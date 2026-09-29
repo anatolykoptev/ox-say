@@ -335,8 +335,8 @@ func TestTranscribeTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stored struct {
-		Text   string `json:"text"`
-		Words  []struct {
+		Text  string `json:"text"`
+		Words []struct {
 			W string `json:"w"`
 		} `json:"words"`
 	}

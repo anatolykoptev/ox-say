@@ -166,10 +166,10 @@ func TestDeviceChoice(t *testing.T) {
 	src := testutil.WriteTinyWAV(t, dir, "in.wav")
 
 	cases := []struct {
-		name    string
-		gpu     string
-		busy    bool
-		wantNG  bool
+		name   string
+		gpu    string
+		busy   bool
+		wantNG bool
 	}{
 		{"auto + engine busy → -ng", "auto", true, true},
 		{"auto + idle → GPU", "auto", false, false},
