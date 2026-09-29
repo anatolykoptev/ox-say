@@ -21,6 +21,9 @@
     <true/>
     <key>ThrottleInterval</key>
     <integer>10</integer>
+    <!-- the daemon stops its engine child (SIGTERM, then SIGKILL after 5 s) and drains HTTP -->
+    <key>ExitTimeOut</key>
+    <integer>20</integer>
     <key>StandardOutPath</key>
     <string>@LOGDIR@/ox-say.log</string>
     <key>StandardErrorPath</key>
