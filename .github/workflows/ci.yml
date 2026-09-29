@@ -10,7 +10,7 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -39,10 +39,12 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)"
 
-      # The product ships to macOS — the linux gate must still compile the
-      # darwin build-tagged files (afplay player, proc listing).
-      - name: darwin build
-        run: GOOS=darwin go build ./...
+      # The product ships to macOS — the linux gate must still compile and
+      # vet the darwin build-tagged files (afplay player, proc listing).
+      - name: darwin build + vet
+        run: |
+          GOOS=darwin GOARCH=amd64 go build ./...
+          GOOS=darwin GOARCH=amd64 go vet ./...
 
       - name: go vet
         run: go vet ./...
