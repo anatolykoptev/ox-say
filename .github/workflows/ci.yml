@@ -1,0 +1,51 @@
+name: ci
+
+# Pre-merge gate. Public repo → free GitHub-hosted ARM runner (arm64 also
+# matches the deploy target profile). Gate per job: gofmt, vet, race tests.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GOWORK: "off"
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # ffmpeg is required by tests: voice normalization and the mp3/opus
+      # transcode path shell out to it.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+
+      # The product ships to macOS — the linux gate must still compile the
+      # darwin build-tagged files (afplay player, proc listing).
+      - name: darwin build
+        run: GOOS=darwin go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: go test -race -count=1 ./...
