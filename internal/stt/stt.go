@@ -1,0 +1,220 @@
+// Package stt transcribes audio with the ox-stt engine child: input of any
+// format is converted to a 16 kHz mono PCM16 WAV with ffmpeg, then ox-stt
+// runs on it and its JSON is parsed into a typed Result. One transcription
+// runs at a time per process — the engine holds ~1.3 GB of GPU memory while
+// it runs, on top of whatever the TTS child holds.
+package stt
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// InputError marks a failure caused by caller input — a relative path, an
+// unreadable file, a clip ffmpeg cannot decode. The HTTP layer maps it to
+// 400; everything else is a 500.
+type InputError struct{ msg string }
+
+func (e *InputError) Error() string { return e.msg }
+
+// EngineError is an ox-stt run failure (nonzero exit): the input was
+// decodable but the engine failed. Mapped to 500 by the HTTP layer.
+type EngineError struct{ msg string }
+
+func (e *EngineError) Error() string { return e.msg }
+
+// Word is one timed token from the engine's "words" array.
+type Word struct {
+	W string  `json:"w"`
+	S float64 `json:"s"`
+	E float64 `json:"e"`
+	P float64 `json:"p"`
+}
+
+// Segment is one timed span from the engine's "segments" array.
+type Segment struct {
+	S    float64 `json:"s"`
+	E    float64 `json:"e"`
+	Text string  `json:"text"`
+}
+
+// Result is ox-stt's JSON output, times in seconds.
+type Result struct {
+	Engine    string    `json:"engine"`
+	Language  *string   `json:"language"` // string or null (parakeet reports none)
+	DurationS float64   `json:"duration_s"`
+	ElapsedS  float64   `json:"elapsed_s"`
+	Text      string    `json:"text"`
+	Segments  []Segment `json:"segments"`
+	Words     []Word    `json:"words"`
+}
+
+// Options controls one Transcribe call. The daemon fills the Bin/Model/GPU
+// fields from config; EngineBusy reports whether the TTS supervisor holds
+// the GPU (state starting or ready).
+type Options struct {
+	Engine   string // "parakeet" (default) | "whisper"
+	Language string // whisper only; parakeet auto-detects
+	Prompt   string // whisper only
+
+	Bin          string        // ox-stt binary
+	Model        string        // parakeet model
+	WhisperModel string        // whisper model
+	GPU          string        // "auto" (default) | "on" | "off"
+	EngineBusy   func() bool   // nil → false
+	Timeout      time.Duration // cap on the conversion+run; 0 → DefaultTimeout
+}
+
+// Defaults and bounds.
+const (
+	DefaultTimeout = 10 * time.Minute
+	convertTimeout = 60 * time.Second
+)
+
+// sem serializes transcriptions: a second ox-stt would contend for GPU
+// memory with the one already running (and with the TTS child).
+var sem = make(chan struct{}, 1)
+
+// ffmpeg is a variable so tests can point it at a missing binary.
+var ffmpeg = "ffmpeg"
+
+// Transcribe converts audioPath (absolute) to a 16 kHz mono PCM16 WAV and
+// runs ox-stt on it under ctx — a cancelled context kills the engine child.
+func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, error) {
+	if !filepath.IsAbs(audioPath) {
+		return nil, &InputError{fmt.Sprintf("stt: audio path %q is not absolute", audioPath)}
+	}
+	if _, err := os.Stat(audioPath); err != nil {
+		return nil, &InputError{fmt.Sprintf("stt: audio: %v", err)}
+	}
+	engine := opts.Engine
+	if engine == "" {
+		engine = "parakeet"
+	}
+	if engine != "parakeet" && engine != "whisper" {
+		return nil, &InputError{fmt.Sprintf("stt: unsupported engine %q (want parakeet|whisper)", engine)}
+	}
+	model := opts.Model
+	if engine == "whisper" {
+		model = opts.WhisperModel
+	}
+	if _, err := os.Stat(model); err != nil {
+		return nil, fmt.Errorf("stt: model %q not found — fetch it with scripts/fetch-models.sh", model)
+	}
+
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	wav, err := convert(ctx, audioPath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.Remove(wav) }()
+
+	args := []string{"-m", model, "-f", wav, "--engine", engine}
+	if engine == "whisper" {
+		if opts.Language != "" {
+			args = append(args, "-l", opts.Language)
+		}
+		if opts.Prompt != "" {
+			args = append(args, "--prompt", opts.Prompt)
+		}
+	}
+	if !gpuAllowed(opts.GPU, engineBusy(opts.EngineBusy)) {
+		args = append(args, "-ng")
+	}
+
+	cmd := exec.CommandContext(ctx, opts.Bin, args...)
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return nil, &EngineError{fmt.Sprintf("stt: ox-stt failed: %s", strings.TrimSpace(errb.String()))}
+		}
+		return nil, fmt.Errorf("stt: cannot run %s: %w", opts.Bin, err)
+	}
+	var res Result
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		return nil, &EngineError{fmt.Sprintf("stt: ox-stt returned invalid JSON: %v", err)}
+	}
+	return &res, nil
+}
+
+func engineBusy(f func() bool) bool { return f != nil && f() }
+
+// gpuAllowed resolves the -ng decision: "on" always uses the GPU, "off"
+// never, and "auto" stays off the GPU while the TTS engine occupies it
+// (its ~2 GB plus the ~1.3 GB ox-stt wants would not fit the card).
+func gpuAllowed(mode string, ttsBusy bool) bool {
+	switch mode {
+	case "on":
+		return true
+	case "off":
+		return false
+	default: // auto
+		return !ttsBusy
+	}
+}
+
+// convert turns any input ffmpeg reads into a 16 kHz mono PCM16 WAV temp
+// file. A clip ffmpeg ran against and refused is caller input; a missing
+// binary or a kill on the timeout is a daemon fault — same split as
+// voices.Prepare.
+func convert(ctx context.Context, audioPath string) (string, error) {
+	tmp, err := os.CreateTemp("", "ox-say-stt-*.wav")
+	if err != nil {
+		return "", fmt.Errorf("stt: %w", err)
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(ctx, convertTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, ffmpeg,
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-protocol_whitelist", "file",
+		"-i", "file:"+audioPath,
+		"-ar", "16000",
+		"-ac", "1",
+		"-c:a", "pcm_s16le",
+		tmpName,
+	).CombinedOutput()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && ctx.Err() == nil {
+			return "", &InputError{fmt.Sprintf("stt: cannot decode audio %q: %s", audioPath, strings.TrimSpace(string(out)))}
+		}
+		return "", fmt.Errorf("stt: ffmpeg: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	ok = true
+	return tmpName, nil
+}

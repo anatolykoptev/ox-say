@@ -46,6 +46,16 @@ func (d *Daemon) RegisterTools(srv *mcp.Server) {
 		Name:        "engine_status",
 		Description: `Engine supervisor status: state (stopped|starting|ready|crashed), pid, uptime, last error, start/restart counts.`,
 	}, d.toolEngineStatus)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "transcribe",
+		Description: `Transcribe a local audio file to text. Returns text plus audio duration, elapsed time and engine; ` +
+			`words=true adds per-word timings. ` +
+			`engine parakeet (default): fast, covers 25 European languages incl. English and Russian, language auto-detected. ` +
+			`engine whisper: 99 languages, takes language and prompt hints; needs the optional whisper model. ` +
+			`Parakeet word times carry about ±80 ms jitter — for cut-precise timings use a forced aligner on the transcript instead. ` +
+			`out_path writes the full result JSON (segments and words) to an absolute .json path.`,
+	}, d.toolTranscribe)
 }
 
 type speakToolIn struct {

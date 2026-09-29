@@ -26,6 +26,11 @@ func servedHandler(t *testing.T) http.Handler {
 func TestGuard(t *testing.T) {
 	h := servedHandler(t)
 	voiceBody := `{"name":"ben","audio_path":"/tmp/x.wav"}`
+	// A well-formed multipart body (fields only, no file): reaching the
+	// handler answers 400 "file is required"; being stopped by the guard
+	// answers 415.
+	mpBody := "--xx\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nparakeet\r\n--xx--\r\n"
+	mpType := "multipart/form-data; boundary=xx"
 
 	cases := []struct {
 		name, method, path, host, ctype, body string
@@ -42,6 +47,13 @@ func TestGuard(t *testing.T) {
 			map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"}, http.StatusForbidden},
 		{"cross-origin POST without Sec-Fetch-Site", "POST", "/v1/audio/speech", "127.0.0.1:8094", "application/json", `{"input":"x"}`,
 			map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		// multipart is OpenAI-compatible ONLY on the transcriptions route:
+		// accepted there (reaches the handler → 400), refused elsewhere (415)
+		{"multipart transcriptions", "POST", "/v1/audio/transcriptions", "127.0.0.1:8094", mpType, mpBody, nil, http.StatusBadRequest},
+		{"multipart voices refused", "POST", "/v1/audio/voices", "127.0.0.1:8094", mpType, mpBody, nil, http.StatusUnsupportedMediaType},
+		{"multipart speech refused", "POST", "/v1/audio/speech", "127.0.0.1:8094", mpType, mpBody, nil, http.StatusUnsupportedMediaType},
+		{"cross-site multipart transcriptions", "POST", "/v1/audio/transcriptions", "127.0.0.1:8094", mpType, mpBody,
+			map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
 		// what the CLI and local clients send is still served
 		{"loopback GET", "GET", "/status", "127.0.0.1:8094", "", "", nil, http.StatusOK},
 		{"localhost GET", "GET", "/status", "localhost:8094", "", "", nil, http.StatusOK},

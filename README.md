@@ -27,6 +27,8 @@ echo piped | ox-say say                 # text from stdin
 ox-say voice add ben ./clip.wav --ref-text "what the clip says"
 ox-say voice ls
 ox-say voice rm ben
+ox-say transcribe meeting.wav           # speech-to-text
+ox-say transcribe -e whisper --srt talk.mp4 > talk.srt
 ox-say status
 ```
 
@@ -35,6 +37,14 @@ first request, stops it after `OX_SAY_IDLE_STOP_SECS` (default 300 s) of
 idleness so it does not hold ~2 GB of GPU memory, restarts it after a crash
 with backoff, and replays persisted voices into every fresh child.
 
+Speech-to-text runs the separate `ox-stt` child on demand (no resident
+process): ffmpeg first normalizes the input to 16 kHz mono WAV, then
+Parakeet TDT (default, 25 European languages, auto-detected) or Whisper
+large-v3-turbo (99 languages, takes `language`/`prompt` hints) transcribes
+it. One transcription runs at a time; while the TTS engine is starting or
+ready it holds ~2 GB of GPU memory, so ox-stt automatically runs on the CPU
+(`OX_SAY_STT_GPU` overrides).
+
 ### HTTP API
 
 Listening on `OX_SAY_ADDR` (default `127.0.0.1:8094`, loopback only):
@@ -42,6 +52,7 @@ Listening on `OX_SAY_ADDR` (default `127.0.0.1:8094`, loopback only):
 | Route | Description |
 |-------|-------------|
 | `POST /v1/audio/speech` | OpenAI-compatible TTS. `input` required; `voice`, `language`, `response_format` (`wav`, `pcm`, `mp3`, `opus` — last two transcoded with ffmpeg), `instructions`, `seed`, `temperature`, `top_k`, `top_p`, `repetition_penalty`, `max_new_tokens` |
+| `POST /v1/audio/transcriptions` | OpenAI-compatible STT, multipart: `file` (required, ≤ `OX_SAY_STT_MAX_UPLOAD_MB`), `model` (`parakeet` default; `whisper`/`whisper-1`), `language`, `prompt`, `response_format` (`json` default → `{"text"}`; `text`; `verbose_json` → full result incl. `segments`+`words`; `srt`; `vtt`), `timestamp_granularities[]` |
 | `GET /v1/audio/voices` | List persisted voices |
 | `POST /v1/audio/voices` | `{"name","audio_path","ref_text"}` — clone from a local clip (normalized to 24 kHz mono WAV, max 20 s) |
 | `GET /v1/audio/voices/<name>` | Voice metadata |
@@ -51,8 +62,8 @@ Listening on `OX_SAY_ADDR` (default `127.0.0.1:8094`, loopback only):
 
 ### MCP
 
-The same server exposes MCP tools on `/mcp`: `speak`, `voices_list`,
-`voice_add`, `voice_remove`, `engine_status`. Register with:
+The same server exposes MCP tools on `/mcp`: `speak`, `transcribe`,
+`voices_list`, `voice_add`, `voice_remove`, `engine_status`. Register with:
 
 ```
 claude mcp add --transport http --scope user ox-say http://127.0.0.1:8094/mcp
@@ -76,6 +87,12 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_LANG` | empty | Default language; empty = engine auto-detect |
 | `OX_SAY_ENGINE_LOG_DIR` | `~/Library/Logs/ox-say` | Child stdout/stderr go to `engine.log` here |
 | `OX_SAY_CACHE_DIR` | `~/Library/Caches/ox-say` | Default output dir for `speak` |
+| `OX_SAY_STT_BIN` | `$OX_SAY_HOME/engine/ox-stt` | Speech-to-text binary |
+| `OX_SAY_STT_MODEL` | `$OX_SAY_HOME/models/ggml-parakeet-tdt-0.6b-v3-f16.bin` | Parakeet weights |
+| `OX_SAY_STT_WHISPER_MODEL` | `$OX_SAY_HOME/models/ggml-large-v3-turbo.bin` | Whisper weights (`--with-whisper` fetch) |
+| `OX_SAY_STT_GPU` | `auto` | `auto`: CPU while the TTS engine runs, GPU otherwise; `on`/`off` force |
+| `OX_SAY_STT_TIMEOUT_SECS` | `600` | Per-transcription cap (conversion + engine) |
+| `OX_SAY_STT_MAX_UPLOAD_MB` | `200` | `file` part cap on the transcriptions route |
 
 ## Build and install the engine
 

@@ -20,6 +20,8 @@ const (
 	DefaultMaxBatch       = 2
 	DefaultIdleStopSecs   = 300
 	DefaultStartupTimeout = 180
+	DefaultSTTTimeout     = 600
+	DefaultSTTMaxUploadMB = 200
 )
 
 // Config is the resolved daemon configuration.
@@ -38,22 +40,35 @@ type Config struct {
 	Lang           string // OX_SAY_LANG: default language; empty = engine auto
 	EngineLogDir   string // OX_SAY_ENGINE_LOG_DIR: child stdout/stderr log dir
 	CacheDir       string // OX_SAY_CACHE_DIR: default output dir for speak
+
+	STTBin          string        // OX_SAY_STT_BIN: path to ox-stt
+	STTModel        string        // OX_SAY_STT_MODEL: parakeet weights
+	STTWhisperModel string        // OX_SAY_STT_WHISPER_MODEL: whisper weights
+	STTGPU          string        // OX_SAY_STT_GPU: auto | on | off
+	STTTimeout      time.Duration // OX_SAY_STT_TIMEOUT_SECS
+	STTMaxUploadMB  int64         // OX_SAY_STT_MAX_UPLOAD_MB
 }
 
 // flagNames maps flag names to env var names for ApplyFlags.
 var flagNames = map[string]string{
-	"home":            "OX_SAY_HOME",
-	"addr":            "OX_SAY_ADDR",
-	"engine-port":     "OX_SAY_ENGINE_PORT",
-	"engine-bin":      "OX_SAY_ENGINE_BIN",
-	"model":           "OX_SAY_MODEL",
-	"codec":           "OX_SAY_CODEC",
-	"max-batch":       "OX_SAY_MAX_BATCH",
-	"idle-stop":       "OX_SAY_IDLE_STOP_SECS",
-	"startup-timeout": "OX_SAY_STARTUP_TIMEOUT_SECS",
-	"lang":            "OX_SAY_LANG",
-	"engine-log-dir":  "OX_SAY_ENGINE_LOG_DIR",
-	"cache-dir":       "OX_SAY_CACHE_DIR",
+	"home":              "OX_SAY_HOME",
+	"addr":              "OX_SAY_ADDR",
+	"engine-port":       "OX_SAY_ENGINE_PORT",
+	"engine-bin":        "OX_SAY_ENGINE_BIN",
+	"model":             "OX_SAY_MODEL",
+	"codec":             "OX_SAY_CODEC",
+	"max-batch":         "OX_SAY_MAX_BATCH",
+	"idle-stop":         "OX_SAY_IDLE_STOP_SECS",
+	"startup-timeout":   "OX_SAY_STARTUP_TIMEOUT_SECS",
+	"lang":              "OX_SAY_LANG",
+	"engine-log-dir":    "OX_SAY_ENGINE_LOG_DIR",
+	"cache-dir":         "OX_SAY_CACHE_DIR",
+	"stt-bin":           "OX_SAY_STT_BIN",
+	"stt-model":         "OX_SAY_STT_MODEL",
+	"stt-whisper-model": "OX_SAY_STT_WHISPER_MODEL",
+	"stt-gpu":           "OX_SAY_STT_GPU",
+	"stt-timeout":       "OX_SAY_STT_TIMEOUT_SECS",
+	"stt-max-upload":    "OX_SAY_STT_MAX_UPLOAD_MB",
 }
 
 // RegisterFlags registers one flag per supported env var on fs. Values set on
@@ -128,6 +143,30 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	}
 	c.StartupTimeout = time.Duration(startSecs) * time.Second
 
+	if c.STTBin = get("OX_SAY_STT_BIN"); c.STTBin == "" {
+		c.STTBin = filepath.Join(c.Home, "engine", "ox-stt")
+	}
+	if c.STTModel = get("OX_SAY_STT_MODEL"); c.STTModel == "" {
+		c.STTModel = filepath.Join(c.Home, "models", "ggml-parakeet-tdt-0.6b-v3-f16.bin")
+	}
+	if c.STTWhisperModel = get("OX_SAY_STT_WHISPER_MODEL"); c.STTWhisperModel == "" {
+		c.STTWhisperModel = filepath.Join(c.Home, "models", "ggml-large-v3-turbo.bin")
+	}
+	c.STTGPU = orDefault(get("OX_SAY_STT_GPU"), "auto")
+	switch c.STTGPU {
+	case "auto", "on", "off":
+	default:
+		return nil, fmt.Errorf("config: OX_SAY_STT_GPU %q: want auto|on|off", c.STTGPU)
+	}
+	sttSecs, err := intVar(get("OX_SAY_STT_TIMEOUT_SECS"), DefaultSTTTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("config: OX_SAY_STT_TIMEOUT_SECS: %w", err)
+	}
+	c.STTTimeout = time.Duration(sttSecs) * time.Second
+	if c.STTMaxUploadMB, err = int64Var(get("OX_SAY_STT_MAX_UPLOAD_MB"), DefaultSTTMaxUploadMB); err != nil {
+		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_UPLOAD_MB: %w", err)
+	}
+
 	c.Host, c.Port, err = splitLoopbackAddr(c.Addr)
 	if err != nil {
 		return nil, err
@@ -147,6 +186,17 @@ func intVar(v string, def int) (int, error) {
 		return def, nil
 	}
 	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer %q", v)
+	}
+	return n, nil
+}
+
+func int64Var(v string, def int64) (int64, error) {
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid integer %q", v)
 	}

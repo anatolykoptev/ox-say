@@ -2,8 +2,10 @@ package cli
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -124,6 +126,77 @@ func TestVoiceAddSendsAbsolutePath(t *testing.T) {
 	p, _ := body["audio_path"].(string)
 	if !filepath.IsAbs(p) {
 		t.Fatalf("audio_path = %q, want absolute", p)
+	}
+}
+
+// `transcribe` uploads the file as multipart to /v1/audio/transcriptions:
+// file content, model/language/prompt fields and the default text format.
+// Mutation: send JSON instead of multipart (or the wrong field name) -> RED.
+func TestTranscribeSendsMultipart(t *testing.T) {
+	var gotCT, gotPath string
+	var gotFile []byte
+	var fields map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotCT = r.Header.Get("Content-Type")
+		if mr, err := r.MultipartReader(); err == nil {
+			fields = map[string]string{}
+			for {
+				p, err := mr.NextPart()
+				if err != nil {
+					break
+				}
+				data, _ := io.ReadAll(p)
+				if p.FormName() == "file" {
+					gotFile = data
+				} else {
+					fields[p.FormName()] = string(data)
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("the transcript"))
+	}))
+	defer srv.Close()
+	t.Setenv("OX_SAY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+
+	src := filepath.Join(t.TempDir(), "clip.wav")
+	if err := os.WriteFile(src, []byte("RIFF-fake-audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var outBuf, errBuf strings.Builder
+	code := Run([]string{"transcribe", "-e", "whisper", "-l", "ru", "--prompt", "ctx", src}, &outBuf, &errBuf, "test")
+	if code != 0 {
+		t.Fatalf("transcribe exit = %d (stderr %s)", code, errBuf.String())
+	}
+	if gotPath != "/v1/audio/transcriptions" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if !strings.HasPrefix(gotCT, "multipart/form-data") {
+		t.Fatalf("content-type = %q", gotCT)
+	}
+	if string(gotFile) != "RIFF-fake-audio" {
+		t.Fatalf("file part = %q", gotFile)
+	}
+	if fields["model"] != "whisper" || fields["language"] != "ru" || fields["prompt"] != "ctx" || fields["response_format"] != "text" {
+		t.Fatalf("fields = %v", fields)
+	}
+	if strings.TrimSpace(outBuf.String()) != "the transcript" {
+		t.Fatalf("stdout = %q", outBuf.String())
+	}
+}
+
+// transcribe usage errors: no file, a bad engine, a missing file.
+func TestTranscribeUsageErrors(t *testing.T) {
+	var outBuf, errBuf strings.Builder
+	if code := Run([]string{"transcribe"}, &outBuf, &errBuf, "test"); code != 2 {
+		t.Fatalf("no file: exit = %d, want 2", code)
+	}
+	if code := Run([]string{"transcribe", "-e", "bogus", "x.wav"}, &outBuf, &errBuf, "test"); code != 2 {
+		t.Fatalf("bad engine: exit = %d, want 2", code)
+	}
+	if code := Run([]string{"transcribe", filepath.Join(t.TempDir(), "nope.wav")}, &outBuf, &errBuf, "test"); code != 1 {
+		t.Fatalf("missing file: exit = %d, want 1", code)
 	}
 }
 

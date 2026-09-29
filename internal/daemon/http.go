@@ -19,6 +19,7 @@ import (
 // Config.Routes next to /mcp and /health.
 func (d *Daemon) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/audio/speech", d.handleSpeech)
+	mux.HandleFunc("POST /v1/audio/transcriptions", d.handleTranscribe)
 	mux.HandleFunc("GET /v1/audio/voices", d.handleListVoices)
 	mux.HandleFunc("POST /v1/audio/voices", d.handleAddVoice)
 	mux.HandleFunc("GET /v1/audio/voices/{name}", d.handleGetVoice)
