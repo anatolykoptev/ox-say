@@ -174,3 +174,32 @@ func TestSweepTemp(t *testing.T) {
 		t.Fatalf("leftover still present: %v", err)
 	}
 }
+
+// An in-flight commit's temporaries never show up as voices: List reads
+// only visible *.json files.
+// Mutation: drop the dotfile check in List -> RED ("temporary listed").
+func TestListSkipsTemporaries(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Add(context.Background(), "ben", testutil.WriteTinyWAV(t, t.TempDir(), "a.wav"), ""); err != nil {
+		t.Fatal(err)
+	}
+	// a metadata temporary as a crashed or in-flight commit would leave it
+	meta, err := os.ReadFile(filepath.Join(dir, "ben.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".normalize-ben-1.wav.json"), meta, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("temporary listed: %d voices, want 1", len(list))
+	}
+}

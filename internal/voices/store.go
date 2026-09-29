@@ -168,7 +168,7 @@ func (p *Pending) Commit() (*Voice, error) {
 	if err != nil {
 		return nil, err
 	}
-	metaTmp := p.tmp + ".json"
+	metaTmp := p.tmp + ".meta"
 	if err := s.writeFile(metaTmp, meta, 0o644); err != nil {
 		_ = os.Remove(metaTmp)
 		return nil, fmt.Errorf("voices: %w", err)
@@ -241,7 +241,8 @@ func (s *Store) List() ([]Voice, error) {
 	}
 	var out []Voice
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+		// dotfiles are in-flight temporaries (Prepare/Commit), never voices
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
 		meta, err := os.ReadFile(filepath.Join(s.dir, e.Name()))
