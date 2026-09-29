@@ -60,7 +60,7 @@ void usage(const char * argv0) {
             "          [--no-normalize] [--dump-dir DIR]\n"
             "       %s -m model.gguf --info\n"
             "audio must be a 16 kHz mono WAV (PCM16 or float32): ffmpeg -i in -ar 16000 -ac 1 out.wav\n"
-            "--window/--context must be multiples of 0.02 s (one 320-sample frame),\n"
+            "--window/--context must be positive multiples of 0.02 s (one 320-sample frame),\n"
             "window <= 600 s, context <= 10 s\n",
             argv0, argv0);
 }
@@ -115,25 +115,27 @@ bool parse(int argc, char ** argv, args & a) {
     // samples at 16 kHz): a fraction would emit a silently time-shifted
     // frame per window, and a huge value overflows the sample math. The
     // check runs on the rounded sample count — fp parse noise stays far
-    // below one sample — never on the double itself. --context 0 is legal.
+    // below one sample — never on the double itself. --context 0 cannot be
+    // satisfied: the conv stack's ~400-sample receptive field always leaves
+    // the window short of frames.
     auto arg_frames = [](const char * flag, double sec, double max_s,
-                         bool zero_ok, int64_t & n) -> bool {
-        if (!std::isfinite(sec) || sec < 0 || (!zero_ok && sec <= 0) || sec > max_s) {
-            fprintf(stderr, "ox-align: %s must be a %smultiple of 0.02 s no larger than %g s\n",
-                    flag, zero_ok ? "non-negative " : "positive ", max_s);
+                         int64_t & n) -> bool {
+        if (!std::isfinite(sec) || sec <= 0 || sec > max_s) {
+            fprintf(stderr, "ox-align: %s must be a positive multiple of 0.02 s no larger than %g s\n",
+                    flag, max_s);
             return false;
         }
         const double s = sec * SR;
         n = (int64_t) llround(s);
-        if (fabs(s - (double) n) > 0.5 || n % (SR / 50) != 0 || (!zero_ok && n == 0)) {
+        if (n == 0 || n % (SR / 50) != 0) {
             fprintf(stderr, "ox-align: %s %.9gs does not give a whole number of 20 ms frames\n",
                     flag, sec);
             return false;
         }
         return true;
     };
-    if (!arg_frames("--window", a.window, 600.0, false, a.win_samples) ||
-        !arg_frames("--context", a.context, 10.0, true, a.ctx_samples)) {
+    if (!arg_frames("--window", a.window, 600.0, a.win_samples) ||
+        !arg_frames("--context", a.context, 10.0, a.ctx_samples)) {
         return false;
     }
     return true;
@@ -194,21 +196,14 @@ bool read_wav(const std::string & path, std::vector<float> & out, std::string & 
             }
             // a streaming writer leaves the length 0 or 0xFFFFFFFF: take the rest of the file
             const size_t avail = (len == 0 || len == 0xFFFFFFFFu) ? buf.size() - body : std::min<size_t>(len, buf.size() - body);
-            // keep only the data chunk while decoding: for long files holding
-            // the whole WAV next to the float samples nearly doubles peak RSS
-            if (body > 0) {
-                memmove(buf.data(), buf.data() + body, avail);
-            }
-            buf.resize(avail);
-            buf.shrink_to_fit();
             if (fmt == 1) {
                 out.resize(avail / 2);
                 for (size_t i = 0; i < out.size(); ++i) {
-                    out[i] = (int16_t) rd16(&buf[2 * i]) / 32768.0f;
+                    out[i] = (int16_t) rd16(&buf[body + 2 * i]) / 32768.0f;
                 }
             } else {
                 out.resize(avail / 4);
-                memcpy(out.data(), buf.data(), out.size() * 4);
+                memcpy(out.data(), &buf[body], out.size() * 4);
                 for (float v : out) {
                     if (!std::isfinite(v)) {
                         err = "float WAV has non-finite samples";
@@ -451,10 +446,16 @@ bool load_model(const std::string & path, model & m, ggml_backend_t backend,
                 err = "model is missing tensor " + name;
                 return false;
             }
-            bool bad = ggml_n_dims(t) != (int) want.size();
-            size_t i = 0;
+            // leading dims must match want exactly; every dim beyond them
+            // must be 1 — ggml_n_dims drops trailing size-1 axes, so a real
+            // extra axis would otherwise hide from the count
+            bool bad = false;
+            int i = 0;
             for (int64_t w : want) {
                 bad = bad || t->ne[i++] != w;
+            }
+            for (; i < GGML_MAX_DIMS; ++i) {
+                bad = bad || t->ne[i] != 1;
             }
             if (bad) {
                 char got[80] = {0}, exp[80] = {0};
@@ -531,6 +532,33 @@ bool load_model(const std::string & path, model & m, ggml_backend_t backend,
             }
         }
     }
+    // every stored tensor is f32 — except the Linear kernels, which the
+    // converter may store as f16 (convert_wav2vec2.py is_matmul: attention
+    // and feed-forward weights, the feature projection and lm_head)
+    {
+        auto f16_ok = [](const char * name) -> bool {
+            const std::string n = name;
+            if (n == "lm_head.weight" ||
+                n == "feature_projection.projection.weight") {
+                return true;
+            }
+            const bool is_weight = n.size() > 7 &&
+                n.compare(n.size() - 7, 7, ".weight") == 0;
+            return is_weight && (n.find(".attention.") != std::string::npos ||
+                                 n.find(".feed_forward.") != std::string::npos);
+        };
+        for (int64_t i = 0; i < gguf_get_n_tensors(m.gguf); ++i) {
+            const char *  name = gguf_get_tensor_name(m.gguf, i);
+            ggml_tensor * t    = ggml_get_tensor(m.wctx, name);
+            if (!t || t->type == GGML_TYPE_F32 ||
+                (t->type == GGML_TYPE_F16 && f16_ok(name))) {
+                continue;
+            }
+            err = std::string(name) + " has type " + ggml_type_name(t->type) +
+                  ", expected f32" + (f16_ok(name) ? " or f16" : "");
+            return false;
+        }
+    }
     kv_str(m.gguf, "wav2vec2.vocab_json", m.vocab_json);
 
     if (meta_only) {
@@ -570,6 +598,12 @@ bool load_model(const std::string & path, model & m, ggml_backend_t backend,
 
     if (m.upcast.empty()) {
         m.wbuf = ggml_backend_alloc_ctx_tensors(m.wctx, backend);
+        if (m.wbuf) {
+            // weight buffers are flagged so the sched's weight-affinity
+            // placement and the op_offload split keep the graph where the
+            // weights live
+            ggml_backend_buffer_set_usage(m.wbuf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        }
     } else {
         // the f16 originals are shadowed by their f32 twins and are never
         // touched again — backing them too would park ~half a copy of the
@@ -586,6 +620,7 @@ bool load_model(const std::string & path, model & m, ggml_backend_t backend,
         }
         m.wbuf = size ? ggml_backend_buft_alloc_buffer(buft, size) : nullptr;
         if (m.wbuf) {
+            ggml_backend_buffer_set_usage(m.wbuf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
             ggml_tallocr talloc = ggml_tallocr_new(m.wbuf);
             for (int64_t i = 0; i < gguf_get_n_tensors(m.gguf); ++i) {
                 const char *  name = gguf_get_tensor_name(m.gguf, i);
@@ -603,6 +638,11 @@ bool load_model(const std::string & path, model & m, ggml_backend_t backend,
     if (!m.wbuf || (m.wctx2 && !(m.wbuf2 = ggml_backend_alloc_ctx_tensors(m.wctx2, backend)))) {
         err = "failed to allocate model tensors";
         return false;
+    }
+    if (m.wbuf2) {
+        // the f32 twins are the matmul operands the CPU actually reads —
+        // weights in every sense the sched cares about
+        ggml_backend_buffer_set_usage(m.wbuf2, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
     }
     FILE * f = fopen(path.c_str(), "rb");
     if (!f) {
@@ -1054,7 +1094,10 @@ bool parse_json_string(const std::string & s, size_t & i, std::string & out) {
     return false;
 }
 
-bool write_vocab(const std::string & path, const std::string & vocab_json,
+// validate the GGUF's vocab_json and render it as {"id": "token"}.
+// ids come from the file: bound them by vocab_size before they can size a
+// vector, so a corrupt id is a clean error, never a huge resize.
+bool parse_vocab(const std::string & vocab_json, int vocab, std::string & o,
                  std::string & err) {
     std::vector<std::string> id2tok;
     std::vector<bool>        seen;   // an id with no token is an error
@@ -1089,6 +1132,11 @@ bool write_vocab(const std::string & path, const std::string & vocab_json,
             err = "vocab_json: bad id";
             return false;
         }
+        if (id >= vocab) {
+            err = "vocab_json: token id " + std::to_string(id) +
+                  " >= vocab_size " + std::to_string(vocab);
+            return false;
+        }
         i = (size_t) (e - vocab_json.c_str());
         if ((size_t) id >= id2tok.size()) {
             id2tok.resize((size_t) id + 1);
@@ -1106,7 +1154,7 @@ bool write_vocab(const std::string & path, const std::string & vocab_json,
             return false;
         }
     }
-    std::string o = "{";
+    o = "{";
     for (size_t k = 0; k < id2tok.size(); ++k) {
         if (k) {
             o += ",";
@@ -1129,6 +1177,11 @@ bool write_vocab(const std::string & path, const std::string & vocab_json,
         o += '"';
     }
     o += "}\n";
+    return true;
+}
+
+bool write_vocab(const std::string & path, const std::string & o,
+                 std::string & err) {
     const std::string tmp = path + ".tmp";
     FILE * f = fopen(tmp.c_str(), "wb");
     if (!f) {
@@ -1252,6 +1305,20 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // --vocab: validate the model's vocab_json up front — a corrupt vocab
+    // fails fast, before a full inference pass, and leaves no output behind
+    std::string vocab_out;
+    if (!a.vocab.empty()) {
+        if (m.vocab_json.empty()) {
+            fprintf(stderr, "ox-align: model carries no vocab_json\n");
+            return 1;
+        }
+        if (!parse_vocab(m.vocab_json, m.h.vocab, vocab_out, err)) {
+            fprintf(stderr, "ox-align: %s\n", err.c_str());
+            return 1;
+        }
+    }
+
     std::vector<float> x;
     if (!read_wav(a.file, x, err)) {
         fprintf(stderr, "ox-align: %s\n", err.c_str());
@@ -1369,15 +1436,9 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "ox-align: %s\n", err.c_str());
         return 1;
     }
-    if (!a.vocab.empty()) {
-        if (m.vocab_json.empty()) {
-            fprintf(stderr, "ox-align: model carries no vocab_json\n");
-            return 1;
-        }
-        if (!write_vocab(a.vocab, m.vocab_json, err)) {
-            fprintf(stderr, "ox-align: %s\n", err.c_str());
-            return 1;
-        }
+    if (!a.vocab.empty() && !write_vocab(a.vocab, vocab_out, err)) {
+        fprintf(stderr, "ox-align: %s\n", err.c_str());
+        return 1;
     }
     return 0;
 }
