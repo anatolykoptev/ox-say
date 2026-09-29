@@ -23,12 +23,27 @@ func Guard(next http.Handler) http.Handler {
 			writeErr(w, http.StatusForbidden, "host not allowed")
 			return
 		}
-		if r.Method == http.MethodPost && !jsonBody(r.Header.Get("Content-Type")) {
+		if r.Method == http.MethodPost && !postBodyOK(r) {
 			writeErr(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 			return
 		}
 		protected.ServeHTTP(w, r)
 	})
+}
+
+// postBodyOK requires JSON on every POST — except the transcriptions route,
+// which is OpenAI-compatible multipart/form-data (file upload). The
+// exemption names the exact method and path so no other POST opens up.
+func postBodyOK(r *http.Request) bool {
+	ct := r.Header.Get("Content-Type")
+	if jsonBody(ct) {
+		return true
+	}
+	if r.Method != http.MethodPost || r.URL.Path != "/v1/audio/transcriptions" {
+		return false
+	}
+	mt, _, err := mime.ParseMediaType(ct)
+	return err == nil && mt == "multipart/form-data"
 }
 
 // loopbackHost reports whether a Host header names this machine by a loopback
@@ -61,9 +76,14 @@ func (d *Daemon) ServerConfig(version string) mcpserver.Config {
 		Logger:  d.log,
 		// speak blocks on a cold engine start (Metal shader compile on first
 		// ever run) plus synthesis — give it the startup window plus slack.
-		ToolTimeouts: map[string]time.Duration{"speak": d.Cfg.StartupTimeout + 2*time.Minute},
-		Routes:       d.Routes,
-		Middleware:   []mcpserver.Middleware{Guard},
-		OnShutdown:   d.Shutdown,
+		// transcribe waits on the STT semaphore behind any in-flight run,
+		// then runs its own (up to STTTimeout of work plus ffmpeg).
+		ToolTimeouts: map[string]time.Duration{
+			"speak":      d.Cfg.StartupTimeout + 2*time.Minute,
+			"transcribe": 2*d.Cfg.STTTimeout + 2*time.Minute,
+		},
+		Routes:     d.Routes,
+		Middleware: []mcpserver.Middleware{Guard},
+		OnShutdown: d.Shutdown,
 	}
 }

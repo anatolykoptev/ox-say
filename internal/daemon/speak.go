@@ -47,10 +47,10 @@ var formatExts = map[string][]string{
 	"opus": {".ogg", ".opus"},
 }
 
-// validateOutPath enforces the out_path rules before any synthesis work:
-// absolute path, existing parent dir, extension matching the format, and no
-// overwrite of an existing file unless Overwrite.
-func validateOutPath(path, format string, overwrite bool) error {
+// validateOutPath enforces the out_path rules before any engine work:
+// absolute path, existing parent dir, extension within exts, and no
+// overwrite of an existing file unless allowed.
+func validateOutPath(path string, exts []string, overwrite bool) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("out_path must be absolute, got %q", path)
 	}
@@ -61,13 +61,13 @@ func validateOutPath(path, format string, overwrite bool) error {
 	}
 	ext := strings.ToLower(filepath.Ext(path))
 	ok := false
-	for _, e := range formatExts[format] {
+	for _, e := range exts {
 		if ext == e {
 			ok = true
 		}
 	}
 	if !ok {
-		return fmt.Errorf("out_path extension %q does not match format %s", ext, format)
+		return fmt.Errorf("out_path extension %q not allowed (want %s)", ext, strings.Join(exts, "|"))
 	}
 	if _, err := os.Stat(path); err == nil && !overwrite {
 		return fmt.Errorf("out_path %q exists; set overwrite to replace it", path)
@@ -121,7 +121,7 @@ func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error)
 		return nil, fmt.Errorf("unsupported format %q (want wav|mp3|opus)", format)
 	}
 	if in.OutPath != "" {
-		if err := validateOutPath(in.OutPath, format, in.Overwrite); err != nil {
+		if err := validateOutPath(in.OutPath, formatExts[format], in.Overwrite); err != nil {
 			return nil, err
 		}
 	}

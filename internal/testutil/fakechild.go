@@ -11,6 +11,20 @@
 //	OXSAY_FAKE_EXIT_MS        exit(1) after this many ms
 //	OXSAY_FAKE_EXIT_ONCE      with EXIT_MS: only self-exit once per FAKE_DIR
 //	OXSAY_FAKE_SPEECH_BLOCK   speech blocks until the request context ends
+//
+// Fake ox-stt (dispatched on OXSAY_FAKE_STT=1 AND a --engine flag in argv —
+// the TTS fake never receives one, so both fakes can coexist in a test):
+//
+//	OXSAY_FAKE_STT=1          run the fake ox-stt
+//	OXSAY_FAKE_STT_LOG        append-only record file; lines:
+//	                          "argv\t<id>\t<arg>\t..." on spawn,
+//	                          "start <id> <pid> <unixns>" and
+//	                          "end <id> <pid> <unixns>" around the run —
+//	                          <id> is the basename of the -f argument
+//	OXSAY_FAKE_STT_DELAY_MS   sleep before answering (overlap window)
+//	OXSAY_FAKE_STT_EXIT=1     print a message on stderr and exit 1
+//	OXSAY_FAKE_STT_BLOCK=1    block until killed
+//	OXSAY_FAKE_STT_JSON       payload to print instead of the canned result
 package testutil
 
 import (
@@ -23,6 +37,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,10 +46,78 @@ import (
 // FakeChildMain runs the fake engine when the env marker is set, then exits.
 // Call it first in every test package's TestMain.
 func FakeChildMain() {
+	// The STT fake is selected by argv shape, not only by its env marker:
+	// both markers are typically set in daemon tests, and only ox-stt is
+	// ever invoked with --engine.
+	if os.Getenv("OXSAY_FAKE_STT") == "1" && sttArgv(os.Args[1:]) {
+		os.Exit(runFakeSTT(os.Args[1:]))
+	}
 	if os.Getenv("OXSAY_FAKE_CHILD") != "1" {
 		return
 	}
 	os.Exit(runFakeChild())
+}
+
+// sttArgv reports whether argv looks like an ox-stt invocation.
+func sttArgv(args []string) bool {
+	for _, a := range args {
+		if a == "--engine" {
+			return true
+		}
+	}
+	return false
+}
+
+// runFakeSTT is the fake ox-stt: records argv and start/end stamps, sleeps
+// the configured delay, then prints canned JSON, exits 1, or blocks.
+func runFakeSTT(args []string) int {
+	var file string
+	for i, a := range args {
+		if (a == "-f" || a == "--file") && i+1 < len(args) {
+			file = args[i+1]
+		}
+	}
+	id := filepath.Base(file)
+	log := os.Getenv("OXSAY_FAKE_STT_LOG")
+	stamp := func(rec string) {
+		if log == "" {
+			return
+		}
+		f, err := os.OpenFile(log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return
+		}
+		_, _ = fmt.Fprintln(f, rec)
+		_ = f.Close()
+	}
+	stamp("argv\t" + id + "\t" + strings.Join(args, "\t"))
+	stamp(fmt.Sprintf("start %s %d %d", id, os.Getpid(), time.Now().UnixNano()))
+	// The closure is required: fmt.Sprintf's arguments (time.Now) would
+	// otherwise be captured at defer registration, not at exit.
+	defer func() {
+		stamp(fmt.Sprintf("end %s %d %d", id, os.Getpid(), time.Now().UnixNano()))
+	}()
+
+	if os.Getenv("OXSAY_FAKE_STT_BLOCK") == "1" {
+		for {
+			time.Sleep(time.Hour)
+		}
+	}
+	if d := envMS("OXSAY_FAKE_STT_DELAY_MS"); d > 0 {
+		time.Sleep(d)
+	}
+	if os.Getenv("OXSAY_FAKE_STT_EXIT") == "1" {
+		fmt.Fprintln(os.Stderr, "fake-stt: transcription failed")
+		return 1
+	}
+	payload := os.Getenv("OXSAY_FAKE_STT_JSON")
+	if payload == "" {
+		payload = `{"engine":"parakeet","language":"en","duration_s":0.05,"elapsed_s":0.01,` +
+			`"text":"hello world.","segments":[{"s":0.0,"e":0.05,"text":"hello world."}],` +
+			`"words":[{"w":"hello","s":0.0,"e":0.03,"p":0.99},{"w":"world.","s":0.03,"e":0.05,"p":0.98}]}`
+	}
+	fmt.Println(payload)
+	return 0
 }
 
 func runFakeChild() int {

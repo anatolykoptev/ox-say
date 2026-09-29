@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -39,6 +40,8 @@ func Run(args []string, stdout, stderr io.Writer, version string) int {
 		return cmdSay(args[1:], stdout, stderr)
 	case "voice":
 		return cmdVoice(args[1:], stdout, stderr)
+	case "transcribe":
+		return cmdTranscribe(args[1:], stdout, stderr)
 	case "status":
 		return cmdStatus(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
@@ -60,6 +63,7 @@ Usage:
   ox-say voice add <name> <audio> [--ref-text t]
   ox-say voice ls
   ox-say voice rm <name>
+  ox-say transcribe [-e parakeet|whisper] [-l lang] [--prompt t] [--json|--srt] <file>
   ox-say status
 
 Flags for serve (env vars are the defaults; flags override):
@@ -74,6 +78,13 @@ say flags:
   -l language   e.g. Russian, English (default: engine auto)
   -f format     wav | mp3 | opus (default: wav; used for -o and playback)
   -o path       write file instead of playing it
+
+transcribe flags:
+  -e engine     parakeet (default) | whisper
+  -l language   whisper language hint (parakeet auto-detects)
+  --prompt t    whisper initial prompt
+  --json        print the full result as JSON (ox_json: text, segments, words as w/s/e/p)
+  --srt         print an SRT subtitle file
 
 Without -o, say plays the audio like macOS say.
 `)
@@ -413,6 +424,113 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: ox-say voice add|ls|rm")
 		return 2
 	}
+}
+
+// cmdTranscribe uploads a local file to the daemon's transcriptions route as
+// multipart and prints the transcript (text by default; --json and --srt
+// select ox_json and srt server-side).
+func cmdTranscribe(args []string, stdout, stderr io.Writer) int {
+	var jsonOut, srtOut bool
+	var rest []string
+	for _, a := range args {
+		switch a {
+		case "--json":
+			jsonOut = true
+		case "--srt":
+			srtOut = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+	vals, pos, err := pullFlags(rest, "e", "l", "prompt")
+	if err != nil {
+		fmt.Fprintln(stderr, "ox-say:", err)
+		return 2
+	}
+	switch vals["e"] {
+	case "", "parakeet", "whisper":
+	default:
+		fmt.Fprintf(stderr, "ox-say: unsupported engine %q (want parakeet|whisper)\n", vals["e"])
+		return 2
+	}
+	if len(pos) != 1 {
+		fmt.Fprintln(stderr, "usage: ox-say transcribe [-e parakeet|whisper] [-l lang] [--prompt t] [--json|--srt] <file>")
+		return 2
+	}
+	if jsonOut && srtOut {
+		fmt.Fprintln(stderr, "ox-say transcribe: --json and --srt are exclusive")
+		return 2
+	}
+	f, err := os.Open(pos[0])
+	if err != nil {
+		fmt.Fprintln(stderr, "ox-say:", err)
+		return 1
+	}
+	defer f.Close()
+
+	format := "text"
+	if jsonOut {
+		format = "ox_json" // ox-stt's own shape: words as w/s/e/p
+	}
+	if srtOut {
+		format = "srt"
+	}
+
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		err := func() error {
+			fw, err := mw.CreateFormFile("file", filepath.Base(pos[0]))
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(fw, f); err != nil {
+				return err
+			}
+			for _, kv := range [][2]string{
+				{"model", vals["e"]},
+				{"language", vals["l"]},
+				{"prompt", vals["prompt"]},
+				{"response_format", format},
+			} {
+				if kv[1] == "" {
+					continue
+				}
+				if err := mw.WriteField(kv[0], kv[1]); err != nil {
+					return err
+				}
+			}
+			return mw.Close()
+		}()
+		_ = pw.CloseWithError(err)
+	}()
+	req, err := http.NewRequest(http.MethodPost, daemonURL()+"/v1/audio/transcriptions", pr)
+	if err != nil {
+		fmt.Fprintln(stderr, "ox-say:", err)
+		return 1
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return failDaemon(stderr, daemonErr(err))
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		fmt.Fprintln(stderr, "ox-say:", err)
+		return 1
+	}
+	if resp.StatusCode/100 != 2 {
+		return failDaemon(stderr, fmt.Errorf("daemon: %s: %s", resp.Status, extractErr(data)))
+	}
+	if _, err := stdout.Write(data); err != nil {
+		fmt.Fprintln(stderr, "ox-say:", err)
+		return 1
+	}
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		fmt.Fprintln(stdout)
+	}
+	return 0
 }
 
 func cmdStatus(_ []string, stdout, stderr io.Writer) int {

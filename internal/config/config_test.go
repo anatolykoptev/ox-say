@@ -61,6 +61,33 @@ func TestLoadDefaults(t *testing.T) {
 	if c.VoicesDir() != filepath.Join("/tmp/oxsay-test-home", "voices") {
 		t.Fatalf("voices dir = %q", c.VoicesDir())
 	}
+	if c.STTBin != filepath.Join("/tmp/oxsay-test-home", "engine", "ox-stt") {
+		t.Fatalf("stt bin = %q", c.STTBin)
+	}
+	if c.STTModel != filepath.Join("/tmp/oxsay-test-home", "models", "ggml-parakeet-tdt-0.6b-v3-f16.bin") {
+		t.Fatalf("stt model = %q", c.STTModel)
+	}
+	if c.STTWhisperModel != filepath.Join("/tmp/oxsay-test-home", "models", "ggml-large-v3-turbo.bin") {
+		t.Fatalf("stt whisper model = %q", c.STTWhisperModel)
+	}
+	if c.STTGPU != "auto" || c.STTTimeout != DefaultSTTTimeout*time.Second || c.STTMaxUploadMB != DefaultSTTMaxUploadMB {
+		t.Fatalf("stt defaults: %+v", c)
+	}
+}
+
+// An invalid OX_SAY_STT_GPU must be refused at load: a typo silently picking
+// a device is worse than a loud failure.
+func TestLoadSTTGPUValidation(t *testing.T) {
+	for _, v := range []string{"auto", "on", "off"} {
+		t.Setenv("OX_SAY_STT_GPU", v)
+		if _, err := Load(nil); err != nil {
+			t.Fatalf("OX_SAY_STT_GPU=%q: %v", v, err)
+		}
+	}
+	t.Setenv("OX_SAY_STT_GPU", "gpu")
+	if _, err := Load(nil); err == nil {
+		t.Fatal("OX_SAY_STT_GPU=gpu accepted")
+	}
 }
 
 func TestFlagOverridesEnv(t *testing.T) {
@@ -80,5 +107,24 @@ func TestFlagOverridesEnv(t *testing.T) {
 	}
 	if c.IdleStop != 3*time.Second {
 		t.Fatalf("flag override lost: idle = %v", c.IdleStop)
+	}
+}
+
+// STT bounds: a zero or negative timeout, audio cap or upload cap, and an
+// upload cap that would overflow MB<<20, are refused at load.
+func TestLoadSTTBounds(t *testing.T) {
+	for _, kv := range [][2]string{
+		{"OX_SAY_STT_TIMEOUT_SECS", "0"},
+		{"OX_SAY_STT_TIMEOUT_SECS", "-5"},
+		{"OX_SAY_STT_MAX_UPLOAD_MB", "0"},
+		{"OX_SAY_STT_MAX_UPLOAD_MB", "9000000000000"},
+		{"OX_SAY_STT_MAX_AUDIO_SECS", "0"},
+	} {
+		t.Run(kv[0]+"="+kv[1], func(t *testing.T) {
+			t.Setenv(kv[0], kv[1])
+			if _, err := Load(nil); err == nil {
+				t.Fatalf("%s=%s accepted", kv[0], kv[1])
+			}
+		})
 	}
 }
