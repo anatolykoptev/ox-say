@@ -2,10 +2,11 @@
 # Build the self-contained engines for Intel Macs (Metal on a discrete AMD GPU, CPU fallback):
 #   tts-server  from the pinned qwentts.cpp            (text-to-speech)
 #   ox-stt      from engine/stt on the pinned whisper.cpp (speech-to-text: Parakeet, Whisper)
-# Both carry engine/patches/ggml on their ggml tree.
+#   ox-align    from engine/align on the pinned whisper.cpp (wav2vec2 CTC emissions)
+# All carry engine/patches/ggml on their ggml tree.
 #
 # Usage: engine/build.sh [work-dir]      (default: build/engine)
-# Output: <work-dir>/out/{tts-server,ox-stt,licenses/}
+# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,licenses/}
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -108,3 +109,12 @@ strip -x "$out/ox-stt"
 check_static "$out/ox-stt"
 cp "$stt/LICENSE" "$out/licenses/whisper.cpp.LICENSE"
 echo "built $out/ox-stt"
+
+# --- ox-align (same whisper.cpp tree as ox-stt; only ggml is linked) ---
+cmake -S "$here/align" -B "$work/align-build" -DWHISPER_SRC="$stt" \
+    "${cmake_flags[@]}" > "$work/align-configure.log"
+cmake --build "$work/align-build" --target ox-align -j "$jobs" > "$work/align-build.log"
+cp "$work/align-build/ox-align" "$out/ox-align"
+strip -x "$out/ox-align"
+check_static "$out/ox-align"
+echo "built $out/ox-align"
