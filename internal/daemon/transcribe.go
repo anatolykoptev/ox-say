@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -58,7 +59,13 @@ func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	maxUp := d.Cfg.STTMaxUploadMB << 20
 	// The server's 30 s read timeout covers the whole body; a large upload from
 	// slow storage needs longer. The size cap still bounds it.
-	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(d.Cfg.STTTimeout))
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(d.Cfg.STTTimeout)); err != nil {
+		d.log.Warn("transcriptions: cannot extend the read deadline; large uploads hit the server read timeout", slog.Any("error", err))
+	}
+	if stt.QueueFull(0) {
+		writeErr(w, http.StatusServiceUnavailable, stt.ErrBusy.Error())
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxUp+(1<<20))
 	mr, err := r.MultipartReader()
 	if err != nil {
@@ -110,12 +117,16 @@ func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		v, err := io.ReadAll(io.LimitReader(part, 4<<10))
+		v, err := io.ReadAll(io.LimitReader(part, 4<<10+1))
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "invalid multipart body")
 			return
 		}
 		if transcribeFields[part.FormName()] {
+			if len(v) > 4<<10 {
+				writeErr(w, http.StatusBadRequest, fmt.Sprintf("field %q exceeds 4 KB", part.FormName()))
+				return
+			}
 			fields[part.FormName()] = string(v)
 		}
 	}

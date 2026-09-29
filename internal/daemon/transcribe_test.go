@@ -4,17 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/engine"
+	"github.com/anatolykoptev/ox-say/internal/stt"
 	"github.com/anatolykoptev/ox-say/internal/testutil"
 )
 
@@ -386,7 +390,7 @@ func TestTranscribeTool(t *testing.T) {
 }
 
 // The upload cap: a file part one byte over it is a 413 and leaves no temp
-// file behind; a part at the cap goes through.
+// file behind.
 // Mutation: drop `n > maxUp ||` from the size check in handleTranscribe
 // (internal/daemon/transcribe.go) -> RED (status 200).
 func TestTranscribeUploadCap(t *testing.T) {
@@ -439,5 +443,55 @@ func TestTranscribeErrorStatuses(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("missing model: status %d, want 503", resp.StatusCode)
+	}
+}
+
+// The daemon passes OX_SAY_STT_MAX_AUDIO_SECS through to stt.
+// Mutation: delete `MaxAudio: d.Cfg.STTMaxAudio,` in Daemon.Transcribe
+// (internal/daemon/transcribe.go) -> RED (200: the 4 h default applies).
+func TestTranscribeMaxAudioWired(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+	sttSetup(t, d, dir)
+	d.Cfg.STTMaxAudio = time.Second
+	srv := transcriptionServer(t, d)
+
+	clip := filepath.Join(dir, "three.wav")
+	if out, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+		"-i", "sine=frequency=440:duration=3", "-ar", "16000", "-ac", "1", clip).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v %s", err, out)
+	}
+	data, err := os.ReadFile(clip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := postTranscription(t, srv.URL+"/v1/audio/transcriptions", data, nil)
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "longer than") {
+		t.Fatalf("3 s clip with a 1 s cap: status %d body %s, want 400 about the length", resp.StatusCode, body)
+	}
+}
+
+// Every stt error class has its status.
+// Mutation: drop `errors.Is(err, stt.ErrBusy)` from transcribeStatus -> RED.
+func TestTranscribeStatusMap(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"input", &stt.InputError{}, http.StatusBadRequest},
+		{"timeout", &stt.TimeoutError{}, http.StatusGatewayTimeout},
+		{"model", &stt.ModelError{}, http.StatusServiceUnavailable},
+		{"busy", stt.ErrBusy, http.StatusServiceUnavailable},
+		{"busy wrapped", fmt.Errorf("x: %w", stt.ErrBusy), http.StatusServiceUnavailable},
+		{"engine", &stt.EngineError{}, http.StatusInternalServerError},
+		{"other", errors.New("boom"), http.StatusInternalServerError},
+	} {
+		if got := transcribeStatus(c.err); got != c.want {
+			t.Errorf("%s: status %d, want %d", c.name, got, c.want)
+		}
 	}
 }

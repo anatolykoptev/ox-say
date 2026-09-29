@@ -133,10 +133,7 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		return nil, &ModelError{fmt.Sprintf("stt: model %s not found — fetch it with scripts/fetch-models.sh", filepath.Base(model))}
 	}
 
-	maxQueue := opts.MaxQueue
-	if maxQueue <= 0 {
-		maxQueue = DefaultMaxQueue
-	}
+	maxQueue := queueLimit(opts.MaxQueue)
 	if waiting.Add(1) > int32(maxQueue) {
 		waiting.Add(-1)
 		return nil, ErrBusy
@@ -213,6 +210,17 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 
 func engineBusy(f func() bool) bool { return f != nil && f() }
 
+func queueLimit(n int) int {
+	if n <= 0 {
+		return DefaultMaxQueue
+	}
+	return n
+}
+
+// QueueFull reports whether a new transcription would be refused with ErrBusy
+// right now; the HTTP route checks it before accepting an upload.
+func QueueFull(maxQueue int) bool { return waiting.Load() >= int32(queueLimit(maxQueue)) }
+
 // gpuAllowed resolves the -ng decision: "on" always uses the GPU, "off"
 // never, and "auto" stays off the GPU while the TTS engine occupies it
 // (its ~2 GB plus the ~1.3 GB ox-stt wants would not fit the card). The
@@ -269,8 +277,9 @@ func convert(ctx context.Context, audioPath string, maxAudio time.Duration) (str
 		"-hide_banner", "-loglevel", "error", "-y",
 		"-protocol_whitelist", "file",
 		"-i", "file:"+audioPath,
-		// a small compressed upload can decode to hours of PCM; cap it
-		"-t", strconv.FormatFloat(maxAudio.Seconds(), 'f', 3, 64),
+		// a small compressed upload can decode to hours of PCM: stop a second
+		// past the cap, and refuse (below) what is still longer than the cap
+		"-t", strconv.FormatFloat(maxAudio.Seconds()+1, 'f', 3, 64),
 		"-ar", "16000",
 		"-ac", "1",
 		"-c:a", "pcm_s16le",
@@ -278,13 +287,24 @@ func convert(ctx context.Context, audioPath string, maxAudio time.Duration) (str
 	)
 	cmd.Stdout = errb
 	cmd.Stderr = errb
+	// no path in messages: over HTTP it is the upload's temp file
+	tail := func() string {
+		return strings.TrimSpace(strings.ReplaceAll(errb.String(), audioPath, "<input>"))
+	}
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && ctx.Err() == nil {
-			// no path in the message: over HTTP it is the upload's temp file
-			return "", &InputError{fmt.Sprintf("stt: cannot decode audio: %s", strings.TrimSpace(errb.String()))}
+			return "", &InputError{fmt.Sprintf("stt: cannot decode audio: %s", tail())}
 		}
-		return "", fmt.Errorf("stt: ffmpeg: %w: %s", err, strings.TrimSpace(errb.String()))
+		return "", fmt.Errorf("stt: ffmpeg: %w: %s", err, tail())
+	}
+	fi, err := os.Stat(tmpName)
+	if err != nil {
+		return "", fmt.Errorf("stt: %w", err)
+	}
+	// 16 kHz mono PCM16 after a 44-byte header
+	if secs := float64(fi.Size()-44) / (16000 * 2); secs > maxAudio.Seconds()+0.05 {
+		return "", &InputError{fmt.Sprintf("stt: audio is longer than the %s limit (OX_SAY_STT_MAX_AUDIO_SECS)", maxAudio)}
 	}
 	ok = true
 	return tmpName, nil

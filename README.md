@@ -96,7 +96,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_STT_GPU` | `auto` | `auto`: CPU while the TTS engine runs, GPU otherwise; `on`/`off` force |
 | `OX_SAY_STT_TIMEOUT_SECS` | `600` | Per-transcription cap (conversion + engine) |
 | `OX_SAY_STT_MAX_UPLOAD_MB` | `200` | `file` part cap on the transcriptions route |
-| `OX_SAY_STT_MAX_AUDIO_SECS` | `14400` | Audio past this is not decoded (a small compressed upload can expand to hours of PCM) |
+| `OX_SAY_STT_MAX_AUDIO_SECS` | `14400` | Longer audio is refused with 400, not cut (a small compressed upload can expand to hours of PCM) |
 
 ## Build and install the engine
 

@@ -3,6 +3,7 @@ package stt
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -359,29 +360,36 @@ func TestTimeoutIsTyped(t *testing.T) {
 	}
 }
 
-// convert stops decoding at maxAudio: a small compressed upload must not
-// expand into hours of PCM on disk.
-// Mutation: drop the "-t" argument in convert -> RED.
-func TestConvertCapsDuration(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "long.wav")
-	// 3 s of 16 kHz mono PCM16
-	if out, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-		"-i", "sine=frequency=440:duration=3", "-ar", "16000", "-ac", "1", src).CombinedOutput(); err != nil {
+// sineWAV writes secs seconds of a 16 kHz mono tone with ffmpeg.
+func sineWAV(t *testing.T, path string, secs int) {
+	t.Helper()
+	if out, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+		"-i", fmt.Sprintf("sine=frequency=440:duration=%d", secs), "-ar", "16000", "-ac", "1", path).CombinedOutput(); err != nil {
 		t.Fatalf("ffmpeg: %v %s", err, out)
 	}
-	wav, err := convert(context.Background(), src, time.Second)
+}
+
+// Audio longer than maxAudio is refused, not silently cut: a truncated
+// transcript would look complete. Audio within the cap converts.
+// Mutation: drop the length check after ffmpeg in convert -> RED.
+func TestConvertRefusesOverlongAudio(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "long.wav")
+	sineWAV(t, src, 3)
+
+	_, err := convert(context.Background(), src, time.Second)
+	var iErr *InputError
+	if !errors.As(err, &iErr) || !strings.Contains(err.Error(), "longer than") {
+		t.Fatalf("3 s with a 1 s cap: err = %v, want an InputError about the length", err)
+	}
+	if strings.Contains(err.Error(), dir) {
+		t.Fatalf("error leaks the input path: %v", err)
+	}
+	wav, err := convert(context.Background(), src, 5*time.Second)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("3 s with a 5 s cap: %v", err)
 	}
-	defer os.Remove(wav)
-	fi, err := os.Stat(wav)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if max := int64(16000*2*1 + 4096); fi.Size() > max { // 1 s of PCM16 plus the header
-		t.Fatalf("converted %d bytes, want at most %d (1 s)", fi.Size(), max)
-	}
+	_ = os.Remove(wav)
 }
 
 // tailBuffer keeps only the last max bytes.
