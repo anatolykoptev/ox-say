@@ -103,18 +103,7 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 	err = mcpserver.Serve(&mcp.Implementation{
 		Name:    "ox-say",
 		Version: version,
-	}, mcpserver.Config{
-		Name:    "ox-say",
-		Version: version,
-		Host:    cfg.Host,
-		Port:    cfg.Port,
-		Logger:  logger,
-		// speak blocks on a cold engine start (Metal shader compile on first
-		// ever run) plus synthesis — give it the startup window plus slack.
-		ToolTimeouts: map[string]time.Duration{"speak": 5 * time.Minute},
-		Routes:       d.Routes,
-		OnShutdown:   d.Shutdown,
-	}, d.RegisterTools)
+	}, d.ServerConfig(version), d.RegisterTools)
 	if err != nil {
 		fmt.Fprintln(stderr, "ox-say:", err)
 		return 1
