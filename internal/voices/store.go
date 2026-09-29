@@ -57,6 +57,9 @@ func (s *Store) metaPath(name string) string { return filepath.Join(s.dir, name+
 type Store struct {
 	dir    string
 	ffmpeg string // binary name/path; "ffmpeg" by default
+
+	// writeFile is os.WriteFile; tests swap it to simulate a failed write.
+	writeFile func(string, []byte, os.FileMode) error
 }
 
 // New creates the directory if needed and returns the store.
@@ -64,7 +67,23 @@ func New(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("voices: %w", err)
 	}
-	return &Store{dir: dir, ffmpeg: "ffmpeg"}, nil
+	return &Store{dir: dir, ffmpeg: "ffmpeg", writeFile: os.WriteFile}, nil
+}
+
+// SweepTemp removes normalization leftovers of a daemon that died between
+// Prepare and Commit. Call it only while holding the home lock: a live
+// daemon's in-flight Prepare writes the same kind of file.
+func (s *Store) SweepTemp() error {
+	left, err := filepath.Glob(filepath.Join(s.dir, ".normalize-*"))
+	if err != nil {
+		return err
+	}
+	for _, p := range left {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // Add normalises audioPath and persists the voice: Prepare followed by Commit.
@@ -139,20 +158,28 @@ func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*
 	return &Pending{s: s, name: name, refText: refText, tmp: tmpName}, nil
 }
 
-// Commit moves the clip into place and writes its metadata.
+// Commit moves the clip into place and writes its metadata. The metadata is
+// written to a temporary file first: a failed write (disk full) must leave a
+// voice being re-added exactly as it was, not with its clip replaced or gone.
 func (p *Pending) Commit() (*Voice, error) {
 	s := p.s
-	if err := os.Rename(p.tmp, s.WAVPath(p.name)); err != nil {
-		return nil, fmt.Errorf("voices: %w", err)
-	}
-	p.tmp = ""
 	v := &Voice{Name: p.name, RefText: p.refText, Created: time.Now().UTC()}
 	meta, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(s.metaPath(p.name), meta, 0o644); err != nil {
-		_ = os.Remove(s.WAVPath(p.name)) // do not leave an orphaned clip
+	metaTmp := p.tmp + ".json"
+	if err := s.writeFile(metaTmp, meta, 0o644); err != nil {
+		_ = os.Remove(metaTmp)
+		return nil, fmt.Errorf("voices: %w", err)
+	}
+	if err := os.Rename(p.tmp, s.WAVPath(p.name)); err != nil {
+		_ = os.Remove(metaTmp)
+		return nil, fmt.Errorf("voices: %w", err)
+	}
+	p.tmp = ""
+	if err := os.Rename(metaTmp, s.metaPath(p.name)); err != nil {
+		_ = os.Remove(metaTmp)
 		return nil, fmt.Errorf("voices: %w", err)
 	}
 	return v, nil

@@ -180,6 +180,7 @@ func (s *Supervisor) broadcastLocked() {
 // out a backoff (1s doubling to 30s) before respawning.
 func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 	var waitGen int // the last in-flight start generation this caller joined
+	loggedInvariant := false
 	for {
 		s.mu.Lock()
 		switch {
@@ -191,7 +192,10 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 				// Unreachable since finishStart commits Ready only for a live
 				// owned child; log it so a regression is visible, and wait
 				// for the next transition rather than dereference nil.
-				s.log.Error("engine invariant violated: ready without a child")
+				if !loggedInvariant {
+					s.log.Error("engine invariant violated: ready without a child")
+					loggedInvariant = true
+				}
 				ch := s.change
 				s.mu.Unlock()
 				select {

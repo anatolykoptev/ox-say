@@ -69,6 +69,9 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune func(*engine.Config
 		return nil, err
 	}
 	d.lockFile = lockF
+	if err := store.SweepTemp(); err != nil {
+		logger.Warn("voices: cannot remove normalization leftovers", slog.Any("error", err))
+	}
 	ec := engine.Config{
 		Bin:            cfg.EngineBin,
 		Model:          cfg.Model,

@@ -1,9 +1,11 @@
 package voices
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -107,5 +109,68 @@ func TestAddFFmpegMissingIsNotInputError(t *testing.T) {
 		t.Fatal("undecodable clip accepted")
 	} else if !errors.As(err, &iErr) {
 		t.Fatalf("undecodable clip error = %v, want *InputError", err)
+	}
+}
+
+// Re-adding an existing voice whose metadata write fails (disk full) must
+// leave the old voice intact: its clip and metadata still there.
+// Mutation: in Pending.Commit, restore the pre-fix order (rename the clip
+// into place, then write the metadata, removing the clip if that fails) -> RED.
+func TestReAddWithFailedMetadataKeepsVoice(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(filepath.Join(dir, "voices"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := testutil.WriteTinyWAV(t, dir, "a.wav")
+	if _, err := s.Add(context.Background(), "ben", src, "first"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(s.WAVPath("ben"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.writeFile = func(string, []byte, os.FileMode) error { return errors.New("disk full") }
+	// a different clip, so a replaced clip shows up as changed bytes
+	other := testutil.WriteTinyWAV(t, dir, "b.wav")
+	raw, err := os.ReadFile(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 44; i < len(raw); i += 2 {
+		raw[i] ^= 0x55
+	}
+	if err := os.WriteFile(other, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Add(context.Background(), "ben", other, "second"); err == nil {
+		t.Fatal("re-add with a failing metadata write succeeded")
+	}
+	v, err := s.Get("ben")
+	if err != nil || v.RefText != "first" {
+		t.Fatalf("old voice metadata lost: %v %+v", err, v)
+	}
+	after, err := os.ReadFile(s.WAVPath("ben"))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("old voice clip changed or lost: %v", err)
+	}
+}
+
+// Leftovers of a daemon killed mid-normalization are removed by SweepTemp.
+func TestSweepTemp(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left := filepath.Join(dir, ".normalize-ben-123.wav")
+	if err := os.WriteFile(left, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SweepTemp(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(left); !os.IsNotExist(err) {
+		t.Fatalf("leftover still present: %v", err)
 	}
 }
