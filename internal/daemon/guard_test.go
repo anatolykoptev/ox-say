@@ -47,6 +47,8 @@ func TestGuard(t *testing.T) {
 		{"localhost GET", "GET", "/status", "localhost:8094", "", "", nil, http.StatusOK},
 		{"ipv6 loopback GET", "GET", "/status", "[::1]:8094", "", "", nil, http.StatusOK},
 		{"cli POST reaches the handler", "POST", "/v1/audio/speech", "127.0.0.1:8094", "application/json", `{}`, nil, http.StatusBadRequest},
+		{"json with charset reaches the handler", "POST", "/v1/audio/speech", "127.0.0.1:8094", "application/json; charset=utf-8", `{}`, nil, http.StatusBadRequest},
+		{"cli DELETE reaches the handler", "DELETE", "/v1/audio/voices/nobody", "127.0.0.1:8094", "", "", nil, http.StatusNotFound},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

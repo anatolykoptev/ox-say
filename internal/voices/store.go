@@ -67,11 +67,31 @@ func New(dir string) (*Store, error) {
 	return &Store{dir: dir, ffmpeg: "ffmpeg"}, nil
 }
 
-// Add normalises audioPath to 24 kHz mono s16 WAV (max 20 s) with ffmpeg and
-// persists name.wav + name.json. The name is validated before any filesystem
-// or ffmpeg work. audioPath must be absolute: the daemon's cwd is "/" under
-// launchd, so a relative path would resolve somewhere unexpected.
+// Add normalises audioPath and persists the voice: Prepare followed by Commit.
 func (s *Store) Add(ctx context.Context, name, audioPath, refText string) (*Voice, error) {
+	p, err := s.Prepare(ctx, name, audioPath, refText)
+	if err != nil {
+		return nil, err
+	}
+	defer p.Discard()
+	return p.Commit()
+}
+
+// Pending is a normalised clip waiting to be committed under its name.
+type Pending struct {
+	s       *Store
+	name    string
+	refText string
+	tmp     string
+}
+
+// Prepare normalises audioPath to 24 kHz mono s16 WAV (max 20 s) with ffmpeg
+// into a temporary file in the store dir. It touches no live voice, so callers
+// run it outside their locks (ffmpeg may take up to its 60 s cap). The name is
+// validated before any filesystem or ffmpeg work. audioPath must be absolute:
+// the daemon's cwd is "/" under launchd, so a relative path would resolve
+// somewhere unexpected.
+func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*Pending, error) {
 	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
@@ -87,7 +107,12 @@ func (s *Store) Add(ctx context.Context, name, audioPath, refText string) (*Voic
 	}
 	tmpName := tmp.Name()
 	_ = tmp.Close()
-	defer os.Remove(tmpName)
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(tmpName)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, s.ffmpeg,
@@ -110,19 +135,35 @@ func (s *Store) Add(ctx context.Context, name, audioPath, refText string) (*Voic
 		// daemon-side, not client input.
 		return nil, fmt.Errorf("voices: ffmpeg: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if err := os.Rename(tmpName, s.WAVPath(name)); err != nil {
+	ok = true
+	return &Pending{s: s, name: name, refText: refText, tmp: tmpName}, nil
+}
+
+// Commit moves the clip into place and writes its metadata.
+func (p *Pending) Commit() (*Voice, error) {
+	s := p.s
+	if err := os.Rename(p.tmp, s.WAVPath(p.name)); err != nil {
 		return nil, fmt.Errorf("voices: %w", err)
 	}
-	v := &Voice{Name: name, RefText: refText, Created: time.Now().UTC()}
+	p.tmp = ""
+	v := &Voice{Name: p.name, RefText: p.refText, Created: time.Now().UTC()}
 	meta, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(s.metaPath(name), meta, 0o644); err != nil {
-		_ = os.Remove(s.WAVPath(name)) // do not leave an orphaned clip
+	if err := os.WriteFile(s.metaPath(p.name), meta, 0o644); err != nil {
+		_ = os.Remove(s.WAVPath(p.name)) // do not leave an orphaned clip
 		return nil, fmt.Errorf("voices: %w", err)
 	}
 	return v, nil
+}
+
+// Discard removes the temporary clip if it was not committed.
+func (p *Pending) Discard() {
+	if p.tmp != "" {
+		_ = os.Remove(p.tmp)
+		p.tmp = ""
+	}
 }
 
 // Remove deletes a voice's wav+json. Unknown names yield ErrNotFound.

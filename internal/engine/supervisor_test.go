@@ -457,3 +457,29 @@ func falseBin(t *testing.T) string {
 	}
 	return p
 }
+
+// A child that reaches Ready and then crashes must keep escalating its
+// backoff: clearing the failure count on every Ready commit would reload the
+// model every second forever for an engine that dies on each request.
+// Mutation: set s.failCount = 0 at the Ready commit in finishStart -> RED
+// ("after crash 2 failCount = 1, want 2").
+func TestCrashBackoffEscalatesAcrossReady(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_EXIT_MS", "300")
+	sup := newTestSupervisor(t, dir, nil)
+	for i := 1; i <= 2; i++ {
+		if _, err := sup.EnsureReady(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		testutil.WaitFor(t, 5*time.Second, func() bool {
+			return sup.State() == StateCrashed
+		}, "crash detection")
+		sup.mu.Lock()
+		got := sup.failCount
+		sup.mu.Unlock()
+		if got != i {
+			t.Fatalf("after crash %d failCount = %d, want %d", i, got, i)
+		}
+	}
+}

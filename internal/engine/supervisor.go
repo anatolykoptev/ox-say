@@ -188,8 +188,10 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 			return "", ErrShutdown
 		case s.state == StateReady:
 			if s.child == nil {
-				// Corrupted/racing state — wait for the next transition
-				// rather than dereference nil.
+				// Unreachable since finishStart commits Ready only for a live
+				// owned child; log it so a regression is visible, and wait
+				// for the next transition rather than dereference nil.
+				s.log.Error("engine invariant violated: ready without a child")
 				ch := s.change
 				s.mu.Unlock()
 				select {
@@ -300,9 +302,9 @@ func (s *Supervisor) ReadyURL() (string, bool) {
 }
 
 // LiveURL returns the base URL of the spawned child while it is alive —
-// starting or ready — and false when no child exists. The child answers its
-// API once past the health gate, so daemon code may register work into a
-// still-starting engine.
+// starting (possibly still before /health) or ready — and false when no
+// child exists. Daemon code may register work into a still-starting engine;
+// a request that lands before the model is loaded fails and replay covers it.
 func (s *Supervisor) LiveURL() (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -535,7 +537,9 @@ func (s *Supervisor) finishStart(c *child, err error) {
 		c.readyAt = time.Now()
 		s.lastActivity = c.readyAt
 		s.attemptErr = nil
-		s.failCount = 0 // a successful Ready commit clears crash/start backoff
+		// failCount is NOT cleared here: an engine that reaches Ready and then
+		// crashes on every request must keep escalating its backoff. It clears
+		// after readyResetAfter of Ready (onExit) or on a clean idle stop.
 		s.state = StateReady
 	}
 	s.broadcastLocked()

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -566,5 +567,63 @@ func TestSpeakOverwriteRefusesSymlink(t *testing.T) {
 	}
 	if data, err := os.ReadFile(target); err != nil || string(data) != "keepme" {
 		t.Fatalf("symlink target clobbered: %v", err)
+	}
+}
+
+// Engine-start replay holds voiceMu from its store snapshot to its last
+// registration, so a concurrent add or remove waits for it instead of racing
+// it (a remove interleaved there can leave a ghost voice in the child). This
+// drives the real replayVoices through its test seam.
+// Mutation: drop d.voiceMu.Lock()/defer d.voiceMu.Unlock() from replayVoices
+// (internal/daemon/service.go) -> RED ("remove finished while replay held the
+// voice lock").
+func TestReplayHoldsVoiceLock(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	src := testutil.WriteTinyWAV(t, dir, "clip.wav")
+	d := newTestDaemon(t, dir, nil)
+	if _, _, err := d.AddVoice(context.Background(), "old", src, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	addDone, rmDone := make(chan error, 1), make(chan error, 1)
+	var addEarly, rmEarly atomic.Bool
+	d.replayAfterSnapshot = func() {
+		go func() {
+			_, _, err := d.AddVoice(context.Background(), "new", src, "")
+			addDone <- err
+		}()
+		go func() { rmDone <- d.RemoveVoice(context.Background(), "old") }()
+		time.Sleep(200 * time.Millisecond)
+		addEarly.Store(len(addDone) > 0)
+		rmEarly.Store(len(rmDone) > 0)
+	}
+
+	base, err := d.Sup.EnsureReady(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rmEarly.Load() {
+		t.Fatal("remove finished while replay held the voice lock")
+	}
+	if addEarly.Load() {
+		t.Fatal("add finished while replay held the voice lock")
+	}
+	for _, ch := range []chan error{addDone, rmDone} {
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("add/remove did not finish after replay released the lock")
+		}
+	}
+	got := childVoices(t, base)
+	if _, ok := got["old"]; ok {
+		t.Fatal("removed voice is still live in the child")
+	}
+	if _, ok := got["new"]; !ok {
+		t.Fatal("voice added during replay did not reach the child")
 	}
 }

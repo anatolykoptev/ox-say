@@ -32,6 +32,10 @@ type Daemon struct {
 	// from both the store snapshot and the live child.
 	voiceMu sync.Mutex
 
+	// replayAfterSnapshot, when set (tests only), runs inside replayVoices
+	// after the store snapshot, with voiceMu held.
+	replayAfterSnapshot func()
+
 	// lockFile holds daemon.lock for the process lifetime.
 	lockFile *os.File
 }
@@ -120,6 +124,9 @@ func (d *Daemon) replayVoices(ctx context.Context, baseURL string) error {
 	if err != nil {
 		return err
 	}
+	if d.replayAfterSnapshot != nil {
+		d.replayAfterSnapshot()
+	}
 	var firstErr error
 	for _, v := range list {
 		if err := d.ec.RegisterVoice(ctx, baseURL, v.Name, d.Store.WAVPath(v.Name), v.RefText); err != nil {
@@ -148,12 +155,19 @@ func (d *Daemon) engineBase(ctx context.Context) (base string, g *engine.Guard, 
 
 // AddVoice persists a voice and registers it into the child when the engine
 // is running. registered reports whether the live registration happened.
-// The store write and the live registration run under voiceMu so a
-// concurrent engine-start replay cannot interleave between them.
+// The ffmpeg normalization runs first, outside voiceMu (it may take up to
+// 60 s and must not hold up an engine start's replay); the commit and the
+// live registration then run under voiceMu so a concurrent replay cannot
+// interleave between them.
 func (d *Daemon) AddVoice(ctx context.Context, name, audioPath, refText string) (v *voices.Voice, registered bool, err error) {
+	pending, err := d.Store.Prepare(ctx, name, audioPath, refText)
+	if err != nil {
+		return nil, false, err
+	}
+	defer pending.Discard()
 	d.voiceMu.Lock()
 	defer d.voiceMu.Unlock()
-	v, err = d.Store.Add(ctx, name, audioPath, refText)
+	v, err = pending.Commit()
 	if err != nil {
 		return nil, false, err
 	}
