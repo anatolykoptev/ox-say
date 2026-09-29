@@ -1,0 +1,78 @@
+diff --git a/src/tts-server.h b/src/tts-server.h
+index ca5bd8c..cce7fff 100644
+--- a/src/tts-server.h
++++ b/src/tts-server.h
+@@ -27,6 +27,7 @@
+ #include "qt-error.h"
+ #include "yyjson.h"
+ 
++#include <algorithm>
+ #include <atomic>
+ #include <cctype>
+ #include <cfloat>
+@@ -580,6 +581,34 @@ static void tts_handle_health(const httplib::Request &, httplib::Response & res)
+     res.set_content("{\"status\":\"ok\"}", "application/json");
+ }
+ 
++// "host:port", "[v6]:port" or "host" -> the host without port or brackets
++static std::string tts_host_without_port(const std::string & h) {
++    if (!h.empty() && h[0] == '[') {
++        const size_t e = h.find(']');
++        return e == std::string::npos ? h : h.substr(1, e - 1);
++    }
++    const size_t c = h.find(':');
++    if (c != std::string::npos && h.find(':', c + 1) == std::string::npos) {
++        return h.substr(0, c);  // one colon: a name or an IPv4 address with a port
++    }
++    return h;  // no port, or a bare IPv6 literal
++}
++
++// localhost, ::1 or 127.0.0.0/8
++static bool tts_is_loopback_host(const std::string & h) {
++    std::string s = h;
++    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char ch) { return (char) std::tolower(ch); });
++    if (s == "localhost" || s == "::1") {
++        return true;
++    }
++    unsigned a = 0, b = 0, c = 0, d = 0;
++    char     tail = 0;
++    if (sscanf(s.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) == 4) {
++        return a == 127 && b <= 255 && c <= 255 && d <= 255;
++    }
++    return false;
++}
++
+ static int tts_server_run(const tts_backend & be, const server_config & cfg) {
+     httplib::Server svr;
+     g_svr = &svr;
+@@ -611,13 +640,23 @@ static int tts_server_run(const tts_backend & be, const server_config & cfg) {
+ #endif
+     });
+ 
+-    // permissive CORS so a browser client can call the API directly.
+-    svr.set_default_headers({
+-        { "Access-Control-Allow-Origin", "*" }
+-    });
+-    svr.Options("/.*", [](const httplib::Request &, httplib::Response & res) {
+-        res.set_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+-        res.set_header("Access-Control-Allow-Headers", "Content-Type");
++    // Local-only: a supervising process is the one client. No CORS headers, so a web page cannot read
++    // responses; on a loopback bind the Host header must name loopback too (DNS rebinding), and POST
++    // bodies must be JSON, so a cross-site "simple" request (text/plain, form data) is refused.
++    const bool loopback_bind = tts_is_loopback_host(cfg.host);
++    svr.set_pre_routing_handler([loopback_bind](const httplib::Request & req, httplib::Response & res) {
++        if (loopback_bind && !tts_is_loopback_host(tts_host_without_port(req.get_header_value("Host")))) {
++            res.status = 403;
++            res.set_content("{\"error\":{\"message\":\"host not allowed\",\"type\":\"forbidden\"}}", "application/json");
++            return httplib::Server::HandlerResponse::Handled;
++        }
++        if (req.method == "POST" && req.get_header_value("Content-Type").rfind("application/json", 0) != 0) {
++            res.status = 415;
++            res.set_content("{\"error\":{\"message\":\"Content-Type must be application/json\",\"type\":\"unsupported_media_type\"}}",
++                            "application/json");
++            return httplib::Server::HandlerResponse::Handled;
++        }
++        return httplib::Server::HandlerResponse::Unhandled;
+     });
+ 
+     svr.Post("/v1/audio/speech",
