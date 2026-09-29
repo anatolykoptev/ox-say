@@ -191,10 +191,11 @@ func TestCrashThenRestart(t *testing.T) {
 // error to the caller — this is what the HTTP layer maps to 503 — while the
 // next call may still retry after backoff.
 func TestFailedStartReturnsError(t *testing.T) {
+	bin := falseBin(t)
 	dir := t.TempDir()
 	fakeEnv(t, dir)
 	sup := newTestSupervisor(t, dir, func(c *Config) {
-		c.Bin = "/bin/false" // spawns, exits instantly, never serves /health
+		c.Bin = bin // spawns, exits instantly, never serves /health
 		c.StartupTimeout = 3 * time.Second
 	})
 	_, err := sup.EnsureReady(context.Background())
@@ -215,8 +216,9 @@ func TestFailedStartReturnsError(t *testing.T) {
 func TestFailedStartNotifiesAllWaiters(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
+	bin := falseBin(t)
 	sup := newTestSupervisor(t, dir, func(c *Config) {
-		c.Bin = "/bin/false"
+		c.Bin = bin
 		c.StartupTimeout = 3 * time.Second
 	})
 
@@ -444,4 +446,14 @@ func TestReapOrphan(t *testing.T) {
 	if !processAlive(sleeper.Process.Pid) {
 		t.Fatal("unrelated process was killed by orphan reap")
 	}
+}
+
+// falseBin is the path of `false`: /bin/false on Linux, /usr/bin/false on macOS.
+func falseBin(t *testing.T) string {
+	t.Helper()
+	p, err := exec.LookPath("false")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
