@@ -97,8 +97,10 @@ large-v3-turbo.
 launchd does not read your shell environment: set any `OX_SAY_*` configuration
 (see below) when you run the installer, e.g.
 `OX_SAY_IDLE_STOP_SECS=600 scripts/install.sh`, and it is written into the
-LaunchAgent. Re-running the installer upgrades in place and rewrites the agent
-from the variables set at that time.
+LaunchAgent. Path settings must be absolute. Re-running the installer upgrades
+in place; settings of the installed agent carry over unless you set them again
+(an empty value drops one). The `ox-say` CLI reads `OX_SAY_ADDR` from your shell,
+so export it there too if you installed the daemon on a custom address.
 
 `scripts/uninstall.sh` removes the agent and the binary and keeps engines,
 models and voices; `--purge` removes those too. Undo the MCP registration with

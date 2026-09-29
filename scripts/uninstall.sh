@@ -35,6 +35,10 @@ rm -f "$plist" "$bin"
 echo "ox-say agent and binary removed"
 
 if [ "$purge" = 1 ]; then
+    if [ "${home#/}" = "$home" ] || [ "${cachedir#/}" = "$cachedir" ]; then
+        echo "refusing to purge relative paths: home '$home', cache '$cachedir'" >&2
+        exit 2
+    fi
     # Only what ox-say creates in its home, then rmdir: a home that holds
     # anything else is left in place.
     for d in engine models voices run; do
