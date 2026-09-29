@@ -77,6 +77,24 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_ENGINE_LOG_DIR` | `~/Library/Logs/ox-say` | Child stdout/stderr go to `engine.log` here |
 | `OX_SAY_CACHE_DIR` | `~/Library/Caches/ox-say` | Default output dir for `speak` |
 
+## Install
+
+Requirements: macOS on x86_64, Xcode command line tools, CMake, Go, ffmpeg
+(`brew install cmake go ffmpeg`).
+
+```
+scripts/install.sh      # engines + models + ox-say + LaunchAgent, then waits for /health
+claude mcp add --transport http --scope user ox-say http://127.0.0.1:8094/mcp
+```
+
+It installs `ox-say` into `~/.local/bin` (`OX_SAY_BINDIR` overrides), the engines
+and models into `~/Library/Application Support/ox-say`, logs into
+`~/Library/Logs/ox-say`, and the LaunchAgent `io.github.anatolykoptev.ox-say`,
+which keeps `ox-say serve` running. `OX_SAY_WITH_WHISPER=1 scripts/install.sh`
+also fetches Whisper large-v3-turbo. Re-running it upgrades in place;
+`scripts/uninstall.sh` removes the agent and the binary and keeps models and
+voices (`--purge` removes those too).
+
 ## Build and install the engine
 
 Requirements: macOS on x86_64, Xcode command line tools, CMake, ffmpeg.
