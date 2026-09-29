@@ -24,3 +24,19 @@ memory and without simdgroup matrix multiply (Intel Macs with AMD GPUs):
 
 - Fuses the Q/K/V and gate/up projections into single matmuls at load time.
 - `QT_N_THREADS` overrides the CPU thread count.
+
+## patches/ggml/0002-metal-mps-mul-mat.patch
+
+On GPUs without unified memory and without simdgroup matrix multiply, plain
+2D fp32-output `MUL_MAT` with fp32 activations and m, n, k >= 64 runs through
+`MPSMatrixMultiplication`. On a Radeon Pro 5500M, MPS reaches 3.4-3.7 TFLOPS
+in fp32 (about 85% of peak), against 0.8-1.2 TFLOPS for the tiled kernel;
+its fp16 path is slow, so fp16 weights are widened into a scratch region
+after dst (reserved through `get_alloc_size`) by a small kernel first.
+MPS encodes straight into the command buffer, so the compute encoder is
+ended and reopened around it, with any open debug groups restored.
+`GGML_METAL_MPS_DISABLE` turns the path off.
+
+Measured on the whisper large-v3-turbo encoder (whisper.cpp): 3.14 -> 1.89 s
+per 30 s window, 347 s file 83 -> 60 s, byte-identical transcript. The TTS
+codec decode is ~3.5% faster per frame; the talker is unchanged.
