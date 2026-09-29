@@ -4,6 +4,7 @@
 package voices
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -24,13 +26,20 @@ var voiceNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 // ValidateName rejects names that are unsafe as file names.
 func ValidateName(name string) error {
 	if !voiceNameRe.MatchString(name) {
-		return fmt.Errorf("voices: invalid name %q: must match %s", name, voiceNameRe)
+		return &InputError{fmt.Sprintf("voices: invalid name %q: must match %s", name, voiceNameRe)}
 	}
 	return nil
 }
 
 // ErrNotFound is returned by Remove for an unknown voice.
 var ErrNotFound = errors.New("voices: no such voice")
+
+// InputError marks a failure caused by caller input — a bad name, an
+// unreadable or undecodable clip, a non-absolute path. The HTTP layer maps
+// it to 400; everything else is a 500.
+type InputError struct{ msg string }
+
+func (e *InputError) Error() string { return e.msg }
 
 // Voice is one persisted clone.
 type Voice struct {
@@ -60,29 +69,48 @@ func New(dir string) (*Store, error) {
 
 // Add normalises audioPath to 24 kHz mono s16 WAV (max 20 s) with ffmpeg and
 // persists name.wav + name.json. The name is validated before any filesystem
-// or ffmpeg work.
-func (s *Store) Add(name, audioPath, refText string) (*Voice, error) {
+// or ffmpeg work. audioPath must be absolute: the daemon's cwd is "/" under
+// launchd, so a relative path would resolve somewhere unexpected.
+func (s *Store) Add(ctx context.Context, name, audioPath, refText string) (*Voice, error) {
 	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(audioPath); err != nil {
-		return nil, fmt.Errorf("voices: audio: %w", err)
+	if !filepath.IsAbs(audioPath) {
+		return nil, &InputError{fmt.Sprintf("voices: audio path %q is not absolute", audioPath)}
 	}
-	tmp := filepath.Join(s.dir, ".normalize-"+name+".wav")
-	defer os.Remove(tmp)
-	out, err := exec.Command(s.ffmpeg,
+	if _, err := os.Stat(audioPath); err != nil {
+		return nil, &InputError{fmt.Sprintf("voices: audio: %v", err)}
+	}
+	tmp, err := os.CreateTemp(s.dir, ".normalize-"+name+"-*.wav")
+	if err != nil {
+		return nil, fmt.Errorf("voices: %w", err)
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpName)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, s.ffmpeg,
 		"-hide_banner", "-loglevel", "error", "-y",
-		"-i", audioPath,
+		"-protocol_whitelist", "file",
+		"-i", "file:"+audioPath,
 		"-t", "20",
 		"-ar", "24000",
 		"-ac", "1",
 		"-c:a", "pcm_s16le",
-		tmp,
+		tmpName,
 	).CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("voices: ffmpeg: %w: %s", err, out)
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && ctx.Err() == nil {
+			// ffmpeg ran and refused the clip — caller input.
+			return nil, &InputError{fmt.Sprintf("voices: cannot decode audio %q: %s", audioPath, strings.TrimSpace(string(out)))}
+		}
+		// Missing ffmpeg binary, a kill on the 60s cap, or an I/O error —
+		// daemon-side, not client input.
+		return nil, fmt.Errorf("voices: ffmpeg: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if err := os.Rename(tmp, s.WAVPath(name)); err != nil {
+	if err := os.Rename(tmpName, s.WAVPath(name)); err != nil {
 		return nil, fmt.Errorf("voices: %w", err)
 	}
 	v := &Voice{Name: name, RefText: refText, Created: time.Now().UTC()}

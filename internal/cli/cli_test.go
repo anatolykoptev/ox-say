@@ -1,7 +1,12 @@
 package cli
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -79,5 +84,73 @@ func TestPullFlags(t *testing.T) {
 func TestPullFlagsMissingValue(t *testing.T) {
 	if _, _, err := pullFlags([]string{"hi", "-v"}, "v"); err == nil {
 		t.Fatal("expected error for a flag with no value")
+	}
+}
+
+// captureBody runs one CLI command against a stub daemon and returns the
+// last POSTed JSON body.
+func captureBody(t *testing.T, args ...string) (map[string]any, int) {
+	t.Helper()
+	bodyCh := make(chan map[string]any, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodyCh <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+	t.Setenv("OX_SAY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+
+	var outBuf, errBuf strings.Builder
+	code := Run(args, &outBuf, &errBuf, "test")
+	select {
+	case body := <-bodyCh:
+		return body, code
+	default:
+		return nil, code
+	}
+}
+
+// `voice add` must send an absolute audio_path: the daemon's cwd is "/"
+// under launchd, a relative path resolves somewhere unexpected.
+// Mutation: drop the filepath.Abs in cmdVoice -> RED (the recorded
+// audio_path is relative).
+func TestVoiceAddSendsAbsolutePath(t *testing.T) {
+	body, code := captureBody(t, "voice", "add", "ben", "clip.wav")
+	if code != 0 {
+		t.Fatalf("voice add exit code = %d", code)
+	}
+	p, _ := body["audio_path"].(string)
+	if !filepath.IsAbs(p) {
+		t.Fatalf("audio_path = %q, want absolute", p)
+	}
+}
+
+// Without -f, `say -o` infers the format from the output extension.
+func TestSayInfersFormatFromOutExt(t *testing.T) {
+	cases := []struct {
+		out  string
+		want string
+	}{
+		{filepath.Join(t.TempDir(), "a.mp3"), "mp3"},
+		{filepath.Join(t.TempDir(), "a.ogg"), "opus"},
+		{filepath.Join(t.TempDir(), "a.opus"), "opus"},
+		{filepath.Join(t.TempDir(), "a.wav"), "wav"},
+		{filepath.Join(t.TempDir(), "a.pcm"), "pcm"},
+	}
+	for _, tc := range cases {
+		body, code := captureBody(t, "say", "-o", tc.out, "hi")
+		if code != 0 {
+			t.Fatalf("%s: exit code %d", tc.out, code)
+		}
+		if got := body["response_format"]; got != tc.want {
+			t.Fatalf("%s: response_format = %v, want %s", tc.out, got, tc.want)
+		}
+	}
+	// An explicit -f beats inference.
+	body, _ := captureBody(t, "say", "-f", "wav", "-o", filepath.Join(t.TempDir(), "a.mp3"), "hi")
+	if got := body["response_format"]; got != "wav" {
+		t.Fatalf("explicit -f: response_format = %v, want wav", got)
 	}
 }

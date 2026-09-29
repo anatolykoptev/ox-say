@@ -65,7 +65,8 @@ func fakeEnv(t *testing.T, dir string) {
 	t.Setenv("OXSAY_FAKE_DIR", dir)
 }
 
-func childVoices(t *testing.T, base string) map[string]bool {
+// childVoices returns name → ref_text for every voice the child lists.
+func childVoices(t *testing.T, base string) map[string]string {
 	t.Helper()
 	resp, err := http.Get(base + "/v1/audio/voices")
 	if err != nil {
@@ -73,14 +74,17 @@ func childVoices(t *testing.T, base string) map[string]bool {
 	}
 	defer resp.Body.Close()
 	var out struct {
-		Voices []string `json:"voices"`
+		Voices []struct {
+			Name    string `json:"name"`
+			RefText string `json:"ref_text"`
+		} `json:"voices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
-	m := map[string]bool{}
+	m := map[string]string{}
 	for _, v := range out.Voices {
-		m[v] = true
+		m[v.Name] = v.RefText
 	}
 	return m
 }
@@ -101,13 +105,13 @@ func TestVoicesSurviveRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := testutil.WriteTinyWAV(t, dir, "clip.wav")
-	if _, registered, err := d.AddVoice(context.Background(), "ben", src, ""); err != nil {
+	if _, registered, err := d.AddVoice(context.Background(), "ben", src, "hello there clip"); err != nil {
 		t.Fatal(err)
 	} else if !registered {
 		t.Fatal("voice was not registered into the running engine")
 	}
-	if !childVoices(t, base)["ben"] {
-		t.Fatal("first child does not list ben")
+	if rt, ok := childVoices(t, base)["ben"]; !ok || rt != "hello there clip" {
+		t.Fatalf("first child lists ben with ref_text %q (present=%v), want recorded", rt, ok)
 	}
 
 	// Idle loop stops the child.
@@ -115,13 +119,16 @@ func TestVoicesSurviveRestart(t *testing.T) {
 		return d.Sup.State() == engine.StateStopped
 	}, "idle stop")
 
-	// Restart: the replay inside the start path must re-register ben.
+	// Restart: the replay inside the start path must re-register ben with
+	// its ref_text.
 	base2, err := d.Sup.EnsureReady(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !childVoices(t, base2)["ben"] {
+	if rt, ok := childVoices(t, base2)["ben"]; !ok {
 		t.Fatal("restarted child does not list ben — voices were not replayed")
+	} else if rt != "hello there clip" {
+		t.Fatalf("replayed ref_text = %q, want recorded", rt)
 	}
 	resp, err := http.Post(base2+"/v1/audio/speech", "application/json",
 		strings.NewReader(`{"input":"hi","voice":"ben"}`))
@@ -150,6 +157,7 @@ func TestSpeakOutPathRules(t *testing.T) {
 	}
 	cases := map[string]SpeakInput{
 		"relative path":   {Text: "hi", Format: "wav", OutPath: "rel/out.wav"},
+		"bare filename":   {Text: "hi", Format: "wav", OutPath: "out.wav"},
 		"missing parent":  {Text: "hi", Format: "wav", OutPath: filepath.Join(dir, "nope", "o.wav")},
 		"wrong extension": {Text: "hi", Format: "mp3", OutPath: filepath.Join(dir, "o.wav")},
 		"existing file":   {Text: "hi", Format: "wav", OutPath: existing},
@@ -255,4 +263,308 @@ func TestSpeechClientCancelPropagates(t *testing.T) {
 		_, err := os.Stat(filepath.Join(dir, "speech-cancelled"))
 		return err == nil
 	}, "child to observe request cancellation")
+}
+
+// A relative audio_path must be refused: the daemon's cwd is "/" under
+// launchd, so a relative path would resolve somewhere unexpected. The path
+// given here exists — the refusal must come from the absolute-path rule,
+// not from a missing file.
+// Mutation: drop the filepath.IsAbs check in voices.Store.Add -> RED
+// (ffmpeg happily normalises it and the route answers 200).
+func TestAddVoiceRejectsRelativePath(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+
+	src := testutil.WriteTinyWAV(t, dir, "clip.wav")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(wd, src)
+	if err != nil || filepath.IsAbs(rel) {
+		t.Fatalf("cannot form relative path to %s: %v", src, err)
+	}
+
+	mux := http.NewServeMux()
+	d.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	body, _ := json.Marshal(map[string]any{"name": "ben", "audio_path": rel})
+	resp, err := http.Post(srv.URL+"/v1/audio/voices", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("relative audio_path: status %d, want 400 (body %s)", resp.StatusCode, b)
+	}
+	if _, err := d.Store.Get("ben"); err == nil {
+		t.Fatal("voice was stored despite the rejected request")
+	}
+
+	// The MCP tool must refuse it too.
+	if _, _, err := d.toolVoiceAdd(context.Background(), nil, voiceAddIn{
+		Name: "ben", AudioPath: rel,
+	}); err == nil {
+		t.Fatal("voice_add accepted a relative audio_path")
+	}
+}
+
+// Status codes are mapped by error TYPE: only *voices.InputError is a 400.
+// A store write failure — an unwritable voices dir — is a 500, never a 400.
+// Mutation: classify every AddVoice error as 400 (or by message substring)
+// -> RED.
+func TestAddVoiceStoreFailureIs500(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+
+	if err := os.Chmod(d.Cfg.VoicesDir(), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(d.Cfg.VoicesDir(), 0o755) }()
+
+	src := testutil.WriteTinyWAV(t, dir, "clip.wav")
+	mux := http.NewServeMux()
+	d.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	body, _ := json.Marshal(map[string]any{"name": "ben", "audio_path": src})
+	resp, err := http.Post(srv.URL+"/v1/audio/voices", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("store write failure: status %d, want 500 (body %s)", resp.StatusCode, b)
+	}
+}
+
+// A voice added while the engine is mid-start must still reach the live
+// child: a replay whose store snapshot predates the add cannot carry it,
+// so AddVoice itself must deliver it to the still-starting engine.
+// Mutation: revert LiveURL to ReadyURL in AddVoice -> RED (the register is
+// skipped because the engine is not Ready yet).
+func TestVoiceAddDuringStartup(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	src := testutil.WriteTinyWAV(t, dir, "clip.wav")
+
+	var d *Daemon
+	addDone := make(chan error, 1)
+	d = newTestDaemon(t, dir, func(ec *engine.Config) {
+		ec.Replay = func(ctx context.Context, base string) error {
+			// Snapshot the store exactly as a racing replay would, let the
+			// concurrent add land fully, then register only the snapshot —
+			// the new voice can reach the child solely via AddVoice.
+			list, err := d.Store.List()
+			if err != nil {
+				return err
+			}
+			go func() {
+				_, _, err := d.AddVoice(ctx, "ben", src, "ref words")
+				addDone <- err
+			}()
+			if err := <-addDone; err != nil {
+				return err
+			}
+			for _, v := range list {
+				if err := d.ec.RegisterVoice(ctx, base, v.Name, d.Store.WAVPath(v.Name), v.RefText); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	})
+
+	base, err := d.Sup.EnsureReady(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := childVoices(t, base)["ben"]; !ok {
+		t.Fatal("voice added during engine startup did not reach the child")
+	}
+}
+
+// A voice removed while replay is mid-flight must not survive into the
+// live child: RemoveVoice parks on voiceMu until the replay finishes, then
+// deletes from the child too — no ghost voice left registered.
+// Mutation: drop the voiceMu lock from RemoveVoice -> RED (the remove runs
+// during the replay's hold and the stale register lands after the delete).
+func TestVoiceRemoveDuringReplay(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	src := testutil.WriteTinyWAV(t, dir, "clip.wav")
+
+	var d *Daemon
+	removeDone := make(chan error, 1)
+	d = newTestDaemon(t, dir, func(ec *engine.Config) {
+		ec.Replay = func(ctx context.Context, base string) error {
+			// Mirror production replayVoices: hold voiceMu across the whole
+			// snapshot+register sequence.
+			d.voiceMu.Lock()
+			defer d.voiceMu.Unlock()
+			list, err := d.Store.List()
+			if err != nil {
+				return err
+			}
+			// Materialize each clip into a detached path NOW — part of the
+			// snapshot. Registering the store path later would just fail on
+			// the deleted file instead of leaving the ghost voice this test
+			// is hunting.
+			type snap struct{ name, ref, wav string }
+			var snaps []snap
+			for _, v := range list {
+				data, err := os.ReadFile(d.Store.WAVPath(v.Name))
+				if err != nil {
+					return err
+				}
+				p := filepath.Join(dir, "snap-"+v.Name+".wav")
+				if err := os.WriteFile(p, data, 0o644); err != nil {
+					return err
+				}
+				snaps = append(snaps, snap{v.Name, v.RefText, p})
+			}
+			go func() {
+				// An independent request ctx — NOT the start-attempt ctx,
+				// which run() cancels when the attempt concludes.
+				removeDone <- d.RemoveVoice(context.Background(), "ben")
+			}()
+			// Give the remove time to reach voiceMu (and park there under
+			// the lock / run through without it).
+			time.Sleep(150 * time.Millisecond)
+			for _, v := range snaps {
+				if err := d.ec.RegisterVoice(ctx, base, v.name, v.wav, v.ref); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	})
+
+	// Persist the voice before the engine ever starts — replay will
+	// snapshot it, and the concurrent remove must still win in the child.
+	if _, _, err := d.AddVoice(context.Background(), "ben", src, "ref words"); err != nil {
+		t.Fatal(err)
+	}
+	base, err := d.Sup.EnsureReady(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-removeDone; err != nil {
+		t.Fatalf("RemoveVoice: %v", err)
+	}
+	if _, ok := childVoices(t, base)["ben"]; ok {
+		t.Fatal("voice removed during replay is still live in the child")
+	}
+}
+
+// Two daemons on one home must not coexist: the second fails fast on the
+// home lock instead of reaping the first one's engine.
+func TestDaemonHomeLock(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	home := filepath.Join(dir, "home")
+	mkCfg := func() *config.Config {
+		return &config.Config{
+			Home:           home,
+			Addr:           "127.0.0.1:0",
+			EnginePort:     testutil.FreePort(t),
+			EngineBin:      os.Args[0],
+			Model:          "talker.gguf",
+			Codec:          "codec.gguf",
+			MaxBatch:       1,
+			StartupTimeout: 15 * time.Second,
+			EngineLogDir:   filepath.Join(dir, "logs"),
+			CacheDir:       filepath.Join(dir, "cache"),
+		}
+	}
+
+	d1, err := newDaemon(mkCfg(), testLogger(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d2, err := newDaemon(mkCfg(), testLogger(), nil); err == nil {
+		d2.Shutdown()
+		t.Fatal("second daemon on the same home started successfully")
+	} else if !strings.Contains(err.Error(), "another daemon") {
+		t.Fatalf("second daemon error = %v, want a held-lock message", err)
+	}
+	d1.Shutdown()
+	// The lock is released on shutdown — a later daemon can take it.
+	d3, err := newDaemon(mkCfg(), testLogger(), nil)
+	if err != nil {
+		t.Fatalf("daemon after lock release: %v", err)
+	}
+	d3.Shutdown()
+}
+
+// Speak counts CHARACTERS, not bytes: 3000 Russian (multi-byte) chars must
+// be accepted while 5001 chars are refused before the engine is touched —
+// same cap at the HTTP route.
+func TestSpeakInputCaps(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+
+	if _, err := d.Speak(context.Background(), SpeakInput{Text: strings.Repeat("ж", 3000)}); err != nil {
+		t.Fatalf("3000 Russian chars rejected: %v", err)
+	}
+	if _, err := d.Speak(context.Background(), SpeakInput{Text: strings.Repeat("a", 5001)}); err == nil {
+		t.Fatal("5001 chars accepted")
+	}
+
+	mux := http.NewServeMux()
+	d.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	body, _ := json.Marshal(map[string]any{"input": strings.Repeat("a", 5001)})
+	resp, err := http.Post(srv.URL+"/v1/audio/speech", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized input: status %d, want 400", resp.StatusCode)
+	}
+}
+
+// readAllCap must fail rather than silently truncate an over-limit body.
+func TestReadAllCap(t *testing.T) {
+	b, err := readAllCap(strings.NewReader("0123456789abcdef"), 16)
+	if err != nil || string(b) != "0123456789abcdef" {
+		t.Fatalf("at-limit read: b=%q err=%v", b, err)
+	}
+	if _, err := readAllCap(strings.NewReader("0123456789abcdefg"), 16); err == nil {
+		t.Fatal("over-limit read silently truncated")
+	}
+}
+
+// overwrite=true must never follow a symlink at out_path.
+// Mutation: drop the Lstat check in writeFile -> RED (the link target is
+// clobbered).
+func TestSpeakOverwriteRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+
+	target := filepath.Join(dir, "target.wav")
+	if err := os.WriteFile(target, []byte("keepme"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.wav")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Speak(context.Background(), SpeakInput{
+		Text: "hi", Format: "wav", OutPath: link, Overwrite: true,
+	}); err == nil {
+		t.Fatal("speak overwrote a symlink at out_path")
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "keepme" {
+		t.Fatalf("symlink target clobbered: %v", err)
+	}
 }

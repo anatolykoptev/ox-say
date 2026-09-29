@@ -6,7 +6,12 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"sync"
+	"syscall"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
@@ -21,6 +26,14 @@ type Daemon struct {
 
 	ec  *engine.Client
 	log *slog.Logger
+
+	// voiceMu serializes voice mutations against engine-start replay: a
+	// voice written while replayVoices runs could otherwise be missing
+	// from both the store snapshot and the live child.
+	voiceMu sync.Mutex
+
+	// lockFile holds daemon.lock for the process lifetime.
+	lockFile *os.File
 }
 
 // New builds the supervisor (reaping any orphaned engine) and the voice
@@ -44,6 +57,14 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune func(*engine.Config
 		ec:    engine.NewClient(),
 		log:   logger,
 	}
+	// Single-instance lock: taken BEFORE the supervisor reaps orphaned
+	// engines so a second daemon on the same home cannot kill the first
+	// one's live engine before failing to bind.
+	lockF, err := lockHome(cfg)
+	if err != nil {
+		return nil, err
+	}
+	d.lockFile = lockF
 	ec := engine.Config{
 		Bin:            cfg.EngineBin,
 		Model:          cfg.Model,
@@ -62,16 +83,39 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune func(*engine.Config
 	}
 	sup, err := engine.New(ec)
 	if err != nil {
+		_ = lockF.Close()
 		return nil, err
 	}
 	d.Sup = sup
 	return d, nil
 }
 
+// lockHome takes the exclusive daemon.lock under the home's run dir and
+// keeps the file open for the process lifetime; a second daemon on the
+// same home fails fast instead of reaping the first one's engine.
+func lockHome(cfg *config.Config) (*os.File, error) {
+	if err := os.MkdirAll(cfg.RunDir(), 0o755); err != nil {
+		return nil, fmt.Errorf("ox-say: run dir: %w", err)
+	}
+	lockPath := filepath.Join(cfg.RunDir(), "daemon.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("ox-say: daemon lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("ox-say: another daemon is already running for home %s", cfg.Home)
+	}
+	return f, nil
+}
+
 // replayVoices re-registers every persisted voice into a freshly started
 // child. Per-voice failures are logged and skipped — one corrupt clip must
-// not keep the engine down.
+// not keep the engine down. Held under voiceMu: the store snapshot must not
+// race an Add/Remove that could then also miss the live registration.
 func (d *Daemon) replayVoices(ctx context.Context, baseURL string) error {
+	d.voiceMu.Lock()
+	defer d.voiceMu.Unlock()
 	list, err := d.Store.List()
 	if err != nil {
 		return err
@@ -104,16 +148,22 @@ func (d *Daemon) engineBase(ctx context.Context) (base string, g *engine.Guard, 
 
 // AddVoice persists a voice and registers it into the child when the engine
 // is running. registered reports whether the live registration happened.
+// The store write and the live registration run under voiceMu so a
+// concurrent engine-start replay cannot interleave between them.
 func (d *Daemon) AddVoice(ctx context.Context, name, audioPath, refText string) (v *voices.Voice, registered bool, err error) {
-	v, err = d.Store.Add(name, audioPath, refText)
+	d.voiceMu.Lock()
+	defer d.voiceMu.Unlock()
+	v, err = d.Store.Add(ctx, name, audioPath, refText)
 	if err != nil {
 		return nil, false, err
 	}
 	// A live registration is engine work — hold a guard so the idle loop
-	// cannot stop the child mid-request.
+	// cannot stop the child mid-request. LiveURL also reaches a child that
+	// is past /health but still inside its start attempt (mid-replay):
+	// skipping it would strand a voice that replay's snapshot already missed.
 	g := d.Sup.Acquire()
 	defer g.Release()
-	if base, ok := d.Sup.ReadyURL(); ok {
+	if base, ok := d.Sup.LiveURL(); ok {
 		if rerr := d.ec.RegisterVoice(ctx, base, v.Name, d.Store.WAVPath(v.Name), v.RefText); rerr != nil {
 			d.log.Warn("voice stored but engine registration failed; it will be replayed on next start",
 				slog.String("voice", v.Name), slog.Any("error", rerr))
@@ -127,12 +177,14 @@ func (d *Daemon) AddVoice(ctx context.Context, name, audioPath, refText string) 
 // RemoveVoice deletes a voice from disk and, when the engine is running,
 // from the child too.
 func (d *Daemon) RemoveVoice(ctx context.Context, name string) error {
+	d.voiceMu.Lock()
+	defer d.voiceMu.Unlock()
 	if err := d.Store.Remove(name); err != nil {
 		return err
 	}
 	g := d.Sup.Acquire()
 	defer g.Release()
-	if base, ok := d.Sup.ReadyURL(); ok {
+	if base, ok := d.Sup.LiveURL(); ok {
 		if err := d.ec.DeleteVoice(ctx, base, name); err != nil {
 			d.log.Warn("engine voice delete failed", slog.String("voice", name), slog.Any("error", err))
 		}
@@ -189,5 +241,15 @@ func (d *Daemon) Status() statusSummary {
 	}
 }
 
-// Shutdown stops the engine child.
-func (d *Daemon) Shutdown() { d.Sup.Shutdown() }
+// Shutdown stops the engine child and releases the home lock. Note:
+// go-mcpserver invokes OnShutdown BEFORE it drains in-flight HTTP
+// requests, so the engine can stop while a speech request is still
+// mid-flight — handlers keep their own guards and fail fast on the dead
+// supervisor rather than blocking shutdown.
+func (d *Daemon) Shutdown() {
+	d.Sup.Shutdown()
+	if d.lockFile != nil {
+		_ = d.lockFile.Close()
+		d.lockFile = nil
+	}
+}

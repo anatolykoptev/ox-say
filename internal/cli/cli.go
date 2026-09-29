@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -220,10 +221,21 @@ func cmdSay(args []string, stdout, stderr io.Writer) int {
 	}
 	reqFormat := vals["f"]
 	if reqFormat == "" {
+		// Infer the format from the -o extension; default wav.
 		reqFormat = "wav"
+		switch strings.ToLower(filepath.Ext(vals["o"])) {
+		case ".mp3":
+			reqFormat = "mp3"
+		case ".opus", ".ogg":
+			reqFormat = "opus"
+		case ".pcm":
+			reqFormat = "pcm"
+		}
 	}
-	if reqFormat != "wav" && reqFormat != "mp3" && reqFormat != "opus" {
-		fmt.Fprintf(stderr, "ox-say: unsupported format %q (want wav|mp3|opus)\n", reqFormat)
+	switch reqFormat {
+	case "wav", "mp3", "opus", "pcm":
+	default:
+		fmt.Fprintf(stderr, "ox-say: unsupported format %q (want wav|mp3|opus|pcm)\n", reqFormat)
 		return 2
 	}
 	out := vals["o"]
@@ -328,9 +340,16 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: ox-say voice add <name> <audio> [--ref-text t]")
 			return 2
 		}
+		// The daemon's cwd is "/" under launchd — resolve the clip path
+		// against the CLI's cwd before sending it.
+		abs, err := filepath.Abs(pos[1])
+		if err != nil {
+			fmt.Fprintf(stderr, "ox-say: %v\n", err)
+			return 2
+		}
 		_, err = postJSON(daemonURL()+"/v1/audio/voices", map[string]any{
 			"name":       pos[0],
-			"audio_path": pos[1],
+			"audio_path": abs,
 			"ref_text":   vals["ref-text"],
 		})
 		if err != nil {

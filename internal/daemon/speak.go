@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/player"
 )
@@ -95,7 +95,7 @@ func (d *Daemon) SynthesizeWAV(ctx context.Context, params map[string]any) ([]by
 		return nil, fmt.Errorf("engine speech: %w", err)
 	}
 	defer resp.Body.Close()
-	wav, err := io.ReadAll(io.LimitReader(resp.Body, 256<<20))
+	wav, err := readAllCap(resp.Body, 256<<20)
 	if err != nil {
 		return nil, fmt.Errorf("engine speech: %w", err)
 	}
@@ -110,8 +110,8 @@ func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error)
 	if in.Text == "" {
 		return nil, fmt.Errorf("text is required")
 	}
-	if len(in.Text) > maxSpeakChars {
-		return nil, fmt.Errorf("text is %d chars, max %d", len(in.Text), maxSpeakChars)
+	if n := utf8.RuneCountInString(in.Text); n > maxSpeakChars {
+		return nil, fmt.Errorf("text is %d chars, max %d", n, maxSpeakChars)
 	}
 	format := in.Format
 	if format == "" {
@@ -203,6 +203,10 @@ func formatExt(format string) string {
 func writeFile(path string, data []byte, overwrite bool) error {
 	flags := os.O_WRONLY | os.O_CREATE
 	if overwrite {
+		// Never follow a planted symlink onto an unrelated file.
+		if st, err := os.Lstat(path); err == nil && st.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%q is a symlink; refusing to overwrite it", path)
+		}
 		flags |= os.O_TRUNC
 	} else {
 		flags |= os.O_EXCL

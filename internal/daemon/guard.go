@@ -61,7 +61,7 @@ func (d *Daemon) ServerConfig(version string) mcpserver.Config {
 		Logger:  d.log,
 		// speak blocks on a cold engine start (Metal shader compile on first
 		// ever run) plus synthesis — give it the startup window plus slack.
-		ToolTimeouts: map[string]time.Duration{"speak": 5 * time.Minute},
+		ToolTimeouts: map[string]time.Duration{"speak": d.Cfg.StartupTimeout + 2*time.Minute},
 		Routes:       d.Routes,
 		Middleware:   []mcpserver.Middleware{Guard},
 		OnShutdown:   d.Shutdown,

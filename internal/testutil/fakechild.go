@@ -14,6 +14,7 @@
 package testutil
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -56,7 +57,7 @@ func runFakeChild() int {
 	started := time.Now()
 
 	var mu sync.Mutex
-	registry := map[string]bool{}
+	registry := map[string]string{} // name → ref_text
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -68,30 +69,42 @@ func runFakeChild() int {
 	})
 	mux.HandleFunc("GET /v1/audio/voices", func(w http.ResponseWriter, _ *http.Request) {
 		mu.Lock()
-		names := make([]string, 0, len(registry))
-		for n := range registry {
-			names = append(names, n)
+		list := make([]map[string]string, 0, len(registry))
+		for n, rt := range registry {
+			list = append(list, map[string]string{"name": n, "ref_text": rt})
 		}
 		mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]any{"voices": names})
+		_ = json.NewEncoder(w).Encode(map[string]any{"voices": list})
 	})
 	mux.HandleFunc("POST /v1/audio/voices", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name string `json:"name"`
+			Name    string `json:"name"`
+			WavB64  string `json:"wav_b64"`
+			RefText string `json:"ref_text"`
 		}
+		// Mirror the real engine: the clip payload is mandatory and must
+		// decode — a client that forgets or garbles it gets a 400.
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
 			http.Error(w, "bad voice", http.StatusBadRequest)
 			return
 		}
+		if body.WavB64 == "" {
+			http.Error(w, "wav_b64 is required", http.StatusBadRequest)
+			return
+		}
+		if _, err := base64.StdEncoding.DecodeString(body.WavB64); err != nil {
+			http.Error(w, "wav_b64 is not base64", http.StatusBadRequest)
+			return
+		}
 		mu.Lock()
-		registry[body.Name] = true
+		registry[body.Name] = body.RefText
 		mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{"name": body.Name, "status": "registered"})
 	})
 	mux.HandleFunc("DELETE /v1/audio/voices/{name}", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
-		if !registry[r.PathValue("name")] {
+		if _, ok := registry[r.PathValue("name")]; !ok {
 			http.Error(w, "no such voice", http.StatusNotFound)
 			return
 		}
@@ -109,7 +122,7 @@ func runFakeChild() int {
 		}
 		if body.Voice != "" {
 			mu.Lock()
-			ok := registry[body.Voice]
+			_, ok := registry[body.Voice]
 			mu.Unlock()
 			if !ok {
 				http.Error(w, "unknown voice", http.StatusBadRequest)

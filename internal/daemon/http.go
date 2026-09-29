@@ -7,10 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"os/exec"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/voices"
 )
@@ -45,13 +45,19 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // ffmpeg (opus in an OGG container — Telegram voice notes).
 func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.UseNumber() // keep e.g. seed's int64 precision when proxying upstream
+	if err := dec.Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	input, _ := body["input"].(string)
 	if input == "" {
 		writeErr(w, http.StatusBadRequest, `"input" is required`)
+		return
+	}
+	if n := utf8.RuneCountInString(input); n > maxSpeakChars {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("input is %d chars, max %d", n, maxSpeakChars))
 		return
 	}
 	format, _ := body["response_format"].(string)
@@ -99,7 +105,7 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 
 	switch format {
 	case "mp3", "opus":
-		wav, err := io.ReadAll(io.LimitReader(resp.Body, 256<<20))
+		wav, err := readAllCap(resp.Body, 256<<20)
 		if err != nil {
 			writeErr(w, http.StatusBadGateway, fmt.Sprintf("engine speech: %v", err))
 			return
@@ -145,6 +151,19 @@ func transcode(ctx context.Context, wav []byte, format string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
+// readAllCap reads up to limit bytes and fails instead of silently
+// truncating when the body exceeds it.
+func readAllCap(r io.Reader, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("body exceeds %d bytes", limit)
+	}
+	return b, nil
+}
+
 // maps returns a shallow copy of a JSON object.
 func maps(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m)+1)
@@ -173,11 +192,10 @@ func (d *Daemon) handleAddVoice(w http.ResponseWriter, r *http.Request) {
 	v, registered, err := d.AddVoice(r.Context(), req.Name, req.AudioPath, req.RefText)
 	if err != nil {
 		status := http.StatusInternalServerError
-		var pe *fs.PathError
-		if errors.As(err, &pe) || strings.Contains(err.Error(), "invalid name") ||
-			strings.Contains(err.Error(), "ffmpeg") {
-			// Bad name, unreadable/undecodable clip: client input, not a
-			// daemon fault.
+		var iErr *voices.InputError
+		if errors.As(err, &iErr) {
+			// Bad name, relative path, unreadable/undecodable clip:
+			// client input, not a daemon fault.
 			status = http.StatusBadRequest
 		}
 		writeErr(w, status, err.Error())
