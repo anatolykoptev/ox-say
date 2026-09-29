@@ -38,12 +38,12 @@ include_copy() {
 }
 
 # Static libraries and an embedded Metal library: the installed binaries must not depend on
-# this build tree.
-cmake_flags() {
+# this build tree. Sets the array cmake_flags (an array, so paths with spaces stay one argument).
+set_cmake_flags() {
     local inc=$1
-    echo -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=ON -DGGML_METAL=ON \
-        -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple -DGGML_OPENMP=OFF \
-        "-DCMAKE_C_FLAGS=-I$inc" "-DCMAKE_CXX_FLAGS=-I$inc"
+    cmake_flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=ON -DGGML_METAL=ON
+        -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple -DGGML_OPENMP=OFF
+        "-DCMAKE_C_FLAGS=-I$inc" "-DCMAKE_CXX_FLAGS=-I$inc")
 }
 
 check_static() {
@@ -76,8 +76,8 @@ if ! fresh "$tts" "$stamp"; then
     echo "$stamp" > "$tts/.ox-say-stamp"
 fi
 include_copy "$tts/ggml" "$work/ggml-include-tts"
-# shellcheck disable=SC2046
-cmake -S "$tts" -B "$tts/build" $(cmake_flags "$work/ggml-include-tts") > "$work/tts-configure.log"
+set_cmake_flags "$work/ggml-include-tts"
+cmake -S "$tts" -B "$tts/build" "${cmake_flags[@]}" > "$work/tts-configure.log"
 cmake --build "$tts/build" --target tts-server -j "$jobs" > "$work/tts-build.log"
 cp "$tts/build/tts-server" "$out/tts-server"
 strip -x "$out/tts-server"
@@ -99,9 +99,9 @@ if ! fresh "$stt" "$stamp"; then
     echo "$stamp" > "$stt/.ox-say-stamp"
 fi
 include_copy "$stt/ggml" "$work/ggml-include-stt"
-# shellcheck disable=SC2046
+set_cmake_flags "$work/ggml-include-stt"
 cmake -S "$here/stt" -B "$work/stt-build" -DWHISPER_SRC="$stt" -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=OFF \
-    $(cmake_flags "$work/ggml-include-stt") > "$work/stt-configure.log"
+    "${cmake_flags[@]}" > "$work/stt-configure.log"
 cmake --build "$work/stt-build" --target ox-stt -j "$jobs" > "$work/stt-build.log"
 cp "$work/stt-build/ox-stt" "$out/ox-stt"
 strip -x "$out/ox-stt"

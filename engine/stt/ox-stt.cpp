@@ -13,6 +13,7 @@
 #include "whisper.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -95,7 +96,8 @@ bool parse(int argc, char ** argv, args & a) {
             return false;
         }
     }
-    if (a.model.empty() || a.file.empty() || (a.engine != "parakeet" && a.engine != "whisper") || a.chunk_s < 5.0) {
+    if (a.model.empty() || a.file.empty() || (a.engine != "parakeet" && a.engine != "whisper") ||
+        !std::isfinite(a.chunk_s) || a.chunk_s < 5.0) {
         return false;
     }
     return true;
@@ -112,6 +114,13 @@ bool read_wav(const std::string & path, std::vector<float> & out, std::string & 
         return false;
     }
     std::vector<unsigned char> buf;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        const long size = ftell(f);
+        if (size > 0) {
+            buf.reserve((size_t) size);
+        }
+        fseek(f, 0, SEEK_SET);
+    }
     unsigned char tmp[1 << 16];
     size_t n;
     while ((n = fread(tmp, 1, sizeof(tmp), f)) > 0) {
@@ -144,7 +153,8 @@ bool read_wav(const std::string & path, std::vector<float> & out, std::string & 
                       std::to_string(ch) + ", format " + std::to_string(fmt) + "/" + std::to_string(bits) + " bit)";
                 return false;
             }
-            const size_t avail = std::min<size_t>(len, buf.size() - body);
+            // a streaming writer leaves the length 0 or 0xFFFFFFFF: take the rest of the file
+            const size_t avail = (len == 0 || len == 0xFFFFFFFFu) ? buf.size() - body : std::min<size_t>(len, buf.size() - body);
             if (fmt == 1) {
                 out.resize(avail / 2);
                 for (size_t i = 0; i < out.size(); ++i) {
@@ -154,6 +164,10 @@ bool read_wav(const std::string & path, std::vector<float> & out, std::string & 
                 out.resize(avail / 4);
                 memcpy(out.data(), &buf[body], out.size() * 4);
             }
+            if (out.empty()) {
+                err = "no audio samples";
+                return false;
+            }
             return true;
         }
         off = body + len + (len & 1);
@@ -162,31 +176,58 @@ bool read_wav(const std::string & path, std::vector<float> & out, std::string & 
     return false;
 }
 
-// chunk boundaries (sample offsets): windows of at most max_len samples, each cut at the quietest
-// 10 ms frame in its last fifth
+// chunk boundaries (sample offsets): windows of at most max_len samples, each cut at the centre of the
+// quietest 150 ms stretch in its last fifth. A stretch, not a single 10 ms frame: the closure of a stop
+// consonant is quiet for a frame or two and would cut a word in half.
 std::vector<size_t> chunk_bounds(const std::vector<float> & x, size_t max_len) {
     std::vector<size_t> b = { 0 };
-    const size_t hop = SR / 100;
+    const size_t hop  = SR / 100;
+    const size_t span = 15;  // hops per stretch
     while (x.size() - b.back() > max_len) {
         const size_t start = b.back();
         const size_t lo    = start + max_len * 4 / 5;
-        const size_t hi    = start + max_len - hop;
-        size_t best = hi;
-        double best_e = 1e30;
+        const size_t hi    = start + max_len;
+        std::vector<double> e;  // energy per hop in [lo, hi)
         for (size_t i = lo; i + hop <= hi; i += hop) {
-            double e = 0;
+            double v = 0;
             for (size_t j = i; j < i + hop; ++j) {
-                e += (double) x[j] * x[j];
+                v += (double) x[j] * x[j];
             }
-            if (e < best_e) {
-                best_e = e;
-                best = i + hop / 2;
+            e.push_back(v);
+        }
+        size_t best = hi - hop;
+        if (e.size() >= span) {
+            double sum = 0;
+            for (size_t k = 0; k < span; ++k) {
+                sum += e[k];
             }
+            double best_sum = sum;
+            size_t best_k   = 0;
+            for (size_t k = span; k < e.size(); ++k) {
+                sum += e[k] - e[k - span];
+                if (sum < best_sum) {
+                    best_sum = sum;
+                    best_k   = k - span + 1;
+                }
+            }
+            best = lo + (best_k + span / 2) * hop;
         }
         b.push_back(best);
     }
     b.push_back(x.size());
     return b;
+}
+
+bool is_punct(const std::string & t) {
+    if (t.empty()) {
+        return false;
+    }
+    for (unsigned char c : t) {
+        if (!std::ispunct(c)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void no_log(ggml_log_level, const char *, void *) {}
@@ -209,6 +250,14 @@ bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std:
         err = "failed to load parakeet model " + a.model;
         return false;
     }
+    // Longer chunks than the model's audio context take parakeet's dynamic-encoder path, whose segment
+    // times are in encoder frames (80 ms), not mel frames; stay on the fixed-context path.
+    const double max_s = parakeet_n_audio_ctx(ctx) / 100.0;
+    if (a.chunk_s > max_s) {
+        parakeet_free(ctx);
+        err = "--chunk-s must be at most " + std::to_string((int) max_s) + " s for this model";
+        return false;
+    }
     const std::vector<size_t> b = chunk_bounds(x, (size_t) (a.chunk_s * SR));
     for (size_t c = 0; c + 1 < b.size(); ++c) {
         const double off = (double) b[c] / SR;
@@ -220,15 +269,24 @@ bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std:
             err = "parakeet failed on chunk " + std::to_string(c) + " at " + std::to_string(off) + " s";
             return false;
         }
+        const double end = (double) b[c + 1] / SR;
         for (int i = 0; i < parakeet_full_n_segments(ctx); ++i) {
             r.segments.push_back({ off + parakeet_full_get_segment_t0(ctx, i) / 100.0,
-                                   off + parakeet_full_get_segment_t1(ctx, i) / 100.0,
+                                   std::min(end, off + parakeet_full_get_segment_t1(ctx, i) / 100.0),
                                    parakeet_full_get_segment_text(ctx, i) });
-            int n_in_word = 0;
+            int n_in_word = 0;  // tokens averaged into the current word's p
             for (int j = 0; j < parakeet_full_n_tokens(ctx, i); ++j) {
                 const parakeet_token_data d = parakeet_full_get_token_data(ctx, i, j);
                 const std::string t = strip_marker(parakeet_full_get_token_text(ctx, i, j));
-                if (d.is_word_start || r.words.empty() || n_in_word == 0) {
+                if (t.empty()) {
+                    if (d.is_word_start) {
+                        n_in_word = 0;  // a lone boundary marker: the next token starts a word
+                    }
+                    continue;
+                }
+                if (is_punct(t) && !r.words.empty() && n_in_word > 0) {
+                    r.words.back().w += t;  // punctuation: no timing of its own, not part of p
+                } else if (d.is_word_start || r.words.empty() || n_in_word == 0) {
                     r.words.push_back({ t, off + d.t0 / 100.0, off + d.t1 / 100.0, d.p });
                     n_in_word = 1;
                 } else {
@@ -297,7 +355,34 @@ bool run_whisper(const args & a, const std::vector<float> & x, result & r, std::
     return true;
 }
 
-void json_str(std::string & o, const std::string & s) {
+// length of the valid UTF-8 sequence at s[i], or 0
+size_t utf8_len(const std::string & s, size_t i) {
+    const unsigned char c = s[i];
+    size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+    if (n == 0 || i + n > s.size()) {
+        return 0;
+    }
+    for (size_t k = 1; k < n; ++k) {
+        if (((unsigned char) s[i + k] >> 6) != 0x2) {
+            return 0;
+        }
+    }
+    return n;
+}
+
+void json_str(std::string & o, const std::string & s0) {
+    // model tokens are bytes; replace anything that is not valid UTF-8 with U+FFFD
+    std::string s;
+    for (size_t i = 0; i < s0.size();) {
+        const size_t n = utf8_len(s0, i);
+        if (n == 0) {
+            s += "\xEF\xBF\xBD";
+            ++i;
+        } else {
+            s.append(s0, i, n);
+            i += n;
+        }
+    }
     o += '"';
     for (unsigned char c : s) {
         switch (c) {
@@ -333,6 +418,9 @@ int main(int argc, char ** argv) {
         usage(argv[0]);
         return 2;
     }
+    if (a.engine == "parakeet" && (!a.lang.empty() || !a.prompt.empty())) {
+        fprintf(stderr, "ox-stt: parakeet detects the language itself and takes no prompt; -l/--prompt ignored\n");
+    }
     if (!a.verbose) {
         parakeet_log_set(no_log, nullptr);
         whisper_log_set(no_log, nullptr);
@@ -359,7 +447,11 @@ int main(int argc, char ** argv) {
     std::string o = "{\"engine\":";
     json_str(o, a.engine);
     o += ",\"language\":";
-    json_str(o, r.language);
+    if (r.language.empty()) {
+        o += "null";
+    } else {
+        json_str(o, r.language);
+    }
     o += ",\"duration_s\":" + num((double) x.size() / SR) + ",\"elapsed_s\":" + num(elapsed) + ",\"text\":";
     json_str(o, text);
     o += ",\"segments\":[";
@@ -377,15 +469,17 @@ int main(int argc, char ** argv) {
     o += "]}\n";
 
     if (a.out.empty()) {
-        fwrite(o.data(), 1, o.size(), stdout);
-    } else {
-        FILE * f = fopen(a.out.c_str(), "wb");
-        if (!f || fwrite(o.data(), 1, o.size(), f) != o.size()) {
-            fprintf(stderr, "ox-stt: cannot write %s\n", a.out.c_str());
-            if (f) fclose(f);
+        if (fwrite(o.data(), 1, o.size(), stdout) != o.size() || fflush(stdout) != 0 || ferror(stdout)) {
+            fprintf(stderr, "ox-stt: cannot write to stdout\n");
             return 1;
         }
-        fclose(f);
+    } else {
+        FILE * f = fopen(a.out.c_str(), "wb");
+        const bool wrote = f && fwrite(o.data(), 1, o.size(), f) == o.size();
+        if (!f || fclose(f) != 0 || !wrote) {
+            fprintf(stderr, "ox-stt: cannot write %s\n", a.out.c_str());
+            return 1;
+        }
     }
     return 0;
 }

@@ -4,7 +4,7 @@
 #   Parakeet TDT 0.6B v3 (CC-BY-4.0)             speech-to-text, 25 European languages
 #   Whisper large-v3-turbo (MIT), --with-whisper  speech-to-text, 99 languages (1.6 GB)
 #
-# Usage: scripts/fetch-models.sh [--with-whisper] [dest]
+# Usage: scripts/fetch-models.sh [--with-whisper] [dest]   (any order)
 #   dest defaults to "$OX_SAY_HOME/models" (OX_SAY_HOME defaults to
 #   ~/Library/Application Support/ox-say).
 #   OX_SAY_MODELS_FROM=<dir> copies matching files from a local dir instead of
@@ -12,12 +12,16 @@
 set -euo pipefail
 
 with_whisper=0
-if [ "${1:-}" = "--with-whisper" ]; then
-    with_whisper=1
-    shift
-fi
+dest=
+for arg in "$@"; do
+    case "$arg" in
+        --with-whisper) with_whisper=1 ;;
+        -*) echo "unknown option: $arg" >&2; exit 2 ;;
+        *) dest=$arg ;;
+    esac
+done
 home=${OX_SAY_HOME:-"$HOME/Library/Application Support/ox-say"}
-dest=${1:-"$home/models"}
+dest=${dest:-"$home/models"}
 
 qwen=https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main
 parakeet=https://huggingface.co/ggml-org/parakeet-GGUF/resolve/main
