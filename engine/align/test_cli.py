@@ -172,6 +172,12 @@ def main() -> int:
              "--context"),
             # context 0 can never satisfy the conv receptive field
             ("flag:context-0", no_model, wav, ["--context", "0"], "--context"),
+            # negative values are whole multiples of 320 samples too; only the
+            # sign check stops them (a negative context pads xp short and the
+            # copy into it would write before the buffer)
+            ("flag:context-neg", no_model, wav, ["--context", "-0.02"],
+             "--context"),
+            ("flag:window-neg", no_model, wav, ["--window", "-30"], "--window"),
             ("wav:empty", src, empty, [], "no audio samples"),
         ]
 
