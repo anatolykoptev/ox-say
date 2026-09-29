@@ -12,11 +12,18 @@ GGUFs, 5e-3 for f16. Argmax agreement stays >= 99.5%.
 
 Reference emissions are cached in --ref-dir. Each cached ref carries a JSON
 sidecar with the WAV's sha256, the checkpoint's `source_sha256` (read from
-the GGUF via `ox-align --info`), WIN/CTX, the normalize mode and hf32_err.
-Every field is compared before a cached ref is used — any mismatch is a
-FAIL, never a silent recompute or reuse. torch/transformers are imported
-only when a ref must be computed, so `--refs-only` runs on hosts with numpy
-but no HF stack (the target Mac).
+the GGUF via `ox-align --info`), WIN/CTX, the normalize mode and hf32_err,
+plus platform.machine() and the torch version as information only (never
+compared — a ref computed on one box must still validate on another).
+Every compared field is checked before a cached ref is used — any mismatch
+is a FAIL, never a silent recompute or reuse. torch/transformers are
+imported only when a ref must be computed, so `--refs-only` runs on hosts
+with numpy but no HF stack (the target Mac).
+
+Before a ref is computed, the HF checkpoint dir's provenance hash
+(convert_wav2vec2.py's source_sha256: config.json, preprocessor_config.json,
+vocab.json, model.safetensors, each name+length prefixed) must equal the
+GGUF's ox_align.source_sha256 — a tampered or swapped HF dir fails.
 
 Mutation hooks (each check names the mutation that must turn it RED):
   F6  missing-GGUF FAIL replaced by `continue`   -> empty --models-dir exits 0
@@ -25,6 +32,11 @@ Mutation hooks (each check names the mutation that must turn it RED):
   F13 sidecar comparison skipped                 -> --refs-only on a modified
                                                   copy of the clip passes
   F14 --no-normalize made a no-op                -> the raw case is RED
+  F15 hf32_err bound removed                     -> a sidecar with
+                                                  "hf32_err": Infinity
+                                                  passes --refs-only
+  F18 HF-dir sha vs GGUF sha comparison skipped  -> a ref computed from a
+                                                  tampered HF dir writes
 
 Test audio: engine/align/testdata/clip-{short,long}.wav — LibriSpeech
 test-clean utterances 1089-134686-{0000,0001,0002} (CC-BY-4.0,
@@ -43,7 +55,9 @@ models-dir/wav2vec2-base-960h/config.json) unless --refs-only is given.
 import argparse
 import hashlib
 import json
+import math
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -66,6 +80,27 @@ def sha256_file(path: str) -> str:
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
+    return h.hexdigest()
+
+
+# Identical to convert_wav2vec2.py:source_sha256 — the oracle recomputes the
+# provenance hash from the HF checkpoint dir and refuses to write a
+# reference when it differs from the GGUF's ox_align.source_sha256.
+def source_sha256(model_dir: str) -> str:
+    h = hashlib.sha256()
+    for name in ("config.json", "preprocessor_config.json",
+                 "vocab.json", "model.safetensors"):
+        p = os.path.join(model_dir, name)
+        if name == "preprocessor_config.json" and not os.path.exists(p):
+            p = os.path.join(model_dir, "feature_extractor_config.json")
+        h.update(name.encode())
+        if not os.path.exists(p):
+            h.update((2**64 - 1).to_bytes(8, "little") + b"ABSENT")
+            continue
+        h.update(os.path.getsize(p).to_bytes(8, "little"))
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
     return h.hexdigest()
 
 
@@ -137,22 +172,46 @@ def ref_for(ox_align: str, models_dir: str, testdata: str, ref_dir: str,
         meta = json.load(open(side))
         bad = [f"{k}: sidecar={meta.get(k)!r} want={v!r}"
                for k, v in want.items() if meta.get(k) != v]
-        if "hf32_err" not in meta:
-            bad.append("hf32_err missing")
+        # the gate is derived from hf32_err: a missing, null or out-of-range
+        # value (inf included — Python's json reads "Infinity") makes the
+        # gate meaningless, so the ref is unusable, not just stale
+        hf32 = meta.get("hf32_err")
+        if (isinstance(hf32, bool) or not isinstance(hf32, (int, float))
+                or not math.isfinite(hf32) or not 0 < hf32 <= 1e-2):
+            bad.append(f"hf32_err: sidecar={hf32!r} want a finite float "
+                       "in (0, 1e-2]")
         if bad:
             raise RefError(f"stale reference {npy}: " + "; ".join(bad))
-        return np.load(npy), float(meta["hf32_err"])
+        return np.load(npy), float(hf32)
     if refs_only:
         raise RefError(f"--refs-only and no cached ref at {npy}")
+    model_dir = os.path.join(models_dir, model)
+    # prove the HF dir is the checkpoint the GGUF was built from before a
+    # ref can be baked against it — the hash covers every file the
+    # converter hashes, so a swapped or hand-edited dir fails here
+    have_sha = source_sha256(model_dir)
+    if have_sha != want["source_sha256"]:
+        raise RefError(f"{model_dir} sha256 {have_sha} != GGUF "
+                       f"source_sha256 {want['source_sha256']}: "
+                       "not the checkpoint the GGUF was built from")
     print(f"  hf-f64+f32 oracle: {model} x {clip} ({tag}) ...", flush=True)
     t0 = time.time()
-    model_dir = os.path.join(models_dir, model)
     e64 = hf_emissions(model_dir, wav, normalize, "float64")
     e32 = hf_emissions(model_dir, wav, normalize, "float32")
+    import torch  # already loaded by hf_emissions; recorded for info only
     n = min(len(e64), len(e32))
-    hf32_err = float(np.abs(e32[:n] - e64[:n]).max()) if n else float("inf")
+    if n == 0:
+        raise RefError(f"HF oracle produced no frames for {model} x {clip}")
+    hf32_err = float(np.abs(e32[:n] - e64[:n]).max())
+    if not (math.isfinite(hf32_err) and 0 < hf32_err <= 1e-2):
+        raise RefError(f"HF float32 noise out of range for {model} x {clip}: "
+                       f"{hf32_err} — the oracle cannot gate this case")
     np.save(npy, e64)
-    json.dump({**want, "hf32_err": hf32_err}, open(side, "w"), indent=1)
+    json.dump({**want, "hf32_err": hf32_err,
+               # information only — never compared by the sidecar check, so
+               # a ref computed on one box still validates on another
+               "machine": platform.machine(),
+               "torch": torch.__version__}, open(side, "w"), indent=1)
     print(f"  hf-f64 oracle: {len(e64)} frames in {time.time() - t0:.0f}s "
           f"(hf32_err={hf32_err:.5f}, cached -> {npy})", flush=True)
     return e64, hf32_err

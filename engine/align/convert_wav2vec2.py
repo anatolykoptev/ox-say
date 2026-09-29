@@ -45,9 +45,28 @@ def read_json(model_dir: str, name: str):
         return json.load(f)
 
 
-def sha256_of(*paths: str) -> str:
+# Provenance hash over everything baked into the GGUF, in a fixed order.
+# Each present file contributes name + 8-byte length + content (the framing
+# makes the concatenation unambiguous). A file the converter can run
+# without — preprocessor_config.json (it falls back to
+# feature_extractor_config.json, then to defaults) or vocab.json —
+# contributes name + an impossible uint64 length + "ABSENT" instead.
+# config.json/model.safetensors are required and checked before this runs.
+# test_oracle.py recomputes this from the HF dir and compares it to the
+# GGUF's ox_align.source_sha256, so keep the two implementations identical.
+def source_sha256(model_dir: str) -> str:
     h = hashlib.sha256()
-    for p in paths:
+    for name in ("config.json", "preprocessor_config.json",
+                 "vocab.json", "model.safetensors"):
+        p = os.path.join(model_dir, name)
+        if name == "preprocessor_config.json" and not os.path.exists(p):
+            # what actually gets baked in is the file read for do_normalize
+            p = os.path.join(model_dir, "feature_extractor_config.json")
+        h.update(name.encode())
+        if not os.path.exists(p):
+            h.update((2**64 - 1).to_bytes(8, "little") + b"ABSENT")
+            continue
+        h.update(os.path.getsize(p).to_bytes(8, "little"))
         with open(p, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
@@ -89,7 +108,6 @@ def main() -> int:
     if not os.path.exists(st_path):
         sys.exit(f"{args.model_dir}: no model.safetensors")
 
-    cfg_path = os.path.join(args.model_dir, "config.json")
     header, data_off = st_header(st_path)
     tensors = {}
     with safe_open(st_path, framework="np") as f:
@@ -178,8 +196,7 @@ def main() -> int:
                       config["num_conv_pos_embedding_groups"])
     # provenance: ox-align --info surfaces this, and test_oracle.py uses it to
     # prove a cached HF reference still matches the checkpoint under test
-    writer.add_string("ox_align.source_sha256",
-                      sha256_of(cfg_path, st_path))
+    writer.add_string("ox_align.source_sha256", source_sha256(args.model_dir))
     vocab = read_json(args.model_dir, "vocab.json")
     if vocab is None:
         print("warning: no vocab.json; --vocab output will be unavailable",

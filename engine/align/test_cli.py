@@ -39,13 +39,15 @@ KV_ARRAYS = ("wav2vec2.conv_kernel", "wav2vec2.conv_stride",
 
 
 def build_model(dst: str, src: str, kv_over: dict = None,
-                drop: frozenset = frozenset(), tensor_over: dict = None):
+                drop: frozenset = frozenset(), tensor_over: dict = None,
+                extra: dict = None):
     """Rewrite src into dst with kv_over applied to the metadata."""
     import numpy as np
     from gguf import GGUFReader, GGUFWriter
 
     kv_over = kv_over or {}
     tensor_over = tensor_over or {}
+    extra = extra or {}
     r = GGUFReader(src)
     w = GGUFWriter(dst, "wav2vec2")
     w.add_name("test-corrupt")
@@ -64,6 +66,8 @@ def build_model(dst: str, src: str, kv_over: dict = None,
         if t.name in drop:
             continue
         w.add_tensor(t.name, tensor_over.get(t.name, np.asarray(t.data)))
+    for name, t in extra.items():
+        w.add_tensor(name, t)
     w.write_header_to_file()
     w.write_kv_data_to_file()
     w.write_tensors_to_file()
@@ -94,45 +98,80 @@ def main() -> int:
 
     failures = []
     with tempfile.TemporaryDirectory() as tmp:
-        # corrupted models: (name, kv overrides, dropped tensors, want-stderr)
+        # corrupted models: (name, kv overrides, dropped tensors,
+        # tensor overrides, added tensors, want-stderr)
         vocab, d = 32, 768
         import numpy as np
         bad_models = [
+            # exact "> 0" message: distinct from the divisibility check that
+            # carries the same key name
             ("n_head0", {"wav2vec2.num_attention_heads": 0}, frozenset(),
-             {}, "num_attention_heads"),
+             {}, {}, "num_attention_heads must be > 0"),
             # 0xFFFFFFFF reads back as -1 through the int kv path: passes the
             # divisibility check (768 % -1 == 0) — only the >0 gate stops it
             ("n_headneg", {"wav2vec2.num_attention_heads": 0xFFFFFFFF},
-             frozenset(), {}, "num_attention_heads"),
+             frozenset(), {}, {}, "num_attention_heads must be > 0"),
             ("pos_groups0",
              {"wav2vec2.num_conv_pos_embedding_groups": 0}, frozenset(),
-             {}, "num_conv_pos_embedding_groups"),
+             {}, {}, "num_conv_pos_embedding_groups must be > 0"),
             ("stride0", {"wav2vec2.conv_stride": [0] * 7}, frozenset(),
-             {}, "conv_stride"),
+             {}, {}, "conv_stride[0] must be > 0"),
             ("lm_head", {}, frozenset(),
              {"lm_head.weight": np.zeros((vocab + 1, d), np.float32)},
-             "lm_head.weight"),
+             {}, "lm_head.weight"),
             # conv_bias=true with no bias tensors in the file
             ("conv_bias", {"wav2vec2.conv_bias": True}, frozenset(),
-             {}, "conv.bias"),
+             {}, {}, "conv.bias"),
+            # the reverse: conv_bias=false while the bias tensors are still
+            # present — a stray bias would silently shift the logits
+            ("conv_bias_rev", {"wav2vec2.conv_bias": False}, frozenset(), {},
+             {f"feature_extractor.conv_layers.{i}.conv.bias":
+              np.zeros(512, np.float32) for i in range(7)},
+             "present but wav2vec2.conv_bias is false"),
+            # a non-matmul tensor stored as f16 (LayerNorm): clean error
+            ("ln_f16", {}, frozenset(),
+             {"encoder.layer_norm.weight": np.zeros(d, np.float16)}, {},
+             "encoder.layer_norm.weight has type f16"),
         ]
         models = {}
-        for name, kvo, drop, tover, _ in bad_models:
+        for name, kvo, drop, tover, ex, _ in bad_models:
             dst = os.path.join(tmp, f"bad-{name}.gguf")
             print(f"building {dst} ...", flush=True)
-            build_model(dst, src, kvo, frozenset(drop), tover)
+            build_model(dst, src, kvo, frozenset(drop), tover, ex)
             models[name] = dst
 
         empty = os.path.join(tmp, "empty.wav")
         empty_wav(empty)
 
         cases = []
-        for name, _, _, _, want in bad_models:
+        for name, _, _, _, _, want in bad_models:
             cases.append((f"model:{name}", models[name], wav, [], want))
+        # a vocab id outside [0, vocab_size): bounded at parse time, before
+        # any inference runs and before the emissions file exists
+        vocab_bad = os.path.join(tmp, "bad-vocab.gguf")
+        build_model(vocab_bad, src,
+                    {"wav2vec2.vocab_json": '{"x": 5, "y": 32}'})
+        cases.append(("model:vocab_id", vocab_bad, wav,
+                      ["--vocab", os.path.join(tmp, "vocab-out.json")],
+                      "vocab_json: token id"))
+        # Flags are validated before the model loads, so the flag cases point
+        # at a model that does not exist: if a check goes missing the run
+        # fails on the model instead of starting inference. A removed window
+        # cap must never start a 600 s window — its attention alone needs
+        # tens of GB.
+        no_model = os.path.join(tmp, "never-loaded.gguf")
         cases += [
-            ("flag:window-30.01", src, wav, ["--window", "30.01"], "--window"),
-            ("flag:window-1e15", src, wav, ["--window", "1e15"], "--window"),
-            ("flag:context-1.99", src, wav, ["--context", "1.99"], "--context"),
+            ("flag:window-30.01", no_model, wav, ["--window", "30.01"],
+             "--window"),
+            # a whole number of frames, but over the 600 s cap
+            ("flag:window-600.02", no_model, wav, ["--window", "600.02"],
+             "--window"),
+            ("flag:window-1e15", no_model, wav, ["--window", "1e15"],
+             "--window"),
+            ("flag:context-1.99", no_model, wav, ["--context", "1.99"],
+             "--context"),
+            # context 0 can never satisfy the conv receptive field
+            ("flag:context-0", no_model, wav, ["--context", "0"], "--context"),
             ("wav:empty", src, empty, [], "no audio samples"),
         ]
 
