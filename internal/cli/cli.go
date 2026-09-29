@@ -83,7 +83,7 @@ transcribe flags:
   -e engine     parakeet (default) | whisper
   -l language   whisper language hint (parakeet auto-detects)
   --prompt t    whisper initial prompt
-  --json        print the verbose_json result (text, duration, words)
+  --json        print the full result as JSON (ox_json: text, segments, words as w/s/e/p)
   --srt         print an SRT subtitle file
 
 Without -o, say plays the audio like macOS say.
@@ -428,7 +428,7 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 
 // cmdTranscribe uploads a local file to the daemon's transcriptions route as
 // multipart and prints the transcript (text by default; --json and --srt
-// select verbose_json and srt server-side).
+// select ox_json and srt server-side).
 func cmdTranscribe(args []string, stdout, stderr io.Writer) int {
 	var jsonOut, srtOut bool
 	var rest []string
@@ -455,6 +455,10 @@ func cmdTranscribe(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(pos) != 1 {
 		fmt.Fprintln(stderr, "usage: ox-say transcribe [-e parakeet|whisper] [-l lang] [--prompt t] [--json|--srt] <file>")
+		return 2
+	}
+	if jsonOut && srtOut {
+		fmt.Fprintln(stderr, "ox-say transcribe: --json and --srt are exclusive")
 		return 2
 	}
 	f, err := os.Open(pos[0])

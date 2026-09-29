@@ -43,7 +43,10 @@ Parakeet TDT (default, 25 European languages, auto-detected) or Whisper
 large-v3-turbo (99 languages, takes `language`/`prompt` hints) transcribes
 it. One transcription runs at a time; while the TTS engine is starting or
 ready it holds ~2 GB of GPU memory, so ox-stt automatically runs on the CPU
-(`OX_SAY_STT_GPU` overrides).
+(`OX_SAY_STT_GPU` overrides). The rule is one-way: a TTS request that starts the
+engine while a transcription runs on the GPU is not held back, so the two can
+briefly share the card. Transcriptions run one at a time; up to 8 more wait,
+further ones get 503.
 
 ### HTTP API
 
@@ -52,7 +55,7 @@ Listening on `OX_SAY_ADDR` (default `127.0.0.1:8094`, loopback only):
 | Route | Description |
 |-------|-------------|
 | `POST /v1/audio/speech` | OpenAI-compatible TTS. `input` required; `voice`, `language`, `response_format` (`wav`, `pcm`, `mp3`, `opus` — last two transcoded with ffmpeg), `instructions`, `seed`, `temperature`, `top_k`, `top_p`, `repetition_penalty`, `max_new_tokens` |
-| `POST /v1/audio/transcriptions` | OpenAI-compatible STT, multipart: `file` (required, ≤ `OX_SAY_STT_MAX_UPLOAD_MB`), `model` (`parakeet` default; `whisper`/`whisper-1`), `language`, `prompt`, `response_format` (`json` default → `{"text"}`; `text`; `verbose_json` → OpenAI's shape: `duration`, `segments` (`start`/`end`), `words` (`word`/`start`/`end`); `srt`; `vtt`; `ox_json` → ox-stt's own result with words as `w`/`s`/`e`/`p`, what `ox-say transcribe --json` prints), `timestamp_granularities[]` |
+| `POST /v1/audio/transcriptions` | OpenAI-compatible STT, multipart: `file` (required, ≤ `OX_SAY_STT_MAX_UPLOAD_MB`), `model` (`parakeet` default; `whisper`/`whisper-1`), `language`, `prompt`, `response_format` (`json` default → `{"text"}`; `text`; `verbose_json` → OpenAI's shape: `duration`, `segments` (`start`/`end`), `words` (`word`/`start`/`end`); `srt`; `vtt`; `ox_json` → ox-stt's own result with words as `w`/`s`/`e`/`p`, what `ox-say transcribe --json` prints), `timestamp_granularities[]` (accepted; words are always returned). Errors: 400 bad input, 413 over the upload cap, 503 model missing or queue full, 504 timeout |
 | `GET /v1/audio/voices` | List persisted voices |
 | `POST /v1/audio/voices` | `{"name","audio_path","ref_text"}` — clone from a local clip (normalized to 24 kHz mono WAV, max 20 s) |
 | `GET /v1/audio/voices/<name>` | Voice metadata |
@@ -93,6 +96,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_STT_GPU` | `auto` | `auto`: CPU while the TTS engine runs, GPU otherwise; `on`/`off` force |
 | `OX_SAY_STT_TIMEOUT_SECS` | `600` | Per-transcription cap (conversion + engine) |
 | `OX_SAY_STT_MAX_UPLOAD_MB` | `200` | `file` part cap on the transcriptions route |
+| `OX_SAY_STT_MAX_AUDIO_SECS` | `14400` | Audio past this is not decoded (a small compressed upload can expand to hours of PCM) |
 
 ## Build and install the engine
 

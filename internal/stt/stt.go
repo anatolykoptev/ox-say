@@ -14,7 +14,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -71,17 +73,38 @@ type Options struct {
 	GPU          string        // "auto" (default) | "on" | "off"
 	EngineBusy   func() bool   // nil → false
 	Timeout      time.Duration // cap on the conversion+run; 0 → DefaultTimeout
+	MaxAudio     time.Duration // audio past this is not decoded; 0 → DefaultMaxAudio
+	MaxQueue     int           // callers allowed to wait; 0 → DefaultMaxQueue
 }
 
 // Defaults and bounds.
 const (
-	DefaultTimeout = 10 * time.Minute
-	convertTimeout = 60 * time.Second
+	DefaultTimeout  = 10 * time.Minute
+	DefaultMaxAudio = 4 * time.Hour
+	DefaultMaxQueue = 8
+	stderrTail      = 4 << 10
 )
 
+// ErrBusy means the queue of waiting transcriptions is full.
+var ErrBusy = errors.New("stt: busy, too many transcriptions queued")
+
+// ModelError means the model file is missing; the daemon is not set up.
+type ModelError struct{ msg string }
+
+func (e *ModelError) Error() string { return e.msg }
+
+// TimeoutError means the transcription hit Options.Timeout.
+type TimeoutError struct{ After time.Duration }
+
+func (e *TimeoutError) Error() string { return fmt.Sprintf("stt: timed out after %s", e.After) }
+
 // sem serializes transcriptions: a second ox-stt would contend for GPU
-// memory with the one already running (and with the TTS child).
-var sem = make(chan struct{}, 1)
+// memory with the one already running (and with the TTS child). waiting
+// counts callers queued for it, so a burst cannot pile up uploads on disk.
+var (
+	sem     = make(chan struct{}, 1)
+	waiting atomic.Int32
+)
 
 // ffmpeg is a variable so tests can point it at a missing binary.
 var ffmpeg = "ffmpeg"
@@ -107,13 +130,23 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		model = opts.WhisperModel
 	}
 	if _, err := os.Stat(model); err != nil {
-		return nil, fmt.Errorf("stt: model %q not found — fetch it with scripts/fetch-models.sh", model)
+		return nil, &ModelError{fmt.Sprintf("stt: model %s not found — fetch it with scripts/fetch-models.sh", filepath.Base(model))}
 	}
 
+	maxQueue := opts.MaxQueue
+	if maxQueue <= 0 {
+		maxQueue = DefaultMaxQueue
+	}
+	if waiting.Add(1) > int32(maxQueue) {
+		waiting.Add(-1)
+		return nil, ErrBusy
+	}
 	select {
 	case sem <- struct{}{}:
+		waiting.Add(-1)
 		defer func() { <-sem }()
 	case <-ctx.Done():
+		waiting.Add(-1)
 		return nil, ctx.Err()
 	}
 
@@ -121,11 +154,21 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// a deadline of ours, not the caller going away
+	timedOut := func() bool { return ctx.Err() != nil && parent.Err() == nil }
 
-	wav, err := convert(ctx, audioPath)
+	maxAudio := opts.MaxAudio
+	if maxAudio <= 0 {
+		maxAudio = DefaultMaxAudio
+	}
+	wav, err := convert(ctx, audioPath, maxAudio)
 	if err != nil {
+		if timedOut() {
+			return nil, &TimeoutError{After: timeout}
+		}
 		return nil, err
 	}
 	defer func() { _ = os.Remove(wav) }()
@@ -144,10 +187,14 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	}
 
 	cmd := exec.CommandContext(ctx, opts.Bin, args...)
-	var out, errb bytes.Buffer
+	var out bytes.Buffer
+	errb := &tailBuffer{max: stderrTail}
 	cmd.Stdout = &out
-	cmd.Stderr = &errb
+	cmd.Stderr = errb
 	if err := cmd.Run(); err != nil {
+		if timedOut() {
+			return nil, &TimeoutError{After: timeout}
+		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -168,7 +215,9 @@ func engineBusy(f func() bool) bool { return f != nil && f() }
 
 // gpuAllowed resolves the -ng decision: "on" always uses the GPU, "off"
 // never, and "auto" stays off the GPU while the TTS engine occupies it
-// (its ~2 GB plus the ~1.3 GB ox-stt wants would not fit the card).
+// (its ~2 GB plus the ~1.3 GB ox-stt wants would not fit the card). The
+// exclusion is one-way: a TTS start during a GPU transcription is not held
+// back, so both can briefly share the card (accepted; see the README).
 func gpuAllowed(mode string, ttsBusy bool) bool {
 	switch mode {
 	case "on":
@@ -180,11 +229,29 @@ func gpuAllowed(mode string, ttsBusy bool) bool {
 	}
 }
 
+// tailBuffer keeps the last max bytes written to it: enough of a tool's
+// stderr to explain a failure, bounded however much it prints.
+type tailBuffer struct {
+	max int
+	b   []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if len(t.b) > t.max {
+		t.b = t.b[len(t.b)-t.max:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string { return string(t.b) }
+
 // convert turns any input ffmpeg reads into a 16 kHz mono PCM16 WAV temp
-// file. A clip ffmpeg ran against and refused is caller input; a missing
-// binary or a kill on the timeout is a daemon fault — same split as
-// voices.Prepare.
-func convert(ctx context.Context, audioPath string) (string, error) {
+// file of at most maxAudio. A clip ffmpeg ran against and refused is caller
+// input; a missing binary or a kill on the timeout is a daemon fault — same
+// split as voices.Prepare. It runs under the caller's context, which carries
+// the overall transcription timeout.
+func convert(ctx context.Context, audioPath string, maxAudio time.Duration) (string, error) {
 	tmp, err := os.CreateTemp("", "ox-say-stt-*.wav")
 	if err != nil {
 		return "", fmt.Errorf("stt: %w", err)
@@ -197,23 +264,27 @@ func convert(ctx context.Context, audioPath string) (string, error) {
 			_ = os.Remove(tmpName)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(ctx, convertTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, ffmpeg,
+	errb := &tailBuffer{max: stderrTail}
+	cmd := exec.CommandContext(ctx, ffmpeg,
 		"-hide_banner", "-loglevel", "error", "-y",
 		"-protocol_whitelist", "file",
 		"-i", "file:"+audioPath,
+		// a small compressed upload can decode to hours of PCM; cap it
+		"-t", strconv.FormatFloat(maxAudio.Seconds(), 'f', 3, 64),
 		"-ar", "16000",
 		"-ac", "1",
 		"-c:a", "pcm_s16le",
 		tmpName,
-	).CombinedOutput()
-	if err != nil {
+	)
+	cmd.Stdout = errb
+	cmd.Stderr = errb
+	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && ctx.Err() == nil {
-			return "", &InputError{fmt.Sprintf("stt: cannot decode audio %q: %s", audioPath, strings.TrimSpace(string(out)))}
+			// no path in the message: over HTTP it is the upload's temp file
+			return "", &InputError{fmt.Sprintf("stt: cannot decode audio: %s", strings.TrimSpace(errb.String()))}
 		}
-		return "", fmt.Errorf("stt: ffmpeg: %w: %s", err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("stt: ffmpeg: %w: %s", err, strings.TrimSpace(errb.String()))
 	}
 	ok = true
 	return tmpName, nil

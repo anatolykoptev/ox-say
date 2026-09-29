@@ -195,6 +195,9 @@ func TestTranscribeUsageErrors(t *testing.T) {
 	if code := Run([]string{"transcribe", "-e", "bogus", "x.wav"}, &outBuf, &errBuf, "test"); code != 2 {
 		t.Fatalf("bad engine: exit = %d, want 2", code)
 	}
+	if code := Run([]string{"transcribe", "--json", "--srt", "x.wav"}, &outBuf, &errBuf, "test"); code != 2 {
+		t.Fatalf("--json --srt: exit = %d, want 2", code)
+	}
 	if code := Run([]string{"transcribe", filepath.Join(t.TempDir(), "nope.wav")}, &outBuf, &errBuf, "test"); code != 1 {
 		t.Fatalf("missing file: exit = %d, want 1", code)
 	}
@@ -225,5 +228,41 @@ func TestSayInfersFormatFromOutExt(t *testing.T) {
 	body, _ := captureBody(t, "say", "-f", "wav", "-o", filepath.Join(t.TempDir(), "a.mp3"), "hi")
 	if got := body["response_format"]; got != "wav" {
 		t.Fatalf("explicit -f: response_format = %v, want wav", got)
+	}
+}
+
+// --json asks for ox_json (the engine's own words), --srt for srt.
+// Mutation: map --json to verbose_json in cmdTranscribe -> RED.
+func TestTranscribeFormatFlags(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mr, err := r.MultipartReader(); err == nil {
+			for {
+				p, err := mr.NextPart()
+				if err != nil {
+					break
+				}
+				data, _ := io.ReadAll(p)
+				if p.FormName() == "response_format" {
+					got = string(data)
+				}
+			}
+		}
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+	t.Setenv("OX_SAY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+	src := filepath.Join(t.TempDir(), "clip.wav")
+	if err := os.WriteFile(src, []byte("RIFF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for flag, want := range map[string]string{"--json": "ox_json", "--srt": "srt"} {
+		var outBuf, errBuf strings.Builder
+		if code := Run([]string{"transcribe", flag, src}, &outBuf, &errBuf, "test"); code != 0 {
+			t.Fatalf("%s: exit %d (%s)", flag, code, errBuf.String())
+		}
+		if got != want {
+			t.Fatalf("%s sent response_format %q, want %q", flag, got, want)
+		}
 	}
 }

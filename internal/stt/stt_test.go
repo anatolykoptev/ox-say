@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -281,11 +282,15 @@ func TestOneAtATime(t *testing.T) {
 }
 
 // A queued transcription honours its own context: while the semaphore is
-// held, a second caller's cancel returns ctx.Err() instead of running.
+// held, a second caller's cancel returns promptly, without converting or
+// spawning anything. (Returning ctx.Err() alone proves nothing: a caller that
+// waited for the slot would still fail on its expired context in convert.)
+// Mutation: in Transcribe, acquire the semaphore with a blocking send instead
+// of the select on ctx.Done() -> RED ("returned after ...").
 func TestQueuedHonoursContext(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("OXSAY_FAKE_STT_DELAY_MS", "500")
-	opts, _ := fakeOpts(t, dir)
+	t.Setenv("OXSAY_FAKE_STT_DELAY_MS", "800")
+	opts, log := fakeOpts(t, dir)
 	src := testutil.WriteTinyWAV(t, dir, "in.wav")
 
 	first := make(chan error, 1)
@@ -293,16 +298,99 @@ func TestQueuedHonoursContext(t *testing.T) {
 		_, err := Transcribe(context.Background(), src, opts)
 		first <- err
 	}()
-	// Give the first call time to acquire the semaphore.
-	time.Sleep(100 * time.Millisecond)
+	testutil.WaitFor(t, 5*time.Second, func() bool { return len(sttRuns(t, log)) == 1 }, "first run spawned")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := Transcribe(ctx, src, opts); !errors.Is(err, context.DeadlineExceeded) {
+	start := time.Now()
+	_, err := Transcribe(ctx, src, opts)
+	if took := time.Since(start); took > 300*time.Millisecond {
+		t.Fatalf("queued call returned after %s, want promptly on its own deadline", took)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("queued call err = %v, want context.DeadlineExceeded", err)
 	}
 	if err := <-first; err != nil {
 		t.Fatal(err)
+	}
+	if n := len(sttRuns(t, log)); n != 1 {
+		t.Fatalf("ox-stt spawned %d times, want 1 (the cancelled caller must not run)", n)
+	}
+}
+
+// A full queue refuses new callers at once instead of piling up uploads.
+// Mutation: drop the waiting-count check in Transcribe -> RED (the extra
+// caller waits for the slot instead of getting ErrBusy).
+func TestQueueFullIsBusy(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OXSAY_FAKE_STT_DELAY_MS", "800")
+	opts, log := fakeOpts(t, dir)
+	opts.MaxQueue = 1
+	src := testutil.WriteTinyWAV(t, dir, "in.wav")
+
+	done := make(chan error, 2)
+	go func() { _, err := Transcribe(context.Background(), src, opts); done <- err }()
+	testutil.WaitFor(t, 5*time.Second, func() bool { return len(sttRuns(t, log)) == 1 }, "first run spawned")
+	go func() { _, err := Transcribe(context.Background(), src, opts); done <- err }() // waits: queue 1/1
+	testutil.WaitFor(t, 2*time.Second, func() bool { return waiting.Load() == 1 }, "second caller queued")
+
+	start := time.Now()
+	_, err := Transcribe(context.Background(), src, opts)
+	if !errors.Is(err, ErrBusy) || time.Since(start) > 200*time.Millisecond {
+		t.Fatalf("third caller: err %v after %s, want ErrBusy at once", err, time.Since(start))
+	}
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Hitting Options.Timeout is a TimeoutError, not a bare context error.
+func TestTimeoutIsTyped(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OXSAY_FAKE_STT_DELAY_MS", "2000")
+	opts, _ := fakeOpts(t, dir)
+	opts.Timeout = 300 * time.Millisecond
+	src := testutil.WriteTinyWAV(t, dir, "in.wav")
+	var tErr *TimeoutError
+	if _, err := Transcribe(context.Background(), src, opts); !errors.As(err, &tErr) {
+		t.Fatalf("err = %v, want *TimeoutError", err)
+	}
+}
+
+// convert stops decoding at maxAudio: a small compressed upload must not
+// expand into hours of PCM on disk.
+// Mutation: drop the "-t" argument in convert -> RED.
+func TestConvertCapsDuration(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "long.wav")
+	// 3 s of 16 kHz mono PCM16
+	if out, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+		"-i", "sine=frequency=440:duration=3", "-ar", "16000", "-ac", "1", src).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v %s", err, out)
+	}
+	wav, err := convert(context.Background(), src, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(wav)
+	fi, err := os.Stat(wav)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if max := int64(16000*2*1 + 4096); fi.Size() > max { // 1 s of PCM16 plus the header
+		t.Fatalf("converted %d bytes, want at most %d (1 s)", fi.Size(), max)
+	}
+}
+
+// tailBuffer keeps only the last max bytes.
+func TestTailBuffer(t *testing.T) {
+	b := &tailBuffer{max: 8}
+	_, _ = b.Write([]byte("0123456789"))
+	_, _ = b.Write([]byte("abc"))
+	if got := b.String(); got != "56789abc" {
+		t.Fatalf("tail = %q", got)
 	}
 }
 

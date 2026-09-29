@@ -22,6 +22,8 @@ const (
 	DefaultStartupTimeout = 180
 	DefaultSTTTimeout     = 600
 	DefaultSTTMaxUploadMB = 200
+	DefaultSTTMaxAudio    = 4 * 3600
+	maxSTTUploadMB        = 1 << 20 // keeps MB<<20 far from int64 overflow
 )
 
 // Config is the resolved daemon configuration.
@@ -47,6 +49,7 @@ type Config struct {
 	STTGPU          string        // OX_SAY_STT_GPU: auto | on | off
 	STTTimeout      time.Duration // OX_SAY_STT_TIMEOUT_SECS
 	STTMaxUploadMB  int64         // OX_SAY_STT_MAX_UPLOAD_MB
+	STTMaxAudio     time.Duration // OX_SAY_STT_MAX_AUDIO_SECS: longer audio is cut
 }
 
 // flagNames maps flag names to env var names for ApplyFlags.
@@ -69,6 +72,7 @@ var flagNames = map[string]string{
 	"stt-gpu":           "OX_SAY_STT_GPU",
 	"stt-timeout":       "OX_SAY_STT_TIMEOUT_SECS",
 	"stt-max-upload":    "OX_SAY_STT_MAX_UPLOAD_MB",
+	"stt-max-audio":     "OX_SAY_STT_MAX_AUDIO_SECS",
 }
 
 // RegisterFlags registers one flag per supported env var on fs. Values set on
@@ -162,10 +166,24 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if err != nil {
 		return nil, fmt.Errorf("config: OX_SAY_STT_TIMEOUT_SECS: %w", err)
 	}
+	if sttSecs < 1 {
+		return nil, fmt.Errorf("config: OX_SAY_STT_TIMEOUT_SECS %d: want >= 1", sttSecs)
+	}
 	c.STTTimeout = time.Duration(sttSecs) * time.Second
 	if c.STTMaxUploadMB, err = int64Var(get("OX_SAY_STT_MAX_UPLOAD_MB"), DefaultSTTMaxUploadMB); err != nil {
 		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_UPLOAD_MB: %w", err)
 	}
+	if c.STTMaxUploadMB < 1 || c.STTMaxUploadMB > maxSTTUploadMB {
+		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_UPLOAD_MB %d: want 1..%d", c.STTMaxUploadMB, maxSTTUploadMB)
+	}
+	audioSecs, err := intVar(get("OX_SAY_STT_MAX_AUDIO_SECS"), DefaultSTTMaxAudio)
+	if err != nil {
+		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_AUDIO_SECS: %w", err)
+	}
+	if audioSecs < 1 {
+		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_AUDIO_SECS %d: want >= 1", audioSecs)
+	}
+	c.STTMaxAudio = time.Duration(audioSecs) * time.Second
 
 	c.Host, c.Port, err = splitLoopbackAddr(c.Addr)
 	if err != nil {

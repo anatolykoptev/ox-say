@@ -259,6 +259,12 @@ func TestTranscribeFormats(t *testing.T) {
 	if len(vj.Segments) != 1 || vj.Segments[0].Start != 0.0 || vj.Segments[0].End != 1.5 {
 		t.Fatalf("verbose_json segments: %s", body)
 	}
+	// OpenAI's segment fields exist (clients read avg_logprob, no_speech_prob)
+	for _, key := range []string{`"seek":`, `"tokens":[]`, `"temperature":`, `"avg_logprob":`, `"compression_ratio":`, `"no_speech_prob":`} {
+		if !strings.Contains(string(body), key) {
+			t.Fatalf("verbose_json segment lacks %s: %s", key, body)
+		}
+	}
 	if len(vj.Words) != 2 || vj.Words[1].Word != "world." || vj.Words[1].Start != 0.9 || vj.Words[1].End != 1.5 {
 		t.Fatalf("verbose_json words: %s", body)
 	}
@@ -376,5 +382,62 @@ func TestTranscribeTool(t *testing.T) {
 		AudioPath: src, OutPath: filepath.Join(dir, "result.txt"),
 	}); err == nil {
 		t.Fatal("out_path accepted a non-.json extension")
+	}
+}
+
+// The upload cap: a file part one byte over it is a 413 and leaves no temp
+// file behind; a part at the cap goes through.
+// Mutation: drop `n > maxUp ||` from the size check in handleTranscribe
+// (internal/daemon/transcribe.go) -> RED (status 200).
+func TestTranscribeUploadCap(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	tmpdir := filepath.Join(dir, "tmp")
+	if err := os.Mkdir(tmpdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmpdir)
+	d := newTestDaemon(t, dir, nil)
+	sttSetup(t, d, dir)
+	d.Cfg.STTMaxUploadMB = 1
+	srv := transcriptionServer(t, d)
+
+	over := append(testutil.TinyWAV(), make([]byte, 1<<20+1-len(testutil.TinyWAV()))...)
+	resp := postTranscription(t, srv.URL+"/v1/audio/transcriptions", over, nil)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("1 MB + 1 byte: status %d, want 413", resp.StatusCode)
+	}
+	left, _ := filepath.Glob(filepath.Join(tmpdir, "ox-say-*"))
+	if len(left) != 0 {
+		t.Fatalf("temp files left: %v", left)
+	}
+}
+
+// stt errors map to distinct statuses: a timeout is 504, a missing model 503.
+// Mutation: map *stt.TimeoutError to 500 in transcribeStatus -> RED.
+func TestTranscribeErrorStatuses(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+	sttSetup(t, d, dir)
+	srv := transcriptionServer(t, d)
+	url := srv.URL + "/v1/audio/transcriptions"
+
+	t.Setenv("OXSAY_FAKE_STT_DELAY_MS", "2000")
+	d.Cfg.STTTimeout = 300 * time.Millisecond
+	resp := postTranscription(t, url, testutil.TinyWAV(), nil)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("timeout: status %d, want 504", resp.StatusCode)
+	}
+
+	t.Setenv("OXSAY_FAKE_STT_DELAY_MS", "0")
+	d.Cfg.STTTimeout = 30 * time.Second
+	d.Cfg.STTModel = filepath.Join(dir, "missing.bin")
+	resp = postTranscription(t, url, testutil.TinyWAV(), nil)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("missing model: status %d, want 503", resp.StatusCode)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/stt"
@@ -38,6 +39,7 @@ func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Resul
 		WhisperModel: d.Cfg.STTWhisperModel,
 		GPU:          d.Cfg.STTGPU,
 		Timeout:      d.Cfg.STTTimeout,
+		MaxAudio:     d.Cfg.STTMaxAudio,
 		EngineBusy: func() bool {
 			s := d.Sup.State()
 			return s == engine.StateStarting || s == engine.StateReady
@@ -48,8 +50,15 @@ func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Resul
 // handleTranscribe is OpenAI-compatible /v1/audio/transcriptions. The
 // multipart body is streamed: the "file" part goes to a temp file under the
 // size cap and is removed when the request ends, success or failure.
+// transcribeFields are the multipart fields the route reads; anything else is
+// ignored unread beyond its first 4 KB.
+var transcribeFields = map[string]bool{"model": true, "language": true, "prompt": true, "response_format": true}
+
 func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	maxUp := d.Cfg.STTMaxUploadMB << 20
+	// The server's 30 s read timeout covers the whole body; a large upload from
+	// slow storage needs longer. The size cap still bounds it.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(d.Cfg.STTTimeout))
 	r.Body = http.MaxBytesReader(w, r.Body, maxUp+(1<<20))
 	mr, err := r.MultipartReader()
 	if err != nil {
@@ -90,18 +99,25 @@ func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 			n, err := io.Copy(f, io.LimitReader(part, maxUp+1))
 			_ = f.Close()
 			tmp = f.Name()
-			if err != nil || n > maxUp {
+			var mbErr *http.MaxBytesError
+			if n > maxUp || errors.As(err, &mbErr) {
 				writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("upload exceeds %d MB", d.Cfg.STTMaxUploadMB))
+				return
+			}
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, fmt.Sprintf("upload failed: %v", err))
 				return
 			}
 			continue
 		}
-		v, err := io.ReadAll(io.LimitReader(part, 1<<20))
+		v, err := io.ReadAll(io.LimitReader(part, 4<<10))
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "invalid multipart body")
 			return
 		}
-		fields[part.FormName()] = string(v)
+		if transcribeFields[part.FormName()] {
+			fields[part.FormName()] = string(v)
+		}
 	}
 	if tmp == "" {
 		writeErr(w, http.StatusBadRequest, `"file" is required`)
@@ -135,16 +151,7 @@ func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		Prompt:    fields["prompt"],
 	})
 	if err != nil {
-		var iErr *stt.InputError
-		var eErr *stt.EngineError
-		switch {
-		case errors.As(err, &iErr):
-			writeErr(w, http.StatusBadRequest, err.Error())
-		case errors.As(err, &eErr):
-			writeErr(w, http.StatusInternalServerError, err.Error())
-		default:
-			writeErr(w, http.StatusInternalServerError, err.Error())
-		}
+		writeErr(w, transcribeStatus(err), err.Error())
 		return
 	}
 
@@ -156,7 +163,7 @@ func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, toSRT(res.Segments))
 	case "vtt":
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
 		_, _ = io.WriteString(w, toVTT(res.Segments))
 	case "verbose_json":
 		writeJSON(w, http.StatusOK, toOpenAIVerbose(res))
@@ -168,8 +175,28 @@ func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// transcribeStatus maps an stt error to an HTTP status.
+func transcribeStatus(err error) int {
+	var iErr *stt.InputError
+	var tErr *stt.TimeoutError
+	var mErr *stt.ModelError
+	switch {
+	case errors.As(err, &iErr):
+		return http.StatusBadRequest
+	case errors.As(err, &tErr):
+		return http.StatusGatewayTimeout
+	case errors.As(err, &mErr), errors.Is(err, stt.ErrBusy):
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 // openAIVerbose is OpenAI's verbose_json transcription shape, which OpenAI
-// clients parse; words are always included.
+// clients parse; words are always included. Fields the engines do not produce
+// (tokens, compression_ratio, no_speech_prob) carry neutral values;
+// avg_logprob is the mean log probability of the segment's words. language is
+// the engine's code ("" for parakeet), not OpenAI's full name.
 type openAIVerbose struct {
 	Task     string          `json:"task"`
 	Language string          `json:"language"`
@@ -180,10 +207,16 @@ type openAIVerbose struct {
 }
 
 type openAISegment struct {
-	ID    int     `json:"id"`
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
-	Text  string  `json:"text"`
+	ID               int     `json:"id"`
+	Seek             int     `json:"seek"`
+	Start            float64 `json:"start"`
+	End              float64 `json:"end"`
+	Text             string  `json:"text"`
+	Tokens           []int   `json:"tokens"`
+	Temperature      float64 `json:"temperature"`
+	AvgLogprob       float64 `json:"avg_logprob"`
+	CompressionRatio float64 `json:"compression_ratio"`
+	NoSpeechProb     float64 `json:"no_speech_prob"`
 }
 
 type openAIWord struct {
@@ -204,12 +237,30 @@ func toOpenAIVerbose(res *stt.Result) openAIVerbose {
 		v.Language = *res.Language
 	}
 	for i, s := range res.Segments {
-		v.Segments = append(v.Segments, openAISegment{ID: i, Start: s.S, End: s.E, Text: s.Text})
+		v.Segments = append(v.Segments, openAISegment{
+			ID: i, Start: s.S, End: s.E, Text: s.Text,
+			Tokens: []int{}, AvgLogprob: avgLogprob(res.Words, s.S, s.E),
+		})
 	}
 	for _, w := range res.Words {
 		v.Words = append(v.Words, openAIWord{Word: w.W, Start: w.S, End: w.E})
 	}
 	return v
+}
+
+// avgLogprob is the mean ln(p) of the words that start inside [s, e).
+func avgLogprob(words []stt.Word, s, e float64) float64 {
+	sum, n := 0.0, 0
+	for _, w := range words {
+		if w.S >= s && w.S < e && w.P > 0 {
+			sum += math.Log(w.P)
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return sum / float64(n)
 }
 
 // srtStamp renders seconds as HH:MM:SS,mmm.
@@ -292,7 +343,8 @@ func (d *Daemon) toolTranscribe(ctx context.Context, _ *mcp.CallToolRequest, in 
 			return nil, transcribeToolOut{}, err
 		}
 		if err := writeFile(in.OutPath, raw, false); err != nil {
-			return nil, transcribeToolOut{}, err
+			// the transcription itself succeeded: do not lose it
+			return nil, transcribeToolOut{}, fmt.Errorf("transcript not saved to %s (%v); text: %s", in.OutPath, err, res.Text)
 		}
 	}
 	out := transcribeToolOut{

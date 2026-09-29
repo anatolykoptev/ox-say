@@ -109,3 +109,22 @@ func TestFlagOverridesEnv(t *testing.T) {
 		t.Fatalf("flag override lost: idle = %v", c.IdleStop)
 	}
 }
+
+// STT bounds: a zero or negative timeout, audio cap or upload cap, and an
+// upload cap that would overflow MB<<20, are refused at load.
+func TestLoadSTTBounds(t *testing.T) {
+	for _, kv := range [][2]string{
+		{"OX_SAY_STT_TIMEOUT_SECS", "0"},
+		{"OX_SAY_STT_TIMEOUT_SECS", "-5"},
+		{"OX_SAY_STT_MAX_UPLOAD_MB", "0"},
+		{"OX_SAY_STT_MAX_UPLOAD_MB", "9000000000000"},
+		{"OX_SAY_STT_MAX_AUDIO_SECS", "0"},
+	} {
+		t.Run(kv[0]+"="+kv[1], func(t *testing.T) {
+			t.Setenv(kv[0], kv[1])
+			if _, err := Load(nil); err == nil {
+				t.Fatalf("%s=%s accepted", kv[0], kv[1])
+			}
+		})
+	}
+}
