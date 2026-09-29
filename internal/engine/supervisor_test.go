@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -207,6 +209,111 @@ func TestFailedStartReturnsError(t *testing.T) {
 	}
 }
 
+// Every caller that waited on a failed start generation gets its error —
+// not just the one that happened to re-acquire the lock first — and a
+// failed attempt is not re-launched per waiter.
+func TestFailedStartNotifiesAllWaiters(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	sup := newTestSupervisor(t, dir, func(c *Config) {
+		c.Bin = "/bin/false"
+		c.StartupTimeout = 3 * time.Second
+	})
+
+	const n = 5
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = sup.EnsureReady(context.Background())
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err == nil {
+			t.Fatalf("waiter %d got no error from a failed start", i)
+		}
+		if !strings.Contains(err.Error(), "start failed") {
+			t.Fatalf("waiter %d error = %v, want a start-failed report", i, err)
+		}
+	}
+	if got := sup.Status().Starts; got != 1 {
+		t.Fatalf("starts = %d, want 1 (waiters share one attempt)", got)
+	}
+}
+
+// A child that exits after /health succeeded — during the Replay step —
+// must NOT be committed Ready: onExit may already have reaped it, so the
+// start attempt counts as failed. And the supervisor must not wedge: the
+// next EnsureReady starts a fresh child.
+// Mutation: drop the s.child==c / c.done re-check in finishStart -> RED
+// (Ready is committed on a dead child and EnsureReady returns a URL).
+func TestExitAfterHealthFailsStart(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	var pidPath string
+	var killOnce sync.Once
+	var sup *Supervisor
+	sup = newTestSupervisor(t, dir, func(c *Config) {
+		pidPath = c.PidPath
+		c.Replay = func(context.Context, string) error {
+			// The first child dies right after /health passed; later
+			// generations are left alone.
+			killOnce.Do(func() {
+				data, err := os.ReadFile(pidPath)
+				if err != nil {
+					return
+				}
+				pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+				if err != nil {
+					return
+				}
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			})
+			// Replay returns only once the waiter has reaped the child —
+			// the point of the test is the deterministic ordering:
+			// finishStart must see the death instead of committing Ready.
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				sup.mu.Lock()
+				gone := sup.child == nil
+				sup.mu.Unlock()
+				if gone {
+					return nil
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			return fmt.Errorf("child still registered after kill")
+		}
+	})
+
+	if _, err := sup.EnsureReady(context.Background()); err == nil {
+		t.Fatal("EnsureReady returned success although the child died after /health")
+	}
+	if st := sup.State(); st != StateStopped {
+		t.Fatalf("state = %s, want stopped", st)
+	}
+
+	// Not wedged: the next EnsureReady waits out the backoff and respawns.
+	base, err := sup.EnsureReady(context.Background())
+	if err != nil {
+		t.Fatalf("restart after post-health exit: %v", err)
+	}
+	resp, err := http.Get(base + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if sup.State() != StateReady {
+		t.Fatalf("state = %s, want ready", sup.State())
+	}
+	if got := testutil.SpawnStamps(t, dir); got != 2 {
+		t.Fatalf("spawn stamps = %d, want 2", got)
+	}
+}
+
 // Shutdown racing an in-flight start must not leave the just-spawned child
 // running: it would hold the engine port (and, on the real engine, ~2 GB of
 // GPU). Probe: after Shutdown returns, the child's port is bindable again.
@@ -238,6 +345,53 @@ func TestShutdownDuringStartupKillsChild(t *testing.T) {
 		_ = ln.Close()
 		return true
 	}, "engine port freed after shutdown")
+}
+
+// Shutdown landing after /health — while run() sits in the Replay step —
+// must still kill the child and must be reported as a shutdown, not a
+// crash. Mutation: drop the s.dead check in finishStart -> RED (last
+// error reports an unexpected exit instead of a shutdown).
+func TestShutdownDuringReplayKillsChild(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	replayEntered := make(chan struct{})
+	releaseReplay := make(chan struct{})
+	var port int
+	sup := newTestSupervisor(t, dir, func(c *Config) {
+		port = c.Port
+		c.Replay = func(context.Context, string) error {
+			close(replayEntered)
+			<-releaseReplay // run() waits here while Shutdown lands
+			return nil
+		}
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := sup.EnsureReady(context.Background())
+		done <- err
+	}()
+	<-replayEntered // engine is past /health, inside Replay
+	sup.Shutdown()  // kills the child, waits for its exit, returns
+	close(releaseReplay)
+	if err := <-done; err == nil {
+		t.Fatal("EnsureReady succeeded despite shutdown")
+	}
+	// EnsureReady may return on the dead broadcast before run()'s
+	// finishStart records the outcome — wait for the start to settle.
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		return sup.State() == StateStopped
+	}, "shutdown-aborted start to settle")
+	if lastErr := sup.Status().LastErr; !strings.Contains(lastErr, "shut down") {
+		t.Fatalf("last error = %q, want a shutdown report", lastErr)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+		if err != nil {
+			return false
+		}
+		_ = ln.Close()
+		return true
+	}, "engine port freed after shutdown-during-replay")
 }
 
 // Orphan reap: a live pidfile process whose exe is the configured binary is

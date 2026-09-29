@@ -89,7 +89,9 @@ type Supervisor struct {
 	dead         bool // Shutdown called
 	child        *child
 	lastErr      error
-	attemptErr   error // concluded start-attempt error, consumed once by the next starter-path caller
+	startGen     int   // incremented for every start attempt launched
+	attemptErr   error // concluded start-attempt error…
+	attemptGen   int   // …belonging to this start generation; delivered to every waiter of it, never to a later request
 	starts       int
 	restarts     int
 	failCount    int // consecutive crash/start failures (drives backoff)
@@ -177,6 +179,7 @@ func (s *Supervisor) broadcastLocked() {
 // wait for its outcome. After an unexpected exit the next EnsureReady waits
 // out a backoff (1s doubling to 30s) before respawning.
 func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
+	var waitGen int // the last in-flight start generation this caller joined
 	for {
 		s.mu.Lock()
 		switch {
@@ -202,6 +205,7 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 		case s.state == StateStarting || s.child != nil:
 			// Start in flight, or a previous child is still tearing down —
 			// wait for the next transition.
+			waitGen = s.startGen
 			ch := s.change
 			s.mu.Unlock()
 			select {
@@ -210,12 +214,12 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 				return "", ctx.Err()
 			}
 		default: // stopped or crashed, no live child — eligible to start
-			// A concluded failed attempt is reported to exactly one caller
-			// (consumed here; HTTP maps it to 503); the next call retries
-			// after the recorded backoff.
-			if s.attemptErr != nil {
+			// A concluded failed attempt is reported to every caller that
+			// waited on that generation (HTTP maps it to 503); a caller
+			// that never joined it retries after the recorded backoff
+			// instead of consuming the error.
+			if s.attemptErr != nil && s.attemptGen == waitGen {
 				err := s.attemptErr
-				s.attemptErr = nil
 				s.mu.Unlock()
 				return "", fmt.Errorf("engine: start failed: %w", err)
 			}
@@ -233,9 +237,14 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 				}
 				continue
 			}
-			if s.state == StateCrashed {
+			if s.state == StateCrashed || s.attemptErr != nil {
+				// A respawn after a crash OR after a failed start counts
+				// as a restart.
 				s.restarts++
 			}
+			s.startGen++
+			waitGen = s.startGen
+			s.attemptErr = nil
 			s.state = StateStarting
 			s.lastErr = nil
 			s.broadcastLocked()
@@ -290,6 +299,19 @@ func (s *Supervisor) ReadyURL() (string, bool) {
 	return "", false
 }
 
+// LiveURL returns the base URL of the spawned child while it is alive —
+// starting or ready — and false when no child exists. The child answers its
+// API once past the health gate, so daemon code may register work into a
+// still-starting engine.
+func (s *Supervisor) LiveURL() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.child != nil {
+		return s.child.baseURL, true
+	}
+	return "", false
+}
+
 // Guard marks an in-flight engine user; the idle loop never stops the child
 // while a guard is alive. Release is idempotent.
 type Guard struct {
@@ -332,9 +354,16 @@ func (s *Supervisor) Shutdown() {
 	if c != nil {
 		s.killChild(c)
 	}
-	// Wait for the waiter goroutine to publish the exit so State() settles.
+	// Wait briefly for the waiter goroutine to publish the exit so State()
+	// settles — bounded: an uninterruptible child (killChild already logged
+	// it and gave up) must not hang shutdown forever.
 	if c != nil {
-		<-c.done
+		select {
+		case <-c.done:
+		case <-time.After(s.cfg.KillGrace):
+			s.log.Error("engine exit not observed during shutdown",
+				slog.Int("pid", c.cmd.Process.Pid))
+		}
 	}
 }
 
@@ -356,22 +385,12 @@ func (s *Supervisor) run() {
 			s.log.Warn("voice replay failed", slog.Any("error", rerr))
 		}
 	}
-	s.mu.Lock()
-	shuttingDown := s.dead
-	s.mu.Unlock()
-	if err == nil && shuttingDown {
-		// Shutdown raced this start — do not commit Ready on a dead
-		// supervisor and leave the GPU-holding child behind.
-		err = ErrShutdown
+	if err != nil && c != nil {
+		s.killChild(c)
 	}
-	if err != nil {
-		if c != nil {
-			s.killChild(c)
-		}
-		s.finishStart(c, err)
-		return
-	}
-	s.finishStart(c, nil)
+	// finishStart re-validates ownership under s.mu: a child that died or a
+	// Shutdown that landed mid-start turns the attempt into a failed start.
+	s.finishStart(c, err)
 }
 
 // spawn starts the child and installs the waiter goroutine.
@@ -425,17 +444,26 @@ func (s *Supervisor) waiter(c *child) {
 	s.onExit(c)
 }
 
-// onExit transitions on child exit: daemon-requested → stopped, otherwise →
-// crashed with restart backoff.
+// onExit reaps the child pointer and transitions on child exit: while a
+// start attempt is in flight (state == StateStarting) run() owns the
+// classification — onExit only clears s.child so finishStart can see the
+// death — otherwise daemon-requested → stopped, unexpected → crashed with
+// restart backoff.
 func (s *Supervisor) onExit(c *child) {
 	var crashErr error
 	var retryIn time.Duration
 	s.mu.Lock()
 	if s.child == c {
 		s.child = nil
-		if c.userStop {
+		switch {
+		case s.state == StateStarting:
+			// finishStart re-checks s.child == c / c.done under this same
+			// lock and fails the attempt; classifying here too would let
+			// one death be counted twice (and race a Ready commit onto a
+			// dead child).
+		case c.userStop:
 			s.state = StateStopped
-		} else {
+		default:
 			if !c.readyAt.IsZero() && time.Since(c.readyAt) > readyResetAfter {
 				s.failCount = 0
 			}
@@ -463,23 +491,38 @@ func (s *Supervisor) backoffLocked() time.Duration {
 	return min(d, 30*time.Second)
 }
 
-// finishStart commits the outcome of run().
+// finishStart commits the outcome of run(). Ready is committed only while
+// this attempt still owns s.child and the child is alive: onExit may have
+// reaped a child that exited during startup, and Shutdown may have raced
+// the whole attempt.
 func (s *Supervisor) finishStart(c *child, err error) {
-	if err == nil && c != nil {
-		select {
-		case <-c.done:
-			err = fmt.Errorf("engine exited during startup: %w", c.waitErr)
-		default:
-		}
-	}
 	var retryIn time.Duration
 	s.mu.Lock()
+	if err == nil && c != nil {
+		switch {
+		case s.dead:
+			err = ErrShutdown
+		case s.child != c:
+			// onExit already reaped this child — it exited during startup.
+			err = fmt.Errorf("engine exited during startup: %w", c.waitErr)
+		default:
+			select {
+			case <-c.done:
+				// The waiter has not run onExit yet; drop the child here
+				// so onExit stays a no-op when it arrives.
+				s.child = nil
+				err = fmt.Errorf("engine exited during startup: %w", c.waitErr)
+			default:
+			}
+		}
+	}
 	if err != nil {
 		if c != nil && s.child == c {
 			s.child = nil
 		}
 		s.lastErr = err
 		s.attemptErr = err
+		s.attemptGen = s.startGen // still this run's gen: no new attempt can launch while state is Starting
 		if s.state != StateCrashed {
 			// onExit may already have classified this child as crashed and
 			// charged the backoff — never count one death twice.
@@ -491,6 +534,8 @@ func (s *Supervisor) finishStart(c *child, err error) {
 	} else {
 		c.readyAt = time.Now()
 		s.lastActivity = c.readyAt
+		s.attemptErr = nil
+		s.failCount = 0 // a successful Ready commit clears crash/start backoff
 		s.state = StateReady
 	}
 	s.broadcastLocked()
@@ -551,6 +596,7 @@ func (s *Supervisor) idleLoop() {
 		c := s.child
 		c.userStop = true
 		s.state = StateStopped
+		s.failCount = 0 // a clean idle stop clears crash/start backoff
 		s.broadcastLocked()
 		s.mu.Unlock()
 		s.log.Info("engine idle, stopping", slog.Duration("idle_stop", s.cfg.IdleStop))
@@ -656,10 +702,9 @@ func (s *Supervisor) reapOrphan() {
 	if resolved, err := filepath.EvalSymlinks(want); err == nil {
 		want = resolved
 	}
-	// ps comm on macOS may report a bare command name; the basename compare
-	// still refuses to kill a same-pid unrelated binary.
-	if exe != want && filepath.Base(exe) != filepath.Base(want) {
-		// The pid was reused by an unrelated process — never kill it.
+	// Only an exact exec-path match counts: a reused pid that merely shares
+	// the binary's name must never be killed.
+	if exe != want {
 		return
 	}
 	s.log.Info("killing orphaned engine", slog.Int("pid", pid))

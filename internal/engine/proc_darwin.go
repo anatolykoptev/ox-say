@@ -3,17 +3,28 @@
 package engine
 
 import (
-	"os/exec"
-	"strconv"
-	"strings"
+	"bytes"
+	"fmt"
+
+	"golang.org/x/sys/unix"
 )
 
-// processExe returns the executable path of a live process. On macOS
-// `ps -o comm=` prints the full path the process was exec'd with.
+// processExe returns the real executable path of a live process via the
+// KERN_PROCARGS2 sysctl: the buffer starts with an int32 argc, then the
+// exec path NUL-terminated, then argv/env strings. `ps -o comm=` would only
+// report argv[0], which a process can lie about — and a wrong answer here
+// SIGKILLs an innocent process that reused the pid.
 func processExe(pid int) (string, error) {
-	out, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
+	buf, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("kern.procargs2 %d: %w", pid, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	if len(buf) <= 4 {
+		return "", fmt.Errorf("kern.procargs2 %d: short buffer", pid)
+	}
+	rest := buf[4:] // skip int32 argc
+	if i := bytes.IndexByte(rest, 0); i > 0 {
+		return string(rest[:i]), nil
+	}
+	return "", fmt.Errorf("kern.procargs2 %d: no exec path", pid)
 }
