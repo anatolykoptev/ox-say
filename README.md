@@ -87,13 +87,22 @@ scripts/install.sh      # engines + models + ox-say + LaunchAgent, then waits fo
 claude mcp add --transport http --scope user ox-say http://127.0.0.1:8094/mcp
 ```
 
-It installs `ox-say` into `~/.local/bin` (`OX_SAY_BINDIR` overrides), the engines
-and models into `~/Library/Application Support/ox-say`, logs into
-`~/Library/Logs/ox-say`, and the LaunchAgent `io.github.anatolykoptev.ox-say`,
-which keeps `ox-say serve` running. `OX_SAY_WITH_WHISPER=1 scripts/install.sh`
-also fetches Whisper large-v3-turbo. Re-running it upgrades in place;
-`scripts/uninstall.sh` removes the agent and the binary and keeps models and
-voices (`--purge` removes those too).
+It installs `ox-say` into `~/.local/bin` (`OX_SAY_BINDIR` overrides; keep it on
+your `PATH` for the CLI), the engines and models into
+`~/Library/Application Support/ox-say`, logs into `~/Library/Logs/ox-say`, and
+the LaunchAgent `io.github.anatolykoptev.ox-say`, which keeps `ox-say serve`
+running. `OX_SAY_WITH_WHISPER=1 scripts/install.sh` also fetches Whisper
+large-v3-turbo.
+
+launchd does not read your shell environment: set any `OX_SAY_*` configuration
+(see below) when you run the installer, e.g.
+`OX_SAY_IDLE_STOP_SECS=600 scripts/install.sh`, and it is written into the
+LaunchAgent. Re-running the installer upgrades in place and rewrites the agent
+from the variables set at that time.
+
+`scripts/uninstall.sh` removes the agent and the binary and keeps engines,
+models and voices; `--purge` removes those too. Undo the MCP registration with
+`claude mcp remove --scope user ox-say`.
 
 ## Build and install the engine
 
