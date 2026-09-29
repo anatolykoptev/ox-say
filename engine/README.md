@@ -20,6 +20,16 @@ memory and without simdgroup matrix multiply (Intel Macs with AMD GPUs):
   without simdgroup matrix multiply, plus mat-vec and flash-attention
   routing that stays within what these devices compute correctly.
 
+## patches/qwentts/0002-tts-server-local-only.patch
+
+Upstream `tts-server` answers every origin (`Access-Control-Allow-Origin: *`),
+so while it runs any web page can synthesize speech in a cloned voice, read
+the audio and register voices. Here the ox-say daemon is its only client:
+the CORS headers are gone and POST bodies must be JSON (no cross-site simple
+request). When bound to loopback, which is how ox-say always starts it, the
+Host must be a loopback literal or `localhost` (DNS rebinding). A non-loopback
+bind (LAN use) gets no Host check, so there a rebinding page is same-origin.
+
 ## patches/qwentts/0001-fused-qkv-gateup-and-threads-env.patch
 
 - Fuses the Q/K/V and gate/up projections into single matmuls at load time.

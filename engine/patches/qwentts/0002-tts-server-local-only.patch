@@ -1,0 +1,100 @@
+diff --git a/src/tts-server.h b/src/tts-server.h
+index ca5bd8c..7233c89 100644
+--- a/src/tts-server.h
++++ b/src/tts-server.h
+@@ -23,10 +23,14 @@
+ // default so streaming is on unless the client asks for a file.
+ 
+ #include "../vendor/cpp-httplib/httplib.h"
++#ifndef _WIN32
++#include <arpa/inet.h>
++#endif
+ #include "audio-io.h"
+ #include "qt-error.h"
+ #include "yyjson.h"
+ 
++#include <algorithm>
+ #include <atomic>
+ #include <cctype>
+ #include <cfloat>
+@@ -35,6 +39,7 @@
+ #include <csignal>
+ #include <cstdint>
+ #include <cstdio>
++#include <cstring>
+ #include <functional>
+ #include <memory>
+ #include <mutex>
+@@ -580,6 +585,38 @@ static void tts_handle_health(const httplib::Request &, httplib::Response & res)
+     res.set_content("{\"status\":\"ok\"}", "application/json");
+ }
+ 
++// "host:port", "[v6]:port" or "host" -> the host without port or brackets
++static std::string tts_host_without_port(const std::string & h) {
++    if (!h.empty() && h[0] == '[') {
++        const size_t e = h.find(']');
++        return e == std::string::npos ? h : h.substr(1, e - 1);
++    }
++    const size_t c = h.find(':');
++    if (c != std::string::npos && h.find(':', c + 1) == std::string::npos) {
++        return h.substr(0, c);  // one colon: a name or an IPv4 address with a port
++    }
++    return h;  // no port, or a bare IPv6 literal
++}
++
++// localhost, 127.0.0.0/8 or ::1 (strict literals via inet_pton)
++static bool tts_is_loopback_host(const std::string & h) {
++    std::string s = h;
++    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char ch) { return (char) std::tolower(ch); });
++    if (s == "localhost") {
++        return true;
++    }
++    unsigned char v4[4];
++    if (inet_pton(AF_INET, s.c_str(), v4) == 1) {
++        return v4[0] == 127;
++    }
++    unsigned char v6[16];
++    if (inet_pton(AF_INET6, s.c_str(), v6) == 1) {
++        static const unsigned char loop6[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
++        return memcmp(v6, loop6, sizeof(loop6)) == 0;
++    }
++    return false;
++}
++
+ static int tts_server_run(const tts_backend & be, const server_config & cfg) {
+     httplib::Server svr;
+     g_svr = &svr;
+@@ -611,13 +648,26 @@ static int tts_server_run(const tts_backend & be, const server_config & cfg) {
+ #endif
+     });
+ 
+-    // permissive CORS so a browser client can call the API directly.
+-    svr.set_default_headers({
+-        { "Access-Control-Allow-Origin", "*" }
+-    });
+-    svr.Options("/.*", [](const httplib::Request &, httplib::Response & res) {
+-        res.set_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+-        res.set_header("Access-Control-Allow-Headers", "Content-Type");
++    // Local-only: a supervising process is the one client. No CORS headers, so a web page cannot read
++    // responses; POST bodies must be JSON, so a cross-site "simple" request (text/plain, form data) is
++    // refused. On a loopback bind the Host header must name loopback too (DNS rebinding); a non-loopback
++    // bind (LAN use) gets no Host check, so a rebinding page is same-origin there.
++    const bool loopback_bind = tts_is_loopback_host(cfg.host);
++    svr.set_pre_routing_handler([loopback_bind](const httplib::Request & req, httplib::Response & res) {
++        if (loopback_bind && !tts_is_loopback_host(tts_host_without_port(req.get_header_value("Host")))) {
++            res.status = 403;
++            res.set_content("{\"error\":{\"message\":\"host not allowed\",\"type\":\"forbidden\"}}", "application/json");
++            return httplib::Server::HandlerResponse::Handled;
++        }
++        std::string ctype = req.get_header_value("Content-Type");
++        std::transform(ctype.begin(), ctype.end(), ctype.begin(), [](unsigned char ch) { return (char) std::tolower(ch); });
++        if (req.method == "POST" && ctype.rfind("application/json", 0) != 0) {
++            res.status = 415;
++            res.set_content("{\"error\":{\"message\":\"Content-Type must be application/json\",\"type\":\"unsupported_media_type\"}}",
++                            "application/json");
++            return httplib::Server::HandlerResponse::Handled;
++        }
++        return httplib::Server::HandlerResponse::Unhandled;
+     });
+ 
+     svr.Post("/v1/audio/speech",
