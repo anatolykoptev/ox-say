@@ -1,0 +1,3 @@
+build/
+*.part
+.DS_Store
