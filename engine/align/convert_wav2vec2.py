@@ -24,6 +24,7 @@ off by 7.6. Newer checkpoints store the pair as
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -44,6 +45,31 @@ def read_json(model_dir: str, name: str):
         return json.load(f)
 
 
+def sha256_of(*paths: str) -> str:
+    h = hashlib.sha256()
+    for p in paths:
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    return h.hexdigest()
+
+
+def st_header(path: str):
+    """The safetensors JSON header + offset of the data section."""
+    with open(path, "rb") as f:
+        hlen = int.from_bytes(f.read(8), "little")
+        return json.loads(f.read(hlen)), 8 + hlen
+
+
+def read_bf16(path: str, info, data_off: int) -> np.ndarray:
+    """bf16 is the top 16 bits of f32: read raw and shift."""
+    with open(path, "rb") as f:
+        f.seek(data_off + info["data_offsets"][0])
+        raw = f.read(info["data_offsets"][1] - info["data_offsets"][0])
+    u = np.frombuffer(raw, dtype="<u2").astype(np.uint32) << 16
+    return u.view(np.float32).reshape(info["shape"])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="convert HF Wav2Vec2ForCTC to GGUF")
     ap.add_argument("model_dir")
@@ -54,16 +80,38 @@ def main() -> int:
     config = read_json(args.model_dir, "config.json")
     if config is None:
         sys.exit(f"{args.model_dir}: no config.json")
+    if config.get("model_type") != "wav2vec2":
+        sys.exit(f"unsupported model_type: {config.get('model_type')!r} "
+                 "(need wav2vec2)")
     prep = read_json(args.model_dir, "preprocessor_config.json") or \
         read_json(args.model_dir, "feature_extractor_config.json") or {}
     st_path = os.path.join(args.model_dir, "model.safetensors")
     if not os.path.exists(st_path):
         sys.exit(f"{args.model_dir}: no model.safetensors")
 
+    cfg_path = os.path.join(args.model_dir, "config.json")
+    header, data_off = st_header(st_path)
     tensors = {}
     with safe_open(st_path, framework="np") as f:
         for name in f.keys():
-            tensors[name] = f.get_tensor(name)
+            dt = header[name]["dtype"]
+            if dt == "BF16":
+                # the numpy framework cannot read bf16 — shift the raw bits
+                tensors[name] = read_bf16(st_path, header[name], data_off)
+                continue
+            t = f.get_tensor(name)
+            if t.dtype != np.float32:
+                # fp16/fp64 etc. convert cleanly; non-float dtypes are refused
+                if not np.issubdtype(t.dtype, np.floating):
+                    sys.exit(f"{name}: unsupported dtype {t.dtype}")
+                t = t.astype(np.float32)
+            tensors[name] = t
+
+    lm = tensors.get("lm_head.weight")
+    vs = config.get("vocab_size")
+    if lm is None or lm.ndim != 2 or vs is None or lm.shape[0] != vs:
+        sys.exit("vocab_size does not match lm_head.weight rows: "
+                 f"{vs} vs {None if lm is None else lm.shape}")
 
     # --- positional conv: materialize weight_norm (see module docstring) ---
     base = "wav2vec2.encoder.pos_conv_embed.conv."
@@ -107,7 +155,7 @@ def main() -> int:
 
     writer.add_string(KEY + "feat_extract_norm", config["feat_extract_norm"])
     writer.add_bool(KEY + "do_stable_layer_norm",
-                    bool(config["do_stable_layer_norm"]))
+                    bool(config.get("do_stable_layer_norm", False)))
     writer.add_bool(KEY + "do_normalize", bool(prep.get("do_normalize", True)))
     writer.add_bool(KEY + "conv_bias", bool(config.get("conv_bias", False)))
     writer.add_float32(KEY + "layer_norm_eps",
@@ -128,6 +176,10 @@ def main() -> int:
                       config["num_conv_pos_embeddings"])
     writer.add_uint32(KEY + "num_conv_pos_embedding_groups",
                       config["num_conv_pos_embedding_groups"])
+    # provenance: ox-align --info surfaces this, and test_oracle.py uses it to
+    # prove a cached HF reference still matches the checkpoint under test
+    writer.add_string("ox_align.source_sha256",
+                      sha256_of(cfg_path, st_path))
     vocab = read_json(args.model_dir, "vocab.json")
     if vocab is None:
         print("warning: no vocab.json; --vocab output will be unavailable",
