@@ -93,21 +93,35 @@ ox-align -m model.gguf -f audio.wav -o emissions.npy \
 ox-align -m model.gguf --info
 ```
 
-`--window`/`--context` must be whole numbers of 20 ms frames (window <=
-600 s, context <= 10 s). Per window the input is zero-mean/unit-variance
-normalized when the checkpoint's `do_normalize` says so; `--no-normalize`
-feeds raw samples instead, matching the production aligner, which passes
-unnormalized audio (the ONNX export it runs does not normalize internally
-either — a x10 input gain changes 5% of frame argmaxes there). `--info`
-prints the hyperparameters and the checkpoint's `ox_align.source_sha256`
-provenance hash as JSON without reading audio. `--dump-dir DIR` writes the
-named stage activations of the first window as `.npy` files for debugging;
-it is a flag, not an env var, so it cannot be inherited by accident.
+`--window`/`--context` must be positive whole numbers of 20 ms frames
+(window <= 600 s, context <= 10 s; a zero context can never satisfy the
+conv stack's receptive field and is rejected at parse time).
+
+**Normalization contract.** By default the input is zero-mean/unit-variance
+normalized per window when the checkpoint's `do_normalize` says so — the HF
+semantics. `--no-normalize` feeds raw samples instead. The production
+aligner today feeds raw audio (`--no-normalize`; its ONNX export does not
+normalize internally either — a x10 input gain changes 5% of frame argmaxes
+there). Callers must pass the mode explicitly until an A/B on word-boundary
+accuracy decides the default.
+
+Outputs are write-or-nothing: content goes to `<path>.tmp` and is renamed
+over `<path>` only on success. A run that exits non-zero leaves the
+previous output file in place, so callers must check the exit code before
+reading the emissions.
+
+`--info` prints the hyperparameters and the checkpoint's
+`ox_align.source_sha256` provenance hash as JSON without reading audio.
+`--dump-dir DIR` writes the named stage activations of the first window as
+`.npy` files for debugging; it is a flag, not an env var, so it cannot be
+inherited by accident.
 
 `engine/align/convert_wav2vec2.py` turns a Hugging Face `Wav2Vec2ForCTC`
 checkpoint into the GGUF it reads (fp16/bf16 source tensors are upcast to
-f32 at conversion; `ox_align.source_sha256` records the sha256 of the source
-`config.json` + `model.safetensors`). `--ftype f16` stores the matmul
+f32 at conversion; `ox_align.source_sha256` records a sha256 over every
+file baked into the GGUF — `config.json`, `preprocessor_config.json`,
+`vocab.json` and `model.safetensors`, each name+length framed, with a fixed
+marker for files the converter can run without). `--ftype f16` stores the matmul
 weights in f16. On the CPU backend they are upcast back to f32 at load —
 ggml's f16 dot product would also quantize the activations — so CPU compute
 is identical for both ftypes; f16 buys smaller files, not CPU speed. On
