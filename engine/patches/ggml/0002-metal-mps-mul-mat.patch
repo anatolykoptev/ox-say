@@ -1,0 +1,366 @@
+diff --git a/src/ggml-metal/CMakeLists.txt b/src/ggml-metal/CMakeLists.txt
+index e7afdb69..de90608f 100644
+--- a/src/ggml-metal/CMakeLists.txt
++++ b/src/ggml-metal/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ find_library(FOUNDATION_LIBRARY Foundation REQUIRED)
+ find_library(METAL_FRAMEWORK    Metal      REQUIRED)
+ find_library(METALKIT_FRAMEWORK MetalKit   REQUIRED)
++find_library(MPS_FRAMEWORK      MetalPerformanceShaders REQUIRED)
+ 
+ message(STATUS "Metal framework found")
+ 
+@@ -19,6 +20,7 @@ target_link_libraries(ggml-metal PRIVATE
+                       ${FOUNDATION_LIBRARY}
+                       ${METAL_FRAMEWORK}
+                       ${METALKIT_FRAMEWORK}
++                      ${MPS_FRAMEWORK}
+                       )
+ 
+ if (GGML_METAL_NDEBUG)
+diff --git a/src/ggml-metal/ggml-metal-device.cpp b/src/ggml-metal/ggml-metal-device.cpp
+index ce3c1b66..d041235d 100644
+--- a/src/ggml-metal/ggml-metal-device.cpp
++++ b/src/ggml-metal/ggml-metal-device.cpp
+@@ -812,6 +812,17 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_tg(ggml_m
+     return res;
+ }
+ 
++ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_cvt_f16_f32(ggml_metal_library_t lib) {
++    const char * name = "kernel_cvt_f16_f32";
++
++    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
++    if (!res.pipeline) {
++        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
++    }
++
++    return res;
++}
++
+ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_metal_library_t lib, const ggml_tensor * op) {
+     char base[256];
+     char name[256];
+diff --git a/src/ggml-metal/ggml-metal-device.h b/src/ggml-metal/ggml-metal-device.h
+index 08fdb0fd..b199a565 100644
+--- a/src/ggml-metal/ggml-metal-device.h
++++ b/src/ggml-metal/ggml-metal-device.h
+@@ -91,6 +91,15 @@ void ggml_metal_encoder_memory_barrier(ggml_metal_encoder_t encoder);
+ 
+ void ggml_metal_encoder_end_encoding(ggml_metal_encoder_t encoder);
+ 
++// c[N rows, M cols] = b[N rows, K cols] * a[M rows, K cols]^T with MPSMatrixMultiplication, all fp32,
++// row strides in bytes. MPS encodes into the command buffer directly, so the compute encoder is
++// ended before and reopened after it.
++void ggml_metal_encoder_mps_mul_mat(ggml_metal_encoder_t encoder,
++        struct ggml_metal_buffer_id a, size_t a_row_bytes,
++        struct ggml_metal_buffer_id b, size_t b_row_bytes,
++        struct ggml_metal_buffer_id c, size_t c_row_bytes,
++        int M, int N, int K);
++
+ //
+ // MTLLibrary wrapper
+ //
+@@ -137,6 +146,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_ext        (ggml_metal_library_t lib, const struct ggml_tensor * op, int nsg, int nxpsg, int r1ptg);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm            (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_tg         (ggml_metal_library_t lib, const struct ggml_tensor * op);
++struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_cvt_f16_f32       (ggml_metal_library_t lib);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv            (ggml_metal_library_t lib, const struct ggml_tensor * op);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_map0    (ggml_metal_library_t lib, int ne02, int ne20);
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_amax(ggml_metal_library_t lib);
+@@ -294,6 +304,7 @@ struct ggml_metal_device_props {
+     bool has_tensor;
+     bool use_residency_sets;
+     bool use_shared_buffers;
++    bool use_mps_mul_mat;
+ 
+     bool supports_gpu_family_apple7;
+ 
+diff --git a/src/ggml-metal/ggml-metal-device.m b/src/ggml-metal/ggml-metal-device.m
+index d544a34b..8299fef8 100644
+--- a/src/ggml-metal/ggml-metal-device.m
++++ b/src/ggml-metal/ggml-metal-device.m
+@@ -9,6 +9,7 @@
+ #include <Foundation/Foundation.h>
+ 
+ #include <Metal/Metal.h>
++#include <MetalPerformanceShaders/MetalPerformanceShaders.h>
+ 
+ #include <stdatomic.h>
+ #include <unistd.h>
+@@ -816,20 +817,28 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_compile_pipeline(ggml_
+ 
+ struct ggml_metal_encoder {
+     id<MTLComputeCommandEncoder> obj;
++
++    // kept to reopen the compute encoder after an MPS kernel, with the debug groups it had open
++    id<MTLCommandBuffer> cmd_buf;
++    bool concurrent;
++    int  n_debug_groups;
++    char debug_group[64];
+ };
+ 
+-ggml_metal_encoder_t ggml_metal_encoder_init(ggml_metal_cmd_buf_t cmd_buf_raw, bool concurrent) {
+-    ggml_metal_encoder_t res = calloc(1, sizeof(struct ggml_metal_encoder));
++static id<MTLComputeCommandEncoder> ggml_metal_encoder_new_obj(id<MTLCommandBuffer> cmd_buf, bool concurrent) {
++    id<MTLComputeCommandEncoder> obj = concurrent
++        ? [cmd_buf computeCommandEncoderWithDispatchType: MTLDispatchTypeConcurrent]
++        : [cmd_buf computeCommandEncoder];
+ 
+-    id<MTLCommandBuffer> cmd_buf = (id<MTLCommandBuffer>) cmd_buf_raw;
++    return [obj retain];
++}
+ 
+-    if (concurrent) {
+-        res->obj = [cmd_buf computeCommandEncoderWithDispatchType: MTLDispatchTypeConcurrent];
+-    } else {
+-        res->obj = [cmd_buf computeCommandEncoder];
+-    }
++ggml_metal_encoder_t ggml_metal_encoder_init(ggml_metal_cmd_buf_t cmd_buf_raw, bool concurrent) {
++    ggml_metal_encoder_t res = calloc(1, sizeof(struct ggml_metal_encoder));
+ 
+-    [res->obj retain];
++    res->cmd_buf    = (id<MTLCommandBuffer>) cmd_buf_raw;
++    res->concurrent = concurrent;
++    res->obj        = ggml_metal_encoder_new_obj(res->cmd_buf, concurrent);
+ 
+     return res;
+ }
+@@ -843,10 +852,13 @@ void ggml_metal_encoder_debug_group_push(ggml_metal_encoder_t encoder, const cha
+     @autoreleasepool {
+         [encoder->obj pushDebugGroup:[NSString stringWithCString:name encoding:NSUTF8StringEncoding]];
+     }
++    encoder->n_debug_groups++;
++    snprintf(encoder->debug_group, sizeof(encoder->debug_group), "%s", name);
+ }
+ 
+ void ggml_metal_encoder_debug_group_pop (ggml_metal_encoder_t encoder) {
+     [encoder->obj popDebugGroup];
++    encoder->n_debug_groups--;
+ }
+ 
+ void ggml_metal_encoder_set_pipeline(ggml_metal_encoder_t encoder, struct ggml_metal_pipeline_with_params pipeline) {
+@@ -884,6 +896,51 @@ void ggml_metal_encoder_end_encoding(ggml_metal_encoder_t encoder) {
+     [encoder->obj endEncoding];
+ }
+ 
++void ggml_metal_encoder_mps_mul_mat(ggml_metal_encoder_t encoder,
++        struct ggml_metal_buffer_id a, size_t a_row_bytes,
++        struct ggml_metal_buffer_id b, size_t b_row_bytes,
++        struct ggml_metal_buffer_id c, size_t c_row_bytes,
++        int M, int N, int K) {
++    @autoreleasepool {
++        for (int i = 0; i < encoder->n_debug_groups; ++i) {
++            [encoder->obj popDebugGroup];
++        }
++        [encoder->obj endEncoding];
++        [encoder->obj release];
++        encoder->obj = nil;
++
++        MPSMatrixDescriptor * da = [MPSMatrixDescriptor matrixDescriptorWithRows:M columns:K rowBytes:a_row_bytes dataType:MPSDataTypeFloat32];
++        MPSMatrixDescriptor * db = [MPSMatrixDescriptor matrixDescriptorWithRows:N columns:K rowBytes:b_row_bytes dataType:MPSDataTypeFloat32];
++        MPSMatrixDescriptor * dc = [MPSMatrixDescriptor matrixDescriptorWithRows:N columns:M rowBytes:c_row_bytes dataType:MPSDataTypeFloat32];
++
++        MPSMatrix * ma = [[[MPSMatrix alloc] initWithBuffer:(id<MTLBuffer>) a.metal offset:a.offs descriptor:da] autorelease];
++        MPSMatrix * mb = [[[MPSMatrix alloc] initWithBuffer:(id<MTLBuffer>) b.metal offset:b.offs descriptor:db] autorelease];
++        MPSMatrix * mc = [[[MPSMatrix alloc] initWithBuffer:(id<MTLBuffer>) c.metal offset:c.offs descriptor:dc] autorelease];
++
++        MPSMatrixMultiplication * mm = [[[MPSMatrixMultiplication alloc] initWithDevice:encoder->cmd_buf.device
++                                                                          transposeLeft:NO
++                                                                         transposeRight:YES
++                                                                             resultRows:N
++                                                                          resultColumns:M
++                                                                        interiorColumns:K
++                                                                                  alpha:1.0
++                                                                                   beta:0.0] autorelease];
++
++        GGML_ASSERT(ma && mb && mc && mm);
++
++        [mm encodeToCommandBuffer:encoder->cmd_buf leftMatrix:mb rightMatrix:ma resultMatrix:mc];
++
++        encoder->obj = ggml_metal_encoder_new_obj(encoder->cmd_buf, encoder->concurrent);
++
++        // ops push one group each, so the innermost name is the one to restore (nested groups would
++        // all come back under that name; only a GPU capture shows them)
++        NSString * group = [NSString stringWithCString:encoder->debug_group encoding:NSUTF8StringEncoding];
++        for (int i = 0; i < encoder->n_debug_groups; ++i) {
++            [encoder->obj pushDebugGroup:group];
++        }
++    }
++}
++
+ struct ggml_metal_device {
+     id<MTLDevice> mtl_device;
+ 
+@@ -1267,6 +1324,14 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
+ 
+                 dev->props.supports_gpu_family_apple7 = [dev->mtl_device supportsFamily:MTLGPUFamilyApple7];
+ 
++                // discrete GPUs without simdgroup matrix multiply (AMD on Intel Macs): MPS reaches ~85% of
++                // the fp32 peak there, about 3x the tiled threadgroup kernel
++                dev->props.use_mps_mul_mat = !dev->props.has_unified_memory && !dev->props.has_simdgroup_mm &&
++                    MPSSupportsMTLDevice(dev->mtl_device);
++                if (getenv("GGML_METAL_MPS_DISABLE") != NULL) {
++                    dev->props.use_mps_mul_mat = false;
++                }
++
+                 dev->props.device_id = ggml_metal_device_id_parse([[dev->mtl_device name] UTF8String]);
+ 
+                 dev->props.op_offload_min_batch_size  = getenv("GGML_OP_OFFLOAD_MIN_BATCH") ? atoi(getenv("GGML_OP_OFFLOAD_MIN_BATCH")) : 32;
+@@ -1345,6 +1410,7 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
+                 GGML_LOG_INFO("%s: has tensor            = %s\n", __func__, dev->props.has_tensor              ? "true" : "false");
+                 GGML_LOG_INFO("%s: use residency sets    = %s\n", __func__, dev->props.use_residency_sets      ? "true" : "false");
+                 GGML_LOG_INFO("%s: use shared buffers    = %s\n", __func__, dev->props.use_shared_buffers      ? "true" : "false");
++                GGML_LOG_INFO("%s: use MPS mul_mat       = %s\n", __func__, dev->props.use_mps_mul_mat         ? "true" : "false");
+ 
+ #if TARGET_OS_OSX || (TARGET_OS_IOS && __clang_major__ >= 15)
+                 if (@available(macOS 10.12, iOS 16.0, *)) {
+diff --git a/src/ggml-metal/ggml-metal-ops.cpp b/src/ggml-metal/ggml-metal-ops.cpp
+index e85294e6..aeef34cc 100644
+--- a/src/ggml-metal/ggml-metal-ops.cpp
++++ b/src/ggml-metal/ggml-metal-ops.cpp
+@@ -2413,6 +2413,41 @@ int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
+     return 1;
+ }
+ 
++bool ggml_metal_op_mul_mat_use_mps(const ggml_tensor * op, bool use_mps_mul_mat) {
++    const ggml_tensor * src0 = op->src[0];
++    const ggml_tensor * src1 = op->src[1];
++
++    // plain 2D products with element-contiguous rows; an fp16 src0 is widened into the scratch after
++    // dst, which only exists for a dst allocated through get_alloc_size (not a view)
++    return use_mps_mul_mat && !ggml_metal_op_mul_mat_use_fwht(op) &&
++        op->type == GGML_TYPE_F32 && ggml_is_contiguous(op) && op->view_src == nullptr &&
++        (src0->type == GGML_TYPE_F32 || (src0->type == GGML_TYPE_F16 && ggml_is_contiguous(src0))) &&
++        src1->type == GGML_TYPE_F32 &&
++        src0->ne[2] == 1 && src0->ne[3] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1 &&
++        src0->nb[0] == ggml_type_size(src0->type) && src1->nb[0] == sizeof(float) &&
++        src0->ne[0] % 4 == 0 &&
++        src0->ne[0] >= 64 && src0->ne[1] >= 64 && src1->ne[1] >= 64;
++}
++
++// fp16 weights are widened this many elements (16 MiB of fp32) at a time, so the scratch stays small
++// whatever the weight size (a 51866-row vocabulary projection would otherwise need 265 MB)
++static constexpr int64_t GGML_METAL_MPS_WIDEN_MAX = 4*1024*1024;
++
++static int64_t ggml_metal_op_mul_mat_mps_chunk_rows(const ggml_tensor * op) {
++    return std::max<int64_t>(1, GGML_METAL_MPS_WIDEN_MAX/op->src[0]->ne[0]);
++}
++
++size_t ggml_metal_op_mul_mat_extra_mps(const ggml_tensor * op, bool use_mps_mul_mat) {
++    if (!ggml_metal_op_mul_mat_use_mps(op, use_mps_mul_mat) || op->src[0]->type != GGML_TYPE_F16) {
++        return 0;
++    }
++
++    const int64_t rows = std::min(ggml_metal_op_mul_mat_mps_chunk_rows(op), op->src[0]->ne[1]);
++
++    // the scratch starts at the first 256-byte boundary after dst
++    return GGML_PAD(rows*op->src[0]->ne[0]*sizeof(float), 256) + 256;
++}
++
+ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+     ggml_tensor * op = ctx->node(idx);
+ 
+@@ -2439,6 +2474,49 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+     const int16_t r2 = ne12/ne02;
+     const int16_t r3 = ne13/ne03;
+ 
++    if (ggml_metal_op_mul_mat_use_mps(op, props_dev->use_mps_mul_mat)) {
++        const ggml_metal_buffer_id bid_src0 = ggml_metal_get_buffer_id(op->src[0]);
++        const ggml_metal_buffer_id bid_src1 = ggml_metal_get_buffer_id(op->src[1]);
++        const ggml_metal_buffer_id bid_dst  = ggml_metal_get_buffer_id(op);
++
++        if (op->src[0]->type == GGML_TYPE_F32) {
++            ggml_metal_encoder_mps_mul_mat(enc, bid_src0, nb01, bid_src1, nb11, bid_dst, nb1, ne01, ne11, ne00);
++            return 1;
++        }
++
++        // fp16 weights: widen a block of rows into the scratch after dst, then multiply it into the
++        // matching dst columns; the next block reuses the scratch once MPS has read it (tracked buffer)
++        ggml_metal_buffer_id bid_tmp = bid_dst;
++        bid_tmp.offs = GGML_PAD(bid_dst.offs + ggml_nbytes(op), 256);
++
++        const int64_t rows = ggml_metal_op_mul_mat_mps_chunk_rows(op);
++
++        auto pipeline = ggml_metal_library_get_pipeline_cvt_f16_f32(lib);
++
++        for (int64_t m0 = 0; m0 < ne01; m0 += rows) {
++            const int64_t mc = std::min<int64_t>(rows, ne01 - m0);
++
++            ggml_metal_buffer_id bid_blk = bid_src0;
++            bid_blk.offs += m0*nb01;
++
++            const uint32_t n4 = (uint32_t) (mc*ne00/4);
++
++            ggml_metal_encoder_set_pipeline(enc, pipeline);
++            ggml_metal_encoder_set_bytes   (enc, (void *) &n4, sizeof(n4), 0);
++            ggml_metal_encoder_set_buffer  (enc, bid_blk, 1);
++            ggml_metal_encoder_set_buffer  (enc, bid_tmp, 2);
++
++            ggml_metal_encoder_dispatch_threadgroups(enc, (n4 + 255)/256, 1, 1, 256, 1, 1);
++
++            ggml_metal_buffer_id bid_out = bid_dst;
++            bid_out.offs += m0*sizeof(float);
++
++            ggml_metal_encoder_mps_mul_mat(enc, bid_tmp, ne00*sizeof(float), bid_src1, nb11, bid_out, nb1, (int) mc, ne11, ne00);
++        }
++
++        return 1;
++    }
++
+     const bool use_tg = !props_dev->has_simdgroup_mm && ne11 > 32 &&
+         (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16) &&
+         (op->src[1]->type == GGML_TYPE_F32 || op->src[1]->type == GGML_TYPE_F16) &&
+diff --git a/src/ggml-metal/ggml-metal-ops.h b/src/ggml-metal/ggml-metal-ops.h
+index a1752df8..681c5b22 100644
+--- a/src/ggml-metal/ggml-metal-ops.h
++++ b/src/ggml-metal/ggml-metal-ops.h
+@@ -38,6 +38,12 @@ size_t ggml_metal_op_mul_mat_id_extra_tpe(const struct ggml_tensor * op);
+ size_t ggml_metal_op_mul_mat_id_extra_ids(const struct ggml_tensor * op);
+ size_t ggml_metal_op_mul_mat_id_extra_amax(const struct ggml_tensor * op);
+ 
++// return true if MUL_MAT runs through MPSMatrixMultiplication (see ggml_metal_op_mul_mat)
++bool ggml_metal_op_mul_mat_use_mps(const struct ggml_tensor * op, bool use_mps_mul_mat);
++
++// scratch after dst for the fp32 copy of an fp16 src0 on the MPS path
++size_t ggml_metal_op_mul_mat_extra_mps(const struct ggml_tensor * op, bool use_mps_mul_mat);
++
+ // return true if we should use the FA vector kernel for this op
+ bool ggml_metal_op_flash_attn_ext_use_vec(const struct ggml_tensor * op, bool has_simdgroup_mm);
+ 
+diff --git a/src/ggml-metal/ggml-metal.cpp b/src/ggml-metal/ggml-metal.cpp
+index c6c8ce83..08101fad 100644
+--- a/src/ggml-metal/ggml-metal.cpp
++++ b/src/ggml-metal/ggml-metal.cpp
+@@ -222,6 +222,12 @@ static size_t ggml_backend_metal_buffer_type_get_alloc_size(ggml_backend_buffer_
+ 
+     // some operations require additional memory for fleeting data:
+     switch (tensor->op) {
++        case GGML_OP_MUL_MAT:
++            {
++                const ggml_metal_device_props * props_dev = ggml_metal_device_get_props((ggml_metal_device_t) buft->device->context);
++
++                res += ggml_metal_op_mul_mat_extra_mps(tensor, props_dev->use_mps_mul_mat);
++            } break;
+         case GGML_OP_MUL_MAT_ID:
+             {
+                 res += ggml_metal_op_mul_mat_id_extra_tpe(tensor);
+diff --git a/src/ggml-metal/kernels/mul_mm.metal b/src/ggml-metal/kernels/mul_mm.metal
+index 78281a04..bec293d8 100644
+--- a/src/ggml-metal/kernels/mul_mm.metal
++++ b/src/ggml-metal/kernels/mul_mm.metal
+@@ -1057,3 +1057,14 @@ template [[host_name("kernel_mul_mm_tg_f32_f32")]] kernel mul_mm_tg_t kernel_mul
+ template [[host_name("kernel_mul_mm_tg_f32_f16")]] kernel mul_mm_tg_t kernel_mul_mm_tg<float, half>;
+ template [[host_name("kernel_mul_mm_tg_f16_f32")]] kernel mul_mm_tg_t kernel_mul_mm_tg<half,  float>;
+ template [[host_name("kernel_mul_mm_tg_f16_f16")]] kernel mul_mm_tg_t kernel_mul_mm_tg<half,  half>;
++
++// fp16 -> fp32 widening of a contiguous buffer, 4 elements per thread (n4 = n/4)
++kernel void kernel_cvt_f16_f32(
++        constant uint   & n4,
++        device const half4 * src,
++        device      float4 * dst,
++        uint i [[thread_position_in_grid]]) {
++    if (i < n4) {
++        dst[i] = float4(src[i]);
++    }
++}
