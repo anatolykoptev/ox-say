@@ -58,3 +58,23 @@ tree when bumping the pins and run `test-backend-ops -o MUL_MAT -b MTL0`.
 Measured on the whisper large-v3-turbo encoder (whisper.cpp): 3.14 -> 1.89 s
 per 30 s window, 347 s file 83 -> 60 s, byte-identical transcript. The TTS
 codec decode is ~3.5% faster per frame; the talker is unchanged.
+
+## stt/ox-stt.cpp
+
+`ox-stt` is speech-to-text on the pinned whisper.cpp (`WHISPER_COMMIT`), whose
+vendored ggml takes the same `patches/ggml`. It reads a 16 kHz mono WAV and
+prints JSON: `text`, `segments` and `words` (`w`, `s`, `e`, `p`; seconds).
+
+- `--engine parakeet` (default): Parakeet TDT 0.6B v3, 25 European languages,
+  punctuation and word timings. Long audio is cut into chunks of at most
+  `--chunk-s` (30) seconds at the quietest 10 ms frame near each window's end:
+  one graph per chunk keeps each GPU command buffer under the macOS watchdog
+  of a display GPU, and the encoder cost linear in length.
+- `--engine whisper`: Whisper large-v3-turbo, 99 languages, one segment per
+  word (`max_len` 1, split on word), beam search 5.
+- `-ng` runs on the CPU.
+
+Measured on a 347 s English interview (Radeon Pro 5500M, i9-9880H):
+Parakeet 9.6 s on the GPU (RTF 0.028) and 29.7 s on the CPU; Whisper turbo
+60.5 s; faster-whisper large-v3-turbo int8 (CPU) 103.6 s. Parakeet and Whisper
+share 853 and 858 words in order with a reference transcript of 909.
