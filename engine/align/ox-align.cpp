@@ -2,6 +2,8 @@
 //
 //   ox-align -m model.gguf -f audio.wav -o emissions.npy
 //            [--window 30] [--context 2] [-t threads] [-ng] [--vocab vocab.json] [-v]
+//            [--no-normalize] [--dump-dir DIR]
+//   ox-align -m model.gguf --info
 //
 // Reads a 16 kHz mono WAV, runs the wav2vec2 forward pass per --window-second
 // window with --context seconds of padding on each side, crops the context
@@ -14,6 +16,7 @@
 // the grouped positional conv embedding with the last frame dropped.
 
 #include "ggml.h"
+#include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
@@ -38,20 +41,28 @@ constexpr int SR = 16000;
 // args
 
 struct args {
-    std::string model, file, out, vocab;
-    int    threads = 4;
-    double window  = 30.0;
-    double context = 2.0;
-    bool   gpu     = true;
-    bool   verbose = false;
+    std::string model, file, out, vocab, dump_dir;
+    int    threads   = 4;
+    double window    = 30.0;
+    double context   = 2.0;
+    bool   gpu       = true;
+    bool   verbose   = false;
+    bool   normalize = true;
+    bool   info      = false;
+    // window/context validated to whole 20 ms frames at parse time
+    int64_t win_samples = 0, ctx_samples = 0;
 };
 
 void usage(const char * argv0) {
     fprintf(stderr,
             "usage: %s -m model.gguf -f audio.wav -o emissions.npy\n"
             "          [--window 30] [--context 2] [-t threads] [-ng] [--vocab vocab.json] [-v]\n"
-            "audio must be a 16 kHz mono WAV (PCM16 or float32): ffmpeg -i in -ar 16000 -ac 1 out.wav\n",
-            argv0);
+            "          [--no-normalize] [--dump-dir DIR]\n"
+            "       %s -m model.gguf --info\n"
+            "audio must be a 16 kHz mono WAV (PCM16 or float32): ffmpeg -i in -ar 16000 -ac 1 out.wav\n"
+            "--window/--context must be multiples of 0.02 s (one 320-sample frame),\n"
+            "window <= 600 s, context <= 10 s\n",
+            argv0, argv0);
 }
 
 bool parse(int argc, char ** argv, args & a) {
@@ -84,6 +95,12 @@ bool parse(int argc, char ** argv, args & a) {
             a.threads = std::max(1, atoi(v.c_str()));
         } else if (k == "-ng" || k == "--no-gpu") {
             a.gpu = false;
+        } else if (k == "--no-normalize") {
+            a.normalize = false;
+        } else if (k == "--dump-dir") {
+            if (!next(a.dump_dir)) return false;
+        } else if (k == "--info") {
+            a.info = true;
         } else if (k == "-v" || k == "--verbose") {
             a.verbose = true;
         } else {
@@ -91,9 +108,32 @@ bool parse(int argc, char ** argv, args & a) {
             return false;
         }
     }
-    if (a.model.empty() || a.file.empty() || a.out.empty() ||
-        !std::isfinite(a.window) || a.window < 1.0 ||
-        !std::isfinite(a.context) || a.context < 0.0) {
+    if (a.model.empty() || (!a.info && (a.file.empty() || a.out.empty()))) {
+        return false;
+    }
+    // --window/--context must land on a whole number of 20 ms frames (320
+    // samples at 16 kHz): a fraction would emit a silently time-shifted
+    // frame per window, and a huge value overflows the sample math. The
+    // check runs on the rounded sample count — fp parse noise stays far
+    // below one sample — never on the double itself. --context 0 is legal.
+    auto arg_frames = [](const char * flag, double sec, double max_s,
+                         bool zero_ok, int64_t & n) -> bool {
+        if (!std::isfinite(sec) || sec < 0 || (!zero_ok && sec <= 0) || sec > max_s) {
+            fprintf(stderr, "ox-align: %s must be a %smultiple of 0.02 s no larger than %g s\n",
+                    flag, zero_ok ? "non-negative " : "positive ", max_s);
+            return false;
+        }
+        const double s = sec * SR;
+        n = (int64_t) llround(s);
+        if (fabs(s - (double) n) > 0.5 || n % (SR / 50) != 0 || (!zero_ok && n == 0)) {
+            fprintf(stderr, "ox-align: %s %.9gs does not give a whole number of 20 ms frames\n",
+                    flag, sec);
+            return false;
+        }
+        return true;
+    };
+    if (!arg_frames("--window", a.window, 600.0, false, a.win_samples) ||
+        !arg_frames("--context", a.context, 10.0, true, a.ctx_samples)) {
         return false;
     }
     return true;
@@ -154,14 +194,21 @@ bool read_wav(const std::string & path, std::vector<float> & out, std::string & 
             }
             // a streaming writer leaves the length 0 or 0xFFFFFFFF: take the rest of the file
             const size_t avail = (len == 0 || len == 0xFFFFFFFFu) ? buf.size() - body : std::min<size_t>(len, buf.size() - body);
+            // keep only the data chunk while decoding: for long files holding
+            // the whole WAV next to the float samples nearly doubles peak RSS
+            if (body > 0) {
+                memmove(buf.data(), buf.data() + body, avail);
+            }
+            buf.resize(avail);
+            buf.shrink_to_fit();
             if (fmt == 1) {
                 out.resize(avail / 2);
                 for (size_t i = 0; i < out.size(); ++i) {
-                    out[i] = (int16_t) rd16(&buf[body + 2 * i]) / 32768.0f;
+                    out[i] = (int16_t) rd16(&buf[2 * i]) / 32768.0f;
                 }
             } else {
                 out.resize(avail / 4);
-                memcpy(out.data(), &buf[body], out.size() * 4);
+                memcpy(out.data(), buf.data(), out.size() * 4);
                 for (float v : out) {
                     if (!std::isfinite(v)) {
                         err = "float WAV has non-finite samples";
@@ -188,7 +235,7 @@ struct hparams {
     int  n_layer = 0, d = 0, n_head = 0, n_inter = 0, vocab = 0;
     int  pos_k = 0, pos_groups = 1;
     int  n_conv = 0;
-    int  conv_k[8] = {}, conv_s[8] = {};
+    int  conv_k[8] = {}, conv_s[8] = {}, conv_d[8] = {};
     float ln_eps = 1e-5f;
     bool feat_ln_layer = false;  // feat_extract_norm == "layer"
     bool stable_ln     = false;  // do_stable_layer_norm: pre-LN encoder
@@ -202,8 +249,13 @@ struct model {
     ggml_backend_buffer_t wbuf = nullptr;
     // CPU backend only: f16 matmul weights are stored in the file but upcast to
     // f32 at load — ggml's CPU vec_dot for f16 x f32 rounds the activation to
-    // f16 first, which injects ~1e-1 of log-prob noise; Metal keeps native f16
-    // matmuls where activations stay f32, so no upcast there. Twins live in
+    // f16 first, which injects ~1e-1 of log-prob noise. On the Metal side the
+    // picture depends on the GPU: on the target AMD dGPU, patch 0002 routes
+    // eligible 2D mul_mats to MPS in float32 after widening the f16 weights,
+    // and the ops it does not take (attention, lm_head) go through mul_mv,
+    // whose activations stay f32 — so f16 weights are kept as stored. On
+    // Apple Silicon, kernel_mul_mm_* tiles the activations into `half`,
+    // which is exactly the rounding the CPU upcast avoids. Twins live in
     // wctx2 (the gguf context has no room for extra tensors).
     ggml_context   * wctx2 = nullptr;
     ggml_backend_buffer_t wbuf2 = nullptr;
@@ -309,7 +361,7 @@ ggml_tensor * maybe(const model & m, const std::string & name) {
 }
 
 bool load_model(const std::string & path, model & m, ggml_backend_t backend,
-                bool upcast_f16, std::string & err) {
+                bool upcast_f16, bool meta_only, std::string & err) {
     struct gguf_init_params params = { /*no_alloc =*/ true, /*ctx =*/ &m.wctx };
     m.gguf = gguf_init_from_file(path.c_str(), params);
     if (!m.gguf || !m.wctx) {
@@ -335,41 +387,155 @@ bool load_model(const std::string & path, model & m, ggml_backend_t backend,
         return false;
     }
     h.feat_ln_layer = norm == "layer";
-    if (h.d <= 0 || h.d % h.n_head != 0 || h.d % h.pos_groups != 0 || h.n_layer <= 0) {
-        err = "bad wav2vec2 dimensions in " + path;
+    // every hyperparameter is validated before it divides, modulos or indexes
+    // anything — a zero here is SIGFPE on x86 and silent garbage on ARM
+    {
+        const struct { const char * key; int v; } pos[] = {
+            {"hidden_size", h.d}, {"num_hidden_layers", h.n_layer},
+            {"num_attention_heads", h.n_head}, {"intermediate_size", h.n_inter},
+            {"vocab_size", h.vocab}, {"num_conv_pos_embeddings", h.pos_k},
+            {"num_conv_pos_embedding_groups", h.pos_groups},
+        };
+        for (const auto & e : pos) {
+            if (e.v <= 0) {
+                err = std::string("wav2vec2.") + e.key + " must be > 0 in " + path;
+                return false;
+            }
+        }
+        if (h.d % h.n_head != 0) {
+            err = "wav2vec2.hidden_size is not divisible by wav2vec2.num_attention_heads";
+            return false;
+        }
+        if (h.d % h.pos_groups != 0) {
+            err = "wav2vec2.hidden_size is not divisible by wav2vec2.num_conv_pos_embedding_groups";
+            return false;
+        }
+    }
+    h.n_conv = kv_ints(m.gguf, "wav2vec2.conv_kernel", h.conv_k, 8);
+    if (h.n_conv <= 0) {
+        err = "wav2vec2.conv_kernel is missing or empty in " + path;
         return false;
     }
-    {
-        int cd[8] = {};
-        h.n_conv = kv_ints(m.gguf, "wav2vec2.conv_kernel", h.conv_k, 8);
-        if (h.n_conv <= 0 ||
-            kv_ints(m.gguf, "wav2vec2.conv_stride", h.conv_s, 8) != h.n_conv ||
-            kv_ints(m.gguf, "wav2vec2.conv_dim", cd, 8) != h.n_conv) {
-            err = "missing/inconsistent conv_kernel/conv_stride/conv_dim metadata";
+    if (kv_ints(m.gguf, "wav2vec2.conv_stride", h.conv_s, 8) != h.n_conv ||
+        kv_ints(m.gguf, "wav2vec2.conv_dim", h.conv_d, 8) != h.n_conv) {
+        err = "wav2vec2.conv_stride/conv_dim length != conv_kernel in " + path;
+        return false;
+    }
+    for (int i = 0; i < h.n_conv; ++i) {
+        char bad[96];
+        if (h.conv_k[i] <= 0) {
+            snprintf(bad, sizeof(bad), "wav2vec2.conv_kernel[%d] must be > 0", i);
+            err = std::string(bad) + " in " + path;
             return false;
         }
+        if (h.conv_s[i] <= 0) {
+            snprintf(bad, sizeof(bad), "wav2vec2.conv_stride[%d] must be > 0", i);
+            err = std::string(bad) + " in " + path;
+            return false;
+        }
+        if (h.conv_d[i] <= 0) {
+            snprintf(bad, sizeof(bad), "wav2vec2.conv_dim[%d] must be > 0", i);
+            err = std::string(bad) + " in " + path;
+            return false;
+        }
+    }
+    // one pass over every tensor the forward pass touches: a wrong shape is a
+    // clean error naming the tensor and both shapes, never a ggml assert.
+    // (conv.bias existence vs wav2vec2.conv_bias is enforced in build_forward,
+    //  where the bias is consumed.)
+    {
+        auto shape = [&](const std::string & name,
+                         std::initializer_list<int64_t> want) -> bool {
+            ggml_tensor * t = ggml_get_tensor(m.wctx, name.c_str());
+            if (!t) {
+                err = "model is missing tensor " + name;
+                return false;
+            }
+            bool bad = ggml_n_dims(t) != (int) want.size();
+            size_t i = 0;
+            for (int64_t w : want) {
+                bad = bad || t->ne[i++] != w;
+            }
+            if (bad) {
+                char got[80] = {0}, exp[80] = {0};
+                for (int j = 0; j < ggml_n_dims(t); ++j) {
+                    snprintf(got + strlen(got), sizeof(got) - strlen(got),
+                             "%s%lld", j ? "," : "", (long long) t->ne[j]);
+                }
+                for (int64_t w : want) {
+                    snprintf(exp + strlen(exp), sizeof(exp) - strlen(exp),
+                             "%s%lld", exp[0] ? "," : "", (long long) w);
+                }
+                err = name + " has shape [" + got + "], expected [" + exp + "]";
+                return false;
+            }
+            return true;
+        };
+        const int64_t d = h.d;
         for (int i = 0; i < h.n_conv; ++i) {
-            // conv weight arrives as ggml [K, IC, OC] (HF [OC, IC, K] reinterpreted)
             char name[128];
             snprintf(name, sizeof(name), "feature_extractor.conv_layers.%d.conv.weight", i);
-            ggml_tensor * w = need(m, name);
-            if (w->ne[0] != h.conv_k[i] || w->ne[2] != cd[i]) {
-                err = std::string("conv shape mismatch for ") + name;
+            // conv weight arrives as ggml [K, IC, OC] (HF [OC, IC, K] reinterpreted)
+            if (!shape(name, {h.conv_k[i], i > 0 ? h.conv_d[i - 1] : 1, h.conv_d[i]})) {
                 return false;
             }
-            if (i > 0 && w->ne[1] != cd[i - 1]) {
-                err = std::string("conv in-channel mismatch for ") + name;
+            snprintf(name, sizeof(name), "feature_extractor.conv_layers.%d.conv.bias", i);
+            if (ggml_get_tensor(m.wctx, name) && !shape(name, {h.conv_d[i]})) {
                 return false;
+            }
+            if (h.feat_ln_layer || i == 0) {
+                snprintf(name, sizeof(name), "feature_extractor.conv_layers.%d.layer_norm.weight", i);
+                if (!shape(name, {h.conv_d[i]})) {
+                    return false;
+                }
+                snprintf(name, sizeof(name), "feature_extractor.conv_layers.%d.layer_norm.bias", i);
+                if (!shape(name, {h.conv_d[i]})) {
+                    return false;
+                }
             }
         }
-        ggml_tensor * pw = need(m, "encoder.pos_conv_embed.conv.weight");
-        if (pw->ne[0] != h.pos_k || pw->ne[1] != h.d / h.pos_groups ||
-            pw->ne[2] != h.d) {
-            err = "pos_conv_embed weight shape mismatch";
+        if (!shape("feature_projection.layer_norm.weight", {h.conv_d[h.n_conv - 1]}) ||
+            !shape("feature_projection.layer_norm.bias", {h.conv_d[h.n_conv - 1]}) ||
+            !shape("feature_projection.projection.weight", {h.conv_d[h.n_conv - 1], d}) ||
+            !shape("feature_projection.projection.bias", {d}) ||
+            !shape("encoder.pos_conv_embed.conv.weight", {h.pos_k, d / h.pos_groups, d}) ||
+            !shape("encoder.pos_conv_embed.conv.bias", {d}) ||
+            !shape("encoder.layer_norm.weight", {d}) ||
+            !shape("encoder.layer_norm.bias", {d}) ||
+            !shape("lm_head.weight", {d, (int64_t) h.vocab}) ||
+            !shape("lm_head.bias", {(int64_t) h.vocab})) {
             return false;
+        }
+        for (int i = 0; i < h.n_layer; ++i) {
+            char base[128];
+            snprintf(base, sizeof(base), "encoder.layers.%d.", i);
+            const std::string b = base;
+            const int64_t ni = h.n_inter;
+            if (!shape(b + "attention.q_proj.weight", {d, d}) ||
+                !shape(b + "attention.q_proj.bias", {d}) ||
+                !shape(b + "attention.k_proj.weight", {d, d}) ||
+                !shape(b + "attention.k_proj.bias", {d}) ||
+                !shape(b + "attention.v_proj.weight", {d, d}) ||
+                !shape(b + "attention.v_proj.bias", {d}) ||
+                !shape(b + "attention.out_proj.weight", {d, d}) ||
+                !shape(b + "attention.out_proj.bias", {d}) ||
+                !shape(b + "layer_norm.weight", {d}) ||
+                !shape(b + "layer_norm.bias", {d}) ||
+                !shape(b + "final_layer_norm.weight", {d}) ||
+                !shape(b + "final_layer_norm.bias", {d}) ||
+                !shape(b + "feed_forward.intermediate_dense.weight", {d, ni}) ||
+                !shape(b + "feed_forward.intermediate_dense.bias", {ni}) ||
+                !shape(b + "feed_forward.output_dense.weight", {ni, d}) ||
+                !shape(b + "feed_forward.output_dense.bias", {d})) {
+                return false;
+            }
         }
     }
     kv_str(m.gguf, "wav2vec2.vocab_json", m.vocab_json);
+
+    if (meta_only) {
+        return true;   // --info: no backend buffers, no tensor data
+    }
 
     if (upcast_f16) {
         // unnamed f32 twins shadow the stored f16 tensors (see struct model)
@@ -402,7 +568,38 @@ bool load_model(const std::string & path, model & m, ggml_backend_t backend,
         }
     }
 
-    m.wbuf = ggml_backend_alloc_ctx_tensors(m.wctx, backend);
+    if (m.upcast.empty()) {
+        m.wbuf = ggml_backend_alloc_ctx_tensors(m.wctx, backend);
+    } else {
+        // the f16 originals are shadowed by their f32 twins and are never
+        // touched again — backing them too would park ~half a copy of the
+        // model in RAM (or VRAM) for nothing
+        ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(backend);
+        const size_t align = ggml_backend_buft_get_alignment(buft);
+        size_t size = 0;
+        for (int64_t i = 0; i < gguf_get_n_tensors(m.gguf); ++i) {
+            const char *  name = gguf_get_tensor_name(m.gguf, i);
+            ggml_tensor * t    = ggml_get_tensor(m.wctx, name);
+            if (t && !m.upcast.count(name)) {
+                size += (ggml_backend_buft_get_alloc_size(buft, t) + align - 1) / align * align;
+            }
+        }
+        m.wbuf = size ? ggml_backend_buft_alloc_buffer(buft, size) : nullptr;
+        if (m.wbuf) {
+            ggml_tallocr talloc = ggml_tallocr_new(m.wbuf);
+            for (int64_t i = 0; i < gguf_get_n_tensors(m.gguf); ++i) {
+                const char *  name = gguf_get_tensor_name(m.gguf, i);
+                ggml_tensor * t    = ggml_get_tensor(m.wctx, name);
+                if (t && !m.upcast.count(name) &&
+                    ggml_tallocr_alloc(&talloc, t) != GGML_STATUS_SUCCESS) {
+                    ggml_backend_buffer_free(m.wbuf);
+                    m.wbuf = nullptr;
+                    err = std::string("failed to allocate tensor ") + name;
+                    return false;
+                }
+            }
+        }
+    }
     if (!m.wbuf || (m.wctx2 && !(m.wbuf2 = ggml_backend_alloc_ctx_tensors(m.wctx2, backend)))) {
         err = "failed to allocate model tensors";
         return false;
@@ -547,12 +744,14 @@ ggml_tensor * ffn(ggml_context * g, const layer_w & l, ggml_tensor * x) {
     return x;
 }
 
-// debug: OX_ALIGN_DUMP=dir writes the named stage outputs as .npy files
+// debug: --dump-dir DIR writes the named stage outputs as .npy files.
+// An env var would silently write ~250 MB per call when inherited; an
+// explicit flag cannot be set by accident.
 std::vector<std::pair<std::string, ggml_tensor *>> g_dump;
-const char * g_dump_dir = getenv("OX_ALIGN_DUMP");
+std::string g_dump_dir;
 
 void dump_tag(const char * name, ggml_tensor * t) {
-    if (g_dump_dir) {
+    if (!g_dump_dir.empty()) {
         g_dump.emplace_back(name, t);
         ggml_set_output(t);   // pin the buffer: without this the allocator reuses it
     }
@@ -570,19 +769,29 @@ ggml_tensor * build_forward(ggml_context * g, const model & m, ggml_tensor * inp
         snprintf(name, sizeof(name), "feature_extractor.conv_layers.%d.conv.weight", i);
         ggml_tensor * w = need(m, name);
         snprintf(name, sizeof(name), "feature_extractor.conv_layers.%d.conv.bias", i);
-        ggml_tensor * cb = maybe(m, name);
+        // conv_bias is honoured here, at the point of use: required when the
+        // flag says the checkpoint has biases, an error when it says it must
+        // not — a stray bias would otherwise silently shift the logits
+        ggml_tensor * cb = h.conv_bias ? need(m, name) : maybe(m, name);
+        if (!h.conv_bias && cb) {
+            fprintf(stderr, "ox-align: %s present but wav2vec2.conv_bias is false\n", name);
+            exit(1);
+        }
         x = conv1d(g, x, w, cb, h.conv_s[i], 0);
         if (i == 0) {
             dump_tag("conv0_pre", x);
         }
         if (h.feat_ln_layer) {
-            // LayerNorm over channels: norm needs the channel axis as ne0
+            // LayerNorm over channels: norm needs the channel axis as ne0.
+            // HF builds this as nn.LayerNorm(out_conv_dim) with no eps — the
+            // 1e-5 default, not config.layer_norm_eps (transformers
+            // Wav2Vec2LayerNormConvLayer, modeling_wav2vec2.py:291).
             snprintf(name, sizeof(name), "feature_extractor.conv_layers.%d.layer_norm.weight", i);
             ggml_tensor * lw = need(m, name);
             snprintf(name, sizeof(name), "feature_extractor.conv_layers.%d.layer_norm.bias", i);
             ggml_tensor * lb = need(m, name);
             x = ggml_cont(g, ggml_permute(g, x, 1, 0, 2, 3));   // [C, L']
-            x = layer_norm(g, x, lw, lb, h.ln_eps);
+            x = layer_norm(g, x, lw, lb, 1e-5f);
             x = ggml_cont(g, ggml_permute(g, x, 1, 0, 2, 3));   // back to [L', C]
         } else if (i == 0) {
             // feat_extract_norm == "group": GroupNorm(C, C) on conv 0 only, i.e.
@@ -699,13 +908,32 @@ ggml_tensor * build_forward(ggml_context * g, const model & m, ggml_tensor * inp
     // contiguous (row stride stays vocab), so softmax/log see dense rows.
     x = linear(g, x, need(m, "lm_head.weight"), need(m, "lm_head.bias"));
     x = ggml_view_2d(g, x, h.vocab, keep, x->nb[1],
-                     (size_t) crop * h.vocab * ggml_element_size(x));
+                     (size_t) crop * x->nb[1]);
     x = ggml_log(g, ggml_soft_max(g, x));
     return x;
 }
 
 // ---------------------------------------------------------------------------
 // .npy v1.0 writer (float32, C order)
+
+// Write-or-nothing: content goes to <path>.tmp and is renamed over <path> only
+// on success, so a crash or a full disk never leaves a truncated emissions
+// file under the final name. fclose runs exactly once and is checked; any
+// failure removes the .tmp file and reports a non-zero exit.
+bool commit_file(FILE * f, bool ok, const std::string & tmp, const std::string & path,
+                 std::string & err) {
+    if (fclose(f) != 0) {
+        ok = false;
+    }
+    if (ok && rename(tmp.c_str(), path.c_str()) != 0) {
+        ok = false;
+    }
+    if (!ok) {
+        remove(tmp.c_str());
+        err = "write failed on " + path;
+    }
+    return ok;
+}
 
 bool write_npy(const std::string & path, const float * data, int64_t rows, int64_t cols,
                std::string & err) {
@@ -716,9 +944,10 @@ bool write_npy(const std::string & path, const float * data, int64_t rows, int64
     // header: magic(6) + ver(2) + hlen(2) + dict, the whole header padded to 64
     const int pad = (int) (64 - ((10 + n + 1) % 64));
     const uint16_t hlen = (uint16_t) (n + pad + 1);
-    FILE * f = fopen(path.c_str(), "wb");
+    const std::string tmp = path + ".tmp";
+    FILE * f = fopen(tmp.c_str(), "wb");
     if (!f) {
-        err = "cannot write " + path;
+        err = "cannot write " + tmp;
         return false;
     }
     bool ok = fwrite("\x93NUMPY\x01\x00", 1, 8, f) == 8 &&
@@ -729,14 +958,7 @@ bool write_npy(const std::string & path, const float * data, int64_t rows, int64
     }
     ok = ok && fwrite("\n", 1, 1, f) == 1;
     ok = ok && fwrite(data, 4, (size_t) rows * cols, f) == (size_t) rows * cols;
-    ok = ok && fclose(f) == 0;
-    if (!ok) {
-        err = "write failed on " + path;
-        if (f) {
-            fclose(f);
-        }
-    }
-    return ok;
+    return commit_file(f, ok, tmp, path, err);
 }
 
 // ---------------------------------------------------------------------------
@@ -765,27 +987,57 @@ bool parse_json_string(const std::string & s, size_t & i, std::string & out) {
                 case 'r': out += '\r'; break;
                 case 't': out += '\t'; break;
                 case 'u': {
-                    if (i + 4 >= s.size()) {
+                    auto hex4 = [&]() -> int {
+                        // -1 on failure; leaves i on the last hex digit
+                        if (i + 4 >= s.size()) {
+                            return -1;
+                        }
+                        int cp = 0;
+                        for (int j = 0; j < 4; ++j) {
+                            const char ch = s[++i];
+                            const int v = (ch >= '0' && ch <= '9') ? ch - '0' :
+                                          (ch >= 'a' && ch <= 'f') ? ch - 'a' + 10 :
+                                          (ch >= 'A' && ch <= 'F') ? ch - 'A' + 10 : -1;
+                            if (v < 0) {
+                                return -1;
+                            }
+                            cp = cp << 4 | v;
+                        }
+                        return cp;
+                    };
+                    const int hi = hex4();
+                    if (hi < 0) {
                         return false;
                     }
-                    unsigned cp = 0;
-                    for (int j = 0; j < 4; ++j) {
-                        const char ch = s[++i];
-                        const int v = (ch >= '0' && ch <= '9') ? ch - '0' :
-                                      (ch >= 'a' && ch <= 'f') ? ch - 'a' + 10 :
-                                      (ch >= 'A' && ch <= 'F') ? ch - 'A' + 10 : -1;
-                        if (v < 0) {
+                    unsigned cp;
+                    if (hi >= 0xD800 && hi <= 0xDBFF) {
+                        // a high surrogate must be followed by a low one
+                        if (i + 2 >= s.size() || s[i + 1] != '\\' || s[i + 2] != 'u') {
                             return false;
                         }
-                        cp = cp << 4 | (unsigned) v;
+                        i += 2;
+                        const int lo = hex4();
+                        if (lo < 0xDC00 || lo > 0xDFFF) {
+                            return false;
+                        }
+                        cp = 0x10000 + ((unsigned) (hi - 0xD800) << 10) + (unsigned) (lo - 0xDC00);
+                    } else if (hi >= 0xDC00 && hi <= 0xDFFF) {
+                        return false;   // lone low surrogate
+                    } else {
+                        cp = (unsigned) hi;
                     }
                     if (cp < 0x80) {
                         out += (char) cp;
                     } else if (cp < 0x800) {
                         out += (char) (0xC0 | cp >> 6);
                         out += (char) (0x80 | (cp & 0x3F));
-                    } else {
+                    } else if (cp < 0x10000) {
                         out += (char) (0xE0 | cp >> 12);
+                        out += (char) (0x80 | (cp >> 6 & 0x3F));
+                        out += (char) (0x80 | (cp & 0x3F));
+                    } else {
+                        out += (char) (0xF0 | cp >> 18);
+                        out += (char) (0x80 | (cp >> 12 & 0x3F));
                         out += (char) (0x80 | (cp >> 6 & 0x3F));
                         out += (char) (0x80 | (cp & 0x3F));
                     }
@@ -805,6 +1057,7 @@ bool parse_json_string(const std::string & s, size_t & i, std::string & out) {
 bool write_vocab(const std::string & path, const std::string & vocab_json,
                  std::string & err) {
     std::vector<std::string> id2tok;
+    std::vector<bool>        seen;   // an id with no token is an error
     size_t i = vocab_json.find('{');
     if (i == std::string::npos) {
         err = "vocab_json is not an object";
@@ -839,10 +1092,18 @@ bool write_vocab(const std::string & path, const std::string & vocab_json,
         i = (size_t) (e - vocab_json.c_str());
         if ((size_t) id >= id2tok.size()) {
             id2tok.resize((size_t) id + 1);
+            seen.resize(id2tok.size());
         }
         id2tok[id] = tok;
+        seen[id]   = true;
         while (i < vocab_json.size() && (isspace((unsigned char) vocab_json[i]) || vocab_json[i] == ',')) {
             ++i;
+        }
+    }
+    for (size_t k = 0; k < id2tok.size(); ++k) {
+        if (!seen[k]) {
+            err = "vocab_json: no token for id " + std::to_string(k);
+            return false;
         }
     }
     std::string o = "{";
@@ -868,18 +1129,72 @@ bool write_vocab(const std::string & path, const std::string & vocab_json,
         o += '"';
     }
     o += "}\n";
-    FILE * f = fopen(path.c_str(), "wb");
-    const bool ok = f && fwrite(o.data(), 1, o.size(), f) == o.size();
-    if (f) {
-        fclose(f);
+    const std::string tmp = path + ".tmp";
+    FILE * f = fopen(tmp.c_str(), "wb");
+    if (!f) {
+        err = "cannot write " + tmp;
+        return false;
     }
-    if (!ok) {
-        err = "cannot write " + path;
-    }
-    return ok;
+    const bool ok = fwrite(o.data(), 1, o.size(), f) == o.size();
+    return commit_file(f, ok, tmp, path, err);
 }
 
 void no_log(ggml_log_level, const char *, void *) {}
+
+std::string json_str(const std::string & s) {
+    std::string o = "\"";
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':  o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            default:
+                if (c < 0x20) {
+                    char u[8];
+                    snprintf(u, sizeof(u), "\\u%04x", c);
+                    o += u;
+                } else {
+                    o += (char) c;
+                }
+        }
+    }
+    return o + '"';
+}
+
+// --info: model hyperparameters + provenance as one JSON object on stdout
+void print_info(const model & m) {
+    const hparams & h = m.h;
+    std::string name, sha;
+    kv_str(m.gguf, "general.name", name);
+    kv_str(m.gguf, "ox_align.source_sha256", sha);
+    int ftype = 0;
+    kv_u32(m.gguf, "general.file_type", ftype);
+    auto arr = [](const int * v, int n) {
+        std::string o = "[";
+        for (int i = 0; i < n; ++i) {
+            if (i) {
+                o += ",";
+            }
+            o += std::to_string(v[i]);
+        }
+        return o + "]";
+    };
+    printf("{"
+           "\"name\":%s,\"file_type\":\"%s\","
+           "\"hidden_size\":%d,\"num_hidden_layers\":%d,\"num_attention_heads\":%d,"
+           "\"intermediate_size\":%d,\"vocab_size\":%d,"
+           "\"num_conv_pos_embeddings\":%d,\"num_conv_pos_embedding_groups\":%d,"
+           "\"conv_kernel\":%s,\"conv_stride\":%s,\"conv_dim\":%s,"
+           "\"feat_extract_norm\":\"%s\",\"do_stable_layer_norm\":%s,"
+           "\"do_normalize\":%s,\"conv_bias\":%s,\"layer_norm_eps\":%.6g,"
+           "\"source_sha256\":%s}\n",
+           json_str(name).c_str(), ftype == 1 ? "f16" : "f32",
+           h.d, h.n_layer, h.n_head, h.n_inter, h.vocab, h.pos_k, h.pos_groups,
+           arr(h.conv_k, h.n_conv).c_str(), arr(h.conv_s, h.n_conv).c_str(),
+           arr(h.conv_d, h.n_conv).c_str(), h.feat_ln_layer ? "layer" : "group",
+           h.stable_ln ? "true" : "false", h.do_normalize ? "true" : "false",
+           h.conv_bias ? "true" : "false", (double) h.ln_eps,
+           sha.empty() ? "null" : json_str(sha).c_str());
+}
 
 }  // namespace
 
@@ -892,11 +1207,17 @@ int main(int argc, char ** argv) {
     if (!a.verbose) {
         ggml_log_set(no_log, nullptr);
     }
-    std::vector<float> x;
     std::string err;
-    if (!read_wav(a.file, x, err)) {
-        fprintf(stderr, "ox-align: %s\n", err.c_str());
-        return 1;
+
+    // --info needs only the GGUF header: no audio, no backend, no tensor data
+    if (a.info) {
+        model m;
+        if (!load_model(a.model, m, nullptr, false, true, err)) {
+            fprintf(stderr, "ox-align: %s\n", err.c_str());
+            return 1;
+        }
+        print_info(m);
+        return 0;
     }
     const auto t0 = std::chrono::steady_clock::now();
 
@@ -926,19 +1247,32 @@ int main(int argc, char ** argv) {
     ggml_backend_t wbackend = backends.front();
 
     model m;
-    if (!load_model(a.model, m, wbackend, wbackend == cpu, err)) {
+    if (!load_model(a.model, m, wbackend, wbackend == cpu, false, err)) {
         fprintf(stderr, "ox-align: %s\n", err.c_str());
         return 1;
+    }
+
+    std::vector<float> x;
+    if (!read_wav(a.file, x, err)) {
+        fprintf(stderr, "ox-align: %s\n", err.c_str());
+        return 1;
+    }
+
+    g_dump_dir = a.dump_dir;
+    if (!g_dump_dir.empty()) {
+        fprintf(stderr, "ox-align: dumping activations to %s\n", g_dump_dir.c_str());
     }
 
     // windowing mirrors the reference: xp padded to whole windows of `win`
     // samples with `ctx` on each side; per call the model sees win+2*ctx
     // samples and the ctx frames at both ends are dropped.
-    const int64_t win = (int64_t) llround(a.window * SR);
-    const int64_t ctx = (int64_t) llround(a.context * SR);
-    const int64_t ext = ((-(int64_t) x.size()) % win + win) % win;
-    std::vector<float> xp((size_t) (ctx + (int64_t) x.size() + ctx + ext), 0.0f);
+    const int64_t win = a.win_samples;
+    const int64_t ctx = a.ctx_samples;
+    const int64_t n_in = (int64_t) x.size();
+    const int64_t ext = ((-n_in) % win + win) % win;
+    std::vector<float> xp((size_t) (ctx + n_in + ctx + ext), 0.0f);
     memcpy(xp.data() + ctx, x.data(), x.size() * sizeof(float));
+    std::vector<float>().swap(x);   // xp is the working copy from here
     const int64_t n_win = ((int64_t) xp.size() - 2 * ctx) / win;
     const int64_t slice = win + 2 * ctx;
 
@@ -954,11 +1288,12 @@ int main(int argc, char ** argv) {
                 a.window, a.context, (long long) T, (long long) (crop + keep));
         return 1;
     }
-    const int64_t out_want = ((int64_t) x.size() + 319) / 320;   // ceil(len/320)
+    const int64_t out_want = (n_in + 319) / 320;   // ceil(len/320)
 
     // ---- the input length is fixed, so build the graph once ----
     const size_t max_nodes = 8192;
-    struct ggml_init_params ip = { ggml_tensor_overhead() * max_nodes + ggml_graph_overhead(),
+    struct ggml_init_params ip = { ggml_tensor_overhead() * max_nodes +
+                                   ggml_graph_overhead_custom(max_nodes, false),
                                    nullptr, true };
     ggml_context * gctx = ggml_init(ip);
     if (!gctx) {
@@ -971,7 +1306,7 @@ int main(int argc, char ** argv) {
     ggml_tensor * out = build_forward(gctx, m, input, T, crop, keep);
     ggml_set_output(out);
 
-    ggml_cgraph * gf = ggml_new_graph(gctx);
+    ggml_cgraph * gf = ggml_new_graph_custom(gctx, max_nodes, false);
     ggml_build_forward_expand(gf, out);
 
     ggml_backend_sched_t sched =
@@ -988,7 +1323,7 @@ int main(int argc, char ** argv) {
     std::vector<float> buf((size_t) slice);
     for (int64_t w = 0; w < n_win; ++w) {
         const float * seg = xp.data() + w * win;
-        if (m.h.do_normalize) {
+        if (a.normalize && m.h.do_normalize) {
             double mu = 0, var = 0;
             for (int64_t i = 0; i < slice; ++i) {
                 mu += seg[i];
@@ -1012,11 +1347,11 @@ int main(int argc, char ** argv) {
         }
         ggml_backend_tensor_get(out, out_row.data(), 0, out_row.size() * sizeof(float));
         emissions.insert(emissions.end(), out_row.begin(), out_row.end());
-        if (w == 0 && g_dump_dir) {
+        if (w == 0 && !g_dump_dir.empty()) {
             for (auto & [name, t] : g_dump) {
                 std::vector<float> d(ggml_nelements(t));
                 ggml_backend_tensor_get(t, d.data(), 0, d.size() * sizeof(float));
-                std::string p = std::string(g_dump_dir) + "/" + name + ".npy";
+                std::string p = g_dump_dir + "/" + name + ".npy";
                 if (!write_npy(p, d.data(), t->ne[1] * t->ne[2] * t->ne[3], t->ne[0], err)) {
                     fprintf(stderr, "ox-align: dump %s: %s\n", name.c_str(), err.c_str());
                 }
