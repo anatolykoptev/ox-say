@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.github.anatolykoptev.ox-say</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@BIN@</string>
+        <string>serve</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- ffmpeg and afplay lookups -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <!-- the daemon stops its engine child (SIGTERM, then SIGKILL after 5 s) and drains HTTP -->
+    <key>ExitTimeOut</key>
+    <integer>20</integer>
+    <key>StandardOutPath</key>
+    <string>@LOGDIR@/ox-say.log</string>
+    <key>StandardErrorPath</key>
+    <string>@LOGDIR@/ox-say.log</string>
+</dict>
+</plist>

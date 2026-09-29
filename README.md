@@ -77,6 +77,35 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_ENGINE_LOG_DIR` | `~/Library/Logs/ox-say` | Child stdout/stderr go to `engine.log` here |
 | `OX_SAY_CACHE_DIR` | `~/Library/Caches/ox-say` | Default output dir for `speak` |
 
+## Install
+
+Requirements: macOS on x86_64, Xcode command line tools, CMake, Go, ffmpeg
+(`brew install cmake go ffmpeg`).
+
+```
+scripts/install.sh      # engines + models + ox-say + LaunchAgent, then waits for /health
+claude mcp add --transport http --scope user ox-say http://127.0.0.1:8094/mcp
+```
+
+It installs `ox-say` into `~/.local/bin` (`OX_SAY_BINDIR` overrides; keep it on
+your `PATH` for the CLI), the engines and models into
+`~/Library/Application Support/ox-say`, logs into `~/Library/Logs/ox-say`, and
+the LaunchAgent `io.github.anatolykoptev.ox-say`, which keeps `ox-say serve`
+running. `OX_SAY_WITH_WHISPER=1 scripts/install.sh` also fetches Whisper
+large-v3-turbo.
+
+launchd does not read your shell environment: set any `OX_SAY_*` configuration
+(see below) when you run the installer, e.g.
+`OX_SAY_IDLE_STOP_SECS=600 scripts/install.sh`, and it is written into the
+LaunchAgent. Path settings must be absolute. Re-running the installer upgrades
+in place; settings of the installed agent carry over unless you set them again
+(an empty value drops one). The `ox-say` CLI reads `OX_SAY_ADDR` from your shell,
+so export it there too if you installed the daemon on a custom address.
+
+`scripts/uninstall.sh` removes the agent and the binary and keeps engines,
+models and voices; `--purge` removes those too. Undo the MCP registration with
+`claude mcp remove --scope user ox-say`.
+
 ## Build and install the engine
 
 Requirements: macOS on x86_64, Xcode command line tools, CMake, ffmpeg.
