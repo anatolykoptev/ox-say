@@ -98,6 +98,6 @@ binaries. `scripts/fetch-models.sh` downloads model weights from their
 publishers, each under its own license:
 
 - Qwen3-TTS 12 Hz talker and tokenizer: Apache-2.0 (Qwen team, Alibaba)
-- Parakeet TDT 0.6B v3: CC-BY-4.0 (NVIDIA); attribute NVIDIA when you share
-  output or the weights
+- Parakeet TDT 0.6B v3: CC-BY-4.0 (NVIDIA); attribute NVIDIA when you
+  redistribute the weights
 - Whisper large-v3-turbo (optional): MIT (OpenAI)

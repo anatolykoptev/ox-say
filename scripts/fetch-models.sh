@@ -17,7 +17,13 @@ for arg in "$@"; do
     case "$arg" in
         --with-whisper) with_whisper=1 ;;
         -*) echo "unknown option: $arg" >&2; exit 2 ;;
-        *) dest=$arg ;;
+        *)
+            if [ -n "$dest" ]; then
+                echo "more than one destination: $dest, $arg" >&2
+                exit 2
+            fi
+            dest=$arg
+            ;;
     esac
 done
 home=${OX_SAY_HOME:-"$HOME/Library/Application Support/ox-say"}

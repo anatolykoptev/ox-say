@@ -163,6 +163,12 @@ bool read_wav(const std::string & path, std::vector<float> & out, std::string & 
             } else {
                 out.resize(avail / 4);
                 memcpy(out.data(), &buf[body], out.size() * 4);
+                for (float v : out) {
+                    if (!std::isfinite(v)) {
+                        err = "float WAV has non-finite samples";
+                        return false;
+                    }
+                }
             }
             if (out.empty()) {
                 err = "no audio samples";
@@ -252,10 +258,13 @@ bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std:
     }
     // Longer chunks than the model's audio context take parakeet's dynamic-encoder path, whose segment
     // times are in encoder frames (80 ms), not mel frames; stay on the fixed-context path.
-    const double max_s = parakeet_n_audio_ctx(ctx) / 100.0;
+    // A chunk of n samples has n/160 + 1 mel frames: at most n_audio_ctx - 1 hops, i.e. 49.99 s.
+    const double max_s = (parakeet_n_audio_ctx(ctx) - 1) / 100.0;
     if (a.chunk_s > max_s) {
         parakeet_free(ctx);
-        err = "--chunk-s must be at most " + std::to_string((int) max_s) + " s for this model";
+        char msg[96];
+        snprintf(msg, sizeof(msg), "--chunk-s must be at most %.2f s for this model", max_s);
+        err = msg;
         return false;
     }
     const std::vector<size_t> b = chunk_bounds(x, (size_t) (a.chunk_s * SR));
@@ -284,7 +293,7 @@ bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std:
                     }
                     continue;
                 }
-                if (is_punct(t) && !r.words.empty() && n_in_word > 0) {
+                if (is_punct(t) && !d.is_word_start && !r.words.empty() && n_in_word > 0) {
                     r.words.back().w += t;  // punctuation: no timing of its own, not part of p
                 } else if (d.is_word_start || r.words.empty() || n_in_word == 0) {
                     r.words.push_back({ t, off + d.t0 / 100.0, off + d.t1 / 100.0, d.p });
@@ -355,14 +364,35 @@ bool run_whisper(const args & a, const std::vector<float> & x, result & r, std::
     return true;
 }
 
-// length of the valid UTF-8 sequence at s[i], or 0
+// length of the well-formed UTF-8 sequence at s[i] (RFC 3629: no overlongs, no surrogates,
+// nothing above U+10FFFF), or 0
 size_t utf8_len(const std::string & s, size_t i) {
     const unsigned char c = s[i];
-    size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
-    if (n == 0 || i + n > s.size()) {
+    size_t        n  = 0;
+    unsigned char lo = 0x80, hi = 0xBF;  // allowed range of the second byte
+    if (c < 0x80) {
+        return 1;
+    } else if (c >= 0xC2 && c <= 0xDF) {
+        n = 2;
+    } else if (c >= 0xE0 && c <= 0xEF) {
+        n  = 3;
+        lo = c == 0xE0 ? 0xA0 : 0x80;
+        hi = c == 0xED ? 0x9F : 0xBF;
+    } else if (c >= 0xF0 && c <= 0xF4) {
+        n  = 4;
+        lo = c == 0xF0 ? 0x90 : 0x80;
+        hi = c == 0xF4 ? 0x8F : 0xBF;
+    } else {
         return 0;
     }
-    for (size_t k = 1; k < n; ++k) {
+    if (i + n > s.size()) {
+        return 0;
+    }
+    const unsigned char c1 = s[i + 1];
+    if (c1 < lo || c1 > hi) {
+        return 0;
+    }
+    for (size_t k = 2; k < n; ++k) {
         if (((unsigned char) s[i + k] >> 6) != 0x2) {
             return 0;
         }
