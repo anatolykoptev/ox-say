@@ -92,5 +92,12 @@ The first start of a freshly built engine compiles the Metal shaders
 
 ## Licenses
 
-ox-say is MIT. The engine is qwentts.cpp (MIT) with ggml (MIT); the model
-weights are Qwen3-TTS (Apache-2.0).
+ox-say is MIT. The engines are qwentts.cpp (MIT) and whisper.cpp (MIT), both
+with ggml (MIT); `engine/build.sh` copies their license files next to the
+binaries. `scripts/fetch-models.sh` downloads model weights from their
+publishers, each under its own license:
+
+- Qwen3-TTS 12 Hz talker and tokenizer: Apache-2.0 (Qwen team, Alibaba)
+- Parakeet TDT 0.6B v3: CC-BY-4.0 (NVIDIA); attribute NVIDIA when you
+  redistribute the weights
+- Whisper large-v3-turbo (optional): MIT (OpenAI)
