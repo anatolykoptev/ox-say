@@ -466,7 +466,7 @@ func cmdTranscribe(args []string, stdout, stderr io.Writer) int {
 
 	format := "text"
 	if jsonOut {
-		format = "verbose_json"
+		format = "ox_json" // ox-stt's own shape: words as w/s/e/p
 	}
 	if srtOut {
 		format = "srt"

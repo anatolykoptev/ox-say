@@ -203,10 +203,12 @@ func TestTranscribeUploadTempRemoved(t *testing.T) {
 	}
 }
 
-// S6 — response formats: verbose_json carries words with s/e/w/p exactly as
-// the engine produced them; srt/vtt render segment times; unknown model is
-// a 400; timestamp_granularities[] is accepted.
-// Mutation: swap s and e when building subtitles (or drop words) -> RED.
+// S6 — response formats: verbose_json is OpenAI's shape (duration, segments
+// start/end, words word/start/end) built from the engine output; ox_json
+// carries the engine's words (w/s/e/p) verbatim; srt/vtt render segment times;
+// unknown model is a 400; timestamp_granularities[] is accepted.
+// Mutation: swap s and e when building subtitles, or Start and End in
+// toOpenAIVerbose (internal/daemon/transcribe.go) -> RED.
 func TestTranscribeFormats(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
@@ -232,23 +234,47 @@ func TestTranscribeFormats(t *testing.T) {
 		t.Fatalf("verbose_json status = %d (body %s)", code, body)
 	}
 	var vj struct {
-		Text     string `json:"text"`
-		Language string `json:"language"`
-		Words    []struct {
+		Task     string  `json:"task"`
+		Text     string  `json:"text"`
+		Language string  `json:"language"`
+		Duration float64 `json:"duration"`
+		Segments []struct {
+			ID    int     `json:"id"`
+			Start float64 `json:"start"`
+			End   float64 `json:"end"`
+			Text  string  `json:"text"`
+		} `json:"segments"`
+		Words []struct {
+			Word  string  `json:"word"`
+			Start float64 `json:"start"`
+			End   float64 `json:"end"`
+		} `json:"words"`
+	}
+	if err := json.Unmarshal(body, &vj); err != nil {
+		t.Fatalf("verbose_json not JSON: %v", err)
+	}
+	if vj.Task != "transcribe" || vj.Text != "hello world." || vj.Language != "en" || vj.Duration != 1.5 {
+		t.Fatalf("verbose_json = %s", body)
+	}
+	if len(vj.Segments) != 1 || vj.Segments[0].Start != 0.0 || vj.Segments[0].End != 1.5 {
+		t.Fatalf("verbose_json segments: %s", body)
+	}
+	if len(vj.Words) != 2 || vj.Words[1].Word != "world." || vj.Words[1].Start != 0.9 || vj.Words[1].End != 1.5 {
+		t.Fatalf("verbose_json words: %s", body)
+	}
+
+	code, body = do(map[string]string{"response_format": "ox_json"})
+	var oj struct {
+		Words []struct {
 			W string  `json:"w"`
 			S float64 `json:"s"`
 			E float64 `json:"e"`
 			P float64 `json:"p"`
 		} `json:"words"`
 	}
-	if err := json.Unmarshal(body, &vj); err != nil {
-		t.Fatalf("verbose_json not JSON: %v", err)
-	}
-	if vj.Text != "hello world." || vj.Language != "en" {
-		t.Fatalf("verbose_json = %s", body)
-	}
-	if len(vj.Words) != 2 || vj.Words[0].W != "hello" || vj.Words[0].S != 0.0 || vj.Words[0].E != 0.9 || vj.Words[0].P != 0.99 {
-		t.Fatalf("verbose_json words not verbatim: %s", body)
+	if code != http.StatusOK || json.Unmarshal(body, &oj) != nil ||
+		len(oj.Words) != 2 || oj.Words[0].W != "hello" || oj.Words[0].E != 0.9 || oj.Words[0].P != 0.99 {
+		t.Fatalf("ox_json: status %d body %s", code, body)
 	}
 
 	code, body = do(map[string]string{"response_format": "srt"})

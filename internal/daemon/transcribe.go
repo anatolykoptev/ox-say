@@ -119,9 +119,9 @@ func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	format := fields["response_format"]
 	switch format {
-	case "", "json", "text", "verbose_json", "srt", "vtt":
+	case "", "json", "text", "verbose_json", "srt", "vtt", "ox_json":
 	default:
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("unsupported response_format %q (want json|text|verbose_json|srt|vtt)", format))
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("unsupported response_format %q (want json|text|verbose_json|srt|vtt|ox_json)", format))
 		return
 	}
 	if format == "" {
@@ -159,10 +159,57 @@ func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, toVTT(res.Segments))
 	case "verbose_json":
+		writeJSON(w, http.StatusOK, toOpenAIVerbose(res))
+	case "ox_json":
+		// ox-say extension: ox-stt's own JSON (words as w/s/e/p, times in seconds)
 		writeJSON(w, http.StatusOK, res)
 	default:
 		writeJSON(w, http.StatusOK, map[string]any{"text": res.Text})
 	}
+}
+
+// openAIVerbose is OpenAI's verbose_json transcription shape, which OpenAI
+// clients parse; words are always included.
+type openAIVerbose struct {
+	Task     string          `json:"task"`
+	Language string          `json:"language"`
+	Duration float64         `json:"duration"`
+	Text     string          `json:"text"`
+	Segments []openAISegment `json:"segments"`
+	Words    []openAIWord    `json:"words"`
+}
+
+type openAISegment struct {
+	ID    int     `json:"id"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+	Text  string  `json:"text"`
+}
+
+type openAIWord struct {
+	Word  string  `json:"word"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+}
+
+func toOpenAIVerbose(res *stt.Result) openAIVerbose {
+	v := openAIVerbose{
+		Task:     "transcribe",
+		Duration: res.DurationS,
+		Text:     res.Text,
+		Segments: make([]openAISegment, 0, len(res.Segments)),
+		Words:    make([]openAIWord, 0, len(res.Words)),
+	}
+	if res.Language != nil {
+		v.Language = *res.Language
+	}
+	for i, s := range res.Segments {
+		v.Segments = append(v.Segments, openAISegment{ID: i, Start: s.S, End: s.E, Text: s.Text})
+	}
+	for _, w := range res.Words {
+		v.Words = append(v.Words, openAIWord{Word: w.W, Start: w.S, End: w.E})
+	}
+	return v
 }
 
 // srtStamp renders seconds as HH:MM:SS,mmm.
