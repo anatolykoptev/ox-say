@@ -89,13 +89,35 @@ Viterbi pass over the emissions stay outside the binary.
 ```
 ox-align -m model.gguf -f audio.wav -o emissions.npy \
          [--window 30] [--context 2] [-t threads] [-ng] [--vocab vocab.json]
+         [--no-normalize] [--dump-dir DIR]
+ox-align -m model.gguf --info
 ```
 
+`--window`/`--context` must be whole numbers of 20 ms frames (window <=
+600 s, context <= 10 s). Per window the input is zero-mean/unit-variance
+normalized when the checkpoint's `do_normalize` says so; `--no-normalize`
+feeds raw samples instead, matching the production aligner, which passes
+unnormalized audio (the ONNX export it runs does not normalize internally
+either — a x10 input gain changes 5% of frame argmaxes there). `--info`
+prints the hyperparameters and the checkpoint's `ox_align.source_sha256`
+provenance hash as JSON without reading audio. `--dump-dir DIR` writes the
+named stage activations of the first window as `.npy` files for debugging;
+it is a flag, not an env var, so it cannot be inherited by accident.
+
 `engine/align/convert_wav2vec2.py` turns a Hugging Face `Wav2Vec2ForCTC`
-checkpoint into the GGUF it reads; `--ftype f16` stores the matmul weights in
-f16 (upcast back to f32 at load on the CPU backend — ggml's f16 dot product
-would also quantize the activations — and kept f16 on Metal, where matmuls
-run natively in f16). Two configurations are supported:
+checkpoint into the GGUF it reads (fp16/bf16 source tensors are upcast to
+f32 at conversion; `ox_align.source_sha256` records the sha256 of the source
+`config.json` + `model.safetensors`). `--ftype f16` stores the matmul
+weights in f16. On the CPU backend they are upcast back to f32 at load —
+ggml's f16 dot product would also quantize the activations — so CPU compute
+is identical for both ftypes; f16 buys smaller files, not CPU speed. On
+Metal the picture depends on the GPU: on the target AMD dGPU, patch
+0002 routes eligible 2D mul_mats to MPS in float32 after widening the f16
+weights, and the ops it does not take (attention, lm_head) go through
+mul_mv, whose activations stay f32 — so f16 weights are kept as stored.
+On Apple Silicon, `kernel_mul_mm_*` tiles the activations into `half`,
+which is exactly the rounding the CPU upcast avoids. Two configurations
+are supported:
 
 - `feat_extract_norm: "layer"` + `do_stable_layer_norm: true` (pre-LN), e.g.
   `MahmoudAshraf/mms-300m-1130-forced-aligner`;
@@ -118,9 +140,19 @@ python3 engine/align/convert_wav2vec2.py <hf-checkpoint-dir> out.gguf [--ftype f
 ### Verification
 
 `engine/align/test_oracle.py` compares emissions against HF transformers
-`Wav2Vec2ForCTC` run in float64 on CPU (HF's own f32 forward deviates ~3e-3
-from its f64 result on these models, so the f64 run is the meaningful
-reference for a 2e-3 gate). Test audio is committed under `testdata/`
+`Wav2Vec2ForCTC` run in float64 on CPU. The gate is derived from the oracle
+we did not choose: HF's own f32 forward deviates from its f64 result by
+`hf32_err` (measured 2.3e-3-7.6e-3 across the cases on this aarch64 box,
+3.2e-3 on the target Mac), so a fixed 2e-3 gate would sit below float32
+noise — no correct implementation could meet it. Each case's gate is `max(base_tol, 2 * hf32_err)` with base
+tolerances 2e-3 (f32) and 5e-3 (f16), argmax agreement >= 99.5%. Cached
+references carry a sidecar (WAV sha256, `source_sha256`, windowing,
+normalize mode); any mismatch fails instead of silently recomputing.
+`--backend cpu|gpu` picks the backend; `--refs-only` runs without torch or
+transformers on the host (numpy only), which is how the target Mac runs it.
+`engine/align/test_cli.py` is the bad-input suite: corrupted GGUFs,
+malformed `--window`/`--context`, empty WAV — each must fail cleanly with
+the offending key named. Test audio is committed under `testdata/`
 (LibriSpeech test-clean, CC-BY-4.0).
 
 Measured on aarch64 Linux (CPU backend, `-t 4`; max Δ = max |log-prob
@@ -130,12 +162,30 @@ difference| vs the float64 oracle, argmax = per-frame argmax agreement):
 |-------|-------|------|-------|--------|------|
 | wav2vec2-base-960h | f32 | 10.4 s | 0.0016 | 1.000 | 39 s |
 | wav2vec2-base-960h | f16 | 10.4 s | 0.0016 | 1.000 | 38 s |
-| mms-300m-1130-forced-aligner | f32 | 10.4 s | 0.0003 | 1.000 | 184 s |
-| mms-300m-1130-forced-aligner | f16 | 10.4 s | 0.0003 | 1.000 | 106 s |
+| mms-300m-1130-forced-aligner | f32 | 10.4 s | 0.0003 | 1.000 | ~110-180 s |
+| mms-300m-1130-forced-aligner | f16 | 10.4 s | 0.0003 | 1.000 | ~110-180 s |
 | wav2vec2-base-960h | f32 | 70 s (3 windows) | 0.0020 | 1.000 | 116 s |
 
-For reference, torch/transformers f32 runs the same 70 s clip in 44 s on this
-box — the CPU backend is not faster than torch here; the win of this port is
-Metal on the Mac and sharing the patched ggml stack with ox-stt.
+The f32/f16 rows run the same arithmetic on the CPU — f16 weights are
+upcast at load — so identical times are expected; the earlier 184 s vs
+106 s spread came from a contended box, not the dtype. For reference,
+torch/transformers f32 runs the same 70 s clip in 44 s on this box — the
+CPU backend is not faster than torch here; the win of this port is Metal
+on the Mac and sharing the patched ggml stack with ox-stt.
+
+Measured on the target Mac (Intel i9-9880H, Radeon Pro 5500M; max Δ vs
+the float64 oracle, argmax = per-frame agreement):
+
+| model | ftype | clip | backend | max Δ | argmax |
+|-------|-------|------|---------|-------|--------|
+| wav2vec2-base-960h | f32 | 10 s | Metal | 0.0045 | 1.000 |
+| wav2vec2-base-960h | f32 | 10 s | CPU `-ng` | 0.0042 | 1.000 |
+| mms-300m-1130-forced-aligner | f16 | 10 s | Metal | 0.0014 | 1.000 |
+| wav2vec2-base-960h | f32 | 70 s | Metal | 0.0030 | 1.000 |
+
+The Mac's own CPU backend sits at 0.0042 — above a fixed 2e-3 — because
+HF float32 itself is 0.0032 away from HF float64 there. That is float32
+noise on x86, not a Metal defect; the per-case `2 * hf32_err` gate
+accounts for it.
 
 

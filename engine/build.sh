@@ -111,6 +111,8 @@ cp "$stt/LICENSE" "$out/licenses/whisper.cpp.LICENSE"
 echo "built $out/ox-stt"
 
 # --- ox-align (same whisper.cpp tree as ox-stt; only ggml is linked) ---
+# Re-set the flags: this block must not depend on whatever the stt block left.
+set_cmake_flags "$work/ggml-include-stt"
 cmake -S "$here/align" -B "$work/align-build" -DWHISPER_SRC="$stt" \
     "${cmake_flags[@]}" > "$work/align-configure.log"
 cmake --build "$work/align-build" --target ox-align -j "$jobs" > "$work/align-build.log"
