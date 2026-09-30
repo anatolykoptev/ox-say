@@ -192,14 +192,16 @@ index d544a34b..8299fef8 100644
  struct ggml_metal_device {
      id<MTLDevice> mtl_device;
  
-@@ -1267,6 +1324,14 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
+@@ -1267,6 +1324,16 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
  
                  dev->props.supports_gpu_family_apple7 = [dev->mtl_device supportsFamily:MTLGPUFamilyApple7];
  
 +                // discrete GPUs without simdgroup matrix multiply (AMD on Intel Macs): MPS reaches ~85% of
-+                // the fp32 peak there, about 3x the tiled threadgroup kernel
++                // the fp32 peak there, about 3x the tiled threadgroup kernel. Opt-in (GGML_METAL_MPS_ENABLE=1):
++                // on a Radeon Pro 5500M it returned different, wrong results run to run for a while under
++                // sustained CPU load, with no error; the cause is not found yet (ox-say#14).
 +                dev->props.use_mps_mul_mat = !dev->props.has_unified_memory && !dev->props.has_simdgroup_mm &&
-+                    MPSSupportsMTLDevice(dev->mtl_device);
++                    MPSSupportsMTLDevice(dev->mtl_device) && getenv("GGML_METAL_MPS_ENABLE") != NULL;
 +                if (getenv("GGML_METAL_MPS_DISABLE") != NULL) {
 +                    dev->props.use_mps_mul_mat = false;
 +                }
@@ -207,7 +209,7 @@ index d544a34b..8299fef8 100644
                  dev->props.device_id = ggml_metal_device_id_parse([[dev->mtl_device name] UTF8String]);
  
                  dev->props.op_offload_min_batch_size  = getenv("GGML_OP_OFFLOAD_MIN_BATCH") ? atoi(getenv("GGML_OP_OFFLOAD_MIN_BATCH")) : 32;
-@@ -1345,6 +1410,7 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
+@@ -1345,6 +1412,7 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
                  GGML_LOG_INFO("%s: has tensor            = %s\n", __func__, dev->props.has_tensor              ? "true" : "false");
                  GGML_LOG_INFO("%s: use residency sets    = %s\n", __func__, dev->props.use_residency_sets      ? "true" : "false");
                  GGML_LOG_INFO("%s: use shared buffers    = %s\n", __func__, dev->props.use_shared_buffers      ? "true" : "false");
