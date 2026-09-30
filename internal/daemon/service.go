@@ -138,6 +138,14 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engi
 				if cfg.STTGPU != "on" {
 					args = append(args, "-ng")
 				}
+				// Streaming sessions need the silero VAD model; without the
+				// file the server spawns exactly as before and the session
+				// routes answer 501. The stat runs per spawn (Args is
+				// evaluated at every start), so dropping the model in later
+				// enables sessions without a daemon restart.
+				if _, err := os.Stat(cfg.STTVADModel); err == nil {
+					args = append(args, "--vad", cfg.STTVADModel)
+				}
 				return args
 			},
 		}
@@ -343,6 +351,7 @@ func (d *Daemon) Status() statusSummary {
 			"stt_server":        d.Cfg.STTServer,
 			"stt_port":          d.Cfg.STTPort,
 			"stt_idle_stop_s":   d.Cfg.STTIdleStop.Seconds(),
+			"stt_vad_model":     d.Cfg.STTVADModel,
 		},
 		Version: version,
 	}

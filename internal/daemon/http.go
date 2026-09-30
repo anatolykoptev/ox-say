@@ -20,6 +20,11 @@ import (
 func (d *Daemon) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/audio/speech", d.handleSpeech)
 	mux.HandleFunc("POST /v1/audio/transcriptions", d.handleTranscribe)
+	// Streaming transcription sessions on the resident ox-stt server.
+	mux.HandleFunc("POST /v1/audio/transcriptions/sessions", d.handleSTTSessionCreate)
+	mux.HandleFunc("POST /v1/audio/transcriptions/sessions/{id}/audio", d.handleSTTSessionAudio)
+	mux.HandleFunc("POST /v1/audio/transcriptions/sessions/{id}/finish", d.handleSTTSessionFinish)
+	mux.HandleFunc("DELETE /v1/audio/transcriptions/sessions/{id}", d.handleSTTSessionDelete)
 	mux.HandleFunc("GET /v1/audio/voices", d.handleListVoices)
 	mux.HandleFunc("POST /v1/audio/voices", d.handleAddVoice)
 	mux.HandleFunc("GET /v1/audio/voices/{name}", d.handleGetVoice)

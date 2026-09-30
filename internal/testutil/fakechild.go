@@ -33,24 +33,47 @@
 //	GET  /health      -> 200
 //	POST /transcribe  -> OXSAY_FAKE_STT_JSON or the canned CLI result
 //
+// Streaming sessions (the ox-stt --serve contract): only when argv carries
+// --vad, mirroring the real server — OXSAY_FAKE_STT_NO_VAD=1 forces 501
+// either way, standing in for an ox-stt without session support:
+//
+//	POST   /sessions            -> 200 {"id":"<32 lowercase hex>"} (429 past 4)
+//	POST   /sessions/{id}/audio -> 200 one segment "chunk <n>"; logs
+//	                               "sess-audio <id> <content-length> <content-type>"
+//	POST   /sessions/{id}/finish -> 200 done with text = the chunks joined;
+//	                               logs "sess-finish <id>"
+//	DELETE /sessions/{id}        -> 200 {}; logs "sess-del <id>"
+//
+// The session routes mirror the server's own guard: the exact Content-Type
+// per route (415 otherwise) and an exact Content-Length on POST (400 on a
+// chunked/missing length). Unknown ids are 404.
+//
 // It appends to OXSAY_FAKE_STT_LOG:
 //
 //   - "serve\t<pid>\t<arg>\t..." on start (tab-separated argv);
 //
-//   - "req <pid> <content-type> <unixns>" per /transcribe request.
+//   - "req <pid> <content-type> <unixns>" per /transcribe request;
+//
+//   - "sess-audio <id> <bytes> <content-type>", "sess-finish <id>",
+//     "sess-del <id>" per session request.
 //
 //     OXSAY_FAKE_STT_SERVE_STATUS   the HTTP status /transcribe answers
 //     OXSAY_FAKE_STT_SERVE_DELAY_MS sleep before answering /transcribe
 //     OXSAY_FAKE_STT_SERVE_EXIT=1   a serve child that cannot start: exit 1
 //     right after logging its serve record (port taken, ox-stt without
 //     --serve, a corrupt model)
+//     OXSAY_FAKE_STT_NO_VAD=1       session routes answer 501 even when the
+//     spawn argv carries --vad
 package testutil
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -81,6 +104,12 @@ func FakeChildMain() {
 		return
 	}
 	os.Exit(runFakeChild())
+}
+
+// fakeSTTSession is one live session in the fake `ox-stt --serve`: the
+// chunk texts it has taken so far, joined verbatim by /finish.
+type fakeSTTSession struct {
+	texts []string
 }
 
 // sttArgv reports whether argv looks like an ox-stt invocation.
@@ -169,6 +198,143 @@ func runFakeSTTServe(args []string) int {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintln(w, sttResultJSON())
+	})
+
+	// Streaming sessions exist only when the spawn argv carries --vad (the
+	// real server's gate); OXSAY_FAKE_STT_NO_VAD forces the no-VAD answer.
+	noVAD := os.Getenv("OXSAY_FAKE_STT_NO_VAD") == "1"
+	if !noVAD {
+		noVAD = true
+		for _, a := range args {
+			if a == "--vad" {
+				noVAD = false
+			}
+		}
+	}
+	var sessMu sync.Mutex
+	sessions := map[string]*fakeSTTSession{}
+
+	sessErr := func(w http.ResponseWriter, code int, msg string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	}
+	// The real server's own guard on the session POSTs: the exact
+	// Content-Type for the route and an exact Content-Length (no chunked).
+	sessCheck := func(w http.ResponseWriter, r *http.Request, wantCT string) bool {
+		if r.Header.Get("Content-Type") != wantCT {
+			sessErr(w, http.StatusUnsupportedMediaType, "content type must be "+wantCT)
+			return false
+		}
+		if len(r.TransferEncoding) != 0 || r.ContentLength < 0 {
+			sessErr(w, http.StatusBadRequest, "an exact Content-Length is required")
+			return false
+		}
+		return true
+	}
+	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
+		if noVAD {
+			sessErr(w, http.StatusNotImplemented, "sessions need the VAD model (--vad)")
+			return
+		}
+		if !sessCheck(w, r, "application/json") {
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		var rnd [16]byte
+		if _, err := rand.Read(rnd[:]); err != nil {
+			sessErr(w, http.StatusInternalServerError, "rand")
+			return
+		}
+		sessMu.Lock()
+		defer sessMu.Unlock()
+		if len(sessions) >= 4 {
+			sessErr(w, http.StatusTooManyRequests, "too many sessions")
+			return
+		}
+		id := hex.EncodeToString(rnd[:])
+		sessions[id] = &fakeSTTSession{}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": id})
+	})
+	mux.HandleFunc("POST /sessions/{id}/audio", func(w http.ResponseWriter, r *http.Request) {
+		if noVAD {
+			sessErr(w, http.StatusNotImplemented, "sessions need the VAD model (--vad)")
+			return
+		}
+		if !sessCheck(w, r, "application/octet-stream") {
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		id := r.PathValue("id")
+		sttLog(fmt.Sprintf("sess-audio %s %d %s", id, r.ContentLength, r.Header.Get("Content-Type")))
+		sessMu.Lock()
+		s, ok := sessions[id]
+		var text string
+		if ok {
+			s.texts = append(s.texts, "chunk "+strconv.Itoa(len(s.texts)+1))
+			text = s.texts[len(s.texts)-1]
+		}
+		sessMu.Unlock()
+		if !ok {
+			sessErr(w, http.StatusNotFound, "unknown session")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"segments": []map[string]any{{"s": 0, "e": 1, "text": text}},
+			"words":    []any{},
+			"pending":  0,
+		})
+	})
+	mux.HandleFunc("POST /sessions/{id}/finish", func(w http.ResponseWriter, r *http.Request) {
+		if noVAD {
+			sessErr(w, http.StatusNotImplemented, "sessions need the VAD model (--vad)")
+			return
+		}
+		if !sessCheck(w, r, "application/json") {
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		id := r.PathValue("id")
+		sttLog("sess-finish " + id)
+		sessMu.Lock()
+		s, ok := sessions[id]
+		if ok {
+			delete(sessions, id)
+		}
+		sessMu.Unlock()
+		if !ok {
+			sessErr(w, http.StatusNotFound, "unknown session")
+			return
+		}
+		segs := make([]map[string]any, 0, len(s.texts))
+		for i, txt := range s.texts {
+			segs = append(segs, map[string]any{"s": float64(i), "e": float64(i + 1), "text": txt})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"segments": segs, "words": []any{}, "pending": 0,
+			"done": true, "text": strings.Join(s.texts, " "),
+		})
+	})
+	mux.HandleFunc("DELETE /sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if noVAD {
+			sessErr(w, http.StatusNotImplemented, "sessions need the VAD model (--vad)")
+			return
+		}
+		id := r.PathValue("id")
+		sttLog("sess-del " + id)
+		sessMu.Lock()
+		_, ok := sessions[id]
+		delete(sessions, id)
+		sessMu.Unlock()
+		if !ok {
+			sessErr(w, http.StatusNotFound, "unknown session")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, "{}")
 	})
 
 	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))

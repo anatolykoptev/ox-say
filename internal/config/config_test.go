@@ -125,6 +125,39 @@ func TestLoadSTTServerValidation(t *testing.T) {
 	}
 }
 
+// OX_SAY_STT_VAD_MODEL defaults to the silero VAD weights in the same
+// models dir as the parakeet default, and the env var overrides it.
+// Mutation: drop the default assignment (leave the field empty when the env
+// is unset) -> RED on the default-path assertion.
+func TestLoadSTTVADModel(t *testing.T) {
+	t.Setenv("OX_SAY_HOME", "/tmp/oxsay-test-home")
+	c, err := Load(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join("/tmp/oxsay-test-home", "models", "ggml-silero-v5.1.2.bin")
+	if c.STTVADModel != want {
+		t.Fatalf("stt vad model = %q, want %q", c.STTVADModel, want)
+	}
+	t.Setenv("OX_SAY_STT_VAD_MODEL", "/tmp/custom-vad.bin")
+	c, err = Load(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.STTVADModel != "/tmp/custom-vad.bin" {
+		t.Fatalf("stt vad model override = %q", c.STTVADModel)
+	}
+	found := false
+	for _, k := range EnvKeys() {
+		if k == "OX_SAY_STT_VAD_MODEL" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("OX_SAY_STT_VAD_MODEL missing from EnvKeys")
+	}
+}
+
 // An invalid OX_SAY_STT_GPU must be refused at load: a typo silently picking
 // a device is worse than a loud failure.
 func TestLoadSTTGPUValidation(t *testing.T) {
@@ -205,6 +238,7 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_STT_BIN", "/tmp/oxk-4917/ox-stt-x", "/tmp/oxk-4917/ox-stt-x", func(c *Config) string { return c.STTBin }},
 		{"OX_SAY_STT_MODEL", "/tmp/oxk-4917/stt-x.bin", "/tmp/oxk-4917/stt-x.bin", func(c *Config) string { return c.STTModel }},
 		{"OX_SAY_STT_WHISPER_MODEL", "/tmp/oxk-4917/whisper-x.bin", "/tmp/oxk-4917/whisper-x.bin", func(c *Config) string { return c.STTWhisperModel }},
+		{"OX_SAY_STT_VAD_MODEL", "/tmp/oxk-4917/vad-x.bin", "/tmp/oxk-4917/vad-x.bin", func(c *Config) string { return c.STTVADModel }},
 		{"OX_SAY_STT_GPU", "off", "off", func(c *Config) string { return c.STTGPU }},
 		{"OX_SAY_STT_TIMEOUT_SECS", "63", "1m3s", func(c *Config) string { return c.STTTimeout.String() }},
 		{"OX_SAY_STT_MAX_UPLOAD_MB", "64", "64", func(c *Config) string { return strconv.FormatInt(c.STTMaxUploadMB, 10) }},
