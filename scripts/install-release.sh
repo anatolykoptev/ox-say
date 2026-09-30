@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Install an unpacked ox-say release for the current user. get.sh downloads,
+# verifies and unpacks the release, then runs this from inside it:
+#   <release>/bin/ox-say, <release>/engine/{tts-server,ox-stt,ox-align,licenses/},
+#   <release>/launchd/, <release>/scripts/, <release>/VERSION
+# Settings (OX_SAY_* variables): see scripts/lib-install.sh.
+#   OX_SAY_NO_MCP=1       do not register the MCP server with Claude Code
+#   OX_SAY_NO_SELFTEST=1  skip the speak-and-transcribe check at the end
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd -P)
+# shellcheck source=scripts/lib-install.sh source-path=SCRIPTDIR
+. "$root/scripts/lib-install.sh"
+
+oxs_require "brew install ffmpeg" ffmpeg plutil launchctl curl shasum
+oxs_settings
+version=$(cat "$root/VERSION")
+
+# 1. Fetch the models first: nothing the running daemon uses changes until step 2,
+#    so a failed download leaves an installed version intact.
+oxs_fetch_models "$root/scripts/fetch-models.sh"
+tmp=$(oxs_render_agent "$root/launchd/$label.plist.in")
+trap 'rm -f "$tmp"; rmdir "$(dirname "$tmp")" 2>/dev/null || true' EXIT
+
+# 2. Swap in the engines and the binary, then reload the agent.
+oxs_install_engines "$root/engine"
+oxs_install_binary "$root/bin/ox-say"
+oxs_load_agent "$tmp"
+oxs_wait_version "$version"
+
+# 3. Register the MCP server with Claude Code, if it is installed.
+mcp_url="http://$addr/mcp"
+if [ "${OX_SAY_NO_MCP:-0}" != 1 ] && command -v claude >/dev/null; then
+    if claude mcp get ox-say >/dev/null 2>&1; then
+        echo "MCP server ox-say is already registered with Claude Code"
+    elif claude mcp add --transport http --scope user ox-say "$mcp_url" >/dev/null; then
+        echo "registered the MCP server ox-say with Claude Code ($mcp_url)"
+    else
+        echo "could not register the MCP server; run: claude mcp add --transport http --scope user ox-say $mcp_url" >&2
+    fi
+else
+    echo "MCP: claude mcp add --transport http --scope user ox-say $mcp_url"
+fi
+
+# 4. Self-test: speak a phrase, transcribe it back. The first start of freshly
+#    installed engines compiles their Metal shaders (about a minute on a
+#    Radeon Pro 5500M), so this can take a while once.
+if [ "${OX_SAY_NO_SELFTEST:-0}" != 1 ]; then
+    echo "self-test: speaking and transcribing a phrase (the first run compiles GPU shaders, up to a few minutes)"
+    st=$(mktemp -d)
+    wav="$st/selftest.wav"
+    heard=
+    ok=0
+    # no `| grep -q` here: under pipefail its early exit can SIGPIPE the writer
+    # and fail a pipeline that matched
+    if "$bindir/ox-say" say -o "$wav" "ox-say is ready" >/dev/null &&
+        heard=$("$bindir/ox-say" transcribe "$wav"); then
+        case "$(printf '%s' "$heard" | tr '[:upper:]' '[:lower:]')" in
+            *ready*) ok=1 ;;
+        esac
+    fi
+    rm -f "$wav"
+    rmdir "$st"
+    if [ "$ok" = 1 ]; then
+        echo "self-test passed: heard \"$heard\""
+    else
+        echo "self-test failed (heard: \"${heard:-nothing}\"); see $logdir/ox-say.log" >&2
+        exit 1
+    fi
+fi
+echo "done. Try: ox-say say \"hello\"   ·   ox-say transcribe <file>   ·   ox-say status"

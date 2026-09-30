@@ -40,9 +40,20 @@ include_copy() {
 
 # Static libraries and an embedded Metal library: the installed binaries must not depend on
 # this build tree. Sets the array cmake_flags (an array, so paths with spaces stay one argument).
+#
+# OX_SAY_DIST=1 builds binaries to hand to other machines. The default, -march=native, targets this
+# CPU; distribution builds use a fixed baseline instead. Every Intel Mac since 2013 (Haswell) has
+# AVX2/FMA/F16C/BMI2. AVX-512 stays off because most Intel MacBooks have none. macOS 13 is the
+# oldest target.
 set_cmake_flags() {
-    local inc=$1
-    cmake_flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=ON -DGGML_METAL=ON
+    local inc=$1 cpu
+    if [ "${OX_SAY_DIST:-0}" = 1 ]; then
+        cpu=(-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+            -DGGML_BMI2=ON -DGGML_AVX512=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0)
+    else
+        cpu=(-DGGML_NATIVE=ON)
+    fi
+    cmake_flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF "${cpu[@]}" -DGGML_METAL=ON
         -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple -DGGML_OPENMP=OFF
         "-DCMAKE_C_FLAGS=-I$inc" "-DCMAKE_CXX_FLAGS=-I$inc")
 }
