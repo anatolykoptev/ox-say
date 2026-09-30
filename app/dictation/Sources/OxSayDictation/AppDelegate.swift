@@ -24,6 +24,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The last problem worth telling the user; the menu shows it until the
     /// next dictation starts.
     private var lastNotice: String?
+    private var client: TranscriptionClient!
+    /// Counts the seconds of a transcription on the pill, and after a while says
+    /// why it takes long (CPU while the voice engine is loaded, or the GPU's
+    /// first run after an update), so a slow run does not look like a hang.
+    private var workingTimer: Timer?
+    private var workingStarted = Date()
+    private var slowReason: String?
     /// Why the recording ended on its own (length cap, microphone change); said
     /// once the text has been delivered.
     private var endedReason: String?
@@ -42,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let client = TranscriptionClient(baseURL: DaemonAddress.url(agentPlist: try? Data(contentsOf: DaemonAddress.agentPlist)))
+        self.client = client
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode) { samples in
             try await client.transcribe(samples)
@@ -182,6 +190,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // The paste goes to the app the user was dictating into, or nowhere.
             output.target = NSWorkspace.shared.frontmostApplication?.processIdentifier
             overlay.showWorking()
+            startWorkingTimer()
+        }
+        if state != .transcribing {
+            workingTimer?.invalidate()
+            workingTimer = nil
         }
         // Esc cancels, but only while there is something to cancel: a registered
         // hotkey takes the key away from every other app.
@@ -196,6 +209,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "OxSay Dictation")
         statusItem.button?.contentTintColor = state == .recording ? .systemRed : nil
+    }
+
+    private func startWorkingTimer() {
+        workingTimer?.invalidate()
+        workingStarted = Date()
+        slowReason = nil
+        workingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.tickWorking()
+        }
+    }
+
+    private func tickWorking() {
+        guard controller.state == .transcribing else { return }
+        let elapsed = Date().timeIntervalSince(workingStarted)
+        let seconds = Int(elapsed)
+        if elapsed >= SlowTranscription.explainAfter && slowReason == nil {
+            slowReason = "" // asked once per transcription
+            let client = self.client!
+            Task { @MainActor [weak self] in
+                let state = await client.engineState()
+                guard let self, self.controller.state == .transcribing else { return }
+                self.slowReason = SlowTranscription.reason(engineState: state)
+            }
+        }
+        guard seconds >= 3 else { return }
+        if let reason = slowReason, !reason.isEmpty {
+            overlay.setWorkingText("Transcribing… \(seconds)s · \(reason)")
+        } else {
+            overlay.setWorkingText("Transcribing… \(seconds)s")
+        }
     }
 
     private func notice(_ message: String) {

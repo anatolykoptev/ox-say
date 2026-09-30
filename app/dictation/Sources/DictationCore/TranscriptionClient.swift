@@ -32,6 +32,15 @@ public struct TranscriptionClient {
         self.send = send
     }
 
+    /// The voice engine's state from the daemon's /status, nil when unreadable.
+    public func engineState() async -> String? {
+        var request = URLRequest(url: baseURL.appendingPathComponent("status"))
+        request.timeoutInterval = 3
+        guard let (data, response) = try? await send(request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return SlowTranscription.engineState(fromStatus: data)
+    }
+
     /// Transcribes 16 kHz mono samples.
     public func transcribe(_ samples: [Float]) async throws -> String {
         let boundary = "ox-say-dictation-\(UUID().uuidString)"
