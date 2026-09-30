@@ -41,6 +41,9 @@
 //
 //     OXSAY_FAKE_STT_SERVE_STATUS   the HTTP status /transcribe answers
 //     OXSAY_FAKE_STT_SERVE_DELAY_MS sleep before answering /transcribe
+//     OXSAY_FAKE_STT_SERVE_EXIT=1   a serve child that cannot start: exit 1
+//     right after logging its serve record (port taken, ox-stt without
+//     --serve, a corrupt model)
 package testutil
 
 import (
@@ -136,6 +139,10 @@ func runFakeSTTServe(args []string) int {
 		}
 	}
 	sttLog("serve\t" + strconv.Itoa(os.Getpid()) + "\t" + strings.Join(args, "\t"))
+
+	if os.Getenv("OXSAY_FAKE_STT_SERVE_EXIT") == "1" {
+		return 1
+	}
 
 	status := http.StatusOK
 	if v, err := strconv.Atoi(os.Getenv("OXSAY_FAKE_STT_SERVE_STATUS")); err == nil && v != 0 {

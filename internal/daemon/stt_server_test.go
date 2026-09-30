@@ -288,6 +288,107 @@ func TestSTTIdleStopWired(t *testing.T) {
 	}, "STT server idle stop")
 }
 
+// A server that cannot start (port taken, ox-stt without --serve, a corrupt
+// model) must not make every dictation sleep out the supervisor's crash
+// backoff inside EnsureReady: a request inside the cool-down window takes
+// the CLI fallback at once. The fake's --serve mode exits 1 on spawn; the
+// per-call CLI still works.
+// Mutation: delete the Backoff() check in sttServer -> RED (the in-window
+// request sleeps out the remaining backoff and spawns another serve child).
+func TestSTTServerBackoffFallsBackFast(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_STT_SERVE_EXIT", "1")
+	d := newTestDaemonSTT(t, dir, nil, nil, nil)
+	log := sttSetupServer(t, d, dir)
+	src := testutil.WriteTinyWAV(t, dir, "in.wav")
+
+	// Each failed start doubles the cool-down (1 s, 2 s, 4 s …) while the
+	// per-request cost stays ~constant, so driving attempts until a window
+	// still has ≥1 s left after the request is deterministic — on a slow box
+	// the first 1 s window can already be spent inside the request that
+	// earned it. Every request so far has fallen back to the CLI (an
+	// in-window request does not even spawn a serve child).
+	var calls int
+	for d.STTSup.Backoff() < time.Second && calls < 6 {
+		res, err := d.Transcribe(context.Background(), TranscribeInput{AudioPath: src})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Text != "hello world." {
+			t.Fatalf("text = %q — want the CLI fake's canned result", res.Text)
+		}
+		calls++
+	}
+	win := d.STTSup.Backoff()
+	if win < time.Second {
+		t.Fatal("no open backoff window after 6 failed serve starts")
+	}
+	serves := len(linesWith(sttLogLines(t, log), "serve\t"))
+
+	// Inside the window a request must go straight to the CLI: it pays no
+	// cool-down sleep and spawns no new serve child.
+	calls++
+	start := time.Now()
+	res, err := d.Transcribe(context.Background(), TranscribeInput{AudioPath: src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "hello world." {
+		t.Fatalf("text = %q — want the CLI fake's canned result", res.Text)
+	}
+	if el := time.Since(start); el >= win {
+		t.Fatalf("transcription during server backoff took %s — it slept out the crash backoff (window %s)", el, win)
+	}
+	lines := sttLogLines(t, log)
+	if n := len(linesWith(lines, "serve\t")); n != serves {
+		t.Fatalf("serve spawns = %d, want %d (no start attempt inside the backoff window)", n, serves)
+	}
+	if n := len(linesWith(lines, "argv\t")); n != calls {
+		t.Fatalf("CLI runs = %d, want %d (every request fell back)", n, calls)
+	}
+
+	// Recovery is automatic: the first request past the window launches a
+	// new start attempt (this one fails too and falls back again).
+	testutil.WaitFor(t, 40*time.Second, func() bool {
+		return d.STTSup.Backoff() <= 0
+	}, "backoff window to lapse")
+	if _, err := d.Transcribe(context.Background(), TranscribeInput{AudioPath: src}); err != nil {
+		t.Fatal(err)
+	}
+	lines = sttLogLines(t, log)
+	if n := len(linesWith(lines, "serve\t")); n != serves+1 {
+		t.Fatalf("serve spawns after the backoff lapsed = %d, want %d", n, serves+1)
+	}
+}
+
+// The STT server's start budget is capped at 90 s, below the TTS startup
+// budget (180 s — sized for first-start Metal shader compile): an honest
+// `ox-stt --serve` start is ~2–3 s, and even a cold start of a NEW ox-stt
+// binary spends ~47 s compiling Metal libraries despite -ng (issue #37). A
+// hung STT start must not pin a transcription for the TTS budget.
+// Mutation: pass cfg.StartupTimeout uncapped in the STT engine.Config ->
+// RED (sttGot = 300s).
+func TestSTTStartupTimeoutCap(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	var ttsGot, sttGot time.Duration
+	newTestDaemonSTT(t, dir,
+		func(c *config.Config) { c.StartupTimeout = 300 * time.Second },
+		func(ec *engine.Config) { ttsGot = ec.StartupTimeout },
+		func(ec *engine.Config) { sttGot = ec.StartupTimeout })
+	if ttsGot != 300*time.Second {
+		t.Fatalf("TTS StartupTimeout = %s, want the configured 300s", ttsGot)
+	}
+	if sttGot != 90*time.Second {
+		t.Fatalf("STT StartupTimeout = %s, want the 90s cap", sttGot)
+	}
+	// A smaller configured budget is honoured, not raised to the cap.
+	if got := sttStartupTimeout(15 * time.Second); got != 15*time.Second {
+		t.Fatalf("sttStartupTimeout(15s) = %s, want 15s", got)
+	}
+}
+
 // OX_SAY_STT_SERVER=off: no supervisor, the CLI path serves requests and
 // /status reports the server as off.
 func TestSTTServerOff(t *testing.T) {

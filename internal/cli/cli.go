@@ -555,11 +555,12 @@ func cmdStatus(_ []string, stdout, stderr io.Writer) int {
 			Starts   int     `json:"starts"`
 			Restarts int     `json:"restarts"`
 		} `json:"engine"`
-		STTServer struct {
-			State   string  `json:"state"`
-			PID     int     `json:"pid,omitempty"`
-			UptimeS float64 `json:"uptime_s,omitempty"`
-			LastErr string  `json:"last_error,omitempty"`
+		STTServer *struct {
+			State    string  `json:"state"`
+			PID      int     `json:"pid,omitempty"`
+			UptimeS  float64 `json:"uptime_s,omitempty"`
+			LastErr  string  `json:"last_error,omitempty"`
+			Restarts int     `json:"restarts"`
 		} `json:"stt_server"`
 		Voices []struct {
 			Name string `json:"name"`
@@ -579,11 +580,21 @@ func cmdStatus(_ []string, stdout, stderr io.Writer) int {
 	if st.Engine.LastErr != "" {
 		fmt.Fprintf(stdout, "last error: %s\n", st.Engine.LastErr)
 	}
-	fmt.Fprintf(stdout, "stt server: %s", st.STTServer.State)
-	if st.STTServer.PID != 0 {
-		fmt.Fprintf(stdout, " (pid %d, up %.0fs)", st.STTServer.PID, st.STTServer.UptimeS)
+	// The stt_server key is absent on a daemon old enough to predate the
+	// resident server — print no empty line for it.
+	if st.STTServer != nil {
+		fmt.Fprintf(stdout, "stt server: %s", st.STTServer.State)
+		if st.STTServer.PID != 0 {
+			fmt.Fprintf(stdout, " (pid %d, up %.0fs)", st.STTServer.PID, st.STTServer.UptimeS)
+		}
+		if st.STTServer.Restarts != 0 {
+			fmt.Fprintf(stdout, ", crash restarts: %d", st.STTServer.Restarts)
+		}
+		fmt.Fprintln(stdout)
+		if st.STTServer.LastErr != "" {
+			fmt.Fprintf(stdout, "stt server last error: %s\n", st.STTServer.LastErr)
+		}
 	}
-	fmt.Fprintln(stdout)
 	names := make([]string, 0, len(st.Voices))
 	for _, v := range st.Voices {
 		names = append(names, v.Name)

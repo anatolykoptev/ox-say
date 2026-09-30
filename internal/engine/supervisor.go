@@ -333,6 +333,22 @@ func (s *Supervisor) LiveURL() (string, bool) {
 	return "", false
 }
 
+// Backoff reports how long a NEW EnsureReady caller would have to sleep out
+// before the next start attempt may launch — the cool-down charged by a
+// crash or a failed start. It is 0 whenever an attempt could start at once:
+// never started, Ready, a start in flight or a child still tearing down,
+// and after Shutdown. Callers with a cheaper path (the daemon's STT route
+// falls back to the per-call CLI) use it to skip the wait instead of paying
+// it per request.
+func (s *Supervisor) Backoff() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dead || s.state == StateReady || s.state == StateStarting || s.child != nil {
+		return 0
+	}
+	return max(time.Until(s.nextAttempt), 0)
+}
+
 // Guard marks an in-flight engine user; the idle loop never stops the child
 // while a guard is alive. Release is idempotent.
 type Guard struct {

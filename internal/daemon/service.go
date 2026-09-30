@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
@@ -50,6 +51,17 @@ type Daemon struct {
 // store, and wires voice replay into engine startup.
 func New(cfg *config.Config, logger *slog.Logger) (*Daemon, error) {
 	return newDaemon(cfg, logger, nil, nil)
+}
+
+// sttStartupTimeout bounds the resident STT server's start budget. Passing
+// cfg.StartupTimeout outright would hand it the TTS budget (180 s), which
+// exists for the tts-server's first-start Metal shader compile: a hung STT
+// start would pin a transcription for all of it. An honest `ox-stt --serve`
+// start is ~2–3 s, and even a cold start of a NEW ox-stt binary spends
+// ~47 s compiling Metal libraries despite -ng (issue #37) — 90 s covers
+// that plus model load.
+func sttStartupTimeout(d time.Duration) time.Duration {
+	return min(d, 90*time.Second)
 }
 
 // newDaemon is New plus engine.Config tuning hooks for tests — tune for
@@ -106,7 +118,7 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engi
 			Name:           "stt",
 			Bin:            cfg.STTBin,
 			Port:           cfg.STTPort,
-			StartupTimeout: cfg.StartupTimeout,
+			StartupTimeout: sttStartupTimeout(cfg.StartupTimeout),
 			IdleStop:       cfg.STTIdleStop,
 			LogName:        "stt.log",
 			LogDir:         cfg.EngineLogDir,
@@ -200,6 +212,14 @@ func (d *Daemon) engineBase(ctx context.Context) (base string, g *engine.Guard, 
 // same acquire-then-ready shape as engineBase, but the release func travels
 // with the URL so stt can drop the guard once the response body is read.
 func (d *Daemon) sttServer(ctx context.Context) (base string, release func(), err error) {
+	// A server cooling down after a crash or a failed start would make this
+	// caller sleep out the rest of the restart backoff inside EnsureReady —
+	// under stt's serialization sem, so every queued dictation would pay it
+	// too. The CLI fallback is cheaper; the first request past the window
+	// still launches the next start attempt, so recovery is automatic.
+	if b := d.STTSup.Backoff(); b > 0 {
+		return "", nil, fmt.Errorf("stt server cooling down (%s)", b)
+	}
 	g := d.STTSup.Acquire()
 	base, err = d.STTSup.EnsureReady(ctx)
 	if err != nil {
