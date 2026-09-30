@@ -100,6 +100,16 @@ prints JSON: `text`, `segments` and `words` (`w`, `s`, `e`, `p`; seconds).
 - `--engine whisper`: Whisper large-v3-turbo, 99 languages, one segment per
   word (`max_len` 1, split on word), beam search 5.
 - `-ng` runs on the CPU.
+- `--serve --port N -m <parakeet>` keeps the model resident on loopback HTTP:
+  `GET /health` and `POST /transcribe` (WAV body). With `--vad <silero>` it
+  also serves `/sessions` for streaming dictation: the client posts raw
+  float32 16 kHz PCM chunks, a Silero VAD per session cuts the stream at
+  pauses (`segmenter.h`, 512-sample windows, hysteresis, 400 ms close, 12 s
+  cap) and a single background worker decodes finished pieces under the same
+  `decode_mu` as `/transcribe`. `POST /sessions` (application/json), `POST
+  /sessions/<id>/audio` (octet-stream, <= 30 s), `POST
+  /sessions/<id>/finish` (drains and closes), `DELETE /sessions/<id>`; at
+  most 4 sessions, idle >120 s reaped.
 
 Measured on a 347 s English interview (Radeon Pro 5500M, i9-9880H):
 Parakeet 9.6 s on the GPU (RTF 0.028) and 29.7 s on the CPU; Whisper turbo

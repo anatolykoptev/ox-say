@@ -3,12 +3,24 @@
 //   ox-stt -m <model> -f <16 kHz mono WAV> [--engine parakeet|whisper] [-l lang] [--prompt text]
 //          [-t threads] [-ng] [--chunk-s 30] [-o out.json] [-v]
 //
-//   ox-stt --serve -m <parakeet model> --port <port> [-t threads] [-ng] [--chunk-s 30] [-v]
+//   ox-stt --serve -m <parakeet model> --port <port> [--vad <silero VAD model>]
+//          [-t threads] [-ng] [--chunk-s 30] [-v]
 //          loads the model once, warms it up, then serves loopback HTTP (whisper stays CLI-only):
 //            GET  /health      -> 200 {"status":"ok"}
 //            POST /transcribe  -> body is a 16 kHz mono WAV sent as Content-Type: audio/wav with a
 //                                 Content-Length; 200 with the same JSON the CLI prints
-//          The Host header must name loopback. Anything else is refused (403, 411, 415).
+//          with --vad, streaming dictation sessions:
+//            POST /sessions              -> {"id":<32 lowercase hex>}; application/json, body ignored
+//            POST /sessions/<id>/audio   -> raw little-endian float32 mono 16 kHz PCM
+//                                 (application/octet-stream, <= 30 s per call); Silero VAD cuts the
+//                                 stream at pauses and finished pieces decode in the background;
+//                                 200 {"segments":[...],"words":[...],"pending":N} with what decoded
+//                                 since the previous response
+//            POST /sessions/<id>/finish  -> flushes the open segment, waits out the queued decodes,
+//                                 200 with the same fields plus "done":true and the whole "text"
+//            DELETE /sessions/<id>       -> drops the session and its queued work
+//          without --vad the session routes answer 501. The Host header must name loopback.
+//          Anything else is refused (403, 411, 415).
 //
 // Output: {"engine","language","duration_s","elapsed_s","text","segments":[{"s","e","text"}],
 //          "words":[{"w","s","e","p"}]}, times in seconds.
@@ -19,20 +31,29 @@
 #include "parakeet.h"
 #include "whisper.h"
 
+#include "segmenter.h"
+
 #include "httplib.h"
 
 #include <arpa/inet.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <memory>
 #include <mutex>
+#include <random>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -56,7 +77,7 @@ struct result {
 };
 
 struct args {
-    std::string model, file, out, engine = "parakeet", lang, prompt;
+    std::string model, file, out, engine = "parakeet", lang, prompt, vad;
     int threads = 6;
     bool gpu = true, verbose = false, serve = false;
     int port = 0;  // set to a valid 1..65535 value by parse, or flagged invalid
@@ -67,8 +88,12 @@ void usage(const char * argv0) {
     fprintf(stderr,
             "usage: %s -m model -f audio.wav [--engine parakeet|whisper] [-l lang] [--prompt text]\n"
             "          [-t threads] [-ng] [--chunk-s 30] [-o out.json] [-v]\n"
-            "       %s --serve -m model --port port [-t threads] [-ng] [--chunk-s 30] [-v]\n"
-            "audio must be a 16 kHz mono WAV (PCM16 or float32): ffmpeg -i in -ar 16000 -ac 1 out.wav\n",
+            "       %s --serve -m model --port port [--vad silero-vad.bin] [-t threads] [-ng]\n"
+            "          [--chunk-s 30] [-v]\n"
+            "audio must be a 16 kHz mono WAV (PCM16 or float32): ffmpeg -i in -ar 16000 -ac 1 out.wav\n"
+            "--vad enables the /sessions routes: POST /sessions, then raw little-endian float32\n"
+            "mono 16 kHz PCM chunks to /sessions/<id>/audio, POST /sessions/<id>/finish or\n"
+            "DELETE /sessions/<id> to end it\n",
             argv0, argv0);
 }
 
@@ -103,6 +128,8 @@ bool parse(int argc, char ** argv, args & a) {
             a.chunk_s = atof(v.c_str());
         } else if (k == "--serve") {
             a.serve = true;
+        } else if (k == "--vad") {
+            if (!next(a.vad)) return false;
         } else if (k == "--port") {
             if (!next(v)) return false;
             char * end = nullptr;
@@ -127,7 +154,7 @@ bool parse(int argc, char ** argv, args & a) {
         return a.engine == "parakeet" && a.file.empty() && a.out.empty() && a.lang.empty() &&
                a.prompt.empty() && a.port >= 1 && a.port <= 65535;
     }
-    return a.port == 0 && !a.file.empty();
+    return a.port == 0 && !a.file.empty() && a.vad.empty();
 }
 
 uint32_t rd32(const unsigned char * p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t) p[3] << 24; }
@@ -526,6 +553,119 @@ std::string error_json(const std::string & err) {
     return o;
 }
 
+// One decoded VAD segment of a session: absolute times, all its words.
+struct decoded_seg {
+    double s, e;
+    std::string text;
+    std::vector<word> words;
+};
+
+// Segment/words JSON shared by POST .../audio and .../finish: the segments
+// decoded since the session's previous response. `done` adds "done":true and
+// the session's full "text" (segments joined with single spaces, as
+// result_json joins them).
+std::string session_json(const std::vector<decoded_seg> & segs, size_t from, size_t pending, bool done,
+                         const std::string & text) {
+    std::string o = "{\"segments\":[";
+    for (size_t i = from; i < segs.size(); ++i) {
+        o += (i > from ? "," : "") + std::string("{\"s\":") + num(segs[i].s) + ",\"e\":" +
+             num(segs[i].e) + ",\"text\":";
+        json_str(o, segs[i].text);
+        o += "}";
+    }
+    o += "],\"words\":[";
+    bool first = true;
+    for (size_t i = from; i < segs.size(); ++i) {
+        for (const word & w : segs[i].words) {
+            o += (first ? "" : ",") + std::string("{\"w\":");
+            json_str(o, w.w);
+            o += ",\"s\":" + num(w.s) + ",\"e\":" + num(w.e) + ",\"p\":" + num(w.p) + "}";
+            first = false;
+        }
+    }
+    o += "],\"pending\":" + std::to_string(pending);
+    if (done) {
+        o += ",\"done\":true,\"text\":";
+        json_str(o, text);
+    }
+    o += "}";
+    return o;
+}
+
+// A streaming dictation session: its own Silero VAD context (the LSTM state is
+// per stream), the segmenter, the audio backlog for not-yet-emitted ranges and
+// the decoded results. Everything mutable sits behind mu; the decode worker
+// never holds mu while decoding.
+struct session {
+    std::mutex mu;
+    std::condition_variable cv;
+    whisper_vad_context * vad = nullptr;
+    oxstt::segmenter   seg;
+    std::vector<float> audio;        // samples [audio_base, audio_base+size)
+    uint64_t           audio_base = 0;
+    uint64_t           vad_pos = 0;      // samples already run through VAD
+    std::vector<decoded_seg> results;    // decoded segments in order
+    size_t             returned = 0;     // results below this were already sent
+    size_t             inflight = 0;     // segments queued or decoding
+    bool               dead = false;     // deleted/reaped: keep nothing
+    std::atomic<long long> touch{0};     // last request, epoch seconds (steady_clock)
+
+    ~session() {
+        if (vad) {
+            whisper_vad_free(vad);
+        }
+    }
+};
+
+struct decode_job {
+    std::shared_ptr<session> sess;
+    uint64_t s, e;
+    std::vector<float> pcm;
+};
+
+// "/sessions/<one path segment>/audio" or ".../finish": the required media
+// type for the POST; "/sessions" itself; anything else -> nullptr.
+const char * session_post_type(const std::string & path) {
+    static const std::string pre = "/sessions/";
+    if (path == "/sessions") {
+        return "application/json";
+    }
+    if (path.compare(0, pre.size(), pre) != 0) {
+        return nullptr;
+    }
+    const size_t mid = path.find('/', pre.size());
+    if (mid == std::string::npos || mid == pre.size()) {
+        return nullptr;
+    }
+    const std::string tail = path.substr(mid);
+    if (tail == "/audio") {
+        return "application/octet-stream";
+    }
+    if (tail == "/finish") {
+        return "application/json";
+    }
+    return nullptr;
+}
+
+bool is_session_path(const std::string & path) {
+    static const std::string pre = "/sessions/";
+    return path == "/sessions" || path.compare(0, pre.size(), pre) == 0;
+}
+
+std::string new_session_id() {
+    unsigned char b[16];
+    std::random_device rd;
+    for (int i = 0; i < 16; i += 4) {
+        const uint32_t v = rd();
+        memcpy(b + i, &v, 4);
+    }
+    char hex[33];
+    for (int i = 0; i < 16; ++i) {
+        snprintf(hex + 2 * i, 3, "%02x", b[i]);
+    }
+    return std::string(hex, 32);
+}
+
 // "host:port", "[v6]:port" or "host" -> the host without port or brackets
 std::string host_without_port(const std::string & h) {
     if (!h.empty() && h[0] == '[') {
@@ -559,8 +699,9 @@ bool is_loopback_host(const std::string & h) {
 }
 
 // Loopback HTTP front for the resident parakeet context. No SIGTERM handler: the default action
-// kills the process, which is what the supervisor's TERM-then-KILL expects. parakeet_context is
-// not thread-safe while httplib serves on a thread pool, so decodes run one at a time.
+// kills the process, which is what the supervisor's TERM-then-KILL expects — prompt exit regardless
+// of what the session decode worker is doing. parakeet_context is not thread-safe while httplib
+// serves on a thread pool, so decodes run one at a time under decode_mu.
 int serve(const args & a) {
     std::string err;
     parakeet_context * ctx = load_parakeet(a, err);
@@ -580,7 +721,154 @@ int serve(const args & a) {
             return 1;
         }
     }
+    // The VAD model gates the session routes; fail like the parakeet model before listening.
+    if (!a.vad.empty()) {
+        whisper_vad_context_params vp = whisper_vad_default_context_params();
+        vp.use_gpu = false;  // the VAD stays on the CPU even when parakeet uses the GPU
+        whisper_vad_context * probe = whisper_vad_init_from_file_with_params(a.vad.c_str(), vp);
+        if (!probe) {
+            fprintf(stderr, "ox-stt: failed to load VAD model %s\n", a.vad.c_str());
+            parakeet_free(ctx);
+            return 1;
+        }
+        whisper_vad_free(probe);
+    }
     std::mutex decode_mu;
+
+    // Session store + the single background decode worker (FIFO across sessions).
+    // Lock order, everywhere: sessions_mu < session.mu < jobs_mu — never nested
+    // the other way, and no lock is held across a decode or a wait.
+    std::mutex                                          sessions_mu;
+    std::unordered_map<std::string, std::shared_ptr<session>> sessions;
+    std::mutex                                          jobs_mu;
+    std::condition_variable                             jobs_cv;
+    std::deque<decode_job>                              jobs;
+    bool                                                stopping = false;
+
+    const auto now_s = [] {
+        return std::chrono::duration_cast<std::chrono::seconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    };
+    // Drop sessions idle past 120 s. Lazy — runs under sessions_mu inside every
+    // handler that already touches the map, so no extra thread or lock domain.
+    auto reap_idle = [&] {
+        const long long now = now_s();
+        for (auto it = sessions.begin(); it != sessions.end();) {
+            session & s = *it->second;
+            if (now - s.touch.load() > 120) {
+                {
+                    std::lock_guard<std::mutex> sl(s.mu);
+                    s.dead = true;
+                }
+                it = sessions.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    };
+    // Enqueue one emitted segment for background decode. Called with the
+    // session's mu held; the job copies its samples so audio can be trimmed.
+    auto enqueue_segment = [&](const std::shared_ptr<session> & sp, uint64_t ss, uint64_t ee) {
+        session & s = *sp;
+        decode_job j;
+        j.sess = sp;
+        j.s = ss;
+        j.e = ee;
+        const size_t off = (size_t) (ss - s.audio_base);
+        j.pcm.assign(s.audio.begin() + off, s.audio.begin() + off + (size_t) (ee - ss));
+        ++s.inflight;
+        {
+            std::lock_guard<std::mutex> jl(jobs_mu);
+            jobs.push_back(std::move(j));
+        }
+        jobs_cv.notify_one();
+    };
+    // Run VAD over the whole new windows, feed the segmenter, enqueue whatever
+    // it closes. False on a VAD failure (the session is then killed). mu held.
+    auto pump_session = [&](const std::shared_ptr<session> & sp) -> bool {
+        session & s = *sp;
+        const uint64_t total = s.audio_base + (uint64_t) s.audio.size();
+        const size_t n_win = (size_t) ((total - s.vad_pos) / oxstt::SEG_WIN);
+        if (n_win == 0) {
+            return true;
+        }
+        const float * pcm = s.audio.data() + (size_t) (s.vad_pos - s.audio_base);
+        if (!whisper_vad_detect_speech_no_reset(s.vad, pcm, (int) (n_win * oxstt::SEG_WIN))) {
+            return false;
+        }
+        const int np = whisper_vad_n_probs(s.vad);
+        std::vector<oxstt::seg_range> segs;
+        s.seg.feed(whisper_vad_probs(s.vad), (size_t) np, pcm, (size_t) np * oxstt::SEG_WIN, segs);
+        s.vad_pos += (uint64_t) np * oxstt::SEG_WIN;
+        for (const oxstt::seg_range & r : segs) {
+            enqueue_segment(sp, r.s, r.e);
+        }
+        // drop audio nothing can reference any more: the segmenter's floor is
+        // the lowest offset a future emit can still touch, so memory is bound
+        // to the open segment plus a few seconds of slack, silence included
+        const uint64_t floor_ = s.seg.floor();
+        if (floor_ > s.audio_base && floor_ - s.audio_base > 4u * SR) {
+            s.audio.erase(s.audio.begin(), s.audio.begin() + (size_t) (floor_ - s.audio_base));
+            s.audio_base = floor_;
+        }
+        return true;
+    };
+
+    std::thread worker([&] {
+        for (;;) {
+            decode_job j;
+            {
+                std::unique_lock<std::mutex> jl(jobs_mu);
+                jobs_cv.wait(jl, [&] { return stopping || !jobs.empty(); });
+                if (stopping) {
+                    return;
+                }
+                j = std::move(jobs.front());
+                jobs.pop_front();
+            }
+            result r;
+            std::string derr;
+            bool ok;
+            {
+                std::lock_guard<std::mutex> dl(decode_mu);
+                ok = decode_parakeet(ctx, a, j.pcm, r, derr);
+            }
+            if (!ok) {
+                fprintf(stderr, "ox-stt: session segment decode failed: %s\n", derr.c_str());
+            }
+            decoded_seg d;
+            d.s = (double) j.s / SR;
+            d.e = (double) j.e / SR;
+            if (ok) {
+                for (const segment & sg : r.segments) {
+                    d.text += (d.text.empty() ? "" : " ") + sg.text;
+                }
+                d.words = std::move(r.words);
+                for (word & w : d.words) {
+                    w.s += d.s;
+                    w.e += d.s;
+                }
+            }
+            {
+                std::lock_guard<std::mutex> sl(j.sess->mu);
+                if (!j.sess->dead) {
+                    j.sess->results.push_back(std::move(d));
+                }
+                --j.sess->inflight;
+            }
+            j.sess->cv.notify_all();
+        }
+    });
+    auto join_worker = [&] {
+        {
+            std::lock_guard<std::mutex> jl(jobs_mu);
+            stopping = true;
+        }
+        jobs_cv.notify_all();
+        worker.join();
+    };
+
     httplib::Server srv;
     srv.set_payload_max_length(64 << 20);
     // Local-only, as tts-server (engine/patches/qwentts/0002-tts-server-local-only.patch): the
@@ -589,10 +877,16 @@ int serve(const args & a) {
     // (text/plain, form data) without a preflight, but not this type. No request may be chunked:
     // httplib reads a chunked body, for any method, past set_payload_max_length; a POST must carry
     // a Content-Length.
-    srv.set_pre_routing_handler([](const httplib::Request & req, httplib::Response & res) {
+    srv.set_pre_routing_handler([&](const httplib::Request & req, httplib::Response & res) {
         if (!is_loopback_host(host_without_port(req.get_header_value("Host")))) {
             res.status = 403;
             res.set_content(error_json("host not allowed"), "application/json");
+            return httplib::Server::HandlerResponse::Handled;
+        }
+        // without --vad the session route space does not exist at all
+        if (a.vad.empty() && is_session_path(req.path)) {
+            res.status = 501;
+            res.set_content(error_json("sessions need --vad"), "application/json");
             return httplib::Server::HandlerResponse::Handled;
         }
         // httplib reads a chunked body for any method, not only POST, so refuse it everywhere
@@ -602,16 +896,24 @@ int serve(const args & a) {
             return httplib::Server::HandlerResponse::Handled;
         }
         if (req.method == "POST") {
-            std::string ctype = req.get_header_value("Content-Type");
-            std::transform(ctype.begin(), ctype.end(), ctype.begin(),
-                           [](unsigned char ch) { return (char) std::tolower(ch); });
-            const size_t semi = ctype.find(';');  // "audio/wav" exactly, parameters allowed
-            std::string mime = ctype.substr(0, semi);
-            mime.erase(mime.find_last_not_of(" \t") + 1);
-            if (mime != "audio/wav") {
-                res.status = 415;
-                res.set_content(error_json("Content-Type must be audio/wav"), "application/json");
-                return httplib::Server::HandlerResponse::Handled;
+            // per route: exact media type, parameters allowed — a web page can
+            // send a cross-site "simple" request (text/plain, form data)
+            // without a preflight, but none of these types
+            const char * want =
+                req.path == "/transcribe" ? "audio/wav" : session_post_type(req.path);
+            if (want) {
+                std::string ctype = req.get_header_value("Content-Type");
+                std::transform(ctype.begin(), ctype.end(), ctype.begin(),
+                               [](unsigned char ch) { return (char) std::tolower(ch); });
+                const size_t semi = ctype.find(';');
+                std::string mime = ctype.substr(0, semi);
+                mime.erase(mime.find_last_not_of(" \t") + 1);
+                if (mime != want) {
+                    res.status = 415;
+                    res.set_content(error_json(std::string("Content-Type must be ") + want),
+                                    "application/json");
+                    return httplib::Server::HandlerResponse::Handled;
+                }
             }
         }
         return httplib::Server::HandlerResponse::Unhandled;
@@ -626,6 +928,10 @@ int serve(const args & a) {
         res.set_content("{\"status\":\"ok\"}", "application/json");
     });
     srv.Post("/transcribe", [&](const httplib::Request & req, httplib::Response & res) {
+        {
+            std::lock_guard<std::mutex> ml(sessions_mu);
+            reap_idle();
+        }
         std::vector<float> x;
         std::string err;
         if (!read_wav_bytes((const unsigned char *) req.body.data(), req.body.size(), x, err)) {
@@ -648,11 +954,214 @@ int serve(const args & a) {
         }
         res.set_content(result_json("parakeet", r, x.size(), elapsed), "application/json");
     });
+
+    // find a live session by hex id: the shared_ptr, or nullptr (404 already
+    // set by the caller). Reaps idle sessions while the map is locked.
+    auto find_session = [&](const std::string & id) -> std::shared_ptr<session> {
+        std::lock_guard<std::mutex> ml(sessions_mu);
+        reap_idle();
+        const auto it = sessions.find(id);
+        return it == sessions.end() ? nullptr : it->second;
+    };
+
+    srv.Post("/sessions", [&](const httplib::Request &, httplib::Response & res) {
+        std::shared_ptr<session> s = std::make_shared<session>();
+        const std::string id = new_session_id();
+        // count check and insert under the same lock, or two POSTs could both
+        // win the 4-session cap
+        {
+            std::lock_guard<std::mutex> ml(sessions_mu);
+            reap_idle();
+            if (sessions.size() >= 4) {
+                res.status = 429;
+                res.set_content(error_json("at most 4 sessions"), "application/json");
+                return;
+            }
+            whisper_vad_context_params vp = whisper_vad_default_context_params();
+            vp.n_threads = a.threads;
+            vp.use_gpu   = false;
+            s->vad = whisper_vad_init_from_file_with_params(a.vad.c_str(), vp);
+            if (!s->vad) {
+                res.status = 500;
+                res.set_content(error_json("failed to init VAD context"), "application/json");
+                return;
+            }
+            whisper_vad_reset_state(s->vad);
+            s->touch.store(now_s());
+            sessions.emplace(id, s);
+        }
+        res.set_content("{\"id\":\"" + id + "\"}", "application/json");
+    });
+
+    srv.Post(R"(/sessions/([0-9a-f]{32})/audio)", [&](const httplib::Request & req, httplib::Response & res) {
+        const std::string id = req.matches[1].str();
+        std::shared_ptr<session> s = find_session(id);
+        if (!s) {
+            res.status = 404;
+            res.set_content(error_json("unknown session"), "application/json");
+            return;
+        }
+        s->touch.store(now_s());
+        if (req.body.size() % 4 != 0) {
+            res.status = 400;
+            res.set_content(error_json("body must be a whole number of float32 samples"),
+                            "application/json");
+            return;
+        }
+        if (req.body.size() > 30u * SR * 4) {
+            res.status = 413;
+            res.set_content(error_json("at most 30 s of audio per request"), "application/json");
+            return;
+        }
+        std::vector<float> fresh(req.body.size() / 4);
+        memcpy(fresh.data(), req.body.data(), fresh.size() * 4);
+        for (const float v : fresh) {
+            if (!std::isfinite(v)) {
+                res.status = 400;
+                res.set_content(error_json("non-finite sample"), "application/json");
+                return;
+            }
+        }
+        bool ok = true;
+        {
+            std::lock_guard<std::mutex> sl(s->mu);
+            if (s->dead) {
+                res.status = 404;
+                res.set_content(error_json("unknown session"), "application/json");
+                return;
+            }
+            s->audio.insert(s->audio.end(), fresh.begin(), fresh.end());
+            ok = pump_session(s);
+        }
+        if (!ok) {
+            {
+                std::lock_guard<std::mutex> sl(s->mu);
+                s->dead = true;
+            }
+            {
+                std::lock_guard<std::mutex> ml(sessions_mu);
+                sessions.erase(id);
+            }
+            fprintf(stderr, "ox-stt: VAD failed, session %s dropped\n", id.c_str());
+            res.status = 500;
+            res.set_content(error_json("VAD failed"), "application/json");
+            return;
+        }
+        std::string out;
+        {
+            std::lock_guard<std::mutex> sl(s->mu);
+            out = session_json(s->results, s->returned, s->inflight, false, "");
+            s->returned = s->results.size();
+        }
+        res.set_content(out, "application/json");
+    });
+
+    srv.Post(R"(/sessions/([0-9a-f]{32})/finish)", [&](const httplib::Request & req, httplib::Response & res) {
+        const std::string id = req.matches[1].str();
+        std::shared_ptr<session> s;
+        {
+            // gone from the map at once: nothing new may attach while it drains
+            std::lock_guard<std::mutex> ml(sessions_mu);
+            reap_idle();
+            const auto it = sessions.find(id);
+            if (it == sessions.end()) {
+                res.status = 404;
+                res.set_content(error_json("unknown session"), "application/json");
+                return;
+            }
+            s = it->second;
+            sessions.erase(it);
+        }
+        s->touch.store(now_s());
+        int status = 0;  // 0 = ok, else the error response
+        std::string out;
+        {
+            std::unique_lock<std::mutex> sl(s->mu);
+            // the carried remainder becomes one zero-padded VAD window; the
+            // segmenter sees only the real samples so its ranges stay exact
+            const uint64_t total = s->audio_base + (uint64_t) s->audio.size();
+            const size_t rem = (size_t) (total - s->vad_pos);
+            bool vad_ok = true;
+            if (rem > 0) {
+                float pad[oxstt::SEG_WIN];
+                memcpy(pad, s->audio.data() + (size_t) (s->vad_pos - s->audio_base), rem * 4);
+                memset(pad + rem, 0, (oxstt::SEG_WIN - rem) * 4);
+                if (!whisper_vad_detect_speech_no_reset(s->vad, pad, oxstt::SEG_WIN)) {
+                    vad_ok = false;
+                } else {
+                    std::vector<oxstt::seg_range> segs;
+                    s->seg.feed(whisper_vad_probs(s->vad), 1, pad, rem, segs);
+                    for (const oxstt::seg_range & r : segs) {
+                        enqueue_segment(s, r.s, r.e);
+                    }
+                }
+            }
+            if (vad_ok) {
+                std::vector<oxstt::seg_range> segs;
+                s->seg.finish(segs);
+                for (const oxstt::seg_range & r : segs) {
+                    enqueue_segment(s, r.s, r.e);
+                }
+                if (s->cv.wait_until(sl,
+                                     std::chrono::steady_clock::now() + std::chrono::seconds(60),
+                                     [&] { return s->inflight == 0; })) {
+                    std::string text;
+                    for (const decoded_seg & d : s->results) {
+                        text += (text.empty() ? "" : " ") + d.text;
+                    }
+                    out = session_json(s->results, s->returned, s->inflight, true, text);
+                    s->returned = s->results.size();
+                } else {
+                    status = 504;
+                }
+            } else {
+                status = 500;
+            }
+            if (status != 0) {
+                s->dead = true;  // queued and in-flight jobs drop their results
+                s->cv.notify_all();
+            }
+        }
+        if (status == 0) {
+            res.set_content(out, "application/json");
+        } else {
+            res.status = status;
+            res.set_content(error_json(status == 504 ? "decode did not finish in time"
+                                                   : "VAD failed"),
+                            "application/json");
+        }
+    });
+
+    srv.Delete(R"(/sessions/([0-9a-f]{32}))", [&](const httplib::Request & req, httplib::Response & res) {
+        const std::string id = req.matches[1].str();
+        std::shared_ptr<session> s;
+        {
+            std::lock_guard<std::mutex> ml(sessions_mu);
+            reap_idle();
+            const auto it = sessions.find(id);
+            if (it == sessions.end()) {
+                res.status = 404;
+                res.set_content(error_json("unknown session"), "application/json");
+                return;
+            }
+            s = it->second;
+            sessions.erase(it);
+        }
+        {
+            std::lock_guard<std::mutex> sl(s->mu);
+            s->dead = true;  // queued and in-flight jobs drop their results
+        }
+        s->cv.notify_all();
+        res.set_content("{}", "application/json");
+    });
+
     if (!srv.listen("127.0.0.1", a.port)) {
         fprintf(stderr, "ox-stt: cannot bind 127.0.0.1:%d\n", a.port);
+        join_worker();
         parakeet_free(ctx);
         return 1;
     }
+    join_worker();
     parakeet_free(ctx);
     return 0;
 }

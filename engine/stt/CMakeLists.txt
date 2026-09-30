@@ -16,3 +16,8 @@ add_executable(ox-stt ox-stt.cpp)
 target_compile_features(ox-stt PRIVATE cxx_std_17)
 target_include_directories(ox-stt PRIVATE ${WHISPER_SRC}/examples/server)  # vendored httplib.h
 target_link_libraries(ox-stt PRIVATE whisper parakeet Threads::Threads)
+
+# standalone: segmenter.h has no whisper/ggml/httplib deps, so this also builds
+# on any host with a C++17 compiler (the CI gate compiles it directly)
+add_executable(segmenter-test segmenter_test.cpp)
+target_compile_features(segmenter-test PRIVATE cxx_std_17)

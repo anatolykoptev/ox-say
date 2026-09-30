@@ -52,6 +52,11 @@ jobs:
       - name: go test -race
         run: go test -race -count=1 ./...
 
+      # segmenter.h is pure C++17 (no whisper/ggml deps): compile and run its
+      # standalone test directly, no CMake needed.
+      - name: segmenter test
+        run: c++ -std=c++17 -O1 -Wall -Wextra -Werror -o "$RUNNER_TEMP/segmenter-test" engine/stt/segmenter_test.cpp && "$RUNNER_TEMP/segmenter-test"
+
   # The dictation app is Swift and AppKit, so it needs a macOS runner (Intel:
   # the Macs ox-say is built for). The build step also assembles and ad-hoc
   # signs the .app, which catches a broken bundle, not just broken code.
