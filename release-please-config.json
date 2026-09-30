@@ -6,6 +6,9 @@
   "packages": {
     ".": {
       "release-type": "go",
+      "initial-version": "0.1.0",
+      "draft": true,
+      "force-tag-creation": true,
       "changelog-sections": [
         { "type": "feat", "section": "Added" },
         { "type": "fix", "section": "Fixed" },

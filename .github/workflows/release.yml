@@ -3,6 +3,11 @@
 # GITHUB_TOKEN cannot trigger a separate tag-triggered workflow (the Actions
 # recursion guard). workflow_dispatch builds the package without releasing it,
 # as a workflow artifact, to check the build before cutting a release.
+#
+# Releases are created as DRAFTS (release-please-config "draft": true +
+# "force-tag-creation": true) and published only after the package is attached,
+# so `releases/latest` never points at an asset-less release while the build
+# runs — or forever after one that fails.
 
 name: Release
 
@@ -10,16 +15,15 @@ on:
   push:
     branches: [main]
   # A PR that touches the engines or the packaging builds the package too, so a
-  # broken release build shows up before the release PR does.
+  # broken release build shows up before the release PR does. No paths: filter —
+  # the hand list kept missing inputs (scripts/fetch-models.sh, launchd/**,
+  # cmd/**, internal/**, go.mod, LICENSE, NOTICE, README.md).
   pull_request:
-    paths:
-      - "engine/**"
-      - "scripts/package-release.sh"
-      - "scripts/install-release.sh"
-      - "scripts/lib-install.sh"
-      - "get.sh"
-      - ".github/workflows/release.yml"
   workflow_dispatch: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Default: least privilege. Grant only what each job needs.
 permissions: {}
@@ -37,7 +41,7 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - name: Run release-please
-        uses: googleapis/release-please-action@v5.0.0
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -51,7 +55,7 @@ jobs:
   macos-package:
     name: Build the macOS x86_64 package
     needs: release-please
-    if: always() && (github.event_name != 'push' || needs.release-please.outputs.release_created == 'true')
+    if: "!cancelled() && (github.event_name != 'push' || needs.release-please.outputs.release_created == 'true')"
     runs-on: macos-15-intel
     timeout-minutes: 120
     # read only: this job runs the build scripts, including a PR's own
@@ -103,7 +107,9 @@ jobs:
           path: dist/
 
   # The only job with write access: it runs no build scripts, just attaches the
-  # checked package to the release release-please created.
+  # checked package to the draft release release-please created, then publishes
+  # it — drafts are excluded from releases/latest, so a failed build leaves the
+  # previous release as latest.
   publish:
     name: Attach the package to the release
     needs: [release-please, macos-package]
@@ -121,9 +127,15 @@ jobs:
         run: cd dist && shasum -a 256 -c SHA256SUMS
 
       - name: Upload to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
           files: |
             dist/ox-say-macos-x86_64.tar.gz
             dist/SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release edit "$TAG" --draft=false
