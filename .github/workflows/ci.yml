@@ -51,3 +51,18 @@ jobs:
 
       - name: go test -race
         run: go test -race -count=1 ./...
+
+  # The dictation app is Swift and AppKit, so it needs a macOS runner (Intel:
+  # the Macs ox-say is built for). The build step also assembles and ad-hoc
+  # signs the .app, which catches a broken bundle, not just broken code.
+  dictation:
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: swift test
+        run: swift test --package-path app/dictation
+
+      - name: build the app bundle
+        run: app/dictation/build.sh
