@@ -82,6 +82,17 @@ jobs:
           git fetch --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
           commit=$(git rev-parse "$TAG^{commit}")
           git merge-base --is-ancestor "$commit" "$GITHUB_SHA"
+          # ...and must be the release commit itself: the one whose manifest
+          # became this version. release-please adopts a tag that already
+          # exists, so a tag created on an older main commit would otherwise
+          # turn old code into a signed release under the new number.
+          want=${TAG#v}
+          got=$(git show "$commit:.release-please-manifest.json" | jq -r '."."')
+          before=$(git show "$commit^1:.release-please-manifest.json" | jq -r '."."')
+          if [ "$got" != "$want" ] || [ "$before" = "$want" ]; then
+            echo "$TAG points at $commit, which is not the commit that released $want (manifest $before -> $got)" >&2
+            exit 1
+          fi
           git checkout --detach "$commit"
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -169,6 +180,17 @@ jobs:
           git fetch --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
           commit=$(git rev-parse "$TAG^{commit}")
           git merge-base --is-ancestor "$commit" "$GITHUB_SHA"
+          # ...and must be the release commit itself: the one whose manifest
+          # became this version. release-please adopts a tag that already
+          # exists, so a tag created on an older main commit would otherwise
+          # turn old code into a signed release under the new number.
+          want=${TAG#v}
+          got=$(git show "$commit:.release-please-manifest.json" | jq -r '."."')
+          before=$(git show "$commit^1:.release-please-manifest.json" | jq -r '."."')
+          if [ "$got" != "$want" ] || [ "$before" = "$want" ]; then
+            echo "$TAG points at $commit, which is not the commit that released $want (manifest $before -> $got)" >&2
+            exit 1
+          fi
           git checkout --detach "$commit"
 
       # Build the app here, from first-party Swift with no dependencies, before
@@ -214,21 +236,22 @@ jobs:
 
       - name: Sign, notarize and repack
         env:
-          # App Store Connect API key when set (preferred), else the Apple ID.
-          # ASC_KEY_P8 holds the .p8 file base64-encoded, like MACOS_CERT_P12.
+          # An App Store Connect API key, which can only reach App Store
+          # Connect; no Apple ID fallback, so re-adding one cannot bring the
+          # broader credential back. ASC_KEY_P8 is the .p8 file, base64-encoded.
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           NOTARY_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.ASC_ISSUER_ID }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -n "$ASC_KEY_P8" ]; then
-            umask 077
-            export NOTARY_KEY="$RUNNER_TEMP/notary.p8"
-            trap 'rm -f "$NOTARY_KEY"' EXIT
-            printf '%s' "$ASC_KEY_P8" | base64 --decode > "$NOTARY_KEY"
+          if [ -z "$ASC_KEY_P8" ] || [ -z "$NOTARY_KEY_ID" ] || [ -z "$NOTARY_ISSUER" ]; then
+            echo "the release environment lacks the App Store Connect key (ASC_KEY_P8, ASC_KEY_ID, ASC_ISSUER_ID)" >&2
+            exit 1
           fi
+          umask 077
+          export NOTARY_KEY="$RUNNER_TEMP/notary.p8"
+          trap 'rm -f "$NOTARY_KEY"' EXIT
+          printf '%s' "$ASC_KEY_P8" | base64 --decode > "$NOTARY_KEY"
           scripts/sign-release.sh dist build/dictation/OxSayDictation.app
 
       - name: Remove the temporary keychain
