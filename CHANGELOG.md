@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/anatolykoptev/ox-say/compare/v0.1.3...v0.1.4) (2026-09-30)
+
+
+### Added
+
+* **dictation:** stream the recording into a transcription session ([#45](https://github.com/anatolykoptev/ox-say/issues/45)) ([898a09c](https://github.com/anatolykoptev/ox-say/commit/898a09c31e4dd2d728d5b83a2574005f9970da4a))
+
 ## [0.1.3](https://github.com/anatolykoptev/ox-say/compare/v0.1.2...v0.1.3) (2026-09-30)
 
 
