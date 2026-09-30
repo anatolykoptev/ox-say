@@ -98,6 +98,29 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_STT_MAX_UPLOAD_MB` | `200` | `file` part cap on the transcriptions route |
 | `OX_SAY_STT_MAX_AUDIO_SECS` | `14400` | Longer audio is refused with 400, not cut (a small compressed upload can expand to hours of PCM) |
 
+## Dictation
+
+`app/dictation` is a menu-bar app: hold ⌥Space, speak, release, and the text
+appears where the cursor is, in any app. The daemon transcribes it, so nothing
+leaves the Mac. A menu setting switches to toggle mode (press to start, press
+again to stop).
+
+```
+app/dictation/build.sh --install    # needs Xcode; installs ~/Applications/OxSayDictation.app
+```
+
+On first launch macOS asks for two permissions: the microphone, and
+Accessibility, which lets the app paste into other apps. Without Accessibility
+the text is left on the clipboard. The app pastes through the clipboard and puts
+your previous clipboard back afterwards, unless something else changed the
+clipboard in between. When a password field has focus, it does not paste at all
+and leaves the text on the clipboard.
+
+Without `OX_SAY_SIGN_IDENTITY` the build is signed ad hoc: it runs only on the
+Mac that built it, and macOS drops its Accessibility permission on every rebuild
+(remove the stale entry in System Settings and add the app again). See the
+header of `app/dictation/build.sh` for Developer ID signing and notarization.
+
 ## Install
 
 Requirements: macOS on x86_64, Xcode command line tools, CMake, Go, ffmpeg
