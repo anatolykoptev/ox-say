@@ -66,3 +66,6 @@ jobs:
 
       - name: build the app bundle
         run: app/dictation/build.sh
+
+      - name: install-app tests
+        run: bash app/dictation/test-install-app.sh

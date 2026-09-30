@@ -13,6 +13,7 @@ dist="$root/dist"
 asset=ox-say-macos-x86_64.tar.gz
 
 OX_SAY_DIST=1 "$root/engine/build.sh" "$work"
+VERSION="$version" "$root/app/dictation/build.sh"
 (cd "$root" && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath \
     -ldflags "-s -w -X main.version=$version" -o "$root/build/ox-say-dist" ./cmd/ox-say)
 
@@ -31,7 +32,9 @@ cp "$work"/out/tts-server "$work"/out/ox-stt "$work"/out/ox-align "$stage/engine
 cp "$work"/out/licenses/* "$stage/engine/licenses/"
 cp "$root"/launchd/*.plist.in "$stage/launchd/"
 cp "$root"/scripts/install-release.sh "$root"/scripts/lib-install.sh "$root"/scripts/fetch-models.sh \
-    "$root"/scripts/uninstall.sh "$stage/scripts/"
+    "$root"/scripts/uninstall.sh "$root"/app/dictation/install-app.sh "$stage/scripts/"
+mkdir -p "$stage/app"
+ditto "$root/build/dictation/OxSayDictation.app" "$stage/app/OxSayDictation.app"
 cp "$root"/LICENSE "$root"/NOTICE "$root"/README.md "$stage/"
 
 # The Go binary is statically linked: ship the license of every module it
@@ -70,6 +73,7 @@ fi
 mkdir -p "$stage/licenses/go/go"
 cp "$golicense" "$stage/licenses/go/go/LICENSE"
 
-tar -C "$root/build/release" -czf "$dist/$asset" ox-say
+# COPYFILE_DISABLE: no AppleDouble ._ files for extended attributes in the archive
+COPYFILE_DISABLE=1 tar -C "$root/build/release" -czf "$dist/$asset" ox-say
 (cd "$dist" && shasum -a 256 "$asset" > SHA256SUMS)
 cat "$dist/SHA256SUMS"

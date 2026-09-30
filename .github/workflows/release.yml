@@ -103,6 +103,11 @@ jobs:
           grep 'ox-say serve' usage.txt >/dev/null
           engine/tts-server --help > tts-help.txt 2>&1 || true
           grep 'qwentts.cpp' tts-help.txt >/dev/null
+          # the dictation app: signed, ours, carrying this version
+          codesign --verify --strict app/OxSayDictation.app
+          test "$(plutil -extract CFBundleIdentifier raw -o - app/OxSayDictation.app/Contents/Info.plist)" = io.github.anatolykoptev.ox-say.dictation
+          test "$(plutil -extract CFBundleShortVersionString raw -o - app/OxSayDictation.app/Contents/Info.plist)" = "$(sed 's/^v//; s/[-+].*//' VERSION | grep -E '^[0-9]+[.][0-9]+[.][0-9]+$' || echo 0.0.0)"
+          test -x scripts/install-app.sh
           (cd ../../dist && shasum -a 256 -c SHA256SUMS)
 
       - name: Keep the package as a workflow artifact

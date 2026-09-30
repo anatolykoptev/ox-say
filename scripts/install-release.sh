@@ -2,10 +2,12 @@
 # Install an unpacked ox-say release for the current user. get.sh downloads,
 # verifies and unpacks the release, then runs this from inside it:
 #   <release>/bin/ox-say, <release>/engine/{tts-server,ox-stt,ox-align,licenses/},
-#   <release>/launchd/, <release>/scripts/, <release>/VERSION
+#   <release>/app/OxSayDictation.app, <release>/launchd/, <release>/scripts/,
+#   <release>/VERSION
 # Settings (OX_SAY_* variables): see scripts/lib-install.sh.
-#   OX_SAY_NO_MCP=1       do not register the MCP server with Claude Code
-#   OX_SAY_NO_SELFTEST=1  skip the speak-and-transcribe check at the end
+#   OX_SAY_NO_MCP=1        do not register the MCP server with Claude Code
+#   OX_SAY_NO_SELFTEST=1   skip the speak-and-transcribe check
+#   OX_SAY_NO_DICTATION=1  do not install the dictation app
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -98,4 +100,24 @@ if [ "${OX_SAY_NO_SELFTEST:-0}" != 1 ]; then
         exit 1
     fi
 fi
+
+# 5. The dictation app, into ~/Applications. It only talks to the daemon, so a
+#    failure here leaves a working install and is reported, not fatal.
+dictation=0
+if [ "${OX_SAY_NO_DICTATION:-0}" != 1 ] && [ -d "$root/app/OxSayDictation.app" ]; then
+    if "$root/scripts/install-app.sh" "$root/app/OxSayDictation.app"; then
+        dictation=1
+    else
+        echo "the dictation app was not installed (see above); the daemon works without it" >&2
+    fi
+fi
+
 echo "done. Try: ox-say say \"hello\"   ·   ox-say transcribe <file>   ·   ox-say status"
+if [ "$dictation" = 1 ]; then
+    cat <<'EOF2'
+Dictation: hold ⌃Space in any app, speak, release. macOS asks once for the
+microphone and for Accessibility (System Settings → Privacy & Security →
+Accessibility → OxSay Dictation), which pasting needs. Until ox-say is signed
+with a Developer ID, it asks for Accessibility again after each update.
+EOF2
+fi

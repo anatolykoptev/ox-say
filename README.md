@@ -4,8 +4,7 @@ Local speech for **Intel Macs**, running on their AMD GPU:
 - text-to-speech with voice cloning;
 - speech-to-text with word timestamps;
 - dictation: hold ⌃Space in any app, speak, and the text is typed where the
-  cursor is (a menu-bar app; [build it from source](#dictation) for now, the
-  release does not ship it yet).
+  cursor is (a menu-bar app, see [Dictation](#dictation)).
 
 The engine build also produces `ox-align`, a wav2vec2 tool that emits
 per-frame CTC emissions — the first phase of a forced aligner (see
@@ -24,7 +23,9 @@ The installer:
 - fetches the models (about 2.9 GB, checksummed; the optional Whisper adds 1.6 GB);
 - starts the daemon as a LaunchAgent;
 - registers the MCP server with Claude Code, if Claude Code is installed;
-- finishes with a speak-and-transcribe self-test.
+- runs a speak-and-transcribe self-test;
+- installs the dictation app into `~/Applications` and starts it
+  (`OX_SAY_NO_DICTATION=1` skips it).
 
 It needs `ffmpeg` (`brew install ffmpeg`) and never uses `sudo`. To build from source instead, run
 `scripts/install.sh` (it needs Xcode CLT, `go`, `cmake` and `ffmpeg`).
@@ -156,6 +157,8 @@ leaves the Mac. While you speak, a pill at the bottom of the screen shows bars
 that move with your voice; Esc cancels. The menu switches the key to ⌥Space and
 turns on toggle mode (press to start, press again to stop).
 
+`get.sh` installs it into `~/Applications`. To build it from source instead:
+
 ```
 app/dictation/build.sh --install    # needs Xcode; installs ~/Applications/OxSayDictation.app
 ```
@@ -171,11 +174,12 @@ The app finds the daemon at the address the installer gave it (`OX_SAY_ADDR`
 in the ox-say LaunchAgent), 127.0.0.1:8094 by default. When something goes
 wrong, or the text could not be pasted, the pill says why for a few seconds.
 
-Without `OX_SAY_SIGN_IDENTITY` the build is signed ad hoc: it runs only on the
-Mac that built it, and macOS drops its microphone and Accessibility permissions
-on every rebuild (remove the stale Accessibility entry in System Settings and
-add the app again). See the
-header of `app/dictation/build.sh` for Developer ID signing and notarization.
+The app is signed ad hoc for now, so macOS ties its microphone and
+Accessibility permissions to the exact build: after each update or rebuild it
+asks again, and a stale entry in System Settings → Privacy & Security →
+Accessibility looks enabled but no longer applies (remove it and add the app
+again). A Developer ID signature, which ends this, is planned; see the header
+of `app/dictation/build.sh` for signing and notarization.
 
 ## Install
 
@@ -204,8 +208,8 @@ so export it there too if you installed the daemon on a custom address.
 
 `~/Library/Application Support/ox-say/uninstall.sh` (installed there by the
 release installer; in a source checkout it is `scripts/uninstall.sh`) removes
-the agent and the binary and keeps engines, models and voices; `--purge`
-removes those too. Undo the MCP registration with
+the agent, the binary and the dictation app, and keeps engines, models and
+voices; `--purge` removes those too. Undo the MCP registration with
 `claude mcp remove --scope user ox-say`.
 
 ## Build and install the engine
