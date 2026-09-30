@@ -46,6 +46,10 @@ if [ "$purge" = 1 ]; then
             rm -r "${home:?}/$d"
         fi
     done
+    # The release installer copies this script to $home/uninstall.sh; remove
+    # it so rmdir can drop an otherwise-empty home. Unlinking the running
+    # script is safe — the open fd keeps the inode until exit.
+    rm -f "$home/uninstall.sh"
     if [ -d "$home" ] && ! rmdir "$home" 2>/dev/null; then
         echo "left $home: it holds files ox-say did not create" >&2
     fi

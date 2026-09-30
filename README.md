@@ -195,8 +195,10 @@ in place; settings of the installed agent carry over unless you set them again
 (an empty value drops one). The `ox-say` CLI reads `OX_SAY_ADDR` from your shell,
 so export it there too if you installed the daemon on a custom address.
 
-`scripts/uninstall.sh` removes the agent and the binary and keeps engines,
-models and voices; `--purge` removes those too. Undo the MCP registration with
+`~/Library/Application Support/ox-say/uninstall.sh` (installed there by the
+release installer; in a source checkout it is `scripts/uninstall.sh`) removes
+the agent and the binary and keeps engines, models and voices; `--purge`
+removes those too. Undo the MCP registration with
 `claude mcp remove --scope user ox-say`.
 
 ## Build and install the engine

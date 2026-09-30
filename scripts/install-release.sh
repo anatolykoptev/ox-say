@@ -34,15 +34,19 @@ oxs_render_agent "$root/launchd/$label.plist.in" "$tmp"
 # 2. Swap in the engines and the binary, then reload the agent.
 oxs_install_engines "$root/engine"
 oxs_install_binary "$root/bin/ox-say"
+# get.sh deletes the extracted release tree, so the uninstaller must live
+# under $OX_SAY_HOME.
+cp "$root/scripts/uninstall.sh" "$home/uninstall.sh"
 oxs_load_agent "$tmp"
 oxs_wait_version "$version"
 
 # 3. Register the MCP server with Claude Code, if it is installed.
 mcp_url="http://$addr/mcp"
 if [ "${OX_SAY_NO_MCP:-0}" != 1 ] && command -v claude >/dev/null; then
-    if claude mcp get ox-say >/dev/null 2>&1; then
-        echo "MCP server ox-say is already registered with Claude Code"
-    elif claude mcp add --transport http --scope user ox-say "$mcp_url" >/dev/null; then
+    # remove+add, pinned to user scope: `mcp get` also reads project/local
+    # scope from the cwd and would keep a stale URL on a changed OX_SAY_ADDR.
+    claude mcp remove --scope user ox-say >/dev/null 2>&1 || true
+    if claude mcp add --transport http --scope user ox-say "$mcp_url" >/dev/null; then
         echo "registered the MCP server ox-say with Claude Code ($mcp_url)"
     else
         echo "could not register the MCP server; run: claude mcp add --transport http --scope user ox-say $mcp_url" >&2
