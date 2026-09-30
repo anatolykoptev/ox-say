@@ -129,7 +129,11 @@ private:
     }
 
     void close(uint64_t end, std::vector<seg_range> & out) {
-        if (speech_samples_ >= min_sp_) {
+        // end <= seg_start_ happens when a cap cut lands in the silence after
+        // the utterance already ended (past last speech + pad): the
+        // continuation holds no speech, and emitting it would be an empty or
+        // inverted range.
+        if (speech_samples_ >= min_sp_ && end > seg_start_) {
             out.push_back({ seg_start_, end });
             prev_end_ = end;
         }

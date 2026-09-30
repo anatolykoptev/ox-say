@@ -793,6 +793,9 @@ int serve(const args & a) {
     // Enqueue one emitted segment for background decode. Called with the
     // session's mu held; the job copies its samples so audio can be trimmed.
     auto enqueue_segment = [&](const std::shared_ptr<session> & sp, uint64_t ss, uint64_t ee) {
+        if (ee <= ss) {
+            return;  // the segmenter never emits one; never let one underflow the copy below
+        }
         session & s = *sp;
         decode_job j;
         j.sess = sp;

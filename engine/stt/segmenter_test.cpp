@@ -173,6 +173,28 @@ static void t_cap_tail_kept() {
     }
 }
 
+// A cap that fires in the silence right after an utterance must not emit an
+// empty or inverted continuation. Speech ends at 186368 (364 windows); the
+// cap fires at 192000 before the 400 ms pause can close the segment, and the
+// quietest stretch (true zeros from 189600) puts the cut at 190800, past the
+// speech end + 200 ms pad (189568).
+// RED when: close() drops its end > start check (emits [190800,189568)).
+static void t_cap_after_speech_no_inversion() {
+    stream s;
+    s.add(364, 0.9f);           // 11.65 s of speech
+    s.add(37, 0.05f, 0.001f);   // faint noise, then zeros below
+    s.silence_at(189600, s.x.size());
+    const std::vector<seg_range> got = run(s);
+    bool ok = !got.empty();
+    for (const seg_range & r : got) {
+        ok = ok && r.e > r.s;
+    }
+    if (!ok || !eq(got, { {0, 190800} })) {
+        dump("t_cap_after_speech_no_inversion", got);
+        CHECK(false, "expected exactly [{0,190800}] and no empty or inverted range");
+    }
+}
+
 // finish() closes an open segment with the end pad clamped to the samples fed.
 // RED when: the end is left unclamped (emits 21120, past the last sample 20480).
 static void t_finish_flush() {
@@ -238,6 +260,7 @@ int main() {
     t_hysteresis();
     t_hard_cap();
     t_cap_tail_kept();
+    t_cap_after_speech_no_inversion();
     t_finish_flush();
     t_pre_pad_no_overlap();
     t_chunk_invariant();
