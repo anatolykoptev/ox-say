@@ -4,9 +4,11 @@
 //          [-t threads] [-ng] [--chunk-s 30] [-o out.json] [-v]
 //
 //   ox-stt --serve -m <parakeet model> --port <port> [-t threads] [-ng] [--chunk-s 30] [-v]
-//          loads the model once, then serves loopback HTTP (whisper stays CLI-only):
+//          loads the model once, warms it up, then serves loopback HTTP (whisper stays CLI-only):
 //            GET  /health      -> 200 {"status":"ok"}
-//            POST /transcribe  -> body is a 16 kHz mono WAV; 200 with the same JSON the CLI prints
+//            POST /transcribe  -> body is a 16 kHz mono WAV sent as Content-Type: audio/wav with a
+//                                 Content-Length; 200 with the same JSON the CLI prints
+//          The Host header must name loopback. Anything else is refused (403, 411, 415).
 //
 // Output: {"engine","language","duration_s","elapsed_s","text","segments":[{"s","e","text"}],
 //          "words":[{"w","s","e","p"}]}, times in seconds.
@@ -18,6 +20,8 @@
 #include "whisper.h"
 
 #include "httplib.h"
+
+#include <arpa/inet.h>
 
 #include <algorithm>
 #include <cctype>
@@ -101,8 +105,10 @@ bool parse(int argc, char ** argv, args & a) {
             a.serve = true;
         } else if (k == "--port") {
             if (!next(v)) return false;
-            const long p = strtol(v.c_str(), nullptr, 10);
-            a.port = p < 1 ? -1 : (p > 65535 ? 65536 : (int) p);  // out of range stays invalid
+            char * end = nullptr;
+            const long p = strtol(v.c_str(), &end, 10);
+            const bool whole = !v.empty() && std::isdigit((unsigned char) v[0]) && *end == '\0';
+            a.port = !whole || p < 1 ? -1 : (p > 65535 ? 65536 : (int) p);  // out of range stays invalid
         } else if (k == "-ng" || k == "--no-gpu") {
             a.gpu = false;
         } else if (k == "-v" || k == "--verbose") {
@@ -520,6 +526,38 @@ std::string error_json(const std::string & err) {
     return o;
 }
 
+// "host:port", "[v6]:port" or "host" -> the host without port or brackets
+std::string host_without_port(const std::string & h) {
+    if (!h.empty() && h[0] == '[') {
+        const size_t e = h.find(']');
+        return e == std::string::npos ? h : h.substr(1, e - 1);
+    }
+    const size_t c = h.find(':');
+    if (c != std::string::npos && h.find(':', c + 1) == std::string::npos) {
+        return h.substr(0, c);  // one colon: a name or an IPv4 address with a port
+    }
+    return h;  // no port, or a bare IPv6 literal
+}
+
+// localhost, 127.0.0.0/8 or ::1 (strict literals via inet_pton)
+bool is_loopback_host(const std::string & h) {
+    std::string s = h;
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char ch) { return (char) std::tolower(ch); });
+    if (s == "localhost") {
+        return true;
+    }
+    unsigned char v4[4];
+    if (inet_pton(AF_INET, s.c_str(), v4) == 1) {
+        return v4[0] == 127;
+    }
+    unsigned char v6[16];
+    if (inet_pton(AF_INET6, s.c_str(), v6) == 1) {
+        static const unsigned char loop6[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+        return memcmp(v6, loop6, sizeof(loop6)) == 0;
+    }
+    return false;
+}
+
 // Loopback HTTP front for the resident parakeet context. No SIGTERM handler: the default action
 // kills the process, which is what the supervisor's TERM-then-KILL expects. parakeet_context is
 // not thread-safe while httplib serves on a thread pool, so decodes run one at a time.
@@ -530,9 +568,49 @@ int serve(const args & a) {
         fprintf(stderr, "ox-stt: %s\n", err.c_str());
         return 1;
     }
+    // Warm up before listening: the first decode after a load pays for allocating the compute
+    // buffers and paging in the weights (measured 1.8-4.5 s for a 4.7 s phrase, against 0.9 s
+    // warm). One second of silence costs ~0.3 s here, so /health answering means warm, not just
+    // loaded.
+    {
+        result r;
+        if (!decode_parakeet(ctx, a, std::vector<float>(SR, 0.0f), r, err)) {
+            fprintf(stderr, "ox-stt: warm-up decode failed: %s\n", err.c_str());
+            parakeet_free(ctx);
+            return 1;
+        }
+    }
     std::mutex decode_mu;
     httplib::Server srv;
     srv.set_payload_max_length(64 << 20);
+    // Local-only, as tts-server (engine/patches/qwentts/0002-tts-server-local-only.patch): the
+    // supervising daemon is the one client. The Host header must name loopback (DNS rebinding), and
+    // a POST must carry Content-Type audio/wav: a web page can send a cross-site "simple" request
+    // (text/plain, form data) without a preflight, but not this type. A POST must also carry a
+    // Content-Length: httplib reads a chunked body past set_payload_max_length.
+    srv.set_pre_routing_handler([](const httplib::Request & req, httplib::Response & res) {
+        if (!is_loopback_host(host_without_port(req.get_header_value("Host")))) {
+            res.status = 403;
+            res.set_content(error_json("host not allowed"), "application/json");
+            return httplib::Server::HandlerResponse::Handled;
+        }
+        if (req.method == "POST") {
+            std::string ctype = req.get_header_value("Content-Type");
+            std::transform(ctype.begin(), ctype.end(), ctype.begin(),
+                           [](unsigned char ch) { return (char) std::tolower(ch); });
+            if (ctype.rfind("audio/wav", 0) != 0) {
+                res.status = 415;
+                res.set_content(error_json("Content-Type must be audio/wav"), "application/json");
+                return httplib::Server::HandlerResponse::Handled;
+            }
+            if (req.has_header("Transfer-Encoding") || !req.has_header("Content-Length")) {
+                res.status = 411;
+                res.set_content(error_json("a Content-Length body is required"), "application/json");
+                return httplib::Server::HandlerResponse::Handled;
+            }
+        }
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
     // httplib defaults to SO_REUSEPORT: a second server on the same port would bind silently and
     // split requests. SO_REUSEADDR keeps rebind-after-crash fast while an occupied port fails.
     srv.set_socket_options([](socket_t s) {
