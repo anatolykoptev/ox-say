@@ -47,6 +47,14 @@ if [ -d "$app" ] && [ ! -L "$app" ] &&
     rm -r "$app"
     echo "OxSay Dictation removed"
 fi
+# Staging copies an interrupted install may have left, when they are ours.
+for leftover in "$HOME/Applications/.OxSayDictation.app.new" "$HOME/Applications/.OxSayDictation.app.old"; do
+    if [ -d "$leftover" ] && [ ! -L "$leftover" ] &&
+        { [ ! -e "$leftover/Contents/Info.plist" ] ||
+            [ "$(plutil -extract CFBundleIdentifier raw -o - "$leftover/Contents/Info.plist" 2>/dev/null || true)" = "$label.dictation" ]; }; then
+        rm -r "$leftover"
+    fi
+done
 
 if [ "$purge" = 1 ]; then
     if [ "${home#/}" = "$home" ] || [ "${cachedir#/}" = "$cachedir" ]; then

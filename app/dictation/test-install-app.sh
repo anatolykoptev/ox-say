@@ -4,9 +4,10 @@
 #
 #   bash app/dictation/test-install-app.sh
 #
-# Mutation that must turn this RED: make `ours` in install-app.sh skip the
+# Mutations that must turn this RED: make `ours` in install-app.sh skip the
 # bundle identifier check (return success for any directory) - the foreign
-# bundle and the symlink scenarios fail.
+# bundle and the symlink scenarios fail; drop `clear_staging "$new"` - the
+# leftover scenarios fail; drop the pkill - the running-copy scenario fails.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -100,6 +101,39 @@ if [ "$rc" -ne 0 ] && [ "$(marker "$tmp/b/OxSayDictation.app")" = new ]; then
     pass "a foreign source bundle is refused"
 else
     fail "foreign source: rc=$rc"
+fi
+
+# G: a partial staging copy from an interrupted run (no Info.plist) is cleared
+mkdir -p "$tmp/g/.OxSayDictation.app.new/Contents/MacOS"
+echo partial > "$tmp/g/.OxSayDictation.app.new/Contents/MacOS/OxSayDictation"
+run "$tmp/src/OxSayDictation.app" "$tmp/g"
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(marker "$tmp/g/OxSayDictation.app")" = new ] && [ ! -e "$tmp/g/.OxSayDictation.app.new" ]; then
+    pass "a partial staging copy left by an interrupted run does not block the install"
+else
+    fail "partial staging: rc=$rc $(cat "$tmp/out")"
+fi
+
+# H: a foreign bundle under the staging name is refused, not merged into
+bundle "$tmp/h/.OxSayDictation.app.new" com.example.other foreign
+run "$tmp/src/OxSayDictation.app" "$tmp/h"
+rc=$?
+if [ "$rc" -ne 0 ] && [ "$(marker "$tmp/h/.OxSayDictation.app.new")" = foreign ] && [ ! -e "$tmp/h/OxSayDictation.app" ]; then
+    pass "a foreign bundle under the staging name is refused"
+else
+    fail "foreign staging: rc=$rc"
+fi
+
+# I: a running copy is stopped before the swap, and a failed start is not a failed install
+printf '#!/bin/sh\necho "pkill $*" >> "%s/calls"\nexit 0\n' "$tmp" > "$tmp/stubs/pkill"
+printf '#!/bin/sh\necho "open $*" >> "%s/calls"\nexit 1\n' "$tmp" > "$tmp/stubs/open"
+: > "$tmp/calls"
+run "$tmp/src/OxSayDictation.app" "$tmp/i"
+rc=$?
+if [ "$rc" -eq 0 ] && grep -q '^pkill -x OxSayDictation' "$tmp/calls" && [ "$(marker "$tmp/i/OxSayDictation.app")" = new ]; then
+    pass "a running copy is stopped; a failed start still counts as installed"
+else
+    fail "running copy: rc=$rc calls=$(tr '\n' ';' < "$tmp/calls")"
 fi
 
 echo
