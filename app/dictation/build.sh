@@ -5,11 +5,13 @@
 #   app/dictation/build.sh --install   build, replace ~/Applications/OxSayDictation.app, open it
 #
 # Signing: OX_SAY_SIGN_IDENTITY names a "Developer ID Application: …" identity in
-# the keychain. Without it the app is signed ad hoc, which runs only on the Mac that
-# built it, and macOS forgets its Accessibility permission on every rebuild (the
-# grant is tied to the exact binary). With a Developer ID identity and
-# OX_SAY_NOTARY_PROFILE (a `xcrun notarytool store-credentials` profile), the app
-# is also notarized and stapled, so it opens on other Macs without a warning.
+# the keychain. Without it the app is signed ad hoc: macOS then ties its
+# Accessibility permission to the exact binary and asks again after every
+# rebuild or update, and Gatekeeper refuses it when it arrives through a browser
+# download (a curl download, as get.sh does, carries no quarantine). With a
+# Developer ID identity the permission survives updates, and with
+# OX_SAY_NOTARY_PROFILE (a `xcrun notarytool store-credentials` profile) the app
+# is also notarized and stapled, so it opens anywhere without a warning.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -68,7 +70,7 @@ remove_app() {
 
 # Refuse a bundle that is not ours before spending a build on it.
 check_app "$app"
-if [ "$install" = 1 ]; then check_app "$HOME/Applications/$name.app"; fi
+if [ "$install" = 1 ]; then "$here/install-app.sh" --check; fi
 swift build -c release --package-path "$here"
 bin=$(swift build -c release --package-path "$here" --show-bin-path)
 
@@ -131,23 +133,11 @@ if [ "$identity" != - ] && [ -n "${OX_SAY_NOTARY_PROFILE:-}" ]; then
 fi
 
 if [ "$identity" = - ]; then
-    echo "built $app ($version, signed ad hoc: runs on this Mac only)"
+    echo "built $app ($version, signed ad hoc: macOS asks for Accessibility again after each rebuild)"
 else
     echo "built $app ($version, signed by $identity)"
 fi
 
 if [ "$install" = 1 ]; then
-    dest=$HOME/Applications/$name.app
-    mkdir -p "$HOME/Applications"
-    check_app "$dest"
-    # Stop a running copy first: its binary is about to be replaced. A signal, not
-    # an Apple Event, which would need the Automation permission for this terminal.
-    # The app gives a borrowed clipboard back on SIGTERM.
-    if pkill -x "$name"; then
-        for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x "$name" >/dev/null || break; sleep 0.5; done
-    fi
-    remove_app "$dest"
-    ditto "$app" "$dest"
-    open "$dest"
-    echo "installed $dest"
+    "$here/install-app.sh" "$app"
 fi

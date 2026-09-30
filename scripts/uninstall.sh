@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stop and remove the LaunchAgent and the ox-say binary. Engines, models and
-# voices stay unless --purge is given. Paths are read back from the installed
+# Stop and remove the LaunchAgent, the ox-say binary and the dictation app in
+# ~/Applications. Engines, models and voices stay unless --purge is given. Paths are read back from the installed
 # LaunchAgent, so an install with a custom OX_SAY_HOME or OX_SAY_BINDIR is
 # removed correctly without setting them again.
 set -euo pipefail
@@ -33,6 +33,28 @@ fi
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
 rm -f "$plist" "$bin"
 echo "ox-say agent and binary removed"
+
+# The dictation app, only when the bundle at that path is ours.
+app="$HOME/Applications/OxSayDictation.app"
+if [ -d "$app" ] && [ ! -L "$app" ] &&
+    [ "$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)" = "$label.dictation" ]; then
+    if pkill -x OxSayDictation; then
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            pgrep -x OxSayDictation >/dev/null || break
+            sleep 0.5
+        done
+    fi
+    rm -r "$app"
+    echo "OxSay Dictation removed"
+fi
+# Staging copies an interrupted install may have left, when they are ours.
+for leftover in "$HOME/Applications/.OxSayDictation.app.new" "$HOME/Applications/.OxSayDictation.app.old"; do
+    if [ -d "$leftover" ] && [ ! -L "$leftover" ] &&
+        { [ ! -e "$leftover/Contents/Info.plist" ] ||
+            [ "$(plutil -extract CFBundleIdentifier raw -o - "$leftover/Contents/Info.plist" 2>/dev/null || true)" = "$label.dictation" ]; }; then
+        rm -r "$leftover"
+    fi
+done
 
 if [ "$purge" = 1 ]; then
     if [ "${home#/}" = "$home" ] || [ "${cachedir#/}" = "$cachedir" ]; then
