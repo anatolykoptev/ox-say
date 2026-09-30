@@ -123,7 +123,8 @@ jobs:
   sign:
     name: Sign and notarize the app
     needs: [release-please, macos-package]
-    if: "!cancelled() && needs.macos-package.result == 'success' && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch')"
+    # a manual run from another branch skips it: the environment admits main only
+    if: "!cancelled() && needs.macos-package.result == 'success' && (needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))"
     runs-on: macos-15-intel
     timeout-minutes: 60
     environment: release
@@ -165,8 +166,9 @@ jobs:
             kc=${kc#*\"}
             keychains+=("${kc%\"}")
           done < <(security list-keychains -d user)
-          security list-keychains -d user -s "$SIGN_KEYCHAIN" "${keychains[@]}"
-          security find-identity -v -p codesigning "$SIGN_KEYCHAIN"
+          security list-keychains -d user -s "$SIGN_KEYCHAIN" ${keychains[@]+"${keychains[@]}"}
+          # a gate, not a print: exits 0 even with no valid identity
+          security find-identity -v -p codesigning "$SIGN_KEYCHAIN" | grep -F "\"$SIGN_IDENTITY\"" > /dev/null
 
       - name: Sign, notarize and repack
         env:
