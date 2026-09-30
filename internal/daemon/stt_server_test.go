@@ -303,14 +303,22 @@ func TestSTTServerBackoffFallsBackFast(t *testing.T) {
 	log := sttSetupServer(t, d, dir)
 	src := testutil.WriteTinyWAV(t, dir, "in.wav")
 
-	// Each failed start doubles the cool-down (1 s, 2 s, 4 s …) while the
-	// per-request cost stays ~constant, so driving attempts until a window
-	// still has ≥1 s left after the request is deterministic — on a slow box
-	// the first 1 s window can already be spent inside the request that
-	// earned it. Every request so far has fallen back to the CLI (an
-	// in-window request does not even spawn a serve child).
+	// Drive failed start ATTEMPTS, not requests: a request inside a window
+	// falls back without an attempt and does not grow the backoff, so a
+	// request-counted loop stalls in the first window on a fast machine.
+	// Each window is waited out so every request launches a fresh (failing)
+	// start; the windows double (1 s, 2 s, 4 s …), so within a few attempts
+	// one still has ≥1 s left after the request that earned it, however long
+	// a request takes. Every request falls back to the CLI.
 	var calls int
-	for d.STTSup.Backoff() < time.Second && calls < 6 {
+	deadline := time.Now().Add(60 * time.Second)
+	for d.STTSup.Backoff() < time.Second {
+		if time.Now().After(deadline) {
+			t.Fatalf("no backoff window of 1 s or more after %d failed serve starts", calls)
+		}
+		testutil.WaitFor(t, 40*time.Second, func() bool {
+			return d.STTSup.Backoff() <= 0
+		}, "backoff window to lapse before the next attempt")
 		res, err := d.Transcribe(context.Background(), TranscribeInput{AudioPath: src})
 		if err != nil {
 			t.Fatal(err)
@@ -321,9 +329,6 @@ func TestSTTServerBackoffFallsBackFast(t *testing.T) {
 		calls++
 	}
 	win := d.STTSup.Backoff()
-	if win < time.Second {
-		t.Fatal("no open backoff window after 6 failed serve starts")
-	}
 	serves := len(linesWith(sttLogLines(t, log), "serve\t"))
 
 	// Inside the window a request must go straight to the CLI: it pays no
@@ -386,6 +391,13 @@ func TestSTTStartupTimeoutCap(t *testing.T) {
 	// A smaller configured budget is honoured, not raised to the cap.
 	if got := sttStartupTimeout(15 * time.Second); got != 15*time.Second {
 		t.Fatalf("sttStartupTimeout(15s) = %s, want 15s", got)
+	}
+	// An unset or invalid budget must not fall through to engine.New's
+	// 180 s default. Mutation: drop the d <= 0 branch -> RED.
+	for _, d := range []time.Duration{0, -time.Second} {
+		if got := sttStartupTimeout(d); got != 90*time.Second {
+			t.Fatalf("sttStartupTimeout(%s) = %s, want the 90s cap", d, got)
+		}
 	}
 }
 

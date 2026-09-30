@@ -61,7 +61,13 @@ func New(cfg *config.Config, logger *slog.Logger) (*Daemon, error) {
 // ~47 s compiling Metal libraries despite -ng (issue #37) — 90 s covers
 // that plus model load.
 func sttStartupTimeout(d time.Duration) time.Duration {
-	return min(d, 90*time.Second)
+	const limit = 90 * time.Second
+	if d <= 0 {
+		// engine.New turns a non-positive timeout into its 180 s default,
+		// which would bypass the cap.
+		return limit
+	}
+	return min(d, limit)
 }
 
 // newDaemon is New plus engine.Config tuning hooks for tests — tune for
