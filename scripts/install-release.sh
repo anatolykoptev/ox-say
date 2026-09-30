@@ -37,6 +37,12 @@ oxs_install_binary "$root/bin/ox-say"
 # get.sh deletes the extracted release tree, so the uninstaller must live
 # under $OX_SAY_HOME.
 cp "$root/scripts/uninstall.sh" "$home/uninstall.sh"
+# Third-party licenses for the Go binary ship in the release under licenses/,
+# next to the engine's own licenses dir.
+if [ -d "$home/licenses" ]; then
+    find "$home/licenses" -depth -delete
+fi
+cp -R "$root/licenses" "$home/"
 oxs_load_agent "$tmp"
 oxs_wait_version "$version"
 

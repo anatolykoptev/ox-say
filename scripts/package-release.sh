@@ -18,15 +18,9 @@ OX_SAY_DIST=1 "$root/engine/build.sh" "$work"
 
 # The engines must not use AVX-512: most Intel MacBooks have none, and one such
 # instruction is a SIGILL there. -march=native on a build machine that has it
-# would slip this in silently.
+# would slip this in silently. The guard fails closed on an otool error.
 for bin in tts-server ox-stt ox-align; do
-    # grep -c reads everything: a `| grep -q` would exit early, SIGPIPE otool
-    # and, under pipefail, turn a match into a pass.
-    zmm=$(otool -tv "$work/out/$bin" | grep -c '%zmm' || true)
-    if [ "${zmm:-0}" -gt 0 ]; then
-        echo "$bin uses AVX-512 registers ($zmm instructions); distribution builds must not" >&2
-        exit 1
-    fi
+    "$root/scripts/check-no-avx512.sh" "$work/out/$bin"
 done
 
 rm -rf "$root/build/release" "$dist"
@@ -39,6 +33,42 @@ cp "$root"/launchd/*.plist.in "$stage/launchd/"
 cp "$root"/scripts/install-release.sh "$root"/scripts/lib-install.sh "$root"/scripts/fetch-models.sh \
     "$root"/scripts/uninstall.sh "$stage/scripts/"
 cp "$root"/LICENSE "$root"/NOTICE "$root"/README.md "$stage/"
+
+# The Go binary is statically linked: ship the license of every module it
+# links, the way engine/licenses does for the C++ engines, plus the Go
+# runtime's own. A module with no license file fails the package — shipping a
+# binary without its notices is worse than no build.
+modpath=$(cd "$root" && go list -m)
+(cd "$root" && go list -deps -f '{{with .Module}}{{.Path}} {{.Dir}}{{end}}' ./cmd/ox-say | sort -u) \
+    > "$work/go-modules.txt"
+while read -r mod dir; do
+    if [ -z "${mod:-}" ] || [ -z "${dir:-}" ] || [ "$mod" = "$modpath" ]; then
+        continue
+    fi
+    dst="$stage/licenses/go/${mod//\//_}"
+    mkdir -p "$dst"
+    found=
+    for f in "$dir"/LICENSE* "$dir"/LICENCE* "$dir"/COPYING* "$dir"/NOTICE*; do
+        if [ -f "$f" ]; then
+            cp "$f" "$dst/"
+            found=1
+        fi
+    done
+    if [ -z "$found" ]; then
+        echo "module $mod ($dir) ships no LICENSE/COPYING/NOTICE — cannot package a binary that links it" >&2
+        exit 1
+    fi
+done < "$work/go-modules.txt"
+# Go's own license lives at GOROOT/LICENSE in a source install; Homebrew puts
+# it one level above libexec.
+golicense=$(go env GOROOT)/LICENSE
+[ -f "$golicense" ] || golicense=$(dirname "$(go env GOROOT)")/LICENSE
+if [ ! -f "$golicense" ]; then
+    echo "Go's LICENSE not found under $(go env GOROOT) or its parent" >&2
+    exit 1
+fi
+mkdir -p "$stage/licenses/go/go"
+cp "$golicense" "$stage/licenses/go/go/LICENSE"
 
 tar -C "$root/build/release" -czf "$dist/$asset" ox-say
 (cd "$dist" && shasum -a 256 "$asset" > SHA256SUMS)

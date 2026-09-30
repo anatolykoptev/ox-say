@@ -59,11 +59,17 @@ set_cmake_flags() {
 }
 
 check_static() {
-    if otool -L "$1" | grep -q '@rpath'; then
-        echo "$1 still links @rpath libraries:" >&2
-        otool -L "$1" >&2
-        exit 1
-    fi
+    local libs
+    # Capture, then match: `otool | grep -q` under pipefail lets grep's early
+    # exit SIGPIPE otool and turn a hit into a pass.
+    libs=$(otool -L "$1")
+    case $libs in
+        *@rpath*)
+            echo "$1 still links @rpath libraries:" >&2
+            printf '%s\n' "$libs" >&2
+            exit 1
+            ;;
+    esac
 }
 
 mkdir -p "$out/licenses"
@@ -94,6 +100,7 @@ cmake --build "$tts/build" --target tts-server -j "$jobs" > "$work/tts-build.log
 cp "$tts/build/tts-server" "$out/tts-server"
 strip -x "$out/tts-server"
 check_static "$out/tts-server"
+"$here/../scripts/check-no-avx512.sh" "$out/tts-server"
 cp "$tts/LICENSE" "$out/licenses/qwentts.cpp.LICENSE"
 cp "$tts/ggml/LICENSE" "$out/licenses/ggml.LICENSE"
 cp "$tts/vendor/cpp-httplib/LICENSE" "$out/licenses/cpp-httplib.LICENSE"
@@ -118,6 +125,7 @@ cmake --build "$work/stt-build" --target ox-stt -j "$jobs" > "$work/stt-build.lo
 cp "$work/stt-build/ox-stt" "$out/ox-stt"
 strip -x "$out/ox-stt"
 check_static "$out/ox-stt"
+"$here/../scripts/check-no-avx512.sh" "$out/ox-stt"
 cp "$stt/LICENSE" "$out/licenses/whisper.cpp.LICENSE"
 echo "built $out/ox-stt"
 
@@ -130,4 +138,5 @@ cmake --build "$work/align-build" --target ox-align -j "$jobs" > "$work/align-bu
 cp "$work/align-build/ox-align" "$out/ox-align"
 strip -x "$out/ox-align"
 check_static "$out/ox-align"
+"$here/../scripts/check-no-avx512.sh" "$out/ox-align"
 echo "built $out/ox-align"
