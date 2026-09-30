@@ -68,7 +68,7 @@ check_bundle() {
         echo "$a is not a bundle directory" >&2
         return 1
     fi
-    extra=$(cd "$a" && find . -mindepth 1 | sed 's|^\./||' | sort | comm -23 - <(printf '%s\n' "$bundle_files" | sort))
+    extra=$(cd "$a" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sort | LC_ALL=C comm -23 - <(printf '%s\n' "$bundle_files" | LC_ALL=C sort))
     if [ -n "$extra" ]; then
         echo "$a holds files build.sh does not create: $extra" >&2
         return 1
@@ -100,13 +100,21 @@ if [ ! -d "$work/ox-say/app/OxSayDictation.app" ]; then
     exit 1
 fi
 
-# The app to sign: the one built here, checked before the key touches it.
+# The app to sign: the one built here, checked before the key touches it, and
+# of the same version as the app it replaces.
 check_bundle "$src_app"
+version_of() { plutil -extract CFBundleShortVersionString raw -o - "$1/Contents/Info.plist"; }
+if [ "$(version_of "$src_app")" != "$(version_of "$work/ox-say/app/OxSayDictation.app")" ]; then
+    echo "the app to sign is version $(version_of "$src_app"), the package's is $(version_of "$work/ox-say/app/OxSayDictation.app")" >&2
+    exit 1
+fi
 rm -r "$work/ox-say/app/OxSayDictation.app"
 ditto "$src_app" "$work/ox-say/app/OxSayDictation.app"
 app=$work/ox-say/app/OxSayDictation.app
 
 codesign -d --entitlements - --xml "$app" > "$work/built.plist" 2>/dev/null
+# An exact string match holds for this single key; plutil does not sort keys,
+# so allowing a second one needs a parsed comparison instead.
 if [ "$(plutil -convert json -o - "$work/built.plist")" != "$entitlements_json" ]; then
     echo "the app's entitlements differ from the one it may carry ($entitlements_json):" >&2
     plutil -convert json -o - "$work/built.plist" >&2 || true

@@ -64,19 +64,25 @@ jobs:
     env:
       VERSION: ${{ needs.release-please.outputs.tag_name || format('dev-{0}', github.sha) }}
     steps:
-      # The commit this run was started for, not the tag: a tag can be moved.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: The release tag is this commit
+      # Build the tag's commit, which must be on the history of the commit this
+      # run was started for (main, which the environment admitted). Usually the
+      # two are the same; a release cut in a later push's run tags the earlier
+      # release merge, and a tag pointing anywhere off main is refused.
+      - name: Check out the release tag
         if: needs.release-please.outputs.tag_name != ''
         env:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
-          git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
-          test "$(git rev-parse "$TAG^{commit}")" = "$GITHUB_SHA"
+          git fetch --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
+          commit=$(git rev-parse "$TAG^{commit}")
+          git merge-base --is-ancestor "$commit" "$GITHUB_SHA"
+          git checkout --detach "$commit"
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
@@ -145,20 +151,25 @@ jobs:
       APPLE_TEAM_ID: Z25C7QACUF
       VERSION: ${{ needs.release-please.outputs.tag_name || format('dev-{0}', github.sha) }}
     steps:
-      # The commit this run was started for (the environment admitted main),
-      # not the tag, which can be moved after it was created.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: The release tag is this commit
+      # Build the tag's commit, which must be on the history of the commit this
+      # run was started for (main, which the environment admitted). Usually the
+      # two are the same; a release cut in a later push's run tags the earlier
+      # release merge, and a tag pointing anywhere off main is refused.
+      - name: Check out the release tag
         if: needs.release-please.outputs.tag_name != ''
         env:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
-          git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
-          test "$(git rev-parse "$TAG^{commit}")" = "$GITHUB_SHA"
+          git fetch --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
+          commit=$(git rev-parse "$TAG^{commit}")
+          git merge-base --is-ancestor "$commit" "$GITHUB_SHA"
+          git checkout --detach "$commit"
 
       # Build the app here, from first-party Swift with no dependencies, before
       # any secret is in reach: the key signs this build, not the one the
@@ -203,7 +214,8 @@ jobs:
 
       - name: Sign, notarize and repack
         env:
-          # App Store Connect API key when set (preferred), else the Apple ID
+          # App Store Connect API key when set (preferred), else the Apple ID.
+          # ASC_KEY_P8 holds the .p8 file base64-encoded, like MACOS_CERT_P12.
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           NOTARY_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.ASC_ISSUER_ID }}
