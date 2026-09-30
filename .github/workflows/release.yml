@@ -116,13 +116,81 @@ jobs:
           name: ox-say-macos-x86_64
           path: dist/
 
+  # Signs the dictation app with the Developer ID, notarizes it and repacks the
+  # package. Only for a release or a manual run, and only in the "release"
+  # environment, which holds the certificate and admits main alone: pull
+  # requests, whose build scripts are the PR's own, never see the key.
+  sign:
+    name: Sign and notarize the app
+    needs: [release-please, macos-package]
+    if: "!cancelled() && needs.macos-package.result == 'success' && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch')"
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: read
+    env:
+      SIGN_IDENTITY: "Developer ID Application: Anatoly Koptev (Z25C7QACUF)"
+      APPLE_TEAM_ID: Z25C7QACUF
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name || github.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ox-say-macos-x86_64
+          path: dist
+
+      - name: Import the certificate into a temporary keychain
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          SIGN_KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          echo "SIGN_KEYCHAIN=$SIGN_KEYCHAIN" >> "$GITHUB_ENV"
+          kcpass=$(openssl rand -hex 24)
+          security create-keychain -p "$kcpass" "$SIGN_KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$SIGN_KEYCHAIN"
+          security unlock-keychain -p "$kcpass" "$SIGN_KEYCHAIN"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$SIGN_KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$SIGN_KEYCHAIN" > /dev/null
+          # codesign looks the identity up in the search list: put ours first,
+          # keep the rest (each listed as "<path>", one per line)
+          keychains=()
+          while IFS= read -r kc; do
+            kc=${kc#*\"}
+            keychains+=("${kc%\"}")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$SIGN_KEYCHAIN" "${keychains[@]}"
+          security find-identity -v -p codesigning "$SIGN_KEYCHAIN"
+
+      - name: Sign, notarize and repack
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: scripts/sign-release.sh dist
+
+      - name: Remove the temporary keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+
+      - name: Keep the signed package as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ox-say-macos-x86_64-signed
+          path: dist/
+
   # The only job with write access: it runs no build scripts, just attaches the
-  # checked package to the draft release release-please created, then publishes
-  # it — drafts are excluded from releases/latest, so a failed build leaves the
-  # previous release as latest.
+  # signed package to the draft release release-please created, then publishes
+  # it — drafts are excluded from releases/latest, so a failed build or a failed
+  # notarization leaves the previous release as latest.
   publish:
     name: Attach the package to the release
-    needs: [release-please, macos-package]
+    needs: [release-please, sign]
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-24.04-arm
     permissions:
@@ -130,7 +198,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: ox-say-macos-x86_64
+          name: ox-say-macos-x86_64-signed
           path: dist
 
       - name: Verify the checksum again
