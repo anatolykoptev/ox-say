@@ -44,6 +44,13 @@ func Run(args []string, stdout, stderr io.Writer, version string) int {
 		return cmdTranscribe(args[1:], stdout, stderr)
 	case "status":
 		return cmdStatus(args[1:], stdout, stderr)
+	case "env-keys":
+		// Hidden: prints the OX_SAY_* names the daemon reads, one per line,
+		// for the installer's LaunchAgent allowlist.
+		for _, k := range config.EnvKeys() {
+			fmt.Fprintln(stdout, k)
+		}
+		return 0
 	case "-h", "--help", "help":
 		usage(stdout)
 		return 0

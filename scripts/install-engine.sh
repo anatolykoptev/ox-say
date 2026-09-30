@@ -3,20 +3,12 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=scripts/lib-install.sh source-path=SCRIPTDIR
+. "$root/scripts/lib-install.sh"
+# shellcheck disable=SC2034  # read by oxs_install_engines
 home=${OX_SAY_HOME:-"$HOME/Library/Application Support/ox-say"}
-out="$root/build/engine/out"
-
-for bin in tts-server ox-stt ox-align; do
-    if [ ! -x "$out/$bin" ]; then
-        echo "no $bin in $out; run engine/build.sh first" >&2
-        exit 1
-    fi
-done
-mkdir -p "$home/engine/licenses"
-for bin in tts-server ox-stt ox-align; do
-    # Copy then rename, so a running process keeps its old inode.
-    cp "$out/$bin" "$home/engine/$bin.new"
-    mv "$home/engine/$bin.new" "$home/engine/$bin"
-    echo "installed $home/engine/$bin"
-done
-cp "$out"/licenses/* "$home/engine/licenses/"
+if [ ! -x "$root/build/engine/out/tts-server" ]; then
+    echo "ox-say install: no engines in $root/build/engine/out — run engine/build.sh first" >&2
+    exit 1
+fi
+oxs_install_engines "$root/build/engine/out"

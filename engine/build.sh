@@ -40,19 +40,45 @@ include_copy() {
 
 # Static libraries and an embedded Metal library: the installed binaries must not depend on
 # this build tree. Sets the array cmake_flags (an array, so paths with spaces stay one argument).
+#
+# OX_SAY_DIST=1 builds binaries to hand to other machines. The default, -march=native, targets this
+# CPU; distribution builds use a fixed baseline instead. Every Intel Mac since 2013 (Haswell) has
+# AVX2/FMA/F16C/BMI2. AVX-512 stays off because most Intel MacBooks have none. macOS 13 is the
+# oldest target.
+# A distribution build must run on every supported Mac, so it may not carry
+# AVX-512. A native build (the default, from source) compiles for this CPU and
+# rightly uses AVX-512 where the CPU has it.
+check_dist() {
+    if [ "${OX_SAY_DIST:-0}" = 1 ]; then
+        "$here/../scripts/check-no-avx512.sh" "$1"
+    fi
+}
+
 set_cmake_flags() {
-    local inc=$1
-    cmake_flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=ON -DGGML_METAL=ON
+    local inc=$1 cpu
+    if [ "${OX_SAY_DIST:-0}" = 1 ]; then
+        cpu=(-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+            -DGGML_BMI2=ON -DGGML_AVX512=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0)
+    else
+        cpu=(-DGGML_NATIVE=ON)
+    fi
+    cmake_flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF "${cpu[@]}" -DGGML_METAL=ON
         -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple -DGGML_OPENMP=OFF
         "-DCMAKE_C_FLAGS=-I$inc" "-DCMAKE_CXX_FLAGS=-I$inc")
 }
 
 check_static() {
-    if otool -L "$1" | grep -q '@rpath'; then
-        echo "$1 still links @rpath libraries:" >&2
-        otool -L "$1" >&2
-        exit 1
-    fi
+    local libs
+    # Capture, then match: `otool | grep -q` under pipefail lets grep's early
+    # exit SIGPIPE otool and turn a hit into a pass.
+    libs=$(otool -L "$1")
+    case $libs in
+        *@rpath*)
+            echo "$1 still links @rpath libraries:" >&2
+            printf '%s\n' "$libs" >&2
+            exit 1
+            ;;
+    esac
 }
 
 mkdir -p "$out/licenses"
@@ -83,6 +109,7 @@ cmake --build "$tts/build" --target tts-server -j "$jobs" > "$work/tts-build.log
 cp "$tts/build/tts-server" "$out/tts-server"
 strip -x "$out/tts-server"
 check_static "$out/tts-server"
+check_dist "$out/tts-server"
 cp "$tts/LICENSE" "$out/licenses/qwentts.cpp.LICENSE"
 cp "$tts/ggml/LICENSE" "$out/licenses/ggml.LICENSE"
 cp "$tts/vendor/cpp-httplib/LICENSE" "$out/licenses/cpp-httplib.LICENSE"
@@ -107,6 +134,7 @@ cmake --build "$work/stt-build" --target ox-stt -j "$jobs" > "$work/stt-build.lo
 cp "$work/stt-build/ox-stt" "$out/ox-stt"
 strip -x "$out/ox-stt"
 check_static "$out/ox-stt"
+check_dist "$out/ox-stt"
 cp "$stt/LICENSE" "$out/licenses/whisper.cpp.LICENSE"
 echo "built $out/ox-stt"
 
@@ -119,4 +147,5 @@ cmake --build "$work/align-build" --target ox-align -j "$jobs" > "$work/align-bu
 cp "$work/align-build/ox-align" "$out/ox-align"
 strip -x "$out/ox-align"
 check_static "$out/ox-align"
+check_dist "$out/ox-align"
 echo "built $out/ox-align"

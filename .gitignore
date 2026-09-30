@@ -2,3 +2,4 @@ build/
 *.part
 .DS_Store
 .build/
+dist/

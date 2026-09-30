@@ -1,19 +1,69 @@
 # ox-say
 
-Local text-to-speech for Intel Macs, built for machines with a discrete AMD
-GPU (MacBook Pro 2019 class, Radeon Pro 5300M/5500M/5600M). It runs the
-Qwen3-TTS 12 Hz models through [qwentts.cpp](https://github.com/ServeurpersoCom/qwentts.cpp)
-on Metal: about 0.55x real time on a Radeon Pro 5500M, first audio in about
-100 ms, voice cloning from a short reference clip.
+Local speech for **Intel Macs**, running on their AMD GPU:
+- text-to-speech with voice cloning;
+- speech-to-text with word timestamps;
+- dictation: hold ⌃Space in any app, speak, and the text is typed where the
+  cursor is (a menu-bar app; [build it from source](#dictation) for now, the
+  release does not ship it yet).
 
-Upstream ggml does not run correctly on discrete (non-unified-memory) Metal
-GPUs. `engine/patches/ggml` carries the fixes; see [engine/README.md](engine/README.md).
+The engine build also produces `ox-align`, a wav2vec2 tool that emits
+per-frame CTC emissions — the first phase of a forced aligner (see
+[engine/README.md](engine/README.md)); the daemon, CLI and MCP expose no
+alignment.
+
+It is one small daemon with an OpenAI-compatible HTTP API, an MCP server for coding agents, and a
+`say`-like CLI. There is no Python, no PyTorch, no Electron and no cloud.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | sh
+```
+
+The installer:
+- downloads a prebuilt release and checks its SHA-256;
+- fetches the models (about 2.9 GB, checksummed; the optional Whisper adds 1.6 GB);
+- starts the daemon as a LaunchAgent;
+- registers the MCP server with Claude Code, if Claude Code is installed;
+- finishes with a speak-and-transcribe self-test.
+
+It needs `ffmpeg` (`brew install ffmpeg`) and never uses `sudo`. To build from source instead, run
+`scripts/install.sh` (it needs Xcode CLT, `go`, `cmake` and `ffmpeg`).
+
+**Install through your coding agent.** Paste this into Claude Code, Codex or Cursor:
+
+> Install ox-say on this Mac with `curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | sh`,
+> then show me `ox-say status` and speak one sentence with `ox-say say`.
+
+## What it does
+
+| | Engine | On a Radeon Pro 5500M |
+|---|---|---|
+| Text-to-speech, voice cloning from a short clip | Qwen3-TTS 12 Hz via [qwentts.cpp](https://github.com/ServeurpersoCom/qwentts.cpp) | faster than real time (about 0.55× RTF), first audio in about 100 ms |
+| Speech-to-text with word timestamps | Parakeet TDT v3 (25 European languages) or Whisper large-v3-turbo (99 languages) via whisper.cpp | 6 minutes of audio in about 18 s |
+| `ox-align` engine tool: per-frame CTC emissions for a wav2vec2 checkpoint ([engine/README.md](engine/README.md)) — not exposed by the daemon | optional hand-converted GGUF (the MMS aligner weights are CC-BY-NC; the installer fetches none) | emissions match the transformers oracle within tolerance |
+
+## Why Intel Macs
+
+The modern local speech stacks have left Intel Macs behind:
+- PyTorch stopped publishing macOS x86_64 wheels after 2.2.
+- MLX runs only on Apple Silicon.
+- [VoiceStudio's install guide](https://github.com/debpalash/VoiceStudio/blob/main/docs/install/macos.md)
+  states that its local backend cannot run on Intel Macs.
+- Stock ggml gives wrong results on discrete, non-unified-memory Metal GPUs.
+
+ox-say carries the fixes (`engine/patches/ggml`, see [engine/README.md](engine/README.md)). It
+builds static binaries, so a 2019–2020 MacBook Pro with a Radeon Pro 5300M/5500M/5600M runs
+current speech models on its GPU.
+
+ox-say itself is Apache-2.0, and the default models are Apache-2.0 and CC-BY-4.0 (see
+[Licenses](#licenses)).
 
 ## Status
 
-- Engine: pinned upstream + patches, static `tts-server`, verified on a
-  Radeon Pro 5500M.
+- Engines: pinned upstream plus patches, static `tts-server`, `ox-stt` and `ox-align`, verified on
+  a Radeon Pro 5500M.
 - Daemon, CLI and MCP server: `cmd/ox-say`.
+- Releases: macOS x86_64 packages built on GitHub's Intel macOS runner (`get.sh`).
 
 ## Usage
 
@@ -152,8 +202,10 @@ in place; settings of the installed agent carry over unless you set them again
 (an empty value drops one). The `ox-say` CLI reads `OX_SAY_ADDR` from your shell,
 so export it there too if you installed the daemon on a custom address.
 
-`scripts/uninstall.sh` removes the agent and the binary and keeps engines,
-models and voices; `--purge` removes those too. Undo the MCP registration with
+`~/Library/Application Support/ox-say/uninstall.sh` (installed there by the
+release installer; in a source checkout it is `scripts/uninstall.sh`) removes
+the agent and the binary and keeps engines, models and voices; `--purge`
+removes those too. Undo the MCP registration with
 `claude mcp remove --scope user ox-say`.
 
 ## Build and install the engine
