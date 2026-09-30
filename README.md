@@ -2,7 +2,10 @@
 
 Local speech for **Intel Macs**, running on their AMD GPU:
 - text-to-speech with voice cloning;
-- speech-to-text with word timestamps.
+- speech-to-text with word timestamps;
+- dictation: hold ⌃Space in any app, speak, and the text is typed where the
+  cursor is (a menu-bar app; [build it from source](#dictation) for now, the
+  release does not ship it yet).
 
 The engine build also produces `ox-align`, a wav2vec2 tool that emits
 per-frame CTC emissions — the first phase of a forced aligner (see
