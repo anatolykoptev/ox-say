@@ -142,7 +142,7 @@ The first start of a freshly built engine compiles the Metal shaders
 
 ## Licenses
 
-ox-say is MIT. The engines are qwentts.cpp (MIT) and whisper.cpp (MIT), both
+ox-say is Apache-2.0 (see `LICENSE` and `NOTICE`). The engines are qwentts.cpp (MIT) and whisper.cpp (MIT), both
 with ggml (MIT); `engine/build.sh` copies their license files next to the
 binaries. `scripts/fetch-models.sh` downloads model weights from their
 publishers, each under its own license:
@@ -151,3 +151,6 @@ publishers, each under its own license:
 - Parakeet TDT 0.6B v3: CC-BY-4.0 (NVIDIA); attribute NVIDIA when you
   redistribute the weights
 - Whisper large-v3-turbo (optional): MIT (OpenAI)
+- Forced aligner for `ox-align` (optional, converted by hand, see
+  `engine/README.md`): the MMS-300m forced-aligner weights are CC-BY-NC-4.0,
+  **non-commercial**; `facebook/wav2vec2-base-960h` is Apache-2.0

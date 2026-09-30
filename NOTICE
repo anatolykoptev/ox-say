@@ -1,0 +1,15 @@
+ox-say
+Copyright 2026 Anatoly Koptev
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The engines it builds link third-party code, each under its own license, and
+engine/build.sh copies those license files next to the binaries:
+
+- qwentts.cpp (https://github.com/ServeurpersoCom/qwentts.cpp): MIT
+- whisper.cpp (https://github.com/ggml-org/whisper.cpp): MIT
+- ggml (https://github.com/ggml-org/ggml): MIT
+- cpp-httplib and yyjson, vendored by qwentts.cpp: MIT
+
+The model weights are not part of this product. scripts/fetch-models.sh
+downloads them from their publishers under their own licenses (see README.md).
