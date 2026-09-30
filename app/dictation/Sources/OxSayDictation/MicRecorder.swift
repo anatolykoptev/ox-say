@@ -61,19 +61,19 @@ final class MicRecorder: Recorder {
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             self?.append(buffer, converter)
         }
-        // The engine stops itself when the input device changes; without this the
-        // recording would go quiet and look like the user stopped talking.
-        configObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
-        ) { [weak self] _ in
-            self?.end("The microphone changed while recording.")
-        }
         engine.prepare()
         do {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
             throw error
+        }
+        // The engine stops itself when the input device changes; without this the
+        // recording would go quiet and look like the user stopped talking.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            self?.end("The microphone changed while recording.")
         }
     }
 

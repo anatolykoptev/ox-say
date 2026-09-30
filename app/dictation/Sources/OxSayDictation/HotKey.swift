@@ -1,11 +1,13 @@
 import Carbon
+import DictationCore
 
 /// A system-wide hotkey with press and release events, registered through Carbon's
 /// RegisterEventHotKey. Unlike a CGEventTap it needs no Accessibility or Input
 /// Monitoring permission, and it still sees the release that hold-to-talk needs.
 /// While registered, the key combination no longer reaches other apps. It is
-/// registered exclusively, so a combination another app already holds fails
-/// here instead of silently going to whichever app registered last.
+/// registered exclusively, which only catches another app that did the same:
+/// ordinary registrations and macOS's own shortcuts do not make it fail (see
+/// ShortcutConflict for the latter).
 final class HotKey {
     var onDown: (() -> Void)?
     var onUp: (() -> Void)?
@@ -73,6 +75,23 @@ enum Shortcut: String, CaseIterable {
     }
 
     var keyCode: UInt32 { UInt32(kVK_Space) }
+
+    /// Not an enabled macOS shortcut (⌃Space switches input sources on a stock Mac).
+    var isFree: Bool {
+        !ShortcutConflict.taken(keyCode: Int(keyCode), modifiers: Int(modifiers), by: Shortcut.systemShortcuts())
+    }
+
+    static func systemShortcuts() -> [SystemShortcut] {
+        var ref: Unmanaged<CFArray>?
+        guard CopySymbolicHotKeys(&ref) == noErr,
+              let entries = ref?.takeRetainedValue() as? [[String: Any]] else { return [] }
+        return entries.compactMap { entry in
+            guard let code = entry[kHISymbolicHotKeyCode as String] as? Int,
+                  let modifiers = entry[kHISymbolicHotKeyModifiers as String] as? Int else { return nil }
+            let enabled = (entry[kHISymbolicHotKeyEnabled as String] as? Bool) ?? false
+            return SystemShortcut(keyCode: code, modifiers: modifiers, enabled: enabled)
+        }
+    }
 
     var modifiers: UInt32 {
         switch self {

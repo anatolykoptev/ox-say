@@ -12,7 +12,15 @@ final class FakePasteboard: DictationPasteboard {
         changeCount += 1
         return changeCount
     }
-    func restore(_ snapshot: PasteboardSnapshot) { items = snapshot.items; changeCount += 1 }
+    /// Like SystemPasteboard.restore: the markers go on every item put back.
+    func restore(_ snapshot: PasteboardSnapshot) {
+        items = snapshot.items.map { item in
+            var item = item
+            for marker in PasteboardMarker.restored { item[marker] = Data() }
+            return item
+        }
+        changeCount += 1
+    }
     /// The user (or another app) copies something.
     func userCopies(_ text: String) { writeText(text) }
     var text: String { String(decoding: items.first?["public.utf8-plain-text"] ?? Data(), as: UTF8.self) }
@@ -46,6 +54,17 @@ final class ClipboardLeaseTests: XCTestCase {
         let lease = ClipboardLease(board: board, text: "dictated text")
         XCTAssertFalse(lease.release())
         XCTAssertEqual(board.text, "dictated text")
+    }
+
+    // Mutation: add `transient` to PasteboardMarker.restored and to
+    // PasteboardMarker.sensitive (the bug the review reproduced: restore marked
+    // the copy Transient, and Transient counted as sensitive) -> RED here.
+    func testTwoDictationsInARowBothGiveTheClipboardBack() {
+        let board = FakePasteboard(text: "the user's copy")
+        XCTAssertTrue(ClipboardLease(board: board, text: "first").release())
+        XCTAssertTrue(ClipboardLease(board: board, text: "second").release())
+        XCTAssertEqual(board.text, "the user's copy")
+        XCTAssertTrue(Set(PasteboardMarker.restored).isDisjoint(with: PasteboardMarker.sensitive))
     }
 
     func testReleaseActsOnce() {
@@ -145,9 +164,10 @@ final class TranscriptionClientTests: XCTestCase {
 
 final class FakeRecorder: Recorder {
     var started = 0
+    var stopped = 0
     var samples: [Float] = []
     func start() throws { started += 1 }
-    func stop() -> [Float] { samples }
+    func stop() -> [Float] { stopped += 1; return samples }
 }
 
 final class FakeOutput: TextOutput {
@@ -233,6 +253,9 @@ final class CancelTests: XCTestCase {
         c.keyDown()
         c.cancel()
         XCTAssertEqual(c.state, .idle)
+        // Mutation: `_ = recorder.stop()` -> `break` in DictationController.cancel
+        // -> RED (the microphone would stay on after Esc).
+        XCTAssertEqual(rec.stopped, 1, "Esc must turn the microphone off")
         c.keyUp() // the release after Esc must not start a transcription
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertFalse(transcribed)
@@ -368,5 +391,33 @@ final class DaemonAddressTests: XCTestCase {
         XCTAssertNil(DaemonAddress.url(listenAddress: "8094"))
         XCTAssertNil(DaemonAddress.url(listenAddress: "host:99999"))
         XCTAssertNil(DaemonAddress.url(listenAddress: "evil.example/path:80"))
+    }
+}
+
+final class ShortcutConflictTests: XCTestCase {
+    let space = 49, control = 0x1000, option = 0x800, command = 0x100, shift = 0x200
+
+    // Mutation: return false from ShortcutConflict.taken -> RED (a stock Mac's
+    // ⌃Space input-source switch would silently fight the dictation key).
+    func testStockInputSourceShortcutTakesControlSpace() {
+        let stock = [SystemShortcut(keyCode: space, modifiers: control, enabled: true)]
+        XCTAssertTrue(ShortcutConflict.taken(keyCode: space, modifiers: control, by: stock))
+        XCTAssertFalse(ShortcutConflict.taken(keyCode: space, modifiers: option, by: stock))
+    }
+
+    func testDisabledOrDifferentShortcutsDoNotCount() {
+        // This Mac: input sources on ⌘Space, emoji on ⌃⌘Space, ⌃⇧Space disabled.
+        let here = [
+            SystemShortcut(keyCode: space, modifiers: command, enabled: true),
+            SystemShortcut(keyCode: space, modifiers: control | command, enabled: true),
+            SystemShortcut(keyCode: space, modifiers: control | shift, enabled: false),
+        ]
+        XCTAssertFalse(ShortcutConflict.taken(keyCode: space, modifiers: control, by: here))
+        XCTAssertFalse(ShortcutConflict.taken(keyCode: space, modifiers: control | shift, by: here))
+    }
+
+    func testCapsLockBitDoesNotMatter() {
+        let stock = [SystemShortcut(keyCode: space, modifiers: control | 0x400, enabled: true)]
+        XCTAssertTrue(ShortcutConflict.taken(keyCode: space, modifiers: control, by: stock))
     }
 }

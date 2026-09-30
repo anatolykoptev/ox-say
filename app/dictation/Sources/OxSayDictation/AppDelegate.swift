@@ -24,9 +24,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The last problem worth telling the user; the menu shows it until the
     /// next dictation starts.
     private var lastNotice: String?
+    /// Why the recording ended on its own (length cap, microphone change); said
+    /// once the text has been delivered.
+    private var endedReason: String?
+    private var termSource: DispatchSourceSignal?
 
+    /// The chosen key, or the first one macOS does not already use.
     private var shortcut: Shortcut {
-        Shortcut(rawValue: UserDefaults.standard.string(forKey: shortcutKey) ?? "") ?? .controlSpace
+        if let chosen = Shortcut(rawValue: UserDefaults.standard.string(forKey: shortcutKey) ?? ""), chosen.isFree {
+            return chosen
+        }
+        return Shortcut.allCases.first { $0.isFree } ?? .controlSpace
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -41,10 +49,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         output.onNotice = { [weak self] message in self?.notice(message) }
         recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }
         recorder.onEnded = { [weak self] reason in
-            // Transcribe what was recorded; say why it ended once it is idle.
-            self?.lastNotice = reason
-            self?.controller.finishRecording()
+            // Transcribe what was recorded; say why it ended once it is delivered.
+            guard let self, self.controller.state == .recording else { return }
+            self.endedReason = reason
+            self.controller.finishRecording()
         }
+        // The pasted text is a promise this process keeps; give the clipboard
+        // back before quitting, also on a plain `kill`.
+        signal(SIGTERM, SIG_IGN)
+        let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        term.setEventHandler { NSApp.terminate(nil) }
+        term.resume()
+        termSource = term
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         buildMenu()
@@ -59,14 +75,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        output.settle()
+    }
+
     private func registerShortcut() {
         hotKey = nil
-        hotKey = HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers)
+        let key = shortcut
+        for (choice, item) in shortcutItems {
+            item.state = choice == key ? .on : .off
+            item.isEnabled = choice.isFree
+            item.title = choice.isFree ? choice.title : "\(choice.title) (a macOS shortcut)"
+        }
+        guard key.isFree else {
+            notice("Every dictation key is a macOS shortcut on this Mac. Free ⌃Space or ⌥Space in System Settings → Keyboard → Keyboard Shortcuts.")
+            return
+        }
+        hotKey = HotKey(keyCode: key.keyCode, modifiers: key.modifiers)
         hotKey?.onDown = { [weak self] in self?.controller.keyDown() }
         hotKey?.onUp = { [weak self] in self?.controller.keyUp() }
-        for (choice, item) in shortcutItems { item.state = choice == shortcut ? .on : .off }
         if hotKey == nil {
-            notice("\(shortcut.title) is taken by another app, so dictation has no hotkey. Pick another one in this menu.")
+            notice("\(key.title) is taken by another app, so dictation has no hotkey. Pick another one in this menu.")
+        } else if let chosen = Shortcut(rawValue: UserDefaults.standard.string(forKey: shortcutKey) ?? ""), chosen != key {
+            notice("\(chosen.title) is a macOS shortcut on this Mac, so dictation uses \(key.title).")
         }
     }
 
@@ -108,6 +139,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ? "Hold \(shortcut.title) and speak"
                 : "Press \(shortcut.title) to start and stop")
             overlay.finish()
+            if let reason = endedReason {
+                endedReason = nil
+                notice(reason)
+            }
         case .recording:
             symbol = "mic.fill"
             lastNotice = nil
@@ -124,7 +159,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Esc cancels, but only while there is something to cancel: a registered
         // hotkey takes the key away from every other app.
         if state == .idle {
-            escapeKey = nil
+            // Not from inside the Esc handler itself: Carbon is still dispatching it.
+            DispatchQueue.main.async { [weak self] in
+                if self?.controller.state == .idle { self?.escapeKey = nil }
+            }
         } else if escapeKey == nil {
             escapeKey = HotKey(keyCode: UInt32(kVK_Escape), modifiers: 0)
             escapeKey?.onDown = { [weak self] in self?.controller.cancel() }

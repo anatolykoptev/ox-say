@@ -35,11 +35,15 @@ else
     version=0.0.0
 fi
 
-# Removes a bundle this script built: its files by name, then its directories.
-# Anything else inside means it is not ours to delete: refuse before touching it.
-remove_app() {
+# Refuses unless $1 is absent or a bundle this script built: a real directory
+# holding only the files it creates. Anything else is not ours to delete.
+check_app() {
     local a=$1 entry
-    [ -e "$a" ] || return 0
+    [ -e "$a" ] || [ -L "$a" ] || return 0
+    if [ -L "$a" ] || [ ! -d "$a" ]; then
+        echo "build.sh: $a is not a directory this script created; not replacing it" >&2
+        exit 1
+    fi
     while IFS= read -r entry; do
         case "${entry#"$a"/}" in
             Contents | Contents/Info.plist | Contents/PkgInfo | Contents/MacOS | "Contents/MacOS/$name" | \
@@ -50,6 +54,13 @@ remove_app() {
                 ;;
         esac
     done < <(find "$a" -mindepth 1)
+}
+
+# Removes a bundle this script built: its files by name, then its directories.
+remove_app() {
+    local a=$1
+    check_app "$a"
+    [ -e "$a" ] || return 0
     rm -f "$a/Contents/Info.plist" "$a/Contents/PkgInfo" "$a/Contents/MacOS/$name" \
         "$a/Contents/_CodeSignature/CodeResources" "$a/Contents/CodeResources"
     rmdir "$a/Contents/_CodeSignature" "$a/Contents/MacOS" "$a/Contents" "$a"
@@ -125,8 +136,10 @@ fi
 if [ "$install" = 1 ]; then
     dest=$HOME/Applications/$name.app
     mkdir -p "$HOME/Applications"
+    check_app "$dest"
     # Stop a running copy first: its binary is about to be replaced. A signal, not
     # an Apple Event, which would need the Automation permission for this terminal.
+    # The app gives a borrowed clipboard back on SIGTERM.
     if pkill -x "$name"; then
         for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x "$name" >/dev/null || break; sleep 0.5; done
     fi

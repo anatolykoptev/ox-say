@@ -56,7 +56,7 @@ final class SystemPasteboard: NSObject, DictationPasteboard, NSPasteboardItemDat
             for (type, data) in types { item.setData(data, forType: NSPasteboard.PasteboardType(type)) }
             // The user's copy is already in any clipboard history; putting it back
             // is not a new copy.
-            item.setData(Data(), forType: NSPasteboard.PasteboardType(PasteboardMarker.transient))
+            for marker in PasteboardMarker.restored { item.setData(Data(), forType: NSPasteboard.PasteboardType(marker)) }
             return item
         }
         if !items.isEmpty { pasteboard.writeObjects(items) }
@@ -113,7 +113,9 @@ final class PasteOutput: TextOutput {
         }
     }
 
-    private func settle() {
+    /// Gives a borrowed clipboard back now. Also called before the app quits: the
+    /// promised text dies with the process and would leave the clipboard empty.
+    func settle() {
         guard let pending else { return }
         self.pending = nil
         pending.timer.invalidate()

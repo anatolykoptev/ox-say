@@ -17,6 +17,9 @@ final class Overlay {
     private var size: NSSize
     private var showingMessage = false
     private var messageTimeout: DispatchWorkItem?
+    /// Bumped by every show, so a fade-out that finishes after a new show does
+    /// not order the new pill out.
+    private var shown = 0
 
     init() {
         size = pillSize
@@ -142,11 +145,13 @@ final class Overlay {
     private func hide() {
         bars.stop()
         spinner.stopAnimation(nil)
+        let fading = shown
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15
             panel.animator().alphaValue = 0
-        }, completionHandler: { [panel] in
-            if panel.alphaValue == 0 { panel.orderOut(nil) }
+        }, completionHandler: { [weak self] in
+            guard let self, self.shown == fading else { return }
+            self.panel.orderOut(nil)
         })
     }
 
@@ -156,6 +161,7 @@ final class Overlay {
     }
 
     private func show() {
+        shown += 1
         // Bottom centre of the screen the pointer is on, above the Dock.
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
