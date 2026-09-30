@@ -3,6 +3,13 @@
 //   ox-stt -m <model> -f <16 kHz mono WAV> [--engine parakeet|whisper] [-l lang] [--prompt text]
 //          [-t threads] [-ng] [--chunk-s 30] [-o out.json] [-v]
 //
+//   ox-stt --serve -m <parakeet model> --port <port> [-t threads] [-ng] [--chunk-s 30] [-v]
+//          loads the model once, warms it up, then serves loopback HTTP (whisper stays CLI-only):
+//            GET  /health      -> 200 {"status":"ok"}
+//            POST /transcribe  -> body is a 16 kHz mono WAV sent as Content-Type: audio/wav with a
+//                                 Content-Length; 200 with the same JSON the CLI prints
+//          The Host header must name loopback. Anything else is refused (403, 411, 415).
+//
 // Output: {"engine","language","duration_s","elapsed_s","text","segments":[{"s","e","text"}],
 //          "words":[{"w","s","e","p"}]}, times in seconds.
 //
@@ -12,6 +19,10 @@
 #include "parakeet.h"
 #include "whisper.h"
 
+#include "httplib.h"
+
+#include <arpa/inet.h>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -20,6 +31,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -46,7 +58,8 @@ struct result {
 struct args {
     std::string model, file, out, engine = "parakeet", lang, prompt;
     int threads = 6;
-    bool gpu = true, verbose = false;
+    bool gpu = true, verbose = false, serve = false;
+    int port = 0;  // set to a valid 1..65535 value by parse, or flagged invalid
     double chunk_s = 30.0;
 };
 
@@ -54,8 +67,9 @@ void usage(const char * argv0) {
     fprintf(stderr,
             "usage: %s -m model -f audio.wav [--engine parakeet|whisper] [-l lang] [--prompt text]\n"
             "          [-t threads] [-ng] [--chunk-s 30] [-o out.json] [-v]\n"
+            "       %s --serve -m model --port port [-t threads] [-ng] [--chunk-s 30] [-v]\n"
             "audio must be a 16 kHz mono WAV (PCM16 or float32): ffmpeg -i in -ar 16000 -ac 1 out.wav\n",
-            argv0);
+            argv0, argv0);
 }
 
 bool parse(int argc, char ** argv, args & a) {
@@ -87,6 +101,14 @@ bool parse(int argc, char ** argv, args & a) {
         } else if (k == "--chunk-s") {
             if (!next(v)) return false;
             a.chunk_s = atof(v.c_str());
+        } else if (k == "--serve") {
+            a.serve = true;
+        } else if (k == "--port") {
+            if (!next(v)) return false;
+            char * end = nullptr;
+            const long p = strtol(v.c_str(), &end, 10);
+            const bool whole = !v.empty() && std::isdigit((unsigned char) v[0]) && *end == '\0';
+            a.port = !whole || p < 1 ? -1 : (p > 65535 ? 65536 : (int) p);  // out of range stays invalid
         } else if (k == "-ng" || k == "--no-gpu") {
             a.gpu = false;
         } else if (k == "-v" || k == "--verbose") {
@@ -96,17 +118,78 @@ bool parse(int argc, char ** argv, args & a) {
             return false;
         }
     }
-    if (a.model.empty() || a.file.empty() || (a.engine != "parakeet" && a.engine != "whisper") ||
+    if (a.model.empty() || (a.engine != "parakeet" && a.engine != "whisper") ||
         !std::isfinite(a.chunk_s) || a.chunk_s < 5.0) {
         return false;
     }
-    return true;
+    if (a.serve) {
+        // serve mode is parakeet only and takes audio over HTTP, not from flags
+        return a.engine == "parakeet" && a.file.empty() && a.out.empty() && a.lang.empty() &&
+               a.prompt.empty() && a.port >= 1 && a.port <= 65535;
+    }
+    return a.port == 0 && !a.file.empty();
 }
 
 uint32_t rd32(const unsigned char * p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t) p[3] << 24; }
 uint16_t rd16(const unsigned char * p) { return (uint16_t) (p[0] | p[1] << 8); }
 
 // 16 kHz mono PCM16 or float32 WAV -> float samples
+bool read_wav_bytes(const unsigned char * buf, size_t size, std::vector<float> & out, std::string & err) {
+    if (size < 12 || memcmp(buf, "RIFF", 4) != 0 || memcmp(buf + 8, "WAVE", 4) != 0) {
+        err = "not a RIFF/WAVE file";
+        return false;
+    }
+    int fmt = 0, ch = 0, bits = 0;
+    uint32_t rate = 0;
+    for (size_t off = 12; off + 8 <= size;) {
+        const uint32_t len = rd32(buf + off + 4);
+        const size_t body = off + 8;
+        if (body + len > size && memcmp(buf + off, "data", 4) != 0) {
+            break;
+        }
+        if (memcmp(buf + off, "fmt ", 4) == 0 && len >= 16) {
+            fmt  = rd16(buf + body);
+            ch   = rd16(buf + body + 2);
+            rate = rd32(buf + body + 4);
+            bits = rd16(buf + body + 14);
+            if (fmt == 0xFFFE && len >= 26) {  // WAVE_FORMAT_EXTENSIBLE: sub-format code
+                fmt = rd16(buf + body + 24);
+            }
+        } else if (memcmp(buf + off, "data", 4) == 0) {
+            if (rate != SR || ch != 1 || !((fmt == 1 && bits == 16) || (fmt == 3 && bits == 32))) {
+                err = "need 16 kHz mono PCM16 or float32 (got rate " + std::to_string(rate) + ", channels " +
+                      std::to_string(ch) + ", format " + std::to_string(fmt) + "/" + std::to_string(bits) + " bit)";
+                return false;
+            }
+            // a streaming writer leaves the length 0 or 0xFFFFFFFF: take the rest of the file
+            const size_t avail = (len == 0 || len == 0xFFFFFFFFu) ? size - body : std::min<size_t>(len, size - body);
+            if (fmt == 1) {
+                out.resize(avail / 2);
+                for (size_t i = 0; i < out.size(); ++i) {
+                    out[i] = (int16_t) rd16(buf + body + 2 * i) / 32768.0f;
+                }
+            } else {
+                out.resize(avail / 4);
+                memcpy(out.data(), buf + body, out.size() * 4);
+                for (float v : out) {
+                    if (!std::isfinite(v)) {
+                        err = "float WAV has non-finite samples";
+                        return false;
+                    }
+                }
+            }
+            if (out.empty()) {
+                err = "no audio samples";
+                return false;
+            }
+            return true;
+        }
+        off = body + len + (len & 1);
+    }
+    err = "no data chunk";
+    return false;
+}
+
 bool read_wav(const std::string & path, std::vector<float> & out, std::string & err) {
     FILE * f = fopen(path.c_str(), "rb");
     if (!f) {
@@ -127,59 +210,7 @@ bool read_wav(const std::string & path, std::vector<float> & out, std::string & 
         buf.insert(buf.end(), tmp, tmp + n);
     }
     fclose(f);
-    if (buf.size() < 12 || memcmp(buf.data(), "RIFF", 4) != 0 || memcmp(buf.data() + 8, "WAVE", 4) != 0) {
-        err = "not a RIFF/WAVE file";
-        return false;
-    }
-    int fmt = 0, ch = 0, bits = 0;
-    uint32_t rate = 0;
-    for (size_t off = 12; off + 8 <= buf.size();) {
-        const uint32_t len = rd32(&buf[off + 4]);
-        const size_t body = off + 8;
-        if (body + len > buf.size() && memcmp(&buf[off], "data", 4) != 0) {
-            break;
-        }
-        if (memcmp(&buf[off], "fmt ", 4) == 0 && len >= 16) {
-            fmt  = rd16(&buf[body]);
-            ch   = rd16(&buf[body + 2]);
-            rate = rd32(&buf[body + 4]);
-            bits = rd16(&buf[body + 14]);
-            if (fmt == 0xFFFE && len >= 26) {  // WAVE_FORMAT_EXTENSIBLE: sub-format code
-                fmt = rd16(&buf[body + 24]);
-            }
-        } else if (memcmp(&buf[off], "data", 4) == 0) {
-            if (rate != SR || ch != 1 || !((fmt == 1 && bits == 16) || (fmt == 3 && bits == 32))) {
-                err = "need 16 kHz mono PCM16 or float32 (got rate " + std::to_string(rate) + ", channels " +
-                      std::to_string(ch) + ", format " + std::to_string(fmt) + "/" + std::to_string(bits) + " bit)";
-                return false;
-            }
-            // a streaming writer leaves the length 0 or 0xFFFFFFFF: take the rest of the file
-            const size_t avail = (len == 0 || len == 0xFFFFFFFFu) ? buf.size() - body : std::min<size_t>(len, buf.size() - body);
-            if (fmt == 1) {
-                out.resize(avail / 2);
-                for (size_t i = 0; i < out.size(); ++i) {
-                    out[i] = (int16_t) rd16(&buf[body + 2 * i]) / 32768.0f;
-                }
-            } else {
-                out.resize(avail / 4);
-                memcpy(out.data(), &buf[body], out.size() * 4);
-                for (float v : out) {
-                    if (!std::isfinite(v)) {
-                        err = "float WAV has non-finite samples";
-                        return false;
-                    }
-                }
-            }
-            if (out.empty()) {
-                err = "no audio samples";
-                return false;
-            }
-            return true;
-        }
-        off = body + len + (len & 1);
-    }
-    err = "no data chunk";
-    return false;
+    return read_wav_bytes(buf.data(), buf.size(), out, err);
 }
 
 // chunk boundaries (sample offsets): windows of at most max_len samples, each cut at the centre of the
@@ -248,13 +279,15 @@ std::string strip_marker(const char * tok) {
     return s;
 }
 
-bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std::string & err) {
+// Loads the model and checks --chunk-s against its audio context once; the returned context is
+// reused for every decode (CLI: one run; --serve: one per request).
+parakeet_context * load_parakeet(const args & a, std::string & err) {
     parakeet_context_params cp = parakeet_context_default_params();
     cp.use_gpu = a.gpu;
     parakeet_context * ctx = parakeet_init_from_file_with_params(a.model.c_str(), cp);
     if (!ctx) {
         err = "failed to load parakeet model " + a.model;
-        return false;
+        return nullptr;
     }
     // Longer chunks than the model's audio context take parakeet's dynamic-encoder path, whose segment
     // times are in encoder frames (80 ms), not mel frames; stay on the fixed-context path.
@@ -265,8 +298,13 @@ bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std:
         char msg[96];
         snprintf(msg, sizeof(msg), "--chunk-s must be at most %.2f s for this model", max_s);
         err = msg;
-        return false;
+        return nullptr;
     }
+    return ctx;
+}
+
+bool decode_parakeet(parakeet_context * ctx, const args & a, const std::vector<float> & x, result & r,
+                     std::string & err) {
     const std::vector<size_t> b = chunk_bounds(x, (size_t) (a.chunk_s * SR));
     for (size_t c = 0; c + 1 < b.size(); ++c) {
         const double off = (double) b[c] / SR;
@@ -274,7 +312,6 @@ bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std:
         fp.n_threads  = a.threads;
         fp.no_context = true;
         if (parakeet_full(ctx, fp, x.data() + b[c], (int) (b[c + 1] - b[c])) != 0) {
-            parakeet_free(ctx);
             err = "parakeet failed on chunk " + std::to_string(c) + " at " + std::to_string(off) + " s";
             return false;
         }
@@ -308,8 +345,17 @@ bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std:
             }
         }
     }
-    parakeet_free(ctx);
     return true;
+}
+
+bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std::string & err) {
+    parakeet_context * ctx = load_parakeet(a, err);
+    if (!ctx) {
+        return false;
+    }
+    const bool ok = decode_parakeet(ctx, a, x, r, err);
+    parakeet_free(ctx);
+    return ok;
 }
 
 bool run_whisper(const args & a, const std::vector<float> & x, result & r, std::string & err) {
@@ -440,6 +486,177 @@ std::string num(double v) {
     return b;
 }
 
+// The one JSON shape of ox-stt, shared by the CLI (stdout/-o) and POST /transcribe. Trailing
+// newline included.
+std::string result_json(const std::string & engine, const result & r, size_t n_samples, double elapsed) {
+    std::string text;
+    for (const segment & s : r.segments) {
+        text += (text.empty() ? "" : " ") + s.text;
+    }
+    std::string o = "{\"engine\":";
+    json_str(o, engine);
+    o += ",\"language\":";
+    if (r.language.empty()) {
+        o += "null";
+    } else {
+        json_str(o, r.language);
+    }
+    o += ",\"duration_s\":" + num((double) n_samples / SR) + ",\"elapsed_s\":" + num(elapsed) + ",\"text\":";
+    json_str(o, text);
+    o += ",\"segments\":[";
+    for (size_t i = 0; i < r.segments.size(); ++i) {
+        o += (i ? "," : "") + std::string("{\"s\":") + num(r.segments[i].s) + ",\"e\":" + num(r.segments[i].e) + ",\"text\":";
+        json_str(o, r.segments[i].text);
+        o += "}";
+    }
+    o += "],\"words\":[";
+    for (size_t i = 0; i < r.words.size(); ++i) {
+        o += (i ? "," : "") + std::string("{\"w\":");
+        json_str(o, r.words[i].w);
+        o += ",\"s\":" + num(r.words[i].s) + ",\"e\":" + num(r.words[i].e) + ",\"p\":" + num(r.words[i].p) + "}";
+    }
+    o += "]}\n";
+    return o;
+}
+
+std::string error_json(const std::string & err) {
+    std::string o = "{\"error\":";
+    json_str(o, err);
+    o += "}";
+    return o;
+}
+
+// "host:port", "[v6]:port" or "host" -> the host without port or brackets
+std::string host_without_port(const std::string & h) {
+    if (!h.empty() && h[0] == '[') {
+        const size_t e = h.find(']');
+        return e == std::string::npos ? h : h.substr(1, e - 1);
+    }
+    const size_t c = h.find(':');
+    if (c != std::string::npos && h.find(':', c + 1) == std::string::npos) {
+        return h.substr(0, c);  // one colon: a name or an IPv4 address with a port
+    }
+    return h;  // no port, or a bare IPv6 literal
+}
+
+// localhost, 127.0.0.0/8 or ::1 (strict literals via inet_pton)
+bool is_loopback_host(const std::string & h) {
+    std::string s = h;
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char ch) { return (char) std::tolower(ch); });
+    if (s == "localhost") {
+        return true;
+    }
+    unsigned char v4[4];
+    if (inet_pton(AF_INET, s.c_str(), v4) == 1) {
+        return v4[0] == 127;
+    }
+    unsigned char v6[16];
+    if (inet_pton(AF_INET6, s.c_str(), v6) == 1) {
+        static const unsigned char loop6[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+        return memcmp(v6, loop6, sizeof(loop6)) == 0;
+    }
+    return false;
+}
+
+// Loopback HTTP front for the resident parakeet context. No SIGTERM handler: the default action
+// kills the process, which is what the supervisor's TERM-then-KILL expects. parakeet_context is
+// not thread-safe while httplib serves on a thread pool, so decodes run one at a time.
+int serve(const args & a) {
+    std::string err;
+    parakeet_context * ctx = load_parakeet(a, err);
+    if (!ctx) {
+        fprintf(stderr, "ox-stt: %s\n", err.c_str());
+        return 1;
+    }
+    // Warm up before listening: the first decode after a load pays for allocating the compute
+    // buffers and paging in the weights (measured 1.8-4.5 s for a 4.7 s phrase, against 0.9 s
+    // warm). One second of silence costs ~0.3 s here, so /health answering means warm, not just
+    // loaded.
+    {
+        result r;
+        if (!decode_parakeet(ctx, a, std::vector<float>(SR, 0.0f), r, err)) {
+            fprintf(stderr, "ox-stt: warm-up decode failed: %s\n", err.c_str());
+            parakeet_free(ctx);
+            return 1;
+        }
+    }
+    std::mutex decode_mu;
+    httplib::Server srv;
+    srv.set_payload_max_length(64 << 20);
+    // Local-only, as tts-server (engine/patches/qwentts/0002-tts-server-local-only.patch): the
+    // supervising daemon is the one client. The Host header must name loopback (DNS rebinding), and
+    // a POST must carry Content-Type audio/wav: a web page can send a cross-site "simple" request
+    // (text/plain, form data) without a preflight, but not this type. No request may be chunked:
+    // httplib reads a chunked body, for any method, past set_payload_max_length; a POST must carry
+    // a Content-Length.
+    srv.set_pre_routing_handler([](const httplib::Request & req, httplib::Response & res) {
+        if (!is_loopback_host(host_without_port(req.get_header_value("Host")))) {
+            res.status = 403;
+            res.set_content(error_json("host not allowed"), "application/json");
+            return httplib::Server::HandlerResponse::Handled;
+        }
+        // httplib reads a chunked body for any method, not only POST, so refuse it everywhere
+        if (req.has_header("Transfer-Encoding") || (req.method == "POST" && !req.has_header("Content-Length"))) {
+            res.status = 411;
+            res.set_content(error_json("a Content-Length body is required"), "application/json");
+            return httplib::Server::HandlerResponse::Handled;
+        }
+        if (req.method == "POST") {
+            std::string ctype = req.get_header_value("Content-Type");
+            std::transform(ctype.begin(), ctype.end(), ctype.begin(),
+                           [](unsigned char ch) { return (char) std::tolower(ch); });
+            const size_t semi = ctype.find(';');  // "audio/wav" exactly, parameters allowed
+            std::string mime = ctype.substr(0, semi);
+            mime.erase(mime.find_last_not_of(" \t") + 1);
+            if (mime != "audio/wav") {
+                res.status = 415;
+                res.set_content(error_json("Content-Type must be audio/wav"), "application/json");
+                return httplib::Server::HandlerResponse::Handled;
+            }
+        }
+        return httplib::Server::HandlerResponse::Unhandled;
+    });
+    // httplib defaults to SO_REUSEPORT: a second server on the same port would bind silently and
+    // split requests. SO_REUSEADDR keeps rebind-after-crash fast while an occupied port fails.
+    srv.set_socket_options([](socket_t s) {
+        int on = 1;
+        setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *) &on, sizeof(on));
+    });
+    srv.Get("/health", [](const httplib::Request &, httplib::Response & res) {
+        res.set_content("{\"status\":\"ok\"}", "application/json");
+    });
+    srv.Post("/transcribe", [&](const httplib::Request & req, httplib::Response & res) {
+        std::vector<float> x;
+        std::string err;
+        if (!read_wav_bytes((const unsigned char *) req.body.data(), req.body.size(), x, err)) {
+            res.status = 400;
+            res.set_content(error_json(err), "application/json");
+            return;
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        result r;
+        bool ok;
+        {
+            std::lock_guard<std::mutex> lock(decode_mu);
+            ok = decode_parakeet(ctx, a, x, r, err);
+        }
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        if (!ok) {
+            res.status = 500;
+            res.set_content(error_json(err), "application/json");
+            return;
+        }
+        res.set_content(result_json("parakeet", r, x.size(), elapsed), "application/json");
+    });
+    if (!srv.listen("127.0.0.1", a.port)) {
+        fprintf(stderr, "ox-stt: cannot bind 127.0.0.1:%d\n", a.port);
+        parakeet_free(ctx);
+        return 1;
+    }
+    parakeet_free(ctx);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -455,6 +672,9 @@ int main(int argc, char ** argv) {
         parakeet_log_set(no_log, nullptr);
         whisper_log_set(no_log, nullptr);
     }
+    if (a.serve) {
+        return serve(a);
+    }
     std::vector<float> x;
     std::string err;
     if (!read_wav(a.file, x, err)) {
@@ -469,34 +689,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
     const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-
-    std::string text;
-    for (const segment & s : r.segments) {
-        text += (text.empty() ? "" : " ") + s.text;
-    }
-    std::string o = "{\"engine\":";
-    json_str(o, a.engine);
-    o += ",\"language\":";
-    if (r.language.empty()) {
-        o += "null";
-    } else {
-        json_str(o, r.language);
-    }
-    o += ",\"duration_s\":" + num((double) x.size() / SR) + ",\"elapsed_s\":" + num(elapsed) + ",\"text\":";
-    json_str(o, text);
-    o += ",\"segments\":[";
-    for (size_t i = 0; i < r.segments.size(); ++i) {
-        o += (i ? "," : "") + std::string("{\"s\":") + num(r.segments[i].s) + ",\"e\":" + num(r.segments[i].e) + ",\"text\":";
-        json_str(o, r.segments[i].text);
-        o += "}";
-    }
-    o += "],\"words\":[";
-    for (size_t i = 0; i < r.words.size(); ++i) {
-        o += (i ? "," : "") + std::string("{\"w\":");
-        json_str(o, r.words[i].w);
-        o += ",\"s\":" + num(r.words[i].s) + ",\"e\":" + num(r.words[i].e) + ",\"p\":" + num(r.words[i].p) + "}";
-    }
-    o += "]}\n";
+    const std::string o = result_json(a.engine, r, x.size(), elapsed);
 
     if (a.out.empty()) {
         if (fwrite(o.data(), 1, o.size(), stdout) != o.size() || fflush(stdout) != 0 || ferror(stdout)) {

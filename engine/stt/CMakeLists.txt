@@ -10,6 +10,9 @@ endif()
 
 add_subdirectory(${WHISPER_SRC} whisper EXCLUDE_FROM_ALL)
 
+find_package(Threads REQUIRED)
+
 add_executable(ox-stt ox-stt.cpp)
 target_compile_features(ox-stt PRIVATE cxx_std_17)
-target_link_libraries(ox-stt PRIVATE whisper parakeet)
+target_include_directories(ox-stt PRIVATE ${WHISPER_SRC}/examples/server)  # vendored httplib.h
+target_link_libraries(ox-stt PRIVATE whisper parakeet Threads::Threads)
