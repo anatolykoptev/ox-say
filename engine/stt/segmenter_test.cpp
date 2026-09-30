@@ -155,6 +155,24 @@ static void t_hard_cap() {
     }
 }
 
+// A segment continued from a cap cut keeps the whole utterance's speech count:
+// the tail is part of a real utterance, not an isolated blip, so the 250 ms
+// minimum must not drop it. 380 speech windows (12.16 s) force the cap at
+// 12.0 s; the cut lands at 177200 with only 5 speech windows (160 ms) left in
+// the continuation, then silence closes it.
+// RED when: cut_at_cap resets speech_samples_ to 0 (the tail is dropped and
+// only {0,177200} is emitted).
+static void t_cap_tail_kept() {
+    stream s;
+    s.add(380, 0.9f);  // 12.16 s of speech; cap fires when pos reaches 192000
+    s.add(30, 0.1f);   // silence closes the continuation
+    const std::vector<seg_range> got = run(s);
+    if (!eq(got, { {0, 177200}, {177200, 197760} })) {
+        dump("t_cap_tail_kept", got);
+        CHECK(false, "expected exactly [{0,177200},{177200,197760}]");
+    }
+}
+
 // finish() closes an open segment with the end pad clamped to the samples fed.
 // RED when: the end is left unclamped (emits 21120, past the last sample 20480).
 static void t_finish_flush() {
@@ -219,6 +237,7 @@ int main() {
     t_blip_dropped();
     t_hysteresis();
     t_hard_cap();
+    t_cap_tail_kept();
     t_finish_flush();
     t_pre_pad_no_overlap();
     t_chunk_invariant();

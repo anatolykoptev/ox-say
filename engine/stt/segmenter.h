@@ -167,7 +167,10 @@ private:
         out.push_back({ seg_start_, cut });
         prev_end_ = cut;
         seg_start_ = cut;
-        speech_samples_ = 0;
+        // speech_samples_ is NOT reset: the count belongs to the utterance, not
+        // the emitted piece. The min-speech rule exists to drop isolated noise
+        // blips — a continuation that ends 160 ms after the cut is the tail of
+        // a real utterance and must reach the decoder.
     }
 
     // Sample energy per SEG_BUCKET-aligned absolute bucket; only kept while in

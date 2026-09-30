@@ -10,17 +10,27 @@
 //            POST /transcribe  -> body is a 16 kHz mono WAV sent as Content-Type: audio/wav with a
 //                                 Content-Length; 200 with the same JSON the CLI prints
 //          with --vad, streaming dictation sessions:
-//            POST /sessions              -> {"id":<32 lowercase hex>}; application/json, body ignored
+//            POST /sessions              -> {"id":<32 lowercase hex>}; application/json, body ignored;
+//                                 429 "at most 4 sessions", 500 "failed to init VAD context",
+//                                 500 "no entropy"
 //            POST /sessions/<id>/audio   -> raw little-endian float32 mono 16 kHz PCM
 //                                 (application/octet-stream, <= 30 s per call); Silero VAD cuts the
 //                                 stream at pauses and finished pieces decode in the background;
 //                                 200 {"segments":[...],"words":[...],"pending":N} with what decoded
-//                                 since the previous response
+//                                 since the previous response; 429 "decode backlog" when the
+//                                 session has more than 8 segments queued or decoding (the audio
+//                                 is NOT taken, so the client can retry or fall back);
+//                                 500 "decode failed" once any of the session's decodes failed
 //            POST /sessions/<id>/finish  -> flushes the open segment, waits out the queued decodes,
-//                                 200 with the same fields plus "done":true and the whole "text"
+//                                 200 with the same fields plus "done":true and the whole "text";
+//                                 500 "decode failed" (the session is deleted) after a decode
+//                                 failure, 504 when the 60 s drain bound is hit
 //            DELETE /sessions/<id>       -> drops the session and its queued work
 //          without --vad the session routes answer 501. The Host header must name loopback.
 //          Anything else is refused (403, 411, 415).
+//          Client rule: on any non-200 from a session route the stream is unreliable (a failed
+//          decode cannot pass for silence — words would go missing); upload the whole recording
+//          to POST /transcribe or the daemon's one-shot route instead.
 //
 // Output: {"engine","language","duration_s","elapsed_s","text","segments":[{"s","e","text"}],
 //          "words":[{"w","s","e","p"}]}, times in seconds.
@@ -607,6 +617,7 @@ struct session {
     std::vector<decoded_seg> results;    // decoded segments in order
     size_t             returned = 0;     // results below this were already sent
     size_t             inflight = 0;     // segments queued or decoding
+    bool               failed = false;   // a segment decode failed: /audio + /finish answer 500
     bool               dead = false;     // deleted/reaped: keep nothing
     std::atomic<long long> touch{0};     // last request, epoch seconds (steady_clock)
 
@@ -731,6 +742,18 @@ int serve(const args & a) {
             parakeet_free(ctx);
             return 1;
         }
+        // The model's window comes from the file but SEG_WIN is compiled into
+        // the segmenter: a shorter n_window emits more probs than fed windows
+        // and pump_session would index past the samples it copied. One silent
+        // window must yield exactly one prob.
+        std::vector<float> zwin(oxstt::SEG_WIN, 0.0f);
+        if (!whisper_vad_detect_speech_no_reset(probe, zwin.data(), oxstt::SEG_WIN) ||
+            whisper_vad_n_probs(probe) != 1) {
+            fprintf(stderr, "ox-stt: VAD model window is not 512 samples\n");
+            whisper_vad_free(probe);
+            parakeet_free(ctx);
+            return 1;
+        }
         whisper_vad_free(probe);
     }
     std::mutex decode_mu;
@@ -827,6 +850,16 @@ int serve(const args & a) {
                 j = std::move(jobs.front());
                 jobs.pop_front();
             }
+            {
+                std::lock_guard<std::mutex> sl(j.sess->mu);
+                if (j.sess->dead || j.sess->failed) {
+                    // deleted or failed sessions have no consumer for the
+                    // result: drop the job before paying decode_mu for it
+                    --j.sess->inflight;
+                    j.sess->cv.notify_all();
+                    continue;
+                }
+            }
             result r;
             std::string derr;
             bool ok;
@@ -834,26 +867,28 @@ int serve(const args & a) {
                 std::lock_guard<std::mutex> dl(decode_mu);
                 ok = decode_parakeet(ctx, a, j.pcm, r, derr);
             }
-            if (!ok) {
-                fprintf(stderr, "ox-stt: session segment decode failed: %s\n", derr.c_str());
-            }
-            decoded_seg d;
-            d.s = (double) j.s / SR;
-            d.e = (double) j.e / SR;
-            if (ok) {
-                for (const segment & sg : r.segments) {
-                    d.text += (d.text.empty() ? "" : " ") + sg.text;
-                }
-                d.words = std::move(r.words);
-                for (word & w : d.words) {
-                    w.s += d.s;
-                    w.e += d.s;
-                }
-            }
             {
                 std::lock_guard<std::mutex> sl(j.sess->mu);
-                if (!j.sess->dead) {
-                    j.sess->results.push_back(std::move(d));
+                if (ok) {
+                    if (!j.sess->dead) {
+                        decoded_seg d;
+                        d.s = (double) j.s / SR;
+                        d.e = (double) j.e / SR;
+                        for (const segment & sg : r.segments) {
+                            d.text += (d.text.empty() ? "" : " ") + sg.text;
+                        }
+                        d.words = std::move(r.words);
+                        for (word & w : d.words) {
+                            w.s += d.s;
+                            w.e += d.s;
+                        }
+                        j.sess->results.push_back(std::move(d));
+                    }
+                } else {
+                    // a failed decode must not pass for an empty segment: the
+                    // session is failed and the client restarts one-shot
+                    fprintf(stderr, "ox-stt: session segment decode failed: %s\n", derr.c_str());
+                    j.sess->failed = true;
                 }
                 --j.sess->inflight;
             }
@@ -966,10 +1001,22 @@ int serve(const args & a) {
 
     srv.Post("/sessions", [&](const httplib::Request &, httplib::Response & res) {
         std::shared_ptr<session> s = std::make_shared<session>();
-        const std::string id = new_session_id();
-        // count check and insert under the same lock, or two POSTs could both
-        // win the 4-session cap
-        {
+        // the VAD context is built before taking the lock: init reads the
+        // model file and would serialize every session route behind
+        // sessions_mu. A rejected session frees it via ~session.
+        whisper_vad_context_params vp = whisper_vad_default_context_params();
+        vp.n_threads = a.threads;
+        vp.use_gpu   = false;
+        s->vad = whisper_vad_init_from_file_with_params(a.vad.c_str(), vp);
+        if (!s->vad) {
+            res.status = 500;
+            res.set_content(error_json("failed to init VAD context"), "application/json");
+            return;
+        }
+        std::string id;
+        try {
+            // count check and insert under the same lock, or two POSTs could
+            // both win the 4-session cap; the id re-rolls while it collides
             std::lock_guard<std::mutex> ml(sessions_mu);
             reap_idle();
             if (sessions.size() >= 4) {
@@ -977,18 +1024,18 @@ int serve(const args & a) {
                 res.set_content(error_json("at most 4 sessions"), "application/json");
                 return;
             }
-            whisper_vad_context_params vp = whisper_vad_default_context_params();
-            vp.n_threads = a.threads;
-            vp.use_gpu   = false;
-            s->vad = whisper_vad_init_from_file_with_params(a.vad.c_str(), vp);
-            if (!s->vad) {
-                res.status = 500;
-                res.set_content(error_json("failed to init VAD context"), "application/json");
-                return;
-            }
+            do {
+                id = new_session_id();
+            } while (sessions.count(id) != 0);
             whisper_vad_reset_state(s->vad);
             s->touch.store(now_s());
             sessions.emplace(id, s);
+        } catch (...) {
+            // std::random_device can throw when the OS refuses entropy; an
+            // exception must never escape a request handler
+            res.status = 500;
+            res.set_content(error_json("no entropy"), "application/json");
+            return;
         }
         res.set_content("{\"id\":\"" + id + "\"}", "application/json");
     });
@@ -1028,6 +1075,18 @@ int serve(const args & a) {
             if (s->dead) {
                 res.status = 404;
                 res.set_content(error_json("unknown session"), "application/json");
+                return;
+            }
+            if (s->failed) {
+                res.status = 500;
+                res.set_content(error_json("decode failed"), "application/json");
+                return;
+            }
+            if (s->inflight > 8) {
+                // bound the decode backlog per session; the posted audio is
+                // NOT taken, so the client can retry or fall back
+                res.status = 429;
+                res.set_content(error_json("decode backlog"), "application/json");
                 return;
             }
             s->audio.insert(s->audio.end(), fresh.begin(), fresh.end());
@@ -1074,48 +1133,60 @@ int serve(const args & a) {
         }
         s->touch.store(now_s());
         int status = 0;  // 0 = ok, else the error response
-        std::string out;
+        std::string out, emsg;
         {
             std::unique_lock<std::mutex> sl(s->mu);
-            // the carried remainder becomes one zero-padded VAD window; the
-            // segmenter sees only the real samples so its ranges stay exact
-            const uint64_t total = s->audio_base + (uint64_t) s->audio.size();
-            const size_t rem = (size_t) (total - s->vad_pos);
-            bool vad_ok = true;
-            if (rem > 0) {
-                float pad[oxstt::SEG_WIN];
-                memcpy(pad, s->audio.data() + (size_t) (s->vad_pos - s->audio_base), rem * 4);
-                memset(pad + rem, 0, (oxstt::SEG_WIN - rem) * 4);
-                if (!whisper_vad_detect_speech_no_reset(s->vad, pad, oxstt::SEG_WIN)) {
-                    vad_ok = false;
-                } else {
+            if (s->failed) {
+                status = 500;
+                emsg = "decode failed";
+            } else {
+                // the carried remainder becomes one zero-padded VAD window; the
+                // segmenter sees only the real samples so its ranges stay exact
+                const uint64_t total = s->audio_base + (uint64_t) s->audio.size();
+                const size_t rem = (size_t) (total - s->vad_pos);
+                bool vad_ok = true;
+                if (rem > 0) {
+                    float pad[oxstt::SEG_WIN];
+                    memcpy(pad, s->audio.data() + (size_t) (s->vad_pos - s->audio_base), rem * 4);
+                    memset(pad + rem, 0, (oxstt::SEG_WIN - rem) * 4);
+                    if (!whisper_vad_detect_speech_no_reset(s->vad, pad, oxstt::SEG_WIN)) {
+                        vad_ok = false;
+                    } else {
+                        std::vector<oxstt::seg_range> segs;
+                        s->seg.feed(whisper_vad_probs(s->vad), 1, pad, rem, segs);
+                        for (const oxstt::seg_range & r : segs) {
+                            enqueue_segment(s, r.s, r.e);
+                        }
+                    }
+                }
+                if (vad_ok) {
                     std::vector<oxstt::seg_range> segs;
-                    s->seg.feed(whisper_vad_probs(s->vad), 1, pad, rem, segs);
+                    s->seg.finish(segs);
                     for (const oxstt::seg_range & r : segs) {
                         enqueue_segment(s, r.s, r.e);
                     }
-                }
-            }
-            if (vad_ok) {
-                std::vector<oxstt::seg_range> segs;
-                s->seg.finish(segs);
-                for (const oxstt::seg_range & r : segs) {
-                    enqueue_segment(s, r.s, r.e);
-                }
-                if (s->cv.wait_until(sl,
-                                     std::chrono::steady_clock::now() + std::chrono::seconds(60),
-                                     [&] { return s->inflight == 0; })) {
-                    std::string text;
-                    for (const decoded_seg & d : s->results) {
-                        text += (text.empty() ? "" : " ") + d.text;
+                    if (s->cv.wait_until(sl,
+                                         std::chrono::steady_clock::now() + std::chrono::seconds(60),
+                                         [&] { return s->inflight == 0 || s->failed; })) {
+                        if (s->failed) {
+                            status = 500;
+                            emsg = "decode failed";
+                        } else {
+                            std::string text;
+                            for (const decoded_seg & d : s->results) {
+                                text += (text.empty() ? "" : " ") + d.text;
+                            }
+                            out = session_json(s->results, s->returned, s->inflight, true, text);
+                            s->returned = s->results.size();
+                        }
+                    } else {
+                        status = 504;
+                        emsg = "decode did not finish in time";
                     }
-                    out = session_json(s->results, s->returned, s->inflight, true, text);
-                    s->returned = s->results.size();
                 } else {
-                    status = 504;
+                    status = 500;
+                    emsg = "VAD failed";
                 }
-            } else {
-                status = 500;
             }
             if (status != 0) {
                 s->dead = true;  // queued and in-flight jobs drop their results
@@ -1126,9 +1197,7 @@ int serve(const args & a) {
             res.set_content(out, "application/json");
         } else {
             res.status = status;
-            res.set_content(error_json(status == 504 ? "decode did not finish in time"
-                                                   : "VAD failed"),
-                            "application/json");
+            res.set_content(error_json(emsg), "application/json");
         }
     });
 
