@@ -7,7 +7,7 @@ import ServiceManagement
 /// The menu-bar app: an icon that shows the dictation state, a menu with the
 /// settings, an overlay while dictating, and the wiring between the hotkey, the
 /// recorder, the ox-say daemon and the paste output.
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let toggleItem = NSMenuItem(title: "Toggle mode (press to start, press again to stop)", action: #selector(toggleMode), keyEquivalent: "")
@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// once the text has been delivered.
     private var endedReason: String?
     private var termSource: DispatchSourceSignal?
+    /// The key that is registered right now; what the menu tells the user to press.
+    private var active: Shortcut?
+    private let fallbackNoticeKey = "fallbackNoticeShownFor"
 
     /// The chosen key, or the first one macOS does not already use.
     private var shortcut: Shortcut {
@@ -64,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         buildMenu()
-        registerShortcut()
+        registerShortcut(announce: true)
         show(.idle)
 
         // Ask for both permissions up front, so the first dictation does not stall
@@ -79,8 +82,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         output.settle()
     }
 
-    private func registerShortcut() {
+    /// Registers the chosen key, or the first free one. `announce` says so when
+    /// the choice had to fall back (once per choice, not at every launch).
+    private func registerShortcut(announce: Bool) {
         hotKey = nil
+        active = nil
         let key = shortcut
         for (choice, item) in shortcutItems {
             item.state = choice == key ? .on : .off
@@ -88,24 +94,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.title = choice.isFree ? choice.title : "\(choice.title) (a macOS shortcut)"
         }
         guard key.isFree else {
-            notice("Every dictation key is a macOS shortcut on this Mac. Free ⌃Space or ⌥Space in System Settings → Keyboard → Keyboard Shortcuts.")
+            if announce {
+                notice("Every dictation key is a macOS shortcut on this Mac. Free ⌃Space or ⌥Space in System Settings → Keyboard → Keyboard Shortcuts.")
+            }
             return
         }
         hotKey = HotKey(keyCode: key.keyCode, modifiers: key.modifiers)
         hotKey?.onDown = { [weak self] in self?.controller.keyDown() }
         hotKey?.onUp = { [weak self] in self?.controller.keyUp() }
-        if hotKey == nil {
-            notice("\(key.title) is taken by another app, so dictation has no hotkey. Pick another one in this menu.")
-        } else if let chosen = Shortcut(rawValue: UserDefaults.standard.string(forKey: shortcutKey) ?? ""), chosen != key {
-            notice("\(chosen.title) is a macOS shortcut on this Mac, so dictation uses \(key.title).")
+        guard hotKey != nil else {
+            if announce { notice("\(key.title) is taken by another app, so dictation has no hotkey. Pick another one in this menu.") }
+            return
+        }
+        active = key
+        let defaults = UserDefaults.standard
+        if let chosen = Shortcut(rawValue: defaults.string(forKey: shortcutKey) ?? ""), chosen != key {
+            if announce && defaults.string(forKey: fallbackNoticeKey) != chosen.rawValue {
+                defaults.set(chosen.rawValue, forKey: fallbackNoticeKey)
+                notice("\(chosen.title) is a macOS shortcut on this Mac, so dictation uses \(key.title).")
+            }
+        } else {
+            defaults.removeObject(forKey: fallbackNoticeKey)
+        }
+    }
+
+    /// System Settings may have freed or taken a key since: follow it.
+    func menuWillOpen(_ menu: NSMenu) {
+        if controller.state == .idle && active != shortcut {
+            registerShortcut(announce: false)
+            show(.idle)
         }
     }
 
     private func buildMenu() {
         let menu = NSMenu()
+        menu.delegate = self
         menu.addItem(statusLine)
         menu.addItem(.separator())
         let shortcuts = NSMenu()
+        shortcuts.autoenablesItems = false // or AppKit re-enables the greyed-out keys
         for choice in Shortcut.allCases {
             let item = NSMenuItem(title: choice.title, action: #selector(pickShortcut(_:)), keyEquivalent: "")
             item.target = self
@@ -135,9 +162,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch state {
         case .idle:
             symbol = "mic"
-            statusLine.title = lastNotice ?? (controller.mode == .hold
-                ? "Hold \(shortcut.title) and speak"
-                : "Press \(shortcut.title) to start and stop")
+            statusLine.title = lastNotice ?? active.map { key in
+                controller.mode == .hold ? "Hold \(key.title) and speak" : "Press \(key.title) to start and stop"
+            } ?? "No dictation key"
             overlay.finish()
             if let reason = endedReason {
                 endedReason = nil
@@ -172,6 +199,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func notice(_ message: String) {
+        // A recording that ended on its own says why together with what happened
+        // to its text, not instead of it.
+        let message = endedReason.map { "\($0) \(message)" } ?? message
+        endedReason = nil
         lastNotice = message
         statusLine.title = message
         statusItem.button?.toolTip = message
@@ -183,7 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let raw = sender.representedObject as? String, Shortcut(rawValue: raw) != nil else { return }
         controller.cancel()
         UserDefaults.standard.set(raw, forKey: shortcutKey)
-        registerShortcut()
+        registerShortcut(announce: true)
         show(controller.state)
     }
 

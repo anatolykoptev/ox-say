@@ -66,6 +66,9 @@ remove_app() {
     rmdir "$a/Contents/_CodeSignature" "$a/Contents/MacOS" "$a/Contents" "$a"
 }
 
+# Refuse a bundle that is not ours before spending a build on it.
+check_app "$app"
+if [ "$install" = 1 ]; then check_app "$HOME/Applications/$name.app"; fi
 swift build -c release --package-path "$here"
 bin=$(swift build -c release --package-path "$here" --show-bin-path)
 

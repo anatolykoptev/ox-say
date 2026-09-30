@@ -416,6 +416,12 @@ final class ShortcutConflictTests: XCTestCase {
         XCTAssertFalse(ShortcutConflict.taken(keyCode: space, modifiers: control | shift, by: here))
     }
 
+    // Mutation: drop `$0.keyCode == keyCode &&` from ShortcutConflict.taken -> RED.
+    func testSameModifiersOnAnotherKeyDoNotCount() {
+        let controlF = [SystemShortcut(keyCode: 3, modifiers: control, enabled: true)]
+        XCTAssertFalse(ShortcutConflict.taken(keyCode: space, modifiers: control, by: controlF))
+    }
+
     func testCapsLockBitDoesNotMatter() {
         let stock = [SystemShortcut(keyCode: space, modifiers: control | 0x400, enabled: true)]
         XCTAssertTrue(ShortcutConflict.taken(keyCode: space, modifiers: control, by: stock))
