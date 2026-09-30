@@ -57,7 +57,8 @@ final class Overlay {
         spinner.frame.origin = NSPoint(x: 18, y: (size.height - spinner.frame.height) / 2)
         background.addSubview(spinner)
 
-        label.font = .systemFont(ofSize: 12, weight: .medium)
+        // fixed-width digits: the seconds counter must not resize the pill every tick
+        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         label.textColor = .secondaryLabelColor
         label.sizeToFit()
         label.frame.origin = NSPoint(x: spinner.frame.maxX + 8, y: (size.height - label.frame.height) / 2)
@@ -89,7 +90,22 @@ final class Overlay {
         spinner.isHidden = false
         spinner.startAnimation(nil)
         label.isHidden = false
+        setWorkingText("Transcribing…")
         show()
+    }
+
+    /// While transcribing: the elapsed time, and why it takes long once it does.
+    /// The pill widens to fit, up to a limit, and stays centred.
+    func setWorkingText(_ text: String) {
+        guard !label.isHidden else { return }
+        label.stringValue = text
+        label.sizeToFit()
+        let width = min(520, max(pillSize.width, ceil(label.frame.maxX - label.frame.minX) + label.frame.minX + 50))
+        label.frame.origin = NSPoint(x: spinner.frame.maxX + 8, y: (size.height - label.frame.height) / 2)
+        if width != size.width {
+            resize(to: NSSize(width: width, height: pillSize.height))
+            if panel.isVisible { recentre(on: panel.screen) }
+        }
     }
 
     /// Dictation is over. A message on screen stays until it times out.
@@ -160,14 +176,19 @@ final class Overlay {
         DispatchQueue.main.async { [bars] in bars.target(levels) }
     }
 
-    private func show() {
-        shown += 1
-        // Bottom centre of the screen the pointer is on, above the Dock.
+    // Bottom centre of a screen, above the Dock: the pointer's when the pill
+    // appears, the pill's own while it only changes width.
+    private func recentre(on current: NSScreen? = nil) {
         let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+        let screen = current ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
         if let visible = screen?.visibleFrame {
             panel.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: visible.minY + 24))
         }
+    }
+
+    private func show() {
+        shown += 1
+        recentre()
         if !panel.isVisible || panel.alphaValue < 1 {
             panel.alphaValue = 0
             panel.orderFrontRegardless()

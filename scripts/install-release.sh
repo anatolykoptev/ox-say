@@ -77,12 +77,27 @@ fi
 # 4. Self-test: speak a phrase, transcribe it back. The first start of freshly
 #    installed engines compiles their Metal shaders (about a minute on a
 #    Radeon Pro 5500M), so this can take a while once.
+#    Speech-to-text goes first, with macOS's own voice, while the TTS engine is
+#    still stopped: the daemon keeps speech-to-text off the GPU while TTS holds
+#    it, so this is the only moment the installer can compile ox-stt's GPU
+#    shaders. Otherwise the user's first dictation after an update pays for it.
 if [ "${OX_SAY_NO_SELFTEST:-0}" != 1 ]; then
-    echo "self-test: speaking and transcribing a phrase (the first run compiles GPU shaders, up to a few minutes)"
+    echo "self-test: transcribing and speaking a phrase (the first run compiles GPU shaders, up to a few minutes)"
     st=$(mktemp -d)
     wav="$st/selftest.wav"
     heard=
     ok=0
+    # Warm-up with an English system voice, when there is one; best effort, the
+    # round trip below decides pass or fail.
+    say -v '?' > "$st/voices.txt" 2>/dev/null || true
+    for voice in Samantha Alex Daniel Karen Moira; do
+        if grep -E "^$voice " "$st/voices.txt" >/dev/null; then
+            if say -v "$voice" -o "$st/mac.aiff" "ox-say is ready" 2>/dev/null; then
+                "$bindir/ox-say" transcribe "$st/mac.aiff" >/dev/null 2>&1 || true
+            fi
+            break
+        fi
+    done
     # no `| grep -q` here: under pipefail its early exit can SIGPIPE the writer
     # and fail a pipeline that matched
     if "$bindir/ox-say" say -o "$wav" "ox-say is ready" >/dev/null &&
@@ -91,7 +106,7 @@ if [ "${OX_SAY_NO_SELFTEST:-0}" != 1 ]; then
             *ready*) ok=1 ;;
         esac
     fi
-    rm -f "$wav"
+    rm -f "$wav" "$st/mac.aiff" "$st/voices.txt"
     rmdir "$st"
     if [ "$ok" = 1 ]; then
         echo "self-test passed: heard \"$heard\""

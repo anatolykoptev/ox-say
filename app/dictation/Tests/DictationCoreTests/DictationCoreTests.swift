@@ -427,3 +427,58 @@ final class ShortcutConflictTests: XCTestCase {
         XCTAssertTrue(ShortcutConflict.taken(keyCode: space, modifiers: control, by: stock))
     }
 }
+
+final class SlowTranscriptionTests: XCTestCase {
+    // Mutation: return the GPU reason for every state in
+    // SlowTranscription.reason -> RED (a CPU-bound dictation would blame the GPU).
+    func testTheReasonFollowsTheEngineState() {
+        XCTAssertTrue(SlowTranscription.reason(engineState: "ready").contains("CPU"))
+        XCTAssertTrue(SlowTranscription.reason(engineState: "starting").contains("CPU"))
+        XCTAssertTrue(SlowTranscription.reason(engineState: "stopped").contains("GPU"))
+        XCTAssertTrue(SlowTranscription.reason(engineState: nil).contains("GPU"))
+    }
+
+    func testEngineStateIsReadFromStatus() {
+        let body = Data(#"{"engine":{"state":"ready","pid":1},"voices":[]}"#.utf8)
+        XCTAssertEqual(SlowTranscription.engineState(fromStatus: body), "ready")
+        XCTAssertNil(SlowTranscription.engineState(fromStatus: Data("oops".utf8)))
+        XCTAssertNil(SlowTranscription.engineState(fromStatus: Data(#"{"voices":[]}"#.utf8)))
+    }
+
+    // Mutation: return 8 from SlowTranscription.explainAfter -> RED (a long
+    // dictation on a warm GPU would be blamed on GPU preparation).
+    func testALongRecordingWaitsLongerBeforeBlamingTheGPU() {
+        XCTAssertEqual(SlowTranscription.explainAfter(recordingSeconds: 3), 8)
+        XCTAssertEqual(SlowTranscription.explainAfter(recordingSeconds: 300), 30)
+    }
+
+    // Mutation: drop the `statusCode == 200` check in engineState -> RED.
+    func testAnErrorStatusIsNotAState() async {
+        let client = TranscriptionClient { req in
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            return (Data(#"{"engine":{"state":"ready"}}"#.utf8), resp)
+        }
+        let state = await client.engineState()
+        XCTAssertNil(state)
+    }
+
+    @MainActor
+    func testTheControllerKnowsHowLongTheRecordingWas() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 48000)
+        let c = DictationController(recorder: rec, output: FakeOutput()) { _ in "x" }
+        c.keyDown(); c.keyUp()
+        XCTAssertEqual(c.recordingSeconds, 3, accuracy: 0.001)
+    }
+
+    func testTheClientAsksStatus() async {
+        var path = ""
+        let client = TranscriptionClient { req in
+            path = req.url!.path
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(#"{"engine":{"state":"stopped"}}"#.utf8), resp)
+        }
+        let state = await client.engineState()
+        XCTAssertEqual(path, "/status")
+        XCTAssertEqual(state, "stopped")
+    }
+}

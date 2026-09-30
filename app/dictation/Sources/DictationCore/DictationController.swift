@@ -39,6 +39,8 @@ public final class DictationController {
     public var onError: ((String) -> Void)?
     /// A press while the previous dictation is still transcribing: ignored.
     public var onBusy: (() -> Void)?
+    /// Length of the recording being transcribed (or last transcribed).
+    public private(set) var recordingSeconds: Double = 0
 
     private let recorder: Recorder
     private let transcribe: ([Float]) async throws -> String
@@ -107,7 +109,8 @@ public final class DictationController {
 
     private func finish() {
         let samples = recorder.stop()
-        guard Double(samples.count) / sampleRate >= minSeconds else {
+        recordingSeconds = Double(samples.count) / sampleRate
+        guard recordingSeconds >= minSeconds else {
             state = .idle
             return
         }
