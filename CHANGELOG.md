@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/anatolykoptev/ox-say/compare/v0.1.1...v0.1.2) (2026-09-30)
+
+
+### Added
+
+* **stt:** ox-stt --serve keeps the Parakeet model resident ([#34](https://github.com/anatolykoptev/ox-say/issues/34)) ([43f4971](https://github.com/anatolykoptev/ox-say/commit/43f49718997cc231e7bfda8e0d7f1ca7e25f841e))
+* **stt:** resident CPU speech-to-text server with CLI fallback ([#36](https://github.com/anatolykoptev/ox-say/issues/36)) ([148f1ae](https://github.com/anatolykoptev/ox-say/commit/148f1aebae0c5132bfceb5f63e5e1eca7c96e698))
+
 ## [0.1.1](https://github.com/anatolykoptev/ox-say/compare/v0.1.0...v0.1.1) (2026-09-30)
 
 
