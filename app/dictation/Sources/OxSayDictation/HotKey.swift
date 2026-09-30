@@ -3,7 +3,9 @@ import Carbon
 /// A system-wide hotkey with press and release events, registered through Carbon's
 /// RegisterEventHotKey. Unlike a CGEventTap it needs no Accessibility or Input
 /// Monitoring permission, and it still sees the release that hold-to-talk needs.
-/// While registered, the key combination no longer reaches other apps.
+/// While registered, the key combination no longer reaches other apps. It is
+/// registered exclusively, so a combination another app already holds fails
+/// here instead of silently going to whichever app registered last.
 final class HotKey {
     var onDown: (() -> Void)?
     var onUp: (() -> Void)?
@@ -42,8 +44,10 @@ final class HotKey {
         }, types.count, &types, me, &handlerRef)
         guard installed == noErr else { return nil }
         let hotKeyID = EventHotKeyID(signature: HotKey.signature, id: id)
-        guard RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef) == noErr else {
-            if let handlerRef { RemoveEventHandler(handlerRef) }
+        let options = OptionBits(kEventHotKeyExclusive)
+        guard RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), options, &hotKeyRef) == noErr else {
+            // deinit still runs for a failed init and removes the handler; removing
+            // it here too would dispose of it twice.
             return nil
         }
     }

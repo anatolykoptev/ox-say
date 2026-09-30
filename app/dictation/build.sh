@@ -26,19 +26,30 @@ case "${1:-}" in
     *) echo "usage: $0 [--install]" >&2; exit 2 ;;
 esac
 
-# CFBundleShortVersionString must be numeric; a dev build is 0.0.0.
+# CFBundleShortVersionString must be three numbers; a dev build is 0.0.0.
 version=${VERSION:-0.0.0}
 version=${version#v}
-case "$version" in
-    [0-9]*.[0-9]*.[0-9]*) version=${version%%[-+]*} ;;
-    *) version=0.0.0 ;;
-esac
+if [[ $version =~ ^([0-9]+\.[0-9]+\.[0-9]+)([-+].*)?$ ]]; then
+    version=${BASH_REMATCH[1]}
+else
+    version=0.0.0
+fi
 
 # Removes a bundle this script built: its files by name, then its directories.
-# rmdir fails loudly if anything else is inside, instead of deleting it.
+# Anything else inside means it is not ours to delete: refuse before touching it.
 remove_app() {
-    local a=$1
+    local a=$1 entry
     [ -e "$a" ] || return 0
+    while IFS= read -r entry; do
+        case "${entry#"$a"/}" in
+            Contents | Contents/Info.plist | Contents/PkgInfo | Contents/MacOS | "Contents/MacOS/$name" | \
+                Contents/_CodeSignature | Contents/_CodeSignature/CodeResources | Contents/CodeResources) ;;
+            *)
+                echo "build.sh: $a holds $entry, which this script does not create; not replacing it" >&2
+                exit 1
+                ;;
+        esac
+    done < <(find "$a" -mindepth 1)
     rm -f "$a/Contents/Info.plist" "$a/Contents/PkgInfo" "$a/Contents/MacOS/$name" \
         "$a/Contents/_CodeSignature/CodeResources" "$a/Contents/CodeResources"
     rmdir "$a/Contents/_CodeSignature" "$a/Contents/MacOS" "$a/Contents" "$a"

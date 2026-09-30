@@ -2,17 +2,24 @@ import AppKit
 
 /// The pill at the bottom of the screen that shows dictation is happening: a
 /// pulsing dot and bars that move with your voice while recording, a spinner
-/// while the daemon transcribes. It never takes focus, so the paste still goes
-/// to the app you were typing in, and it lets clicks through.
+/// while the daemon transcribes, and a short message when something went wrong.
+/// It never takes focus, so the paste still goes to the app you were typing in,
+/// and it lets clicks through.
 final class Overlay {
     private let panel: NSPanel
+    private let background: NSVisualEffectView
     private let bars = LevelBarsView(count: 9)
     private let spinner = NSProgressIndicator()
     private let label = NSTextField(labelWithString: "Transcribing…")
     private let hint = NSTextField(labelWithString: "esc")
-    private let size = NSSize(width: 176, height: 36)
+    private let message = NSTextField(wrappingLabelWithString: "")
+    private let pillSize = NSSize(width: 176, height: 36)
+    private var size: NSSize
+    private var showingMessage = false
+    private var messageTimeout: DispatchWorkItem?
 
     init() {
+        size = pillSize
         panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.isFloatingPanel = true
@@ -25,7 +32,7 @@ final class Overlay {
         panel.hidesOnDeactivate = false
         panel.appearance = NSAppearance(named: .vibrantDark)
 
-        let background = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
+        background = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
         background.material = .hudWindow
         background.blendingMode = .behindWindow
         background.state = .active
@@ -52,10 +59,17 @@ final class Overlay {
         label.sizeToFit()
         label.frame.origin = NSPoint(x: spinner.frame.maxX + 8, y: (size.height - label.frame.height) / 2)
         background.addSubview(label)
+
+        message.font = .systemFont(ofSize: 12, weight: .medium)
+        message.textColor = .labelColor
+        message.maximumNumberOfLines = 3
+        message.isHidden = true
+        background.addSubview(message)
     }
 
     /// Recording: bars "breathe" in grey until the first sound arrives.
     func showListening() {
+        leaveMessage()
         bars.reset()
         bars.isHidden = false
         spinner.stopAnimation(nil)
@@ -66,6 +80,7 @@ final class Overlay {
     }
 
     func showWorking() {
+        leaveMessage()
         bars.stop()
         bars.isHidden = true
         spinner.isHidden = false
@@ -74,7 +89,57 @@ final class Overlay {
         show()
     }
 
-    func hide() {
+    /// Dictation is over. A message on screen stays until it times out.
+    func finish() {
+        if !showingMessage { hide() }
+    }
+
+    /// Says what went wrong (or where the text went) for a few seconds.
+    func showMessage(_ text: String) {
+        bars.stop()
+        bars.isHidden = true
+        spinner.stopAnimation(nil)
+        spinner.isHidden = true
+        label.isHidden = true
+        hint.isHidden = true
+        message.stringValue = text
+        message.isHidden = false
+        let maxText: CGFloat = 420
+        message.preferredMaxLayoutWidth = maxText
+        let fit = message.sizeThatFits(NSSize(width: maxText, height: 200))
+        resize(to: NSSize(width: max(pillSize.width, ceil(fit.width) + 40), height: max(pillSize.height, ceil(fit.height) + 18)))
+        message.frame = NSRect(x: 20, y: (size.height - ceil(fit.height)) / 2, width: ceil(fit.width), height: ceil(fit.height))
+        showingMessage = true
+        show()
+        messageTimeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.showingMessage = false
+            self?.hide()
+        }
+        messageTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: timeout)
+    }
+
+    private func leaveMessage() {
+        messageTimeout?.cancel()
+        messageTimeout = nil
+        showingMessage = false
+        message.isHidden = true
+        hint.isHidden = false
+        resize(to: pillSize)
+    }
+
+    private func resize(to newSize: NSSize) {
+        guard newSize != size else { return }
+        size = newSize
+        panel.setContentSize(size)
+        background.frame = NSRect(origin: .zero, size: size)
+        background.maskImage = Overlay.pill(radius: min(size.height, pillSize.height) / 2)
+        bars.frame.size.height = size.height
+        hint.frame.origin = NSPoint(x: size.width - hint.frame.width - 14, y: (size.height - hint.frame.height) / 2)
+    }
+
+    private func hide() {
         bars.stop()
         spinner.stopAnimation(nil)
         NSAnimationContext.runAnimationGroup({ context in

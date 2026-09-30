@@ -37,6 +37,17 @@ final class ClipboardLeaseTests: XCTestCase {
         XCTAssertEqual(board.text, "new copy made during dictation")
     }
 
+    // Mutation: delete `guard !original.isSensitive else { return false }` in
+    // ClipboardLease.release -> RED (the password goes back on the clipboard and
+    // outlives the password manager's auto-clear).
+    func testAPasswordManagersCopyIsNotPutBack() {
+        let board = FakePasteboard(text: "hunter2")
+        board.items[0][PasteboardMarker.concealed] = Data()
+        let lease = ClipboardLease(board: board, text: "dictated text")
+        XCTAssertFalse(lease.release())
+        XCTAssertEqual(board.text, "dictated text")
+    }
+
     func testReleaseActsOnce() {
         let board = FakePasteboard(text: "a")
         let lease = ClipboardLease(board: board, text: "b")
@@ -59,6 +70,14 @@ final class OutputPolicyTests: XCTestCase {
     func testWithoutAccessibilityTheTextStaysOnTheClipboard() {
         guard case .clipboardOnly = OutputPolicy.decide(secureInput: false, accessibilityTrusted: false) else {
             return XCTFail("without Accessibility a posted Cmd+V is dropped silently")
+        }
+    }
+
+    // Mutation: ignore `focusMoved` in OutputPolicy.decide -> RED (the text is
+    // pasted into whatever app the user switched to).
+    func testNoPasteIntoAnAppTheUserSwitchedTo() {
+        guard case .clipboardOnly = OutputPolicy.decide(secureInput: false, focusMoved: true, accessibilityTrusted: true) else {
+            return XCTFail("a paste must go where the user dictated, not where focus went later")
         }
     }
 
@@ -101,6 +120,16 @@ final class TranscriptionClientTests: XCTestCase {
         XCTAssertTrue(body.contains("filename=\"dictation.wav\""))
     }
 
+    func testATimeoutIsNotReportedAsADeadDaemon() async {
+        let client = TranscriptionClient { _ in throw URLError(.timedOut) }
+        do {
+            _ = try await client.transcribe([0])
+            XCTFail("a timeout must not read as text")
+        } catch let e as TranscriptionError {
+            XCTAssertEqual(e, .timedOut)
+        } catch { XCTFail("\(error)") }
+    }
+
     func testHTTPErrorIsReported() async {
         let client = TranscriptionClient { req in
             (Data("queue full".utf8), HTTPURLResponse(url: req.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!)
@@ -127,9 +156,10 @@ final class FakeOutput: TextOutput {
 }
 
 final class DictationControllerTests: XCTestCase {
-    func run(_ c: DictationController, until state: DictationState) async {
+    @MainActor func run(_ c: DictationController, until state: DictationState, file: StaticString = #filePath, line: UInt = #line) async {
         let deadline = Date().addingTimeInterval(2)
         while c.state != state && Date() < deadline { try? await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertEqual(c.state, state, "stuck: every later key press would be ignored", file: file, line: line)
     }
 
     @MainActor
@@ -188,9 +218,10 @@ final class DictationControllerTests: XCTestCase {
 }
 
 final class CancelTests: XCTestCase {
-    func run(_ c: DictationController, until state: DictationState) async {
+    @MainActor func run(_ c: DictationController, until state: DictationState, file: StaticString = #filePath, line: UInt = #line) async {
         let deadline = Date().addingTimeInterval(2)
         while c.state != state && Date() < deadline { try? await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertEqual(c.state, state, "stuck: every later key press would be ignored", file: file, line: line)
     }
 
     @MainActor
@@ -261,5 +292,81 @@ final class LevelMeterTests: XCTestCase {
         XCTAssertGreaterThan(whisper, 0)
         XCTAssertLessThan(whisper, 0.5)
         XCTAssertGreaterThan(normal, whisper)
+    }
+}
+
+final class ControllerEdgeTests: XCTestCase {
+    @MainActor func run(_ c: DictationController, until state: DictationState) async {
+        let deadline = Date().addingTimeInterval(2)
+        while c.state != state && Date() < deadline { try? await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertEqual(c.state, state)
+    }
+
+    // Mutation: in DictationController.finish change `where !text.isEmpty` to
+    // `where true` -> RED (an empty result would replace the clipboard with nothing).
+    @MainActor
+    func testAnEmptyTranscriptionDeliversNothing() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 16000)
+        let out = FakeOutput()
+        let c = DictationController(recorder: rec, output: out) { _ in "" }
+        c.keyDown(); c.keyUp()
+        await run(c, until: .idle)
+        XCTAssertEqual(out.delivered, [])
+    }
+
+    @MainActor
+    func testFinishRecordingTranscribesWhatWasRecorded() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 16000)
+        let out = FakeOutput()
+        let c = DictationController(recorder: rec, output: out, mode: .toggle) { _ in "capped" }
+        c.keyDown()
+        c.finishRecording()
+        await run(c, until: .idle)
+        XCTAssertEqual(out.delivered, ["capped"])
+    }
+
+    @MainActor
+    func testAPressWhileTranscribingIsReported() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 16000)
+        var busy = 0
+        let c = DictationController(recorder: rec, output: FakeOutput()) { _ in
+            try await Task.sleep(nanoseconds: 100_000_000); return "x"
+        }
+        c.onBusy = { busy += 1 }
+        c.keyDown(); c.keyUp()
+        c.keyDown()
+        XCTAssertEqual(busy, 1)
+        XCTAssertEqual(rec.started, 1, "no second recording while the first is transcribing")
+        await run(c, until: .idle)
+    }
+}
+
+final class DaemonAddressTests: XCTestCase {
+    func plist(_ env: [String: String]?) -> Data {
+        var dict: [String: Any] = ["Label": "io.github.anatolykoptev.ox-say"]
+        if let env { dict["EnvironmentVariables"] = env }
+        return try! PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
+    }
+
+    // Mutation: make DaemonAddress.url(agentPlist:) return `fallback` right away
+    // -> RED (a daemon moved to another port is never found).
+    func testReadsTheInstalledAddress() {
+        XCTAssertEqual(DaemonAddress.url(agentPlist: plist(["OX_SAY_ADDR": "127.0.0.1:9123"])).absoluteString, "http://127.0.0.1:9123")
+    }
+
+    func testDefaultsWithoutAPlistOrSetting() {
+        XCTAssertEqual(DaemonAddress.url(agentPlist: nil), DaemonAddress.fallback)
+        XCTAssertEqual(DaemonAddress.url(agentPlist: plist(nil)), DaemonAddress.fallback)
+        XCTAssertEqual(DaemonAddress.url(agentPlist: Data("not a plist".utf8)), DaemonAddress.fallback)
+    }
+
+    func testListenAddressForms() {
+        XCTAssertEqual(DaemonAddress.url(listenAddress: ":8094")?.absoluteString, "http://127.0.0.1:8094")
+        XCTAssertEqual(DaemonAddress.url(listenAddress: "0.0.0.0:8094")?.absoluteString, "http://127.0.0.1:8094")
+        XCTAssertEqual(DaemonAddress.url(listenAddress: "[::1]:8094")?.absoluteString, "http://[::1]:8094")
+        XCTAssertEqual(DaemonAddress.url(listenAddress: "localhost:8094")?.absoluteString, "http://localhost:8094")
+        XCTAssertNil(DaemonAddress.url(listenAddress: "8094"))
+        XCTAssertNil(DaemonAddress.url(listenAddress: "host:99999"))
+        XCTAssertNil(DaemonAddress.url(listenAddress: "evil.example/path:80"))
     }
 }

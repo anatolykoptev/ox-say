@@ -37,6 +37,8 @@ public final class DictationController {
     public var minSeconds: Double = 0.3
     public var onState: ((DictationState) -> Void)?
     public var onError: ((String) -> Void)?
+    /// A press while the previous dictation is still transcribing: ignored.
+    public var onBusy: (() -> Void)?
 
     private let recorder: Recorder
     private let transcribe: ([Float]) async throws -> String
@@ -65,9 +67,19 @@ public final class DictationController {
             }
         case (.toggle, .recording):
             finish()
+        case (_, .transcribing):
+            onBusy?()
         default:
-            // Key repeat while holding, or a press during transcription: ignore.
+            // Key repeat while holding: ignore.
             break
+        }
+    }
+
+    /// Ends the recording as if the key had been released: the recorder hit its
+    /// length cap, or the microphone went away.
+    public func finishRecording() {
+        if state == .recording {
+            finish()
         }
     }
 

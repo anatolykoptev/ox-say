@@ -21,23 +21,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlay = Overlay()
     private let modeKey = "hotkeyMode"
     private let shortcutKey = "shortcut"
+    /// The last problem worth telling the user; the menu shows it until the
+    /// next dictation starts.
+    private var lastNotice: String?
 
     private var shortcut: Shortcut {
         Shortcut(rawValue: UserDefaults.standard.string(forKey: shortcutKey) ?? "") ?? .controlSpace
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let base = ProcessInfo.processInfo.environment["OX_SAY_URL"].flatMap(URL.init(string:))
-            ?? URL(string: "http://127.0.0.1:8094")!
-        let client = TranscriptionClient(baseURL: base)
+        let client = TranscriptionClient(baseURL: DaemonAddress.url(agentPlist: try? Data(contentsOf: DaemonAddress.agentPlist)))
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode) { samples in
             try await client.transcribe(samples)
         }
         controller.onState = { [weak self] state in self?.show(state) }
         controller.onError = { [weak self] message in self?.notice(message) }
+        controller.onBusy = { NSSound.beep() }
         output.onNotice = { [weak self] message in self?.notice(message) }
         recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }
+        recorder.onEnded = { [weak self] reason in
+            // Transcribe what was recorded; say why it ended once it is idle.
+            self?.lastNotice = reason
+            self?.controller.finishRecording()
+        }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         buildMenu()
@@ -97,17 +104,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch state {
         case .idle:
             symbol = "mic"
-            statusLine.title = controller.mode == .hold
+            statusLine.title = lastNotice ?? (controller.mode == .hold
                 ? "Hold \(shortcut.title) and speak"
-                : "Press \(shortcut.title) to start and stop"
-            overlay.hide()
+                : "Press \(shortcut.title) to start and stop")
+            overlay.finish()
         case .recording:
             symbol = "mic.fill"
+            lastNotice = nil
+            statusItem.button?.toolTip = nil
             statusLine.title = "Listening… (esc cancels)"
             overlay.showListening()
         case .transcribing:
             symbol = "ellipsis.circle"
             statusLine.title = "Transcribing… (esc cancels)"
+            // The paste goes to the app the user was dictating into, or nowhere.
+            output.target = NSWorkspace.shared.frontmostApplication?.processIdentifier
             overlay.showWorking()
         }
         // Esc cancels, but only while there is something to cancel: a registered
@@ -123,8 +134,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func notice(_ message: String) {
+        lastNotice = message
         statusLine.title = message
         statusItem.button?.toolTip = message
+        overlay.showMessage(message)
         NSSound.beep()
     }
 

@@ -117,9 +117,14 @@ your previous clipboard back afterwards, unless something else changed the
 clipboard in between. When a password field has focus, it does not paste at all
 and leaves the text on the clipboard.
 
+The app finds the daemon at the address the installer gave it (`OX_SAY_ADDR`
+in the ox-say LaunchAgent), 127.0.0.1:8094 by default. When something goes
+wrong, or the text could not be pasted, the pill says why for a few seconds.
+
 Without `OX_SAY_SIGN_IDENTITY` the build is signed ad hoc: it runs only on the
-Mac that built it, and macOS drops its Accessibility permission on every rebuild
-(remove the stale entry in System Settings and add the app again). See the
+Mac that built it, and macOS drops its microphone and Accessibility permissions
+on every rebuild (remove the stale Accessibility entry in System Settings and
+add the app again). See the
 header of `app/dictation/build.sh` for Developer ID signing and notarization.
 
 ## Install

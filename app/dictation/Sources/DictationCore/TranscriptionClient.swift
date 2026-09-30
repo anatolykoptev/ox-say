@@ -2,12 +2,14 @@ import Foundation
 
 public enum TranscriptionError: Error, Equatable, CustomStringConvertible {
     case daemonUnreachable(String)
+    case timedOut
     case http(Int, String)
     case badResponse
 
     public var description: String {
         switch self {
         case .daemonUnreachable(let why): return "The ox-say daemon is not reachable (\(why)). Is it running? Try `ox-say status`."
+        case .timedOut: return "The ox-say daemon took too long to answer. It may be busy with a long transcription."
         case .http(let code, let body): return "The ox-say daemon answered \(code): \(body)"
         case .badResponse: return "The ox-say daemon sent a response without text."
         }
@@ -47,11 +49,15 @@ public struct TranscriptionClient {
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        request.timeoutInterval = 120
+        // Longer than the daemon's own per-transcription cap (600 s): a request
+        // queued behind a long transcription is slow, not lost.
+        request.timeoutInterval = 660
 
         let data: Data, response: URLResponse
         do {
             (data, response) = try await send(request)
+        } catch let error as URLError where error.code == .timedOut {
+            throw TranscriptionError.timedOut
         } catch {
             throw TranscriptionError.daemonUnreachable(error.localizedDescription)
         }

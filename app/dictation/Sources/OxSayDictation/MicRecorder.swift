@@ -23,11 +23,16 @@ final class MicRecorder: Recorder {
     /// Loudness per frequency band, 0...1, for each chunk of audio. Called on the
     /// audio thread.
     var onLevels: (([Float]) -> Void)?
+    /// The recording reached `maxSeconds` or lost its input device (AirPods
+    /// connecting, a new default input): it has stopped growing and should be
+    /// finished. Called on the main thread with the reason.
+    var onEnded: ((String) -> Void)?
 
     private let engine = AVAudioEngine()
     private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-    private var converter: AVAudioConverter?
     private var samples: [Float] = []
+    private var ended = false
+    private var configObserver: NSObjectProtocol?
     private let lock = NSLock()
     private let meter = LevelMeter(bands: 9, sampleRate: 16000)
 
@@ -49,9 +54,19 @@ final class MicRecorder: Recorder {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw RecorderError.noInput }
-        converter = AVAudioConverter(from: format, to: target)
+        lock.lock()
+        ended = false
+        lock.unlock()
+        guard let converter = AVAudioConverter(from: format, to: target) else { throw RecorderError.noInput }
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            self?.append(buffer)
+            self?.append(buffer, converter)
+        }
+        // The engine stops itself when the input device changes; without this the
+        // recording would go quiet and look like the user stopped talking.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            self?.end("The microphone changed while recording.")
         }
         engine.prepare()
         do {
@@ -63,6 +78,8 @@ final class MicRecorder: Recorder {
     }
 
     func stop() -> [Float] {
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+        configObserver = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         lock.lock()
@@ -70,8 +87,15 @@ final class MicRecorder: Recorder {
         return samples
     }
 
-    private func append(_ buffer: AVAudioPCMBuffer) {
-        guard let converter else { return }
+    private func end(_ reason: String) {
+        lock.lock()
+        let first = !ended
+        ended = true
+        lock.unlock()
+        if first { onEnded?(reason) }
+    }
+
+    private func append(_ buffer: AVAudioPCMBuffer, _ converter: AVAudioConverter) {
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * target.sampleRate / buffer.format.sampleRate + 64)
         guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
         var fed = false
@@ -89,9 +113,13 @@ final class MicRecorder: Recorder {
         let chunk = Array(UnsafeBufferPointer(start: channel[0], count: Int(out.frameLength)))
         onLevels?(meter.levels(chunk))
         lock.lock()
-        defer { lock.unlock() }
-        if Double(samples.count) / target.sampleRate < maxSeconds {
-            samples.append(contentsOf: chunk)
+        let full = Double(samples.count) / target.sampleRate >= maxSeconds
+        if !full { samples.append(contentsOf: chunk) }
+        lock.unlock()
+        if full {
+            DispatchQueue.main.async { [weak self] in
+                self?.end("Recordings stop after \(Int(self?.maxSeconds ?? 0)) seconds.")
+            }
         }
     }
 }
