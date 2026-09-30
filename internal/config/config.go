@@ -24,6 +24,8 @@ const (
 	DefaultSTTTimeout     = 600
 	DefaultSTTMaxUploadMB = 200
 	DefaultSTTMaxAudio    = 4 * 3600
+	DefaultSTTPort        = 8096
+	DefaultSTTIdleStop    = 600
 	maxSTTUploadMB        = 1 << 20 // keeps MB<<20 far from int64 overflow
 )
 
@@ -51,6 +53,9 @@ type Config struct {
 	STTTimeout      time.Duration // OX_SAY_STT_TIMEOUT_SECS
 	STTMaxUploadMB  int64         // OX_SAY_STT_MAX_UPLOAD_MB
 	STTMaxAudio     time.Duration // OX_SAY_STT_MAX_AUDIO_SECS: longer audio is cut
+	STTServer       string        // OX_SAY_STT_SERVER: on | off — resident ox-stt server
+	STTPort         int           // OX_SAY_STT_PORT: loopback port the STT server binds
+	STTIdleStop     time.Duration // OX_SAY_STT_IDLE_STOP_SECS
 }
 
 // flagNames maps flag names to env var names for ApplyFlags.
@@ -74,6 +79,9 @@ var flagNames = map[string]string{
 	"stt-timeout":       "OX_SAY_STT_TIMEOUT_SECS",
 	"stt-max-upload":    "OX_SAY_STT_MAX_UPLOAD_MB",
 	"stt-max-audio":     "OX_SAY_STT_MAX_AUDIO_SECS",
+	"stt-server":        "OX_SAY_STT_SERVER",
+	"stt-port":          "OX_SAY_STT_PORT",
+	"stt-idle-stop":     "OX_SAY_STT_IDLE_STOP_SECS",
 }
 
 // RegisterFlags registers one flag per supported env var on fs. Values set on
@@ -201,9 +209,38 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	}
 	c.STTMaxAudio = time.Duration(audioSecs) * time.Second
 
+	c.STTServer = orDefault(get("OX_SAY_STT_SERVER"), "on")
+	switch c.STTServer {
+	case "on", "off":
+	default:
+		return nil, fmt.Errorf("config: OX_SAY_STT_SERVER %q: want on|off", c.STTServer)
+	}
+	if c.STTPort, err = intVar(get("OX_SAY_STT_PORT"), DefaultSTTPort); err != nil {
+		return nil, fmt.Errorf("config: OX_SAY_STT_PORT: %w", err)
+	}
+	if c.STTPort < 1 || c.STTPort > 65535 {
+		return nil, fmt.Errorf("config: OX_SAY_STT_PORT %d: want 1..65535", c.STTPort)
+	}
+	sttIdleSecs, err := intVar(get("OX_SAY_STT_IDLE_STOP_SECS"), DefaultSTTIdleStop)
+	if err != nil {
+		return nil, fmt.Errorf("config: OX_SAY_STT_IDLE_STOP_SECS: %w", err)
+	}
+	if sttIdleSecs < 1 {
+		return nil, fmt.Errorf("config: OX_SAY_STT_IDLE_STOP_SECS %d: want >= 1", sttIdleSecs)
+	}
+	c.STTIdleStop = time.Duration(sttIdleSecs) * time.Second
+
 	c.Host, c.Port, err = splitLoopbackAddr(c.Addr)
 	if err != nil {
 		return nil, err
+	}
+	// The STT server binds its own loopback port; a collision with either
+	// of the other two listeners is a config error, not a bind-time one.
+	if c.STTPort == c.EnginePort {
+		return nil, fmt.Errorf("config: OX_SAY_STT_PORT %d collides with OX_SAY_ENGINE_PORT", c.STTPort)
+	}
+	if p, perr := strconv.Atoi(c.Port); perr == nil && c.STTPort == p {
+		return nil, fmt.Errorf("config: OX_SAY_STT_PORT %d collides with OX_SAY_ADDR", c.STTPort)
 	}
 	return c, nil
 }

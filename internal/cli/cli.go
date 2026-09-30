@@ -555,6 +555,12 @@ func cmdStatus(_ []string, stdout, stderr io.Writer) int {
 			Starts   int     `json:"starts"`
 			Restarts int     `json:"restarts"`
 		} `json:"engine"`
+		STTServer struct {
+			State   string  `json:"state"`
+			PID     int     `json:"pid,omitempty"`
+			UptimeS float64 `json:"uptime_s,omitempty"`
+			LastErr string  `json:"last_error,omitempty"`
+		} `json:"stt_server"`
 		Voices []struct {
 			Name string `json:"name"`
 		} `json:"voices"`
@@ -573,6 +579,11 @@ func cmdStatus(_ []string, stdout, stderr io.Writer) int {
 	if st.Engine.LastErr != "" {
 		fmt.Fprintf(stdout, "last error: %s\n", st.Engine.LastErr)
 	}
+	fmt.Fprintf(stdout, "stt server: %s", st.STTServer.State)
+	if st.STTServer.PID != 0 {
+		fmt.Fprintf(stdout, " (pid %d, up %.0fs)", st.STTServer.PID, st.STTServer.UptimeS)
+	}
+	fmt.Fprintln(stdout)
 	names := make([]string, 0, len(st.Voices))
 	for _, v := range st.Voices {
 		names = append(names, v.Name)
