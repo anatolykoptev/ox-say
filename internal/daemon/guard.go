@@ -4,6 +4,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -32,18 +33,42 @@ func Guard(next http.Handler) http.Handler {
 }
 
 // postBodyOK requires JSON on every POST — except the transcriptions route,
-// which is OpenAI-compatible multipart/form-data (file upload). The
-// exemption names the exact method and path so no other POST opens up.
+// which is OpenAI-compatible multipart/form-data (file upload), and a
+// session audio chunk, which is application/octet-stream (raw PCM). The
+// exemptions name the exact method and path so no other POST opens up.
 func postBodyOK(r *http.Request) bool {
 	ct := r.Header.Get("Content-Type")
 	if jsonBody(ct) {
 		return true
 	}
-	if r.Method != http.MethodPost || r.URL.Path != "/v1/audio/transcriptions" {
+	if r.Method != http.MethodPost {
 		return false
 	}
 	mt, _, err := mime.ParseMediaType(ct)
-	return err == nil && mt == "multipart/form-data"
+	if err != nil {
+		return false
+	}
+	if r.URL.Path == "/v1/audio/transcriptions" {
+		return mt == "multipart/form-data"
+	}
+	return mt == "application/octet-stream" && sttSessionAudioPath(r.URL.EscapedPath())
+}
+
+// sttSessionAudioPath reports whether the escaped request path is exactly
+// /v1/audio/transcriptions/sessions/<id>/audio with a well-formed id — the
+// one POST allowed to carry application/octet-stream. The id segment is
+// checked unescaped, the same value the route sees in PathValue, so an
+// encoded slash lands inside it (where the regexp refuses it) instead of
+// changing the segment count.
+func sttSessionAudioPath(escapedPath string) bool {
+	seg := strings.Split(escapedPath, "/")
+	if len(seg) != 7 || seg[0] != "" ||
+		seg[1] != "v1" || seg[2] != "audio" || seg[3] != "transcriptions" ||
+		seg[4] != "sessions" || seg[6] != "audio" {
+		return false
+	}
+	id, err := url.PathUnescape(seg[5])
+	return err == nil && sessionIDRe.MatchString(id)
 }
 
 // loopbackHost reports whether a Host header names this machine by a loopback

@@ -99,7 +99,10 @@ the TTS engine; its idle cost is ~1.4 GB of RAM, and
 clips up to 300 s go to the server whatever the TTS state; a server failure
 falls back to the per-call CLI, and audio longer than 300 s stays on the
 CLI (a cancelled server decode cannot be killed the way a CLI child is).
-Whisper always uses the CLI.
+Whisper always uses the CLI. When the silero VAD model
+(`OX_SAY_STT_VAD_MODEL`) is present, the spawned server is passed `--vad`
+and can also host streaming transcription sessions — the daemon proxies
+them under `/v1/audio/transcriptions/sessions` (below).
 
 On the CLI path the GPU rule is unchanged: `auto` puts ox-stt on the CPU
 while the TTS engine is starting or ready (~2 GB held), `on`/`off` force.
@@ -116,13 +119,40 @@ Listening on `OX_SAY_ADDR` (default `127.0.0.1:8094`, loopback only):
 | Route | Description |
 |-------|-------------|
 | `POST /v1/audio/speech` | OpenAI-compatible TTS. `input` required; `voice`, `language`, `response_format` (`wav`, `pcm`, `mp3`, `opus` — last two transcoded with ffmpeg), `instructions`, `seed`, `temperature`, `top_k`, `top_p`, `repetition_penalty`, `max_new_tokens` |
-| `POST /v1/audio/transcriptions` | OpenAI-compatible STT, multipart: `file` (required, ≤ `OX_SAY_STT_MAX_UPLOAD_MB`), `model` (`parakeet` default; `whisper`/`whisper-1`), `language`, `prompt`, `response_format` (`json` default → `{"text"}`; `text`; `verbose_json` → OpenAI's shape: `duration`, `segments` (`start`/`end`), `words` (`word`/`start`/`end`); `srt`; `vtt`; `ox_json` → ox-stt's own result with words as `w`/`s`/`e`/`p`, what `ox-say transcribe --json` prints), `timestamp_granularities[]` (accepted; words are always returned). Errors: 400 bad input, 413 over the upload cap, 503 model missing or queue full, 504 timeout |
+| `POST /v1/audio/transcriptions` | OpenAI-compatible STT, multipart: `file` (required, ≤ `OX_SAY_STT_MAX_UPLOAD_MB`), `model` (`parakeet` default; `whisper`/`whisper-1`), `language`, `prompt`, `response_format` (`json` default → `{"text"}`; `text`; `verbose_json` → OpenAI's shape: `duration`, `segments` (`start`/`end`), `words` (`word`/`start`/`end`); `srt`; `vtt`; `ox_json` → ox-stt's own result with words as `w`/`s`/`e`/`p`, what `ox-say transcribe --json` prints), `timestamp_granularities[]` (accepted; words are always returned). Errors: 400 bad input, 413 over the upload cap, 500 engine failure, 503 model missing or queue full, 504 timeout |
 | `GET /v1/audio/voices` | List persisted voices |
 | `POST /v1/audio/voices` | `{"name","audio_path","ref_text"}` — clone from a local clip (normalized to 24 kHz mono WAV, max 20 s) |
 | `GET /v1/audio/voices/<name>` | Voice metadata |
 | `DELETE /v1/audio/voices/<name>` | Remove a voice |
 | `GET /status` | Engine and STT-server state, pids, uptime, restarts, voices, config |
 | `GET /health` | Daemon liveness (always 200; engine may be stopped) |
+
+Streaming transcription sessions — incremental decoding on the resident
+`ox-stt --serve` (requires the VAD model; unavailable when it is absent or
+`OX_SAY_STT_SERVER=off`):
+
+| Route | Description |
+|-------|-------------|
+| `POST /v1/audio/transcriptions/sessions` | `{}` → `{"id":"<32 hex>"}`. 429 past 4 live sessions |
+| `POST /v1/audio/transcriptions/sessions/<id>/audio` | `application/octet-stream` body: little-endian float32 mono PCM at 16 kHz, ≤ 30 s (1,920,000 bytes) per request → `{"segments","words","pending"}` with what was decoded since the previous call |
+| `POST /v1/audio/transcriptions/sessions/<id>/finish` | Waits for pending decodes (up to ~60 s) → final `{"segments","words","done":true,"text"}`, then deletes the session |
+| `DELETE /v1/audio/transcriptions/sessions/<id>` | Drop the session without finishing |
+
+Session errors are `{"error":"…"}`:
+- 400: an audio body that is not whole float32 samples, holds a non-finite sample, or cannot be read.
+- 404: unknown session. This includes a server restart, since sessions do not survive one.
+- 413: over the per-chunk cap, or a JSON body over 4 KB.
+- 429: past 4 live sessions, or a decode backlog.
+- 500: a segment failed to decode or VAD failed, so the session is unusable; or the server could not create a session.
+- 501: no VAD model.
+- 502: the STT server could not be reached.
+- 503: the STT server is off or cooling down.
+- 504: `finish` waited too long.
+
+Requests the daemon's guard refuses (403, 415) keep its usual error
+shape. On **any** non-200 response a client should keep its own copy of
+the recording and fall back to uploading the whole clip to
+`POST /v1/audio/transcriptions`.
 
 ### MCP
 
@@ -153,6 +183,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_CACHE_DIR` | `~/Library/Caches/ox-say` | Default output dir for `speak` |
 | `OX_SAY_STT_BIN` | `$OX_SAY_HOME/engine/ox-stt` | Speech-to-text binary |
 | `OX_SAY_STT_MODEL` | `$OX_SAY_HOME/models/ggml-parakeet-tdt-0.6b-v3-f16.bin` | Parakeet weights |
+| `OX_SAY_STT_VAD_MODEL` | `$OX_SAY_HOME/models/ggml-silero-v5.1.2.bin` | Silero VAD model; enables the streaming session routes when present at STT-server spawn |
 | `OX_SAY_STT_WHISPER_MODEL` | `$OX_SAY_HOME/models/ggml-large-v3-turbo.bin` | Whisper weights (`--with-whisper` fetch) |
 | `OX_SAY_STT_GPU` | `auto` | CLI device: `auto` = CPU while the TTS engine runs; `on`/`off` force. `on` also lets the resident server use the GPU (explicit opt-in to sharing with TTS) |
 | `OX_SAY_STT_TIMEOUT_SECS` | `600` | Per-transcription cap (conversion + engine) |

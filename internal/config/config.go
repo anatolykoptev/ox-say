@@ -48,6 +48,7 @@ type Config struct {
 
 	STTBin          string        // OX_SAY_STT_BIN: path to ox-stt
 	STTModel        string        // OX_SAY_STT_MODEL: parakeet weights
+	STTVADModel     string        // OX_SAY_STT_VAD_MODEL: silero VAD model enabling streaming sessions
 	STTWhisperModel string        // OX_SAY_STT_WHISPER_MODEL: whisper weights
 	STTGPU          string        // OX_SAY_STT_GPU: auto | on | off
 	STTTimeout      time.Duration // OX_SAY_STT_TIMEOUT_SECS
@@ -74,6 +75,7 @@ var flagNames = map[string]string{
 	"cache-dir":         "OX_SAY_CACHE_DIR",
 	"stt-bin":           "OX_SAY_STT_BIN",
 	"stt-model":         "OX_SAY_STT_MODEL",
+	"stt-vad-model":     "OX_SAY_STT_VAD_MODEL",
 	"stt-whisper-model": "OX_SAY_STT_WHISPER_MODEL",
 	"stt-gpu":           "OX_SAY_STT_GPU",
 	"stt-timeout":       "OX_SAY_STT_TIMEOUT_SECS",
@@ -176,6 +178,9 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	}
 	if c.STTModel = get("OX_SAY_STT_MODEL"); c.STTModel == "" {
 		c.STTModel = filepath.Join(c.Home, "models", "ggml-parakeet-tdt-0.6b-v3-f16.bin")
+	}
+	if c.STTVADModel = get("OX_SAY_STT_VAD_MODEL"); c.STTVADModel == "" {
+		c.STTVADModel = filepath.Join(c.Home, "models", "ggml-silero-v5.1.2.bin")
 	}
 	if c.STTWhisperModel = get("OX_SAY_STT_WHISPER_MODEL"); c.STTWhisperModel == "" {
 		c.STTWhisperModel = filepath.Join(c.Home, "models", "ggml-large-v3-turbo.bin")
