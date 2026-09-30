@@ -41,7 +41,7 @@ if [ "$purge" = 1 ]; then
     fi
     # Only what ox-say creates in its home, then rmdir: a home that holds
     # anything else is left in place.
-    for d in engine models voices run licenses; do
+    for d in engine models voices run; do
         if [ -d "$home/$d" ]; then
             rm -r "${home:?}/$d"
         fi

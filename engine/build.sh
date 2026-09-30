@@ -45,6 +45,15 @@ include_copy() {
 # CPU; distribution builds use a fixed baseline instead. Every Intel Mac since 2013 (Haswell) has
 # AVX2/FMA/F16C/BMI2. AVX-512 stays off because most Intel MacBooks have none. macOS 13 is the
 # oldest target.
+# A distribution build must run on every supported Mac, so it may not carry
+# AVX-512. A native build (the default, from source) compiles for this CPU and
+# rightly uses AVX-512 where the CPU has it.
+check_dist() {
+    if [ "${OX_SAY_DIST:-0}" = 1 ]; then
+        "$here/../scripts/check-no-avx512.sh" "$1"
+    fi
+}
+
 set_cmake_flags() {
     local inc=$1 cpu
     if [ "${OX_SAY_DIST:-0}" = 1 ]; then
@@ -100,7 +109,7 @@ cmake --build "$tts/build" --target tts-server -j "$jobs" > "$work/tts-build.log
 cp "$tts/build/tts-server" "$out/tts-server"
 strip -x "$out/tts-server"
 check_static "$out/tts-server"
-"$here/../scripts/check-no-avx512.sh" "$out/tts-server"
+check_dist "$out/tts-server"
 cp "$tts/LICENSE" "$out/licenses/qwentts.cpp.LICENSE"
 cp "$tts/ggml/LICENSE" "$out/licenses/ggml.LICENSE"
 cp "$tts/vendor/cpp-httplib/LICENSE" "$out/licenses/cpp-httplib.LICENSE"
@@ -125,7 +134,7 @@ cmake --build "$work/stt-build" --target ox-stt -j "$jobs" > "$work/stt-build.lo
 cp "$work/stt-build/ox-stt" "$out/ox-stt"
 strip -x "$out/ox-stt"
 check_static "$out/ox-stt"
-"$here/../scripts/check-no-avx512.sh" "$out/ox-stt"
+check_dist "$out/ox-stt"
 cp "$stt/LICENSE" "$out/licenses/whisper.cpp.LICENSE"
 echo "built $out/ox-stt"
 
@@ -138,5 +147,5 @@ cmake --build "$work/align-build" --target ox-align -j "$jobs" > "$work/align-bu
 cp "$work/align-build/ox-align" "$out/ox-align"
 strip -x "$out/ox-align"
 check_static "$out/ox-align"
-"$here/../scripts/check-no-avx512.sh" "$out/ox-align"
+check_dist "$out/ox-align"
 echo "built $out/ox-align"

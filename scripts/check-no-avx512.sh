@@ -23,8 +23,9 @@ otool -tv "$bin" >"$disasm"
 # under pipefail, could turn a match into a pass.
 pat='%zmm|%k[0-7]|%[xy]mm(1[6-9]|2[0-9]|3[01])|\{1to'
 bad=$(grep -cE "$pat" "$disasm" || true)
-if [ "$bad" -gt 0 ]; then
-    echo "$bin uses AVX-512 forms ($bad instructions); distribution builds must not" >&2
+# Anything but a clean 0 fails: a grep error leaves $bad empty.
+if [ "${bad:-x}" != 0 ]; then
+    echo "$bin uses AVX-512 forms (${bad:-scan failed} instructions); distribution builds must not" >&2
     grep -nE -m5 "$pat" "$disasm" >&2 || true
     exit 1
 fi

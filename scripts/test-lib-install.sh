@@ -189,6 +189,13 @@ else
 fi
 check_in_log "refusal names the fix" "$tmp/nokeys.log" "oxs_env_keys_from"
 
+# --- F: the real installers call the render as a plain statement -----------
+# Scenario D proves the shape on a copy; this pins the real call sites to it.
+for f in install.sh install-release.sh; do
+    n=$(grep -cE '^[^#]*[$][(]oxs_render_agent' "$root/scripts/$f" || true) # code, not comments
+    check "$f renders without \$(…), so errexit applies" "${n:-x}" 0
+done
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "all checks passed"

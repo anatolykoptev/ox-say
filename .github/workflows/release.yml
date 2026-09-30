@@ -72,6 +72,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The installer's own tests need macOS (plutil); they are quick, so they
+      # run before the long engine build.
+      - name: Installer tests
+        run: bash scripts/test-lib-install.sh
+
       - name: Build tools
         run: command -v cmake >/dev/null || brew install cmake
 
@@ -137,5 +142,7 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # no checkout in this job, so gh has no git remote to find the repo from
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: gh release edit "$TAG" --draft=false

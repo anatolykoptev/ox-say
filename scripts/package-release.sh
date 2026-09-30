@@ -39,7 +39,7 @@ cp "$root"/LICENSE "$root"/NOTICE "$root"/README.md "$stage/"
 # runtime's own. A module with no license file fails the package — shipping a
 # binary without its notices is worse than no build.
 modpath=$(cd "$root" && go list -m)
-(cd "$root" && go list -deps -f '{{with .Module}}{{.Path}} {{.Dir}}{{end}}' ./cmd/ox-say | sort -u) \
+(cd "$root" && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go list -deps -f '{{with .Module}}{{.Path}} {{.Dir}}{{end}}' ./cmd/ox-say | sort -u) \
     > "$work/go-modules.txt"
 while read -r mod dir; do
     if [ -z "${mod:-}" ] || [ -z "${dir:-}" ] || [ "$mod" = "$modpath" ]; then

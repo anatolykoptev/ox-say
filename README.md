@@ -37,7 +37,7 @@ It needs `ffmpeg` (`brew install ffmpeg`) and never uses `sudo`. To build from s
 |---|---|---|
 | Text-to-speech, voice cloning from a short clip | Qwen3-TTS 12 Hz via [qwentts.cpp](https://github.com/ServeurpersoCom/qwentts.cpp) | faster than real time (about 0.55× RTF), first audio in about 100 ms |
 | Speech-to-text with word timestamps | Parakeet TDT v3 (25 European languages) or Whisper large-v3-turbo (99 languages) via whisper.cpp | 6 minutes of audio in about 18 s |
-| `ox-align` engine tool: per-frame CTC emissions for a wav2vec2 checkpoint ([engine/README.md](engine/README.md)) — not exposed by the daemon | optional hand-converted GGUF (CC-BY-NC; the installer does not fetch it) | emissions match the transformers oracle within tolerance |
+| `ox-align` engine tool: per-frame CTC emissions for a wav2vec2 checkpoint ([engine/README.md](engine/README.md)) — not exposed by the daemon | optional hand-converted GGUF (the MMS aligner weights are CC-BY-NC; the installer fetches none) | emissions match the transformers oracle within tolerance |
 
 ## Why Intel Macs
 

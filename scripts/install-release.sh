@@ -37,26 +37,37 @@ oxs_install_binary "$root/bin/ox-say"
 # get.sh deletes the extracted release tree, so the uninstaller must live
 # under $OX_SAY_HOME.
 cp "$root/scripts/uninstall.sh" "$home/uninstall.sh"
-# Third-party licenses for the Go binary ship in the release under licenses/,
-# next to the engine's own licenses dir.
-if [ -d "$home/licenses" ]; then
-    find "$home/licenses" -depth -delete
+# Third-party licenses for the Go binary ship in the release under licenses/go.
+# They go under engine/licenses, a directory ox-say owns, never a directory of
+# their own in OX_SAY_HOME, which may be shared with other things.
+if [ -d "$home/engine/licenses/go" ]; then
+    find "$home/engine/licenses/go" -depth -delete
 fi
-cp -R "$root/licenses" "$home/"
+mkdir -p "$home/engine/licenses"
+cp -R "$root/licenses/go" "$home/engine/licenses/"
 oxs_load_agent "$tmp"
 oxs_wait_version "$version"
 
 # 3. Register the MCP server with Claude Code, if it is installed.
 mcp_url="http://$addr/mcp"
 if [ "${OX_SAY_NO_MCP:-0}" != 1 ] && command -v claude >/dev/null; then
-    # remove+add, pinned to user scope: `mcp get` also reads project/local
-    # scope from the cwd and would keep a stale URL on a changed OX_SAY_ADDR.
-    claude mcp remove --scope user ox-say >/dev/null 2>&1 || true
-    if claude mcp add --transport http --scope user ox-say "$mcp_url" >/dev/null; then
-        echo "registered the MCP server ox-say with Claude Code ($mcp_url)"
-    else
-        echo "could not register the MCP server; run: claude mcp add --transport http --scope user ox-say $mcp_url" >&2
-    fi
+    # Asked from / so a project- or local-scope entry of the caller's cwd does
+    # not answer for the user scope. Replace it only when the URL is not ours:
+    # a failed add after the remove would lose a working registration.
+    current=$(cd / && claude mcp get ox-say 2>/dev/null || true)
+    case "$current" in
+        *"$mcp_url"*)
+            echo "the MCP server ox-say is registered with Claude Code ($mcp_url)"
+            ;;
+        *)
+            (cd / && claude mcp remove --scope user ox-say >/dev/null 2>&1) || true
+            if (cd / && claude mcp add --transport http --scope user ox-say "$mcp_url" >/dev/null); then
+                echo "registered the MCP server ox-say with Claude Code ($mcp_url)"
+            else
+                echo "could not register the MCP server; run: claude mcp add --transport http --scope user ox-say $mcp_url" >&2
+            fi
+            ;;
+    esac
 else
     echo "MCP: claude mcp add --transport http --scope user ox-say $mcp_url"
 fi
