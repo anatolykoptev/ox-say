@@ -12,6 +12,9 @@ public struct SessionClient {
     /// many decodes are still pending on the server.
     public struct AudioReply: Equatable {
         public var texts: [String]
+        /// Decodes the server still owed the session at reply time. Parsed so
+        /// the wire shape is visible to tests; the drain is judged on sample
+        /// counts, not on this.
         public var pending: Int
     }
 

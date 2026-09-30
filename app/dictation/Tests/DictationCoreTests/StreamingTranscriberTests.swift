@@ -392,7 +392,14 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertEqual(fake.recorded().last?.method, "DELETE")
         XCTAssertEqual(fake.recorded().last?.path, sessionPath)
         await st.feed(chunk(1)) // after cancel a feed only buffers
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        // A pump kicked by that feed would set `sending` under feed's own
+        // lock, so once none runs the recorded requests are final.
+        let deadline = Date().addingTimeInterval(2)
+        while st.pumpSending && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(st.pumpSending, "the post-cancel feed must not start a pump")
+        XCTAssertEqual(fake.requestCount, 3, "cancel + buffered feed sends nothing else")
         XCTAssertFalse(fake.recorded().contains { $0.path == finishPath })
         XCTAssertFalse(fake.recorded().contains { $0.path == uploadPath })
     }
@@ -439,6 +446,184 @@ final class StreamingTranscriberTests: XCTestCase {
         let audio = fake.recorded().filter { $0.path == audioPath }
         XCTAssertEqual(audio.map { chunkIndex($0.body) }, [1, 2, 3],
                        "buffered chunks go out first, in order")
+    }
+
+    /// Polls until a request matching path (and method) is recorded.
+    private func waitFor(_ fake: ScriptedSend, path: String, method: String? = nil) async -> Bool {
+        let deadline = Date().addingTimeInterval(3)
+        func found() -> Bool {
+            fake.recorded().contains { $0.path == path && (method == nil || $0.method == method) }
+        }
+        while !found() && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        return found()
+    }
+
+    // Mutation: in the pump's exit branch, resume the waiters with this
+    // pump's stale-generation verdict (`generation == g && …`) before kicking
+    // a successor pump -> RED: B's waiter resolves false and finish uploads.
+    @MainActor
+    func testAStalePumpDoesNotResolveTheNextDictationsDrain() async throws {
+        let gate = Gate()
+        let fake = ScriptedSend([
+            .json(200, #"{"id":"\#(sessionID)"}"#),                        // A create
+            .gated(gate, .json(200, #"{"segments":[],"pending":0}"#)),     // A audio, held
+            .json(200, #"{"id":"\#(sessionID)"}"#),   // A DELETE and B create race;
+            .json(200, #"{"id":"\#(sessionID)"}"#),   // either order answers both.
+            .json(200, #"{"segments":[],"pending":0}"#),                   // B audio
+            .json(200, #"{"text":"b text","done":true}"#),                 // B finish
+        ])
+        let st = transcriber(fake)
+        st.begin()
+        await st.feed(chunk(0))
+        var arrived = await fake.waitForRequests(2)
+        XCTAssertTrue(arrived, "A's create and held audio")
+        st.cancel()
+        st.begin()
+        arrived = await fake.waitForRequests(4)
+        XCTAssertTrue(arrived, "A's delete and B's create")
+        await st.feed(chunk(7)) // buffers: A's pump still owns `sending`
+        let finish = Task { try await st.finish(all: chunk(7)) }
+        // B's drain waiter must be queued before A's pump gets to exit.
+        let deadline = Date().addingTimeInterval(2)
+        while st.pendingDrainWaiters == 0 && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(st.pendingDrainWaiters, 1)
+        gate.open()
+        let text = try await finish.value
+        XCTAssertEqual(text, "b text")
+        arrived = await fake.waitForRequests(6)
+        XCTAssertTrue(arrived)
+        let reqs = fake.recorded()
+        XCTAssertEqual(reqs.filter { $0.path == audioPath }.count, 2,
+                       "B's chunk streams through B's session")
+        XCTAssertEqual(reqs.last?.path, finishPath)
+        XCTAssertFalse(reqs.contains { $0.path == uploadPath },
+                       "B must not fall back to a one-shot upload")
+    }
+
+    // Mutation: drop the cancelled/generation re-check before the one-shot
+    // upload in finish -> RED: the cancelled dictation uploads anyway.
+    @MainActor
+    func testEscDuringAnInFlightFinishNeverUploads() async throws {
+        let gate = Gate()
+        let fake = ScriptedSend([
+            .json(200, #"{"id":"\#(sessionID)"}"#),
+            .json(200, #"{"segments":[],"pending":0}"#),
+            .gated(gate, .json(500, #"{"error":"finish blew up"}"#)),
+            .json(200, "{}"), // the cancel DELETE
+        ])
+        let st = transcriber(fake)
+        st.begin()
+        await st.feed(chunk(0))
+        let finish = Task { try await st.finish(all: chunk(0)) }
+        let inFlight = await fake.waitForRequests(3)
+        XCTAssertTrue(inFlight, "the finish POST is in flight")
+        st.cancel()
+        gate.open()
+        do {
+            _ = try await finish.value
+            XCTFail("a cancelled finish must throw CancellationError")
+        } catch is CancellationError {
+        } catch { XCTFail("\(error)") }
+        let deleted = await fake.waitForRequests(4)
+        XCTAssertTrue(deleted)
+        let reqs = fake.recorded()
+        XCTAssertEqual(reqs.last?.method, "DELETE")
+        XCTAssertFalse(reqs.contains { $0.path == uploadPath },
+                       "no one-shot upload after Esc")
+    }
+
+    // Mutation: skip the `all[accepted...]` suffix append in finish -> RED:
+    // the tail still in the feed stream never reaches the session. Also
+    // covers the drop: a chunk fed while finish is in flight must not be
+    // sent (drop the `guard !finishing` in feed -> RED via the count).
+    @MainActor
+    func testFinishFlushesSamplesStillInTheFeedStream() async throws {
+        let gate = Gate()
+        let fake = ScriptedSend([
+            .json(200, #"{"id":"\#(sessionID)"}"#),
+            .json(200, #"{"segments":[],"pending":0}"#),
+            .json(200, #"{"segments":[],"pending":0}"#),
+            .gated(gate, .json(200, #"{"text":"with tail","done":true}"#)),
+        ])
+        let st = transcriber(fake)
+        st.begin()
+        // The AsyncStream consumer lags: the tail was recorded but not fed.
+        await st.feed(chunk(0))
+        let all = chunk(0) + chunk(1, 3000)
+        let finish = Task { try await st.finish(all: all) }
+        let sent = await fake.waitForRequests(4)
+        XCTAssertTrue(sent, "create + both audio chunks + held finish POST")
+        // Fed while finish is in flight: dropped, never sent.
+        await st.feed(chunk(9))
+        let deadline = Date().addingTimeInterval(2)
+        while st.pumpSending && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(st.pumpSending)
+        XCTAssertEqual(fake.requestCount, 4, "a mid-finish feed is not sent")
+        gate.open()
+        let text = try await finish.value
+        XCTAssertEqual(text, "with tail")
+        let audio = fake.recorded().filter { $0.path == audioPath }
+        XCTAssertEqual(audio.count, 2, "the unfed tail must reach the session")
+        XCTAssertEqual(audio[1].body.count, 12000, "the withheld 3000 samples")
+        XCTAssertEqual(chunkIndex(audio[1].body), 2)
+        XCTAssertEqual(fake.recorded().last?.path, finishPath)
+        XCTAssertFalse(fake.recorded().contains { $0.path == uploadPath })
+    }
+
+    // Mutation: drop the `accepted > all.count` fallback in finish -> RED:
+    // the polluted session is finished instead of re-uploaded whole.
+    @MainActor
+    func testOverFedSamplesFallBackToTheUpload() async throws {
+        let fake = ScriptedSend([
+            .json(200, #"{"id":"\#(sessionID)"}"#),
+            .json(200, #"{"segments":[],"pending":0}"#),
+            .json(200, #"{"segments":[],"pending":0}"#),
+            // The fallback DELETE and the one-shot upload race; both carry text.
+            .json(200, #"{"text":"uploaded"}"#),
+            .json(200, #"{"text":"uploaded"}"#),
+        ])
+        let st = transcriber(fake)
+        st.begin()
+        await st.feed(chunk(0))
+        await st.feed(chunk(9)) // foreign: more fed than the recording holds
+        let text = try await st.finish(all: chunk(0))
+        XCTAssertEqual(text, "uploaded")
+        let uploaded = await waitFor(fake, path: uploadPath)
+        XCTAssertTrue(uploaded, "the whole recording is uploaded")
+        let deleted = await waitFor(fake, path: sessionPath, method: "DELETE")
+        XCTAssertTrue(deleted, "the polluted session gets a best-effort DELETE")
+        XCTAssertFalse(fake.recorded().contains { $0.path == finishPath },
+                       "a session holding foreign audio is never finished")
+    }
+
+    // Mutation: keep `id` after a successful finish -> RED: the next begin()
+    // DELETEs the already-finished session (guaranteed 404).
+    @MainActor
+    func testABeginAfterASuccessfulFinishSendsNoDelete() async throws {
+        let fake = ScriptedSend([
+            .json(200, #"{"id":"\#(sessionID)"}"#),
+            .json(200, #"{"segments":[],"pending":0}"#),
+            .json(200, #"{"text":"done","done":true}"#),
+            .json(200, #"{"id":"\#(sessionID)"}"#),
+            .json(200, #"{"segments":[],"pending":0}"#),
+        ])
+        let st = transcriber(fake)
+        st.begin()
+        await st.feed(chunk(0))
+        let text = try await st.finish(all: chunk(0))
+        XCTAssertEqual(text, "done")
+        st.begin()
+        await st.feed(chunk(1))
+        let arrived = await fake.waitForRequests(5)
+        XCTAssertTrue(arrived, "second create + audio")
+        XCTAssertFalse(fake.recorded().contains { $0.method == "DELETE" },
+                       "a finished session is forgotten, not deleted")
     }
 }
 

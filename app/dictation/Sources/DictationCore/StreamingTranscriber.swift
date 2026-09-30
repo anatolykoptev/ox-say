@@ -31,8 +31,17 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
     private var finishing = false
     private var fallback = false
     private var cancelled = false
+    /// Samples appended to `unsent` this generation; `finish` reconciles it
+    /// against the recording, since `feed` rides an AsyncStream that can lag.
+    private var accepted = 0
     /// finish() waiters: true = everything sent, false = fell back or cancelled.
     private var drainWaiters: [CheckedContinuation<Bool, Never>] = []
+
+    /// Test seam: the pump's in-flight flag, read under the lock, so tests can
+    /// await quiescence instead of sleeping.
+    var pumpSending: Bool { lock.withLock { sending } }
+    /// Test seam: drain waiters currently queued in `waitForDrain`.
+    var pendingDrainWaiters: Int { lock.withLock { drainWaiters.count } }
 
     public init(baseURL: URL,
                 send: @escaping TranscriptionClient.Send = { try await URLSession.shared.data(for: $0) }) {
@@ -50,6 +59,7 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
             id = nil
             unsent.removeAll(keepingCapacity: true)
             committed.removeAll()
+            accepted = 0
             finishing = false
             fallback = false
             cancelled = false
@@ -72,7 +82,12 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
 
     public func feed(_ samples: [Float]) async {
         lock.withLock {
+            // Once finish() reconciled the recording into `unsent`, a late
+            // chunk can only duplicate the appended tail or be foreign audio;
+            // buffering it would let the pump's finishing-drain send it.
+            guard !finishing else { return }
             unsent.append(contentsOf: samples)
+            accepted += samples.count
             kickPumpLocked()
         }
     }
@@ -82,33 +97,48 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
     /// — or a fallback that already happened — means the whole recording goes
     /// through the one-shot upload instead.
     public func finish(all: [Float]) async throws -> String {
-        enum Step { case cancelled, upload, wait(Int) }
-        let step = lock.withLock { () -> Step in
-            if cancelled { return .cancelled }
+        enum Step { case cancelled, upload, wait }
+        let (step, g) = lock.withLock { () -> (Step, Int) in
+            if cancelled { return (.cancelled, generation) }
             finishing = true
+            // `feed` can lag the recorder: a tail still in its AsyncStream is
+            // missing from the session — take it straight from `all`. More
+            // accepted than recorded means foreign audio (e.g. the previous
+            // recording's tail fed after this begin): the session can never
+            // match `all`, so it is dropped and the recording re-uploaded.
+            if accepted < all.count {
+                unsent.append(contentsOf: all[accepted...])
+                accepted = all.count
+            } else if accepted > all.count {
+                enterFallbackLocked()
+            }
             kickPumpLocked()
-            return id != nil || createTask != nil ? .wait(generation) : .upload
+            return (fallback || (id == nil && createTask == nil) ? .upload : .wait,
+                    generation)
         }
-        let g: Int
-        switch step {
-        case .cancelled: throw CancellationError()
-        case .upload: return try await oneShot.transcribe(all)
-        case .wait(let generation): g = generation
-        }
-        let drained = await waitForDrain(g)
-        let (dead, canStream, sid) = lock.withLock {
-            let dead = cancelled || generation != g
-            return (dead, drained && !dead && !fallback, id)
-        }
-        if dead { throw CancellationError() }
-        if canStream, let sid {
-            do {
-                let text = try await sessions.finish(id: sid)
-                return text.trimmingCharacters(in: .whitespacesAndNewlines)
-            } catch {
-                lock.withLock { if generation == g { enterFallbackLocked() } }
+        if step == .cancelled { throw CancellationError() }
+        if step == .wait {
+            let drained = await waitForDrain(g)
+            let (dead, canStream, sid) = lock.withLock {
+                let dead = cancelled || generation != g
+                return (dead, drained && !dead && !fallback, id)
+            }
+            if dead { throw CancellationError() }
+            if canStream, let sid {
+                do {
+                    let text = try await sessions.finish(id: sid)
+                    // Forget the session: the next begin() must not DELETE a
+                    // finished one, and nothing may POST to it again.
+                    lock.withLock { if generation == g { id = nil } }
+                    return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                } catch {
+                    lock.withLock { if generation == g { enterFallbackLocked() } }
+                }
             }
         }
+        // Esc during the drain or the session finish lands here: a dead
+        // dictation must not upload.
+        if lock.withLock({ cancelled || generation != g }) { throw CancellationError() }
         return try await oneShot.transcribe(all)
     }
 
@@ -149,7 +179,10 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
 
     private func createFailed(generation g: Int) {
         lock.withLock {
-            if generation == g, !cancelled { enterFallbackLocked() }
+            if generation == g, !cancelled {
+                createTask = nil
+                enterFallbackLocked()
+            }
         }
     }
 
@@ -188,8 +221,14 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
             guard let (sid, chunk) = next else {
                 lock.withLock {
                     sending = false
-                    resumeWaitersLocked(generation == g && !fallback && !cancelled && unsent.isEmpty)
                     kickPumpLocked()  // hand off to a newer generation's pending work
+                    // Drain waiters always belong to the current generation —
+                    // a supersede or cancel resumed the stale ones — so the
+                    // verdict is judged on live state, not this pump's g; a
+                    // create still in flight gets to resolve the drain itself.
+                    if !sending && createTask == nil {
+                        resumeWaitersLocked(!fallback && !cancelled && unsent.isEmpty)
+                    }
                 }
                 return
             }
@@ -224,9 +263,11 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
             if let decided {
                 cont.resume(returning: decided)
             } else {
-                Task { [weak self] in
+                // Strong self: the continuation must be resumed even if the
+                // transcriber is otherwise unreferenced.
+                Task { [self] in
                     try? await Task.sleep(nanoseconds: 10_000_000_000)
-                    self?.drainTimedOut(g)
+                    drainTimedOut(g)
                 }
             }
         }
