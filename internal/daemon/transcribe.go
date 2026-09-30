@@ -28,10 +28,12 @@ type TranscribeInput struct {
 }
 
 // Transcribe runs one stt.Transcribe with the daemon's config; the STT
-// device choice sees the live TTS supervisor state so ox-stt never takes
-// GPU memory the TTS child is holding.
+// device choice sees the live TTS supervisor state so a CLI ox-stt never
+// takes GPU memory the TTS child is holding. Parakeet clips go to the
+// resident CPU server when it is enabled — independent of TTS state — and
+// fall back to the CLI on a server failure.
 func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Result, error) {
-	return stt.Transcribe(ctx, in.AudioPath, stt.Options{
+	opts := stt.Options{
 		Engine:       in.Engine,
 		Language:     in.Language,
 		Prompt:       in.Prompt,
@@ -45,7 +47,14 @@ func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Resul
 			s := d.Sup.State()
 			return s == engine.StateStarting || s == engine.StateReady
 		},
-	})
+	}
+	if d.STTSup != nil {
+		opts.Server = d.sttServer
+		opts.OnServerError = func(err error) {
+			d.log.Warn("stt server failed; retrying via CLI", slog.Any("error", err))
+		}
+	}
+	return stt.Transcribe(ctx, in.AudioPath, opts)
 }
 
 // handleTranscribe is OpenAI-compatible /v1/audio/transcriptions. The

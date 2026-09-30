@@ -1,8 +1,11 @@
-// Package stt transcribes audio with the ox-stt engine child: input of any
-// format is converted to a 16 kHz mono PCM16 WAV with ffmpeg, then ox-stt
-// runs on it and its JSON is parsed into a typed Result. One transcription
-// runs at a time per process — the engine holds ~1.3 GB of GPU memory while
-// it runs, on top of whatever the TTS child holds.
+// Package stt transcribes audio with the ox-stt engine: input of any format
+// is converted to a 16 kHz mono PCM16 WAV with ffmpeg, then decoded either
+// by the resident `ox-stt --serve` process (the default for parakeet clips
+// up to serverMaxAudio — the model is loaded once, so a warm call is far
+// faster than a cold CLI start) or by a per-call ox-stt child. One
+// transcription runs at a time per process. The resident server runs on
+// the CPU (it is spawned with -ng unless OX_SAY_STT_GPU=on), so it never
+// takes GPU memory from the TTS child; its idle cost is ~1.4 GB of RAM.
 package stt
 
 import (
@@ -11,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,6 +80,15 @@ type Options struct {
 	Timeout      time.Duration // cap on the conversion+run; 0 → DefaultTimeout
 	MaxAudio     time.Duration // audio past this is not decoded; 0 → DefaultMaxAudio
 	MaxQueue     int           // callers allowed to wait; 0 → DefaultMaxQueue
+
+	// Server, when non-nil, acquires the resident ox-stt server: it returns
+	// its base URL plus a release func the caller runs once the response
+	// body is read. A nil Server means CLI only. The daemon wires it to the
+	// STT supervisor's Acquire+EnsureReady.
+	Server func(ctx context.Context) (baseURL string, release func(), err error)
+	// OnServerError is called with the error that sent a request back to
+	// the CLI path; nil → ignore.
+	OnServerError func(error)
 }
 
 // Defaults and bounds.
@@ -84,6 +98,14 @@ const (
 	DefaultMaxQueue = 8
 	stderrTail      = 4 << 10
 )
+
+// serverMaxAudio caps the clips routed to the resident server: a cancelled
+// server decode is not killed the way a CLI child is, so long files stay on
+// the CLI. Tests shrink it.
+var serverMaxAudio = 300 * time.Second
+
+// serverHTTP has no Timeout: the caller's ctx carries the deadline.
+var serverHTTP = &http.Client{}
 
 // ErrBusy means the queue of waiting transcriptions is full.
 var ErrBusy = errors.New("stt: busy, too many transcriptions queued")
@@ -161,7 +183,7 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	if maxAudio <= 0 {
 		maxAudio = DefaultMaxAudio
 	}
-	wav, err := convert(ctx, audioPath, maxAudio)
+	wav, secs, err := convert(ctx, audioPath, maxAudio)
 	if err != nil {
 		if timedOut() {
 			return nil, &TimeoutError{After: timeout}
@@ -169,6 +191,25 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		return nil, err
 	}
 	defer func() { _ = os.Remove(wav) }()
+
+	// The resident server decodes parakeet only and returns the CLI's JSON
+	// shape; short clips go to it whatever the TTS state is (the server is
+	// CPU-only by default). Long files stay on the CLI: a cancelled CLI run
+	// is killed, a cancelled server decode is not.
+	if engine == "parakeet" && opts.Server != nil && secs <= serverMaxAudio.Seconds() {
+		res, err := transcribeServer(ctx, wav, opts)
+		switch {
+		case err == nil:
+			return res, nil
+		case timedOut():
+			return nil, &TimeoutError{After: timeout}
+		case ctx.Err() != nil:
+			return nil, ctx.Err()
+		}
+		if opts.OnServerError != nil {
+			opts.OnServerError(err)
+		}
+	}
 
 	args := []string{"-m", model, "-f", wav, "--engine", engine}
 	if engine == "whisper" {
@@ -208,6 +249,59 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	return &res, nil
 }
 
+// transcribeServer posts the converted WAV to the resident ox-stt server.
+// Any failure — acquire, transport, non-200, invalid JSON — is the caller's
+// fallback signal; a caller-side cancellation surfaces as the ctx error.
+func transcribeServer(ctx context.Context, wav string, opts Options) (*Result, error) {
+	base, release, err := opts.Server(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(wav)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		release()
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/transcribe", f)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	req.ContentLength = fi.Size()
+	// ox-stt's httplib caps a form-urlencoded body at 8 KB; a raw WAV body
+	// under its own content type is unlimited.
+	req.Header.Set("Content-Type", "audio/wav")
+	resp, err := serverHTTP.Do(req)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	_ = resp.Body.Close()
+	release()
+	if rerr != nil {
+		return nil, rerr
+	}
+	if resp.StatusCode != http.StatusOK {
+		msg := strings.TrimSpace(string(body))
+		if len(msg) > 256 {
+			msg = msg[:256]
+		}
+		return nil, fmt.Errorf("stt: server %s: %s", resp.Status, msg)
+	}
+	var res Result
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, fmt.Errorf("stt: server returned invalid JSON: %v", err)
+	}
+	return &res, nil
+}
+
 func engineBusy(f func() bool) bool { return f != nil && f() }
 
 func queueLimit(n int) int {
@@ -221,11 +315,13 @@ func queueLimit(n int) int {
 // right now; the HTTP route checks it before accepting an upload.
 func QueueFull(maxQueue int) bool { return waiting.Load() >= int32(queueLimit(maxQueue)) }
 
-// gpuAllowed resolves the -ng decision: "on" always uses the GPU, "off"
-// never, and "auto" stays off the GPU while the TTS engine occupies it
-// (its ~2 GB plus the ~1.3 GB ox-stt wants would not fit the card). The
-// exclusion is one-way: a TTS start during a GPU transcription is not held
-// back, so both can briefly share the card (accepted; see the README).
+// gpuAllowed resolves the -ng decision for the per-call CLI — the resident
+// server has its own device choice (CPU unless OX_SAY_STT_GPU=on). "on"
+// always uses the GPU, "off" never, and "auto" stays off the GPU while the
+// TTS engine occupies it (its ~2 GB plus the ~1.3 GB ox-stt wants would not
+// fit the card). The exclusion is one-way: a TTS start during a GPU
+// transcription is not held back, so both can briefly share the card
+// (accepted; see the README).
 func gpuAllowed(mode string, ttsBusy bool) bool {
 	switch mode {
 	case "on":
@@ -255,14 +351,15 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 func (t *tailBuffer) String() string { return string(t.b) }
 
 // convert turns any input ffmpeg reads into a 16 kHz mono PCM16 WAV temp
-// file of at most maxAudio. A clip ffmpeg ran against and refused is caller
-// input; a missing binary or a kill on the timeout is a daemon fault — same
-// split as voices.Prepare. It runs under the caller's context, which carries
-// the overall transcription timeout.
-func convert(ctx context.Context, audioPath string, maxAudio time.Duration) (string, error) {
+// file of at most maxAudio and reports the decoded duration. A clip ffmpeg
+// ran against and refused is caller input; a missing binary or a kill on
+// the timeout is a daemon fault — same split as voices.Prepare. It runs
+// under the caller's context, which carries the overall transcription
+// timeout.
+func convert(ctx context.Context, audioPath string, maxAudio time.Duration) (wav string, secs float64, err error) {
 	tmp, err := os.CreateTemp("", "ox-say-stt-*.wav")
 	if err != nil {
-		return "", fmt.Errorf("stt: %w", err)
+		return "", 0, fmt.Errorf("stt: %w", err)
 	}
 	tmpName := tmp.Name()
 	_ = tmp.Close()
@@ -294,18 +391,19 @@ func convert(ctx context.Context, audioPath string, maxAudio time.Duration) (str
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && ctx.Err() == nil {
-			return "", &InputError{fmt.Sprintf("stt: cannot decode audio: %s", tail())}
+			return "", 0, &InputError{fmt.Sprintf("stt: cannot decode audio: %s", tail())}
 		}
-		return "", fmt.Errorf("stt: ffmpeg: %w: %s", err, tail())
+		return "", 0, fmt.Errorf("stt: ffmpeg: %w: %s", err, tail())
 	}
 	fi, err := os.Stat(tmpName)
 	if err != nil {
-		return "", fmt.Errorf("stt: %w", err)
+		return "", 0, fmt.Errorf("stt: %w", err)
 	}
 	// 16 kHz mono PCM16 after a 44-byte header
-	if secs := float64(fi.Size()-44) / (16000 * 2); secs > maxAudio.Seconds()+0.05 {
-		return "", &InputError{fmt.Sprintf("stt: audio is longer than the %s limit (OX_SAY_STT_MAX_AUDIO_SECS)", maxAudio)}
+	secs = float64(fi.Size()-44) / (16000 * 2)
+	if secs > maxAudio.Seconds()+0.05 {
+		return "", 0, &InputError{fmt.Sprintf("stt: audio is longer than the %s limit (OX_SAY_STT_MAX_AUDIO_SECS)", maxAudio)}
 	}
 	ok = true
-	return tmpName, nil
+	return tmpName, secs, nil
 }

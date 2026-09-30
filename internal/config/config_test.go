@@ -78,6 +78,51 @@ func TestLoadDefaults(t *testing.T) {
 	if c.STTGPU != "auto" || c.STTTimeout != DefaultSTTTimeout*time.Second || c.STTMaxUploadMB != DefaultSTTMaxUploadMB {
 		t.Fatalf("stt defaults: %+v", c)
 	}
+	if c.STTServer != "on" || c.STTPort != DefaultSTTPort || c.STTIdleStop != DefaultSTTIdleStop*time.Second {
+		t.Fatalf("stt server defaults: %+v", c)
+	}
+}
+
+// The resident STT server's own knobs: on|off, a port that must not collide
+// with the daemon's or the engine's, and a >= 1 s idle stop.
+// Mutation: drop the STTServer validation switch in load -> RED; drop the
+// port collision checks -> RED ("accepted a port equal to the engine's").
+func TestLoadSTTServerValidation(t *testing.T) {
+	for _, v := range []string{"on", "off"} {
+		t.Setenv("OX_SAY_STT_SERVER", v)
+		if _, err := Load(nil); err != nil {
+			t.Fatalf("OX_SAY_STT_SERVER=%q: %v", v, err)
+		}
+	}
+	t.Setenv("OX_SAY_STT_SERVER", "yes")
+	if _, err := Load(nil); err == nil {
+		t.Fatal("OX_SAY_STT_SERVER=yes accepted")
+	}
+	t.Setenv("OX_SAY_STT_SERVER", "on")
+
+	for _, kv := range [][2]string{
+		{"OX_SAY_STT_PORT", "notaport"},
+		{"OX_SAY_STT_PORT", "0"},
+		{"OX_SAY_STT_PORT", "65536"},
+		{"OX_SAY_STT_IDLE_STOP_SECS", "0"},
+		{"OX_SAY_STT_IDLE_STOP_SECS", "-3"},
+	} {
+		t.Setenv(kv[0], kv[1])
+		if _, err := Load(nil); err == nil {
+			t.Fatalf("%s=%s accepted", kv[0], kv[1])
+		}
+		t.Setenv(kv[0], "")
+	}
+
+	// The STT server port must not take the engine's or the daemon's own.
+	t.Setenv("OX_SAY_STT_PORT", strconv.Itoa(DefaultEnginePort))
+	if _, err := Load(nil); err == nil {
+		t.Fatal("accepted a port equal to the engine's")
+	}
+	t.Setenv("OX_SAY_STT_PORT", "8094") // default OX_SAY_ADDR port
+	if _, err := Load(nil); err == nil {
+		t.Fatal("accepted a port equal to the daemon's")
+	}
 }
 
 // An invalid OX_SAY_STT_GPU must be refused at load: a typo silently picking
@@ -164,6 +209,9 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_STT_TIMEOUT_SECS", "63", "1m3s", func(c *Config) string { return c.STTTimeout.String() }},
 		{"OX_SAY_STT_MAX_UPLOAD_MB", "64", "64", func(c *Config) string { return strconv.FormatInt(c.STTMaxUploadMB, 10) }},
 		{"OX_SAY_STT_MAX_AUDIO_SECS", "65", "1m5s", func(c *Config) string { return c.STTMaxAudio.String() }},
+		{"OX_SAY_STT_SERVER", "off", "off", func(c *Config) string { return c.STTServer }},
+		{"OX_SAY_STT_PORT", "18096", "18096", func(c *Config) string { return strconv.Itoa(c.STTPort) }},
+		{"OX_SAY_STT_IDLE_STOP_SECS", "66", "1m6s", func(c *Config) string { return c.STTIdleStop.String() }},
 	}
 	keys := EnvKeys()
 	inTable := map[string]bool{}

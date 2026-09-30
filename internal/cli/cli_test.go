@@ -269,6 +269,52 @@ func TestTranscribeFormatFlags(t *testing.T) {
 	}
 }
 
+// `status` shows the resident STT server's own failure state — last_error
+// and crash restarts — and omits the line entirely for an older daemon
+// whose /status has no stt_server key.
+// Mutation: drop the st.STTServer != nil guard -> RED ("stt server:" prints
+// for a keyless payload); drop the LastErr print -> RED.
+func TestStatusSTTServerLine(t *testing.T) {
+	statusOut := func(payload string) string {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(payload))
+		}))
+		defer srv.Close()
+		t.Setenv("OX_SAY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+		var outBuf, errBuf strings.Builder
+		if code := Run([]string{"status"}, &outBuf, &errBuf, "test"); code != 0 {
+			t.Fatalf("status: exit %d (%s)", code, errBuf.String())
+		}
+		return outBuf.String()
+	}
+
+	out := statusOut(`{"engine":{"state":"ready","pid":1,"uptime_s":3,"starts":1,"restarts":0},` +
+		`"stt_server":{"state":"crashed","restarts":2,"last_error":"engine exited unexpectedly: exit status 1"},` +
+		`"voices":[],"version":"test"}`)
+	if !strings.Contains(out, "stt server: crashed") {
+		t.Fatalf("stt server state missing: %q", out)
+	}
+	if !strings.Contains(out, "crash restarts: 2") {
+		t.Fatalf("stt server restarts missing: %q", out)
+	}
+	if !strings.Contains(out, "exit status 1") {
+		t.Fatalf("stt server last error missing: %q", out)
+	}
+
+	// OX_SAY_STT_SERVER=off still reports the key — the line stays, as "off".
+	out = statusOut(`{"engine":{"state":"ready","starts":1,"restarts":0},"stt_server":{"state":"off"},"voices":[],"version":"test"}`)
+	if !strings.Contains(out, "stt server: off") {
+		t.Fatalf("stt server off state missing: %q", out)
+	}
+
+	// An older daemon has no stt_server key: no empty "stt server:" line.
+	out = statusOut(`{"engine":{"state":"stopped","starts":0,"restarts":0},"voices":[],"version":"test"}`)
+	if strings.Contains(out, "stt server") {
+		t.Fatalf("stt server line printed for a keyless payload: %q", out)
+	}
+}
+
 // env-keys is the installer's allowlist source: it must print exactly the
 // daemon's env-key table, one per line.
 // Mutation: drop the "env-keys" case in Run -> RED (exit 2, usage text).

@@ -29,13 +29,13 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// newTestDaemon builds a Daemon whose engine binary is the test binary
-// re-exec'd as the fake child.
-func newTestDaemon(t *testing.T, dir string, tune func(*engine.Config)) *Daemon {
+// testCfg is the shared daemon test config. The STT server is ON — mirroring
+// the production default — with the test binary as the fake ox-stt; tests
+// asserting the per-call CLI path switch it off in sttSetup.
+func testCfg(t *testing.T, dir string) *config.Config {
 	t.Helper()
-	home := filepath.Join(dir, "home")
-	cfg := &config.Config{
-		Home:           home,
+	return &config.Config{
+		Home:           filepath.Join(dir, "home"),
 		Addr:           "127.0.0.1:0",
 		EnginePort:     testutil.FreePort(t),
 		EngineBin:      os.Args[0],
@@ -45,14 +45,47 @@ func newTestDaemon(t *testing.T, dir string, tune func(*engine.Config)) *Daemon 
 		StartupTimeout: 15 * time.Second,
 		EngineLogDir:   filepath.Join(dir, "logs"),
 		CacheDir:       filepath.Join(dir, "cache"),
+		STTServer:      "on",
+		STTBin:         os.Args[0],
+		STTModel:       filepath.Join(dir, "parakeet.bin"),
+		STTPort:        testutil.FreePort(t),
+		STTGPU:         "auto",
 	}
-	d, err := newDaemon(cfg, testLogger(), func(ec *engine.Config) {
+}
+
+// newTestDaemon builds a Daemon whose engine binary is the test binary
+// re-exec'd as the fake child.
+func newTestDaemon(t *testing.T, dir string, tune func(*engine.Config)) *Daemon {
+	t.Helper()
+	return newTestDaemonSTT(t, dir, nil, tune, nil)
+}
+
+// newTestDaemonSTT is newTestDaemon plus two seams the resident STT server
+// tests need: editCfg adjusts the config before newDaemon consumes it (e.g.
+// STTIdleStop), and tuneSTT tunes the STT supervisor's engine.Config.
+func newTestDaemonSTT(t *testing.T, dir string, editCfg func(*config.Config), tune, tuneSTT func(*engine.Config)) *Daemon {
+	t.Helper()
+	cfg := testCfg(t, dir)
+	if editCfg != nil {
+		editCfg(cfg)
+	}
+	fast := func(ec *engine.Config) {
 		ec.HealthPoll = 10 * time.Millisecond
 		ec.KillGrace = 2 * time.Second
-		if tune != nil {
-			tune(ec)
-		}
-	})
+	}
+	d, err := newDaemon(cfg, testLogger(),
+		func(ec *engine.Config) {
+			fast(ec)
+			if tune != nil {
+				tune(ec)
+			}
+		},
+		func(ec *engine.Config) {
+			fast(ec)
+			if tuneSTT != nil {
+				tuneSTT(ec)
+			}
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,11 +523,11 @@ func TestDaemonHomeLock(t *testing.T) {
 		}
 	}
 
-	d1, err := newDaemon(mkCfg(), testLogger(), nil)
+	d1, err := newDaemon(mkCfg(), testLogger(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d2, err := newDaemon(mkCfg(), testLogger(), nil); err == nil {
+	if d2, err := newDaemon(mkCfg(), testLogger(), nil, nil); err == nil {
 		d2.Shutdown()
 		t.Fatal("second daemon on the same home started successfully")
 	} else if !strings.Contains(err.Error(), "another daemon") {
@@ -502,7 +535,7 @@ func TestDaemonHomeLock(t *testing.T) {
 	}
 	d1.Shutdown()
 	// The lock is released on shutdown — a later daemon can take it.
-	d3, err := newDaemon(mkCfg(), testLogger(), nil)
+	d3, err := newDaemon(mkCfg(), testLogger(), nil, nil)
 	if err != nil {
 		t.Fatalf("daemon after lock release: %v", err)
 	}

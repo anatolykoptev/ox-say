@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
@@ -23,6 +25,11 @@ type Daemon struct {
 	Cfg   *config.Config
 	Sup   *engine.Supervisor
 	Store *voices.Store
+
+	// STTSup supervises the resident `ox-stt --serve` child; nil when
+	// OX_SAY_STT_SERVER=off. It decodes on the CPU (-ng unless
+	// OX_SAY_STT_GPU=on) so it never contends with the TTS engine's GPU.
+	STTSup *engine.Supervisor
 
 	ec  *engine.Client
 	log *slog.Logger
@@ -43,11 +50,29 @@ type Daemon struct {
 // New builds the supervisor (reaping any orphaned engine) and the voice
 // store, and wires voice replay into engine startup.
 func New(cfg *config.Config, logger *slog.Logger) (*Daemon, error) {
-	return newDaemon(cfg, logger, nil)
+	return newDaemon(cfg, logger, nil, nil)
 }
 
-// newDaemon is New plus an engine.Config tuning hook for tests.
-func newDaemon(cfg *config.Config, logger *slog.Logger, tune func(*engine.Config)) (*Daemon, error) {
+// sttStartupTimeout bounds the resident STT server's start budget. Passing
+// cfg.StartupTimeout outright would hand it the TTS budget (180 s), which
+// exists for the tts-server's first-start Metal shader compile: a hung STT
+// start would pin a transcription for all of it. An honest `ox-stt --serve`
+// start is ~2–3 s, and even a cold start of a NEW ox-stt binary spends
+// ~47 s compiling Metal libraries despite -ng (issue #37) — 90 s covers
+// that plus model load.
+func sttStartupTimeout(d time.Duration) time.Duration {
+	const limit = 90 * time.Second
+	if d <= 0 {
+		// engine.New turns a non-positive timeout into its 180 s default,
+		// which would bypass the cap.
+		return limit
+	}
+	return min(d, limit)
+}
+
+// newDaemon is New plus engine.Config tuning hooks for tests — tune for
+// the TTS supervisor, tuneSTT for the STT server's.
+func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engine.Config)) (*Daemon, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -94,6 +119,39 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune func(*engine.Config
 		return nil, err
 	}
 	d.Sup = sup
+	if cfg.STTServer == "on" {
+		sc := engine.Config{
+			Name:           "stt",
+			Bin:            cfg.STTBin,
+			Port:           cfg.STTPort,
+			StartupTimeout: sttStartupTimeout(cfg.StartupTimeout),
+			IdleStop:       cfg.STTIdleStop,
+			LogName:        "stt.log",
+			LogDir:         cfg.EngineLogDir,
+			PidPath:        filepath.Join(cfg.RunDir(), "stt.pid"),
+			Logger:         logger,
+			// The resident server loads the parakeet model once and decodes
+			// on the CPU; only an explicit OX_SAY_STT_GPU=on opts it into
+			// sharing the GPU with TTS.
+			Args: func(port int) []string {
+				args := []string{"--serve", "--port", strconv.Itoa(port), "-m", cfg.STTModel}
+				if cfg.STTGPU != "on" {
+					args = append(args, "-ng")
+				}
+				return args
+			},
+		}
+		if tuneSTT != nil {
+			tuneSTT(&sc)
+		}
+		ssup, err := engine.New(sc)
+		if err != nil {
+			sup.Shutdown()
+			_ = lockF.Close()
+			return nil, err
+		}
+		d.STTSup = ssup
+	}
 	return d, nil
 }
 
@@ -154,6 +212,27 @@ func (d *Daemon) engineBase(ctx context.Context) (base string, g *engine.Guard, 
 		return "", nil, err
 	}
 	return base, g, nil
+}
+
+// sttServer is the Options.Server closure for the resident ox-stt server —
+// same acquire-then-ready shape as engineBase, but the release func travels
+// with the URL so stt can drop the guard once the response body is read.
+func (d *Daemon) sttServer(ctx context.Context) (base string, release func(), err error) {
+	// A server cooling down after a crash or a failed start would make this
+	// caller sleep out the rest of the restart backoff inside EnsureReady —
+	// under stt's serialization sem, so every queued dictation would pay it
+	// too. The CLI fallback is cheaper; the first request past the window
+	// still launches the next start attempt, so recovery is automatic.
+	if b := d.STTSup.Backoff(); b > 0 {
+		return "", nil, fmt.Errorf("stt server cooling down (%s)", b)
+	}
+	g := d.STTSup.Acquire()
+	base, err = d.STTSup.EnsureReady(ctx)
+	if err != nil {
+		g.Release()
+		return "", nil, err
+	}
+	return base, g.Release, nil
 }
 
 // AddVoice persists a voice and registers it into the child when the engine
@@ -222,10 +301,13 @@ func (d *Daemon) applyLanguageDefault(body map[string]any) {
 
 // statusSummary is the /status response.
 type statusSummary struct {
-	Engine  engine.Status  `json:"engine"`
-	Voices  []voices.Voice `json:"voices"`
-	Config  map[string]any `json:"config"`
-	Version string         `json:"version"`
+	Engine engine.Status `json:"engine"`
+	// STTServer is the resident ox-stt server's engine.Status, or
+	// {"state":"off"} when OX_SAY_STT_SERVER=off.
+	STTServer any            `json:"stt_server"`
+	Voices    []voices.Voice `json:"voices"`
+	Config    map[string]any `json:"config"`
+	Version   string         `json:"version"`
 }
 
 var version = "dev"
@@ -239,9 +321,14 @@ func (d *Daemon) Status() statusSummary {
 	if err != nil {
 		d.log.Warn("status: voice list failed", slog.Any("error", err))
 	}
+	var sttServer any = map[string]string{"state": "off"}
+	if d.STTSup != nil {
+		sttServer = d.STTSup.Status()
+	}
 	return statusSummary{
-		Engine: d.Sup.Status(),
-		Voices: list,
+		Engine:    d.Sup.Status(),
+		STTServer: sttServer,
+		Voices:    list,
 		Config: map[string]any{
 			"addr":              d.Cfg.Addr,
 			"engine_port":       d.Cfg.EnginePort,
@@ -253,6 +340,9 @@ func (d *Daemon) Status() statusSummary {
 			"startup_timeout_s": d.Cfg.StartupTimeout.Seconds(),
 			"lang":              d.Cfg.Lang,
 			"home":              d.Cfg.Home,
+			"stt_server":        d.Cfg.STTServer,
+			"stt_port":          d.Cfg.STTPort,
+			"stt_idle_stop_s":   d.Cfg.STTIdleStop.Seconds(),
 		},
 		Version: version,
 	}
@@ -265,6 +355,9 @@ func (d *Daemon) Status() statusSummary {
 // supervisor rather than blocking shutdown.
 func (d *Daemon) Shutdown() {
 	d.Sup.Shutdown()
+	if d.STTSup != nil {
+		d.STTSup.Shutdown()
+	}
 	if d.lockFile != nil {
 		_ = d.lockFile.Close()
 		d.lockFile = nil

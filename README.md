@@ -88,16 +88,26 @@ first request, stops it after `OX_SAY_IDLE_STOP_SECS` (default 300 s) of
 idleness so it does not hold ~2 GB of GPU memory, restarts it after a crash
 with backoff, and replays persisted voices into every fresh child.
 
-Speech-to-text runs the separate `ox-stt` child on demand (no resident
-process): ffmpeg first normalizes the input to 16 kHz mono WAV, then
-Parakeet TDT (default, 25 European languages, auto-detected) or Whisper
-large-v3-turbo (99 languages, takes `language`/`prompt` hints) transcribes
-it. One transcription runs at a time; while the TTS engine is starting or
-ready it holds ~2 GB of GPU memory, so ox-stt automatically runs on the CPU
-(`OX_SAY_STT_GPU` overrides). The rule is one-way: a TTS request that starts the
-engine while a transcription runs on the GPU is not held back, so the two can
-briefly share the card. Transcriptions run one at a time; up to 8 more wait,
-further ones get 503.
+Speech-to-text is served by a resident `ox-stt --serve` child
+(`OX_SAY_STT_SERVER=on`, the default): the daemon starts it on the first
+parakeet request, it loads the model once and decodes 1 s of silence before
+listening on `OX_SAY_STT_PORT`, and a warm transcription skips the
+multi-second model load a per-call `ox-stt` pays every time. The server
+runs on the CPU — spawned with `-ng` — so it never takes GPU memory from
+the TTS engine; its idle cost is ~1.4 GB of RAM, and
+`OX_SAY_STT_IDLE_STOP_SECS` (default 600 s) stops it when unused. Parakeet
+clips up to 300 s go to the server whatever the TTS state; a server failure
+falls back to the per-call CLI, and audio longer than 300 s stays on the
+CLI (a cancelled server decode cannot be killed the way a CLI child is).
+Whisper always uses the CLI.
+
+On the CLI path the GPU rule is unchanged: `auto` puts ox-stt on the CPU
+while the TTS engine is starting or ready (~2 GB held), `on`/`off` force.
+`OX_SAY_STT_GPU=on` additionally opts the *resident server* into the GPU —
+an explicit choice to share the card with TTS. The rule stays one-way: a
+TTS request that starts the engine while a transcription runs on the GPU is
+not held back, so the two can briefly share the card. Transcriptions run
+one at a time; up to 8 more wait, further ones get 503.
 
 ### HTTP API
 
@@ -111,7 +121,7 @@ Listening on `OX_SAY_ADDR` (default `127.0.0.1:8094`, loopback only):
 | `POST /v1/audio/voices` | `{"name","audio_path","ref_text"}` — clone from a local clip (normalized to 24 kHz mono WAV, max 20 s) |
 | `GET /v1/audio/voices/<name>` | Voice metadata |
 | `DELETE /v1/audio/voices/<name>` | Remove a voice |
-| `GET /status` | Engine state, pid, uptime, restarts, voices, config |
+| `GET /status` | Engine and STT-server state, pids, uptime, restarts, voices, config |
 | `GET /health` | Daemon liveness (always 200; engine may be stopped) |
 
 ### MCP
@@ -144,10 +154,13 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_STT_BIN` | `$OX_SAY_HOME/engine/ox-stt` | Speech-to-text binary |
 | `OX_SAY_STT_MODEL` | `$OX_SAY_HOME/models/ggml-parakeet-tdt-0.6b-v3-f16.bin` | Parakeet weights |
 | `OX_SAY_STT_WHISPER_MODEL` | `$OX_SAY_HOME/models/ggml-large-v3-turbo.bin` | Whisper weights (`--with-whisper` fetch) |
-| `OX_SAY_STT_GPU` | `auto` | `auto`: CPU while the TTS engine runs, GPU otherwise; `on`/`off` force |
+| `OX_SAY_STT_GPU` | `auto` | CLI device: `auto` = CPU while the TTS engine runs; `on`/`off` force. `on` also lets the resident server use the GPU (explicit opt-in to sharing with TTS) |
 | `OX_SAY_STT_TIMEOUT_SECS` | `600` | Per-transcription cap (conversion + engine) |
 | `OX_SAY_STT_MAX_UPLOAD_MB` | `200` | `file` part cap on the transcriptions route |
 | `OX_SAY_STT_MAX_AUDIO_SECS` | `14400` | Longer audio is refused with 400, not cut (a small compressed upload can expand to hours of PCM) |
+| `OX_SAY_STT_SERVER` | `on` | Resident `ox-stt --serve` for parakeet clips ≤ 300 s; `off` = per-call CLI only |
+| `OX_SAY_STT_PORT` | `8096` | Loopback port the STT server binds; must differ from `OX_SAY_ENGINE_PORT` and the daemon's port |
+| `OX_SAY_STT_IDLE_STOP_SECS` | `600` | Stop the STT server after N s idle; its idle cost is RAM, not VRAM |
 
 ## Dictation
 

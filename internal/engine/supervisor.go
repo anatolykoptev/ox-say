@@ -34,11 +34,22 @@ var ErrShutdown = errors.New("engine: supervisor shut down")
 
 // Config controls the supervisor.
 type Config struct {
-	Bin      string // tts-server binary
+	Bin      string // child binary; reapOrphan matches an orphan's exe to it
 	Model    string // talker GGUF
 	Codec    string // tokenizer GGUF
 	Port     int    // loopback port the child binds
 	MaxBatch int
+
+	// Name, when non-empty, tags the supervisor's log lines with a
+	// child=<Name> attribute — two supervised engines would otherwise
+	// interleave indistinguishably. Empty: log lines are unchanged.
+	Name string
+	// LogName is the child's log file name inside LogDir; "" → engine.log.
+	LogName string
+	// Args, when non-nil, produces the spawned argv for the configured
+	// port; nil keeps the tts-server argv
+	// (--model/--codec/--host/--port/--max-batch).
+	Args func(port int) []string
 
 	StartupTimeout time.Duration // covers first-start Metal shader compile (~60s)
 	IdleStop       time.Duration // 0 = never stop for idleness
@@ -140,10 +151,14 @@ func New(cfg Config) (*Supervisor, error) {
 	if cfg.IdleStop > 0 && cfg.IdleTick <= 0 {
 		cfg.IdleTick = min(cfg.IdleStop/2, time.Second)
 	}
+	logger := orLogger(cfg.Logger)
+	if cfg.Name != "" {
+		logger = logger.With("child", cfg.Name)
+	}
 	s := &Supervisor{
 		cfg:      cfg,
 		hc:       &http.Client{Timeout: 10 * time.Second},
-		log:      orLogger(cfg.Logger),
+		log:      logger,
 		change:   make(chan struct{}),
 		state:    StateStopped,
 		stopIdle: make(chan struct{}),
@@ -318,6 +333,22 @@ func (s *Supervisor) LiveURL() (string, bool) {
 	return "", false
 }
 
+// Backoff reports how long a NEW EnsureReady caller would have to sleep out
+// before the next start attempt may launch — the cool-down charged by a
+// crash or a failed start. It is 0 whenever an attempt could start at once:
+// never started, Ready, a start in flight or a child still tearing down,
+// and after Shutdown. Callers with a cheaper path (the daemon's STT route
+// falls back to the per-call CLI) use it to skip the wait instead of paying
+// it per request.
+func (s *Supervisor) Backoff() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dead || s.state == StateReady || s.state == StateStarting || s.child != nil {
+		return 0
+	}
+	return max(time.Until(s.nextAttempt), 0)
+}
+
 // Guard marks an in-flight engine user; the idle loop never stops the child
 // while a guard is alive. Release is idempotent.
 type Guard struct {
@@ -405,13 +436,7 @@ func (s *Supervisor) spawn() (*child, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(s.cfg.Bin,
-		"--model", s.cfg.Model,
-		"--codec", s.cfg.Codec,
-		"--host", "127.0.0.1",
-		"--port", strconv.Itoa(s.cfg.Port),
-		"--max-batch", strconv.Itoa(s.cfg.MaxBatch),
-	)
+	cmd := exec.Command(s.cfg.Bin, s.childArgs()...)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	if err := cmd.Start(); err != nil {
@@ -440,6 +465,21 @@ func (s *Supervisor) spawn() (*child, error) {
 	s.writePidFile(c.cmd.Process.Pid)
 	s.log.Info("engine spawned", slog.Int("pid", c.cmd.Process.Pid))
 	return c, nil
+}
+
+// childArgs is the spawned argv: Config.Args when set, else the tts-server
+// flags.
+func (s *Supervisor) childArgs() []string {
+	if s.cfg.Args != nil {
+		return s.cfg.Args(s.cfg.Port)
+	}
+	return []string{
+		"--model", s.cfg.Model,
+		"--codec", s.cfg.Codec,
+		"--host", "127.0.0.1",
+		"--port", strconv.Itoa(s.cfg.Port),
+		"--max-batch", strconv.Itoa(s.cfg.MaxBatch),
+	}
 }
 
 // waiter owns cmd.Wait and reports the exit exactly once.
@@ -641,7 +681,11 @@ func (s *Supervisor) openEngineLog() (*os.File, error) {
 	if err := os.MkdirAll(s.cfg.LogDir, 0o755); err != nil {
 		return nil, fmt.Errorf("engine: log dir: %w", err)
 	}
-	p := filepath.Join(s.cfg.LogDir, "engine.log")
+	name := s.cfg.LogName
+	if name == "" {
+		name = "engine.log"
+	}
+	p := filepath.Join(s.cfg.LogDir, name)
 	if st, err := os.Stat(p); err == nil && st.Size() > s.cfg.LogMaxBytes {
 		if err := os.Truncate(p, 0); err != nil {
 			return nil, fmt.Errorf("engine: truncate log: %w", err)

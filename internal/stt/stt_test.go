@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -377,7 +380,7 @@ func TestConvertRefusesOverlongAudio(t *testing.T) {
 	src := filepath.Join(dir, "long.wav")
 	sineWAV(t, src, 3)
 
-	_, err := convert(context.Background(), src, time.Second)
+	_, _, err := convert(context.Background(), src, time.Second)
 	var iErr *InputError
 	if !errors.As(err, &iErr) || !strings.Contains(err.Error(), "longer than") {
 		t.Fatalf("3 s with a 1 s cap: err = %v, want an InputError about the length", err)
@@ -385,11 +388,55 @@ func TestConvertRefusesOverlongAudio(t *testing.T) {
 	if strings.Contains(err.Error(), dir) {
 		t.Fatalf("error leaks the input path: %v", err)
 	}
-	wav, err := convert(context.Background(), src, 5*time.Second)
+	wav, secs, err := convert(context.Background(), src, 5*time.Second)
 	if err != nil {
 		t.Fatalf("3 s with a 5 s cap: %v", err)
 	}
+	if secs < 2.9 || secs > 3.1 {
+		t.Fatalf("convert duration = %v, want ~3 s", secs)
+	}
 	_ = os.Remove(wav)
+}
+
+// A clip longer than serverMaxAudio stays on the CLI even when a server is
+// configured: a cancelled server decode cannot be killed the way a CLI
+// child can, so long files never go there.
+// Mutation: drop `secs <= serverMaxAudio.Seconds()` from the server-branch
+// condition in Transcribe -> RED (the server answers; no CLI run is
+// recorded).
+func TestLongAudioUsesCLI(t *testing.T) {
+	dir := t.TempDir()
+	opts, log := fakeOpts(t, dir)
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"engine":"parakeet","duration_s":3,"text":"via server"}`)
+	}))
+	defer srv.Close()
+	opts.Server = func(context.Context) (string, func(), error) {
+		return srv.URL, func() {}, nil
+	}
+	old := serverMaxAudio
+	serverMaxAudio = time.Second
+	defer func() { serverMaxAudio = old }()
+
+	src := filepath.Join(dir, "long.wav")
+	sineWAV(t, src, 3)
+	res, err := Transcribe(context.Background(), src, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "hello world." {
+		t.Fatalf("text = %q, want the CLI fake's canned result", res.Text)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("server got %d requests for a clip over serverMaxAudio", n)
+	}
+	if runs := sttRuns(t, log); len(runs) != 1 {
+		t.Fatalf("CLI runs = %d, want 1", len(runs))
+	}
 }
 
 // tailBuffer keeps only the last max bytes.

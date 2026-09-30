@@ -25,6 +25,25 @@
 //	OXSAY_FAKE_STT_EXIT=1     print a message on stderr and exit 1
 //	OXSAY_FAKE_STT_BLOCK=1    block until killed
 //	OXSAY_FAKE_STT_JSON       payload to print instead of the canned result
+//
+// Fake ox-stt --serve (selected on OXSAY_FAKE_STT=1 AND a --serve flag in
+// argv, checked BEFORE the --engine CLI selection above — the two fake
+// modes never overlap): parses --port and serves on 127.0.0.1:
+//
+//	GET  /health      -> 200
+//	POST /transcribe  -> OXSAY_FAKE_STT_JSON or the canned CLI result
+//
+// It appends to OXSAY_FAKE_STT_LOG:
+//
+//   - "serve\t<pid>\t<arg>\t..." on start (tab-separated argv);
+//
+//   - "req <pid> <content-type> <unixns>" per /transcribe request.
+//
+//     OXSAY_FAKE_STT_SERVE_STATUS   the HTTP status /transcribe answers
+//     OXSAY_FAKE_STT_SERVE_DELAY_MS sleep before answering /transcribe
+//     OXSAY_FAKE_STT_SERVE_EXIT=1   a serve child that cannot start: exit 1
+//     right after logging its serve record (port taken, ox-stt without
+//     --serve, a corrupt model)
 package testutil
 
 import (
@@ -46,11 +65,17 @@ import (
 // FakeChildMain runs the fake engine when the env marker is set, then exits.
 // Call it first in every test package's TestMain.
 func FakeChildMain() {
-	// The STT fake is selected by argv shape, not only by its env marker:
-	// both markers are typically set in daemon tests, and only ox-stt is
-	// ever invoked with --engine.
-	if os.Getenv("OXSAY_FAKE_STT") == "1" && sttArgv(os.Args[1:]) {
-		os.Exit(runFakeSTT(os.Args[1:]))
+	// The STT fakes are selected by argv shape, not only by their env
+	// marker: both markers are typically set in daemon tests. A --serve
+	// argv runs the resident-server fake; a --engine argv the per-call CLI
+	// fake (the TTS fake never sees either).
+	if os.Getenv("OXSAY_FAKE_STT") == "1" {
+		if sttServeArgv(os.Args[1:]) {
+			os.Exit(runFakeSTTServe(os.Args[1:]))
+		}
+		if sttArgv(os.Args[1:]) {
+			os.Exit(runFakeSTT(os.Args[1:]))
+		}
 	}
 	if os.Getenv("OXSAY_FAKE_CHILD") != "1" {
 		return
@@ -68,6 +93,93 @@ func sttArgv(args []string) bool {
 	return false
 }
 
+// sttServeArgv reports whether argv looks like an `ox-stt --serve` one.
+func sttServeArgv(args []string) bool {
+	for _, a := range args {
+		if a == "--serve" {
+			return true
+		}
+	}
+	return false
+}
+
+// sttResultJSON is the canned ox-stt result; OXSAY_FAKE_STT_JSON overrides
+// it (shared by the CLI fake's stdout and the serve fake's /transcribe).
+func sttResultJSON() string {
+	if p := os.Getenv("OXSAY_FAKE_STT_JSON"); p != "" {
+		return p
+	}
+	return `{"engine":"parakeet","language":"en","duration_s":0.05,"elapsed_s":0.01,` +
+		`"text":"hello world.","segments":[{"s":0.0,"e":0.05,"text":"hello world."}],` +
+		`"words":[{"w":"hello","s":0.0,"e":0.03,"p":0.99},{"w":"world.","s":0.03,"e":0.05,"p":0.98}]}`
+}
+
+// sttLog appends one record line to OXSAY_FAKE_STT_LOG.
+func sttLog(rec string) {
+	log := os.Getenv("OXSAY_FAKE_STT_LOG")
+	if log == "" {
+		return
+	}
+	f, err := os.OpenFile(log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintln(f, rec)
+	_ = f.Close()
+}
+
+// runFakeSTTServe is the fake resident ox-stt: it records its argv as a
+// "serve" line, then serves /health and /transcribe on 127.0.0.1:<--port>,
+// logging a "req" line per transcription request.
+func runFakeSTTServe(args []string) int {
+	var port int
+	for i, a := range args {
+		if a == "--port" && i+1 < len(args) {
+			port, _ = strconv.Atoi(args[i+1])
+		}
+	}
+	sttLog("serve\t" + strconv.Itoa(os.Getpid()) + "\t" + strings.Join(args, "\t"))
+
+	if os.Getenv("OXSAY_FAKE_STT_SERVE_EXIT") == "1" {
+		return 1
+	}
+
+	status := http.StatusOK
+	if v, err := strconv.Atoi(os.Getenv("OXSAY_FAKE_STT_SERVE_STATUS")); err == nil && v != 0 {
+		status = v
+	}
+	delay := envMS("OXSAY_FAKE_STT_SERVE_DELAY_MS")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /transcribe", func(w http.ResponseWriter, r *http.Request) {
+		sttLog(fmt.Sprintf("req %d %s %d", os.Getpid(), r.Header.Get("Content-Type"), time.Now().UnixNano()))
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		if status != http.StatusOK {
+			http.Error(w, "fake-stt: transcribe failed", status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, sttResultJSON())
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake-stt serve: listen:", err)
+		return 2
+	}
+	_ = http.Serve(ln, mux)
+	return 0
+}
+
 // runFakeSTT is the fake ox-stt: records argv and start/end stamps, sleeps
 // the configured delay, then prints canned JSON, exits 1, or blocks.
 func runFakeSTT(args []string) int {
@@ -78,18 +190,7 @@ func runFakeSTT(args []string) int {
 		}
 	}
 	id := filepath.Base(file)
-	log := os.Getenv("OXSAY_FAKE_STT_LOG")
-	stamp := func(rec string) {
-		if log == "" {
-			return
-		}
-		f, err := os.OpenFile(log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			return
-		}
-		_, _ = fmt.Fprintln(f, rec)
-		_ = f.Close()
-	}
+	stamp := sttLog
 	stamp("argv\t" + id + "\t" + strings.Join(args, "\t"))
 	stamp(fmt.Sprintf("start %s %d %d", id, os.Getpid(), time.Now().UnixNano()))
 	// The closure is required: fmt.Sprintf's arguments (time.Now) would
@@ -110,13 +211,7 @@ func runFakeSTT(args []string) int {
 		fmt.Fprintln(os.Stderr, "fake-stt: transcription failed")
 		return 1
 	}
-	payload := os.Getenv("OXSAY_FAKE_STT_JSON")
-	if payload == "" {
-		payload = `{"engine":"parakeet","language":"en","duration_s":0.05,"elapsed_s":0.01,` +
-			`"text":"hello world.","segments":[{"s":0.0,"e":0.05,"text":"hello world."}],` +
-			`"words":[{"w":"hello","s":0.0,"e":0.03,"p":0.99},{"w":"world.","s":0.03,"e":0.05,"p":0.98}]}`
-	}
-	fmt.Println(payload)
+	fmt.Println(sttResultJSON())
 	return 0
 }
 

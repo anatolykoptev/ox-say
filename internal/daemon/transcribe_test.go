@@ -24,8 +24,22 @@ import (
 
 // sttSetup points the daemon's STT config at the test binary re-exec'd as
 // the fake ox-stt and creates the model files the Transcribe stat check
-// needs. Returns the fake's argv/start/end record log path.
+// needs. It turns the resident STT server OFF (STTSup was already built by
+// newDaemon, so both the config flag and the field must move) — the tests
+// using it assert the per-call CLI path. Returns the fake's record log path.
 func sttSetup(t *testing.T, d *Daemon, dir string) string {
+	t.Helper()
+	return sttFake(t, d, dir, false)
+}
+
+// sttSetupServer is sttSetup with the resident STT server left enabled, so
+// transcriptions route to the fake `ox-stt --serve` child.
+func sttSetupServer(t *testing.T, d *Daemon, dir string) string {
+	t.Helper()
+	return sttFake(t, d, dir, true)
+}
+
+func sttFake(t *testing.T, d *Daemon, dir string, server bool) string {
 	t.Helper()
 	t.Setenv("OXSAY_FAKE_STT", "1")
 	log := filepath.Join(dir, "stt.log")
@@ -43,6 +57,10 @@ func sttSetup(t *testing.T, d *Daemon, dir string) string {
 	d.Cfg.STTGPU = "auto"
 	d.Cfg.STTTimeout = 30 * time.Second
 	d.Cfg.STTMaxUploadMB = 10
+	if !server {
+		d.Cfg.STTServer = "off"
+		d.STTSup = nil
+	}
 	return log
 }
 
