@@ -142,7 +142,7 @@ Session errors are `{"error":"…"}`:
 - 404: unknown session. This includes a server restart, since sessions do not survive one.
 - 413: over the per-chunk cap, or a JSON body over 4 KB.
 - 429: past 4 live sessions, or a decode backlog.
-- 500: a segment failed to decode; the session is lost.
+- 500: a segment failed to decode or VAD failed, so the session is unusable; or the server could not create a session.
 - 501: no VAD model.
 - 502: the STT server could not be reached.
 - 503: the STT server is off or cooling down.
