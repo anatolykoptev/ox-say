@@ -586,26 +586,31 @@ int serve(const args & a) {
     // Local-only, as tts-server (engine/patches/qwentts/0002-tts-server-local-only.patch): the
     // supervising daemon is the one client. The Host header must name loopback (DNS rebinding), and
     // a POST must carry Content-Type audio/wav: a web page can send a cross-site "simple" request
-    // (text/plain, form data) without a preflight, but not this type. A POST must also carry a
-    // Content-Length: httplib reads a chunked body past set_payload_max_length.
+    // (text/plain, form data) without a preflight, but not this type. No request may be chunked:
+    // httplib reads a chunked body, for any method, past set_payload_max_length; a POST must carry
+    // a Content-Length.
     srv.set_pre_routing_handler([](const httplib::Request & req, httplib::Response & res) {
         if (!is_loopback_host(host_without_port(req.get_header_value("Host")))) {
             res.status = 403;
             res.set_content(error_json("host not allowed"), "application/json");
             return httplib::Server::HandlerResponse::Handled;
         }
+        // httplib reads a chunked body for any method, not only POST, so refuse it everywhere
+        if (req.has_header("Transfer-Encoding") || (req.method == "POST" && !req.has_header("Content-Length"))) {
+            res.status = 411;
+            res.set_content(error_json("a Content-Length body is required"), "application/json");
+            return httplib::Server::HandlerResponse::Handled;
+        }
         if (req.method == "POST") {
             std::string ctype = req.get_header_value("Content-Type");
             std::transform(ctype.begin(), ctype.end(), ctype.begin(),
                            [](unsigned char ch) { return (char) std::tolower(ch); });
-            if (ctype.rfind("audio/wav", 0) != 0) {
+            const size_t semi = ctype.find(';');  // "audio/wav" exactly, parameters allowed
+            std::string mime = ctype.substr(0, semi);
+            mime.erase(mime.find_last_not_of(" \t") + 1);
+            if (mime != "audio/wav") {
                 res.status = 415;
                 res.set_content(error_json("Content-Type must be audio/wav"), "application/json");
-                return httplib::Server::HandlerResponse::Handled;
-            }
-            if (req.has_header("Transfer-Encoding") || !req.has_header("Content-Length")) {
-                res.status = 411;
-                res.set_content(error_json("a Content-Length body is required"), "application/json");
                 return httplib::Server::HandlerResponse::Handled;
             }
         }
