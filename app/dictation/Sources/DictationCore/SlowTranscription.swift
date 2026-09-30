@@ -4,8 +4,12 @@ import Foundation
 /// slow cases look the same from outside, a spinner that keeps spinning, so the
 /// daemon's engine state tells them apart.
 public enum SlowTranscription {
-    /// After this long the pill explains why it is still working.
-    public static let explainAfter: TimeInterval = 8
+    /// After this long the pill explains why it is still working. A long
+    /// recording takes a while even on a warm GPU (a 6-minute file about 18 s),
+    /// so the threshold grows with it rather than blaming the GPU for length.
+    public static func explainAfter(recordingSeconds: Double) -> TimeInterval {
+        max(8, recordingSeconds * 0.1)
+    }
 
     /// - Parameter engineState: `engine.state` from the daemon's /status, nil if
     ///   it could not be read.

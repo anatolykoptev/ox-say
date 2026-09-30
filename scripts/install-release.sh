@@ -115,6 +115,18 @@ if [ "${OX_SAY_NO_SELFTEST:-0}" != 1 ]; then
         exit 1
     fi
 fi
+
+# 5. The dictation app, into ~/Applications. It only talks to the daemon, so a
+#    failure here leaves a working install and is reported, not fatal.
+dictation=0
+if [ "${OX_SAY_NO_DICTATION:-0}" != 1 ] && [ -d "$root/app/OxSayDictation.app" ]; then
+    if "$root/scripts/install-app.sh" "$root/app/OxSayDictation.app"; then
+        dictation=1
+    else
+        echo "the dictation app was not installed (see above); the daemon works without it" >&2
+    fi
+fi
+
 echo "done. Try: ox-say say \"hello\"   ·   ox-say transcribe <file>   ·   ox-say status"
 if [ "$dictation" = 1 ]; then
     cat <<'EOF2'

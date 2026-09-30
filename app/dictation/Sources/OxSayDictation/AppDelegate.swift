@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var workingTimer: Timer?
     private var workingStarted = Date()
     private var slowReason: String?
+    /// Bumped per transcription, so a late /status answer for one cannot label the next.
+    private var workingGeneration = 0
     /// Why the recording ended on its own (length cap, microphone change); said
     /// once the text has been delivered.
     private var endedReason: String?
@@ -215,21 +217,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         workingTimer?.invalidate()
         workingStarted = Date()
         slowReason = nil
-        workingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.tickWorking()
-        }
+        workingGeneration += 1
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.tickWorking() }
+        // .common: keep counting while the status-bar menu is open
+        RunLoop.main.add(timer, forMode: .common)
+        workingTimer = timer
     }
 
     private func tickWorking() {
         guard controller.state == .transcribing else { return }
         let elapsed = Date().timeIntervalSince(workingStarted)
         let seconds = Int(elapsed)
-        if elapsed >= SlowTranscription.explainAfter && slowReason == nil {
+        if elapsed >= SlowTranscription.explainAfter(recordingSeconds: controller.recordingSeconds) && slowReason == nil {
             slowReason = "" // asked once per transcription
             let client = self.client!
+            let generation = workingGeneration
             Task { @MainActor [weak self] in
                 let state = await client.engineState()
-                guard let self, self.controller.state == .transcribing else { return }
+                guard let self, self.workingGeneration == generation, self.controller.state == .transcribing else { return }
                 self.slowReason = SlowTranscription.reason(engineState: state)
             }
         }
