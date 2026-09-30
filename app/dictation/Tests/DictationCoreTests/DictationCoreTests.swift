@@ -186,3 +186,80 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(errors.count, 1)
     }
 }
+
+final class CancelTests: XCTestCase {
+    func run(_ c: DictationController, until state: DictationState) async {
+        let deadline = Date().addingTimeInterval(2)
+        while c.state != state && Date() < deadline { try? await Task.sleep(nanoseconds: 5_000_000) }
+    }
+
+    @MainActor
+    func testCancelWhileRecordingSendsNothing() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 16000)
+        let out = FakeOutput()
+        var transcribed = false
+        let c = DictationController(recorder: rec, output: out, mode: .hold) { _ in transcribed = true; return "x" }
+        c.keyDown()
+        c.cancel()
+        XCTAssertEqual(c.state, .idle)
+        c.keyUp() // the release after Esc must not start a transcription
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(transcribed)
+        XCTAssertEqual(out.delivered, [])
+    }
+
+    // Mutation: delete `guard started == generation else { return }` in
+    // DictationController.finish -> RED: the late text is pasted, and the old
+    // task flips the new recording to idle.
+    @MainActor
+    func testCancelWhileTranscribingDropsTheLateResult() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 16000)
+        let out = FakeOutput()
+        let c = DictationController(recorder: rec, output: out, mode: .toggle) { _ in
+            try await Task.sleep(nanoseconds: 200_000_000)
+            return "late"
+        }
+        c.keyDown(); c.keyDown()
+        XCTAssertEqual(c.state, .transcribing)
+        c.cancel()
+        XCTAssertEqual(c.state, .idle)
+        c.keyDown() // a new recording starts before the old request returns
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertEqual(out.delivered, [])
+        XCTAssertEqual(c.state, .recording, "the cancelled request must not end the new recording")
+    }
+}
+
+final class LevelMeterTests: XCTestCase {
+    func tone(_ hz: Double, amplitude: Float, count: Int = 1024) -> [Float] {
+        (0..<count).map { amplitude * Float(sin(2 * Double.pi * hz * Double($0) / 16000)) }
+    }
+
+    func testSilenceIsZero() {
+        let m = LevelMeter()
+        XCTAssertEqual(m.levels([Float](repeating: 0, count: 1024)), [Float](repeating: 0, count: 9))
+        XCTAssertEqual(m.levels([]).count, 9)
+    }
+
+    // Mutation: in LevelMeter.levels replace `for k in lo..<min(hi, power.count)`
+    // with `for k in 0..<1` (every band reads the DC bin) -> RED.
+    func testTheToneLightsItsOwnBand() {
+        let m = LevelMeter()
+        // Bands are log-spaced 100 Hz ... 5 kHz: 300 Hz is band 2, 2.5 kHz band 7.
+        for (hz, band) in [(300.0, 2), (2500.0, 7)] {
+            let levels = m.levels(tone(hz, amplitude: 0.1)) // -20 dBFS: speech at a normal distance
+            XCTAssertEqual(levels.firstIndex(of: levels.max()!), band, "\(hz) Hz -> \(levels)")
+            XCTAssertGreaterThan(levels[band], 0.8)
+            XCTAssertLessThan(levels[0], 0.3, "a far band stays low: \(levels)")
+        }
+    }
+
+    func testQuietIsLowButNotNothing() {
+        let m = LevelMeter()
+        let whisper = m.levels(tone(1000, amplitude: 0.001))[5] // -60 dBFS
+        let normal = m.levels(tone(1000, amplitude: 0.05))[5]    // -26 dBFS
+        XCTAssertGreaterThan(whisper, 0)
+        XCTAssertLessThan(whisper, 0.5)
+        XCTAssertGreaterThan(normal, whisper)
+    }
+}

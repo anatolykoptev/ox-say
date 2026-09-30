@@ -20,12 +20,16 @@ enum RecorderError: LocalizedError {
 final class MicRecorder: Recorder {
     /// A stuck key must not record forever.
     var maxSeconds: Double = 120
+    /// Loudness per frequency band, 0...1, for each chunk of audio. Called on the
+    /// audio thread.
+    var onLevels: (([Float]) -> Void)?
 
     private let engine = AVAudioEngine()
     private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
     private var converter: AVAudioConverter?
     private var samples: [Float] = []
     private let lock = NSLock()
+    private let meter = LevelMeter(bands: 9, sampleRate: 16000)
 
     func start() throws {
         // Without permission the engine still runs and records silence, which
@@ -82,10 +86,12 @@ final class MicRecorder: Recorder {
             return buffer
         }
         guard error == nil, let channel = out.floatChannelData else { return }
+        let chunk = Array(UnsafeBufferPointer(start: channel[0], count: Int(out.frameLength)))
+        onLevels?(meter.levels(chunk))
         lock.lock()
         defer { lock.unlock() }
         if Double(samples.count) / target.sampleRate < maxSeconds {
-            samples.append(contentsOf: UnsafeBufferPointer(start: channel[0], count: Int(out.frameLength)))
+            samples.append(contentsOf: chunk)
         }
     }
 }

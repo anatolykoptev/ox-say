@@ -42,6 +42,9 @@ public final class DictationController {
     private let transcribe: ([Float]) async throws -> String
     private let output: TextOutput
     private let sampleRate = 16000.0
+    /// Bumped by `cancel`: a transcription started under an older generation
+    /// neither pastes nor touches the state when it finishes.
+    private var generation = 0
 
     public init(recorder: Recorder, output: TextOutput, mode: HotkeyMode = .hold,
                 transcribe: @escaping ([Float]) async throws -> String) {
@@ -74,6 +77,22 @@ public final class DictationController {
         }
     }
 
+    /// Drops the recording, or the result of a transcription in flight, so
+    /// nothing is pasted. The daemon may still finish the request; its text is
+    /// thrown away.
+    public func cancel() {
+        switch state {
+        case .idle:
+            return
+        case .recording:
+            _ = recorder.stop()
+        case .transcribing:
+            break
+        }
+        generation += 1
+        state = .idle
+    }
+
     private func finish() {
         let samples = recorder.stop()
         guard Double(samples.count) / sampleRate >= minSeconds else {
@@ -81,13 +100,21 @@ public final class DictationController {
             return
         }
         state = .transcribing
+        let started = generation
         Task { @MainActor in
+            let result: Result<String, Error>
             do {
-                let text = try await transcribe(samples)
-                if !text.isEmpty {
-                    output.deliver(text)
-                }
+                result = .success(try await transcribe(samples))
             } catch {
+                result = .failure(error)
+            }
+            guard started == generation else { return }
+            switch result {
+            case .success(let text) where !text.isEmpty:
+                output.deliver(text)
+            case .success:
+                break
+            case .failure(let error):
                 onError?(String(describing: error))
             }
             state = .idle

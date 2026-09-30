@@ -100,10 +100,11 @@ Environment variables (flags on `serve` override them):
 
 ## Dictation
 
-`app/dictation` is a menu-bar app: hold ⌥Space, speak, release, and the text
+`app/dictation` is a menu-bar app: hold ⌃Space, speak, release, and the text
 appears where the cursor is, in any app. The daemon transcribes it, so nothing
-leaves the Mac. A menu setting switches to toggle mode (press to start, press
-again to stop).
+leaves the Mac. While you speak, a pill at the bottom of the screen shows bars
+that move with your voice; Esc cancels. The menu switches the key to ⌥Space and
+turns on toggle mode (press to start, press again to stop).
 
 ```
 app/dictation/build.sh --install    # needs Xcode; installs ~/Applications/OxSayDictation.app

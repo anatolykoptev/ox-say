@@ -1,21 +1,30 @@
 import AppKit
 import AVFoundation
+import Carbon
 import DictationCore
 import ServiceManagement
 
 /// The menu-bar app: an icon that shows the dictation state, a menu with the
-/// settings, and the wiring between the hotkey, the recorder, the ox-say daemon
-/// and the paste output.
+/// settings, an overlay while dictating, and the wiring between the hotkey, the
+/// recorder, the ox-say daemon and the paste output.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let toggleItem = NSMenuItem(title: "Toggle mode (press to start, press again to stop)", action: #selector(toggleMode), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Start at login", action: #selector(toggleLogin), keyEquivalent: "")
+    private var shortcutItems: [Shortcut: NSMenuItem] = [:]
     private var hotKey: HotKey?
+    private var escapeKey: HotKey?
     private var controller: DictationController!
     private let recorder = MicRecorder()
     private let output = PasteOutput()
+    private let overlay = Overlay()
     private let modeKey = "hotkeyMode"
+    private let shortcutKey = "shortcut"
+
+    private var shortcut: Shortcut {
+        Shortcut(rawValue: UserDefaults.standard.string(forKey: shortcutKey) ?? "") ?? .controlSpace
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let base = ProcessInfo.processInfo.environment["OX_SAY_URL"].flatMap(URL.init(string:))
@@ -28,17 +37,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onState = { [weak self] state in self?.show(state) }
         controller.onError = { [weak self] message in self?.notice(message) }
         output.onNotice = { [weak self] message in self?.notice(message) }
+        recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         buildMenu()
+        registerShortcut()
         show(.idle)
-
-        hotKey = HotKey()
-        hotKey?.onDown = { [weak self] in self?.controller.keyDown() }
-        hotKey?.onUp = { [weak self] in self?.controller.keyUp() }
-        if hotKey == nil {
-            notice("⌥Space is taken by another app, so dictation has no hotkey.")
-        }
 
         // Ask for both permissions up front, so the first dictation does not stall
         // on a prompt. The Accessibility prompt shows once; the microphone prompt
@@ -48,10 +52,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
     }
 
+    private func registerShortcut() {
+        hotKey = nil
+        hotKey = HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers)
+        hotKey?.onDown = { [weak self] in self?.controller.keyDown() }
+        hotKey?.onUp = { [weak self] in self?.controller.keyUp() }
+        for (choice, item) in shortcutItems { item.state = choice == shortcut ? .on : .off }
+        if hotKey == nil {
+            notice("\(shortcut.title) is taken by another app, so dictation has no hotkey. Pick another one in this menu.")
+        }
+    }
+
     private func buildMenu() {
         let menu = NSMenu()
         menu.addItem(statusLine)
         menu.addItem(.separator())
+        let shortcuts = NSMenu()
+        for choice in Shortcut.allCases {
+            let item = NSMenuItem(title: choice.title, action: #selector(pickShortcut(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = choice.rawValue
+            shortcuts.addItem(item)
+            shortcutItems[choice] = item
+        }
+        let shortcutMenu = NSMenuItem(title: "Dictation key", action: nil, keyEquivalent: "")
+        shortcutMenu.submenu = shortcuts
+        menu.addItem(shortcutMenu)
         toggleItem.target = self
         toggleItem.state = controller.mode == .toggle ? .on : .off
         menu.addItem(toggleItem)
@@ -71,13 +97,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch state {
         case .idle:
             symbol = "mic"
-            statusLine.title = controller.mode == .hold ? "Hold ⌥Space and speak" : "Press ⌥Space to start and stop"
+            statusLine.title = controller.mode == .hold
+                ? "Hold \(shortcut.title) and speak"
+                : "Press \(shortcut.title) to start and stop"
+            overlay.hide()
         case .recording:
             symbol = "mic.fill"
-            statusLine.title = "Listening…"
+            statusLine.title = "Listening… (esc cancels)"
+            overlay.showListening()
         case .transcribing:
             symbol = "ellipsis.circle"
-            statusLine.title = "Transcribing…"
+            statusLine.title = "Transcribing… (esc cancels)"
+            overlay.showWorking()
+        }
+        // Esc cancels, but only while there is something to cancel: a registered
+        // hotkey takes the key away from every other app.
+        if state == .idle {
+            escapeKey = nil
+        } else if escapeKey == nil {
+            escapeKey = HotKey(keyCode: UInt32(kVK_Escape), modifiers: 0)
+            escapeKey?.onDown = { [weak self] in self?.controller.cancel() }
         }
         statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "OxSay Dictation")
         statusItem.button?.contentTintColor = state == .recording ? .systemRed : nil
@@ -87,6 +126,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusLine.title = message
         statusItem.button?.toolTip = message
         NSSound.beep()
+    }
+
+    @objc private func pickShortcut(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, Shortcut(rawValue: raw) != nil else { return }
+        controller.cancel()
+        UserDefaults.standard.set(raw, forKey: shortcutKey)
+        registerShortcut()
+        show(controller.state)
     }
 
     @objc private func toggleMode() {
