@@ -51,25 +51,40 @@ vocabulary projection). MPS encodes straight into the command buffer, so the
 compute encoder is ended and reopened around it, with any open debug groups
 restored.
 
-**The path is opt-in: set `GGML_METAL_MPS_ENABLE=1`** (`GGML_METAL_MPS_DISABLE`
-still wins over it). During a stretch of sustained full CPU load, on a Radeon Pro 5500M,
-it returned different wrong results on every run, with exit code 0. This hit
-both Parakeet and the wav2vec2 aligner in 7 of 8 runs over about 12
-minutes. Without MPS, the same inputs came out correct. The failure has not
-been reproduced since, even at 16 busy threads on a throttled CPU, and its
-cause is not known (#14). Until it is, correct-and-slower is the default.
-Measured idle on a 347 s file, MPS off against on: Parakeet 18.2 s against 10.9 s,
-and the MMS aligner 68.2 s against 49.6 s, with the same transcript and
-emissions within 0.004.
+**The path is opt-in: set `GGML_METAL_MPS_ENABLE`.** Any value turns it on,
+including `0`, following ggml's presence-only convention for these variables.
+Unset it to turn the path off; `GGML_METAL_MPS_DISABLE` wins over it. During a
+stretch of sustained full CPU load, on a Radeon Pro 5500M, the path gave
+wrong output in 7 of 8 runs over about 12 minutes. It hit both Parakeet and
+the wav2vec2 aligner, the results differed from run to run, and every run
+exited 0. Without MPS, the same inputs came out correct. The failure has not
+reproduced since, even at 16 busy threads on a throttled CPU, and its cause
+is not known (#14). Until it is, correct-and-slower is the default.
+
+Measured idle on a 347 s file, MPS off against on:
+
+| Model | MPS off | MPS on |
+|---|---|---|
+| Parakeet | 18.2 s | 10.9 s |
+| MMS aligner | 68.2 s | 49.6 s |
+
+The transcript was the same, and the emissions agreed within 0.004.
+
+The daemon's engines inherit the variable from the LaunchAgent environment.
+`scripts/install.sh` writes only `OX_SAY_*` variables, so if you add
+`GGML_METAL_MPS_ENABLE` to the plist by hand, the next reinstall drops it and the
+engines quietly fall back to the slower path.
 
 `patches/ggml-tests/` holds test-backend-ops cases that reach this path
 (stock cases never do); `build.sh` does not apply it. Apply it to the ggml
-tree when bumping the pins and run `GGML_METAL_MPS_ENABLE=1 test-backend-ops -o MUL_MAT -b MTL0`
-(without the variable the path is off and the cases pass without reaching it).
+tree when bumping the pins and run
+`GGML_METAL_MPS_ENABLE=1 test-backend-ops -o MUL_MAT -b MTL0`. Without the
+variable the path is off, and the cases pass without ever reaching it.
 
-Measured with the path enabled, on the whisper large-v3-turbo encoder (whisper.cpp): 3.14 -> 1.89 s
-per 30 s window, 347 s file 83 -> 60 s, byte-identical transcript. The TTS
-codec decode is ~3.5% faster per frame; the talker is unchanged.
+Measured with the path enabled, on the whisper large-v3-turbo encoder
+(whisper.cpp): 3.14 -> 1.89 s per 30 s window, and 83 -> 60 s on a 347 s file,
+with a byte-identical transcript. The TTS codec decode is ~3.5% faster per
+frame; the talker is unchanged.
 
 ## stt/ox-stt.cpp
 
@@ -137,10 +152,13 @@ marker for files the converter can run without). `--ftype f16` stores the matmul
 weights in f16. On the CPU backend they are upcast back to f32 at load —
 ggml's f16 dot product would also quantize the activations — so CPU compute
 is identical for both ftypes; f16 buys smaller files, not CPU speed. On
-Metal the picture depends on the GPU: on the target AMD dGPU, patch
-0002, when enabled (`GGML_METAL_MPS_ENABLE=1`), routes eligible 2D mul_mats to MPS in float32 after widening the f16
-weights, and the ops it does not take (attention, lm_head) go through
-mul_mv, whose activations stay f32 — so f16 weights are kept as stored.
+Metal the picture depends on the GPU. On the target AMD dGPU, every
+mul_mat with more than 32 frames runs patch 0001's tiled kernel. That covers the
+projections, the attention products and lm_head, and the kernel's tiles are
+float. The exception is when patch 0002's opt-in MPS path takes the eligible 2D
+projections: then it runs them in float32 after widening the f16 weights. A
+short window falls back to mul_mv. Activations stay f32 on the tiled and MPS
+paths, so f16 weights are kept as stored.
 On Apple Silicon, `kernel_mul_mm_*` tiles the activations into `half`,
 which is exactly the rounding the CPU upcast avoids. Two configurations
 are supported:
