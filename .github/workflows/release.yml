@@ -64,11 +64,21 @@ jobs:
     env:
       VERSION: ${{ needs.release-please.outputs.tag_name || format('dev-{0}', github.sha) }}
     steps:
-      - uses: actions/checkout@v5
+      # The commit this run was started for, not the tag: a tag can be moved.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ needs.release-please.outputs.tag_name || github.sha }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - name: The release tag is this commit
+        if: needs.release-please.outputs.tag_name != ''
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git rev-parse "$TAG^{commit}")" = "$GITHUB_SHA"
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
@@ -111,7 +121,7 @@ jobs:
           (cd ../../dist && shasum -a 256 -c SHA256SUMS)
 
       - name: Keep the package as a workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ox-say-macos-x86_64
           path: dist/
@@ -133,12 +143,30 @@ jobs:
     env:
       SIGN_IDENTITY: "Developer ID Application: Anatoly Koptev (Z25C7QACUF)"
       APPLE_TEAM_ID: Z25C7QACUF
+      VERSION: ${{ needs.release-please.outputs.tag_name || format('dev-{0}', github.sha) }}
     steps:
-      - uses: actions/checkout@v5
+      # The commit this run was started for (the environment admitted main),
+      # not the tag, which can be moved after it was created.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: ${{ needs.release-please.outputs.tag_name || github.sha }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - name: The release tag is this commit
+        if: needs.release-please.outputs.tag_name != ''
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git rev-parse "$TAG^{commit}")" = "$GITHUB_SHA"
+
+      # Build the app here, from first-party Swift with no dependencies, before
+      # any secret is in reach: the key signs this build, not the one the
+      # package job made next to third-party engine code.
+      - name: Build the app
+        run: app/dictation/build.sh
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ox-say-macos-x86_64
           path: dist
@@ -149,15 +177,18 @@ jobs:
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
           set -euo pipefail
+          umask 077
           SIGN_KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
           echo "SIGN_KEYCHAIN=$SIGN_KEYCHAIN" >> "$GITHUB_ENV"
+          p12="$RUNNER_TEMP/cert.p12"
+          trap 'rm -f "$p12"' EXIT
           kcpass=$(openssl rand -hex 24)
           security create-keychain -p "$kcpass" "$SIGN_KEYCHAIN"
           security set-keychain-settings -lut 3600 "$SIGN_KEYCHAIN"
           security unlock-keychain -p "$kcpass" "$SIGN_KEYCHAIN"
-          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$SIGN_KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
-          rm -f "$RUNNER_TEMP/cert.p12"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$p12"
+          # -x: the private key cannot be exported from the keychain again
+          security import "$p12" -k "$SIGN_KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -x -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$SIGN_KEYCHAIN" > /dev/null
           # codesign looks the identity up in the search list: put ours first,
           # keep the rest (each listed as "<path>", one per line)
@@ -172,19 +203,38 @@ jobs:
 
       - name: Sign, notarize and repack
         env:
+          # App Store Connect API key when set (preferred), else the Apple ID
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.ASC_ISSUER_ID }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: scripts/sign-release.sh dist
+        run: |
+          set -euo pipefail
+          if [ -n "$ASC_KEY_P8" ]; then
+            umask 077
+            export NOTARY_KEY="$RUNNER_TEMP/notary.p8"
+            trap 'rm -f "$NOTARY_KEY"' EXIT
+            printf '%s' "$ASC_KEY_P8" | base64 --decode > "$NOTARY_KEY"
+          fi
+          scripts/sign-release.sh dist build/dictation/OxSayDictation.app
 
       - name: Remove the temporary keychain
         if: always()
-        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+        run: |
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          if [ -e "$kc" ]; then
+            security delete-keychain "$kc"
+          fi
 
       - name: Keep the signed package as a workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ox-say-macos-x86_64-signed
           path: dist/
+          # publish takes it within this run; a manual run's signed build
+          # should not linger as a public download
+          retention-days: 3
 
   # The only job with write access: it runs no build scripts, just attaches the
   # signed package to the draft release release-please created, then publishes
@@ -198,7 +248,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ox-say-macos-x86_64-signed
           path: dist
