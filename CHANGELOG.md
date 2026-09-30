@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3](https://github.com/anatolykoptev/ox-say/compare/v0.1.2...v0.1.3) (2026-09-30)
+
+
+### Added
+
+* **stt:** proxy streaming transcription sessions on the resident server ([#43](https://github.com/anatolykoptev/ox-say/issues/43)) ([21d4c12](https://github.com/anatolykoptev/ox-say/commit/21d4c1292db1f569efddccbf043183d6e1f4d600))
+* **stt:** VAD-segmented streaming transcription sessions in ox-stt --serve ([#42](https://github.com/anatolykoptev/ox-say/issues/42)) ([52b4ebf](https://github.com/anatolykoptev/ox-say/commit/52b4ebf95bb02596e1abb6d91ac2dfecedd827db))
+
 ## [0.1.2](https://github.com/anatolykoptev/ox-say/compare/v0.1.1...v0.1.2) (2026-09-30)
 
 
