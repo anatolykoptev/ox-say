@@ -2,7 +2,12 @@ package config
 
 import (
 	"flag"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -126,5 +131,174 @@ func TestLoadSTTBounds(t *testing.T) {
 				t.Fatalf("%s=%s accepted", kv[0], kv[1])
 			}
 		})
+	}
+}
+
+// The installer trusts EnvKeys as the set the LaunchAgent may carry: every
+// entry must actually land in the loaded Config (a table entry the loader
+// ignores would be written into the agent's environment with no effect), and
+// each case below must be in EnvKeys (a read the table misses would never
+// reach the daemon under launchd). Durations render via String(), so the
+// expected value is not always the raw env string.
+func TestEnvKeysAllLoaded(t *testing.T) {
+	cases := []struct {
+		env, set, want string
+		read           func(*Config) string
+	}{
+		{"OX_SAY_HOME", "/tmp/oxk-4917/home", "/tmp/oxk-4917/home", func(c *Config) string { return c.Home }},
+		{"OX_SAY_ADDR", "127.0.0.1:18094", "127.0.0.1:18094", func(c *Config) string { return c.Addr }},
+		{"OX_SAY_ENGINE_PORT", "18095", "18095", func(c *Config) string { return strconv.Itoa(c.EnginePort) }},
+		{"OX_SAY_ENGINE_BIN", "/tmp/oxk-4917/tts-x", "/tmp/oxk-4917/tts-x", func(c *Config) string { return c.EngineBin }},
+		{"OX_SAY_MODEL", "/tmp/oxk-4917/model-x.gguf", "/tmp/oxk-4917/model-x.gguf", func(c *Config) string { return c.Model }},
+		{"OX_SAY_CODEC", "/tmp/oxk-4917/codec-x.gguf", "/tmp/oxk-4917/codec-x.gguf", func(c *Config) string { return c.Codec }},
+		{"OX_SAY_MAX_BATCH", "17", "17", func(c *Config) string { return strconv.Itoa(c.MaxBatch) }},
+		{"OX_SAY_IDLE_STOP_SECS", "61", "1m1s", func(c *Config) string { return c.IdleStop.String() }},
+		{"OX_SAY_STARTUP_TIMEOUT_SECS", "62", "1m2s", func(c *Config) string { return c.StartupTimeout.String() }},
+		{"OX_SAY_LANG", "Testlang", "Testlang", func(c *Config) string { return c.Lang }},
+		{"OX_SAY_ENGINE_LOG_DIR", "/tmp/oxk-4917/logs", "/tmp/oxk-4917/logs", func(c *Config) string { return c.EngineLogDir }},
+		{"OX_SAY_CACHE_DIR", "/tmp/oxk-4917/cache", "/tmp/oxk-4917/cache", func(c *Config) string { return c.CacheDir }},
+		{"OX_SAY_STT_BIN", "/tmp/oxk-4917/ox-stt-x", "/tmp/oxk-4917/ox-stt-x", func(c *Config) string { return c.STTBin }},
+		{"OX_SAY_STT_MODEL", "/tmp/oxk-4917/stt-x.bin", "/tmp/oxk-4917/stt-x.bin", func(c *Config) string { return c.STTModel }},
+		{"OX_SAY_STT_WHISPER_MODEL", "/tmp/oxk-4917/whisper-x.bin", "/tmp/oxk-4917/whisper-x.bin", func(c *Config) string { return c.STTWhisperModel }},
+		{"OX_SAY_STT_GPU", "off", "off", func(c *Config) string { return c.STTGPU }},
+		{"OX_SAY_STT_TIMEOUT_SECS", "63", "1m3s", func(c *Config) string { return c.STTTimeout.String() }},
+		{"OX_SAY_STT_MAX_UPLOAD_MB", "64", "64", func(c *Config) string { return strconv.FormatInt(c.STTMaxUploadMB, 10) }},
+		{"OX_SAY_STT_MAX_AUDIO_SECS", "65", "1m5s", func(c *Config) string { return c.STTMaxAudio.String() }},
+	}
+	keys := EnvKeys()
+	inTable := map[string]bool{}
+	for _, k := range keys {
+		inTable[k] = true
+	}
+	probed := map[string]bool{}
+	for _, tc := range cases {
+		probed[tc.env] = true
+		t.Setenv(tc.env, tc.set)
+		if !inTable[tc.env] {
+			t.Errorf("%s is read (see probe) but missing from EnvKeys", tc.env)
+		}
+	}
+	for _, k := range keys {
+		if !probed[k] {
+			t.Errorf("EnvKeys entry %s has no load probe in this test", k)
+		}
+		if !strings.HasPrefix(k, "OX_SAY_") {
+			t.Errorf("EnvKeys entry %q lacks the OX_SAY_ prefix", k)
+		}
+	}
+	c, err := Load(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		if got := tc.read(c); got != tc.want {
+			t.Errorf("%s=%q did not reach the config: field reads %q, want %q", tc.env, tc.set, got, tc.want)
+		}
+	}
+}
+
+// EnvKeys and the reads must not drift: parse the module's non-test Go
+// sources and require every OX_SAY_* read — load()'s get("…") calls in this
+// package and os.Getenv/LookupEnv everywhere — to be a table entry.
+// Mutation: add get("OX_SAY_X") in load() or drop a flagNames value -> RED.
+func TestEnvKeysMatchSource(t *testing.T) {
+	inTable := map[string]bool{}
+	for _, k := range EnvKeys() {
+		inTable[k] = true
+	}
+	read := map[string]string{} // env key -> first file:line that reads it
+
+	fset := token.NewFileSet()
+	collect := func(path string, inConfig bool) {
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			lit, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			key, err := strconv.Unquote(lit.Value)
+			if err != nil || !strings.HasPrefix(key, "OX_SAY_") {
+				return true
+			}
+			isRead := false
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				// load()'s getenv helper — only meaningful in this package.
+				isRead = inConfig && fun.Name == "get"
+			case *ast.SelectorExpr:
+				if pkg, ok := fun.X.(*ast.Ident); ok && pkg.Name == "os" {
+					isRead = fun.Sel.Name == "Getenv" || fun.Sel.Name == "LookupEnv"
+				}
+			}
+			if isRead {
+				pos := fset.Position(call.Pos())
+				if _, seen := read[key]; !seen {
+					read[key] = filepath.Clean(path) + ":" + strconv.Itoa(pos.Line)
+				}
+			}
+			return true
+		})
+	}
+	// This package's sources (cwd during `go test`) plus every other non-test
+	// .go file in the module, minus gitignored trees.
+	pkgDir, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		abs := filepath.Join(pkgDir, name)
+		seen[abs] = true
+		collect(name, true)
+	}
+	root := filepath.Join("..", "..")
+	skip := map[string]bool{".git": true, "build": true, "dist": true, "vendor": true}
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && skip[d.Name()] {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		if seen[abs] {
+			return nil // already collected via the package dir
+		}
+		collect(path, filepath.Dir(abs) == pkgDir)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, where := range read {
+		if !inTable[key] {
+			t.Errorf("%s is read at %s but missing from EnvKeys", key, where)
+		}
+	}
+	for _, k := range EnvKeys() {
+		if _, ok := read[k]; !ok {
+			t.Errorf("EnvKeys entry %s is never read", k)
+		}
 	}
 }

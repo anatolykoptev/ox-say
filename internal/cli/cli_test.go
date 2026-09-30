@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/anatolykoptev/ox-say/internal/config"
 )
 
 // pullFlags must find flags in ANY position: Go's flag package stops at the
@@ -264,5 +266,20 @@ func TestTranscribeFormatFlags(t *testing.T) {
 		if got != want {
 			t.Fatalf("%s sent response_format %q, want %q", flag, got, want)
 		}
+	}
+}
+
+// env-keys is the installer's allowlist source: it must print exactly the
+// daemon's env-key table, one per line.
+// Mutation: drop the "env-keys" case in Run -> RED (exit 2, usage text).
+func TestEnvKeysCommand(t *testing.T) {
+	var outBuf, errBuf strings.Builder
+	if code := Run([]string{"env-keys"}, &outBuf, &errBuf, "test"); code != 0 {
+		t.Fatalf("env-keys: exit %d (%s)", code, errBuf.String())
+	}
+	got := strings.Fields(outBuf.String())
+	want := config.EnvKeys()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("env-keys = %v, want %v", got, want)
 	}
 }

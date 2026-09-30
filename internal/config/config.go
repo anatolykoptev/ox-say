@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -81,6 +82,21 @@ func RegisterFlags(fs *flag.FlagSet) {
 	for name, env := range flagNames {
 		fs.String(name, "", "override "+env)
 	}
+}
+
+// EnvKeys returns the sorted set of OX_SAY_* variables the daemon reads — the
+// one table the loader draws on. `ox-say env-keys` prints them for
+// the installers, which write exactly these into the LaunchAgent (and carry
+// over exactly these on re-install), so a variable the daemon does not read —
+// an installer knob like OX_SAY_BINDIR — cannot leak into the agent's
+// environment.
+func EnvKeys() []string {
+	keys := make([]string, 0, len(flagNames))
+	for _, env := range flagNames {
+		keys = append(keys, env)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // Load reads configuration from the environment, then applies any flags that

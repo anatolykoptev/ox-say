@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # Shared steps of the two installers: scripts/install.sh (build from source) and
-# scripts/install-release.sh (a prebuilt release). Source it; it defines functions
-# and these variables:
-#   label uid bindir logdir plist addr home
+# scripts/install-release.sh (a prebuilt release). Source it; it defines the
+# variables
+#   label uid logdir plist
+# and functions; oxs_settings also sets bindir, addr and home.
 #
-# launchd does not read your shell environment. Every OX_SAY_* variable set when
-# an installer runs (OX_SAY_HOME, OX_SAY_ADDR, ...) is written into the
-# LaunchAgent, so the daemon runs with the settings the installer used. On a
-# re-run, settings of the installed agent carry over unless set again; set one
-# to an empty value to drop it. Paths must be absolute (the daemon's cwd is /).
-# These variables only steer the installer and never reach the agent:
-#   OX_SAY_BINDIR        where the ox-say binary goes (default ~/.local/bin)
-#   OX_SAY_WITH_WHISPER  1 also downloads Whisper large-v3-turbo (1.6 GB)
-#   OX_SAY_MODELS_FROM   copy models from this dir instead of downloading
+# launchd does not read your shell environment. Every OX_SAY_* variable the
+# daemon reads (see `ox-say env-keys`) that is set when an installer runs is
+# written into the LaunchAgent, so the daemon runs with the settings the
+# installer used. On a re-run, those settings carry over from the installed
+# agent unless set again; set one to an empty value to drop it. Paths must be
+# absolute (the daemon's cwd is /).
+#
+# Variables that steer the installer itself are never written to the agent,
+# because the daemon does not read them: OX_SAY_BINDIR (where the ox-say
+# binary goes, default ~/.local/bin), OX_SAY_WITH_WHISPER (also fetch Whisper
+# large-v3-turbo), OX_SAY_MODELS_FROM (copy models from a local dir),
+# OX_SAY_GET_URL, OX_SAY_NO_MCP, OX_SAY_NO_SELFTEST. The allowlist is the
+# daemon's own env-keys table, not a hand-maintained list that can forget one.
 
 label=io.github.anatolykoptev.ox-say
 uid=$(id -u)
@@ -30,10 +35,30 @@ oxs_require() {
     done
 }
 
-oxs_installer_only() {
-    case "$1" in
-        OX_SAY_BINDIR | OX_SAY_WITH_WHISPER | OX_SAY_MODELS_FROM) return 0 ;;
-    esac
+# oxs_env_keys holds the newline-separated names of the OX_SAY_* variables
+# the daemon reads. oxs_settings and oxs_render_agent refuse to run before it
+# is set: an empty allowlist would silently drop every carried-over setting.
+oxs_env_keys=
+
+oxs_env_keys_from() {
+    oxs_env_keys=$("$1" env-keys)
+}
+
+oxs_env_keys_ready() {
+    if [ -z "$oxs_env_keys" ]; then
+        echo "ox-say install: run oxs_env_keys_from <ox-say binary> first" >&2
+        exit 1
+    fi
+}
+
+# Is $1 a variable the daemon reads (and therefore may reach the agent)?
+oxs_daemon_var() {
+    local k
+    for k in $oxs_env_keys; do
+        if [ "$k" = "$1" ]; then
+            return 0
+        fi
+    done
     return 1
 }
 
@@ -42,12 +67,18 @@ oxs_installer_only() {
 # the current directory, the daemon against /). Sets bindir, addr and home.
 oxs_settings() {
     local name
+    oxs_env_keys_ready
     if [ -f "$plist" ]; then
         for name in $(plutil -extract EnvironmentVariables xml1 -o - "$plist" 2>/dev/null |
             sed -n 's|.*<key>\(OX_SAY_[A-Z0-9_]*\)</key>.*|\1|p'); do
-            if [ -z "${!name+set}" ]; then
+            if [ -n "${!name+set}" ]; then
+                continue
+            fi
+            if oxs_daemon_var "$name"; then
                 export "$name=$(plutil -extract "EnvironmentVariables.$name" raw -o - "$plist")"
                 echo "keeping $name from the installed agent"
+            else
+                echo "dropping $name from the installed agent (the daemon does not read it)"
             fi
         done
     fi
@@ -78,9 +109,11 @@ oxs_fetch_models() {
 # Render the LaunchAgent from its template with plutil (it does the XML
 # escaping) into a temporary file outside LaunchAgents, and lint it before it
 # replaces the installed one. Prints the temporary file's path; the caller
-# removes its directory.
+# removes its directory. Only the variables the daemon reads are written —
+# installer knobs must not ride into the agent's environment.
 oxs_render_agent() {
     local template=$1 tmpdir tmp name
+    oxs_env_keys_ready
     mkdir -p "$(dirname "$plist")" "$logdir" "$bindir"
     tmpdir=$(mktemp -d)
     tmp="$tmpdir/agent.plist"
@@ -92,7 +125,7 @@ oxs_render_agent() {
     plutil -replace StandardOutPath -string "$logdir/ox-say.log" "$tmp"
     plutil -replace StandardErrorPath -string "$logdir/ox-say.log" "$tmp"
     for name in $(compgen -e | grep '^OX_SAY_' || true); do
-        if oxs_installer_only "$name" || [ -z "${!name}" ]; then
+        if [ -z "${!name}" ] || ! oxs_daemon_var "$name"; then
             continue
         fi
         plutil -replace "EnvironmentVariables.$name" -string "${!name}" "$tmp"

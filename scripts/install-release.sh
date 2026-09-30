@@ -13,8 +13,12 @@ root=$(cd "$(dirname "$0")/.." && pwd -P)
 . "$root/scripts/lib-install.sh"
 
 oxs_require "brew install ffmpeg" ffmpeg plutil launchctl curl shasum
-oxs_settings
 version=$(cat "$root/VERSION")
+# `ox-say env-keys` names the variables the daemon reads: it decides what
+# oxs_settings carries over (fetch-models then sees a carried-over
+# OX_SAY_HOME) and what the render writes into the LaunchAgent.
+oxs_env_keys_from "$root/bin/ox-say"
+oxs_settings
 
 # 1. Fetch the models first: nothing the running daemon uses changes until step 2,
 #    so a failed download leaves an installed version intact.
