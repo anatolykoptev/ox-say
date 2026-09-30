@@ -64,7 +64,8 @@ emissions within 0.004.
 
 `patches/ggml-tests/` holds test-backend-ops cases that reach this path
 (stock cases never do); `build.sh` does not apply it. Apply it to the ggml
-tree when bumping the pins and run `test-backend-ops -o MUL_MAT -b MTL0`.
+tree when bumping the pins and run `GGML_METAL_MPS_ENABLE=1 test-backend-ops -o MUL_MAT -b MTL0`
+(without the variable the path is off and the cases pass without reaching it).
 
 Measured with the path enabled, on the whisper large-v3-turbo encoder (whisper.cpp): 3.14 -> 1.89 s
 per 30 s window, 347 s file 83 -> 60 s, byte-identical transcript. The TTS
