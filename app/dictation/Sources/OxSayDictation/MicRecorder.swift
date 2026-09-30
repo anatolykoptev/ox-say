@@ -23,6 +23,10 @@ final class MicRecorder: Recorder {
     /// Loudness per frequency band, 0...1, for each chunk of audio. Called on the
     /// audio thread.
     var onLevels: (([Float]) -> Void)?
+    /// Every converted 16 kHz mono chunk, in order, on the audio thread: the
+    /// streaming transcription session is fed from it. The recorder still keeps
+    /// the full recording itself, for the finish and for the fallback upload.
+    var onSamples: (([Float]) -> Void)?
     /// The recording reached `maxSeconds` or lost its input device (AirPods
     /// connecting, a new default input): it has stopped growing and should be
     /// finished. Called on the main thread with the reason.
@@ -116,6 +120,7 @@ final class MicRecorder: Recorder {
         let full = Double(samples.count) / target.sampleRate >= maxSeconds
         if !full { samples.append(contentsOf: chunk) }
         lock.unlock()
+        if !full { onSamples?(chunk) }
         if full {
             DispatchQueue.main.async { [weak self] in
                 self?.end("Recordings stop after \(Int(self?.maxSeconds ?? 0)) seconds.")

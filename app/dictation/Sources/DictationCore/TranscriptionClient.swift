@@ -32,13 +32,13 @@ public struct TranscriptionClient {
         self.send = send
     }
 
-    /// The voice engine's state from the daemon's /status, nil when unreadable.
-    public func engineState() async -> String? {
+    /// The STT server's state from the daemon's /status, nil when unreadable.
+    public func sttServerState() async -> String? {
         var request = URLRequest(url: baseURL.appendingPathComponent("status"))
         request.timeoutInterval = 3
         guard let (data, response) = try? await send(request),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return SlowTranscription.engineState(fromStatus: data)
+        return SlowTranscription.sttServerState(fromStatus: data)
     }
 
     /// Transcribes 16 kHz mono samples.
