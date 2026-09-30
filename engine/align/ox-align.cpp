@@ -245,10 +245,11 @@ struct model {
     // CPU backend only: f16 matmul weights are stored in the file but upcast to
     // f32 at load — ggml's CPU vec_dot for f16 x f32 rounds the activation to
     // f16 first, which injects ~1e-1 of log-prob noise. On the Metal side the
-    // picture depends on the GPU: on the target AMD dGPU, patch 0002 routes
-    // eligible 2D mul_mats to MPS in float32 after widening the f16 weights,
-    // and the ops it does not take (attention, lm_head) go through mul_mv,
-    // whose activations stay f32 — so f16 weights are kept as stored. On
+    // picture depends on the GPU: on the target AMD dGPU, eligible 2D mul_mats
+    // run patch 0001's tiled kernel, whose tiles are float (or, with
+    // GGML_METAL_MPS_ENABLE=1, MPS in float32 after widening the f16 weights),
+    // and the rest (attention, lm_head) go through mul_mv; activations stay
+    // f32 on every path, so f16 weights are kept as stored. On
     // Apple Silicon, kernel_mul_mm_* tiles the activations into `half`,
     // which is exactly the rounding the CPU upcast avoids. Twins live in
     // wctx2 (the gguf context has no room for extra tensors).

@@ -49,13 +49,24 @@ large-v3-turbo, decode +19 MB, encode +5 MB and cross +52 MB of compute
 buffer against the tiled kernel (unbounded widening had cost +268 MB on the
 vocabulary projection). MPS encodes straight into the command buffer, so the
 compute encoder is ended and reopened around it, with any open debug groups
-restored. `GGML_METAL_MPS_DISABLE` turns the path off.
+restored.
+
+**The path is opt-in: set `GGML_METAL_MPS_ENABLE=1`** (`GGML_METAL_MPS_DISABLE`
+still wins over it). During a stretch of sustained full CPU load, on a Radeon Pro 5500M,
+it returned different wrong results on every run, with exit code 0. This hit
+both Parakeet and the wav2vec2 aligner in 7 of 8 runs over about 12
+minutes. Without MPS, the same inputs came out correct. The failure has not
+been reproduced since, even at 16 busy threads on a throttled CPU, and its
+cause is not known (#14). Until it is, correct-and-slower is the default.
+Measured idle on a 347 s file, MPS off against on: Parakeet 18.2 s against 10.9 s,
+and the MMS aligner 68.2 s against 49.6 s, with the same transcript and
+emissions within 0.004.
 
 `patches/ggml-tests/` holds test-backend-ops cases that reach this path
 (stock cases never do); `build.sh` does not apply it. Apply it to the ggml
 tree when bumping the pins and run `test-backend-ops -o MUL_MAT -b MTL0`.
 
-Measured on the whisper large-v3-turbo encoder (whisper.cpp): 3.14 -> 1.89 s
+Measured with the path enabled, on the whisper large-v3-turbo encoder (whisper.cpp): 3.14 -> 1.89 s
 per 30 s window, 347 s file 83 -> 60 s, byte-identical transcript. The TTS
 codec decode is ~3.5% faster per frame; the talker is unchanged.
 
@@ -126,7 +137,7 @@ weights in f16. On the CPU backend they are upcast back to f32 at load —
 ggml's f16 dot product would also quantize the activations — so CPU compute
 is identical for both ftypes; f16 buys smaller files, not CPU speed. On
 Metal the picture depends on the GPU: on the target AMD dGPU, patch
-0002 routes eligible 2D mul_mats to MPS in float32 after widening the f16
+0002, when enabled (`GGML_METAL_MPS_ENABLE=1`), routes eligible 2D mul_mats to MPS in float32 after widening the f16
 weights, and the ops it does not take (attention, lm_head) go through
 mul_mv, whose activations stay f32 — so f16 weights are kept as stored.
 On Apple Silicon, `kernel_mul_mm_*` tiles the activations into `half`,
