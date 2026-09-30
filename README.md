@@ -142,12 +142,26 @@ The first start of a freshly built engine compiles the Metal shaders
 
 ## Licenses
 
-ox-say is MIT. The engines are qwentts.cpp (MIT) and whisper.cpp (MIT), both
-with ggml (MIT); `engine/build.sh` copies their license files next to the
-binaries. `scripts/fetch-models.sh` downloads model weights from their
-publishers, each under its own license:
+ox-say's own code is Apache-2.0 (see `LICENSE`; `NOTICE` carries the
+required third-party notices). The engines it builds are MIT:
+
+- qwentts.cpp, with the ServeurpersoCom fork of ggml;
+- whisper.cpp, with its vendored ggml;
+- cpp-httplib and yyjson, vendored by qwentts.cpp.
+
+`engine/build.sh` copies all their license files next to the binaries.
+`engine/patches/` modify ggml and qwentts.cpp: our lines are Apache-2.0,
+and the upstream lines they contain stay MIT. The test clips in
+`engine/align/testdata/` are LibriSpeech, CC-BY-4.0 (see its README).
+
+`scripts/fetch-models.sh` downloads the model weights from Hugging Face.
+They are GGUF conversions of the publishers' weights, each under the
+publisher's license:
 
 - Qwen3-TTS 12 Hz talker and tokenizer: Apache-2.0 (Qwen team, Alibaba)
 - Parakeet TDT 0.6B v3: CC-BY-4.0 (NVIDIA); attribute NVIDIA when you
   redistribute the weights
 - Whisper large-v3-turbo (optional): MIT (OpenAI)
+- Forced aligner for `ox-align` (optional, converted by hand, see
+  `engine/README.md`): the MMS-300m forced-aligner weights are CC-BY-NC-4.0,
+  **non-commercial**; `facebook/wav2vec2-base-960h` is Apache-2.0

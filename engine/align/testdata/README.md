@@ -3,8 +3,8 @@
 Both clips are LibriSpeech **test-clean** material, fetched as FLAC via
 huggingface.co/datasets/Narsil/asr_dummy (files `1.flac`, `2.flac`,
 `3.flac`), which repacks the OpenSLR test-clean set. LibriSpeech is
-CC-BY-4.0, (c) 2014 Vassil Panayotov & Daniel Povey —
-https://www.openslr.org/12.
+CC-BY-4.0 (https://creativecommons.org/licenses/by/4.0/), (c) 2014 Vassil
+Panayotov & Daniel Povey — https://www.openslr.org/12.
 
 - `clip-short.wav` (10.435 s) = utterance `1089-134686-0000`
   ("he hoped there would be stew for dinner, turnips and carrots and

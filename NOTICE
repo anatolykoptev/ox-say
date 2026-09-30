@@ -1,0 +1,10 @@
+ox-say
+Copyright 2026 Anatolii Koptev
+
+engine/align/testdata/clip-short.wav and clip-long.wav are excerpts of
+LibriSpeech test-clean, (c) 2014 Vassil Panayotov and Daniel Povey
+(https://www.openslr.org/12), licensed under CC BY 4.0
+(https://creativecommons.org/licenses/by/4.0/).
+
+The files in engine/patches/ modify MIT-licensed ggml and qwentts.cpp; the
+upstream lines they contain remain under those projects' MIT licenses.
