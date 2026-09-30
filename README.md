@@ -2,8 +2,12 @@
 
 Local speech for **Intel Macs**, running on their AMD GPU:
 - text-to-speech with voice cloning;
-- speech-to-text with word timestamps;
-- forced alignment.
+- speech-to-text with word timestamps.
+
+The engine build also produces `ox-align`, a wav2vec2 tool that emits
+per-frame CTC emissions — the first phase of a forced aligner (see
+[engine/README.md](engine/README.md)); the daemon, CLI and MCP expose no
+alignment.
 
 It is one small daemon with an OpenAI-compatible HTTP API, an MCP server for coding agents, and a
 `say`-like CLI. There is no Python, no PyTorch, no Electron and no cloud.
@@ -14,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | 
 
 The installer:
 - downloads a prebuilt release and checks its SHA-256;
-- fetches the models (about 1.5 GB, checksummed);
+- fetches the models (about 2.9 GB, checksummed; the optional Whisper adds 1.6 GB);
 - starts the daemon as a LaunchAgent;
 - registers the MCP server with Claude Code, if Claude Code is installed;
 - finishes with a speak-and-transcribe self-test.
@@ -33,7 +37,7 @@ It needs `ffmpeg` (`brew install ffmpeg`) and never uses `sudo`. To build from s
 |---|---|---|
 | Text-to-speech, voice cloning from a short clip | Qwen3-TTS 12 Hz via [qwentts.cpp](https://github.com/ServeurpersoCom/qwentts.cpp) | faster than real time (about 0.55× RTF), first audio in about 100 ms |
 | Speech-to-text with word timestamps | Parakeet TDT v3 (25 European languages) or Whisper large-v3-turbo (99 languages) via whisper.cpp | 6 minutes of audio in about 18 s |
-| Forced alignment (word times for a known transcript) | wav2vec2 CTC via `ox-align` | same word times as the onnxruntime reference |
+| `ox-align` engine tool: per-frame CTC emissions for a wav2vec2 checkpoint ([engine/README.md](engine/README.md)) — not exposed by the daemon | optional hand-converted GGUF (CC-BY-NC; the installer does not fetch it) | emissions match the transformers oracle within tolerance |
 
 ## Why Intel Macs
 
