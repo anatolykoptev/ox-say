@@ -1,6 +1,12 @@
-// Package engine supervises the tts-server child process: single-flight
-// startup, health gating, idle shutdown, crash restart with backoff, an
-// in-flight request guard, and pidfile orphan reaping.
+// Package engine supervises one engine child process per Supervisor:
+// single-flight startup, health gating, idle shutdown, crash restart with
+// backoff, an in-flight request guard, and pidfile orphan reaping. Today it
+// drives the tts-server child; the same supervisor is meant to also drive a
+// resident ox-stt server sharing the one GPU, through the optional hooks —
+// Config.Name and Config.LogName keep the two children's logs apart,
+// Config.Args supplies a non-tts argv, Config.BeforeStart runs sibling
+// coordination before each spawn, and Stop halts the child without shutting
+// the supervisor down so a later EnsureReady can start it again.
 package engine
 
 import (
@@ -32,13 +38,30 @@ const (
 // ErrShutdown is returned by EnsureReady after Shutdown was called.
 var ErrShutdown = errors.New("engine: supervisor shut down")
 
+// ErrStopped is the outcome recorded for a start attempt aborted by Stop —
+// and the error EnsureReady waiters of that generation get. Unlike
+// ErrShutdown it is non-terminal: the next EnsureReady starts the child
+// again.
+var ErrStopped = errors.New("engine: stopped")
+
 // Config controls the supervisor.
 type Config struct {
-	Bin      string // tts-server binary
+	Bin      string // child binary; reapOrphan matches an orphan's exe to it
 	Model    string // talker GGUF
 	Codec    string // tokenizer GGUF
 	Port     int    // loopback port the child binds
 	MaxBatch int
+
+	// Name, when non-empty, tags the supervisor's log lines with a
+	// child=<Name> attribute — two supervised engines would otherwise
+	// interleave indistinguishably. Empty: log lines are unchanged.
+	Name string
+	// LogName is the child's log file name inside LogDir; "" → engine.log.
+	LogName string
+	// Args, when non-nil, produces the spawned argv for the configured
+	// port; nil keeps the tts-server argv
+	// (--model/--codec/--host/--port/--max-batch).
+	Args func(port int) []string
 
 	StartupTimeout time.Duration // covers first-start Metal shader compile (~60s)
 	IdleStop       time.Duration // 0 = never stop for idleness
@@ -49,6 +72,12 @@ type Config struct {
 	// is marked Ready. The daemon uses it to re-register persisted voices,
 	// which the child holds only in memory.
 	Replay func(ctx context.Context, baseURL string) error
+
+	// BeforeStart, when non-nil, runs inside run() before spawn, under the
+	// attempt's startup context — e.g. to stop a sibling engine so the GPU
+	// is free. A non-nil return fails the attempt exactly like a spawn
+	// error: nothing is spawned.
+	BeforeStart func(ctx context.Context) error
 
 	Logger *slog.Logger // nil → slog.Default()
 
@@ -90,6 +119,7 @@ type Supervisor struct {
 	child        *child
 	lastErr      error
 	startGen     int   // incremented for every start attempt launched
+	stopGen      int   // start generation a Stop asked to abort; live only while == startGen
 	attemptErr   error // concluded start-attempt error…
 	attemptGen   int   // …belonging to this start generation; delivered to every waiter of it, never to a later request
 	starts       int
@@ -140,10 +170,14 @@ func New(cfg Config) (*Supervisor, error) {
 	if cfg.IdleStop > 0 && cfg.IdleTick <= 0 {
 		cfg.IdleTick = min(cfg.IdleStop/2, time.Second)
 	}
+	logger := orLogger(cfg.Logger)
+	if cfg.Name != "" {
+		logger = logger.With("child", cfg.Name)
+	}
 	s := &Supervisor{
 		cfg:      cfg,
 		hc:       &http.Client{Timeout: 10 * time.Second},
-		log:      orLogger(cfg.Logger),
+		log:      logger,
 		change:   make(chan struct{}),
 		state:    StateStopped,
 		stopIdle: make(chan struct{}),
@@ -249,6 +283,7 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 				s.restarts++
 			}
 			s.startGen++
+			s.stopGen = 0 // a stop request dies with its generation
 			waitGen = s.startGen
 			s.attemptErr = nil
 			s.state = StateStarting
@@ -333,12 +368,15 @@ func (s *Supervisor) Acquire() *Guard {
 	return &Guard{s: s}
 }
 
-// Release returns the guard; idle accounting restarts now.
+// Release returns the guard; idle accounting restarts now. The broadcast
+// wakes Stop's guard drain; EnsureReady waiters just re-check their
+// conditions and go back to waiting, so it changes nothing for them.
 func (g *Guard) Release() {
 	g.once.Do(func() {
 		g.s.mu.Lock()
 		g.s.guards--
 		g.s.lastActivity = time.Now()
+		g.s.broadcastLocked()
 		g.s.mu.Unlock()
 	})
 }
@@ -373,13 +411,130 @@ func (s *Supervisor) Shutdown() {
 	}
 }
 
+// Stop is a non-terminal Shutdown: it stops the child and returns, and a
+// later EnsureReady starts it again with no restart backoff.
+//
+//   - Ready: waits for in-flight guards to drain, bounded by ctx. When they
+//     drain — or when ctx ends first — it performs the same clean stop the
+//     idle loop does. A ctx that ends mid-drain is not an error: the stop
+//     proceeds and cuts the in-flight work off.
+//   - Starting: records a stop request for the current generation. A request
+//     that lands before spawn prevents it; one that lands after kills the
+//     spawned child. finishStart then records the attempt as stopped — no
+//     Ready commit, no crash bookkeeping, no backoff. The request dies with
+//     its generation and can never leak into a later start.
+//   - Stopped/Crashed with a child still exiting: waits for the exit,
+//     bounded by ctx.
+//
+// It returns nil once no child is alive and no start is in flight, and
+// ctx.Err() only when ctx ends while it waits on a start conclusion or a
+// child exit. After Shutdown it returns ErrShutdown.
+func (s *Supervisor) Stop(ctx context.Context) error {
+	var killed *child // signalled this call already — kill at most once
+	for {
+		s.mu.Lock()
+		if s.dead {
+			s.mu.Unlock()
+			return ErrShutdown
+		}
+		switch {
+		case s.state == StateStarting:
+			s.stopGen = s.startGen
+			c := s.child
+			ch := s.change
+			s.mu.Unlock()
+			if c != nil && c != killed {
+				killed = c
+				s.killChild(c)
+				continue
+			}
+			select {
+			case <-ch:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		case s.state == StateReady && s.child != nil:
+			c := s.child
+			if s.guards == 0 {
+				s.stopChildLocked(c)
+				s.mu.Unlock()
+				s.killChild(c)
+				continue
+			}
+			ch := s.change
+			s.mu.Unlock()
+			select {
+			case <-ch:
+				// A guard release or a transition — re-evaluate.
+			case <-ctx.Done():
+				// The drain budget is spent: cut the in-flight work off
+				// and stop anyway. The deadline bounded the drain, not
+				// the stop itself.
+				s.mu.Lock()
+				if s.state == StateReady && s.child == c {
+					cut := s.guards
+					s.stopChildLocked(c)
+					s.mu.Unlock()
+					if cut > 0 {
+						s.log.Warn("engine stop cutting off in-flight work",
+							slog.Int("guards", cut))
+					}
+					s.killChild(c)
+				} else {
+					s.mu.Unlock()
+				}
+			}
+		case s.child != nil:
+			// Stopped/Crashed with a child still exiting — wait for the
+			// exit. A closed c.done means the process is dead already even
+			// if onExit has not reaped the pointer yet.
+			c := s.child
+			ch := s.change
+			s.mu.Unlock()
+			select {
+			case <-c.done:
+				return nil
+			default:
+			}
+			select {
+			case <-c.done:
+				return nil
+			case <-ch:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		default:
+			s.mu.Unlock()
+			return nil
+		}
+	}
+}
+
+// stopChildLocked switches a live child into a user-requested stop: the
+// exit classifies as clean (not a crash) and crash/start backoff clears.
+// Callers kill the child after releasing the lock. Shared by the idle loop
+// and Stop so the two cannot drift.
+func (s *Supervisor) stopChildLocked(c *child) {
+	c.userStop = true
+	s.state = StateStopped
+	s.failCount = 0 // a clean stop clears crash/start backoff
+	s.broadcastLocked()
+}
+
 // run performs one start attempt in its own goroutine: spawn → health gate →
 // voice replay → commit Ready (or record the failure with backoff).
 func (s *Supervisor) run() {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.StartupTimeout)
 	defer cancel()
 
-	c, err := s.spawn()
+	var c *child
+	var err error
+	if s.cfg.BeforeStart != nil {
+		err = s.cfg.BeforeStart(ctx)
+	}
+	if err == nil {
+		c, err = s.spawn()
+	}
 	if err == nil {
 		err = s.waitHealthy(ctx, c)
 	}
@@ -401,17 +556,22 @@ func (s *Supervisor) run() {
 
 // spawn starts the child and installs the waiter goroutine.
 func (s *Supervisor) spawn() (*child, error) {
+	s.mu.Lock()
+	switch {
+	case s.dead:
+		s.mu.Unlock()
+		return nil, ErrShutdown
+	case s.stopGen == s.startGen:
+		// A Stop requested before the spawn must prevent it.
+		s.mu.Unlock()
+		return nil, ErrStopped
+	}
+	s.mu.Unlock()
 	logf, err := s.openEngineLog()
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(s.cfg.Bin,
-		"--model", s.cfg.Model,
-		"--codec", s.cfg.Codec,
-		"--host", "127.0.0.1",
-		"--port", strconv.Itoa(s.cfg.Port),
-		"--max-batch", strconv.Itoa(s.cfg.MaxBatch),
-	)
+	cmd := exec.Command(s.cfg.Bin, s.childArgs()...)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	if err := cmd.Start(); err != nil {
@@ -428,11 +588,18 @@ func (s *Supervisor) spawn() (*child, error) {
 	// when the shutdown check below refuses to adopt this child.
 	go s.waiter(c)
 	s.mu.Lock()
-	if s.dead {
+	switch {
+	case s.dead:
 		s.mu.Unlock()
 		_ = c.cmd.Process.Kill()
 		<-c.done
 		return nil, ErrShutdown
+	case s.stopGen == s.startGen:
+		// A Stop that landed during the spawn kills the child it spawned.
+		s.mu.Unlock()
+		_ = c.cmd.Process.Kill()
+		<-c.done
+		return nil, ErrStopped
 	}
 	s.child = c
 	s.starts++
@@ -440,6 +607,21 @@ func (s *Supervisor) spawn() (*child, error) {
 	s.writePidFile(c.cmd.Process.Pid)
 	s.log.Info("engine spawned", slog.Int("pid", c.cmd.Process.Pid))
 	return c, nil
+}
+
+// childArgs is the spawned argv: Config.Args when set, else the tts-server
+// flags.
+func (s *Supervisor) childArgs() []string {
+	if s.cfg.Args != nil {
+		return s.cfg.Args(s.cfg.Port)
+	}
+	return []string{
+		"--model", s.cfg.Model,
+		"--codec", s.cfg.Codec,
+		"--host", "127.0.0.1",
+		"--port", strconv.Itoa(s.cfg.Port),
+		"--max-batch", strconv.Itoa(s.cfg.MaxBatch),
+	}
 }
 
 // waiter owns cmd.Wait and reports the exit exactly once.
@@ -504,6 +686,14 @@ func (s *Supervisor) backoffLocked() time.Duration {
 func (s *Supervisor) finishStart(c *child, err error) {
 	var retryIn time.Duration
 	s.mu.Lock()
+	// A Stop request aimed at this generation turns whatever the attempt
+	// saw — a refused spawn, a killed starting child, even a clean
+	// health+replay — into ErrStopped. Shutdown wins when both land:
+	// startGen cannot move while state is Starting, so stopGen can only
+	// name this attempt.
+	if !s.dead && s.stopGen == s.startGen {
+		err = ErrStopped
+	}
 	if err == nil && c != nil {
 		switch {
 		case s.dead:
@@ -526,15 +716,22 @@ func (s *Supervisor) finishStart(c *child, err error) {
 		if c != nil && s.child == c {
 			s.child = nil
 		}
-		s.lastErr = err
 		s.attemptErr = err
 		s.attemptGen = s.startGen // still this run's gen: no new attempt can launch while state is Starting
-		if s.state != StateCrashed {
-			// onExit may already have classified this child as crashed and
-			// charged the backoff — never count one death twice.
+		if errors.Is(err, ErrStopped) {
+			// Aborted by Stop: no Ready commit, but also no crash record
+			// and no backoff — lastErr stays nil so /status reports no
+			// fault, and the next EnsureReady starts immediately.
 			s.state = StateStopped
-			s.failCount++
-			s.nextAttempt = time.Now().Add(s.backoffLocked())
+		} else {
+			s.lastErr = err
+			if s.state != StateCrashed {
+				// onExit may already have classified this child as crashed and
+				// charged the backoff — never count one death twice.
+				s.state = StateStopped
+				s.failCount++
+				s.nextAttempt = time.Now().Add(s.backoffLocked())
+			}
 		}
 		retryIn = time.Until(s.nextAttempt)
 	} else {
@@ -549,8 +746,12 @@ func (s *Supervisor) finishStart(c *child, err error) {
 	s.broadcastLocked()
 	s.mu.Unlock()
 	if err != nil {
-		s.log.Error("engine start failed", slog.Any("error", err),
-			slog.Duration("retry_in", retryIn))
+		if errors.Is(err, ErrStopped) {
+			s.log.Info("engine start aborted by stop")
+		} else {
+			s.log.Error("engine start failed", slog.Any("error", err),
+				slog.Duration("retry_in", retryIn))
+		}
 	} else {
 		s.log.Info("engine ready", slog.String("base_url", c.baseURL))
 	}
@@ -602,10 +803,7 @@ func (s *Supervisor) idleLoop() {
 			continue
 		}
 		c := s.child
-		c.userStop = true
-		s.state = StateStopped
-		s.failCount = 0 // a clean idle stop clears crash/start backoff
-		s.broadcastLocked()
+		s.stopChildLocked(c)
 		s.mu.Unlock()
 		s.log.Info("engine idle, stopping", slog.Duration("idle_stop", s.cfg.IdleStop))
 		s.killChild(c)
@@ -641,7 +839,11 @@ func (s *Supervisor) openEngineLog() (*os.File, error) {
 	if err := os.MkdirAll(s.cfg.LogDir, 0o755); err != nil {
 		return nil, fmt.Errorf("engine: log dir: %w", err)
 	}
-	p := filepath.Join(s.cfg.LogDir, "engine.log")
+	name := s.cfg.LogName
+	if name == "" {
+		name = "engine.log"
+	}
+	p := filepath.Join(s.cfg.LogDir, name)
 	if st, err := os.Stat(p); err == nil && st.Size() > s.cfg.LogMaxBytes {
 		if err := os.Truncate(p, 0); err != nil {
 			return nil, fmt.Errorf("engine: truncate log: %w", err)
