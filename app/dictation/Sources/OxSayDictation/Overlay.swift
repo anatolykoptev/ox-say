@@ -13,7 +13,11 @@ final class Overlay {
     private let label = NSTextField(labelWithString: "Transcribing…")
     private let hint = NSTextField(labelWithString: "esc")
     private let message = NSTextField(wrappingLabelWithString: "")
+    /// The words decoded so far while dictating, next to the bars.
+    private let liveText = NSTextField(labelWithString: "")
     private let pillSize = NSSize(width: 176, height: 36)
+    /// The widest the pill grows for the working label and live text together.
+    private let maxWidth: CGFloat = 560
     private var size: NSSize
     private var showingMessage = false
     private var messageTimeout: DispatchWorkItem?
@@ -69,6 +73,13 @@ final class Overlay {
         message.maximumNumberOfLines = 3
         message.isHidden = true
         background.addSubview(message)
+
+        liveText.font = .systemFont(ofSize: 12, weight: .medium)
+        liveText.textColor = .labelColor
+        // The newest words stay visible: the head is what truncates.
+        liveText.lineBreakMode = .byTruncatingHead
+        liveText.isHidden = true
+        background.addSubview(liveText)
     }
 
     /// Recording: bars "breathe" in grey until the first sound arrives.
@@ -100,11 +111,44 @@ final class Overlay {
         guard !label.isHidden else { return }
         label.stringValue = text
         label.sizeToFit()
-        let width = min(520, max(pillSize.width, ceil(label.frame.maxX - label.frame.minX) + label.frame.minX + 50))
-        label.frame.origin = NSPoint(x: spinner.frame.maxX + 8, y: (size.height - label.frame.height) / 2)
+        relayout()
+    }
+
+    /// The committed text while dictating, next to the bars or the spinner; the
+    /// pill widens smoothly and the text truncates at the head. Empty text is
+    /// the compact pill again.
+    func setLiveText(_ text: String) {
+        guard !showingMessage else { return }
+        liveText.stringValue = text
+        liveText.isHidden = text.isEmpty
+        relayout()
+    }
+
+    /// Lays the live text out after the controls (bars while listening, spinner
+    /// and label while working) and before the esc hint, growing the pill up to
+    /// maxWidth and keeping its horizontal centre.
+    private func relayout() {
+        guard !showingMessage else { return }
+        let liveX: CGFloat
+        var width: CGFloat
+        let hintRoom = hint.isHidden ? 0 : hint.frame.width + 8
+        if !bars.isHidden {
+            liveX = bars.frame.maxX + 8
+            width = pillSize.width
+        } else {
+            label.frame.origin = NSPoint(x: spinner.frame.maxX + 8, y: (size.height - label.frame.height) / 2)
+            liveX = label.frame.maxX + 8
+            width = min(520, max(pillSize.width, ceil(label.frame.maxX) + hintRoom + 14))
+        }
+        if !liveText.isHidden {
+            liveText.sizeToFit()
+            let room = max(0, maxWidth - liveX - hintRoom - 14)
+            liveText.frame = NSRect(x: liveX, y: (size.height - liveText.frame.height) / 2,
+                                    width: min(ceil(liveText.frame.width), room), height: liveText.frame.height)
+            width = liveX + liveText.frame.width + hintRoom + 14
+        }
         if width != size.width {
-            resize(to: NSSize(width: width, height: pillSize.height))
-            if panel.isVisible { recentre(on: panel.screen) }
+            resize(to: NSSize(width: width, height: pillSize.height), animated: true)
         }
     }
 
@@ -121,6 +165,8 @@ final class Overlay {
         spinner.isHidden = true
         label.isHidden = true
         hint.isHidden = true
+        liveText.stringValue = ""
+        liveText.isHidden = true
         message.stringValue = text
         message.isHidden = false
         let maxText: CGFloat = 420
@@ -148,10 +194,18 @@ final class Overlay {
         resize(to: pillSize)
     }
 
-    private func resize(to newSize: NSSize) {
+    /// Resizes the panel around its horizontal centre; animated while visible,
+    /// so live text grows the pill smoothly instead of snapping.
+    private func resize(to newSize: NSSize, animated: Bool = false) {
         guard newSize != size else { return }
         size = newSize
-        panel.setContentSize(size)
+        if panel.isVisible {
+            panel.setFrame(NSRect(x: panel.frame.midX - newSize.width / 2, y: panel.frame.minY,
+                                  width: newSize.width, height: newSize.height),
+                           display: true, animate: animated)
+        } else {
+            panel.setContentSize(newSize)
+        }
         background.frame = NSRect(origin: .zero, size: size)
         background.maskImage = Overlay.pill(radius: min(size.height, pillSize.height) / 2)
         bars.frame.size.height = size.height
@@ -161,6 +215,8 @@ final class Overlay {
     private func hide() {
         bars.stop()
         spinner.stopAnimation(nil)
+        liveText.stringValue = ""
+        liveText.isHidden = true
         let fading = shown
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15

@@ -429,36 +429,42 @@ final class ShortcutConflictTests: XCTestCase {
 }
 
 final class SlowTranscriptionTests: XCTestCase {
-    // Mutation: return the GPU reason for every state in
-    // SlowTranscription.reason -> RED (a CPU-bound dictation would blame the GPU).
-    func testTheReasonFollowsTheEngineState() {
-        XCTAssertTrue(SlowTranscription.reason(engineState: "ready").contains("CPU"))
-        XCTAssertTrue(SlowTranscription.reason(engineState: "starting").contains("CPU"))
-        XCTAssertTrue(SlowTranscription.reason(engineState: "stopped").contains("GPU"))
-        XCTAssertTrue(SlowTranscription.reason(engineState: nil).contains("GPU"))
+    // Mutation: return "decoding a long recording" for every state in
+    // SlowTranscription.reason -> RED (a dead speech server would go unnamed).
+    func testTheReasonFollowsTheSttServerState() {
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "starting"), "loading the speech model")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "stopped"), "the speech server is not running; using the slower path")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "crashed"), "the speech server is not running; using the slower path")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "off"), "the speech server is off")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "ready"), "decoding a long recording")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: nil), "the daemon did not answer")
     }
 
-    func testEngineStateIsReadFromStatus() {
-        let body = Data(#"{"engine":{"state":"ready","pid":1},"voices":[]}"#.utf8)
-        XCTAssertEqual(SlowTranscription.engineState(fromStatus: body), "ready")
-        XCTAssertNil(SlowTranscription.engineState(fromStatus: Data("oops".utf8)))
-        XCTAssertNil(SlowTranscription.engineState(fromStatus: Data(#"{"voices":[]}"#.utf8)))
+    // Mutation: read "engine" instead of "stt_server" in
+    // SlowTranscription.sttServerState -> RED (the TTS engine's state would
+    // label a speech-to-text stall).
+    func testSttServerStateIsReadFromStatus() {
+        let body = Data(#"{"engine":{"state":"ready"},"stt_server":{"state":"starting","pid":1},"voices":[]}"#.utf8)
+        XCTAssertEqual(SlowTranscription.sttServerState(fromStatus: body), "starting")
+        XCTAssertNil(SlowTranscription.sttServerState(fromStatus: Data("oops".utf8)))
+        // An older daemon has no stt_server key at all.
+        XCTAssertNil(SlowTranscription.sttServerState(fromStatus: Data(#"{"engine":{"state":"ready"},"voices":[]}"#.utf8)))
     }
 
     // Mutation: return 8 from SlowTranscription.explainAfter -> RED (a long
-    // dictation on a warm GPU would be blamed on GPU preparation).
-    func testALongRecordingWaitsLongerBeforeBlamingTheGPU() {
+    // dictation would get the stall explanation too early).
+    func testALongRecordingWaitsLongerBeforeExplaining() {
         XCTAssertEqual(SlowTranscription.explainAfter(recordingSeconds: 3), 8)
         XCTAssertEqual(SlowTranscription.explainAfter(recordingSeconds: 300), 30)
     }
 
-    // Mutation: drop the `statusCode == 200` check in engineState -> RED.
+    // Mutation: drop the `statusCode == 200` check in sttServerState -> RED.
     func testAnErrorStatusIsNotAState() async {
         let client = TranscriptionClient { req in
             let resp = HTTPURLResponse(url: req.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
-            return (Data(#"{"engine":{"state":"ready"}}"#.utf8), resp)
+            return (Data(#"{"stt_server":{"state":"ready"}}"#.utf8), resp)
         }
-        let state = await client.engineState()
+        let state = await client.sttServerState()
         XCTAssertNil(state)
     }
 
@@ -475,9 +481,9 @@ final class SlowTranscriptionTests: XCTestCase {
         let client = TranscriptionClient { req in
             path = req.url!.path
             let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            return (Data(#"{"engine":{"state":"stopped"}}"#.utf8), resp)
+            return (Data(#"{"stt_server":{"state":"stopped"}}"#.utf8), resp)
         }
-        let state = await client.engineState()
+        let state = await client.sttServerState()
         XCTAssertEqual(path, "/status")
         XCTAssertEqual(state, "stopped")
     }
