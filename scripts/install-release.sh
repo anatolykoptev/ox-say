@@ -117,7 +117,6 @@ if [ "$dictation" = 1 ]; then
     cat <<'EOF2'
 Dictation: hold ⌃Space in any app, speak, release. macOS asks once for the
 microphone and for Accessibility (System Settings → Privacy & Security →
-Accessibility → OxSay Dictation), which pasting needs. Until ox-say is signed
-with a Developer ID, it asks for both again after each update.
+Accessibility → OxSay Dictation), which pasting needs.
 EOF2
 fi

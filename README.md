@@ -174,12 +174,13 @@ The app finds the daemon at the address the installer gave it (`OX_SAY_ADDR`
 in the ox-say LaunchAgent), 127.0.0.1:8094 by default. When something goes
 wrong, or the text could not be pasted, the pill says why for a few seconds.
 
-The app is signed ad hoc for now, so macOS ties its microphone and
-Accessibility permissions to the exact build: after each update or rebuild it
-asks again, and a stale entry in System Settings → Privacy & Security →
-Accessibility looks enabled but no longer applies (remove it and add the app
-again). A Developer ID signature, which ends this, is planned; see the header
-of `app/dictation/build.sh` for signing and notarization.
+Releases ship the app signed with a Developer ID and notarized, so macOS keeps
+its microphone and Accessibility permissions across updates. A build from
+source is signed ad hoc unless `OX_SAY_SIGN_IDENTITY` names a Developer ID
+identity: macOS then ties the permissions to the exact build and asks again
+after every rebuild, and a stale entry in System Settings → Privacy & Security
+→ Accessibility looks enabled but no longer applies (remove it and add the app
+again). See the header of `app/dictation/build.sh`.
 
 ## Install
 
