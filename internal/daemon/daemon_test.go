@@ -101,6 +101,11 @@ func TestVoicesSurviveRestart(t *testing.T) {
 		ec.IdleTick = 20 * time.Millisecond
 	})
 
+	// Keep the first child up while the voice is added: AddVoice normalizes
+	// the clip with ffmpeg before it takes its own guard, and on a loaded
+	// runner (-race) that can outlast the 1 s idle window, so the idle loop
+	// stopped the child first and the registration found no engine.
+	first := d.Sup.Acquire()
 	base, err := d.Sup.EnsureReady(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +119,7 @@ func TestVoicesSurviveRestart(t *testing.T) {
 	if rt, ok := childVoices(t, base)["ben"]; !ok || rt != "hello there clip" {
 		t.Fatalf("first child lists ben with ref_text %q (present=%v), want recorded", rt, ok)
 	}
+	first.Release()
 
 	// Idle loop stops the child.
 	testutil.WaitFor(t, 5*time.Second, func() bool {
