@@ -459,7 +459,7 @@ func TestSTTSessionKeepsServerAlive(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
 	d := newTestDaemonSTT(t, dir,
-		func(c *config.Config) { c.STTIdleStop = 400 * time.Millisecond },
+		func(c *config.Config) { c.STTIdleStop = time.Second },
 		nil,
 		func(ec *engine.Config) { ec.IdleTick = 50 * time.Millisecond })
 	sttSetupServer(t, d, dir)
@@ -479,9 +479,11 @@ func TestSTTSessionKeepsServerAlive(t *testing.T) {
 	}
 	id := created.ID
 
-	// 7 chunks 150 ms apart ≈ 1.05 s of traffic — over twice the 400 ms
-	// idle stop. Any idle-stop mid-session turns a chunk into a 404.
-	for i := 0; i < 7; i++ {
+	// 15 chunks 150 ms apart ≈ 2.25 s of traffic — over twice the 1 s idle
+	// stop, while each gap leaves ~850 ms of slack before an idle tick could
+	// fire on a slow machine. Any idle stop mid-session turns a chunk into a
+	// 404.
+	for i := 0; i < 15; i++ {
 		time.Sleep(150 * time.Millisecond)
 		code, body = sessReq(t, http.MethodPost, base+"/"+id+"/audio", "application/octet-stream", []byte{0, 0, 0, 0})
 		if code != http.StatusOK {

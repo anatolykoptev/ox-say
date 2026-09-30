@@ -146,7 +146,7 @@ func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, p
 	out, rerr := readAllCap(resp.Body, sessionMaxResp)
 	_ = resp.Body.Close()
 	if rerr != nil {
-		writeSessionErr(w, http.StatusBadGateway, "stt server: oversized response")
+		writeSessionErr(w, http.StatusBadGateway, fmt.Sprintf("stt server: %v", rerr))
 		return
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "" {

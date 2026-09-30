@@ -138,10 +138,19 @@ Streaming transcription sessions — incremental decoding on the resident
 | `POST /v1/audio/transcriptions/sessions/<id>/finish` | Waits for pending decodes (up to ~60 s) → final `{"segments","words","done":true,"text"}`, then deletes the session |
 | `DELETE /v1/audio/transcriptions/sessions/<id>` | Drop the session without finishing |
 
-Errors are `{"error":"…"}`: 404 unknown session (also when the server
-restarted — sessions do not survive one), 413 over the per-chunk cap, 501
-no VAD model, 503 the STT server is off or cooling down. On 404/501/503 a
-client should fall back to uploading the whole clip to
+Session errors are `{"error":"…"}`:
+- 404: unknown session. This includes a server restart, since sessions do not survive one.
+- 413: over the per-chunk cap, or a JSON body over 4 KB.
+- 429: past 4 live sessions, or a decode backlog.
+- 500: a segment failed to decode; the session is lost.
+- 501: no VAD model.
+- 502: the STT server could not be reached.
+- 503: the STT server is off or cooling down.
+- 504: `finish` waited too long.
+
+Requests the daemon's guard refuses (403, 415) keep its usual error
+shape. On **any** non-200 response a client should keep its own copy of
+the recording and fall back to uploading the whole clip to
 `POST /v1/audio/transcriptions`.
 
 ### MCP
