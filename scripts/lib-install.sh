@@ -106,17 +106,17 @@ oxs_fetch_models() {
     fi
 }
 
-# Render the LaunchAgent from its template with plutil (it does the XML
-# escaping) into a temporary file outside LaunchAgents, and lint it before it
-# replaces the installed one. Prints the temporary file's path; the caller
-# removes its directory. Only the variables the daemon reads are written —
-# installer knobs must not ride into the agent's environment.
+# Render the LaunchAgent from its template into $2 — a path inside a temp dir
+# the caller already made and trapped. Rendering into a caller-owned path, as
+# a plain statement, keeps `set -e` working: inside `tmp=$(oxs_render_agent)`
+# command substitution bash 3.2 has no inherit_errexit, so a failing plutil
+# would not stop the installer. plutil does the XML escaping; the result is
+# linted before the caller swaps it in. Only the variables the daemon reads
+# are written — installer knobs must not ride into the agent's environment.
 oxs_render_agent() {
-    local template=$1 tmpdir tmp name
+    local template=$1 tmp=$2 name
     oxs_env_keys_ready
     mkdir -p "$(dirname "$plist")" "$logdir" "$bindir"
-    tmpdir=$(mktemp -d)
-    tmp="$tmpdir/agent.plist"
     cp "$template" "$tmp"
     # replace the whole array: -replace on an array index inserts instead of replacing
     plutil -replace ProgramArguments -array "$tmp"
@@ -131,7 +131,6 @@ oxs_render_agent() {
         plutil -replace "EnvironmentVariables.$name" -string "${!name}" "$tmp"
     done
     plutil -lint "$tmp" >/dev/null
-    echo "$tmp"
 }
 
 # Copy then rename, so a running process keeps its old inode.

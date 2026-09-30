@@ -28,8 +28,13 @@ oxs_settings
 #    step 3, so a failure here leaves the installed version intact.
 "$root/engine/build.sh"
 oxs_fetch_models "$root/scripts/fetch-models.sh"
-tmp=$(oxs_render_agent "$root/launchd/$label.plist.in")
-trap 'rm -f "$tmp"; rmdir "$(dirname "$tmp")" 2>/dev/null || true' EXIT
+# Caller-owned temp dir + plain-statement render: inside `tmp=$(oxs_render_agent)`
+# command substitution bash 3.2 clears `set -e`, so a failing plutil would not
+# stop the install.
+tmpdir=$(mktemp -d)
+tmp="$tmpdir/agent.plist"
+trap 'rm -f "$tmp"; rmdir "$tmpdir" 2>/dev/null || true' EXIT
+oxs_render_agent "$root/launchd/$label.plist.in" "$tmp"
 
 # 3. Swap in the new engines and binary, then reload the agent.
 oxs_install_engines "$root/build/engine/out"

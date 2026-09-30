@@ -5,9 +5,12 @@
 #
 # Run: bash scripts/test-lib-install.sh
 #
-# Mutation that must turn this RED: restore the render loop in
-# lib-install.sh that writes every OX_SAY_* variable (drop the
-# oxs_daemon_var filter) — scenario A fails.
+# Mutations that must turn this RED:
+#   * restore the render loop in lib-install.sh that writes every OX_SAY_*
+#     variable (drop the oxs_daemon_var filter) — scenario A fails
+#   * write the render call in scenario-installer.sh back as
+#     tmp=$(oxs_render_agent …) — the broken-template scenario fails:
+#     bash clears `set -e` inside $(…) so the install step gets reached
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -49,8 +52,32 @@ else
 fi
 oxs_settings
 compgen -e | grep '^OX_SAY_' >"$OXS_TMP/env-after-settings.txt" 2>/dev/null || true
-t=$(oxs_render_agent "$OXS_TEMPLATE")
-cp "$t" "$OXS_TMP/render.plist"
+rd=$(mktemp -d "$OXS_TMP/rd.XXXXXX")
+oxs_render_agent "$OXS_TEMPLATE" "$rd/agent.plist"
+cp "$rd/agent.plist" "$OXS_TMP/render.plist"
+EOF
+
+# The caller-shaped render: caller owns mktemp + trap, then calls the render
+# as a PLAIN statement so `set -e` fires on a failing plutil. The final echo
+# stands in for the install step (engine swap, agent reload). Mutation that
+# must go RED: write the call back as tmp=$(oxs_render_agent …) — bash clears
+# `set -e` inside $(…) so the install step gets reached on a broken render.
+cat >"$tmp/scenario-installer.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+export HOME=$OXS_HOME
+. "$OXS_ROOT/scripts/lib-install.sh"
+if [ -n "${OXS_BIN:-}" ]; then
+    oxs_env_keys_from "$OXS_BIN"
+else
+    oxs_env_keys=$(cat "$OXS_KEYS")
+fi
+oxs_settings
+tmpdir=$(mktemp -d "$OXS_TMP/it.XXXXXX")
+tmp="$tmpdir/agent.plist"
+trap 'rm -f "$tmp"; rmdir "$tmpdir" 2>/dev/null || true' EXIT
+oxs_render_agent "$OXS_TEMPLATE" "$tmp"
+echo reached >"$OXS_TMP/installed"
 EOF
 
 # oxs_settings must refuse to run before the env-key list is known: an empty
@@ -84,6 +111,17 @@ scenario() {
 for s in render carry stale nokeys; do
     cp "$root/launchd/$label.plist.in" "$tmp/template-$s.plist"
 done
+# A template that makes a mid-render plutil fail while the file still lints
+# clean: EnvironmentVariables is a string, so replacing a key under it errors.
+cat >"$tmp/template-broken.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>ProgramArguments</key><array><string>x</string></array>
+<key>EnvironmentVariables</key><string>not-a-dict</string>
+<key>StandardOutPath</key><string>/tmp/o</string>
+<key>StandardErrorPath</key><string>/tmp/e</string>
+</dict></plist>
+EOF
 
 # --- A: the render writes only variables the daemon reads -------------------
 scenario render scenario-render.sh \
@@ -130,7 +168,17 @@ else
 fi
 check_in_log "drop announced" "$tmp/stale.log" "dropping OX_SAY_GET_URL"
 
-# --- D: no env-key list -> refuse (fail closed) ------------------------------
+# --- D: a failing render stops the installer before the install step --------
+rm -f "$tmp/installed"
+scenario broken scenario-installer.sh OX_SAY_ADDR=127.0.0.1:9999
+rc=$?
+if [ $rc -ne 0 ] && [ ! -f "$tmp/installed" ]; then
+    pass "broken template: set -e stopped the run before the install step"
+else
+    fail "broken template: rc=$rc installed=$([ -f "$tmp/installed" ] && echo yes || echo no)"
+fi
+
+# --- E: no env-key list -> refuse (fail closed) ------------------------------
 rm -f "$tmp/installed"
 scenario nokeys scenario-nokeys.sh
 rc=$?
