@@ -3,7 +3,16 @@ import DictationCore
 
 enum RecorderError: LocalizedError {
     case noInput
-    var errorDescription: String? { "No microphone input is available." }
+    case notAllowed
+    case askedForPermission
+
+    var errorDescription: String? {
+        switch self {
+        case .noInput: return "No microphone input is available."
+        case .notAllowed: return "Microphone access is off. Turn it on in System Settings → Privacy & Security → Microphone."
+        case .askedForPermission: return "Allow microphone access, then try again."
+        }
+    }
 }
 
 /// Records the default input device as 16 kHz mono float samples, which is what
@@ -19,6 +28,17 @@ final class MicRecorder: Recorder {
     private let lock = NSLock()
 
     func start() throws {
+        // Without permission the engine still runs and records silence, which
+        // would look like dictation that heard nothing. Say what is wrong instead.
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            break
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+            throw RecorderError.askedForPermission
+        default:
+            throw RecorderError.notAllowed
+        }
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         lock.unlock()

@@ -67,6 +67,9 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <!-- The daemon speaks plain http on 127.0.0.1; this allows only local hosts. -->
+    <key>NSAppTransportSecurity</key>
+    <dict><key>NSAllowsLocalNetworking</key><true/></dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>OxSay Dictation records your voice while you hold the dictation key and sends it to the ox-say daemon on this Mac, which turns it into text. Nothing leaves your Mac.</string>
 </dict>
