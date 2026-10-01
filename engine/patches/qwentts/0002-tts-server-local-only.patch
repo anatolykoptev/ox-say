@@ -1,5 +1,5 @@
 diff --git a/src/tts-server.h b/src/tts-server.h
-index ca5bd8c..7233c89 100644
+index ca5bd8c..6c227c6 100644
 --- a/src/tts-server.h
 +++ b/src/tts-server.h
 @@ -23,10 +23,14 @@
@@ -64,7 +64,7 @@ index ca5bd8c..7233c89 100644
  static int tts_server_run(const tts_backend & be, const server_config & cfg) {
      httplib::Server svr;
      g_svr = &svr;
-@@ -611,13 +648,26 @@ static int tts_server_run(const tts_backend & be, const server_config & cfg) {
+@@ -611,13 +648,43 @@ static int tts_server_run(const tts_backend & be, const server_config & cfg) {
  #endif
      });
  
@@ -82,17 +82,34 @@ index ca5bd8c..7233c89 100644
 +    const bool loopback_bind = tts_is_loopback_host(cfg.host);
 +    svr.set_pre_routing_handler([loopback_bind](const httplib::Request & req, httplib::Response & res) {
 +        if (loopback_bind && !tts_is_loopback_host(tts_host_without_port(req.get_header_value("Host")))) {
-+            res.status = 403;
-+            res.set_content("{\"error\":{\"message\":\"host not allowed\",\"type\":\"forbidden\"}}", "application/json");
++            tts_json_error(res, 403, "forbidden", "host not allowed");
 +            return httplib::Server::HandlerResponse::Handled;
 +        }
-+        std::string ctype = req.get_header_value("Content-Type");
-+        std::transform(ctype.begin(), ctype.end(), ctype.begin(), [](unsigned char ch) { return (char) std::tolower(ch); });
-+        if (req.method == "POST" && ctype.rfind("application/json", 0) != 0) {
-+            res.status = 415;
-+            res.set_content("{\"error\":{\"message\":\"Content-Type must be application/json\",\"type\":\"unsupported_media_type\"}}",
-+                            "application/json");
++        // GET, HEAD, POST and DELETE are the only routed methods. Refuse the
++        // rest (PUT, PATCH, ...) before any body is read: the pre-routing
++        // handler runs ahead of the body read for every method
++        // (Server::routing, httplib.cpp:7961 vs 8036).
++        if (req.method != "GET" && req.method != "HEAD" && req.method != "POST" && req.method != "DELETE") {
++            tts_json_error(res, 405, "method_not_allowed", "method not allowed");
 +            return httplib::Server::HandlerResponse::Handled;
++        }
++        // This API takes no chunked or unframed bodies: refuse
++        // Transfer-Encoding outright, and a POST must carry a Content-Length.
++        if (req.has_header("Transfer-Encoding") || (req.method == "POST" && !req.has_header("Content-Length"))) {
++            tts_json_error(res, 411, "length_required", "a Content-Length body is required");
++            return httplib::Server::HandlerResponse::Handled;
++        }
++        if (req.method == "POST") {
++            // the media type must be exactly application/json, parameters allowed
++            std::string ctype = req.get_header_value("Content-Type");
++            std::transform(ctype.begin(), ctype.end(), ctype.begin(), [](unsigned char ch) { return (char) std::tolower(ch); });
++            const size_t semi = ctype.find(';');
++            std::string mime = ctype.substr(0, semi);
++            mime.erase(mime.find_last_not_of(" \t") + 1);
++            if (mime != "application/json") {
++                tts_json_error(res, 415, "unsupported_media_type", "Content-Type must be application/json");
++                return httplib::Server::HandlerResponse::Handled;
++            }
 +        }
 +        return httplib::Server::HandlerResponse::Unhandled;
      });
