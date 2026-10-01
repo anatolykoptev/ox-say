@@ -131,6 +131,11 @@ if [ -f "$tmp/render.plist" ]; then
     check "render writes only daemon vars" "$(plist_keys "$tmp/render.plist")" "OX_SAY_ADDR
 PATH"
     check "OX_SAY_ADDR value" "$(plist_val "$tmp/render.plist" OX_SAY_ADDR)" "127.0.0.1:9999"
+    # Without it launchd throttles the daemon and its STT child (priority 20,
+    # not an app's 31), and dictation stalls on a busy Mac. Mutation: drop
+    # ProcessType from the template -> RED.
+    check "agent runs as Interactive" \
+        "$(plutil -extract ProcessType raw -o - "$tmp/render.plist" 2>/dev/null || true)" "Interactive"
 fi
 
 # --- B: carry-over from an installed agent ----------------------------------
