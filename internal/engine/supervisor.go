@@ -56,6 +56,12 @@ type Config struct {
 	LogDir         string        // child stdout/stderr destination
 	PidPath        string        // child pidfile
 
+	// GPU, when non-nil, arbitrates the card between this engine and
+	// whoever else holds the lease (a GPU ox-stt run). A start attempt
+	// waits for it on the caller's context, then holds it from spawn to
+	// the observed child exit — past the Stopped transition.
+	GPU *GPULease
+
 	// Replay is invoked after /health first reports OK and before the engine
 	// is marked Ready. The daemon uses it to re-register persisted voices,
 	// which the child holds only in memory.
@@ -114,6 +120,7 @@ type Supervisor struct {
 	nextAttempt   time.Time
 	lastActivity  time.Time // last Ready commit or Guard release
 	guards        int
+	gpuHeld       bool // the current generation owns cfg.GPU
 
 	stopIdle  chan struct{}
 	idleDone  chan struct{}
@@ -213,6 +220,17 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 	}
 	var waitGen int // the last in-flight start generation this caller joined
 	loggedInvariant := false
+	// gpuOwned tracks this caller's lease token until the start commit hands
+	// it to the generation (s.gpuHeld); every early return must give it
+	// back, hence the defer. The token is only ever acquired with no locks
+	// held and released without blocking, so the lease cannot cycle with
+	// s.mu, the guard counter, voiceMu or stt's sem.
+	gpuOwned := false
+	defer func() {
+		if gpuOwned {
+			s.cfg.GPU.Release()
+		}
+	}()
 	for {
 		s.mu.Lock()
 		switch {
@@ -287,6 +305,28 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 				}
 				continue
 			}
+			if s.cfg.GPU != nil && !gpuOwned {
+				// A GPU transcription may own the card: the spawn needs the
+				// lease, so the caller waits for it on its own context —
+				// s.mu is released for the wait (the lease is never
+				// acquired under a lock) and the change broadcast aborts it
+				// so Shutdown or a racing transition re-evaluates instead of
+				// leaving the caller parked until its ctx ends. The token,
+				// once taken, is re-validated under s.mu: with it held no
+				// other start can be committed, so only s.dead can have
+				// changed.
+				ch := s.change
+				s.mu.Unlock()
+				ok, err := s.cfg.GPU.WaitOr(ctx, ch)
+				if err != nil {
+					return "", err
+				}
+				if !ok {
+					continue
+				}
+				gpuOwned = true
+				continue
+			}
 			if s.state == StateCrashed || s.attemptErr != nil {
 				// A respawn after a crash OR after a failed start counts
 				// as a restart.
@@ -296,6 +336,8 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 			waitGen = s.startGen
 			s.attemptErr = nil
 			s.state = StateStarting
+			s.gpuHeld = gpuOwned
+			gpuOwned = false // transferred: the generation now owns the token
 			s.lastErr = nil
 			s.broadcastLocked()
 			go s.run()
@@ -537,6 +579,11 @@ func (s *Supervisor) onExit(c *child) {
 	s.mu.Lock()
 	if s.child == c {
 		s.child = nil
+		// The lease, not the state, is "the engine holds the GPU": the
+		// supervisor commits Stopped (idle loop, Shutdown) before the child
+		// has exited, so releasing here — the observed exit — is what keeps
+		// an ox-stt run off the card inside that window (issue #11).
+		s.releaseGPULocked()
 		switch {
 		case s.state == StateStarting:
 			// finishStart re-checks s.child == c / c.done under this same
@@ -565,6 +612,19 @@ func (s *Supervisor) onExit(c *child) {
 	if crashErr != nil {
 		s.log.Warn("engine crashed", slog.Any("error", crashErr),
 			slog.Duration("retry_in", retryIn))
+	}
+}
+
+// releaseGPULocked returns the current generation's lease token, if it
+// owns one. It runs wherever a generation is dismantled under s.mu:
+// onExit (the observed child exit) and finishStart's failure path (a start
+// that leaves no live child to outlive it). Channel recv on a held token
+// never blocks, so it is safe under s.mu and cannot cycle with the waiters
+// that acquire the lease lock-free.
+func (s *Supervisor) releaseGPULocked() {
+	if s.gpuHeld && s.cfg.GPU != nil {
+		s.gpuHeld = false
+		s.cfg.GPU.Release()
 	}
 }
 
@@ -599,8 +659,21 @@ func (s *Supervisor) finishStart(c *child, err error) {
 		}
 	}
 	if err != nil {
+		// The generation's lease goes back only once its child is provably
+		// gone — that is the lifetime rule the idle-stop window needs
+		// (issue #11). Paths reaching here with a dead-or-absent child
+		// (spawn failure, post-killChild, a reap onExit already ran) release
+		// it now; a child still dying under Shutdown's in-flight killChild
+		// keeps s.child so its onExit releases at the real exit.
 		if c != nil && s.child == c {
-			s.child = nil
+			select {
+			case <-c.done:
+				s.child = nil
+				s.releaseGPULocked()
+			default:
+			}
+		} else {
+			s.releaseGPULocked()
 		}
 		s.lastErr = err
 		s.attemptErr = err

@@ -162,28 +162,71 @@ func TestTranscribeHappyPath(t *testing.T) {
 	}
 }
 
-// S1 — device choice: EngineBusy (TTS starting/ready) or GPU=off forces -ng;
-// GPU=on always takes the GPU; auto+idle does too.
-// Mutation: gpuAllowed always returns true (never appends -ng) -> RED.
+// fakeLease implements Options.GPULease for the device-choice tests:
+// held gates Try/Wait like the real token; tries/waits count acquisitions
+// so a mode that must not touch the lease is provable.
+type fakeLease struct {
+	held  atomic.Bool
+	tries atomic.Int32
+	waits atomic.Int32
+}
+
+func (f *fakeLease) Try() bool {
+	f.tries.Add(1)
+	return f.held.CompareAndSwap(false, true)
+}
+
+func (f *fakeLease) Wait(ctx context.Context) error {
+	f.waits.Add(1)
+	for !f.held.CompareAndSwap(false, true) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
+	}
+	return nil
+}
+
+func (f *fakeLease) Release() { f.held.Store(false) }
+
+// S1 — device choice is the shared GPU lease: a CLI run that skips -ng
+// must hold it for the whole run (issue #11). auto prefers CPU over
+// contention (Try fails → -ng); on insists on the GPU and waits; off
+// never touches the lease.
+// Mutation: make the CLI path always run without -ng -> RED on the
+// held/off cases; make auto's acquisition unconditional -> RED on
+// "auto + held → -ng".
 func TestDeviceChoice(t *testing.T) {
 	dir := t.TempDir()
 	opts, log := fakeOpts(t, dir)
 	src := testutil.WriteTinyWAV(t, dir, "in.wav")
 
 	cases := []struct {
-		name   string
-		gpu    string
-		busy   bool
-		wantNG bool
+		name     string
+		gpu      string
+		held     bool // lease already taken when the run starts
+		nilLease bool
+		wantNG   bool
 	}{
-		{"auto + engine busy → -ng", "auto", true, true},
-		{"auto + idle → GPU", "auto", false, false},
-		{"on + busy → GPU", "on", true, false},
-		{"off + idle → -ng", "off", false, true},
+		{"auto + lease held → -ng", "auto", true, false, true},
+		{"auto + free → GPU", "auto", false, false, false},
+		{"auto + no arbiter → GPU", "auto", false, true, false},
+		{"on + free → GPU", "on", false, false, false},
+		{"off + free → -ng", "off", false, false, true},
+		{"off + lease held → -ng, no wait", "off", true, false, true},
 	}
 	for _, c := range cases {
 		opts.GPU = c.gpu
-		opts.EngineBusy = func() bool { return c.busy }
+		lease := &fakeLease{held: atomic.Bool{}}
+		if c.held {
+			lease.held.Store(true)
+		}
+		if c.nilLease {
+			opts.GPULease = nil
+		} else {
+			opts.GPULease = lease
+		}
 		if _, err := Transcribe(context.Background(), src, opts); err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
@@ -192,6 +235,128 @@ func TestDeviceChoice(t *testing.T) {
 		if got := hasArg(args, "-ng"); got != c.wantNG {
 			t.Fatalf("%s: -ng present = %v, want %v (argv %v)", c.name, got, c.wantNG, args)
 		}
+		if c.gpu == "off" && (lease.tries.Load() != 0 || lease.waits.Load() != 0) {
+			t.Fatalf("%s: off touched the lease (tries=%d waits=%d)", c.name, lease.tries.Load(), lease.waits.Load())
+		}
+	}
+}
+
+// The lease covers the WHOLE run, not just the argv decision: while a
+// blocking fake ox-stt is mid-run the token must read held, and a second
+// auto run inside that window must fall to -ng.
+// Mutation: release the lease right after the device choice (before
+// cmd.Run) -> RED ("lease not held while ox-stt runs").
+func TestGPURunHoldsLeaseForWholeRun(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OXSAY_FAKE_STT_BLOCK", "1")
+	opts, log := fakeOpts(t, dir)
+	src := testutil.WriteTinyWAV(t, dir, "in.wav")
+	lease := &fakeLease{}
+	opts.GPULease = lease
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := Transcribe(ctx, src, opts)
+		done <- err
+	}()
+	var pid int
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		for _, r := range sttRuns(t, log) {
+			if r.start != 0 && r.pid != 0 {
+				pid = r.pid
+				return true
+			}
+		}
+		return false
+	}, "fake ox-stt to start")
+	t.Cleanup(func() {
+		if pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	if !lease.held.Load() {
+		t.Fatal("lease not held while ox-stt runs")
+	}
+	// The TTS side must see it too: a start's Try fails mid-run.
+	if lease.Try() {
+		t.Fatal("lease acquirable while a GPU ox-stt run is in flight")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked fake ox-stt did not die with the request context")
+	}
+	testutil.WaitFor(t, 2*time.Second, func() bool {
+		return !lease.held.Load()
+	}, "lease release after the run")
+}
+
+// on insists on the GPU: it waits out the current holder inside the
+// caller's deadline instead of falling back to -ng like auto.
+// Mutation: treat on like auto (Try, not Wait) -> RED (the run gets -ng
+// or returns immediately instead of parking).
+func TestGPUOnWaitsOutTheHolder(t *testing.T) {
+	dir := t.TempDir()
+	opts, log := fakeOpts(t, dir)
+	src := testutil.WriteTinyWAV(t, dir, "in.wav")
+	lease := &fakeLease{}
+	lease.held.Store(true) // a GPU transcription / the TTS child owns it
+	opts.GPU = "on"
+	opts.GPULease = lease
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Transcribe(context.Background(), src, opts)
+		done <- err
+	}()
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		return lease.waits.Load() == 1
+	}, "on-mode run to park on the lease")
+	select {
+	case err := <-done:
+		t.Fatalf("on-mode run returned %v while the lease was still held", err)
+	default:
+	}
+	lease.held.Store(false) // holder releases; the waiter must run on GPU
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("on-mode run after release: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("on-mode run did not proceed once the lease freed")
+	}
+	runs := sttRuns(t, log)
+	if len(runs) == 0 {
+		t.Fatal("on-mode run never spawned ox-stt")
+	}
+	if args := runs[len(runs)-1].args; hasArg(args, "-ng") {
+		t.Fatalf("on-mode run argv %v has -ng — it must insist on the GPU", args)
+	}
+}
+
+// on's wait is bounded by the caller's context: with the lease held past
+// the deadline the run ends with the ctx error, not a silent CPU fallback.
+func TestGPUOnHonoursCallerCtx(t *testing.T) {
+	dir := t.TempDir()
+	opts, _ := fakeOpts(t, dir)
+	src := testutil.WriteTinyWAV(t, dir, "in.wav")
+	lease := &fakeLease{}
+	lease.held.Store(true)
+	opts.GPU = "on"
+	opts.GPULease = lease
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := Transcribe(ctx, src, opts)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("on-mode run on a held lease = %v, want context.DeadlineExceeded", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("on-mode lease wait outlived the caller deadline by %s", took-2*time.Second)
 	}
 }
 

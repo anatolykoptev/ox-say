@@ -27,12 +27,19 @@ type Daemon struct {
 	Store *voices.Store
 
 	// STTSup supervises the resident `ox-stt --serve` child; nil when
-	// OX_SAY_STT_SERVER=off. It decodes on the CPU (-ng unless
-	// OX_SAY_STT_GPU=on) so it never contends with the TTS engine's GPU.
+	// OX_SAY_STT_SERVER=off. It always decodes on the CPU (-ng): a resident
+	// process holding GPU memory for its whole life cannot share the card
+	// through a per-run lease, so it never takes d.gpu and never contends
+	// with the TTS engine's GPU.
 	STTSup *engine.Supervisor
 
 	ec  *engine.Client
 	log *slog.Logger
+
+	// gpu is the single-token GPU lease shared by the TTS engine (held
+	// from a start's spawn to the child's observed exit) and by a per-call
+	// ox-stt run that goes without -ng (issue #11).
+	gpu *engine.GPULease
 
 	// voiceMu serializes voice mutations against engine-start replay: a
 	// voice written while replayVoices runs could otherwise be missing
@@ -90,6 +97,7 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engi
 		Store: store,
 		ec:    engine.NewClient(),
 		log:   logger,
+		gpu:   engine.NewGPULease(),
 	}
 	// Single-instance lock: taken BEFORE the supervisor reaps orphaned
 	// engines so a second daemon on the same home cannot kill the first
@@ -114,6 +122,10 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engi
 		PidPath:        cfg.PidPath(),
 		Replay:         d.replayVoices,
 		Logger:         logger,
+		// The TTS engine owns the GPU while its child lives: a start waits
+		// out a GPU transcription, and the lease is released at the child's
+		// observed exit — past the Stopped commit (issue #11).
+		GPU: d.gpu,
 	}
 	if tune != nil {
 		tune(&ec)
@@ -136,13 +148,12 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engi
 			PidPath:        filepath.Join(cfg.RunDir(), "stt.pid"),
 			Logger:         logger,
 			// The resident server loads the parakeet model once and decodes
-			// on the CPU; only an explicit OX_SAY_STT_GPU=on opts it into
-			// sharing the GPU with TTS.
+			// on the CPU — unconditionally: a child that would hold GPU
+			// memory for its whole lifetime cannot take part in the per-run
+			// GPU lease (a speak would have to wait out its idle timeout),
+			// so OX_SAY_STT_GPU=on scopes to the per-call CLI only.
 			Args: func(port int) []string {
-				args := []string{"--serve", "--port", strconv.Itoa(port), "-m", cfg.STTModel}
-				if cfg.STTGPU != "on" {
-					args = append(args, "-ng")
-				}
+				args := []string{"--serve", "--port", strconv.Itoa(port), "-m", cfg.STTModel, "-ng"}
 				// Streaming sessions need the silero VAD model; without the
 				// file the server spawns exactly as before and the session
 				// routes answer 501. The stat runs per spawn (Args is
