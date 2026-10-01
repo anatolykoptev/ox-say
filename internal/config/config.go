@@ -53,7 +53,7 @@ type Config struct {
 	STTGPU          string        // OX_SAY_STT_GPU: auto | on | off
 	STTTimeout      time.Duration // OX_SAY_STT_TIMEOUT_SECS: fixed allowance; the engine's budget adds k×audio duration on top
 	STTMaxUploadMB  int64         // OX_SAY_STT_MAX_UPLOAD_MB
-	STTMaxAudio     time.Duration // OX_SAY_STT_MAX_AUDIO_SECS: longer audio is cut
+	STTMaxAudio     time.Duration // OX_SAY_STT_MAX_AUDIO_SECS: longer audio is refused (400), not cut
 	STTServer       string        // OX_SAY_STT_SERVER: on | off — resident ox-stt server
 	STTPort         int           // OX_SAY_STT_PORT: loopback port the STT server binds
 	STTIdleStop     time.Duration // OX_SAY_STT_IDLE_STOP_SECS

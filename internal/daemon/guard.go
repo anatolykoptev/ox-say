@@ -103,8 +103,9 @@ func (d *Daemon) ServerConfig(version string) mcpserver.Config {
 		// speak blocks on a cold engine start (Metal shader compile on first
 		// ever run) plus synthesis — give it the startup window plus slack.
 		// transcribe waits on the STT semaphore behind any in-flight run,
-		// then runs its own — the worst case is the scaled budget on the
-		// longest allowed clip, twice, plus slack.
+		// then runs its own: two worst-case transcriptions plus slack. A
+		// caller queued behind more than one long run can still be cut
+		// here; each phase of a run has its own deadline regardless.
 		ToolTimeouts: map[string]time.Duration{
 			"speak":      d.Cfg.StartupTimeout + 2*time.Minute,
 			"transcribe": 2*stt.WorstTimeout(d.Cfg.STTMaxAudio, d.Cfg.STTTimeout) + 2*time.Minute,

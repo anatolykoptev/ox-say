@@ -403,13 +403,13 @@ func TestTimeoutScalesWithDuration(t *testing.T) {
 // is the longest clip on the slowest engine/device.
 func TestWorstTimeout(t *testing.T) {
 	got := WorstTimeout(4*time.Hour, 600*time.Second)
-	want := 43800 * time.Second // whisper CPU: 600 + 3.0×14400
+	want := 44400 * time.Second // conversion 600 + whisper CPU 600 + 3.0×14400
 	if got != want {
 		t.Fatalf("WorstTimeout(4h, 600s) = %s, want %s", got, want)
 	}
 	// Zero inputs fall back to the defaults.
-	if got := WorstTimeout(0, 0); got != DefaultTimeout+time.Duration(3.0*DefaultMaxAudio.Seconds())*time.Second {
-		t.Fatalf("WorstTimeout(0,0) = %s, want base+k×4h", got)
+	if got := WorstTimeout(0, 0); got != 2*DefaultTimeout+time.Duration(3.0*DefaultMaxAudio.Seconds())*time.Second {
+		t.Fatalf("WorstTimeout(0,0) = %s, want 2×base+k×4h", got)
 	}
 }
 

@@ -110,7 +110,7 @@ const (
 // The rates carry a ≈4.5–5× safety factor over those slopes; the fixed
 // part (model load, spawn) is covered by base. The GPU cells reuse the
 // CPU rate: the GPU is strictly faster, so the budget stays
-// conservative there. A var so tests can scale the rate.
+// conservative there.
 var sttK = map[string]map[bool]float64{
 	"parakeet": {false: 0.5, true: 0.5},
 	"whisper":  {false: 3.0, true: 3.0},
@@ -152,11 +152,15 @@ func sttTimeout(engine string, gpu bool, secs float64, base time.Duration) time.
 }
 
 // WorstTimeout bounds one transcription at the longest allowed clip on
-// the slowest engine/device. The daemon sizes the transcribe tool's MCP
-// timeout on it so a long run is never cut before its own deadline.
+// the slowest engine/device: the conversion's base plus the engine's
+// scaled budget, both burned in full. The daemon sizes the transcribe
+// tool's MCP timeout on it.
 func WorstTimeout(maxAudio, base time.Duration) time.Duration {
 	if maxAudio <= 0 {
 		maxAudio = DefaultMaxAudio
+	}
+	if base <= 0 {
+		base = DefaultTimeout
 	}
 	var worst time.Duration
 	for engine, dev := range sttK {
@@ -166,7 +170,7 @@ func WorstTimeout(maxAudio, base time.Duration) time.Duration {
 			}
 		}
 	}
-	return worst
+	return base + worst
 }
 
 // sem serializes transcriptions: a second ox-stt would contend for GPU

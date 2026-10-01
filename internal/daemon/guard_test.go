@@ -34,8 +34,9 @@ func servedHandler(t *testing.T) http.Handler {
 // ServerConfig -> RED.
 func TestTranscribeToolTimeoutScales(t *testing.T) {
 	d := newTestDaemon(t, t.TempDir(), nil)
-	d.Cfg.STTTimeout = 600 * time.Second
-	d.Cfg.STTMaxAudio = 4 * time.Hour
+	// not the defaults, so a hardcoded entry cannot pass
+	d.Cfg.STTTimeout = 30 * time.Second
+	d.Cfg.STTMaxAudio = time.Hour
 	got := d.ServerConfig("test").ToolTimeouts["transcribe"]
 	want := 2*stt.WorstTimeout(d.Cfg.STTMaxAudio, d.Cfg.STTTimeout) + 2*time.Minute
 	if got != want {
