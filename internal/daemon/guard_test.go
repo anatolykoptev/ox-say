@@ -44,6 +44,22 @@ func TestTranscribeToolTimeoutScales(t *testing.T) {
 	}
 }
 
+// A client's timeout_secs is capped at MaxToolTimeout before ToolTimeouts
+// is consulted (go-mcpserver resolveTimeout); its default, 2×ToolTimeout,
+// is 180 s. Mutation: drop MaxToolTimeout from ServerConfig -> RED (a
+// client asking to wait hours for a transcription gets 3 minutes).
+func TestTimeoutArgCannotCutTranscribeShort(t *testing.T) {
+	d := newTestDaemon(t, t.TempDir(), nil)
+	cfg := d.ServerConfig("test")
+	if cfg.MaxToolTimeout < cfg.ToolTimeouts["transcribe"] {
+		t.Fatalf("MaxToolTimeout = %s caps timeout_secs below the transcribe entry %s",
+			cfg.MaxToolTimeout, cfg.ToolTimeouts["transcribe"])
+	}
+	if cfg.ToolKeepaliveInterval <= 0 {
+		t.Fatal("no keepalive: a multi-hour transcribe call streams nothing until it ends")
+	}
+}
+
 func TestGuard(t *testing.T) {
 	h := servedHandler(t)
 	voiceBody := `{"name":"ben","audio_path":"/tmp/x.wav"}`

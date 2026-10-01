@@ -27,6 +27,11 @@ const (
 	DefaultSTTPort        = 8096
 	DefaultSTTIdleStop    = 600
 	maxSTTUploadMB        = 1 << 20 // keeps MB<<20 far from int64 overflow
+	// maxSTTSecs caps the STT timeout base and the audio length: the engine
+	// deadline is base + k×duration, and the MCP tool timeout doubles it, so
+	// an unbounded value overflows time.Duration into a negative deadline
+	// that times every transcription out at once.
+	maxSTTSecs = 24 * 3600
 )
 
 // Config is the resolved daemon configuration.
@@ -195,8 +200,8 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if err != nil {
 		return nil, fmt.Errorf("config: OX_SAY_STT_TIMEOUT_SECS: %w", err)
 	}
-	if sttSecs < 1 {
-		return nil, fmt.Errorf("config: OX_SAY_STT_TIMEOUT_SECS %d: want >= 1", sttSecs)
+	if sttSecs < 1 || sttSecs > maxSTTSecs {
+		return nil, fmt.Errorf("config: OX_SAY_STT_TIMEOUT_SECS %d: want 1..%d", sttSecs, maxSTTSecs)
 	}
 	c.STTTimeout = time.Duration(sttSecs) * time.Second
 	if c.STTMaxUploadMB, err = int64Var(get("OX_SAY_STT_MAX_UPLOAD_MB"), DefaultSTTMaxUploadMB); err != nil {
@@ -209,8 +214,8 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if err != nil {
 		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_AUDIO_SECS: %w", err)
 	}
-	if audioSecs < 1 {
-		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_AUDIO_SECS %d: want >= 1", audioSecs)
+	if audioSecs < 1 || audioSecs > maxSTTSecs {
+		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_AUDIO_SECS %d: want 1..%d", audioSecs, maxSTTSecs)
 	}
 	c.STTMaxAudio = time.Duration(audioSecs) * time.Second
 

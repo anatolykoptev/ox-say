@@ -202,6 +202,10 @@ func TestLoadSTTBounds(t *testing.T) {
 		{"OX_SAY_STT_MAX_UPLOAD_MB", "0"},
 		{"OX_SAY_STT_MAX_UPLOAD_MB", "9000000000000"},
 		{"OX_SAY_STT_MAX_AUDIO_SECS", "0"},
+		// past 24 h, base + k×duration heads for a time.Duration overflow
+		{"OX_SAY_STT_TIMEOUT_SECS", "86401"},
+		{"OX_SAY_STT_MAX_AUDIO_SECS", "86401"},
+		{"OX_SAY_STT_MAX_AUDIO_SECS", "3100000000"},
 	} {
 		t.Run(kv[0]+"="+kv[1], func(t *testing.T) {
 			t.Setenv(kv[0], kv[1])
