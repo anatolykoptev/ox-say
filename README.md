@@ -251,7 +251,10 @@ It installs `ox-say` into `~/.local/bin` (`OX_SAY_BINDIR` overrides; keep it on
 your `PATH` for the CLI), the engines and models into
 `~/Library/Application Support/ox-say`, logs into `~/Library/Logs/ox-say`, and
 the LaunchAgent `io.github.anatolykoptev.ox-say`, which keeps `ox-say serve`
-running. `OX_SAY_WITH_WHISPER=1 scripts/install.sh` also fetches Whisper
+running. The agent is an Interactive launchd job: the daemon and its engines run at
+an app's base CPU priority (31) instead of launchd's throttled default (20),
+still below the app in front and the window server.
+`OX_SAY_WITH_WHISPER=1 scripts/install.sh` also fetches Whisper
 large-v3-turbo.
 
 launchd does not read your shell environment: set any `OX_SAY_*` configuration
