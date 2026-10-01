@@ -5,23 +5,92 @@ import Foundation
 public protocol DictationPasteboard: AnyObject {
     /// Changes on every write to the pasteboard, by any app.
     var changeCount: Int { get }
-    /// Every item with every type it carries, to be put back later.
-    func snapshot() -> PasteboardSnapshot
+    /// The type identifiers each item declares, in the item's own order.
+    var declaredItems: [[String]] { get }
+    /// The data behind a declared type of an item, or nil when the source
+    /// cannot or will not give it. Only types PasteboardSnapshot asks for are
+    /// read; promised types are never read through here.
+    func data(item: Int, forType type: String) -> Data?
     /// Replaces the contents with plain text and returns the resulting changeCount.
     @discardableResult func writeText(_ text: String) -> Int
     /// Replaces the contents with a snapshot.
     func restore(_ snapshot: PasteboardSnapshot)
 }
 
-/// The pasteboard contents: one dictionary per item, type identifier to data.
+/// One type an item carried, with its data, kept in the item's declared order:
+/// the order is the priority a reader picks formats by, so a restore must keep it.
+public struct PasteboardEntry: Equatable {
+    public var type: String
+    public var data: Data
+    public init(type: String, data: Data) {
+        self.type = type
+        self.data = data
+    }
+}
+
+/// The pasteboard contents: the types of every item in each item's declared
+/// order, with their data — plus the reasons the snapshot is not a whole copy.
 public struct PasteboardSnapshot: Equatable {
-    public var items: [[String: Data]]
-    public init(items: [[String: Data]]) { self.items = items }
+    public var items: [[PasteboardEntry]]
+    /// Why the snapshot is not exactly what the user had. Non-empty means it
+    /// must not be put back: it would be a different clipboard, silently.
+    public private(set) var problems: [String]
+    /// Holding more than this for a restore costs more than the restore saves.
+    public static let maxBytes = 64 * 1024 * 1024
+
+    public init(items: [[PasteboardEntry]], problems: [String] = []) {
+        self.items = items
+        self.problems = problems
+    }
+
+    /// Copies every type of every item on `board`, in declared order.
+    /// Promised types are never read: reading one runs the source app's
+    /// provider synchronously, which can stall for seconds on a big promise.
+    /// A promise and a clipboard over `maxBytes` go into `problems`: the
+    /// snapshot then is not the user's copy, and putting it back would hand
+    /// them a different clipboard without a word.
+    /// A type that gives no data is left out without a problem: no app can
+    /// paste it either, so the restore loses nothing a reader could get, and
+    /// refusing the restore over it would throw away everything else.
+    public static func capture(_ board: DictationPasteboard) -> PasteboardSnapshot {
+        var snapshot = PasteboardSnapshot(items: [])
+        var bytes = 0
+        capture: for (index, types) in board.declaredItems.enumerated() {
+            var entries: [PasteboardEntry] = []
+            for type in types {
+                if isPromisedType(type) {
+                    snapshot.report("a promised file")
+                    continue
+                }
+                guard let data = board.data(item: index, forType: type) else { continue }
+                bytes += data.count
+                if bytes > maxBytes {
+                    snapshot.report("more than \(maxBytes / (1024 * 1024)) MB of data")
+                    break capture
+                }
+                entries.append(PasteboardEntry(type: type, data: data))
+            }
+            snapshot.items.append(entries)
+        }
+        return snapshot
+    }
+
+    private mutating func report(_ problem: String) {
+        if !problems.contains(problem) { problems.append(problem) }
+    }
+
+    /// A promised type carries no data until the source app is asked for it;
+    /// asking runs the source's provider on this thread. Apple's promise UTIs
+    /// all carry "promise" (com.apple.pasteboard.promised-file,
+    /// com.apple.pasteboard.promised-file-url, com.apple.NSFilePromise).
+    private static func isPromisedType(_ type: String) -> Bool {
+        type.lowercased().contains("promise")
+    }
 
     /// Marked by its writer as a secret (nspasteboard.org convention, used by
     /// password managers). Such contents are not put back.
     public var isSensitive: Bool {
-        items.contains { item in PasteboardMarker.sensitive.contains { item.keys.contains($0) } }
+        items.contains { item in item.contains { PasteboardMarker.sensitive.contains($0.type) } }
     }
 }
 
@@ -56,10 +125,15 @@ public final class ClipboardLease {
     private let board: DictationPasteboard
     private let original: PasteboardSnapshot
     private let ourChange: Int
+    /// Why `release` left our text instead of putting the original back: the
+    /// snapshot was not a whole copy of what the user had. nil when the
+    /// clipboard was left because someone else wrote to it — that copy is the
+    /// user's own.
+    public private(set) var notice: String?
 
     public init(board: DictationPasteboard, text: String) {
         self.board = board
-        self.original = board.snapshot()
+        self.original = PasteboardSnapshot.capture(board)
         self.ourChange = board.writeText(text)
     }
 
@@ -69,6 +143,10 @@ public final class ClipboardLease {
     public func release() -> Bool {
         guard board.changeCount == ourChange else { return false }
         guard !original.isSensitive else { return false }
+        guard original.problems.isEmpty else {
+            notice = "The earlier clipboard was not put back: it held \(original.problems.joined(separator: " and ")). The dictated text is on the clipboard."
+            return false
+        }
         board.restore(original)
         return true
     }

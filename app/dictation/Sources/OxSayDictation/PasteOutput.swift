@@ -21,15 +21,13 @@ final class SystemPasteboard: NSObject, DictationPasteboard, NSPasteboardItemDat
 
     var changeCount: Int { pasteboard.changeCount }
 
-    func snapshot() -> PasteboardSnapshot {
-        let items = (pasteboard.pasteboardItems ?? []).map { item -> [String: Data] in
-            var types: [String: Data] = [:]
-            for type in item.types {
-                if let data = item.data(forType: type) { types[type.rawValue] = data }
-            }
-            return types
-        }
-        return PasteboardSnapshot(items: items)
+    var declaredItems: [[String]] {
+        (pasteboard.pasteboardItems ?? []).map { $0.types.map(\.rawValue) }
+    }
+
+    func data(item index: Int, forType type: String) -> Data? {
+        guard let items = pasteboard.pasteboardItems, items.indices.contains(index) else { return nil }
+        return items[index].data(forType: NSPasteboard.PasteboardType(type))
     }
 
     @discardableResult
@@ -51,9 +49,9 @@ final class SystemPasteboard: NSObject, DictationPasteboard, NSPasteboardItemDat
 
     func restore(_ snapshot: PasteboardSnapshot) {
         pasteboard.clearContents()
-        let items = snapshot.items.map { types -> NSPasteboardItem in
+        let items = snapshot.items.map { entries -> NSPasteboardItem in
             let item = NSPasteboardItem()
-            for (type, data) in types { item.setData(data, forType: NSPasteboard.PasteboardType(type)) }
+            for entry in entries { item.setData(entry.data, forType: NSPasteboard.PasteboardType(entry.type)) }
             // The user's copy is already in any clipboard history; putting it back
             // is not a new copy.
             for marker in PasteboardMarker.restored { item.setData(Data(), forType: NSPasteboard.PasteboardType(marker)) }
@@ -119,12 +117,14 @@ final class PasteOutput: TextOutput {
         guard let pending else { return }
         self.pending = nil
         pending.timer.invalidate()
-        pending.lease.release()
+        if !pending.lease.release(), let notice = pending.lease.notice {
+            onNotice?(notice)
+        }
     }
 
     private func postCommandV() {
         let source = CGEventSource(stateID: .combinedSessionState)
-        let v = CGKeyCode(kVK_ANSI_V)
+        let v = CGKeyCode(PasteKey.commandV(lookup: PasteOutput.layoutCharacter()))
         // Only Command: a modifier still held from the hotkey must not turn this into ⌃⌘V.
         let down = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: true)
         down?.flags = .maskCommand
@@ -132,5 +132,43 @@ final class PasteOutput: TextOutput {
         up?.flags = .maskCommand
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
+    }
+
+    /// Maps a virtual key code to the character it types with ⌘ held in the
+    /// current keyboard layout, via UCKeyTranslate on the live TIS layout data.
+    /// ⌘ matters: some layouts switch tables under it ("Dvorak – QWERTY ⌘"
+    /// types QWERTY, Russian types Latin). The closure holds the layout bytes, so one paste scans the
+    /// keyboard once. A dead key or a key that types nothing maps to nil, as
+    /// does every key when the layout cannot be read at all.
+    private static func layoutCharacter() -> (Int) -> Character? {
+        guard let ref = layoutData() else { return { _ in nil } }
+        let data = Unmanaged<CFData>.fromOpaque(ref).takeUnretainedValue() as Data
+        let keyboardType = UInt32(LMGetKbdType())
+        return { keyCode in
+            data.withUnsafeBytes { raw -> Character? in
+                guard let layout = raw.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else { return nil }
+                var deadKeyState: UInt32 = 0
+                var length = 0
+                var chars = [UniChar](repeating: 0, count: 4)
+                let commandHeld = UInt32((cmdKey >> 8) & 0xFF)
+                guard UCKeyTranslate(layout, UInt16(keyCode), UInt16(kUCKeyActionDown), commandHeld,
+                                     keyboardType, UInt32(kUCKeyTranslateNoDeadKeysMask),
+                                     &deadKeyState, chars.count, &length, &chars) == noErr,
+                      length > 0 else { return nil }
+                return String(utf16CodeUnits: chars, count: length).first
+            }
+        }
+    }
+
+    /// The current layout's UCKeyTranslate data; the ASCII-capable layout's
+    /// when the current input source does not carry key layout data.
+    private static func layoutData() -> UnsafeMutableRawPointer? {
+        var source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue()
+        var data = source.flatMap { TISGetInputSourceProperty($0, kTISPropertyUnicodeKeyLayoutData) }
+        if data == nil {
+            source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue()
+            data = source.flatMap { TISGetInputSourceProperty($0, kTISPropertyUnicodeKeyLayoutData) }
+        }
+        return data
     }
 }
