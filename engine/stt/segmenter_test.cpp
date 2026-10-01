@@ -253,6 +253,156 @@ static void t_chunk_invariant() {
     CHECK(per == one && sev == one && big == one, "output differs across chunk sizes");
 }
 
+// The same utterance as t_one_utterance reports why it closed: a 400 ms
+// silence is a pause cut, and the quiet run it saw is at least close_ms.
+// RED when: the pause path stops stamping cut (cut stays the zero value).
+static void t_cut_pause() {
+    stream s;
+    s.add(20, 0.1f);
+    s.add(30, 0.9f);
+    s.add(30, 0.1f);
+    const std::vector<seg_range> got = run(s);
+    if (!eq(got, { {7040, 28800} })) {
+        dump("t_cut_pause", got);
+        CHECK(false, "expected exactly [{7040,28800}]");
+    }
+    CHECK(got[0].cut == oxstt::seg_cut::pause, "cut != pause on a silence-closed segment");
+    CHECK(got[0].quiet_ms >= 400, "quiet_ms < close_ms on a pause cut");
+    CHECK(got[0].min_p == 0.1f, "min_p != the silence floor");
+}
+
+// A 13.4 s utterance whose pauses dip to p=0.2 for only 320 ms each is cut by
+// the cap, never by a pause; quiet_ms shows how close the dips came.
+// RED when: the cap path stamps cut=pause, or quiet_ms stops accumulating
+// (0 instead of the 320 ms dip).
+static void t_cut_cap() {
+    stream s;
+    s.add(100, 0.9f);
+    s.add(10, 0.2f);   // 320 ms dip: quiet but too short to close
+    s.add(100, 0.9f);
+    s.add(10, 0.2f);
+    s.add(200, 0.6f);  // post-cap windows never dip below the piece's 0.3 floor
+    s.add(13, 0.3f);   // the pause closes the post-cap continuation
+    const std::vector<seg_range> got = run(s);
+    if (!eq(got, { {0, 177200}, {177200, 218240} })) {
+        dump("t_cut_cap", got);
+        CHECK(false, "expected exactly [{0,177200},{177200,218240}]");
+    }
+    CHECK(got[0].cut == oxstt::seg_cut::cap, "first piece cut != cap");
+    CHECK(got[0].quiet_ms == 320, "cap piece quiet_ms != the 320 ms dip");
+    CHECK(got[0].min_p == 0.2f, "cap piece min_p != the dip's 0.2");
+    CHECK(got[1].cut == oxstt::seg_cut::pause, "continuation cut != pause");
+    // 0.3 not 0.2: the continuation's counters start fresh at the cap.
+    CHECK(got[1].min_p == 0.3f, "continuation min_p inherited the pre-cap dip");
+    CHECK(got[1].quiet_ms == 416, "continuation quiet_ms != its closing run");
+}
+
+// An utterance still open when the stream ends is closed by finish().
+// RED when: finish() routes through the pause cut.
+static void t_cut_finish() {
+    stream s;
+    s.add(5, 0.1f);
+    s.add(30, 0.9f);
+    s.add(5, 0.1f);  // 160 ms: too short to close on its own
+    segmenter seg;
+    std::vector<seg_range> got;
+    seg.feed(s.p.data(), s.p.size(), s.x.data(), s.x.size(), got);
+    seg.finish(got);
+    if (!eq(got, { {0, 20480} })) {
+        dump("t_cut_finish", got);
+        CHECK(false, "expected exactly [{0,20480}]");
+    }
+    CHECK(got[0].cut == oxstt::seg_cut::finish, "cut != finish");
+    CHECK(got[0].quiet_ms == 160, "quiet_ms != the 160 ms trailing dip");
+}
+
+// min_p is the lowest p of any window while the segment was open — here the
+// 0.15 mid-utterance dip, below the 0.3 closing-silence floor. The 0.05
+// leading noise is outside the segment and must not count.
+// RED when: min_p is taken over every fed window (0.05 wins) or never updated
+// (stays 1.0).
+static void t_min_p() {
+    stream s;
+    s.add(10, 0.05f);
+    s.add(15, 0.9f);
+    s.add(4, 0.15f);   // 128 ms dip, the lowest p while open
+    s.add(15, 0.9f);
+    s.add(13, 0.3f);   // closing silence above the dip
+    const std::vector<seg_range> got = run(s);
+    if (!eq(got, { {1920, 25728} })) {
+        dump("t_min_p", got);
+        CHECK(false, "expected exactly [{1920,25728}]");
+    }
+    CHECK(got[0].min_p == 0.15f, "min_p != the lowest p fed while open");
+    CHECK(got[0].cut == oxstt::seg_cut::pause, "cut != pause");
+    CHECK(got[0].quiet_ms == 416, "quiet_ms != the closing 416 ms run");
+}
+
+// A second, independent segment must not inherit the first segment's
+// counters: the onset reset makes each emitted range describe only the
+// windows while it was open. min_p carries the check — quiet_ms cannot:
+// a quiet run beyond close_ms closes the segment, so the closing run is
+// always the longest a pause-closed segment can report.
+// RED when: min_p_ is not reset at onset — seg 2 would report seg 1's 0.1.
+static void t_diag_reset_between_segments() {
+    stream s;
+    s.add(10, 0.05f);
+    s.add(20, 0.9f);
+    s.add(2, 0.1f);    // seg 1's dip: 64 ms quiet, min_p 0.1
+    s.add(20, 0.9f);
+    s.add(14, 0.3f);   // closes seg 1 on the 13th window: quiet_ms 416
+    s.add(20, 0.9f);   // seg 2: onset resets both counters
+    s.add(13, 0.3f);   // closes seg 2
+    const std::vector<seg_range> got = run(s);
+    if (!eq(got, { {1920, 29824}, {30592, 47232} })) {
+        dump("t_diag_reset_between_segments", got);
+        CHECK(false, "expected exactly [{1920,29824},{30592,47232}]");
+    }
+    CHECK(got[0].min_p == 0.1f && got[0].quiet_ms == 416, "seg 1 diagnostics wrong");
+    CHECK(got[1].min_p == 0.3f, "seg 2 min_p inherited seg 1's 0.1 dip");
+    CHECK(got[1].quiet_ms == 416, "seg 2 quiet_ms != its closing run");
+}
+
+// A pause that starts before the cap straddles it: 370 speech windows, then
+// 640 ms of silence whose zero energy draws the cap cut into it (190640).
+// The open quiet run belongs to the continuation too — it closes by pause
+// with quiet_ms >= close_ms, not a fraction of it.
+// RED when: cut_at_cap zeroes quiet_run_ (the continuation reports 256 ms).
+static void t_cap_straddle_quiet() {
+    stream s;
+    s.add(370, 0.9f);          // 11.84 s of speech; cap fires at pos = 192000
+    s.add(20, 0.1f, 0.0f);     // 640 ms of silence: the pause starts before the cap
+    const std::vector<seg_range> got = run(s);
+    if (!eq(got, { {0, 190640}, {190640, 192640} })) {
+        dump("t_cap_straddle_quiet", got);
+        CHECK(false, "expected exactly [{0,190640},{190640,192640}]");
+    }
+    CHECK(got[0].cut == oxstt::seg_cut::cap, "first piece cut != cap");
+    CHECK(got[0].quiet_ms == 160, "cap piece quiet_ms != its pre-cut 160 ms run");
+    CHECK(got[1].cut == oxstt::seg_cut::pause, "continuation cut != pause");
+    CHECK(got[1].quiet_ms >= 400, "a pause cut reports quiet_ms < close_ms");
+    CHECK(got[1].quiet_ms == 416, "continuation quiet_ms != the whole straddling run");
+    CHECK(got[1].min_p == 0.1f, "continuation min_p != the silence floor");
+}
+
+// A cap while speech continues seeds the continuation's min_p from the
+// current window — the 1.0 sentinel must never leak into an emitted range.
+// 375 speech windows reach the cap exactly; finish() then closes the
+// continuation, which saw only p = 0.9.
+// RED when: cut_at_cap resets min_p_ to 1.0f (the finish piece reports 1.0).
+static void t_cap_finish_min_p() {
+    stream s;
+    s.add(375, 0.9f);  // cap fires inside feed at pos = 192000
+    const std::vector<seg_range> got = run(s);
+    if (!eq(got, { {0, 177200}, {177200, 192000} })) {
+        dump("t_cap_finish_min_p", got);
+        CHECK(false, "expected exactly [{0,177200},{177200,192000}]");
+    }
+    CHECK(got[0].cut == oxstt::seg_cut::cap, "first piece cut != cap");
+    CHECK(got[1].cut == oxstt::seg_cut::finish, "continuation cut != finish");
+    CHECK(got[1].min_p == 0.9f, "continuation min_p is the reset sentinel, not 0.9");
+}
+
 int main() {
     t_one_utterance();
     t_short_pause_no_split();
@@ -264,6 +414,13 @@ int main() {
     t_finish_flush();
     t_pre_pad_no_overlap();
     t_chunk_invariant();
+    t_cut_pause();
+    t_cut_cap();
+    t_cut_finish();
+    t_min_p();
+    t_diag_reset_between_segments();
+    t_cap_straddle_quiet();
+    t_cap_finish_min_p();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

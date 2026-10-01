@@ -39,11 +39,16 @@
 // either way, standing in for an ox-stt without session support:
 //
 //	POST   /sessions            -> 200 {"id":"<32 lowercase hex>"} (429 past 4)
-//	POST   /sessions/{id}/audio -> 200 one segment "chunk <n>"; logs
+//	POST   /sessions/{id}/audio -> 200 one segment "chunk <n>" per chunk, two
+//	                               for a chunk of 3200 bytes or more (so one
+//	                               response can carry several); logs
 //	                               "sess-audio <id> <content-length> <content-type>"
 //	POST   /sessions/{id}/finish -> 200 done with text = the chunks joined;
 //	                               logs "sess-finish <id>"
 //	DELETE /sessions/{id}        -> 200 {}; logs "sess-del <id>"
+//
+// As on the real server each segment is returned once: /audio and /finish
+// answer only the segments not sent by an earlier response.
 //
 // The session routes mirror the server's own guard: the exact Content-Type
 // per route (415 otherwise) and an exact Content-Length on POST (400 on a
@@ -110,9 +115,39 @@ func FakeChildMain() {
 }
 
 // fakeSTTSession is one live session in the fake `ox-stt --serve`: the
-// chunk texts it has taken so far, joined verbatim by /finish.
+// chunk texts it has taken so far, joined verbatim by /finish, and how many
+// of its segments were already returned — like the real server, /audio and
+// /finish each answer only the segments not sent before.
 type fakeSTTSession struct {
-	texts []string
+	texts    []string
+	returned int
+}
+
+// fakeSTTSegment is one session segment as the real ox-stt emits it,
+// including the segmenter cut diagnostics (cut/min_p/quiet_ms) the daemon
+// logs. n is the segment's index: each field takes a DISTINCT value per
+// segment, so a consumer that reports segment 0's values for every segment
+// is caught.
+func fakeSTTSegment(s, e float64, text string, n int) map[string]any {
+	return map[string]any{
+		"s": s, "e": e, "text": text,
+		"cut":      []string{"pause", "cap", "finish"}[n%3],
+		"min_p":    []float64{0.2, 0.25, 0.3, 0.35}[n%4],
+		"quiet_ms": 400 + 40*n,
+	}
+}
+
+// fakeSTTSegments drains the session's not-yet-returned segments — one per
+// text at index >= s.returned — and marks them returned, as the real
+// server's `returned` cursor does on both /audio and /finish. Called under
+// sessMu.
+func fakeSTTSegments(s *fakeSTTSession) []map[string]any {
+	segs := make([]map[string]any, 0, len(s.texts)-s.returned)
+	for i := s.returned; i < len(s.texts); i++ {
+		segs = append(segs, fakeSTTSegment(float64(i), float64(i+1), s.texts[i], i))
+	}
+	s.returned = len(s.texts)
+	return segs
 }
 
 // sttArgv reports whether argv looks like an ox-stt invocation.
@@ -273,10 +308,16 @@ func runFakeSTTServe(args []string) int {
 		sttLog(fmt.Sprintf("sess-audio %s %d %s", id, r.ContentLength, r.Header.Get("Content-Type")))
 		sessMu.Lock()
 		s, ok := sessions[id]
-		var text string
+		var segs []map[string]any
 		if ok {
-			s.texts = append(s.texts, "chunk "+strconv.Itoa(len(s.texts)+1))
-			text = s.texts[len(s.texts)-1]
+			closed := 1
+			if r.ContentLength >= 3200 {
+				closed = 2
+			}
+			for range closed {
+				s.texts = append(s.texts, "chunk "+strconv.Itoa(len(s.texts)+1))
+			}
+			segs = fakeSTTSegments(s)
 		}
 		sessMu.Unlock()
 		if !ok {
@@ -285,7 +326,7 @@ func runFakeSTTServe(args []string) int {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"segments": []map[string]any{{"s": 0, "e": 1, "text": text}},
+			"segments": segs,
 			"words":    []any{},
 			"pending":  0,
 		})
@@ -303,17 +344,15 @@ func runFakeSTTServe(args []string) int {
 		sttLog("sess-finish " + id)
 		sessMu.Lock()
 		s, ok := sessions[id]
+		var segs []map[string]any
 		if ok {
+			segs = fakeSTTSegments(s)
 			delete(sessions, id)
 		}
 		sessMu.Unlock()
 		if !ok {
 			sessErr(w, http.StatusNotFound, "unknown session")
 			return
-		}
-		segs := make([]map[string]any, 0, len(s.texts))
-		for i, txt := range s.texts {
-			segs = append(segs, map[string]any{"s": float64(i), "e": float64(i + 1), "text": txt})
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{

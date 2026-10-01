@@ -7,7 +7,8 @@
 // carried remainder at finish). Memory stays bounded: outside speech the
 // segmenter keeps only the previous segment's end and one energy bucket —
 // nothing per window; inside speech it keeps ~1.2 s of 10 ms bucket energies,
-// only what the hard-cap cut needs.
+// only what the hard-cap cut needs, plus the open segment's three diagnostic
+// counters (min_p_/quiet_run_/quiet_max_).
 #ifndef OX_STT_SEGMENTER_H
 #define OX_STT_SEGMENTER_H
 
@@ -35,9 +36,19 @@ struct seg_params {
     int cap_lookback_ms = 1000; // search that stretch in the segment's last this-long
 };
 
+// Why an emitted segment closed: pause = close_ms of silence; cap = force-cut
+// at cap_ms; finish = closed by finish().
+enum class seg_cut : uint8_t { pause, cap, finish };
+
 struct seg_range {
-    uint64_t s, e;  // absolute sample offsets from the session start, [s, e)
-    bool operator==(const seg_range & o) const { return s == o.s && e == o.e; }
+    uint64_t s, e;                     // absolute sample offsets, [s, e)
+    seg_cut cut = seg_cut::pause;      // why it closed
+    float min_p = 1.0f;                // lowest window probability while open
+    int quiet_ms = 0;                  // longest consecutive p < off_p run, ms
+    bool operator==(const seg_range & o) const {
+        return s == o.s && e == o.e && cut == o.cut && min_p == o.min_p &&
+               quiet_ms == o.quiet_ms;
+    }
 };
 
 class segmenter {
@@ -75,6 +86,8 @@ public:
                     in_speech_ = true;
                     last_speech_end_ = pos_;
                     speech_samples_ = wl;
+                    min_p_ = p;
+                    quiet_run_ = quiet_max_ = 0;
                     seg_start_ = w0 > pad_pre_ ? w0 - pad_pre_ : 0;
                     if (seg_start_ < prev_end_) {
                         seg_start_ = prev_end_;
@@ -83,11 +96,24 @@ public:
             } else if (p >= p_.off_p) {
                 last_speech_end_ = pos_;
                 speech_samples_ += wl;
-            } else if (pos_ - last_speech_end_ >= close_) {
-                close(std::min(last_speech_end_ + pad_post_, pos_), out);
+                quiet_run_ = 0;
+                if (p < min_p_) {
+                    min_p_ = p;
+                }
+            } else {
+                quiet_run_ += wl;
+                if (quiet_run_ > quiet_max_) {
+                    quiet_max_ = quiet_run_;
+                }
+                if (p < min_p_) {
+                    min_p_ = p;
+                }
+                if (pos_ - last_speech_end_ >= close_) {
+                    close(std::min(last_speech_end_ + pad_post_, pos_), out, seg_cut::pause);
+                }
             }
             if (in_speech_ && pos_ - seg_start_ >= cap_) {
-                cut_at_cap(out);
+                cut_at_cap(out, p);
             }
         }
         bump_floor();
@@ -98,7 +124,7 @@ public:
     // rule applies.
     void finish(std::vector<seg_range> & out) {
         if (in_speech_) {
-            close(std::min(last_speech_end_ + pad_post_, pos_), out);
+            close(std::min(last_speech_end_ + pad_post_, pos_), out, seg_cut::finish);
         }
         bump_floor();
     }
@@ -128,22 +154,26 @@ private:
         }
     }
 
-    void close(uint64_t end, std::vector<seg_range> & out) {
+    void close(uint64_t end, std::vector<seg_range> & out, seg_cut cut) {
         // end <= seg_start_ happens when a cap cut lands in the silence after
         // the utterance already ended (past last speech + pad): the
         // continuation holds no speech, and emitting it would be an empty or
         // inverted range.
         if (speech_samples_ >= min_sp_ && end > seg_start_) {
-            out.push_back({ seg_start_, end });
+            out.push_back({ seg_start_, end, cut, min_p_, quiet_max_ms() });
             prev_end_ = end;
         }
         in_speech_ = false;
     }
 
+    // quiet_max_ in milliseconds.
+    int quiet_max_ms() const { return (int) (quiet_max_ * 1000 / SEG_SR); }
+
     // Cut the open segment at the centre of the quietest cap_quiet_ stretch in
     // [pos - cap_lookback_, pos_]; the segment continues from the cut, still in
-    // speech.
-    void cut_at_cap(std::vector<seg_range> & out) {
+    // speech. p is the current window's probability — it seeds the
+    // continuation's min_p (that window already belongs to the continuation).
+    void cut_at_cap(std::vector<seg_range> & out, float p) {
         const uint64_t hi = pos_;
         const uint64_t lo = hi - cap_lookback_;
         const uint64_t nb = cap_quiet_ / SEG_BUCKET;              // buckets per stretch
@@ -168,13 +198,21 @@ private:
         } else {
             cut = (lo + hi) / 2;  // parameters leave no full stretch: centre it
         }
-        out.push_back({ seg_start_, cut });
+        out.push_back({ seg_start_, cut, seg_cut::cap, min_p_, quiet_max_ms() });
         prev_end_ = cut;
         seg_start_ = cut;
         // speech_samples_ is NOT reset: the count belongs to the utterance, not
         // the emitted piece. The min-speech rule exists to drop isolated noise
         // blips — a continuation that ends 160 ms after the cut is the tail of
         // a real utterance and must reach the decoder.
+        // The diagnostic counters restart at the cut, but a quiet run already
+        // in progress straddles it: keep quiet_run_ (and seed the max with it)
+        // so a pause that opened before the cap still closes the continuation
+        // with quiet_ms >= close_ms, and start min_p_ at the current window's
+        // p — never the 1.0 sentinel, which would leak into a finish() piece
+        // that saw no quieter window.
+        min_p_ = p;
+        quiet_max_ = quiet_run_;
     }
 
     // Sample energy per SEG_BUCKET-aligned absolute bucket; only kept while in
@@ -222,6 +260,10 @@ private:
     uint64_t prev_end_ = 0;        // end of the last emitted segment (pre-pad floor)
     uint64_t floor_ = 0;           // see bump_floor()
     bool in_speech_ = false;
+
+    float min_p_ = 1.0f;        // lowest p since the open segment's start
+    uint64_t quiet_run_ = 0;    // current consecutive p < off_p stretch, samples
+    uint64_t quiet_max_ = 0;    // longest such stretch in the open segment
 
     std::deque<double> buckets_;   // energy per SEG_BUCKET bucket
     uint64_t buckets_off_ = 0;     // absolute sample index of buckets_.front()'s start
