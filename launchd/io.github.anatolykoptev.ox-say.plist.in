@@ -20,9 +20,9 @@
     <key>KeepAlive</key>
     <true/>
     <!-- Dictation and speech answer the user directly, so the daemon and its
-         engine children get an app's CPU priority. With no ProcessType,
-         launchd throttles the job: base priority 20 instead of 31, and on a
-         busy Mac a 6 s dictation took 13 s to finish. -->
+         engine children run at an app's base CPU priority (31). With no
+         ProcessType, launchd throttles the job's CPU and I/O (priority 20);
+         a dictation that streamed while the Mac was saturated took 13 s. -->
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>ThrottleInterval</key>
