@@ -126,6 +126,14 @@ if ! fresh "$stt" "$stamp"; then
     ggml_patches | while read -r p; do git -C "$stt" apply --directory=ggml "$p"; done
     echo "$stamp" > "$stt/.ox-say-stamp"
 fi
+# ox-stt and ox-align -ng set GGML_METAL_DEVICES=0 so that ggml registers no
+# Metal device (#37). It is a debug hook, not an API: a whisper.cpp bump that
+# drops it would bring back the ~47 s Metal library compile on every CPU-only
+# first run, silently. Fail the build instead.
+grep -q 'getenv("GGML_METAL_DEVICES")' "$stt/ggml/src/ggml-metal/ggml-metal.cpp" || {
+    echo "engine/build.sh: the pinned ggml no longer reads GGML_METAL_DEVICES; ox-stt/ox-align -ng would compile Metal again (#37)" >&2
+    exit 1
+}
 include_copy "$stt/ggml" "$work/ggml-include-stt"
 set_cmake_flags "$work/ggml-include-stt"
 cmake -S "$here/stt" -B "$work/stt-build" -DWHISPER_SRC="$stt" -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=OFF \

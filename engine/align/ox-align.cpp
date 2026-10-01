@@ -1258,6 +1258,13 @@ int main(int argc, char ** argv) {
         usage(argv[0]);
         return 2;
     }
+    if (!a.gpu) {
+        // -ng must not touch Metal at all: ggml_backend_load_all() registers the
+        // Metal device, which compiles the whole embedded shader library (~47 s
+        // cold per binary) though no Metal kernel will run. GGML_METAL_DEVICES=0
+        // registers none. Same switch as ox-stt (#37); build.sh checks it exists.
+        setenv("GGML_METAL_DEVICES", "0", 1);
+    }
     if (!a.verbose) {
         ggml_log_set(no_log, nullptr);
     }
