@@ -48,6 +48,13 @@ public protocol Transcriber: AnyObject {
     func finish(all: [Float]) async throws -> String
     /// Drop the recording: nothing will be delivered for it.
     func cancel()
+    /// How the last `finish` was served. Read on the main thread right after
+    /// `finish` returns, before the next `begin`.
+    var finishStats: TranscriberStats { get }
+}
+
+extension Transcriber {
+    public var finishStats: TranscriberStats { TranscriberStats(path: .oneShot) }
 }
 
 /// The one-shot path the app always had: `begin`/`feed`/`cancel` do nothing and
@@ -76,6 +83,9 @@ public final class DictationController {
     public var onError: ((String) -> Void)?
     /// A press while the previous dictation is still transcribing: ignored.
     public var onBusy: (() -> Void)?
+    /// Once per transcribed dictation (not for a tap or a cancelled one): its
+    /// timing, with no text, for the log.
+    public var onTiming: ((DictationTiming) -> Void)?
     /// Length of the recording being transcribed (or last transcribed).
     public private(set) var recordingSeconds: Double = 0
 
@@ -194,6 +204,8 @@ public final class DictationController {
         }
         state = .transcribing
         let started = generation
+        let released = DispatchTime.now().uptimeNanoseconds
+        let seconds = recordingSeconds
         Task { @MainActor in
             let result: Result<String, Error>
             do {
@@ -202,14 +214,20 @@ public final class DictationController {
                 result = .failure(error)
             }
             guard started == generation else { return }
+            let elapsedMs = Int((DispatchTime.now().uptimeNanoseconds - released) / 1_000_000)
+            let outcome: DictationTiming.Outcome
             switch result {
             case .success(let text) where !text.isEmpty:
                 output.deliver(text)
+                outcome = .delivered
             case .success:
-                break
+                outcome = .empty
             case .failure(let error):
                 onError?(String(describing: error))
+                outcome = .failed
             }
+            onTiming?(DictationTiming(recordedSeconds: seconds, releaseToTextMs: elapsedMs,
+                                      stats: transcriber.finishStats, outcome: outcome))
             state = .idle
         }
     }

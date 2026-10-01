@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Carbon
 import DictationCore
+import os
 import ServiceManagement
 
 /// The menu-bar app: an icon that shows the dictation state, a menu with the
@@ -72,6 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         streamer.onText = { [overlay] text in overlay.setLiveText(text) }
         controller.onState = { [weak self] state in self?.show(state) }
         controller.onError = { [weak self] message in self?.notice(message, kind: .outcome) }
+        // One line per dictation, no text: read with
+        // `log show --predicate 'subsystem == "io.github.anatolykoptev.ox-say.dictation"'`.
+        // Notice level, so the unified log persists it.
+        let timingLog = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "timing")
+        controller.onTiming = { timing in timingLog.notice("\(timing.line, privacy: .public)") }
         controller.onBusy = { NSSound.beep() }
         output.onNotice = { [weak self] message in self?.notice(message, kind: .outcome) }
         recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }
