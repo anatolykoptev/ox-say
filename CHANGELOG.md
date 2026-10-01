@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.7](https://github.com/anatolykoptev/ox-say/compare/v0.1.6...v0.1.7) (2026-10-01)
+
+
+### Fixed
+
+* **daemon:** hold the engine guard across AddVoice normalization ([#69](https://github.com/anatolykoptev/ox-say/issues/69)) ([98aa2e9](https://github.com/anatolykoptev/ox-say/commit/98aa2e9c4e66bf9c8c83dbf282f746e0764c57e3))
+* **daemon:** keepalive for long tool calls; bound the STT seconds ([#74](https://github.com/anatolykoptev/ox-say/issues/74)) ([53f130c](https://github.com/anatolykoptev/ox-say/commit/53f130c272259131fbfcf188258d78a9a3f930b4))
+* **engine:** deliver the start error to callers that overlapped the attempt ([#66](https://github.com/anatolykoptev/ox-say/issues/66)) ([b65488c](https://github.com/anatolykoptev/ox-say/commit/b65488c8381ea3e1fd9e6a974638447e5c22d240))
+* **engine:** gate LiveURL on stopping children; validate AddVoice before the guard ([#70](https://github.com/anatolykoptev/ox-say/issues/70), [#67](https://github.com/anatolykoptev/ox-say/issues/67)) ([#75](https://github.com/anatolykoptev/ox-say/issues/75)) ([ebbe828](https://github.com/anatolykoptev/ox-say/commit/ebbe8286200d092398442a4003427686667356b4))
+* **engine:** reap an orphan only when its start time matches the pidfile ([#72](https://github.com/anatolykoptev/ox-say/issues/72)) ([f9eecab](https://github.com/anatolykoptev/ox-say/commit/f9eecab3e541226bfb8027f2539e9dacbcff8cf6))
+
 ## [0.1.6](https://github.com/anatolykoptev/ox-say/compare/v0.1.5...v0.1.6) (2026-10-01)
 
 
