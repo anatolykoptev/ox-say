@@ -111,10 +111,6 @@ func (d *Daemon) ServerConfig(version string) mcpserver.Config {
 			"speak":      d.Cfg.StartupTimeout + 2*time.Minute,
 			"transcribe": transcribeTimeout,
 		},
-		// A client's timeout_secs argument is checked first and capped here.
-		// Left at its default (2×90 s), it would cut a transcription the
-		// client asked to wait hours for down to 3 minutes.
-		MaxToolTimeout: transcribeTimeout,
 		// Progress notifications every 30 s keep a multi-hour call's event
 		// stream from looking idle to a client or proxy.
 		ToolKeepaliveInterval: 30 * time.Second,

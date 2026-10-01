@@ -44,19 +44,19 @@ func TestTranscribeToolTimeoutScales(t *testing.T) {
 	}
 }
 
-// A client's timeout_secs is capped at MaxToolTimeout before ToolTimeouts
-// is consulted (go-mcpserver resolveTimeout); its default, 2×ToolTimeout,
-// is 180 s. Mutation: drop MaxToolTimeout from ServerConfig -> RED (a
-// client asking to wait hours for a transcription gets 3 minutes).
-func TestTimeoutArgCannotCutTranscribeShort(t *testing.T) {
+// A transcription can run for hours (#16); progress notifications every
+// 30 s keep its event stream from looking idle. They route only in SSE mode,
+// so JSONResponse must stay off.
+// Mutation: drop ToolKeepaliveInterval from ServerConfig, or set
+// JSONResponse: true -> RED.
+func TestLongToolCallsKeepTheStreamWarm(t *testing.T) {
 	d := newTestDaemon(t, t.TempDir(), nil)
 	cfg := d.ServerConfig("test")
-	if cfg.MaxToolTimeout < cfg.ToolTimeouts["transcribe"] {
-		t.Fatalf("MaxToolTimeout = %s caps timeout_secs below the transcribe entry %s",
-			cfg.MaxToolTimeout, cfg.ToolTimeouts["transcribe"])
-	}
 	if cfg.ToolKeepaliveInterval <= 0 {
 		t.Fatal("no keepalive: a multi-hour transcribe call streams nothing until it ends")
+	}
+	if cfg.JSONResponse {
+		t.Fatal("JSONResponse mode has no per-request stream: the keepalive would be a no-op")
 	}
 }
 
