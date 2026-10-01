@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.5](https://github.com/anatolykoptev/ox-say/compare/v0.1.4...v0.1.5) (2026-10-01)
+
+
+### Fixed
+
+* **daemon:** cap the daemon log and drop per-chunk access lines ([#48](https://github.com/anatolykoptev/ox-say/issues/48)) ([7ba4455](https://github.com/anatolykoptev/ox-say/commit/7ba44559f3facf3901206b8127e9c4895ee42cfd)), closes [#9](https://github.com/anatolykoptev/ox-say/issues/9)
+* **dictation:** tag feed chunks with the dictation generation ([#51](https://github.com/anatolykoptev/ox-say/issues/51)) ([ee89b91](https://github.com/anatolykoptev/ox-say/commit/ee89b917b155cb9718f76b7041580d8c0aaea45c))
+* **stt:** -ng skips Metal entirely, ~50 s off a fresh binary's start ([#49](https://github.com/anatolykoptev/ox-say/issues/49)) ([2bc396f](https://github.com/anatolykoptev/ox-say/commit/2bc396f7a08a589d1ff23e1438d37efa44997ea3))
+
 ## [0.1.4](https://github.com/anatolykoptev/ox-say/compare/v0.1.3...v0.1.4) (2026-09-30)
 
 
