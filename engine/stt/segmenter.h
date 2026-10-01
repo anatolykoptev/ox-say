@@ -44,7 +44,9 @@ struct seg_range {
     uint64_t s, e;                     // absolute sample offsets, [s, e)
     seg_cut cut = seg_cut::pause;      // why it closed
     float min_p = 1.0f;                // lowest window probability while open
-    int quiet_ms = 0;                  // longest consecutive p < off_p run, ms
+    int quiet_ms = 0;                  // longest consecutive p < off_p run, ms; a run that
+                                       // straddles a cap cut counts whole in the continuation
+                                       // too, so it can exceed the continuation's length
     bool operator==(const seg_range & o) const {
         return s == o.s && e == o.e && cut == o.cut && min_p == o.min_p &&
                quiet_ms == o.quiet_ms;

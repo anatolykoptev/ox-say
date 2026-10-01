@@ -12,7 +12,10 @@
 //          with --vad, streaming dictation sessions:
 //            POST /sessions              -> {"id":<32 lowercase hex>}; application/json, body ignored;
 //                                 429 "at most 4 sessions", 500 "failed to init VAD context",
-//                                 500 "no entropy"
+//                                 500 "no entropy"; when nothing has decoded for 60 s or more it also
+//                                 queues a one-second silent decode ahead of the session's
+//                                 segments, so a model the OS paged out pages back in during
+//                                 speech (stderr: "pre-warm after N s idle took M ms")
 //            POST /sessions/<id>/audio   -> raw little-endian float32 mono 16 kHz PCM
 //                                 (application/octet-stream, <= 30 s per call); Silero VAD cuts the
 //                                 stream at pauses and finished pieces decode in the background;
@@ -644,6 +647,8 @@ struct session {
     }
 };
 
+// One unit of work for the session decode worker. A job without a session is a
+// pre-warm (see POST /sessions): its result is discarded.
 struct decode_job {
     std::shared_ptr<session> sess;
     uint64_t s, e;
@@ -651,6 +656,7 @@ struct decode_job {
     float min_p;
     int quiet_ms;
     std::vector<float> pcm;
+    long long idle_s = 0;  // pre-warm only: seconds since the previous decode
 };
 
 // "/sessions/<one path segment>/audio" or ".../finish": the required media
@@ -792,6 +798,10 @@ int serve(const args & a) {
                    std::chrono::steady_clock::now().time_since_epoch())
             .count();
     };
+    // When the model last decoded (the warm-up above counts), and whether a
+    // pre-warm job is already queued — see POST /sessions.
+    std::atomic<long long> last_decode{now_s()};
+    std::atomic<bool>      warm_queued{false};
     // Drop sessions idle past 120 s. Lazy — runs under sessions_mu inside every
     // handler that already touches the map, so no extra thread or lock domain.
     auto reap_idle = [&] {
@@ -875,6 +885,27 @@ int serve(const args & a) {
                 j = std::move(jobs.front());
                 jobs.pop_front();
             }
+            if (!j.sess) {
+                const auto t0 = std::chrono::steady_clock::now();
+                result r;
+                std::string werr;
+                bool ok;
+                {
+                    std::lock_guard<std::mutex> dl(decode_mu);
+                    ok = decode_parakeet(ctx, a, j.pcm, r, werr);
+                }
+                last_decode.store(now_s());
+                warm_queued.store(false);
+                const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                         std::chrono::steady_clock::now() - t0)
+                                         .count();
+                if (ok) {
+                    fprintf(stderr, "ox-stt: pre-warm after %lld s idle took %lld ms\n", j.idle_s, ms);
+                } else {
+                    fprintf(stderr, "ox-stt: pre-warm decode failed: %s\n", werr.c_str());
+                }
+                continue;
+            }
             {
                 std::lock_guard<std::mutex> sl(j.sess->mu);
                 if (j.sess->dead || j.sess->failed) {
@@ -892,6 +923,7 @@ int serve(const args & a) {
                 std::lock_guard<std::mutex> dl(decode_mu);
                 ok = decode_parakeet(ctx, a, j.pcm, r, derr);
             }
+            last_decode.store(now_s());
             {
                 std::lock_guard<std::mutex> sl(j.sess->mu);
                 if (ok) {
@@ -1025,6 +1057,7 @@ int serve(const args & a) {
             std::lock_guard<std::mutex> lock(decode_mu);
             ok = decode_parakeet(ctx, a, x, r, err);
         }
+        last_decode.store(now_s());
         const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         if (!ok) {
             res.status = 500;
@@ -1080,6 +1113,25 @@ int serve(const args & a) {
             res.status = 500;
             res.set_content(error_json("no entropy"), "application/json");
             return;
+        }
+        // Pre-warm: a model idle for a minute or more may have had its pages
+        // compressed or swapped out by the OS. On a 16 GB Mac under memory
+        // pressure the whole model was compressed 7 min after its last use,
+        // and the next 4 s clip then took 5.15 s against 1.2 s warm. A session
+        // opens at key-down, so decoding one second of silence now pages the
+        // model back in while the operator speaks, not after the release. It
+        // goes first in the FIFO, ahead of this session's segments; at most
+        // one is queued.
+        const long long idle = now_s() - last_decode.load();
+        if (idle >= 60 && !warm_queued.exchange(true)) {
+            decode_job w;
+            w.pcm.assign(SR, 0.0f);
+            w.idle_s = idle;
+            {
+                std::lock_guard<std::mutex> jl(jobs_mu);
+                jobs.push_back(std::move(w));
+            }
+            jobs_cv.notify_one();
         }
         res.set_content("{\"id\":\"" + id + "\"}", "application/json");
     });
