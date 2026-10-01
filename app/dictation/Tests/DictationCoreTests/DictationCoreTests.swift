@@ -168,6 +168,11 @@ final class FakeRecorder: Recorder {
     var samples: [Float] = []
     var onStart: (() -> Void)?
     var startError: Error?
+    var prepareError: Error?
+    var onSamples: (([Float]) -> Void)?
+    func prepare() throws {
+        if let prepareError { throw prepareError }
+    }
     func start() throws {
         started += 1
         onStart?()

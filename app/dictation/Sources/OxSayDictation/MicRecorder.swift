@@ -50,7 +50,7 @@ final class MicRecorder: Recorder {
     private let lock = NSLock()
     private let meter = LevelMeter(bands: 9, sampleRate: 16000)
 
-    func start() throws {
+    func prepare() throws {
         // Without permission the engine still runs and records silence, which
         // would look like dictation that heard nothing. Say what is wrong instead.
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -62,6 +62,11 @@ final class MicRecorder: Recorder {
         default:
             throw RecorderError.notAllowed
         }
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else { throw RecorderError.noInput }
+    }
+
+    func start() throws {
         let tapEpoch = recording.start()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)

@@ -25,11 +25,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// next dictation starts.
     private var lastNotice: String?
     private var client: TranscriptionClient!
-    private var streamer: StreamingTranscriber!
-    /// Recorder chunks ride a fresh AsyncStream per dictation, so they stay in
-    /// order: the audio thread yields, one consumer task feeds each chunk to
-    /// the transcriber tagged with the generation that dictation began under.
-    private var feedRoute: FeedRoute?
     /// Counts the seconds of a transcription on the pill, and after a while says
     /// why it takes long (CPU while the voice engine is loaded, or the GPU's
     /// first run after an update), so a slow run does not look like a hang.
@@ -59,14 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let client = TranscriptionClient(baseURL: baseURL)
         self.client = client
         let streamer = StreamingTranscriber(baseURL: baseURL)
-        self.streamer = streamer
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode, transcriber: streamer)
         streamer.onText = { [overlay] text in overlay.setLiveText(text) }
-        controller.onState = { [weak self] state in
-            self?.routeFeed(state)
-            self?.show(state)
-        }
+        controller.onState = { [weak self] state in self?.show(state) }
         controller.onError = { [weak self] message in self?.notice(message) }
         controller.onBusy = { NSSound.beep() }
         output.onNotice = { [weak self] message in self?.notice(message) }
@@ -100,21 +91,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         output.settle()
-    }
-
-    /// Rebuilds the chunk plumbing on dictation boundaries (onState fires only
-    /// on transitions): a recording gets its own stream and consumer, tagged
-    /// with the generation `begin` just minted; on stop or cancel the stream
-    /// is finished and the consumer cancelled, so nothing of this dictation
-    /// can be fed — or sent — once the next one starts.
-    private func routeFeed(_ state: DictationState) {
-        recorder.onSamples = nil
-        feedRoute?.close()
-        feedRoute = nil
-        guard state == .recording, let streamer else { return }
-        let route = FeedRoute(transcriber: streamer)
-        feedRoute = route
-        recorder.onSamples = route.sink
     }
 
     /// Registers the chosen key, or the first free one. `announce` says so when

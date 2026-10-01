@@ -29,8 +29,9 @@ public final class FeedRoute {
         { [continuation] chunk in continuation.yield(chunk) }
     }
 
-    /// Ends the route: no chunk is fed after it, except one whose feed had
-    /// already begun.
+    /// Ends the route: what is still queued is never fed. At most one chunk
+    /// that was already past the cancellation check is still fed; it is the
+    /// next one in order, so the fed chunks stay a prefix of the recording.
     public func close() {
         continuation.finish()
         consumer.cancel()

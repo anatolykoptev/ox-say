@@ -785,28 +785,51 @@ final class TranscriberControllerTests: XCTestCase {
     }
 
     // Mutation: in DictationController.keyDown, move `try recorder.start()`
-    // back above `transcriber.begin()` / `state = .recording` -> RED. The app
-    // routes chunks into the session on `.recording`; a chunk recorded before
-    // that is in the recording but never in the session.
+    // above `openRoute()` / `state = .recording` -> RED. A chunk recorded
+    // before the route exists is in the recording but never in the session.
     @MainActor
-    func testTheRecordingIsAnnouncedBeforeTheMicrophoneStarts() {
+    func testTheRouteExistsBeforeTheMicrophoneStarts() {
         let rec = FakeRecorder()
         let t = FakeTranscriber()
         let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
         var stateAtStart: DictationState?
+        var routedAtStart = false
         var beganAtStart = 0
-        rec.onStart = { stateAtStart = c.state; beganAtStart = t.began }
+        rec.onStart = { stateAtStart = c.state; routedAtStart = rec.onSamples != nil; beganAtStart = t.began }
         c.keyDown()
-        XCTAssertEqual(stateAtStart, .recording, "the chunk route must exist before the first chunk")
+        XCTAssertTrue(routedAtStart, "the chunk route must exist before the first chunk")
         XCTAssertEqual(beganAtStart, 1, "the generation must be minted before the first chunk")
+        XCTAssertEqual(stateAtStart, .recording)
     }
 
-    // Mutation: drop `transcriber.cancel()` in keyDown's catch -> RED (the
-    // session opened by begin() would stay open on the daemon).
+    // Mutation: move `try recorder.prepare()` below `transcriber.begin()` in
+    // keyDown -> RED (a press without microphone permission would open a
+    // daemon session, which cold-starts the speech-to-text server).
+    @MainActor
+    func testAPressThatCannotRecordOpensNoSession() {
+        struct NoPermission: LocalizedError { var errorDescription: String? { "no permission" } }
+        let rec = FakeRecorder(); rec.prepareError = NoPermission()
+        let t = FakeTranscriber()
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
+        var states: [DictationState] = []
+        var errors: [String] = []
+        c.onState = { states.append($0) }
+        c.onError = { errors.append($0) }
+        c.keyDown()
+        XCTAssertEqual(t.began, 0, "no session for a press that cannot record")
+        XCTAssertEqual(rec.started, 0)
+        XCTAssertNil(rec.onSamples)
+        XCTAssertEqual(states, [])
+        XCTAssertEqual(errors, ["Could not start recording: no permission"])
+    }
+
+    // Mutation: drop `transcriber.cancel()` (or `closeRoute()`) in keyDown's
+    // catch -> RED (the session opened by begin() would stay open on the
+    // daemon, or the recorder would keep a dead route).
     @MainActor
     func testAFailedStartCancelsTheSessionAndReturnsToIdle() {
-        struct NoMic: LocalizedError { var errorDescription: String? { "no mic" } }
-        let rec = FakeRecorder(); rec.startError = NoMic()
+        struct EngineFailed: LocalizedError { var errorDescription: String? { "engine failed" } }
+        let rec = FakeRecorder(); rec.startError = EngineFailed()
         let t = FakeTranscriber()
         let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
         var states: [DictationState] = []
@@ -816,11 +839,38 @@ final class TranscriberControllerTests: XCTestCase {
         c.keyDown()
         XCTAssertEqual(t.began, 1)
         XCTAssertEqual(t.cancelled, 1)
+        XCTAssertNil(rec.onSamples, "the route is closed")
         XCTAssertEqual(c.state, .idle)
-        XCTAssertEqual(states, [.recording, .idle], "the route is torn down on .idle")
-        XCTAssertEqual(errors, ["Could not start recording: no mic"])
+        XCTAssertEqual(states, [.recording, .idle])
+        XCTAssertEqual(errors, ["Could not start recording: engine failed"])
         rec.startError = nil
         c.keyDown()
         XCTAssertEqual(c.state, .recording, "a failed start must not wedge the next press")
+    }
+
+    // Mutation: drop `recorder.onSamples = route.sink` in openRoute -> RED
+    // (nothing streams; every dictation silently becomes a full upload).
+    // Mutation: drop `closeRoute()` in finish or in cancel -> RED (the
+    // recorder keeps feeding a dead dictation's route).
+    @MainActor
+    func testRecorderChunksReachTheTranscriberUntilTheDictationEnds() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 16000)
+        let t = FeedRouteTests.FeedLog()
+        t.generation = 7
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
+        c.keyDown()
+        rec.onSamples?([1])
+        let deadline = Date().addingTimeInterval(5)
+        while t.fed.isEmpty && Date() < deadline { try? await Task.sleep(nanoseconds: 2_000_000) }
+        XCTAssertEqual(t.fed.map(\.0), [[1]], "a recorder chunk must reach feed")
+        XCTAssertEqual(t.fed.map(\.1), [7], "tagged with the dictation's generation")
+        c.keyUp()
+        XCTAssertNil(rec.onSamples, "finish closes the route")
+        await run(c, until: .idle)
+
+        c.keyDown()
+        XCTAssertNotNil(rec.onSamples)
+        c.cancel()
+        XCTAssertNil(rec.onSamples, "cancel closes the route")
     }
 }
