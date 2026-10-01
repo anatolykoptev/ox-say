@@ -94,6 +94,7 @@ func jsonBody(contentType string) bool {
 
 // ServerConfig is the go-mcpserver configuration `ox-say serve` runs with.
 func (d *Daemon) ServerConfig(version string) mcpserver.Config {
+	transcribeTimeout := 2*stt.WorstTimeout(d.Cfg.STTMaxAudio, d.Cfg.STTTimeout) + 2*time.Minute
 	return mcpserver.Config{
 		Name:    "ox-say",
 		Version: version,
@@ -108,10 +109,13 @@ func (d *Daemon) ServerConfig(version string) mcpserver.Config {
 		// here; each phase of a run has its own deadline regardless.
 		ToolTimeouts: map[string]time.Duration{
 			"speak":      d.Cfg.StartupTimeout + 2*time.Minute,
-			"transcribe": 2*stt.WorstTimeout(d.Cfg.STTMaxAudio, d.Cfg.STTTimeout) + 2*time.Minute,
+			"transcribe": transcribeTimeout,
 		},
-		Routes:     d.Routes,
-		Middleware: []mcpserver.Middleware{Guard},
-		OnShutdown: d.Shutdown,
+		// Progress notifications every 30 s keep a multi-hour call's event
+		// stream from looking idle to a client or proxy.
+		ToolKeepaliveInterval: 30 * time.Second,
+		Routes:                d.Routes,
+		Middleware:            []mcpserver.Middleware{Guard},
+		OnShutdown:            d.Shutdown,
 	}
 }
