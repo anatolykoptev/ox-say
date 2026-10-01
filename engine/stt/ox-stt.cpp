@@ -524,6 +524,13 @@ std::string num(double v) {
     return b;
 }
 
+// session segments report min_p at two decimals
+std::string num2(double v) {
+    char b[32];
+    snprintf(b, sizeof(b), "%.2f", v);
+    return b;
+}
+
 // The one JSON shape of ox-stt, shared by the CLI (stdout/-o) and POST /transcribe. Trailing
 // newline included.
 std::string result_json(const std::string & engine, const result & r, size_t n_samples, double elapsed) {
@@ -564,12 +571,26 @@ std::string error_json(const std::string & err) {
     return o;
 }
 
-// One decoded VAD segment of a session: absolute times, all its words.
+// One decoded VAD segment of a session: absolute times, all its words, and
+// the segmenter's own record of why it was cut (cut) and what the VAD saw
+// while it was open (min_p, quiet_ms) — the dictation diagnostic.
 struct decoded_seg {
     double s, e;
     std::string text;
     std::vector<word> words;
+    oxstt::seg_cut cut;
+    float min_p;
+    int quiet_ms;
 };
+
+const char * cut_name(oxstt::seg_cut c) {
+    switch (c) {
+        case oxstt::seg_cut::pause:  return "pause";
+        case oxstt::seg_cut::cap:    return "cap";
+        case oxstt::seg_cut::finish: return "finish";
+    }
+    return "unknown";
+}
 
 // Segment/words JSON shared by POST .../audio and .../finish: the segments
 // decoded since the session's previous response. `done` adds "done":true and
@@ -580,7 +601,8 @@ std::string session_json(const std::vector<decoded_seg> & segs, size_t from, siz
     std::string o = "{\"segments\":[";
     for (size_t i = from; i < segs.size(); ++i) {
         o += (i > from ? "," : "") + std::string("{\"s\":") + num(segs[i].s) + ",\"e\":" +
-             num(segs[i].e) + ",\"text\":";
+             num(segs[i].e) + ",\"cut\":\"" + cut_name(segs[i].cut) + "\",\"min_p\":" +
+             num2(segs[i].min_p) + ",\"quiet_ms\":" + std::to_string(segs[i].quiet_ms) + ",\"text\":";
         json_str(o, segs[i].text);
         o += "}";
     }
@@ -632,6 +654,9 @@ struct session {
 struct decode_job {
     std::shared_ptr<session> sess;
     uint64_t s, e;
+    oxstt::seg_cut cut;
+    float min_p;
+    int quiet_ms;
     std::vector<float> pcm;
 };
 
@@ -793,17 +818,20 @@ int serve(const args & a) {
     };
     // Enqueue one emitted segment for background decode. Called with the
     // session's mu held; the job copies its samples so audio can be trimmed.
-    auto enqueue_segment = [&](const std::shared_ptr<session> & sp, uint64_t ss, uint64_t ee) {
-        if (ee <= ss) {
+    auto enqueue_segment = [&](const std::shared_ptr<session> & sp, const oxstt::seg_range & r) {
+        if (r.e <= r.s) {
             return;  // the segmenter never emits one; never let one underflow the copy below
         }
         session & s = *sp;
         decode_job j;
         j.sess = sp;
-        j.s = ss;
-        j.e = ee;
-        const size_t off = (size_t) (ss - s.audio_base);
-        j.pcm.assign(s.audio.begin() + off, s.audio.begin() + off + (size_t) (ee - ss));
+        j.s = r.s;
+        j.e = r.e;
+        j.cut = r.cut;
+        j.min_p = r.min_p;
+        j.quiet_ms = r.quiet_ms;
+        const size_t off = (size_t) (r.s - s.audio_base);
+        j.pcm.assign(s.audio.begin() + off, s.audio.begin() + off + (size_t) (r.e - r.s));
         ++s.inflight;
         {
             std::lock_guard<std::mutex> jl(jobs_mu);
@@ -829,7 +857,7 @@ int serve(const args & a) {
         s.seg.feed(whisper_vad_probs(s.vad), (size_t) np, pcm, (size_t) np * oxstt::SEG_WIN, segs);
         s.vad_pos += (uint64_t) np * oxstt::SEG_WIN;
         for (const oxstt::seg_range & r : segs) {
-            enqueue_segment(sp, r.s, r.e);
+            enqueue_segment(sp, r);
         }
         // drop audio nothing can reference any more: the segmenter's floor is
         // the lowest offset a future emit can still touch, so memory is bound
@@ -878,6 +906,9 @@ int serve(const args & a) {
                         decoded_seg d;
                         d.s = (double) j.s / SR;
                         d.e = (double) j.e / SR;
+                        d.cut = j.cut;
+                        d.min_p = j.min_p;
+                        d.quiet_ms = j.quiet_ms;
                         for (const segment & sg : r.segments) {
                             d.text += (d.text.empty() ? "" : " ") + sg.text;
                         }
@@ -1175,7 +1206,7 @@ int serve(const args & a) {
                         std::vector<oxstt::seg_range> segs;
                         s->seg.feed(whisper_vad_probs(s->vad), 1, pad, rem, segs);
                         for (const oxstt::seg_range & r : segs) {
-                            enqueue_segment(s, r.s, r.e);
+                            enqueue_segment(s, r);
                         }
                     }
                 }
@@ -1183,7 +1214,7 @@ int serve(const args & a) {
                     std::vector<oxstt::seg_range> segs;
                     s->seg.finish(segs);
                     for (const oxstt::seg_range & r : segs) {
-                        enqueue_segment(s, r.s, r.e);
+                        enqueue_segment(s, r);
                     }
                     if (s->cv.wait_until(sl,
                                          std::chrono::steady_clock::now() + std::chrono::seconds(60),

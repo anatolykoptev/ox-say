@@ -115,6 +115,16 @@ type fakeSTTSession struct {
 	texts []string
 }
 
+// fakeSTTSegment is one session segment as the real ox-stt emits it,
+// including the segmenter cut diagnostics (cut/min_p/quiet_ms) the daemon
+// logs — fixed plausible values, enough for a consumer to see the keys.
+func fakeSTTSegment(s, e float64, text string) map[string]any {
+	return map[string]any{
+		"s": s, "e": e, "text": text,
+		"cut": "pause", "min_p": 0.2, "quiet_ms": 400,
+	}
+}
+
 // sttArgv reports whether argv looks like an ox-stt invocation.
 func sttArgv(args []string) bool {
 	for _, a := range args {
@@ -285,7 +295,7 @@ func runFakeSTTServe(args []string) int {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"segments": []map[string]any{{"s": 0, "e": 1, "text": text}},
+			"segments": []map[string]any{fakeSTTSegment(0, 1, text)},
 			"words":    []any{},
 			"pending":  0,
 		})
@@ -313,7 +323,7 @@ func runFakeSTTServe(args []string) int {
 		}
 		segs := make([]map[string]any, 0, len(s.texts))
 		for i, txt := range s.texts {
-			segs = append(segs, map[string]any{"s": float64(i), "e": float64(i + 1), "text": txt})
+			segs = append(segs, fakeSTTSegment(float64(i), float64(i+1), txt))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{

@@ -2,15 +2,18 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -353,6 +356,109 @@ func TestSTTSessionCreateBackoff(t *testing.T) {
 	}
 	if n := len(linesWith(sttLogLines(t, log), "serve\t")); n != serves {
 		t.Fatalf("serve spawns = %d, want %d — the backoff create spawned a child", n, serves)
+	}
+}
+
+// segLog records the proxy's per-segment diagnostic records with their
+// attrs, so the test can check exactly what was logged — and that no
+// transcribed text leaked into the log.
+type segLog struct {
+	mu   sync.Mutex
+	recs []slog.Record
+}
+
+func (h *segLog) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *segLog) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != "stt segment" {
+		return nil
+	}
+	h.mu.Lock()
+	h.recs = append(h.recs, r.Clone())
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *segLog) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *segLog) WithGroup(string) slog.Handler      { return h }
+
+func (h *segLog) all() []slog.Record {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]slog.Record(nil), h.recs...)
+}
+
+// recAttrs flattens a record's attrs into a map for assertions.
+func recAttrs(r slog.Record) map[string]any {
+	m := map[string]any{}
+	r.Attrs(func(a slog.Attr) bool {
+		m[a.Key] = a.Value.Any()
+		return true
+	})
+	return m
+}
+
+// Every segment a session response carries produces exactly one "stt
+// segment" Info line with the cut diagnostics — dur_s, cut, min_p,
+// quiet_ms — and never the text: the segment's text is the operator's
+// dictation, a privacy matter.
+// Mutation: drop the log call in sttSessionProxy -> RED (no records).
+// Mutation: log the segment's text -> RED (a "text" attr appears).
+func TestSTTSegmentLogLines(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemonSTT(t, dir, nil, nil, nil)
+	sttSetupServer(t, d, dir)
+	sttVADModel(t, d, dir)
+	srv := transcriptionServer(t, d)
+	base := sessBase(srv)
+
+	rec := &segLog{}
+	d.log = slog.New(rec)
+
+	code, body := sessReq(t, http.MethodPost, base, "application/json", []byte("{}"))
+	if code != http.StatusOK {
+		t.Fatalf("create: status %d body %s", code, body)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil || !sessionIDRe.MatchString(created.ID) {
+		t.Fatalf("create body = %s", body)
+	}
+	id := created.ID
+
+	chunk := bytes.Repeat([]byte{1}, 640)
+	for i := 0; i < 2; i++ {
+		code, body = sessReq(t, http.MethodPost, base+"/"+id+"/audio", "application/octet-stream", chunk)
+		if code != http.StatusOK {
+			t.Fatalf("audio %d: status %d body %s", i+1, code, body)
+		}
+	}
+	if n := len(rec.all()); n != 2 {
+		t.Fatalf("stt segment lines after 2 chunks = %d, want 2 (one per response segment)", n)
+	}
+
+	// The finish response carries both chunk segments: two more lines.
+	code, body = sessReq(t, http.MethodPost, base+"/"+id+"/finish", "application/json", []byte("{}"))
+	if code != http.StatusOK {
+		t.Fatalf("finish: status %d body %s", code, body)
+	}
+	recs := rec.all()
+	if len(recs) != 4 {
+		t.Fatalf("stt segment lines = %d, want 4", len(recs))
+	}
+	for i, r := range recs[2:] {
+		m := recAttrs(r)
+		if r.Level != slog.LevelInfo {
+			t.Fatalf("segment %d level = %s, want INFO", i+1, r.Level)
+		}
+		if m["dur_s"] != 1.0 || m["cut"] != "pause" || m["min_p"] != 0.2 || m["quiet_ms"] != int64(400) {
+			t.Fatalf("segment %d attrs = %v, want dur_s=1 cut=pause min_p=0.2 quiet_ms=400", i+1, m)
+		}
+		if _, ok := m["text"]; ok {
+			t.Fatalf("segment %d line logs the transcribed text", i+1)
+		}
 	}
 }
 
