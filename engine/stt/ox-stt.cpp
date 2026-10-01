@@ -798,8 +798,10 @@ int serve(const args & a) {
                    std::chrono::steady_clock::now().time_since_epoch())
             .count();
     };
-    // When the model last decoded (the warm-up above counts), and whether a
-    // pre-warm job is already queued — see POST /sessions.
+    // When a decode last started or ended (the warm-up above counts), and
+    // whether a pre-warm job is already queued — see POST /sessions. Stamping
+    // the start too keeps a session opened during a long cold /transcribe
+    // from queueing a pre-warm the running decode already does.
     std::atomic<long long> last_decode{now_s()};
     std::atomic<bool>      warm_queued{false};
     // Drop sessions idle past 120 s. Lazy — runs under sessions_mu inside every
@@ -921,6 +923,7 @@ int serve(const args & a) {
             bool ok;
             {
                 std::lock_guard<std::mutex> dl(decode_mu);
+                last_decode.store(now_s());
                 ok = decode_parakeet(ctx, a, j.pcm, r, derr);
             }
             last_decode.store(now_s());
@@ -1055,6 +1058,7 @@ int serve(const args & a) {
         bool ok;
         {
             std::lock_guard<std::mutex> lock(decode_mu);
+            last_decode.store(now_s());
             ok = decode_parakeet(ctx, a, x, r, err);
         }
         last_decode.store(now_s());
@@ -1120,11 +1124,13 @@ int serve(const args & a) {
         // and the next 4 s clip then took 5.15 s against 1.2 s warm. A session
         // opens at key-down, so decoding one second of silence now pages the
         // model back in while the operator speaks, not after the release. It
-        // goes first in the FIFO, ahead of this session's segments; at most
-        // one is queued.
+        // is queued ahead of this session's segments (other sessions' queued
+        // segments stay ahead of it); at most one is queued. The trade-off: a
+        // model that was never paged out still pays the silent decode, so a
+        // dictation shorter than it finishes that much later.
         const long long idle = now_s() - last_decode.load();
         if (idle >= 60 && !warm_queued.exchange(true)) {
-            decode_job w;
+            decode_job w{};
             w.pcm.assign(SR, 0.0f);
             w.idle_s = idle;
             {
