@@ -25,8 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// next dictation starts.
     private var lastNotice: String?
     private var client: TranscriptionClient!
-    /// Recorder chunks ride one AsyncStream to the transcriber, so they stay in
-    /// order: the audio thread yields, a single consumer task awaits each feed.
+    private var streamer: StreamingTranscriber!
+    /// Recorder chunks ride a fresh AsyncStream per dictation, so they stay in
+    /// order: the audio thread yields, one consumer task feeds each chunk to
+    /// the transcriber tagged with the generation that dictation began under.
+    private var feedContinuation: AsyncStream<[Float]>.Continuation?
     private var feedTask: Task<Void, Never>?
     /// Counts the seconds of a transcription on the pill, and after a while says
     /// why it takes long (CPU while the voice engine is loaded, or the GPU's
@@ -57,13 +60,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let client = TranscriptionClient(baseURL: baseURL)
         self.client = client
         let streamer = StreamingTranscriber(baseURL: baseURL)
+        self.streamer = streamer
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode, transcriber: streamer)
-        let (chunks, feedChunks) = AsyncStream<[Float]>.makeStream()
-        recorder.onSamples = { chunk in feedChunks.yield(chunk) }
-        feedTask = Task { for await chunk in chunks { await streamer.feed(chunk) } }
         streamer.onText = { [overlay] text in overlay.setLiveText(text) }
-        controller.onState = { [weak self] state in self?.show(state) }
+        controller.onState = { [weak self] state in
+            self?.routeFeed(state)
+            self?.show(state)
+        }
         controller.onError = { [weak self] message in self?.notice(message) }
         controller.onBusy = { NSSound.beep() }
         output.onNotice = { [weak self] message in self?.notice(message) }
@@ -97,6 +101,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         output.settle()
+    }
+
+    /// Rebuilds the chunk plumbing on dictation boundaries (onState fires only
+    /// on transitions): a recording gets its own stream and consumer, tagged
+    /// with the generation `begin` just minted; on stop or cancel the stream
+    /// is finished and the consumer cancelled, so nothing of this dictation
+    /// can be fed — or sent — once the next one starts.
+    private func routeFeed(_ state: DictationState) {
+        recorder.onSamples = nil
+        feedContinuation?.finish()
+        feedContinuation = nil
+        feedTask?.cancel()
+        feedTask = nil
+        guard state == .recording, let streamer else { return }
+        let generation = streamer.feedGeneration
+        let (chunks, feedChunks) = AsyncStream<[Float]>.makeStream()
+        feedContinuation = feedChunks
+        recorder.onSamples = { chunk in feedChunks.yield(chunk) }
+        feedTask = Task { for await chunk in chunks { await streamer.feed(chunk, generation: generation) } }
     }
 
     /// Registers the chosen key, or the first free one. `announce` says so when

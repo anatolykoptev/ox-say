@@ -31,8 +31,10 @@ public protocol TextOutput: AnyObject {
 public protocol Transcriber: AnyObject {
     /// Prepare for a new recording (e.g. open a streaming session).
     func begin()
-    /// A chunk of 16 kHz mono samples, in recording order.
-    func feed(_ samples: [Float]) async
+    /// A chunk of 16 kHz mono samples, in recording order. `generation` is the
+    /// tag `begin` minted for the dictation that recorded the chunk; a stale
+    /// tag means the chunk belongs to a dead recording and is dropped.
+    func feed(_ samples: [Float], generation: Int) async
     /// The recording stopped: the text for the whole recording.
     func finish(all: [Float]) async throws -> String
     /// Drop the recording: nothing will be delivered for it.
@@ -45,7 +47,7 @@ private final class OneShotTranscriber: Transcriber {
     private let transcribe: ([Float]) async throws -> String
     init(_ transcribe: @escaping ([Float]) async throws -> String) { self.transcribe = transcribe }
     func begin() {}
-    func feed(_: [Float]) async {}
+    func feed(_: [Float], generation _: Int) async {}
     func finish(all: [Float]) async throws -> String { try await transcribe(all) }
     func cancel() {}
 }
