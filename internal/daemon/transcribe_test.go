@@ -127,9 +127,12 @@ func postTranscription(t *testing.T, url string, wav []byte, fields map[string]s
 	return resp
 }
 
-// S1 — device choice is driven by the TTS supervisor's live state: Ready →
-// ox-stt gets -ng; back to Stopped with GPU=auto → no -ng.
-// Mutation: drop the EngineBusy term (or always omit -ng) in the device
+// S1 — device choice is driven by the shared GPU lease the TTS engine
+// holds for its child's whole lifetime: Ready → ox-stt gets -ng; once the
+// stopped child's exit has freed the lease, GPU=auto → no -ng. The wait
+// covers the lease, not just the state: the supervisor reports Stopped
+// before the child has exited, and the lease outlives that window.
+// Mutation: drop the GPULease wiring (or always omit -ng) in the device
 // choice -> RED.
 func TestTranscribeDeviceChoice(t *testing.T) {
 	dir := t.TempDir()
@@ -145,7 +148,7 @@ func TestTranscribeDeviceChoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pin the engine in Ready while the transcription runs — the device
-	// choice reads state at spawn time and must see busy.
+	// choice takes the lease at spawn time and must find it held.
 	g := d.Sup.Acquire()
 	if _, err := d.Transcribe(context.Background(), TranscribeInput{AudioPath: src}); err != nil {
 		t.Fatal(err)
@@ -155,9 +158,11 @@ func TestTranscribeDeviceChoice(t *testing.T) {
 		t.Fatalf("engine ready: argv %v missing -ng", args)
 	}
 
+	// Stopped alone is not enough: the teardown window (Stopped before the
+	// child exits) still holds the lease, so wait for the release too.
 	testutil.WaitFor(t, 5*time.Second, func() bool {
-		return d.Sup.State() == engine.StateStopped
-	}, "idle stop")
+		return d.Sup.State() == engine.StateStopped && !d.gpu.Held()
+	}, "idle stop + lease release")
 	if _, err := d.Transcribe(context.Background(), TranscribeInput{AudioPath: src}); err != nil {
 		t.Fatal(err)
 	}

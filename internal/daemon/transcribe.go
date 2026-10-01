@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/stt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -27,11 +26,12 @@ type TranscribeInput struct {
 	Prompt    string // whisper only
 }
 
-// Transcribe runs one stt.Transcribe with the daemon's config; the STT
-// device choice sees the live TTS supervisor state so a CLI ox-stt never
-// takes GPU memory the TTS child is holding. Parakeet clips go to the
-// resident CPU server when it is enabled — independent of TTS state — and
-// fall back to the CLI on a server failure.
+// Transcribe runs one stt.Transcribe with the daemon's config; the CLI
+// device choice goes through the GPU lease the TTS supervisor holds for
+// its child's whole lifetime, so a per-call ox-stt never takes GPU memory
+// the engine is holding — including the Stopped-but-not-exited teardown
+// window (issue #11). Parakeet clips go to the resident CPU server when it
+// is enabled and fall back to the CLI on a server failure.
 func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Result, error) {
 	opts := stt.Options{
 		Engine:       in.Engine,
@@ -41,12 +41,9 @@ func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Resul
 		Model:        d.Cfg.STTModel,
 		WhisperModel: d.Cfg.STTWhisperModel,
 		GPU:          d.Cfg.STTGPU,
+		GPULease:     d.gpu,
 		Timeout:      d.Cfg.STTTimeout,
 		MaxAudio:     d.Cfg.STTMaxAudio,
-		EngineBusy: func() bool {
-			s := d.Sup.State()
-			return s == engine.StateStarting || s == engine.StateReady
-		},
 	}
 	if d.STTSup != nil {
 		opts.Server = d.sttServer

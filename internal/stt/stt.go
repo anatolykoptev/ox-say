@@ -3,9 +3,12 @@
 // by the resident `ox-stt --serve` process (the default for parakeet clips
 // up to serverMaxAudio — the model is loaded once, so a warm call is far
 // faster than a cold CLI start) or by a per-call ox-stt child. One
-// transcription runs at a time per process. The resident server runs on
-// the CPU (it is spawned with -ng unless OX_SAY_STT_GPU=on), so it never
-// takes GPU memory from the TTS child; its idle cost is ~1.4 GB of RAM.
+// transcription runs at a time per process. The resident server always runs
+// on the CPU (-ng): a process holding GPU memory for its whole lifetime
+// cannot share the card through a per-run lease, so it never takes GPU
+// memory from the TTS child; its idle cost is ~1.4 GB of RAM. Per-call CLI
+// runs arbitrate the GPU with the TTS engine through Options.GPULease
+// (issue #11).
 package stt
 
 import (
@@ -64,9 +67,24 @@ type Result struct {
 	Words     []Word    `json:"words"`
 }
 
+// GPULease is the daemon's single-token GPU mutex, shared between the TTS
+// engine child and per-call ox-stt CLI runs (issue #11). A run that goes
+// without -ng must hold it for the whole run; the resident server is
+// CPU-only and never touches it. Implemented by *engine.GPULease. A
+// transcription only ever tries the lease, never waits for it: a run that
+// waited would hold its place in the queue (or the lease itself) while
+// doing no work. The owner tag lets the supervisor's Status name who a
+// parked engine start is waiting on.
+type GPULease interface {
+	// TryAs takes the lease only if free, tagging the holder with owner.
+	TryAs(owner string) bool
+	// Release returns the token — exactly once per acquisition.
+	Release()
+}
+
 // Options controls one Transcribe call. The daemon fills the Bin/Model/GPU
-// fields from config; EngineBusy reports whether the TTS supervisor holds
-// the GPU (state starting or ready).
+// fields from config; GPULease carries the shared GPU lease the TTS
+// engine also holds while its child lives.
 type Options struct {
 	Engine   string // "parakeet" (default) | "whisper"
 	Language string // whisper only; parakeet auto-detects
@@ -76,7 +94,7 @@ type Options struct {
 	Model        string        // parakeet model
 	WhisperModel string        // whisper model
 	GPU          string        // "auto" (default) | "on" | "off"
-	EngineBusy   func() bool   // nil → false
+	GPULease     GPULease      // nil → no arbitration (auto/on behave as if the GPU were free)
 	Timeout      time.Duration // fixed allowance: bounds the conversion alone and seeds the engine's base + k×duration budget; 0 → DefaultTimeout
 	MaxAudio     time.Duration // audio past this is not decoded; 0 → DefaultMaxAudio
 	MaxQueue     int           // callers allowed to wait; 0 → DefaultMaxQueue
@@ -120,6 +138,16 @@ var sttK = map[string]map[bool]float64{
 // server decode is not killed the way a CLI child is, so long files stay on
 // the CLI. Tests shrink it.
 var serverMaxAudio = 300 * time.Second
+
+// autoGPUMaxAudio caps the decoded length for which OX_SAY_STT_GPU=auto may
+// take the GPU lease. A run that holds the card parks a speak's engine
+// start for the whole transcription — past the MCP tool's timeout once the
+// audio is long — and the operator wants the GPU idle anyway, because the
+// Mac's display lags under load. So auto never holds the card longer than
+// a speak may reasonably be asked to wait: longer audio runs with -ng and
+// never touches the lease. `on` lifts the cap but still only takes a free
+// lease.
+const autoGPUMaxAudio = 5 * time.Minute
 
 // serverHTTP has no Timeout: the caller's ctx carries the deadline.
 var serverHTTP = &http.Client{}
@@ -216,11 +244,11 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	select {
 	case sem <- struct{}{}:
 		waiting.Add(-1)
-		defer func() { <-sem }()
 	case <-ctx.Done():
 		waiting.Add(-1)
 		return nil, ctx.Err()
 	}
+	defer func() { <-sem }()
 
 	base := opts.Timeout
 	if base <= 0 {
@@ -250,9 +278,9 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	defer func() { _ = os.Remove(wav) }()
 
 	// The engine budget scales with the real duration (issue #16). The
-	// device is the worst the run may land on: only OX_SAY_STT_GPU=on
-	// keeps every leg — the resident server and the CLI fallback — off
-	// the CPU.
+	// device flag is the worst the run may land on: the resident server is
+	// CPU-only whatever the mode, so only OX_SAY_STT_GPU=on's CLI leg can
+	// be off the CPU.
 	timeout := sttTimeout(engine, opts.GPU == "on", secs, base)
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
@@ -260,9 +288,9 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	timedOut := func() bool { return ctx.Err() != nil && parent.Err() == nil }
 
 	// The resident server decodes parakeet only and returns the CLI's JSON
-	// shape; short clips go to it whatever the TTS state is (the server is
-	// CPU-only by default). Long files stay on the CLI: a cancelled CLI run
-	// is killed, a cancelled server decode is not.
+	// shape; short clips go to it whatever the GPU state is (the server is
+	// CPU-only and never holds the lease). Long files stay on the CLI: a
+	// cancelled CLI run is killed, a cancelled server decode is not.
 	if engine == "parakeet" && opts.Server != nil && secs <= serverMaxAudio.Seconds() {
 		res, err := transcribeServer(ctx, wav, opts)
 		switch {
@@ -287,7 +315,25 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 			args = append(args, "--prompt", opts.Prompt)
 		}
 	}
-	if !gpuAllowed(opts.GPU, engineBusy(opts.EngineBusy)) {
+	// A run without -ng must hold the shared GPU lease for its whole
+	// lifetime: the TTS engine start waits on the same token before it may
+	// spawn (issue #11). A transcription only tries the lease and falls
+	// back to -ng when it is taken, so it never waits holding sem or the
+	// lease while doing no work. off never touches it. auto also caps the
+	// audio length (autoGPUMaxAudio), so a speak's parked start waits out a
+	// short run at worst; on takes the GPU whenever it is free, whatever
+	// the length.
+	gpu := opts.GPU != "off"
+	if l := opts.GPULease; gpu && l != nil {
+		// The 0.05 s mirrors convert's duration slop (the WAV header is
+		// wider than the 44 bytes secs subtracts).
+		short := secs <= autoGPUMaxAudio.Seconds()+0.05
+		gpu = (opts.GPU == "on" || short) && l.TryAs("transcription")
+		if gpu {
+			defer l.Release()
+		}
+	}
+	if !gpu {
 		args = append(args, "-ng")
 	}
 
@@ -369,8 +415,6 @@ func transcribeServer(ctx context.Context, wav string, opts Options) (*Result, e
 	return &res, nil
 }
 
-func engineBusy(f func() bool) bool { return f != nil && f() }
-
 func queueLimit(n int) int {
 	if n <= 0 {
 		return DefaultMaxQueue
@@ -381,24 +425,6 @@ func queueLimit(n int) int {
 // QueueFull reports whether a new transcription would be refused with ErrBusy
 // right now; the HTTP route checks it before accepting an upload.
 func QueueFull(maxQueue int) bool { return waiting.Load() >= int32(queueLimit(maxQueue)) }
-
-// gpuAllowed resolves the -ng decision for the per-call CLI — the resident
-// server has its own device choice (CPU unless OX_SAY_STT_GPU=on). "on"
-// always uses the GPU, "off" never, and "auto" stays off the GPU while the
-// TTS engine occupies it (its ~2 GB plus the ~1.3 GB ox-stt wants would not
-// fit the card). The exclusion is one-way: a TTS start during a GPU
-// transcription is not held back, so both can briefly share the card
-// (accepted; see the README).
-func gpuAllowed(mode string, ttsBusy bool) bool {
-	switch mode {
-	case "on":
-		return true
-	case "off":
-		return false
-	default: // auto
-		return !ttsBusy
-	}
-}
 
 // tailBuffer keeps the last max bytes written to it: enough of a tool's
 // stderr to explain a failure, bounded however much it prints.

@@ -116,10 +116,10 @@ func TestTranscribeUsesServer(t *testing.T) {
 	}
 }
 
-// The server is CPU-only by default, so TTS readiness does not route a
+// The server is CPU-only, so a held GPU lease (TTS ready) does not route a
 // transcription back to the CLI.
-// Mutation: add `&& !engineBusy(opts.EngineBusy)` to the server-branch
-// condition in stt.Transcribe -> RED (the CLI fake runs).
+// Mutation: gate the server-branch condition in stt.Transcribe on the GPU
+// lease being free -> RED (the CLI fake runs).
 func TestServerUsedWhileTTSReady(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
@@ -148,10 +148,13 @@ func TestServerUsedWhileTTSReady(t *testing.T) {
 	}
 }
 
-// The resident server is spawned with -ng by default (CPU — the GPU stays
-// with TTS); OX_SAY_STT_GPU=on drops the flag, opting into GPU sharing.
-// Mutation: drop the `-ng` append in the Args func in newDaemon -> RED
-// (the default-config serve argv loses -ng).
+// The resident server is spawned with -ng unconditionally (CPU — the GPU
+// stays with the TTS engine / the per-call GPU run, which arbitrate it via
+// the shared lease). OX_SAY_STT_GPU=on no longer opts the server in: a
+// process that holds GPU memory for its whole lifetime cannot take part in
+// a per-run lease without starving TTS starts (issue #11).
+// Mutation: make the -ng append conditional on cfg.STTGPU != "on" in the
+// Args func in newDaemon -> RED (the GPU=on serve argv loses -ng).
 func TestSTTServerArgs(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
@@ -172,20 +175,22 @@ func TestSTTServerArgs(t *testing.T) {
 	d2 := newTestDaemonSTT(t, dir2, nil, nil, nil)
 	log2 := sttSetupServer(t, d2, dir2)
 	// The Args closure reads cfg.STTGPU at spawn time, so flipping it here —
-	// after setup, before the first transcription — is what the flag does.
+	// after setup, before the first transcription — exercises what the flag
+	// would do. The serve child must still be CPU-only, and it must not
+	// hold the GPU lease.
 	d2.Cfg.STTGPU = "on"
 	src2 := testutil.WriteTinyWAV(t, dir2, "in.wav")
 	if _, err := d2.Transcribe(context.Background(), TranscribeInput{AudioPath: src2}); err != nil {
 		t.Fatal(err)
 	}
 	argv = lastServeArgv(t, log2)
-	if argvHas(argv, "-ng") {
-		t.Fatalf("OX_SAY_STT_GPU=on serve argv %v still carries -ng", argv)
-	}
-	for _, want := range []string{"--serve", "--port", "-m"} {
+	for _, want := range []string{"--serve", "--port", "-m", "-ng"} {
 		if !argvHas(argv, want) {
-			t.Fatalf("GPU=on serve argv %v missing %q", argv, want)
+			t.Fatalf("GPU=on serve argv %v missing %q — the resident server stays on CPU", argv, want)
 		}
+	}
+	if d2.gpu.Held() {
+		t.Fatal("the resident STT server took the GPU lease")
 	}
 }
 
