@@ -40,13 +40,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The key that is registered right now; what the menu tells the user to press.
     private var active: Shortcut?
     private let fallbackNoticeKey = "fallbackNoticeShownFor"
+    /// The key last reported as held by another app, so an open menu does not
+    /// repeat the notice and the beep while the conflict lasts.
+    private var registerFailNoticeShownFor: Shortcut?
 
-    /// The chosen key, or the first one macOS does not already use.
-    private var shortcut: Shortcut {
-        if let chosen = Shortcut(rawValue: UserDefaults.standard.string(forKey: shortcutKey) ?? ""), chosen.isFree {
-            return chosen
-        }
-        return Shortcut.allCases.first { $0.isFree } ?? .controlSpace
+    /// What the system shortcuts right now mean for the offered keys: which
+    /// one dictation should listen to and what each menu item shows.
+    private func shortcutPlan() -> ShortcutMenu.Plan {
+        let defaults = UserDefaults.standard
+        return ShortcutMenu.plan(
+            stored: defaults.string(forKey: shortcutKey).flatMap(Shortcut.init(rawValue:)).map(choice),
+            active: active.map(choice),
+            choices: Shortcut.allCases.map(choice),
+            system: Shortcut.systemShortcuts())
+    }
+
+    private func choice(_ shortcut: Shortcut) -> ShortcutMenu.Choice {
+        ShortcutMenu.Choice(title: shortcut.title, keyCode: Int(shortcut.keyCode), modifiers: Int(shortcut.modifiers))
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -58,9 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller = DictationController(recorder: recorder, output: output, mode: mode, transcriber: streamer)
         streamer.onText = { [overlay] text in overlay.setLiveText(text) }
         controller.onState = { [weak self] state in self?.show(state) }
-        controller.onError = { [weak self] message in self?.notice(message) }
+        controller.onError = { [weak self] message in self?.notice(message, kind: .outcome) }
         controller.onBusy = { NSSound.beep() }
-        output.onNotice = { [weak self] message in self?.notice(message) }
+        output.onNotice = { [weak self] message in self?.notice(message, kind: .outcome) }
         recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }
         recorder.onEnded = { [weak self] reason in
             // Transcribe what was recorded; say why it ended once it is delivered.
@@ -78,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         buildMenu()
-        registerShortcut(announce: true)
+        registerShortcut(shortcutPlan())
         show(.idle)
 
         // Ask for both permissions up front, so the first dictation does not stall
@@ -93,46 +103,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         output.settle()
     }
 
-    /// Registers the chosen key, or the first free one. `announce` says so when
-    /// the choice had to fall back (once per choice, not at every launch).
-    private func registerShortcut(announce: Bool) {
+    /// Registers the plan's key. A forced move off a key macOS took is said
+    /// once per taken key (remembered across launches); a first registration
+    /// and a move back to a freed pick stay silent.
+    private func registerShortcut(_ plan: ShortcutMenu.Plan) {
         hotKey = nil
         active = nil
-        let key = shortcut
-        for (choice, item) in shortcutItems {
-            item.state = choice == key ? .on : .off
-            item.isEnabled = choice.isFree
-            item.title = choice.isFree ? choice.title : "\(choice.title) (a macOS shortcut)"
-        }
-        guard key.isFree else {
-            if announce {
-                notice("Every dictation key is a macOS shortcut on this Mac. Free ⌃Space or ⌥Space in System Settings → Keyboard → Keyboard Shortcuts.")
-            }
+        applyShortcutItems(plan)
+        guard let index = plan.key else {
+            notice("Every dictation key is a macOS shortcut on this Mac. Free ⌃Space or ⌥Space in System Settings → Keyboard → Keyboard Shortcuts.")
             return
         }
+        let key = Shortcut.allCases[index]
         hotKey = HotKey(keyCode: key.keyCode, modifiers: key.modifiers)
         hotKey?.onDown = { [weak self] in self?.controller.keyDown() }
         hotKey?.onUp = { [weak self] in self?.controller.keyUp() }
         guard hotKey != nil else {
-            if announce { notice("\(key.title) is taken by another app, so dictation has no hotkey. Pick another one in this menu.") }
+            // Once per key per launch: menuWillOpen re-registers while active
+            // stays nil, and the conflict usually outlasts the menu open.
+            if registerFailNoticeShownFor != key {
+                registerFailNoticeShownFor = key
+                notice("\(key.title) is taken by another app, so dictation has no hotkey. Pick another one in this menu.")
+            }
             return
         }
+        registerFailNoticeShownFor = nil
         active = key
         let defaults = UserDefaults.standard
-        if let chosen = Shortcut(rawValue: defaults.string(forKey: shortcutKey) ?? ""), chosen != key {
-            if announce && defaults.string(forKey: fallbackNoticeKey) != chosen.rawValue {
-                defaults.set(chosen.rawValue, forKey: fallbackNoticeKey)
-                notice("\(chosen.title) is a macOS shortcut on this Mac, so dictation uses \(key.title).")
+        if let from = plan.movedFrom {
+            let taken = Shortcut.allCases[from]
+            if defaults.string(forKey: fallbackNoticeKey) != taken.rawValue {
+                defaults.set(taken.rawValue, forKey: fallbackNoticeKey)
+                notice("\(taken.title) is a macOS shortcut on this Mac, so dictation uses \(key.title).")
             }
         } else {
             defaults.removeObject(forKey: fallbackNoticeKey)
         }
     }
 
-    /// System Settings may have freed or taken a key since: follow it.
+    /// The menu items follow the live system shortcuts: a key macOS freed is
+    /// clickable again, a key it took greys out — whether or not the
+    /// registered key changes.
+    private func applyShortcutItems(_ plan: ShortcutMenu.Plan) {
+        for (index, shortcut) in Shortcut.allCases.enumerated() {
+            guard let item = shortcutItems[shortcut] else { continue }
+            let row = plan.items[index]
+            item.state = row.isOn ? .on : .off
+            item.isEnabled = row.isEnabled
+            item.title = row.title
+        }
+    }
+
+    /// System Settings may have freed or taken a key since: the items always
+    /// follow it, and the registered key moves only when the plan says so.
     func menuWillOpen(_ menu: NSMenu) {
-        if controller.state == .idle && active != shortcut {
-            registerShortcut(announce: false)
+        let plan = shortcutPlan()
+        applyShortcutItems(plan)
+        if controller.state == .idle, plan.key.map({ Shortcut.allCases[$0] }) != active {
+            registerShortcut(plan)
             show(.idle)
         }
     }
@@ -247,15 +275,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func notice(_ message: String) {
+    private func notice(_ message: String, kind: DictationNotice.Kind = .unrelated) {
         // A recording that ended on its own says why together with what happened
-        // to its text, not instead of it.
-        let message = endedReason.map { "\($0) \(message)" } ?? message
-        endedReason = nil
-        lastNotice = message
-        statusLine.title = message
-        statusItem.button?.toolTip = message
-        overlay.showMessage(message)
+        // to its text, not instead of it — and spends that reason on nothing else.
+        let merged = DictationNotice.merge(endedReason: endedReason, into: message, kind: kind)
+        endedReason = merged.endedReason
+        lastNotice = merged.message
+        statusLine.title = merged.message
+        statusItem.button?.toolTip = merged.message
+        overlay.showMessage(merged.message)
         NSSound.beep()
     }
 
@@ -263,7 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let raw = sender.representedObject as? String, Shortcut(rawValue: raw) != nil else { return }
         controller.cancel()
         UserDefaults.standard.set(raw, forKey: shortcutKey)
-        registerShortcut(announce: true)
+        registerShortcut(shortcutPlan())
         show(controller.state)
     }
 

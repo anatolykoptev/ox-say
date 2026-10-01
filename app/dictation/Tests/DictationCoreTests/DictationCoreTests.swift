@@ -533,6 +533,106 @@ final class ShortcutConflictTests: XCTestCase {
     }
 }
 
+final class ShortcutMenuTests: XCTestCase {
+    let space = 49, control = 0x1000, option = 0x800
+    var ctrl: ShortcutMenu.Choice { ShortcutMenu.Choice(title: "⌃Space", keyCode: space, modifiers: control) }
+    var opt: ShortcutMenu.Choice { ShortcutMenu.Choice(title: "⌥Space", keyCode: space, modifiers: option) }
+    /// Offered in the same preference order as the app's Shortcut.allCases.
+    var offers: [ShortcutMenu.Choice] { [ctrl, opt] }
+    /// A stock Mac: ⌃Space switches input sources.
+    var stock: [SystemShortcut] { [SystemShortcut(keyCode: space, modifiers: control, enabled: true)] }
+
+    // Mutation: always use `isEnabled: true` and the bare title when building
+    // ShortcutMenu.Plan.items -> RED (a macOS-owned key stays clickable and
+    // unmarked, the bug behind the greyed-out menu).
+    func testTheItemsFollowTheSystemShortcuts() {
+        let taken = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: stock)
+        XCTAssertEqual(taken.items[0], ShortcutMenu.Item(title: "⌃Space (a macOS shortcut)", isEnabled: false, isOn: false))
+        XCTAssertEqual(taken.items[1], ShortcutMenu.Item(title: "⌥Space", isEnabled: true, isOn: true))
+
+        // The same call after the key is freed un-greys it: the refresh path
+        // asks again every menu open, so the answer must come from `system`.
+        let freed = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: [])
+        XCTAssertEqual(freed.items[0], ShortcutMenu.Item(title: "⌃Space", isEnabled: true, isOn: false))
+    }
+
+    // The decision: with no stored pick, a working key does not move when a
+    // more preferred key frees up — a shortcut freed in System Settings was
+    // usually freed for something else, and grabbing it would fight that.
+    // Mutation: `key = choices.firstIndex(where: isFree)` in the no-stored
+    // branch of ShortcutMenu.plan -> RED (⌃Space is silently claimed).
+    func testAWorkingKeyIsNotMovedForPreference() {
+        let plan = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: [])
+        XCTAssertEqual(plan.key, 1, "⌥Space is registered and still free: stay on it")
+        XCTAssertNil(plan.movedFrom, "no move, nothing to announce")
+        XCTAssertTrue(plan.items[1].isOn)
+    }
+
+    // Mutation: drop the `movedFrom = choices.firstIndex(of:)` assignments in
+    // ShortcutMenu.plan -> RED (a forced move goes back to silent).
+    func testLosingTheActiveKeyMovesAndMarksIt() {
+        let optTaken = [SystemShortcut(keyCode: space, modifiers: option, enabled: true)]
+        let plan = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: optTaken)
+        XCTAssertEqual(plan.key, 0, "⌥Space is taken: fall back to free ⌃Space")
+        XCTAssertEqual(plan.movedFrom, 1, "the move off ⌥Space earns a notice")
+        XCTAssertEqual(plan.items[1], ShortcutMenu.Item(title: "⌥Space (a macOS shortcut)", isEnabled: false, isOn: false))
+    }
+
+    func testAStoredPickThatMacOSTookFallsBack() {
+        let plan = ShortcutMenu.plan(stored: ctrl, active: opt, choices: offers, system: stock)
+        XCTAssertEqual(plan.key, 1)
+        XCTAssertEqual(plan.movedFrom, 0)
+    }
+
+    func testAFreeStoredPickWinsOverTheActiveKey() {
+        let plan = ShortcutMenu.plan(stored: opt, active: ctrl, choices: offers, system: [])
+        XCTAssertEqual(plan.key, 1)
+        XCTAssertNil(plan.movedFrom)
+    }
+
+    func testNothingFreeRegistersNothing() {
+        let all = stock + [SystemShortcut(keyCode: space, modifiers: option, enabled: true)]
+        let plan = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: all)
+        XCTAssertNil(plan.key)
+        XCTAssertTrue(plan.items.allSatisfy { !$0.isEnabled && !$0.isOn })
+        XCTAssertEqual(plan.movedFrom, 1)
+    }
+
+    func testFirstLaunchTakesTheFirstFreeKeySilently() {
+        let plan = ShortcutMenu.plan(stored: nil, active: nil, choices: offers, system: stock)
+        XCTAssertEqual(plan.key, 1)
+        XCTAssertNil(plan.movedFrom, "an initial choice is not a move")
+    }
+}
+
+final class DictationNoticeTests: XCTestCase {
+    let reason = "Recordings stop after 120 seconds."
+
+    // Mutation: drop `kind == .outcome` from the guard in DictationNotice.merge
+    // -> RED (a "Start at login" failure raised while a capped recording is
+    // transcribing gets the cap prefix and spends it, so the reason never
+    // reaches the dictation's own outcome).
+    func testAnUnrelatedNoticeNeitherTakesNorSpendsTheReason() {
+        let merged = DictationNotice.merge(endedReason: reason, into: "Start at login: denied", kind: .unrelated)
+        XCTAssertEqual(merged.message, "Start at login: denied")
+        XCTAssertEqual(merged.endedReason, reason, "the reason stays pending for the dictation's outcome")
+    }
+
+    // Mutation: merge never prefixes -> RED (the cap would read as an
+    // unrelated failure, and the recording would end unexplained).
+    func testAnOutcomeNoticeTakesTheReasonAsPrefix() {
+        let merged = DictationNotice.merge(endedReason: reason, into: "the text stayed on the clipboard", kind: .outcome)
+        XCTAssertEqual(merged.message, "\(reason) the text stayed on the clipboard")
+        XCTAssertNil(merged.endedReason, "the reason is said once")
+    }
+
+    func testNothingPendingPassesThrough() {
+        let merged = DictationNotice.merge(endedReason: nil, into: "plain", kind: .outcome)
+        XCTAssertEqual(merged.message, "plain")
+        XCTAssertNil(merged.endedReason)
+    }
+}
+
 final class SlowTranscriptionTests: XCTestCase {
     // Mutation: return "decoding a long recording" for every state in
     // SlowTranscription.reason -> RED (a dead speech server would go unnamed).
