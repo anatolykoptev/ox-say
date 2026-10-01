@@ -94,25 +94,36 @@ type Supervisor struct {
 	hc  *http.Client
 	log *slog.Logger
 
-	mu           sync.Mutex
-	change       chan struct{} // closed on every state transition (broadcast)
-	state        State
-	dead         bool // Shutdown called
-	child        *child
-	lastErr      error
-	startGen     int   // incremented for every start attempt launched
-	attemptErr   error // concluded start-attempt error…
-	attemptGen   int   // …belonging to this start generation; delivered to every waiter of it, never to a later request
-	starts       int
-	restarts     int
-	failCount    int // consecutive crash/start failures (drives backoff)
-	nextAttempt  time.Time
-	lastActivity time.Time // last Ready commit or Guard release
-	guards       int
+	mu         sync.Mutex
+	change     chan struct{} // closed on every state transition (broadcast)
+	state      State
+	dead       bool // Shutdown called
+	child      *child
+	lastErr    error
+	startGen   int   // incremented for every start attempt launched
+	attemptErr error // concluded start-attempt error…
+	attemptGen int   // …belonging to this start generation; delivered to every waiter of it, never to a later request
+	// attemptDoneAt is when the attempt owning attemptErr concluded. An
+	// EnsureReady caller that entered before it overlapped the attempt and
+	// is owed the error — even when it never took s.mu while the attempt
+	// was in flight.
+	attemptDoneAt time.Time
+	starts        int
+	restarts      int
+	failCount     int // consecutive crash/start failures (drives backoff)
+	nextAttempt   time.Time
+	lastActivity  time.Time // last Ready commit or Guard release
+	guards        int
 
 	stopIdle  chan struct{}
 	idleDone  chan struct{}
 	closeOnce sync.Once
+
+	// ensureEntryHook, when set (tests only), runs inside EnsureReady
+	// after the caller's entry timestamp, before the first s.mu
+	// acquisition — it parks a caller in the window where an in-flight
+	// start attempt can conclude unseen.
+	ensureEntryHook func()
 }
 
 // child is one spawned engine process generation.
@@ -194,6 +205,12 @@ func (s *Supervisor) broadcastLocked() {
 // wait for its outcome. After an unexpected exit the next EnsureReady waits
 // out a backoff (1s doubling to 30s) before respawning.
 func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
+	// enteredAt separates callers that overlapped a start attempt from
+	// callers that arrived only after it concluded — see the default branch.
+	enteredAt := time.Now()
+	if s.ensureEntryHook != nil {
+		s.ensureEntryHook()
+	}
 	var waitGen int // the last in-flight start generation this caller joined
 	loggedInvariant := false
 	for {
@@ -236,10 +253,12 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 			}
 		default: // stopped or crashed, no live child — eligible to start
 			// A concluded failed attempt is reported to every caller that
-			// waited on that generation (HTTP maps it to 503); a caller
-			// that never joined it retries after the recorded backoff
-			// instead of consuming the error.
-			if s.attemptErr != nil && s.attemptGen == waitGen {
+			// waited on that generation — including one that entered while
+			// it was in flight but first took s.mu after the conclusion
+			// (waitGen is still unset then) — HTTP maps it to 503. A
+			// caller that arrived only after the conclusion retries after
+			// the recorded backoff instead of consuming the error.
+			if s.attemptErr != nil && (s.attemptGen == waitGen || !enteredAt.After(s.attemptDoneAt)) {
 				err := s.attemptErr
 				s.mu.Unlock()
 				return "", fmt.Errorf("engine: start failed: %w", err)
@@ -569,6 +588,7 @@ func (s *Supervisor) finishStart(c *child, err error) {
 		s.lastErr = err
 		s.attemptErr = err
 		s.attemptGen = s.startGen // still this run's gen: no new attempt can launch while state is Starting
+		s.attemptDoneAt = time.Now()
 		if s.state != StateCrashed {
 			// onExit may already have classified this child as crashed and
 			// charged the backoff — never count one death twice.
