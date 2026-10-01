@@ -79,7 +79,7 @@ final class PasteOutput: TextOutput {
     private let lending = SystemPasteboard(promised: true)
     private let plain = SystemPasteboard(promised: false)
     /// A paste whose clipboard has not been given back yet.
-    private var pending: (lease: ClipboardLease, timer: Timer)?
+    private var pending: (lease: ClipboardLease, timer: Timer, text: String)?
 
     func deliver(_ text: String) {
         // A previous paste still waiting for its read: give its clipboard back
@@ -107,7 +107,7 @@ final class PasteOutput: TextOutput {
                     self?.settle()
                 }
             }
-            pending = (lease, timer)
+            pending = (lease, timer, text)
         }
     }
 
@@ -118,6 +118,10 @@ final class PasteOutput: TextOutput {
         self.pending = nil
         pending.timer.invalidate()
         if !pending.lease.release(), let notice = pending.lease.notice {
+            // The user's clipboard is not coming back, so the dictation stays on
+            // it. Write it plainly: the lent copy is a transient promise, which
+            // clipboard history skips and which dies with this process.
+            plain.writeText(pending.text)
             onNotice?(notice)
         }
     }
@@ -141,8 +145,7 @@ final class PasteOutput: TextOutput {
     /// keyboard once. A dead key or a key that types nothing maps to nil, as
     /// does every key when the layout cannot be read at all.
     private static func layoutCharacter() -> (Int) -> Character? {
-        guard let ref = layoutData() else { return { _ in nil } }
-        let data = Unmanaged<CFData>.fromOpaque(ref).takeUnretainedValue() as Data
+        guard let data = layoutData() else { return { _ in nil } }
         let keyboardType = UInt32(LMGetKbdType())
         return { keyCode in
             data.withUnsafeBytes { raw -> Character? in
@@ -162,13 +165,16 @@ final class PasteOutput: TextOutput {
 
     /// The current layout's UCKeyTranslate data; the ASCII-capable layout's
     /// when the current input source does not carry key layout data.
-    private static func layoutData() -> UnsafeMutableRawPointer? {
-        var source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue()
-        var data = source.flatMap { TISGetInputSourceProperty($0, kTISPropertyUnicodeKeyLayoutData) }
-        if data == nil {
-            source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue()
-            data = source.flatMap { TISGetInputSourceProperty($0, kTISPropertyUnicodeKeyLayoutData) }
+    private static func layoutData() -> Data? {
+        func uchr(_ source: TISInputSource?) -> Data? {
+            guard let source, let ref = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+                return nil
+            }
+            // The CFData belongs to `source` (Get rule): bridge it while the
+            // source is alive; the Data then keeps its own reference.
+            return withExtendedLifetime(source) { Unmanaged<CFData>.fromOpaque(ref).takeUnretainedValue() as Data }
         }
-        return data
+        return uchr(TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue())
+            ?? uchr(TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue())
     }
 }

@@ -1,8 +1,8 @@
-/// ⌘V must press the key that types "v" in the current layout, not the QWERTY
+/// ⌘V must press the key that types "v" with ⌘ held, not the QWERTY V
 /// position: on Dvorak the QWERTY V key is "k", and the letter v sits on the
-/// QWERTY "." key. Non-Latin layouts such as Russian have no "v" at all, but
-/// macOS resolves ⌘ shortcuts through the ASCII-capable layout, so the QWERTY
-/// key is still right there.
+/// QWERTY "." key. Layouts switch tables under ⌘: Russian, Ukrainian, Hebrew and
+/// the other non-Latin layouts type QWERTY Latin with ⌘ held, and "Dvorak –
+/// QWERTY ⌘" types QWERTY, so a scan under ⌘ finds the right key for each.
 public enum PasteKey {
     /// kVK_ANSI_V as a plain number: DictationCore does not link Carbon.
     public static let ansiV = 9
