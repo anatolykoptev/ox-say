@@ -258,6 +258,80 @@ final class StreamingTranscriberTests: XCTestCase {
                        "committed text grows with single spaces, trimmed; a 200 with no new segments re-emits")
     }
 
+    // The release's view of the dictation: one segment already decoded while
+    // the key was held, and the 0.25 s tail the recording added at finish.
+    // Mutation: take segmentsBeforeRelease after the finish (committed then
+    // holds the tail's segment too) -> RED.
+    @MainActor
+    func testFinishStatsDescribeTheRelease() async throws {
+        let fake = ScriptedSend([
+            .json(200, #"{"id":"\#(sessionID)"}"#),
+            .json(200, #"{"segments":[{"s":0,"e":0.5,"text":"hello"}],"pending":0}"#),
+            .json(200, #"{"segments":[{"s":0.5,"e":0.75,"text":"world"}],"pending":0}"#),
+            .json(200, #"{"text":"hello world","done":true}"#),
+        ])
+        let st = transcriber(fake)
+        st.begin()
+        await st.feed(chunk(0), generation: st.feedGeneration)
+        let sent = await fake.waitForRequests(2)
+        XCTAssertTrue(sent)
+        let deadline = Date().addingTimeInterval(2)
+        while st.pumpSending && Date() < deadline { try? await Task.sleep(nanoseconds: 5_000_000) }
+        let text = try await st.finish(all: chunk(0) + chunk(1, 4000))
+        XCTAssertEqual(text, "hello world")
+        let stats = st.finishStats
+        XCTAssertEqual(stats.path, .stream)
+        XCTAssertEqual(stats.segmentsBeforeRelease, 1, "only the segment decoded while the key was held")
+        XCTAssertEqual(stats.tailSeconds, 0.25, accuracy: 0.0001, "4000 samples were still unsent at the release")
+        XCTAssertNotNil(stats.sessionCreateMs)
+    }
+
+    // A cold server: the create lands after the release. The timing must still
+    // carry how long it took — that is the cold start the targets measure.
+    // Mutation: drop the `if finishing { stats.sessionCreateMs = … }` update in
+    // createArrived -> RED (the line reads session_create_ms=none).
+    @MainActor
+    func testACreateLandingAfterTheReleaseIsStillTimed() async throws {
+        let gate = Gate()
+        let fake = ScriptedSend([
+            .gated(gate, .json(200, #"{"id":"\#(sessionID)"}"#)),
+            .json(200, #"{"segments":[],"pending":0}"#),
+            .json(200, #"{"text":"late","done":true}"#),
+        ])
+        let st = transcriber(fake)
+        st.begin()
+        Task { try? await Task.sleep(nanoseconds: 150_000_000); gate.open() }
+        let text = try await st.finish(all: chunk(0, 100))
+        XCTAssertEqual(text, "late")
+        let stats = st.finishStats
+        XCTAssertEqual(stats.path, .stream)
+        XCTAssertGreaterThanOrEqual(stats.sessionCreateMs ?? -1, 140, "the create took about 150 ms")
+    }
+
+    // Each dictation reports its own create: a second dictation whose create
+    // fails must not inherit the first one's time.
+    // Mutation: drop `createMs = nil` in begin -> RED.
+    @MainActor
+    func testASecondDictationDoesNotInheritTheFirstCreateTime() async throws {
+        let fake = ScriptedSend([
+            .json(200, #"{"id":"\#(sessionID)"}"#),
+            .json(200, #"{"segments":[],"pending":0}"#),
+            .json(200, #"{"text":"one","done":true}"#),
+            .json(404, #"{"error":"no such route"}"#),
+            .json(200, #"{"text":"two"}"#),
+        ])
+        let st = transcriber(fake)
+        st.begin()
+        let first = try await st.finish(all: chunk(0, 100))
+        XCTAssertEqual(first, "one")
+        XCTAssertNotNil(st.finishStats.sessionCreateMs)
+        st.begin()
+        let second = try await st.finish(all: chunk(1, 100))
+        XCTAssertEqual(second, "two")
+        XCTAssertEqual(st.finishStats.path, .fallback)
+        XCTAssertNil(st.finishStats.sessionCreateMs, "the second dictation never opened a session")
+    }
+
     // Mutation: StreamingTranscriber.finish returns "" instead of falling back
     // to the one-shot upload -> RED (the dictation would paste nothing).
     @MainActor
@@ -288,6 +362,10 @@ final class StreamingTranscriberTests: XCTestCase {
         await st.feed(all, generation: st.feedGeneration)
         let text = try await st.finish(all: all)
         XCTAssertEqual(text, "uploaded")
+        // Mutation: never set `stats.path = .fallback` before the one-shot
+        // upload -> RED (the timing log would credit the session).
+        XCTAssertEqual(st.finishStats.path, .fallback)
+        XCTAssertNil(st.finishStats.sessionCreateMs, "no session opened")
         let arrived = await fake.waitForRequests(2)
         XCTAssertTrue(arrived)
         let reqs = fake.recorded()
@@ -723,12 +801,18 @@ final class TranscriberControllerTests: XCTestCase {
         var finishCalls: [[Float]] = []
         var result: String = "text"
         var finishDelayNanos: UInt64 = 0
+        var finishError: Error?
+        var finishReturned = 0
+        var stats = TranscriberStats(path: .stream, sessionCreateMs: 120, segmentsBeforeRelease: 2, tailSeconds: 0.5)
+        var finishStats: TranscriberStats { stats }
         func begin() { began += 1 }
         var feedGeneration: Int { began }
         func feed(_ samples: [Float], generation _: Int) async {}
         func finish(all: [Float]) async throws -> String {
             finishCalls.append(all)
             if finishDelayNanos > 0 { try? await Task.sleep(nanoseconds: finishDelayNanos) }
+            finishReturned += 1
+            if let finishError { throw finishError }
             return result
         }
         func cancel() { cancelled += 1 }
@@ -738,6 +822,68 @@ final class TranscriberControllerTests: XCTestCase {
         let deadline = Date().addingTimeInterval(2)
         while c.state != state && Date() < deadline { try? await Task.sleep(nanoseconds: 5_000_000) }
         XCTAssertEqual(c.state, state, file: file, line: line)
+    }
+
+    // One timing line per transcribed dictation: the recording's length, the
+    // release-to-text latency and how the transcriber served it — never the
+    // text. Mutation: drop the onTiming call in finish -> RED.
+    @MainActor
+    func testATranscribedDictationReportsItsTiming() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 16000)
+        let t = FakeTranscriber()
+        t.finishDelayNanos = 60_000_000
+        t.result = "meet me at noon"
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
+        var timings: [DictationTiming] = []
+        c.onTiming = { timings.append($0) }
+        c.keyDown(); c.keyUp()
+        await run(c, until: .idle)
+        XCTAssertEqual(timings.count, 1)
+        guard let timing = timings.first else { return }
+        XCTAssertEqual(timing.outcome, .delivered)
+        XCTAssertEqual(timing.recordedSeconds, 1.0, accuracy: 0.0001)
+        XCTAssertGreaterThanOrEqual(timing.releaseToTextMs, 50, "the finish took 60 ms")
+        XCTAssertEqual(timing.stats, t.stats)
+        XCTAssertFalse(timing.line.contains("noon"), "the dictated text never reaches the line")
+    }
+
+    @MainActor
+    func testAFailedOrEmptyDictationReportsItsOutcome() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 16000)
+        let t = FakeTranscriber()
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
+        var outcomes: [DictationTiming.Outcome] = []
+        c.onTiming = { outcomes.append($0.outcome) }
+        t.result = ""
+        c.keyDown(); c.keyUp()
+        await run(c, until: .idle)
+        t.finishError = URLError(.cannotConnectToHost)
+        c.keyDown(); c.keyUp()
+        await run(c, until: .idle)
+        XCTAssertEqual(outcomes, [.empty, .failed])
+    }
+
+    // A tap is not a dictation and a cancelled one has no latency to report.
+    @MainActor
+    func testATapOrACancelledDictationReportsNoTiming() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 1000)
+        let t = FakeTranscriber()
+        t.finishDelayNanos = 200_000_000
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
+        var timings = 0
+        c.onTiming = { _ in timings += 1 }
+        c.keyDown(); c.keyUp()  // 1000 samples: a tap under minSeconds
+        rec.samples = [Float](repeating: 0.1, count: 16000)
+        c.keyDown(); c.keyUp()
+        XCTAssertEqual(c.state, .transcribing)
+        c.cancel()
+        // Wait for the cancelled finish to actually return, so the guard that
+        // drops its timing has run — a fixed sleep could assert too early.
+        let deadline = Date().addingTimeInterval(2)
+        while t.finishReturned < 1 && Date() < deadline { try? await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertEqual(t.finishReturned, 1)
+        await Task.yield()
+        XCTAssertEqual(timings, 0)
     }
 
     // Mutation: drop `transcriber.begin()` in keyDown -> RED (no session is

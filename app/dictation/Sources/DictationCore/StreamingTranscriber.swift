@@ -36,6 +36,15 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
     private var accepted = 0
     /// finish() waiters: true = everything sent, false = fell back or cancelled.
     private var drainWaiters: [CheckedContinuation<Bool, Never>] = []
+    /// When `begin` ran, and how long its session create took once it landed.
+    private var beganAt: UInt64 = 0
+    private var createMs: Int?
+    /// What the current dictation's `finish` saw at the release, and how it ended.
+    private var stats = TranscriberStats(path: .stream)
+
+    /// How the last `finish` was served: the session, or the re-upload after
+    /// a failure, plus what was still unsent at the release.
+    public var finishStats: TranscriberStats { lock.withLock { stats } }
 
     /// The tag `feed` requires, minted by `begin`: read it once per dictation
     /// and hand it to every chunk that dictation records.
@@ -66,6 +75,9 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
             unsent.removeAll(keepingCapacity: true)
             committed.removeAll()
             accepted = 0
+            beganAt = DispatchTime.now().uptimeNanoseconds
+            createMs = nil
+            stats = TranscriberStats(path: .stream)
             finishing = false
             fallback = false
             cancelled = false
@@ -123,6 +135,11 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
             } else if accepted > all.count {
                 enterFallbackLocked()
             }
+            // What the release left to do: the unsent audio, against what
+            // the session had already decoded while the key was held.
+            stats = TranscriberStats(path: .stream, sessionCreateMs: createMs,
+                                     segmentsBeforeRelease: committed.count,
+                                     tailSeconds: Double(unsent.count) / 16000)
             kickPumpLocked()
             return (fallback || (id == nil && createTask == nil) ? .upload : .wait,
                     generation)
@@ -149,7 +166,12 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
         }
         // Esc during the drain or the session finish lands here: a dead
         // dictation must not upload.
-        if lock.withLock({ cancelled || generation != g }) { throw CancellationError() }
+        let dead = lock.withLock { () -> Bool in
+            if cancelled || generation != g { return true }
+            stats.path = .fallback
+            return false
+        }
+        if dead { throw CancellationError() }
         return try await oneShot.transcribe(all)
     }
 
@@ -177,6 +199,10 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
             guard generation == g, !cancelled, !fallback else { return false }
             id = newID
             createTask = nil
+            createMs = Int((DispatchTime.now().uptimeNanoseconds - beganAt) / 1_000_000)
+            // A cold server's create can land after the release: the stats
+            // snapshot finish() took must still carry how long it took.
+            if finishing { stats.sessionCreateMs = createMs }
             kickPumpLocked()
             // A finish() waiter with nothing sendable (empty buffer) never gets
             // a pump to resume it; decide the drain here instead.

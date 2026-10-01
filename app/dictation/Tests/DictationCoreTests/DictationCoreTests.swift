@@ -745,3 +745,20 @@ final class SlowTranscriptionTests: XCTestCase {
         XCTAssertEqual(state, "stopped")
     }
 }
+
+final class DictationTimingTests: XCTestCase {
+    // The log line's contract: fixed keys in a fixed order, two-decimal
+    // seconds, and "none" for a session that never opened.
+    func testTheLineIsKeyValueWithNoText() {
+        let timing = DictationTiming(
+            recordedSeconds: 19.04, releaseToTextMs: 1170,
+            stats: TranscriberStats(path: .stream, sessionCreateMs: 4305, segmentsBeforeRelease: 2, tailSeconds: 10.5),
+            outcome: .delivered)
+        XCTAssertEqual(timing.line,
+                       "outcome=delivered path=stream recorded_s=19.04 release_to_text_ms=1170 tail_s=10.50 segments_before_release=2 session_create_ms=4305")
+        let oneShot = DictationTiming(recordedSeconds: 1, releaseToTextMs: 900,
+                                      stats: TranscriberStats(path: .oneShot), outcome: .failed)
+        XCTAssertTrue(oneShot.line.hasSuffix("session_create_ms=none"))
+        XCTAssertTrue(oneShot.line.contains("path=one-shot"))
+    }
+}
