@@ -70,15 +70,14 @@ type Result struct {
 // GPULease is the daemon's single-token GPU mutex, shared between the TTS
 // engine child and per-call ox-stt CLI runs (issue #11). A run that goes
 // without -ng must hold it for the whole run; the resident server is
-// CPU-only and never touches it. Implemented by *engine.GPULease. The
-// As-variants tag the holder so the supervisor's Status can name who a
+// CPU-only and never touches it. Implemented by *engine.GPULease. A
+// transcription only ever tries the lease, never waits for it: a run that
+// waited would hold its place in the queue (or the lease itself) while
+// doing no work. The owner tag lets the supervisor's Status name who a
 // parked engine start is waiting on.
 type GPULease interface {
 	// TryAs takes the lease only if free, tagging the holder with owner.
 	TryAs(owner string) bool
-	// WaitAs blocks for the lease until free or ctx ends, tagging the
-	// holder with owner.
-	WaitAs(ctx context.Context, owner string) error
 	// Release returns the token — exactly once per acquisition.
 	Release()
 }
@@ -146,7 +145,8 @@ var serverMaxAudio = 300 * time.Second
 // audio is long — and the operator wants the GPU idle anyway, because the
 // Mac's display lags under load. So auto never holds the card longer than
 // a speak may reasonably be asked to wait: longer audio runs with -ng and
-// never touches the lease. `on` is unaffected — it insists on the GPU.
+// never touches the lease. `on` lifts the cap but still only takes a free
+// lease.
 const autoGPUMaxAudio = 5 * time.Minute
 
 // serverHTTP has no Timeout: the caller's ctx carries the deadline.
@@ -248,15 +248,7 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		waiting.Add(-1)
 		return nil, ctx.Err()
 	}
-	// semHeld tracks the slot while it can be dropped for the `on` lease
-	// wait below, so the deferred release never pops a channel the caller
-	// does not hold.
-	semHeld := true
-	defer func() {
-		if semHeld {
-			<-sem
-		}
-	}()
+	defer func() { <-sem }()
 
 	base := opts.Timeout
 	if base <= 0 {
@@ -325,46 +317,18 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	}
 	// A run without -ng must hold the shared GPU lease for its whole
 	// lifetime: the TTS engine start waits on the same token before it may
-	// spawn (issue #11). off never touches it. auto keeps its
-	// CPU-over-contention stance — TryAs, else -ng — plus a length cap:
-	// audio past autoGPUMaxAudio runs -ng without touching the lease, so a
-	// speak's parked start waits out a short run at worst. on insists on
-	// the GPU and waits the holder out inside the caller's deadline — but
-	// NOT while holding sem: a parked run would otherwise serialize every
-	// other transcription behind TTS's occupancy.
+	// spawn (issue #11). A transcription only tries the lease and falls
+	// back to -ng when it is taken, so it never waits holding sem or the
+	// lease while doing no work. off never touches it. auto also caps the
+	// audio length (autoGPUMaxAudio), so a speak's parked start waits out a
+	// short run at worst; on takes the GPU whenever it is free, whatever
+	// the length.
 	gpu := opts.GPU != "off"
 	if l := opts.GPULease; gpu && l != nil {
-		if opts.GPU == "on" {
-			// Drop the slot for the wait and re-queue after it. Lock order
-			// is lease → sem: nothing holding sem ever waits on the lease
-			// (auto's TryAs is non-blocking, off skips it), and the TTS
-			// start that holds the token never takes sem — no cycle.
-			<-sem
-			semHeld = false
-			err := l.WaitAs(ctx, "transcription")
-			select {
-			case sem <- struct{}{}:
-				semHeld = true
-			case <-ctx.Done():
-				if err == nil {
-					l.Release()
-				}
-				if timedOut() {
-					return nil, &TimeoutError{After: timeout}
-				}
-				return nil, ctx.Err()
-			}
-			if err != nil {
-				if timedOut() {
-					return nil, &TimeoutError{After: timeout}
-				}
-				return nil, err
-			}
-		} else {
-			// The 0.05 s mirrors convert's duration slop (the WAV header
-			// is wider than the 44 bytes secs subtracts).
-			gpu = secs <= autoGPUMaxAudio.Seconds()+0.05 && l.TryAs("transcription")
-		}
+		// The 0.05 s mirrors convert's duration slop (the WAV header is
+		// wider than the 44 bytes secs subtracts).
+		short := secs <= autoGPUMaxAudio.Seconds()+0.05
+		gpu = (opts.GPU == "on" || short) && l.TryAs("transcription")
 		if gpu {
 			defer l.Release()
 		}

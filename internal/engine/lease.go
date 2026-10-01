@@ -17,7 +17,8 @@ import (
 // until the child's exit is observed — the supervisor reports Stopped
 // before the process has actually died, so the lease, not the state, is
 // "the engine holds the GPU". An STT CLI run that goes without -ng takes
-// it for the whole ox-stt run: Try for auto, Wait for on; off and the
+// it for the whole ox-stt run, taking it only with Try (auto and on alike: a
+// transcription never waits for the GPU); off and the
 // resident server (CPU-only) never touch it.
 //
 // Every acquisition tags the holder — "tts" for the engine's generation,
