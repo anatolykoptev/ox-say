@@ -16,7 +16,8 @@ public struct TranscriberStats: Equatable {
     public var sessionCreateMs: Int?
     /// Segments the session had decoded before the release.
     public var segmentsBeforeRelease: Int
-    /// Audio not yet sent when the key was released, in seconds.
+    /// Audio not yet acknowledged by the session when the key was released,
+    /// in seconds (a chunk still in flight counts).
     public var tailSeconds: Double
 
     public init(path: Path, sessionCreateMs: Int? = nil, segmentsBeforeRelease: Int = 0,

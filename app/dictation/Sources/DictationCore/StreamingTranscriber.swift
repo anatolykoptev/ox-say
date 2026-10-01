@@ -200,6 +200,9 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
             id = newID
             createTask = nil
             createMs = Int((DispatchTime.now().uptimeNanoseconds - beganAt) / 1_000_000)
+            // A cold server's create can land after the release: the stats
+            // snapshot finish() took must still carry how long it took.
+            if finishing { stats.sessionCreateMs = createMs }
             kickPumpLocked()
             // A finish() waiter with nothing sendable (empty buffer) never gets
             // a pump to resume it; decide the drain here instead.

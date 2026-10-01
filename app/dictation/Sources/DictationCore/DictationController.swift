@@ -193,6 +193,9 @@ public final class DictationController {
     }
 
     private func finish() {
+        // The release: taken before the recorder stops, so stopping the audio
+        // engine counts toward the latency the user feels.
+        let released = DispatchTime.now().uptimeNanoseconds
         let samples = recorder.stop()
         closeRoute()
         recordingSeconds = Double(samples.count) / sampleRate
@@ -204,7 +207,6 @@ public final class DictationController {
         }
         state = .transcribing
         let started = generation
-        let released = DispatchTime.now().uptimeNanoseconds
         let seconds = recordingSeconds
         Task { @MainActor in
             let result: Result<String, Error>
