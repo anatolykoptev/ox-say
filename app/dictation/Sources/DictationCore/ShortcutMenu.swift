@@ -62,8 +62,14 @@ public enum ShortcutMenu {
     /// for preference alone, because a shortcut freed in System Settings was
     /// usually freed for something else and claiming it would fight that —
     /// and only losing it moves dictation to the first free offer.
-    public static func plan(stored: Choice?, active: Choice?, choices: [Choice],
-                            system: [SystemShortcut]) -> Plan {
+    ///
+    /// `lastSession` is the key the previous run registered. It stands in for
+    /// `active` until this run has registered one, so a relaunch (the app
+    /// starts at login) neither claims a key freed meanwhile nor moves off a
+    /// key macOS took without saying so.
+    public static func plan(stored: Choice?, active: Choice?, lastSession: Choice? = nil,
+                            choices: [Choice], system: [SystemShortcut]) -> Plan {
+        let active = active ?? lastSession
         func isFree(_ choice: Choice) -> Bool {
             !ShortcutConflict.taken(keyCode: choice.keyCode, modifiers: choice.modifiers, by: system)
         }
@@ -89,5 +95,22 @@ public enum ShortcutMenu {
                         isEnabled: free, isOn: index == key)
         }
         return Plan(key: key, items: items, movedFrom: movedFrom)
+    }
+
+    /// What opening the menu does with a fresh plan. Idle, a planned key that
+    /// differs from the registered one is registered, and the rows are the
+    /// plan's. Busy (recording or transcribing), nothing re-registers, so the
+    /// checkmark stays on the key that is actually registered — the rows'
+    /// titles and enabled state still follow the system shortcuts.
+    public static func onOpen(_ plan: Plan, registered: Int?, idle: Bool)
+        -> (items: [Item], register: Bool) {
+        if idle && plan.key != registered {
+            return (plan.items, true)
+        }
+        let items = plan.items.indices.map { index in
+            Item(title: plan.items[index].title, isEnabled: plan.items[index].isEnabled,
+                 isOn: index == registered)
+        }
+        return (items, false)
     }
 }

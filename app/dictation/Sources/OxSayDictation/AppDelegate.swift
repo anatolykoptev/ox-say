@@ -40,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The key that is registered right now; what the menu tells the user to press.
     private var active: Shortcut?
     private let fallbackNoticeKey = "fallbackNoticeShownFor"
+    /// The key the last successful registration used, kept across launches.
+    private let keyInUseKey = "dictationKeyInUse"
     /// The key last reported as held by another app, so an open menu does not
     /// repeat the notice and the beep while the conflict lasts.
     private var registerFailNoticeShownFor: Shortcut?
@@ -51,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return ShortcutMenu.plan(
             stored: defaults.string(forKey: shortcutKey).flatMap(Shortcut.init(rawValue:)).map(choice),
             active: active.map(choice),
+            lastSession: defaults.string(forKey: keyInUseKey).flatMap(Shortcut.init(rawValue:)).map(choice),
             choices: Shortcut.allCases.map(choice),
             system: Shortcut.systemShortcuts())
     }
@@ -109,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func registerShortcut(_ plan: ShortcutMenu.Plan) {
         hotKey = nil
         active = nil
-        applyShortcutItems(plan)
+        applyShortcutItems(plan.items)
         guard let index = plan.key else {
             notice("Every dictation key is a macOS shortcut on this Mac. Free ⌃Space or ⌥Space in System Settings → Keyboard → Keyboard Shortcuts.")
             return
@@ -130,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         registerFailNoticeShownFor = nil
         active = key
         let defaults = UserDefaults.standard
+        defaults.set(key.rawValue, forKey: keyInUseKey)
         if let from = plan.movedFrom {
             let taken = Shortcut.allCases[from]
             if defaults.string(forKey: fallbackNoticeKey) != taken.rawValue {
@@ -144,10 +148,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The menu items follow the live system shortcuts: a key macOS freed is
     /// clickable again, a key it took greys out — whether or not the
     /// registered key changes.
-    private func applyShortcutItems(_ plan: ShortcutMenu.Plan) {
+    private func applyShortcutItems(_ rows: [ShortcutMenu.Item]) {
         for (index, shortcut) in Shortcut.allCases.enumerated() {
             guard let item = shortcutItems[shortcut] else { continue }
-            let row = plan.items[index]
+            let row = rows[index]
             item.state = row.isOn ? .on : .off
             item.isEnabled = row.isEnabled
             item.title = row.title
@@ -158,11 +162,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// follow it, and the registered key moves only when the plan says so.
     func menuWillOpen(_ menu: NSMenu) {
         let plan = shortcutPlan()
-        applyShortcutItems(plan)
-        if controller.state == .idle, plan.key.map({ Shortcut.allCases[$0] }) != active {
-            registerShortcut(plan)
-            show(.idle)
+        let open = ShortcutMenu.onOpen(plan, registered: active.flatMap { Shortcut.allCases.firstIndex(of: $0) },
+                                       idle: controller.state == .idle)
+        guard open.register else {
+            applyShortcutItems(open.items)
+            return
         }
+        registerShortcut(plan)
+        show(.idle)
     }
 
     private func buildMenu() {
