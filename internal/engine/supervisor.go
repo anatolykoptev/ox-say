@@ -253,11 +253,21 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 			}
 		default: // stopped or crashed, no live child — eligible to start
 			// A concluded failed attempt is reported to every caller that
-			// waited on that generation — including one that entered while
-			// it was in flight but first took s.mu after the conclusion
-			// (waitGen is still unset then) — HTTP maps it to 503. A
-			// caller that arrived only after the conclusion retries after
-			// the recorded backoff instead of consuming the error.
+			// overlapped it — including one that entered while it was in
+			// flight but first took s.mu after the conclusion — HTTP maps
+			// it to 503. The time test carries that decision: it subsumes
+			// the generation test because waitGen is only set under s.mu
+			// while its generation is still unconcluded and attemptDoneAt
+			// is stamped later under the same mutex, so
+			// attemptGen == waitGen already implies
+			// !enteredAt.After(attemptDoneAt). The generation half stays
+			// anyway — cheap, and defensive if the entry-stamp ordering
+			// ever changes. waitGen is not necessarily unset for a caller
+			// that never joined the failed generation: one parked through
+			// an idle-stop teardown still holds the stale successful
+			// generation it last waited on. A caller that arrived only
+			// after the conclusion retries after the recorded backoff
+			// instead of consuming the error.
 			if s.attemptErr != nil && (s.attemptGen == waitGen || !enteredAt.After(s.attemptDoneAt)) {
 				err := s.attemptErr
 				s.mu.Unlock()
@@ -341,12 +351,15 @@ func (s *Supervisor) ReadyURL() (string, bool) {
 
 // LiveURL returns the base URL of the spawned child while it is alive —
 // starting (possibly still before /health) or ready — and false when no
-// child exists. Daemon code may register work into a still-starting engine;
+// child exists OR the child is already being stopped: the idle loop and
+// Shutdown stamp userStop before killChild's SIGTERM→SIGKILL completes,
+// and a caller handed that child would register work into a process that
+// is exiting. Daemon code may register work into a still-starting engine;
 // a request that lands before the model is loaded fails and replay covers it.
 func (s *Supervisor) LiveURL() (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.child != nil {
+	if s.child != nil && !s.child.userStop {
 		return s.child.baseURL, true
 	}
 	return "", false

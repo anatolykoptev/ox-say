@@ -132,6 +132,10 @@ func TestEnsureReadyEnteredDuringStartGetsError(t *testing.T) {
 	park := false
 	entered := make(chan struct{}, 4)
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	// A t.Fatal before the close below would otherwise leave the two
+	// parked callers blocked on <-release past the test's end.
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	sup.ensureEntryHook = func() {
 		gate.Lock()
 		p := park
@@ -178,7 +182,7 @@ func TestEnsureReadyEnteredDuringStartGetsError(t *testing.T) {
 	if err := <-launcherErr; err == nil {
 		t.Fatal("the launching caller got no error from the killed start")
 	}
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 
 	// Both overlapped the attempt and must get its error, not a retry.
 	for range 2 {

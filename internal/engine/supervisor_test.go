@@ -81,6 +81,55 @@ func TestIdleStop(t *testing.T) {
 	}
 }
 
+// LiveURL must not hand out a child the idle loop is stopping: the stop
+// commits (child.userStop, state=Stopped) under s.mu while killChild's
+// SIGTERM→SIGKILL escalation still waits on the process, so s.child is set
+// and dying for up to KillGrace. The fake child ignores SIGTERM, which
+// holds that window open deterministically — no sleep-and-hope: the child
+// cannot exit before the grace SIGKILL, and userStop is already stamped
+// when Stopped is observed.
+// Mutation: drop the !s.child.userStop check in LiveURL -> RED (the dying
+// child's URL is returned).
+func TestLiveURLSkipsStoppingChild(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_IGNORE_SIGTERM", "1")
+	var pidPath string
+	sup := newTestSupervisor(t, dir, func(c *Config) {
+		c.IdleStop = 300 * time.Millisecond
+		c.IdleTick = 20 * time.Millisecond
+		// Long grace: the ignored SIGTERM leaves the child alive until the
+		// SIGKILL, so it is provably still up when the assertions run.
+		c.KillGrace = 30 * time.Second
+		pidPath = c.PidPath
+	})
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sup.LiveURL(); !ok {
+		t.Fatal("LiveURL reported no child on a ready engine")
+	}
+
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		return sup.State() == StateStopped
+	}, "idle stop commit")
+
+	// The stop is committed but the child cannot have exited yet (SIGTERM
+	// ignored, SIGKILL 30 s out): LiveURL must refuse to hand it out.
+	pid := childPid(t, pidPath)
+	// End the grace wait whatever the outcome: the SIGTERM-ignoring child
+	// would otherwise keep the Shutdown cleanup waiting in killChild for
+	// the full KillGrace. Runs before Shutdown (cleanups are LIFO); an
+	// already-dead pid just yields ESRCH.
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	if !processAlive(pid) {
+		t.Fatal("the stopping child exited before its grace deadline")
+	}
+	if url, ok := sup.LiveURL(); ok {
+		t.Fatalf("LiveURL = %q for a child the idle loop is stopping", url)
+	}
+}
+
 // T2 — a held Guard blocks idle stop past the limit.
 // Mutation: drop `s.guards == 0` from the idle condition -> RED.
 func TestGuardBlocksIdleStop(t *testing.T) {

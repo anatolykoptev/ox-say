@@ -57,8 +57,15 @@ var testLogs sync.Map // *testing.T → *testLogWriter
 // did. The cleanup is registered before the daemon's Shutdown cleanup and
 // so runs after it — shutdown logging still reaches the test, while a
 // stray goroutine logging after the test completed is dropped.
+// A test that builds several daemons (TestDaemonHomeLock) calls this once
+// per daemon on the same t: repeat calls reuse the first writer — a fresh
+// one would evict the earlier testLogs entry, and its earlier cleanup
+// would then delete the new entry mid-test.
 func testLogger(t *testing.T) *slog.Logger {
 	t.Helper()
+	if v, ok := testLogs.Load(t); ok {
+		return slog.New(slog.NewTextHandler(v.(*testLogWriter), nil))
+	}
 	w := &testLogWriter{out: t.Output()}
 	testLogs.Store(t, w)
 	t.Cleanup(func() {
@@ -317,6 +324,41 @@ func TestAddVoicePrepareHoldsGuard(t *testing.T) {
 	testutil.WaitFor(t, 5*time.Second, func() bool {
 		return d.Sup.State() == engine.StateStopped
 	}, "idle stop after a failed AddVoice")
+}
+
+// A request Store.Prepare would refuse — bad name, relative path, missing
+// clip — must fail BEFORE the engine guard is taken: Acquire/Release
+// re-stamps the supervisor's lastActivity, so rejected adds inside the
+// guard would keep pushing a Ready engine's idle stop back (issue #70).
+// The add loop spans several idle windows; with validation up front none
+// of the calls touches lastActivity and the child still stops on time.
+// Mutation: move d.Sup.Acquire() back above the ValidateInput call in
+// AddVoice -> RED (every rejected add re-arms the idle window and the
+// engine is still Ready when the loop ends).
+func TestAddVoiceRejectedKeepsIdleClock(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	const idleStop = 300 * time.Millisecond
+	d := newTestDaemon(t, dir, func(ec *engine.Config) {
+		ec.IdleStop = idleStop
+		ec.IdleTick = 20 * time.Millisecond
+	})
+	if _, err := d.Sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	src := testutil.WriteTinyWAV(t, dir, "clip.wav")
+
+	// Failing adds spanning 3x the idle deadline — no sleeps: the loop
+	// condition is wall-clock, so under the mutation each Release keeps
+	// the engine alive for the whole span.
+	for stop := time.Now().Add(3 * idleStop); time.Now().Before(stop); {
+		if _, _, err := d.AddVoice(context.Background(), "BAD NAME", src, ""); err == nil {
+			t.Fatal("AddVoice with an invalid name succeeded")
+		}
+	}
+	if st := d.Sup.State(); st != engine.StateStopped {
+		t.Fatalf("state = %s after an idle-span of rejected adds, want stopped — a failed add refreshed lastActivity", st)
+	}
 }
 
 // T7 — speak out_path rules: relative, missing parent, wrong extension and
