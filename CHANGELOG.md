@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/anatolykoptev/ox-say/compare/v0.1.7...v0.1.8) (2026-10-01)
+
+
+### Fixed
+
+* **daemon:** arbitrate the GPU both ways with a shared lease ([#76](https://github.com/anatolykoptev/ox-say/issues/76)) ([513a090](https://github.com/anatolykoptev/ox-say/commit/513a0903f0d892348c9e3d2b424149ed5cd28462))
+
 ## [0.1.7](https://github.com/anatolykoptev/ox-say/compare/v0.1.6...v0.1.7) (2026-10-01)
 
 
