@@ -363,6 +363,80 @@ func TestTimeoutIsTyped(t *testing.T) {
 	}
 }
 
+// The engine budget is base + sttK×duration per engine and device — the
+// flat cap of issue #16 cannot fit a 4 h whisper clip.
+// Mutation: drop the sttK term in sttTimeout (return base) -> RED on
+// every scaled case.
+func TestTimeoutScalesWithDuration(t *testing.T) {
+	const base = 600 * time.Second
+	cases := []struct {
+		engine string
+		gpu    bool
+		secs   float64
+		want   time.Duration
+	}{
+		{"parakeet", false, 10, 605 * time.Second},
+		{"parakeet", false, 3600, 2400 * time.Second},
+		{"parakeet", false, 14400, 7800 * time.Second},
+		{"parakeet", true, 10, 605 * time.Second},
+		{"parakeet", true, 3600, 2400 * time.Second},
+		{"parakeet", true, 14400, 7800 * time.Second},
+		{"whisper", false, 10, 630 * time.Second},
+		{"whisper", false, 3600, 11400 * time.Second},
+		{"whisper", false, 14400, 43800 * time.Second},
+		{"whisper", true, 10, 630 * time.Second},
+		{"whisper", true, 3600, 11400 * time.Second},
+		{"whisper", true, 14400, 43800 * time.Second},
+	}
+	for _, c := range cases {
+		if got := sttTimeout(c.engine, c.gpu, c.secs, base); got != c.want {
+			t.Errorf("sttTimeout(%s, gpu=%v, %vs) = %s, want %s", c.engine, c.gpu, c.secs, got, c.want)
+		}
+	}
+	// A zero base falls back to DefaultTimeout.
+	if got := sttTimeout("parakeet", false, 0, 0); got != DefaultTimeout {
+		t.Fatalf("zero base: got %s, want DefaultTimeout %s", got, DefaultTimeout)
+	}
+}
+
+// The worst-case bound (the daemon's MCP tool timeout derives from it)
+// is the longest clip on the slowest engine/device.
+func TestWorstTimeout(t *testing.T) {
+	got := WorstTimeout(4*time.Hour, 600*time.Second)
+	want := 44400 * time.Second // conversion 600 + whisper CPU 600 + 3.0×14400
+	if got != want {
+		t.Fatalf("WorstTimeout(4h, 600s) = %s, want %s", got, want)
+	}
+	// Zero inputs fall back to the defaults.
+	if got := WorstTimeout(0, 0); got != 2*DefaultTimeout+time.Duration(3.0*DefaultMaxAudio.Seconds())*time.Second {
+		t.Fatalf("WorstTimeout(0,0) = %s, want 2×base+k×4h", got)
+	}
+}
+
+// A run longer than the old flat budget but inside base + k×duration
+// must succeed — the CLI path applies the scaled deadline, not the bare
+// base. Whisper, 3 s of audio, fake sleeps 2 s, base 1 s: flat would
+// kill the child at 1 s; scaled gives 1 s + 3×3 s.
+// Mutation: run the CLI child under the flat base again -> TimeoutError
+// -> RED.
+func TestCLIPathUsesScaledDeadline(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OXSAY_FAKE_STT_DELAY_MS", "2000")
+	opts, _ := fakeOpts(t, dir)
+	opts.Engine = "whisper"
+	opts.Timeout = time.Second
+	src := filepath.Join(dir, "clip.wav")
+	sineWAV(t, src, 3)
+
+	res, err := Transcribe(context.Background(), src, opts)
+	if err != nil {
+		t.Fatalf("3 s whisper clip under the scaled budget: %v", err)
+	}
+	if res.Engine != "parakeet" || res.Text != "hello world." {
+		t.Fatalf("result = %+v, want the fake's canned JSON", res)
+	}
+}
+
 // sineWAV writes secs seconds of a 16 kHz mono tone with ffmpeg.
 func sineWAV(t *testing.T, path string, secs int) {
 	t.Helper()

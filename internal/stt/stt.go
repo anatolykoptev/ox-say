@@ -77,7 +77,7 @@ type Options struct {
 	WhisperModel string        // whisper model
 	GPU          string        // "auto" (default) | "on" | "off"
 	EngineBusy   func() bool   // nil → false
-	Timeout      time.Duration // cap on the conversion+run; 0 → DefaultTimeout
+	Timeout      time.Duration // fixed allowance: bounds the conversion alone and seeds the engine's base + k×duration budget; 0 → DefaultTimeout
 	MaxAudio     time.Duration // audio past this is not decoded; 0 → DefaultMaxAudio
 	MaxQueue     int           // callers allowed to wait; 0 → DefaultMaxQueue
 
@@ -99,6 +99,23 @@ const (
 	stderrTail      = 4 << 10
 )
 
+// sttK is the decode budget's per-second rate: seconds of engine time
+// allowed per second of audio, by engine and device. Both engines scale
+// linearly — fixed start + per-second slope, measured with `ox-stt -ng`
+// on this Mac at v0.1.5 (issue #16):
+//
+//	parakeet   70 s → 11.6 s, 630 s → 68.0 s   (≈4.5 s fixed + 0.10 s/s)
+//	whisper    70 s → 111.2 s, 630 s → 487.0 s (≈64 s fixed + 0.67 s/s)
+//
+// The rates carry a ≈4.5–5× safety factor over those slopes; the fixed
+// part (model load, spawn) is covered by base. The GPU cells reuse the
+// CPU rate: the GPU is strictly faster, so the budget stays
+// conservative there.
+var sttK = map[string]map[bool]float64{
+	"parakeet": {false: 0.5, true: 0.5},
+	"whisper":  {false: 3.0, true: 3.0},
+}
+
 // serverMaxAudio caps the clips routed to the resident server: a cancelled
 // server decode is not killed the way a CLI child is, so long files stay on
 // the CLI. Tests shrink it.
@@ -115,10 +132,46 @@ type ModelError struct{ msg string }
 
 func (e *ModelError) Error() string { return e.msg }
 
-// TimeoutError means the transcription hit Options.Timeout.
+// TimeoutError means the transcription hit a phase budget — the
+// conversion's base allowance or the engine's scaled deadline; After
+// names the one that fired.
 type TimeoutError struct{ After time.Duration }
 
 func (e *TimeoutError) Error() string { return fmt.Sprintf("stt: timed out after %s", e.After) }
+
+// sttTimeout is the engine-run budget for one clip: the fixed base
+// (Options.Timeout, from OX_SAY_STT_TIMEOUT_SECS) plus sttK seconds per
+// second of audio. A flat cap cannot fit both a 10 s clip and a 4 h
+// file — the old 600 s covered only ~3.2 h of parakeet-CPU audio
+// (issue #16). engine is validated before this is called.
+func sttTimeout(engine string, gpu bool, secs float64, base time.Duration) time.Duration {
+	if base <= 0 {
+		base = DefaultTimeout
+	}
+	return base + time.Duration(sttK[engine][gpu]*secs*float64(time.Second))
+}
+
+// WorstTimeout bounds one transcription at the longest allowed clip on
+// the slowest engine/device: the conversion's base plus the engine's
+// scaled budget, both burned in full. The daemon sizes the transcribe
+// tool's MCP timeout on it.
+func WorstTimeout(maxAudio, base time.Duration) time.Duration {
+	if maxAudio <= 0 {
+		maxAudio = DefaultMaxAudio
+	}
+	if base <= 0 {
+		base = DefaultTimeout
+	}
+	var worst time.Duration
+	for engine, dev := range sttK {
+		for gpu := range dev {
+			if d := sttTimeout(engine, gpu, maxAudio.Seconds(), base); d > worst {
+				worst = d
+			}
+		}
+	}
+	return base + worst
+}
 
 // sem serializes transcriptions: a second ox-stt would contend for GPU
 // memory with the one already running (and with the TTS child). waiting
@@ -169,28 +222,42 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		return nil, ctx.Err()
 	}
 
-	timeout := opts.Timeout
-	if timeout <= 0 {
-		timeout = DefaultTimeout
+	base := opts.Timeout
+	if base <= 0 {
+		base = DefaultTimeout
 	}
-	parent := ctx
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	// a deadline of ours, not the caller going away
-	timedOut := func() bool { return ctx.Err() != nil && parent.Err() == nil }
-
 	maxAudio := opts.MaxAudio
 	if maxAudio <= 0 {
 		maxAudio = DefaultMaxAudio
 	}
-	wav, secs, err := convert(ctx, audioPath, maxAudio)
+	parent := ctx
+
+	// Conversion runs under the base alone: the duration that would
+	// scale its budget is only known once ffmpeg has run, and ffmpeg
+	// self-caps the decode at maxAudio + 1 s anyway.
+	cctx, ccancel := context.WithTimeout(parent, base)
+	wav, secs, err := convert(cctx, audioPath, maxAudio)
+	// Snapshot the timeout check BEFORE ccancel — after it, cctx.Err()
+	// is Canceled regardless of why convert failed.
+	convTimedOut := cctx.Err() != nil && parent.Err() == nil
+	ccancel()
 	if err != nil {
-		if timedOut() {
-			return nil, &TimeoutError{After: timeout}
+		if convTimedOut {
+			return nil, &TimeoutError{After: base}
 		}
 		return nil, err
 	}
 	defer func() { _ = os.Remove(wav) }()
+
+	// The engine budget scales with the real duration (issue #16). The
+	// device is the worst the run may land on: only OX_SAY_STT_GPU=on
+	// keeps every leg — the resident server and the CLI fallback — off
+	// the CPU.
+	timeout := sttTimeout(engine, opts.GPU == "on", secs, base)
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	// a deadline of ours, not the caller going away
+	timedOut := func() bool { return ctx.Err() != nil && parent.Err() == nil }
 
 	// The resident server decodes parakeet only and returns the CLI's JSON
 	// shape; short clips go to it whatever the TTS state is (the server is
