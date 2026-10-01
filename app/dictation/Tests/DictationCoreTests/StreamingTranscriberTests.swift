@@ -609,6 +609,9 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertEqual(text, "uploaded")
         let uploaded = await waitFor(fake, path: uploadPath)
         XCTAssertTrue(uploaded, "the whole recording is uploaded")
+        // The routed answers are never consumed, so count: a second upload
+        // would otherwise pass unseen.
+        XCTAssertEqual(fake.recorded().filter { $0.path == uploadPath }.count, 1, "uploaded once")
         let deleted = await waitFor(fake, path: sessionPath, method: "DELETE")
         XCTAssertTrue(deleted, "the polluted session gets a best-effort DELETE")
         XCTAssertFalse(fake.recorded().contains { $0.path == finishPath },
