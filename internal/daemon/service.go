@@ -43,6 +43,11 @@ type Daemon struct {
 	// after the store snapshot, with voiceMu held.
 	replayAfterSnapshot func()
 
+	// slowPrepare, when set (tests only), runs inside AddVoice just before
+	// Store.Prepare — a stand-in for a slow ffmpeg normalization, so a test
+	// can hold the prepare phase open while the idle deadline passes.
+	slowPrepare func()
+
 	// lockFile holds daemon.lock for the process lifetime.
 	lockFile *os.File
 }
@@ -245,11 +250,20 @@ func (d *Daemon) sttServer(ctx context.Context) (base string, release func(), er
 
 // AddVoice persists a voice and registers it into the child when the engine
 // is running. registered reports whether the live registration happened.
-// The ffmpeg normalization runs first, outside voiceMu (it may take up to
-// 60 s and must not hold up an engine start's replay); the commit and the
-// live registration then run under voiceMu so a concurrent replay cannot
-// interleave between them.
+// The engine guard is taken before the ffmpeg normalization and held across
+// the whole call: a slow Prepare (up to 60 s) must not let the idle loop
+// stop the child the voice is about to be registered into — that window
+// otherwise ends in registered=false for a voice the next start's replay
+// would register, or in a registration into a child already marked Stopped.
+// Prepare still runs outside voiceMu (it must not hold up an engine
+// start's replay); the commit and the live registration run under voiceMu
+// so a concurrent replay cannot interleave between them.
 func (d *Daemon) AddVoice(ctx context.Context, name, audioPath, refText string) (v *voices.Voice, registered bool, err error) {
+	g := d.Sup.Acquire()
+	defer g.Release()
+	if d.slowPrepare != nil {
+		d.slowPrepare()
+	}
 	pending, err := d.Store.Prepare(ctx, name, audioPath, refText)
 	if err != nil {
 		return nil, false, err
@@ -261,12 +275,11 @@ func (d *Daemon) AddVoice(ctx context.Context, name, audioPath, refText string) 
 	if err != nil {
 		return nil, false, err
 	}
-	// A live registration is engine work — hold a guard so the idle loop
-	// cannot stop the child mid-request. LiveURL also reaches a child that
-	// is past /health but still inside its start attempt (mid-replay):
-	// skipping it would strand a voice that replay's snapshot already missed.
-	g := d.Sup.Acquire()
-	defer g.Release()
+	// A live registration is engine work — the guard above keeps the idle
+	// loop from stopping the child mid-request. LiveURL also reaches a
+	// child that is past /health but still inside its start attempt
+	// (mid-replay): skipping it would strand a voice that replay's
+	// snapshot already missed.
 	if base, ok := d.Sup.LiveURL(); ok {
 		if rerr := d.ec.RegisterVoice(ctx, base, v.Name, d.Store.WAVPath(v.Name), v.RefText); rerr != nil {
 			d.log.Warn("voice stored but engine registration failed; it will be replayed on next start",
