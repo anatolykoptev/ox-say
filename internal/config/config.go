@@ -51,7 +51,7 @@ type Config struct {
 	STTVADModel     string        // OX_SAY_STT_VAD_MODEL: silero VAD model enabling streaming sessions
 	STTWhisperModel string        // OX_SAY_STT_WHISPER_MODEL: whisper weights
 	STTGPU          string        // OX_SAY_STT_GPU: auto | on | off
-	STTTimeout      time.Duration // OX_SAY_STT_TIMEOUT_SECS
+	STTTimeout      time.Duration // OX_SAY_STT_TIMEOUT_SECS: fixed allowance; the engine's budget adds k×audio duration on top
 	STTMaxUploadMB  int64         // OX_SAY_STT_MAX_UPLOAD_MB
 	STTMaxAudio     time.Duration // OX_SAY_STT_MAX_AUDIO_SECS: longer audio is cut
 	STTServer       string        // OX_SAY_STT_SERVER: on | off — resident ox-stt server

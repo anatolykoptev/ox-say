@@ -5,8 +5,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anatolykoptev/go-mcpserver"
+	"github.com/anatolykoptev/ox-say/internal/stt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -21,6 +23,24 @@ func servedHandler(t *testing.T) http.Handler {
 		t.Fatal(err)
 	}
 	return h
+}
+
+// The transcribe tool's MCP timeout must outlast the longest legal
+// transcription: the duration-scaled budget on a max-length clip on the
+// slowest engine, twice (a queued call can sit behind one in-flight
+// run), plus slack. A flat 2×STTTimeout would cut a >3 h whisper clip
+// before its own deadline fired.
+// Mutation: revert the entry to 2*d.Cfg.STTTimeout + 2*time.Minute in
+// ServerConfig -> RED.
+func TestTranscribeToolTimeoutScales(t *testing.T) {
+	d := newTestDaemon(t, t.TempDir(), nil)
+	d.Cfg.STTTimeout = 600 * time.Second
+	d.Cfg.STTMaxAudio = 4 * time.Hour
+	got := d.ServerConfig("test").ToolTimeouts["transcribe"]
+	want := 2*stt.WorstTimeout(d.Cfg.STTMaxAudio, d.Cfg.STTTimeout) + 2*time.Minute
+	if got != want {
+		t.Fatalf("transcribe tool timeout = %s, want %s", got, want)
+	}
 }
 
 func TestGuard(t *testing.T) {

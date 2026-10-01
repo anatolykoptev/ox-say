@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/go-mcpserver"
+	"github.com/anatolykoptev/ox-say/internal/stt"
 )
 
 // Guard rejects what a web page can send to a loopback daemon. A Host that is
@@ -102,10 +103,11 @@ func (d *Daemon) ServerConfig(version string) mcpserver.Config {
 		// speak blocks on a cold engine start (Metal shader compile on first
 		// ever run) plus synthesis — give it the startup window plus slack.
 		// transcribe waits on the STT semaphore behind any in-flight run,
-		// then runs its own (up to STTTimeout of work plus ffmpeg).
+		// then runs its own — the worst case is the scaled budget on the
+		// longest allowed clip, twice, plus slack.
 		ToolTimeouts: map[string]time.Duration{
 			"speak":      d.Cfg.StartupTimeout + 2*time.Minute,
-			"transcribe": 2*d.Cfg.STTTimeout + 2*time.Minute,
+			"transcribe": 2*stt.WorstTimeout(d.Cfg.STTMaxAudio, d.Cfg.STTTimeout) + 2*time.Minute,
 		},
 		Routes:     d.Routes,
 		Middleware: []mcpserver.Middleware{Guard},
