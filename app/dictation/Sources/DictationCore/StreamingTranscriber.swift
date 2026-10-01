@@ -37,9 +37,15 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
     /// finish() waiters: true = everything sent, false = fell back or cancelled.
     private var drainWaiters: [CheckedContinuation<Bool, Never>] = []
 
+    /// The tag `feed` requires, minted by `begin`: read it once per dictation
+    /// and hand it to every chunk that dictation records.
+    public var feedGeneration: Int { lock.withLock { generation } }
+
     /// Test seam: the pump's in-flight flag, read under the lock, so tests can
     /// await quiescence instead of sleeping.
     var pumpSending: Bool { lock.withLock { sending } }
+    /// Test seam: samples `feed` accepted for the current dictation.
+    var acceptedCount: Int { lock.withLock { accepted } }
     /// Test seam: drain waiters currently queued in `waitForDrain`.
     var pendingDrainWaiters: Int { lock.withLock { drainWaiters.count } }
 
@@ -80,12 +86,17 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
         }
     }
 
-    public func feed(_ samples: [Float]) async {
+    /// The tag is fixed when the chunk is recorded (`feedGeneration` of that
+    /// dictation), so a chunk still queued in a finished stream — or a feed
+    /// suspended across `begin()` — is checked against the live generation
+    /// here, under the lock, and dropped instead of entering the next
+    /// dictation's session.
+    public func feed(_ samples: [Float], generation g: Int) async {
         lock.withLock {
             // Once finish() reconciled the recording into `unsent`, a late
             // chunk can only duplicate the appended tail or be foreign audio;
             // buffering it would let the pump's finishing-drain send it.
-            guard !finishing else { return }
+            guard g == generation, !cancelled, !finishing else { return }
             unsent.append(contentsOf: samples)
             accepted += samples.count
             kickPumpLocked()

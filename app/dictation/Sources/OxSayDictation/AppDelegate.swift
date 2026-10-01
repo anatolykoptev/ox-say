@@ -25,9 +25,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// next dictation starts.
     private var lastNotice: String?
     private var client: TranscriptionClient!
-    /// Recorder chunks ride one AsyncStream to the transcriber, so they stay in
-    /// order: the audio thread yields, a single consumer task awaits each feed.
-    private var feedTask: Task<Void, Never>?
     /// Counts the seconds of a transcription on the pill, and after a while says
     /// why it takes long (CPU while the voice engine is loaded, or the GPU's
     /// first run after an update), so a slow run does not look like a hang.
@@ -59,9 +56,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let streamer = StreamingTranscriber(baseURL: baseURL)
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode, transcriber: streamer)
-        let (chunks, feedChunks) = AsyncStream<[Float]>.makeStream()
-        recorder.onSamples = { chunk in feedChunks.yield(chunk) }
-        feedTask = Task { for await chunk in chunks { await streamer.feed(chunk) } }
         streamer.onText = { [overlay] text in overlay.setLiveText(text) }
         controller.onState = { [weak self] state in self?.show(state) }
         controller.onError = { [weak self] message in self?.notice(message) }

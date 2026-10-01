@@ -227,8 +227,8 @@ final class StreamingTranscriberTests: XCTestCase {
         var texts: [String] = []
         st.onText = { texts.append($0) }
         st.begin()
-        await st.feed(chunk(0))
-        await st.feed(chunk(1) + chunk(2, 3000))
+        await st.feed(chunk(0), generation: st.feedGeneration)
+        await st.feed(chunk(1) + chunk(2, 3000), generation: st.feedGeneration)
         let all = chunk(0) + chunk(1) + chunk(2, 3000)
         let text = try await st.finish(all: all)
         XCTAssertEqual(text, "hello world.", "finish's text wins, trimmed")
@@ -277,7 +277,7 @@ final class StreamingTranscriberTests: XCTestCase {
         let st = transcriber(fake)
         st.begin()
         let all = chunk(0, 19000)
-        await st.feed(all)
+        await st.feed(all, generation: st.feedGeneration)
         let text = try await st.finish(all: all)
         XCTAssertEqual(text, "uploaded")
         let arrived = await fake.waitForRequests(2)
@@ -315,9 +315,9 @@ final class StreamingTranscriberTests: XCTestCase {
         let fake = ScriptedSend([.json(200, #"{"id":"\#(sessionID)"}"#)] + afterCreate)
         let st = transcriber(fake)
         st.begin()
-        await st.feed(chunk(0))
-        await st.feed(chunk(1))
-        await st.feed(chunk(2))
+        await st.feed(chunk(0), generation: st.feedGeneration)
+        await st.feed(chunk(1), generation: st.feedGeneration)
+        await st.feed(chunk(2), generation: st.feedGeneration)
         let all = chunk(0) + chunk(1) + chunk(2)
         let text = try await st.finish(all: all)
         XCTAssertEqual(text, "uploaded")
@@ -361,7 +361,7 @@ final class StreamingTranscriberTests: XCTestCase {
         let st = transcriber(fake)
         st.begin()
         let all = chunk(0, 9000)
-        await st.feed(all)
+        await st.feed(all, generation: st.feedGeneration)
         let text = try await st.finish(all: all)
         XCTAssertEqual(text, "uploaded")
         let arrived = await fake.waitForRequests(6)
@@ -383,7 +383,7 @@ final class StreamingTranscriberTests: XCTestCase {
         ])
         let st = transcriber(fake)
         st.begin()
-        await st.feed(chunk(0))
+        await st.feed(chunk(0), generation: st.feedGeneration)
         let arrived = await fake.waitForRequests(2)
         XCTAssertTrue(arrived, "create + first audio")
         st.cancel()
@@ -391,7 +391,10 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertTrue(deleted, "the session must be deleted")
         XCTAssertEqual(fake.recorded().last?.method, "DELETE")
         XCTAssertEqual(fake.recorded().last?.path, sessionPath)
-        await st.feed(chunk(1)) // after cancel a feed only buffers
+        await st.feed(chunk(1), generation: st.feedGeneration) // after cancel a feed is dropped
+        // Mutation: drop `!cancelled` from the guard in feed -> RED (the dead
+        // dictation keeps buffering what the recorder still delivers).
+        XCTAssertEqual(st.acceptedCount, chunk(0).count, "a feed after cancel must not be accepted")
         // A pump kicked by that feed would set `sending` under feed's own
         // lock, so once none runs the recorded requests are final.
         let deadline = Date().addingTimeInterval(2)
@@ -412,7 +415,7 @@ final class StreamingTranscriberTests: XCTestCase {
         let fake = ScriptedSend([.gated(gate, .json(200, #"{"id":"\#(sessionID)"}"#)), .json(200, "{}")])
         let st = transcriber(fake)
         st.begin()
-        await st.feed(chunk(0))
+        await st.feed(chunk(0), generation: st.feedGeneration)
         st.cancel()
         gate.open()
         let arrived = await fake.waitForRequests(2)
@@ -435,9 +438,9 @@ final class StreamingTranscriberTests: XCTestCase {
         ])
         let st = transcriber(fake)
         st.begin()
-        await st.feed(chunk(0))
-        await st.feed(chunk(1))
-        await st.feed(chunk(2, 100))
+        await st.feed(chunk(0), generation: st.feedGeneration)
+        await st.feed(chunk(1), generation: st.feedGeneration)
+        await st.feed(chunk(2, 100), generation: st.feedGeneration)
         gate.open()
         let text = try await st.finish(all: chunk(0) + chunk(1) + chunk(2, 100))
         XCTAssertEqual(text, "early bird")
@@ -476,14 +479,14 @@ final class StreamingTranscriberTests: XCTestCase {
         ])
         let st = transcriber(fake)
         st.begin()
-        await st.feed(chunk(0))
+        await st.feed(chunk(0), generation: st.feedGeneration)
         var arrived = await fake.waitForRequests(2)
         XCTAssertTrue(arrived, "A's create and held audio")
         st.cancel()
         st.begin()
         arrived = await fake.waitForRequests(4)
         XCTAssertTrue(arrived, "A's delete and B's create")
-        await st.feed(chunk(7)) // buffers: A's pump still owns `sending`
+        await st.feed(chunk(7), generation: st.feedGeneration) // buffers: A's pump still owns `sending`
         let finish = Task { try await st.finish(all: chunk(7)) }
         // B's drain waiter must be queued before A's pump gets to exit.
         let deadline = Date().addingTimeInterval(2)
@@ -517,7 +520,7 @@ final class StreamingTranscriberTests: XCTestCase {
         ])
         let st = transcriber(fake)
         st.begin()
-        await st.feed(chunk(0))
+        await st.feed(chunk(0), generation: st.feedGeneration)
         let finish = Task { try await st.finish(all: chunk(0)) }
         let inFlight = await fake.waitForRequests(3)
         XCTAssertTrue(inFlight, "the finish POST is in flight")
@@ -552,13 +555,13 @@ final class StreamingTranscriberTests: XCTestCase {
         let st = transcriber(fake)
         st.begin()
         // The AsyncStream consumer lags: the tail was recorded but not fed.
-        await st.feed(chunk(0))
+        await st.feed(chunk(0), generation: st.feedGeneration)
         let all = chunk(0) + chunk(1, 3000)
         let finish = Task { try await st.finish(all: all) }
         let sent = await fake.waitForRequests(4)
         XCTAssertTrue(sent, "create + both audio chunks + held finish POST")
         // Fed while finish is in flight: dropped, never sent.
-        await st.feed(chunk(9))
+        await st.feed(chunk(9), generation: st.feedGeneration)
         let deadline = Date().addingTimeInterval(2)
         while st.pumpSending && Date() < deadline {
             try? await Task.sleep(nanoseconds: 5_000_000)
@@ -590,8 +593,8 @@ final class StreamingTranscriberTests: XCTestCase {
         ])
         let st = transcriber(fake)
         st.begin()
-        await st.feed(chunk(0))
-        await st.feed(chunk(9)) // foreign: more fed than the recording holds
+        await st.feed(chunk(0), generation: st.feedGeneration)
+        await st.feed(chunk(9), generation: st.feedGeneration) // foreign: more fed than the recording holds
         let text = try await st.finish(all: chunk(0))
         XCTAssertEqual(text, "uploaded")
         let uploaded = await waitFor(fake, path: uploadPath)
@@ -615,15 +618,88 @@ final class StreamingTranscriberTests: XCTestCase {
         ])
         let st = transcriber(fake)
         st.begin()
-        await st.feed(chunk(0))
+        await st.feed(chunk(0), generation: st.feedGeneration)
         let text = try await st.finish(all: chunk(0))
         XCTAssertEqual(text, "done")
         st.begin()
-        await st.feed(chunk(1))
+        await st.feed(chunk(1), generation: st.feedGeneration)
         let arrived = await fake.waitForRequests(5)
         XCTAssertTrue(arrived, "second create + audio")
         XCTAssertFalse(fake.recorded().contains { $0.method == "DELETE" },
                        "a finished session is forgotten, not deleted")
+    }
+
+    /// One body that answers create, audio, finish and DELETE alike, so the
+    /// cancel-DELETE / next-create race can consume script entries in any order.
+    private static let universalReply =
+        #"{"id":"\#(sessionID)","segments":[],"pending":0,"text":"b","done":true}"#
+
+    // Mutation: drop `g == generation` from the guard in feed -> RED: the stale
+    // chunk is POSTed into B's session (audio.count grows to 3, and the body at
+    // index 1 is A's chunk).
+    @MainActor
+    func testAChunkFromADeadDictationNeverReachesTheNextSession() async throws {
+        let fake = ScriptedSend([.json(200, #"{"id":"\#(sessionID)"}"#),
+                               .json(200, #"{"segments":[],"pending":0}"#)]
+                              + [ScriptedSend.Response](repeating: .json(200, Self.universalReply), count: 5))
+        let st = transcriber(fake)
+        st.begin()
+        let genA = st.feedGeneration
+        await st.feed(chunk(0), generation: genA)
+        var arrived = await fake.waitForRequests(2)
+        XCTAssertTrue(arrived, "A's create and audio")
+        st.cancel()
+        st.begin()
+        let genB = st.feedGeneration
+        XCTAssertNotEqual(genA, genB)
+        // A chunk of A landing now — still queued in a dead stream, or a feed
+        // suspended across begin() — must be dropped, never fed into B.
+        await st.feed(chunk(9), generation: genA)
+        await st.feed(chunk(1), generation: genB)
+        let text = try await st.finish(all: chunk(1))
+        XCTAssertEqual(text, "b")
+        arrived = await fake.waitForRequests(6)
+        XCTAssertTrue(arrived)
+        let audio = fake.recorded().filter { $0.path == audioPath }
+        XCTAssertEqual(audio.count, 2, "one audio POST per dictation")
+        XCTAssertEqual(audio[0].body.count, 32000)
+        XCTAssertEqual(chunkIndex(audio[0].body), 1, "A's chunk went to A's session")
+        XCTAssertEqual(audio[1].body.count, 32000)
+        XCTAssertEqual(chunkIndex(audio[1].body), 2, "B's session holds only B's chunk")
+        XCTAssertFalse(fake.recorded().contains { $0.path == uploadPath })
+    }
+
+    // The app's real wiring: a consumer suspended inside `for await` wakes to a
+    // chunk that landed after the next begin() — the stale tag must drop it.
+    // Awaiting the finished stream's consumer joins every feed it ran, so no
+    // sleep is needed to know the stale feed happened.
+    @MainActor
+    func testAChunkQueuedInAFinishedStreamIsDroppedAfterBegin() async throws {
+        let fake = ScriptedSend([ScriptedSend.Response](repeating: .json(200, Self.universalReply), count: 7))
+        let st = transcriber(fake)
+        st.begin()
+        let genA = st.feedGeneration
+        let (chunks, yielder) = AsyncStream<[Float]>.makeStream()
+        let consumer = Task { for await c in chunks { await st.feed(c, generation: genA) } }
+        st.cancel()
+        st.begin()
+        let genB = st.feedGeneration
+        yielder.yield(chunk(9))   // A's stream still held this past begin()
+        yielder.finish()
+        await consumer.value      // every queued element was fed by now
+        await st.feed(chunk(1), generation: genB)
+        let text = try await st.finish(all: chunk(1))
+        XCTAssertEqual(text, "b")
+        // A's create, A's DELETE (the id arrives cancelled, the watcher drops
+        // it), B's create, B's audio, B's finish — in whichever order the two
+        // racing writes land; only the audio POST carries samples.
+        let arrived = await fake.waitForRequests(5)
+        XCTAssertTrue(arrived)
+        let audio = fake.recorded().filter { $0.path == audioPath }
+        XCTAssertEqual(audio.count, 1, "B's session gets exactly its own chunk")
+        XCTAssertEqual(audio[0].body.count, 32000)
+        XCTAssertEqual(chunkIndex(audio[0].body), 2)
+        XCTAssertFalse(fake.recorded().contains { $0.path == uploadPath })
     }
 }
 
@@ -635,7 +711,8 @@ final class TranscriberControllerTests: XCTestCase {
         var result: String = "text"
         var finishDelayNanos: UInt64 = 0
         func begin() { began += 1 }
-        func feed(_ samples: [Float]) async {}
+        var feedGeneration: Int { began }
+        func feed(_ samples: [Float], generation _: Int) async {}
         func finish(all: [Float]) async throws -> String {
             finishCalls.append(all)
             if finishDelayNanos > 0 { try? await Task.sleep(nanoseconds: finishDelayNanos) }
@@ -705,5 +782,95 @@ final class TranscriberControllerTests: XCTestCase {
         await run(c, until: .idle)
         XCTAssertEqual(t.cancelled, 1)
         XCTAssertTrue(t.finishCalls.isEmpty)
+    }
+
+    // Mutation: in DictationController.keyDown, move `try recorder.start()`
+    // above `openRoute()` / `state = .recording` -> RED. A chunk recorded
+    // before the route exists is in the recording but never in the session.
+    @MainActor
+    func testTheRouteExistsBeforeTheMicrophoneStarts() {
+        let rec = FakeRecorder()
+        let t = FakeTranscriber()
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
+        var stateAtStart: DictationState?
+        var routedAtStart = false
+        var beganAtStart = 0
+        rec.onStart = { stateAtStart = c.state; routedAtStart = rec.onSamples != nil; beganAtStart = t.began }
+        c.keyDown()
+        XCTAssertTrue(routedAtStart, "the chunk route must exist before the first chunk")
+        XCTAssertEqual(beganAtStart, 1, "the generation must be minted before the first chunk")
+        XCTAssertEqual(stateAtStart, .recording)
+    }
+
+    // Mutation: move `try recorder.prepare()` below `transcriber.begin()` in
+    // keyDown -> RED (a press without microphone permission would open a
+    // daemon session, which cold-starts the speech-to-text server).
+    @MainActor
+    func testAPressThatCannotRecordOpensNoSession() {
+        struct NoPermission: LocalizedError { var errorDescription: String? { "no permission" } }
+        let rec = FakeRecorder(); rec.prepareError = NoPermission()
+        let t = FakeTranscriber()
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
+        var states: [DictationState] = []
+        var errors: [String] = []
+        c.onState = { states.append($0) }
+        c.onError = { errors.append($0) }
+        c.keyDown()
+        XCTAssertEqual(t.began, 0, "no session for a press that cannot record")
+        XCTAssertEqual(rec.started, 0)
+        XCTAssertNil(rec.onSamples)
+        XCTAssertEqual(states, [])
+        XCTAssertEqual(errors, ["Could not start recording: no permission"])
+    }
+
+    // Mutation: drop `transcriber.cancel()` (or `closeRoute()`) in keyDown's
+    // catch -> RED (the session opened by begin() would stay open on the
+    // daemon, or the recorder would keep a dead route).
+    @MainActor
+    func testAFailedStartCancelsTheSessionAndReturnsToIdle() {
+        struct EngineFailed: LocalizedError { var errorDescription: String? { "engine failed" } }
+        let rec = FakeRecorder(); rec.startError = EngineFailed()
+        let t = FakeTranscriber()
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
+        var states: [DictationState] = []
+        var errors: [String] = []
+        c.onState = { states.append($0) }
+        c.onError = { errors.append($0) }
+        c.keyDown()
+        XCTAssertEqual(t.began, 1)
+        XCTAssertEqual(t.cancelled, 1)
+        XCTAssertNil(rec.onSamples, "the route is closed")
+        XCTAssertEqual(c.state, .idle)
+        XCTAssertEqual(states, [.recording, .idle])
+        XCTAssertEqual(errors, ["Could not start recording: engine failed"])
+        rec.startError = nil
+        c.keyDown()
+        XCTAssertEqual(c.state, .recording, "a failed start must not wedge the next press")
+    }
+
+    // Mutation: drop `recorder.onSamples = route.sink` in openRoute -> RED
+    // (nothing streams; every dictation silently becomes a full upload).
+    // Mutation: drop `closeRoute()` in finish or in cancel -> RED (the
+    // recorder keeps feeding a dead dictation's route).
+    @MainActor
+    func testRecorderChunksReachTheTranscriberUntilTheDictationEnds() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 16000)
+        let t = FeedRouteTests.FeedLog()
+        t.generation = 7
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
+        c.keyDown()
+        rec.onSamples?([1])
+        let deadline = Date().addingTimeInterval(5)
+        while t.fed.isEmpty && Date() < deadline { try? await Task.sleep(nanoseconds: 2_000_000) }
+        XCTAssertEqual(t.fed.map(\.0), [[1]], "a recorder chunk must reach feed")
+        XCTAssertEqual(t.fed.map(\.1), [7], "tagged with the dictation's generation")
+        c.keyUp()
+        XCTAssertNil(rec.onSamples, "finish closes the route")
+        await run(c, until: .idle)
+
+        c.keyDown()
+        XCTAssertNotNil(rec.onSamples)
+        c.cancel()
+        XCTAssertNil(rec.onSamples, "cancel closes the route")
     }
 }

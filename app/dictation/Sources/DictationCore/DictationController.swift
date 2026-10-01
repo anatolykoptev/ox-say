@@ -15,9 +15,15 @@ public enum HotkeyMode: String {
 
 /// Captures 16 kHz mono audio from the microphone.
 public protocol Recorder: AnyObject {
+    /// Checks what can fail before any side effect (permission, an input
+    /// device), so a press that cannot record opens no transcription session.
+    func prepare() throws
     func start() throws
     /// Stops and returns what was recorded since `start`.
     func stop() -> [Float]
+    /// Every recorded chunk, in order, from the recording thread. The
+    /// controller sets it per dictation.
+    var onSamples: (([Float]) -> Void)? { get set }
 }
 
 /// Delivers dictated text to the user, e.g. by pasting it where the cursor is.
@@ -31,8 +37,13 @@ public protocol TextOutput: AnyObject {
 public protocol Transcriber: AnyObject {
     /// Prepare for a new recording (e.g. open a streaming session).
     func begin()
-    /// A chunk of 16 kHz mono samples, in recording order.
-    func feed(_ samples: [Float]) async
+    /// The tag `begin` minted for the current dictation. Read it once when the
+    /// dictation's chunk route opens and pass it with every chunk.
+    var feedGeneration: Int { get }
+    /// A chunk of 16 kHz mono samples, in recording order. `generation` is the
+    /// tag `begin` minted for the dictation that recorded the chunk; a stale
+    /// tag means the chunk belongs to a dead recording and is dropped.
+    func feed(_ samples: [Float], generation: Int) async
     /// The recording stopped: the text for the whole recording.
     func finish(all: [Float]) async throws -> String
     /// Drop the recording: nothing will be delivered for it.
@@ -45,7 +56,8 @@ private final class OneShotTranscriber: Transcriber {
     private let transcribe: ([Float]) async throws -> String
     init(_ transcribe: @escaping ([Float]) async throws -> String) { self.transcribe = transcribe }
     func begin() {}
-    func feed(_: [Float]) async {}
+    var feedGeneration: Int { 0 }
+    func feed(_: [Float], generation _: Int) async {}
     func finish(all: [Float]) async throws -> String { try await transcribe(all) }
     func cancel() {}
 }
@@ -74,6 +86,8 @@ public final class DictationController {
     /// Bumped by `cancel`: a transcription started under an older generation
     /// neither pastes nor touches the state when it finishes.
     private var generation = 0
+    /// The current dictation's chunk route from the recorder to the transcriber.
+    private var route: FeedRoute?
 
     public convenience init(recorder: Recorder, output: TextOutput, mode: HotkeyMode = .hold,
                             transcribe: @escaping ([Float]) async throws -> String) {
@@ -92,10 +106,24 @@ public final class DictationController {
         switch (mode, state) {
         case (_, .idle):
             do {
-                try recorder.start()
-                transcriber.begin()
-                state = .recording
+                try recorder.prepare()
             } catch {
+                onError?("Could not start recording: \(error.localizedDescription)")
+                return
+            }
+            // Route chunks before the microphone runs, so the first chunk has
+            // somewhere to go: a chunk recorded but never fed would make the
+            // session's audio differ from the recording that `finish(all:)`
+            // reconciles against.
+            transcriber.begin()
+            openRoute()
+            state = .recording
+            do {
+                try recorder.start()
+            } catch {
+                closeRoute()
+                transcriber.cancel()
+                state = .idle
                 onError?("Could not start recording: \(error.localizedDescription)")
             }
         case (.toggle, .recording):
@@ -131,6 +159,7 @@ public final class DictationController {
             return
         case .recording:
             _ = recorder.stop()
+            closeRoute()
             transcriber.cancel()
         case .transcribing:
             transcriber.cancel()
@@ -139,8 +168,23 @@ public final class DictationController {
         state = .idle
     }
 
+    private func openRoute() {
+        let route = FeedRoute(transcriber: transcriber)
+        self.route = route
+        recorder.onSamples = route.sink
+    }
+
+    /// What the route had not fed yet is the tail of the recording, which
+    /// `finish(all:)` appends itself.
+    private func closeRoute() {
+        recorder.onSamples = nil
+        route?.close()
+        route = nil
+    }
+
     private func finish() {
         let samples = recorder.stop()
+        closeRoute()
         recordingSeconds = Double(samples.count) / sampleRate
         guard recordingSeconds >= minSeconds else {
             // A tap, not speech: the session it opened must still be closed.
