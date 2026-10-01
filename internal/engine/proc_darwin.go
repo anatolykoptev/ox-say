@@ -28,3 +28,17 @@ func processExe(pid int) (string, error) {
 	}
 	return "", fmt.Errorf("kern.procargs2 %d: no exec path", pid)
 }
+
+// processStartTime returns an opaque token identifying the process's start
+// instant: kern.proc.pid's p_starttime rendered "<sec>.<usec>". It is only
+// ever compared to another read of the same function — writePidFile stamps
+// it next to the pid, reapOrphan re-reads it — so no unit conversion is
+// needed.
+func processStartTime(pid int) (string, error) {
+	proc, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		return "", fmt.Errorf("kern.proc.pid %d: %w", pid, err)
+	}
+	tv := proc.Proc.P_starttime
+	return fmt.Sprintf("%d.%06d", tv.Sec, tv.Usec), nil
+}

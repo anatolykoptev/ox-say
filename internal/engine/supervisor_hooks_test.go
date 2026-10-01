@@ -249,8 +249,8 @@ func readPidfile(pidPath string) int {
 	if err != nil {
 		return -1
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
+	pid, _, ok := parsePidFile(data)
+	if !ok {
 		return -1
 	}
 	return pid

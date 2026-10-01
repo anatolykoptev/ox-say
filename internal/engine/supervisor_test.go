@@ -268,8 +268,8 @@ func TestExitAfterHealthFailsStart(t *testing.T) {
 				if err != nil {
 					return
 				}
-				pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-				if err != nil {
+				pid, _, ok := parsePidFile(data)
+				if !ok {
 					return
 				}
 				_ = syscall.Kill(pid, syscall.SIGKILL)
