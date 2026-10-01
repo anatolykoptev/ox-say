@@ -308,13 +308,15 @@ func TestSTTServerBackoffFallsBackFast(t *testing.T) {
 	// request-counted loop stalls in the first window on a fast machine.
 	// Each window is waited out so every request launches a fresh (failing)
 	// start; the windows double (1 s, 2 s, 4 s …), so within a few attempts
-	// one still has ≥1 s left after the request that earned it, however long
-	// a request takes. Every request falls back to the CLI.
+	// one still has ≥2 s left after the request that earned it, however long
+	// a request takes. The in-window request below must finish inside that
+	// window, so 2 s leaves a loaded runner room (#41). Every request falls
+	// back to the CLI.
 	var calls int
 	deadline := time.Now().Add(60 * time.Second)
-	for d.STTSup.Backoff() < time.Second {
+	for d.STTSup.Backoff() < 2*time.Second {
 		if time.Now().After(deadline) {
-			t.Fatalf("no backoff window of 1 s or more after %d failed serve starts", calls)
+			t.Fatalf("no backoff window of 2 s or more after %d failed serve starts", calls)
 		}
 		testutil.WaitFor(t, 40*time.Second, func() bool {
 			return d.STTSup.Backoff() <= 0
