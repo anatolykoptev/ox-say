@@ -27,7 +27,8 @@
 //                                 failure, 504 when the 60 s drain bound is hit
 //            DELETE /sessions/<id>       -> drops the session and its queued work
 //          without --vad the session routes answer 501. The Host header must name loopback.
-//          Anything else is refused (403, 411, 415).
+//          Anything else is refused (403, 405, 411, 415); methods other than GET, HEAD, POST
+//          and DELETE are refused before their body would be read.
 //          Client rule: on any non-200 from a session route the stream is unreliable (a failed
 //          decode cannot pass for silence — words would go missing); upload the whole recording
 //          to POST /transcribe or the daemon's one-shot route instead.
@@ -919,6 +920,22 @@ int serve(const args & a) {
         if (!is_loopback_host(host_without_port(req.get_header_value("Host")))) {
             res.status = 403;
             res.set_content(error_json("host not allowed"), "application/json");
+            return httplib::Server::HandlerResponse::Handled;
+        }
+        // GET, HEAD, POST and DELETE are the only routed methods; refuse the
+        // rest before any body is read. httplib's pre-routing handler runs
+        // before read_content for every method (routing(), httplib.h:7023 vs
+        // 7077), and it treats PUT and PATCH as body-bearing
+        // (expect_content, httplib.h:5459): with neither Content-Length nor
+        // Transfer-Encoding the body is read until the connection closes,
+        // past set_payload_max_length (read_content_without_length,
+        // httplib.h:4386). DELETE is a real route and exempt: read_content_core
+        // returns without reading when a DELETE has no Content-Length
+        // (httplib.h:6842).
+        if (req.method != "GET" && req.method != "HEAD" && req.method != "POST" &&
+            req.method != "DELETE") {
+            res.status = 405;
+            res.set_content(error_json("method not allowed"), "application/json");
             return httplib::Server::HandlerResponse::Handled;
         }
         // without --vad the session route space does not exist at all

@@ -26,9 +26,13 @@ Upstream `tts-server` answers every origin (`Access-Control-Allow-Origin: *`),
 so while it runs any web page can synthesize speech in a cloned voice, read
 the audio and register voices. Here the ox-say daemon is its only client:
 the CORS headers are gone and POST bodies must be JSON (no cross-site simple
-request). When bound to loopback, which is how ox-say always starts it, the
-Host must be a loopback literal or `localhost` (DNS rebinding). A non-loopback
-bind (LAN use) gets no Host check, so there a rebinding page is same-origin.
+request) — exactly `application/json`, case-insensitive, parameters allowed;
+a prefix match would also accept `application/jsonx`. Methods other than GET,
+HEAD, POST and DELETE are refused before any body is read (405), a request
+carrying Transfer-Encoding or a POST without Content-Length gets 411. When
+bound to loopback, which is how ox-say always starts it, the Host must be a
+loopback literal or `localhost` (DNS rebinding). A non-loopback bind (LAN
+use) gets no Host check, so there a rebinding page is same-origin.
 
 ## patches/qwentts/0001-fused-qkv-gateup-and-threads-env.patch
 
