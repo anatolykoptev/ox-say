@@ -1246,6 +1246,14 @@ int main(int argc, char ** argv) {
         usage(argv[0]);
         return 2;
     }
+    if (!a.gpu) {
+        // -ng must not touch Metal at all. The ggml backend registry eagerly creates
+        // every Metal device on first enumeration — MTLCreateSystemDefaultDevice plus
+        // compiling the whole embedded shader library (~47 s cold per binary, and it
+        // can wake a discrete GPU) — before use_gpu is even read. GGML_METAL_DEVICES=0
+        // registers none, so -ng sees no GPU and never pays for it.
+        setenv("GGML_METAL_DEVICES", "0", 1);
+    }
     if (a.engine == "parakeet" && (!a.lang.empty() || !a.prompt.empty())) {
         fprintf(stderr, "ox-stt: parakeet detects the language itself and takes no prompt; -l/--prompt ignored\n");
     }
