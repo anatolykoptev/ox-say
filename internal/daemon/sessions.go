@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"regexp"
 )
@@ -150,7 +151,7 @@ func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, p
 		writeSessionErr(w, http.StatusBadGateway, fmt.Sprintf("stt server: %v", rerr))
 		return
 	}
-	d.logSegments(out)
+	d.logSegments(out, r.PathValue("id"))
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	} else {
@@ -176,16 +177,23 @@ type sessionSegment struct {
 // response carries — parsed off a copy; the body passed to the client stays
 // byte-for-byte. A response without segments (create, delete, an error
 // body) logs nothing. Low volume by design: one line per closed utterance.
-func (d *Daemon) logSegments(body []byte) {
+// sessID attributes the line to its session — the first 8 id chars — so
+// concurrent sessions' lines can be told apart; "" on the create route,
+// whose response carries no segments.
+func (d *Daemon) logSegments(body []byte, sessID string) {
 	var resp struct {
 		Segments []sessionSegment `json:"segments"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return
 	}
+	if len(sessID) > 8 {
+		sessID = sessID[:8]
+	}
 	for _, s := range resp.Segments {
 		d.log.Info("stt segment",
-			slog.Float64("dur_s", s.E-s.S),
+			slog.String("session", sessID),
+			slog.Float64("dur_s", math.Round((s.E-s.S)*1000)/1000),
 			slog.String("cut", s.Cut),
 			slog.Float64("min_p", s.MinP),
 			slog.Int64("quiet_ms", s.QuietMs))

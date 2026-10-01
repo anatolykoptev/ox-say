@@ -363,6 +363,46 @@ static void t_diag_reset_between_segments() {
     CHECK(got[1].quiet_ms == 416, "seg 2 quiet_ms != its closing run");
 }
 
+// A pause that starts before the cap straddles it: 370 speech windows, then
+// 640 ms of silence whose zero energy draws the cap cut into it (190640).
+// The open quiet run belongs to the continuation too — it closes by pause
+// with quiet_ms >= close_ms, not a fraction of it.
+// RED when: cut_at_cap zeroes quiet_run_ (the continuation reports 256 ms).
+static void t_cap_straddle_quiet() {
+    stream s;
+    s.add(370, 0.9f);          // 11.84 s of speech; cap fires at pos = 192000
+    s.add(20, 0.1f, 0.0f);     // 640 ms of silence: the pause starts before the cap
+    const std::vector<seg_range> got = run(s);
+    if (!eq(got, { {0, 190640}, {190640, 192640} })) {
+        dump("t_cap_straddle_quiet", got);
+        CHECK(false, "expected exactly [{0,190640},{190640,192640}]");
+    }
+    CHECK(got[0].cut == oxstt::seg_cut::cap, "first piece cut != cap");
+    CHECK(got[0].quiet_ms == 160, "cap piece quiet_ms != its pre-cut 160 ms run");
+    CHECK(got[1].cut == oxstt::seg_cut::pause, "continuation cut != pause");
+    CHECK(got[1].quiet_ms >= 400, "a pause cut reports quiet_ms < close_ms");
+    CHECK(got[1].quiet_ms == 416, "continuation quiet_ms != the whole straddling run");
+    CHECK(got[1].min_p == 0.1f, "continuation min_p != the silence floor");
+}
+
+// A cap while speech continues seeds the continuation's min_p from the
+// current window — the 1.0 sentinel must never leak into an emitted range.
+// 375 speech windows reach the cap exactly; finish() then closes the
+// continuation, which saw only p = 0.9.
+// RED when: cut_at_cap resets min_p_ to 1.0f (the finish piece reports 1.0).
+static void t_cap_finish_min_p() {
+    stream s;
+    s.add(375, 0.9f);  // cap fires inside feed at pos = 192000
+    const std::vector<seg_range> got = run(s);
+    if (!eq(got, { {0, 177200}, {177200, 192000} })) {
+        dump("t_cap_finish_min_p", got);
+        CHECK(false, "expected exactly [{0,177200},{177200,192000}]");
+    }
+    CHECK(got[0].cut == oxstt::seg_cut::cap, "first piece cut != cap");
+    CHECK(got[1].cut == oxstt::seg_cut::finish, "continuation cut != finish");
+    CHECK(got[1].min_p == 0.9f, "continuation min_p is the reset sentinel, not 0.9");
+}
+
 int main() {
     t_one_utterance();
     t_short_pause_no_split();
@@ -379,6 +419,8 @@ int main() {
     t_cut_finish();
     t_min_p();
     t_diag_reset_between_segments();
+    t_cap_straddle_quiet();
+    t_cap_finish_min_p();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

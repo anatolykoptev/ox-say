@@ -113,7 +113,7 @@ public:
                 }
             }
             if (in_speech_ && pos_ - seg_start_ >= cap_) {
-                cut_at_cap(out);
+                cut_at_cap(out, p);
             }
         }
         bump_floor();
@@ -171,8 +171,9 @@ private:
 
     // Cut the open segment at the centre of the quietest cap_quiet_ stretch in
     // [pos - cap_lookback_, pos_]; the segment continues from the cut, still in
-    // speech.
-    void cut_at_cap(std::vector<seg_range> & out) {
+    // speech. p is the current window's probability — it seeds the
+    // continuation's min_p (that window already belongs to the continuation).
+    void cut_at_cap(std::vector<seg_range> & out, float p) {
         const uint64_t hi = pos_;
         const uint64_t lo = hi - cap_lookback_;
         const uint64_t nb = cap_quiet_ / SEG_BUCKET;              // buckets per stretch
@@ -204,10 +205,14 @@ private:
         // the emitted piece. The min-speech rule exists to drop isolated noise
         // blips — a continuation that ends 160 ms after the cut is the tail of
         // a real utterance and must reach the decoder.
-        // The diagnostic counters DO reset: they describe one emitted piece —
-        // what the VAD saw while that range was open.
-        min_p_ = 1.0f;
-        quiet_run_ = quiet_max_ = 0;
+        // The diagnostic counters restart at the cut, but a quiet run already
+        // in progress straddles it: keep quiet_run_ (and seed the max with it)
+        // so a pause that opened before the cap still closes the continuation
+        // with quiet_ms >= close_ms, and start min_p_ at the current window's
+        // p — never the 1.0 sentinel, which would leak into a finish() piece
+        // that saw no quieter window.
+        min_p_ = p;
+        quiet_max_ = quiet_run_;
     }
 
     // Sample energy per SEG_BUCKET-aligned absolute bucket; only kept while in

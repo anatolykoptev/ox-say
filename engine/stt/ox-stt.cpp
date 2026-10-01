@@ -524,13 +524,6 @@ std::string num(double v) {
     return b;
 }
 
-// session segments report min_p at two decimals
-std::string num2(double v) {
-    char b[32];
-    snprintf(b, sizeof(b), "%.2f", v);
-    return b;
-}
-
 // The one JSON shape of ox-stt, shared by the CLI (stdout/-o) and POST /transcribe. Trailing
 // newline included.
 std::string result_json(const std::string & engine, const result & r, size_t n_samples, double elapsed) {
@@ -602,7 +595,7 @@ std::string session_json(const std::vector<decoded_seg> & segs, size_t from, siz
     for (size_t i = from; i < segs.size(); ++i) {
         o += (i > from ? "," : "") + std::string("{\"s\":") + num(segs[i].s) + ",\"e\":" +
              num(segs[i].e) + ",\"cut\":\"" + cut_name(segs[i].cut) + "\",\"min_p\":" +
-             num2(segs[i].min_p) + ",\"quiet_ms\":" + std::to_string(segs[i].quiet_ms) + ",\"text\":";
+             num(segs[i].min_p) + ",\"quiet_ms\":" + std::to_string(segs[i].quiet_ms) + ",\"text\":";
         json_str(o, segs[i].text);
         o += "}";
     }

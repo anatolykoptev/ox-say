@@ -399,11 +399,17 @@ func recAttrs(r slog.Record) map[string]any {
 }
 
 // Every segment a session response carries produces exactly one "stt
-// segment" Info line with the cut diagnostics — dur_s, cut, min_p,
+// segment" Info line, attributed to the session's first 8 id chars and
+// carrying exactly the cut diagnostics — session, dur_s, cut, min_p,
 // quiet_ms — and never the text: the segment's text is the operator's
-// dictation, a privacy matter.
+// dictation, a privacy matter. The check reads the texts the fake child
+// emitted out of the proxied responses themselves, so the dictation cannot
+// leak under any attr key or inside the message.
 // Mutation: drop the log call in sttSessionProxy -> RED (no records).
-// Mutation: log the segment's text -> RED (a "text" attr appears).
+// Mutation: log the segment's text under any key -> RED (an extra attr
+// appears and an attr value contains the emitted text).
+// Mutation: log Segments[0] for every segment -> RED (record 3, the second
+// segment of a two-segment response, carries record 2's distinct values).
 func TestSTTSegmentLogLines(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
@@ -428,36 +434,95 @@ func TestSTTSegmentLogLines(t *testing.T) {
 	}
 	id := created.ID
 
-	chunk := bytes.Repeat([]byte{1}, 640)
-	for i := 0; i < 2; i++ {
-		code, body = sessReq(t, http.MethodPost, base+"/"+id+"/audio", "application/octet-stream", chunk)
+	// The texts the fake emitted, read off the proxied responses — no part
+	// of them may appear in a record's message or in any attr value.
+	// The first chunk closes one segment; the second closes two, so one
+	// response carries several and each must get its own line.
+	var emitted []string
+	for i, size := range []int{640, 3200} {
+		code, body = sessReq(t, http.MethodPost, base+"/"+id+"/audio", "application/octet-stream", bytes.Repeat([]byte{1}, size))
 		if code != http.StatusOK {
 			t.Fatalf("audio %d: status %d body %s", i+1, code, body)
 		}
+		var dec struct {
+			Segments []struct {
+				Text string `json:"text"`
+			} `json:"segments"`
+		}
+		if err := json.Unmarshal(body, &dec); err != nil || len(dec.Segments) != i+1 {
+			t.Fatalf("audio %d body = %s, want %d segment(s)", i+1, body, i+1)
+		}
+		for _, s := range dec.Segments {
+			emitted = append(emitted, s.Text)
+		}
 	}
-	if n := len(rec.all()); n != 2 {
-		t.Fatalf("stt segment lines after 2 chunks = %d, want 2 (one per response segment)", n)
+	if n := len(rec.all()); n != 3 {
+		t.Fatalf("stt segment lines after 2 chunks = %d, want 3 (one per response segment)", n)
 	}
 
-	// The finish response carries both chunk segments: two more lines.
+	// The server returns each segment once: /audio already returned all
+	// three, so the finish response carries none — no new lines.
 	code, body = sessReq(t, http.MethodPost, base+"/"+id+"/finish", "application/json", []byte("{}"))
 	if code != http.StatusOK {
 		t.Fatalf("finish: status %d body %s", code, body)
 	}
-	recs := rec.all()
-	if len(recs) != 4 {
-		t.Fatalf("stt segment lines = %d, want 4", len(recs))
+	var fin struct {
+		Text string `json:"text"`
 	}
-	for i, r := range recs[2:] {
+	if err := json.Unmarshal(body, &fin); err == nil && fin.Text != "" {
+		emitted = append(emitted, fin.Text)
+	}
+	recs := rec.all()
+	if len(recs) != 3 {
+		t.Fatalf("stt segment lines = %d, want 3 (each segment is returned once)", len(recs))
+	}
+
+	wantKeys := map[string]bool{
+		"session": true, "dur_s": true, "cut": true, "min_p": true, "quiet_ms": true,
+	}
+	// The fake's per-segment diagnostics, all distinct.
+	wantVals := []struct {
+		cut   string
+		minP  float64
+		quiet int64
+	}{
+		{"pause", 0.2, 400},
+		{"cap", 0.25, 440},
+		{"finish", 0.3, 480},
+	}
+	for i, r := range recs {
 		m := recAttrs(r)
 		if r.Level != slog.LevelInfo {
 			t.Fatalf("segment %d level = %s, want INFO", i+1, r.Level)
 		}
-		if m["dur_s"] != 1.0 || m["cut"] != "pause" || m["min_p"] != 0.2 || m["quiet_ms"] != int64(400) {
-			t.Fatalf("segment %d attrs = %v, want dur_s=1 cut=pause min_p=0.2 quiet_ms=400", i+1, m)
+		if len(m) != len(wantKeys) {
+			t.Fatalf("segment %d attr keys = %v, want exactly %v", i+1, m, wantKeys)
 		}
-		if _, ok := m["text"]; ok {
-			t.Fatalf("segment %d line logs the transcribed text", i+1)
+		for k := range m {
+			if !wantKeys[k] {
+				t.Fatalf("segment %d logs unexpected attr %q (keys %v)", i+1, k, m)
+			}
+		}
+		if m["session"] != id[:8] {
+			t.Fatalf("segment %d session = %v, want %q", i+1, m["session"], id[:8])
+		}
+		if m["dur_s"] != 1.0 || m["cut"] != wantVals[i].cut ||
+			m["min_p"] != wantVals[i].minP || m["quiet_ms"] != wantVals[i].quiet {
+			t.Fatalf("segment %d attrs = %v, want dur_s=1 cut=%s min_p=%v quiet_ms=%d",
+				i+1, m, wantVals[i].cut, wantVals[i].minP, wantVals[i].quiet)
+		}
+		for _, txt := range emitted {
+			if txt == "" {
+				continue
+			}
+			if strings.Contains(r.Message, txt) {
+				t.Fatalf("segment %d message %q contains the emitted text %q", i+1, r.Message, txt)
+			}
+			for k, v := range m {
+				if s, ok := v.(string); ok && strings.Contains(s, txt) {
+					t.Fatalf("segment %d attr %q = %q contains the emitted text", i+1, k, s)
+				}
+			}
 		}
 	}
 }
