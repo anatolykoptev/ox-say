@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.6](https://github.com/anatolykoptev/ox-say/compare/v0.1.5...v0.1.6) (2026-10-01)
+
+
+### Fixed
+
+* **dictation:** layout-aware ⌘V; clipboard snapshot keeps order, skips promises ([#57](https://github.com/anatolykoptev/ox-say/issues/57)) ([f3d8911](https://github.com/anatolykoptev/ox-say/commit/f3d891163701e08e549c87d06cc9afbe6c1f0df8))
+* **dictation:** refresh the shortcut menu on every open, scope the ended reason ([#59](https://github.com/anatolykoptev/ox-say/issues/59)) ([f2e8ba0](https://github.com/anatolykoptev/ox-say/commit/f2e8ba066663a2e9dbf7657b2683340de8012348))
+* **engine:** close unframed-body and content-type gaps in local HTTP servers ([#60](https://github.com/anatolykoptev/ox-say/issues/60)) ([562ce19](https://github.com/anatolykoptev/ox-say/commit/562ce19414cc6f07aa70a8ac3d9d1ac277783df8)), closes [#40](https://github.com/anatolykoptev/ox-say/issues/40)
+* **engine:** ox-align -ng skips Metal; build fails if the switch disappears ([#54](https://github.com/anatolykoptev/ox-say/issues/54)) ([7e77569](https://github.com/anatolykoptev/ox-say/commit/7e77569d3336f01383087342c05f22b228b973f4)), closes [#50](https://github.com/anatolykoptev/ox-say/issues/50) [#53](https://github.com/anatolykoptev/ox-say/issues/53) [#41](https://github.com/anatolykoptev/ox-say/issues/41)
+* **stt:** scale the transcription timeout with audio duration ([#61](https://github.com/anatolykoptev/ox-say/issues/61)) ([072f2c5](https://github.com/anatolykoptev/ox-say/commit/072f2c590be80316af20daffcc097f0deea5be45))
+
 ## [0.1.5](https://github.com/anatolykoptev/ox-say/compare/v0.1.4...v0.1.5) (2026-10-01)
 
 
