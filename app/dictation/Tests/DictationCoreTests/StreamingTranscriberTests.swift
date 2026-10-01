@@ -51,6 +51,9 @@ final class ScriptedSend: @unchecked Sendable {
 
     private let lock = NSLock()
     private var script: [Response]
+    /// Answers by "METHOD path", consulted before the script and never
+    /// consumed: for requests whose order against the rest is not fixed.
+    private var routes: [String: Response] = [:]
     private var requests: [Recorded] = []
     private var inFlight = 0
     private(set) var maxInFlight = 0
@@ -58,6 +61,10 @@ final class ScriptedSend: @unchecked Sendable {
     var responseDelayNanos: UInt64 = 0
 
     init(_ script: [Response]) { self.script = script }
+
+    func route(_ method: String, _ path: String, _ response: Response) {
+        lock.withLock { routes["\(method) \(path)"] = response }
+    }
 
     var send: TranscriptionClient.Send {
         { [self] req in
@@ -69,6 +76,7 @@ final class ScriptedSend: @unchecked Sendable {
                                          timeout: req.timeoutInterval))
                 inFlight += 1
                 maxInFlight = max(maxInFlight, inFlight)
+                if let routed = routes["\(req.httpMethod ?? "GET") \(req.url?.path ?? "")"] { return routed }
                 return script.isEmpty ? .json(500, #"{"error":"unscripted request"}"#) : script.removeFirst()
             }
             defer { lock.withLock { inFlight -= 1 } }
@@ -587,10 +595,12 @@ final class StreamingTranscriberTests: XCTestCase {
             .json(200, #"{"id":"\#(sessionID)"}"#),
             .json(200, #"{"segments":[],"pending":0}"#),
             .json(200, #"{"segments":[],"pending":0}"#),
-            // The fallback DELETE and the one-shot upload race; both carry text.
-            .json(200, #"{"text":"uploaded"}"#),
-            .json(200, #"{"text":"uploaded"}"#),
         ])
+        // Whether the pump sends any chunk before finish() sees the over-feed
+        // depends on timing (none when this test runs alone, #63), so the
+        // fallback DELETE and the one-shot upload are answered by path.
+        fake.route("DELETE", sessionPath, .json(200, "{}"))
+        fake.route("POST", uploadPath, .json(200, #"{"text":"uploaded"}"#))
         let st = transcriber(fake)
         st.begin()
         await st.feed(chunk(0), generation: st.feedGeneration)
@@ -599,6 +609,9 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertEqual(text, "uploaded")
         let uploaded = await waitFor(fake, path: uploadPath)
         XCTAssertTrue(uploaded, "the whole recording is uploaded")
+        // The routed answers are never consumed, so count: a second upload
+        // would otherwise pass unseen.
+        XCTAssertEqual(fake.recorded().filter { $0.path == uploadPath }.count, 1, "uploaded once")
         let deleted = await waitFor(fake, path: sessionPath, method: "DELETE")
         XCTAssertTrue(deleted, "the polluted session gets a best-effort DELETE")
         XCTAssertFalse(fake.recorded().contains { $0.path == finishPath },
