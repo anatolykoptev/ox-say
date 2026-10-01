@@ -11,6 +11,7 @@
 //	OXSAY_FAKE_EXIT_MS        exit(1) after this many ms
 //	OXSAY_FAKE_EXIT_ONCE      with EXIT_MS: only self-exit once per FAKE_DIR
 //	OXSAY_FAKE_SPEECH_BLOCK   speech blocks until the request context ends
+//	OXSAY_FAKE_IGNORE_SIGTERM SIGTERM is ignored; only SIGKILL ends the child
 //
 // Fake ox-stt (dispatched on OXSAY_FAKE_STT=1 AND a --engine flag in argv —
 // the TTS fake never receives one, so both fakes can coexist in a test):
@@ -77,10 +78,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -396,6 +399,11 @@ func runFakeChild() int {
 	dir := os.Getenv("OXSAY_FAKE_DIR")
 	if dir != "" {
 		_ = os.WriteFile(filepath.Join(dir, "spawn-"+strconv.Itoa(os.Getpid())), nil, 0o644)
+	}
+	if os.Getenv("OXSAY_FAKE_IGNORE_SIGTERM") == "1" {
+		// A child that does not honour SIGTERM: killChild's escalation to
+		// SIGKILL after KillGrace is the only way down.
+		signal.Notify(make(chan os.Signal, 1), syscall.SIGTERM)
 	}
 	delay := envMS("OXSAY_FAKE_START_DELAY_MS")
 	started := time.Now()

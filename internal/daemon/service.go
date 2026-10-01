@@ -250,15 +250,21 @@ func (d *Daemon) sttServer(ctx context.Context) (base string, release func(), er
 
 // AddVoice persists a voice and registers it into the child when the engine
 // is running. registered reports whether the live registration happened.
-// The engine guard is taken before the ffmpeg normalization and held across
-// the whole call: a slow Prepare (up to 60 s) must not let the idle loop
-// stop the child the voice is about to be registered into — that window
-// otherwise ends in registered=false for a voice the next start's replay
-// would register, or in a registration into a child already marked Stopped.
+// Input validation runs before the guard: a request Prepare will refuse
+// must not re-stamp lastActivity through Release and push a Ready engine's
+// idle stop back. The engine guard is then taken before the ffmpeg
+// normalization and held across the whole call: a slow Prepare (up to 60 s)
+// must not let the idle loop stop the child the voice is about to be
+// registered into — that window otherwise ends in registered=false for a
+// voice the next start's replay would register, or in a registration into
+// a child already marked Stopped.
 // Prepare still runs outside voiceMu (it must not hold up an engine
 // start's replay); the commit and the live registration run under voiceMu
 // so a concurrent replay cannot interleave between them.
 func (d *Daemon) AddVoice(ctx context.Context, name, audioPath, refText string) (v *voices.Voice, registered bool, err error) {
+	if err := d.Store.ValidateInput(name, audioPath); err != nil {
+		return nil, false, err
+	}
 	g := d.Sup.Acquire()
 	defer g.Release()
 	if d.slowPrepare != nil {

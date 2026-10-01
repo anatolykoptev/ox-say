@@ -104,21 +104,32 @@ type Pending struct {
 	tmp     string
 }
 
-// Prepare normalises audioPath to 24 kHz mono s16 WAV (max 20 s) with ffmpeg
-// into a temporary file in the store dir. It touches no live voice, so callers
-// run it outside their locks (ffmpeg may take up to its 60 s cap). The name is
-// validated before any filesystem or ffmpeg work. audioPath must be absolute:
-// the daemon's cwd is "/" under launchd, so a relative path would resolve
-// somewhere unexpected.
-func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*Pending, error) {
+// ValidateInput runs the checks Prepare applies before it writes anything
+// or invokes ffmpeg: a safe voice name, an absolute audioPath (the daemon's
+// cwd is "/" under launchd, so a relative path would resolve somewhere
+// unexpected), and an existing clip. It performs no writes, so callers can
+// reject a request before taking a lock or a guard they would otherwise
+// hold through the refusal.
+func (s *Store) ValidateInput(name, audioPath string) error {
 	if err := ValidateName(name); err != nil {
-		return nil, err
+		return err
 	}
 	if !filepath.IsAbs(audioPath) {
-		return nil, &InputError{fmt.Sprintf("voices: audio path %q is not absolute", audioPath)}
+		return &InputError{fmt.Sprintf("voices: audio path %q is not absolute", audioPath)}
 	}
 	if _, err := os.Stat(audioPath); err != nil {
-		return nil, &InputError{fmt.Sprintf("voices: audio: %v", err)}
+		return &InputError{fmt.Sprintf("voices: audio: %v", err)}
+	}
+	return nil
+}
+
+// Prepare normalises audioPath to 24 kHz mono s16 WAV (max 20 s) with ffmpeg
+// into a temporary file in the store dir. It touches no live voice, so callers
+// run it outside their locks (ffmpeg may take up to its 60 s cap). The input
+// is validated before any filesystem or ffmpeg work — see ValidateInput.
+func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*Pending, error) {
+	if err := s.ValidateInput(name, audioPath); err != nil {
+		return nil, err
 	}
 	tmp, err := os.CreateTemp(s.dir, ".normalize-"+name+"-*.wav")
 	if err != nil {
