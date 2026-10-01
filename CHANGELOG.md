@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.10](https://github.com/anatolykoptev/ox-say/compare/v0.1.9...v0.1.10) (2026-10-01)
+
+
+### Added
+
+* **stt:** pre-warm a paged-out model when a session opens ([#82](https://github.com/anatolykoptev/ox-say/issues/82)) ([a27ca06](https://github.com/anatolykoptev/ox-say/commit/a27ca067ee1431741a22432f5ca7c8bbd003cebe))
+
+
+### Fixed
+
+* **install:** run the LaunchAgent as an Interactive job ([#84](https://github.com/anatolykoptev/ox-say/issues/84)) ([5a37f0a](https://github.com/anatolykoptev/ox-say/commit/5a37f0a4c5be0fb531965ecde0bb56601364043f))
+
 ## [0.1.9](https://github.com/anatolykoptev/ox-say/compare/v0.1.8...v0.1.9) (2026-10-01)
 
 
