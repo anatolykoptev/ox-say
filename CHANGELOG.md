@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.9](https://github.com/anatolykoptev/ox-say/compare/v0.1.8...v0.1.9) (2026-10-01)
+
+
+### Added
+
+* **dictation:** log one timing line per dictation, without text ([#80](https://github.com/anatolykoptev/ox-say/issues/80)) ([1163379](https://github.com/anatolykoptev/ox-say/commit/11633790c394a865503deb106b4bbc825f30c576))
+* **stt:** report why each session segment was cut ([#79](https://github.com/anatolykoptev/ox-say/issues/79)) ([12ee6b6](https://github.com/anatolykoptev/ox-say/commit/12ee6b6adb89c752c14e2a474babacc84a5ffff0))
+
 ## [0.1.8](https://github.com/anatolykoptev/ox-say/compare/v0.1.7...v0.1.8) (2026-10-01)
 
 
