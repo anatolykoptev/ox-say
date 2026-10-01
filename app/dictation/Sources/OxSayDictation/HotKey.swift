@@ -76,11 +76,6 @@ enum Shortcut: String, CaseIterable {
 
     var keyCode: UInt32 { UInt32(kVK_Space) }
 
-    /// Not an enabled macOS shortcut (⌃Space switches input sources on a stock Mac).
-    var isFree: Bool {
-        !ShortcutConflict.taken(keyCode: Int(keyCode), modifiers: Int(modifiers), by: Shortcut.systemShortcuts())
-    }
-
     static func systemShortcuts() -> [SystemShortcut] {
         var ref: Unmanaged<CFArray>?
         guard CopySymbolicHotKeys(&ref) == noErr,
