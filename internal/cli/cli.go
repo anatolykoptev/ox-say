@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -111,7 +110,7 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 		fmt.Fprintln(stderr, "ox-say:", err)
 		return 2
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := newServeLogger(context.Background(), os.Stderr, serveLogMaxBytes, serveLogCapEvery)
 	d, err := daemon.New(cfg, logger)
 	if err != nil {
 		fmt.Fprintln(stderr, "ox-say:", err)
