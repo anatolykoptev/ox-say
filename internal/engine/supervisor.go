@@ -468,6 +468,11 @@ func (s *Supervisor) spawn() (*child, error) {
 		done:    make(chan struct{}),
 		baseURL: s.baseURL(),
 	}
+	// The pidfile is written before the waiter starts: a child that dies at
+	// once is then removed by the waiter's onExit, instead of the write
+	// recreating a stale file after that removal (with a bare pid, since the
+	// start time of a reaped pid cannot be read).
+	s.writePidFile(c.cmd.Process.Pid)
 	// The waiter runs before registration so c.done is always closed, even
 	// when the shutdown check below refuses to adopt this child.
 	go s.waiter(c)
@@ -481,7 +486,6 @@ func (s *Supervisor) spawn() (*child, error) {
 	s.child = c
 	s.starts++
 	s.mu.Unlock()
-	s.writePidFile(c.cmd.Process.Pid)
 	s.log.Info("engine spawned", slog.Int("pid", c.cmd.Process.Pid))
 	return c, nil
 }

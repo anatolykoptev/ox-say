@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -172,4 +173,40 @@ func TestReapOrphanOldFormatPidfile(t *testing.T) {
 		return !processAlive(orphan.Process.Pid)
 	}, "orphan kill on an old-format pidfile")
 	<-waitDone
+}
+
+// The supervisor stamps the token itself: a pidfile written by a real spawn
+// names the child and carries the child's own start token. Every reaper test
+// above writes its pidfile by hand, so without this one the write side could
+// drop the token, and #6 would reopen through the bare-pid fallback, with
+// every test green.
+// Mutation: drop `content += " " + token` in writePidFile -> RED.
+func TestSpawnWritesTheStartToken(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	sup := newTestSupervisor(t, dir, nil)
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "run", "engine.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, token, ok := parsePidFile(data)
+	if !ok {
+		t.Fatalf("pidfile %q does not parse", data)
+	}
+	if want := sup.Status().PID; pid != want {
+		t.Fatalf("pidfile names pid %d, the child is %d", pid, want)
+	}
+	if token == "" {
+		t.Fatalf("pidfile %q carries no start token", data)
+	}
+	want, err := processStartTime(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != want {
+		t.Fatalf("pidfile token %q, the child's own is %q", token, want)
+	}
 }
