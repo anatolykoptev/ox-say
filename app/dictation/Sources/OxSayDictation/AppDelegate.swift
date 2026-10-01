@@ -29,8 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Recorder chunks ride a fresh AsyncStream per dictation, so they stay in
     /// order: the audio thread yields, one consumer task feeds each chunk to
     /// the transcriber tagged with the generation that dictation began under.
-    private var feedContinuation: AsyncStream<[Float]>.Continuation?
-    private var feedTask: Task<Void, Never>?
+    private var feedRoute: FeedRoute?
     /// Counts the seconds of a transcription on the pill, and after a while says
     /// why it takes long (CPU while the voice engine is loaded, or the GPU's
     /// first run after an update), so a slow run does not look like a hang.
@@ -110,16 +109,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// can be fed — or sent — once the next one starts.
     private func routeFeed(_ state: DictationState) {
         recorder.onSamples = nil
-        feedContinuation?.finish()
-        feedContinuation = nil
-        feedTask?.cancel()
-        feedTask = nil
+        feedRoute?.close()
+        feedRoute = nil
         guard state == .recording, let streamer else { return }
-        let generation = streamer.feedGeneration
-        let (chunks, feedChunks) = AsyncStream<[Float]>.makeStream()
-        feedContinuation = feedChunks
-        recorder.onSamples = { chunk in feedChunks.yield(chunk) }
-        feedTask = Task { for await chunk in chunks { await streamer.feed(chunk, generation: generation) } }
+        let route = FeedRoute(transcriber: streamer)
+        feedRoute = route
+        recorder.onSamples = route.sink
     }
 
     /// Registers the chosen key, or the first free one. `announce` says so when

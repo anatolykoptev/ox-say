@@ -392,6 +392,9 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertEqual(fake.recorded().last?.method, "DELETE")
         XCTAssertEqual(fake.recorded().last?.path, sessionPath)
         await st.feed(chunk(1), generation: st.feedGeneration) // after cancel a feed is dropped
+        // Mutation: drop `!cancelled` from the guard in feed -> RED (the dead
+        // dictation keeps buffering what the recorder still delivers).
+        XCTAssertEqual(st.acceptedCount, chunk(0).count, "a feed after cancel must not be accepted")
         // A pump kicked by that feed would set `sending` under feed's own
         // lock, so once none runs the recorded requests are final.
         let deadline = Date().addingTimeInterval(2)
@@ -708,6 +711,7 @@ final class TranscriberControllerTests: XCTestCase {
         var result: String = "text"
         var finishDelayNanos: UInt64 = 0
         func begin() { began += 1 }
+        var feedGeneration: Int { began }
         func feed(_ samples: [Float], generation _: Int) async {}
         func finish(all: [Float]) async throws -> String {
             finishCalls.append(all)
@@ -778,5 +782,45 @@ final class TranscriberControllerTests: XCTestCase {
         await run(c, until: .idle)
         XCTAssertEqual(t.cancelled, 1)
         XCTAssertTrue(t.finishCalls.isEmpty)
+    }
+
+    // Mutation: in DictationController.keyDown, move `try recorder.start()`
+    // back above `transcriber.begin()` / `state = .recording` -> RED. The app
+    // routes chunks into the session on `.recording`; a chunk recorded before
+    // that is in the recording but never in the session.
+    @MainActor
+    func testTheRecordingIsAnnouncedBeforeTheMicrophoneStarts() {
+        let rec = FakeRecorder()
+        let t = FakeTranscriber()
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
+        var stateAtStart: DictationState?
+        var beganAtStart = 0
+        rec.onStart = { stateAtStart = c.state; beganAtStart = t.began }
+        c.keyDown()
+        XCTAssertEqual(stateAtStart, .recording, "the chunk route must exist before the first chunk")
+        XCTAssertEqual(beganAtStart, 1, "the generation must be minted before the first chunk")
+    }
+
+    // Mutation: drop `transcriber.cancel()` in keyDown's catch -> RED (the
+    // session opened by begin() would stay open on the daemon).
+    @MainActor
+    func testAFailedStartCancelsTheSessionAndReturnsToIdle() {
+        struct NoMic: LocalizedError { var errorDescription: String? { "no mic" } }
+        let rec = FakeRecorder(); rec.startError = NoMic()
+        let t = FakeTranscriber()
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
+        var states: [DictationState] = []
+        var errors: [String] = []
+        c.onState = { states.append($0) }
+        c.onError = { errors.append($0) }
+        c.keyDown()
+        XCTAssertEqual(t.began, 1)
+        XCTAssertEqual(t.cancelled, 1)
+        XCTAssertEqual(c.state, .idle)
+        XCTAssertEqual(states, [.recording, .idle], "the route is torn down on .idle")
+        XCTAssertEqual(errors, ["Could not start recording: no mic"])
+        rec.startError = nil
+        c.keyDown()
+        XCTAssertEqual(c.state, .recording, "a failed start must not wedge the next press")
     }
 }

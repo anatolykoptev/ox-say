@@ -19,19 +19,21 @@ enum RecorderError: LocalizedError {
 /// the daemon's speech-to-text wants.
 final class MicRecorder: Recorder {
     /// A stuck key must not record forever.
-    var maxSeconds: Double = 120
+    var maxSeconds: Double {
+        get { recording.maxSeconds }
+        set { recording.maxSeconds = newValue }
+    }
     /// Loudness per frequency band, 0...1, for each chunk of audio. Called on the
     /// audio thread.
     var onLevels: (([Float]) -> Void)?
     /// Every converted 16 kHz mono chunk, in order, on the audio thread: the
     /// streaming transcription session is fed from it. The recorder still keeps
     /// the full recording itself, for the finish and for the fallback upload.
-    /// Rebound per dictation on the main thread, so access goes through `lock`.
+    /// Rebound per dictation on the main thread.
     var onSamples: (([Float]) -> Void)? {
-        get { lock.withLock { _onSamples } }
-        set { lock.withLock { _onSamples = newValue } }
+        get { recording.onSamples }
+        set { recording.onSamples = newValue }
     }
-    private var _onSamples: (([Float]) -> Void)?
     /// The recording reached `maxSeconds` or lost its input device (AirPods
     /// connecting, a new default input): it has stopped growing and should be
     /// finished. Called on the main thread with the reason.
@@ -39,11 +41,10 @@ final class MicRecorder: Recorder {
 
     private let engine = AVAudioEngine()
     private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-    private var samples: [Float] = []
-    /// Bumped per start/stop under `lock`; the tap closure captures it, so a
-    /// buffer still in flight across a recording boundary is dropped instead
-    /// of leaking the old recording's tail into the next one.
-    private var epoch = 0
+    /// The recording and its epoch gate: the tap closure captures the epoch
+    /// of its start, so a buffer still in flight across a recording boundary
+    /// is dropped instead of leaking the old recording's tail into the next one.
+    private let recording = RecordingBuffer(sampleRate: 16000, maxSeconds: 120)
     private var ended = false
     private var configObserver: NSObjectProtocol?
     private let lock = NSLock()
@@ -61,11 +62,7 @@ final class MicRecorder: Recorder {
         default:
             throw RecorderError.notAllowed
         }
-        lock.lock()
-        samples.removeAll(keepingCapacity: true)
-        epoch += 1
-        let tapEpoch = epoch
-        lock.unlock()
+        let tapEpoch = recording.start()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw RecorderError.noInput }
@@ -97,10 +94,7 @@ final class MicRecorder: Recorder {
         configObserver = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        lock.lock()
-        epoch += 1
-        defer { lock.unlock() }
-        return samples
+        return recording.stop()
     }
 
     private func end(_ reason: String) {
@@ -127,17 +121,10 @@ final class MicRecorder: Recorder {
         }
         guard error == nil, let channel = out.floatChannelData else { return }
         let chunk = Array(UnsafeBufferPointer(start: channel[0], count: Int(out.frameLength)))
+        let appended = recording.append(chunk, epoch: tapEpoch)
+        guard appended != .stale else { return }
         onLevels?(meter.levels(chunk))
-        // The sink is captured with the epoch check under the one lock: a chunk
-        // emitted can only land on the stream of the recording it belongs to.
-        let (full, sink) = lock.withLock { () -> (Bool, (([Float]) -> Void)?) in
-            guard epoch == tapEpoch else { return (false, nil) }
-            let full = Double(samples.count) / target.sampleRate >= maxSeconds
-            if !full { samples.append(contentsOf: chunk) }
-            return (full, full ? nil : _onSamples)
-        }
-        sink?(chunk)
-        if full {
+        if appended == .full {
             DispatchQueue.main.async { [weak self] in
                 self?.end("Recordings stop after \(Int(self?.maxSeconds ?? 0)) seconds.")
             }

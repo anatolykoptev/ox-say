@@ -31,6 +31,9 @@ public protocol TextOutput: AnyObject {
 public protocol Transcriber: AnyObject {
     /// Prepare for a new recording (e.g. open a streaming session).
     func begin()
+    /// The tag `begin` minted for the current dictation. Read it once when the
+    /// dictation's chunk route opens and pass it with every chunk.
+    var feedGeneration: Int { get }
     /// A chunk of 16 kHz mono samples, in recording order. `generation` is the
     /// tag `begin` minted for the dictation that recorded the chunk; a stale
     /// tag means the chunk belongs to a dead recording and is dropped.
@@ -47,6 +50,7 @@ private final class OneShotTranscriber: Transcriber {
     private let transcribe: ([Float]) async throws -> String
     init(_ transcribe: @escaping ([Float]) async throws -> String) { self.transcribe = transcribe }
     func begin() {}
+    var feedGeneration: Int { 0 }
     func feed(_: [Float], generation _: Int) async {}
     func finish(all: [Float]) async throws -> String { try await transcribe(all) }
     func cancel() {}
@@ -93,11 +97,18 @@ public final class DictationController {
     public func keyDown() {
         switch (mode, state) {
         case (_, .idle):
+            // Begin and announce the recording before the microphone runs: the
+            // app routes recorder chunks into the session on `.recording`, so
+            // the first chunk always has somewhere to go. A chunk recorded but
+            // never fed would make the session's audio differ from the
+            // recording that `finish(all:)` reconciles against.
+            transcriber.begin()
+            state = .recording
             do {
                 try recorder.start()
-                transcriber.begin()
-                state = .recording
             } catch {
+                transcriber.cancel()
+                state = .idle
                 onError?("Could not start recording: \(error.localizedDescription)")
             }
         case (.toggle, .recording):

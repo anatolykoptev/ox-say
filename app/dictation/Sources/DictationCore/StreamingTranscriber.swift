@@ -44,6 +44,8 @@ public final class StreamingTranscriber: Transcriber, @unchecked Sendable {
     /// Test seam: the pump's in-flight flag, read under the lock, so tests can
     /// await quiescence instead of sleeping.
     var pumpSending: Bool { lock.withLock { sending } }
+    /// Test seam: samples `feed` accepted for the current dictation.
+    var acceptedCount: Int { lock.withLock { accepted } }
     /// Test seam: drain waiters currently queued in `waitForDrain`.
     var pendingDrainWaiters: Int { lock.withLock { drainWaiters.count } }
 
