@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,8 +26,67 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+// testLogWriter mirrors daemon log lines into the test's own output
+// (t.Output) and keeps every line for assertions via testLogSaw. A daemon
+// goroutine that logs after the test's cleanups have run would panic
+// inside t.Output, so the cleanup flips closed and late writes are
+// dropped; mu makes the closed check and the write atomic.
+type testLogWriter struct {
+	out    io.Writer
+	mu     sync.Mutex
+	closed bool
+	lines  []string
+}
+
+func (w *testLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return len(p), nil
+	}
+	w.lines = append(w.lines, string(p))
+	return w.out.Write(p)
+}
+
+// testLogs maps a test to the writer behind its daemon logger, so a test
+// can assert on lines the daemon produced (testLogSaw).
+var testLogs sync.Map // *testing.T → *testLogWriter
+
+// testLogger routes the daemon's logs into the test's own output instead
+// of discarding them: a failing or flaky test then shows what the daemon
+// did. The cleanup is registered before the daemon's Shutdown cleanup and
+// so runs after it — shutdown logging still reaches the test, while a
+// stray goroutine logging after the test completed is dropped.
+func testLogger(t *testing.T) *slog.Logger {
+	t.Helper()
+	w := &testLogWriter{out: t.Output()}
+	testLogs.Store(t, w)
+	t.Cleanup(func() {
+		w.mu.Lock()
+		w.closed = true
+		w.mu.Unlock()
+		testLogs.Delete(t)
+	})
+	return slog.New(slog.NewTextHandler(w, nil))
+}
+
+// testLogSaw reports whether a daemon log line containing sub reached the
+// test's log through testLogger.
+func testLogSaw(t *testing.T, sub string) bool {
+	t.Helper()
+	v, ok := testLogs.Load(t)
+	if !ok {
+		t.Fatal("testLogSaw: this test built no daemon logger")
+	}
+	w := v.(*testLogWriter)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, l := range w.lines {
+		if strings.Contains(l, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // testCfg is the shared daemon test config. The STT server is ON — mirroring
@@ -73,7 +133,7 @@ func newTestDaemonSTT(t *testing.T, dir string, editCfg func(*config.Config), tu
 		ec.HealthPoll = 10 * time.Millisecond
 		ec.KillGrace = 2 * time.Second
 	}
-	d, err := newDaemon(cfg, testLogger(),
+	d, err := newDaemon(cfg, testLogger(t),
 		func(ec *engine.Config) {
 			fast(ec)
 			if tune != nil {
@@ -134,10 +194,10 @@ func TestVoicesSurviveRestart(t *testing.T) {
 		ec.IdleTick = 20 * time.Millisecond
 	})
 
-	// Keep the first child up while the voice is added: AddVoice normalizes
-	// the clip with ffmpeg before it takes its own guard, and on a loaded
-	// runner (-race) that can outlast the 1 s idle window, so the idle loop
-	// stopped the child first and the registration found no engine.
+	// Keep the first child up while the voice is added: the add guards the
+	// engine across normalization itself (issue #29), but the gap between
+	// EnsureReady returning and AddVoice taking that guard is unguarded —
+	// on a loaded runner (-race) the 1 s idle window could lapse in between.
 	first := d.Sup.Acquire()
 	base, err := d.Sup.EnsureReady(context.Background())
 	if err != nil {
@@ -180,6 +240,83 @@ func TestVoicesSurviveRestart(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("speech with replayed voice: %s: %s", resp.Status, body)
 	}
+}
+
+// A slow Prepare must not let the idle stop win: AddVoice holds the engine
+// guard across normalization, so the child survives while Prepare is open
+// and the live registration lands. Without it the idle loop stops the
+// child mid-Prepare — the API returns registered=false for a voice the
+// next start's replay would register, or LiveURL hands out a child already
+// marked Stopped and a spurious "registration failed" warning is logged.
+// Mutation: move d.Sup.Acquire() back after Store.Prepare in AddVoice ->
+// RED (the idle stop fires while Prepare is blocked; registered=false).
+func TestAddVoicePrepareHoldsGuard(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	const idleStop = 200 * time.Millisecond
+	d := newTestDaemon(t, dir, func(ec *engine.Config) {
+		ec.IdleStop = idleStop
+		ec.IdleTick = 20 * time.Millisecond
+	})
+
+	src := testutil.WriteTinyWAV(t, dir, "clip.wav")
+	// Pin the engine through startup so the armed idle window begins exactly
+	// when Prepare does: the setup guard is released inside slowPrepare and
+	// the add's own guard must then be the thing keeping the child up.
+	hold := d.Sup.Acquire()
+	base, err := d.Sup.EnsureReady(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	preparing := make(chan struct{})
+	finish := make(chan struct{})
+	d.slowPrepare = func() {
+		close(preparing)
+		hold.Release()
+		<-finish
+	}
+
+	var registered bool
+	addDone := make(chan error, 1)
+	go func() {
+		var err error
+		_, registered, err = d.AddVoice(context.Background(), "ben", src, "ref words")
+		addDone <- err
+	}()
+	<-preparing
+
+	// Prepare is open: let several idle ticks pass the deadline. The add's
+	// guard must keep the child alive through all of them.
+	time.Sleep(3 * idleStop)
+	if st := d.Sup.State(); st != engine.StateReady {
+		t.Errorf("mid-prepare engine state = %s, want ready — the idle stop fired under the guard", st)
+	}
+	close(finish)
+
+	if err := <-addDone; err != nil {
+		t.Fatalf("AddVoice: %v", err)
+	}
+	if !registered {
+		t.Fatal("registered=false — the idle stop won while Prepare ran")
+	}
+	if rt, ok := childVoices(t, base)["ben"]; !ok || rt != "ref words" {
+		t.Fatalf("child lists ben %q (present %v), want the live registration", rt, ok)
+	}
+	if testLogSaw(t, "registration failed") {
+		t.Fatal("a 'registration failed' warning was logged for a voice that registered cleanly")
+	}
+
+	// The guard is released on Prepare's error paths too (a failing ffmpeg,
+	// a ctx cancelled mid-Prepare): a failed add leaves no guard behind, so
+	// the idle stop still fires afterwards.
+	d.slowPrepare = nil
+	if _, _, err := d.AddVoice(context.Background(), "bad", filepath.Join(dir, "missing.wav"), ""); err == nil {
+		t.Fatal("add of a missing clip succeeded")
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		return d.Sup.State() == engine.StateStopped
+	}, "idle stop after a failed AddVoice")
 }
 
 // T7 — speak out_path rules: relative, missing parent, wrong extension and
@@ -523,11 +660,11 @@ func TestDaemonHomeLock(t *testing.T) {
 		}
 	}
 
-	d1, err := newDaemon(mkCfg(), testLogger(), nil, nil)
+	d1, err := newDaemon(mkCfg(), testLogger(t), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d2, err := newDaemon(mkCfg(), testLogger(), nil, nil); err == nil {
+	if d2, err := newDaemon(mkCfg(), testLogger(t), nil, nil); err == nil {
 		d2.Shutdown()
 		t.Fatal("second daemon on the same home started successfully")
 	} else if !strings.Contains(err.Error(), "another daemon") {
@@ -535,7 +672,7 @@ func TestDaemonHomeLock(t *testing.T) {
 	}
 	d1.Shutdown()
 	// The lock is released on shutdown — a later daemon can take it.
-	d3, err := newDaemon(mkCfg(), testLogger(), nil, nil)
+	d3, err := newDaemon(mkCfg(), testLogger(t), nil, nil)
 	if err != nil {
 		t.Fatalf("daemon after lock release: %v", err)
 	}
