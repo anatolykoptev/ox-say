@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -72,4 +73,35 @@ func TestReapOrphanExeMatch(t *testing.T) {
 		t.Fatal("orphan reaper left a matching process alive")
 	}
 	<-waitDone
+}
+
+// The darwin start token is kern.proc.pid's p_starttime rendered
+// "<sec>.<usec>" with the usec field zero-padded to 6 digits.
+func TestProcessStartTimeFormat(t *testing.T) {
+	tok, err := processStartTime(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec, usec, ok := strings.Cut(tok, ".")
+	if !ok {
+		t.Fatalf("start token %q is not <sec>.<usec>", tok)
+	}
+	if _, err := strconv.ParseUint(sec, 10, 64); err != nil {
+		t.Fatalf("start token %q: bad sec field: %v", tok, err)
+	}
+	if len(usec) != 6 {
+		t.Fatalf("start token %q: usec field is not 6 digits", tok)
+	}
+	if _, err := strconv.ParseUint(usec, 10, 32); err != nil {
+		t.Fatalf("start token %q: bad usec field: %v", tok, err)
+	}
+
+	// A dead pid has no start time to read.
+	c := exec.Command("true")
+	if err := c.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := processStartTime(c.Process.Pid); err == nil {
+		t.Fatal("start token read for a reaped process")
+	}
 }

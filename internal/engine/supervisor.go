@@ -714,6 +714,12 @@ func (s *Supervisor) openEngineLog() (*os.File, error) {
 	return os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 }
 
+// Pidfile format since v0.1.7: "<pid> <start-token>", where the token is the
+// child's opaque processStartTime stamp — it distinguishes the spawned
+// engine from a process that later recycled the pid. v0.1.6 and earlier
+// wrote a bare "<pid>", which a v0.1.6 reader must not misparse: its
+// strconv.Atoi on the whole content fails on the two-field line, so an old
+// binary ignores a new-format file instead of reading a wrong pid.
 func (s *Supervisor) writePidFile(pid int) {
 	if s.cfg.PidPath == "" {
 		return
@@ -722,12 +728,41 @@ func (s *Supervisor) writePidFile(pid int) {
 		s.log.Warn("engine: pidfile dir", slog.Any("error", err))
 		return
 	}
-	if err := os.WriteFile(s.cfg.PidPath, []byte(strconv.Itoa(pid)), 0o644); err != nil {
+	// A token read failure degrades to the bare-pid format rather than
+	// leaving the spawned engine without a reapable pidfile — the reaper
+	// then falls back to the exe-only rule, as for an old-format file.
+	content := strconv.Itoa(pid)
+	if token, err := processStartTime(pid); err == nil {
+		content += " " + token
+	} else {
+		s.log.Warn("engine: cannot read child start time; pidfile carries a bare pid",
+			slog.Int("pid", pid), slog.Any("error", err))
+	}
+	if err := os.WriteFile(s.cfg.PidPath, []byte(content+"\n"), 0o644); err != nil {
 		s.log.Warn("engine: write pidfile", slog.Any("error", err))
 	}
 }
 
-// removePidFile removes the pidfile only if it still names pid.
+// parsePidFile decodes the pidfile content: "<pid> <start-token>" in the
+// current format, or a bare "<pid>" — a v0.1.6-and-earlier file, reported
+// with an empty token.
+func parsePidFile(data []byte) (pid int, token string, ok bool) {
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, "", false
+	}
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil || pid <= 0 {
+		return 0, "", false
+	}
+	if len(fields) > 1 {
+		token = fields[1]
+	}
+	return pid, token, true
+}
+
+// removePidFile removes the pidfile only if it still names pid, matching on
+// the pid field alone whether or not a start token follows it.
 func (s *Supervisor) removePidFile(pid int) {
 	if s.cfg.PidPath == "" {
 		return
@@ -736,13 +771,14 @@ func (s *Supervisor) removePidFile(pid int) {
 	if err != nil {
 		return
 	}
-	if strings.TrimSpace(string(data)) == strconv.Itoa(pid) {
+	if filePid, _, ok := parsePidFile(data); ok && filePid == pid {
 		_ = os.Remove(s.cfg.PidPath)
 	}
 }
 
 // reapOrphan kills a leftover engine from a previous daemon run: the pidfile
-// names a live process whose executable is still the configured binary.
+// names a live process whose executable is still the configured binary and,
+// for pidfiles carrying a start token, whose start time still matches it.
 func (s *Supervisor) reapOrphan() {
 	if s.cfg.PidPath == "" {
 		return
@@ -751,8 +787,8 @@ func (s *Supervisor) reapOrphan() {
 	if err != nil {
 		return
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
+	pid, token, ok := parsePidFile(data)
+	if !ok {
 		return
 	}
 	if !processAlive(pid) {
@@ -778,6 +814,23 @@ func (s *Supervisor) reapOrphan() {
 	// the binary's name must never be killed.
 	if exe != want {
 		return
+	}
+	// A new-format pidfile also records the spawned child's start-time
+	// token: the pid must still belong to that same process instance, or it
+	// is a recycled pid on a same-binary process (a hand-started engine, a
+	// second home sharing the binary) and must be left running. A bare pid
+	// — a v0.1.6-and-earlier pidfile — has no token and keeps the exe-only
+	// rule, so an upgrade still reaps the previous version's orphan.
+	if token != "" {
+		start, err := processStartTime(pid)
+		if err != nil {
+			s.log.Warn("engine: cannot verify orphan start time; leaving pid running",
+				slog.Int("pid", pid), slog.Any("error", err))
+			return
+		}
+		if start != token {
+			return
+		}
 	}
 	s.log.Info("killing orphaned engine", slog.Int("pid", pid))
 	_ = syscall.Kill(pid, syscall.SIGTERM)
