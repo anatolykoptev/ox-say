@@ -547,12 +547,13 @@ func cmdStatus(_ []string, stdout, stderr io.Writer) int {
 	defer resp.Body.Close()
 	var st struct {
 		Engine struct {
-			State    string  `json:"state"`
-			PID      int     `json:"pid,omitempty"`
-			UptimeS  float64 `json:"uptime_s,omitempty"`
-			LastErr  string  `json:"last_error,omitempty"`
-			Starts   int     `json:"starts"`
-			Restarts int     `json:"restarts"`
+			State     string  `json:"state"`
+			PID       int     `json:"pid,omitempty"`
+			UptimeS   float64 `json:"uptime_s,omitempty"`
+			LastErr   string  `json:"last_error,omitempty"`
+			Starts    int     `json:"starts"`
+			Restarts  int     `json:"restarts"`
+			GPUHeldBy string  `json:"gpu_held_by,omitempty"`
 		} `json:"engine"`
 		STTServer *struct {
 			State    string  `json:"state"`
@@ -576,6 +577,9 @@ func cmdStatus(_ []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout)
 	fmt.Fprintf(stdout, "starts: %d, crash restarts: %d\n", st.Engine.Starts, st.Engine.Restarts)
+	if st.Engine.GPUHeldBy != "" {
+		fmt.Fprintf(stdout, "gpu lease held by: %s\n", st.Engine.GPUHeldBy)
+	}
 	if st.Engine.LastErr != "" {
 		fmt.Fprintf(stdout, "last error: %s\n", st.Engine.LastErr)
 	}

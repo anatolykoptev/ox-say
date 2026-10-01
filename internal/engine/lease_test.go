@@ -3,12 +3,43 @@ package engine
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/testutil"
 )
+
+// infoLog is a slog handler recording every message — the parked-start
+// line is Info, which a Warn-only recorder would drop.
+type infoLog struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (h *infoLog) Enabled(context.Context, slog.Level) bool { return true }
+func (h *infoLog) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	h.msgs = append(h.msgs, r.Message)
+	h.mu.Unlock()
+	return nil
+}
+func (h *infoLog) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *infoLog) WithGroup(string) slog.Handler      { return h }
+
+func (h *infoLog) saw(sub string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, m := range h.msgs {
+		if strings.Contains(m, sub) {
+			return true
+		}
+	}
+	return false
+}
 
 // The lease itself: one token; Try fails while held; Wait parks until
 // released or ctx ends; WaitOr also wakes on abort.
@@ -78,6 +109,79 @@ func TestGPULeasePrimitive(t *testing.T) {
 		t.Fatal(err)
 	}
 	l.Release()
+}
+
+// Release on a free lease is a misuse and must panic at once — the
+// supervisor's release runs under s.mu, where the old blocking receive
+// would have frozen it. The wait runs in a goroutine so a regression to a
+// blocking Release fails the test in 2 s instead of hanging the package.
+func TestFreeLeaseReleasePanics(t *testing.T) {
+	l := NewGPULease()
+	done := make(chan any, 1)
+	go func() {
+		defer func() { done <- recover() }()
+		l.Release()
+	}()
+	select {
+	case r := <-done:
+		if r == nil {
+			t.Fatal("Release on a free lease returned normally")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Release on a free lease blocked instead of panicking")
+	}
+}
+
+// The lease names its holder for the operator: a start parked behind a
+// transcription reads "transcription" in Status (surfaced as gpu_held_by
+// through /status, engine_status and `ox-say status`), the park itself is
+// logged once, and once the spawned generation owns the token the owner
+// reads "tts".
+// Mutation: acquire the lease untagged in the supervisor (drop the owner
+// argument) -> RED (GPUHeldBy stays ""); drop the park log -> RED on saw().
+func TestGPUOwnerInStatus(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	lease := NewGPULease()
+	rec := &infoLog{}
+	sup := newTestSupervisor(t, dir, func(c *Config) {
+		c.GPU = lease
+		c.Logger = slog.New(rec)
+	})
+	if err := lease.WaitAs(context.Background(), "transcription"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lease.Owner(); got != "transcription" {
+		t.Fatalf("Owner() = %q, want transcription", got)
+	}
+
+	ready := make(chan error, 1)
+	go func() {
+		_, err := sup.EnsureReady(context.Background())
+		ready <- err
+	}()
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		return lease.Waiters() == 1
+	}, "EnsureReady to park on the held lease")
+	if got := sup.Status().GPUHeldBy; got != "transcription" {
+		t.Fatalf("gpu_held_by while parked = %q, want transcription", got)
+	}
+	if !rec.saw("waiting for the GPU lease") {
+		t.Fatalf("parked start produced no log line; got %v", rec.msgs)
+	}
+
+	lease.Release()
+	select {
+	case err := <-ready:
+		if err != nil {
+			t.Fatalf("EnsureReady after release: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("EnsureReady did not proceed once the lease freed")
+	}
+	if got := sup.Status().GPUHeldBy; got != "tts" {
+		t.Fatalf("gpu_held_by with a ready engine = %q, want tts", got)
+	}
 }
 
 // A start attempt must hold the GPU lease before the engine spawns, and a
@@ -255,6 +359,25 @@ func TestGPULeaseHeldUntilChildExit(t *testing.T) {
 	// killChild waits out the grace.
 	pid2 := childPid(t, pidPath)
 	t.Cleanup(func() { _ = syscall.Kill(pid2, syscall.SIGKILL) })
+}
+
+// A start that fails at spawn releases the lease it took: the generation
+// owned the token from the start commit, and with no live child to carry
+// it, finishStart must give it back or every later GPU user parks forever.
+// Mutation: drop the `} else { s.releaseGPULocked() }` release in
+// finishStart -> RED (the lease stays held after the spawn error).
+func TestSpawnFailureReleasesLease(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	lease := NewGPULease()
+	sup := newTestSupervisor(t, dir, func(c *Config) {
+		c.GPU = lease
+		c.Bin = "/nonexistent/tts-server"
+	})
+	if _, err := sup.EnsureReady(context.Background()); err == nil {
+		t.Fatal("EnsureReady with a missing binary succeeded")
+	}
+	testutil.WaitFor(t, 2*time.Second, func() bool { return !lease.Held() }, "lease release after spawn failure")
 }
 
 // A crash release follows the same rule: the lease is freed when the exit

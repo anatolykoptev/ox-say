@@ -92,6 +92,10 @@ type Status struct {
 	LastErr  string  `json:"last_error,omitempty"`
 	Starts   int     `json:"starts"`   // total spawn count
 	Restarts int     `json:"restarts"` // starts triggered by a crash
+	// GPUHeldBy names the lease's current holder — "tts" while the child
+	// lives, "transcription" for a GPU ox-stt run; empty when the card is
+	// free or no lease is wired.
+	GPUHeldBy string `json:"gpu_held_by,omitempty"`
 }
 
 // Supervisor owns one child process generation at a time.
@@ -316,8 +320,16 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 				// other start can be committed, so only s.dead can have
 				// changed.
 				ch := s.change
+				held := s.cfg.GPU.Held()
+				heldBy := s.cfg.GPU.Owner()
 				s.mu.Unlock()
-				ok, err := s.cfg.GPU.WaitOr(ctx, ch)
+				if held {
+					// One line per park: the start is blocked behind
+					// whoever holds the card and would otherwise be
+					// invisible until its own timeout fires.
+					s.log.Info("engine start waiting for the GPU lease", slog.String("held_by", heldBy))
+				}
+				ok, err := s.cfg.GPU.WaitOrAs(ctx, ch, s.leaseOwner())
 				if err != nil {
 					return "", err
 				}
@@ -359,6 +371,15 @@ func (s *Supervisor) State() State {
 	return s.state
 }
 
+// leaseOwner tags this supervisor's lease holdings: the engine's Name
+// when it has one, else "tts" — the only lease-wired engine today.
+func (s *Supervisor) leaseOwner() string {
+	if s.cfg.Name != "" {
+		return s.cfg.Name
+	}
+	return "tts"
+}
+
 // Status returns a snapshot for /status and engine_status.
 func (s *Supervisor) Status() Status {
 	s.mu.Lock()
@@ -367,6 +388,9 @@ func (s *Supervisor) Status() Status {
 		State:    s.state,
 		Starts:   s.starts,
 		Restarts: s.restarts,
+	}
+	if s.cfg.GPU != nil {
+		st.GPUHeldBy = s.cfg.GPU.Owner()
 	}
 	if s.lastErr != nil {
 		st.LastErr = s.lastErr.Error()

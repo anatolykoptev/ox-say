@@ -163,20 +163,28 @@ func TestTranscribeHappyPath(t *testing.T) {
 }
 
 // fakeLease implements Options.GPULease for the device-choice tests:
-// held gates Try/Wait like the real token; tries/waits count acquisitions
-// so a mode that must not touch the lease is provable.
+// held gates TryAs/WaitAs like the real token; tries/waits count
+// acquisitions so a mode that must not touch the lease is provable.
+// Release mirrors the real lease's contract: freeing a free token is a
+// bug and panics, so a double release in Transcribe fails the test.
 type fakeLease struct {
 	held  atomic.Bool
 	tries atomic.Int32
 	waits atomic.Int32
 }
 
-func (f *fakeLease) Try() bool {
+// Try is TryAs with an empty owner — tests keep the untagged call.
+func (f *fakeLease) Try() bool { return f.TryAs("") }
+
+func (f *fakeLease) TryAs(string) bool {
 	f.tries.Add(1)
 	return f.held.CompareAndSwap(false, true)
 }
 
-func (f *fakeLease) Wait(ctx context.Context) error {
+// Wait is WaitAs with an empty owner.
+func (f *fakeLease) Wait(ctx context.Context) error { return f.WaitAs(ctx, "") }
+
+func (f *fakeLease) WaitAs(ctx context.Context, _ string) error {
 	f.waits.Add(1)
 	for !f.held.CompareAndSwap(false, true) {
 		select {
@@ -188,7 +196,11 @@ func (f *fakeLease) Wait(ctx context.Context) error {
 	return nil
 }
 
-func (f *fakeLease) Release() { f.held.Store(false) }
+func (f *fakeLease) Release() {
+	if !f.held.CompareAndSwap(true, false) {
+		panic("stt test: fakeLease release of a free lease")
+	}
+}
 
 // S1 — device choice is the shared GPU lease: a CLI run that skips -ng
 // must hold it for the whole run (issue #11). auto prefers CPU over
@@ -357,6 +369,112 @@ func TestGPUOnHonoursCallerCtx(t *testing.T) {
 	}
 	if took := time.Since(start); took > 5*time.Second {
 		t.Fatalf("on-mode lease wait outlived the caller deadline by %s", took-2*time.Second)
+	}
+}
+
+// on waits the holder out — but the wait must not hold sem: a run parked
+// on the lease would otherwise serialize every other transcription behind
+// TTS's occupancy of the card. A GPU-free run must complete while an
+// on-mode caller is still parked on a held lease.
+// Mutation: wait on the lease while holding sem again (drop the release/
+// reacquire around l.Wait) -> RED (the off-mode run queues behind sem).
+func TestGPUOnWaitDoesNotHoldSem(t *testing.T) {
+	dir := t.TempDir()
+	opts, log := fakeOpts(t, dir)
+	src := testutil.WriteTinyWAV(t, dir, "in.wav")
+	lease := &fakeLease{}
+	lease.held.Store(true) // a TTS engine owns the card
+	opts.GPU = "on"
+	opts.GPULease = lease
+
+	parked := make(chan error, 1)
+	go func() {
+		_, err := Transcribe(context.Background(), src, opts)
+		parked <- err
+	}()
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		return lease.waits.Load() == 1
+	}, "on-mode run to park on the lease")
+
+	// The CPU run must finish while the on-mode caller is still parked.
+	offOpts := opts
+	offOpts.GPU = "off"
+	done := make(chan error, 1)
+	go func() {
+		_, err := Transcribe(context.Background(), src, offOpts)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("off-mode run while a peer parks on the lease: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("off-mode run queued behind a run waiting on the GPU lease — the lease wait held sem")
+	}
+	runs := sttRuns(t, log)
+	if args := runs[len(runs)-1].args; !hasArg(args, "-ng") {
+		t.Fatalf("off-mode run argv %v missing -ng", args)
+	}
+	select {
+	case err := <-parked:
+		t.Fatalf("parked on-mode run returned %v while the lease was still held", err)
+	default:
+	}
+
+	lease.held.Store(false) // the holder releases; the parked run proceeds on GPU
+	select {
+	case err := <-parked:
+		if err != nil {
+			t.Fatalf("on-mode run after the lease freed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("on-mode run did not proceed once the lease freed")
+	}
+	runs = sttRuns(t, log)
+	if args := runs[len(runs)-1].args; hasArg(args, "-ng") {
+		t.Fatalf("on-mode run argv %v has -ng — it must insist on the GPU", args)
+	}
+}
+
+// auto takes the lease only for short audio: a GPU run parks a speak's
+// engine start for the whole transcription, so a clip past
+// autoGPUMaxAudio runs with -ng and never touches the lease, while a clip
+// at the cap still takes it. The +0.05 headroom mirrors convert's
+// measurement slop (the WAV header is wider than the 44 bytes subtracted
+// for the duration estimate).
+// Mutation: drop the duration check from the auto branch -> RED (the long
+// clip acquires the lease and runs without -ng).
+func TestAutoGPUSkipsLongAudio(t *testing.T) {
+	dir := t.TempDir()
+	opts, log := fakeOpts(t, dir)
+	lease := &fakeLease{}
+	opts.GPULease = lease
+
+	long := filepath.Join(dir, "long.wav")
+	sineWAV(t, long, int(autoGPUMaxAudio.Seconds())+30)
+	if _, err := Transcribe(context.Background(), long, opts); err != nil {
+		t.Fatal(err)
+	}
+	runs := sttRuns(t, log)
+	if args := runs[len(runs)-1].args; !hasArg(args, "-ng") {
+		t.Fatalf("auto run on audio past %s went without -ng (argv %v)", autoGPUMaxAudio, args)
+	}
+	if n := lease.tries.Load() + lease.waits.Load(); n != 0 {
+		t.Fatalf("long auto run touched the lease (%d acquisitions)", n)
+	}
+
+	atLimit := filepath.Join(dir, "limit.wav")
+	sineWAV(t, atLimit, int(autoGPUMaxAudio.Seconds()))
+	if _, err := Transcribe(context.Background(), atLimit, opts); err != nil {
+		t.Fatal(err)
+	}
+	runs = sttRuns(t, log)
+	if args := runs[len(runs)-1].args; hasArg(args, "-ng") {
+		t.Fatalf("auto run on %s of audio got -ng (argv %v)", autoGPUMaxAudio, args)
+	}
+	if n := lease.tries.Load(); n != 1 {
+		t.Fatalf("at-limit auto run tried the lease %d times, want 1", n)
 	}
 }
 

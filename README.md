@@ -110,14 +110,16 @@ whole run, and a TTS engine start must wait for it before spawning — the
 engine then keeps it until the child has actually exited, so the brief
 window where the supervisor already reports stopped but the process is
 still tearing down is covered too. On the CLI path `OX_SAY_STT_GPU=auto`
-prefers CPU over contention: it takes the lease only if free, else runs
-with `-ng`; `on` insists on the GPU and waits the current holder out inside
-the request's deadline; `off` never touches the card. A `speak` that needs
-the engine while a GPU transcription runs simply blocks until the run ends.
-`OX_SAY_STT_GPU=on` no longer opts the resident server into the GPU — a
-process that holds GPU memory for its whole lifetime cannot take part in a
-per-run lease, so the server is always `-ng`. Transcriptions run one at a
-time; up to 8 more wait, further ones get 503.
+prefers CPU over contention — and caps how long it will hold the card: it
+takes the lease only when free AND the decoded audio is at most 5 minutes,
+so a `speak` that needs the engine mid-transcription waits out a short GPU
+run at worst (the tool's timeout is about 5 minutes). Longer audio runs
+with `-ng` without touching the lease. `on` insists on the GPU and waits
+the current holder out inside the request's deadline; `off` never touches
+the card. `OX_SAY_STT_GPU=on` no longer opts the resident server into the
+GPU — a process that holds GPU memory for its whole lifetime cannot take
+part in a per-run lease, so the server is always `-ng`. Transcriptions run
+one at a time; up to 8 more wait, further ones get 503.
 
 ### HTTP API
 
@@ -192,7 +194,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_STT_MODEL` | `$OX_SAY_HOME/models/ggml-parakeet-tdt-0.6b-v3-f16.bin` | Parakeet weights |
 | `OX_SAY_STT_VAD_MODEL` | `$OX_SAY_HOME/models/ggml-silero-v5.1.2.bin` | Silero VAD model; enables the streaming session routes when present at STT-server spawn |
 | `OX_SAY_STT_WHISPER_MODEL` | `$OX_SAY_HOME/models/ggml-large-v3-turbo.bin` | Whisper weights (`--with-whisper` fetch) |
-| `OX_SAY_STT_GPU` | `auto` | CLI device under the shared GPU lease: `auto` = CPU (-ng) while the lease is held (TTS engine alive or a GPU run in flight); `on` waits for the lease and insists on the GPU; `off` forces CPU. The resident server is always CPU-only |
+| `OX_SAY_STT_GPU` | `auto` | CLI device under the shared GPU lease: `auto` = GPU only for audio ≤ 5 min while the lease is free (TTS engine down, no GPU run in flight), else CPU (-ng); `on` waits for the lease and insists on the GPU; `off` forces CPU. The resident server is always CPU-only |
 | `OX_SAY_STT_TIMEOUT_SECS` | `600` | Fixed part of the per-transcription budget: it bounds the HTTP upload and the ffmpeg conversion, and the engine run gets this base plus k×audio duration (k ≈ 0.5 s/s parakeet, 3 s/s whisper — ≥3× the measured CPU rates, GPU runs reuse them). An explicit value is a floor, not a hard cap. At most 86400 |
 | `OX_SAY_STT_MAX_UPLOAD_MB` | `200` | `file` part cap on the transcriptions route |
 | `OX_SAY_STT_MAX_AUDIO_SECS` | `14400` | Longer audio is refused with 400, not cut (a small compressed upload can expand to hours of PCM). At most 86400 |
