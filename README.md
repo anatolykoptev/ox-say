@@ -234,12 +234,14 @@ wrong, or the text could not be pasted, the pill says why for a few seconds.
 The app streams the microphone into a transcription session while you speak.
 Silero VAD cuts the stream at pauses of 400 ms or more, and force-cuts any
 segment at 12 s, at the quietest point of its last second. Each segment is
-decoded as soon as it closes. On release, only the open tail is left to decode,
-so the text usually arrives within about a second.
+decoded as soon as it closes. On release, only the open tail is left to decode:
+the operator's own dictations measured 0.9 s from release to text when the tail
+was short, and 2.1 s for an 11 s dictation with no pause long enough to cut.
 
-Accuracy has a cost: segments decode without their neighbours. On FLEURS,
-streaming came out 1.6 (Russian) and 2.5 (English) WER points worse than
-decoding the whole recording, and punctuation can break at a join ([#88](https://github.com/anatolykoptev/ox-say/issues/88)). A
+Accuracy has a cost: segments decode without their neighbours. On FLEURS
+utterances of 8 s or more (measured with the f16 model, before q8_0 became the
+default), streaming came out 1.6 (Russian) and 2.5 (English) WER points worse
+than decoding the whole recording, and punctuation can break at a join ([#88](https://github.com/anatolykoptev/ox-say/issues/88)). A
 dictation shorter than 12 s with no long pause is one segment, so it is not
 affected.
 
@@ -258,7 +260,7 @@ Three logs describe a dictation without recording what was said:
   `outcome=delivered path=stream recorded_s=11.30 release_to_text_ms=2057 tail_s=0.30 segments_before_release=0 session_create_ms=3`.
   - `path`: `stream`, `fallback` (the session failed and the recording was sent whole) or `one-shot`.
   - `tail_s`: audio not yet acknowledged when the key was released.
-  - `session_create_ms`: time to open the session. It is large when the STT server had to start.
+  - `session_create_ms`: time to open the session. It is large when the STT server had to start, and `none` when no session opened (the one-shot path, a failed create, or a create still in flight at release).
 
   In zsh, type `/usr/bin/log`: plain `log` is a shell builtin.
 - **The daemon writes one line per closed segment to `~/Library/Logs/ox-say/ox-say.log`:**
@@ -267,7 +269,7 @@ Three logs describe a dictation without recording what was said:
   - `min_p`: the lowest speech probability the VAD saw inside the segment.
   - `quiet_ms`: its longest quiet run. A string of `cut=cap` lines with a small `quiet_ms` means the pauses were too short to close a segment.
 - **The STT server reports each pre-warm to `~/Library/Logs/ox-say/stt.log`:**
-  `ox-stt: pre-warm after <N> s idle took <M> ms`. The higher M is above the warm cost of about 0.3 s, the more of the model had been paged out.
+  `ox-stt: pre-warm after <N> s idle took <M> ms`. A resident model decodes that second in about 0.3 s; the higher M is above that, the more of the model had been paged out.
 
 Releases ship the app signed with a Developer ID and notarized, so macOS keeps
 its microphone and Accessibility permissions across updates. A build from
