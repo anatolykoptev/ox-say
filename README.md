@@ -304,10 +304,11 @@ publisher's license:
 
 - Qwen3-TTS 12 Hz talker and tokenizer: Apache-2.0 (Qwen team, Alibaba)
 - Parakeet TDT 0.6B v3: CC-BY-4.0 (NVIDIA); attribute NVIDIA when you
-  redistribute the weights. ox-say uses the q8_0 conversion: on 300 FLEURS
-  test utterances per language its WER matched f16 (Russian 5.17% against
-  5.27%, English 6.00% against 6.03%) at about half the memory (669 MB
-  against 1229 MB resident)
+  redistribute the weights. ox-say uses the q8_0 conversion. On 300 Russian
+  and 300 English FLEURS test utterances its WER matched f16 (normalised:
+  Russian 5.17% against 5.27%, English 6.00% against 6.03%; with case kept:
+  6.81% against 6.84%, 8.13% against 8.15%) at about half the memory (669 MB
+  against 1229 MB resident). The other 23 languages were not measured
 - Whisper large-v3-turbo (optional): MIT (OpenAI)
 - Forced aligner for `ox-align` (optional, converted by hand, see
   `engine/README.md`): the MMS-300m forced-aligner weights are CC-BY-NC-4.0,
