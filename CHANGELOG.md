@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.12](https://github.com/anatolykoptev/ox-say/compare/v0.1.11...v0.1.12) (2026-10-02)
+
+
+### Documentation
+
+* describe dictation streaming, its diagnostics and the STT pre-warm ([#89](https://github.com/anatolykoptev/ox-say/issues/89)) ([71c61fe](https://github.com/anatolykoptev/ox-say/commit/71c61fe873383c1127fb155d1ad6ccfd367ff4ab))
+
 ## [0.1.11](https://github.com/anatolykoptev/ox-say/compare/v0.1.10...v0.1.11) (2026-10-02)
 
 
