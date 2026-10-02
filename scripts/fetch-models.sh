@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Download the pinned model weights into the models dir, SHA-256 verified:
 #   Qwen3-TTS talker + tokenizer (Apache-2.0)     text-to-speech
-#   Parakeet TDT 0.6B v3 (CC-BY-4.0)             speech-to-text, 25 European languages
+#   Parakeet TDT 0.6B v3 q8_0 (CC-BY-4.0)        speech-to-text, 25 European languages
 #   Silero VAD v5.1.2 (MIT)                      ox-stt --serve --vad streaming sessions
 #   Whisper large-v3-turbo (MIT), --with-whisper  speech-to-text, 99 languages (1.6 GB)
 #
@@ -39,7 +39,7 @@ whisper_vad=https://huggingface.co/ggml-org/whisper-vad/resolve/main
 models=(
     "qwen-talker-0.6b-base-Q8_0.gguf d54dbaf10591421fa764ed630d764efa717ae40cd959bd48c66d4eb1af226426 $qwen"
     "qwen-tokenizer-12hz-F32.gguf b16b95557c7c7340a121757bd6855b9609e1cf4ad3fad0778b89393293ae5f3d $qwen"
-    "ggml-parakeet-tdt-0.6b-v3-f16.bin 833bffc9513b2cae867ee9e51633cfd11e4d51aaa5597c8ac02159385a2b426f $parakeet"
+    "ggml-parakeet-tdt-0.6b-v3-q8_0.bin 4d64e9e96c2792186d072fde0034df0ad670cf680a2f53069052ead827fd600e $parakeet"
     "ggml-silero-v5.1.2.bin 29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf $whisper_vad"
 )
 if [ "$with_whisper" = 1 ]; then
@@ -73,3 +73,11 @@ for entry in "${models[@]}"; do
     mv "$part" "$target"
     echo "ok      $name"
 done
+
+# The f16 Parakeet weights were the default until q8_0 replaced them (the same
+# FLEURS ru/en WER, half the RAM). Name a leftover copy nothing points at; never
+# delete it here, as OX_SAY_STT_MODEL may name it in a setup this script cannot see.
+old="$dest/ggml-parakeet-tdt-0.6b-v3-f16.bin"
+if [ -f "$old" ] && [ "${OX_SAY_STT_MODEL:-}" != "$old" ]; then
+    echo "note    $old (1.3 GB) is no longer used by default; delete it to free the space"
+fi

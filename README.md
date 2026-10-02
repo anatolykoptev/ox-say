@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | 
 
 The installer:
 - downloads a prebuilt release and checks its SHA-256;
-- fetches the models (about 2.9 GB, checksummed; the optional Whisper adds 1.6 GB);
+- fetches the models (about 2.3 GB, checksummed; the optional Whisper adds 1.6 GB);
 - starts the daemon as a LaunchAgent;
 - registers the MCP server with Claude Code, if Claude Code is installed;
 - runs a speak-and-transcribe self-test;
@@ -94,7 +94,7 @@ parakeet request, it loads the model once and decodes 1 s of silence before
 listening on `OX_SAY_STT_PORT`, and a warm transcription skips the
 multi-second model load a per-call `ox-stt` pays every time. The server
 runs on the CPU — spawned with `-ng` — so it never takes GPU memory from
-the TTS engine; its idle cost is ~1.4 GB of RAM, and
+the TTS engine; its idle cost is ~0.7 GB of RAM, and
 `OX_SAY_STT_IDLE_STOP_SECS` (default 600 s) stops it when unused. Parakeet
 clips up to 300 s go to the server whatever the TTS state; a server failure
 falls back to the per-call CLI, and audio longer than 300 s stays on the
@@ -192,7 +192,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_ENGINE_LOG_DIR` | `~/Library/Logs/ox-say` | Child stdout/stderr go to `engine.log` here |
 | `OX_SAY_CACHE_DIR` | `~/Library/Caches/ox-say` | Default output dir for `speak` |
 | `OX_SAY_STT_BIN` | `$OX_SAY_HOME/engine/ox-stt` | Speech-to-text binary |
-| `OX_SAY_STT_MODEL` | `$OX_SAY_HOME/models/ggml-parakeet-tdt-0.6b-v3-f16.bin` | Parakeet weights |
+| `OX_SAY_STT_MODEL` | `$OX_SAY_HOME/models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin` | Parakeet weights |
 | `OX_SAY_STT_VAD_MODEL` | `$OX_SAY_HOME/models/ggml-silero-v5.1.2.bin` | Silero VAD model; enables the streaming session routes when present at STT-server spawn |
 | `OX_SAY_STT_WHISPER_MODEL` | `$OX_SAY_HOME/models/ggml-large-v3-turbo.bin` | Whisper weights (`--with-whisper` fetch) |
 | `OX_SAY_STT_GPU` | `auto` | CLI device under the shared GPU lease: `auto` = GPU only for audio ≤ 5 min while the lease is free (TTS engine down, no GPU run in flight), else CPU (-ng); `on` = GPU whenever the lease is free, any length, else CPU (never waits); `off` forces CPU. The resident server is always CPU-only |
@@ -304,7 +304,10 @@ publisher's license:
 
 - Qwen3-TTS 12 Hz talker and tokenizer: Apache-2.0 (Qwen team, Alibaba)
 - Parakeet TDT 0.6B v3: CC-BY-4.0 (NVIDIA); attribute NVIDIA when you
-  redistribute the weights
+  redistribute the weights. ox-say uses the q8_0 conversion: on 300 FLEURS
+  test utterances per language its WER matched f16 (Russian 5.17% against
+  5.27%, English 6.00% against 6.03%) at about half the memory (669 MB
+  against 1229 MB resident)
 - Whisper large-v3-turbo (optional): MIT (OpenAI)
 - Forced aligner for `ox-align` (optional, converted by hand, see
   `engine/README.md`): the MMS-300m forced-aligner weights are CC-BY-NC-4.0,
