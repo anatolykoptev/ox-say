@@ -77,12 +77,8 @@ done
 # The f16 Parakeet weights were the default until q8_0 replaced them (the same
 # FLEURS ru/en WER, half the RAM). Name a leftover copy; never delete it here: the
 # LaunchAgent's OX_SAY_STT_MODEL may name it, and a standalone run cannot see that.
-# Paths are compared resolved, so a trailing slash or a symlink does not matter.
-old="$(cd "$dest" && pwd -P)/ggml-parakeet-tdt-0.6b-v3-f16.bin"
-cur=
-if [ -n "${OX_SAY_STT_MODEL:-}" ] && [ -d "$(dirname "$OX_SAY_STT_MODEL")" ]; then
-    cur="$(cd "$(dirname "$OX_SAY_STT_MODEL")" && pwd -P)/$(basename "$OX_SAY_STT_MODEL")"
-fi
-if [ -f "$old" ] && [ "$cur" != "$old" ]; then
+# -ef compares the files themselves, so a trailing slash or a symlink does not matter.
+old="$dest/ggml-parakeet-tdt-0.6b-v3-f16.bin"
+if [ -f "$old" ] && ! [ "${OX_SAY_STT_MODEL:-}" -ef "$old" ]; then
     echo "note    $old (1.3 GB) is no longer the default; unless OX_SAY_STT_MODEL in your LaunchAgent names it, delete it to free the space"
 fi

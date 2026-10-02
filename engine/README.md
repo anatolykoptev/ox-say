@@ -67,9 +67,9 @@ is not known (#14). Until it is, correct-and-slower is the default.
 
 Measured idle on a 347 s file, MPS off against on:
 
-| Model (Parakeet f16) | MPS off | MPS on |
+| Model | MPS off | MPS on |
 |---|---|---|
-| Parakeet | 18.2 s | 10.9 s |
+| Parakeet (f16) | 18.2 s | 10.9 s |
 | MMS aligner | 68.2 s | 49.6 s |
 
 The transcript was the same, and the emissions agreed within 0.004.
@@ -126,9 +126,10 @@ prints JSON: `text`, `segments` and `words` (`w`, `s`, `e`, `p`; seconds).
   can hit its 60 s bound queued behind a very long one-shot.
 
 Measured on a 347 s English interview (Radeon Pro 5500M, i9-9880H), with the
-Parakeet f16 weights that were the default then: Parakeet 9.6 s on the GPU (RTF 0.028) and 29.7 s on the CPU; Whisper turbo
-60.5 s; faster-whisper large-v3-turbo int8 (CPU) 103.6 s. Parakeet and Whisper
-share 853 and 858 words in order with a reference transcript of 909.
+Parakeet f16 weights that were the default then: Parakeet 9.6 s on the GPU
+(RTF 0.028) and 29.7 s on the CPU; Whisper turbo 60.5 s; faster-whisper
+large-v3-turbo int8 (CPU) 103.6 s. Parakeet and Whisper share 853 and 858 words
+in order with a reference transcript of 909.
 
 ## align/ox-align.cpp
 
