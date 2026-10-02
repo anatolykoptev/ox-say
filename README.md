@@ -95,7 +95,10 @@ listening on `OX_SAY_STT_PORT`, and a warm transcription skips the
 multi-second model load a per-call `ox-stt` pays every time. The server
 runs on the CPU — spawned with `-ng` — so it never takes GPU memory from
 the TTS engine; its idle cost is ~0.7 GB of RAM, and
-`OX_SAY_STT_IDLE_STOP_SECS` (default 600 s) stops it when unused. Parakeet
+`OX_SAY_STT_IDLE_STOP_SECS` (default 600 s) stops it when unused. When a
+streaming session opens after a minute or more without a decode, the server
+first decodes 1 s of silence on its worker, so a model the OS has paged out
+pages back in while you speak rather than after you release the key. Parakeet
 clips up to 300 s go to the server whatever the TTS state; a server failure
 falls back to the per-call CLI, and audio longer than 300 s stays on the
 CLI (a cancelled server decode cannot be killed the way a CLI child is).
@@ -227,6 +230,46 @@ and leaves the text on the clipboard.
 The app finds the daemon at the address the installer gave it (`OX_SAY_ADDR`
 in the ox-say LaunchAgent), 127.0.0.1:8094 by default. When something goes
 wrong, or the text could not be pasted, the pill says why for a few seconds.
+
+The app streams the microphone into a transcription session while you speak.
+Silero VAD cuts the stream at pauses of 400 ms or more, and force-cuts any
+segment at 12 s, at the quietest point of its last second. Each segment is
+decoded as soon as it closes. On release, only the open tail is left to decode:
+the operator's own dictations measured 0.9 s from release to text when the tail
+was short, and 2.1 s for an 11 s dictation with no pause long enough to cut.
+
+Accuracy has a cost: segments decode without their neighbours. On FLEURS
+utterances of 8 s or more (measured with the f16 model, before q8_0 became the
+default), streaming came out 1.6 (Russian) and 2.5 (English) WER points worse
+than decoding the whole recording, and punctuation can break at a join ([#88](https://github.com/anatolykoptev/ox-say/issues/88)). A
+dictation shorter than 12 s with no long pause is one segment, so it is not
+affected.
+
+### Diagnosing dictation
+
+Three logs describe a dictation without recording what was said:
+
+- **The app writes one line per dictation to the unified log:**
+
+  ```
+  /usr/bin/log show --last 1h --style compact --info \
+    --predicate 'subsystem == "io.github.anatolykoptev.ox-say.dictation"'
+  ```
+
+  A line looks like this:
+  `outcome=delivered path=stream recorded_s=11.30 release_to_text_ms=2057 tail_s=0.30 segments_before_release=0 session_create_ms=3`.
+  - `path`: `stream`, `fallback` (the session failed and the recording was sent whole) or `one-shot`.
+  - `tail_s`: audio not yet acknowledged when the key was released.
+  - `session_create_ms`: time to open the session. It is large when the STT server had to start, and `none` when no session opened (the one-shot path, a failed create, or a create still in flight at release).
+
+  In zsh, type `/usr/bin/log`: plain `log` is a shell builtin.
+- **The daemon writes one line per closed segment to `~/Library/Logs/ox-say/ox-say.log`:**
+  `msg="stt segment" session=<first 8 id chars> dur_s=… cut=pause|cap|finish min_p=… quiet_ms=…`.
+  - `cut`: why the segment closed.
+  - `min_p`: the lowest speech probability the VAD saw inside the segment.
+  - `quiet_ms`: its longest quiet run. A string of `cut=cap` lines with a small `quiet_ms` means the pauses were too short to close a segment.
+- **The STT server reports each pre-warm to `~/Library/Logs/ox-say/stt.log`:**
+  `ox-stt: pre-warm after <N> s idle took <M> ms`. A resident model decodes that second in about 0.3 s; the higher M is above that, the more of the model had been paged out.
 
 Releases ship the app signed with a Developer ID and notarized, so macOS keeps
 its microphone and Accessibility permissions across updates. A build from
