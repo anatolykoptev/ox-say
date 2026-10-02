@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.11](https://github.com/anatolykoptev/ox-say/compare/v0.1.10...v0.1.11) (2026-10-02)
+
+
+### Added
+
+* **stt:** default to the q8_0 Parakeet weights ([#86](https://github.com/anatolykoptev/ox-say/issues/86)) ([d92e5af](https://github.com/anatolykoptev/ox-say/commit/d92e5afb8872243b0a59b2f0a54bffc77e96a942))
+
 ## [0.1.10](https://github.com/anatolykoptev/ox-say/compare/v0.1.9...v0.1.10) (2026-10-01)
 
 
