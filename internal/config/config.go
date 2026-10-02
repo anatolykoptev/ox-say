@@ -182,7 +182,7 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 		c.STTBin = filepath.Join(c.Home, "engine", "ox-stt")
 	}
 	if c.STTModel = get("OX_SAY_STT_MODEL"); c.STTModel == "" {
-		c.STTModel = filepath.Join(c.Home, "models", "ggml-parakeet-tdt-0.6b-v3-f16.bin")
+		c.STTModel = filepath.Join(c.Home, "models", "ggml-parakeet-tdt-0.6b-v3-q8_0.bin")
 	}
 	if c.STTVADModel = get("OX_SAY_STT_VAD_MODEL"); c.STTVADModel == "" {
 		c.STTVADModel = filepath.Join(c.Home, "models", "ggml-silero-v5.1.2.bin")

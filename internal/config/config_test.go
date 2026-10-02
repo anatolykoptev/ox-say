@@ -69,7 +69,7 @@ func TestLoadDefaults(t *testing.T) {
 	if c.STTBin != filepath.Join("/tmp/oxsay-test-home", "engine", "ox-stt") {
 		t.Fatalf("stt bin = %q", c.STTBin)
 	}
-	if c.STTModel != filepath.Join("/tmp/oxsay-test-home", "models", "ggml-parakeet-tdt-0.6b-v3-f16.bin") {
+	if c.STTModel != filepath.Join("/tmp/oxsay-test-home", "models", "ggml-parakeet-tdt-0.6b-v3-q8_0.bin") {
 		t.Fatalf("stt model = %q", c.STTModel)
 	}
 	if c.STTWhisperModel != filepath.Join("/tmp/oxsay-test-home", "models", "ggml-large-v3-turbo.bin") {
