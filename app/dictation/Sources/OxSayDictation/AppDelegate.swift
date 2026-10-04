@@ -20,6 +20,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let recorder = MicRecorder()
     private let output = PasteOutput()
     private let overlay = Overlay()
+    private let speakService = SpeakServiceProvider()
+    private let player = AudioPlayer()
+    private var speechClient: SpeechClient!
+    private let voiceSubmenu = NSMenu()
+    private let speakVoiceKey = "speakVoice"
+    /// Voices fetched from the daemon; nil until the first answer arrives.
+    private var knownVoices: [String]?
+    private var voicesLoading = false
+    /// Bumped per speak request, so a late answer cannot stop the playback of a
+    /// newer one.
+    private var speakGeneration = 0
+    /// The speak-selection hotkey and its menu state; mirrors the dictation
+    /// key machinery with its own offered combinations.
+    private var speakHotKey: HotKey?
+    private let capture = SelectionCapture()
+    private var speakShortcutItems: [SpeakShortcut: NSMenuItem] = [:]
+    private let speakShortcutKey = "speakShortcut"
+    private let speakKeyInUseKey = "speakKeyInUse"
+    private var speakActive: SpeakShortcut?
+    private var speakRegisterFailFor: SpeakShortcut?
+    /// The "how to speak" hint line; its title follows the registered key.
+    private let speakHint = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let modeKey = "hotkeyMode"
     private let shortcutKey = "shortcut"
     /// The last problem worth telling the user; the menu shows it until the
@@ -63,10 +85,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ShortcutMenu.Choice(title: shortcut.title, keyCode: Int(shortcut.keyCode), modifiers: Int(shortcut.modifiers))
     }
 
+    /// The same plan question for the speak-selection key: which offered
+    /// combination should be registered and what the menu rows show.
+    private func speakShortcutPlan() -> ShortcutMenu.Plan {
+        let defaults = UserDefaults.standard
+        return ShortcutMenu.plan(
+            stored: defaults.string(forKey: speakShortcutKey).flatMap(SpeakShortcut.init(rawValue:)).map(speakChoice),
+            active: speakActive.map(speakChoice),
+            lastSession: defaults.string(forKey: speakKeyInUseKey).flatMap(SpeakShortcut.init(rawValue:)).map(speakChoice),
+            choices: SpeakShortcut.allCases.map(speakChoice),
+            system: Shortcut.systemShortcuts())
+    }
+
+    private func speakChoice(_ shortcut: SpeakShortcut) -> ShortcutMenu.Choice {
+        ShortcutMenu.Choice(title: shortcut.title, keyCode: Int(shortcut.keyCode), modifiers: Int(shortcut.modifiers))
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let baseURL = DaemonAddress.url(agentPlist: try? Data(contentsOf: DaemonAddress.agentPlist))
         let client = TranscriptionClient(baseURL: baseURL)
         self.client = client
+        speechClient = SpeechClient(baseURL: baseURL)
+        speakService.onSpeak = { [weak self] text in self?.speak(text) }
+        NSApp.servicesProvider = speakService
+        overlay.onPlaybackToggle = { [weak self] in self?.player.toggle() }
+        overlay.onPlaybackStop = { [weak self] in
+            self?.player.stop()
+            self?.overlay.finishPlaying()
+        }
+        overlay.playbackPosition = { [weak self] in
+            guard let self else { return (0, 0, false) }
+            return (self.player.currentTime, self.player.duration, self.player.isPaused)
+        }
+        player.onFinish = { [weak self] in self?.overlay.finishPlaying() }
         let streamer = StreamingTranscriber(baseURL: baseURL)
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode, transcriber: streamer)
@@ -98,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         buildMenu()
         registerShortcut(shortcutPlan())
+        registerSpeakShortcut(speakShortcutPlan())
         show(.idle)
 
         // Ask for both permissions up front, so the first dictation does not stall
@@ -151,6 +203,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Registers the speak-selection key from the plan. The keypress fires
+    /// once per press — there is no hold state to protect, so the plan is
+    /// applied at any time, unlike the dictation key.
+    private func registerSpeakShortcut(_ plan: ShortcutMenu.Plan) {
+        speakHotKey = nil
+        speakActive = nil
+        applySpeakShortcutItems(plan.items)
+        guard let index = plan.key else {
+            notice("Every speak key is a macOS shortcut on this Mac. Free one in System Settings → Keyboard → Keyboard Shortcuts.")
+            return
+        }
+        let key = SpeakShortcut.allCases[index]
+        speakHotKey = HotKey(keyCode: key.keyCode, modifiers: key.modifiers)
+        speakHotKey?.onDown = { [weak self] in self?.speakSelection() }
+        guard speakHotKey != nil else {
+            if speakRegisterFailFor != key {
+                speakRegisterFailFor = key
+                notice("\(key.title) is taken by another app, so speaking has no hotkey. Pick another one in this menu.")
+            }
+            return
+        }
+        speakRegisterFailFor = nil
+        speakActive = key
+        let defaults = UserDefaults.standard
+        defaults.set(key.rawValue, forKey: speakKeyInUseKey)
+        if let from = plan.movedFrom {
+            let taken = SpeakShortcut.allCases[from]
+            notice("\(taken.title) is a macOS shortcut on this Mac, so speaking uses \(key.title).")
+        }
+    }
+
+    private func applySpeakShortcutItems(_ rows: [ShortcutMenu.Item]) {
+        for (index, shortcut) in SpeakShortcut.allCases.enumerated() {
+            guard let item = speakShortcutItems[shortcut] else { continue }
+            let row = rows[index]
+            item.state = row.isOn ? .on : .off
+            item.isEnabled = row.isEnabled
+            item.title = row.title
+        }
+    }
+
     /// The menu items follow the live system shortcuts: a key macOS freed is
     /// clickable again, a key it took greys out — whether or not the
     /// registered key changes.
@@ -167,15 +260,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// System Settings may have freed or taken a key since: the items always
     /// follow it, and the registered key moves only when the plan says so.
     func menuWillOpen(_ menu: NSMenu) {
+        rebuildVoiceMenu()
+        refreshVoices()
         let plan = shortcutPlan()
         let open = ShortcutMenu.onOpen(plan, registered: active.flatMap { Shortcut.allCases.firstIndex(of: $0) },
                                        idle: controller.state == .idle)
-        guard open.register else {
+        if open.register {
+            registerShortcut(plan)
+            show(.idle)
+        } else {
             applyShortcutItems(open.items)
-            return
         }
-        registerShortcut(plan)
-        show(.idle)
+        let speakPlan = speakShortcutPlan()
+        let speakOpen = ShortcutMenu.onOpen(speakPlan, registered: speakActive.flatMap { SpeakShortcut.allCases.firstIndex(of: $0) },
+                                            idle: true)
+        if speakOpen.register {
+            registerSpeakShortcut(speakPlan)
+        } else {
+            applySpeakShortcutItems(speakOpen.items)
+        }
+        speakHint.title = speakActive.map { "Speak: \($0.title) on a selection, or right-click → Services" }
+            ?? "Speak: select text, then right-click → Services"
     }
 
     private func buildMenu() {
@@ -201,6 +306,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginItem.target = self
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(loginItem)
+        menu.addItem(.separator())
+        let voiceItem = NSMenuItem(title: "Speak voice", action: nil, keyEquivalent: "")
+        voiceItem.submenu = voiceSubmenu
+        menu.addItem(voiceItem)
+        let speakKeys = NSMenu()
+        speakKeys.autoenablesItems = false // or AppKit re-enables the greyed-out keys
+        for choice in SpeakShortcut.allCases {
+            let item = NSMenuItem(title: choice.title, action: #selector(pickSpeakShortcut(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = choice.rawValue
+            speakKeys.addItem(item)
+            speakShortcutItems[choice] = item
+        }
+        let speakKeyMenu = NSMenuItem(title: "Speak key", action: nil, keyEquivalent: "")
+        speakKeyMenu.submenu = speakKeys
+        menu.addItem(speakKeyMenu)
+        speakHint.isEnabled = false
+        menu.addItem(speakHint)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Microphone settings…", action: #selector(openMicrophoneSettings), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Accessibility settings…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
@@ -286,6 +409,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             overlay.setWorkingText("Transcribing… \(seconds)s")
         }
+    }
+
+    /// Synthesizes the text through the daemon and plays it. The pill says
+    /// "Speaking…" for the wait; playback then runs in the background. A newer
+    /// request supersedes an in-flight one, so a slow answer cannot stop what
+    /// already plays.
+    private func speak(_ text: String) {
+        speakGeneration += 1
+        let generation = speakGeneration
+        overlay.showWorking()
+        overlay.setWorkingText("Speaking…")
+        overlay.setHintHidden(true)
+        let client = speechClient!
+        let voice = UserDefaults.standard.string(forKey: speakVoiceKey)
+        Task { @MainActor [weak self] in
+            do {
+                let wav = try await client.speak(text, voice: voice)
+                guard let self, self.speakGeneration == generation else { return }
+                try self.player.play(wav: wav)
+                self.overlay.showPlaying()
+            } catch {
+                guard let self, self.speakGeneration == generation else { return }
+                self.overlay.finish()
+                self.notice(String(describing: error))
+            }
+        }
+    }
+
+    /// Rebuilds the Speak voice submenu: the engine default plus the voices the
+    /// daemon knows.
+    private func rebuildVoiceMenu() {
+        voiceSubmenu.removeAllItems()
+        let current = UserDefaults.standard.string(forKey: speakVoiceKey)
+        let fallback = NSMenuItem(title: "Engine default", action: #selector(pickVoice(_:)), keyEquivalent: "")
+        fallback.target = self
+        fallback.state = current == nil ? .on : .off
+        voiceSubmenu.addItem(fallback)
+        for name in knownVoices ?? [] {
+            let item = NSMenuItem(title: name, action: #selector(pickVoice(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = name
+            item.state = name == current ? .on : .off
+            voiceSubmenu.addItem(item)
+        }
+        if knownVoices == nil {
+            let loading = NSMenuItem(title: "Loading…", action: nil, keyEquivalent: "")
+            loading.isEnabled = false
+            voiceSubmenu.addItem(loading)
+        }
+    }
+
+    /// Refreshes the daemon's voice list on every menu open; a failed fetch
+    /// keeps the last good list and retries on the next open.
+    private func refreshVoices() {
+        guard !voicesLoading else { return }
+        voicesLoading = true
+        let client = speechClient!
+        Task { @MainActor [weak self] in
+            let voices = try? await client.voices()
+            guard let self else { return }
+            self.voicesLoading = false
+            self.knownVoices = voices ?? self.knownVoices
+            self.rebuildVoiceMenu()
+        }
+    }
+
+    /// The speak-selection hotkey press: read whatever is selected in the
+    /// frontmost app and speak it, or say on the pill why nothing came.
+    private func speakSelection() {
+        let (text, problem) = capture.capture()
+        if let text {
+            speak(text)
+        } else {
+            overlay.showMessage(problem ?? "Nothing selected to speak.")
+        }
+    }
+
+    @objc private func pickSpeakShortcut(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, SpeakShortcut(rawValue: raw) != nil else { return }
+        UserDefaults.standard.set(raw, forKey: speakShortcutKey)
+        registerSpeakShortcut(speakShortcutPlan())
+    }
+
+    @objc private func pickVoice(_ sender: NSMenuItem) {
+        if let name = sender.representedObject as? String {
+            UserDefaults.standard.set(name, forKey: speakVoiceKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: speakVoiceKey)
+        }
+        rebuildVoiceMenu()
     }
 
     private func notice(_ message: String, kind: DictationNotice.Kind = .unrelated) {

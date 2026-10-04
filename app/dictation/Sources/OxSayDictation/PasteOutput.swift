@@ -47,6 +47,11 @@ final class SystemPasteboard: NSObject, DictationPasteboard, NSPasteboardItemDat
         return pasteboard.changeCount
     }
 
+    /// The plain-text contents, for the speak-selection ⌘C read.
+    func readText() -> String? {
+        pasteboard.string(forType: .string)
+    }
+
     func restore(_ snapshot: PasteboardSnapshot) {
         pasteboard.clearContents()
         let items = snapshot.items.map { entries -> NSPasteboardItem in
@@ -144,7 +149,7 @@ final class PasteOutput: TextOutput {
     /// types QWERTY, Russian types Latin). The closure holds the layout bytes, so one paste scans the
     /// keyboard once. A dead key or a key that types nothing maps to nil, as
     /// does every key when the layout cannot be read at all.
-    private static func layoutCharacter() -> (Int) -> Character? {
+    static func layoutCharacter() -> (Int) -> Character? {
         guard let data = layoutData() else { return { _ in nil } }
         let keyboardType = UInt32(LMGetKbdType())
         return { keyCode in

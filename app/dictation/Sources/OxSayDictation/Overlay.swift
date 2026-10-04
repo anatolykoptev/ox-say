@@ -24,6 +24,17 @@ final class Overlay {
     /// Bumped by every show, so a fade-out that finishes after a new show does
     /// not order the new pill out.
     private var shown = 0
+    private let playPauseButton = NSButton()
+    private let stopButton = NSButton()
+    /// True while the pill shows playback controls — the only state where it
+    /// accepts mouse events. Everywhere else clicks fall through as before.
+    private var playing = false
+    private var playbackTimer: Timer?
+    /// Pause/resume and stop, wired to the audio player by the app delegate.
+    var onPlaybackToggle: (() -> Void)?
+    var onPlaybackStop: (() -> Void)?
+    /// Elapsed, total and paused state, polled while playing.
+    var playbackPosition: (() -> (elapsed: TimeInterval, duration: TimeInterval, paused: Bool))?
 
     init() {
         size = pillSize
@@ -80,11 +91,26 @@ final class Overlay {
         liveText.lineBreakMode = .byTruncatingHead
         liveText.isHidden = true
         background.addSubview(liveText)
+
+        for (button, name, action) in
+            [(playPauseButton, "pause.fill", #selector(playbackToggleClicked)),
+             (stopButton, "xmark", #selector(playbackStopClicked))] {
+            button.isBordered = false
+            button.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
+            button.imageScaling = .scaleProportionallyDown
+            button.contentTintColor = .secondaryLabelColor
+            button.target = self
+            button.action = action
+            button.frame = NSRect(x: 0, y: (size.height - 20) / 2, width: 20, height: 20)
+            button.isHidden = true
+            background.addSubview(button)
+        }
     }
 
     /// Recording: bars "breathe" in grey until the first sound arrives.
     func showListening() {
         leaveMessage()
+        leavePlaying()
         bars.reset()
         bars.isHidden = false
         spinner.stopAnimation(nil)
@@ -96,6 +122,7 @@ final class Overlay {
 
     func showWorking() {
         leaveMessage()
+        leavePlaying()
         bars.stop()
         bars.isHidden = true
         spinner.isHidden = false
@@ -157,8 +184,87 @@ final class Overlay {
         if !showingMessage { hide() }
     }
 
+    /// Speaking: the pill turns into playback controls — a pause/resume button,
+    /// the position counter and a stop button. This is the only state that
+    /// takes mouse events; dictation keeps passing clicks through.
+    func showPlaying() {
+        leaveMessage()
+        leavePlaying()
+        playing = true
+        bars.stop()
+        bars.isHidden = true
+        spinner.stopAnimation(nil)
+        spinner.isHidden = true
+        label.isHidden = false
+        hint.isHidden = true
+        playPauseButton.isHidden = false
+        stopButton.isHidden = false
+        panel.ignoresMouseEvents = false
+        show()
+        tickPlayback()
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.tickPlayback() }
+        RunLoop.main.add(timer, forMode: .common)
+        playbackTimer = timer
+    }
+
+    /// Playback is over or cancelled; other states hide through finish().
+    func finishPlaying() {
+        guard playing else { return }
+        leavePlaying()
+        hide()
+    }
+
+    /// The esc hint is only honest where esc is wired — dictation. Speaking
+    /// has no key equivalent, so the hint hides instead of lying.
+    func setHintHidden(_ hidden: Bool) {
+        hint.isHidden = hidden
+    }
+
+    /// Tears the playback state down: controls away, clicks fall through again.
+    private func leavePlaying() {
+        playing = false
+        playbackTimer?.invalidate()
+        playbackTimer = nil
+        playPauseButton.isHidden = true
+        stopButton.isHidden = true
+        panel.ignoresMouseEvents = true
+    }
+
+    @objc private func playbackToggleClicked() {
+        onPlaybackToggle?()
+        tickPlayback()
+    }
+
+    @objc private func playbackStopClicked() {
+        onPlaybackStop?()
+    }
+
+    /// Polls the player for position and paused state, keeping the counter and
+    /// the pause/resume glyph current; resizes only when the text changes.
+    private func tickPlayback() {
+        guard playing, let position = playbackPosition?() else { return }
+        label.stringValue = "\(Overlay.clock(position.elapsed)) / \(Overlay.clock(position.duration))"
+        label.sizeToFit()
+        let icon = position.paused ? "play.fill" : "pause.fill"
+        playPauseButton.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
+        playPauseButton.frame.origin = NSPoint(x: 18, y: playPauseButton.frame.minY)
+        label.frame.origin = NSPoint(x: playPauseButton.frame.maxX + 8,
+                                     y: (size.height - label.frame.height) / 2)
+        stopButton.frame.origin = NSPoint(x: label.frame.maxX + 12, y: stopButton.frame.minY)
+        let width = max(pillSize.width, ceil(stopButton.frame.maxX) + 14)
+        if width != size.width {
+            resize(to: NSSize(width: width, height: pillSize.height))
+        }
+    }
+
+    private static func clock(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
     /// Says what went wrong (or where the text went) for a few seconds.
     func showMessage(_ text: String) {
+        leavePlaying()
         bars.stop()
         bars.isHidden = true
         spinner.stopAnimation(nil)
@@ -213,6 +319,7 @@ final class Overlay {
     }
 
     private func hide() {
+        leavePlaying()
         bars.stop()
         spinner.stopAnimation(nil)
         liveText.stringValue = ""

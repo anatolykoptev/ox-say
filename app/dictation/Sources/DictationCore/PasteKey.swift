@@ -6,6 +6,8 @@
 public enum PasteKey {
     /// kVK_ANSI_V as a plain number: DictationCore does not link Carbon.
     public static let ansiV = 9
+    /// kVK_ANSI_C as a plain number.
+    public static let ansiC = 8
 
     /// The virtual key code that types "v" with ⌘ held in the current keyboard
     /// layout: the lowest code in 0–127 whose `lookup` says so, else `ansiV`.
@@ -17,5 +19,14 @@ public enum PasteKey {
             return code
         }
         return ansiV
+    }
+
+    /// The virtual key code that types "c" with ⌘ held: the same scan for the
+    /// speak-selection copy. kVK_ANSI_C types "i" on Dvorak.
+    public static func commandC(lookup: (Int) -> Character?) -> Int {
+        for code in 0...127 where lookup(code) == "c" {
+            return code
+        }
+        return ansiC
     }
 }

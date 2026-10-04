@@ -245,6 +245,32 @@ than decoding the whole recording, and punctuation can break at a join ([#88](ht
 dictation shorter than 12 s with no long pause is one segment, so it is not
 affected.
 
+### Speak selection
+
+The same app speaks selected text in any app — pick the way that reaches it:
+press the **Speak key** (⌃⌥Space by default, change it in the app's menu) with
+text selected, or open the right-click menu (or the app's menu) → Services →
+**Speak Selection** («Озвучить выделенное»). The key works everywhere: it asks
+the focused element for its selection through Accessibility first, and only
+falls back to a ⌘C-and-restore when that gives nothing — the clipboard ends
+up untouched, and a password field or an unrestorable clipboard blocks the
+copy instead of risking it. The Services menu depends on the app handing its
+selection to Services, so some Electron apps will not show the item.
+
+The selection goes to the daemon's `/v1/audio/speech`, and the synthesized
+wav plays through the app's audio player — nothing leaves the Mac. While the
+daemon synthesizes, the pill reads "Speaking…"; the first use after an engine
+stop waits out a cold start of about 15 s. Once playback starts the pill turns
+into playback controls — pause/resume, the position counter and stop.
+
+The **Speak voice** submenu picks the voice: the engine's default or any cloned
+voice registered on the daemon (`ox-say voice list`). A new request while one
+is in flight supersedes it; a new playback stops the previous one.
+
+The service registers when LaunchServices scans the app, so it appears after
+the first launch of an updated build. Apps that do not hand their selection to
+Services (some Electron apps) will not show the item.
+
 ### Diagnosing dictation
 
 Three logs describe a dictation without recording what was said:
