@@ -178,7 +178,7 @@ func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error)
 
 	voice := in.Voice
 	if voice == "" {
-		voice = d.Cfg.Voice
+		voice = d.configuredVoice(langHint(params))
 	}
 	if voice == "" {
 		voice = "default"

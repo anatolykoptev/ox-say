@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let speakService = SpeakServiceProvider()
     private let player = AudioPlayer()
     private var speechClient: SpeechClient!
+    private let updater = UpdateChecker()
     private let voiceSubmenu = NSMenu()
     private let speakVoiceKey = "speakVoice"
     /// Voices fetched from the daemon; nil until the first answer arrives.
@@ -328,6 +329,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: "Microphone settings…", action: #selector(openMicrophoneSettings), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Accessibility settings…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "").target = self
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Quit OxSay Dictation", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
     }
@@ -478,6 +481,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.voicesLoading = false
             self.knownVoices = voices ?? self.knownVoices
             self.rebuildVoiceMenu()
+        }
+    }
+
+    /// The menu's update check: GitHub's latest release tag against the
+    /// bundle's build version; a newer tag offers a self-install via the
+    /// same get.sh the manual install uses.
+    @objc private func checkForUpdates() {
+        let local = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        overlay.showWorking()
+        overlay.setWorkingText("Checking for updates…")
+        overlay.setHintHidden(true)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let (tag, _) = try await self.updater.latestRelease()
+                self.overlay.finish()
+                if UpdateChecker.isNewer(tag, than: local) {
+                    self.confirmInstall(remote: tag, local: local)
+                } else {
+                    self.notice("ox-say v\(local) is the latest release.")
+                }
+            } catch {
+                self.overlay.finish()
+                self.notice(String(describing: error))
+            }
+        }
+    }
+
+    private func confirmInstall(remote: String, local: String) {
+        let alert = NSAlert()
+        alert.messageText = "ox-say \(remote) is available"
+        alert.informativeText = "Installed: v\(local).\nThe updater downloads the signed package, swaps in the new daemon and app, then relaunches."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            installUpdate(tag: remote)
+        }
+    }
+
+    /// Runs the release installer; on success the installed app is already
+    /// swapped in place, so open a fresh instance and hand over.
+    private func installUpdate(tag: String) {
+        overlay.showWorking()
+        overlay.setWorkingText("Installing \(tag)…")
+        overlay.setHintHidden(true)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | sh"]
+        p.terminationHandler = { [weak self] p in
+            Task { @MainActor in
+                guard let self else { return }
+                if p.terminationStatus == 0 {
+                    let relaunch = Process()
+                    relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                    relaunch.arguments = ["-n", Bundle.main.bundleURL.path]
+                    try? relaunch.run()
+                    NSApp.terminate(nil)
+                } else {
+                    self.overlay.finish()
+                    self.notice("Update to \(tag) failed (exit \(p.terminationStatus)).")
+                }
+            }
+        }
+        do {
+            try p.run()
+        } catch {
+            overlay.finish()
+            notice("Update failed: \(error)")
         }
     }
 

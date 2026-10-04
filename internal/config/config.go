@@ -49,6 +49,8 @@ type Config struct {
 	StartupTimeout time.Duration
 	Lang           string // OX_SAY_LANG: default language; empty = engine auto
 	Voice          string // OX_SAY_VOICE: default cloned voice; empty = engine random
+	VoiceRU        string // OX_SAY_VOICE_RU: default for Russian speech; empty = Voice
+	VoiceEN        string // OX_SAY_VOICE_EN: default for English speech; empty = Voice
 	EngineLogDir   string // OX_SAY_ENGINE_LOG_DIR: child stdout/stderr log dir
 	CacheDir       string // OX_SAY_CACHE_DIR: default output dir for speak
 
@@ -78,6 +80,8 @@ var flagNames = map[string]string{
 	"startup-timeout":   "OX_SAY_STARTUP_TIMEOUT_SECS",
 	"lang":              "OX_SAY_LANG",
 	"voice":             "OX_SAY_VOICE",
+	"voice-ru":          "OX_SAY_VOICE_RU",
+	"voice-en":          "OX_SAY_VOICE_EN",
 	"engine-log-dir":    "OX_SAY_ENGINE_LOG_DIR",
 	"cache-dir":         "OX_SAY_CACHE_DIR",
 	"stt-bin":           "OX_SAY_STT_BIN",
@@ -149,6 +153,8 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 		CacheDir:     orDefault(get("OX_SAY_CACHE_DIR"), filepath.Join(homeDir, "Library", "Caches", "ox-say")),
 		Lang:         get("OX_SAY_LANG"),
 		Voice:        get("OX_SAY_VOICE"),
+		VoiceRU:      get("OX_SAY_VOICE_RU"),
+		VoiceEN:      get("OX_SAY_VOICE_EN"),
 	}
 	if c.Home == "" {
 		c.Home = filepath.Join(homeDir, "Library", "Application Support", "ox-say")
