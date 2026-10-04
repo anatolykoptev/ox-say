@@ -237,6 +237,7 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_IDLE_STOP_SECS", "61", "1m1s", func(c *Config) string { return c.IdleStop.String() }},
 		{"OX_SAY_STARTUP_TIMEOUT_SECS", "62", "1m2s", func(c *Config) string { return c.StartupTimeout.String() }},
 		{"OX_SAY_LANG", "Testlang", "Testlang", func(c *Config) string { return c.Lang }},
+		{"OX_SAY_VOICE", "testvoice", "testvoice", func(c *Config) string { return c.Voice }},
 		{"OX_SAY_ENGINE_LOG_DIR", "/tmp/oxk-4917/logs", "/tmp/oxk-4917/logs", func(c *Config) string { return c.EngineLogDir }},
 		{"OX_SAY_CACHE_DIR", "/tmp/oxk-4917/cache", "/tmp/oxk-4917/cache", func(c *Config) string { return c.CacheDir }},
 		{"OX_SAY_STT_BIN", "/tmp/oxk-4917/ox-stt-x", "/tmp/oxk-4917/ox-stt-x", func(c *Config) string { return c.STTBin }},

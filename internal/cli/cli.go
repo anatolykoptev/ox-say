@@ -80,7 +80,7 @@ Flags for serve (env vars are the defaults; flags override):
 	fs.PrintDefaults()
 	fmt.Fprint(w, `
 say flags:
-  -v voice      cloned voice name
+  -v voice      cloned voice name ("default" = random engine voice; omit = OX_SAY_VOICE)
   -l language   e.g. Russian, English (default: engine auto)
   -f format     wav | mp3 | opus (default: wav; used for -o and playback)
   -o path       write file instead of playing it

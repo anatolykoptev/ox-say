@@ -60,7 +60,7 @@ func (d *Daemon) RegisterTools(srv *mcp.Server) {
 
 type speakToolIn struct {
 	Text         string `json:"text" jsonschema:"Text to synthesize (required, max 5000 chars)"`
-	Voice        string `json:"voice,omitempty" jsonschema:"Cloned voice name; omit for the engine default"`
+	Voice        string `json:"voice,omitempty" jsonschema:"Cloned voice name; \"default\" = a random engine voice; omit for the configured default"`
 	Language     string `json:"language,omitempty" jsonschema:"Language name (e.g. Russian, English); empty = engine auto-detect"`
 	Format       string `json:"format,omitempty" jsonschema:"wav (default) | mp3 | opus (Ogg container, Telegram-ready)"`
 	OutPath      string `json:"out_path,omitempty" jsonschema:"Absolute output path; parent must exist; extension must match format; existing file refused unless overwrite"`
