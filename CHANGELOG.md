@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.12](https://github.com/anatolykoptev/ox-say/compare/v0.1.11...v0.1.12) (2026-10-04)
+
+
+### Added
+
+* **dictation:** speak the selected text via a macOS service ([#92](https://github.com/anatolykoptev/ox-say/issues/92)) ([9d0e363](https://github.com/anatolykoptev/ox-say/commit/9d0e36386dcbbcbba9cfd98e1029d600932ade88))
+
+
+### Documentation
+
+* describe dictation streaming, its diagnostics and the STT pre-warm ([#89](https://github.com/anatolykoptev/ox-say/issues/89)) ([71c61fe](https://github.com/anatolykoptev/ox-say/commit/71c61fe873383c1127fb155d1ad6ccfd367ff4ab))
+
 ## [0.1.11](https://github.com/anatolykoptev/ox-say/compare/v0.1.10...v0.1.11) (2026-10-02)
 
 
