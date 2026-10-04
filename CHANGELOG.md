@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.15](https://github.com/anatolykoptev/ox-say/compare/v0.1.14...v0.1.15) (2026-10-04)
+
+
+### Added
+
+* per-language voice picks and a voice preview in the menu ([#98](https://github.com/anatolykoptev/ox-say/issues/98)) ([0b843f1](https://github.com/anatolykoptev/ox-say/commit/0b843f173865635fd1632200f028d8fd79f14ab2))
+
 ## [0.1.14](https://github.com/anatolykoptev/ox-say/compare/v0.1.13...v0.1.14) (2026-10-04)
 
 
