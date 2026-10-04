@@ -263,17 +263,20 @@ daemon synthesizes, the pill reads "Speaking…"; the first use after an engine
 stop waits out a cold start of about 15 s. Once playback starts the pill turns
 into playback controls — pause/resume, the position counter and stop.
 
-The **Speak voice** submenu picks the voice: **Default voice** follows the
-daemon's configured default, **Random each time** always rolls a new engine
-voice, and any cloned voice registered on the daemon (`ox-say voice list`)
-can be picked by name. The configured default resolves per language:
-`OX_SAY_VOICE_RU` for Russian, `OX_SAY_VOICE_EN` for English, then
-`OX_SAY_VOICE` for everything else — the request's `language` field wins,
-otherwise the input's script decides (Cyrillic is Russian, Latin is
-English). The same resolution applies to `ox-say say` and the MCP `speak`
-tool — `-v default` or `"voice": "default"` asks for a random voice
-explicitly. A new request while one is in flight supersedes it; a new
-playback stops the previous one.
+The **Russian voice** and **English voice** submenus pick a voice per
+language: **Default voice** follows the daemon's configured default,
+**Random each time** always rolls a new engine voice, and any cloned voice
+registered on the daemon (`ox-say voice list`) can be picked by name. The
+text's script decides which pick a request sends — Cyrillic gets the Russian
+pick, Latin the English one, anything else leaves the voice to the daemon.
+Picking a voice speaks a sample phrase in that voice right away. The
+configured default resolves per language too: `OX_SAY_VOICE_RU` for Russian,
+`OX_SAY_VOICE_EN` for English, then `OX_SAY_VOICE` for everything else — the
+request's `language` field wins, otherwise the input's script decides
+(Cyrillic is Russian, Latin is English). The same resolution applies to
+`ox-say say` and the MCP `speak` tool — `-v default` or
+`"voice": "default"` asks for a random voice explicitly. A new request
+while one is in flight supersedes it; a new playback stops the previous one.
 
 **Check for Updates…** compares the installed version with the latest
 GitHub release; a newer tag offers a one-click install of the signed
