@@ -1,29 +1,49 @@
-import Foundation
+import AVFoundation
 
-/// Plays synthesized audio through the platform player, afplay. Each playback
-/// is its own temporary file and process: a new `play` stops the previous one,
-/// and a file is removed when its process exits, not when the next one starts,
-/// so an interrupted playback cannot delete a live one's file.
-final class AudioPlayer {
-    private var current: Process?
+/// Plays a synthesized WAV through the default output; pauses and resumes in
+/// place. Playing straight from memory, so there is no temp file to clean up.
+final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
+    private var player: AVAudioPlayer?
+    /// Called on the main queue when playback ends on its own — not after stop().
+    var onFinish: (() -> Void)?
 
-    func stop() {
-        current?.terminate()
-        current = nil
+    /// True while a paused clip is held; false while playing or when nothing
+    /// is loaded.
+    var isPaused: Bool { player != nil && !(player?.isPlaying ?? false) }
+    var duration: TimeInterval { player?.duration ?? 0 }
+    var currentTime: TimeInterval { player?.currentTime ?? 0 }
+
+    /// Stops whatever was playing and starts the new clip.
+    func play(wav: Data) throws {
+        stop()
+        let next = try AVAudioPlayer(data: wav)
+        next.delegate = self
+        next.prepareToPlay()
+        player = next
+        next.play()
     }
 
-    /// Plays the bytes as a wav. Returns after afplay starts; playback then
-    /// continues in the background until it finishes or `stop` runs.
-    func play(wav: Data) throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ox-say-speak-\(UUID().uuidString).wav")
-        try wav.write(to: url)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
-        process.arguments = [url.path]
-        process.terminationHandler = { _ in try? FileManager.default.removeItem(at: url) }
-        stop()
-        try process.run()
-        current = process
+    /// Toggles between pause and resume; a no-op when nothing is loaded.
+    func toggle() {
+        guard let player else { return }
+        if player.isPlaying {
+            player.pause()
+        } else {
+            player.play()
+        }
+    }
+
+    /// Stops without firing onFinish — a superseded request or the stop button.
+    func stop() {
+        let previous = player
+        player = nil
+        previous?.delegate = nil
+        previous?.stop()
+    }
+
+    func audioPlayerDidFinishPlaying(_ finished: AVAudioPlayer, successfully _: Bool) {
+        guard finished === player else { return }
+        player = nil
+        DispatchQueue.main.async { [onFinish] in onFinish?() }
     }
 }

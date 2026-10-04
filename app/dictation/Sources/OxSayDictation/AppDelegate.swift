@@ -81,6 +81,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speechClient = SpeechClient(baseURL: baseURL)
         speakService.onSpeak = { [weak self] text in self?.speak(text) }
         NSApp.servicesProvider = speakService
+        overlay.onPlaybackToggle = { [weak self] in self?.player.toggle() }
+        overlay.onPlaybackStop = { [weak self] in
+            self?.player.stop()
+            self?.overlay.finishPlaying()
+        }
+        overlay.playbackPosition = { [weak self] in
+            guard let self else { return (0, 0, false) }
+            return (self.player.currentTime, self.player.duration, self.player.isPaused)
+        }
+        player.onFinish = { [weak self] in self?.overlay.finishPlaying() }
         let streamer = StreamingTranscriber(baseURL: baseURL)
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode, transcriber: streamer)
@@ -320,6 +330,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let generation = speakGeneration
         overlay.showWorking()
         overlay.setWorkingText("Speaking…")
+        overlay.setHintHidden(true)
         let client = speechClient!
         let voice = UserDefaults.standard.string(forKey: speakVoiceKey)
         Task { @MainActor [weak self] in
@@ -327,7 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let wav = try await client.speak(text, voice: voice)
                 guard let self, self.speakGeneration == generation else { return }
                 try self.player.play(wav: wav)
-                self.overlay.finish()
+                self.overlay.showPlaying()
             } catch {
                 guard let self, self.speakGeneration == generation else { return }
                 self.overlay.finish()

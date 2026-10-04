@@ -250,9 +250,11 @@ affected.
 The same app registers a macOS service, so selected text can be spoken in any
 app: select text, open the right-click menu (or the app's menu) → Services →
 **Speak Selection** («Озвучить выделенное»). The selection goes to the daemon's
-`/v1/audio/speech`, and the synthesized wav plays through afplay — nothing
-leaves the Mac. While the daemon synthesizes, the pill reads "Speaking…"; the
-first use after an engine stop waits out a cold start of about 15 s.
+`/v1/audio/speech`, and the synthesized wav plays through the app's audio
+player — nothing leaves the Mac. While the daemon synthesizes, the pill reads
+"Speaking…"; the first use after an engine stop waits out a cold start of
+about 15 s. Once playback starts the pill turns into playback controls —
+pause/resume, the position counter and stop.
 
 The **Speak voice** submenu picks the voice: the engine's default or any cloned
 voice registered on the daemon (`ox-say voice list`). A new request while one
