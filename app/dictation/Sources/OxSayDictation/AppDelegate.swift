@@ -24,8 +24,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let player = AudioPlayer()
     private var speechClient: SpeechClient!
     private let updater = UpdateChecker()
-    private let voiceSubmenu = NSMenu()
-    private let speakVoiceKey = "speakVoice"
+    private let russianVoiceSubmenu = NSMenu()
+    private let englishVoiceSubmenu = NSMenu()
+    private let speakVoiceRUKey = "speakVoiceRU"
+    private let speakVoiceENKey = "speakVoiceEN"
+    /// The single choice from before the per-language menus; migrated into
+    /// both on first launch of a build that has them.
+    private let legacySpeakVoiceKey = "speakVoice"
     /// Voices fetched from the daemon; nil until the first answer arrives.
     private var knownVoices: [String]?
     private var voicesLoading = false
@@ -159,6 +164,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(prompt)
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        // One voice pref from before per-language picks applies to both.
+        let defaults = UserDefaults.standard
+        if let legacy = defaults.string(forKey: legacySpeakVoiceKey) {
+            defaults.removeObject(forKey: legacySpeakVoiceKey)
+            if defaults.string(forKey: speakVoiceRUKey) == nil { defaults.set(legacy, forKey: speakVoiceRUKey) }
+            if defaults.string(forKey: speakVoiceENKey) == nil { defaults.set(legacy, forKey: speakVoiceENKey) }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -261,7 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// System Settings may have freed or taken a key since: the items always
     /// follow it, and the registered key moves only when the plan says so.
     func menuWillOpen(_ menu: NSMenu) {
-        rebuildVoiceMenu()
+        rebuildVoiceMenus()
         refreshVoices()
         let plan = shortcutPlan()
         let open = ShortcutMenu.onOpen(plan, registered: active.flatMap { Shortcut.allCases.firstIndex(of: $0) },
@@ -308,9 +320,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(loginItem)
         menu.addItem(.separator())
-        let voiceItem = NSMenuItem(title: "Speak voice", action: nil, keyEquivalent: "")
-        voiceItem.submenu = voiceSubmenu
-        menu.addItem(voiceItem)
+        let russianVoiceItem = NSMenuItem(title: "Russian voice", action: nil, keyEquivalent: "")
+        russianVoiceItem.submenu = russianVoiceSubmenu
+        menu.addItem(russianVoiceItem)
+        let englishVoiceItem = NSMenuItem(title: "English voice", action: nil, keyEquivalent: "")
+        englishVoiceItem.submenu = englishVoiceSubmenu
+        menu.addItem(englishVoiceItem)
         let speakKeys = NSMenu()
         speakKeys.autoenablesItems = false // or AppKit re-enables the greyed-out keys
         for choice in SpeakShortcut.allCases {
@@ -414,21 +429,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Sends the text to the daemon with the pick for its script's language.
+    private func speak(_ text: String) {
+        let defaults = UserDefaults.standard
+        let voice = VoicePick.voice(for: text,
+                                    russian: defaults.string(forKey: speakVoiceRUKey),
+                                    english: defaults.string(forKey: speakVoiceENKey))
+        speakRequest(text, voice: voice)
+    }
+
     /// Synthesizes the text through the daemon and plays it. The pill says
     /// "Speaking…" for the wait; playback then runs in the background. A newer
     /// request supersedes an in-flight one, so a slow answer cannot stop what
     /// already plays.
-    private func speak(_ text: String) {
+    private func speakRequest(_ text: String, voice: String?, language: String? = nil) {
         speakGeneration += 1
         let generation = speakGeneration
         overlay.showWorking()
         overlay.setWorkingText("Speaking…")
         overlay.setHintHidden(true)
         let client = speechClient!
-        let voice = UserDefaults.standard.string(forKey: speakVoiceKey)
         Task { @MainActor [weak self] in
             do {
-                let wav = try await client.speak(text, voice: voice)
+                let wav = try await client.speak(text, voice: voice, language: language)
                 guard let self, self.speakGeneration == generation else { return }
                 try self.player.play(wav: wav)
                 self.overlay.showPlaying()
@@ -440,33 +463,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Rebuilds the Speak voice submenu: the daemon's configured default,
-    /// the engine's random voice, then the cloned voices the daemon knows.
-    private func rebuildVoiceMenu() {
-        voiceSubmenu.removeAllItems()
-        let current = UserDefaults.standard.string(forKey: speakVoiceKey)
+    /// Rebuilds both voice submenus: the daemon's configured default, the
+    /// engine's random voice, then the cloned voices the daemon knows.
+    private func rebuildVoiceMenus() {
+        buildVoiceSubmenu(russianVoiceSubmenu, key: speakVoiceRUKey)
+        buildVoiceSubmenu(englishVoiceSubmenu, key: speakVoiceENKey)
+    }
+
+    /// One submenu's rows; each item carries the pref key it writes, so one
+    /// selector serves both languages.
+    private func buildVoiceSubmenu(_ submenu: NSMenu, key: String) {
+        submenu.removeAllItems()
+        let current = UserDefaults.standard.string(forKey: key)
         let fallback = NSMenuItem(title: "Default voice", action: #selector(pickVoice(_:)), keyEquivalent: "")
         fallback.target = self
+        fallback.representedObject = ["key": key]
         fallback.state = current == nil ? .on : .off
-        voiceSubmenu.addItem(fallback)
+        submenu.addItem(fallback)
         let random = NSMenuItem(title: "Random each time", action: #selector(pickVoice(_:)), keyEquivalent: "")
         random.target = self
-        random.representedObject = "default"
+        random.representedObject = ["key": key, "voice": "default"]
         random.state = current == "default" ? .on : .off
-        voiceSubmenu.addItem(random)
-        voiceSubmenu.addItem(.separator())
+        submenu.addItem(random)
+        submenu.addItem(.separator())
         for name in knownVoices ?? [] {
             let item = NSMenuItem(title: name, action: #selector(pickVoice(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = name
+            item.representedObject = ["key": key, "voice": name]
             item.state = name == current ? .on : .off
-            voiceSubmenu.addItem(item)
+            submenu.addItem(item)
         }
         if knownVoices == nil {
             let loading = NSMenuItem(title: "Loading…", action: nil, keyEquivalent: "")
             loading.isEnabled = false
-            voiceSubmenu.addItem(loading)
+            submenu.addItem(loading)
         }
+    }
+
+    /// Speaks a sample phrase through the just-picked voice, so a menu choice
+    /// is heard right away. "Default voice" sends no voice — the explicit
+    /// language routes it to that language's configured default even when a
+    /// daemon-wide OX_SAY_LANG overrides script detection. A pick while
+    /// speech plays supersedes it.
+    private func previewVoice(key: String) {
+        let russian = key == speakVoiceRUKey
+        let text = russian ? "Это пример выбранного голоса." : "This is a preview of the selected voice."
+        speakRequest(text, voice: UserDefaults.standard.string(forKey: key), language: russian ? "russian" : "english")
     }
 
     /// Refreshes the daemon's voice list on every menu open; a failed fetch
@@ -480,7 +522,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             self.voicesLoading = false
             self.knownVoices = voices ?? self.knownVoices
-            self.rebuildVoiceMenu()
+            self.rebuildVoiceMenus()
         }
     }
 
@@ -572,12 +614,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func pickVoice(_ sender: NSMenuItem) {
-        if let name = sender.representedObject as? String {
-            UserDefaults.standard.set(name, forKey: speakVoiceKey)
+        guard let pick = sender.representedObject as? [String: String],
+              let key = pick["key"], key == speakVoiceRUKey || key == speakVoiceENKey else { return }
+        if let name = pick["voice"] {
+            UserDefaults.standard.set(name, forKey: key)
         } else {
-            UserDefaults.standard.removeObject(forKey: speakVoiceKey)
+            UserDefaults.standard.removeObject(forKey: key)
         }
-        rebuildVoiceMenu()
+        rebuildVoiceMenus()
+        previewVoice(key: key)
     }
 
     private func notice(_ message: String, kind: DictationNotice.Kind = .unrelated) {

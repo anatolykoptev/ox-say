@@ -33,6 +33,17 @@ final class SpeechClientTests: XCTestCase {
         let body = try XCTUnwrap(lastRequest()?.httpBody)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertNil(json["voice"])
+        XCTAssertNil(json["language"])
+    }
+
+    /// The voice preview pins the language explicitly so a daemon-wide
+    /// OX_SAY_LANG cannot reroute the sample to another language's default.
+    func testSpeakSendsAnExplicitLanguage() async throws {
+        let (client, lastRequest) = fakeSend(data: Data([1]))
+        _ = try await client.speak("hello", language: "en")
+        let body = try XCTUnwrap(lastRequest()?.httpBody)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(json["language"] as? String, "en")
     }
 
     func testHttpErrorBecomesSpeechError() async {
