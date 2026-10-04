@@ -95,3 +95,27 @@ enum Shortcut: String, CaseIterable {
         }
     }
 }
+
+/// The speak-selection key combinations the menu offers. Both carry two
+/// modifiers, so they cannot collide with the dictation keys — and produce no
+/// text, so an app without a selection loses nothing to the keypress.
+enum SpeakShortcut: String, CaseIterable {
+    case controlOptionSpace
+    case controlOptionS
+
+    var title: String {
+        switch self {
+        case .controlOptionSpace: return "⌃⌥Space"
+        case .controlOptionS: return "⌃⌥S"
+        }
+    }
+
+    var keyCode: UInt32 {
+        switch self {
+        case .controlOptionSpace: return UInt32(kVK_Space)
+        case .controlOptionS: return UInt32(kVK_ANSI_S)
+        }
+    }
+
+    var modifiers: UInt32 { UInt32(controlKey | optionKey) }
+}

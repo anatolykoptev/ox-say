@@ -31,6 +31,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Bumped per speak request, so a late answer cannot stop the playback of a
     /// newer one.
     private var speakGeneration = 0
+    /// The speak-selection hotkey and its menu state; mirrors the dictation
+    /// key machinery with its own offered combinations.
+    private var speakHotKey: HotKey?
+    private let capture = SelectionCapture()
+    private var speakShortcutItems: [SpeakShortcut: NSMenuItem] = [:]
+    private let speakShortcutKey = "speakShortcut"
+    private let speakKeyInUseKey = "speakKeyInUse"
+    private var speakActive: SpeakShortcut?
+    private var speakRegisterFailFor: SpeakShortcut?
+    /// The "how to speak" hint line; its title follows the registered key.
+    private let speakHint = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let modeKey = "hotkeyMode"
     private let shortcutKey = "shortcut"
     /// The last problem worth telling the user; the menu shows it until the
@@ -71,6 +82,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func choice(_ shortcut: Shortcut) -> ShortcutMenu.Choice {
+        ShortcutMenu.Choice(title: shortcut.title, keyCode: Int(shortcut.keyCode), modifiers: Int(shortcut.modifiers))
+    }
+
+    /// The same plan question for the speak-selection key: which offered
+    /// combination should be registered and what the menu rows show.
+    private func speakShortcutPlan() -> ShortcutMenu.Plan {
+        let defaults = UserDefaults.standard
+        return ShortcutMenu.plan(
+            stored: defaults.string(forKey: speakShortcutKey).flatMap(SpeakShortcut.init(rawValue:)).map(speakChoice),
+            active: speakActive.map(speakChoice),
+            lastSession: defaults.string(forKey: speakKeyInUseKey).flatMap(SpeakShortcut.init(rawValue:)).map(speakChoice),
+            choices: SpeakShortcut.allCases.map(speakChoice),
+            system: Shortcut.systemShortcuts())
+    }
+
+    private func speakChoice(_ shortcut: SpeakShortcut) -> ShortcutMenu.Choice {
         ShortcutMenu.Choice(title: shortcut.title, keyCode: Int(shortcut.keyCode), modifiers: Int(shortcut.modifiers))
     }
 
@@ -122,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         buildMenu()
         registerShortcut(shortcutPlan())
+        registerSpeakShortcut(speakShortcutPlan())
         show(.idle)
 
         // Ask for both permissions up front, so the first dictation does not stall
@@ -175,6 +203,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Registers the speak-selection key from the plan. The keypress fires
+    /// once per press — there is no hold state to protect, so the plan is
+    /// applied at any time, unlike the dictation key.
+    private func registerSpeakShortcut(_ plan: ShortcutMenu.Plan) {
+        speakHotKey = nil
+        speakActive = nil
+        applySpeakShortcutItems(plan.items)
+        guard let index = plan.key else {
+            notice("Every speak key is a macOS shortcut on this Mac. Free one in System Settings → Keyboard → Keyboard Shortcuts.")
+            return
+        }
+        let key = SpeakShortcut.allCases[index]
+        speakHotKey = HotKey(keyCode: key.keyCode, modifiers: key.modifiers)
+        speakHotKey?.onDown = { [weak self] in self?.speakSelection() }
+        guard speakHotKey != nil else {
+            if speakRegisterFailFor != key {
+                speakRegisterFailFor = key
+                notice("\(key.title) is taken by another app, so speaking has no hotkey. Pick another one in this menu.")
+            }
+            return
+        }
+        speakRegisterFailFor = nil
+        speakActive = key
+        let defaults = UserDefaults.standard
+        defaults.set(key.rawValue, forKey: speakKeyInUseKey)
+        if let from = plan.movedFrom {
+            let taken = SpeakShortcut.allCases[from]
+            notice("\(taken.title) is a macOS shortcut on this Mac, so speaking uses \(key.title).")
+        }
+    }
+
+    private func applySpeakShortcutItems(_ rows: [ShortcutMenu.Item]) {
+        for (index, shortcut) in SpeakShortcut.allCases.enumerated() {
+            guard let item = speakShortcutItems[shortcut] else { continue }
+            let row = rows[index]
+            item.state = row.isOn ? .on : .off
+            item.isEnabled = row.isEnabled
+            item.title = row.title
+        }
+    }
+
     /// The menu items follow the live system shortcuts: a key macOS freed is
     /// clickable again, a key it took greys out — whether or not the
     /// registered key changes.
@@ -196,12 +265,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let plan = shortcutPlan()
         let open = ShortcutMenu.onOpen(plan, registered: active.flatMap { Shortcut.allCases.firstIndex(of: $0) },
                                        idle: controller.state == .idle)
-        guard open.register else {
+        if open.register {
+            registerShortcut(plan)
+            show(.idle)
+        } else {
             applyShortcutItems(open.items)
-            return
         }
-        registerShortcut(plan)
-        show(.idle)
+        let speakPlan = speakShortcutPlan()
+        let speakOpen = ShortcutMenu.onOpen(speakPlan, registered: speakActive.flatMap { SpeakShortcut.allCases.firstIndex(of: $0) },
+                                            idle: true)
+        if speakOpen.register {
+            registerSpeakShortcut(speakPlan)
+        } else {
+            applySpeakShortcutItems(speakOpen.items)
+        }
+        speakHint.title = speakActive.map { "Speak: \($0.title) on a selection, or right-click → Services" }
+            ?? "Speak: select text, then right-click → Services"
     }
 
     private func buildMenu() {
@@ -231,9 +310,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let voiceItem = NSMenuItem(title: "Speak voice", action: nil, keyEquivalent: "")
         voiceItem.submenu = voiceSubmenu
         menu.addItem(voiceItem)
-        let hint = NSMenuItem(title: "Speak: select text, then right-click → Services", action: nil, keyEquivalent: "")
-        hint.isEnabled = false
-        menu.addItem(hint)
+        let speakKeys = NSMenu()
+        speakKeys.autoenablesItems = false // or AppKit re-enables the greyed-out keys
+        for choice in SpeakShortcut.allCases {
+            let item = NSMenuItem(title: choice.title, action: #selector(pickSpeakShortcut(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = choice.rawValue
+            speakKeys.addItem(item)
+            speakShortcutItems[choice] = item
+        }
+        let speakKeyMenu = NSMenuItem(title: "Speak key", action: nil, keyEquivalent: "")
+        speakKeyMenu.submenu = speakKeys
+        menu.addItem(speakKeyMenu)
+        speakHint.isEnabled = false
+        menu.addItem(speakHint)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Microphone settings…", action: #selector(openMicrophoneSettings), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Accessibility settings…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
@@ -383,6 +473,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.knownVoices = voices ?? self.knownVoices
             self.rebuildVoiceMenu()
         }
+    }
+
+    /// The speak-selection hotkey press: read whatever is selected in the
+    /// frontmost app and speak it, or say on the pill why nothing came.
+    private func speakSelection() {
+        let (text, problem) = capture.capture()
+        if let text {
+            speak(text)
+        } else {
+            overlay.showMessage(problem ?? "Nothing selected to speak.")
+        }
+    }
+
+    @objc private func pickSpeakShortcut(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, SpeakShortcut(rawValue: raw) != nil else { return }
+        UserDefaults.standard.set(raw, forKey: speakShortcutKey)
+        registerSpeakShortcut(speakShortcutPlan())
     }
 
     @objc private func pickVoice(_ sender: NSMenuItem) {
