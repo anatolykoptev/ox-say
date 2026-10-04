@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.13](https://github.com/anatolykoptev/ox-say/compare/v0.1.12...v0.1.13) (2026-10-04)
+
+
+### Added
+
+* OX_SAY_VOICE pins the default speech voice ([#94](https://github.com/anatolykoptev/ox-say/issues/94)) ([d10f65c](https://github.com/anatolykoptev/ox-say/commit/d10f65c5e7eaf1a3df82f13b3ebe39ec31204783))
+
 ## [0.1.12](https://github.com/anatolykoptev/ox-say/compare/v0.1.11...v0.1.12) (2026-10-04)
 
 
