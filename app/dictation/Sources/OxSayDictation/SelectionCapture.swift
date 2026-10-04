@@ -27,8 +27,11 @@ final class SelectionCapture {
         while board.changeCount == before && Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
         }
-        defer { board.restore(snapshot) }
-        guard let text = board.readText(),
+        // Restore only our own copy: nothing copied → nothing to put back;
+        // a newer clipboard is the user's and restoring would destroy it.
+        let afterCopy = board.changeCount
+        defer { if afterCopy != before && board.changeCount == afterCopy { board.restore(snapshot) } }
+        guard afterCopy != before, let text = board.readText(),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return (nil, "Nothing selected to speak.")
         }
