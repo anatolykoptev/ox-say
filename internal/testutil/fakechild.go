@@ -503,17 +503,19 @@ func runFakeChild() int {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("POST /v1/audio/speech", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Input string `json:"input"`
-			Voice string `json:"voice"`
-		}
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		if body.Voice != "" {
+		if dir != "" {
+			raw, _ := json.Marshal(body)
+			_ = os.WriteFile(filepath.Join(dir, "speech-last.json"), raw, 0o644)
+		}
+		voice, _ := body["voice"].(string)
+		if voice != "" {
 			mu.Lock()
-			_, ok := registry[body.Voice]
+			_, ok := registry[voice]
 			mu.Unlock()
 			if !ok {
 				http.Error(w, "unknown voice", http.StatusBadRequest)

@@ -437,15 +437,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Rebuilds the Speak voice submenu: the engine default plus the voices the
-    /// daemon knows.
+    /// Rebuilds the Speak voice submenu: the daemon's configured default,
+    /// the engine's random voice, then the cloned voices the daemon knows.
     private func rebuildVoiceMenu() {
         voiceSubmenu.removeAllItems()
         let current = UserDefaults.standard.string(forKey: speakVoiceKey)
-        let fallback = NSMenuItem(title: "Engine default", action: #selector(pickVoice(_:)), keyEquivalent: "")
+        let fallback = NSMenuItem(title: "Default voice", action: #selector(pickVoice(_:)), keyEquivalent: "")
         fallback.target = self
         fallback.state = current == nil ? .on : .off
         voiceSubmenu.addItem(fallback)
+        let random = NSMenuItem(title: "Random each time", action: #selector(pickVoice(_:)), keyEquivalent: "")
+        random.target = self
+        random.representedObject = "default"
+        random.state = current == "default" ? .on : .off
+        voiceSubmenu.addItem(random)
+        voiceSubmenu.addItem(.separator())
         for name in knownVoices ?? [] {
             let item = NSMenuItem(title: name, action: #selector(pickVoice(_:)), keyEquivalent: "")
             item.target = self

@@ -438,6 +438,102 @@ func TestSpeakHappyPath(t *testing.T) {
 	}
 }
 
+// OX_SAY_VOICE fills the voice field when a request leaves it unset; an
+// explicit name wins; "default" asks for the engine's random voice and is
+// stripped before the request reaches it. Asserted on the stamp the fake
+// child writes per speech request — the wire body, not the intent.
+// Mutation: drop the applyVoiceDefault call in SynthesizeWAV or
+// handleSpeech -> RED (the stamp shows no injected voice).
+func TestSpeakVoiceDefault(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemonSTT(t, dir, func(c *config.Config) { c.Voice = "vtest" }, nil, nil)
+
+	lastVoice := func() (string, bool) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, "speech-last.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(data, &body); err != nil {
+			t.Fatal(err)
+		}
+		v, ok := body["voice"].(string)
+		return v, ok
+	}
+
+	g := d.Sup.Acquire()
+	if _, err := d.Sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	src := testutil.WriteTinyWAV(t, dir, "clip.wav")
+	if _, registered, err := d.AddVoice(context.Background(), "vtest", src, "ref"); err != nil || !registered {
+		t.Fatalf("register vtest: registered=%v err=%v", registered, err)
+	}
+	g.Release()
+
+	res, err := d.Speak(context.Background(), SpeakInput{Text: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Voice != "vtest" {
+		t.Fatalf("reported voice = %q, want vtest", res.Voice)
+	}
+	if v, ok := lastVoice(); !ok || v != "vtest" {
+		t.Fatalf("unset voice reached the engine as %q (present=%v), want vtest", v, ok)
+	}
+
+	// An explicit name wins — even one the engine does not know: the 400
+	// proves "other" travelled upstream, not the configured default.
+	if _, err := d.Speak(context.Background(), SpeakInput{Text: "hi explicit", Voice: "other"}); err == nil {
+		t.Fatal("explicit unknown voice should surface the engine's error")
+	}
+	if v, _ := lastVoice(); v != "other" {
+		t.Fatalf("explicit voice reached the engine as %q, want other", v)
+	}
+
+	// "default" is the engine's random voice: the field must not reach it.
+	if _, err := d.Speak(context.Background(), SpeakInput{Text: "hi default", Voice: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := lastVoice(); ok {
+		t.Fatalf(`"default" reached the engine as %q — want the field stripped`, v)
+	}
+
+	// The /v1/audio/speech route resolves voice the same way.
+	mux := http.NewServeMux()
+	d.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/v1/audio/speech", "application/json",
+		strings.NewReader(`{"input":"hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("route speak: %s", resp.Status)
+	}
+	if v, ok := lastVoice(); !ok || v != "vtest" {
+		t.Fatalf("route unset voice reached the engine as %q (present=%v), want vtest", v, ok)
+	}
+
+	resp, err = http.Post(srv.URL+"/v1/audio/speech", "application/json",
+		strings.NewReader(`{"input":"hi","voice":"default"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf(`route "default" speak: %s`, resp.Status)
+	}
+	if v, ok := lastVoice(); ok {
+		t.Fatalf(`route "default" reached the engine as %q — want the field stripped`, v)
+	}
+}
+
 // T9 — client disconnect cancels the upstream request: the fake child blocks
 // in its speech handler until the request context ends; after the client
 // goes away the child must observe cancellation within 1s.

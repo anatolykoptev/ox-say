@@ -263,9 +263,14 @@ daemon synthesizes, the pill reads "Speaking…"; the first use after an engine
 stop waits out a cold start of about 15 s. Once playback starts the pill turns
 into playback controls — pause/resume, the position counter and stop.
 
-The **Speak voice** submenu picks the voice: the engine's default or any cloned
-voice registered on the daemon (`ox-say voice list`). A new request while one
-is in flight supersedes it; a new playback stops the previous one.
+The **Speak voice** submenu picks the voice: **Default voice** follows the
+daemon's `OX_SAY_VOICE` (a cloned voice name; unset means the engine picks a
+random voice per request), **Random each time** always rolls a new engine
+voice, and any cloned voice registered on the daemon (`ox-say voice list`)
+can be picked by name. The same resolution applies to `ox-say say` and the
+MCP `speak` tool — `-v default` or `"voice": "default"` asks for a random
+voice explicitly. A new request while one is in flight supersedes it; a new
+playback stops the previous one.
 
 The service registers when LaunchServices scans the app, so it appears after
 the first launch of an updated build. Apps that do not hand their selection to

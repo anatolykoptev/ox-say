@@ -337,6 +337,22 @@ func (d *Daemon) applyLanguageDefault(body map[string]any) {
 	}
 }
 
+// applyVoiceDefault resolves the request's voice field: an explicit name
+// wins; "default" selects the engine's built-in random voice and is
+// stripped before the request reaches it; an unset field falls back to
+// OX_SAY_VOICE when configured.
+func (d *Daemon) applyVoiceDefault(body map[string]any) {
+	if v, ok := body["voice"].(string); ok {
+		if v == "default" {
+			delete(body, "voice")
+		}
+		return
+	}
+	if d.Cfg.Voice != "" {
+		body["voice"] = d.Cfg.Voice
+	}
+}
+
 // statusSummary is the /status response.
 type statusSummary struct {
 	Engine engine.Status `json:"engine"`
@@ -377,6 +393,7 @@ func (d *Daemon) Status() statusSummary {
 			"idle_stop_s":       d.Cfg.IdleStop.Seconds(),
 			"startup_timeout_s": d.Cfg.StartupTimeout.Seconds(),
 			"lang":              d.Cfg.Lang,
+			"voice":             d.Cfg.Voice,
 			"home":              d.Cfg.Home,
 			"stt_server":        d.Cfg.STTServer,
 			"stt_port":          d.Cfg.STTPort,

@@ -81,6 +81,7 @@ func (d *Daemon) SynthesizeWAV(ctx context.Context, params map[string]any) ([]by
 	body := maps(params)
 	body["response_format"] = "wav"
 	d.applyLanguageDefault(body)
+	d.applyVoiceDefault(body)
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -176,6 +177,9 @@ func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error)
 	}
 
 	voice := in.Voice
+	if voice == "" {
+		voice = d.Cfg.Voice
+	}
 	if voice == "" {
 		voice = "default"
 	}

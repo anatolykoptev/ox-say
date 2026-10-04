@@ -74,6 +74,7 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.applyLanguageDefault(body)
+	d.applyVoiceDefault(body)
 
 	base, g, err := d.engineBase(r.Context())
 	if err != nil {
