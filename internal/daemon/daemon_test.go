@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -531,6 +532,86 @@ func TestSpeakVoiceDefault(t *testing.T) {
 	}
 	if v, ok := lastVoice(); ok {
 		t.Fatalf(`route "default" reached the engine as %q — want the field stripped`, v)
+	}
+}
+
+// OX_SAY_VOICE_RU/EN override the global default per language: a recognized
+// language field wins, otherwise the input's script decides (Cyrillic→ru,
+// Latin→en); an unrecognized language still falls to the script. Explicit
+// voices and "default" behave as without per-language config.
+// Mutation: drop the configuredVoice call in applyVoiceDefault -> RED (the
+// stamp shows the global voice or none for every case).
+func TestSpeakVoicePerLanguage(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemonSTT(t, dir, func(c *config.Config) {
+		c.Voice = "vglobal"
+		c.VoiceRU = "vr"
+		c.VoiceEN = "ve"
+	}, nil, nil)
+
+	lastVoice := func() (string, bool) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, "speech-last.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(data, &body); err != nil {
+			t.Fatal(err)
+		}
+		v, ok := body["voice"].(string)
+		return v, ok
+	}
+
+	g := d.Sup.Acquire()
+	if _, err := d.Sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	src := testutil.WriteTinyWAV(t, dir, "clip.wav")
+	for _, name := range []string{"vglobal", "vr", "ve"} {
+		if _, registered, err := d.AddVoice(context.Background(), name, src, "ref"); err != nil || !registered {
+			t.Fatalf("register %s: registered=%v err=%v", name, registered, err)
+		}
+	}
+	g.Release()
+
+	cases := []struct {
+		name string
+		in   SpeakInput
+		want string // "" means the voice field must be absent upstream
+	}{
+		{"cyrillic picks ru", SpeakInput{Text: "Привет, как дела?"}, "vr"},
+		{"latin picks en", SpeakInput{Text: "Hello there."}, "ve"},
+		{"explicit Russian field wins over latin", SpeakInput{Text: "Hello", Language: "Russian"}, "vr"},
+		{"explicit English field wins over cyrillic", SpeakInput{Text: "Привет", Language: "en"}, "ve"},
+		{"unrecognized language falls to script", SpeakInput{Text: "Guten Tag", Language: "German"}, "ve"},
+		{"no letters falls to global", SpeakInput{Text: "123 456"}, "vglobal"},
+		{"explicit voice wins", SpeakInput{Text: "Hello", Voice: "vr"}, "vr"},
+		{"default stays random", SpeakInput{Text: "Привет", Voice: "default"}, ""},
+	}
+	for i, tc := range cases {
+		res, err := d.Speak(context.Background(), SpeakInput{
+			Text:     fmt.Sprintf("%d %s", i, tc.in.Text),
+			Voice:    tc.in.Voice,
+			Language: tc.in.Language,
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		v, ok := lastVoice()
+		if tc.want == "" {
+			if ok {
+				t.Fatalf("%s: voice %q reached the engine — want the field stripped", tc.name, v)
+			}
+			continue
+		}
+		if !ok || v != tc.want {
+			t.Fatalf("%s: reached the engine as %q (present=%v), want %q", tc.name, v, ok, tc.want)
+		}
+		if res.Voice != tc.want {
+			t.Fatalf("%s: reported voice = %q, want %q", tc.name, res.Voice, tc.want)
+		}
 	}
 }
 

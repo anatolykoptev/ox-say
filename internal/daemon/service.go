@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
@@ -340,16 +342,62 @@ func (d *Daemon) applyLanguageDefault(body map[string]any) {
 // applyVoiceDefault resolves the request's voice field: an explicit name
 // wins; "default" selects the engine's built-in random voice and is
 // stripped before the request reaches it; an unset field falls back to
-// OX_SAY_VOICE when configured.
+// the configured voice for the request's language, then OX_SAY_VOICE.
 func (d *Daemon) applyVoiceDefault(body map[string]any) {
 	v, _ := body["voice"].(string)
 	if v == "default" {
 		delete(body, "voice")
 		return
 	}
-	if v == "" && d.Cfg.Voice != "" {
-		body["voice"] = d.Cfg.Voice
+	if v == "" {
+		if cv := d.configuredVoice(langHint(body)); cv != "" {
+			body["voice"] = cv
+		}
 	}
+}
+
+// configuredVoice picks the configured voice for a language code: the
+// per-language OX_SAY_VOICE_<LANG> wins, then the global OX_SAY_VOICE.
+func (d *Daemon) configuredVoice(lang string) string {
+	switch lang {
+	case "ru":
+		if d.Cfg.VoiceRU != "" {
+			return d.Cfg.VoiceRU
+		}
+	case "en":
+		if d.Cfg.VoiceEN != "" {
+			return d.Cfg.VoiceEN
+		}
+	}
+	return d.Cfg.Voice
+}
+
+// langHint resolves a request's language to a short code. A recognized
+// language field wins; otherwise the input's script decides — Cyrillic is
+// Russian, Latin letters are English. Anything else returns "".
+func langHint(body map[string]any) string {
+	if l, ok := body["language"].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(l)) {
+		case "ru", "rus", "russian", "русский":
+			return "ru"
+		case "en", "eng", "english":
+			return "en"
+		}
+	}
+	input, _ := body["input"].(string)
+	latin := false
+	for _, r := range input {
+		switch {
+		case unicode.Is(unicode.Cyrillic, r):
+			return "ru"
+		case unicode.Is(unicode.Latin, r):
+			latin = true
+		}
+	}
+	if latin {
+		return "en"
+	}
+	return ""
 }
 
 // statusSummary is the /status response.
@@ -393,6 +441,8 @@ func (d *Daemon) Status() statusSummary {
 			"startup_timeout_s": d.Cfg.StartupTimeout.Seconds(),
 			"lang":              d.Cfg.Lang,
 			"voice":             d.Cfg.Voice,
+			"voice_ru":          d.Cfg.VoiceRU,
+			"voice_en":          d.Cfg.VoiceEN,
 			"home":              d.Cfg.Home,
 			"stt_server":        d.Cfg.STTServer,
 			"stt_port":          d.Cfg.STTPort,

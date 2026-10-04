@@ -264,13 +264,20 @@ stop waits out a cold start of about 15 s. Once playback starts the pill turns
 into playback controls — pause/resume, the position counter and stop.
 
 The **Speak voice** submenu picks the voice: **Default voice** follows the
-daemon's `OX_SAY_VOICE` (a cloned voice name; unset means the engine picks a
-random voice per request), **Random each time** always rolls a new engine
+daemon's configured default, **Random each time** always rolls a new engine
 voice, and any cloned voice registered on the daemon (`ox-say voice list`)
-can be picked by name. The same resolution applies to `ox-say say` and the
-MCP `speak` tool — `-v default` or `"voice": "default"` asks for a random
-voice explicitly. A new request while one is in flight supersedes it; a new
+can be picked by name. The configured default resolves per language:
+`OX_SAY_VOICE_RU` for Russian, `OX_SAY_VOICE_EN` for English, then
+`OX_SAY_VOICE` for everything else — the request's `language` field wins,
+otherwise the input's script decides (Cyrillic is Russian, Latin is
+English). The same resolution applies to `ox-say say` and the MCP `speak`
+tool — `-v default` or `"voice": "default"` asks for a random voice
+explicitly. A new request while one is in flight supersedes it; a new
 playback stops the previous one.
+
+**Check for Updates…** compares the installed version with the latest
+GitHub release; a newer tag offers a one-click install of the signed
+package (the same `get.sh` as the manual install) and relaunches the app.
 
 The service registers when LaunchServices scans the app, so it appears after
 the first launch of an updated build. Apps that do not hand their selection to
