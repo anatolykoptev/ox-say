@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.14](https://github.com/anatolykoptev/ox-say/compare/v0.1.13...v0.1.14) (2026-10-04)
+
+
+### Added
+
+* per-language default voices and an in-app update check ([#96](https://github.com/anatolykoptev/ox-say/issues/96)) ([c0e35d7](https://github.com/anatolykoptev/ox-say/commit/c0e35d7491f7f933d7cb738cbb3d9438d34ea3f4))
+
 ## [0.1.13](https://github.com/anatolykoptev/ox-say/compare/v0.1.12...v0.1.13) (2026-10-04)
 
 
