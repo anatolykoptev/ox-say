@@ -342,13 +342,12 @@ func (d *Daemon) applyLanguageDefault(body map[string]any) {
 // stripped before the request reaches it; an unset field falls back to
 // OX_SAY_VOICE when configured.
 func (d *Daemon) applyVoiceDefault(body map[string]any) {
-	if v, ok := body["voice"].(string); ok {
-		if v == "default" {
-			delete(body, "voice")
-		}
+	v, _ := body["voice"].(string)
+	if v == "default" {
+		delete(body, "voice")
 		return
 	}
-	if d.Cfg.Voice != "" {
+	if v == "" && d.Cfg.Voice != "" {
 		body["voice"] = d.Cfg.Voice
 	}
 }
