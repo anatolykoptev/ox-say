@@ -182,6 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// follow it, and the registered key moves only when the plan says so.
     func menuWillOpen(_ menu: NSMenu) {
         rebuildVoiceMenu()
+        refreshVoices()
         let plan = shortcutPlan()
         let open = ShortcutMenu.onOpen(plan, registered: active.flatMap { Shortcut.allCases.firstIndex(of: $0) },
                                        idle: controller.state == .idle)
@@ -330,13 +331,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 guard let self, self.speakGeneration == generation else { return }
                 self.overlay.finish()
-                self.notice(error.localizedDescription)
+                self.notice(String(describing: error))
             }
         }
     }
 
     /// Rebuilds the Speak voice submenu: the engine default plus the voices the
-    /// daemon knows, fetched once and refreshed on every menu open.
+    /// daemon knows.
     private func rebuildVoiceMenu() {
         voiceSubmenu.removeAllItems()
         let current = UserDefaults.standard.string(forKey: speakVoiceKey)
@@ -356,14 +357,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             loading.isEnabled = false
             voiceSubmenu.addItem(loading)
         }
-        guard knownVoices == nil, !voicesLoading else { return }
+    }
+
+    /// Refreshes the daemon's voice list on every menu open; a failed fetch
+    /// keeps the last good list and retries on the next open.
+    private func refreshVoices() {
+        guard !voicesLoading else { return }
         voicesLoading = true
         let client = speechClient!
         Task { @MainActor [weak self] in
             let voices = try? await client.voices()
             guard let self else { return }
             self.voicesLoading = false
-            self.knownVoices = voices ?? []
+            self.knownVoices = voices ?? self.knownVoices
             self.rebuildVoiceMenu()
         }
     }
