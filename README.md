@@ -245,6 +245,23 @@ than decoding the whole recording, and punctuation can break at a join ([#88](ht
 dictation shorter than 12 s with no long pause is one segment, so it is not
 affected.
 
+### Speak selection
+
+The same app registers a macOS service, so selected text can be spoken in any
+app: select text, open the right-click menu (or the app's menu) → Services →
+**Speak Selection** («Озвучить выделенное»). The selection goes to the daemon's
+`/v1/audio/speech`, and the synthesized wav plays through afplay — nothing
+leaves the Mac. While the daemon synthesizes, the pill reads "Speaking…"; the
+first use after an engine stop waits out a cold start of about 15 s.
+
+The **Speak voice** submenu picks the voice: the engine's default or any cloned
+voice registered on the daemon (`ox-say voice list`). A new request while one
+is in flight supersedes it; a new playback stops the previous one.
+
+The service registers when LaunchServices scans the app, so it appears after
+the first launch of an updated build. Apps that do not hand their selection to
+Services (some Electron apps) will not show the item.
+
 ### Diagnosing dictation
 
 Three logs describe a dictation without recording what was said:

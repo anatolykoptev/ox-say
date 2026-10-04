@@ -97,6 +97,22 @@ cat > "$app/Contents/Info.plist" <<EOF
     <!-- The daemon speaks plain http on 127.0.0.1; this allows only local hosts. -->
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsLocalNetworking</key><true/></dict>
+    <!-- "Speak Selection" in right-click → Services and app → Services: the
+         selection arrives on a pasteboard to SpeakServiceProvider. -->
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSPortName</key><string>OxSayDictation</string>
+            <key>NSMessage</key><string>speakSelection</string>
+            <key>NSSendTypes</key>
+            <array><string>NSStringPboardType</string></array>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key><string>Speak Selection</string>
+                <key>ru</key><string>Озвучить выделенное</string>
+            </dict>
+        </dict>
+    </array>
     <key>NSMicrophoneUsageDescription</key>
     <string>OxSay Dictation records your voice while you hold the dictation key and sends it to the ox-say daemon on this Mac, which turns it into text. Nothing leaves your Mac.</string>
 </dict>

@@ -20,6 +20,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let recorder = MicRecorder()
     private let output = PasteOutput()
     private let overlay = Overlay()
+    private let speakService = SpeakServiceProvider()
+    private let player = AudioPlayer()
+    private var speechClient: SpeechClient!
+    private let voiceSubmenu = NSMenu()
+    private let speakVoiceKey = "speakVoice"
+    /// Voices fetched from the daemon; nil until the first answer arrives.
+    private var knownVoices: [String]?
+    private var voicesLoading = false
+    /// Bumped per speak request, so a late answer cannot stop the playback of a
+    /// newer one.
+    private var speakGeneration = 0
     private let modeKey = "hotkeyMode"
     private let shortcutKey = "shortcut"
     /// The last problem worth telling the user; the menu shows it until the
@@ -67,6 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let baseURL = DaemonAddress.url(agentPlist: try? Data(contentsOf: DaemonAddress.agentPlist))
         let client = TranscriptionClient(baseURL: baseURL)
         self.client = client
+        speechClient = SpeechClient(baseURL: baseURL)
+        speakService.onSpeak = { [weak self] text in self?.speak(text) }
+        NSApp.servicesProvider = speakService
         let streamer = StreamingTranscriber(baseURL: baseURL)
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode, transcriber: streamer)
@@ -167,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// System Settings may have freed or taken a key since: the items always
     /// follow it, and the registered key moves only when the plan says so.
     func menuWillOpen(_ menu: NSMenu) {
+        rebuildVoiceMenu()
         let plan = shortcutPlan()
         let open = ShortcutMenu.onOpen(plan, registered: active.flatMap { Shortcut.allCases.firstIndex(of: $0) },
                                        idle: controller.state == .idle)
@@ -201,6 +216,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginItem.target = self
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(loginItem)
+        menu.addItem(.separator())
+        let voiceItem = NSMenuItem(title: "Speak voice", action: nil, keyEquivalent: "")
+        voiceItem.submenu = voiceSubmenu
+        menu.addItem(voiceItem)
+        let hint = NSMenuItem(title: "Speak: select text, then right-click → Services", action: nil, keyEquivalent: "")
+        hint.isEnabled = false
+        menu.addItem(hint)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Microphone settings…", action: #selector(openMicrophoneSettings), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Accessibility settings…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
@@ -286,6 +308,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             overlay.setWorkingText("Transcribing… \(seconds)s")
         }
+    }
+
+    /// Synthesizes the text through the daemon and plays it. The pill says
+    /// "Speaking…" for the wait; playback then runs in the background. A newer
+    /// request supersedes an in-flight one, so a slow answer cannot stop what
+    /// already plays.
+    private func speak(_ text: String) {
+        speakGeneration += 1
+        let generation = speakGeneration
+        overlay.showWorking()
+        overlay.setWorkingText("Speaking…")
+        let client = speechClient!
+        let voice = UserDefaults.standard.string(forKey: speakVoiceKey)
+        Task { @MainActor [weak self] in
+            do {
+                let wav = try await client.speak(text, voice: voice)
+                guard let self, self.speakGeneration == generation else { return }
+                try self.player.play(wav: wav)
+                self.overlay.finish()
+            } catch {
+                guard let self, self.speakGeneration == generation else { return }
+                self.overlay.finish()
+                self.notice(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Rebuilds the Speak voice submenu: the engine default plus the voices the
+    /// daemon knows, fetched once and refreshed on every menu open.
+    private func rebuildVoiceMenu() {
+        voiceSubmenu.removeAllItems()
+        let current = UserDefaults.standard.string(forKey: speakVoiceKey)
+        let fallback = NSMenuItem(title: "Engine default", action: #selector(pickVoice(_:)), keyEquivalent: "")
+        fallback.target = self
+        fallback.state = current == nil ? .on : .off
+        voiceSubmenu.addItem(fallback)
+        for name in knownVoices ?? [] {
+            let item = NSMenuItem(title: name, action: #selector(pickVoice(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = name
+            item.state = name == current ? .on : .off
+            voiceSubmenu.addItem(item)
+        }
+        if knownVoices == nil {
+            let loading = NSMenuItem(title: "Loading…", action: nil, keyEquivalent: "")
+            loading.isEnabled = false
+            voiceSubmenu.addItem(loading)
+        }
+        guard knownVoices == nil, !voicesLoading else { return }
+        voicesLoading = true
+        let client = speechClient!
+        Task { @MainActor [weak self] in
+            let voices = try? await client.voices()
+            guard let self else { return }
+            self.voicesLoading = false
+            self.knownVoices = voices ?? []
+            self.rebuildVoiceMenu()
+        }
+    }
+
+    @objc private func pickVoice(_ sender: NSMenuItem) {
+        if let name = sender.representedObject as? String {
+            UserDefaults.standard.set(name, forKey: speakVoiceKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: speakVoiceKey)
+        }
+        rebuildVoiceMenu()
     }
 
     private func notice(_ message: String, kind: DictationNotice.Kind = .unrelated) {
