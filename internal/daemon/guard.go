@@ -96,11 +96,13 @@ func jsonBody(contentType string) bool {
 func (d *Daemon) ServerConfig(version string) mcpserver.Config {
 	transcribeTimeout := 2*stt.WorstTimeout(d.Cfg.STTMaxAudio, d.Cfg.STTTimeout) + 2*time.Minute
 	return mcpserver.Config{
-		Name:    "ox-say",
-		Version: version,
-		Host:    d.Cfg.Host,
-		Port:    d.Cfg.Port,
-		Logger:  d.log,
+		Name:           "ox-say",
+		Version:        version,
+		Host:           d.Cfg.Host,
+		Port:           d.Cfg.Port,
+		SessionTimeout: 10 * time.Minute,
+		Stateless:      new(bool),
+		Logger:         d.log,
 		// speak blocks on a cold engine start (Metal shader compile on first
 		// ever run) plus synthesis — give it the startup window plus slack.
 		// transcribe waits on the STT semaphore behind any in-flight run,
