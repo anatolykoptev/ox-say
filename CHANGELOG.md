@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.16](https://github.com/anatolykoptev/ox-say/compare/v0.1.15...v0.1.16) (2026-10-08)
+
+
+### Fixed
+
+* **mcp:** enable stateful sessions for standalone GET stream ([#100](https://github.com/anatolykoptev/ox-say/issues/100)) ([e2d67a7](https://github.com/anatolykoptev/ox-say/commit/e2d67a71e3934f7aac0be71a943b25eeace5c322))
+
 ## [0.1.15](https://github.com/anatolykoptev/ox-say/compare/v0.1.14...v0.1.15) (2026-10-04)
 
 
