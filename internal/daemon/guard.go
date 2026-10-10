@@ -96,13 +96,15 @@ func jsonBody(contentType string) bool {
 func (d *Daemon) ServerConfig(version string) mcpserver.Config {
 	transcribeTimeout := 2*stt.WorstTimeout(d.Cfg.STTMaxAudio, d.Cfg.STTTimeout) + 2*time.Minute
 	return mcpserver.Config{
-		Name:           "ox-say",
-		Version:        version,
-		Host:           d.Cfg.Host,
-		Port:           d.Cfg.Port,
-		SessionTimeout: 10 * time.Minute,
-		Stateless:      new(bool),
-		Logger:         d.log,
+		Name:    "ox-say",
+		Version: version,
+		Host:    d.Cfg.Host,
+		Port:    d.Cfg.Port,
+		// Stateless on purpose: GET /mcp answers 405 + Allow: POST, which rmcp
+		// reads as "no standalone stream". The 2026-10-08 stateful flip assumed
+		// that 405 caused rmcp's SSE error loop; the loop rate never changed.
+		// Stateful only added session expiry and lost MCP 2026-07-28.
+		Logger: d.log,
 		// speak blocks on a cold engine start (Metal shader compile on first
 		// ever run) plus synthesis — give it the startup window plus slack.
 		// transcribe waits on the STT semaphore behind any in-flight run,
