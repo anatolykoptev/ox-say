@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.17](https://github.com/anatolykoptev/ox-say/compare/v0.1.16...v0.1.17) (2026-10-10)
+
+
+### Fixed
+
+* **mcp:** back to stateless + go-mcpserver v0.21.0 (MCP 2026-07-28) ([#102](https://github.com/anatolykoptev/ox-say/issues/102)) ([4be6f08](https://github.com/anatolykoptev/ox-say/commit/4be6f08b0f244acfe59de0a2c94ff601a6886bac))
+
 ## [0.1.16](https://github.com/anatolykoptev/ox-say/compare/v0.1.15...v0.1.16) (2026-10-08)
 
 
