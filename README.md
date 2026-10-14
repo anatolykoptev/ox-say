@@ -1,6 +1,6 @@
 # ox-say
 
-Local speech for **Intel Macs**, running on their AMD GPU:
+Local speech for **Macs** — natively on Apple Silicon's GPU, and on Intel Macs' AMD GPU:
 - text-to-speech with voice cloning;
 - speech-to-text with word timestamps;
 - dictation: hold ⌃Space in any app, speak, and the text is typed where the
@@ -45,7 +45,7 @@ It needs `ffmpeg` (`brew install ffmpeg`) and never uses `sudo`. To build from s
 
 Apple Silicon numbers: [docs/performance.md](docs/performance.md).
 
-## Why Intel Macs
+## Intel Macs and Apple Silicon
 
 The modern local speech stacks have left Intel Macs behind:
 - PyTorch stopped publishing macOS x86_64 wheels after 2.2.
@@ -58,15 +58,24 @@ ox-say carries the fixes (`engine/patches/ggml`, see [engine/README.md](engine/R
 builds static binaries, so a 2019–2020 MacBook Pro with a Radeon Pro 5300M/5500M/5600M runs
 current speech models on its GPU.
 
+On Apple Silicon the same engines build natively for arm64 and run on Metal. The GPU shares the
+Mac's memory, so the TTS engine and speech-to-text run on it side by side, with no lease
+(`OX_SAY_GPU_MEMORY`, see [Usage](#usage)). The ggml patches are carried there too; on unified
+memory they are inert or plain bug fixes ([engine/README.md](engine/README.md#apple-silicon)).
+Measurements: [docs/performance.md](docs/performance.md).
+
 ox-say itself is Apache-2.0, and the default models are Apache-2.0 and CC-BY-4.0 (see
 [Licenses](#licenses)).
 
 ## Status
 
 - Engines: pinned upstream plus patches, static `tts-server`, `ox-stt` and `ox-align`, verified on
-  a Radeon Pro 5500M.
+  a Radeon Pro 5500M and an Apple M5 Pro.
 - Daemon, CLI and MCP server: `cmd/ox-say`.
-- Releases: macOS x86_64 packages built on GitHub's Intel macOS runner (`get.sh`).
+- Releases: one macOS package per architecture, `ox-say-macos-arm64.tar.gz` (built on GitHub's
+  `macos-15` runner) and `ox-say-macos-x86_64.tar.gz` (built on `macos-15-intel`), with one combined
+  `SHA256SUMS`. `get.sh` picks the package for the hardware it runs on; a release cut before the
+  arm64 package existed has no arm64 asset, and `get.sh` then says so.
 
 ## Usage
 
@@ -339,7 +348,7 @@ signed ad hoc. See the header of `app/dictation/build.sh`.
 
 ## Install
 
-Requirements: macOS on x86_64, Xcode command line tools, CMake, Go, ffmpeg
+Requirements: macOS 13 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, Go, ffmpeg
 (`brew install cmake go ffmpeg`).
 
 ```
@@ -373,7 +382,7 @@ voices; `--purge` removes those too. Undo the MCP registration with
 
 ## Build and install the engine
 
-Requirements: macOS on x86_64, Xcode command line tools, CMake, ffmpeg.
+Requirements: macOS 13 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, ffmpeg.
 
 ```
 engine/build.sh                # pinned clone + patches + static Metal build

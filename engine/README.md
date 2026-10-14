@@ -70,7 +70,9 @@ use) gets no Host check, so there a rebinding page is same-origin.
 ## patches/qwentts/0001-fused-qkv-gateup-and-threads-env.patch
 
 - Fuses the Q/K/V and gate/up projections into single matmuls at load time.
-- `QT_N_THREADS` overrides the CPU thread count.
+- `OV_N_THREADS` overrides the CPU thread count (default: half of
+  `std::thread::hardware_concurrency()`). It is not an `OX_SAY_*` variable, so the installers do not
+  carry it into the LaunchAgent; it applies when you run `tts-server` yourself.
 
 ## patches/ggml/0002-metal-mps-mul-mat.patch
 

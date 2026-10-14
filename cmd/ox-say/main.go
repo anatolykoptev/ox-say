@@ -1,4 +1,4 @@
-// ox-say is a local text-to-speech daemon for Intel Macs: `ox-say serve`
+// ox-say is a local text-to-speech daemon for Macs (Apple Silicon and Intel): `ox-say serve`
 // owns the tts-server engine child; `say`, `voice` and `status` are thin
 // clients of the running daemon.
 package main
