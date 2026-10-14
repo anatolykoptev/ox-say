@@ -51,13 +51,24 @@ main() {
         arch=x86_64
     fi
     asset=ox-say-macos-$arch.tar.gz
-    # Refuse before downloading ~3 GB into a machine that cannot run it.
+    # Refuse before downloading ~3 GB into a machine that cannot run it: the
+    # engines weak-import Accelerate's new-LAPACK cblas, which exists only on
+    # macOS 13.3+ — on 13.0-13.2 it resolves to NULL and the first BLAS call
+    # crashes.
     macos=$(sw_vers -productVersion)
-    case ${macos%%.*} in
+    macos_major=${macos%%.*}
+    case $macos_major in
         '' | *[!0-9]*) echo "ox-say: could not determine the macOS version" >&2; exit 1 ;;
     esac
-    if [ "${macos%%.*}" -lt 13 ]; then
-        echo "ox-say needs macOS 13 or later; this is $macos." >&2
+    macos_minor=0
+    case $macos in
+        *.*) macos_minor=${macos#*.}; macos_minor=${macos_minor%%.*} ;;
+    esac
+    case $macos_minor in
+        '' | *[!0-9]*) macos_minor=0 ;;
+    esac
+    if [ "$macos_major" -lt 13 ] || { [ "$macos_major" -eq 13 ] && [ "$macos_minor" -lt 3 ]; }; then
+        echo "ox-say needs macOS 13.3 or later; this is $macos." >&2
         exit 1
     fi
     if [ "$arch" = x86_64 ]; then

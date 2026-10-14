@@ -54,8 +54,8 @@ include_copy() {
 # this build tree. Sets the array cmake_flags (an array, so paths with spaces stay one argument).
 #
 # OX_SAY_DIST=1 builds binaries to hand to other machines. The default, -march/-mcpu=native,
-# targets this CPU; distribution builds use a fixed baseline instead, and macOS 13 is the oldest
-# target.
+# targets this CPU; distribution builds use a fixed baseline instead, and macOS 13.3 is the
+# oldest target: ggml-blas calls Accelerate's new-LAPACK cblas, which exists only since 13.3.
 #   x86_64: every Intel Mac since 2013 (Haswell) has AVX2/FMA/F16C/BMI2. AVX-512 stays off because
 #           most Intel MacBooks have none.
 #   arm64:  the Apple M1 (dotprod, fp16; no i8mm, BF16 or SME), pinned with -mcpu=apple-m1 on the
@@ -79,7 +79,7 @@ set_cmake_flags() {
                 -DGGML_BMI2=ON -DGGML_AVX512=OFF) ;;
             arm64) cpu=(-DGGML_NATIVE=OFF); opt=" -mcpu=apple-m1" ;;
         esac
-        cpu+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0)
+        cpu+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=13.3)
     else
         cpu=(-DGGML_NATIVE=ON)
     fi
