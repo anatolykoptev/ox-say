@@ -20,6 +20,9 @@
 #   APPLE_ID, APPLE_APP_PASSWORD, APPLE_TEAM_ID
 set -euo pipefail
 
+# shellcheck source=scripts/lib-notary.sh
+. "$(dirname "$0")/lib-notary.sh"
+
 dist=${1:?usage: $0 <dist-dir> <OxSayDictation.app>}
 src_app=${2:?usage: $0 <dist-dir> <OxSayDictation.app>}
 dist=$(cd "$dist" && pwd -P)
@@ -155,7 +158,7 @@ if [ "$status" != Accepted ]; then
     exit 1
 fi
 xcrun stapler staple "$app"
-xcrun stapler validate "$app"
+oxs_stapler_validate "$app"
 spctl --assess --type execute -vv "$app" 2> "$work/spctl.txt" || { cat "$work/spctl.txt" >&2; exit 1; }
 if ! grep -F 'source=Notarized Developer ID' "$work/spctl.txt" >/dev/null; then
     cat "$work/spctl.txt" >&2
@@ -172,7 +175,7 @@ tar -xzf "$work/signed.tar.gz" -C "$work/check"
 checked=$work/check/ox-say/app/OxSayDictation.app
 check_bundle "$checked"
 codesign --verify --strict "$checked"
-xcrun stapler validate "$checked"
+oxs_stapler_validate "$checked"
 tar -tzf "$work/unsigned.tar.gz" | grep -v '^ox-say/app/' | sort > "$work/files.unsigned"
 tar -tzf "$work/signed.tar.gz" | grep -v '^ox-say/app/' | sort > "$work/files.signed"
 if ! cmp -s "$work/files.unsigned" "$work/files.signed"; then
