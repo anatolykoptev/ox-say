@@ -54,6 +54,9 @@ func (s *Store) fitReference(ctx context.Context, wav, refText string) (text, no
 	if !ok || cut.Text == "" {
 		return "", "", &InputError{tooLongMsg("no speech found in the first 20 s")}
 	}
+	if !cut.Covers(words) {
+		return "", "", &InputError{tooLongMsg("the transcript skips stretches of the audio")}
+	}
 	if err := s.trimWAV(ctx, wav, cut.At); err != nil {
 		return "", "", err
 	}

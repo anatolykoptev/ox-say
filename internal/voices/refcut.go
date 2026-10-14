@@ -49,7 +49,16 @@ const (
 	// this only has to flag an obviously over-long transcript on a short clip.
 	MaxPlausibleWordsPerSecond = 4.5
 
-	wavHeaderMin = 12 // RIFF + size + WAVE
+	// maxSpeechGapSeconds is the longest silence the kept words may contain
+	// (including before the first word) before the transcript is not trusted:
+	// the STT can drop whole stretches of speech, and a transcript that skips
+	// audio is as mismatched as one that runs past it. Natural pauses in a
+	// reference clip are well under this.
+	maxSpeechGapSeconds = 5.0
+
+	wavHeaderMin = 12         // RIFF + size + WAVE
+	wavFmtMin    = 16         // PCM fmt chunk body
+	wavUnsized   = 0xFFFFFFFF // data size of a streamed (unfinished) header
 	chunkHeader  = 8
 	chunkAlign   = 2
 )
@@ -101,6 +110,19 @@ func PlanCut(words []Word, limit float64) (Cut, bool) {
 		at = max(words[pick+1].S, words[pick].E)
 	}
 	return Cut{At: min(at, limit), Text: joinWords(words[:pick+1]), Last: pick}, true
+}
+
+// Covers reports whether words[:c.Last+1] account for the audio from the clip
+// start to c.At: no leading or inner silence longer than maxSpeechGapSeconds.
+func (c Cut) Covers(words []Word) bool {
+	prev := 0.0
+	for _, w := range words[:c.Last+1] {
+		if w.S-prev > maxSpeechGapSeconds {
+			return false
+		}
+		prev = max(prev, w.E)
+	}
+	return true
 }
 
 // isBoundary reports a sentence end at words[i], or a pause after it.
@@ -156,14 +178,14 @@ func WAVSeconds(path string) (float64, error) {
 		switch string(ch[:4]) {
 		case "fmt ":
 			body := make([]byte, size)
-			if _, err := io.ReadFull(f, body); err != nil || size < 16 {
+			if _, err := io.ReadFull(f, body); err != nil || size < wavFmtMin {
 				return 0, fmt.Errorf("voices: %s has a bad fmt chunk", path)
 			}
 			rate := float64(binary.LittleEndian.Uint32(body[4:]))
 			bytesPerSec = rate * float64(binary.LittleEndian.Uint16(body[2:])) * float64(binary.LittleEndian.Uint16(body[14:])) / 8
 		case "data":
 			pos, _ := f.Seek(0, io.SeekCurrent)
-			if rest := st.Size() - pos; size > rest || size == 0xFFFFFFFF {
+			if rest := st.Size() - pos; size > rest || size == wavUnsized {
 				size = rest // streamed header or truncated file
 			}
 			if bytesPerSec <= 0 {

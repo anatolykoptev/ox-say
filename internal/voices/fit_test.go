@@ -279,3 +279,26 @@ func TestPlanCut(t *testing.T) {
 		})
 	}
 }
+
+// An STT that skips stretches of the clip must not yield a stored pair: the
+// transcript would describe less than the audio holds.
+// Mutation: internal/voices/fit.go fitReference — delete the `!cut.Covers(words)`
+// refusal -> RED.
+func TestPrepareLongClipRefusesTranscriptThatSkipsAudio(t *testing.T) {
+	s, dir := newStore(t)
+	src := testutil.WriteSilentWAV(t, dir, "long.wav", 30)
+	late := speechWords(10, 0.3, 0.1, 5)
+	for i := range late { // speech only from 15.5 s on, as the real STT did
+		late[i].S += 15.5
+		late[i].E += 15.5
+	}
+	s.SetTranscriber(fixedWords(late, new(int)))
+	_, err := s.Add(context.Background(), "ben", src, "whatever")
+	var ie *InputError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %v, want *InputError", err)
+	}
+	if _, err := s.Get("ben"); err == nil {
+		t.Fatal("voice stored from a transcript that skips the first 15 s")
+	}
+}

@@ -78,11 +78,17 @@ func (s *Store) PrepareRepair(ctx context.Context, name string) (*Repair, error)
 		if !ok {
 			return nil, fmt.Errorf("voices: repair %s: no speech found", name)
 		}
+		if !cut.Covers(words) {
+			return nil, fmt.Errorf("voices: repair %s: the transcript skips stretches of the audio", name)
+		}
 		r.NewText, r.Cut = cut.Text, cut.At
 		if err := r.cutCopy(ctx); err != nil {
 			return nil, err
 		}
 	} else {
+		if len(words) == 0 || !(Cut{Last: len(words) - 1}).Covers(words) {
+			return nil, fmt.Errorf("voices: repair %s: the transcript skips stretches of the audio", name)
+		}
 		r.NewText = joinWords(words)
 	}
 	if r.NewText == "" {

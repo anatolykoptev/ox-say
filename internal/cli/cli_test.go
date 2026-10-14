@@ -329,3 +329,26 @@ func TestEnvKeysCommand(t *testing.T) {
 		t.Fatalf("env-keys = %v, want %v", got, want)
 	}
 }
+
+// `voice add` prints the daemon's one-line notice when it replaced the
+// ref_text, and nothing extra otherwise.
+// Mutation: drop the notice print in cmdVoice -> RED.
+func TestVoiceAddPrintsNotice(t *testing.T) {
+	for _, tc := range []struct{ resp, want string }{
+		{`{"name":"ben","status":"registered"}`, "voice \"ben\" added\n"},
+		{`{"name":"ben","notice":"clip is longer than 20 s: kept the first 14.0 s"}`, "voice \"ben\" added\nnote: clip is longer than 20 s: kept the first 14.0 s\n"},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(tc.resp))
+		}))
+		t.Setenv("OX_SAY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+		var out, errb strings.Builder
+		if code := Run([]string{"voice", "add", "ben", "clip.wav"}, &out, &errb, "test"); code != 0 {
+			t.Fatalf("exit %d: %s", code, errb.String())
+		}
+		srv.Close()
+		if out.String() != tc.want {
+			t.Fatalf("stdout = %q, want %q", out.String(), tc.want)
+		}
+	}
+}
