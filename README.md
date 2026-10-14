@@ -327,6 +327,9 @@ Three logs describe a dictation without recording what was said:
   - `path`: `stream`, `fallback` (the session failed and the recording was sent whole) or `one-shot`.
   - `tail_s`: audio not yet acknowledged when the key was released.
   - `session_create_ms`: time to open the session. It is large when the STT server had to start, and `none` when no session opened (the one-shot path, a failed create, or a create still in flight at release).
+  - `delivery`: how the text reached the user — `paste`, or `clipboard` plus `clipboard_reason=accessibility|secure_input|focus_moved`. `none` when the dictation was empty or failed.
+
+  When a paste was posted, a second line follows once it settles: `paste settled read=yes|no`. `read=no` means the target app never read the clipboard before the 3 s cap — the paste went nowhere.
 
   In zsh, type `/usr/bin/log`: plain `log` is a shell builtin.
 - **The daemon writes one line per closed segment to `~/Library/Logs/ox-say/ox-say.log`:**

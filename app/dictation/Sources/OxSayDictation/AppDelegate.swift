@@ -139,6 +139,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Notice level, so the unified log persists it.
         let timingLog = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "timing")
         controller.onTiming = { timing in timingLog.notice("\(timing.line, privacy: .public)") }
+        // A settled paste nobody read is what a paste that went nowhere looks
+        // like — the dictation claimed `delivered` and reached no app.
+        output.onPasteSettled = { read in
+            let outcome = read ? "yes" : "no"
+            timingLog.notice("paste settled read=\(outcome, privacy: .public)")
+        }
         controller.onBusy = { NSSound.beep() }
         output.onNotice = { [weak self] message in self?.notice(message, kind: .outcome) }
         recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }

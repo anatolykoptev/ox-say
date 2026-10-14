@@ -28,7 +28,9 @@ public protocol Recorder: AnyObject {
 
 /// Delivers dictated text to the user, e.g. by pasting it where the cursor is.
 public protocol TextOutput: AnyObject {
-    func deliver(_ text: String)
+    /// Delivers the text and reports how: pasted, or left on the clipboard and
+    /// why — the report reaches the timing line as `delivery=`.
+    func deliver(_ text: String) -> Delivery
 }
 
 /// A transcription backend: a one-shot upload after the recording, or a
@@ -218,9 +220,10 @@ public final class DictationController {
             guard started == generation else { return }
             let elapsedMs = Int((DispatchTime.now().uptimeNanoseconds - released) / 1_000_000)
             let outcome: DictationTiming.Outcome
+            var delivery: Delivery?
             switch result {
             case .success(let text) where !text.isEmpty:
-                output.deliver(text)
+                delivery = output.deliver(text)
                 outcome = .delivered
             case .success:
                 outcome = .empty
@@ -229,7 +232,7 @@ public final class DictationController {
                 outcome = .failed
             }
             onTiming?(DictationTiming(recordedSeconds: seconds, releaseToTextMs: elapsedMs,
-                                      stats: transcriber.finishStats, outcome: outcome))
+                                      stats: transcriber.finishStats, outcome: outcome, delivery: delivery))
             state = .idle
         }
     }

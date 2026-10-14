@@ -77,6 +77,10 @@ final class SystemPasteboard: NSObject, DictationPasteboard, NSPasteboardItemDat
 /// `onNotice` says why.
 final class PasteOutput: TextOutput {
     var onNotice: ((String) -> Void)?
+    /// When a posted paste settles: whether the target app read the promised
+    /// clipboard before the 3 s cap. `false` is what a paste that went nowhere
+    /// looks like; feeds the `paste settled` log line.
+    var onPasteSettled: ((Bool) -> Void)?
     /// The app that had focus when the recording stopped; the paste goes there
     /// or nowhere.
     var target: pid_t?
@@ -86,7 +90,7 @@ final class PasteOutput: TextOutput {
     /// A paste whose clipboard has not been given back yet.
     private var pending: (lease: ClipboardLease, timer: Timer, text: String)?
 
-    func deliver(_ text: String) {
+    func deliver(_ text: String) -> Delivery {
         // A previous paste still waiting for its read: give its clipboard back
         // now, so this one borrows the user's contents and not the old dictation.
         settle()
@@ -96,7 +100,8 @@ final class PasteOutput: TextOutput {
                                    accessibilityTrusted: AXIsProcessTrusted()) {
         case .clipboardOnly(let reason):
             plain.writeText(text)
-            onNotice?(reason)
+            onNotice?(reason.message)
+            return .clipboardOnly(reason: reason)
         case .paste:
             let lease = ClipboardLease(board: lending, text: text)
             let posted = Date()
@@ -113,6 +118,7 @@ final class PasteOutput: TextOutput {
                 }
             }
             pending = (lease, timer, text)
+            return .paste
         }
     }
 
@@ -122,6 +128,7 @@ final class PasteOutput: TextOutput {
         guard let pending else { return }
         self.pending = nil
         pending.timer.invalidate()
+        onPasteSettled?(lending.readAt != nil)
         if !pending.lease.release(), let notice = pending.lease.notice {
             // The user's clipboard is not coming back, so the dictation stays on
             // it. Write it plainly: the lent copy is a transient promise, which
