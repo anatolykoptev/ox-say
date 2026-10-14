@@ -42,6 +42,12 @@ const (
 	// dataEndSlackSeconds is how close to the limit the last transcript word
 	// must end for the transcript to count as truncated by the limit.
 	dataEndSlackSeconds = 0.5
+	// preferKeepSeconds is the length a boundary-preferring cut aims to keep
+	// (60% of the cap): a sentence end at 9 s of a 20 s clip would throw away
+	// the later, still-usable audio (en-william cut at 9 s still bled "…, but";
+	// at its clause end 17.8 s, 4 of 4 runs were clean). Only when no boundary
+	// exists that late does the cut fall back to minKeepSeconds.
+	preferKeepSeconds = 12.0
 	// minKeepSeconds is the least audio a boundary-preferring cut keeps: a
 	// reference shorter than this conditions the voice poorly.
 	minKeepSeconds = 6.0
@@ -117,12 +123,16 @@ func PlanCut(words []Word, limit float64) (Cut, bool) {
 	if last == len(words)-1 && words[last].E >= limit-dataEndSlackSeconds {
 		hi = last - 1
 	}
-	pick := latest(words, hi, func(i int) bool { return isSentenceEnd(words, i) })
-	if pick < 0 {
-		pick = latest(words, hi, func(i int) bool { return isClauseEnd(words, i) })
-	}
-	if pick < 0 {
-		pick = latest(words, hi, func(i int) bool { return gapAfter(words, i) >= minPauseSeconds })
+	pick := -1
+	for _, keep := range []float64{preferKeepSeconds, minKeepSeconds} {
+		for _, boundary := range []func([]Word, int) bool{isSentenceEnd, isClauseEnd, isPause} {
+			if pick = latest(words, hi, keep, boundary); pick >= 0 {
+				break
+			}
+		}
+		if pick >= 0 {
+			break
+		}
 	}
 	if pick < 0 {
 		pick = last
@@ -137,11 +147,14 @@ func PlanCut(words []Word, limit float64) (Cut, bool) {
 	return Cut{At: min(words[pick].E+tail, limit), Text: joinWords(words[:pick+1]), Last: pick}, true
 }
 
-// latest returns the highest index <= last whose word ends at minKeepSeconds
+// isPause reports a pause of at least minPauseSeconds after words[i].
+func isPause(words []Word, i int) bool { return gapAfter(words, i) >= minPauseSeconds }
+
+// latest returns the highest index <= last whose word ends at keep seconds
 // or later and satisfies ok, or -1.
-func latest(words []Word, last int, ok func(int) bool) int {
-	for i := last; i >= 0 && words[i].E >= minKeepSeconds; i-- {
-		if ok(i) {
+func latest(words []Word, last int, keep float64, ok func([]Word, int) bool) int {
+	for i := last; i >= 0 && words[i].E >= keep; i-- {
+		if ok(words, i) {
 			return i
 		}
 	}

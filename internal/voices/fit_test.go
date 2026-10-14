@@ -298,6 +298,29 @@ func TestPlanCut(t *testing.T) {
 			wantOK:   true,
 		},
 		{
+			name: "a boundary at >= 12 s beats a sentence end at 9 s",
+			words: func() []Word {
+				w := speechWords(70, 0.28, 0.0, 0)
+				w[31].W = "early." // sentence end at 9.0 s
+				w[60].W = "club,"  // clause end at 17.08 s
+				return w
+			}(),
+			wantLast: 60,
+			wantAt:   17.08,
+			wantOK:   true,
+		},
+		{
+			name: "with nothing after 12 s, fall back to a sentence end at >= 6 s",
+			words: func() []Word {
+				w := speechWords(60, 0.28, 0.0, 0)
+				w[31].W = "early." // 9.0 s
+				return w
+			}(),
+			wantLast: 31,
+			wantAt:   8.96,
+			wantOK:   true,
+		},
+		{
 			name:   "nothing ends within the cap",
 			words:  []Word{{W: "a", S: 0, E: 25}},
 			wantOK: false,
