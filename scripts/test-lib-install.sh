@@ -201,6 +201,23 @@ for f in install.sh install-release.sh; do
     check "$f renders without \$(…), so errexit applies" "${n:-x}" 0
 done
 
+# --- G: the self-test accepts the phrase, not any text containing "ready" ---
+# The 2026-10-14 old-Mac install passed with a 15 s hallucination because
+# its tail contained "ready". Mutation: restore `*ready*) ok=1` in
+# install-release.sh — the call-site pin below fails.
+selftest_ok() { ( . "$root/scripts/lib-install.sh" && oxs_selftest_heard_ok "$1" "ox-say is ready" ); }
+halluc="Her face was stretched into distortion, a drop of blood trickled slowly down her taut neck, and the door was ready to open when the water came."
+for heard in "Oxay is ready." "OX say is ready" "ox-say is ready" "Ox, say, is ready!"; do
+    if selftest_ok "$heard"; then pass "self-test accepts [$heard]"; else fail "self-test rejected [$heard]"; fi
+done
+for heard in "$halluc" "" "ox-say is steady" "ox say is not ready at all really"; do
+    if selftest_ok "$heard"; then fail "self-test accepted [$heard]"; else pass "self-test rejects [${heard:0:30}]"; fi
+done
+n=$(grep -cE '^[^#]*[*]ready[*]' "$root/scripts/install-release.sh" || true)
+check "install-release.sh has no *ready* substring pass" "${n:-x}" 0
+n=$(grep -cE '^[^#]*oxs_selftest_heard_ok' "$root/scripts/install-release.sh" || true)
+check "install-release.sh calls oxs_selftest_heard_ok" "${n:-x}" 1
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "all checks passed"

@@ -85,6 +85,7 @@ if [ "${OX_SAY_NO_SELFTEST:-0}" != 1 ]; then
     echo "self-test: transcribing and speaking a phrase (the first run compiles GPU shaders, up to a few minutes)"
     st=$(mktemp -d)
     wav="$st/selftest.wav"
+    phrase="ox-say is ready"
     heard=
     ok=0
     # Warm-up with an English system voice, when there is one; best effort, the
@@ -100,11 +101,11 @@ if [ "${OX_SAY_NO_SELFTEST:-0}" != 1 ]; then
     done
     # no `| grep -q` here: under pipefail its early exit can SIGPIPE the writer
     # and fail a pipeline that matched
-    if "$bindir/ox-say" say -o "$wav" "ox-say is ready" >/dev/null &&
+    if "$bindir/ox-say" say -o "$wav" "$phrase" >/dev/null &&
         heard=$("$bindir/ox-say" transcribe "$wav"); then
-        case "$(printf '%s' "$heard" | tr '[:upper:]' '[:lower:]')" in
-            *ready*) ok=1 ;;
-        esac
+        if oxs_selftest_heard_ok "$heard" "$phrase"; then
+            ok=1
+        fi
     fi
     rm -f "$wav" "$st/mac.aiff" "$st/voices.txt"
     rmdir "$st"

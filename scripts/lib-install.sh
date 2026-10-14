@@ -171,6 +171,23 @@ oxs_load_agent() {
     launchctl bootstrap "gui/$uid" "$plist"
 }
 
+# Self-test verdict: does the transcript heard for the spoken phrase say that
+# phrase? "Ready" must be one of its words AND the transcript must be no longer
+# than the phrase plus two words (an ASR slip like "ox a" fits; a model that
+# kept talking past the request — the continuation of its reference clip that
+# happened to contain "ready" later — does not). Case and punctuation are
+# ignored. Usage: oxs_selftest_heard_ok <heard> <phrase>.
+oxs_selftest_heard_ok() {
+    local heard=$1 phrase=$2 norm w n=0 phrase_n ready=0
+    norm=$(printf '%s' "$heard" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' ' ')
+    for w in $norm; do
+        n=$((n + 1))
+        [ "$w" = ready ] && ready=1
+    done
+    phrase_n=$(printf '%s' "$phrase" | tr -c 'A-Za-z0-9' ' ' | wc -w | tr -d ' ')
+    [ "$ready" = 1 ] && [ "$n" -le $((phrase_n + 2)) ]
+}
+
 # Wait for this version to answer, not a stale daemon on the same address.
 oxs_wait_version() {
     local version=$1 got=
