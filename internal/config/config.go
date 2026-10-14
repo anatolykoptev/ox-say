@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"time"
@@ -33,6 +34,20 @@ const (
 	// that times every transcription out at once.
 	maxSTTSecs = 24 * 3600
 )
+
+// GPU memory models (OX_SAY_GPU_MEMORY). auto is resolved at load, so a
+// loaded Config holds unified or discrete.
+const (
+	GPUMemoryAuto     = "auto"
+	GPUMemoryUnified  = "unified"
+	GPUMemoryDiscrete = "discrete"
+)
+
+// hostUnifiedMemory reports whether this machine's GPU shares system memory:
+// every darwin/arm64 Mac is Apple Silicon. Intel Macs — and the linux CI
+// host — keep the discrete-card behaviour. A variable so tests can pin
+// either answer on any host.
+var hostUnifiedMemory = func() bool { return runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" }
 
 // Config is the resolved daemon configuration.
 type Config struct {
@@ -65,6 +80,13 @@ type Config struct {
 	STTServer       string        // OX_SAY_STT_SERVER: on | off — resident ox-stt server
 	STTPort         int           // OX_SAY_STT_PORT: loopback port the STT server binds
 	STTIdleStop     time.Duration // OX_SAY_STT_IDLE_STOP_SECS
+
+	// GPUMemory is OX_SAY_GPU_MEMORY resolved by load: GPUMemoryUnified
+	// (Apple Silicon: TTS and STT share the GPU, no lease) or
+	// GPUMemoryDiscrete (a 4 GB card: the lease and the CPU-only resident
+	// STT server, issue #11). A Config literal leaves it "", which is
+	// discrete.
+	GPUMemory string
 }
 
 // flagNames maps flag names to env var names for ApplyFlags.
@@ -95,6 +117,7 @@ var flagNames = map[string]string{
 	"stt-server":        "OX_SAY_STT_SERVER",
 	"stt-port":          "OX_SAY_STT_PORT",
 	"stt-idle-stop":     "OX_SAY_STT_IDLE_STOP_SECS",
+	"gpu-memory":        "OX_SAY_GPU_MEMORY",
 }
 
 // RegisterFlags registers one flag per supported env var on fs. Values set on
@@ -205,6 +228,9 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	default:
 		return nil, fmt.Errorf("config: OX_SAY_STT_GPU %q: want auto|on|off", c.STTGPU)
 	}
+	if c.GPUMemory, err = resolveGPUMemory(get("OX_SAY_GPU_MEMORY")); err != nil {
+		return nil, err
+	}
 	sttSecs, err := intVar(get("OX_SAY_STT_TIMEOUT_SECS"), DefaultSTTTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("config: OX_SAY_STT_TIMEOUT_SECS: %w", err)
@@ -270,6 +296,29 @@ func orDefault(v, def string) string {
 	}
 	return v
 }
+
+// resolveGPUMemory validates OX_SAY_GPU_MEMORY and resolves auto (the
+// default) against the host.
+func resolveGPUMemory(v string) (string, error) {
+	switch orDefault(v, GPUMemoryAuto) {
+	case GPUMemoryAuto:
+		if hostUnifiedMemory() {
+			return GPUMemoryUnified, nil
+		}
+		return GPUMemoryDiscrete, nil
+	case GPUMemoryUnified:
+		return GPUMemoryUnified, nil
+	case GPUMemoryDiscrete:
+		return GPUMemoryDiscrete, nil
+	}
+	return "", fmt.Errorf("config: OX_SAY_GPU_MEMORY %q: want auto|unified|discrete", v)
+}
+
+// UnifiedMemory reports whether the GPU shares system memory with the CPU
+// (Apple Silicon): the TTS engine and the resident STT server then run on
+// the GPU side by side and no GPU lease is taken. Anything else — the zero
+// value included — keeps the discrete-card arbitration (issue #11).
+func (c *Config) UnifiedMemory() bool { return c.GPUMemory == GPUMemoryUnified }
 
 func intVar(v string, def int) (int, error) {
 	if v == "" {
