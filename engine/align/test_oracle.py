@@ -44,7 +44,7 @@ https://www.openslr.org/12) fetched via huggingface.co/datasets/Narsil/
 asr_dummy (1.flac/2.flac/3.flac). See testdata/README.md.
 
 Usage:
-  python3 test_oracle.py --ox-align build/engine/align-build/ox-align \
+  python3 test_oracle.py --ox-align build/engine/out/ox-align \
       --models-dir build/models --testdata engine/align/testdata \
       --ref-dir build/ref [--backend cpu|gpu] [--refs-only] [--quick]
 
