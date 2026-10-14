@@ -247,6 +247,7 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_STT_WHISPER_MODEL", "/tmp/oxk-4917/whisper-x.bin", "/tmp/oxk-4917/whisper-x.bin", func(c *Config) string { return c.STTWhisperModel }},
 		{"OX_SAY_STT_VAD_MODEL", "/tmp/oxk-4917/vad-x.bin", "/tmp/oxk-4917/vad-x.bin", func(c *Config) string { return c.STTVADModel }},
 		{"OX_SAY_STT_GPU", "off", "off", func(c *Config) string { return c.STTGPU }},
+		{"OX_SAY_GPU_MEMORY", "discrete", "discrete", func(c *Config) string { return c.GPUMemory }},
 		{"OX_SAY_STT_TIMEOUT_SECS", "63", "1m3s", func(c *Config) string { return c.STTTimeout.String() }},
 		{"OX_SAY_STT_MAX_UPLOAD_MB", "64", "64", func(c *Config) string { return strconv.FormatInt(c.STTMaxUploadMB, 10) }},
 		{"OX_SAY_STT_MAX_AUDIO_SECS", "65", "1m5s", func(c *Config) string { return c.STTMaxAudio.String() }},
@@ -283,6 +284,48 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		if got := tc.read(c); got != tc.want {
 			t.Errorf("%s=%q did not reach the config: field reads %q, want %q", tc.env, tc.set, got, tc.want)
 		}
+	}
+}
+
+// OX_SAY_GPU_MEMORY: auto (and unset) resolves against the host — Apple
+// Silicon is unified, anything else discrete — explicit values win on any
+// host, and a typo is refused. The host probe is stubbed, so the test means
+// the same on linux CI, an Intel Mac and Apple Silicon.
+// Mutation: config.go ≈ line 300 (resolveGPUMemory, `case GPUMemoryAuto:`)
+// return GPUMemoryDiscrete without consulting hostUnifiedMemory -> RED.
+func TestLoadGPUMemory(t *testing.T) {
+	orig := hostUnifiedMemory
+	t.Cleanup(func() { hostUnifiedMemory = orig })
+	cases := []struct {
+		env  string
+		host bool
+		want string
+	}{
+		{"", true, GPUMemoryUnified},
+		{"", false, GPUMemoryDiscrete},
+		{"auto", true, GPUMemoryUnified},
+		{"auto", false, GPUMemoryDiscrete},
+		{"discrete", true, GPUMemoryDiscrete},
+		{"unified", false, GPUMemoryUnified},
+	}
+	for _, tc := range cases {
+		hostUnifiedMemory = func() bool { return tc.host }
+		t.Setenv("OX_SAY_GPU_MEMORY", tc.env)
+		c, err := Load(nil)
+		if err != nil {
+			t.Fatalf("OX_SAY_GPU_MEMORY=%q host unified=%v: %v", tc.env, tc.host, err)
+		}
+		if c.GPUMemory != tc.want || c.UnifiedMemory() != (tc.want == GPUMemoryUnified) {
+			t.Fatalf("OX_SAY_GPU_MEMORY=%q host unified=%v: GPUMemory=%q UnifiedMemory=%v, want %q",
+				tc.env, tc.host, c.GPUMemory, c.UnifiedMemory(), tc.want)
+		}
+	}
+	t.Setenv("OX_SAY_GPU_MEMORY", "shared")
+	if _, err := Load(nil); err == nil {
+		t.Fatal("OX_SAY_GPU_MEMORY=shared accepted")
+	}
+	if (&Config{}).UnifiedMemory() {
+		t.Fatal("a Config literal (GPUMemory \"\") must keep the discrete-card behaviour")
 	}
 }
 

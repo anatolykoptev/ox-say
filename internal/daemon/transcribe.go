@@ -26,12 +26,16 @@ type TranscribeInput struct {
 	Prompt    string // whisper only
 }
 
-// Transcribe runs one stt.Transcribe with the daemon's config; the CLI
-// device choice goes through the GPU lease the TTS supervisor holds for
-// its child's whole lifetime, so a per-call ox-stt never takes GPU memory
-// the engine is holding — including the Stopped-but-not-exited teardown
-// window (issue #11). Parakeet clips go to the resident CPU server when it
-// is enabled and fall back to the CLI on a server failure.
+// Transcribe runs one stt.Transcribe with the daemon's config. On a
+// discrete card the CLI device choice goes through the GPU lease the TTS
+// supervisor holds for its child's whole lifetime, so a per-call ox-stt
+// never takes GPU memory the engine is holding — including the
+// Stopped-but-not-exited teardown window (issue #11). With unified memory
+// no lease is passed and the CLI runs on the GPU unless OX_SAY_STT_GPU=off,
+// at any length: auto's 5-minute cap (stt.autoGPUMaxAudio) bounds a lease
+// hold, and without a lease nothing waits on it. Parakeet clips go to the
+// resident server when it is enabled and fall back to the CLI on a server
+// failure.
 func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Result, error) {
 	opts := stt.Options{
 		Engine:       in.Engine,
@@ -41,9 +45,13 @@ func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Resul
 		Model:        d.Cfg.STTModel,
 		WhisperModel: d.Cfg.STTWhisperModel,
 		GPU:          d.Cfg.STTGPU,
-		GPULease:     d.gpu,
 		Timeout:      d.Cfg.STTTimeout,
 		MaxAudio:     d.Cfg.STTMaxAudio,
+	}
+	// Assign the lease only on a discrete card: opts.GPULease is an
+	// interface, and leaving it nil is stt's "no arbitration".
+	if !d.Cfg.UnifiedMemory() {
+		opts.GPULease = d.gpu
 	}
 	if d.STTSup != nil {
 		opts.Server = d.sttServer

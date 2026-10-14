@@ -116,8 +116,8 @@ func TestTranscribeUsesServer(t *testing.T) {
 	}
 }
 
-// The server is CPU-only, so a held GPU lease (TTS ready) does not route a
-// transcription back to the CLI.
+// On a discrete card the server is CPU-only, so a held GPU lease (TTS
+// ready) does not route a transcription back to the CLI.
 // Mutation: gate the server-branch condition in stt.Transcribe on the GPU
 // lease being free -> RED (the CLI fake runs).
 func TestServerUsedWhileTTSReady(t *testing.T) {
@@ -148,13 +148,14 @@ func TestServerUsedWhileTTSReady(t *testing.T) {
 	}
 }
 
-// The resident server is spawned with -ng unconditionally (CPU — the GPU
+// On a discrete card — the Config{} literal leaves GPUMemory "" — the
+// resident server is spawned with -ng unconditionally (CPU — the GPU
 // stays with the TTS engine / the per-call GPU run, which arbitrate it via
 // the shared lease). OX_SAY_STT_GPU=on no longer opts the server in: a
 // process that holds GPU memory for its whole lifetime cannot take part in
 // a per-run lease without starving TTS starts (issue #11).
-// Mutation: make the -ng append conditional on cfg.STTGPU != "on" in the
-// Args func in newDaemon -> RED (the GPU=on serve argv loses -ng).
+// Mutation: make the -ng append in STTServeArgs conditional on
+// cfg.STTGPU != "on" -> RED (the GPU=on serve argv loses -ng).
 func TestSTTServerArgs(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
@@ -176,8 +177,8 @@ func TestSTTServerArgs(t *testing.T) {
 	log2 := sttSetupServer(t, d2, dir2)
 	// The Args closure reads cfg.STTGPU at spawn time, so flipping it here —
 	// after setup, before the first transcription — exercises what the flag
-	// would do. The serve child must still be CPU-only, and it must not
-	// hold the GPU lease.
+	// would do. On a discrete card the serve child must still be CPU-only,
+	// and it must not hold the GPU lease.
 	d2.Cfg.STTGPU = "on"
 	src2 := testutil.WriteTinyWAV(t, dir2, "in.wav")
 	if _, err := d2.Transcribe(context.Background(), TranscribeInput{AudioPath: src2}); err != nil {

@@ -29,10 +29,11 @@ type Daemon struct {
 	Store *voices.Store
 
 	// STTSup supervises the resident `ox-stt --serve` child; nil when
-	// OX_SAY_STT_SERVER=off. It always decodes on the CPU (-ng): a resident
-	// process holding GPU memory for its whole life cannot share the card
-	// through a per-run lease, so it never takes d.gpu and never contends
-	// with the TTS engine's GPU.
+	// OX_SAY_STT_SERVER=off. On a discrete card it decodes on the CPU
+	// (-ng): a resident process holding GPU memory for its whole life
+	// cannot share the card through a per-run lease. With unified memory
+	// (Apple Silicon) it decodes on the GPU next to the TTS engine — see
+	// STTServeArgs.
 	STTSup *engine.Supervisor
 
 	ec  *engine.Client
@@ -40,7 +41,8 @@ type Daemon struct {
 
 	// gpu is the single-token GPU lease shared by the TTS engine (held
 	// from a start's spawn to the child's observed exit) and by a per-call
-	// ox-stt run that goes without -ng (issue #11).
+	// ox-stt run that goes without -ng (issue #11). It is wired only on a
+	// discrete card; with unified memory nothing takes it.
 	gpu *engine.GPULease
 
 	// voiceMu serializes voice mutations against engine-start replay: a
@@ -84,6 +86,29 @@ func sttStartupTimeout(d time.Duration) time.Duration {
 	return min(d, limit)
 }
 
+// STTServeArgs is the resident server's argv, evaluated at every spawn
+// (exported for cmd/ox-say-bench, which spawns the same argv). On
+// a discrete card it always decodes on the CPU (-ng): a child that would
+// hold GPU memory for its whole lifetime cannot take part in the per-run
+// GPU lease (a speak would have to wait out its idle timeout), so
+// OX_SAY_STT_GPU=on scopes to the per-call CLI only. With unified memory
+// there is no lease and room for both engines: the server decodes on the
+// GPU unless OX_SAY_STT_GPU=off.
+func STTServeArgs(cfg *config.Config, port int) []string {
+	args := []string{"--serve", "--port", strconv.Itoa(port), "-m", cfg.STTModel}
+	if !cfg.UnifiedMemory() || cfg.STTGPU == "off" {
+		args = append(args, "-ng")
+	}
+	// Streaming sessions need the silero VAD model; without the file the
+	// server spawns exactly as before and the session routes answer 501.
+	// The stat runs per spawn, so dropping the model in later enables
+	// sessions without a daemon restart.
+	if _, err := os.Stat(cfg.STTVADModel); err == nil {
+		args = append(args, "--vad", cfg.STTVADModel)
+	}
+	return args
+}
+
 // newDaemon is New plus engine.Config tuning hooks for tests — tune for
 // the TTS supervisor, tuneSTT for the STT server's.
 func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engine.Config)) (*Daemon, error) {
@@ -124,11 +149,15 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engi
 		PidPath:        cfg.PidPath(),
 		Replay:         d.replayVoices,
 		Logger:         logger,
+	}
+	if !cfg.UnifiedMemory() {
 		// The TTS engine owns the GPU while its child lives: a start waits
 		// out a GPU transcription, and the lease is released at the child's
-		// observed exit — past the Stopped commit (issue #11).
-		GPU: d.gpu,
+		// observed exit — past the Stopped commit (issue #11). Unified memory
+		// holds both engines, so nothing arbitrates there.
+		ec.GPU = d.gpu
 	}
+	logger.Info("gpu memory model", slog.Bool("unified", cfg.UnifiedMemory()))
 	if tune != nil {
 		tune(&ec)
 	}
@@ -149,23 +178,8 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engi
 			LogDir:         cfg.EngineLogDir,
 			PidPath:        filepath.Join(cfg.RunDir(), "stt.pid"),
 			Logger:         logger,
-			// The resident server loads the parakeet model once and decodes
-			// on the CPU — unconditionally: a child that would hold GPU
-			// memory for its whole lifetime cannot take part in the per-run
-			// GPU lease (a speak would have to wait out its idle timeout),
-			// so OX_SAY_STT_GPU=on scopes to the per-call CLI only.
-			Args: func(port int) []string {
-				args := []string{"--serve", "--port", strconv.Itoa(port), "-m", cfg.STTModel, "-ng"}
-				// Streaming sessions need the silero VAD model; without the
-				// file the server spawns exactly as before and the session
-				// routes answer 501. The stat runs per spawn (Args is
-				// evaluated at every start), so dropping the model in later
-				// enables sessions without a daemon restart.
-				if _, err := os.Stat(cfg.STTVADModel); err == nil {
-					args = append(args, "--vad", cfg.STTVADModel)
-				}
-				return args
-			},
+			// GPU or CPU per the memory model; see STTServeArgs.
+			Args: func(port int) []string { return STTServeArgs(cfg, port) },
 		}
 		if tuneSTT != nil {
 			tuneSTT(&sc)

@@ -3,12 +3,11 @@
 // by the resident `ox-stt --serve` process (the default for parakeet clips
 // up to serverMaxAudio — the model is loaded once, so a warm call is far
 // faster than a cold CLI start) or by a per-call ox-stt child. One
-// transcription runs at a time per process. The resident server always runs
-// on the CPU (-ng): a process holding GPU memory for its whole lifetime
-// cannot share the card through a per-run lease, so it never takes GPU
-// memory from the TTS child; its idle cost is ~1.4 GB of RAM. Per-call CLI
-// runs arbitrate the GPU with the TTS engine through Options.GPULease
-// (issue #11).
+// transcription runs at a time per process. On a discrete card the
+// resident server runs on the CPU (-ng) and per-call CLI runs arbitrate the
+// GPU with the TTS engine through Options.GPULease (issue #11); with
+// unified memory (Apple Silicon) the daemon passes no lease and both run on
+// the GPU.
 package stt
 
 import (
@@ -69,8 +68,9 @@ type Result struct {
 
 // GPULease is the daemon's single-token GPU mutex, shared between the TTS
 // engine child and per-call ox-stt CLI runs (issue #11). A run that goes
-// without -ng must hold it for the whole run; the resident server is
-// CPU-only and never touches it. Implemented by *engine.GPULease. A
+// without -ng must hold it for the whole run; on a discrete card the
+// resident server is CPU-only and never touches it, and on unified memory
+// no lease is wired at all. Implemented by *engine.GPULease. A
 // transcription only ever tries the lease, never waits for it: a run that
 // waited would hold its place in the queue (or the lease itself) while
 // doing no work. The owner tag lets the supervisor's Status name who a
@@ -277,10 +277,10 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	}
 	defer func() { _ = os.Remove(wav) }()
 
-	// The engine budget scales with the real duration (issue #16). The
-	// device flag is the worst the run may land on: the resident server is
-	// CPU-only whatever the mode, so only OX_SAY_STT_GPU=on's CLI leg can
-	// be off the CPU.
+	// The engine budget scales with the real duration (issue #16). sttK
+	// gives the GPU the CPU's rate, so whichever device the run lands on —
+	// the resident server is on the GPU with unified memory — the budget
+	// stays the conservative CPU one.
 	timeout := sttTimeout(engine, opts.GPU == "on", secs, base)
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
@@ -288,8 +288,8 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	timedOut := func() bool { return ctx.Err() != nil && parent.Err() == nil }
 
 	// The resident server decodes parakeet only and returns the CLI's JSON
-	// shape; short clips go to it whatever the GPU state is (the server is
-	// CPU-only and never holds the lease). Long files stay on the CLI: a
+	// shape; short clips go to it whatever the GPU state is (the server
+	// never holds the lease). Long files stay on the CLI: a
 	// cancelled CLI run is killed, a cancelled server decode is not.
 	if engine == "parakeet" && opts.Server != nil && secs <= serverMaxAudio.Seconds() {
 		res, err := transcribeServer(ctx, wav, opts)
