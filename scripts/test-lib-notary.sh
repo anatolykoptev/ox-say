@@ -58,7 +58,8 @@ run() {
 
 run "success first try" 0 1 ok
 run "transient twice then success" 0 3 transient transient ok
-grep -c 'retry' "$tmp/err" | { read -r n; check "retries are announced on stderr" "$n" 2; }
+n=$(grep -c retry "$tmp/err" || true)
+check "retries are announced on stderr" "$n" 2
 run "timeout then success" 0 2 timeout ok
 run "transient 4x fails" 1 4 transient
 run "non-transient error fails without retry" 1 1 ticket ok
