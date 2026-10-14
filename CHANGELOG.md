@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.19](https://github.com/anatolykoptev/ox-say/compare/v0.1.18...v0.1.19) (2026-10-14)
+
+
+### Fixed
+
+* **voices:** keep a reference clip and its transcript describing the same audio ([#121](https://github.com/anatolykoptev/ox-say/issues/121)) ([353ad91](https://github.com/anatolykoptev/ox-say/commit/353ad91ceab752696ae8838745b55ef5e662763f))
+
+
+### Documentation
+
+* **performance:** add the Intel Mac measurements ([#119](https://github.com/anatolykoptev/ox-say/issues/119)) ([a3a2466](https://github.com/anatolykoptev/ox-say/commit/a3a246668b7b3e64083fbce38ef6ae183ad86469))
+
 ## [0.1.18](https://github.com/anatolykoptev/ox-say/compare/v0.1.17...v0.1.18) (2026-10-14)
 
 
