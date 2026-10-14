@@ -6,15 +6,17 @@ import (
 	"testing"
 )
 
-// The real at-cap voices of the old Mac (ref_text as stored, stt as the
-// resident parakeet heard the same WAV) and the verdict each must get. The
-// first four run past their audio and bleed the tail into every request;
+// Synthetic at-cap voices (testdata/transcript_tails.json): ref_text as
+// stored and the transcript the STT heard for the same clip, built to the
+// overrun counts measured on real references (35, 48, 11, 6 and 4 ref words
+// past the audio; the last three score 0.84-0.9 on the overall word ratio).
+// The first five run past their audio and bleed the tail into every request;
 // the rest are correct.
 // Mutation: internal/voices/repair.go plan — call TextsMatch instead of
-// TranscriptMatches (the overall ratio) -> RED for en-deniro, en-william,
-// en-daniel.
-func TestTranscriptMatchesRealVoices(t *testing.T) {
-	raw, err := os.ReadFile("testdata/real_voices.json")
+// TranscriptMatches (the overall ratio) -> RED for capped-overrun-11,
+// capped-overrun-6 and capped-overrun-4.
+func TestTranscriptMatchesTails(t *testing.T) {
+	raw, err := os.ReadFile("testdata/transcript_tails.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +28,7 @@ func TestTranscriptMatchesRealVoices(t *testing.T) {
 	if err := json.Unmarshal(raw, &voices); err != nil {
 		t.Fatal(err)
 	}
-	healthy := map[string]bool{"en-emma": true, "en-freeman": true, "ru-fleurs-f": true}
+	healthy := map[string]bool{"fast-reader-healthy": true, "healthy-1": true, "healthy-ru": true}
 	if len(voices) != 8 {
 		t.Fatalf("fixture has %d voices, want 8", len(voices))
 	}

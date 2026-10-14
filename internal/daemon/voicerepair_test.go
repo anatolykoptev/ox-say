@@ -53,7 +53,7 @@ func TestRepairVoicesRewritesAndReregisters(t *testing.T) {
 	fakeEnv(t, dir)
 	d := newTestDaemon(t, dir, nil)
 	long := strings.TrimSpace(strings.Repeat("word ", 90))
-	seedStoredVoice(t, d, "snakes", 20, long)
+	seedStoredVoice(t, d, "longref", 20, long)
 	seedStoredVoice(t, d, "native", 5.4, "one two three four five six seven eight nine ten eleven")
 	calls := 0
 	d.Store.SetTranscriber(func(context.Context, string) ([]voices.Word, error) {
@@ -69,14 +69,14 @@ func TestRepairVoicesRewritesAndReregisters(t *testing.T) {
 	}
 	d.RepairVoices(context.Background())
 
-	v, err := d.Store.Get("snakes")
+	v, err := d.Store.Get("longref")
 	if err != nil || v.RefText == long || !strings.HasPrefix(v.RefText, "wa wb") {
-		t.Fatalf("snakes = %+v, %v; want the transcript as ref_text", v, err)
+		t.Fatalf("longref = %+v, %v; want the transcript as ref_text", v, err)
 	}
-	if got := childVoices(t, base)["snakes"]; got != v.RefText {
+	if got := childVoices(t, base)["longref"]; got != v.RefText {
 		t.Fatalf("live child holds ref_text %q, want the repaired %q", got, v.RefText)
 	}
-	if _, err := os.Stat(strings.TrimSuffix(d.Store.WAVPath("snakes"), ".wav") + ".orig.wav"); err != nil {
+	if _, err := os.Stat(strings.TrimSuffix(d.Store.WAVPath("longref"), ".wav") + ".orig.wav"); err != nil {
 		t.Fatalf("backup wav missing: %v", err)
 	}
 	if n, _ := d.Store.Get("native"); n.RefText != "one two three four five six seven eight nine ten eleven" {
@@ -100,9 +100,9 @@ func TestRepairVoicesSTTUnavailableWarns(t *testing.T) {
 	fakeEnv(t, dir)
 	d := newTestDaemon(t, dir, nil) // Cfg has no STT model: the default transcriber fails
 	long := strings.TrimSpace(strings.Repeat("word ", 90))
-	seedStoredVoice(t, d, "snakes", 20, long)
+	seedStoredVoice(t, d, "longref", 20, long)
 	d.RepairVoices(context.Background())
-	if v, _ := d.Store.Get("snakes"); v.RefText != long {
+	if v, _ := d.Store.Get("longref"); v.RefText != long {
 		t.Fatalf("voice modified despite failing STT: %q", v.RefText)
 	}
 	if !testLogSaw(t, "speech-to-text unavailable") {
@@ -247,12 +247,12 @@ func TestStartVoiceRepairWaitsForListener(t *testing.T) {
 	_ = ln.Close() // nobody listens on addr now
 	d.Cfg.Addr = addr
 	long := strings.TrimSpace(strings.Repeat("word ", 90))
-	seedStoredVoice(t, d, "snakes", 20, long)
+	seedStoredVoice(t, d, "longref", 20, long)
 	d.Store.SetTranscriber(func(context.Context, string) ([]voices.Word, error) { return fakeWords(60), nil })
 
 	d.StartVoiceRepair()
 	time.Sleep(500 * time.Millisecond)
-	if v, _ := d.Store.Get("snakes"); v.RefText != long {
+	if v, _ := d.Store.Get("longref"); v.RefText != long {
 		t.Fatal("repair ran before the listener was up")
 	}
 	ln2, err := net.Listen("tcp", addr)
@@ -261,7 +261,7 @@ func TestStartVoiceRepairWaitsForListener(t *testing.T) {
 	}
 	defer ln2.Close()
 	testutil.WaitFor(t, 10*time.Second, func() bool {
-		v, _ := d.Store.Get("snakes")
+		v, _ := d.Store.Get("longref")
 		return v != nil && v.RefText != long
 	}, "repair after the listener came up")
 	d.StopVoiceRepair() // returns: the pass is done

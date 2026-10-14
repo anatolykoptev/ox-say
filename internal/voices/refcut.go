@@ -44,7 +44,7 @@ const (
 	dataEndSlackSeconds = 0.5
 	// preferKeepSeconds is the length a boundary-preferring cut aims to keep
 	// (60% of the cap): a sentence end at 9 s of a 20 s clip would throw away
-	// the later, still-usable audio (en-william cut at 9 s still bled "…, but";
+	// the later, still-usable audio (a reference cut at a 9 s sentence end still bled "…, but";
 	// at its clause end 17.8 s, 4 of 4 runs were clean). Only when no boundary
 	// exists that late does the cut fall back to minKeepSeconds.
 	preferKeepSeconds = 12.0
@@ -116,8 +116,9 @@ func PlanCut(words []Word, limit float64) (Cut, bool) {
 	}
 	// When the transcript runs to the very end of a clip cut at the limit,
 	// its last word is where the DATA ends, not a boundary: a reference that
-	// stops there makes the model replay that word ("...things happening."
-	// -> "happening, Oxay is ready", 2 of 3 runs on en-william). Boundaries
+	// stops there makes the model replay that word (a measured reference
+	// ending "...wonderful things happening." opened 2 of 3 requests with
+	// "happening"). Boundaries
 	// are then sought before it.
 	hi := last
 	if last == len(words)-1 && words[last].E >= limit-dataEndSlackSeconds {

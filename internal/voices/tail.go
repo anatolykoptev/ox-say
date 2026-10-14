@@ -5,8 +5,8 @@ const (
 	// the end of the transcript. The bleed this guards against is the ref_text
 	// tail past the audio: a reference that ends in words the clip never says
 	// makes the model speak them. An overall similarity ratio cannot see it
-	// when the overrun is under a fifth of the text (en-deniro, en-william and
-	// en-daniel: 10, 5 and 3 words over, ratios 0.88-0.95, all still bleeding).
+	// when the overrun is under a fifth of the text (measured references
+	// that ran 11, 6 and 4 words over scored 0.88-0.95 and still bled).
 	anchorWords = 3
 	// anchorWindow is how far from the end of the transcript the anchor may
 	// start: room for ASR dropping or splitting a word, not for a missing

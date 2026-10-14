@@ -40,7 +40,7 @@ func TestDiagnose(t *testing.T) {
 		{"just under cap tolerance", Voice{RefText: "a b c"}, 19.96, true},
 		{"too fast", Voice{RefText: words90()}, 13, true},
 		{"70 words in 13 s", Voice{RefText: strings.TrimSpace(strings.Repeat("w ", 70))}, 13, true},
-		{"emma: a real fast reader, 53 words in 12.98 s", Voice{RefText: strings.TrimSpace(strings.Repeat("w ", 53))}, 12.98, false},
+		{"a real fast reader, 53 words in 12.98 s", Voice{RefText: strings.TrimSpace(strings.Repeat("w ", 53))}, 12.98, false},
 		{"healthy", Voice{RefText: strings.TrimSpace(strings.Repeat("w ", 11))}, 5.4, false},
 		{"at cap but no text", Voice{}, 20, false},
 		{"slow russian", Voice{RefText: strings.TrimSpace(strings.Repeat("w ", 18))}, 17.2, false},
@@ -58,18 +58,18 @@ func TestDiagnose(t *testing.T) {
 // 100 (detection disabled) -> RED (nothing repaired).
 func TestRepairCappedVoice(t *testing.T) {
 	s, _ := newStore(t)
-	seedVoice(t, s, "snakes", 20, words90())
+	seedVoice(t, s, "longref", 20, words90())
 	calls := 0
 	s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), &calls))
 
-	r, err := s.PrepareRepair(context.Background(), "snakes")
+	r, err := s.PrepareRepair(context.Background(), "longref")
 	if err != nil || r == nil {
 		t.Fatalf("PrepareRepair = %v, %v; want a repair", r, err)
 	}
 	if err := r.Apply(); err != nil {
 		t.Fatal(err)
 	}
-	v, err := s.Get("snakes")
+	v, err := s.Get("longref")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,18 +79,18 @@ func TestRepairCappedVoice(t *testing.T) {
 	if v.Created.Format("2006-01-02") != "2026-10-04" {
 		t.Fatalf("Created not preserved: %v", v.Created)
 	}
-	if d, _ := WAVSeconds(s.WAVPath("snakes")); d > MaxRefSeconds+0.01 || d < 15 {
+	if d, _ := WAVSeconds(s.WAVPath("longref")); d > MaxRefSeconds+0.01 || d < 15 {
 		t.Fatalf("repaired clip is %.2f s", d)
 	}
-	old, err := os.ReadFile(s.backupPath("snakes", ".json"))
+	old, err := os.ReadFile(s.backupPath("longref", ".json"))
 	if err != nil || !strings.Contains(string(old), words90()) {
 		t.Fatalf("backup json missing or altered: %v %q", err, old)
 	}
-	if d, err := WAVSeconds(s.backupPath("snakes", ".wav")); err != nil || math.Abs(d-20) > 0.01 {
+	if d, err := WAVSeconds(s.backupPath("longref", ".wav")); err != nil || math.Abs(d-20) > 0.01 {
 		t.Fatalf("backup wav = %.2f s, %v; want the original 20 s", d, err)
 	}
 	list, _ := s.List()
-	if len(list) != 1 || list[0].Name != "snakes" {
+	if len(list) != 1 || list[0].Name != "longref" {
 		t.Fatalf("List = %+v; the .orig backup must not appear as a voice", list)
 	}
 }
@@ -99,20 +99,20 @@ func TestRepairCappedVoice(t *testing.T) {
 // and its audio left whole.
 func TestRepairFastTranscriptKeepsAudio(t *testing.T) {
 	s, _ := newStore(t)
-	seedVoice(t, s, "emma", 12.98, strings.TrimSpace(strings.Repeat("w ", 70)))
+	seedVoice(t, s, "fastref", 12.98, strings.TrimSpace(strings.Repeat("w ", 70)))
 	calls := 0
 	s.SetTranscriber(fixedWords(speechWords(35, 0.3, 0.07, 9), &calls))
-	r, err := s.PrepareRepair(context.Background(), "emma")
+	r, err := s.PrepareRepair(context.Background(), "fastref")
 	if err != nil || r == nil {
 		t.Fatalf("PrepareRepair = %v, %v", r, err)
 	}
 	if err := r.Apply(); err != nil {
 		t.Fatal(err)
 	}
-	if d, _ := WAVSeconds(s.WAVPath("emma")); math.Abs(d-12.98) > 0.02 {
+	if d, _ := WAVSeconds(s.WAVPath("fastref")); math.Abs(d-12.98) > 0.02 {
 		t.Fatalf("audio changed: %.2f s", d)
 	}
-	v, _ := s.Get("emma")
+	v, _ := s.Get("fastref")
 	if n := len(strings.Fields(v.RefText)); n != 35 {
 		t.Fatalf("ref_text has %d words, want 35", n)
 	}
@@ -200,35 +200,35 @@ func TestRepairNonLatinLeftAlone(t *testing.T) {
 func TestRepairApplyRefusesChangedVoice(t *testing.T) {
 	cases := map[string]func(t *testing.T, s *Store){
 		"same text, new audio and created": func(t *testing.T, s *Store) {
-			meta := `{"name":"snakes","ref_text":"` + words90() + `","created":"2026-10-15T00:00:00Z"}`
-			if err := os.WriteFile(s.WAVPath("snakes"), testutil.SilentWAV(19), 0o644); err != nil {
+			meta := `{"name":"longref","ref_text":"` + words90() + `","created":"2026-10-15T00:00:00Z"}`
+			if err := os.WriteFile(s.WAVPath("longref"), testutil.SilentWAV(19), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(s.metaPath("snakes"), []byte(meta), 0o644); err != nil {
+			if err := os.WriteFile(s.metaPath("longref"), []byte(meta), 0o644); err != nil {
 				t.Fatal(err)
 			}
 		},
-		"new text": func(t *testing.T, s *Store) { seedVoice(t, s, "snakes", 20, "brand new transcript") },
+		"new text": func(t *testing.T, s *Store) { seedVoice(t, s, "longref", 20, "brand new transcript") },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
 			s, _ := newStore(t)
-			seedVoice(t, s, "snakes", 20, words90())
+			seedVoice(t, s, "longref", 20, words90())
 			s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), new(int)))
-			r, err := s.PrepareRepair(context.Background(), "snakes")
+			r, err := s.PrepareRepair(context.Background(), "longref")
 			if err != nil || r == nil {
 				t.Fatalf("PrepareRepair = %v, %v", r, err)
 			}
 			mutate(t, s)
-			before, _ := os.ReadFile(s.WAVPath("snakes"))
+			before, _ := os.ReadFile(s.WAVPath("longref"))
 			if err := r.Apply(); !errors.Is(err, ErrChanged) {
 				t.Fatalf("Apply = %v, want ErrChanged", err)
 			}
-			after, _ := os.ReadFile(s.WAVPath("snakes"))
+			after, _ := os.ReadFile(s.WAVPath("longref"))
 			if !bytes.Equal(before, after) {
 				t.Fatal("the re-added clip was overwritten")
 			}
-			if _, err := os.Stat(s.backupPath("snakes", ".json")); err == nil {
+			if _, err := os.Stat(s.backupPath("longref", ".json")); err == nil {
 				t.Fatal("backup written for a refused repair")
 			}
 		})
@@ -247,15 +247,15 @@ func TestRepairConvergesAfterCrashAtEveryStep(t *testing.T) {
 	}{
 		{"backup wav", func(_, n string) bool { return strings.HasSuffix(n, ".orig.wav") }},
 		{"backup json (marker)", func(_, n string) bool { return strings.HasSuffix(n, ".orig.json") }},
-		{"main wav", func(_, n string) bool { return strings.HasSuffix(n, "/snakes.wav") }},
-		{"main json", func(_, n string) bool { return strings.HasSuffix(n, "/snakes.json") }},
+		{"main wav", func(_, n string) bool { return strings.HasSuffix(n, "/longref.wav") }},
+		{"main json", func(_, n string) bool { return strings.HasSuffix(n, "/longref.json") }},
 	}
 	for _, st := range steps {
 		t.Run(st.name, func(t *testing.T) {
 			s, _ := newStore(t)
-			seedVoice(t, s, "snakes", 20, words90())
-			origWAV, _ := os.ReadFile(s.WAVPath("snakes"))
-			origJSON, _ := os.ReadFile(s.metaPath("snakes"))
+			seedVoice(t, s, "longref", 20, words90())
+			origWAV, _ := os.ReadFile(s.WAVPath("longref"))
+			origJSON, _ := os.ReadFile(s.metaPath("longref"))
 			tr := fixedWords(speechWords(60, 0.3, 0.1, 6), new(int))
 			s.SetTranscriber(tr)
 			s.rename = func(o, n string) error {
@@ -264,7 +264,7 @@ func TestRepairConvergesAfterCrashAtEveryStep(t *testing.T) {
 				}
 				return os.Rename(o, n)
 			}
-			r, err := s.PrepareRepair(context.Background(), "snakes")
+			r, err := s.PrepareRepair(context.Background(), "longref")
 			if err != nil || r == nil {
 				t.Fatalf("PrepareRepair = %v, %v", r, err)
 			}
@@ -281,27 +281,27 @@ func TestRepairConvergesAfterCrashAtEveryStep(t *testing.T) {
 			if err := s2.SweepTemp(); err != nil {
 				t.Fatal(err)
 			}
-			r2, err := s2.PrepareRepair(context.Background(), "snakes")
+			r2, err := s2.PrepareRepair(context.Background(), "longref")
 			if err != nil || r2 == nil {
 				t.Fatalf("after the crash PrepareRepair = %v, %v; want a repair (the voice is still broken)", r2, err)
 			}
 			if err := r2.Apply(); err != nil {
 				t.Fatal(err)
 			}
-			v, _ := s2.Get("snakes")
+			v, _ := s2.Get("longref")
 			if v.RefText == words90() || !strings.HasPrefix(v.RefText, "w0 w1") {
 				t.Fatalf("ref_text after convergence = %q", v.RefText)
 			}
-			if d, _ := WAVSeconds(s2.WAVPath("snakes")); d > MaxRefSeconds || d < 10 {
+			if d, _ := WAVSeconds(s2.WAVPath("longref")); d > MaxRefSeconds || d < 10 {
 				t.Fatalf("clip = %.2f s", d)
 			}
-			bw, _ := os.ReadFile(s2.backupPath("snakes", ".wav"))
-			bj, _ := os.ReadFile(s2.backupPath("snakes", ".json"))
+			bw, _ := os.ReadFile(s2.backupPath("longref", ".wav"))
+			bj, _ := os.ReadFile(s2.backupPath("longref", ".json"))
 			if !bytes.Equal(bw, origWAV) || !bytes.Equal(bj, origJSON) {
 				t.Fatal("the backup is not the byte-identical original pair")
 			}
 			// And now it is done: a further start does nothing.
-			if r3, err := s2.PrepareRepair(context.Background(), "snakes"); r3 != nil || err != nil {
+			if r3, err := s2.PrepareRepair(context.Background(), "longref"); r3 != nil || err != nil {
 				t.Fatalf("third pass = %v, %v; want nil, nil", r3, err)
 			}
 			left, _ := filepath.Glob(filepath.Join(s2.dir, ".normalize-*"))
@@ -320,42 +320,42 @@ func TestRepairConvergesAfterCrashAtEveryStep(t *testing.T) {
 // `haveBackup` (backup = done) -> RED.
 func TestRepairRetriesBrokenVoiceWithBackup(t *testing.T) {
 	s, _ := newStore(t)
-	seedVoice(t, s, "snakes", 20, words90())
+	seedVoice(t, s, "longref", 20, words90())
 	// a backup exists, main still has the original text (repair died after the marker)
-	if err := os.WriteFile(s.backupPath("snakes", ".wav"), testutil.SilentWAV(20), 0o644); err != nil {
+	if err := os.WriteFile(s.backupPath("longref", ".wav"), testutil.SilentWAV(20), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(s.backupPath("snakes", ".json"), []byte(`{"name":"snakes","ref_text":"`+words90()+`"}`), 0o644); err != nil {
+	if err := os.WriteFile(s.backupPath("longref", ".json"), []byte(`{"name":"longref","ref_text":"`+words90()+`"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), new(int)))
-	r, err := s.PrepareRepair(context.Background(), "snakes")
+	r, err := s.PrepareRepair(context.Background(), "longref")
 	if err != nil || r == nil || !r.Retry {
 		t.Fatalf("PrepareRepair = %+v, %v; want a retry", r, err)
 	}
 	if err := r.Apply(); err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := s.Get("snakes"); v.RefText == words90() {
+	if v, _ := s.Get("longref"); v.RefText == words90() {
 		t.Fatal("still broken after the retry")
 	}
-	if bj, _ := os.ReadFile(s.backupPath("snakes", ".json")); !strings.Contains(string(bj), words90()) {
+	if bj, _ := os.ReadFile(s.backupPath("longref", ".json")); !strings.Contains(string(bj), words90()) {
 		t.Fatal("backup json overwritten by the retry")
 	}
 }
 
 func TestRemoveDeletesRepairBackup(t *testing.T) {
 	s, _ := newStore(t)
-	seedVoice(t, s, "snakes", 20, words90())
+	seedVoice(t, s, "longref", 20, words90())
 	for _, ext := range []string{".wav", ".json"} {
-		if err := os.WriteFile(s.backupPath("snakes", ext), []byte("x"), 0o644); err != nil {
+		if err := os.WriteFile(s.backupPath("longref", ext), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.Remove("snakes"); err != nil {
+	if err := s.Remove("longref"); err != nil {
 		t.Fatal(err)
 	}
-	left, _ := filepath.Glob(filepath.Join(s.dir, "snakes*"))
+	left, _ := filepath.Glob(filepath.Join(s.dir, "longref*"))
 	if len(left) != 0 {
 		t.Fatalf("files left after Remove: %v", left)
 	}
@@ -379,24 +379,24 @@ func TestAddDropsStaleBackup(t *testing.T) {
 
 func TestRepairWithoutTranscriber(t *testing.T) {
 	s, _ := newStore(t)
-	seedVoice(t, s, "snakes", 20, words90())
-	if _, err := s.PrepareRepair(context.Background(), "snakes"); !errors.Is(err, ErrNoTranscriber) {
+	seedVoice(t, s, "longref", 20, words90())
+	if _, err := s.PrepareRepair(context.Background(), "longref"); !errors.Is(err, ErrNoTranscriber) {
 		t.Fatalf("err = %v, want ErrNoTranscriber", err)
 	}
-	if v, _ := s.Get("snakes"); v.RefText != words90() {
+	if v, _ := s.Get("longref"); v.RefText != words90() {
 		t.Fatal("voice modified without a transcriber")
 	}
-	if _, err := os.Stat(filepath.Join(s.dir, "snakes.orig.json")); err == nil {
+	if _, err := os.Stat(filepath.Join(s.dir, "longref.orig.json")); err == nil {
 		t.Fatal("backup written for a repair that did not happen")
 	}
 }
 
-// A real at-cap voice whose text runs a few words past its audio must be
-// repaired (the overall word ratio alone calls it healthy: 0.88).
+// An at-cap voice whose text runs a few words past its audio must be repaired
+// (the overall word ratio alone calls it healthy: 0.84-0.9).
 // Mutation: internal/voices/repair.go plan — call TextsMatch instead of
-// TranscriptMatches -> RED for deniro, william, daniel.
-func TestRepairRealOverrunVoices(t *testing.T) {
-	raw, err := os.ReadFile("testdata/real_voices.json")
+// TranscriptMatches -> RED for capped-overrun-11, -6 and -4.
+func TestRepairTailOverrunVoices(t *testing.T) {
+	raw, err := os.ReadFile("testdata/transcript_tails.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +408,7 @@ func TestRepairRealOverrunVoices(t *testing.T) {
 	if err := json.Unmarshal(raw, &fixtures); err != nil {
 		t.Fatal(err)
 	}
-	wantRepair := map[string]bool{"en-snakes": true, "en-geralt": true, "en-deniro": true, "en-william": true, "en-daniel": true}
+	wantRepair := map[string]bool{"capped-overrun-35": true, "capped-overrun-48": true, "capped-overrun-11": true, "capped-overrun-6": true, "capped-overrun-4": true}
 	for _, f := range fixtures {
 		t.Run(f.Name, func(t *testing.T) {
 			s, _ := newStore(t)
@@ -445,7 +445,7 @@ func TestRepairRealOverrunVoices(t *testing.T) {
 // Mutation: internal/voices/repair.go Apply — iterate {".json", ".wav"} -> RED.
 func TestRepairBackupOrderMarkerLast(t *testing.T) {
 	s, _ := newStore(t)
-	seedVoice(t, s, "snakes", 20, words90())
+	seedVoice(t, s, "longref", 20, words90())
 	var order []string
 	s.rename = func(o, n string) error {
 		if strings.Contains(filepath.Base(n), ".orig.") {
@@ -454,7 +454,7 @@ func TestRepairBackupOrderMarkerLast(t *testing.T) {
 		return os.Rename(o, n)
 	}
 	s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), new(int)))
-	r, err := s.PrepareRepair(context.Background(), "snakes")
+	r, err := s.PrepareRepair(context.Background(), "longref")
 	if err != nil || r == nil {
 		t.Fatalf("PrepareRepair = %v, %v", r, err)
 	}

@@ -39,11 +39,11 @@ func TestServeRepairsBrokenVoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	long := strings.TrimSpace(strings.Repeat("word ", 90))
-	if err := os.WriteFile(filepath.Join(vdir, "snakes.wav"), testutil.SilentWAV(20), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(vdir, "longref.wav"), testutil.SilentWAV(20), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	meta := `{"name":"snakes","ref_text":"` + long + `","created":"2026-10-04T14:28:00Z"}`
-	if err := os.WriteFile(filepath.Join(vdir, "snakes.json"), []byte(meta), 0o644); err != nil {
+	meta := `{"name":"longref","ref_text":"` + long + `","created":"2026-10-04T14:28:00Z"}`
+	if err := os.WriteFile(filepath.Join(vdir, "longref.json"), []byte(meta), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -77,7 +77,7 @@ func TestServeRepairsBrokenVoice(t *testing.T) {
 			return err
 		}
 		for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-			if v, err := store.Get("snakes"); err == nil && v.RefText != long {
+			if v, err := store.Get("longref"); err == nil && v.RefText != long {
 				repaired = true
 				return nil
 			}
@@ -92,7 +92,7 @@ func TestServeRepairsBrokenVoice(t *testing.T) {
 	if !repaired {
 		t.Fatal("serve never repaired the broken voice")
 	}
-	if _, err := os.Stat(filepath.Join(vdir, "snakes.orig.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(vdir, "longref.orig.json")); err != nil {
 		t.Fatalf("no backup beside the repaired voice: %v", err)
 	}
 }
