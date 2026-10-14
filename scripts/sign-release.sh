@@ -2,7 +2,7 @@
 # Sign the dictation app with a Developer ID, notarize it with Apple, staple the
 # ticket, and put it into a release package in place of the unsigned one:
 #   scripts/sign-release.sh <dist-dir> <OxSayDictation.app>
-# <dist-dir> holds ox-say-macos-x86_64.tar.gz + SHA256SUMS; the app is one built
+# <dist-dir> holds ox-say-macos-<arch>.tar.gz (this Mac's architecture) + SHA256SUMS; the app is one built
 # from this checkout by app/dictation/build.sh, not the one in the package, so
 # the key vouches only for first-party code built next to it.
 #
@@ -22,7 +22,14 @@ set -euo pipefail
 dist=${1:?usage: $0 <dist-dir> <OxSayDictation.app>}
 src_app=${2:?usage: $0 <dist-dir> <OxSayDictation.app>}
 dist=$(cd "$dist" && pwd -P)
-asset=ox-say-macos-x86_64.tar.gz
+# The package of this Mac's architecture: the app signed below is built here
+# (app/dictation/build.sh), so signing runs on the architecture it packs.
+arch=$(uname -m)
+case $arch in
+    x86_64 | arm64) ;;
+    *) echo "sign-release.sh: unsupported architecture $arch" >&2; exit 1 ;;
+esac
+asset=ox-say-macos-$arch.tar.gz
 bundle_id=io.github.anatolykoptev.ox-say.dictation
 identity=${SIGN_IDENTITY:?set SIGN_IDENTITY to the Developer ID Application identity}
 team=${identity##*(}

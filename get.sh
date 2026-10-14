@@ -1,5 +1,5 @@
 #!/bin/sh
-# ox-say installer for Intel Macs:
+# ox-say installer for Macs (Apple Silicon and Intel):
 #   curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | sh
 #   curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | sh -s -- --version v0.2.0
 #
@@ -16,7 +16,6 @@ set -eu
 
 main() {
     repo=anatolykoptev/ox-say
-    asset=ox-say-macos-x86_64.tar.gz
     version=latest
 
     while [ $# -gt 0 ]; do
@@ -43,11 +42,15 @@ main() {
         echo "ox-say runs on macOS only." >&2
         exit 1
     fi
-    # Under Rosetta, uname -m says x86_64 on an Apple Silicon Mac.
-    if [ "$(uname -m)" != x86_64 ] || [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then
-        echo "ox-say is built for Intel Macs (x86_64). On Apple Silicon, MLX-based speech tools run natively." >&2
-        exit 1
+    # The hardware decides, not the shell: hw.optional.arm64 is 1 on Apple
+    # Silicon even in a Rosetta shell, where uname -m says x86_64, and the
+    # native arm64 build is the one to install there.
+    if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
+        arch=arm64
+    else
+        arch=x86_64
     fi
+    asset=ox-say-macos-$arch.tar.gz
     # Refuse before downloading ~3 GB into a machine that cannot run it.
     macos=$(sw_vers -productVersion)
     case ${macos%%.*} in
@@ -57,10 +60,12 @@ main() {
         echo "ox-say needs macOS 13 or later; this is $macos." >&2
         exit 1
     fi
-    case $(sysctl -n machdep.cpu.leaf7_features 2>/dev/null) in
-        *AVX2*) : ;;
-        *) echo "ox-say's engines need a CPU with AVX2; this one does not have it." >&2; exit 1 ;;
-    esac
+    if [ "$arch" = x86_64 ]; then
+        case $(sysctl -n machdep.cpu.leaf7_features 2>/dev/null) in
+            *AVX2*) : ;;
+            *) echo "ox-say's engines need a CPU with AVX2; this one does not have it." >&2; exit 1 ;;
+        esac
+    fi
     for tool in curl shasum tar; do
         command -v "$tool" >/dev/null || { echo "ox-say: $tool not found" >&2; exit 1; }
     done
@@ -86,7 +91,13 @@ main() {
     trap 'cleanup; exit 143' TERM
 
     echo "downloading ox-say ($version)"
-    curl -fL --retry 3 --progress-bar -o "$tmp/$asset" "$url/$asset"
+    if ! curl -fL --retry 3 --progress-bar -o "$tmp/$asset" "$url/$asset"; then
+        echo "ox-say: could not download $asset for $version." >&2
+        if [ "$arch" = arm64 ]; then
+            echo "This release may have no Apple Silicon package: pick a newer version, or build from source with scripts/install.sh." >&2
+        fi
+        exit 1
+    fi
     curl -fsSL --retry 3 -o "$tmp/SHA256SUMS" "$url/SHA256SUMS"
     want=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' "$tmp/SHA256SUMS")
     got=$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')
