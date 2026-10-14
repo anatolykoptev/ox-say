@@ -1,7 +1,8 @@
 # Performance
 
-Measured by `cmd/ox-say-bench` on the distribution engines (`OX_SAY_DIST=1 engine/build.sh`),
-each spawned through the daemon's supervisor on loopback.
+Measured by `cmd/ox-say-bench` on the distribution engines (`OX_SAY_DIST=1 engine/build.sh`;
+the Intel section used the signed x86_64 release package instead), each spawned through the
+daemon's supervisor on loopback.
 
 - Clips are macOS `say` voices (Samantha for English, Milena for the Russian reference), cut with
   ffmpeg.
@@ -84,3 +85,78 @@ measurement. The 1.7B Q8 talker is not fetched by
 - ox-stt (Metal) first start (Metal library compile, excluded from the tables): 0.23 s
 - TTS qwen-talker-0.6b-base-Q8_0.gguf: first synthesis after start took 1.48 s (excluded from the medians)
 - TTS qwen-talker-1.7b-base-Q8_0.gguf: first synthesis after start took 1.64 s (excluded from the medians)
+
+## Intel Mac: Core i9-9880H + Radeon Pro 5500M (4 GB), macOS 26.6.2 (2026-10-14)
+
+The same bench on the signed x86_64 release engines built by `release.yml` on `macos-15-intel`
+from `main` at 56a700c, so these rows are comparable with the M5 section. Two host lines below
+are corrected tool artifacts: the bench reads `engine/pins.env` from its working directory and
+printed `?` (the values are the pins of `main` at 56a700c), and Intel Macs have no performance
+levels, so the CPU is given as 8 cores / 16 threads. The Metal columns were measured with both
+engines allowed on the GPU at once (the bench forces unified-memory behaviour); on a discrete
+4 GB card the daemon by default keeps the resident STT server on the CPU (`-ng`) and gives the
+GPU lease to the TTS engine (see "Intel Macs and Apple Silicon" and the memory model under Usage
+in the README), so the CPU column is what the Intel daemon actually runs for resident STT today.
+First starts compile the Metal library for the AMD GPU — 56.6 s for `tts-server`, 47.4 s for
+`ox-stt` on this run — and macOS caches it afterwards. This Mac has only the 0.6B talker
+installed, so there are no 1.7B rows.
+
+### Host
+
+- Chip: Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz
+- Cores: 8 (16 threads)
+- Memory (bytes): 17179869184
+- macOS: 26.6.2
+- Engine pins (engine/pins.env): QWENTTS_COMMIT=6fae929, GGML_COMMIT=40e16e4, WHISPER_COMMIT=6e4ab85
+- Date: 2026-10-14
+
+### Text-to-speech: tts-server (Qwen3-TTS) on Metal
+
+| Model | Voice | Language | Start (s) | First audio (ms) | RTF | Peak RSS (MB) | Peak footprint |
+|---|---|---|---|---|---|---|---|
+| qwen-talker-0.6b-base-Q8_0.gguf | default | English | 2.6 | 113 | 0.58 | 3149 | 1.7G |
+| qwen-talker-0.6b-base-Q8_0.gguf | cloned | English | 2.6 | 250 | 0.61 | 3149 | 1.7G |
+| qwen-talker-0.6b-base-Q8_0.gguf | default | Russian | 2.6 | 133 | 0.59 | 3149 | 1.7G |
+| qwen-talker-0.6b-base-Q8_0.gguf | cloned | Russian | 2.6 | 255 | 0.61 | 3149 | 1.7G |
+
+### Speech-to-text: ox-stt, Parakeet TDT 0.6B v3 q8_0
+
+| Measurement | Metal | CPU (-ng) |
+|---|---|---|
+| Server start (spawn to ready) | 0.83 s | 0.77 s |
+| First call after start, 30 s clip † | 1.24 s (24× RT) | 2.42 s (12× RT) |
+| Whole clip 5 s, warm | 0.21 s (24× RT) | 0.67 s (7× RT) |
+| Whole clip 15 s, warm | 0.61 s (25× RT) | 1.29 s (12× RT) |
+| Whole clip 30 s, warm | 1.23 s (24× RT) | 2.32 s (13× RT) |
+| Whole clip 60 s, warm | 2.50 s (24× RT) | 5.05 s (12× RT) |
+| Whole clip 120 s, warm | 5.01 s (24× RT) | 10.13 s (12× RT) |
+| Whole clip 300 s, warm | 12.54 s (24× RT) | 26.88 s (11× RT) |
+| Daemon path (ffmpeg + server), 60 s clip, warm | 2.65 s (23× RT) | 5.62 s (11× RT) |
+| First call after 2m0s idle, 60 s clip † | 2.38 s (25× RT) | 4.76 s (13× RT) |
+| Session /finish after 15 s streamed in real time | 0.14 s | 0.51 s |
+| CLI, 360 s clip, model load included † | 60.80 s (6× RT) | 30.20 s (12× RT) |
+| Peak RSS (ps), resident server | 879 MB | 927 MB |
+| Peak physical footprint (vmmap), resident server | 838.6M | 908.6M |
+| Whole clip 30 s while tts-server synthesizes | 2.66 s (11× RT) | — |
+
+† single run; every other latency row is the median of -runs warm runs.
+
+### Notes
+
+- environment: no GGML_* or OX_SAY_* variables set
+- tts-server first start (includes any Metal library compile; macOS caches compiled libraries, so later starts are fast; excluded from the tables): 56.55 s
+- ox-stt (Metal) first start (includes any Metal library compile; macOS caches compiled libraries, so later starts are fast; excluded from the tables): 47.38 s
+- TTS qwen-talker-0.6b-base-Q8_0.gguf: first synthesis after start took 3.60 s (excluded from the medians)
+
+### What the numbers say
+
+- Resident STT: Metal is about 2× faster than CPU while the GPU is free (60 s clip: 2.50 s vs
+  5.05 s), but while `tts-server` synthesizes, a 30 s Metal decode slows to 2.66 s (1.23 s warm)
+  — slower than the CPU's 2.32 s warm on the same clip. The CPU default for the resident server
+  on a discrete card is the right trade while TTS is busy.
+- The per-call CLI on Metal (360 s clip, model load included) took 60.8 s against 30.2 s on CPU:
+  per-process Metal start-up on this card dominates.
+- TTS with the 0.6B talker runs faster than real time (RTF 0.58–0.61; first audio byte
+  113–255 ms).
+- M5 Pro vs this Intel Mac on the same rows: 60 s whole-clip Metal decode 0.38 s vs 2.50 s;
+  TTS 0.6B RTF 0.22 vs ~0.6.
