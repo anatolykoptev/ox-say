@@ -286,6 +286,18 @@ func TestPlanCut(t *testing.T) {
 			wantOK:   true,
 		},
 		{
+			name: "a transcript cut off at the limit does not end on its last word",
+			words: func() []Word {
+				w := speechWords(70, 0.28, 0.0, 0) // runs to ~19.6 s: the data end
+				w[60].W = "club,"                  // a clause end at 17.08 s
+				w[69].W = "happening."             // sentence end, but it IS the data end
+				return w
+			}(),
+			wantLast: 60,
+			wantAt:   17.08,
+			wantOK:   true,
+		},
+		{
 			name:   "nothing ends within the cap",
 			words:  []Word{{W: "a", S: 0, E: 25}},
 			wantOK: false,

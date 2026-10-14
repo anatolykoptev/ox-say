@@ -39,6 +39,9 @@ const (
 	// sentencePauseSeconds is the pause that counts as a sentence end even
 	// without punctuation.
 	sentencePauseSeconds = 0.5
+	// dataEndSlackSeconds is how close to the limit the last transcript word
+	// must end for the transcript to count as truncated by the limit.
+	dataEndSlackSeconds = 0.5
 	// minKeepSeconds is the least audio a boundary-preferring cut keeps: a
 	// reference shorter than this conditions the voice poorly.
 	minKeepSeconds = 6.0
@@ -89,8 +92,9 @@ type Cut struct {
 // every word that ends at or before limit. A reference that stops mid-sentence
 // invites the model to carry on, so the cut prefers, in order: the latest
 // sentence end (terminal punctuation, or a pause of at least
-// sentencePauseSeconds) at minKeepSeconds or later; the latest pause of at
-// least minPauseSeconds at minKeepSeconds or later; the last word. A short
+// sentencePauseSeconds) at minKeepSeconds or later; the latest clause end
+// (comma, semicolon, colon); the latest pause of at least minPauseSeconds;
+// the last word. A short
 // tail follows the word, at most half the gap to the next word so it never
 // reaches into it (STT word times are quantised to ~80 ms). ok is false when
 // no word ends within limit.
@@ -104,16 +108,31 @@ func PlanCut(words []Word, limit float64) (Cut, bool) {
 	if last < 0 {
 		return Cut{}, false
 	}
-	pick := latest(words, last, func(i int) bool { return isSentenceEnd(words, i) })
+	// When the transcript runs to the very end of a clip cut at the limit,
+	// its last word is where the DATA ends, not a boundary: a reference that
+	// stops there makes the model replay that word ("...things happening."
+	// -> "happening, Oxay is ready", 2 of 3 runs on en-william). Boundaries
+	// are then sought before it.
+	hi := last
+	if last == len(words)-1 && words[last].E >= limit-dataEndSlackSeconds {
+		hi = last - 1
+	}
+	pick := latest(words, hi, func(i int) bool { return isSentenceEnd(words, i) })
 	if pick < 0 {
-		pick = latest(words, last, func(i int) bool { return gapAfter(words, i) >= minPauseSeconds })
+		pick = latest(words, hi, func(i int) bool { return isClauseEnd(words, i) })
+	}
+	if pick < 0 {
+		pick = latest(words, hi, func(i int) bool { return gapAfter(words, i) >= minPauseSeconds })
 	}
 	if pick < 0 {
 		pick = last
 	}
-	tail := cutTailSeconds
+	// No next word means the transcript ends here, but the audio may run on:
+	// at the cap, the onset of a word the STT did not complete. Keep no tail
+	// there rather than carry that onset into the reference.
+	tail := 0.0
 	if pick+1 < len(words) {
-		tail = max(0, min(tail, (words[pick+1].S-words[pick].E)/2))
+		tail = max(0, min(cutTailSeconds, (words[pick+1].S-words[pick].E)/2))
 	}
 	return Cut{At: min(words[pick].E+tail, limit), Text: joinWords(words[:pick+1]), Last: pick}, true
 }
@@ -148,6 +167,12 @@ func (c Cut) Covers(words []Word) bool {
 		prev = max(prev, w.E)
 	}
 	return true
+}
+
+// isClauseEnd reports a comma, semicolon or colon on words[i].
+func isClauseEnd(words []Word, i int) bool {
+	t := []rune(strings.TrimSpace(words[i].W))
+	return len(t) > 0 && strings.ContainsRune(",;:", t[len(t)-1])
 }
 
 // isSentenceEnd reports terminal punctuation on words[i] or a pause of at
