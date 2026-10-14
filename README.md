@@ -342,9 +342,14 @@ its microphone and Accessibility permissions across updates. A build from
 source is signed ad hoc unless `OX_SAY_SIGN_IDENTITY` names a Developer ID
 identity: macOS then ties the permissions to the exact build and asks again
 after every rebuild, and a stale entry in System Settings → Privacy & Security
-→ Accessibility looks enabled but no longer applies (remove it and add the app
-again). The same happens once when updating from ox-say 0.1.x, whose app was
-signed ad hoc. See the header of `app/dictation/build.sh`.
+→ Accessibility looks enabled but no longer applies. While that is the state
+the app's menu offers **Allow pasting… (Accessibility is off)** at the top: it
+resets this app's own Accessibility entry (`tccutil reset Accessibility
+<bundle id>`) so the permission prompt can store a grant matching the running
+build, then re-asks and opens the pane. If the item is missing or the reset
+fails, remove OxSayDictation with − in the pane and add it again. The same
+happens once when updating from ox-say 0.1.x, whose app was signed ad hoc. See
+the header of `app/dictation/build.sh`.
 
 ## Install
 

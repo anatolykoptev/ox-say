@@ -25,7 +25,7 @@ public enum OutputPolicy {
             return .clipboardOnly(reason: "You switched apps while it was transcribing, so the text was not pasted. It is on the clipboard.")
         }
         if !accessibilityTrusted {
-            return .clipboardOnly(reason: "Pasting needs the Accessibility permission (System Settings → Privacy & Security → Accessibility). The text is on the clipboard.")
+            return .clipboardOnly(reason: "Pasting needs the Accessibility permission — choose \"Allow pasting…\" in this app's menu. The text is on the clipboard.")
         }
         return .paste
     }

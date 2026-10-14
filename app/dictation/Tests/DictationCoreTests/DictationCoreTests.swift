@@ -181,9 +181,11 @@ final class OutputPolicyTests: XCTestCase {
     }
 
     func testWithoutAccessibilityTheTextStaysOnTheClipboard() {
-        guard case .clipboardOnly = OutputPolicy.decide(secureInput: false, accessibilityTrusted: false) else {
+        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: false, accessibilityTrusted: false) else {
             return XCTFail("without Accessibility a posted Cmd+V is dropped silently")
         }
+        XCTAssertTrue(reason.contains("Allow pasting"),
+                      "the notice must point at the menu item that repairs the grant")
     }
 
     // Mutation: ignore `focusMoved` in OutputPolicy.decide -> RED (the text is
@@ -196,6 +198,29 @@ final class OutputPolicyTests: XCTestCase {
 
     func testPastesOtherwise() {
         XCTAssertEqual(OutputPolicy.decide(secureInput: false, accessibilityTrusted: true), .paste)
+    }
+}
+
+final class AccessibilityRepairTests: XCTestCase {
+    // Mutations: emit "All" instead of "Accessibility" in
+    // AccessibilityRepair.resetArguments -> RED (it would reset every app's
+    // Accessibility entries); drop the empty-id guard -> RED below.
+    func testTheResetIsScopedToThisAppsOwnAccessibilityEntry() {
+        XCTAssertEqual(AccessibilityRepair.resetArguments(bundleID: "io.github.anatolykoptev.ox-say.dictation"),
+                       ["reset", "Accessibility", "io.github.anatolykoptev.ox-say.dictation"])
+    }
+
+    func testNoUsableBundleIDNoReset() {
+        XCTAssertNil(AccessibilityRepair.resetArguments(bundleID: nil))
+        XCTAssertNil(AccessibilityRepair.resetArguments(bundleID: ""))
+        XCTAssertNil(AccessibilityRepair.resetArguments(bundleID: "  \n\t "))
+    }
+
+    // The item exists only while the grant does not work; it is recomputed on
+    // every menu open.
+    func testTheRepairItemIsOfferedOnlyWhileUntrusted() {
+        XCTAssertTrue(AccessibilityRepair.shouldOffer(accessibilityTrusted: false))
+        XCTAssertFalse(AccessibilityRepair.shouldOffer(accessibilityTrusted: true))
     }
 }
 

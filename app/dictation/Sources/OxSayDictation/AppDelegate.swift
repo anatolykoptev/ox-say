@@ -11,6 +11,10 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    /// Repair for a stale Accessibility grant; sits at the top of the menu
+    /// only while the permission does not work (recomputed each open).
+    private let allowPastingItem = NSMenuItem(title: "Allow pasting… (Accessibility is off)",
+                                              action: #selector(allowPasting), keyEquivalent: "")
     private let toggleItem = NSMenuItem(title: "Toggle mode (press to start, press again to stop)", action: #selector(toggleMode), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Start at login", action: #selector(toggleLogin), keyEquivalent: "")
     private var shortcutItems: [Shortcut: NSMenuItem] = [:]
@@ -294,6 +298,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         speakHint.title = speakActive.map { "Speak: \($0.title) on a selection, or right-click → Services" }
             ?? "Speak: select text, then right-click → Services"
+        // A grant recorded for a differently-signed build (an ad-hoc build's
+        // cdhash, an older release) never matches again and the Settings
+        // toggle cannot fix it; the repair item is offered only while the
+        // grant does not work.
+        if AccessibilityRepair.shouldOffer(accessibilityTrusted: AXIsProcessTrusted()) {
+            if menu.items.first !== allowPastingItem {
+                menu.insertItem(allowPastingItem, at: 0)
+            }
+        } else if let index = menu.items.firstIndex(of: allowPastingItem) {
+            menu.removeItem(at: index)
+        }
     }
 
     private func buildMenu() {
@@ -301,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         menu.addItem(statusLine)
         menu.addItem(.separator())
+        allowPastingItem.target = self
         let shortcuts = NSMenu()
         shortcuts.autoenablesItems = false // or AppKit re-enables the greyed-out keys
         for choice in Shortcut.allCases {
@@ -671,5 +687,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openAccessibilitySettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    /// "Allow pasting…": reset this app's own Accessibility entry so the trust
+    /// prompt can store a grant matching the running build, then re-ask and
+    /// open the pane. The reset is scoped to this app's bundle id and the one
+    /// service, and offered only while the entry does not work — nothing
+    /// else's TCC state is touched.
+    @objc private func allowPasting() {
+        let failure = "Could not refresh the Accessibility permission: remove OxSayDictation with − in System Settings → Privacy & Security → Accessibility, then add it again."
+        guard let arguments = AccessibilityRepair.resetArguments(bundleID: Bundle.main.bundleIdentifier) else {
+            return notice(failure)
+        }
+        let reset = Process()
+        reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        reset.arguments = arguments
+        do {
+            try reset.run()
+        } catch {
+            return notice(failure)
+        }
+        reset.waitUntilExit()
+        guard reset.terminationStatus == 0 else {
+            return notice(failure)
+        }
+        let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(prompt)
+        openAccessibilitySettings()
     }
 }
