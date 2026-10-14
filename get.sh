@@ -42,22 +42,34 @@ main() {
         echo "ox-say runs on macOS only." >&2
         exit 1
     fi
-    # The hardware decides, not the shell: hw.optional.arm64 is 1 on Apple
-    # Silicon even in a Rosetta shell, where uname -m says x86_64, and the
-    # native arm64 build is the one to install there.
-    if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
+    # An arm64 shell means Apple Silicon outright (an arm64 binary only runs
+    # there) — answer without sysctl, which a stripped-down PATH may lack.
+    # In a Rosetta shell uname -m says x86_64 while the hardware is arm64;
+    # hw.optional.arm64 reads the hardware and still picks the arm64 build.
+    if [ "$(uname -m)" = arm64 ] || [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
         arch=arm64
     else
         arch=x86_64
     fi
     asset=ox-say-macos-$arch.tar.gz
-    # Refuse before downloading ~3 GB into a machine that cannot run it.
+    # Refuse before downloading ~3 GB into a machine that cannot run it: the
+    # engines weak-import Accelerate's new-LAPACK cblas, which exists only on
+    # macOS 13.3+ — on 13.0-13.2 it resolves to NULL and the first BLAS call
+    # crashes.
     macos=$(sw_vers -productVersion)
-    case ${macos%%.*} in
+    macos_major=${macos%%.*}
+    case $macos_major in
         '' | *[!0-9]*) echo "ox-say: could not determine the macOS version" >&2; exit 1 ;;
     esac
-    if [ "${macos%%.*}" -lt 13 ]; then
-        echo "ox-say needs macOS 13 or later; this is $macos." >&2
+    macos_minor=0
+    case $macos in
+        *.*) macos_minor=${macos#*.}; macos_minor=${macos_minor%%.*} ;;
+    esac
+    case $macos_minor in
+        '' | *[!0-9]*) macos_minor=0 ;;
+    esac
+    if [ "$macos_major" -lt 13 ] || { [ "$macos_major" -eq 13 ] && [ "$macos_minor" -lt 3 ]; }; then
+        echo "ox-say needs macOS 13.3 or later; this is $macos." >&2
         exit 1
     fi
     if [ "$arch" = x86_64 ]; then
@@ -66,6 +78,17 @@ main() {
             *) echo "ox-say's engines need a CPU with AVX2; this one does not have it." >&2; exit 1 ;;
         esac
     fi
+    # The dictation app's updater runs this script under launchd's default
+    # PATH (/usr/bin:/bin:/usr/sbin:/sbin), which hides a Homebrew ffmpeg. Put
+    # the two standard prefixes back, when they exist, for the tool checks and
+    # for install-release.sh, which inherits this PATH.
+    for prefix in /opt/homebrew/bin /usr/local/bin; do
+        if [ -d "$prefix" ]; then
+            PATH="$prefix:$PATH"
+        fi
+    done
+    export PATH
+
     for tool in curl shasum tar; do
         command -v "$tool" >/dev/null || { echo "ox-say: $tool not found" >&2; exit 1; }
     done
@@ -101,8 +124,12 @@ main() {
     curl -fsSL --retry 3 -o "$tmp/SHA256SUMS" "$url/SHA256SUMS"
     want=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' "$tmp/SHA256SUMS")
     got=$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')
-    if [ -z "$want" ] || [ "$want" != "$got" ]; then
-        echo "ox-say: checksum mismatch for $asset (want ${want:-none}, got $got); nothing was installed" >&2
+    if [ -z "$want" ]; then
+        echo "ox-say: no checksum listed for $asset in SHA256SUMS — nothing was installed" >&2
+        exit 1
+    fi
+    if [ "$want" != "$got" ]; then
+        echo "ox-say: checksum mismatch for $asset (want $want, got $got); nothing was installed" >&2
         exit 1
     fi
     echo "checksum ok"

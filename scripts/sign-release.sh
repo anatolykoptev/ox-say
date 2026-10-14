@@ -2,9 +2,10 @@
 # Sign the dictation app with a Developer ID, notarize it with Apple, staple the
 # ticket, and put it into a release package in place of the unsigned one:
 #   scripts/sign-release.sh <dist-dir> <OxSayDictation.app>
-# <dist-dir> holds ox-say-macos-<arch>.tar.gz (this Mac's architecture) + SHA256SUMS; the app is one built
-# from this checkout by app/dictation/build.sh, not the one in the package, so
-# the key vouches only for first-party code built next to it.
+# <dist-dir> holds ox-say-macos-<arch>.tar.gz (this Mac's architecture) +
+# SHA256SUMS; the app is one built from this checkout by app/dictation/build.sh,
+# not the one in the package, so the key vouches only for first-party code
+# built next to it.
 #
 # With a Developer ID signature macOS keeps the app's microphone and
 # Accessibility permissions across updates (the grant follows the team, not the

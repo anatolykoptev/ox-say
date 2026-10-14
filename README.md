@@ -348,7 +348,7 @@ signed ad hoc. See the header of `app/dictation/build.sh`.
 
 ## Install
 
-Requirements: macOS 13 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, Go, ffmpeg
+Requirements: macOS 13.3 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, Go, ffmpeg
 (`brew install cmake go ffmpeg`).
 
 ```
@@ -382,7 +382,7 @@ voices; `--purge` removes those too. Undo the MCP registration with
 
 ## Build and install the engine
 
-Requirements: macOS 13 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, ffmpeg.
+Requirements: macOS 13.3 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, ffmpeg.
 
 ```
 engine/build.sh                # pinned clone + patches + static Metal build

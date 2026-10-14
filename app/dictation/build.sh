@@ -91,7 +91,10 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundleVersion</key><string>$version</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <!-- One floor for the whole product: the engines weak-import Accelerate's
+         new-LAPACK cblas (macOS 13.3+); get.sh refuses older versions and
+         engine/build.sh sets the same deployment target. -->
+    <key>LSMinimumSystemVersion</key><string>13.3</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <!-- The daemon speaks plain http on 127.0.0.1; this allows only local hosts. -->
