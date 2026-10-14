@@ -40,13 +40,14 @@ const (
 	// end or pause is preferred over the very last word.
 	cutPreferWindow = 1.0 / 3.0
 
-	// MaxPlausibleWordsPerSecond is the ceiling above which a stored
-	// transcript cannot belong to its clip. Read speech runs ~2-3.5 words/s
-	// in both English (160-210 wpm) and Russian (longer words, so fewer per
-	// second); audiobook narration peaks near 3.3. The measured broken
-	// voices sit at 3.7-5.8 words/s (en-daniel, en-deniro, en-snakes,
-	// en-geralt), healthy ones at 1.0-2.4.
-	MaxPlausibleWordsPerSecond = 3.5
+	// MaxPlausibleWordsPerSecond is the ceiling above which a transcript
+	// stored with a clip shorter than the cap cannot belong to it. Read speech
+	// runs ~2-3.5 words/s in English (160-210 wpm) and Russian (longer words,
+	// so fewer per second); fast conversational speakers reach ~4.2 (a real
+	// 12.98 s / 53-word reference measured 4.1 and is correct), and nobody
+	// sustains 4.5+. Clips AT the cap are caught by their duration instead, so
+	// this only has to flag an obviously over-long transcript on a short clip.
+	MaxPlausibleWordsPerSecond = 4.5
 
 	wavHeaderMin = 12 // RIFF + size + WAVE
 	chunkHeader  = 8

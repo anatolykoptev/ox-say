@@ -37,7 +37,8 @@ func TestDiagnose(t *testing.T) {
 		{"at cap with text", Voice{RefText: "a b c"}, 20, true},
 		{"just under cap tolerance", Voice{RefText: "a b c"}, 19.96, true},
 		{"too fast", Voice{RefText: words90()}, 13, true},
-		{"emma: 53 words in 12.98 s", Voice{RefText: strings.TrimSpace(strings.Repeat("w ", 53))}, 12.98, true},
+		{"70 words in 13 s", Voice{RefText: strings.TrimSpace(strings.Repeat("w ", 70))}, 13, true},
+		{"emma: a real fast reader, 53 words in 12.98 s", Voice{RefText: strings.TrimSpace(strings.Repeat("w ", 53))}, 12.98, false},
 		{"healthy", Voice{RefText: strings.TrimSpace(strings.Repeat("w ", 11))}, 5.4, false},
 		{"at cap but no text", Voice{}, 20, false},
 		{"slow russian", Voice{RefText: strings.TrimSpace(strings.Repeat("w ", 18))}, 17.2, false},
@@ -96,7 +97,7 @@ func TestRepairCappedVoice(t *testing.T) {
 // and its audio left whole.
 func TestRepairFastTranscriptKeepsAudio(t *testing.T) {
 	s, _ := newStore(t)
-	seedVoice(t, s, "emma", 12.98, strings.TrimSpace(strings.Repeat("w ", 53)))
+	seedVoice(t, s, "emma", 12.98, strings.TrimSpace(strings.Repeat("w ", 70)))
 	calls := 0
 	s.SetTranscriber(fixedWords(speechWords(35, 0.3, 0.07, 9), &calls))
 	r, err := s.PrepareRepair(context.Background(), "emma")
