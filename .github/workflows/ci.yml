@@ -60,6 +60,11 @@ jobs:
       - name: segmenter test
         run: c++ -std=c++17 -O1 -Wall -Wextra -Werror -o "$RUNNER_TEMP/segmenter-test" engine/stt/segmenter_test.cpp && "$RUNNER_TEMP/segmenter-test"
 
+      # sign-release.sh's stapler-validate retry helper, against a fake xcrun;
+      # needs only bash.
+      - name: notary helper test
+        run: bash scripts/test-lib-notary.sh
+
   # The dictation app is Swift and AppKit, so it needs a macOS runner — one
   # per architecture ox-say ships for. The build step also assembles and
   # ad-hoc signs the .app, which catches a broken bundle, not just broken code.
