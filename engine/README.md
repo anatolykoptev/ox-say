@@ -20,6 +20,34 @@ memory and without simdgroup matrix multiply (Intel Macs with AMD GPUs):
   without simdgroup matrix multiply, plus mat-vec and flash-attention
   routing that stays within what these devices compute correctly.
 
+## Apple Silicon
+
+`build.sh` builds for the shell's architecture (`uname -m`). On arm64 the same pins and the same
+patches apply. On unified memory with simdgroup matrix multiply (every M-series GPU),
+`0001-metal-amd-discrete-gpu.patch` is inert:
+- its kernel routing is gated on `!has_simdgroup_mm`;
+- its dispatch default is gated on `!has_unified_memory`;
+- its staging copies are on the private-buffer path, which unified memory does not use.
+
+Two parts of it do apply on Apple Silicon:
+- the `memset_tensor` range fix, a bug fix on the private-buffer path
+  (`GGML_METAL_SHARED_BUFFERS_DISABLE`);
+- a larger flash-attention scratch reservation.
+
+`0002-metal-mps-mul-mat.patch` never runs there (`!has_unified_memory`).
+
+Verified on an Apple M5 Pro (macOS 26.5) at qwentts.cpp `6fae929` / ggml `40e16e4` and
+whisper.cpp `6e4ab85`:
+- `test-backend-ops test -b MTL0` for MUL_MAT, MUL_MAT_ID and FLASH_ATTN_EXT gives the same
+  OK/FAIL set on the patched tree as on stock ggml (791, 796 and 4115 cases; FAIL: 0 on both).
+  Cases that already flip between two stock runs (random inputs) are excluded — there were none.
+- whisper.cpp's ggml has no test suite: there, `ox-stt` prints identical text for
+  `samples/jfk.wav` on Metal and with `-ng`.
+
+`OX_SAY_DIST=1` on arm64 targets the Apple M1 baseline (`GGML_NATIVE=OFF`; dotprod, fp16).
+`scripts/check-arm64-baseline.sh` fails the build if a binary uses i8mm, BF16, SME or SVE, which a
+native build on a newer chip emits.
+
 ## patches/qwentts/0002-tts-server-local-only.patch
 
 Upstream `tts-server` answers every origin (`Access-Control-Allow-Origin: *`),
