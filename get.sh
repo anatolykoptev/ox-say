@@ -66,6 +66,17 @@ main() {
             *) echo "ox-say's engines need a CPU with AVX2; this one does not have it." >&2; exit 1 ;;
         esac
     fi
+    # The dictation app's updater runs this script under launchd's default
+    # PATH (/usr/bin:/bin:/usr/sbin:/sbin), which hides a Homebrew ffmpeg. Put
+    # the two standard prefixes back, when they exist, for the tool checks and
+    # for install-release.sh, which inherits this PATH.
+    for prefix in /opt/homebrew/bin /usr/local/bin; do
+        if [ -d "$prefix" ]; then
+            PATH="$prefix:$PATH"
+        fi
+    done
+    export PATH
+
     for tool in curl shasum tar; do
         command -v "$tool" >/dev/null || { echo "ox-say: $tool not found" >&2; exit 1; }
     done
