@@ -24,6 +24,11 @@ final class Overlay {
     /// Bumped by every show, so a fade-out that finishes after a new show does
     /// not order the new pill out.
     private var shown = 0
+    /// True from hide() until its fade-out ends or a show() supersedes it. The
+    /// fade's target alpha is applied asynchronously, so the panel still reads
+    /// alpha 1 right after hide(); show() needs this flag to know the pending
+    /// fade-out must be turned back into a fade-in.
+    private var fadingOut = false
     private let playPauseButton = NSButton()
     private let stopButton = NSButton()
     /// True while the pill shows playback controls — the only state where it
@@ -325,11 +330,13 @@ final class Overlay {
         liveText.stringValue = ""
         liveText.isHidden = true
         let fading = shown
+        fadingOut = true
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15
             panel.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
             guard let self, self.shown == fading else { return }
+            self.fadingOut = false
             self.panel.orderOut(nil)
         })
     }
@@ -352,7 +359,11 @@ final class Overlay {
     private func show() {
         shown += 1
         recentre()
-        if !panel.isVisible || panel.alphaValue < 1 {
+        // A hide() still fading out reads alpha 1 here, so without the flag the
+        // pill would stay up only until that fade lands, then be invisible.
+        let revive = fadingOut
+        fadingOut = false
+        if !panel.isVisible || panel.alphaValue < 1 || revive {
             panel.alphaValue = 0
             panel.orderFrontRegardless()
             panel.invalidateShadow()
