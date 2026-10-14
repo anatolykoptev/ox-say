@@ -42,10 +42,11 @@ main() {
         echo "ox-say runs on macOS only." >&2
         exit 1
     fi
-    # The hardware decides, not the shell: hw.optional.arm64 is 1 on Apple
-    # Silicon even in a Rosetta shell, where uname -m says x86_64, and the
-    # native arm64 build is the one to install there.
-    if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
+    # An arm64 shell means Apple Silicon outright (an arm64 binary only runs
+    # there) — answer without sysctl, which a stripped-down PATH may lack.
+    # In a Rosetta shell uname -m says x86_64 while the hardware is arm64;
+    # hw.optional.arm64 reads the hardware and still picks the arm64 build.
+    if [ "$(uname -m)" = arm64 ] || [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
         arch=arm64
     else
         arch=x86_64
@@ -123,8 +124,12 @@ main() {
     curl -fsSL --retry 3 -o "$tmp/SHA256SUMS" "$url/SHA256SUMS"
     want=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' "$tmp/SHA256SUMS")
     got=$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')
-    if [ -z "$want" ] || [ "$want" != "$got" ]; then
-        echo "ox-say: checksum mismatch for $asset (want ${want:-none}, got $got); nothing was installed" >&2
+    if [ -z "$want" ]; then
+        echo "ox-say: no checksum listed for $asset in SHA256SUMS — nothing was installed" >&2
+        exit 1
+    fi
+    if [ "$want" != "$got" ]; then
+        echo "ox-say: checksum mismatch for $asset (want $want, got $got); nothing was installed" >&2
         exit 1
     fi
     echo "checksum ok"
