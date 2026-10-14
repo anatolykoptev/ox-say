@@ -43,6 +43,7 @@ type options struct {
 	out       string
 	runs      int
 	idle      time.Duration
+	keep      bool
 }
 
 func parseFlags() (options, error) {
@@ -55,6 +56,7 @@ func parseFlags() (options, error) {
 	flag.StringVar(&o.out, "out", "", "also write the report to this file")
 	flag.IntVar(&o.runs, "runs", defaultRuns, "warm runs per measurement; the median is reported")
 	flag.DurationVar(&o.idle, "idle", defaultIdle, "pause before the after-idle STT call")
+	flag.BoolVar(&o.keep, "keep", false, "keep the scratch directory after a successful run")
 	flag.Parse()
 	if o.modelsDir == "" {
 		return o, errors.New("-models is required")
@@ -92,7 +94,8 @@ func main() {
 // recorded as a note and the rest still runs: a 1.7B load failure is a
 // result, not a reason to lose the STT numbers.
 func bench(ctx context.Context, o options) error {
-	if o.work == "" {
+	temp := o.work == ""
+	if temp {
 		dir, err := os.MkdirTemp("", "ox-say-bench-")
 		if err != nil {
 			return err
@@ -105,6 +108,7 @@ func bench(ctx context.Context, o options) error {
 		return err
 	}
 	o.work = work
+	fmt.Fprintln(os.Stderr, "ox-say-bench: scratch directory", o.work)
 	for _, sub := range []string{"clips", "logs", "run"} {
 		if err := os.MkdirAll(filepath.Join(o.work, sub), dirPerm); err != nil {
 			return err
@@ -119,21 +123,36 @@ func bench(ctx context.Context, o options) error {
 	warmShaders(ctx, o, r)
 	for _, m := range o.ttsModels {
 		if err := measureTTS(ctx, o, cl, m, r); err != nil {
-			r.note("TTS %s: %v", filepath.Base(m), err)
+			r.fail("TTS %s: %v", filepath.Base(m), err)
 		}
 	}
 	for _, dev := range devices {
 		if err := measureSTT(ctx, o, cl, dev, r); err != nil {
-			r.note("STT %s: %v", dev.name, err)
+			r.fail("STT %s: %v", dev.name, err)
 		}
 	}
 	if err := measureContention(ctx, o, cl, r); err != nil {
-		r.note("STT under TTS load: %v", err)
+		r.fail("STT under TTS load: %v", err)
+	}
+	if err := ctx.Err(); err != nil {
+		r.fail("interrupted: %v", err)
 	}
 	text := r.markdown()
 	fmt.Print(text)
 	if o.out != "" {
-		return os.WriteFile(o.out, []byte(text), filePerm)
+		if err := os.WriteFile(o.out, []byte(text), filePerm); err != nil {
+			return err
+		}
+	}
+	if len(r.partial) > 0 {
+		fmt.Fprintln(os.Stderr, "ox-say-bench: scratch directory kept:", o.work)
+		return fmt.Errorf("partial run: %d measurement(s) failed or were interrupted", len(r.partial))
+	}
+	// Only a directory the tool created itself is removed.
+	if temp && !o.keep {
+		if err := os.RemoveAll(o.work); err != nil {
+			fmt.Fprintln(os.Stderr, "ox-say-bench: remove scratch directory:", err)
+		}
 	}
 	return nil
 }
@@ -145,10 +164,10 @@ func warmShaders(ctx context.Context, o options, r *report) {
 	warm := func(label, name string, cfg engine.Config) {
 		c, err := startChild(ctx, o.work, name, cfg)
 		if err != nil {
-			r.note("%s first start failed: %v", label, err)
+			r.fail("%s first start failed: %v", label, err)
 			return
 		}
-		r.note("%s first start (Metal library compile, excluded from the tables): %.2f s", label, c.start.Seconds())
+		r.note("%s first start (includes any Metal library compile; macOS caches compiled libraries, so later starts are fast; excluded from the tables): %.2f s", label, c.start.Seconds())
 		c.stop()
 	}
 	if len(o.ttsModels) > 0 {

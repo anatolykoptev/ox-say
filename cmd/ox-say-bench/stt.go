@@ -21,6 +21,8 @@ import (
 )
 
 const (
+	sttBin        = "ox-stt"
+	httpTimeout   = 10 * time.Minute // covers the 300 s clip and 1.7B synthesis
 	parakeetFile  = "ggml-parakeet-tdt-0.6b-v3-q8_0.bin"
 	vadFile       = "ggml-silero-v5.1.2.bin"
 	probeClip     = 30 // s: the first-call and under-load clip
@@ -63,7 +65,7 @@ func sttConfig(o options, dev device) engine.Config {
 		GPUMemory:   config.GPUMemoryUnified,
 	}
 	return engine.Config{
-		Bin:  filepath.Join(o.engineDir, "ox-stt"),
+		Bin:  filepath.Join(o.engineDir, sttBin),
 		Args: func(port int) []string { return daemon.STTServeArgs(cfg, port) },
 	}
 }
@@ -105,7 +107,7 @@ func sweep(ctx context.Context, o options, cl *clips, base string, dev device, r
 	if err != nil {
 		return err
 	}
-	r.sttCell(fmt.Sprintf("First call after start, %d s clip", probeClip), dev.name, speed(d.Seconds(), probeClip))
+	r.sttCell(r.single(fmt.Sprintf("First call after start, %d s clip", probeClip)), dev.name, speed(d.Seconds(), probeClip))
 	for _, n := range sweepLengths {
 		wav, err := cl.wav(ctx, n)
 		if err != nil {
@@ -138,7 +140,7 @@ func daemonPath(ctx context.Context, o options, cl *clips, base string, dev devi
 	}
 	var serverErr error
 	opts := stt.Options{
-		Bin:           filepath.Join(o.engineDir, "ox-stt"),
+		Bin:           filepath.Join(o.engineDir, sttBin),
 		Model:         filepath.Join(o.modelsDir, parakeetFile),
 		GPU:           dev.sttGPU(),
 		Server:        func(context.Context) (string, func(), error) { return base, func() {}, nil },
@@ -181,7 +183,7 @@ func afterIdle(ctx context.Context, o options, cl *clips, base string, dev devic
 	if err != nil {
 		return err
 	}
-	r.sttCell(fmt.Sprintf("First call after %s idle, %d s clip", o.idle, idleClip), dev.name, speed(d.Seconds(), idleClip))
+	r.sttCell(r.single(fmt.Sprintf("First call after %s idle, %d s clip", o.idle, idleClip)), dev.name, speed(d.Seconds(), idleClip))
 	return nil
 }
 
@@ -261,7 +263,7 @@ func cliLong(ctx context.Context, o options, cl *clips, dev device, r *report) e
 	if dev.cpu {
 		args = append(args, "-ng")
 	}
-	cmd := exec.CommandContext(ctx, filepath.Join(o.engineDir, "ox-stt"), args...)
+	cmd := exec.CommandContext(ctx, filepath.Join(o.engineDir, sttBin), args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	t0 := time.Now()
@@ -274,7 +276,7 @@ func cliLong(ctx context.Context, o options, cl *clips, dev device, r *report) e
 	if err := json.Unmarshal(out, &res); err != nil || strings.TrimSpace(res.Text) == "" {
 		return errors.New("ox-stt CLI returned no text")
 	}
-	r.sttCell(fmt.Sprintf("CLI, %d s clip, model load included", longClip), dev.name, speed(d.Seconds(), longClip))
+	r.sttCell(r.single(fmt.Sprintf("CLI, %d s clip, model load included", longClip)), dev.name, speed(d.Seconds(), longClip))
 	return nil
 }
 
@@ -373,6 +375,8 @@ func transcribe(ctx context.Context, base, wav string) (time.Duration, error) {
 	return d, nil
 }
 
+var httpClient = &http.Client{Timeout: httpTimeout}
+
 // post sends one request and returns the body of a 200 response.
 func post(ctx context.Context, url, contentType string, body []byte) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -380,7 +384,7 @@ func post(ctx context.Context, url, contentType string, body []byte) ([]byte, er
 		return nil, err
 	}
 	req.Header.Set("Content-Type", contentType)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

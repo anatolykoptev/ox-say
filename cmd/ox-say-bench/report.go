@@ -21,6 +21,24 @@ type report struct {
 	stt       map[string]map[string]string // row → device → cell
 	sttRows   []string                     // row labels, first-seen order
 	notes     []string
+	partial   []string // why the run is incomplete; empty on a full run
+	singles   bool     // some row is a single run, not a median
+}
+
+const singleMark = " †"
+
+// single labels a row measured by one run rather than a median of -runs.
+func (r *report) single(label string) string {
+	r.singles = true
+	return label + singleMark
+}
+
+// fail records a failed or interrupted measurement: a note and a reason the
+// report is partial.
+func (r *report) fail(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	r.notes = append(r.notes, msg)
+	r.partial = append(r.partial, msg)
 }
 
 func (r *report) note(format string, args ...any) {
@@ -55,6 +73,24 @@ func (r *report) host(ctx context.Context) {
 		"Engine pins (engine/pins.env): " + pins(),
 		"Date: " + time.Now().Format(time.DateOnly),
 	}
+	r.envNote()
+}
+
+// envNote records the GGML_* and OX_SAY_* variables the engines inherit, so
+// a reader can audit that the Metal column ran with no tuning in effect.
+func (r *report) envNote() {
+	var vars []string
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "GGML_") || strings.HasPrefix(k, "OX_SAY_") {
+			vars = append(vars, kv)
+		}
+	}
+	slices.Sort(vars)
+	if len(vars) == 0 {
+		r.note("environment: no GGML_* or OX_SAY_* variables set")
+		return
+	}
+	r.note("environment inherited by the engines: %s", strings.Join(vars, " "))
 }
 
 // pins reads the engine commits from engine/pins.env; run from the repo
@@ -75,6 +111,13 @@ func pins() string {
 
 func (r *report) markdown() string {
 	var b strings.Builder
+	if len(r.partial) > 0 {
+		b.WriteString("> **PARTIAL RUN — do not publish these numbers as a complete result.**\n")
+		for _, p := range r.partial {
+			fmt.Fprintf(&b, "> - %s\n", p)
+		}
+		b.WriteString("\n")
+	}
 	b.WriteString("### Host\n\n")
 	for _, l := range r.hostLines {
 		fmt.Fprintf(&b, "- %s\n", l)
@@ -105,6 +148,9 @@ func (r *report) markdown() string {
 			fmt.Fprintf(&b, " %s |", v)
 		}
 		b.WriteString("\n")
+	}
+	if r.singles {
+		b.WriteString("\n† single run; every other latency row is the median of -runs warm runs.\n")
 	}
 	if len(r.notes) > 0 {
 		b.WriteString("\n### Notes\n\n")
