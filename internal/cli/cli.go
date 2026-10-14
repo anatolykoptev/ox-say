@@ -111,7 +111,7 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 		return 2
 	}
 	logger := newServeLogger(context.Background(), os.Stderr, serveLogMaxBytes, serveLogCapEvery)
-	d, err := daemon.New(cfg, logger)
+	d, err := newDaemon(cfg, logger)
 	if err != nil {
 		fmt.Fprintln(stderr, "ox-say:", err)
 		return 2
@@ -119,16 +119,26 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 	d.StartVoiceRepair()
 	daemon.SetVersion(version)
 
-	err = mcpserver.Serve(&mcp.Implementation{
+	err = serve(&mcp.Implementation{
 		Name:    "ox-say",
 		Version: version,
 	}, d.ServerConfig(version), d.RegisterTools)
+	// Serve returns on a failed bind too, without OnShutdown: stop the repair
+	// pass (and wait for it) rather than exit mid-rewrite.
+	d.StopVoiceRepair()
 	if err != nil {
 		fmt.Fprintln(stderr, "ox-say:", err)
 		return 1
 	}
 	return 0
 }
+
+// newDaemon and serve are seams for tests: the production wiring is
+// daemon.New and go-mcpserver's Serve.
+var (
+	newDaemon = daemon.New
+	serve     = mcpserver.Serve
+)
 
 // daemonURL is where the CLI finds the daemon.
 func daemonURL() string {

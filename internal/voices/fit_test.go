@@ -142,8 +142,8 @@ func TestPrepareShortClipUnchanged(t *testing.T) {
 func TestPrepareLongClipWithoutSTTRefused(t *testing.T) {
 	cases := map[string]Transcriber{
 		"nil": nil,
-		"failing": func(context.Context, string) ([]Word, error) {
-			return nil, errors.New("stt down")
+		"no model": func(context.Context, string) ([]Word, error) {
+			return nil, fmt.Errorf("%w: model missing", ErrNoTranscriber)
 		},
 		"no speech": func(context.Context, string) ([]Word, error) { return nil, nil },
 	}
@@ -228,10 +228,10 @@ func TestPlanCut(t *testing.T) {
 			wantOK:   true,
 		},
 		{
-			name: "sentence end outside the last third is ignored",
+			name: "sentence end before minKeepSeconds is ignored",
 			words: func() []Word {
 				w := speechWords(100, 0.3, 0.0, 0)
-				w[20].W = "early."
+				w[10].W = "early." // ends at 3.3 s
 				return w
 			}(),
 			wantLast: 65,
@@ -239,8 +239,8 @@ func TestPlanCut(t *testing.T) {
 			wantOK:   true,
 		},
 		{
-			name:     "tail is 0.15 s when the gap is larger",
-			words:    []Word{{W: "a", S: 0, E: 10}, {W: "b", S: 10.5, E: 19.5}, {W: "c", S: 19.9, E: 21}},
+			name:     "tail is 0.15 s when the gap is larger (and a 0.6 s pause is a sentence end)",
+			words:    []Word{{W: "a", S: 0, E: 10}, {W: "b", S: 10.4, E: 19.5}, {W: "c", S: 20.1, E: 21}},
 			wantLast: 1,
 			wantAt:   19.65,
 			wantOK:   true,
@@ -252,7 +252,37 @@ func TestPlanCut(t *testing.T) {
 				{W: "b", S: 19.95, E: 20.5},
 			},
 			wantLast: 0,
-			wantAt:   19.95,
+			wantAt:   19.925, // half the 0.05 s gap: STT times are quantised
+			wantOK:   true,
+		},
+		{
+			name: "the latest sentence end beats a later short pause and a later word",
+			words: func() []Word {
+				w := speechWords(100, 0.3, 0.0, 0)
+				w[40].W = "stop." // ends 12.3
+				w[50].W = "pause" // 0.4 s pause after (not a sentence end)
+				for i := 51; i < len(w); i++ {
+					w[i].S += 0.4
+					w[i].E += 0.4
+				}
+				return w
+			}(),
+			wantLast: 40,
+			wantAt:   12.3,
+			wantOK:   true,
+		},
+		{
+			name: "no sentence end: the latest pause of >= 0.3 s",
+			words: func() []Word {
+				w := speechWords(100, 0.3, 0.0, 0)
+				for i := 50; i < len(w); i++ { // 0.35 s gap after word 49 (ends 15.0)
+					w[i].S += 0.35
+					w[i].E += 0.35
+				}
+				return w
+			}(),
+			wantLast: 49,
+			wantAt:   15.15,
 			wantOK:   true,
 		},
 		{
@@ -300,5 +330,83 @@ func TestPrepareLongClipRefusesTranscriptThatSkipsAudio(t *testing.T) {
 	}
 	if _, err := s.Get("ben"); err == nil {
 		t.Fatal("voice stored from a transcript that skips the first 15 s")
+	}
+}
+
+func TestPrepareLongClipTransientSTTFailureIsNotInput(t *testing.T) {
+	s, dir := newStore(t)
+	src := testutil.WriteSilentWAV(t, dir, "long.wav", 30)
+	s.SetTranscriber(func(context.Context, string) ([]Word, error) { return nil, errors.New("stt: busy") })
+	_, err := s.Add(context.Background(), "ben", src, "some transcript")
+	var ie *InputError
+	if err == nil || errors.As(err, &ie) {
+		t.Fatalf("err = %v, want a non-input error for a transient STT failure", err)
+	}
+	if !strings.Contains(err.Error(), "speech-to-text failed") {
+		t.Fatalf("message does not say what failed: %v", err)
+	}
+}
+
+// The STT cannot reproduce CJK/Arabic: the user's ref_text must survive as is,
+// so a too-long clip is refused with the advice to trim it.
+// Mutation: internal/voices/fit.go fitReference — delete the
+// `Script(refText) == ""` refusal -> RED.
+func TestPrepareLongClipNonLatinRefTextRefused(t *testing.T) {
+	for name, text := range map[string]string{
+		"cjk":    "今天天气很好，我们一起去公园玩，然后回家吃饭。",
+		"arabic": "الطقس جميل اليوم وسوف نذهب إلى الحديقة معا",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, dir := newStore(t)
+			src := testutil.WriteSilentWAV(t, dir, "long.wav", 30)
+			calls := 0
+			s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), &calls))
+			_, err := s.Add(context.Background(), "ben", src, text)
+			var ie *InputError
+			if !errors.As(err, &ie) || !strings.Contains(err.Error(), "trim the clip to at most 20 s") {
+				t.Fatalf("err = %v, want an InputError that says to trim the clip", err)
+			}
+			if calls != 0 {
+				t.Fatalf("STT called %d times for an untranscribable script", calls)
+			}
+			if _, err := s.Get("ben"); err == nil {
+				t.Fatal("voice stored")
+			}
+		})
+	}
+}
+
+// A Cyrillic ref_text whose STT transcript comes back in Latin (a language the
+// STT did not recognise) is not replaced.
+func TestPrepareLongClipScriptMismatchRefused(t *testing.T) {
+	s, dir := newStore(t)
+	src := testutil.WriteSilentWAV(t, dir, "long.wav", 30)
+	s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), new(int))) // "w0 w1…": Latin
+	_, err := s.Add(context.Background(), "ben", src, "Добрый вечер это проверка голоса")
+	var ie *InputError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %v, want *InputError", err)
+	}
+}
+
+func TestScriptAndMatch(t *testing.T) {
+	for text, want := range map[string]string{
+		"Hello there, world.":           scriptLatin,
+		"Добрый вечер, это проверка.":   scriptCyrillic,
+		"Добрый вечер, это проверка ok": scriptCyrillic,
+		"今天天气很好":                        "",
+		"الطقس جميل":                    "",
+		"12345 !!!":                     "",
+		"":                              "",
+	} {
+		if got := Script(text); got != want {
+			t.Errorf("Script(%q) = %q, want %q", text, got, want)
+		}
+	}
+	if !TextsMatch("Um, you create this pool of light.", "um you create this pool of light") {
+		t.Error("punctuation and case must not matter")
+	}
+	if TextsMatch(strings.Repeat("word ", 90), strings.Repeat("word ", 45)) {
+		t.Error("a transcript twice as long as the audio's matched")
 	}
 }

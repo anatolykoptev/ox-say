@@ -24,6 +24,11 @@ func tooLongMsg(why string) string {
 		MaxRefSeconds, why, MaxRefSeconds)
 }
 
+// scriptMsg refuses a too-long clip whose ref_text the STT cannot reproduce:
+// replacing the user's own transcript with a transliteration would be worse
+// than the cap.
+const scriptMsg = "voices: clip is longer than 20 s and its ref_text is not in Latin or Cyrillic script, which the speech-to-text cannot re-derive — trim the clip to at most 20 s and keep your own transcript"
+
 // fitReference makes the clip at wav and its transcript describe the same
 // audio. A clip within the cap keeps refText as given. A longer one without a
 // ref_text is simply cut at the cap (nothing to mismatch). A longer one WITH a
@@ -43,12 +48,20 @@ func (s *Store) fitReference(ctx context.Context, wav, refText string) (text, no
 	if refText == "" {
 		return "", "", s.trimWAV(ctx, wav, MaxRefSeconds)
 	}
+	if Script(refText) == "" {
+		return "", "", &InputError{scriptMsg}
+	}
 	if s.transcribe == nil {
 		return "", "", &InputError{tooLongMsg("speech-to-text is unavailable")}
 	}
 	words, err := s.transcribe(ctx, wav)
-	if err != nil {
-		return "", "", &InputError{tooLongMsg("speech-to-text failed: " + err.Error())}
+	switch {
+	case errors.Is(err, ErrNoTranscriber):
+		return "", "", &InputError{tooLongMsg("speech-to-text is unavailable")}
+	case err != nil:
+		// Busy, timed out, server down: transient, not the caller's input.
+		return "", "", fmt.Errorf("voices: clip is longer than %.0f s and speech-to-text failed (retry, or trim the clip to at most %.0f s): %w",
+			MaxRefSeconds, MaxRefSeconds, err)
 	}
 	cut, ok := PlanCut(words, MaxRefSeconds)
 	if !ok || cut.Text == "" {
@@ -56,6 +69,9 @@ func (s *Store) fitReference(ctx context.Context, wav, refText string) (text, no
 	}
 	if !cut.Covers(words) {
 		return "", "", &InputError{tooLongMsg("the transcript skips stretches of the audio")}
+	}
+	if !SameScript(refText, cut.Text) {
+		return "", "", &InputError{scriptMsg}
 	}
 	if err := s.trimWAV(ctx, wav, cut.At); err != nil {
 		return "", "", err

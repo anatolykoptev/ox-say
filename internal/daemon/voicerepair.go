@@ -3,16 +3,37 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
+	"time"
 
+	"github.com/anatolykoptev/ox-say/internal/stt"
 	"github.com/anatolykoptev/ox-say/internal/voices"
 )
 
+const (
+	// listenWait bounds how long the repair pass waits for the HTTP listener
+	// before running anyway; listenPoll is the dial interval.
+	listenWait = 60 * time.Second
+	listenPoll = 100 * time.Millisecond
+	// repairStopWait bounds how long Shutdown waits for a repair pass: Apply
+	// is a handful of renames, so a pass in its critical section finishes in
+	// milliseconds; the bound only guards a stuck re-registration.
+	repairStopWait = 10 * time.Second
+)
+
 // voiceWords is the voice store's Transcriber: the daemon's own STT, word
-// timestamps from the parakeet engine.
+// timestamps from the parakeet engine. A missing model is reported as
+// voices.ErrNoTranscriber (a definitive "cannot"); every other failure is
+// returned as is (busy, timeout, server down: transient).
 func (d *Daemon) voiceWords(ctx context.Context, wavPath string) ([]voices.Word, error) {
 	res, err := d.Transcribe(ctx, TranscribeInput{AudioPath: wavPath})
 	if err != nil {
+		var me *stt.ModelError
+		if errors.As(err, &me) {
+			return nil, fmt.Errorf("%w: %v", voices.ErrNoTranscriber, err)
+		}
 		return nil, err
 	}
 	out := make([]voices.Word, 0, len(res.Words))
@@ -23,13 +44,54 @@ func (d *Daemon) voiceWords(ctx context.Context, wavPath string) ([]voices.Word,
 }
 
 // StartVoiceRepair repairs stored voices whose transcript cannot match their
-// audio, once per daemon start and off every request path. A repaired voice
-// keeps its original pair as <name>.orig.wav/.json, so a voice is repaired at
-// most once.
+// audio, once per daemon start and off every request path. It waits for the
+// HTTP listener first, so a bind failure ends the process before any voice
+// is touched. A repaired voice keeps its original pair as
+// <name>.orig.wav/.json.
 func (d *Daemon) StartVoiceRepair() {
 	ctx, cancel := context.WithCancel(context.Background())
-	d.repairCancel = cancel
-	go d.RepairVoices(ctx)
+	done := make(chan struct{})
+	d.repairCancel, d.repairDone = cancel, done
+	go func() {
+		defer close(done)
+		if !waitListening(ctx, d.Cfg.Addr) {
+			return
+		}
+		d.RepairVoices(ctx)
+	}()
+}
+
+// StopVoiceRepair cancels a running pass and waits (bounded) for it: Apply
+// must not be cut off between its renames by process exit.
+func (d *Daemon) StopVoiceRepair() {
+	if d.repairCancel == nil {
+		return
+	}
+	d.repairCancel()
+	select {
+	case <-d.repairDone:
+	case <-time.After(repairStopWait):
+		d.log.Warn("voice repair still running at shutdown")
+	}
+}
+
+// waitListening polls addr until something accepts, up to listenWait; false
+// when ctx ended first.
+func waitListening(ctx context.Context, addr string) bool {
+	deadline := time.Now().Add(listenWait)
+	for time.Now().Before(deadline) {
+		c, err := net.DialTimeout("tcp", addr, listenPoll)
+		if err == nil {
+			_ = c.Close()
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(listenPoll):
+		}
+	}
+	return ctx.Err() == nil
 }
 
 // RepairVoices runs one repair pass over the store. A failure on one voice is
@@ -52,18 +114,27 @@ func (d *Daemon) RepairVoices(ctx context.Context) {
 
 func (d *Daemon) repairVoice(ctx context.Context, name string) {
 	r, err := d.Store.PrepareRepair(ctx, name)
-	if err != nil {
-		if errors.Is(err, voices.ErrNoTranscriber) {
-			d.log.Warn("voice repair: speech-to-text unavailable; voice left as is", slog.String("voice", name))
-			return
-		}
+	switch {
+	case errors.Is(err, voices.ErrNoTranscriber):
+		d.log.Warn("voice repair: speech-to-text unavailable; voice left as is", slog.String("voice", name))
+		return
+	case errors.Is(err, voices.ErrScript):
+		d.log.Warn("voice repair: ref_text is not Latin or Cyrillic script, which the speech-to-text cannot re-derive; voice left as is",
+			slog.String("voice", name), slog.Any("error", err))
+		return
+	case errors.Is(err, voices.ErrStillBroken):
+		d.log.Warn("backup exists but voice still broken: "+name, slog.String("voice", name))
+		return
+	case err != nil:
 		d.log.Warn("voice repair failed; voice left as is", slog.String("voice", name), slog.Any("error", err))
 		return
-	}
-	if r == nil {
+	case r == nil:
 		return
 	}
 	defer r.Discard()
+	if r.Retry {
+		d.log.Warn("backup exists but voice still broken: "+name+"; retrying the repair", slog.String("voice", name))
+	}
 	d.voiceMu.Lock()
 	defer d.voiceMu.Unlock()
 	if err := r.Apply(); err != nil {

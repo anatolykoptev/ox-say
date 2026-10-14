@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/testutil"
 	"github.com/anatolykoptev/ox-say/internal/voices"
@@ -32,7 +34,11 @@ func fakeWords(n int) []voices.Word {
 	out := make([]voices.Word, n)
 	for i := range out {
 		s := float64(i) * 0.4
-		out[i] = voices.Word{W: "w" + string(rune('a'+i%26)), S: s, E: s + 0.3}
+		w := "w" + string(rune('a'+i%26))
+		if i%6 == 5 {
+			w += "." // a sentence end every 6 words, as real speech has
+		}
+		out[i] = voices.Word{W: w, S: s, E: s + 0.3}
 	}
 	return out
 }
@@ -99,7 +105,7 @@ func TestRepairVoicesSTTUnavailableWarns(t *testing.T) {
 	if v, _ := d.Store.Get("snakes"); v.RefText != long {
 		t.Fatalf("voice modified despite failing STT: %q", v.RefText)
 	}
-	if !testLogSaw(t, "voice repair failed") {
+	if !testLogSaw(t, "speech-to-text unavailable") {
 		t.Fatal("no warning logged for the unrepairable voice")
 	}
 }
@@ -148,4 +154,115 @@ func TestAddVoiceNoticeInResponse(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(d.Store.WAVPath("long")), "long.orig.json")); err == nil {
 		t.Fatal("a fresh add must not create a backup")
 	}
+}
+
+// fakeSTTPayload is an ox-stt result whose words are n speech words of 0.3 s
+// every 0.4 s, a sentence end every sixth.
+func fakeSTTPayload(t *testing.T, n int) string {
+	t.Helper()
+	type w struct {
+		W string  `json:"w"`
+		S float64 `json:"s"`
+		E float64 `json:"e"`
+		P float64 `json:"p"`
+	}
+	words := make([]w, n)
+	for i := range words {
+		tok := "tok" + string(rune('a'+i%26))
+		if i%6 == 5 {
+			tok += "."
+		}
+		s := float64(i) * 0.4
+		words[i] = w{tok, s, s + 0.3, 0.9}
+	}
+	raw, err := json.Marshal(map[string]any{
+		"engine": "parakeet", "duration_s": float64(n) * 0.4, "elapsed_s": 0.1,
+		"text": "x", "segments": []any{}, "words": words,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// voiceWords is the seam between the STT result and the voice store: start and
+// end must not be swapped, nor the text.
+// Mutation: internal/daemon/voicerepair.go voiceWords — build
+// voices.Word{W: w.W, S: w.E, E: w.S} -> RED.
+func TestVoiceWordsMapsTimestamps(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+	sttSetup(t, d, dir)
+	t.Setenv("OXSAY_FAKE_STT_JSON", `{"engine":"parakeet","duration_s":4,"elapsed_s":0.1,"text":"alpha beta.",`+
+		`"segments":[],"words":[{"w":"alpha","s":1.25,"e":2.5,"p":0.9},{"w":"beta.","s":2.75,"e":4.0,"p":0.9}]}`)
+	wav := testutil.WriteTinyWAV(t, dir, "in.wav")
+	got, err := d.voiceWords(context.Background(), wav)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []voices.Word{{W: "alpha", S: 1.25, E: 2.5}, {W: "beta.", S: 2.75, E: 4.0}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("voiceWords = %+v, want %+v", got, want)
+	}
+}
+
+// A real daemon wires its own STT into the voice store: a too-long clip is
+// cut and re-transcribed without any test-injected transcriber.
+// Mutation: internal/daemon/service.go newDaemon — delete
+// `store.SetTranscriber(d.voiceWords)` -> RED (the add is refused as
+// "speech-to-text is unavailable").
+func TestDaemonWiresSTTIntoVoiceStore(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+	sttSetup(t, d, dir)
+	t.Setenv("OXSAY_FAKE_STT_JSON", fakeSTTPayload(t, 60)) // 24 s of speech
+	src := testutil.WriteSilentWAV(t, dir, "long.wav", 30)
+	v, _, err := d.AddVoice(context.Background(), "ben", src, "typed by hand, much too long for twenty seconds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(v.RefText, "toka tokb") || strings.Contains(v.RefText, "typed") {
+		t.Fatalf("ref_text = %q, want the fake STT's words", v.RefText)
+	}
+	if v.Notice == "" {
+		t.Fatal("no notice")
+	}
+}
+
+// The repair pass waits for the HTTP listener: a daemon whose bind fails must
+// exit without having touched a voice. StopVoiceRepair ends a waiting pass.
+// Mutation: internal/daemon/voicerepair.go StartVoiceRepair — drop the
+// waitListening gate (call RepairVoices directly) -> RED.
+func TestStartVoiceRepairWaitsForListener(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close() // nobody listens on addr now
+	d.Cfg.Addr = addr
+	long := strings.TrimSpace(strings.Repeat("word ", 90))
+	seedStoredVoice(t, d, "snakes", 20, long)
+	d.Store.SetTranscriber(func(context.Context, string) ([]voices.Word, error) { return fakeWords(60), nil })
+
+	d.StartVoiceRepair()
+	time.Sleep(500 * time.Millisecond)
+	if v, _ := d.Store.Get("snakes"); v.RefText != long {
+		t.Fatal("repair ran before the listener was up")
+	}
+	ln2, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln2.Close()
+	testutil.WaitFor(t, 10*time.Second, func() bool {
+		v, _ := d.Store.Get("snakes")
+		return v != nil && v.RefText != long
+	}, "repair after the listener came up")
+	d.StopVoiceRepair() // returns: the pass is done
 }

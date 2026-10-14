@@ -1,6 +1,7 @@
 package voices
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math"
@@ -116,11 +117,18 @@ func TestRepairFastTranscriptKeepsAudio(t *testing.T) {
 	}
 }
 
+// A completed repair (backup + healthy, different main files) is left alone;
+// a healthy voice is not even transcribed.
 func TestRepairLeavesHealthyAndRepairedAlone(t *testing.T) {
 	s, _ := newStore(t)
 	seedVoice(t, s, "native", 5.4, "one two three four five six seven eight nine ten eleven")
-	seedVoice(t, s, "done", 20, words90())
-	if err := os.WriteFile(s.backupPath("done", ".json"), []byte(`{"name":"done"}`), 0o644); err != nil {
+	seedVoice(t, s, "done", 10, "a cut and healthy transcript of ten words or so here")
+	for ext, content := range map[string]string{".json": `{"name":"done","ref_text":"` + words90() + `"}`, ".wav": "orig"} {
+		if err := os.WriteFile(s.backupPath("done", ext), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(s.backupPath("done", ".wav"), testutil.SilentWAV(20), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	calls := 0
@@ -133,28 +141,238 @@ func TestRepairLeavesHealthyAndRepairedAlone(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("transcriber called %d times for healthy/already-repaired voices", calls)
 	}
-	v, _ := s.Get("done")
-	if v.RefText != words90() {
-		t.Fatalf("already-repaired voice was modified: %q", v.RefText)
+}
+
+// A correct at-cap clip (its text IS the transcript) is neither cut nor
+// rewritten.
+// Mutation: internal/voices/repair.go plan — delete the TextsMatch early return -> RED.
+func TestRepairCorrectCappedClipUntouched(t *testing.T) {
+	s, _ := newStore(t)
+	words := speechWords(60, 0.3, 0.03, 6) // 19.8 s of speech
+	text := joinWords(words)
+	seedVoice(t, s, "exact", 20, text)
+	s.SetTranscriber(fixedWords(words, new(int)))
+	if r, err := s.PrepareRepair(context.Background(), "exact"); r != nil || err != nil {
+		t.Fatalf("PrepareRepair = %v, %v; want nil, nil for a correct transcript", r, err)
+	}
+	if _, err := os.Stat(s.backupPath("exact", ".json")); err == nil {
+		t.Fatal("backup written for a voice that needed no repair")
 	}
 }
 
-func TestRepairNeverOverwritesBackup(t *testing.T) {
+// Untranscribable scripts are never rewritten.
+// Mutation: internal/voices/repair.go PrepareRepair — delete the
+// `Script(srcText) == ""` refusal -> RED.
+func TestRepairNonLatinLeftAlone(t *testing.T) {
+	for name, text := range map[string]string{
+		"cjk":    strings.Repeat("今天天气很好我们一起去公园玩。", 6),
+		"arabic": strings.Repeat("الطقس جميل اليوم ", 30),
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := newStore(t)
+			seedVoice(t, s, "zh", 20, text)
+			calls := 0
+			s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), &calls))
+			r, err := s.PrepareRepair(context.Background(), "zh")
+			if r != nil || !errors.Is(err, ErrScript) {
+				t.Fatalf("PrepareRepair = %v, %v; want ErrScript", r, err)
+			}
+			if calls != 0 {
+				t.Fatalf("STT called %d times", calls)
+			}
+		})
+	}
+	// Latin text whose transcript is Cyrillic (script differs): left alone too.
+	s, _ := newStore(t)
+	seedVoice(t, s, "x", 20, words90())
+	s.SetTranscriber(func(context.Context, string) ([]Word, error) {
+		return []Word{{W: "Привет", S: 0, E: 1}, {W: "мир.", S: 1.1, E: 2}}, nil
+	})
+	if r, err := s.PrepareRepair(context.Background(), "x"); r != nil || !errors.Is(err, ErrScript) {
+		t.Fatalf("script mismatch: %v, %v; want ErrScript", r, err)
+	}
+}
+
+// A re-add between PrepareRepair (outside the lock) and Apply must not be
+// overwritten by the cut of the old clip.
+// Mutation: internal/voices/repair.go Apply — `!cur.equal(r.from)` -> `false` -> RED.
+func TestRepairApplyRefusesChangedVoice(t *testing.T) {
+	cases := map[string]func(t *testing.T, s *Store){
+		"same text, new audio and created": func(t *testing.T, s *Store) {
+			meta := `{"name":"snakes","ref_text":"` + words90() + `","created":"2026-10-15T00:00:00Z"}`
+			if err := os.WriteFile(s.WAVPath("snakes"), testutil.SilentWAV(19), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(s.metaPath("snakes"), []byte(meta), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"new text": func(t *testing.T, s *Store) { seedVoice(t, s, "snakes", 20, "brand new transcript") },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			s, _ := newStore(t)
+			seedVoice(t, s, "snakes", 20, words90())
+			s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), new(int)))
+			r, err := s.PrepareRepair(context.Background(), "snakes")
+			if err != nil || r == nil {
+				t.Fatalf("PrepareRepair = %v, %v", r, err)
+			}
+			mutate(t, s)
+			before, _ := os.ReadFile(s.WAVPath("snakes"))
+			if err := r.Apply(); !errors.Is(err, ErrChanged) {
+				t.Fatalf("Apply = %v, want ErrChanged", err)
+			}
+			after, _ := os.ReadFile(s.WAVPath("snakes"))
+			if !bytes.Equal(before, after) {
+				t.Fatal("the re-added clip was overwritten")
+			}
+			if _, err := os.Stat(s.backupPath("snakes", ".json")); err == nil {
+				t.Fatal("backup written for a refused repair")
+			}
+		})
+	}
+}
+
+// Crash safety. A rename that fails at step N stands in for a kill there; the
+// next start (a fresh Store on the same dir) must converge to a repaired voice
+// with the ORIGINAL pair intact in the backup.
+// Mutation: internal/voices/repair.go Apply — swap the backup loop's order to
+// {".json", ".wav"} (marker first) -> RED for the "backup .wav" step.
+func TestRepairConvergesAfterCrashAtEveryStep(t *testing.T) {
+	steps := []struct {
+		name string
+		fail func(old, new string) bool
+	}{
+		{"backup wav", func(_, n string) bool { return strings.HasSuffix(n, ".orig.wav") }},
+		{"backup json (marker)", func(_, n string) bool { return strings.HasSuffix(n, ".orig.json") }},
+		{"main wav", func(_, n string) bool { return strings.HasSuffix(n, "/snakes.wav") }},
+		{"main json", func(_, n string) bool { return strings.HasSuffix(n, "/snakes.json") }},
+	}
+	for _, st := range steps {
+		t.Run(st.name, func(t *testing.T) {
+			s, _ := newStore(t)
+			seedVoice(t, s, "snakes", 20, words90())
+			origWAV, _ := os.ReadFile(s.WAVPath("snakes"))
+			origJSON, _ := os.ReadFile(s.metaPath("snakes"))
+			tr := fixedWords(speechWords(60, 0.3, 0.1, 6), new(int))
+			s.SetTranscriber(tr)
+			s.rename = func(o, n string) error {
+				if st.fail(o, n) {
+					return errors.New("simulated crash")
+				}
+				return os.Rename(o, n)
+			}
+			r, err := s.PrepareRepair(context.Background(), "snakes")
+			if err != nil || r == nil {
+				t.Fatalf("PrepareRepair = %v, %v", r, err)
+			}
+			if err := r.Apply(); err == nil {
+				t.Fatal("Apply survived the simulated crash")
+			}
+
+			// Restart: a new Store, SweepTemp as the daemon does, a normal pass.
+			s2, err := New(s.dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s2.SetTranscriber(tr)
+			if err := s2.SweepTemp(); err != nil {
+				t.Fatal(err)
+			}
+			r2, err := s2.PrepareRepair(context.Background(), "snakes")
+			if err != nil || r2 == nil {
+				t.Fatalf("after the crash PrepareRepair = %v, %v; want a repair (the voice is still broken)", r2, err)
+			}
+			if err := r2.Apply(); err != nil {
+				t.Fatal(err)
+			}
+			v, _ := s2.Get("snakes")
+			if v.RefText == words90() || !strings.HasPrefix(v.RefText, "w0 w1") {
+				t.Fatalf("ref_text after convergence = %q", v.RefText)
+			}
+			if d, _ := WAVSeconds(s2.WAVPath("snakes")); d > MaxRefSeconds || d < 10 {
+				t.Fatalf("clip = %.2f s", d)
+			}
+			bw, _ := os.ReadFile(s2.backupPath("snakes", ".wav"))
+			bj, _ := os.ReadFile(s2.backupPath("snakes", ".json"))
+			if !bytes.Equal(bw, origWAV) || !bytes.Equal(bj, origJSON) {
+				t.Fatal("the backup is not the byte-identical original pair")
+			}
+			// And now it is done: a further start does nothing.
+			if r3, err := s2.PrepareRepair(context.Background(), "snakes"); r3 != nil || err != nil {
+				t.Fatalf("third pass = %v, %v; want nil, nil", r3, err)
+			}
+			left, _ := filepath.Glob(filepath.Join(s2.dir, ".normalize-*"))
+			if len(left) != 0 {
+				t.Fatalf("temp files left: %v", left)
+			}
+		})
+	}
+}
+
+// A backup beside a voice that is still broken is not a completed repair: it
+// is retried. When the main files carry the original text the retry derives
+// from the BACKUP's audio (the main WAV may already be a cut).
+// Mutation: internal/voices/repair.go PrepareRepair — replace the
+// `haveBackup && … Diagnose(*v, mainDur) == ""` early return with
+// `haveBackup` (backup = done) -> RED.
+func TestRepairRetriesBrokenVoiceWithBackup(t *testing.T) {
 	s, _ := newStore(t)
 	seedVoice(t, s, "snakes", 20, words90())
-	if err := os.WriteFile(s.backupPath("snakes", ".wav"), []byte("precious"), 0o644); err != nil {
+	// a backup exists, main still has the original text (repair died after the marker)
+	if err := os.WriteFile(s.backupPath("snakes", ".wav"), testutil.SilentWAV(20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.backupPath("snakes", ".json"), []byte(`{"name":"snakes","ref_text":"`+words90()+`"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), new(int)))
 	r, err := s.PrepareRepair(context.Background(), "snakes")
-	if err != nil || r == nil {
-		t.Fatalf("PrepareRepair = %v, %v", r, err)
+	if err != nil || r == nil || !r.Retry {
+		t.Fatalf("PrepareRepair = %+v, %v; want a retry", r, err)
 	}
 	if err := r.Apply(); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(s.backupPath("snakes", ".wav")); string(b) != "precious" {
-		t.Fatalf("existing backup overwritten: %q", b)
+	if v, _ := s.Get("snakes"); v.RefText == words90() {
+		t.Fatal("still broken after the retry")
+	}
+	if bj, _ := os.ReadFile(s.backupPath("snakes", ".json")); !strings.Contains(string(bj), words90()) {
+		t.Fatal("backup json overwritten by the retry")
+	}
+}
+
+func TestRemoveDeletesRepairBackup(t *testing.T) {
+	s, _ := newStore(t)
+	seedVoice(t, s, "snakes", 20, words90())
+	for _, ext := range []string{".wav", ".json"} {
+		if err := os.WriteFile(s.backupPath("snakes", ext), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Remove("snakes"); err != nil {
+		t.Fatal(err)
+	}
+	left, _ := filepath.Glob(filepath.Join(s.dir, "snakes*"))
+	if len(left) != 0 {
+		t.Fatalf("files left after Remove: %v", left)
+	}
+}
+
+// A fresh add of a name supersedes a stale repair backup of an older voice.
+func TestAddDropsStaleBackup(t *testing.T) {
+	s, dir := newStore(t)
+	for _, ext := range []string{".wav", ".json"} {
+		if err := os.WriteFile(s.backupPath("ben", ext), []byte("stale"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Add(context.Background(), "ben", testutil.WriteTinyWAV(t, dir, "c.wav"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(s.backupPath("ben", ".json")); err == nil {
+		t.Fatal("stale backup survived a re-add")
 	}
 }
 

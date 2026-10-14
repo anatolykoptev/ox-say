@@ -36,9 +36,12 @@ const (
 	// cutTailSeconds is the audio kept after the last kept word's end so the
 	// word does not end on a hard edge.
 	cutTailSeconds = 0.15
-	// cutPreferWindow is the trailing share of the cap in which a sentence
-	// end or pause is preferred over the very last word.
-	cutPreferWindow = 1.0 / 3.0
+	// sentencePauseSeconds is the pause that counts as a sentence end even
+	// without punctuation.
+	sentencePauseSeconds = 0.5
+	// minKeepSeconds is the least audio a boundary-preferring cut keeps: a
+	// reference shorter than this conditions the voice poorly.
+	minKeepSeconds = 6.0
 
 	// MaxPlausibleWordsPerSecond is the ceiling above which a transcript
 	// stored with a clip shorter than the cap cannot belong to it. Read speech
@@ -83,10 +86,14 @@ type Cut struct {
 }
 
 // PlanCut chooses the cut for a clip that runs past limit seconds. It keeps
-// every word that ends at or before limit, prefers the latest sentence end or
-// pause of at least minPauseSeconds inside the last cutPreferWindow of limit,
-// and adds a short tail that never reaches the next word. ok is false when no
-// word ends within limit.
+// every word that ends at or before limit. A reference that stops mid-sentence
+// invites the model to carry on, so the cut prefers, in order: the latest
+// sentence end (terminal punctuation, or a pause of at least
+// sentencePauseSeconds) at minKeepSeconds or later; the latest pause of at
+// least minPauseSeconds at minKeepSeconds or later; the last word. A short
+// tail follows the word, at most half the gap to the next word so it never
+// reaches into it (STT word times are quantised to ~80 ms). ok is false when
+// no word ends within limit.
 func PlanCut(words []Word, limit float64) (Cut, bool) {
 	last := -1
 	for i, w := range words {
@@ -97,19 +104,37 @@ func PlanCut(words []Word, limit float64) (Cut, bool) {
 	if last < 0 {
 		return Cut{}, false
 	}
-	pick := last
-	from := limit * (1 - cutPreferWindow)
-	for i := last; i >= 0 && words[i].E >= from; i-- {
-		if isBoundary(words, i) {
-			pick = i
-			break
+	pick := latest(words, last, func(i int) bool { return isSentenceEnd(words, i) })
+	if pick < 0 {
+		pick = latest(words, last, func(i int) bool { return gapAfter(words, i) >= minPauseSeconds })
+	}
+	if pick < 0 {
+		pick = last
+	}
+	tail := cutTailSeconds
+	if pick+1 < len(words) {
+		tail = max(0, min(tail, (words[pick+1].S-words[pick].E)/2))
+	}
+	return Cut{At: min(words[pick].E+tail, limit), Text: joinWords(words[:pick+1]), Last: pick}, true
+}
+
+// latest returns the highest index <= last whose word ends at minKeepSeconds
+// or later and satisfies ok, or -1.
+func latest(words []Word, last int, ok func(int) bool) int {
+	for i := last; i >= 0 && words[i].E >= minKeepSeconds; i-- {
+		if ok(i) {
+			return i
 		}
 	}
-	at := words[pick].E + cutTailSeconds
-	if pick+1 < len(words) && words[pick+1].S < at {
-		at = max(words[pick+1].S, words[pick].E)
+	return -1
+}
+
+// gapAfter is the silence between words[i] and the next word; 0 for the last.
+func gapAfter(words []Word, i int) float64 {
+	if i+1 >= len(words) {
+		return 0
 	}
-	return Cut{At: min(at, limit), Text: joinWords(words[:pick+1]), Last: pick}, true
+	return words[i+1].S - words[i].E
 }
 
 // Covers reports whether words[:c.Last+1] account for the audio from the clip
@@ -125,13 +150,14 @@ func (c Cut) Covers(words []Word) bool {
 	return true
 }
 
-// isBoundary reports a sentence end at words[i], or a pause after it.
-func isBoundary(words []Word, i int) bool {
-	t := strings.TrimSpace(words[i].W)
-	if t != "" && strings.ContainsRune(".!?…", []rune(t)[len([]rune(t))-1]) {
+// isSentenceEnd reports terminal punctuation on words[i] or a pause of at
+// least sentencePauseSeconds after it.
+func isSentenceEnd(words []Word, i int) bool {
+	t := []rune(strings.TrimSpace(words[i].W))
+	if len(t) > 0 && strings.ContainsRune(".!?…", t[len(t)-1]) {
 		return true
 	}
-	return i+1 < len(words) && words[i+1].S-words[i].E >= minPauseSeconds
+	return gapAfter(words, i) >= sentencePauseSeconds
 }
 
 func joinWords(words []Word) string {

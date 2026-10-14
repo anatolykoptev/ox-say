@@ -62,8 +62,9 @@ type Daemon struct {
 	// lockFile holds daemon.lock for the process lifetime.
 	lockFile *os.File
 
-	// repairCancel stops a running StartVoiceRepair pass on Shutdown.
+	// repairCancel and repairDone stop and await a StartVoiceRepair pass.
 	repairCancel context.CancelFunc
+	repairDone   chan struct{}
 }
 
 // New builds the supervisor (reaping any orphaned engine) and the voice
@@ -477,9 +478,7 @@ func (d *Daemon) Status() statusSummary {
 // mid-flight — handlers keep their own guards and fail fast on the dead
 // supervisor rather than blocking shutdown.
 func (d *Daemon) Shutdown() {
-	if d.repairCancel != nil {
-		d.repairCancel()
-	}
+	d.StopVoiceRepair()
 	d.Sup.Shutdown()
 	if d.STTSup != nil {
 		d.STTSup.Shutdown()

@@ -69,6 +69,10 @@ type Store struct {
 
 	// writeFile is os.WriteFile; tests swap it to simulate a failed write.
 	writeFile func(string, []byte, os.FileMode) error
+
+	// rename is os.Rename; tests swap it to simulate a crash between the
+	// steps of a repair.
+	rename func(string, string) error
 }
 
 // New creates the directory if needed and returns the store.
@@ -76,7 +80,7 @@ func New(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("voices: %w", err)
 	}
-	return &Store{dir: dir, ffmpeg: "ffmpeg", writeFile: os.WriteFile}, nil
+	return &Store{dir: dir, ffmpeg: "ffmpeg", writeFile: os.WriteFile, rename: os.Rename}, nil
 }
 
 // SetTranscriber wires the word-timestamp source used to keep a reference
@@ -213,6 +217,11 @@ func (p *Pending) Commit() (*Voice, error) {
 		_ = os.Remove(metaTmp)
 		return nil, fmt.Errorf("voices: %w", err)
 	}
+	// A fresh add supersedes any repair backup of an earlier voice by this
+	// name: a stale one would later be mistaken for this voice's original.
+	for _, ext := range []string{".wav", ".json"} {
+		_ = os.Remove(s.backupPath(p.name, ext))
+	}
 	return v, nil
 }
 
@@ -236,6 +245,12 @@ func (s *Store) Remove(name string) error {
 		case errors.Is(err, fs.ErrNotExist):
 			missing = true
 		default:
+			return fmt.Errorf("voices: %w", err)
+		}
+	}
+	// The repair backup is the deleted voice's recording too.
+	for _, ext := range []string{".wav", ".json"} {
+		if err := os.Remove(s.backupPath(name, ext)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("voices: %w", err)
 		}
 	}

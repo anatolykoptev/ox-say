@@ -207,10 +207,10 @@ done
 # install-release.sh — the call-site pin below fails.
 selftest_ok() { ( . "$root/scripts/lib-install.sh" && oxs_selftest_heard_ok "$1" "ox-say is ready" ); }
 halluc="Her face was stretched into distortion, a drop of blood trickled slowly down her taut neck, and the door was ready to open when the water came."
-for heard in "Oxay is ready." "OX say is ready" "ox-say is ready" "Ox, say, is ready!"; do
+for heard in "Oxay is ready." "OX say is ready" "ox-say is ready" "Ox, say, is ready!" "Okse is ready, and the"; do
     if selftest_ok "$heard"; then pass "self-test accepts [$heard]"; else fail "self-test rejected [$heard]"; fi
 done
-for heard in "$halluc" "" "ox-say is steady" "ox say is not ready at all really"; do
+for heard in "$halluc" "" "ox-say is steady" "ox say is not ready at all really" "Okse is ready, and the sky"; do
     if selftest_ok "$heard"; then fail "self-test accepted [$heard]"; else pass "self-test rejects [${heard:0:30}]"; fi
 done
 n=$(grep -cE '^[^#]*[*]ready[*]' "$root/scripts/install-release.sh" || true)
