@@ -10,18 +10,28 @@ root=$(cd "$(dirname "$0")/.." && pwd -P)
 work="$root/build/engine-dist"
 stage="$root/build/release/ox-say"
 dist="$root/dist"
-asset=ox-say-macos-x86_64.tar.gz
+# One package per architecture, built on a Mac of that architecture: the
+# engines, the dictation app and the Go binary all target $(uname -m).
+arch=$(uname -m)
+case $arch in
+    x86_64) goarch=amd64; baseline=check-no-avx512.sh ;;
+    arm64) goarch=arm64; baseline=check-arm64-baseline.sh ;;
+    *) echo "package-release.sh: unsupported architecture $arch" >&2; exit 1 ;;
+esac
+asset=ox-say-macos-$arch.tar.gz
 
 OX_SAY_DIST=1 "$root/engine/build.sh" "$work"
 VERSION="$version" "$root/app/dictation/build.sh"
-(cd "$root" && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath \
+(cd "$root" && CGO_ENABLED=0 GOOS=darwin GOARCH=$goarch go build -trimpath \
     -ldflags "-s -w -X main.version=$version" -o "$root/build/ox-say-dist" ./cmd/ox-say)
 
-# The engines must not use AVX-512: most Intel MacBooks have none, and one such
-# instruction is a SIGILL there. -march=native on a build machine that has it
-# would slip this in silently. The guard fails closed on an otool error.
+# The engines must stay within the architecture's distribution baseline:
+# x86_64 without AVX-512 (most Intel MacBooks have none), arm64 without the
+# i8mm/BF16/SME an M1 lacks. One such instruction is a SIGILL there, and a
+# build machine that has it would slip it in silently. The guards fail
+# closed on an otool error.
 for bin in tts-server ox-stt ox-align; do
-    "$root/scripts/check-no-avx512.sh" "$work/out/$bin"
+    "$root/scripts/$baseline" "$work/out/$bin"
 done
 
 rm -rf "$root/build/release" "$dist"
@@ -42,7 +52,7 @@ cp "$root"/LICENSE "$root"/NOTICE "$root"/README.md "$stage/"
 # runtime's own. A module with no license file fails the package — shipping a
 # binary without its notices is worse than no build.
 modpath=$(cd "$root" && go list -m)
-(cd "$root" && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go list -deps -f '{{with .Module}}{{.Path}} {{.Dir}}{{end}}' ./cmd/ox-say | sort -u) \
+(cd "$root" && CGO_ENABLED=0 GOOS=darwin GOARCH=$goarch go list -deps -f '{{with .Module}}{{.Path}} {{.Dir}}{{end}}' ./cmd/ox-say | sort -u) \
     > "$work/go-modules.txt"
 while read -r mod dir; do
     if [ -z "${mod:-}" ] || [ -z "${dir:-}" ] || [ "$mod" = "$modpath" ]; then
