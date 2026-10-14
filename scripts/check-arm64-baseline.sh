@@ -11,7 +11,16 @@
 # builds run on every Apple Silicon Mac, and one such instruction is a SIGILL
 # on an M1. A native build on a newer chip emits them: the M5 Pro's ggml carries
 # ~280 smmla per engine. An otool failure fails the check (closed), so a
-# non-arm64 input is a failure. scripts/check-arm64-baseline_test.sh covers it.
+# non-arm64 input is a failure.
+# It also fails closed on anything the disassembler cannot decode: an Xcode whose
+# otool predates SME/SVE prints those words as ".long 0x..." (or .word, .inst,
+# .byte, .short), which no mnemonic grep can see, so every such line in the text
+# is refused. The one exception is a sign-extended negative offset
+# (".long 0xffff...."): clean M1 builds carry them (jump-table offsets), and no
+# SME/SVE/i8mm/BF16 encoding has a 0xff top byte. A disassembly with no
+# instruction at all is refused too, since nothing was checked. $OX_SAY_OTOOL
+# overrides the disassembler (tests); scripts/check-arm64-baseline_test.sh
+# covers all of it.
 set -euo pipefail
 
 bin=${1:?usage: $0 <binary>}
@@ -25,7 +34,7 @@ trap 'rm -f "$disasm"' EXIT
 # Drop the trailing "; literal pool for: ..." comments: they quote string
 # literals ("number with leading zero ...") that are not instructions. pipefail
 # keeps an otool failure fatal.
-otool -tv "$bin" | sed 's/[[:space:]]*;.*$//' >"$disasm"
+${OX_SAY_OTOOL:-otool} -tv "$bin" | sed 's/[[:space:]]*;.*$//' >"$disasm"
 # otool prints a bare mnemonic at the end of the line ("\tsmmla") or, for
 # vector forms, with an arrangement suffix ("\tusdot.4s"): a mnemonic ends at
 # an optional suffix, then whitespace or the end of the line.
@@ -34,6 +43,21 @@ pat="[[:space:]]($mnemonic)(\\.[0-9]*[bhsdq])?([[:space:]]|\$)"
 pat="$pat|[[:space:]{]z[0-9]+(\\.|[,}[:space:]]|\$)"
 pat="$pat|[[:space:]{]za[0-9]*[hv]?(\\.|[],}[:space:]]|\$)"
 pat="$pat|[[:space:]]pn?[0-9]+(/|\\.|,|[[:space:]]|\$)"
+# A disassembly with no instruction line (address, whitespace, mnemonic) means
+# the scan saw nothing; refuse rather than pass.
+insns=$(grep -cE '^[0-9a-f]+[[:space:]]+[a-z]' "$disasm" || true)
+if [ "${insns:-0}" = 0 ]; then
+    echo "$bin: the disassembly holds no instruction; cannot verify its baseline" >&2
+    exit 1
+fi
+# Words the disassembler could not decode, minus the negative-offset data words.
+undecoded=$(grep -E '^[0-9a-f]+[[:space:]]+\.(long|word|inst|byte|short|quad|hword)([[:space:]]|$)' "$disasm" \
+    | grep -vE '^[0-9a-f]+[[:space:]]+\.(long|word|inst)[[:space:]]+0xffff[0-9a-f]{4}$' || true)
+if [ -n "$undecoded" ]; then
+    echo "$bin has words the disassembler cannot decode (an older otool prints SME/SVE this way); cannot verify its baseline" >&2
+    printf '%s\n' "$undecoded" | head -5 >&2
+    exit 1
+fi
 # grep -c reads everything: `| grep -q` exits early, SIGPIPEs the writer and,
 # under pipefail, could turn a match into a pass.
 bad=$(grep -cE "$pat" "$disasm" || true)
