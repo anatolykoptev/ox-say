@@ -19,9 +19,9 @@ import (
 // "the engine holds the GPU". An STT CLI run that goes without -ng takes
 // it for the whole ox-stt run, taking it only with Try (auto and on alike: a
 // transcription never waits for the GPU); off and the
-// resident server (CPU-only) never touch it. With unified memory
-// (config.UnifiedMemory) the daemon wires the lease to nothing: TTS and STT
-// share the GPU.
+// resident server (CPU-only on a discrete card) never touch it. With
+// unified memory (config.UnifiedMemory) the daemon wires the lease to
+// nothing: TTS and STT share the GPU.
 //
 // Every acquisition tags the holder — "tts" for the engine's generation,
 // "transcription" for an ox-stt run — which Owner reports and the

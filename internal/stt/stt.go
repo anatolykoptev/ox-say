@@ -68,8 +68,9 @@ type Result struct {
 
 // GPULease is the daemon's single-token GPU mutex, shared between the TTS
 // engine child and per-call ox-stt CLI runs (issue #11). A run that goes
-// without -ng must hold it for the whole run; the resident server is
-// CPU-only and never touches it. Implemented by *engine.GPULease. A
+// without -ng must hold it for the whole run; on a discrete card the
+// resident server is CPU-only and never touches it, and on unified memory
+// no lease is wired at all. Implemented by *engine.GPULease. A
 // transcription only ever tries the lease, never waits for it: a run that
 // waited would hold its place in the queue (or the lease itself) while
 // doing no work. The owner tag lets the supervisor's Status name who a
