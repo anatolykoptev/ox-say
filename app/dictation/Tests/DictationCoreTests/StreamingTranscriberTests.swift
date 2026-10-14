@@ -847,6 +847,27 @@ final class TranscriberControllerTests: XCTestCase {
         XCTAssertFalse(timing.line.contains("noon"), "the dictated text never reaches the line")
     }
 
+    // The output's report must reach the timing line — the log once claimed
+    // `delivered` for a dictation that only landed on the clipboard.
+    // Mutation: in DictationController.finish drop the `delivery =` (or log
+    // .paste unconditionally) -> RED.
+    @MainActor
+    func testAClipboardDeliveryReachesTheTimingLine() async {
+        let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 16000)
+        let t = FakeTranscriber()
+        t.result = "meet me at noon"
+        let out = FakeOutput()
+        out.delivery = .clipboardOnly(reason: .accessibility)
+        let c = DictationController(recorder: rec, output: out, mode: .hold, transcriber: t)
+        var timings: [DictationTiming] = []
+        c.onTiming = { timings.append($0) }
+        c.keyDown(); c.keyUp()
+        await run(c, until: .idle)
+        guard let timing = timings.first else { return XCTFail("the dictation reported no timing") }
+        XCTAssertEqual(timing.delivery, .clipboardOnly(reason: .accessibility))
+        XCTAssertTrue(timing.line.hasSuffix("delivery=clipboard clipboard_reason=accessibility"), timing.line)
+    }
+
     @MainActor
     func testAFailedOrEmptyDictationReportsItsOutcome() async {
         let rec = FakeRecorder(); rec.samples = [Float](repeating: 0.1, count: 16000)

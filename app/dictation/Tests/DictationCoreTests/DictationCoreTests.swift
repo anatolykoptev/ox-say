@@ -175,27 +175,58 @@ final class OutputPolicyTests: XCTestCase {
     // Mutation: ignore `secureInput` in OutputPolicy.decide -> RED (the text
     // would be pasted into a password field).
     func testNeverPastesIntoAPasswordField() {
-        guard case .clipboardOnly = OutputPolicy.decide(secureInput: true, accessibilityTrusted: true) else {
+        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: true, accessibilityTrusted: true) else {
             return XCTFail("secure input must not get a synthesized paste")
         }
+        XCTAssertEqual(reason.code, "secure_input")
     }
 
+    // Mutation: decide(secureInput: false, accessibilityTrusted: false)
+    // returning .clipboardOnly(.secureInput) -> RED (the timing line would
+    // blame a password field for an untrusted grant).
     func testWithoutAccessibilityTheTextStaysOnTheClipboard() {
-        guard case .clipboardOnly = OutputPolicy.decide(secureInput: false, accessibilityTrusted: false) else {
+        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: false, accessibilityTrusted: false) else {
             return XCTFail("without Accessibility a posted Cmd+V is dropped silently")
         }
+        XCTAssertEqual(reason.code, "accessibility")
+        XCTAssertTrue(reason.message.contains("Allow pasting"),
+                      "the notice must point at the menu item that repairs the grant")
     }
 
     // Mutation: ignore `focusMoved` in OutputPolicy.decide -> RED (the text is
     // pasted into whatever app the user switched to).
     func testNoPasteIntoAnAppTheUserSwitchedTo() {
-        guard case .clipboardOnly = OutputPolicy.decide(secureInput: false, focusMoved: true, accessibilityTrusted: true) else {
+        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: false, focusMoved: true, accessibilityTrusted: true) else {
             return XCTFail("a paste must go where the user dictated, not where focus went later")
         }
+        XCTAssertEqual(reason.code, "focus_moved")
     }
 
     func testPastesOtherwise() {
         XCTAssertEqual(OutputPolicy.decide(secureInput: false, accessibilityTrusted: true), .paste)
+    }
+}
+
+final class AccessibilityRepairTests: XCTestCase {
+    // Mutations: emit "All" instead of "Accessibility" in
+    // AccessibilityRepair.resetArguments -> RED (it would reset every app's
+    // Accessibility entries); drop the empty-id guard -> RED below.
+    func testTheResetIsScopedToThisAppsOwnAccessibilityEntry() {
+        XCTAssertEqual(AccessibilityRepair.resetArguments(bundleID: "io.github.anatolykoptev.ox-say.dictation"),
+                       ["reset", "Accessibility", "io.github.anatolykoptev.ox-say.dictation"])
+    }
+
+    func testNoUsableBundleIDNoReset() {
+        XCTAssertNil(AccessibilityRepair.resetArguments(bundleID: nil))
+        XCTAssertNil(AccessibilityRepair.resetArguments(bundleID: ""))
+        XCTAssertNil(AccessibilityRepair.resetArguments(bundleID: "  \n\t "))
+    }
+
+    // The item exists only while the grant does not work; it is recomputed on
+    // every menu open.
+    func testTheRepairItemIsOfferedOnlyWhileUntrusted() {
+        XCTAssertTrue(AccessibilityRepair.shouldOffer(accessibilityTrusted: false))
+        XCTAssertFalse(AccessibilityRepair.shouldOffer(accessibilityTrusted: true))
     }
 }
 
@@ -277,7 +308,12 @@ final class FakeRecorder: Recorder {
 
 final class FakeOutput: TextOutput {
     var delivered: [String] = []
-    func deliver(_ text: String) { delivered.append(text) }
+    /// What `deliver` reports; set it to play a clipboard delivery.
+    var delivery: Delivery = .paste
+    func deliver(_ text: String) -> Delivery {
+        delivered.append(text)
+        return delivery
+    }
 }
 
 final class DictationControllerTests: XCTestCase {
@@ -748,17 +784,45 @@ final class SlowTranscriptionTests: XCTestCase {
 
 final class DictationTimingTests: XCTestCase {
     // The log line's contract: fixed keys in a fixed order, two-decimal
-    // seconds, and "none" for a session that never opened.
+    // seconds, "none" for a session that never opened, and the delivery
+    // suffix appended last. The keys through session_create_ms are
+    // byte-identical to before the delivery fields existed — something may
+    // parse them.
     func testTheLineIsKeyValueWithNoText() {
+        let prefix = "outcome=delivered path=stream recorded_s=19.04 release_to_text_ms=1170 tail_s=10.50 segments_before_release=2 session_create_ms=4305"
         let timing = DictationTiming(
             recordedSeconds: 19.04, releaseToTextMs: 1170,
             stats: TranscriberStats(path: .stream, sessionCreateMs: 4305, segmentsBeforeRelease: 2, tailSeconds: 10.5),
-            outcome: .delivered)
-        XCTAssertEqual(timing.line,
-                       "outcome=delivered path=stream recorded_s=19.04 release_to_text_ms=1170 tail_s=10.50 segments_before_release=2 session_create_ms=4305")
+            outcome: .delivered, delivery: .paste)
+        XCTAssertEqual(timing.line, "\(prefix) delivery=paste")
         let oneShot = DictationTiming(recordedSeconds: 1, releaseToTextMs: 900,
-                                      stats: TranscriberStats(path: .oneShot), outcome: .failed)
-        XCTAssertTrue(oneShot.line.hasSuffix("session_create_ms=none"))
+                                      stats: TranscriberStats(path: .oneShot), outcome: .failed, delivery: nil)
+        XCTAssertTrue(oneShot.line.hasSuffix("session_create_ms=none delivery=none"))
         XCTAssertTrue(oneShot.line.contains("path=one-shot"))
+    }
+
+    // The delivered line used to claim success whether the text was pasted or
+    // only left on the clipboard. Mutation: print `delivery=paste`
+    // unconditionally in DictationTiming.line -> RED on every clipboard row.
+    func testTheDeliverySuffixSaysHowTheTextArrived() {
+        func line(_ outcome: DictationTiming.Outcome, _ delivery: Delivery?) -> String {
+            DictationTiming(recordedSeconds: 3.7, releaseToTextMs: 182,
+                            stats: TranscriberStats(path: .stream, sessionCreateMs: 5,
+                                                    segmentsBeforeRelease: 1, tailSeconds: 0.2),
+                            outcome: outcome, delivery: delivery).line
+        }
+        let prefix = "outcome=delivered path=stream recorded_s=3.70 release_to_text_ms=182 tail_s=0.20 segments_before_release=1 session_create_ms=5"
+        XCTAssertEqual(line(.delivered, .paste), "\(prefix) delivery=paste")
+        XCTAssertEqual(line(.delivered, .clipboardOnly(reason: .accessibility)),
+                       "\(prefix) delivery=clipboard clipboard_reason=accessibility")
+        XCTAssertEqual(line(.delivered, .clipboardOnly(reason: .secureInput)),
+                       "\(prefix) delivery=clipboard clipboard_reason=secure_input")
+        XCTAssertEqual(line(.delivered, .clipboardOnly(reason: .focusMoved)),
+                       "\(prefix) delivery=clipboard clipboard_reason=focus_moved")
+        XCTAssertEqual(line(.delivered, nil), "\(prefix) delivery=none")
+        XCTAssertEqual(line(.empty, nil),
+                       "outcome=empty path=stream recorded_s=3.70 release_to_text_ms=182 tail_s=0.20 segments_before_release=1 session_create_ms=5 delivery=none")
+        XCTAssertEqual(line(.failed, nil),
+                       "outcome=failed path=stream recorded_s=3.70 release_to_text_ms=182 tail_s=0.20 segments_before_release=1 session_create_ms=5 delivery=none")
     }
 }

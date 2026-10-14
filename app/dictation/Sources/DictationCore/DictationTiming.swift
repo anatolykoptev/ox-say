@@ -42,15 +42,24 @@ public struct DictationTiming: Equatable {
     public var releaseToTextMs: Int
     public var stats: TranscriberStats
     public var outcome: Outcome
+    /// How the text reached the user, as `TextOutput.deliver` reported it;
+    /// nil when nothing was delivered (an empty or failed transcription). A
+    /// `delivered` outcome with the text left on the clipboard is still a
+    /// delivery — `delivery=none` would claim the dictation produced nothing.
+    public var delivery: Delivery?
 
-    public init(recordedSeconds: Double, releaseToTextMs: Int, stats: TranscriberStats, outcome: Outcome) {
+    public init(recordedSeconds: Double, releaseToTextMs: Int, stats: TranscriberStats, outcome: Outcome,
+                delivery: Delivery?) {
         self.recordedSeconds = recordedSeconds
         self.releaseToTextMs = releaseToTextMs
         self.stats = stats
         self.outcome = outcome
+        self.delivery = delivery
     }
 
-    /// The log line: key=value pairs, fixed order, no text.
+    /// The log line: key=value pairs, fixed order, no text. The delivery
+    /// fields are appended last; every earlier key is byte-identical to before
+    /// they existed — something may parse them.
     public var line: String {
         var parts = [
             "outcome=\(outcome.rawValue)",
@@ -61,6 +70,15 @@ public struct DictationTiming: Equatable {
             "segments_before_release=\(stats.segmentsBeforeRelease)",
         ]
         parts.append("session_create_ms=\(stats.sessionCreateMs.map(String.init) ?? "none")")
+        switch delivery {
+        case .paste?:
+            parts.append("delivery=paste")
+        case .clipboardOnly(let reason)?:
+            parts.append("delivery=clipboard")
+            parts.append("clipboard_reason=\(reason.code)")
+        case nil:
+            parts.append("delivery=none")
+        }
         return parts.joined(separator: " ")
     }
 

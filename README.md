@@ -327,6 +327,9 @@ Three logs describe a dictation without recording what was said:
   - `path`: `stream`, `fallback` (the session failed and the recording was sent whole) or `one-shot`.
   - `tail_s`: audio not yet acknowledged when the key was released.
   - `session_create_ms`: time to open the session. It is large when the STT server had to start, and `none` when no session opened (the one-shot path, a failed create, or a create still in flight at release).
+  - `delivery`: how the text reached the user — `paste`, or `clipboard` plus `clipboard_reason=accessibility|secure_input|focus_moved`. `none` when the dictation was empty or failed.
+
+  When a paste was posted, a second line follows once it settles: `paste settled read=yes|no`. `read=no` means the target app never read the clipboard before the 3 s cap — the paste went nowhere.
 
   In zsh, type `/usr/bin/log`: plain `log` is a shell builtin.
 - **The daemon writes one line per closed segment to `~/Library/Logs/ox-say/ox-say.log`:**
@@ -342,9 +345,14 @@ its microphone and Accessibility permissions across updates. A build from
 source is signed ad hoc unless `OX_SAY_SIGN_IDENTITY` names a Developer ID
 identity: macOS then ties the permissions to the exact build and asks again
 after every rebuild, and a stale entry in System Settings → Privacy & Security
-→ Accessibility looks enabled but no longer applies (remove it and add the app
-again). The same happens once when updating from ox-say 0.1.x, whose app was
-signed ad hoc. See the header of `app/dictation/build.sh`.
+→ Accessibility looks enabled but no longer applies. While that is the state
+the app's menu offers **Allow pasting… (Accessibility is off)** at the top: it
+resets this app's own Accessibility entry (`tccutil reset Accessibility
+<bundle id>`) so the permission prompt can store a grant matching the running
+build, then re-asks and opens the pane. If the item is missing or the reset
+fails, remove OxSayDictation with − in the pane and add it again. The same
+happens once when updating from ox-say 0.1.x, whose app was signed ad hoc. See
+the header of `app/dictation/build.sh`.
 
 ## Install
 
