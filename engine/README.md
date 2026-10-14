@@ -48,7 +48,9 @@ whisper.cpp `6e4ab85`:
 dotprod, fp16). `scripts/check-arm64-baseline.sh` fails the build if the disassembly of a binary
 has an i8mm (`smmla`, `usdot`, ...), BF16 (`bfdot`, `bfcvt`, ...), SME (`smstart`, `zero {za}`,
 `rdsvl`, ZA tiles, `fmopa`, ...) or SVE (`addvl`, z- and p-registers) instruction, which a native
-build on a newer chip emits. `scripts/check-arm64-baseline_test.sh` assembles one probe per
+build on a newer chip emits. It also refuses anything the disassembler cannot decode (an older
+Xcode's `otool` prints SME/SVE words as `.long 0x...`) and an empty disassembly, so a toolchain
+that cannot see an instruction fails the build instead of passing it. `scripts/check-arm64-baseline_test.sh` assembles one probe per
 instruction family (and M1-legal controls) and checks the guard against the real engine binaries.
 
 ## patches/qwentts/0002-tts-server-local-only.patch
