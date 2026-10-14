@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.20](https://github.com/anatolykoptev/ox-say/compare/v0.1.19...v0.1.20) (2026-10-14)
+
+
+### Fixed
+
+* **dictation:** repair a stale Accessibility grant and log how text was delivered ([#128](https://github.com/anatolykoptev/ox-say/issues/128)) ([37ae2e2](https://github.com/anatolykoptev/ox-say/commit/37ae2e2512aae7c0132c63a3504e433edcddfc4e))
+* **release:** retry stapler validate on transient network errors ([#126](https://github.com/anatolykoptev/ox-say/issues/126)) ([4f58ee0](https://github.com/anatolykoptev/ox-say/commit/4f58ee0be44489df8caa331920f4f1b2db969e96))
+
 ## [0.1.19](https://github.com/anatolykoptev/ox-say/compare/v0.1.18...v0.1.19) (2026-10-14)
 
 
