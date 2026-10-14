@@ -45,9 +45,12 @@ func (d *Daemon) voiceWords(ctx context.Context, wavPath string) ([]voices.Word,
 
 // StartVoiceRepair repairs stored voices whose transcript cannot match their
 // audio, once per daemon start and off every request path. It waits for the
-// HTTP listener first, so a bind failure ends the process before any voice
-// is touched. A repaired voice keeps its original pair as
-// <name>.orig.wav/.json.
+// HTTP listener to accept first, so a daemon that never gets to serve rarely
+// touches a voice. (A failed bind means someone ELSE holds the address, so the
+// dial can succeed and the pass can start while Serve is reporting the error;
+// that is harmless because cmdServe waits for the pass in StopVoiceRepair
+// before exiting and a repair is crash-safe.) A repaired voice keeps its
+// original pair as <name>.orig.wav/.json.
 func (d *Daemon) StartVoiceRepair() {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -62,17 +65,20 @@ func (d *Daemon) StartVoiceRepair() {
 }
 
 // StopVoiceRepair cancels a running pass and waits (bounded) for it: Apply
-// must not be cut off between its renames by process exit.
+// must not be cut off between its renames by process exit. Only the first
+// call waits, so Shutdown and cmdServe together cost one bound, not two.
 func (d *Daemon) StopVoiceRepair() {
 	if d.repairCancel == nil {
 		return
 	}
-	d.repairCancel()
-	select {
-	case <-d.repairDone:
-	case <-time.After(repairStopWait):
-		d.log.Warn("voice repair still running at shutdown")
-	}
+	d.repairStop.Do(func() {
+		d.repairCancel()
+		select {
+		case <-d.repairDone:
+		case <-time.After(repairStopWait):
+			d.log.Warn("voice repair still running at shutdown")
+		}
+	})
 }
 
 // waitListening polls addr until something accepts, up to listenWait; false
@@ -119,7 +125,7 @@ func (d *Daemon) repairVoice(ctx context.Context, name string) {
 		d.log.Warn("voice repair: speech-to-text unavailable; voice left as is", slog.String("voice", name))
 		return
 	case errors.Is(err, voices.ErrScript):
-		d.log.Warn("voice repair: ref_text is not Latin or Cyrillic script, which the speech-to-text cannot re-derive; voice left as is",
+		d.log.Warn("voice repair: ref_text is not Latin, Cyrillic or Greek script, which the speech-to-text cannot re-derive; voice left as is",
 			slog.String("voice", name), slog.Any("error", err))
 		return
 	case errors.Is(err, voices.ErrStillBroken):

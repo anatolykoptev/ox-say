@@ -3,6 +3,7 @@ package voices
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"os"
@@ -387,5 +388,80 @@ func TestRepairWithoutTranscriber(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.dir, "snakes.orig.json")); err == nil {
 		t.Fatal("backup written for a repair that did not happen")
+	}
+}
+
+// A real at-cap voice whose text runs a few words past its audio must be
+// repaired (the overall word ratio alone calls it healthy: 0.88).
+// Mutation: internal/voices/repair.go plan — call TextsMatch instead of
+// TranscriptMatches -> RED for deniro, william, daniel.
+func TestRepairRealOverrunVoices(t *testing.T) {
+	raw, err := os.ReadFile("testdata/real_voices.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures []struct {
+		Name    string `json:"name"`
+		RefText string `json:"ref_text"`
+		Stt     string `json:"stt"`
+	}
+	if err := json.Unmarshal(raw, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	wantRepair := map[string]bool{"en-snakes": true, "en-geralt": true, "en-deniro": true, "en-william": true, "en-daniel": true}
+	for _, f := range fixtures {
+		t.Run(f.Name, func(t *testing.T) {
+			s, _ := newStore(t)
+			meta, _ := json.Marshal(map[string]any{"name": f.Name, "ref_text": f.RefText, "created": "2026-10-04T14:28:00Z"})
+			if err := os.WriteFile(s.WAVPath(f.Name), testutil.SilentWAV(20), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(s.metaPath(f.Name), meta, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			heard := strings.Fields(f.Stt)
+			words := make([]Word, len(heard))
+			step := 19.8 / float64(len(heard))
+			for i, w := range heard {
+				words[i] = Word{W: w, S: float64(i) * step, E: float64(i)*step + step*0.9}
+			}
+			s.SetTranscriber(fixedWords(words, new(int)))
+			r, err := s.PrepareRepair(context.Background(), f.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := r != nil; got != wantRepair[f.Name] {
+				t.Fatalf("repair planned = %v, want %v", got, wantRepair[f.Name])
+			}
+			if r != nil {
+				r.Discard()
+			}
+		})
+	}
+}
+
+// The backup .wav lands before the .json marker: a marker without its audio
+// would claim a repair that cannot be retried from the backup.
+// Mutation: internal/voices/repair.go Apply — iterate {".json", ".wav"} -> RED.
+func TestRepairBackupOrderMarkerLast(t *testing.T) {
+	s, _ := newStore(t)
+	seedVoice(t, s, "snakes", 20, words90())
+	var order []string
+	s.rename = func(o, n string) error {
+		if strings.Contains(filepath.Base(n), ".orig.") {
+			order = append(order, filepath.Ext(n))
+		}
+		return os.Rename(o, n)
+	}
+	s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), new(int)))
+	r, err := s.PrepareRepair(context.Background(), "snakes")
+	if err != nil || r == nil {
+		t.Fatalf("PrepareRepair = %v, %v", r, err)
+	}
+	if err := r.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) != 2 || order[0] != ".wav" || order[1] != ".json" {
+		t.Fatalf("backup rename order = %v, want [.wav .json]", order)
 	}
 }

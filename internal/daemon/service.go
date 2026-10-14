@@ -65,6 +65,7 @@ type Daemon struct {
 	// repairCancel and repairDone stop and await a StartVoiceRepair pass.
 	repairCancel context.CancelFunc
 	repairDone   chan struct{}
+	repairStop   sync.Once
 }
 
 // New builds the supervisor (reaping any orphaned engine) and the voice

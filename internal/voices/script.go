@@ -16,6 +16,7 @@ var ErrScript = errors.New("voices: ref_text is not in a script the speech-to-te
 const (
 	scriptLatin    = "latin"
 	scriptCyrillic = "cyrillic"
+	scriptGreek    = "greek"
 
 	// scriptShare is the share of a text's letters that must be Latin or
 	// Cyrillic for the text to count as one of them; a sentence with a few
@@ -31,10 +32,16 @@ const (
 	matchThreshold = 0.8
 )
 
-// Script returns "latin" or "cyrillic" for a text written predominantly in
-// that script, "" for anything else (CJK, Arabic, digits only, empty).
+// Script returns "latin", "cyrillic" or "greek" for a text written
+// predominantly in that script, "" for anything else (CJK, Arabic, digits
+// only, empty). The three are the scripts of parakeet-tdt-0.6b-v3's 25
+// languages (model card, huggingface.co/nvidia/parakeet-tdt-0.6b-v3):
+// bg hr cs da nl en et fi fr de el hu it lv lt mt pl pt ro sk sl es sv ru uk —
+// Latin for all but bg/el/ru/uk, Cyrillic for bg/ru/uk, Greek for el. Latin
+// letters of a language the model does not list (Turkish, Vietnamese) are not
+// told apart: the script-mismatch and match checks cover those.
 func Script(text string) string {
-	var latin, cyr, letters int
+	var latin, cyr, greek, letters int
 	for _, r := range text {
 		if !unicode.IsLetter(r) {
 			continue
@@ -45,15 +52,21 @@ func Script(text string) string {
 			latin++
 		case unicode.Is(unicode.Cyrillic, r):
 			cyr++
+		case unicode.Is(unicode.Greek, r):
+			greek++
 		}
 	}
-	if letters == 0 || float64(latin+cyr) < scriptShare*float64(letters) {
+	top, name := latin, scriptLatin
+	if cyr > top {
+		top, name = cyr, scriptCyrillic
+	}
+	if greek > top {
+		top, name = greek, scriptGreek
+	}
+	if letters == 0 || float64(top) < scriptShare*float64(letters) {
 		return ""
 	}
-	if cyr > latin {
-		return scriptCyrillic
-	}
-	return scriptLatin
+	return name
 }
 
 // SameScript reports whether both texts are in the same transcribable script.

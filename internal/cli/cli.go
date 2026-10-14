@@ -123,8 +123,9 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 		Name:    "ox-say",
 		Version: version,
 	}, d.ServerConfig(version), d.RegisterTools)
-	// Serve returns on a failed bind too, without OnShutdown: stop the repair
-	// pass (and wait for it) rather than exit mid-rewrite.
+	// Serve returns on a failed bind too, possibly without OnShutdown. The
+	// repair pass may already be running (it only waits for SOMETHING to
+	// accept on the address): wait for it here rather than exit mid-rewrite.
 	d.StopVoiceRepair()
 	if err != nil {
 		fmt.Fprintln(stderr, "ox-say:", err)

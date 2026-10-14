@@ -109,7 +109,7 @@ func (s *Store) stampOf(name string, v *Voice) (stamp, error) {
 // exists is a marker of a COMPLETED repair only while the main files are
 // healthy and differ from it; otherwise the repair is retried (from the
 // backup when the main files still carry the original text). ErrScript means
-// the ref_text is not Latin/Cyrillic and is left alone; ErrStillBroken that a
+// the ref_text is not Latin/Cyrillic/Greek and is left alone; ErrStillBroken that a
 // retry changed nothing.
 func (s *Store) PrepareRepair(ctx context.Context, name string) (*Repair, error) {
 	v, err := s.Get(name)
@@ -170,7 +170,7 @@ func (r *Repair) plan(ctx context.Context, srcWav, srcText string, srcDur float6
 	if !SameScript(srcText, joinWords(words)) {
 		return fmt.Errorf("voice %s: the transcript's script differs from ref_text: %w", name, ErrScript)
 	}
-	if TextsMatch(srcText, joinWords(words)) {
+	if TranscriptMatches(srcText, joinWords(words)) {
 		return nil // a correct transcript, e.g. an exact 20.0 s clip with its own text
 	}
 	if srcDur >= MaxRefSeconds-capEpsilon {

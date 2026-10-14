@@ -27,7 +27,7 @@ func tooLongMsg(why string) string {
 // scriptMsg refuses a too-long clip whose ref_text the STT cannot reproduce:
 // replacing the user's own transcript with a transliteration would be worse
 // than the cap.
-const scriptMsg = "voices: clip is longer than 20 s and its ref_text is not in Latin or Cyrillic script, which the speech-to-text cannot re-derive — trim the clip to at most 20 s and keep your own transcript"
+const scriptMsg = "voices: clip is longer than 20 s and its ref_text is not in Latin, Cyrillic or Greek script, which the speech-to-text cannot re-derive — trim the clip to at most 20 s and keep your own transcript"
 
 // fitReference makes the clip at wav and its transcript describe the same
 // audio. A clip within the cap keeps refText as given. A longer one without a

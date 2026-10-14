@@ -410,3 +410,14 @@ func TestScriptAndMatch(t *testing.T) {
 		t.Error("a transcript twice as long as the audio's matched")
 	}
 }
+
+// Greek is one of parakeet-tdt-0.6b-v3's languages (el), so a Greek ref_text
+// is transcribable and must not be refused as an unsupported script.
+func TestScriptGreek(t *testing.T) {
+	if got := Script("Καλησπέρα, αυτός είναι ένας έλεγχος φωνής."); got != scriptGreek {
+		t.Fatalf("Script(greek) = %q", got)
+	}
+	if SameScript("Καλησπέρα κόσμε", "Hello world") {
+		t.Fatal("greek and latin treated as the same script")
+	}
+}
