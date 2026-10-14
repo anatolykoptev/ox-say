@@ -28,8 +28,9 @@ public struct UpdateChecker {
         self.send = send
     }
 
-    /// The published release: "v0.1.14" tag and its web page URL.
-    public func latestRelease() async throws -> (tag: String, url: URL?) {
+    /// The published release: "v0.1.14" tag, its web page URL and the notes
+    /// markdown ("" when the release has none).
+    public func latestRelease() async throws -> (tag: String, url: URL?, body: String) {
         var request = URLRequest(url: apiURL)
         request.timeoutInterval = 15
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -47,7 +48,7 @@ public struct UpdateChecker {
             throw UpdateError.badResponse
         }
         let page = (obj["html_url"] as? String).flatMap(URL.init(string:))
-        return (tag, page)
+        return (tag, page, obj["body"] as? String ?? "")
     }
 
     /// Version triples compare numerically: "v0.1.14" > "0.1.13". An

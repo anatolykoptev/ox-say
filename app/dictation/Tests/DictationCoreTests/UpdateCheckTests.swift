@@ -13,9 +13,16 @@ final class UpdateCheckTests: XCTestCase {
 
     func testLatestReleaseParsesTheTag() async throws {
         let json = #"{"tag_name":"v0.1.14","html_url":"https://github.com/x/y/releases/tag/v0.1.14"}"#.data(using: .utf8)!
-        let (tag, url) = try await fakeSend(data: json).latestRelease()
+        let (tag, url, body) = try await fakeSend(data: json).latestRelease()
         XCTAssertEqual(tag, "v0.1.14")
         XCTAssertEqual(url?.absoluteString, "https://github.com/x/y/releases/tag/v0.1.14")
+        XCTAssertEqual(body, "", "a release without a body has empty notes")
+    }
+
+    func testLatestReleaseParsesTheBody() async throws {
+        let json = ###"{"tag_name":"v0.1.21","html_url":"https://github.com/x/y/releases/tag/v0.1.21","body":"## Fixes\n- one"}"###.data(using: .utf8)!
+        let release = try await fakeSend(data: json).latestRelease()
+        XCTAssertEqual(release.body, "## Fixes\n- one")
     }
 
     func testMissingTagIsABadResponse() async {

@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let player = AudioPlayer()
     private var speechClient: SpeechClient!
     private let updater = UpdateChecker()
+    /// True from the menu click until the result alert is up, so a second click
+    /// does not stack a second check.
+    private var updateCheckRunning = false
     private let russianVoiceSubmenu = NSMenu()
     private let englishVoiceSubmenu = NSMenu()
     private let speakVoiceRUKey = "speakVoiceRU"
@@ -548,46 +551,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// The menu's update check: GitHub's latest release tag against the
-    /// bundle's build version; a newer tag offers a self-install via the
-    /// same get.sh the manual install uses.
+    /// The menu's update check: GitHub's latest release against the bundle's
+    /// build version. Every outcome ends in an alert that waits for the user —
+    /// a pill message times out and is easy to miss.
     @objc private func checkForUpdates() {
+        guard !updateCheckRunning else { return }
+        updateCheckRunning = true
         let local = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
         overlay.showWorking()
         overlay.setWorkingText("Checking for updates…")
         overlay.setHintHidden(true)
         Task { @MainActor [weak self] in
             guard let self else { return }
+            let fetch: Result<(tag: String, url: URL?, body: String), UpdateError>
             do {
-                let (tag, _) = try await self.updater.latestRelease()
-                self.overlay.finish()
-                if UpdateChecker.isNewer(tag, than: local) {
-                    self.confirmInstall(remote: tag, local: local)
-                } else {
-                    self.notice("ox-say v\(local) is the latest release.")
-                }
+                fetch = .success(try await self.updater.latestRelease())
+            } catch let error as UpdateError {
+                fetch = .failure(error)
             } catch {
-                self.overlay.finish()
-                self.notice(String(describing: error))
+                fetch = .failure(.unreachable(error.localizedDescription))
+            }
+            self.overlay.finish()
+            self.updateCheckRunning = false
+            self.present(UpdatePrompt.make(local: local, fetch: fetch))
+        }
+    }
+
+    /// Renders the prompt; the pure decision is UpdatePrompt.make.
+    private func present(_ prompt: UpdatePrompt) {
+        switch prompt {
+        case .upToDate(let version):
+            runAlert(title: "You're up to date", text: "ox-say v\(version) is the newest version.", buttons: ["OK"])
+        case .available(let remote, let local, let notes, let url):
+            confirmInstall(remote: remote, local: local, notes: notes, url: url)
+        case .failed(let reason):
+            if runAlert(title: "Couldn't check for updates", text: reason, buttons: ["Try Again", "OK"]) == .alertFirstButtonReturn {
+                checkForUpdates()
             }
         }
     }
 
-    private func confirmInstall(remote: String, local: String) {
+    /// Shows a modal alert over every app and returns the pressed button.
+    @discardableResult
+    private func runAlert(title: String, text: String, buttons: [String]) -> NSApplication.ModalResponse {
         let alert = NSAlert()
-        alert.messageText = "ox-say \(remote) is available"
-        alert.informativeText = "Installed: v\(local).\nThe updater downloads the signed package, swaps in the new daemon and app, then relaunches."
+        alert.messageText = title
+        alert.informativeText = text
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Install")
-        alert.addButton(withTitle: "Later")
+        for button in buttons { alert.addButton(withTitle: button) }
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
+        return alert.runModal()
+    }
+
+    /// Update / Later / Release Notes…; the notes button opens the release page
+    /// and asks again, so reading them does not forfeit the decision.
+    private func confirmInstall(remote: String, local: String, notes: String, url: URL?) {
+        let text = notes.isEmpty ? "You have v\(local)." : "You have v\(local).\n\n\(notes)"
+        let buttons = url == nil ? ["Update", "Later"] : ["Update", "Later", "Release Notes…"]
+        switch runAlert(title: "ox-say \(remote) is available", text: text, buttons: buttons) {
+        case .alertFirstButtonReturn:
             installUpdate(tag: remote)
+        case .alertThirdButtonReturn:
+            if let url { NSWorkspace.shared.open(url) }
+            confirmInstall(remote: remote, local: local, notes: notes, url: url)
+        default:
+            break
         }
     }
 
-    /// Runs the release installer; on success the installed app is already
-    /// swapped in place, so open a fresh instance and hand over.
+    /// Where the installer's output of the last attempt lands.
+    private static var updateLogURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/ox-say/update.log")
+    }
+
+    /// Opens (truncating) the update log; nil when the directory or file cannot
+    /// be created, in which case the installer's output is discarded.
+    private static func openUpdateLog() -> FileHandle? {
+        let url = updateLogURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard FileManager.default.createFile(atPath: url.path, contents: nil) else { return nil }
+        return try? FileHandle(forWritingTo: url)
+    }
+
+    /// Runs the release installer, its stdout and stderr captured in the update
+    /// log; on success the installed app is already swapped in place, so open a
+    /// fresh instance and hand over.
     private func installUpdate(tag: String) {
         overlay.showWorking()
         overlay.setWorkingText("Installing \(tag)…")
@@ -595,7 +643,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = ["-c", "curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | sh"]
+        let log = Self.openUpdateLog()
+        p.standardOutput = log ?? FileHandle.nullDevice
+        p.standardError = log ?? FileHandle.nullDevice
         p.terminationHandler = { [weak self] p in
+            try? log?.close()
             Task { @MainActor in
                 guard let self else { return }
                 if p.terminationStatus == 0 {
@@ -606,15 +658,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     NSApp.terminate(nil)
                 } else {
                     self.overlay.finish()
-                    self.notice("Update to \(tag) failed (exit \(p.terminationStatus)).")
+                    self.runAlert(title: "Update to \(tag) failed",
+                                  text: "The installer exited with status \(p.terminationStatus). Its output is in\n\(Self.updateLogURL.path)",
+                                  buttons: ["OK"])
                 }
             }
         }
         do {
             try p.run()
         } catch {
+            try? log?.close()
             overlay.finish()
-            notice("Update failed: \(error)")
+            runAlert(title: "Update to \(tag) failed", text: "The installer could not start: \(error.localizedDescription)", buttons: ["OK"])
         }
     }
 
