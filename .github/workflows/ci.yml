@@ -39,12 +39,15 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)"
 
-      # The product ships to macOS — the linux gate must still compile and
-      # vet the darwin build-tagged files (afplay player, proc listing).
+      # The product ships to macOS on both architectures — the linux gate must
+      # still compile and vet the darwin build-tagged files (afplay player,
+      # proc listing) for each.
       - name: darwin build + vet
         run: |
-          GOOS=darwin GOARCH=amd64 go build ./...
-          GOOS=darwin GOARCH=amd64 go vet ./...
+          for arch in amd64 arm64; do
+            GOOS=darwin GOARCH=$arch go build ./...
+            GOOS=darwin GOARCH=$arch go vet ./...
+          done
 
       - name: go vet
         run: go vet ./...
@@ -57,11 +60,15 @@ jobs:
       - name: segmenter test
         run: c++ -std=c++17 -O1 -Wall -Wextra -Werror -o "$RUNNER_TEMP/segmenter-test" engine/stt/segmenter_test.cpp && "$RUNNER_TEMP/segmenter-test"
 
-  # The dictation app is Swift and AppKit, so it needs a macOS runner (Intel:
-  # the Macs ox-say is built for). The build step also assembles and ad-hoc
-  # signs the .app, which catches a broken bundle, not just broken code.
+  # The dictation app is Swift and AppKit, so it needs a macOS runner — one
+  # per architecture ox-say ships for. The build step also assembles and
+  # ad-hoc signs the .app, which catches a broken bundle, not just broken code.
   dictation:
-    runs-on: macos-15-intel
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -74,3 +81,9 @@ jobs:
 
       - name: install-app tests
         run: bash app/dictation/test-install-app.sh
+
+      # The arm64 baseline guard (issue #109): its probe cases need only Xcode
+      # clang; the real-binary cases print SKIP on CI.
+      - name: arm64 baseline guard test
+        if: runner.arch == 'ARM64'
+        run: bash scripts/check-arm64-baseline_test.sh

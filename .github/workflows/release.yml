@@ -48,15 +48,24 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # ox-say targets Intel Macs: native x86_64 build on GitHub's Intel macOS runner
-  # (free for public repos). The runner has no usable GPU, so this job only builds
-  # and checks the package; the Metal path is verified by running get.sh on a
-  # real Intel Mac before a release is announced.
+  # One package per architecture, each built natively on a GitHub macOS runner
+  # (free for public repos): x86_64 on the Intel image, arm64 on macos-15
+  # (Apple M1). The runners have no usable GPU for our engines, so this job
+  # only builds and checks the package; the Metal path is verified by running
+  # get.sh on real Macs before a release is announced.
   macos-package:
-    name: Build the macOS x86_64 package
+    name: Build the macOS ${{ matrix.arch }} package
     needs: release-please
     if: "!cancelled() && (github.event_name != 'push' || needs.release-please.outputs.release_created == 'true')"
-    runs-on: macos-15-intel
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-15-intel
+          - arch: arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     # read only: this job runs the build scripts, including a PR's own
     permissions:
@@ -111,14 +120,16 @@ jobs:
         run: scripts/package-release.sh "$VERSION"
 
       - name: Check the package
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           mkdir -p check
-          tar -xzf dist/ox-say-macos-x86_64.tar.gz -C check
+          tar -xzf "dist/ox-say-macos-$ARCH.tar.gz" -C check
           cd check/ox-say
           test "$(cat VERSION)" = "$VERSION"
           for bin in bin/ox-say engine/tts-server engine/ox-stt engine/ox-align; do
-            file "$bin" | grep 'x86_64' >/dev/null
+            test "$(lipo -archs "$bin")" = "$ARCH"
             if otool -L "$bin" | grep '@rpath' >/dev/null; then
               echo "$bin links @rpath libraries" >&2
               exit 1
@@ -140,7 +151,7 @@ jobs:
       - name: Keep the package as a workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ox-say-macos-x86_64
+          name: ox-say-macos-${{ matrix.arch }}
           path: dist/
 
   # Signs the dictation app with the Developer ID, notarizes it and repacks the
@@ -148,11 +159,19 @@ jobs:
   # environment, which holds the certificate and admits main alone: pull
   # requests, whose build scripts are the PR's own, never see the key.
   sign:
-    name: Sign and notarize the app
+    name: Sign and notarize the ${{ matrix.arch }} app
     needs: [release-please, macos-package]
     # a manual run from another branch skips it: the environment admits main only
     if: "!cancelled() && needs.macos-package.result == 'success' && (needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))"
-    runs-on: macos-15-intel
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-15-intel
+          - arch: arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     environment: release
     permissions:
@@ -201,7 +220,7 @@ jobs:
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ox-say-macos-x86_64
+          name: ox-say-macos-${{ matrix.arch }}
           path: dist
 
       - name: Import the certificate into a temporary keychain
@@ -265,7 +284,7 @@ jobs:
       - name: Keep the signed package as a workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ox-say-macos-x86_64-signed
+          name: ox-say-macos-${{ matrix.arch }}-signed
           path: dist/
           # publish takes it within this run; a manual run's signed build
           # should not linger as a public download
@@ -283,13 +302,27 @@ jobs:
     permissions:
       contents: write
     steps:
+      # No merge-multiple: each leg lands in its own directory, so one leg's
+      # SHA256SUMS cannot overwrite the other's.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ox-say-macos-x86_64-signed
-          path: dist
+          pattern: ox-say-macos-*-signed
+          path: signed
 
-      - name: Verify the checksum again
-        run: cd dist && shasum -a 256 -c SHA256SUMS
+      # Each architecture's job wrote a SHA256SUMS for its own asset: verify
+      # each, then publish one file listing both (get.sh picks its line by the
+      # asset name).
+      - name: Verify and combine the checksums
+        run: |
+          set -euo pipefail
+          mkdir dist
+          for arch in x86_64 arm64; do
+            dir="signed/ox-say-macos-$arch-signed"
+            (cd "$dir" && shasum -a 256 -c SHA256SUMS)
+            cp "$dir/ox-say-macos-$arch.tar.gz" dist/
+          done
+          (cd dist && shasum -a 256 ox-say-macos-x86_64.tar.gz ox-say-macos-arm64.tar.gz > SHA256SUMS)
+          cat dist/SHA256SUMS
 
       - name: Upload to the release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -297,6 +330,7 @@ jobs:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
           files: |
             dist/ox-say-macos-x86_64.tar.gz
+            dist/ox-say-macos-arm64.tar.gz
             dist/SHA256SUMS
 
       - name: Publish the release
