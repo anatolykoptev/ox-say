@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.18](https://github.com/anatolykoptev/ox-say/compare/v0.1.17...v0.1.18) (2026-10-14)
+
+
+### Added
+
+* **bench:** measure the engines on Apple Silicon ([#114](https://github.com/anatolykoptev/ox-say/issues/114)) ([1d1cdf4](https://github.com/anatolykoptev/ox-say/commit/1d1cdf4da756a381b1c8735c303ef22d25c3fa54))
+* **daemon:** share the GPU on unified memory (OX_SAY_GPU_MEMORY) ([#104](https://github.com/anatolykoptev/ox-say/issues/104)) ([aacee20](https://github.com/anatolykoptev/ox-say/commit/aacee20db2a58d678ab2f2818fc1a887841eff53))
+* **engine:** build the engines natively for arm64 ([#105](https://github.com/anatolykoptev/ox-say/issues/105)) ([64bf3cf](https://github.com/anatolykoptev/ox-say/commit/64bf3cfd1d199a012ed87a6f871d027f3bdf46cf))
+* **release:** package and install per architecture ([#110](https://github.com/anatolykoptev/ox-say/issues/110)) ([6220c64](https://github.com/anatolykoptev/ox-say/commit/6220c64bd3d12197f97324d038f648bf5d02abeb))
+
+
+### Fixed
+
+* install path — Homebrew PATH, macOS 13.3 floor, get.sh robustness ([#118](https://github.com/anatolykoptev/ox-say/issues/118)) ([9dc70da](https://github.com/anatolykoptev/ox-say/commit/9dc70da768cbd43f172f4a3a99b0054b7bd7aba7))
+
+
+### Documentation
+
+* describe ox-say on Apple Silicon and Intel ([#117](https://github.com/anatolykoptev/ox-say/issues/117)) ([59ea440](https://github.com/anatolykoptev/ox-say/commit/59ea44027db38e008dccfe429357012b1195d852))
+
 ## [0.1.17](https://github.com/anatolykoptev/ox-say/compare/v0.1.16...v0.1.17) (2026-10-10)
 
 
