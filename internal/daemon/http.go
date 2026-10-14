@@ -208,11 +208,15 @@ func (d *Daemon) handleAddVoice(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, status, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"name":                 v.Name,
 		"status":               "registered",
 		"registered_to_engine": registered,
-	})
+	}
+	if v.Notice != "" {
+		resp["notice"] = v.Notice
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (d *Daemon) handleListVoices(w http.ResponseWriter, _ *http.Request) {

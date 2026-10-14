@@ -116,6 +116,7 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 		fmt.Fprintln(stderr, "ox-say:", err)
 		return 2
 	}
+	d.StartVoiceRepair()
 	daemon.SetVersion(version)
 
 	err = mcpserver.Serve(&mcp.Implementation{
@@ -364,7 +365,7 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "ox-say: %v\n", err)
 			return 2
 		}
-		_, err = postJSON(daemonURL()+"/v1/audio/voices", map[string]any{
+		body, err := postJSON(daemonURL()+"/v1/audio/voices", map[string]any{
 			"name":       pos[0],
 			"audio_path": abs,
 			"ref_text":   vals["ref-text"],
@@ -373,6 +374,12 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 			return failDaemon(stderr, err)
 		}
 		fmt.Fprintf(stdout, "voice %q added\n", pos[0])
+		var added struct {
+			Notice string `json:"notice"`
+		}
+		if json.Unmarshal(body, &added) == nil && added.Notice != "" {
+			fmt.Fprintf(stdout, "note: %s\n", added.Notice)
+		}
 		return 0
 	case "ls":
 		resp, err := httpClient.Get(daemonURL() + "/v1/audio/voices")

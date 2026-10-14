@@ -46,6 +46,11 @@ type Voice struct {
 	Name    string    `json:"name"`
 	RefText string    `json:"ref_text,omitempty"`
 	Created time.Time `json:"created"`
+
+	// Notice is a one-line, human-readable remark about how the voice was
+	// stored (e.g. its ref_text was replaced). Set by Commit only; never
+	// persisted.
+	Notice string `json:"-"`
 }
 
 // WAVPath returns the clip path for a valid name.
@@ -58,6 +63,10 @@ type Store struct {
 	dir    string
 	ffmpeg string // binary name/path; "ffmpeg" by default
 
+	// transcribe derives word timestamps for reference clips that outrun the
+	// cap and for repairs; nil when the daemon cannot transcribe.
+	transcribe Transcriber
+
 	// writeFile is os.WriteFile; tests swap it to simulate a failed write.
 	writeFile func(string, []byte, os.FileMode) error
 }
@@ -69,6 +78,10 @@ func New(dir string) (*Store, error) {
 	}
 	return &Store{dir: dir, ffmpeg: "ffmpeg", writeFile: os.WriteFile}, nil
 }
+
+// SetTranscriber wires the word-timestamp source used to keep a reference
+// clip and its transcript consistent (see Prepare and PrepareRepair).
+func (s *Store) SetTranscriber(t Transcriber) { s.transcribe = t }
 
 // SweepTemp removes normalization leftovers of a daemon that died between
 // Prepare and Commit. Call it only while holding the home lock: a live
@@ -101,6 +114,7 @@ type Pending struct {
 	s       *Store
 	name    string
 	refText string
+	notice  string
 	tmp     string
 }
 
@@ -123,8 +137,10 @@ func (s *Store) ValidateInput(name, audioPath string) error {
 	return nil
 }
 
-// Prepare normalises audioPath to 24 kHz mono s16 WAV (max 20 s) with ffmpeg
-// into a temporary file in the store dir. It touches no live voice, so callers
+// Prepare normalises audioPath to 24 kHz mono s16 WAV (max MaxRefSeconds)
+// with ffmpeg into a temporary file in the store dir. A clip that runs past
+// the cap with a ref_text is cut at a word boundary and its ref_text replaced
+// by the transcript of the kept part (see fitReference). It touches no live voice, so callers
 // run it outside their locks (ffmpeg may take up to its 60 s cap). The input
 // is validated before any filesystem or ffmpeg work — see ValidateInput.
 func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*Pending, error) {
@@ -149,7 +165,7 @@ func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*
 		"-hide_banner", "-loglevel", "error", "-y",
 		"-protocol_whitelist", "file",
 		"-i", "file:"+audioPath,
-		"-t", "20",
+		"-t", fmt.Sprint(probeSeconds),
 		"-ar", "24000",
 		"-ac", "1",
 		"-c:a", "pcm_s16le",
@@ -165,8 +181,12 @@ func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*
 		// daemon-side, not client input.
 		return nil, fmt.Errorf("voices: ffmpeg: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	text, notice, err := s.fitReference(ctx, tmpName, refText)
+	if err != nil {
+		return nil, err
+	}
 	ok = true
-	return &Pending{s: s, name: name, refText: refText, tmp: tmpName}, nil
+	return &Pending{s: s, name: name, refText: text, notice: notice, tmp: tmpName}, nil
 }
 
 // Commit moves the clip into place and writes its metadata. The metadata is
@@ -174,7 +194,7 @@ func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*
 // voice being re-added exactly as it was, not with its clip replaced or gone.
 func (p *Pending) Commit() (*Voice, error) {
 	s := p.s
-	v := &Voice{Name: p.name, RefText: p.refText, Created: time.Now().UTC()}
+	v := &Voice{Name: p.name, RefText: p.refText, Created: time.Now().UTC(), Notice: p.notice}
 	meta, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
@@ -253,7 +273,8 @@ func (s *Store) List() ([]Voice, error) {
 	var out []Voice
 	for _, e := range entries {
 		// dotfiles are in-flight temporaries (Prepare/Commit), never voices
-		if e.IsDir() || strings.HasPrefix(e.Name(), ".") || filepath.Ext(e.Name()) != ".json" {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") || filepath.Ext(e.Name()) != ".json" ||
+			strings.HasSuffix(strings.TrimSuffix(e.Name(), ".json"), backupInfix) {
 			continue
 		}
 		meta, err := os.ReadFile(filepath.Join(s.dir, e.Name()))

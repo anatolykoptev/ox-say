@@ -61,6 +61,9 @@ type Daemon struct {
 
 	// lockFile holds daemon.lock for the process lifetime.
 	lockFile *os.File
+
+	// repairCancel stops a running StartVoiceRepair pass on Shutdown.
+	repairCancel context.CancelFunc
 }
 
 // New builds the supervisor (reaping any orphaned engine) and the voice
@@ -126,6 +129,7 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engi
 		log:   logger,
 		gpu:   engine.NewGPULease(),
 	}
+	store.SetTranscriber(d.voiceWords)
 	// Single-instance lock: taken BEFORE the supervisor reaps orphaned
 	// engines so a second daemon on the same home cannot kill the first
 	// one's live engine before failing to bind.
@@ -473,6 +477,9 @@ func (d *Daemon) Status() statusSummary {
 // mid-flight — handlers keep their own guards and fail fast on the dead
 // supervisor rather than blocking shutdown.
 func (d *Daemon) Shutdown() {
+	if d.repairCancel != nil {
+		d.repairCancel()
+	}
 	d.Sup.Shutdown()
 	if d.STTSup != nil {
 		d.STTSup.Shutdown()

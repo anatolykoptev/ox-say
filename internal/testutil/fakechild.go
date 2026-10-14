@@ -622,6 +622,38 @@ func TinyWAV() []byte {
 	return data
 }
 
+// SilentWAV is secs seconds of 24 kHz mono s16 silence — a stand-in reference
+// clip of a chosen length.
+func SilentWAV(secs float64) []byte {
+	const rate = 24000
+	samples := int(secs * rate)
+	data := make([]byte, 44+samples*2)
+	copy(data, "RIFF")
+	putU32(data[4:], uint32(36+samples*2))
+	copy(data[8:], "WAVE")
+	copy(data[12:], "fmt ")
+	putU32(data[16:], 16)
+	putU16(data[20:], 1)
+	putU16(data[22:], 1)
+	putU32(data[24:], rate)
+	putU32(data[28:], rate*2)
+	putU16(data[32:], 2)
+	putU16(data[34:], 16)
+	copy(data[36:], "data")
+	putU32(data[40:], uint32(samples*2))
+	return data
+}
+
+// WriteSilentWAV writes SilentWAV(secs) to dir/name and returns the path.
+func WriteSilentWAV(t *testing.T, dir, name string, secs float64) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, SilentWAV(secs), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // WriteTinyWAV writes TinyWAV to dir/voice.wav and returns the path.
 func WriteTinyWAV(t *testing.T, dir, name string) string {
 	t.Helper()

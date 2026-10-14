@@ -116,13 +116,14 @@ func (d *Daemon) toolVoicesList(_ context.Context, _ *mcp.CallToolRequest, _ str
 
 type voiceAddIn struct {
 	Name      string `json:"name" jsonschema:"Voice name: ^[a-z0-9][a-z0-9_-]{0,31}$"`
-	AudioPath string `json:"audio_path" jsonschema:"Local path to a 5-20 s clean voice clip (any format ffmpeg reads)"`
+	AudioPath string `json:"audio_path" jsonschema:"Local path to a 5-20 s clean voice clip (a longer one is cut at a word boundary and ref_text is replaced by the transcript of the kept part) (any format ffmpeg reads)"`
 	RefText   string `json:"ref_text,omitempty" jsonschema:"Transcript of the clip — only for same-language cloning; omit for other languages"`
 }
 
 type voiceAddOut struct {
 	Name               string `json:"name"`
 	RegisteredToEngine bool   `json:"registered_to_engine"`
+	Notice             string `json:"notice,omitempty"`
 }
 
 func (d *Daemon) toolVoiceAdd(ctx context.Context, _ *mcp.CallToolRequest, in voiceAddIn) (*mcp.CallToolResult, voiceAddOut, error) {
@@ -130,7 +131,7 @@ func (d *Daemon) toolVoiceAdd(ctx context.Context, _ *mcp.CallToolRequest, in vo
 	if err != nil {
 		return nil, voiceAddOut{}, err
 	}
-	return nil, voiceAddOut{Name: v.Name, RegisteredToEngine: registered}, nil
+	return nil, voiceAddOut{Name: v.Name, RegisteredToEngine: registered, Notice: v.Notice}, nil
 }
 
 type voiceRemoveIn struct {
