@@ -61,7 +61,7 @@ func Run(args []string, stdout, stderr io.Writer, version string) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `ox-say — local text-to-speech for Intel Macs
+	fmt.Fprint(w, `ox-say — local speech for Macs: text-to-speech and speech-to-text
 
 Usage:
   ox-say serve [flags]                  run the daemon (launchd starts this)
