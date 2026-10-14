@@ -44,9 +44,12 @@ whisper.cpp `6e4ab85`:
 - whisper.cpp's ggml has no test suite: there, `ox-stt` prints identical text for
   `samples/jfk.wav` on Metal and with `-ng`.
 
-`OX_SAY_DIST=1` on arm64 targets the Apple M1 baseline (`GGML_NATIVE=OFF`; dotprod, fp16).
-`scripts/check-arm64-baseline.sh` fails the build if a binary uses i8mm, BF16, SME or SVE, which a
-native build on a newer chip emits.
+`OX_SAY_DIST=1` on arm64 targets the Apple M1 baseline (`-mcpu=apple-m1`, `GGML_NATIVE=OFF`;
+dotprod, fp16). `scripts/check-arm64-baseline.sh` fails the build if the disassembly of a binary
+has an i8mm (`smmla`, `usdot`, ...), BF16 (`bfdot`, `bfcvt`, ...), SME (`smstart`, `zero {za}`,
+`rdsvl`, ZA tiles, `fmopa`, ...) or SVE (`addvl`, z- and p-registers) instruction, which a native
+build on a newer chip emits. `scripts/check-arm64-baseline_test.sh` assembles one probe per
+instruction family (and M1-legal controls) and checks the guard against the real engine binaries.
 
 ## patches/qwentts/0002-tts-server-local-only.patch
 

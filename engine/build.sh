@@ -58,9 +58,9 @@ include_copy() {
 # target.
 #   x86_64: every Intel Mac since 2013 (Haswell) has AVX2/FMA/F16C/BMI2. AVX-512 stays off because
 #           most Intel MacBooks have none.
-#   arm64:  GGML_NATIVE=OFF leaves the compiler's default arm64 target, the Apple M1 (dotprod,
-#           fp16; no i8mm, BF16 or SME). A native build on a newer chip uses those and is a
-#           SIGILL on an M1.
+#   arm64:  the Apple M1 (dotprod, fp16; no i8mm, BF16 or SME), pinned with -mcpu=apple-m1 on the
+#           C and C++ flags. GGML_NATIVE=OFF keeps ggml from adding its own -mcpu/-march. A native
+#           build on a newer chip uses those extensions and is a SIGILL on an M1.
 # check_dist verifies the baseline on the output, per architecture.
 check_dist() {
     if [ "${OX_SAY_DIST:-0}" = 1 ]; then
@@ -72,12 +72,12 @@ check_dist() {
 }
 
 set_cmake_flags() {
-    local inc=$1 cpu
+    local inc=$1 cpu opt=""
     if [ "${OX_SAY_DIST:-0}" = 1 ]; then
         case $arch in
             x86_64) cpu=(-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
                 -DGGML_BMI2=ON -DGGML_AVX512=OFF) ;;
-            arm64) cpu=(-DGGML_NATIVE=OFF) ;;
+            arm64) cpu=(-DGGML_NATIVE=OFF); opt=" -mcpu=apple-m1" ;;
         esac
         cpu+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0)
     else
@@ -85,7 +85,7 @@ set_cmake_flags() {
     fi
     cmake_flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF "-DCMAKE_OSX_ARCHITECTURES=$arch"
         "${cpu[@]}" -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple
-        -DGGML_OPENMP=OFF "-DCMAKE_C_FLAGS=-I$inc" "-DCMAKE_CXX_FLAGS=-I$inc")
+        -DGGML_OPENMP=OFF "-DCMAKE_C_FLAGS=-I$inc$opt" "-DCMAKE_CXX_FLAGS=-I$inc$opt")
 }
 
 # The output must be a thin binary of the target architecture with no @rpath

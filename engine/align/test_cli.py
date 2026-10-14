@@ -10,7 +10,7 @@ Corrupted GGUFs are rebuilt from the base f32 GGUF with the `gguf` package
 into a temp dir.
 
 Usage:
-  python3 test_cli.py --ox-align build/engine/align-build/ox-align \
+  python3 test_cli.py --ox-align build/engine/out/ox-align \
       --models-dir build/models --testdata engine/align/testdata
 """
 
