@@ -31,6 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// True from the menu click until the result alert is up, so a second click
     /// does not stack a second check.
     private var updateCheckRunning = false
+    /// True from the moment Update is chosen until installUpdate ends, however
+    /// it ends; Check for Updates is refused meanwhile (a second get.sh would
+    /// race the first on the same install).
+    private var updateInstalling = false
     private let russianVoiceSubmenu = NSMenu()
     private let englishVoiceSubmenu = NSMenu()
     private let speakVoiceRUKey = "speakVoiceRU"
@@ -555,6 +559,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// build version. Every outcome ends in an alert that waits for the user —
     /// a pill message times out and is easy to miss.
     @objc private func checkForUpdates() {
+        guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
+            runAlert(title: UpdateGate.busyAlertTitle, text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
+            return
+        }
         guard !updateCheckRunning else { return }
         updateCheckRunning = true
         let local = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
@@ -633,43 +641,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return try? FileHandle(forWritingTo: url)
     }
 
-    /// Runs the release installer, its stdout and stderr captured in the update
-    /// log; on success the installed app is already swapped in place, so open a
-    /// fresh instance and hand over.
+    /// Installs the release: downloads get.sh to a temp file, then runs it —
+    /// two steps, each exit status checked (a `curl | sh` pipe would report the
+    /// shell's 0 for a failed download). Output of both lands in the update
+    /// log. The app relaunches only when the installed bundle really reports
+    /// the target version; every other outcome is the failed alert.
     private func installUpdate(tag: String) {
+        updateInstalling = true
         overlay.showWorking()
         overlay.setWorkingText("Installing \(tag)…")
         overlay.setHintHidden(true)
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = ["-c", "curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | sh"]
-        let log = Self.openUpdateLog()
-        p.standardOutput = log ?? FileHandle.nullDevice
-        p.standardError = log ?? FileHandle.nullDevice
-        p.terminationHandler = { [weak self] p in
-            try? log?.close()
-            Task { @MainActor in
-                guard let self else { return }
-                if p.terminationStatus == 0 {
-                    let relaunch = Process()
-                    relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                    relaunch.arguments = ["-n", Bundle.main.bundleURL.path]
-                    try? relaunch.run()
-                    NSApp.terminate(nil)
-                } else {
-                    self.overlay.finish()
-                    self.runAlert(title: "Update to \(tag) failed",
-                                  text: "The installer exited with status \(p.terminationStatus). Its output is in\n\(Self.updateLogURL.path)",
-                                  buttons: ["OK"])
-                }
+        Task { @MainActor in
+            let failure = await Self.runInstall(tag: tag)
+            updateInstalling = false
+            if let failure {
+                overlay.finish()
+                runAlert(title: "Update to \(tag) failed",
+                         text: "\(failure.message) Its output is in\n\(Self.updateLogURL.path)",
+                         buttons: ["OK"])
+                return
             }
+            let relaunch = Process()
+            relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            relaunch.arguments = ["-n", Bundle.main.bundleURL.path]
+            try? relaunch.run()
+            NSApp.terminate(nil)
         }
-        do {
-            try p.run()
-        } catch {
-            try? log?.close()
-            overlay.finish()
-            runAlert(title: "Update to \(tag) failed", text: "The installer could not start: \(error.localizedDescription)", buttons: ["OK"])
+    }
+
+    /// nil on success; otherwise the first step that failed.
+    private static func runInstall(tag: String) async -> UpdateInstaller.Failure? {
+        let log = openUpdateLog()
+        defer { try? log?.close() }
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-get-\(UUID().uuidString).sh")
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        switch await runProcess(UpdateInstaller.downloadCommand(to: script.path), log: log) {
+        case .failure(let error): return .couldNotStart(error.localizedDescription)
+        case .success(let status) where status != 0: return .downloadFailed(status: status)
+        case .success: break
+        }
+        let head = (try? FileHandle(forReadingFrom: script)).flatMap { handle -> Data? in
+            defer { try? handle.close() }
+            return try? handle.read(upToCount: 2)
+        } ?? Data()
+        guard UpdateInstaller.isScript(head: head) else { return .notAScript }
+
+        switch await runProcess(UpdateInstaller.installCommand(script: script.path, tag: tag), log: log) {
+        case .failure(let error): return .couldNotStart(error.localizedDescription)
+        case .success(let status) where status != 0: return .installerFailed(status: status)
+        case .success: break
+        }
+        // Bundle.main caches its Info.plist; read the file the relaunch will use.
+        let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
+        let installed = (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
+        return UpdateInstaller.verifyInstalled(version: installed, target: tag)
+    }
+
+    /// Runs one command with stdout and stderr in the log; the result is its
+    /// exit status, or the error when it could not start.
+    private static func runProcess(_ argv: [String], log: FileHandle?) async -> Result<Int32, Error> {
+        await withCheckedContinuation { continuation in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: argv[0])
+            p.arguments = Array(argv.dropFirst())
+            p.standardInput = FileHandle.nullDevice
+            p.standardOutput = log ?? FileHandle.nullDevice
+            p.standardError = log ?? FileHandle.nullDevice
+            p.terminationHandler = { continuation.resume(returning: .success($0.terminationStatus)) }
+            do {
+                try p.run()
+            } catch {
+                continuation.resume(returning: .failure(error))
+            }
         }
     }
 
