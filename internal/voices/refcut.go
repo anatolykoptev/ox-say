@@ -76,10 +76,12 @@ const (
 )
 
 // Word is one timed word of a transcript, in seconds from the clip start.
+// The tags are the on-disk shape of take sidecars and of the published
+// words.json; keys written untagged ("W", "S", "E") still decode.
 type Word struct {
-	W string
-	S float64
-	E float64
+	W string  `json:"w"`
+	S float64 `json:"s"`
+	E float64 `json:"e"`
 }
 
 // Transcriber turns the WAV at path into timed words. The daemon wires its

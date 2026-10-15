@@ -144,6 +144,9 @@ func TestAssemble(t *testing.T) {
 	if err := json.Unmarshal(wj, &words); err != nil || len(words) != 4 || words[3].W != "Второе." || words[3].S < 1.78 {
 		t.Errorf("words.json: %v %+v", err, words)
 	}
+	if !strings.Contains(string(wj), `"w": "Второе."`) || !strings.Contains(string(wj), `"s": `) || !strings.Contains(string(wj), `"e": `) {
+		t.Errorf("words.json keys are not the lowercase w/s/e contract:\n%.200s", wj)
+	}
 	var export vproject.Manifest
 	mj, _ := os.ReadFile(j.m.Outputs.Manifest)
 	if err := json.Unmarshal(mj, &export); err != nil || export.Outputs.WAV != j.m.Outputs.WAV || export.Chunks[1].StartS != j.m.Chunks[1].StartS {
@@ -528,5 +531,21 @@ func TestOutputStem(t *testing.T) {
 		if _, err := outputStem(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// Sidecars written before voices.Word carried json tags have "W"/"S"/"E" keys;
+// they must still decode, or every stored take would lose its heard words.
+// Mutation: voices/refcut.go, change a tag to a different name -> RED.
+func TestSidecarsWithUntaggedWordKeysStillDecode(t *testing.T) {
+	key := strings.Repeat("a", 24)
+	path := filepath.Join(t.TempDir(), key+".json")
+	old := `{"ref":{"key":"` + key + `","seed":1,"attempt":0,"cfg_value":2,"duration_s":1,"wer":0,"passed":true},"heard":[{"W":"раз","S":0.5,"E":0.9}]}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := readDetail(path)
+	if err != nil || len(d.Heard) != 1 || d.Heard[0].W != "раз" || d.Heard[0].S != 0.5 || d.Heard[0].E != 0.9 {
+		t.Fatalf("%v %+v", err, d.Heard)
 	}
 }
