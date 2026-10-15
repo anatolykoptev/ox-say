@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The ten lines of the F1-0 numerals probe (numerals.txt) with the spoken
@@ -373,4 +374,24 @@ func TestSpokenFitsEngineCap(t *testing.T) {
 	if !over {
 		t.Errorf("fixture too weak: no chunk exceeds 1000 spoken runes without the cap")
 	}
+}
+
+// FuzzExpandNumbers: no panic; text without digits is returned unchanged; the
+// result of valid UTF-8 is valid UTF-8; non-digit, non-expanded runs survive
+// (a result never loses a letter that is not part of a number's expansion is
+// not checkable, so only the structural invariants are asserted).
+func FuzzExpandNumbers(f *testing.F) {
+	for _, s := range []string{"в 5 домах", "–5 градусов", "5–10%", "в 2-м классе", "1998–2000", "12:30:45", "+7 (999) 123-45-67",
+		"1 000 000 рублей", "2,5 литра", "12 апреля", "в 2026 году", "123 456 789, ", "5-", "№5", "0,001 раза"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		out := ExpandNumbers(in)
+		if !strings.ContainsAny(in, "0123456789") && out != in {
+			t.Fatalf("no digits but changed: %q -> %q", in, out)
+		}
+		if utf8.ValidString(in) && !utf8.ValidString(out) {
+			t.Fatalf("invalid UTF-8 from valid input %q: %q", in, out)
+		}
+	})
 }
