@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/pcm"
 	"github.com/anatolykoptev/ox-say/internal/voices"
@@ -52,15 +53,21 @@ func writeTake(t *testing.T, dir, key string, clip pcm.Clip, text string) vproje
 // returns a job whose chunks pick them: 1.08 s, a 0.7 s pause, 1.08 s.
 func assembleFixture(t *testing.T, f *fakePorts) (*producer, *job) {
 	t.Helper()
+	return assembleFixtureAs(t, f, assembleID, filepath.Join(t.TempDir(), "v.wav"))
+}
+
+// assembleFixtureAs is assembleFixture for project id publishing at out.
+func assembleFixtureAs(t *testing.T, f *fakePorts, id, out string) (*producer, *job) {
+	t.Helper()
 	p := newProducer(f)
 	p.start()
 	t.Cleanup(func() { p.shutdown() })
-	dir := filepath.Join(f.home, produceDir, assembleID)
+	dir := filepath.Join(f.home, produceDir, id)
 	if err := os.MkdirAll(filepath.Join(dir, vproject.TakesDir), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	m := &vproject.Manifest{Version: vproject.Version, ID: assembleID,
-		Settings: vproject.Settings{LUFS: -16, OutPath: filepath.Join(t.TempDir(), "v.wav")}}
+	m := &vproject.Manifest{Version: vproject.Version, ID: id,
+		Settings: vproject.Settings{LUFS: -16, OutPath: out}}
 	for i, text := range []string{"Первое предложение здесь.", "Второе."} {
 		key := strings.Repeat(string(rune('a'+i)), 24)
 		ref := writeTake(t, dir, key, fixtureTake(48000), text)
@@ -596,11 +603,16 @@ func TestReassemblyWAVStagingFailureLeavesThePreviousSet(t *testing.T) {
 	noTemps(t, filepath.Dir(assembledStem(j)))
 }
 
-// A rename that fails inside the final burst, whichever output it hits, leaves
-// no mixed set: none of the five exist, and no temp is left.
+// A rename that fails inside the final burst, after at least one output was
+// replaced, leaves no mixed set: none of the five exist, and no temp is left.
+// The first rename of the burst (.srt) replaces nothing yet, so its failure
+// keeps the previous set whole (TestReassemblyFirstRenameFailureKeepsThePreviousSet).
 // Mutation: produce_assemble.go publish, drop the removeOutputs call -> RED.
 func TestReassemblyBurstFailureLeavesNoMixedSet(t *testing.T) {
 	for _, ext := range outputExts {
+		if ext == ".srt" {
+			continue
+		}
 		f := newFakePorts(t)
 		p, j := assembleFixture(t, f)
 		if err := p.assemble(j); err != nil {
@@ -621,6 +633,101 @@ func TestReassemblyBurstFailureLeavesNoMixedSet(t *testing.T) {
 			}
 		}
 		noTemps(t, filepath.Dir(dest))
+	}
+}
+
+// The first rename of the burst failing replaces nothing: the previous good
+// set stays whole and the error says so (#154.8).
+// Mutation: produce_assemble.go publish, call removeOutputs for k == 0 too -> the old set is deleted -> RED.
+func TestReassemblyFirstRenameFailureKeepsThePreviousSet(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	before := outputSet(t, j)
+	editForReassembly(j)
+	dest := assembledStem(j) + ".srt"
+	failRenames(t, func(from, to string) bool {
+		return to == dest && strings.Contains(filepath.Base(from), vproject.TempMark)
+	}, errors.New("disk on fire"))
+	if err := p.assemble(j); !errors.Is(err, errOutputsKept) {
+		t.Fatalf("error %v", err)
+	}
+	for ext, was := range outputSet(t, j) {
+		if was != before[ext] {
+			t.Errorf("%s changed although no rename succeeded", ext)
+		}
+	}
+	noTemps(t, filepath.Dir(dest))
+}
+
+// One directory sync after the burst, once the last rename is done (#154.9).
+// Mutation: produce_assemble.go publish, delete the syncOutputDir call -> RED.
+// Mutation: move the syncOutputDir call into the rename loop -> 5 calls -> RED.
+func TestPublishSyncsTheOutputDirOnceAfterTheBurst(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	var renamed, syncs, renamedAtSync int
+	origRename, origSync := renameFile, syncOutputDir
+	t.Cleanup(func() { renameFile, syncOutputDir = origRename, origSync })
+	renameFile = func(from, to string) error {
+		if strings.Contains(filepath.Base(from), vproject.TempMark) && !strings.Contains(filepath.Base(to), vproject.TempMark) {
+			renamed++
+		}
+		return origRename(from, to)
+	}
+	syncOutputDir = func(dir string) error {
+		syncs++
+		renamedAtSync = renamed
+		if dir != filepath.Dir(j.m.Settings.OutPath) {
+			t.Errorf("synced %s", dir)
+		}
+		return nil
+	}
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	if syncs != 1 || renamedAtSync != len(outputExts) {
+		t.Fatalf("%d syncs, %d of %d renames done at the sync", syncs, renamedAtSync, len(outputExts))
+	}
+}
+
+// The export is written after the final status, elapsed and ETA are known; it
+// must not say "running" (#154.6).
+// Mutation: produce_assemble.go publish, delete the finalizeExport call -> status "" -> RED.
+func TestExportCarriesTheFinalStatus(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	j.started = time.Now().Add(-5 * time.Second)
+	j.m.Status, j.m.Progress.ETAS = vproject.StatusRunning, 99
+	j.m.Chunks[1].Status = vproject.ChunkReview
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	var export vproject.Manifest
+	raw, _ := os.ReadFile(j.m.Outputs.Manifest)
+	if err := json.Unmarshal(raw, &export); err != nil {
+		t.Fatal(err)
+	}
+	if export.Status != vproject.StatusReview || export.Progress.ETAS != 0 || export.Progress.ElapsedS < 5 || export.Progress.ElapsedS != j.elapsedS {
+		t.Fatalf("export status %q eta %v elapsed %v (job %v)", export.Status, export.Progress.ETAS, export.Progress.ElapsedS, j.elapsedS)
+	}
+}
+
+// A review chunk whose every take is silent does not fail the job: the file is
+// made with the gap and no speech (#154 amendment 3; F1-4 Noted).
+// Mutation: produce_assemble.go add, drop the ChunkReview exception -> the assembly fails -> RED.
+func TestAssembleToleratesASilentReviewChunk(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	writeTake(t, j.dir, j.m.Chunks[1].Pick, pcm.Silence(48000, 1), "Второе.")
+	j.m.Chunks[1].Status = vproject.ChunkReview
+	if err := p.assemble(j); err != nil {
+		t.Fatalf("a review chunk with a silent take failed the assembly: %v", err)
+	}
+	if j.m.Chunks[1].EndS != j.m.Chunks[1].StartS {
+		t.Errorf("silent chunk has a span %v..%v", j.m.Chunks[1].StartS, j.m.Chunks[1].EndS)
 	}
 }
 
@@ -707,4 +814,60 @@ func TestSidecarsWithUntaggedWordKeysStillDecode(t *testing.T) {
 	if err != nil || len(d.Heard) != 1 || d.Heard[0].W != "раз" || d.Heard[0].S != 0.5 || d.Heard[0].E != 0.9 {
 		t.Fatalf("%v %+v", err, d.Heard)
 	}
+}
+
+// Re-assembly overwrites only files the project can prove are its own: the
+// files at its out_path may since have been moved away and replaced by another
+// project's, or the user may have saved their own v.wav over the published
+// one. Neither is replaced without overwrite (review round 1, data loss).
+// Mutation: produce_assemble.go ownedOutputs, return every stem+ext path -> RED.
+// Mutation: produce_ops.go ownedPaths, drop the export-ID check -> the first case is RED.
+// Mutation: produce_ops.go ownedPaths, drop the WAV sha check -> the second case is RED.
+func TestReassemblyNeverReplacesFilesThatAreNotItsOwn(t *testing.T) {
+	t.Run("another project published there", func(t *testing.T) {
+		f := newFakePorts(t)
+		out := filepath.Join(t.TempDir(), "v.wav")
+		p, a := assembleFixtureAs(t, f, assembleID, out)
+		if err := p.assemble(a); err != nil {
+			t.Fatal(err)
+		}
+		away := t.TempDir() // the user moves A's files elsewhere
+		for _, ext := range outputExts {
+			if err := os.Rename(strings.TrimSuffix(out, ".wav")+ext, filepath.Join(away, "v"+ext)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, b := assembleFixtureAs(t, f, "20261015-130000-b1b2b3", out)
+		if err := p.assemble(b); err != nil {
+			t.Fatal(err)
+		}
+		before := outputSet(t, b)
+		editForReassembly(a)
+		if err := p.assemble(a); err == nil || !strings.Contains(err.Error(), "already exists") {
+			t.Fatalf("A replaced B's files: %v", err)
+		}
+		for ext, was := range outputSet(t, b) {
+			if was != before[ext] {
+				t.Errorf("B's %s was changed by A", ext)
+			}
+		}
+	})
+	t.Run("the user saved their own wav over it", func(t *testing.T) {
+		f := newFakePorts(t)
+		p, a := assembleFixture(t, f)
+		if err := p.assemble(a); err != nil {
+			t.Fatal(err)
+		}
+		wav := assembledStem(a) + ".wav"
+		if err := os.WriteFile(wav, []byte("my own recording"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		editForReassembly(a)
+		if err := p.assemble(a); err == nil || !strings.Contains(err.Error(), "already exists") {
+			t.Fatalf("the user's file was replaced: %v", err)
+		}
+		if raw, _ := os.ReadFile(wav); string(raw) != "my own recording" {
+			t.Fatalf("the user's file was changed: %q", raw)
+		}
+	})
 }

@@ -112,3 +112,14 @@ func TestWriteAtomicErrorsNameThePath(t *testing.T) {
 		t.Fatalf("error does not name %s: %v", p, err)
 	}
 }
+
+// A write failure is a typed error whose Path a caller can map to plain words;
+// the message still names the path for the log.
+// Mutation: files.go Stage, return the bare CreateTemp error -> errors.As fails -> RED.
+func TestWriteErrorIsTyped(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "missing", "a.json")
+	var we *WriteError
+	if err := WriteAtomic(p, []byte("x"), 0o600); !errors.As(err, &we) || we.Path != p || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("not a typed write error for %s: %v", p, err)
+	}
+}

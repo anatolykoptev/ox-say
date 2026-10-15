@@ -42,6 +42,10 @@ const (
 	TTSModelVoxCPM2 = "voxcpm2"
 )
 
+// DefaultProduceOutDir is where finished voiceovers land, relative to the
+// user's home (plan QF5: provisional, pending the owner's confirmation).
+const DefaultProduceOutDir = "Movies/ox-say"
+
 // VoxCPM2ModelFile is the one model filename fetch-models.sh and the default
 // path share (the Q8_0 variant, chosen in the engine gate).
 const VoxCPM2ModelFile = "voxcpm2-q8_0.gguf"
@@ -85,6 +89,11 @@ type Config struct {
 	VoiceEN        string // OX_SAY_VOICE_EN: default for English speech; empty = Voice
 	EngineLogDir   string // OX_SAY_ENGINE_LOG_DIR: child stdout/stderr log dir
 	CacheDir       string // OX_SAY_CACHE_DIR: default output dir for speak
+	// ProduceOutDir is OX_SAY_PRODUCE_OUT_DIR: where `produce` publishes a
+	// finished voiceover when the request names no out_path. The default
+	// (DefaultProduceOutDir under the user's home) is the owner's provisional
+	// answer to plan question QF5 and a two-way door: this is its one place.
+	ProduceOutDir string
 
 	STTBin          string        // OX_SAY_STT_BIN: path to ox-stt
 	STTModel        string        // OX_SAY_STT_MODEL: parakeet weights
@@ -131,6 +140,7 @@ var flagNames = map[string]string{
 	"voice-en":          "OX_SAY_VOICE_EN",
 	"engine-log-dir":    "OX_SAY_ENGINE_LOG_DIR",
 	"cache-dir":         "OX_SAY_CACHE_DIR",
+	"produce-out-dir":   "OX_SAY_PRODUCE_OUT_DIR",
 	"stt-bin":           "OX_SAY_STT_BIN",
 	"stt-model":         "OX_SAY_STT_MODEL",
 	"stt-vad-model":     "OX_SAY_STT_VAD_MODEL",
@@ -199,14 +209,15 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	}
 
 	c := &Config{
-		Home:         get("OX_SAY_HOME"),
-		Addr:         orDefault(get("OX_SAY_ADDR"), DefaultAddr),
-		EngineLogDir: orDefault(get("OX_SAY_ENGINE_LOG_DIR"), filepath.Join(homeDir, "Library", "Logs", "ox-say")),
-		CacheDir:     orDefault(get("OX_SAY_CACHE_DIR"), filepath.Join(homeDir, "Library", "Caches", "ox-say")),
-		Lang:         get("OX_SAY_LANG"),
-		Voice:        get("OX_SAY_VOICE"),
-		VoiceRU:      get("OX_SAY_VOICE_RU"),
-		VoiceEN:      get("OX_SAY_VOICE_EN"),
+		Home:          get("OX_SAY_HOME"),
+		Addr:          orDefault(get("OX_SAY_ADDR"), DefaultAddr),
+		EngineLogDir:  orDefault(get("OX_SAY_ENGINE_LOG_DIR"), filepath.Join(homeDir, "Library", "Logs", "ox-say")),
+		CacheDir:      orDefault(get("OX_SAY_CACHE_DIR"), filepath.Join(homeDir, "Library", "Caches", "ox-say")),
+		ProduceOutDir: orDefault(get("OX_SAY_PRODUCE_OUT_DIR"), filepath.Join(homeDir, DefaultProduceOutDir)),
+		Lang:          get("OX_SAY_LANG"),
+		Voice:         get("OX_SAY_VOICE"),
+		VoiceRU:       get("OX_SAY_VOICE_RU"),
+		VoiceEN:       get("OX_SAY_VOICE_EN"),
 	}
 	if c.Home == "" {
 		c.Home = filepath.Join(homeDir, "Library", "Application Support", "ox-say")

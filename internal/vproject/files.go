@@ -33,6 +33,22 @@ func syncDirectory(dir string) error {
 	return err
 }
 
+// SyncDir fsyncs dir so renames into it survive a power cut (no error where
+// the platform cannot fsync a directory).
+func SyncDir(dir string) error { return syncDir(dir) }
+
+// WriteError is a failed write of Path. Error names the full path, for the
+// log; anything shown to a caller must use Base(Path) and not Error.
+type WriteError struct {
+	Path string
+	Err  error
+}
+
+func (e *WriteError) Error() string { return fmt.Sprintf("write %s: %v", e.Path, e.Err) }
+func (e *WriteError) Unwrap() error { return e.Err }
+
+func writeErr(path string, err error) error { return &WriteError{Path: path, Err: err} }
+
 // TempMark marks F1's temp files so a project load can sweep them.
 const TempMark = ".tmp-"
 
@@ -42,13 +58,13 @@ const TempMark = ".tmp-"
 func Stage(path string, data []byte, mode os.FileMode) (tmp string, err error) {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+TempMark+"*")
 	if err != nil {
-		return "", fmt.Errorf("write %s: %w", path, err)
+		return "", writeErr(path, err)
 	}
 	tmp = f.Name()
 	fail := func(err error) (string, error) {
 		_ = f.Close()
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("write %s: %w", path, err)
+		return "", writeErr(path, err)
 	}
 	if _, err := f.Write(data); err != nil {
 		return fail(err)
@@ -61,7 +77,7 @@ func Stage(path string, data []byte, mode os.FileMode) (tmp string, err error) {
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("write %s: %w", path, err)
+		return "", writeErr(path, err)
 	}
 	return tmp, nil
 }
@@ -77,10 +93,10 @@ func WriteAtomic(path string, data []byte, mode os.FileMode) error {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("write %s: %w", path, err)
+		return writeErr(path, err)
 	}
 	if err := syncDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("write %s: syncing the directory: %w", path, err)
+		return writeErr(path, fmt.Errorf("syncing the directory: %w", err))
 	}
 	return nil
 }

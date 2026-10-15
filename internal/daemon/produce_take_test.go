@@ -23,6 +23,7 @@ type fakePorts struct {
 	home        string
 	secs        float64
 	gapAt       map[int]float64 // render index -> insert a silent gap of this many seconds mid-take
+	silentAt    map[int]bool    // render index -> the whole take is silence
 	heard       map[int]string  // render index -> transcript override
 	warning     string
 	renders     []renderParams
@@ -40,14 +41,17 @@ type fakePorts struct {
 	engineID    string
 	normErr     error
 	normCalls   int
-	normHook    func() // non-nil: Normalize calls it first
-	normNoop    bool   // Normalize reports success and writes nothing
-	normOut     []byte // non-nil: Normalize writes these bytes instead of its input
-	normDynamic bool   // Normalize reports loudnorm's dynamic mode
+	normHook    func()        // non-nil: Normalize calls it first
+	normNoop    bool          // Normalize reports success and writes nothing
+	normOut     []byte        // non-nil: Normalize writes these bytes instead of its input
+	normDynamic bool          // Normalize reports loudnorm's dynamic mode
+	outRoot     string        // non-empty: OutputRoot answers it
+	hang        chan struct{} // non-nil: Render ignores its context and waits for this
+	events      []string      // "quiet", "render", "hear" in call order
 }
 
 func newFakePorts(t *testing.T) *fakePorts {
-	return &fakePorts{home: t.TempDir(), secs: 2, gapAt: map[int]float64{}, heard: map[int]string{},
+	return &fakePorts{home: t.TempDir(), secs: 2, gapAt: map[int]float64{}, silentAt: map[int]bool{}, heard: map[int]string{},
 		voice: voiceFacts{Name: "nar", RefText: "Привет, как дела у вас сегодня.", SHA: "aa"}, engineID: "eng1"}
 }
 
@@ -64,13 +68,18 @@ func (f *fakePorts) Render(ctx context.Context, p renderParams) (*synthOut, erro
 	f.mu.Lock()
 	idx := len(f.renders)
 	f.renders = append(f.renders, p)
+	f.events = append(f.events, "render")
+	hang := f.hang
 	f.inFlight++
 	f.maxInFlight = max(f.maxInFlight, f.inFlight)
-	block, started, gap := f.block, f.started, f.gapAt[idx]
+	block, started, gap, silent := f.block, f.started, f.gapAt[idx], f.silentAt[idx]
 	f.mu.Unlock()
 	defer func() { f.mu.Lock(); f.inFlight--; f.mu.Unlock() }()
 	if started != nil {
 		started <- struct{}{}
+	}
+	if hang != nil {
+		<-hang
 	}
 	if block != nil {
 		select {
@@ -79,6 +88,9 @@ func (f *fakePorts) Render(ctx context.Context, p renderParams) (*synthOut, erro
 			return nil, ctx.Err()
 		}
 	}
+	if silent {
+		return &synthOut{WAV: pcm.Silence(48000, f.secs).Encode(), Model: config.TTSModelVoxCPM2}, nil
+	}
 	return &synthOut{WAV: toneClip(f.secs, gap).Encode(), Model: config.TTSModelVoxCPM2, Warning: f.warning}, nil
 }
 
@@ -86,6 +98,7 @@ func (f *fakePorts) Hear(_ context.Context, _ string) ([]voices.Word, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.hears++
+	f.events = append(f.events, "hear")
 	idx := len(f.renders) - 1
 	text := f.renders[idx].Text
 	if o, ok := f.heard[idx]; ok {
@@ -125,6 +138,12 @@ func (f *fakePorts) Normalize(_ context.Context, in, out string, _, _ float64) (
 	return dyn, os.WriteFile(out, raw, 0o600)
 }
 func (f *fakePorts) Quiet(ctx context.Context, onWait func()) error {
+	f.mu.Lock()
+	f.events = append(f.events, "quiet")
+	f.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if f.quietWait > 0 {
 		onWait()
 		select {
@@ -142,7 +161,12 @@ func (f *fakePorts) Power(context.Context) (bool, bool) {
 }
 func (f *fakePorts) Background(on bool) { f.mu.Lock(); f.bg = append(f.bg, on); f.mu.Unlock() }
 func (f *fakePorts) Home() string       { return f.home }
-func (f *fakePorts) OutputRoot() string { return filepath.Join(f.home, "Movies", "ox-say") }
+func (f *fakePorts) OutputRoot() string {
+	if f.outRoot != "" {
+		return f.outRoot
+	}
+	return filepath.Join(f.home, "Movies", "ox-say")
+}
 
 func noQuiet(context.Context) error { return nil }
 

@@ -243,6 +243,7 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_VOICE_EN", "testvoiceen", "testvoiceen", func(c *Config) string { return c.VoiceEN }},
 		{"OX_SAY_ENGINE_LOG_DIR", "/tmp/oxk-4917/logs", "/tmp/oxk-4917/logs", func(c *Config) string { return c.EngineLogDir }},
 		{"OX_SAY_CACHE_DIR", "/tmp/oxk-4917/cache", "/tmp/oxk-4917/cache", func(c *Config) string { return c.CacheDir }},
+		{"OX_SAY_PRODUCE_OUT_DIR", "/tmp/oxk-4917/produce-out", "/tmp/oxk-4917/produce-out", func(c *Config) string { return c.ProduceOutDir }},
 		{"OX_SAY_STT_BIN", "/tmp/oxk-4917/ox-stt-x", "/tmp/oxk-4917/ox-stt-x", func(c *Config) string { return c.STTBin }},
 		{"OX_SAY_STT_MODEL", "/tmp/oxk-4917/stt-x.bin", "/tmp/oxk-4917/stt-x.bin", func(c *Config) string { return c.STTModel }},
 		{"OX_SAY_STT_WHISPER_MODEL", "/tmp/oxk-4917/whisper-x.bin", "/tmp/oxk-4917/whisper-x.bin", func(c *Config) string { return c.STTWhisperModel }},

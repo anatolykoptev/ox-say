@@ -117,6 +117,7 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 		return 2
 	}
 	d.StartVoiceRepair()
+	d.StartProducer()
 	daemon.SetVersion(version)
 
 	err = serve(&mcp.Implementation{
@@ -126,6 +127,8 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 	// Serve returns on a failed bind too, possibly without OnShutdown. The
 	// repair pass may already be running (it only waits for SOMETHING to
 	// accept on the address): wait for it here rather than exit mid-rewrite.
+	// A running voiceover job is interrupted first so it is not killed mid-take.
+	d.StopProducer()
 	d.StopVoiceRepair()
 	if err != nil {
 		fmt.Fprintln(stderr, "ox-say:", err)
