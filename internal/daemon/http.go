@@ -36,6 +36,8 @@ func (d *Daemon) Routes(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("GET /v1/audio/voices", d.handleListVoices)
 	mux.HandleFunc("POST /v1/audio/voices", d.handleAddVoice)
+	mux.HandleFunc("POST /v1/audio/voices/design", d.handleDesignVoice)
+	mux.HandleFunc("POST /v1/audio/voices/design/save", d.handleSaveDesign)
 	mux.HandleFunc("GET /v1/audio/voices/{name}", d.handleGetVoice)
 	mux.HandleFunc("PATCH /v1/audio/voices/{name}", d.handleUpdateVoice)
 	mux.HandleFunc("DELETE /v1/audio/voices/{name}", d.handleDeleteVoice)

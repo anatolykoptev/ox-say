@@ -51,6 +51,9 @@ type Meta struct {
 	Style string `json:"style,omitempty"`
 	// DesignedFrom is the description a designed voice was rendered from.
 	DesignedFrom string `json:"designed_from,omitempty"`
+	// Seed is the seed of the design take the voice was kept from. Like
+	// DesignedFrom it describes the audio, so a re-add never inherits it.
+	Seed *int64 `json:"seed,omitempty"`
 }
 
 // Voice is one persisted clone. Every code path that rewrites the metadata
