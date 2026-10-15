@@ -171,7 +171,7 @@ func (d *Daemon) toolEngineStatus(_ context.Context, _ *mcp.CallToolRequest, _ s
 func (d *Daemon) toolVoiceDesign(ctx context.Context, _ *mcp.CallToolRequest, in DesignInput) (*mcp.CallToolResult, DesignResult, error) {
 	res, err := d.DesignVoice(ctx, in)
 	if err != nil {
-		return nil, DesignResult{}, err
+		return nil, DesignResult{}, d.publicError(err)
 	}
 	return nil, *res, nil
 }
@@ -179,7 +179,7 @@ func (d *Daemon) toolVoiceDesign(ctx context.Context, _ *mcp.CallToolRequest, in
 func (d *Daemon) toolVoiceDesignSave(ctx context.Context, _ *mcp.CallToolRequest, in SaveDesignInput) (*mcp.CallToolResult, SaveDesignResult, error) {
 	res, err := d.saveDesignResult(ctx, in)
 	if err != nil {
-		return nil, SaveDesignResult{}, err
+		return nil, SaveDesignResult{}, d.publicError(err)
 	}
 	return nil, *res, nil
 }

@@ -68,7 +68,7 @@ Usage:
   ox-say say [-v v] [-l lang] [-f fmt] [-o path] [text...]
   ox-say voice add <name> <audio> [--ref-text t]
   ox-say voice design "<description>" -t "<text>" [-n 1..4] [--seed N] [--play]
-  ox-say voice save <name> <take path>
+  ox-say voice save <name> <take path> [--replace]
   ox-say voice ls
   ox-say voice rm <name>
   ox-say transcribe [-e parakeet|whisper] [-l lang] [--prompt t] [--json|--srt] <file>

@@ -114,6 +114,8 @@ func (d *Daemon) ServerConfig(version string) mcpserver.Config {
 		ToolTimeouts: map[string]time.Duration{
 			"speak":      d.Cfg.StartupTimeout + 2*time.Minute,
 			"transcribe": transcribeTimeout,
+			// voice_design: cold start plus up to maxDesignTakes takes.
+			"voice_design": designToolTimeout(),
 		},
 		// Progress notifications every 30 s keep a multi-hour call's event
 		// stream from looking idle to a client or proxy.

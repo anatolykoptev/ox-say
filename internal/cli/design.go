@@ -15,7 +15,8 @@ import (
 
 const (
 	voiceDesignUsage = `usage: ox-say voice design "<description>" -t "<text>" [-n 1..4] [--seed N] [--play]`
-	voiceSaveUsage   = "usage: ox-say voice save <name> <take path>"
+	voiceSaveUsage   = "usage: ox-say voice save <name> <take path> [--replace]"
+	replaceFlag      = "--replace"
 	playFlag         = "--play"
 	voiceUsage       = "usage: ox-say voice add|design|save|ls|rm"
 )
@@ -63,9 +64,12 @@ func cmdVoiceDesign(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	for i, t := range res.Takes {
-		outf(stdout, "take %d  seed %d  %.1fs  %s\n", i+1, t.Seed, t.DurationS, t.Path)
+		outf(stdout, "take %d  seed %d  %.1fs  %s%s\n", i+1, t.Seed, t.DurationS, t.Path, warningSuffix(t.Warning))
 	}
-	outf(stdout, "save one: ox-say voice save <name> %s\n", shellQuote(res.Takes[0].Path))
+	outln(stdout, "save one:")
+	for _, t := range res.Takes {
+		outf(stdout, "  ox-say voice save %s %s\n", t.SuggestedName, shellQuote(t.Path))
+	}
 	if play {
 		for _, t := range res.Takes {
 			if err := player.Play(context.Background(), t.Path); err != nil {
@@ -80,6 +84,16 @@ func cmdVoiceDesign(args []string, stdout, stderr io.Writer) int {
 // cmdVoiceSave keeps a design take under a voice name. The daemon alone
 // decides what the voice records about itself.
 func cmdVoiceSave(args []string, stdout, stderr io.Writer) int {
+	replace := false
+	var rest []string
+	for _, a := range args {
+		if a == replaceFlag {
+			replace = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	args = rest
 	if len(args) != 2 {
 		outln(stderr, voiceSaveUsage)
 		return 2
@@ -89,7 +103,7 @@ func cmdVoiceSave(args []string, stdout, stderr io.Writer) int {
 		outf(stderr, "ox-say: %v\n", err)
 		return 2
 	}
-	raw, err := postJSON(daemonURL()+"/v1/audio/voices/design/save", map[string]any{"name": args[0], "take": take})
+	raw, err := postJSON(daemonURL()+"/v1/audio/voices/design/save", map[string]any{"name": args[0], "take": take, "replace": replace})
 	if err != nil {
 		return failDaemon(stderr, err)
 	}
@@ -105,16 +119,14 @@ func cmdVoiceSave(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// shellQuote leaves a plain path as is and single-quotes anything else, so the
-// printed command can be pasted.
-func shellQuote(s string) string {
-	for _, r := range s {
-		plain := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("/._-+,:@%", r) || r > 127
-		if !plain {
-			return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-		}
+// shellQuote single-quotes s so the printed command pastes into a shell as is.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+func warningSuffix(w string) string {
+	if w == "" {
+		return ""
 	}
-	return s
+	return "  (warning: " + w + ")"
 }
 
 // outf and outln write a line to a terminal; a failed write has nowhere to be

@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -23,7 +25,17 @@ import (
 const (
 	defaultDesignTakes = 3
 	maxDesignTakes     = 4
-	maxDesignText      = 300
+	// designSlowCharsPerSec is the slowest Russian pace measured (a sad design
+	// line, ~10.7 chars/s, plan §1.6 S3), rounded down.
+	designSlowCharsPerSec = 10.0
+	// maxDesignText keeps a take inside the reference window (voices.MaxRefSeconds)
+	// even at the slowest pace, so a saved take is never trimmed or re-transcribed.
+	maxDesignText = int(voices.MaxRefSeconds * designSlowCharsPerSec)
+	// designToolSlack is added to the MCP design budget for the file writes.
+	designToolSlack = 30 * time.Second
+	// maxNameChars is the longest voice name (voices.ValidateName).
+	maxNameChars = 32
+	fallbackName = "voice"
 	// designSubdir is where design takes live inside the cache dir. A take path
 	// a client sends back is confined to it.
 	designSubdir = "design"
@@ -39,16 +51,19 @@ const (
 // DesignInput asks VoxCPM2 for a voice from a description alone.
 type DesignInput struct {
 	Description string `json:"description" jsonschema:"Describe the speaker: gender, age, pitch, timbre, pace, accent or native language, mood, use (max 300 chars). Example: A clear, pleasant female narrator in her thirties, native Russian speaker, friendly and professional"`
-	Text        string `json:"text" jsonschema:"1-2 sentences in the target language, 5-15 s spoken (max 300 chars); it is also the saved voice's transcript"`
+	Text        string `json:"text" jsonschema:"1-2 sentences in the target language, 5-15 s spoken (max 200 chars, so a take stays under the 20 s a saved voice can keep); it is also the saved voice's transcript"`
 	Takes       int    `json:"takes,omitempty" jsonschema:"How many candidate takes, 1-4 (default 3)"`
 	Seed        *int64 `json:"seed,omitempty" jsonschema:"Seed of the first take; the others use the next seeds. Same seed, same take"`
 }
 
 // DesignTake is one rendered candidate.
 type DesignTake struct {
-	Path      string  `json:"path"`
-	Seed      int64   `json:"seed"`
-	DurationS float64 `json:"duration_s"`
+	Path          string  `json:"path"`
+	Seed          int64   `json:"seed"`
+	DurationS     float64 `json:"duration_s"`
+	SuggestedName string  `json:"suggested_name"`
+	// Warning is set when the take is suspect (runaway/babble) or too long to keep.
+	Warning string `json:"warning,omitempty"`
 }
 
 // DesignResult lists the takes and how to keep one.
@@ -72,6 +87,8 @@ type designRecord struct {
 type SaveDesignInput struct {
 	Name string `json:"name" jsonschema:"Voice name: ^[a-z0-9][a-z0-9_-]{0,31}$"`
 	Take string `json:"take" jsonschema:"The path of a take returned by voice_design"`
+	// Replace allows overwriting a voice that already has this name.
+	Replace bool `json:"replace,omitempty" jsonschema:"Set true to replace an existing voice of the same name"`
 }
 
 // SaveDesignResult is the saved voice.
@@ -83,6 +100,9 @@ type SaveDesignResult struct {
 	RegisteredToEngine bool   `json:"registered_to_engine"`
 	Notice             string `json:"notice,omitempty"`
 }
+
+// designSeed draws the random seed base; a variable so a test can inject it.
+var designSeed = randomSeed
 
 func (in *DesignInput) validate(seedRange int64) error {
 	switch {
@@ -123,9 +143,9 @@ func (d *Daemon) DesignVoice(ctx context.Context, in DesignInput) (*DesignResult
 		return nil, &unavailableError{why}
 	}
 	if err := os.MkdirAll(d.designDir(), 0o755); err != nil {
-		return nil, err
+		return nil, d.diskError("create the takes folder", err)
 	}
-	base := min(randomSeed(), maxVoxSeed-int64(takes)+1)
+	base := min(designSeed(), maxVoxSeed-int64(takes)+1)
 	if in.Seed != nil {
 		base = *in.Seed
 	}
@@ -136,9 +156,14 @@ func (d *Daemon) DesignVoice(ctx context.Context, in DesignInput) (*DesignResult
 		if err != nil {
 			return nil, err
 		}
+		take.SuggestedName = suggestVoiceName(in.Description, i+1)
 		res.Takes = append(res.Takes, *take)
 	}
-	res.SaveHint = "keep a take with: ox-say voice save <name> <take path>   (MCP: voice_design_save {name, take})"
+	lines := make([]string, len(res.Takes))
+	for i, t := range res.Takes {
+		lines[i] = "ox-say voice save " + t.SuggestedName + " " + shellQuote(t.Path)
+	}
+	res.SaveHint = "keep a take with one of: " + strings.Join(lines, "  |  ") + "   (MCP: voice_design_save {name, take})"
 	return res, nil
 }
 
@@ -153,7 +178,7 @@ func (d *Daemon) designTake(ctx context.Context, in DesignInput, stamp string, s
 	}
 	stem := filepath.Join(d.designDir(), fmt.Sprintf("%s-%s-%d", stamp, slugify(in.Description), seed))
 	if err := writeFile(stem+takeExt, out.WAV, false); err != nil {
-		return nil, err
+		return nil, d.diskError("write the take", err)
 	}
 	rec, err := json.Marshal(designRecord{Description: in.Description, Text: in.Text, Seed: seed})
 	if err == nil {
@@ -163,9 +188,103 @@ func (d *Daemon) designTake(ctx context.Context, in DesignInput, stamp string, s
 		if rerr := os.Remove(stem + takeExt); rerr != nil {
 			d.log.Warn("design: cannot remove a take left without its record", slog.String("path", stem+takeExt), slog.Any("error", rerr))
 		}
-		return nil, err
+		return nil, d.diskError("write the take's record", err)
 	}
-	return &DesignTake{Path: stem + takeExt, Seed: seed, DurationS: math.Round(wavDuration(out.WAV)*secondsRound) / secondsRound}, nil
+	secs := math.Round(wavDuration(out.WAV)*secondsRound) / secondsRound
+	if secs > voices.MaxRefSeconds {
+		out.addWarning(fmt.Sprintf("this take is %.0f s, too long to keep as a voice (the limit is %.0f s): use a shorter line", secs, voices.MaxRefSeconds))
+	}
+	return &DesignTake{Path: stem + takeExt, Seed: seed, DurationS: secs, Warning: out.Warning}, nil
+}
+
+// diskError logs a filesystem failure with its path and returns the same
+// failure in plain words, without the path.
+func (d *Daemon) diskError(what string, err error) error {
+	d.log.Error("design: filesystem error", slog.String("action", what), slog.Any("error", err))
+	return fmt.Errorf("could not %s: the computer refused the file write (details are in the ox-say log)", what)
+}
+
+// absPath matches an absolute path inside an error message.
+var absPath = regexp.MustCompile(`(^|[\s"'(=])/[^\s"'():]+`)
+
+// publicError is err as the caller of the design routes and tools may see it:
+// absolute paths replaced by "[path]", the original in the log. Statuses are
+// unaffected (synthStatus reads the typed error, so the wrapped one is kept).
+func (d *Daemon) publicError(err error) error {
+	if err == nil {
+		return nil
+	}
+	clean := absPath.ReplaceAllString(err.Error(), "${1}[path]")
+	if clean == err.Error() {
+		return err
+	}
+	d.log.Warn("design: error with a path withheld from the caller", slog.Any("error", err))
+	return &scrubbedError{msg: clean, err: err}
+}
+
+// scrubbedError carries the caller-safe message and keeps the original for
+// errors.As/Is (status mapping).
+type scrubbedError struct {
+	msg string
+	err error
+}
+
+func (e *scrubbedError) Error() string { return e.msg }
+func (e *scrubbedError) Unwrap() error { return e.err }
+
+// suggestVoiceName turns a description into a valid voice name ending in -n:
+// Latin transliteration of the first words, ASCII letters and digits only.
+func suggestVoiceName(desc string, n int) string {
+	suffix := "-" + strconv.Itoa(n)
+	var words []string
+	for _, w := range strings.Fields(strings.ToLower(translit.Replace(desc))) {
+		if w = strings.Map(asciiAlnum, w); w != "" {
+			words = append(words, w)
+		}
+	}
+	name := ""
+	for _, w := range words {
+		next := w
+		if name != "" {
+			next = name + "-" + w
+		}
+		if len(next)+len(suffix) > maxNameChars {
+			break
+		}
+		name = next
+	}
+	if name == "" {
+		name = fallbackName
+	}
+	return name + suffix
+}
+
+func asciiAlnum(r rune) rune {
+	if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+		return r
+	}
+	return -1
+}
+
+// translit is the plain Russian-to-Latin map used for suggested voice names.
+var translit = strings.NewReplacer(
+	"а", "a", "б", "b", "в", "v", "г", "g", "д", "d", "е", "e", "ё", "e", "ж", "zh", "з", "z", "и", "i", "й", "y",
+	"к", "k", "л", "l", "м", "m", "н", "n", "о", "o", "п", "p", "р", "r", "с", "s", "т", "t", "у", "u", "ф", "f",
+	"х", "kh", "ц", "ts", "ч", "ch", "ш", "sh", "щ", "shch", "ъ", "", "ы", "y", "ь", "", "э", "e", "ю", "yu", "я", "ya",
+	"А", "a", "Б", "b", "В", "v", "Г", "g", "Д", "d", "Е", "e", "Ё", "e", "Ж", "zh", "З", "z", "И", "i", "Й", "y",
+	"К", "k", "Л", "l", "М", "m", "Н", "n", "О", "o", "П", "p", "Р", "r", "С", "s", "Т", "t", "У", "u", "Ф", "f",
+	"Х", "kh", "Ц", "ts", "Ч", "ch", "Ш", "sh", "Щ", "shch", "Ъ", "", "Ы", "y", "Ь", "", "Э", "e", "Ю", "yu", "Я", "ya",
+)
+
+// shellQuote single-quotes s so the printed command pastes into a shell as is.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// designToolTimeout is the MCP budget of voice_design: a cold engine start plus
+// the longest allowed text for every take, each at the plausibility budget
+// (lengthBudget), plus slack.
+func designToolTimeout() time.Duration {
+	perTake := time.Duration(lengthBudget(strings.Repeat("я", maxDesignText)) * float64(time.Second))
+	return voxStartupTimeout + maxDesignTakes*perTake + designToolSlack
 }
 
 // errNotATake is the refusal for any path that is not a take this daemon made.
@@ -237,10 +356,32 @@ func (d *Daemon) SaveDesignedVoice(ctx context.Context, in SaveDesignInput) (*vo
 	if err != nil {
 		return nil, false, err
 	}
+	// A clip past the window would be cut and re-transcribed by the store (its
+	// ref_text replaced by speech-to-text output): a design take is refused instead.
+	if secs, serr := voices.WAVSeconds(take); serr != nil {
+		return nil, false, errNotATake("it cannot be read as audio")
+	} else if secs > voices.MaxRefSeconds {
+		return nil, false, &requestError{fmt.Sprintf("this take is %.0f s, too long to keep as a voice (the limit is %.0f s): use a shorter line", secs, voices.MaxRefSeconds)}
+	}
+	existing, gerr := d.Store.Get(in.Name)
+	if gerr == nil && !in.Replace {
+		return nil, false, &conflictError{fmt.Sprintf("a voice named %q already exists; choose another name or pass replace", in.Name)}
+	}
 	seed := rec.Seed
-	return d.AddVoiceMeta(ctx, in.Name, take, rec.Text, voices.Meta{
+	v, registered, err := d.AddVoiceMeta(ctx, in.Name, take, rec.Text, voices.Meta{
 		Engine: config.TTSModelVoxCPM2, DesignedFrom: rec.Description, Seed: &seed,
 	})
+	if err != nil {
+		return nil, false, err
+	}
+	if gerr == nil && existing.Style != "" {
+		// The store keeps a replaced voice's style; a designed voice starts with none.
+		empty := ""
+		if v, err = d.UpdateVoice(in.Name, nil, &empty); err != nil {
+			return nil, false, err
+		}
+	}
+	return v, registered, nil
 }
 
 func (d *Daemon) handleDesignVoice(w http.ResponseWriter, r *http.Request) {
@@ -251,7 +392,7 @@ func (d *Daemon) handleDesignVoice(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := d.DesignVoice(r.Context(), in)
 	if err != nil {
-		writeErr(w, synthStatus(err), err.Error())
+		writeErr(w, synthStatus(err), d.publicError(err).Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
@@ -266,7 +407,7 @@ func (d *Daemon) handleSaveDesign(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := d.saveDesignResult(r.Context(), in)
 	if err != nil {
-		writeErr(w, synthStatus(err), err.Error())
+		writeErr(w, synthStatus(err), d.publicError(err).Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
