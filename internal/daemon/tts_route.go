@@ -114,6 +114,12 @@ func (d *Daemon) prepareSpeech(body map[string]any) (model, warning string, err 
 		if model == config.TTSModelVoxCPM2 {
 			if why := d.voxUnavailable(); why != "" {
 				model, warning = config.TTSModelQwen, "spoken by qwen3-tts: "+why
+				// The caller never asked for voxcpm2 (the voice or the daemon
+				// default did), so its quality knobs must not turn a call that
+				// can be spoken into a 400 on this host: drop them and say so.
+				if dropped := dropVoxOnlyFields(body); dropped != "" {
+					warning += "; ignored " + dropped + " (they apply to voxcpm2 only)"
+				}
 			}
 		}
 	}
@@ -125,6 +131,19 @@ func (d *Daemon) prepareSpeech(body map[string]any) (model, warning string, err 
 		}
 	}
 	return model, warning, nil
+}
+
+// dropVoxOnlyFields removes the voxcpm2 knobs from body and returns the names
+// it removed, comma-separated ("" when none were set).
+func dropVoxOnlyFields(body map[string]any) string {
+	var dropped []string
+	for _, k := range voxOnlyFields {
+		if _, ok := body[k]; ok {
+			delete(body, k)
+			dropped = append(dropped, k)
+		}
+	}
+	return strings.Join(dropped, ", ")
 }
 
 // voxUnavailable is the plain-words reason the voxcpm2 engine cannot serve

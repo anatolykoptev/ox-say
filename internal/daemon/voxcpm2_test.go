@@ -609,3 +609,24 @@ func TestVoxStyleCfOnlyInstructFallsBackToVoiceStyle(t *testing.T) {
 		}
 	}
 }
+
+// A voice that merely PREFERS voxcpm2, spoken where voxcpm2 cannot run, with
+// voxcpm2-only knobs: the call is spoken by qwen3-tts with the knobs dropped
+// and named in the warning, not refused. An EXPLICIT qwen3-tts request with a
+// knob is still a 400 (the caller asked for the engine that cannot take it).
+// Mutation: tts_route.go prepareSpeech, delete the dropVoxOnlyFields call ->
+// RED (the fallback answers 400 "applies to model voxcpm2 only").
+func TestPreferredVoxKnobsDroppedOnFallback(t *testing.T) {
+	d, _, _ := voxFixture(t, func(c *config.Config) { c.GPUMemory = config.GPUMemoryDiscrete })
+	placeVoxVoice(t, d, "nar", config.TTSModelVoxCPM2, "", "", 3)
+	cfg, steps := 2.5, 12
+	res, err := d.Speak(context.Background(), SpeakInput{Text: "hi", Voice: "nar", CfgValue: &cfg, InferenceTimesteps: &steps, CloneMode: "reference"})
+	if err != nil || res.Model != config.TTSModelQwen ||
+		!strings.Contains(res.Warning, "ignored cfg_value, inference_timesteps, clone_mode") {
+		t.Fatalf("fallback with knobs: %+v %v", res, err)
+	}
+	if _, err := d.Speak(context.Background(), SpeakInput{Text: "hi", Voice: "nar", Model: config.TTSModelQwen, CfgValue: &cfg}); err == nil ||
+		!strings.Contains(err.Error(), "applies to model voxcpm2 only") {
+		t.Fatalf("explicit qwen3-tts with a knob: %v, want the refusal", err)
+	}
+}

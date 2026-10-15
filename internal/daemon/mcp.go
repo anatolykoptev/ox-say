@@ -87,9 +87,9 @@ type speakToolIn struct {
 	Overwrite          bool     `json:"overwrite,omitempty" jsonschema:"Allow replacing an existing out_path file"`
 	Play               bool     `json:"play,omitempty" jsonschema:"Play the audio after writing (macOS afplay)"`
 	Instructions       string   `json:"instructions,omitempty" jsonschema:"voxcpm2: how to speak, short English descriptors without parentheses (emotion, pace, loudness, delivery); with voice \"default\" it also describes the speaker"`
-	CfgValue           *float64 `json:"cfg_value,omitempty" jsonschema:"voxcpm2 guidance, default 2.0 (measured); raise only if a take ignores the style"`
-	InferenceTimesteps *int     `json:"inference_timesteps,omitempty" jsonschema:"voxcpm2 diffusion steps, default 10 (measured); more is slower"`
-	CloneMode          string   `json:"clone_mode,omitempty" jsonschema:"voxcpm2: auto (default) / reference (timbre only, styles allowed) / ultimate (needs the voice's ref_text, no instructions)"`
+	CfgValue           *float64 `json:"cfg_value,omitempty" jsonschema:"voxcpm2 guidance, above 0 and at most 5, default 2.0 (measured); raise only if a take ignores the style"`
+	InferenceTimesteps *int     `json:"inference_timesteps,omitempty" jsonschema:"voxcpm2 diffusion steps, whole number 1-50, default 10 (measured); more is slower"`
+	CloneMode          string   `json:"clone_mode,omitempty" jsonschema:"voxcpm2: auto (default; faithful copy only if the voice has ref_text, no style at all and same-script text) / reference (timbre only, styles allowed) / ultimate (needs ref_text and no style: refused with instructions or a saved voice style)"`
 	Seed               *int64   `json:"seed,omitempty" jsonschema:"0-4294967295; reproduces a take; the result reports the seed used"`
 	LoudnessLUFS       *float64 `json:"loudness_lufs,omitempty" jsonschema:"Normalize integrated loudness (-40..-5), e.g. -16 (online video), -23 (broadcast)"`
 }

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -169,10 +170,8 @@ func TestMCPDescriptionsAreSelfSufficient(t *testing.T) {
 // The agent journey over MCP: speak with no model uses qwen3-tts (the
 // dictation-safe default), a voice is added with its engine and style, listed
 // with them, updated, and the style cleared.
-// Mutation: internal/daemon/mcp.go toolVoiceAdd, call d.AddVoice instead of
-// d.AddVoiceMeta -> RED (engine/style are dropped). Mutation: internal/config
-// /config.go default OX_SAY_TTS_MODEL qwen -> voxcpm2 -> the config test is RED
-// (TestLoadTTSModelAndPorts) and speak reports voxcpm2 here.
+// Mutation: internal/daemon/mcp.go toolVoiceAdd, pass voices.Meta{} instead of
+// the engine, style and designed_from -> RED (they are dropped).
 func TestMCPVoiceJourney(t *testing.T) {
 	d, dir, _ := designFixture(t)
 	cs := mcpSession(t, d)
@@ -240,6 +239,37 @@ func TestMCPSpeakForwardsQualityOptions(t *testing.T) {
 		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "speak", Arguments: args})
 		if err != nil || !res.IsError {
 			t.Errorf("%s: the bad value was accepted (err %v): the option is not forwarded", name, err)
+		}
+	}
+}
+
+// The numeric ranges and the clone-mode conditions an agent reads match the
+// code's constants and rules.
+// Mutation: internal/daemon/voxcpm2.go maxCfgValue 5.0 -> 6.0 (or maxTimesteps
+// 50 -> 60) -> RED (the texts still say 5 / 1-50).
+func TestMCPTextsStateRangesFromConstants(t *testing.T) {
+	d, _, _ := designFixture(t)
+	tools, err := mcpSession(t, d).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var speak *mcp.Tool
+	for _, tl := range tools.Tools {
+		if tl.Name == "speak" {
+			speak = tl
+		}
+	}
+	schema, _ := json.Marshal(speak.InputSchema)
+	cfgRange := fmt.Sprintf("at most %.0f", maxCfgValue)
+	stepRange := fmt.Sprintf("1-%d", maxTimesteps)
+	for _, w := range []string{cfgRange, stepRange} {
+		if !strings.Contains(string(schema), w) || !strings.Contains(speak.Description, w) {
+			t.Errorf("speak schema or description lacks %q", w)
+		}
+	}
+	for _, w := range []string{"neither instructions nor the voice's saved style", "same script", `voice_update (style "")`, "saved style"} {
+		if !strings.Contains(speak.Description, w) {
+			t.Errorf("speak description lacks %q", w)
 		}
 	}
 }
