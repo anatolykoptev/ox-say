@@ -218,6 +218,63 @@ check "install-release.sh has no *ready* substring pass" "${n:-x}" 0
 n=$(grep -cE '^[^#]*oxs_selftest_heard_ok' "$root/scripts/install-release.sh" || true)
 check "install-release.sh calls oxs_selftest_heard_ok" "${n:-x}" 1
 
+# --- H: VoxCPM2 is opt-in, Apple Silicon with >= 24 GB only -----------------
+# A stub fetch records its argv; stub uname and sysctl on PATH play the host.
+# Mutation (lib-install.sh oxs_fetch_models): drop the oxs_voxcpm2_ok call ->
+# the x86_64, 16 GB and 23.99 GB cases fail. Mutation: `-lt` -> `-le` in
+# oxs_voxcpm2_ok -> the exactly-24 GB case fails.
+vox_case() { # name arch memsize want [extra env assignments...]
+    local d="$tmp/vox-$1" name=$1 arch=$2 mem=$3 want=$4
+    shift 4
+    mkdir -p "$d/bin"
+    printf '#!/bin/sh\necho "$@" > "%s/fetch-args"\n' "$d" > "$d/fetch"
+    printf '#!/bin/sh\necho %s\n' "$arch" > "$d/bin/uname"
+    printf '#!/bin/sh\necho %s\n' "$mem" > "$d/bin/sysctl"
+    chmod +x "$d/fetch" "$d/bin/uname" "$d/bin/sysctl"
+    env PATH="$d/bin:$PATH" OX_SAY_WITH_VOXCPM2=1 "$@" \
+        bash -c ". '$root/scripts/lib-install.sh'; oxs_fetch_models '$d/fetch'" >"$d/log" 2>&1
+    check "voxcpm2 opt-in $name" "$(cat "$d/fetch-args")" "$want"
+}
+vox_case arm64-32g arm64 34359738368 "--with-voxcpm2"
+vox_case arm64-24g-exact arm64 25769803776 "--with-voxcpm2"
+vox_case arm64-just-under-24g arm64 25769803775 ""
+vox_case arm64-16g arm64 17179869184 ""
+vox_case x86_64 x86_64 34359738368 ""
+vox_case with-whisper arm64 34359738368 "--with-whisper --with-voxcpm2" OX_SAY_WITH_WHISPER=1
+check_in_log "x86_64 refusal says why" "$tmp/vox-x86_64/log" "Apple Silicon only"
+check_in_log "16 GB refusal says why" "$tmp/vox-arm64-16g/log" "needs 24 GB"
+# Not requested -> never asked for, whatever the host.
+d="$tmp/vox-unset"
+mkdir -p "$d"
+printf '#!/bin/sh\necho "$@" > "%s/fetch-args"\n' "$d" > "$d/fetch"
+chmod +x "$d/fetch"
+env -u OX_SAY_WITH_VOXCPM2 bash -c ". '$root/scripts/lib-install.sh'; oxs_fetch_models '$d/fetch'" >/dev/null 2>&1
+check "voxcpm2 not requested" "$(cat "$d/fetch-args")" ""
+
+# --- I: audiocpp_server is an optional engine --------------------------------
+# The arm64 package carries it, the x86_64 one does not. Mutation: drop the
+# optional block in oxs_install_engines -> the binary is missing -> RED.
+engine_case() { # name with-audiocpp
+    local d="$tmp/eng-$1" bin
+    mkdir -p "$d/out/licenses" "$d/home"
+    echo x > "$d/out/licenses/x.LICENSE"
+    for bin in tts-server ox-stt ox-align $( [ "$2" = yes ] && echo audiocpp_server ); do
+        printf '#!/bin/sh\n' > "$d/out/$bin"
+        chmod +x "$d/out/$bin"
+    done
+    bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/out'" >"$d/log" 2>&1
+    echo "rc=$?" >> "$d/log"
+    for f in "$d/home/engine"/*; do
+        if [ -f "$f" ]; then
+            printf '%s ' "$(basename "$f")"
+        fi
+    done
+}
+check "engines with audiocpp_server" "$(engine_case with yes)" "audiocpp_server ox-align ox-stt tts-server "
+check_in_log "with audiocpp: exit 0" "$tmp/eng-with/log" "rc=0"
+check "engines without audiocpp_server" "$(engine_case without no)" "ox-align ox-stt tts-server "
+check_in_log "without audiocpp: exit 0" "$tmp/eng-without/log" "rc=0"
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "all checks passed"

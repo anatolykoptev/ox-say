@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install an unpacked ox-say release for the current user. get.sh downloads,
 # verifies and unpacks the release, then runs this from inside it:
-#   <release>/bin/ox-say, <release>/engine/{tts-server,ox-stt,ox-align,licenses/},
+#   <release>/bin/ox-say, <release>/engine/{tts-server,ox-stt,ox-align,licenses/} (+ audiocpp_server on arm64),
 #   <release>/app/OxSayDictation.app, <release>/launchd/, <release>/scripts/,
 #   <release>/VERSION
 # Settings (OX_SAY_* variables): see scripts/lib-install.sh.

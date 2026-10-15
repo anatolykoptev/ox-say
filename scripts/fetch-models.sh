@@ -4,8 +4,9 @@
 #   Parakeet TDT 0.6B v3 q8_0 (CC-BY-4.0)        speech-to-text, 25 European languages
 #   Silero VAD v5.1.2 (MIT)                      ox-stt --serve --vad streaming sessions
 #   Whisper large-v3-turbo (MIT), --with-whisper  speech-to-text, 99 languages (1.6 GB)
+#   VoxCPM2 Q8_0 (Apache-2.0), --with-voxcpm2    quality text-to-speech, Apple Silicon only (3.0 GB)
 #
-# Usage: scripts/fetch-models.sh [--with-whisper] [dest]   (any order)
+# Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [dest]   (any order)
 #   dest defaults to "$OX_SAY_HOME/models" (OX_SAY_HOME defaults to
 #   ~/Library/Application Support/ox-say).
 #   OX_SAY_MODELS_FROM=<dir> copies matching files from a local dir instead of
@@ -13,10 +14,12 @@
 set -euo pipefail
 
 with_whisper=0
+with_voxcpm2=0
 dest=
 for arg in "$@"; do
     case "$arg" in
         --with-whisper) with_whisper=1 ;;
+        --with-voxcpm2) with_voxcpm2=1 ;;
         -*) echo "unknown option: $arg" >&2; exit 2 ;;
         *)
             if [ -n "$dest" ]; then
@@ -44,6 +47,11 @@ models=(
 )
 if [ "$with_whisper" = 1 ]; then
     models+=("ggml-large-v3-turbo.bin 1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69 $whisper")
+fi
+# VoxCPM2 Q8_0 (Apache-2.0 weights, GGUF by audio.cpp), --with-voxcpm2, 2.96 GB, Apple Silicon only.
+voxcpm2=https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/f861648c0c1f4da9f18e9a0ce5e217b0679bb2f5/VoxCPM2-GGUF
+if [ "$with_voxcpm2" = 1 ]; then
+    models+=("voxcpm2-q8_0.gguf c8e01ab4416011e12a28f24ede298a1aa5ce64b43f8e8aaad53b1e2fe7c96432 $voxcpm2")
 fi
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
