@@ -38,6 +38,9 @@ const (
 	// spoken dash, a breath). Scored as a word it is an insertion against a
 	// script that has none; a real missing word still counts as a deletion.
 	asrUnknown = "<unk>"
+	// reasonSilent is the gate reason of a take with no audible samples;
+	// settle prefers any take without it.
+	reasonSilent = "the take is silent"
 )
 
 // gateLimits are the thresholds gateTake applies; the zero value means
@@ -348,7 +351,7 @@ func gateTake(spoken string, clip pcm.Clip, heard []voices.Word) (fails []string
 // else a babbled tail of <unk> would score as clean.
 func gateWith(l gateLimits, spoken string, clip pcm.Clip, heard []voices.Word) (fails []string, errs, n int) {
 	if voiced, _ := clip.Trim(l.FloorDB, 0); len(voiced.S) == 0 {
-		fails = append(fails, "the take is silent")
+		fails = append(fails, reasonSilent)
 	}
 	if s := clip.LongestSilence(l.FloorDB); s > l.MaxSilenceSec {
 		fails = append(fails, fmt.Sprintf("%.1f s of silence inside the take", s))

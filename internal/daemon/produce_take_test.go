@@ -23,6 +23,7 @@ type fakePorts struct {
 	home        string
 	secs        float64
 	gapAt       map[int]float64 // render index -> insert a silent gap of this many seconds mid-take
+	silentAt    map[int]bool    // render index -> the whole take is silence
 	heard       map[int]string  // render index -> transcript override
 	warning     string
 	renders     []renderParams
@@ -47,7 +48,7 @@ type fakePorts struct {
 }
 
 func newFakePorts(t *testing.T) *fakePorts {
-	return &fakePorts{home: t.TempDir(), secs: 2, gapAt: map[int]float64{}, heard: map[int]string{},
+	return &fakePorts{home: t.TempDir(), secs: 2, gapAt: map[int]float64{}, silentAt: map[int]bool{}, heard: map[int]string{},
 		voice: voiceFacts{Name: "nar", RefText: "Привет, как дела у вас сегодня.", SHA: "aa"}, engineID: "eng1"}
 }
 
@@ -66,7 +67,7 @@ func (f *fakePorts) Render(ctx context.Context, p renderParams) (*synthOut, erro
 	f.renders = append(f.renders, p)
 	f.inFlight++
 	f.maxInFlight = max(f.maxInFlight, f.inFlight)
-	block, started, gap := f.block, f.started, f.gapAt[idx]
+	block, started, gap, silent := f.block, f.started, f.gapAt[idx], f.silentAt[idx]
 	f.mu.Unlock()
 	defer func() { f.mu.Lock(); f.inFlight--; f.mu.Unlock() }()
 	if started != nil {
@@ -78,6 +79,9 @@ func (f *fakePorts) Render(ctx context.Context, p renderParams) (*synthOut, erro
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+	if silent {
+		return &synthOut{WAV: pcm.Silence(48000, f.secs).Encode(), Model: config.TTSModelVoxCPM2}, nil
 	}
 	return &synthOut{WAV: toneClip(f.secs, gap).Encode(), Model: config.TTSModelVoxCPM2, Warning: f.warning}, nil
 }

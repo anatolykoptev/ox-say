@@ -134,6 +134,9 @@ func (p *producer) assemble(j *job) error {
 	if err != nil {
 		return diskErr(err)
 	}
+	if tl.total <= 0 {
+		return errors.New("every chunk is silent, so there is nothing to publish: regenerate the chunks marked review")
+	}
 	tl.dynamic, err = p.ports.Normalize(p.ctx, tmp.Name(), norm, m.Settings.LUFS, tl.total)
 	if err != nil {
 		return fmt.Errorf("loudness normalisation failed, so nothing was published: %w", err)
@@ -440,11 +443,20 @@ func moveFile(src, dst string) error {
 	return err
 }
 
+// ownedOutputs are the recorded outputs that really are siblings of the
+// project's output stem: a manifest cannot make an arbitrary file "ours" and
+// so overwritable without the overwrite flag.
 func ownedOutputs(m *vproject.Manifest) map[string]bool {
 	owned := map[string]bool{}
-	for _, p := range []string{m.Outputs.WAV, m.Outputs.SRT, m.Outputs.VTT, m.Outputs.Words, m.Outputs.Manifest} {
-		if p != "" {
-			owned[p] = true
+	stem, err := outputStem(m.Settings.OutPath)
+	if err != nil {
+		return owned
+	}
+	recorded := map[string]string{".wav": m.Outputs.WAV, ".srt": m.Outputs.SRT, ".vtt": m.Outputs.VTT,
+		".words.json": m.Outputs.Words, ".manifest.json": m.Outputs.Manifest}
+	for _, ext := range outputExts {
+		if recorded[ext] != "" && recorded[ext] == stem+ext {
+			owned[stem+ext] = true
 		}
 	}
 	return owned
