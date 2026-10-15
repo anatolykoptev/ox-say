@@ -75,6 +75,8 @@ func (d *Daemon) RegisterTools(srv *mcp.Server) {
 			`Parakeet word times carry about ±80 ms jitter — for cut-precise timings use a forced aligner on the transcript instead. ` +
 			`out_path writes the full result JSON (segments and words) to an absolute .json path.`,
 	}, d.toolTranscribe)
+
+	d.registerProduceTools(srv)
 }
 
 type speakToolIn struct {

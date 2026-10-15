@@ -116,6 +116,9 @@ func (d *Daemon) ServerConfig(version string) mcpserver.Config {
 			"transcribe": transcribeTimeout,
 			// voice_design: cold start plus up to maxDesignTakes takes.
 			"voice_design": designToolTimeout(),
+			// The produce tools have no entry on purpose: they return at once
+			// (the job runs in the background, status is polled), so the
+			// default deadline is right and a long one would only hide a hang.
 		},
 		// Progress notifications every 30 s keep a multi-hour call's event
 		// stream from looking idle to a client or proxy.
