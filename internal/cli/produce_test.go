@@ -169,9 +169,9 @@ func TestProduceRejectsUnknownAndMisplacedFlags(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"typo switch", []string{src, "--allow-batery"}, "--allow-batery"},
-		{"typo switch 2", []string{src, "--overwrit"}, "--overwrit"},
-		{"typo value flag", []string{src, "--tkaes", "3"}, "--tkaes"},
+		{"typo switch", []string{src, "--allow-batery"}, "unknown flag --allow-batery"},
+		{"typo switch 2", []string{src, "--overwrit"}, "unknown flag --overwrit"},
+		{"typo value flag", []string{src, "--tkaes", "3"}, "unknown flag --tkaes"},
 		{"extra positional", []string{src, "another.txt"}, "another.txt"},
 		{"seed on cancel", []string{"cancel", testProjectID, "--seed", "1"}, "--seed does not apply to produce cancel"},
 		{"overwrite on status", []string{"status", testProjectID, "--overwrite"}, "--overwrite does not apply to produce status"},

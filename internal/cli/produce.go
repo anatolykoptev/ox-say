@@ -237,6 +237,9 @@ func contains(list []string, s string) bool {
 // checkUsage rejects flags that do not belong to the verb, unknown "-" tokens
 // and a wrong number of arguments; it returns the message to print.
 func checkUsage(verb string, spec verbSpec, vals map[string]string, sw map[string]bool, args []string) string {
+	if verb == "create" {
+		verb = "<script>"
+	}
 	for name := range vals {
 		if !contains(spec.values, name) {
 			return fmt.Sprintf("%s does not apply to produce %s", flagText(name), verb)
