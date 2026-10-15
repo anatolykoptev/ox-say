@@ -151,13 +151,19 @@ func dropVoxOnlyFields(body map[string]any) string {
 // touching the supervisor, which exists whenever the memory is unified — even
 // with no model on disk.
 func (d *Daemon) voxUnavailable() string {
-	if why := d.Cfg.VoxCPM2Unavailable(); why != "" {
-		return why
+	_, why := d.voxBlock()
+	return why
+}
+
+// voxBlock is voxUnavailable with config's machine-readable code.
+func (d *Daemon) voxBlock() (code, reason string) {
+	if code, why := d.Cfg.VoxCPM2Block(); why != "" {
+		return code, why
 	}
 	if d.VoxSup == nil {
-		return "The studio voice engine is not running on this host."
+		return config.VoxReasonUnsupported, "The studio voice engine is not running on this host."
 	}
-	return ""
+	return "", ""
 }
 
 // synthesize renders a prepared body on model. It applies no defaults.

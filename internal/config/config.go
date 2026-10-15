@@ -362,26 +362,44 @@ func loadVoxCPM2(c *Config, get func(string) string) error {
 	return nil
 }
 
+// Codes for why VoxCPM2 is unavailable, for a UI that must tell "an install
+// would fix this" from "this Mac cannot run it".
+const (
+	// VoxReasonUnsupported: the hardware cannot run it (no Apple Silicon, too
+	// little memory). No install helps.
+	VoxReasonUnsupported = "unsupported"
+	// VoxReasonModelMissing: the engine or its model is not on disk. The
+	// installer with OX_SAY_WITH_VOXCPM2=1 adds both.
+	VoxReasonModelMissing = "model_missing"
+)
+
 // VoxCPM2Unavailable reports, in plain words for a UI, why the VoxCPM2 engine
-// cannot serve on this host, or "" when it can. The model file — not the
-// binary alone — enables it: a release install on arm64 carries the binary
-// without the 3 GB model. Files are stat'ed per call, so a model fetched later
-// works without a daemon restart.
+// cannot serve on this host, or "" when it can.
 func (c *Config) VoxCPM2Unavailable() string {
+	_, reason := c.VoxCPM2Block()
+	return reason
+}
+
+// VoxCPM2Block is VoxCPM2Unavailable with a machine-readable code
+// (VoxReasonUnsupported or VoxReasonModelMissing); both are "" when it can
+// serve. The model file — not the binary alone — enables it: a release install
+// on arm64 carries the binary without the 3 GB model. Files are stat'ed per
+// call, so a model fetched later works without a daemon restart.
+func (c *Config) VoxCPM2Block() (code, reason string) {
 	if !c.UnifiedMemory() {
-		return "Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them."
+		return VoxReasonUnsupported, "Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them."
 	}
 	if c.HostMemoryBytes != 0 && c.HostMemoryBytes < VoxCPM2MinMemoryGB*bytesPerGB {
-		return fmt.Sprintf("Studio voices (VoxCPM2) need at least %d GB of memory; this Mac has %d GB.",
+		return VoxReasonUnsupported, fmt.Sprintf("Studio voices (VoxCPM2) need at least %d GB of memory; this Mac has %d GB.",
 			VoxCPM2MinMemoryGB, c.HostMemoryBytes/bytesPerGB)
 	}
 	if !isRegularFile(c.VoxCPM2Bin) {
-		return "The studio voice engine is not installed. Reinstall ox-say with OX_SAY_WITH_VOXCPM2=1."
+		return VoxReasonModelMissing, "The studio voice engine is not installed. Reinstall ox-say with OX_SAY_WITH_VOXCPM2=1."
 	}
 	if !isRegularFile(c.VoxCPM2Model) {
-		return "The studio voice model is not downloaded yet. Run the installer with OX_SAY_WITH_VOXCPM2=1 to add it."
+		return VoxReasonModelMissing, "The studio voice model is not downloaded yet. Run the installer with OX_SAY_WITH_VOXCPM2=1 to add it."
 	}
-	return ""
+	return "", ""
 }
 
 func isRegularFile(path string) bool {

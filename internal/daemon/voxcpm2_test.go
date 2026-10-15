@@ -123,12 +123,16 @@ func TestVoxCPM2ServerArgsNeverParallelJobs(t *testing.T) {
 // installed engine is available and "stopped" before first use.
 // Mutation: service.go newDaemon, drop the `if cfg.UnifiedMemory()` guard
 // around newVoxSupervisor -> the Intel daemon gets a VoxSup -> RED.
+// voxcpm2.go voxStatus, `ReasonCode: code` -> `ReasonCode: code[:0]` -> the
+// reason_code assertions fail -> RED. voxcpm2.go voxCPM2Status, the json tag
+// `reason_code` -> `reason_cod` -> the wire assertion fails -> RED.
 func TestVoxCPM2StatusStates(t *testing.T) {
 	intel := newTestDaemonSTT(t, t.TempDir(), nil, nil, nil)
 	if intel.VoxSup != nil {
 		t.Fatal("a discrete-memory daemon built a voxcpm2 supervisor")
 	}
-	if st := intel.Status().VoxCPM2; st.Available || st.State != "unavailable" || !strings.Contains(st.Reason, "Apple Silicon") {
+	if st := intel.Status().VoxCPM2; st.Available || st.State != "unavailable" || !strings.Contains(st.Reason, "Apple Silicon") ||
+		st.ReasonCode != config.VoxReasonUnsupported {
 		t.Fatalf("Intel status = %+v", st)
 	}
 
@@ -136,13 +140,19 @@ func TestVoxCPM2StatusStates(t *testing.T) {
 		c.GPUMemory = config.GPUMemoryUnified
 		c.VoxCPM2Model = filepath.Join(t.TempDir(), "absent.gguf")
 	}, nil, nil)
-	if st := noModel.Status().VoxCPM2; st.Available || st.State != "unavailable" || !strings.Contains(st.Reason, "model is not downloaded") {
+	if st := noModel.Status().VoxCPM2; st.Available || st.State != "unavailable" || !strings.Contains(st.Reason, "model is not downloaded") ||
+		st.ReasonCode != config.VoxReasonModelMissing {
 		t.Fatalf("binary without model status = %+v", st)
+	}
+	// The app reads the code off the wire by name: a renamed tag would turn
+	// every "model missing" Mac into one with no install offer.
+	if raw, err := json.Marshal(noModel.Status()); err != nil || !strings.Contains(string(raw), `"reason_code":"model_missing"`) {
+		t.Fatalf("status JSON = %s (%v), want a reason_code of model_missing", raw, err)
 	}
 
 	ok := newVoxTestDaemon(t, t.TempDir(), nil)
 	st := ok.Status()
-	if !st.VoxCPM2.Available || st.VoxCPM2.State != engine.StateStopped || st.VoxCPM2.Reason != "" {
+	if !st.VoxCPM2.Available || st.VoxCPM2.State != engine.StateStopped || st.VoxCPM2.Reason != "" || st.VoxCPM2.ReasonCode != "" {
 		t.Fatalf("installed status = %+v", st.VoxCPM2)
 	}
 	raw, err := json.Marshal(st)

@@ -511,6 +511,43 @@ func TestVoxCPM2Unavailable(t *testing.T) {
 	}
 }
 
+// The code tells a UI whether an install would help: hardware refusals are
+// "unsupported", a missing engine or model is "model_missing", and an available
+// engine has none.
+// Mutation: config.go VoxCPM2Block, the Intel branch's VoxReasonUnsupported ->
+// VoxReasonModelMissing -> the Intel case offers an install -> RED; the memory
+// branch likewise; the model-file branch's VoxReasonModelMissing ->
+// VoxReasonUnsupported -> RED.
+func TestVoxCPM2BlockCodes(t *testing.T) {
+	env, _, _ := voxEnv(t)
+	if code, why := loadEnv(t, env).VoxCPM2Block(); code != "" || why != "" {
+		t.Fatalf("available: code %q reason %q, want both empty", code, why)
+	}
+
+	intel := maps.Clone(env)
+	intel["OX_SAY_GPU_MEMORY"] = GPUMemoryDiscrete
+	if code, _ := loadEnv(t, intel).VoxCPM2Block(); code != VoxReasonUnsupported {
+		t.Errorf("Intel: code %q, want %q", code, VoxReasonUnsupported)
+	}
+
+	noModel := maps.Clone(env)
+	noModel["OX_SAY_VOXCPM2_MODEL"] = filepath.Join(t.TempDir(), "missing.gguf")
+	if code, _ := loadEnv(t, noModel).VoxCPM2Block(); code != VoxReasonModelMissing {
+		t.Errorf("no model: code %q, want %q", code, VoxReasonModelMissing)
+	}
+
+	noBin := maps.Clone(env)
+	noBin["OX_SAY_VOXCPM2_BIN"] = filepath.Join(t.TempDir(), "missing")
+	if code, _ := loadEnv(t, noBin).VoxCPM2Block(); code != VoxReasonModelMissing {
+		t.Errorf("no engine: code %q, want %q", code, VoxReasonModelMissing)
+	}
+
+	hostMemoryBytes = func() uint64 { return 16 * bytesPerGB }
+	if code, _ := loadEnv(t, env).VoxCPM2Block(); code != VoxReasonUnsupported {
+		t.Errorf("16 GB Mac: code %q, want %q", code, VoxReasonUnsupported)
+	}
+}
+
 func TestLoadTTSModelAndPorts(t *testing.T) {
 	env := map[string]string{"OX_SAY_HOME": t.TempDir(), "OX_SAY_TTS_MODEL": "voxcpm2"}
 	c := loadEnv(t, env)

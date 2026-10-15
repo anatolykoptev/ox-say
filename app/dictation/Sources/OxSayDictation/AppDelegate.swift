@@ -15,9 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// only while the permission does not work (recomputed each open).
     private let allowPastingItem = NSMenuItem(title: "Allow pasting… (Accessibility is off)",
                                               action: #selector(allowPasting), keyEquivalent: "")
-    private let toggleItem = NSMenuItem(title: "Toggle mode (press to start, press again to stop)", action: #selector(toggleMode), keyEquivalent: "")
-    private let loginItem = NSMenuItem(title: "Start at login", action: #selector(toggleLogin), keyEquivalent: "")
-    private var shortcutItems: [Shortcut: NSMenuItem] = [:]
+    private let toggleItem = NSMenuItem(title: "Toggle Mode (press to start, press again to stop)", action: #selector(toggleMode), keyEquivalent: "")
+    private let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
     private var hotKey: HotKey?
     private var escapeKey: HotKey?
     private var controller: DictationController!
@@ -27,6 +26,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let speakService = SpeakServiceProvider()
     private let player = AudioPlayer()
     private var speechClient: SpeechClient!
+    private var studioClient: StudioClient!
+    private var studio: StudioController!
+    /// Runs once when the playback that was started with a completion ends on its own.
+    private var playbackDone: (() -> Void)?
+    /// The daemon's last /status answer, fetched on every menu open; nil when it
+    /// could not be reached.
+    private var serviceStatus: DaemonStatus?
+    /// The small version line at the bottom of the menu.
+    private let footerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let updater = UpdateChecker()
     /// True from the menu click until the result alert is up, so a second click
     /// does not stack a second check.
@@ -35,8 +43,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// it ends; Check for Updates is refused meanwhile (a second get.sh would
     /// race the first on the same install).
     private var updateInstalling = false
-    private let russianVoiceSubmenu = NSMenu()
-    private let englishVoiceSubmenu = NSMenu()
+    private let voiceSubmenu = NSMenu()
+    /// One submenu for both hotkeys; its rows are rebuilt from the latest plans.
+    private let shortcutsSubmenu = NSMenu()
+    private var dictationKeyRows: [ShortcutMenu.Item] = []
+    private var speakKeyRows: [ShortcutMenu.Item] = []
     private let speakVoiceRUKey = "speakVoiceRU"
     private let speakVoiceENKey = "speakVoiceEN"
     /// The single choice from before the per-language menus; migrated into
@@ -52,7 +63,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// key machinery with its own offered combinations.
     private var speakHotKey: HotKey?
     private let capture = SelectionCapture()
-    private var speakShortcutItems: [SpeakShortcut: NSMenuItem] = [:]
     private let speakShortcutKey = "speakShortcut"
     private let speakKeyInUseKey = "speakKeyInUse"
     private var speakActive: SpeakShortcut?
@@ -123,10 +133,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let client = TranscriptionClient(baseURL: baseURL)
         self.client = client
         speechClient = SpeechClient(baseURL: baseURL)
+        studioClient = StudioClient(baseURL: baseURL)
+        studio = StudioController(host: studioHost())
         speakService.onSpeak = { [weak self] text in self?.speak(text) }
         NSApp.servicesProvider = speakService
         overlay.onPlaybackToggle = { [weak self] in self?.player.toggle() }
         overlay.onPlaybackStop = { [weak self] in
+            self?.playbackDone = nil
             self?.player.stop()
             self?.overlay.finishPlaying()
         }
@@ -134,7 +147,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return (0, 0, false) }
             return (self.player.currentTime, self.player.duration, self.player.isPaused)
         }
-        player.onFinish = { [weak self] in self?.overlay.finishPlaying() }
+        player.onFinish = { [weak self] in
+            self?.overlay.finishPlaying()
+            let done = self?.playbackDone
+            self?.playbackDone = nil
+            done?()
+        }
         let streamer = StreamingTranscriber(baseURL: baseURL)
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode, transcriber: streamer)
@@ -177,6 +195,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         registerShortcut(shortcutPlan())
         registerSpeakShortcut(speakShortcutPlan())
         show(.idle)
+        refreshServiceStatus()
+        studio.render()
 
         // Ask for both permissions up front, so the first dictation does not stall
         // on a prompt. The Accessibility prompt shows once; the microphone prompt
@@ -268,25 +288,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func applySpeakShortcutItems(_ rows: [ShortcutMenu.Item]) {
-        for (index, shortcut) in SpeakShortcut.allCases.enumerated() {
-            guard let item = speakShortcutItems[shortcut] else { continue }
-            let row = rows[index]
-            item.state = row.isOn ? .on : .off
-            item.isEnabled = row.isEnabled
-            item.title = row.title
-        }
+        speakKeyRows = rows
+        rebuildShortcutsMenu()
     }
 
-    /// The menu items follow the live system shortcuts: a key macOS freed is
+    /// The menu rows follow the live system shortcuts: a key macOS freed is
     /// clickable again, a key it took greys out — whether or not the
     /// registered key changes.
     private func applyShortcutItems(_ rows: [ShortcutMenu.Item]) {
-        for (index, shortcut) in Shortcut.allCases.enumerated() {
-            guard let item = shortcutItems[shortcut] else { continue }
-            let row = rows[index]
-            item.state = row.isOn ? .on : .off
-            item.isEnabled = row.isEnabled
-            item.title = row.title
+        dictationKeyRows = rows
+        rebuildShortcutsMenu()
+    }
+
+    private func rebuildShortcutsMenu() {
+        let rows = MenuSections.shortcutRows(dictation: dictationKeyRows, speak: speakKeyRows)
+        MenuRenderer.fill(shortcutsSubmenu, rows: rows, target: self) { action in
+            switch action {
+            case .pickDictationKey(let index): return (#selector(pickShortcut(_:)), Shortcut.allCases[index].rawValue)
+            case .pickSpeakKey(let index): return (#selector(pickSpeakShortcut(_:)), SpeakShortcut.allCases[index].rawValue)
+            default: return (#selector(pickVoice(_:)), [String: String]())
+            }
         }
     }
 
@@ -295,6 +316,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         rebuildVoiceMenus()
         refreshVoices()
+        refreshServiceStatus()
+        studio.render()
         let plan = shortcutPlan()
         let open = ShortcutMenu.onOpen(plan, registered: active.flatMap { Shortcut.allCases.firstIndex(of: $0) },
                                        idle: controller.state == .idle)
@@ -330,56 +353,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func buildMenu() {
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(statusLine)
-        menu.addItem(.separator())
         allowPastingItem.target = self
-        let shortcuts = NSMenu()
-        shortcuts.autoenablesItems = false // or AppKit re-enables the greyed-out keys
-        for choice in Shortcut.allCases {
-            let item = NSMenuItem(title: choice.title, action: #selector(pickShortcut(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = choice.rawValue
-            shortcuts.addItem(item)
-            shortcutItems[choice] = item
-        }
-        let shortcutMenu = NSMenuItem(title: "Dictation key", action: nil, keyEquivalent: "")
-        shortcutMenu.submenu = shortcuts
-        menu.addItem(shortcutMenu)
-        toggleItem.target = self
-        toggleItem.state = controller.mode == .toggle ? .on : .off
-        menu.addItem(toggleItem)
-        loginItem.target = self
-        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        menu.addItem(loginItem)
-        menu.addItem(.separator())
-        let russianVoiceItem = NSMenuItem(title: "Russian voice", action: nil, keyEquivalent: "")
-        russianVoiceItem.submenu = russianVoiceSubmenu
-        menu.addItem(russianVoiceItem)
-        let englishVoiceItem = NSMenuItem(title: "English voice", action: nil, keyEquivalent: "")
-        englishVoiceItem.submenu = englishVoiceSubmenu
-        menu.addItem(englishVoiceItem)
-        let speakKeys = NSMenu()
-        speakKeys.autoenablesItems = false // or AppKit re-enables the greyed-out keys
-        for choice in SpeakShortcut.allCases {
-            let item = NSMenuItem(title: choice.title, action: #selector(pickSpeakShortcut(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = choice.rawValue
-            speakKeys.addItem(item)
-            speakShortcutItems[choice] = item
-        }
-        let speakKeyMenu = NSMenuItem(title: "Speak key", action: nil, keyEquivalent: "")
-        speakKeyMenu.submenu = speakKeys
-        menu.addItem(speakKeyMenu)
+        menu.addItem(statusLine)
         speakHint.isEnabled = false
         menu.addItem(speakHint)
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Microphone settings…", action: #selector(openMicrophoneSettings), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Accessibility settings…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
+        menu.addItem(submenuItem("Voice", voiceSubmenu))
+        shortcutsSubmenu.autoenablesItems = false // or AppKit re-enables the greyed-out keys
+        menu.addItem(submenuItem("Keyboard Shortcuts", shortcutsSubmenu))
+        menu.addItem(submenuItem("Studio", studio.submenu))
         menu.addItem(.separator())
+        menu.addItem(submenuItem("Settings", buildSettingsMenu()))
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "About OxSay", action: #selector(showAbout), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Quit OxSay", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit OxSay Dictation", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        footerItem.isEnabled = false
+        menu.addItem(footerItem)
+        updateFooter()
         statusItem.menu = menu
+    }
+
+    /// The bundle's version in small secondary-colour text, never clickable.
+    private func updateFooter() {
+        let text = MenuFooter.text(appVersion: AboutPanel.appVersion)
+        footerItem.attributedTitle = NSAttributedString(string: text, attributes: [
+            .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+    }
+
+    /// Asks the daemon for /status on every menu open; a failure clears the last
+    /// answer so the About panel does not name a stale service version.
+    private func refreshServiceStatus() {
+        let client = studioClient!
+        Task { @MainActor [weak self] in
+            let status = try? await client.status()
+            guard let self else { return }
+            self.serviceStatus = status
+            self.studio.statusChanged(status)
+        }
+    }
+
+    @objc private func showAbout() {
+        AboutPanel.show(serviceVersion: serviceStatus?.version)
+    }
+
+    private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.submenu = submenu
+        return item
+    }
+
+    /// The extra settings: dictation mode, login item and the two permission panes.
+    private func buildSettingsMenu() -> NSMenu {
+        let settings = NSMenu()
+        toggleItem.target = self
+        toggleItem.state = controller.mode == .toggle ? .on : .off
+        settings.addItem(toggleItem)
+        loginItem.target = self
+        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        settings.addItem(loginItem)
+        settings.addItem(.separator())
+        settings.addItem(withTitle: "Microphone Access…", action: #selector(openMicrophoneSettings), keyEquivalent: "").target = self
+        settings.addItem(withTitle: "Accessibility Access…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
+        return settings
     }
 
     private func show(_ state: DictationState) {
@@ -475,6 +514,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// request supersedes an in-flight one, so a slow answer cannot stop what
     /// already plays.
     private func speakRequest(_ text: String, voice: String?, language: String? = nil) {
+        playbackDone = nil // a speech request supersedes a voiceover that was playing
         speakGeneration += 1
         let generation = speakGeneration
         overlay.showWorking()
@@ -495,40 +535,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Rebuilds both voice submenus: the daemon's configured default, the
-    /// engine's random voice, then the cloned voices the daemon knows.
+    /// Rebuilds the Voice submenu: per language the daemon's configured
+    /// default, the engine's random voice, then the cloned voices the daemon knows.
     private func rebuildVoiceMenus() {
-        buildVoiceSubmenu(russianVoiceSubmenu, key: speakVoiceRUKey)
-        buildVoiceSubmenu(englishVoiceSubmenu, key: speakVoiceENKey)
-    }
-
-    /// One submenu's rows; each item carries the pref key it writes, so one
-    /// selector serves both languages.
-    private func buildVoiceSubmenu(_ submenu: NSMenu, key: String) {
-        submenu.removeAllItems()
-        let current = UserDefaults.standard.string(forKey: key)
-        let fallback = NSMenuItem(title: "Default voice", action: #selector(pickVoice(_:)), keyEquivalent: "")
-        fallback.target = self
-        fallback.representedObject = ["key": key]
-        fallback.state = current == nil ? .on : .off
-        submenu.addItem(fallback)
-        let random = NSMenuItem(title: "Random each time", action: #selector(pickVoice(_:)), keyEquivalent: "")
-        random.target = self
-        random.representedObject = ["key": key, "voice": "default"]
-        random.state = current == "default" ? .on : .off
-        submenu.addItem(random)
-        submenu.addItem(.separator())
-        for name in knownVoices ?? [] {
-            let item = NSMenuItem(title: name, action: #selector(pickVoice(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = ["key": key, "voice": name]
-            item.state = name == current ? .on : .off
-            submenu.addItem(item)
-        }
-        if knownVoices == nil {
-            let loading = NSMenuItem(title: "Loading…", action: nil, keyEquivalent: "")
-            loading.isEnabled = false
-            submenu.addItem(loading)
+        let defaults = UserDefaults.standard
+        let rows = MenuSections.voiceRows(known: knownVoices, russian: defaults.string(forKey: speakVoiceRUKey),
+                                          english: defaults.string(forKey: speakVoiceENKey))
+        MenuRenderer.fill(voiceSubmenu, rows: rows, target: self) { action in
+            guard case .pickVoice(let slot, let name) = action else { return (#selector(pickVoice(_:)), [String: String]()) }
+            // Each item carries the pref key it writes, so one selector serves both languages.
+            var pick = ["key": slot == .russian ? speakVoiceRUKey : speakVoiceENKey]
+            if let name { pick["voice"] = name }
+            return (#selector(pickVoice(_:)), pick)
         }
     }
 
@@ -556,6 +574,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.knownVoices = voices ?? self.knownVoices
             self.rebuildVoiceMenus()
         }
+    }
+
+    /// What the Studio features use of the app: alerts, the pill, the player and the installer.
+    private func studioHost() -> StudioHost {
+        StudioHost(
+            client: studioClient, speech: speechClient,
+            russianVoicePick: { [unowned self] in UserDefaults.standard.string(forKey: self.speakVoiceRUKey) },
+            alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) },
+            pill: { [unowned self] text in
+                if let text {
+                    self.overlay.showWorking()
+                    self.overlay.setWorkingText(text)
+                    self.overlay.setHintHidden(true)
+                } else {
+                    self.overlay.finish()
+                }
+            },
+            notify: { [unowned self] message in self.notice(message) },
+            play: { [unowned self] wav, showPill, onFinish in
+                self.playbackDone = onFinish
+                do {
+                    try self.player.play(wav: wav)
+                    if showPill { self.overlay.showPlaying() }
+                } catch {
+                    self.playbackDone = nil
+                    self.notice(String(describing: error))
+                }
+            },
+            stopPlayback: { [unowned self] in
+                self.playbackDone = nil
+                self.player.stop()
+            },
+            installStudioVoice: { [unowned self] in self.installStudioVoice() },
+            installing: { [unowned self] in self.updateInstalling })
+    }
+
+    /// Install Studio Voice: confirm, then the update install pinned to the
+    /// installed version with the studio model switched on.
+    private func installStudioVoice() {
+        guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
+            runAlert(title: UpdateGate.busyAlertTitle, text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
+            return
+        }
+        let sure = runAlert(title: "Install the studio voice?",
+                            text: "Downloads the studio voice model once, about 3 GB. Dictation pauses for a few seconds while ox-say restarts.",
+                            buttons: ["Install", "Cancel"])
+        guard sure == .alertFirstButtonReturn else { return }
+        installUpdate(tag: UpdateInstaller.tag(forVersion: AboutPanel.appVersion), kind: .studioVoice)
     }
 
     /// The menu's update check: GitHub's latest release against the bundle's
@@ -604,7 +670,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Shows a modal alert over every app and returns the pressed button.
     @discardableResult
-    private func runAlert(title: String, text: String, buttons: [String]) -> NSApplication.ModalResponse {
+    func runAlert(title: String, text: String, buttons: [String]) -> NSApplication.ModalResponse {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = text
@@ -621,7 +687,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let buttons = url == nil ? ["Update", "Later"] : ["Update", "Later", "Release Notes…"]
         switch runAlert(title: "ox-say \(remote) is available", text: text, buttons: buttons) {
         case .alertFirstButtonReturn:
-            installUpdate(tag: remote)
+            installUpdate(tag: remote, kind: .update)
         case .alertThirdButtonReturn:
             if let url { NSWorkspace.shared.open(url) }
             confirmInstall(remote: remote, local: local, notes: notes, url: url)
@@ -644,22 +710,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return try? FileHandle(forWritingTo: url)
     }
 
-    /// Installs the release: downloads get.sh to a temp file, then runs it —
-    /// two steps, each exit status checked (a `curl | sh` pipe would report the
-    /// shell's 0 for a failed download). Output of both lands in the update
-    /// log. The app relaunches only when the installed bundle really reports
-    /// the target version; every other outcome is the failed alert.
-    private func installUpdate(tag: String) {
+    /// Installs the release (DictationCore's UpdateInstaller.run: download get.sh,
+    /// run it, check the bundle's version). Output lands in the update log. The
+    /// app relaunches only when the installed bundle really reports the target
+    /// version; every other outcome is the failed alert. A successful install
+    /// usually ends this process first: install-app.sh quits the running app and
+    /// opens the new one, so nothing here may be needed after the install.
+    private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {
         updateInstalling = true
+        studio.render()
         overlay.showWorking()
-        overlay.setWorkingText("Installing \(tag)…")
+        overlay.setWorkingText(kind == .studioVoice ? "Installing the studio voice…" : "Installing \(tag)…")
         overlay.setHintHidden(true)
         Task { @MainActor in
-            let failure = await Self.runInstall(tag: tag)
+            let log = Self.openUpdateLog()
+            let failure = await UpdateInstaller.run(kind: kind, tag: tag, log: log) {
+                // Bundle.main caches its Info.plist; read the file the relaunch will use.
+                let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
+                return (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
+            }
+            try? log?.close()
             updateInstalling = false
+            studio.render()
             if let failure {
                 overlay.finish()
-                runAlert(title: "Update to \(tag) failed",
+                runAlert(title: kind == .studioVoice ? "Installing the studio voice failed" : "Update to \(tag) failed",
                          text: "\(failure.message) Its output is in\n\(Self.updateLogURL.path)",
                          buttons: ["OK"])
                 return
@@ -669,54 +744,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             relaunch.arguments = ["-n", Bundle.main.bundleURL.path]
             try? relaunch.run()
             NSApp.terminate(nil)
-        }
-    }
-
-    /// nil on success; otherwise the first step that failed.
-    private static func runInstall(tag: String) async -> UpdateInstaller.Failure? {
-        let log = openUpdateLog()
-        defer { try? log?.close() }
-        let script = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-get-\(UUID().uuidString).sh")
-        defer { try? FileManager.default.removeItem(at: script) }
-
-        switch await runProcess(UpdateInstaller.downloadCommand(to: script.path), log: log) {
-        case .failure(let error): return .couldNotStart(error.localizedDescription)
-        case .success(let status) where status != 0: return .downloadFailed(status: status)
-        case .success: break
-        }
-        let head = (try? FileHandle(forReadingFrom: script)).flatMap { handle -> Data? in
-            defer { try? handle.close() }
-            return try? handle.read(upToCount: 2)
-        } ?? Data()
-        guard UpdateInstaller.isScript(head: head) else { return .notAScript }
-
-        switch await runProcess(UpdateInstaller.installCommand(script: script.path, tag: tag), log: log) {
-        case .failure(let error): return .couldNotStart(error.localizedDescription)
-        case .success(let status) where status != 0: return .installerFailed(status: status)
-        case .success: break
-        }
-        // Bundle.main caches its Info.plist; read the file the relaunch will use.
-        let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
-        let installed = (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
-        return UpdateInstaller.verifyInstalled(version: installed, target: tag)
-    }
-
-    /// Runs one command with stdout and stderr in the log; the result is its
-    /// exit status, or the error when it could not start.
-    private static func runProcess(_ argv: [String], log: FileHandle?) async -> Result<Int32, Error> {
-        await withCheckedContinuation { continuation in
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: argv[0])
-            p.arguments = Array(argv.dropFirst())
-            p.standardInput = FileHandle.nullDevice
-            p.standardOutput = log ?? FileHandle.nullDevice
-            p.standardError = log ?? FileHandle.nullDevice
-            p.terminationHandler = { continuation.resume(returning: .success($0.terminationStatus)) }
-            do {
-                try p.run()
-            } catch {
-                continuation.resume(returning: .failure(error))
-            }
         }
     }
 
