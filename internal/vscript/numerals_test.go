@@ -395,3 +395,90 @@ func FuzzExpandNumbers(f *testing.F) {
 		}
 	})
 }
+
+// Review round 2: "числа" after a number is a date or a quantity: digits.
+// Mutation: numerals_scan.go expandCardinal `|| dateWord(next)` removed -> RED.
+func TestNumbersChislaStaysDigits(t *testing.T) {
+	for _, in := range []string{"5 числа", "15 числа", "2 числа", "было 2 числа", "5–7 числа"} {
+		if got := ExpandNumbers(in); got != in {
+			t.Errorf("ExpandNumbers(%q) = %q, want unchanged", in, got)
+		}
+	}
+	checkTable(t, map[string]string{"3-го числа": "третьего числа", "12 апреля": "двенадцатого апреля"})
+}
+
+// youtubeOpts mirrors the daemon's youtube preset (produce.go presetOpts).
+var youtubeOpts = Options{TargetChars: 250, MaxChars: 400, MinChars: 80, MaxScriptChars: 40000, MaxSpokenChars: 1000,
+	ChunkPause: 0.30, ParagraphPause: 0.70}
+
+// Review round 2: halving a dense chunk must not cut between a word and the
+// words that complete it. The phrase sits at the middle of a comma-separated
+// run of figures (so a naive nearest-space cut lands inside it); every padding
+// moves it by one rune so some padding puts the naive cut in each space.
+// Mutation: chunk_fit.go safeCut `rankCut(rs, i, depth > 0)` -> `cutSpace` -> RED.
+func TestHalvingKeepsPhrasesTogether(t *testing.T) {
+	for _, phrase := range []string{"до 5 минут", "прирост 50 % за год", "к 12 апреля", "на 30% меньше"} {
+		for pad := 0; pad < 6; pad++ {
+			unit := strings.Repeat("123 456 789, ", 13)
+			src := "Данные" + strings.Repeat("х", pad) + ": " + unit + phrase + ", " + unit + "итого."
+			got, err := Parse(src, youtubeOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) < 2 {
+				t.Fatalf("%q pad %d: not split (%d chunk)", phrase, pad, len(got))
+			}
+			together := false
+			for _, c := range got {
+				if n := len([]rune(c.Spoken)); n > youtubeOpts.MaxSpokenChars {
+					t.Errorf("%q pad %d: Spoken %d runes", phrase, pad, n)
+				}
+				together = together || strings.Contains(c.Text, phrase)
+			}
+			if !together {
+				t.Errorf("%q pad %d: the phrase is cut across chunks: %q", phrase, pad, texts(got))
+			}
+		}
+	}
+}
+
+func texts(cs []Chunk) []string {
+	var out []string
+	for _, c := range cs {
+		out = append(out, c.Text)
+	}
+	return out
+}
+
+// No safe place to cut (every space touches a digit): the chunk stays whole and
+// its numbers stay digits, so Spoken (= Text here) is under the cap.
+// Mutation: chunk_fit.go split `plain: true` -> `plain: false` -> RED.
+func TestNoSafeCutKeepsDigits(t *testing.T) {
+	src := strings.Repeat("111 222 333 и ", 25) + "444."
+	got, err := Parse(src, youtubeOpts)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("%v %d chunks", err, len(got))
+	}
+	if n := len([]rune(got[0].Spoken)); n > youtubeOpts.MaxSpokenChars || !strings.Contains(got[0].Spoken, "111 222 333") {
+		t.Errorf("Spoken has %d runes, want digits kept and <= cap: %q", n, got[0].Spoken)
+	}
+}
+
+// Quotes: a cut inside «…» only when no other cut exists.
+// Mutation: chunk_fit.go rankCut `pick(inQuote, cutClause, cutClauseInQuote)` -> `cutClause` -> RED.
+func TestHalvingAvoidsQuotes(t *testing.T) {
+	u := func(n int) string { return strings.Repeat("123 456 789, ", n) }
+	src := "Ряд: " + u(6) + "«" + u(3) + "123 456 789» " + u(6) + "итого."
+	got, err := Parse(src, youtubeOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < 2 {
+		t.Fatalf("not split: %d chunk", len(got))
+	}
+	for _, c := range got {
+		if strings.Count(c.Text, "«") != strings.Count(c.Text, "»") {
+			t.Errorf("a chunk cuts inside the quote: %q", texts(got))
+		}
+	}
+}

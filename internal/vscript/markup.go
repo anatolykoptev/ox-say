@@ -96,12 +96,12 @@ func Parse(src string, o Options) ([]Chunk, error) {
 				pending += p.pause
 				continue
 			}
-			for _, text := range fitSpoken(chunkParagraph(Sentences(p.text), o), o) {
+			for _, fc := range fitSpoken(chunkParagraph(Sentences(p.text), o), o) {
 				if n := len(out); n > 0 {
 					out[n-1].PauseAfter = gapBefore(o, emitted, pending)
 				}
 				pending = 0
-				out = append(out, Chunk{Index: len(out), Paragraph: para, Text: text, Spoken: Spoken(text), Style: style})
+				out = append(out, Chunk{Index: len(out), Paragraph: para, Text: fc.text, Spoken: fc.spoken(), Style: style})
 				emitted = true
 			}
 		}

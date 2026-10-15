@@ -227,7 +227,7 @@ func expandCardinal(c numCtx) (string, int, bool) {
 		return r.text, r.end, true
 	}
 	next := nextWord(after)
-	if governed(c) || isYearBlocked(n, next) || bareYear(c, n, next) || obliquePlural(next) {
+	if governed(c) || isYearBlocked(n, next) || bareYear(c, n, next) || obliquePlural(next) || dateWord(next) {
 		return "", 0, false
 	}
 	if sp, ok := percentSign(after); ok {
@@ -252,6 +252,10 @@ var yearForms = setOf("год", "года", "году", "годом", "годе"
 const minYear = 1000
 
 func isYearBlocked(n int, next string) bool { return n >= minYear && yearForms[next] }
+
+// dateWord: "5 числа" is a date (the fifth) or a quantity ("два числа"); the
+// genitive ordinal would be wrong for the second, so the digits stay.
+func dateWord(next string) bool { return next == "числа" }
 
 func yearLike(n int) bool { return n >= minYear && n <= maxYear }
 
@@ -427,7 +431,7 @@ func expandRange(c numCtx) (string, int, bool) {
 	after := c.text[c.end:]
 	next := nextWord(after)
 	if !okA || !okB || a >= b || governed(c) || months[next] || isYearBlocked(a, next) || isYearBlocked(b, next) ||
-		(yearLike(a) && yearLike(b)) || obliquePlural(next) {
+		(yearLike(a) && yearLike(b)) || obliquePlural(next) || dateWord(next) {
 		return "", 0, false
 	}
 	if sp, ok := percentSign(after); ok {
