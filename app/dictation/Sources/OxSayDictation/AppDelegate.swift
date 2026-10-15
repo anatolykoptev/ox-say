@@ -26,6 +26,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let speakService = SpeakServiceProvider()
     private let player = AudioPlayer()
     private var speechClient: SpeechClient!
+    private var studioClient: StudioClient!
+    /// The daemon's last /status answer, fetched on every menu open; nil when it
+    /// could not be reached.
+    private var serviceStatus: DaemonStatus?
+    /// The small version line at the bottom of the menu.
+    private let footerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let updater = UpdateChecker()
     /// True from the menu click until the result alert is up, so a second click
     /// does not stack a second check.
@@ -124,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let client = TranscriptionClient(baseURL: baseURL)
         self.client = client
         speechClient = SpeechClient(baseURL: baseURL)
+        studioClient = StudioClient(baseURL: baseURL)
         speakService.onSpeak = { [weak self] text in self?.speak(text) }
         NSApp.servicesProvider = speakService
         overlay.onPlaybackToggle = { [weak self] in self?.player.toggle() }
@@ -297,6 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         rebuildVoiceMenus()
         refreshVoices()
+        refreshServiceStatus()
         let plan = shortcutPlan()
         let open = ShortcutMenu.onOpen(plan, registered: active.flatMap { Shortcut.allCases.firstIndex(of: $0) },
                                        idle: controller.state == .idle)
@@ -343,9 +351,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(submenuItem("Settings", buildSettingsMenu()))
         menu.addItem(.separator())
+        menu.addItem(withTitle: "About OxSay", action: #selector(showAbout), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Quit OxSay", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(.separator())
+        footerItem.isEnabled = false
+        menu.addItem(footerItem)
+        updateFooter()
         statusItem.menu = menu
+    }
+
+    /// The bundle's version in small secondary-colour text, never clickable.
+    private func updateFooter() {
+        let text = MenuFooter.text(appVersion: AboutPanel.appVersion)
+        footerItem.attributedTitle = NSAttributedString(string: text, attributes: [
+            .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+    }
+
+    /// Asks the daemon for /status on every menu open; a failure clears the last
+    /// answer so the About panel does not name a stale service version.
+    private func refreshServiceStatus() {
+        let client = studioClient!
+        Task { @MainActor [weak self] in
+            let status = try? await client.status()
+            guard let self else { return }
+            self.serviceStatus = status
+        }
+    }
+
+    @objc private func showAbout() {
+        AboutPanel.show(serviceVersion: serviceStatus?.version)
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
