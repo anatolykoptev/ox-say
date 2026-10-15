@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os/exec"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/voices"
 )
 
@@ -74,8 +76,18 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("unsupported response_format %q (want wav|pcm|mp3|opus)", format))
 		return
 	}
-	d.applyLanguageDefault(body)
-	d.applyVoiceDefault(body)
+	model, warning, err := d.prepareSpeech(body)
+	if err != nil {
+		writeErr(w, synthStatus(err), err.Error())
+		return
+	}
+	if model == config.TTSModelVoxCPM2 {
+		d.handleSpeechBuffered(w, r, body, format, warning)
+		return
+	}
+	if warning != "" {
+		w.Header().Set("X-Ox-Say-Warning", warning)
+	}
 
 	base, g, err := d.engineBase(r.Context())
 	if err != nil {
@@ -137,7 +149,39 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// transcode converts wav bytes to mp3 or ogg-opus via ffmpeg.
+// speechContentTypes are the buffered path's response types.
+var speechContentTypes = map[string]string{
+	"": "audio/wav", "wav": "audio/wav", "mp3": "audio/mpeg", "opus": "audio/ogg", "pcm": "audio/pcm",
+}
+
+// handleSpeechBuffered renders the whole take first (voxcpm2), then encodes
+// it. pcm stays OpenAI's 24 kHz s16le. body is already prepared: no defaults
+// are applied again.
+func (d *Daemon) handleSpeechBuffered(w http.ResponseWriter, r *http.Request, body map[string]any, format, warning string) {
+	out, err := d.synthesize(r.Context(), body, config.TTSModelVoxCPM2)
+	if err != nil {
+		writeErr(w, synthStatus(err), err.Error())
+		return
+	}
+	out.addWarning(warning)
+	audio := out.WAV
+	if format != "" && format != "wav" {
+		if audio, err = transcode(r.Context(), out.WAV, format); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	out.setHeaders(w.Header())
+	w.Header().Set("Content-Type", speechContentTypes[format])
+	if _, err := w.Write(audio); err != nil {
+		d.log.Warn("speech response write failed", slog.Any("error", err))
+	}
+}
+
+// pcmSampleRate is OpenAI's pcm response rate.
+const pcmSampleRate = "24000"
+
+// transcode converts wav bytes to mp3, ogg-opus or raw pcm via ffmpeg.
 func transcode(ctx context.Context, wav []byte, format string) ([]byte, error) {
 	args := []string{"-hide_banner", "-loglevel", "error", "-f", "wav", "-i", "pipe:0"}
 	switch format {
@@ -145,6 +189,8 @@ func transcode(ctx context.Context, wav []byte, format string) ([]byte, error) {
 		args = append(args, "-f", "mp3", "-c:a", "libmp3lame", "pipe:1")
 	case "opus":
 		args = append(args, "-f", "ogg", "-c:a", "libopus", "pipe:1")
+	case "pcm":
+		args = append(args, "-f", "s16le", "-ac", "1", "-ar", pcmSampleRate, "-c:a", "pcm_s16le", "pipe:1")
 	default:
 		return nil, fmt.Errorf("unsupported transcode format %q", format)
 	}

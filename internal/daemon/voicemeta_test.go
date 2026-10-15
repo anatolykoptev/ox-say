@@ -199,7 +199,9 @@ func TestSynthStatus(t *testing.T) {
 		{&requestError{"x"}, http.StatusBadRequest},
 		{fmt.Errorf("wrapped: %w", &requestError{"x"}), http.StatusBadRequest},
 		{fmt.Errorf("w: %w", voices.ErrNotFound), http.StatusNotFound},
-		{&unavailableError{"x"}, http.StatusNotImplemented},
+		{&unavailableError{"x"}, http.StatusUnprocessableEntity}, // a 4xx naming the reason, never a 5xx
+		{&engineError{status: http.StatusServiceUnavailable, msg: "busy"}, http.StatusServiceUnavailable},
+		{fmt.Errorf("%w: %v", errEngineStart, "no port"), http.StatusServiceUnavailable},
 		{errors.New("boom"), http.StatusInternalServerError},
 	} {
 		if got := synthStatus(tc.err); got != tc.want {

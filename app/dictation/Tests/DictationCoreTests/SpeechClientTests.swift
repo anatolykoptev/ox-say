@@ -27,6 +27,17 @@ final class SpeechClientTests: XCTestCase {
         XCTAssertEqual(json["response_format"] as? String, "wav")
     }
 
+    /// Speak-selection is the fast path: it must name qwen3-tts so that a voice
+    /// preferring voxcpm2, or a daemon default of voxcpm2, cannot slow it down.
+    /// Mutation: drop the "model" entry in SpeechClient.speak -> RED.
+    func testSpeakPinsTheFastModel() async throws {
+        let (client, lastRequest) = fakeSend(data: Data("RIFF".utf8))
+        _ = try await client.speak("Привет", voice: "ru-ruslan")
+        let body = try XCTUnwrap(lastRequest()?.httpBody)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(obj["model"] as? String, "qwen3-tts")
+    }
+
     func testSpeakLeavesTheVoiceOutWhenNoneIsPicked() async throws {
         let (client, lastRequest) = fakeSend(data: Data([1]))
         _ = try await client.speak("hello")
