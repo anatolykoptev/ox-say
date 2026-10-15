@@ -106,6 +106,9 @@ type Outputs struct {
 	Words     string  `json:"words_json,omitempty"`
 	Manifest  string  `json:"manifest_export,omitempty"`
 	DurationS float64 `json:"duration_s,omitempty"`
+	// WAVSHA256 identifies the WAV this project published, so a file a user
+	// saved over it later is no longer taken for the project's own.
+	WAVSHA256 string `json:"wav_sha256,omitempty"`
 }
 
 // Manifest is a project.

@@ -48,6 +48,13 @@ var (
 	errNoProject       = errors.New("no such voiceover project")
 )
 
+// cancellingError: the job was told to stop and has not yet (HTTP 409).
+type cancellingError struct{ id string }
+
+func (e *cancellingError) Error() string {
+	return "this voiceover is still cancelling, try again in a moment"
+}
+
 // busyError: one job at a time (HTTP 409, with the running id).
 type busyError struct{ id string }
 
@@ -89,6 +96,12 @@ type job struct {
 	regen        map[int]int        // chunk -> extra takes requested
 	cancel       atomic.Bool
 	allowBattery atomic.Bool
+
+	// ctx ends when the producer shuts down or the job is cancelled; waits
+	// (dictation, battery) end with it, renders do not: they run under the
+	// producer's own context so a cancelled job keeps its in-flight take.
+	ctx      context.Context
+	stopWait context.CancelFunc
 
 	started  time.Time // when this run began
 	elapsedS float64   // the elapsed time the export recorded (guarded by producer.mu)
@@ -166,6 +179,7 @@ func (p *producer) launch(j *job) (vproject.Summary, error) {
 	}
 	p.cur = j
 	j.started = time.Now()
+	j.ctx, j.stopWait = context.WithCancel(p.ctx)
 	j.m.Status, j.m.Error = vproject.StatusRunning, ""
 	if err := j.m.Save(j.dir); err != nil {
 		p.cur = nil
@@ -179,6 +193,7 @@ func (p *producer) launch(j *job) (vproject.Summary, error) {
 // run is one pass over a project: settle every chunk, then assemble.
 func (p *producer) run(j *job) {
 	defer p.wg.Done()
+	defer j.stopWait()
 	p.ports.Background(true)
 	err := p.runChunks(j, j.started)
 	if err == nil {
@@ -256,13 +271,19 @@ func (p *producer) checkpoint(j *job) error {
 	if err := p.waitPower(j); err != nil {
 		return err
 	}
-	return p.quiet(j)(p.ctx)
+	return p.quiet(j)(j.ctx)
 }
 
 // quiet waits for dictation to be quiet, showing the waiting status (D12).
+// The wait ends at once when the job is cancelled (errCancelled) or the
+// producer shuts down; the caller's ctx is not used for the wait, because a
+// render in flight must not be cut by a cancel.
 func (p *producer) quiet(j *job) func(context.Context) error {
-	return func(ctx context.Context) error {
-		err := p.ports.Quiet(ctx, func() { p.setStatus(j, vproject.StatusWaitingForDictation) })
+	return func(context.Context) error {
+		err := p.ports.Quiet(j.ctx, func() { p.setStatus(j, vproject.StatusWaitingForDictation) })
+		if err != nil && j.cancel.Load() {
+			return errCancelled
+		}
 		p.setStatus(j, vproject.StatusRunning)
 		return err
 	}
@@ -277,7 +298,10 @@ func (p *producer) waitPower(j *job) error {
 		}
 		p.setStatus(j, vproject.StatusPausedOnBattery)
 		select {
-		case <-p.ctx.Done():
+		case <-j.ctx.Done():
+			if j.cancel.Load() {
+				return errCancelled
+			}
 			return p.ctx.Err()
 		case <-time.After(powerPoll):
 		}

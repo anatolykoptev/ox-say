@@ -59,7 +59,13 @@ func decodeStrict(r *http.Request, v any) error {
 	dec := json.NewDecoder(io.LimitReader(r.Body, produceBodyLimit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil // an empty body is {}
+		}
 		return &requestError{"invalid JSON body: " + err.Error()}
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return &requestError{"invalid JSON body: unexpected data after the JSON object"}
 	}
 	return nil
 }
@@ -67,8 +73,9 @@ func decodeStrict(r *http.Request, v any) error {
 // produceStatusCode maps producer errors; the rest go through synthStatus.
 func produceStatusCode(err error) int {
 	var be *busyError
+	var ce *cancellingError
 	switch {
-	case errors.As(err, &be):
+	case errors.As(err, &be), errors.As(err, &ce):
 		return http.StatusConflict
 	case errors.Is(err, errNoProject):
 		return http.StatusNotFound

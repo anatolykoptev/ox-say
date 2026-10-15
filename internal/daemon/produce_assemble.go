@@ -289,7 +289,11 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 		return err
 	}
 	finalizeExport(j, m)
-	m.Outputs = vproject.Outputs{WAV: stem + ".wav", SRT: stem + ".srt", VTT: stem + ".vtt",
+	sum, err := fileSHA(norm)
+	if err != nil {
+		return err
+	}
+	m.Outputs = vproject.Outputs{WAVSHA256: sum, WAV: stem + ".wav", SRT: stem + ".srt", VTT: stem + ".vtt",
 		Words: stem + ".words.json", Manifest: stem + ".manifest.json", DurationS: round2(tl.total)}
 	set, err := stageOutputs(norm, tl, m)
 	if err != nil {
@@ -443,21 +447,17 @@ func moveFile(src, dst string) error {
 	return err
 }
 
-// ownedOutputs are the recorded outputs that really are siblings of the
-// project's output stem: a manifest cannot make an arbitrary file "ours" and
-// so overwritable without the overwrite flag.
+// ownedOutputs are the output files the project can prove are its own
+// (ownedPaths): empty when the proof fails, so files that merely sit at the
+// project's output name are never overwritten without the overwrite flag.
 func ownedOutputs(m *vproject.Manifest) map[string]bool {
 	owned := map[string]bool{}
-	stem, err := outputStem(m.Settings.OutPath)
+	paths, err := ownedPaths(m)
 	if err != nil {
 		return owned
 	}
-	recorded := map[string]string{".wav": m.Outputs.WAV, ".srt": m.Outputs.SRT, ".vtt": m.Outputs.VTT,
-		".words.json": m.Outputs.Words, ".manifest.json": m.Outputs.Manifest}
-	for _, ext := range outputExts {
-		if recorded[ext] != "" && recorded[ext] == stem+ext {
-			owned[stem+ext] = true
-		}
+	for _, p := range paths {
+		owned[p] = true
 	}
 	return owned
 }

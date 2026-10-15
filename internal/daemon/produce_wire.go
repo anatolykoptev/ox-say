@@ -73,16 +73,15 @@ func engineIdentity(bin, model string) (string, error) {
 	return fmt.Sprintf("%s:%s:%d", sha[:24], filepath.Base(model), st.Size()), nil
 }
 
-// producePorts adapts the daemon. EngineID is hashed ONCE per daemon
-// process: replacing audiocpp_server or the model on disk without
+// producePorts adapts the daemon. EngineID is hashed once per daemon
+// process once it has succeeded (an error is not cached): replacing audiocpp_server or the model on disk without
 // restarting the daemon keeps the old identity, so cached takes rendered
 // by the old engine are reused until the next restart. Every supported
 // upgrade path (the installer) restarts the LaunchAgent; a hand swap must
 // be followed by a daemon restart.
 func (d *Daemon) producePorts() producePorts {
-	var once sync.Once
-	var engineID string
-	var engErr error
+	var idMu sync.Mutex
+	var engineID string // cached on success only: a failure is retried by the next job
 	var mu sync.Mutex
 	bg := false
 	applyQoS := func() {
@@ -129,8 +128,16 @@ func (d *Daemon) producePorts() producePorts {
 		defaultVoice: d.configuredVoice,
 		unavailable:  d.voxUnavailable,
 		engineID: func() (string, error) {
-			once.Do(func() { engineID, engErr = engineIdentity(d.Cfg.VoxCPM2Bin, d.Cfg.VoxCPM2Model) })
-			return engineID, engErr
+			idMu.Lock()
+			defer idMu.Unlock()
+			if engineID != "" {
+				return engineID, nil
+			}
+			id, err := engineIdentity(d.Cfg.VoxCPM2Bin, d.Cfg.VoxCPM2Model)
+			if err == nil {
+				engineID = id
+			}
+			return id, err
 		},
 		normalize: strictNormalize,
 		quiet:     d.waitQuiet,

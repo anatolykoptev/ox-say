@@ -28,15 +28,9 @@ func setBackground(pid int, on bool) error {
 	return unix.Setpriority(prioDarwinProcess, pid, prio)
 }
 
-// powerState reads pmset (read-only): on battery, and Low Power Mode. A
-// failure reads as "on AC, normal" so a broken pmset never blocks a job.
-func powerState(ctx context.Context) (onBattery, lowPower bool) {
+// runPmset runs pmset with a short timeout.
+func runPmset(ctx context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, pmsetTimeout)
 	defer cancel()
-	batt, err := exec.CommandContext(ctx, pmsetPath, "-g", "batt").Output()
-	if err != nil {
-		return false, false
-	}
-	all, _ := exec.CommandContext(ctx, pmsetPath, "-g").Output()
-	return parsePower(string(batt), string(all))
+	return exec.CommandContext(ctx, pmsetPath, args...).Output()
 }

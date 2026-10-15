@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -162,7 +163,12 @@ func (p *producer) outputPath(in produceInput, id string) (string, error) {
 				folder = s
 			}
 		}
-		out = filepath.Join(p.ports.OutputRoot(), folder, folder+".wav")
+		root := p.ports.OutputRoot()
+		if !filepath.IsAbs(root) {
+			// Config does not expand "~" in any path setting, so it is relative too.
+			return "", &requestError{"the output folder setting (OX_SAY_PRODUCE_OUT_DIR) must be an absolute path such as /Users/you/Movies/ox-say; \"~\" and relative paths are not accepted. Fix it and restart ox-say, or pass out_path"}
+		}
+		out = filepath.Join(root, folder, folder+".wav")
 		return out, checkOutputs(strings.TrimSuffix(out, ".wav"), in.Overwrite, nil)
 	}
 	if err := validateOutPath(out, []string{".wav"}, true); err != nil {
@@ -172,10 +178,11 @@ func (p *producer) outputPath(in produceInput, id string) (string, error) {
 }
 
 func title(in produceInput, chunks []vscript.Chunk) string {
-	if t := strings.TrimSpace(in.Title); t != "" {
-		return t
+	t := strings.TrimSpace(in.Title)
+	if t == "" {
+		t = chunks[0].Text
 	}
-	r := []rune(chunks[0].Text)
+	r := []rune(t)
 	return string(r[:min(len(r), titleRunes)])
 }
 
@@ -304,6 +311,13 @@ func (p *producer) resume(id string, allowBattery bool) (vproject.Summary, error
 	}
 	p.mu.Lock()
 	if cur := p.cur; cur != nil && cur.m.ID == id {
+		// A cancel is pending: answering "running" would be a lie, since the
+		// job ends cancelled. Clearing the flag instead would undo what the
+		// user asked for, and race with a checkpoint that already acted on it.
+		if cur.cancel.Load() {
+			p.mu.Unlock()
+			return vproject.Summary{}, &cancellingError{id}
+		}
 		if allowBattery {
 			cur.allowBattery.Store(true)
 		}
@@ -392,6 +406,7 @@ func (p *producer) cancel(id string) error {
 	defer p.mu.Unlock()
 	if p.cur != nil && p.cur.m.ID == id {
 		p.cur.cancel.Store(true)
+		p.cur.stopWait() // ends a dictation or battery wait now, not at the next poll
 		return nil
 	}
 	if _, err := os.Stat(filepath.Join(p.root, id, vproject.ManifestFile)); err != nil {
@@ -499,12 +514,15 @@ func (p *producer) remove(id string, deleteOutputs bool) error {
 	return os.RemoveAll(j.dir)
 }
 
-// ownedPaths re-validates what a loaded manifest claims to have published
-// (#154.6): the stem must come from a valid out_path, every recorded output
-// must be exactly stem+ext, and the exported manifest beside them must name
-// this very project. A hand-edited manifest therefore cannot point DELETE at
-// a file outside the job's own outputs. It returns nil when nothing was
-// published.
+// ownedPaths is the one proof that the files at a project's output stem are
+// its own, used by DELETE-with-outputs and by re-assembly alike (#154.6): the
+// stem must come from a valid out_path, every recorded output must be exactly
+// stem+ext, none of the existing files may be a symlink or a non-regular
+// file, the exported manifest beside them must name this very project, and the
+// WAV must still be the one this project published (its recorded sha256). A
+// hand-edited manifest, a project whose files were moved away and replaced by
+// another's, and a file the user saved over the WAV are therefore all "not
+// ours". It returns nil when nothing was published.
 func ownedPaths(m *vproject.Manifest) ([]string, error) {
 	o := m.Outputs
 	if o.WAV == "" && o.SRT == "" && o.VTT == "" && o.Words == "" && o.Manifest == "" {
@@ -522,12 +540,23 @@ func ownedPaths(m *vproject.Manifest) ([]string, error) {
 		}
 		paths = append(paths, stem+ext)
 	}
+	errNotOurs := &requestError{"the output files beside this project are not marked as its own; delete them by hand"}
+	for _, path := range paths {
+		if st, err := os.Lstat(path); err == nil && !st.Mode().IsRegular() {
+			return nil, errNotOurs
+		}
+	}
 	raw, err := os.ReadFile(stem + ".manifest.json")
 	var export struct {
 		ID string `json:"id"`
 	}
 	if err != nil || json.Unmarshal(raw, &export) != nil || export.ID != m.ID {
-		return nil, &requestError{"the output files beside this project are not marked as its own; delete them by hand"}
+		return nil, errNotOurs
+	}
+	if want := o.WAVSHA256; want != "" {
+		if got, err := fileSHA(stem + ".wav"); err != nil || got != want {
+			return nil, errNotOurs
+		}
 	}
 	return paths, nil
 }
@@ -550,10 +579,14 @@ func (p *producer) deleteOwnedOutputs(m *vproject.Manifest) error {
 
 // fileSHA is the sha256 of a file, hex.
 func fileSHA(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), nil
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

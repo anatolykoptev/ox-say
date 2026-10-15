@@ -5,12 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/pcm"
@@ -278,7 +281,7 @@ func (t *taker) render(ctx context.Context, spec takeSpec, wavPath string) (*syn
 	if err := t.quiet(ctx); err != nil {
 		return nil, err
 	}
-	out, err := t.ports.Render(ctx, spec.params())
+	out, err := t.renderWithin(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -298,6 +301,51 @@ func (t *taker) render(ctx context.Context, spec takeSpec, wavPath string) (*syn
 	return out, nil
 }
 
+// Per-render deadline: the audio a text makes (estCharsPerSec) times a budget
+// well above the measured warm real-time factor, plus slack for an engine that
+// has to start, with a floor. A render that outlasts it is a wedged engine.
+const (
+	renderBudgetRTF  = 4.0
+	renderSlack      = 60 * time.Second
+	renderFloor      = 90 * time.Second
+	errEngineTimeout = "the voice engine did not answer in time; check that it is running, then resume the project"
+)
+
+// renderDeadline is the longest one render of chars characters may take.
+var renderDeadline = func(chars int) time.Duration {
+	audio := time.Duration(float64(chars) / estCharsPerSec * renderBudgetRTF * float64(time.Second))
+	return max(renderFloor, audio+renderSlack)
+}
+
+// renderWithin renders spec under ctx and the per-render deadline. The port
+// is called in its own goroutine so even one that ignores its context cannot
+// hold the job: the job fails in plain words and the late answer is dropped.
+func (t *taker) renderWithin(ctx context.Context, spec takeSpec) (*synthOut, error) {
+	rctx, cancel := context.WithTimeout(ctx, renderDeadline(utf8.RuneCountInString(spec.Text)))
+	defer cancel()
+	type answer struct {
+		out *synthOut
+		err error
+	}
+	got := make(chan answer, 1)
+	go func() {
+		out, err := t.ports.Render(rctx, spec.params())
+		got <- answer{out, err}
+	}()
+	select {
+	case a := <-got:
+		if a.err != nil && rctx.Err() != nil && ctx.Err() == nil {
+			return nil, errors.New(errEngineTimeout)
+		}
+		return a.out, a.err
+	case <-rctx.Done():
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, errors.New(errEngineTimeout)
+	}
+}
+
 // gateJob is one stored take about to be gated and recorded.
 type gateJob struct {
 	spec          takeSpec
@@ -309,7 +357,9 @@ type gateJob struct {
 }
 
 func (t *taker) gate(ctx context.Context, g gateJob) (vproject.TakeRef, bool, error) {
-	if err := t.quiet(ctx); err != nil {
+	// A cancel that arrives while waiting for quiet does not drop a take that
+	// is already rendered: the wait is skipped and the take is gated and kept.
+	if err := t.quiet(ctx); err != nil && !errors.Is(err, errCancelled) {
 		return vproject.TakeRef{}, g.rendered, err
 	}
 	heard, err := t.ports.Hear(ctx, g.wavPath)
