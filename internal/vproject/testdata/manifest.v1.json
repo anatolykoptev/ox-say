@@ -58,6 +58,6 @@
     "duration_s": 3.1
   },
   "notes": [
-    "numbers are not checked by the transcript gate"
+    "numbers left as digits are not checked by the transcript gate"
   ]
 }
