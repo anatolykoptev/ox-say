@@ -429,7 +429,7 @@ func settle(c *vproject.Chunk) {
 	}
 	c.Pick, c.Reasons = pick.Key, pick.Reasons
 	c.Status = vproject.ChunkOK
-	if !pick.Passed && !(c.UserPick && !isSilent(pick)) {
+	if !pick.Passed && (!c.UserPick || isSilent(pick)) {
 		c.Status = vproject.ChunkReview
 	}
 }
