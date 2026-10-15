@@ -19,6 +19,11 @@ final class ScriptLimitTests: XCTestCase {
         XCTAssertEqual(ScriptLimit.keepFirstPart(text, limit: 21), String(repeating: "a", count: 10))
     }
 
+    func testAParagraphBoundaryWinsOverALaterSentenceEnd() {
+        let text = "Alpha one. Beta two.\n\nGamma three. Delta four."
+        XCTAssertEqual(ScriptLimit.keepFirstPart(text, limit: 36), "Alpha one. Beta two.")
+    }
+
     func testATextThatFitsIsKept() {
         XCTAssertEqual(ScriptLimit.keepFirstPart("  Short.\n\nText.  "), "Short.\n\nText.")
     }
@@ -65,6 +70,13 @@ final class ScriptLimitTests: XCTestCase {
         XCTAssertTrue(ScriptLimit.statusLine(editorText: over).contains("7 over the limit"))
         XCTAssertFalse(ScriptLimit.canStart(editorText: over))
         XCTAssertTrue(ScriptLimit.canStart(editorText: String(repeating: "я", count: ScriptLimit.maxCharacters)))
+    }
+
+    func testACombiningMarkCountsAsTwoRunesAgainstTheLimit() {
+        // Half the limit plus one letters with an accent: that many Characters, but over the limit in runes.
+        let text = String(repeating: "е\u{0301}", count: ScriptLimit.maxCharacters / 2 + 1)
+        XCTAssertFalse(ScriptLimit.canStart(editorText: text))
+        XCTAssertEqual(ScriptLimit.overBy(text), 2)
     }
 
     func testTheLimitIsMeasuredOnWhatIsSentNotOnTheWhiteSpaceAroundIt() {

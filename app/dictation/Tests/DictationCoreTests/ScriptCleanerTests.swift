@@ -124,6 +124,11 @@ final class ScriptCleanerTests: XCTestCase {
         XCTAssertEqual(ScriptCleaner.clean("Title\nFirst para.\n\u{FFFC}\nSecond para.", source: .richText), "Title\n\nFirst para.\n\nSecond para.")
     }
 
+    func testAParagraphThatWasOnlyAFootnoteLeavesNoGap() {
+        XCTAssertEqual(ScriptCleaner.clean("Hello[1]\n\n[2]\n\nWorld"), "Hello\n\nWorld")
+        XCTAssertEqual(ScriptCleaner.clean("A\n\n[ ]\n\nB"), "A\n\nB")
+    }
+
     func testCleaningTwiceChangesNothing() {
         let samples: [(String, ScriptCleaner.Source)] = [
             ("[style: calm]\nHi [1] there. [pause 2s]\n\n\nTwo [music] [x\ny] \u{00A0} ok", .text),
