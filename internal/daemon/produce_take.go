@@ -39,6 +39,18 @@ const (
 	asrUnknown = "<unk>"
 )
 
+// gateLimits are the thresholds gateTake applies; the zero value means
+// defaultGate. A taker field, not only constants, so a recalibration is
+// testable and a cache hit is re-judged against the current limits.
+type gateLimits struct {
+	MaxSilenceSec float64
+	MaxWER        float64
+	MinErrors     int
+	FloorDB       float64
+}
+
+var defaultGate = gateLimits{MaxSilenceSec: gateMaxSilenceSec, MaxWER: gateMaxWER, MinErrors: gateMinErrors, FloorDB: gateFloorDB}
+
 // renderParams is one typed VoxCPM2 request of the producer.
 type renderParams struct {
 	Text, Voice, Style, Mode string
@@ -175,21 +187,40 @@ type takeDetail struct {
 
 // taker renders, stores and gates takes in dir (<project>/takes).
 type taker struct {
-	ports producePorts
-	dir   string
-	quiet func(context.Context) error
+	ports  producePorts
+	dir    string
+	quiet  func(context.Context) error
+	limits gateLimits // zero: defaultGate
 }
 
-// take returns the take of spec: from its sidecar when both files exist (no
-// render, no transcription); re-gated when only the WAV exists (a crash
-// between the two writes); else rendered. text is the chunk as written (the
-// WER reference); rendered reports an engine call.
-func (t *taker) take(ctx context.Context, spec takeSpec, text string, attempt int) (vproject.TakeRef, bool, error) {
+func (t *taker) gateLimits() gateLimits {
+	if t.limits == (gateLimits{}) {
+		return defaultGate
+	}
+	return t.limits
+}
+
+// take returns the take of spec. The gate judges the take against spec.Text,
+// the text the engine was asked to say (Chunk.Spoken), never the written text.
+//   - sidecar and WAV exist: no render, no transcription; the verdict is
+//     recomputed from the stored heard words and the WAV under the current
+//     limits, so a recalibration is never frozen out by the cache;
+//   - only the WAV exists (a crash between the two writes): transcribed and
+//     gated, not rendered;
+//   - else rendered.
+//
+// rendered reports an engine call.
+func (t *taker) take(ctx context.Context, spec takeSpec, attempt int) (vproject.TakeRef, bool, error) {
 	key := spec.key()
 	wavPath, side := filepath.Join(t.dir, key+".wav"), filepath.Join(t.dir, key+".json")
 	if d, err := readDetail(side); err == nil && d.Ref.Key == key {
-		if _, err := os.Stat(wavPath); err == nil {
-			return d.Ref, false, nil
+		if raw, err := os.ReadFile(wavPath); err == nil {
+			clip, err := pcm.Decode(raw)
+			if err != nil {
+				return vproject.TakeRef{}, false, err
+			}
+			ref, _ := t.verdict(spec, attempt, clip, d.Heard, d.Warning)
+			return ref, false, nil
 		}
 	}
 	rendered, warning := false, ""
@@ -200,7 +231,21 @@ func (t *taker) take(ctx context.Context, spec takeSpec, text string, attempt in
 		}
 		rendered, warning = true, out.Warning
 	}
-	return t.gate(ctx, gateJob{spec: spec, text: text, attempt: attempt, wavPath: wavPath, side: side, rendered: rendered, warning: warning})
+	return t.gate(ctx, gateJob{spec: spec, attempt: attempt, wavPath: wavPath, side: side, rendered: rendered, warning: warning})
+}
+
+// verdict is the gate result of one take: the manifest ref and its sidecar.
+// The plausibility warning is a recorded reason, never a failure (#143.6).
+func (t *taker) verdict(spec takeSpec, attempt int, clip pcm.Clip, heard []voices.Word, warning string) (vproject.TakeRef, takeDetail) {
+	fails, errs, n := gateWith(t.gateLimits(), spec.Text, clip, heard)
+	reasons := append([]string{}, fails...)
+	if warning != "" {
+		reasons = append(reasons, noteReason+warning)
+	}
+	ref := vproject.TakeRef{Key: spec.key(), Seed: spec.Seed, Attempt: attempt, Cfg: spec.Cfg,
+		DurationS: round2(clip.Seconds()), WER: round2(float64(errs) / float64(max(1, n))),
+		Passed: len(fails) == 0, Reasons: reasons}
+	return ref, takeDetail{Ref: ref, Heard: heard, Warning: warning}
 }
 
 // render asks the engine for spec and stores the answer at wavPath. Only a
@@ -233,7 +278,6 @@ func (t *taker) render(ctx context.Context, spec takeSpec, wavPath string) (*syn
 // gateJob is one stored take about to be gated and recorded.
 type gateJob struct {
 	spec          takeSpec
-	text          string
 	attempt       int
 	wavPath, side string
 	rendered      bool
@@ -256,15 +300,8 @@ func (t *taker) gate(ctx context.Context, g gateJob) (vproject.TakeRef, bool, er
 	if err != nil {
 		return vproject.TakeRef{}, g.rendered, fmt.Errorf("produce: transcribe a take: %w", err)
 	}
-	fails, errs, n := gateTake(g.text, clip, heard)
-	reasons := append([]string{}, fails...)
-	if g.warning != "" { // recorded, never a failure (#143.6)
-		reasons = append(reasons, noteReason+g.warning)
-	}
-	ref := vproject.TakeRef{Key: g.spec.key(), Seed: g.spec.Seed, Attempt: g.attempt, Cfg: g.spec.Cfg,
-		DurationS: round2(clip.Seconds()), WER: round2(float64(errs) / float64(max(1, n))),
-		Passed: len(fails) == 0, Reasons: reasons}
-	raw, err = json.Marshal(takeDetail{Ref: ref, Heard: heard, Warning: g.warning})
+	ref, detail := t.verdict(g.spec, g.attempt, clip, heard, g.warning)
+	raw, err = json.Marshal(detail)
 	if err == nil {
 		err = vproject.WriteAtomic(g.side, raw, takeFileMode)
 	}
@@ -283,10 +320,16 @@ func readDetail(path string) (takeDetail, error) {
 	return d, err
 }
 
-// gateTake applies plan D8: inner silence, then the WER round trip. text is
-// the chunk as written; heard is what the daemon's own STT made of the take.
-func gateTake(text string, clip pcm.Clip, heard []voices.Word) (fails []string, errs, n int) {
-	if s := clip.LongestSilence(gateFloorDB); s > gateMaxSilenceSec {
+// gateTake applies plan D8 with the default limits.
+func gateTake(spoken string, clip pcm.Clip, heard []voices.Word) (fails []string, errs, n int) {
+	return gateWith(defaultGate, spoken, clip, heard)
+}
+
+// gateWith applies plan D8: inner silence, then the WER round trip. spoken is
+// the text the engine was asked to say (Chunk.Spoken); heard is what the
+// daemon's own STT made of the take.
+func gateWith(l gateLimits, spoken string, clip pcm.Clip, heard []voices.Word) (fails []string, errs, n int) {
+	if s := clip.LongestSilence(l.FloorDB); s > l.MaxSilenceSec {
 		fails = append(fails, fmt.Sprintf("%.1f s of silence inside the take", s))
 	}
 	parts := make([]string, 0, len(heard))
@@ -295,8 +338,8 @@ func gateTake(text string, clip pcm.Clip, heard []voices.Word) (fails []string, 
 			parts = append(parts, h.W)
 		}
 	}
-	errs, n = wordalign.WER(text, strings.Join(parts, " "))
-	if float64(errs) > gateMaxWER*float64(max(1, n)) && errs > gateMinErrors {
+	errs, n = wordalign.WER(spoken, strings.Join(parts, " "))
+	if float64(errs) > l.MaxWER*float64(max(1, n)) && errs > l.MinErrors {
 		fails = append(fails, fmt.Sprintf("the transcript differs from the text in %d of %d words", errs, n))
 	}
 	return fails, errs, n

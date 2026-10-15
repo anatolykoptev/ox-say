@@ -110,7 +110,7 @@ func TestTakeRefusesBrokenAudio(t *testing.T) {
 	for name, wav := range cases {
 		tk := &taker{ports: &badWAVPorts{newFakePorts(t), wav}, dir: t.TempDir(), quiet: noQuiet}
 		s := takeSpec{V: takeKeyVersion, Text: "Текст.", Seed: 1, Cfg: 2, Steps: 10}
-		if _, _, err := tk.take(context.Background(), s, s.Text, 0); err == nil {
+		if _, _, err := tk.take(context.Background(), s, 0); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 		if entries, _ := os.ReadDir(tk.dir); len(entries) != 0 {
@@ -136,7 +136,7 @@ func TestTakeCacheMissesOnVoiceChange(t *testing.T) {
 	}
 	for i, st := range steps {
 		st.mut(&s)
-		if _, _, err := tk.take(context.Background(), s, s.Text, 0); err != nil {
+		if _, _, err := tk.take(context.Background(), s, 0); err != nil {
 			t.Fatal(err)
 		}
 		if len(f.renders) != st.renders {
@@ -158,14 +158,14 @@ func TestTakeResumesAfterHearFailure(t *testing.T) {
 	f := newFakePorts(t)
 	s := takeSpec{V: takeKeyVersion, Text: "Раз два три.", Seed: 7, Cfg: 2, Steps: 10}
 	bad := &taker{ports: &hearFails{f, errors.New("stt busy")}, dir: t.TempDir(), quiet: noQuiet}
-	if _, _, err := bad.take(context.Background(), s, s.Text, 0); err == nil {
+	if _, _, err := bad.take(context.Background(), s, 0); err == nil {
 		t.Fatal("hear failure swallowed")
 	}
 	if _, err := os.Stat(filepath.Join(bad.dir, s.key()+".json")); err == nil {
 		t.Fatal("sidecar written without a gate result")
 	}
 	ok := &taker{ports: f, dir: bad.dir, quiet: noQuiet}
-	ref, rendered, err := ok.take(context.Background(), s, s.Text, 0)
+	ref, rendered, err := ok.take(context.Background(), s, 0)
 	if err != nil || rendered || len(f.renders) != 1 || !ref.Passed {
 		t.Fatalf("%v rendered=%v renders=%d %+v", err, rendered, len(f.renders), ref)
 	}
@@ -214,5 +214,65 @@ func TestGateTakeIgnoresASRUnknown(t *testing.T) {
 	bad := []voices.Word{{W: "<unk>"}, {W: "<unk>"}, {W: "<unk>"}}
 	if fails, _, _ := gateTake(text, toneClip(2, 0), bad); len(fails) != 1 {
 		t.Errorf("an all-<unk> transcript passed: %v", fails)
+	}
+}
+
+func wordsOf(s string) []voices.Word {
+	var ws []voices.Word
+	for _, w := range strings.Fields(s) {
+		ws = append(ws, voices.Word{W: w})
+	}
+	return ws
+}
+
+// The engine is asked to say Chunk.Spoken ("то есть"), so that is what a take
+// is judged against; the written "Т.е." would score the right audio as wrong.
+// Mutation: vscript.Spoken without expandAbbreviations -> the take fails -> RED.
+func TestTakeIsGatedAgainstSpokenText(t *testing.T) {
+	chunks, err := vscript.Parse("Начните с одного приёма. Т.е. с самого простого.",
+		vscript.Options{TargetChars: 250, MaxChars: 400, MinChars: 80, MaxScriptChars: 40000})
+	if err != nil || len(chunks) != 1 {
+		t.Fatalf("%v %+v", err, chunks)
+	}
+	c := chunks[0]
+	saidAloud := "начните с одного приёма то есть с самого простого"
+	f := newFakePorts(t)
+	f.heard[0] = saidAloud
+	tk := &taker{ports: f, dir: t.TempDir(), quiet: noQuiet}
+	spec := takeSpec{V: takeKeyVersion, Mode: cloneReference, Text: c.Spoken, Seed: 1, Cfg: 2, Steps: 10}
+	if ref, _, err := tk.take(context.Background(), spec, 0); err != nil || !ref.Passed {
+		t.Fatalf("a take that says the Spoken text failed: %v %+v", err, ref)
+	}
+	if fails, _, _ := gateTake(c.Text, toneClip(2, 0), wordsOf(saidAloud)); len(fails) == 0 {
+		t.Fatal("the written text would also pass: the test proves nothing")
+	}
+}
+
+// A cache hit is re-judged from the stored heard words and WAV under the
+// current limits (no render, no transcription), and keeps the plausibility
+// warning recorded when the take was made.
+// Mutation: return d.Ref from the sidecar on a hit -> second verdict unchanged -> RED.
+func TestCachedTakeIsRegatedWithCurrentLimits(t *testing.T) {
+	f := newFakePorts(t)
+	f.warning = "the take is 30.0 s, longer than its text plausibly needs"
+	f.gapAt[0] = 1.0 // under the 1.5 s default, over a stricter limit
+	tk := &taker{ports: f, dir: t.TempDir(), quiet: noQuiet}
+	s := takeSpec{V: takeKeyVersion, Mode: cloneReference, Text: "Раз два три четыре.", Seed: 7, Cfg: 2, Steps: 10}
+	first, rendered, err := tk.take(context.Background(), s, 0)
+	if err != nil || !rendered || !first.Passed {
+		t.Fatalf("%v rendered=%v %+v", err, rendered, first)
+	}
+	tk.limits = defaultGate
+	tk.limits.MaxSilenceSec = 0.5
+	second, rendered, err := tk.take(context.Background(), s, 0)
+	if err != nil || rendered || len(f.renders) != 1 || f.hears != 1 {
+		t.Fatalf("%v rendered=%v renders=%d hears=%d", err, rendered, len(f.renders), f.hears)
+	}
+	if second.Passed || len(second.Reasons) != 2 || !strings.HasPrefix(second.Reasons[1], noteReason) {
+		t.Fatalf("stale verdict or lost warning: %+v", second)
+	}
+	tk.limits = defaultGate
+	if third, _, _ := tk.take(context.Background(), s, 0); !third.Passed {
+		t.Fatalf("loosening the limit did not re-pass the cached take: %+v", third)
 	}
 }

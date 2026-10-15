@@ -183,7 +183,7 @@ func TestTakeGates(t *testing.T) {
 		c.setup()
 		s := spec
 		s.Text, s.Seed = text, int64(100+i)
-		ref, rendered, err := tk.take(context.Background(), s, text, 0)
+		ref, rendered, err := tk.take(context.Background(), s, 0)
 		if err != nil || !rendered {
 			t.Fatalf("%s: %v rendered=%v", c.name, err, rendered)
 		}
@@ -201,7 +201,7 @@ func TestTakeIsCached(t *testing.T) {
 	tk := &taker{ports: f, dir: t.TempDir(), quiet: noQuiet}
 	s := takeSpec{V: takeKeyVersion, Engine: "e", Voice: "nar", Mode: cloneReference, Text: "Раз два три.", Seed: 7, Cfg: 2, Steps: 10}
 	for i := 0; i < 2; i++ {
-		if _, _, err := tk.take(context.Background(), s, s.Text, 0); err != nil {
+		if _, _, err := tk.take(context.Background(), s, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -211,7 +211,7 @@ func TestTakeIsCached(t *testing.T) {
 	if err := os.Remove(filepath.Join(tk.dir, s.key()+".json")); err != nil {
 		t.Fatal(err)
 	}
-	if _, rendered, err := tk.take(context.Background(), s, s.Text, 0); err != nil || rendered || f.hears != 2 {
+	if _, rendered, err := tk.take(context.Background(), s, 0); err != nil || rendered || f.hears != 2 {
 		t.Fatalf("rendered=%v hears=%d err=%v", rendered, f.hears, err)
 	}
 }
@@ -221,7 +221,7 @@ func TestTakeRefusesOtherModels(t *testing.T) {
 	f := newFakePorts(t)
 	tk := &taker{ports: &qwenPorts{f}, dir: t.TempDir(), quiet: noQuiet}
 	s := takeSpec{V: takeKeyVersion, Text: "Текст.", Seed: 1, Cfg: 2, Steps: 10}
-	if _, _, err := tk.take(context.Background(), s, s.Text, 0); err == nil {
+	if _, _, err := tk.take(context.Background(), s, 0); err == nil {
 		t.Fatal("a qwen take was accepted")
 	}
 	if entries, _ := os.ReadDir(tk.dir); len(entries) != 0 {
