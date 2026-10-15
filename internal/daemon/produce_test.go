@@ -617,3 +617,24 @@ func TestResumeAfterCrashReusesStoredTake(t *testing.T) {
 		t.Fatalf("resume rendered %d, heard %d", len(f.renders)-renders, f.hears-hears)
 	}
 }
+
+// A job paused on battery can still be cancelled.
+// Mutation: produce.go waitPower, drop the cancel check after the poll wait -> never ends -> RED.
+func TestCancelWhilePausedOnBattery(t *testing.T) {
+	f := newFakePorts(t)
+	f.onBattery = true
+	powerPoll = 20 * time.Millisecond
+	t.Cleanup(func() { powerPoll = 30 * time.Second })
+	p := startedProducer(t, f)
+	s, err := p.create(reelInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if err := p.cancel(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitTerminal(t, p, s.ID); got.Status != vproject.StatusCancelled || len(f.renders) != 0 {
+		t.Fatalf("%s after %d renders", got.Status, len(f.renders))
+	}
+}
