@@ -18,7 +18,7 @@ const (
 	voiceSaveUsage   = "usage: ox-say voice save <name> <take path> [--replace]"
 	replaceFlag      = "--replace"
 	playFlag         = "--play"
-	voiceUsage       = "usage: ox-say voice add|design|save|ls|rm"
+	voiceUsage       = "usage: ox-say voice add|design|save|set|ls|rm"
 )
 
 // cmdVoiceDesign asks the daemon for takes of a voice described in words and

@@ -85,6 +85,11 @@ oxs_settings() {
     fi
     for name in $(compgen -e | grep '^OX_SAY_' || true); do
         case "$name" in
+            # A model NAME, not a file: the engine to speak with (qwen3-tts or
+            # voxcpm2). Every other *_MODEL key is a weights path (OX_SAY_MODEL,
+            # OX_SAY_STT_MODEL, OX_SAY_STT_VAD_MODEL, OX_SAY_STT_WHISPER_MODEL,
+            # OX_SAY_VOXCPM2_MODEL) and OX_SAY_CODEC a path too.
+            OX_SAY_TTS_MODEL) ;;
             *_HOME | *_DIR | *_BIN | *_MODEL | *_CODEC | OX_SAY_BINDIR)
                 if [ -n "${!name}" ] && [ "${!name#/}" = "${!name}" ]; then
                     echo "ox-say install: $name must be an absolute path (got '${!name}')" >&2

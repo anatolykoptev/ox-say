@@ -40,6 +40,7 @@ It needs `ffmpeg` (`brew install ffmpeg`) and never uses `sudo`. To build from s
 | | Engine | On a Radeon Pro 5500M | On an Apple M5 Pro |
 |---|---|---|---|
 | Text-to-speech, voice cloning from a short clip | Qwen3-TTS 12 Hz via [qwentts.cpp](https://github.com/ServeurpersoCom/qwentts.cpp) | faster than real time (about 0.55× RTF), first audio in about 100 ms | faster than real time (about 0.22× RTF), first audio byte in about 30–35 ms (Qwen3-TTS 1.7B: 0.27–0.28× RTF) |
+| Studio-quality voiceover with emotion, voice design and loudness control (opt-in, Apple Silicon, see [Studio voice](#studio-voice-voxcpm2)) | VoxCPM2 via [audio.cpp](https://github.com/ShugoAI/audio.cpp) | not available | about real time (0.58× RTF warm), 48 kHz |
 | Speech-to-text with word timestamps | Parakeet TDT v3 (25 European languages) or Whisper large-v3-turbo (99 languages) via whisper.cpp | 6 minutes of audio in about 18 s | 6 minutes of audio in about 2.5 s on Metal |
 | `ox-align` engine tool: per-frame CTC emissions for a wav2vec2 checkpoint ([engine/README.md](engine/README.md)) — not exposed by the daemon | optional hand-converted GGUF (the MMS aligner weights are CC-BY-NC; the installer fetches none) | emissions match the transformers oracle within tolerance | not measured |
 
@@ -77,6 +78,108 @@ ox-say itself is Apache-2.0, and the default models are Apache-2.0 and CC-BY-4.0
   `SHA256SUMS`. `get.sh` picks the package for the hardware it runs on; a release cut before the
   arm64 package existed has no arm64 asset, and `get.sh` then says so.
 
+## Studio voice (VoxCPM2)
+
+This is the voice to use when you want a **lively, emotional voiceover** (in Russian, or one of 29 other
+languages) for a Reel, a YouTube video or a podcast. It sounds like a person reading with feeling. The
+default fast voice (Qwen3-TTS) is better for short notices. You can use both: you pick one for each line.
+
+**What you need.** A Mac with Apple Silicon and 24 GB of memory or more. It is an opt-in install that adds
+about 3 GB. Run the installer once more with the switch on:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | OX_SAY_WITH_VOXCPM2=1 sh
+```
+
+Check it with `ox-say status`: the `voxcpm2` line says `ready` or `stopped` (it starts when you first use
+it and rests when idle), or says in plain words why it cannot run. Intel Macs cannot run it: the model
+does not fit a 4 GB card and would be far too slow on the processor. Everything else keeps working there.
+
+**The way to a lively voice.** Do not clone a flat recording and hope: a flat reading gives a flat
+copy. Instead:
+
+1. **Describe** the voice you want, in words, and hear a few versions (takes):
+   ```sh
+   ox-say voice design "A warm, deep male narrator in his forties, native Russian speaker, calm documentary voice-over" \
+     -t "Добро пожаловать. Сегодня я расскажу о свете." -n 3
+   ```
+   It prints each take's file path and seed, and the exact command to keep one. Each take takes about as
+   long as it plays; the first one after a pause also waits 10–40 s for the model to load. Keep the text
+   to one or two sentences (up to 200 characters): the voice you save is made from that take.
+2. **Listen** to the takes (`--play` plays them) and pick the one you like.
+3. **Save** it under a name: `ox-say voice save narrator '<take path>'`.
+4. **Use** it, with a style for the feeling you want:
+   ```sh
+   ox-say say -m voxcpm2 -v narrator -i "excited and joyful, lively pace" -o line.wav "Честно говоря, я и сам не верил, что это сработает."
+   ```
+
+Your own recording works too (`ox-say voice add me clip.wav`), with the same warning: the clone is as
+expressive as the clip. A calm, flat reading will not become excited. Change a voice's engine or default
+style later with `ox-say voice set narrator --style "calm and warm, slow"`.
+
+**Styles.** `-i` (`instructions`) says *how* to speak. Write a few short English words separated by commas:
+the feeling, the pace, the loudness. It works for text in any language. Examples:
+- `excited and joyful, lively pace, smiling voice`
+- `calm and warm, slow, close to the mic`
+- `sad and tender, quiet`
+- `angry and frustrated, loud, sharp emphasis`
+
+With a saved voice, the style changes the delivery and keeps the voice. A voice can carry a default style
+(`--style` on `voice add` or `voice set`) that is used when you give none. Do not start your text with a
+bracket `(` when a style is in effect, from `-i` or from the voice's saved style: the engine reads it as a
+style, and the call is refused.
+
+**Seeds.** The same words come out a little differently every time, and the feeling varies most. For a line
+that matters, make 2–3 takes with different `--seed` numbers and keep the best. `ox-say say` prints the seed it used (and any warning) on the error stream, so it never lands in your
+audio or output file. The same seed on the same Mac and the same build gives the same take again.
+
+**Length.** One call takes up to **1000 characters** (about 75 seconds). For now, split a longer script into
+parts of up to 1000 characters at sentence ends and make each part with the same voice and seed settings; a
+long-form command that does the splitting and joining for you is coming.
+
+**Loudness.** `--loudness -16` (or `loudness_lufs`) sets the finished file to a standard level: -16 for online
+video and podcasts, -14 for music streaming, -23 for broadcast.
+
+**Quality knobs, for the curious.** Leave them alone unless a take goes wrong. `--cfg` (default 2.0; above 0 and
+at most 5) is how strictly the voice follows the text and style; higher is stricter, too high sounds strained.
+`--steps` (default 10; a whole number from 1 to 50) is the number of refinement steps; more costs time and was
+measured not to help. `--clone-mode` chooses how the voice is copied:
+- `auto` (default) makes the most faithful copy, continuing the voice's own recording, only when the voice has
+  its transcript, **no style is in effect** (neither `-i` nor the voice's saved style) and your text is in the
+  same alphabet as that transcript. Otherwise it copies the timbre only.
+- `reference` always copies the timbre only and lets a style steer the delivery.
+- `ultimate` needs the voice's transcript and no style at all. With `-i`, or with a voice that has a saved
+  style, it is refused: use `--clone-mode reference`, clear the voice's style (`ox-say voice set <name> --style ""`),
+  or drop `-i`.
+
+**Safety nets.** The engine stops a take that runs away, and ox-say warns you when a take is much longer than
+its text needs (it may contain babble): make another with a different seed.
+
+**If something is wrong.**
+- `ox-say status` says `unavailable`: read the reason. "Not installed" or "model not downloaded": run the installer
+  with `OX_SAY_WITH_VOXCPM2=1`.
+- It crashed at start: read `~/Library/Logs/ox-say/voxcpm2.log`. Usual causes: a damaged model file, or
+  port 8097 taken (`OX_SAY_VOXCPM2_PORT`).
+- A warning about a long take: make another with a different seed, or shorten the line.
+- A request for `voxcpm2` on a Mac that cannot run it is answered with the reason; a saved voice that prefers
+  it speaks with the fast voice and says so (`ox-say say` prints the warning, and names any studio-only options
+  it ignored).
+
+**Rules of use.** The VoxCPM2 model card forbids impersonation, fraud and disinformation, and asks that
+AI-generated speech be labelled as such. Please do.
+
+**Make it the default.** `OX_SAY_TTS_MODEL=voxcpm2` makes the studio voice the default for the CLI, MCP agents
+and OpenAI clients that do not name a model. The daemon runs under launchd, which does not read your shell, so set it
+when you run the installer; it is written into the daemon's LaunchAgent and kept on later re-runs:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | OX_SAY_TTS_MODEL=voxcpm2 sh
+```
+
+(From a source checkout: `OX_SAY_TTS_MODEL=voxcpm2 scripts/install.sh`.) To go back, run the installer once with
+`OX_SAY_TTS_MODEL=` (empty). The dictation app's Speak Selection always asks for the fast voice, so it is not
+affected.
+
 ## Usage
 
 One binary, `ox-say`, is the daemon, the CLI client and the MCP server.
@@ -86,7 +189,11 @@ ox-say serve        # run the daemon (launchd starts this)
 ox-say say hello                        # speak like `say`
 ox-say say -v ben -l Russian -f mp3 -o hi.mp3 "privet"
 echo piped | ox-say say                 # text from stdin
+ox-say say -m voxcpm2 -i "excited, lively pace" --seed 9 --loudness -16 -o hi.wav "..."   # studio voice
 ox-say voice add ben ./clip.wav --ref-text "what the clip says"
+ox-say voice design "A clear, pleasant female narrator in her thirties" -t "Привет." -n 3   # describe a voice
+ox-say voice save narrator <take path>  # keep a take
+ox-say voice set narrator --style "calm and warm, slow"   # change a voice's engine/style
 ox-say voice ls
 ox-say voice rm ben
 ox-say transcribe meeting.wav           # speech-to-text
@@ -155,11 +262,14 @@ Listening on `OX_SAY_ADDR` (default `127.0.0.1:8094`, loopback only):
 
 | Route | Description |
 |-------|-------------|
-| `POST /v1/audio/speech` | OpenAI-compatible TTS. `input` required; `voice`, `language`, `response_format` (`wav`, `pcm`, `mp3`, `opus` — last two transcoded with ffmpeg), `instructions`, `seed`, `temperature`, `top_k`, `top_p`, `repetition_penalty`, `max_new_tokens` |
+| `POST /v1/audio/speech` | OpenAI-compatible TTS. `input` required; `voice`, `language`, `response_format` (`wav`, `pcm`, `mp3`, `opus` — last two transcoded with ffmpeg), `model` (`qwen3-tts` or `voxcpm2`; absent = the voice's engine, then `OX_SAY_TTS_MODEL`), `instructions`, `seed`, `loudness_lufs` (-40..-5, normalizes the take), voxcpm2 only: `cfg_value`, `inference_timesteps`, `clone_mode` (`auto`/`reference`/`ultimate`; input up to 1000 chars); qwen3-tts only: `temperature`, `top_k`, `top_p`, `repetition_penalty`, `max_new_tokens`. A voxcpm2 or normalized answer is a finished take with `X-Ox-Say-Model`, `X-Ox-Say-Seed` and `X-Ox-Say-Warning` headers |
 | `POST /v1/audio/transcriptions` | OpenAI-compatible STT, multipart: `file` (required, ≤ `OX_SAY_STT_MAX_UPLOAD_MB`), `model` (`parakeet` default; `whisper`/`whisper-1`), `language`, `prompt`, `response_format` (`json` default → `{"text"}`; `text`; `verbose_json` → OpenAI's shape: `duration`, `segments` (`start`/`end`), `words` (`word`/`start`/`end`); `srt`; `vtt`; `ox_json` → ox-stt's own result with words as `w`/`s`/`e`/`p`, what `ox-say transcribe --json` prints), `timestamp_granularities[]` (accepted; words are always returned). Errors: 400 bad input, 413 over the upload cap, 500 engine failure, 503 model missing or queue full, 504 timeout |
 | `GET /v1/audio/voices` | List persisted voices |
-| `POST /v1/audio/voices` | `{"name","audio_path","ref_text"}` — clone from a local clip (normalized to 24 kHz mono WAV, max 20 s) |
+| `POST /v1/audio/voices` | `{"name","audio_path","ref_text"}` plus optional `engine`, `style`, `designed_from` — clone from a local clip (normalized to 24 kHz mono WAV, max 20 s) |
+| `POST /v1/audio/voices/design` | `{"description","text","takes"(1..4),"seed"}` → takes rendered with voxcpm2 (no reference voice), each with path, seed, duration and a suggested name |
+| `POST /v1/audio/voices/design/save` | `{"name","take","replace"}` → keeps a take returned by design as a voice; the daemon records the description, seed and transcript itself |
 | `GET /v1/audio/voices/<name>` | Voice metadata |
+| `PATCH /v1/audio/voices/<name>` | `{"engine","style"}` — change a voice's preferred engine and default style; a given `""` clears, an absent field stays |
 | `DELETE /v1/audio/voices/<name>` | Remove a voice |
 | `GET /status` | Engine and STT-server state, pids, uptime, restarts, voices, config |
 | `GET /health` | Daemon liveness (always 200; engine may be stopped) |
@@ -194,7 +304,10 @@ the recording and fall back to uploading the whole clip to
 ### MCP
 
 The same server exposes MCP tools on `/mcp`: `speak`, `transcribe`,
-`voices_list`, `voice_add`, `voice_remove`, `engine_status`. Register with:
+`voices_list`, `voice_add`, `voice_update`, `voice_remove`, `voice_design`, `voice_design_save`,
+`engine_status`. Each tool's description tells an agent when to use it, the units and limits, and what
+to call next; the VoxCPM2 quality options (`model`, `instructions`, `cfg_value`, `inference_timesteps`,
+`clone_mode`, `seed`, `loudness_lufs`) are on `speak` only. Register with:
 
 ```
 claude mcp add --transport http --scope user ox-say http://127.0.0.1:8094/mcp
@@ -213,6 +326,10 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_MODEL` | `$OX_SAY_HOME/models/qwen-talker-0.6b-base-Q8_0.gguf` | |
 | `OX_SAY_CODEC` | `$OX_SAY_HOME/models/qwen-tokenizer-12hz-F32.gguf` | |
 | `OX_SAY_MAX_BATCH` | `2` | |
+| `OX_SAY_TTS_MODEL` | `qwen3-tts` | Engine for a speech request that names no model and whose voice has no preference: `qwen3-tts` or `voxcpm2` |
+| `OX_SAY_VOXCPM2_BIN` | `$OX_SAY_HOME/engine/audiocpp_server` | The VoxCPM2 engine (audio.cpp's server); Apple Silicon only |
+| `OX_SAY_VOXCPM2_MODEL` | `$OX_SAY_HOME/models/voxcpm2-q8_0.gguf` | VoxCPM2 weights (`OX_SAY_WITH_VOXCPM2=1` fetch) |
+| `OX_SAY_VOXCPM2_PORT` | `8097` | Loopback port the VoxCPM2 child binds |
 | `OX_SAY_IDLE_STOP_SECS` | `300` | Stop the idle engine after N s; 0 = never |
 | `OX_SAY_STARTUP_TIMEOUT_SECS` | `180` | Covers the first-start Metal shader compile |
 | `OX_SAY_LANG` | empty | Default language; empty = engine auto-detect |
@@ -417,6 +534,9 @@ required third-party notices). The engines it builds are MIT:
 - whisper.cpp, with its vendored ggml;
 - cpp-httplib and yyjson, vendored by qwentts.cpp.
 
+The optional VoxCPM2 engine, [audio.cpp](https://github.com/ShugoAI/audio.cpp), is Apache-2.0 (ShugoAI LLC)
+with its own vendored dependencies; `NOTICE` lists our patches to it.
+
 `engine/build.sh` copies all their license files next to the binaries.
 `engine/patches/` modify ggml and qwentts.cpp: our lines are Apache-2.0,
 and the upstream lines they contain stay MIT. The test clips in
@@ -427,6 +547,8 @@ They are GGUF conversions of the publishers' weights, each under the
 publisher's license:
 
 - Qwen3-TTS 12 Hz talker and tokenizer: Apache-2.0 (Qwen team, Alibaba)
+- VoxCPM2 (optional): Apache-2.0 (OpenBMB); the GGUF conversion comes from audio.cpp. The model
+  card forbids impersonation, fraud and disinformation and asks that AI-generated speech be labelled
 - Parakeet TDT 0.6B v3: CC-BY-4.0 (NVIDIA); attribute NVIDIA when you
   redistribute the weights. ox-say uses the q8_0 conversion. On 300 Russian
   and 300 English FLEURS test utterances its WER matched f16 (normalised:

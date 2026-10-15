@@ -265,8 +265,10 @@ type addVoiceRequest struct {
 	AudioPath string `json:"audio_path"`
 	RefText   string `json:"ref_text"`
 	// Engine, Style and DesignedFrom are optional. A client may set
-	// designed_from: the voice-design save flow is a plain voice_add that
-	// passes the description along. It is a label, not a trust boundary.
+	// designed_from, as the additions-only contract keeps accepting it. The
+	// design save route (POST /v1/audio/voices/design/save) does not use it:
+	// it records the description from the daemon's own note of the take.
+	// A label sent here is not a trust boundary.
 	Engine       string `json:"engine"`
 	Style        string `json:"style"`
 	DesignedFrom string `json:"designed_from"`
