@@ -88,14 +88,13 @@ func abs(x int) int {
 
 // Spoken is the text the engine reads. The one rewrite: a leading "(x)"
 // becomes "x —" — the engine parses any leading ASCII "(…)" as a style tag
-// (audio.cpp session.cpp:99-117), with or without a style of ours. Stray
-// brackets of the leading group are dropped and the rewrite repeats until the
-// text no longer opens with "(" (after white space and format characters).
+// (audio.cpp session.cpp:99-117), with or without a style of ours. The
+// rewrite repeats until the text no longer opens with "(" (after white space
+// and format characters); each pass consumes one "(".
 func Spoken(text string) string {
 	s := trimLead(text)
 	for strings.HasPrefix(s, "(") {
 		inner, rest, closed := strings.Cut(s[1:], ")")
-		inner = strings.NewReplacer("(", "", ")", "").Replace(inner)
 		rest = trimLead(strings.TrimLeft(rest, ")"))
 		inner = strings.TrimSpace(inner)
 		switch {

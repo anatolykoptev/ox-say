@@ -339,6 +339,9 @@ func checkChunks(t *testing.T, src string, o Options) {
 		if n := len([]rune(c.Text)); n > o.MaxChars {
 			t.Fatalf("opts %+v: chunk of %d runes > MaxChars from %q", o, n, src)
 		}
+		if strings.HasPrefix(c.Spoken, "(") {
+			t.Fatalf("Spoken %q opens with a paren, from %q", c.Spoken, src)
+		}
 		got.WriteString(c.Text)
 	}
 	if a, b := strings.Join(strings.Fields(got.String()), ""), strings.Join(strings.Fields(src), ""); a != b {
