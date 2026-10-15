@@ -168,6 +168,17 @@ func (p *producer) ready() error {
 	return nil
 }
 
+// active is the count of jobs a restart would interrupt: the producer
+// runs at most one.
+func (p *producer) active() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.cur == nil {
+		return 0
+	}
+	return 1
+}
+
 // launch makes j the running job, or answers busy. Crash leftovers are swept
 // here, under the lock and behind the busy check, so the sweep never touches
 // the directory of a running job (#154.6); fresh files are spared.

@@ -61,8 +61,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 // handleSpeech is OpenAI-compatible /v1/audio/speech. wav and pcm stream
 // straight through; mp3 and opus are transcoded from the child's wav via
-// ffmpeg (opus in an OGG container — Telegram voice notes).
+// ffmpeg (opus in an OGG container — Telegram voice notes). The request
+// counts under busy.speaking for its whole life — a restart mid-render
+// loses the take.
 func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
+	d.speaking.Add(1)
+	defer d.speaking.Add(-1)
 	var body map[string]any
 	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	dec.UseNumber() // keep e.g. seed's int64 precision when proxying upstream

@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"time"
 )
 
 // Streaming transcription sessions on the resident ox-stt server
@@ -36,6 +37,46 @@ const (
 // the server is contacted, so an id can never smuggle a path segment into
 // the upstream URL.
 var sessionIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// sttSessionIdle mirrors the resident server's own session reap — ox-stt
+// drops a session idle past 120 s — plus margin: an entry older than it
+// names a session the server no longer holds. A var so tests can lower it.
+var sttSessionIdle = 125 * time.Second
+
+// The daemon mirrors the server's session registry — sessions live inside
+// the ox-stt process — so the count /status reports under
+// busy.stt_sessions is built from what it proxies: a create's answer is
+// noted, per-session traffic refreshes the entry, finish and delete drop
+// it, and the sweep reaps anything idle past the server's own window.
+
+// noteSTTSession marks id open — or refreshes it: traffic on the session
+// proves the server still holds it.
+func (d *Daemon) noteSTTSession(id string) {
+	d.sessMu.Lock()
+	d.sessSeen[id] = time.Now()
+	d.sessMu.Unlock()
+}
+
+// dropSTTSession forgets id — the server consumed it or never held it.
+func (d *Daemon) dropSTTSession(id string) {
+	d.sessMu.Lock()
+	delete(d.sessSeen, id)
+	d.sessMu.Unlock()
+}
+
+// sttSessions counts the sessions the resident server still holds, reaping
+// entries idle past the server's own window.
+func (d *Daemon) sttSessions() int {
+	d.sessMu.Lock()
+	defer d.sessMu.Unlock()
+	cut := time.Now().Add(-sttSessionIdle)
+	for id, seen := range d.sessSeen {
+		if seen.Before(cut) {
+			delete(d.sessSeen, id)
+		}
+	}
+	return len(d.sessSeen)
+}
 
 // sessionHTTP has no Timeout: the request context governs cancellation,
 // and a finish call can legitimately wait out the server's 60 s pending
@@ -71,7 +112,15 @@ func (d *Daemon) handleSTTSessionCreate(w http.ResponseWriter, r *http.Request) 
 		writeSessionErr(w, http.StatusServiceUnavailable, fmt.Sprintf("stt server: %v", err))
 		return
 	}
-	d.sttSessionProxy(w, r, base, "/sessions", sessionMaxJSON)
+	status, body := d.sttSessionProxy(w, r, base, "/sessions", sessionMaxJSON)
+	if status/100 == 2 {
+		var created struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(body, &created) == nil && sessionIDRe.MatchString(created.ID) {
+			d.noteSTTSession(created.ID)
+		}
+	}
 }
 
 // handleSTTSessionAudio forwards one PCM chunk: f32le mono at 16 kHz, at
@@ -115,26 +164,37 @@ func (d *Daemon) sttSessionOp(w http.ResponseWriter, r *http.Request, op string,
 	if op != "" {
 		up += "/" + op
 	}
-	d.sttSessionProxy(w, r, base, up, limit)
+	status, _ := d.sttSessionProxy(w, r, base, up, limit)
+	switch {
+	case op == "audio" && status/100 == 2:
+		d.noteSTTSession(id) // session traffic refreshes its idle clock
+	case status == http.StatusNotFound || (op != "audio" && status/100 == 2):
+		// The server no longer holds it: a finish consumed it, a delete
+		// dropped it, or a 404 means it was already reaped upstream.
+		d.dropSTTSession(id)
+	}
 }
 
 // sttSessionProxy reads the request body under its cap, forwards it to the
 // STT server at base+path, and copies the upstream status and JSON body
 // back. The caller holds the guard; the request context carries the call.
-func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, path string, limit int64) {
+// The status returned is what was written to the client — the upstream's
+// code on a proxy-through, the proxy's own on a local refusal — and the
+// body the one sent back, so the caller can keep the session registry.
+func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, path string, limit int64) (int, []byte) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		writeSessionErr(w, http.StatusBadRequest, fmt.Sprintf("cannot read body: %v", err))
-		return
+		return http.StatusBadRequest, nil
 	}
 	if int64(len(body)) > limit {
 		writeSessionErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("body exceeds %d bytes", limit))
-		return
+		return http.StatusRequestEntityTooLarge, nil
 	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, base+path, bytes.NewReader(body))
 	if err != nil {
 		writeSessionErr(w, http.StatusInternalServerError, err.Error())
-		return
+		return http.StatusInternalServerError, nil
 	}
 	req.ContentLength = int64(len(body))
 	if ct := r.Header.Get("Content-Type"); ct != "" {
@@ -143,13 +203,13 @@ func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, p
 	resp, err := sessionHTTP.Do(req)
 	if err != nil {
 		writeSessionErr(w, http.StatusBadGateway, fmt.Sprintf("stt server: %v", err))
-		return
+		return http.StatusBadGateway, nil
 	}
 	out, rerr := readAllCap(resp.Body, sessionMaxResp)
 	_ = resp.Body.Close()
 	if rerr != nil {
 		writeSessionErr(w, http.StatusBadGateway, fmt.Sprintf("stt server: %v", rerr))
-		return
+		return http.StatusBadGateway, nil
 	}
 	d.logSegments(out, r.PathValue("id"))
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
@@ -159,6 +219,7 @@ func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, p
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(out)
+	return resp.StatusCode, out
 }
 
 // sessionSegment is the slice of a session response's segment the daemon
