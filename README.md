@@ -218,24 +218,29 @@ you want to be sure. Abbreviations such as «т.е.» may be read letter by lett
 
 **Choosing a preset** (`--preset`):
 
-| Preset | For | Loudness | Pauses (sentence / paragraph) | Takes per piece |
+| Preset | For | Loudness target | Pauses (sentence / paragraph) | Takes per piece |
 |---|---|---|---|---|
 | `youtube` (default) | YouTube, podcasts | −16 LUFS | 0.30 s / 0.70 s | 1 |
 | `reels` | Reels, Shorts, TikTok | −14 LUFS | 0.20 s / 0.45 s (tighter) | 2: the better one is used |
 | `voice-under-music` | a voice over a music bed | −18 LUFS | 0.30 s / 0.70 s | 1 |
 
+The loudness is a target. The result can sit a little under it when the peak limiter holds the gain back
+(the summary then notes "loudness was set in dynamic mode"): the 11-minute `youtube` run measured −16.4 LUFS
+against −16, and a 33-second `reels` test measured −15.8 LUFS against −14.
+
 `--takes 1..3` overrides the takes per piece (more takes cost proportionally more time).
 `--seed N` makes the whole voiceover reproducible; ox-say prints the seed it used.
 
 **Where the files go.** With `-o ~/Movies/reel/reel.wav` the files land next to that path; otherwise in
-`~/Movies/ox-say/<title>/` (`-t "my title"` names the folder and the files; without it they are named after the
+`~/Movies/ox-say/<title>/` (`-t "my title"` names the folder and the files: the title lowercased, letters and
+digits joined by hyphens, at most 32 characters, e.g. `my-title`; without `-t` they are named after the
 project id. This default folder is a provisional choice: change it with `OX_SAY_PRODUCE_OUT_DIR`, an
 absolute path, then restart the daemon). An existing file is never replaced
 unless you pass `--overwrite`. You get five files with the same name:
 
 | File | What it is |
 |---|---|
-| `name.wav` | the voiceover: 48 kHz, mono, at the preset's loudness |
+| `name.wav` | the voiceover: 48 kHz, mono, near the preset's loudness target |
 | `name.srt`, `name.vtt` | subtitles, ready for a video editor |
 | `name.words.json` | the time of every word, for animated captions |
 | `name.manifest.json` | a copy of the project record: the settings, the pieces, the takes |
@@ -253,9 +258,17 @@ ox-say produce chunk 20261015-120000-a1b2c3 1 --pick <take> # use that take
 ox-say produce chunk 20261015-120000-a1b2c3 1 --text "…"    # replace the piece's words (one piece, no brackets)
 ```
 
+**Picking is final.** `--pick` means you listened and accept that take: the piece becomes OK even if the take
+failed the automatic check, the manifest marks it `user_pick`, and once no piece is left in review the
+project turns `done`. (A take that is completely silent cannot be accepted.)
+
 **Regenerating does not switch to the new take by itself:** your current pick stays until you choose.
 After `--regen`, ox-say lists the new takes with their files and prints the exact `--pick` command for
 each. Every change rebuilds the file in seconds, because only that piece is touched.
+
+**Exit codes** (the run, `resume`, `chunk`, and `status`): 0 done, 3 review, 1 failed, cancelled or
+interrupted, 2 wrong usage (an unknown or misplaced flag is refused with its name, never ignored).
+`status` of a project that is still going exits 0.
 
 **Closing the laptop.** If anything interrupts a run (the Mac shuts down, ox-say restarts, you cancel), the project is kept.
 `ox-say produce resume <id>` continues it; only the missing pieces are made again, and the result is the
@@ -267,18 +280,24 @@ one (the take being made finishes and is kept), `ox-say produce rm <id>` deletes
 battery*) so a long render does not drain the Mac. Plug in, or continue anyway with
 `ox-say produce resume <id> --allow-battery` (`--allow-battery` on the first command does the same).
 **Dictation always goes first:** while you are dictating or using Speak Selection, the voiceover waits
-(*waiting for dictation*) and carries on afterwards.
+(*waiting for dictation*) and carries on afterwards. While paused on battery the command keeps waiting for
+the end; `--no-wait` returns at once with the project id, so you can close the terminal and check later.
 
-**How long it takes.** Measured on an M5 Pro on AC power, one voice. The engine speaks at about 0.55 times real time, and the check of
-each piece costs about a tenth of a second, so the time is set by the takes you ask for. The first piece after
-a rest also waits 10–40 s for the model to load.
-- A 33-second Reel (`reels`, 2 takes per piece): **about 50–60 seconds**. A 60-second one: 1.5 to 2 minutes.
-- An 11-minute voiceover (`youtube`, 1 take per piece, 64 pieces): **about 12–13 minutes**. With `reels` or
-  `--takes 2` expect roughly half as long again.
-- A voiceover that is interrupted loses nothing already made (see above): the rest of the 11-minute one took
-  10 minutes after a stop at piece 11.
-The status line shows the time left while it works. The engine uses about 3–4 GB of memory while it runs and
-frees it when it rests.
+**How long it takes.** On a quiet Mac the engine makes speech at about 0.55 times real time (a lab measurement
+on an M5 Pro: 10 s of speech in about 5.5 s). A voiceover takes longer than that for three reasons: every
+piece is made once per take you ask for (`reels` asks for 2), a piece that fails the check is made again
+(up to three tries), and the first piece after a rest waits 10–40 s for the model to load. Measured runs
+(M5 Pro, AC power, one voice; another heavy job shared the Mac for part of the long run, so treat them as
+upper bounds):
+- A 33-second Reel (`reels`, 2 takes per piece): 48 s on a warm model, 62 s on a cold one.
+- An 11.2-minute voiceover (`youtube`, 64 pieces): 12.7 minutes. The engine made 93 takes with 941 s of
+  speech to deliver 670 s, because the 7 pieces that kept failing the check were tried three times each and
+  a few others once more. The rest of that run, after an interruption at piece 11, took 10 minutes.
+- Estimates, not measured: a 60-second Reel about 1.5–2 minutes; a 10-minute `youtube` voiceover about 11–12
+  minutes; `--takes 2` on a long script roughly half as long again.
+
+The status line shows the time left while it works. The engine uses about 3–4 GB of memory while it runs
+(4.1 GB peak in the long run above).
 
 **Limits.**
 - **One voiceover at a time.** Starting a second one while one is running is refused and names the
@@ -299,13 +318,13 @@ are refused.
 
 | Route | Description |
 |-------|-------------|
-| `POST /v1/produce` | `{"script"` (required, ≤ 40,000 chars)`,"title","voice","style","preset","seed","takes"(1..3),"out_path","overwrite","allow_battery"}` → 202 with the project summary. 409 + `running_id` when another voiceover is running. No `cfg_value`, steps or loudness: the preset carries them |
-| `GET /v1/produce` | `{"projects":[…]}` newest first |
+| `POST /v1/produce` | `{"script"` (required, ≤ 40,000 chars)`,"title","voice","style","preset","seed","takes"(1..3; 0 is refused),"out_path","overwrite","allow_battery"}` → 202 with the project summary. 409 + `running_id` when another voiceover is running. No `cfg_value`, steps or loudness: the preset carries them |
+| `GET /v1/produce` | `{"projects":[…]}`: the 20 most recent, newest first, without their chunk lists |
 | `GET /v1/produce/<id>` | Summary: `status` (`running`, `waiting_for_dictation`, `paused_on_battery`, `review`, `done`, `failed`, `cancelled`, `interrupted`), `seed`, `progress` (`chunks_done`, `chunks_total`, `eta_s`), `outputs`, `chunks` (status, pick, reasons), `notes` |
 | `GET /v1/produce/<id>/chunks/<n>` | One chunk (0-based): its text, takes (key, seed, duration, word errors) and `take_files` (key → WAV path) |
 | `POST /v1/produce/<id>/resume` | `{"allow_battery"}` → continue an interrupted, cancelled or finished project |
-| `POST /v1/produce/<id>/cancel` | Stop a running project; the take in progress finishes and is kept |
-| `POST /v1/produce/<id>/chunks/<n>` | `{"action":"regenerate","takes":1..3}` / `{"action":"pick","take":"<key>"}` / `{"action":"edit","text":"…"}`; the pick is kept by `regenerate` |
+| `POST /v1/produce/<id>/cancel` | Stop a running project; the take in progress finishes and is kept. A project that is not running answers 409 |
+| `POST /v1/produce/<id>/chunks/<n>` | `{"action":"regenerate","takes":1..3}` / `{"action":"pick","take":"<key>"}` / `{"action":"edit","text":"…"}`; `regenerate` keeps the current pick; `pick` is final (the chunk becomes ok, `user_pick: true`). A chunk number past the end answers 400 with the chunk count |
 | `DELETE /v1/produce/<id>` | Remove the project; `?delete_outputs=true` also deletes its published files |
 
 **Agents (MCP)** use four tools, `produce`, `produce_status`, `produce_edit` and `produce_control`, that

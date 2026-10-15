@@ -28,8 +28,10 @@ const (
 	bytesPerAudioSec = 96000 // 48 kHz s16 mono
 	diskFactor       = 2.0
 	maxTakesPerChunk = 3
-	stopBound        = 10 * time.Second // launchd ExitTimeOut is 20 s
-	defaultPreset    = "youtube"
+	// maxListedProjects caps GET /v1/produce and produce_status without an id.
+	maxListedProjects = 20
+	stopBound         = 10 * time.Second // launchd ExitTimeOut is 20 s
+	defaultPreset     = "youtube"
 	// renderRTF is the measured warm real-time factor (parent Task 1 result).
 	renderRTF = 0.58
 	// tempSweepMinAge is how long a crash leftover must have been untouched
@@ -46,6 +48,7 @@ var (
 	errCancelled       = errors.New("produce: cancelled")
 	errProducerStopped = errors.New("the voiceover producer is not running")
 	errNoProject       = errors.New("no such voiceover project")
+	errNotRunning      = errors.New("this voiceover is not running, so there is nothing to cancel")
 )
 
 // cancellingError: the job was told to stop and has not yet (HTTP 409).

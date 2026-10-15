@@ -142,9 +142,9 @@ func (c *produceCmd) chunk(pos []string) int {
 	if err != nil {
 		return failProduce(c.err, err)
 	}
-	code := c.follow(data)
-	if body["action"] != "regenerate" || c.sw["no-wait"] {
-		return code
+	code, final := c.follow(data)
+	if body["action"] != "regenerate" || final == nil || (final.Status != statusDone && final.Status != statusReview) {
+		return code // no new takes to show: no wait, or the run did not finish
 	}
 	c.showNewTakes(id, n, &before)
 	return code

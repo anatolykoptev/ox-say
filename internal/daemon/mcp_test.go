@@ -165,10 +165,10 @@ func TestMCPDescriptionsAreSelfSufficient(t *testing.T) {
 		"voice_update":      {"engine", "style", "voice_add"},
 		"voices_list":       {"engine", "style", "designed_from"},
 		"engine_status":     {"voxcpm2", "stt_server"},
-		"produce":           {"produce_status", "AT ONCE", "[pause", "[style:", "youtube", "reels", "voice-under-music", "out_path", "allow_battery", strconv.Itoa(maxProduceChars)},
+		"produce":           {"produce_status", "AT ONCE", "[pause", "[style:", "youtube", "reels", "voice-under-music", "out_path", "allow_battery", strconv.Itoa(maxProduceChars), "targets", "32 characters"},
 		"produce_status":    {"review", "chunk", "produce_edit", "numbers are not checked"},
-		"produce_edit":      {"regenerate", "pick", "edit", "take", "produce_status", "pick is kept", "new takes"},
-		"produce_control":   {"resume", "cancel", "remove", "delete_outputs", "allow_battery"},
+		"produce_edit":      {"regenerate", "pick", "edit", "take", "produce_status", "pick is kept", "new takes", "user_pick", "ok even if"},
+		"produce_control":   {"resume", "cancel", "remove", "delete_outputs", "allow_battery", "for good", "not running"},
 	}
 	for tool, words := range need {
 		for _, w := range words {

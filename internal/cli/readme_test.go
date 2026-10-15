@@ -29,6 +29,10 @@ func TestReadmeDocumentsProduce(t *testing.T) {
 		"ox-say produce resume",
 		"| `POST /v1/produce` |",
 		"`produce_edit`",
+		"Picking is final",
+		"Loudness target",
+		"`--no-wait` returns at once",
+		"Estimates, not measured",
 	} {
 		if !strings.Contains(readme, want) {
 			t.Errorf("README lacks %q", want)

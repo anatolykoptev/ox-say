@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/anatolykoptev/ox-say/internal/vproject"
 )
 
 func produceMCPSession(t *testing.T, f *fakePorts) *mcp.ClientSession {
@@ -154,5 +159,141 @@ func TestProduceToolsHaveNoToolTimeout(t *testing.T) {
 	}
 	if _, ok := cfg.ToolTimeouts["speak"]; !ok {
 		t.Fatal("the test no longer reads the real ToolTimeouts map: speak is missing")
+	}
+}
+
+// mcpProduceDone starts a project through the produce tool and waits for it.
+func mcpProduceDone(t *testing.T, cs *mcp.ClientSession, args map[string]any) string {
+	t.Helper()
+	out, errText := toolText(t, cs, "produce", args)
+	if errText != "" {
+		t.Fatalf("produce: %s", errText)
+	}
+	id := out["id"].(string)
+	for i := 0; i < 500; i++ {
+		got, _ := toolText(t, cs, "produce_status", map[string]any{"id": id})
+		if p, _ := got["project"].(map[string]any); p != nil && p["status"] == "done" {
+			time.Sleep(50 * time.Millisecond) // the job releases the producer just after it saves "done"
+			return id
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("never done")
+	return ""
+}
+
+// Every produce field an agent sets reaches the producer.
+// Mutation: internal/daemon/produce_mcp.go toolProduce, drop OutPath, Seed,
+// Takes, Overwrite or AllowBattery from the produceInput -> RED.
+func TestMCPProduceForwardsEveryField(t *testing.T) {
+	f := newFakePorts(t)
+	cs := produceMCPSession(t, f)
+	outPath := filepath.Join(t.TempDir(), "v.wav")
+	id := mcpProduceDone(t, cs, map[string]any{"script": "Привет. Пока.", "title": "My Title", "voice": "nar", "style": "calm",
+		"preset": "reels", "seed": 77, "takes": 2, "out_path": outPath, "overwrite": true, "allow_battery": true})
+	m, err := vproject.Load(filepath.Join(f.home, produceDir, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := m.Settings
+	if m.Title != "My Title" || st.Voice != "nar" || st.Style != "calm" || st.Preset != "reels" || st.Seed != 77 || st.Takes != 2 ||
+		st.OutPath != outPath || !st.Overwrite || !st.AllowBattery {
+		t.Fatalf("title %q settings %+v", m.Title, st)
+	}
+}
+
+// takes 0 is refused over MCP and HTTP, not read as "the preset's".
+// Mutation: internal/daemon/produce_http.go explicitTakes, treat 0 as default -> RED.
+func TestProduceTakesZeroRefused(t *testing.T) {
+	f := newFakePorts(t)
+	cs := produceMCPSession(t, f)
+	if _, errText := toolText(t, cs, "produce", map[string]any{"script": "Привет.", "voice": "nar", "takes": 0}); !strings.Contains(errText, "takes must be 1..") {
+		t.Fatalf("mcp: %q", errText)
+	}
+	_, mux := produceMux(t, newFakePorts(t))
+	if rec := do(mux, http.MethodPost, "/v1/produce", `{"script":"Привет.","takes":0}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("http: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// remove with delete_outputs true deletes the finished voiceover files; false
+// keeps them. The destructive flag must reach the producer.
+// Mutation: internal/daemon/produce_mcp.go toolProduceControl, remove(in.ID, false) -> RED.
+func TestMCPProduceControlRemoveDeleteOutputs(t *testing.T) {
+	f := newFakePorts(t)
+	cs := produceMCPSession(t, f)
+	for _, del := range []bool{false, true} {
+		out := filepath.Join(t.TempDir(), "v.wav")
+		id := mcpProduceDone(t, cs, map[string]any{"script": "Привет.", "voice": "nar", "out_path": out})
+		if _, err := os.Stat(out); err != nil {
+			t.Fatalf("the project published nothing: %v", err)
+		}
+		args := map[string]any{"id": id, "action": "remove"}
+		if del {
+			args["delete_outputs"] = true
+		}
+		if _, errText := toolText(t, cs, "produce_control", args); errText != "" {
+			t.Fatalf("remove: %s", errText)
+		}
+		_, err := os.Stat(out)
+		if del && !os.IsNotExist(err) {
+			t.Errorf("delete_outputs true left the WAV behind")
+		}
+		if !del && err != nil {
+			t.Errorf("delete_outputs false deleted the WAV: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(f.home, produceDir, id)); !os.IsNotExist(err) {
+			t.Errorf("the project directory is still there")
+		}
+	}
+}
+
+// A project that is not running cannot be "cancelled"; a chunk out of range
+// says how many chunks there are; the list is capped and has no chunk arrays.
+// Mutation: internal/daemon/produce_ops.go cancel, return nil for a stopped
+// project -> RED; chunkDetail, return errNoProject for a bad index -> RED;
+// list, drop the maxListedProjects bound -> RED.
+func TestMCPProduceReadsAndGuards(t *testing.T) {
+	f := newFakePorts(t)
+	cs := produceMCPSession(t, f)
+	id := mcpProduceDone(t, cs, map[string]any{"script": "Привет.", "voice": "nar"})
+	if _, errText := toolText(t, cs, "produce_control", map[string]any{"id": id, "action": "cancel"}); !strings.Contains(errText, "not running") {
+		t.Fatalf("cancel of a finished project: %q", errText)
+	}
+	if _, errText := toolText(t, cs, "produce_status", map[string]any{"id": id, "chunk": 9}); !strings.Contains(errText, "the project has 1 chunks") || strings.Contains(errText, "no such") {
+		t.Fatalf("chunk out of range: %q", errText)
+	}
+	for i := 0; i < maxListedProjects+2; i++ {
+		mcpProduceDone(t, cs, map[string]any{"script": "Привет.", "voice": "nar"})
+	}
+	list, _ := toolText(t, cs, "produce_status", map[string]any{})
+	ps, _ := list["projects"].([]any)
+	if len(ps) != maxListedProjects {
+		t.Fatalf("list has %d projects, want %d", len(ps), maxListedProjects)
+	}
+	if ch, _ := ps[0].(map[string]any)["chunks"].([]any); len(ch) != 0 {
+		t.Fatalf("the list must not carry chunk arrays: %v", ch)
+	}
+}
+
+// HTTP: cancel of a stopped project is a 409, a bad chunk index a 400 in words.
+func TestProduceHTTPCancelAndChunkRange(t *testing.T) {
+	f := newFakePorts(t)
+	_, mux := produceMux(t, f)
+	rec := do(mux, http.MethodPost, "/v1/produce", `{"script":"Привет.","voice":"nar"}`)
+	var s vproject.Summary
+	_ = json.Unmarshal(rec.Body.Bytes(), &s)
+	for i := 0; i < 500; i++ {
+		if r := do(mux, http.MethodGet, "/v1/produce/"+s.ID, ""); strings.Contains(r.Body.String(), `"status":"done"`) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if rec := do(mux, http.MethodPost, "/v1/produce/"+s.ID+"/cancel", ""); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "not running") {
+		t.Fatalf("cancel: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(mux, http.MethodGet, "/v1/produce/"+s.ID+"/chunks/7", ""); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "the project has 1 chunks") {
+		t.Fatalf("chunk range: %d %s", rec.Code, rec.Body)
 	}
 }

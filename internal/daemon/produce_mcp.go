@@ -33,31 +33,31 @@ func produceDescription() string {
 
 Script: plain text; blank lines separate paragraphs. [pause 0.8s] (or [pause 300ms]; [pause] = 0.6 s) inserts exact silence anywhere. [style: excited and joyful, lively pace] at the very start of a paragraph sets that paragraph's delivery (short English descriptors). Any other [...] is an error. style is the default delivery for every paragraph. Up to %d characters.
 
-preset: "youtube" (default: -16 LUFS, calm pauses, 1 take per chunk), "reels" (-14 LUFS, tighter pauses, 2 takes per chunk to choose from), "voice-under-music" (-18 LUFS); all presets: %s. seed makes it reproducible (the status reports the seed used). takes (1-%d) overrides takes per chunk. There are no cfg_value, steps or loudness options: presets carry them.
-Output: a 48 kHz WAV plus .srt, .vtt, .words.json (word timings for animated captions) and .manifest.json next to it, in out_path (absolute .wav; existing files refused unless overwrite) or the daemon's output folder (OX_SAY_PRODUCE_OUT_DIR, default ~/Movies/ox-say/<title>/). On battery the job pauses unless allow_battery.`, produceTimeText, maxProduceChars, presetNames(), maxTakesPerChunk)
+preset: "youtube" (default: loudness target -16 LUFS, calm pauses, 1 take per chunk), "reels" (target -14 LUFS, tighter pauses, 2 takes per chunk to choose from), "voice-under-music" (target -18 LUFS); all presets: %s. Loudness values are targets: the measured level can sit a little lower when the true-peak limit holds the gain back. seed makes it reproducible (the status reports the seed used). takes (1-%d) overrides takes per chunk. There are no cfg_value, steps or loudness options: presets carry them.
+Output: a 48 kHz WAV plus .srt, .vtt, .words.json (word timings for animated captions) and .manifest.json next to it, in out_path (absolute .wav; existing files refused unless overwrite) or the daemon's output folder (OX_SAY_PRODUCE_OUT_DIR, default ~/Movies/ox-say/): a folder and files named from title (lowercased, letters and digits, up to 32 characters) or, with no title, the project id. On battery the job pauses unless allow_battery.`, produceTimeText, maxProduceChars, presetNames(), maxTakesPerChunk)
 }
 
 // produceTimeText is the time budget an agent plans around; the README states
 // the same numbers (measured, F1-6 live acceptance).
 const produceTimeText = `A 60 s reel takes about 1.5-2 minutes (reels: 2 takes per chunk), 10 minutes of speech about 11-12 minutes with 1 take per chunk (youtube); the first call after idle adds 10-40 s to load the model.`
 
-const produceStatusDescription = `Progress of a project: status (running, waiting_for_dictation, paused_on_battery, review, done, failed, cancelled, interrupted), chunks done/total, ETA, outputs, and per chunk its status, pick and reasons. Without id: all projects (newest first) under "projects". With id: the project under "project". With id and chunk (0-based): that chunk's detail under "chunk" - its takes with file paths (take_files), durations and word errors. ` +
-	`"review" means the file is ready but some chunks failed the automatic checks after 3 attempts: get that chunk's detail, listen to its takes, then use produce_edit. ` +
-	`The checks reject broken audio (long silences, wrong or missing words); they do not judge expressiveness, and numbers are not checked ("numbers are not checked by the transcript gate" is in notes).`
+var produceStatusDescription = fmt.Sprintf(`Progress of a project: status (running, waiting_for_dictation, paused_on_battery, review, done, failed, cancelled, interrupted), chunks done/total, ETA, outputs, and per chunk its status, pick and reasons. Without id: the %d most recent projects (newest first) under "projects", without their chunk lists. With id: the project under "project". With id and chunk (0-based): that chunk's detail under "chunk" - its takes with file paths (take_files), durations and word errors. `+
+	`"review" means the file is ready but some chunks failed the automatic checks after 3 attempts: get that chunk's detail, listen to its takes, then use produce_edit. `+
+	`The checks reject broken audio (long silences, wrong or missing words); they do not judge expressiveness, and numbers are not checked ("numbers are not checked by the transcript gate" is in notes).`, maxListedProjects)
 
 const produceEditDescription = `Change one chunk (0-based index, see produce_status) of a project that is not running: action "regenerate" renders takes (1-3) more takes with new seeds; "pick" chooses one of the chunk's takes by take (its key from produce_status with chunk); "edit" replaces the chunk's text (one piece of text, no [directives]) and renders only that chunk. The file is re-assembled; poll produce_status. ` +
-	`Regenerate does NOT change the chunk's pick: your pick is kept until you choose another. The new takes are the keys that were not there before: read produce_status {id, chunk}, listen to take_files, then call produce_edit {action: "pick", take: <key>}. A pick re-assembles the file in seconds.`
+	`Regenerate does NOT change the chunk's pick: your pick is kept until you choose another. A pick is your decision after listening: the chunk becomes ok even if that take failed the automatic checks (the chunk then shows user_pick true), so the project can reach done; a silent take cannot be accepted. The new takes are the keys that were not there before: read produce_status {id, chunk}, listen to take_files, then call produce_edit {action: "pick", take: <key>}. A pick re-assembles the file in seconds.`
 
-const produceControlDescription = `action "resume" continues an interrupted, cancelled or finished project (only missing or changed chunks render; allow_battery lets it run on battery), "cancel" stops a running one (the take being rendered finishes and is kept), "remove" deletes the project (its published files stay unless delete_outputs).`
+const produceControlDescription = `action "resume" continues an interrupted, cancelled or finished project (only missing or changed chunks render; allow_battery lets it run on battery), "cancel" stops a running one (the take being rendered finishes and is kept), "remove" deletes the project's working files; the published voiceover files (.wav .srt .vtt .words.json .manifest.json) stay unless delete_outputs is true, which deletes the finished voiceover files for good (only files this project published, and only if they are unchanged). A project that is not running cannot be cancelled: cancel then answers an error saying so.`
 
 type produceIn struct {
 	Script       string `json:"script" jsonschema:"The voiceover text. Blank line = new paragraph; [pause 0.8s] exact silence; [style: ...] opens a paragraph. Up to 40000 characters"`
-	Title        string `json:"title,omitempty" jsonschema:"Name of the project and of its output folder and files; default: the first words of the script"`
+	Title        string `json:"title,omitempty" jsonschema:"Names the output folder and files: the title lowercased, letters and digits only, at most 32 characters; without a title the project id is used"`
 	Voice        string `json:"voice,omitempty" jsonschema:"Saved voice name (a recording of at most 30 s, see voices_list); omit for the configured default voice"`
 	Style        string `json:"style,omitempty" jsonschema:"Default delivery for every paragraph: short English descriptors, up to 300 characters, e.g. calm and warm, slow"`
 	Preset       string `json:"preset,omitempty" jsonschema:"youtube (default) | reels | voice-under-music: loudness, pauses and takes per chunk"`
 	Seed         *int64 `json:"seed,omitempty" jsonschema:"0-4294967295; reproduces the whole voiceover; the status reports the seed used"`
-	Takes        int    `json:"takes,omitempty" jsonschema:"Takes per chunk, 1-3; overrides the preset"`
+	Takes        *int   `json:"takes,omitempty" jsonschema:"Takes per chunk, 1-3; overrides the preset; 0 is refused"`
 	OutPath      string `json:"out_path,omitempty" jsonschema:"Absolute path of the final .wav; its .srt .vtt .words.json .manifest.json go beside it; existing files refused unless overwrite"`
 	Overwrite    bool   `json:"overwrite,omitempty" jsonschema:"Allow replacing existing files at out_path"`
 	AllowBattery bool   `json:"allow_battery,omitempty" jsonschema:"Keep going on battery power (default: the job pauses until the Mac is plugged in)"`
@@ -81,7 +81,7 @@ type produceControlIn struct {
 	ID            string `json:"id" jsonschema:"Project id"`
 	Action        string `json:"action" jsonschema:"resume | cancel | remove"`
 	AllowBattery  bool   `json:"allow_battery,omitempty" jsonschema:"resume: keep going on battery power"`
-	DeleteOutputs bool   `json:"delete_outputs,omitempty" jsonschema:"remove: also delete the published .wav .srt .vtt .words.json .manifest.json"`
+	DeleteOutputs bool   `json:"delete_outputs,omitempty" jsonschema:"remove: ALSO delete the finished voiceover files (.wav .srt .vtt .words.json .manifest.json) for good; default false keeps them"`
 }
 
 type produceStatusOut struct {
@@ -122,8 +122,12 @@ func (d *Daemon) produceErr(err error) error {
 }
 
 func (d *Daemon) toolProduce(_ context.Context, _ *mcp.CallToolRequest, in produceIn) (*mcp.CallToolResult, vproject.Summary, error) {
+	takes, err := explicitTakes(in.Takes)
+	if err != nil {
+		return nil, vproject.Summary{}, d.produceErr(err)
+	}
 	s, err := d.prod.create(produceInput{Script: in.Script, Title: in.Title, Voice: in.Voice, Style: in.Style,
-		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: in.Takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery})
+		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery})
 	if err != nil {
 		return nil, vproject.Summary{}, d.produceErr(err)
 	}

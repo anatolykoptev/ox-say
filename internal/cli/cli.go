@@ -113,7 +113,8 @@ produce turns a whole script (a file, or - for stdin) into one finished voiceove
   -t title      the project and its folder name; -o path writes the .wav there (an absolute or relative .wav path)
   --takes N     takes per chunk, 1..3 (default: the preset's)
   --no-wait     start it and return; check with ox-say produce status <id>
-  Exit codes: 0 done, 3 done but some chunks need a listen (printed), 1 failed, 2 wrong usage.
+  Exit codes (also for status): 0 done, 3 done but some chunks need a listen (printed), 1 failed/cancelled/interrupted, 2 wrong usage.
+  On battery the job pauses and this command keeps waiting; --no-wait returns at once. --pick of a take is final (the chunk becomes ok).
   See the README, "Long-form voiceover (produce)".
 
 transcribe flags:

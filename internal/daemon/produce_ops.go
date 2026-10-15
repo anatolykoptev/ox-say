@@ -94,7 +94,7 @@ func (p *producer) newManifest(in produceInput) (*vproject.Manifest, error) {
 		return nil, &requestError{fmt.Sprintf("preset %q: want youtube, reels or voice-under-music", in.Preset)}
 	}
 	if n := utf8.RuneCountInString(in.Script); n == 0 || n > maxProduceChars {
-		return nil, &requestError{fmt.Sprintf("the script must have 1–%d characters (about an hour of speech); it has %d", maxProduceChars, n)}
+		return nil, &requestError{fmt.Sprintf("the script must have 1–%d characters (about 48 minutes of speech); it has %d", maxProduceChars, n)}
 	}
 	chunks, err := vscript.Parse(in.Script, pr.opts)
 	if err != nil {
@@ -254,7 +254,7 @@ func (p *producer) refresh(j *job) ([]takeSpec, error) {
 	for i := range j.m.Chunks {
 		c := &j.m.Chunks[i]
 		if b := specs[i].basis(); c.Basis != b {
-			c.Basis, c.Takes, c.Pick, c.Reasons, c.Status = b, nil, "", nil, vproject.ChunkPending
+			c.Basis, c.Takes, c.Pick, c.UserPick, c.Reasons, c.Status = b, nil, "", false, nil, vproject.ChunkPending
 		}
 	}
 	j.m.Progress.ChunksDone = countSettled(j.m.Chunks)
@@ -397,7 +397,8 @@ func listed(ts []vproject.TakeRef, key string) bool {
 	return false
 }
 
-// cancel flags the running job; a project that is not running is a no-op.
+// cancel flags the running job; a project that exists but is not running is
+// answered errNotRunning, never a pretended cancel.
 func (p *producer) cancel(id string) error {
 	if !vproject.ValidID(id) {
 		return errNoProject
@@ -412,7 +413,7 @@ func (p *producer) cancel(id string) error {
 	if _, err := os.Stat(filepath.Join(p.root, id, vproject.ManifestFile)); err != nil {
 		return errNoProject
 	}
-	return nil
+	return errNotRunning
 }
 
 // status is the summary of a project; a stale active status on disk reads
@@ -461,7 +462,7 @@ func (p *producer) chunkDetail(id string, index int) (chunkDetailOut, error) {
 		return chunkDetailOut{}, err
 	}
 	if index < 0 || index >= len(m.Chunks) {
-		return chunkDetailOut{}, errNoProject
+		return chunkDetailOut{}, &requestError{fmt.Sprintf("chunk %d: the project has %d chunks (numbered from 0)", index, len(m.Chunks))}
 	}
 	out := chunkDetailOut{Chunk: m.Chunks[index], TakeFiles: map[string]string{}}
 	for _, t := range out.Takes {
@@ -470,7 +471,8 @@ func (p *producer) chunkDetail(id string, index int) (chunkDetailOut, error) {
 	return out, nil
 }
 
-// list summarises every project, newest first.
+// list summarises the most recent maxListedProjects projects, newest first,
+// without their chunk lists.
 func (p *producer) list() ([]vproject.Summary, error) {
 	entries, err := os.ReadDir(p.root)
 	if errors.Is(err, os.ErrNotExist) {
@@ -480,9 +482,10 @@ func (p *producer) list() ([]vproject.Summary, error) {
 		return nil, err
 	}
 	var out []vproject.Summary
-	for k := len(entries) - 1; k >= 0; k-- {
+	for k := len(entries) - 1; k >= 0 && len(out) < maxListedProjects; k-- {
 		if id := entries[k].Name(); vproject.ValidID(id) {
 			if s, err := p.status(id); err == nil {
+				s.Chunks = []vproject.ChunkSummary{} // the list is an overview: ask for one project to see its chunks
 				out = append(out, s)
 			}
 		}

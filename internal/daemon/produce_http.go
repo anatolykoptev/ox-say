@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -26,7 +27,7 @@ type produceRequest struct {
 	Style        string `json:"style,omitempty"`
 	Preset       string `json:"preset,omitempty"`
 	Seed         *int64 `json:"seed,omitempty"`
-	Takes        int    `json:"takes,omitempty"`
+	Takes        *int   `json:"takes,omitempty"`
 	OutPath      string `json:"out_path,omitempty"`
 	Overwrite    bool   `json:"overwrite,omitempty"`
 	AllowBattery bool   `json:"allow_battery,omitempty"`
@@ -75,7 +76,7 @@ func produceStatusCode(err error) int {
 	var be *busyError
 	var ce *cancellingError
 	switch {
-	case errors.As(err, &be), errors.As(err, &ce):
+	case errors.As(err, &be), errors.As(err, &ce), errors.Is(err, errNotRunning):
 		return http.StatusConflict
 	case errors.Is(err, errNoProject):
 		return http.StatusNotFound
@@ -108,8 +109,13 @@ func (d *Daemon) handleProduceCreate(w http.ResponseWriter, r *http.Request) {
 		d.writeProduceErr(w, err)
 		return
 	}
+	takes, err := explicitTakes(in.Takes)
+	if err != nil {
+		d.writeProduceErr(w, err)
+		return
+	}
 	s, err := d.prod.create(produceInput{Script: in.Script, Title: in.Title, Voice: in.Voice, Style: in.Style,
-		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: in.Takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery})
+		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery})
 	if err != nil {
 		d.writeProduceErr(w, err)
 		return
@@ -135,10 +141,22 @@ func (d *Daemon) handleProduceStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
+// explicitTakes turns the optional takes field into the producer's value (0 =
+// the preset's): a given 0 or negative number is refused, not read as "default".
+func explicitTakes(p *int) (int, error) {
+	if p == nil {
+		return 0, nil
+	}
+	if *p < 1 || *p > maxTakesPerChunk {
+		return 0, &requestError{fmt.Sprintf("takes must be 1..%d", maxTakesPerChunk)}
+	}
+	return *p, nil
+}
+
 func chunkIndex(r *http.Request) (int, error) {
 	n, err := strconv.Atoi(r.PathValue("n"))
 	if err != nil || n < 0 {
-		return 0, errNoProject
+		return 0, &requestError{"the chunk number must be a whole number, 0 or more"}
 	}
 	return n, nil
 }

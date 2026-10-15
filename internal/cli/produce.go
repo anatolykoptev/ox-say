@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Exit codes of the produce commands that wait for a project.
@@ -30,6 +32,12 @@ const (
 	// produceReadLimit bounds one daemon answer.
 	produceReadLimit = 8 << 20
 	defaultRegen     = 2
+	// maxTakes is the daemon's limit on takes per chunk.
+	maxTakes = 3
+	// pollRetries is how many failed status requests in a row end the wait.
+	pollRetries = 3
+	// defaultTermWidth is used when the terminal size cannot be read.
+	defaultTermWidth = 80
 	secondsPerMinute = 60
 	producePath      = "/v1/produce"
 	// producePollInterval is how often the CLI asks the daemon for progress.
@@ -187,6 +195,69 @@ func decodeSummary(data []byte) (projectSummary, error) {
 	return s, nil
 }
 
+// verbSpec is what one produce verb accepts: how many positionals follow the
+// verb and which flags apply. Everything else is a usage error that names the
+// token (a typo must not be dropped silently).
+type verbSpec struct {
+	args     int
+	values   []string
+	switches []string
+}
+
+// createSpec is `ox-say produce <script>`: any word that is not a verb names a script.
+var createSpec = verbSpec{args: 1, values: []string{"v", "i", "t", "o", "preset", "seed", "takes"},
+	switches: []string{"overwrite", "allow-battery", "no-wait"}}
+
+var produceVerbs = map[string]verbSpec{
+	"ls":     {},
+	"status": {args: 1, values: []string{"chunk"}},
+	"resume": {args: 1, switches: []string{"allow-battery", "no-wait"}},
+	"cancel": {args: 1},
+	"rm":     {args: 1, switches: []string{"delete-outputs"}},
+	"chunk":  {args: 2, values: []string{"regen", "pick", "text"}, switches: []string{"no-wait"}},
+}
+
+// flagText is a flag as the person typed it.
+func flagText(name string) string {
+	if len(name) == 1 {
+		return "-" + name
+	}
+	return "--" + name
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// checkUsage rejects flags that do not belong to the verb, unknown "-" tokens
+// and a wrong number of arguments; it returns the message to print.
+func checkUsage(verb string, spec verbSpec, vals map[string]string, sw map[string]bool, args []string) string {
+	for name := range vals {
+		if !contains(spec.values, name) {
+			return fmt.Sprintf("%s does not apply to produce %s", flagText(name), verb)
+		}
+	}
+	for name := range sw {
+		if !contains(spec.switches, name) {
+			return fmt.Sprintf("%s does not apply to produce %s", flagText(name), verb)
+		}
+	}
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			return fmt.Sprintf("unknown flag %s (see ox-say help)", a)
+		}
+	}
+	if len(args) != spec.args {
+		return fmt.Sprintf("produce %s takes %d argument(s), got %d: %s", verb, spec.args, len(args), strings.Join(args, " "))
+	}
+	return ""
+}
+
 // cmdProduce dispatches `ox-say produce …`; poll is the wait between status
 // requests (the Run case passes a second).
 func cmdProduce(args []string, stdout, stderr io.Writer, poll time.Duration) int {
@@ -201,22 +272,31 @@ func cmdProduce(args []string, stdout, stderr io.Writer, poll time.Duration) int
 		outln(stderr, produceUsage)
 		return exitUsage
 	}
+	verb, rest := pos[0], pos[1:]
+	spec, known := produceVerbs[verb]
+	if !known {
+		verb, rest, spec = "create", pos, createSpec
+	}
+	if msg := checkUsage(verb, spec, vals, switches, rest); msg != "" {
+		outln(stderr, "ox-say:", msg)
+		return exitUsage
+	}
 	c := &produceCmd{vals: vals, sw: switches, out: stdout, err: stderr, poll: poll}
-	switch pos[0] {
+	switch verb {
 	case "ls":
 		return c.list()
 	case "status":
-		return c.status(pos[1:])
+		return c.status(rest)
 	case "resume":
-		return c.resume(pos[1:])
+		return c.resume(rest)
 	case "cancel":
-		return c.cancel(pos[1:])
+		return c.cancel(rest)
 	case "rm":
-		return c.remove(pos[1:])
+		return c.remove(rest)
 	case "chunk":
-		return c.chunk(pos[1:])
+		return c.chunk(rest)
 	}
-	return c.create(pos)
+	return c.create(rest)
 }
 
 // pullSwitches removes the value-less switches from pos and records them.
@@ -224,13 +304,7 @@ func pullSwitches(pos []string, into map[string]bool) []string {
 	rest := make([]string, 0, len(pos))
 	for _, a := range pos {
 		name := strings.TrimLeft(a, "-")
-		known := false
-		for _, s := range produceSwitchNames {
-			if name == s && strings.HasPrefix(a, "-") {
-				known = true
-			}
-		}
-		if known {
+		if strings.HasPrefix(a, "-") && contains(produceSwitchNames, name) {
 			into[name] = true
 			continue
 		}
@@ -249,15 +323,19 @@ type produceCmd struct {
 
 // readScript reads the script from a file or, for "-", from stdin.
 func readScript(arg string) (string, error) {
-	var r io.Reader = os.Stdin
-	if arg != "-" {
-		f, err := os.Open(arg)
-		if err != nil {
-			return "", err
-		}
-		defer func() { _ = f.Close() }()
-		r = f
+	if arg == "-" {
+		return readScriptFrom(os.Stdin)
 	}
+	f, err := os.Open(arg)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	return readScriptFrom(f)
+}
+
+// readScriptFrom reads at most maxScriptBytes; one byte more is an error.
+func readScriptFrom(r io.Reader) (string, error) {
 	b, err := io.ReadAll(io.LimitReader(r, maxScriptBytes+1))
 	if err != nil {
 		return "", err
@@ -292,6 +370,9 @@ func (c *produceCmd) createBody(script string) (map[string]any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("--%s %s: %w", n, raw, err)
 		}
+		if n == "takes" && (v.(int64) < 1 || v.(int64) > maxTakes) {
+			return nil, fmt.Errorf("--takes %s: must be 1 to %d", raw, maxTakes)
+		}
 		body[n] = v
 	}
 	for sw, field := range map[string]string{"overwrite": "overwrite", "allow-battery": "allow_battery"} {
@@ -317,61 +398,99 @@ func (c *produceCmd) create(pos []string) int {
 	if err != nil {
 		return failProduce(c.err, err)
 	}
-	return c.follow(data)
+	code, _ := c.follow(data)
+	return code
 }
 
 // follow takes the daemon's answer to a request that started a run, and
-// either reports it (--no-wait) or waits for the end.
-func (c *produceCmd) follow(data []byte) int {
+// either reports it (--no-wait) or waits for the end. It returns the exit code
+// and the final summary (nil when the run was not waited for or contact was lost).
+func (c *produceCmd) follow(data []byte) (int, *projectSummary) {
 	s, err := decodeSummary(data)
 	if err != nil {
 		outln(c.err, "ox-say:", err)
-		return exitFailed
+		return exitFailed, nil
 	}
 	if c.sw["no-wait"] {
 		outf(c.out, "%s\ncheck on it: ox-say produce status %s\n", s.ID, s.ID)
-		return exitDone
+		return exitDone, nil
 	}
 	final, err := c.wait(s.ID)
 	if err != nil {
-		outf(c.err, "ox-say: lost contact with the daemon; the voiceover keeps going. Check: ox-say produce status %s\n", s.ID)
-		return failProduce(c.err, err)
+		var ae *apiError
+		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
+			outf(c.err, "ox-say: the project %s was removed while waiting\n", s.ID)
+			return exitFailed, nil
+		}
+		outf(c.err, "ox-say: lost contact with the daemon (%v); the voiceover keeps going. Check: ox-say produce status %s\n", err, s.ID)
+		return exitFailed, nil
 	}
 	c.report(&final)
-	return exitCode(final.Status)
+	return exitCode(final.Status), &final
 }
 
 // wait polls the project until it is no longer running. On a terminal the
-// progress line rewrites itself; anywhere else (a log, a pipe) each change is
-// its own line.
+// progress line rewrites itself (cut to the terminal's width, the rest of the
+// line cleared); anywhere else (a log, a pipe) each change is its own line. A
+// request that fails is retried pollRetries times in a row before giving up;
+// a 404 ends at once (the project is gone).
 func (c *produceCmd) wait(id string) (projectSummary, error) {
 	tty := isTerminal(c.err)
-	last := ""
+	width := termWidth(c.err)
+	last, failures := "", 0
 	for {
 		time.Sleep(c.poll)
 		data, err := produceCall(http.MethodGet, producePath+"/"+url.PathEscape(id), nil)
-		if err != nil {
+		var ae *apiError
+		if err != nil && (errors.As(err, &ae) || failures+1 >= pollRetries) {
 			return projectSummary{}, err
 		}
+		if err != nil {
+			failures++
+			continue
+		}
+		failures = 0
 		s, err := decodeSummary(data)
 		if err != nil {
 			return s, err
 		}
-		line := progressLine(&s, id)
+		line := fitLine(progressLine(&s, id), width)
 		if !s.active() {
 			if tty && last != "" {
-				outf(c.err, "\r%s\r", strings.Repeat(" ", len(last)))
+				outf(c.err, "\r%s\r", clearLine)
 			}
 			return s, nil
 		}
 		switch {
 		case tty:
-			outf(c.err, "\r%s", line)
+			outf(c.err, "\r%s%s", line, clearLine)
 		case line != last:
 			outln(c.err, line)
 		}
 		last = line
 	}
+}
+
+// clearLine erases from the cursor to the end of the terminal line.
+const clearLine = "\x1b[K"
+
+// fitLine cuts line to width-1 characters so it never wraps.
+func fitLine(line string, width int) string {
+	r := []rune(line)
+	if width > 1 && len(r) > width-1 {
+		return string(r[:width-2]) + "…"
+	}
+	return line
+}
+
+// termWidth is the terminal's column count, or a default.
+func termWidth(w io.Writer) int {
+	if f, ok := w.(*os.File); ok {
+		if ws, err := unix.IoctlGetWinsize(int(f.Fd()), unix.TIOCGWINSZ); err == nil && ws.Col > 0 {
+			return int(ws.Col)
+		}
+	}
+	return defaultTermWidth
 }
 
 // isTerminal reports whether w is a character device (a terminal).
@@ -475,7 +594,10 @@ func (c *produceCmd) status(pos []string) int {
 	}
 	outf(c.out, "%s: %s · chunk %d/%d\n", s.ID, statusWords(s.Status, s.ID), s.Progress.ChunksDone, s.Progress.ChunksTotal)
 	c.report(&s)
-	return exitDone
+	if s.active() {
+		return exitDone // still going: nothing has gone wrong
+	}
+	return exitCode(s.Status)
 }
 
 func (c *produceCmd) resume(pos []string) int {
@@ -491,7 +613,8 @@ func (c *produceCmd) resume(pos []string) int {
 	if err != nil {
 		return failProduce(c.err, err)
 	}
-	return c.follow(data)
+	code, _ := c.follow(data)
+	return code
 }
 
 func (c *produceCmd) cancel(pos []string) int {
