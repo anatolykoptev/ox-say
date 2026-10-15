@@ -44,7 +44,7 @@ type fakePorts struct {
 	normHook    func()        // non-nil: Normalize calls it first
 	normNoop    bool          // Normalize reports success and writes nothing
 	normOut     []byte        // non-nil: Normalize writes these bytes instead of its input
-	normLimited bool          // Normalize reports loudnorm's dynamic mode
+	normLimited bool          // Normalize reports a hard-limited take
 	outRoot     string        // non-empty: OutputRoot answers it
 	hang        chan struct{} // non-nil: Render ignores its context and waits for this
 	events      []string      // "quiet", "render", "hear" in call order

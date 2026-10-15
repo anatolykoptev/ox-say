@@ -38,7 +38,7 @@ const (
 	// loudnessToleranceLU is how far off target a result may land before it is
 	// corrected; loudnessRefinements bounds the corrections.
 	loudnessToleranceLU = 0.3
-	loudnessRefinements = 2
+	loudnessRefinements = 4
 	// missedTargetLU is how far under the target a result may land before the
 	// take carries a warning (the peaks, not the gain, were the limit).
 	missedTargetLU = 0.5

@@ -458,7 +458,7 @@ func meterOf(t *testing.T, audio []byte, inputArgs ...string) (lufs, truePeak fl
 // -> `limit := false` -> the peaks stay over the ceiling -> RED.
 // Mutation: loudness.go levelFilter, `f := fmt.Sprintf("volume=%.4fdB", gainDB)`
 // -> `f := "volume=0dB"` -> the take keeps its level -> RED.
-// Mutation: loudness.go, loudnessRefinements = 2 -> 0 -> the -14 case lands
+// Mutation: loudness.go, loudnessRefinements = 4 -> 0 -> the -14 case lands
 // 1.3 LU under (the limiter costs loudness) -> RED.
 func TestLoudnormHoldsTheCeilingAndHitsTheTargetOnPeakyTakes(t *testing.T) {
 	for _, rate := range []int{testutil.VoxRate, testutil.QwenRate} {
