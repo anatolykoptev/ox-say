@@ -28,8 +28,9 @@ public enum StudioMenu {
     ///   - job: the voiceover the app is following, while it is not over.
     ///   - serviceWaiting: the app is following `job` but the daemon did not answer the last poll.
     ///   - hasOutputFolder: the latest voiceover's folder exists on this Mac.
+    ///   - readingDocument: a document is being read for a new voiceover; a second one waits.
     public static func rows(service: ServiceState, installing: Bool, job: ProduceJob?,
-                            serviceWaiting: Bool, hasOutputFolder: Bool) -> [MenuRow] {
+                            serviceWaiting: Bool, hasOutputFolder: Bool, readingDocument: Bool = false) -> [MenuRow] {
         let active = job.flatMap { $0.status.isTerminal ? nil : $0 }
         switch service {
         case .unknown:
@@ -42,7 +43,7 @@ public enum StudioMenu {
                 guard status.installWouldHelp else { return [disabled(unavailableText(reason: status.studioReason))] }
                 return [.item(title: installTitle, isOn: false, isEnabled: !installing, action: .installStudioVoice)]
             }
-            var rows: [MenuRow] = [.item(title: newVoiceoverTitle, isOn: false, isEnabled: active == nil, action: .newVoiceover)]
+            var rows: [MenuRow] = [.item(title: newVoiceoverTitle, isOn: false, isEnabled: active == nil && !readingDocument, action: .newVoiceover)]
             rows += jobRows(active, waiting: serviceWaiting)
             rows.append(.item(title: folderTitle, isOn: false, isEnabled: hasOutputFolder, action: hasOutputFolder ? .openVoiceoversFolder : nil))
             rows.append(.separator)

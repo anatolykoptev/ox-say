@@ -29,6 +29,8 @@ final class StudioController: NSObject {
     let host: StudioHost
     private var service = StudioMenu.ServiceState.unknown
     private var latestFolder: URL?
+    /// A document is being read: the menu row waits and the pill says so.
+    private var readingDocument = false
     private lazy var follower = VoiceoverFollower(
         source: VoiceoverFollower.Source(voiceover: { [client = host.client] in try await client.voiceover(id: $0) },
                                          voiceovers: { [client = host.client] in try await client.voiceovers() }),
@@ -51,7 +53,8 @@ final class StudioController: NSObject {
         let folderExists = latestFolder.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
         let rows = StudioMenu.rows(
             service: service, installing: host.installing(), job: follower.job,
-            serviceWaiting: follower.serviceWaiting, hasOutputFolder: folderExists)
+            serviceWaiting: follower.serviceWaiting, hasOutputFolder: folderExists,
+            readingDocument: readingDocument)
         MenuRenderer.fill(submenu, rows: rows, target: self) { action in (#selector(choose(_:)), action) }
     }
 
@@ -120,20 +123,30 @@ final class StudioController: NSObject {
                 return
             }
             let choices = StudioMenu.voiceChoices(voices: voices, russianPick: self.host.russianVoicePick())
-            let sheet = ReviewSheet(defaultTitle: StudioMenu.defaultTitle(fileName: file.lastPathComponent), text: script, voices: choices)
-            guard let review = sheet.run() else { return }
-            do {
-                let started = try await self.host.client.startVoiceover(script: review.script, title: review.title,
-                                                                         voice: review.voice, format: review.format)
-                self.follower.follow(started)
-            } catch {
-                _ = self.host.alert("Couldn't start the voiceover", Self.plain(error), ["OK"])
-            }
+            let first = ReviewSheet.Result(title: StudioMenu.defaultTitle(fileName: file.lastPathComponent), script: script,
+                                           format: ProduceFormat.allCases[0], voice: choices.names[choices.selected])
+            // A start the daemon refuses reopens the sheet with the person's text, not the first cleaning.
+            let started = await ReviewRetry.run(first, review: { ReviewSheet(draft: $0, voiceNames: choices.names).run() },
+                start: { [client = self.host.client] draft in
+                    try await client.startVoiceover(script: draft.script, title: draft.title, voice: draft.voice, format: draft.format)
+                },
+                failed: { error in
+                    _ = self.host.alert("Couldn't start the voiceover", Self.plain(error) + " Your text is kept in the next window.", ["OK"])
+                })
+            if let started { self.follower.follow(started) }
         }
     }
 
     /// The cleaned text of the document, or nil after telling the person why there is none.
     private func readScript(_ file: URL) async -> String? {
+        readingDocument = true
+        render()
+        host.pill("Reading the document…")
+        defer {
+            readingDocument = false
+            render()
+            host.pill(nil)
+        }
         do {
             let document = try await DocumentReader.read(file)
             let script = document.script
@@ -145,7 +158,6 @@ final class StudioController: NSObject {
             return nil
         }
     }
-
 
     private func stopVoiceover() {
         guard let job = follower.job else { return }

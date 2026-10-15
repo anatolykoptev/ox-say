@@ -12,6 +12,8 @@ final class ReviewSheet: NSObject, NSTextViewDelegate, NSWindowDelegate {
         var voice: String?
     }
 
+    /// Starts from inside the editor, where Return types a new line.
+    static let startKeyHint = "⌘Return"
     static let editorSize = NSSize(width: 560, height: 300)
     static let editorFontSize: CGFloat = 13
     private static let contentInset: CGFloat = 16
@@ -30,15 +32,18 @@ final class ReviewSheet: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private var outcome: Result?
     private var finished = false
 
-    init(defaultTitle: String, text: String, voices: (names: [String?], selected: Int)) {
+    /// The sheet opens on `draft`: the document's first cleaning, or what the person
+    /// had when a start was refused. `voiceNames` are the Voice popup's choices (nil is the default voice).
+    init(draft: Result, voiceNames: [String?]) {
         textView = scroll.documentView as! NSTextView
-        titleField = NSTextField(string: defaultTitle)
-        voiceNames = voices.names
+        titleField = NSTextField(string: draft.title)
+        self.voiceNames = voiceNames
         super.init()
         formatPopup.addItems(withTitles: ProduceFormat.allCases.map(\.title))
-        voicePopup.addItems(withTitles: voices.names.map { $0 ?? "Default voice" })
-        voicePopup.selectItem(at: voices.selected)
-        configureEditor(text)
+        formatPopup.selectItem(at: ProduceFormat.allCases.firstIndex(of: draft.format) ?? 0)
+        voicePopup.addItems(withTitles: voiceNames.map { $0 ?? "Default voice" })
+        voicePopup.selectItem(at: voiceNames.firstIndex { $0 == draft.voice } ?? 0)
+        configureEditor(draft.script)
         build()
         refresh()
     }
@@ -83,6 +88,8 @@ final class ReviewSheet: NSObject, NSTextViewDelegate, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         status.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         startButton.keyEquivalent = "\r"
+        startButton.keyEquivalentModifierMask = .command
+        startButton.toolTip = "Start the voiceover (\(Self.startKeyHint))"
         startButton.target = self
         startButton.action = #selector(start)
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
