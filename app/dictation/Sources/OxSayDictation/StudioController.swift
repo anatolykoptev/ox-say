@@ -112,33 +112,40 @@ final class StudioController: NSObject {
     // MARK: flows
 
     private func newVoiceover() {
-        guard let file = StudioForms.chooseTextFile() else { return }
-        guard let script = try? String(contentsOf: file, encoding: .utf8) else {
-            _ = host.alert("Couldn't read that file", "Choose a plain text or Markdown file saved as UTF-8.", ["OK"])
-            return
-        }
-        if let problem = ProduceRequest.scriptProblem(script) {
-            _ = host.alert("This file can't be voiced", problem, ["OK"])
-            return
-        }
+        guard let file = StudioForms.chooseDocument() else { return }
         Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self, let script = await self.readScript(file) else { return }
             guard let voices = try? await self.host.speech.voices() else {
                 _ = self.host.alert("The ox-say service isn't answering", "Try again in a moment.", ["OK"])
                 return
             }
             let choices = StudioMenu.voiceChoices(voices: voices, russianPick: self.host.russianVoicePick())
-            guard let form = StudioForms.voiceoverForm(defaultTitle: StudioMenu.defaultTitle(fileName: file.lastPathComponent),
-                                                      choices: choices) else { return }
+            let sheet = ReviewSheet(defaultTitle: StudioMenu.defaultTitle(fileName: file.lastPathComponent), text: script, voices: choices)
+            guard let review = sheet.run() else { return }
             do {
-                let started = try await self.host.client.startVoiceover(script: script, title: form.title,
-                                                                         voice: form.voice, format: form.format)
+                let started = try await self.host.client.startVoiceover(script: review.script, title: review.title,
+                                                                         voice: review.voice, format: review.format)
                 self.follower.follow(started)
             } catch {
                 _ = self.host.alert("Couldn't start the voiceover", Self.plain(error), ["OK"])
             }
         }
     }
+
+    /// The cleaned text of the document, or nil after telling the person why there is none.
+    private func readScript(_ file: URL) async -> String? {
+        do {
+            let document = try await DocumentReader.read(file)
+            let script = document.script
+            if script.isEmpty { _ = host.alert("Nothing to read", document.emptyMessage, ["OK"]) }
+            return script.isEmpty ? nil : script
+        } catch {
+            let why = (error as? DocumentError)?.description ?? "The file could not be opened."
+            _ = host.alert("Couldn't read that file", why, ["OK"])
+            return nil
+        }
+    }
+
 
     private func stopVoiceover() {
         guard let job = follower.job else { return }

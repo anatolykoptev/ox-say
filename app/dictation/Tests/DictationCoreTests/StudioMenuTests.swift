@@ -102,16 +102,16 @@ final class StudioMenuTests: XCTestCase {
 
     func testAvailableStudioWithoutAJob() {
         XCTAssertEqual(titles(rows(available, folder: true)),
-                       ["New Voiceover from Text File…", "Open Voiceovers Folder", "---", "Create a Voice…"])
+                       ["New Voiceover from Document…", "Open Voiceovers Folder", "---", "Create a Voice…"])
         XCTAssertTrue(rows(available).contains(.item(title: "Open Voiceovers Folder", isOn: false, isEnabled: false, action: nil)),
                       "no folder yet: the row is disabled")
     }
 
     func testRunningJobShowsProgressAndStop() {
         let result = rows(available, job: job(.running), folder: true)
-        XCTAssertEqual(titles(result), ["New Voiceover from Text File…", "“Ch 1” — 2 of 5 parts", "Stop Voiceover",
+        XCTAssertEqual(titles(result), ["New Voiceover from Document…", "“Ch 1” — 2 of 5 parts", "Stop Voiceover",
                                         "Open Voiceovers Folder", "---", "Create a Voice…"])
-        XCTAssertTrue(result.contains(.item(title: "New Voiceover from Text File…", isOn: false, isEnabled: false, action: .newVoiceover)),
+        XCTAssertTrue(result.contains(.item(title: "New Voiceover from Document…", isOn: false, isEnabled: false, action: .newVoiceover)),
                       "the daemon runs one voiceover at a time")
         XCTAssertTrue(result.contains(.item(title: "“Ch 1” — 2 of 5 parts", isOn: false, isEnabled: false, action: nil)))
         XCTAssertTrue(result.contains(.item(title: "Stop Voiceover", isOn: false, isEnabled: true, action: .stopVoiceover)))
@@ -126,7 +126,7 @@ final class StudioMenuTests: XCTestCase {
 
     func testAFinishedJobShowsNoProgressRow() {
         let result = titles(rows(available, job: job(.done)))
-        XCTAssertEqual(result, ["New Voiceover from Text File…", "Open Voiceovers Folder", "---", "Create a Voice…"])
+        XCTAssertEqual(result, ["New Voiceover from Document…", "Open Voiceovers Folder", "---", "Create a Voice…"])
     }
 
     func testVoicePopupPreselectsTheRussianPick() {

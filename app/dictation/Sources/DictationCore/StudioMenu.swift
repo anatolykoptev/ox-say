@@ -4,7 +4,7 @@ import Foundation
 /// /status and the voiceover the app is following. Pure: AppKit only draws the rows.
 public enum StudioMenu {
     public static let installTitle = "Install Studio Voice (about 3 GB)…"
-    public static let newVoiceoverTitle = "New Voiceover from Text File…"
+    public static let newVoiceoverTitle = "New Voiceover from Document…"
     public static let stopTitle = "Stop Voiceover"
     public static let continueTitle = "Continue on Battery Power"
     public static let folderTitle = "Open Voiceovers Folder"
