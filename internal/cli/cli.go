@@ -306,10 +306,11 @@ func cmdSay(args []string, stdout, stderr io.Writer) int {
 		outln(stderr, "ox-say:", err)
 		return 2
 	}
-	audio, err := postJSON(daemonURL()+"/v1/audio/speech", body)
+	audio, hdr, err := postJSONHeaders(daemonURL()+"/v1/audio/speech", body)
 	if err != nil {
 		return failDaemon(stderr, err)
 	}
+	reportRender(stderr, hdr, vals["m"])
 	if out != "" {
 		if err := os.WriteFile(out, audio, 0o644); err != nil {
 			fmt.Fprintln(stderr, "ox-say:", err)
@@ -345,23 +346,29 @@ func cmdSay(args []string, stdout, stderr io.Writer) int {
 // postJSON POSTs a JSON body and returns the response bytes or an
 // error carrying the daemon's error message.
 func postJSON(url string, body map[string]any) ([]byte, error) {
+	data, _, err := postJSONHeaders(url, body)
+	return data, err
+}
+
+// postJSONHeaders is postJSON that also returns the response headers.
+func postJSONHeaders(url string, body map[string]any) ([]byte, http.Header, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	resp, err := httpClient.Post(url, "application/json", strings.NewReader(string(raw)))
 	if err != nil {
-		return nil, daemonErr(err)
+		return nil, nil, daemonErr(err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 256<<20))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("daemon: %s: %s", resp.Status, extractErr(data))
+		return nil, nil, fmt.Errorf("daemon: %s: %s", resp.Status, extractErr(data))
 	}
-	return data, nil
+	return data, resp.Header, nil
 }
 
 // extractErr pulls "error.message" out of a JSON error body if present.

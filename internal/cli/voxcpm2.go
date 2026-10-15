@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -27,25 +29,63 @@ func addQualityFlags(body map[string]any, vals map[string]string) error {
 	}
 	numbers := []struct {
 		flagName, field string
-		parse           func(string) (any, error)
+		whole           bool
 	}{
-		{"seed", "seed", func(s string) (any, error) { return strconv.ParseInt(s, 10, 64) }},
-		{"cfg", "cfg_value", func(s string) (any, error) { return strconv.ParseFloat(s, 64) }},
-		{"steps", "inference_timesteps", func(s string) (any, error) { return strconv.Atoi(s) }},
-		{"loudness", "loudness_lufs", func(s string) (any, error) { return strconv.ParseFloat(s, 64) }},
+		{"seed", "seed", true},
+		{"cfg", "cfg_value", false},
+		{"steps", "inference_timesteps", true},
+		{"loudness", "loudness_lufs", false},
 	}
 	for _, n := range numbers {
 		raw, given := vals[n.flagName]
 		if !given {
 			continue
 		}
-		v, err := n.parse(raw)
+		v, err := parseNumber(raw, n.whole)
 		if err != nil {
-			return fmt.Errorf("--%s %s: not a number", n.flagName, raw)
+			return fmt.Errorf("--%s %s: %w", n.flagName, raw, err)
 		}
 		body[n.field] = v
 	}
 	return nil
+}
+
+// reportRender tells the person, on stderr, what the daemon says about the take:
+// the seed to reuse, a warning (a take that may contain babble, a request that
+// degraded), and a plain note when another engine spoke than the one asked for.
+// stdout and the audio stay as they were.
+func reportRender(w io.Writer, hdr http.Header, asked string) {
+	if seed := hdr.Get("X-Ox-Say-Seed"); seed != "" {
+		outf(w, "seed %s\n", seed)
+	}
+	if warning := hdr.Get("X-Ox-Say-Warning"); warning != "" {
+		outf(w, "warning: %s\n", warning)
+	}
+	if got := hdr.Get("X-Ox-Say-Model"); asked != "" && got != "" && got != asked {
+		outf(w, "note: you asked for %s, and %s spoke\n", asked, got)
+	}
+}
+
+var (
+	errNotNumber = errors.New("not a number")
+	errNotWhole  = errors.New("not a whole number")
+)
+
+// parseNumber reads a finite number; whole demands an integer (a seed, a step
+// count). NaN and Inf parse as floats but are no number a daemon can use.
+func parseNumber(raw string, whole bool) (any, error) {
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return nil, errNotNumber
+	}
+	if !whole {
+		return f, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return nil, errNotWhole
+	}
+	return n, nil
 }
 
 // addVoiceMeta copies --engine, --style and --designed-from, when given, into body.

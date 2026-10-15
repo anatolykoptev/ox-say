@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,7 +35,7 @@ func stubCalls(t *testing.T, reply []byte) *[]recordedCall {
 }
 
 // say forwards every quality flag as a typed JSON field.
-// Mutation: internal/cli/cli.go addNumberFlags, store the raw string for --cfg
+// Mutation: internal/cli/cli.go addQualityFlags, store the raw string for --cfg
 // (no strconv) -> the body carries "cfg_value":"2.5" -> RED.
 func TestSayForwardsQualityFlags(t *testing.T) {
 	calls := stubCalls(t, testutil.TinyWAV())
@@ -76,7 +78,7 @@ func TestSayWithoutNewFlagsSendsLegacyBody(t *testing.T) {
 }
 
 // A malformed number is a plain message and exit 2; nothing reaches the daemon.
-// Mutation: internal/cli/cli.go addNumberFlags, ignore the parse error -> RED.
+// Mutation: internal/cli/cli.go addQualityFlags, ignore the parse error -> RED.
 func TestSayBadNumberExits2(t *testing.T) {
 	calls := stubCalls(t, testutil.TinyWAV())
 	for _, flagName := range []string{"seed", "cfg", "steps", "loudness"} {
@@ -208,5 +210,79 @@ func TestStatusStudioVoiceLine(t *testing.T) {
 	}
 	if out = statusOut(base + `}`); strings.Contains(out, "studio voice") {
 		t.Errorf("studio voice line printed for a keyless payload: %q", out)
+	}
+}
+
+// NaN, Inf and a fraction where a whole number is due are refused before
+// anything is sent.
+// Mutation: internal/cli/voxcpm2.go parseNumber, delete the math.IsNaN/IsInf
+// test -> RED (NaN is sent); replace the ParseInt step by returning int64(f)
+// -> RED (--seed 1.5 is accepted).
+func TestSayRejectsNonFiniteAndFractionalNumbers(t *testing.T) {
+	calls := stubCalls(t, testutil.TinyWAV())
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--cfg", "NaN"}, "ox-say: --cfg NaN: not a number\n"},
+		{[]string{"--loudness", "Inf"}, "ox-say: --loudness Inf: not a number\n"},
+		{[]string{"--loudness", "-inf"}, "ox-say: --loudness -inf: not a number\n"},
+		{[]string{"--seed", "1.5"}, "ox-say: --seed 1.5: not a whole number\n"},
+		{[]string{"--steps", "2.5"}, "ox-say: --steps 2.5: not a whole number\n"},
+	} {
+		var so, se strings.Builder
+		args := append(tc.args, "-o", filepath.Join(t.TempDir(), "o.wav"), "hi")
+		if code := cmdSay(args, &so, &se); code != 2 || se.String() != tc.want {
+			t.Errorf("%v: exit %d stderr %q, want exit 2 %q", tc.args, code, se.String(), tc.want)
+		}
+	}
+	if len(*calls) != 0 {
+		t.Errorf("reached the daemon: %v", *calls)
+	}
+}
+
+// say tells the person, on stderr, the seed, the warning, and when another
+// engine spoke than the one asked for; stdout and the audio file stay as they
+// were, and a plain say prints nothing extra.
+// Mutation: internal/cli/cli.go cmdSay, delete the reportRender call -> RED.
+func TestSayReportsSeedWarningAndFallback(t *testing.T) {
+	var hdr map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		for k, v := range hdr {
+			w.Header().Set(k, v)
+		}
+		_, _ = w.Write(testutil.TinyWAV())
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("OX_SAY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+	run := func(args ...string) (string, string, []byte) {
+		out := filepath.Join(t.TempDir(), "o.wav")
+		var so, se strings.Builder
+		if code := cmdSay(append(args, "-o", out, "hi"), &so, &se); code != 0 {
+			t.Fatalf("exit %d: %s", code, se.String())
+		}
+		audio, _ := os.ReadFile(out)
+		return strings.ReplaceAll(so.String(), out, "OUT"), se.String(), audio
+	}
+
+	hdr = map[string]string{"X-Ox-Say-Model": "qwen3-tts", "X-Ox-Say-Seed": "42",
+		"X-Ox-Say-Warning": "spoken by qwen3-tts: Studio voices need a Mac with Apple Silicon."}
+	so, se, audio := run("-m", "voxcpm2")
+	if so != "OUT\n" || !bytes.Equal(audio, testutil.TinyWAV()) {
+		t.Errorf("stdout %q / audio changed", so)
+	}
+	for _, want := range []string{"seed 42\n", "warning: spoken by qwen3-tts: Studio voices need a Mac with Apple Silicon.\n",
+		"note: you asked for voxcpm2, and qwen3-tts spoke\n"} {
+		if !strings.Contains(se, want) {
+			t.Errorf("stderr lacks %q: %q", want, se)
+		}
+	}
+	// No model asked: no mismatch note. No headers: nothing at all.
+	if _, se, _ = run(); strings.Contains(se, "note:") {
+		t.Errorf("a note without a model asked: %q", se)
+	}
+	hdr = nil
+	if _, se, _ = run("-m", "voxcpm2"); se != "" {
+		t.Errorf("stderr %q, want empty", se)
 	}
 }
