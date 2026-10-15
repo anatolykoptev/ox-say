@@ -1,0 +1,18 @@
+diff --git a/app/server/runtime.cpp b/app/server/runtime.cpp
+index 1259ddf5..e6b1df5a 100644
+--- a/app/server/runtime.cpp
++++ b/app/server/runtime.cpp
+@@ -2223,6 +2223,13 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
+     if (const auto * value = body.find("reference_text")) {
+         request.options["reference_text"] = value->as_string();
+     }
++    // ox-say: "ultimate" cloning — VoxCPM2 continues from prompt audio plus its
++    // transcript (reference_text). The speech route otherwise only fills the
++    // reference (voice_ref), and reference_text alone is then ignored.
++    if (const auto * value = body.find("prompt_audio")) {
++        request.audio_input = minitts::cli::read_audio_buffer(
++            resolve_path(request_base_, value->as_string()));
++    }
+     const auto * speed = body.find("speed");
+     if (speed == nullptr) {
+         speed = body.find("speaking_rate");

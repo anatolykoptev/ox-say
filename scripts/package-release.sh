@@ -30,7 +30,7 @@ VERSION="$version" "$root/app/dictation/build.sh"
 # i8mm/BF16/SME an M1 lacks. One such instruction is a SIGILL there, and a
 # build machine that has it would slip it in silently. The guards fail
 # closed on an otool error.
-for bin in tts-server ox-stt ox-align; do
+for bin in tts-server ox-stt ox-align $( [ -f "$work/out/audiocpp_server" ] && echo audiocpp_server ); do
     "$root/scripts/$baseline" "$work/out/$bin"
 done
 
@@ -39,6 +39,10 @@ mkdir -p "$stage/bin" "$stage/engine/licenses" "$stage/launchd" "$stage/scripts"
 echo "$version" > "$stage/VERSION"
 cp "$root/build/ox-say-dist" "$stage/bin/ox-say"
 cp "$work"/out/tts-server "$work"/out/ox-stt "$work"/out/ox-align "$stage/engine/"
+# VoxCPM2's server: the arm64 package only.
+if [ -f "$work/out/audiocpp_server" ]; then
+    cp "$work/out/audiocpp_server" "$stage/engine/"
+fi
 cp "$work"/out/licenses/* "$stage/engine/licenses/"
 cp "$root"/launchd/*.plist.in "$stage/launchd/"
 cp "$root"/scripts/install-release.sh "$root"/scripts/lib-install.sh "$root"/scripts/fetch-models.sh \

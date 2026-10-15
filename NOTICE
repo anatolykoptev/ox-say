@@ -8,3 +8,8 @@ LibriSpeech test-clean, (c) 2014 Vassil Panayotov and Daniel Povey
 
 The files in engine/patches/ modify MIT-licensed ggml and qwentts.cpp; the
 upstream lines they contain remain under those projects' MIT licenses.
+
+engine/patches/audiocpp modify audio.cpp (Copyright 2026 ShugoAI LLC,
+Apache-2.0), the engine behind VoxCPM2 on Apple Silicon: a speech-route prompt
+audio field and a loopback-only guard. The upstream lines they contain remain
+under audio.cpp's Apache-2.0 license.

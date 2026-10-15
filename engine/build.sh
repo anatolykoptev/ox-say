@@ -5,11 +5,12 @@
 #   tts-server  from the pinned qwentts.cpp            (text-to-speech)
 #   ox-stt      from engine/stt on the pinned whisper.cpp (speech-to-text: Parakeet, Whisper)
 #   ox-align    from engine/align on the pinned whisper.cpp (wav2vec2 CTC emissions)
-# All carry engine/patches/ggml on their ggml tree, on both architectures: on
+#   audiocpp_server from the pinned audio.cpp, arm64 only (VoxCPM2 quality text-to-speech)
+# The first three carry engine/patches/ggml on their ggml tree, on both architectures: on
 # unified memory the patches are inert or bug fixes (engine/README.md).
 #
 # Usage: engine/build.sh [work-dir]      (default: build/engine)
-# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,licenses/}
+# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,audiocpp_server (arm64),licenses/}
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -185,3 +186,72 @@ strip -x "$out/ox-align"
 check_static "$out/ox-align"
 check_dist "$out/ox-align"
 echo "built $out/ox-align"
+
+# --- audiocpp_server (audio.cpp, VoxCPM2) — Apple Silicon only ---
+# VoxCPM2 (2B) needs unified memory next to the speech engines; the Intel
+# package carries no quality engine (README "VoxCPM2"). audio.cpp vendors its
+# own ggml, so engine/patches/ggml (AMD discrete fixes) does not apply here.
+if [ "$arch" = arm64 ]; then
+    ac="$work/audio.cpp"
+    stamp=$( { echo "$AUDIOCPP_REPO $AUDIOCPP_COMMIT"; find "$here/patches/audiocpp" -name '*.patch' -type f | LC_ALL=C sort | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
+    if ! fresh "$ac" "$stamp"; then
+        rm -rf "$ac"
+        git clone --quiet "$AUDIOCPP_REPO" "$ac"
+        git -C "$ac" checkout --quiet "$AUDIOCPP_COMMIT"
+        git -C "$ac" submodule update --quiet --init --recursive
+        # A tag object or a short ref must not stand in for the pinned commit.
+        actual=$(git -C "$ac" rev-parse HEAD)
+        if [ "$actual" != "$AUDIOCPP_COMMIT" ]; then
+            echo "audio.cpp is $actual, expected the commit $AUDIOCPP_COMMIT" >&2
+            exit 1
+        fi
+        for p in "$here"/patches/audiocpp/*.patch; do
+            git -C "$ac" apply "$p"
+        done
+        echo "$stamp" > "$ac/.ox-say-stamp"
+    fi
+    # Same baseline as set_cmake_flags: a distribution build pins the M1 and the
+    # 13.3 deployment target; a local build targets this CPU.
+    native=ON
+    ac_dist=()
+    if [ "${OX_SAY_DIST:-0}" = 1 ]; then
+        native=OFF
+        ac_dist=(-DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 "-DCMAKE_C_FLAGS=-mcpu=apple-m1" "-DCMAKE_CXX_FLAGS=-mcpu=apple-m1")
+    fi
+    cmake -S "$ac" -B "$ac/build-$arch" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_OSX_ARCHITECTURES=arm64 -DENGINE_ENABLE_CUDA=OFF -DENGINE_ENABLE_VULKAN=OFF \
+        -DENGINE_ENABLE_METAL=ON -DENGINE_ENABLE_OPENMP=OFF -DGGML_OPENMP=OFF \
+        "-DENGINE_ENABLE_NATIVE_CPU=$native" -DGGML_METAL_EMBED_LIBRARY=ON \
+        -DENGINE_BUILD_TESTS=OFF -DENGINE_BUILD_EXAMPLES=OFF -DAUDIOCPP_DEPLOYMENT_BUILD=ON \
+        -DAUDIOCPP_MODEL_SET=custom -DAUDIOCPP_MODELS=voxcpm2 -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+        ${ac_dist[@]+"${ac_dist[@]}"} \
+        > "$work/audiocpp-configure.log"
+    cmake --build "$ac/build-$arch" --target audiocpp_server -j "$jobs" > "$work/audiocpp-build.log"
+    cp "$ac/build-$arch/bin/audiocpp_server" "$out/audiocpp_server"
+    strip -x "$out/audiocpp_server"
+    check_static "$out/audiocpp_server"
+    check_dist "$out/audiocpp_server"
+    cp "$ac/LICENSE" "$out/licenses/audio.cpp.LICENSE"
+    # Every vendored dependency, derived from the tree: a hand-written list
+    # cannot notice one it lacks. One with no licence file fails the build.
+    # find's output is captured whole: `find | head -1` under pipefail lets
+    # head's early exit SIGPIPE find.
+    for dep in "$ac"/external/*/; do
+        name=$(basename "$dep")
+        found=$(find "$dep" -maxdepth 1 \( -iname 'licen[sc]e*' -o -iname 'copying*' \))
+        f=${found%%$'\n'*}
+        # external/llama_tokenizer is llama.cpp's BPE and unicode code; upstream
+        # ships no licence file next to it. llama.cpp and ggml are one project
+        # under one MIT licence, so ggml's stands in. Any other dependency
+        # without a licence file still fails the build.
+        if [ -z "$f" ] && [ "$name" = llama_tokenizer ]; then
+            f="$ac/external/ggml/LICENSE"
+        fi
+        if [ -z "$f" ]; then
+            echo "engine/build.sh: audio.cpp external/$name has no licence file" >&2
+            exit 1
+        fi
+        cp "$f" "$out/licenses/audiocpp-$name.LICENSE"
+    done
+    echo "built $out/audiocpp_server"
+fi
