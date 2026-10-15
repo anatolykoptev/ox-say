@@ -37,6 +37,11 @@ type unavailableError struct{ msg string }
 
 func (e *unavailableError) Error() string { return e.msg }
 
+// conflictError is a request that clashes with existing state (HTTP 409).
+type conflictError struct{ msg string }
+
+func (e *conflictError) Error() string { return e.msg }
+
 // engineError is a non-2xx answer from an engine child; its status is kept
 // (audio.cpp's 400 capacity / 503 server_busy must not become 502).
 type engineError struct {
@@ -55,7 +60,10 @@ func synthStatus(err error) int {
 	var ue *unavailableError
 	var ie *voices.InputError
 	var ee *engineError
+	var ce *conflictError
 	switch {
+	case errors.As(err, &ce):
+		return http.StatusConflict
 	case errors.As(err, &re), errors.As(err, &ie):
 		return http.StatusBadRequest
 	case errors.Is(err, voices.ErrNotFound):
