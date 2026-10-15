@@ -124,7 +124,7 @@ func (d *Daemon) producePorts() producePorts {
 				d.log.Warn("produce: cannot read a voice recording", "voice", name, "error", err)
 				return voiceFacts{}, &requestError{fmt.Sprintf("voice %q: its recording cannot be read; add the voice again", name)}
 			}
-			return voiceFacts{Name: v.Name, RefText: v.RefText, Style: v.Meta.Style, SHA: sha}, nil
+			return voiceFacts{Name: v.Name, RefText: v.RefText, Style: v.Style, SHA: sha}, nil
 		},
 		defaultVoice: d.configuredVoice,
 		unavailable:  d.voxUnavailable,

@@ -186,7 +186,7 @@ func (d *Daemon) handleProduceChunk(w http.ResponseWriter, r *http.Request) {
 	}
 	var s vproject.Summary
 	if err == nil {
-		s, err = d.prod.chunk(r.PathValue("id"), n, chunkOp{Action: in.Action, Takes: in.Takes, Take: in.Take, Text: in.Text})
+		s, err = d.prod.chunk(r.PathValue("id"), n, chunkOp(in))
 	}
 	if err != nil {
 		d.writeProduceErr(w, err)

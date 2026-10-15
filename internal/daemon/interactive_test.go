@@ -118,7 +118,7 @@ func TestDictationNeverWaitsForARender(t *testing.T) {
 	go func() {
 		resp := postTranscription(t, srv.URL+"/v1/audio/transcriptions", testutil.TinyWAV(), nil)
 		_, err := io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		got <- answer{resp.StatusCode, err}
 	}()
 	select {
