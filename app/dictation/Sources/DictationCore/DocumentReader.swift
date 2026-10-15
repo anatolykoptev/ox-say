@@ -16,9 +16,13 @@ public struct ReadDocument: Equatable {
     /// The script the review sheet starts from.
     public var script: String { ScriptCleaner.clean(pages: pages, source: source) }
 
-    /// Why there is nothing to read, in plain words, when the script is empty.
+    /// Why there is nothing to read, in plain words, when the script is empty. Text
+    /// that was there and was all layout is not a scan, and is not said to be.
     public var emptyMessage: String {
-        source == .pdf ? "This PDF has no text to read (it may be a scan)." : "This document has no text to read."
+        let hadText = pages.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let kind = source == .pdf ? "PDF" : "document"
+        if hadText { return "ox-say could not find readable text in this \(kind) after cleaning it up." }
+        return source == .pdf ? "This PDF has no text to read (it may be a scan)." : "This document has no text to read."
     }
 }
 

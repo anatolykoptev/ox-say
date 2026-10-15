@@ -47,10 +47,59 @@ final class ScriptCleanerTests: XCTestCase {
                        "It happened in\n\n2024\n\nand again.")
     }
 
-    func testARepeatedHeaderAndFooterAreDropped() {
-        let bodies = ["Apples grow on trees.", "Pears grow too.", "Plums ripen late.", "Figs need warmth."]
-        let pages = bodies.enumerated().map { "Annual Report 2024\n\($0.element)\nAcme Corp — page \($0.offset + 1)" }
-        XCTAssertEqual(ScriptCleaner.clean(pages: pages, source: .pdf), bodies.joined(separator: "\n\n"))
+    /// A page of `count` distinct body lines between a header and a footer.
+    private func longPage(_ index: Int, header: String, footer: String, body count: Int = 8) -> String {
+        let body = (1...count).map { "Body line \($0) of leaf \(index) says something different." }
+        return ([header] + body + [footer]).joined(separator: "\n")
+    }
+
+    func testARepeatedHeaderAndFooterAreDroppedFromLongPages() {
+        let pages = (1...4).map { longPage($0, header: "Annual Report 2024", footer: "Acme Corp — page \($0)") }
+        let cleaned = ScriptCleaner.clean(pages: pages, source: .pdf)
+        XCTAssertFalse(cleaned.contains("Annual Report"))
+        XCTAssertFalse(cleaned.contains("Acme Corp"))
+        XCTAssertTrue(cleaned.contains("Body line 8 of leaf 4"))
+        XCTAssertEqual(cleaned.components(separatedBy: "Body line").count - 1, 32, "every body line is kept")
+    }
+
+    func testAHeaderWithAPageNumberInItIsStillRecognised() {
+        let pages = (1...4).map { longPage($0, header: "Quarterly Review | \($0)", footer: "\($0) | Acme") }
+        let cleaned = ScriptCleaner.clean(pages: pages, source: .pdf)
+        XCTAssertFalse(cleaned.contains("Quarterly Review"))
+        XCTAssertFalse(cleaned.contains("Acme"))
+    }
+
+    func testAChapterHeadingOpeningEachLongPageIsContentNotARunningHeader() {
+        let pages = (1...5).map { longPage($0, header: "Chapter \($0)", footer: "end of page") }
+        let cleaned = ScriptCleaner.clean(pages: pages, source: .pdf)
+        for chapter in 1...5 { XCTAssertTrue(cleaned.contains("Chapter \(chapter)"), "Chapter \(chapter) was dropped") }
+        XCTAssertFalse(cleaned.contains("end of page"), "a footer that is identical on every page is still dropped")
+    }
+
+    func testShortPagesKeepEveryLineEvenWhenTheyRepeat() {
+        let pages = (1...6).map { "Chorus line\nVerse \($0) text goes here and continues.\nChorus line\n\($0)" }
+        let cleaned = ScriptCleaner.clean(pages: pages, source: .pdf)
+        XCTAssertFalse(cleaned.isEmpty)
+        XCTAssertEqual(cleaned.components(separatedBy: "Chorus line").count - 1, 12)
+        for verse in 1...6 { XCTAssertTrue(cleaned.contains("Verse \(verse) text goes here and continues.")) }
+    }
+
+    func testANumberInTheMiddleOfAPageIsContent() {
+        let answer = ScriptCleaner.clean(pages: ["The answer is\n42\nand that is final."], source: .pdf).split(whereSeparator: \.isWhitespace)
+        XCTAssertEqual(answer.map(String.init), ["The", "answer", "is", "42", "and", "that", "is", "final."])
+        let words = ScriptCleaner.clean(pages: ["Items:\n1\n2\n3\nend"], source: .pdf).split(whereSeparator: \.isWhitespace)
+        XCTAssertEqual(words.map(String.init), ["Items:", "1", "2", "3", "end"])
+    }
+
+    func testAListOfNumbersOnAPageOfItsOwnIsNotPageNumbers() {
+        let words = ScriptCleaner.clean(pages: ["1\n2\n3"], source: .pdf).split(whereSeparator: \.isWhitespace)
+        XCTAssertEqual(words.map(String.init), ["1", "2", "3"])
+    }
+
+    func testOnlyTheNumberAtTheEdgeOfAPageIsDropped() {
+        let page = "7\nFirst line of the page.\nSecond line.\n12\nThird line.\n8"
+        XCTAssertEqual(ScriptCleaner.clean(pages: [page], source: .pdf).split(whereSeparator: \.isWhitespace).map(String.init),
+                       ["First", "line", "of", "the", "page.", "Second", "line.", "12", "Third", "line."])
     }
 
     func testALineThatRepeatsOnFewPagesIsKept() {
