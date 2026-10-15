@@ -217,8 +217,12 @@ func TestSaveDesignedVoiceConfinedToDesignDir(t *testing.T) {
 	if err := os.WriteFile(stray, testutil.SilentWAV(1), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	traversal, err := filepath.Rel(d.designDir(), outside)
+	if err != nil || !strings.HasPrefix(traversal, "..") {
+		t.Fatalf("traversal fixture %q %v", traversal, err)
+	}
 	for name, take := range map[string]string{
-		"traversal":        filepath.Join(d.designDir(), "..", "..", filepath.Base(dir), "outside.wav"),
+		"traversal":        d.designDir() + "/" + traversal,
 		"absolute outside": outside,
 		"symlinked file":   link,
 		"symlinked dir":    filepath.Join(dirLink, "outside.wav"),
@@ -282,7 +286,7 @@ func TestDesignVoiceHTTP(t *testing.T) {
 
 // The MCP tools are thin layers over the same functions: design returns the
 // takes, save returns the recorded provenance.
-// Mutation D-mcp: mcp.go toolVoiceDesignSave, pass `Name: ""` -> RED.
+// Mutation D-mcp: design.go saveDesignResult, `Name: v.Name` -> `Name: ""` -> RED.
 func TestDesignMCPTools(t *testing.T) {
 	d, _, _ := designFixture(t)
 	_, res, err := d.toolVoiceDesign(context.Background(), nil, DesignInput{Description: testDesc, Text: testText, Takes: 2})
