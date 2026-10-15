@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/pcm"
 	"github.com/anatolykoptev/ox-say/internal/stt"
@@ -46,6 +47,14 @@ var errDiskFull = errors.New("the disk is full: free some space, then resume the
 // errOutputsRemoved is the plain-words end of a publish that failed after it
 // had begun replacing the outputs: none are kept, rather than a mixed set.
 var errOutputsRemoved = errors.New("the output files could not all be put in place, so none were kept; assemble the project again")
+
+// errOutputsKept is the plain-words end of a publish whose very first rename
+// failed: nothing was replaced, so the previous set is still whole.
+var errOutputsKept = errors.New("the output files could not be put in place; the previous files were kept")
+
+// syncOutputDir makes the renames of one publish durable; a var so a test can
+// count it.
+var syncOutputDir = vproject.SyncDir
 
 // renameFile is os.Rename; a var so a test can stand in for another volume.
 var renameFile = os.Rename
@@ -204,7 +213,14 @@ func (tl *timeline) add(w *pcm.Writer, c *vproject.Chunk, clip pcm.Clip, heard [
 	}
 	trimmed, lead := clip.Trim(trimFloorDB, trimPadSec)
 	if len(trimmed.S) == 0 {
-		return fmt.Errorf("chunk %d: the picked take is silent", c.Index)
+		if c.Status != vproject.ChunkReview {
+			return fmt.Errorf("chunk %d: the picked take is silent", c.Index)
+		}
+		// Every take of a review chunk was silent: the file is still made, with
+		// the chunk's gap and no speech, and the chunk stays flagged for a listen.
+		c.StartS, c.EndS = round2(tl.total), round2(tl.total)
+		tl.total += c.PauseAfter
+		return writeSilence(w, clip.Rate, c.PauseAfter)
 	}
 	at, dur := tl.total, trimmed.Seconds()
 	ws := wordalign.AlignWords(c.Text, heard, clip.Seconds())
@@ -269,26 +285,54 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 	if err := os.MkdirAll(filepath.Dir(stem), outDirMode); err != nil {
 		return err
 	}
+	finalizeExport(j, m)
 	m.Outputs = vproject.Outputs{WAV: stem + ".wav", SRT: stem + ".srt", VTT: stem + ".vtt",
 		Words: stem + ".words.json", Manifest: stem + ".manifest.json", DurationS: round2(tl.total)}
 	set, err := stageOutputs(norm, tl, m)
 	if err != nil {
 		return err
 	}
-	for _, s := range set {
+	for k, s := range set {
 		if err := renameFile(s.tmp, s.dest); err != nil {
+			if k == 0 {
+				// Nothing was replaced yet: drop the staged temps only and keep
+				// the previous good set (#154.8).
+				for _, st := range set {
+					_ = os.Remove(st.tmp)
+				}
+				return fmt.Errorf("%w: %v", errOutputsKept, err)
+			}
 			removeOutputs(set, m.Outputs)
 			return fmt.Errorf("%w: %v", errOutputsRemoved, err)
 		}
+	}
+	if err := syncOutputDir(filepath.Dir(stem)); err != nil {
+		p.log.Warn("produce: cannot sync the output directory", slog.Any("error", err))
 	}
 	p.mu.Lock()
 	for i := range j.m.Chunks {
 		j.m.Chunks[i].StartS, j.m.Chunks[i].EndS = m.Chunks[i].StartS, m.Chunks[i].EndS
 	}
 	j.m.Outputs = m.Outputs
+	j.m.Progress.ElapsedS, j.m.Progress.ETAS = m.Progress.ElapsedS, 0
+	j.elapsedS = m.Progress.ElapsedS
 	j.m.Notes = withNote(j.m.Notes, vproject.NoteDynamicLoudness, tl.dynamic)
 	p.mu.Unlock()
 	return nil
+}
+
+// finalizeExport sets on the clone that becomes the .manifest.json export what
+// the project will read once this assembly is over: the final status, the
+// elapsed time and no ETA (#154.6). run() adopts the same elapsed value.
+func finalizeExport(j *job, m *vproject.Manifest) {
+	m.Status, m.Error = vproject.StatusDone, ""
+	if m.AnyReview() {
+		m.Status = vproject.StatusReview
+	}
+	m.Progress.ETAS = 0
+	if !j.started.IsZero() {
+		m.Progress.ElapsedS = round2(time.Since(j.started).Seconds())
+	}
 }
 
 // stageOutputs stages the siblings and then the WAV (last); on a failure it
@@ -341,7 +385,7 @@ func stageWAV(norm, dest string) (string, error) {
 	_ = f.Close()
 	if err := moveFile(norm, tmp); err != nil {
 		_ = os.Remove(tmp)
-		return "", fmt.Errorf("write %s: %w", dest, err)
+		return "", &vproject.WriteError{Path: dest, Err: err}
 	}
 	return tmp, nil
 }

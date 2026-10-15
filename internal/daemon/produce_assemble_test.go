@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/pcm"
 	"github.com/anatolykoptev/ox-say/internal/voices"
@@ -596,11 +597,16 @@ func TestReassemblyWAVStagingFailureLeavesThePreviousSet(t *testing.T) {
 	noTemps(t, filepath.Dir(assembledStem(j)))
 }
 
-// A rename that fails inside the final burst, whichever output it hits, leaves
-// no mixed set: none of the five exist, and no temp is left.
+// A rename that fails inside the final burst, after at least one output was
+// replaced, leaves no mixed set: none of the five exist, and no temp is left.
+// The first rename of the burst (.srt) replaces nothing yet, so its failure
+// keeps the previous set whole (TestReassemblyFirstRenameFailureKeepsThePreviousSet).
 // Mutation: produce_assemble.go publish, drop the removeOutputs call -> RED.
 func TestReassemblyBurstFailureLeavesNoMixedSet(t *testing.T) {
 	for _, ext := range outputExts {
+		if ext == ".srt" {
+			continue
+		}
 		f := newFakePorts(t)
 		p, j := assembleFixture(t, f)
 		if err := p.assemble(j); err != nil {
@@ -621,6 +627,101 @@ func TestReassemblyBurstFailureLeavesNoMixedSet(t *testing.T) {
 			}
 		}
 		noTemps(t, filepath.Dir(dest))
+	}
+}
+
+// The first rename of the burst failing replaces nothing: the previous good
+// set stays whole and the error says so (#154.8).
+// Mutation: produce_assemble.go publish, call removeOutputs for k == 0 too -> the old set is deleted -> RED.
+func TestReassemblyFirstRenameFailureKeepsThePreviousSet(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	before := outputSet(t, j)
+	editForReassembly(j)
+	dest := assembledStem(j) + ".srt"
+	failRenames(t, func(from, to string) bool {
+		return to == dest && strings.Contains(filepath.Base(from), vproject.TempMark)
+	}, errors.New("disk on fire"))
+	if err := p.assemble(j); !errors.Is(err, errOutputsKept) {
+		t.Fatalf("error %v", err)
+	}
+	for ext, was := range outputSet(t, j) {
+		if was != before[ext] {
+			t.Errorf("%s changed although no rename succeeded", ext)
+		}
+	}
+	noTemps(t, filepath.Dir(dest))
+}
+
+// One directory sync after the burst, once the last rename is done (#154.9).
+// Mutation: produce_assemble.go publish, delete the syncOutputDir call -> RED.
+// Mutation: move the syncOutputDir call into the rename loop -> 5 calls -> RED.
+func TestPublishSyncsTheOutputDirOnceAfterTheBurst(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	var renamed, syncs, renamedAtSync int
+	origRename, origSync := renameFile, syncOutputDir
+	t.Cleanup(func() { renameFile, syncOutputDir = origRename, origSync })
+	renameFile = func(from, to string) error {
+		if strings.Contains(filepath.Base(from), vproject.TempMark) && !strings.Contains(filepath.Base(to), vproject.TempMark) {
+			renamed++
+		}
+		return origRename(from, to)
+	}
+	syncOutputDir = func(dir string) error {
+		syncs++
+		renamedAtSync = renamed
+		if dir != filepath.Dir(j.m.Settings.OutPath) {
+			t.Errorf("synced %s", dir)
+		}
+		return nil
+	}
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	if syncs != 1 || renamedAtSync != len(outputExts) {
+		t.Fatalf("%d syncs, %d of %d renames done at the sync", syncs, renamedAtSync, len(outputExts))
+	}
+}
+
+// The export is written after the final status, elapsed and ETA are known; it
+// must not say "running" (#154.6).
+// Mutation: produce_assemble.go publish, delete the finalizeExport call -> status "" -> RED.
+func TestExportCarriesTheFinalStatus(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	j.started = time.Now().Add(-5 * time.Second)
+	j.m.Status, j.m.Progress.ETAS = vproject.StatusRunning, 99
+	j.m.Chunks[1].Status = vproject.ChunkReview
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	var export vproject.Manifest
+	raw, _ := os.ReadFile(j.m.Outputs.Manifest)
+	if err := json.Unmarshal(raw, &export); err != nil {
+		t.Fatal(err)
+	}
+	if export.Status != vproject.StatusReview || export.Progress.ETAS != 0 || export.Progress.ElapsedS < 5 || export.Progress.ElapsedS != j.elapsedS {
+		t.Fatalf("export status %q eta %v elapsed %v (job %v)", export.Status, export.Progress.ETAS, export.Progress.ElapsedS, j.elapsedS)
+	}
+}
+
+// A review chunk whose every take is silent does not fail the job: the file is
+// made with the gap and no speech (#154 amendment 3; F1-4 Noted).
+// Mutation: produce_assemble.go add, drop the ChunkReview exception -> the assembly fails -> RED.
+func TestAssembleToleratesASilentReviewChunk(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	writeTake(t, j.dir, j.m.Chunks[1].Pick, pcm.Silence(48000, 1), "Второе.")
+	j.m.Chunks[1].Status = vproject.ChunkReview
+	if err := p.assemble(j); err != nil {
+		t.Fatalf("a review chunk with a silent take failed the assembly: %v", err)
+	}
+	if j.m.Chunks[1].EndS != j.m.Chunks[1].StartS {
+		t.Errorf("silent chunk has a span %v..%v", j.m.Chunks[1].StartS, j.m.Chunks[1].EndS)
 	}
 }
 

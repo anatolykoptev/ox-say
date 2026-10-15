@@ -22,6 +22,9 @@ type job struct {
 	dir   string
 	m     *vproject.Manifest // guarded by producer.mu
 	regen map[int]int        // chunk -> extra takes requested
+
+	started  time.Time // when this run began
+	elapsedS float64   // the elapsed time the export recorded (guarded by producer.mu)
 }
 
 // producer runs at most one job, through ports only.
