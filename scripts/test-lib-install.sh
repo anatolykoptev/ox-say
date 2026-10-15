@@ -35,7 +35,7 @@ if command -v go >/dev/null 2>&1; then
 else
     bin=
     keysfile=$tmp/env-keys
-    printf '%s\n' OX_SAY_ADDR OX_SAY_CACHE_DIR OX_SAY_HOME OX_SAY_STT_GPU >"$keysfile"
+    printf '%s\n' OX_SAY_ADDR OX_SAY_CACHE_DIR OX_SAY_HOME OX_SAY_STT_GPU OX_SAY_TTS_MODEL OX_SAY_STT_MODEL >"$keysfile"
 fi
 
 # One install scenario: read settings, render the agent, copy the result to
@@ -108,7 +108,7 @@ scenario() {
         "$@" bash "$tmp/$script" >"$tmp/$name.log" 2>&1
 }
 
-for s in render carry stale nokeys; do
+for s in render carry stale nokeys ttsmodel relmodel; do
     cp "$root/launchd/$label.plist.in" "$tmp/template-$s.plist"
 done
 # A template that makes a mid-render plutil fail while the file still lints
@@ -122,6 +122,21 @@ cat >"$tmp/template-broken.plist" <<'EOF'
 <key>StandardErrorPath</key><string>/tmp/e</string>
 </dict></plist>
 EOF
+
+# --- M: a model NAME is not a path; a weights path still must be absolute ----
+# Mutation: restore the old glob (drop the OX_SAY_TTS_MODEL case in
+# oxs_settings) -> the "TTS model name accepted" case fails.
+rm -f "$tmp/render.plist"
+if scenario ttsmodel scenario-render.sh OX_SAY_NO_SELFTEST=1 OX_SAY_TTS_MODEL=voxcpm2; then
+    check "TTS model name accepted, written to the agent" "$(plist_val "$tmp/render.plist" OX_SAY_TTS_MODEL)" "voxcpm2"
+else
+    fail "TTS model name accepted — installer refused it: $(tail -2 "$tmp/ttsmodel.log")"
+fi
+if scenario relmodel scenario-render.sh OX_SAY_NO_SELFTEST=1 OX_SAY_STT_MODEL=models/x.bin; then
+    fail "relative path key refused — installer accepted OX_SAY_STT_MODEL=models/x.bin"
+else
+    check_in_log "relative path key refused, named" "$tmp/relmodel.log" "OX_SAY_STT_MODEL must be an absolute path"
+fi
 
 # --- A: the render writes only variables the daemon reads -------------------
 scenario render scenario-render.sh \
