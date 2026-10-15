@@ -4,8 +4,12 @@ import Foundation
 /// into its LaunchAgent, so the app reads OX_SAY_ADDR from there rather than
 /// keeping a second copy of the setting that could disagree.
 public enum DaemonAddress {
+    /// The daemon's LaunchAgent label, the one the installer renders into
+    /// launchd/<label>.plist.in — one constant, so the kickstart argv and the
+    /// plist path below never drift from what the installer writes.
+    public static let agentLabel = "io.github.anatolykoptev.ox-say"
     public static let agentPlist = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/LaunchAgents/io.github.anatolykoptev.ox-say.plist")
+        .appendingPathComponent("Library/LaunchAgents/\(agentLabel).plist")
     public static let fallback = URL(string: "http://127.0.0.1:8094")!
 
     /// The daemon's base URL from the LaunchAgent plist's contents; the default
