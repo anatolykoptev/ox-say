@@ -41,6 +41,8 @@ func Run(args []string, stdout, stderr io.Writer, version string) int {
 		return cmdVoice(args[1:], stdout, stderr)
 	case "transcribe":
 		return cmdTranscribe(args[1:], stdout, stderr)
+	case "produce":
+		return cmdProduce(args[1:], stdout, stderr, producePollInterval)
 	case "status":
 		return cmdStatus(args[1:], stdout, stderr)
 	case "env-keys":
@@ -73,6 +75,10 @@ Usage:
   ox-say voice save <name> <take path> [--replace]
   ox-say voice ls
   ox-say voice rm <name>
+  ox-say produce <script.txt|-> [-v v] [-i style] [-t title] [-o out.wav] [--preset p] [--seed N] [--takes N]
+                 [--overwrite] [--allow-battery] [--no-wait]
+  ox-say produce status|resume|cancel|rm <id>   ox-say produce chunk <id> <n> --regen N|--pick KEY|--text "…"
+  ox-say produce ls
   ox-say transcribe [-e parakeet|whisper] [-l lang] [--prompt t] [--json|--srt] <file>
   ox-say status
 
@@ -101,6 +107,14 @@ voice add flags: --engine sets the voice's preferred model, --style its default 
 
 voice design renders a few takes of a voice you describe in words (VoxCPM2 only) and prints
 each take's path and seed; voice save keeps one under a name.
+
+produce turns a whole script (a file, or - for stdin) into one finished voiceover with VoxCPM2:
+  --preset p    youtube (default, -16 LUFS) | reels (-14, tighter pauses, 2 takes per chunk) | voice-under-music (-18)
+  -t title      the project and its folder name; -o path writes the .wav there (an absolute or relative .wav path)
+  --takes N     takes per chunk, 1..3 (default: the preset's)
+  --no-wait     start it and return; check with ox-say produce status <id>
+  Exit codes: 0 done, 3 done but some chunks need a listen (printed), 1 failed, 2 wrong usage.
+  See the README, "Long-form voiceover (produce)".
 
 transcribe flags:
   -e engine     parakeet (default) | whisper

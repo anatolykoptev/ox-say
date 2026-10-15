@@ -55,14 +55,20 @@ func addQualityFlags(body map[string]any, vals map[string]string) error {
 // degraded), and a plain note when another engine spoke than the one asked for.
 // stdout and the audio stay as they were.
 func reportRender(w io.Writer, hdr http.Header, asked string) {
-	if seed := hdr.Get("X-Ox-Say-Seed"); seed != "" {
-		outf(w, "seed %s\n", seed)
-	}
-	if warning := hdr.Get("X-Ox-Say-Warning"); warning != "" {
-		outf(w, "warning: %s\n", warning)
-	}
+	writeSeedWarning(w, hdr.Get("X-Ox-Say-Seed"), hdr.Get("X-Ox-Say-Warning"))
 	if got := hdr.Get("X-Ox-Say-Model"); asked != "" && got != "" && got != asked {
 		outf(w, "note: you asked for %s, and %s spoke\n", asked, got)
+	}
+}
+
+// writeSeedWarning prints the seed to reuse and a warning, when there are any;
+// `say` and `produce` share it so both say it in the same words.
+func writeSeedWarning(w io.Writer, seed, warning string) {
+	if seed != "" {
+		outf(w, "seed %s\n", seed)
+	}
+	if warning != "" {
+		outf(w, "warning: %s\n", warning)
 	}
 }
 
