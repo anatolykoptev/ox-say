@@ -18,10 +18,7 @@ func AlignWords(text string, heard []voices.Word, dur float64) []voices.Word {
 			owner = append(owner, wi)
 		}
 	}
-	hyp := make([]string, len(heard))
-	for i, h := range heard {
-		hyp[i] = strings.Join(Words(h.W), "")
-	}
+	hyp, heard := heardTokens(heard)
 	tok := tokenTimes(ref, hyp, heard)
 	fillGaps(tok, dur)
 	out := make([]voices.Word, len(written))
@@ -43,6 +40,25 @@ func AlignWords(text string, heard []voices.Word, dur float64) []voices.Word {
 		}
 	}
 	return out
+}
+
+// heardTokens tokenises the STT words with Words, the tokenizer WER and the
+// written side use, so a word STT writes whole ("кто-то", "по-русски") lines up
+// with its written form token for token. A heard word of several tokens gives
+// each an equal share of its time; one with none (bare punctuation) is dropped.
+func heardTokens(heard []voices.Word) ([]string, []voices.Word) {
+	var toks []string
+	var timed []voices.Word
+	for _, h := range heard {
+		parts := Words(h.W)
+		share := (h.E - h.S) / float64(max(1, len(parts)))
+		for k, p := range parts {
+			s := h.S + share*float64(k)
+			toks = append(toks, p)
+			timed = append(timed, voices.Word{W: p, S: s, E: s + share})
+		}
+	}
+	return toks, timed
 }
 
 // tokenTimes walks the WER backtrace; unmatched ref tokens keep S = E = -1.

@@ -1,6 +1,7 @@
 package wordalign
 
 import (
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -139,6 +140,53 @@ func TestCuesCharLimit(t *testing.T) {
 	for _, c := range cues {
 		if n := len([]rune(strings.ReplaceAll(c.Text, "\n", " "))); n > MaxCueChars {
 			t.Errorf("cue of %d characters: %q", n, c.Text)
+		}
+	}
+}
+
+// STT (Parakeet) writes a hyphenated word whole; the script's form splits the
+// same way under Words, so WER and AlignWords must tokenise both sides alike.
+// Mutation: in WER tokenise either side with strings.Fields instead of Words
+// -> WER 4/7 or 4/5, RED. The AlignWords side is pinned by
+// TestHyphenatedHeardSplitsAcrossWrittenWords.
+func TestHyphenatedWordsAgree(t *testing.T) {
+	const text = "Кто-то пришёл и сказал по-русски."
+	heard := []voices.Word{{W: "Кто-то", S: 0, E: 0.4}, {W: "пришел", S: 0.4, E: 0.8}, {W: "и", S: 0.8, E: 0.88},
+		{W: "сказал", S: 0.88, E: 1.28}, {W: "по-русски,", S: 1.28, E: 1.84}}
+	var heardText []string
+	for _, h := range heard {
+		heardText = append(heardText, h.W)
+	}
+	if e, n := WER(text, strings.Join(heardText, " ")); e != 0 || n != 7 {
+		t.Errorf("WER = %d/%d, want 0/7", e, n)
+	}
+	got := AlignWords(text, heard, 2)
+	want := []voices.Word{{W: "Кто-то", S: 0, E: 0.4}, {W: "пришёл", S: 0.4, E: 0.8}, {W: "и", S: 0.8, E: 0.88},
+		{W: "сказал", S: 0.88, E: 1.28}, {W: "по-русски.", S: 1.28, E: 1.84}}
+	if len(got) != len(want) {
+		t.Fatalf("%+v", got)
+	}
+	for i := range want {
+		if got[i].W != want[i].W || math.Abs(got[i].S-want[i].S) > 1e-9 || math.Abs(got[i].E-want[i].E) > 1e-9 {
+			t.Errorf("word %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// The other way round: STT's whole hyphenated word is shared by the written
+// words it covers, half its time each.
+// Mutation: as above (join the heard tokens) -> the two written words get
+// 0-0.8 / interpolated times -> RED.
+func TestHyphenatedHeardSplitsAcrossWrittenWords(t *testing.T) {
+	heard := []voices.Word{{W: "Кто-то", S: 0, E: 0.8}, {W: "пришел", S: 0.8, E: 1.2}}
+	got := AlignWords("Кто то пришёл", heard, 1.2)
+	want := [][2]float64{{0, 0.4}, {0.4, 0.8}, {0.8, 1.2}}
+	if len(got) != len(want) {
+		t.Fatalf("%+v", got)
+	}
+	for i, w := range want {
+		if math.Abs(got[i].S-w[0]) > 1e-9 || math.Abs(got[i].E-w[1]) > 1e-9 {
+			t.Errorf("word %d = %+v, want %.1f-%.1f", i, got[i], w[0], w[1])
 		}
 	}
 }
