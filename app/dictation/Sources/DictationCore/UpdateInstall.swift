@@ -78,6 +78,8 @@ public enum UpdateInstaller {
         case installerFailed(status: Int32)
         case couldNotStart(String)
         case versionUnchanged(expected: String, found: String?)
+        /// The bundle updated but the daemon never reported the target on /status.
+        case daemonNotOnVersion(expected: String, found: String?)
 
         public var message: String {
             switch self {
@@ -92,25 +94,50 @@ public enum UpdateInstaller {
             case .versionUnchanged(let expected, let found):
                 let now = found.map { "v\(UpdateInstaller.normalized($0))" } ?? "unknown"
                 return "The version did not change: expected \(expected) after the install, found \(now)."
+            case .daemonNotOnVersion(let expected, let found):
+                let now = found.map { "v\(UpdateInstaller.normalized($0))" } ?? "nothing"
+                return "The ox-say service did not reach \(expected) after the install; /status reports \(now)."
             }
         }
     }
 
-    /// After a "successful" install: nil when the app on disk reports the target
-    /// tag, otherwise the failure to show instead of relaunching.
-    public static func verifyInstalled(version: String?, target: String) -> Failure? {
-        if let version, normalized(version) == normalized(target) { return nil }
-        return .versionUnchanged(expected: target, found: version)
+    /// The daemon wait after an install: the same 20 s the shell installer's
+    /// oxs_wait_version allows, as 40 polls half a second apart.
+    public static let daemonChecks = 40
+    public static let daemonCheckInterval: TimeInterval = 0.5
+
+    /// After a "successful" install: nil when the app on disk reports the
+    /// target tag AND the daemon's /status reaches the target within the wait.
+    /// `daemonVersion` re-reads /status on every poll; a nil answer means the
+    /// daemon did not respond. Otherwise the failure to show instead of
+    /// relaunching.
+    public static func verifyInstalled(version: String?, daemonVersion: () async -> String?, target: String,
+                                       checks: Int = daemonChecks,
+                                       interval: TimeInterval = daemonCheckInterval) async -> Failure? {
+        guard let version, normalized(version) == normalized(target) else {
+            return .versionUnchanged(expected: target, found: version)
+        }
+        var found: String?
+        for _ in 0..<checks {
+            if let got = await daemonVersion() {
+                found = got
+                if normalized(got) == normalized(target) { return nil }
+            }
+            try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+        }
+        return .daemonNotOnVersion(expected: target, found: found)
     }
 
     /// The whole install: downloads get.sh from `scriptSource`, checks it is a
     /// script, runs it for `kind` pinned to `tag`, then asks `installedVersion`
-    /// (the version the bundle on disk now reports) whether the target arrived.
+    /// (the version the bundle on disk now reports) and `daemonVersion` (the
+    /// daemon's /status) whether the target arrived.
     /// Two steps, each exit status checked (a `curl | sh` pipe would report the
     /// shell's 0 for a failed download). nil on success; otherwise the first step
     /// that failed. Output of both steps goes to `log`.
     public static func run(kind: Kind, tag: String, log: FileHandle?, scriptSource: String = scriptURL,
-                           installedVersion: () -> String?) async -> Failure? {
+                           installedVersion: () -> String?,
+                           daemonVersion: () async -> String?) async -> Failure? {
         let script = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-get-\(UUID().uuidString).sh")
         defer { try? FileManager.default.removeItem(at: script) }
 
@@ -131,7 +158,7 @@ public enum UpdateInstaller {
         case .success(let status) where status != 0: return .installerFailed(status: status)
         case .success: break
         }
-        return verifyInstalled(version: installedVersion(), target: tag)
+        return await verifyInstalled(version: installedVersion(), daemonVersion: daemonVersion, target: tag)
     }
 
     /// Runs one command with stdout and stderr in the log; the result is its exit
