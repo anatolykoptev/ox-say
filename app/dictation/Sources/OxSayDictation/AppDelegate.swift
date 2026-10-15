@@ -15,9 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// only while the permission does not work (recomputed each open).
     private let allowPastingItem = NSMenuItem(title: "Allow pasting… (Accessibility is off)",
                                               action: #selector(allowPasting), keyEquivalent: "")
-    private let toggleItem = NSMenuItem(title: "Toggle mode (press to start, press again to stop)", action: #selector(toggleMode), keyEquivalent: "")
-    private let loginItem = NSMenuItem(title: "Start at login", action: #selector(toggleLogin), keyEquivalent: "")
-    private var shortcutItems: [Shortcut: NSMenuItem] = [:]
+    private let toggleItem = NSMenuItem(title: "Toggle Mode (press to start, press again to stop)", action: #selector(toggleMode), keyEquivalent: "")
+    private let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
     private var hotKey: HotKey?
     private var escapeKey: HotKey?
     private var controller: DictationController!
@@ -35,8 +34,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// it ends; Check for Updates is refused meanwhile (a second get.sh would
     /// race the first on the same install).
     private var updateInstalling = false
-    private let russianVoiceSubmenu = NSMenu()
-    private let englishVoiceSubmenu = NSMenu()
+    private let voiceSubmenu = NSMenu()
+    /// One submenu for both hotkeys; its rows are rebuilt from the latest plans.
+    private let shortcutsSubmenu = NSMenu()
+    private var dictationKeyRows: [ShortcutMenu.Item] = []
+    private var speakKeyRows: [ShortcutMenu.Item] = []
     private let speakVoiceRUKey = "speakVoiceRU"
     private let speakVoiceENKey = "speakVoiceEN"
     /// The single choice from before the per-language menus; migrated into
@@ -52,7 +54,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// key machinery with its own offered combinations.
     private var speakHotKey: HotKey?
     private let capture = SelectionCapture()
-    private var speakShortcutItems: [SpeakShortcut: NSMenuItem] = [:]
     private let speakShortcutKey = "speakShortcut"
     private let speakKeyInUseKey = "speakKeyInUse"
     private var speakActive: SpeakShortcut?
@@ -268,25 +269,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func applySpeakShortcutItems(_ rows: [ShortcutMenu.Item]) {
-        for (index, shortcut) in SpeakShortcut.allCases.enumerated() {
-            guard let item = speakShortcutItems[shortcut] else { continue }
-            let row = rows[index]
-            item.state = row.isOn ? .on : .off
-            item.isEnabled = row.isEnabled
-            item.title = row.title
-        }
+        speakKeyRows = rows
+        rebuildShortcutsMenu()
     }
 
-    /// The menu items follow the live system shortcuts: a key macOS freed is
+    /// The menu rows follow the live system shortcuts: a key macOS freed is
     /// clickable again, a key it took greys out — whether or not the
     /// registered key changes.
     private func applyShortcutItems(_ rows: [ShortcutMenu.Item]) {
-        for (index, shortcut) in Shortcut.allCases.enumerated() {
-            guard let item = shortcutItems[shortcut] else { continue }
-            let row = rows[index]
-            item.state = row.isOn ? .on : .off
-            item.isEnabled = row.isEnabled
-            item.title = row.title
+        dictationKeyRows = rows
+        rebuildShortcutsMenu()
+    }
+
+    private func rebuildShortcutsMenu() {
+        let rows = MenuSections.shortcutRows(dictation: dictationKeyRows, speak: speakKeyRows)
+        MenuRenderer.fill(shortcutsSubmenu, rows: rows, target: self) { action in
+            switch action {
+            case .pickDictationKey(let index): return (#selector(pickShortcut(_:)), Shortcut.allCases[index].rawValue)
+            case .pickSpeakKey(let index): return (#selector(pickSpeakShortcut(_:)), SpeakShortcut.allCases[index].rawValue)
+            case .pickVoice: return (#selector(pickVoice(_:)), [String: String]())
+            }
         }
     }
 
@@ -330,56 +332,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func buildMenu() {
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(statusLine)
-        menu.addItem(.separator())
         allowPastingItem.target = self
-        let shortcuts = NSMenu()
-        shortcuts.autoenablesItems = false // or AppKit re-enables the greyed-out keys
-        for choice in Shortcut.allCases {
-            let item = NSMenuItem(title: choice.title, action: #selector(pickShortcut(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = choice.rawValue
-            shortcuts.addItem(item)
-            shortcutItems[choice] = item
-        }
-        let shortcutMenu = NSMenuItem(title: "Dictation key", action: nil, keyEquivalent: "")
-        shortcutMenu.submenu = shortcuts
-        menu.addItem(shortcutMenu)
-        toggleItem.target = self
-        toggleItem.state = controller.mode == .toggle ? .on : .off
-        menu.addItem(toggleItem)
-        loginItem.target = self
-        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        menu.addItem(loginItem)
-        menu.addItem(.separator())
-        let russianVoiceItem = NSMenuItem(title: "Russian voice", action: nil, keyEquivalent: "")
-        russianVoiceItem.submenu = russianVoiceSubmenu
-        menu.addItem(russianVoiceItem)
-        let englishVoiceItem = NSMenuItem(title: "English voice", action: nil, keyEquivalent: "")
-        englishVoiceItem.submenu = englishVoiceSubmenu
-        menu.addItem(englishVoiceItem)
-        let speakKeys = NSMenu()
-        speakKeys.autoenablesItems = false // or AppKit re-enables the greyed-out keys
-        for choice in SpeakShortcut.allCases {
-            let item = NSMenuItem(title: choice.title, action: #selector(pickSpeakShortcut(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = choice.rawValue
-            speakKeys.addItem(item)
-            speakShortcutItems[choice] = item
-        }
-        let speakKeyMenu = NSMenuItem(title: "Speak key", action: nil, keyEquivalent: "")
-        speakKeyMenu.submenu = speakKeys
-        menu.addItem(speakKeyMenu)
+        menu.addItem(statusLine)
         speakHint.isEnabled = false
         menu.addItem(speakHint)
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Microphone settings…", action: #selector(openMicrophoneSettings), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Accessibility settings…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
+        menu.addItem(submenuItem("Voice", voiceSubmenu))
+        shortcutsSubmenu.autoenablesItems = false // or AppKit re-enables the greyed-out keys
+        menu.addItem(submenuItem("Keyboard Shortcuts", shortcutsSubmenu))
+        menu.addItem(.separator())
+        menu.addItem(submenuItem("Settings", buildSettingsMenu()))
         menu.addItem(.separator())
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "").target = self
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit OxSay Dictation", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit OxSay", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
+    }
+
+    private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.submenu = submenu
+        return item
+    }
+
+    /// The extra settings: dictation mode, login item and the two permission panes.
+    private func buildSettingsMenu() -> NSMenu {
+        let settings = NSMenu()
+        toggleItem.target = self
+        toggleItem.state = controller.mode == .toggle ? .on : .off
+        settings.addItem(toggleItem)
+        loginItem.target = self
+        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        settings.addItem(loginItem)
+        settings.addItem(.separator())
+        settings.addItem(withTitle: "Microphone Access…", action: #selector(openMicrophoneSettings), keyEquivalent: "").target = self
+        settings.addItem(withTitle: "Accessibility Access…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
+        return settings
     }
 
     private func show(_ state: DictationState) {
@@ -495,40 +482,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Rebuilds both voice submenus: the daemon's configured default, the
-    /// engine's random voice, then the cloned voices the daemon knows.
+    /// Rebuilds the Voice submenu: per language the daemon's configured
+    /// default, the engine's random voice, then the cloned voices the daemon knows.
     private func rebuildVoiceMenus() {
-        buildVoiceSubmenu(russianVoiceSubmenu, key: speakVoiceRUKey)
-        buildVoiceSubmenu(englishVoiceSubmenu, key: speakVoiceENKey)
-    }
-
-    /// One submenu's rows; each item carries the pref key it writes, so one
-    /// selector serves both languages.
-    private func buildVoiceSubmenu(_ submenu: NSMenu, key: String) {
-        submenu.removeAllItems()
-        let current = UserDefaults.standard.string(forKey: key)
-        let fallback = NSMenuItem(title: "Default voice", action: #selector(pickVoice(_:)), keyEquivalent: "")
-        fallback.target = self
-        fallback.representedObject = ["key": key]
-        fallback.state = current == nil ? .on : .off
-        submenu.addItem(fallback)
-        let random = NSMenuItem(title: "Random each time", action: #selector(pickVoice(_:)), keyEquivalent: "")
-        random.target = self
-        random.representedObject = ["key": key, "voice": "default"]
-        random.state = current == "default" ? .on : .off
-        submenu.addItem(random)
-        submenu.addItem(.separator())
-        for name in knownVoices ?? [] {
-            let item = NSMenuItem(title: name, action: #selector(pickVoice(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = ["key": key, "voice": name]
-            item.state = name == current ? .on : .off
-            submenu.addItem(item)
-        }
-        if knownVoices == nil {
-            let loading = NSMenuItem(title: "Loading…", action: nil, keyEquivalent: "")
-            loading.isEnabled = false
-            submenu.addItem(loading)
+        let defaults = UserDefaults.standard
+        let rows = MenuSections.voiceRows(known: knownVoices, russian: defaults.string(forKey: speakVoiceRUKey),
+                                          english: defaults.string(forKey: speakVoiceENKey))
+        MenuRenderer.fill(voiceSubmenu, rows: rows, target: self) { action in
+            guard case .pickVoice(let slot, let name) = action else { return (#selector(pickVoice(_:)), [String: String]()) }
+            // Each item carries the pref key it writes, so one selector serves both languages.
+            var pick = ["key": slot == .russian ? speakVoiceRUKey : speakVoiceENKey]
+            if let name { pick["voice"] = name }
+            return (#selector(pickVoice(_:)), pick)
         }
     }
 
