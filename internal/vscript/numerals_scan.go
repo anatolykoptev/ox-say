@@ -100,11 +100,15 @@ func isOrdinalToken(tok string) bool {
 
 // blockBefore are the characters that make a digit run part of something
 // else when they touch it from the left: a word, a code, a sign, a version.
-const blockBefore = `_/\.,:;-−+$€£₽№#@%&*=<>`
+const blockBefore = `_/\.,:;-−–—+$€£₽№#@%&*=<>`
 
 // blockAfter likewise on the right; a "." "," ":" "-" blocks only before a
 // digit or letter (a sentence-final "5." is fine).
 const blockAfter = `_/\°$€£₽²³@&*=<>`
+
+// dashes are the hyphen-minus, the minus sign and the en and em dashes: touching
+// a number they mean a minus or a dangling range, not a word break.
+const dashes = "-−–—"
 
 // signsAfter: a unit or currency sign after a number ("300 ₽") — the number
 // would be spoken without its unit, so the digits stay.
@@ -127,9 +131,11 @@ func boundaryOK(before, after string) bool {
 		return true
 	case unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune(blockAfter, r):
 		return false
-	case strings.ContainsRune(".,:-–", r):
+	case strings.ContainsRune(dashes, r):
+		return false // "5-", "5–": a dangling or minus-like dash
+	case strings.ContainsRune(".,:", r):
 		next, _ := utf8.DecodeRuneInString(after[size:])
-		return !unicode.IsDigit(next) && (!unicode.IsLetter(next) || r != '-')
+		return !unicode.IsDigit(next)
 	}
 	return true
 }
@@ -195,6 +201,15 @@ func setOf(words ...string) map[string]bool {
 	return m
 }
 
+// prepositions: every preposition the rules know, governing or not.
+var prepositions = func() map[string]bool {
+	m := setOf("в", "во", "на", "за", "через", "про", "ко")
+	for w := range caseGovernors {
+		m[w] = true
+	}
+	return m
+}()
+
 func governed(c numCtx) bool { return caseGovernors[prevWord(c.before())] }
 
 // expandCardinal handles a plain number: a percent, a day before a month,
@@ -211,13 +226,14 @@ func expandCardinal(c numCtx) (string, int, bool) {
 	if r, ok := yearWords(c, n, after); ok {
 		return r.text, r.end, true
 	}
-	if governed(c) || isYearBlocked(n, nextWord(after)) {
+	next := nextWord(after)
+	if governed(c) || isYearBlocked(n, next) || bareYear(c, n, next) || obliquePlural(next) {
 		return "", 0, false
 	}
 	if sp, ok := percentSign(after); ok {
 		return join(cardinalWords(n, masculine)) + " " + percentWord(n), c.end + sp, true
 	}
-	g, ok := nounGender(nextWord(after), n)
+	g, ok := nounGender(next, n)
 	if !ok {
 		return "", 0, false
 	}
@@ -236,6 +252,16 @@ var yearForms = setOf("год", "года", "году", "годом", "годе"
 const minYear = 1000
 
 func isYearBlocked(n int, next string) bool { return n >= minYear && yearForms[next] }
+
+func yearLike(n int) bool { return n >= minYear && n <= maxYear }
+
+// bareYear: "в 2026" without "году"/"г." is a year read in a case the numerals
+// here cannot take, unless a counted noun follows ("в 2000 раз").
+func bareYear(c numCtx, n int, next string) bool {
+	_, counted := nounNom[next]
+	_, countedGen := nounGen[next]
+	return yearLike(n) && prevWord(c.before()) == "в" && !counted && !countedGen
+}
 
 var (
 	yearTail   = regexp.MustCompile(`^[ \x{00a0}]+(году|г\.)`)
@@ -291,7 +317,27 @@ func dateWords(c numCtx, n int, after string) (replacement, bool) {
 		form = formDatMN
 	}
 	w, ok := ordinalWords(n, form)
-	return replacement{join(w), c.end}, ok
+	if !ok || prepMismatch(prevWord(c.before()), w[0]) {
+		return replacement{}, false
+	}
+	return replacement{join(w), c.end}, true
+}
+
+// prepMismatch: the written preposition would be wrong before the spoken word
+// ("в 2-м" → "в втором" needs "во"; "об 8-м" → "об восьмом" is "о"; "о 11-м"
+// is "об"). The preposition is not ours to rewrite, so the digits stay.
+func prepMismatch(prep, first string) bool {
+	r, _ := utf8.DecodeRuneInString(first)
+	vowel := strings.ContainsRune("аеёиоуыэюя", r)
+	switch prep {
+	case "в", "к", "с":
+		return strings.HasPrefix(first, "вт")
+	case "об":
+		return !vowel
+	case "о":
+		return vowel
+	}
+	return false
 }
 
 // percentWord agrees "процент" with the number n.
@@ -304,7 +350,11 @@ func percentWord(n int) string {
 func nounGender(noun string, ns ...int) (gender, bool) {
 	for _, n := range ns {
 		if endsInOneOrTwo(n) {
-			g, ok := nounGenders[noun]
+			if n%ten == 1 {
+				g, ok := nounNom[noun]
+				return g, ok
+			}
+			g, ok := nounGen[noun]
 			return g, ok
 		}
 	}
@@ -318,14 +368,18 @@ func expandOrdinal(c numCtx) (string, int, bool) {
 		return "", 0, false
 	}
 	form, ok := suffixForms[suffix]
-	if suffix == "м" {
-		form, ok = formPrepMN, prepForPrep[prevWord(c.before())]
+	prev := prevWord(c.before())
+	switch suffix {
+	case "м":
+		form, ok = formPrepMN, prepForPrep[prev]
+	case "й":
+		ok = mascNominative(prev, nextWord(c.text[c.end:]))
 	}
 	if !ok {
 		return "", 0, false
 	}
 	w, ok := ordinalWords(n, form)
-	if !ok {
+	if !ok || prepMismatch(prev, w[0]) {
 		return "", 0, false
 	}
 	return join(w), c.end, true
@@ -336,6 +390,30 @@ var suffixForms = map[string]ordForm{
 	"ые": formNomPl, "ю": formAccF, "ую": formAccF, "го": formGenMN, "ого": formGenMN, "му": formDatMN, "ому": formDatMN,
 	"ым": formInsMN, "ом": formPrepMN, "х": formGenPl, "ых": formGenPl, "ми": formInsPl, "ыми": formInsPl,
 }
+
+// mascNominative: "-й" is a masculine nominative/accusative ("2-й этап") or a
+// feminine oblique ("в 5-й школе", "к 5-й"). It is read as masculine only when
+// the next word is a masculine noun (after a preposition: a listed one) or an
+// adjective-like consonant-final word, never when the word looks feminine.
+func mascNominative(prev, next string) bool {
+	if next == "" {
+		return !prepositions[prev]
+	}
+	if prepositions[prev] {
+		g, ok := nounNom[next]
+		return ok && g == masculine
+	}
+	if conjunctions[next] {
+		return true
+	}
+	r, _ := utf8.DecodeLastRuneInString(next)
+	if strings.HasSuffix(next, "ой") || strings.HasSuffix(next, "ей") {
+		return false
+	}
+	return unicode.IsLetter(r) && !strings.ContainsRune("аеёиоуыэюяъ", r) || r == 'й' || r == 'ь'
+}
+
+var conjunctions = setOf("и", "или", "а", "но", "да")
 
 // prepForPrep: "-м" is prepositional only after these ("в 21-м веке"); it is
 // instrumental or dative elsewhere ("2-м этапом" / "к 2-му"), which the suffix
@@ -348,14 +426,34 @@ func expandRange(c numCtx) (string, int, bool) {
 	b, okB := digitsOf(hi)
 	after := c.text[c.end:]
 	next := nextWord(after)
-	if !okA || !okB || a >= b || governed(c) || months[next] || isYearBlocked(a, next) || isYearBlocked(b, next) {
+	if !okA || !okB || a >= b || governed(c) || months[next] || isYearBlocked(a, next) || isYearBlocked(b, next) ||
+		(yearLike(a) && yearLike(b)) || obliquePlural(next) {
 		return "", 0, false
 	}
-	g, ok := nounGender(next, a, b)
+	if sp, ok := percentSign(after); ok {
+		return join(cardinalWords(a, masculine)) + " — " + join(cardinalWords(b, masculine)) + " " + percentWord(b), c.end + sp, true
+	}
+	g, ok := rangeGender(next, a, b)
 	if !ok {
 		return "", 0, false
 	}
 	return join(cardinalWords(a, g)) + " — " + join(cardinalWords(b, g)), c.end, true
+}
+
+// rangeGender: the noun agrees with the second number ("1–2 минуты"); when
+// only the first needs a gender ("1–5 минут") any listed form of the noun tells.
+func rangeGender(noun string, a, b int) (gender, bool) {
+	if endsInOneOrTwo(b) {
+		return nounGender(noun, b)
+	}
+	if endsInOneOrTwo(a) {
+		if g, ok := nounNom[noun]; ok {
+			return g, true
+		}
+		g, ok := nounGen[noun]
+		return g, ok
+	}
+	return masculine, true
 }
 
 const (
@@ -392,7 +490,7 @@ func expandDecimal(c numCtx) (string, int, bool) {
 	ip, fp, _ := strings.Cut(c.token(), ",")
 	whole, ok := digitsOf(ip)
 	frac, ok2 := strconv.Atoi(fp)
-	if !ok || ok2 != nil || len(fp) > maxFractionDigits || frac == 0 || governed(c) {
+	if !ok || ok2 != nil || len(fp) > maxFractionDigits || frac == 0 || governed(c) || obliquePlural(nextWord(c.text[c.end:])) {
 		return "", 0, false
 	}
 	out := cardinalWords(whole, feminine)

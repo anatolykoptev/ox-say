@@ -245,3 +245,97 @@ func TestNumeralsFileHasNoDigitsLeft(t *testing.T) {
 		}
 	}
 }
+
+func checkTable(t *testing.T, table map[string]string) {
+	t.Helper()
+	for in, want := range table {
+		if got := ExpandNumbers(in); got != want {
+			t.Errorf("ExpandNumbers(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Review F1: "-й" is a masculine nominative or a feminine oblique; after a
+// preposition only a listed masculine noun settles it.
+// Mutation: numerals_scan.go expandOrdinal `case "й":` branch removed -> RED.
+func TestNumbersOrdinalYAmbiguity(t *testing.T) {
+	checkTable(t, map[string]string{
+		"в 5-й школе":     "в 5-й школе",
+		"на 3-й странице": "на 3-й странице",
+		"к 5-й":           "к 5-й",
+		"из 2-й школы":    "из 2-й школы",
+		"на 3-й день":     "на третий день",
+		"Это 2-й этап":    "Это второй этап",
+		"Занял 5-й.":      "Занял пятый.",
+		"2-й школой":      "2-й школой",
+		"Дал 5-й школе":   "Дал 5-й школе",
+	})
+}
+
+// Review F2: a number before an oblique plural noun is not nominative.
+// Mutation: numerals_scan.go expandCardinal `|| obliquePlural(next)` removed -> RED.
+func TestNumbersObliquePlural(t *testing.T) {
+	for _, in := range []string{
+		"в 5 домах", "на 5 страницах", "управляет 5 серверами", "дал 3 детям", "помог 5 людям", "за 3 днями",
+		"в 2,5 литрах", "по 3–5 домам",
+	} {
+		if got := ExpandNumbers(in); got != in {
+			t.Errorf("ExpandNumbers(%q) = %q, want unchanged", in, got)
+		}
+	}
+	checkTable(t, map[string]string{"в 5 домов": "в пять домов", "за 3 дня": "за три дня"})
+}
+
+// Review F3: a dash touching a number is a minus or dangling; digits stay.
+// Mutation: numerals_scan.go blockBefore without "–—" -> RED.
+func TestNumbersMinusAndDangling(t *testing.T) {
+	for _, in := range []string{"–5 градусов", "−5 градусов", "-5 градусов", "—5 минут", "5- и 6-летний", "5–", "от 5– до", "Ответ 5—"} {
+		if got := ExpandNumbers(in); got != in {
+			t.Errorf("ExpandNumbers(%q) = %q, want unchanged", in, got)
+		}
+	}
+}
+
+// Review F4: clock phrases and a genitive after one keep their digits.
+// Mutation: numerals_nouns.go add `ночь/ночи` to the feminine list -> RED.
+func TestNumbersClockAndCase(t *testing.T) {
+	for _, in := range []string{"в 2 ночи", "в 1 ночи", "1 утра", "2 утра", "1 человека", "21 человека", "1 дня"} {
+		if got := ExpandNumbers(in); got != in {
+			t.Errorf("ExpandNumbers(%q) = %q, want unchanged", in, got)
+		}
+	}
+	checkTable(t, map[string]string{"1 человек": "один человек", "2 человека": "два человека", "22 дня": "двадцать два дня"})
+}
+
+// Review F5: "во/ко/со" cannot be written by us; leave digits.
+// Mutation: numerals_scan.go prepMismatch `HasPrefix(first, "вт")` -> `false` -> RED.
+func TestNumbersPrepositionAgreement(t *testing.T) {
+	for _, in := range []string{"в 2-м классе", "в 2-й раз", "к 2-му", "с 2-го", "с 2 апреля", "к 2 апреля", "об 8-м", "о 11-м"} {
+		if got := ExpandNumbers(in); got != in {
+			t.Errorf("ExpandNumbers(%q) = %q, want unchanged", in, got)
+		}
+	}
+	checkTable(t, map[string]string{"в 3-м классе": "в третьем классе", "о 8-м": "о восьмом", "об 11-м": "об одиннадцатом", "с 3-го": "с третьего"})
+}
+
+// Review F6: year ranges and a bare "в 2026" keep their digits.
+// Mutation: numerals_scan.go `(yearLike(a) && yearLike(b))` removed / bareYear `return false` -> RED.
+func TestNumbersBareYears(t *testing.T) {
+	for _, in := range []string{"1998–2000", "(1998–2000)", "в 2026", "в 2026.", "в 1998–2000 годах", "1998-2000"} {
+		if got := ExpandNumbers(in); got != in {
+			t.Errorf("ExpandNumbers(%q) = %q, want unchanged", in, got)
+		}
+	}
+	checkTable(t, map[string]string{"в 2000 раз": "в две тысячи раз"})
+}
+
+// Review F7: a percent after a range agrees with the second number.
+// Mutation: numerals_scan.go expandRange percent branch removed -> RED.
+func TestNumbersRangePercent(t *testing.T) {
+	checkTable(t, map[string]string{
+		"5–10%":        "пять — десять процентов",
+		"1–2%":         "один — два процента",
+		"10–21 %":      "десять — двадцать один процент",
+		"скидка 5–10%": "скидка пять — десять процентов",
+	})
+}
