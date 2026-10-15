@@ -18,6 +18,29 @@ public enum UpdateInstaller {
         ["/bin/sh", file, "--version", tag]
     }
 
+    /// A command to run: argv, and the environment variables added to the app's own.
+    public struct Command: Equatable {
+        public var argv: [String]
+        public var environment: [String: String]
+    }
+
+    /// The installer's switch for the studio voice model (about 3 GB).
+    public static let studioVoiceVariable = "OX_SAY_WITH_VOXCPM2"
+
+    /// Step 2 of an update: the pinned install, with no extra environment.
+    public static func updateCommand(script file: String, tag: String) -> Command {
+        Command(argv: installCommand(script: file, tag: tag), environment: [:])
+    }
+
+    /// Step 2 of "Install Studio Voice": the same pinned install with the studio
+    /// voice switched on.
+    public static func studioVoiceCommand(script file: String, tag: String) -> Command {
+        Command(argv: installCommand(script: file, tag: tag), environment: [studioVoiceVariable: "1"])
+    }
+
+    /// The tag of the version that is installed: "0.1.21" is release "v0.1.21".
+    public static func tag(forVersion version: String) -> String { "v\(normalized(version))" }
+
     /// A downloaded get.sh is plausible only when non-empty and starting `#!`.
     /// `head` is the file's first bytes.
     public static func isScript(head: Data) -> Bool {

@@ -22,6 +22,25 @@ final class UpdateInstallTests: XCTestCase {
                        ["/bin/sh", "/tmp/x.sh", "--version", "v0.1.21"])
     }
 
+    /// Mutation: drop the environment entry in UpdateInstaller.studioVoiceCommand -> RED.
+    func testStudioVoiceInstallIsPinnedToTheTagAndSwitchesTheModelOn() {
+        let command = UpdateInstaller.studioVoiceCommand(script: "/tmp/x.sh", tag: UpdateInstaller.tag(forVersion: "0.1.21"))
+        XCTAssertEqual(command.argv, ["/bin/sh", "/tmp/x.sh", "--version", "v0.1.21"])
+        XCTAssertEqual(command.environment["OX_SAY_WITH_VOXCPM2"], "1")
+    }
+
+    func testPlainUpdateDoesNotDownloadTheStudioModel() {
+        let command = UpdateInstaller.updateCommand(script: "/tmp/x.sh", tag: "v0.1.22")
+        XCTAssertEqual(command.argv, ["/bin/sh", "/tmp/x.sh", "--version", "v0.1.22"])
+        XCTAssertNil(command.environment["OX_SAY_WITH_VOXCPM2"])
+        XCTAssertTrue(command.environment.isEmpty)
+    }
+
+    func testInstalledVersionBecomesItsReleaseTag() {
+        XCTAssertEqual(UpdateInstaller.tag(forVersion: "0.1.21"), "v0.1.21")
+        XCTAssertEqual(UpdateInstaller.tag(forVersion: "v0.1.21"), "v0.1.21")
+    }
+
     func testScriptCheck() {
         XCTAssertTrue(UpdateInstaller.isScript(head: Data("#!/bin/sh\necho".utf8)))
         XCTAssertFalse(UpdateInstaller.isScript(head: Data()))
