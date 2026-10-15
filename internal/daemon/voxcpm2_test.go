@@ -3,10 +3,13 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -166,5 +169,39 @@ func TestVoxCPM2IdleStopWired(t *testing.T) {
 			t.Fatalf("voxcpm2 still %q well past an idle stop of %v", d.Status().VoxCPM2.State, idle)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Daemon.Shutdown must stop the voxcpm2 child: a ~4 GB audiocpp_server left
+// behind survives until the next start's orphan reaper (issue #139.1), and the
+// supervisor must refuse new work afterwards.
+// Mutation: service.go Daemon.Shutdown, delete the `d.VoxSup.Shutdown()` call
+// -> the stamped pid stays alive -> RED.
+func TestDaemonShutdownStopsVoxChild(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_VOX", "1")
+	d := newVoxTestDaemon(t, dir, nil)
+	if _, err := d.VoxSup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stamps, _ := filepath.Glob(filepath.Join(dir, "vox-spawn-*"))
+	if len(stamps) != 1 {
+		t.Fatalf("spawn stamps = %v", stamps)
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(stamps[0]), "vox-spawn-"))
+	if err != nil || pid <= 0 {
+		t.Fatalf("stamp %s: unusable pid", stamps[0])
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) }) // never leak a failing run's child
+	if !alive(pid) {
+		t.Fatalf("child %d is not running before Shutdown", pid)
+	}
+	d.Shutdown()
+	if alive(pid) {
+		t.Fatalf("voxcpm2 child %d survived Daemon.Shutdown", pid)
+	}
+	if _, err := d.VoxSup.EnsureReady(context.Background()); !errors.Is(err, engine.ErrShutdown) {
+		t.Fatalf("EnsureReady after Shutdown = %v, want engine.ErrShutdown", err)
 	}
 }
