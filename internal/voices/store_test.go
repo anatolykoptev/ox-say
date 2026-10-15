@@ -203,3 +203,106 @@ func TestListSkipsTemporaries(t *testing.T) {
 		t.Fatalf("temporary listed: %d voices, want 1", len(list))
 	}
 }
+
+func TestUpdateAndMetaRoundTrip(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip := testutil.WriteSilentWAV(t, t.TempDir(), "c.wav", 3)
+	p, err := s.Prepare(context.Background(), "nar", clip, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetMeta(Meta{Engine: "voxcpm2", DesignedFrom: "a narrator"})
+	if _, err := p.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.Update("nar", func(v *Voice) { v.Style = "slow"; v.Name = "other" })
+	if err != nil || v.Engine != "voxcpm2" || v.Style != "slow" || v.DesignedFrom != "a narrator" || v.Name != "nar" {
+		t.Fatalf("%+v %v", v, err)
+	}
+	if _, err := s.Update("nope", func(*Voice) {}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown voice: %v", err)
+	}
+}
+
+// Re-adding a voice (a new clip under an existing name) keeps its engine and
+// style unless the new add sets them, and never keeps designed_from, which
+// describes the old audio.
+// Mutation: internal/voices/store.go inheritedMeta — return p.meta at the top
+// -> RED (the second add resets engine and style).
+func TestReAddKeepsEnginePreferences(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip := testutil.WriteSilentWAV(t, t.TempDir(), "c.wav", 3)
+	add := func(m Meta) *Voice {
+		t.Helper()
+		p, err := s.Prepare(context.Background(), "nar", clip, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.SetMeta(m)
+		v, err := p.Commit()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	add(Meta{Engine: "voxcpm2", Style: "slow", DesignedFrom: "old design"})
+	if v := add(Meta{}); v.Engine != "voxcpm2" || v.Style != "slow" || v.DesignedFrom != "" {
+		t.Fatalf("re-add without metadata: %+v", v.Meta)
+	}
+	if got, _ := s.Get("nar"); got.Engine != "voxcpm2" || got.Style != "slow" || got.DesignedFrom != "" {
+		t.Fatalf("persisted: %+v", got.Meta)
+	}
+	if v := add(Meta{Engine: "qwen3-tts", DesignedFrom: "new"}); v.Engine != "qwen3-tts" || v.Style != "slow" || v.DesignedFrom != "new" {
+		t.Fatalf("re-add with explicit metadata: %+v", v.Meta)
+	}
+}
+
+// A voice file written before the metadata fields existed loads unchanged and
+// is rewritten byte for byte (no new keys appear).
+// Mutation: internal/voices/store.go — drop `omitempty` from Meta.Engine -> RED.
+func TestOldVoiceFileRoundTripsByteStable(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const old = `{"name":"old","ref_text":"hello there","created":"2026-10-04T14:28:00Z"}`
+	if err := os.WriteFile(s.metaPath("old"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.Get("old")
+	if err != nil || v.Meta != (Meta{}) || v.RefText != "hello there" {
+		t.Fatalf("old file: %+v %v", v, err)
+	}
+	if _, err := s.Update("old", func(*Voice) {}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(s.metaPath("old"))
+	if err != nil || string(got) != old {
+		t.Fatalf("rewritten = %s (%v), want %s", got, err, old)
+	}
+}
+
+// A failed metadata write leaves the voice exactly as it was.
+func TestUpdateFailedWriteKeepsVoice(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip := testutil.WriteSilentWAV(t, t.TempDir(), "c.wav", 3)
+	if _, err := s.Add(context.Background(), "nar", clip, ""); err != nil {
+		t.Fatal(err)
+	}
+	s.writeFile = func(string, []byte, os.FileMode) error { return errors.New("disk full") }
+	if _, err := s.Update("nar", func(v *Voice) { v.Style = "x" }); err == nil {
+		t.Fatal("Update with a failing write succeeded")
+	}
+	if v, _ := s.Get("nar"); v.Style != "" {
+		t.Fatalf("voice changed despite the failed write: %+v", v)
+	}
+}

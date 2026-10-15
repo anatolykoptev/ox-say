@@ -34,6 +34,11 @@ const (
 	// samples at 16 kHz: 30 s. The engine default, 240000 (15 s), answers
 	// HTTP 500 on a 17 s reference voice.
 	voxEncoderSampleCapacity = 480000
+	// voxEncoderSampleRate is the rate voxEncoderSampleCapacity counts in.
+	voxEncoderSampleRate = 16000
+	// voxMaxRefSeconds is the longest reference clip the encoder takes (30 s),
+	// derived so it cannot drift from the capacity above.
+	voxMaxRefSeconds = voxEncoderSampleCapacity / voxEncoderSampleRate
 	// voxMaxBodyBytes caps a request body (audio.cpp's default is 2 GiB); the
 	// daemon sends JSON with file paths, never inline audio.
 	voxMaxBodyBytes = 8 << 20

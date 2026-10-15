@@ -465,3 +465,38 @@ func TestRepairBackupOrderMarkerLast(t *testing.T) {
 		t.Fatalf("backup rename order = %v, want [.wav .json]", order)
 	}
 }
+
+// A repair rewrites the transcript only: every other metadata field survives,
+// in the main file and in the backup of the original.
+// Mutation: internal/voices/repair.go Apply — marshal
+// Voice{Name: v.Name, RefText: r.NewText, Created: v.Created} (the old
+// three-field literal) instead of the copy of v -> RED.
+func TestRepairKeepsVoiceMeta(t *testing.T) {
+	s, _ := newStore(t)
+	const name = "longref"
+	seedVoice(t, s, name, 20, words90())
+	calls := 0
+	s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), &calls))
+	want := Meta{Engine: "voxcpm2", Style: "calm, warm", DesignedFrom: "a deep narrator"}
+	if _, err := s.Update(name, func(v *Voice) { v.Meta = want }); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.PrepareRepair(context.Background(), name)
+	if err != nil || r == nil {
+		t.Fatalf("PrepareRepair = %v, %v; want a repair", r, err)
+	}
+	if err := r.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.Get(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Meta != want || v.RefText != r.NewText {
+		t.Fatalf("repair dropped metadata: %+v, want %+v", v.Meta, want)
+	}
+	raw, err := os.ReadFile(s.backupPath(name, ".json"))
+	if err != nil || !strings.Contains(string(raw), `"engine":"voxcpm2"`) {
+		t.Fatalf("backup of the original lost the metadata: %v %s", err, raw)
+	}
+}
