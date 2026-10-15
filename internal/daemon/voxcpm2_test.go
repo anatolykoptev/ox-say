@@ -479,6 +479,10 @@ func TestVoxCPM2StyleCannotBreakOutOfTheTag(t *testing.T) {
 	if got := sanitizeStyle("a\nb) injected ("); got != "a b injected" {
 		t.Errorf("sanitizeStyle = %q", got)
 	}
+	// Delegation to vscript.CleanStyle: a format character cannot survive.
+	if got := sanitizeStyle("\u200b"); got != "" {
+		t.Errorf("sanitizeStyle(U+200B) = %q, want empty", got)
+	}
 }
 
 // Asking for voxcpm2 on a host that cannot run it is a 4xx in plain words that
@@ -589,5 +593,19 @@ func TestVoxCPM2BufferedFormats(t *testing.T) {
 	if rec = postSpeech(d, `{"model":"voxcpm2","input":"Привет.","response_format":"mp3"}`); rec.Code != http.StatusOK ||
 		rec.Header().Get("Content-Type") != "audio/mpeg" || rec.Header().Get("X-Ox-Say-Model") != "voxcpm2" {
 		t.Fatalf("mp3: %d %v", rec.Code, rec.Header())
+	}
+}
+
+// #143 N3: an instruct that is empty only after cleaning (format characters)
+// must fall back to the voice's default style, not mask it with "".
+// Mutation: voxcpm2.go voxStyle, test `strings.TrimSpace(raw) == ""` before
+// sanitising instead of `style == ""` after -> returns "" -> RED.
+func TestVoxStyleCfOnlyInstructFallsBackToVoiceStyle(t *testing.T) {
+	v := &voices.Voice{Name: "nar", Meta: voices.Meta{Style: "calm"}}
+	for _, in := range []string{"\u200B", "\uFEFF\u202E", " \u200B "} {
+		got, err := voxStyle(map[string]any{fieldInstruct: in}, v)
+		if err != nil || got != "calm" {
+			t.Errorf("instruct %q: style %q, err %v; want the voice default \"calm\"", in, got, err)
+		}
 	}
 }
