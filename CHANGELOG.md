@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.21](https://github.com/anatolykoptev/ox-say/compare/v0.1.20...v0.1.21) (2026-10-15)
+
+
+### Added
+
+* **daemon:** supervise the VoxCPM2 engine (audio.cpp) on Apple Silicon ([#138](https://github.com/anatolykoptev/ox-say/issues/138)) ([236dc76](https://github.com/anatolykoptev/ox-say/commit/236dc7689d0cfbfdc9d4f473fcd64db0d3566a16))
+* **engine:** opt-in VoxCPM2 engine build and model fetch (Apple Silicon) ([#136](https://github.com/anatolykoptev/ox-say/issues/136)) ([5a121ff](https://github.com/anatolykoptev/ox-say/commit/5a121ff87391449679d20847fe2ef26826574d08))
+* **mcp,cli:** expose VoxCPM2 knobs, voice design and voice updates to agents; document ([#161](https://github.com/anatolykoptev/ox-say/issues/161)) ([f662ff6](https://github.com/anatolykoptev/ox-say/commit/f662ff6edf427f06859909ac7667ddc3b0b42892))
+* **produce:** CLI and MCP surfaces for long-form voiceover; document ([#164](https://github.com/anatolykoptev/ox-say/issues/164)) ([21c5346](https://github.com/anatolykoptev/ox-say/commit/21c53466c03057aeb29bbfc49b7ca025c063b9cc))
+* **produce:** long-form voiceover jobs — one at a time, cancel, resume, chunk edits, dictation yield, battery pause ([#155](https://github.com/anatolykoptev/ox-say/issues/155)) ([561a540](https://github.com/anatolykoptev/ox-say/commit/561a540e5c4b7d6b433761ffe23c0dd128bb0611))
+* **produce:** project manifest v1 and the streaming assembly of a voiceover ([#152](https://github.com/anatolykoptev/ox-say/issues/152)) ([3893cb5](https://github.com/anatolykoptev/ox-say/commit/3893cb5a9abcf14961204957ca1addac50dd19e6))
+* **produce:** strict PCM I/O and the take core — render, cache and gate voiceover chunks ([#148](https://github.com/anatolykoptev/ox-say/issues/148)) ([2c0699d](https://github.com/anatolykoptev/ox-say/commit/2c0699df8210b91d130d9e9e17a141ff3c2f80a3))
+* **tts:** loudness_lufs normalisation of a finished take ([#150](https://github.com/anatolykoptev/ox-say/issues/150)) ([08efad1](https://github.com/anatolykoptev/ox-say/commit/08efad1b423e4cc2cf919b5f36b5bc818228b904))
+* **tts:** route speech to VoxCPM2 by model or voice (styles, clone modes, runaway guard) ([#142](https://github.com/anatolykoptev/ox-say/issues/142)) ([0ca67ac](https://github.com/anatolykoptev/ox-say/commit/0ca67ac40d617496b039de316e7ebfbadd1401b8))
+* **voices:** design a voice from a description, keep the take you like ([#159](https://github.com/anatolykoptev/ox-say/issues/159)) ([caf946f](https://github.com/anatolykoptev/ox-say/commit/caf946fc4cb55033034d020b2b9896bd128dc77f))
+* **voices:** per-voice engine, style and design origin; repairs keep them ([#140](https://github.com/anatolykoptev/ox-say/issues/140)) ([6fc6a11](https://github.com/anatolykoptev/ox-say/commit/6fc6a1184184f02691d21bbcacae7c07e811d46c))
+* **vscript:** speak Russian numbers as words in long-form voiceover ([#163](https://github.com/anatolykoptev/ox-say/issues/163)) ([8f95f26](https://github.com/anatolykoptev/ox-say/commit/8f95f2604266f431542d9c0fc7043fe6c0c0e750))
+* **vscript:** split voiceover scripts into chunks with pause and style markup ([#145](https://github.com/anatolykoptev/ox-say/issues/145)) ([a7cdf21](https://github.com/anatolykoptev/ox-say/commit/a7cdf21c791dc6a1a99646de7452b9b5ade1f688))
+* **wordalign:** WER with ASR-slip and number tolerance, word timings and subtitle cues ([#144](https://github.com/anatolykoptev/ox-say/issues/144)) ([0f9cb0a](https://github.com/anatolykoptev/ox-say/commit/0f9cb0a338adc9acb5595c2441a64855ee1f11fd))
+
+
+### Fixed
+
+* **daemon:** set loudness with a constant gain and a true-peak limiter instead of loudnorm ([#166](https://github.com/anatolykoptev/ox-say/issues/166)) ([50d5b03](https://github.com/anatolykoptev/ox-say/commit/50d5b03f702b3d16cd2474e1a2bacfdc850ebb3e))
+* **dictation:** never read or restore a Universal Clipboard copy ([#157](https://github.com/anatolykoptev/ox-say/issues/157)) ([ebb5361](https://github.com/anatolykoptev/ox-say/commit/ebb5361b8bed6dd9450943a9f0ce70bc49eb48b5))
+* **dictation:** never report a failed update download as success ([#134](https://github.com/anatolykoptev/ox-say/issues/134)) ([8c544c2](https://github.com/anatolykoptev/ox-say/commit/8c544c24e2bfac6c6f89333ba0f8e5e86886114a)), closes [#132](https://github.com/anatolykoptev/ox-say/issues/132)
+* **dictation:** show every update-check result and fix the hidden pill message ([#131](https://github.com/anatolykoptev/ox-say/issues/131)) ([5ff0bca](https://github.com/anatolykoptev/ox-say/commit/5ff0bcad11267ff95a1a20887dd5bed091f7fde7))
+
 ## [0.1.20](https://github.com/anatolykoptev/ox-say/compare/v0.1.19...v0.1.20) (2026-10-14)
 
 
