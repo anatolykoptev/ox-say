@@ -54,7 +54,7 @@ final class SystemPasteboard: NSObject, DictationPasteboard, NSPasteboardItemDat
 
     func restore(_ snapshot: PasteboardSnapshot) {
         pasteboard.clearContents()
-        let items = snapshot.items.map { entries -> NSPasteboardItem in
+        let items = snapshot.restorableItems.map { entries -> NSPasteboardItem in
             let item = NSPasteboardItem()
             for entry in entries { item.setData(entry.data, forType: NSPasteboard.PasteboardType(entry.type)) }
             // The user's copy is already in any clipboard history; putting it back
@@ -81,6 +81,9 @@ final class PasteOutput: TextOutput {
     /// clipboard before the 3 s cap. `false` is what a paste that went nowhere
     /// looks like; feeds the `paste settled` log line.
     var onPasteSettled: ((Bool) -> Void)?
+    /// The clipboard held a copy from another device (Universal Clipboard) and
+    /// was left alone; the dictated text replaced it. A log line, not a notice.
+    var onRemoteClipboardKept: (() -> Void)?
     /// The app that had focus when the recording stopped; the paste goes there
     /// or nowhere.
     var target: pid_t?
@@ -129,7 +132,11 @@ final class PasteOutput: TextOutput {
         self.pending = nil
         pending.timer.invalidate()
         onPasteSettled?(lending.readAt != nil)
-        if !pending.lease.release(), let notice = pending.lease.notice {
+        let restored = pending.lease.release()
+        if pending.lease.keptRemote {
+            plain.writeText(pending.text)
+            onRemoteClipboardKept?()
+        } else if !restored, let notice = pending.lease.notice {
             // The user's clipboard is not coming back, so the dictation stays on
             // it. Write it plainly: the lent copy is a transient promise, which
             // clipboard history skips and which dies with this process.

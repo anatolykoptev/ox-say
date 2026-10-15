@@ -152,6 +152,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let outcome = read ? "yes" : "no"
             timingLog.notice("paste settled read=\(outcome, privacy: .public)")
         }
+        output.onRemoteClipboardKept = {
+            timingLog.notice("clipboard held a Universal Clipboard copy: not read, dictated text left on it")
+        }
         controller.onBusy = { NSSound.beep() }
         output.onNotice = { [weak self] message in self?.notice(message, kind: .outcome) }
         recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }
