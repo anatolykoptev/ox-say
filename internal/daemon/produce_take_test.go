@@ -40,6 +40,9 @@ type fakePorts struct {
 	engineID    string
 	normErr     error
 	normCalls   int
+	normHook    func() // non-nil: Normalize calls it first
+	normNoop    bool   // Normalize reports success and writes nothing
+	normOut     []byte // non-nil: Normalize writes these bytes instead of its input
 }
 
 func newFakePorts(t *testing.T) *fakePorts {
@@ -103,14 +106,20 @@ func (f *fakePorts) EngineID() (string, error)        { return f.engineID, nil }
 func (f *fakePorts) Normalize(_ context.Context, in, out string, _, _ float64) error {
 	f.mu.Lock()
 	f.normCalls++
-	err := f.normErr
+	err, hook, noop := f.normErr, f.normHook, f.normNoop
 	f.mu.Unlock()
-	if err != nil {
+	if hook != nil {
+		hook()
+	}
+	if err != nil || noop {
 		return err
 	}
 	raw, rerr := os.ReadFile(in)
 	if rerr != nil {
 		return rerr
+	}
+	if f.normOut != nil {
+		raw = f.normOut
 	}
 	return os.WriteFile(out, raw, 0o600)
 }

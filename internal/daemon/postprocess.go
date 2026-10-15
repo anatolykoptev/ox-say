@@ -294,7 +294,7 @@ func wavInfoFile(path string) (int, float64) {
 	if err != nil {
 		return 0, 0
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	head := make([]byte, wavHeadProbe)
 	n, _ := io.ReadFull(f, head)
 	return wavInfo(head[:n])
