@@ -218,6 +218,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_LANG` | empty | Default language; empty = engine auto-detect |
 | `OX_SAY_ENGINE_LOG_DIR` | `~/Library/Logs/ox-say` | Child stdout/stderr go to `engine.log` here |
 | `OX_SAY_CACHE_DIR` | `~/Library/Caches/ox-say` | Default output dir for `speak` |
+| `OX_SAY_PRODUCE_OUT_DIR` | `~/Movies/ox-say` | Where `produce` publishes a finished voiceover when the request names no `out_path` (provisional default, pending the owner) |
 | `OX_SAY_STT_BIN` | `$OX_SAY_HOME/engine/ox-stt` | Speech-to-text binary |
 | `OX_SAY_STT_MODEL` | `$OX_SAY_HOME/models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin` | Parakeet weights |
 | `OX_SAY_STT_VAD_MODEL` | `$OX_SAY_HOME/models/ggml-silero-v5.1.2.bin` | Silero VAD model; enables the streaming session routes when present at STT-server spawn |
