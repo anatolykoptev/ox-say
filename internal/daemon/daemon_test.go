@@ -106,6 +106,9 @@ func testCfg(t *testing.T, dir string) *config.Config {
 		Home:           filepath.Join(dir, "home"),
 		Addr:           "127.0.0.1:0",
 		EnginePort:     testutil.FreePort(t),
+		TTSModel:       config.TTSModelQwen,
+		VoxCPM2Bin:     os.Args[0],
+		VoxCPM2Port:    testutil.FreePort(t),
 		EngineBin:      os.Args[0],
 		Model:          "talker.gguf",
 		Codec:          "codec.gguf",
@@ -133,6 +136,12 @@ func newTestDaemon(t *testing.T, dir string, tune func(*engine.Config)) *Daemon 
 // STTIdleStop), and tuneSTT tunes the STT supervisor's engine.Config.
 func newTestDaemonSTT(t *testing.T, dir string, editCfg func(*config.Config), tune, tuneSTT func(*engine.Config)) *Daemon {
 	t.Helper()
+	return newTestDaemonVox(t, dir, editCfg, tune, tuneSTT, nil)
+}
+
+// newTestDaemonVox is newTestDaemonSTT plus tuneVox for the voxcpm2 child.
+func newTestDaemonVox(t *testing.T, dir string, editCfg func(*config.Config), tune, tuneSTT, tuneVox func(*engine.Config)) *Daemon {
+	t.Helper()
 	cfg := testCfg(t, dir)
 	if editCfg != nil {
 		editCfg(cfg)
@@ -152,6 +161,12 @@ func newTestDaemonSTT(t *testing.T, dir string, editCfg func(*config.Config), tu
 			fast(ec)
 			if tuneSTT != nil {
 				tuneSTT(ec)
+			}
+		},
+		func(ec *engine.Config) {
+			fast(ec)
+			if tuneVox != nil {
+				tuneVox(ec)
 			}
 		})
 	if err != nil {
@@ -879,11 +894,11 @@ func TestDaemonHomeLock(t *testing.T) {
 		}
 	}
 
-	d1, err := newDaemon(mkCfg(), testLogger(t), nil, nil)
+	d1, err := newDaemon(mkCfg(), testLogger(t), nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d2, err := newDaemon(mkCfg(), testLogger(t), nil, nil); err == nil {
+	if d2, err := newDaemon(mkCfg(), testLogger(t), nil, nil, nil); err == nil {
 		d2.Shutdown()
 		t.Fatal("second daemon on the same home started successfully")
 	} else if !strings.Contains(err.Error(), "another daemon") {
@@ -891,7 +906,7 @@ func TestDaemonHomeLock(t *testing.T) {
 	}
 	d1.Shutdown()
 	// The lock is released on shutdown — a later daemon can take it.
-	d3, err := newDaemon(mkCfg(), testLogger(t), nil, nil)
+	d3, err := newDaemon(mkCfg(), testLogger(t), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("daemon after lock release: %v", err)
 	}

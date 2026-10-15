@@ -13,6 +13,20 @@
 //	OXSAY_FAKE_SPEECH_BLOCK   speech blocks until the request context ends
 //	OXSAY_FAKE_IGNORE_SIGTERM SIGTERM is ignored; only SIGKILL ends the child
 //
+// Fake audiocpp_server (the voxcpm2 child; selected on OXSAY_FAKE_VOX=1 AND a
+// --config flag in argv, checked first): reads host/port from the --config
+// JSON and serves on them:
+//
+//	OXSAY_FAKE_VOX=1          run the fake audiocpp_server
+//	OXSAY_FAKE_VOX_LOG        append-only file: one line per POST
+//	                          /v1/audio/speech body
+//	OXSAY_FAKE_VOX_SECS       seconds of silence the speech route answers
+//	                          (default 1; a long value stands in for a
+//	                          runaway take)
+//
+// With OXSAY_FAKE_DIR set it stamps "vox-spawn-<pid>" holding the argv, one
+// argument per line.
+//
 // Fake ox-stt (dispatched on OXSAY_FAKE_STT=1 AND a --engine flag in argv —
 // the TTS fake never receives one, so both fakes can coexist in a test):
 //
@@ -96,6 +110,9 @@ import (
 // FakeChildMain runs the fake engine when the env marker is set, then exits.
 // Call it first in every test package's TestMain.
 func FakeChildMain() {
+	if os.Getenv("OXSAY_FAKE_VOX") == "1" && hasFlagArg(os.Args[1:], "--config") {
+		os.Exit(runFakeVox(os.Args[1:]))
+	}
 	// The STT fakes are selected by argv shape, not only by their env
 	// marker: both markers are typically set in daemon tests. A --serve
 	// argv runs the resident-server fake; a --engine argv the per-call CLI
@@ -667,4 +684,74 @@ func WriteTinyWAV(t *testing.T, dir, name string) string {
 func putU16(b []byte, v uint16) { b[0], b[1] = byte(v), byte(v>>8) }
 func putU32(b []byte, v uint32) {
 	b[0], b[1], b[2], b[3] = byte(v), byte(v>>8), byte(v>>16), byte(v>>24)
+}
+
+func hasFlagArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+// runFakeVox is the fake audiocpp_server: it reads host/port from the
+// --config JSON, serves GET /health and POST /v1/audio/speech, appends each
+// speech body as one JSON line to OXSAY_FAKE_VOX_LOG, and answers a silent WAV
+// of OXSAY_FAKE_VOX_SECS seconds (default 1).
+func runFakeVox(args []string) int {
+	var path string
+	for i, a := range args {
+		if a == "--config" && i+1 < len(args) {
+			path = args[i+1]
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake-vox:", err)
+		return 2
+	}
+	var sc struct {
+		Host string `json:"host"`
+		Port int    `json:"port"`
+	}
+	if err := json.Unmarshal(raw, &sc); err != nil {
+		fmt.Fprintln(os.Stderr, "fake-vox:", err)
+		return 2
+	}
+	if dir := os.Getenv("OXSAY_FAKE_DIR"); dir != "" {
+		stamp := filepath.Join(dir, "vox-spawn-"+strconv.Itoa(os.Getpid()))
+		_ = os.WriteFile(stamp, []byte(strings.Join(args, "\n")), 0o644)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	var mu sync.Mutex
+	mux.HandleFunc("POST /v1/audio/speech", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !json.Valid(body) {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if log := os.Getenv("OXSAY_FAKE_VOX_LOG"); log != "" {
+			mu.Lock()
+			f, err := os.OpenFile(log, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			if err == nil {
+				_, _ = f.Write(append(body, '\n'))
+				_ = f.Close()
+			}
+			mu.Unlock()
+		}
+		secs := 1.0
+		if s, err := strconv.ParseFloat(os.Getenv("OXSAY_FAKE_VOX_SECS"), 64); err == nil {
+			secs = s
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(SilentWAV(secs))
+	})
+	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", sc.Host, sc.Port), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	if err := srv.ListenAndServe(); err != nil {
+		fmt.Fprintln(os.Stderr, "fake-vox:", err)
+		return 1
+	}
+	return 0
 }

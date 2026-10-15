@@ -36,6 +36,10 @@ type Daemon struct {
 	// STTServeArgs.
 	STTSup *engine.Supervisor
 
+	// VoxSup supervises audiocpp_server (VoxCPM2); nil on a discrete card,
+	// see config.VoxCPM2Unavailable.
+	VoxSup *engine.Supervisor
+
 	ec  *engine.Client
 	log *slog.Logger
 
@@ -71,7 +75,7 @@ type Daemon struct {
 // New builds the supervisor (reaping any orphaned engine) and the voice
 // store, and wires voice replay into engine startup.
 func New(cfg *config.Config, logger *slog.Logger) (*Daemon, error) {
-	return newDaemon(cfg, logger, nil, nil)
+	return newDaemon(cfg, logger, nil, nil, nil)
 }
 
 // sttStartupTimeout bounds the resident STT server's start budget. Passing
@@ -115,8 +119,9 @@ func STTServeArgs(cfg *config.Config, port int) []string {
 }
 
 // newDaemon is New plus engine.Config tuning hooks for tests — tune for
-// the TTS supervisor, tuneSTT for the STT server's.
-func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engine.Config)) (*Daemon, error) {
+// the TTS supervisor, tuneSTT for the STT server's, tuneVox for the voxcpm2
+// child's.
+func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox func(*engine.Config)) (*Daemon, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -197,6 +202,16 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT func(*engi
 			return nil, err
 		}
 		d.STTSup = ssup
+	}
+	if cfg.UnifiedMemory() {
+		if d.VoxSup, err = newVoxSupervisor(cfg, logger, tuneVox); err != nil {
+			sup.Shutdown()
+			if d.STTSup != nil {
+				d.STTSup.Shutdown()
+			}
+			_ = lockF.Close()
+			return nil, err
+		}
 	}
 	return d, nil
 }
@@ -425,10 +440,13 @@ type statusSummary struct {
 	Engine engine.Status `json:"engine"`
 	// STTServer is the resident ox-stt server's engine.Status, or
 	// {"state":"off"} when OX_SAY_STT_SERVER=off.
-	STTServer any            `json:"stt_server"`
-	Voices    []voices.Voice `json:"voices"`
-	Config    map[string]any `json:"config"`
-	Version   string         `json:"version"`
+	STTServer any `json:"stt_server"`
+	// VoxCPM2 is the studio-voice engine: available or not (with the reason
+	// in plain words), and its stopped/starting/ready state.
+	VoxCPM2 voxCPM2Status  `json:"voxcpm2"`
+	Voices  []voices.Voice `json:"voices"`
+	Config  map[string]any `json:"config"`
+	Version string         `json:"version"`
 }
 
 var version = "dev"
@@ -449,6 +467,7 @@ func (d *Daemon) Status() statusSummary {
 	return statusSummary{
 		Engine:    d.Sup.Status(),
 		STTServer: sttServer,
+		VoxCPM2:   d.voxStatus(),
 		Voices:    list,
 		Config: map[string]any{
 			"addr":              d.Cfg.Addr,
@@ -468,6 +487,7 @@ func (d *Daemon) Status() statusSummary {
 			"stt_port":          d.Cfg.STTPort,
 			"stt_idle_stop_s":   d.Cfg.STTIdleStop.Seconds(),
 			"stt_vad_model":     d.Cfg.STTVADModel,
+			"tts_model":         d.Cfg.TTSModel,
 		},
 		Version: version,
 	}
@@ -483,6 +503,9 @@ func (d *Daemon) Shutdown() {
 	d.Sup.Shutdown()
 	if d.STTSup != nil {
 		d.STTSup.Shutdown()
+	}
+	if d.VoxSup != nil {
+		d.VoxSup.Shutdown()
 	}
 	if d.lockFile != nil {
 		_ = d.lockFile.Close()
