@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/ox-say/internal/pcm"
 	"github.com/anatolykoptev/ox-say/internal/testutil"
 )
 
@@ -471,5 +472,193 @@ func TestLoudnormFallsBackToSinglePass(t *testing.T) {
 		if l := integratedLUFS(t, got); math.Abs(l-testTargetLUFS) > lufsTolerance {
 			t.Errorf("%s: fell back to %.1f LUFS, want -16 ±1", name, l)
 		}
+	}
+}
+
+// Fixture of the strict file path: a 60 s sine whose level steps up halfway,
+// so a dynamic (single pass) loudnorm would ride the gain and a linear
+// two-pass one cannot.
+const (
+	stepSecs      = 60
+	stepFreq      = 300.0
+	stepQuietDB   = -27.0 // a 9 LU step: inside loudnorm's 11 LU range, so linear mode is allowed
+	stepLoudDB    = -18.0
+	crestSlackDB  = 0.5
+	silentFileSec = 5
+)
+
+func writeStepFile(t *testing.T, dir string) string {
+	t.Helper()
+	const rate = testutil.VoxRate
+	s := make([]int16, stepSecs*rate)
+	for i := range s {
+		amp := math.Pow(10, stepQuietDB/20)
+		if i >= len(s)/2 {
+			amp = math.Pow(10, stepLoudDB/20)
+		}
+		s[i] = int16(amp * math.MaxInt16 * math.Sin(2*math.Pi*stepFreq*float64(i)/rate))
+	}
+	p := filepath.Join(dir, "in.wav")
+	if err := os.WriteFile(p, pcm.Clip{Rate: rate, S: s}.Encode(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+var astatsRe = regexp.MustCompile(`(Peak level dB|RMS level dB): (-?[0-9.]+)`)
+
+// crestDB is peak minus RMS level over the whole file, read by ffmpeg's
+// astats: a constant gain leaves it unchanged, a dynamic one does not.
+func crestDB(t *testing.T, path string) float64 {
+	t.Helper()
+	out, _ := exec.Command("ffmpeg", "-hide_banner", "-nostats", "-i", path, "-af", "astats", "-f", "null", "-").CombinedOutput()
+	txt := string(out)
+	if i := strings.LastIndex(txt, "Overall"); i >= 0 {
+		txt = txt[i:]
+	}
+	v := map[string]float64{}
+	for _, m := range astatsRe.FindAllStringSubmatch(txt, -1) {
+		f, _ := strconv.ParseFloat(m[2], 64)
+		v[m[1]] = f
+	}
+	if len(v) != 2 {
+		t.Fatalf("no astats Overall block: %s", out)
+	}
+	return v["Peak level dB"] - v["RMS level dB"]
+}
+
+func fileLUFS(t *testing.T, path string) float64 {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return integratedLUFS(t, raw)
+}
+
+// The strict file path: lands within 1 LU on a 60 s file with a level step,
+// keeps the rate, and is linear (the crest factor is unchanged within
+// 0.5 dB); a silent file is an error, never a published unnormalised file.
+// Mutation: postprocess.go loudnormFile, loudnormFilter(lufs, st) ->
+// loudnormFilter(lufs, nil) (single pass) -> dynamic mode changes the crest
+// factor -> RED.
+// Mutation: postprocess.go loudnormFile, on a measuring error fall back to a
+// single pass -> the silent file succeeds -> RED.
+func TestLoudnormFileStrictTwoPass(t *testing.T) {
+	dir := t.TempDir()
+	in, out := writeStepFile(t, dir), filepath.Join(dir, "out.wav")
+	if err := loudnormFile(context.Background(), in, out, testTargetLUFS); err != nil {
+		t.Fatal(err)
+	}
+	if l := fileLUFS(t, out); math.Abs(l-testTargetLUFS) > lufsTolerance {
+		t.Errorf("integrated %.2f LUFS, want -16 ±1", l)
+	}
+	if rate, _ := wavInfoFile(out); rate != testutil.VoxRate {
+		t.Errorf("rate %d, want %d", rate, testutil.VoxRate)
+	}
+	if before, after := crestDB(t, in), crestDB(t, out); math.Abs(before-after) > crestSlackDB {
+		t.Errorf("crest factor moved from %.2f dB to %.2f dB: not a linear (constant-gain) pass", before, after)
+	}
+
+	silent := filepath.Join(dir, "silent.wav")
+	if err := os.WriteFile(silent, pcm.Silence(testutil.VoxRate, silentFileSec).Encode(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out2 := filepath.Join(dir, "out2.wav")
+	if err := loudnormFile(context.Background(), silent, out2, testTargetLUFS); err == nil {
+		t.Error("a silent file was reported as normalised")
+	}
+	if _, err := os.Stat(out2); !os.IsNotExist(err) {
+		t.Errorf("a silent file left an output behind: %v", err)
+	}
+}
+
+// Whatever fails, the output path is left empty: ffmpeg dying half way through
+// the applying pass leaves no partial file that could pass for the result.
+// Mutation: postprocess.go loudnormFile, drop the os.Remove(out) on error -> RED.
+func TestLoudnormFileLeavesNoPartialOutput(t *testing.T) {
+	real, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	useFakeFFmpeg(t, `case "$*" in *"-f null"*) exec `+real+` "$@";; esac
+for a; do last=$a; done
+echo junk > "$last"
+exit 1`)
+	dir := t.TempDir()
+	in, out := writeStepFile(t, dir), filepath.Join(dir, "out.wav")
+	if err := loudnormFile(context.Background(), in, out, testTargetLUFS); err == nil {
+		t.Fatal("a failing apply pass reported success")
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("partial output left behind: %v", err)
+	}
+}
+
+// A measuring failure on the assembled file is an error: nothing falls back
+// to a single pass (that is only for one take).
+func TestLoudnormFileMeasureFailureIsAnError(t *testing.T) {
+	real, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, measure := range map[string]string{
+		"no JSON in the report": `echo "no report here" >&2; exit 0`,
+		"measure exits 1":       `exit 1`,
+	} {
+		useFakeFFmpeg(t, `case "$*" in *"-f null"*) `+measure+`;; esac; exec `+real+` "$@"`)
+		dir := t.TempDir()
+		in, out := writeStepFile(t, dir), filepath.Join(dir, "out.wav")
+		if err := loudnormFile(context.Background(), in, out, testTargetLUFS); err == nil {
+			t.Errorf("%s: fell back instead of failing", name)
+		}
+		if _, err := os.Stat(out); !os.IsNotExist(err) {
+			t.Errorf("%s: output exists", name)
+		}
+	}
+}
+
+// loudnormFile refuses what is not a PCM WAV before it starts ffmpeg.
+func TestLoudnormFileRefusesNonWAV(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "x.wav")
+	if err := os.WriteFile(in, []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := loudnormFile(context.Background(), in, filepath.Join(dir, "o.wav"), testTargetLUFS); err == nil {
+		t.Fatal("a non-WAV was accepted")
+	}
+}
+
+// Both passes are bounded in proportion to the audio.
+// Mutation: postprocess.go loudnormFileTimeout, drop the passes factor -> RED.
+func TestLoudnormFileTimeoutScalesWithDuration(t *testing.T) {
+	short, long := loudnormFileTimeout(10), loudnormFileTimeout(3600)
+	if short < loudnormPasses*loudnormFileBase {
+		t.Errorf("a 10 s file gets only %v", short)
+	}
+	if long <= short || long < time.Duration(3600*loudnormFilePerSec*float64(time.Second)) {
+		t.Errorf("an hour of audio gets %v (10 s: %v)", long, short)
+	}
+}
+
+// loudnormFileReport tells the dynamic fallback from a constant gain, from
+// ffmpeg's own normalization_type: a peaky programme cannot reach -16 LUFS
+// under a -1.5 dBTP ceiling with one gain; the stepped sine can.
+// Mutation: postprocess.go reportedNormType, return "" -> the peaky case reads linear -> RED.
+// Mutation: postprocess.go applyLoudnormReport, drop ":print_format=json" -> RED.
+func TestLoudnormFileReportsTheDynamicFallback(t *testing.T) {
+	dir := t.TempDir()
+	peaky := filepath.Join(dir, "peaky.wav")
+	if err := os.WriteFile(peaky, clickyBytes(testutil.VoxRate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dyn, err := loudnormFileReport(context.Background(), peaky, filepath.Join(dir, "p.wav"), testTargetLUFS)
+	if err != nil || !dyn {
+		t.Errorf("peaky programme: dynamic=%v err=%v, want dynamic", dyn, err)
+	}
+	dyn, err = loudnormFileReport(context.Background(), writeStepFile(t, dir), filepath.Join(dir, "s.wav"), testTargetLUFS)
+	if err != nil || dyn {
+		t.Errorf("stepped sine: dynamic=%v err=%v, want a constant gain", dyn, err)
 	}
 }

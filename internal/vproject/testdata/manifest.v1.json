@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "id": "20261015-120000-a1b2c3",
+  "title": "Утренний рилс",
+  "created": "2026-10-15T12:00:00Z",
+  "updated": "2026-10-15T12:00:00Z",
+  "status": "review",
+  "settings": {
+    "voice": "nar",
+    "style": "calm",
+    "preset": "reels",
+    "clone_mode": "reference",
+    "seed": 42,
+    "cfg_value": 2,
+    "inference_timesteps": 10,
+    "takes_per_chunk": 2,
+    "loudness_lufs": -14,
+    "chunk_pause_s": 0.2,
+    "paragraph_pause_s": 0.45,
+    "out_path": "/Users/x/Movies/ox-say/reel/reel.wav",
+    "voice_sha": "aa",
+    "engine": "eng1"
+  },
+  "progress": {
+    "chunks_total": 2,
+    "chunks_done": 2,
+    "renders": 5,
+    "elapsed_s": 61.5,
+    "eta_s": 0
+  },
+  "chunks": [
+    {
+      "index": 0,
+      "paragraph": 0,
+      "text": "Привет.",
+      "spoken": "Привет.",
+      "pause_after_s": 0.45,
+      "status": "ok",
+      "basis": "0123456789abcdef01234567",
+      "pick": "89abcdef0123456789abcdef",
+      "takes": [
+        {
+          "key": "89abcdef0123456789abcdef",
+          "seed": 42,
+          "attempt": 0,
+          "cfg_value": 0,
+          "duration_s": 1.2,
+          "wer": 0,
+          "passed": true
+        }
+      ],
+      "start_s": 0,
+      "end_s": 1.1
+    }
+  ],
+  "outputs": {
+    "wav": "/Users/x/Movies/ox-say/reel/reel.wav",
+    "duration_s": 3.1
+  },
+  "notes": [
+    "numbers are not checked by the transcript gate"
+  ]
+}

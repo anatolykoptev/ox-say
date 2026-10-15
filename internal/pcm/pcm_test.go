@@ -67,6 +67,68 @@ func TestWriterStreams(t *testing.T) {
 	}
 }
 
+// A never-closed file (a crash mid-assembly) carries the unsized placeholder,
+// so it reads as the audio that reached the disk and an empty one is refused:
+// it must never pass for a valid, finished, empty WAV (#149.2).
+// Mutation: pcm.go NewWriter, header(f, rate, 0, ...) -> a zero data size
+// placeholder -> the empty file decodes and the partial file has no samples -> RED.
+func TestWriterCrashedFileIsNotAValidEmptyWAV(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "o.wav")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWriter(f, 48000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(p)
+	if c, err := Decode(raw); err == nil {
+		t.Fatalf("a header-only crashed file decoded as a valid WAV of %d samples", len(c.S))
+	}
+	for _, off := range []int{riffSizeOff, dataSizeOff} {
+		if got := binary.LittleEndian.Uint32(raw[off:]); got != wavUnsized {
+			t.Errorf("placeholder at %d is %#x, want %#x", off, got, uint32(wavUnsized))
+		}
+	}
+	const secs = 1 // far past bufio's buffer: part of it reaches the disk before the "crash"
+	if err := w.Write(Clip{Rate: 48000, S: tone(48000, secs)}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(p)
+	c, err := Decode(raw)
+	if err != nil || len(c.S) == 0 || len(c.S) > 48000*secs {
+		t.Fatalf("partial file: err %v, %d samples", err, len(c.S))
+	}
+	_ = w.Abort()
+}
+
+// Abort closes and removes the file; Close afterwards is harmless.
+// Mutation: drop the os.Remove in Abort -> the file survives -> RED.
+func TestWriterAbortRemovesTheFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "o.wav")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWriter(f, 48000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Write(Silence(48000, 0.1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatalf("aborted file still there: %v", err)
+	}
+	if err := w.Abort(); err != nil {
+		t.Fatalf("second Abort: %v", err)
+	}
+}
+
 // An inner 2 s gap is found; edges are not counted.
 // Mutation: LongestSilence counts the untrimmed clip -> 3 s -> RED.
 func TestLongestSilence(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/pcm"
@@ -92,7 +93,9 @@ type producePorts interface {
 	DefaultVoice(lang string) string
 	Unavailable() string
 	EngineID() (string, error)
-	Normalize(ctx context.Context, in, out string, lufs, durSec float64) error
+	// Normalize writes in at lufs to out; dynamic reports that the level moves
+	// within the file (loudnorm's dynamic mode).
+	Normalize(ctx context.Context, in, out string, lufs, durSec float64) (dynamic bool, err error)
 	Quiet(ctx context.Context, onWait func()) error
 	Power(ctx context.Context) (onBattery, lowPower bool)
 	Background(on bool)
@@ -207,31 +210,48 @@ func (t *taker) gateLimits() gateLimits {
 //     limits, so a recalibration is never frozen out by the cache;
 //   - only the WAV exists (a crash between the two writes): transcribed and
 //     gated, not rendered;
-//   - else rendered.
+//   - else rendered. A stored WAV that does not decode, or holds no audio,
+//     counts as absent: the cache heals by rendering again.
 //
 // rendered reports an engine call.
 func (t *taker) take(ctx context.Context, spec takeSpec, attempt int) (vproject.TakeRef, bool, error) {
 	key := spec.key()
 	wavPath, side := filepath.Join(t.dir, key+".wav"), filepath.Join(t.dir, key+".json")
-	if d, err := readDetail(side); err == nil && d.Ref.Key == key {
-		if raw, err := os.ReadFile(wavPath); err == nil {
-			clip, err := pcm.Decode(raw)
-			if err != nil {
-				return vproject.TakeRef{}, false, err
-			}
+	clip, err := readClip(wavPath)
+	if err == nil {
+		if d, derr := readDetail(side); derr == nil && d.Ref.Key == key {
 			ref, _ := t.verdict(spec, attempt, clip, d.Heard, d.Warning)
 			return ref, false, nil
 		}
 	}
 	rendered, warning := false, ""
-	if _, err := os.Stat(wavPath); err != nil {
-		out, err := t.render(ctx, spec, wavPath)
-		if err != nil {
-			return vproject.TakeRef{}, false, err
+	if err != nil {
+		out, rerr := t.render(ctx, spec, wavPath)
+		if rerr != nil {
+			return vproject.TakeRef{}, false, rerr
 		}
 		rendered, warning = true, out.Warning
+		if clip, err = readClip(wavPath); err != nil {
+			return vproject.TakeRef{}, true, err
+		}
 	}
-	return t.gate(ctx, gateJob{spec: spec, attempt: attempt, wavPath: wavPath, side: side, rendered: rendered, warning: warning})
+	return t.gate(ctx, gateJob{spec: spec, attempt: attempt, clip: clip, wavPath: wavPath, side: side, rendered: rendered, warning: warning})
+}
+
+// readClip decodes a stored take; a missing, corrupt or empty file is an error.
+func readClip(path string) (pcm.Clip, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return pcm.Clip{}, err
+	}
+	clip, err := pcm.Decode(raw)
+	if err != nil {
+		return pcm.Clip{}, fmt.Errorf("produce: %s: %w", filepath.Base(path), err)
+	}
+	if len(clip.S) == 0 {
+		return pcm.Clip{}, fmt.Errorf("produce: %s: no audio", filepath.Base(path))
+	}
+	return clip, nil
 }
 
 // verdict is the gate result of one take: the manifest ref and its sidecar.
@@ -279,20 +299,13 @@ func (t *taker) render(ctx context.Context, spec takeSpec, wavPath string) (*syn
 type gateJob struct {
 	spec          takeSpec
 	attempt       int
+	clip          pcm.Clip
 	wavPath, side string
 	rendered      bool
 	warning       string
 }
 
 func (t *taker) gate(ctx context.Context, g gateJob) (vproject.TakeRef, bool, error) {
-	raw, err := os.ReadFile(g.wavPath)
-	if err != nil {
-		return vproject.TakeRef{}, g.rendered, err
-	}
-	clip, err := pcm.Decode(raw)
-	if err != nil {
-		return vproject.TakeRef{}, g.rendered, err
-	}
 	if err := t.quiet(ctx); err != nil {
 		return vproject.TakeRef{}, g.rendered, err
 	}
@@ -300,8 +313,8 @@ func (t *taker) gate(ctx context.Context, g gateJob) (vproject.TakeRef, bool, er
 	if err != nil {
 		return vproject.TakeRef{}, g.rendered, fmt.Errorf("produce: transcribe a take: %w", err)
 	}
-	ref, detail := t.verdict(g.spec, g.attempt, clip, heard, g.warning)
-	raw, err = json.Marshal(detail)
+	ref, detail := t.verdict(g.spec, g.attempt, g.clip, heard, g.warning)
+	raw, err := json.Marshal(detail)
 	if err == nil {
 		err = vproject.WriteAtomic(g.side, raw, takeFileMode)
 	}
@@ -325,24 +338,47 @@ func gateTake(spoken string, clip pcm.Clip, heard []voices.Word) (fails []string
 	return gateWith(defaultGate, spoken, clip, heard)
 }
 
-// gateWith applies plan D8: inner silence, then the WER round trip. spoken is
-// the text the engine was asked to say (Chunk.Spoken); heard is what the
-// daemon's own STT made of the take.
+// gateWith applies plan D8: a silent take, inner silence, then the WER round
+// trip. spoken is the text the engine was asked to say (Chunk.Spoken); heard
+// is what the daemon's own STT made of the take.
+//
+// Parakeet writes <unk> for a spoken dash or breath, so <unk> tokens are
+// dropped from the transcript, but only as many as the spoken text has dashes
+// and punctuation marks: each one past that is a word the take got wrong,
+// else a babbled tail of <unk> would score as clean.
 func gateWith(l gateLimits, spoken string, clip pcm.Clip, heard []voices.Word) (fails []string, errs, n int) {
+	if voiced, _ := clip.Trim(l.FloorDB, 0); len(voiced.S) == 0 {
+		fails = append(fails, "the take is silent")
+	}
 	if s := clip.LongestSilence(l.FloorDB); s > l.MaxSilenceSec {
 		fails = append(fails, fmt.Sprintf("%.1f s of silence inside the take", s))
 	}
 	parts := make([]string, 0, len(heard))
+	unknown := 0
 	for _, h := range heard {
-		if h.W != asrUnknown {
-			parts = append(parts, h.W)
+		if h.W == asrUnknown {
+			unknown++
+			continue
 		}
+		parts = append(parts, h.W)
 	}
 	errs, n = wordalign.WER(spoken, strings.Join(parts, " "))
+	errs += max(0, unknown-countPunct(spoken))
 	if float64(errs) > l.MaxWER*float64(max(1, n)) && errs > l.MinErrors {
 		fails = append(fails, fmt.Sprintf("the transcript differs from the text in %d of %d words", errs, n))
 	}
 	return fails, errs, n
+}
+
+// countPunct is the number of dash and punctuation marks in s.
+func countPunct(s string) int {
+	n := 0
+	for _, r := range s {
+		if unicode.IsPunct(r) {
+			n++
+		}
+	}
+	return n
 }
 
 func round2(x float64) float64 { return math.Round(x*roundScale) / roundScale }
