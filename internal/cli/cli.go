@@ -616,7 +616,8 @@ func cmdStatus(_ []string, stdout, stderr io.Writer) int {
 			LastErr  string  `json:"last_error,omitempty"`
 			Restarts int     `json:"restarts"`
 		} `json:"stt_server"`
-		Voices []struct {
+		VoxCPM2 *studioVoiceStatus `json:"voxcpm2"`
+		Voices  []struct {
 			Name string `json:"name"`
 		} `json:"voices"`
 		Version string `json:"version"`
@@ -651,6 +652,9 @@ func cmdStatus(_ []string, stdout, stderr io.Writer) int {
 		if st.STTServer.LastErr != "" {
 			fmt.Fprintf(stdout, "stt server last error: %s\n", st.STTServer.LastErr)
 		}
+	}
+	if st.VoxCPM2 != nil {
+		st.VoxCPM2.print(stdout)
 	}
 	names := make([]string, 0, len(st.Voices))
 	for _, v := range st.Voices {

@@ -109,3 +109,29 @@ func patchJSON(target string, body map[string]any) error {
 	}
 	return nil
 }
+
+// studioVoiceStatus is /status's voxcpm2 key.
+type studioVoiceStatus struct {
+	Available bool    `json:"available"`
+	Reason    string  `json:"reason,omitempty"`
+	State     string  `json:"state"`
+	PID       int     `json:"pid,omitempty"`
+	UptimeS   float64 `json:"uptime_s,omitempty"`
+	LastErr   string  `json:"last_error,omitempty"`
+}
+
+// print writes the studio voice line: its state, or why it cannot run.
+func (s *studioVoiceStatus) print(w io.Writer) {
+	if !s.Available {
+		outf(w, "studio voice (voxcpm2): unavailable: %s\n", s.Reason)
+		return
+	}
+	outf(w, "studio voice (voxcpm2): %s", s.State)
+	if s.PID != 0 {
+		outf(w, " (pid %d, up %.0fs)", s.PID, s.UptimeS)
+	}
+	outln(w)
+	if s.LastErr != "" {
+		outf(w, "studio voice last error: %s\n", s.LastErr)
+	}
+}

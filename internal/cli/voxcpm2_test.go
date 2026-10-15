@@ -183,3 +183,30 @@ func TestVoiceLsShowsEngine(t *testing.T) {
 		t.Fatalf("out %q, want %q", so.String(), want)
 	}
 }
+
+// status shows the studio voice: its state, or the plain reason it cannot run;
+// an older daemon without the key prints no line.
+// Mutation: internal/cli/cli.go cmdStatus, drop the studio voice line -> RED.
+func TestStatusStudioVoiceLine(t *testing.T) {
+	statusOut := func(payload string) string {
+		t.Helper()
+		stubCalls(t, []byte(payload))
+		var so, se strings.Builder
+		if code := Run([]string{"status"}, &so, &se, "test"); code != 0 {
+			t.Fatalf("exit %d: %s", code, se.String())
+		}
+		return so.String()
+	}
+	base := `{"engine":{"state":"ready","starts":1,"restarts":0},"voices":[],"version":"t"`
+	out := statusOut(base + `,"voxcpm2":{"available":true,"state":"ready","pid":7,"uptime_s":3,"starts":1,"restarts":0}}`)
+	if !strings.Contains(out, "studio voice (voxcpm2): ready (pid 7, up 3s)") {
+		t.Errorf("ready line missing: %q", out)
+	}
+	out = statusOut(base + `,"voxcpm2":{"available":false,"reason":"Studio voices (VoxCPM2) need a Mac with Apple Silicon.","state":"stopped","starts":0,"restarts":0}}`)
+	if !strings.Contains(out, "studio voice (voxcpm2): unavailable: Studio voices (VoxCPM2) need a Mac with Apple Silicon.") {
+		t.Errorf("unavailable line missing: %q", out)
+	}
+	if out = statusOut(base + `}`); strings.Contains(out, "studio voice") {
+		t.Errorf("studio voice line printed for a keyless payload: %q", out)
+	}
+}
