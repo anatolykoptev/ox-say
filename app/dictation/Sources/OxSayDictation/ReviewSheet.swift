@@ -15,6 +15,7 @@ final class ReviewSheet: NSObject, NSTextViewDelegate, NSWindowDelegate {
     static let editorSize = NSSize(width: 560, height: 300)
     static let editorFontSize: CGFloat = 13
     private static let contentInset: CGFloat = 16
+    private static let editorInset = NSSize(width: 4, height: 6)
 
     private let panel = NSPanel(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
     private let textView: NSTextView
@@ -62,7 +63,7 @@ final class ReviewSheet: NSObject, NSTextViewDelegate, NSWindowDelegate {
         textView.isRichText = false
         textView.allowsUndo = true
         textView.font = .systemFont(ofSize: Self.editorFontSize)
-        textView.textContainerInset = NSSize(width: 4, height: 6)
+        textView.textContainerInset = Self.editorInset
         // What is typed is sent as typed: no curly quotes, no dashes, no corrections.
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
