@@ -91,9 +91,10 @@ func abs(x int) int {
 // ASCII "(…)" as a style tag (audio.cpp session.cpp:99-117), with or without
 // a style of ours; it repeats until the text no longer opens with "(" (after
 // white space and format characters), each pass consuming one "(". Then the
-// unambiguous Russian abbreviations (spokenForms) are written out.
+// unambiguous Russian abbreviations (spokenForms) are written out, and the
+// numbers become words (ExpandNumbers). Text, the subtitles, keeps the digits.
 func Spoken(text string) string {
-	return expandAbbreviations(unparen(text))
+	return ExpandNumbers(expandAbbreviations(unparen(text)))
 }
 
 func unparen(text string) string {

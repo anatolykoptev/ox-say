@@ -1,0 +1,247 @@
+package vscript
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+// The ten lines of the F1-0 numerals probe (numerals.txt) with the spoken
+// forms they must become. 2-й, 2,5 and 10–15 are the three the engine misread.
+// Mutations: numerals_scan.go ordinal branch removed -> "2-й этап" stays;
+// range branch removed -> "10–15" stays; the thousands feminine rule dropped
+// (numerals.go cardinal, `triple(th, fem)` -> `triple(th, masc)`) -> TestNumbersRound RED.
+func TestExpandNumbersProbeLines(t *testing.T) {
+	for in, want := range map[string]string{
+		"в 1998 году":   "в тысяча девятьсот девяносто восьмом году",
+		"21 день":       "двадцать один день",
+		"5 минут":       "пять минут",
+		"2-й этап":      "второй этап",
+		"300 рублей":    "триста рублей",
+		"2,5 литра":     "две целых пять десятых литра",
+		"10–15 человек": "десять — пятнадцать человек",
+		"на 40%":        "на сорок процентов",
+		"в 18:30":       "в восемнадцать тридцать",
+		"12 апреля":     "двенадцатого апреля",
+	} {
+		if got := ExpandNumbers(in); got != want {
+			t.Errorf("ExpandNumbers(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNumbersRound(t *testing.T) {
+	for in, want := range map[string]string{
+		"0 раз":            "ноль раз",
+		"11 минут":         "одиннадцать минут",
+		"20 шагов":         "двадцать шагов",
+		"100 рублей":       "сто рублей",
+		"1000 рублей":      "тысяча рублей",
+		"2000 рублей":      "две тысячи рублей",
+		"1 000 000 рублей": "миллион рублей",
+		"21 000 рублей":    "двадцать одна тысяча рублей",
+		"22 000 рублей":    "двадцать две тысячи рублей",
+		"5 000 рублей":     "пять тысяч рублей",
+		"11 000 рублей":    "одиннадцать тысяч рублей",
+		"2 500 000 штук":   "два миллиона пятьсот тысяч штук",
+		"123 456 рублей":   "сто двадцать три тысячи четыреста пятьдесят шесть рублей",
+		"999999999 раз":    "девятьсот девяносто девять миллионов девятьсот девяносто девять тысяч девятьсот девяносто девять раз",
+	} {
+		if got := ExpandNumbers(in); got != want {
+			t.Errorf("ExpandNumbers(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A trailing 1 or 2 takes the noun's gender; an unknown noun leaves the digits.
+func TestNumbersGender(t *testing.T) {
+	for in, want := range map[string]string{
+		"1 минута":       "одна минута",
+		"2 минуты":       "две минуты",
+		"2 дня":          "два дня",
+		"1 окно":         "одно окно",
+		"31 секунда":     "тридцать одна секунда",
+		"1 странность":   "1 странность",
+		"Ответ: 2.":      "Ответ: 2.",
+		"101 далматинец": "101 далматинец",
+	} {
+		if got := ExpandNumbers(in); got != want {
+			t.Errorf("ExpandNumbers(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNumbersPercentAndDecimal(t *testing.T) {
+	for in, want := range map[string]string{
+		"1%":         "один процент",
+		"2 %":        "два процента",
+		"5%":         "пять процентов",
+		"11%":        "одиннадцать процентов",
+		"21%":        "двадцать один процент",
+		"2,5%":       "две целых пять десятых процента",
+		"1,5 раза":   "одна целая пять десятых раза",
+		"0,25 литра": "ноль целых двадцать пять сотых литра",
+		"3,001 кг":   "три целых одна тысячная кг",
+		"2,12 метра": "две целых двенадцать сотых метра",
+		"1,2,3":      "1,2,3",
+		"1,2345":     "1,2345",
+		"2,0 литра":  "2,0 литра",
+	} {
+		if got := ExpandNumbers(in); got != want {
+			t.Errorf("ExpandNumbers(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNumbersTime(t *testing.T) {
+	for in, want := range map[string]string{
+		"в 18:30":  "в восемнадцать тридцать",
+		"в 9:05":   "в девять ноль пять",
+		"в 18:00":  "в восемнадцать ноль ноль",
+		"в 0:15":   "в ноль пятнадцать",
+		"в 25:30":  "в 25:30",
+		"в 12:60":  "в 12:60",
+		"12:30:45": "12:30:45",
+		"до 18:30": "до 18:30",
+	} {
+		if got := ExpandNumbers(in); got != want {
+			t.Errorf("ExpandNumbers(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Ordinals written with a suffix take the case the suffix marks; an
+// ambiguous or unknown suffix leaves the token.
+func TestNumbersOrdinalSuffix(t *testing.T) {
+	for in, want := range map[string]string{
+		"2-й этап":       "второй этап",
+		"3-го числа":     "третьего числа",
+		"5-му":           "пятому",
+		"1-я часть":      "первая часть",
+		"2-е место":      "второе место",
+		"10-х годов":     "десятых годов",
+		"в 90-х":         "в девяностых",
+		"21-м":           "21-м",
+		"в 21-м веке":    "в двадцать первом веке",
+		"3-я":            "третья",
+		"3-й":            "третий",
+		"3-ю":            "третью",
+		"40-й":           "сороковой",
+		"200-й":          "двухсотый",
+		"100-го":         "сотого",
+		"2000-й":         "двухтысячный",
+		"в 1998-м":       "в тысяча девятьсот девяносто восьмом",
+		"4-й":            "четвёртый",
+		"2-ой этап":      "2-ой этап",
+		"5-минутный":     "5-минутный",
+		"3-D":            "3-D",
+		"2-ыми":          "вторыми",
+		"1-й, 2-й и 3-й": "первый, второй и третий",
+		"25-летие":       "25-летие",
+	} {
+		if got := ExpandNumbers(in); got != want {
+			t.Errorf("ExpandNumbers(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNumbersRange(t *testing.T) {
+	for in, want := range map[string]string{
+		"10-15 человек":  "десять — пятнадцать человек",
+		"10–15 человек":  "десять — пятнадцать человек",
+		"1–2 минуты":     "одна — две минуты",
+		"2-3 дня":        "два — три дня",
+		"1–2 странности": "1–2 странности",
+		"5-3":            "5-3",
+		"3-3 раза":       "3-3 раза",
+		"12–15 апреля":   "12–15 апреля",
+		"до 10–15 минут": "до 10–15 минут",
+		"1990–2000 годы": "1990–2000 годы",
+		"1-2-3":          "1-2-3",
+	} {
+		if got := ExpandNumbers(in); got != want {
+			t.Errorf("ExpandNumbers(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNumbersYearsAndDates(t *testing.T) {
+	for in, want := range map[string]string{
+		"в 2026 году":        "в две тысячи двадцать шестом году",
+		"в 2000 году":        "в двухтысячном году",
+		"в 1905 г.":          "в тысяча девятьсот пятом году.",
+		"в 1905 г. он":       "в тысяча девятьсот пятом году он",
+		"Это было в 1905 г.": "Это было в тысяча девятьсот пятом году.",
+		"с 2026 года":        "с 2026 года",
+		"2026 год":           "2026 год",
+		"3 года":             "три года",
+		"5 лет":              "пять лет",
+		"1 мая":              "первого мая",
+		"с 12 апреля":        "с двенадцатого апреля",
+		"к 12 апреля":        "к двенадцатому апреля",
+		"на 3 марта":         "на третье марта",
+		"Сегодня 12 апреля":  "Сегодня двенадцатое апреля",
+		"32 апреля":          "32 апреля",
+	} {
+		if got := ExpandNumbers(in); got != want {
+			t.Errorf("ExpandNumbers(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Case after any other preposition is out of scope: the digits stay.
+func TestNumbersLeaveUnsure(t *testing.T) {
+	for _, in := range []string{
+		"с 5 друзьями", "до 5 минут", "от 10 до 20", "о 3 вещах", "около 40%", "по 2 штуки",
+		"v1.2.3", "COVID-19", "5G", "10x", "№5", "$5", "5₽", "300 ₽", "-5", "1/2", "3.14", "007", "1234567890",
+		"+7 (999) 123-45-67", "12:30:45", "ГОСТ 12345-2020",
+	} {
+		if got := ExpandNumbers(in); got != in {
+			t.Errorf("ExpandNumbers(%q) = %q, want unchanged", in, got)
+		}
+	}
+}
+
+func TestNumbersNoDigitsUntouched(t *testing.T) {
+	in := "Просто текст, без чисел. Т.е. совсем."
+	if got := ExpandNumbers(in); got != in {
+		t.Errorf("got %q", got)
+	}
+}
+
+// The spoken text carries the words; the written text (subtitles) keeps the
+// digits; abbreviation expansion and numbers compose.
+// Mutation: markup.go `Spoken: Spoken(text)` -> `Spoken: text`, or chunk.go
+// Spoken applying ExpandNumbers to its input but Parse storing it into Text
+// (`Text: ExpandNumbers(text)`) -> RED.
+func TestSpokenExpandsNumbersTextKeepsDigits(t *testing.T) {
+	src := "Т.е. через 5 минут, в 18:30, 2-й этап: 10–15 человек и 2,5 литра."
+	got, err := Parse(src, testOpts)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("%v %+v", err, got)
+	}
+	wantSpoken := "То есть через пять минут, в восемнадцать тридцать, второй этап: десять — пятнадцать человек и две целых пять десятых литра."
+	if got[0].Spoken != wantSpoken {
+		t.Errorf("Spoken = %q, want %q", got[0].Spoken, wantSpoken)
+	}
+	if got[0].Text != src {
+		t.Errorf("Text = %q, want the written digits %q", got[0].Text, src)
+	}
+	if strings.ContainsAny(got[0].Spoken, "0123456789") {
+		t.Errorf("digits left in Spoken: %q", got[0].Spoken)
+	}
+}
+
+// The probe's own file, when the private kit is present: every line expands to
+// a digit-free string (the table above pins the exact forms).
+func TestNumeralsFileHasNoDigitsLeft(t *testing.T) {
+	b, err := os.ReadFile(os.ExpandEnv("$HOME/deploy/krolik-server/plans/ox-say/voxcpm2-probe/produce/scripts/numerals.txt"))
+	if err != nil {
+		t.Skip("private numerals.txt not present")
+	}
+	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if got := ExpandNumbers(l); strings.ContainsAny(got, "0123456789") {
+			t.Errorf("%q -> %q still has digits", l, got)
+		}
+	}
+}
