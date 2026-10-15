@@ -76,13 +76,20 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("unsupported response_format %q (want wav|pcm|mp3|opus)", format))
 		return
 	}
+	lufs, err := loudnessTarget(body)
+	if err != nil {
+		writeErr(w, synthStatus(err), err.Error())
+		return
+	}
 	model, warning, err := d.prepareSpeech(body)
 	if err != nil {
 		writeErr(w, synthStatus(err), err.Error())
 		return
 	}
-	if model == config.TTSModelVoxCPM2 {
-		d.handleSpeechBuffered(w, r, body, format, warning)
+	// A normalised take is buffered, whichever engine rendered it. Without a
+	// target the qwen path streams through unchanged.
+	if model == config.TTSModelVoxCPM2 || lufs != nil {
+		d.handleSpeechBuffered(w, r, bufferedSpeech{body: body, model: model, format: format, warning: warning, lufs: lufs})
 		return
 	}
 	if warning != "" {
@@ -154,16 +161,32 @@ var speechContentTypes = map[string]string{
 	"": "audio/wav", "wav": "audio/wav", "mp3": "audio/mpeg", "opus": "audio/ogg", "pcm": "audio/pcm",
 }
 
-// handleSpeechBuffered renders the whole take first (voxcpm2), then encodes
-// it. pcm stays OpenAI's 24 kHz s16le. body is already prepared: no defaults
-// are applied again.
-func (d *Daemon) handleSpeechBuffered(w http.ResponseWriter, r *http.Request, body map[string]any, format, warning string) {
-	out, err := d.synthesize(r.Context(), body, config.TTSModelVoxCPM2)
+// bufferedSpeech is a prepared speech request answered from a finished take.
+type bufferedSpeech struct {
+	body    map[string]any // already prepared: no defaults are applied again
+	model   string
+	format  string
+	warning string
+	lufs    *float64 // nil = leave the level alone
+}
+
+// handleSpeechBuffered renders the whole take first (voxcpm2, or any engine
+// when a loudness target was asked for), normalises it, then encodes it. pcm
+// stays OpenAI's 24 kHz s16le.
+func (d *Daemon) handleSpeechBuffered(w http.ResponseWriter, r *http.Request, req bufferedSpeech) {
+	format := req.format
+	if format == "" && req.model == config.TTSModelQwen {
+		// qwen's own default is raw pcm; asking for a level must not change
+		// the format. (voxcpm2 has always answered wav.)
+		format = "pcm"
+	}
+	out, err := d.synthesize(r.Context(), req.body, req.model)
 	if err != nil {
 		writeErr(w, synthStatus(err), err.Error())
 		return
 	}
-	out.addWarning(warning)
+	out.addWarning(req.warning)
+	d.normalizeTake(r.Context(), out, req.lufs)
 	audio := out.WAV
 	if format != "" && format != "wav" {
 		if audio, err = transcode(r.Context(), out.WAV, format); err != nil {
