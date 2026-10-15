@@ -61,26 +61,6 @@ final class DocumentReaderTests: XCTestCase {
         try await assertScript(url, "Open document text.")
     }
 
-    func testHtmlIsReadAsTextWithoutScriptsStylesOrImages() async throws {
-        let html = """
-        <html><head><title>T</title><style>p { color: red }</style><script>var a = "[pause]";</script></head>
-        <body><h1>Heading</h1><p>First <b>bold</b> paragraph.</p><img src="http://127.0.0.1:9/x.png" alt="ALT NOISE">
-        <script>alert("no")</script><p>Second &amp; last.</p></body></html>
-        """
-        let url = try write(Data(html.utf8), as: "a.html")
-        defer { try? FileManager.default.removeItem(at: url) }
-        try await assertScript(url, "Heading\n\nFirst bold paragraph.\n\nSecond & last.")
-    }
-
-    func testAWebArchiveIsReadFromItsMainPage() async throws {
-        let page = Data("<html><body><p>Archived text.</p></body></html>".utf8)
-        let plist: [String: Any] = ["WebMainResource": ["WebResourceData": page, "WebResourceMIMEType": "text/html"]]
-        let archive = try PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0)
-        let url = try write(archive, as: "a.webarchive")
-        defer { try? FileManager.default.removeItem(at: url) }
-        try await assertScript(url, "Archived text.")
-    }
-
     func testPlainTextIsReadInUtf8AndWindows1251() async throws {
         let utf8 = try write(Data("Привет.".utf8), as: "a.txt")
         let cp1251 = try write("Привет, как дела? Всё хорошо.".data(using: .windowsCP1251)!, as: "b.md")
@@ -150,7 +130,7 @@ final class DocumentReaderTests: XCTestCase {
 
     func testThePanelOffersExactlyTheReadableTypes() {
         XCTAssertEqual(Set(DocumentReader.supportedExtensions),
-                       ["txt", "md", "markdown", "docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive", "pdf"])
+                       ["txt", "md", "markdown", "docx", "doc", "rtf", "rtfd", "odt", "pdf"])
     }
 
     // MARK: encodings

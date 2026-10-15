@@ -15,7 +15,7 @@ public enum ScriptCleaner {
         /// A Markdown file (by its extension, never guessed from the content): as
         /// `.text`, with links, images and task boxes reduced to the words (see MarkdownText).
         case markdown
-        /// Word, RTF, ODT, HTML: every line break ends a paragraph.
+        /// Word, RTF, ODT: every line break ends a paragraph.
         case richText
         /// PDF pages: paragraphs are inferred from the layout.
         case pdf

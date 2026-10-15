@@ -16,11 +16,11 @@ enum StudioForms {
         var name: String
     }
 
-    /// A text, Markdown, Word, RTF, OpenDocument, HTML or PDF file, or nil when the person cancels.
+    /// A text, Markdown, Word, RTF, OpenDocument or PDF file, or nil when the person cancels.
     static func chooseDocument() -> URL? {
         let panel = NSOpenPanel()
         panel.title = "Choose the document to voice"
-        panel.message = "Choose a text, Markdown, Word, PDF, RTF, OpenDocument or HTML file."
+        panel.message = "Choose a text, Markdown, Word, PDF, RTF or OpenDocument file."
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = DocumentReader.supportedExtensions.compactMap { UTType(filenameExtension: $0) }

@@ -37,7 +37,7 @@ public enum DocumentError: Error, Equatable, CustomStringConvertible {
         case .unsupported(let ext) where ext.lowercased() == "pages":
             return "Pages files can't be read directly. In Pages choose File > Export To > Word or PDF, then open that file."
         case .unsupported:
-            return "ox-say reads text, Markdown, Word, RTF, OpenDocument, HTML and PDF files."
+            return "ox-say reads text, Markdown, Word, RTF, OpenDocument and PDF files."
         case .unreadable:
             return "The file could not be opened. It may be damaged, or not the kind of file its name says."
         case .passwordProtected:
@@ -56,15 +56,12 @@ public enum DocumentReader {
         case markdown
         case pdf
         case attributed(NSAttributedString.DocumentType)
-        case html
-        case webArchive
     }
 
     private static let kinds: [(ext: String, kind: Kind)] = [
         ("txt", .text), ("md", .markdown), ("markdown", .markdown),
         ("docx", .attributed(.officeOpenXML)), ("doc", .attributed(.docFormat)),
         ("rtf", .attributed(.rtf)), ("rtfd", .attributed(.rtfd)), ("odt", .attributed(.openDocument)),
-        ("html", .html), ("htm", .html), ("webarchive", .webArchive),
         ("pdf", .pdf),
     ]
 
@@ -79,8 +76,6 @@ public enum DocumentReader {
         case .markdown: return ReadDocument(pages: [try plainText(url)], source: .markdown)
         case .pdf: return ReadDocument(pages: try pdfPages(url), source: .pdf)
         case .attributed(let type): return ReadDocument(pages: [try attributedText(url, type)], source: .richText)
-        case .html: return ReadDocument(pages: [try htmlText(try Data(contentsOf: url))], source: .richText)
-        case .webArchive: return ReadDocument(pages: [try htmlText(try archiveMainPage(url))], source: .richText)
         }
     }
 
@@ -162,21 +157,5 @@ public enum DocumentReader {
             throw DocumentError.unreadable
         }
         return text.string
-    }
-
-    /// The page of a Safari web archive: the main resource of its property list.
-    private static func archiveMainPage(_ url: URL) throws -> Data {
-        guard let data = try? Data(contentsOf: url),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-              let main = plist["WebMainResource"] as? [String: Any],
-              let page = main["WebResourceData"] as? Data else { throw DocumentError.unreadable }
-        return page
-    }
-
-    /// The text of a page, from its parsed tree (see HTMLText): a page cannot make
-    /// this Mac load anything.
-    private static func htmlText(_ page: Data) throws -> String {
-        guard let text = HTMLText.plain(try decode(page)) else { throw DocumentError.unreadable }
-        return text
     }
 }
