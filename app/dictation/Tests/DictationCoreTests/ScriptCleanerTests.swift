@@ -191,4 +191,55 @@ final class ScriptCleanerTests: XCTestCase {
         let once = ScriptCleaner.clean(pages: pages, source: .pdf)
         XCTAssertEqual(ScriptCleaner.clean(pages: [once], source: .pdf), once)
     }
+
+    // MARK: Markdown
+
+    private func markdown(_ text: String) -> String { ScriptCleaner.clean(text, source: .markdown) }
+
+    func testAMarkdownLinkIsReadAsItsText() {
+        XCTAssertEqual(markdown("See [the docs](https://example.com/a?b=1&c=2) now."), "See the docs now.")
+        XCTAssertEqual(markdown("A [page](https://en.wikipedia.org/wiki/Foo_(bar) \"Title\") here."), "A page here.")
+    }
+
+    func testAMarkdownImageIsReadAsItsAltTextOrNothing() {
+        XCTAssertEqual(markdown("Before ![a red door](door.png) after."), "Before a red door after.")
+        XCTAssertEqual(markdown("Before ![](door.png) after."), "Before after.")
+    }
+
+    func testABadgeThatIsALinkAroundAnImageIsReadAsItsAlt() {
+        XCTAssertEqual(markdown("[![build status](https://ci.example/badge.svg)](https://ci.example)"), "build status")
+        XCTAssertEqual(markdown("[![](https://ci.example/badge.svg)](https://ci.example)"), "")
+    }
+
+    func testReferenceLinksAreReadAsTheirTextAndTheirDefinitionsGo() {
+        let text = "Read [the guide][guide] and [the FAQ][] and [docs][1].\n\n[guide]: https://example.com/guide \"Guide\"\n[the FAQ]: <https://example.com/faq>\n[1]: https://example.com/1"
+        XCTAssertEqual(markdown(text), "Read the guide and the FAQ and docs.")
+    }
+
+    func testAutolinksAreRemoved() {
+        XCTAssertEqual(markdown("Mail <me@example.com> or visit <https://example.com/x>."), "Mail or visit.")
+    }
+
+    func testTaskListBoxesAreRemoved() {
+        XCTAssertEqual(markdown("- [ ] buy milk\n- [x] done\n  * [X] nested"), "- buy milk\n- done\n* nested")
+    }
+
+    func testTheDaemonsDirectivesStillWorkInAMarkdownFile() {
+        let text = "[style: calm] Hello [pause 1s] and [link](http://x.y) more.\n\nSecond [pause 2s] paragraph."
+        XCTAssertEqual(markdown(text), "[style: calm] Hello [pause 1s] and link more.\n\nSecond [pause 2s] paragraph.")
+    }
+
+    func testALinkWhoseTextLooksLikeADirectiveIsNotADirective() {
+        XCTAssertEqual(markdown("Wait [pause 1s](https://x.y) here."), "Wait pause 1s here.")
+    }
+
+    func testAPlainTextFileIsNotReadAsMarkdown() {
+        XCTAssertEqual(ScriptCleaner.clean("See [the docs](https://example.com/a) now.", source: .text), "See the docs (https://example.com/a) now.")
+    }
+
+    func testMarkdownCleaningIsIdempotent() {
+        let once = markdown("# T\n\nSee [a](u) ![b](v) <https://x.y>\n\n- [x] k\n\n[r]: http://r")
+        XCTAssertEqual(markdown(once), once)
+    }
 }
+

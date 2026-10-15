@@ -50,6 +50,7 @@ public enum DocumentError: Error, Equatable, CustomStringConvertible {
 public enum DocumentReader {
     private enum Kind {
         case text
+        case markdown
         case pdf
         case attributed(NSAttributedString.DocumentType)
         case html
@@ -57,7 +58,7 @@ public enum DocumentReader {
     }
 
     private static let kinds: [(ext: String, kind: Kind)] = [
-        ("txt", .text), ("md", .text), ("markdown", .text),
+        ("txt", .text), ("md", .markdown), ("markdown", .markdown),
         ("docx", .attributed(.officeOpenXML)), ("doc", .attributed(.docFormat)),
         ("rtf", .attributed(.rtf)), ("rtfd", .attributed(.rtfd)), ("odt", .attributed(.openDocument)),
         ("html", .html), ("htm", .html), ("webarchive", .webArchive),
@@ -72,6 +73,7 @@ public enum DocumentReader {
         guard let kind = kinds.first(where: { $0.ext == ext })?.kind else { throw DocumentError.unsupported(ext) }
         switch kind {
         case .text: return ReadDocument(pages: [try plainText(url)], source: .text)
+        case .markdown: return ReadDocument(pages: [try plainText(url)], source: .markdown)
         case .pdf: return ReadDocument(pages: try pdfPages(url), source: .pdf)
         case .attributed(let type): return ReadDocument(pages: [try attributedText(url, type)], source: .richText)
         case .html: return ReadDocument(pages: [try htmlText(try Data(contentsOf: url))], source: .richText)

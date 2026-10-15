@@ -9,9 +9,12 @@ import Foundation
 /// daemon would read as directives (see ScriptBrackets).
 public enum ScriptCleaner {
     public enum Source: Equatable {
-        /// A text or Markdown file the owner wrote: line breaks stay as written and
-        /// the `[pause]` / `[style:]` directives the daemon accepts stay.
+        /// A text file the owner wrote: line breaks stay as written and the
+        /// `[pause]` / `[style:]` directives the daemon accepts stay.
         case text
+        /// A Markdown file (by its extension, never guessed from the content): as
+        /// `.text`, with links, images and task boxes reduced to the words (see MarkdownText).
+        case markdown
         /// Word, RTF, ODT, HTML: every line break ends a paragraph.
         case richText
         /// PDF pages: paragraphs are inferred from the layout.
@@ -25,15 +28,15 @@ public enum ScriptCleaner {
     /// `pages` matter for a PDF (a repeated header is found across pages); the
     /// other sources are one text.
     public static func clean(pages: [String], source: Source) -> String {
-        let normal = pages.map(normalise)
+        let normal = pages.map { source == .markdown ? MarkdownText.plain(normalise($0)) : normalise($0) }
         let body: String
         switch source {
-        case .text: body = normal.joined(separator: "\n\n")
+        case .text, .markdown: body = normal.joined(separator: "\n\n")
         case .richText: body = normal.joined(separator: "\n").replacingOccurrences(of: "\n", with: "\n\n")
         case .pdf: body = PDFTextLayout.paragraphs(normal)
         }
         let folded = foldWhitespace(body)
-        return foldWhitespace(ScriptBrackets.neutralise(folded, keepDirectives: source == .text))
+        return foldWhitespace(ScriptBrackets.neutralise(folded, keepDirectives: source == .text || source == .markdown))
     }
 
     /// Line endings become "\n"; invisible characters go; every kind of space

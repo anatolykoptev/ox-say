@@ -89,6 +89,21 @@ final class DocumentReaderTests: XCTestCase {
         try await assertScript(cp1251, "Привет, как дела? Всё хорошо.")
     }
 
+    func testMarkdownFilesAreReadAsMarkdownAndTextFilesAreNot() async throws {
+        let md = try write(Data("A [link](https://x.y/z) here.".utf8), as: "a.md")
+        let markdown = try write(Data("A [link](https://x.y/z) here.".utf8), as: "b.markdown")
+        let txt = try write(Data("A [link](https://x.y/z) here.".utf8), as: "c.txt")
+        defer { [md, markdown, txt].forEach { try? FileManager.default.removeItem(at: $0) } }
+        for url in [md, markdown] {
+            let document = try await DocumentReader.read(url)
+            XCTAssertEqual(document.source, .markdown)
+            XCTAssertEqual(document.script, "A link here.")
+        }
+        let plain = try await DocumentReader.read(txt)
+        XCTAssertEqual(plain.source, .text)
+        XCTAssertEqual(plain.script, "A link (https://x.y/z) here.")
+    }
+
     func testAPdfIsReadPageByPage() async throws {
         let url = try write(pdfData(pages: ["First page text.", "Second page text."]), as: "a.pdf")
         defer { try? FileManager.default.removeItem(at: url) }
