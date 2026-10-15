@@ -15,7 +15,8 @@
 # Variables that steer the installer itself are never written to the agent,
 # because the daemon does not read them: OX_SAY_BINDIR (where the ox-say
 # binary goes, default ~/.local/bin), OX_SAY_WITH_WHISPER (also fetch Whisper
-# large-v3-turbo), OX_SAY_MODELS_FROM (copy models from a local dir),
+# large-v3-turbo), OX_SAY_WITH_VOXCPM2 (also fetch the VoxCPM2 model; Apple
+# Silicon with 24 GB or more), OX_SAY_MODELS_FROM (copy models from a local dir),
 # OX_SAY_GET_URL, OX_SAY_NO_MCP, OX_SAY_NO_SELFTEST. The allowlist is the
 # daemon's own env-keys table, not a hand-maintained list that can forget one.
 
@@ -97,13 +98,40 @@ oxs_settings() {
     home=${OX_SAY_HOME:-"$HOME/Library/Application Support/ox-say"}
 }
 
-oxs_fetch_models() {
-    local fetch=$1
-    if [ "${OX_SAY_WITH_WHISPER:-0}" = 1 ]; then
-        "$fetch" --with-whisper
-    else
-        "$fetch"
+# VoxCPM2 (OX_SAY_WITH_VOXCPM2=1) runs on Apple Silicon with >= 24 GB only (a
+# 16 GB Mac is unmeasured; Metal wires at most about 2/3 of RAM): its 2B model
+# sits next to the speech engines in unified memory. Elsewhere the opt-in is
+# refused before any download.
+oxs_voxcpm2_min_bytes=25769803776 # 24 GiB
+oxs_voxcpm2_ok() {
+    local mem
+    if [ "$(uname -m)" != arm64 ]; then
+        echo "ox-say: VoxCPM2 runs on Apple Silicon only; not fetching its model on this Mac" >&2
+        return 1
     fi
+    # Fail closed: no readable memory size is no proof of 24 GB.
+    mem=$(sysctl -n hw.memsize 2>/dev/null) || mem=
+    case $mem in
+        '' | *[!0-9]*)
+            echo "ox-say: cannot read this Mac's memory size; not fetching the VoxCPM2 model" >&2
+            return 1
+            ;;
+    esac
+    if [ "$mem" -lt "$oxs_voxcpm2_min_bytes" ]; then
+        echo "ox-say: VoxCPM2 needs 24 GB of memory; this Mac has $((mem / 1073741824)) GB — not fetching its model" >&2
+        return 1
+    fi
+}
+
+oxs_fetch_models() {
+    local fetch=$1 args=()
+    if [ "${OX_SAY_WITH_WHISPER:-0}" = 1 ]; then
+        args+=(--with-whisper)
+    fi
+    if [ "${OX_SAY_WITH_VOXCPM2:-0}" = 1 ] && oxs_voxcpm2_ok; then
+        args+=(--with-voxcpm2)
+    fi
+    "$fetch" ${args[@]+"${args[@]}"}
 }
 
 # Render the LaunchAgent from its template into $2 — a path inside a temp dir
@@ -148,6 +176,12 @@ oxs_install_engines() {
         mv "$home/engine/$bin.new" "$home/engine/$bin"
         echo "installed $home/engine/$bin"
     done
+    # Optional: only the arm64 package carries the VoxCPM2 server.
+    if [ -x "$out/audiocpp_server" ]; then
+        cp "$out/audiocpp_server" "$home/engine/audiocpp_server.new"
+        mv "$home/engine/audiocpp_server.new" "$home/engine/audiocpp_server"
+        echo "installed $home/engine/audiocpp_server"
+    fi
     cp "$out"/licenses/* "$home/engine/licenses/"
 }
 

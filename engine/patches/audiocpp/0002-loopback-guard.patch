@@ -1,0 +1,29 @@
+diff --git a/app/server/runtime.cpp b/app/server/runtime.cpp
+index e6b1df5a..09128c7f 100644
+--- a/app/server/runtime.cpp
++++ b/app/server/runtime.cpp
+@@ -1201,6 +1201,24 @@ HttpResponse ServerState::handle_request(const HttpRequest & request, bool use_f
+   HttpResponse response;
+   const std::string allowed_origin = get_allowed_origin(request);
+   try {
++    // ox-say: this server is a loopback child of the ox-say daemon. Refuse what a
++    // web page can send it: a non-loopback Host (DNS rebinding) and a POST that is
++    // not JSON (a cross-site "simple" request). Same rule as ox-say's own guard.
++    if (const auto host = request.headers.find("host"); host != request.headers.end() &&
++        host->second.rfind("127.0.0.1:", 0) != 0 && host->second.rfind("localhost:", 0) != 0 &&
++        host->second != "127.0.0.1" && host->second != "localhost") {
++        response.status = 403;
++        response.body = R"({"error":{"message":"non-loopback Host refused"}})";
++        return response;
++    }
++    if (request.method == "POST") {
++        const auto ct = request.headers.find("content-type");
++        if (ct == request.headers.end() || ct->second.rfind("application/json", 0) != 0) {
++            response.status = 415;
++            response.body = R"({"error":{"message":"POST bodies must be application/json"}})";
++            return response;
++        }
++    }
+     log_request_body_if_enabled(config_, request);
+     if (request.method == "OPTIONS" && (!allowed_origin.empty() || config_.ui_enabled)) {
+         response.status = 204;

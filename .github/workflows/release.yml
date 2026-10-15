@@ -128,7 +128,18 @@ jobs:
           tar -xzf "dist/ox-say-macos-$ARCH.tar.gz" -C check
           cd check/ox-say
           test "$(cat VERSION)" = "$VERSION"
-          for bin in bin/ox-say engine/tts-server engine/ox-stt engine/ox-align; do
+          # VoxCPM2's server is optional for the installer, so a build that
+          # silently dropped it would still install: pin it to the architecture
+          # here. arm64 carries it, x86_64 must not.
+          bins="bin/ox-say engine/tts-server engine/ox-stt engine/ox-align"
+          if [ "$ARCH" = arm64 ]; then
+            test -x engine/audiocpp_server
+            bins="$bins engine/audiocpp_server"
+            "$GITHUB_WORKSPACE/scripts/check-arm64-baseline.sh" engine/audiocpp_server
+          else
+            test ! -e engine/audiocpp_server
+          fi
+          for bin in $bins; do
             test "$(lipo -archs "$bin")" = "$ARCH"
             if otool -L "$bin" | grep '@rpath' >/dev/null; then
               echo "$bin links @rpath libraries" >&2

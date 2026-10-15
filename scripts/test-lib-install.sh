@@ -218,6 +218,116 @@ check "install-release.sh has no *ready* substring pass" "${n:-x}" 0
 n=$(grep -cE '^[^#]*oxs_selftest_heard_ok' "$root/scripts/install-release.sh" || true)
 check "install-release.sh calls oxs_selftest_heard_ok" "${n:-x}" 1
 
+# --- H: VoxCPM2 is opt-in, Apple Silicon with >= 24 GB only -----------------
+# A stub fetch records its argv; stub uname and sysctl on PATH play the host.
+# Mutation (lib-install.sh oxs_fetch_models): drop the oxs_voxcpm2_ok call ->
+# the x86_64, 16 GB and 23.99 GB cases fail. Mutation: `-lt` -> `-le` in
+# oxs_voxcpm2_ok -> the exactly-24 GB case fails. Mutation: delete the
+# `case $mem` digits check in oxs_voxcpm2_ok -> the sysctl-fails, sysctl-empty
+# and sysctl-garbage cases fail (they used to fetch 3 GB).
+vox_case() { # name arch memsize want [extra env assignments...]
+    local d="$tmp/vox-$1" name=$1 arch=$2 mem=$3 want=$4
+    shift 4
+    mkdir -p "$d/bin"
+    printf '#!/bin/sh\necho "$@" > "%s/fetch-args"\n' "$d" > "$d/fetch"
+    printf '#!/bin/sh\necho %s\n' "$arch" > "$d/bin/uname"
+    case $mem in
+        fail) printf '#!/bin/sh\nexit 1\n' > "$d/bin/sysctl" ;;
+        *) printf '#!/bin/sh\necho %s\n' "$mem" > "$d/bin/sysctl" ;;
+    esac
+    chmod +x "$d/fetch" "$d/bin/uname" "$d/bin/sysctl"
+    env PATH="$d/bin:$PATH" OX_SAY_WITH_VOXCPM2=1 "$@" \
+        bash -c ". '$root/scripts/lib-install.sh'; oxs_fetch_models '$d/fetch'" >"$d/log" 2>&1
+    check "voxcpm2 opt-in $name" "$(cat "$d/fetch-args")" "$want"
+}
+vox_case arm64-32g arm64 34359738368 "--with-voxcpm2"
+vox_case arm64-24g-exact arm64 25769803776 "--with-voxcpm2"
+vox_case arm64-just-under-24g arm64 25769803775 ""
+vox_case arm64-16g arm64 17179869184 ""
+vox_case x86_64 x86_64 34359738368 ""
+vox_case sysctl-fails arm64 fail ""
+vox_case sysctl-empty arm64 "" ""
+vox_case sysctl-garbage arm64 "n/a" ""
+vox_case with-whisper arm64 34359738368 "--with-whisper --with-voxcpm2" OX_SAY_WITH_WHISPER=1
+check_in_log "x86_64 refusal says why" "$tmp/vox-x86_64/log" "Apple Silicon only"
+check_in_log "unreadable memory refusal says why (sysctl fails)" "$tmp/vox-sysctl-fails/log" "cannot read this Mac's memory size"
+check_in_log "unreadable memory refusal says why (empty)" "$tmp/vox-sysctl-empty/log" "cannot read this Mac's memory size"
+check_in_log "16 GB refusal says why" "$tmp/vox-arm64-16g/log" "needs 24 GB"
+# Not requested -> never asked for, whatever the host.
+d="$tmp/vox-unset"
+mkdir -p "$d"
+printf '#!/bin/sh\necho "$@" > "%s/fetch-args"\n' "$d" > "$d/fetch"
+chmod +x "$d/fetch"
+env -u OX_SAY_WITH_VOXCPM2 bash -c ". '$root/scripts/lib-install.sh'; oxs_fetch_models '$d/fetch'" >/dev/null 2>&1
+check "voxcpm2 not requested" "$(cat "$d/fetch-args")" ""
+
+# --- I: audiocpp_server is an optional engine --------------------------------
+# The arm64 package carries it, the x86_64 one does not. Mutation: drop the
+# optional block in oxs_install_engines -> the binary is missing -> RED.
+engine_case() { # name with-audiocpp
+    local d="$tmp/eng-$1" bin
+    mkdir -p "$d/out/licenses" "$d/home"
+    echo x > "$d/out/licenses/x.LICENSE"
+    for bin in tts-server ox-stt ox-align $( [ "$2" = yes ] && echo audiocpp_server ); do
+        printf '#!/bin/sh\n' > "$d/out/$bin"
+        chmod +x "$d/out/$bin"
+    done
+    bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/out'" >"$d/log" 2>&1
+    echo "rc=$?" >> "$d/log"
+    for f in "$d/home/engine"/*; do
+        if [ -f "$f" ]; then
+            printf '%s ' "$(basename "$f")"
+        fi
+    done
+}
+check "engines with audiocpp_server" "$(engine_case with yes)" "audiocpp_server ox-align ox-stt tts-server "
+check_in_log "with audiocpp: exit 0" "$tmp/eng-with/log" "rc=0"
+check "engines without audiocpp_server" "$(engine_case without no)" "ox-align ox-stt tts-server "
+check_in_log "without audiocpp: exit 0" "$tmp/eng-without/log" "rc=0"
+
+# --- J: audio.cpp is built only on request ---------------------------------
+# A source install (scripts/install.sh -> engine/build.sh) must not clone and
+# build a second engine nobody asked for. Mutation (engine/want-audiocpp.sh:9):
+# drop the `&& { ...DIST... || ...WITH_VOXCPM2... }` clause so arm64 always
+# builds -> "audiocpp not built on plain arm64" fails.
+want_case() { # name arch want [env assignments...]
+    local name=$1 arch=$2 want=$3 got=no
+    shift 3
+    if env -i PATH="$PATH" "$@" bash -c ". '$root/engine/want-audiocpp.sh'; want_audiocpp '$arch'"; then got=yes; fi
+    check "audiocpp built: $name" "$got" "$want"
+}
+want_case "plain arm64" arm64 no
+want_case "arm64 dist" arm64 yes OX_SAY_DIST=1
+want_case "arm64 with-voxcpm2" arm64 yes OX_SAY_WITH_VOXCPM2=1
+want_case "arm64 dist=0" arm64 no OX_SAY_DIST=0 OX_SAY_WITH_VOXCPM2=0
+want_case "x86_64 dist" x86_64 no OX_SAY_DIST=1
+want_case "x86_64 with-voxcpm2" x86_64 no OX_SAY_WITH_VOXCPM2=1
+# The gate: not wanted -> a stale binary in out/ is removed and the build stops;
+# wanted -> it is left alone and the build goes on. Mutations
+# (engine/want-audiocpp.sh, audiocpp_gate): drop `rm -f "$2/audiocpp_server"`
+# -> "stale audiocpp_server plain arm64" fails; `return 1` -> `return 0` ->
+# "gate continues the build: plain arm64" fails.
+gate_case() { # name arch want-continue want-stale-left [env assignments...]
+    local name=$1 arch=$2 cont=$3 left=$4 d="$tmp/gate-$1" rc=stop stale=gone
+    shift 4
+    mkdir -p "$d"
+    : > "$d/audiocpp_server"
+    if env -i PATH="$PATH" "$@" bash -c ". '$root/engine/want-audiocpp.sh'; audiocpp_gate '$arch' '$d'"; then rc=go; fi
+    if [ -e "$d/audiocpp_server" ]; then stale=left; fi
+    check "gate continues the build: $name" "$rc" "$cont"
+    check "stale audiocpp_server $name" "$stale" "$left"
+}
+gate_case "plain arm64" arm64 stop gone
+gate_case "x86_64 dist" x86_64 stop gone OX_SAY_DIST=1
+gate_case "arm64 dist" arm64 go left OX_SAY_DIST=1
+gate_case "arm64 with-voxcpm2" arm64 go left OX_SAY_WITH_VOXCPM2=1
+# The call sites cannot run without a real build, so they are pinned by shape;
+# the release.yml arm64 `test -x engine/audiocpp_server` is the behavioural check.
+n=$(grep -cE '^[^#]*if audiocpp_gate "[$]arch" "[$]out"; then' "$root/engine/build.sh" || true)
+check "build.sh guards the audio.cpp block with audiocpp_gate" "${n:-x}" 1
+n=$(grep -cE '^[^#]*OX_SAY_DIST=1 "[$]root/engine/build.sh"' "$root/scripts/package-release.sh" || true)
+check "package-release.sh builds with OX_SAY_DIST=1" "${n:-x}" 1
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "all checks passed"
