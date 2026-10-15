@@ -63,11 +63,6 @@ public enum DocumentReader {
     /// The file extensions the open panel offers.
     public static let supportedExtensions = kinds.map(\.ext)
 
-    /// Tags whose content is not text the reader sees, or that makes the HTML
-    /// importer load something from the network.
-    private static let strippedBlocks = ["script", "style", "noscript", "svg", "iframe", "object", "video", "audio", "template"]
-    private static let strippedVoids = ["img", "link", "embed", "source", "base", "meta"]
-
     public static func read(_ url: URL) async throws -> ReadDocument {
         let ext = url.pathExtension.lowercased()
         guard let kind = kinds.first(where: { $0.ext == ext })?.kind else { throw DocumentError.unsupported(ext) }
@@ -75,8 +70,8 @@ public enum DocumentReader {
         case .text: return ReadDocument(pages: [try plainText(url)], source: .text)
         case .pdf: return ReadDocument(pages: try pdfPages(url), source: .pdf)
         case .attributed(let type): return ReadDocument(pages: [try attributedText(url, type)], source: .richText)
-        case .html: return ReadDocument(pages: [try await htmlText(try Data(contentsOf: url))], source: .richText)
-        case .webArchive: return ReadDocument(pages: [try await htmlText(try archiveMainPage(url))], source: .richText)
+        case .html: return ReadDocument(pages: [try htmlText(try Data(contentsOf: url))], source: .richText)
+        case .webArchive: return ReadDocument(pages: [try htmlText(try archiveMainPage(url))], source: .richText)
         }
     }
 
@@ -119,31 +114,10 @@ public enum DocumentReader {
         return page
     }
 
-    /// AppKit's HTML importer runs on the main thread and loads what a page links
-    /// to, so it is given the page with scripts, styles and every element that
-    /// loads something taken out: text only.
-    private static func htmlText(_ page: Data) async throws -> String {
-        let source = Data(textOnly(decode(page)).utf8)
-        return try await MainActor.run {
-            let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
-                .documentType: NSAttributedString.DocumentType.html,
-                .characterEncoding: String.Encoding.utf8.rawValue,
-            ]
-            guard let text = try? NSAttributedString(data: source, options: options, documentAttributes: nil) else {
-                throw DocumentError.unreadable
-            }
-            return text.string
-        }
-    }
-
-    static func textOnly(_ html: String) -> String {
-        var result = html
-        for tag in strippedBlocks {
-            result = result.replacingOccurrences(of: "(?is)<\(tag)\\b.*?</\(tag)\\s*>", with: " ", options: [.regularExpression, .caseInsensitive])
-        }
-        for tag in strippedVoids {
-            result = result.replacingOccurrences(of: "<\(tag)\\b[^>]*>", with: " ", options: [.regularExpression, .caseInsensitive])
-        }
-        return result
+    /// The text of a page, from its parsed tree (see HTMLText): a page cannot make
+    /// this Mac load anything.
+    private static func htmlText(_ page: Data) throws -> String {
+        guard let text = HTMLText.plain(decode(page)) else { throw DocumentError.unreadable }
+        return text
     }
 }
