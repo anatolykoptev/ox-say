@@ -4,7 +4,9 @@ package vproject
 
 import "regexp"
 
-// TakeRef is one take of a chunk as the manifest lists it.
+// TakeRef is one take of a chunk as the manifest lists it. Seed is the seed
+// the engine was asked for: every reader takes it from here, never from
+// base seed + attempt (the sum wraps into the engine's 32-bit range).
 type TakeRef struct {
 	Key       string   `json:"key"`
 	Seed      int64    `json:"seed"`
