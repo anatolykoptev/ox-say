@@ -1,0 +1,185 @@
+package cli
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/anatolykoptev/ox-say/internal/testutil"
+)
+
+// recordedCall is one request the stub daemon saw.
+type recordedCall struct {
+	method, path string
+	body         map[string]any
+}
+
+// stubCalls answers every request with reply and records each one.
+func stubCalls(t *testing.T, reply []byte) *[]recordedCall {
+	t.Helper()
+	var calls []recordedCall
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c := recordedCall{method: r.Method, path: r.URL.Path}
+		_ = json.NewDecoder(r.Body).Decode(&c.body)
+		calls = append(calls, c)
+		_, _ = w.Write(reply)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("OX_SAY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+	return &calls
+}
+
+// say forwards every quality flag as a typed JSON field.
+// Mutation: internal/cli/cli.go addNumberFlags, store the raw string for --cfg
+// (no strconv) -> the body carries "cfg_value":"2.5" -> RED.
+func TestSayForwardsQualityFlags(t *testing.T) {
+	calls := stubCalls(t, testutil.TinyWAV())
+	out := filepath.Join(t.TempDir(), "o.wav")
+	var so, se strings.Builder
+	code := cmdSay([]string{"-m", "voxcpm2", "-i", "calm, slow", "--seed", "9", "--cfg", "2.5", "--steps", "16",
+		"--clone-mode", "reference", "--loudness", "-16", "-o", out, "Привет"}, &so, &se)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, se.String())
+	}
+	got := (*calls)[0].body
+	want := map[string]any{"model": "voxcpm2", "instructions": "calm, slow", "seed": float64(9), "cfg_value": 2.5,
+		"inference_timesteps": float64(16), "clone_mode": "reference", "loudness_lufs": float64(-16)}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %#v, want %#v", k, got[k], v)
+		}
+	}
+}
+
+// A client that passes none of the new flags sends the body it always sent.
+// Mutation: internal/cli/cli.go cmdSay, set body["model"] unconditionally -> RED.
+func TestSayWithoutNewFlagsSendsLegacyBody(t *testing.T) {
+	calls := stubCalls(t, testutil.TinyWAV())
+	out := filepath.Join(t.TempDir(), "o.wav")
+	var so, se strings.Builder
+	if code := cmdSay([]string{"-v", "ben", "-l", "Russian", "-o", out, "Привет"}, &so, &se); code != 0 {
+		t.Fatalf("exit %d: %s", code, se.String())
+	}
+	got := (*calls)[0].body
+	want := map[string]any{"input": "Привет", "response_format": "wav", "voice": "ben", "language": "Russian"}
+	if len(got) != len(want) {
+		t.Fatalf("body = %v, want exactly %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %#v, want %#v", k, got[k], v)
+		}
+	}
+}
+
+// A malformed number is a plain message and exit 2; nothing reaches the daemon.
+// Mutation: internal/cli/cli.go addNumberFlags, ignore the parse error -> RED.
+func TestSayBadNumberExits2(t *testing.T) {
+	calls := stubCalls(t, testutil.TinyWAV())
+	for _, flagName := range []string{"seed", "cfg", "steps", "loudness"} {
+		var so, se strings.Builder
+		code := cmdSay([]string{"--" + flagName, "abc", "-o", filepath.Join(t.TempDir(), "o.wav"), "hi"}, &so, &se)
+		want := "ox-say: --" + flagName + " abc: not a number\n"
+		if code != 2 || se.String() != want {
+			t.Errorf("--%s: exit %d stderr %q, want exit 2 %q", flagName, code, se.String(), want)
+		}
+	}
+	if len(*calls) != 0 {
+		t.Errorf("a bad number reached the daemon: %v", *calls)
+	}
+}
+
+// voice add carries the metadata only when it was given.
+// Mutation: internal/cli/cli.go cmdVoice add, drop the "designed_from" entry -> RED.
+func TestVoiceAddForwardsMetadata(t *testing.T) {
+	calls := stubCalls(t, []byte(`{"name":"ru"}`))
+	var so, se strings.Builder
+	code := Run([]string{"voice", "add", "ru", "clip.wav", "--engine", "voxcpm2", "--style", "calm", "--designed-from", "a narrator"}, &so, &se, "test")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, se.String())
+	}
+	got := (*calls)[0].body
+	for k, v := range map[string]string{"engine": "voxcpm2", "style": "calm", "designed_from": "a narrator"} {
+		if got[k] != v {
+			t.Errorf("%s = %#v, want %q", k, got[k], v)
+		}
+	}
+	*calls = nil
+	if code := Run([]string{"voice", "add", "ru", "clip.wav"}, &so, &se, "test"); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	for _, k := range []string{"engine", "style", "designed_from"} {
+		if _, ok := (*calls)[0].body[k]; ok {
+			t.Errorf("%s sent although not given", k)
+		}
+	}
+}
+
+// voice set PATCHes only the flags that were given; --style "" clears.
+// Mutation: internal/cli/cli.go cmdVoiceSet, send style always (even absent) -> RED.
+func TestVoiceSetPatchesGivenFieldsOnly(t *testing.T) {
+	calls := stubCalls(t, []byte(`{"name":"ru"}`))
+	var so, se strings.Builder
+	if code := Run([]string{"voice", "set", "ru", "--style", ""}, &so, &se, "test"); code != 0 {
+		t.Fatalf("exit %d: %s", code, se.String())
+	}
+	c := (*calls)[0]
+	if c.method != http.MethodPatch || c.path != "/v1/audio/voices/ru" {
+		t.Fatalf("request %s %s", c.method, c.path)
+	}
+	if s, ok := c.body["style"]; !ok || s != "" {
+		t.Errorf("style = %#v (present %v), want empty string present", s, ok)
+	}
+	if _, ok := c.body["engine"]; ok {
+		t.Error("engine sent although not given")
+	}
+	*calls = nil
+	if code := Run([]string{"voice", "set", "ru", "--engine", "voxcpm2"}, &so, &se, "test"); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if b := (*calls)[0].body; b["engine"] != "voxcpm2" || len(b) != 1 {
+		t.Errorf("body = %v, want only engine", b)
+	}
+}
+
+// voice set with nothing to change, or no name, never reaches the daemon.
+func TestVoiceSetUsage(t *testing.T) {
+	calls := stubCalls(t, []byte(`{}`))
+	for _, args := range [][]string{{"voice", "set"}, {"voice", "set", "ru"}} {
+		var so, se strings.Builder
+		if code := Run(args, &so, &se, "test"); code != 2 || !strings.Contains(se.String(), "usage: ox-say voice set") {
+			t.Errorf("%v: exit %d %q", args, code, se.String())
+		}
+	}
+	if len(*calls) != 0 {
+		t.Errorf("reached the daemon: %v", *calls)
+	}
+}
+
+// The usage text lists every new flag and verb, so `ox-say` alone teaches them.
+func TestUsageMentionsVoxCPM2Surface(t *testing.T) {
+	var sb strings.Builder
+	usage(&sb)
+	for _, s := range []string{"-m model", "-i instructions", "--seed", "--cfg", "--steps", "--clone-mode", "--loudness",
+		"--engine", "--style", "--designed-from", "voice set"} {
+		if !strings.Contains(sb.String(), s) {
+			t.Errorf("usage lacks %q", s)
+		}
+	}
+}
+
+// voice ls marks a voice that prefers an engine, and prints a plain voice as before.
+// Mutation: internal/cli/cli.go cmdVoice ls, drop the engine mark -> RED.
+func TestVoiceLsShowsEngine(t *testing.T) {
+	stubCalls(t, []byte(`{"voices":[{"name":"ben","created":"x"},{"name":"ru","ref_text":"t","engine":"voxcpm2","created":"x"}]}`))
+	var so, se strings.Builder
+	if code := Run([]string{"voice", "ls"}, &so, &se, "test"); code != 0 {
+		t.Fatalf("exit %d: %s", code, se.String())
+	}
+	if want := "ben\nru (ref_text) [voxcpm2]\n"; so.String() != want {
+		t.Fatalf("out %q, want %q", so.String(), want)
+	}
+}

@@ -65,8 +65,10 @@ func usage(w io.Writer) {
 
 Usage:
   ox-say serve [flags]                  run the daemon (launchd starts this)
-  ox-say say [-v v] [-l lang] [-f fmt] [-o path] [text...]
-  ox-say voice add <name> <audio> [--ref-text t]
+  ox-say say [-v v] [-l lang] [-f fmt] [-o path] [-m model] [-i instructions] [--seed N]
+             [--cfg X] [--steps N] [--clone-mode m] [--loudness LUFS] [text...]
+  ox-say voice add <name> <audio> [--ref-text t] [--engine e] [--style s] [--designed-from d]
+  ox-say voice set <name> [--engine e] [--style s]
   ox-say voice design "<description>" -t "<text>" [-n 1..4] [--seed N] [--play]
   ox-say voice save <name> <take path> [--replace]
   ox-say voice ls
@@ -86,6 +88,16 @@ say flags:
   -l language   e.g. Russian, English (default: engine auto)
   -f format     wav | mp3 | opus (default: wav; used for -o and playback)
   -o path       write file instead of playing it
+  -m model      qwen3-tts (fast) | voxcpm2 (studio quality; Apple Silicon, opt-in install)
+  -i text       voxcpm2: how to speak, e.g. "excited, lively pace" (English words, any text language)
+  --seed N      reproduce a take (0..4294967295); vary it to get another delivery
+  --cfg X       voxcpm2 guidance (default 2.0); change only if a take ignores the style
+  --steps N     voxcpm2 diffusion steps (default 10); more is slower
+  --clone-mode  voxcpm2: auto (default) | reference (timbre only) | ultimate (needs the voice's transcript)
+  --loudness L  normalize to L LUFS: -16 online video, -14 music streaming, -23 broadcast
+
+voice add flags: --engine sets the voice's preferred model, --style its default delivery (voxcpm2),
+--designed-from a note on how it was made. voice set changes engine/style later; --style "" clears.
 
 voice design renders a few takes of a voice you describe in words (VoxCPM2 only) and prints
 each take's path and seed; voice save keeps one under a name.
@@ -232,7 +244,7 @@ func pullFlags(args []string, names ...string) (vals map[string]string, position
 
 // cmdSay synthesizes text and either writes it to -o or plays it.
 func cmdSay(args []string, stdout, stderr io.Writer) int {
-	vals, pos, err := pullFlags(args, "v", "l", "f", "o")
+	vals, pos, err := pullFlags(args, sayFlagNames...)
 	if err != nil {
 		fmt.Fprintln(stderr, "ox-say:", err)
 		return 2
@@ -289,6 +301,10 @@ func cmdSay(args []string, stdout, stderr io.Writer) int {
 	}
 	if vals["l"] != "" {
 		body["language"] = vals["l"]
+	}
+	if err := addQualityFlags(body, vals); err != nil {
+		fmt.Fprintln(stderr, "ox-say:", err)
+		return 2
 	}
 	audio, err := postJSON(daemonURL()+"/v1/audio/speech", body)
 	if err != nil {
@@ -368,13 +384,13 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "add":
-		vals, pos, err := pullFlags(args[1:], "ref-text")
+		vals, pos, err := pullFlags(args[1:], "ref-text", "engine", "style", "designed-from")
 		if err != nil {
 			fmt.Fprintln(stderr, "ox-say:", err)
 			return 2
 		}
 		if len(pos) != 2 {
-			fmt.Fprintln(stderr, "usage: ox-say voice add <name> <audio> [--ref-text t]")
+			fmt.Fprintln(stderr, "usage: ox-say voice add <name> <audio> [--ref-text t] [--engine e] [--style s] [--designed-from d]")
 			return 2
 		}
 		// The daemon's cwd is "/" under launchd — resolve the clip path
@@ -384,11 +400,13 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "ox-say: %v\n", err)
 			return 2
 		}
-		body, err := postJSON(daemonURL()+"/v1/audio/voices", map[string]any{
+		req := map[string]any{
 			"name":       pos[0],
 			"audio_path": abs,
 			"ref_text":   vals["ref-text"],
-		})
+		}
+		addVoiceMeta(req, vals)
+		body, err := postJSON(daemonURL()+"/v1/audio/voices", req)
 		if err != nil {
 			return failDaemon(stderr, err)
 		}
@@ -400,6 +418,8 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "note: %s\n", added.Notice)
 		}
 		return 0
+	case "set":
+		return cmdVoiceSet(args[1:], stdout, stderr)
 	case "design":
 		return cmdVoiceDesign(args[1:], stdout, stderr)
 	case "save":
@@ -420,6 +440,7 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 				Name    string `json:"name"`
 				RefText string `json:"ref_text,omitempty"`
 				Created string `json:"created"`
+				Engine  string `json:"engine,omitempty"`
 			} `json:"voices"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
@@ -430,6 +451,9 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 			mark := ""
 			if v.RefText != "" {
 				mark = " (ref_text)"
+			}
+			if v.Engine != "" {
+				mark += " [" + v.Engine + "]"
 			}
 			fmt.Fprintf(stdout, "%s%s\n", v.Name, mark)
 		}
