@@ -26,6 +26,7 @@ type Options struct {
 	MaxChars       int     // a sentence longer than this is split at a clause
 	MinChars       int     // a shorter last chunk of a paragraph joins its predecessor
 	MaxScriptChars int     // the whole script
+	MaxSpokenChars int     // the engine's per-request cap on Chunk.Spoken, which numbers written as words make longer than Text; 0 = no cap
 	ChunkPause     float64 // seconds between chunks of one paragraph
 	ParagraphPause float64 // seconds between paragraphs
 }
@@ -95,12 +96,12 @@ func Parse(src string, o Options) ([]Chunk, error) {
 				pending += p.pause
 				continue
 			}
-			for _, text := range chunkParagraph(Sentences(p.text), o) {
+			for _, fc := range fitSpoken(chunkParagraph(Sentences(p.text), o), o) {
 				if n := len(out); n > 0 {
 					out[n-1].PauseAfter = gapBefore(o, emitted, pending)
 				}
 				pending = 0
-				out = append(out, Chunk{Index: len(out), Paragraph: para, Text: text, Spoken: Spoken(text), Style: style})
+				out = append(out, Chunk{Index: len(out), Paragraph: para, Text: fc.text, Spoken: fc.spoken(), Style: style})
 				emitted = true
 			}
 		}

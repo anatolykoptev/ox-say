@@ -638,3 +638,14 @@ func TestCancelWhilePausedOnBattery(t *testing.T) {
 		t.Fatalf("%s after %d renders", got.Status, len(f.renders))
 	}
 }
+
+// Review F8: every preset caps Chunk.Spoken at the engine's per-request limit,
+// or a chunk dense with numbers fails the render (buildVoxCPM2 rejects it).
+// Mutation: produce.go presetOpts without `MaxSpokenChars: maxVoxChars` -> RED.
+func TestPresetsCapSpokenAtEngineLimit(t *testing.T) {
+	for name, p := range presets {
+		if p.opts.MaxSpokenChars != maxVoxChars {
+			t.Errorf("preset %s: MaxSpokenChars = %d, want %d", name, p.opts.MaxSpokenChars, maxVoxChars)
+		}
+	}
+}
