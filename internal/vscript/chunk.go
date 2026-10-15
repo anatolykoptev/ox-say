@@ -86,12 +86,17 @@ func abs(x int) int {
 	return x
 }
 
-// Spoken is the text the engine reads. The one rewrite: a leading "(x)"
-// becomes "x —" — the engine parses any leading ASCII "(…)" as a style tag
-// (audio.cpp session.cpp:99-117), with or without a style of ours. The
-// rewrite repeats until the text no longer opens with "(" (after white space
-// and format characters); each pass consumes one "(".
+// Spoken is the text the engine reads, and the text a take is gated against.
+// Two rewrites. A leading "(x)" becomes "x —" — the engine parses any leading
+// ASCII "(…)" as a style tag (audio.cpp session.cpp:99-117), with or without
+// a style of ours; it repeats until the text no longer opens with "(" (after
+// white space and format characters), each pass consuming one "(". Then the
+// unambiguous Russian abbreviations (spokenForms) are written out.
 func Spoken(text string) string {
+	return expandAbbreviations(unparen(text))
+}
+
+func unparen(text string) string {
 	s := trimLead(text)
 	for strings.HasPrefix(s, "(") {
 		inner, rest, closed := strings.Cut(s[1:], ")")
