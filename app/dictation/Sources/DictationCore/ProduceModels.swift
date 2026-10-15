@@ -164,10 +164,13 @@ public enum ProduceText {
         !job.status.isTerminal
     }
 
+    public static let waitingForServiceText = "waiting for the ox-say service…"
+
     /// The menu's progress row: `“Title” — 3 of 10 parts`, or why it is not moving.
-    public static func progressRow(_ job: ProduceJob) -> String {
+    /// `serviceWaiting`: the last poll got no answer, so the numbers may be old.
+    public static func progressRow(_ job: ProduceJob, serviceWaiting: Bool = false) -> String {
         let name = job.title.isEmpty ? "Voiceover" : "“\(job.title)”"
-        return "\(name) — \(progressDetail(job))"
+        return "\(name) — \(serviceWaiting ? waitingForServiceText : progressDetail(job))"
     }
 
     private static func progressDetail(_ job: ProduceJob) -> String {

@@ -8,8 +8,8 @@ public enum UpdateInstaller {
 
     /// Step 1: download get.sh to `file`. argv, never a shell string: curl's own
     /// exit status is the step's result, with no pipeline to swallow it.
-    public static func downloadCommand(to file: String) -> [String] {
-        ["/usr/bin/curl", "-fsSL", "-o", file, scriptURL]
+    public static func downloadCommand(to file: String, from source: String = scriptURL) -> [String] {
+        ["/usr/bin/curl", "-fsSL", "-o", file, source]
     }
 
     /// Step 2: run the downloaded script, pinned to the tag the user accepted so
@@ -27,20 +27,32 @@ public enum UpdateInstaller {
             self.argv = argv
             self.environment = environment
         }
+
+        /// The environment the process starts with: `base` plus this command's variables.
+        public func launchEnvironment(base: [String: String]) -> [String: String] {
+            base.merging(environment) { _, new in new }
+        }
     }
 
     /// The installer's switch for the studio voice model (about 3 GB).
     public static let studioVoiceVariable = "OX_SAY_WITH_VOXCPM2"
 
-    /// Step 2 of an update: the pinned install, with no extra environment.
-    public static func updateCommand(script file: String, tag: String) -> Command {
-        Command(argv: installCommand(script: file, tag: tag), environment: [:])
+    /// What an install is for.
+    public enum Kind: Equatable {
+        /// Check for Updates: the pinned install, no extra environment.
+        case update
+        /// Install Studio Voice: the same pinned install with the studio voice switched on.
+        case studioVoice
     }
 
-    /// Step 2 of "Install Studio Voice": the same pinned install with the studio
-    /// voice switched on.
-    public static func studioVoiceCommand(script file: String, tag: String) -> Command {
-        Command(argv: installCommand(script: file, tag: tag), environment: [studioVoiceVariable: "1"])
+    /// Step 2 of an install, and the one place that decides between an update and
+    /// the studio voice: the AppDelegate runs whatever this returns.
+    public static func command(kind: Kind, script file: String, tag: String) -> Command {
+        let argv = installCommand(script: file, tag: tag)
+        switch kind {
+        case .update: return Command(argv: argv, environment: [:])
+        case .studioVoice: return Command(argv: argv, environment: [studioVoiceVariable: "1"])
+        }
     }
 
     /// The tag of the version that is installed: "0.1.21" is release "v0.1.21".
@@ -89,6 +101,58 @@ public enum UpdateInstaller {
     public static func verifyInstalled(version: String?, target: String) -> Failure? {
         if let version, normalized(version) == normalized(target) { return nil }
         return .versionUnchanged(expected: target, found: version)
+    }
+
+    /// The whole install: downloads get.sh from `scriptSource`, checks it is a
+    /// script, runs it for `kind` pinned to `tag`, then asks `installedVersion`
+    /// (the version the bundle on disk now reports) whether the target arrived.
+    /// Two steps, each exit status checked (a `curl | sh` pipe would report the
+    /// shell's 0 for a failed download). nil on success; otherwise the first step
+    /// that failed. Output of both steps goes to `log`.
+    public static func run(kind: Kind, tag: String, log: FileHandle?, scriptSource: String = scriptURL,
+                           installedVersion: () -> String?) async -> Failure? {
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-get-\(UUID().uuidString).sh")
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        let download = Command(argv: downloadCommand(to: script.path, from: scriptSource), environment: [:])
+        switch await runProcess(download, log: log) {
+        case .failure(let error): return .couldNotStart(error.localizedDescription)
+        case .success(let status) where status != 0: return .downloadFailed(status: status)
+        case .success: break
+        }
+        let head = (try? FileHandle(forReadingFrom: script)).flatMap { handle -> Data? in
+            defer { try? handle.close() }
+            return try? handle.read(upToCount: 2)
+        } ?? Data()
+        guard isScript(head: head) else { return .notAScript }
+
+        switch await runProcess(command(kind: kind, script: script.path, tag: tag), log: log) {
+        case .failure(let error): return .couldNotStart(error.localizedDescription)
+        case .success(let status) where status != 0: return .installerFailed(status: status)
+        case .success: break
+        }
+        return verifyInstalled(version: installedVersion(), target: tag)
+    }
+
+    /// Runs one command with stdout and stderr in the log; the result is its exit
+    /// status, or the error when it could not start. The command's own variables
+    /// are added to the app's environment.
+    static func runProcess(_ command: Command, log: FileHandle?) async -> Result<Int32, Error> {
+        await withCheckedContinuation { continuation in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: command.argv[0])
+            p.arguments = Array(command.argv.dropFirst())
+            p.environment = command.launchEnvironment(base: ProcessInfo.processInfo.environment)
+            p.standardInput = FileHandle.nullDevice
+            p.standardOutput = log ?? FileHandle.nullDevice
+            p.standardError = log ?? FileHandle.nullDevice
+            p.terminationHandler = { continuation.resume(returning: .success($0.terminationStatus)) }
+            do {
+                try p.run()
+            } catch {
+                continuation.resume(returning: .failure(error))
+            }
+        }
     }
 }
 

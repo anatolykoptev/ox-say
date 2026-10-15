@@ -22,18 +22,95 @@ final class UpdateInstallTests: XCTestCase {
                        ["/bin/sh", "/tmp/x.sh", "--version", "v0.1.21"])
     }
 
-    /// Mutation: drop the environment entry in UpdateInstaller.studioVoiceCommand -> RED.
+    /// Mutation: UpdateInstall.swift command(kind:), the `.studioVoice` branch
+    /// without its environment entry (`environment: [:]`) -> RED.
     func testStudioVoiceInstallIsPinnedToTheTagAndSwitchesTheModelOn() {
-        let command = UpdateInstaller.studioVoiceCommand(script: "/tmp/x.sh", tag: UpdateInstaller.tag(forVersion: "0.1.21"))
+        let command = UpdateInstaller.command(kind: .studioVoice, script: "/tmp/x.sh", tag: UpdateInstaller.tag(forVersion: "0.1.21"))
         XCTAssertEqual(command.argv, ["/bin/sh", "/tmp/x.sh", "--version", "v0.1.21"])
         XCTAssertEqual(command.environment["OX_SAY_WITH_VOXCPM2"], "1")
     }
 
     func testPlainUpdateDoesNotDownloadTheStudioModel() {
-        let command = UpdateInstaller.updateCommand(script: "/tmp/x.sh", tag: "v0.1.22")
+        let command = UpdateInstaller.command(kind: .update, script: "/tmp/x.sh", tag: "v0.1.22")
         XCTAssertEqual(command.argv, ["/bin/sh", "/tmp/x.sh", "--version", "v0.1.22"])
         XCTAssertNil(command.environment["OX_SAY_WITH_VOXCPM2"])
         XCTAssertTrue(command.environment.isEmpty)
+    }
+
+    func testLaunchEnvironmentAddsTheCommandsVariablesToTheApps() {
+        let command = UpdateInstaller.Command(argv: ["/bin/true"], environment: ["A": "new"])
+        XCTAssertEqual(command.launchEnvironment(base: ["A": "old", "B": "kept"]), ["A": "new", "B": "kept"])
+    }
+
+    // MARK: the whole install, through a real process
+
+    private struct Rig {
+        let dir: URL
+        /// A file:// URL of a fake get.sh that records its arguments and the studio switch.
+        let source: String
+        var env: String { (try? String(contentsOf: dir.appendingPathComponent("env"), encoding: .utf8)) ?? "<not run>" }
+        var args: String { (try? String(contentsOf: dir.appendingPathComponent("args"), encoding: .utf8)) ?? "<not run>" }
+
+        init(script: String? = nil) throws {
+            dir = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-install-test-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let file = dir.appendingPathComponent("get.sh")
+            let body = script ?? "#!/bin/sh\nprintf '%s' \"$OX_SAY_WITH_VOXCPM2\" > '\(dir.path)/env'\nprintf '%s' \"$*\" > '\(dir.path)/args'\n"
+            try body.write(to: file, atomically: true, encoding: .utf8)
+            source = "file://" + file.path
+        }
+
+        func cleanUp() {
+            for name in ["get.sh", "env", "args"] { try? FileManager.default.removeItem(at: dir.appendingPathComponent(name)) }
+            try? FileManager.default.removeItem(at: dir)
+        }
+    }
+
+    /// The choice between the studio install and the plain update, run for real:
+    /// the studio install's process sees the switch, the update's does not. A
+    /// regression at either end — the decision or the environment reaching the
+    /// process — leaves the studio model un-downloaded with no error.
+    /// Mutations: UpdateInstall.swift command(kind:), `.studioVoice` branch uses
+    /// `environment: [:]` -> RED; UpdateInstall.swift runProcess, `p.environment =`
+    /// line removed -> RED.
+    func testTheStudioInstallRunsWithTheSwitchAndTheUpdateWithout() async throws {
+        unsetenv(UpdateInstaller.studioVoiceVariable)
+        let studio = try Rig()
+        defer { studio.cleanUp() }
+        let failure = await UpdateInstaller.run(kind: .studioVoice, tag: "v0.1.21", log: nil, scriptSource: studio.source) { "0.1.21" }
+        XCTAssertNil(failure)
+        XCTAssertEqual(studio.env, "1", "the installer process must get OX_SAY_WITH_VOXCPM2=1")
+        XCTAssertEqual(studio.args, "--version v0.1.21")
+
+        let update = try Rig()
+        defer { update.cleanUp() }
+        let updateFailure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil, scriptSource: update.source) { "0.1.22" }
+        XCTAssertNil(updateFailure)
+        XCTAssertEqual(update.env, "", "a plain update must not download the studio model")
+        XCTAssertEqual(update.args, "--version v0.1.22")
+    }
+
+    func testAnInstallThatLeavesTheOldVersionFails() async throws {
+        let rig = try Rig()
+        defer { rig.cleanUp() }
+        let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil, scriptSource: rig.source) { "0.1.21" }
+        XCTAssertEqual(failure, .versionUnchanged(expected: "v0.1.22", found: "0.1.21"))
+    }
+
+    func testAFailingInstallerOrANonScriptIsReported() async throws {
+        let failing = try Rig(script: "#!/bin/sh\nexit 3\n")
+        defer { failing.cleanUp() }
+        let status = await UpdateInstaller.run(kind: .studioVoice, tag: "v0.1.21", log: nil, scriptSource: failing.source) { "0.1.21" }
+        XCTAssertEqual(status, .installerFailed(status: 3))
+
+        let html = try Rig(script: "<html>404</html>")
+        defer { html.cleanUp() }
+        let notScript = await UpdateInstaller.run(kind: .update, tag: "v0.1.21", log: nil, scriptSource: html.source) { "0.1.21" }
+        XCTAssertEqual(notScript, .notAScript)
+
+        let missing = await UpdateInstaller.run(kind: .update, tag: "v0.1.21", log: nil,
+                                                scriptSource: "file:///nonexistent/ox-say-get.sh") { "0.1.21" }
+        guard case .downloadFailed? = missing else { return XCTFail("expected a download failure, got \(String(describing: missing))") }
     }
 
     func testInstalledVersionBecomesItsReleaseTag() {

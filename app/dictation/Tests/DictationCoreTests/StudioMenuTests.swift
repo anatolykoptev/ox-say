@@ -3,15 +3,16 @@ import XCTest
 
 final class StudioMenuTests: XCTestCase {
     private let available = DaemonStatus(version: "v0.1.21", studioAvailable: true)
-    private func unavailable(_ reason: String? = nil) -> DaemonStatus {
-        DaemonStatus(version: "v0.1.21", studioAvailable: false, studioReason: reason)
+    private func unavailable(_ reason: String? = nil, code: String? = nil) -> DaemonStatus {
+        DaemonStatus(version: "v0.1.21", studioAvailable: false, studioReason: reason, studioReasonCode: code)
     }
     private func job(_ status: ProduceStatus, done: Int = 2, total: Int = 5) -> ProduceJob {
         ProduceJob(id: "j", title: "Ch 1", status: status, partsTotal: total, partsDone: done)
     }
-    private func rows(_ status: DaemonStatus?, attempted: Bool = false, installing: Bool = false,
-                      job: ProduceJob? = nil, folder: Bool = false) -> [MenuRow] {
-        StudioMenu.rows(status: status, installAttempted: attempted, installing: installing, job: job, hasOutputFolder: folder)
+    private func rows(_ status: DaemonStatus?, installing: Bool = false, job: ProduceJob? = nil,
+                      waiting: Bool = false, folder: Bool = false) -> [MenuRow] {
+        let service = status.map { StudioMenu.ServiceState.answered($0) } ?? .unreachable
+        return StudioMenu.rows(service: service, installing: installing, job: job, serviceWaiting: waiting, hasOutputFolder: folder)
     }
     private func titles(_ rows: [MenuRow]) -> [String] {
         rows.map { row in
@@ -22,22 +23,32 @@ final class StudioMenuTests: XCTestCase {
             }
         }
     }
+    private let installRow = MenuRow.item(title: "Install Studio Voice (about 3 GB)…", isOn: false, isEnabled: true, action: .installStudioVoice)
 
-    func testUnavailableStudioOffersOnlyTheInstall() {
-        let result = rows(unavailable("The studio voice model is not downloaded yet. Run the installer with OX_SAY_WITH_VOXCPM2=1 to add it."))
-        XCTAssertEqual(result, [.item(title: "Install Studio Voice (about 3 GB)…", isOn: false, isEnabled: true, action: .installStudioVoice)])
+    func testAMissingModelOffersOnlyTheInstall() {
+        let result = rows(unavailable("The studio voice model is not downloaded yet. Run the installer with OX_SAY_WITH_VOXCPM2=1 to add it.",
+                                      code: "model_missing"))
+        XCTAssertEqual(result, [installRow])
+    }
+
+    func testAnOldDaemonThatSaysNothingStillOffersTheInstall() {
+        XCTAssertEqual(rows(unavailable()), [installRow])
     }
 
     func testInstallRowIsDisabledWhileAnInstallRuns() {
-        XCTAssertEqual(rows(unavailable(), installing: true),
+        XCTAssertEqual(rows(unavailable(code: "model_missing"), installing: true),
                        [.item(title: StudioMenu.installTitle, isOn: false, isEnabled: false, action: .installStudioVoice)])
     }
 
-    func testAfterAnInstallThatChangedNothingTheDaemonsReasonShows() {
-        let result = rows(unavailable("Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them."), attempted: true)
-        XCTAssertEqual(result, [.item(title: "Studio voices need a Mac with Apple Silicon; this computer cannot run them.",
-                                      isOn: false, isEnabled: false, action: nil)])
-        XCTAssertEqual(titles(rows(unavailable(nil), attempted: true)), ["This Mac can't run the studio voice."])
+    /// Mutation: StudioMenu.swift rows, `guard status.installWouldHelp` -> `guard true` -> RED.
+    func testAMacThatCannotRunItIsNeverOfferedTheInstall() {
+        let reason = "Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them."
+        let plain = MenuRow.item(title: "Studio voices need a Mac with Apple Silicon; this computer cannot run them.",
+                                 isOn: false, isEnabled: false, action: nil)
+        XCTAssertEqual(rows(unavailable(reason, code: "unsupported")), [plain])
+        XCTAssertEqual(rows(unavailable(reason)), [plain], "a reason without a code: no 3 GB download either")
+        XCTAssertEqual(rows(unavailable(reason, code: "a_code_from_the_future")), [plain])
+        XCTAssertEqual(titles(rows(unavailable(nil, code: "unsupported"))), ["This Mac can't run the studio voice."])
     }
 
     func testReasonLosesTheTerminalInstruction() {
@@ -54,6 +65,8 @@ final class StudioMenuTests: XCTestCase {
                        "Studio voices need a Mac with Apple Silicon; this computer cannot run them.")
         XCTAssertEqual(PlainWords.clean("The script is empty. Reinstall with OX_SAY_WITH_VOXCPM2=1.", fallback: fallback), "The script is empty.")
         XCTAssertEqual(PlainWords.clean("", fallback: fallback), fallback)
+        XCTAssertEqual(PlainWords.clean("   ", fallback: fallback), fallback, "a blank message never makes a blank alert")
+        XCTAssertEqual(PlainWords.clean("\n", fallback: fallback), fallback)
     }
 
     func testRefusalMessagesArePlainToo() {
@@ -65,6 +78,26 @@ final class StudioMenuTests: XCTestCase {
     func testUnreachableDaemonDisablesStudio() {
         let result = rows(nil)
         XCTAssertEqual(result, [.item(title: StudioMenu.noServiceTitle, isOn: false, isEnabled: false, action: nil)])
+    }
+
+    /// Mutation: StudioMenu.swift rows, `.unreachable` case returns only the
+    /// noService row (drop `jobRows(...) +`) -> RED.
+    func testOneFailedStatusKeepsTheFollowedVoiceoversRows() {
+        let result = rows(nil, job: job(.running))
+        XCTAssertEqual(titles(result), ["“Ch 1” — 2 of 5 parts", "Stop Voiceover", StudioMenu.noServiceTitle])
+        XCTAssertTrue(result.contains(.item(title: "Stop Voiceover", isOn: false, isEnabled: true, action: .stopVoiceover)))
+    }
+
+    func testBeforeTheFirstReplyTheServiceIsNeitherUpNorNotAnswering() {
+        let result = StudioMenu.rows(service: .unknown, installing: false, job: nil, serviceWaiting: false, hasOutputFolder: false)
+        XCTAssertEqual(result, [.item(title: StudioMenu.checkingTitle, isOn: false, isEnabled: false, action: nil)])
+        XCTAssertFalse(titles(result).contains(StudioMenu.noServiceTitle))
+    }
+
+    func testAFollowedVoiceoverSaysItIsWaitingWhileTheServiceIsGone() {
+        let result = titles(rows(available, job: job(.running), waiting: true))
+        XCTAssertTrue(result.contains("“Ch 1” — waiting for the ox-say service…"))
+        XCTAssertFalse(result.contains("“Ch 1” — 2 of 5 parts"))
     }
 
     func testAvailableStudioWithoutAJob() {

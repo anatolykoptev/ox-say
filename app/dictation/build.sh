@@ -20,8 +20,8 @@ name=OxSayDictation
 bundle_id=io.github.anatolykoptev.ox-say.dictation
 out=$root/build/dictation
 app=$out/$name.app
-# The app icon: rendered from Resources/AppIcon.svg by make-icon.sh and committed,
-# so a build never needs rsvg-convert.
+# The app icon: made from Resources/AppIcon.png by make-icon.sh and committed,
+# so a build never needs the icon tools.
 icon_file=AppIcon.icns
 icon=$here/Resources/$icon_file
 

@@ -25,15 +25,18 @@ struct StudioHost {
 /// The Studio submenu: draws the rows StudioMenu decides, and runs the three
 /// flows behind them — a long voiceover, following it to the end, and a new voice.
 final class StudioController: NSObject {
-    /// Polls in a row that may fail (the daemon restarting) before the app stops following a voiceover.
-    static let maxPollFailures = 12
-
     let submenu = NSMenu()
     let host: StudioHost
-    private var status: DaemonStatus?
-    private var job: ProduceJob?
+    private var service = StudioMenu.ServiceState.unknown
     private var latestFolder: URL?
-    private var polling: Task<Void, Never>?
+    private lazy var follower = VoiceoverFollower(
+        source: VoiceoverFollower.Source(voiceover: { [client = host.client] in try await client.voiceover(id: $0) },
+                                         voiceovers: { [client = host.client] in try await client.voiceovers() }),
+        onChange: { [weak self] in self?.render() },
+        onFinish: { [weak self] job in
+            self?.refreshFolder()
+            self?.presentFinish(job)
+        })
     private lazy var designer = VoiceDesigner(host: host)
 
     init(host: StudioHost) {
@@ -47,19 +50,17 @@ final class StudioController: NSObject {
     func render() {
         let folderExists = latestFolder.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
         let rows = StudioMenu.rows(
-            status: status,
-            installAttempted: UserDefaults.standard.bool(forKey: StudioMenu.installAttemptedKey),
-            installing: host.installing(), job: job, hasOutputFolder: folderExists)
+            service: service, installing: host.installing(), job: follower.job,
+            serviceWaiting: follower.serviceWaiting, hasOutputFolder: folderExists)
         MenuRenderer.fill(submenu, rows: rows, target: self) { action in (#selector(choose(_:)), action) }
     }
 
-    /// The daemon's /status arrived (or failed): redraw, and look for the latest voiceover's folder.
+    /// The daemon's /status arrived (or failed): redraw, look for the latest
+    /// voiceover's folder, and pick up a voiceover already running.
     func statusChanged(_ new: DaemonStatus?) {
-        status = new
-        if new?.studioAvailable == true {
-            UserDefaults.standard.removeObject(forKey: StudioMenu.installAttemptedKey)
-            refreshFolder()
-        }
+        service = new.map { .answered($0) } ?? .unreachable
+        if new != nil { follower.serviceAnswered() }
+        if new?.studioAvailable == true { refreshFolder() }
         render()
     }
 
@@ -74,57 +75,6 @@ final class StudioController: NSObject {
         case .createVoice: designer.start()
         case .pickVoice, .pickDictationKey, .pickSpeakKey: break
         }
-    }
-
-    // MARK: following a voiceover
-
-    /// On launch: a voiceover that was running when the app last quit is still the daemon's.
-    func pickUpRunningVoiceover() {
-        Task { @MainActor [weak self] in
-            guard let self, let jobs = try? await self.host.client.voiceovers(),
-                  let running = jobs.first(where: { !$0.status.isTerminal }) else { return }
-            self.follow(running)
-        }
-    }
-
-    private func follow(_ started: ProduceJob) {
-        job = started
-        render()
-        polling?.cancel()
-        let id = started.id
-        polling = Task { @MainActor [weak self] in
-            var failures = 0
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(ProduceText.pollInterval * 1_000_000_000))
-                guard let self, !Task.isCancelled else { return }
-                do {
-                    let latest = try await self.host.client.voiceover(id: id)
-                    failures = 0
-                    self.job = latest
-                    self.render()
-                    if !ProduceText.shouldKeepPolling(latest) {
-                        self.refreshFolder()
-                        self.presentFinish(latest)
-                        return
-                    }
-                } catch StudioError.refused(status: 404, _) {
-                    self.forgetJob()
-                    return
-                } catch {
-                    failures += 1
-                    if failures >= Self.maxPollFailures {
-                        self.forgetJob()
-                        self.host.notify("Lost contact with the voiceover. Check the ox-say service.")
-                        return
-                    }
-                }
-            }
-        }
-    }
-
-    private func forgetJob() {
-        job = nil
-        render()
     }
 
     private func refreshFolder() {
@@ -183,7 +133,7 @@ final class StudioController: NSObject {
             do {
                 let started = try await self.host.client.startVoiceover(script: script, title: form.title,
                                                                          voice: form.voice, format: form.format)
-                self.follow(started)
+                self.follower.follow(started)
             } catch {
                 _ = self.host.alert("Couldn't start the voiceover", Self.plain(error), ["OK"])
             }
@@ -191,7 +141,7 @@ final class StudioController: NSObject {
     }
 
     private func stopVoiceover() {
-        guard let job else { return }
+        guard let job = follower.job else { return }
         let sure = host.alert("Stop this voiceover?", "ox-say stops after the part it is working on. What is already made is not turned into a finished file.",
                               ["Stop Voiceover", "Keep Going"])
         guard sure == .alertFirstButtonReturn else { return }
@@ -205,7 +155,7 @@ final class StudioController: NSObject {
     }
 
     private func continueOnBattery() {
-        guard let job else { return }
+        guard let job = follower.job else { return }
         Task { @MainActor [weak self] in
             do {
                 try await self?.host.client.continueOnBattery(id: job.id)

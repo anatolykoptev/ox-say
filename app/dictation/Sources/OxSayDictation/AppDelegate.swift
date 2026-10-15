@@ -197,7 +197,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         show(.idle)
         refreshServiceStatus()
         studio.render()
-        studio.pickUpRunningVoiceover()
 
         // Ask for both permissions up front, so the first dictation does not stall
         // on a prompt. The Accessibility prompt shows once; the microphone prompt
@@ -622,7 +621,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                             text: "Downloads the studio voice model once, about 3 GB. Dictation pauses for a few seconds while ox-say restarts.",
                             buttons: ["Install", "Cancel"])
         guard sure == .alertFirstButtonReturn else { return }
-        installUpdate(tag: UpdateInstaller.tag(forVersion: AboutPanel.appVersion), studioVoice: true)
+        installUpdate(tag: UpdateInstaller.tag(forVersion: AboutPanel.appVersion), kind: .studioVoice)
     }
 
     /// The menu's update check: GitHub's latest release against the bundle's
@@ -711,90 +710,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return try? FileHandle(forWritingTo: url)
     }
 
-    /// Installs the release: downloads get.sh to a temp file, then runs it —
-    /// two steps, each exit status checked (a `curl | sh` pipe would report the
-    /// shell's 0 for a failed download). Output of both lands in the update
-    /// log. The app relaunches only when the installed bundle really reports
-    /// the target version; every other outcome is the failed alert.
-    private func installUpdate(tag: String, studioVoice: Bool = false) {
+    /// Installs the release (DictationCore's UpdateInstaller.run: download get.sh,
+    /// run it, check the bundle's version). Output lands in the update log. The
+    /// app relaunches only when the installed bundle really reports the target
+    /// version; every other outcome is the failed alert. A successful install
+    /// usually ends this process first: install-app.sh quits the running app and
+    /// opens the new one, so nothing here may be needed after the install.
+    private func installUpdate(tag: String, kind: UpdateInstaller.Kind = .update) {
         updateInstalling = true
         studio.render()
         overlay.showWorking()
-        overlay.setWorkingText(studioVoice ? "Installing the studio voice…" : "Installing \(tag)…")
+        overlay.setWorkingText(kind == .studioVoice ? "Installing the studio voice…" : "Installing \(tag)…")
         overlay.setHintHidden(true)
         Task { @MainActor in
-            let failure = await Self.runInstall(tag: tag, studioVoice: studioVoice)
+            let log = Self.openUpdateLog()
+            let failure = await UpdateInstaller.run(kind: kind, tag: tag, log: log) {
+                // Bundle.main caches its Info.plist; read the file the relaunch will use.
+                let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
+                return (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
+            }
+            try? log?.close()
             updateInstalling = false
             studio.render()
             if let failure {
                 overlay.finish()
-                runAlert(title: studioVoice ? "Installing the studio voice failed" : "Update to \(tag) failed",
+                runAlert(title: kind == .studioVoice ? "Installing the studio voice failed" : "Update to \(tag) failed",
                          text: "\(failure.message) Its output is in\n\(Self.updateLogURL.path)",
                          buttons: ["OK"])
                 return
             }
-            // After the relaunch the Studio menu tells whether this Mac took it.
-            if studioVoice { UserDefaults.standard.set(true, forKey: StudioMenu.installAttemptedKey) }
             let relaunch = Process()
             relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
             relaunch.arguments = ["-n", Bundle.main.bundleURL.path]
             try? relaunch.run()
             NSApp.terminate(nil)
-        }
-    }
-
-    /// nil on success; otherwise the first step that failed.
-    private static func runInstall(tag: String, studioVoice: Bool) async -> UpdateInstaller.Failure? {
-        let log = openUpdateLog()
-        defer { try? log?.close() }
-        let script = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-get-\(UUID().uuidString).sh")
-        defer { try? FileManager.default.removeItem(at: script) }
-
-        let download = UpdateInstaller.Command(argv: UpdateInstaller.downloadCommand(to: script.path), environment: [:])
-        switch await runProcess(download, log: log) {
-        case .failure(let error): return .couldNotStart(error.localizedDescription)
-        case .success(let status) where status != 0: return .downloadFailed(status: status)
-        case .success: break
-        }
-        let head = (try? FileHandle(forReadingFrom: script)).flatMap { handle -> Data? in
-            defer { try? handle.close() }
-            return try? handle.read(upToCount: 2)
-        } ?? Data()
-        guard UpdateInstaller.isScript(head: head) else { return .notAScript }
-
-        let install = studioVoice ? UpdateInstaller.studioVoiceCommand(script: script.path, tag: tag)
-                                  : UpdateInstaller.updateCommand(script: script.path, tag: tag)
-        switch await runProcess(install, log: log) {
-        case .failure(let error): return .couldNotStart(error.localizedDescription)
-        case .success(let status) where status != 0: return .installerFailed(status: status)
-        case .success: break
-        }
-        // Bundle.main caches its Info.plist; read the file the relaunch will use.
-        let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
-        let installed = (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
-        return UpdateInstaller.verifyInstalled(version: installed, target: tag)
-    }
-
-    /// Runs one command with stdout and stderr in the log; the result is its
-    /// exit status, or the error when it could not start. The command's own
-    /// variables are added to the app's environment.
-    private static func runProcess(_ command: UpdateInstaller.Command, log: FileHandle?) async -> Result<Int32, Error> {
-        await withCheckedContinuation { continuation in
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: command.argv[0])
-            p.arguments = Array(command.argv.dropFirst())
-            if !command.environment.isEmpty {
-                p.environment = ProcessInfo.processInfo.environment.merging(command.environment) { _, new in new }
-            }
-            p.standardInput = FileHandle.nullDevice
-            p.standardOutput = log ?? FileHandle.nullDevice
-            p.standardError = log ?? FileHandle.nullDevice
-            p.terminationHandler = { continuation.resume(returning: .success($0.terminationStatus)) }
-            do {
-                try p.run()
-            } catch {
-                continuation.resume(returning: .failure(error))
-            }
         }
     }
 

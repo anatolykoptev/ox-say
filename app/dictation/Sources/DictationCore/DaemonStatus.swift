@@ -11,11 +11,27 @@ public struct DaemonStatus: Equatable {
     public var studioAvailable: Bool
     /// The daemon's plain-words reason the studio voice cannot run, when it gives one.
     public var studioReason: String?
+    /// The daemon's machine-readable reason: "model_missing" (an install adds it)
+    /// or "unsupported" (this Mac cannot run it); nil from a daemon without the field.
+    public var studioReasonCode: String?
 
-    public init(version: String?, studioAvailable: Bool, studioReason: String? = nil) {
+    public init(version: String?, studioAvailable: Bool, studioReason: String? = nil, studioReasonCode: String? = nil) {
         self.version = version
         self.studioAvailable = studioAvailable
         self.studioReason = studioReason
+        self.studioReasonCode = studioReasonCode
+    }
+
+    public static let reasonModelMissing = "model_missing"
+
+    /// Whether "Install Studio Voice" can help: the daemon says the engine or model
+    /// is missing, or says nothing at all (a daemon from before the studio voice).
+    /// A reason without that code — "unsupported", or one this app does not know —
+    /// is never answered with a 3 GB download.
+    public var installWouldHelp: Bool {
+        if studioAvailable { return false }
+        if let studioReasonCode { return studioReasonCode == Self.reasonModelMissing }
+        return studioReason == nil
     }
 
     /// nil when `data` is not a JSON object.
@@ -24,7 +40,8 @@ public struct DaemonStatus: Equatable {
         let studio = obj["voxcpm2"] as? [String: Any]
         return DaemonStatus(version: nonEmpty(obj["version"] as? String),
                             studioAvailable: studio?["available"] as? Bool ?? false,
-                            studioReason: nonEmpty(studio?["reason"] as? String))
+                            studioReason: nonEmpty(studio?["reason"] as? String),
+                            studioReasonCode: nonEmpty(studio?["reason_code"] as? String))
     }
 
     private static func nonEmpty(_ text: String?) -> String? {

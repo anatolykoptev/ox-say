@@ -15,6 +15,18 @@ final class DaemonStatusTests: XCTestCase {
         XCTAssertEqual(status?.studioReason, "Studio voices need a Mac with Apple Silicon.")
     }
 
+    func testReasonCodeIsDecoded() {
+        let status = decode(#"{"voxcpm2":{"available":false,"reason":"x","reason_code":"model_missing"}}"#)
+        XCTAssertEqual(status?.studioReasonCode, "model_missing")
+        XCTAssertEqual(status?.installWouldHelp, true)
+        XCTAssertEqual(decode(#"{"voxcpm2":{"available":false,"reason":"x","reason_code":"unsupported"}}"#)?.installWouldHelp, false)
+        XCTAssertNil(decode(#"{"voxcpm2":{"available":false,"reason":"x"}}"#)?.studioReasonCode)
+        XCTAssertEqual(decode(#"{"voxcpm2":{"available":false,"reason":"x"}}"#)?.installWouldHelp, false,
+                       "a reason with no code: this app cannot tell, so it does not offer 3 GB")
+        XCTAssertEqual(decode(#"{"version":"v0.1.10"}"#)?.installWouldHelp, true)
+        XCTAssertEqual(decode(#"{"voxcpm2":{"available":true,"reason_code":"model_missing"}}"#)?.installWouldHelp, false)
+    }
+
     func testMissingStudioSectionMeansUnavailable() {
         XCTAssertEqual(decode(#"{"version":"v0.1.10"}"#)?.studioAvailable, false)
         XCTAssertNil(decode(#"{"version":"v0.1.10"}"#)?.studioReason)

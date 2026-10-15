@@ -10,40 +10,59 @@ public enum StudioMenu {
     public static let folderTitle = "Open Voiceovers Folder"
     public static let createVoiceTitle = "Create a Voice…"
     public static let noServiceTitle = "Studio needs the ox-say service, which is not answering"
-    /// UserDefaults key: the studio voice was installed from the menu once.
-    public static let installAttemptedKey = "studioInstallAttempted"
     public static let cannotRunTitle = "This Mac can't run the studio voice."
+    public static let checkingTitle = "Checking the ox-say service…"
+
+    /// What the app knows of the daemon right now.
+    public enum ServiceState: Equatable {
+        /// No answer yet since the app started: neither "up" nor "not answering".
+        case unknown
+        /// The last /status did not answer.
+        case unreachable
+        case answered(DaemonStatus)
+    }
 
     /// - Parameters:
-    ///   - status: the daemon's last /status; nil when it did not answer.
-    ///   - installAttempted: the studio voice was installed once already and the
-    ///     daemon still says it is unavailable, so offering the same install again helps nobody.
+    ///   - service: the daemon's last /status.
     ///   - installing: an install or update is running now.
     ///   - job: the voiceover the app is following, while it is not over.
+    ///   - serviceWaiting: the app is following `job` but the daemon did not answer the last poll.
     ///   - hasOutputFolder: the latest voiceover's folder exists on this Mac.
-    public static func rows(status: DaemonStatus?, installAttempted: Bool, installing: Bool,
-                            job: ProduceJob?, hasOutputFolder: Bool) -> [MenuRow] {
-        guard let status else {
-            return [.item(title: noServiceTitle, isOn: false, isEnabled: false, action: nil)]
-        }
-        guard status.studioAvailable else {
-            if installAttempted {
-                return [.item(title: unavailableText(reason: status.studioReason), isOn: false, isEnabled: false, action: nil)]
+    public static func rows(service: ServiceState, installing: Bool, job: ProduceJob?,
+                            serviceWaiting: Bool, hasOutputFolder: Bool) -> [MenuRow] {
+        let active = job.flatMap { $0.status.isTerminal ? nil : $0 }
+        switch service {
+        case .unknown:
+            return jobRows(active, waiting: serviceWaiting) + [disabled(checkingTitle)]
+        case .unreachable:
+            // A voiceover the app is following keeps its rows: the service is only not answering.
+            return jobRows(active, waiting: serviceWaiting) + [disabled(noServiceTitle)]
+        case .answered(let status):
+            guard status.studioAvailable else {
+                guard status.installWouldHelp else { return [disabled(unavailableText(reason: status.studioReason))] }
+                return [.item(title: installTitle, isOn: false, isEnabled: !installing, action: .installStudioVoice)]
             }
-            return [.item(title: installTitle, isOn: false, isEnabled: !installing, action: .installStudioVoice)]
+            var rows: [MenuRow] = [.item(title: newVoiceoverTitle, isOn: false, isEnabled: active == nil, action: .newVoiceover)]
+            rows += jobRows(active, waiting: serviceWaiting)
+            rows.append(.item(title: folderTitle, isOn: false, isEnabled: hasOutputFolder, action: hasOutputFolder ? .openVoiceoversFolder : nil))
+            rows.append(.separator)
+            rows.append(.item(title: createVoiceTitle, isOn: false, isEnabled: true, action: .createVoice))
+            return rows
         }
-        let active = job.map { !$0.status.isTerminal } ?? false
-        var rows: [MenuRow] = [.item(title: newVoiceoverTitle, isOn: false, isEnabled: !active, action: .newVoiceover)]
-        if let job, active {
-            rows.append(.item(title: ProduceText.progressRow(job), isOn: false, isEnabled: false, action: nil))
-            rows.append(.item(title: stopTitle, isOn: false, isEnabled: true, action: .stopVoiceover))
-            if job.status == .pausedOnBattery {
-                rows.append(.item(title: continueTitle, isOn: false, isEnabled: true, action: .continueOnBattery))
-            }
+    }
+
+    private static func disabled(_ title: String) -> MenuRow {
+        .item(title: title, isOn: false, isEnabled: false, action: nil)
+    }
+
+    /// The followed voiceover's progress, Stop and (on battery) Continue rows.
+    private static func jobRows(_ job: ProduceJob?, waiting: Bool) -> [MenuRow] {
+        guard let job else { return [] }
+        var rows = [disabled(ProduceText.progressRow(job, serviceWaiting: waiting)),
+                    MenuRow.item(title: stopTitle, isOn: false, isEnabled: true, action: .stopVoiceover)]
+        if job.status == .pausedOnBattery {
+            rows.append(.item(title: continueTitle, isOn: false, isEnabled: true, action: .continueOnBattery))
         }
-        rows.append(.item(title: folderTitle, isOn: false, isEnabled: hasOutputFolder, action: hasOutputFolder ? .openVoiceoversFolder : nil))
-        rows.append(.separator)
-        rows.append(.item(title: createVoiceTitle, isOn: false, isEnabled: true, action: .createVoice))
         return rows
     }
 
@@ -77,7 +96,7 @@ public enum PlainWords {
     public static func clean(_ text: String, fallback: String) -> String {
         let all = text.components(separatedBy: ". ")
         let kept = all.filter { sentence in
-            !sentence.isEmpty && !jargon.contains(where: { sentence.contains($0) })
+            !sentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !jargon.contains(where: { sentence.contains($0) })
         }
         guard let last = kept.last else { return fallback }
         let joined = kept.joined(separator: ". ").replacingOccurrences(of: " (VoxCPM2)", with: "")
