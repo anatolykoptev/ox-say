@@ -104,6 +104,19 @@ final class DocumentReaderTests: XCTestCase {
                        "only the five numbers inside the sentences stay: \(dropped)")
     }
 
+    func testReadScriptIsTheReadAndCleanedDocumentWithItsEmptyMessage() async throws {
+        let rtf = try write(attributedData("Привет, мир.\nSecond paragraph.", .rtf), as: "a.rtf")
+        let scan = try write(pdfData(pages: [""]), as: "scan.pdf")
+        defer { [rtf, scan].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let read = try await DocumentReader.readScript(rtf)
+        let document = try await DocumentReader.read(rtf)
+        XCTAssertEqual(read, ReadScript(script: document.script, emptyMessage: document.emptyMessage))
+        XCTAssertEqual(read.script, "Привет, мир.\n\nSecond paragraph.")
+        let empty = try await DocumentReader.readScript(scan)
+        XCTAssertEqual(empty.script, "")
+        XCTAssertEqual(empty.emptyMessage, "This PDF has no text to read (it may be a scan).")
+    }
+
     func testAPdfWithoutATextLayerReadsAsEmptyAndSaysWhy() async throws {
         let size = 64
         let bitmap = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,

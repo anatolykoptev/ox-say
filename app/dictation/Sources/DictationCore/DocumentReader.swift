@@ -26,6 +26,13 @@ public struct ReadDocument: Equatable {
     }
 }
 
+/// What the review sheet starts from: the cleaned script, and what to tell the
+/// person when there is none.
+public struct ReadScript: Equatable {
+    public var script: String
+    public var emptyMessage: String
+}
+
 public enum DocumentError: Error, Equatable, CustomStringConvertible {
     case unsupported(String)
     case unreadable
@@ -67,6 +74,14 @@ public enum DocumentReader {
 
     /// The file extensions the open panel offers.
     public static let supportedExtensions = kinds.map(\.ext)
+
+    /// Reads and cleans a document. Both steps run here, off the caller's actor: the
+    /// cleaning is as much work as the reading, and a menu-bar app must not freeze
+    /// its menu on a large file.
+    public static func readScript(_ url: URL) async throws -> ReadScript {
+        let document = try await read(url)
+        return ReadScript(script: document.script, emptyMessage: document.emptyMessage)
+    }
 
     public static func read(_ url: URL) async throws -> ReadDocument {
         let ext = url.pathExtension.lowercased()

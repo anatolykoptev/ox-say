@@ -148,10 +148,9 @@ final class StudioController: NSObject {
             host.pill(nil)
         }
         do {
-            let document = try await DocumentReader.read(file)
-            let script = document.script
-            if script.isEmpty { _ = host.alert("Nothing to read", document.emptyMessage, ["OK"]) }
-            return script.isEmpty ? nil : script
+            let read = try await DocumentReader.readScript(file)
+            if read.script.isEmpty { _ = host.alert("Nothing to read", read.emptyMessage, ["OK"]) }
+            return read.script.isEmpty ? nil : read.script
         } catch {
             let why = (error as? DocumentError)?.description ?? "The file could not be opened."
             _ = host.alert("Couldn't read that file", why, ["OK"])
