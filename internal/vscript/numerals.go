@@ -100,7 +100,7 @@ func cardinalWords(n int, g gender) []string {
 
 func groupWords(n int, g gender, one, few, many string, leading bool) []string {
 	var out []string
-	if !(leading && n == 1) {
+	if !leading || n != 1 {
 		out = triple(n, g)
 	}
 	return append(out, plural(n, one, few, many))

@@ -129,7 +129,7 @@ func boundaryOK(before, after string) bool {
 		return false
 	case strings.ContainsRune(".,:-–", r):
 		next, _ := utf8.DecodeRuneInString(after[size:])
-		return !unicode.IsDigit(next) && !(unicode.IsLetter(next) && r == '-')
+		return !unicode.IsDigit(next) && (!unicode.IsLetter(next) || r != '-')
 	}
 	return true
 }
