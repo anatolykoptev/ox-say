@@ -137,7 +137,10 @@ audio or output file. The same seed on the same Mac and the same build gives the
 [`ox-say produce`](#long-form-voiceover-produce), which does the splitting, checking and joining for you.
 
 **Loudness.** `--loudness -16` (or `loudness_lufs`) sets the finished file to a standard level: -16 for online
-video and podcasts, -14 for music streaming, -23 for broadcast.
+video and podcasts, -14 for music streaming, -23 for broadcast. The level is one constant gain, with a
+true-peak limiter at -1.5 dBTP; 2-3 second takes land within 0.2 LU (measured -16.0 to -16.2 at -16). A very
+peaky take gets a warning that the limiter worked hard, and a take too quiet to raise (more than +25 dB) is
+returned unchanged with a warning.
 
 **Quality knobs, for the curious.** Leave them alone unless a take goes wrong. `--cfg` (default 2.0; above 0 and
 at most 5) is how strictly the voice follows the text and style; higher is stricter, too high sounds strained.
@@ -224,9 +227,12 @@ lines. Write a number as words if you want to be sure. Abbreviations such as «�
 | `reels` | Reels, Shorts, TikTok | −14 LUFS | 0.20 s / 0.45 s (tighter) | 2: the better one is used |
 | `voice-under-music` | a voice over a music bed | −18 LUFS | 0.30 s / 0.70 s | 1 |
 
-The loudness is a target. The result can sit a little under it when the peak limiter holds the gain back
-(the summary then notes "loudness was set in dynamic mode"): the 11-minute `youtube` run measured −16.4 LUFS
-against −16, and a 33-second `reels` test measured −15.8 LUFS against −14.
+The loudness is reached with one constant gain plus a true-peak limiter at −1.5 dBTP, so peaks never pass
+that ceiling. When the limiter has to cut the loudest peaks by more than 6 dB, the summary notes "loudness needed
+a peak limiter: the loudest peaks were pulled down by several dB to hold the true-peak ceiling, so very peaky
+speech may sound slightly squashed". Measured: 33-second and 30-second `reels` runs −14.2 and −14.3 LUFS against
+−14, the 11-minute `youtube` run −16.1 against −16. A take that would need more than +25 dB (hiss, near silence)
+is refused instead of boosting its noise.
 
 `--takes 1..3` overrides the takes per piece (more takes cost proportionally more time).
 `--seed N` makes the whole voiceover reproducible; ox-say prints the seed it used.

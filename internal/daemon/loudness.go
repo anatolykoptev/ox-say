@@ -16,7 +16,7 @@ import (
 )
 
 // Why not ffmpeg's loudnorm: even its second pass, given the measured values
-// and linear=true, silently switches to a dynamic mode when the gain needed
+// and linear=true, silently switches to its dynamic mode when the gain needed
 // would push the true peak past the ceiling (issue #153), and on a 2-3 s take
 // its own reading is off (issue #162). Loudness is instead set by a chain whose
 // behaviour is predictable: measure the integrated loudness with the EBU R128
