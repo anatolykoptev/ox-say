@@ -133,9 +133,8 @@ style, and the call is refused.
 that matters, make 2–3 takes with different `--seed` numbers and keep the best. `ox-say say` prints the seed it used (and any warning) on the error stream, so it never lands in your
 audio or output file. The same seed on the same Mac and the same build gives the same take again.
 
-**Length.** One call takes up to **1000 characters** (about 75 seconds). For now, split a longer script into
-parts of up to 1000 characters at sentence ends and make each part with the same voice and seed settings; a
-long-form command that does the splitting and joining for you is coming.
+**Length.** One call takes up to **1000 characters** (about 75 seconds). For a longer script use
+[`ox-say produce`](#long-form-voiceover-produce), which does the splitting, checking and joining for you.
 
 **Loudness.** `--loudness -16` (or `loudness_lufs`) sets the finished file to a standard level: -16 for online
 video and podcasts, -14 for music streaming, -23 for broadcast.
@@ -180,6 +179,157 @@ curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | 
 `OX_SAY_TTS_MODEL=` (empty). The dictation app's Speak Selection always asks for the fast voice, so it is not
 affected.
 
+## Long-form voiceover (`produce`)
+
+`ox-say produce` turns a whole script, a Reel or a ten-minute YouTube voiceover, into one finished file in
+the studio voice ([VoxCPM2](#studio-voice-voxcpm2)). You write the script as plain text; ox-say cuts it
+into pieces at sentence ends, speaks each piece, **listens to every piece again** to catch a swallowed
+word or a long stall, joins them with natural pauses, sets the loudness, and hands you the audio together
+with ready subtitles. It needs the same Mac as the studio voice (Apple Silicon, 24 GB or more) and a saved
+voice (see [Studio voice](#studio-voice-voxcpm2) for making one).
+
+```sh
+ox-say produce script.txt -v narrator --preset reels
+```
+
+**Writing the script.**
+- A **blank line starts a new paragraph**; the pause between paragraphs is longer than between sentences.
+- `[pause 0.8s]` puts exactly that much silence at that spot (`[pause 300ms]` works too; a bare `[pause]`
+  is 0.6 s). Use it before a punchline or between sections.
+- `[style: excited and joyful, lively pace]` at the **very start of a paragraph** changes how that
+  paragraph is spoken (a few short English words, comma-separated, the same as `-i`). Without it the
+  paragraph uses `-i`, or the voice's saved style.
+- **Any other text in square brackets is an error**, and ox-say says where: it will not read `[music]`
+  aloud by accident.
+
+```text
+Вы когда-нибудь замечали, что лучшие идеи приходят в душ?
+
+[style: excited and joyful, lively pace, smiling voice]
+Вот три приёма, которые работают у меня каждый день!
+
+[pause 0.8s]
+Сохраните это видео, чтобы не забыть.
+```
+
+Numbers are turned into words before they are spoken, and the check hears them like any other word. Only a
+number you deliberately leave as digits is not checked (the project notes say so), so listen to those
+lines. Write a number as words if you want to be sure. Abbreviations such as «т.е.» may be read letter by letter. Write them out.
+
+**Choosing a preset** (`--preset`):
+
+| Preset | For | Loudness target | Pauses (sentence / paragraph) | Takes per piece |
+|---|---|---|---|---|
+| `youtube` (default) | YouTube, podcasts | −16 LUFS | 0.30 s / 0.70 s | 1 |
+| `reels` | Reels, Shorts, TikTok | −14 LUFS | 0.20 s / 0.45 s (tighter) | 2: the better one is used |
+| `voice-under-music` | a voice over a music bed | −18 LUFS | 0.30 s / 0.70 s | 1 |
+
+The loudness is a target. The result can sit a little under it when the peak limiter holds the gain back
+(the summary then notes "loudness was set in dynamic mode"): the 11-minute `youtube` run measured −16.4 LUFS
+against −16, and a 33-second `reels` test measured −15.8 LUFS against −14.
+
+`--takes 1..3` overrides the takes per piece (more takes cost proportionally more time).
+`--seed N` makes the whole voiceover reproducible; ox-say prints the seed it used.
+
+**Where the files go.** With `-o ~/Movies/reel/reel.wav` the files land next to that path; otherwise in
+`~/Movies/ox-say/<title>/` (`-t "my title"` names the folder and the files: the title lowercased, letters and
+digits joined by hyphens, at most 32 characters, e.g. `my-title`; without `-t` they are named after the
+project id. This default folder is a provisional choice: change it with `OX_SAY_PRODUCE_OUT_DIR`, an
+absolute path, then restart the daemon). An existing file is never replaced
+unless you pass `--overwrite`. You get five files with the same name:
+
+| File | What it is |
+|---|---|
+| `name.wav` | the voiceover: 48 kHz, mono, near the preset's loudness target |
+| `name.srt`, `name.vtt` | subtitles, ready for a video editor |
+| `name.words.json` | the time of every word, for animated captions |
+| `name.manifest.json` | a copy of the project record: the settings, the pieces, the takes |
+
+**Listening to a flagged piece.** When the run ends, ox-say tells you if it is `done` (exit code 0) or
+`review` (exit code 3). *Review* means the file is complete, but some pieces failed the automatic check three
+times in a row: a stall of more than 1.5 s inside the speech, or words that do not match the script. The
+check rejects broken audio; it does not judge whether the delivery is good, so a `done` voiceover is still
+worth a listen. For each flagged piece ox-say prints what was wrong and the commands to use:
+
+```sh
+ox-say produce status 20261015-120000-a1b2c3 --chunk 1      # its takes: file paths to open and listen to
+ox-say produce chunk 20261015-120000-a1b2c3 1 --regen 2     # render 2 more takes of this piece
+ox-say produce chunk 20261015-120000-a1b2c3 1 --pick <take> # use that take
+ox-say produce chunk 20261015-120000-a1b2c3 1 --text "…"    # replace the piece's words (one piece, no brackets)
+```
+
+**Picking is final.** `--pick` means you listened and accept that take: the piece becomes OK even if the take
+failed the automatic check, the manifest marks it `user_pick`, and once no piece is left in review the
+project turns `done`. (A take that is completely silent cannot be accepted.)
+
+**Regenerating does not switch to the new take by itself:** your current pick stays until you choose.
+After `--regen`, ox-say lists the new takes with their files and prints the exact `--pick` command for
+each. Every change rebuilds the file in seconds, because only that piece is touched.
+
+**Exit codes** (the run, `resume`, `chunk`, and `status`): 0 done, 3 review, 1 failed, cancelled or
+interrupted, 2 wrong usage (an unknown or misplaced flag is refused with its name, never ignored).
+`status` of a project that is still going exits 0.
+
+**Closing the laptop.** If anything interrupts a run (the Mac shuts down, ox-say restarts, you cancel), the project is kept.
+`ox-say produce resume <id>` continues it; only the missing pieces are made again, and the result is the
+same as an uninterrupted run. `ox-say produce ls` lists your projects, `ox-say produce cancel <id>` stops
+one (the take being made finishes and is kept), `ox-say produce rm <id>` deletes a project's working files
+(the finished files stay unless you add `--delete-outputs`).
+
+**Battery.** On battery or in Low Power Mode, the job pauses (`ox-say produce status` says *paused: on
+battery*) so a long render does not drain the Mac. Plug in, or continue anyway with
+`ox-say produce resume <id> --allow-battery` (`--allow-battery` on the first command does the same).
+**Dictation always goes first:** while you are dictating or using Speak Selection, the voiceover waits
+(*waiting for dictation*) and carries on afterwards. While paused on battery the command keeps waiting for
+the end; `--no-wait` returns at once with the project id, so you can close the terminal and check later.
+
+**How long it takes.** On a quiet Mac the engine makes speech at about 0.55 times real time (a lab measurement
+on an M5 Pro: 10 s of speech in about 5.5 s). A voiceover takes longer than that for three reasons: every
+piece is made once per take you ask for (`reels` asks for 2), a piece that fails the check is made again
+(up to three tries), and the first piece after a rest waits 10–40 s for the model to load. Measured runs
+(M5 Pro, AC power, one voice; another heavy job shared the Mac for part of the long run, so treat them as
+upper bounds):
+- A 33-second Reel (`reels`, 2 takes per piece): 48 s on a warm model, 62 s on a cold one.
+- An 11.2-minute voiceover (`youtube`, 64 pieces): 12.7 minutes. The engine made 93 takes with 941 s of
+  speech to deliver 670 s, because the 7 pieces that kept failing the check were tried three times each and
+  a few others once more. The rest of that run, after an interruption at piece 11, took 10 minutes.
+- Estimates, not measured: a 60-second Reel about 1.5–2 minutes; a 10-minute `youtube` voiceover about 11–12
+  minutes; `--takes 2` on a long script roughly half as long again.
+
+The status line shows the time left while it works. The engine uses about 3–4 GB of memory while it runs
+(4.1 GB peak in the long run above).
+
+**Limits.**
+- **One voiceover at a time.** Starting a second one while one is running is refused and names the
+  running one.
+- One voice per voiceover, a recording of at most 30 s. Numbers left as digits are not checked (see above).
+- About 40,000 characters per project (roughly 48 minutes of speech). Split longer books in parts.
+- Apple Silicon with 24 GB or more only; the same disk space as the working takes (a free-space check
+  runs first).
+- After you replace the engine or the model **by hand**, restart the daemon: the engine's identity is read
+  once per start, so without a restart the old takes would still be reused.
+- The VoxCPM2 model card forbids impersonation, fraud and disinformation, and asks that AI-generated
+  speech be labelled as such. Please do.
+
+### `produce` HTTP API
+
+All on `OX_SAY_ADDR`, loopback only. A project id looks like `20261015-120000-a1b2c3`. Unknown JSON fields
+are refused.
+
+| Route | Description |
+|-------|-------------|
+| `POST /v1/produce` | `{"script"` (required, ≤ 40,000 chars)`,"title","voice","style","preset","seed","takes"(1..3; 0 is refused),"out_path","overwrite","allow_battery"}` → 202 with the project summary. 409 + `running_id` when another voiceover is running. No `cfg_value`, steps or loudness: the preset carries them |
+| `GET /v1/produce` | `{"projects":[…]}`: the 20 most recent, newest first, without their chunk lists |
+| `GET /v1/produce/<id>` | Summary: `status` (`running`, `waiting_for_dictation`, `paused_on_battery`, `review`, `done`, `failed`, `cancelled`, `interrupted`), `seed`, `progress` (`chunks_done`, `chunks_total`, `eta_s`), `outputs`, `chunks` (status, pick, reasons), `notes` |
+| `GET /v1/produce/<id>/chunks/<n>` | One chunk (0-based): its text, takes (key, seed, duration, word errors) and `take_files` (key → WAV path) |
+| `POST /v1/produce/<id>/resume` | `{"allow_battery"}` → continue an interrupted, cancelled or finished project |
+| `POST /v1/produce/<id>/cancel` | Stop a running project; the take in progress finishes and is kept. A project that is not running answers 409 |
+| `POST /v1/produce/<id>/chunks/<n>` | `{"action":"regenerate","takes":1..3}` / `{"action":"pick","take":"<key>"}` / `{"action":"edit","text":"…"}`; `regenerate` keeps the current pick; `pick` is final (the chunk becomes ok, `user_pick: true`). A chunk number past the end answers 400 with the chunk count |
+| `DELETE /v1/produce/<id>` | Remove the project; `?delete_outputs=true` also deletes its published files |
+
+**Agents (MCP)** use four tools, `produce`, `produce_status`, `produce_edit` and `produce_control`, that
+mirror the routes above. `produce` returns at once with the id; poll `produce_status` every ~10 s.
+
 ## Usage
 
 One binary, `ox-say`, is the daemon, the CLI client and the MCP server.
@@ -196,6 +346,7 @@ ox-say voice save narrator <take path>  # keep a take
 ox-say voice set narrator --style "calm and warm, slow"   # change a voice's engine/style
 ox-say voice ls
 ox-say voice rm ben
+ox-say produce script.txt -v narrator --preset reels   # a whole voiceover from a script (see "Long-form voiceover")
 ox-say transcribe meeting.wav           # speech-to-text
 ox-say transcribe -e whisper --srt talk.mp4 > talk.srt
 ox-say status
@@ -305,7 +456,7 @@ the recording and fall back to uploading the whole clip to
 
 The same server exposes MCP tools on `/mcp`: `speak`, `transcribe`,
 `voices_list`, `voice_add`, `voice_update`, `voice_remove`, `voice_design`, `voice_design_save`,
-`engine_status`. Each tool's description tells an agent when to use it, the units and limits, and what
+`engine_status`, and the long-form voiceover tools `produce`, `produce_status`, `produce_edit`, `produce_control`. Each tool's description tells an agent when to use it, the units and limits, and what
 to call next; the VoxCPM2 quality options (`model`, `instructions`, `cfg_value`, `inference_timesteps`,
 `clone_mode`, `seed`, `loudness_lufs`) are on `speak` only. Register with:
 

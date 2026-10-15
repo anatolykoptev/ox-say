@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/testutil"
+	"github.com/anatolykoptev/ox-say/internal/vproject"
 )
 
 // mcpSession connects an in-memory MCP client to d's tools — the same
@@ -74,6 +76,13 @@ var wantToolSchemas = map[string]struct{ props, required []string }{
 	"voice_design_save": {[]string{"name", "take", "replace"}, []string{"name", "take"}},
 	"engine_status":     {nil, nil},
 	"transcribe":        {[]string{"audio_path", "engine", "language", "prompt", "words", "out_path"}, []string{"audio_path"}},
+	// The produce tools carry no cfg_value/inference_timesteps/loudness_lufs:
+	// presets and the adapter's defaults carry them (the knob ruling).
+	"produce": {[]string{"script", "title", "voice", "style", "preset", "seed", "takes", "out_path", "overwrite", "allow_battery"},
+		[]string{"script"}},
+	"produce_status":  {[]string{"id", "chunk"}, nil},
+	"produce_edit":    {[]string{"id", "chunk", "action", "takes", "take", "text"}, []string{"id", "chunk", "action"}},
+	"produce_control": {[]string{"id", "action", "allow_battery", "delete_outputs"}, []string{"id", "action"}},
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -157,6 +166,10 @@ func TestMCPDescriptionsAreSelfSufficient(t *testing.T) {
 		"voice_update":      {"engine", "style", "voice_add"},
 		"voices_list":       {"engine", "style", "designed_from"},
 		"engine_status":     {"voxcpm2", "stt_server"},
+		"produce":           {"produce_status", "AT ONCE", "[pause", "[style:", "youtube", "reels", "voice-under-music", "out_path", "allow_battery", strconv.Itoa(maxProduceChars), "targets", "32 characters"},
+		"produce_status":    {"review", "chunk", "produce_edit", vproject.NoteNumbers},
+		"produce_edit":      {"regenerate", "pick", "edit", "take", "produce_status", "pick is kept", "new takes", "user_pick", "ok even if"},
+		"produce_control":   {"resume", "cancel", "remove", "delete_outputs", "allow_battery", "for good", "not running"},
 	}
 	for tool, words := range need {
 		for _, w := range words {

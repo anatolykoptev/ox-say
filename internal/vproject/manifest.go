@@ -74,19 +74,22 @@ type Settings struct {
 
 // Chunk is one engine request's worth of the script and its takes.
 type Chunk struct {
-	Index      int       `json:"index"`
-	Paragraph  int       `json:"paragraph"`
-	Text       string    `json:"text"`
-	Spoken     string    `json:"spoken"`
-	Style      string    `json:"style,omitempty"`
-	PauseAfter float64   `json:"pause_after_s"`
-	Status     string    `json:"status"`
-	Basis      string    `json:"basis,omitempty"`
-	Pick       string    `json:"pick,omitempty"`
-	Reasons    []string  `json:"reasons,omitempty"`
-	Takes      []TakeRef `json:"takes"`
-	StartS     float64   `json:"start_s"`
-	EndS       float64   `json:"end_s"`
+	Index      int     `json:"index"`
+	Paragraph  int     `json:"paragraph"`
+	Text       string  `json:"text"`
+	Spoken     string  `json:"spoken"`
+	Style      string  `json:"style,omitempty"`
+	PauseAfter float64 `json:"pause_after_s"`
+	Status     string  `json:"status"`
+	Basis      string  `json:"basis,omitempty"`
+	Pick       string  `json:"pick,omitempty"`
+	// UserPick records that the person chose Pick after listening: the chunk
+	// is ok even when that take failed the automatic checks.
+	UserPick bool      `json:"user_pick,omitempty"`
+	Reasons  []string  `json:"reasons,omitempty"`
+	Takes    []TakeRef `json:"takes"`
+	StartS   float64   `json:"start_s"`
+	EndS     float64   `json:"end_s"`
 }
 
 // Progress of a run.
@@ -133,6 +136,8 @@ type ChunkSummary struct {
 	Status  string   `json:"status"`
 	Reasons []string `json:"reasons,omitempty"`
 	Pick    string   `json:"pick,omitempty"`
+	// UserPick: the pick was chosen by the person, not by the checks.
+	UserPick bool `json:"user_pick,omitempty"`
 }
 
 // Summary is the default status view of a project.
@@ -155,7 +160,7 @@ func (m *Manifest) Summary() Summary {
 		Progress: m.Progress, Outputs: m.Outputs, Notes: append([]string{}, m.Notes...),
 		Chunks: make([]ChunkSummary, 0, len(m.Chunks))}
 	for _, c := range m.Chunks {
-		s.Chunks = append(s.Chunks, ChunkSummary{Index: c.Index, Status: c.Status, Pick: c.Pick,
+		s.Chunks = append(s.Chunks, ChunkSummary{Index: c.Index, Status: c.Status, Pick: c.Pick, UserPick: c.UserPick,
 			Reasons: append([]string(nil), c.Reasons...)})
 	}
 	return s
