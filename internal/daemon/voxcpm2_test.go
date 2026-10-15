@@ -595,3 +595,17 @@ func TestVoxCPM2BufferedFormats(t *testing.T) {
 		t.Fatalf("mp3: %d %v", rec.Code, rec.Header())
 	}
 }
+
+// #143 N3: an instruct that is empty only after cleaning (format characters)
+// must fall back to the voice's default style, not mask it with "".
+// Mutation: voxcpm2.go voxStyle, test `strings.TrimSpace(raw) == ""` before
+// sanitising instead of `style == ""` after -> returns "" -> RED.
+func TestVoxStyleCfOnlyInstructFallsBackToVoiceStyle(t *testing.T) {
+	v := &voices.Voice{Name: "nar", Meta: voices.Meta{Style: "calm"}}
+	for _, in := range []string{"\u200B", "\uFEFF\u202E", " \u200B "} {
+		got, err := voxStyle(map[string]any{fieldInstruct: in}, v)
+		if err != nil || got != "calm" {
+			t.Errorf("instruct %q: style %q, err %v; want the voice default \"calm\"", in, got, err)
+		}
+	}
+}

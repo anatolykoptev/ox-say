@@ -259,11 +259,13 @@ func voxSeed(body map[string]any) (int64, error) {
 // voxStyle is the request's instructions, else the voice's default style,
 // made safe to sit inside the engine's leading "(...)" tag.
 func voxStyle(body map[string]any, v *voices.Voice) (string, error) {
-	style, _ := body[fieldInstruct].(string)
-	if strings.TrimSpace(style) == "" && v != nil {
-		style = v.Style
+	raw, _ := body[fieldInstruct].(string)
+	// Emptiness is judged after cleaning: an instruct made only of format
+	// characters (U+200B...) is no instruct, so the voice's default applies.
+	style := sanitizeStyle(raw)
+	if style == "" && v != nil {
+		style = sanitizeStyle(v.Style)
 	}
-	style = sanitizeStyle(style)
 	if utf8.RuneCountInString(style) > maxStyleChars {
 		return "", &requestError{fmt.Sprintf("instructions are longer than %d characters", maxStyleChars)}
 	}

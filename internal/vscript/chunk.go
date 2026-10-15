@@ -2,6 +2,7 @@ package vscript
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -38,6 +39,8 @@ func chunkParagraph(sents []string, o Options) []string {
 	return out
 }
 
+// splitLong cuts s into pieces of at most MaxChars runes: every cut lands at
+// or before MaxChars, and the remainder is split again until it fits.
 func splitLong(s string, o Options) []string {
 	if runes(s) <= o.MaxChars {
 		return []string{s}
@@ -61,9 +64,11 @@ func bestCut(rs []rune, o Options) int {
 	return min(o.TargetChars, len(rs)-1)
 }
 
+// nearest is the cut (index after the mark) closest to TargetChars among
+// marks whose left piece fits MaxChars and whose right piece is not tiny.
 func nearest(rs []rune, o Options, ok func(i int) bool) int {
 	best, bestDist := -1, len(rs)
-	for i := o.MinChars; i < len(rs)-o.MinChars; i++ {
+	for i := o.MinChars; i < len(rs)-o.MinChars && i+1 <= o.MaxChars; i++ {
 		if !ok(i) {
 			continue
 		}
@@ -83,15 +88,32 @@ func abs(x int) int {
 
 // Spoken is the text the engine reads. The one rewrite: a leading "(x)"
 // becomes "x —" — the engine parses any leading ASCII "(…)" as a style tag
-// (audio.cpp session.cpp:99-117), with or without a style of ours.
+// (audio.cpp session.cpp:99-117), with or without a style of ours. Stray
+// brackets of the leading group are dropped and the rewrite repeats until the
+// text no longer opens with "(" (after white space and format characters).
 func Spoken(text string) string {
-	s := strings.TrimSpace(text)
-	if !strings.HasPrefix(s, "(") {
-		return s
+	s := trimLead(text)
+	for strings.HasPrefix(s, "(") {
+		inner, rest, closed := strings.Cut(s[1:], ")")
+		inner = strings.NewReplacer("(", "", ")", "").Replace(inner)
+		rest = trimLead(strings.TrimLeft(rest, ")"))
+		inner = strings.TrimSpace(inner)
+		switch {
+		case !closed:
+			s = trimLead(inner)
+		case inner == "":
+			s = rest
+		case rest == "":
+			s = inner
+		default:
+			s = inner + " — " + rest
+		}
 	}
-	inner, rest, closed := strings.Cut(s[1:], ")")
-	if !closed {
-		return strings.TrimSpace(s[1:])
-	}
-	return strings.TrimSpace(strings.TrimSpace(inner) + " — " + strings.TrimSpace(rest))
+	return strings.TrimSpace(s)
+}
+
+// trimLead drops leading white space and format characters (zero-width
+// spaces, BOM) that would hide a "(" from the prefix check.
+func trimLead(s string) string {
+	return strings.TrimLeftFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) })
 }

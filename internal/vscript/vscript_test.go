@@ -2,6 +2,7 @@ package vscript
 
 import (
 	"errors"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -192,6 +193,198 @@ func TestCleanStyle(t *testing.T) {
 	} {
 		if got := CleanStyle(in); got != want {
 			t.Errorf("CleanStyle(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// lineOf parses src and returns the LineError's line (0 for none).
+func lineOf(t *testing.T, src string) int {
+	t.Helper()
+	_, err := Parse(src, testOpts)
+	var le *LineError
+	if !errors.As(err, &le) {
+		t.Fatalf("%q: want a LineError, got %v", src, err)
+	}
+	return le.Line
+}
+
+// MAJOR 3: the reported line is the line of the offending directive, also
+// after a style line, and with CRLF endings.
+// Mutation: markup.go leadingStyle, return b.line instead of the counted
+// bodyLine -> the style-first rows report line 1 -> RED.
+func TestLineErrorNamesTheRightLine(t *testing.T) {
+	for name, c := range map[string]struct {
+		src  string
+		want int
+	}{
+		"plain":               {"Привет [bad]", 1},
+		"second paragraph":    {"Один.\n\nПривет [bad]", 3},
+		"second line":         {"Один.\nДва [bad]", 2},
+		"style first":         {"[style: calm]\nПривет [bad]", 2},
+		"style inline":        {"[style: calm] Привет [bad]", 1},
+		"style three lines":   {"[style: calm]\nОдин.\nДва [bad]", 3},
+		"crlf":                {"Один.\r\n\r\n[style: calm]\r\nПривет [bad]", 4},
+		"bad pause number":    {"Один.\n\nДва [pause 99s]", 3},
+		"unknown after style": {"[style: calm]\nОдин.\n[music]", 3},
+	} {
+		if got := lineOf(t, c.src); got != c.want {
+			t.Errorf("%s: %q reports line %d, want %d", name, c.src, got, c.want)
+		}
+	}
+}
+
+// Call-site gates through Parse (each a silent failure if broken).
+// Mutations: markup.go `Spoken: Spoken(text)` -> `text`; `min(pending,
+// maxMarkPause)` -> `pending`; script `utf8.RuneCountInString(src)` ->
+// `len(src)`; style `utf8.RuneCountInString(style)` -> `len(style)`.
+func TestParseCallSites(t *testing.T) {
+	t.Run("spoken rewrite reaches the chunk", func(t *testing.T) {
+		got, err := Parse("(Шёпотом) Тише.", testOpts)
+		if err != nil || got[0].Spoken != "Шёпотом — Тише." || got[0].Text != "(Шёпотом) Тише." {
+			t.Fatalf("%+v %v", got, err)
+		}
+	})
+	t.Run("pauses add and cap at 10 s", func(t *testing.T) {
+		got, err := Parse("Раз. [pause 6s] [pause 6s] Два.", testOpts)
+		if err != nil || got[0].PauseAfter != maxMarkPause {
+			t.Fatalf("%+v %v", got, err)
+		}
+	})
+	t.Run("script limit counts runes", func(t *testing.T) {
+		o := testOpts
+		o.MaxScriptChars = 10
+		if _, err := Parse(strings.Repeat("я", 10), o); err != nil {
+			t.Errorf("10 runes (20 bytes) at limit 10: %v", err)
+		}
+		if _, err := Parse(strings.Repeat("я", 11), o); err == nil {
+			t.Error("11 runes accepted at limit 10")
+		}
+	})
+	t.Run("style limit counts runes", func(t *testing.T) {
+		ok := "[style: " + strings.Repeat("я", MaxStyleChars) + "]\nТекст."
+		if _, err := Parse(ok, testOpts); err != nil {
+			t.Errorf("%d-rune style: %v", MaxStyleChars, err)
+		}
+		if _, err := Parse(strings.Replace(ok, "я]", "яя]", 1), testOpts); err == nil {
+			t.Error("over-long style accepted")
+		}
+	})
+}
+
+// MAJOR 2: no input leaves Spoken opening with "(" (the engine would read it
+// as a style tag), including hidden leading characters.
+// Mutation: chunk.go Spoken, `for strings.HasPrefix` -> `if strings.HasPrefix`
+// and drop the bracket stripping -> "((a)) b" stays ( -> RED.
+func TestSpokenNeverOpensWithParen(t *testing.T) {
+	for in, want := range map[string]string{
+		"((a)) b":          "a — b",
+		"(( x) y":          "x — y",
+		"(((":              "",
+		"() (b) c":         "b — c",
+		"\u200B(x) y":      "x — y",
+		" \uFEFF(x) y":     "x — y",
+		"(x)":              "x",
+		"(a)(b) c":         "a — (b) c",
+		"(без закрывающей": "без закрывающей",
+	} {
+		got := Spoken(in)
+		if got != want || strings.HasPrefix(got, "(") {
+			t.Errorf("Spoken(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// MAJOR 1: every chunk fits MaxChars, nothing is lost, nothing panics.
+// Mutation: chunk.go nearest, drop `&& i+1 <= o.MaxChars` -> the far-comma
+// cases and the fuzz exceed MaxChars -> RED.
+func TestChunksNeverExceedMaxChars(t *testing.T) {
+	for _, pos := range []int{300, 500, 900, 1500} {
+		var b strings.Builder
+		for b.Len() < pos {
+			b.WriteString("слово ")
+		}
+		b.WriteString("слово, ")
+		for b.Len() < 2400 {
+			b.WriteString("слово ")
+		}
+		checkChunks(t, b.String(), testOpts)
+	}
+	alpha := []string{"а", "б", "слово", " ", " ", " ", ",", "; ", ", ", "— ", "- ", ".", ". ", "! ", "?", "\n", "Б", "т. е. ", "«", "»", "(", ")", "…", "é"}
+	optSets := []Options{
+		testOpts,
+		{TargetChars: 120, MaxChars: 400, MinChars: 40, MaxScriptChars: 1 << 20},
+		{TargetChars: 120, MaxChars: 150, MinChars: 40, MaxScriptChars: 1 << 20},
+		{TargetChars: 50, MaxChars: 60, MinChars: 10, MaxScriptChars: 1 << 20},
+	}
+	for oi, o := range optSets {
+		rng := rand.New(rand.NewSource(int64(oi) + 1))
+		for it := 0; it < 1500; it++ {
+			var b strings.Builder
+			for k, n := 0, rng.Intn(400); k < n; k++ {
+				b.WriteString(alpha[rng.Intn(len(alpha))])
+			}
+			checkChunks(t, b.String(), o)
+		}
+	}
+}
+
+func checkChunks(t *testing.T, src string, o Options) {
+	t.Helper()
+	cs, err := Parse(src, o)
+	if err != nil {
+		return // directive-looking noise or empty input
+	}
+	var got strings.Builder
+	for _, c := range cs {
+		if n := len([]rune(c.Text)); n > o.MaxChars {
+			t.Fatalf("opts %+v: chunk of %d runes > MaxChars from %q", o, n, src)
+		}
+		got.WriteString(c.Text)
+	}
+	if a, b := strings.Join(strings.Fields(got.String()), ""), strings.Join(strings.Fields(src), ""); a != b {
+		t.Fatalf("opts %+v: text changed\n got %q\nwant %q", o, a, b)
+	}
+}
+
+// MINOR: BOM, pauses at the script's edges, case-insensitive style, option
+// validation, and the style-only-at-paragraph-start message.
+// Mutations: markup.go drop TrimPrefix(BOM) -> "\uFEFF[style: x]" is text;
+// drop the trailing `pending > 0` block -> last PauseAfter 0; drop the
+// `len(out) == 0` pause check -> no error; styleRe without (?i) -> RED;
+// drop o.validate() -> RED.
+func TestParseEdges(t *testing.T) {
+	if cs, err := Parse("\uFEFF[style: calm]\nПривет.", testOpts); err != nil || cs[0].Style != "calm" || strings.HasPrefix(cs[0].Text, "\uFEFF") {
+		t.Errorf("BOM: %+v %v", cs, err)
+	}
+	if got := lineOf(t, "[pause 1s] Привет."); got != 1 {
+		t.Errorf("leading pause line %d", got)
+	}
+	if _, err := Parse("[pause 1s] Привет.", testOpts); err == nil || !strings.Contains(err.Error(), "needs text before") {
+		t.Errorf("leading pause: %v", err)
+	}
+	if cs, err := Parse("Привет. [pause 2s]", testOpts); err != nil || cs[0].PauseAfter != 2 {
+		t.Errorf("trailing pause: %+v %v", cs, err)
+	}
+	for _, tag := range []string{"style", "Style", "STYLE"} {
+		if cs, err := Parse("["+tag+": calm]\nПривет.", testOpts); err != nil || cs[0].Style != "calm" {
+			t.Errorf("[%s: calm]: %+v %v", tag, cs, err)
+		}
+	}
+	if _, err := Parse("Привет. [Style: calm]", testOpts); err == nil || strings.Contains(err.Error(), "unknown directive") {
+		t.Errorf("mid-text style must say it is paragraph-start only, got %v", err)
+	}
+	if _, err := Parse("Привет [bad]", testOpts); err == nil || !strings.Contains(err.Error(), "unknown directive") {
+		t.Errorf("unknown directive: %v", err)
+	}
+	for _, o := range []Options{
+		{TargetChars: 0, MaxChars: 10, MinChars: 1, MaxScriptChars: 100},
+		{TargetChars: 10, MaxChars: 9, MinChars: 1, MaxScriptChars: 100},
+		{TargetChars: 10, MaxChars: 20, MinChars: 10, MaxScriptChars: 100},
+		{TargetChars: 10, MaxChars: 20, MinChars: 0, MaxScriptChars: 100},
+		{TargetChars: 10, MaxChars: 20, MinChars: 1},
+	} {
+		if _, err := Parse("Привет.", o); err == nil {
+			t.Errorf("options %+v accepted", o)
 		}
 	}
 }
