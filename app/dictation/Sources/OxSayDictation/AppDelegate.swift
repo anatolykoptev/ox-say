@@ -687,7 +687,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let buttons = url == nil ? ["Update", "Later"] : ["Update", "Later", "Release Notes…"]
         switch runAlert(title: "ox-say \(remote) is available", text: text, buttons: buttons) {
         case .alertFirstButtonReturn:
-            installUpdate(tag: remote)
+            installUpdate(tag: remote, kind: .update)
         case .alertThirdButtonReturn:
             if let url { NSWorkspace.shared.open(url) }
             confirmInstall(remote: remote, local: local, notes: notes, url: url)
@@ -716,7 +716,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// version; every other outcome is the failed alert. A successful install
     /// usually ends this process first: install-app.sh quits the running app and
     /// opens the new one, so nothing here may be needed after the install.
-    private func installUpdate(tag: String, kind: UpdateInstaller.Kind = .update) {
+    private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {
         updateInstalling = true
         studio.render()
         overlay.showWorking()

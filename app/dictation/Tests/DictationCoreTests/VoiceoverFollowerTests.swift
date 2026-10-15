@@ -28,7 +28,9 @@ private func settle(_ condition: () -> Bool) async {
     for _ in 0..<2000 where !condition() { await Task.yield() }
 }
 
-final class VoiceoverFollowerTests: XCTestCase {
+/// On the main actor, like the follower's tasks: the fake daemon's lists and the
+/// follower's state are then touched from one thread only.
+@MainActor final class VoiceoverFollowerTests: XCTestCase {
     private struct Down: Error {}
 
     private func makeFollower(_ daemon: FakeDaemon, changes: @escaping () -> Void = {},
