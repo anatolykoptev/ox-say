@@ -155,12 +155,41 @@ func (m *Manifest) Summary() Summary {
 	return s
 }
 
-// Clone is a deep copy (through JSON: the type is plain data).
+// Clone is a deep copy that cannot fail: every slice is copied by hand.
 func (m *Manifest) Clone() *Manifest {
-	raw, _ := json.Marshal(m)
-	var c Manifest
-	_ = json.Unmarshal(raw, &c)
+	c := *m
+	c.Notes = append([]string(nil), m.Notes...)
+	c.Chunks = make([]Chunk, len(m.Chunks))
+	for i, ch := range m.Chunks {
+		ch.Reasons = append([]string(nil), ch.Reasons...)
+		ch.Takes = make([]TakeRef, len(m.Chunks[i].Takes))
+		for j, t := range m.Chunks[i].Takes {
+			t.Reasons = append([]string(nil), t.Reasons...)
+			ch.Takes[j] = t
+		}
+		c.Chunks[i] = ch
+	}
 	return &c
+}
+
+// plainManifest has no MarshalJSON of its own.
+type plainManifest Manifest
+
+// MarshalJSON writes empty lists as [] (never null: the GUI decodes them as
+// non-optional arrays). Reasons stay omitted when empty. m is not modified.
+func (m Manifest) MarshalJSON() ([]byte, error) {
+	p := plainManifest(m)
+	if p.Notes == nil {
+		p.Notes = []string{}
+	}
+	p.Chunks = make([]Chunk, len(m.Chunks))
+	for i, c := range m.Chunks {
+		if c.Takes == nil {
+			c.Takes = []TakeRef{}
+		}
+		p.Chunks[i] = c
+	}
+	return json.Marshal(p)
 }
 
 // AnyReview reports a chunk that needs a listen.
@@ -254,14 +283,23 @@ func Contained(root, dir string) error {
 	return nil
 }
 
-// SweepTemp removes F1 temp files left by a crash in dir, dir/takes and
-// dir/out, and reports how many.
+// SweepTemp removes the temp files a crash left in dir, dir/takes and
+// dir/out, and reports how many. It removes only what WriteAtomic and the
+// assembly create - a name starting with "." that holds TempMark - never a
+// directory, and never looks through a symlinked directory.
 func SweepTemp(dir string) int {
 	n := 0
 	for _, d := range []string{dir, filepath.Join(dir, TakesDir), filepath.Join(dir, WorkDir)} {
+		if st, err := os.Lstat(d); err != nil || !st.IsDir() { // Lstat: a link is not a directory
+			continue
+		}
 		entries, _ := os.ReadDir(d)
 		for _, e := range entries {
-			if strings.Contains(e.Name(), TempMark) && os.Remove(filepath.Join(d, e.Name())) == nil {
+			name := e.Name()
+			if e.IsDir() || !strings.HasPrefix(name, ".") || !strings.Contains(name, TempMark) {
+				continue
+			}
+			if os.Remove(filepath.Join(d, name)) == nil {
 				n++
 			}
 		}

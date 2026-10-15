@@ -243,3 +243,92 @@ func TestSweepTempCoversTheWholeProject(t *testing.T) {
 		}
 	}
 }
+
+// SweepTemp removes only what WriteAtomic and the assembly name as temp files:
+// a dot-name with the mark. A user file that merely contains the mark, a
+// directory, and anything behind a symlinked takes/ or out/ are left alone.
+// Mutation: manifest.go SweepTemp, test only strings.Contains(name, TempMark)
+// -> the plain file is removed -> RED.
+// Mutation: manifest.go SweepTemp, drop the IsDir skip -> the directory goes -> RED.
+// Mutation: manifest.go SweepTemp, drop the Lstat symlink skip -> RED.
+func TestSweepTempIsConservative(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, ".victim"+TempMark+"1")
+	if err := os.WriteFile(victim, []byte("x"), FileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, TakesDir)); err != nil { // takes/ is a link out
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, WorkDir), DirMode); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(dir, WorkDir, ".assembled"+TempMark+"1.wav")
+	plain := filepath.Join(dir, WorkDir, "notes"+TempMark+"draft.txt")
+	subdir := filepath.Join(dir, WorkDir, ".keep"+TempMark+"dir")
+	for _, p := range []string{gone, plain} {
+		if err := os.WriteFile(p, []byte("x"), FileMode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(subdir, DirMode); err != nil {
+		t.Fatal(err)
+	}
+	if n := SweepTemp(dir); n != 1 {
+		t.Errorf("swept %d, want 1", n)
+	}
+	if _, err := os.Lstat(gone); !os.IsNotExist(err) {
+		t.Errorf("the real temp file survived: %v", err)
+	}
+	for name, p := range map[string]string{"a user file with the mark inside": plain, "a directory": subdir, "a file behind a symlinked takes/": victim} {
+		if _, err := os.Lstat(p); err != nil {
+			t.Errorf("%s was removed: %v", name, err)
+		}
+	}
+}
+
+// Empty lists are [], never null: the GUI decodes them as non-optional arrays.
+// Mutation: manifest.go MarshalJSON, skip the nil-to-empty fixes -> RED.
+func TestMarshalNeverWritesNullLists(t *testing.T) {
+	raw, err := json.Marshal(&Manifest{Version: Version, Chunks: []Chunk{{Index: 0}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back map[string]any
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := back["notes"].([]any); !ok {
+		t.Errorf("notes is %v", back["notes"])
+	}
+	chunk := back["chunks"].([]any)[0].(map[string]any)
+	if _, ok := chunk["takes"].([]any); !ok {
+		t.Errorf("takes is %v", chunk["takes"])
+	}
+	empty, _ := json.Marshal(Manifest{Version: Version}) // by value too
+	if !strings.Contains(string(empty), `"chunks":[]`) || strings.Contains(string(empty), "null") {
+		t.Errorf("empty manifest: %s", empty)
+	}
+	// Save goes through the same path, and the marshalling did not touch m.
+	m := &Manifest{Version: Version}
+	dir := t.TempDir()
+	if err := m.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	disk, _ := os.ReadFile(filepath.Join(dir, ManifestFile))
+	if strings.Contains(string(disk), "null") || m.Chunks != nil {
+		t.Errorf("saved %s; m.Chunks nil=%v", disk, m.Chunks == nil)
+	}
+}
+
+// A take's reasons are copied too.
+// Mutation: manifest.go Clone, share TakeRef.Reasons -> RED.
+func TestCloneCopiesTakeReasons(t *testing.T) {
+	m := &Manifest{Version: Version, Chunks: []Chunk{{Takes: []TakeRef{{Key: "k", Reasons: []string{"r"}}}}}}
+	c := m.Clone()
+	m.Chunks[0].Takes[0].Reasons[0] = "changed"
+	if c.Chunks[0].Takes[0].Reasons[0] != "r" {
+		t.Error("clone shares a take's reasons")
+	}
+}
