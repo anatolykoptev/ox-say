@@ -212,9 +212,9 @@ ox-say produce script.txt -v narrator --preset reels
 Сохраните это видео, чтобы не забыть.
 ```
 
-Numbers are spoken as the engine reads them. Plain numbers, times, dates and percentages usually come out
-right, but **ox-say does not check numbers**: listen to any line that has one. Write a number as words if
-you want to be sure. Abbreviations such as «т.е.» may be read letter by letter. Write them out.
+Numbers are turned into words before they are spoken, and the check hears them like any other word. Only a
+number you deliberately leave as digits is not checked (the project notes say so), so listen to those
+lines. Write a number as words if you want to be sure. Abbreviations such as «т.е.» may be read letter by letter. Write them out.
 
 **Choosing a preset** (`--preset`):
 
@@ -302,7 +302,7 @@ The status line shows the time left while it works. The engine uses about 3–4 
 **Limits.**
 - **One voiceover at a time.** Starting a second one while one is running is refused and names the
   running one.
-- One voice per voiceover, a recording of at most 30 s. Numbers are not checked (see above).
+- One voice per voiceover, a recording of at most 30 s. Numbers left as digits are not checked (see above).
 - About 40,000 characters per project (roughly 48 minutes of speech). Split longer books in parts.
 - Apple Silicon with 24 GB or more only; the same disk space as the working takes (a free-space check
   runs first).

@@ -564,3 +564,9 @@ func plainErrno(err error) string {
 	}
 	return "an error"
 }
+
+// Limits the CLI shares with the daemon, so a text there cannot drift.
+const (
+	MaxTakesPerChunk  = maxTakesPerChunk
+	MaxListedProjects = maxListedProjects
+)

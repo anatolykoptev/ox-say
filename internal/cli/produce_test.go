@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/anatolykoptev/ox-say/internal/daemon"
 )
 
 const testProjectID = "20261015-120000-a1b2c3"
@@ -494,5 +496,49 @@ func TestFitLine(t *testing.T) {
 	}
 	if fitLine("short", 40) != "short" {
 		t.Fatal("a short line must stay")
+	}
+}
+
+// Off a terminal the progress line is printed whole: the battery instruction
+// carries the full id and --allow-battery.
+// Mutation: internal/cli/produce.go wait, apply fitLine unconditionally -> RED.
+func TestProduceBatteryLineIsNotCutOffTerminal(t *testing.T) {
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		st := "paused_on_battery"
+		if r.Method == http.MethodGet && n.Add(1) > 2 {
+			st = "done"
+		}
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusAccepted)
+		}
+		_, _ = fmt.Fprintf(w, `{"id":%q,"status":%q,"progress":{"chunks_total":2},"chunks":[],"outputs":{},"notes":[]}`, testProjectID, st)
+	}))
+	defer srv.Close()
+	t.Setenv("OX_SAY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+	var errb bytes.Buffer
+	if code := cmdProduce([]string{writeScript(t, "Привет.")}, io.Discard, &errb, time.Millisecond); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(errb.String(), "ox-say produce resume "+testProjectID+" --allow-battery") {
+		t.Fatalf("the battery line was cut:\n%s", errb.String())
+	}
+}
+
+// ls says when the list is capped.
+func TestProduceLsCapNote(t *testing.T) {
+	var items []string
+	for i := 0; i < daemon.MaxListedProjects; i++ {
+		items = append(items, `{"id":"`+testProjectID+`","title":"T","status":"done","progress":{}}`)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"projects":[` + strings.Join(items, ",") + `]}`))
+	}))
+	defer srv.Close()
+	t.Setenv("OX_SAY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+	var out bytes.Buffer
+	cmdProduce([]string{"ls"}, &out, io.Discard, time.Millisecond)
+	if !strings.Contains(out.String(), fmt.Sprintf("showing the %d most recent projects", daemon.MaxListedProjects)) {
+		t.Fatalf("no cap note:\n%s", out.String())
 	}
 }

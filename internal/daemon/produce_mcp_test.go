@@ -271,6 +271,9 @@ func TestMCPProduceReadsAndGuards(t *testing.T) {
 	if len(ps) != maxListedProjects {
 		t.Fatalf("list has %d projects, want %d", len(ps), maxListedProjects)
 	}
+	if note, _ := list["note"].(string); !strings.Contains(note, fmt.Sprintf("%d most recent", maxListedProjects)) {
+		t.Fatalf("a capped list must say so: %q", note)
+	}
 	if ch, _ := ps[0].(map[string]any)["chunks"].([]any); len(ch) != 0 {
 		t.Fatalf("the list must not carry chunk arrays: %v", ch)
 	}

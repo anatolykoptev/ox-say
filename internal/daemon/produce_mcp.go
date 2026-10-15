@@ -43,7 +43,7 @@ const produceTimeText = `A 60 s reel takes about 1.5-2 minutes (reels: 2 takes p
 
 var produceStatusDescription = fmt.Sprintf(`Progress of a project: status (running, waiting_for_dictation, paused_on_battery, review, done, failed, cancelled, interrupted), chunks done/total, ETA, outputs, and per chunk its status, pick and reasons. Without id: the %d most recent projects (newest first) under "projects", without their chunk lists. With id: the project under "project". With id and chunk (0-based): that chunk's detail under "chunk" - its takes with file paths (take_files), durations and word errors. `+
 	`"review" means the file is ready but some chunks failed the automatic checks after 3 attempts: get that chunk's detail, listen to its takes, then use produce_edit. `+
-	`The checks reject broken audio (long silences, wrong or missing words); they do not judge expressiveness, and numbers are not checked ("numbers are not checked by the transcript gate" is in notes).`, maxListedProjects)
+	`The checks reject broken audio (long silences, wrong or missing words); they do not judge expressiveness. Numbers are spoken as words and checked; only numbers left as digits are not (the note says: %q). When the list is capped, "note" says so.`, maxListedProjects, vproject.NoteNumbers)
 
 const produceEditDescription = `Change one chunk (0-based index, see produce_status) of a project that is not running: action "regenerate" renders takes (1-3) more takes with new seeds; "pick" chooses one of the chunk's takes by take (its key from produce_status with chunk); "edit" replaces the chunk's text (one piece of text, no [directives]) and renders only that chunk. The file is re-assembled; poll produce_status. ` +
 	`Regenerate does NOT change the chunk's pick: your pick is kept until you choose another. A pick is your decision after listening: the chunk becomes ok even if that take failed the automatic checks (the chunk then shows user_pick true), so the project can reach done; a silent take cannot be accepted. The new takes are the keys that were not there before: read produce_status {id, chunk}, listen to take_files, then call produce_edit {action: "pick", take: <key>}. A pick re-assembles the file in seconds.`
@@ -85,6 +85,7 @@ type produceControlIn struct {
 }
 
 type produceStatusOut struct {
+	Note     string             `json:"note,omitempty"`
 	Project  *vproject.Summary  `json:"project,omitempty"`
 	Projects []vproject.Summary `json:"projects,omitempty"`
 	Chunk    *chunkDetailOut    `json:"chunk,omitempty"`
@@ -143,7 +144,11 @@ func (d *Daemon) toolProduceStatus(_ context.Context, _ *mcp.CallToolRequest, in
 		if err != nil {
 			return nil, produceStatusOut{}, d.produceErr(err)
 		}
-		return nil, produceStatusOut{Projects: list}, nil
+		out := produceStatusOut{Projects: list}
+		if len(list) >= maxListedProjects {
+			out.Note = fmt.Sprintf("showing the %d most recent projects", maxListedProjects)
+		}
+		return nil, out, nil
 	case in.Chunk != nil:
 		c, err := d.prod.chunkDetail(in.ID, *in.Chunk)
 		if err != nil {

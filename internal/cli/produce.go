@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/anatolykoptev/ox-say/internal/daemon"
 )
 
 // Exit codes of the produce commands that wait for a project.
@@ -33,7 +35,7 @@ const (
 	produceReadLimit = 8 << 20
 	defaultRegen     = 2
 	// maxTakes is the daemon's limit on takes per chunk.
-	maxTakes = 3
+	maxTakes = daemon.MaxTakesPerChunk
 	// pollRetries is how many failed status requests in a row end the wait.
 	pollRetries = 3
 	// defaultTermWidth is used when the terminal size cannot be read.
@@ -457,7 +459,10 @@ func (c *produceCmd) wait(id string) (projectSummary, error) {
 		if err != nil {
 			return s, err
 		}
-		line := fitLine(progressLine(&s, id), width)
+		line := progressLine(&s, id)
+		if tty {
+			line = fitLine(line, width) // a pipe or log keeps the whole line
+		}
 		if !s.active() {
 			if tty && last != "" {
 				outf(c.err, "\r%s\r", clearLine)
@@ -662,6 +667,9 @@ func (c *produceCmd) list() int {
 	}
 	if len(v.Projects) == 0 {
 		outln(c.out, "no voiceover projects")
+	}
+	if len(v.Projects) >= daemon.MaxListedProjects {
+		outf(c.out, "showing the %d most recent projects\n", daemon.MaxListedProjects)
 	}
 	for _, p := range v.Projects {
 		outf(c.out, "%s  %-12s  chunk %d/%d  %s\n", p.ID, p.Status, p.Progress.ChunksDone, p.Progress.ChunksTotal, p.Title)
