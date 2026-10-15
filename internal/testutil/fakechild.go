@@ -24,6 +24,10 @@
 //	                          (default 1; a long value stands in for a
 //	                          runaway take)
 //
+// OXSAY_FAKE_TONE=1 makes both fakes answer a quiet sine instead of silence
+// or a click — audio a loudness meter can measure — at their engine's native
+// rate (48 kHz voxcpm2, 24 kHz qwen).
+//
 // With OXSAY_FAKE_DIR set it stamps "vox-spawn-<pid>" holding the argv, one
 // argument per line.
 //
@@ -94,6 +98,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -550,6 +555,10 @@ func runFakeChild() int {
 			return
 		}
 		w.Header().Set("Content-Type", "audio/wav")
+		if os.Getenv(envFakeTone) == "1" {
+			_, _ = w.Write(ToneWAV(QwenRate, ToneSecs, ToneAmp))
+			return
+		}
 		_, _ = w.Write(TinyWAV())
 	})
 
@@ -661,6 +670,41 @@ func SilentWAV(secs float64) []byte {
 	return data
 }
 
+// The fakes' tone take (OXSAY_FAKE_TONE=1) and the engines' native rates.
+const (
+	envFakeTone = "OXSAY_FAKE_TONE"
+	QwenRate    = 24000
+	VoxRate     = 48000
+	ToneSecs    = 6.0  // long enough for an EBU R128 integrated reading
+	ToneAmp     = 0.03 // linear amplitude of the sine: about -34 LUFS
+	toneHz      = 440.0
+)
+
+// ToneWAV is secs seconds of a toneHz sine at linear amplitude amp, as mono
+// s16le at rate.
+func ToneWAV(rate int, secs, amp float64) []byte {
+	samples := int(secs * float64(rate))
+	data := make([]byte, 44+samples*2)
+	copy(data, "RIFF")
+	putU32(data[4:], uint32(36+samples*2))
+	copy(data[8:], "WAVE")
+	copy(data[12:], "fmt ")
+	putU32(data[16:], 16)
+	putU16(data[20:], 1)
+	putU16(data[22:], 1)
+	putU32(data[24:], uint32(rate))
+	putU32(data[28:], uint32(rate*2))
+	putU16(data[32:], 2)
+	putU16(data[34:], 16)
+	copy(data[36:], "data")
+	putU32(data[40:], uint32(samples*2))
+	for i := 0; i < samples; i++ {
+		v := int16(amp * math.MaxInt16 * math.Sin(2*math.Pi*toneHz*float64(i)/float64(rate)))
+		putU16(data[44+2*i:], uint16(v))
+	}
+	return data
+}
+
 // WriteSilentWAV writes SilentWAV(secs) to dir/name and returns the path.
 func WriteSilentWAV(t *testing.T, dir, name string, secs float64) string {
 	t.Helper()
@@ -746,6 +790,10 @@ func runFakeVox(args []string) int {
 			secs = s
 		}
 		w.Header().Set("Content-Type", "audio/wav")
+		if os.Getenv(envFakeTone) == "1" {
+			_, _ = w.Write(ToneWAV(VoxRate, ToneSecs, ToneAmp))
+			return
+		}
 		_, _ = w.Write(SilentWAV(secs))
 	})
 	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", sc.Host, sc.Port), Handler: mux, ReadHeaderTimeout: 5 * time.Second}

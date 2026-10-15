@@ -31,6 +31,9 @@ type SpeakInput struct {
 	Play         bool
 	Instructions string
 	Seed         *int64
+	// LoudnessLUFS normalises the finished take to this integrated loudness
+	// (EBU R128); nil leaves the engine's level alone.
+	LoudnessLUFS *float64
 
 	// Model names the engine ("qwen3-tts" | "voxcpm2"); empty = the voice's
 	// preferred engine, then the daemon default.
@@ -155,6 +158,11 @@ func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error)
 			return nil, err
 		}
 	}
+	if in.LoudnessLUFS != nil {
+		if err := validLUFS(*in.LoudnessLUFS); err != nil {
+			return nil, err
+		}
+	}
 	if in.Play && format == "opus" {
 		return nil, fmt.Errorf("opus produces an .ogg file the platform player (afplay) cannot play; use format wav or mp3 with play")
 	}
@@ -190,8 +198,9 @@ func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error)
 	if err != nil {
 		return nil, err
 	}
-	wav := rendered.WAV
 	elapsed := time.Since(start)
+	d.normalizeTake(ctx, rendered, in.LoudnessLUFS)
+	wav := rendered.WAV
 
 	audio := wav
 	if format != "wav" {
@@ -294,12 +303,19 @@ func slugify(text string) string {
 	return s
 }
 
-// wavDuration walks the RIFF chunks and computes the PCM duration.
+// wavDuration is the PCM duration in seconds, 0 when wav is not a PCM WAV.
 func wavDuration(wav []byte) float64 {
+	_, secs := wavInfo(wav)
+	return secs
+}
+
+// wavInfo walks the RIFF chunks and returns the sample rate and the PCM
+// duration; both are 0 when wav is not a PCM WAV.
+func wavInfo(wav []byte) (rate int, secs float64) {
 	if len(wav) < 44 || string(wav[:4]) != "RIFF" || string(wav[8:12]) != "WAVE" {
-		return 0
+		return 0, 0
 	}
-	var rate, channels, bits int
+	var channels, bits int
 	var dataSize int64
 	for off := 12; off+8 <= len(wav); {
 		id := string(wav[off : off+4])
@@ -318,7 +334,7 @@ func wavDuration(wav []byte) float64 {
 	}
 	bytesPerSec := int64(rate * channels * (bits / 8))
 	if bytesPerSec <= 0 || dataSize <= 0 {
-		return 0
+		return rate, 0
 	}
-	return float64(dataSize) / float64(bytesPerSec)
+	return rate, float64(dataSize) / float64(bytesPerSec)
 }
