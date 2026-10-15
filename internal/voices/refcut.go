@@ -77,9 +77,9 @@ const (
 
 // Word is one timed word of a transcript, in seconds from the clip start.
 type Word struct {
-	W string  `json:"w"`
-	S float64 `json:"s"`
-	E float64 `json:"e"`
+	W string
+	S float64
+	E float64
 }
 
 // Transcriber turns the WAV at path into timed words. The daemon wires its
