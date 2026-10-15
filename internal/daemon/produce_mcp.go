@@ -39,7 +39,7 @@ Output: a 48 kHz WAV plus .srt, .vtt, .words.json (word timings for animated cap
 
 // produceTimeText is the time budget an agent plans around; the README states
 // the same numbers (measured, F1-6 live acceptance).
-const produceTimeText = `A 60 s reel takes about 2-3 minutes, 10 minutes of speech about 12-14 minutes (more takes per chunk cost proportionally more).`
+const produceTimeText = `A 60 s reel takes about 1.5-2 minutes (reels: 2 takes per chunk), 10 minutes of speech about 11-12 minutes with 1 take per chunk (youtube); the first call after idle adds 10-40 s to load the model.`
 
 const produceStatusDescription = `Progress of a project: status (running, waiting_for_dictation, paused_on_battery, review, done, failed, cancelled, interrupted), chunks done/total, ETA, outputs, and per chunk its status, pick and reasons. Without id: all projects (newest first) under "projects". With id: the project under "project". With id and chunk (0-based): that chunk's detail under "chunk" - its takes with file paths (take_files), durations and word errors. ` +
 	`"review" means the file is ready but some chunks failed the automatic checks after 3 attempts: get that chunk's detail, listen to its takes, then use produce_edit. ` +

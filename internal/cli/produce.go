@@ -341,8 +341,12 @@ func (c *produceCmd) follow(data []byte) int {
 	return exitCode(final.Status)
 }
 
-// wait polls the project until it is no longer running.
+// wait polls the project until it is no longer running. On a terminal the
+// progress line rewrites itself; anywhere else (a log, a pipe) each change is
+// its own line.
 func (c *produceCmd) wait(id string) (projectSummary, error) {
+	tty := isTerminal(c.err)
+	last := ""
 	for {
 		time.Sleep(c.poll)
 		data, err := produceCall(http.MethodGet, producePath+"/"+url.PathEscape(id), nil)
@@ -353,13 +357,31 @@ func (c *produceCmd) wait(id string) (projectSummary, error) {
 		if err != nil {
 			return s, err
 		}
-		if s.active() {
-			outf(c.err, "\r%s", progressLine(&s, id))
-			continue
+		line := progressLine(&s, id)
+		if !s.active() {
+			if tty && last != "" {
+				outf(c.err, "\r%s\r", strings.Repeat(" ", len(last)))
+			}
+			return s, nil
 		}
-		outf(c.err, "\r%s\r", strings.Repeat(" ", len(progressLine(&s, id))))
-		return s, nil
+		switch {
+		case tty:
+			outf(c.err, "\r%s", line)
+		case line != last:
+			outln(c.err, line)
+		}
+		last = line
 	}
+}
+
+// isTerminal reports whether w is a character device (a terminal).
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	st, err := f.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }
 
 // progressLine is the one status line shown while waiting.
