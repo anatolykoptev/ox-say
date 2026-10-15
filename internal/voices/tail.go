@@ -36,7 +36,7 @@ func tailAnchored(ref, heard []string) bool {
 	matched, pos := 0, 0
 	for _, w := range anchor {
 		for j := pos; j < len(window); j++ {
-			if sameWord(w, window[j]) {
+			if SameWord(w, window[j]) {
 				matched++
 				pos = j + 1
 				break
@@ -46,9 +46,9 @@ func tailAnchored(ref, heard []string) bool {
 	return matched >= min(anchorNeed, len(anchor))
 }
 
-// sameWord is equality up to an ASR spelling slip: one edit per five letters
+// SameWord is equality up to an ASR spelling slip: one edit per five letters
 // (at least one for words of four letters or more).
-func sameWord(a, b string) bool {
+func SameWord(a, b string) bool {
 	if a == b {
 		return true
 	}

@@ -59,3 +59,21 @@ func TestTailAnchoredTolerance(t *testing.T) {
 		}
 	}
 }
+
+// SameWord forgives a spelling slip, not a different word.
+// Mutation: tail.go SameWord tolerance n/5 -> n/2 -> "тридцать"/"двадцать" and
+// "слон"/"стол" read as the same word -> RED.
+func TestSameWordRejectsDifferentWords(t *testing.T) {
+	for _, c := range [][2]string{
+		{"тридцать", "двадцать"}, {"слон", "стол"}, {"кот", "код"}, {"три", "два"},
+	} {
+		if SameWord(c[0], c[1]) {
+			t.Errorf("SameWord(%q, %q) = true", c[0], c[1])
+		}
+	}
+	for _, c := range [][2]string{{"сохранить", "сохранит"}, {"видео", "видео"}} {
+		if !SameWord(c[0], c[1]) {
+			t.Errorf("SameWord(%q, %q) = false", c[0], c[1])
+		}
+	}
+}
