@@ -89,6 +89,12 @@ func Decode(wav []byte) (Clip, error) {
 				return Clip{}, errors.New("pcm: data before fmt")
 			}
 			if size == wavUnsized {
+				// A stream whose writer never finished: it holds what reached
+				// the disk. With nothing in it, it is a crashed file, not an
+				// empty recording.
+				if rest == 0 {
+					return Clip{}, errors.New("pcm: unfinished WAV with no audio")
+				}
 				size = rest
 			}
 			return decodeData(f, wav[bodyAt:], size)
@@ -125,10 +131,12 @@ func decodeData(f pcmFormat, body []byte, size int64) (Clip, error) {
 	return c, nil
 }
 
-func header(w io.Writer, rate int, dataBytes uint32) error {
+// header writes the 44-byte WAV header; riffBytes and dataBytes are the size
+// fields (wavUnsized for a stream whose length is not known yet).
+func header(w io.Writer, rate int, riffBytes, dataBytes uint32) error {
 	var b bytes.Buffer
 	b.WriteString("RIFF")
-	_ = binary.Write(&b, binary.LittleEndian, uint32(wavHdrBytes-chunkHdrBytes)+dataBytes)
+	_ = binary.Write(&b, binary.LittleEndian, riffBytes)
 	b.WriteString("WAVEfmt ")
 	for _, v := range []any{uint32(fmtBodyMin), uint16(fmtPCM), uint16(1), uint32(rate), uint32(bytesPerSamp * rate), uint16(bytesPerSamp), uint16(bits16)} {
 		_ = binary.Write(&b, binary.LittleEndian, v)
@@ -142,7 +150,8 @@ func header(w io.Writer, rate int, dataBytes uint32) error {
 // Encode writes a canonical 44-byte-header WAV.
 func (c Clip) Encode() []byte {
 	var b bytes.Buffer
-	_ = header(&b, c.Rate, uint32(bytesPerSamp*len(c.S)))
+	data := uint32(bytesPerSamp * len(c.S))
+	_ = header(&b, c.Rate, uint32(wavHdrBytes-chunkHdrBytes)+data, data)
 	_ = binary.Write(&b, binary.LittleEndian, c.S)
 	return b.Bytes()
 }
@@ -234,12 +243,15 @@ type Writer struct {
 	n    uint32
 }
 
-// NewWriter writes a placeholder header to f.
+// NewWriter writes a placeholder header to f. The sizes are wavUnsized until
+// Close patches them, so a file that was never closed (a crash) reads as the
+// audio that reached the disk, and as an error when none did, never as a
+// finished empty WAV.
 func NewWriter(f *os.File, rate int) (*Writer, error) {
 	if rate < MinRate || rate > MaxRate {
 		return nil, fmt.Errorf("pcm: sample rate %d outside %d..%d", rate, MinRate, MaxRate)
 	}
-	if err := header(f, rate, 0); err != nil {
+	if err := header(f, rate, wavUnsized, wavUnsized); err != nil {
 		return nil, err
 	}
 	return &Writer{f: f, buf: bufio.NewWriter(f), rate: rate}, nil
@@ -277,6 +289,19 @@ func (w *Writer) Close() error {
 	}
 	if cerr := w.f.Close(); err == nil {
 		err = cerr
+	}
+	return err
+}
+
+// Abort closes the file and removes it: the way out of a failed write. It is
+// safe after Close or a second time.
+func (w *Writer) Abort() error {
+	err := w.f.Close()
+	if errors.Is(err, os.ErrClosed) {
+		err = nil
+	}
+	if rerr := os.Remove(w.f.Name()); rerr != nil && !os.IsNotExist(rerr) && err == nil {
+		err = rerr
 	}
 	return err
 }
