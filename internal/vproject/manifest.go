@@ -48,7 +48,7 @@ const (
 	NoteNumbers  = "numbers left as digits are not checked by the transcript gate"
 	// NoteLimitedLoudness is recorded when reaching the loudness target took a
 	// peak limiter hard (see issue #153).
-	NoteLimitedLoudness = "loudness needed a peak limiter: the loudest peaks were pulled down a few dB to hold the true-peak ceiling, so very peaky speech may sound slightly squashed"
+	NoteLimitedLoudness = "loudness needed a peak limiter: the loudest peaks were pulled down by several dB to hold the true-peak ceiling, so very peaky speech may sound slightly squashed"
 )
 
 // Settings are fixed at creation, except the fields a run recomputes from

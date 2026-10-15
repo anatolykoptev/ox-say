@@ -405,10 +405,15 @@ func peakyBytes(rate, secs int) []byte {
 // clicksOnlyBytes is nothing but peaks: the ceiling leaves it far under any
 // sensible target, so the result must say it missed.
 func clicksOnlyBytes(rate, secs int) []byte {
-	w := testutil.ToneWAV(rate, float64(secs), 0)
+	const (
+		silentAmp = 0
+		clickAmp  = 0.9
+		clickLen  = 8
+	)
+	w := testutil.ToneWAV(rate, float64(secs), silentAmp)
 	for s := 0; s < secs; s++ {
-		for i := 0; i < 8; i++ {
-			v := int16(math.Round(0.9 * math.MaxInt16))
+		for i := 0; i < clickLen; i++ {
+			v := int16(math.Round(clickAmp * math.MaxInt16))
 			if i%2 == 1 {
 				v = -v
 			}
