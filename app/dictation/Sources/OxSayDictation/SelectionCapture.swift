@@ -14,7 +14,8 @@ final class SelectionCapture {
         let snapshot = PasteboardSnapshot.capture(board)
         switch SelectionPolicy.plan(axText: selectedText(),
                                     secureInput: IsSecureEventInputEnabled(),
-                                    clipboardRestorable: snapshot.problems.isEmpty && !snapshot.isSensitive) {
+                                    clipboardRestorable: snapshot.problems.isEmpty && !snapshot.isSensitive,
+                                    clipboardRemote: snapshot.isRemote) {
         case .speak(let text): return (text, nil)
         case .decline(let reason): return (nil, reason)
         case .copy: break
@@ -29,8 +30,10 @@ final class SelectionCapture {
         }
         // Restore only our own copy: nothing copied → nothing to put back;
         // a newer clipboard is the user's and restoring would destroy it.
+        // A remote snapshot holds nothing (restoring would need the fetch from
+        // the other device): the clipboard keeps the selection.
         let afterCopy = board.changeCount
-        defer { if afterCopy != before && board.changeCount == afterCopy { board.restore(snapshot) } }
+        defer { if !snapshot.isRemote && afterCopy != before && board.changeCount == afterCopy { board.restore(snapshot) } }
         guard afterCopy != before, let text = board.readText(),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return (nil, "Nothing selected to speak.")
