@@ -363,7 +363,7 @@ func extractErr(body []byte) string {
 
 func cmdVoice(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: ox-say voice add|design|save|ls|rm")
+		outln(stderr, voiceUsage)
 		return 2
 	}
 	switch args[0] {
@@ -457,7 +457,7 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "voice %q removed\n", args[1])
 		return 0
 	default:
-		fmt.Fprintln(stderr, "usage: ox-say voice add|design|save|ls|rm")
+		outln(stderr, voiceUsage)
 		return 2
 	}
 }

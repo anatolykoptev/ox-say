@@ -87,7 +87,7 @@ func TestDesignVoiceRefusals(t *testing.T) {
 	for _, bad := range []DesignInput{
 		{Text: "x"}, {Description: "d"}, {Description: "d", Text: "x", Takes: maxDesignTakes + 1},
 		{Description: "d", Text: "x", Takes: -1},
-		{Description: "()​", Text: "x"},
+		{Description: "()\u200b", Text: "x"},
 		{Description: "d", Text: strings.Repeat("я", maxDesignText+1)},
 		{Description: strings.Repeat("я", maxStyleChars+1), Text: "x"},
 		{Description: "d", Text: "x", Takes: 3, Seed: &huge},
@@ -109,7 +109,7 @@ func TestDesignVoiceRefusals(t *testing.T) {
 // `style := sanitizeStyle(raw)` -> `style := raw` -> RED.
 func TestDesignVoiceSanitisesDescription(t *testing.T) {
 	d, _, logPath := designFixture(t)
-	_, err := d.DesignVoice(context.Background(), DesignInput{Description: "calm) (loud​ voice", Text: "Привет.", Takes: 1})
+	_, err := d.DesignVoice(context.Background(), DesignInput{Description: "calm) (loud\u200b voice", Text: "Привет.", Takes: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
