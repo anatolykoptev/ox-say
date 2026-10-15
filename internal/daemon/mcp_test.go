@@ -41,7 +41,8 @@ func callMCP(t *testing.T, cs *mcp.ClientSession, name string, args map[string]a
 		t.Fatalf("%s: %v", name, err)
 	}
 	if res.IsError {
-		t.Fatalf("%s: tool error: %+v", name, res.Content)
+		raw, _ := json.Marshal(res.Content)
+		t.Fatalf("%s: tool error: %s", name, raw)
 	}
 	raw, _ := json.Marshal(res.StructuredContent)
 	var out map[string]any
@@ -206,5 +207,39 @@ func TestMCPVoiceJourney(t *testing.T) {
 	callMCP(t, cs, "voice_update", map[string]any{"name": "ru-doc", "style": "", "engine": "qwen3-tts"})
 	if v = found(); v["style"] != nil || v["engine"] != "qwen3-tts" {
 		t.Fatalf("after clear: %v", v)
+	}
+}
+
+// Every quality option on the speak tool reaches the engine request: a field
+// the tool accepts but drops would fail silently (a take in the wrong style,
+// at the wrong level, from another seed).
+// Mutation: internal/daemon/mcp.go toolSpeak, delete the `CfgValue: in.CfgValue`
+// line -> RED (guidance_scale stays 2). The same for InferenceTimesteps, Model,
+// Seed, Instructions; and LoudnessLUFS / CloneMode, which the out-of-range
+// calls below catch.
+func TestMCPSpeakForwardsQualityOptions(t *testing.T) {
+	d, _, logPath := designFixture(t)
+	cs := mcpSession(t, d)
+	got := callMCP(t, cs, "speak", map[string]any{"text": "Привет.", "voice": "nar", "model": "voxcpm2",
+		"instructions": "calm, slow", "seed": 7, "cfg_value": 2.5, "inference_timesteps": 12, "clone_mode": "reference"})
+	if got["model"] != config.TTSModelVoxCPM2 || got["seed"] != float64(7) {
+		t.Fatalf("result = %v", got)
+	}
+	reqs := voxLog(t, logPath)
+	if len(reqs) != 1 {
+		t.Fatalf("engine requests %d, want 1", len(reqs))
+	}
+	r := reqs[0]
+	if r["input"] != "(calm, slow)Привет." || r["seed"] != float64(7) || r["guidance_scale"] != 2.5 || r["num_inference_steps"] != float64(12) {
+		t.Errorf("engine request = %v", r)
+	}
+	for name, args := range map[string]map[string]any{
+		"loudness_lufs": {"text": "x", "model": "voxcpm2", "loudness_lufs": -100},
+		"clone_mode":    {"text": "x", "model": "voxcpm2", "clone_mode": "bogus"},
+	} {
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "speak", Arguments: args})
+		if err != nil || !res.IsError {
+			t.Errorf("%s: the bad value was accepted (err %v): the option is not forwarded", name, err)
+		}
 	}
 }
