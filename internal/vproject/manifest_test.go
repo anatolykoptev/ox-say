@@ -332,3 +332,33 @@ func TestCloneCopiesTakeReasons(t *testing.T) {
 		t.Error("clone shares a take's reasons")
 	}
 }
+
+// A temp file written within minAge may belong to a live orphan writer (the
+// ffmpeg of a SIGKILLed daemon): it stays; an old one goes (#154 amendment 4).
+// Mutation: manifest.go SweepStaleTemp, drop the ModTime check -> the fresh file goes -> RED.
+func TestSweepStaleTempSkipsFreshFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, WorkDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fresh := filepath.Join(dir, WorkDir, ".assembled"+TempMark+"1.wav.norm.wav")
+	stale := filepath.Join(dir, WorkDir, ".assembled"+TempMark+"2.wav")
+	for _, p := range []string{fresh, stale} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if n := SweepStaleTemp(dir, time.Minute); n != 1 {
+		t.Fatalf("swept %d, want only the stale file", n)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("a file written seconds ago was removed: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("the stale file stayed")
+	}
+}

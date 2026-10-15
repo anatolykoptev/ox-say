@@ -286,12 +286,21 @@ func Contained(root, dir string) error {
 	return nil
 }
 
-// SweepTemp removes the temp files a crash left in dir, dir/takes and
-// dir/out, and reports how many. It removes only what WriteAtomic and the
-// assembly create - a name starting with "." that holds TempMark - never a
-// directory, and never looks through a symlinked directory.
-func SweepTemp(dir string) int {
+// SweepTemp removes every temp file a crash left in dir, dir/takes and
+// dir/out. Call it only while nothing writes into dir; see SweepStaleTemp for
+// the form that tolerates a writer that may still be alive.
+func SweepTemp(dir string) int { return SweepStaleTemp(dir, 0) }
+
+// SweepStaleTemp is SweepTemp that leaves a temp file modified within minAge
+// of now. A daemon killed with SIGKILL leaves its ffmpeg child running as an
+// orphan; the orphan keeps modifying its output, so a file that is still
+// fresh may have a live writer and is not touched, while a file nobody has
+// written for minAge has no writer left to race. It removes only what
+// WriteAtomic and the assembly create - a name starting with "." that holds
+// TempMark - never a directory, and never looks through a symlinked directory.
+func SweepStaleTemp(dir string, minAge time.Duration) int {
 	n := 0
+	now := time.Now()
 	for _, d := range []string{dir, filepath.Join(dir, TakesDir), filepath.Join(dir, WorkDir)} {
 		if st, err := os.Lstat(d); err != nil || !st.IsDir() { // Lstat: a link is not a directory
 			continue
@@ -300,6 +309,9 @@ func SweepTemp(dir string) int {
 		for _, e := range entries {
 			name := e.Name()
 			if e.IsDir() || !strings.HasPrefix(name, ".") || !strings.Contains(name, TempMark) {
+				continue
+			}
+			if info, err := e.Info(); err != nil || now.Sub(info.ModTime()) < minAge {
 				continue
 			}
 			if os.Remove(filepath.Join(d, name)) == nil {
