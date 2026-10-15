@@ -79,9 +79,12 @@ func logBuf(d *Daemon) *bytes.Buffer {
 // (and loudnorm's own output-rate self-check) -> 192000 Hz comes out -> RED.
 func TestLoudnormHitsTargetAtTheEngineRate(t *testing.T) {
 	for _, rate := range []int{testutil.VoxRate, testutil.QwenRate} {
-		got, err := loudnorm(context.Background(), t.TempDir(), toneBytes(rate), testTargetLUFS)
+		got, note, err := loudnorm(context.Background(), t.TempDir(), toneBytes(rate), testTargetLUFS)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if note != "" {
+			t.Errorf("rate %d: unexpected degrade note %q", rate, note)
 		}
 		if gotRate, _ := wavInfo(got); gotRate != rate {
 			t.Errorf("rate %d, want %d kept", gotRate, rate)
@@ -144,10 +147,10 @@ func TestNormalizeLoudnessKeepsTheTakeWhenFFmpegFails(t *testing.T) {
 	}
 	for name, setup := range map[string]func(){
 		"ffmpeg writes the wrong rate": func() {
-			useFakeFFmpeg(t, `for a in "$@"; do last=$a; done; /bin/cp `+wrongRate+` "$last"`)
+			useFakeFFmpeg(t, `case "$*" in *print_format*) exit 1;; esac; for a in "$@"; do last=$a; done; /bin/cp `+wrongRate+` "$last"`)
 		},
 		"ffmpeg writes only a header": func() {
-			useFakeFFmpeg(t, `for a in "$@"; do last=$a; done; /bin/cp `+header+` "$last"`)
+			useFakeFFmpeg(t, `case "$*" in *print_format*) exit 1;; esac; for a in "$@"; do last=$a; done; /bin/cp `+header+` "$last"`)
 		},
 		"ffmpeg exits 1":  func() { useFakeFFmpeg(t, "echo boom >&2; exit 1") },
 		"ffmpeg missing":  func() { t.Setenv("PATH", t.TempDir()) },
@@ -365,5 +368,108 @@ func TestSpeakLoudness(t *testing.T) {
 	}
 	if got, err := os.ReadFile(res.Path); err != nil || !bytes.Equal(got, toneBytes(testutil.VoxRate)) {
 		t.Errorf("the un-normalised take was not written: %v", err)
+	}
+}
+
+// clickyBytes is a quiet tone with a full-scale click burst every second: its
+// peak-to-loudness ratio (about 34 dB) is far beyond what the -1.5 dBTP ceiling
+// leaves room for, so single-pass loudnorm lands about 2 LU under the target.
+func clickyBytes(rate int) []byte {
+	const (
+		secs     = 8
+		toneAmp  = 0.03
+		clickAmp = 0.9
+		clickLen = 8
+	)
+	w := testutil.ToneWAV(rate, secs, toneAmp)
+	for s := 0; s < secs; s++ {
+		for i := 0; i < clickLen; i++ {
+			v := int16(math.Round(clickAmp * math.MaxInt16))
+			if i%2 == 1 {
+				v = -v
+			}
+			off := 44 + 2*(s*rate+i)
+			w[off], w[off+1] = byte(uint16(v)), byte(uint16(v)>>8)
+		}
+	}
+	return w
+}
+
+// loudnorm is two-pass: on a take whose single pass misses the target by more
+// than 1 LU, the result is within 1 LU. The fixture is checked against a
+// single-pass run first, so the test cannot pass vacuously.
+// Mutation: postprocess.go loudnorm, loudnormFilter(lufs, st) ->
+// loudnormFilter(lufs, nil) (single pass) -> RED.
+func TestLoudnormIsTwoPass(t *testing.T) {
+	take := clickyBytes(testutil.VoxRate)
+	in := filepath.Join(t.TempDir(), "in.wav")
+	if err := os.WriteFile(in, take, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	single, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-i", in, "-af",
+		"loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "48000", "-f", "wav", "pipe:1").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := integratedLUFS(t, single); math.Abs(l-testTargetLUFS) <= lufsTolerance {
+		t.Fatalf("fixture no longer discriminates: single pass reads %.1f LUFS", l)
+	}
+	got, note, err := loudnorm(context.Background(), t.TempDir(), take, testTargetLUFS)
+	if err != nil || note != "" {
+		t.Fatalf("%v %q", err, note)
+	}
+	if l := integratedLUFS(t, got); math.Abs(l-testTargetLUFS) > lufsTolerance {
+		t.Errorf("two-pass read %.1f LUFS, want -16 ±1", l)
+	}
+	// linear mode is one constant gain: the tone between clicks is amplified
+	// the same early and late. Dynamic mode rides the gain with the clicks.
+	early, late := gainDB(take, got, 0.2, 0.8), gainDB(take, got, 6.2, 6.8)
+	if math.Abs(early-late) > gainSlackDB {
+		t.Errorf("gain moved from %.2f dB to %.2f dB: not a linear (constant-gain) pass", early, late)
+	}
+}
+
+// gainSlackDB is how far the gain may drift between two stretches of a take
+// that a constant-gain pass amplified.
+const gainSlackDB = 0.3
+
+// gainDB is the RMS gain from in to out over [from, to) seconds.
+func gainDB(in, out []byte, from, to float64) float64 {
+	rate, _ := wavInfo(in)
+	rms := func(w []byte) float64 {
+		var sum float64
+		a, b := int(from*float64(rate)), int(to*float64(rate))
+		data := bytes.Index(w, []byte("data")) + 8 // ffmpeg puts a LIST chunk first
+		for i := a; i < b; i++ {
+			v := float64(int16(uint16(w[data+2*i]) | uint16(w[data+1+2*i])<<8))
+			sum += v * v
+		}
+		return math.Sqrt(sum / float64(b-a))
+	}
+	return 20 * math.Log10(rms(out)/rms(in))
+}
+
+// A failing or unparsable measuring pass degrades to single pass: still
+// normalised, and the warning says so. Mutation: drop the `note = warnSinglePass`
+// assignment -> RED.
+func TestLoudnormFallsBackToSinglePass(t *testing.T) {
+	real, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _, _ := voxFixture(t, nil)
+	for name, measure := range map[string]string{
+		"no JSON in the report": `echo "no report here" >&2; exit 0`,
+		"measure exits 1":       `exit 1`,
+		"silence reads -inf":    `printf '{"input_i":"-inf","input_tp":"-inf","input_lra":"0.00","input_thresh":"-70.00","target_offset":"0.00"}' >&2; exit 0`,
+	} {
+		useFakeFFmpeg(t, `case "$*" in *print_format*) `+measure+`;; esac; exec `+real+` "$@"`)
+		got, warn := d.normalizeLoudness(context.Background(), toneBytes(testutil.VoxRate), testTargetLUFS)
+		if !strings.Contains(warn, "single pass") {
+			t.Errorf("%s: warning %q", name, warn)
+		}
+		if l := integratedLUFS(t, got); math.Abs(l-testTargetLUFS) > lufsTolerance {
+			t.Errorf("%s: fell back to %.1f LUFS, want -16 ±1", name, l)
+		}
 	}
 }
