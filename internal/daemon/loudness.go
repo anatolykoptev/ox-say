@@ -51,6 +51,11 @@ const (
 	limiterAttackMs   = 5
 	limiterReleaseMs  = 50
 	tpFloorDB         = -200.0 // true peak of digital silence
+	// maxGainDB is the most a take may be raised. The real takes in the
+	// evidence corpus needed at most 15.8 dB (assembled reels at -14 LUFS from
+	// -29.8); 25 dB leaves room for quiet clones yet refuses a hiss-only take
+	// (-62 LUFS needs +46 dB), whose noise would become the signal.
+	maxGainDB = 25.0
 )
 
 // loudnormWaitDelay bounds how long Run waits for ffmpeg's pipes after the
@@ -63,6 +68,9 @@ var loudnormTimeout = 10 * time.Minute
 
 // errUnmeasurable marks a take with no measurable loudness (silence).
 var errUnmeasurable = errors.New("loudness: the audio is silent or too short to measure")
+
+// errTooQuiet marks a take that would need more than maxGainDB.
+var errTooQuiet = errors.New("loudness: the audio is too quiet to raise to the target")
 
 // level is a take's EBU R128 reading.
 type level struct {
@@ -133,7 +141,7 @@ func measureLevel(ctx context.Context, src loudnormSource, secs float64, rate in
 		return level{}, fmt.Errorf("ffmpeg ebur128: %w: %s", err, strings.TrimSpace(errb.String()))
 	}
 	if !found {
-		return level{}, fmt.Errorf("ffmpeg ebur128: no loudness reading in its output")
+		return level{}, fmt.Errorf("ffmpeg ebur128: no loudness and true-peak reading in its output")
 	}
 	if lvl.lufs <= absoluteGateLUFS {
 		return level{}, errUnmeasurable
@@ -142,9 +150,13 @@ func measureLevel(ctx context.Context, src loudnormSource, secs float64, rate in
 }
 
 // scanLevel reads the meter's metadata lines: the last integrated loudness
-// (it is cumulative) and the highest true peak seen.
+// (it is cumulative) and the highest true peak seen, from the combined key or
+// the per-channel ones. found is true only when both were read: a build whose
+// meter prints no true peak must not pass for a measured take. NaN readings
+// are ignored.
 func scanLevel(r io.Reader) (lvl level, found bool) {
 	lvl.tpDB = tpFloorDB
+	sawLUFS, sawTP := false, false
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		key, val, ok := strings.Cut(sc.Text(), "=")
@@ -152,19 +164,20 @@ func scanLevel(r io.Reader) (lvl level, found bool) {
 			continue
 		}
 		f, err := strconv.ParseFloat(val, 64)
-		if err != nil {
+		if err != nil || math.IsNaN(f) {
 			continue
 		}
-		switch key {
-		case "lavfi.r128.I":
-			lvl.lufs, found = f, true
-		case "lavfi.r128.true_peak":
+		switch {
+		case key == "lavfi.r128.I":
+			lvl.lufs, sawLUFS = f, true
+		case key == "lavfi.r128.true_peak" || strings.HasPrefix(key, "lavfi.r128.true_peaks_ch"):
+			sawTP = true
 			if f > 0 {
 				lvl.tpDB = math.Max(lvl.tpDB, 20*math.Log10(f))
 			}
 		}
 	}
-	return lvl, found
+	return lvl, sawLUFS && sawTP
 }
 
 // levelFilter is the ffmpeg chain for one constant gain: volume, and when the
@@ -214,6 +227,9 @@ func levelTo(ctx context.Context, src loudnormSource, secs float64, rate int, ou
 	in, err := measureLevel(ctx, src, secs, rate)
 	if err != nil {
 		return levelOutcome{}, err
+	}
+	if lufs-in.lufs > maxGainDB {
+		return levelOutcome{}, fmt.Errorf("%w: it would need +%.0f dB, the limit is +%.0f dB", errTooQuiet, lufs-in.lufs, maxGainDB)
 	}
 	try := out + trySuffix
 	defer func() { _ = os.Remove(try) }()

@@ -495,8 +495,12 @@ func TestLoudnormHoldsTheCeilingAndHitsTheTargetOnPeakyTakes(t *testing.T) {
 }
 
 // lengthSlackSec is how far a levelled take's length may drift (the limiter's
-// look-ahead is compensated, so it should not at all).
-const lengthSlackSec = 0.01
+// look-ahead is compensated, so it should not at all: 1 ms is 48 samples at
+// 48 kHz, a tenth of the 5 ms look-ahead that an uncompensated limiter loses).
+const lengthSlackSec = 0.001
+
+// onsetSlackSamples is how far the first click of a levelled take may move.
+const onsetSlackSamples = 4
 
 // A clip shorter than one EBU R128 gating block has no loudness to read; it is
 // measured on a looped copy so it still reaches the target. The oracle loops
@@ -560,13 +564,13 @@ func TestLoudnormRefusesSilence(t *testing.T) {
 	}
 }
 
-// Fixture of the strict file path: a 60 s sine whose level steps up halfway,
-// so a dynamic (single pass) loudnorm would ride the gain and a linear
-// two-pass one cannot.
+// Fixture of the strict file path: a 60 s sine whose level steps up halfway.
+// One constant gain keeps its crest factor; anything that rides the gain with
+// the level (a compressor, a dynamic normaliser) changes it.
 const (
 	stepSecs      = 60
 	stepFreq      = 300.0
-	stepQuietDB   = -27.0 // a 9 LU step: inside loudnorm's 11 LU range, so linear mode is allowed
+	stepQuietDB   = -27.0 // a 9 LU step, small enough that no peak needs the limiter
 	stepLoudDB    = -18.0
 	crestSlackDB  = 0.5
 	silentFileSec = 5
@@ -641,7 +645,7 @@ func TestLoudnormFileStrictConstantGain(t *testing.T) {
 		t.Errorf("rate %d, want %d", rate, testutil.VoxRate)
 	}
 	if before, after := crestDB(t, in), crestDB(t, out); math.Abs(before-after) > crestSlackDB {
-		t.Errorf("crest factor moved from %.2f dB to %.2f dB: not a linear (constant-gain) pass", before, after)
+		t.Errorf("crest factor moved from %.2f dB to %.2f dB: not one constant gain", before, after)
 	}
 
 	silent := filepath.Join(dir, "silent.wav")
@@ -744,5 +748,121 @@ func TestLoudnormFileReportsLimiting(t *testing.T) {
 	limited, err = loudnormFileReport(context.Background(), writeStepFile(t, dir), filepath.Join(dir, "s.wav"), testTargetLUFS)
 	if err != nil || limited {
 		t.Errorf("stepped sine: limited=%v err=%v, want a constant gain", limited, err)
+	}
+}
+
+// loudTargetLUFS is a loud target at which modulatedBytes needs the limiter.
+const loudTargetLUFS = -10.0
+
+// modulatedBytes is secs seconds of four unrelated sines under a 3 Hz
+// amplitude swell: a speech-like crest factor of about 12 dB at amplitude amp.
+func modulatedBytes(rate, secs int, amp float64) []byte {
+	s := make([]int16, rate*secs)
+	for i := range s {
+		t := float64(i) / float64(rate)
+		v := math.Sin(2*math.Pi*180*t) + 0.7*math.Sin(2*math.Pi*440*t+1) + 0.5*math.Sin(2*math.Pi*1130*t+2) + 0.4*math.Sin(2*math.Pi*2600*t+3)
+		v *= 0.55 + 0.45*math.Sin(2*math.Pi*3*t)
+		s[i] = int16(amp * v * math.MaxInt16)
+	}
+	return pcm.Clip{Rate: rate, S: s}.Encode()
+}
+
+// onsetOf is the index of the first sample louder than a tenth of the take's
+// loudest, in a 16-bit mono WAV.
+func onsetOf(wav []byte) int {
+	data := bytes.Index(wav, []byte("data")) + 8
+	n := (len(wav) - data) / 2
+	at := func(i int) int {
+		v := int(int16(uint16(wav[data+2*i]) | uint16(wav[data+1+2*i])<<8))
+		if v < 0 {
+			return -v
+		}
+		return v
+	}
+	peak := 0
+	for i := 0; i < n; i++ {
+		peak = max(peak, at(i))
+	}
+	for i := 0; i < n; i++ {
+		if at(i) > peak/10 {
+			return i
+		}
+	}
+	return -1
+}
+
+// The limiter must only move peaks: its auto-level (which raises the output so
+// the ceiling reads 0 dBFS) is off, and its look-ahead delay is compensated
+// (else the audio shifts by the 5 ms attack and the tail is cut). The fixture's
+// first click sits at sample 0 and its peaks need the limiter.
+// Mutation: loudness.go levelFilter, drop ":level=false" -> the output is
+// lifted until its peak reads 0 dBFS -> RED.
+// Mutation: loudness.go levelFilter, drop ":latency=true" -> the click moves by
+// 240 samples and the take is 5 ms short -> RED.
+func TestLimiterOnlyMovesThePeaks(t *testing.T) {
+	// A loud take whose limited peaks land on the ceiling: with auto-level on,
+	// the limiter lifts them to 0 dBFS (this fixture reads 0.00 then).
+	loud := modulatedBytes(testutil.VoxRate, 6, 0.2)
+	got, _, err := loudnorm(context.Background(), t.TempDir(), loud, loudTargetLUFS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, tp := meterOf(t, got); tp > loudnessCeilingDB+truePeakSlackDB/2 {
+		t.Errorf("true peak %.2f dBTP, ceiling %.1f: the limiter lifted the output", tp, loudnessCeilingDB)
+	}
+	take := peakyBytes(testutil.VoxRate, 8)
+	got, _, err = loudnorm(context.Background(), t.TempDir(), take, -14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in, out := onsetOf(take), onsetOf(got); out < 0 || out-in > onsetSlackSamples || in-out > onsetSlackSamples {
+		t.Errorf("first click at sample %d, was %d: the audio shifted", out, in)
+	}
+	if _, secs := wavInfo(got); math.Abs(secs-8) > lengthSlackSec {
+		t.Errorf("length %.4f s, want 8", secs)
+	}
+}
+
+// A meter that prints no true peak must not pass for a measurement: the output
+// could clip silently. The per-channel keys count; NaN readings are ignored.
+// Mutation: loudness.go scanLevel, `sawLUFS && sawTP` -> `sawLUFS` -> RED.
+func TestScanLevelNeedsTheTruePeak(t *testing.T) {
+	if _, ok := scanLevel(strings.NewReader("lavfi.r128.I=-20.0\n")); ok {
+		t.Error("a reading without a true peak was accepted")
+	}
+	lvl, ok := scanLevel(strings.NewReader("lavfi.r128.I=nan\nlavfi.r128.I=-20.5\nlavfi.r128.true_peaks_ch0=0.5\nlavfi.r128.true_peaks_ch1=0.8\n"))
+	if !ok || lvl.lufs != -20.5 || math.Abs(lvl.tpDB-20*math.Log10(0.8)) > 1e-9 {
+		t.Errorf("per-channel peaks: %+v ok=%v, want -20.5 LUFS and the louder channel", lvl, ok)
+	}
+	if _, ok := scanLevel(strings.NewReader("lavfi.r128.I=nan\nlavfi.r128.true_peak=0.5\n")); ok {
+		t.Error("a NaN loudness was accepted")
+	}
+}
+
+// A hiss-only take would need far more than maxGainDB: the soft path keeps it
+// with a plain warning, the strict path refuses it and leaves no output.
+// Mutation: loudness.go levelTo, `lufs-in.lufs > maxGainDB` -> `false` -> the
+// hiss is raised 47 dB and passes for normalised -> RED.
+func TestLoudnormRefusesToBoostHiss(t *testing.T) {
+	const hissAmp = 0.001
+	hiss := testutil.ToneWAV(testutil.VoxRate, testutil.ToneSecs, hissAmp)
+	if l, _ := meterOf(t, hiss); l < absoluteGateLUFS || testTargetLUFS-l <= maxGainDB {
+		t.Fatalf("fixture no longer discriminates: reads %.1f LUFS", l)
+	}
+	d, _, _ := voxFixture(t, nil)
+	got, warn := d.normalizeLoudness(context.Background(), hiss, testTargetLUFS)
+	if !bytes.Equal(got, hiss) || warn != warnTooQuiet {
+		t.Errorf("soft path: kept=%v, warning %q", bytes.Equal(got, hiss), warn)
+	}
+	dir := t.TempDir()
+	in, out := filepath.Join(dir, "hiss.wav"), filepath.Join(dir, "out.wav")
+	if err := os.WriteFile(in, hiss, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := loudnormFile(context.Background(), in, out, testTargetLUFS); !errors.Is(err, errTooQuiet) || !strings.Contains(err.Error(), "too quiet") {
+		t.Errorf("strict path: %v, want errTooQuiet in plain words", err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("the strict path left an output: %v", err)
 	}
 }

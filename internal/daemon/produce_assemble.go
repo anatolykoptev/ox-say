@@ -33,7 +33,7 @@ const (
 	workWAVPattern  = ".assembled" + vproject.TempMark + "*.wav"
 	normSuffix      = ".norm.wav"
 	// normLengthSlackSec is how far the normalised file may differ from the
-	// timeline. loudnorm keeps the length to a few samples; 50 ms covers
+	// timeline. the limiter chain keeps the length to a few samples; 50 ms covers
 	// decoder padding and frame rounding yet is far below the loss of a word,
 	// so a truncated or padded result cannot pass.
 	normLengthSlackSec = 0.05

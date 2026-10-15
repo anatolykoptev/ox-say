@@ -25,6 +25,7 @@ const (
 const (
 	warnNoFFmpeg     = "loudness was not normalised: ffmpeg is not installed, so the take keeps its original level"
 	warnFFmpegFailed = "loudness was not normalised: ffmpeg could not process the audio, so the take keeps its original level"
+	warnTooQuiet     = "loudness was not normalised: the take is too quiet to raise to the target without boosting its noise, so it keeps its original level"
 	warnUnmeasurable = "loudness was not normalised: the take is silent or too short to measure, so it keeps its original level"
 	warnFFmpegSlow   = "loudness was not normalised: ffmpeg took too long, so the take keeps its original level"
 )
@@ -120,6 +121,8 @@ func (d *Daemon) normalizeLoudness(ctx context.Context, wav []byte, lufs float64
 		return wav, warnNoFFmpeg
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return wav, warnFFmpegSlow
+	case errors.Is(err, errTooQuiet):
+		return wav, warnTooQuiet
 	case errors.Is(err, errUnmeasurable):
 		return wav, warnUnmeasurable
 	default:
