@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"os"
@@ -115,13 +116,41 @@ func loudnormFilter(lufs float64, measured *loudnormStats) (string, error) {
 	return f + ":" + args, nil
 }
 
-// measureLoudness is loudnorm's first pass: it reads the take and reports its
-// integrated loudness, true peak, range and gate threshold as JSON on stderr.
+// loudnormSource is an ffmpeg input: a WAV in memory (piped) or a file on
+// disk (the producer's assembled voiceover, which may be hundreds of MB).
+type loudnormSource struct {
+	wav  []byte // non-nil: piped through stdin
+	path string
+}
+
+func (s loudnormSource) args() []string {
+	if s.wav != nil {
+		return []string{"-f", "wav", "-i", "pipe:0"}
+	}
+	return []string{"-i", s.path}
+}
+
+func (s loudnormSource) stdin() io.Reader {
+	if s.wav != nil {
+		return bytes.NewReader(s.wav)
+	}
+	return nil
+}
+
+// measureLoudness is loudnorm's first pass over one take held in memory.
 func measureLoudness(ctx context.Context, wav []byte, lufs float64) (*loudnormStats, error) {
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-nostats", "-f", "wav", "-i", "pipe:0",
-		"-af", fmt.Sprintf("loudnorm=I=%g:TP=%g:LRA=%d:print_format=json", lufs, loudnormTP, loudnormLRA),
+	return measureLoudnessFrom(ctx, loudnormSource{wav: wav}, lufs)
+}
+
+// measureLoudnessFrom reads src and reports its integrated loudness, true
+// peak, range and gate threshold as JSON on stderr. A reading that is missing
+// or not finite (silence measures -inf) is an error.
+func measureLoudnessFrom(ctx context.Context, src loudnormSource, lufs float64) (*loudnormStats, error) {
+	args := append([]string{"-hide_banner", "-nostats"}, src.args()...)
+	args = append(args, "-af", fmt.Sprintf("loudnorm=I=%g:TP=%g:LRA=%d:print_format=json", lufs, loudnormTP, loudnormLRA),
 		"-f", "null", "-")
-	cmd.Stdin = bytes.NewReader(wav)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd.Stdin = src.stdin()
 	cmd.WaitDelay = loudnormWaitDelay
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
@@ -187,25 +216,88 @@ func runLoudnorm(ctx context.Context, dir string, wav []byte, rate int, filter s
 	out := f.Name()
 	_ = f.Close()
 	defer func() { _ = os.Remove(out) }()
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-		"-f", "wav", "-i", "pipe:0", "-af", filter, "-ar", strconv.Itoa(rate), "-c:a", "pcm_s16le", out)
-	cmd.Stdin = bytes.NewReader(wav)
+	if err := applyLoudnorm(ctx, loudnormSource{wav: wav}, out, rate, filter); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(out)
+}
+
+// applyLoudnorm runs filter over src into the file out at rate and checks the
+// result: ffmpeg can exit 0 and leave nothing, or leave the wrong rate, and
+// neither may pass for a normalised file.
+func applyLoudnorm(ctx context.Context, src loudnormSource, out string, rate int, filter string) error {
+	args := append([]string{"-hide_banner", "-loglevel", "error", "-y"}, src.args()...)
+	args = append(args, "-af", filter, "-ar", strconv.Itoa(rate), "-c:a", "pcm_s16le", out)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd.Stdin = src.stdin()
 	cmd.WaitDelay = loudnormWaitDelay
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffmpeg loudnorm: %w: %s", err, strings.TrimSpace(errb.String()))
+		return fmt.Errorf("ffmpeg loudnorm: %w: %s", err, strings.TrimSpace(errb.String()))
 	}
-	res, err := os.ReadFile(out)
+	if gotRate, secs := wavInfoFile(out); gotRate != rate || secs <= 0 {
+		return fmt.Errorf("loudnorm: ffmpeg produced %d Hz / %.2f s, want %d Hz of audio", gotRate, secs, rate)
+	}
+	return nil
+}
+
+// Bounds of one long-file normalisation: ffmpeg's loudnorm runs far faster
+// than real time; the slack covers a loaded machine. Two passes.
+const (
+	wavHeadProbe       = 64 << 10
+	loudnormFileBase   = 30 * time.Second
+	loudnormFilePerSec = 0.25
+	loudnormPasses     = 2
+)
+
+// loudnormFileTimeout bounds both passes of loudnormFile for durSec of audio.
+func loudnormFileTimeout(durSec float64) time.Duration {
+	return loudnormPasses * (loudnormFileBase + time.Duration(durSec*loudnormFilePerSec*float64(time.Second)))
+}
+
+// loudnormFile is the producer's STRICT two-pass normalisation of the file in
+// into the file out, at in's sample rate: measure, then a linear gain from the
+// measurement. Unlike loudnorm it never falls back to a single pass and the
+// producer never calls normalizeLoudness's soft fallback: any failure,
+// including a measuring pass that reads silence, is returned, and out is left
+// absent, so an unnormalised file can never pass for the result.
+func loudnormFile(ctx context.Context, in, out string, lufs float64) (err error) {
+	if in == out {
+		return fmt.Errorf("loudnorm: the output must be a different file from the input")
+	}
+	rate, _ := wavInfoFile(in)
+	if rate <= 0 {
+		return fmt.Errorf("loudnorm: the assembled file is not a PCM WAV")
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(out)
+		}
+	}()
+	src := loudnormSource{path: in}
+	st, err := measureLoudnessFrom(ctx, src, lufs)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	// ffmpeg can exit 0 and leave nothing, or leave the wrong rate: neither
-	// may pass for a normalised take.
-	if gotRate, secs := wavInfo(res); gotRate != rate || secs <= 0 {
-		return nil, fmt.Errorf("loudnorm: ffmpeg produced %d Hz / %.2f s, want %d Hz of audio", gotRate, secs, rate)
+	filter, err := loudnormFilter(lufs, st)
+	if err != nil {
+		return err
 	}
-	return res, nil
+	return applyLoudnorm(ctx, src, out, rate, filter)
+}
+
+// wavInfoFile is wavInfo over a file's first 64 KiB: wavInfo reads the sizes
+// from the header, which pcm.Writer patches on Close and ffmpeg writes.
+func wavInfoFile(path string) (int, float64) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+	head := make([]byte, wavHeadProbe)
+	n, _ := io.ReadFull(f, head)
+	return wavInfo(head[:n])
 }
 
 // normalizeLoudness is loudnorm that cannot lose the take: when ffmpeg is
