@@ -5,7 +5,7 @@
 #   tts-server  from the pinned qwentts.cpp            (text-to-speech)
 #   ox-stt      from engine/stt on the pinned whisper.cpp (speech-to-text: Parakeet, Whisper)
 #   ox-align    from engine/align on the pinned whisper.cpp (wav2vec2 CTC emissions)
-#   audiocpp_server from the pinned audio.cpp, arm64 only (VoxCPM2 quality text-to-speech)
+#   audiocpp_server from the pinned audio.cpp, arm64, dist build or OX_SAY_WITH_VOXCPM2=1 (VoxCPM2 quality text-to-speech)
 # The first three carry engine/patches/ggml on their ggml tree, on both architectures: on
 # unified memory the patches are inert or bug fixes (engine/README.md).
 #
@@ -16,6 +16,8 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=pins.env
 . "$here/pins.env"
+# shellcheck source=want-audiocpp.sh
+. "$here/want-audiocpp.sh"
 
 work=${1:-"$here/../build/engine"}
 mkdir -p "$work"
@@ -187,11 +189,15 @@ check_static "$out/ox-align"
 check_dist "$out/ox-align"
 echo "built $out/ox-align"
 
-# --- audiocpp_server (audio.cpp, VoxCPM2) — Apple Silicon only ---
+# --- audiocpp_server (audio.cpp, VoxCPM2) — Apple Silicon, on request only ---
 # VoxCPM2 (2B) needs unified memory next to the speech engines; the Intel
 # package carries no quality engine (README "VoxCPM2"). audio.cpp vendors its
 # own ggml, so engine/patches/ggml (AMD discrete fixes) does not apply here.
-if [ "$arch" = arm64 ]; then
+# Wanted: a dist build or OX_SAY_WITH_VOXCPM2=1 (engine/want-audiocpp.sh). Otherwise
+# drop a binary an earlier build left in out/, so the installer cannot pick it up.
+if ! want_audiocpp "$arch"; then
+    rm -f "$out/audiocpp_server"
+else
     ac="$work/audio.cpp"
     stamp=$( { echo "$AUDIOCPP_REPO $AUDIOCPP_COMMIT"; find "$here/patches/audiocpp" -name '*.patch' -type f | LC_ALL=C sort | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
     if ! fresh "$ac" "$stamp"; then

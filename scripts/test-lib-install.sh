@@ -275,6 +275,27 @@ check_in_log "with audiocpp: exit 0" "$tmp/eng-with/log" "rc=0"
 check "engines without audiocpp_server" "$(engine_case without no)" "ox-align ox-stt tts-server "
 check_in_log "without audiocpp: exit 0" "$tmp/eng-without/log" "rc=0"
 
+# --- J: audio.cpp is built only on request ---------------------------------
+# A source install (scripts/install.sh -> engine/build.sh) must not clone and
+# build a second engine nobody asked for. Mutation (engine/want-audiocpp.sh:9):
+# drop the `&& { ...DIST... || ...WITH_VOXCPM2... }` clause so arm64 always
+# builds -> "audiocpp not built on plain arm64" fails.
+want_case() { # name arch want [env assignments...]
+    local name=$1 arch=$2 want=$3 got=no
+    shift 3
+    if env -i PATH="$PATH" "$@" bash -c ". '$root/engine/want-audiocpp.sh'; want_audiocpp '$arch'"; then got=yes; fi
+    check "audiocpp built: $name" "$got" "$want"
+}
+want_case "plain arm64" arm64 no
+want_case "arm64 dist" arm64 yes OX_SAY_DIST=1
+want_case "arm64 with-voxcpm2" arm64 yes OX_SAY_WITH_VOXCPM2=1
+want_case "arm64 dist=0" arm64 no OX_SAY_DIST=0 OX_SAY_WITH_VOXCPM2=0
+want_case "x86_64 dist" x86_64 no OX_SAY_DIST=1
+want_case "x86_64 with-voxcpm2" x86_64 no OX_SAY_WITH_VOXCPM2=1
+# build.sh really goes through the predicate (not a copy of it).
+n=$(grep -cE '^[^#]*want_audiocpp "[$]arch"' "$root/engine/build.sh" || true)
+check "build.sh calls want_audiocpp" "${n:-x}" 1
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "all checks passed"

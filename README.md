@@ -373,6 +373,12 @@ an app's base CPU priority (31) instead of launchd's throttled default (20),
 still below the app in front and the window server.
 `OX_SAY_WITH_WHISPER=1 scripts/install.sh` also fetches Whisper
 large-v3-turbo.
+`OX_SAY_WITH_VOXCPM2=1 scripts/install.sh` also builds audio.cpp's server and
+fetches the VoxCPM2 model (Q8_0, about 3 GB), the quality text-to-speech engine.
+It needs Apple Silicon with 24 GB of memory or more: elsewhere the installer
+says so and fetches nothing. Without the variable a source install does not
+build the engine at all; a release package for Apple Silicon always carries the
+binary, and the same variable fetches the model.
 
 launchd does not read your shell environment: set any `OX_SAY_*` configuration
 (see below) when you run the installer, e.g.
