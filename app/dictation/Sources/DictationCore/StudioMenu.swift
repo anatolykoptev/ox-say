@@ -47,15 +47,10 @@ public enum StudioMenu {
         return rows
     }
 
-    /// The daemon's reason the studio voice cannot run, without the instruction
-    /// meant for a terminal ("Run the installer with OX_SAY_WITH_VOXCPM2=1"). A reason
-    /// that is nothing but such an instruction, or none, becomes the plain fallback.
+    /// The daemon's reason the studio voice cannot run, in words for the owner; a
+    /// reason that is nothing but a terminal instruction, or none, becomes the plain fallback.
     public static func unavailableText(reason: String?) -> String {
-        guard let reason, !reason.isEmpty else { return cannotRunTitle }
-        let sentences = reason.components(separatedBy: ". ")
-        let plain = sentences.filter { !$0.contains("OX_SAY") }
-        guard let first = plain.first, !first.isEmpty else { return cannotRunTitle }
-        return first.hasSuffix(".") ? first : first + "."
+        PlainWords.clean(reason ?? "", fallback: cannotRunTitle)
     }
 
     /// The Voice popup of the voiceover form: "Default voice" (the daemon's own
@@ -70,5 +65,23 @@ public enum StudioMenu {
     /// The file name without its extension: the form's default title.
     public static func defaultTitle(fileName: String) -> String {
         (fileName as NSString).deletingPathExtension
+    }
+}
+
+/// The daemon words its errors for terminals and agents too. What an owner reads
+/// drops the sentences that name an environment variable or a tool, and the engine's name.
+public enum PlainWords {
+    /// Text that only makes sense in a terminal or to an agent.
+    static let jargon = ["OX_SAY", "voice_", "ox-say voice", "ox-say status", "`"]
+
+    public static func clean(_ text: String, fallback: String) -> String {
+        let all = text.components(separatedBy: ". ")
+        let kept = all.filter { sentence in
+            !sentence.isEmpty && !jargon.contains(where: { sentence.contains($0) })
+        }
+        guard let last = kept.last else { return fallback }
+        let joined = kept.joined(separator: ". ").replacingOccurrences(of: " (VoxCPM2)", with: "")
+        // A sentence cut off from the ones after it needs its full stop back.
+        return last == all.last ? joined : joined + "."
     }
 }

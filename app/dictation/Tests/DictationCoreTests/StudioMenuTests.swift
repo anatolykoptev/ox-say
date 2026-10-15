@@ -35,7 +35,7 @@ final class StudioMenuTests: XCTestCase {
 
     func testAfterAnInstallThatChangedNothingTheDaemonsReasonShows() {
         let result = rows(unavailable("Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them."), attempted: true)
-        XCTAssertEqual(result, [.item(title: "Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them.",
+        XCTAssertEqual(result, [.item(title: "Studio voices need a Mac with Apple Silicon; this computer cannot run them.",
                                       isOn: false, isEnabled: false, action: nil)])
         XCTAssertEqual(titles(rows(unavailable(nil), attempted: true)), ["This Mac can't run the studio voice."])
     }
@@ -45,6 +45,21 @@ final class StudioMenuTests: XCTestCase {
                        "The studio voice model is not downloaded yet.")
         XCTAssertEqual(StudioMenu.unavailableText(reason: "Reinstall ox-say with OX_SAY_WITH_VOXCPM2=1."), "This Mac can't run the studio voice.")
         XCTAssertEqual(StudioMenu.unavailableText(reason: ""), "This Mac can't run the studio voice.")
+    }
+
+    func testDaemonErrorsLoseTerminalJargon() {
+        let fallback = "The ox-say service answered with an error (400)."
+        XCTAssertEqual(PlainWords.clean("produce needs a saved voice: design one with voice_design or add one with voice_add", fallback: fallback), fallback)
+        XCTAssertEqual(PlainWords.clean("Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them.", fallback: fallback),
+                       "Studio voices need a Mac with Apple Silicon; this computer cannot run them.")
+        XCTAssertEqual(PlainWords.clean("The script is empty. Reinstall with OX_SAY_WITH_VOXCPM2=1.", fallback: fallback), "The script is empty.")
+        XCTAssertEqual(PlainWords.clean("", fallback: fallback), fallback)
+    }
+
+    func testRefusalMessagesArePlainToo() {
+        let body = Data(#"{"error":{"message":"produce needs a saved voice: design one with voice_design or add one with voice_add"}}"#.utf8)
+        XCTAssertEqual(StudioClient.refusal(status: 400, body: body),
+                       .refused(status: 400, message: "The ox-say service answered with an error (400)."))
     }
 
     func testUnreachableDaemonDisablesStudio() {

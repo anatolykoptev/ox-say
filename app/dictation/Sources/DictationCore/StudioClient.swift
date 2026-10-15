@@ -57,15 +57,13 @@ public struct StudioClient {
         return request
     }
 
-    /// The daemon's own message from an error body (`{"error":{"message":…}}`), or a
-    /// plain sentence naming the status when the body has none.
+    /// The daemon's own message from an error body (`{"error":{"message":…}}`) in plain
+    /// words, or a sentence naming the status when the body has none or only jargon.
     static func refusal(status: Int, body: Data) -> StudioError {
         let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
-        let message = (obj?["error"] as? [String: Any])?["message"] as? String
-        guard let message, !message.isEmpty else {
-            return .refused(status: status, message: "The ox-say service answered with an error (\(status)).")
-        }
-        return .refused(status: status, message: message)
+        let message = (obj?["error"] as? [String: Any])?["message"] as? String ?? ""
+        return .refused(status: status, message: PlainWords.clean(
+            message, fallback: "The ox-say service answered with an error (\(status))."))
     }
 
     /// GET /status: the daemon's version and whether the studio voice can run.

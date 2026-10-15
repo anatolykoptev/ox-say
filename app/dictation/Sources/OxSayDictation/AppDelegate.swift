@@ -139,6 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.servicesProvider = speakService
         overlay.onPlaybackToggle = { [weak self] in self?.player.toggle() }
         overlay.onPlaybackStop = { [weak self] in
+            self?.playbackDone = nil
             self?.player.stop()
             self?.overlay.finishPlaying()
         }
@@ -194,6 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         registerShortcut(shortcutPlan())
         registerSpeakShortcut(speakShortcutPlan())
         show(.idle)
+        refreshServiceStatus()
         studio.render()
         studio.pickUpRunningVoiceover()
 
@@ -513,6 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// request supersedes an in-flight one, so a slow answer cannot stop what
     /// already plays.
     private func speakRequest(_ text: String, voice: String?, language: String? = nil) {
+        playbackDone = nil // a speech request supersedes a voiceover that was playing
         speakGeneration += 1
         let generation = speakGeneration
         overlay.showWorking()
