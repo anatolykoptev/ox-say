@@ -1,6 +1,7 @@
 package wordalign
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/anatolykoptev/ox-say/internal/voices"
@@ -9,7 +10,7 @@ import (
 // AlignWords times every written word of text (whitespace-separated,
 // punctuation kept) from heard, the STT words of the same audio of dur s.
 func AlignWords(text string, heard []voices.Word, dur float64) []voices.Word {
-	written := strings.Fields(text)
+	written := writtenWords(text)
 	var ref []string
 	var owner []int
 	for wi, w := range written {
@@ -39,6 +40,56 @@ func AlignWords(text string, heard []voices.Word, dur float64) []voices.Word {
 			out[wi] = voices.Word{W: written[wi], S: at, E: at}
 		}
 	}
+	return settle(out, dur)
+}
+
+// settle keeps every time inside [0, dur] and the starts non-decreasing, so
+// overlapping or overlong heard words cannot produce a backwards cue.
+func settle(words []voices.Word, dur float64) []voices.Word {
+	prev := 0.0
+	for i := range words {
+		s := min(max(words[i].S, prev, 0), dur)
+		words[i].S, words[i].E = s, min(max(words[i].E, s), dur)
+		prev = s
+	}
+	return words
+}
+
+var (
+	firstGroup = regexp.MustCompile(`^[0-9]{1,3}$`)
+	digitsOnly = regexp.MustCompile(`^[0-9]+$`)
+	nextGroup  = regexp.MustCompile(`^[0-9]{3}[^\p{L}0-9]*$`)
+)
+
+// numberRuns groups consecutive items that are one number written in groups
+// ("1", "000", "000."): the first is 1-3 digits, each next exactly 3 (the last
+// may carry punctuation). Returned as [start, end) index pairs covering all n.
+func numberRuns(n int, text func(int) string) [][2]int {
+	var runs [][2]int
+	for i := 0; i < n; {
+		j := i + 1
+		if firstGroup.MatchString(text(i)) {
+			for j < n && nextGroup.MatchString(text(j)) {
+				j++
+				if !digitsOnly.MatchString(text(j - 1)) {
+					break // punctuation ends the number
+				}
+			}
+		}
+		runs = append(runs, [2]int{i, j})
+		i = j
+	}
+	return runs
+}
+
+// writtenWords splits text on whitespace, keeping the groups of one number
+// ("1 000 000") together as a single written word.
+func writtenWords(text string) []string {
+	f := strings.Fields(text)
+	var out []string
+	for _, r := range numberRuns(len(f), func(i int) string { return f[i] }) {
+		out = append(out, strings.Join(f[r[0]:r[1]], " "))
+	}
 	return out
 }
 
@@ -49,7 +100,7 @@ func AlignWords(text string, heard []voices.Word, dur float64) []voices.Word {
 func heardTokens(heard []voices.Word) ([]string, []voices.Word) {
 	var toks []string
 	var timed []voices.Word
-	for _, h := range heard {
+	for _, h := range joinHeardNumbers(heard) {
 		parts := Words(h.W)
 		share := (h.E - h.S) / float64(max(1, len(parts)))
 		for k, p := range parts {
@@ -59,6 +110,19 @@ func heardTokens(heard []voices.Word) ([]string, []voices.Word) {
 		}
 	}
 	return toks, timed
+}
+
+// joinHeardNumbers merges STT words that are the groups of one number.
+func joinHeardNumbers(heard []voices.Word) []voices.Word {
+	var out []voices.Word
+	for _, r := range numberRuns(len(heard), func(i int) string { return heard[i].W }) {
+		w := heard[r[0]]
+		for _, h := range heard[r[0]+1 : r[1]] {
+			w.W, w.E = w.W+" "+h.W, h.E
+		}
+		out = append(out, w)
+	}
+	return out
 }
 
 // tokenTimes walks the WER backtrace; unmatched ref tokens keep S = E = -1.

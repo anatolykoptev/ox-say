@@ -21,8 +21,8 @@ type Cue struct {
 }
 
 // Cues groups timed written words: a cue ends after a word with terminal
-// punctuation, or before the next word would pass MaxCueChars or
-// MaxCueSeconds; a cue over MaxCueLine wraps at the space nearest its middle.
+// punctuation, or before the next word would pass MaxCueChars, two lines of
+// MaxCueLine or MaxCueSeconds; a cue over MaxCueLine wraps greedily.
 func Cues(words []voices.Word) []Cue {
 	var out []Cue
 	var cur []string
@@ -34,7 +34,8 @@ func Cues(words []voices.Word) []Cue {
 		}
 	}
 	for _, w := range words {
-		if len(cur) > 0 && (utf8.RuneCountInString(strings.Join(cur, " "))+1+utf8.RuneCountInString(w.W) > MaxCueChars || w.E-s > MaxCueSeconds) {
+		if len(cur) > 0 && (utf8.RuneCountInString(strings.Join(cur, " "))+1+utf8.RuneCountInString(w.W) > MaxCueChars ||
+			!fits(strings.Join(cur, " ")+" "+w.W) || w.E-s > MaxCueSeconds) {
 			flush()
 		}
 		if len(cur) == 0 {
@@ -49,26 +50,30 @@ func Cues(words []voices.Word) []Cue {
 	return out
 }
 
-func wrap(s string) string {
-	rs := []rune(s)
-	if len(rs) <= MaxCueLine {
-		return s
-	}
-	mid, best := len(rs)/2, -1
-	for i, r := range rs {
-		if r == ' ' && (best < 0 || absInt(i-mid) < absInt(best-mid)) {
-			best = i
+// wrapLines fills lines greedily up to MaxCueLine characters; a word longer
+// than the limit gets a line of its own.
+func wrapLines(s string) []string {
+	var lines []string
+	line, n := "", 0
+	for _, w := range strings.Fields(s) {
+		wn := utf8.RuneCountInString(w)
+		if n > 0 && n+1+wn > MaxCueLine {
+			lines = append(lines, line)
+			line, n = "", 0
 		}
+		if n > 0 {
+			line, n = line+" ", n+1
+		}
+		line, n = line+w, n+wn
 	}
-	if best < 0 {
-		return s
+	if n > 0 {
+		lines = append(lines, line)
 	}
-	return string(rs[:best]) + "\n" + string(rs[best+1:])
+	return lines
 }
 
-func absInt(x int) int {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
+// fits reports whether s shows as at most two lines; greedy lines never pass
+// MaxCueLine except a single word longer than a line.
+func fits(s string) bool { return len(wrapLines(s)) <= 2 }
+
+func wrap(s string) string { return strings.Join(wrapLines(s), "\n") }

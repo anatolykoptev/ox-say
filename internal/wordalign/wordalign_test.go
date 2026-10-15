@@ -127,8 +127,17 @@ func TestAlignWordsMultiToken(t *testing.T) {
 }
 
 // The character limit alone (words too quick for the time limit) ends a cue.
+// Two full 42-character lines are 85 characters with their line break counted
+// as a space, one over MaxCueChars.
 // Mutation: drop the MaxCueChars check -> one cue of 120+ characters -> RED.
 func TestCuesCharLimit(t *testing.T) {
+	var full []voices.Word
+	for i, n := range []int{20, 21, 20, 21} {
+		full = append(full, voices.Word{W: strings.Repeat("я", n), S: float64(i) * 0.1, E: float64(i)*0.1 + 0.08})
+	}
+	if got := Cues(full); len(got) != 2 {
+		t.Errorf("%d cues for two 42-character lines, want 2: %+v", len(got), got)
+	}
 	var ws []voices.Word
 	for i := 0; i < 40; i++ {
 		ws = append(ws, voices.Word{W: "слово", S: float64(i) * 0.05, E: float64(i)*0.05 + 0.04})
@@ -187,6 +196,170 @@ func TestHyphenatedHeardSplitsAcrossWrittenWords(t *testing.T) {
 	for i, w := range want {
 		if math.Abs(got[i].S-w[0]) > 1e-9 || math.Abs(got[i].E-w[1]) > 1e-9 {
 			t.Errorf("word %d = %+v, want %.1f-%.1f", i, got[i], w[0], w[1])
+		}
+	}
+}
+
+// gateMaxWER mirrors the produce gate's word-error threshold (0.10).
+const gateMaxWER = 0.10
+
+// A digit token stands for spoken numerals only: babble it would absorb costs.
+// Mutation: wer.go isNumeral returns true for every word -> the babble rows
+// score 0 -> RED.
+func TestWERNumberWordsMustBeNumerals(t *testing.T) {
+	for _, c := range []struct {
+		ref, hyp string
+		errs     int
+	}{
+		{"Нас 10 человек.", "нас бла бла бла бла человек", 4},
+		{"нас бла бла бла бла человек", "Нас 10 человек.", 4},
+		{"Нас 10 человек.", "нас десять человек", 0},
+		{"Тут 21 человек.", "тут двадцать один человек", 0},
+	} {
+		if e, _ := WER(c.ref, c.hyp); e != c.errs {
+			t.Errorf("WER(%q, %q) errors = %d, want %d", c.ref, c.hyp, e, c.errs)
+		}
+	}
+	if e, n := WER("Нас 10 человек.", "нас бла бла бла бла человек"); float64(e)/float64(n) <= gateMaxWER {
+		t.Errorf("babble inside a number passes the gate: %d/%d", e, n)
+	}
+}
+
+// Real spoken numbers stay free in both directions; each written form below is
+// the TTS/STT variant of its spoken form.
+// Mutation: drop the numeralStems entries "тысяч"/"восьм"/"двенадцат"... is
+// covered per row; drop signUnits for '%' -> "сорок процентов" row RED.
+func TestWERNumberForms(t *testing.T) {
+	for _, c := range [][2]string{
+		{"Двадцать один год.", "21 год"},
+		{"Две целых пять десятых.", "2,5"},
+		{"Встреча в 18:30.", "встреча в восемнадцать тридцать"},
+		{"Сорок процентов.", "40%"},
+		{"Скидка 40 %.", "скидка сорок процентов"},
+		{"Цена 500 ₽.", "цена пятьсот рублей"},
+		{"Двенадцатого апреля.", "12 апреля"},
+		{"В тысяча девятьсот девяносто восьмом.", "в 1998"},
+		{"Путь третьего класса.", "путь 3-го класса"},
+		{"Путь 3-го класса.", "путь третьего класса"},
+		{"Миллион рублей.", "1 000 000 рублей"},
+		{"1 000 000 рублей.", "миллион рублей"},
+		{"1 000 рублей.", "тысяча рублей"},
+		{"В 90-х годах.", "в девяностых годах"},
+		{"От 10–15 человек.", "от десяти пятнадцати человек"},
+	} {
+		if e, _ := WER(c[0], c[1]); e != 0 {
+			t.Errorf("WER(%q, %q) = %d errors, want 0", c[0], c[1], e)
+		}
+	}
+	// An en-dash range stays two numbers; a babble word in its place is an error.
+	if e, _ := WER("10–15 человек", "бла бла человек"); e != 2 {
+		t.Errorf("range vs babble = %d, want 2", e)
+	}
+}
+
+// Marks and quote styles do not make a different word.
+// Mutation: wer.go normalise keeps unicode.Mn -> "сло́во" row RED; keeps
+// U+00AD -> "мо­локо" row RED; drops the ’ mapping -> "don’t" row RED.
+func TestWERNormalisation(t *testing.T) {
+	for _, c := range [][2]string{
+		{"сло́во", "слово"},
+		{"мо­локо", "молоко"},
+		{"don’t stop", "don't stop"},
+		{"й ну", "й ну"},
+	} {
+		if e, _ := WER(c[0], c[1]); e != 0 {
+			t.Errorf("WER(%q, %q) = %d, want 0", c[0], c[1], e)
+		}
+	}
+}
+
+// score.py's fixture has no real error rows, so it only guards strictness; this
+// guards leniency: genuinely wrong hyps must stay above the gate threshold.
+// Mutation: voices/tail.go SameWord tolerance n/5 -> n/2 -> "стол"/"слон" and
+// the wrong-word rows fall below the threshold -> RED.
+func TestWERLeniency(t *testing.T) {
+	const ref = "Сегодня в Петербурге ясная погода, и мы идём гулять по набережной."
+	e0, n0 := WER("Он купил большой стол и красный диван.", "он купил большой слон и красный диван")
+	if float64(e0)/float64(n0) <= gateMaxWER {
+		t.Errorf("a different word (стол/слон) passes the gate: %d/%d", e0, n0)
+	}
+	for name, hyp := range map[string]string{
+		"wrong words":  "сегодня в москве пасмурная погода и мы идем спать по лестнице",
+		"dropped part": "сегодня в петербурге ясная погода",
+		"babble tail":  ref + " бла бла бла бла бла",
+		"babble mid":   "сегодня в петербурге бла бла бла ясная погода и мы идем гулять по набережной",
+	} {
+		e, n := WER(ref, hyp)
+		if got := float64(e) / float64(n); got <= gateMaxWER {
+			t.Errorf("%s: %d/%d = %.2f passes the gate", name, e, n, got)
+		}
+	}
+}
+
+// settle: overlapping and overlong heard words keep the times inside the audio
+// and the starts non-decreasing.
+// Mutation: AlignWords returns out without settle -> RED.
+func TestAlignWordsSettled(t *testing.T) {
+	heard := []voices.Word{{W: "а", S: 0, E: 1.0}, {W: "б", S: 0.8, E: 1.5}, {W: "в", S: 0.2, E: 9}}
+	got := AlignWords("а б в", heard, 2)
+	prev := 0.0
+	for i, w := range got {
+		if w.S < prev || w.S < 0 || w.E > 2 || w.E < w.S {
+			t.Errorf("word %d = %+v (prev start %.2f)", i, w, prev)
+		}
+		prev = w.S
+	}
+}
+
+// A number written in groups is one written word with the time of its spoken
+// words, whichever side writes the groups.
+// Mutation: AlignWords uses strings.Fields instead of writtenWords -> RED.
+func TestAlignWordsGroupedNumber(t *testing.T) {
+	heard := []voices.Word{{W: "миллион", S: 0, E: 0.6}, {W: "рублей", S: 0.6, E: 1.0}}
+	got := AlignWords("1 000 000 рублей", heard, 1)
+	if len(got) != 2 || got[0].W != "1 000 000" || got[0].S != 0 || got[0].E != 0.6 || got[1].S != 0.6 {
+		t.Errorf("%+v", got)
+	}
+	heard = []voices.Word{{W: "1", S: 0, E: 0.2}, {W: "000", S: 0.2, E: 0.4}, {W: "000", S: 0.4, E: 0.6}, {W: "рублей", S: 0.6, E: 1.0}}
+	got = AlignWords("миллион рублей", heard, 1)
+	if len(got) != 2 || got[0].S != 0 || got[0].E != 0.6 || got[1].S != 0.6 {
+		t.Errorf("joined heard groups: %+v", got)
+	}
+}
+
+// Lines are filled greedily to MaxCueLine and a cue never needs a third line;
+// a word longer than a line stands alone.
+// Mutation: fits returns true -> the three-line text is one cue -> RED.
+func TestCuesWrapLimits(t *testing.T) {
+	long := strings.Repeat("я", MaxCueLine+8)
+	if got := wrap(long + " ок"); got != long+"\nок" {
+		t.Errorf("long word: %q", got)
+	}
+	// 3 x 25 characters fit MaxCueChars but not two greedy lines.
+	var wide []voices.Word
+	for i := 0; i < 3; i++ {
+		wide = append(wide, voices.Word{W: strings.Repeat("я", 25), S: float64(i) * 0.1, E: float64(i)*0.1 + 0.08})
+	}
+	if got := Cues(wide); len(got) != 2 {
+		t.Errorf("%d cues for three 25-character words, want 2: %+v", len(got), got)
+	}
+	var ws []voices.Word
+	for i := 0; i < 24; i++ {
+		ws = append(ws, voices.Word{W: "слово", S: float64(i) * 0.1, E: float64(i)*0.1 + 0.08})
+	}
+	cues := Cues(ws)
+	if len(cues) < 2 {
+		t.Fatalf("one cue for 24 words: %q", cues[0].Text)
+	}
+	for _, c := range cues {
+		lines := strings.Split(c.Text, "\n")
+		if len(lines) > 2 {
+			t.Errorf("%d lines: %q", len(lines), c.Text)
+		}
+		for _, l := range lines {
+			if n := len([]rune(l)); n > MaxCueLine {
+				t.Errorf("line of %d: %q", n, l)
+			}
 		}
 	}
 }
