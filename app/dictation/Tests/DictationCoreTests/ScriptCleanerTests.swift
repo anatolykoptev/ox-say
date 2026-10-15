@@ -241,5 +241,55 @@ final class ScriptCleanerTests: XCTestCase {
         let once = markdown("# T\n\nSee [a](u) ![b](v) <https://x.y>\n\n- [x] k\n\n[r]: http://r")
         XCTAssertEqual(markdown(once), once)
     }
-}
 
+    /// A run of spaces this long made the old autolink rule take 12.7 s (every start in
+    /// the run scanned the rest of it); a linear rule takes a few milliseconds.
+    private static let spaceRunLength = 40_000
+    private static let maxSecondsForTheSpaceRun = 1.0
+
+    // Mutation: MarkdownText.swift, in `autolinkBeforePunctuation`, put `[ \t]*`
+    // back in front of the autolink -> RED (the run of spaces takes seconds).
+    func testAnAutolinkAfterAHugeRunOfSpacesIsCleanedInLinearTime() {
+        // The autolink is not followed by punctuation, so a rule that starts with the
+        // spaces fails at every start in the run before the plain rule removes it.
+        let text = "Visit" + String(repeating: " ", count: Self.spaceRunLength) + "<https://example.com/x> Done."
+        let started = Date()
+        let result = markdown(text)
+        let seconds = Date().timeIntervalSince(started)
+        XCTAssertEqual(result, "Visit Done.")
+        XCTAssertLessThan(seconds, Self.maxSecondsForTheSpaceRun, "the autolink rule backtracks on a run of spaces")
+    }
+
+    // Mutation: MarkdownText.swift, in `footnoteMark`, put `[ \t]*` in front of the
+    // pattern -> RED. The text after the spaces is not a complete mark, so a rule
+    // that starts with the spaces fails at every start in the run.
+    func testAFootnoteMarkRuleDoesNotBacktrackOnARunOfSpaces() {
+        let text = "Note" + String(repeating: " ", count: Self.spaceRunLength) + "[^1 and more."
+        let started = Date()
+        let result = markdown(text)
+        XCTAssertEqual(result, markdown("Note [^1 and more."))
+        XCTAssertLessThan(Date().timeIntervalSince(started), Self.maxSecondsForTheSpaceRun)
+    }
+
+    // Mutation: MarkdownText.swift, in `definitionRules`, put the old pattern back:
+    // `^ {0,3}\[[^\[\]\n]+\]:[ \t]*\S.*\n?` -> RED here (the Narrator line is deleted).
+    func testALineThatLooksLikeADefinitionButIsSpeechIsKept() {
+        XCTAssertEqual(markdown("[Narrator]: Once upon a time…"), "Narrator: Once upon a time…")
+        XCTAssertEqual(markdown("He said:\n[note]: this is a quote line\nmore"), "He said:\nnote: this is a quote line\nmore")
+        XCTAssertEqual(markdown("[todo]: hello"), "todo: hello", "one plain word is not an address")
+    }
+
+    func testOnlyALineThatIsAnAddressIsADefinition() {
+        let text = "Body.\n\n[a]: https://example.com/a\n[b]: /local/path 'Title'\n[c]: <#frag> (Title)\n[d]: www.example.com\n[e]: images/pic.png \"Pic\""
+        XCTAssertEqual(markdown(text), "Body.")
+    }
+
+    // Footnote marks are not speech and are removed from every source (`[1]`); the
+    // notes they point to are page-bottom asides for the eye, which read aloud after
+    // the body, or in the middle of it, would only confuse a listener. Both go.
+    func testFootnoteMarksAndTheirDefinitionsAreDropped() {
+        let text = "Text[^1] and more.[^note] Again [^1].\n\n[^1]: The note text.\n    It goes on here.\n[^note]: Another."
+        XCTAssertEqual(markdown(text), "Text and more. Again.")
+        XCTAssertEqual(markdown("Two[^1][^2] marks."), "Two marks.")
+    }
+}
