@@ -516,6 +516,10 @@ func publicMessage(err error, roots ...string) string {
 			msg = regexp.MustCompile(regexp.QuoteMeta(r)+`[^\s"'()<>:]*`).ReplaceAllString(msg, "…")
 		}
 	}
+	var re *requestError
+	if errors.As(err, &re) {
+		return msg // the caller's own words about the caller's own input: roots are already gone
+	}
 	return absPathRe.ReplaceAllStringFunc(msg, func(m string) string {
 		sub := absPathRe.FindStringSubmatch(m)
 		return sub[1] + filepath.Base(sub[2])

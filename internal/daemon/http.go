@@ -20,19 +20,27 @@ import (
 // Routes registers the daemon's HTTP API on mux — mounted by go-mcpserver's
 // Config.Routes next to /mcp and /health.
 func (d *Daemon) Routes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/audio/speech", d.handleSpeech)
-	mux.HandleFunc("POST /v1/audio/transcriptions", d.handleTranscribe)
-	// Streaming transcription sessions on the resident ox-stt server.
-	mux.HandleFunc("POST /v1/audio/transcriptions/sessions", d.handleSTTSessionCreate)
-	mux.HandleFunc("POST /v1/audio/transcriptions/sessions/{id}/audio", d.handleSTTSessionAudio)
-	mux.HandleFunc("POST /v1/audio/transcriptions/sessions/{id}/finish", d.handleSTTSessionFinish)
-	mux.HandleFunc("DELETE /v1/audio/transcriptions/sessions/{id}", d.handleSTTSessionDelete)
+	// Dictation and speak-selection routes are counted in flight so the
+	// producer yields to them (D12); every pattern of interactiveRoutes is
+	// registered here, and only those.
+	interactiveHandlers := map[string]http.HandlerFunc{
+		"POST /v1/audio/speech":                              d.handleSpeech,
+		"POST /v1/audio/transcriptions":                      d.handleTranscribe,
+		"POST /v1/audio/transcriptions/sessions":             d.handleSTTSessionCreate,
+		"POST /v1/audio/transcriptions/sessions/{id}/audio":  d.handleSTTSessionAudio,
+		"POST /v1/audio/transcriptions/sessions/{id}/finish": d.handleSTTSessionFinish,
+		"DELETE /v1/audio/transcriptions/sessions/{id}":      d.handleSTTSessionDelete,
+	}
+	for _, pattern := range interactiveRoutes {
+		mux.HandleFunc(pattern, d.interactive(interactiveHandlers[pattern]))
+	}
 	mux.HandleFunc("GET /v1/audio/voices", d.handleListVoices)
 	mux.HandleFunc("POST /v1/audio/voices", d.handleAddVoice)
 	mux.HandleFunc("GET /v1/audio/voices/{name}", d.handleGetVoice)
 	mux.HandleFunc("PATCH /v1/audio/voices/{name}", d.handleUpdateVoice)
 	mux.HandleFunc("DELETE /v1/audio/voices/{name}", d.handleDeleteVoice)
 	mux.HandleFunc("GET /status", d.handleStatus)
+	d.produceRoutes(mux)
 }
 
 func writeErr(w http.ResponseWriter, status int, msg string) {

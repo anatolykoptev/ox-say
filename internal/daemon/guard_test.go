@@ -98,6 +98,19 @@ func TestGuard(t *testing.T) {
 		{"cli POST reaches the handler", "POST", "/v1/audio/speech", "127.0.0.1:8094", "application/json", `{}`, nil, http.StatusBadRequest},
 		{"json with charset reaches the handler", "POST", "/v1/audio/speech", "127.0.0.1:8094", "application/json; charset=utf-8", `{}`, nil, http.StatusBadRequest},
 		{"cli DELETE reaches the handler", "DELETE", "/v1/audio/voices/nobody", "127.0.0.1:8094", "", "", nil, http.StatusNotFound},
+		// produce: rebinding is refused for every method; CrossOriginProtection
+		// refuses cross-site POST/DELETE but lets safe GETs through by design
+		// (they are side-effect free and unreadable cross-site without CORS)
+		{"rebinding produce", "POST", "/v1/produce", "attacker.example:8094", "application/json", `{}`, nil, http.StatusForbidden},
+		{"text/plain produce", "POST", "/v1/produce", "127.0.0.1:8094", "text/plain", `{}`, nil, http.StatusUnsupportedMediaType},
+		{"cross-site produce chunk", "POST", "/v1/produce/x/chunks/0", "127.0.0.1:8094", "application/json", `{}`,
+			map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"rebinding produce GET", "GET", "/v1/produce/x", "attacker.example:8094", "", "", nil, http.StatusForbidden},
+		{"rebinding produce DELETE", "DELETE", "/v1/produce/x", "attacker.example:8094", "", "", nil, http.StatusForbidden},
+		{"cross-site produce DELETE", "DELETE", "/v1/produce/x", "127.0.0.1:8094", "", "",
+			map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"cli produce reaches the handler", "POST", "/v1/produce", "127.0.0.1:8094", "application/json", `{}`, nil, http.StatusServiceUnavailable},
+		{"cli produce DELETE reaches the handler", "DELETE", "/v1/produce/x", "127.0.0.1:8094", "", "", nil, http.StatusNotFound},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

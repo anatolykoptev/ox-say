@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -70,6 +71,12 @@ type Daemon struct {
 	repairCancel context.CancelFunc
 	repairDone   chan struct{}
 	repairStop   sync.Once
+
+	// prod runs long-form voiceover jobs; inflight and lastInteractiveEnd
+	// feed the dictation yield (see interactive.go).
+	prod               *producer
+	inflight           atomic.Int64
+	lastInteractiveEnd atomic.Int64
 }
 
 // New builds the supervisor (reaping any orphaned engine) and the voice
@@ -213,6 +220,8 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 			return nil, err
 		}
 	}
+	d.prod = newProducer(d.producePorts())
+	d.prod.log = logger
 	return d, nil
 }
 
@@ -534,6 +543,7 @@ func (d *Daemon) Status() statusSummary {
 // mid-flight — handlers keep their own guards and fail fast on the dead
 // supervisor rather than blocking shutdown.
 func (d *Daemon) Shutdown() {
+	d.StopProducer()
 	d.StopVoiceRepair()
 	d.Sup.Shutdown()
 	if d.STTSup != nil {
