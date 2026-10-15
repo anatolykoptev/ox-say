@@ -190,13 +190,13 @@ func TestMCPProduceForwardsEveryField(t *testing.T) {
 	cs := produceMCPSession(t, f)
 	outPath := filepath.Join(t.TempDir(), "v.wav")
 	id := mcpProduceDone(t, cs, map[string]any{"script": "Привет. Пока.", "title": "My Title", "voice": "nar", "style": "calm",
-		"preset": "reels", "seed": 77, "takes": 2, "out_path": outPath, "overwrite": true, "allow_battery": true})
+		"preset": "reels", "seed": 77, "takes": 3, "out_path": outPath, "overwrite": true, "allow_battery": true})
 	m, err := vproject.Load(filepath.Join(f.home, produceDir, id))
 	if err != nil {
 		t.Fatal(err)
 	}
 	st := m.Settings
-	if m.Title != "My Title" || st.Voice != "nar" || st.Style != "calm" || st.Preset != "reels" || st.Seed != 77 || st.Takes != 2 ||
+	if m.Title != "My Title" || st.Voice != "nar" || st.Style != "calm" || st.Preset != "reels" || st.Seed != 77 || st.Takes != 3 ||
 		st.OutPath != outPath || !st.Overwrite || !st.AllowBattery {
 		t.Fatalf("title %q settings %+v", m.Title, st)
 	}
