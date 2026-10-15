@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -74,10 +76,10 @@ func logBuf(d *Daemon) *bytes.Buffer {
 }
 
 // loudnorm lands within 1 LU of the target AND keeps the engine's sample rate
-// (the filter resamples to 192 kHz internally).
-// Mutation: postprocess.go loudnorm, "-af", filter -> "-af", "anull" -> the
+// (the limiter runs at 4x the rate internally).
+// Mutation: loudness.go renderLevel, "-af", filter -> "-af", "anull" -> the
 // quiet tone stays at about -34 -> RED. Mutation: drop "-ar", strconv.Itoa(rate)
-// (and loudnorm's own output-rate self-check) -> 192000 Hz comes out -> RED.
+// (and renderLevel's own output-rate self-check) -> the limiter's rate comes out -> RED.
 func TestLoudnormHitsTargetAtTheEngineRate(t *testing.T) {
 	for _, rate := range []int{testutil.VoxRate, testutil.QwenRate} {
 		got, note, err := loudnorm(context.Background(), t.TempDir(), toneBytes(rate), testTargetLUFS)
@@ -132,12 +134,16 @@ func TestLoudnessTargetValidates(t *testing.T) {
 // comes back, with a plain-words warning, and the failure is logged.
 // Mutation: postprocess.go normalizeLoudness, the default branch
 // `return wav, warnFFmpegFailed` -> `return nil, ...` (the take is dropped)
-// -> RED. Mutation: loudnorm's `secs <= 0` or rate self-check removed -> a
+// -> RED. Mutation: renderLevel's `secs <= 0` or rate self-check removed -> a
 // header-only / wrong-rate output passes for a normalised take -> RED.
 func TestNormalizeLoudnessKeepsTheTakeWhenFFmpegFails(t *testing.T) {
 	d, _, _ := voxFixture(t, nil)
 	buf := logBuf(d)
 	take := toneBytes(testutil.VoxRate)
+	real, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
 	header := filepath.Join(t.TempDir(), "header.wav")
 	if err := os.WriteFile(header, testutil.ToneWAV(testutil.VoxRate, 0, 0), 0o644); err != nil {
 		t.Fatal(err)
@@ -148,10 +154,10 @@ func TestNormalizeLoudnessKeepsTheTakeWhenFFmpegFails(t *testing.T) {
 	}
 	for name, setup := range map[string]func(){
 		"ffmpeg writes the wrong rate": func() {
-			useFakeFFmpeg(t, `case "$*" in *print_format*) exit 1;; esac; for a in "$@"; do last=$a; done; /bin/cp `+wrongRate+` "$last"`)
+			useFakeFFmpeg(t, `case "$*" in *ebur128*) exec `+real+` "$@";; esac; for a in "$@"; do last=$a; done; /bin/cp `+wrongRate+` "$last"`)
 		},
 		"ffmpeg writes only a header": func() {
-			useFakeFFmpeg(t, `case "$*" in *print_format*) exit 1;; esac; for a in "$@"; do last=$a; done; /bin/cp `+header+` "$last"`)
+			useFakeFFmpeg(t, `case "$*" in *ebur128*) exec `+real+` "$@";; esac; for a in "$@"; do last=$a; done; /bin/cp `+header+` "$last"`)
 		},
 		"ffmpeg exits 1":  func() { useFakeFFmpeg(t, "echo boom >&2; exit 1") },
 		"ffmpeg missing":  func() { t.Setenv("PATH", t.TempDir()) },
@@ -372,17 +378,17 @@ func TestSpeakLoudness(t *testing.T) {
 	}
 }
 
-// clickyBytes is a quiet tone with a full-scale click burst every second: its
-// peak-to-loudness ratio (about 34 dB) is far beyond what the -1.5 dBTP ceiling
-// leaves room for, so single-pass loudnorm lands about 2 LU under the target.
-func clickyBytes(rate int) []byte {
+// peakyBytes is secs seconds of a quiet tone with a full-scale click burst every
+// second: its true peak sits far above its loudness (about 24 dB), so a constant
+// gain to a broadcast level would put the peaks over the ceiling and the
+// limiter has to work.
+func peakyBytes(rate, secs int) []byte {
 	const (
-		secs     = 8
-		toneAmp  = 0.03
+		toneAmp  = 0.1
 		clickAmp = 0.9
-		clickLen = 8
+		clickLen = 40
 	)
-	w := testutil.ToneWAV(rate, secs, toneAmp)
+	w := testutil.ToneWAV(rate, float64(secs), toneAmp)
 	for s := 0; s < secs; s++ {
 		for i := 0; i < clickLen; i++ {
 			v := int16(math.Round(clickAmp * math.MaxInt16))
@@ -396,82 +402,156 @@ func clickyBytes(rate int) []byte {
 	return w
 }
 
-// loudnorm is two-pass: on a take whose single pass misses the target by more
-// than 1 LU, the result is within 1 LU. The fixture is checked against a
-// single-pass run first, so the test cannot pass vacuously.
-// Mutation: postprocess.go loudnorm, loudnormFilter(lufs, st) ->
-// loudnormFilter(lufs, nil) (single pass) -> RED.
-func TestLoudnormIsTwoPass(t *testing.T) {
-	take := clickyBytes(testutil.VoxRate)
-	in := filepath.Join(t.TempDir(), "in.wav")
-	if err := os.WriteFile(in, take, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	single, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-i", in, "-af",
-		"loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "48000", "-f", "wav", "pipe:1").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if l := integratedLUFS(t, single); math.Abs(l-testTargetLUFS) <= lufsTolerance {
-		t.Fatalf("fixture no longer discriminates: single pass reads %.1f LUFS", l)
-	}
-	got, note, err := loudnorm(context.Background(), t.TempDir(), take, testTargetLUFS)
-	if err != nil || note != "" {
-		t.Fatalf("%v %q", err, note)
-	}
-	if l := integratedLUFS(t, got); math.Abs(l-testTargetLUFS) > lufsTolerance {
-		t.Errorf("two-pass read %.1f LUFS, want -16 ±1", l)
-	}
-	// linear mode is one constant gain: the tone between clicks is amplified
-	// the same early and late. Dynamic mode rides the gain with the clicks.
-	early, late := gainDB(take, got, 0.2, 0.8), gainDB(take, got, 6.2, 6.8)
-	if math.Abs(early-late) > gainSlackDB {
-		t.Errorf("gain moved from %.2f dB to %.2f dB: not a linear (constant-gain) pass", early, late)
-	}
-}
-
-// gainSlackDB is how far the gain may drift between two stretches of a take
-// that a constant-gain pass amplified.
-const gainSlackDB = 0.3
-
-// gainDB is the RMS gain from in to out over [from, to) seconds.
-func gainDB(in, out []byte, from, to float64) float64 {
-	rate, _ := wavInfo(in)
-	rms := func(w []byte) float64 {
-		var sum float64
-		a, b := int(from*float64(rate)), int(to*float64(rate))
-		data := bytes.Index(w, []byte("data")) + 8 // ffmpeg puts a LIST chunk first
-		for i := a; i < b; i++ {
-			v := float64(int16(uint16(w[data+2*i]) | uint16(w[data+1+2*i])<<8))
-			sum += v * v
+// clicksOnlyBytes is nothing but peaks: the ceiling leaves it far under any
+// sensible target, so the result must say it missed.
+func clicksOnlyBytes(rate, secs int) []byte {
+	w := testutil.ToneWAV(rate, float64(secs), 0)
+	for s := 0; s < secs; s++ {
+		for i := 0; i < 8; i++ {
+			v := int16(math.Round(0.9 * math.MaxInt16))
+			if i%2 == 1 {
+				v = -v
+			}
+			off := 44 + 2*(s*rate+i)
+			w[off], w[off+1] = byte(uint16(v)), byte(uint16(v)>>8)
 		}
-		return math.Sqrt(sum / float64(b-a))
 	}
-	return 20 * math.Log10(rms(out)/rms(in))
+	return w
 }
 
-// A failing or unparsable measuring pass degrades to single pass: still
-// normalised, and the warning says so. Mutation: drop the `note = warnSinglePass`
-// assignment -> RED.
-func TestLoudnormFallsBackToSinglePass(t *testing.T) {
-	real, err := exec.LookPath("ffmpeg")
-	if err != nil {
+// Tolerances of the meter checks: the loudness target (LU) and the true-peak
+// ceiling (dB; the oversampled limiter and the 16-bit rounding may overshoot
+// it by a few hundredths).
+const (
+	levelToleranceLU = 0.5
+	truePeakSlackDB  = 0.1
+)
+
+var truePeakRe = regexp.MustCompile(`True peak:\s+Peak:\s+(-?[0-9.]+) dBFS`)
+
+// meterOf reads integrated loudness and true peak with ffmpeg's EBU R128
+// meter - an oracle independent of the code under test. inputArgs go before -i.
+func meterOf(t *testing.T, audio []byte, inputArgs ...string) (lufs, truePeak float64) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "m.wav")
+	if err := os.WriteFile(p, audio, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	args := append([]string{"-hide_banner", "-nostats"}, inputArgs...)
+	args = append(args, "-i", p, "-af", "ebur128=peak=true", "-f", "null", "-")
+	out, _ := exec.Command("ffmpeg", args...).CombinedOutput()
+	i, tp := lufsRe.FindAllStringSubmatch(string(out), -1), truePeakRe.FindAllStringSubmatch(string(out), -1)
+	if len(i) == 0 || len(tp) == 0 {
+		t.Fatalf("no ebur128 summary: %s", out)
+	}
+	lufs, _ = strconv.ParseFloat(i[len(i)-1][1], 64)
+	truePeak, _ = strconv.ParseFloat(tp[len(tp)-1][1], 64)
+	return lufs, truePeak
+}
+
+// A peaky take lands within 0.5 LU of -14 and of -16 AND holds the -1.5 dBTP
+// ceiling, at both engines' rates, 8 s and 2 s long (issues #153, #162). The
+// fixture is checked first: one constant gain to the target would put its
+// peaks over the ceiling, so the limiter has to work and the test cannot pass
+// vacuously. ffmpeg's loudnorm landed the 2 s take 10 LU under the target.
+// Mutation: loudness.go levelTo, `limit := in.tpDB+gain > loudnessCeilingDB`
+// -> `limit := false` -> the peaks stay over the ceiling -> RED.
+// Mutation: loudness.go levelFilter, `f := fmt.Sprintf("volume=%.4fdB", gainDB)`
+// -> `f := "volume=0dB"` -> the take keeps its level -> RED.
+// Mutation: loudness.go, loudnessRefinements = 2 -> 0 -> the -14 case lands
+// 1.3 LU under (the limiter costs loudness) -> RED.
+func TestLoudnormHoldsTheCeilingAndHitsTheTargetOnPeakyTakes(t *testing.T) {
+	for _, rate := range []int{testutil.VoxRate, testutil.QwenRate} {
+		for _, secs := range []int{8, 2} {
+			take := peakyBytes(rate, secs)
+			inI, inTP := meterOf(t, take)
+			for _, target := range []float64{-14, -16} {
+				if inTP+(target-inI) <= loudnessCeilingDB {
+					t.Fatalf("fixture no longer discriminates: %.1f LUFS / %.1f dBTP needs no limiter for %.0f", inI, inTP, target)
+				}
+				got, _, err := loudnorm(context.Background(), t.TempDir(), take, target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				l, tp := meterOf(t, got)
+				name := fmt.Sprintf("%d Hz, %d s, target %.0f", rate, secs, target)
+				if math.Abs(l-target) > levelToleranceLU {
+					t.Errorf("%s: integrated %.2f LUFS, want within %.1f LU", name, l, levelToleranceLU)
+				}
+				if tp > loudnessCeilingDB+truePeakSlackDB {
+					t.Errorf("%s: true peak %.2f dBTP is over the %.1f ceiling", name, tp, loudnessCeilingDB)
+				}
+				if gotRate, gotSecs := wavInfo(got); gotRate != rate || math.Abs(gotSecs-float64(secs)) > lengthSlackSec {
+					t.Errorf("%s: %d Hz / %.2f s came back", name, gotRate, gotSecs)
+				}
+			}
+		}
+	}
+}
+
+// lengthSlackSec is how far a levelled take's length may drift (the limiter's
+// look-ahead is compensated, so it should not at all).
+const lengthSlackSec = 0.01
+
+// A clip shorter than one EBU R128 gating block has no loudness to read; it is
+// measured on a looped copy so it still reaches the target. The oracle loops
+// the result the same way.
+// Mutation: loudness.go measureFilter, `if secs >= gatingBlockSec` -> `if true`
+// -> the 0.3 s clip reads as silence and the take is refused -> RED.
+func TestLoudnormLevelsAClipShorterThanOneGatingBlock(t *testing.T) {
+	const (
+		clipSecs = 0.3
+		loops    = 12
+	)
+	clip := testutil.ToneWAV(testutil.VoxRate, clipSecs, testutil.ToneAmp)
+	if l, _ := meterOf(t, clip); l > absoluteGateLUFS {
+		t.Fatalf("fixture no longer discriminates: the clip reads %.1f LUFS without looping", l)
+	}
+	got, _, err := loudnorm(context.Background(), t.TempDir(), clip, testTargetLUFS)
+	if err != nil {
+		t.Fatalf("a short clip was refused: %v", err)
+	}
+	if l, _ := meterOf(t, got, "-stream_loop", strconv.Itoa(loops)); math.Abs(l-testTargetLUFS) > levelToleranceLU {
+		t.Errorf("looped result reads %.2f LUFS, want -16 within %.1f", l, levelToleranceLU)
+	}
+	if _, secs := wavInfo(got); math.Abs(secs-clipSecs) > lengthSlackSec {
+		t.Errorf("length %.3f s, want %.1f s", secs, clipSecs)
+	}
+}
+
+// A take the limiter had to pull down hard says so in plain words; a gentle
+// one carries no note; a take too peaky to reach the target says it missed.
+// Mutation: loudness.go levelOutcome.note, return "" always -> RED.
+// Mutation: loudness.go levelOutcome.note, swap the order of the two cases ->
+// the miss reads as "pulled down" -> RED.
+func TestLoudnessNoteNamesTheLimiter(t *testing.T) {
 	d, _, _ := voxFixture(t, nil)
-	for name, measure := range map[string]string{
-		"no JSON in the report": `echo "no report here" >&2; exit 0`,
-		"measure exits 1":       `exit 1`,
-		"silence reads -inf":    `printf '{"input_i":"-inf","input_tp":"-inf","input_lra":"0.00","input_thresh":"-70.00","target_offset":"0.00"}' >&2; exit 0`,
-	} {
-		useFakeFFmpeg(t, `case "$*" in *print_format*) `+measure+`;; esac; exec `+real+` "$@"`)
-		got, warn := d.normalizeLoudness(context.Background(), toneBytes(testutil.VoxRate), testTargetLUFS)
-		if !strings.Contains(warn, "single pass") {
-			t.Errorf("%s: warning %q", name, warn)
-		}
-		if l := integratedLUFS(t, got); math.Abs(l-testTargetLUFS) > lufsTolerance {
-			t.Errorf("%s: fell back to %.1f LUFS, want -16 ±1", name, l)
-		}
+	_, warn := d.normalizeLoudness(context.Background(), peakyBytes(testutil.VoxRate, 8), -14)
+	if !strings.Contains(warn, "peak limiter") || !strings.Contains(warn, "dB") || strings.ContainsAny(warn, "\r\n") {
+		t.Errorf("hard limiting: warning %q does not say so in plain words", warn)
+	}
+	if _, warn := d.normalizeLoudness(context.Background(), toneBytes(testutil.VoxRate), testTargetLUFS); warn != "" {
+		t.Errorf("a plain take carries the warning %q", warn)
+	}
+	_, warn = d.normalizeLoudness(context.Background(), clicksOnlyBytes(testutil.VoxRate, 8), -10)
+	if !strings.Contains(warn, "under the target") {
+		t.Errorf("a missed target: warning %q does not say so", warn)
+	}
+}
+
+// A silent take has no loudness to set: the take comes back untouched with a
+// warning that names the reason, and the strict path refuses it.
+// Mutation: loudness.go measureLevel, drop the `lvl.lufs <= absoluteGateLUFS`
+// check -> the silence is "levelled" by +54 dB and reported as normalised -> RED.
+func TestLoudnormRefusesSilence(t *testing.T) {
+	d, _, _ := voxFixture(t, nil)
+	silent := testutil.SilentWAV(2)
+	got, warn := d.normalizeLoudness(context.Background(), silent, testTargetLUFS)
+	if !bytes.Equal(got, silent) || !strings.Contains(warn, "silent or too short") {
+		t.Errorf("silence: kept=%v, warning %q", bytes.Equal(got, silent), warn)
+	}
+	if _, _, err := loudnorm(context.Background(), t.TempDir(), silent, testTargetLUFS); !errors.Is(err, errUnmeasurable) {
+		t.Errorf("silence: %v, want errUnmeasurable", err)
 	}
 }
 
@@ -537,14 +617,13 @@ func fileLUFS(t *testing.T, path string) float64 {
 }
 
 // The strict file path: lands within 1 LU on a 60 s file with a level step,
-// keeps the rate, and is linear (the crest factor is unchanged within
-// 0.5 dB); a silent file is an error, never a published unnormalised file.
-// Mutation: postprocess.go loudnormFile, loudnormFilter(lufs, st) ->
-// loudnormFilter(lufs, nil) (single pass) -> dynamic mode changes the crest
-// factor -> RED.
-// Mutation: postprocess.go loudnormFile, on a measuring error fall back to a
-// single pass -> the silent file succeeds -> RED.
-func TestLoudnormFileStrictTwoPass(t *testing.T) {
+// keeps the rate, and is one constant gain (the crest factor is unchanged
+// within 0.5 dB, nothing needed the limiter); a silent file is an error, never a published unnormalised file.
+// Mutation: loudness.go levelTo, drop the gain (levelFilter's volume=%.4fdB ->
+// volume=0dB) -> the file keeps its level -> RED.
+// Mutation: loudness.go levelTo, on errUnmeasurable carry on with gain 0 and
+// return nil -> the silent file succeeds -> RED.
+func TestLoudnormFileStrictConstantGain(t *testing.T) {
 	dir := t.TempDir()
 	in, out := writeStepFile(t, dir), filepath.Join(dir, "out.wav")
 	if err := loudnormFile(context.Background(), in, out, testTargetLUFS); err != nil {
@@ -596,7 +675,7 @@ exit 1`)
 }
 
 // A measuring failure on the assembled file is an error: nothing falls back
-// to a single pass (that is only for one take).
+// to an unmeasured gain.
 func TestLoudnormFileMeasureFailureIsAnError(t *testing.T) {
 	real, err := exec.LookPath("ffmpeg")
 	if err != nil {
@@ -642,23 +721,23 @@ func TestLoudnormFileTimeoutScalesWithDuration(t *testing.T) {
 	}
 }
 
-// loudnormFileReport tells the dynamic fallback from a constant gain, from
-// ffmpeg's own normalization_type: a peaky programme cannot reach -16 LUFS
-// under a -1.5 dBTP ceiling with one gain; the stepped sine can.
-// Mutation: postprocess.go reportedNormType, return "" -> the peaky case reads linear -> RED.
-// Mutation: postprocess.go applyLoudnormReport, drop ":print_format=json" -> RED.
-func TestLoudnormFileReportsTheDynamicFallback(t *testing.T) {
+// loudnormFileReport says when the limiter had to work hard: a peaky programme
+// needs it, the stepped sine (one constant gain) does not.
+// Mutation: loudness.go levelOutcome.limited, return false always -> RED.
+// Mutation: loudness.go, limitNoteDB = 6.0 -> 100 -> the peaky case reads
+// as a light touch -> RED.
+func TestLoudnormFileReportsLimiting(t *testing.T) {
 	dir := t.TempDir()
 	peaky := filepath.Join(dir, "peaky.wav")
-	if err := os.WriteFile(peaky, clickyBytes(testutil.VoxRate), 0o644); err != nil {
+	if err := os.WriteFile(peaky, peakyBytes(testutil.VoxRate, 8), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dyn, err := loudnormFileReport(context.Background(), peaky, filepath.Join(dir, "p.wav"), testTargetLUFS)
-	if err != nil || !dyn {
-		t.Errorf("peaky programme: dynamic=%v err=%v, want dynamic", dyn, err)
+	limited, err := loudnormFileReport(context.Background(), peaky, filepath.Join(dir, "p.wav"), -14)
+	if err != nil || !limited {
+		t.Errorf("peaky programme: limited=%v err=%v, want limited", limited, err)
 	}
-	dyn, err = loudnormFileReport(context.Background(), writeStepFile(t, dir), filepath.Join(dir, "s.wav"), testTargetLUFS)
-	if err != nil || dyn {
-		t.Errorf("stepped sine: dynamic=%v err=%v, want a constant gain", dyn, err)
+	limited, err = loudnormFileReport(context.Background(), writeStepFile(t, dir), filepath.Join(dir, "s.wav"), testTargetLUFS)
+	if err != nil || limited {
+		t.Errorf("stepped sine: limited=%v err=%v, want a constant gain", limited, err)
 	}
 }

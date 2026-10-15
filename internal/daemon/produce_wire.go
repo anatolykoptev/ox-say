@@ -50,7 +50,7 @@ func (f *portFuncs) Background(on bool)                             { f.backgrou
 func (f *portFuncs) Home() string                                   { return f.home() }
 func (f *portFuncs) OutputRoot() string                             { return f.outputRoot() }
 
-// strictNormalize is the Normalize port: the STRICT two-pass loudnormFileReport
+// strictNormalize is the Normalize port: the STRICT loudnormFileReport
 // under a timeout proportional to the duration. It must never be the soft
 // normalizeLoudness, which returns the unnormalised audio on a failure - an
 // unnormalised file may not pass for a published one (#154.6, D16).

@@ -99,9 +99,10 @@ type producePorts interface {
 	DefaultVoice(lang string) string
 	Unavailable() string
 	EngineID() (string, error)
-	// Normalize writes in at lufs to out; dynamic reports that the level moves
-	// within the file (loudnorm's dynamic mode).
-	Normalize(ctx context.Context, in, out string, lufs, durSec float64) (dynamic bool, err error)
+	// Normalize writes in at lufs to out; limited reports that the peak limiter
+	// pulled the loudest peaks down hard (or the target was missed under the
+	// true-peak ceiling).
+	Normalize(ctx context.Context, in, out string, lufs, durSec float64) (limited bool, err error)
 	Quiet(ctx context.Context, onWait func()) error
 	Power(ctx context.Context) (onBattery, lowPower bool)
 	Background(on bool)

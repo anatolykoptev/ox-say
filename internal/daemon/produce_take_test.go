@@ -44,7 +44,7 @@ type fakePorts struct {
 	normHook    func()        // non-nil: Normalize calls it first
 	normNoop    bool          // Normalize reports success and writes nothing
 	normOut     []byte        // non-nil: Normalize writes these bytes instead of its input
-	normDynamic bool          // Normalize reports loudnorm's dynamic mode
+	normLimited bool          // Normalize reports loudnorm's dynamic mode
 	outRoot     string        // non-empty: OutputRoot answers it
 	hang        chan struct{} // non-nil: Render ignores its context and waits for this
 	events      []string      // "quiet", "render", "hear" in call order
@@ -120,7 +120,7 @@ func (f *fakePorts) EngineID() (string, error)        { return f.engineID, nil }
 func (f *fakePorts) Normalize(_ context.Context, in, out string, _, _ float64) (bool, error) {
 	f.mu.Lock()
 	f.normCalls++
-	err, hook, noop, dyn := f.normErr, f.normHook, f.normNoop, f.normDynamic
+	err, hook, noop, dyn := f.normErr, f.normHook, f.normNoop, f.normLimited
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
