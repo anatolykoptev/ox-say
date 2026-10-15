@@ -12,12 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/voices"
+	"github.com/anatolykoptev/ox-say/internal/vscript"
 )
 
 const (
@@ -273,22 +273,9 @@ func voxStyle(body map[string]any, v *voices.Voice) (string, error) {
 // sanitizeStyle makes s a single-line phrase that cannot close or reopen the
 // engine's style tag: the engine reads the first "(...)" of the text as the
 // tag, so a ")" in the style would end it early and the rest would be spoken,
-// and "(" would start a second one. Parentheses (ASCII and full-width) are
-// dropped; newlines, tabs and every other control character become a space;
-// runs of white space collapse.
-func sanitizeStyle(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r == '(' || r == ')' || r == '\uFF08' || r == '\uFF09':
-		case unicode.IsControl(r):
-			b.WriteRune(' ')
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return strings.Join(strings.Fields(b.String()), " ")
-}
+// and "(" would start a second one. The rules live in vscript.CleanStyle, the
+// single source shared with the produce script parser.
+func sanitizeStyle(s string) string { return vscript.CleanStyle(s) }
 
 // voxCloneMode decides ultimate (reference + its transcript as a continuation
 // prompt: most faithful, keeps the reference's own delivery and language) vs

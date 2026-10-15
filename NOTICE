@@ -13,3 +13,7 @@ engine/patches/audiocpp modify audio.cpp (Copyright 2026 ShugoAI LLC,
 Apache-2.0), the engine behind VoxCPM2 on Apple Silicon: a speech-route prompt
 audio field and a loopback-only guard. The upstream lines they contain remain
 under audio.cpp's Apache-2.0 license.
+
+internal/vscript/sentences.go and abbrev.go port six sentence rules and part of
+the abbreviation list of razdel (https://github.com/natasha/razdel), Copyright
+(c) 2018 Alexander Kukushkin, MIT License.

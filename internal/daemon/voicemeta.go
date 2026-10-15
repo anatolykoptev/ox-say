@@ -6,13 +6,12 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/voices"
+	"github.com/anatolykoptev/ox-say/internal/vscript"
 )
 
 const (
-	// maxStyleChars bounds a voice's default style: VoxCPM2 reads it as a
-	// parenthesised prefix of the text, and a paragraph there is a prompt, not
-	// a style.
-	maxStyleChars = 300
+	// maxStyleChars bounds a voice's default style (vscript.MaxStyleChars).
+	maxStyleChars = vscript.MaxStyleChars
 	// maxDesignedFromChars bounds the description a designed voice records;
 	// it is a label for people and agents, never sent to the engine.
 	maxDesignedFromChars = 1000

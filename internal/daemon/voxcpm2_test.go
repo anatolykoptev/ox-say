@@ -479,6 +479,10 @@ func TestVoxCPM2StyleCannotBreakOutOfTheTag(t *testing.T) {
 	if got := sanitizeStyle("a\nb) injected ("); got != "a b injected" {
 		t.Errorf("sanitizeStyle = %q", got)
 	}
+	// Delegation to vscript.CleanStyle: a format character cannot survive.
+	if got := sanitizeStyle("\u200b"); got != "" {
+		t.Errorf("sanitizeStyle(U+200B) = %q, want empty", got)
+	}
 }
 
 // Asking for voxcpm2 on a host that cannot run it is a 4xx in plain words that
