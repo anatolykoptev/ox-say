@@ -749,19 +749,19 @@ func TestAssembleChecksTheNormalisedLength(t *testing.T) {
 	}
 }
 
-// ffmpeg's dynamic fallback is recorded, in the job and in the export, and
+// the limiter note is recorded, in the job and in the export, and
 // cleared again when a later assembly keeps one gain.
 // Mutation: produce_assemble.go assemble, drop the withNote call -> RED.
-func TestAssembleRecordsDynamicLoudness(t *testing.T) {
+func TestAssembleRecordsLimitedLoudness(t *testing.T) {
 	f := newFakePorts(t)
 	p, j := assembleFixture(t, f)
 	if err := p.assemble(j); err != nil {
 		t.Fatal(err)
 	}
 	if hasNote(j.m.Notes) {
-		t.Fatalf("a linear result carries the dynamic note: %v", j.m.Notes)
+		t.Fatalf("a linear result carries the limiter note: %v", j.m.Notes)
 	}
-	f.normDynamic = true
+	f.normLimited = true
 	if err := p.assemble(j); err != nil {
 		t.Fatal(err)
 	}
@@ -770,15 +770,15 @@ func TestAssembleRecordsDynamicLoudness(t *testing.T) {
 	if err := json.Unmarshal(raw, &export); err != nil || !hasNote(j.m.Notes) || !hasNote(export.Notes) {
 		t.Fatalf("job notes %v, export notes %v (%v)", j.m.Notes, export.Notes, err)
 	}
-	f.normDynamic = false
+	f.normLimited = false
 	if err := p.assemble(j); err != nil || hasNote(j.m.Notes) {
-		t.Fatalf("the note outlived a linear assembly: %v %v", err, j.m.Notes)
+		t.Fatalf("the note outlived an unlimited assembly: %v %v", err, j.m.Notes)
 	}
 }
 
 func hasNote(notes []string) bool {
 	for _, n := range notes {
-		if n == vproject.NoteDynamicLoudness {
+		if n == vproject.NoteLimitedLoudness {
 			return true
 		}
 	}

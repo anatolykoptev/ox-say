@@ -46,9 +46,9 @@ const (
 	DirMode      = 0o700
 	FileMode     = 0o600
 	NoteNumbers  = "numbers left as digits are not checked by the transcript gate"
-	// NoteDynamicLoudness is recorded when ffmpeg could not keep one gain over
-	// the whole programme (see issue #153).
-	NoteDynamicLoudness = "loudness was set in dynamic mode: a limiter held the true peak, so the level moves a little within the file"
+	// NoteLimitedLoudness is recorded when reaching the loudness target took a
+	// peak limiter hard (see issue #153).
+	NoteLimitedLoudness = "loudness needed a peak limiter: the loudest peaks were pulled down by several dB to hold the true-peak ceiling, so very peaky speech may sound slightly squashed"
 )
 
 // Settings are fixed at creation, except the fields a run recomputes from

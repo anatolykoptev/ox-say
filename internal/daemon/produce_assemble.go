@@ -33,7 +33,7 @@ const (
 	workWAVPattern  = ".assembled" + vproject.TempMark + "*.wav"
 	normSuffix      = ".norm.wav"
 	// normLengthSlackSec is how far the normalised file may differ from the
-	// timeline. loudnorm keeps the length to a few samples; 50 ms covers
+	// timeline. the limiter chain keeps the length to a few samples; 50 ms covers
 	// decoder padding and frame rounding yet is far below the loss of a word,
 	// so a truncated or padded result cannot pass.
 	normLengthSlackSec = 0.05
@@ -94,8 +94,9 @@ type timeline struct {
 	words []voices.Word
 	rate  int
 	total float64 // seconds of audio written
-	// dynamic: loudnorm could not keep one gain over the programme.
-	dynamic bool
+	// limited: the peak limiter pulled the loudest peaks down hard, or the
+	// target could not be reached under the true-peak ceiling.
+	limited bool
 }
 
 // assemble streams every chunk's picked take - trimmed, faded, then its gap -
@@ -137,17 +138,17 @@ func (p *producer) assemble(j *job) error {
 	if tl.total <= 0 {
 		return errors.New("every chunk is silent, so there is nothing to publish: regenerate the chunks marked review")
 	}
-	tl.dynamic, err = p.ports.Normalize(p.ctx, tmp.Name(), norm, m.Settings.LUFS, tl.total)
+	tl.limited, err = p.ports.Normalize(p.ctx, tmp.Name(), norm, m.Settings.LUFS, tl.total)
 	if err != nil {
 		return fmt.Errorf("loudness normalisation failed, so nothing was published: %w", err)
 	}
 	if rate, secs := wavInfoFile(norm); rate != tl.rate || secs <= 0 || math.Abs(secs-tl.total) > normLengthSlackSec {
 		return fmt.Errorf("loudness normalisation left %d Hz / %.2f s instead of %d Hz / %.2f s, so nothing was published", rate, secs, tl.rate, tl.total)
 	}
-	if tl.dynamic {
-		p.log.Warn("produce: loudness was set in dynamic mode", slog.Float64("target_lufs", m.Settings.LUFS))
+	if tl.limited {
+		p.log.Warn("produce: loudness needed the peak limiter", slog.Float64("target_lufs", m.Settings.LUFS))
 	}
-	m.Notes = withNote(m.Notes, vproject.NoteDynamicLoudness, tl.dynamic)
+	m.Notes = withNote(m.Notes, vproject.NoteLimitedLoudness, tl.limited)
 	if err := checkOutputs(stem, m.Settings.Overwrite, ownedOutputs(m)); err != nil { // write-time re-check
 		return err
 	}
@@ -323,7 +324,7 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 	j.m.Outputs = m.Outputs
 	j.m.Progress.ElapsedS, j.m.Progress.ETAS = m.Progress.ElapsedS, 0
 	j.elapsedS = m.Progress.ElapsedS
-	j.m.Notes = withNote(j.m.Notes, vproject.NoteDynamicLoudness, tl.dynamic)
+	j.m.Notes = withNote(j.m.Notes, vproject.NoteLimitedLoudness, tl.limited)
 	p.mu.Unlock()
 	return nil
 }
