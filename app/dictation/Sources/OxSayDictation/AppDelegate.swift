@@ -15,6 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// only while the permission does not work (recomputed each open).
     private let allowPastingItem = NSMenuItem(title: "Allow pasting… (Accessibility is off)",
                                               action: #selector(allowPasting), keyEquivalent: "")
+    /// Repair for a version split the kickstart could not fix: the same
+    /// conditional top slot, offered only while the daemon stays off the
+    /// on-disk bundle's version.
+    private let repairItem = NSMenuItem(title: "Repair ox-say…",
+                                        action: #selector(repairOxSay), keyEquivalent: "")
     private let toggleItem = NSMenuItem(title: "Toggle Mode (press to start, press again to stop)", action: #selector(toggleMode), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
     private var hotKey: HotKey?
@@ -33,6 +38,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The daemon's last /status answer, fetched on every menu open; nil when it
     /// could not be reached.
     private var serviceStatus: DaemonStatus?
+    /// Version-handshake episode state: the disk version being chased, the
+    /// kickstarts spent on it, and the version Repair would reinstall. A
+    /// /status answer matching the disk version ends the episode.
+    private var handshakeDisk: String?
+    private var handshakeKickstarts = 0
+    private var repairTarget: String?
+    /// True while a handshake pass runs, so a /status refresh arriving during
+    /// a kickstart's backoff does not stack a second pass.
+    private var handshakeRunning = false
+    /// True while the "Finishing the update…" pill is the handshake's to clear.
+    private var handshakePill = false
+    private var wakeObserver: NSObjectProtocol?
     /// The small version line at the bottom of the menu.
     private let footerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let updater = UpdateChecker()
@@ -196,6 +213,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         registerSpeakShortcut(speakShortcutPlan())
         show(.idle)
         refreshServiceStatus()
+        // A wake is the other moment the app and the daemon can split, e.g.
+        // the daemon restarted while the Mac slept. It reuses the menu-open
+        // /status refresh, which also runs the handshake.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.refreshServiceStatus() }
         studio.render()
 
         // Ask for both permissions up front, so the first dictation does not stall
@@ -348,12 +371,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else if let index = menu.items.firstIndex(of: allowPastingItem) {
             menu.removeItem(at: index)
         }
+        // The same conditional top slot as allowPastingItem: a repair row that
+        // exists only while the daemon refuses the bundle's version. The
+        // mismatch itself is never a menu state.
+        if repairTarget != nil {
+            if menu.items.first !== repairItem {
+                menu.insertItem(repairItem, at: 0)
+            }
+        } else if let index = menu.items.firstIndex(of: repairItem) {
+            menu.removeItem(at: index)
+        }
     }
 
     private func buildMenu() {
         let menu = NSMenu()
         menu.delegate = self
         allowPastingItem.target = self
+        repairItem.target = self
         menu.addItem(statusLine)
         speakHint.isEnabled = false
         menu.addItem(speakHint)
@@ -393,7 +427,123 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             self.serviceStatus = status
             self.studio.statusChanged(status)
+            self.runVersionHandshake()
         }
+    }
+
+    /// The on-disk bundle's version, read from its Info.plist file — never
+    /// Bundle.main, which caches the plist this process launched with, the
+    /// exact stale answer the handshake exists to catch.
+    private static func diskVersion() -> String? {
+        let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
+        return (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
+    }
+
+    /// One pass of the version handshake over the latest /status: app, on-disk
+    /// bundle and daemon should be one version. DictationCore's table decides;
+    /// this gathers its inputs and performs what it returns. Skipped while an
+    /// install runs — the installer is already moving the versions, and a
+    /// kickstart then would fight its own agent reload.
+    private func runVersionHandshake() {
+        guard !updateInstalling, !handshakeRunning else { return }
+        handshakeRunning = true
+        let client = studioClient!
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.handshakeRunning = false }
+            let disk = Self.diskVersion()
+            if disk != self.handshakeDisk {
+                // An install that landed mid-episode starts a fresh count.
+                self.handshakeDisk = disk
+                self.handshakeKickstarts = 0
+            }
+            while true {
+                switch VersionHandshake.decide(app: AboutPanel.appVersion, disk: disk,
+                                               daemon: self.serviceStatus?.version,
+                                               kickstarts: self.handshakeKickstarts) {
+                case .none:
+                    if VersionHandshake.agrees(daemon: self.serviceStatus?.version, disk: disk) {
+                        self.handshakeKickstarts = 0
+                        self.repairTarget = nil
+                    }
+                    self.finishHandshakePill()
+                    return
+                case .relaunchSelf:
+                    self.relaunch()
+                    return
+                case .kickstartDaemon:
+                    self.handshakeKickstarts += 1
+                    self.showHandshakePill()
+                    Self.kickstartDaemon()
+                    try? await Task.sleep(nanoseconds: UInt64(VersionHandshake.kickstartBackoff * 1_000_000_000))
+                    let status = try? await client.status()
+                    self.serviceStatus = status
+                    self.studio.statusChanged(status)
+                case .offerRepair(let target):
+                    self.repairTarget = target
+                    self.finishHandshakePill()
+                    return
+                }
+            }
+        }
+    }
+
+    /// `launchctl kickstart -k` the daemon's agent: kills it and lets launchd
+    /// start the installed build. Best-effort — the /status re-read after the
+    /// backoff decides the next step either way.
+    private static func kickstartDaemon() {
+        let argv = VersionHandshake.kickstartCommand(uid: getuid())
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: argv[0])
+        process.arguments = Array(argv.dropFirst())
+        try? process.run()
+        process.waitUntilExit()
+    }
+
+    /// The bounded "Finishing the update…" pill while a kickstart runs. A
+    /// recording owns the pill, so during dictation the kickstart is silent.
+    private func showHandshakePill() {
+        guard controller.state == .idle else { return }
+        overlay.showWorking()
+        overlay.setWorkingText("Finishing the update…")
+        overlay.setHintHidden(true)
+        handshakePill = true
+    }
+
+    /// Clears the handshake's pill unless a dictation took it over meanwhile.
+    private func finishHandshakePill() {
+        defer { handshakePill = false }
+        guard handshakePill, controller.state == .idle else { return }
+        overlay.finish()
+    }
+
+    /// The user-chosen repair: reinstall the on-disk bundle's version over the
+    /// mismatched service. Never automatic — the row exists only while the
+    /// daemon stays off the bundle's version, and asks before running the
+    /// installer.
+    @objc private func repairOxSay() {
+        guard let target = repairTarget else { return }
+        guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
+            runAlert(title: UpdateGate.busyAlertTitle,
+                     text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
+            return
+        }
+        let sure = runAlert(title: "Repair ox-say?",
+                            text: "The app and the ox-say service disagree on the version. This reinstalls v\(target), the version already on disk; dictation pauses while ox-say restarts.",
+                            buttons: ["Repair", "Cancel"])
+        guard sure == .alertFirstButtonReturn else { return }
+        installUpdate(tag: UpdateInstaller.tag(forVersion: target), kind: .update)
+    }
+
+    /// `open -n` this app's own bundle path — the current copy on disk — and
+    /// end this process. The installer's success path and the handshake's
+    /// relaunchSelf are the same act.
+    private func relaunch() {
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        relaunch.arguments = ["-n", Bundle.main.bundleURL.path]
+        try? relaunch.run()
+        NSApp.terminate(nil)
     }
 
     @objc private func showAbout() {
@@ -724,11 +874,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.setHintHidden(true)
         Task { @MainActor in
             let log = Self.openUpdateLog()
-            let failure = await UpdateInstaller.run(kind: kind, tag: tag, log: log) {
-                // Bundle.main caches its Info.plist; read the file the relaunch will use.
-                let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
-                return (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
-            }
+            let statusClient = studioClient!
+            let failure = await UpdateInstaller.run(kind: kind, tag: tag, log: log,
+                                                    installedVersion: Self.diskVersion,
+                                                    daemonVersion: { (try? await statusClient.status())?.version })
             try? log?.close()
             updateInstalling = false
             studio.render()
@@ -739,11 +888,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                          buttons: ["OK"])
                 return
             }
-            let relaunch = Process()
-            relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            relaunch.arguments = ["-n", Bundle.main.bundleURL.path]
-            try? relaunch.run()
-            NSApp.terminate(nil)
+            relaunch()
         }
     }
 
