@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"flag"
 	"go/ast"
 	"go/parser"
@@ -574,4 +575,128 @@ func TestLoadTTSModelAndPorts(t *testing.T) {
 			t.Errorf("%s: accepted %v", name, extra)
 		}
 	}
+}
+
+// T1 of the one-version plan: when the daemon's own executable resolves into
+// <X>.app/Contents/Helpers — launchd starts bin/ox-say, a symlink into the
+// bundle — every engine binary default lands in Helpers with it, because one
+// bundle is the versioned unit. A daemon outside a bundle keeps
+// <Home>/engine, an exe-lookup or EvalSymlinks failure falls back the same
+// way so the daemon still starts, and an explicit OX_SAY_*_BIN wins in either
+// layout.
+// Mutations: config.go defaultEngineDir — drop the EvalSymlinks call so the
+// symlink's own bin/ dir is used -> bundle subtest RED; drop the
+// isBundleHelpersDir check so any exe dir counts -> plain subtest RED; point
+// one default (STTBin) back at filepath.Join(c.Home, "engine", …) -> bundle
+// subtest RED.
+func TestLoadEngineDir(t *testing.T) {
+	orig := daemonExe
+	t.Cleanup(func() { daemonExe = orig })
+	pinExe := func(t *testing.T, path string, err error) {
+		t.Helper()
+		daemonExe = func() (string, error) { return path, err }
+	}
+	check := func(t *testing.T, home, wantDir string) {
+		t.Helper()
+		c := loadEnv(t, map[string]string{"OX_SAY_HOME": home})
+		for _, tc := range []struct{ field, got, bin string }{
+			{"EngineBin", c.EngineBin, "tts-server"},
+			{"STTBin", c.STTBin, "ox-stt"},
+			{"VoxCPM2Bin", c.VoxCPM2Bin, "audiocpp_server"},
+		} {
+			if want := filepath.Join(wantDir, tc.bin); tc.got != want {
+				t.Errorf("%s = %q, want %q", tc.field, tc.got, want)
+			}
+		}
+	}
+	homeEngine := func(t *testing.T) (home, dir string) {
+		t.Helper()
+		home = filepath.Join(t.TempDir(), "home")
+		return home, filepath.Join(home, "engine")
+	}
+
+	t.Run("bundle", func(t *testing.T) {
+		// The install layout: bin/ox-say -> OxSayDictation.app/Contents/Helpers/ox-say.
+		root := t.TempDir()
+		helpers := filepath.Join(root, "OxSayDictation.app", "Contents", "Helpers")
+		writeFakeExe(t, filepath.Join(helpers, "ox-say"))
+		link := filepath.Join(root, "bin", "ox-say")
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(helpers, "ox-say"), link); err != nil {
+			t.Fatal(err)
+		}
+		pinExe(t, link, nil)
+		// EvalSymlinks resolves the whole path — /var -> /private/var on macOS.
+		resolved, err := filepath.EvalSymlinks(helpers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		home, _ := homeEngine(t)
+		check(t, home, resolved)
+	})
+
+	t.Run("plain binary", func(t *testing.T) {
+		pinExe(t, writeFakeExe(t, filepath.Join(t.TempDir(), "bin", "ox-say")), nil)
+		home, dir := homeEngine(t)
+		check(t, home, dir)
+	})
+
+	t.Run("inside app but not Helpers", func(t *testing.T) {
+		pinExe(t, writeFakeExe(t, filepath.Join(t.TempDir(), "OxSayDictation.app", "Contents", "MacOS", "ox-say")), nil)
+		home, dir := homeEngine(t)
+		check(t, home, dir)
+	})
+
+	t.Run("eval symlinks fails", func(t *testing.T) {
+		pinExe(t, filepath.Join(t.TempDir(), "bin", "ox-say"), nil) // no such file
+		home, dir := homeEngine(t)
+		check(t, home, dir)
+	})
+
+	t.Run("exe lookup error", func(t *testing.T) {
+		pinExe(t, "", errors.New("no exe"))
+		home, dir := homeEngine(t)
+		check(t, home, dir)
+	})
+
+	t.Run("override wins", func(t *testing.T) {
+		bins := map[string]string{
+			"OX_SAY_ENGINE_BIN":  filepath.Join(t.TempDir(), "my-tts"),
+			"OX_SAY_STT_BIN":     filepath.Join(t.TempDir(), "my-stt"),
+			"OX_SAY_VOXCPM2_BIN": filepath.Join(t.TempDir(), "my-vox"),
+		}
+		exes := map[string]string{
+			"bundle": func() string {
+				root := t.TempDir()
+				exe := filepath.Join(root, "OxSayDictation.app", "Contents", "Helpers", "ox-say")
+				return writeFakeExe(t, exe)
+			}(),
+			"plain": writeFakeExe(t, filepath.Join(t.TempDir(), "bin", "ox-say")),
+		}
+		for layout, exe := range exes {
+			pinExe(t, exe, nil)
+			env := map[string]string{"OX_SAY_HOME": filepath.Join(t.TempDir(), "home")}
+			maps.Copy(env, bins)
+			c := loadEnv(t, env)
+			if c.EngineBin != bins["OX_SAY_ENGINE_BIN"] ||
+				c.STTBin != bins["OX_SAY_STT_BIN"] ||
+				c.VoxCPM2Bin != bins["OX_SAY_VOXCPM2_BIN"] {
+				t.Errorf("%s: overrides lost: %q %q %q", layout, c.EngineBin, c.STTBin, c.VoxCPM2Bin)
+			}
+		}
+	})
+}
+
+// writeFakeExe creates an empty file at path (with parents) and returns it.
+func writeFakeExe(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
