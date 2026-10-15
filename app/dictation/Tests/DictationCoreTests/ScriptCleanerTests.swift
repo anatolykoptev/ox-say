@@ -97,9 +97,40 @@ final class ScriptCleanerTests: XCTestCase {
     }
 
     func testOnlyTheNumberAtTheEdgeOfAPageIsDropped() {
-        let page = "7\nFirst line of the page.\nSecond line.\n12\nThird line.\n8"
-        XCTAssertEqual(ScriptCleaner.clean(pages: [page], source: .pdf).split(whereSeparator: \.isWhitespace).map(String.init),
-                       ["First", "line", "of", "the", "page.", "Second", "line.", "12", "Third", "line."])
+        let pages = ["First line of the page.\nSecond line.\n12\nThird line.\n1", "Fourth line.\n2", "Fifth line.\n3"]
+        XCTAssertEqual(ScriptCleaner.clean(pages: pages, source: .pdf).split(whereSeparator: \.isWhitespace).map(String.init),
+                       ["First", "line", "of", "the", "page.", "Second", "line.", "12", "Third", "line.", "Fourth", "line.", "Fifth", "line."])
+    }
+
+    private func words(_ pages: [String]) -> [String] {
+        ScriptCleaner.clean(pages: pages, source: .pdf).split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, change the evidence guard
+    // `rising.count >= minPagesForPageNumbers` to `rising.count >= 0` -> RED here
+    // (a one-page PDF loses its "4").
+    func testANumberAtTheEdgeOfAOnePagePdfIsKept() {
+        XCTAssertEqual(words(["Bake until golden.\nServes\n4"]), ["Bake", "until", "golden.", "Serves", "4"])
+        XCTAssertEqual(words(["4"]), ["4"])
+        XCTAssertEqual(words(["Bake until golden.\nServes\n4", "Second page text."]), ["Bake", "until", "golden.", "Serves", "4", "Second", "page", "text."],
+                       "one number on two pages is still one number")
+    }
+
+    func testPageNumbersRisingFromPageToPageAreDroppedOnAFivePagePdf() {
+        let bottom = (1...5).map { "Page \($0) text goes here.\n\($0)" }
+        XCTAssertEqual(words(bottom), (1...5).flatMap { ["Page", "\($0)", "text", "goes", "here."] })
+        let top = (1...5).map { "\($0)\nPage \($0) text goes here." }
+        XCTAssertEqual(words(top), words(bottom))
+        let gaps = ["One.\n1", "Two.\n2", "Three is a picture.", "Four.\n4", "Five.\n5"]
+        XCTAssertEqual(words(gaps), ["One.", "Two.", "Three", "is", "a", "picture.", "Four.", "Five."])
+    }
+
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, replace `longestRisingRun(candidates)`
+    // with `candidates` -> RED here (the numbers that do not rise are dropped as well).
+    func testNumbersThatDoNotRiseAreText() {
+        XCTAssertEqual(words(["Final score.\n10", "Two.\n3", "Three.\n4", "Four.\n5"]), ["Final", "score.", "10", "Two.", "Three.", "Four."])
+        XCTAssertEqual(words(["A.\n4", "B.\n4"]), ["A.", "4", "B.", "4"], "equal numbers do not rise")
+        XCTAssertEqual(words(["A.\n7", "B.\n3"]), ["A.", "7", "B.", "3"])
     }
 
     func testALineThatRepeatsOnFewPagesIsKept() {

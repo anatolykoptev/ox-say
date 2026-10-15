@@ -19,6 +19,10 @@ enum PDFTextLayout {
     static let usualLengthPercentile = 0.9
     /// A page number is at most this many digits (a four-digit line is a year).
     static let maxPageNumberDigits = 3
+    /// A bare number at the edge of a page is dropped as a page number only when at
+    /// least this many pages show one at the same edge, rising from page to page:
+    /// one such line alone is as likely to be the last word of the page ("Serves" / "4").
+    static let minPagesForPageNumbers = 2
 
     private static let terminalPunctuation = Set(".!?…»”\"')")
     private static let pageNumber = try! NSRegularExpression(
@@ -28,10 +32,9 @@ enum PDFTextLayout {
     /// `pages` hold normalised text (line breaks are "\n"). Paragraphs are
     /// separated by one blank line.
     static func paragraphs(_ pages: [String]) -> String {
-        let lines = pages.map { page in
-            dropPageNumbers(page.split(separator: "\n", omittingEmptySubsequences: false)
-                .map { $0.trimmingCharacters(in: .whitespaces) })
-        }
+        let lines = dropPageNumbers(pages.map { page in
+            page.split(separator: "\n", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        })
         var out: [String] = []
         for var page in dropRunningLines(lines).map(pageParagraphs) {
             guard !page.isEmpty else { continue }
@@ -45,21 +48,60 @@ enum PDFTextLayout {
         pageNumber.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
     }
 
-    /// The page number a page prints at its top or bottom: the first or last
-    /// non-blank line when it is a page number. A number anywhere else is text
-    /// ("the answer is" / "42"), and so is one beside another number (a list of
-    /// "1", "2", "3" is not three page numbers).
-    private static func dropPageNumbers(_ page: [String]) -> [String] {
-        let filled = page.indices.filter { !page[$0].isEmpty }
-        guard let first = filled.first, let last = filled.last else { return page }
-        var dropped = Set<Int>()
-        func consider(_ index: Int, neighbour: Int?) {
-            guard isPageNumber(page[index]), neighbour.map({ !isPageNumber(page[$0]) }) ?? true else { return }
-            dropped.insert(index)
+    private enum Edge: CaseIterable { case top, bottom }
+
+    /// A page number found at the top or bottom of a page.
+    private struct Candidate {
+        var page: Int
+        var line: Int
+        var value: Int
+    }
+
+    /// The page numbers the pages print at their top or bottom, taken out. A bare
+    /// number there is a page number only on evidence: at least
+    /// `minPagesForPageNumbers` pages show one at the same edge and the numbers rise
+    /// from page to page (gaps allowed: a page of pictures may print none). A number
+    /// that breaks the rise is text ("the final score was" / "42"), and a PDF of one
+    /// page keeps what it has at its edge. A number anywhere else is text too, and so
+    /// is one beside another number (a list of "1", "2", "3" is not three page numbers).
+    private static func dropPageNumbers(_ pages: [[String]]) -> [[String]] {
+        var dropped = pages.map { _ in Set<Int>() }
+        for edge in Edge.allCases {
+            let candidates = pages.indices.flatMap { pageNumberCandidates(pages[$0], page: $0, edge: edge) }
+            let rising = longestRisingRun(candidates)
+            guard rising.count >= minPagesForPageNumbers else { continue }
+            for candidate in rising { dropped[candidate.page].insert(candidate.line) }
         }
-        consider(first, neighbour: filled.count > 1 ? filled[1] : nil)
-        if last != first { consider(last, neighbour: filled[filled.count - 2]) }
-        return page.indices.filter { !dropped.contains($0) }.map { page[$0] }
+        return zip(pages, dropped).map { page, gone in page.indices.filter { !gone.contains($0) }.map { page[$0] } }
+    }
+
+    /// The page number at `edge` of one page, if its first or last non-blank line is
+    /// one. A page with a single line has it at both edges.
+    private static func pageNumberCandidates(_ page: [String], page index: Int, edge: Edge) -> [Candidate] {
+        let filled = page.indices.filter { !page[$0].isEmpty }
+        guard let line = edge == .top ? filled.first : filled.last, isPageNumber(page[line]) else { return [] }
+        let neighbour = edge == .top ? filled.dropFirst().first : filled.dropLast().last
+        if let neighbour, isPageNumber(page[neighbour]) { return [] }
+        guard let value = pageNumberValue(page[line]) else { return [] }
+        return [Candidate(page: index, line: line, value: value)]
+    }
+
+    private static let digits = try! NSRegularExpression(pattern: "[0-9]+")
+
+    /// The number a page-number line prints: the first one in it ("Page 3 of 10" is 3).
+    private static func pageNumberValue(_ line: String) -> Int? {
+        guard let match = digits.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) else { return nil }
+        return Int((line as NSString).substring(with: match.range))
+    }
+
+    /// The longest run of candidates, in page order, whose values strictly rise.
+    private static func longestRisingRun(_ candidates: [Candidate]) -> [Candidate] {
+        var best: [[Candidate]] = []
+        for (index, candidate) in candidates.enumerated() {
+            let before = (0..<index).filter { candidates[$0].value < candidate.value }.max { best[$0].count < best[$1].count }
+            best.append((before.map { best[$0] } ?? []) + [candidate])
+        }
+        return best.max { $0.count < $1.count } ?? []
     }
 
     /// Header and footer lines that repeat on most of the pages long enough to have

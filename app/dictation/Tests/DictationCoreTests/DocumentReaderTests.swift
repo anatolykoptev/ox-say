@@ -93,6 +93,17 @@ final class DocumentReaderTests: XCTestCase {
         XCTAssertEqual(document.script, "First page text.\n\nSecond page text.")
     }
 
+    func testAPdfKeepsTheNumberAtTheEdgeOfItsOnlyPageAndDropsRealPageNumbers() async throws {
+        let single = try write(pdfData(pages: ["Bake until golden.\nServes\n4"]), as: "single.pdf")
+        let numbered = try write(pdfData(pages: (1...5).map { "Leaf \($0) holds some words.\n\($0)" }), as: "numbered.pdf")
+        defer { [single, numbered].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let kept = try await DocumentReader.read(single).script
+        XCTAssertTrue(kept.hasSuffix("Serves 4"), kept)
+        let dropped = try await DocumentReader.read(numbered).script
+        XCTAssertEqual(dropped.split(whereSeparator: \.isWhitespace).filter { $0.allSatisfy(\.isNumber) }.count, 5,
+                       "only the five numbers inside the sentences stay: \(dropped)")
+    }
+
     func testAPdfWithoutATextLayerReadsAsEmptyAndSaysWhy() async throws {
         let size = 64
         let bitmap = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
