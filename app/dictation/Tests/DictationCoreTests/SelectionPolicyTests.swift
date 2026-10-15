@@ -41,4 +41,20 @@ final class SelectionPolicyTests: XCTestCase {
             return XCTFail("a clipboard that cannot be restored must not be copied over")
         }
     }
+
+    // Mutation: SelectionPolicy.plan `guard clipboardRestorable || clipboardRemote`
+    // -> `guard clipboardRestorable` -> RED (speak-selection stops working
+    // whenever the clipboard holds an iPhone copy and AX gives nothing).
+    func testRemoteClipboardStillCopies() {
+        XCTAssertEqual(SelectionPolicy.plan(axText: nil, secureInput: false,
+                                            clipboardRestorable: false, clipboardRemote: true),
+                       .copy)
+    }
+
+    func testSecureFieldStillBlocksTheCopyOverARemoteClipboard() {
+        guard case .decline = SelectionPolicy.plan(axText: nil, secureInput: true,
+                                                   clipboardRestorable: false, clipboardRemote: true) else {
+            return XCTFail("a secure field must not see a synthetic ⌘C, remote clipboard or not")
+        }
+    }
 }

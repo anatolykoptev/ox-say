@@ -29,7 +29,7 @@ final class FakePasteboard: DictationPasteboard {
     /// Like SystemPasteboard.restore: the markers go on every item put back,
     /// after its own types.
     func restore(_ snapshot: PasteboardSnapshot) {
-        items = snapshot.items.map { entries in
+        items = snapshot.restorableItems.map { entries in
             entries.map { ($0.type, $0.data as Data?) }
                 + PasteboardMarker.restored.map { ($0, Data()) }
         }

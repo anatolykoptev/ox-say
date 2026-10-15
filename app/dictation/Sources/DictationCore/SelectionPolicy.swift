@@ -15,16 +15,21 @@ public enum SelectionPlan: Equatable {
 /// selection without touching anything. ⌘C follows only when no secure field
 /// is focused and the clipboard snapshot can be put back — a snapshot with
 /// problems or a secret inside is not safely restorable, so copying over it
-/// would destroy the user's clipboard silently.
+/// would destroy the user's clipboard silently. A remote (Universal Clipboard)
+/// clipboard is the exception: it is never read, so it cannot be restored, but
+/// declining would make speak-selection stop working after every iPhone copy —
+/// the copy proceeds and the clipboard is left holding the selection, as
+/// dictation leaves its text.
 public enum SelectionPolicy {
-    public static func plan(axText: String?, secureInput: Bool, clipboardRestorable: Bool) -> SelectionPlan {
+    public static func plan(axText: String?, secureInput: Bool, clipboardRestorable: Bool,
+                            clipboardRemote: Bool = false) -> SelectionPlan {
         if let axText, !axText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .speak(axText)
         }
         if secureInput {
             return .decline("A password field is focused.")
         }
-        guard clipboardRestorable else {
+        guard clipboardRestorable || clipboardRemote else {
             return .decline("The selection did not come through.")
         }
         return .copy

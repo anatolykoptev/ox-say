@@ -43,7 +43,8 @@ public struct PasteboardSnapshot: Equatable {
         self.problems = problems
     }
 
-    /// Copies every type of every item on `board`, in declared order.
+    /// Copies every type of every item on `board`, in declared order. A
+    /// Universal Clipboard copy (a declared remote marker) is not read at all.
     /// Promised types are never read: reading one runs the source app's
     /// provider synchronously, which can stall for seconds on a big promise.
     /// A promise and a clipboard over `maxBytes` go into `problems`: the
@@ -55,6 +56,11 @@ public struct PasteboardSnapshot: Equatable {
     public static func capture(_ board: DictationPasteboard) -> PasteboardSnapshot {
         var snapshot = PasteboardSnapshot(items: [])
         var bytes = 0
+        if board.declaredItems.contains(where: { $0.contains(where: PasteboardMarker.remote.contains) }) {
+            snapshot.isRemote = true
+            snapshot.report("a clipboard copied on another device")
+            return snapshot
+        }
         capture: for (index, types) in board.declaredItems.enumerated() {
             var entries: [PasteboardEntry] = []
             for type in types {
@@ -73,6 +79,18 @@ public struct PasteboardSnapshot: Equatable {
             snapshot.items.append(entries)
         }
         return snapshot
+    }
+
+    /// The clipboard held a Universal Clipboard copy from another device. Its
+    /// data was not read: reading any type makes macOS fetch the contents from
+    /// that device, which shows a panel and stalls the paste.
+    public private(set) var isRemote = false
+
+    /// The entries a restore may write: never the remote marker. Written back,
+    /// it would make our own restored copy look remote, and every later
+    /// dictation would trigger the fetch again.
+    public var restorableItems: [[PasteboardEntry]] {
+        items.map { $0.filter { !PasteboardMarker.remote.contains($0.type) } }
     }
 
     private mutating func report(_ problem: String) {
@@ -106,6 +124,10 @@ public enum PasteboardMarker {
 
     /// Contents carrying any of these are a secret: not put back after a paste.
     public static let sensitive = [concealed]
+    /// Declared by a Universal Clipboard copy made on another device.
+    public static let remoteClipboard = "com.apple.is-remote-clipboard"
+    /// Declaring any of these means the contents live on another device.
+    public static let remote = [remoteClipboard]
     /// Added to the user's contents when they are put back: it is not a new copy,
     /// so clipboard managers skip it. Must not overlap `sensitive`, or the next
     /// dictation would take the restored contents for a secret and drop them.
@@ -130,6 +152,10 @@ public final class ClipboardLease {
     /// clipboard was left because someone else wrote to it — that copy is the
     /// user's own.
     public private(set) var notice: String?
+    /// The clipboard held a copy from another device, which cannot be put back
+    /// without fetching it; the dictated text stays. Not a `notice`: that would
+    /// fire on every dictation after an iPhone copy.
+    public private(set) var keptRemote = false
 
     public init(board: DictationPasteboard, text: String) {
         self.board = board
@@ -143,6 +169,10 @@ public final class ClipboardLease {
     public func release() -> Bool {
         guard board.changeCount == ourChange else { return false }
         guard !original.isSensitive else { return false }
+        guard !original.isRemote else {
+            keptRemote = true
+            return false
+        }
         guard original.problems.isEmpty else {
             notice = "The earlier clipboard was not put back: it held \(original.problems.joined(separator: " and ")). The dictated text is on the clipboard."
             return false
