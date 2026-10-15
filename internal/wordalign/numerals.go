@@ -13,6 +13,11 @@ var numeralStems = []string{
 	"восемьдесят", "восьмидесят", "девяност", "сот", "двест", "двухсот", "триста", "трехсот", "четыреста", "четырехсот",
 	"пятьсот", "пятисот", "шестьсот", "шестисот", "семьсот", "семисот", "восемьсот", "восьмисот", "девятьсот", "девятисот",
 	"тысяч", "миллион", "миллиард", "триллион", "половин",
+	// ordinals the long-form number speller writes (vscript.ExpandNumbers):
+	// "четвёртый" (ё folds to е), "сороковой", "нулевой" and the one-word
+	// thousands ordinals "двухтысячный" …
+	"четверт", "сороков", "нулев", "двухтысяч", "трехтысяч", "четырехтысяч", "пятитысяч", "шеститысяч",
+	"семитысяч", "восьмитысяч", "девятитысяч",
 }
 
 // numeralWords are the short or irregular numeral-lexicon forms matched whole.
@@ -30,6 +35,8 @@ var numeralEndings = map[string]bool{
 	"ый": true, "ая": true, "ое": true, "ые": true, "ие": true, "их": true, "ими": true, "ем": true, "ею": true,
 	"ьми": true, "ной": true, "ная": true, "ное": true, "ные": true, "ный": true, "ных": true, "ного": true,
 	"ному": true, "ьего": true, "ьему": true, "ьем": true, "ьим": true, "ьей": true, "ья": true, "ье": true, "ьи": true, "ным": true, "ными": true, "ную": true, "ти": true,
+	// accusative feminine, soft plural and prepositional forms the speller writes (vscript.ExpandNumbers)
+	"ую": true, "ьих": true, "ьими": true, "ном": true,
 }
 
 // signUnits maps a sign written with a number to the stem of the unit word

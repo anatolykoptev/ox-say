@@ -363,3 +363,36 @@ func TestCuesWrapLimits(t *testing.T) {
 		}
 	}
 }
+
+// F1-7: the gate compares the ASR transcript with Chunk.Spoken, which now has
+// the numbers as words. Parakeet writes either words or digits for them; both
+// must pass, and babble must still fail.
+// Mutation: numeral lexicon (numerals.go) emptied -> the digit rows RED.
+func TestWERAgainstSpokenNumbers(t *testing.T) {
+	const ref = "Через пять минут, в восемнадцать тридцать, второй этап: десять — пятнадцать человек и две целых пять десятых литра, в тысяча девятьсот девяносто восьмом году, четвёртый и сороковой на сорок процентов."
+	for name, hyp := range map[string]string{
+		"words":  "через пять минут в восемнадцать тридцать второй этап десять пятнадцать человек и две целых пять десятых литра в тысяча девятьсот девяносто восьмом году четвертый и сороковой на сорок процентов",
+		"digits": "Через 5 минут, в 18:30, 2-й этап: 10-15 человек и 2,5 литра, в 1998 году, 4-й и 40-й на 40%.",
+	} {
+		if errs, n := WER(ref, hyp); errs != 0 {
+			t.Errorf("%s: %d errors in %d words", name, errs, n)
+		}
+	}
+	if errs, n := WER(ref, "это совсем другой текст про кошек и собак которые бегают по двору"); errs*10 <= n {
+		t.Errorf("babble passed: %d errors in %d words", errs, n)
+	}
+}
+
+// The ordinals ExpandNumbers writes are numeral words to the gate, so an ASR
+// that writes the digit form ("4-й") is not an error.
+// Mutation: drop "четверт" / "сороков" / "двухтысяч" from numeralStems -> RED.
+func TestWERSpokenOrdinalsMatchDigits(t *testing.T) {
+	for ref, hyp := range map[string]string{
+		"четвёртый": "4-й", "сороковой": "40-й", "двухтысячный": "2000-й", "нулевой": "0-й", "девятитысячный": "9000-й",
+		"двухсотый": "200-й", "третьего": "3-го", "десятых": "10-х",
+	} {
+		if errs, _ := WER(ref, hyp); errs != 0 {
+			t.Errorf("WER(%q, %q) = %d errors", ref, hyp, errs)
+		}
+	}
+}
