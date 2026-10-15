@@ -67,6 +67,8 @@ Contents/Info.plist
 Contents/MacOS
 Contents/MacOS/OxSayDictation
 Contents/PkgInfo
+Contents/Resources
+Contents/Resources/AppIcon.icns
 Contents/_CodeSignature
 Contents/_CodeSignature/CodeResources'
 entitlements_json='{"com.apple.security.device.audio-input":true}'

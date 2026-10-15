@@ -20,6 +20,10 @@ name=OxSayDictation
 bundle_id=io.github.anatolykoptev.ox-say.dictation
 out=$root/build/dictation
 app=$out/$name.app
+# The app icon: rendered from Resources/AppIcon.svg by make-icon.sh and committed,
+# so a build never needs rsvg-convert.
+icon_file=AppIcon.icns
+icon=$here/Resources/$icon_file
 
 install=0
 case "${1:-}" in
@@ -49,6 +53,7 @@ check_app() {
     while IFS= read -r entry; do
         case "${entry#"$a"/}" in
             Contents | Contents/Info.plist | Contents/PkgInfo | Contents/MacOS | "Contents/MacOS/$name" | \
+                Contents/Resources | "Contents/Resources/$icon_file" | \
                 Contents/_CodeSignature | Contents/_CodeSignature/CodeResources | Contents/CodeResources) ;;
             *)
                 echo "build.sh: $a holds $entry, which this script does not create; not replacing it" >&2
@@ -64,19 +69,23 @@ remove_app() {
     check_app "$a"
     [ -e "$a" ] || return 0
     rm -f "$a/Contents/Info.plist" "$a/Contents/PkgInfo" "$a/Contents/MacOS/$name" \
-        "$a/Contents/_CodeSignature/CodeResources" "$a/Contents/CodeResources"
+        "$a/Contents/Resources/$icon_file" "$a/Contents/_CodeSignature/CodeResources" "$a/Contents/CodeResources"
+    # A bundle from before the icon has no Resources directory.
+    if [ -d "$a/Contents/Resources" ]; then rmdir "$a/Contents/Resources"; fi
     rmdir "$a/Contents/_CodeSignature" "$a/Contents/MacOS" "$a/Contents" "$a"
 }
 
 # Refuse a bundle that is not ours before spending a build on it.
+[ -f "$icon" ] || { echo "build.sh: $icon is missing; run make-icon.sh" >&2; exit 1; }
 check_app "$app"
 if [ "$install" = 1 ]; then "$here/install-app.sh" --check; fi
 swift build -c release --package-path "$here"
 bin=$(swift build -c release --package-path "$here" --show-bin-path)
 
 remove_app "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin/$name" "$app/Contents/MacOS/$name"
+cp "$icon" "$app/Contents/Resources/$icon_file"
 printf 'APPL????' > "$app/Contents/PkgInfo"
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -91,6 +100,8 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundleVersion</key><string>$version</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>NSHumanReadableCopyright</key><string>© 2026 Anatolii Koptev</string>
     <!-- One floor for the whole product: the engines weak-import Accelerate's
          new-LAPACK cblas (macOS 13.3+); get.sh refuses older versions and
          engine/build.sh sets the same deployment target. -->
