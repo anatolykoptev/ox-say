@@ -189,22 +189,58 @@ check_static "$out/ox-align"
 check_dist "$out/ox-align"
 echo "built $out/ox-align"
 
+# Licences of audio.cpp's vendored dependencies, derived from the tree: a
+# hand-written list cannot notice one it lacks. Every licence file under
+# external/<dep>/ is copied, named by its path (sentencepiece bundles absl,
+# darts_clone, esaxx and protobuf-lite with licences of their own). A dependency
+# with none fails the build. A submodule is skipped: it is not built in.
+# find's output is captured whole: `find | head -1` under pipefail lets head's
+# early exit SIGPIPE find.
+copy_audiocpp_licenses() {
+    local ac=$1 dst=$2 dep name found f rel submodules
+    submodules=$(git -C "$ac" ls-files -s external | awk '$1 == 160000 { print $4 }')
+    for dep in "$ac"/external/*/; do
+        name=$(basename "$dep")
+        case $'\n'"$submodules"$'\n' in
+            *$'\n'"external/$name"$'\n'*) continue ;;
+        esac
+        found=$(find "$dep" -type f \( -iname 'licen[sc]e*' -o -iname 'copying*' \) | LC_ALL=C sort)
+        # external/llama_tokenizer is llama.cpp's BPE and unicode code; upstream
+        # ships no licence file next to it. llama.cpp and ggml are one project
+        # under one MIT licence, so ggml's stands in. Any other dependency
+        # without a licence file still fails the build.
+        if [ -z "$found" ] && [ "$name" = llama_tokenizer ]; then
+            cp "$ac/external/ggml/LICENSE" "$dst/audiocpp-llama_tokenizer_LICENSE"
+            continue
+        fi
+        if [ -z "$found" ]; then
+            echo "engine/build.sh: audio.cpp external/$name has no licence file" >&2
+            exit 1
+        fi
+        while IFS= read -r f; do
+            rel=${f#"$ac"/external/}
+            cp "$f" "$dst/audiocpp-${rel//\//_}"
+        done <<< "$found"
+    done
+}
+
 # --- audiocpp_server (audio.cpp, VoxCPM2) — Apple Silicon, on request only ---
 # VoxCPM2 (2B) needs unified memory next to the speech engines; the Intel
 # package carries no quality engine (README "VoxCPM2"). audio.cpp vendors its
 # own ggml, so engine/patches/ggml (AMD discrete fixes) does not apply here.
-# Wanted: a dist build or OX_SAY_WITH_VOXCPM2=1 (engine/want-audiocpp.sh). Otherwise
-# drop a binary an earlier build left in out/, so the installer cannot pick it up.
-if ! want_audiocpp "$arch"; then
-    rm -f "$out/audiocpp_server"
-else
+# Wanted: a dist build or OX_SAY_WITH_VOXCPM2=1. Otherwise audiocpp_gate drops a
+# binary an earlier build left in out/, so the installer cannot pick it up
+# (engine/want-audiocpp.sh).
+if audiocpp_gate "$arch" "$out"; then
     ac="$work/audio.cpp"
     stamp=$( { echo "$AUDIOCPP_REPO $AUDIOCPP_COMMIT"; find "$here/patches/audiocpp" -name '*.patch' -type f | LC_ALL=C sort | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
     if ! fresh "$ac" "$stamp"; then
         rm -rf "$ac"
         git clone --quiet "$AUDIOCPP_REPO" "$ac"
         git -C "$ac" checkout --quiet "$AUDIOCPP_COMMIT"
-        git -C "$ac" submodule update --quiet --init --recursive
+        # No `submodule update`: audio.cpp's only submodule, external/audio.cpp-server-frontends,
+        # is optional frontends (mp3/miniaudio/HTTPS; AUDIOCPP_BUILD_SERVER_FRONTENDS, OFF here)
+        # and .gitmodules points it at git@github.com:, which fails for anyone without an SSH key.
         # A tag object or a short ref must not stand in for the pinned commit.
         actual=$(git -C "$ac" rev-parse HEAD)
         if [ "$actual" != "$AUDIOCPP_COMMIT" ]; then
@@ -238,26 +274,6 @@ else
     check_static "$out/audiocpp_server"
     check_dist "$out/audiocpp_server"
     cp "$ac/LICENSE" "$out/licenses/audio.cpp.LICENSE"
-    # Every vendored dependency, derived from the tree: a hand-written list
-    # cannot notice one it lacks. One with no licence file fails the build.
-    # find's output is captured whole: `find | head -1` under pipefail lets
-    # head's early exit SIGPIPE find.
-    for dep in "$ac"/external/*/; do
-        name=$(basename "$dep")
-        found=$(find "$dep" -maxdepth 1 \( -iname 'licen[sc]e*' -o -iname 'copying*' \))
-        f=${found%%$'\n'*}
-        # external/llama_tokenizer is llama.cpp's BPE and unicode code; upstream
-        # ships no licence file next to it. llama.cpp and ggml are one project
-        # under one MIT licence, so ggml's stands in. Any other dependency
-        # without a licence file still fails the build.
-        if [ -z "$f" ] && [ "$name" = llama_tokenizer ]; then
-            f="$ac/external/ggml/LICENSE"
-        fi
-        if [ -z "$f" ]; then
-            echo "engine/build.sh: audio.cpp external/$name has no licence file" >&2
-            exit 1
-        fi
-        cp "$f" "$out/licenses/audiocpp-$name.LICENSE"
-    done
+    copy_audiocpp_licenses "$ac" "$out/licenses"
     echo "built $out/audiocpp_server"
 fi

@@ -109,7 +109,14 @@ oxs_voxcpm2_ok() {
         echo "ox-say: VoxCPM2 runs on Apple Silicon only; not fetching its model on this Mac" >&2
         return 1
     fi
-    mem=$(sysctl -n hw.memsize)
+    # Fail closed: no readable memory size is no proof of 24 GB.
+    mem=$(sysctl -n hw.memsize 2>/dev/null) || mem=
+    case $mem in
+        '' | *[!0-9]*)
+            echo "ox-say: cannot read this Mac's memory size; not fetching the VoxCPM2 model" >&2
+            return 1
+            ;;
+    esac
     if [ "$mem" -lt "$oxs_voxcpm2_min_bytes" ]; then
         echo "ox-say: VoxCPM2 needs 24 GB of memory; this Mac has $((mem / 1073741824)) GB — not fetching its model" >&2
         return 1
