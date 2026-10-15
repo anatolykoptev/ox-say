@@ -70,6 +70,11 @@ const (
 // either answer on any host.
 var hostUnifiedMemory = func() bool { return runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" }
 
+// daemonExe is os.Executable behind a variable so tests can pin the daemon's
+// own path — the installer's bin/ox-say symlink or a plain file — without a
+// real binary to exec. See defaultEngineDir.
+var daemonExe = os.Executable
+
 // Config is the resolved daemon configuration.
 type Config struct {
 	Home           string // OX_SAY_HOME: engine, models, voices, run dir
@@ -222,9 +227,10 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if c.Home == "" {
 		c.Home = filepath.Join(homeDir, "Library", "Application Support", "ox-say")
 	}
+	engineDir := defaultEngineDir(c.Home)
 
 	if c.EngineBin = get("OX_SAY_ENGINE_BIN"); c.EngineBin == "" {
-		c.EngineBin = filepath.Join(c.Home, "engine", "tts-server")
+		c.EngineBin = filepath.Join(engineDir, "tts-server")
 	}
 	if c.Model = get("OX_SAY_MODEL"); c.Model == "" {
 		c.Model = filepath.Join(c.Home, "models", "qwen-talker-0.6b-base-Q8_0.gguf")
@@ -251,7 +257,7 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	c.StartupTimeout = time.Duration(startSecs) * time.Second
 
 	if c.STTBin = get("OX_SAY_STT_BIN"); c.STTBin == "" {
-		c.STTBin = filepath.Join(c.Home, "engine", "ox-stt")
+		c.STTBin = filepath.Join(engineDir, "ox-stt")
 	}
 	if c.STTModel = get("OX_SAY_STT_MODEL"); c.STTModel == "" {
 		c.STTModel = filepath.Join(c.Home, "models", "ggml-parakeet-tdt-0.6b-v3-q8_0.bin")
@@ -327,7 +333,7 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if p, perr := strconv.Atoi(c.Port); perr == nil && c.STTPort == p {
 		return nil, fmt.Errorf("config: OX_SAY_STT_PORT %d collides with OX_SAY_ADDR", c.STTPort)
 	}
-	if err := loadVoxCPM2(c, get); err != nil {
+	if err := loadVoxCPM2(c, get, engineDir); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -335,9 +341,9 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 
 // loadVoxCPM2 reads the quality-engine keys and the default TTS model. It
 // runs after the other ports are parsed: its port must collide with none.
-func loadVoxCPM2(c *Config, get func(string) string) error {
+func loadVoxCPM2(c *Config, get func(string) string, engineDir string) error {
 	if c.VoxCPM2Bin = get("OX_SAY_VOXCPM2_BIN"); c.VoxCPM2Bin == "" {
-		c.VoxCPM2Bin = filepath.Join(c.Home, "engine", "audiocpp_server")
+		c.VoxCPM2Bin = filepath.Join(engineDir, "audiocpp_server")
 	}
 	if c.VoxCPM2Model = get("OX_SAY_VOXCPM2_MODEL"); c.VoxCPM2Model == "" {
 		c.VoxCPM2Model = filepath.Join(c.Home, "models", VoxCPM2ModelFile)
@@ -412,6 +418,40 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// defaultEngineDir is where the engine binaries default to. When the daemon's
+// own executable resolves into <X>.app/Contents/Helpers — the launchd agent
+// runs bin/ox-say, a symlink into the bundle — the engines travel with the
+// daemon, so the dir is the resolved executable's own (the one-version plan,
+// 2026-10-15: one bundle is the versioned unit). Everywhere else it stays
+// <home>/engine, the only layout in production today. A failed exe lookup or
+// EvalSymlinks falls back to <home>/engine: the daemon must still start.
+func defaultEngineDir(home string) string {
+	fallback := filepath.Join(home, "engine")
+	exe, err := daemonExe()
+	if err != nil {
+		return fallback
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return fallback
+	}
+	if dir := filepath.Dir(resolved); isBundleHelpersDir(dir) {
+		return dir
+	}
+	return fallback
+}
+
+// isBundleHelpersDir reports whether dir is <X>.app/Contents/Helpers.
+func isBundleHelpersDir(dir string) bool {
+	if filepath.Base(dir) != "Helpers" {
+		return false
+	}
+	if filepath.Base(filepath.Dir(dir)) != "Contents" {
+		return false
+	}
+	return filepath.Ext(filepath.Base(filepath.Dir(filepath.Dir(dir)))) == ".app"
 }
 
 // resolveGPUMemory validates OX_SAY_GPU_MEMORY and resolves auto (the
