@@ -122,3 +122,38 @@ func unparen(text string) string {
 func trimLead(s string) string {
 	return strings.TrimLeftFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) })
 }
+
+// fitSpoken halves every chunk whose Spoken text exceeds MaxSpokenChars (numbers
+// written as words are several times longer than their digits) until each fits.
+// A cut is a space nearest the middle that does not split a written number
+// ("123 456"); a chunk with no such space is kept whole.
+func fitSpoken(chunks []string, o Options) []string {
+	if o.MaxSpokenChars <= 0 {
+		return chunks
+	}
+	var out []string
+	for _, c := range chunks {
+		out = append(out, halve(c, o.MaxSpokenChars)...)
+	}
+	return out
+}
+
+func halve(text string, limit int) []string {
+	if runes(Spoken(text)) <= limit {
+		return []string{text}
+	}
+	rs := []rune(text)
+	cut := -1
+	for i := 1; i < len(rs)-1; i++ {
+		if rs[i] != ' ' || (unicode.IsDigit(rs[i-1]) && unicode.IsDigit(rs[i+1])) {
+			continue
+		}
+		if cut < 0 || abs(i-len(rs)/2) < abs(cut-len(rs)/2) {
+			cut = i
+		}
+	}
+	if cut < 0 {
+		return []string{text}
+	}
+	return append(halve(strings.TrimSpace(string(rs[:cut])), limit), halve(strings.TrimSpace(string(rs[cut:])), limit)...)
+}

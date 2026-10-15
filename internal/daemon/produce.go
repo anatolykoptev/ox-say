@@ -70,7 +70,7 @@ type preset struct {
 }
 
 func presetOpts(chunkPause, paraPause float64) vscript.Options {
-	return vscript.Options{TargetChars: 250, MaxChars: 400, MinChars: 80, MaxScriptChars: maxProduceChars,
+	return vscript.Options{TargetChars: 250, MaxChars: 400, MinChars: 80, MaxScriptChars: maxProduceChars, MaxSpokenChars: maxVoxChars,
 		ChunkPause: chunkPause, ParagraphPause: paraPause}
 }
 

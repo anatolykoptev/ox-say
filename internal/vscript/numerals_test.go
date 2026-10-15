@@ -339,3 +339,38 @@ func TestNumbersRangePercent(t *testing.T) {
 		"скидка 5–10%": "скидка пять — десять процентов",
 	})
 }
+
+// Review F8: numbers written as words are longer than their digits; no chunk's
+// Spoken may exceed the engine's per-request cap while Text fits MaxChars.
+// Mutation: markup.go Parse without fitSpoken (`fitSpoken(x, o)` -> `x`) -> RED.
+func TestSpokenFitsEngineCap(t *testing.T) {
+	o := testOpts
+	o.MaxSpokenChars = 1000
+	src := "Выручка по регионам: " + strings.Repeat("123 456 789, ", 28) + "итого."
+	got, err := Parse(src, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var joined []string
+	for _, c := range got {
+		if n := len([]rune(c.Spoken)); n > o.MaxSpokenChars {
+			t.Errorf("chunk %d: Spoken is %d runes (Text %d)", c.Index, n, len([]rune(c.Text)))
+		}
+		joined = append(joined, c.Text)
+	}
+	if len(got) < 2 {
+		t.Errorf("want the dense chunk split, got %d chunk(s)", len(got))
+	}
+	if strings.Join(joined, " ") != strings.Join(strings.Fields(src), " ") {
+		t.Errorf("the chunks do not rebuild the script")
+	}
+	// Without a cap the old behaviour: Spoken far over 1000 from a Text that fits.
+	got, _ = Parse(src, testOpts)
+	over := false
+	for _, c := range got {
+		over = over || len([]rune(c.Spoken)) > 1000
+	}
+	if !over {
+		t.Errorf("fixture too weak: no chunk exceeds 1000 spoken runes without the cap")
+	}
+}
