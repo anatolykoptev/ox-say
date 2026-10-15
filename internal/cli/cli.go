@@ -67,6 +67,8 @@ Usage:
   ox-say serve [flags]                  run the daemon (launchd starts this)
   ox-say say [-v v] [-l lang] [-f fmt] [-o path] [text...]
   ox-say voice add <name> <audio> [--ref-text t]
+  ox-say voice design "<description>" -t "<text>" [-n 1..4] [--seed N] [--play]
+  ox-say voice save <name> <take path>
   ox-say voice ls
   ox-say voice rm <name>
   ox-say transcribe [-e parakeet|whisper] [-l lang] [--prompt t] [--json|--srt] <file>
@@ -84,6 +86,9 @@ say flags:
   -l language   e.g. Russian, English (default: engine auto)
   -f format     wav | mp3 | opus (default: wav; used for -o and playback)
   -o path       write file instead of playing it
+
+voice design renders a few takes of a voice you describe in words (VoxCPM2 only) and prints
+each take's path and seed; voice save keeps one under a name.
 
 transcribe flags:
   -e engine     parakeet (default) | whisper
@@ -358,7 +363,7 @@ func extractErr(body []byte) string {
 
 func cmdVoice(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: ox-say voice add|ls|rm")
+		fmt.Fprintln(stderr, "usage: ox-say voice add|design|save|ls|rm")
 		return 2
 	}
 	switch args[0] {
@@ -395,6 +400,10 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "note: %s\n", added.Notice)
 		}
 		return 0
+	case "design":
+		return cmdVoiceDesign(args[1:], stdout, stderr)
+	case "save":
+		return cmdVoiceSave(args[1:], stdout, stderr)
 	case "ls":
 		resp, err := httpClient.Get(daemonURL() + "/v1/audio/voices")
 		if err != nil {
@@ -448,7 +457,7 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "voice %q removed\n", args[1])
 		return 0
 	default:
-		fmt.Fprintln(stderr, "usage: ox-say voice add|ls|rm")
+		fmt.Fprintln(stderr, "usage: ox-say voice add|design|save|ls|rm")
 		return 2
 	}
 }

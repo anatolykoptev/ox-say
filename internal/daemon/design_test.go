@@ -279,3 +279,18 @@ func TestDesignVoiceHTTP(t *testing.T) {
 		t.Fatalf("missing take = %d", rec.Code)
 	}
 }
+
+// The MCP tools are thin layers over the same functions: design returns the
+// takes, save returns the recorded provenance.
+// Mutation D-mcp: mcp.go toolVoiceDesignSave, pass `Name: ""` -> RED.
+func TestDesignMCPTools(t *testing.T) {
+	d, _, _ := designFixture(t)
+	_, res, err := d.toolVoiceDesign(context.Background(), nil, DesignInput{Description: testDesc, Text: testText, Takes: 2})
+	if err != nil || len(res.Takes) != 2 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	_, saved, err := d.toolVoiceDesignSave(context.Background(), nil, SaveDesignInput{Name: "agent-voice", Take: res.Takes[1].Path})
+	if err != nil || saved.Name != "agent-voice" || saved.DesignedFrom != testDesc || saved.Seed != res.Takes[1].Seed || saved.Engine != config.TTSModelVoxCPM2 {
+		t.Fatalf("%+v %v", saved, err)
+	}
+}

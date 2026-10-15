@@ -38,6 +38,25 @@ func (d *Daemon) RegisterTools(srv *mcp.Server) {
 	}, d.toolVoiceAdd)
 
 	mcp.AddTool(srv, &mcp.Tool{
+		Name: "voice_design",
+		Description: `Create a NEW voice from a text description with the voxcpm2 engine (no reference audio). ` +
+			`It renders ` + "`takes`" + ` candidate clips (default 3, max 4) of ` + "`text`" + ` with consecutive seeds and returns their paths and seeds. ` +
+			`Compare them (listen, or transcribe to check clarity) and keep the best with voice_design_save {name, take: <take path>}; ` +
+			`the saved voice keeps that timbre on every later line and records the description and seed. ` +
+			`Describe the speaker: gender, age, pitch, timbre, pace, accent or "native <language> speaker", mood, and use. ` +
+			`Example: "A clear, pleasant female narrator in her thirties, native Russian speaker, friendly and professional, audiobook style". ` +
+			`Give 1-2 sentences of text in the target language (5-15 s spoken). ` +
+			`Each take takes about as long as it plays, plus up to 40 s if the model was idle. Takes are previews at the engine's own level. ` +
+			`Apple Silicon with 24 GB or more only.`,
+	}, d.toolVoiceDesign)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "voice_design_save",
+		Description: `Keep one take from voice_design as a named voice (engine voxcpm2). take must be a path voice_design returned; ` +
+			`any other file is refused. The voice records the description, the seed and the take's text as its transcript.`,
+	}, d.toolVoiceDesignSave)
+
+	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "voice_remove",
 		Description: `Delete a cloned voice from disk and from the running engine.`,
 	}, d.toolVoiceRemove)
@@ -147,4 +166,20 @@ func (d *Daemon) toolVoiceRemove(ctx context.Context, _ *mcp.CallToolRequest, in
 
 func (d *Daemon) toolEngineStatus(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, statusSummary, error) {
 	return nil, d.Status(), nil
+}
+
+func (d *Daemon) toolVoiceDesign(ctx context.Context, _ *mcp.CallToolRequest, in DesignInput) (*mcp.CallToolResult, DesignResult, error) {
+	res, err := d.DesignVoice(ctx, in)
+	if err != nil {
+		return nil, DesignResult{}, err
+	}
+	return nil, *res, nil
+}
+
+func (d *Daemon) toolVoiceDesignSave(ctx context.Context, _ *mcp.CallToolRequest, in SaveDesignInput) (*mcp.CallToolResult, SaveDesignResult, error) {
+	res, err := d.saveDesignResult(ctx, in)
+	if err != nil {
+		return nil, SaveDesignResult{}, err
+	}
+	return nil, *res, nil
 }
