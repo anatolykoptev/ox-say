@@ -176,6 +176,14 @@ final class DocumentReaderTests: XCTestCase {
         XCTAssertTrue(text.contains("Это длинный текст для проверки кодировки."))
     }
 
+    func testAStrayByteInMostlyAsciiUtf8TextDoesNotTurnItIntoMojibake() throws {
+        var data = Data(String(repeating: "The café was open and the naïve fiancé said hello. ", count: 20).utf8)
+        data.insert(0xFF, at: try XCTUnwrap(data[200...].firstIndex(of: 0x20)) + 1)
+        let text = try DocumentReader.decode(data)
+        XCTAssertTrue(text.contains("The café was open and the naïve fiancé said hello."), String(text.prefix(60)))
+        XCTAssertEqual(text.unicodeScalars.filter { $0 == "\u{FFFD}" }.count, 1)
+    }
+
     func testEightBitTextWithFewHighBytesIsNotReadAsBrokenUtf8() throws {
         let sentence = "He said it was a fine day, and the café was open. "
         let text = String(repeating: sentence, count: 40) + "She wrote \u{2019}hello\u{2019} \u{201C}twice\u{201D}."
