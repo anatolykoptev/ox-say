@@ -303,7 +303,7 @@ func cmdSay(args []string, stdout, stderr io.Writer) int {
 		body["language"] = vals["l"]
 	}
 	if err := addQualityFlags(body, vals); err != nil {
-		fmt.Fprintln(stderr, "ox-say:", err)
+		outln(stderr, "ox-say:", err)
 		return 2
 	}
 	audio, err := postJSON(daemonURL()+"/v1/audio/speech", body)
@@ -390,7 +390,7 @@ func cmdVoice(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		if len(pos) != 2 {
-			fmt.Fprintln(stderr, "usage: ox-say voice add <name> <audio> [--ref-text t] [--engine e] [--style s] [--designed-from d]")
+			outln(stderr, "usage: ox-say voice add <name> <audio> [--ref-text t] [--engine e] [--style s] [--designed-from d]")
 			return 2
 		}
 		// The daemon's cwd is "/" under launchd — resolve the clip path

@@ -99,7 +99,7 @@ func patchJSON(target string, body map[string]any) error {
 	if err != nil {
 		return daemonErr(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
 	if err != nil {
 		return err
