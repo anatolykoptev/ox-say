@@ -66,7 +66,8 @@ public struct SpeechClient {
     /// engine's default voice; a non-nil `language` pins the request's
     /// language instead of letting the daemon infer it.
     public func speak(_ text: String, voice: String? = nil, language: String? = nil) async throws -> Data {
-        var body: [String: Any] = ["input": text, "response_format": format]
+        // The fast engine, always: a voice that prefers voxcpm2 must not slow speak-selection down.
+        var body: [String: Any] = ["input": text, "response_format": format, "model": "qwen3-tts"]
         if let voice { body["voice"] = voice }
         if let language { body["language"] = language }
         var request = URLRequest(url: baseURL.appendingPathComponent("v1/audio/speech"))
