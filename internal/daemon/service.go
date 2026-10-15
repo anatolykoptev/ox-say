@@ -314,9 +314,10 @@ func (d *Daemon) AddVoice(ctx context.Context, name, audioPath, refText string) 
 }
 
 // AddVoiceMeta is AddVoice with the voice's metadata (engine, style,
-// designed_from). A voice added for voxcpm2 must have a reference the encoder
-// can take: Prepare already cuts every clip to voices.MaxRefSeconds, and the
-// check below refuses it should that cap ever outgrow voxMaxRefSeconds.
+// designed_from). A voice that will carry voxcpm2 — by m, or inherited from the
+// voice it replaces — must have a reference the encoder can take: Prepare
+// already cuts every clip to voices.MaxRefSeconds, and the check below refuses
+// it should that cap ever outgrow voxMaxRefSeconds.
 func (d *Daemon) AddVoiceMeta(ctx context.Context, name, audioPath, refText string, m voices.Meta) (v *voices.Voice, registered bool, err error) {
 	if err := validateMeta(m); err != nil {
 		return nil, false, err
@@ -334,7 +335,7 @@ func (d *Daemon) AddVoiceMeta(ctx context.Context, name, audioPath, refText stri
 		return nil, false, err
 	}
 	defer pending.Discard()
-	if m.Engine == config.TTSModelVoxCPM2 {
+	if d.effectiveEngine(name, m) == config.TTSModelVoxCPM2 {
 		secs, serr := pending.Seconds()
 		if serr == nil {
 			serr = checkVoxReference(secs)
@@ -364,6 +365,19 @@ func (d *Daemon) AddVoiceMeta(ctx context.Context, name, audioPath, refText stri
 		}
 	}
 	return v, registered, nil
+}
+
+// effectiveEngine is the engine a voice will carry after being added with m:
+// the request's, else the one a re-added voice inherits from its stored
+// metadata (see voices.Pending.Commit).
+func (d *Daemon) effectiveEngine(name string, m voices.Meta) string {
+	if m.Engine != "" {
+		return m.Engine
+	}
+	if prev, err := d.Store.Get(name); err == nil {
+		return prev.Engine
+	}
+	return ""
 }
 
 // RemoveVoice deletes a voice from disk and, when the engine is running,

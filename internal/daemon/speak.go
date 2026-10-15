@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/player"
 )
 
@@ -30,6 +31,15 @@ type SpeakInput struct {
 	Play         bool
 	Instructions string
 	Seed         *int64
+
+	// Model names the engine ("qwen3-tts" | "voxcpm2"); empty = the voice's
+	// preferred engine, then the daemon default.
+	Model string
+	// CfgValue, InferenceTimesteps and CloneMode are voxcpm2 knobs; the qwen
+	// engine refuses them.
+	CfgValue           *float64
+	InferenceTimesteps *int
+	CloneMode          string
 }
 
 // SpeakResult is returned to the caller.
@@ -39,6 +49,11 @@ type SpeakResult struct {
 	DurationS float64 `json:"duration_s"`
 	ElapsedS  float64 `json:"elapsed_s"`
 	Voice     string  `json:"voice"`
+	// Model is the engine that rendered the take; Seed the one it used when
+	// known; Warning is set when the take is suspect or the request degraded.
+	Model   string `json:"model"`
+	Seed    *int64 `json:"seed,omitempty"`
+	Warning string `json:"warning,omitempty"`
 }
 
 var formatExts = map[string][]string{
@@ -75,33 +90,47 @@ func validateOutPath(path string, exts []string, overwrite bool) error {
 	return nil
 }
 
-// SynthesizeWAV renders params via the engine and returns wav bytes. The
-// in-flight guard is held for the whole upstream request.
+// SynthesizeWAV renders params via the engine that serves them (see
+// prepareSpeech) and returns wav bytes. The in-flight guard is held for the
+// whole upstream request.
 func (d *Daemon) SynthesizeWAV(ctx context.Context, params map[string]any) ([]byte, error) {
-	body := maps(params)
-	body["response_format"] = "wav"
-	d.applyLanguageDefault(body)
-	d.applyVoiceDefault(body)
+	out, err := d.render(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	return out.WAV, nil
+}
+
+// synthesizeQwen renders a prepared body on the qwen3-tts child.
+func (d *Daemon) synthesizeQwen(ctx context.Context, body map[string]any) ([]byte, error) {
+	return d.speechOn(ctx, d.Sup, body)
+}
+
+// speechOn POSTs one prepared body to sup's child and returns the WAV — the
+// shared shape of every engine call (Acquire, EnsureReady, Speech, status).
+func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[string]any) ([]byte, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	base, g, err := d.engineBase(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("engine failed to start: %w", err)
-	}
+	g := sup.Acquire()
 	defer g.Release()
+	base, err := sup.EnsureReady(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errEngineStart, err)
+	}
 	resp, err := d.ec.Speech(ctx, base, raw)
 	if err != nil {
 		return nil, fmt.Errorf("engine speech: %w", err)
 	}
 	defer resp.Body.Close()
-	wav, err := readAllCap(resp.Body, 256<<20)
+	wav, err := readAllCap(resp.Body, maxEngineWAVBytes)
 	if err != nil {
 		return nil, fmt.Errorf("engine speech: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("engine speech: %s: %s", resp.Status, strings.TrimSpace(string(wav)))
+		return nil, &engineError{status: resp.StatusCode,
+			msg: fmt.Sprintf("engine speech: %s: %s", resp.Status, strings.TrimSpace(string(wav)))}
 	}
 	return wav, nil
 }
@@ -130,7 +159,7 @@ func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error)
 		return nil, fmt.Errorf("opus produces an .ogg file the platform player (afplay) cannot play; use format wav or mp3 with play")
 	}
 
-	params := map[string]any{"input": in.Text}
+	params := map[string]any{fieldInput: in.Text}
 	if in.Voice != "" {
 		params["voice"] = in.Voice
 	}
@@ -138,17 +167,30 @@ func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error)
 		params["language"] = in.Language
 	}
 	if in.Instructions != "" {
-		params["instructions"] = in.Instructions
+		params[fieldInstruct] = in.Instructions
 	}
 	if in.Seed != nil {
-		params["seed"] = *in.Seed
+		params[fieldSeed] = *in.Seed
+	}
+	if in.Model != "" {
+		params[fieldModel] = in.Model
+	}
+	if in.CfgValue != nil {
+		params["cfg_value"] = *in.CfgValue
+	}
+	if in.InferenceTimesteps != nil {
+		params["inference_timesteps"] = *in.InferenceTimesteps
+	}
+	if in.CloneMode != "" {
+		params["clone_mode"] = in.CloneMode
 	}
 
 	start := time.Now()
-	wav, err := d.SynthesizeWAV(ctx, params)
+	rendered, err := d.render(ctx, params)
 	if err != nil {
 		return nil, err
 	}
+	wav := rendered.WAV
 	elapsed := time.Since(start)
 
 	audio := wav
@@ -189,6 +231,9 @@ func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error)
 		DurationS: math.Round(wavDuration(wav)*100) / 100,
 		ElapsedS:  math.Round(elapsed.Seconds()*100) / 100,
 		Voice:     voice,
+		Model:     rendered.Model,
+		Seed:      rendered.Seed,
+		Warning:   rendered.Warning,
 	}, nil
 }
 
