@@ -355,7 +355,7 @@ func (p *producer) chunk(id string, index int, op chunkOp) (vproject.Summary, er
 		if !listed(c.Takes, op.Take) {
 			return vproject.Summary{}, &requestError{"take is not one of this chunk's takes"}
 		}
-		c.Pick = op.Take
+		c.Pick, c.UserPick = op.Take, true
 		settle(c)
 	case opRegenerate:
 		if op.Takes < 1 || op.Takes > maxTakesPerChunk {
@@ -384,7 +384,7 @@ func editChunk(c *vproject.Chunk, text, preset string) error {
 		return &requestError{fmt.Sprintf("an edit is one piece of text of at most %d characters, without [directives]", pr.opts.MaxChars)}
 	}
 	c.Text, c.Spoken = parsed[0].Text, parsed[0].Spoken
-	c.Takes, c.Pick, c.Reasons, c.Basis, c.Status = nil, "", nil, "", vproject.ChunkPending
+	c.Takes, c.Pick, c.UserPick, c.Reasons, c.Basis, c.Status = nil, "", false, nil, "", vproject.ChunkPending
 	return nil
 }
 

@@ -391,7 +391,9 @@ func (p *producer) record(j *job, i int, ref vproject.TakeRef, rendered bool, st
 	return j.m.Save(j.dir)
 }
 
-// settle picks: a still-listed user pick wins; else the first passing take;
+// settle picks: a still-listed user pick wins and, being the person's choice
+// after listening, is ok even if it failed the checks (UserPick; a silent take
+// is never accepted, the assembly needs audio); else the first passing take;
 // else the take with the lowest WER among the audible ones (review); a take
 // that is silent is picked only when every take is, so the chunk is flagged
 // for a listen instead of failing the assembly (#154 amendment 3).
@@ -403,6 +405,7 @@ func settle(c *vproject.Chunk) {
 		}
 	}
 	if pick == nil {
+		c.UserPick = false // the take the person chose is gone: back to the checks
 		for k := range c.Takes {
 			if c.Takes[k].Passed {
 				pick = &c.Takes[k]
@@ -423,7 +426,7 @@ func settle(c *vproject.Chunk) {
 	}
 	c.Pick, c.Reasons = pick.Key, pick.Reasons
 	c.Status = vproject.ChunkOK
-	if !pick.Passed {
+	if !pick.Passed && !(c.UserPick && !isSilent(pick)) {
 		c.Status = vproject.ChunkReview
 	}
 }

@@ -638,3 +638,69 @@ func TestCancelWhilePausedOnBattery(t *testing.T) {
 		t.Fatalf("%s after %d renders", got.Status, len(f.renders))
 	}
 }
+
+// An explicit pick means the person listened and accepted the take: a chunk
+// whose every take failed the automatic checks leaves review, the project
+// reaches done, and the manifest says the pick was the person's. Automatic
+// settling still marks a failing pick as review (TestProduceReviewNotFailed).
+// Mutation: produce.go settle, ignore UserPick (status from Passed only) -> the project stays review -> RED.
+func TestUserPickClearsReview(t *testing.T) {
+	f := newFakePorts(t)
+	for i := 0; i < 3; i++ {
+		f.heard[i] = "совсем другие слова звучат здесь"
+	}
+	p := startedProducer(t, f)
+	in := reelInput(t)
+	in.Script = "Сохраните это видео, чтобы не забыть."
+	s, err := p.create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitTerminal(t, p, s.ID)
+	d, err := p.chunkDetail(s.ID, 0)
+	if err != nil || got.Chunks[0].Status != vproject.ChunkReview {
+		t.Fatalf("%v %+v", err, got)
+	}
+	other := d.Takes[0].Key
+	if other == d.Pick {
+		other = d.Takes[1].Key
+	}
+	if _, err := p.chunk(s.ID, 0, chunkOp{Action: opPick, Take: other}); err != nil {
+		t.Fatal(err)
+	}
+	got = waitTerminal(t, p, s.ID)
+	if got.Status != vproject.StatusDone || got.Chunks[0].Status != vproject.ChunkOK || got.Chunks[0].Pick != other || !got.Chunks[0].UserPick {
+		t.Fatalf("a user pick must clear review and be recorded as the user's: %+v", got)
+	}
+	// Regenerating keeps the accepted pick, so the project stays done.
+	if _, err := p.chunk(s.ID, 0, chunkOp{Action: opRegenerate, Takes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	got = waitTerminal(t, p, s.ID)
+	if got.Status != vproject.StatusDone || got.Chunks[0].Pick != other {
+		t.Fatalf("regenerate lost the accepted pick: %+v", got)
+	}
+}
+
+// A user pick of a silent take is not accepted: the assembly needs audio.
+// Mutation: produce.go settle, drop the isSilent guard -> the chunk is ok and the assembly fails -> RED.
+func TestUserPickOfSilentTakeStaysReview(t *testing.T) {
+	f := newFakePorts(t)
+	f.silentAt[0], f.silentAt[1], f.silentAt[2] = true, true, true
+	p := startedProducer(t, f)
+	in := reelInput(t)
+	in.Script = "Сохраните это видео, чтобы не забыть.\n\nВторой абзац звучит."
+	s, err := p.create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, p, s.ID)
+	d, _ := p.chunkDetail(s.ID, 0)
+	if _, err := p.chunk(s.ID, 0, chunkOp{Action: opPick, Take: d.Takes[0].Key}); err != nil {
+		t.Fatal(err)
+	}
+	got := waitTerminal(t, p, s.ID)
+	if got.Chunks[0].Status != vproject.ChunkReview || got.Status == vproject.StatusFailed {
+		t.Fatalf("a silent take must stay in review, not fail: %+v", got)
+	}
+}
