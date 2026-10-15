@@ -27,6 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let player = AudioPlayer()
     private var speechClient: SpeechClient!
     private var studioClient: StudioClient!
+    private var studio: StudioController!
+    /// Runs once when the playback that was started with a completion ends on its own.
+    private var playbackDone: (() -> Void)?
     /// The daemon's last /status answer, fetched on every menu open; nil when it
     /// could not be reached.
     private var serviceStatus: DaemonStatus?
@@ -131,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.client = client
         speechClient = SpeechClient(baseURL: baseURL)
         studioClient = StudioClient(baseURL: baseURL)
+        studio = StudioController(host: studioHost())
         speakService.onSpeak = { [weak self] text in self?.speak(text) }
         NSApp.servicesProvider = speakService
         overlay.onPlaybackToggle = { [weak self] in self?.player.toggle() }
@@ -142,7 +146,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return (0, 0, false) }
             return (self.player.currentTime, self.player.duration, self.player.isPaused)
         }
-        player.onFinish = { [weak self] in self?.overlay.finishPlaying() }
+        player.onFinish = { [weak self] in
+            self?.overlay.finishPlaying()
+            let done = self?.playbackDone
+            self?.playbackDone = nil
+            done?()
+        }
         let streamer = StreamingTranscriber(baseURL: baseURL)
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode, transcriber: streamer)
@@ -185,6 +194,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         registerShortcut(shortcutPlan())
         registerSpeakShortcut(speakShortcutPlan())
         show(.idle)
+        studio.render()
+        studio.pickUpRunningVoiceover()
 
         // Ask for both permissions up front, so the first dictation does not stall
         // on a prompt. The Accessibility prompt shows once; the microphone prompt
@@ -294,7 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switch action {
             case .pickDictationKey(let index): return (#selector(pickShortcut(_:)), Shortcut.allCases[index].rawValue)
             case .pickSpeakKey(let index): return (#selector(pickSpeakShortcut(_:)), SpeakShortcut.allCases[index].rawValue)
-            case .pickVoice: return (#selector(pickVoice(_:)), [String: String]())
+            default: return (#selector(pickVoice(_:)), [String: String]())
             }
         }
     }
@@ -305,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildVoiceMenus()
         refreshVoices()
         refreshServiceStatus()
+        studio.render()
         let plan = shortcutPlan()
         let open = ShortcutMenu.onOpen(plan, registered: active.flatMap { Shortcut.allCases.firstIndex(of: $0) },
                                        idle: controller.state == .idle)
@@ -348,6 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(submenuItem("Voice", voiceSubmenu))
         shortcutsSubmenu.autoenablesItems = false // or AppKit re-enables the greyed-out keys
         menu.addItem(submenuItem("Keyboard Shortcuts", shortcutsSubmenu))
+        menu.addItem(submenuItem("Studio", studio.submenu))
         menu.addItem(.separator())
         menu.addItem(submenuItem("Settings", buildSettingsMenu()))
         menu.addItem(.separator())
@@ -378,6 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let status = try? await client.status()
             guard let self else { return }
             self.serviceStatus = status
+            self.studio.statusChanged(status)
         }
     }
 
@@ -560,6 +574,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// What the Studio features use of the app: alerts, the pill, the player and the installer.
+    private func studioHost() -> StudioHost {
+        StudioHost(
+            client: studioClient, speech: speechClient,
+            russianVoicePick: { [unowned self] in UserDefaults.standard.string(forKey: self.speakVoiceRUKey) },
+            alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) },
+            pill: { [unowned self] text in
+                if let text {
+                    self.overlay.showWorking()
+                    self.overlay.setWorkingText(text)
+                    self.overlay.setHintHidden(true)
+                } else {
+                    self.overlay.finish()
+                }
+            },
+            notify: { [unowned self] message in self.notice(message) },
+            play: { [unowned self] wav, showPill, onFinish in
+                self.playbackDone = onFinish
+                do {
+                    try self.player.play(wav: wav)
+                    if showPill { self.overlay.showPlaying() }
+                } catch {
+                    self.playbackDone = nil
+                    self.notice(String(describing: error))
+                }
+            },
+            stopPlayback: { [unowned self] in
+                self.playbackDone = nil
+                self.player.stop()
+            },
+            installStudioVoice: { [unowned self] in self.installStudioVoice() },
+            installing: { [unowned self] in self.updateInstalling })
+    }
+
+    /// Install Studio Voice: confirm, then the update install pinned to the
+    /// installed version with the studio model switched on.
+    private func installStudioVoice() {
+        guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
+            runAlert(title: UpdateGate.busyAlertTitle, text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
+            return
+        }
+        let sure = runAlert(title: "Install the studio voice?",
+                            text: "Downloads the studio voice model once, about 3 GB. Dictation pauses for a few seconds while ox-say restarts.",
+                            buttons: ["Install", "Cancel"])
+        guard sure == .alertFirstButtonReturn else { return }
+        installUpdate(tag: UpdateInstaller.tag(forVersion: AboutPanel.appVersion), studioVoice: true)
+    }
+
     /// The menu's update check: GitHub's latest release against the bundle's
     /// build version. Every outcome ends in an alert that waits for the user —
     /// a pill message times out and is easy to miss.
@@ -606,7 +668,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Shows a modal alert over every app and returns the pressed button.
     @discardableResult
-    private func runAlert(title: String, text: String, buttons: [String]) -> NSApplication.ModalResponse {
+    func runAlert(title: String, text: String, buttons: [String]) -> NSApplication.ModalResponse {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = text
@@ -651,21 +713,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// shell's 0 for a failed download). Output of both lands in the update
     /// log. The app relaunches only when the installed bundle really reports
     /// the target version; every other outcome is the failed alert.
-    private func installUpdate(tag: String) {
+    private func installUpdate(tag: String, studioVoice: Bool = false) {
         updateInstalling = true
+        studio.render()
         overlay.showWorking()
-        overlay.setWorkingText("Installing \(tag)…")
+        overlay.setWorkingText(studioVoice ? "Installing the studio voice…" : "Installing \(tag)…")
         overlay.setHintHidden(true)
         Task { @MainActor in
-            let failure = await Self.runInstall(tag: tag)
+            let failure = await Self.runInstall(tag: tag, studioVoice: studioVoice)
             updateInstalling = false
+            studio.render()
             if let failure {
                 overlay.finish()
-                runAlert(title: "Update to \(tag) failed",
+                runAlert(title: studioVoice ? "Installing the studio voice failed" : "Update to \(tag) failed",
                          text: "\(failure.message) Its output is in\n\(Self.updateLogURL.path)",
                          buttons: ["OK"])
                 return
             }
+            // After the relaunch the Studio menu tells whether this Mac took it.
+            if studioVoice { UserDefaults.standard.set(true, forKey: StudioMenu.installAttemptedKey) }
             let relaunch = Process()
             relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
             relaunch.arguments = ["-n", Bundle.main.bundleURL.path]
@@ -675,13 +741,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// nil on success; otherwise the first step that failed.
-    private static func runInstall(tag: String) async -> UpdateInstaller.Failure? {
+    private static func runInstall(tag: String, studioVoice: Bool) async -> UpdateInstaller.Failure? {
         let log = openUpdateLog()
         defer { try? log?.close() }
         let script = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-get-\(UUID().uuidString).sh")
         defer { try? FileManager.default.removeItem(at: script) }
 
-        switch await runProcess(UpdateInstaller.downloadCommand(to: script.path), log: log) {
+        let download = UpdateInstaller.Command(argv: UpdateInstaller.downloadCommand(to: script.path), environment: [:])
+        switch await runProcess(download, log: log) {
         case .failure(let error): return .couldNotStart(error.localizedDescription)
         case .success(let status) where status != 0: return .downloadFailed(status: status)
         case .success: break
@@ -692,7 +759,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } ?? Data()
         guard UpdateInstaller.isScript(head: head) else { return .notAScript }
 
-        switch await runProcess(UpdateInstaller.installCommand(script: script.path, tag: tag), log: log) {
+        let install = studioVoice ? UpdateInstaller.studioVoiceCommand(script: script.path, tag: tag)
+                                  : UpdateInstaller.updateCommand(script: script.path, tag: tag)
+        switch await runProcess(install, log: log) {
         case .failure(let error): return .couldNotStart(error.localizedDescription)
         case .success(let status) where status != 0: return .installerFailed(status: status)
         case .success: break
@@ -704,12 +773,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Runs one command with stdout and stderr in the log; the result is its
-    /// exit status, or the error when it could not start.
-    private static func runProcess(_ argv: [String], log: FileHandle?) async -> Result<Int32, Error> {
+    /// exit status, or the error when it could not start. The command's own
+    /// variables are added to the app's environment.
+    private static func runProcess(_ command: UpdateInstaller.Command, log: FileHandle?) async -> Result<Int32, Error> {
         await withCheckedContinuation { continuation in
             let p = Process()
-            p.executableURL = URL(fileURLWithPath: argv[0])
-            p.arguments = Array(argv.dropFirst())
+            p.executableURL = URL(fileURLWithPath: command.argv[0])
+            p.arguments = Array(command.argv.dropFirst())
+            if !command.environment.isEmpty {
+                p.environment = ProcessInfo.processInfo.environment.merging(command.environment) { _, new in new }
+            }
             p.standardInput = FileHandle.nullDevice
             p.standardOutput = log ?? FileHandle.nullDevice
             p.standardError = log ?? FileHandle.nullDevice

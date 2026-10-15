@@ -22,6 +22,11 @@ public enum UpdateInstaller {
     public struct Command: Equatable {
         public var argv: [String]
         public var environment: [String: String]
+
+        public init(argv: [String], environment: [String: String]) {
+            self.argv = argv
+            self.environment = environment
+        }
     }
 
     /// The installer's switch for the studio voice model (about 3 GB).

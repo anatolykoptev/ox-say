@@ -511,8 +511,11 @@ Environment variables (flags on `serve` override them):
 `app/dictation` is a menu-bar app: hold ⌃Space, speak, release, and the text
 appears where the cursor is, in any app. The daemon transcribes it, so nothing
 leaves the Mac. While you speak, a pill at the bottom of the screen shows bars
-that move with your voice; Esc cancels. The menu switches the key to ⌥Space and
-turns on toggle mode (press to start, press again to stop).
+that move with your voice; Esc cancels. **Keyboard Shortcuts** in the menu
+switches the key to ⌥Space, and **Settings** turns on toggle mode (press to
+start, press again to stop). **Studio** in the same menu makes long
+voiceovers from a text file and designs new voices (it needs the studio
+voice, which the menu installs on request); **About OxSay** shows the version.
 
 `get.sh` installs it into `~/Applications`. To build it from source instead:
 
@@ -548,7 +551,7 @@ affected.
 ### Speak selection
 
 The same app speaks selected text in any app — pick the way that reaches it:
-press the **Speak key** (⌃⌥Space by default, change it in the app's menu) with
+press the **Speak Selection** key (⌃⌥Space by default, change it under **Keyboard Shortcuts** in the app's menu) with
 text selected, or open the right-click menu (or the app's menu) → Services →
 **Speak Selection** («Озвучить выделенное»). The key works everywhere: it asks
 the focused element for its selection through Accessibility first, and only
@@ -563,7 +566,7 @@ daemon synthesizes, the pill reads "Speaking…"; the first use after an engine
 stop waits out a cold start of about 15 s. Once playback starts the pill turns
 into playback controls — pause/resume, the position counter and stop.
 
-The **Russian voice** and **English voice** submenus pick a voice per
+The **Voice** submenu has a **Russian** and an **English** section that pick a voice per
 language: **Default voice** follows the daemon's configured default,
 **Random each time** always rolls a new engine voice, and any cloned voice
 registered on the daemon (`ox-say voice list`) can be picked by name. The

@@ -44,6 +44,13 @@ final class DesignModelsTests: XCTestCase {
         XCTAssertNotNil(DesignForm.problem(description: String(repeating: "d", count: 301), sentence: "x", name: "a"))
         XCTAssertNotNil(DesignForm.problem(description: "d", sentence: String(repeating: "x", count: 201), name: "a"))
         XCTAssertNotNil(DesignForm.problem(description: "d", sentence: "x", name: "Bad Name"))
+        XCTAssertNil(DesignForm.problem(description: "d", sentence: "x", name: ""), "an empty name takes the daemon's suggestion")
+    }
+
+    func testAnEmptyNameFallsBackToTheTakesSuggestion() {
+        let take = DesignTake(path: "/t.wav", durationSeconds: 5, suggestedName: "warm-narrator-2")
+        XCTAssertEqual(DesignForm.saveName(typed: "", take: take), "warm-narrator-2")
+        XCTAssertEqual(DesignForm.saveName(typed: "anna", take: take), "anna")
     }
 
     func testTheDefaultSentenceFitsTheDaemonsLimit() {

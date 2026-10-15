@@ -96,7 +96,13 @@ public enum DesignForm {
         name.range(of: namePattern, options: .regularExpression) != nil
     }
 
+    /// The name to save a take under: the one typed, or the daemon's suggestion for that take.
+    public static func saveName(typed: String, take: DesignTake) -> String {
+        typed.isEmpty ? take.suggestedName : typed
+    }
+
     /// The first thing wrong with the form, in plain words; nil when it can be sent.
+    /// An empty name is fine: the daemon suggests one per take.
     public static func problem(description: String, sentence: String, name: String) -> String? {
         let description = description.trimmingCharacters(in: .whitespacesAndNewlines)
         let sentence = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -104,7 +110,7 @@ public enum DesignForm {
         if description.count > descriptionLimit { return "The description is too long: keep it under \(descriptionLimit) characters." }
         if sentence.isEmpty { return "Write a sample sentence for the voice to say." }
         if sentence.count > sentenceLimit { return "The sample sentence is too long: keep it under \(sentenceLimit) characters." }
-        if !isValidName(name) {
+        if !name.isEmpty && !isValidName(name) {
             return "The name can use lowercase English letters, digits, - and _, up to 32 characters, and must start with a letter or digit."
         }
         return nil

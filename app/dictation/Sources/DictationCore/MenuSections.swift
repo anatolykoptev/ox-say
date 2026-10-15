@@ -25,6 +25,13 @@ public enum MenuAction: Equatable {
     case pickDictationKey(Int)
     /// An index into the offered speak keys.
     case pickSpeakKey(Int)
+    // The Studio submenu.
+    case installStudioVoice
+    case newVoiceover
+    case stopVoiceover
+    case continueOnBattery
+    case openVoiceoversFolder
+    case createVoice
 }
 
 public enum MenuRow: Equatable {
