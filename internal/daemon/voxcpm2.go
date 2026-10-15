@@ -126,15 +126,18 @@ func newVoxSupervisor(cfg *config.Config, logger *slog.Logger, tune func(*engine
 // non-technical person one of: unavailable (with Reason), stopped, starting,
 // ready, crashed. Available is false exactly when State is "unavailable".
 type voxCPM2Status struct {
-	Available bool         `json:"available"`
-	Reason    string       `json:"reason,omitempty"`
-	State     engine.State `json:"state"`
-	PID       int          `json:"pid,omitempty"`
-	BaseURL   string       `json:"base_url,omitempty"`
-	UptimeS   float64      `json:"uptime_s,omitempty"`
-	LastErr   string       `json:"last_error,omitempty"`
-	Starts    int          `json:"starts"`
-	Restarts  int          `json:"restarts"`
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"`
+	// ReasonCode is Reason for a program: config.VoxReasonUnsupported (this Mac
+	// cannot run it) or config.VoxReasonModelMissing (an install adds it).
+	ReasonCode string       `json:"reason_code,omitempty"`
+	State      engine.State `json:"state"`
+	PID        int          `json:"pid,omitempty"`
+	BaseURL    string       `json:"base_url,omitempty"`
+	UptimeS    float64      `json:"uptime_s,omitempty"`
+	LastErr    string       `json:"last_error,omitempty"`
+	Starts     int          `json:"starts"`
+	Restarts   int          `json:"restarts"`
 }
 
 // stateVoxUnavailable is the State of an engine that cannot run on this host.
@@ -142,8 +145,8 @@ const stateVoxUnavailable engine.State = "unavailable"
 
 // voxStatus reports the voxcpm2 engine for /status.
 func (d *Daemon) voxStatus() voxCPM2Status {
-	if reason := d.voxUnavailable(); reason != "" {
-		return voxCPM2Status{State: stateVoxUnavailable, Reason: reason}
+	if code, reason := d.voxBlock(); reason != "" {
+		return voxCPM2Status{State: stateVoxUnavailable, Reason: reason, ReasonCode: code}
 	}
 	st := d.VoxSup.Status()
 	return voxCPM2Status{

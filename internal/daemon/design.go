@@ -399,7 +399,7 @@ func (d *Daemon) handleDesignVoice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Daemon) handleSaveDesign(w http.ResponseWriter, r *http.Request) {
-	// Only name and take are read: any other field a client sends is ignored.
+	// Only name, take and replace are read: any other field a client sends is ignored.
 	var in SaveDesignInput
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxDesignBody)).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
