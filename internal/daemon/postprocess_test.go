@@ -581,7 +581,7 @@ func TestLoudnormFileLeavesNoPartialOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	useFakeFFmpeg(t, `case "$*" in *print_format*) exec `+real+` "$@";; esac
+	useFakeFFmpeg(t, `case "$*" in *"-f null"*) exec `+real+` "$@";; esac
 for a; do last=$a; done
 echo junk > "$last"
 exit 1`)
@@ -606,7 +606,7 @@ func TestLoudnormFileMeasureFailureIsAnError(t *testing.T) {
 		"no JSON in the report": `echo "no report here" >&2; exit 0`,
 		"measure exits 1":       `exit 1`,
 	} {
-		useFakeFFmpeg(t, `case "$*" in *print_format*) `+measure+`;; esac; exec `+real+` "$@"`)
+		useFakeFFmpeg(t, `case "$*" in *"-f null"*) `+measure+`;; esac; exec `+real+` "$@"`)
 		dir := t.TempDir()
 		in, out := writeStepFile(t, dir), filepath.Join(dir, "out.wav")
 		if err := loudnormFile(context.Background(), in, out, testTargetLUFS); err == nil {
@@ -639,5 +639,26 @@ func TestLoudnormFileTimeoutScalesWithDuration(t *testing.T) {
 	}
 	if long <= short || long < time.Duration(3600*loudnormFilePerSec*float64(time.Second)) {
 		t.Errorf("an hour of audio gets %v (10 s: %v)", long, short)
+	}
+}
+
+// loudnormFileReport tells the dynamic fallback from a constant gain, from
+// ffmpeg's own normalization_type: a peaky programme cannot reach -16 LUFS
+// under a -1.5 dBTP ceiling with one gain; the stepped sine can.
+// Mutation: postprocess.go reportedNormType, return "" -> the peaky case reads linear -> RED.
+// Mutation: postprocess.go applyLoudnormReport, drop ":print_format=json" -> RED.
+func TestLoudnormFileReportsTheDynamicFallback(t *testing.T) {
+	dir := t.TempDir()
+	peaky := filepath.Join(dir, "peaky.wav")
+	if err := os.WriteFile(peaky, clickyBytes(testutil.VoxRate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dyn, err := loudnormFileReport(context.Background(), peaky, filepath.Join(dir, "p.wav"), testTargetLUFS)
+	if err != nil || !dyn {
+		t.Errorf("peaky programme: dynamic=%v err=%v, want dynamic", dyn, err)
+	}
+	dyn, err = loudnormFileReport(context.Background(), writeStepFile(t, dir), filepath.Join(dir, "s.wav"), testTargetLUFS)
+	if err != nil || dyn {
+		t.Errorf("stepped sine: dynamic=%v err=%v, want a constant gain", dyn, err)
 	}
 }

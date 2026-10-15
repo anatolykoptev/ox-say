@@ -103,7 +103,10 @@ func (m loudnormStats) measuredArgs() (string, error) {
 }
 
 // loudnormFilter is the filter for a target; measured (nil = single pass)
-// switches it to loudnorm's two-pass linear mode.
+// switches it to loudnorm's two-pass mode with linear=true. "Linear" is a
+// request: when the measured peak plus the gain needed would pass the
+// true-peak ceiling, or the measured range exceeds LRA, ffmpeg runs the
+// dynamic mode anyway and reports normalization_type "dynamic".
 func loudnormFilter(lufs float64, measured *loudnormStats) (string, error) {
 	f := fmt.Sprintf("loudnorm=I=%g:TP=%g:LRA=%d", lufs, loudnormTP, loudnormLRA)
 	if measured == nil {
@@ -226,7 +229,23 @@ func runLoudnorm(ctx context.Context, dir string, wav []byte, rate int, filter s
 // result: ffmpeg can exit 0 and leave nothing, or leave the wrong rate, and
 // neither may pass for a normalised file.
 func applyLoudnorm(ctx context.Context, src loudnormSource, out string, rate int, filter string) error {
-	args := append([]string{"-hide_banner", "-loglevel", "error", "-y"}, src.args()...)
+	_, err := applyLoudnormReport(ctx, src, out, rate, filter, false)
+	return err
+}
+
+// normTypeDynamic is the normalization_type ffmpeg reports when it could not
+// keep the gain constant.
+const normTypeDynamic = "dynamic"
+
+// applyLoudnormReport is applyLoudnorm that can also ask ffmpeg for its own
+// report and return the normalization_type it ran ("linear", "dynamic"; empty
+// when not asked or the report is unreadable).
+func applyLoudnormReport(ctx context.Context, src loudnormSource, out string, rate int, filter string, report bool) (normType string, err error) {
+	level := "error"
+	if report {
+		level, filter = "info", filter+":print_format=json" // the JSON is an info-level message
+	}
+	args := append([]string{"-hide_banner", "-nostats", "-loglevel", level, "-y"}, src.args()...)
 	args = append(args, "-af", filter, "-ar", strconv.Itoa(rate), "-c:a", "pcm_s16le", out)
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stdin = src.stdin()
@@ -234,12 +253,27 @@ func applyLoudnorm(ctx context.Context, src loudnormSource, out string, rate int
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg loudnorm: %w: %s", err, strings.TrimSpace(errb.String()))
+		return "", fmt.Errorf("ffmpeg loudnorm: %w: %s", err, strings.TrimSpace(errb.String()))
 	}
 	if gotRate, secs := wavInfoFile(out); gotRate != rate || secs <= 0 {
-		return fmt.Errorf("loudnorm: ffmpeg produced %d Hz / %.2f s, want %d Hz of audio", gotRate, secs, rate)
+		return "", fmt.Errorf("loudnorm: ffmpeg produced %d Hz / %.2f s, want %d Hz of audio", gotRate, secs, rate)
 	}
-	return nil
+	if report {
+		normType = reportedNormType(errb.String())
+	}
+	return normType, nil
+}
+
+// reportedNormType reads normalization_type from loudnorm's JSON report.
+func reportedNormType(stderr string) string {
+	start, end := strings.LastIndex(stderr, "{"), strings.LastIndex(stderr, "}")
+	var rep struct {
+		Type string `json:"normalization_type"`
+	}
+	if start < 0 || end < start || json.Unmarshal([]byte(stderr[start:end+1]), &rep) != nil {
+		return ""
+	}
+	return rep.Type
 }
 
 // Bounds of one long-file normalisation: ffmpeg's loudnorm runs far faster
@@ -256,19 +290,31 @@ func loudnormFileTimeout(durSec float64) time.Duration {
 	return loudnormPasses * (loudnormFileBase + time.Duration(durSec*loudnormFilePerSec*float64(time.Second)))
 }
 
-// loudnormFile is the producer's STRICT two-pass normalisation of the file in
-// into the file out, at in's sample rate: measure, then a linear gain from the
-// measurement. Unlike loudnorm it never falls back to a single pass and the
-// producer never calls normalizeLoudness's soft fallback: any failure,
-// including a measuring pass that reads silence, is returned, and out is left
-// absent, so an unnormalised file can never pass for the result.
-func loudnormFile(ctx context.Context, in, out string, lufs float64) (err error) {
+// loudnormFile is loudnormFileReport without the report.
+func loudnormFile(ctx context.Context, in, out string, lufs float64) error {
+	_, err := loudnormFileReport(ctx, in, out, lufs)
+	return err
+}
+
+// loudnormFileReport is the producer's STRICT two-pass normalisation of the
+// file in into the file out, at in's sample rate: measure, then a gain from
+// the measurement (linear=true). Unlike loudnorm it never falls back to a
+// single pass and the producer never calls normalizeLoudness's soft fallback:
+// any failure, including a measuring pass that reads silence, is returned, and
+// out is left absent, so an unnormalised file can never pass for the result.
+//
+// The gain is constant only when loudnorm can keep it so. A programme whose
+// peak would pass the true-peak ceiling at the needed gain (hot TTS at -14
+// LUFS), or whose range exceeds LRA, is normalised in loudnorm's dynamic mode
+// whatever linear=true asks (issue #153). dynamic reports that, from ffmpeg's
+// own normalization_type.
+func loudnormFileReport(ctx context.Context, in, out string, lufs float64) (dynamic bool, err error) {
 	if in == out {
-		return fmt.Errorf("loudnorm: the output must be a different file from the input")
+		return false, fmt.Errorf("loudnorm: the output must be a different file from the input")
 	}
 	rate, _ := wavInfoFile(in)
 	if rate <= 0 {
-		return fmt.Errorf("loudnorm: the assembled file is not a PCM WAV")
+		return false, fmt.Errorf("loudnorm: the assembled file is not a PCM WAV")
 	}
 	defer func() {
 		if err != nil {
@@ -278,13 +324,14 @@ func loudnormFile(ctx context.Context, in, out string, lufs float64) (err error)
 	src := loudnormSource{path: in}
 	st, err := measureLoudnessFrom(ctx, src, lufs)
 	if err != nil {
-		return err
+		return false, err
 	}
 	filter, err := loudnormFilter(lufs, st)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return applyLoudnorm(ctx, src, out, rate, filter)
+	normType, err := applyLoudnormReport(ctx, src, out, rate, filter, true)
+	return normType == normTypeDynamic, err
 }
 
 // wavInfoFile is wavInfo over a file's first 64 KiB: wavInfo reads the sizes

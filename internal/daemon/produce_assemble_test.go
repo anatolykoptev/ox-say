@@ -223,11 +223,11 @@ func TestAssembleValidatesTheTarget(t *testing.T) {
 
 // A word the STT places in the tail of the take (or after it) ends with the
 // trimmed take, never inside the next chunk's time.
-// Mutation: produce_assemble.go add, drop the math.Min(dur, ...) clamp -> RED.
+// Mutation: produce_assemble.go add, drop the math.Min(dur, ...) clamp on S, or on E -> RED.
 func TestAssembleKeepsWordsInsideTheirChunk(t *testing.T) {
 	f := newFakePorts(t)
 	p, j := assembleFixture(t, f)
-	late := []voices.Word{{W: "Первое", S: fixtureLead, E: fixtureLead + 0.5}, {W: "предложение", S: 1.0, E: 1.4}, {W: "здесь.", S: 1.4, E: 1.95}}
+	late := []voices.Word{{W: "Первое", S: fixtureLead, E: fixtureLead + 0.5}, {W: "предложение", S: 1.0, E: 1.4}, {W: "здесь.", S: 1.9, E: 1.95}} // the last starts in the take's trimmed tail
 	d := takeDetail{Ref: j.m.Chunks[0].Takes[0], Heard: late}
 	writeDetailT(t, filepath.Join(j.dir, vproject.TakesDir, j.m.Chunks[0].Pick+".json"), d)
 	if err := p.assemble(j); err != nil {
@@ -240,8 +240,8 @@ func TestAssembleKeepsWordsInsideTheirChunk(t *testing.T) {
 	}
 	end := j.m.Chunks[0].EndS
 	for _, w := range words[:3] {
-		if w.E > end+timeSlackSec || w.S > w.E {
-			t.Errorf("%q runs %.2f-%.2f, past its chunk's end %.2f", w.W, w.S, w.E, end)
+		if w.E > end+timeSlackSec || w.S > end+timeSlackSec || w.S > w.E {
+			t.Errorf("%q runs %.2f-%.2f, outside its chunk (ends %.2f)", w.W, w.S, w.E, end)
 		}
 	}
 }
@@ -493,30 +493,189 @@ func TestMoveFileAcrossVolumes(t *testing.T) {
 	}
 }
 
-// A failure while publishing removes what this call created, and only that.
-// Mutation: produce_assemble.go publish, drop the rollback -> the .srt stays -> RED.
+// A burst rename that cannot complete (here: the third sibling's path is a
+// directory) leaves no mixed set: every output file is removed, the
+// directory that is not ours stays, and the error says what happened.
+// Mutation: produce_assemble.go publish, drop the removeOutputs call -> RED.
+// Mutation: produce_assemble.go removeOutputs, drop the IsDir guard -> the empty directory is deleted -> RED.
 func TestPublishRollsBackWhatItCreated(t *testing.T) {
 	f := newFakePorts(t)
 	p, j := assembleFixture(t, f)
 	j.m.Settings.Overwrite = true
 	stem := assembledStem(j)
-	if err := os.MkdirAll(filepath.Join(stem+".words.json", "blocker"), 0o755); err != nil { // the third sibling cannot be replaced
+	if err := os.MkdirAll(stem+".words.json", 0o755); err != nil { // empty: only the IsDir guard keeps it
 		t.Fatal(err)
 	}
-	if err := p.assemble(j); err == nil {
-		t.Fatal("publishing over a directory succeeded")
+	err := p.assemble(j)
+	if !errors.Is(err, errOutputsRemoved) {
+		t.Fatalf("publishing over a directory: %v", err)
 	}
 	for _, ext := range []string{".wav", ".srt", ".vtt", ".manifest.json"} {
 		if _, err := os.Lstat(stem + ext); !os.IsNotExist(err) {
 			t.Errorf("%s survived a failed publish: %v", ext, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(stem+".words.json", "blocker")); err != nil {
-		t.Errorf("the user's own path was touched: %v", err)
+	if st, err := os.Stat(stem + ".words.json"); err != nil || !st.IsDir() {
+		t.Errorf("the user's own directory was touched: %v", err)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(stem))
+	for _, e := range entries {
+		if strings.Contains(e.Name(), vproject.TempMark) {
+			t.Errorf("staged temp left: %s", e.Name())
+		}
 	}
 	if j.m.Outputs.WAV != "" {
 		t.Errorf("outputs recorded for a failed publish: %+v", j.m.Outputs)
 	}
+}
+
+// outputSet reads the five outputs of j's stem.
+func outputSet(t *testing.T, j *job) map[string]string {
+	t.Helper()
+	set := map[string]string{}
+	for _, ext := range outputExts {
+		raw, err := os.ReadFile(assembledStem(j) + ext)
+		if err != nil {
+			t.Fatal(err)
+		}
+		set[ext] = string(raw)
+	}
+	return set
+}
+
+func failRenames(t *testing.T, fails func(from, to string) bool, err error) {
+	t.Helper()
+	orig := renameFile
+	t.Cleanup(func() { renameFile = orig })
+	renameFile = func(from, to string) error {
+		if fails(from, to) {
+			return err
+		}
+		return os.Rename(from, to)
+	}
+}
+
+func noTemps(t *testing.T, dir string) {
+	t.Helper()
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), vproject.TempMark) {
+			t.Errorf("temp left in %s: %s", dir, e.Name())
+		}
+	}
+}
+
+// editForReassembly changes what the next assembly would publish.
+func editForReassembly(j *job) {
+	j.m.Chunks[0].Text = "Совсем другой текст."
+	j.m.Chunks[0].PauseAfter = 1.5
+}
+
+// A WAV that cannot be staged (permission, full disk on the copy) fails the
+// re-assembly BEFORE any output is touched: the previous set stays whole.
+// Mutation: produce_assemble.go publish, write the siblings before staging the
+// WAV (stage per file and rename at once) -> the old wav stays beside new siblings -> RED.
+func TestReassemblyWAVStagingFailureLeavesThePreviousSet(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	before := outputSet(t, j)
+	editForReassembly(j)
+	failRenames(t, func(from, _ string) bool { return strings.HasSuffix(from, normSuffix) }, errors.New("permission denied"))
+	if err := p.assemble(j); err == nil {
+		t.Fatal("assembly succeeded although the wav could not be staged")
+	}
+	after := outputSet(t, j)
+	for ext, was := range before {
+		if after[ext] != was {
+			t.Errorf("%s changed although the assembly failed", ext)
+		}
+	}
+	noTemps(t, filepath.Dir(assembledStem(j)))
+}
+
+// A rename that fails inside the final burst, whichever output it hits, leaves
+// no mixed set: none of the five exist, and no temp is left.
+// Mutation: produce_assemble.go publish, drop the removeOutputs call -> RED.
+func TestReassemblyBurstFailureLeavesNoMixedSet(t *testing.T) {
+	for _, ext := range outputExts {
+		f := newFakePorts(t)
+		p, j := assembleFixture(t, f)
+		if err := p.assemble(j); err != nil {
+			t.Fatal(err)
+		}
+		editForReassembly(j)
+		dest := assembledStem(j) + ext
+		failRenames(t, func(from, to string) bool {
+			return to == dest && strings.Contains(filepath.Base(from), vproject.TempMark)
+		}, errors.New("disk on fire"))
+		err := p.assemble(j)
+		if !errors.Is(err, errOutputsRemoved) {
+			t.Errorf("%s: error %v", ext, err)
+		}
+		for _, e := range outputExts {
+			if _, serr := os.Lstat(assembledStem(j) + e); !os.IsNotExist(serr) {
+				t.Errorf("failing %s left %s behind", ext, e)
+			}
+		}
+		noTemps(t, filepath.Dir(dest))
+	}
+}
+
+// The normalised file must be as long as the timeline: a result cut short (or
+// padded) is not published.
+// Mutation: produce_assemble.go assemble, drop the math.Abs(secs-tl.total) test -> RED.
+func TestAssembleChecksTheNormalisedLength(t *testing.T) {
+	short := pcm.Clip{Rate: 48000, S: toneClip(1, 0).S[:9600]} // 0.2 s against a 2.86 s timeline
+	long := pcm.Clip{Rate: 48000, S: append(append([]int16{}, toneClip(1, 0).S...), make([]int16, 48000*4)...)}
+	for name, clip := range map[string]pcm.Clip{"0.2 s": short, "padded to 5 s": long} {
+		f := newFakePorts(t)
+		f.normOut = clip.Encode()
+		p, j := assembleFixture(t, f)
+		err := p.assemble(j)
+		if err == nil || !strings.Contains(err.Error(), "nothing was published") {
+			t.Errorf("%s: %v", name, err)
+		}
+		noOutputs(t, j)
+	}
+}
+
+// ffmpeg's dynamic fallback is recorded, in the job and in the export, and
+// cleared again when a later assembly keeps one gain.
+// Mutation: produce_assemble.go assemble, drop the withNote call -> RED.
+func TestAssembleRecordsDynamicLoudness(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	if hasNote(j.m.Notes) {
+		t.Fatalf("a linear result carries the dynamic note: %v", j.m.Notes)
+	}
+	f.normDynamic = true
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	var export vproject.Manifest
+	raw, _ := os.ReadFile(j.m.Outputs.Manifest)
+	if err := json.Unmarshal(raw, &export); err != nil || !hasNote(j.m.Notes) || !hasNote(export.Notes) {
+		t.Fatalf("job notes %v, export notes %v (%v)", j.m.Notes, export.Notes, err)
+	}
+	f.normDynamic = false
+	if err := p.assemble(j); err != nil || hasNote(j.m.Notes) {
+		t.Fatalf("the note outlived a linear assembly: %v %v", err, j.m.Notes)
+	}
+}
+
+func hasNote(notes []string) bool {
+	for _, n := range notes {
+		if n == vproject.NoteDynamicLoudness {
+			return true
+		}
+	}
+	return false
 }
 
 // The output name must be a .wav (any case); siblings share its stem.

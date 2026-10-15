@@ -43,6 +43,7 @@ type fakePorts struct {
 	normHook    func() // non-nil: Normalize calls it first
 	normNoop    bool   // Normalize reports success and writes nothing
 	normOut     []byte // non-nil: Normalize writes these bytes instead of its input
+	normDynamic bool   // Normalize reports loudnorm's dynamic mode
 }
 
 func newFakePorts(t *testing.T) *fakePorts {
@@ -103,25 +104,25 @@ func (f *fakePorts) Voice(string) (voiceFacts, error) { return f.voice, f.voiceE
 func (f *fakePorts) DefaultVoice(string) string       { return "nar" }
 func (f *fakePorts) Unavailable() string              { return f.unavailable }
 func (f *fakePorts) EngineID() (string, error)        { return f.engineID, nil }
-func (f *fakePorts) Normalize(_ context.Context, in, out string, _, _ float64) error {
+func (f *fakePorts) Normalize(_ context.Context, in, out string, _, _ float64) (bool, error) {
 	f.mu.Lock()
 	f.normCalls++
-	err, hook, noop := f.normErr, f.normHook, f.normNoop
+	err, hook, noop, dyn := f.normErr, f.normHook, f.normNoop, f.normDynamic
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
 	}
 	if err != nil || noop {
-		return err
+		return false, err
 	}
 	raw, rerr := os.ReadFile(in)
 	if rerr != nil {
-		return rerr
+		return false, rerr
 	}
 	if f.normOut != nil {
 		raw = f.normOut
 	}
-	return os.WriteFile(out, raw, 0o600)
+	return dyn, os.WriteFile(out, raw, 0o600)
 }
 func (f *fakePorts) Quiet(ctx context.Context, onWait func()) error {
 	if f.quietWait > 0 {

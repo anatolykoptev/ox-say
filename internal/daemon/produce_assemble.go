@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -30,12 +31,21 @@ const (
 	silenceBlockSec = 10.0
 	workWAVPattern  = ".assembled" + vproject.TempMark + "*.wav"
 	normSuffix      = ".norm.wav"
+	// normLengthSlackSec is how far the normalised file may differ from the
+	// timeline. loudnorm keeps the length to a few samples; 50 ms covers
+	// decoder padding and frame rounding yet is far below the loss of a word,
+	// so a truncated or padded result cannot pass.
+	normLengthSlackSec = 0.05
 )
 
 // outputExts are the five published siblings of one output stem.
 var outputExts = []string{".wav", ".srt", ".vtt", ".words.json", ".manifest.json"}
 
 var errDiskFull = errors.New("the disk is full: free some space, then resume the project")
+
+// errOutputsRemoved is the plain-words end of a publish that failed after it
+// had begun replacing the outputs: none are kept, rather than a mixed set.
+var errOutputsRemoved = errors.New("the output files could not all be put in place, so none were kept; assemble the project again")
 
 // renameFile is os.Rename; a var so a test can stand in for another volume.
 var renameFile = os.Rename
@@ -75,6 +85,8 @@ type timeline struct {
 	words []voices.Word
 	rate  int
 	total float64 // seconds of audio written
+	// dynamic: loudnorm could not keep one gain over the programme.
+	dynamic bool
 }
 
 // assemble streams every chunk's picked take - trimmed, faded, then its gap -
@@ -113,12 +125,17 @@ func (p *producer) assemble(j *job) error {
 	if err != nil {
 		return diskErr(err)
 	}
-	if err := p.ports.Normalize(p.ctx, tmp.Name(), norm, m.Settings.LUFS, tl.total); err != nil {
+	tl.dynamic, err = p.ports.Normalize(p.ctx, tmp.Name(), norm, m.Settings.LUFS, tl.total)
+	if err != nil {
 		return fmt.Errorf("loudness normalisation failed, so nothing was published: %w", err)
 	}
-	if rate, secs := wavInfoFile(norm); rate != tl.rate || secs <= 0 {
-		return fmt.Errorf("loudness normalisation left %d Hz / %.2f s instead of %d Hz of audio, so nothing was published", rate, secs, tl.rate)
+	if rate, secs := wavInfoFile(norm); rate != tl.rate || secs <= 0 || math.Abs(secs-tl.total) > normLengthSlackSec {
+		return fmt.Errorf("loudness normalisation left %d Hz / %.2f s instead of %d Hz / %.2f s, so nothing was published", rate, secs, tl.rate, tl.total)
 	}
+	if tl.dynamic {
+		p.log.Warn("produce: loudness was set in dynamic mode", slog.Float64("target_lufs", m.Settings.LUFS))
+	}
+	m.Notes = withNote(m.Notes, vproject.NoteDynamicLoudness, tl.dynamic)
 	if err := checkOutputs(stem, m.Settings.Overwrite, ownedOutputs(m)); err != nil { // write-time re-check
 		return err
 	}
@@ -223,59 +240,124 @@ func writeSilence(w *pcm.Writer, rate int, sec float64) error {
 	return nil
 }
 
-// publish writes the siblings and then moves the normalised WAV into place
-// (last, so its appearance means the rest is there); the job's manifest records
-// chunk times and outputs only when everything succeeded. A failure removes
-// what this call created.
-func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.Manifest) (err error) {
+// withNote returns notes with note present exactly when want.
+func withNote(notes []string, note string, want bool) []string {
+	out := make([]string, 0, len(notes)+1)
+	for _, n := range notes {
+		if n != note {
+			out = append(out, n)
+		}
+	}
+	if want {
+		out = append(out, note)
+	}
+	return out
+}
+
+// staged is a file written beside its destination, not yet renamed to it.
+type staged struct{ tmp, dest string }
+
+// publish puts the five outputs in place as one set. It first STAGES all of
+// them - every sibling as an fsynced temp beside its destination, the
+// normalised WAV moved or copied to a temp beside its destination - so a full
+// disk, a permission error or a cross-volume copy fails here, with the previous
+// set untouched and the staged temps removed. Only then does it rename the
+// staged set into place, the WAV last. If a rename in that burst fails, the
+// whole output set (new and old) is removed rather than left mixed. The job's
+// manifest records chunk times and outputs only when everything succeeded.
+func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.Manifest) error {
 	if err := os.MkdirAll(filepath.Dir(stem), outDirMode); err != nil {
 		return err
 	}
 	m.Outputs = vproject.Outputs{WAV: stem + ".wav", SRT: stem + ".srt", VTT: stem + ".vtt",
 		Words: stem + ".words.json", Manifest: stem + ".manifest.json", DurationS: round2(tl.total)}
-	var created []string
-	defer func() {
-		if err != nil {
-			for _, path := range created {
-				_ = os.Remove(path)
-			}
-		}
-	}()
-	wj, err := json.MarshalIndent(tl.words, "", " ")
+	set, err := stageOutputs(norm, tl, m)
 	if err != nil {
 		return err
 	}
-	export, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
-	}
-	for _, f := range []struct {
-		path string
-		data []byte
-	}{{m.Outputs.SRT, []byte(toSRT(tl.segs))}, {m.Outputs.VTT, []byte(toVTT(tl.segs))}, {m.Outputs.Words, wj}, {m.Outputs.Manifest, export}} {
-		if _, serr := os.Lstat(f.path); os.IsNotExist(serr) {
-			created = append(created, f.path)
+	for _, s := range set {
+		if err := renameFile(s.tmp, s.dest); err != nil {
+			removeOutputs(set, m.Outputs)
+			return fmt.Errorf("%w: %v", errOutputsRemoved, err)
 		}
-		if err = vproject.WriteAtomic(f.path, f.data, outFileMode); err != nil {
-			return err
-		}
-	}
-	if _, serr := os.Lstat(m.Outputs.WAV); os.IsNotExist(serr) {
-		created = append(created, m.Outputs.WAV)
-	}
-	if err = os.Chmod(norm, outFileMode); err != nil {
-		return err
-	}
-	if err = moveFile(norm, m.Outputs.WAV); err != nil {
-		return err
 	}
 	p.mu.Lock()
 	for i := range j.m.Chunks {
 		j.m.Chunks[i].StartS, j.m.Chunks[i].EndS = m.Chunks[i].StartS, m.Chunks[i].EndS
 	}
 	j.m.Outputs = m.Outputs
+	j.m.Notes = withNote(j.m.Notes, vproject.NoteDynamicLoudness, tl.dynamic)
 	p.mu.Unlock()
 	return nil
+}
+
+// stageOutputs stages the siblings and then the WAV (last); on a failure it
+// removes what it staged and nothing else.
+func stageOutputs(norm string, tl timeline, m *vproject.Manifest) (set []staged, err error) {
+	defer func() {
+		if err != nil {
+			for _, s := range set {
+				_ = os.Remove(s.tmp)
+			}
+			set = nil
+		}
+	}()
+	wj, err := json.MarshalIndent(tl.words, "", " ")
+	if err != nil {
+		return nil, err
+	}
+	export, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range []struct {
+		dest string
+		data []byte
+	}{{m.Outputs.SRT, []byte(toSRT(tl.segs))}, {m.Outputs.VTT, []byte(toVTT(tl.segs))}, {m.Outputs.Words, wj}, {m.Outputs.Manifest, export}} {
+		tmp, err := vproject.Stage(f.dest, f.data, outFileMode)
+		if err != nil {
+			return set, err
+		}
+		set = append(set, staged{tmp, f.dest})
+	}
+	wav, err := stageWAV(norm, m.Outputs.WAV)
+	if err != nil {
+		return set, err
+	}
+	return append(set, staged{wav, m.Outputs.WAV}), nil
+}
+
+// stageWAV moves the normalised file to a temp name beside dest (a rename on
+// one volume, a fsynced copy across volumes) and returns that name.
+func stageWAV(norm, dest string) (string, error) {
+	if err := os.Chmod(norm, outFileMode); err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+vproject.TempMark+"*")
+	if err != nil {
+		return "", err
+	}
+	tmp := f.Name()
+	_ = f.Close()
+	if err := moveFile(norm, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("write %s: %w", dest, err)
+	}
+	return tmp, nil
+}
+
+// removeOutputs deletes the five output files and any staged temp left: never
+// a directory, which is the user's.
+func removeOutputs(set []staged, out vproject.Outputs) {
+	paths := []string{out.WAV, out.SRT, out.VTT, out.Words, out.Manifest}
+	for _, s := range set {
+		paths = append(paths, s.tmp)
+	}
+	for _, path := range paths {
+		if st, err := os.Lstat(path); err == nil && !st.IsDir() {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 // moveFile renames src to dst; across volumes (EXDEV) it copies beside dst and
