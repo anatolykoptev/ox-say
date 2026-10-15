@@ -21,7 +21,7 @@ enum MarkdownText {
         (#"!\[([^\[\]\n]*)\](?:\#(target)|\[[^\[\]\n]*\])"#, "$1", []),
         // `[text](url)`.
         (#"\[([^\[\]\n]*)\]\#(target)"#, "$1", []),
-        // `[text][ref]` and `[text][]`, unless the text is a footnote number: `[1][2]`.
+        // `[text][ref]` and `[text][]`, unless the text starts with a digit: `[1][2]` are two footnote marks.
         (#"\[([^\[\]\n0-9][^\[\]\n]*)\]\[[^\[\]\n]*\]"#, "$1", []),
         // `<https://…>`, `<mailto:…>` and `<name@host>`; before a full stop or comma
         // the space in front goes too.

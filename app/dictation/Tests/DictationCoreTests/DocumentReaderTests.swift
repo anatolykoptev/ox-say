@@ -152,4 +152,71 @@ final class DocumentReaderTests: XCTestCase {
         XCTAssertEqual(Set(DocumentReader.supportedExtensions),
                        ["txt", "md", "markdown", "docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive", "pdf"])
     }
+
+    // MARK: encodings
+
+    private let russian = "Привет, мир. Это длинный текст для проверки кодировки. "
+
+    func testUtf8CutInTheMiddleOfACharacterIsStillUtf8() throws {
+        let long = Data((String(repeating: russian, count: 40) + "т").utf8).dropLast(1)
+        let text = try DocumentReader.decode(Data(long))
+        XCTAssertTrue(text.hasPrefix("Привет, мир. Это длинный текст"), String(text.prefix(40)))
+        XCTAssertEqual(text.unicodeScalars.filter { $0 == "\u{FFFD}" }.count, 1)
+        let short = try DocumentReader.decode(Data("Привет мир, длинный текст".utf8).dropLast(1))
+        XCTAssertTrue(short.hasPrefix("Привет мир, длинный текс"), short)
+    }
+
+    func testAFewStrayBytesInUtf8TextDoNotMakeItAnotherEncoding() throws {
+        var data = Data(String(repeating: russian, count: 40).utf8)
+        // After a space, so no character is split.
+        data.insert(0xFF, at: try XCTUnwrap(data[100...].firstIndex(of: 0x20)) + 1)
+        data.insert(0xFE, at: try XCTUnwrap(data[900...].firstIndex(of: 0x20)) + 1)
+        let text = try DocumentReader.decode(data)
+        XCTAssertEqual(text.unicodeScalars.filter { $0 == "\u{FFFD}" }.count, 2)
+        XCTAssertTrue(text.contains("Это длинный текст для проверки кодировки."))
+    }
+
+    func testEightBitTextWithFewHighBytesIsNotReadAsBrokenUtf8() throws {
+        let sentence = "He said it was a fine day, and the café was open. "
+        let text = String(repeating: sentence, count: 40) + "She wrote \u{2019}hello\u{2019} \u{201C}twice\u{201D}."
+        let data = try XCTUnwrap(text.data(using: .windowsCP1252))
+        let decoded = try DocumentReader.decode(data)
+        XCTAssertEqual(decoded, text)
+    }
+
+    func testWindows1251IsStillRecognised() throws {
+        let data = try XCTUnwrap(String(repeating: russian, count: 5).data(using: .windowsCP1251))
+        let decoded = try DocumentReader.decode(data)
+        XCTAssertEqual(decoded, String(repeating: russian, count: 5))
+    }
+
+    func testUtf16WithoutAByteOrderMarkIsRecognisedByItsNulBytes() throws {
+        for text in ["Hello world, this is plain text. ", russian] {
+            let little = try DocumentReader.decode(try XCTUnwrap(text.data(using: .utf16LittleEndian)))
+            let big = try DocumentReader.decode(try XCTUnwrap(text.data(using: .utf16BigEndian)))
+            XCTAssertEqual(little, text)
+            XCTAssertEqual(big, text)
+        }
+    }
+
+    func testUtf16WithAByteOrderMarkIsRead() throws {
+        let cyrillic = try DocumentReader.decode(try XCTUnwrap(russian.data(using: .utf16)))
+        let latin = try DocumentReader.decode(try XCTUnwrap("Hello".data(using: .utf16)))
+        XCTAssertEqual(ScriptCleaner.clean(cyrillic), ScriptCleaner.clean(russian))
+        XCTAssertEqual(ScriptCleaner.clean(latin), "Hello")
+    }
+
+    func testBinaryDataIsRefusedInPlainWords() async throws {
+        let bytes = Data([0x00, 0x01, 0x00, 0x00, 0xFF, 0xD8, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC3, 0x28, 0x00])
+        do { _ = try DocumentReader.decode(bytes); XCTFail("expected a refusal") } catch {
+            XCTAssertEqual(error as? DocumentError, .unknownEncoding)
+            XCTAssertTrue("\(error)".contains("Save it as UTF-8"))
+        }
+        let url = try write(bytes, as: "a.txt")
+        defer { try? FileManager.default.removeItem(at: url) }
+        do { _ = try await DocumentReader.read(url); XCTFail("expected a refusal") } catch {
+            XCTAssertEqual(error as? DocumentError, .unknownEncoding)
+        }
+    }
 }
+
