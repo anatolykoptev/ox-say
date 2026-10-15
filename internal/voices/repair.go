@@ -246,7 +246,11 @@ func (r *Repair) Apply() error {
 			}
 		}
 	}
-	meta, err := json.Marshal(Voice{Name: v.Name, RefText: r.NewText, Created: v.Created})
+	// Start from the voice just read, so every field a repair does not own
+	// (engine, style, designed_from, and any added later) survives it.
+	nv := *v
+	nv.RefText = r.NewText
+	meta, err := json.Marshal(nv)
 	if err != nil {
 		return err
 	}

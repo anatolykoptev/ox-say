@@ -310,6 +310,17 @@ func (d *Daemon) sttServer(ctx context.Context) (base string, release func(), er
 // start's replay); the commit and the live registration run under voiceMu
 // so a concurrent replay cannot interleave between them.
 func (d *Daemon) AddVoice(ctx context.Context, name, audioPath, refText string) (v *voices.Voice, registered bool, err error) {
+	return d.AddVoiceMeta(ctx, name, audioPath, refText, voices.Meta{})
+}
+
+// AddVoiceMeta is AddVoice with the voice's metadata (engine, style,
+// designed_from). A voice added for voxcpm2 must have a reference the encoder
+// can take: Prepare already cuts every clip to voices.MaxRefSeconds, and the
+// check below refuses it should that cap ever outgrow voxMaxRefSeconds.
+func (d *Daemon) AddVoiceMeta(ctx context.Context, name, audioPath, refText string, m voices.Meta) (v *voices.Voice, registered bool, err error) {
+	if err := validateMeta(m); err != nil {
+		return nil, false, err
+	}
 	if err := d.Store.ValidateInput(name, audioPath); err != nil {
 		return nil, false, err
 	}
@@ -323,6 +334,16 @@ func (d *Daemon) AddVoice(ctx context.Context, name, audioPath, refText string) 
 		return nil, false, err
 	}
 	defer pending.Discard()
+	if m.Engine == config.TTSModelVoxCPM2 {
+		secs, serr := pending.Seconds()
+		if serr == nil {
+			serr = checkVoxReference(secs)
+		}
+		if serr != nil {
+			return nil, false, serr
+		}
+	}
+	pending.SetMeta(m)
 	d.voiceMu.Lock()
 	defer d.voiceMu.Unlock()
 	v, err = pending.Commit()

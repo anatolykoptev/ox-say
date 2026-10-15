@@ -41,11 +41,26 @@ type InputError struct{ msg string }
 
 func (e *InputError) Error() string { return e.msg }
 
-// Voice is one persisted clone.
+// Meta is the optional, engine-facing metadata of a voice. Every field is
+// additive (omitempty): a daemon that predates it reads the voice unchanged.
+type Meta struct {
+	// Engine is the voice's preferred TTS model ("" = the daemon default).
+	Engine string `json:"engine,omitempty"`
+	// Style is the default VoxCPM2 style steering, used when a request sets
+	// no instructions.
+	Style string `json:"style,omitempty"`
+	// DesignedFrom is the description a designed voice was rendered from.
+	DesignedFrom string `json:"designed_from,omitempty"`
+}
+
+// Voice is one persisted clone. Every code path that rewrites the metadata
+// file (Commit, Update, Repair.Apply) must carry Meta over.
 type Voice struct {
 	Name    string    `json:"name"`
 	RefText string    `json:"ref_text,omitempty"`
 	Created time.Time `json:"created"`
+	// Meta is embedded, so its fields stay flat in the JSON file.
+	Meta
 
 	// Notice is a one-line, human-readable remark about how the voice was
 	// stored (e.g. its ref_text was replaced). Set by Commit only; never
@@ -120,7 +135,14 @@ type Pending struct {
 	refText string
 	notice  string
 	tmp     string
+	meta    Meta
 }
+
+// SetMeta sets the metadata Commit will persist with the voice.
+func (p *Pending) SetMeta(m Meta) { p.meta = m }
+
+// Seconds is the duration of the normalised clip waiting to be committed.
+func (p *Pending) Seconds() (float64, error) { return WAVSeconds(p.tmp) }
 
 // ValidateInput runs the checks Prepare applies before it writes anything
 // or invokes ffmpeg: a safe voice name, an absolute audioPath (the daemon's
@@ -198,7 +220,7 @@ func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*
 // voice being re-added exactly as it was, not with its clip replaced or gone.
 func (p *Pending) Commit() (*Voice, error) {
 	s := p.s
-	v := &Voice{Name: p.name, RefText: p.refText, Created: time.Now().UTC(), Notice: p.notice}
+	v := &Voice{Name: p.name, RefText: p.refText, Created: time.Now().UTC(), Meta: p.inheritedMeta(), Notice: p.notice}
 	meta, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
@@ -225,12 +247,60 @@ func (p *Pending) Commit() (*Voice, error) {
 	return v, nil
 }
 
+// inheritedMeta is the metadata a commit persists. Re-adding a voice replaces
+// its audio but keeps the preferences it was set up with (engine, style): an
+// older client that does not know the fields must not silently reset them.
+// DesignedFrom describes the old audio, so it is never carried over. Clear a
+// preference with Update.
+func (p *Pending) inheritedMeta() Meta {
+	m := p.meta
+	prev, err := p.s.Get(p.name)
+	if err != nil {
+		return m
+	}
+	if m.Engine == "" {
+		m.Engine = prev.Engine
+	}
+	if m.Style == "" {
+		m.Style = prev.Style
+	}
+	return m
+}
+
 // Discard removes the temporary clip if it was not committed.
 func (p *Pending) Discard() {
 	if p.tmp != "" {
 		_ = os.Remove(p.tmp)
 		p.tmp = ""
 	}
+}
+
+// Update applies fn to an existing voice's metadata and rewrites it through a
+// temp file and a rename; the clip is untouched. Name and Created are kept
+// whatever fn does. The caller serialises Update against Commit, Repair.Apply
+// and Remove (the daemon holds voiceMu).
+func (s *Store) Update(name string, fn func(*Voice)) (*Voice, error) {
+	v, err := s.Get(name)
+	if err != nil {
+		return nil, err
+	}
+	keepName, keepCreated := v.Name, v.Created
+	fn(v)
+	v.Name, v.Created = keepName, keepCreated
+	meta, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	tmp := filepath.Join(s.dir, ".normalize-update-"+name+".meta")
+	if err := s.writeFile(tmp, meta, 0o644); err != nil {
+		_ = os.Remove(tmp)
+		return nil, fmt.Errorf("voices: %w", err)
+	}
+	if err := s.rename(tmp, s.metaPath(name)); err != nil {
+		_ = os.Remove(tmp)
+		return nil, fmt.Errorf("voices: %w", err)
+	}
+	return v, nil
 }
 
 // Remove deletes a voice's wav+json. Unknown names yield ErrNotFound.

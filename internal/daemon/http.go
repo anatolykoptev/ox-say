@@ -28,6 +28,7 @@ func (d *Daemon) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/audio/voices", d.handleListVoices)
 	mux.HandleFunc("POST /v1/audio/voices", d.handleAddVoice)
 	mux.HandleFunc("GET /v1/audio/voices/{name}", d.handleGetVoice)
+	mux.HandleFunc("PATCH /v1/audio/voices/{name}", d.handleUpdateVoice)
 	mux.HandleFunc("DELETE /v1/audio/voices/{name}", d.handleDeleteVoice)
 	mux.HandleFunc("GET /status", d.handleStatus)
 }
@@ -184,6 +185,12 @@ type addVoiceRequest struct {
 	Name      string `json:"name"`
 	AudioPath string `json:"audio_path"`
 	RefText   string `json:"ref_text"`
+	// Engine, Style and DesignedFrom are optional. A client may set
+	// designed_from: the voice-design save flow is a plain voice_add that
+	// passes the description along. It is a label, not a trust boundary.
+	Engine       string `json:"engine"`
+	Style        string `json:"style"`
+	DesignedFrom string `json:"designed_from"`
 }
 
 func (d *Daemon) handleAddVoice(w http.ResponseWriter, r *http.Request) {
@@ -196,16 +203,12 @@ func (d *Daemon) handleAddVoice(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, `"name" and "audio_path" are required`)
 		return
 	}
-	v, registered, err := d.AddVoice(r.Context(), req.Name, req.AudioPath, req.RefText)
+	v, registered, err := d.AddVoiceMeta(r.Context(), req.Name, req.AudioPath, req.RefText,
+		voices.Meta{Engine: req.Engine, Style: req.Style, DesignedFrom: req.DesignedFrom})
 	if err != nil {
-		status := http.StatusInternalServerError
-		var iErr *voices.InputError
-		if errors.As(err, &iErr) {
-			// Bad name, relative path, unreadable/undecodable clip:
-			// client input, not a daemon fault.
-			status = http.StatusBadRequest
-		}
-		writeErr(w, status, err.Error())
+		// Bad name, relative path, unreadable/undecodable clip, bad metadata:
+		// client input (400), not a daemon fault.
+		writeErr(w, synthStatus(err), err.Error())
 		return
 	}
 	resp := map[string]any{
@@ -217,6 +220,25 @@ func (d *Daemon) handleAddVoice(w http.ResponseWriter, r *http.Request) {
 		resp["notice"] = v.Notice
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+type updateVoiceRequest struct {
+	Engine *string `json:"engine"`
+	Style  *string `json:"style"`
+}
+
+func (d *Daemon) handleUpdateVoice(w http.ResponseWriter, r *http.Request) {
+	var req updateVoiceRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	v, err := d.UpdateVoice(r.PathValue("name"), req.Engine, req.Style)
+	if err != nil {
+		writeErr(w, synthStatus(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 func (d *Daemon) handleListVoices(w http.ResponseWriter, _ *http.Request) {
