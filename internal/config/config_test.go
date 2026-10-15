@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -254,6 +255,10 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_STT_SERVER", "off", "off", func(c *Config) string { return c.STTServer }},
 		{"OX_SAY_STT_PORT", "18096", "18096", func(c *Config) string { return strconv.Itoa(c.STTPort) }},
 		{"OX_SAY_STT_IDLE_STOP_SECS", "66", "1m6s", func(c *Config) string { return c.STTIdleStop.String() }},
+		{"OX_SAY_VOXCPM2_BIN", "/tmp/oxk-4917/audiocpp-x", "/tmp/oxk-4917/audiocpp-x", func(c *Config) string { return c.VoxCPM2Bin }},
+		{"OX_SAY_VOXCPM2_MODEL", "/tmp/oxk-4917/vox-x.gguf", "/tmp/oxk-4917/vox-x.gguf", func(c *Config) string { return c.VoxCPM2Model }},
+		{"OX_SAY_VOXCPM2_PORT", "18097", "18097", func(c *Config) string { return strconv.Itoa(c.VoxCPM2Port) }},
+		{"OX_SAY_TTS_MODEL", "voxcpm2", "voxcpm2", func(c *Config) string { return c.TTSModel }},
 	}
 	keys := EnvKeys()
 	inTable := map[string]bool{}
@@ -431,6 +436,104 @@ func TestEnvKeysMatchSource(t *testing.T) {
 	for _, k := range EnvKeys() {
 		if _, ok := read[k]; !ok {
 			t.Errorf("EnvKeys entry %s is never read", k)
+		}
+	}
+}
+
+// voxEnv writes a binary and a model file into a temp home and returns the env
+// that points a loaded Config at them, on unified memory with 32 GB.
+func voxEnv(t *testing.T) (env map[string]string, bin, model string) {
+	t.Helper()
+	orig := hostMemoryBytes
+	t.Cleanup(func() { hostMemoryBytes = orig })
+	hostMemoryBytes = func() uint64 { return 32 * bytesPerGB }
+	dir := t.TempDir()
+	bin, model = filepath.Join(dir, "audiocpp_server"), filepath.Join(dir, VoxCPM2ModelFile)
+	for _, p := range []string{bin, model} {
+		if err := os.WriteFile(p, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env = map[string]string{
+		"OX_SAY_HOME": dir, "OX_SAY_VOXCPM2_BIN": bin, "OX_SAY_VOXCPM2_MODEL": model,
+		"OX_SAY_GPU_MEMORY": GPUMemoryUnified,
+	}
+	return env, bin, model
+}
+
+func loadEnv(t *testing.T, env map[string]string) *Config {
+	t.Helper()
+	c, err := load(func(k string) string { return env[k] }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// VoxCPM2 is enabled by the MODEL being present on a big-enough Apple Silicon
+// Mac, never by the binary alone (issue #137.5); every refusal says why in plain
+// words. Mutation: config.go VoxCPM2Unavailable, drop the model-file stat (the
+// second isRegularFile) -> the "no model" case returns "" -> RED; drop the
+// !c.UnifiedMemory() branch -> the Intel case returns "" -> RED; drop the
+// HostMemoryBytes branch -> the 16 GB case returns "" -> RED.
+func TestVoxCPM2Unavailable(t *testing.T) {
+	env, _, _ := voxEnv(t)
+	if got := loadEnv(t, env).VoxCPM2Unavailable(); got != "" {
+		t.Fatalf("installed Apple Silicon 32 GB: %q, want available", got)
+	}
+
+	intel := maps.Clone(env)
+	intel["OX_SAY_GPU_MEMORY"] = GPUMemoryDiscrete
+	if got := loadEnv(t, intel).VoxCPM2Unavailable(); !strings.Contains(got, "Apple Silicon") {
+		t.Errorf("Intel: %q, want an Apple Silicon reason", got)
+	}
+
+	noModel := maps.Clone(env)
+	noModel["OX_SAY_VOXCPM2_MODEL"] = filepath.Join(t.TempDir(), "missing.gguf")
+	if got := loadEnv(t, noModel).VoxCPM2Unavailable(); !strings.Contains(got, "model is not downloaded") {
+		t.Errorf("binary without model: %q, want a model reason", got)
+	}
+
+	noBin := maps.Clone(env)
+	noBin["OX_SAY_VOXCPM2_BIN"] = filepath.Join(t.TempDir(), "missing")
+	if got := loadEnv(t, noBin).VoxCPM2Unavailable(); !strings.Contains(got, "engine is not installed") {
+		t.Errorf("model without binary: %q, want an engine reason", got)
+	}
+
+	hostMemoryBytes = func() uint64 { return 16 * bytesPerGB }
+	if got := loadEnv(t, env).VoxCPM2Unavailable(); !strings.Contains(got, "24 GB") || !strings.Contains(got, "16 GB") {
+		t.Errorf("16 GB Mac: %q, want a memory reason naming 24 and 16", got)
+	}
+	hostMemoryBytes = func() uint64 { return 0 } // unreadable: never blocks
+	if got := loadEnv(t, env).VoxCPM2Unavailable(); got != "" {
+		t.Errorf("unknown memory: %q, want available", got)
+	}
+}
+
+func TestLoadTTSModelAndPorts(t *testing.T) {
+	env := map[string]string{"OX_SAY_HOME": t.TempDir(), "OX_SAY_TTS_MODEL": "voxcpm2"}
+	c := loadEnv(t, env)
+	if c.TTSModel != TTSModelVoxCPM2 || c.VoxCPM2Port != DefaultVoxCPM2Port ||
+		filepath.Base(c.VoxCPM2Model) != VoxCPM2ModelFile || filepath.Base(c.VoxCPM2Bin) != "audiocpp_server" {
+		t.Fatalf("got %+v", c)
+	}
+	if c = loadEnv(t, map[string]string{"OX_SAY_HOME": env["OX_SAY_HOME"]}); c.TTSModel != TTSModelQwen {
+		t.Fatalf("default TTS model = %q", c.TTSModel)
+	}
+	home := env["OX_SAY_HOME"]
+	// Each case names the OX_SAY_* keys it sets on top of OX_SAY_HOME.
+	for name, extra := range map[string]map[string]string{
+		"unknown model":         {"OX_SAY_TTS_MODEL": "tts-2"},
+		"port out of range":     {"OX_SAY_VOXCPM2_PORT": "70000"},
+		"port equals engine":    {"OX_SAY_VOXCPM2_PORT": "8095"},
+		"port equals stt":       {"OX_SAY_VOXCPM2_PORT": "8096"},
+		"port equals daemon":    {"OX_SAY_VOXCPM2_PORT": "8200", "OX_SAY_ADDR": "127.0.0.1:8200"},
+		"engine on vox default": {"OX_SAY_ENGINE_PORT": strconv.Itoa(DefaultVoxCPM2Port)},
+	} {
+		bad := map[string]string{"OX_SAY_HOME": home}
+		maps.Copy(bad, extra)
+		if _, err := load(func(k string) string { return bad[k] }, nil); err == nil {
+			t.Errorf("%s: accepted %v", name, extra)
 		}
 	}
 }

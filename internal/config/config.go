@@ -27,6 +27,7 @@ const (
 	DefaultSTTMaxAudio    = 4 * 3600
 	DefaultSTTPort        = 8096
 	DefaultSTTIdleStop    = 600
+	DefaultVoxCPM2Port    = 8097
 	maxSTTUploadMB        = 1 << 20 // keeps MB<<20 far from int64 overflow
 	// maxSTTSecs caps the STT timeout base and the audio length: the engine
 	// deadline is base + k×duration, and the MCP tool timeout doubles it, so
@@ -34,6 +35,22 @@ const (
 	// that times every transcription out at once.
 	maxSTTSecs = 24 * 3600
 )
+
+// TTS models a speech request can name (OX_SAY_TTS_MODEL, the request's model).
+const (
+	TTSModelQwen    = "qwen3-tts"
+	TTSModelVoxCPM2 = "voxcpm2"
+)
+
+// VoxCPM2ModelFile is the one model filename fetch-models.sh and the default
+// path share (the Q8_0 variant, chosen in the engine gate).
+const VoxCPM2ModelFile = "voxcpm2-q8_0.gguf"
+
+// VoxCPM2MinMemoryGB is the smallest Mac the quality engine is offered on: a
+// 16 GB Mac is unmeasured and Metal wires at most about 2/3 of RAM.
+const VoxCPM2MinMemoryGB = 24
+
+const bytesPerGB = 1 << 30
 
 // GPU memory models (OX_SAY_GPU_MEMORY). auto is resolved at load, so a
 // loaded Config holds unified or discrete.
@@ -87,6 +104,14 @@ type Config struct {
 	// STT server, issue #11). A Config literal leaves it "", which is
 	// discrete.
 	GPUMemory string
+
+	VoxCPM2Bin   string // OX_SAY_VOXCPM2_BIN: path to audiocpp_server
+	VoxCPM2Model string // OX_SAY_VOXCPM2_MODEL: VoxCPM2 GGUF
+	VoxCPM2Port  int    // OX_SAY_VOXCPM2_PORT: loopback port the child binds
+	TTSModel     string // OX_SAY_TTS_MODEL: default model of a speech request
+	// HostMemoryBytes is the installed RAM read by load; 0 (a Config literal,
+	// or an unreadable host) means unknown and never blocks VoxCPM2.
+	HostMemoryBytes uint64
 }
 
 // flagNames maps flag names to env var names for ApplyFlags.
@@ -118,6 +143,10 @@ var flagNames = map[string]string{
 	"stt-port":          "OX_SAY_STT_PORT",
 	"stt-idle-stop":     "OX_SAY_STT_IDLE_STOP_SECS",
 	"gpu-memory":        "OX_SAY_GPU_MEMORY",
+	"voxcpm2-bin":       "OX_SAY_VOXCPM2_BIN",
+	"voxcpm2-model":     "OX_SAY_VOXCPM2_MODEL",
+	"voxcpm2-port":      "OX_SAY_VOXCPM2_PORT",
+	"tts-model":         "OX_SAY_TTS_MODEL",
 }
 
 // RegisterFlags registers one flag per supported env var on fs. Values set on
@@ -287,7 +316,66 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if p, perr := strconv.Atoi(c.Port); perr == nil && c.STTPort == p {
 		return nil, fmt.Errorf("config: OX_SAY_STT_PORT %d collides with OX_SAY_ADDR", c.STTPort)
 	}
+	if err := loadVoxCPM2(c, get); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// loadVoxCPM2 reads the quality-engine keys and the default TTS model. It
+// runs after the other ports are parsed: its port must collide with none.
+func loadVoxCPM2(c *Config, get func(string) string) error {
+	if c.VoxCPM2Bin = get("OX_SAY_VOXCPM2_BIN"); c.VoxCPM2Bin == "" {
+		c.VoxCPM2Bin = filepath.Join(c.Home, "engine", "audiocpp_server")
+	}
+	if c.VoxCPM2Model = get("OX_SAY_VOXCPM2_MODEL"); c.VoxCPM2Model == "" {
+		c.VoxCPM2Model = filepath.Join(c.Home, "models", VoxCPM2ModelFile)
+	}
+	var err error
+	if c.VoxCPM2Port, err = intVar(get("OX_SAY_VOXCPM2_PORT"), DefaultVoxCPM2Port); err != nil {
+		return fmt.Errorf("config: OX_SAY_VOXCPM2_PORT: %w", err)
+	}
+	if c.VoxCPM2Port < 1 || c.VoxCPM2Port > 65535 {
+		return fmt.Errorf("config: OX_SAY_VOXCPM2_PORT %d: want 1..65535", c.VoxCPM2Port)
+	}
+	addrPort, _ := strconv.Atoi(c.Port)
+	switch c.VoxCPM2Port {
+	case c.EnginePort, c.STTPort, addrPort:
+		return fmt.Errorf("config: OX_SAY_VOXCPM2_PORT %d collides with another ox-say listener", c.VoxCPM2Port)
+	}
+	c.TTSModel = orDefault(get("OX_SAY_TTS_MODEL"), TTSModelQwen)
+	if c.TTSModel != TTSModelQwen && c.TTSModel != TTSModelVoxCPM2 {
+		return fmt.Errorf("config: OX_SAY_TTS_MODEL %q: want %s|%s", c.TTSModel, TTSModelQwen, TTSModelVoxCPM2)
+	}
+	c.HostMemoryBytes = hostMemoryBytes()
+	return nil
+}
+
+// VoxCPM2Unavailable reports, in plain words for a UI, why the VoxCPM2 engine
+// cannot serve on this host, or "" when it can. The model file — not the
+// binary alone — enables it: a release install on arm64 carries the binary
+// without the 3 GB model. Files are stat'ed per call, so a model fetched later
+// works without a daemon restart.
+func (c *Config) VoxCPM2Unavailable() string {
+	if !c.UnifiedMemory() {
+		return "Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them."
+	}
+	if c.HostMemoryBytes != 0 && c.HostMemoryBytes < VoxCPM2MinMemoryGB*bytesPerGB {
+		return fmt.Sprintf("Studio voices (VoxCPM2) need at least %d GB of memory; this Mac has %d GB.",
+			VoxCPM2MinMemoryGB, c.HostMemoryBytes/bytesPerGB)
+	}
+	if !isRegularFile(c.VoxCPM2Bin) {
+		return "The studio voice engine is not installed. Reinstall ox-say with OX_SAY_WITH_VOXCPM2=1."
+	}
+	if !isRegularFile(c.VoxCPM2Model) {
+		return "The studio voice model is not downloaded yet. Run the installer with OX_SAY_WITH_VOXCPM2=1 to add it."
+	}
+	return ""
+}
+
+func isRegularFile(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Mode().IsRegular()
 }
 
 func orDefault(v, def string) string {
