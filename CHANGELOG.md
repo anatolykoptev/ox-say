@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.22](https://github.com/anatolykoptev/ox-say/compare/v0.1.21...v0.1.22) (2026-10-15)
+
+
+### Added
+
+* **dictation:** tidy menu, Studio tools, About panel and app icon ([#167](https://github.com/anatolykoptev/ox-say/issues/167)) ([758001b](https://github.com/anatolykoptev/ox-say/commit/758001ba9ccd8f80c5a01541ae4565e9ce044446))
+
 ## [0.1.21](https://github.com/anatolykoptev/ox-say/compare/v0.1.20...v0.1.21) (2026-10-15)
 
 
