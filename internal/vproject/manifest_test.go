@@ -70,8 +70,9 @@ func TestV1ManifestWithoutSupersededRoundTrips(t *testing.T) {
 	}
 }
 
-// A v1 manifest written before clone_mode existed loads it as auto (empty)
-// and re-marshals to the same bytes: the additive field is not a new version.
+// A v1 manifest written before clone_mode existed loads both mode fields as
+// auto (empty); on the next save the resolved slot reappears as "" — exactly
+// what origin/main wrote — while clone_pin stays absent.
 func TestV1ManifestWithoutCloneModeRoundTrips(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "manifest.v1.json"))
 	if err != nil {
@@ -89,14 +90,16 @@ func TestV1ManifestWithoutCloneModeRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Settings.CloneMode != "" {
-		t.Fatalf("clone_mode %q, want empty (auto)", m.Settings.CloneMode)
+	if m.Settings.CloneMode != "" || m.Settings.CloneModePin != "" {
+		t.Fatalf("clone_mode %q clone_pin %q, want empty (auto)", m.Settings.CloneMode, m.Settings.CloneModePin)
 	}
+	want := strings.Replace(string(raw), "    \"preset\": \"reels\",\n",
+		"    \"preset\": \"reels\",\n    \"clone_mode\": \"\",\n", 1)
 	got, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(raw) {
+	if string(got) != want {
 		t.Fatalf("a v1 manifest without clone_mode changed shape on load:\n%s", got)
 	}
 }
@@ -200,6 +203,18 @@ func TestContainedRefusesEveryEscape(t *testing.T) {
 	}
 }
 
+// A clone's Superseded list is a copy of its own: a writer holding the clone
+// does not corrupt the source manifest's take cache.
+// Mutation: manifest.go Clone, copy Superseded by header -> RED.
+func TestCloneCopiesSuperseded(t *testing.T) {
+	m := &Manifest{Version: Version, Chunks: []Chunk{{Superseded: []string{"aaaaaaaaaaaaaaaaaaaaaaaa"}}}}
+	c := m.Clone()
+	c.Chunks[0].Superseded[0] = "bbbbbbbbbbbbbbbbbbbbbbbb"
+	if m.Chunks[0].Superseded[0] != "aaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("the clone's superseded list is the source's: %v", m.Chunks[0].Superseded)
+	}
+}
+
 // The status view and a clone share nothing with the manifest they came from,
 // and a client sees [] rather than null for an empty list.
 // Mutation: manifest.go Clone, return m -> RED.
@@ -241,6 +256,7 @@ func TestLoadContract(t *testing.T) {
 		"bad take":       `{"version":1,"chunks":[{"takes":[{"key":"x/y"}]}]}`,
 		"empty input":    ``,
 		"bad clone_mode": `{"version":1,"settings":{"clone_mode":"bogus"}}`,
+		"bad clone_pin":  `{"version":1,"settings":{"clone_pin":"bogus"}}`,
 	} {
 		if _, err := Load(write(body)); err == nil {
 			t.Errorf("%s accepted", name)

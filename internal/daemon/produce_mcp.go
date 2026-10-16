@@ -77,7 +77,7 @@ type produceEditIn struct {
 	Take       string          `json:"take,omitempty" jsonschema:"pick: the take key from produce_status with chunk (24 hex characters)"`
 	Text       string          `json:"text,omitempty" jsonschema:"edit: the chunk's new text; one piece, no [directives]"`
 	Style      *string         `json:"style,omitempty" jsonschema:"delivery: the chunk's new delivery, e.g. excited, lively; \"\" clears it to the project default"`
-	PauseAfter *float64        `json:"pause_after,omitempty" jsonschema:"delivery: silence after the chunk in seconds"`
+	PauseAfter *float64        `json:"pause_after,omitempty" jsonschema:"delivery: silence after the chunk in seconds; 0 clears it"`
 	Chunks     []deliveryEntry `json:"chunks,omitempty" jsonschema:"delivery batch: apply every entry under one launch; chunk is not needed"`
 }
 

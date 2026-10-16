@@ -198,7 +198,7 @@ func TestMCPProduceForwardsEveryField(t *testing.T) {
 	}
 	st := m.Settings
 	if m.Title != "My Title" || st.Voice != "nar" || st.Style != "calm" || st.Preset != "reels" || st.Seed != 77 || st.Takes != 3 ||
-		st.OutPath != outPath || !st.Overwrite || !st.AllowBattery || st.CloneMode != "reference" {
+		st.OutPath != outPath || !st.Overwrite || !st.AllowBattery || st.CloneModePin != "reference" {
 		t.Fatalf("title %q settings %+v", m.Title, st)
 	}
 }

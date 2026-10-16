@@ -95,8 +95,8 @@ func TestDeliveryStyleRendersOnlyThatChunk(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "v.wav")
 	id := createDone(t, mux, `{"script":"Первое. Второе.\n\nТретье.\n\nЧетвёртое.","voice":"nar","style":"calm","out_path":"`+out+`"}`)
 	m := manifestOf(t, f, id)
-	if m.Settings.CloneMode != "" || len(m.Chunks) != 3 || len(f.renders) != 3 {
-		t.Fatalf("setup: requested mode %q chunks %d renders %d", m.Settings.CloneMode, len(m.Chunks), len(f.renders))
+	if m.Settings.CloneModePin != "" || len(m.Chunks) != 3 || len(f.renders) != 3 {
+		t.Fatalf("setup: requested mode %q chunks %d renders %d", m.Settings.CloneModePin, len(m.Chunks), len(f.renders))
 	}
 	for i, r := range f.renders {
 		if r.Mode != cloneReference {
@@ -148,8 +148,8 @@ func TestDeliveryStyleOnAutoCloneIsRefused(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "v.wav")
 	id := createDone(t, mux, `{"script":"Первое. Второе.\n\nТретье.\n\nЧетвёртое.","voice":"nar","out_path":"`+out+`"}`)
 	m := manifestOf(t, f, id)
-	if m.Settings.CloneMode != "" {
-		t.Fatalf("setup: requested mode %q, want auto", m.Settings.CloneMode)
+	if m.Settings.CloneModePin != "" {
+		t.Fatalf("setup: requested mode %q, want auto", m.Settings.CloneModePin)
 	}
 	for i, r := range f.renders {
 		if r.Mode != cloneUltimate {
@@ -215,6 +215,84 @@ func TestDeliveryPauseReassemblesOnly(t *testing.T) {
 	}
 	if m = manifestOf(t, f, id); m.Chunks[1].PauseAfter != 1.2 {
 		t.Fatalf("pause_after %v", m.Chunks[1].PauseAfter)
+	}
+}
+
+// F2: a stored pause_after of 0 clears the chunk's pause — unlike the
+// [pause Ns] directive, the delivery field takes 0 as "no pause" — and the
+// assembled file shrinks by the old pause without a single render.
+// Mutation: produce_ops.go validateDelivery, restore the plain range check
+// -> the 0 is a 400 -> RED.
+func TestDeliveryPauseZeroClearsIt(t *testing.T) {
+	f := newFakePorts(t)
+	_, mux := produceMux(t, f)
+	out := filepath.Join(t.TempDir(), "v.wav")
+	id := createDone(t, mux, `{"script":"Первое. Второе.\n\nТретье.\n\nЧетвёртое.","voice":"nar","out_path":"`+out+`"}`)
+	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/1", `{"action":"delivery","pause_after":1.2}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("set: %d %s", rec.Code, rec.Body)
+	}
+	waitDoneHTTP(t, mux, id)
+	_, dur := wavInfoFile(out)
+	renders := len(f.renders)
+
+	rec = do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/1", `{"action":"delivery","pause_after":0}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("clear: %d %s", rec.Code, rec.Body)
+	}
+	waitDoneHTTP(t, mux, id)
+	if got := len(f.renders) - renders; got != 0 {
+		t.Fatalf("clearing a pause rendered %d takes", got)
+	}
+	_, cleared := wavInfoFile(out)
+	if got := dur - cleared; math.Abs(got-1.2) > 2.0/48000 {
+		t.Fatalf("the assembled file shrank %.4f s, want the 1.2 s pause", got)
+	}
+	if m := manifestOf(t, f, id); m.Chunks[1].PauseAfter != 0 {
+		t.Fatalf("pause_after %v, want 0", m.Chunks[1].PauseAfter)
+	}
+}
+
+// The stored-field bound directly: 0 is "clear", a real pause is the
+// directive's range, and NaN/±Inf are refused even though no transport can
+// carry them today.
+// Mutation: produce_ops.go deliveryPauseOK, restore the plain range check
+// -> 0, NaN and ±Inf are judged by it -> RED.
+func TestValidateDeliveryPauseBounds(t *testing.T) {
+	m := &vproject.Manifest{Chunks: []vproject.Chunk{{Index: 0}}}
+	n, zero := 0, 0.0
+	if _, err := validateDelivery(m, []deliveryEntry{{N: &n, PauseAfter: &zero}}); err != nil {
+		t.Fatalf("pause 0 refused: %v", err)
+	}
+	nan, inf := math.NaN(), math.Inf(1)
+	for name, p := range map[string]float64{"NaN": nan, "+Inf": inf, "-Inf": -inf, "below min": 0.01, "over max": 11} {
+		if _, err := validateDelivery(m, []deliveryEntry{{N: &n, PauseAfter: &p}}); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
+// A style set to what the chunk already resolves to — here the job's style
+// through the fallback chain — changes nothing: nothing supersedes, nothing
+// writes, nothing renders.
+// Mutation: produce_ops.go deliver, compare with c.Style instead of the
+// effective style -> the op supersedes and rewrites -> RED.
+func TestDeliveryStyleMatchingTheEffectiveIsANoOp(t *testing.T) {
+	f := newFakePorts(t)
+	_, mux := produceMux(t, f)
+	out := filepath.Join(t.TempDir(), "v.wav")
+	id := createDone(t, mux, `{"script":"Первое. Второе.\n\nТретье.\n\nЧетвёртое.","voice":"nar","style":"calm","out_path":"`+out+`"}`)
+	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/1", `{"action":"delivery","style":"calm"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("delivery: %d %s", rec.Code, rec.Body)
+	}
+	waitDoneHTTP(t, mux, id)
+	if got := len(f.renders) - 3; got != 0 {
+		t.Fatalf("a no-op style rendered %d takes", got)
+	}
+	m := manifestOf(t, f, id)
+	if m.Chunks[1].Style != "" || len(m.Chunks[1].Superseded) != 0 {
+		t.Fatalf("a no-op changed chunk 1: style %q superseded %v", m.Chunks[1].Style, m.Chunks[1].Superseded)
 	}
 }
 
@@ -307,10 +385,10 @@ func TestDeliveryBatchIsAtomic(t *testing.T) {
 	// The same strictness holds on the single-chunk route.
 	before = manifestBytes(t, f, id)
 	for name, body := range map[string]string{
-		"no field":      `{"action":"delivery"}`,
-		"unknown":       `{"action":"delivery","style":"x","bogus":1}`,
-		"pause range":   `{"action":"delivery","pause_after":0.01}`,
-		"take+delivery": `{"action":"delivery","pause_after":300}`,
+		"no field":       `{"action":"delivery"}`,
+		"unknown":        `{"action":"delivery","style":"x","bogus":1}`,
+		"pause range":    `{"action":"delivery","pause_after":0.01}`,
+		"pause too long": `{"action":"delivery","pause_after":300}`,
 	} {
 		rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/0", body)
 		if rec.Code != http.StatusBadRequest {

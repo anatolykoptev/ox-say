@@ -1,11 +1,14 @@
 package daemon
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/anatolykoptev/ox-say/internal/vproject"
 )
 
 // The job-level clone_mode on produce create pins the whole run: "reference"
@@ -31,8 +34,8 @@ func TestCloneModeReferencePinsEveryChunk(t *testing.T) {
 			t.Fatalf("render %d mode %q, want %q", i, r.Mode, cloneReference)
 		}
 	}
-	if got := manifestOf(t, f, id).Settings.CloneMode; got != cloneReference {
-		t.Fatalf("manifest clone_mode %q, want %q", got, cloneReference)
+	if s := manifestOf(t, f, id).Settings; s.CloneModePin != cloneReference || s.CloneMode != cloneReference {
+		t.Fatalf("manifest clone_pin %q clone_mode %q, want %q", s.CloneModePin, s.CloneMode, cloneReference)
 	}
 
 	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/1", `{"action":"delivery","style":"excited, lively"}`)
@@ -140,8 +143,11 @@ func TestAutoModeTakeKeysMatchMain(t *testing.T) {
 		}
 		id := createDone(t, mux, body+"}")
 		m := manifestOf(t, f, id)
-		if m.Settings.CloneMode != "" {
-			t.Errorf("%s: an auto create stored clone_mode %q", c.name, m.Settings.CloneMode)
+		if m.Settings.CloneModePin != "" {
+			t.Errorf("%s: an auto create stored clone_pin %q", c.name, m.Settings.CloneModePin)
+		}
+		if m.Settings.CloneMode != c.mode {
+			t.Errorf("%s: refresh recorded clone_mode %q, want the resolved %q", c.name, m.Settings.CloneMode, c.mode)
 		}
 		var keys []string
 		for _, ch := range m.Chunks {
@@ -157,6 +163,143 @@ func TestAutoModeTakeKeysMatchMain(t *testing.T) {
 				t.Errorf("%s: render %d mode %q, want %q", c.name, i, r.Mode, c.mode)
 			}
 		}
+	}
+}
+
+// asOldManifest rewrites a finished project's manifest the way origin/main
+// wrote it: the RESOLVED clone mode in settings.clone_mode and no clone_pin
+// key — the pin field did not exist. The edit happens on the JSON text, so
+// the fixture is exactly what an old daemon left on disk.
+func asOldManifest(t *testing.T, f *fakePorts, id, resolved string) {
+	t.Helper()
+	path := filepath.Join(f.home, produceDir, id, vproject.ManifestFile)
+	var doc map[string]any
+	raw := manifestBytes(t, f, id)
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	settings, ok := doc["settings"].(map[string]any)
+	if !ok {
+		t.Fatalf("manifest has no settings object:\n%s", raw)
+	}
+	settings["clone_mode"] = resolved
+	delete(settings, "clone_pin")
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out, vproject.FileMode); err != nil {
+		t.Fatal(err)
+	}
+	if m := manifestOf(t, f, id); m.Settings.CloneMode != resolved {
+		t.Fatalf("fixture clone_mode %q, want %q", m.Settings.CloneMode, resolved)
+	}
+}
+
+// F1(a): a manifest origin/main wrote — clone_mode holds the RESOLVED mode,
+// no pin exists — is an auto project, not a pinned one. An English edit on
+// such an auto->ultimate project re-renders in reference, exactly as on
+// main; a resolved value mistaken for a pin would skip SameScript.
+// Mutation: produce_ops.go refresh, read the pin from Settings.CloneMode ->
+// the edit renders ultimate -> RED.
+func TestOldUltimateManifestEditsAsAuto(t *testing.T) {
+	f := newFakePorts(t)
+	_, mux := produceMux(t, f)
+	out := filepath.Join(t.TempDir(), "v.wav")
+	id := createDone(t, mux, `{"script":"Первое. Второе.\n\nТретье.\n\nЧетвёртое.","voice":"nar","out_path":"`+out+`"}`)
+	asOldManifest(t, f, id, cloneUltimate)
+	renders := len(f.renders)
+
+	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/0", `{"action":"edit","text":"Welcome home, friend."}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body)
+	}
+	waitDoneHTTP(t, mux, id)
+	if m := manifestOf(t, f, id); m.Status != vproject.StatusDone {
+		t.Fatalf("status %q error %q", m.Status, m.Error)
+	}
+	if got := len(f.renders) - renders; got != 3 {
+		t.Fatalf("the edit re-rendered %d takes, want all 3 under reference", got)
+	}
+	for i, r := range f.renders[renders:] {
+		if r.Mode != cloneReference {
+			t.Fatalf("render %d mode %q, want %q", renders+i, r.Mode, cloneReference)
+		}
+	}
+}
+
+// F1(b): the same manifest after its voice gains a style resumes and
+// renders — a mistaken pin fires create's refusal ("ultimate ignores a
+// style") mid-run and fails the job instead.
+// Mutation: as (a) -> resume leaves the job failed -> RED.
+func TestOldUltimateManifestResumesAfterVoiceStyle(t *testing.T) {
+	f := newFakePorts(t)
+	_, mux := produceMux(t, f)
+	out := filepath.Join(t.TempDir(), "v.wav")
+	id := createDone(t, mux, `{"script":"Первое. Второе.\n\nТретье.\n\nЧетвёртое.","voice":"nar","out_path":"`+out+`"}`)
+	asOldManifest(t, f, id, cloneUltimate)
+	f.voice.Style = "solemn" // the voice gained a style since the project ran
+
+	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/resume", `{}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("resume: %d %s", rec.Code, rec.Body)
+	}
+	waitDoneHTTP(t, mux, id)
+	if m := manifestOf(t, f, id); m.Status != vproject.StatusDone {
+		t.Fatalf("status %q error %q", m.Status, m.Error)
+	}
+	for i, r := range f.renders[3:] {
+		if r.Mode != cloneReference || r.Style != "solemn" {
+			t.Fatalf("render %d mode %q style %q, want reference/solemn", 3+i, r.Mode, r.Style)
+		}
+	}
+}
+
+// F1(c): a delivery style on the same manifest gets the auto project's
+// answer — a 409 naming the way to opt out — never the false claim that the
+// project "was created with clone_mode ultimate".
+// Mutation: produce_ops.go deliveryModeGate, read the pin from
+// Settings.CloneMode -> the 409 misattributes the pin -> RED.
+func TestOldUltimateManifestDeliveryReadsAsAuto(t *testing.T) {
+	f := newFakePorts(t)
+	_, mux := produceMux(t, f)
+	out := filepath.Join(t.TempDir(), "v.wav")
+	id := createDone(t, mux, `{"script":"Первое. Второе.\n\nТретье.\n\nЧетвёртое.","voice":"nar","out_path":"`+out+`"}`)
+	asOldManifest(t, f, id, cloneUltimate)
+	before := manifestBytes(t, f, id)
+
+	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/1", `{"action":"delivery","style":"excited"}`)
+	body := rec.Body.String()
+	if rec.Code != http.StatusConflict || !strings.Contains(body, "--clone-mode reference") || strings.Contains(body, "ultimate") {
+		t.Fatalf("want the auto-mode 409, got %d %s", rec.Code, body)
+	}
+	if len(f.renders) != 3 {
+		t.Fatalf("the refused op rendered: %d takes", len(f.renders))
+	}
+	if string(manifestBytes(t, f, id)) != string(before) {
+		t.Fatal("the refused op changed the manifest")
+	}
+}
+
+// F1(d): an auto->reference manifest — a chunk style resolved it to
+// reference on main — clearing that style gets the auto project's answer
+// (409), not the unconditional pass a mistaken pin gives.
+// Mutation: as (c) -> the op is accepted -> RED.
+func TestOldReferenceManifestClearingStyleReadsAsAuto(t *testing.T) {
+	f := newFakePorts(t)
+	_, mux := produceMux(t, f)
+	out := filepath.Join(t.TempDir(), "v.wav")
+	id := createDone(t, mux, `{"script":"[style: calm] Первое. Второе.\n\nТретье. Четвёртое.","voice":"nar","out_path":"`+out+`"}`)
+	asOldManifest(t, f, id, cloneReference)
+	before := manifestBytes(t, f, id)
+
+	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/delivery", `{"chunks":[{"n":0,"style":""}]}`)
+	body := rec.Body.String()
+	if rec.Code != http.StatusConflict || !strings.Contains(body, "--clone-mode reference") || strings.Contains(body, "ultimate") {
+		t.Fatalf("want the auto-mode 409, got %d %s", rec.Code, body)
+	}
+	if string(manifestBytes(t, f, id)) != string(before) {
+		t.Fatal("the refused op changed the manifest")
 	}
 }
 
@@ -178,7 +321,7 @@ func TestCloneModeInvalidIsRefused(t *testing.T) {
 	// "auto" is the explicit spelling of the default and is accepted.
 	out := filepath.Join(t.TempDir(), "v.wav")
 	id := createDone(t, mux, `{"script":"Привет.","voice":"nar","clone_mode":"auto","out_path":"`+out+`"}`)
-	if got := manifestOf(t, f, id).Settings.CloneMode; got != cloneAuto {
+	if got := manifestOf(t, f, id).Settings.CloneModePin; got != cloneAuto {
 		t.Fatalf("explicit auto stored %q", got)
 	}
 }

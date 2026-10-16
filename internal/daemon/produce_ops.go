@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,8 +28,9 @@ const (
 	opDelivery   = "delivery"
 	titleRunes   = 60
 	// maxSupersededTakes bounds Chunk.Superseded: the takes a delivery change
-	// replaced stay cached for a revert, but disk stays bounded.
-	maxSupersededTakes = 4
+	// replaced stay cached for a revert, but disk stays bounded. Two earlier
+	// variants of a maximum-take chunk are kept whole.
+	maxSupersededTakes = 2 * maxTakesPerChunk
 	// deliveryNeedsReference refuses a delivery that would move an auto-mode
 	// job's clone mode: styling one phrase on an ultimate job would re-render
 	// them all in reference mode.
@@ -60,7 +62,7 @@ type chunkOp struct {
 type deliveryEntry struct {
 	N          *int     `json:"n" jsonschema:"Chunk index, 0-based (see produce_status chunks)"`
 	Style      *string  `json:"style,omitempty" jsonschema:"New delivery for the chunk, e.g. excited, lively; \"\" clears it to the project default"`
-	PauseAfter *float64 `json:"pause_after,omitempty" jsonschema:"Silence after the chunk in seconds, the range a [pause Ns] directive takes"`
+	PauseAfter *float64 `json:"pause_after,omitempty" jsonschema:"Silence after the chunk in seconds; 0 clears it, otherwise the range a [pause Ns] directive takes"`
 }
 
 // create validates in, writes a new project and launches it.
@@ -161,7 +163,7 @@ func (p *producer) newManifest(in produceInput) (*vproject.Manifest, error) {
 		return nil, err
 	}
 	m := &vproject.Manifest{Version: vproject.Version, ID: id, Title: title(in, chunks), Created: now,
-		Settings: vproject.Settings{Voice: voice, Style: style, Preset: name, CloneMode: in.CloneMode, Seed: seed, Cfg: defaultCfgValue,
+		Settings: vproject.Settings{Voice: voice, Style: style, Preset: name, CloneModePin: in.CloneMode, Seed: seed, Cfg: defaultCfgValue,
 			Steps: defaultTimesteps, Takes: takes, LUFS: pr.lufs, ChunkPause: pr.opts.ChunkPause,
 			ParagraphPause: pr.opts.ParagraphPause, OutPath: out, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery},
 		Notes: []string{vproject.NoteNumbers}}
@@ -246,9 +248,9 @@ func (p *producer) makeProject(m *vproject.Manifest, script string) (string, err
 }
 
 // refresh re-reads the voice and engine, recomputes effective styles, the
-// effective clone mode (jobCloneMode under the job's requested mode) and each
-// chunk's basis; a chunk whose basis changed is reset (D5, D10). It returns
-// the base spec per chunk.
+// effective clone mode (jobCloneMode under the job's pin, recorded into
+// Settings.CloneMode) and each chunk's basis; a chunk whose basis changed is
+// reset (D5, D10). It returns the base spec per chunk.
 func (p *producer) refresh(j *job) ([]takeSpec, error) {
 	p.mu.Lock()
 	s := j.m.Settings
@@ -266,7 +268,7 @@ func (p *producer) refresh(j *job) ([]takeSpec, error) {
 	for i, c := range chunks {
 		vc[i] = vscript.Chunk{Style: c.Style, Spoken: c.Spoken}
 	}
-	mode, styles, err := jobCloneMode(facts, s.Style, vc, s.CloneMode)
+	mode, styles, err := jobCloneMode(facts, s.Style, vc, s.CloneModePin)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +279,7 @@ func (p *producer) refresh(j *job) ([]takeSpec, error) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	j.m.Settings.VoiceSHA, j.m.Settings.Engine = facts.SHA, engineID
+	j.m.Settings.CloneMode, j.m.Settings.VoiceSHA, j.m.Settings.Engine = mode, facts.SHA, engineID
 	for i := range j.m.Chunks {
 		c := &j.m.Chunks[i]
 		if b := specs[i].basis(); c.Basis != b {
@@ -422,14 +424,16 @@ func (p *producer) deliver(j *job, es []deliveryEntry) (vproject.Summary, error)
 	if err != nil {
 		return vproject.Summary{}, err
 	}
-	if err := p.deliveryModeGate(j, es, styles); err != nil {
+	eff, err := p.deliveryModeGate(j, es, styles)
+	if err != nil {
 		return vproject.Summary{}, err
 	}
 	p.mu.Lock()
 	assembleOnly := true
 	for i, e := range es {
 		c := &j.m.Chunks[*e.N]
-		if e.Style != nil && styles[i] != c.Style {
+		// eff is nil only for pause-only batches, which have no style to apply.
+		if e.Style != nil && styles[i] != eff[*e.N] {
 			c.Superseded = supersedeTakes(c.Superseded, c.Takes)
 			c.Style, assembleOnly = styles[i], false
 		}
@@ -470,56 +474,75 @@ func validateDelivery(m *vproject.Manifest, es []deliveryEntry) ([]string, error
 				return nil, &requestError{fmt.Sprintf("style is longer than %d characters", vscript.MaxStyleChars)}
 			}
 		}
-		if e.PauseAfter != nil && (*e.PauseAfter < vscript.MinPause || *e.PauseAfter > vscript.MaxPause) {
-			return nil, &requestError{fmt.Sprintf("a pause must be %.2f–%.0f s", vscript.MinPause, vscript.MaxPause)}
+		if e.PauseAfter != nil && !deliveryPauseOK(*e.PauseAfter) {
+			return nil, &requestError{fmt.Sprintf("a pause must be 0 (clears it) or %.2f–%.0f s", vscript.MinPause, vscript.MaxPause)}
 		}
 	}
 	return styles, nil
+}
+
+// deliveryPauseOK: a stored pause of 0 means "no pause"; a real pause stays
+// inside the [pause Ns] directive's range. NaN and ±Inf are refused outright
+// even though no transport can carry them today.
+func deliveryPauseOK(p float64) bool {
+	return !math.IsNaN(p) && !math.IsInf(p, 0) && (p == 0 || (p >= vscript.MinPause && p <= vscript.MaxPause))
 }
 
 // deliveryModeGate refuses a batch whose style changes would move the job's
 // effective clone mode (an ultimate job turning reference re-renders every
 // chunk, which is a recreate, not a delivery change). A job pinned to
 // reference at create cannot leave it; one pinned to ultimate refuses any
-// style op.
-func (p *producer) deliveryModeGate(j *job, es []deliveryEntry, styles []string) error {
-	req := j.m.Settings.CloneMode
-	switch req {
-	case cloneReference:
-		return nil
-	case cloneUltimate:
-		for _, e := range es {
-			if e.Style != nil {
-				return &conflictError{deliveryIsUltimate}
-			}
+// style op. It returns each chunk's effective style under the current state,
+// so a style op can tell a real change from a no-op — nil when no style op
+// can apply.
+func (p *producer) deliveryModeGate(j *job, es []deliveryEntry, styles []string) ([]string, error) {
+	pin := j.m.Settings.CloneModePin
+	styled := false
+	for _, e := range es {
+		if e.Style != nil {
+			styled = true
+			break
 		}
-		return nil
+	}
+	switch pin {
+	case cloneUltimate:
+		if styled {
+			return nil, &conflictError{deliveryIsUltimate}
+		}
+		return nil, nil
+	case cloneReference:
+		if !styled {
+			return nil, nil
+		}
 	}
 	facts, err := p.ports.Voice(j.m.Settings.Voice)
 	if err != nil {
-		return fmt.Errorf("voice %q: %w", j.m.Settings.Voice, err)
+		return nil, fmt.Errorf("voice %q: %w", j.m.Settings.Voice, err)
 	}
 	vc := make([]vscript.Chunk, len(j.m.Chunks))
 	for i, c := range j.m.Chunks {
 		vc[i] = vscript.Chunk{Style: c.Style, Spoken: c.Spoken}
 	}
-	before, _, err := jobCloneMode(facts, j.m.Settings.Style, vc, req)
+	before, eff, err := jobCloneMode(facts, j.m.Settings.Style, vc, pin)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if pin == cloneReference {
+		return eff, nil // pinned already: no style op moves the mode
 	}
 	for i, e := range es {
 		if e.Style != nil {
 			vc[*e.N].Style = styles[i]
 		}
 	}
-	after, _, err := jobCloneMode(facts, j.m.Settings.Style, vc, req)
+	after, _, err := jobCloneMode(facts, j.m.Settings.Style, vc, pin)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if after != before {
-		return &conflictError{deliveryNeedsReference}
+		return nil, &conflictError{deliveryNeedsReference}
 	}
-	return nil
+	return eff, nil
 }
 
 // supersedeTakes moves the keys of ts onto cur, deduplicated, keeping at
