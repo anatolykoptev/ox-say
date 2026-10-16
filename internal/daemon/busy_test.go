@@ -40,6 +40,30 @@ func statusBusy(t *testing.T, srv *httptest.Server) busySummary {
 	return st.Busy
 }
 
+// busyIdleTimeout bounds how long a test waits for the server-side handler
+// of a cancelled request to unwind and run its deferred decrements.
+const busyIdleTimeout = 10 * time.Second
+
+// waitStatusIdle polls /status until every lane reads zero. The HTTP client
+// returning does not mean the handler has: after a cancel the server unwinds
+// asynchronously, so the decrements land a moment later. A counter that never
+// decrements still goes RED — the timeout reports the last busy values seen.
+func waitStatusIdle(t *testing.T, srv *httptest.Server, what string) {
+	t.Helper()
+	var last busySummary
+	deadline := time.Now().Add(busyIdleTimeout)
+	for {
+		last = statusBusy(t, srv)
+		if last.idle() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("busy = %+v %s, want all zero (waited %s)", last, what, busyIdleTimeout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // A quiet daemon reports idle with every lane at zero — through the HTTP
 // handler, so the wire shape itself is what is checked.
 // Mutation: service.go Status, `Idle: busy.idle()` -> `Idle: true` -> RED
@@ -57,7 +81,8 @@ func TestStatusIdleWhenQuiet(t *testing.T) {
 // child blocks the request until its context ends, so the in-flight window
 // is deterministic; the client cancel is what lets the handler return.
 // Mutation: drop the speaking Add/defer pair in handleSpeech -> RED
-// (busy.speaking stays 0 while the request is open).
+// (busy.speaking stays 0 while the request is open); keep the Add but drop
+// its `defer d.speaking.Add(-1)` -> RED (the idle wait times out at speaking=1).
 func TestBusySpeaking(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
@@ -95,9 +120,8 @@ func TestBusySpeaking(t *testing.T) {
 	}
 	cancel()
 	<-done
-	if b := statusBusy(t, srv); !b.idle() {
-		t.Fatalf("busy = %+v after the request ended, want all zero", b)
-	}
+	// The client is back, the handler may still be unwinding its defers.
+	waitStatusIdle(t, srv, "after the request ended")
 }
 
 // The MCP speak tool shares the counter but not the HTTP route: it never
