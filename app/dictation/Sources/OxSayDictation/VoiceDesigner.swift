@@ -6,7 +6,8 @@ import DictationCore
 /// means) is in DictationCore; this drives the dialogs.
 final class VoiceDesigner {
     private let host: StudioHost
-    private var running = false
+    /// True from the form being answered until the takes are kept or dropped.
+    private(set) var running = false
 
     /// What was typed last, so a second voice starts from it.
     private var lastForm = StudioForms.VoiceDesign(description: "", sentence: DesignForm.defaultSentence, name: "")
@@ -22,7 +23,10 @@ final class VoiceDesigner {
         host.pill("Designing a voice…")
         Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.running = false }
+            defer {
+                self.running = false
+                self.host.workEnded()
+            }
             do {
                 let takes = try await self.host.client.designVoice(description: form.description, text: form.sentence)
                 self.host.pill(nil)

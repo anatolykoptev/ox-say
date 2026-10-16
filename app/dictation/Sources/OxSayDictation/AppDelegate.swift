@@ -38,17 +38,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The daemon's last /status answer, fetched on every menu open; nil when it
     /// could not be reached.
     private var serviceStatus: DaemonStatus?
-    /// Version-handshake episode state: the disk version being chased, the
-    /// kickstarts spent on it, and the version Repair would reinstall. A
-    /// /status answer matching the disk version ends the episode.
-    private var handshakeDisk: String?
-    private var handshakeKickstarts = 0
-    private var repairTarget: String?
+    /// Version-handshake episode state (DictationCore): the disk version being
+    /// chased, the kickstarts spent on it, and the version Repair would
+    /// reinstall. A /status answer matching the disk version ends the episode.
+    private var handshake = VersionHandshake.Episode()
     /// True while a handshake pass runs, so a /status refresh arriving during
     /// a kickstart's backoff does not stack a second pass.
     private var handshakeRunning = false
-    /// True while the "Finishing the update…" pill is the handshake's to clear.
-    private var handshakePill = false
+    /// True when the last pass held an action back for work in flight: the
+    /// moment that work ends, a fresh /status is read and the pass runs again.
+    private var handshakeDeferred = false
+    /// The overlay's owner count when the handshake put its "Finishing the
+    /// update…" text up; nil when the handshake has no text showing. The pill
+    /// is cleared only while that count still stands — another owner taking it
+    /// moves the count on.
+    private var handshakePillOwner: Int?
     private var wakeObserver: NSObjectProtocol?
     /// The small version line at the bottom of the menu.
     private let footerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -76,6 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Bumped per speak request, so a late answer cannot stop the playback of a
     /// newer one.
     private var speakGeneration = 0
+    /// True from a speak request until its audio is in hand (or it failed);
+    /// the newest request owns it. A daemon restart or a relaunch in between
+    /// would lose the synthesis.
+    private var speakInFlight = false
     /// The speak-selection hotkey and its menu state; mirrors the dictation
     /// key machinery with its own offered combinations.
     private var speakHotKey: HotKey?
@@ -169,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let done = self?.playbackDone
             self?.playbackDone = nil
             done?()
+            self?.handshakeWorkEnded()
         }
         let streamer = StreamingTranscriber(baseURL: baseURL)
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
@@ -374,7 +383,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The same conditional top slot as allowPastingItem: a repair row that
         // exists only while the daemon refuses the bundle's version. The
         // mismatch itself is never a menu state.
-        if repairTarget != nil {
+        syncRepairItem(in: menu)
+    }
+
+    /// Shows the Repair row at the top while the episode offers one and
+    /// removes it the moment it does not — also on an open menu, when a pass
+    /// retracts the offer.
+    private func syncRepairItem(in menu: NSMenu) {
+        if handshake.repairTarget != nil {
             if menu.items.first !== repairItem {
                 menu.insertItem(repairItem, at: 0)
             }
@@ -439,65 +455,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
     }
 
+    /// The work in this process a relaunch would lose and a daemon restart
+    /// would fail mid-way. The daemon's own half is /status `idle`.
+    private func appWork() -> VersionHandshake.AppWork {
+        VersionHandshake.AppWork(dictating: controller.state != .idle,
+                                 speaking: speakInFlight || player.isActivelyPlaying,
+                                 designing: studio.designing,
+                                 followingVoiceover: studio.followingVoiceover)
+    }
+
+    /// Work in this process ended: a pass that held an action back runs
+    /// again, on a fresh /status (the daemon's busy flag may have cleared too).
+    private func handshakeWorkEnded() {
+        guard handshakeDeferred, appWork().idle else { return }
+        refreshServiceStatus()
+    }
+
     /// One pass of the version handshake over the latest /status: app, on-disk
     /// bundle and daemon should be one version. DictationCore's table decides;
     /// this gathers its inputs and performs what it returns. Skipped while an
     /// install runs — the installer is already moving the versions, and a
-    /// kickstart then would fight its own agent reload.
+    /// kickstart then would fight its own agent reload. A kickstart or a
+    /// relaunch never fires with work in flight — on the daemon's side
+    /// (/status `idle`) or the app's — it waits for the work to end, and the
+    /// guards are re-read before every action.
     private func runVersionHandshake() {
         guard !updateInstalling, !handshakeRunning else { return }
         handshakeRunning = true
         let client = studioClient!
         Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.handshakeRunning = false }
-            let disk = Self.diskVersion()
-            if disk != self.handshakeDisk {
-                // An install that landed mid-episode starts a fresh count.
-                self.handshakeDisk = disk
-                self.handshakeKickstarts = 0
+            defer {
+                self.handshakeRunning = false
+                if let menu = self.statusItem.menu { self.syncRepairItem(in: menu) }
             }
-            while true {
-                switch VersionHandshake.decide(app: AboutPanel.appVersion, disk: disk,
-                                               daemon: self.serviceStatus?.version,
-                                               kickstarts: self.handshakeKickstarts) {
-                case .none:
-                    if VersionHandshake.agrees(daemon: self.serviceStatus?.version, disk: disk) {
-                        self.handshakeKickstarts = 0
-                        self.repairTarget = nil
-                    }
+            let disk = Self.diskVersion()
+            while !self.updateInstalling {
+                switch self.handshake.decide(app: AboutPanel.appVersion, disk: disk,
+                                             status: self.serviceStatus, work: self.appWork()) {
+                case .none, .offerRepair:
+                    self.handshakeDeferred = false
+                    self.finishHandshakePill()
+                    return
+                case .deferUntilIdle:
+                    self.handshakeDeferred = true
                     self.finishHandshakePill()
                     return
                 case .relaunchSelf:
+                    self.handshakeDeferred = false
                     self.relaunch()
                     return
                 case .kickstartDaemon:
-                    self.handshakeKickstarts += 1
+                    self.handshakeDeferred = false
                     self.showHandshakePill()
-                    Self.kickstartDaemon()
+                    _ = await VersionHandshake.runKickstart(argv: VersionHandshake.kickstartCommand(uid: getuid()))
                     try? await Task.sleep(nanoseconds: UInt64(VersionHandshake.kickstartBackoff * 1_000_000_000))
                     let status = try? await client.status()
                     self.serviceStatus = status
                     self.studio.statusChanged(status)
-                case .offerRepair(let target):
-                    self.repairTarget = target
-                    self.finishHandshakePill()
-                    return
                 }
             }
+            // An install started between actions: it owns the versions now.
+            self.finishHandshakePill()
         }
-    }
-
-    /// `launchctl kickstart -k` the daemon's agent: kills it and lets launchd
-    /// start the installed build. Best-effort — the /status re-read after the
-    /// backoff decides the next step either way.
-    private static func kickstartDaemon() {
-        let argv = VersionHandshake.kickstartCommand(uid: getuid())
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: argv[0])
-        process.arguments = Array(argv.dropFirst())
-        try? process.run()
-        process.waitUntilExit()
     }
 
     /// The bounded "Finishing the update…" pill while a kickstart runs. A
@@ -507,13 +527,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.showWorking()
         overlay.setWorkingText("Finishing the update…")
         overlay.setHintHidden(true)
-        handshakePill = true
+        handshakePillOwner = overlay.owner
     }
 
-    /// Clears the handshake's pill unless a dictation took it over meanwhile.
+    /// Clears the handshake's pill, but only while its own text is still the
+    /// one showing: a speak, a studio pill or an install that took the overlay
+    /// since keeps it.
     private func finishHandshakePill() {
-        defer { handshakePill = false }
-        guard handshakePill, controller.state == .idle else { return }
+        defer { handshakePillOwner = nil }
+        guard let owner = handshakePillOwner, owner == overlay.owner, controller.state == .idle else { return }
         overlay.finish()
     }
 
@@ -522,7 +544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// daemon stays off the bundle's version, and asks before running the
     /// installer.
     @objc private func repairOxSay() {
-        guard let target = repairTarget else { return }
+        guard let target = handshake.repairTarget else { return }
         guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
             runAlert(title: UpdateGate.busyAlertTitle,
                      text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
@@ -584,6 +606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 endedReason = nil
                 notice(reason)
             }
+            handshakeWorkEnded()
         case .recording:
             symbol = "mic.fill"
             lastNotice = nil
@@ -667,6 +690,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         playbackDone = nil // a speech request supersedes a voiceover that was playing
         speakGeneration += 1
         let generation = speakGeneration
+        speakInFlight = true
         overlay.showWorking()
         overlay.setWorkingText("Speaking…")
         overlay.setHintHidden(true)
@@ -675,12 +699,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 let wav = try await client.speak(text, voice: voice, language: language)
                 guard let self, self.speakGeneration == generation else { return }
+                self.speakInFlight = false
                 try self.player.play(wav: wav)
                 self.overlay.showPlaying()
             } catch {
                 guard let self, self.speakGeneration == generation else { return }
+                self.speakInFlight = false
                 self.overlay.finish()
                 self.notice(String(describing: error))
+                self.handshakeWorkEnded()
             }
         }
     }
@@ -757,7 +784,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.player.stop()
             },
             installStudioVoice: { [unowned self] in self.installStudioVoice() },
-            installing: { [unowned self] in self.updateInstalling })
+            installing: { [unowned self] in self.updateInstalling },
+            workEnded: { [unowned self] in self.handshakeWorkEnded() })
     }
 
     /// Install Studio Voice: confirm, then the update install pinned to the
@@ -877,7 +905,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let statusClient = studioClient!
             let failure = await UpdateInstaller.run(kind: kind, tag: tag, log: log,
                                                     installedVersion: Self.diskVersion,
-                                                    daemonVersion: { (try? await statusClient.status())?.version })
+                                                    daemonVersion: { (try? await statusClient.status(timeout: UpdateInstaller.daemonCheckTimeout))?.version })
             try? log?.close()
             updateInstalling = false
             studio.render()

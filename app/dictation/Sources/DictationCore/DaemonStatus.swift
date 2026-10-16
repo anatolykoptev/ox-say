@@ -14,12 +14,20 @@ public struct DaemonStatus: Equatable {
     /// The daemon's machine-readable reason: "model_missing" (an install adds it)
     /// or "unsupported" (this Mac cannot run it); nil from a daemon without the field.
     public var studioReasonCode: String?
+    /// The daemon's own busy report: false while any lane it counts — a
+    /// produce job, a dictation session, a speech or a design — is in
+    /// flight. True when the field is absent: a daemon that predates it
+    /// reports nothing, and guessing "busy" would pin the version
+    /// handshake's actions forever.
+    public var idle: Bool
 
-    public init(version: String?, studioAvailable: Bool, studioReason: String? = nil, studioReasonCode: String? = nil) {
+    public init(version: String?, studioAvailable: Bool, studioReason: String? = nil, studioReasonCode: String? = nil,
+                idle: Bool = true) {
         self.version = version
         self.studioAvailable = studioAvailable
         self.studioReason = studioReason
         self.studioReasonCode = studioReasonCode
+        self.idle = idle
     }
 
     public static let reasonModelMissing = "model_missing"
@@ -41,7 +49,8 @@ public struct DaemonStatus: Equatable {
         return DaemonStatus(version: nonEmpty(obj["version"] as? String),
                             studioAvailable: studio?["available"] as? Bool ?? false,
                             studioReason: nonEmpty(studio?["reason"] as? String),
-                            studioReasonCode: nonEmpty(studio?["reason_code"] as? String))
+                            studioReasonCode: nonEmpty(studio?["reason_code"] as? String),
+                            idle: obj["idle"] as? Bool ?? true)
     }
 
     private static func nonEmpty(_ text: String?) -> String? {

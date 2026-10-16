@@ -37,6 +37,17 @@ final class DaemonStatusTests: XCTestCase {
         XCTAssertNil(decode(#"{"version":"","voxcpm2":{"available":true}}"#)?.version)
     }
 
+    /// The daemon's own busy flag. A daemon that predates the field reports
+    /// nothing and counts as idle: guessing busy would pin the handshake's
+    /// actions forever.
+    /// Mutation: DaemonStatus.decode, `idle: obj["idle"] as? Bool ?? true` ->
+    /// `idle: true` -> RED.
+    func testIdleFollowsTheDaemonsFlagAndDefaultsToIdle() {
+        XCTAssertEqual(decode(#"{"version":"v0.1.22","idle":false,"busy":{"produce":1}}"#)?.idle, false)
+        XCTAssertEqual(decode(#"{"version":"v0.1.22","idle":true}"#)?.idle, true)
+        XCTAssertEqual(decode(#"{"version":"v0.1.21"}"#)?.idle, true)
+    }
+
     func testNotAJsonObjectIsNil() {
         XCTAssertNil(decode("<html>nope</html>"))
         XCTAssertNil(decode("[1,2]"))

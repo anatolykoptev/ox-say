@@ -200,6 +200,45 @@ final class UpdateInstallTests: XCTestCase {
         XCTAssertEqual(failure, .daemonNotOnVersion(expected: "v0.1.22", found: nil))
     }
 
+    // MARK: the wait's wall-clock bound
+
+    /// A count both the polling task and the test read, under a lock.
+    private final class PollCounter {
+        private let lock = NSLock()
+        private var value = 0
+        var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+        func bump() { lock.lock(); value += 1; lock.unlock() }
+    }
+
+    /// Mutation: UpdateInstall.swift verifyInstalled, `guard poll < checks - 1`
+    /// deleted -> RED (a pause after the final poll).
+    func testThereIsNoPauseAfterTheFinalPoll() async {
+        var sleeps = 0
+        let failure = await UpdateInstaller.verifyInstalled(version: "0.1.22", daemonVersion: { nil },
+                                                            target: "v0.1.22", checks: 4, interval: 0.5,
+                                                            sleep: { _ in sleeps += 1 })
+        XCTAssertEqual(failure, .daemonNotOnVersion(expected: "v0.1.22", found: nil))
+        XCTAssertEqual(sleeps, 3, "between polls only: checks - 1")
+    }
+
+    /// A cancelled wait stops where it stands, not at the bound.
+    /// Mutation: verifyInstalled, `do { try await sleep(interval) } catch { break }`
+    /// -> `try? await sleep(interval)` AND the `Task.isCancelled` line deleted -> RED.
+    func testACancelledWaitStopsAtOnce() async {
+        let polls = PollCounter()
+        let started = Date()
+        let task = Task { () -> UpdateInstaller.Failure? in
+            await UpdateInstaller.verifyInstalled(version: "0.1.22", daemonVersion: { polls.bump(); return nil },
+                                                  target: "v0.1.22", checks: 40, interval: 30)
+        }
+        while polls.count == 0 { await Task.yield() }
+        task.cancel()
+        let failure = await task.value
+        XCTAssertEqual(failure, .daemonNotOnVersion(expected: "v0.1.22", found: nil))
+        XCTAssertEqual(polls.count, 1)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10, "not 40 x 30 s")
+    }
+
     func testFailureMessages() {
         XCTAssertEqual(UpdateInstaller.Failure.downloadFailed(status: 22).message,
                        "Downloading the installer failed (curl exited with status 22).")

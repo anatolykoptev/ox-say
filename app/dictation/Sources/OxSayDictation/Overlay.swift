@@ -112,8 +112,14 @@ final class Overlay {
         }
     }
 
+    /// Counts the times a new owner took the pill (listening, working,
+    /// playing, a message). An owner that must clear only its own text keeps
+    /// the count from when it showed it and clears while the count still stands.
+    private(set) var owner = 0
+
     /// Recording: bars "breathe" in grey until the first sound arrives.
     func showListening() {
+        owner += 1
         leaveMessage()
         leavePlaying()
         bars.reset()
@@ -126,6 +132,7 @@ final class Overlay {
     }
 
     func showWorking() {
+        owner += 1
         leaveMessage()
         leavePlaying()
         bars.stop()
@@ -193,6 +200,7 @@ final class Overlay {
     /// the position counter and a stop button. This is the only state that
     /// takes mouse events; dictation keeps passing clicks through.
     func showPlaying() {
+        owner += 1
         leaveMessage()
         leavePlaying()
         playing = true
@@ -269,6 +277,7 @@ final class Overlay {
 
     /// Says what went wrong (or where the text went) for a few seconds.
     func showMessage(_ text: String) {
+        owner += 1
         leavePlaying()
         bars.stop()
         bars.isHidden = true
