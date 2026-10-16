@@ -33,3 +33,26 @@
 "placeholder.voices" = "Здесь будут голоса.";
 "placeholder.dictation" = "Здесь будут настройки диктовки.";
 "placeholder.settings" = "Здесь будут настройки.";
+
+/* The Reel editor. */
+"reel.script" = "Сценарий";
+"reel.open_document" = "Открыть документ…";
+"reel.reading_document" = "Читаю документ…";
+"reel.voice" = "Голос";
+"reel.default_voice" = "Голос по умолчанию";
+"reel.phrases" = "Фраз: %d";
+"reel.create" = "Озвучить";
+"reel.checking" = "Проверяю сервис ox-say…";
+"reel.service_missing" = "Сервис ox-say не отвечает.";
+"reel.stop" = "Остановить";
+"reel.stop_title" = "Остановить озвучку?";
+"reel.stop_text" = "ox-say остановится после фразы, над которой работает. Сделанное не станет готовым файлом.";
+"reel.stop_confirm" = "Остановить";
+"reel.keep_going" = "Продолжить";
+"reel.continue_battery" = "Продолжить на батарее";
+"reel.duration" = "Длительность: %@";
+"reel.export" = "Экспорт WAV…";
+"reel.show_in_finder" = "Показать в Finder";
+"reel.read_error" = "Не удалось прочитать файл";
+"reel.nothing_to_read" = "Нечего прочитать";
+"reel.export_error" = "Не удалось сохранить файл";

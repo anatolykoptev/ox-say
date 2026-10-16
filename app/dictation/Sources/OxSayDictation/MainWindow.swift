@@ -25,7 +25,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         // key-equivalent is matched against the main menu first, so dictation
         // into our own window needs it installed.
         MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular)
-        let window = self.window ?? makeWindow()
+        let window = self.window ?? makeWindow(reel: appDelegate.reelModel)
         self.window = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
@@ -76,8 +76,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
                                  visible: window.isVisible)
     }
 
-    private func makeWindow() -> NSWindow {
-        let window = NSWindow(contentViewController: NSHostingController(rootView: MainView()))
+    private func makeWindow(reel: ReelModel) -> NSWindow {
+        let window = NSWindow(contentViewController: NSHostingController(rootView: MainView(reel: reel)))
         window.title = L10nKey.windowTitle.text
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.contentMinSize = NSSize(width: MainWindowSpec.minimumWidth,
