@@ -28,12 +28,12 @@ func lastSpeechInput(t *testing.T, dir string) string {
 	return in
 }
 
-// Plain speech hands the engine the same spoken text long-form produce
-// renders — vscript.Spoken — on a Russian request: numbers and times become
-// words while a URL, a version or a phone keeps its digits, and any other
-// language's text reaches the engine byte-identical. The language is the
-// daemon's own resolution: a recognized language field wins, else the
-// input's script decides.
+// Plain speech hands the engine the spoken rewrite of a Russian request —
+// vscript.SpokenInline: numbers and times become words while a URL, a
+// version or a phone keeps its digits, and any other language's text
+// reaches the engine byte-identical. The language is the daemon's own
+// resolution: a recognized language field wins, else the input's script
+// decides.
 // Mutations: drop the normalizeSpeakText call in handleSpeech (http.go) ->
 // every route case is RED; drop it in Speak (speak.go) -> the MCP test below
 // is RED; remove the `langHint(body) != "ru"` gate -> the English cases go
@@ -143,5 +143,59 @@ func TestSynthesizeWAVExpandsRussianNumbers(t *testing.T) {
 	}
 	if got, want := lastSpeechInput(t, dir), "Мне двадцать пять лет"; got != want {
 		t.Fatalf("SynthesizeWAV: engine got %q, want %q", got, want)
+	}
+}
+
+// A leading "(…)" is the engine's own style channel on the plain-speech
+// routes (audio.cpp session.cpp:99-117): it must reach the engine untouched,
+// never folded into the text the way produce's Spoken does for scripts —
+// only the numbers become words.
+// Mutation: tts_route.go normalizeSpeakText, SpokenInline -> Spoken -> the
+// cue is spoken aloud as "шёпотом — …" -> RED.
+func TestSpeechKeepsLeadingStyleTag(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+
+	rec := postSpeech(d, `{"input":"(шёпотом) Мне 25 лет"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, bodyText(rec))
+	}
+	if got, want := lastSpeechInput(t, dir), "(шёпотом) Мне двадцать пять лет"; got != want {
+		t.Fatalf("engine got %q, want %q", got, want)
+	}
+}
+
+// On voxcpm2 the tag is the same channel: a leading "(" plus instructions
+// is still the 400 buildVoxCPM2 answered before normalization existed, and
+// with no instructions the tag reaches the engine verbatim for it to read.
+// Mutation: the F1 mutation above -> the 400 case answers 200 and the
+// verbatim case arrives folded -> RED.
+func TestSpeechVoxCPM2LeadingStyleTag(t *testing.T) {
+	d, _, logPath := voxFixture(t, nil)
+
+	rec := postSpeech(d, `{"input":"(шёпотом) Привет","instructions":"спокойно","model":"voxcpm2"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("style tag + instructions = %d %s, want 400", rec.Code, bodyText(rec))
+	}
+	rec = postSpeech(d, `{"input":"(шёпотом) Привет","model":"voxcpm2"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, bodyText(rec))
+	}
+	if reqs := voxLog(t, logPath); len(reqs) != 1 || reqs[0]["input"] != "(шёпотом) Привет" {
+		t.Fatalf("voxcpm2 requests %v; want the one tag verbatim", reqs)
+	}
+}
+
+// The MCP speak tool shares Speak: the tag reaches the engine verbatim.
+func TestSpeakToolKeepsLeadingStyleTag(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+	cs := mcpSession(t, d)
+
+	callMCP(t, cs, "speak", map[string]any{"text": "(шёпотом) Привет"})
+	if got, want := lastSpeechInput(t, dir), "(шёпотом) Привет"; got != want {
+		t.Fatalf("MCP speak: engine got %q, want %q", got, want)
 	}
 }

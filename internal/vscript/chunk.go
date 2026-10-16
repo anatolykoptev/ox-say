@@ -97,6 +97,14 @@ func Spoken(text string) string {
 	return ExpandNumbers(spokenPlain(text))
 }
 
+// SpokenInline is Spoken for a direct speech request: the same
+// abbreviations and numbers, but a leading "(…)" is never folded — there it
+// is the caller's own cue, which the engine parses as its style tag
+// (session.cpp:99-117), so it must reach the engine untouched.
+func SpokenInline(text string) string {
+	return ExpandNumbers(expandAbbreviations(text))
+}
+
 func unparen(text string) string {
 	s := trimLead(text)
 	for strings.HasPrefix(s, "(") {
