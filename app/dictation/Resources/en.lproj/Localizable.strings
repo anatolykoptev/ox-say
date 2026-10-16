@@ -1,0 +1,35 @@
+/* The status menu's "Open OxSay…" row. */
+"menu.open_oxsay" = "Open OxSay…";
+
+/* The app menu while the app is a regular (windowed) app. */
+"menu.app" = "OxSay";
+"menu.app.about" = "About OxSay";
+"menu.app.hide" = "Hide OxSay";
+"menu.app.quit" = "Quit OxSay";
+
+/* The Edit menu: standard editing keys for text fields. */
+"menu.edit" = "Edit";
+"menu.edit.undo" = "Undo";
+"menu.edit.redo" = "Redo";
+"menu.edit.cut" = "Cut";
+"menu.edit.copy" = "Copy";
+"menu.edit.paste" = "Paste";
+"menu.edit.select_all" = "Select All";
+
+/* The Window menu. */
+"menu.window" = "Window";
+"menu.window.minimize" = "Minimize";
+"menu.window.close" = "Close";
+
+/* The main window. */
+"window.title" = "OxSay";
+"section.reel" = "Reel";
+"section.projects" = "Projects";
+"section.voices" = "Voices";
+"section.dictation" = "Dictation";
+"section.settings" = "Settings";
+"placeholder.reel" = "The Reel editor will live here.";
+"placeholder.projects" = "The project list will live here.";
+"placeholder.voices" = "Voice management will live here.";
+"placeholder.dictation" = "Dictation settings will live here.";
+"placeholder.settings" = "Settings will live here.";

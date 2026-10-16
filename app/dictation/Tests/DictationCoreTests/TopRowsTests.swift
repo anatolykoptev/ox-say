@@ -25,7 +25,15 @@ final class TopRowsTests: XCTestCase {
         }
     }
 
-    private let arrangements: [[TopRow]] = [[], [.repair], [.allowPasting], [.repair, .allowPasting], [.allowPasting, .repair]]
+    private let arrangements: [[TopRow]] = [[], [.openOxSay], [.repair], [.allowPasting],
+                                            [.repair, .allowPasting], [.allowPasting, .repair],
+                                            [.repair, .allowPasting, .openOxSay], [.openOxSay, .repair],
+                                            [.allowPasting, .openOxSay]]
+
+    /// The top block's order: the conditional repair rows, then the always-present "Open OxSay…".
+    private func expected(wantRepair: Bool, wantAllow: Bool) -> [TopRow] {
+        (wantRepair ? [TopRow.repair] : []) + (wantAllow ? [.allowPasting] : []) + [.openOxSay]
+    }
 
     func testEveryPresentAndWantedCombinationEndsInTheFixedOrder() {
         for current in arrangements {
@@ -33,10 +41,30 @@ final class TopRowsTests: XCTestCase {
                 for wantAllow in [false, true] {
                     var menu = FakeMenu(rows: current)
                     menu.open(wantRepair: wantRepair, wantAllowPasting: wantAllow)
-                    let expected = (wantRepair ? [TopRow.repair] : []) + (wantAllow ? [.allowPasting] : [])
                     let label = "current \(current) wantRepair \(wantRepair) wantAllow \(wantAllow)"
-                    XCTAssertEqual(menu.rows, expected, label)
+                    XCTAssertEqual(menu.rows, expected(wantRepair: wantRepair, wantAllow: wantAllow), label)
                     XCTAssertEqual(menu.violations, [], label)
+                }
+            }
+        }
+    }
+
+    /// "Open OxSay…" is wanted on every plan: the one unconditional row of the
+    /// top block, below Repair and Allow pasting when those are due.
+    func testOpenOxSayIsPlannedOnceBelowTheConditionalRows() {
+        for current in arrangements {
+            for wantRepair in [false, true] {
+                for wantAllow in [false, true] {
+                    let plan = TopRows.plan(current: current, wantRepair: wantRepair, wantAllowPasting: wantAllow)
+                    // A misordered menu is rebuilt: openOxSay may be removed
+                    // then re-inserted — but never inserted twice.
+                    XCTAssertLessThanOrEqual(plan.insert.filter { $0.row == .openOxSay }.count, 1,
+                                             "openOxSay is inserted at most once")
+                    var menu = FakeMenu(rows: current)
+                    menu.apply(plan)
+                    let wanted = expected(wantRepair: wantRepair, wantAllow: wantAllow)
+                    XCTAssertEqual(menu.rows.filter { $0 == .openOxSay }.count, 1)
+                    XCTAssertEqual(menu.rows.firstIndex(of: .openOxSay), wanted.count - 1)
                 }
             }
         }
@@ -68,23 +96,23 @@ final class TopRowsTests: XCTestCase {
     func testBothRowsDueAcrossTwoOpensLeavesTheMenuAlone() {
         var menu = FakeMenu(rows: [])
         menu.open(wantRepair: true, wantAllowPasting: true)
-        XCTAssertEqual(menu.rows, [.repair, .allowPasting])
+        XCTAssertEqual(menu.rows, [.repair, .allowPasting, .openOxSay])
         let second = TopRows.plan(current: menu.rows, wantRepair: true, wantAllowPasting: true)
         XCTAssertEqual(second, TopRows.Plan(remove: [], insert: []), "the second open must change nothing")
         menu.open(wantRepair: true, wantAllowPasting: true)
-        XCTAssertEqual(menu.rows, [.repair, .allowPasting])
+        XCTAssertEqual(menu.rows, [.repair, .allowPasting, .openOxSay])
         XCTAssertEqual(menu.violations, [])
     }
 
     func testRowsComeAndGoAcrossOpensInTheFixedOrder() {
         var menu = FakeMenu(rows: [])
         let opens: [(repair: Bool, allow: Bool, rows: [TopRow])] = [
-            (false, true, [.allowPasting]),
-            (true, true, [.repair, .allowPasting]),   // Repair joins above Allow
-            (true, false, [.repair]),
-            (true, true, [.repair, .allowPasting]),   // Allow joins below Repair
-            (false, true, [.allowPasting]),
-            (false, false, []),
+            (false, true, [.allowPasting, .openOxSay]),
+            (true, true, [.repair, .allowPasting, .openOxSay]),   // Repair joins above Allow
+            (true, false, [.repair, .openOxSay]),
+            (true, true, [.repair, .allowPasting, .openOxSay]),   // Allow joins below Repair
+            (false, true, [.allowPasting, .openOxSay]),
+            (false, false, [.openOxSay]),
         ]
         for (i, open) in opens.enumerated() {
             menu.open(wantRepair: open.repair, wantAllowPasting: open.allow)
@@ -96,7 +124,7 @@ final class TopRowsTests: XCTestCase {
     func testAMisorderedMenuIsRebuiltInTheFixedOrder() {
         var menu = FakeMenu(rows: [.allowPasting, .repair])
         menu.open(wantRepair: true, wantAllowPasting: true)
-        XCTAssertEqual(menu.rows, [.repair, .allowPasting])
+        XCTAssertEqual(menu.rows, [.repair, .allowPasting, .openOxSay])
         XCTAssertEqual(menu.violations, [])
     }
 }

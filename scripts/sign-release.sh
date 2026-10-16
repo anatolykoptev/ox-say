@@ -69,6 +69,10 @@ Contents/MacOS/OxSayDictation
 Contents/PkgInfo
 Contents/Resources
 Contents/Resources/AppIcon.icns
+Contents/Resources/en.lproj
+Contents/Resources/en.lproj/Localizable.strings
+Contents/Resources/ru.lproj
+Contents/Resources/ru.lproj/Localizable.strings
 Contents/_CodeSignature
 Contents/_CodeSignature/CodeResources'
 entitlements_json='{"com.apple.security.device.audio-input":true}'

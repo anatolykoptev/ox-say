@@ -1,0 +1,35 @@
+/* The status menu's "Open OxSay…" row. */
+"menu.open_oxsay" = "Открыть OxSay…";
+
+/* The app menu while the app is a regular (windowed) app. */
+"menu.app" = "OxSay";
+"menu.app.about" = "Об OxSay";
+"menu.app.hide" = "Скрыть OxSay";
+"menu.app.quit" = "Завершить OxSay";
+
+/* The Edit menu: standard editing keys for text fields. */
+"menu.edit" = "Правка";
+"menu.edit.undo" = "Отменить";
+"menu.edit.redo" = "Повторить";
+"menu.edit.cut" = "Вырезать";
+"menu.edit.copy" = "Копировать";
+"menu.edit.paste" = "Вставить";
+"menu.edit.select_all" = "Выбрать всё";
+
+/* The Window menu. */
+"menu.window" = "Окно";
+"menu.window.minimize" = "Свернуть";
+"menu.window.close" = "Закрыть";
+
+/* The main window. */
+"window.title" = "OxSay";
+"section.reel" = "Ролик";
+"section.projects" = "Проекты";
+"section.voices" = "Голоса";
+"section.dictation" = "Диктовка";
+"section.settings" = "Настройки";
+"placeholder.reel" = "Здесь будет редактор ролика.";
+"placeholder.projects" = "Здесь будет список проектов.";
+"placeholder.voices" = "Здесь будут голоса.";
+"placeholder.dictation" = "Здесь будут настройки диктовки.";
+"placeholder.settings" = "Здесь будут настройки.";
