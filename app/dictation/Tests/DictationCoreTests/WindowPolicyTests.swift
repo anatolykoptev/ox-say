@@ -19,7 +19,7 @@ final class WindowPolicyTests: XCTestCase {
     /// itself when it needs to. None of them is a reason for a Dock icon — even
     /// one that claims it can become main.
     func testAuxiliaryWindowsNeverHoldTheDockIcon() {
-        for kind in [WindowKind.about, .review, .overlay, .panel] {
+        for kind in [WindowKind.overlay, .panel] {
             XCTAssertEqual(WindowPolicy.policy(for: [window(kind)]), .accessory,
                            "\(kind) alone must not keep the app .regular")
         }
@@ -27,8 +27,8 @@ final class WindowPolicyTests: XCTestCase {
 
     /// windowWillClose is answered after the window left NSApp.windows; a
     /// listed-but-ordered-out main window is the halfway state.
-    func testTheMainWindowClosedWhileAboutIsOpenReturnsToAccessory() {
-        XCTAssertEqual(WindowPolicy.policy(for: [window(.main, visible: false), window(.about)]), .accessory)
+    func testTheMainWindowClosedWhileAnotherPanelIsOpenReturnsToAccessory() {
+        XCTAssertEqual(WindowPolicy.policy(for: [window(.main, visible: false), window(.panel)]), .accessory)
     }
 
     func testAWindowThatCannotBecomeMainNeverCounts() {
@@ -37,6 +37,6 @@ final class WindowPolicyTests: XCTestCase {
     }
 
     func testTheMainWindowBesideAuxiliaryOnesStillHoldsRegular() {
-        XCTAssertEqual(WindowPolicy.policy(for: [window(.about), window(.overlay), window(.main)]), .regular)
+        XCTAssertEqual(WindowPolicy.policy(for: [window(.panel), window(.overlay), window(.main)]), .regular)
     }
 }

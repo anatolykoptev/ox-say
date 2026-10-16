@@ -4,13 +4,9 @@ import Foundation
 public enum WindowKind: Equatable {
     /// The main editor window — the only kind that holds a Dock icon.
     case main
-    /// The standard about panel.
-    case about
-    /// The voiceover review sheet.
-    case review
     /// The dictation pill: a borderless, non-activating panel.
     case overlay
-    /// Any other panel or window.
+    /// Any other panel or window — the about panel, the review sheet.
     case panel
 }
 

@@ -582,7 +582,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.terminate(nil)
     }
 
-    @objc private func showAbout() {
+    @objc func showAbout() {
         AboutPanel.show(serviceVersion: serviceStatus?.version)
     }
 

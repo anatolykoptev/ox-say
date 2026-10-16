@@ -112,6 +112,10 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundleVersion</key><string>$version</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <!-- The shipped locales: en and ru .lproj trees under Resources/. -->
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>en</string><string>ru</string></array>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>NSHumanReadableCopyright</key><string>© 2026 Anatolii Koptev</string>
     <!-- One floor for the whole product: the engines weak-import Accelerate's

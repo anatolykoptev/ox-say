@@ -24,7 +24,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         // The Edit menu is what makes ⌘V reach a text field — a posted
         // key-equivalent is matched against the main menu first, so dictation
         // into our own window needs it installed.
-        MainMenuBar.install(appDelegateTarget: appDelegate)
+        MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular)
         let window = self.window ?? makeWindow()
         self.window = window
         NSApp.activate(ignoringOtherApps: true)
@@ -34,20 +34,29 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// NSWindowDelegate: the window is going away. The app returns to
     /// .accessory a beat later — the closing window needs a moment to leave
     /// NSApp.windows, and a quick close→reopen must not flicker the Dock icon.
+    /// This close is the only trigger that re-evaluates the policy: a
+    /// miniaturized main window reads as not visible, so re-evaluating on any
+    /// other event would strand it under .accessory with no Dock tile to
+    /// restore from — add no other trigger without handling that case.
     func windowWillClose(_ notification: Notification) {
         DispatchQueue.main.asyncAfter(deadline: .now() + WindowPolicy.accessoryRevertDelay) { [weak self] in
             self?.applyPolicy()
         }
     }
 
-    /// Re-reads the windows on screen and sets the matching activation policy.
+    /// Re-reads the windows on screen, sets the matching activation policy and
+    /// installs the menu that goes with it — under .accessory the bar shrinks
+    /// to the Edit menu, so ⌘Q/⌘H/⌘W stop being live in our own modals.
     private func applyPolicy() {
-        switch WindowPolicy.policy(for: NSApp.windows.map(describe)) {
+        guard let appDelegate else { return }
+        let policy = WindowPolicy.policy(for: NSApp.windows.map(describe))
+        switch policy {
         case .regular:
             NSApp.setActivationPolicy(.regular)
         case .accessory:
             NSApp.setActivationPolicy(.accessory)
         }
+        MainMenuBar.install(appDelegateTarget: appDelegate, for: policy)
     }
 
     /// The kind the policy is asked about. Only the main window's answer can
