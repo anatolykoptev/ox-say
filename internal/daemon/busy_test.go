@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -157,6 +159,103 @@ func TestBusyDesigning(t *testing.T) {
 	<-done // the design fails on this config (no vox engine) — irrelevant
 	if b := d.busy(); b.Designing != 0 || !b.idle() {
 		t.Fatalf("busy = %+v after the design returned, want designing=0", b)
+	}
+}
+
+// A transcription in flight counts under transcribing for its whole run,
+// on the path with no HTTP wrapper: the MCP transcribe tool and voice_add's
+// STT pass both call Transcribe directly, and a restart kills the run. The
+// fake ox-stt blocks until its context ends, so the in-flight window is
+// deterministic.
+// Mutation: drop the transcribing Add/defer pair in Transcribe -> RED
+// (busy.transcribing stays 0 while the run is open).
+func TestBusyTranscribing(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_STT_BLOCK", "1")
+	d := newTestDaemon(t, dir, nil)
+	log := sttSetup(t, d, dir)
+	src := testutil.WriteTinyWAV(t, dir, "in.wav")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel) // a failed assert must not leave the run blocking the cleanup
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.Transcribe(ctx, TranscribeInput{AudioPath: src})
+		done <- err
+	}()
+	var pid int
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		pid = lastRunPid(t, log)
+		return pid != 0
+	}, "the fake ox-stt run to start")
+	t.Cleanup(func() {
+		if pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	if b := d.busy(); b.Transcribing != 1 || b.Interactive != 0 || b.idle() {
+		t.Fatalf("mid-transcription busy = %+v, want transcribing=1 interactive=0 idle=false", b)
+	}
+	cancel()
+	<-done
+	if b := d.busy(); !b.idle() {
+		t.Fatalf("busy = %+v after the transcription ended, want all zero", b)
+	}
+}
+
+// An audio chunk that the server accepts refreshes the session's idle
+// clock: a long dictation driven by a CLI client (nothing else counts it)
+// stays busy past the server's reap window as long as chunks keep coming.
+// The entry is aged to just past the window; the chunk must pull it back.
+// Mutation: drop the noteSTTSession(id) call on the audio 2xx in
+// sttSessionOp -> RED (the aged entry is reaped, stt_sessions stays 0).
+func TestBusySTTSessionAudioRefreshes(t *testing.T) {
+	orig := sttSessionIdle
+	sttSessionIdle = 60 * time.Second
+	t.Cleanup(func() { sttSessionIdle = orig })
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemonSTT(t, dir, nil, nil, nil)
+	sttSetupServer(t, d, dir)
+	sttVADModel(t, d, dir)
+	srv := transcriptionServer(t, d)
+	base := sessBase(srv)
+
+	code, body := sessReq(t, http.MethodPost, base, "application/json", []byte("{}"))
+	if code != http.StatusOK {
+		t.Fatalf("create: status %d body %s", code, body)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil || !sessionIDRe.MatchString(created.ID) {
+		t.Fatalf("create body = %s, want {\"id\":<32 lowercase hex>}", body)
+	}
+	id := created.ID
+
+	age := func() {
+		d.sessMu.Lock()
+		d.sessSeen[id] = time.Now().Add(-sttSessionIdle - time.Second)
+		d.sessMu.Unlock()
+	}
+
+	// Control: aged and untouched, the sweep reaps it — so the survival
+	// below can only come from the refresh.
+	age()
+	if n := d.busy().STTSessions; n != 0 {
+		t.Fatalf("aged untouched session counted: stt_sessions = %d, want 0", n)
+	}
+
+	// Aged again, the only thing that can save it is a chunk the server
+	// accepts.
+	age()
+	code, _ = sessReq(t, http.MethodPost, base+"/"+id+"/audio", "application/octet-stream", bytes.Repeat([]byte{1}, 640))
+	if code != http.StatusOK {
+		t.Fatalf("audio: status %d", code)
+	}
+	if b := statusBusy(t, srv); b.STTSessions != 1 || b.idle() {
+		t.Fatalf("session refreshed by audio busy = %+v, want stt_sessions=1 idle=false", b)
 	}
 }
 

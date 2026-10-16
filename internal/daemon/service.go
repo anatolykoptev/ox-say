@@ -83,11 +83,12 @@ type Daemon struct {
 	inflight           atomic.Int64
 	lastInteractiveEnd atomic.Int64
 
-	// speaking and designing count in-flight work /status reports under
-	// busy: a restart kills either mid-request, and both can be driven by
-	// CLI and MCP clients nothing else can see.
-	speaking  atomic.Int64
-	designing atomic.Int64
+	// speaking, designing and transcribing count in-flight work /status
+	// reports under busy: a restart kills any of them mid-request, and all
+	// can be driven by CLI and MCP clients nothing else can see.
+	speaking     atomic.Int64
+	designing    atomic.Int64
+	transcribing atomic.Int64
 
 	// sessSeen is the daemon's mirror of the resident STT server's open
 	// sessions (they live inside the server's process): id → last traffic.
@@ -509,6 +510,9 @@ type busySummary struct {
 	Speaking int `json:"speaking"`
 	// Designing is the voice designs in flight.
 	Designing int `json:"designing"`
+	// Transcribing is the transcriptions in flight, however they arrived:
+	// MCP transcribe and the STT pass of voice_add reach no HTTP wrapper.
+	Transcribing int `json:"transcribing"`
 	// Interactive is the interactive routes in flight (interactive.go): a
 	// request that counts in no other lane — a one-shot transcription
 	// upload — still marks the daemon busy here.
@@ -524,11 +528,12 @@ func (b busySummary) idle() bool {
 // busy counts the work a restart would interrupt, per lane.
 func (d *Daemon) busy() busySummary {
 	return busySummary{
-		Produce:     d.prod.active(),
-		STTSessions: d.sttSessions(),
-		Speaking:    int(d.speaking.Load()),
-		Designing:   int(d.designing.Load()),
-		Interactive: int(d.inflight.Load()),
+		Produce:      d.prod.active(),
+		STTSessions:  d.sttSessions(),
+		Speaking:     int(d.speaking.Load()),
+		Designing:    int(d.designing.Load()),
+		Transcribing: int(d.transcribing.Load()),
+		Interactive:  int(d.inflight.Load()),
 	}
 }
 
