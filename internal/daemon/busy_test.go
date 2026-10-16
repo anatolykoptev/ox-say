@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ func statusBusy(t *testing.T, srv *httptest.Server) busySummary {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var st struct {
 		Busy busySummary `json:"busy"`
 		Idle bool        `json:"idle"`
@@ -63,6 +64,7 @@ func TestBusySpeaking(t *testing.T) {
 	srv := transcriptionServer(t, d)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel) // a failed assert must not leave the request blocking the cleanup
 	done := make(chan error, 1)
 	go func() {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -77,7 +79,7 @@ func TestBusySpeaking(t *testing.T) {
 			done <- err
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		_, err = io.Copy(io.Discard, resp.Body)
 		done <- err
 	}()
@@ -96,6 +98,37 @@ func TestBusySpeaking(t *testing.T) {
 	}
 }
 
+// The MCP speak tool shares the counter but not the HTTP route: it never
+// passes the interactive wrapper, so only its own Add keeps a restart from
+// killing the render.
+// Mutation: drop the speaking Add/defer pair in Speak -> RED.
+func TestBusySpeakingViaMCP(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_SPEECH_BLOCK", "1")
+	d := newTestDaemon(t, dir, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel) // a failed assert must not leave the request blocking the cleanup
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.Speak(ctx, SpeakInput{Text: "hi"})
+		done <- err
+	}()
+	testutil.WaitFor(t, 15*time.Second, func() bool {
+		_, err := os.Stat(filepath.Join(dir, "speech-started"))
+		return err == nil
+	}, "the fake child's speech-started stamp")
+	if b := d.busy(); b.Speaking != 1 || b.Interactive != 0 || b.idle() {
+		t.Fatalf("mid-speak busy = %+v, want speaking=1 interactive=0 idle=false", b)
+	}
+	cancel()
+	<-done
+	if b := d.busy(); !b.idle() {
+		t.Fatalf("busy = %+v after the speak ended, want all zero", b)
+	}
+}
+
 // A voice design in flight counts under designing for its whole run —
 // slowDesign holds DesignVoice open at its top, so the check is not a race
 // with the render.
@@ -103,6 +136,9 @@ func TestBusySpeaking(t *testing.T) {
 func TestBusyDesigning(t *testing.T) {
 	d := newTestDaemon(t, t.TempDir(), nil)
 	hold := make(chan struct{})
+	var release sync.Once
+	releaseHold := func() { release.Do(func() { close(hold) }) }
+	t.Cleanup(releaseHold) // a failed assert must not leave the design held
 	d.slowDesign = func() { <-hold }
 	done := make(chan error, 1)
 	go func() {
@@ -117,7 +153,7 @@ func TestBusyDesigning(t *testing.T) {
 	if b := d.busy(); b.idle() {
 		t.Fatalf("idle with a design in flight: busy = %+v", b)
 	}
-	close(hold)
+	releaseHold()
 	<-done // the design fails on this config (no vox engine) — irrelevant
 	if b := d.busy(); b.Designing != 0 || !b.idle() {
 		t.Fatalf("busy = %+v after the design returned, want designing=0", b)
