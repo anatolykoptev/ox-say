@@ -54,6 +54,7 @@ check_app() {
         case "${entry#"$a"/}" in
             Contents | Contents/Info.plist | Contents/PkgInfo | Contents/MacOS | "Contents/MacOS/$name" | \
                 Contents/Resources | "Contents/Resources/$icon_file" | \
+                Contents/Resources/*.lproj | Contents/Resources/*.lproj/Localizable.strings | \
                 Contents/_CodeSignature | Contents/_CodeSignature/CodeResources | Contents/CodeResources) ;;
             *)
                 echo "build.sh: $a holds $entry, which this script does not create; not replacing it" >&2
@@ -70,6 +71,12 @@ remove_app() {
     [ -e "$a" ] || return 0
     rm -f "$a/Contents/Info.plist" "$a/Contents/PkgInfo" "$a/Contents/MacOS/$name" \
         "$a/Contents/Resources/$icon_file" "$a/Contents/_CodeSignature/CodeResources" "$a/Contents/CodeResources"
+    # Locale directories hold the Localizable.strings this script copies in.
+    for lproj in "$a/Contents/Resources/"*.lproj; do
+        [ -d "$lproj" ] || continue
+        rm -f "$lproj/Localizable.strings"
+        rmdir "$lproj"
+    done
     # A bundle from before the icon has no Resources directory.
     if [ -d "$a/Contents/Resources" ]; then rmdir "$a/Contents/Resources"; fi
     rmdir "$a/Contents/_CodeSignature" "$a/Contents/MacOS" "$a/Contents" "$a"
@@ -86,6 +93,11 @@ remove_app "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin/$name" "$app/Contents/MacOS/$name"
 cp "$icon" "$app/Contents/Resources/$icon_file"
+# The .lproj trees carry Localizable.strings; Bundle picks the locale by the
+# user's preferred languages, en when neither matches.
+for lproj in "$here/Resources/"*.lproj; do
+    cp -R "$lproj" "$app/Contents/Resources/"
+done
 printf 'APPL????' > "$app/Contents/PkgInfo"
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -100,6 +112,10 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundleVersion</key><string>$version</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <!-- The shipped locales: en and ru .lproj trees under Resources/. -->
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>en</string><string>ru</string></array>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>NSHumanReadableCopyright</key><string>© 2026 Anatolii Koptev</string>
     <!-- One floor for the whole product: the engines weak-import Accelerate's

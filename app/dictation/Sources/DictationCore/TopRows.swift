@@ -1,21 +1,24 @@
 import Foundation
 
 /// A row that can occupy the top of the status menu. The case order is the
-/// menu order: Repair above Allow pasting.
+/// menu order: Repair above Allow pasting, then the always-present "Open
+/// OxSay…".
 public enum TopRow: Int, CaseIterable, Equatable {
     case repair
     case allowPasting
+    case openOxSay
 }
 
-/// Which of the conditional top rows to add and drop, decided from what the
+/// Which of the managed top rows to add and drop, decided from what the
 /// menu holds right now.
 ///
-/// Both rows are offered only while their condition holds, so either can be
-/// due on any menu open or on an open menu when a handshake pass ends. The
-/// decision is by MEMBERSHIP, never by "is it the first item": inserting an
-/// item that is already in a menu raises `NSInternalInconsistencyException`,
-/// which Swift cannot catch, and a first-item test is wrong as soon as two
-/// rows share the top.
+/// The Repair and Allow-pasting rows are offered only while their condition
+/// holds, so either can be due on any menu open or on an open menu when a
+/// handshake pass ends; "Open OxSay…" is wanted always. The decision is by
+/// MEMBERSHIP, never by "is it the first item": inserting an item that is
+/// already in a menu raises `NSInternalInconsistencyException`, which Swift
+/// cannot catch, and a first-item test is wrong as soon as two rows share
+/// the top.
 public enum TopRows {
     public struct Insertion: Equatable {
         public let row: TopRow
@@ -33,11 +36,12 @@ public enum TopRows {
     /// `current` is the managed rows the menu holds now, top to bottom (they
     /// always sit above every other item). After applying the plan the menu
     /// holds exactly the wanted rows in the fixed order Repair, Allow
-    /// pasting — also when `current` arrives misordered.
+    /// pasting, Open OxSay — also when `current` arrives misordered.
     public static func plan(current: [TopRow], wantRepair: Bool, wantAllowPasting: Bool) -> Plan {
         var desired: [TopRow] = []
         if wantRepair { desired.append(.repair) }
         if wantAllowPasting { desired.append(.allowPasting) }
+        desired.append(.openOxSay)
 
         var remove: [TopRow] = []
         for row in current where !desired.contains(row) && !remove.contains(row) {

@@ -20,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// on-disk bundle's version.
     private let repairItem = NSMenuItem(title: "Repair ox-say…",
                                         action: #selector(repairOxSay), keyEquivalent: "")
+    /// The always-present top row that opens the main window.
+    private let openItem = NSMenuItem(title: L10nKey.menuOpenOxSay.text,
+                                    action: #selector(openMainWindow), keyEquivalent: "")
     /// Whether the Allow-pasting row is due, as of the last menu open; a
     /// handshake pass ending on an open menu re-syncs against it.
     private var wantAllowPasting = false
@@ -36,6 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var speechClient: SpeechClient!
     private var studioClient: StudioClient!
     private var studio: StudioController!
+    /// The one main window; created on first "Open OxSay…", kept across closes.
+    private lazy var mainWindow = MainWindowController(appDelegate: self)
     /// Runs once when the playback that was started with a completion ends on its own.
     private var playbackDone: (() -> Void)?
     /// The daemon's last /status answer, fetched on every menu open; nil when it
@@ -389,7 +394,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// item": inserting an item the menu already holds raises an Objective-C
     /// exception the app cannot survive.
     private func syncTopRows(in menu: NSMenu) {
-        let items: [(TopRow, NSMenuItem)] = [(.repair, repairItem), (.allowPasting, allowPastingItem)]
+        let items: [(TopRow, NSMenuItem)] = [(.repair, repairItem), (.allowPasting, allowPastingItem),
+                                             (.openOxSay, openItem)]
         let current = menu.items.compactMap { item in items.first { $0.1 === item }?.0 }
         let plan = TopRows.plan(current: current, wantRepair: handshake.repairTarget != nil,
                                 wantAllowPasting: wantAllowPasting)
@@ -408,6 +414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         allowPastingItem.target = self
         repairItem.target = self
+        openItem.target = self
         menu.addItem(statusLine)
         speakHint.isEnabled = false
         menu.addItem(speakHint)
@@ -426,6 +433,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         footerItem.isEnabled = false
         menu.addItem(footerItem)
         updateFooter()
+        // The managed top rows (Repair, Allow pasting, Open OxSay…) land above
+        // the status line; syncTopRows keeps them in plan order on every open.
+        syncTopRows(in: menu)
         statusItem.menu = menu
     }
 
@@ -572,8 +582,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.terminate(nil)
     }
 
-    @objc private func showAbout() {
+    @objc func showAbout() {
         AboutPanel.show(serviceVersion: serviceStatus?.version)
+    }
+
+    /// "Open OxSay…": the one main window, opened or brought forward.
+    @objc private func openMainWindow() {
+        mainWindow.open()
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
