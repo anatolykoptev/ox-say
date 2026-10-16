@@ -291,6 +291,27 @@ final class ScriptCleanerTests: XCTestCase {
         XCTAssertLessThan(seconds, Self.maxSecondsForTheSpaceRun, "the autolink rule backtracks on a run of spaces")
     }
 
+    // Mutation: MarkdownText.swift, in `destination`, put `\S*/\S*` back in place of
+    // `[^\s/]*/\S*` -> RED (a 40 000-slash token then a word took 36 s).
+    func testADefinitionWithAHugeSlashTokenIsCleanedInLinearTime() {
+        // The token is not the whole line, so the rule fails after trying every way to split it.
+        let text = "[a]: " + String(repeating: "/", count: Self.spaceRunLength) + " x"
+        let started = Date()
+        let result = markdown(text)
+        let seconds = Date().timeIntervalSince(started)
+        XCTAssertTrue(result.hasPrefix("a: /"), "a line with a stray word after the address is speech and stays")
+        XCTAssertLessThan(seconds, Self.maxSecondsForTheSpaceRun, "the definition rule backtracks on a long run of slashes")
+    }
+
+    func testADefinitionWithAHugeTokenOfSlashSegmentsIsCleanedInLinearTime() {
+        let text = "[a]: " + String(repeating: "a/", count: Self.spaceRunLength / 2) + " x"
+        let started = Date()
+        let result = markdown(text)
+        let seconds = Date().timeIntervalSince(started)
+        XCTAssertTrue(result.hasPrefix("a: a/"), "a line with a stray word after the address is speech and stays")
+        XCTAssertLessThan(seconds, Self.maxSecondsForTheSpaceRun, "the definition rule backtracks on a long run of slash segments")
+    }
+
     // Mutation: MarkdownText.swift, in `footnoteMark`, put `[ \t]*` in front of the
     // pattern -> RED. The text after the spaces is not a complete mark, so a rule
     // that starts with the spaces fails at every start in the run.

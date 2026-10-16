@@ -13,9 +13,10 @@ enum MarkdownText {
 
     /// What a reference definition may point at: `<anything>`, a URL with a scheme,
     /// `www.`, an absolute or dot-relative path, a `#fragment`, or any path with a
-    /// slash in it. A plain word is not an address, so `[Narrator]: Once upon a
+    /// slash in it (`[^\s/]*/\S*`: the first slash ends the first piece, so a
+    /// long token is not split at every slash). A plain word is not an address, so `[Narrator]: Once upon a
     /// time` and `[note]: this is a quote line` are spoken lines and stay.
-    private static let destination = #"(?:<[^<>\s]+>|[A-Za-z][A-Za-z0-9+.-]*://\S+|mailto:\S+|www\.\S+|[./#]\S*|\S*/\S*)"#
+    private static let destination = #"(?:<[^<>\s]+>|[A-Za-z][A-Za-z0-9+.-]*://\S+|mailto:\S+|www\.\S+|[./#]\S*|[^\s/]*/\S*)"#
     /// An optional title after the address: "…", '…' or (…).
     private static let title = #"(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?"#
 
