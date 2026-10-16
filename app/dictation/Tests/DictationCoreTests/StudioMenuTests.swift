@@ -10,9 +10,10 @@ final class StudioMenuTests: XCTestCase {
         ProduceJob(id: "j", title: "Ch 1", status: status, partsTotal: total, partsDone: done)
     }
     private func rows(_ status: DaemonStatus?, installing: Bool = false, job: ProduceJob? = nil,
-                      waiting: Bool = false, folder: Bool = false) -> [MenuRow] {
+                      waiting: Bool = false, folder: Bool = false, reading: Bool = false) -> [MenuRow] {
         let service = status.map { StudioMenu.ServiceState.answered($0) } ?? .unreachable
-        return StudioMenu.rows(service: service, installing: installing, job: job, serviceWaiting: waiting, hasOutputFolder: folder)
+        return StudioMenu.rows(service: service, installing: installing, job: job, serviceWaiting: waiting,
+                               hasOutputFolder: folder, readingDocument: reading)
     }
     private func titles(_ rows: [MenuRow]) -> [String] {
         rows.map { row in
@@ -102,16 +103,16 @@ final class StudioMenuTests: XCTestCase {
 
     func testAvailableStudioWithoutAJob() {
         XCTAssertEqual(titles(rows(available, folder: true)),
-                       ["New Voiceover from Text File…", "Open Voiceovers Folder", "---", "Create a Voice…"])
+                       ["New Voiceover from Document…", "Open Voiceovers Folder", "---", "Create a Voice…"])
         XCTAssertTrue(rows(available).contains(.item(title: "Open Voiceovers Folder", isOn: false, isEnabled: false, action: nil)),
                       "no folder yet: the row is disabled")
     }
 
     func testRunningJobShowsProgressAndStop() {
         let result = rows(available, job: job(.running), folder: true)
-        XCTAssertEqual(titles(result), ["New Voiceover from Text File…", "“Ch 1” — 2 of 5 parts", "Stop Voiceover",
+        XCTAssertEqual(titles(result), ["New Voiceover from Document…", "“Ch 1” — 2 of 5 parts", "Stop Voiceover",
                                         "Open Voiceovers Folder", "---", "Create a Voice…"])
-        XCTAssertTrue(result.contains(.item(title: "New Voiceover from Text File…", isOn: false, isEnabled: false, action: .newVoiceover)),
+        XCTAssertTrue(result.contains(.item(title: "New Voiceover from Document…", isOn: false, isEnabled: false, action: .newVoiceover)),
                       "the daemon runs one voiceover at a time")
         XCTAssertTrue(result.contains(.item(title: "“Ch 1” — 2 of 5 parts", isOn: false, isEnabled: false, action: nil)))
         XCTAssertTrue(result.contains(.item(title: "Stop Voiceover", isOn: false, isEnabled: true, action: .stopVoiceover)))
@@ -126,7 +127,7 @@ final class StudioMenuTests: XCTestCase {
 
     func testAFinishedJobShowsNoProgressRow() {
         let result = titles(rows(available, job: job(.done)))
-        XCTAssertEqual(result, ["New Voiceover from Text File…", "Open Voiceovers Folder", "---", "Create a Voice…"])
+        XCTAssertEqual(result, ["New Voiceover from Document…", "Open Voiceovers Folder", "---", "Create a Voice…"])
     }
 
     func testVoicePopupPreselectsTheRussianPick() {
@@ -142,4 +143,16 @@ final class StudioMenuTests: XCTestCase {
         XCTAssertEqual(StudioMenu.defaultTitle(fileName: "Chapter one.md"), "Chapter one")
         XCTAssertEqual(StudioMenu.defaultTitle(fileName: "notes.final.txt"), "notes.final")
     }
+
+    func testTheNewVoiceoverRowIsDisabledWhileADocumentIsBeingRead() {
+        let newRow: (Bool) -> MenuRow? = { reading in
+            self.rows(self.available, reading: reading).first { row in
+                if case .item(_, _, _, .newVoiceover) = row { return true }
+                return false
+            }
+        }
+        XCTAssertEqual(newRow(false), .item(title: StudioMenu.newVoiceoverTitle, isOn: false, isEnabled: true, action: .newVoiceover))
+        XCTAssertEqual(newRow(true), .item(title: StudioMenu.newVoiceoverTitle, isOn: false, isEnabled: false, action: .newVoiceover))
+    }
 }
+

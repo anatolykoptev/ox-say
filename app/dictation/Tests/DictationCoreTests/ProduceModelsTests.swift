@@ -48,13 +48,6 @@ final class ProduceModelsTests: XCTestCase {
         XCTAssertEqual(json["allow_battery"] as? Bool, true)
     }
 
-    func testScriptProblems() {
-        XCTAssertNil(ProduceRequest.scriptProblem("Hello."))
-        XCTAssertEqual(ProduceRequest.scriptProblem(" \n "), "The file has no text in it.")
-        XCTAssertNotNil(ProduceRequest.scriptProblem(String(repeating: "я", count: ProduceRequest.scriptLimit + 1)))
-        XCTAssertNil(ProduceRequest.scriptProblem(String(repeating: "я", count: ProduceRequest.scriptLimit)))
-    }
-
     // MARK: decoding every real state
 
     func testEveryDaemonStateDecodes() throws {

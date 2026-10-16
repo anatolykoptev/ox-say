@@ -139,16 +139,6 @@ public enum ProduceRequest {
     /// The daemon's cap on a script (produce.go maxProduceChars), about 48 minutes of speech.
     public static let scriptLimit = 40000
 
-    /// Why a file cannot be voiced, in plain words; nil when it can.
-    public static func scriptProblem(_ script: String) -> String? {
-        let length = script.trimmingCharacters(in: .whitespacesAndNewlines).count
-        if length == 0 { return "The file has no text in it." }
-        if length > scriptLimit {
-            return "The file is too long: a voiceover can be up to \(scriptLimit) characters (about 48 minutes), and this one has \(length)."
-        }
-        return nil
-    }
-
     /// Resume with the battery allowed: the whole of "Continue on Battery Power".
     public static func resumeOnBatteryBody() -> Data {
         (try? JSONSerialization.data(withJSONObject: ["allow_battery": true])) ?? Data()
@@ -205,7 +195,7 @@ public enum ProduceText {
             return ("The voiceover failed", job.error ?? "ox-say could not finish it.")
         case .interrupted:
             return ("The voiceover was interrupted",
-                    "ox-say stopped while it was working. Start it again with New Voiceover from Text File.")
+                    "ox-say stopped while it was working. Start it again with New Voiceover from Document.")
         case .cancelled, .running, .waitingForDictation, .pausedOnBattery, .unknown:
             return nil
         }
