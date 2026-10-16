@@ -64,6 +64,11 @@ type Daemon struct {
 	// can hold the prepare phase open while the idle deadline passes.
 	slowPrepare func()
 
+	// slowDesign, when set (tests only), runs at the top of DesignVoice —
+	// a stand-in for a design run in flight, so a test can hold the
+	// busy.designing counter open without an engine.
+	slowDesign func()
+
 	// lockFile holds daemon.lock for the process lifetime.
 	lockFile *os.File
 
@@ -77,6 +82,18 @@ type Daemon struct {
 	prod               *producer
 	inflight           atomic.Int64
 	lastInteractiveEnd atomic.Int64
+
+	// speaking, designing and transcribing count in-flight work /status
+	// reports under busy: a restart kills any of them mid-request, and all
+	// can be driven by CLI and MCP clients nothing else can see.
+	speaking     atomic.Int64
+	designing    atomic.Int64
+	transcribing atomic.Int64
+
+	// sessSeen is the daemon's mirror of the resident STT server's open
+	// sessions (they live inside the server's process): id → last traffic.
+	sessMu   sync.Mutex
+	sessSeen map[string]time.Time
 }
 
 // New builds the supervisor (reaping any orphaned engine) and the voice
@@ -137,11 +154,12 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 		return nil, err
 	}
 	d := &Daemon{
-		Cfg:   cfg,
-		Store: store,
-		ec:    engine.NewClient(),
-		log:   logger,
-		gpu:   engine.NewGPULease(),
+		Cfg:      cfg,
+		Store:    store,
+		ec:       engine.NewClient(),
+		log:      logger,
+		gpu:      engine.NewGPULease(),
+		sessSeen: map[string]time.Time{},
 	}
 	store.SetTranscriber(d.voiceWords)
 	// Single-instance lock: taken BEFORE the supervisor reaps orphaned
@@ -479,6 +497,46 @@ func langHint(body map[string]any) string {
 	return ""
 }
 
+// busySummary is the /status view of the work a daemon restart would
+// interrupt, counted per lane where the daemon itself can see it —
+// including load driven by CLI and MCP clients, which the app cannot.
+type busySummary struct {
+	// Produce is the running voiceover job (0 or 1).
+	Produce int `json:"produce"`
+	// STTSessions is the count of open streaming-dictation sessions on the
+	// resident ox-stt server.
+	STTSessions int `json:"stt_sessions"`
+	// Speaking is the speech requests in flight.
+	Speaking int `json:"speaking"`
+	// Designing is the voice designs in flight.
+	Designing int `json:"designing"`
+	// Transcribing is the transcriptions in flight, however they arrived:
+	// MCP transcribe and the STT pass of voice_add reach no HTTP wrapper.
+	Transcribing int `json:"transcribing"`
+	// Interactive is the interactive routes in flight (interactive.go): a
+	// request that counts in no other lane — a one-shot transcription
+	// upload — still marks the daemon busy here.
+	Interactive int `json:"interactive"`
+}
+
+// idle reports whether every lane is empty — the version handshake's
+// precondition for a restart or a relaunch.
+func (b busySummary) idle() bool {
+	return b == busySummary{}
+}
+
+// busy counts the work a restart would interrupt, per lane.
+func (d *Daemon) busy() busySummary {
+	return busySummary{
+		Produce:      d.prod.active(),
+		STTSessions:  d.sttSessions(),
+		Speaking:     int(d.speaking.Load()),
+		Designing:    int(d.designing.Load()),
+		Transcribing: int(d.transcribing.Load()),
+		Interactive:  int(d.inflight.Load()),
+	}
+}
+
 // statusSummary is the /status response.
 type statusSummary struct {
 	Engine engine.Status `json:"engine"`
@@ -491,6 +549,11 @@ type statusSummary struct {
 	Voices  []voices.Voice `json:"voices"`
 	Config  map[string]any `json:"config"`
 	Version string         `json:"version"`
+	// Busy counts in-flight work per lane; Idle holds only when every
+	// count is zero. A client about to restart the daemon — the app's
+	// version handshake — checks Idle first.
+	Busy busySummary `json:"busy"`
+	Idle bool        `json:"idle"`
 }
 
 var version = "dev"
@@ -508,6 +571,7 @@ func (d *Daemon) Status() statusSummary {
 	if d.STTSup != nil {
 		sttServer = d.STTSup.Status()
 	}
+	busy := d.busy()
 	return statusSummary{
 		Engine:    d.Sup.Status(),
 		STTServer: sttServer,
@@ -534,6 +598,8 @@ func (d *Daemon) Status() statusSummary {
 			"tts_model":         d.Cfg.TTSModel,
 		},
 		Version: version,
+		Busy:    busy,
+		Idle:    busy.idle(),
 	}
 }
 

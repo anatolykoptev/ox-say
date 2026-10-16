@@ -3,7 +3,13 @@ import XCTest
 
 /// A daemon whose every answer the test gives by hand: a call waits until the
 /// test resumes it, so the order of events is the test's.
-private final class FakeDaemon {
+///
+/// On the main actor, so the closures `source()` builds inherit the isolation:
+/// the follower's polls append to `polls` and `delays` on the main thread,
+/// where the test reads and resumes them. Unisolated, they ran on the
+/// cooperative pool while the test indexed the same arrays — a data race on a
+/// Swift Array.
+@MainActor private final class FakeDaemon {
     var polls: [CheckedContinuation<ProduceJob, Error>] = []
     var lists: [CheckedContinuation<[ProduceJob], Error>] = []
     var delays: [TimeInterval] = []
@@ -23,13 +29,16 @@ private func job(_ status: ProduceStatus, id: String = "j") -> ProduceJob {
     ProduceJob(id: id, title: "Ch 1", status: status, partsTotal: 5, partsDone: 2)
 }
 
-/// Lets the follower's tasks run until `condition` holds.
-private func settle(_ condition: () -> Bool) async {
+/// Lets the follower's tasks run until `condition` holds. On the main actor: a
+/// nonisolated async function hops to the cooperative pool, and the conditions
+/// read main-actor state (the fake daemon's arrays, the follower's job) — run
+/// there they race the follower's own main-actor updates.
+@MainActor private func settle(_ condition: () -> Bool) async {
     for _ in 0..<2000 where !condition() { await Task.yield() }
 }
 
-/// On the main actor, like the follower's tasks: the fake daemon's lists and the
-/// follower's state are then touched from one thread only.
+/// On the main actor, like the follower's tasks and the fake daemon: its arrays
+/// and the follower's state are then touched from one thread only.
 @MainActor final class VoiceoverFollowerTests: XCTestCase {
     private struct Down: Error {}
 

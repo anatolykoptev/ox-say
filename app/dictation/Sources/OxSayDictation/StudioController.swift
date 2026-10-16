@@ -20,6 +20,9 @@ struct StudioHost {
     /// Confirms and runs the studio voice install.
     var installStudioVoice: () -> Void
     var installing: () -> Bool
+    /// Work the studio was doing has ended (a voiceover finished or was forgotten,
+    /// a voice design closed): a version handshake held back for it runs again.
+    var workEnded: () -> Void
 }
 
 /// The Studio submenu: draws the rows StudioMenu decides, and runs the three
@@ -34,7 +37,10 @@ final class StudioController: NSObject {
     private lazy var follower = VoiceoverFollower(
         source: VoiceoverFollower.Source(voiceover: { [client = host.client] in try await client.voiceover(id: $0) },
                                          voiceovers: { [client = host.client] in try await client.voiceovers() }),
-        onChange: { [weak self] in self?.render() },
+        onChange: { [weak self] in
+            self?.render()
+            if self?.followingVoiceover == false { self?.host.workEnded() }
+        },
         onFinish: { [weak self] job in
             self?.refreshFolder()
             self?.presentFinish(job)
@@ -46,6 +52,12 @@ final class StudioController: NSObject {
         super.init()
         submenu.autoenablesItems = false
     }
+
+    /// A voice design is running or its takes are being reviewed.
+    var designing: Bool { designer.running }
+
+    /// A voiceover the app follows has not reached a terminal state.
+    var followingVoiceover: Bool { follower.job.map { !$0.status.isTerminal } ?? false }
 
     // MARK: menu
 

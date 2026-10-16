@@ -67,8 +67,9 @@ public struct StudioClient {
     }
 
     /// GET /status: the daemon's version and whether the studio voice can run.
-    public func status() async throws -> DaemonStatus {
-        let (data, status) = try await perform(get("status"))
+    /// `timeout` bounds the request; the default is the quick read every menu open uses.
+    public func status(timeout: TimeInterval = StudioClient.quickTimeout) async throws -> DaemonStatus {
+        let (data, status) = try await perform(get("status", timeout: timeout))
         guard (200..<300).contains(status) else { throw Self.refusal(status: status, body: data) }
         guard let decoded = DaemonStatus.decode(data) else { throw StudioError.badResponse }
         return decoded

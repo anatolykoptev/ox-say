@@ -78,6 +78,8 @@ public enum UpdateInstaller {
         case installerFailed(status: Int32)
         case couldNotStart(String)
         case versionUnchanged(expected: String, found: String?)
+        /// The bundle updated but the daemon never reported the target on /status.
+        case daemonNotOnVersion(expected: String, found: String?)
 
         public var message: String {
             switch self {
@@ -92,25 +94,64 @@ public enum UpdateInstaller {
             case .versionUnchanged(let expected, let found):
                 let now = found.map { "v\(UpdateInstaller.normalized($0))" } ?? "unknown"
                 return "The version did not change: expected \(expected) after the install, found \(now)."
+            case .daemonNotOnVersion(let expected, let found):
+                let now = found.map { "v\(UpdateInstaller.normalized($0))" } ?? "nothing"
+                return "The ox-say service did not reach \(expected) after the install; /status reports \(now)."
             }
         }
     }
 
-    /// After a "successful" install: nil when the app on disk reports the target
-    /// tag, otherwise the failure to show instead of relaunching.
-    public static func verifyInstalled(version: String?, target: String) -> Failure? {
-        if let version, normalized(version) == normalized(target) { return nil }
-        return .versionUnchanged(expected: target, found: version)
+    /// The daemon wait after an install: up to 40 polls half a second apart,
+    /// each poll bounded by its own short request timeout (curl -m 2 in the
+    /// shell installer's oxs_wait_version). A daemon that is down answers
+    /// "refused" at once, so the wait is then about 20 s; one that accepts
+    /// and never answers costs the full request timeout per poll, so the hard
+    /// bound is checks x (daemonCheckTimeout + interval) - interval, about
+    /// 100 s.
+    public static let daemonChecks = 40
+    public static let daemonCheckInterval: TimeInterval = 0.5
+    /// The /status request timeout for one poll of the wait.
+    public static let daemonCheckTimeout: TimeInterval = 2
+
+    /// After a "successful" install: nil when the app on disk reports the
+    /// target tag AND the daemon's /status reaches the target within the wait.
+    /// `daemonVersion` re-reads /status on every poll (the caller bounds each
+    /// request by `daemonCheckTimeout`); a nil answer means the daemon did
+    /// not respond. There is no pause after the last poll, and a cancelled
+    /// task stops the wait where it stands. Otherwise the failure to show
+    /// instead of relaunching.
+    public static func verifyInstalled(version: String?, daemonVersion: () async -> String?, target: String,
+                                       checks: Int = daemonChecks,
+                                       interval: TimeInterval = daemonCheckInterval,
+                                       sleep: (TimeInterval) async throws -> Void = { seconds in
+                                           try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                                       }) async -> Failure? {
+        guard let version, normalized(version) == normalized(target) else {
+            return .versionUnchanged(expected: target, found: version)
+        }
+        var found: String?
+        for poll in 0..<checks {
+            if Task.isCancelled { break }
+            if let got = await daemonVersion() {
+                found = got
+                if normalized(got) == normalized(target) { return nil }
+            }
+            guard poll < checks - 1 else { break }
+            do { try await sleep(interval) } catch { break }
+        }
+        return .daemonNotOnVersion(expected: target, found: found)
     }
 
     /// The whole install: downloads get.sh from `scriptSource`, checks it is a
     /// script, runs it for `kind` pinned to `tag`, then asks `installedVersion`
-    /// (the version the bundle on disk now reports) whether the target arrived.
+    /// (the version the bundle on disk now reports) and `daemonVersion` (the
+    /// daemon's /status) whether the target arrived.
     /// Two steps, each exit status checked (a `curl | sh` pipe would report the
     /// shell's 0 for a failed download). nil on success; otherwise the first step
     /// that failed. Output of both steps goes to `log`.
     public static func run(kind: Kind, tag: String, log: FileHandle?, scriptSource: String = scriptURL,
-                           installedVersion: () -> String?) async -> Failure? {
+                           installedVersion: () -> String?,
+                           daemonVersion: () async -> String?) async -> Failure? {
         let script = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-get-\(UUID().uuidString).sh")
         defer { try? FileManager.default.removeItem(at: script) }
 
@@ -131,14 +172,15 @@ public enum UpdateInstaller {
         case .success(let status) where status != 0: return .installerFailed(status: status)
         case .success: break
         }
-        return verifyInstalled(version: installedVersion(), target: tag)
+        return await verifyInstalled(version: installedVersion(), daemonVersion: daemonVersion, target: tag)
     }
 
     /// Runs one command with stdout and stderr in the log; the result is its exit
     /// status, or the error when it could not start. The command's own variables
     /// are added to the app's environment.
-    static func runProcess(_ command: Command, log: FileHandle?) async -> Result<Int32, Error> {
+    static func runProcess(_ command: Command, log: FileHandle?, timeout: TimeInterval? = nil) async -> Result<Int32, Error> {
         await withCheckedContinuation { continuation in
+            let once = ResumeOnce(continuation)
             let p = Process()
             p.executableURL = URL(fileURLWithPath: command.argv[0])
             p.arguments = Array(command.argv.dropFirst())
@@ -146,12 +188,41 @@ public enum UpdateInstaller {
             p.standardInput = FileHandle.nullDevice
             p.standardOutput = log ?? FileHandle.nullDevice
             p.standardError = log ?? FileHandle.nullDevice
-            p.terminationHandler = { continuation.resume(returning: .success($0.terminationStatus)) }
+            p.terminationHandler = { _ = once.resume(.success($0.terminationStatus)) }
             do {
                 try p.run()
             } catch {
-                continuation.resume(returning: .failure(error))
+                // Never launched: no termination handler will fire, and nothing may wait on it.
+                _ = once.resume(.failure(error))
+                return
             }
+            guard let timeout else { return }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                // Only the timeout that wins the race ends the process.
+                if once.resume(.failure(ProcessTimedOut())), p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            }
+        }
+    }
+
+    /// `runProcess` ran past its timeout and the process was killed.
+    struct ProcessTimedOut: Error {}
+
+    /// Resumes a continuation at most once: a process's termination, a launch
+    /// failure and a timeout can each try, and the first one wins.
+    private final class ResumeOnce: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Result<Int32, Error>, Never>?
+
+        init(_ continuation: CheckedContinuation<Result<Int32, Error>, Never>) { self.continuation = continuation }
+
+        /// True when this call was the one that resumed.
+        func resume(_ result: Result<Int32, Error>) -> Bool {
+            lock.lock()
+            let taken = continuation
+            continuation = nil
+            lock.unlock()
+            taken?.resume(returning: result)
+            return taken != nil
         }
     }
 }

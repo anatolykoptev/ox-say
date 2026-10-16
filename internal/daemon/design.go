@@ -131,6 +131,14 @@ func (d *Daemon) designDir() string { return filepath.Join(d.Cfg.CacheDir, desig
 // is the style tag, sanitised by the adapter. Takes are previews and stay at the
 // engine's own level (no loudness normalisation). Keep one with SaveDesignedVoice.
 func (d *Daemon) DesignVoice(ctx context.Context, in DesignInput) (*DesignResult, error) {
+	// Counted from entry: the design route is not an interactive one, and
+	// the MCP tool shares this method — the count lives here so /status
+	// sees a design in flight however it arrived.
+	d.designing.Add(1)
+	defer d.designing.Add(-1)
+	if d.slowDesign != nil {
+		d.slowDesign()
+	}
 	takes := in.Takes
 	if takes == 0 {
 		takes = defaultDesignTakes

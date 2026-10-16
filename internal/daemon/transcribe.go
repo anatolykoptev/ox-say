@@ -37,6 +37,10 @@ type TranscribeInput struct {
 // resident server when it is enabled and fall back to the CLI on a server
 // failure.
 func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Result, error) {
+	// Counted from entry: /status reports it under busy.transcribing — the
+	// MCP transcribe tool and voice_add's STT pass have no HTTP wrapper.
+	d.transcribing.Add(1)
+	defer d.transcribing.Add(-1)
 	opts := stt.Options{
 		Engine:       in.Engine,
 		Language:     in.Language,

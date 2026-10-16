@@ -10,6 +10,8 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
     /// True while a paused clip is held; false while playing or when nothing
     /// is loaded.
     var isPaused: Bool { player != nil && !(player?.isPlaying ?? false) }
+    /// True while a clip is actually sounding (not paused, not finished).
+    var isActivelyPlaying: Bool { player?.isPlaying ?? false }
     var duration: TimeInterval { player?.duration ?? 0 }
     var currentTime: TimeInterval { player?.currentTime ?? 0 }
 

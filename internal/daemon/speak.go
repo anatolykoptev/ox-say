@@ -140,6 +140,10 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 
 // Speak synthesizes text to a file — the shared core of the `speak` MCP tool.
 func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error) {
+	// Counted from entry: /status reports it under busy.speaking — the
+	// MCP caller has no HTTP wrapper to stamp, so the count lives here.
+	d.speaking.Add(1)
+	defer d.speaking.Add(-1)
 	if in.Text == "" {
 		return nil, fmt.Errorf("text is required")
 	}

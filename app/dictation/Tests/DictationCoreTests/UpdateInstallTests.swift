@@ -77,14 +77,18 @@ final class UpdateInstallTests: XCTestCase {
         unsetenv(UpdateInstaller.studioVoiceVariable)
         let studio = try Rig()
         defer { studio.cleanUp() }
-        let failure = await UpdateInstaller.run(kind: .studioVoice, tag: "v0.1.21", log: nil, scriptSource: studio.source) { "0.1.21" }
+        let failure = await UpdateInstaller.run(kind: .studioVoice, tag: "v0.1.21", log: nil,
+                                                scriptSource: studio.source,
+                                                installedVersion: { "0.1.21" }, daemonVersion: { "v0.1.21" })
         XCTAssertNil(failure)
         XCTAssertEqual(studio.env, "1", "the installer process must get OX_SAY_WITH_VOXCPM2=1")
         XCTAssertEqual(studio.args, "--version v0.1.21")
 
         let update = try Rig()
         defer { update.cleanUp() }
-        let updateFailure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil, scriptSource: update.source) { "0.1.22" }
+        let updateFailure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil,
+                                                      scriptSource: update.source,
+                                                      installedVersion: { "0.1.22" }, daemonVersion: { "v0.1.22" })
         XCTAssertNil(updateFailure)
         XCTAssertEqual(update.env, "", "a plain update must not download the studio model")
         XCTAssertEqual(update.args, "--version v0.1.22")
@@ -93,23 +97,33 @@ final class UpdateInstallTests: XCTestCase {
     func testAnInstallThatLeavesTheOldVersionFails() async throws {
         let rig = try Rig()
         defer { rig.cleanUp() }
-        let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil, scriptSource: rig.source) { "0.1.21" }
+        var daemonPolls = 0
+        let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil,
+                                                scriptSource: rig.source,
+                                                installedVersion: { "0.1.21" },
+                                                daemonVersion: { daemonPolls += 1; return "v0.1.22" })
         XCTAssertEqual(failure, .versionUnchanged(expected: "v0.1.22", found: "0.1.21"))
+        XCTAssertEqual(daemonPolls, 0, "a stale bundle fails before one /status poll is spent")
     }
 
     func testAFailingInstallerOrANonScriptIsReported() async throws {
         let failing = try Rig(script: "#!/bin/sh\nexit 3\n")
         defer { failing.cleanUp() }
-        let status = await UpdateInstaller.run(kind: .studioVoice, tag: "v0.1.21", log: nil, scriptSource: failing.source) { "0.1.21" }
+        let status = await UpdateInstaller.run(kind: .studioVoice, tag: "v0.1.21", log: nil,
+                                               scriptSource: failing.source,
+                                               installedVersion: { "0.1.21" }, daemonVersion: { nil })
         XCTAssertEqual(status, .installerFailed(status: 3))
 
         let html = try Rig(script: "<html>404</html>")
         defer { html.cleanUp() }
-        let notScript = await UpdateInstaller.run(kind: .update, tag: "v0.1.21", log: nil, scriptSource: html.source) { "0.1.21" }
+        let notScript = await UpdateInstaller.run(kind: .update, tag: "v0.1.21", log: nil,
+                                                  scriptSource: html.source,
+                                                  installedVersion: { "0.1.21" }, daemonVersion: { nil })
         XCTAssertEqual(notScript, .notAScript)
 
         let missing = await UpdateInstaller.run(kind: .update, tag: "v0.1.21", log: nil,
-                                                scriptSource: "file:///nonexistent/ox-say-get.sh") { "0.1.21" }
+                                                scriptSource: "file:///nonexistent/ox-say-get.sh",
+                                                installedVersion: { "0.1.21" }, daemonVersion: { nil })
         guard case .downloadFailed? = missing else { return XCTFail("expected a download failure, got \(String(describing: missing))") }
     }
 
@@ -124,20 +138,105 @@ final class UpdateInstallTests: XCTestCase {
         XCTAssertFalse(UpdateInstaller.isScript(head: Data("<html>404".utf8)))
     }
 
-    func testVersionMatchIgnoresTheVPrefix() {
-        XCTAssertNil(UpdateInstaller.verifyInstalled(version: "0.1.21", target: "v0.1.21"))
-        XCTAssertNil(UpdateInstaller.verifyInstalled(version: "v0.1.21", target: "0.1.21"))
+    func testVersionMatchIgnoresTheVPrefix() async {
+        let a = await UpdateInstaller.verifyInstalled(version: "0.1.21", daemonVersion: { "v0.1.21" }, target: "v0.1.21",
+                                                      checks: 3, interval: 0.001)
+        let b = await UpdateInstaller.verifyInstalled(version: "v0.1.21", daemonVersion: { "0.1.21" }, target: "0.1.21",
+                                                      checks: 3, interval: 0.001)
+        XCTAssertNil(a)
+        XCTAssertNil(b)
     }
 
-    func testUnchangedVersionIsAFailureNamingBothVersions() {
-        let f = UpdateInstaller.verifyInstalled(version: "0.1.20", target: "v0.1.21")
+    func testUnchangedVersionIsAFailureNamingBothVersions() async {
+        let f = await UpdateInstaller.verifyInstalled(version: "0.1.20", daemonVersion: { nil }, target: "v0.1.21")
         XCTAssertEqual(f, .versionUnchanged(expected: "v0.1.21", found: "0.1.20"))
         XCTAssertEqual(f?.message, "The version did not change: expected v0.1.21 after the install, found v0.1.20.")
     }
 
-    func testUnreadableInstalledVersionIsAFailure() {
-        XCTAssertEqual(UpdateInstaller.verifyInstalled(version: nil, target: "v0.1.21"),
-                       .versionUnchanged(expected: "v0.1.21", found: nil))
+    func testUnreadableInstalledVersionIsAFailure() async {
+        let failure = await UpdateInstaller.verifyInstalled(version: nil, daemonVersion: { nil }, target: "v0.1.21")
+        XCTAssertEqual(failure, .versionUnchanged(expected: "v0.1.21", found: nil))
+    }
+
+    // MARK: verifyInstalled also waits for the daemon
+
+    /// A daemon still restarting when the bundle already matches: the poll
+    /// catches it landing on the target. Mutation: the daemonVersion loop in
+    /// verifyInstalled deleted (disk check alone) -> RED here and below.
+    func testVerifyInstalledWaitsForTheDaemonToReachTheTarget() async {
+        var answers = ["v0.1.21", "v0.1.22"]
+        let failure = await UpdateInstaller.verifyInstalled(version: "0.1.22", daemonVersion: {
+            answers.isEmpty ? "v0.1.22" : answers.removeFirst()
+        }, target: "v0.1.22", checks: 40, interval: 0.001)
+        XCTAssertNil(failure)
+    }
+
+    func testAnAnsweringDaemonNeedsNoWait() async {
+        var polls = 0
+        let failure = await UpdateInstaller.verifyInstalled(version: "0.1.22", daemonVersion: {
+            polls += 1
+            return "v0.1.22"
+        }, target: "v0.1.22", checks: 40, interval: 0.001)
+        XCTAssertNil(failure)
+        XCTAssertEqual(polls, 1, "the daemon answering the target ends the wait on the first poll")
+    }
+
+    func testADaemonThatNeverReachesTheTargetIsAFailure() async {
+        var polls = 0
+        let failure = await UpdateInstaller.verifyInstalled(version: "0.1.22", daemonVersion: {
+            polls += 1
+            return "v0.1.21"
+        }, target: "v0.1.22", checks: 3, interval: 0.001)
+        XCTAssertEqual(failure, .daemonNotOnVersion(expected: "v0.1.22", found: "v0.1.21"))
+        XCTAssertEqual(polls, 3, "bounded: exactly `checks` polls")
+        XCTAssertEqual(failure?.message,
+                       "The ox-say service did not reach v0.1.22 after the install; /status reports v0.1.21.")
+    }
+
+    /// A daemon that never answers is the same failure, without a made-up version.
+    func testVerifyInstalledReportsAnUnreachableDaemon() async {
+        let failure = await UpdateInstaller.verifyInstalled(version: "0.1.22", daemonVersion: { nil },
+                                                            target: "v0.1.22", checks: 3, interval: 0.001)
+        XCTAssertEqual(failure, .daemonNotOnVersion(expected: "v0.1.22", found: nil))
+    }
+
+    // MARK: the wait's wall-clock bound
+
+    /// A count both the polling task and the test read, under a lock.
+    private final class PollCounter {
+        private let lock = NSLock()
+        private var value = 0
+        var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+        func bump() { lock.lock(); value += 1; lock.unlock() }
+    }
+
+    /// Mutation: UpdateInstall.swift verifyInstalled, `guard poll < checks - 1`
+    /// deleted -> RED (a pause after the final poll).
+    func testThereIsNoPauseAfterTheFinalPoll() async {
+        var sleeps = 0
+        let failure = await UpdateInstaller.verifyInstalled(version: "0.1.22", daemonVersion: { nil },
+                                                            target: "v0.1.22", checks: 4, interval: 0.5,
+                                                            sleep: { _ in sleeps += 1 })
+        XCTAssertEqual(failure, .daemonNotOnVersion(expected: "v0.1.22", found: nil))
+        XCTAssertEqual(sleeps, 3, "between polls only: checks - 1")
+    }
+
+    /// A cancelled wait stops where it stands, not at the bound.
+    /// Mutation: verifyInstalled, `do { try await sleep(interval) } catch { break }`
+    /// -> `try? await sleep(interval)` AND the `Task.isCancelled` line deleted -> RED.
+    func testACancelledWaitStopsAtOnce() async {
+        let polls = PollCounter()
+        let started = Date()
+        let task = Task { () -> UpdateInstaller.Failure? in
+            await UpdateInstaller.verifyInstalled(version: "0.1.22", daemonVersion: { polls.bump(); return nil },
+                                                  target: "v0.1.22", checks: 40, interval: 30)
+        }
+        while polls.count == 0 { await Task.yield() }
+        task.cancel()
+        let failure = await task.value
+        XCTAssertEqual(failure, .daemonNotOnVersion(expected: "v0.1.22", found: nil))
+        XCTAssertEqual(polls.count, 1)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10, "not 40 x 30 s")
     }
 
     func testFailureMessages() {
