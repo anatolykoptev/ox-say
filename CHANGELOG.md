@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.23](https://github.com/anatolykoptev/ox-say/compare/v0.1.22...v0.1.23) (2026-10-16)
+
+
+### Added
+
+* **config:** default the engine dir to the daemon's bundle Helpers ([#170](https://github.com/anatolykoptev/ox-say/issues/170)) ([7e43706](https://github.com/anatolykoptev/ox-say/commit/7e43706c667bfd7b57606c7ad5ebfa20de539573))
+* **dictation:** app and service version handshake that waits for idle, stronger update check ([#176](https://github.com/anatolykoptev/ox-say/issues/176)) ([0b3f6ec](https://github.com/anatolykoptev/ox-say/commit/0b3f6ecd12f61b0d3e35cef918282e6a8ebd1d07))
+* **dictation:** voiceover from Word, RTF, ODT and PDF, with a review sheet ([#173](https://github.com/anatolykoptev/ox-say/issues/173)) ([0767a87](https://github.com/anatolykoptev/ox-say/commit/0767a87062e5e9b9541ee318d527e2792e06919b))
+
 ## [0.1.22](https://github.com/anatolykoptev/ox-say/compare/v0.1.21...v0.1.22) (2026-10-15)
 
 
