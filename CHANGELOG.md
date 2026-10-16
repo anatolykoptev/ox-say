@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.24](https://github.com/anatolykoptev/ox-say/compare/v0.1.23...v0.1.24) (2026-10-16)
+
+
+### Added
+
+* **dictation:** main window shell — Open OxSay, menu bar, activation policy ([#186](https://github.com/anatolykoptev/ox-say/issues/186)) ([f061bca](https://github.com/anatolykoptev/ox-say/commit/f061bcaf5f65cf14b63302ef8bb342bd981c1b3a))
+* **produce:** per-phrase delivery op (style, pause) and job clone_mode ([#182](https://github.com/anatolykoptev/ox-say/issues/182)) ([ff420d1](https://github.com/anatolykoptev/ox-say/commit/ff420d174761f337d8ad7b76383d0d6140fbac9f))
+* **produce:** per-phrase pace op (ffmpeg atempo) ([#184](https://github.com/anatolykoptev/ox-say/issues/184)) ([d913aeb](https://github.com/anatolykoptev/ox-say/commit/d913aeb2384acb605638e91a7b12601cb632984b))
+* **say:** expand Russian numbers on the plain-speech routes ([#178](https://github.com/anatolykoptev/ox-say/issues/178)) ([c1c9ebc](https://github.com/anatolykoptev/ox-say/commit/c1c9ebc95fe25806698ad48403aa2fac4fe568e8))
+
 ## [0.1.23](https://github.com/anatolykoptev/ox-say/compare/v0.1.22...v0.1.23) (2026-10-16)
 
 
