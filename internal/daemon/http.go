@@ -100,6 +100,7 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, synthStatus(err), err.Error())
 		return
 	}
+	d.normalizeSpeakText(body)
 	// A normalised take is buffered, whichever engine rendered it. Without a
 	// target the qwen path streams through unchanged.
 	if model == config.TTSModelVoxCPM2 || lufs != nil {

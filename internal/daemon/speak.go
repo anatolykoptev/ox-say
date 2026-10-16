@@ -97,6 +97,8 @@ func validateOutPath(path string, exts []string, overwrite bool) error {
 // prepareSpeech) and returns wav bytes. The in-flight guard is held for the
 // whole upstream request.
 func (d *Daemon) SynthesizeWAV(ctx context.Context, params map[string]any) ([]byte, error) {
+	params = maps(params)
+	d.normalizeSpeakText(params)
 	out, err := d.render(ctx, params)
 	if err != nil {
 		return nil, err
@@ -196,6 +198,7 @@ func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error)
 	if in.CloneMode != "" {
 		params["clone_mode"] = in.CloneMode
 	}
+	d.normalizeSpeakText(params)
 
 	start := time.Now()
 	rendered, err := d.render(ctx, params)

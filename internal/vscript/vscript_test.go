@@ -181,6 +181,24 @@ func TestSpoken(t *testing.T) {
 	}
 }
 
+// SpokenInline is the direct-request rewrite: the same abbreviations and
+// numbers, but a leading "(…)" — the caller's own style cue for the engine —
+// is never folded. Digits inside it still become words.
+// Mutation: chunk.go SpokenInline -> Spoken -> the paren rows are RED.
+func TestSpokenInlineKeepsLeadingParen(t *testing.T) {
+	for in, want := range map[string]string{
+		"(Шёпотом) Тише.":        "(Шёпотом) Тише.",
+		"(за 5 минут) Привет.":   "(за пять минут) Привет.",
+		"(тихо) Мне 25 лет.":     "(тихо) Мне двадцать пять лет.",
+		"Это (в скобках) текст.": "Это (в скобках) текст.",
+		"В 14:30, т.е. скоро.":   "В четырнадцать тридцать, то есть скоро.",
+	} {
+		if got := SpokenInline(in); got != want {
+			t.Errorf("SpokenInline(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // #143.5: format characters and bracket lookalikes cannot survive.
 // Mutation: drop the unicode.Cf case in CleanStyle -> RED.
 func TestCleanStyle(t *testing.T) {

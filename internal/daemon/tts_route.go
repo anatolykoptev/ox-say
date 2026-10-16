@@ -11,6 +11,7 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/voices"
+	"github.com/anatolykoptev/ox-say/internal/vscript"
 )
 
 // Speech request fields the router and the adapters read.
@@ -164,6 +165,27 @@ func (d *Daemon) voxBlock() (code, reason string) {
 		return config.VoxReasonUnsupported, "The studio voice engine is not running on this host."
 	}
 	return "", ""
+}
+
+// normalizeSpeakText rewrites a plain-speech request's input for the engine
+// (vscript.SpokenInline: the unambiguous abbreviations are written out and
+// numbers become Russian words; a leading "(…)", the engine's own style
+// channel, is left for the engine to parse — it is never folded into the
+// text the way produce's Spoken does for script chunks). Only a Russian
+// request is rewritten — the language the daemon resolves for it (the
+// language field or OX_SAY_LANG, else the input's script); anything else
+// reaches the engine byte-identical. The caller's text is never the
+// normalized one: responses and file names keep the input as sent.
+func (d *Daemon) normalizeSpeakText(body map[string]any) {
+	input, _ := body[fieldInput].(string)
+	if input == "" {
+		return
+	}
+	d.applyLanguageDefault(body)
+	if langHint(body) != "ru" {
+		return
+	}
+	body[fieldInput] = vscript.SpokenInline(input)
 }
 
 // synthesize renders a prepared body on model. It applies no defaults.
