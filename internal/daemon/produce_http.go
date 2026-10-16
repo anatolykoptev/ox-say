@@ -45,6 +45,7 @@ type chunkRequest struct {
 	Text       string   `json:"text,omitempty"`
 	Style      *string  `json:"style,omitempty"`
 	PauseAfter *float64 `json:"pause_after,omitempty"`
+	Pace       *float64 `json:"pace,omitempty"`
 }
 
 // deliveryRequest is POST /v1/produce/{id}/delivery: one batch of chunk

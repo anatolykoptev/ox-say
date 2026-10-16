@@ -79,6 +79,13 @@ type Settings struct {
 	Engine         string  `json:"engine"`
 }
 
+// PaceMin and PaceMax bound Chunk.Pace: the ffmpeg atempo rates the lab
+// proved artefact-free. 0 is neutral (1.0).
+const (
+	PaceMin = 0.85
+	PaceMax = 1.15
+)
+
 // Chunk is one engine request's worth of the script and its takes.
 type Chunk struct {
 	Index      int     `json:"index"`
@@ -87,9 +94,13 @@ type Chunk struct {
 	Spoken     string  `json:"spoken"`
 	Style      string  `json:"style,omitempty"`
 	PauseAfter float64 `json:"pause_after_s"`
-	Status     string  `json:"status"`
-	Basis      string  `json:"basis,omitempty"`
-	Pick       string  `json:"pick,omitempty"`
+	// Pace is the delivery-time speech rate: 0 or 1.0 is neutral, the
+	// PaceMin–PaceMax band stretches the trimmed take with ffmpeg atempo at
+	// assembly.
+	Pace   float64 `json:"pace,omitempty"`
+	Status string  `json:"status"`
+	Basis  string  `json:"basis,omitempty"`
+	Pick   string  `json:"pick,omitempty"`
 	// UserPick records that the person chose Pick after listening: the chunk
 	// is ok even when that take failed the automatic checks.
 	UserPick bool      `json:"user_pick,omitempty"`
@@ -257,6 +268,10 @@ func (m *Manifest) validate() error {
 		return fmt.Errorf("clone_pin %q: want auto|reference|ultimate", m.Settings.CloneModePin)
 	}
 	for _, c := range m.Chunks {
+		// !(0 or in range) also refuses NaN: every comparison is false.
+		if !(c.Pace == 0 || (c.Pace >= PaceMin && c.Pace <= PaceMax)) {
+			return fmt.Errorf("chunk %d: a pace of %v; want 0 or %.2f–%.2f", c.Index, c.Pace, PaceMin, PaceMax)
+		}
 		if c.Pick != "" && !ValidKey(c.Pick) {
 			return fmt.Errorf("chunk %d: bad pick", c.Index)
 		}

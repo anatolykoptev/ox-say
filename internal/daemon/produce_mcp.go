@@ -45,7 +45,7 @@ var produceStatusDescription = fmt.Sprintf(`Progress of a project: status (runni
 	`"review" means the file is ready but some chunks failed the automatic checks after 3 attempts: get that chunk's detail, listen to its takes, then use produce_edit. `+
 	`The checks reject broken audio (long silences, wrong or missing words); they do not judge expressiveness. Numbers are spoken as words and checked; only numbers left as digits are not (the note says: %q). When the list is capped, "note" says so.`, maxListedProjects, vproject.NoteNumbers)
 
-const produceEditDescription = `Change one chunk (0-based index, see produce_status) of a project that is not running: action "regenerate" renders takes (1-3) more takes with new seeds; "pick" chooses one of the chunk's takes by take (its key from produce_status with chunk); "edit" replaces the chunk's text (one piece of text, no [directives]) and renders only that chunk; "delivery" changes its style and/or pause_after ("" clears the style to the project default; only chunks whose style changed render, a pause alone just re-assembles). With chunks [{n, style?, pause_after?}...] delivery applies every entry under one launch; chunk is then not needed. On a clone voice in auto mode a style is refused: create with clone_mode reference. The file is re-assembled; poll produce_status. ` +
+const produceEditDescription = `Change one chunk (0-based index, see produce_status) of a project that is not running: action "regenerate" renders takes (1-3) more takes with new seeds; "pick" chooses one of the chunk's takes by take (its key from produce_status with chunk); "edit" replaces the chunk's text (one piece of text, no [directives]) and renders only that chunk; "delivery" changes its style, pause_after and/or pace ("" clears the style to the project default; pace is a 0.85-1.15 rate, 0 restores neutral, and needs ffmpeg's atempo filter on this machine; only chunks whose style changed render, a pause or pace alone just re-assembles). With chunks [{n, style?, pause_after?, pace?}...] delivery applies every entry under one launch; chunk is then not needed. On a clone voice in auto mode a style is refused: create with clone_mode reference. The file is re-assembled; poll produce_status. ` +
 	`Regenerate does NOT change the chunk's pick: your pick is kept until you choose another. A pick is your decision after listening: the chunk becomes ok even if that take failed the automatic checks (the chunk then shows user_pick true), so the project can reach done; a silent take cannot be accepted. The new takes are the keys that were not there before: read produce_status {id, chunk}, listen to take_files, then call produce_edit {action: "pick", take: <key>}. A pick re-assembles the file in seconds.`
 
 const produceControlDescription = `action "resume" continues an interrupted, cancelled or finished project (only missing or changed chunks render; allow_battery lets it run on battery), "cancel" stops a running one (the take being rendered finishes and is kept), "remove" deletes the project's working files; the published voiceover files (.wav .srt .vtt .words.json .manifest.json) stay unless delete_outputs is true, which deletes the finished voiceover files for good (only files this project published, and only if they are unchanged). A project that is not running cannot be cancelled: cancel then answers an error saying so.`
@@ -78,6 +78,7 @@ type produceEditIn struct {
 	Text       string          `json:"text,omitempty" jsonschema:"edit: the chunk's new text; one piece, no [directives]"`
 	Style      *string         `json:"style,omitempty" jsonschema:"delivery: the chunk's new delivery, e.g. excited, lively; \"\" clears it to the project default"`
 	PauseAfter *float64        `json:"pause_after,omitempty" jsonschema:"delivery: silence after the chunk in seconds; 0 clears it"`
+	Pace       *float64        `json:"pace,omitempty" jsonschema:"delivery: the chunk's speech rate multiplier, 0.85-1.15 (0.9 slower, 1.1 faster); 0 restores neutral; needs ffmpeg's atempo filter on this machine"`
 	Chunks     []deliveryEntry `json:"chunks,omitempty" jsonschema:"delivery batch: apply every entry under one launch; chunk is not needed"`
 }
 
@@ -182,7 +183,7 @@ func (d *Daemon) toolProduceEdit(_ context.Context, _ *mcp.CallToolRequest, in p
 		err = &requestError{fmt.Sprintf("action %q needs chunk", in.Action)}
 	default:
 		s, err = d.prod.chunk(in.ID, *in.Chunk, chunkOp{Action: in.Action, Takes: in.Takes, Take: in.Take,
-			Text: in.Text, Style: in.Style, PauseAfter: in.PauseAfter})
+			Text: in.Text, Style: in.Style, PauseAfter: in.PauseAfter, Pace: in.Pace})
 	}
 	if err != nil {
 		return nil, produceEditOut{}, d.produceErr(err)
