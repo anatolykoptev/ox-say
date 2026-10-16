@@ -19,7 +19,7 @@ import (
 
 const produceBodyLimit = 1 << 20
 
-// produceRequest is POST /v1/produce. Tuning knobs are preset, seed and takes only.
+// produceRequest is POST /v1/produce. Tuning knobs are preset, seed, takes and clone_mode only.
 type produceRequest struct {
 	Script       string `json:"script"`
 	Title        string `json:"title,omitempty"`
@@ -28,6 +28,7 @@ type produceRequest struct {
 	Preset       string `json:"preset,omitempty"`
 	Seed         *int64 `json:"seed,omitempty"`
 	Takes        *int   `json:"takes,omitempty"`
+	CloneMode    string `json:"clone_mode,omitempty"`
 	OutPath      string `json:"out_path,omitempty"`
 	Overwrite    bool   `json:"overwrite,omitempty"`
 	AllowBattery bool   `json:"allow_battery,omitempty"`
@@ -38,10 +39,18 @@ type resumeRequest struct {
 }
 
 type chunkRequest struct {
-	Action string `json:"action"`
-	Takes  int    `json:"takes,omitempty"`
-	Take   string `json:"take,omitempty"`
-	Text   string `json:"text,omitempty"`
+	Action     string   `json:"action"`
+	Takes      int      `json:"takes,omitempty"`
+	Take       string   `json:"take,omitempty"`
+	Text       string   `json:"text,omitempty"`
+	Style      *string  `json:"style,omitempty"`
+	PauseAfter *float64 `json:"pause_after,omitempty"`
+}
+
+// deliveryRequest is POST /v1/produce/{id}/delivery: one batch of chunk
+// changes applied under a single launch.
+type deliveryRequest struct {
+	Chunks []deliveryEntry `json:"chunks"`
 }
 
 func (d *Daemon) produceRoutes(mux *http.ServeMux) {
@@ -52,6 +61,7 @@ func (d *Daemon) produceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/produce/{id}/resume", d.handleProduceResume)
 	mux.HandleFunc("POST /v1/produce/{id}/cancel", d.handleProduceCancel)
 	mux.HandleFunc("POST /v1/produce/{id}/chunks/{n}", d.handleProduceChunk)
+	mux.HandleFunc("POST /v1/produce/{id}/delivery", d.handleProduceDelivery)
 	mux.HandleFunc("DELETE /v1/produce/{id}", d.handleProduceDelete)
 }
 
@@ -115,7 +125,8 @@ func (d *Daemon) handleProduceCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s, err := d.prod.create(produceInput{Script: in.Script, Title: in.Title, Voice: in.Voice, Style: in.Style,
-		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery})
+		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery,
+		CloneMode: in.CloneMode})
 	if err != nil {
 		d.writeProduceErr(w, err)
 		return
@@ -212,6 +223,24 @@ func (d *Daemon) handleProduceChunk(w http.ResponseWriter, r *http.Request) {
 	var s vproject.Summary
 	if err == nil {
 		s, err = d.prod.chunk(r.PathValue("id"), n, chunkOp(in))
+	}
+	if err != nil {
+		d.writeProduceErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, s)
+}
+
+func (d *Daemon) handleProduceDelivery(w http.ResponseWriter, r *http.Request) {
+	if !vproject.ValidID(r.PathValue("id")) {
+		d.writeProduceErr(w, errNoProject)
+		return
+	}
+	var in deliveryRequest
+	err := decodeStrict(r, &in)
+	var s vproject.Summary
+	if err == nil {
+		s, err = d.prod.delivery(r.PathValue("id"), in.Chunks)
 	}
 	if err != nil {
 		d.writeProduceErr(w, err)

@@ -45,7 +45,7 @@ var produceStatusDescription = fmt.Sprintf(`Progress of a project: status (runni
 	`"review" means the file is ready but some chunks failed the automatic checks after 3 attempts: get that chunk's detail, listen to its takes, then use produce_edit. `+
 	`The checks reject broken audio (long silences, wrong or missing words); they do not judge expressiveness. Numbers are spoken as words and checked; only numbers left as digits are not (the note says: %q). When the list is capped, "note" says so.`, maxListedProjects, vproject.NoteNumbers)
 
-const produceEditDescription = `Change one chunk (0-based index, see produce_status) of a project that is not running: action "regenerate" renders takes (1-3) more takes with new seeds; "pick" chooses one of the chunk's takes by take (its key from produce_status with chunk); "edit" replaces the chunk's text (one piece of text, no [directives]) and renders only that chunk. The file is re-assembled; poll produce_status. ` +
+const produceEditDescription = `Change one chunk (0-based index, see produce_status) of a project that is not running: action "regenerate" renders takes (1-3) more takes with new seeds; "pick" chooses one of the chunk's takes by take (its key from produce_status with chunk); "edit" replaces the chunk's text (one piece of text, no [directives]) and renders only that chunk; "delivery" changes its style and/or pause_after ("" clears the style to the project default; only chunks whose style changed render, a pause alone just re-assembles). With chunks [{n, style?, pause_after?}...] delivery applies every entry under one launch; chunk is then not needed. On a clone voice in auto mode a style is refused: create with clone_mode reference. The file is re-assembled; poll produce_status. ` +
 	`Regenerate does NOT change the chunk's pick: your pick is kept until you choose another. A pick is your decision after listening: the chunk becomes ok even if that take failed the automatic checks (the chunk then shows user_pick true), so the project can reach done; a silent take cannot be accepted. The new takes are the keys that were not there before: read produce_status {id, chunk}, listen to take_files, then call produce_edit {action: "pick", take: <key>}. A pick re-assembles the file in seconds.`
 
 const produceControlDescription = `action "resume" continues an interrupted, cancelled or finished project (only missing or changed chunks render; allow_battery lets it run on battery), "cancel" stops a running one (the take being rendered finishes and is kept), "remove" deletes the project's working files; the published voiceover files (.wav .srt .vtt .words.json .manifest.json) stay unless delete_outputs is true, which deletes the finished voiceover files for good (only files this project published, and only if they are unchanged). A project that is not running cannot be cancelled: cancel then answers an error saying so.`
@@ -58,6 +58,7 @@ type produceIn struct {
 	Preset       string `json:"preset,omitempty" jsonschema:"youtube (default) | reels | voice-under-music: loudness, pauses and takes per chunk"`
 	Seed         *int64 `json:"seed,omitempty" jsonschema:"0-4294967295; reproduces the whole voiceover; the status reports the seed used"`
 	Takes        *int   `json:"takes,omitempty" jsonschema:"Takes per chunk, 1-3; overrides the preset; 0 is refused"`
+	CloneMode    string `json:"clone_mode,omitempty" jsonschema:"auto (default; the adapter's rule per job) | reference (every chunk clones the timbre only; styles may steer) | ultimate (the job continues the voice's recording; needs ref_text, and any style — job, [style:] or the voice's own — is refused)"`
 	OutPath      string `json:"out_path,omitempty" jsonschema:"Absolute path of the final .wav; its .srt .vtt .words.json .manifest.json go beside it; existing files refused unless overwrite"`
 	Overwrite    bool   `json:"overwrite,omitempty" jsonschema:"Allow replacing existing files at out_path"`
 	AllowBattery bool   `json:"allow_battery,omitempty" jsonschema:"Keep going on battery power (default: the job pauses until the Mac is plugged in)"`
@@ -69,12 +70,15 @@ type produceStatusIn struct {
 }
 
 type produceEditIn struct {
-	ID     string `json:"id" jsonschema:"Project id"`
-	Chunk  int    `json:"chunk" jsonschema:"Chunk index, 0-based (see produce_status chunks)"`
-	Action string `json:"action" jsonschema:"regenerate | pick | edit"`
-	Takes  int    `json:"takes,omitempty" jsonschema:"regenerate: how many more takes to render, 1-3"`
-	Take   string `json:"take,omitempty" jsonschema:"pick: the take key from produce_status with chunk (24 hex characters)"`
-	Text   string `json:"text,omitempty" jsonschema:"edit: the chunk's new text; one piece, no [directives]"`
+	ID         string          `json:"id" jsonschema:"Project id"`
+	Chunk      *int            `json:"chunk,omitempty" jsonschema:"Chunk index, 0-based (see produce_status chunks); needed by every action but a delivery batch"`
+	Action     string          `json:"action" jsonschema:"regenerate | pick | edit | delivery"`
+	Takes      int             `json:"takes,omitempty" jsonschema:"regenerate: how many more takes to render, 1-3"`
+	Take       string          `json:"take,omitempty" jsonschema:"pick: the take key from produce_status with chunk (24 hex characters)"`
+	Text       string          `json:"text,omitempty" jsonschema:"edit: the chunk's new text; one piece, no [directives]"`
+	Style      *string         `json:"style,omitempty" jsonschema:"delivery: the chunk's new delivery, e.g. excited, lively; \"\" clears it to the project default"`
+	PauseAfter *float64        `json:"pause_after,omitempty" jsonschema:"delivery: silence after the chunk in seconds; 0 clears it"`
+	Chunks     []deliveryEntry `json:"chunks,omitempty" jsonschema:"delivery batch: apply every entry under one launch; chunk is not needed"`
 }
 
 type produceControlIn struct {
@@ -128,7 +132,8 @@ func (d *Daemon) toolProduce(_ context.Context, _ *mcp.CallToolRequest, in produ
 		return nil, vproject.Summary{}, d.produceErr(err)
 	}
 	s, err := d.prod.create(produceInput{Script: in.Script, Title: in.Title, Voice: in.Voice, Style: in.Style,
-		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery})
+		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery,
+		CloneMode: in.CloneMode})
 	if err != nil {
 		return nil, vproject.Summary{}, d.produceErr(err)
 	}
@@ -164,7 +169,21 @@ func (d *Daemon) toolProduceStatus(_ context.Context, _ *mcp.CallToolRequest, in
 }
 
 func (d *Daemon) toolProduceEdit(_ context.Context, _ *mcp.CallToolRequest, in produceEditIn) (*mcp.CallToolResult, produceEditOut, error) {
-	s, err := d.prod.chunk(in.ID, in.Chunk, chunkOp{Action: in.Action, Takes: in.Takes, Take: in.Take, Text: in.Text})
+	var s vproject.Summary
+	var err error
+	switch {
+	case in.Chunks != nil:
+		if in.Action != opDelivery {
+			err = &requestError{"chunks applies to action delivery only"}
+			break
+		}
+		s, err = d.prod.delivery(in.ID, in.Chunks)
+	case in.Chunk == nil:
+		err = &requestError{fmt.Sprintf("action %q needs chunk", in.Action)}
+	default:
+		s, err = d.prod.chunk(in.ID, *in.Chunk, chunkOp{Action: in.Action, Takes: in.Takes, Take: in.Take,
+			Text: in.Text, Style: in.Style, PauseAfter: in.PauseAfter})
+	}
 	if err != nil {
 		return nil, produceEditOut{}, d.produceErr(err)
 	}

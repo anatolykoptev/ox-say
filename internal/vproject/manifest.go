@@ -54,10 +54,17 @@ const (
 // Settings are fixed at creation, except the fields a run recomputes from
 // the live voice (CloneMode, VoiceSHA, Engine).
 type Settings struct {
-	Voice          string  `json:"voice"`
-	Style          string  `json:"style,omitempty"`
-	Preset         string  `json:"preset"`
-	CloneMode      string  `json:"clone_mode"`
+	Voice  string `json:"voice"`
+	Style  string `json:"style,omitempty"`
+	Preset string `json:"preset"`
+	// CloneMode is the mode a run resolved and refresh recorded: "reference"
+	// or "ultimate", "" before the first run. Manifests written before
+	// CloneModePin existed carry the resolved mode here, never the request.
+	CloneMode string `json:"clone_mode"`
+	// CloneModePin is the clone_mode the create asked for: "" or "auto" let
+	// the adapter's rule decide, "reference" and "ultimate" pin the job. A
+	// run never rewrites it.
+	CloneModePin   string  `json:"clone_pin,omitempty"`
 	Seed           int64   `json:"seed"`
 	Cfg            float64 `json:"cfg_value"`
 	Steps          int     `json:"inference_timesteps"`
@@ -88,8 +95,12 @@ type Chunk struct {
 	UserPick bool      `json:"user_pick,omitempty"`
 	Reasons  []string  `json:"reasons,omitempty"`
 	Takes    []TakeRef `json:"takes"`
-	StartS   float64   `json:"start_s"`
-	EndS     float64   `json:"end_s"`
+	// Superseded lists the take keys a delivery change replaced, so the takes
+	// stay on disk and returning to an earlier style is a cache hit. Bounded
+	// by the producer; oldest entries drop first.
+	Superseded []string `json:"superseded,omitempty"`
+	StartS     float64  `json:"start_s"`
+	EndS       float64  `json:"end_s"`
 }
 
 // Progress of a run.
@@ -173,6 +184,7 @@ func (m *Manifest) Clone() *Manifest {
 	c.Chunks = make([]Chunk, len(m.Chunks))
 	for i, ch := range m.Chunks {
 		ch.Reasons = append([]string(nil), ch.Reasons...)
+		ch.Superseded = append([]string(nil), ch.Superseded...)
 		ch.Takes = make([]TakeRef, len(m.Chunks[i].Takes))
 		for j, t := range m.Chunks[i].Takes {
 			t.Reasons = append([]string(nil), t.Reasons...)
@@ -232,6 +244,18 @@ func (m *Manifest) validate() error {
 	if m.Version != Version {
 		return fmt.Errorf("manifest version %d; this daemon reads %d", m.Version, Version)
 	}
+	// The daemon's clone-mode set (voxCloneMode); ""/"auto" are both auto.
+	// clone_mode is what a run resolved, clone_pin what the create asked.
+	switch m.Settings.CloneMode {
+	case "", "auto", "reference", "ultimate":
+	default:
+		return fmt.Errorf("clone_mode %q: want auto|reference|ultimate", m.Settings.CloneMode)
+	}
+	switch m.Settings.CloneModePin {
+	case "", "auto", "reference", "ultimate":
+	default:
+		return fmt.Errorf("clone_pin %q: want auto|reference|ultimate", m.Settings.CloneModePin)
+	}
 	for _, c := range m.Chunks {
 		if c.Pick != "" && !ValidKey(c.Pick) {
 			return fmt.Errorf("chunk %d: bad pick", c.Index)
@@ -239,6 +263,11 @@ func (m *Manifest) validate() error {
 		for _, t := range c.Takes {
 			if !ValidKey(t.Key) {
 				return fmt.Errorf("chunk %d: bad take key", c.Index)
+			}
+		}
+		for _, k := range c.Superseded {
+			if !ValidKey(k) {
+				return fmt.Errorf("chunk %d: bad superseded key", c.Index)
 			}
 		}
 	}

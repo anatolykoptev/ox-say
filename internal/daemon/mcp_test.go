@@ -63,8 +63,9 @@ type schemaView struct {
 }
 
 // wantToolSchemas pins each tool's exact property set and required fields.
-// cfg_value, inference_timesteps and clone_mode live on speak alone: the
-// plan's knob ruling keeps every other tool free of them.
+// cfg_value and inference_timesteps live on speak alone: the plan's knob
+// ruling keeps every other tool free of them (produce takes clone_mode —
+// the per-job mode is what per-phrase delivery styling needs).
 var wantToolSchemas = map[string]struct{ props, required []string }{
 	"speak": {[]string{"text", "model", "voice", "language", "format", "out_path", "overwrite", "play", "instructions",
 		"cfg_value", "inference_timesteps", "clone_mode", "seed", "loudness_lufs"}, []string{"text"}},
@@ -78,10 +79,10 @@ var wantToolSchemas = map[string]struct{ props, required []string }{
 	"transcribe":        {[]string{"audio_path", "engine", "language", "prompt", "words", "out_path"}, []string{"audio_path"}},
 	// The produce tools carry no cfg_value/inference_timesteps/loudness_lufs:
 	// presets and the adapter's defaults carry them (the knob ruling).
-	"produce": {[]string{"script", "title", "voice", "style", "preset", "seed", "takes", "out_path", "overwrite", "allow_battery"},
+	"produce": {[]string{"script", "title", "voice", "style", "preset", "seed", "takes", "clone_mode", "out_path", "overwrite", "allow_battery"},
 		[]string{"script"}},
 	"produce_status":  {[]string{"id", "chunk"}, nil},
-	"produce_edit":    {[]string{"id", "chunk", "action", "takes", "take", "text"}, []string{"id", "chunk", "action"}},
+	"produce_edit":    {[]string{"id", "chunk", "action", "takes", "take", "text", "style", "pause_after", "chunks"}, []string{"id", "action"}},
 	"produce_control": {[]string{"id", "action", "allow_battery", "delete_outputs"}, []string{"id", "action"}},
 }
 
@@ -168,7 +169,7 @@ func TestMCPDescriptionsAreSelfSufficient(t *testing.T) {
 		"engine_status":     {"voxcpm2", "stt_server"},
 		"produce":           {"produce_status", "AT ONCE", "[pause", "[style:", "youtube", "reels", "voice-under-music", "out_path", "allow_battery", strconv.Itoa(maxProduceChars), "targets", "32 characters"},
 		"produce_status":    {"review", "chunk", "produce_edit", vproject.NoteNumbers},
-		"produce_edit":      {"regenerate", "pick", "edit", "take", "produce_status", "pick is kept", "new takes", "user_pick", "ok even if"},
+		"produce_edit":      {"regenerate", "pick", "edit", "delivery", "take", "produce_status", "pick is kept", "new takes", "user_pick", "ok even if"},
 		"produce_control":   {"resume", "cancel", "remove", "delete_outputs", "allow_battery", "for good", "not running"},
 	}
 	for tool, words := range need {

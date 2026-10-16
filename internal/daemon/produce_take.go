@@ -112,8 +112,9 @@ type producePorts interface {
 
 // chunkClone is how one chunk is spoken, decided by the adapter's own rules:
 // the effective style (the chunk's, else the job's, else the voice's) and
-// whether clone_mode auto would continue the reference (ultimate).
-func chunkClone(f voiceFacts, jobStyle string, c vscript.Chunk) (style string, ultimate bool, err error) {
+// whether the job's clone_mode — ""/"auto" asks the adapter, "reference"/
+// "ultimate" pin it — continues the reference.
+func chunkClone(f voiceFacts, jobStyle string, c vscript.Chunk, req string) (style string, ultimate bool, err error) {
 	asked := c.Style
 	if asked == "" {
 		asked = jobStyle
@@ -123,18 +124,19 @@ func chunkClone(f voiceFacts, jobStyle string, c vscript.Chunk) (style string, u
 	if err != nil {
 		return "", false, err
 	}
-	ultimate, err = voxCloneMode(map[string]any{}, v, style, c.Spoken)
+	ultimate, err = voxCloneMode(map[string]any{"clone_mode": req}, v, style, c.Spoken)
 	return style, ultimate, err
 }
 
-// jobCloneMode applies plan D5: ultimate only when the adapter says ultimate
+// jobCloneMode applies plan D5 under the job's requested mode (req, "" or
+// "auto" = the adapter's rule): ultimate only when the adapter says ultimate
 // for every chunk, else reference for all; it returns each chunk's effective
 // style (empty in ultimate mode, where a style cannot apply).
-func jobCloneMode(f voiceFacts, jobStyle string, chunks []vscript.Chunk) (mode string, styles []string, err error) {
+func jobCloneMode(f voiceFacts, jobStyle string, chunks []vscript.Chunk, req string) (mode string, styles []string, err error) {
 	styles = make([]string, len(chunks))
 	allUltimate := len(chunks) > 0
 	for i, c := range chunks {
-		style, ultimate, err := chunkClone(f, jobStyle, c)
+		style, ultimate, err := chunkClone(f, jobStyle, c, req)
 		if err != nil {
 			return "", nil, err
 		}

@@ -56,7 +56,8 @@ func TestRenderBodyThroughAdapter(t *testing.T) {
 	}
 }
 
-// Clone mode is the adapter's rule applied to every chunk (D5).
+// Clone mode is the adapter's rule applied to every chunk (D5), unless the
+// job asked for one mode at create.
 // Mutation: jobCloneMode returns ultimate when ANY chunk is ultimate -> RED.
 func TestJobCloneModeFollowsAdapter(t *testing.T) {
 	ru := voiceFacts{Name: "nar", RefText: "Привет, как дела у вас сегодня."}
@@ -67,20 +68,38 @@ func TestJobCloneModeFollowsAdapter(t *testing.T) {
 		f      voiceFacts
 		job    string
 		chunks []vscript.Chunk
+		req    string
 		mode   string
 		styles []string
 	}{
-		{"all plain", ru, "", []vscript.Chunk{plain, plain}, cloneUltimate, []string{"", ""}},
-		{"one styled", ru, "", []vscript.Chunk{plain, styled}, cloneReference, []string{"", "excited"}},
-		{"job style", ru, "calm", []vscript.Chunk{plain}, cloneReference, []string{"calm"}},
-		{"voice default style", voiceFacts{Name: "n", RefText: ru.RefText, Style: "warm"}, "", []vscript.Chunk{plain}, cloneReference, []string{"warm"}},
-		{"no transcript", voiceFacts{Name: "n"}, "", []vscript.Chunk{plain}, cloneReference, []string{""}},
-		{"other script", ru, "", []vscript.Chunk{{Spoken: "Save this video."}}, cloneReference, []string{""}},
+		{"all plain", ru, "", []vscript.Chunk{plain, plain}, "", cloneUltimate, []string{"", ""}},
+		{"one styled", ru, "", []vscript.Chunk{plain, styled}, "", cloneReference, []string{"", "excited"}},
+		{"job style", ru, "calm", []vscript.Chunk{plain}, "", cloneReference, []string{"calm"}},
+		{"voice default style", voiceFacts{Name: "n", RefText: ru.RefText, Style: "warm"}, "", []vscript.Chunk{plain}, "", cloneReference, []string{"warm"}},
+		{"no transcript", voiceFacts{Name: "n"}, "", []vscript.Chunk{plain}, "", cloneReference, []string{""}},
+		{"other script", ru, "", []vscript.Chunk{{Spoken: "Save this video."}}, "", cloneReference, []string{""}},
+		{"explicit auto", ru, "", []vscript.Chunk{plain, plain}, cloneAuto, cloneUltimate, []string{"", ""}},
+		{"reference pins", ru, "", []vscript.Chunk{plain, plain}, cloneReference, cloneReference, []string{"", ""}},
+		{"ultimate pins", ru, "", []vscript.Chunk{plain, plain}, cloneUltimate, cloneUltimate, []string{"", ""}},
 	}
 	for _, c := range cases {
-		mode, styles, err := jobCloneMode(c.f, c.job, c.chunks)
+		mode, styles, err := jobCloneMode(c.f, c.job, c.chunks, c.req)
 		if err != nil || mode != c.mode || strings.Join(styles, "|") != strings.Join(c.styles, "|") {
 			t.Errorf("%s: %q %q %v", c.name, mode, styles, err)
+		}
+	}
+	// A mode say's validator would refuse fails the job the same way.
+	for name, c := range map[string]struct {
+		f      voiceFacts
+		chunks []vscript.Chunk
+		req    string
+	}{
+		"ultimate with a styled chunk": {ru, []vscript.Chunk{styled}, cloneUltimate},
+		"ultimate without ref_text":    {voiceFacts{Name: "n"}, []vscript.Chunk{plain}, cloneUltimate},
+		"invalid mode":                 {ru, []vscript.Chunk{plain}, "bogus"},
+	} {
+		if _, _, err := jobCloneMode(c.f, "", c.chunks, c.req); err == nil {
+			t.Errorf("%s: accepted", name)
 		}
 	}
 }

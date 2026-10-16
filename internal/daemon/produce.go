@@ -86,10 +86,10 @@ var presets = map[string]preset{
 
 // produceInput is a create request.
 type produceInput struct {
-	Script, Title, Voice, Style, Preset, OutPath string
-	Seed                                         *int64
-	Takes                                        int
-	Overwrite, AllowBattery                      bool
+	Script, Title, Voice, Style, Preset, OutPath, CloneMode string
+	Seed                                                    *int64
+	Takes                                                   int
+	Overwrite, AllowBattery                                 bool
 }
 
 // job is the running project.
@@ -99,6 +99,10 @@ type job struct {
 	regen        map[int]int        // chunk -> extra takes requested
 	cancel       atomic.Bool
 	allowBattery atomic.Bool
+	// assembleOnly marks a pause-only delivery run: settled chunks are
+	// re-assembled without entering runChunks (no renders, no checkpoint).
+	// Set before launch; run reads it after the goroutine starts.
+	assembleOnly bool
 
 	// ctx ends when the producer shuts down or the job is cancelled; waits
 	// (dictation, battery) end with it, renders do not: they run under the
@@ -209,9 +213,14 @@ func (p *producer) run(j *job) {
 	defer p.wg.Done()
 	defer j.stopWait()
 	p.ports.Background(true)
-	err := p.runChunks(j, j.started)
-	if err == nil {
+	var err error
+	if j.assembleOnly && countSettled(j.m.Chunks) == len(j.m.Chunks) {
 		err = p.assemble(j)
+	} else {
+		err = p.runChunks(j, j.started)
+		if err == nil {
+			err = p.assemble(j)
+		}
 	}
 	p.ports.Background(false)
 	status, msg := p.outcome(j, err)
@@ -500,12 +509,16 @@ func eta(m *vproject.Manifest, elapsed float64) float64 {
 	return float64(left) * elapsed / float64(doneChars)
 }
 
-// pruneTakes removes take files no chunk lists any more.
+// pruneTakes removes take files no chunk lists any more, keeping the
+// superseded keys a delivery change recorded so a revert stays a cache hit.
 func pruneTakes(j *job) (int, error) {
 	keep := map[string]bool{}
 	for _, c := range j.m.Chunks {
 		for _, t := range c.Takes {
 			keep[t.Key] = true
+		}
+		for _, k := range c.Superseded {
+			keep[k] = true
 		}
 	}
 	dir := filepath.Join(j.dir, vproject.TakesDir)
