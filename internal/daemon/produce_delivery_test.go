@@ -95,8 +95,13 @@ func TestDeliveryStyleRendersOnlyThatChunk(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "v.wav")
 	id := createDone(t, mux, `{"script":"Первое. Второе.\n\nТретье.\n\nЧетвёртое.","voice":"nar","style":"calm","out_path":"`+out+`"}`)
 	m := manifestOf(t, f, id)
-	if m.Settings.CloneMode != cloneReference || len(m.Chunks) != 3 || len(f.renders) != 3 {
-		t.Fatalf("setup: mode %q chunks %d renders %d", m.Settings.CloneMode, len(m.Chunks), len(f.renders))
+	if m.Settings.CloneMode != "" || len(m.Chunks) != 3 || len(f.renders) != 3 {
+		t.Fatalf("setup: requested mode %q chunks %d renders %d", m.Settings.CloneMode, len(m.Chunks), len(f.renders))
+	}
+	for i, r := range f.renders {
+		if r.Mode != cloneReference {
+			t.Fatalf("render %d mode %q, want %q", i, r.Mode, cloneReference)
+		}
 	}
 	keys := make([]map[string]bool, len(m.Chunks))
 	picks := make([]string, len(m.Chunks))
@@ -143,8 +148,13 @@ func TestDeliveryStyleOnAutoCloneIsRefused(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "v.wav")
 	id := createDone(t, mux, `{"script":"Первое. Второе.\n\nТретье.\n\nЧетвёртое.","voice":"nar","out_path":"`+out+`"}`)
 	m := manifestOf(t, f, id)
-	if m.Settings.CloneMode != cloneUltimate {
-		t.Fatalf("setup: mode %q, want ultimate", m.Settings.CloneMode)
+	if m.Settings.CloneMode != "" {
+		t.Fatalf("setup: requested mode %q, want auto", m.Settings.CloneMode)
+	}
+	for i, r := range f.renders {
+		if r.Mode != cloneUltimate {
+			t.Fatalf("render %d mode %q, want %q", i, r.Mode, cloneUltimate)
+		}
 	}
 	before := manifestBytes(t, f, id)
 	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/1", `{"action":"delivery","style":"excited"}`)

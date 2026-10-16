@@ -61,7 +61,7 @@ const (
 const produceUsage = `usage:
   ox-say produce <script.txt|-> [-v voice] [-i style] [-t title] [-o out.wav]
                  [--preset youtube|reels|voice-under-music] [--seed N] [--takes 1..3]
-                 [--overwrite] [--allow-battery] [--no-wait]
+                 [--clone-mode auto|reference|ultimate] [--overwrite] [--allow-battery] [--no-wait]
   ox-say produce status <id> [--chunk N]
   ox-say produce resume <id> [--allow-battery] [--no-wait]
   ox-say produce cancel <id>
@@ -71,7 +71,7 @@ const produceUsage = `usage:
 
 // produceFlags are the flags that carry a value; the rest are switches.
 var (
-	produceValueFlags  = []string{"v", "i", "t", "o", "preset", "seed", "takes", "chunk", "regen", "pick", "text", "style", "pause"}
+	produceValueFlags  = []string{"v", "i", "t", "o", "preset", "seed", "takes", "clone-mode", "chunk", "regen", "pick", "text", "style", "pause"}
 	produceSwitchNames = []string{"overwrite", "allow-battery", "no-wait", "delete-outputs"}
 )
 
@@ -207,7 +207,7 @@ type verbSpec struct {
 }
 
 // createSpec is `ox-say produce <script>`: any word that is not a verb names a script.
-var createSpec = verbSpec{args: 1, values: []string{"v", "i", "t", "o", "preset", "seed", "takes"},
+var createSpec = verbSpec{args: 1, values: []string{"v", "i", "t", "o", "preset", "seed", "takes", "clone-mode"},
 	switches: []string{"overwrite", "allow-battery", "no-wait"}}
 
 var produceVerbs = map[string]verbSpec{
@@ -354,7 +354,7 @@ func readScriptFrom(r io.Reader) (string, error) {
 // createBody builds POST /v1/produce from the flags, numbers typed.
 func (c *produceCmd) createBody(script string) (map[string]any, error) {
 	body := map[string]any{"script": script}
-	for flagName, field := range map[string]string{"v": "voice", "i": "style", "t": "title", "preset": "preset"} {
+	for flagName, field := range map[string]string{"v": "voice", "i": "style", "t": "title", "preset": "preset", "clone-mode": "clone_mode"} {
 		if c.vals[flagName] != "" {
 			body[field] = c.vals[flagName]
 		}

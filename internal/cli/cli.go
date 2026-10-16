@@ -76,7 +76,7 @@ Usage:
   ox-say voice ls
   ox-say voice rm <name>
   ox-say produce <script.txt|-> [-v v] [-i style] [-t title] [-o out.wav] [--preset p] [--seed N] [--takes N]
-                 [--overwrite] [--allow-battery] [--no-wait]
+                 [--clone-mode m] [--overwrite] [--allow-battery] [--no-wait]
   ox-say produce status|resume|cancel|rm <id>   ox-say produce chunk <id> <n> --regen N|--pick KEY|--text "…"
   ox-say produce ls
   ox-say transcribe [-e parakeet|whisper] [-l lang] [--prompt t] [--json|--srt] <file>
@@ -112,6 +112,8 @@ produce turns a whole script (a file, or - for stdin) into one finished voiceove
   --preset p    youtube (default, -16 LUFS) | reels (-14, tighter pauses, 2 takes per chunk) | voice-under-music (-18)
   -t title      the project and its folder name; -o path writes the .wav there (an absolute or relative .wav path)
   --takes N     takes per chunk, 1..3 (default: the preset's)
+  --clone-mode  auto (default) | reference (every chunk clones the timbre; per-phrase styles apply)
+                | ultimate (the whole voiceover continues the voice's recording; no styles)
   --no-wait     start it and return; check with ox-say produce status <id>
   Exit codes (also for status): 0 done, 3 done but some chunks need a listen (printed), 1 failed/cancelled/interrupted, 2 wrong usage.
   On battery the job pauses and this command keeps waiting; --no-wait returns at once. --pick of a take is final (the chunk becomes ok).

@@ -70,6 +70,37 @@ func TestV1ManifestWithoutSupersededRoundTrips(t *testing.T) {
 	}
 }
 
+// A v1 manifest written before clone_mode existed loads it as auto (empty)
+// and re-marshals to the same bytes: the additive field is not a new version.
+func TestV1ManifestWithoutCloneModeRoundTrips(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "manifest.v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = []byte(strings.Replace(string(raw), "    \"clone_mode\": \"reference\",\n", "", 1))
+	if strings.Contains(string(raw), "clone_mode") {
+		t.Fatal("the fixture no longer carries clone_mode to strip")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ManifestFile), raw, FileMode); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Settings.CloneMode != "" {
+		t.Fatalf("clone_mode %q, want empty (auto)", m.Settings.CloneMode)
+	}
+	got, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("a v1 manifest without clone_mode changed shape on load:\n%s", got)
+	}
+}
+
 // A failed write never replaces a good manifest; temp files are swept.
 // Mutation: os.WriteFile(manifest.json) in Save -> a torn file -> RED.
 func TestSaveIsAtomicAndSweep(t *testing.T) {
@@ -203,12 +234,13 @@ func TestLoadContract(t *testing.T) {
 		t.Errorf("unknown key refused: %v", err)
 	}
 	for name, body := range map[string]string{
-		"version 2":   `{"version":2}`,
-		"no version":  `{}`,
-		"torn json":   `{"version":1,"chunks":[`,
-		"bad pick":    `{"version":1,"chunks":[{"pick":"../../etc/passwd"}]}`,
-		"bad take":    `{"version":1,"chunks":[{"takes":[{"key":"x/y"}]}]}`,
-		"empty input": ``,
+		"version 2":      `{"version":2}`,
+		"no version":     `{}`,
+		"torn json":      `{"version":1,"chunks":[`,
+		"bad pick":       `{"version":1,"chunks":[{"pick":"../../etc/passwd"}]}`,
+		"bad take":       `{"version":1,"chunks":[{"takes":[{"key":"x/y"}]}]}`,
+		"empty input":    ``,
+		"bad clone_mode": `{"version":1,"settings":{"clone_mode":"bogus"}}`,
 	} {
 		if _, err := Load(write(body)); err == nil {
 			t.Errorf("%s accepted", name)

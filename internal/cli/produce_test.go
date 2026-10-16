@@ -89,8 +89,8 @@ func writeScript(t *testing.T, text string) string {
 // list and exits 3 on "review". EVERY key of the create body is asserted:
 // a flag that stops being forwarded is a silent failure.
 // Mutation: internal/cli/produce.go exitCode, map review to 0 -> RED; drop
-// body["out_path"], body["title"] (the "t" entry), "overwrite", "allow_battery"
-// or "takes" in createBody -> RED.
+// body["out_path"], body["title"] (the "t" entry), "clone_mode", "overwrite",
+// "allow_battery" or "takes" in createBody -> RED.
 func TestProduceCLI(t *testing.T) {
 	f := newFakeProduce(t, "review")
 	dir := t.TempDir()
@@ -98,9 +98,10 @@ func TestProduceCLI(t *testing.T) {
 	var out, errb bytes.Buffer
 	outFile := filepath.Join(dir, "o.wav")
 	code := cmdProduce([]string{src, "-v", "nar", "-i", "calm", "-t", "My Title", "--preset", "reels", "--seed", "9",
-		"--takes", "2", "--overwrite", "--allow-battery", "-o", outFile}, &out, &errb, time.Millisecond)
+		"--takes", "2", "--overwrite", "--allow-battery", "--clone-mode", "reference", "-o", outFile}, &out, &errb, time.Millisecond)
 	want := map[string]any{"script": "Привет. [pause 0.5s] Пока.", "voice": "nar", "style": "calm", "title": "My Title",
-		"preset": "reels", "seed": float64(9), "takes": float64(2), "out_path": outFile, "overwrite": true, "allow_battery": true}
+		"preset": "reels", "seed": float64(9), "takes": float64(2), "out_path": outFile, "overwrite": true, "allow_battery": true,
+		"clone_mode": "reference"}
 	if code != 3 || !reflect.DeepEqual(f.created, want) {
 		t.Fatalf("exit %d body %v, want %v", code, f.created, want)
 	}

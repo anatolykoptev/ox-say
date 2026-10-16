@@ -237,6 +237,15 @@ is refused instead of boosting its noise.
 `--takes 1..3` overrides the takes per piece (more takes cost proportionally more time).
 `--seed N` makes the whole voiceover reproducible; ox-say prints the seed it used.
 
+`--clone-mode auto|reference|ultimate` picks how the voice is copied for the whole voiceover — the same
+three modes as [`ox-say say`](#studio-voice-voxcpm2). `auto`, the default, applies the engine's rule: the
+job continues the voice's own recording (`ultimate`) when the voice has its transcript, no style is set
+anywhere and the script shares its alphabet, else every piece copies the timbre (`reference`). `reference`
+pins the job to timbre copying: a per-piece style may steer, and a style change below can never hit the
+mode conflict — this is the mode the Reel editor creates its projects in. `ultimate` pins the job to
+continuing the recording: a style at create (`-i`, a `[style: …]` line, the voice's own saved style) is
+refused, and a per-piece style later is refused too.
+
 **Where the files go.** With `-o ~/Movies/reel/reel.wav` the files land next to that path; otherwise in
 `~/Movies/ox-say/<title>/` (`-t "my title"` names the folder and the files: the title lowercased, letters and
 digits joined by hyphens, at most 32 characters, e.g. `my-title`; without `-t` they are named after the
@@ -275,8 +284,9 @@ ox-say produce chunk 20261015-120000-a1b2c3 1 --style ""                  # back
 
 A style the previous take used is kept: switching back is instant. On a voiceover whose voice runs in
 `ultimate` clone mode (a clone voice with no style anywhere), styling a piece is refused — it would
-re-render every piece; set a style at create (`-i`, or `[style: …]` in the script) to run in `reference`
-mode, where a per-piece style is allowed.
+re-render every piece; set a style at create (`-i`, or `[style: …]` in the script) or create the
+voiceover with `--clone-mode reference` to run in `reference` mode, where a per-piece style is allowed.
+A voiceover created with `--clone-mode ultimate` refuses a per-piece style outright.
 
 **Picking is final.** `--pick` means you listened and accept that take: the piece becomes OK even if the take
 failed the automatic check, the manifest marks it `user_pick`, and once no piece is left in review the
@@ -338,14 +348,14 @@ are refused.
 
 | Route | Description |
 |-------|-------------|
-| `POST /v1/produce` | `{"script"` (required, ≤ 40,000 chars)`,"title","voice","style","preset","seed","takes"(1..3; 0 is refused),"out_path","overwrite","allow_battery"}` → 202 with the project summary. 409 + `running_id` when another voiceover is running. No `cfg_value`, steps or loudness: the preset carries them |
+| `POST /v1/produce` | `{"script"` (required, ≤ 40,000 chars)`,"title","voice","style","preset","seed","takes"(1..3; 0 is refused),"clone_mode"("auto"/"reference"/"ultimate"; default auto, ultimate refuses any style),"out_path","overwrite","allow_battery"}` → 202 with the project summary. 409 + `running_id` when another voiceover is running. No `cfg_value`, steps or loudness: the preset carries them |
 | `GET /v1/produce` | `{"projects":[…]}`: the 20 most recent, newest first, without their chunk lists |
 | `GET /v1/produce/<id>` | Summary: `status` (`running`, `waiting_for_dictation`, `paused_on_battery`, `review`, `done`, `failed`, `cancelled`, `interrupted`), `seed`, `progress` (`chunks_done`, `chunks_total`, `eta_s`), `outputs`, `chunks` (status, pick, reasons), `notes` |
 | `GET /v1/produce/<id>/chunks/<n>` | One chunk (0-based): its text, takes (key, seed, duration, word errors) and `take_files` (key → WAV path) |
 | `POST /v1/produce/<id>/resume` | `{"allow_battery"}` → continue an interrupted, cancelled or finished project |
 | `POST /v1/produce/<id>/cancel` | Stop a running project; the take in progress finishes and is kept. A project that is not running answers 409 |
 | `POST /v1/produce/<id>/chunks/<n>` | `{"action":"regenerate","takes":1..3}` / `{"action":"pick","take":"<key>"}` / `{"action":"edit","text":"…"}` / `{"action":"delivery","style":"…","pause_after":0.05..10}` (either or both; `"style":""` restores the default); `regenerate` keeps the current pick; `pick` is final (the chunk becomes ok, `user_pick: true`). A chunk number past the end answers 400 with the chunk count |
-| `POST /v1/produce/<id>/delivery` | `{"chunks":[{"n":0,"style":"…"},{"n":3,"pause_after":0.6}]}` — every entry is checked before anything changes (a bad entry is a 400 and nothing moved), then one relaunch; only chunks whose style changed render, a pause-only batch only re-assembles. A style that would switch the job's clone mode answers 409 (`styling a phrase needs clone_mode reference…`) |
+| `POST /v1/produce/<id>/delivery` | `{"chunks":[{"n":0,"style":"…"},{"n":3,"pause_after":0.6}]}` — every entry is checked before anything changes (a bad entry is a 400 and nothing moved), then one relaunch; only chunks whose style changed render, a pause-only batch only re-assembles. A style that would switch the job's clone mode answers 409 (`styling a phrase needs clone_mode reference…`); on a project created with `clone_mode: "ultimate"` any style answers 409 |
 | `DELETE /v1/produce/<id>` | Remove the project; `?delete_outputs=true` also deletes its published files |
 
 **Agents (MCP)** use four tools, `produce`, `produce_status`, `produce_edit` and `produce_control`, that
@@ -479,7 +489,8 @@ The same server exposes MCP tools on `/mcp`: `speak`, `transcribe`,
 `voices_list`, `voice_add`, `voice_update`, `voice_remove`, `voice_design`, `voice_design_save`,
 `engine_status`, and the long-form voiceover tools `produce`, `produce_status`, `produce_edit`, `produce_control`. Each tool's description tells an agent when to use it, the units and limits, and what
 to call next; the VoxCPM2 quality options (`model`, `instructions`, `cfg_value`, `inference_timesteps`,
-`clone_mode`, `seed`, `loudness_lufs`) are on `speak` only. Register with:
+`seed`, `loudness_lufs`) are on `speak` only, and `clone_mode` is on `speak` and `produce` (the same
+`auto`/`reference`/`ultimate` set, judged by the same rules). Register with:
 
 ```
 claude mcp add --transport http --scope user ox-say http://127.0.0.1:8094/mcp

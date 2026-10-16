@@ -19,7 +19,7 @@ import (
 
 const produceBodyLimit = 1 << 20
 
-// produceRequest is POST /v1/produce. Tuning knobs are preset, seed and takes only.
+// produceRequest is POST /v1/produce. Tuning knobs are preset, seed, takes and clone_mode only.
 type produceRequest struct {
 	Script       string `json:"script"`
 	Title        string `json:"title,omitempty"`
@@ -28,6 +28,7 @@ type produceRequest struct {
 	Preset       string `json:"preset,omitempty"`
 	Seed         *int64 `json:"seed,omitempty"`
 	Takes        *int   `json:"takes,omitempty"`
+	CloneMode    string `json:"clone_mode,omitempty"`
 	OutPath      string `json:"out_path,omitempty"`
 	Overwrite    bool   `json:"overwrite,omitempty"`
 	AllowBattery bool   `json:"allow_battery,omitempty"`
@@ -124,7 +125,8 @@ func (d *Daemon) handleProduceCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s, err := d.prod.create(produceInput{Script: in.Script, Title: in.Title, Voice: in.Voice, Style: in.Style,
-		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery})
+		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery,
+		CloneMode: in.CloneMode})
 	if err != nil {
 		d.writeProduceErr(w, err)
 		return

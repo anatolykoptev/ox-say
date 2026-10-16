@@ -29,10 +29,13 @@ const (
 	// maxSupersededTakes bounds Chunk.Superseded: the takes a delivery change
 	// replaced stay cached for a revert, but disk stays bounded.
 	maxSupersededTakes = 4
-	// deliveryNeedsReference refuses a delivery that would move the job's
-	// clone mode: styling one phrase on an ultimate job would re-render them
-	// all in reference mode.
-	deliveryNeedsReference = "styling a phrase needs clone_mode reference; create the project with clone_mode reference"
+	// deliveryNeedsReference refuses a delivery that would move an auto-mode
+	// job's clone mode: styling one phrase on an ultimate job would re-render
+	// them all in reference mode.
+	deliveryNeedsReference = "styling a phrase needs clone_mode reference; create the project with clone_mode reference (ox-say produce --clone-mode reference)"
+	// deliveryIsUltimate refuses a style on a job pinned to clone_mode
+	// ultimate at create: no style can ever apply there.
+	deliveryIsUltimate = "styling a phrase cannot apply: the project was created with clone_mode ultimate"
 	// takesMargin is the factor of takes kept on disk per planned take, with
 	// room for retries, in the free-space estimate.
 	takesMargin = 1.3
@@ -125,12 +128,18 @@ func (p *producer) newManifest(in produceInput) (*vproject.Manifest, error) {
 	if voice == "" {
 		return nil, &requestError{"produce needs a saved voice: design one with voice_design or add one with voice_add"}
 	}
-	if _, err := p.ports.Voice(voice); err != nil {
+	facts, err := p.ports.Voice(voice)
+	if err != nil {
 		return nil, err
 	}
 	style := vscript.CleanStyle(in.Style)
 	if utf8.RuneCountInString(style) > vscript.MaxStyleChars {
 		return nil, &requestError{fmt.Sprintf("style is longer than %d characters", vscript.MaxStyleChars)}
+	}
+	// clone_mode is judged by the adapter's own validator against every
+	// chunk: an invalid value, or ultimate with any style, fails the create.
+	if _, _, err := jobCloneMode(facts, style, chunks, in.CloneMode); err != nil {
+		return nil, err
 	}
 	takes := in.Takes
 	if takes == 0 {
@@ -152,7 +161,7 @@ func (p *producer) newManifest(in produceInput) (*vproject.Manifest, error) {
 		return nil, err
 	}
 	m := &vproject.Manifest{Version: vproject.Version, ID: id, Title: title(in, chunks), Created: now,
-		Settings: vproject.Settings{Voice: voice, Style: style, Preset: name, Seed: seed, Cfg: defaultCfgValue,
+		Settings: vproject.Settings{Voice: voice, Style: style, Preset: name, CloneMode: in.CloneMode, Seed: seed, Cfg: defaultCfgValue,
 			Steps: defaultTimesteps, Takes: takes, LUFS: pr.lufs, ChunkPause: pr.opts.ChunkPause,
 			ParagraphPause: pr.opts.ParagraphPause, OutPath: out, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery},
 		Notes: []string{vproject.NoteNumbers}}
@@ -237,9 +246,9 @@ func (p *producer) makeProject(m *vproject.Manifest, script string) (string, err
 }
 
 // refresh re-reads the voice and engine, recomputes effective styles, the
-// clone mode (the adapter's own rule, jobCloneMode) and each chunk's basis; a
-// chunk whose basis changed is reset (D5, D10). It returns the base spec per
-// chunk.
+// effective clone mode (jobCloneMode under the job's requested mode) and each
+// chunk's basis; a chunk whose basis changed is reset (D5, D10). It returns
+// the base spec per chunk.
 func (p *producer) refresh(j *job) ([]takeSpec, error) {
 	p.mu.Lock()
 	s := j.m.Settings
@@ -257,7 +266,7 @@ func (p *producer) refresh(j *job) ([]takeSpec, error) {
 	for i, c := range chunks {
 		vc[i] = vscript.Chunk{Style: c.Style, Spoken: c.Spoken}
 	}
-	mode, styles, err := jobCloneMode(facts, s.Style, vc)
+	mode, styles, err := jobCloneMode(facts, s.Style, vc, s.CloneMode)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +277,7 @@ func (p *producer) refresh(j *job) ([]takeSpec, error) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	j.m.Settings.CloneMode, j.m.Settings.VoiceSHA, j.m.Settings.Engine = mode, facts.SHA, engineID
+	j.m.Settings.VoiceSHA, j.m.Settings.Engine = facts.SHA, engineID
 	for i := range j.m.Chunks {
 		c := &j.m.Chunks[i]
 		if b := specs[i].basis(); c.Basis != b {
@@ -470,8 +479,22 @@ func validateDelivery(m *vproject.Manifest, es []deliveryEntry) ([]string, error
 
 // deliveryModeGate refuses a batch whose style changes would move the job's
 // effective clone mode (an ultimate job turning reference re-renders every
-// chunk, which is a recreate, not a delivery change).
+// chunk, which is a recreate, not a delivery change). A job pinned to
+// reference at create cannot leave it; one pinned to ultimate refuses any
+// style op.
 func (p *producer) deliveryModeGate(j *job, es []deliveryEntry, styles []string) error {
+	req := j.m.Settings.CloneMode
+	switch req {
+	case cloneReference:
+		return nil
+	case cloneUltimate:
+		for _, e := range es {
+			if e.Style != nil {
+				return &conflictError{deliveryIsUltimate}
+			}
+		}
+		return nil
+	}
 	facts, err := p.ports.Voice(j.m.Settings.Voice)
 	if err != nil {
 		return fmt.Errorf("voice %q: %w", j.m.Settings.Voice, err)
@@ -480,7 +503,7 @@ func (p *producer) deliveryModeGate(j *job, es []deliveryEntry, styles []string)
 	for i, c := range j.m.Chunks {
 		vc[i] = vscript.Chunk{Style: c.Style, Spoken: c.Spoken}
 	}
-	before, _, err := jobCloneMode(facts, j.m.Settings.Style, vc)
+	before, _, err := jobCloneMode(facts, j.m.Settings.Style, vc, req)
 	if err != nil {
 		return err
 	}
@@ -489,7 +512,7 @@ func (p *producer) deliveryModeGate(j *job, es []deliveryEntry, styles []string)
 			vc[*e.N].Style = styles[i]
 		}
 	}
-	after, _, err := jobCloneMode(facts, j.m.Settings.Style, vc)
+	after, _, err := jobCloneMode(facts, j.m.Settings.Style, vc, req)
 	if err != nil {
 		return err
 	}

@@ -63,8 +63,9 @@ type schemaView struct {
 }
 
 // wantToolSchemas pins each tool's exact property set and required fields.
-// cfg_value, inference_timesteps and clone_mode live on speak alone: the
-// plan's knob ruling keeps every other tool free of them.
+// cfg_value and inference_timesteps live on speak alone: the plan's knob
+// ruling keeps every other tool free of them (produce takes clone_mode —
+// the per-job mode is what per-phrase delivery styling needs).
 var wantToolSchemas = map[string]struct{ props, required []string }{
 	"speak": {[]string{"text", "model", "voice", "language", "format", "out_path", "overwrite", "play", "instructions",
 		"cfg_value", "inference_timesteps", "clone_mode", "seed", "loudness_lufs"}, []string{"text"}},
@@ -78,7 +79,7 @@ var wantToolSchemas = map[string]struct{ props, required []string }{
 	"transcribe":        {[]string{"audio_path", "engine", "language", "prompt", "words", "out_path"}, []string{"audio_path"}},
 	// The produce tools carry no cfg_value/inference_timesteps/loudness_lufs:
 	// presets and the adapter's defaults carry them (the knob ruling).
-	"produce": {[]string{"script", "title", "voice", "style", "preset", "seed", "takes", "out_path", "overwrite", "allow_battery"},
+	"produce": {[]string{"script", "title", "voice", "style", "preset", "seed", "takes", "clone_mode", "out_path", "overwrite", "allow_battery"},
 		[]string{"script"}},
 	"produce_status":  {[]string{"id", "chunk"}, nil},
 	"produce_edit":    {[]string{"id", "chunk", "action", "takes", "take", "text", "style", "pause_after", "chunks"}, []string{"id", "action"}},

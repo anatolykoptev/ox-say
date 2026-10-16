@@ -86,10 +86,10 @@ var presets = map[string]preset{
 
 // produceInput is a create request.
 type produceInput struct {
-	Script, Title, Voice, Style, Preset, OutPath string
-	Seed                                         *int64
-	Takes                                        int
-	Overwrite, AllowBattery                      bool
+	Script, Title, Voice, Style, Preset, OutPath, CloneMode string
+	Seed                                                    *int64
+	Takes                                                   int
+	Overwrite, AllowBattery                                 bool
 }
 
 // job is the running project.

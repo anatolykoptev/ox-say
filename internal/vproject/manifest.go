@@ -52,12 +52,14 @@ const (
 )
 
 // Settings are fixed at creation, except the fields a run recomputes from
-// the live voice (CloneMode, VoiceSHA, Engine).
+// the live voice (VoiceSHA, Engine).
 type Settings struct {
-	Voice          string  `json:"voice"`
-	Style          string  `json:"style,omitempty"`
-	Preset         string  `json:"preset"`
-	CloneMode      string  `json:"clone_mode"`
+	Voice  string `json:"voice"`
+	Style  string `json:"style,omitempty"`
+	Preset string `json:"preset"`
+	// CloneMode is the job-level mode the create asked for: "" or "auto" lets
+	// the adapter's rule decide; "reference" and "ultimate" pin the job.
+	CloneMode      string  `json:"clone_mode,omitempty"`
 	Seed           int64   `json:"seed"`
 	Cfg            float64 `json:"cfg_value"`
 	Steps          int     `json:"inference_timesteps"`
@@ -235,6 +237,12 @@ func ValidID(id string) bool { return idRe.MatchString(id) }
 func (m *Manifest) validate() error {
 	if m.Version != Version {
 		return fmt.Errorf("manifest version %d; this daemon reads %d", m.Version, Version)
+	}
+	// The daemon's clone-mode set (voxCloneMode); ""/"auto" are both auto.
+	switch m.Settings.CloneMode {
+	case "", "auto", "reference", "ultimate":
+	default:
+		return fmt.Errorf("clone_mode %q: want auto|reference|ultimate", m.Settings.CloneMode)
 	}
 	for _, c := range m.Chunks {
 		if c.Pick != "" && !ValidKey(c.Pick) {

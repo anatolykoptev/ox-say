@@ -58,6 +58,7 @@ type produceIn struct {
 	Preset       string `json:"preset,omitempty" jsonschema:"youtube (default) | reels | voice-under-music: loudness, pauses and takes per chunk"`
 	Seed         *int64 `json:"seed,omitempty" jsonschema:"0-4294967295; reproduces the whole voiceover; the status reports the seed used"`
 	Takes        *int   `json:"takes,omitempty" jsonschema:"Takes per chunk, 1-3; overrides the preset; 0 is refused"`
+	CloneMode    string `json:"clone_mode,omitempty" jsonschema:"auto (default; the adapter's rule per job) | reference (every chunk clones the timbre only; styles may steer) | ultimate (the job continues the voice's recording; needs ref_text, and any style — job, [style:] or the voice's own — is refused)"`
 	OutPath      string `json:"out_path,omitempty" jsonschema:"Absolute path of the final .wav; its .srt .vtt .words.json .manifest.json go beside it; existing files refused unless overwrite"`
 	Overwrite    bool   `json:"overwrite,omitempty" jsonschema:"Allow replacing existing files at out_path"`
 	AllowBattery bool   `json:"allow_battery,omitempty" jsonschema:"Keep going on battery power (default: the job pauses until the Mac is plugged in)"`
@@ -131,7 +132,8 @@ func (d *Daemon) toolProduce(_ context.Context, _ *mcp.CallToolRequest, in produ
 		return nil, vproject.Summary{}, d.produceErr(err)
 	}
 	s, err := d.prod.create(produceInput{Script: in.Script, Title: in.Title, Voice: in.Voice, Style: in.Style,
-		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery})
+		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery,
+		CloneMode: in.CloneMode})
 	if err != nil {
 		return nil, vproject.Summary{}, d.produceErr(err)
 	}
