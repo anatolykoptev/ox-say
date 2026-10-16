@@ -253,7 +253,7 @@ func TestLineErrorNamesTheRightLine(t *testing.T) {
 
 // Call-site gates through Parse (each a silent failure if broken).
 // Mutations: markup.go `Spoken: Spoken(text)` -> `text`; `min(pending,
-// maxMarkPause)` -> `pending`; script `utf8.RuneCountInString(src)` ->
+// MaxPause)` -> `pending`; script `utf8.RuneCountInString(src)` ->
 // `len(src)`; style `utf8.RuneCountInString(style)` -> `len(style)`.
 func TestParseCallSites(t *testing.T) {
 	t.Run("spoken rewrite reaches the chunk", func(t *testing.T) {
@@ -264,7 +264,7 @@ func TestParseCallSites(t *testing.T) {
 	})
 	t.Run("pauses add and cap at 10 s", func(t *testing.T) {
 		got, err := Parse("Раз. [pause 6s] [pause 6s] Два.", testOpts)
-		if err != nil || got[0].PauseAfter != maxMarkPause {
+		if err != nil || got[0].PauseAfter != MaxPause {
 			t.Fatalf("%+v %v", got, err)
 		}
 	})

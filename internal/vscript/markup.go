@@ -15,9 +15,14 @@ import (
 const (
 	utf8BOM          = "\ufeff"
 	defaultMarkPause = 0.6
-	minMarkPause     = 0.05
-	maxMarkPause     = 10.0
 	msPerSecond      = 1000.0
+)
+
+// MinPause and MaxPause bound a silence between chunks: the same range the
+// [pause Ns] directive enforces and the delivery op reuses.
+const (
+	MinPause = 0.05
+	MaxPause = 10.0
 )
 
 // Options sizes chunks and the silences between them.
@@ -113,7 +118,7 @@ func Parse(src string, o Options) ([]Chunk, error) {
 		return nil, &LineError{1, "the script has no text to speak"}
 	}
 	if pending > 0 {
-		out[len(out)-1].PauseAfter = min(pending, maxMarkPause)
+		out[len(out)-1].PauseAfter = min(pending, MaxPause)
 	}
 	return out, nil
 }
@@ -134,7 +139,7 @@ func (o Options) validate() error {
 func gapBefore(o Options, samePara bool, pending float64) float64 {
 	switch {
 	case pending > 0:
-		return min(pending, maxMarkPause)
+		return min(pending, MaxPause)
 	case samePara:
 		return o.ChunkPause
 	default:
@@ -235,8 +240,8 @@ func pauseSeconds(num, unit string) (float64, error) {
 	if unit == "ms" {
 		v /= msPerSecond
 	}
-	if v < minMarkPause || v > maxMarkPause {
-		return 0, fmt.Errorf("a pause must be %.2f–%.0f s", minMarkPause, maxMarkPause)
+	if v < MinPause || v > MaxPause {
+		return 0, fmt.Errorf("a pause must be %.2f–%.0f s", MinPause, MaxPause)
 	}
 	return v, nil
 }

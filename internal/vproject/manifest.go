@@ -88,8 +88,12 @@ type Chunk struct {
 	UserPick bool      `json:"user_pick,omitempty"`
 	Reasons  []string  `json:"reasons,omitempty"`
 	Takes    []TakeRef `json:"takes"`
-	StartS   float64   `json:"start_s"`
-	EndS     float64   `json:"end_s"`
+	// Superseded lists the take keys a delivery change replaced, so the takes
+	// stay on disk and returning to an earlier style is a cache hit. Bounded
+	// by the producer; oldest entries drop first.
+	Superseded []string `json:"superseded,omitempty"`
+	StartS     float64  `json:"start_s"`
+	EndS       float64  `json:"end_s"`
 }
 
 // Progress of a run.
@@ -239,6 +243,11 @@ func (m *Manifest) validate() error {
 		for _, t := range c.Takes {
 			if !ValidKey(t.Key) {
 				return fmt.Errorf("chunk %d: bad take key", c.Index)
+			}
+		}
+		for _, k := range c.Superseded {
+			if !ValidKey(k) {
+				return fmt.Errorf("chunk %d: bad superseded key", c.Index)
 			}
 		}
 	}

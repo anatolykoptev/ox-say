@@ -43,6 +43,33 @@ func TestManifestGolden(t *testing.T) {
 	}
 }
 
+// D6: a v1 manifest written before Chunk.Superseded existed loads and
+// re-marshals to the same bytes; the additive field is not a new version.
+func TestV1ManifestWithoutSupersededRoundTrips(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "manifest.v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ManifestFile), raw, FileMode); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Version != 1 || len(m.Chunks) != 1 || m.Chunks[0].Superseded != nil {
+		t.Fatalf("loaded: version %d chunks %+v", m.Version, m.Chunks)
+	}
+	got, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("a v1 manifest changed shape on load:\n%s", got)
+	}
+}
+
 // A failed write never replaces a good manifest; temp files are swept.
 // Mutation: os.WriteFile(manifest.json) in Save -> a torn file -> RED.
 func TestSaveIsAtomicAndSweep(t *testing.T) {

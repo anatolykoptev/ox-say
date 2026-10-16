@@ -38,10 +38,18 @@ type resumeRequest struct {
 }
 
 type chunkRequest struct {
-	Action string `json:"action"`
-	Takes  int    `json:"takes,omitempty"`
-	Take   string `json:"take,omitempty"`
-	Text   string `json:"text,omitempty"`
+	Action     string   `json:"action"`
+	Takes      int      `json:"takes,omitempty"`
+	Take       string   `json:"take,omitempty"`
+	Text       string   `json:"text,omitempty"`
+	Style      *string  `json:"style,omitempty"`
+	PauseAfter *float64 `json:"pause_after,omitempty"`
+}
+
+// deliveryRequest is POST /v1/produce/{id}/delivery: one batch of chunk
+// changes applied under a single launch.
+type deliveryRequest struct {
+	Chunks []deliveryEntry `json:"chunks"`
 }
 
 func (d *Daemon) produceRoutes(mux *http.ServeMux) {
@@ -52,6 +60,7 @@ func (d *Daemon) produceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/produce/{id}/resume", d.handleProduceResume)
 	mux.HandleFunc("POST /v1/produce/{id}/cancel", d.handleProduceCancel)
 	mux.HandleFunc("POST /v1/produce/{id}/chunks/{n}", d.handleProduceChunk)
+	mux.HandleFunc("POST /v1/produce/{id}/delivery", d.handleProduceDelivery)
 	mux.HandleFunc("DELETE /v1/produce/{id}", d.handleProduceDelete)
 }
 
@@ -212,6 +221,24 @@ func (d *Daemon) handleProduceChunk(w http.ResponseWriter, r *http.Request) {
 	var s vproject.Summary
 	if err == nil {
 		s, err = d.prod.chunk(r.PathValue("id"), n, chunkOp(in))
+	}
+	if err != nil {
+		d.writeProduceErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, s)
+}
+
+func (d *Daemon) handleProduceDelivery(w http.ResponseWriter, r *http.Request) {
+	if !vproject.ValidID(r.PathValue("id")) {
+		d.writeProduceErr(w, errNoProject)
+		return
+	}
+	var in deliveryRequest
+	err := decodeStrict(r, &in)
+	var s vproject.Summary
+	if err == nil {
+		s, err = d.prod.delivery(r.PathValue("id"), in.Chunks)
 	}
 	if err != nil {
 		d.writeProduceErr(w, err)

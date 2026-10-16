@@ -24,7 +24,15 @@ const (
 	opPick       = "pick"
 	opRegenerate = "regenerate"
 	opEdit       = "edit"
+	opDelivery   = "delivery"
 	titleRunes   = 60
+	// maxSupersededTakes bounds Chunk.Superseded: the takes a delivery change
+	// replaced stay cached for a revert, but disk stays bounded.
+	maxSupersededTakes = 4
+	// deliveryNeedsReference refuses a delivery that would move the job's
+	// clone mode: styling one phrase on an ultimate job would re-render them
+	// all in reference mode.
+	deliveryNeedsReference = "styling a phrase needs clone_mode reference; create the project with clone_mode reference"
 	// takesMargin is the factor of takes kept on disk per planned take, with
 	// room for retries, in the free-space estimate.
 	takesMargin = 1.3
@@ -36,10 +44,20 @@ const (
 
 // chunkOp changes one chunk of a project that is not running.
 type chunkOp struct {
-	Action string
-	Takes  int
-	Take   string
-	Text   string
+	Action     string
+	Takes      int
+	Take       string
+	Text       string
+	Style      *string
+	PauseAfter *float64
+}
+
+// deliveryEntry is one chunk's part of a delivery request: a nil field
+// leaves the chunk alone, so a batch mixes style and pause changes.
+type deliveryEntry struct {
+	N          *int     `json:"n" jsonschema:"Chunk index, 0-based (see produce_status chunks)"`
+	Style      *string  `json:"style,omitempty" jsonschema:"New delivery for the chunk, e.g. excited, lively; \"\" clears it to the project default"`
+	PauseAfter *float64 `json:"pause_after,omitempty" jsonschema:"Silence after the chunk in seconds, the range a [pause Ns] directive takes"`
 }
 
 // create validates in, writes a new project and launches it.
@@ -366,10 +384,137 @@ func (p *producer) chunk(id string, index int, op chunkOp) (vproject.Summary, er
 		if err := editChunk(c, op.Text, j.m.Settings.Preset); err != nil {
 			return vproject.Summary{}, err
 		}
+	case opDelivery:
+		return p.deliver(j, []deliveryEntry{{N: &index, Style: op.Style, PauseAfter: op.PauseAfter}})
 	default:
-		return vproject.Summary{}, &requestError{fmt.Sprintf("action %q: want pick, regenerate or edit", op.Action)}
+		return vproject.Summary{}, &requestError{fmt.Sprintf("action %q: want pick, regenerate, edit or delivery", op.Action)}
 	}
 	return p.launch(j)
+}
+
+// delivery applies a batch of style/pause changes to a project that is not
+// running and launches it once.
+func (p *producer) delivery(id string, es []deliveryEntry) (vproject.Summary, error) {
+	if err := p.ready(); err != nil {
+		return vproject.Summary{}, err
+	}
+	j, err := p.open(id)
+	if err != nil {
+		return vproject.Summary{}, err
+	}
+	return p.deliver(j, es)
+}
+
+// deliver validates every entry before changing anything, refuses a batch
+// that would move the job's clone mode, then applies and launches. A
+// pause-only batch re-assembles without a render or a checkpoint.
+func (p *producer) deliver(j *job, es []deliveryEntry) (vproject.Summary, error) {
+	styles, err := validateDelivery(j.m, es)
+	if err != nil {
+		return vproject.Summary{}, err
+	}
+	if err := p.deliveryModeGate(j, es, styles); err != nil {
+		return vproject.Summary{}, err
+	}
+	p.mu.Lock()
+	assembleOnly := true
+	for i, e := range es {
+		c := &j.m.Chunks[*e.N]
+		if e.Style != nil && styles[i] != c.Style {
+			c.Superseded = supersedeTakes(c.Superseded, c.Takes)
+			c.Style, assembleOnly = styles[i], false
+		}
+		if e.PauseAfter != nil {
+			c.PauseAfter = *e.PauseAfter
+		}
+	}
+	j.assembleOnly = assembleOnly
+	p.mu.Unlock()
+	return p.launch(j)
+}
+
+// validateDelivery checks the whole batch and returns each entry's cleaned
+// style ("" where the entry has none); nothing is applied when it errs.
+func validateDelivery(m *vproject.Manifest, es []deliveryEntry) ([]string, error) {
+	if len(es) == 0 {
+		return nil, &requestError{"chunks must name at least one chunk"}
+	}
+	styles := make([]string, len(es))
+	seen := map[int]bool{}
+	for i, e := range es {
+		if e.N == nil {
+			return nil, &requestError{fmt.Sprintf("entry %d: n is required", i)}
+		}
+		if n := *e.N; n < 0 || n >= len(m.Chunks) {
+			return nil, &requestError{fmt.Sprintf("chunk %d: the project has %d chunks", n, len(m.Chunks))}
+		} else if seen[n] {
+			return nil, &requestError{fmt.Sprintf("chunk %d is named twice", n)}
+		} else {
+			seen[n] = true
+		}
+		if e.Style == nil && e.PauseAfter == nil {
+			return nil, &requestError{fmt.Sprintf("chunk %d: delivery needs style or pause_after", *e.N)}
+		}
+		if e.Style != nil {
+			styles[i] = vscript.CleanStyle(*e.Style)
+			if utf8.RuneCountInString(styles[i]) > vscript.MaxStyleChars {
+				return nil, &requestError{fmt.Sprintf("style is longer than %d characters", vscript.MaxStyleChars)}
+			}
+		}
+		if e.PauseAfter != nil && (*e.PauseAfter < vscript.MinPause || *e.PauseAfter > vscript.MaxPause) {
+			return nil, &requestError{fmt.Sprintf("a pause must be %.2f–%.0f s", vscript.MinPause, vscript.MaxPause)}
+		}
+	}
+	return styles, nil
+}
+
+// deliveryModeGate refuses a batch whose style changes would move the job's
+// effective clone mode (an ultimate job turning reference re-renders every
+// chunk, which is a recreate, not a delivery change).
+func (p *producer) deliveryModeGate(j *job, es []deliveryEntry, styles []string) error {
+	facts, err := p.ports.Voice(j.m.Settings.Voice)
+	if err != nil {
+		return fmt.Errorf("voice %q: %w", j.m.Settings.Voice, err)
+	}
+	vc := make([]vscript.Chunk, len(j.m.Chunks))
+	for i, c := range j.m.Chunks {
+		vc[i] = vscript.Chunk{Style: c.Style, Spoken: c.Spoken}
+	}
+	before, _, err := jobCloneMode(facts, j.m.Settings.Style, vc)
+	if err != nil {
+		return err
+	}
+	for i, e := range es {
+		if e.Style != nil {
+			vc[*e.N].Style = styles[i]
+		}
+	}
+	after, _, err := jobCloneMode(facts, j.m.Settings.Style, vc)
+	if err != nil {
+		return err
+	}
+	if after != before {
+		return &conflictError{deliveryNeedsReference}
+	}
+	return nil
+}
+
+// supersedeTakes moves the keys of ts onto cur, deduplicated, keeping at
+// most the last maxSupersededTakes.
+func supersedeTakes(cur []string, ts []vproject.TakeRef) []string {
+	have := map[string]bool{}
+	for _, k := range cur {
+		have[k] = true
+	}
+	for _, t := range ts {
+		if !have[t.Key] {
+			cur, have[t.Key] = append(cur, t.Key), true
+		}
+	}
+	if n := len(cur) - maxSupersededTakes; n > 0 {
+		cur = cur[n:]
+	}
+	return cur
 }
 
 // editChunk replaces one chunk's text: one piece of text, no directives,

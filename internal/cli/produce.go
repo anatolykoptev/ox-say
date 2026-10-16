@@ -65,13 +65,13 @@ const produceUsage = `usage:
   ox-say produce status <id> [--chunk N]
   ox-say produce resume <id> [--allow-battery] [--no-wait]
   ox-say produce cancel <id>
-  ox-say produce chunk <id> <n> (--regen N | --pick KEY | --text "…") [--no-wait]
+  ox-say produce chunk <id> <n> (--regen N | --pick KEY | --text "…" | --style "…" [--pause S] | --pause S) [--no-wait]
   ox-say produce rm [--delete-outputs] <id>
   ox-say produce ls`
 
 // produceFlags are the flags that carry a value; the rest are switches.
 var (
-	produceValueFlags  = []string{"v", "i", "t", "o", "preset", "seed", "takes", "chunk", "regen", "pick", "text"}
+	produceValueFlags  = []string{"v", "i", "t", "o", "preset", "seed", "takes", "chunk", "regen", "pick", "text", "style", "pause"}
 	produceSwitchNames = []string{"overwrite", "allow-battery", "no-wait", "delete-outputs"}
 )
 
@@ -216,7 +216,7 @@ var produceVerbs = map[string]verbSpec{
 	"resume": {args: 1, switches: []string{"allow-battery", "no-wait"}},
 	"cancel": {args: 1},
 	"rm":     {args: 1, switches: []string{"delete-outputs"}},
-	"chunk":  {args: 2, values: []string{"regen", "pick", "text"}, switches: []string{"no-wait"}},
+	"chunk":  {args: 2, values: []string{"regen", "pick", "text", "style", "pause"}, switches: []string{"no-wait"}},
 }
 
 // flagText is a flag as the person typed it.
