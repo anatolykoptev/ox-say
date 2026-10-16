@@ -20,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// on-disk bundle's version.
     private let repairItem = NSMenuItem(title: "Repair ox-say…",
                                         action: #selector(repairOxSay), keyEquivalent: "")
+    /// Whether the Allow-pasting row is due, as of the last menu open; a
+    /// handshake pass ending on an open menu re-syncs against it.
+    private var wantAllowPasting = false
     private let toggleItem = NSMenuItem(title: "Toggle Mode (press to start, press again to stop)", action: #selector(toggleMode), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
     private var hotKey: HotKey?
@@ -373,29 +376,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // cdhash, an older release) never matches again and the Settings
         // toggle cannot fix it; the repair item is offered only while the
         // grant does not work.
-        if AccessibilityRepair.shouldOffer(accessibilityTrusted: AXIsProcessTrusted()) {
-            if menu.items.first !== allowPastingItem {
-                menu.insertItem(allowPastingItem, at: 0)
-            }
-        } else if let index = menu.items.firstIndex(of: allowPastingItem) {
-            menu.removeItem(at: index)
-        }
-        // The same conditional top slot as allowPastingItem: a repair row that
-        // exists only while the daemon refuses the bundle's version. The
-        // mismatch itself is never a menu state.
-        syncRepairItem(in: menu)
+        wantAllowPasting = AccessibilityRepair.shouldOffer(accessibilityTrusted: AXIsProcessTrusted())
+        // Both conditional top rows go through one plan, decided by what the
+        // menu holds: the Repair row exists only while the daemon refuses the
+        // bundle's version. The mismatch itself is never a menu state.
+        syncTopRows(in: menu)
     }
 
-    /// Shows the Repair row at the top while the episode offers one and
-    /// removes it the moment it does not — also on an open menu, when a pass
-    /// retracts the offer.
-    private func syncRepairItem(in menu: NSMenu) {
-        if handshake.repairTarget != nil {
-            if menu.items.first !== repairItem {
-                menu.insertItem(repairItem, at: 0)
-            }
-        } else if let index = menu.items.firstIndex(of: repairItem) {
-            menu.removeItem(at: index)
+    /// Brings the conditional top rows (Repair, Allow pasting) in line with
+    /// what is wanted now — on a menu open, and on an open menu when a pass
+    /// retracts or offers the repair. Membership decides, never "first
+    /// item": inserting an item the menu already holds raises an Objective-C
+    /// exception the app cannot survive.
+    private func syncTopRows(in menu: NSMenu) {
+        let items: [(TopRow, NSMenuItem)] = [(.repair, repairItem), (.allowPasting, allowPastingItem)]
+        let current = menu.items.compactMap { item in items.first { $0.1 === item }?.0 }
+        let plan = TopRows.plan(current: current, wantRepair: handshake.repairTarget != nil,
+                                wantAllowPasting: wantAllowPasting)
+        for row in plan.remove {
+            guard let item = items.first(where: { $0.0 == row })?.1, item.menu === menu else { continue }
+            menu.removeItem(item)
+        }
+        for insertion in plan.insert {
+            guard let item = items.first(where: { $0.0 == insertion.row })?.1, item.menu == nil else { continue }
+            menu.insertItem(item, at: min(insertion.index, menu.items.count))
         }
     }
 
@@ -487,7 +491,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             defer {
                 self.handshakeRunning = false
-                if let menu = self.statusItem.menu { self.syncRepairItem(in: menu) }
+                if let menu = self.statusItem.menu { self.syncTopRows(in: menu) }
             }
             let disk = Self.diskVersion()
             while !self.updateInstalling {
