@@ -273,14 +273,19 @@ ox-say produce chunk 20261015-120000-a1b2c3 1 --pick <take> # use that take
 ox-say produce chunk 20261015-120000-a1b2c3 1 --text "…"    # replace the piece's words (one piece, no brackets)
 ```
 
-**Tuning the delivery.** `--style` changes how a piece is spoken and `--pause` the silence after it,
-without recreating the voiceover:
+**Tuning the delivery.** `--style` changes how a piece is spoken, `--pause` the silence after it and
+`--pace` its speed — a rate of 0.85–1.15 (1.1 faster, 0.9 slower, 0 back to normal), stretched with
+ffmpeg's `atempo` — without recreating the voiceover:
 
 ```sh
 ox-say produce chunk 20261015-120000-a1b2c3 1 --style "excited, lively"   # re-renders only this piece
 ox-say produce chunk 20261015-120000-a1b2c3 1 --pause 1.2                 # only re-assembles, no render
+ox-say produce chunk 20261015-120000-a1b2c3 1 --pace 1.1                  # only re-assembles, no render
 ox-say produce chunk 20261015-120000-a1b2c3 1 --style ""                  # back to the voiceover's default
 ```
+
+A pace needs ffmpeg with the `atempo` filter on this machine; without it the change is refused and
+nothing moves.
 
 A style the previous take used is kept: switching back is instant. On a voiceover whose voice runs in
 `ultimate` clone mode (a clone voice with no style anywhere), styling a piece is refused — it would
@@ -354,8 +359,8 @@ are refused.
 | `GET /v1/produce/<id>/chunks/<n>` | One chunk (0-based): its text, takes (key, seed, duration, word errors) and `take_files` (key → WAV path) |
 | `POST /v1/produce/<id>/resume` | `{"allow_battery"}` → continue an interrupted, cancelled or finished project |
 | `POST /v1/produce/<id>/cancel` | Stop a running project; the take in progress finishes and is kept. A project that is not running answers 409 |
-| `POST /v1/produce/<id>/chunks/<n>` | `{"action":"regenerate","takes":1..3}` / `{"action":"pick","take":"<key>"}` / `{"action":"edit","text":"…"}` / `{"action":"delivery","style":"…","pause_after":0.05..10 or 0 to clear}` (either or both; `"style":""` restores the default); `regenerate` keeps the current pick; `pick` is final (the chunk becomes ok, `user_pick: true`). A chunk number past the end answers 400 with the chunk count |
-| `POST /v1/produce/<id>/delivery` | `{"chunks":[{"n":0,"style":"…"},{"n":3,"pause_after":0.6}]}` — every entry is checked before anything changes (a bad entry is a 400 and nothing moved), then one relaunch; only chunks whose style changed render, a pause-only batch only re-assembles. A style that would switch the job's clone mode answers 409 (`styling a phrase needs clone_mode reference…`); on a project created with `clone_mode: "ultimate"` any style answers 409 |
+| `POST /v1/produce/<id>/chunks/<n>` | `{"action":"regenerate","takes":1..3}` / `{"action":"pick","take":"<key>"}` / `{"action":"edit","text":"…"}` / `{"action":"delivery","style":"…","pause_after":0.05..10 or 0 to clear,"pace":0.85..1.15 or 0 to clear}` (any of them; `"style":""` restores the default); `regenerate` keeps the current pick; `pick` is final (the chunk becomes ok, `user_pick: true`). A chunk number past the end answers 400 with the chunk count |
+| `POST /v1/produce/<id>/delivery` | `{"chunks":[{"n":0,"style":"…"},{"n":3,"pause_after":0.6,"pace":1.1}]}` — every entry is checked before anything changes (a bad entry is a 400 and nothing moved), then one relaunch; only chunks whose style changed render, a pause- or pace-only batch only re-assembles. A pace on a machine without ffmpeg's `atempo` filter answers 422. A style that would switch the job's clone mode answers 409 (`styling a phrase needs clone_mode reference…`); on a project created with `clone_mode: "ultimate"` any style answers 409 |
 | `DELETE /v1/produce/<id>` | Remove the project; `?delete_outputs=true` also deletes its published files |
 
 **Agents (MCP)** use four tools, `produce`, `produce_status`, `produce_edit` and `produce_control`, that

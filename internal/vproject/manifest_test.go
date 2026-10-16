@@ -104,6 +104,36 @@ func TestV1ManifestWithoutCloneModeRoundTrips(t *testing.T) {
 	}
 }
 
+// A stored pace is range-checked at load: a hand-edited or downgraded
+// manifest cannot smuggle a rate the delivery op would refuse. An absent
+// pace is neutral; the bounds are inclusive.
+// Mutation: manifest.go validate, drop the pace check -> RED.
+func TestChunkPaceValidation(t *testing.T) {
+	write := func(body string) string {
+		d := t.TempDir()
+		if err := os.WriteFile(filepath.Join(d, ManifestFile), []byte(body), FileMode); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	for name, body := range map[string]string{
+		"too fast": `{"version":1,"chunks":[{"index":0,"pace":1.16}]}`,
+		"too slow": `{"version":1,"chunks":[{"index":0,"pace":0.84}]}`,
+		"negative": `{"version":1,"chunks":[{"index":0,"pace":-1}]}`,
+	} {
+		if _, err := Load(write(body)); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	for _, ok := range []float64{0, PaceMin, PaceMax, 1.0} {
+		raw, _ := json.Marshal(map[string]any{"version": 1, "chunks": []map[string]any{{"index": 0, "pace": ok}}})
+		m, err := Load(write(string(raw)))
+		if err != nil || m.Chunks[0].Pace != ok {
+			t.Errorf("pace %v: %v", ok, err)
+		}
+	}
+}
+
 // A failed write never replaces a good manifest; temp files are swept.
 // Mutation: os.WriteFile(manifest.json) in Save -> a torn file -> RED.
 func TestSaveIsAtomicAndSweep(t *testing.T) {

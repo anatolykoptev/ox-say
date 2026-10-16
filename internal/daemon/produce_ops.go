@@ -55,6 +55,7 @@ type chunkOp struct {
 	Text       string
 	Style      *string
 	PauseAfter *float64
+	Pace       *float64
 }
 
 // deliveryEntry is one chunk's part of a delivery request: a nil field
@@ -63,6 +64,7 @@ type deliveryEntry struct {
 	N          *int     `json:"n" jsonschema:"Chunk index, 0-based (see produce_status chunks)"`
 	Style      *string  `json:"style,omitempty" jsonschema:"New delivery for the chunk, e.g. excited, lively; \"\" clears it to the project default"`
 	PauseAfter *float64 `json:"pause_after,omitempty" jsonschema:"Silence after the chunk in seconds; 0 clears it, otherwise the range a [pause Ns] directive takes"`
+	Pace       *float64 `json:"pace,omitempty" jsonschema:"Speech rate multiplier, 0.85-1.15 (0.9 slower, 1.1 faster); 0 restores neutral. Needs ffmpeg's atempo filter on this machine"`
 }
 
 // create validates in, writes a new project and launches it.
@@ -396,7 +398,7 @@ func (p *producer) chunk(id string, index int, op chunkOp) (vproject.Summary, er
 			return vproject.Summary{}, err
 		}
 	case opDelivery:
-		return p.deliver(j, []deliveryEntry{{N: &index, Style: op.Style, PauseAfter: op.PauseAfter}})
+		return p.deliver(j, []deliveryEntry{{N: &index, Style: op.Style, PauseAfter: op.PauseAfter, Pace: op.Pace}})
 	default:
 		return vproject.Summary{}, &requestError{fmt.Sprintf("action %q: want pick, regenerate, edit or delivery", op.Action)}
 	}
@@ -418,11 +420,17 @@ func (p *producer) delivery(id string, es []deliveryEntry) (vproject.Summary, er
 
 // deliver validates every entry before changing anything, refuses a batch
 // that would move the job's clone mode, then applies and launches. A
-// pause-only batch re-assembles without a render or a checkpoint.
+// pause- or pace-only batch re-assembles without a render or a checkpoint;
+// a real pace is refused here when this machine cannot stretch.
 func (p *producer) deliver(j *job, es []deliveryEntry) (vproject.Summary, error) {
 	styles, err := validateDelivery(j.m, es)
 	if err != nil {
 		return vproject.Summary{}, err
+	}
+	if needPace(es) {
+		if err := paceOK(); err != nil {
+			return vproject.Summary{}, &unavailableError{err.Error()}
+		}
 	}
 	eff, err := p.deliveryModeGate(j, es, styles)
 	if err != nil {
@@ -439,6 +447,9 @@ func (p *producer) deliver(j *job, es []deliveryEntry) (vproject.Summary, error)
 		}
 		if e.PauseAfter != nil {
 			c.PauseAfter = *e.PauseAfter
+		}
+		if e.Pace != nil {
+			c.Pace = *e.Pace
 		}
 	}
 	j.assembleOnly = assembleOnly
@@ -465,8 +476,8 @@ func validateDelivery(m *vproject.Manifest, es []deliveryEntry) ([]string, error
 		} else {
 			seen[n] = true
 		}
-		if e.Style == nil && e.PauseAfter == nil {
-			return nil, &requestError{fmt.Sprintf("chunk %d: delivery needs style or pause_after", *e.N)}
+		if e.Style == nil && e.PauseAfter == nil && e.Pace == nil {
+			return nil, &requestError{fmt.Sprintf("chunk %d: delivery needs style, pause_after or pace", *e.N)}
 		}
 		if e.Style != nil {
 			styles[i] = vscript.CleanStyle(*e.Style)
@@ -477,6 +488,9 @@ func validateDelivery(m *vproject.Manifest, es []deliveryEntry) ([]string, error
 		if e.PauseAfter != nil && !deliveryPauseOK(*e.PauseAfter) {
 			return nil, &requestError{fmt.Sprintf("a pause must be 0 (clears it) or %.2f–%.0f s", vscript.MinPause, vscript.MaxPause)}
 		}
+		if e.Pace != nil && !deliveryPaceOK(*e.Pace) {
+			return nil, &requestError{fmt.Sprintf("chunk %d: a pace of %v; want 0 or %.2f–%.2f", *e.N, *e.Pace, vproject.PaceMin, vproject.PaceMax)}
+		}
 	}
 	return styles, nil
 }
@@ -486,6 +500,24 @@ func validateDelivery(m *vproject.Manifest, es []deliveryEntry) ([]string, error
 // even though no transport can carry them today.
 func deliveryPauseOK(p float64) bool {
 	return !math.IsNaN(p) && !math.IsInf(p, 0) && (p == 0 || (p >= vscript.MinPause && p <= vscript.MaxPause))
+}
+
+// deliveryPaceOK: a stored pace of 0 is neutral; a real one stays inside the
+// atempo band the manifest itself validates. NaN and ±Inf are refused
+// outright even though no transport can carry them today.
+func deliveryPaceOK(r float64) bool {
+	return !math.IsNaN(r) && !math.IsInf(r, 0) && (r == 0 || (r >= vproject.PaceMin && r <= vproject.PaceMax))
+}
+
+// needPace reports whether the batch sets a real pace anywhere; clearing
+// one needs no atempo, and neither does anything else.
+func needPace(es []deliveryEntry) bool {
+	for _, e := range es {
+		if e.Pace != nil && *e.Pace != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // deliveryModeGate refuses a batch whose style changes would move the job's

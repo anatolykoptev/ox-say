@@ -85,8 +85,8 @@ func newTakeKeys(before, after *chunkDetail) []string {
 }
 
 // chunkRequestBody builds the request of `produce chunk` from its flags;
-// ok is false when not exactly one of --regen, --pick, --text, --style/--pause
-// is given.
+// ok is false when not exactly one of --regen, --pick, --text,
+// --style/--pause/--pace is given.
 func (c *produceCmd) chunkRequestBody() (map[string]any, bool) {
 	given := 0
 	body := map[string]any{}
@@ -109,7 +109,8 @@ func (c *produceCmd) chunkRequestBody() (map[string]any, bool) {
 	}
 	style, hasStyle := c.vals["style"]
 	pause, hasPause := c.vals["pause"]
-	if hasStyle || hasPause {
+	pace, hasPace := c.vals["pace"]
+	if hasStyle || hasPause || hasPace {
 		given++
 		body["action"] = "delivery"
 		if hasStyle {
@@ -123,15 +124,23 @@ func (c *produceCmd) chunkRequestBody() (map[string]any, bool) {
 			}
 			body["pause_after"] = sec
 		}
+		if hasPace {
+			rate, err := strconv.ParseFloat(pace, 64)
+			if err != nil {
+				outf(c.err, "ox-say: --pace %s: not a number\n", pace)
+				return nil, false
+			}
+			body["pace"] = rate
+		}
 	}
 	if given != 1 {
-		outln(c.err, "ox-say: give exactly one of --regen N, --pick KEY, --text \"…\" or --style \"…\"/--pause S")
+		outln(c.err, "ox-say: give exactly one of --regen N, --pick KEY, --text \"…\" or --style \"…\"/--pause S/--pace R")
 		return nil, false
 	}
 	return body, true
 }
 
-// chunk is `produce chunk <id> <n> --regen|--pick|--text|--style/--pause`.
+// chunk is `produce chunk <id> <n> --regen|--pick|--text|--style/--pause/--pace`.
 func (c *produceCmd) chunk(pos []string) int {
 	if len(pos) != 2 {
 		outln(c.err, produceUsage)

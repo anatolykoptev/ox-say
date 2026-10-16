@@ -82,7 +82,7 @@ var wantToolSchemas = map[string]struct{ props, required []string }{
 	"produce": {[]string{"script", "title", "voice", "style", "preset", "seed", "takes", "clone_mode", "out_path", "overwrite", "allow_battery"},
 		[]string{"script"}},
 	"produce_status":  {[]string{"id", "chunk"}, nil},
-	"produce_edit":    {[]string{"id", "chunk", "action", "takes", "take", "text", "style", "pause_after", "chunks"}, []string{"id", "action"}},
+	"produce_edit":    {[]string{"id", "chunk", "action", "takes", "take", "text", "style", "pause_after", "pace", "chunks"}, []string{"id", "action"}},
 	"produce_control": {[]string{"id", "action", "allow_battery", "delete_outputs"}, []string{"id", "action"}},
 }
 

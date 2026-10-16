@@ -168,6 +168,10 @@ func (p *producer) stream(dir string, m *vproject.Manifest, f *os.File) (tl time
 			_ = f.Close()
 		}
 	}()
+	work := filepath.Join(dir, vproject.WorkDir)
+	stretch := func(clip pcm.Clip, rate float64) (pcm.Clip, error) {
+		return atempoClip(p.ctx, work, clip, rate)
+	}
 	for i := range m.Chunks {
 		c := &m.Chunks[i]
 		clip, d, err := loadPick(dir, c)
@@ -180,7 +184,7 @@ func (p *producer) stream(dir string, m *vproject.Manifest, f *os.File) (tl time
 			}
 			tl.rate = clip.Rate
 		}
-		if err := tl.add(w, c, clip, d.Heard); err != nil {
+		if err := tl.add(w, c, clip, d.Heard, stretch); err != nil {
 			return tl, err
 		}
 	}
@@ -208,12 +212,20 @@ func loadPick(dir string, c *vproject.Chunk) (pcm.Clip, takeDetail, error) {
 	return clip, d, nil
 }
 
-// add appends one chunk at tl.total: its trimmed, faded take, then its gap.
-// It records the chunk's times and the subtitle cues and word timings on the
-// shared timeline.
-func (tl *timeline) add(w *pcm.Writer, c *vproject.Chunk, clip pcm.Clip, heard []voices.Word) error {
+// add appends one chunk at tl.total: its trimmed take, stretched by a
+// non-neutral pace, faded, then its gap. It records the chunk's times and
+// the subtitle cues and word timings on the shared timeline; a paced
+// chunk's words scale by 1/rate so they keep their place on the audio.
+func (tl *timeline) add(w *pcm.Writer, c *vproject.Chunk, clip pcm.Clip, heard []voices.Word, stretch paceStretch) error {
 	if !(c.PauseAfter >= 0 && c.PauseAfter <= maxPauseSec) { // also false for NaN
 		return fmt.Errorf("chunk %d: a pause of %v s is out of range", c.Index, c.PauseAfter)
+	}
+	if !(c.Pace == 0 || (c.Pace >= vproject.PaceMin && c.Pace <= vproject.PaceMax)) { // NaN and ±Inf fail too
+		return fmt.Errorf("chunk %d: a pace of %v is out of range", c.Index, c.Pace)
+	}
+	rate := c.Pace
+	if rate == 0 {
+		rate = 1
 	}
 	trimmed, lead := clip.Trim(trimFloorDB, trimPadSec)
 	if len(trimmed.S) == 0 {
@@ -226,11 +238,20 @@ func (tl *timeline) add(w *pcm.Writer, c *vproject.Chunk, clip pcm.Clip, heard [
 		tl.total += c.PauseAfter
 		return writeSilence(w, clip.Rate, c.PauseAfter)
 	}
+	if rate != 1 {
+		if stretch == nil {
+			return fmt.Errorf("chunk %d: a pace of %v cannot be stretched here", c.Index, c.Pace)
+		}
+		var err error
+		if trimmed, err = stretch(trimmed, rate); err != nil {
+			return fmt.Errorf("chunk %d: %w", c.Index, err)
+		}
+	}
 	at, dur := tl.total, trimmed.Seconds()
 	ws := wordalign.AlignWords(c.Text, heard, clip.Seconds())
 	for k := range ws {
-		ws[k].S = at + math.Min(dur, math.Max(0, ws[k].S-lead))
-		ws[k].E = at + math.Min(dur, math.Max(0, ws[k].E-lead))
+		ws[k].S = at + math.Min(dur, math.Max(0, ws[k].S-lead)/rate)
+		ws[k].E = at + math.Min(dur, math.Max(0, ws[k].E-lead)/rate)
 	}
 	for _, q := range wordalign.Cues(ws) {
 		tl.segs = append(tl.segs, stt.Segment{S: q.S, E: q.E, Text: q.Text})
