@@ -60,8 +60,12 @@ struct ReelHost {
     private var didPresetVoice = false
     /// The job this window created; its phrases stay the user's own text.
     private var createdJobID: String?
-    /// The job whose chunk details `paragraphOf` belongs to.
+    /// The job `paragraphOf` and `chunkDetails` belong to — synced when every
+    /// one of its chunk indices holds a paragraph (ReelScript.missingChunks).
     private var detailsJobID: String?
+    /// The details fetched so far for `detailsJobID`; a picked-up job's
+    /// phrases rebuild from them as each round lands.
+    private var chunkDetails: [ProduceChunkDetail] = []
     private var detailsInFlight = false
 
     /// The init only stores its dependencies — everything the follower drives
@@ -99,7 +103,7 @@ struct ReelHost {
         case .unreachable: return L10nKey.reelServiceMissing.text
         case .answered(let status):
             guard !status.studioAvailable else { return nil }
-            return StudioMenu.unavailableText(reason: status.studioReason)
+            return ReelText.unavailableText(reason: status.studioReason) { $0.text }
         }
     }
 
@@ -110,8 +114,12 @@ struct ReelHost {
 
     // MARK: lifecycle
 
-    /// The window is on screen: start asking /status.
+    /// The window is on screen: start asking /status, and pick the job's
+    /// polling back up. A live follow resumes; anything running that this
+    /// window does not know — started from the menu or while it was closed —
+    /// is found by the pick-up the next answered /status runs.
     func appeared() {
+        follower.resume()
         guard pollTask == nil else { return }
         pollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -124,6 +132,7 @@ struct ReelHost {
     func disappeared() {
         pollTask?.cancel()
         pollTask = nil
+        follower.stop()
     }
 
     /// /status: remembers the answer, feeds the follower's pick-up of a job
@@ -157,26 +166,36 @@ struct ReelHost {
         if let job { syncDetails(job) }
     }
 
-    /// Fetches every chunk's detail once per followed job. A job this window
-    /// did not create also gets its phrases rebuilt from the chunks' own text.
+    /// Fetches the chunk details the followed job is still missing — the ones
+    /// `ReelScript.missingChunks` names — one round per poll, never a tight
+    /// retry loop. A fetch that fails leaves its index missing and the next
+    /// status poll asks for it again; the job is synced only when nothing is
+    /// missing. A job this window did not create also gets its phrases rebuilt
+    /// from the chunks' own text, growing as each round lands.
     private func syncDetails(_ job: ProduceJob) {
-        guard job.id != detailsJobID, !detailsInFlight else { return }
+        if detailsJobID != job.id {
+            detailsJobID = job.id
+            paragraphOf = [:]
+            chunkDetails = []
+        }
+        let missing = ReelScript.missingChunks(of: job, paragraphOf: paragraphOf)
+        guard !missing.isEmpty, !detailsInFlight else { return }
         detailsInFlight = true
         let client = host.client
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.detailsInFlight = false }
-            var details: [ProduceChunkDetail] = []
-            for n in 0..<job.partsTotal {
+            var fetched: [ProduceChunkDetail] = []
+            for n in missing {
                 if let detail = try? await client.voiceoverChunk(id: job.id, n: n) {
-                    details.append(detail)
+                    fetched.append(detail)
                 }
             }
-            guard self.follower.job?.id == job.id else { return }
-            self.detailsJobID = job.id
-            self.paragraphOf = Dictionary(details.map { ($0.index, $0.paragraph) }, uniquingKeysWith: { _, last in last })
+            guard self.detailsJobID == job.id else { return }
+            self.chunkDetails += fetched
+            self.paragraphOf.merge(fetched.map { ($0.index, $0.paragraph) }) { _, last in last }
             if job.id != self.createdJobID {
-                self.phrases = Self.phrases(fromChunks: details)
+                self.phrases = Self.phrases(fromChunks: self.chunkDetails)
                 self.emitting = [Bool](repeating: true, count: self.phrases.count)
             }
         }
@@ -196,23 +215,27 @@ struct ReelHost {
     // MARK: actions
 
     /// «Открыть документ…»: the same read the Studio menu does — panel,
-    /// DocumentReader, ScriptCleaner — into the editor.
+    /// DocumentReader, ScriptCleaner — into the editor, in the window's own
+    /// words.
     func openDocument() {
-        guard let file = StudioForms.chooseDocument() else { return }
+        guard let file = StudioForms.chooseDocument(title: L10nKey.reelChooseTitle.text,
+                                                    message: L10nKey.reelChooseMessage.text) else { return }
         readingDocument = true
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.readingDocument = false }
             do {
-                let read = try await DocumentReader.readScript(file)
-                if read.script.isEmpty {
-                    _ = self.host.alert(L10nKey.reelNothingToRead.text, read.emptyMessage, ["OK"])
+                let document = try await DocumentReader.read(file)
+                let script = document.script
+                if script.isEmpty {
+                    _ = self.host.alert(L10nKey.reelNothingToRead.text,
+                                        ReelText.emptyMessage(of: document) { $0.text }, ["OK"])
                 } else {
-                    self.editorText = read.script
+                    self.editorText = script
                 }
             } catch {
-                let why = (error as? DocumentError)?.description ?? "The file could not be opened."
-                _ = self.host.alert(L10nKey.reelReadError.text, why, ["OK"])
+                _ = self.host.alert(L10nKey.reelReadError.text,
+                                    ReelText.documentError(error) { $0.text }, ["OK"])
             }
         }
     }
@@ -236,12 +259,13 @@ struct ReelHost {
                 self.phrases = ReelScript.phrases(of: script)
                 self.emitting = self.phrases.map(ReelScript.emits)
                 self.paragraphOf = [:]
+                self.chunkDetails = []
                 self.detailsJobID = nil
                 self.follower.follow(job)
             } catch {
                 // A 409 — "another voiceover is running" — lands here as the
-                // daemon's own plain-words message.
-                self.notice = StudioController.plain(error)
+                // daemon's own plain-words message behind the lead-in.
+                self.notice = ReelText.notice(error) { $0.text }
             }
         }
     }
@@ -256,7 +280,7 @@ struct ReelHost {
             do {
                 try await self?.host.client.stopVoiceover(id: job.id)
             } catch {
-                self?.notice = StudioController.plain(error)
+                self?.notice = ReelText.notice(error) { $0.text }
             }
         }
     }
@@ -268,7 +292,7 @@ struct ReelHost {
             do {
                 try await self?.host.client.continueOnBattery(id: job.id)
             } catch {
-                self?.notice = StudioController.plain(error)
+                self?.notice = ReelText.notice(error) { $0.text }
             }
         }
     }
@@ -284,12 +308,21 @@ struct ReelHost {
         panel.canCreateDirectories = true
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let destination = panel.url else { return }
+        // A folder is never a destination — clearing the way would delete it.
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDirectory),
+           !ReelExport.allowsDestination(isDirectory: isDirectory.boolValue) {
+            _ = host.alert(L10nKey.reelExportError.text, L10nKey.reelExportFolder.text, ["OK"])
+            return
+        }
+        // Copy to a staging file next to the destination, then swap atomically:
+        // a failed copy leaves the file the person had there intact.
+        let staging = ReelExport.stagingURL(for: destination)
         do {
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
-            }
-            try FileManager.default.copyItem(at: source, to: destination)
+            try FileManager.default.copyItem(at: source, to: staging)
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
         } catch {
+            try? FileManager.default.removeItem(at: staging)
             _ = host.alert(L10nKey.reelExportError.text, error.localizedDescription, ["OK"])
         }
     }

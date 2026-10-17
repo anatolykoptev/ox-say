@@ -40,7 +40,7 @@ struct ReelView: View {
                     Text(L10nKey.reelReadingDocument.text).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(ScriptLimit.statusLine(editorText: model.editorText))
+                Text(ReelText.statusLine(editorText: model.editorText) { $0.text })
                     .font(.callout).foregroundStyle(.secondary)
             }
             Text(String(format: L10nKey.reelPhrases.text, model.phraseCount))
@@ -92,7 +92,7 @@ struct ReelView: View {
         Group {
             if let job = model.job, !job.status.isTerminal {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(ProduceText.progressRow(job, serviceWaiting: model.serviceWaiting))
+                    Text(ReelText.progressRow(job, serviceWaiting: model.serviceWaiting) { $0.text })
                         .font(.callout).foregroundStyle(.secondary)
                     Spacer()
                     if job.status == .pausedOnBattery {
@@ -109,8 +109,8 @@ struct ReelView: View {
     private var result: some View {
         Group {
             if let job = model.job, job.status.isTerminal {
-                if let finish = ProduceText.finishAlert(job) {
-                    Text(finish.text).font(.callout).foregroundStyle(.secondary)
+                if let finish = ReelText.finishText(job, { $0.text }) {
+                    Text(finish).font(.callout).foregroundStyle(.secondary)
                 }
                 if let duration = ReelScript.durationText(job.durationS) {
                     Text(String(format: L10nKey.reelDuration.text, duration))
@@ -134,8 +134,13 @@ struct ReelView: View {
             return AnyView(ProgressView().controlSize(.small))
         case .done:
             return AnyView(Image(systemName: "checkmark.circle.fill").foregroundStyle(.green))
-        case .failed:
-            return AnyView(Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange))
+        case .needsListen:
+            // A "review" chunk has audio — the row says «нужно прослушать»,
+            // not failed.
+            return AnyView(HStack(spacing: 4) {
+                Text(L10nKey.reelNeedsListen.text).font(.caption)
+                Image(systemName: "ear")
+            }.foregroundStyle(.secondary))
         }
     }
 }

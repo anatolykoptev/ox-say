@@ -64,6 +64,9 @@ final class ProduceModelsTests: XCTestCase {
     /// origin/main's createBody, verbatim: the oracle the byte check compares
     /// against. It must run in this process — a [String: Any] dictionary's
     /// order is per-process, so a literal baked elsewhere cannot match.
+    /// Frozen copy: do not update it when createBody changes — the drift
+    /// between this baseline and the live function is exactly what the
+    /// byte-identical test watches for.
     private func mainCreateBody(script: String, title: String, voice: String?, format: ProduceFormat) -> Data {
         var body: [String: Any] = ["script": script, "preset": format.preset]
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -169,6 +172,11 @@ final class ProduceModelsTests: XCTestCase {
         let job = try XCTUnwrap(ProduceJob.decode(data), "the daemon's own status answer must decode")
         XCTAssertEqual(job.chunks.map(\.index), Array(0..<job.partsTotal))
         XCTAssertEqual(job.chunks.count, job.partsTotal)
+        // The fields the UI consumes: the duration line, the export's source
+        // path and each chunk's status driving its phrase row.
+        XCTAssertEqual(job.durationS, 6.98)
+        XCTAssertEqual(job.outputPath, "/Users/anatolykoptev/tmp/ox-say-p1/probe-t31/out/тестовый-ролик/тестовый-ролик.wav")
+        XCTAssertEqual(job.chunks.map(\.status), [.ok, .ok])
     }
 
     /// The same probe's `GET /v1/produce/{id}/chunks/0`: a real paragraph index.
@@ -179,6 +187,8 @@ final class ProduceModelsTests: XCTestCase {
         let detail = try XCTUnwrap(ProduceChunkDetail.decode(data), "the daemon's own chunk detail must decode")
         XCTAssertEqual(detail.index, 0)
         XCTAssertEqual(detail.paragraph, 0)
+        XCTAssertEqual(detail.status, .ok)
+        XCTAssertEqual(detail.text, "Привет! Сегодня расскажу, как собрать ролик за минуту.")
     }
 
     // MARK: polling and text

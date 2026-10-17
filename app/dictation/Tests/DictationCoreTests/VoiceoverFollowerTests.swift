@@ -164,9 +164,56 @@ private func job(_ status: ProduceStatus, id: String = "j") -> ProduceJob {
         XCTAssertNil(follower.job)
     }
 
-    /// Mutation: VoiceoverFollower.swift serviceAnswered, set `self.pickedUp = true`
-    /// before `guard let jobs` (a failed read counts as done) -> RED.
-    func testAFailedPickUpIsRetriedOnTheNextAnsweredStatusUntilItSucceedsOnce() async {
+    /// The window's disappear stops the polling; its reappear picks it back
+    /// up through the follower's own resume.
+    /// Mutation: stop() not cancelling the polling task -> polls keep coming -> RED.
+    /// Mutation: resume() doing nothing -> RED.
+    func testStopEndsThePollingAndResumeRestartsIt() async {
+        let daemon = FakeDaemon()
+        let follower = makeFollower(daemon)
+        follower.follow(job(.running))
+        await settle { daemon.polls.count == 1 }
+        guard daemon.polls.count == 1 else { return XCTFail("no poll") }
+        daemon.polls[0].resume(returning: job(.running))
+        await settle { daemon.polls.count == 2 }
+        guard daemon.polls.count == 2 else { return XCTFail("no second poll") }
+
+        follower.stop()
+        daemon.polls[1].resume(returning: job(.running))
+        await settle { false } // time for a stray extra poll
+        XCTAssertEqual(daemon.polls.count, 2, "no poll after stop()")
+
+        follower.resume()
+        await settle { daemon.polls.count == 3 }
+        guard daemon.polls.count == 3 else { return XCTFail("resume did not restart the polling") }
+        daemon.polls[2].resume(returning: job(.done))
+        await settle { follower.job?.status == .done }
+
+        follower.resume() // a finished job does not resume
+        await settle { false }
+        XCTAssertEqual(daemon.polls.count, 3, "nothing to resume once the job is over")
+    }
+
+    /// The «Озвучить» gate as a pure function of the daemon's answer: which
+    /// job, if any, is running — the followed one, else the list's.
+    func testTheActiveJobIsTheFollowedOneOrTheListsRunningOne() {
+        XCTAssertNil(VoiceoverFollower.activeJob(following: nil, listed: []))
+        XCTAssertNil(VoiceoverFollower.activeJob(following: nil, listed: [job(.done), job(.cancelled)]))
+        XCTAssertEqual(VoiceoverFollower.activeJob(following: nil, listed: [job(.done), job(.running, id: "r")])?.id, "r")
+        XCTAssertEqual(VoiceoverFollower.activeJob(following: job(.running, id: "mine"),
+                                                   listed: [job(.running, id: "other")])?.id, "mine",
+                       "a list answer never takes over a live follow")
+        XCTAssertEqual(VoiceoverFollower.activeJob(following: job(.done, id: "old"),
+                                                   listed: [job(.running, id: "r")])?.id, "r")
+        XCTAssertEqual(VoiceoverFollower.activeJob(following: job(.running), listed: [])?.id, "j")
+    }
+
+    /// Pickup is not a once-per-lifetime flag: a failed list read is retried,
+    /// and a voiceover started elsewhere after a successful read is still
+    /// found on the next answered status.
+    /// Mutation: keep a once-per-lifetime `pickedUp` flag -> the second
+    /// successful read never happens -> RED at "a later running job".
+    func testAJobStartedElsewhereIsPickedUpOnALaterAnsweredStatus() async {
         let daemon = FakeDaemon()
         let follower = makeFollower(daemon)
 
@@ -180,16 +227,24 @@ private func job(_ status: ProduceStatus, id: String = "j") -> ProduceJob {
         await settle { false }
         XCTAssertNil(follower.job)
 
-        follower.serviceAnswered() // the next successful /status
+        follower.serviceAnswered() // the next successful /status retries it
         await settle { daemon.lists.count == 2 }
         guard daemon.lists.count == 2 else { return XCTFail("not retried after the failure") }
-        daemon.lists[1].resume(returning: [job(.done, id: "old"), job(.running, id: "live")])
+        daemon.lists[1].resume(returning: [job(.done, id: "old")])
+        await settle { false }
+        XCTAssertNil(follower.job, "nothing running yet")
+
+        // A voiceover started elsewhere after the first successful read.
+        follower.serviceAnswered()
+        await settle { daemon.lists.count == 3 }
+        guard daemon.lists.count == 3 else { return XCTFail("a later running job is never found") }
+        daemon.lists[2].resume(returning: [job(.done, id: "old"), job(.running, id: "live")])
         await settle { follower.job != nil }
         XCTAssertEqual(follower.job?.id, "live", "the running voiceover is picked up")
-
-        follower.serviceAnswered()
+        await settle { daemon.polls.count == 1 }
+        guard daemon.polls.count == 1 else { return XCTFail("the picked-up job is not followed") }
+        daemon.polls[0].resume(returning: job(.done, id: "live"))
         await settle { false }
-        XCTAssertEqual(daemon.lists.count, 2, "after one success the list is not read again")
         follower.stop()
     }
 

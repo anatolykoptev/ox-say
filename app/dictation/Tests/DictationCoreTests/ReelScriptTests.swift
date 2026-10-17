@@ -60,11 +60,12 @@ final class ReelScriptTests: XCTestCase {
         XCTAssertEqual(states, [.done, .rendering, .pending])
     }
 
-    /// A chunk the automatic checks could not pass ("review") fails its phrase.
-    func testAFailedChunkFailsItsPhrase() {
+    /// A chunk the automatic checks could not pass ("review") marks its phrase
+    /// for a listen — the daemon keeps its audio; the row is not a failure.
+    func testAReviewChunkMarksItsPhraseForListening() {
         let chunks = [chunk(0, "ok"), chunk(1, "review")]
         let states = ReelScript.phraseStates(emitting: [true], chunks: chunks, paragraphOf: [0: 0, 1: 0])
-        XCTAssertEqual(states, [.failed])
+        XCTAssertEqual(states, [.needsListen])
     }
 
     /// The daemon renders chunks in order: pending chunks behind the one in
@@ -123,6 +124,15 @@ final class ReelScriptTests: XCTestCase {
         XCTAssertEqual(ReelScript.preview("короткая\nстрока"), "короткая строка")
     }
 
+    /// The preview shows the words, not the directives: `[pause …]` and
+    /// `[style: …]` are read by the daemon, and `emits` strips them with the
+    /// same pattern (ScriptBrackets.directivePattern).
+    /// Mutation: preview without the directive strip -> RED.
+    func testTheRowPreviewDropsDirectiveText() {
+        XCTAssertEqual(ReelScript.preview("Стоп. [pause 1s]"), "Стоп.")
+        XCTAssertEqual(ReelScript.preview("[style: тепло]\nТекст."), "Текст.")
+    }
+
     func testTheDurationReadsAsClockTime() {
         XCTAssertEqual(ReelScript.durationText(0), "0:00")
         XCTAssertEqual(ReelScript.durationText(61.5), "1:01")
@@ -135,5 +145,46 @@ final class ReelScriptTests: XCTestCase {
     func testTheCreateIsOneTakeOfAReferenceVoice() {
         XCTAssertEqual(ReelScript.takes, 1)
         XCTAssertEqual(ReelScript.cloneMode, "reference")
+    }
+
+    // MARK: F1 — the chunks still missing a detail
+
+    /// A job is synced only when every chunk index holds a paragraph; what is
+    /// still missing is refetched on the next poll. Mutation: missingChunks
+    /// answers [] for a partially-fetched job -> RED.
+    func testMissingChunksNamesExactlyTheChunksWithoutAParagraph() {
+        let job = ProduceJob(id: "j", title: "t", status: .running, partsTotal: 4)
+        XCTAssertEqual(ReelScript.missingChunks(of: job, paragraphOf: [0: 0, 2: 1]), [1, 3],
+                       "a partial fetch leaves its failed indices missing")
+        XCTAssertEqual(ReelScript.missingChunks(of: job, paragraphOf: [:]), [0, 1, 2, 3])
+        XCTAssertEqual(ReelScript.missingChunks(of: job, paragraphOf: [0: 0, 1: 0, 2: 1, 3: 1]), [])
+    }
+
+    /// A detail under an index outside the job's range is not the job's; a job
+    /// with no chunks needs no fetch.
+    func testMissingChunksIgnoresStrayIndices() {
+        let job = ProduceJob(id: "j", title: "t", status: .running, partsTotal: 2)
+        XCTAssertEqual(ReelScript.missingChunks(of: job, paragraphOf: [7: 0]), [0, 1])
+        let empty = ProduceJob(id: "j", title: "t", status: .done, partsTotal: 0)
+        XCTAssertEqual(ReelScript.missingChunks(of: empty, paragraphOf: [:]), [])
+    }
+
+    // MARK: F3 — the export's destination rule
+
+    /// A folder is refused: removing it to make room would delete a directory
+    /// whole. Mutation: allow a directory destination -> RED.
+    func testAFolderIsNeverAnExportDestination() {
+        XCTAssertFalse(ReelExport.allowsDestination(isDirectory: true))
+        XCTAssertTrue(ReelExport.allowsDestination(isDirectory: false))
+    }
+
+    /// The staged copy sits next to the destination — the swap stays on one
+    /// volume, so `replaceItemAt` is atomic and a failed copy keeps the old file.
+    func testTheStagingFileSitsNextToTheDestination() {
+        let destination = URL(fileURLWithPath: "/tmp/out/reel.wav")
+        let staging = ReelExport.stagingURL(for: destination)
+        XCTAssertEqual(staging.deletingLastPathComponent(), destination.deletingLastPathComponent())
+        XCTAssertNotEqual(staging, destination)
+        XCTAssertTrue(staging.lastPathComponent.contains("reel.wav"))
     }
 }

@@ -8,8 +8,9 @@ public enum PhraseState: Equatable {
     case rendering
     /// Every chunk of it passed.
     case done
-    /// One of its chunks failed the automatic checks (the daemon's "review").
-    case failed
+    /// One of its chunks is left for a listen (the daemon's "review"): it has
+    /// audio — the best take the checks could not pass.
+    case needsListen
 }
 
 /// A phrase row: its number, a short preview and how far it is.
@@ -80,8 +81,12 @@ public enum ReelScript {
     }
 
     /// A row's preview: the phrase's start, whitespace folded, capped.
+    /// Directives ([pause …], [style: …]) are the daemon's, not the reader's —
+    /// the row shows only the spoken words, stripped the way `emits` strips.
     public static func preview(_ phrase: String) -> String {
-        let folded = fold(phrase)
+        let words = phrase.replacingOccurrences(of: ScriptBrackets.directivePattern,
+                                                with: "", options: .regularExpression)
+        let folded = fold(words)
         guard folded.count > previewLength else { return folded }
         return String(folded.prefix(previewLength)) + "…"
     }
@@ -105,6 +110,14 @@ public enum ReelScript {
     private static let secondsPerMinute = 60
     private static let secondsPerHour = 60 * secondsPerMinute
 
+    /// The chunk indices of a followed job still missing a fetched detail —
+    /// what the next sync must ask the daemon for, one round per poll. A job
+    /// is synced exactly when this is empty: a detail fetch that failed leaves
+    /// its index here and is retried on the next status poll.
+    public static func missingChunks(of job: ProduceJob, paragraphOf: [Int: Int]) -> [Int] {
+        (0..<job.partsTotal).filter { paragraphOf[$0] == nil }
+    }
+
     /// "Озвучить" may be pressed: the text fits, the studio voice can run, and
     /// no voiceover is going. One project at a time.
     public static func canCreate(script: String, studioAvailable: Bool, jobRunning: Bool) -> Bool {
@@ -127,7 +140,7 @@ public enum ReelScript {
             emitted += 1
             let own = chunks.filter { paragraphOf[$0.index] == paragraph }
             guard !own.isEmpty else { return .pending }
-            if own.contains(where: { $0.status == .review }) { return .failed }
+            if own.contains(where: { $0.status == .review }) { return .needsListen }
             if own.allSatisfy({ $0.status == .ok }) { return .done }
             return paragraph == firstOpen ? .rendering : .pending
         }
