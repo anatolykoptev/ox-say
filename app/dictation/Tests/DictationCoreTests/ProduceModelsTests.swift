@@ -48,6 +48,46 @@ final class ProduceModelsTests: XCTestCase {
         XCTAssertEqual(json["allow_battery"] as? Bool, true)
     }
 
+    /// The reel's create: one take per chunk and the reference clone path, on
+    /// top of the fields the Studio menu already sends.
+    func testCreateBodyWithTakesAndCloneModeCarriesBoth() throws {
+        let body = ProduceRequest.createBody(script: "S.", title: "", voice: nil, format: .short,
+                                             takes: 1, cloneMode: "reference")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(json["takes"] as? Int, 1)
+        XCTAssertEqual(json["clone_mode"] as? String, "reference")
+        XCTAssertEqual(json["script"] as? String, "S.")
+        XCTAssertEqual(json["preset"] as? String, "reels")
+        XCTAssertEqual(Set(json.keys), ["script", "preset", "takes", "clone_mode"])
+    }
+
+    /// origin/main's createBody, verbatim: the oracle the byte check compares
+    /// against. It must run in this process — a [String: Any] dictionary's
+    /// order is per-process, so a literal baked elsewhere cannot match.
+    /// Frozen copy: do not update it when createBody changes — the drift
+    /// between this baseline and the live function is exactly what the
+    /// byte-identical test watches for.
+    private func mainCreateBody(script: String, title: String, voice: String?, format: ProduceFormat) -> Data {
+        var body: [String: Any] = ["script": script, "preset": format.preset]
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { body["title"] = trimmed }
+        if let voice, !voice.isEmpty { body["voice"] = voice }
+        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+    }
+
+    /// Without the new options the body is byte-identical to the previous
+    /// version's — the same call through origin/main's function, here in
+    /// process. Mutation: always emit clone_mode -> RED.
+    func testCreateBodyWithoutTheNewFieldsIsByteIdentical() {
+        for (script, title, voice, format) in [("Привет, мир.", " Глава 1 ", "ru-anna" as String?, ProduceFormat.short),
+                                               ("S.", "", nil, .long),
+                                               ("T.", "t", "", .short)] {
+            XCTAssertEqual(ProduceRequest.createBody(script: script, title: title, voice: voice, format: format),
+                           mainCreateBody(script: script, title: title, voice: voice, format: format),
+                           "script=\(script) title=\(title) voice=\(voice ?? "nil")")
+        }
+    }
+
     // MARK: decoding every real state
 
     func testEveryDaemonStateDecodes() throws {
@@ -85,6 +125,70 @@ final class ProduceModelsTests: XCTestCase {
         XCTAssertEqual(ProduceJob.decodeList(list)?.map(\.id), ["b", "a"])
         XCTAssertEqual(ProduceJob.decodeList(Data(#"{"projects":null}"#.utf8)), [])
         XCTAssertNil(ProduceJob.decodeList(Data("nope".utf8)))
+    }
+
+    // MARK: chunks, duration, the live answer
+
+    /// The summary's chunks carry index and status; per-phrase progress is
+    /// built from them, so they must be on the job, not just counted.
+    func testJobDecodesItsChunks() throws {
+        let job = try XCTUnwrap(ProduceJob.decode(summary(status: "running", done: 1, total: 3,
+                                                         wav: "/x/a.wav", reviewChunks: 0)))
+        XCTAssertEqual(job.chunks, [ProduceChunk(index: 0, status: .ok),
+                                    ProduceChunk(index: 1, status: .ok),
+                                    ProduceChunk(index: 2, status: .ok)])
+        XCTAssertEqual(job.durationS, 61.5)
+    }
+
+    /// Chunk status words beyond the three known ones stay open: a status the
+    /// daemon adds later must not read as done.
+    func testChunkStatusWordsDecode() {
+        XCTAssertEqual(ProduceChunkState("pending"), .pending)
+        XCTAssertEqual(ProduceChunkState("ok"), .ok)
+        XCTAssertEqual(ProduceChunkState("review"), .review)
+        XCTAssertEqual(ProduceChunkState("whatever_next"), .unknown("whatever_next"))
+        XCTAssertTrue(ProduceChunkState("whatever_next").isOpen)
+        XCTAssertFalse(ProduceChunkState("ok").isOpen)
+        XCTAssertFalse(ProduceChunkState("review").isOpen)
+    }
+
+    /// The one field only the chunk detail carries: the script paragraph the
+    /// chunk belongs to (vproject.Chunk.Paragraph, embedded in chunkDetailOut).
+    func testAChunkDetailDecodesItsParagraph() throws {
+        let data = Data(#"{"index":2,"paragraph":1,"status":"ok","text":"Дальше.","spoken":"дальше","take_files":{}}"#.utf8)
+        let detail = try XCTUnwrap(ProduceChunkDetail.decode(data))
+        XCTAssertEqual(detail.index, 2)
+        XCTAssertEqual(detail.paragraph, 1)
+        XCTAssertEqual(detail.status, .ok)
+        XCTAssertEqual(detail.text, "Дальше.")
+    }
+
+    /// A real `GET /v1/produce/{id}` answer from the isolated daemon (the live
+    /// probe saved it): the job decodes with its chunk list.
+    func testDecodesALiveProduceStatus() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("produce-status-live.json")
+        let data = try Data(contentsOf: url)
+        let job = try XCTUnwrap(ProduceJob.decode(data), "the daemon's own status answer must decode")
+        XCTAssertEqual(job.chunks.map(\.index), Array(0..<job.partsTotal))
+        XCTAssertEqual(job.chunks.count, job.partsTotal)
+        // The fields the UI consumes: the duration line, the export's source
+        // path and each chunk's status driving its phrase row.
+        XCTAssertEqual(job.durationS, 6.98)
+        XCTAssertEqual(job.outputPath, "/Users/anatolykoptev/tmp/ox-say-p1/probe-t31/out/тестовый-ролик/тестовый-ролик.wav")
+        XCTAssertEqual(job.chunks.map(\.status), [.ok, .ok])
+    }
+
+    /// The same probe's `GET /v1/produce/{id}/chunks/0`: a real paragraph index.
+    func testDecodesALiveChunkDetail() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("produce-chunk-live.json")
+        let data = try Data(contentsOf: url)
+        let detail = try XCTUnwrap(ProduceChunkDetail.decode(data), "the daemon's own chunk detail must decode")
+        XCTAssertEqual(detail.index, 0)
+        XCTAssertEqual(detail.paragraph, 0)
+        XCTAssertEqual(detail.status, .ok)
+        XCTAssertEqual(detail.text, "Привет! Сегодня расскажу, как собрать ролик за минуту.")
     }
 
     // MARK: polling and text

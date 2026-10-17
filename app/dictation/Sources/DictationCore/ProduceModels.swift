@@ -64,6 +64,71 @@ public enum ProduceFormat: Equatable, CaseIterable {
     }
 }
 
+/// A chunk's work status (vproject ChunkStatus*). An unknown word counts as
+/// open: a state the daemon adds later must not read as done.
+public enum ProduceChunkState: Equatable {
+    case pending
+    /// Rendered and passed the automatic checks.
+    case ok
+    /// The checks failed: it is left for the person to listen to.
+    case review
+    case unknown(String)
+
+    public init(_ word: String) {
+        switch word {
+        case "pending": self = .pending
+        case "ok": self = .ok
+        case "review": self = .review
+        default: self = .unknown(word)
+        }
+    }
+
+    /// Still to be rendered, or a word this build does not know.
+    public var isOpen: Bool {
+        self != .ok && self != .review
+    }
+}
+
+/// One chunk as the job summary reports it (`chunks[]` of `GET /v1/produce/{id}`).
+public struct ProduceChunk: Equatable {
+    public var index: Int
+    public var status: ProduceChunkState
+
+    public init(index: Int, status: ProduceChunkState) {
+        self.index = index
+        self.status = status
+    }
+}
+
+/// What `GET /v1/produce/{id}/chunks/{n}` adds that the summary's chunk list
+/// does not carry: the script paragraph the chunk belongs to
+/// (`chunkDetailOut` embeds vproject.Chunk's fields at the top level).
+public struct ProduceChunkDetail: Equatable {
+    public var index: Int
+    public var paragraph: Int
+    public var status: ProduceChunkState
+    /// The chunk's words with directives removed, as the daemon speaks them.
+    public var text: String
+
+    public init(index: Int, paragraph: Int, status: ProduceChunkState, text: String) {
+        self.index = index
+        self.paragraph = paragraph
+        self.status = status
+        self.text = text
+    }
+
+    /// nil without both indices — a detail that names neither its chunk nor
+    /// its paragraph cannot be mapped.
+    public static func decode(_ data: Data) -> ProduceChunkDetail? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let index = obj["index"] as? Int,
+              let paragraph = obj["paragraph"] as? Int else { return nil }
+        return ProduceChunkDetail(index: index, paragraph: paragraph,
+                                  status: ProduceChunkState(obj["status"] as? String ?? ""),
+                                  text: obj["text"] as? String ?? "")
+    }
+}
+
 public struct ProduceJob: Equatable {
     public var id: String
     public var title: String
@@ -76,9 +141,14 @@ public struct ProduceJob: Equatable {
     public var error: String?
     /// The published WAV's absolute path; nil until the job has finished.
     public var outputPath: String?
+    /// The published audio's length, seconds; nil until the job has finished.
+    public var durationS: Double?
+    /// Every chunk the summary lists, with its live status.
+    public var chunks: [ProduceChunk]
 
     public init(id: String, title: String, status: ProduceStatus, partsTotal: Int = 0, partsDone: Int = 0,
-                partsToReview: Int = 0, error: String? = nil, outputPath: String? = nil) {
+                partsToReview: Int = 0, error: String? = nil, outputPath: String? = nil,
+                durationS: Double? = nil, chunks: [ProduceChunk] = []) {
         self.id = id
         self.title = title
         self.status = status
@@ -87,6 +157,8 @@ public struct ProduceJob: Equatable {
         self.partsToReview = partsToReview
         self.error = error
         self.outputPath = outputPath
+        self.durationS = durationS
+        self.chunks = chunks
     }
 
     /// The folder the finished files are in.
@@ -109,7 +181,12 @@ public struct ProduceJob: Equatable {
             partsDone: progress?["chunks_done"] as? Int ?? 0,
             partsToReview: chunks.filter { $0["status"] as? String == "review" }.count,
             error: (obj["error"] as? String).flatMap { $0.isEmpty ? nil : $0 },
-            outputPath: wav.flatMap { $0.isEmpty ? nil : $0 })
+            outputPath: wav.flatMap { $0.isEmpty ? nil : $0 },
+            durationS: (outputs?["duration_s"] as? NSNumber)?.doubleValue,
+            chunks: chunks.enumerated().map {
+                ProduceChunk(index: $0.element["index"] as? Int ?? $0.offset,
+                             status: ProduceChunkState($0.element["status"] as? String ?? ""))
+            })
     }
 
     public static func decode(_ data: Data) -> ProduceJob? {
@@ -127,12 +204,17 @@ public struct ProduceJob: Equatable {
 /// `POST /v1/produce` and the job controls.
 public enum ProduceRequest {
     /// The body of a new voiceover. An empty title or voice is left out so the
-    /// daemon picks its own (the script's first words, the configured voice).
-    public static func createBody(script: String, title: String, voice: String?, format: ProduceFormat) -> Data {
+    /// daemon picks its own (the script's first words, the configured voice);
+    /// so are the optional knobs — a caller that passes none gets the body it
+    /// always sent, byte for byte.
+    public static func createBody(script: String, title: String, voice: String?, format: ProduceFormat,
+                                  takes: Int? = nil, cloneMode: String? = nil) -> Data {
         var body: [String: Any] = ["script": script, "preset": format.preset]
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { body["title"] = trimmed }
         if let voice, !voice.isEmpty { body["voice"] = voice }
+        if let takes { body["takes"] = takes }
+        if let cloneMode, !cloneMode.isEmpty { body["clone_mode"] = cloneMode }
         return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
     }
 

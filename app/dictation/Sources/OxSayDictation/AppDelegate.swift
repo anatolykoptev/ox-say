@@ -41,6 +41,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var studio: StudioController!
     /// The one main window; created on first "Open OxSay…", kept across closes.
     private lazy var mainWindow = MainWindowController(appDelegate: self)
+    /// The Reel editor's model: one for the window's lifetime, wired to the
+    /// same clients the Studio submenu uses.
+    private(set) lazy var reelModel = ReelModel(host: reelHost())
     /// Runs once when the playback that was started with a completion ends on its own.
     private var playbackDone: (() -> Void)?
     /// The daemon's last /status answer, fetched on every menu open; nil when it
@@ -805,6 +808,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             installStudioVoice: { [unowned self] in self.installStudioVoice() },
             installing: { [unowned self] in self.updateInstalling },
             workEnded: { [unowned self] in self.handshakeWorkEnded() })
+    }
+
+    /// What the Reel editor needs of the app: its daemon clients, the stored
+    /// Russian pick and a modal alert. Built lazily — studioClient and
+    /// speechClient exist by the time the window can open.
+    private func reelHost() -> ReelHost {
+        ReelHost(client: studioClient, speech: speechClient,
+                 russianVoicePick: { [unowned self] in UserDefaults.standard.string(forKey: self.speakVoiceRUKey) },
+                 alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) })
     }
 
     /// Install Studio Voice: confirm, then the update install pinned to the

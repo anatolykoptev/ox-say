@@ -55,6 +55,14 @@ final class StudioClientTests: XCTestCase {
         XCTAssertEqual(seen()?.url?.path, "/v1/produce")
     }
 
+    /// The Reel editor learns each chunk's paragraph from the detail route.
+    func testChunkDetailReadsItsRoute() async throws {
+        let (client, seen) = fake(body: #"{"index":1,"paragraph":0,"status":"pending","text":"Привет."}"#)
+        let detail = try await client.voiceoverChunk(id: "j1", n: 1)
+        XCTAssertEqual(detail, ProduceChunkDetail(index: 1, paragraph: 0, status: .pending, text: "Привет."))
+        XCTAssertEqual(seen()?.url?.path, "/v1/produce/j1/chunks/1")
+    }
+
     func testDesignWaitsLongEnoughForThreeTakes() async throws {
         let (client, seen) = fake(body: #"{"takes":[{"path":"/c/a.wav","duration_s":5,"suggested_name":"n-1"}]}"#)
         let takes = try await client.designVoice(description: "d", text: "t")

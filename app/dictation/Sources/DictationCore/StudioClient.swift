@@ -98,8 +98,10 @@ public struct StudioClient {
 
     /// POST /v1/produce: starts a voiceover of `script`. The daemon runs one at
     /// a time; a second start answers 409 with its message.
-    public func startVoiceover(script: String, title: String, voice: String?, format: ProduceFormat) async throws -> ProduceJob {
-        let body = ProduceRequest.createBody(script: script, title: title, voice: voice, format: format)
+    public func startVoiceover(script: String, title: String, voice: String?, format: ProduceFormat,
+                               takes: Int? = nil, cloneMode: String? = nil) async throws -> ProduceJob {
+        let body = ProduceRequest.createBody(script: script, title: title, voice: voice, format: format,
+                                             takes: takes, cloneMode: cloneMode)
         let data = try await succeed(post("v1/produce", body: body, timeout: Self.startTimeout))
         guard let job = ProduceJob.decode(data) else { throw StudioError.badResponse }
         return job
@@ -110,6 +112,14 @@ public struct StudioClient {
         let data = try await succeed(get("v1/produce/\(id)"))
         guard let job = ProduceJob.decode(data) else { throw StudioError.badResponse }
         return job
+    }
+
+    /// GET /v1/produce/{id}/chunks/{n}: the chunk's detail — the only route
+    /// that carries which script paragraph it belongs to.
+    public func voiceoverChunk(id: String, n: Int) async throws -> ProduceChunkDetail {
+        let data = try await succeed(get("v1/produce/\(id)/chunks/\(n)"))
+        guard let chunk = ProduceChunkDetail.decode(data) else { throw StudioError.badResponse }
+        return chunk
     }
 
     /// GET /v1/produce: the daemon's recent voiceovers, newest first.

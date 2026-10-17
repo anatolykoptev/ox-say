@@ -16,11 +16,13 @@ enum StudioForms {
         var name: String
     }
 
-    /// A text, Markdown, Word, RTF, OpenDocument or PDF file, or nil when the person cancels.
-    static func chooseDocument() -> URL? {
+    /// A text, Markdown, Word, RTF, OpenDocument or PDF file, or nil when the
+    /// person cancels. The Reel window passes its own localized title/message.
+    static func chooseDocument(title: String = "Choose the document to voice",
+                               message: String = "Choose a text, Markdown, Word, PDF, RTF or OpenDocument file.") -> URL? {
         let panel = NSOpenPanel()
-        panel.title = "Choose the document to voice"
-        panel.message = "Choose a text, Markdown, Word, PDF, RTF or OpenDocument file."
+        panel.title = title
+        panel.message = message
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = DocumentReader.supportedExtensions.compactMap { UTType(filenameExtension: $0) }

@@ -45,7 +45,6 @@ public final class VoiceoverFollower {
     private let onChange: () -> Void
     private let onFinish: (ProduceJob) -> Void
     private var polling: Task<Void, Never>?
-    private var pickedUp = false
     private var pickingUp = false
 
     public init(source: Source, onChange: @escaping () -> Void, onFinish: @escaping (ProduceJob) -> Void) {
@@ -60,20 +59,39 @@ public final class VoiceoverFollower {
         polling = nil
     }
 
-    /// The daemon answered /status. Until the daemon's recent voiceovers have been
-    /// read once, look for one still running (the app may have quit and come back,
-    /// or been started before the daemon was up) and follow it.
+    /// After `stop`, pick the polling back up — the window's reappear. A no-op
+    /// while a poll loop runs, with no job, or once the job is over.
+    public func resume() {
+        guard polling == nil, let job, !job.status.isTerminal else { return }
+        follow(job)
+    }
+
+    /// The voiceover the daemon is working on: the app's own followed job
+    /// while it lives (a list answer must not take a live follow over), else
+    /// the list's first non-terminal job — one started elsewhere included.
+    /// nil when nothing runs. The «Озвучить» gate, a pure function of the
+    /// daemon's answer.
+    public static func activeJob(following: ProduceJob?, listed: [ProduceJob]) -> ProduceJob? {
+        if let following, !following.status.isTerminal { return following }
+        return listed.first { !$0.status.isTerminal }
+    }
+
+    /// The daemon answered /status. Check its recent voiceovers for one still
+    /// running and follow it: the app may have quit and come back, the job may
+    /// have been started from the menu or while this window was closed. Not a
+    /// once-per-lifetime flag — a job started after a successful read is found
+    /// on the next answered status.
     public func serviceAnswered() {
-        guard !pickedUp, !pickingUp else { return }
+        guard !pickingUp else { return }
         pickingUp = true
         Task { @MainActor [weak self] in
             guard let self else { return }
             let jobs = try? await self.source.voiceovers()
             self.pickingUp = false
-            guard let jobs else { return }
-            self.pickedUp = true
-            let following = self.job.map { !$0.status.isTerminal } ?? false
-            if !following, let running = jobs.first(where: { !$0.status.isTerminal }) { self.follow(running) }
+            guard let jobs,
+                  let running = Self.activeJob(following: self.job, listed: jobs),
+                  running.id != self.job?.id else { return }
+            self.follow(running)
         }
     }
 

@@ -1,10 +1,12 @@
 import DictationCore
 import SwiftUI
 
-/// The main window's content: a section sidebar and, for now, a placeholder
-/// per section. NavigationSplitView — the package targets macOS 13, where it
-/// is available, so no HSplitView fallback is needed.
+/// The main window's content: a section sidebar and the section's detail —
+/// the Reel editor for «Ролик», a placeholder for the sections still waiting
+/// for their phase. NavigationSplitView — the package targets macOS 13, where
+/// it is available, so no HSplitView fallback is needed.
 struct MainView: View {
+    @ObservedObject var reel: ReelModel
     @State private var selection: MainSection? = .reel
 
     var body: some View {
@@ -16,9 +18,18 @@ struct MainView: View {
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
         } detail: {
-            Placeholder(section: selection ?? .reel)
+            detail
         }
         .frame(minWidth: MainWindowSpec.minimumWidth, minHeight: MainWindowSpec.minimumHeight)
+    }
+
+    @ViewBuilder private var detail: some View {
+        switch selection ?? .reel {
+        case .reel:
+            ReelView(model: reel)
+        case let other:
+            Placeholder(section: other)
+        }
     }
 }
 
