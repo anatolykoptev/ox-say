@@ -33,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// True while a background check is in flight, so a tick and a wake do not
     /// stack two.
     private var autoUpdateRunning = false
+    /// True once a background check in this process got an answer from GitHub;
+    /// until then every slot is due (see `AutoUpdateSchedule.shouldCheck`).
+    private var autoUpdateAnswered = false
     private var autoUpdateTimers: [Timer] = []
     /// The symbol the status icon shows now; the update badge is drawn on it.
     private var statusSymbol = "mic"
@@ -279,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             self?.refreshServiceStatus()
-            self?.backgroundUpdateCheck(firstSlot: false)
+            self?.backgroundUpdateCheck()
         }
         startAutoUpdateChecks()
         studio.render()
@@ -989,25 +992,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Arms the background check: once shortly after launch, then a tick that
     /// asks the clock whether a day has passed (a wake asks it too).
     private func startAutoUpdateChecks() {
-        autoUpdateTimers = [
-            Timer.scheduledTimer(withTimeInterval: AutoUpdateSchedule.firstDelay, repeats: false) { [weak self] _ in
-                self?.backgroundUpdateCheck(firstSlot: true)
+        let timers = [
+            Timer(timeInterval: AutoUpdateSchedule.firstDelay, repeats: false) { [weak self] _ in
+                self?.backgroundUpdateCheck()
             },
-            Timer.scheduledTimer(withTimeInterval: AutoUpdateSchedule.tick, repeats: true) { [weak self] _ in
-                self?.backgroundUpdateCheck(firstSlot: false)
+            Timer(timeInterval: AutoUpdateSchedule.tick, repeats: true) { [weak self] _ in
+                self?.backgroundUpdateCheck()
             },
         ]
+        // .common: keep firing while the status-bar menu is open
+        for timer in timers { RunLoop.main.add(timer, forMode: .common) }
+        autoUpdateTimers = timers
     }
 
     /// The automatic update check. Silent by construction: no working pill, no
     /// alert, no install. A newer release becomes the menu row, the icon dot
     /// and one notice per version (through NoticeGate, so a dictation holds
     /// it); a failed check changes nothing and the next slot retries.
-    private func backgroundUpdateCheck(firstSlot: Bool) {
+    private func backgroundUpdateCheck() {
         guard UpdateGate.decide(installing: updateInstalling) == .proceed,
               !updateCheckRunning, !autoUpdateRunning else { return }
         guard AutoUpdateSchedule.shouldCheck(now: Date(), lastCheck: AutoUpdateState.load(from: autoUpdateDefaults).lastCheck,
-                                             firstSlot: firstSlot) else { return }
+                                             answeredThisProcess: autoUpdateAnswered) else { return }
         autoUpdateRunning = true
         let local = AboutPanel.appVersion
         Task { @MainActor [weak self] in
@@ -1019,6 +1025,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var state = AutoUpdateState.load(from: self.autoUpdateDefaults)
             let outcome = AutoUpdateSchedule.apply(fetch: fetch, local: local, now: Date(), state: &state)
             state.save(to: self.autoUpdateDefaults)
+            if outcome != .unchanged { self.autoUpdateAnswered = true }
             switch outcome {
             case .unchanged:
                 return
@@ -1040,6 +1047,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// on Update, with the tag the background check found.
     @objc private func installOfferedUpdate() {
         guard let tag = updateOffer else { return }
+        // The installer quits the app: never in the middle of a dictation. The
+        // row stays; the user clicks it again once the pill is gone.
+        guard controller.state == .idle else {
+            NSSound.beep()
+            return
+        }
         guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
             runAlert(title: UpdateGate.busyAlertTitle, text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
             return

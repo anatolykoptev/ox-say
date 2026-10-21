@@ -58,12 +58,15 @@ public enum AutoUpdateSchedule {
         case unchanged
     }
 
-    /// Whether a check is due. The launch slot (`firstSlot`) always checks, so
-    /// the row is rebuilt after every relaunch without storing the release;
-    /// every other slot (the tick, a wake) waits out `interval`. A last check
-    /// in the future (the clock moved back) is due.
-    public static func shouldCheck(now: Date, lastCheck: Date?, firstSlot: Bool) -> Bool {
-        if firstSlot { return true }
+    /// Whether a check is due. A process that has not had an answer yet is
+    /// always due, so the row is rebuilt after every relaunch without storing
+    /// the release, and a launch check that failed or was skipped (no network
+    /// yet, a manual check running) is retried at the next slot instead of
+    /// waiting out the previous process's answer. Once this process got one,
+    /// every slot (the tick, a wake) waits out `interval`. A last check in the
+    /// future (the clock moved back) is due.
+    public static func shouldCheck(now: Date, lastCheck: Date?, answeredThisProcess: Bool) -> Bool {
+        if !answeredThisProcess { return true }
         guard let lastCheck else { return true }
         let elapsed = now.timeIntervalSince(lastCheck)
         return elapsed < 0 || elapsed >= interval
