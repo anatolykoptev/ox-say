@@ -5,6 +5,10 @@
 public enum L10nKey: String, CaseIterable {
     // The status menu's "Open OxSay…" row.
     case menuOpenOxSay = "menu.open_oxsay"
+    // The status menu's dictation-recovery rows and the unread-paste notice.
+    case menuRecentDictations = "menu.recent_dictations"
+    case menuPasteLastDictation = "menu.paste_last_dictation"
+    case noticePasteUnread = "notice.paste_unread"
     // The app menu while the app is .regular.
     case menuApp = "menu.app"
     case menuAppAbout = "menu.app.about"

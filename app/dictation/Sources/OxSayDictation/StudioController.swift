@@ -88,7 +88,7 @@ final class StudioController: NSObject {
         case .continueOnBattery: continueOnBattery()
         case .openVoiceoversFolder: openFolder()
         case .createVoice: designer.start()
-        case .pickVoice, .pickDictationKey, .pickSpeakKey: break
+        case .pickVoice, .pickDictationKey, .pickSpeakKey, .copyDictation, .pasteLastDictation: break
         }
     }
 

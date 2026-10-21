@@ -33,3 +33,9 @@
 "placeholder.voices" = "Здесь будут голоса.";
 "placeholder.dictation" = "Здесь будут настройки диктовки.";
 "placeholder.settings" = "Здесь будут настройки.";
+
+/* The status menu: the last dictations, and re-pasting the newest. */
+"menu.recent_dictations" = "Последние диктовки";
+"menu.paste_last_dictation" = "Вставить последнюю диктовку";
+/* Shown when a dictation was pasted but no app took it. */
+"notice.paste_unread" = "Текст не вставился — он в меню OxSay → Последние диктовки";

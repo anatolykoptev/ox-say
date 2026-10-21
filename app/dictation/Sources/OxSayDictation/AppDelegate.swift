@@ -33,6 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var controller: DictationController!
     private let recorder = MicRecorder()
     private let output = PasteOutput()
+    /// Plain-text clipboard writes for a click in Recent Dictations.
+    private let clipboard = SystemPasteboard(promised: false)
+    private let recentSubmenu = NSMenu()
+    private lazy var recentItem = submenuItem(L10nKey.menuRecentDictations.text, recentSubmenu)
+    private let pasteLastItem = NSMenuItem(title: L10nKey.menuPasteLastDictation.text,
+                                           action: nil, keyEquivalent: "")
     private let overlay = Overlay()
     private let speakService = SpeakServiceProvider()
     private let player = AudioPlayer()
@@ -219,6 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.onBusy = { NSSound.beep() }
         output.onNotice = { [weak self] message in self?.notice(message, kind: .outcome) }
+        output.onPasteUnread = { [weak self] in self?.notice(L10nKey.noticePasteUnread.text, kind: .outcome) }
         recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }
         recorder.onEnded = { [weak self] reason in
             // Transcribe what was recorded; say why it ended once it is delivered.
@@ -365,6 +372,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// follow it, and the registered key moves only when the plan says so.
     func menuWillOpen(_ menu: NSMenu) {
         rebuildVoiceMenus()
+        rebuildRecentMenu()
         refreshVoices()
         refreshServiceStatus()
         studio.render()
@@ -433,6 +441,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shortcutsSubmenu.autoenablesItems = false // or AppKit re-enables the greyed-out keys
         menu.addItem(submenuItem("Keyboard Shortcuts", shortcutsSubmenu))
         menu.addItem(submenuItem("Studio", studio.submenu))
+        menu.addItem(.separator())
+        menu.addItem(recentItem)
+        pasteLastItem.target = self
+        menu.addItem(pasteLastItem)
+        rebuildRecentMenu()
         menu.addItem(.separator())
         menu.addItem(submenuItem("Settings", buildSettingsMenu()))
         menu.addItem(.separator())
@@ -751,6 +764,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.handshakeWorkEnded()
             }
         }
+    }
+
+    /// Rebuilds "Recent Dictations" from the history, and greys out it and
+    /// "Paste Last Dictation" while the history is empty. A row carries its full
+    /// text, not an index: a dictation that lands while the menu is open must
+    /// not shift what a click copies. A submenu-less, action-less item is what
+    /// AppKit's auto-enable leaves greyed out.
+    private func rebuildRecentMenu() {
+        let history = controller.history
+        let enabled = RecentDictationsMenu.isEnabled(history: history)
+        MenuRenderer.fill(recentSubmenu, rows: RecentDictationsMenu.rows(history: history), target: self) { action in
+            guard case .copyDictation(let index) = action, history.texts.indices.contains(index) else {
+                return (#selector(copyRecentDictation(_:)), "")
+            }
+            return (#selector(copyRecentDictation(_:)), history.texts[index])
+        }
+        recentItem.submenu = enabled ? recentSubmenu : nil
+        pasteLastItem.action = enabled ? #selector(pasteLastDictation) : nil
+    }
+
+    @objc private func copyRecentDictation(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String, !text.isEmpty else { return }
+        clipboard.writeText(text)
+    }
+
+    /// "Paste Last Dictation": the newest dictation, through the same
+    /// PasteOutput path (secure input, focus, accessibility) as a fresh one.
+    /// The status menu does not take focus, so the front app is the target.
+    @objc private func pasteLastDictation() {
+        guard let text = controller.history.latest else { return }
+        output.target = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        _ = output.deliver(text)
     }
 
     /// Rebuilds the Voice submenu: per language the daemon's configured
