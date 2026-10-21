@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.1.24](https://github.com/anatolykoptev/ox-say/compare/v0.1.23...v0.1.24) (2026-10-21)
+
+
+### Added
+
+* **dictation:** check for updates automatically and show them in the menu ([#197](https://github.com/anatolykoptev/ox-say/issues/197)) ([3f3162f](https://github.com/anatolykoptev/ox-say/commit/3f3162fcd1a29e7ec73ee5b9f726bf60b18728de))
+* **dictation:** main window shell — Open OxSay, menu bar, activation policy ([#186](https://github.com/anatolykoptev/ox-say/issues/186)) ([f061bca](https://github.com/anatolykoptev/ox-say/commit/f061bcaf5f65cf14b63302ef8bb342bd981c1b3a))
+* **dictation:** never lose a dictation — recent dictations, paste last, unread-paste notice ([#192](https://github.com/anatolykoptev/ox-say/issues/192)) ([110e281](https://github.com/anatolykoptev/ox-say/commit/110e281714d63a38959b049d8467c2b2033780b1))
+* **dictation:** pause Music and Spotify while dictating ([#194](https://github.com/anatolykoptev/ox-say/issues/194)) ([cb1ba56](https://github.com/anatolykoptev/ox-say/commit/cb1ba56685c93366975b66f4c906cc522a60dd02))
+* **produce:** per-phrase delivery op (style, pause) and job clone_mode ([#182](https://github.com/anatolykoptev/ox-say/issues/182)) ([ff420d1](https://github.com/anatolykoptev/ox-say/commit/ff420d174761f337d8ad7b76383d0d6140fbac9f))
+* **produce:** per-phrase pace op (ffmpeg atempo) ([#184](https://github.com/anatolykoptev/ox-say/issues/184)) ([d913aeb](https://github.com/anatolykoptev/ox-say/commit/d913aeb2384acb605638e91a7b12601cb632984b))
+* **say:** expand Russian numbers on the plain-speech routes ([#178](https://github.com/anatolykoptev/ox-say/issues/178)) ([c1c9ebc](https://github.com/anatolykoptev/ox-say/commit/c1c9ebc95fe25806698ad48403aa2fac4fe568e8))
+
+
+### Fixed
+
+* **dictation:** keep the dictation pill visible — owner-scoped clears, deterministic show, overlay logging ([#190](https://github.com/anatolykoptev/ox-say/issues/190)) ([8e96101](https://github.com/anatolykoptev/ox-say/commit/8e961018a259f6b04f2dcea60a78c344bc062f37))
+
+
+### Performance
+
+* **engine:** open the first STT session after idle without a fixed 500 ms wait ([#196](https://github.com/anatolykoptev/ox-say/issues/196)) ([f85fc06](https://github.com/anatolykoptev/ox-say/commit/f85fc06177785f2320cf90dca0286d5b1f65288e))
+
 ## [0.1.23](https://github.com/anatolykoptev/ox-say/compare/v0.1.22...v0.1.23) (2026-10-16)
 
 
