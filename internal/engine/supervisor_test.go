@@ -532,3 +532,52 @@ func TestCrashBackoffEscalatesAcrossReady(t *testing.T) {
 		}
 	}
 }
+
+// A start that is quick to serve must not wait out a fixed health-poll
+// tick: the first dictation's session create after an idle stop pays it —
+// every wait landed on the second 250 ms tick (~510 ms) while the spawned
+// ox-stt was already serving. A child whose /health turns 200 ~30 ms into
+// the start must be reported ready well under one production tick.
+// Mutation: restore `case <-time.After(s.cfg.HealthPoll)` as the only wait
+// in waitHealthy (sleep 250 ms before the first probe) -> RED (>= 250 ms).
+func TestFastStartDoesNotWaitOutHealthPoll(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_START_DELAY_MS", "30")
+	sup := newTestSupervisor(t, dir, func(c *Config) {
+		c.HealthPoll = defaultHealthPoll // the production 250 ms cadence
+	})
+	start := time.Now()
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if el := time.Since(start); el >= 200*time.Millisecond {
+		t.Fatalf("EnsureReady on a ~30ms-ready child took %s — it waited out a fixed health-poll tick", el)
+	}
+}
+
+// A child that never answers /health still fails at the StartupTimeout
+// deadline — the finer early probes must neither shorten nor skip it.
+func TestNeverHealthyFailsAtStartupDeadline(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_START_DELAY_MS", "60000") // never ready in-budget
+	sup := newTestSupervisor(t, dir, func(c *Config) {
+		c.StartupTimeout = 400 * time.Millisecond
+	})
+	start := time.Now()
+	_, err := sup.EnsureReady(context.Background())
+	el := time.Since(start)
+	if err == nil {
+		t.Fatal("EnsureReady succeeded although the child never became healthy")
+	}
+	if !strings.Contains(err.Error(), "did not become healthy") {
+		t.Fatalf("EnsureReady error = %v, want the startup-deadline report", err)
+	}
+	if el < 350*time.Millisecond {
+		t.Fatalf("EnsureReady failed after %s — before the %s startup deadline", el, 400*time.Millisecond)
+	}
+	if el > 5*time.Second {
+		t.Fatalf("EnsureReady took %s — it did not honour the %s startup deadline", el, 400*time.Millisecond)
+	}
+}
