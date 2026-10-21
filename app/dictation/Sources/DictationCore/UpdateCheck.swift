@@ -51,6 +51,17 @@ public struct UpdateChecker {
         return (tag, page, obj["body"] as? String ?? "")
     }
 
+    /// `latestRelease` as a value, every failure mapped to an `UpdateError`.
+    public func fetchResult() async -> Result<(tag: String, url: URL?, body: String), UpdateError> {
+        do {
+            return .success(try await latestRelease())
+        } catch let error as UpdateError {
+            return .failure(error)
+        } catch {
+            return .failure(.unreachable(error.localizedDescription))
+        }
+    }
+
     /// Version triples compare numerically: "v0.1.14" > "0.1.13". An
     /// unparsable tag (a malformed remote, never a dev build's "0.0.0")
     /// sorts oldest so a garbage tag can never prompt a false update.

@@ -9,6 +9,9 @@ public enum L10nKey: String, CaseIterable {
     case menuRecentDictations = "menu.recent_dictations"
     case menuPasteLastDictation = "menu.paste_last_dictation"
     case noticePasteUnread = "notice.paste_unread"
+    // The automatic update check: the status menu's install row and the one notice per version.
+    case menuUpdateAvailable = "menu.update_available"
+    case noticeUpdateAvailable = "notice.update_available"
     // Pause Music While Dictating: the Settings row and the Automation notice.
     case menuPauseMedia = "menu.pause_media"
     case noticeMediaDenied = "notice.media_denied"
