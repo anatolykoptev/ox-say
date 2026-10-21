@@ -1,9 +1,10 @@
 import Foundation
 
 /// A row that can occupy the top of the status menu. The case order is the
-/// menu order: Repair above Allow pasting, then the always-present "Open
-/// OxSay…".
+/// menu order: "Update to vX.Y.Z…" above everything, Repair above Allow
+/// pasting, then the always-present "Open OxSay…".
 public enum TopRow: Int, CaseIterable, Equatable {
+    case update
     case repair
     case allowPasting
     case openOxSay
@@ -37,8 +38,10 @@ public enum TopRows {
     /// always sit above every other item). After applying the plan the menu
     /// holds exactly the wanted rows in the fixed order Repair, Allow
     /// pasting, Open OxSay — also when `current` arrives misordered.
-    public static func plan(current: [TopRow], wantRepair: Bool, wantAllowPasting: Bool) -> Plan {
+    public static func plan(current: [TopRow], wantRepair: Bool, wantAllowPasting: Bool,
+                            wantUpdate: Bool = false) -> Plan {
         var desired: [TopRow] = []
+        if wantUpdate { desired.append(.update) }
         if wantRepair { desired.append(.repair) }
         if wantAllowPasting { desired.append(.allowPasting) }
         desired.append(.openOxSay)

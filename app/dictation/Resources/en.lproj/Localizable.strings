@@ -44,3 +44,8 @@
 "menu.pause_media" = "Pause Music While Dictating";
 /* Shown once per launch when macOS refuses OxSay's Automation access to Music or Spotify. */
 "notice.media_denied" = "OxSay cannot pause Music or Spotify — allow it in System Settings → Privacy & Security → Automation";
+
+/* The status menu's install row when a newer release exists; %@ is the version, e.g. v0.1.23. */
+"menu.update_available" = "Update to %@…";
+/* Said once per version when the background check finds a newer release; %@ is the version. */
+"notice.update_available" = "A new OxSay version %@ is available — update from the menu";

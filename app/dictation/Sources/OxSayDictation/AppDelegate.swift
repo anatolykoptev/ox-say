@@ -23,6 +23,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The always-present top row that opens the main window.
     private let openItem = NSMenuItem(title: L10nKey.menuOpenOxSay.text,
                                     action: #selector(openMainWindow), keyEquivalent: "")
+    /// The top row that installs the release the background check found; its
+    /// title carries the version and it is in the menu only while `updateOffer`
+    /// is set.
+    private let updateItem = NSMenuItem(title: "", action: #selector(installOfferedUpdate), keyEquivalent: "")
+    /// The release tag the background check found newer than this build; nil
+    /// when none (also after a later check finds the build current).
+    private var updateOffer: String?
+    /// True while a background check is in flight, so a tick and a wake do not
+    /// stack two.
+    private var autoUpdateRunning = false
+    private var autoUpdateTimers: [Timer] = []
+    /// The symbol the status icon shows now; the update badge is drawn on it.
+    private var statusSymbol = "mic"
     /// Whether the Allow-pasting row is due, as of the last menu open; a
     /// handshake pass ending on an open menu re-syncs against it.
     private var wantAllowPasting = false
@@ -85,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The small version line at the bottom of the menu.
     private let footerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let updater = UpdateChecker()
+    private let autoUpdateDefaults = UserDefaults.standard
     /// True from the menu click until the result alert is up, so a second click
     /// does not stack a second check.
     private var updateCheckRunning = false
@@ -263,7 +277,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // /status refresh, which also runs the handshake.
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.refreshServiceStatus() }
+        ) { [weak self] _ in
+            self?.refreshServiceStatus()
+            self?.backgroundUpdateCheck(firstSlot: false)
+        }
+        startAutoUpdateChecks()
         studio.render()
 
         // Ask for both permissions up front, so the first dictation does not stall
@@ -426,11 +444,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// item": inserting an item the menu already holds raises an Objective-C
     /// exception the app cannot survive.
     private func syncTopRows(in menu: NSMenu) {
-        let items: [(TopRow, NSMenuItem)] = [(.repair, repairItem), (.allowPasting, allowPastingItem),
-                                             (.openOxSay, openItem)]
+        let items: [(TopRow, NSMenuItem)] = [(.update, updateItem), (.repair, repairItem),
+                                             (.allowPasting, allowPastingItem), (.openOxSay, openItem)]
         let current = menu.items.compactMap { item in items.first { $0.1 === item }?.0 }
         let plan = TopRows.plan(current: current, wantRepair: handshake.repairTarget != nil,
-                                wantAllowPasting: wantAllowPasting)
+                                wantAllowPasting: wantAllowPasting, wantUpdate: updateOffer != nil)
         for row in plan.remove {
             guard let item = items.first(where: { $0.0 == row })?.1, item.menu === menu else { continue }
             menu.removeItem(item)
@@ -447,6 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         allowPastingItem.target = self
         repairItem.target = self
         openItem.target = self
+        updateItem.target = self
         menu.addItem(statusLine)
         speakHint.isEnabled = false
         menu.addItem(speakHint)
@@ -708,8 +727,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             escapeKey?.onDown = { [weak self] in self?.controller.cancel() }
         }
         refreshPasteLastItem()
-        statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "OxSay Dictation")
+        statusSymbol = symbol
+        applyStatusIcon()
         statusItem.button?.contentTintColor = state == .recording ? .systemRed : nil
+    }
+
+    /// The status icon for `statusSymbol`, with a small dot at its corner while
+    /// an update is on offer.
+    private func applyStatusIcon() {
+        guard let base = NSImage(systemSymbolName: statusSymbol, accessibilityDescription: "OxSay Dictation") else { return }
+        guard updateOffer != nil else {
+            statusItem.button?.image = base
+            return
+        }
+        let size = base.size
+        let badged = NSImage(size: size, flipped: false) { rect in
+            base.draw(in: rect)
+            let dot: CGFloat = 5
+            NSBezierPath(ovalIn: NSRect(x: rect.maxX - dot, y: rect.maxY - dot, width: dot, height: dot)).fill()
+            return true
+        }
+        badged.isTemplate = true
+        badged.accessibilityDescription = "OxSay Dictation — update available"
+        statusItem.button?.image = badged
     }
 
     private func startWorkingTimer() {
@@ -938,19 +978,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateCheckPillOwner = overlay.owner
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let fetch: Result<(tag: String, url: URL?, body: String), UpdateError>
-            do {
-                fetch = .success(try await self.updater.latestRelease())
-            } catch let error as UpdateError {
-                fetch = .failure(error)
-            } catch {
-                fetch = .failure(.unreachable(error.localizedDescription))
-            }
+            let fetch = await self.updater.fetchResult()
             self.finishPill(self.updateCheckPillOwner)
             self.updateCheckPillOwner = nil
             self.updateCheckRunning = false
             self.present(UpdatePrompt.make(local: local, fetch: fetch))
         }
+    }
+
+    /// Arms the background check: once shortly after launch, then a tick that
+    /// asks the clock whether a day has passed (a wake asks it too).
+    private func startAutoUpdateChecks() {
+        autoUpdateTimers = [
+            Timer.scheduledTimer(withTimeInterval: AutoUpdateSchedule.firstDelay, repeats: false) { [weak self] _ in
+                self?.backgroundUpdateCheck(firstSlot: true)
+            },
+            Timer.scheduledTimer(withTimeInterval: AutoUpdateSchedule.tick, repeats: true) { [weak self] _ in
+                self?.backgroundUpdateCheck(firstSlot: false)
+            },
+        ]
+    }
+
+    /// The automatic update check. Silent by construction: no working pill, no
+    /// alert, no install. A newer release becomes the menu row, the icon dot
+    /// and one notice per version (through NoticeGate, so a dictation holds
+    /// it); a failed check changes nothing and the next slot retries.
+    private func backgroundUpdateCheck(firstSlot: Bool) {
+        guard UpdateGate.decide(installing: updateInstalling) == .proceed,
+              !updateCheckRunning, !autoUpdateRunning else { return }
+        guard AutoUpdateSchedule.shouldCheck(now: Date(), lastCheck: AutoUpdateState.load(from: autoUpdateDefaults).lastCheck,
+                                             firstSlot: firstSlot) else { return }
+        autoUpdateRunning = true
+        let local = AboutPanel.appVersion
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let fetch = await self.updater.fetchResult()
+            self.autoUpdateRunning = false
+            // An install that began while the request was out owns the menu now.
+            guard UpdateGate.decide(installing: self.updateInstalling) == .proceed else { return }
+            var state = AutoUpdateState.load(from: self.autoUpdateDefaults)
+            let outcome = AutoUpdateSchedule.apply(fetch: fetch, local: local, now: Date(), state: &state)
+            state.save(to: self.autoUpdateDefaults)
+            switch outcome {
+            case .unchanged:
+                return
+            case .clear:
+                self.updateOffer = nil
+            case .offer(let tag, let notify):
+                self.updateOffer = tag
+                self.updateItem.title = L10nKey.menuUpdateAvailable.text(AutoUpdateSchedule.displayVersion(tag))
+                if notify {
+                    self.notice(L10nKey.noticeUpdateAvailable.text(AutoUpdateSchedule.displayVersion(tag)))
+                }
+            }
+            if let menu = self.statusItem.menu { self.syncTopRows(in: menu) }
+            self.applyStatusIcon()
+        }
+    }
+
+    /// The "Update to vX.Y.Z…" row: the install the manual check's prompt runs
+    /// on Update, with the tag the background check found.
+    @objc private func installOfferedUpdate() {
+        guard let tag = updateOffer else { return }
+        guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
+            runAlert(title: UpdateGate.busyAlertTitle, text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
+            return
+        }
+        installUpdate(tag: tag, kind: .update)
     }
 
     /// Renders the prompt; the pure decision is UpdatePrompt.make.
