@@ -33,3 +33,9 @@
 "placeholder.voices" = "Voice management will live here.";
 "placeholder.dictation" = "Dictation settings will live here.";
 "placeholder.settings" = "Settings will live here.";
+
+/* The status menu: the last dictations, and re-pasting the newest. */
+"menu.recent_dictations" = "Recent Dictations";
+"menu.paste_last_dictation" = "Paste Last Dictation";
+/* Shown when a dictation was pasted but no app took it. */
+"notice.paste_unread" = "The text did not paste — it is in the OxSay menu → Recent Dictations";

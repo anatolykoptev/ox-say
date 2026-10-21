@@ -90,6 +90,9 @@ public final class DictationController {
     public var onTiming: ((DictationTiming) -> Void)?
     /// Length of the recording being transcribed (or last transcribed).
     public private(set) var recordingSeconds: Double = 0
+    /// Every delivered dictation, pasted or left on the clipboard: what a paste
+    /// that went nowhere cannot lose.
+    public let history = DictationHistory()
 
     private let recorder: Recorder
     private let transcriber: Transcriber
@@ -224,6 +227,8 @@ public final class DictationController {
             switch result {
             case .success(let text) where !text.isEmpty:
                 delivery = output.deliver(text)
+                // Whatever became of the paste, the text is kept.
+                history.add(text)
                 outcome = .delivered
             case .success:
                 outcome = .empty

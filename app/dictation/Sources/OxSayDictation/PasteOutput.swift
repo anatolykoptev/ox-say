@@ -81,6 +81,10 @@ final class PasteOutput: TextOutput {
     /// clipboard before the 3 s cap. `false` is what a paste that went nowhere
     /// looks like; feeds the `paste settled` log line.
     var onPasteSettled: ((Bool) -> Void)?
+    /// A posted paste settled unread and the user's clipboard went back: the
+    /// dictation is on neither the screen nor the clipboard, only in the
+    /// history. The app says so, and the clipboard stays the user's.
+    var onPasteUnread: (() -> Void)?
     /// The clipboard held a copy from another device (Universal Clipboard) and
     /// was left alone; the dictated text replaced it. A log line, not a notice.
     var onRemoteClipboardKept: (() -> Void)?
@@ -93,7 +97,11 @@ final class PasteOutput: TextOutput {
     /// A paste whose clipboard has not been given back yet.
     private var pending: (lease: ClipboardLease, timer: Timer, text: String)?
 
-    func deliver(_ text: String) -> Delivery {
+    func deliver(_ text: String) -> Delivery { deliver(text, to: target) }
+
+    /// Delivers to an explicit app, leaving `target` — the in-flight
+    /// dictation's — untouched (Paste Last Dictation).
+    func deliver(_ text: String, to target: pid_t?) -> Delivery {
         // A previous paste still waiting for its read: give its clipboard back
         // now, so this one borrows the user's contents and not the old dictation.
         settle()
@@ -131,18 +139,9 @@ final class PasteOutput: TextOutput {
         guard let pending else { return }
         self.pending = nil
         pending.timer.invalidate()
-        onPasteSettled?(lending.readAt != nil)
-        let restored = pending.lease.release()
-        if pending.lease.keptRemote {
-            plain.writeText(pending.text)
-            onRemoteClipboardKept?()
-        } else if !restored, let notice = pending.lease.notice {
-            // The user's clipboard is not coming back, so the dictation stays on
-            // it. Write it plainly: the lent copy is a transient promise, which
-            // clipboard history skips and which dies with this process.
-            plain.writeText(pending.text)
-            onNotice?(notice)
-        }
+        PasteSettlement.settle(lease: pending.lease, text: pending.text, read: lending.readAt != nil, plain: plain,
+                               onSettled: onPasteSettled, onRemoteClipboardKept: onRemoteClipboardKept,
+                               onNotice: onNotice, onUnread: onPasteUnread)
     }
 
     private func postCommandV() {

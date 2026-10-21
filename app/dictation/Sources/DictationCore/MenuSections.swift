@@ -32,6 +32,10 @@ public enum MenuAction: Equatable {
     case continueOnBattery
     case openVoiceoversFolder
     case createVoice
+    // The Recent Dictations submenu and its sibling row.
+    /// An index into `DictationHistory.texts` (newest first): copy it.
+    case copyDictation(Int)
+    case pasteLastDictation
 }
 
 public enum MenuRow: Equatable {
