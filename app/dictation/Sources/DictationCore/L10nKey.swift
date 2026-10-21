@@ -9,6 +9,9 @@ public enum L10nKey: String, CaseIterable {
     case menuRecentDictations = "menu.recent_dictations"
     case menuPasteLastDictation = "menu.paste_last_dictation"
     case noticePasteUnread = "notice.paste_unread"
+    // Pause Music While Dictating: the Settings row and the Automation notice.
+    case menuPauseMedia = "menu.pause_media"
+    case noticeMediaDenied = "notice.media_denied"
     // The app menu while the app is .regular.
     case menuApp = "menu.app"
     case menuAppAbout = "menu.app.about"

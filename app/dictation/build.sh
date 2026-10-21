@@ -143,6 +143,10 @@ cat > "$app/Contents/Info.plist" <<EOF
             </dict>
         </dict>
     </array>
+    <!-- Pause Music While Dictating: the first Apple Event to Music or Spotify
+         makes macOS ask for Automation access with this text. -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>OxSay pauses Music and Spotify while you dictate, so the microphone hears only you.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>OxSay Dictation records your voice while you hold the dictation key and sends it to the ox-say daemon on this Mac, which turns it into text. Nothing leaves your Mac.</string>
 </dict>
@@ -150,7 +154,10 @@ cat > "$app/Contents/Info.plist" <<EOF
 EOF
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 
-# The hardened runtime blocks the microphone unless this entitlement is present.
+# The hardened runtime blocks the microphone unless the audio-input entitlement
+# is present, and blocks Apple Events to Music and Spotify (Pause Music While
+# Dictating) unless apple-events is. scripts/sign-release.sh pins this exact
+# pair for the Developer ID signature.
 entitlements=$(mktemp "${TMPDIR:-/tmp}/ox-say-dictation.XXXXXX")
 trap 'rm -f "$entitlements"' EXIT
 cat > "$entitlements" <<EOF
@@ -158,6 +165,7 @@ cat > "$entitlements" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>com.apple.security.automation.apple-events</key><true/>
     <key>com.apple.security.device.audio-input</key><true/>
 </dict>
 </plist>

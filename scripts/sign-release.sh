@@ -59,7 +59,8 @@ if [ -n "${SIGN_KEYCHAIN:-}" ]; then
 fi
 
 # The one shape of bundle build.sh makes (plus the stapled ticket), and the only
-# entitlement it may carry. The signature vouches for exactly this: anything
+# entitlements it may carry (audio-input for the microphone, apple-events to
+# pause Music and Spotify). The signature vouches for exactly these: anything
 # more is refused, not signed.
 bundle_files='Contents
 Contents/CodeResources
@@ -75,7 +76,7 @@ Contents/Resources/ru.lproj
 Contents/Resources/ru.lproj/Localizable.strings
 Contents/_CodeSignature
 Contents/_CodeSignature/CodeResources'
-entitlements_json='{"com.apple.security.device.audio-input":true}'
+entitlements_json='{"com.apple.security.automation.apple-events":true,"com.apple.security.device.audio-input":true}'
 
 # check_bundle <app>: a real directory holding only those files, no symlinks,
 # with our identifier and executable.
@@ -130,10 +131,10 @@ ditto "$src_app" "$work/ox-say/app/OxSayDictation.app"
 app=$work/ox-say/app/OxSayDictation.app
 
 codesign -d --entitlements - --xml "$app" > "$work/built.plist" 2>/dev/null
-# An exact string match holds for this single key; plutil does not sort keys,
-# so allowing a second one needs a parsed comparison instead.
+# plutil -convert json writes a dictionary's keys sorted, so the exact string
+# match holds for these two keys; a third needs this order kept in mind.
 if [ "$(plutil -convert json -o - "$work/built.plist")" != "$entitlements_json" ]; then
-    echo "the app's entitlements differ from the one it may carry ($entitlements_json):" >&2
+    echo "the app's entitlements differ from the ones it may carry ($entitlements_json):" >&2
     plutil -convert json -o - "$work/built.plist" >&2 || true
     exit 1
 fi
