@@ -71,16 +71,24 @@ type Config struct {
 
 	// Tunables — zero values get sane defaults; tests override.
 	IdleTick    time.Duration // idle check interval (default min(IdleStop/2, 1s))
-	HealthPoll  time.Duration // /health poll interval while starting (default 250ms)
 	KillGrace   time.Duration // SIGTERM → SIGKILL escalation delay (default 5s)
 	LogMaxBytes int64         // engine.log truncation threshold (default 10MB)
 }
 
 const (
-	defaultHealthPoll  = 250 * time.Millisecond
 	defaultKillGrace   = 5 * time.Second
 	defaultLogMaxBytes = 10 << 20
 	readyResetAfter    = 60 * time.Second // Ready this long → crash backoff resets
+	// healthProbeInit is the first real wait between /health probes — the
+	// first probe fires at once. Each failure doubles it up to
+	// healthProbeMax: the resident ox-stt becomes healthy in the
+	// (250, 500] ms window, so startup probes must stay on a 25 ms grid —
+	// a coarser cap only reports such readiness on the next grid tick.
+	// Probes run every ≤25 ms for up to StartupTimeout — cheap on
+	// loopback: children bind late and probes before bind are
+	// connection-refused.
+	healthProbeInit = 10 * time.Millisecond
+	healthProbeMax  = 25 * time.Millisecond
 )
 
 // Status is a point-in-time snapshot for /status and the engine_status tool.
@@ -160,9 +168,6 @@ func New(cfg Config) (*Supervisor, error) {
 	}
 	if cfg.StartupTimeout <= 0 {
 		cfg.StartupTimeout = 180 * time.Second
-	}
-	if cfg.HealthPoll <= 0 {
-		cfg.HealthPoll = defaultHealthPoll
 	}
 	if cfg.KillGrace <= 0 {
 		cfg.KillGrace = defaultKillGrace
@@ -730,16 +735,22 @@ func (s *Supervisor) finishStart(c *child, err error) {
 	}
 }
 
-// waitHealthy polls /health until 200, the child exits, or ctx ends.
+// waitHealthy polls /health until 200, the child exits, or ctx ends. The
+// first probe fires immediately and the interval then doubles from
+// healthProbeInit up to healthProbeMax on a fixed grid: a child already
+// serving (a restart that re-binds in tens of ms, or the (250, 500] ms
+// window a resident ox-stt warms in) must not wait out a whole tick
+// before the probe that catches it.
 func (s *Supervisor) waitHealthy(ctx context.Context, c *child) error {
 	url := c.baseURL + "/health"
+	delay := time.Duration(0)
 	for {
 		select {
 		case <-c.done:
 			return fmt.Errorf("engine exited during startup: %w", c.waitErr)
 		case <-ctx.Done():
 			return fmt.Errorf("engine did not become healthy within %s", s.cfg.StartupTimeout)
-		case <-time.After(s.cfg.HealthPoll):
+		case <-time.After(delay):
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
@@ -752,6 +763,7 @@ func (s *Supervisor) waitHealthy(ctx context.Context, c *child) error {
 				return nil
 			}
 		}
+		delay = min(max(2*delay, healthProbeInit), healthProbeMax)
 	}
 }
 

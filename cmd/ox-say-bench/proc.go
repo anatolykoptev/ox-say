@@ -16,11 +16,10 @@ import (
 )
 
 const (
-	startupTimeout  = 5 * time.Minute       // first start compiles the Metal library
-	benchHealthPoll = 10 * time.Millisecond // the default 250 ms would quantize start times
-	rssPoll         = 200 * time.Millisecond
-	kibPerMiB       = 1024
-	footprintPeak   = "Physical footprint (peak):"
+	startupTimeout = 5 * time.Minute // first start compiles the Metal library
+	rssPoll        = 200 * time.Millisecond
+	kibPerMiB      = 1024
+	footprintPeak  = "Physical footprint (peak):"
 )
 
 // freePort asks the kernel for an unused loopback port.
@@ -55,7 +54,6 @@ func startChild(ctx context.Context, work, name string, cfg engine.Config) (*chi
 	cfg.LogDir = filepath.Join(work, "logs")
 	cfg.PidPath = filepath.Join(work, "run", name+".pid")
 	cfg.StartupTimeout = startupTimeout
-	cfg.HealthPoll = benchHealthPoll
 	cfg.Logger = slog.New(slog.DiscardHandler)
 	sup, err := engine.New(cfg)
 	if err != nil {

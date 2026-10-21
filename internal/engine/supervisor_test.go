@@ -34,7 +34,6 @@ func newTestSupervisor(t *testing.T, dir string, mutate func(*Config)) *Supervis
 		Port:           testutil.FreePort(t),
 		MaxBatch:       1,
 		StartupTimeout: 15 * time.Second,
-		HealthPoll:     10 * time.Millisecond,
 		KillGrace:      2 * time.Second,
 		LogDir:         filepath.Join(dir, "logs"),
 		PidPath:        filepath.Join(dir, "run", "engine.pid"),
@@ -530,5 +529,75 @@ func TestCrashBackoffEscalatesAcrossReady(t *testing.T) {
 		if got != i {
 			t.Fatalf("after crash %d failCount = %d, want %d", i, got, i)
 		}
+	}
+}
+
+// A start that is quick to serve must not wait out a fixed health-poll
+// tick: the first dictation's session create after an idle stop pays it —
+// every wait landed on the second 250 ms tick (~510 ms) while the spawned
+// ox-stt was already serving. A child whose /health turns 200 ~30 ms into
+// the start must be reported ready well under one production tick.
+// Mutation: restore `case <-time.After(250 * time.Millisecond)` as the only
+// wait in waitHealthy (sleep 250 ms before the first probe) -> RED (>= 250 ms).
+func TestFastStartDoesNotWaitOutHealthPoll(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_START_DELAY_MS", "30")
+	sup := newTestSupervisor(t, dir, nil)
+	start := time.Now()
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if el := time.Since(start); el >= 200*time.Millisecond {
+		t.Fatalf("EnsureReady on a ~30ms-ready child took %s — it waited out a fixed health-poll tick", el)
+	}
+}
+
+// A child that never answers /health still fails at the StartupTimeout
+// deadline — the finer early probes must neither shorten nor skip it.
+func TestNeverHealthyFailsAtStartupDeadline(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_START_DELAY_MS", "60000") // never ready in-budget
+	sup := newTestSupervisor(t, dir, func(c *Config) {
+		c.StartupTimeout = 400 * time.Millisecond
+	})
+	start := time.Now()
+	_, err := sup.EnsureReady(context.Background())
+	el := time.Since(start)
+	if err == nil {
+		t.Fatal("EnsureReady succeeded although the child never became healthy")
+	}
+	if !strings.Contains(err.Error(), "did not become healthy") {
+		t.Fatalf("EnsureReady error = %v, want the startup-deadline report", err)
+	}
+	if el < 350*time.Millisecond {
+		t.Fatalf("EnsureReady failed after %s — before the %s startup deadline", el, 400*time.Millisecond)
+	}
+	if el > 5*time.Second {
+		t.Fatalf("EnsureReady took %s — it did not honour the %s startup deadline", el, 400*time.Millisecond)
+	}
+}
+
+// The resident ox-stt becomes healthy in the (250, 500] ms window — every
+// cold session create in the live log lands at 509-521 ms. With the backoff
+// capped at the old fixed 250 ms health poll, such readiness was only
+// reported on the ~560 ms grid point, slower than the fixed wait it
+// replaced. The startup probes are capped by healthProbeMax (25 ms), so a
+// child whose /health turns 200 ~350 ms into the start must be reported
+// under 450 ms (358-386 ms measured under -race).
+// Mutation: cap the backoff at a fixed 250 ms instead of healthProbeMax
+// in waitHealthy -> RED (readiness caught on the ~560 ms tick, ~578 ms).
+func TestMidWindowHealthCaughtWithinProbeCap(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_START_DELAY_MS", "350")
+	sup := newTestSupervisor(t, dir, nil)
+	start := time.Now()
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if el := time.Since(start); el >= 450*time.Millisecond {
+		t.Fatalf("EnsureReady on a ~350ms-ready child took %s — startup probes are not on the ≤25 ms grid", el)
 	}
 }

@@ -147,7 +147,6 @@ func newTestDaemonVox(t *testing.T, dir string, editCfg func(*config.Config), tu
 		editCfg(cfg)
 	}
 	fast := func(ec *engine.Config) {
-		ec.HealthPoll = 10 * time.Millisecond
 		ec.KillGrace = 2 * time.Second
 	}
 	d, err := newDaemon(cfg, testLogger(t),
