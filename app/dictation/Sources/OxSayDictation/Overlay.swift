@@ -1,4 +1,8 @@
 import AppKit
+import DictationCore
+import os
+
+private let overlayLog = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "overlay")
 
 /// The pill at the bottom of the screen that shows dictation is happening: a
 /// pulsing dot and bars that move with your voice while recording, a spinner
@@ -22,13 +26,20 @@ final class Overlay {
     private var showingMessage = false
     private var messageTimeout: DispatchWorkItem?
     /// Bumped by every show, so a fade-out that finishes after a new show does
-    /// not order the new pill out.
+    /// not order the new pill out — and so a pending visibility check can tell
+    /// it is about a stale show.
     private var shown = 0
-    /// True from hide() until its fade-out ends or a show() supersedes it. The
-    /// fade's target alpha is applied asynchronously, so the panel still reads
-    /// alpha 1 right after hide(); show() needs this flag to know the pending
-    /// fade-out must be turned back into a fade-in.
-    private var fadingOut = false
+    /// What the current show put up: "listening", "working", "playing" or
+    /// "message" — the kind each show/hide log line carries.
+    private var kind = "working"
+    /// True from a show() until a hide() actually fades the panel out; a
+    /// pending visibility check skips the pill a hide has since taken down.
+    private var wantsVisible = false
+    /// The controller's dictation state, read live. While it is recording or
+    /// transcribing the pill belongs to the dictation: a hide() that lands
+    /// mid-dictation (a stray finish, a message timeout, a playback ending)
+    /// does not take it down — the dictation look is put back instead.
+    var dictationState: (() -> DictationState)?
     private let playPauseButton = NSButton()
     private let stopButton = NSButton()
     /// True while the pill shows playback controls — the only state where it
@@ -120,6 +131,7 @@ final class Overlay {
     /// Recording: bars "breathe" in grey until the first sound arrives.
     func showListening() {
         owner += 1
+        kind = "listening"
         leaveMessage()
         leavePlaying()
         bars.reset()
@@ -133,6 +145,7 @@ final class Overlay {
 
     func showWorking() {
         owner += 1
+        kind = "working"
         leaveMessage()
         leavePlaying()
         bars.stop()
@@ -201,6 +214,7 @@ final class Overlay {
     /// takes mouse events; dictation keeps passing clicks through.
     func showPlaying() {
         owner += 1
+        kind = "playing"
         leaveMessage()
         leavePlaying()
         playing = true
@@ -278,6 +292,7 @@ final class Overlay {
     /// Says what went wrong (or where the text went) for a few seconds.
     func showMessage(_ text: String) {
         owner += 1
+        kind = "message"
         leavePlaying()
         bars.stop()
         bars.isHidden = true
@@ -298,8 +313,9 @@ final class Overlay {
         show()
         messageTimeout?.cancel()
         let timeout = DispatchWorkItem { [weak self] in
-            self?.showingMessage = false
-            self?.hide()
+            guard let self else { return }
+            self.showingMessage = false
+            self.hide()
         }
         messageTimeout = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: timeout)
@@ -320,9 +336,19 @@ final class Overlay {
         guard newSize != size else { return }
         size = newSize
         if panel.isVisible {
-            panel.setFrame(NSRect(x: panel.frame.midX - newSize.width / 2, y: panel.frame.minY,
-                                  width: newSize.width, height: newSize.height),
-                           display: true, animate: animated)
+            let frame = NSRect(x: panel.frame.midX - newSize.width / 2, y: panel.frame.minY,
+                               width: newSize.width, height: newSize.height)
+            if animated {
+                // setFrame(_:display:animate:) spends the animation on the main
+                // thread — on every live-text update that stalls the run loop.
+                // The animator inside a group lets the window server drive it.
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.15
+                    panel.animator().setFrame(frame, display: true)
+                }
+            } else {
+                panel.setFrame(frame, display: true)
+            }
         } else {
             panel.setContentSize(newSize)
         }
@@ -338,14 +364,23 @@ final class Overlay {
         spinner.stopAnimation(nil)
         liveText.stringValue = ""
         liveText.isHidden = true
+        if let state = dictationState?(), state != .idle {
+            // A hide landing mid-dictation must not take the pill — it belongs
+            // to the dictation until the key is up. Put the dictation look
+            // back instead of fading out.
+            let look = state == .recording ? "listening" : "working"
+            overlayLog.error("overlay hide during dictation: re-showing kind=\(look, privacy: .public) owner=\(self.owner, privacy: .public)")
+            if state == .recording { showListening() } else { showWorking() }
+            return
+        }
+        overlayLog.notice("overlay hide kind=\(self.kind, privacy: .public) owner=\(self.owner, privacy: .public)")
+        wantsVisible = false
         let fading = shown
-        fadingOut = true
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.15
             panel.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
             guard let self, self.shown == fading else { return }
-            self.fadingOut = false
             self.panel.orderOut(nil)
         })
     }
@@ -367,20 +402,63 @@ final class Overlay {
 
     private func show() {
         shown += 1
+        wantsVisible = true
         recentre()
-        // A hide() still fading out reads alpha 1 here, so without the flag the
-        // pill would stay up only until that fade lands, then be invisible.
-        let revive = fadingOut
-        fadingOut = false
-        if !panel.isVisible || panel.alphaValue < 1 || revive {
-            panel.alphaValue = 0
+        // Deterministic: an alpha animation still in flight (a fade-out that a
+        // new show is superseding) is cut short by a zero-duration animation to
+        // alpha 1, then alpha is set synchronously. panel.alphaValue is never
+        // read to decide anything — it is stale while animations run.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            panel.animator().alphaValue = 1
+        }
+        panel.alphaValue = 1
+        panel.orderFrontRegardless()
+        panel.invalidateShadow()
+        overlayLog.notice("overlay show kind=\(self.kind, privacy: .public) owner=\(self.owner, privacy: .public)")
+        let expected = shown
+        let ownerAtShow = owner
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.checkVisible(expected: expected, owner: ownerAtShow, healed: false)
+        }
+    }
+
+    /// The window server's truth about the pill's own window, ~250 ms after a
+    /// show: a panel that should be up but is not onscreen or not opaque gets
+    /// logged at fault and re-shown once, then checked a second time.
+    private func checkVisible(expected: Int, owner ownerAtShow: Int, healed: Bool) {
+        guard shown == expected, wantsVisible else { return }
+        let server = windowServerState()
+        let frame = NSStringFromRect(panel.frame)
+        let visibleFrame = (NSScreen.screens.first { $0.frame.intersects(panel.frame) } ?? NSScreen.main)
+            .map { NSStringFromRect($0.visibleFrame) } ?? "none"
+        let detail = "owner=\(ownerAtShow) onscreen=\(server.onscreen) alpha=\(server.alpha) frame=\(frame) visible_frame=\(visibleFrame)\(healed ? " (after self-heal)" : "")"
+        if server.onscreen && server.alpha >= 1 {
+            overlayLog.notice("overlay check \(detail, privacy: .public)")
+        } else if healed {
+            overlayLog.fault("overlay not visible after self-heal \(detail, privacy: .public)")
+        } else {
+            overlayLog.fault("overlay not visible \(detail, privacy: .public)")
+            // Self-heal once: opaque, front again, recentred — then re-check.
+            panel.alphaValue = 1
+            recentre()
             panel.orderFrontRegardless()
-            panel.invalidateShadow()
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.12
-                panel.animator().alphaValue = 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.checkVisible(expected: expected, owner: ownerAtShow, healed: true)
             }
         }
+    }
+
+    /// The pill's window as the window server sees it: onscreen and alpha.
+    /// (false, 0) when the panel has no window yet or the list knows none.
+    private func windowServerState() -> (onscreen: Bool, alpha: Double) {
+        guard panel.windowNumber > 0,
+              let list = CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(panel.windowNumber)) as? [[String: Any]],
+              let entry = list.first else {
+            return (false, 0)
+        }
+        return ((entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? false,
+                (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0)
     }
 
     private static func pill(radius: CGFloat) -> NSImage {
