@@ -71,13 +71,11 @@ type Config struct {
 
 	// Tunables — zero values get sane defaults; tests override.
 	IdleTick    time.Duration // idle check interval (default min(IdleStop/2, 1s))
-	HealthPoll  time.Duration // kept for config compatibility — startup /health probing runs on the healthProbeInit/healthProbeMax grid, not this field (default 250ms)
 	KillGrace   time.Duration // SIGTERM → SIGKILL escalation delay (default 5s)
 	LogMaxBytes int64         // engine.log truncation threshold (default 10MB)
 }
 
 const (
-	defaultHealthPoll  = 250 * time.Millisecond
 	defaultKillGrace   = 5 * time.Second
 	defaultLogMaxBytes = 10 << 20
 	readyResetAfter    = 60 * time.Second // Ready this long → crash backoff resets
@@ -85,8 +83,10 @@ const (
 	// first probe fires at once. Each failure doubles it up to
 	// healthProbeMax: the resident ox-stt becomes healthy in the
 	// (250, 500] ms window, so startup probes must stay on a 25 ms grid —
-	// a coarser cap only reports such readiness on the next grid tick. A
-	// loopback GET every 25 ms for under a second is negligible.
+	// a coarser cap only reports such readiness on the next grid tick.
+	// Probes run every ≤25 ms for up to StartupTimeout — cheap on
+	// loopback: children bind late and probes before bind are
+	// connection-refused.
 	healthProbeInit = 10 * time.Millisecond
 	healthProbeMax  = 25 * time.Millisecond
 )
@@ -168,9 +168,6 @@ func New(cfg Config) (*Supervisor, error) {
 	}
 	if cfg.StartupTimeout <= 0 {
 		cfg.StartupTimeout = 180 * time.Second
-	}
-	if cfg.HealthPoll <= 0 {
-		cfg.HealthPoll = defaultHealthPoll
 	}
 	if cfg.KillGrace <= 0 {
 		cfg.KillGrace = defaultKillGrace
@@ -740,10 +737,10 @@ func (s *Supervisor) finishStart(c *child, err error) {
 
 // waitHealthy polls /health until 200, the child exits, or ctx ends. The
 // first probe fires immediately and the interval then doubles from
-// healthProbeInit up to healthProbeMax — independent of cfg.HealthPoll: a
-// child already serving (a restart that re-binds in tens of ms, or the
-// (250, 500] ms window a resident ox-stt warms in) must not wait out a
-// whole tick before the probe that catches it.
+// healthProbeInit up to healthProbeMax on a fixed grid: a child already
+// serving (a restart that re-binds in tens of ms, or the (250, 500] ms
+// window a resident ox-stt warms in) must not wait out a whole tick
+// before the probe that catches it.
 func (s *Supervisor) waitHealthy(ctx context.Context, c *child) error {
 	url := c.baseURL + "/health"
 	delay := time.Duration(0)
