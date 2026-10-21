@@ -28,6 +28,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var wantAllowPasting = false
     private let toggleItem = NSMenuItem(title: "Toggle Mode (press to start, press again to stop)", action: #selector(toggleMode), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
+    private let pauseMediaItem = NSMenuItem(title: L10nKey.menuPauseMedia.text,
+                                           action: #selector(togglePauseMedia), keyEquivalent: "")
+    /// Pauses Music and Spotify while a dictation records and resumes them
+    /// after; driven by the controller's state changes (`controller.onState`).
+    private lazy var mediaPause = MediaPauseSystem.makeRunner { [weak self] in
+        DispatchQueue.main.async { self?.notice(L10nKey.noticeMediaDenied.text) }
+    }
     private var hotKey: HotKey?
     private var escapeKey: HotKey?
     private var controller: DictationController!
@@ -209,7 +216,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // controller's state before letting any hide take it down.
         overlay.dictationState = { [weak self] in self?.controller?.state ?? .idle }
         streamer.onText = { [overlay] text in overlay.setLiveText(text) }
-        controller.onState = { [weak self] state in self?.show(state) }
+        // Every way a recording ends (release, tap, esc, error, length cap)
+        // changes this state, so one forward covers the media resume.
+        controller.onState = { [weak self] state in self?.mediaPause.dictationStateChanged(state); self?.show(state) }
         controller.onError = { [weak self] message in self?.notice(message, kind: .outcome) }
         // One line per dictation, no text: read with
         // `log show --predicate 'subsystem == "io.github.anatolykoptev.ox-say.dictation"'`.
@@ -273,6 +282,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Quitting mid-dictation must not leave the music paused.
+        mediaPause.dictationStateChanged(.idle)
+        mediaPause.drain()
         output.settle()
     }
 
@@ -640,6 +652,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginItem.target = self
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
         settings.addItem(loginItem)
+        pauseMediaItem.target = self
+        pauseMediaItem.state = MediaPauseSetting.isEnabled(.standard) ? .on : .off
+        settings.addItem(pauseMediaItem)
         settings.addItem(.separator())
         settings.addItem(withTitle: "Microphone Access…", action: #selector(openMicrophoneSettings), keyEquivalent: "").target = self
         settings.addItem(withTitle: "Accessibility Access…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
@@ -1098,6 +1113,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             notice("Start at login: \(error.localizedDescription)")
         }
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+    }
+
+    @objc private func togglePauseMedia() {
+        let enabled = !MediaPauseSetting.isEnabled(.standard)
+        UserDefaults.standard.set(enabled, forKey: MediaPauseSetting.defaultsKey)
+        pauseMediaItem.state = enabled ? .on : .off
     }
 
     @objc private func openMicrophoneSettings() {
