@@ -148,6 +148,26 @@ final class PasteSettlementTests: XCTestCase {
         board.userCopies("new")
         let calls = settle(board, lease: lease, read: false)
         XCTAssertEqual(board.text, "new")
+        XCTAssertEqual(calls.unread, 1, "the paste went nowhere and the text is not on the clipboard: say so")
+        XCTAssertEqual(calls.notices, [])
+    }
+
+    // Mutation: restore the `restored &&` condition on the unread branch in
+    // PasteSettlement.settle -> RED here (F5: unread, not restored, no notice).
+    func testAnUnreadPasteTheClipboardWasNotRestoredForStillSaysSo() {
+        let board = FakePasteboard(text: "old")
+        let lease = ClipboardLease(board: board, text: "dictated text")
+        board.userCopies("new")
+        let calls = settle(board, lease: lease, read: false)
+        XCTAssertNil(lease.notice)
+        XCTAssertEqual(calls.unread, 1)
+    }
+
+    func testAReadPasteTheClipboardWasNotRestoredForIsQuiet() {
+        let board = FakePasteboard(text: "old")
+        let lease = ClipboardLease(board: board, text: "dictated text")
+        board.userCopies("new")
+        let calls = settle(board, lease: lease, read: true)
         XCTAssertEqual(calls.unread, 0)
     }
 }

@@ -97,7 +97,11 @@ final class PasteOutput: TextOutput {
     /// A paste whose clipboard has not been given back yet.
     private var pending: (lease: ClipboardLease, timer: Timer, text: String)?
 
-    func deliver(_ text: String) -> Delivery {
+    func deliver(_ text: String) -> Delivery { deliver(text, to: target) }
+
+    /// Delivers to an explicit app, leaving `target` — the in-flight
+    /// dictation's — untouched (Paste Last Dictation).
+    func deliver(_ text: String, to target: pid_t?) -> Delivery {
         // A previous paste still waiting for its read: give its clipboard back
         // now, so this one borrows the user's contents and not the old dictation.
         settle()

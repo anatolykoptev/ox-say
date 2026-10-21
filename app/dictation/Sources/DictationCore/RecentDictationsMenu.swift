@@ -11,4 +11,11 @@ public enum RecentDictationsMenu {
 
     /// Whether "Recent Dictations" and "Paste Last Dictation" can be chosen.
     public static func isEnabled(history: DictationHistory) -> Bool { !history.isEmpty }
+
+    /// Whether "Paste Last Dictation" can run: there is a dictation to paste and
+    /// none is running. Mid-dictation the paste target, the clipboard lease and
+    /// the pill all belong to that dictation.
+    public static func canPasteLast(history: DictationHistory, dictation: DictationState) -> Bool {
+        isEnabled(history: history) && dictation == .idle
+    }
 }

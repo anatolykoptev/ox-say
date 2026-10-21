@@ -132,6 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Why the recording ended on its own (length cap, microphone change); said
     /// once the text has been delivered.
     private var endedReason: String?
+    /// A notice that landed mid-dictation, shown once the dictation is idle.
+    private var noticeGate = NoticeGate()
     private var termSource: DispatchSourceSignal?
     /// The key that is registered right now; what the menu tells the user to press.
     private var active: Shortcut?
@@ -653,6 +655,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 controller.mode == .hold ? "Hold \(key.title) and speak" : "Press \(key.title) to start and stop"
             } ?? "No dictation key"
             overlay.finish()
+            if let held = noticeGate.release(state: controller.state) {
+                notice(held.message, kind: held.kind)
+            }
             if let reason = endedReason {
                 endedReason = nil
                 notice(reason)
@@ -687,6 +692,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             escapeKey = HotKey(keyCode: UInt32(kVK_Escape), modifiers: 0)
             escapeKey?.onDown = { [weak self] in self?.controller.cancel() }
         }
+        refreshPasteLastItem()
         statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "OxSay Dictation")
         statusItem.button?.contentTintColor = state == .recording ? .systemRed : nil
     }
@@ -781,7 +787,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return (#selector(copyRecentDictation(_:)), history.texts[index])
         }
         recentItem.submenu = enabled ? recentSubmenu : nil
-        pasteLastItem.action = enabled ? #selector(pasteLastDictation) : nil
+        refreshPasteLastItem()
+    }
+
+    /// "Paste Last Dictation" is greyed out while the history is empty and
+    /// while a dictation runs; `show` re-evaluates it on every state change.
+    private func refreshPasteLastItem() {
+        let canPaste = RecentDictationsMenu.canPasteLast(history: controller.history, dictation: controller.state)
+        pasteLastItem.action = canPaste ? #selector(pasteLastDictation) : nil
     }
 
     @objc private func copyRecentDictation(_ sender: NSMenuItem) {
@@ -791,11 +804,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// "Paste Last Dictation": the newest dictation, through the same
     /// PasteOutput path (secure input, focus, accessibility) as a fresh one.
-    /// The status menu does not take focus, so the front app is the target.
+    /// The status menu does not take focus, so the front app is the target,
+    /// passed to the delivery directly: `output.target` is the running
+    /// dictation's and is never reassigned here. Refused while one runs (the
+    /// menu row can still be clicked if a dictation started with it open).
     @objc private func pasteLastDictation() {
-        guard let text = controller.history.latest else { return }
-        output.target = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        _ = output.deliver(text)
+        guard RecentDictationsMenu.canPasteLast(history: controller.history, dictation: controller.state),
+              let text = controller.history.latest else { return }
+        _ = output.deliver(text, to: NSWorkspace.shared.frontmostApplication?.processIdentifier)
     }
 
     /// Rebuilds the Voice submenu: per language the daemon's configured
@@ -1042,9 +1058,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func notice(_ message: String, kind: DictationNotice.Kind = .unrelated) {
+        // The pill, the beep and the status line belong to a running dictation:
+        // hold the notice until it is idle (`show(.idle)` releases it).
+        guard let admitted = noticeGate.admit(.init(message: message, kind: kind), state: controller.state) else { return }
         // A recording that ended on its own says why together with what happened
         // to its text, not instead of it — and spends that reason on nothing else.
-        let merged = DictationNotice.merge(endedReason: endedReason, into: message, kind: kind)
+        let merged = DictationNotice.merge(endedReason: endedReason, into: admitted.message, kind: admitted.kind)
         endedReason = merged.endedReason
         lastNotice = merged.message
         statusLine.title = merged.message
