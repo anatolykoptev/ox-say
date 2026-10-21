@@ -3,7 +3,7 @@ import DictationCore
 import os
 
 /// The macOS side of "Pause Music While Dictating": the real process list and
-/// NSAppleScript behind DictationCore's coordinator. Browser media is not
+/// NSAppleScript behind DictationCore's `MediaPauseWiring`. Browser media is not
 /// covered — macOS limits MediaRemote to Apple's own apps since 15.4.
 enum MediaPauseSystem {
     /// Whether a bundle id is running now. Asked from the process list, never
@@ -17,14 +17,9 @@ enum MediaPauseSystem {
         // Notice level so the unified log keeps it; lines carry a bundle id and
         // an error code, never user content.
         let logger = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "media")
-        let scripts = QueuedScriptRunner()
-        let players = [ScriptedMediaPlayer.musicBundleID, ScriptedMediaPlayer.spotifyBundleID].map {
-            ScriptedMediaPlayer(bundleID: $0, isRunning: isRunning, runner: scripts,
-                                log: { logger.notice("\($0, privacy: .public)") })
-        }
-        let coordinator = MediaPauseCoordinator(players: players,
-                                                isEnabled: { MediaPauseSetting.isEnabled(.standard) })
-        coordinator.onPermissionDenied = onPermissionDenied
-        return MediaPauseRunner(coordinator: coordinator)
+        return MediaPauseWiring.makeRunner(isRunning: isRunning, defaults: .standard,
+                                           onPermissionDenied: onPermissionDenied,
+                                           log: { logger.notice("\($0, privacy: .public)") },
+                                           logError: { logger.error("\($0, privacy: .public)") })
     }
 }

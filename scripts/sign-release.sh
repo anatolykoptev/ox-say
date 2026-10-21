@@ -131,8 +131,10 @@ ditto "$src_app" "$work/ox-say/app/OxSayDictation.app"
 app=$work/ox-say/app/OxSayDictation.app
 
 codesign -d --entitlements - --xml "$app" > "$work/built.plist" 2>/dev/null
-# plutil -convert json writes a dictionary's keys sorted, so the exact string
-# match holds for these two keys; a third needs this order kept in mind.
+# plutil -convert json does not sort keys: it keeps the order the plist has, and
+# codesign normalises that order when it embeds the entitlements. The exact
+# string match therefore depends on codesign's order for these two keys; a
+# third key needs $entitlements_json written in that order.
 if [ "$(plutil -convert json -o - "$work/built.plist")" != "$entitlements_json" ]; then
     echo "the app's entitlements differ from the ones it may carry ($entitlements_json):" >&2
     plutil -convert json -o - "$work/built.plist" >&2 || true

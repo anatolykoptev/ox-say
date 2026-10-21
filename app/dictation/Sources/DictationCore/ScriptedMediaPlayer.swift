@@ -15,15 +15,18 @@ public protocol AppleScriptRunner {
 
 /// Scripts on their own serial queue. The caller waits at most `timeout`; the
 /// script itself is bounded by `with timeout of 1 second`, so a hung player
-/// blocks the worker for about a second, not the 2-minute default. `execute`
-/// is NSAppleScript in the app and a stand-in in tests.
+/// blocks the worker for about a second, not the 2-minute default. One runner
+/// per player, so a hung Music never queues Spotify's calls behind it.
+/// `execute` is NSAppleScript in the app and a stand-in in tests.
 public final class QueuedScriptRunner: AppleScriptRunner {
     private final class Slot { var outcome: ScriptOutcome = .failed(0) }
 
-    private let worker = DispatchQueue(label: "io.github.anatolykoptev.ox-say.dictation.applescript")
+    private let worker: DispatchQueue
     private let execute: (String) -> ScriptOutcome
 
-    public init(execute: @escaping (String) -> ScriptOutcome = QueuedScriptRunner.executeWithNSAppleScript) {
+    public init(label: String = "",
+                execute: @escaping (String) -> ScriptOutcome = QueuedScriptRunner.executeWithNSAppleScript) {
+        worker = DispatchQueue(label: "io.github.anatolykoptev.ox-say.dictation.applescript\(label.isEmpty ? "" : "." + label)")
         self.execute = execute
     }
 
@@ -58,8 +61,11 @@ public final class QueuedScriptRunner: AppleScriptRunner {
 public final class ScriptedMediaPlayer: MediaPlayer {
     public static let musicBundleID = "com.apple.Music"
     public static let spotifyBundleID = "com.spotify.client"
-    /// Per call; a player slower than this is treated as unavailable.
+    /// What `MediaWait.quick` waits: a player slower than this is skipped.
     public static let callTimeout: TimeInterval = 0.3
+    /// What `MediaWait.confirming` waits: longer than the script's own
+    /// `with timeout of 1 second`, so a slow call is outwaited, not abandoned.
+    public static let confirmTimeout: TimeInterval = 1.5
 
     private let bundleID: String
     private let isRunning: (String) -> Bool
@@ -78,29 +84,32 @@ public final class ScriptedMediaPlayer: MediaPlayer {
         self.log = log
     }
 
-    public func state() -> MediaPlaybackState {
+    public func state(wait: MediaWait) -> MediaPlaybackState {
         guard isRunning(bundleID) else { return .notRunning }
-        switch run(Self.script(bundleID, body: "return player state as text"), op: "state") {
+        let timeout = wait == .quick ? Self.callTimeout : Self.confirmTimeout
+        switch run(Self.script(bundleID, body: "return player state as text"), op: "state", timeout: timeout) {
         case .value("playing"): return .playing
         case .value("paused"): return .paused
         case .value("stopped"): return .stopped
         case .value("notRunning"): return .notRunning
         case .denied: return .denied
+        case .timedOut: return .timedOut
         default: return .unavailable
         }
     }
 
-    public func pause() { command("pause") }
+    public func pause() { command("pause", timeout: Self.callTimeout) }
 
-    public func play() { command("play") }
+    /// Only ever the giving-back call, so it is outwaited like `.confirming`.
+    public func play() { command("play", timeout: Self.confirmTimeout) }
 
-    private func command(_ verb: String) {
+    private func command(_ verb: String, timeout: TimeInterval) {
         guard isRunning(bundleID) else { return }
-        _ = run(Self.script(bundleID, body: "\(verb)\nreturn \"ok\""), op: verb)
+        _ = run(Self.script(bundleID, body: "\(verb)\nreturn \"ok\""), op: verb, timeout: timeout)
     }
 
-    private func run(_ source: String, op: String) -> ScriptOutcome {
-        let outcome = runner.run(source, timeout: Self.callTimeout)
+    private func run(_ source: String, op: String, timeout: TimeInterval) -> ScriptOutcome {
+        let outcome = runner.run(source, timeout: timeout)
         switch outcome {
         case .value: break
         case .denied: log("\(bundleID) \(op): automation denied (-1743)")
