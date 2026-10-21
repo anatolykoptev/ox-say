@@ -581,3 +581,27 @@ func TestNeverHealthyFailsAtStartupDeadline(t *testing.T) {
 		t.Fatalf("EnsureReady took %s — it did not honour the %s startup deadline", el, 400*time.Millisecond)
 	}
 }
+
+// The resident ox-stt becomes healthy in the (250, 500] ms window — every
+// cold session create in the live log lands at 509-521 ms. With the backoff
+// capped by HealthPoll, such readiness is only reported on the ~560 ms grid
+// point, slower than the fixed wait it replaced. The startup probes are
+// capped by healthProbeMax (25 ms), so a child whose /health turns 200 ~350 ms
+// into the start must be reported under 400 ms.
+// Mutation: cap the backoff with s.cfg.HealthPoll instead of healthProbeMax
+// in waitHealthy -> RED (readiness caught on the ~560 ms tick >= 400 ms).
+func TestMidWindowHealthCaughtWithinProbeCap(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_START_DELAY_MS", "350")
+	sup := newTestSupervisor(t, dir, func(c *Config) {
+		c.HealthPoll = defaultHealthPoll // the production 250 ms cadence
+	})
+	start := time.Now()
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if el := time.Since(start); el >= 400*time.Millisecond {
+		t.Fatalf("EnsureReady on a ~350ms-ready child took %s — startup probes waited out a HealthPoll tick", el)
+	}
+}
