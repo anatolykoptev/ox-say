@@ -61,6 +61,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// is cleared only while that count still stands — another owner taking it
     /// moves the count on.
     private var handshakePillOwner: Int?
+    /// The owner count each non-dictation pill below captured right after its
+    /// show; nil while that task has no pill up. A pill is cleared only while
+    /// its count still stands and no dictation runs (PillOwnership).
+    private var speakPillOwner: Int?
+    private var studioPillOwner: Int?
+    private var updateCheckPillOwner: Int?
+    private var installPillOwner: Int?
     private var wakeObserver: NSObjectProtocol?
     /// The small version line at the bottom of the menu.
     private let footerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -190,6 +197,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let streamer = StreamingTranscriber(baseURL: baseURL)
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode, transcriber: streamer)
+        // While a dictation runs the pill belongs to it: the overlay asks the
+        // controller's state before letting any hide take it down.
+        overlay.dictationState = { [weak self] in self?.controller?.state ?? .idle }
         streamer.onText = { [overlay] text in overlay.setLiveText(text) }
         controller.onState = { [weak self] state in self?.show(state) }
         controller.onError = { [weak self] message in self?.notice(message, kind: .outcome) }
@@ -544,13 +554,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         handshakePillOwner = overlay.owner
     }
 
+    /// Clears a pill a task put up — only while the owner count its show
+    /// captured still stands (nobody since took the pill) and no dictation is
+    /// running: a late async finish must never hide the dictation's pill or a
+    /// pill another owner shows now. The caller then drops its captured count.
+    private func finishPill(_ owner: Int?) {
+        if PillOwnership.shouldFinish(owner: owner, current: overlay.owner, dictation: controller.state) {
+            overlay.finish()
+        }
+    }
+
     /// Clears the handshake's pill, but only while its own text is still the
     /// one showing: a speak, a studio pill or an install that took the overlay
     /// since keeps it.
     private func finishHandshakePill() {
         defer { handshakePillOwner = nil }
-        guard let owner = handshakePillOwner, owner == overlay.owner, controller.state == .idle else { return }
-        overlay.finish()
+        finishPill(handshakePillOwner)
     }
 
     /// The user-chosen repair: reinstall the on-disk bundle's version over the
@@ -713,6 +732,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.showWorking()
         overlay.setWorkingText("Speaking…")
         overlay.setHintHidden(true)
+        speakPillOwner = overlay.owner
         let client = speechClient!
         Task { @MainActor [weak self] in
             do {
@@ -721,10 +741,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.speakInFlight = false
                 try self.player.play(wav: wav)
                 self.overlay.showPlaying()
+                self.speakPillOwner = nil
             } catch {
                 guard let self, self.speakGeneration == generation else { return }
                 self.speakInFlight = false
-                self.overlay.finish()
+                self.finishPill(self.speakPillOwner)
+                self.speakPillOwner = nil
                 self.notice(String(describing: error))
                 self.handshakeWorkEnded()
             }
@@ -783,8 +805,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.overlay.showWorking()
                     self.overlay.setWorkingText(text)
                     self.overlay.setHintHidden(true)
+                    self.studioPillOwner = self.overlay.owner
                 } else {
-                    self.overlay.finish()
+                    self.finishPill(self.studioPillOwner)
+                    self.studioPillOwner = nil
                 }
             },
             notify: { [unowned self] message in self.notice(message) },
@@ -835,6 +859,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.showWorking()
         overlay.setWorkingText("Checking for updates…")
         overlay.setHintHidden(true)
+        updateCheckPillOwner = overlay.owner
         Task { @MainActor [weak self] in
             guard let self else { return }
             let fetch: Result<(tag: String, url: URL?, body: String), UpdateError>
@@ -845,7 +870,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } catch {
                 fetch = .failure(.unreachable(error.localizedDescription))
             }
-            self.overlay.finish()
+            self.finishPill(self.updateCheckPillOwner)
+            self.updateCheckPillOwner = nil
             self.updateCheckRunning = false
             self.present(UpdatePrompt.make(local: local, fetch: fetch))
         }
@@ -919,6 +945,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.showWorking()
         overlay.setWorkingText(kind == .studioVoice ? "Installing the studio voice…" : "Installing \(tag)…")
         overlay.setHintHidden(true)
+        installPillOwner = overlay.owner
         Task { @MainActor in
             let log = Self.openUpdateLog()
             let statusClient = studioClient!
@@ -929,7 +956,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             updateInstalling = false
             studio.render()
             if let failure {
-                overlay.finish()
+                self.finishPill(self.installPillOwner)
+                self.installPillOwner = nil
                 runAlert(title: kind == .studioVoice ? "Installing the studio voice failed" : "Update to \(tag) failed",
                          text: "\(failure.message) Its output is in\n\(Self.updateLogURL.path)",
                          buttons: ["OK"])
