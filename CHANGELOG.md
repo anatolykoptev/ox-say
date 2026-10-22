@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.25](https://github.com/anatolykoptev/ox-say/compare/v0.1.24...v0.1.25) (2026-10-22)
+
+
+### Added
+
+* **dictation:** lower all sound while dictating — a choice next to pausing the music ([#199](https://github.com/anatolykoptev/ox-say/issues/199)) ([323726d](https://github.com/anatolykoptev/ox-say/commit/323726d348b375c83598c6ac80b90b44b7090704))
+
 ## [0.1.24](https://github.com/anatolykoptev/ox-say/compare/v0.1.23...v0.1.24) (2026-10-21)
 
 
