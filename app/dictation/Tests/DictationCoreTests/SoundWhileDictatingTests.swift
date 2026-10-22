@@ -18,6 +18,12 @@ final class FakeSystemVolume: SystemVolume {
     var reportedLevel: Float?
     /// When set, `setVolume` waits on it like a call that answers slowly.
     var gate: DispatchSemaphore?
+    /// When set, a write lands snapped to this grid — an output whose volume
+    /// comes in steps (the volume keys' 1/16) never holds the exact level
+    /// the duck computed.
+    var quantum: Float?
+    /// Writes at this index and later are refused — a fade stopped midway.
+    var refuseWritesFrom: Int?
     private(set) var writes: [Float] = []
 
     func defaultDevice() -> (id: UInt32, uid: String?)? { gone ? nil : device }
@@ -30,8 +36,9 @@ final class FakeSystemVolume: SystemVolume {
     func setVolume(_: UInt32, _ newLevel: Float) -> Bool {
         _ = gate?.wait(timeout: .now() + 1)
         writes.append(newLevel)
+        if let refuseWritesFrom, writes.count > refuseWritesFrom { return false }
         if refusedWrites > 0 { refusedWrites -= 1; return false }
-        level = newLevel
+        level = quantum.map { ($0 * (newLevel / $0).rounded()) } ?? newLevel
         return true
     }
     func device(forUID uid: String) -> UInt32? {
@@ -262,6 +269,97 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
         defaults.set(["uid": "fake-output"], forKey: VolumeDuckCoordinator.markerKey)
         duck.restoreInterruptedDuck()
         XCTAssertEqual(fake.writes, [])
+        XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey))
+    }
+
+    // F7 — an output whose volume comes in 1/16 steps never holds the
+    // computed target (0.6875 * 0.15 = 0.103 lands on 0.125 — off by more
+    // than tolerance). The duck must record what the device TOOK, or the
+    // restore reads its own write as a user change and the output stays
+    // quiet forever. Mutation: in begin store the computed
+    // `preDuck * duckFraction` as `duck.ducked` instead of the read-back
+    // -> RED.
+    func testAQuantizingDeviceRestoresTheExactPriorLevel() {
+        let (fake, duck, defaults, suite) = rig(level: 0.6875)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        fake.quantum = 1.0 / 16
+        duck.begin(generation: 1)
+        XCTAssertEqual(fake.level, 0.125, accuracy: 0.0001,
+                       "the device snapped the target to its own step")
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.6875, accuracy: 0.0001,
+                       "the level the user had comes back")
+        XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey))
+    }
+
+    // Same duck, through the crash marker: the dead process stored the
+    // read-back level, so the launch pass still recognizes it as ours.
+    // Mutation: same as F7 — the marker then names the computed target the
+    // device never held -> RED.
+    func testACrashMarkerFromAQuantizingDeviceRestoresAtLaunch() {
+        let (fake, duck, defaults, suite) = rig(level: 0.6875)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        fake.quantum = 1.0 / 16
+        duck.begin(generation: 1) // the dead process left this marker
+        let relaunched = VolumeDuckCoordinator(volume: fake, defaults: defaults, stepDelay: 0)
+        relaunched.restoreInterruptedDuck()
+        XCTAssertEqual(fake.level, 0.6875, accuracy: 0.0001)
+        XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey))
+    }
+
+    // A fade that dies midway leaves the level between pre-duck and target;
+    // with the read-back that level is still ours, so the restore runs from
+    // wherever the fade stopped. Mutation: same as F7 -> RED (the partial
+    // level then reads as a user change).
+    func testAPartiallyFadedDuckStillRestores() {
+        let (fake, duck, _, suite) = rig()
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        fake.refuseWritesFrom = 2 // the third step on never lands
+        duck.begin(generation: 1)
+        XCTAssertEqual(fake.level, 0.528, accuracy: 0.0001,
+                       "stopped between the level and the target")
+        fake.refuseWritesFrom = nil
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001,
+                       "the restore still gives back the level the user had")
+    }
+
+    // F8 — an unconfirmed restore leaves the marker standing and the output
+    // still quiet; the next dictation must not take that quiet level as the
+    // user's own — what is owed is the pre-duck the marker names. Mutation:
+    // in begin derive the pre-duck from the current level only (ignore the
+    // standing marker) -> RED.
+    func testANextDictationAfterAnUnconfirmedRestoreRestoresTheOriginalLevel() {
+        var errors: [String] = []
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fake = FakeSystemVolume()
+        let duck = VolumeDuckCoordinator(volume: fake, defaults: defaults, stepDelay: 0,
+                                         logError: { errors.append($0) })
+        duck.begin(generation: 1)
+        fake.refusedWrites = 2 // the restore tries a fade step + one retry, both refused
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.8 * VolumeDuckCoordinator.duckFraction, accuracy: 0.001,
+                       "still quiet: the restore never landed")
+        XCTAssertEqual(errors.count, 1)
+        duck.begin(generation: 2)
+        duck.end(generation: 2)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001,
+                       "the ORIGINAL level comes back, not the quiet one")
+        XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey))
+    }
+
+    // F9 — near silence the flat 0.02 tolerance swallows a user-set 0: with
+    // pre-duck 0.1 the ducked level is 0.015, within tolerance of nothing.
+    // Mutation: restore the flat `abs(current - ducked) <= tolerance` check
+    // -> the user's 0 is faded back over (RED).
+    func testAUserSetZeroAtALowDuckedLevelIsLeftAlone() {
+        let (fake, duck, defaults, suite) = rig(level: 0.1)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        duck.begin(generation: 1)
+        fake.level = 0 // the user muted the output themselves
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0, "the user's silence is theirs to keep")
         XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey))
     }
 }

@@ -41,12 +41,15 @@ public final class VolumeDuckCoordinator {
     public static let markerKey = "soundDuckRestore"
 
     /// What `begin` captured of the device it ducked: who owns the restore.
+    /// `ducked` is the level the device was read to hold after the fade —
+    /// an output whose volume comes in steps never lands on the computed
+    /// target, and restore compares against what the device holds.
     private struct Duck {
         let generation: Int
         let deviceID: UInt32
         let uid: String?
         let preDuck: Float
-        let ducked: Float
+        var ducked: Float
     }
 
     private let volume: SystemVolume
@@ -89,11 +92,20 @@ public final class VolumeDuckCoordinator {
             return
         }
         guard let level = volume.volume(device.id), level > 0 else { return }
-        let duck = Duck(generation: generation, deviceID: device.id, uid: device.uid,
-                        preDuck: level, ducked: level * Self.duckFraction)
+        let preDuck = owedPreDuck(device: device, level: level)
+        var duck = Duck(generation: generation, deviceID: device.id, uid: device.uid,
+                        preDuck: preDuck, ducked: preDuck * Self.duckFraction)
         self.duck = duck
         writeMarker(duck)
         fade(from: level, to: duck.ducked, on: device.id)
+        // What the device actually took — a step grid or a fade stopped
+        // early leave it off the computed target — is what restore and the
+        // marker compare against.
+        if let settled = volume.volume(device.id) {
+            duck.ducked = settled
+            self.duck = duck
+            writeMarker(duck)
+        }
     }
 
     /// The dictation of `generation` ended: gives the level back unless the
@@ -114,7 +126,7 @@ public final class VolumeDuckCoordinator {
               let pre = marker["pre"] as? Double, let ducked = marker["ducked"] as? Double,
               let deviceID = volume.device(forUID: uid),
               let current = volume.volume(deviceID),
-              abs(current - Float(ducked)) <= Self.tolerance else { return }
+              Self.isDucked(current, ducked: Float(ducked)) else { return }
         fade(from: current, to: Float(pre), on: deviceID)
     }
 
@@ -140,7 +152,7 @@ public final class VolumeDuckCoordinator {
             deviceID = found
         } else { return }
         guard let current = volume.volume(deviceID) else { return }
-        guard abs(current - duck.ducked) <= Self.tolerance else {
+        guard Self.isDucked(current, ducked: duck.ducked) else {
             defaults.removeObject(forKey: Self.markerKey)
             log("the volume was changed during the dictation: left at the user's level")
             return
@@ -161,6 +173,28 @@ public final class VolumeDuckCoordinator {
     private func confirmed(_ target: Float, on deviceID: UInt32) -> Bool {
         guard let read = volume.volume(deviceID) else { return false }
         return abs(read - target) <= Self.tolerance
+    }
+
+    /// Whether the reported level is still the one a duck left. The flat
+    /// tolerance is tightened near silence: with `ducked` below ~0.04 a
+    /// user-set 0 would fall inside 0.02 of it and read as "unchanged" —
+    /// a change down to nothing must still count as the user's.
+    private static func isDucked(_ current: Float, ducked: Float) -> Bool {
+        abs(current - ducked) <= min(tolerance, ducked / 2)
+    }
+
+    /// The level a new duck owes back: normally the level just read — but
+    /// when a marker for this device still stands and the output still sits
+    /// at the ducked level it names, the last restore never landed, so the
+    /// quiet level is ours and what is owed is the marker's pre-duck.
+    private func owedPreDuck(device: (id: UInt32, uid: String?), level: Float) -> Float {
+        guard let uid = device.uid,
+              let marker = defaults.dictionary(forKey: Self.markerKey),
+              marker["uid"] as? String == uid,
+              let pre = marker["pre"] as? Double,
+              let ducked = marker["ducked"] as? Double,
+              Self.isDucked(level, ducked: Float(ducked)) else { return level }
+        return Float(pre)
     }
 
     /// The crash marker names the device by UID — an AudioObjectID does not
