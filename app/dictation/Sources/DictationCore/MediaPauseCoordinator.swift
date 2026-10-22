@@ -34,15 +34,18 @@ public protocol MediaPlayer: AnyObject {
     var identifier: String { get }
     func state(wait: MediaWait) -> MediaPlaybackState
     func pause()
-    func play()
+    /// The script's outcome: anything but `.value` means the player may still
+    /// be paused — the caller decides whether to ask again.
+    @discardableResult func play() -> ScriptOutcome
 }
 
 /// Decides who to pause when a dictation starts and who to resume when it ends.
 /// It remembers exactly the players IT paused: a player the user had already
 /// paused stays paused, and one the user started or stopped meanwhile is left be.
 ///
-/// Not thread safe: `MediaPauseRunner` feeds it from one serial queue, in which
-/// `begin` and `end` alternate (the runner queues an end before the next begin).
+/// Not thread safe: `SoundWhileDictatingRunner` feeds it from one serial queue,
+/// in which `begin` and `end` alternate (the runner queues an end before the
+/// next begin).
 public final class MediaPauseCoordinator {
     private let players: [MediaPlayer]
     private let isEnabled: () -> Bool
@@ -107,60 +110,25 @@ public final class MediaPauseCoordinator {
         case .playing, .stopped, .notRunning:
             return
         case .paused:
-            player.play()
+            play(player)
         case .denied, .timedOut, .unavailable:
             logError("\(player.identifier) resume unconfirmed (\(state)): playing anyway")
-            player.play()
-        }
-    }
-}
-
-/// Turns the controller's state transitions into `begin`/`end` calls on a
-/// serial queue, so the main thread (the hotkey) never waits for a player.
-/// Call `dictationStateChanged` from the main thread, once per transition.
-public final class MediaPauseRunner {
-    private let coordinator: MediaPauseCoordinator
-    private let queue: DispatchQueue
-    private var generation = 0
-    /// True from the recording's start until its end was queued.
-    private var active = false
-
-    public init(coordinator: MediaPauseCoordinator,
-                queue: DispatchQueue = DispatchQueue(label: "io.github.anatolykoptev.ox-say.dictation.media")) {
-        self.coordinator = coordinator
-        self.queue = queue
-    }
-
-    /// `.recording` pauses; anything else ends the recording and resumes — the
-    /// release moves to `.transcribing`, a tap, an esc cancel, a start error
-    /// and a failure go straight to `.idle`. Repeats are no-ops.
-    public func dictationStateChanged(_ state: DictationState) {
-        switch state {
-        case .recording:
-            guard !active else { return }
-            active = true
-            generation += 1
-            let g = generation
-            queue.async { [coordinator] in coordinator.begin(generation: g) }
-        case .transcribing, .idle:
-            guard active else { return }
-            active = false
-            let g = generation
-            queue.async { [coordinator] in coordinator.end(generation: g) }
+            play(player)
         }
     }
 
-    /// Waits for the queued pauses and resumes to finish: at quit, so music
-    /// paused for a dictation is not left paused, and in tests.
-    public func drain() { queue.sync {} }
-}
-
-/// The "Pause Music While Dictating" menu setting.
-public enum MediaPauseSetting {
-    public static let defaultsKey = "pauseMediaWhileDictating"
-
-    /// On unless the user turned it off.
-    public static func isEnabled(_ defaults: UserDefaults) -> Bool {
-        defaults.object(forKey: defaultsKey) as? Bool ?? true
+    /// The last path to "music stays paused": a non-value outcome gets one
+    /// retry, and a play that still did not take is an error line, not a
+    /// notice nobody sees.
+    private func play(_ player: MediaPlayer) {
+        var outcome = player.play()
+        if case .value = outcome { return }
+        if retryDelay > 0 { Thread.sleep(forTimeInterval: retryDelay) }
+        outcome = player.play()
+        if case .value = outcome { return }
+        logError("\(player.identifier) play did not take (\(outcome)): it may be left paused")
     }
 }
+
+/// The dispatcher that feeds this coordinator — and, under the other modes,
+/// the volume duck — is `SoundWhileDictatingRunner` in SoundWhileDictating.swift.

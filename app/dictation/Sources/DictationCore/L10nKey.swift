@@ -12,8 +12,12 @@ public enum L10nKey: String, CaseIterable {
     // The automatic update check: the status menu's install row and the one notice per version.
     case menuUpdateAvailable = "menu.update_available"
     case noticeUpdateAvailable = "notice.update_available"
-    // Pause Music While Dictating: the Settings row and the Automation notice.
-    case menuPauseMedia = "menu.pause_media"
+    // Sound While Dictating: the Settings submenu, its three exclusive rows,
+    // and the Automation notice Pause Music can still raise.
+    case menuSoundWhileDictating = "menu.sound_while_dictating"
+    case menuSoundPauseMusic = "menu.sound_pause_music"
+    case menuSoundLowerAll = "menu.sound_lower_all"
+    case menuSoundDontTouch = "menu.sound_dont_touch"
     case noticeMediaDenied = "notice.media_denied"
     // The app menu while the app is .regular.
     case menuApp = "menu.app"

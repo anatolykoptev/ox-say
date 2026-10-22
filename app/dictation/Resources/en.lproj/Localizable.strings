@@ -40,8 +40,11 @@
 /* Shown when a dictation was pasted but no app took it. */
 "notice.paste_unread" = "The text did not paste — it is in the OxSay menu → Recent Dictations";
 
-/* Settings: pause Music and Spotify while the dictation key is held. */
-"menu.pause_media" = "Pause Music While Dictating";
+/* Settings → Sound While Dictating: what happens to sound while the key is held. */
+"menu.sound_while_dictating" = "Sound While Dictating";
+"menu.sound_pause_music" = "Pause Music";
+"menu.sound_lower_all" = "Lower All Sound";
+"menu.sound_dont_touch" = "Don't Touch";
 /* Shown once per launch when macOS refuses OxSay's Automation access to Music or Spotify. */
 "notice.media_denied" = "OxSay cannot pause Music or Spotify — allow it in System Settings → Privacy & Security → Automation";
 

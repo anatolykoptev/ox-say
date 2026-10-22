@@ -98,14 +98,19 @@ public final class ScriptedMediaPlayer: MediaPlayer {
         }
     }
 
-    public func pause() { command("pause", timeout: Self.callTimeout) }
+    public func pause() { _ = command("pause", timeout: Self.callTimeout) }
 
     /// Only ever the giving-back call, so it is outwaited like `.confirming`.
-    public func play() { command("play", timeout: Self.confirmTimeout) }
+    /// Its outcome is the coordinator's signal: a non-value means the player
+    /// may still be paused.
+    @discardableResult
+    public func play() -> ScriptOutcome { command("play", timeout: Self.confirmTimeout) }
 
-    private func command(_ verb: String, timeout: TimeInterval) {
-        guard isRunning(bundleID) else { return }
-        _ = run(Self.script(bundleID, body: "\(verb)\nreturn \"ok\""), op: verb, timeout: timeout)
+    /// A player that is already gone needs no command — and gets none: the
+    /// running check is what keeps a `tell` from launching it.
+    private func command(_ verb: String, timeout: TimeInterval) -> ScriptOutcome {
+        guard isRunning(bundleID) else { return .value("notRunning") }
+        return run(Self.script(bundleID, body: "\(verb)\nreturn \"ok\""), op: verb, timeout: timeout)
     }
 
     private func run(_ source: String, op: String, timeout: TimeInterval) -> ScriptOutcome {

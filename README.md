@@ -565,14 +565,18 @@ The app finds the daemon at the address the installer gave it (`OX_SAY_ADDR`
 in the ox-say LaunchAgent), 127.0.0.1:8094 by default. When something goes
 wrong, or the text could not be pasted, the pill says why for a few seconds.
 
-While you hold the key, Apple Music and Spotify are paused if they are playing
-and resume from the same spot when you let go, cancel with Esc, or the
-recording ends; a player that was already paused stays paused, and one that is
-not running is never launched. The first time, macOS asks to let OxSay control
-Music or Spotify (System Settings → Privacy & Security → Automation); the
-**Settings → Pause Music While Dictating** item turns it off. Media in a
-browser is not covered: macOS restricts system-wide media control to Apple's
-own apps since 15.4.
+What happens to sound while you hold the key is the **Settings → Sound While
+Dictating** submenu, with three choices. **Pause Music** (the default): Apple
+Music and Spotify are paused if they are playing and resume from the same
+spot when you let go, cancel with Esc, or the recording ends; a player that
+was already paused stays paused, and one that is not running is never
+launched. The first time, macOS asks to let OxSay control Music or Spotify
+(System Settings → Privacy & Security → Automation). **Lower All Sound**:
+everything the Mac plays — Music, a browser, YouTube — keeps playing but
+fades to a fraction of its volume while you dictate, then fades back to
+exactly the level it had; a volume you changed yourself during the dictation
+is left alone. It uses CoreAudio's output volume, so no permission prompt.
+**Don't Touch** leaves every sound alone.
 
 The app streams the microphone into a transcription session while you speak.
 Silero VAD cuts the stream at pauses of 400 ms or more, and force-cuts any

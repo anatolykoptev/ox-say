@@ -1,0 +1,510 @@
+import Foundation
+import XCTest
+@testable import DictationCore
+
+/// A fake output device behind the duck: one device with a level, settable
+/// flag and mute; reassign `device` for a replug (new AudioObjectID), set
+/// `gone` for an unplug. Writes are recorded and applied like the server.
+final class FakeSystemVolume: SystemVolume {
+    var device: (id: UInt32, uid: String?)? = (id: 76, uid: "fake-output")
+    var gone = false
+    var settable = true
+    var muted = false
+    var level: Float = 0.8
+    /// Writes the server refused, consumed one per `setVolume`.
+    var refusedWrites = 0
+    /// When set, `volume` reports this — a write the server took but the
+    /// read-back does not reflect.
+    var reportedLevel: Float?
+    /// When set, `setVolume` waits on it like a call that answers slowly.
+    var gate: DispatchSemaphore?
+    private(set) var writes: [Float] = []
+
+    func defaultDevice() -> (id: UInt32, uid: String?)? { gone ? nil : device }
+    func isSettable(_: UInt32) -> Bool { settable }
+    func volume(_ id: UInt32) -> Float? {
+        guard !gone, let device, device.id == id else { return nil }
+        return reportedLevel ?? level
+    }
+    func isMuted(_: UInt32) -> Bool { muted }
+    func setVolume(_: UInt32, _ newLevel: Float) -> Bool {
+        _ = gate?.wait(timeout: .now() + 1)
+        writes.append(newLevel)
+        if refusedWrites > 0 { refusedWrites -= 1; return false }
+        level = newLevel
+        return true
+    }
+    func device(forUID uid: String) -> UInt32? {
+        guard !gone, let device, device.uid == uid else { return nil }
+        return device.id
+    }
+}
+
+/// A private defaults suite that removes itself.
+private func freshDefaults(_ label: String = "ox-say-sound") -> (UserDefaults, String) {
+    let suite = "\(label)-\(UUID().uuidString)"
+    return (UserDefaults(suiteName: suite)!, suite)
+}
+
+/// The crash marker the tests seed, in the coordinator's own format.
+private func marker(uid: String, pre: Double, ducked: Double) -> [String: Any] {
+    ["uid": uid, "pre": pre, "ducked": ducked]
+}
+
+final class VolumeDuckCoordinatorTests: XCTestCase {
+    private func rig(level: Float = 0.8) -> (FakeSystemVolume, VolumeDuckCoordinator, UserDefaults, String) {
+        let (defaults, suite) = freshDefaults()
+        let fake = FakeSystemVolume()
+        fake.level = level
+        let coordinator = VolumeDuckCoordinator(volume: fake, defaults: defaults, stepDelay: 0)
+        return (fake, coordinator, defaults, suite)
+    }
+
+    // F1 — journey 2: the key goes down, the output fades to a fraction of its
+    // level; the key goes up, it comes back to exactly the level it had.
+    // Mutation: in VolumeDuckCoordinator.restore fade `to: 1.0` (or skip the
+    // restore) -> the level does not come back (RED).
+    func testDuckThenRestoreToTheExactPriorLevel() {
+        let (fake, duck, defaults, suite) = rig()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        duck.begin(generation: 1)
+        XCTAssertEqual(fake.level, 0.8 * VolumeDuckCoordinator.duckFraction, accuracy: 0.001,
+                       "the output must be faint background, not silence")
+        XCTAssertNotNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey),
+                        "the crash marker stands while the duck does")
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "the exact pre-duck level must come back")
+        XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey))
+    }
+
+    func testTheFadeTakesAFewStepsNotAJump() {
+        let (fake, duck, _, suite) = rig()
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        duck.begin(generation: 1)
+        XCTAssertGreaterThan(fake.writes.count, 1, "a ramp, so the drop does not startle")
+        XCTAssertEqual(fake.writes.last ?? 0, 0.8 * VolumeDuckCoordinator.duckFraction, accuracy: 0.001)
+    }
+
+    func testMutedOrSilentOutputIsNotTouched() {
+        for silent in [Float(0), -1] {
+            let (fake, duck, defaults, suite) = rig(level: silent == 0 ? 0 : 0.5)
+            fake.muted = silent < 0
+            duck.begin(generation: 1)
+            duck.end(generation: 1)
+            XCTAssertEqual(fake.writes, [], "muted/zero output: nothing to lower")
+            XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey))
+            defaults.removePersistentDomain(forName: suite)
+        }
+    }
+
+    // A device without a software volume (some HDMI/USB DACs): do nothing and
+    // say so once per launch, not once per dictation.
+    func testAnUnsettableOutputIsNotTouchedAndLoggedOnce() {
+        var lines: [String] = []
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fake = FakeSystemVolume()
+        fake.settable = false
+        let duck = VolumeDuckCoordinator(volume: fake, defaults: defaults, stepDelay: 0,
+                                         log: { lines.append($0) })
+        for generation in 1...2 { duck.begin(generation: generation); duck.end(generation: generation) }
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertEqual(lines.count, 1, "one notice per launch")
+    }
+
+    func testNoDefaultDeviceDoesNothing() {
+        let (fake, duck, _, suite) = rig()
+        fake.gone = true
+        duck.begin(generation: 1)
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.writes, [])
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+    }
+
+    // F2 — journey 3: the user moved the volume themselves while the duck
+    // stood; the read-back differs from what we wrote, so their level stays.
+    // Mutation: in VolumeDuckCoordinator.restore drop the
+    // `abs(current - duck.ducked) <= tolerance` check -> the fade writes over
+    // the user's level (RED).
+    func testAUserChangeDuringDictationIsLeftAlone() {
+        let (fake, duck, defaults, suite) = rig()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        duck.begin(generation: 1)
+        let duckedWrites = fake.writes.count
+        fake.level = 0.5 // the user's own pick
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.writes.count, duckedWrites, "not one write over the user's level")
+        XCTAssertEqual(fake.level, 0.5)
+        XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey),
+                     "nothing owed: the user's level is not ours")
+    }
+
+    // The volume keys move 1/16 per press — within tolerance of the ducked
+    // level it is still ours to restore.
+    func testATinyDriftStillRestores() {
+        let (fake, duck, _, suite) = rig()
+        duck.begin(generation: 1)
+        fake.level = fake.level + VolumeDuckCoordinator.tolerance / 2
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+    }
+
+    // The restore is confirmed by reading the level back; an unconfirmed write
+    // is retried once, then reported at error level — never silently dropped.
+    func testARefusedRestoreWriteIsRetriedOnce() {
+        var errors: [String] = []
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fake = FakeSystemVolume()
+        let duck = VolumeDuckCoordinator(volume: fake, defaults: defaults, stepDelay: 0,
+                                         logError: { errors.append($0) })
+        duck.begin(generation: 1)
+        fake.refusedWrites = 1
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "the retry lands it")
+        XCTAssertEqual(errors, [], "a recovered restore is not an error")
+    }
+
+    func testAStillUnconfirmedRestoreIsAnErrorWithoutContent() {
+        var errors: [String] = []
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fake = FakeSystemVolume()
+        let duck = VolumeDuckCoordinator(volume: fake, defaults: defaults, stepDelay: 0,
+                                         logError: { errors.append($0) })
+        duck.begin(generation: 1)
+        fake.reportedLevel = fake.level // the server takes the writes, the level never moves
+        duck.end(generation: 1)
+        XCTAssertEqual(errors.count, 1)
+        XCTAssertTrue(errors.first?.contains("unconfirmed") ?? false, "\(errors)")
+    }
+
+    // The device the dictation ducked is restored even when it is no longer
+    // the default — and is found by its UID when a replug gave it a new id.
+    func testARepluggedDeviceIsFoundByUID() {
+        let (fake, duck, _, suite) = rig()
+        duck.begin(generation: 1)
+        fake.device = (id: 90, uid: "fake-output") // unplugged and back as a new id
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+    }
+
+    func testAGoneDeviceDropsTheRestoreButKeepsTheMarker() {
+        let (fake, duck, defaults, suite) = rig()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        duck.begin(generation: 1)
+        let writes = fake.writes.count
+        fake.gone = true
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.writes.count, writes, "nothing to write to a gone device")
+        XCTAssertNotNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey),
+                        "a device that comes back is still owed its level")
+    }
+
+    // Generations own their ducks: a stray end does not restore another
+    // generation's duck, and a second begin does not re-duck an active one.
+    func testOnlyTheOwningGenerationEndsTheDuck() {
+        let (fake, duck, _, suite) = rig()
+        duck.begin(generation: 1)
+        duck.end(generation: 9)
+        XCTAssertEqual(fake.level, 0.8 * VolumeDuckCoordinator.duckFraction, accuracy: 0.001,
+                       "another generation's end leaves the duck standing")
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+    }
+
+    // F4 — crash marker: the process died mid-duck, the marker is in defaults
+    // and the level is still what the duck wrote — the next launch owes the
+    // restore. Mutation: in restoreInterruptedDuck restore unconditionally
+    // (drop the current-vs-ducked check) -> the user-change half goes RED.
+    func testACrashMarkerStillDuckedRestoresAtLaunch() {
+        let (fake, duck, defaults, suite) = rig()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let ducked = 0.8 * VolumeDuckCoordinator.duckFraction
+        defaults.set(marker(uid: "fake-output", pre: 0.8, ducked: Double(ducked)),
+                     forKey: VolumeDuckCoordinator.markerKey)
+        fake.level = ducked // still where the dead process left it
+        duck.restoreInterruptedDuck()
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "the owed restore happens at launch")
+        XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey))
+    }
+
+    func testACrashMarkerWhoseVolumeMovedIsLeftAlone() {
+        let (fake, duck, defaults, suite) = rig()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(marker(uid: "fake-output", pre: 0.8, ducked: 0.12),
+                     forKey: VolumeDuckCoordinator.markerKey)
+        fake.level = 0.5 // the user picked a level while the app was dead
+        duck.restoreInterruptedDuck()
+        XCTAssertEqual(fake.writes, [], "the user's level is not ours to move")
+        XCTAssertEqual(fake.level, 0.5)
+        XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey),
+                     "the marker is always consumed")
+    }
+
+    func testACrashMarkerForAGoneDeviceIsDropped() {
+        let (fake, duck, defaults, suite) = rig()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(marker(uid: "unplugged", pre: 0.8, ducked: 0.12),
+                     forKey: VolumeDuckCoordinator.markerKey)
+        fake.level = 0.12
+        duck.restoreInterruptedDuck()
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey))
+    }
+
+    func testAMalformedCrashMarkerIsCleared() {
+        let (fake, duck, defaults, suite) = rig()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(["uid": "fake-output"], forKey: VolumeDuckCoordinator.markerKey)
+        duck.restoreInterruptedDuck()
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertNil(defaults.dictionary(forKey: VolumeDuckCoordinator.markerKey))
+    }
+}
+
+final class SoundWhileDictatingSettingTests: XCTestCase {
+    // F3 — migration: the v0.1.24 bool, off, means the user opted out of sound
+    // handling; it maps to "Don't Touch". Mutation: in
+    // SoundWhileDictatingSetting.mode map legacy false to .pauseMusic -> RED.
+    func testTheLegacyOffMigratesToDontTouch() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: SoundWhileDictatingSetting.legacyKey)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .dontTouch)
+        XCTAssertNil(defaults.object(forKey: SoundWhileDictatingSetting.legacyKey),
+                     "the old key is read once, then gone")
+        XCTAssertEqual(defaults.string(forKey: SoundWhileDictatingSetting.defaultsKey), "dontTouch",
+                       "and the pick is stored under the new key")
+    }
+
+    func testTheLegacyOnAndItsAbsenceMigrateToPauseMusic() {
+        for legacy: Bool? in [true, nil] {
+            let (defaults, suite) = freshDefaults()
+            if let legacy { defaults.set(legacy, forKey: SoundWhileDictatingSetting.legacyKey) }
+            XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic,
+                           "legacy \(legacy == nil ? "absent" : "on") keeps today's behaviour")
+            XCTAssertNil(defaults.object(forKey: SoundWhileDictatingSetting.legacyKey))
+            defaults.removePersistentDomain(forName: suite)
+        }
+    }
+
+    func testAStoredModeWinsOverTheLegacyKey() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("lowerAllSound", forKey: SoundWhileDictatingSetting.defaultsKey)
+        defaults.set(false, forKey: SoundWhileDictatingSetting.legacyKey)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .lowerAllSound)
+        XCTAssertNil(defaults.object(forKey: SoundWhileDictatingSetting.legacyKey))
+    }
+
+    func testAGarbageStoredValueFallsBackToTheMigration() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("bogus", forKey: SoundWhileDictatingSetting.defaultsKey)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic)
+    }
+}
+
+final class SoundWhileDictatingRunnerTests: XCTestCase {
+    private func rig(mode: @escaping () -> SoundWhileDictating)
+        -> (SoundWhileDictatingRunner, FakeMediaPlayer, FakeSystemVolume, UserDefaults, String) {
+        let (defaults, suite) = freshDefaults()
+        let music = FakeMediaPlayer("music", .playing)
+        let fake = FakeSystemVolume()
+        let duck = VolumeDuckCoordinator(volume: fake, defaults: defaults, stepDelay: 0)
+        let runner = SoundWhileDictatingRunner(pause: MediaPauseCoordinator(players: [music], retryDelay: 0),
+                                               duck: duck, mode: mode)
+        return (runner, music, fake, defaults, suite)
+    }
+
+    // The menu pick, read at every dictation start: pause the players, lower
+    // everything, or leave all sound alone.
+    func testEachModeRunsItsOwnAction() {
+        var mode = SoundWhileDictating.pauseMusic
+        let (runner, music, fake, _, suite) = rig { mode }
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+
+        runner.dictationStateChanged(.recording); runner.drain()
+        XCTAssertEqual(music.current, .paused)
+        XCTAssertEqual(fake.writes, [], "pause mode never touches the volume")
+        runner.dictationStateChanged(.idle); runner.drain()
+
+        mode = .lowerAllSound
+        runner.dictationStateChanged(.recording); runner.drain()
+        XCTAssertEqual(fake.level, 0.8 * VolumeDuckCoordinator.duckFraction, accuracy: 0.001)
+        XCTAssertEqual(music.pauseCalls, 1, "duck mode never touches the players")
+        runner.dictationStateChanged(.idle); runner.drain()
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+
+        mode = .dontTouch
+        runner.dictationStateChanged(.recording); runner.drain()
+        XCTAssertEqual([music.pauseCalls, music.playCalls], [1, 1])
+        XCTAssertEqual(fake.level, 0.8)
+        runner.dictationStateChanged(.idle); runner.drain()
+    }
+
+    // Changing the pick mid-dictation must still give back what that dictation
+    // took: the ending ends BOTH actions, so the generation decides, not the
+    // mode that happens to be stored when it ends.
+    func testAModeChangeMidDictationStillGivesItBack() {
+        var mode = SoundWhileDictating.lowerAllSound
+        let (runner, music, fake, _, suite) = rig { mode }
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        runner.dictationStateChanged(.recording); runner.drain()
+        mode = .pauseMusic
+        runner.dictationStateChanged(.idle); runner.drain()
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "the duck this dictation took is restored")
+        XCTAssertEqual(music.pauseCalls, 0, "and no pause was taken to give back")
+    }
+
+    // The launch pass over the crash marker runs on the same serial queue, so
+    // it cannot race the duck work.
+    func testRestoreInterruptedDuckRunsThroughTheQueue() {
+        let (runner, _, fake, defaults, suite) = rig { .lowerAllSound }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let ducked = 0.8 * VolumeDuckCoordinator.duckFraction
+        defaults.set(["uid": "fake-output", "pre": 0.8, "ducked": Double(ducked)],
+                     forKey: VolumeDuckCoordinator.markerKey)
+        fake.level = ducked
+        runner.restoreInterruptedDuck()
+        runner.drain()
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+    }
+
+    // A hung volume call must not hold termination open: the timed drain gives
+    // up, the unbounded one still joins, and the work completes on its queue.
+    func testTheTimedDrainBoundsTheWaitAndThePlainOneJoins() {
+        let (runner, _, fake, _, suite) = rig { .lowerAllSound }
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        fake.gate = DispatchSemaphore(value: 0)
+        runner.dictationStateChanged(.recording)
+        XCTAssertFalse(runner.drain(timeout: 0.05), "the queue is busy in the gated write")
+        fake.gate?.signal()
+        runner.drain()
+        XCTAssertEqual(fake.level, 0.8 * VolumeDuckCoordinator.duckFraction, accuracy: 0.001)
+        runner.dictationStateChanged(.idle); runner.drain()
+    }
+}
+
+/// The duck through the real DictationController: recording start is never
+/// held by a fade, and every ending restores the level.
+final class VolumeDuckJourneyTests: XCTestCase {
+    private func rig(samples: Int) -> (DictationController, FakeRecorder, FakeSystemVolume, SoundWhileDictatingRunner) {
+        let fake = FakeSystemVolume()
+        let (defaults, _) = freshDefaults()
+        let duck = VolumeDuckCoordinator(volume: fake, defaults: defaults, stepDelay: 0)
+        let runner = SoundWhileDictatingRunner(pause: MediaPauseCoordinator(players: []),
+                                               duck: duck, mode: { .lowerAllSound })
+        let recorder = FakeRecorder()
+        recorder.samples = [Float](repeating: 0.1, count: samples)
+        let controller = DictationController(recorder: recorder, output: FakeOutput(), mode: .hold) { _ in "hello" }
+        controller.onState = { runner.dictationStateChanged($0) }
+        return (controller, recorder, fake, runner)
+    }
+
+    @MainActor
+    func testHoldDucksOnKeyDownAndRestoresOnRelease() async {
+        let (c, _, fake, runner) = rig(samples: 16000)
+        c.keyDown()
+        runner.drain()
+        XCTAssertEqual(fake.level, 0.8 * VolumeDuckCoordinator.duckFraction, accuracy: 0.001)
+        c.keyUp()
+        runner.drain()
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        runner.drain()
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+    }
+
+    // The fade runs off the main thread: a volume call that takes a second
+    // still leaves keyDown — and recorder.start() — unblocked.
+    func testKeyDownNeverWaitsForTheFade() {
+        let (c, _, fake, runner) = rig(samples: 16000)
+        fake.gate = DispatchSemaphore(value: 0)
+        let started = Date()
+        c.keyDown()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.3,
+                          "keyDown must reach recorder.start() without waiting on the volume")
+        XCTAssertEqual(c.state, .recording)
+        fake.gate?.signal()
+        runner.drain()
+        c.cancel()
+        runner.drain()
+    }
+
+    // A start that fails: the queued begin is undone by the queued end —
+    // generation-owned, nothing left ducked.
+    @MainActor
+    func testAFailedStartLeavesNothingDucked() {
+        let (c, recorder, fake, runner) = rig(samples: 16000)
+        recorder.startError = NSError(domain: "mic", code: 1)
+        c.keyDown()
+        runner.drain()
+        XCTAssertEqual(c.state, .idle)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+    }
+}
+
+/// The app-glue files that cannot run here are checked for what they must
+/// hand to the tested wiring — mode pass-through and the bounded quit drain.
+final class SoundWhileDictatingAppGlueTests: XCTestCase {
+    private func source(_ name: String) throws -> String {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent(name)
+        return try String(contentsOf: path, encoding: .utf8)
+    }
+
+    func testTheSystemSideHandsTheRealPiecesToTheWiring() throws {
+        let source = try source("Sources/OxSayDictation/SoundWhileDictatingSystem.swift")
+            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
+        for needle in ["SoundWhileDictatingWiring.makeRunner(", "isRunning: isRunning",
+                       "volume: CoreAudioSystemVolume()", "defaults: .standard",
+                       "onPermissionDenied: onPermissionDenied", "category: \"media\""] {
+            XCTAssertTrue(source.contains(needle), "SoundWhileDictatingSystem.makeRunner must pass `\(needle)`")
+        }
+    }
+
+    // The mode the menu stores must reach the runner, and the real volume the
+    // duck. Mutation: in SoundWhileDictatingWiring.makeRunner replace the
+    // `mode:` closure with `{ .pauseMusic }` (or drop `duck:`) -> RED.
+    func testTheWiringPassesTheModeAndTheVolume() throws {
+        let source = try source("Sources/DictationCore/SoundWhileDictatingWiring.swift")
+            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
+        for needle in ["mode: { SoundWhileDictatingSetting.mode(defaults) }",
+                       "VolumeDuckCoordinator(volume:", "duck: duck"] {
+            XCTAssertTrue(source.contains(needle), "SoundWhileDictatingWiring.makeRunner must contain `\(needle)`")
+        }
+    }
+
+    // F6 — the quit path: inside applicationWillTerminate the runner gets the
+    // .idle transition and a BOUNDED drain; the unbounded drain before this
+    // fix could hold the quit for ~9.5 s. Mutation: in AppDelegate
+    // applicationWillTerminate call `drain()` instead of `drain(timeout: 3)`
+    // -> RED. The launch-side marker recovery is checked in the same file.
+    func testApplicationWillTerminateForwardsIdleAndDrainsBounded() throws {
+        let source = try source("Sources/OxSayDictation/AppDelegate.swift")
+        guard let start = source.range(of: "func applicationWillTerminate"),
+              let end = source[start.upperBound...].range(of: "\n    }\n") else {
+            XCTFail("applicationWillTerminate not found")
+            return
+        }
+        let body = String(source[start.upperBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("soundWhileDictating.dictationStateChanged(.idle)"),
+                      "quitting mid-dictation must end the runner's dictation")
+        XCTAssertTrue(body.contains("soundWhileDictating.drain(timeout:"),
+                      "the quit drain must be bounded — a hung player cannot hold termination open")
+        XCTAssertFalse(body.contains(".drain()"),
+                       "the unbounded drain must not come back")
+        XCTAssertTrue(source.contains("soundWhileDictating.restoreInterruptedDuck()"),
+                      "the crash marker must be consumed at launch")
+        let wiring = source.components(separatedBy: .newlines).filter { $0.contains("controller.onState =") }
+        XCTAssertEqual(wiring.count, 1)
+        XCTAssertTrue(wiring.first?.contains("soundWhileDictating.dictationStateChanged(state)") ?? false,
+                      "every controller state must reach the runner")
+    }
+}
