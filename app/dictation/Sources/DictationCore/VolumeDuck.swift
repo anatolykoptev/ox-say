@@ -41,15 +41,18 @@ public final class VolumeDuckCoordinator {
     public static let markerKey = "soundDuckRestore"
 
     /// What `begin` captured of the device it ducked: who owns the restore.
-    /// `ducked` is the level the device was read to hold after the fade —
-    /// an output whose volume comes in steps never lands on the computed
-    /// target, and restore compares against what the device holds.
+    /// `ducked` is the computed fade target; `duckedReadBack` the level the
+    /// device reported right after the fade — a quantizing output lands off
+    /// the target, and one that applies volume asynchronously (Bluetooth,
+    /// ramping DACs) can still show the pre-write or a ramping level then.
+    /// Restore accepts either: the settled level must match one of them.
     private struct Duck {
         let generation: Int
         let deviceID: UInt32
         let uid: String?
         let preDuck: Float
         var ducked: Float
+        var duckedReadBack: Float?
     }
 
     private let volume: SystemVolume
@@ -98,11 +101,13 @@ public final class VolumeDuckCoordinator {
         self.duck = duck
         writeMarker(duck)
         fade(from: level, to: duck.ducked, on: device.id)
-        // What the device actually took — a step grid or a fade stopped
-        // early leave it off the computed target — is what restore and the
-        // marker compare against.
+        // What the device reports right after the fade is remembered next
+        // to the computed target — a step grid or a fade stopped early
+        // leaves it off the target, and an asynchronous output may still
+        // show the pre-write or a ramping level here. Restore and the
+        // marker accept either.
         if let settled = volume.volume(device.id) {
-            duck.ducked = settled
+            duck.duckedReadBack = settled
             self.duck = duck
             writeMarker(duck)
         }
@@ -126,7 +131,9 @@ public final class VolumeDuckCoordinator {
               let pre = marker["pre"] as? Double, let ducked = marker["ducked"] as? Double,
               let deviceID = volume.device(forUID: uid),
               let current = volume.volume(deviceID),
-              Self.isDucked(current, ducked: Float(ducked)) else { return }
+              Self.isDucked(current, ducked: Float(ducked),
+                            readBack: (marker["duckedReadBack"] as? Double).map { Float($0) })
+        else { return }
         fade(from: current, to: Float(pre), on: deviceID)
     }
 
@@ -152,7 +159,7 @@ public final class VolumeDuckCoordinator {
             deviceID = found
         } else { return }
         guard let current = volume.volume(deviceID) else { return }
-        guard Self.isDucked(current, ducked: duck.ducked) else {
+        guard Self.isDucked(current, ducked: duck.ducked, readBack: duck.duckedReadBack) else {
             defaults.removeObject(forKey: Self.markerKey)
             log("the volume was changed during the dictation: left at the user's level")
             return
@@ -170,17 +177,26 @@ public final class VolumeDuckCoordinator {
         }
     }
 
+    /// A restore counts as landed only within the same tightened-near-
+    /// silence tolerance `isDucked` uses — a read of 0 is not a tiny
+    /// target restored.
     private func confirmed(_ target: Float, on deviceID: UInt32) -> Bool {
         guard let read = volume.volume(deviceID) else { return false }
-        return abs(read - target) <= Self.tolerance
+        return Self.matches(read, target)
     }
 
-    /// Whether the reported level is still the one a duck left. The flat
-    /// tolerance is tightened near silence: with `ducked` below ~0.04 a
+    /// Whether the reported level is still one a duck left — the computed
+    /// target, or the level the post-fade read-back reported on an output
+    /// that applies volume asynchronously. Each candidate has its own
+    /// tolerance, tightened near silence: with a level below ~0.04 a
     /// user-set 0 would fall inside 0.02 of it and read as "unchanged" —
     /// a change down to nothing must still count as the user's.
-    private static func isDucked(_ current: Float, ducked: Float) -> Bool {
-        abs(current - ducked) <= min(tolerance, ducked / 2)
+    private static func isDucked(_ current: Float, ducked: Float, readBack: Float?) -> Bool {
+        matches(current, ducked) || readBack.map { matches(current, $0) } ?? false
+    }
+
+    private static func matches(_ current: Float, _ level: Float) -> Bool {
+        abs(current - level) <= min(tolerance, level / 2)
     }
 
     /// The level a new duck owes back: normally the level just read — but
@@ -193,16 +209,22 @@ public final class VolumeDuckCoordinator {
               marker["uid"] as? String == uid,
               let pre = marker["pre"] as? Double,
               let ducked = marker["ducked"] as? Double,
-              Self.isDucked(level, ducked: Float(ducked)) else { return level }
+              Self.isDucked(level, ducked: Float(ducked),
+                            readBack: (marker["duckedReadBack"] as? Double).map { Float($0) })
+        else { return level }
         return Float(pre)
     }
 
     /// The crash marker names the device by UID — an AudioObjectID does not
-    /// survive re-enumeration — and both levels, so the launch pass can tell
-    /// "still ducked" from "the user moved it while we were dead".
+    /// survive re-enumeration — and both levels the duck counts as its own,
+    /// so the launch pass can tell "still ducked" from "the user moved it
+    /// while we were dead". A marker without `duckedReadBack` predates it
+    /// and names the computed level only.
     private func writeMarker(_ duck: Duck) {
         guard let uid = duck.uid else { return }
-        defaults.set(["uid": uid, "pre": Double(duck.preDuck), "ducked": Double(duck.ducked)],
-                     forKey: Self.markerKey)
+        var marker: [String: Any] = ["uid": uid, "pre": Double(duck.preDuck),
+                                     "ducked": Double(duck.ducked)]
+        if let readBack = duck.duckedReadBack { marker["duckedReadBack"] = Double(readBack) }
+        defaults.set(marker, forKey: Self.markerKey)
     }
 }
