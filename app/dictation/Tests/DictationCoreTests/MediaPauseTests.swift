@@ -22,13 +22,21 @@ final class FakeMediaPlayer: MediaPlayer {
         current = state
     }
 
+    /// Outcomes handed out by `play`, one per call: a play that the player
+    /// did not take the first time.
+    var playOutcomes: [ScriptOutcome] = []
+
     func state(wait: MediaWait) -> MediaPlaybackState {
         waits.append(wait)
         _ = gate?.wait(timeout: .now() + 1)
         return answers.isEmpty ? current : answers.removeFirst()
     }
     func pause() { pauseCalls += 1; current = .paused }
-    func play() { playCalls += 1; current = .playing }
+    func play() -> ScriptOutcome {
+        playCalls += 1
+        current = .playing
+        return playOutcomes.isEmpty ? .value("ok") : playOutcomes.removeFirst()
+    }
 }
 
 final class MediaPauseCoordinatorTests: XCTestCase {
@@ -157,6 +165,36 @@ final class MediaPauseCoordinatorTests: XCTestCase {
         XCTAssertEqual(music.playCalls, 1)
     }
 
+    // F5 (#195.1) — a `play` the player did not take gets one retry, and only
+    // a play that fails twice is an error line. Mutation: in
+    // MediaPauseCoordinator.play drop the retry -> playCalls is 1 and the
+    // error fires on the first failure (both halves go RED).
+    func testAPlayThatFailsOnceIsRetried() {
+        let music = FakeMediaPlayer("com.apple.Music", .playing)
+        var errors: [String] = []
+        let coordinator = MediaPauseCoordinator(players: [music], retryDelay: 0, logError: { errors.append($0) })
+        coordinator.begin(generation: 1)
+        music.answers = [.paused]
+        music.playOutcomes = [.timedOut, .value("ok")]
+        coordinator.end(generation: 1)
+        XCTAssertEqual(music.playCalls, 2, "the failed play is asked once more")
+        XCTAssertEqual(music.current, .playing)
+        XCTAssertEqual(errors, [], "a recovered play is not an error")
+    }
+
+    func testAPlayThatStillFailsIsAnErrorWithoutContent() {
+        let music = FakeMediaPlayer("com.apple.Music", .playing)
+        var errors: [String] = []
+        let coordinator = MediaPauseCoordinator(players: [music], retryDelay: 0, logError: { errors.append($0) })
+        coordinator.begin(generation: 1)
+        music.answers = [.paused]
+        music.playOutcomes = [.timedOut, .failed(-1728)]
+        coordinator.end(generation: 1)
+        XCTAssertEqual(music.playCalls, 2, "the retry ran")
+        XCTAssertEqual(errors.count, 1)
+        XCTAssertTrue(errors.first?.contains("com.apple.Music play did not take") ?? false, "\(errors)")
+    }
+
     func testAPlayerTheUserTookOverIsLeftBeAtTheEnd() {
         for taken in [MediaPlaybackState.playing, .stopped, .notRunning] {
             let music = FakeMediaPlayer("music", .playing)
@@ -201,26 +239,20 @@ final class MediaPauseCoordinatorTests: XCTestCase {
         XCTAssertEqual(music.pauseCalls + spotify.pauseCalls, 0)
     }
 
-    func testTheSettingDefaultsToOn() {
-        let suite = "ox-say-media-test-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        XCTAssertTrue(MediaPauseSetting.isEnabled(defaults))
-        defaults.set(false, forKey: MediaPauseSetting.defaultsKey)
-        XCTAssertFalse(MediaPauseSetting.isEnabled(defaults))
-        defaults.set(true, forKey: MediaPauseSetting.defaultsKey)
-        XCTAssertTrue(MediaPauseSetting.isEnabled(defaults))
-    }
 }
+
+/// The setting lives in `SoundWhileDictatingSetting` now: the old on/off maps
+/// to Pause Music / Don't Touch — tested in SoundWhileDictatingSettingTests.
 
 /// The journeys through the real DictationController: every way a recording
 /// ends must give the music back.
 final class MediaPauseJourneyTests: XCTestCase {
     private func rig(samples: Int, mode: HotkeyMode = .hold,
                      transcribe: @escaping ([Float]) async throws -> String = { _ in "hello" })
-        -> (DictationController, FakeRecorder, FakeMediaPlayer, MediaPauseRunner) {
+        -> (DictationController, FakeRecorder, FakeMediaPlayer, SoundWhileDictatingRunner) {
         let music = FakeMediaPlayer("music", .playing)
-        let runner = MediaPauseRunner(coordinator: MediaPauseCoordinator(players: [music]))
+        let runner = SoundWhileDictatingRunner(pause: MediaPauseCoordinator(players: [music]),
+                                               mode: { .pauseMusic })
         let recorder = FakeRecorder()
         recorder.samples = [Float](repeating: 0.1, count: samples)
         let controller = DictationController(recorder: recorder, output: FakeOutput(), mode: mode, transcribe: transcribe)
@@ -249,7 +281,7 @@ final class MediaPauseJourneyTests: XCTestCase {
 
     // F2 — journey: a key tap (recording under minSeconds) goes recording ->
     // idle without ever transcribing. Mutation: in
-    // MediaPauseRunner.dictationStateChanged make the end branch
+    // SoundWhileDictatingRunner.dictationStateChanged make the end branch
     // `guard active, state == .transcribing` (ignore .idle) -> the tap, esc,
     // start-error and quit tests stay paused (RED). The AppDelegate half of F2
     // is testTheAppDelegateForwardsEveryStateToTheRunner below.
@@ -299,11 +331,12 @@ final class MediaPauseJourneyTests: XCTestCase {
 
     // The hotkey must not wait for a player: a player that takes a second to
     // answer leaves keyDown unblocked. Mutation: queue.async -> queue.sync in
-    // MediaPauseRunner.dictationStateChanged -> RED (the call waits ~1 s).
+    // SoundWhileDictatingRunner.dictationStateChanged -> RED (the call waits ~1 s).
     func testAStateChangeNeverWaitsForAPlayer() {
         let slow = FakeMediaPlayer("music", .playing)
         slow.gate = DispatchSemaphore(value: 0)
-        let runner = MediaPauseRunner(coordinator: MediaPauseCoordinator(players: [slow]))
+        let runner = SoundWhileDictatingRunner(pause: MediaPauseCoordinator(players: [slow]),
+                                               mode: { .pauseMusic })
         let started = Date()
         runner.dictationStateChanged(.recording)
         XCTAssertLessThan(Date().timeIntervalSince(started), 0.3, "keyDown must return before the player answers")
@@ -324,14 +357,14 @@ final class MediaPauseJourneyTests: XCTestCase {
         let wiring = lines.filter { $0.contains("controller.onState =") }
         XCTAssertEqual(wiring.count, 1, "the controller's state callback is assigned in exactly one place")
         let line = wiring.first ?? ""
-        XCTAssertTrue(line.contains("mediaPause.dictationStateChanged(state)"),
-                      "controller.onState does not hand the state to the media runner")
+        XCTAssertTrue(line.contains("soundWhileDictating.dictationStateChanged(state)"),
+                      "controller.onState does not hand the state to the sound runner")
         for conditional in [" if ", "guard ", "switch ", "case ", "where "] {
             XCTAssertFalse(line.contains(conditional),
-                           "controller.onState filters what the media runner sees (\(conditional.trimmingCharacters(in: .whitespaces))): the resume would be skipped for some endings")
+                           "controller.onState filters what the sound runner sees (\(conditional.trimmingCharacters(in: .whitespaces))): the resume would be skipped for some endings")
         }
-        XCTAssertTrue(source.contains("mediaPause.drain()"),
-                      "applicationWillTerminate must wait for the resume, or quitting mid-dictation leaves the music paused")
+        XCTAssertTrue(source.contains("soundWhileDictating.drain(timeout:"),
+                      "applicationWillTerminate must wait for the resume — bounded, or a hang holds the quit open")
     }
 }
 
@@ -503,29 +536,33 @@ final class FakeScriptWorld {
     }
 }
 
-/// MediaPauseWiring is what the app runs: the players, a worker each, the
-/// setting, the denied callback. The AppDelegate and MediaPauseSystem only
-/// hand it the process list and the real script executor.
-final class MediaPauseWiringTests: XCTestCase {
+/// SoundWhileDictatingWiring is what the app runs: the players, a worker
+/// each, the mode the menu stored, the duck, the denied callback. The
+/// AppDelegate and SoundWhileDictatingSystem only hand it the process list,
+/// the real script executor and the real volume.
+final class SoundWhileDictatingWiringTests: XCTestCase {
     private let music = ScriptedMediaPlayer.musicBundleID
     private let spotify = ScriptedMediaPlayer.spotifyBundleID
 
     /// A private suite; the caller removes it when it set a value in it.
-    private func defaults(_ name: String = "ox-say-media-wiring-\(UUID().uuidString)", enabled: Bool? = nil) -> UserDefaults {
+    private func defaults(_ name: String = "ox-say-media-wiring-\(UUID().uuidString)",
+                          mode: SoundWhileDictating? = nil) -> UserDefaults {
         let defaults = UserDefaults(suiteName: name)!
-        if let enabled { defaults.set(enabled, forKey: MediaPauseSetting.defaultsKey) }
+        if let mode { defaults.set(mode.rawValue, forKey: SoundWhileDictatingSetting.defaultsKey) }
         return defaults
     }
 
     private func runner(_ world: FakeScriptWorld, defaults: UserDefaults? = nil,
+                        volume: SystemVolume? = nil,
                         onPermissionDenied: @escaping () -> Void = {},
-                        logError: @escaping (String) -> Void = { _ in }) -> MediaPauseRunner {
-        MediaPauseWiring.makeRunner(isRunning: world.isRunning, execute: world.execute,
-                                    defaults: defaults ?? self.defaults(), onPermissionDenied: onPermissionDenied,
-                                    logError: logError)
+                        logError: @escaping (String) -> Void = { _ in }) -> SoundWhileDictatingRunner {
+        SoundWhileDictatingWiring.makeRunner(isRunning: world.isRunning, execute: world.execute,
+                                             volume: volume,
+                                             defaults: defaults ?? self.defaults(), onPermissionDenied: onPermissionDenied,
+                                             logError: logError)
     }
 
-    // Mutation: in MediaPauseWiring.bundleIDs drop Spotify -> RED.
+    // Mutation: in SoundWhileDictatingWiring.bundleIDs drop Spotify -> RED.
     func testMusicAndSpotifyAreBothPausedAndResumed() {
         let world = FakeScriptWorld([music: "playing", spotify: "playing"])
         let r = runner(world)
@@ -535,26 +572,46 @@ final class MediaPauseWiringTests: XCTestCase {
         XCTAssertEqual([world.state(music), world.state(spotify)], ["playing", "playing"])
     }
 
-    // Mutation: in MediaPauseWiring.makeRunner replace the coordinator's
-    // `isEnabled:` closure with `{ false }` (or `{ true }`) -> one of these two RED.
-    func testTheSettingOnPausesAndOffTouchesNothing() {
+    // The menu pick reaches the runner: Pause Music pauses the players and
+    // leaves the volume; Don't Touch sends no Apple Event at all and never
+    // touches the volume. Mutation: in SoundWhileDictatingWiring.makeRunner
+    // replace the `mode:` closure with `{ .pauseMusic }` -> the Don't Touch
+    // half goes RED.
+    func testTheModeOnPausesAndDontTouchTouchesNothing() {
         let suites = ["ox-say-media-on-\(UUID().uuidString)", "ox-say-media-off-\(UUID().uuidString)"]
         defer { suites.forEach { UserDefaults(suiteName: $0)!.removePersistentDomain(forName: $0) } }
         let on = FakeScriptWorld([music: "playing"])
-        let rOn = runner(on, defaults: defaults(suites[0], enabled: true))
+        let rOn = runner(on, defaults: defaults(suites[0], mode: .pauseMusic))
         rOn.dictationStateChanged(.recording); rOn.drain()
         XCTAssertEqual(on.state(music), "paused")
         rOn.dictationStateChanged(.idle); rOn.drain()
 
         let off = FakeScriptWorld([music: "playing", spotify: "playing"])
-        let rOff = runner(off, defaults: defaults(suites[1], enabled: false))
+        let fakeVolume = FakeSystemVolume()
+        let rOff = runner(off, defaults: defaults(suites[1], mode: .dontTouch), volume: fakeVolume)
         rOff.dictationStateChanged(.recording); rOff.drain()
         rOff.dictationStateChanged(.idle); rOff.drain()
-        XCTAssertEqual(off.touched, [], "switched off in the menu: no Apple Event at all")
+        XCTAssertEqual(off.touched, [], "Don't Touch: no Apple Event at all")
+        XCTAssertEqual(fakeVolume.writes, [], "and no volume write either")
+    }
+
+    // Lower All Sound through the real wiring: the players get no Apple
+    // Event, the volume takes the whole journey.
+    func testLowerAllSoundDucksAndRestoresWithoutScripts() {
+        let suite = "ox-say-media-duck-\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        let world = FakeScriptWorld([music: "playing", spotify: "playing"])
+        let fakeVolume = FakeSystemVolume()
+        let r = runner(world, defaults: defaults(suite, mode: .lowerAllSound), volume: fakeVolume)
+        r.dictationStateChanged(.recording); r.drain()
+        XCTAssertEqual(fakeVolume.level, 0.8 * VolumeDuckCoordinator.duckFraction, accuracy: 0.001)
+        r.dictationStateChanged(.idle); r.drain()
+        XCTAssertEqual(fakeVolume.level, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(world.touched, [], "the duck path sends no Apple Events")
     }
 
     // Mutation: delete `coordinator.onPermissionDenied = onPermissionDenied`
-    // in MediaPauseWiring.makeRunner -> RED.
+    // in SoundWhileDictatingWiring.makeRunner -> RED.
     func testADeniedAutomationReachesTheNoticeOnce() {
         let world = FakeScriptWorld([music: "playing", spotify: "playing"])
         world.denied = [music, spotify]
@@ -576,7 +633,7 @@ final class MediaPauseWiringTests: XCTestCase {
 
     // F5 — journey: Music hangs (every call takes 0.9 s, beyond the quick
     // wait) while Spotify plays. Spotify is still paused promptly and given
-    // back. Mutation: in MediaPauseWiring.makeRunner build ONE QueuedScriptRunner
+    // back. Mutation: in SoundWhileDictatingWiring.makeRunner build ONE QueuedScriptRunner
     // before `bundleIDs.map` and pass it to every player -> Spotify's state
     // call queues behind Music's, times out, and Spotify is never paused (RED).
     func testAHungMusicDoesNotDelayOrBlockSpotify() {
@@ -609,18 +666,6 @@ final class MediaPauseWiringTests: XCTestCase {
     }
 }
 
-/// The two app-target files that cannot run here are checked for what they
-/// must hand to the tested wiring.
-final class MediaPauseAppGlueTests: XCTestCase {
-    func testMediaPauseSystemHandsTheRealPiecesToTheWiring() throws {
-        let path = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources/OxSayDictation/MediaPauseSystem.swift")
-        let source = try String(contentsOf: path, encoding: .utf8)
-            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
-        for needle in ["MediaPauseWiring.makeRunner(", "isRunning: isRunning", "defaults: .standard",
-                       "onPermissionDenied: onPermissionDenied"] {
-            XCTAssertTrue(source.contains(needle), "MediaPauseSystem.makeRunner must pass `\(needle)`")
-        }
-    }
-}
+/// The mode-aware glue checks live in SoundWhileDictatingAppGlueTests: system
+/// side, mode pass-through, and the bounded drain inside
+/// applicationWillTerminate.
