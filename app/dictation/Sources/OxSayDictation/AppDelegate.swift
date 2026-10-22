@@ -249,9 +249,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // changes this state, so one forward covers the media resume.
         controller.onState = { [weak self] state in self?.soundWhileDictating.dictationStateChanged(state); self?.show(state) }
         controller.onError = { [weak self] message in self?.notice(message, kind: .outcome) }
-        // A crash mid-duck left the volume low and a marker behind; finish the
-        // restore the dead process owed.
-        soundWhileDictating.restoreInterruptedDuck()
         // One line per dictation, no text: read with
         // `log show --predicate 'subsystem == "io.github.anatolykoptev.ox-say.dictation"'`.
         // Notice level, so the unified log persists it.
@@ -319,8 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // Quitting mid-dictation must not leave the music paused or the output
-        // ducked — bounded, so a hung player cannot hold the quit open; a duck
-        // it skipped keeps its marker and the next launch restores it.
+        // ducked — bounded, so a hung player cannot hold the quit open.
         soundWhileDictating.dictationStateChanged(.idle)
         soundWhileDictating.drain(timeout: 3)
         output.settle()

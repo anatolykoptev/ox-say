@@ -5,7 +5,8 @@ import Foundation
 /// runner's serial queue.
 public protocol SystemVolume: AnyObject {
     /// The default output device: its AudioObjectID and persistent UID (`nil`
-    /// when the device exposes none — the crash marker cannot name it then).
+    /// when the device exposes none — an unconfirmed restore cannot be
+    /// remembered for it then).
     func defaultDevice() -> (id: UInt32, uid: String?)?
     /// Whether the device's software volume can be written at all — false on
     /// outputs that have none (some HDMI and USB DACs).
@@ -17,8 +18,7 @@ public protocol SystemVolume: AnyObject {
     func isMuted(_ device: UInt32) -> Bool
     /// True when the audio server accepted the write.
     @discardableResult func setVolume(_ device: UInt32, _ level: Float) -> Bool
-    /// The AudioObjectID a persisted UID resolves to now; nil when the device
-    /// is gone.
+    /// The AudioObjectID a UID resolves to now; nil when the device is gone.
     func device(forUID uid: String) -> UInt32?
 }
 
@@ -27,8 +27,11 @@ public protocol SystemVolume: AnyObject {
 /// Restore wins: a level the user picked during the few seconds of a
 /// dictation loses to the restore, because an output left quiet forever is
 /// the larger harm — and no comparison of levels can tell every device's
-/// duck from a user change. A marker persisted while ducked lets the next
-/// launch finish a restore a crash skipped.
+/// duck from a user change. A restore that could not be confirmed stays owed
+/// in memory, per device, and is applied by the next dictation on that device
+/// if the output is still as quiet as the duck left it. Nothing is persisted:
+/// a process that dies mid-dictation leaves the output quiet until the user
+/// raises it.
 ///
 /// Not thread safe: `SoundWhileDictatingRunner` feeds it from one serial
 /// queue, where `begin` and `end` alternate per generation.
@@ -40,9 +43,6 @@ public final class VolumeDuckCoordinator {
     /// snaps every write to a 1/16 grid (the volume keys' step) to land
     /// inside it from any computed target.
     public static let confirmTolerance: Float = 1.0 / 16 + 0.01
-    /// The defaults key of the persisted duck: device UID, pre-duck and
-    /// ducked levels, present only while a duck may still be owed.
-    public static let markerKey = "soundDuckRestore"
     /// How many settle-spaced reads a confirm takes before giving up — an
     /// output that applies volume asynchronously can keep answering the old
     /// level for the first few.
@@ -57,14 +57,22 @@ public final class VolumeDuckCoordinator {
         let ducked: Float
     }
 
+    /// A restore that did not land: the level the device is owed and the
+    /// level the duck left it at.
+    private struct Owed {
+        let preDuck: Float
+        let ducked: Float
+    }
+
     private let volume: SystemVolume
-    private let defaults: UserDefaults
     private let steps: Int
     private let stepDelay: TimeInterval
     private let settleDelay: TimeInterval
     private let log: (String) -> Void
     private let logError: (String) -> Void
     private var duck: Duck?
+    /// Unconfirmed restores by device UID. Dies with the process.
+    private var owed: [String: Owed] = [:]
     /// One log line per launch for outputs without a settable volume.
     private var unsettableLogged = false
 
@@ -74,13 +82,12 @@ public final class VolumeDuckCoordinator {
     /// - `log` gets one line at notice level when the output cannot be
     ///   lowered; `logError` gets a line without user content when a restore
     ///   cannot be confirmed.
-    public init(volume: SystemVolume, defaults: UserDefaults,
+    public init(volume: SystemVolume,
                 steps: Int = 5, stepDelay: TimeInterval = 0.05,
                 settleDelay: TimeInterval = 0.08,
                 log: @escaping (String) -> Void = { _ in },
                 logError: @escaping (String) -> Void = { _ in }) {
         self.volume = volume
-        self.defaults = defaults
         self.steps = steps
         self.stepDelay = stepDelay
         self.settleDelay = settleDelay
@@ -106,7 +113,6 @@ public final class VolumeDuckCoordinator {
         let duck = Duck(generation: generation, deviceID: device.id, uid: device.uid,
                         preDuck: preDuck, ducked: preDuck * Self.duckFraction)
         self.duck = duck
-        writeMarker(duck)
         fade(from: level, to: duck.ducked, on: device.id)
     }
 
@@ -117,66 +123,59 @@ public final class VolumeDuckCoordinator {
         restore(duck)
     }
 
-    /// The launch pass over the crash marker. A marker that cannot be read
-    /// is cleared; one whose device is gone keeps standing for the launch
-    /// that finds it back. Otherwise the level it names is given back —
-    /// unless the output already sits clearly above the ducked level, which
-    /// means someone raised it while the process was dead. The marker is
-    /// always consumed once a device answers.
-    public func restoreInterruptedDuck() {
-        guard let marker = defaults.dictionary(forKey: Self.markerKey) else { return }
-        guard let uid = marker["uid"] as? String,
-              let pre = marker["pre"] as? Double, let ducked = marker["ducked"] as? Double
-        else {
-            defaults.removeObject(forKey: Self.markerKey)
-            return
-        }
-        guard let deviceID = volume.device(forUID: uid) else { return }
-        // A read right after launch can still show the pre-write level on
-        // an output that applies volume asynchronously — read twice past a
-        // settle and trust the later one.
-        var current = volume.volume(deviceID)
-        if settleDelay > 0 { Thread.sleep(forTimeInterval: settleDelay) }
-        if let reread = volume.volume(deviceID) { current = reread }
-        guard let current = current else { return }
-        defaults.removeObject(forKey: Self.markerKey)
-        guard current <= Float(ducked) + Self.confirmTolerance else { return }
-        fade(from: current, to: Float(pre), on: deviceID)
-    }
-
-    /// The few-step ramp; stops early when the device stops taking writes.
-    private func fade(from: Float, to: Float, on deviceID: UInt32) {
+    /// The few-step ramp; stops early when the device stops taking writes,
+    /// and says whether every write was accepted.
+    @discardableResult
+    private func fade(from: Float, to: Float, on deviceID: UInt32) -> Bool {
         for step in 1...max(1, steps) {
             if step > 1 && stepDelay > 0 { Thread.sleep(forTimeInterval: stepDelay) }
             let level = from + (to - from) * Float(step) / Float(max(1, steps))
-            guard volume.setVolume(deviceID, level) else { return }
+            guard volume.setVolume(deviceID, level) else { return false }
         }
+        return true
     }
 
     /// Who the level is restored on: the device the duck captured, re-found
     /// by its persistent UID when a replug handed it a new AudioObjectID.
-    /// The marker stands while a restore is still owed — a device that went
-    /// away or a write the server never confirmed — and is cleared the
-    /// moment the level is back.
+    /// The restore stays owed (in memory, by UID) while a device is away or
+    /// a write was refused or never read back, and is forgotten the moment
+    /// the level is back. A write the server refused never counts as landed,
+    /// whatever the read says: at a tiny pre-duck level the still-ducked
+    /// level sits inside `confirmTolerance` of the target.
     private func restore(_ duck: Duck) {
+        let owedBack = Owed(preDuck: duck.preDuck, ducked: duck.ducked)
         let deviceID: UInt32
         if volume.volume(duck.deviceID) != nil {
             deviceID = duck.deviceID
         } else if let uid = duck.uid, let found = volume.device(forUID: uid) {
             deviceID = found
-        } else { return }
-        guard let current = volume.volume(deviceID) else { return }
-        fade(from: current, to: duck.preDuck, on: deviceID)
-        guard !confirmed(duck.preDuck, on: deviceID) else {
-            defaults.removeObject(forKey: Self.markerKey)
+        } else {
+            keepOwed(owedBack, for: duck.uid)
             return
         }
-        volume.setVolume(deviceID, duck.preDuck)
-        if confirmed(duck.preDuck, on: deviceID) {
-            defaults.removeObject(forKey: Self.markerKey)
+        guard let current = volume.volume(deviceID) else {
+            keepOwed(owedBack, for: duck.uid)
+            return
+        }
+        if fade(from: current, to: duck.preDuck, on: deviceID),
+           confirmed(duck.preDuck, on: deviceID) {
+            forgetOwed(for: duck.uid)
+            return
+        }
+        if volume.setVolume(deviceID, duck.preDuck), confirmed(duck.preDuck, on: deviceID) {
+            forgetOwed(for: duck.uid)
         } else {
+            keepOwed(owedBack, for: duck.uid)
             logError("output volume restore unconfirmed: level did not read back")
         }
+    }
+
+    private func keepOwed(_ entry: Owed, for uid: String?) {
+        if let uid { owed[uid] = entry }
+    }
+
+    private func forgetOwed(for uid: String?) {
+        if let uid { owed[uid] = nil }
     }
 
     /// A restore counts as landed once a settled read sits within
@@ -194,26 +193,14 @@ public final class VolumeDuckCoordinator {
     }
 
     /// The level a new duck owes back: normally the level just read — but
-    /// while a marker for this device still stands a restore is owed, and
-    /// what is owed is the marker's pre-duck, never the current level,
-    /// which a restore that never landed may have left quiet.
+    /// when this device's last restore never landed and the output still sits
+    /// where that duck left it, what is owed is the earlier pre-duck, not the
+    /// quiet level a failed restore left behind. A level clearly above the
+    /// ducked one means the user moved it since: the entry is dropped and the
+    /// level read is theirs. Entries of other devices are never touched.
     private func owedPreDuck(device: (id: UInt32, uid: String?), level: Float) -> Float {
-        guard let uid = device.uid,
-              let marker = defaults.dictionary(forKey: Self.markerKey),
-              marker["uid"] as? String == uid,
-              let pre = marker["pre"] as? Double
-        else { return level }
-        return Float(pre)
-    }
-
-    /// The crash marker names the device by UID — an AudioObjectID does not
-    /// survive re-enumeration — the level owed back and the level the duck
-    /// aimed for, so the launch pass can tell "still ducked" from "raised
-    /// while we were dead". Keys a marker from another version adds are
-    /// ignored.
-    private func writeMarker(_ duck: Duck) {
-        guard let uid = duck.uid else { return }
-        defaults.set(["uid": uid, "pre": Double(duck.preDuck),
-                      "ducked": Double(duck.ducked)], forKey: Self.markerKey)
+        guard let uid = device.uid, let entry = owed.removeValue(forKey: uid) else { return level }
+        guard level <= entry.ducked + Self.confirmTolerance else { return level }
+        return entry.preDuck
     }
 }

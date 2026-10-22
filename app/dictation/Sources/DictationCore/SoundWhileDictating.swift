@@ -94,20 +94,14 @@ public final class SoundWhileDictatingRunner {
         }
     }
 
-    /// The launch pass for a duck this process never ended — a crash mid-
-    /// dictation. Queued like the dictation work, so it cannot race it.
-    public func restoreInterruptedDuck() {
-        queue.async { [duck] in duck?.restoreInterruptedDuck() }
-    }
-
     /// Waits for the queued work to finish: in tests, and to join a bounded
     /// drain that already returned.
     public func drain() { queue.sync {} }
 
     /// Waits at most `timeout` for the queued work — the bound the quit path
     /// needs: a hung player script or audio call must not hold termination
-    /// open (a duck still unrestored keeps its marker; the next launch
-    /// restores it). Returns false when the queue did not finish in time.
+    /// open (a duck it did not finish stays quiet until the user raises
+    /// the volume). Returns false when the queue did not finish in time.
     @discardableResult
     public func drain(timeout: TimeInterval) -> Bool {
         let done = DispatchSemaphore(value: 0)

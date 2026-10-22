@@ -574,8 +574,9 @@ launched. The first time, macOS asks to let OxSay control Music or Spotify
 (System Settings → Privacy & Security → Automation). **Lower All Sound**:
 everything the Mac plays — Music, a browser, YouTube — keeps playing but
 fades to a fraction of its volume while you dictate, then fades back to
-exactly the level it had; a volume you changed yourself during the dictation
-is left alone. It uses CoreAudio's output volume, so no permission prompt.
+exactly the level it had, even over a volume you changed during the dictation.
+If the app is killed mid-dictation the output stays quiet until you raise it.
+It uses CoreAudio's output volume, so no permission prompt.
 **Don't Touch** leaves every sound alone.
 
 The app streams the microphone into a transcription session while you speak.

@@ -33,7 +33,7 @@ public enum SoundWhileDictatingWiring {
         let pause = MediaPauseCoordinator(players: players, logError: logError)
         pause.onPermissionDenied = onPermissionDenied
         let duck = volume.map {
-            VolumeDuckCoordinator(volume: $0, defaults: defaults, log: log, logError: logError)
+            VolumeDuckCoordinator(volume: $0, log: log, logError: logError)
         }
         return SoundWhileDictatingRunner(pause: pause, duck: duck,
                                          mode: { SoundWhileDictatingSetting.mode(defaults) })
