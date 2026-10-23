@@ -38,11 +38,20 @@ public protocol SystemVolume: AnyObject {
 public final class VolumeDuckCoordinator {
     /// The ducked level is this fraction of the level at the key down.
     public static let duckFraction: Float = 0.15
+    /// The grid of the volume keys: an output that snaps every write to it
+    /// lands at most half a step (1/32) from the level it was asked to hold.
+    private static let quantizationStep: Float = 1.0 / 16
+    /// Room on top of the grid for float noise in the read-back.
+    private static let readSlack: Float = 0.01
     /// How far a settled read may sit from the level it was asked to hold
     /// and still count as restored — generous enough for an output that
     /// snaps every write to a 1/16 grid (the volume keys' step) to land
     /// inside it from any computed target.
-    public static let confirmTolerance: Float = 1.0 / 16 + 0.01
+    public static let confirmTolerance: Float = quantizationStep + readSlack
+    /// How long an unconfirmed restore stays owed: the next dictation on the
+    /// device is usually within minutes; past this, a level that happens to
+    /// match the duck is more likely the user's own than a leftover.
+    public static let owedLifetime: TimeInterval = 5 * 60
     /// How many settle-spaced reads a confirm takes before giving up — an
     /// output that applies volume asynchronously can keep answering the old
     /// level for the first few.
@@ -57,11 +66,12 @@ public final class VolumeDuckCoordinator {
         let ducked: Float
     }
 
-    /// A restore that did not land: the level the device is owed and the
-    /// level the duck left it at.
+    /// A restore that did not land: the level the device is owed, the level
+    /// the duck left it at, and when the restore failed.
     private struct Owed {
         let preDuck: Float
         let ducked: Float
+        let since: Date
     }
 
     private let volume: SystemVolume
@@ -70,6 +80,7 @@ public final class VolumeDuckCoordinator {
     private let settleDelay: TimeInterval
     private let log: (String) -> Void
     private let logError: (String) -> Void
+    private let now: () -> Date
     private var duck: Duck?
     /// Unconfirmed restores by device UID. Dies with the process.
     private var owed: [String: Owed] = [:]
@@ -82,17 +93,20 @@ public final class VolumeDuckCoordinator {
     /// - `log` gets one line at notice level when the output cannot be
     ///   lowered; `logError` gets a line without user content when a restore
     ///   cannot be confirmed.
+    /// - `now` stamps and ages the owed restores.
     public init(volume: SystemVolume,
                 steps: Int = 5, stepDelay: TimeInterval = 0.05,
                 settleDelay: TimeInterval = 0.08,
                 log: @escaping (String) -> Void = { _ in },
-                logError: @escaping (String) -> Void = { _ in }) {
+                logError: @escaping (String) -> Void = { _ in },
+                now: @escaping () -> Date = Date.init) {
         self.volume = volume
         self.steps = steps
         self.stepDelay = stepDelay
         self.settleDelay = settleDelay
         self.log = log
         self.logError = logError
+        self.now = now
     }
 
     /// A dictation (generation `generation`) started recording. Nothing is
@@ -139,11 +153,11 @@ public final class VolumeDuckCoordinator {
     /// by its persistent UID when a replug handed it a new AudioObjectID.
     /// The restore stays owed (in memory, by UID) while a device is away or
     /// a write was refused or never read back, and is forgotten the moment
-    /// the level is back. A write the server refused never counts as landed,
+    /// the level is back or `owedLifetime` has passed. A write the server refused never counts as landed,
     /// whatever the read says: at a tiny pre-duck level the still-ducked
     /// level sits inside `confirmTolerance` of the target.
     private func restore(_ duck: Duck) {
-        let owedBack = Owed(preDuck: duck.preDuck, ducked: duck.ducked)
+        let owedBack = Owed(preDuck: duck.preDuck, ducked: duck.ducked, since: now())
         let deviceID: UInt32
         if volume.volume(duck.deviceID) != nil {
             deviceID = duck.deviceID
@@ -151,10 +165,12 @@ public final class VolumeDuckCoordinator {
             deviceID = found
         } else {
             keepOwed(owedBack, for: duck.uid)
+            logError("output volume restore deferred: the device is gone")
             return
         }
         guard let current = volume.volume(deviceID) else {
             keepOwed(owedBack, for: duck.uid)
+            logError("output volume restore deferred: the volume cannot be read")
             return
         }
         if fade(from: current, to: duck.preDuck, on: deviceID),
@@ -196,11 +212,23 @@ public final class VolumeDuckCoordinator {
     /// when this device's last restore never landed and the output still sits
     /// where that duck left it, what is owed is the earlier pre-duck, not the
     /// quiet level a failed restore left behind. A level clearly above the
-    /// ducked one means the user moved it since: the entry is dropped and the
-    /// level read is theirs. Entries of other devices are never touched.
+    /// ducked one means the user moved it since, and so does an entry older
+    /// than `owedLifetime`: the entry is dropped and the level read is theirs.
+    /// Entries of other devices are never touched.
     private func owedPreDuck(device: (id: UInt32, uid: String?), level: Float) -> Float {
         guard let uid = device.uid, let entry = owed.removeValue(forKey: uid) else { return level }
-        guard level <= entry.ducked + Self.confirmTolerance else { return level }
+        guard now().timeIntervalSince(entry.since) < Self.owedLifetime else { return level }
+        guard level <= Self.stillQuietBound(entry.ducked) else { return level }
         return entry.preDuck
+    }
+
+    /// The highest level that still counts as "as quiet as the duck left it":
+    /// a fixed share above the ducked level, so a user who raised a quiet
+    /// output by a little is not mistaken for it — or, for a ducked level so
+    /// small that the share is less than a grid snap, the ducked level plus
+    /// the snap's worst error (half a step) and the read slack. With pre 0.8
+    /// (ducked 0.12) the bound is 0.18, not the 0.1925 of a fixed margin.
+    private static func stillQuietBound(_ ducked: Float) -> Float {
+        max(ducked * 1.5, ducked + quantizationStep / 2 + readSlack)
     }
 }

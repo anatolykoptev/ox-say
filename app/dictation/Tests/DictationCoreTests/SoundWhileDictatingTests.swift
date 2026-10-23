@@ -8,6 +8,8 @@ import XCTest
 final class FakeSystemVolume: SystemVolume {
     var device: (id: UInt32, uid: String?)? = (id: 76, uid: "fake-output")
     var gone = false
+    /// The device is there (its UID resolves) but its volume cannot be read.
+    var unreadable = false
     var settable = true
     var muted = false
     var level: Float = 0.8
@@ -37,7 +39,7 @@ final class FakeSystemVolume: SystemVolume {
     func defaultDevice() -> (id: UInt32, uid: String?)? { gone ? nil : device }
     func isSettable(_: UInt32) -> Bool { settable }
     func volume(_ id: UInt32) -> Float? {
-        guard !gone, let device, device.id == id else { return nil }
+        guard !gone, !unreadable, let device, device.id == id else { return nil }
         if pendingWrite != nil, lagLeft > 0 {
             lagLeft -= 1
             return reportedLevel ?? level
@@ -82,11 +84,12 @@ private func freshDefaults(_ label: String = "ox-say-sound") -> (UserDefaults, S
 }
 
 final class VolumeDuckCoordinatorTests: XCTestCase {
-    private func rig(level: Float = 0.8, logError: @escaping (String) -> Void = { _ in })
+    private func rig(level: Float = 0.8, logError: @escaping (String) -> Void = { _ in },
+                     now: @escaping () -> Date = Date.init)
         -> (FakeSystemVolume, VolumeDuckCoordinator) {
         let fake = FakeSystemVolume()
         fake.level = level
-        return (fake, VolumeDuckCoordinator(volume: fake, stepDelay: 0, logError: logError))
+        return (fake, VolumeDuckCoordinator(volume: fake, stepDelay: 0, logError: logError, now: now))
     }
 
     private let quiet = 0.8 * VolumeDuckCoordinator.duckFraction
@@ -197,14 +200,23 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
 
     // The restore is confirmed by reading the level back; an unconfirmed write
     // is retried once, then reported at error level — never silently dropped.
+    // At 0.06 the still-ducked level sits inside the confirm tolerance of the
+    // target, so only the accepted-write conditions in `restore` tell a retry
+    // that landed from a read that merely looks close (#200.4).
+    // Mutations: in VolumeDuckCoordinator.restore make the first condition
+    // `fade(...) || true` -> the 0.06 case never retries and stays at 0.009;
+    // make the second `volume.setVolume(...) || true` -> only
+    // testATinyLevelRefusedRestoreIsNotConfirmed (both writes refused) sees it.
     func testARefusedRestoreWriteIsRetriedOnce() {
-        var errors: [String] = []
-        let (fake, duck) = rig { errors.append($0) }
-        duck.begin(generation: 1)
-        fake.refusedWrites = 1
-        duck.end(generation: 1)
-        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "the retry lands it")
-        XCTAssertEqual(errors, [], "a recovered restore is not an error")
+        for level: Float in [0.8, 0.06] {
+            var errors: [String] = []
+            let (fake, duck) = rig(level: level) { errors.append($0) }
+            duck.begin(generation: 1)
+            fake.refusedWrites = 1
+            duck.end(generation: 1)
+            XCTAssertEqual(fake.level, level, accuracy: 0.0001, "the retry lands it (from \(level))")
+            XCTAssertEqual(errors, [], "a recovered restore is not an error (from \(level))")
+        }
     }
 
     func testAStillUnconfirmedRestoreIsAnErrorWithoutContent() {
@@ -260,6 +272,32 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
         duck.begin(generation: 2)
         duck.end(generation: 2)
         XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "the level it was owed comes back")
+    }
+
+    // The device is gone, or answers but cannot be read: the restore stays
+    // owed, and each is one error line without the device's name or any
+    // content. Mutation: delete either logError line in
+    // VolumeDuckCoordinator.restore -> the matching test goes RED.
+    func testAGoneDeviceRestoreIsLoggedWithoutContent() {
+        var errors: [String] = []
+        let (fake, duck) = rig { errors.append($0) }
+        duck.begin(generation: 1)
+        fake.gone = true
+        duck.end(generation: 1)
+        XCTAssertEqual(errors.count, 1, "\(errors)")
+        XCTAssertTrue(errors.first?.contains("gone") ?? false, "\(errors)")
+        XCTAssertFalse(errors.first?.contains("fake-output") ?? true, "no device name in the log")
+    }
+
+    func testAnUnreadableDeviceRestoreIsLoggedWithoutContent() {
+        var errors: [String] = []
+        let (fake, duck) = rig { errors.append($0) }
+        duck.begin(generation: 1)
+        fake.unreadable = true
+        duck.end(generation: 1)
+        XCTAssertEqual(errors.count, 1, "\(errors)")
+        XCTAssertTrue(errors.first?.contains("cannot be read") ?? false, "\(errors)")
+        XCTAssertFalse(errors.first?.contains("fake-output") ?? true, "no device name in the log")
     }
 
     // Generations own their ducks: a stray end does not restore another
@@ -338,6 +376,74 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
         duck.end(generation: 2)
         XCTAssertEqual(fake.level, 0.5, accuracy: 0.0001,
                        "the stale owed level must not lift the output above what the user set")
+    }
+
+    // #200.2 — "still as quiet as the duck left it" is relative to the duck:
+    // pre 0.8 ducks to 0.12, and a user who has since set 0.19 chose that
+    // level; the old fixed margin (ducked + 0.0725 = 0.1925) took it for the
+    // leftover and lifted it to 0.8. A level a little above the duck (0.17)
+    // is still the leftover.
+    // Mutation: in VolumeDuckCoordinator.stillQuietBound return
+    // `ducked + confirmTolerance` -> the 0.19 case restores to 0.8 (RED).
+    func testALevelPastOneAndAHalfTimesTheDuckIsTheUsersNotTheLeftover() {
+        for (set, back): (Float, Float) in [(0.19, 0.19), (0.17, 0.8)] {
+            let (fake, duck) = rig()
+            duck.begin(generation: 1)
+            fake.refusedWrites = 2
+            duck.end(generation: 1)
+            fake.level = set
+            duck.begin(generation: 2)
+            duck.end(generation: 2)
+            XCTAssertEqual(fake.level, back, accuracy: 0.0001,
+                           "a level of \(set) after a duck to \(quiet) must come back as \(back)")
+        }
+    }
+
+    // A grid output rounds a small duck UP to the next step (pre 0.25 ->
+    // computed 0.0375 -> held 0.0625), more than 1.5x the computed level:
+    // that is still the leftover, owed its original 0.25.
+    // Mutation: in stillQuietBound drop the second operand of `max` -> the
+    // quiet 0.0625 is taken for the user's and restored to itself (RED).
+    func testAGridSnappedDuckIsStillTheLeftover() {
+        let (fake, duck) = rig(level: 0.25)
+        fake.quantum = 1.0 / 16
+        duck.begin(generation: 1)
+        XCTAssertEqual(fake.level, 0.0625, accuracy: 0.0001, "the grid held the duck above its computed level")
+        fake.refusedWrites = 2
+        duck.end(generation: 1)
+        duck.begin(generation: 2)
+        duck.end(generation: 2)
+        XCTAssertEqual(fake.level, 0.25, accuracy: 0.0001, "the original level is still owed")
+    }
+
+    // #200.1 — an owed restore is forgotten after `owedLifetime`: the output
+    // that sits at the duck's level five minutes on was most likely put there
+    // by the user. Mutation: in owedPreDuck delete the `owedLifetime` guard
+    // -> the aged entry lifts the output to 0.8 (RED).
+    func testAnOwedRestoreExpires() {
+        var clock = Date(timeIntervalSinceReferenceDate: 1_000)
+        let (fake, duck) = rig(now: { clock })
+        duck.begin(generation: 1)
+        fake.refusedWrites = 2
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, quiet, accuracy: 0.001)
+        clock = clock.addingTimeInterval(VolumeDuckCoordinator.owedLifetime + 1)
+        duck.begin(generation: 2)
+        duck.end(generation: 2)
+        XCTAssertEqual(fake.level, quiet, accuracy: 0.001,
+                       "the aged entry is dropped: the level read is the user's own")
+    }
+
+    func testAnOwedRestoreIsStillHonouredJustBeforeItExpires() {
+        var clock = Date(timeIntervalSinceReferenceDate: 1_000)
+        let (fake, duck) = rig(now: { clock })
+        duck.begin(generation: 1)
+        fake.refusedWrites = 2
+        duck.end(generation: 1)
+        clock = clock.addingTimeInterval(VolumeDuckCoordinator.owedLifetime - 1)
+        duck.begin(generation: 2)
+        duck.end(generation: 2)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "inside the lifetime the original level comes back")
     }
 
     // G2 — an owed restore belongs to its device: a dictation on another
@@ -572,6 +678,24 @@ final class VolumeDuckJourneyTests: XCTestCase {
     }
 }
 
+/// The code of `AppDelegate.applicationWillTerminate` — its body with the
+/// comments taken out, so a name that only a comment mentions is not found.
+func applicationWillTerminateCode(file: String = #filePath) throws -> String {
+    let path = URL(fileURLWithPath: file)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/OxSayDictation/AppDelegate.swift")
+    let source = try String(contentsOf: path, encoding: .utf8)
+    guard let start = source.range(of: "func applicationWillTerminate"),
+          let end = source[start.upperBound...].range(of: "\n    }\n") else {
+        throw NSError(domain: "applicationWillTerminate not found", code: 1)
+    }
+    var code = String(source[start.upperBound..<end.lowerBound])
+    for pattern in ["/\\*[\\s\\S]*?\\*/", "//[^\\n]*"] {
+        code = code.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+    }
+    return code
+}
+
 /// The app-glue files that cannot run here are checked for what they must
 /// hand to the tested wiring — mode pass-through and the bounded quit drain.
 final class SoundWhileDictatingAppGlueTests: XCTestCase {
@@ -608,15 +732,10 @@ final class SoundWhileDictatingAppGlueTests: XCTestCase {
     // .idle transition and a BOUNDED drain; the unbounded drain before this
     // fix could hold the quit for ~9.5 s. Mutation: in AppDelegate
     // applicationWillTerminate call `drain()` instead of `drain(timeout: 3)`
-    // -> RED.
+    // -> RED. Comments are taken out first (#195.4): the call must be code.
     func testApplicationWillTerminateForwardsIdleAndDrainsBounded() throws {
         let source = try source("Sources/OxSayDictation/AppDelegate.swift")
-        guard let start = source.range(of: "func applicationWillTerminate"),
-              let end = source[start.upperBound...].range(of: "\n    }\n") else {
-            XCTFail("applicationWillTerminate not found")
-            return
-        }
-        let body = String(source[start.upperBound..<end.lowerBound])
+        let body = try applicationWillTerminateCode()
         XCTAssertTrue(body.contains("soundWhileDictating.dictationStateChanged(.idle)"),
                       "quitting mid-dictation must end the runner's dictation")
         XCTAssertTrue(body.contains("soundWhileDictating.drain(timeout:"),
