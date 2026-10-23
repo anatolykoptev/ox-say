@@ -29,20 +29,40 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
+
 namespace {
 
 constexpr int SR = 16000;
+
+// default thread count = the performance-core count: measured on the target
+// shape (M5 Pro, mms-300m f16, 70 s clip) -t6 runs the CPU backend ~1.9x
+// faster than the old default of 4, while -t18 (P+E oversubscription)
+// regresses. -t overrides. Off Apple Silicon keep 4.
+int default_threads() {
+#if defined(__APPLE__)
+    int n = 0;
+    size_t sz = sizeof(n);
+    if (sysctlbyname("hw.perflevel0.physicalcpu", &n, &sz, nullptr, 0) == 0 && n > 0) {
+        return n;
+    }
+#endif
+    return 4;
+}
 
 // ---------------------------------------------------------------------------
 // args
 
 struct args {
     std::string model, file, out, vocab, dump_dir;
-    int    threads   = 4;
+    int    threads   = default_threads();
     double window    = 30.0;
     double context   = 2.0;
     bool   gpu       = true;
@@ -258,6 +278,22 @@ struct model {
     std::unordered_map<std::string, ggml_tensor *> upcast;
     hparams h;
     std::string vocab_json;
+
+    model() = default;
+    model(const model &) = delete;
+    model & operator=(const model &) = delete;
+    ~model() { release(); }
+
+    // buffers before the contexts whose tensors they back — a Metal buffer's
+    // free also drops its residency set from the device, which is what the
+    // registry's exit-time device teardown asserts on
+    void release() {
+        if (wbuf2) { ggml_backend_buffer_free(wbuf2); wbuf2 = nullptr; }
+        if (wbuf)  { ggml_backend_buffer_free(wbuf);  wbuf  = nullptr; }
+        if (wctx2) { ggml_free(wctx2); wctx2 = nullptr; }
+        if (wctx)  { ggml_free(wctx);  wctx  = nullptr; }
+        if (gguf)  { gguf_free(gguf);  gguf  = nullptr; }
+    }
 };
 
 bool kv_u32(const gguf_context * g, const char * key, int & v) {
@@ -342,8 +378,10 @@ ggml_tensor * need(const model & m, const std::string & name) {
     ggml_tensor * t = it != m.upcast.end() ? it->second
                                          : ggml_get_tensor(m.wctx, name.c_str());
     if (!t) {
-        fprintf(stderr, "ox-align: model is missing tensor %s\n", name.c_str());
-        exit(1);
+        // thrown, not exit(1): need() runs inside build_forward, after the
+        // backends exist — a bare exit would skip their cleanup and trip the
+        // Metal residency-sets assert at process teardown
+        throw std::runtime_error("model is missing tensor " + name);
     }
     return t;
 }
@@ -815,8 +853,8 @@ ggml_tensor * build_forward(ggml_context * g, const model & m, ggml_tensor * inp
         // not — a stray bias would otherwise silently shift the logits
         ggml_tensor * cb = h.conv_bias ? need(m, name) : maybe(m, name);
         if (!h.conv_bias && cb) {
-            fprintf(stderr, "ox-align: %s present but wav2vec2.conv_bias is false\n", name);
-            exit(1);
+            throw std::runtime_error(std::string(name) +
+                                   " present but wav2vec2.conv_bias is false");
         }
         x = conv1d(g, x, w, cb, h.conv_s[i], 0);
         if (i == 0) {
@@ -1250,6 +1288,35 @@ void print_info(const model & m) {
            sha.empty() ? "null" : json_str(sha).c_str());
 }
 
+// everything main() allocates after backend init, in one owner. The Metal
+// device is a registry static torn down at process exit — its destructor
+// asserts that no residency sets remain, so every Metal-backed buffer must
+// be freed while the device is still alive: the sched's compute buffers,
+// the graph context, the model's weight buffers, and only then the
+// backends. A leaked run aborted SIGABRT on a fully successful run.
+struct engine {
+    model m;
+    ggml_context * gctx = nullptr;
+    ggml_backend_sched_t sched = nullptr;
+    std::vector<ggml_backend_t> backends;
+
+    engine() = default;
+    engine(const engine &) = delete;
+    engine & operator=(const engine &) = delete;
+
+    ~engine() {
+        if (sched) { ggml_backend_sched_free(sched); sched = nullptr; }
+        if (gctx)  { ggml_free(gctx); gctx = nullptr; }
+        m.release();
+        for (ggml_backend_t b : backends) {
+            if (b) {
+                ggml_backend_free(b);
+            }
+        }
+        backends.clear();
+    }
+};
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -1284,7 +1351,7 @@ int main(int argc, char ** argv) {
 
     // backends: first GPU (unless -ng), then CPU
     ggml_backend_load_all();
-    std::vector<ggml_backend_t> backends;
+    engine e;
     if (a.gpu) {
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
@@ -1292,7 +1359,7 @@ int main(int argc, char ** argv) {
             if (t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU) {
                 ggml_backend_t b = ggml_backend_dev_init(dev, nullptr);
                 if (b) {
-                    backends.push_back(b);
+                    e.backends.push_back(b);
                     break;
                 }
             }
@@ -1304,10 +1371,10 @@ int main(int argc, char ** argv) {
         return 1;
     }
     ggml_backend_cpu_set_n_threads(cpu, a.threads);
-    backends.push_back(cpu);
-    ggml_backend_t wbackend = backends.front();
+    e.backends.push_back(cpu);
+    ggml_backend_t wbackend = e.backends.front();
 
-    model m;
+    model & m = e.m;
     if (!load_model(a.model, m, wbackend, wbackend == cpu, false, err)) {
         fprintf(stderr, "ox-align: %s\n", err.c_str());
         return 1;
@@ -1370,23 +1437,29 @@ int main(int argc, char ** argv) {
     struct ggml_init_params ip = { ggml_tensor_overhead() * max_nodes +
                                    ggml_graph_overhead_custom(max_nodes, false),
                                    nullptr, true };
-    ggml_context * gctx = ggml_init(ip);
-    if (!gctx) {
+    e.gctx = ggml_init(ip);
+    if (!e.gctx) {
         fprintf(stderr, "ox-align: out of memory\n");
         return 1;
     }
-    ggml_tensor * input = ggml_new_tensor_1d(gctx, GGML_TYPE_F32, slice);
+    ggml_tensor * input = ggml_new_tensor_1d(e.gctx, GGML_TYPE_F32, slice);
     ggml_set_name(input, "audio_in");
     ggml_set_input(input);
-    ggml_tensor * out = build_forward(gctx, m, input, T, crop, keep);
+    ggml_tensor * out = nullptr;
+    try {
+        out = build_forward(e.gctx, m, input, T, crop, keep);
+    } catch (const std::exception & ex) {
+        fprintf(stderr, "ox-align: %s\n", ex.what());
+        return 1;
+    }
     ggml_set_output(out);
 
-    ggml_cgraph * gf = ggml_new_graph_custom(gctx, max_nodes, false);
+    ggml_cgraph * gf = ggml_new_graph_custom(e.gctx, max_nodes, false);
     ggml_build_forward_expand(gf, out);
 
-    ggml_backend_sched_t sched =
-        ggml_backend_sched_new(backends.data(), nullptr, (int) backends.size(), max_nodes, false, true);
-    if (!sched || !ggml_backend_sched_alloc_graph(sched, gf)) {
+    e.sched =
+        ggml_backend_sched_new(e.backends.data(), nullptr, (int) e.backends.size(), max_nodes, false, true);
+    if (!e.sched || !ggml_backend_sched_alloc_graph(e.sched, gf)) {
         fprintf(stderr, "ox-align: failed to allocate the compute graph\n");
         return 1;
     }
@@ -1416,7 +1489,7 @@ int main(int argc, char ** argv) {
             seg = buf.data();
         }
         ggml_backend_tensor_set(input, seg, 0, (size_t) slice * sizeof(float));
-        if (ggml_backend_sched_graph_compute(sched, gf) != GGML_STATUS_SUCCESS) {
+        if (ggml_backend_sched_graph_compute(e.sched, gf) != GGML_STATUS_SUCCESS) {
             fprintf(stderr, "ox-align: compute failed on window %lld\n", (long long) w);
             return 1;
         }
