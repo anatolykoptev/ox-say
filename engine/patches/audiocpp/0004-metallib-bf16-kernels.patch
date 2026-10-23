@@ -1,0 +1,17 @@
+diff --git a/external/ggml/src/ggml-metal/CMakeLists.txt b/external/ggml/src/ggml-metal/CMakeLists.txt
+index 906b0f48..cf2028f8 100644
+--- a/external/ggml/src/ggml-metal/CMakeLists.txt
++++ b/external/ggml/src/ggml-metal/CMakeLists.txt
+@@ -90,6 +90,12 @@ else()
+         list   (APPEND XC_FLAGS -std=${GGML_METAL_STD})
+     endif()
+ 
++    # the runtime source compile defines GGML_METAL_HAS_BF16 on every
++    # bfloat-capable device; the precompiled library must carry the same
++    # kernels or a bf16 op aborts on a missing function (ggml-metal.metal
++    # #undefs it where __METAL_VERSION__ < 310)
++    list   (APPEND XC_FLAGS -DGGML_METAL_HAS_BF16)
++
+     add_custom_command(
+         OUTPUT ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/default.metallib
+         COMMAND xcrun -sdk macosx metal ${XC_FLAGS} -c ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ggml-metal.metal -o - |

@@ -74,15 +74,17 @@ else
     echo "MCP: claude mcp add --transport http --scope user ox-say $mcp_url"
 fi
 
-# 4. Self-test: speak a phrase, transcribe it back. The first start of freshly
-#    installed engines compiles their Metal shaders (about a minute on a
-#    Radeon Pro 5500M), so this can take a while once.
+# 4. Self-test: speak a phrase, transcribe it back. Release engines ship a
+#    precompiled Metal library per binary, so this is a model-load warm-up
+#    with no source compile. (An engine whose library is missing or does not
+#    load falls back to the shader source embedded in it and compiles it
+#    here, which can take a few minutes once.)
 #    Speech-to-text goes first, with macOS's own voice, while the TTS engine is
 #    still stopped: the daemon keeps speech-to-text off the GPU while TTS holds
-#    it, so this is the only moment the installer can compile ox-stt's GPU
-#    shaders. Otherwise the user's first dictation after an update pays for it.
+#    it, so this is the only moment the installer can warm ox-stt up.
+#    Otherwise the user's first dictation after an update pays for it.
 if [ "${OX_SAY_NO_SELFTEST:-0}" != 1 ]; then
-    echo "self-test: transcribing and speaking a phrase (the first run compiles GPU shaders, up to a few minutes)"
+    echo "self-test: transcribing and speaking a phrase (first run loads the models, up to a few minutes)"
     st=$(mktemp -d)
     wav="$st/selftest.wav"
     phrase="ox-say is ready"

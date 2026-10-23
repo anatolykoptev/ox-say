@@ -168,7 +168,7 @@ oxs_render_agent() {
 
 # Copy then rename, so a running process keeps its old inode.
 oxs_install_engines() {
-    local out=$1 bin
+    local out=$1 bin lib
     for bin in tts-server ox-stt ox-align; do
         if [ ! -x "$out/$bin" ]; then
             echo "ox-say install: no $bin in $out" >&2
@@ -176,17 +176,32 @@ oxs_install_engines() {
         fi
     done
     mkdir -p "$home/engine/licenses"
-    for bin in tts-server ox-stt ox-align; do
+    # Each engine's precompiled Metal library travels next to it under its own
+    # name (<bin>.metallib, plus <bin>-tensor.metallib on Metal4-capable
+    # builds). The libraries go in before the binaries, but the window is
+    # symmetric — an engine respawned mid-install meets a mismatched pair
+    # either way, so the order buys nothing: what protects the engine is the
+    # runtime guards (OS floor, bf16 and tensor kernels — the patched ggml
+    # skips a library it cannot safely use) and the embedded shader sources
+    # that keep an engine running with no library at all. A stale library left
+    # by an older install must still go — the guards cannot tell it is stale.
+    # The cleanup runs for audiocpp_server even when this package carries no
+    # binary for it.
+    for bin in tts-server ox-stt ox-align audiocpp_server; do
+        for lib in "$bin.metallib" "$bin-tensor.metallib"; do
+            if [ -f "$out/$lib" ]; then
+                cp "$out/$lib" "$home/engine/$lib.new"
+                mv "$home/engine/$lib.new" "$home/engine/$lib"
+            else
+                rm -f "$home/engine/$lib"
+            fi
+        done
+        # Optional: only the arm64 package carries the VoxCPM2 server.
+        [ -x "$out/$bin" ] || continue
         cp "$out/$bin" "$home/engine/$bin.new"
         mv "$home/engine/$bin.new" "$home/engine/$bin"
         echo "installed $home/engine/$bin"
     done
-    # Optional: only the arm64 package carries the VoxCPM2 server.
-    if [ -x "$out/audiocpp_server" ]; then
-        cp "$out/audiocpp_server" "$home/engine/audiocpp_server.new"
-        mv "$home/engine/audiocpp_server.new" "$home/engine/audiocpp_server"
-        echo "installed $home/engine/audiocpp_server"
-    fi
     cp "$out"/licenses/* "$home/engine/licenses/"
 }
 

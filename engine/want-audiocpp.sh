@@ -11,11 +11,12 @@ want_audiocpp() {
 
 # audiocpp_gate <arch> <out-dir>: true when the build should go on. When it is
 # not wanted, drop an audiocpp_server an earlier build left in <out-dir> (an
-# installer copies whatever is there) and return false.
+# installer copies whatever is there) — its precompiled Metal library too —
+# and return false.
 audiocpp_gate() {
     if want_audiocpp "$1"; then
         return 0
     fi
-    rm -f "$2/audiocpp_server"
+    rm -f "$2/audiocpp_server" "$2/audiocpp_server.metallib" "$2/audiocpp_server-tensor.metallib"
     return 1
 }

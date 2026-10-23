@@ -1,0 +1,106 @@
+diff --git a/external/ggml/src/ggml-metal/ggml-metal-device.m b/external/ggml/src/ggml-metal/ggml-metal-device.m
+index e4cc0475..1a81164c 100644
+--- a/external/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/external/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -163,12 +163,71 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+         NSString * src = nil;
+ 
+ #if GGML_METAL_EMBED_LIBRARY
+-        GGML_LOG_INFO("%s: using embedded metal library\n", __func__);
++        // ox-say: a precompiled <argv0>.metallib next to the executable is
++        // the fast path - the same kernels with no first-run compile. It
++        // must exist AND load; any failure leaves `library` nil and the
++        // embedded source below takes over, so a missing, stale or corrupt
++        // library can never stop the engine.
++        {
++            NSString * bin_cur = [[NSProcessInfo processInfo] arguments][0];
++            NSString * bin_dir = [bin_cur stringByDeletingLastPathComponent];
+ 
+-        extern const char ggml_metallib_start[];
+-        extern const char ggml_metallib_end[];
++            NSString * path_lib = [NSString pathWithComponents:@[bin_dir, [[bin_cur lastPathComponent] stringByAppendingPathExtension:@"metallib"]]];
++            if (![[NSFileManager defaultManager] isReadableFileAtPath:path_lib]) {
++                path_lib = [NSString pathWithComponents:@[bin_dir, @"default.metallib"]];
++            }
+ 
+-        src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
++            // this vintage builds no -tensor library: the precompiled
++            // kernels are compiled without GGML_METAL_HAS_TENSOR, but on a
++            // tensor-capable device the host still picks the tensor tiling
++            // for the mul_mm kernels - silently wrong results, not a crash.
++            // The embedded source compiles the matching variant.
++            if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib] &&
++                ggml_metal_device_get_props(dev)->has_tensor) {
++                GGML_LOG_INFO("%s: tensor API device - the precompiled library has no tensor kernels, using the embedded metal library\n",
++                              __func__);
++            // the precompiled library carries the bf16 kernels, which need
++            // Metal language 3.1 - its AIR target is macOS 14.0, so on an
++            // older OS it would not load; go straight to the embedded source
++            } else if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib] &&
++                ![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){14, 0, 0}]) {
++                GGML_LOG_INFO("%s: skipping '%s' - the precompiled metal library targets macOS 14.0\n",
++                              __func__, [path_lib UTF8String]);
++            } else if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib]) {
++                GGML_LOG_INFO("%s: loading '%s'\n", __func__, [path_lib UTF8String]);
++
++                library = [device newLibraryWithURL:[NSURL fileURLWithPath:path_lib] error:&error];
++                if (library) {
++                    // a library built without the bf16 kernels (a flag
++                    // regression, a dev build) would still abort on the
++                    // first bf16 op on a bfloat-capable device - a missing
++                    // kernel is a crash, so treat the library as unusable,
++                    // the same as one that did not load
++                    if (ggml_metal_device_get_props(dev)->has_bfloat &&
++                        ![[library functionNames] containsObject:@"kernel_get_rows_bf16"]) {
++                        GGML_LOG_INFO("%s: '%s' has no bf16 kernels - falling back to the embedded metal library\n",
++                                      __func__, [path_lib UTF8String]);
++
++                        [library release];
++                        library = nil;
++                    }
++                } else {
++                    GGML_LOG_INFO("%s: '%s' did not load (%s) - falling back to the embedded metal library\n",
++                                  __func__, [path_lib UTF8String],
++                                  error ? [[error localizedDescription] UTF8String] : "unknown error");
++                    error = nil;
++                }
++            }
++        }
++
++        if (!library) {
++            GGML_LOG_INFO("%s: using embedded metal library\n", __func__);
++
++            extern const char ggml_metallib_start[];
++            extern const char ggml_metallib_end[];
++
++            src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
++        }
+ #else
+ 
+ #ifdef SWIFT_PACKAGE
+@@ -177,13 +236,23 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+         NSBundle * bundle = [NSBundle bundleForClass:[GGMLMetalClass class]];
+ #endif
+ 
+-        NSString * path_lib = [bundle pathForResource:@"default" ofType:@"metallib"];
++        // ox-say: a <binary>.metallib next to the executable wins over a shared
++        // default.metallib, so engines built from different ggml trees can sit
++        // in one directory with a compiled library each.
++        NSString * bin_name = [[[NSProcessInfo processInfo] arguments][0] lastPathComponent];
++        NSString * path_lib = [bundle pathForResource:bin_name ofType:@"metallib"];
++        if (path_lib == nil) {
++            path_lib = [bundle pathForResource:@"default" ofType:@"metallib"];
++        }
+         if (path_lib == nil) {
+             // Try to find the resource in the directory where the current binary located.
+             NSString * bin_cur = [[NSProcessInfo processInfo] arguments][0];
+             NSString * bin_dir = [bin_cur stringByDeletingLastPathComponent];
+ 
+-            NSString * path_lib_default = [NSString pathWithComponents:@[bin_dir, @"default.metallib"]];
++            NSString * path_lib_default = [NSString pathWithComponents:@[bin_dir, [bin_name stringByAppendingPathExtension:@"metallib"]]];
++            if (![[NSFileManager defaultManager] isReadableFileAtPath:path_lib_default]) {
++                path_lib_default = [NSString pathWithComponents:@[bin_dir, @"default.metallib"]];
++            }
+             if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib_default]) {
+                 GGML_LOG_INFO("%s: found '%s'\n", __func__, [path_lib_default UTF8String]);
+ 

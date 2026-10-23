@@ -10,7 +10,10 @@
 # unified memory the patches are inert or bug fixes (engine/README.md).
 #
 # Usage: engine/build.sh [work-dir]      (default: build/engine)
-# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,audiocpp_server (arm64),licenses/}
+# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,audiocpp_server (arm64),
+#                        each <bin>.metallib (+<bin>-tensor.metallib on a
+#                        macOS 26 SDK) when the Metal toolchain is present,
+#                        licenses/}
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -23,7 +26,7 @@ work=${1:-"$here/../build/engine"}
 mkdir -p "$work"
 work=$(cd "$work" && pwd)
 out="$work/out"
-jobs=$(sysctl -n hw.physicalcpu)
+jobs=${OX_SAY_JOBS:-$(sysctl -n hw.physicalcpu)}
 
 # The target is the shell's architecture. CMake build dirs are named after it:
 # a dir configured on another architecture keeps that CMAKE_SYSTEM_PROCESSOR
@@ -51,6 +54,80 @@ include_copy() {
     local ggml=$1 dst=$2
     rm -rf "$dst"
     cp -R "$ggml/include" "$dst"
+}
+
+# Engine binaries always embed the Metal sources (GGML_METAL_EMBED_LIBRARY=ON):
+# a missing, stale or corrupt metallib can then never stop an engine — the
+# patched ggml falls back to the embedded compile (patches/ggml/0003,
+# patches/audiocpp/0003). A working Metal toolchain additionally builds each
+# engine a precompiled <bin>.metallib — the same kernels from the same patched
+# tree, with no first-run compile (plans/ox-say/2026-10-22-precompiled-metal-shaders.md).
+# `xcrun -f metal` finds a stub even when Xcode 26's MetalToolchain component
+# is missing, so the probe compiles AND links a trivial kernel the same way
+# the metallib build does. OX_SAY_METAL_EMBED=1 skips the metallib build
+# (A/B tests).
+probe_metal() {
+    local d=$1
+    printf 'kernel void ox_say_metal_probe() {}\n' > "$d/probe.metal"
+    xcrun -sdk macosx metal -c "$d/probe.metal" -o "$d/probe.air" > "$d/metal.log" 2>&1 &&
+        xcrun -sdk macosx metallib "$d/probe.air" -o "$d/probe.metallib" >> "$d/metal.log" 2>&1
+}
+
+# copy_metal_libs <metallib-build-bin-dir> <engine>: ship the compiled library
+# under the engine's own name. Engines in out/ come from different ggml trees,
+# whose kernel sources differ, so one default.metallib cannot serve them all; a
+# patched ggml (patches/ggml/0003, patches/audiocpp/0003) probes
+# <argv0>.metallib next to the binary and falls back to the embedded source
+# when it is missing or does not load.
+copy_metal_libs() {
+    local dir=$1 name=$2
+    cp "$dir/default.metallib" "$out/$name.metallib"
+    if [ -f "$dir/ggml-tensor.metallib" ]; then
+        cp "$dir/ggml-tensor.metallib" "$out/$name-tensor.metallib"
+    fi
+}
+
+probe_dir="$work/.metal-probe"
+mkdir -p "$probe_dir"
+metal_lib=
+if [ "${OX_SAY_METAL_EMBED:-0}" = 1 ]; then
+    echo "engine/build.sh: OX_SAY_METAL_EMBED=1 — no metallib build; binaries embed Metal source and compile shaders at first run"
+elif probe_metal "$probe_dir"; then
+    metal_lib=1
+    echo "Metal toolchain found: per-engine precompiled metallibs alongside the embedded-source binaries"
+else
+    echo "engine/build.sh: no Metal toolchain (see $probe_dir/metal.log) — binaries embed Metal source and compile shaders at first run; install it with 'xcodebuild -downloadComponent MetalToolchain'"
+fi
+# Whatever is in out/ must be from this build: drop metallibs a toolchain
+# build left behind so a library cannot pair a stale library with a new binary.
+rm -f "$out"/*.metallib
+
+# build_metal_lib <cmake-src> <build-dir> [extra -D args]: a second, cheap
+# configure with EMBED_LIBRARY=OFF, building only the ggml-metal-lib target —
+# the same kernel sources the binaries embed, so the shipped library cannot
+# drift from them. qwentts's ggml submodule and audio.cpp's vendored ggml are
+# complete trees configured directly; whisper.cpp's vendored ggml is partial
+# (no tests/examples/ggml.pc.in — it cannot be a -S root), so it is reached
+# through engine/align's CMakeLists, which add_subdirectory()s it.
+# GGML_METAL_MACOSX_VERSION_MIN pins the AIR target at macOS 14.0: the library
+# carries the bf16 kernels (patches/ggml/0005, patches/audiocpp/0004), which
+# need Metal language 3.1 — a lower target compiles them out and a missing
+# kernel is a crash, not a slower fallback. macOS 13.3 remains the app's floor:
+# on 13.x the patched ggml skips the library and uses the embedded sources
+# (patches/ggml/0003, patches/audiocpp/0003). The tensor library keeps its
+# intentional macOS 26 target (patches/ggml/0004).
+# The build dir is rebuilt from scratch every time: the metallib is a
+# custom_command whose DEPENDS does not include the compile flags, so a cached
+# dir keeps its stale .air files after GGML_METAL_MACOSX_VERSION_MIN or
+# XC_FLAGS change and relinks them into the next library.
+build_metal_lib() {
+    local src=$1 dir=$2
+    shift 2
+    rm -rf "$dir"
+    cmake -S "$src" -B "$dir" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+        "-DCMAKE_OSX_ARCHITECTURES=$arch" -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=OFF \
+        -DGGML_METAL_MACOSX_VERSION_MIN=14.0 "$@" > "$dir-configure.log"
+    cmake --build "$dir" --target ggml-metal-lib -j "$jobs" > "$dir-build.log"
 }
 
 # Static libraries and an embedded Metal library: the installed binaries must not depend on
@@ -138,6 +215,10 @@ set_cmake_flags "$work/ggml-include-tts"
 cmake -S "$tts" -B "$tts/build-$arch" "${cmake_flags[@]}" > "$work/tts-configure.log"
 cmake --build "$tts/build-$arch" --target tts-server -j "$jobs" > "$work/tts-build.log"
 cp "$tts/build-$arch/tts-server" "$out/tts-server"
+if [ -n "$metal_lib" ]; then
+    build_metal_lib "$tts/ggml" "$work/tts-metallib-$arch"
+    copy_metal_libs "$work/tts-metallib-$arch/bin" tts-server
+fi
 strip -x "$out/tts-server"
 check_static "$out/tts-server"
 check_dist "$out/tts-server"
@@ -171,6 +252,12 @@ cmake -S "$here/stt" -B "$work/stt-build-$arch" -DWHISPER_SRC="$stt" -DWHISPER_B
     "${cmake_flags[@]}" > "$work/stt-configure.log"
 cmake --build "$work/stt-build-$arch" --target ox-stt -j "$jobs" > "$work/stt-build.log"
 cp "$work/stt-build-$arch/ox-stt" "$out/ox-stt"
+# One metallib build serves ox-stt and ox-align: identical ggml tree and
+# flags. It is reached through engine/align's CMakeLists (see build_metal_lib).
+if [ -n "$metal_lib" ]; then
+    build_metal_lib "$here/align" "$work/wsp-metallib-$arch" -DWHISPER_SRC="$stt"
+    copy_metal_libs "$work/wsp-metallib-$arch/bin" ox-stt
+fi
 strip -x "$out/ox-stt"
 check_static "$out/ox-stt"
 check_dist "$out/ox-stt"
@@ -184,6 +271,7 @@ cmake -S "$here/align" -B "$work/align-build-$arch" -DWHISPER_SRC="$stt" \
     "${cmake_flags[@]}" > "$work/align-configure.log"
 cmake --build "$work/align-build-$arch" --target ox-align -j "$jobs" > "$work/align-build.log"
 cp "$work/align-build-$arch/ox-align" "$out/ox-align"
+if [ -n "$metal_lib" ]; then copy_metal_libs "$work/wsp-metallib-$arch/bin" ox-align; fi
 strip -x "$out/ox-align"
 check_static "$out/ox-align"
 check_dist "$out/ox-align"
@@ -270,6 +358,10 @@ if audiocpp_gate "$arch" "$out"; then
         > "$work/audiocpp-configure.log"
     cmake --build "$ac/build-$arch" --target audiocpp_server -j "$jobs" > "$work/audiocpp-build.log"
     cp "$ac/build-$arch/bin/audiocpp_server" "$out/audiocpp_server"
+    if [ -n "$metal_lib" ]; then
+        build_metal_lib "$ac/external/ggml" "$work/ac-metallib-$arch"
+        copy_metal_libs "$work/ac-metallib-$arch/bin" audiocpp_server
+    fi
     strip -x "$out/audiocpp_server"
     check_static "$out/audiocpp_server"
     check_dist "$out/audiocpp_server"
