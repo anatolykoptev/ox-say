@@ -84,10 +84,31 @@ public enum AutoUpdateSchedule {
             return .clear
         case .available(let remote, _, _, _):
             state.lastCheck = now
-            let notify = state.lastNotifiedVersion != remote
-            if notify { state.lastNotifiedVersion = remote }
-            return .offer(tag: remote, notify: notify)
+            // `lastNotifiedVersion` is NOT set here: the notice may be held by
+            // a dictation and dropped for a costlier one. It is set when the
+            // notice is shown (`noticeShown`), so a lost one is raised again.
+            return .offer(tag: remote, notify: state.lastNotifiedVersion != remote)
         }
+    }
+
+    /// A notice reached the user: if it announced a release, that release has
+    /// been told.
+    public static func noticeShown(_ notice: NoticeGate.Notice, state: inout AutoUpdateState) {
+        if let tag = notice.announces { state.lastNotifiedVersion = tag }
+    }
+
+    /// The least time between a wake-triggered check and the last attempt.
+    /// While no check has been answered every slot is due, and a Mac that wakes
+    /// again and again (lid, dark wake) would otherwise hit GitHub each time.
+    public static let wakeDebounce: TimeInterval = 10 * 60
+
+    /// Whether a wake may start a check: not within `wakeDebounce` of the last
+    /// attempt (answered or not). A last attempt in the future (the clock moved
+    /// back) does not block.
+    public static func wakeCheckAllowed(now: Date, lastAttempt: Date?) -> Bool {
+        guard let lastAttempt else { return true }
+        let elapsed = now.timeIntervalSince(lastAttempt)
+        return elapsed < 0 || elapsed >= wakeDebounce
     }
 
     /// "v0.1.23" whether the tag came with its "v" or not.

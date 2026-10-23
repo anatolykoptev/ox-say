@@ -52,3 +52,5 @@
 "menu.update_available" = "Update to %@…";
 /* Said once per version when the background check finds a newer release; %@ is the version. */
 "notice.update_available" = "A new OxSay version %@ is available — update from the menu";
+/* Shown after a dictation when a click on the update row was refused because it was running. */
+"notice.update_busy" = "A dictation was running, so the update did not start — click the update row again";

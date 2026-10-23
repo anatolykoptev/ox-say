@@ -36,6 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// True once a background check in this process got an answer from GitHub;
     /// until then every slot is due (see `AutoUpdateSchedule.shouldCheck`).
     private var autoUpdateAnswered = false
+    /// When the last background check started, answered or not; a wake within
+    /// `AutoUpdateSchedule.wakeDebounce` of it does not start another.
+    private var lastAutoUpdateAttempt: Date?
     private var autoUpdateTimers: [Timer] = []
     /// The symbol the status icon shows now; the update badge is drawn on it.
     private var statusSymbol = "mic"
@@ -265,7 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.onBusy = { NSSound.beep() }
         output.onNotice = { [weak self] message in self?.notice(message, kind: .outcome) }
-        output.onPasteUnread = { [weak self] in self?.notice(L10nKey.noticePasteUnread.text, kind: .outcome) }
+        output.onPasteUnread = { [weak self] in self?.notice(.unreadPaste(L10nKey.noticePasteUnread.text)) }
         recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }
         recorder.onEnded = { [weak self] reason in
             // Transcribe what was recorded; say why it ended once it is delivered.
@@ -277,7 +280,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // back before quitting, also on a plain `kill`.
         signal(SIGTERM, SIG_IGN)
         let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        term.setEventHandler { NSApp.terminate(nil) }
+        // An install's SIGTERM (install-app.sh stops the running copy) must not end a
+        // dictation; the install's own relaunch() ends the app once it is idle.
+        term.setEventHandler { [weak self] in
+            if let self, InstallTermination.sigterm(installing: self.updateInstalling,
+                                                    dictation: self.controller.state) == .leaveToRelaunch { return }
+            NSApp.terminate(nil)
+        }
         term.resume()
         termSource = term
 
@@ -294,7 +303,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             self?.refreshServiceStatus()
-            self?.backgroundUpdateCheck()
+            guard let self, AutoUpdateSchedule.wakeCheckAllowed(now: Date(), lastAttempt: self.lastAutoUpdateAttempt) else { return }
+            self.backgroundUpdateCheck()
         }
         startAutoUpdateChecks()
         studio.render()
@@ -589,7 +599,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 case .relaunchSelf:
                     self.handshakeDeferred = false
-                    self.relaunch()
+                    await self.relaunch()
                     return
                 case .kickstartDaemon:
                     self.handshakeDeferred = false
@@ -653,9 +663,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// `open -n` this app's own bundle path — the current copy on disk — and
-    /// end this process. The installer's success path and the handshake's
-    /// relaunchSelf are the same act.
-    private func relaunch() {
+    /// end this process, once no dictation runs. The installer's success path
+    /// and the handshake's relaunchSelf are the same act.
+    @MainActor private func relaunch() async {
+        // Never in the middle of a dictation: wait for it to be idle (one that
+        // starts while the install runs is allowed). Bounded: an install that
+        // finished must not hang on a stuck dictation.
+        if await InstallTermination.waitForIdle(state: { [unowned self] in self.controller.state }) == .timedOut {
+            Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "update")
+                .error("relaunch: dictation still not idle after \(Int(InstallTermination.idleTimeout), privacy: .public) s; relaunching anyway")
+        }
         let relaunch = Process()
         relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         relaunch.arguments = ["-n", Bundle.main.bundleURL.path]
@@ -706,7 +723,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } ?? "No dictation key"
             overlay.finish()
             if let held = noticeGate.release(state: controller.state) {
-                notice(held.message, kind: held.kind)
+                notice(held)
             }
             if let reason = endedReason {
                 endedReason = nil
@@ -1028,6 +1045,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard AutoUpdateSchedule.shouldCheck(now: Date(), lastCheck: AutoUpdateState.load(from: autoUpdateDefaults).lastCheck,
                                              answeredThisProcess: autoUpdateAnswered) else { return }
         autoUpdateRunning = true
+        lastAutoUpdateAttempt = Date()
         let local = AboutPanel.appVersion
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1048,7 +1066,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.updateOffer = tag
                 self.updateItem.title = L10nKey.menuUpdateAvailable.text(AutoUpdateSchedule.displayVersion(tag))
                 if notify {
-                    self.notice(L10nKey.noticeUpdateAvailable.text(AutoUpdateSchedule.displayVersion(tag)))
+                    // Remembered as told only when shown (notice() does it), not
+                    // when raised: a dictation may hold it and a costlier notice
+                    // may replace it.
+                    self.notice(.updateAvailable(L10nKey.noticeUpdateAvailable.text(AutoUpdateSchedule.displayVersion(tag)), tag: tag))
                 }
             }
             if let menu = self.statusItem.menu { self.syncTopRows(in: menu) }
@@ -1060,10 +1081,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// on Update, with the tag the background check found.
     @objc private func installOfferedUpdate() {
         guard let tag = updateOffer else { return }
-        // The installer quits the app: never in the middle of a dictation. The
-        // row stays; the user clicks it again once the pill is gone.
+        // Not while a dictation runs. The row stays; the notice (shown once the
+        // dictation is idle) says to click it again.
         guard controller.state == .idle else {
-            NSSound.beep()
+            notice(.updateRefused(L10nKey.noticeUpdateBusy.text))
             return
         }
         guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
@@ -1149,9 +1170,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                     installedVersion: Self.diskVersion,
                                                     daemonVersion: { (try? await statusClient.status(timeout: UpdateInstaller.daemonCheckTimeout))?.version })
             try? log?.close()
-            updateInstalling = false
-            studio.render()
             if let failure {
+                updateInstalling = false
+                studio.render()
                 self.finishPill(self.installPillOwner)
                 self.installPillOwner = nil
                 runAlert(title: kind == .studioVoice ? "Installing the studio voice failed" : "Update to \(tag) failed",
@@ -1159,7 +1180,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                          buttons: ["OK"])
                 return
             }
-            relaunch()
+            // On success `updateInstalling` stays set until the process ends:
+            // the relaunch may wait for a dictation, and nothing else may start
+            // an install or a handshake action meanwhile.
+            await relaunch()
         }
     }
 
@@ -1193,9 +1217,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func notice(_ message: String, kind: DictationNotice.Kind = .unrelated) {
+        notice(.init(message: message, kind: kind))
+    }
+
+    private func notice(_ raised: NoticeGate.Notice) {
         // The pill, the beep and the status line belong to a running dictation:
         // hold the notice until it is idle (`show(.idle)` releases it).
-        guard let admitted = noticeGate.admit(.init(message: message, kind: kind), state: controller.state) else { return }
+        guard let admitted = noticeGate.admit(raised, state: controller.state) else { return }
+        // Shown from here on: an announced release counts as told only now.
+        var told = AutoUpdateState.load(from: autoUpdateDefaults)
+        AutoUpdateSchedule.noticeShown(admitted, state: &told)
+        told.save(to: autoUpdateDefaults)
         // A recording that ended on its own says why together with what happened
         // to its text, not instead of it — and spends that reason on nothing else.
         let merged = DictationNotice.merge(endedReason: endedReason, into: admitted.message, kind: admitted.kind)

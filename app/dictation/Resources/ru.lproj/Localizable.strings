@@ -52,3 +52,5 @@
 "menu.update_available" = "Обновить до %@…";
 /* Said once per version when the background check finds a newer release; %@ is the version. */
 "notice.update_available" = "Доступна новая версия OxSay %@ — обновление в меню";
+/* Показывается после диктовки, если нажатие на строку обновления было отклонено из-за неё. */
+"notice.update_busy" = "Шла диктовка, поэтому обновление не началось — нажмите на строку обновления ещё раз";
