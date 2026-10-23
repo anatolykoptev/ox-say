@@ -430,7 +430,7 @@ audiocpp_server"
 # shipped libraries) and the local acceptance runs. Mutations (engine/build.sh):
 # drop one copy_metal_libs -> count falls; drop an engine's EMBED_LIBRARY=ON ->
 # count falls; drop the separate EMBED_LIBRARY=OFF metallib configure or the
-# 13.3 floor flag -> the count falls.
+# 14.0 library floor flag -> the count falls.
 n=$(grep -cE '^[^#]*copy_metal_libs ' "$root/engine/build.sh" || true)
 check "build.sh copies metallibs for all four engines" "${n:-x}" 4
 n=$(grep -cE '^[^#]*-DGGML_METAL_EMBED_LIBRARY=ON' "$root/engine/build.sh" || true)
@@ -439,8 +439,8 @@ n=$(grep -cE '^[^#]*-DGGML_METAL_EMBED_LIBRARY=OFF' "$root/engine/build.sh" || t
 check "build.sh keeps the separate EMBED_LIBRARY=OFF metallib configure" "${n:-x}" 1
 n=$(grep -cE '^[^#]*build_metal_lib ' "$root/engine/build.sh" || true)
 check "build.sh builds a metallib per ggml tree" "${n:-x}" 3
-n=$(grep -cE 'GGML_METAL_MACOSX_VERSION_MIN=13.3' "$root/engine/build.sh" || true)
-check "build.sh pins the metallib AIR target at 13.3" "${n:-x}" 1
+n=$(grep -cE 'GGML_METAL_MACOSX_VERSION_MIN=14.0' "$root/engine/build.sh" || true)
+check "build.sh pins the metallib AIR target at 14.0" "${n:-x}" 1
 
 echo
 if [ "$fails" -eq 0 ]; then

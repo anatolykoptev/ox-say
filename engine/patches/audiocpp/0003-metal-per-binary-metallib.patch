@@ -1,8 +1,8 @@
 diff --git a/external/ggml/src/ggml-metal/ggml-metal-device.m b/external/ggml/src/ggml-metal/ggml-metal-device.m
-index e4cc0475..13d8644e 100644
+index e4cc0475..4cdef7f8 100644
 --- a/external/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/external/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -163,12 +163,41 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+@@ -163,12 +163,62 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
          NSString * src = nil;
  
  #if GGML_METAL_EMBED_LIBRARY
@@ -15,17 +15,41 @@ index e4cc0475..13d8644e 100644
 +        {
 +            NSString * bin_cur = [[NSProcessInfo processInfo] arguments][0];
 +            NSString * bin_dir = [bin_cur stringByDeletingLastPathComponent];
-+
+ 
+-        extern const char ggml_metallib_start[];
+-        extern const char ggml_metallib_end[];
 +            NSString * path_lib = [NSString pathWithComponents:@[bin_dir, [[bin_cur lastPathComponent] stringByAppendingPathExtension:@"metallib"]]];
 +            if (![[NSFileManager defaultManager] isReadableFileAtPath:path_lib]) {
 +                path_lib = [NSString pathWithComponents:@[bin_dir, @"default.metallib"]];
 +            }
-+
-+            if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib]) {
+ 
+-        src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
++            // the precompiled library carries the bf16 kernels, which need
++            // Metal language 3.1 - its AIR target is macOS 14.0, so on an
++            // older OS it would not load; go straight to the embedded source
++            if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib] &&
++                ![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){14, 0, 0}]) {
++                GGML_LOG_INFO("%s: skipping '%s' - the precompiled metal library targets macOS 14.0\n",
++                              __func__, [path_lib UTF8String]);
++            } else if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib]) {
 +                GGML_LOG_INFO("%s: loading '%s'\n", __func__, [path_lib UTF8String]);
 +
 +                library = [device newLibraryWithURL:[NSURL fileURLWithPath:path_lib] error:&error];
-+                if (!library) {
++                if (library) {
++                    // a library built without the bf16 kernels (a flag
++                    // regression, a dev build) would still abort on the
++                    // first bf16 op on a bfloat-capable device - a missing
++                    // kernel is a crash, so treat the library as unusable,
++                    // the same as one that did not load
++                    if (ggml_metal_device_get_props(dev)->has_bfloat &&
++                        ![[library functionNames] containsObject:@"kernel_get_rows_bf16"]) {
++                        GGML_LOG_INFO("%s: '%s' has no bf16 kernels - falling back to the embedded metal library\n",
++                                      __func__, [path_lib UTF8String]);
++
++                        [library release];
++                        library = nil;
++                    }
++                } else {
 +                    GGML_LOG_INFO("%s: '%s' did not load (%s) - falling back to the embedded metal library\n",
 +                                  __func__, [path_lib UTF8String],
 +                                  error ? [[error localizedDescription] UTF8String] : "unknown error");
@@ -36,19 +60,16 @@ index e4cc0475..13d8644e 100644
 +
 +        if (!library) {
 +            GGML_LOG_INFO("%s: using embedded metal library\n", __func__);
- 
--        extern const char ggml_metallib_start[];
--        extern const char ggml_metallib_end[];
++
 +            extern const char ggml_metallib_start[];
 +            extern const char ggml_metallib_end[];
- 
--        src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
++
 +            src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
 +        }
  #else
  
  #ifdef SWIFT_PACKAGE
-@@ -177,13 +206,23 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+@@ -177,13 +227,23 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
          NSBundle * bundle = [NSBundle bundleForClass:[GGMLMetalClass class]];
  #endif
  

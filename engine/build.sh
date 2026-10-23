@@ -109,15 +109,19 @@ rm -f "$out"/*.metallib
 # complete trees configured directly; whisper.cpp's vendored ggml is partial
 # (no tests/examples/ggml.pc.in — it cannot be a -S root), so it is reached
 # through engine/align's CMakeLists, which add_subdirectory()s it.
-# GGML_METAL_MACOSX_VERSION_MIN pins the AIR target at the macOS 13.3 support
-# floor (README, get.sh); the tensor library keeps its intentional macOS 26
-# target (patches/ggml/0004).
+# GGML_METAL_MACOSX_VERSION_MIN pins the AIR target at macOS 14.0: the library
+# carries the bf16 kernels (patches/ggml/0005, patches/audiocpp/0004), which
+# need Metal language 3.1 — a lower target compiles them out and a missing
+# kernel is a crash, not a slower fallback. macOS 13.3 remains the app's floor:
+# on 13.x the patched ggml skips the library and uses the embedded sources
+# (patches/ggml/0003, patches/audiocpp/0003). The tensor library keeps its
+# intentional macOS 26 target (patches/ggml/0004).
 build_metal_lib() {
     local src=$1 dir=$2
     shift 2
     cmake -S "$src" -B "$dir" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
         "-DCMAKE_OSX_ARCHITECTURES=$arch" -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=OFF \
-        -DGGML_METAL_MACOSX_VERSION_MIN=13.3 "$@" > "$dir-configure.log"
+        -DGGML_METAL_MACOSX_VERSION_MIN=14.0 "$@" > "$dir-configure.log"
     cmake --build "$dir" --target ggml-metal-lib -j "$jobs" > "$dir-build.log"
 }
 

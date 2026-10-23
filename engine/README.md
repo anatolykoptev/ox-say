@@ -14,16 +14,27 @@ same patched ggml tree with `GGML_METAL_EMBED_LIBRARY=OFF` builds only the
 `ggml-metal-lib` target, and its `default.metallib` is copied to `out/` under
 the binary's own name — `tts-server.metallib`, `ox-stt.metallib`,
 `ox-align.metallib` and, on arm64 with VoxCPM2, `audiocpp_server.metallib`.
-`GGML_METAL_MACOSX_VERSION_MIN=13.3` pins the library's AIR target at the
-support floor; a macOS 26 SDK also emits `<bin>-tensor.metallib`, the Metal4
-kernel library, which intentionally keeps its macOS 26 target (patch `0004`).
+`GGML_METAL_MACOSX_VERSION_MIN=14.0` pins the ordinary library's AIR target:
+it carries the bf16 kernels (`GGML_METAL_HAS_BF16`, patch `0005`,
+`audiocpp/0004`), which need Metal language 3.1 — the runtime source compile
+defines the macro on every bfloat-capable device, so the precompiled library
+must match or a bf16 op aborts on a missing function (`kernels/common.h`
+`#undef`s the macro below Metal 3.1). The 14.0 floor is the library's, not
+the app's: macOS 13.3 stays supported because on 13.x the patched ggml skips
+the library and compiles the embedded sources instead. A macOS 26 SDK also
+emits `<bin>-tensor.metallib`, the Metal4 kernel library, which
+intentionally keeps its macOS 26 target (patch `0004`).
 
 The engines are built against different ggml trees whose kernel sources
 differ, so one shared `default.metallib` cannot serve them all — each probes
 `<argv[0] basename>.metallib` next to the binary, uses it only when it loads,
 and otherwise falls back to the embedded source, compiling in-process on
-first run (patch `0003`, `audiocpp/0003`). That failure logs one line and is
-never fatal.
+first run (patch `0003`, `audiocpp/0003`). The library is also refused on
+macOS older than 14.0, where its AIR target cannot load, and on a
+bfloat-capable device when `kernel_get_rows_bf16` is missing from its
+function list — a library built without the bf16 define (a dev build, a flag
+regression) falls back instead of aborting on the first bf16 op. Each
+failure logs one line and is never fatal.
 
 The toolchain check compiles and links a trivial kernel
 (`xcrun -sdk macosx metal -c` + `metallib`), because on Xcode 26 `xcrun -f

@@ -195,15 +195,20 @@ jobs:
           fi
           # Structural checks, runnable without a Metal device: the container
           # must be a real MetalLib with a function list, and an ordinary
-          # library's AIR target must stay at or below the macOS 13.3 support
-          # floor — one that targets the build SDK would not load for users on
-          # older systems. The -tensor libraries intentionally target macOS 26
-          # (Metal4 devices only) and are exempt.
+          # library's AIR target must stay at or below the 14.0 floor of the
+          # precompiled libraries — one that targets the build SDK would not
+          # load for users on older systems (engines on <14 skip the library
+          # and run the embedded sources, so the app's floor stays 13.3). The
+          # library must also carry the bf16 kernels the runtime source
+          # compile defines on bfloat-capable devices: without them a bf16 op
+          # aborts on a missing function. The -tensor libraries intentionally
+          # target macOS 26 (Metal4 devices only) and are exempt.
           for lib in $metallibs; do
             test -s "$lib" || { echo "$lib missing from the package" >&2; exit 1; }
             xcrun -sdk macosx air-readobj --file-headers "$lib" > air-headers.txt
             grep -q 'MagicWord: MTLB' air-headers.txt || { echo "$lib is not a MetalLib container" >&2; exit 1; }
-            n=$(xcrun -sdk macosx air-readobj --symbols "$lib" | grep -c 'Type: Function' || true)
+            xcrun -sdk macosx air-readobj --symbols "$lib" > air-symbols.txt
+            n=$(grep -c 'Type: Function' air-symbols.txt || true)
             if [ "$n" -eq 0 ]; then
               echo "$lib carries no functions" >&2
               exit 1
@@ -219,11 +224,18 @@ jobs:
                   echo "$lib: no AIR target in its header" >&2
                   exit 1
                 fi
-                if [ "$major" -gt 13 ] || { [ "$major" -eq 13 ] && [ "$minor" -gt 3 ]; }; then
-                  echo "$lib targets macOS $major.$minor — above the 13.3 support floor" >&2
+                if [ "$major" -gt 14 ] || { [ "$major" -eq 14 ] && [ "$minor" -gt 0 ]; }; then
+                  echo "$lib targets macOS $major.$minor — above the 14.0 precompiled-library floor" >&2
                   exit 1
                 fi
-                echo "$lib: $n functions, targets macOS $major.$minor (floor 13.3)"
+                # the same representative function the runtime guard probes:
+                # a library without it would be skipped at load anyway, but a
+                # flag regression must fail the release, not ship a fallback
+                grep -q 'Name: kernel_get_rows_bf16' air-symbols.txt || {
+                  echo "$lib has no bf16 kernels — the runtime would fall back to the embedded compile" >&2
+                  exit 1
+                }
+                echo "$lib: $n functions incl. bf16, targets macOS $major.$minor (library floor 14.0, app floor 13.3)"
                 ;;
             esac
           done

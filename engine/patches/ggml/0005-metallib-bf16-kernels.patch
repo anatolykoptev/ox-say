@@ -1,0 +1,17 @@
+diff --git a/src/ggml-metal/CMakeLists.txt b/src/ggml-metal/CMakeLists.txt
+index 3fb4460b..6b9f7fed 100644
+--- a/src/ggml-metal/CMakeLists.txt
++++ b/src/ggml-metal/CMakeLists.txt
+@@ -173,6 +173,12 @@ else()
+         list   (APPEND XC_FLAGS -std=${GGML_METAL_STD})
+     endif()
+ 
++    # the runtime source compile defines GGML_METAL_HAS_BF16 on every
++    # bfloat-capable device; the precompiled library must carry the same
++    # kernels or a bf16 op aborts on a missing function (kernels/common.h
++    # #undefs it where __METAL_VERSION__ < 310)
++    list   (APPEND XC_FLAGS -DGGML_METAL_HAS_BF16)
++
+     # Compile each kernel source to .air, then link into default.metallib
+     set(AIR_FILES "")
+     foreach(src ${METALLIB_KERNEL_SOURCES})
