@@ -32,6 +32,13 @@ public enum SelectionPolicy {
         if secureInput {
             return .decline("A password field is focused.")
         }
+        // AX answered with a selection that is only whitespace: the app has
+        // said what is selected, and ⌘C would copy the same blanks. An empty
+        // string stays ambiguous (no selection, or an app whose AX does not
+        // know), so it still falls through to the copy.
+        if isWhitespaceOnly(axText) {
+            return .decline("Nothing selected to speak.")
+        }
         guard clipboardRestorable || clipboardRemote else {
             return .decline("The selection did not come through.")
         }
@@ -46,6 +53,12 @@ public enum SelectionPolicy {
         if let axText, !axText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return false
         }
-        return !secureInput
+        return !secureInput && !isWhitespaceOnly(axText)
+    }
+
+    /// Non-empty text with nothing in it but whitespace.
+    private static func isWhitespaceOnly(_ text: String?) -> Bool {
+        guard let text, !text.isEmpty else { return false }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }

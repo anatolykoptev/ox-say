@@ -11,6 +11,9 @@ final class SelectionCapture {
     /// A ⌘C result landed over a Universal Clipboard copy: the iPhone copy is
     /// gone and cannot be put back. One log line, never user content.
     var onRemoteCopy: (() -> Void)?
+    /// One report per speak press — the path taken and the AX read's error and
+    /// source, never content. Lets the real app's AX path be checked from the log.
+    var onSelection: ((SelectionReport) -> Void)?
 
     /// The selected text, or why it could not be read.
     func capture() -> (text: String?, problem: String?) {
@@ -20,20 +23,51 @@ final class SelectionCapture {
                                 postCopy: postCommandC,
                                 spin: { RunLoop.current.run(until: Date().addingTimeInterval($0)) },
                                 readText: board.readText,
-                                onRemoteCopy: onRemoteCopy)
+                                onRemoteCopy: onRemoteCopy,
+                                onSelection: onSelection)
     }
 
-    /// The focused element's AXSelectedText — the clipboard-free path.
-    private func selectedText() -> String? {
-        guard AXIsProcessTrusted() else { return nil }
-        let system = AXUIElementCreateSystemWide()
-        var focused: AnyObject?
-        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
-              let element = focused else { return nil }
-        var value: AnyObject?
-        guard AXUIElementCopyAttributeValue(element as! AXUIElement, kAXSelectedTextAttribute as CFString, &value) == .success,
-              let text = value as? String else { return nil }
-        return text
+    /// The focused element's AXSelectedText — the clipboard-free path. The
+    /// system-wide element is asked first; when it yields no focused element
+    /// (some callers get -25204 from it) the frontmost app's own element is.
+    private func selectedText() -> AXSelection {
+        AXSelection.read(
+            systemWide: { read(from: AXUIElementCreateSystemWide(), source: .systemWide) },
+            app: {
+                guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+                    return AXSelection(hasElement: false, error: AXError.noValue.rawValue, source: .app)
+                }
+                return read(from: AXUIElementCreateApplication(pid), source: .app)
+            })
+    }
+
+    /// A hung target must not freeze the main thread: every element queried
+    /// answers within this, or the call fails with kAXErrorCannotComplete.
+    private static let axTimeout: Float = 0.3
+
+    /// `root` → focused element → its subrole and AXSelectedText.
+    private func read(from root: AXUIElement, source: AXSelection.Source) -> AXSelection {
+        guard AXIsProcessTrusted() else {
+            return AXSelection(hasElement: false, error: AXError.apiDisabled.rawValue, source: source)
+        }
+        AXUIElementSetMessagingTimeout(root, Self.axTimeout)
+        var focused: CFTypeRef?
+        let focusError = AXUIElementCopyAttributeValue(root, kAXFocusedUIElementAttribute as CFString, &focused)
+        guard focusError == .success else {
+            return AXSelection(hasElement: false, error: focusError.rawValue, source: source)
+        }
+        guard let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+            return AXSelection(hasElement: false, error: AXError.noValue.rawValue, source: source)
+        }
+        let element = focused as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, Self.axTimeout)
+        var subrole: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
+        let secure = (subrole as? String) == (kAXSecureTextFieldSubrole as String)
+        var value: CFTypeRef?
+        let textError = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &value)
+        return AXSelection(text: textError == .success ? value as? String : nil, secureField: secure,
+                           hasElement: true, error: textError.rawValue, source: source)
     }
 
     private func postCommandC() {

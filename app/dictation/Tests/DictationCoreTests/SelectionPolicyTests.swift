@@ -19,8 +19,14 @@ final class SelectionPolicyTests: XCTestCase {
                        .speak("hi"))
     }
 
-    func testWhitespaceSelectionIsNotText() {
+    // AX succeeded with a selection of only whitespace: ⌘C would copy the same
+    // blanks, so the plan declines. An empty string is ambiguous (no selection,
+    // or an app whose AX does not know) and still falls back to the copy.
+    func testWhitespaceSelectionDeclinesAndEmptyFallsBack() {
         XCTAssertEqual(SelectionPolicy.plan(axText: "  \n ", secureInput: false, clipboardRestorable: true,
+                                            clipboardRemote: false),
+                       .decline("Nothing selected to speak."))
+        XCTAssertEqual(SelectionPolicy.plan(axText: "", secureInput: false, clipboardRestorable: true,
                                             clipboardRemote: false),
                        .copy)
     }
@@ -78,13 +84,15 @@ final class SelectionPolicyTests: XCTestCase {
         XCTAssertFalse(SelectionPolicy.needsClipboard(axText: nil, secureInput: true),
                        "a secure field declines before the clipboard is looked at")
         XCTAssertTrue(SelectionPolicy.needsClipboard(axText: nil, secureInput: false))
-        XCTAssertTrue(SelectionPolicy.needsClipboard(axText: "  ", secureInput: false))
+        XCTAssertFalse(SelectionPolicy.needsClipboard(axText: "  ", secureInput: false),
+                       "a whitespace-only selection declines before the clipboard is looked at")
+        XCTAssertTrue(SelectionPolicy.needsClipboard(axText: "", secureInput: false))
     }
 
     // The equivalence itself: wherever needsClipboard says no, the plan's
     // answer must not change with the clipboard inputs.
     func testWhereTheClipboardIsNotNeededItsFlagsDoNotMatter() {
-        for ax in [nil, "", "x"] {
+        for ax in [nil, "", " ", "x"] {
             for secure in [false, true] where !SelectionPolicy.needsClipboard(axText: ax, secureInput: secure) {
                 XCTAssertEqual(
                     SelectionPolicy.plan(axText: ax, secureInput: secure,
