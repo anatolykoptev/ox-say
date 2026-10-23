@@ -176,23 +176,15 @@ oxs_install_engines() {
         fi
     done
     mkdir -p "$home/engine/licenses"
-    for bin in tts-server ox-stt ox-align; do
-        cp "$out/$bin" "$home/engine/$bin.new"
-        mv "$home/engine/$bin.new" "$home/engine/$bin"
-        echo "installed $home/engine/$bin"
-    done
-    # Optional: only the arm64 package carries the VoxCPM2 server.
-    if [ -x "$out/audiocpp_server" ]; then
-        cp "$out/audiocpp_server" "$home/engine/audiocpp_server.new"
-        mv "$home/engine/audiocpp_server.new" "$home/engine/audiocpp_server"
-        echo "installed $home/engine/audiocpp_server"
-    fi
     # Each engine's precompiled Metal library travels next to it under its own
     # name (<bin>.metallib, plus <bin>-tensor.metallib on Metal4-capable
-    # builds). An engine installed without its library keeps working when it
-    # has the shaders embedded, so a stale library left by an older install
-    # must go: it would be the wrong kernels for the new binary.
-    for bin in tts-server ox-stt ox-align $( [ -x "$out/audiocpp_server" ] && echo audiocpp_server ); do
+    # builds) and goes in BEFORE its binary, so an engine respawned mid-install
+    # meets a matching pair as often as possible. An engine without its
+    # library keeps working — the binary embeds the shader sources — so a
+    # stale library left by an older install must go: it would be the wrong
+    # kernels for the new binary. The cleanup runs for audiocpp_server even
+    # when this package carries no binary for it.
+    for bin in tts-server ox-stt ox-align audiocpp_server; do
         for lib in "$bin.metallib" "$bin-tensor.metallib"; do
             if [ -f "$out/$lib" ]; then
                 cp "$out/$lib" "$home/engine/$lib.new"
@@ -201,6 +193,11 @@ oxs_install_engines() {
                 rm -f "$home/engine/$lib"
             fi
         done
+        # Optional: only the arm64 package carries the VoxCPM2 server.
+        [ -x "$out/$bin" ] || continue
+        cp "$out/$bin" "$home/engine/$bin.new"
+        mv "$home/engine/$bin.new" "$home/engine/$bin"
+        echo "installed $home/engine/$bin"
     done
     cp "$out"/licenses/* "$home/engine/licenses/"
 }

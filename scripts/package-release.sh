@@ -43,19 +43,27 @@ cp "$work"/out/tts-server "$work"/out/ox-stt "$work"/out/ox-align "$stage/engine
 if [ -f "$work/out/audiocpp_server" ]; then
     cp "$work/out/audiocpp_server" "$stage/engine/"
 fi
-# The precompiled Metal libraries: each engine loads <bin>.metallib next to
-# the binary. A release without them is the old first-run shader compile for
-# every user — refuse, don't ship it. arm64 also carries <bin>-tensor.metallib
-# (Metal4 devices; the macOS 26 SDK leg builds them).
+# The precompiled Metal libraries: each engine probes <bin>.metallib next to
+# the binary and falls back to the shader source embedded in it, so a package
+# without them would still run — with the old first-run shader compile for
+# every user. That compile is what this release removes, so refuse to package
+# without the libraries. arm64 also carries <bin>-tensor.metallib (Metal4
+# devices; only a macOS 26 SDK toolchain builds them).
 metallibs="tts-server.metallib ox-stt.metallib ox-align.metallib"
 if [ "$arch" = arm64 ]; then
     metallibs="$metallibs audiocpp_server.metallib tts-server-tensor.metallib ox-stt-tensor.metallib ox-align-tensor.metallib"
 fi
 for lib in $metallibs; do
-    if [ ! -s "$work/out/$lib" ]; then
-        echo "package-release.sh: $lib missing from $work/out — the Metal toolchain is required (xcodebuild -downloadComponent MetalToolchain)" >&2
-        exit 1
+    if [ -s "$work/out/$lib" ]; then
+        continue
     fi
+    case $lib in
+        *-tensor.metallib)
+            echo "package-release.sh: $lib missing from $work/out — it builds only with the Metal toolchain on the macOS 26 SDK (xcodebuild -downloadComponent MetalToolchain on Xcode 26)" >&2 ;;
+        *)
+            echo "package-release.sh: $lib missing from $work/out — it needs the Metal toolchain (xcodebuild -downloadComponent MetalToolchain)" >&2 ;;
+    esac
+    exit 1
 done
 cp "$work"/out/*.metallib "$stage/engine/"
 cp "$work"/out/licenses/* "$stage/engine/licenses/"

@@ -75,10 +75,10 @@ else
 fi
 
 # 4. Self-test: speak a phrase, transcribe it back. Release engines ship a
-#    precompiled Metal library per binary, so this is a model-load warm-up,
-#    not a shader compile. (An engine built on a host without the Metal
-#    toolchain embeds the shader source instead and compiles it here, which
-#    can take a few minutes once.)
+#    precompiled Metal library per binary, so this is a model-load warm-up
+#    with no source compile. (An engine whose library is missing or does not
+#    load falls back to the shader source embedded in it and compiles it
+#    here, which can take a few minutes once.)
 #    Speech-to-text goes first, with macOS's own voice, while the TTS engine is
 #    still stopped: the daemon keeps speech-to-text off the GPU while TTS holds
 #    it, so this is the only moment the installer can warm ox-stt up.
