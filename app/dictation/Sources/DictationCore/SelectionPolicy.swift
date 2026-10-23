@@ -21,8 +21,11 @@ public enum SelectionPlan: Equatable {
 /// the copy proceeds and the clipboard is left holding the selection, as
 /// dictation leaves its text.
 public enum SelectionPolicy {
+    /// Every caller must say whether the clipboard held a Universal Clipboard
+    /// copy — the same reason `OutputPolicy.decide` has no default: a forgotten
+    /// flag reads as "local", and the risky copy proceeds without a word.
     public static func plan(axText: String?, secureInput: Bool, clipboardRestorable: Bool,
-                            clipboardRemote: Bool = false) -> SelectionPlan {
+                            clipboardRemote: Bool) -> SelectionPlan {
         if let axText, !axText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .speak(axText)
         }
@@ -33,5 +36,16 @@ public enum SelectionPolicy {
             return .decline("The selection did not come through.")
         }
         return .copy
+    }
+
+    /// Whether `plan` can reach the clipboard checks at all — AX gave nothing
+    /// usable and no secure field is focused. Lets the caller skip reading the
+    /// clipboard on the paths that never look at it. Mirrors the checks above;
+    /// if their order changes, this changes with them.
+    public static func needsClipboard(axText: String?, secureInput: Bool) -> Bool {
+        if let axText, !axText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        return !secureInput
     }
 }
