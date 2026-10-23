@@ -34,16 +34,35 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
+
 namespace {
 
 constexpr int SR = 16000;
+
+// default thread count = the performance-core count: measured on the target
+// shape (M5 Pro, mms-300m f16, 70 s clip) -t6 runs the CPU backend ~1.9x
+// faster than the old default of 4, while -t18 (P+E oversubscription)
+// regresses. -t overrides. Off Apple Silicon keep 4.
+int default_threads() {
+#if defined(__APPLE__)
+    int n = 0;
+    size_t sz = sizeof(n);
+    if (sysctlbyname("hw.perflevel0.physicalcpu", &n, &sz, nullptr, 0) == 0 && n > 0) {
+        return n;
+    }
+#endif
+    return 4;
+}
 
 // ---------------------------------------------------------------------------
 // args
 
 struct args {
     std::string model, file, out, vocab, dump_dir;
-    int    threads   = 4;
+    int    threads   = default_threads();
     double window    = 30.0;
     double context   = 2.0;
     bool   gpu       = true;
