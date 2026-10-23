@@ -6,25 +6,32 @@ builds a static `tts-server`.
 
 ## Metal shaders: precompiled libraries, embedded fallback
 
-When the Metal toolchain works, the build compiles the ggml kernels into a
-`default.metallib` per engine (`GGML_METAL_EMBED_LIBRARY=OFF`, target
-`ggml-metal-lib`) and copies it to `out/` under the binary's own name:
-`tts-server.metallib`, `ox-stt.metallib`, `ox-align.metallib` and, on arm64
-with VoxCPM2, `audiocpp_server.metallib`. A macOS 26 SDK also emits
-`<bin>-tensor.metallib`, the Metal4 kernel library. The three engines are
-built against different ggml trees whose kernel sources differ, so one shared
-`default.metallib` cannot serve them all — each loads `<argv[0]
-basename>.metallib` (patch `0003`), falling back to `default.metallib` and
-then to the embedded/source path, exactly like upstream.
+Every engine binary always embeds the Metal sources
+(`GGML_METAL_EMBED_LIBRARY=ON`): a missing, stale or corrupt metallib can
+never stop an engine. When the Metal toolchain works, the build additionally
+compiles the same kernels ahead of time: a second, cheap configure of the
+same patched ggml tree with `GGML_METAL_EMBED_LIBRARY=OFF` builds only the
+`ggml-metal-lib` target, and its `default.metallib` is copied to `out/` under
+the binary's own name — `tts-server.metallib`, `ox-stt.metallib`,
+`ox-align.metallib` and, on arm64 with VoxCPM2, `audiocpp_server.metallib`.
+`GGML_METAL_MACOSX_VERSION_MIN=13.3` pins the library's AIR target at the
+support floor; a macOS 26 SDK also emits `<bin>-tensor.metallib`, the Metal4
+kernel library, which intentionally keeps its macOS 26 target (patch `0004`).
+
+The engines are built against different ggml trees whose kernel sources
+differ, so one shared `default.metallib` cannot serve them all — each probes
+`<argv[0] basename>.metallib` next to the binary, uses it only when it loads,
+and otherwise falls back to the embedded source, compiling in-process on
+first run (patch `0003`, `audiocpp/0003`). That failure logs one line and is
+never fatal.
 
 The toolchain check compiles and links a trivial kernel
 (`xcrun -sdk macosx metal -c` + `metallib`), because on Xcode 26 `xcrun -f
 metal` resolves a stub while the toolchain itself is a separate component
 (`xcodebuild -downloadComponent MetalToolchain`). When the probe fails the
-build keeps `GGML_METAL_EMBED_LIBRARY=ON`, says so on one line, and the
-engines compile their shaders in-process on first run.
-`OX_SAY_METAL_EMBED=1` forces the embedded build even when the toolchain is
-present.
+metallib build is skipped, says so on one line, and the engines still embed
+their sources. `OX_SAY_METAL_EMBED=1` skips the metallib build even when the
+toolchain is present (A/B tests).
 
 ## patches/ggml/0001-metal-amd-discrete-gpu.patch
 

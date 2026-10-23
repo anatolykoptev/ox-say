@@ -1,0 +1,18 @@
+diff --git a/src/ggml-metal/CMakeLists.txt b/src/ggml-metal/CMakeLists.txt
+index de90608f..3fb4460b 100644
+--- a/src/ggml-metal/CMakeLists.txt
++++ b/src/ggml-metal/CMakeLists.txt
+@@ -193,8 +193,11 @@ else()
+     # the tensor API kernels go in a separate metallib, loaded only where supported
+     if (GGML_METAL_HAS_TENSOR_LIB)
+         set(AIR_MM_TENSOR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mul_mm_tensor.air")
+-        # the tensor API needs OS 26+
+-        set(XC_FLAGS_TENSOR ${XC_FLAGS} -mtargetos=${GGML_METAL_TARGET_OS}26.0${METAL_TARGET_SIM})
++        # the tensor API needs OS 26+; it must not inherit the version flag
++        # XC_FLAGS carries (-mmacosx-version-min and -mtargetos do not combine)
++        set(XC_FLAGS_TENSOR ${XC_FLAGS})
++        list(FILTER XC_FLAGS_TENSOR EXCLUDE REGEX "^-(mmacosx-version-min|mtargetos)=")
++        list(APPEND XC_FLAGS_TENSOR -mtargetos=${GGML_METAL_TARGET_OS}26.0${METAL_TARGET_SIM})
+         add_custom_command(
+             OUTPUT ${AIR_MM_TENSOR}
+             COMMAND xcrun -sdk ${METAL_SDK} metal ${XC_FLAGS_TENSOR} -DGGML_METAL_HAS_TENSOR -I ${CMAKE_RUNTIME_OUTPUT_DIRECTORY} -c ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/kernels/mul_mm.metal -o ${AIR_MM_TENSOR}
