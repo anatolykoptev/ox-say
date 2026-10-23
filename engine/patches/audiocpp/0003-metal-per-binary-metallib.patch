@@ -1,8 +1,8 @@
 diff --git a/external/ggml/src/ggml-metal/ggml-metal-device.m b/external/ggml/src/ggml-metal/ggml-metal-device.m
-index e4cc0475..4cdef7f8 100644
+index e4cc0475..1a81164c 100644
 --- a/external/ggml/src/ggml-metal/ggml-metal-device.m
 +++ b/external/ggml/src/ggml-metal/ggml-metal-device.m
-@@ -163,12 +163,62 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+@@ -163,12 +163,71 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
          NSString * src = nil;
  
  #if GGML_METAL_EMBED_LIBRARY
@@ -24,10 +24,19 @@ index e4cc0475..4cdef7f8 100644
 +            }
  
 -        src = [[NSString alloc] initWithBytes:ggml_metallib_start length:(ggml_metallib_end-ggml_metallib_start) encoding:NSUTF8StringEncoding];
++            // this vintage builds no -tensor library: the precompiled
++            // kernels are compiled without GGML_METAL_HAS_TENSOR, but on a
++            // tensor-capable device the host still picks the tensor tiling
++            // for the mul_mm kernels - silently wrong results, not a crash.
++            // The embedded source compiles the matching variant.
++            if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib] &&
++                ggml_metal_device_get_props(dev)->has_tensor) {
++                GGML_LOG_INFO("%s: tensor API device - the precompiled library has no tensor kernels, using the embedded metal library\n",
++                              __func__);
 +            // the precompiled library carries the bf16 kernels, which need
 +            // Metal language 3.1 - its AIR target is macOS 14.0, so on an
 +            // older OS it would not load; go straight to the embedded source
-+            if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib] &&
++            } else if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib] &&
 +                ![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){14, 0, 0}]) {
 +                GGML_LOG_INFO("%s: skipping '%s' - the precompiled metal library targets macOS 14.0\n",
 +                              __func__, [path_lib UTF8String]);
@@ -69,7 +78,7 @@ index e4cc0475..4cdef7f8 100644
  #else
  
  #ifdef SWIFT_PACKAGE
-@@ -177,13 +227,23 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+@@ -177,13 +236,23 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
          NSBundle * bundle = [NSBundle bundleForClass:[GGMLMetalClass class]];
  #endif
  

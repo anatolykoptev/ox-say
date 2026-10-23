@@ -178,12 +178,15 @@ oxs_install_engines() {
     mkdir -p "$home/engine/licenses"
     # Each engine's precompiled Metal library travels next to it under its own
     # name (<bin>.metallib, plus <bin>-tensor.metallib on Metal4-capable
-    # builds) and goes in BEFORE its binary, so an engine respawned mid-install
-    # meets a matching pair as often as possible. An engine without its
-    # library keeps working — the binary embeds the shader sources — so a
-    # stale library left by an older install must go: it would be the wrong
-    # kernels for the new binary. The cleanup runs for audiocpp_server even
-    # when this package carries no binary for it.
+    # builds). The libraries go in before the binaries, but the window is
+    # symmetric — an engine respawned mid-install meets a mismatched pair
+    # either way, so the order buys nothing: what protects the engine is the
+    # runtime guards (OS floor, bf16 and tensor kernels — the patched ggml
+    # skips a library it cannot safely use) and the embedded shader sources
+    # that keep an engine running with no library at all. A stale library left
+    # by an older install must still go — the guards cannot tell it is stale.
+    # The cleanup runs for audiocpp_server even when this package carries no
+    # binary for it.
     for bin in tts-server ox-stt ox-align audiocpp_server; do
         for lib in "$bin.metallib" "$bin-tensor.metallib"; do
             if [ -f "$out/$lib" ]; then

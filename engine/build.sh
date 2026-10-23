@@ -116,9 +116,14 @@ rm -f "$out"/*.metallib
 # on 13.x the patched ggml skips the library and uses the embedded sources
 # (patches/ggml/0003, patches/audiocpp/0003). The tensor library keeps its
 # intentional macOS 26 target (patches/ggml/0004).
+# The build dir is rebuilt from scratch every time: the metallib is a
+# custom_command whose DEPENDS does not include the compile flags, so a cached
+# dir keeps its stale .air files after GGML_METAL_MACOSX_VERSION_MIN or
+# XC_FLAGS change and relinks them into the next library.
 build_metal_lib() {
     local src=$1 dir=$2
     shift 2
+    rm -rf "$dir"
     cmake -S "$src" -B "$dir" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
         "-DCMAKE_OSX_ARCHITECTURES=$arch" -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=OFF \
         -DGGML_METAL_MACOSX_VERSION_MIN=14.0 "$@" > "$dir-configure.log"
