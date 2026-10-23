@@ -22,6 +22,8 @@ set -euo pipefail
 
 # shellcheck source=scripts/lib-notary.sh
 . "$(dirname "$0")/lib-notary.sh"
+# shellcheck source=scripts/lib-entitlements.sh
+. "$(dirname "$0")/lib-entitlements.sh"
 
 dist=${1:?usage: $0 <dist-dir> <OxSayDictation.app>}
 src_app=${2:?usage: $0 <dist-dir> <OxSayDictation.app>}
@@ -58,10 +60,8 @@ if [ -n "${SIGN_KEYCHAIN:-}" ]; then
     keychain=(--keychain "$SIGN_KEYCHAIN")
 fi
 
-# The one shape of bundle build.sh makes (plus the stapled ticket), and the only
-# entitlements it may carry (audio-input for the microphone, apple-events to
-# pause Music and Spotify). The signature vouches for exactly these: anything
-# more is refused, not signed.
+# The one shape of bundle build.sh makes (plus the stapled ticket). Its only
+# entitlements are the ones in lib-entitlements.sh.
 bundle_files='Contents
 Contents/CodeResources
 Contents/Info.plist
@@ -76,7 +76,7 @@ Contents/Resources/ru.lproj
 Contents/Resources/ru.lproj/Localizable.strings
 Contents/_CodeSignature
 Contents/_CodeSignature/CodeResources'
-entitlements_json='{"com.apple.security.automation.apple-events":true,"com.apple.security.device.audio-input":true}'
+entitlements_json=$(oxs_entitlements_json)
 
 # check_bundle <app>: a real directory holding only those files, no symlinks,
 # with our identifier and executable.
@@ -131,13 +131,10 @@ ditto "$src_app" "$work/ox-say/app/OxSayDictation.app"
 app=$work/ox-say/app/OxSayDictation.app
 
 codesign -d --entitlements - --xml "$app" > "$work/built.plist" 2>/dev/null
-# plutil -convert json does not sort keys: it keeps the order the plist has, and
-# codesign normalises that order when it embeds the entitlements. The exact
-# string match therefore depends on codesign's order for these two keys; a
-# third key needs $entitlements_json written in that order.
-if [ "$(plutil -convert json -o - "$work/built.plist")" != "$entitlements_json" ]; then
+# Key by key, not as one JSON string: the order plutil prints is not ours to rely on.
+if ! oxs_entitlements_check "$work/built.plist"; then
     echo "the app's entitlements differ from the ones it may carry ($entitlements_json):" >&2
-    plutil -convert json -o - "$work/built.plist" >&2 || true
+    plutil -p "$work/built.plist" >&2 || true
     exit 1
 fi
 printf '%s' "$entitlements_json" > "$work/entitlements.json"

@@ -225,6 +225,25 @@ final class MediaPauseCoordinatorTests: XCTestCase {
         XCTAssertEqual(music.current, .playing)
     }
 
+    // #195.4 — a player that does not answer the start is not known to be
+    // playing: it is not paused, so nothing of it is ours to play at the end.
+    // Mutation: in MediaPauseCoordinator.begin let `.timedOut, .unavailable`
+    // fall into the `.playing` case -> pauseCalls is 1 and the end plays (RED).
+    func testAPlayerThatDoesNotAnswerTheStartIsNeitherPausedNorPlayed() {
+        for unknown in [MediaPlaybackState.timedOut, .unavailable] {
+            let music = FakeMediaPlayer("music", .playing)
+            music.answers = [unknown]
+            var errors: [String] = []
+            let coordinator = MediaPauseCoordinator(players: [music], retryDelay: 0, logError: { errors.append($0) })
+            coordinator.begin(generation: 1)
+            coordinator.end(generation: 1)
+            XCTAssertEqual(music.pauseCalls, 0, "\(unknown) at the start: no pause")
+            XCTAssertEqual(music.playCalls, 0, "\(unknown) at the start: no later play")
+            XCTAssertEqual(music.waits, [.quick], "and the end asks nobody")
+            XCTAssertEqual(errors, [])
+        }
+    }
+
     func testTheDeniedNoticeIsOncePerLaunch() {
         let music = FakeMediaPlayer("music", .denied)
         let spotify = FakeMediaPlayer("spotify", .denied)
@@ -363,7 +382,8 @@ final class MediaPauseJourneyTests: XCTestCase {
             XCTAssertFalse(line.contains(conditional),
                            "controller.onState filters what the sound runner sees (\(conditional.trimmingCharacters(in: .whitespaces))): the resume would be skipped for some endings")
         }
-        XCTAssertTrue(source.contains("soundWhileDictating.drain(timeout:"),
+        let terminate = try applicationWillTerminateCode()
+        XCTAssertTrue(terminate.contains("soundWhileDictating.drain(timeout:"),
                       "applicationWillTerminate must wait for the resume — bounded, or a hang holds the quit open")
     }
 }
