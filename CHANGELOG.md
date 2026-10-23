@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.28](https://github.com/anatolykoptev/ox-say/compare/v0.1.27...v0.1.28) (2026-10-23)
+
+
+### Fixed
+
+* **dictation:** a dictation survives a daemon restart; [#213](https://github.com/anatolykoptev/ox-say/issues/213) follow-ups ([#217](https://github.com/anatolykoptev/ox-say/issues/217)) ([d4c689b](https://github.com/anatolykoptev/ox-say/commit/d4c689b775bab3b5568dd63f28a7f2579261d0bc))
+* **dictation:** duck restores expire and use a relative quiet check; sign-release checks entitlements key by key ([#215](https://github.com/anatolykoptev/ox-say/issues/215)) ([892d968](https://github.com/anatolykoptev/ox-say/commit/892d96808f71b1fb0b08a739ca58f172f4a53796))
+* **dictation:** read the selection through Accessibility before ⌘C; the Speaking pill never covers a dictation ([#219](https://github.com/anatolykoptev/ox-say/issues/219)) ([9a75c33](https://github.com/anatolykoptev/ox-say/commit/9a75c33abf29bf0308de09a46942f9fd790a63d7))
+
 ## [0.1.27](https://github.com/anatolykoptev/ox-say/compare/v0.1.26...v0.1.27) (2026-10-23)
 
 
