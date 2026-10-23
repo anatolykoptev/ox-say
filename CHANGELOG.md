@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.27](https://github.com/anatolykoptev/ox-say/compare/v0.1.26...v0.1.27) (2026-10-23)
+
+
+### Fixed
+
+* **align:** catch every exception in main — exit 1, not 134; metallib review nits ([#208](https://github.com/anatolykoptev/ox-say/issues/208)) ([637c1ed](https://github.com/anatolykoptev/ox-say/commit/637c1ed31cc811a383a7e09ae8e139a857a8caf9))
+* **dictation:** an update install waits for the dictation, and the notices that matter are kept ([#209](https://github.com/anatolykoptev/ox-say/issues/209)) ([935935e](https://github.com/anatolykoptev/ox-say/commit/935935e30e32df398f02f471c08f9d5670b8746f))
+* **dictation:** type the text when the clipboard holds an iPhone copy — the copy survives ([#212](https://github.com/anatolykoptev/ox-say/issues/212)) ([cec1526](https://github.com/anatolykoptev/ox-say/commit/cec1526e40a98f4bee2fe05eeabdc5cf17fe5383))
+
 ## [0.1.26](https://github.com/anatolykoptev/ox-say/compare/v0.1.25...v0.1.26) (2026-10-23)
 
 
