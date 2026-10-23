@@ -90,7 +90,6 @@ final class DictationHistoryHookTests: XCTestCase {
 final class PasteSettlementTests: XCTestCase {
     private struct Calls {
         var settled: [Bool] = []
-        var remoteKept = 0
         var notices: [String] = []
         var unread = 0
     }
@@ -99,7 +98,6 @@ final class PasteSettlementTests: XCTestCase {
         var calls = Calls()
         PasteSettlement.settle(lease: lease, text: "dictated text", read: read, plain: board,
                                onSettled: { calls.settled.append($0) },
-                               onRemoteClipboardKept: { calls.remoteKept += 1 },
                                onNotice: { calls.notices.append($0) },
                                onUnread: { calls.unread += 1 })
         return calls

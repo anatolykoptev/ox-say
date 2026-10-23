@@ -175,7 +175,7 @@ final class OutputPolicyTests: XCTestCase {
     // Mutation: ignore `secureInput` in OutputPolicy.decide -> RED (the text
     // would be pasted into a password field).
     func testNeverPastesIntoAPasswordField() {
-        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: true, accessibilityTrusted: true) else {
+        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: true, accessibilityTrusted: true, clipboardRemote: false) else {
             return XCTFail("secure input must not get a synthesized paste")
         }
         XCTAssertEqual(reason.code, "secure_input")
@@ -185,7 +185,7 @@ final class OutputPolicyTests: XCTestCase {
     // returning .clipboardOnly(.secureInput) -> RED (the timing line would
     // blame a password field for an untrusted grant).
     func testWithoutAccessibilityTheTextStaysOnTheClipboard() {
-        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: false, accessibilityTrusted: false) else {
+        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: false, accessibilityTrusted: false, clipboardRemote: false) else {
             return XCTFail("without Accessibility a posted Cmd+V is dropped silently")
         }
         XCTAssertEqual(reason.code, "accessibility")
@@ -196,14 +196,35 @@ final class OutputPolicyTests: XCTestCase {
     // Mutation: ignore `focusMoved` in OutputPolicy.decide -> RED (the text is
     // pasted into whatever app the user switched to).
     func testNoPasteIntoAnAppTheUserSwitchedTo() {
-        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: false, focusMoved: true, accessibilityTrusted: true) else {
+        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: false, focusMoved: true, accessibilityTrusted: true, clipboardRemote: false) else {
             return XCTFail("a paste must go where the user dictated, not where focus went later")
         }
         XCTAssertEqual(reason.code, "focus_moved")
     }
 
     func testPastesOtherwise() {
-        XCTAssertEqual(OutputPolicy.decide(secureInput: false, accessibilityTrusted: true), .paste)
+        XCTAssertEqual(OutputPolicy.decide(secureInput: false, accessibilityTrusted: true, clipboardRemote: false), .paste)
+    }
+
+    // Mutation: ignore `clipboardRemote` in OutputPolicy.decide -> RED (a
+    // paste over a remote clipboard destroys the other device's copy: it is
+    // never read, so it cannot be put back).
+    func testARemoteClipboardIsTypedNotPasted() {
+        XCTAssertEqual(
+            OutputPolicy.decide(secureInput: false, accessibilityTrusted: true, clipboardRemote: true),
+            .typed, "pasting needs a clipboard write, which would destroy the iPhone copy")
+    }
+
+    // Mutation: move the remote check above the clipboardOnly guards in
+    // OutputPolicy.decide -> RED (secure input would get synthesized keys).
+    func testClipboardOnlyStillWinsOverARemoteClipboard() {
+        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: true, accessibilityTrusted: true, clipboardRemote: true) else {
+            return XCTFail("secure input must not get synthesized keys, typed or pasted")
+        }
+        XCTAssertEqual(reason.code, "secure_input")
+        guard case .clipboardOnly = OutputPolicy.decide(secureInput: false, accessibilityTrusted: false, clipboardRemote: true) else {
+            return XCTFail("without Accessibility the text must land on the clipboard")
+        }
     }
 }
 
@@ -813,6 +834,7 @@ final class DictationTimingTests: XCTestCase {
         }
         let prefix = "outcome=delivered path=stream recorded_s=3.70 release_to_text_ms=182 tail_s=0.20 segments_before_release=1 session_create_ms=5"
         XCTAssertEqual(line(.delivered, .paste), "\(prefix) delivery=paste")
+        XCTAssertEqual(line(.delivered, .typed), "\(prefix) delivery=typed")
         XCTAssertEqual(line(.delivered, .clipboardOnly(reason: .accessibility)),
                        "\(prefix) delivery=clipboard clipboard_reason=accessibility")
         XCTAssertEqual(line(.delivered, .clipboardOnly(reason: .secureInput)),

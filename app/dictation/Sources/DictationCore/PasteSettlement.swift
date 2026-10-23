@@ -12,14 +12,11 @@ public enum PasteSettlement {
     ///     why the user's clipboard is NOT overwritten with the text here — the
     ///     notice says where to find it instead.
     public static func settle(lease: ClipboardLease, text: String, read: Bool, plain: DictationPasteboard,
-                              onSettled: ((Bool) -> Void)?, onRemoteClipboardKept: (() -> Void)?,
+                              onSettled: ((Bool) -> Void)?,
                               onNotice: ((String) -> Void)?, onUnread: (() -> Void)?) {
         onSettled?(read)
         let restored = lease.release()
-        if lease.keptRemote {
-            plain.writeText(text)
-            onRemoteClipboardKept?()
-        } else if !restored, let notice = lease.notice {
+        if !restored, let notice = lease.notice {
             // The user's clipboard is not coming back, so the dictation stays on
             // it. Write it plainly: the lent copy is a transient promise, which
             // clipboard history skips and which dies with this process.

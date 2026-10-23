@@ -73,8 +73,10 @@ final class SystemPasteboard: NSObject, DictationPasteboard, NSPasteboardItemDat
 
 /// Puts dictated text where the cursor is: borrows the clipboard, sends Cmd+V to
 /// the frontmost app and gives the clipboard back once the app has read it. When
-/// pasting is not allowed or not safe, the text stays on the clipboard and
-/// `onNotice` says why.
+/// the clipboard holds a Universal Clipboard copy, which cannot be put back
+/// without fetching it from the other device, the text is typed with Unicode
+/// key events instead and the clipboard is never touched. When pasting is not
+/// allowed or not safe, the text stays on the clipboard and `onNotice` says why.
 final class PasteOutput: TextOutput {
     var onNotice: ((String) -> Void)?
     /// When a posted paste settles: whether the target app read the promised
@@ -85,9 +87,11 @@ final class PasteOutput: TextOutput {
     /// dictation is on neither the screen nor the clipboard, only in the
     /// history. The app says so, and the clipboard stays the user's.
     var onPasteUnread: (() -> Void)?
-    /// The clipboard held a copy from another device (Universal Clipboard) and
-    /// was left alone; the dictated text replaced it. A log line, not a notice.
-    var onRemoteClipboardKept: (() -> Void)?
+    /// The clipboard held a copy from another device (Universal Clipboard), so
+    /// the text was posted as synthetic key events and the clipboard left
+    /// alone: character count and seconds the posting took (the time to
+    /// enqueue the events, not to deliver them). A log line, not a notice.
+    var onTypedOverRemoteClipboard: ((Int, TimeInterval) -> Void)?
     /// The app that had focus when the recording stopped; the paste goes there
     /// or nowhere.
     var target: pid_t?
@@ -107,12 +111,21 @@ final class PasteOutput: TextOutput {
         settle()
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let moved = target != nil && front != target
+        // Declared types only: reading a Universal Clipboard copy makes macOS
+        // fetch it from the other device. Decided before any lease exists — a
+        // ClipboardLease writes the text at init, which would destroy the copy.
+        let remote = plain.holdsRemoteCopy
         switch OutputPolicy.decide(secureInput: IsSecureEventInputEnabled(), focusMoved: moved,
-                                   accessibilityTrusted: AXIsProcessTrusted()) {
+                                   accessibilityTrusted: AXIsProcessTrusted(), clipboardRemote: remote) {
         case .clipboardOnly(let reason):
             plain.writeText(text)
             onNotice?(reason.message)
             return .clipboardOnly(reason: reason)
+        case .typed:
+            let started = Date()
+            postTypedText(text)
+            onTypedOverRemoteClipboard?(text.count, Date().timeIntervalSince(started))
+            return .typed
         case .paste:
             let lease = ClipboardLease(board: lending, text: text)
             let posted = Date()
@@ -140,8 +153,26 @@ final class PasteOutput: TextOutput {
         self.pending = nil
         pending.timer.invalidate()
         PasteSettlement.settle(lease: pending.lease, text: pending.text, read: lending.readAt != nil, plain: plain,
-                               onSettled: onPasteSettled, onRemoteClipboardKept: onRemoteClipboardKept,
+                               onSettled: onPasteSettled,
                                onNotice: onNotice, onUnread: onPasteUnread)
+    }
+
+    /// Types `text` into the frontmost app: key events carrying Unicode
+    /// strings, posted the way ⌘V is, at most 20 UTF-16 units per event. The
+    /// clipboard is never touched.
+    private func postTypedText(_ text: String) {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        for chunk in TypingChunks.split(text) {
+            let units = Array(chunk.utf16)
+            for isDown in [true, false] {
+                let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: isDown)
+                // No modifiers: one still held from the hotkey must not turn
+                // the characters into shortcuts.
+                event?.flags = []
+                event?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+                event?.post(tap: .cghidEventTap)
+            }
+        }
     }
 
     private func postCommandV() {

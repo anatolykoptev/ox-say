@@ -24,17 +24,29 @@ final class RemoteClipboardTests: XCTestCase {
         XCTAssertFalse(snapshot.problems.isEmpty, "a snapshot without the data must not be restorable")
     }
 
-    // Mutation: make ClipboardLease.release skip the `original.isRemote` guard
-    // -> RED (the notice is shown on every dictation after an iPhone copy).
-    func testRemoteClipboardLeavesTheDictationWithoutANotice() {
+    // PasteOutput types instead of borrowing a remote clipboard, so no lease
+    // is built over one. If one ever is — a remote copy landing in the gap
+    // between the check and the capture — the snapshot must still not go
+    // back: it is not a whole copy. Mutation: drop `original.problems` from
+    // the restore guard in ClipboardLease.release -> RED.
+    func testARemoteSnapshotIsNeverRestored() {
         let board = remoteBoard()
         let lease = ClipboardLease(board: board, text: "dictated text")
         XCTAssertEqual(board.text, "dictated text")
         XCTAssertFalse(lease.release())
-        XCTAssertNil(lease.notice, "a notice per dictation after an iPhone copy is noise")
-        XCTAssertTrue(lease.keptRemote)
+        XCTAssertNotNil(lease.notice, "a remote snapshot is not a whole copy: it must not go back")
         XCTAssertEqual(board.text, "dictated text")
         XCTAssertEqual(board.reads, [])
+    }
+
+    // The remote check must look at declared types only: reading data starts
+    // the fetch from the other device. Mutation: read the items' data in
+    // holdsRemoteCopy -> RED (reads would not be empty).
+    func testRemoteDetectionReadsDeclaredTypesOnly() {
+        let board = remoteBoard()
+        XCTAssertTrue(board.holdsRemoteCopy)
+        XCTAssertEqual(board.reads, [])
+        XCTAssertFalse(FakePasteboard(text: "local copy").holdsRemoteCopy)
     }
 
     // Mutation: return `items` instead of the filtered list from
@@ -60,7 +72,6 @@ final class RemoteClipboardTests: XCTestCase {
         XCTAssertEqual(board.reads, ["public.utf8-plain-text"])
         let lease = ClipboardLease(board: board, text: "dictated")
         XCTAssertTrue(lease.release())
-        XCTAssertFalse(lease.keptRemote)
         XCTAssertEqual(board.text, "the user's copy")
     }
 }
