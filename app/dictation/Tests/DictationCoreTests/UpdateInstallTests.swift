@@ -34,7 +34,47 @@ final class UpdateInstallTests: XCTestCase {
         let command = UpdateInstaller.command(kind: .update, script: "/tmp/x.sh", tag: "v0.1.22")
         XCTAssertEqual(command.argv, ["/bin/sh", "/tmp/x.sh", "--version", "v0.1.22"])
         XCTAssertNil(command.environment["OX_SAY_WITH_VOXCPM2"])
-        XCTAssertTrue(command.environment.isEmpty)
+        XCTAssertEqual(command.environment, [UpdateInstaller.appRelaunchesVariable: "1"])
+    }
+
+    // #198.1 — every install the app starts tells the installer that the app
+    // relaunches itself, so install-app.sh does not kill a dictation.
+    // Mutation: UpdateInstall.swift command(kind:), drop `appRelaunchesVariable` from
+    // either branch -> RED.
+    func testEveryInstallTheAppStartsCarriesTheRelaunchVariable() {
+        for kind in [UpdateInstaller.Kind.update, .studioVoice] {
+            let command = UpdateInstaller.command(kind: kind, script: "/tmp/x.sh", tag: "v0.1.22")
+            XCTAssertEqual(command.environment["OX_SAY_APP_RELAUNCHES"], "1", "\(kind): the installer would stop the running app")
+            XCTAssertEqual(command.launchEnvironment(base: [:])["OX_SAY_APP_RELAUNCHES"], "1")
+        }
+    }
+
+    /// The name install-app.sh reads is the name the app sets.
+    /// Mutation: rename the variable in install-app.sh (or in UpdateInstaller) -> RED.
+    func testTheInstallerScriptReadsTheVariableTheAppSets() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("install-app.sh")
+        let text = try String(contentsOf: script, encoding: .utf8)
+        XCTAssertTrue(text.contains("${\(UpdateInstaller.appRelaunchesVariable):-0}\" = 1"),
+                      "install-app.sh does not read \(UpdateInstaller.appRelaunchesVariable)")
+    }
+
+    /// AppDelegate.installUpdate is the one door every install goes through
+    /// (offered row, manual confirm, Repair, studio voice) and it hands its kind
+    /// to UpdateInstaller.run, which builds the command with the variable.
+    /// Mutation: AppDelegate.installUpdate runs a hand-built command instead -> RED.
+    func testInstallUpdateRunsTheInstallerThroughUpdateInstallerRun() throws {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/OxSayDictation/AppDelegate.swift")
+        let source = try String(contentsOf: path, encoding: .utf8)
+        guard let start = source.range(of: "private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {"),
+              let end = source.range(of: "\n    }\n", range: start.upperBound..<source.endIndex)
+        else { return XCTFail("installUpdate not found") }
+        let body = source[start.lowerBound..<end.upperBound]
+        XCTAssertTrue(body.contains("UpdateInstaller.run(kind: kind, tag: tag"), "installUpdate bypasses UpdateInstaller.run")
+        XCTAssertFalse(body.contains("Process()"), "installUpdate starts its own process, without the relaunch variable")
     }
 
     func testLaunchEnvironmentAddsTheCommandsVariablesToTheApps() {
@@ -49,19 +89,20 @@ final class UpdateInstallTests: XCTestCase {
         /// A file:// URL of a fake get.sh that records its arguments and the studio switch.
         let source: String
         var env: String { (try? String(contentsOf: dir.appendingPathComponent("env"), encoding: .utf8)) ?? "<not run>" }
+        var relaunch: String { (try? String(contentsOf: dir.appendingPathComponent("relaunch"), encoding: .utf8)) ?? "<not run>" }
         var args: String { (try? String(contentsOf: dir.appendingPathComponent("args"), encoding: .utf8)) ?? "<not run>" }
 
         init(script: String? = nil) throws {
             dir = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-install-test-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let file = dir.appendingPathComponent("get.sh")
-            let body = script ?? "#!/bin/sh\nprintf '%s' \"$OX_SAY_WITH_VOXCPM2\" > '\(dir.path)/env'\nprintf '%s' \"$*\" > '\(dir.path)/args'\n"
+            let body = script ?? "#!/bin/sh\nprintf '%s' \"$OX_SAY_WITH_VOXCPM2\" > '\(dir.path)/env'\nprintf '%s' \"$OX_SAY_APP_RELAUNCHES\" > '\(dir.path)/relaunch'\nprintf '%s' \"$*\" > '\(dir.path)/args'\n"
             try body.write(to: file, atomically: true, encoding: .utf8)
             source = "file://" + file.path
         }
 
         func cleanUp() {
-            for name in ["get.sh", "env", "args"] { try? FileManager.default.removeItem(at: dir.appendingPathComponent(name)) }
+            for name in ["get.sh", "env", "relaunch", "args"] { try? FileManager.default.removeItem(at: dir.appendingPathComponent(name)) }
             try? FileManager.default.removeItem(at: dir)
         }
     }
@@ -75,6 +116,7 @@ final class UpdateInstallTests: XCTestCase {
     /// line removed -> RED.
     func testTheStudioInstallRunsWithTheSwitchAndTheUpdateWithout() async throws {
         unsetenv(UpdateInstaller.studioVoiceVariable)
+        unsetenv(UpdateInstaller.appRelaunchesVariable)
         let studio = try Rig()
         defer { studio.cleanUp() }
         let failure = await UpdateInstaller.run(kind: .studioVoice, tag: "v0.1.21", log: nil,
@@ -82,6 +124,7 @@ final class UpdateInstallTests: XCTestCase {
                                                 installedVersion: { "0.1.21" }, daemonVersion: { "v0.1.21" })
         XCTAssertNil(failure)
         XCTAssertEqual(studio.env, "1", "the installer process must get OX_SAY_WITH_VOXCPM2=1")
+        XCTAssertEqual(studio.relaunch, "1", "the installer process must get OX_SAY_APP_RELAUNCHES=1")
         XCTAssertEqual(studio.args, "--version v0.1.21")
 
         let update = try Rig()
@@ -91,6 +134,7 @@ final class UpdateInstallTests: XCTestCase {
                                                       installedVersion: { "0.1.22" }, daemonVersion: { "v0.1.22" })
         XCTAssertNil(updateFailure)
         XCTAssertEqual(update.env, "", "a plain update must not download the studio model")
+        XCTAssertEqual(update.relaunch, "1", "the installer process must get OX_SAY_APP_RELAUNCHES=1")
         XCTAssertEqual(update.args, "--version v0.1.22")
     }
 

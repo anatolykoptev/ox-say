@@ -14,6 +14,10 @@ final class AutoUpdateScheduleTests: XCTestCase {
     private func slot(_ fetch: Fetch, local: String, now: Date, defaults: UserDefaults) -> AutoUpdateSchedule.Outcome {
         var state = AutoUpdateState.load(from: defaults)
         let outcome = AutoUpdateSchedule.apply(fetch: fetch, local: local, now: now, state: &state)
+        // The notice a raised offer carries is shown at once here (nothing dictates).
+        if case .offer(let tag, true) = outcome {
+            AutoUpdateSchedule.noticeShown(.updateAvailable("m", tag: tag), state: &state)
+        }
         state.save(to: defaults)
         return outcome
     }
@@ -168,7 +172,7 @@ final class AutoUpdateWiringTests: XCTestCase {
         }
         XCTAssertTrue(check.contains("UpdateGate.decide(installing: updateInstalling) == .proceed"),
                       "the background check can run while an install does")
-        XCTAssertTrue(check.contains("self.notice(L10nKey.noticeUpdateAvailable"), "the notice does not go through notice() and NoticeGate")
+        XCTAssertTrue(check.contains("self.notice(.updateAvailable(L10nKey.noticeUpdateAvailable"), "the notice does not go through notice() and NoticeGate")
         XCTAssertTrue(check.contains("AutoUpdateSchedule.apply(") && check.contains("state.save(to:"),
                       "the outcome is not persisted — the notice would repeat every launch")
     }
@@ -211,7 +215,7 @@ final class AutoUpdateWiringTests: XCTestCase {
         let icon = requireBody("private func applyStatusIcon() {")
         XCTAssertTrue(icon.contains("guard updateOffer != nil else {"), "the status dot is not driven by the offer")
         let check = requireBody("private func backgroundUpdateCheck(")
-        guard let notice = check.range(of: "self.notice(L10nKey.noticeUpdateAvailable"),
+        guard let notice = check.range(of: "self.notice(.updateAvailable(L10nKey.noticeUpdateAvailable"),
               let rows = check.range(of: "self.syncTopRows(in: menu)", range: notice.upperBound..<check.endIndex),
               let dot = check.range(of: "self.applyStatusIcon()", range: rows.upperBound..<check.endIndex)
         else { return XCTFail("the outcome no longer re-syncs the menu rows and then the status icon") }

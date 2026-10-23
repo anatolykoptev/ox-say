@@ -37,9 +37,15 @@ public enum UpdateInstaller {
     /// The installer's switch for the studio voice model (about 3 GB).
     public static let studioVoiceVariable = "OX_SAY_WITH_VOXCPM2"
 
+    /// Tells the installer that the app starting it relaunches itself: install-app.sh
+    /// then neither stops the running copy nor opens the new one, and a dictation
+    /// is never killed by the install. The variable travels app → get.sh →
+    /// install-release.sh → install-app.sh by plain environment inheritance.
+    public static let appRelaunchesVariable = "OX_SAY_APP_RELAUNCHES"
+
     /// What an install is for.
     public enum Kind: Equatable {
-        /// Check for Updates: the pinned install, no extra environment.
+        /// Check for Updates: the pinned install.
         case update
         /// Install Studio Voice: the same pinned install with the studio voice switched on.
         case studioVoice
@@ -50,8 +56,8 @@ public enum UpdateInstaller {
     public static func command(kind: Kind, script file: String, tag: String) -> Command {
         let argv = installCommand(script: file, tag: tag)
         switch kind {
-        case .update: return Command(argv: argv, environment: [:])
-        case .studioVoice: return Command(argv: argv, environment: [studioVoiceVariable: "1"])
+        case .update: return Command(argv: argv, environment: [appRelaunchesVariable: "1"])
+        case .studioVoice: return Command(argv: argv, environment: [studioVoiceVariable: "1", appRelaunchesVariable: "1"])
         }
     }
 

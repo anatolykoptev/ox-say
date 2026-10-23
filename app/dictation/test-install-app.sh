@@ -7,7 +7,9 @@
 # Mutations that must turn this RED: make `ours` in install-app.sh skip the
 # bundle identifier check (return success for any directory) - the foreign
 # bundle and the symlink scenarios fail; drop `clear_staging "$new"` - the
-# leftover scenarios fail; drop the pkill - the running-copy scenario fails.
+# leftover scenarios fail; drop the pkill - the running-copy scenario fails;
+# drop the OX_SAY_APP_RELAUNCHES check in install-app.sh (always pkill and open)
+# - the app-relaunches scenario fails.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -32,7 +34,7 @@ bundle() {
     plutil -insert CFBundleIdentifier -string "$2" "$1/Contents/Info.plist"
     echo "$3" > "$1/Contents/MacOS/OxSayDictation"
 }
-run() { PATH="$tmp/stubs:$PATH" bash "$here/install-app.sh" "$@" > "$tmp/out" 2>&1; }
+run() { PATH="$tmp/stubs:$PATH" env -u OX_SAY_APP_RELAUNCHES bash "$here/install-app.sh" "$@" > "$tmp/out" 2>&1; }
 marker() { cat "$1/Contents/MacOS/OxSayDictation" 2>/dev/null || echo none; }
 
 id=io.github.anatolykoptev.ox-say.dictation
@@ -134,6 +136,45 @@ if [ "$rc" -eq 0 ] && grep -q '^pkill -x OxSayDictation' "$tmp/calls" && [ "$(ma
     pass "a running copy is stopped; a failed start still counts as installed"
 else
     fail "running copy: rc=$rc calls=$(tr '\n' ';' < "$tmp/calls")"
+fi
+
+# J: started by the app (OX_SAY_APP_RELAUNCHES=1): the bundle is swapped, but the
+# running copy is neither stopped nor is the new one opened - the app does both
+# itself once no dictation runs.
+bundle "$tmp/j/OxSayDictation.app" "$id" old
+: > "$tmp/calls"
+PATH="$tmp/stubs:$PATH" OX_SAY_APP_RELAUNCHES=1 bash "$here/install-app.sh" "$tmp/src/OxSayDictation.app" "$tmp/j" > "$tmp/out" 2>&1
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(marker "$tmp/j/OxSayDictation.app")" = new ] &&
+    [ ! -e "$tmp/j/.OxSayDictation.app.old" ] && [ ! -e "$tmp/j/.OxSayDictation.app.new" ] &&
+    ! grep -q '^pkill ' "$tmp/calls" && ! grep -q '^open ' "$tmp/calls" &&
+    grep -q 'relaunch itself' "$tmp/out"; then
+    pass "an install the app started swaps the bundle and neither stops nor opens the app"
+else
+    fail "app relaunches: rc=$rc marker=$(marker "$tmp/j/OxSayDictation.app") calls=$(tr '\n' ';' < "$tmp/calls") out=$(cat "$tmp/out")"
+fi
+
+# K: without the variable (a terminal get.sh run) the old behaviour stands:
+# stop the running copy, swap, open the new one.
+bundle "$tmp/k/OxSayDictation.app" "$id" old
+: > "$tmp/calls"
+run "$tmp/src/OxSayDictation.app" "$tmp/k"
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(marker "$tmp/k/OxSayDictation.app")" = new ] &&
+    grep -q '^pkill -x OxSayDictation' "$tmp/calls" && grep -q '^open ' "$tmp/calls"; then
+    pass "a terminal install stops the running copy and opens the new one"
+else
+    fail "terminal install: rc=$rc calls=$(tr '\n' ';' < "$tmp/calls")"
+fi
+
+# L: a value other than 1 does not count as the app's handoff.
+bundle "$tmp/l/OxSayDictation.app" "$id" old
+: > "$tmp/calls"
+PATH="$tmp/stubs:$PATH" OX_SAY_APP_RELAUNCHES=0 bash "$here/install-app.sh" "$tmp/src/OxSayDictation.app" "$tmp/l" > "$tmp/out" 2>&1
+if grep -q '^pkill ' "$tmp/calls" && grep -q '^open ' "$tmp/calls"; then
+    pass "OX_SAY_APP_RELAUNCHES=0 keeps the terminal behaviour"
+else
+    fail "variable 0: calls=$(tr '\n' ';' < "$tmp/calls")"
 fi
 
 echo
