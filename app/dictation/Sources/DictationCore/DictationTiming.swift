@@ -73,6 +73,8 @@ public struct DictationTiming: Equatable {
         switch delivery {
         case .paste?:
             parts.append("delivery=paste")
+        case .typed?:
+            parts.append("delivery=typed")
         case .clipboardOnly(let reason)?:
             parts.append("delivery=clipboard")
             parts.append("clipboard_reason=\(reason.code)")

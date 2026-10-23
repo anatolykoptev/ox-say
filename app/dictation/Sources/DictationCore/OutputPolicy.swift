@@ -38,6 +38,10 @@ public enum ClipboardReason: Equatable {
 public enum Delivery: Equatable {
     /// Borrow the clipboard, send Cmd+V to the frontmost app, restore the clipboard.
     case paste
+    /// Type the text into the app with synthetic key events carrying Unicode
+    /// strings: the clipboard is left untouched, so a copy made on another
+    /// device (Universal Clipboard) survives the dictation.
+    case typed
     /// Leave the text on the clipboard and tell the user why it was not pasted.
     case clipboardOnly(reason: ClipboardReason)
 }
@@ -51,9 +55,14 @@ public enum OutputPolicy {
     ///   - focusMoved: the frontmost app is not the one that had focus when the
     ///     recording stopped. Pasting would put the text somewhere the user did
     ///     not dictate into.
-    ///   - accessibilityTrusted: `AXIsProcessTrusted()`: posting Cmd+V to another
-    ///     app needs the Accessibility permission.
-    public static func decide(secureInput: Bool, focusMoved: Bool = false, accessibilityTrusted: Bool) -> Delivery {
+    ///   - accessibilityTrusted: `AXIsProcessTrusted()`: posting synthesized keys
+    ///     to another app needs the Accessibility permission.
+    ///   - clipboardRemote: an item on the clipboard declares a Universal
+    ///     Clipboard copy (checked on declared types only — never read). A paste
+    ///     would overwrite it, and it cannot be put back without fetching it
+    ///     from the other device, so the text is typed instead.
+    public static func decide(secureInput: Bool, focusMoved: Bool = false, accessibilityTrusted: Bool,
+                            clipboardRemote: Bool = false) -> Delivery {
         if secureInput {
             return .clipboardOnly(reason: .secureInput)
         }
@@ -63,6 +72,6 @@ public enum OutputPolicy {
         if !accessibilityTrusted {
             return .clipboardOnly(reason: .accessibility)
         }
-        return .paste
+        return clipboardRemote ? .typed : .paste
     }
 }

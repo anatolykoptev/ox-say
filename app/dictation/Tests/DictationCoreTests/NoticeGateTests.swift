@@ -208,6 +208,28 @@ final class NeverLoseWiringTests: XCTestCase {
                       "PasteOutput.settle drops onPasteUnread — an unread paste would be silent")
     }
 
+    // Mutation: construct the ClipboardLease before the remote check in
+    // PasteOutput.deliver(_:to:) -> RED (the lease's writeText destroys the
+    // iPhone copy before the check ever runs).
+    func testDeliverChecksRemoteBeforeBorrowingTheClipboard() {
+        let body = requireBody("func deliver(_ text: String, to target: pid_t?) -> Delivery {", in: "PasteOutput.swift")
+        guard let remote = body.range(of: "holdsRemoteCopy"),
+              let lease = body.range(of: "ClipboardLease(") else {
+            return XCTFail("deliver(_:to:) must detect a remote clipboard and only then decide how to deliver")
+        }
+        XCTAssertLessThan(remote.lowerBound, lease.lowerBound,
+                          "a ClipboardLease writes the text at init: checking remote after it destroys the copy")
+        XCTAssertTrue(body.contains("postTypedText"), "the remote path must type the text, not paste it")
+        // Mutation: write the text to the clipboard inside `case .typed:` -> RED.
+        guard let typedStart = body.range(of: "case .typed:"),
+              let typedEnd = body.range(of: "case .paste:", range: typedStart.upperBound..<body.endIndex) else {
+            return XCTFail("deliver(_:to:) lost its `.typed` case")
+        }
+        let typed = body[typedStart.upperBound..<typedEnd.lowerBound]
+        XCTAssertFalse(typed.contains("writeText") || typed.contains("ClipboardLease("),
+                       "the typed path must leave the clipboard untouched")
+    }
+
     // Mutation: delete the `output.onPasteUnread = ...` line in AppDelegate -> RED.
     func testAppDelegateRaisesTheUnreadNotice() {
         let source = Self.source("AppDelegate.swift")

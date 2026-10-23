@@ -17,6 +17,15 @@ public protocol DictationPasteboard: AnyObject {
     func restore(_ snapshot: PasteboardSnapshot)
 }
 
+extension DictationPasteboard {
+    /// Any item declares a Universal Clipboard copy made on another device.
+    /// Declared types only — reading the data behind any of them makes macOS
+    /// fetch the contents from that device, which shows a panel and stalls.
+    public var holdsRemoteCopy: Bool {
+        declaredItems.contains { $0.contains(where: PasteboardMarker.remote.contains) }
+    }
+}
+
 /// One type an item carried, with its data, kept in the item's declared order:
 /// the order is the priority a reader picks formats by, so a restore must keep it.
 public struct PasteboardEntry: Equatable {
@@ -56,7 +65,7 @@ public struct PasteboardSnapshot: Equatable {
     public static func capture(_ board: DictationPasteboard) -> PasteboardSnapshot {
         var snapshot = PasteboardSnapshot(items: [])
         var bytes = 0
-        if board.declaredItems.contains(where: { $0.contains(where: PasteboardMarker.remote.contains) }) {
+        if board.holdsRemoteCopy {
             snapshot.isRemote = true
             snapshot.report("a clipboard copied on another device")
             return snapshot
@@ -152,10 +161,6 @@ public final class ClipboardLease {
     /// clipboard was left because someone else wrote to it — that copy is the
     /// user's own.
     public private(set) var notice: String?
-    /// The clipboard held a copy from another device, which cannot be put back
-    /// without fetching it; the dictated text stays. Not a `notice`: that would
-    /// fire on every dictation after an iPhone copy.
-    public private(set) var keptRemote = false
 
     public init(board: DictationPasteboard, text: String) {
         self.board = board
@@ -169,10 +174,6 @@ public final class ClipboardLease {
     public func release() -> Bool {
         guard board.changeCount == ourChange else { return false }
         guard !original.isSensitive else { return false }
-        guard !original.isRemote else {
-            keptRemote = true
-            return false
-        }
         guard original.problems.isEmpty else {
             notice = "The earlier clipboard was not put back: it held \(original.problems.joined(separator: " and ")). The dictated text is on the clipboard."
             return false
