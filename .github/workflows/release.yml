@@ -122,8 +122,11 @@ jobs:
       # The engines ship a precompiled Metal library, so the build needs the
       # Metal toolchain. Xcode 26 splits it into a downloadable component —
       # `xcrun -f metal` finds a stub even when it is missing, so the probe
-      # compiles and links a trivial kernel the same way the build does.
+      # compiles and links a trivial kernel the same way the build does. The
+      # component download flakes, so it retries with a backoff, and the step
+      # is bounded so a wedged download cannot eat the job timeout.
       - name: Metal toolchain
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           probe() {
@@ -136,7 +139,17 @@ jobs:
             echo "Metal toolchain present"
           else
             echo "Metal toolchain missing; downloading the component"
-            xcodebuild -downloadComponent MetalToolchain
+            for i in 1 2 3; do
+              if xcodebuild -downloadComponent MetalToolchain; then
+                break
+              fi
+              if [ "$i" = 3 ]; then
+                echo "xcodebuild -downloadComponent MetalToolchain failed 3 times" >&2
+                exit 1
+              fi
+              echo "MetalToolchain download attempt $i failed; retrying in $((i * 30)) s" >&2
+              sleep $((i * 30))
+            done
             probe >/dev/null
           fi
           xcrun -sdk macosx metal --version | head -1
@@ -173,22 +186,56 @@ jobs:
             fi
           done
           # The precompiled Metal libraries: every engine's <bin>.metallib
-          # must be there and must load on a real Metal device — a missing or
-          # corrupt one is a first-run failure for users. arm64 adds the
-          # Metal4 tensor libraries built by the macOS 26 SDK.
+          # must be there and structurally sound — a missing or corrupt one is
+          # a first-run compile for users. arm64 adds the Metal4 tensor
+          # libraries built by the macOS 26 SDK.
           metallibs="engine/tts-server.metallib engine/ox-stt.metallib engine/ox-align.metallib"
           if [ "$ARCH" = arm64 ]; then
             metallibs="$metallibs engine/audiocpp_server.metallib engine/tts-server-tensor.metallib engine/ox-stt-tensor.metallib engine/ox-align-tensor.metallib"
           fi
+          # Structural checks, runnable without a Metal device: the container
+          # must be a real MetalLib with a function list, and an ordinary
+          # library's AIR target must stay at or below the macOS 13.3 support
+          # floor — one that targets the build SDK would not load for users on
+          # older systems. The -tensor libraries intentionally target macOS 26
+          # (Metal4 devices only) and are exempt.
           for lib in $metallibs; do
             test -s "$lib" || { echo "$lib missing from the package" >&2; exit 1; }
+            xcrun -sdk macosx air-readobj --file-headers "$lib" > air-headers.txt
+            grep -q 'MagicWord: MTLB' air-headers.txt || { echo "$lib is not a MetalLib container" >&2; exit 1; }
+            n=$(xcrun -sdk macosx air-readobj --symbols "$lib" | grep -c 'Type: Function' || true)
+            if [ "$n" -eq 0 ]; then
+              echo "$lib carries no functions" >&2
+              exit 1
+            fi
+            case $lib in
+              *-tensor.metallib)
+                echo "$lib: $n functions (tensor library, macOS 26 target by design)"
+                ;;
+              *)
+                major=$(awk '/PlatformMajor:/{print $2; exit}' air-headers.txt)
+                minor=$(awk '/PlatformMinor:/{print $2; exit}' air-headers.txt)
+                if [ -z "${major:-}" ] || [ -z "${minor:-}" ]; then
+                  echo "$lib: no AIR target in its header" >&2
+                  exit 1
+                fi
+                if [ "$major" -gt 13 ] || { [ "$major" -eq 13 ] && [ "$minor" -gt 3 ]; }; then
+                  echo "$lib targets macOS $major.$minor — above the 13.3 support floor" >&2
+                  exit 1
+                fi
+                echo "$lib: $n functions, targets macOS $major.$minor (floor 13.3)"
+                ;;
+            esac
           done
+          # The device load check is the stronger test, but a runner without a
+          # Metal device (possible on macos-15-intel) must not fail on that
+          # alone: the structural checks above stand in for it then.
           cat > metal-load.swift <<'EOF'
           import Metal
           import Foundation
           guard let device = MTLCreateSystemDefaultDevice() else {
-              FileHandle.standardError.write("FAIL: no Metal device\n".data(using: .utf8)!)
-              exit(1)
+              print("no Metal device on this runner")
+              exit(3)
           }
           var bad = false
           for path in CommandLine.arguments.dropFirst() {
@@ -206,9 +253,15 @@ jobs:
               }
           }
           exit(bad ? 1 : 0)
-EOF
+          EOF
           swiftc -o metal-load metal-load.swift
-          ./metal-load $metallibs
+          rc=0
+          ./metal-load $metallibs || rc=$?
+          case $rc in
+            0) ;;
+            3) echo "no Metal device on this runner — load check skipped, the AIR-target and function-count checks above stand in" ;;
+            *) exit "$rc" ;;
+          esac
           # into files, not `| head`: under pipefail an early-exiting reader can
           # SIGPIPE the writer and fail a step that worked
           bin/ox-say > usage.txt 2>&1 || true
