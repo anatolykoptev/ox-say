@@ -270,6 +270,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let ms = Int(seconds * 1000)
             timingLog.notice("clipboard held a Universal Clipboard copy: posted the text as keystrokes, clipboard untouched chars=\(chars, privacy: .public) post_ms=\(ms, privacy: .public)")
         }
+        capture.onRemoteCopy = {
+            timingLog.notice("speak-selection fell back to ⌘C over a Universal Clipboard copy: the remote copy is overwritten, not restored")
+        }
+        // One line per speak press, no text: which path served the selection
+        // (ax, copy, none) and the AX read's error code and source.
+        capture.onSelection = { report in timingLog.notice("\(report.line, privacy: .public)") }
         controller.onBusy = { NSSound.beep() }
         // A transcription that fails while its recording is still held can be
         // the daemon restarting — an install reloads its agent, a crash is
@@ -864,10 +870,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speakGeneration += 1
         let generation = speakGeneration
         speakInFlight = true
-        overlay.showWorking()
-        overlay.setWorkingText("Speaking…")
-        overlay.setHintHidden(true)
-        speakPillOwner = overlay.owner
+        // A running dictation owns the pill — the install and handshake pills
+        // guard the same way. Speech still plays; it just does not take the
+        // pill over the recording's look.
+        if controller.state == .idle {
+            overlay.showWorking()
+            overlay.setWorkingText("Speaking…")
+            overlay.setHintHidden(true)
+            speakPillOwner = overlay.owner
+        }
         let client = speechClient!
         Task { @MainActor [weak self] in
             do {
@@ -875,7 +886,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self, self.speakGeneration == generation else { return }
                 self.speakInFlight = false
                 try self.player.play(wav: wav)
-                self.overlay.showPlaying()
+                // The reply can land after a dictation started: the playback
+                // pill is shown only while our own pill still stands and no
+                // dictation runs.
+                if PillOwnership.shouldFinish(owner: self.speakPillOwner, current: self.overlay.owner,
+                                              dictation: self.controller.state) {
+                    self.overlay.showPlaying()
+                }
                 self.speakPillOwner = nil
             } catch {
                 guard let self, self.speakGeneration == generation else { return }

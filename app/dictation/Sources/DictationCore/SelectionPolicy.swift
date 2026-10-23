@@ -21,17 +21,44 @@ public enum SelectionPlan: Equatable {
 /// the copy proceeds and the clipboard is left holding the selection, as
 /// dictation leaves its text.
 public enum SelectionPolicy {
+    /// Every caller must say whether the clipboard held a Universal Clipboard
+    /// copy — the same reason `OutputPolicy.decide` has no default: a forgotten
+    /// flag reads as "local", and the risky copy proceeds without a word.
     public static func plan(axText: String?, secureInput: Bool, clipboardRestorable: Bool,
-                            clipboardRemote: Bool = false) -> SelectionPlan {
+                            clipboardRemote: Bool) -> SelectionPlan {
         if let axText, !axText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .speak(axText)
         }
         if secureInput {
             return .decline("A password field is focused.")
         }
+        // AX answered with a selection that is only whitespace: the app has
+        // said what is selected, and ⌘C would copy the same blanks. An empty
+        // string stays ambiguous (no selection, or an app whose AX does not
+        // know), so it still falls through to the copy.
+        if isWhitespaceOnly(axText) {
+            return .decline("Nothing selected to speak.")
+        }
         guard clipboardRestorable || clipboardRemote else {
             return .decline("The selection did not come through.")
         }
         return .copy
+    }
+
+    /// Whether `plan` can reach the clipboard checks at all — AX gave nothing
+    /// usable and no secure field is focused. Lets the caller skip reading the
+    /// clipboard on the paths that never look at it. Mirrors the checks above;
+    /// if their order changes, this changes with them.
+    public static func needsClipboard(axText: String?, secureInput: Bool) -> Bool {
+        if let axText, !axText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        return !secureInput && !isWhitespaceOnly(axText)
+    }
+
+    /// Non-empty text with nothing in it but whitespace.
+    private static func isWhitespaceOnly(_ text: String?) -> Bool {
+        guard let text, !text.isEmpty else { return false }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
