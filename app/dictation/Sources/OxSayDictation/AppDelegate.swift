@@ -268,6 +268,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             timingLog.notice("clipboard held a Universal Clipboard copy: posted the text as keystrokes, clipboard untouched chars=\(chars, privacy: .public) post_ms=\(ms, privacy: .public)")
         }
         controller.onBusy = { NSSound.beep() }
+        // A transcription that fails while its recording is still held can be
+        // the daemon restarting — an install reloads its agent, a crash is
+        // relaunched: poll /status on the same client and upload the held audio
+        // once it answers. The pill keeps the Transcribing look meanwhile; the
+        // slow-transcription reason already names the wait.
+        controller.daemonRetry = DaemonRetry(probe: { [client] in await client.reachable() })
         output.onNotice = { [weak self] message in self?.notice(message, kind: .outcome) }
         output.onPasteUnread = { [weak self] in self?.notice(.unreadPaste(L10nKey.noticePasteUnread.text)) }
         recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }

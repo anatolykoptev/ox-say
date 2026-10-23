@@ -59,6 +59,48 @@ extension Transcriber {
     public var finishStats: TranscriberStats { TranscriberStats(path: .oneShot) }
 }
 
+/// How a transcription that failed while its recording is still held gets a
+/// second chance: a daemon that went dead mid-dictation is often just
+/// restarting — an install reloads its agent, a crash is relaunched — so its
+/// health is polled and the held audio is uploaded once more when it answers.
+public struct DaemonRetry {
+    /// The whole wait is capped here: about an agent reload, not a cold start.
+    /// A probe landing on an accept-but-hang daemon adds its own request
+    /// timeout on top of the budget.
+    public var budget: TimeInterval
+    /// Between probes.
+    public var interval: TimeInterval
+    /// One health probe on the daemon: true when it answered.
+    public var probe: () async -> Bool
+    /// Between probes; injected by tests, production sleeps.
+    public var sleep: (TimeInterval) async -> Void
+
+    public init(probe: @escaping () async -> Bool,
+                budget: TimeInterval = 60, interval: TimeInterval = 1,
+                sleep: @escaping (TimeInterval) async -> Void = { seconds in
+                    try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                }) {
+        self.probe = probe
+        self.budget = budget
+        self.interval = interval
+        self.sleep = sleep
+    }
+
+    /// Polls `probe` until it answers or the budget is spent. `live` false —
+    /// the dictation was cancelled or superseded — ends the wait at once:
+    /// nothing is uploaded for a dead dictation. True means worth a retry.
+    public func wait(live: () -> Bool) async -> Bool {
+        var waited: TimeInterval = 0
+        while live() {
+            if await probe() { return true }
+            guard waited < budget else { return false }
+            await sleep(interval)
+            waited += interval
+        }
+        return false
+    }
+}
+
 /// The one-shot path the app always had: `begin`/`feed`/`cancel` do nothing and
 /// `finish` uploads the whole recording. Keeps the closure-based init working.
 private final class OneShotTranscriber: Transcriber {
@@ -90,6 +132,11 @@ public final class DictationController {
     public var onTiming: ((DictationTiming) -> Void)?
     /// Length of the recording being transcribed (or last transcribed).
     public private(set) var recordingSeconds: Double = 0
+    /// What a failed transcription gets before the error is reported: the
+    /// recording is still held, so a daemon that is merely restarting is
+    /// polled for an answer and the held audio uploaded once more. nil
+    /// reports the failure at once.
+    public var daemonRetry: DaemonRetry?
     /// Every delivered dictation, pasted or left on the clipboard: what a paste
     /// that went nowhere cannot lose.
     public let history = DictationHistory()
@@ -214,11 +261,24 @@ public final class DictationController {
         let started = generation
         let seconds = recordingSeconds
         Task { @MainActor in
-            let result: Result<String, Error>
+            var result: Result<String, Error>
             do {
                 result = .success(try await transcriber.finish(all: samples))
             } catch {
                 result = .failure(error)
+            }
+            // A dead daemon can be mid-restart while the recording is still in
+            // `samples`: wait for it to answer, then upload the held audio once
+            // more. A cancelled or superseded dictation gets neither the wait
+            // nor the retry.
+            if case .failure = result, let retry = daemonRetry, started == generation {
+                if await retry.wait(live: { self.generation == started }), started == generation {
+                    do {
+                        result = .success(try await transcriber.finish(all: samples))
+                    } catch {
+                        result = .failure(error)
+                    }
+                }
             }
             guard started == generation else { return }
             let elapsedMs = Int((DispatchTime.now().uptimeNanoseconds - released) / 1_000_000)
