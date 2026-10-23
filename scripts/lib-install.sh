@@ -178,9 +178,12 @@ oxs_install_engines() {
     mkdir -p "$home/engine/licenses"
     # Each engine's precompiled Metal library travels next to it under its own
     # name (<bin>.metallib, plus <bin>-tensor.metallib on Metal4-capable
-    # builds). The libraries go in before the binaries, but the window is
-    # symmetric — an engine respawned mid-install meets a mismatched pair
-    # either way, so the order buys nothing: what protects the engine is the
+    # builds). Per engine, its libraries go in before its binary, so a new
+    # binary never starts without its new library and pays no embedded-source
+    # compile. That is all the order buys: the pair is not atomic. An old
+    # binary respawned between the two copies meets the new library, and a
+    # failed binary copy after the libraries went in leaves a mismatched pair
+    # (#207). What keeps a mismatched or missing library harmless is the
     # runtime guards (OS floor, bf16 and tensor kernels — the patched ggml
     # skips a library it cannot safely use) and the embedded shader sources
     # that keep an engine running with no library at all. A stale library left

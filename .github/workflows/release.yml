@@ -231,7 +231,7 @@ jobs:
                 # the same representative function the runtime guard probes:
                 # a library without it would be skipped at load anyway, but a
                 # flag regression must fail the release, not ship a fallback
-                grep -q 'Name: kernel_get_rows_bf16 ' air-symbols.txt || {
+                grep -Eq 'Name: kernel_get_rows_bf16( |$)' air-symbols.txt || {
                   echo "$lib has no bf16 kernels — the runtime would fall back to the embedded compile" >&2
                   exit 1
                 }
