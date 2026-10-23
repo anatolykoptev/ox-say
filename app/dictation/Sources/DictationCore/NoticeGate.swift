@@ -53,9 +53,10 @@ public struct NoticeGate {
             Notice(message: message, kind: .unrelated, priority: .low, announces: tag)
         }
 
-        /// A click on the update row that a running dictation refused.
+        /// A click on the update row that a running dictation refused: the
+        /// answer to something the user just did, so it ranks `.normal`.
         public static func updateRefused(_ message: String) -> Notice {
-            Notice(message: message, kind: .unrelated, priority: .low)
+            Notice(message: message, kind: .unrelated)
         }
     }
 

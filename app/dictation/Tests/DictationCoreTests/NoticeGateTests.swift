@@ -79,6 +79,27 @@ final class NoticePriorityTests: XCTestCase {
         XCTAssertTrue(clipboardOnly.priority < unread.priority)
     }
 
+    // The answer to a click the user just made ranks like any other notice, so
+    // a newer one of equal rank does not lose to it silently and it is not the
+    // first dropped.
+    // Mutation: NoticeGate.Notice.updateRefused, add `priority: .low` -> RED.
+    func testTheRefusedClickNoticeRanksNormal() {
+        XCTAssertEqual(NoticeGate.Notice.updateRefused("m").priority, .normal)
+        XCTAssertEqual(NoticeGate.Notice.updateRefused("m").kind, .unrelated)
+    }
+
+    // MAJOR — the lost-text pointer is the user's only way to their text: the
+    // reason of a self-ended recording is not flushed over a notice that was just
+    // released and shown in the same idle transition (the pill holds one message).
+    // Mutation: DictationNotice.reasonToFlush returns `endedReason` always -> RED.
+    func testAReleasedNoticeIsNotOverwrittenByTheEndedReasonInTheSameTick() {
+        let reason = "Recording stopped at the length cap."
+        XCTAssertNil(DictationNotice.reasonToFlush(reason, releasedNotice: true),
+                     "the reason replaced the notice that was just shown")
+        XCTAssertEqual(DictationNotice.reasonToFlush(reason, releasedNotice: false), reason)
+        XCTAssertNil(DictationNotice.reasonToFlush(nil, releasedNotice: false))
+    }
+
     // F3 — the unread notice is about the PREVIOUS dictation: a later
     // dictation's endedReason must not become its prefix.
     // Mutation: NoticeGate.Notice.unreadPaste, `kind: .unrelated` -> `.outcome` -> RED.
@@ -243,13 +264,29 @@ final class NeverLoseWiringTests: XCTestCase {
     // #198.4 — mutation: put `NSSound.beep()` back in place of the notice -> RED.
     func testARefusedUpdateRowClickSaysWhy() {
         let row = requireBody("@objc private func installOfferedUpdate() {", in: "AppDelegate.swift")
-        guard let idle = row.range(of: "guard controller.state == .idle else {"),
+        guard let busy = row.range(of: "guard UpdateGate.decide(installing: updateInstalling) == .proceed else {"),
+              let idle = row.range(of: "guard controller.state == .idle else {"),
               let say = row.range(of: "notice(.updateRefused(L10nKey.noticeUpdateBusy.text))"),
               let install = row.range(of: "installUpdate(tag: tag, kind: .update)") else {
-            return XCTFail("installOfferedUpdate lost its idle gate, the notice or the install")
+            return XCTFail("installOfferedUpdate lost its install gate, its idle gate, the notice or the install")
         }
         XCTAssertTrue(idle.lowerBound < say.lowerBound && say.lowerBound < install.lowerBound)
+        // A click during the install's relaunch wait must not say the update did not start.
+        XCTAssertLessThan(busy.lowerBound, idle.lowerBound, "the install gate must come before the idle gate")
         XCTAssertFalse(row[idle.lowerBound..<install.lowerBound].contains("NSSound.beep()"), "the refusal only beeps")
+    }
+
+    // MAJOR call site — mutation: pass `releasedNotice: false`, or call `notice(reason)`
+    // unconditionally, in show(.idle) -> RED.
+    func testShowDoesNotFlushTheEndedReasonOverAReleasedNotice() {
+        let show = requireBody("private func show(", in: "AppDelegate.swift")
+        guard let release = show.range(of: "if let held = noticeGate.release(state: controller.state) {"),
+              let flagged = show.range(of: "releasedNotice = true"),
+              let flush = show.range(of: "DictationNotice.reasonToFlush(reason, releasedNotice: releasedNotice)") else {
+            return XCTFail("show() lost the released-notice flag or the reason rule")
+        }
+        XCTAssertTrue(release.lowerBound < flagged.lowerBound && flagged.lowerBound < flush.lowerBound)
+        XCTAssertFalse(show.contains("notice(reason)"), "the reason is flushed without the rule")
     }
 
     // Mutation: delete the release in show(.idle) -> RED (held notices never appear).

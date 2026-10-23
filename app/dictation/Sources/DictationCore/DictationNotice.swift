@@ -13,6 +13,16 @@ public enum DictationNotice {
         case unrelated
     }
 
+    /// What to say of an ended-reason still pending when a dictation turns idle,
+    /// after the held notice was released: nothing when that notice was shown
+    /// (`releasedNotice`). The pill holds one message and a lost-text pointer
+    /// must not be overwritten in the same tick; the reason is informational and
+    /// is dropped, never kept — a stale one would prefix a later dictation's
+    /// own outcome notice.
+    public static func reasonToFlush(_ endedReason: String?, releasedNotice: Bool) -> String? {
+        releasedNotice ? nil : endedReason
+    }
+
     /// The message to show and the ended-reason still pending after it. An
     /// `outcome` notice takes the reason as its prefix and spends it; an
     /// `unrelated` one leaves both alone.

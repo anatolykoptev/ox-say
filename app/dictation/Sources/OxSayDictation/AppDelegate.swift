@@ -656,22 +656,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installUpdate(tag: UpdateInstaller.tag(forVersion: target), kind: .update)
     }
 
-    /// `open -n` this app's own bundle path — the current copy on disk — and
-    /// end this process, once no dictation runs. The installer's success path
-    /// and the handshake's relaunchSelf are the same act.
-    @MainActor private func relaunch() async {
-        // Never in the middle of a dictation: wait for it to be idle (one that
-        // starts while the install runs is allowed). Bounded: an install that
-        // finished must not hang on a stuck dictation.
+    /// End this process and start this app's own bundle path — the current copy
+    /// on disk — once no dictation runs. A detached waiter opens the bundle only
+    /// after this process has exited: the old copy holds the exclusive dictation
+    /// hotkey, and two instances would fight over it. The installer's success
+    /// path and the handshake's relaunchSelf are the same act. Returns false,
+    /// without terminating, when the waiter could not be started: the app keeps
+    /// working and the new bundle starts at the next launch.
+    @MainActor @discardableResult private func relaunch() async -> Bool {
+        let log = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "update")
+        // Never in the middle of a dictation: wait up to idleTimeout for it to
+        // be idle (one that starts while the install runs is allowed). After
+        // that the dictation is still live and the relaunch goes ahead over it.
         if await InstallTermination.waitForIdle(state: { [unowned self] in self.controller.state }) == .timedOut {
-            Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "update")
-                .error("relaunch: dictation still not idle after \(Int(InstallTermination.idleTimeout), privacy: .public) s; relaunching anyway")
+            log.error("relaunch: dictation still not idle after \(Int(InstallTermination.idleTimeout), privacy: .public) s; relaunching over it")
         }
-        let relaunch = Process()
-        relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        relaunch.arguments = ["-n", Bundle.main.bundleURL.path]
-        try? relaunch.run()
+        let argv = InstallTermination.openAfterExit(pid: ProcessInfo.processInfo.processIdentifier,
+                                                    bundlePath: Bundle.main.bundleURL.path)
+        let waiter = Process()
+        waiter.executableURL = URL(fileURLWithPath: argv[0])
+        waiter.arguments = Array(argv.dropFirst())
+        waiter.standardInput = FileHandle.nullDevice
+        waiter.standardOutput = FileHandle.nullDevice
+        waiter.standardError = FileHandle.nullDevice
+        do {
+            try waiter.run()
+        } catch {
+            log.error("relaunch: could not start the waiter that opens the new copy: \(error.localizedDescription, privacy: .public); not terminating")
+            return false
+        }
         NSApp.terminate(nil)
+        return true
     }
 
     @objc func showAbout() {
@@ -716,12 +731,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 controller.mode == .hold ? "Hold \(key.title) and speak" : "Press \(key.title) to start and stop"
             } ?? "No dictation key"
             overlay.finish()
+            var releasedNotice = false
             if let held = noticeGate.release(state: controller.state) {
                 notice(held)
+                releasedNotice = true
             }
             if let reason = endedReason {
                 endedReason = nil
-                notice(reason)
+                if let say = DictationNotice.reasonToFlush(reason, releasedNotice: releasedNotice) { notice(say) }
             }
             handshakeWorkEnded()
         case .recording:
@@ -1075,14 +1092,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// on Update, with the tag the background check found.
     @objc private func installOfferedUpdate() {
         guard let tag = updateOffer else { return }
+        // An install (or its relaunch wait) comes first: a click then must not
+        // claim the update did not start.
+        guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
+            runAlert(title: UpdateGate.busyAlertTitle, text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
+            return
+        }
         // Not while a dictation runs. The row stays; the notice (shown once the
         // dictation is idle) says to click it again.
         guard controller.state == .idle else {
             notice(.updateRefused(L10nKey.noticeUpdateBusy.text))
-            return
-        }
-        guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
-            runAlert(title: UpdateGate.busyAlertTitle, text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
             return
         }
         installUpdate(tag: tag, kind: .update)
@@ -1166,10 +1185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                     daemonVersion: { (try? await statusClient.status(timeout: UpdateInstaller.daemonCheckTimeout))?.version })
             try? log?.close()
             if let failure {
-                updateInstalling = false
-                studio.render()
-                self.finishPill(self.installPillOwner)
-                self.installPillOwner = nil
+                self.endInstall()
                 runAlert(title: kind == .studioVoice ? "Installing the studio voice failed" : "Update to \(tag) failed",
                          text: "\(failure.message) Its output is in\n\(Self.updateLogURL.path)",
                          buttons: ["OK"])
@@ -1177,9 +1193,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             // On success `updateInstalling` stays set until the process ends:
             // the relaunch may wait for a dictation, and nothing else may start
-            // an install or a handshake action meanwhile.
-            await relaunch()
+            // an install or a handshake action meanwhile. Only a relaunch that
+            // could not start ends the install here: the app keeps running.
+            guard await relaunch() else {
+                self.endInstall()
+                return
+            }
         }
+    }
+
+    /// The install is over and the app stays: re-enable what it disabled and
+    /// take the "Installing…" pill down.
+    private func endInstall() {
+        updateInstalling = false
+        studio.render()
+        finishPill(self.installPillOwner)
+        installPillOwner = nil
     }
 
     /// The speak-selection hotkey press: read whatever is selected in the

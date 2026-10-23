@@ -44,7 +44,98 @@ final class InstallTerminationTests: XCTestCase {
         let result = await InstallTermination.waitForIdle(state: { dictation.state }, sleep: dictation.sleep)
         XCTAssertEqual(result, .timedOut)
         XCTAssertEqual(Double(dictation.slept) * InstallTermination.pollInterval, InstallTermination.idleTimeout)
-        XCTAssertEqual(InstallTermination.idleTimeout, 120)
+        XCTAssertEqual(InstallTermination.idleTimeout, 600, "toggle-mode recordings can be long")
+    }
+
+    // MARK: the detached waiter that opens the new copy after this process is gone
+
+    // The waiter gets this process's pid and the bundle path as separate argv
+    // entries after the script, never inside it: a path with spaces, quotes or
+    // `$(...)` stays one inert argument.
+    // Mutation: InstallTermination.openAfterExit, interpolate the path into the
+    // script string -> RED.
+    func testTheWaiterGetsThePidAndThePathAsSeparateArguments() {
+        let path = "/Users/me/My Apps/Ox\"Say $(touch pwned).app"
+        let argv = InstallTermination.openAfterExit(pid: 4242, bundlePath: path)
+        XCTAssertEqual(argv[0], "/bin/sh")
+        XCTAssertEqual(argv[1], "-c")
+        XCTAssertEqual(Array(argv[3...]), ["sh", "4242", path, "/usr/bin/open", "30"])
+        XCTAssertFalse(argv[2].contains(path) || argv[2].contains("4242"), "the arguments are interpolated into the script")
+        XCTAssertTrue(argv[2].contains("kill -0 \"$1\""), "the script does not wait for the pid")
+        XCTAssertFalse(argv[2].contains("-n"), "the new copy is opened with -n while the old one may still be alive")
+    }
+
+    /// Runs the waiter for `pid` with an `open` stub that records its arguments.
+    private final class WaiterRig {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-waiter-\(UUID().uuidString)")
+        var opened: URL { dir.appendingPathComponent("opened") }
+        var openStub: URL { dir.appendingPathComponent("open-stub") }
+        init() throws {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try "#!/bin/sh\nprintf '%s' \"$*\" > '\(dir.path)/opened'\n".write(to: openStub, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: openStub.path)
+        }
+        func cleanUp() { try? FileManager.default.removeItem(at: dir) }
+        func start(_ argv: [String]) throws -> Process {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: argv[0])
+            p.arguments = Array(argv.dropFirst())
+            try p.run()
+            return p
+        }
+        func sleeper(seconds: Int) throws -> Process {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sleep")
+            p.arguments = ["\(seconds)"]
+            try p.run()
+            return p
+        }
+        func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) async -> Bool {
+            let end = Date().addingTimeInterval(timeout)
+            while Date() < end {
+                if condition() { return true }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            return condition()
+        }
+    }
+
+    // The real script, run for real: `open` fires only after the old pid exited.
+    // Mutation: InstallTermination.openAfterExit, drop the `while kill -0 ...` loop
+    // -> RED (open fires while the old process is still alive).
+    func testTheWaiterOpensTheBundleOnlyAfterTheOldProcessExited() async throws {
+        let rig = try WaiterRig()
+        defer { rig.cleanUp() }
+        let old = try rig.sleeper(seconds: 2)
+        defer { if old.isRunning { old.terminate() } }
+        let waiter = try rig.start(InstallTermination.openAfterExit(pid: old.processIdentifier,
+                                                                    bundlePath: "/tmp/My App.app", open: rig.openStub.path))
+        try await Task.sleep(nanoseconds: 700_000_000)
+        XCTAssertTrue(old.isRunning)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rig.opened.path),
+                       "open fired while the old process was still alive: two instances would fight over the hotkey")
+        let fired = await rig.waitUntil(6) { FileManager.default.fileExists(atPath: rig.opened.path) }
+        XCTAssertTrue(fired, "open never fired after the old process exited")
+        XCTAssertFalse(old.isRunning)
+        XCTAssertEqual(try? String(contentsOf: rig.opened, encoding: .utf8), "/tmp/My App.app", "open got a different path, or -n")
+        waiter.waitUntilExit()
+        XCTAssertEqual(waiter.terminationStatus, 0)
+    }
+
+    // Bounded: a process that never exits does not leave a waiter behind for good,
+    // and nothing is opened over it.
+    // Mutation: drop the `[ "$n" -ge ... ] && exit 1` line -> RED (the waiter outlives the timeout).
+    func testTheWaiterGivesUpWithoutOpeningWhenTheOldProcessStays() async throws {
+        let rig = try WaiterRig()
+        defer { rig.cleanUp() }
+        let old = try rig.sleeper(seconds: 8)
+        defer { if old.isRunning { old.terminate() } }
+        let waiter = try rig.start(InstallTermination.openAfterExit(pid: old.processIdentifier, bundlePath: "/tmp/x.app",
+                                                                    open: rig.openStub.path, timeout: 1))
+        let gaveUp = await rig.waitUntil(4) { !waiter.isRunning }
+        XCTAssertTrue(gaveUp, "the waiter is still waiting after its timeout")
+        if waiter.isRunning { waiter.terminate() } else { XCTAssertNotEqual(waiter.terminationStatus, 0) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rig.opened.path), "opened over a live process")
     }
 
     // #198.3 — a wake within ten minutes of the last attempt starts no check.
@@ -73,32 +164,77 @@ final class InstallTerminationWiringTests: XCTestCase {
     }
 
     // F1 (call site) — mutation: delete the `InstallTermination.waitForIdle(` call in
-    // relaunch(), or move `NSApp.terminate(nil)` / `relaunch.run()` above it -> RED.
-    func testRelaunchWaitsForTheDictationBeforeItOpensTheNewCopyAndTerminates() {
-        let relaunch = body("private func relaunch() async {")
+    // relaunch(), or move `NSApp.terminate(nil)` / `waiter.run()` above it -> RED.
+    func testRelaunchWaitsForTheDictationBeforeItSchedulesTheNewCopyAndTerminates() {
+        let relaunch = body("@MainActor @discardableResult private func relaunch() async -> Bool {")
         guard let wait = relaunch.range(of: "InstallTermination.waitForIdle(state: { [unowned self] in self.controller.state })"),
-              let open = relaunch.range(of: "relaunch.run()"),
+              let schedule = relaunch.range(of: "try waiter.run()"),
               let terminate = relaunch.range(of: "NSApp.terminate(nil)")
-        else { return XCTFail("relaunch() lost the idle wait, the open or the terminate") }
-        XCTAssertLessThan(wait.lowerBound, open.lowerBound, "the new copy is opened before the dictation is idle")
-        XCTAssertLessThan(wait.lowerBound, terminate.lowerBound, "the app is terminated before the dictation is idle")
-        XCTAssertTrue(relaunch.contains(".timedOut") && relaunch.contains(".error("),
+        else { return XCTFail("relaunch() lost the idle wait, the waiter or the terminate") }
+        XCTAssertLessThan(wait.lowerBound, schedule.lowerBound, "the new copy is scheduled before the dictation is idle")
+        XCTAssertLessThan(schedule.lowerBound, terminate.lowerBound, "the app terminates before the waiter that reopens it runs")
+        XCTAssertTrue(relaunch.contains(".timedOut") && relaunch.contains("log.error("),
                       "a wait that gave up must be logged at error level")
     }
 
+    // The new copy opens only after THIS process exited (the old one holds the
+    // exclusive hotkey): through the detached waiter with this pid and bundle
+    // path, never `open -n` straight from the running app. A waiter that cannot
+    // start leaves the app running.
+    // Mutation: relaunch() runs `/usr/bin/open -n` itself, or terminates in the
+    // catch branch, or passes another pid -> RED.
+    func testRelaunchOpensTheNewCopyOnlyThroughTheWaiterAndSurvivesItsFailure() {
+        let relaunch = body("@MainActor @discardableResult private func relaunch() async -> Bool {")
+        XCTAssertTrue(relaunch.contains("InstallTermination.openAfterExit(pid: ProcessInfo.processInfo.processIdentifier,"),
+                      "the waiter is not given this process's pid")
+        XCTAssertTrue(relaunch.contains("bundlePath: Bundle.main.bundleURL.path)"), "the waiter is not given this bundle's path")
+        XCTAssertFalse(relaunch.contains("/usr/bin/open") || relaunch.contains("\"-n\""),
+                       "relaunch() opens the new copy itself while this process still holds the hotkey")
+        guard let `catch` = relaunch.range(of: "} catch {"), let terminate = relaunch.range(of: "NSApp.terminate(nil)") else {
+            return XCTFail("relaunch() lost its catch branch or the terminate")
+        }
+        let failure = relaunch[`catch`.lowerBound..<terminate.lowerBound]
+        XCTAssertTrue(failure.contains("log.error(") && failure.contains("return false"),
+                      "a waiter that could not start must be logged at error level and leave the app running")
+    }
+
     // Both ways an install ends in relaunch() — the installer's success and the
-    // handshake — go through the waiting one; nothing in installUpdate terminates directly.
-    // Mutation: call `NSApp.terminate(nil)` in installUpdate, or drop its `await` -> RED.
-    func testTheInstallEndsThroughTheWaitingRelaunchOnly() {
+    // handshake — go through the waiting one; nothing in installUpdate terminates
+    // directly, and `updateInstalling` is reset ONLY on the failure paths: on
+    // success it stays set through the relaunch wait, so a second install or a
+    // handshake action cannot start meanwhile.
+    // Mutations: call `NSApp.terminate(nil)` in installUpdate; or restore the
+    // unconditional `updateInstalling = false; studio.render()` before
+    // `if let failure` -> RED.
+    func testTheInstallEndsThroughTheWaitingRelaunchAndResetsOnlyOnFailure() {
         let install = body("private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {")
         XCTAssertTrue(install.contains("await relaunch()"), "installUpdate does not end through the waiting relaunch")
         XCTAssertFalse(install.contains("NSApp.terminate"), "installUpdate terminates the app directly")
-        guard let done = install.range(of: "updateInstalling = false"), let relaunch = install.range(of: "await relaunch()") else {
-            return XCTFail("installUpdate lost its updateInstalling reset or the relaunch")
+        guard let failure = install.range(of: "if let failure {"), let relaunch = install.range(of: "await relaunch()") else {
+            return XCTFail("installUpdate lost its failure branch or the relaunch")
         }
-        XCTAssertLessThan(done.lowerBound, relaunch.lowerBound,
-                          "updateInstalling is reset on the success path too: a second install or a handshake action could start during the wait")
-        XCTAssertEqual(install.components(separatedBy: "updateInstalling = false").count - 1, 1)
+        XCTAssertLessThan(failure.lowerBound, relaunch.lowerBound)
+        // The failure block runs to the `return` that ends it.
+        guard let failureEnd = install.range(of: "return\n            }\n", range: failure.upperBound..<install.endIndex) else {
+            return XCTFail("installUpdate's failure block changed shape")
+        }
+        let beforeFailure = install[install.startIndex..<failure.lowerBound]
+        for reset in ["updateInstalling = false", "endInstall()"] {
+            XCTAssertFalse(beforeFailure.contains(reset),
+                           "`\(reset)` runs before the failure check: the success path resets updateInstalling too")
+        }
+        XCTAssertTrue(install[failure.lowerBound..<failureEnd.upperBound].contains("endInstall()"),
+                      "the failure path does not end the install")
+        // After the failure block the one reset is a relaunch that could not start.
+        let afterFailure = install[failureEnd.upperBound...]
+        XCTAssertFalse(afterFailure.contains("updateInstalling = false"), "a bare reset on the success path")
+        guard let relaunchGuard = afterFailure.range(of: "guard await relaunch() else {") else {
+            return XCTFail("the success path ignores a relaunch that could not start")
+        }
+        XCTAssertEqual(afterFailure.components(separatedBy: "endInstall()").count - 1, 1)
+        XCTAssertTrue(afterFailure[relaunchGuard.upperBound...].prefix(80).contains("endInstall()"))
+        let end = body("private func endInstall() {")
+        XCTAssertTrue(end.contains("updateInstalling = false") && end.contains("studio.render()"))
     }
 
     // A SIGTERM keeps meaning "end now": logout, shutdown and `kill` are not deferred.
