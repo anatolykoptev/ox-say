@@ -10,7 +10,10 @@
 # unified memory the patches are inert or bug fixes (engine/README.md).
 #
 # Usage: engine/build.sh [work-dir]      (default: build/engine)
-# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,audiocpp_server (arm64),licenses/}
+# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,audiocpp_server (arm64),
+#                        each <bin>.metallib (+<bin>-tensor.metallib on a
+#                        macOS 26 SDK) when the Metal toolchain is present,
+#                        licenses/}
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -23,7 +26,7 @@ work=${1:-"$here/../build/engine"}
 mkdir -p "$work"
 work=$(cd "$work" && pwd)
 out="$work/out"
-jobs=$(sysctl -n hw.physicalcpu)
+jobs=${OX_SAY_JOBS:-$(sysctl -n hw.physicalcpu)}
 
 # The target is the shell's architecture. CMake build dirs are named after it:
 # a dir configured on another architecture keeps that CMAKE_SYSTEM_PROCESSOR
@@ -52,6 +55,53 @@ include_copy() {
     rm -rf "$dst"
     cp -R "$ggml/include" "$dst"
 }
+
+# A working Metal toolchain compiles ggml's kernels into a default.metallib at
+# build time; without one the engines fall back to GGML_METAL_EMBED_LIBRARY=ON
+# (the .metal sources embedded in the binary, compiled at first run — tens of
+# seconds once, see plans/ox-say/2026-10-22-precompiled-metal-shaders.md).
+# `xcrun -f metal` finds a stub even when Xcode 26's MetalToolchain component
+# is missing, so the probe compiles AND links a trivial kernel the same way
+# the build does. OX_SAY_METAL_EMBED=1 forces the embedded build (A/B tests).
+probe_metal() {
+    local d=$1
+    printf 'kernel void ox_say_metal_probe() {}\n' > "$d/probe.metal"
+    xcrun -sdk macosx metal -c "$d/probe.metal" -o "$d/probe.air" > "$d/metal.log" 2>&1 &&
+        xcrun -sdk macosx metallib "$d/probe.air" -o "$d/probe.metallib" >> "$d/metal.log" 2>&1
+}
+
+# copy_metal_libs <runtime-out-dir> <engine>: ship the compiled library under
+# the engine's own name. Engines in out/ come from different ggml trees, whose
+# kernel sources differ, so one default.metallib cannot serve them all; a
+# patched ggml (patches/ggml/0003, patches/audiocpp/0003) looks up
+# <argv0>.metallib next to the binary before default.metallib.
+copy_metal_libs() {
+    local dir=$1 name=$2
+    cp "$dir/default.metallib" "$out/$name.metallib"
+    if [ -f "$dir/ggml-tensor.metallib" ]; then
+        cp "$dir/ggml-tensor.metallib" "$out/$name-tensor.metallib"
+    fi
+}
+
+probe_dir="$work/.metal-probe"
+mkdir -p "$probe_dir"
+metal_embed=ON
+if [ "${OX_SAY_METAL_EMBED:-0}" = 1 ]; then
+    echo "engine/build.sh: OX_SAY_METAL_EMBED=1 — engines embed Metal source and compile shaders at first run"
+elif probe_metal "$probe_dir"; then
+    metal_embed=OFF
+    echo "Metal toolchain found: engines ship precompiled metallibs"
+else
+    echo "engine/build.sh: no Metal toolchain (see $probe_dir/metal.log) — engines embed Metal source and compile shaders at first run; install it with 'xcodebuild -downloadComponent MetalToolchain'"
+fi
+# Whatever is in out/ must be from this build: drop metallibs a toolchain
+# build left behind so an embedded rebuild cannot pair a stale library with
+# a new binary.
+rm -f "$out"/*.metallib
+metal_lib_target=()
+if [ "$metal_embed" = OFF ]; then
+    metal_lib_target=(ggml-metal-lib)
+fi
 
 # Static libraries and an embedded Metal library: the installed binaries must not depend on
 # this build tree. Sets the array cmake_flags (an array, so paths with spaces stay one argument).
@@ -87,7 +137,7 @@ set_cmake_flags() {
         cpu=(-DGGML_NATIVE=ON)
     fi
     cmake_flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF "-DCMAKE_OSX_ARCHITECTURES=$arch"
-        "${cpu[@]}" -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple
+        "${cpu[@]}" -DGGML_METAL=ON "-DGGML_METAL_EMBED_LIBRARY=$metal_embed" -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Apple
         -DGGML_OPENMP=OFF "-DCMAKE_C_FLAGS=-I$inc$opt" "-DCMAKE_CXX_FLAGS=-I$inc$opt")
 }
 
@@ -136,8 +186,9 @@ fi
 include_copy "$tts/ggml" "$work/ggml-include-tts"
 set_cmake_flags "$work/ggml-include-tts"
 cmake -S "$tts" -B "$tts/build-$arch" "${cmake_flags[@]}" > "$work/tts-configure.log"
-cmake --build "$tts/build-$arch" --target tts-server -j "$jobs" > "$work/tts-build.log"
+cmake --build "$tts/build-$arch" --target tts-server ${metal_lib_target[@]+"${metal_lib_target[@]}"} -j "$jobs" > "$work/tts-build.log"
 cp "$tts/build-$arch/tts-server" "$out/tts-server"
+if [ "$metal_embed" = OFF ]; then copy_metal_libs "$tts/build-$arch" tts-server; fi
 strip -x "$out/tts-server"
 check_static "$out/tts-server"
 check_dist "$out/tts-server"
@@ -169,8 +220,9 @@ include_copy "$stt/ggml" "$work/ggml-include-stt"
 set_cmake_flags "$work/ggml-include-stt"
 cmake -S "$here/stt" -B "$work/stt-build-$arch" -DWHISPER_SRC="$stt" -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=OFF \
     "${cmake_flags[@]}" > "$work/stt-configure.log"
-cmake --build "$work/stt-build-$arch" --target ox-stt -j "$jobs" > "$work/stt-build.log"
+cmake --build "$work/stt-build-$arch" --target ox-stt ${metal_lib_target[@]+"${metal_lib_target[@]}"} -j "$jobs" > "$work/stt-build.log"
 cp "$work/stt-build-$arch/ox-stt" "$out/ox-stt"
+if [ "$metal_embed" = OFF ]; then copy_metal_libs "$work/stt-build-$arch/bin" ox-stt; fi
 strip -x "$out/ox-stt"
 check_static "$out/ox-stt"
 check_dist "$out/ox-stt"
@@ -182,8 +234,9 @@ echo "built $out/ox-stt"
 set_cmake_flags "$work/ggml-include-stt"
 cmake -S "$here/align" -B "$work/align-build-$arch" -DWHISPER_SRC="$stt" \
     "${cmake_flags[@]}" > "$work/align-configure.log"
-cmake --build "$work/align-build-$arch" --target ox-align -j "$jobs" > "$work/align-build.log"
+cmake --build "$work/align-build-$arch" --target ox-align ${metal_lib_target[@]+"${metal_lib_target[@]}"} -j "$jobs" > "$work/align-build.log"
 cp "$work/align-build-$arch/ox-align" "$out/ox-align"
+if [ "$metal_embed" = OFF ]; then copy_metal_libs "$work/align-build-$arch/bin" ox-align; fi
 strip -x "$out/ox-align"
 check_static "$out/ox-align"
 check_dist "$out/ox-align"
@@ -263,13 +316,14 @@ if audiocpp_gate "$arch" "$out"; then
     cmake -S "$ac" -B "$ac/build-$arch" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
         -DCMAKE_OSX_ARCHITECTURES=arm64 -DENGINE_ENABLE_CUDA=OFF -DENGINE_ENABLE_VULKAN=OFF \
         -DENGINE_ENABLE_METAL=ON -DENGINE_ENABLE_OPENMP=OFF -DGGML_OPENMP=OFF \
-        "-DENGINE_ENABLE_NATIVE_CPU=$native" -DGGML_METAL_EMBED_LIBRARY=ON \
+        "-DENGINE_ENABLE_NATIVE_CPU=$native" "-DGGML_METAL_EMBED_LIBRARY=$metal_embed" \
         -DENGINE_BUILD_TESTS=OFF -DENGINE_BUILD_EXAMPLES=OFF -DAUDIOCPP_DEPLOYMENT_BUILD=ON \
         -DAUDIOCPP_MODEL_SET=custom -DAUDIOCPP_MODELS=voxcpm2 -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
         ${ac_dist[@]+"${ac_dist[@]}"} \
         > "$work/audiocpp-configure.log"
-    cmake --build "$ac/build-$arch" --target audiocpp_server -j "$jobs" > "$work/audiocpp-build.log"
+    cmake --build "$ac/build-$arch" --target audiocpp_server ${metal_lib_target[@]+"${metal_lib_target[@]}"} -j "$jobs" > "$work/audiocpp-build.log"
     cp "$ac/build-$arch/bin/audiocpp_server" "$out/audiocpp_server"
+    if [ "$metal_embed" = OFF ]; then copy_metal_libs "$ac/build-$arch/bin" audiocpp_server; fi
     strip -x "$out/audiocpp_server"
     check_static "$out/audiocpp_server"
     check_dist "$out/audiocpp_server"

@@ -1,0 +1,33 @@
+diff --git a/src/ggml-metal/ggml-metal-device.m b/src/ggml-metal/ggml-metal-device.m
+index 3713306..2a470ee 100644
+--- a/src/ggml-metal/ggml-metal-device.m
++++ b/src/ggml-metal/ggml-metal-device.m
+@@ -492,7 +492,15 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+     const int64_t t_start = ggml_time_us();
+ 
+     NSError * error = nil;
+-    NSString * path_lib = ggml_metal_find_metallib(bundle, @"default");
++
++    // ox-say: a <binary>.metallib next to the executable wins over a shared
++    // default.metallib, so engines built from different ggml trees can sit in
++    // one directory with a compiled library each.
++    NSString * bin_name = [[[NSProcessInfo processInfo] arguments][0] lastPathComponent];
++    NSString * path_lib = ggml_metal_find_metallib(bundle, bin_name);
++    if (path_lib == nil) {
++        path_lib = ggml_metal_find_metallib(bundle, @"default");
++    }
+ 
+     if (path_lib != nil) {
+         // pre-compiled library found: a single combined default.metallib
+@@ -509,7 +517,10 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+ 
+         // the tensor API kernels are built into a separate metallib
+         if (ggml_metal_device_get_props(dev)->has_tensor) {
+-            NSString * path_mm = ggml_metal_find_metallib(bundle, @"ggml-tensor");
++            NSString * path_mm = ggml_metal_find_metallib(bundle, [bin_name stringByAppendingString:@"-tensor"]);
++            if (path_mm == nil) {
++                path_mm = ggml_metal_find_metallib(bundle, @"ggml-tensor");
++            }
+ 
+             id<MTLLibrary> lib_mm = nil;
+             if (path_mm != nil) {

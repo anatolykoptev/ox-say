@@ -1,0 +1,30 @@
+diff --git a/external/ggml/src/ggml-metal/ggml-metal-device.m b/external/ggml/src/ggml-metal/ggml-metal-device.m
+index e4cc047..417e004 100644
+--- a/external/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/external/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -177,13 +177,23 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+         NSBundle * bundle = [NSBundle bundleForClass:[GGMLMetalClass class]];
+ #endif
+ 
+-        NSString * path_lib = [bundle pathForResource:@"default" ofType:@"metallib"];
++        // ox-say: a <binary>.metallib next to the executable wins over a shared
++        // default.metallib, so engines built from different ggml trees can sit
++        // in one directory with a compiled library each.
++        NSString * bin_name = [[[NSProcessInfo processInfo] arguments][0] lastPathComponent];
++        NSString * path_lib = [bundle pathForResource:bin_name ofType:@"metallib"];
++        if (path_lib == nil) {
++            path_lib = [bundle pathForResource:@"default" ofType:@"metallib"];
++        }
+         if (path_lib == nil) {
+             // Try to find the resource in the directory where the current binary located.
+             NSString * bin_cur = [[NSProcessInfo processInfo] arguments][0];
+             NSString * bin_dir = [bin_cur stringByDeletingLastPathComponent];
+ 
+-            NSString * path_lib_default = [NSString pathWithComponents:@[bin_dir, @"default.metallib"]];
++            NSString * path_lib_default = [NSString pathWithComponents:@[bin_dir, [bin_name stringByAppendingPathExtension:@"metallib"]]];
++            if (![[NSFileManager defaultManager] isReadableFileAtPath:path_lib_default]) {
++                path_lib_default = [NSString pathWithComponents:@[bin_dir, @"default.metallib"]];
++            }
+             if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib_default]) {
+                 GGML_LOG_INFO("%s: found '%s'\n", __func__, [path_lib_default UTF8String]);
+ 

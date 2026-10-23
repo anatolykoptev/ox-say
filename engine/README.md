@@ -2,7 +2,29 @@
 
 `build.sh` clones qwentts.cpp at the commit in `pins.env`, checks that its
 ggml submodule is at the recorded commit, applies the patches below and
-builds a static `tts-server` with the Metal shader library embedded.
+builds a static `tts-server`.
+
+## Metal shaders: precompiled libraries, embedded fallback
+
+When the Metal toolchain works, the build compiles the ggml kernels into a
+`default.metallib` per engine (`GGML_METAL_EMBED_LIBRARY=OFF`, target
+`ggml-metal-lib`) and copies it to `out/` under the binary's own name:
+`tts-server.metallib`, `ox-stt.metallib`, `ox-align.metallib` and, on arm64
+with VoxCPM2, `audiocpp_server.metallib`. A macOS 26 SDK also emits
+`<bin>-tensor.metallib`, the Metal4 kernel library. The three engines are
+built against different ggml trees whose kernel sources differ, so one shared
+`default.metallib` cannot serve them all — each loads `<argv[0]
+basename>.metallib` (patch `0003`), falling back to `default.metallib` and
+then to the embedded/source path, exactly like upstream.
+
+The toolchain check compiles and links a trivial kernel
+(`xcrun -sdk macosx metal -c` + `metallib`), because on Xcode 26 `xcrun -f
+metal` resolves a stub while the toolchain itself is a separate component
+(`xcodebuild -downloadComponent MetalToolchain`). When the probe fails the
+build keeps `GGML_METAL_EMBED_LIBRARY=ON`, says so on one line, and the
+engines compile their shaders in-process on first run.
+`OX_SAY_METAL_EMBED=1` forces the embedded build even when the toolchain is
+present.
 
 ## patches/ggml/0001-metal-amd-discrete-gpu.patch
 
