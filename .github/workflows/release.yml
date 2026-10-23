@@ -49,10 +49,10 @@ jobs:
           manifest-file: .release-please-manifest.json
 
   # One package per architecture, each built natively on a GitHub macOS runner
-  # (free for public repos): x86_64 on the Intel image, arm64 on macos-15
-  # (Apple M1). The runners have no usable GPU for our engines, so this job
-  # only builds and checks the package; the Metal path is verified by running
-  # get.sh on real Macs before a release is announced.
+  # (free for public repos): x86_64 on the Intel image, arm64 on macos-26
+  # (Apple Silicon, macOS 26 SDK). The runners do have a Metal device — the
+  # check step loads every shipped metallib through MTLDevice — but they do
+  # not run the engines end to end; get.sh on real Macs stays the last mile.
   macos-package:
     name: Build the macOS ${{ matrix.arch }} package
     needs: release-please
@@ -63,8 +63,11 @@ jobs:
         include:
           - arch: x86_64
             runner: macos-15-intel
+          # macos-26: the macOS 26 SDK is what builds ggml-tensor.metallib,
+          # the Metal4 kernel library M5/A19 devices use; macos-15's SDK 15
+          # would silently ship a package that disables the tensor API there.
           - arch: arm64
-            runner: macos-15
+            runner: macos-26
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     # read only: this job runs the build scripts, including a PR's own
@@ -116,6 +119,29 @@ jobs:
       - name: Build tools
         run: command -v cmake >/dev/null || brew install cmake
 
+      # The engines ship a precompiled Metal library, so the build needs the
+      # Metal toolchain. Xcode 26 splits it into a downloadable component —
+      # `xcrun -f metal` finds a stub even when it is missing, so the probe
+      # compiles and links a trivial kernel the same way the build does.
+      - name: Metal toolchain
+        run: |
+          set -euo pipefail
+          probe() {
+            d=$(mktemp -d)
+            printf 'kernel void p() {}\n' > "$d/p.metal"
+            xcrun -sdk macosx metal -c "$d/p.metal" -o "$d/p.air" &&
+              xcrun -sdk macosx metallib "$d/p.air" -o "$d/p.metallib"
+          }
+          if probe >/dev/null 2>&1; then
+            echo "Metal toolchain present"
+          else
+            echo "Metal toolchain missing; downloading the component"
+            xcodebuild -downloadComponent MetalToolchain
+            probe >/dev/null
+          fi
+          xcrun -sdk macosx metal --version | head -1
+          echo "SDK $(xcrun -sdk macosx --show-sdk-version)"
+
       - name: Package
         run: scripts/package-release.sh "$VERSION"
 
@@ -146,6 +172,43 @@ jobs:
               exit 1
             fi
           done
+          # The precompiled Metal libraries: every engine's <bin>.metallib
+          # must be there and must load on a real Metal device — a missing or
+          # corrupt one is a first-run failure for users. arm64 adds the
+          # Metal4 tensor libraries built by the macOS 26 SDK.
+          metallibs="engine/tts-server.metallib engine/ox-stt.metallib engine/ox-align.metallib"
+          if [ "$ARCH" = arm64 ]; then
+            metallibs="$metallibs engine/audiocpp_server.metallib engine/tts-server-tensor.metallib engine/ox-stt-tensor.metallib engine/ox-align-tensor.metallib"
+          fi
+          for lib in $metallibs; do
+            test -s "$lib" || { echo "$lib missing from the package" >&2; exit 1; }
+          done
+          cat > metal-load.swift <<'EOF'
+          import Metal
+          import Foundation
+          guard let device = MTLCreateSystemDefaultDevice() else {
+              FileHandle.standardError.write("FAIL: no Metal device\n".data(using: .utf8)!)
+              exit(1)
+          }
+          var bad = false
+          for path in CommandLine.arguments.dropFirst() {
+              do {
+                  let lib = try device.makeLibrary(URL: URL(fileURLWithPath: path))
+                  if lib.functionNames.isEmpty {
+                      FileHandle.standardError.write("FAIL \(path): no functions\n".data(using: .utf8)!)
+                      bad = true
+                  } else {
+                      print("loaded \(URL(fileURLWithPath: path).lastPathComponent): \(lib.functionNames.count) functions")
+                  }
+              } catch {
+                  FileHandle.standardError.write("FAIL \(path): \(error)\n".data(using: .utf8)!)
+                  bad = true
+              }
+          }
+          exit(bad ? 1 : 0)
+EOF
+          swiftc -o metal-load metal-load.swift
+          ./metal-load $metallibs
           # into files, not `| head`: under pipefail an early-exiting reader can
           # SIGPIPE the writer and fail a step that worked
           bin/ox-say > usage.txt 2>&1 || true
