@@ -54,6 +54,15 @@ final class TypingChunksTests: XCTestCase {
         XCTAssertEqual(TypingChunks.split("one\ntwo\r\nthree\rfour").joined(), "one two three four")
     }
 
+    // Tab would move focus, ESC and BS act as keys, DEL deletes: none of them
+    // is text. Mutation: map only newlines (drop `isControl` in
+    // TypingChunks.split) -> RED.
+    func testControlCharactersBecomeSpaces() {
+        XCTAssertEqual(TypingChunks.split("a\tb\u{1B}c\u{8}d\u{7F}e\u{85}f").joined(), "a b c d e f")
+        XCTAssertEqual(TypingChunks.split("x\t\u{1B}y").joined(), "x  y")
+        XCTAssertEqual(TypingChunks.split("é\u{301}ж").joined(), "é\u{301}ж", "printable text is untouched")
+    }
+
     // The API contract over a long Russian + emoji text: no chunk over 20
     // UTF-16 units and the text survives whole.
     func testNoChunkExceedsTheApiLimitAndNothingIsLost() {

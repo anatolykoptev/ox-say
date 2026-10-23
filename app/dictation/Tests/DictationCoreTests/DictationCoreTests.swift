@@ -175,7 +175,7 @@ final class OutputPolicyTests: XCTestCase {
     // Mutation: ignore `secureInput` in OutputPolicy.decide -> RED (the text
     // would be pasted into a password field).
     func testNeverPastesIntoAPasswordField() {
-        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: true, accessibilityTrusted: true) else {
+        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: true, accessibilityTrusted: true, clipboardRemote: false) else {
             return XCTFail("secure input must not get a synthesized paste")
         }
         XCTAssertEqual(reason.code, "secure_input")
@@ -185,7 +185,7 @@ final class OutputPolicyTests: XCTestCase {
     // returning .clipboardOnly(.secureInput) -> RED (the timing line would
     // blame a password field for an untrusted grant).
     func testWithoutAccessibilityTheTextStaysOnTheClipboard() {
-        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: false, accessibilityTrusted: false) else {
+        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: false, accessibilityTrusted: false, clipboardRemote: false) else {
             return XCTFail("without Accessibility a posted Cmd+V is dropped silently")
         }
         XCTAssertEqual(reason.code, "accessibility")
@@ -196,14 +196,13 @@ final class OutputPolicyTests: XCTestCase {
     // Mutation: ignore `focusMoved` in OutputPolicy.decide -> RED (the text is
     // pasted into whatever app the user switched to).
     func testNoPasteIntoAnAppTheUserSwitchedTo() {
-        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: false, focusMoved: true, accessibilityTrusted: true) else {
+        guard case .clipboardOnly(let reason) = OutputPolicy.decide(secureInput: false, focusMoved: true, accessibilityTrusted: true, clipboardRemote: false) else {
             return XCTFail("a paste must go where the user dictated, not where focus went later")
         }
         XCTAssertEqual(reason.code, "focus_moved")
     }
 
     func testPastesOtherwise() {
-        XCTAssertEqual(OutputPolicy.decide(secureInput: false, accessibilityTrusted: true), .paste)
         XCTAssertEqual(OutputPolicy.decide(secureInput: false, accessibilityTrusted: true, clipboardRemote: false), .paste)
     }
 

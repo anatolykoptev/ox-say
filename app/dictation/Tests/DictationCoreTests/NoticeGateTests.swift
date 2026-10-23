@@ -220,6 +220,15 @@ final class NeverLoseWiringTests: XCTestCase {
         XCTAssertLessThan(remote.lowerBound, lease.lowerBound,
                           "a ClipboardLease writes the text at init: checking remote after it destroys the copy")
         XCTAssertTrue(body.contains("postTypedText"), "the remote path must type the text, not paste it")
+        // Mutation: pass `clipboardRemote: false` (or any value but the
+        // holdsRemoteCopy result) to OutputPolicy.decide at the call site -> RED
+        // (every paste over an iPhone copy destroys it again).
+        let remoteVariable = body.range(of: #"let (\w+) = plain\.holdsRemoteCopy"#, options: .regularExpression)
+            .map { String(body[$0]).replacingOccurrences(of: "let ", with: "")
+                .components(separatedBy: " ").first ?? "" }
+        XCTAssertNotNil(remoteVariable, "deliver(_:to:) must bind `plain.holdsRemoteCopy` to a variable")
+        XCTAssertTrue(body.contains("clipboardRemote: \(remoteVariable ?? "?"))"),
+                      "OutputPolicy.decide must receive the holdsRemoteCopy result as clipboardRemote:")
         // Mutation: write the text to the clipboard inside `case .typed:` -> RED.
         guard let typedStart = body.range(of: "case .typed:"),
               let typedEnd = body.range(of: "case .paste:", range: typedStart.upperBound..<body.endIndex) else {
@@ -228,6 +237,18 @@ final class NeverLoseWiringTests: XCTestCase {
         let typed = body[typedStart.upperBound..<typedEnd.lowerBound]
         XCTAssertFalse(typed.contains("writeText") || typed.contains("ClipboardLease("),
                        "the typed path must leave the clipboard untouched")
+    }
+
+    // Mutation: delete the `output.onTypedOverRemoteClipboard = ...` block in
+    // AppDelegate, or change its log text -> RED (the typed route would leave
+    // no trace in the unified log).
+    func testAppDelegateLogsTheTypedRoute() {
+        let source = Self.source("AppDelegate.swift")
+        XCTAssertTrue(source.contains("output.onTypedOverRemoteClipboard = { chars, seconds in"),
+                      "AppDelegate does not log the typed-over-iPhone-copy route")
+        XCTAssertTrue(source.contains("clipboard held a Universal Clipboard copy: posted the text as keystrokes, clipboard untouched chars="),
+                      "the typed-route log line changed or lost its fields")
+        XCTAssertTrue(source.contains("post_ms="), "the log must say post_ms: it is the enqueue time, not delivery")
     }
 
     // Mutation: delete the `output.onPasteUnread = ...` line in AppDelegate -> RED.

@@ -60,9 +60,10 @@ public enum OutputPolicy {
     ///   - clipboardRemote: an item on the clipboard declares a Universal
     ///     Clipboard copy (checked on declared types only — never read). A paste
     ///     would overwrite it, and it cannot be put back without fetching it
-    ///     from the other device, so the text is typed instead.
+    ///     from the other device, so the text is typed instead. No default: a
+    ///     caller that forgets it silently brings back the destroyed copy.
     public static func decide(secureInput: Bool, focusMoved: Bool = false, accessibilityTrusted: Bool,
-                            clipboardRemote: Bool = false) -> Delivery {
+                              clipboardRemote: Bool) -> Delivery {
         if secureInput {
             return .clipboardOnly(reason: .secureInput)
         }

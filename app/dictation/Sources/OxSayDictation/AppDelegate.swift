@@ -265,7 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         output.onTypedOverRemoteClipboard = { chars, seconds in
             let ms = Int(seconds * 1000)
-            timingLog.notice("clipboard held a Universal Clipboard copy: typed the text, clipboard untouched chars=\(chars, privacy: .public) duration_ms=\(ms, privacy: .public)")
+            timingLog.notice("clipboard held a Universal Clipboard copy: posted the text as keystrokes, clipboard untouched chars=\(chars, privacy: .public) post_ms=\(ms, privacy: .public)")
         }
         controller.onBusy = { NSSound.beep() }
         output.onNotice = { [weak self] message in self?.notice(message, kind: .outcome) }

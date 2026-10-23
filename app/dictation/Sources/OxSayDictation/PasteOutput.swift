@@ -73,8 +73,10 @@ final class SystemPasteboard: NSObject, DictationPasteboard, NSPasteboardItemDat
 
 /// Puts dictated text where the cursor is: borrows the clipboard, sends Cmd+V to
 /// the frontmost app and gives the clipboard back once the app has read it. When
-/// pasting is not allowed or not safe, the text stays on the clipboard and
-/// `onNotice` says why.
+/// the clipboard holds a Universal Clipboard copy, which cannot be put back
+/// without fetching it from the other device, the text is typed with Unicode
+/// key events instead and the clipboard is never touched. When pasting is not
+/// allowed or not safe, the text stays on the clipboard and `onNotice` says why.
 final class PasteOutput: TextOutput {
     var onNotice: ((String) -> Void)?
     /// When a posted paste settles: whether the target app read the promised
@@ -86,9 +88,9 @@ final class PasteOutput: TextOutput {
     /// history. The app says so, and the clipboard stays the user's.
     var onPasteUnread: (() -> Void)?
     /// The clipboard held a copy from another device (Universal Clipboard), so
-    /// the text was typed with synthetic key events and the clipboard left
-    /// alone: character count and seconds the posting took. A log line, not a
-    /// notice.
+    /// the text was posted as synthetic key events and the clipboard left
+    /// alone: character count and seconds the posting took (the time to
+    /// enqueue the events, not to deliver them). A log line, not a notice.
     var onTypedOverRemoteClipboard: ((Int, TimeInterval) -> Void)?
     /// The app that had focus when the recording stopped; the paste goes there
     /// or nowhere.
