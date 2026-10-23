@@ -42,10 +42,13 @@ namespace {
 
 constexpr int SR = 16000;
 
-// default thread count = the performance-core count: measured on the target
-// shape (M5 Pro, mms-300m f16, 70 s clip) -t6 runs the CPU backend ~1.9x
-// faster than the old default of 4, while -t18 (P+E oversubscription)
-// regresses. -t overrides. Off Apple Silicon keep 4.
+// default thread count = the performance-core count. Measured on the target
+// shape (M5 Pro, mms-300m f16, 70 s clip) with -ng only, where the CPU runs
+// the whole graph: -t6 is faster than the old default of 4 (1.4x over 3 runs
+// each, 22.7 s vs 31.6 s, with another build running; an earlier run gave
+// 1.9x), while -t18 (P+E oversubscription) regresses. On the GPU (default)
+// path the thread count makes no difference: 3.6-3.8 s at both -t6 and -t4,
+// 3 runs each. -t overrides. Off Apple Silicon keep 4.
 int default_threads() {
 #if defined(__APPLE__)
     int n = 0;
@@ -1294,6 +1297,9 @@ void print_info(const model & m) {
 // be freed while the device is still alive: the sched's compute buffers,
 // the graph context, the model's weight buffers, and only then the
 // backends. A leaked run aborted SIGABRT on a fully successful run.
+// The destructor runs on every return out of run() and on every exception
+// that main() catches; an exception nobody catches goes to std::terminate,
+// which unwinds nothing and aborts (exit 134), so main() catches them all.
 struct engine {
     model m;
     ggml_context * gctx = nullptr;
@@ -1319,7 +1325,9 @@ struct engine {
 
 }  // namespace
 
-int main(int argc, char ** argv) {
+// the whole run: every allocation after backend init lives in `engine e`, so
+// returning or throwing out of here frees it before main() sees the result
+static int run(int argc, char ** argv) {
     args a;
     if (!parse(argc, argv, a)) {
         usage(argv[0]);
@@ -1522,4 +1530,18 @@ int main(int argc, char ** argv) {
         return 1;
     }
     return 0;
+}
+
+int main(int argc, char ** argv) {
+    // bad_alloc / length_error from a huge input (the WAV buffer, the padded
+    // sample copy, the emissions reserve) must exit 1 with a message, not
+    // reach std::terminate: that aborts 134 without running any destructor
+    try {
+        return run(argc, argv);
+    } catch (const std::exception & ex) {
+        fprintf(stderr, "ox-align: %s\n", ex.what());
+    } catch (...) {
+        fprintf(stderr, "ox-align: unknown exception\n");
+    }
+    return 1;
 }
