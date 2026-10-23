@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.26](https://github.com/anatolykoptev/ox-say/compare/v0.1.25...v0.1.26) (2026-10-23)
+
+
+### Fixed
+
+* **align:** free every ggml resource before exit — no Metal abort after a good run ([#203](https://github.com/anatolykoptev/ox-say/issues/203)) ([155d10c](https://github.com/anatolykoptev/ox-say/commit/155d10c5be86beaebaa102b74b321a37695be39d))
+
+
+### Performance
+
+* **engine:** ship precompiled Metal libraries — no shader compile at first run ([#206](https://github.com/anatolykoptev/ox-say/issues/206)) ([7fd3240](https://github.com/anatolykoptev/ox-say/commit/7fd3240230d3bb58c1f128dfafbdf69c19eb454f))
+
 ## [0.1.25](https://github.com/anatolykoptev/ox-say/compare/v0.1.24...v0.1.25) (2026-10-22)
 
 
