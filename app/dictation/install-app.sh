@@ -9,6 +9,11 @@
 # ours to delete. The new copy is staged next to the old one and swapped in
 # with renames, so a failure never leaves a half-deleted app behind.
 # Used by app/dictation/build.sh --install and by the release installer.
+#
+# OX_SAY_APP_RELAUNCHES=1 (set by the app when it starts the install): the
+# running app relaunches itself once it is idle, so this script neither stops
+# it nor starts the new copy. The swap is still done here; replacing the bundle
+# of a running app by rename is safe, the process keeps its mapped files.
 set -euo pipefail
 
 name=OxSayDictation
@@ -75,10 +80,14 @@ clear_staging "$new"
 clear_ours "$old"
 ditto "$src" "$new"
 
+app_relaunches=0
+[ "${OX_SAY_APP_RELAUNCHES:-0}" = 1 ] && app_relaunches=1
+
 # Stop a running copy: its binary is about to be replaced. A signal, not an
 # Apple Event, which would need the Automation permission for this terminal.
-# The app gives a borrowed clipboard back on SIGTERM.
-if pkill -x "$name"; then
+# The app gives a borrowed clipboard back on SIGTERM. Not when the app started
+# this install: it may be mid-dictation and ends itself when idle.
+if [ "$app_relaunches" = 0 ] && pkill -x "$name"; then
     for _ in 1 2 3 4 5 6 7 8 9 10; do
         pgrep -x "$name" >/dev/null || break
         sleep 0.5
@@ -91,6 +100,10 @@ fi
 mv "$new" "$dest"
 clear_ours "$old"
 echo "installed $dest"
+if [ "$app_relaunches" = 1 ]; then
+    echo "the running OxSay Dictation will relaunch itself when it is idle"
+    exit 0
+fi
 # Installed either way; a failed start (no GUI session, e.g. over ssh) is not a
 # failed install.
 open "$dest" || echo "could not start $dest; open it from ~/Applications" >&2

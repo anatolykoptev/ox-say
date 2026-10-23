@@ -1,9 +1,10 @@
 import Foundation
 
-/// When an update install may end the app. The installer ends it twice over:
-/// install-app.sh SIGTERMs the running copy, and `relaunch()` ends it after a
-/// successful install. Neither may land on a dictation that records or
-/// transcribes — its text exists nowhere else yet.
+/// When an update install may end the app. An install the app starts runs
+/// with `UpdateInstaller.appRelaunchesVariable`, so install-app.sh leaves the
+/// running copy alone; the app's own `relaunch()` ends it after the install,
+/// and that may not land on a dictation that records or transcribes — its text
+/// exists nowhere else yet.
 public enum InstallTermination {
     /// The longest `relaunch` waits for a dictation before it goes ahead
     /// anyway (and logs it): an install must finish, a stuck dictation must
@@ -11,19 +12,6 @@ public enum InstallTermination {
     public static let idleTimeout: TimeInterval = 120
     /// How often the dictation state is looked at while waiting.
     public static let pollInterval: TimeInterval = 0.5
-
-    /// What a SIGTERM does to the app.
-    public enum Sigterm: Equatable {
-        /// End now (a plain `kill`, or an install with nothing dictating).
-        case terminate
-        /// An install is running and a dictation with it: keep going, the
-        /// install's own `relaunch()` ends the app once the dictation is idle.
-        case leaveToRelaunch
-    }
-
-    public static func sigterm(installing: Bool, dictation: DictationState) -> Sigterm {
-        installing && dictation != .idle ? .leaveToRelaunch : .terminate
-    }
 
     public enum Wait: Equatable {
         case idle

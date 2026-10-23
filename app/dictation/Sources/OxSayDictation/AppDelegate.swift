@@ -280,13 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // back before quitting, also on a plain `kill`.
         signal(SIGTERM, SIG_IGN)
         let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        // An install's SIGTERM (install-app.sh stops the running copy) must not end a
-        // dictation; the install's own relaunch() ends the app once it is idle.
-        term.setEventHandler { [weak self] in
-            if let self, InstallTermination.sigterm(installing: self.updateInstalling,
-                                                    dictation: self.controller.state) == .leaveToRelaunch { return }
-            NSApp.terminate(nil)
-        }
+        term.setEventHandler { NSApp.terminate(nil) }
         term.resume()
         termSource = term
 
@@ -1153,9 +1147,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Installs the release (DictationCore's UpdateInstaller.run: download get.sh,
     /// run it, check the bundle's version). Output lands in the update log. The
     /// app relaunches only when the installed bundle really reports the target
-    /// version; every other outcome is the failed alert. A successful install
-    /// usually ends this process first: install-app.sh quits the running app and
-    /// opens the new one, so nothing here may be needed after the install.
+    /// version; every other outcome is the failed alert. The installer runs
+    /// with `UpdateInstaller.appRelaunchesVariable`: install-app.sh swaps the
+    /// bundle but leaves this process alone, and `relaunch()` ends it once no
+    /// dictation runs and opens the new copy.
     private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {
         updateInstalling = true
         studio.render()

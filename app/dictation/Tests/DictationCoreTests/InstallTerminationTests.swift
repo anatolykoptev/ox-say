@@ -47,16 +47,6 @@ final class InstallTerminationTests: XCTestCase {
         XCTAssertEqual(InstallTermination.idleTimeout, 120)
     }
 
-    // The installer's SIGTERM (install-app.sh) while a dictation runs is left to
-    // the relaunch; a plain kill, or an install with nothing dictating, ends the app.
-    func testSigtermIsDeferredOnlyForAnInstallDuringADictation() {
-        XCTAssertEqual(InstallTermination.sigterm(installing: true, dictation: .recording), .leaveToRelaunch)
-        XCTAssertEqual(InstallTermination.sigterm(installing: true, dictation: .transcribing), .leaveToRelaunch)
-        XCTAssertEqual(InstallTermination.sigterm(installing: true, dictation: .idle), .terminate)
-        XCTAssertEqual(InstallTermination.sigterm(installing: false, dictation: .recording), .terminate)
-        XCTAssertEqual(InstallTermination.sigterm(installing: false, dictation: .idle), .terminate)
-    }
-
     // #198.3 — a wake within ten minutes of the last attempt starts no check.
     // Mutation: AutoUpdateSchedule.wakeCheckAllowed, `return true` for every input -> RED.
     func testAWakeWithinTenMinutesOfTheLastAttemptIsSkipped() {
@@ -111,22 +101,15 @@ final class InstallTerminationWiringTests: XCTestCase {
         XCTAssertEqual(install.components(separatedBy: "updateInstalling = false").count - 1, 1)
     }
 
-    // Mutation: put `term.setEventHandler { NSApp.terminate(nil) }` back -> RED
-    // (install-app.sh's SIGTERM ends a dictation).
-    func testTheSigtermHandlerLeavesAnInstallDuringADictationToTheRelaunch() {
+    // A SIGTERM keeps meaning "end now": logout, shutdown and `kill` are not deferred.
+    // Mutation: make the handler wait or return when an install/dictation runs -> RED.
+    func testTheSigtermHandlerStillTerminatesAtOnce() {
         let path = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/OxSayDictation/AppDelegate.swift")
         let source = (try? String(contentsOf: path, encoding: .utf8)) ?? ""
-        guard let handler = source.range(of: "term.setEventHandler {"),
-              let resume = source.range(of: "term.resume()", range: handler.upperBound..<source.endIndex)
-        else { return XCTFail("the SIGTERM handler is gone") }
-        let text = source[handler.lowerBound..<resume.lowerBound]
-        guard let rule = text.range(of: "InstallTermination.sigterm(installing: self.updateInstalling"),
-              let terminate = text.range(of: "NSApp.terminate(nil)")
-        else { return XCTFail("the SIGTERM handler does not consult InstallTermination") }
-        XCTAssertLessThan(rule.lowerBound, terminate.lowerBound)
-        XCTAssertTrue(text.contains(".leaveToRelaunch { return }"))
+        XCTAssertTrue(source.contains("term.setEventHandler { NSApp.terminate(nil) }"),
+                      "the SIGTERM handler does more than terminate")
     }
 
     // #198.3 call site — mutation: call `self?.backgroundUpdateCheck()` unguarded in the
