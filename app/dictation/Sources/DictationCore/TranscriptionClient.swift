@@ -41,6 +41,18 @@ public struct TranscriptionClient {
         return SlowTranscription.sttServerState(fromStatus: data)
     }
 
+    /// Whether the daemon answers /status at all — the probe a failed
+    /// transcription waits on before re-uploading the held recording.
+    /// Deliberately not `sttServerState`: that is nil both when the daemon is
+    /// down and when it answers but reports no stt_server (an older build),
+    /// which would read an up daemon as down and wait out the whole budget.
+    public func reachable() async -> Bool {
+        var request = URLRequest(url: baseURL.appendingPathComponent("status"))
+        request.timeoutInterval = 3
+        guard let (_, response) = try? await send(request) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
+    }
+
     /// Transcribes 16 kHz mono samples.
     public func transcribe(_ samples: [Float]) async throws -> String {
         let boundary = "ox-say-dictation-\(UUID().uuidString)"

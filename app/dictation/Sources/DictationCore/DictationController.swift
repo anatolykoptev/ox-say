@@ -59,6 +59,84 @@ extension Transcriber {
     public var finishStats: TranscriberStats { TranscriberStats(path: .oneShot) }
 }
 
+/// What the retry did, for the log: no text, only the fact and the wait.
+public enum DaemonRetryEvent: Equatable {
+    /// A transcription failed with the daemon unreachable; the wait began.
+    case started
+    /// The held audio was uploaded again and came back with text (possibly empty).
+    case recovered(waitedMs: Int)
+    /// The wait ran out without an answer, or the second upload failed too.
+    case gaveUp(waitedMs: Int)
+
+    public var line: String {
+        switch self {
+        case .started: return "daemon retry started"
+        case .recovered(let ms): return "daemon retry recovered waited_ms=\(ms)"
+        case .gaveUp(let ms): return "daemon retry gave_up waited_ms=\(ms)"
+        }
+    }
+}
+
+/// How a transcription that failed while its recording is still held gets a
+/// second chance: a daemon that went dead mid-dictation is often just
+/// restarting — an install reloads its agent, a crash is relaunched — so its
+/// health is polled and the held audio is uploaded once more when it answers.
+public struct DaemonRetry {
+    /// The wait is capped here in wall-clock time, probes included: about an
+    /// agent reload, not a cold start. It ends at the first check after the
+    /// budget, so it can overshoot by one probe's own timeout (3 s), no more.
+    public var budget: TimeInterval
+    /// Between probes.
+    public var interval: TimeInterval
+    /// One health probe on the daemon: true when it answered.
+    public var probe: () async -> Bool
+    /// Between probes; injected by tests, production sleeps.
+    public var sleep: (TimeInterval) async -> Void
+    /// Monotonic seconds; injected by tests, production reads the system uptime.
+    public var now: () -> TimeInterval
+
+    public init(probe: @escaping () async -> Bool,
+                budget: TimeInterval = 60, interval: TimeInterval = 1,
+                sleep: @escaping (TimeInterval) async -> Void = { seconds in
+                    try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                },
+                now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.probe = probe
+        self.budget = budget
+        self.interval = interval
+        self.sleep = sleep
+        self.now = now
+    }
+
+    /// Whether a failed transcription is worth the wait: only a daemon that did
+    /// not answer at all. A timeout means the daemon is alive and busy (the
+    /// client's 660 s sits above the daemon's 600 s cap, so a retry would sit
+    /// another ~22 min); an HTTP error or an unreadable answer would fail the
+    /// same way again. 502/503 are not restart signatures either: the daemon
+    /// binds its port with every route registered, so before it is up the
+    /// connect is refused (daemonUnreachable); once it is up, 503 on
+    /// /v1/audio/transcriptions is a full queue (stt.ErrBusy) or a missing
+    /// model, and 502 is not returned by that route at all.
+    public static func worthWaiting(for error: Error) -> Bool {
+        guard let failure = error as? TranscriptionError, case .daemonUnreachable = failure else { return false }
+        return true
+    }
+
+    /// Polls `probe` until it answers or the budget is spent. `live` false —
+    /// the dictation was cancelled or superseded — ends the wait at once:
+    /// nothing is uploaded for a dead dictation. True means worth a retry.
+    public func wait(live: () -> Bool) async -> Bool {
+        let start = now()
+        while live() {
+            if await probe() { return true }
+            let remaining = budget - (now() - start)
+            guard remaining > 0 else { return false }
+            await sleep(min(interval, remaining))
+        }
+        return false
+    }
+}
+
 /// The one-shot path the app always had: `begin`/`feed`/`cancel` do nothing and
 /// `finish` uploads the whole recording. Keeps the closure-based init working.
 private final class OneShotTranscriber: Transcriber {
@@ -90,6 +168,13 @@ public final class DictationController {
     public var onTiming: ((DictationTiming) -> Void)?
     /// Length of the recording being transcribed (or last transcribed).
     public private(set) var recordingSeconds: Double = 0
+    /// What a failed transcription gets before the error is reported: the
+    /// recording is still held, so a daemon that is merely restarting is
+    /// polled for an answer and the held audio uploaded once more. nil
+    /// reports the failure at once.
+    public var daemonRetry: DaemonRetry?
+    /// The retry's start and end, for the log: no text.
+    public var onRetry: ((DaemonRetryEvent) -> Void)?
     /// Every delivered dictation, pasted or left on the clipboard: what a paste
     /// that went nowhere cannot lose.
     public let history = DictationHistory()
@@ -214,13 +299,37 @@ public final class DictationController {
         let started = generation
         let seconds = recordingSeconds
         Task { @MainActor in
-            let result: Result<String, Error>
+            var result: Result<String, Error>
             do {
                 result = .success(try await transcriber.finish(all: samples))
             } catch {
                 result = .failure(error)
             }
+            // A dead daemon can be mid-restart while the recording is still in
+            // `samples`: wait for it to answer, then upload the held audio once
+            // more. A cancelled or superseded dictation gets neither the wait
+            // nor the retry, and only an unreachable daemon is worth it.
+            var retried = false
+            var waitedMs = 0
+            if case .failure(let error) = result, DaemonRetry.worthWaiting(for: error),
+               let retry = daemonRetry, started == generation {
+                retried = true
+                onRetry?(.started)
+                let waitStart = retry.now()
+                let answered = await retry.wait(live: { self.generation == started })
+                waitedMs = Int((retry.now() - waitStart) * 1000)
+                if answered, started == generation {
+                    do {
+                        result = .success(try await transcriber.finish(all: samples))
+                    } catch {
+                        result = .failure(error)
+                    }
+                }
+            }
             guard started == generation else { return }
+            if retried {
+                if case .success = result { onRetry?(.recovered(waitedMs: waitedMs)) } else { onRetry?(.gaveUp(waitedMs: waitedMs)) }
+            }
             let elapsedMs = Int((DispatchTime.now().uptimeNanoseconds - released) / 1_000_000)
             let outcome: DictationTiming.Outcome
             var delivery: Delivery?
@@ -237,7 +346,8 @@ public final class DictationController {
                 outcome = .failed
             }
             onTiming?(DictationTiming(recordedSeconds: seconds, releaseToTextMs: elapsedMs,
-                                      stats: transcriber.finishStats, outcome: outcome, delivery: delivery))
+                                      stats: transcriber.finishStats, outcome: outcome, delivery: delivery,
+                                      retried: retried, waitedMs: waitedMs))
             state = .idle
         }
     }

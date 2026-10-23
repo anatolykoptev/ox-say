@@ -89,15 +89,41 @@ final class NoticePriorityTests: XCTestCase {
     }
 
     // MAJOR — the lost-text pointer is the user's only way to their text: the
-    // reason of a self-ended recording is not flushed over a notice that was just
-    // released and shown in the same idle transition (the pill holds one message).
-    // Mutation: DictationNotice.reasonToFlush returns `endedReason` always -> RED.
-    func testAReleasedNoticeIsNotOverwrittenByTheEndedReasonInTheSameTick() {
-        let reason = "Recording stopped at the length cap."
-        XCTAssertNil(DictationNotice.reasonToFlush(reason, releasedNotice: true),
-                     "the reason replaced the notice that was just shown")
-        XCTAssertEqual(DictationNotice.reasonToFlush(reason, releasedNotice: false), reason)
-        XCTAssertNil(DictationNotice.reasonToFlush(nil, releasedNotice: false))
+    // reason of a self-ended recording never prefixes it, and is dropped.
+    // Mutation: DictationNotice.released prefixes a .lostText notice too (or
+    // keeps the reason pending) -> RED.
+    func testALostTextReleaseIsNotCrowdedByTheEndedReason() {
+        let held = NoticeGate.Notice.unreadPaste("A: the text did not paste")
+        let resolved = DictationNotice.released(held, flushing: "Recording stopped at the length cap.")
+        XCTAssertEqual(resolved.notice, held, "the lost-text notice shows untouched")
+        XCTAssertNil(resolved.endedReason, "the reason is dropped, never kept for a later notice")
+    }
+
+    // #213.1 — the pill holds one message, so a released notice and the pending
+    // reason are said as one: the reason prefixes the notice — the same shape
+    // an outcome notice gets from merge — and is spent.
+    // Mutation: DictationNotice.released drops the reason for every released
+    // notice -> RED.
+    func testAnOrdinaryReleasedNoticeCarriesTheEndedReasonAsPrefix() {
+        for held in [NoticeGate.Notice.updateAvailable("A new version", tag: "v0.1.30"),
+                     NoticeGate.Notice.updateRefused("Click the update row again"),
+                     NoticeGate.Notice(message: "Speak failed", kind: .unrelated)] {
+            let resolved = DictationNotice.released(held, flushing: "Recording stopped at the length cap.")
+            XCTAssertEqual(resolved.notice.message, "Recording stopped at the length cap. \(held.message)")
+            XCTAssertNil(resolved.endedReason, "the reason is said once")
+            XCTAssertEqual(resolved.notice.kind, held.kind)
+            XCTAssertEqual(resolved.notice.priority, held.priority, "\(held.message): the notice keeps its rank")
+            XCTAssertEqual(resolved.notice.announces, held.announces,
+                           "a release notice still counts as told when shown")
+        }
+    }
+
+    // Nothing pending: the held notice is released untouched.
+    func testAReleasedNoticeWithoutAPendingReasonPassesThrough() {
+        let held = NoticeGate.Notice.updateRefused("Click the update row again")
+        let resolved = DictationNotice.released(held, flushing: nil)
+        XCTAssertEqual(resolved.notice, held)
+        XCTAssertNil(resolved.endedReason)
     }
 
     // F3 — the unread notice is about the PREVIOUS dictation: a later
@@ -319,17 +345,24 @@ final class NeverLoseWiringTests: XCTestCase {
         XCTAssertFalse(row[idle.lowerBound..<install.lowerBound].contains("NSSound.beep()"), "the refusal only beeps")
     }
 
-    // MAJOR call site — mutation: pass `releasedNotice: false`, or call `notice(reason)`
-    // unconditionally, in show(.idle) -> RED.
-    func testShowDoesNotFlushTheEndedReasonOverAReleasedNotice() {
+    // MAJOR call site — the released notice is folded with the pending reason
+    // by DictationNotice.released before it shows; the standalone flush only
+    // ever sees a reason nothing was released for. Mutations: show the held
+    // notice without the fold (the reason is dropped even on an ordinary
+    // notice), drop `endedReason = resolved.endedReason` (it lingers and merge
+    // prefixes it a second time), or flush the reason before the fold -> RED.
+    func testTheReleasedNoticeIsFoldedWithTheEndedReasonBeforeItShows() {
         let show = requireBody("private func show(", in: "AppDelegate.swift")
         guard let release = show.range(of: "if let held = noticeGate.release(state: controller.state) {"),
-              let flagged = show.range(of: "releasedNotice = true"),
-              let flush = show.range(of: "DictationNotice.reasonToFlush(reason, releasedNotice: releasedNotice)") else {
-            return XCTFail("show() lost the released-notice flag or the reason rule")
+              let fold = show.range(of: "DictationNotice.released(held, flushing: endedReason)"),
+              let spent = show.range(of: "endedReason = resolved.endedReason"),
+              let shown = show.range(of: "notice(resolved.notice)"),
+              let flush = show.range(of: "if let reason = endedReason") else {
+            return XCTFail("show() lost the release, the fold or the standalone flush")
         }
-        XCTAssertTrue(release.lowerBound < flagged.lowerBound && flagged.lowerBound < flush.lowerBound)
-        XCTAssertFalse(show.contains("notice(reason)"), "the reason is flushed without the rule")
+        XCTAssertTrue(release.lowerBound < fold.lowerBound && fold.lowerBound < spent.lowerBound
+                      && spent.lowerBound < shown.lowerBound && shown.lowerBound < flush.lowerBound,
+                      "the reason must be resolved into the released notice before either shows")
     }
 
     // Mutation: delete the release in show(.idle) -> RED (held notices never appear).

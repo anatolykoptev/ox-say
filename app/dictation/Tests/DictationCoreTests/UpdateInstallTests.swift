@@ -77,6 +77,69 @@ final class UpdateInstallTests: XCTestCase {
         XCTAssertFalse(body.contains("Process()"), "installUpdate starts its own process, without the relaunch variable")
     }
 
+    private func appDelegateBody(_ signature: String) throws -> String {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/OxSayDictation/AppDelegate.swift")
+        let source = try String(contentsOf: path, encoding: .utf8)
+        guard let start = source.range(of: signature),
+              let end = source.range(of: "\n    }\n", range: start.upperBound..<source.endIndex)
+        else { XCTFail("`\(signature)` not found"); return "" }
+        return String(source[start.lowerBound..<end.upperBound])
+    }
+
+    /// #213.3 — a dictation owns the pill, and an install can start during it:
+    /// the confirm alert and the Repair/Studio rows are not idle-gated. If the
+    /// pill show is not guarded, "Installing…" replaces the recording's look
+    /// and stays up through the whole relaunch wait after the install ends.
+    /// Mutation: drop `if controller.state == .idle` around the pill show in
+    /// installUpdate -> RED.
+    func testTheInstallPillIsNotShownOverARunningDictation() throws {
+        let body = try appDelegateBody("private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {")
+        guard let idle = body.range(of: "if controller.state == .idle { showInstallPill() }"),
+              let text = body.range(of: "installPillText = ") else {
+            return XCTFail("installUpdate lost the idle guard or the pill text")
+        }
+        XCTAssertLessThan(text.lowerBound, idle.lowerBound, "the pill text is set after the pill is shown")
+        XCTAssertFalse(body.contains("overlay.showWorking()"), "installUpdate shows the pill itself, past the idle guard")
+    }
+
+    /// The helper both call sites share: it shows the install's own pill and
+    /// captures the owner of what it just showed.
+    func testTheInstallPillHelperShowsThePillAndCapturesItsOwner() throws {
+        let body = try appDelegateBody("private func showInstallPill() {")
+        guard let show = body.range(of: "overlay.showWorking()"),
+              let text = body.range(of: "overlay.setWorkingText(text)"),
+              let owner = body.range(of: "installPillOwner = overlay.owner") else {
+            return XCTFail("showInstallPill lost the show, the text or the owner capture")
+        }
+        XCTAssertTrue(show.lowerBound < text.lowerBound && text.lowerBound < owner.lowerBound,
+                      "the owner must be the pill that was just shown")
+    }
+
+    /// An install that started during a dictation shows no pill then. When the
+    /// dictation ends the install is still running, so `show(.idle)` puts the
+    /// pill up, after `overlay.finish()` cleared the dictation's and before a
+    /// released notice may replace it. The text is dropped with the install.
+    /// Mutations: delete the `if updateInstalling { showInstallPill() }` line in
+    /// show(.idle); or drop `installPillText = nil` in endInstall (the pill
+    /// would come back after the install ended) -> RED.
+    func testTheInstallPillReturnsWhenTheDictationThatHeldItEnds() throws {
+        let show = try appDelegateBody("private func show(")
+        guard let idle = show.range(of: "case .idle:"),
+              let finish = show.range(of: "overlay.finish()"),
+              let pill = show.range(of: "if updateInstalling { showInstallPill() }"),
+              let release = show.range(of: "noticeGate.release(state: controller.state)"),
+              let recording = show.range(of: "case .recording:") else {
+            return XCTFail("show(.idle) does not bring the install pill back")
+        }
+        XCTAssertTrue(idle.lowerBound < finish.lowerBound && finish.lowerBound < pill.lowerBound
+                      && pill.lowerBound < release.lowerBound && release.lowerBound < recording.lowerBound,
+                      "the install pill must come after overlay.finish() and before the notice release, inside .idle")
+        let end = try appDelegateBody("private func endInstall() {")
+        XCTAssertTrue(end.contains("installPillText = nil"), "the pill text outlives the install")
+    }
+
     func testLaunchEnvironmentAddsTheCommandsVariablesToTheApps() {
         let command = UpdateInstaller.Command(argv: ["/bin/true"], environment: ["A": "new"])
         XCTAssertEqual(command.launchEnvironment(base: ["A": "old", "B": "kept"]), ["A": "new", "B": "kept"])
