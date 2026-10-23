@@ -87,6 +87,10 @@ jobs:
       - name: install-app tests
         run: bash app/dictation/test-install-app.sh
 
+      # sign-release.sh's entitlements check, on real plists (needs plutil).
+      - name: entitlements check test
+        run: bash scripts/test-entitlements.sh
+
       # The arm64 baseline guard (issue #109): its probe cases need only Xcode
       # clang; the real-binary cases print SKIP on CI.
       - name: arm64 baseline guard test
