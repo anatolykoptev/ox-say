@@ -47,18 +47,26 @@ public struct DictationTiming: Equatable {
     /// `delivered` outcome with the text left on the clipboard is still a
     /// delivery — `delivery=none` would claim the dictation produced nothing.
     public var delivery: Delivery?
+    /// The transcription failed with the daemon unreachable and the held audio
+    /// got the restart wait (see `DaemonRetry`); true whether or not the second
+    /// upload then succeeded — `outcome` says how it ended.
+    public var retried: Bool
+    /// How long that wait took, in ms; 0 when there was none.
+    public var waitedMs: Int
 
     public init(recordedSeconds: Double, releaseToTextMs: Int, stats: TranscriberStats, outcome: Outcome,
-                delivery: Delivery?) {
+                delivery: Delivery?, retried: Bool = false, waitedMs: Int = 0) {
         self.recordedSeconds = recordedSeconds
         self.releaseToTextMs = releaseToTextMs
         self.stats = stats
         self.outcome = outcome
         self.delivery = delivery
+        self.retried = retried
+        self.waitedMs = waitedMs
     }
 
     /// The log line: key=value pairs, fixed order, no text. The delivery
-    /// fields are appended last; every earlier key is byte-identical to before
+    /// fields, then the retry fields, are appended last; every earlier key is byte-identical to before
     /// they existed — something may parse them.
     public var line: String {
         var parts = [
@@ -80,6 +88,12 @@ public struct DictationTiming: Equatable {
             parts.append("clipboard_reason=\(reason.code)")
         case nil:
             parts.append("delivery=none")
+        }
+        // Only a retried dictation carries these, last: every other line stays
+        // byte-identical to before the retry existed.
+        if retried {
+            parts.append("retried=1")
+            parts.append("waited_ms=\(waitedMs)")
         }
         return parts.joined(separator: " ")
     }

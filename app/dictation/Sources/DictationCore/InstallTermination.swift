@@ -28,6 +28,12 @@ public enum InstallTermination {
     /// waiter's streams go to /dev/null, so each failure leaves one line in the
     /// unified log: a pid still alive after `timeout` seconds (exit 1, nothing
     /// opened) or an `open` that answered non-zero (its status is the waiter's).
+    /// Both lines are written by `logger -t ox-say-dictation`. The unified log
+    /// drops that tag (it shows no subsystem, category or tag, checked on
+    /// macOS 26), so the lines belong to the `logger` process and are found by
+    /// their `open-after-exit:` prefix:
+    /// `log show --last 1h --predicate 'process == "logger" AND eventMessage BEGINSWITH "open-after-exit"'`.
+    /// Do not search the unified log by the tag.
     public static func openAfterExit(pid: Int32, bundlePath: String, open: String = "/usr/bin/open",
                                      timeout: Int = exitTimeout, logger: String = "/usr/bin/logger") -> [String] {
         let script = #"""

@@ -112,6 +112,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var studioPillOwner: Int?
     private var updateCheckPillOwner: Int?
     private var installPillOwner: Int?
+    /// The "Installing…" line while an install runs, so the pill can come back
+    /// when a dictation that held it ends; nil outside an install.
+    private var installPillText: String?
     private var wakeObserver: NSObjectProtocol?
     /// The small version line at the bottom of the menu.
     private let footerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -274,6 +277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // once it answers. The pill keeps the Transcribing look meanwhile; the
         // slow-transcription reason already names the wait.
         controller.daemonRetry = DaemonRetry(probe: { [client] in await client.reachable() })
+        controller.onRetry = { event in timingLog.notice("\(event.line, privacy: .public)") }
         output.onNotice = { [weak self] message in self?.notice(message, kind: .outcome) }
         output.onPasteUnread = { [weak self] in self?.notice(.unreadPaste(L10nKey.noticePasteUnread.text)) }
         recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }
@@ -738,6 +742,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 controller.mode == .hold ? "Hold \(key.title) and speak" : "Press \(key.title) to start and stop"
             } ?? "No dictation key"
             overlay.finish()
+            // An install still running has no pill once the dictation that held
+            // it ends; a notice released below replaces it, as it would any pill.
+            if updateInstalling { showInstallPill() }
             if let held = noticeGate.release(state: controller.state) {
                 // The pill holds one message: a released notice takes the
                 // pending reason as its prefix so both are said — except the
@@ -1186,12 +1193,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // A running dictation owns the pill — the handshake pill guards the
         // same way. Shown over it, "Installing…" would replace the recording's
         // look and then outlive the install through the whole relaunch wait.
-        if controller.state == .idle {
-            overlay.showWorking()
-            overlay.setWorkingText(kind == .studioVoice ? "Installing the studio voice…" : "Installing \(tag)…")
-            overlay.setHintHidden(true)
-            installPillOwner = overlay.owner
-        }
+        installPillText = kind == .studioVoice ? "Installing the studio voice…" : "Installing \(tag)…"
+        if controller.state == .idle { showInstallPill() }
         Task { @MainActor in
             let log = Self.openUpdateLog()
             let statusClient = studioClient!
@@ -1217,10 +1220,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Puts the "Installing…" pill up and remembers it as the install's own.
+    /// `show(.idle)` calls it too: an install that began during a dictation
+    /// shows nothing then, so the pill appears when the dictation ends.
+    private func showInstallPill() {
+        guard let text = installPillText else { return }
+        overlay.showWorking()
+        overlay.setWorkingText(text)
+        overlay.setHintHidden(true)
+        installPillOwner = overlay.owner
+    }
+
     /// The install is over and the app stays: re-enable what it disabled and
     /// take the "Installing…" pill down.
     private func endInstall() {
         updateInstalling = false
+        installPillText = nil
         studio.render()
         finishPill(self.installPillOwner)
         installPillOwner = nil
