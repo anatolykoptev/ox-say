@@ -33,11 +33,11 @@ index e4cc0475..1a81164c 100644
 +                ggml_metal_device_get_props(dev)->has_tensor) {
 +                GGML_LOG_INFO("%s: tensor API device - the precompiled library has no tensor kernels, using the embedded metal library\n",
 +                              __func__);
-+            // the precompiled library carries the bf16 kernels, which need
-+            // Metal language 3.1 - its AIR target is macOS 14.0, so on an
-+            // older OS it would not load; go straight to the embedded source
 +            } else if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib] &&
 +                ![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){14, 0, 0}]) {
++                // the precompiled library carries the bf16 kernels, which need
++                // Metal language 3.1 - its AIR target is macOS 14.0, so on an
++                // older OS it would not load; go straight to the embedded source
 +                GGML_LOG_INFO("%s: skipping '%s' - the precompiled metal library targets macOS 14.0\n",
 +                              __func__, [path_lib UTF8String]);
 +            } else if ([[NSFileManager defaultManager] isReadableFileAtPath:path_lib]) {
