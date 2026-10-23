@@ -77,6 +77,32 @@ final class UpdateInstallTests: XCTestCase {
         XCTAssertFalse(body.contains("Process()"), "installUpdate starts its own process, without the relaunch variable")
     }
 
+    /// #213.3 — a dictation owns the pill, and an install can start during it:
+    /// the confirm alert and the Repair/Studio rows are not idle-gated. If the
+    /// pill show is not guarded, "Installing…" replaces the recording's look
+    /// and stays up through the whole relaunch wait after the install ends.
+    /// Mutation: drop `if controller.state == .idle` around the pill show in
+    /// installUpdate -> RED.
+    func testTheInstallPillIsNotShownOverARunningDictation() throws {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/OxSayDictation/AppDelegate.swift")
+        let source = try String(contentsOf: path, encoding: .utf8)
+        guard let start = source.range(of: "private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {"),
+              let end = source.range(of: "\n    }\n", range: start.upperBound..<source.endIndex)
+        else { return XCTFail("installUpdate not found") }
+        let body = source[start.lowerBound..<end.upperBound]
+        guard let idle = body.range(of: "if controller.state == .idle"),
+              let pill = body.range(of: "overlay.showWorking()"),
+              let owner = body.range(of: "installPillOwner = overlay.owner") else {
+            return XCTFail("installUpdate lost the idle guard, the pill show or the owner capture")
+        }
+        XCTAssertLessThan(idle.lowerBound, pill.lowerBound,
+                          "the pill is shown without checking the dictation is idle")
+        XCTAssertLessThan(pill.lowerBound, owner.lowerBound,
+                          "the owner must be the pill that was just shown")
+    }
+
     func testLaunchEnvironmentAddsTheCommandsVariablesToTheApps() {
         let command = UpdateInstaller.Command(argv: ["/bin/true"], environment: ["A": "new"])
         XCTAssertEqual(command.launchEnvironment(base: ["A": "old", "B": "kept"]), ["A": "new", "B": "kept"])

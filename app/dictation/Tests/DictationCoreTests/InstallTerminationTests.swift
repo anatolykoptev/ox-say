@@ -51,7 +51,8 @@ final class InstallTerminationTests: XCTestCase {
 
     // The waiter gets this process's pid and the bundle path as separate argv
     // entries after the script, never inside it: a path with spaces, quotes or
-    // `$(...)` stays one inert argument.
+    // `$(...)` stays one inert argument. The logger is an argv entry too — only
+    // the tag and the bookkeeping numbers are in the script, no user content.
     // Mutation: InstallTermination.openAfterExit, interpolate the path into the
     // script string -> RED.
     func testTheWaiterGetsThePidAndThePathAsSeparateArguments() {
@@ -59,21 +60,28 @@ final class InstallTerminationTests: XCTestCase {
         let argv = InstallTermination.openAfterExit(pid: 4242, bundlePath: path)
         XCTAssertEqual(argv[0], "/bin/sh")
         XCTAssertEqual(argv[1], "-c")
-        XCTAssertEqual(Array(argv[3...]), ["sh", "4242", path, "/usr/bin/open", "30"])
+        XCTAssertEqual(Array(argv[3...]), ["sh", "4242", path, "/usr/bin/open", "30", "/usr/bin/logger"])
         XCTAssertFalse(argv[2].contains(path) || argv[2].contains("4242"), "the arguments are interpolated into the script")
         XCTAssertTrue(argv[2].contains("kill -0 \"$1\""), "the script does not wait for the pid")
-        XCTAssertFalse(argv[2].contains("-n"), "the new copy is opened with -n while the old one may still be alive")
+        XCTAssertTrue(argv[2].contains(#""$3" "$2""#), "open gets the path alone — no -n while the old copy may still be alive")
+        XCTAssertTrue(argv[2].contains(#""$5" -t ox-say-dictation"#), "the failures do not reach the unified log")
+        XCTAssertFalse(argv[2].contains("/usr/bin/logger"), "the logger path must stay an argv entry")
     }
 
-    /// Runs the waiter for `pid` with an `open` stub that records its arguments.
+    /// Runs the waiter for `pid` with an `open` stub that records its arguments
+    /// and a `logger` stub that records each call, one line per invocation.
     private final class WaiterRig {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-waiter-\(UUID().uuidString)")
         var opened: URL { dir.appendingPathComponent("opened") }
         var openStub: URL { dir.appendingPathComponent("open-stub") }
+        var logged: URL { dir.appendingPathComponent("logged") }
+        var loggerStub: URL { dir.appendingPathComponent("logger-stub") }
         init() throws {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try "#!/bin/sh\nprintf '%s' \"$*\" > '\(dir.path)/opened'\n".write(to: openStub, atomically: true, encoding: .utf8)
+            try "#!/bin/sh\nprintf '%s\n' \"$*\" >> '\(dir.path)/logged'\n".write(to: loggerStub, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: openStub.path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: loggerStub.path)
         }
         func cleanUp() { try? FileManager.default.removeItem(at: dir) }
         func start(_ argv: [String]) throws -> Process {
@@ -109,7 +117,8 @@ final class InstallTerminationTests: XCTestCase {
         let old = try rig.sleeper(seconds: 2)
         defer { if old.isRunning { old.terminate() } }
         let waiter = try rig.start(InstallTermination.openAfterExit(pid: old.processIdentifier,
-                                                                    bundlePath: "/tmp/My App.app", open: rig.openStub.path))
+                                                                    bundlePath: "/tmp/My App.app", open: rig.openStub.path,
+                                                                    logger: rig.loggerStub.path))
         try await Task.sleep(nanoseconds: 700_000_000)
         XCTAssertTrue(old.isRunning)
         XCTAssertFalse(FileManager.default.fileExists(atPath: rig.opened.path),
@@ -131,11 +140,53 @@ final class InstallTerminationTests: XCTestCase {
         let old = try rig.sleeper(seconds: 8)
         defer { if old.isRunning { old.terminate() } }
         let waiter = try rig.start(InstallTermination.openAfterExit(pid: old.processIdentifier, bundlePath: "/tmp/x.app",
-                                                                    open: rig.openStub.path, timeout: 1))
+                                                                    open: rig.openStub.path, timeout: 1,
+                                                                    logger: rig.loggerStub.path))
         let gaveUp = await rig.waitUntil(4) { !waiter.isRunning }
         XCTAssertTrue(gaveUp, "the waiter is still waiting after its timeout")
         if waiter.isRunning { waiter.terminate() } else { XCTAssertNotEqual(waiter.terminationStatus, 0) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: rig.opened.path), "opened over a live process")
+    }
+
+    // #213.2 — the waiter's streams go to /dev/null, so a give-up that logs
+    // nothing is a relaunch that silently never happened.
+    // Mutation: InstallTermination.openAfterExit, drop the logger call on the
+    // give-up path -> RED (nothing lands in `logged`).
+    func testTheGiveUpIsLogged() async throws {
+        let rig = try WaiterRig()
+        defer { rig.cleanUp() }
+        let old = try rig.sleeper(seconds: 8)
+        defer { if old.isRunning { old.terminate() } }
+        let waiter = try rig.start(InstallTermination.openAfterExit(pid: old.processIdentifier, bundlePath: "/tmp/x.app",
+                                                                    open: rig.openStub.path, timeout: 1,
+                                                                    logger: rig.loggerStub.path))
+        let gaveUp = await rig.waitUntil(4) { !waiter.isRunning }
+        XCTAssertTrue(gaveUp, "the waiter is still waiting after its timeout")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rig.opened.path), "opened over a live process")
+        let logged = (try? String(contentsOf: rig.logged, encoding: .utf8)) ?? ""
+        XCTAssertTrue(logged.contains("-t ox-say-dictation"), "the give-up was not logged under the app tag")
+        XCTAssertTrue(logged.contains("still alive"), "the log line must say the pid never exited: \(logged)")
+    }
+
+    // The other silent failure: `open` itself answers non-zero.
+    // Mutation: InstallTermination.openAfterExit, drop the open-failure logger
+    // call -> RED.
+    func testAFailedOpenIsLoggedAndKeepsItsStatus() async throws {
+        let rig = try WaiterRig()
+        defer { rig.cleanUp() }
+        let failing = rig.dir.appendingPathComponent("open-fails")
+        try "#!/bin/sh\nexit 3\n".write(to: failing, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: failing.path)
+        let dead = try rig.sleeper(seconds: 0)
+        dead.waitUntilExit()
+        let waiter = try rig.start(InstallTermination.openAfterExit(pid: dead.processIdentifier, bundlePath: "/tmp/x.app",
+                                                                    open: failing.path, timeout: 5,
+                                                                    logger: rig.loggerStub.path))
+        waiter.waitUntilExit()
+        XCTAssertEqual(waiter.terminationStatus, 3, "the waiter ends on open's status")
+        let logged = (try? String(contentsOf: rig.logged, encoding: .utf8)) ?? ""
+        XCTAssertTrue(logged.contains("-t ox-say-dictation"), "the failed open was not logged under the app tag")
+        XCTAssertTrue(logged.contains("open exited 3"), "the log must carry open's failure: \(logged)")
     }
 
     // #198.3 — a wake within ten minutes of the last attempt starts no check.

@@ -13,14 +13,20 @@ public enum DictationNotice {
         case unrelated
     }
 
-    /// What to say of an ended-reason still pending when a dictation turns idle,
-    /// after the held notice was released: nothing when that notice was shown
-    /// (`releasedNotice`). The pill holds one message and a lost-text pointer
-    /// must not be overwritten in the same tick; the reason is informational and
-    /// is dropped, never kept — a stale one would prefix a later dictation's
-    /// own outcome notice.
-    public static func reasonToFlush(_ endedReason: String?, releasedNotice: Bool) -> String? {
-        releasedNotice ? nil : endedReason
+    /// The held notice released when a dictation turns idle, with the pending
+    /// ended-reason resolved into it. The pill holds one message, so the two
+    /// can only be said as one: the reason prefixes the released notice — the
+    /// same shape `merge` gives an outcome notice — and is spent. The
+    /// exception is a `.lostText` release, the only pointer to a text that
+    /// went nowhere: an informational reason is dropped rather than crowding
+    /// it — never kept, or a stale one would prefix a later dictation's own
+    /// outcome notice.
+    public static func released(_ held: NoticeGate.Notice, flushing endedReason: String?)
+        -> (notice: NoticeGate.Notice, endedReason: String?) {
+        guard held.priority != .lostText else { return (held, nil) }
+        guard let endedReason else { return (held, nil) }
+        return (NoticeGate.Notice(message: "\(endedReason) \(held.message)", kind: held.kind,
+                                priority: held.priority, announces: held.announces), nil)
     }
 
     /// The message to show and the ended-reason still pending after it. An

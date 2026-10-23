@@ -23,21 +23,31 @@ public enum InstallTermination {
     /// opens the bundle at `bundlePath` with plain `open` (not `-n`). The old
     /// app holds the exclusive dictation hotkey until it is gone, so the new copy
     /// must not start before. Everything is passed as argv entries after the
-    /// script (`$1` pid, `$2` path, `$3` open, `$4` seconds), never interpolated
-    /// into it. `open` is injectable for tests. Exits 1 without opening when
-    /// the pid is still alive after `timeout` seconds.
+    /// script (`$1` pid, `$2` path, `$3` open, `$4` seconds, `$5` logger), never
+    /// interpolated into it. `open` and `logger` are injectable for tests. The
+    /// waiter's streams go to /dev/null, so each failure leaves one line in the
+    /// unified log: a pid still alive after `timeout` seconds (exit 1, nothing
+    /// opened) or an `open` that answered non-zero (its status is the waiter's).
     public static func openAfterExit(pid: Int32, bundlePath: String, open: String = "/usr/bin/open",
-                                     timeout: Int = exitTimeout) -> [String] {
+                                     timeout: Int = exitTimeout, logger: String = "/usr/bin/logger") -> [String] {
         let script = #"""
         n=0
         while kill -0 "$1" 2>/dev/null; do
             n=$((n + 1))
-            [ "$n" -ge $(($4 * 5)) ] && exit 1
+            if [ "$n" -ge $(($4 * 5)) ]; then
+                "$5" -t ox-say-dictation "open-after-exit: pid $1 still alive after $4 s; the new copy opens at next launch"
+                exit 1
+            fi
             sleep 0.2
         done
-        exec "$3" "$2"
+        "$3" "$2"
+        s=$?
+        if [ "$s" -ne 0 ]; then
+            "$5" -t ox-say-dictation "open-after-exit: open exited $s"
+        fi
+        exit "$s"
         """#
-        return ["/bin/sh", "-c", script, "sh", String(pid), bundlePath, open, String(timeout)]
+        return ["/bin/sh", "-c", script, "sh", String(pid), bundlePath, open, String(timeout), logger]
     }
 
     public enum Wait: Equatable {

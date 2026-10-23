@@ -738,14 +738,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 controller.mode == .hold ? "Hold \(key.title) and speak" : "Press \(key.title) to start and stop"
             } ?? "No dictation key"
             overlay.finish()
-            var releasedNotice = false
             if let held = noticeGate.release(state: controller.state) {
-                notice(held)
-                releasedNotice = true
+                // The pill holds one message: a released notice takes the
+                // pending reason as its prefix so both are said — except the
+                // lost-text pointer, which the reason is dropped for.
+                let resolved = DictationNotice.released(held, flushing: endedReason)
+                endedReason = resolved.endedReason
+                notice(resolved.notice)
             }
             if let reason = endedReason {
                 endedReason = nil
-                if let say = DictationNotice.reasonToFlush(reason, releasedNotice: releasedNotice) { notice(say) }
+                notice(reason)
             }
             handshakeWorkEnded()
         case .recording:
@@ -1180,10 +1183,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {
         updateInstalling = true
         studio.render()
-        overlay.showWorking()
-        overlay.setWorkingText(kind == .studioVoice ? "Installing the studio voice…" : "Installing \(tag)…")
-        overlay.setHintHidden(true)
-        installPillOwner = overlay.owner
+        // A running dictation owns the pill — the handshake pill guards the
+        // same way. Shown over it, "Installing…" would replace the recording's
+        // look and then outlive the install through the whole relaunch wait.
+        if controller.state == .idle {
+            overlay.showWorking()
+            overlay.setWorkingText(kind == .studioVoice ? "Installing the studio voice…" : "Installing \(tag)…")
+            overlay.setHintHidden(true)
+            installPillOwner = overlay.owner
+        }
         Task { @MainActor in
             let log = Self.openUpdateLog()
             let statusClient = studioClient!
