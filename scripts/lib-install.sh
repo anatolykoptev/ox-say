@@ -168,7 +168,7 @@ oxs_render_agent() {
 
 # Copy then rename, so a running process keeps its old inode.
 oxs_install_engines() {
-    local out=$1 bin
+    local out=$1 bin lib
     for bin in tts-server ox-stt ox-align; do
         if [ ! -x "$out/$bin" ]; then
             echo "ox-say install: no $bin in $out" >&2
@@ -187,6 +187,21 @@ oxs_install_engines() {
         mv "$home/engine/audiocpp_server.new" "$home/engine/audiocpp_server"
         echo "installed $home/engine/audiocpp_server"
     fi
+    # Each engine's precompiled Metal library travels next to it under its own
+    # name (<bin>.metallib, plus <bin>-tensor.metallib on Metal4-capable
+    # builds). An engine installed without its library keeps working when it
+    # has the shaders embedded, so a stale library left by an older install
+    # must go: it would be the wrong kernels for the new binary.
+    for bin in tts-server ox-stt ox-align $( [ -x "$out/audiocpp_server" ] && echo audiocpp_server ); do
+        for lib in "$bin.metallib" "$bin-tensor.metallib"; do
+            if [ -f "$out/$lib" ]; then
+                cp "$out/$lib" "$home/engine/$lib.new"
+                mv "$home/engine/$lib.new" "$home/engine/$lib"
+            else
+                rm -f "$home/engine/$lib"
+            fi
+        done
+    done
     cp "$out"/licenses/* "$home/engine/licenses/"
 }
 

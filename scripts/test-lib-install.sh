@@ -323,14 +323,18 @@ want_case "x86_64 with-voxcpm2" x86_64 no OX_SAY_WITH_VOXCPM2=1
 # -> "stale audiocpp_server plain arm64" fails; `return 1` -> `return 0` ->
 # "gate continues the build: plain arm64" fails.
 gate_case() { # name arch want-continue want-stale-left [env assignments...]
-    local name=$1 arch=$2 cont=$3 left=$4 d="$tmp/gate-$1" rc=stop stale=gone
+    local name=$1 arch=$2 cont=$3 left=$4 d="$tmp/gate-$1" rc=stop stale=gone stalelib=gone
     shift 4
     mkdir -p "$d"
     : > "$d/audiocpp_server"
+    : > "$d/audiocpp_server.metallib"
+    : > "$d/audiocpp_server-tensor.metallib"
     if env -i PATH="$PATH" "$@" bash -c ". '$root/engine/want-audiocpp.sh'; audiocpp_gate '$arch' '$d'"; then rc=go; fi
     if [ -e "$d/audiocpp_server" ]; then stale=left; fi
+    if [ -e "$d/audiocpp_server.metallib" ] || [ -e "$d/audiocpp_server-tensor.metallib" ]; then stalelib=left; fi
     check "gate continues the build: $name" "$rc" "$cont"
     check "stale audiocpp_server $name" "$stale" "$left"
+    check "stale audiocpp_server metallibs $name" "$stalelib" "$left"
 }
 gate_case "plain arm64" arm64 stop gone
 gate_case "x86_64 dist" x86_64 stop gone OX_SAY_DIST=1
@@ -342,6 +346,51 @@ n=$(grep -cE '^[^#]*if audiocpp_gate "[$]arch" "[$]out"; then' "$root/engine/bui
 check "build.sh guards the audio.cpp block with audiocpp_gate" "${n:-x}" 1
 n=$(grep -cE '^[^#]*OX_SAY_DIST=1 "[$]root/engine/build.sh"' "$root/scripts/package-release.sh" || true)
 check "package-release.sh builds with OX_SAY_DIST=1" "${n:-x}" 1
+
+# --- K: precompiled Metal libraries travel with the engines -----------------
+# oxs_install_engines installs <bin>.metallib and <bin>-tensor.metallib next
+# to the binary when out/ ships them; when it does not (an embedded-source
+# build) stale libraries an earlier install left must go — they would serve
+# the wrong kernels for the new binary. Mutations (lib-install.sh
+# oxs_install_engines): drop the library loop -> "metallibs installed" fails;
+# drop the `else rm -f` -> "stale metallibs removed" fails.
+metal_case() { # name with-audiocpp with-libs
+    local d="$tmp/metal-$1" bin
+    mkdir -p "$d/out/licenses" "$d/home/engine"
+    echo x > "$d/out/licenses/x.LICENSE"
+    for bin in tts-server ox-stt ox-align $( [ "$2" = yes ] && echo audiocpp_server ); do
+        printf '#!/bin/sh\n' > "$d/out/$bin"
+        chmod +x "$d/out/$bin"
+        if [ "$3" = yes ]; then
+            echo lib > "$d/out/$bin.metallib"
+            echo lib > "$d/out/$bin-tensor.metallib"
+        fi
+    done
+    # What an earlier arm64 release install leaves behind: stale libraries for
+    # the three engines and the whole optional VoxCPM2 pair.
+    echo stale > "$d/home/engine/ox-align.metallib"
+    echo stale > "$d/home/engine/ox-stt-tensor.metallib"
+    printf '#!/bin/sh\n' > "$d/home/engine/audiocpp_server"
+    echo stale > "$d/home/engine/audiocpp_server.metallib"
+    bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/out'" >"$d/log" 2>&1 \
+        || echo "rc=$?" >>"$d/log"
+    for f in "$d/home/engine"/*; do
+        [ -f "$f" ] && printf '%s ' "$(basename "$f")"
+    done
+}
+check "metallibs installed next to engines" "$(metal_case libs yes yes)" \
+    "audiocpp_server audiocpp_server-tensor.metallib audiocpp_server.metallib ox-align ox-align-tensor.metallib ox-align.metallib ox-stt ox-stt-tensor.metallib ox-stt.metallib tts-server tts-server-tensor.metallib tts-server.metallib "
+check "stale metallibs removed on embedded install" "$(metal_case embed no no)" \
+    "audiocpp_server audiocpp_server.metallib ox-align ox-stt tts-server "
+
+# The build side is pinned by shape: every engine block copies its metallibs
+# only on the non-embedded path, and every cmake call gets the shared
+# metal_embed flag. Mutations (engine/build.sh): drop one copy_metal_libs ->
+# count falls; hardcode GGML_METAL_EMBED_LIBRARY back to ON -> count falls.
+n=$(grep -cE '^[^#]*copy_metal_libs ' "$root/engine/build.sh" || true)
+check "build.sh copies metallibs for all four engines" "${n:-x}" 4
+n=$(grep -cE 'GGML_METAL_EMBED_LIBRARY=[$]metal_embed' "$root/engine/build.sh" || true)
+check "build.sh passes metal_embed to every engine configure" "${n:-x}" 2
 
 echo
 if [ "$fails" -eq 0 ]; then
