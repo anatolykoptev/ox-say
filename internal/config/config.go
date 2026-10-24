@@ -28,6 +28,8 @@ const (
 	DefaultSTTPort        = 8096
 	DefaultSTTIdleStop    = 600
 	DefaultVoxCPM2Port    = 8097
+	DefaultNotesPort      = 8098
+	DefaultNotesIdleStop  = 120
 	maxSTTUploadMB        = 1 << 20 // keeps MB<<20 far from int64 overflow
 	// maxSTTSecs caps the STT timeout base and the audio length: the engine
 	// deadline is base + k×duration, and the MCP tool timeout doubles it, so
@@ -53,6 +55,20 @@ const VoxCPM2ModelFile = "voxcpm2-q8_0.gguf"
 // VoxCPM2MinMemoryGB is the smallest Mac the quality engine is offered on: a
 // 16 GB Mac is unmeasured and Metal wires at most about 2/3 of RAM.
 const VoxCPM2MinMemoryGB = 24
+
+// NotesModelFile is the one model filename fetch-models.sh --with-notes and
+// the default path share (Qwen3.5-4B Q4_K_M, the notes spike's default).
+const NotesModelFile = "Qwen3.5-4B-Q4_K_M.gguf"
+
+// NotesModelBytes is that file's size, for the download's progress only; the
+// integrity pin is the SHA-256 in fetch-models.sh.
+const NotesModelBytes = 2740937888
+
+// NotesMinMemoryGB is the smallest Mac the notes model is offered on: the 4B
+// model peaked at 4.4 GB (7.2 GB resident) in the spike, next to the resident
+// speech engines; an 8 GB Mac is unmeasured and gets the transcript without
+// notes until it is.
+const NotesMinMemoryGB = 16
 
 const bytesPerGB = 1 << 30
 
@@ -119,10 +135,15 @@ type Config struct {
 	// discrete.
 	GPUMemory string
 
-	VoxCPM2Bin   string // OX_SAY_VOXCPM2_BIN: path to audiocpp_server
-	VoxCPM2Model string // OX_SAY_VOXCPM2_MODEL: VoxCPM2 GGUF
-	VoxCPM2Port  int    // OX_SAY_VOXCPM2_PORT: loopback port the child binds
-	TTSModel     string // OX_SAY_TTS_MODEL: default model of a speech request
+	VoxCPM2Bin    string        // OX_SAY_VOXCPM2_BIN: path to audiocpp_server
+	VoxCPM2Model  string        // OX_SAY_VOXCPM2_MODEL: VoxCPM2 GGUF
+	VoxCPM2Port   int           // OX_SAY_VOXCPM2_PORT: loopback port the child binds
+	TTSModel      string        // OX_SAY_TTS_MODEL: default model of a speech request
+	NotesBin      string        // OX_SAY_NOTES_BIN: path to ox-llm (llama-server)
+	NotesModel    string        // OX_SAY_NOTES_MODEL: the notes GGUF
+	NotesPort     int           // OX_SAY_NOTES_PORT: loopback port the child binds
+	NotesIdleStop time.Duration // OX_SAY_NOTES_IDLE_STOP_SECS
+
 	// HostMemoryBytes is the installed RAM read by load; 0 (a Config literal,
 	// or an unreadable host) means unknown and never blocks VoxCPM2.
 	HostMemoryBytes uint64
@@ -162,6 +183,10 @@ var flagNames = map[string]string{
 	"voxcpm2-model":     "OX_SAY_VOXCPM2_MODEL",
 	"voxcpm2-port":      "OX_SAY_VOXCPM2_PORT",
 	"tts-model":         "OX_SAY_TTS_MODEL",
+	"notes-bin":         "OX_SAY_NOTES_BIN",
+	"notes-model":       "OX_SAY_NOTES_MODEL",
+	"notes-port":        "OX_SAY_NOTES_PORT",
+	"notes-idle-stop":   "OX_SAY_NOTES_IDLE_STOP_SECS",
 }
 
 // RegisterFlags registers one flag per supported env var on fs. Values set on
@@ -336,6 +361,9 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if err := loadVoxCPM2(c, get, engineDir); err != nil {
 		return nil, err
 	}
+	if err := loadNotes(c, get, engineDir); err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 
@@ -366,6 +394,64 @@ func loadVoxCPM2(c *Config, get func(string) string, engineDir string) error {
 	}
 	c.HostMemoryBytes = hostMemoryBytes()
 	return nil
+}
+
+// loadNotes reads the meeting-notes engine keys. Its port must collide with
+// no other listener.
+func loadNotes(c *Config, get func(string) string, engineDir string) error {
+	if c.NotesBin = get("OX_SAY_NOTES_BIN"); c.NotesBin == "" {
+		c.NotesBin = filepath.Join(engineDir, "ox-llm")
+	}
+	if c.NotesModel = get("OX_SAY_NOTES_MODEL"); c.NotesModel == "" {
+		c.NotesModel = filepath.Join(c.Home, "models", NotesModelFile)
+	}
+	var err error
+	if c.NotesPort, err = intVar(get("OX_SAY_NOTES_PORT"), DefaultNotesPort); err != nil {
+		return fmt.Errorf("config: OX_SAY_NOTES_PORT: %w", err)
+	}
+	if c.NotesPort < 1 || c.NotesPort > 65535 {
+		return fmt.Errorf("config: OX_SAY_NOTES_PORT %d: want 1..65535", c.NotesPort)
+	}
+	addrPort, _ := strconv.Atoi(c.Port)
+	switch c.NotesPort {
+	case c.EnginePort, c.STTPort, c.VoxCPM2Port, addrPort:
+		return fmt.Errorf("config: OX_SAY_NOTES_PORT %d collides with another ox-say listener", c.NotesPort)
+	}
+	idle, err := intVar(get("OX_SAY_NOTES_IDLE_STOP_SECS"), DefaultNotesIdleStop)
+	if err != nil {
+		return fmt.Errorf("config: OX_SAY_NOTES_IDLE_STOP_SECS: %w", err)
+	}
+	if idle < 1 {
+		return fmt.Errorf("config: OX_SAY_NOTES_IDLE_STOP_SECS %d: want >= 1", idle)
+	}
+	c.NotesIdleStop = time.Duration(idle) * time.Second
+	return nil
+}
+
+// Codes for why the notes engine is unavailable. engine_missing: this install
+// has no ox-llm (update ox-say); model_missing: the download adds it;
+// unsupported: this Mac has too little memory.
+const (
+	NotesReasonEngineMissing = "engine_missing"
+	NotesReasonModelMissing  = "model_missing"
+	NotesReasonUnsupported   = "unsupported"
+)
+
+// NotesBlock reports why the notes engine cannot run, as a code for a program
+// and a sentence for a person; both are "" when it can. Files are stat'ed per
+// call, so a model downloaded later works without a daemon restart.
+func (c *Config) NotesBlock() (code, reason string) {
+	if c.HostMemoryBytes != 0 && c.HostMemoryBytes < NotesMinMemoryGB*bytesPerGB {
+		return NotesReasonUnsupported, fmt.Sprintf("Meeting notes need at least %d GB of memory; this Mac has %d GB.",
+			NotesMinMemoryGB, c.HostMemoryBytes/bytesPerGB)
+	}
+	if !isRegularFile(c.NotesBin) {
+		return NotesReasonEngineMissing, "This ox-say install has no notes engine. Update ox-say."
+	}
+	if !isRegularFile(c.NotesModel) {
+		return NotesReasonModelMissing, "The notes model is not downloaded yet (about 2.7 GB)."
+	}
+	return "", ""
 }
 
 // Codes for why VoxCPM2 is unavailable, for a UI that must tell "an install
