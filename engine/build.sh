@@ -6,11 +6,12 @@
 #   ox-stt      from engine/stt on the pinned whisper.cpp (speech-to-text: Parakeet, Whisper)
 #   ox-align    from engine/align on the pinned whisper.cpp (wav2vec2 CTC emissions)
 #   audiocpp_server from the pinned audio.cpp, arm64, dist build or OX_SAY_WITH_VOXCPM2=1 (VoxCPM2 quality text-to-speech)
+#   ox-llm      from the pinned llama.cpp's llama-server, own ggml (meeting notes: Qwen3.5 GGUF)
 # The first three carry engine/patches/ggml on their ggml tree, on both architectures: on
 # unified memory the patches are inert or bug fixes (engine/README.md).
 #
 # Usage: engine/build.sh [work-dir]      (default: build/engine)
-# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,audiocpp_server (arm64),
+# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,ox-llm,audiocpp_server (arm64),
 #                        each <bin>.metallib (+<bin>-tensor.metallib on a
 #                        macOS 26 SDK) when the Metal toolchain is present,
 #                        licenses/}
@@ -276,6 +277,66 @@ strip -x "$out/ox-align"
 check_static "$out/ox-align"
 check_dist "$out/ox-align"
 echo "built $out/ox-align"
+
+# --- ox-llm (llama.cpp's llama-server; the meeting-notes model server) ---
+# llama.cpp carries its own ggml, so this engine takes none of engine/patches/ggml
+# and builds from its own tree. The binary is renamed ox-llm on copy: the Metal
+# library lookup keys on argv[0] (patches/ggml/0003), and every engine in out/
+# needs a name of its own.
+ll="$work/llama.cpp"
+stamp=$(echo "$LLAMACPP_REPO $LLAMACPP_COMMIT" | shasum -a 256 | cut -d' ' -f1)
+if ! fresh "$ll" "$stamp"; then
+    rm -rf "$ll"
+    git clone --quiet "$LLAMACPP_REPO" "$ll"
+    git -C "$ll" checkout --quiet "$LLAMACPP_COMMIT"
+    actual=$(git -C "$ll" rev-parse HEAD)
+    if [ "$actual" != "$LLAMACPP_COMMIT" ]; then
+        echo "llama.cpp is $actual, expected the commit $LLAMACPP_COMMIT" >&2
+        exit 1
+    fi
+    echo "$stamp" > "$ll/.ox-say-stamp"
+fi
+include_copy "$ll/ggml" "$work/ggml-include-llm"
+set_cmake_flags "$work/ggml-include-llm"
+# Server only: no tests, examples, the unified app or HTTPS; LLAMA_USE_PREBUILT_UI=OFF
+# keeps the configure from downloading a web UI the daemon never serves.
+cmake -S "$ll" -B "$ll/build-$arch" "${cmake_flags[@]}" \
+    -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+    -DLLAMA_BUILD_APP=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF \
+    > "$work/llm-configure.log"
+cmake --build "$ll/build-$arch" --target llama-server -j "$jobs" > "$work/llm-build.log"
+cp "$ll/build-$arch/bin/llama-server" "$out/ox-llm"
+strip -x "$out/ox-llm"
+check_static "$out/ox-llm"
+check_dist "$out/ox-llm"
+# The daemon starts ox-llm with these flags (internal/daemon/meetings.go
+# notesServerArgs); a llama.cpp bump that renames one would make every notes run
+# fail at spawn. Fail the build instead. The help text is captured whole: under
+# pipefail `| grep -q` can SIGPIPE the writer and fail a pass.
+llm_help=$("$out/ox-llm" --help 2>&1 || true)
+for flag in --api-key-file --cache-ram --flash-attn --jinja --no-ui --ctx-size --n-gpu-layers --parallel; do
+    case $llm_help in
+        *"$flag"*) ;;
+        *)
+            echo "engine/build.sh: the pinned llama-server no longer has $flag; the notes engine would not start" >&2
+            exit 1
+            ;;
+    esac
+done
+cp "$ll/LICENSE" "$out/licenses/llama.cpp.LICENSE"
+# llama.cpp's own list of third-party licences, plus every licence under vendor/
+# (cpp-httplib and friends), derived from the tree: a hand list cannot notice one
+# it lacks. A tree with none fails the build.
+found=$(find "$ll/licenses" "$ll/vendor" -type f \( -iname 'licen[sc]e*' -o -iname 'copying*' \) 2>/dev/null | LC_ALL=C sort)
+if [ -z "$found" ]; then
+    echo "engine/build.sh: llama.cpp ships no third-party licence files under licenses/ or vendor/" >&2
+    exit 1
+fi
+while IFS= read -r f; do
+    rel=${f#"$ll"/}
+    cp "$f" "$out/licenses/llama.cpp-${rel//\//_}"
+done <<< "$found"
+echo "built $out/ox-llm"
 
 # Licences of audio.cpp's vendored dependencies, derived from the tree: a
 # hand-written list cannot notice one it lacks. Every licence file under
