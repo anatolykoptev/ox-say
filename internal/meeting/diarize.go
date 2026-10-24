@@ -42,6 +42,7 @@ const (
 	DiarEngineMissing  = "engine_missing"  // this install has no ox-diar
 	DiarModelsMissing  = "models_missing"  // the models were never fetched, or the fetch was cut short
 	DiarModelsUnusable = "models_unusable" // the models are all there and will not load (corrupt, or not plannable on this hardware)
+	DiarTooLong        = "too_long"        // the far-side recording is longer than ox-diar can hold in memory
 	DiarEngineError    = "engine_error"    // ox-diar exited with an error
 	DiarBadOutput      = "bad_output"      // ox-diar's answer could not be read
 	DiarTimeout        = "timeout"         // ox-diar ran past its limit

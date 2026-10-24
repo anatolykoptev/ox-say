@@ -265,6 +265,7 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_NOTES_MODEL", "/tmp/oxk-4917/notes-x.gguf", "/tmp/oxk-4917/notes-x.gguf", func(c *Config) string { return c.NotesModel }},
 		{"OX_SAY_NOTES_PORT", "18098", "18098", func(c *Config) string { return strconv.Itoa(c.NotesPort) }},
 		{"OX_SAY_NOTES_IDLE_STOP_SECS", "67", "1m7s", func(c *Config) string { return c.NotesIdleStop.String() }},
+		{"OX_SAY_DIAR_BIN", "/tmp/oxk-4917/ox-diar-x", "/tmp/oxk-4917/ox-diar-x", func(c *Config) string { return c.DiarBin }},
 	}
 	keys := EnvKeys()
 	inTable := map[string]bool{}
@@ -823,6 +824,35 @@ func TestNotesPortRejectsBadValues(t *testing.T) {
 		t.Setenv("OX_SAY_NOTES_PORT", v)
 		if _, err := Load(nil); err == nil || !strings.Contains(err.Error(), "OX_SAY_NOTES_PORT") {
 			t.Fatalf("OX_SAY_NOTES_PORT=%q: %v", v, err)
+		}
+	}
+}
+
+// The diarization models are ready only when the revision marker fetch-models.sh writes last names the revision
+// this build expects: absent (a fetch cut short), another revision (older models) and a half-written marker are
+// all "not ready".
+// Mutation: internal/config/config.go DiarModelsReady, change `== DiarModelsRevision` to `!= ""` -> RED (an old revision reads as ready).
+func TestDiarModelsReady(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("OX_SAY_HOME", home)
+	c, err := Load(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DiarModelsReady() {
+		t.Fatal("no models yet, ready")
+	}
+	dir := filepath.Join(c.DiarModelsDir(), "speaker-diarization")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, ".fluidaudio-revision")
+	for revision, want := range map[string]bool{"": false, "deadbeef\n": false, DiarModelsRevision[:8] + "\n": false, DiarModelsRevision + "\n": true} {
+		if err := os.WriteFile(marker, []byte(revision), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := c.DiarModelsReady(); got != want {
+			t.Errorf("marker %q: ready %v, want %v", revision, got, want)
 		}
 	}
 }

@@ -518,6 +518,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_VOXCPM2_BIN` | `$OX_SAY_HOME/engine/audiocpp_server` | The VoxCPM2 engine (audio.cpp's server); Apple Silicon only |
 | `OX_SAY_VOXCPM2_MODEL` | `$OX_SAY_HOME/models/voxcpm2-q8_0.gguf` | VoxCPM2 weights (`OX_SAY_WITH_VOXCPM2=1` fetch) |
 | `OX_SAY_VOXCPM2_PORT` | `8097` | Loopback port the VoxCPM2 child binds |
+| `OX_SAY_DIAR_BIN` | `$OX_SAY_HOME/engine/ox-diar` | The speaker diarization engine (meeting voices); Apple Silicon, macOS 15 or later |
 | `OX_SAY_IDLE_STOP_SECS` | `300` | Stop the idle engine after N s; 0 = never |
 | `OX_SAY_STARTUP_TIMEOUT_SECS` | `180` | Covers the first-start Metal shader compile |
 | `OX_SAY_LANG` | empty | Default language; empty = engine auto-detect |

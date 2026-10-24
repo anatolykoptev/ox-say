@@ -11,7 +11,6 @@
 package stt
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,6 +24,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/anatolykoptev/ox-say/internal/oneshot"
 )
 
 // InputError marks a failure caused by caller input — a relative path, an
@@ -337,26 +338,22 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		args = append(args, "-ng")
 	}
 
-	cmd := exec.CommandContext(ctx, opts.Bin, args...)
-	var out bytes.Buffer
-	errb := &tailBuffer{max: stderrTail}
-	cmd.Stdout = &out
-	cmd.Stderr = errb
-	if err := cmd.Run(); err != nil {
+	out, err := oneshot.Run(ctx, opts.Bin, args, oneshot.Options{StderrTail: stderrTail})
+	if err != nil {
 		if timedOut() {
 			return nil, &TimeoutError{After: timeout}
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		var exitErr *exec.ExitError
+		var exitErr *oneshot.ExitError
 		if errors.As(err, &exitErr) {
-			return nil, &EngineError{fmt.Sprintf("stt: ox-stt failed: %s", strings.TrimSpace(errb.String()))}
+			return nil, &EngineError{fmt.Sprintf("stt: ox-stt failed: %s", strings.TrimSpace(exitErr.Tail))}
 		}
 		return nil, fmt.Errorf("stt: cannot run %s: %w", opts.Bin, err)
 	}
 	var res Result
-	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+	if err := json.Unmarshal(out, &res); err != nil {
 		return nil, &EngineError{fmt.Sprintf("stt: ox-stt returned invalid JSON: %v", err)}
 	}
 	return &res, nil

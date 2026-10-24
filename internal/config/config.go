@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -69,6 +70,10 @@ const NotesModelBytes = 2740937888
 // speech engines; an 8 GB Mac is unmeasured and gets the transcript without
 // notes until it is.
 const NotesMinMemoryGB = 16
+
+// DiarModelsRevision is the Hugging Face revision of the diarization models. scripts/fetch-models.sh downloads that
+// revision (diar_rev), engine/diar names it in Pins.swift, and a test compares the three.
+const DiarModelsRevision = "df2625ac79a7ac6b65ad868fee6d80f320da4232"
 
 const bytesPerGB = 1 << 30
 
@@ -143,6 +148,7 @@ type Config struct {
 	NotesModel    string        // OX_SAY_NOTES_MODEL: the notes GGUF
 	NotesPort     int           // OX_SAY_NOTES_PORT: loopback port the child binds
 	NotesIdleStop time.Duration // OX_SAY_NOTES_IDLE_STOP_SECS
+	DiarBin       string        // OX_SAY_DIAR_BIN: path to ox-diar (speaker diarization)
 	// NotesPortBlocked is set by load when the DEFAULT notes port collides
 	// with another ox-say listener: an explicitly set colliding port is a
 	// load error, but a colliding default must not take the daemon down for
@@ -193,6 +199,7 @@ var flagNames = map[string]string{
 	"notes-model":       "OX_SAY_NOTES_MODEL",
 	"notes-port":        "OX_SAY_NOTES_PORT",
 	"notes-idle-stop":   "OX_SAY_NOTES_IDLE_STOP_SECS",
+	"diar-bin":          "OX_SAY_DIAR_BIN",
 }
 
 // RegisterFlags registers one flag per supported env var on fs. Values set on
@@ -370,7 +377,21 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if err := loadNotes(c, get, engineDir); err != nil {
 		return nil, err
 	}
+	if c.DiarBin = get("OX_SAY_DIAR_BIN"); c.DiarBin == "" {
+		c.DiarBin = filepath.Join(engineDir, "ox-diar")
+	}
 	return c, nil
+}
+
+// DiarModelsDir is what ox-diar takes as --models: scripts/fetch-models.sh writes speaker-diarization/ inside it.
+func (c *Config) DiarModelsDir() string { return filepath.Join(c.Home, "models", "diar") }
+
+// DiarModelsReady reports whether the diarization models are all there for DiarModelsRevision. fetch-models.sh
+// writes the revision marker last, after every file passed its checksum, so a fetch that was cut short, or an
+// older revision, reads as not ready. The marker is read per call: a model fetched later works at once.
+func (c *Config) DiarModelsReady() bool {
+	raw, err := os.ReadFile(filepath.Join(c.DiarModelsDir(), "speaker-diarization", ".fluidaudio-revision"))
+	return err == nil && strings.TrimSpace(string(raw)) == DiarModelsRevision
 }
 
 // loadVoxCPM2 reads the quality-engine keys and the default TTS model. It
