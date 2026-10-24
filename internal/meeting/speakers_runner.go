@@ -57,7 +57,7 @@ func (r *Runner) Speakers(id string) (SpeakersView, error) {
 // A merge, an unmerge or the split changes who said what: speakers.json is saved and the notes are queued to be
 // written again by the model. A rename alone does not: the notes already written are corrected by substitution
 // (labels.go) and the meeting keeps its status, unless the substitution would not be unambiguous, when the notes
-// are queued like after a merge. A meeting being transcribed or summarized is refused (ErrSpeakersBusy): the pass
+// are queued like after a merge. The returned view's NotesQueued says which of the two happened. A meeting being transcribed or summarized is refused (ErrSpeakersBusy): the pass
 // in flight would write the old names after it.
 //
 // One edit runs at a time per meeting (the read-modify-write would lose the other's change). speakers.json is
@@ -100,6 +100,9 @@ func (r *Runner) EditSpeakers(id string, e Edit) (SpeakersView, error) {
 			if _, err := r.Retry(id); err != nil {
 				return SpeakersView{}, err
 			}
+			v := View(*m, cur, turns)
+			v.NotesQueued = true
+			return v, nil
 		}
 		return View(*m, cur, turns), nil
 	}
@@ -127,7 +130,8 @@ func (r *Runner) EditSpeakers(id string, e Edit) (SpeakersView, error) {
 	return View(*m, next, turns), nil
 }
 
-// queueNotesAfter saves next with the notes marked stale, writes transcript.md and queues the notes.
+// queueNotesAfter saves next with the notes marked stale, writes transcript.md and queues the notes; the view it
+// returns says so (NotesQueued).
 func (r *Runner) queueNotesAfter(id, dir string, m Manifest, next SpeakerState, turns []Turn, transcript []byte) (SpeakersView, error) {
 	next.NotesStale = true
 	if err := SaveSpeakers(dir, next); err != nil {
@@ -139,5 +143,7 @@ func (r *Runner) queueNotesAfter(id, dir string, m Manifest, next SpeakerState, 
 	if _, err := r.Retry(id); err != nil {
 		return SpeakersView{}, err
 	}
-	return View(m, next, turns), nil
+	v := View(m, next, turns)
+	v.NotesQueued = true
+	return v, nil
 }

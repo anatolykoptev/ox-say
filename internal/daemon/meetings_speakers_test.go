@@ -172,6 +172,32 @@ func TestVoicesReachTheListTheDetailAndMCP(t *testing.T) {
 	}
 }
 
+// The list says when a meeting's audio is gone, so the app offers no "Try Again" that the daemon would refuse.
+// Mutation: internal/daemon/meetings_http.go summarize, delete `AudioDeleted: m.AudioDeleted` -> RED.
+func TestTheListSaysWhenTheAudioIsGone(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	id := groupMeeting(t, d, mux, meeting.StatusDone)
+	list := func() map[string]any {
+		var l struct {
+			Meetings []map[string]any `json:"meetings"`
+		}
+		_ = json.Unmarshal(call(t, mux, "GET", "/v1/meetings", "").Body.Bytes(), &l)
+		if len(l.Meetings) != 1 {
+			t.Fatalf("list = %v", l.Meetings)
+		}
+		return l.Meetings[0]
+	}
+	if _, set := list()["audio_deleted"]; set {
+		t.Errorf("a meeting with its audio says audio_deleted: %v", list())
+	}
+	if _, err := d.Meet.Store.Update(id, func(m *meeting.Manifest) { m.AudioDeleted = true }); err != nil {
+		t.Fatal(err)
+	}
+	if got := list()["audio_deleted"]; got != true {
+		t.Errorf("audio_deleted = %v, want true", got)
+	}
+}
+
 // labels.speaker, the word before a far-side voice's number in the user's language, is stored by POST /v1/meetings
 // and cleaned and bounded like the other labels.
 // Mutation: internal/daemon/meetings_http.go handleMeetingCreate, drop `Speaker: speaker` from the Labels literal -> RED.
