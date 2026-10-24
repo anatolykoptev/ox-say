@@ -17,10 +17,15 @@ const (
 
 // Turn is one stretch of one person talking.
 type Turn struct {
-	Speaker string  `json:"speaker"`
-	S       float64 `json:"s"`
-	E       float64 `json:"e"`
-	Text    string  `json:"text"`
+	Speaker string `json:"speaker"`
+	// Voice is the far-side voice of a turn the diarizer split ("them:2"), "" for
+	// everyone else. Speaker stays "them": how Voice shows (named, merged or
+	// folded back into one far-side label) is decided when the transcript is
+	// rendered (Present), so a rename or a split needs no new recognition.
+	Voice string  `json:"voice,omitempty"`
+	S     float64 `json:"s"`
+	E     float64 `json:"e"`
+	Text  string  `json:"text"`
 	// Words keeps the timing DropEcho needs; it is not written to the
 	// transcript. A turn without words is never judged an echo.
 	Words []stt.Word `json:"-"`

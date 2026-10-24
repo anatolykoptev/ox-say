@@ -142,6 +142,21 @@ func transcriptReadable(dir string) bool {
 	return json.Unmarshal(raw, &turns) == nil
 }
 
+// What a meeting directory can hold, by what becomes of it when the audio goes. Every file-name constant of this
+// package is on exactly one of these lists (or is rootFiles' settings file); TestEveryMeetingFileIsAccountedFor
+// reads the constants from the source, so a file added without deciding is a red test, not a voiceprint that
+// outlives the retention period.
+var (
+	// audioFiles are removed one by one.
+	audioFiles = []string{MePCM, ThemPCM}
+	// workFiles live inside WorkDir, which is removed whole.
+	workFiles = []string{DiarizationJSON}
+	// keptFiles stay for the life of the meeting.
+	keptFiles = []string{ManifestFile, TranscriptJSON, TranscriptMD, RawTranscriptJSON, NotesJSON, NotesMD, SpeakersJSON}
+	// rootFiles sit beside the meetings, not in one.
+	rootFiles = []string{SettingsFile}
+)
+
 // deleteAudio removes a meeting's audio and work files and records it. False
 // when a file would not go or the record could not be saved: the next sweep
 // tries again.
@@ -151,12 +166,17 @@ func (r *Runner) deleteAudio(m Manifest) bool {
 		return false
 	}
 	gone := true
-	for _, name := range []string{MePCM, ThemPCM} {
+	for _, name := range audioFiles {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			gone = false
 		}
 	}
-	if err := os.RemoveAll(filepath.Join(dir, WorkDir)); err != nil {
+	for _, name := range workFiles {
+		if err := os.Remove(filepath.Join(dir, WorkDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			gone = false
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(dir, WorkDir)); err != nil { // the piece caches too
 		gone = false
 	}
 	if !gone {

@@ -66,6 +66,11 @@ type ChunkNotes struct {
 type Notes struct {
 	ChunkNotes
 	SkippedChunks []int `json:"skipped_chunks,omitempty"`
+	// Labels is what the far side's voices were called (voice id -> label) in the text the model read, kept with
+	// the notes so a rename can be replayed from it exactly once: the substitution is the difference between this
+	// map and the new one, and a request applied twice finds nothing left to change. Set by the runner, never by
+	// the model.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // turnPrefix matches the "[m:ss] Name: " a prompt line starts with.
@@ -403,7 +408,7 @@ func languageRule(lang string) string {
 func chunkSystem(l Labels, lang string) string {
 	return "You write meeting notes from one part of a transcript. " + languageRule(lang) +
 		"Use ONLY facts stated in the transcript; never invent names, numbers, dates or owners. " +
-		fmt.Sprintf("The speakers are %q (the person who recorded the call) and %q (everyone else on the call); in \"who\" use these names, or a name said in the transcript. ", l.Me, l.Them) +
+		fmt.Sprintf("The speakers are %q (the person who recorded the call) and %s; in \"who\" use these names, or a name said in the transcript. ", l.Me, otherPeople(l)) +
 		"If the owner or the date of an action item is not stated, leave that field an empty string. " +
 		"Attribute each action to the person who said they will do it; do not swap who did what. " +
 		"Do not repeat the owner's name inside \"what\". " +
@@ -411,6 +416,31 @@ func chunkSystem(l Labels, lang string) string {
 		"action_items: every task someone took on or was asked to do, one entry per task; a task someone committed to with an owner belongs here, not only in decisions. " +
 		"open_questions: questions left unanswered. numbers: key numbers, amounts and dates with what they refer to. Skip small talk. " +
 		"Use empty lists when a part has nothing for a field."
+}
+
+// otherPeople describes the other people on the call to the model: one label for
+// everyone when the transcript has no voices, else each voice by name, as
+// separate people.
+func otherPeople(l Labels) string {
+	var names []string
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(l.Names))
+	for id := range l.Names {
+		if VoiceNumber(id) > 0 {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return VoiceNumber(ids[i]) < VoiceNumber(ids[j]) })
+	for _, id := range ids {
+		if n := strings.TrimSpace(l.Names[id]); n != "" && !seen[n] {
+			seen[n] = true
+			names = append(names, fmt.Sprintf("%q", n))
+		}
+	}
+	if len(names) < 2 {
+		return fmt.Sprintf("%q (everyone else on the call)", l.label(SpeakerThem))
+	}
+	return strings.Join(names, ", ") + " (the other people on the call, each a separate person)"
 }
 
 func mergeSystem(lang string) string {

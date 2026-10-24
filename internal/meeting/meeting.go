@@ -32,6 +32,12 @@ func (s Status) Terminal() bool {
 type Labels struct {
 	Me   string `json:"me"`
 	Them string `json:"them"`
+	// Speaker is the word before a far-side voice's number ("Speaker", "Спикер"),
+	// chosen by the app in the user's language; "" means DefaultSpeakerWord.
+	Speaker string `json:"speaker,omitempty"`
+	// Names is the display name of every far-side voice and of the single
+	// far-side label: derived by Present from speakers.json, never stored.
+	Names map[string]string `json:"-"`
 }
 
 // File names inside a meeting directory.
@@ -45,13 +51,19 @@ const (
 	// written only when DropEcho dropped turns: the way back from a turn that
 	// was wrongly judged an echo.
 	RawTranscriptJSON = "transcript.raw.json"
-	NotesJSON         = "notes.json"
-	NotesMD           = "notes.md"
-	WorkDir           = "work"
-	ManifestVersion   = 1
-	SampleRate        = 16000
-	bytesPerSample    = 2
-	DefaultRetention  = 30
+	// DiarizationJSON is ox-diar's answer, with the embedding of every voice: a voiceprint of people who never
+	// agreed to one. It is written by the daemon inside WorkDir for the length of one diarization and read once;
+	// the transcript keeps the voices (Turn.Voice), and nothing but WorkDir may ever hold an embedding.
+	DiarizationJSON = "diarization.json"
+	// SpeakersJSON is what the user decided about the voices (SpeakerState).
+	SpeakersJSON     = "speakers.json"
+	NotesJSON        = "notes.json"
+	NotesMD          = "notes.md"
+	WorkDir          = "work"
+	ManifestVersion  = 1
+	SampleRate       = 16000
+	bytesPerSample   = 2
+	DefaultRetention = 30
 )
 
 // Warning codes a meeting can carry; the app turns them into plain words.
@@ -60,6 +72,10 @@ const (
 	WarnNoMicAudio    = "no_mic_audio"
 	WarnLanguage      = "language_unsupported" // speech in a script the recognizer does not read
 	WarnEchoDropped   = "echo_dropped"         // DropEcho removed "me" turns it judged an echo of the far side
+	WarnNoDiarization = "diarization_failed"   // the diarizer ran and broke; one far-side label stands (Manifest.DiarReason says how)
+	// WarnDiarUnavailable: this Mac cannot tell voices apart (an old macOS, an unsupported CPU, no engine or models);
+	// one far-side label stands and Manifest.DiarReason says why. Not a failure: nothing was attempted.
+	WarnDiarUnavailable = "diarization_unavailable"
 )
 
 // WaitSTTModel is Manifest.WaitingFor while the recognizer's model file is
@@ -83,6 +99,13 @@ type Manifest struct {
 	Language  string     `json:"language,omitempty"`  // voices.Language of the speech, "" when unclear; picks the notes headings and names the language to the model
 	DurationS float64    `json:"duration_s,omitempty"`
 	Warnings  []string   `json:"warnings,omitempty"`
+	// VoiceMode is VoicesAuto or VoicesOffer when the diarizer found several
+	// substantial voices on the far side (Voices of them), "" otherwise.
+	VoiceMode string `json:"voice_mode,omitempty"`
+	// DiarReason is the code behind WarnNoDiarization or WarnDiarUnavailable (the Diar* constants), "" otherwise.
+	// The app turns it into plain words.
+	DiarReason string `json:"diar_reason,omitempty"`
+	Voices     int    `json:"voices,omitempty"`
 	// EchoDropped counts the "me" turns DropEcho removed; it goes with
 	// WarnEchoDropped so the app can say more than "some echo was dropped".
 	EchoDropped  int    `json:"echo_dropped,omitempty"`
