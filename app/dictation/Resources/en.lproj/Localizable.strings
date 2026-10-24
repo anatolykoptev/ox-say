@@ -120,7 +120,7 @@
 "meeting.diar.failed.bad_output" = "Voices were not told apart: the voice engine's answer could not be read.";
 "meeting.diar.failed.timeout" = "Voices were not told apart: it took too long.";
 "meeting.diar.unavailable.os_too_old" = "Voices on a call are told apart only on macOS 15 or later.";
-"meeting.diar.unavailable.cpu_unsupported" = "Voices on a call are not told apart on this Mac's processor.";
+"meeting.diar.unavailable.cpu_unsupported" = "Voices on a call are not told apart on Intel Macs.";
 "meeting.diar.unavailable.engine_missing" = "Voices on a call are not told apart: this install has no voice engine. Update OxSay.";
 "meeting.diar.unavailable.models_missing" = "Voices on a call are not told apart: the voice models are not downloaded. Update OxSay.";
 "meeting.diar.unavailable.models_unusable" = "Voices on a call are not told apart: the voice models would not load on this Mac. Reinstall OxSay to download them again.";

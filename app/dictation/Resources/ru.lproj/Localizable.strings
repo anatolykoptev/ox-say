@@ -99,20 +99,20 @@
 "notice.meeting.browser_denied" = "Чтобы замечать звонки в Google Meet, разрешите OxSay управлять браузером в Системных настройках → Конфиденциальность и безопасность → Автоматизация.";
 
 /* Speakers: naming, merging and splitting the voices of the other side. */
-"menu.meeting.speakers" = "Говорящие";
+"menu.meeting.speakers" = "Собеседники";
 "menu.meeting.speakers_item" = "%@";
-"meeting.label.speaker" = "Спикер";
-"speakers.title" = "Говорящие";
+"meeting.label.speaker" = "Собеседник";
+"speakers.title" = "Собеседники";
 "speakers.hint" = "Назовите участников звонка. Заметки обновятся с их именами.";
 "speakers.split" = "Разделить по голосам";
-"speakers.split_hint" = "Собеседник звучит как два разных человека.";
-"speakers.same_as" = "Это тот же человек, что";
+"speakers.split_hint" = "На той стороне, похоже, два разных человека.";
+"speakers.same_as" = "Тот же человек, что и";
 "speakers.not_merged" = "—";
 "speakers.name_placeholder" = "Имя";
 "speakers.save" = "Сохранить";
 "speakers.cancel" = "Отмена";
-"speakers.failed" = "Не удалось сохранить говорящих: %@";
-"notice.speakers.saved" = "Говорящие сохранены. Заметки пишутся заново.";
+"speakers.failed" = "Не удалось сохранить собеседников: %@";
+"notice.speakers.saved" = "Собеседники сохранены. Заметки пишутся заново.";
 "notice.speakers.names_saved" = "Имена сохранены.";
 /* Почему голоса встречи не разделены. */
 "menu.meeting.speakers_retry" = "Повторить: %@";
@@ -120,7 +120,7 @@
 "meeting.diar.failed.bad_output" = "Голоса не разделены: не удалось прочитать ответ голосового движка.";
 "meeting.diar.failed.timeout" = "Голоса не разделены: это заняло слишком много времени.";
 "meeting.diar.unavailable.os_too_old" = "Голоса в звонке разделяются только на macOS 15 и новее.";
-"meeting.diar.unavailable.cpu_unsupported" = "Голоса в звонке не разделяются на процессоре этого Mac.";
+"meeting.diar.unavailable.cpu_unsupported" = "На Mac с процессором Intel голоса в звонке не разделяются.";
 "meeting.diar.unavailable.engine_missing" = "Голоса в звонке не разделены: в этой установке нет голосового движка. Обновите OxSay.";
 "meeting.diar.unavailable.models_missing" = "Голоса в звонке не разделены: голосовые модели не скачаны. Обновите OxSay.";
 "meeting.diar.unavailable.models_unusable" = "Голоса в звонке не разделены: голосовые модели не загрузились на этом Mac. Переустановите OxSay, чтобы скачать их заново.";
