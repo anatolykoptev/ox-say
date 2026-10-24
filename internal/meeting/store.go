@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,7 +21,11 @@ var ErrNotFound = errors.New("meeting not found")
 // manifest goes through Update, which serializes writers.
 type Store struct {
 	Root string
-	mu   sync.Mutex
+	// Log receives one line per meeting List had to skip; nil uses slog.Default.
+	Log *slog.Logger
+
+	newID func(time.Time) string // test seam; nil means vproject.NewID
+	mu    sync.Mutex
 }
 
 // Dir is the directory of meeting id; the id must be one NewID made.
@@ -37,19 +42,46 @@ func (s *Store) Create(m Manifest, now time.Time) (Manifest, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m.Version = ManifestVersion
-	m.ID = vproject.NewID(now)
 	m.Status = StatusRecording
 	if m.Started.IsZero() {
 		m.Started = now
 	}
-	dir := filepath.Join(s.Root, m.ID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(s.Root, 0o700); err != nil {
 		return Manifest{}, "", fmt.Errorf("meeting: %w", err)
+	}
+	dir, err := s.makeDir(&m, now)
+	if err != nil {
+		return Manifest{}, "", err
 	}
 	if err := s.save(dir, &m); err != nil {
 		return Manifest{}, "", err
 	}
 	return m, dir, nil
+}
+
+// createTries bounds the fresh-id retries when an id's directory exists.
+const createTries = 5
+
+// makeDir assigns m.ID and makes its directory. os.Mkdir (not MkdirAll) fails
+// on an existing directory, so a colliding id is never silently shared with
+// another meeting; it retries with a fresh id.
+func (s *Store) makeDir(m *Manifest, now time.Time) (string, error) {
+	newID := s.newID
+	if newID == nil {
+		newID = vproject.NewID
+	}
+	for range createTries {
+		m.ID = newID(now)
+		dir := filepath.Join(s.Root, m.ID)
+		err := os.Mkdir(dir, 0o700)
+		if err == nil {
+			return dir, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", fmt.Errorf("meeting: %w", err)
+		}
+	}
+	return "", fmt.Errorf("meeting: no free id after %d tries", createTries)
 }
 
 func (s *Store) save(dir string, m *Manifest) error {
@@ -100,12 +132,17 @@ func (s *Store) Update(id string, fn func(*Manifest)) (*Manifest, error) {
 		return nil, err
 	}
 	fn(m)
-	return m, s.save(dir, m)
+	m.ID = id // fn edits the record, it does not move it
+	if err := s.save(dir, m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // List returns every readable meeting, newest first. A directory whose
 // manifest cannot be read is skipped, not fatal: one bad meeting must not hide
-// the others.
+// the others. Each skip is logged (directory name and error only). A directory
+// with no manifest yet is a Create in flight and is skipped silently.
 func (s *Store) List() ([]Manifest, error) {
 	entries, err := os.ReadDir(s.Root)
 	if errors.Is(err, os.ErrNotExist) {
@@ -119,12 +156,25 @@ func (s *Store) List() ([]Manifest, error) {
 		if !e.IsDir() || !vproject.ValidID(e.Name()) {
 			continue
 		}
-		if m, err := load(filepath.Join(s.Root, e.Name())); err == nil {
-			out = append(out, *m)
+		m, err := load(filepath.Join(s.Root, e.Name()))
+		if errors.Is(err, ErrNotFound) {
+			continue
 		}
+		if err != nil {
+			s.log().Warn("meeting skipped: manifest unreadable", slog.String("dir", e.Name()), slog.Any("error", err))
+			continue
+		}
+		out = append(out, *m)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Started.After(out[j].Started) })
 	return out, nil
+}
+
+func (s *Store) log() *slog.Logger {
+	if s.Log != nil {
+		return s.Log
+	}
+	return slog.Default()
 }
 
 // Delete removes a meeting and all its files.

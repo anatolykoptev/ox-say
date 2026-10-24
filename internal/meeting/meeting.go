@@ -55,6 +55,7 @@ const (
 	WarnNoSystemAudio = "no_system_audio" // the "them" channel is silent or missing
 	WarnNoMicAudio    = "no_mic_audio"
 	WarnLanguage      = "language_unsupported" // speech in a script the recognizer does not read
+	WarnEchoDropped   = "echo_dropped"         // DropEcho removed "me" turns it judged an echo of the far side
 )
 
 // Manifest is meeting.json: everything about a meeting except its audio and
