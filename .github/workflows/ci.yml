@@ -99,3 +99,47 @@ jobs:
       - name: arm64 baseline guard test
         if: runner.arch == 'ARM64'
         run: bash scripts/check-arm64-baseline_test.sh
+
+  # ox-diar (speaker diarization, engine/diar): a Swift package on FluidAudio's Core ML models. It runs per
+  # architecture it ships for. macos-15-intel is the Intel check of plan Task 20a: the same smoke on .cpuOnly, and
+  # its result decides whether the Intel package carries the engine. Xcode 26 because the manifest asks for Swift
+  # tools 6.2 (both images carry Xcode_26.3 beside their default).
+  diar:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: swift test
+        run: swift test --package-path engine/diar
+
+      - name: build ox-diar
+        run: engine/diar/build.sh "$RUNNER_TEMP/diar-work" "$RUNNER_TEMP/diar-out"
+
+      - name: Cache the diarization models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/diar-models
+          key: diar-models-${{ hashFiles('scripts/fetch-models.sh') }}
+
+      - name: Diarization models
+        run: bash scripts/fetch-models.sh --diar-only "$RUNNER_TEMP/diar-models"
+
+      # The CLI contract, the offline rule, the refusal on macOS older than 15 (OX_DIAR_ASSUME_MACOS lowers the version
+      # the binary sees) and the four voices of the AMI excerpt.
+      # The binary is copied away and the build tree removed first: it must not lean on anything it was built beside
+      # (SwiftPM's FluidAudio_FluidAudio.bundle).
+      - name: ox-diar smoke
+        run: |
+          mkdir "$RUNNER_TEMP/diar-run"
+          cp "$RUNNER_TEMP/diar-out/ox-diar" "$RUNNER_TEMP/diar-run/"
+          rm -rf "$RUNNER_TEMP/diar-work" "$RUNNER_TEMP/diar-out"
+          afconvert -f WAVE -d LEI16@16000 -c 1 engine/diar/testdata/ami-es2004a-780-180s.flac "$RUNNER_TEMP/diar-clip.wav"
+          python3 engine/diar/test_cli.py --bin "$RUNNER_TEMP/diar-run/ox-diar" --models "$RUNNER_TEMP/diar-models/diar" \
+              --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4
