@@ -681,6 +681,9 @@ the header of `app/dictation/build.sh`.
 
 Requirements: macOS 13.3 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, Go, ffmpeg
 (`brew install cmake go ffmpeg`).
+Telling the voices of a group call apart (`ox-diar`) needs macOS 15 or later; building it from source also needs Xcode 26 (Swift 6.2).
+A source install on an older Mac or with older tools skips it and meetings come out with one label for the other side
+(`OX_SAY_WITH_DIAR=1` builds it anyway; release packages carry it).
 
 ```
 scripts/install.sh      # engines + models + ox-say + LaunchAgent, then waits for /health
@@ -720,6 +723,9 @@ voices; `--purge` removes those too. Undo the MCP registration with
 ## Build and install the engine
 
 Requirements: macOS 13.3 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, ffmpeg.
+Telling the voices of a group call apart (`ox-diar`) needs macOS 15 or later; building it from source also needs Xcode 26 (Swift 6.2).
+A source install on an older Mac or with older tools skips it and meetings come out with one label for the other side
+(`OX_SAY_WITH_DIAR=1` builds it anyway; release packages carry it).
 
 ```
 engine/build.sh                # pinned clone + patches + static Metal build
