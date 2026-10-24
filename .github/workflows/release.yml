@@ -191,9 +191,9 @@ jobs:
           # must be there and structurally sound — a missing or corrupt one is
           # a first-run compile for users. arm64 adds the Metal4 tensor
           # libraries built by the macOS 26 SDK.
-          metallibs="engine/tts-server.metallib engine/ox-stt.metallib engine/ox-align.metallib"
+          metallibs="engine/tts-server.metallib engine/ox-stt.metallib engine/ox-align.metallib engine/ox-llm.metallib"
           if [ "$ARCH" = arm64 ]; then
-            metallibs="$metallibs engine/audiocpp_server.metallib engine/tts-server-tensor.metallib engine/ox-stt-tensor.metallib engine/ox-align-tensor.metallib"
+            metallibs="$metallibs engine/audiocpp_server.metallib engine/tts-server-tensor.metallib engine/ox-stt-tensor.metallib engine/ox-align-tensor.metallib engine/ox-llm-tensor.metallib"
           fi
           # Structural checks, runnable without a Metal device: the container
           # must be a real MetalLib with a function list, and an ordinary

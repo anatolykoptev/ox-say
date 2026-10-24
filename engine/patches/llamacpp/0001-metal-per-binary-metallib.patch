@@ -1,0 +1,158 @@
+diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
+index 91691b223..53bfd7ed1 100644
+--- a/ggml/src/ggml-metal/CMakeLists.txt
++++ b/ggml/src/ggml-metal/CMakeLists.txt
+@@ -204,6 +204,12 @@ else()
+         list   (APPEND XC_FLAGS -std=${GGML_METAL_STD})
+     endif()
+ 
++    # the runtime source compile defines GGML_METAL_HAS_BF16 on every
++    # bfloat-capable device; the precompiled library must carry the same
++    # kernels or a bf16 op aborts on a missing function (kernels/common.h
++    # #undefs it where __METAL_VERSION__ < 310)
++    list   (APPEND XC_FLAGS -DGGML_METAL_HAS_BF16)
++
+     # Compile each kernel source to .air, then link into default.metallib
+     set(AIR_FILES "")
+     foreach(src ${METALLIB_KERNEL_SOURCES})
+@@ -224,8 +230,11 @@ else()
+     # the tensor API kernels go in a separate metallib, loaded only where supported
+     if (GGML_METAL_HAS_TENSOR_LIB)
+         set(AIR_MM_TENSOR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mul_mm_tensor.air")
+-        # the tensor API needs OS 26+
+-        set(XC_FLAGS_TENSOR ${XC_FLAGS} -mtargetos=${GGML_METAL_TARGET_OS}26.0${METAL_TARGET_SIM})
++        # the tensor API needs OS 26+; it must not inherit the version flag
++        # XC_FLAGS carries (-mmacosx-version-min and -mtargetos do not combine)
++        set(XC_FLAGS_TENSOR ${XC_FLAGS})
++        list(FILTER XC_FLAGS_TENSOR EXCLUDE REGEX "^-(mmacosx-version-min|mtargetos)=")
++        list(APPEND XC_FLAGS_TENSOR -mtargetos=${GGML_METAL_TARGET_OS}26.0${METAL_TARGET_SIM})
+         add_custom_command(
+             OUTPUT ${AIR_MM_TENSOR}
+             COMMAND xcrun -sdk ${METAL_SDK} metal ${XC_FLAGS_TENSOR} -DGGML_METAL_HAS_TENSOR -I ${CMAKE_RUNTIME_OUTPUT_DIRECTORY} -c ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/kernels/mul_mm.metal -o ${AIR_MM_TENSOR}
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index d1bce8bad..35b0445aa 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -466,6 +466,93 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+ #endif
+ 
+ #if GGML_METAL_EMBED_LIBRARY
++    // ox-say: a precompiled <argv0>.metallib next to the executable is the
++    // fast path — the same kernels with no first-run compile. It must exist
++    // AND load; any failure is one log line and the embedded sources below
++    // take over, so a missing, stale or corrupt library can never stop the
++    // engine. The bundle argument stays nil: these are loose binaries, the
++    // lookup is the directory of the running executable.
++    {
++        const int64_t t_lib = ggml_time_us();
++
++        NSString * bin_name = [[[NSProcessInfo processInfo] arguments][0] lastPathComponent];
++        NSString * path_lib = ggml_metal_find_metallib(nil, bin_name);
++        if (path_lib == nil) {
++            path_lib = ggml_metal_find_metallib(nil, @"default");
++        }
++
++        // the precompiled library carries the bf16 kernels, which need Metal
++        // language 3.1 — its AIR target is macOS 14.0, so on an older OS it
++        // would not load; go straight to the embedded sources
++        if (path_lib != nil &&
++            ![[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){14, 0, 0}]) {
++            GGML_LOG_INFO("%s: skipping '%s' - the precompiled metal library targets macOS 14.0\n",
++                          __func__, [path_lib UTF8String]);
++            path_lib = nil;
++        }
++
++        if (path_lib != nil) {
++            NSError * error_lib = nil;
++
++            GGML_LOG_INFO("%s: loading '%s'\n", __func__, [path_lib UTF8String]);
++
++            res->objs[0] = [device newLibraryWithURL:[NSURL fileURLWithPath:path_lib] error:&error_lib];
++            if (res->objs[0]) {
++                // a library built without the bf16 kernels (a flag
++                // regression, a dev build) would still abort on the first
++                // bf16 op on a bfloat-capable device — a missing kernel is a
++                // crash, so treat the library as unusable, the same as one
++                // that did not load
++                if (ggml_metal_device_get_props(dev)->has_bfloat &&
++                    ![[res->objs[0] functionNames] containsObject:@"kernel_get_rows_bf16"]) {
++                    GGML_LOG_INFO("%s: '%s' has no bf16 kernels - falling back to the embedded metal library\n",
++                                  __func__, [path_lib UTF8String]);
++
++                    [res->objs[0] release];
++                    res->objs[0] = nil;
++                } else {
++                    res->single_library = true;
++
++                    // the tensor API kernels are built into a separate metallib
++                    if (ggml_metal_device_get_props(dev)->has_tensor) {
++                        NSString * path_mm = ggml_metal_find_metallib(nil, [bin_name stringByAppendingString:@"-tensor"]);
++                        if (path_mm == nil) {
++                            path_mm = ggml_metal_find_metallib(nil, @"ggml-tensor");
++                        }
++
++                        id<MTLLibrary> lib_mm = nil;
++                        if (path_mm != nil) {
++                            NSError * error_mm = nil;
++                            lib_mm = [device newLibraryWithURL:[NSURL fileURLWithPath:path_mm] error:&error_mm];
++                            if (!lib_mm && error_mm) {
++                                GGML_LOG_ERROR("%s: %s\n", __func__, [[error_mm description] UTF8String]);
++                            }
++                        }
++
++                        if (lib_mm) {
++                            GGML_LOG_INFO("%s: loaded '%s'\n", __func__, [path_mm UTF8String]);
++
++                            res->objs[GGML_METAL_LIB_MUL_MM] = [lib_mm retain];
++                            res->override_fns                = [[NSSet setWithArray:[lib_mm functionNames]] retain];
++                        } else {
++                            GGML_LOG_INFO("%s: ggml-tensor.metallib not found - disabling the tensor API\n", __func__);
++
++                            ggml_metal_device_disable_tensor(dev);
++                        }
++                    }
++
++                    GGML_LOG_INFO("%s: loaded in %.3f sec\n", __func__, (ggml_time_us() - t_lib) / 1e6);
++
++                    return res;
++                }
++            } else {
++                GGML_LOG_INFO("%s: '%s' did not load (%s) - falling back to the embedded metal library\n",
++                              __func__, [path_lib UTF8String],
++                              error_lib ? [[error_lib localizedDescription] UTF8String] : "unknown error");
++            }
++        }
++    }
++
+     GGML_LOG_INFO("%s: using embedded metal library\n", __func__);
+ 
+     // start/end symbols emitted by CMake (see CMakeLists.txt), one pair per kind
+@@ -508,7 +595,15 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+     const int64_t t_start = ggml_time_us();
+ 
+     NSError * error = nil;
+-    NSString * path_lib = ggml_metal_find_metallib(bundle, @"default");
++
++    // ox-say: a <binary>.metallib next to the executable wins over a shared
++    // default.metallib, so engines built from different ggml trees can sit in
++    // one directory with a compiled library each.
++    NSString * bin_name = [[[NSProcessInfo processInfo] arguments][0] lastPathComponent];
++    NSString * path_lib = ggml_metal_find_metallib(bundle, bin_name);
++    if (path_lib == nil) {
++        path_lib = ggml_metal_find_metallib(bundle, @"default");
++    }
+ 
+     if (path_lib != nil) {
+         // pre-compiled library found: a single combined default.metallib
+@@ -525,7 +620,10 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+ 
+         // the tensor API kernels are built into a separate metallib
+         if (ggml_metal_device_get_props(dev)->has_tensor) {
+-            NSString * path_mm = ggml_metal_find_metallib(bundle, @"ggml-tensor");
++            NSString * path_mm = ggml_metal_find_metallib(bundle, [bin_name stringByAppendingString:@"-tensor"]);
++            if (path_mm == nil) {
++                path_mm = ggml_metal_find_metallib(bundle, @"ggml-tensor");
++            }
+ 
+             id<MTLLibrary> lib_mm = nil;
+             if (path_mm != nil) {

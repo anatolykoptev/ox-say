@@ -60,7 +60,7 @@ include_copy() {
 # Engine binaries always embed the Metal sources (GGML_METAL_EMBED_LIBRARY=ON):
 # a missing, stale or corrupt metallib can then never stop an engine — the
 # patched ggml falls back to the embedded compile (patches/ggml/0003,
-# patches/audiocpp/0003). A working Metal toolchain additionally builds each
+# patches/audiocpp/0003, patches/llamacpp/0001). A working Metal toolchain additionally builds each
 # engine a precompiled <bin>.metallib — the same kernels from the same patched
 # tree, with no first-run compile (plans/ox-say/2026-10-22-precompiled-metal-shaders.md).
 # `xcrun -f metal` finds a stub even when Xcode 26's MetalToolchain component
@@ -77,9 +77,9 @@ probe_metal() {
 # copy_metal_libs <metallib-build-bin-dir> <engine>: ship the compiled library
 # under the engine's own name. Engines in out/ come from different ggml trees,
 # whose kernel sources differ, so one default.metallib cannot serve them all; a
-# patched ggml (patches/ggml/0003, patches/audiocpp/0003) probes
-# <argv0>.metallib next to the binary and falls back to the embedded source
-# when it is missing or does not load.
+# patched ggml (patches/ggml/0003, patches/audiocpp/0003, patches/llamacpp/0001)
+# probes <argv0>.metallib next to the binary and falls back to the embedded
+# source when it is missing or does not load.
 copy_metal_libs() {
     local dir=$1 name=$2
     cp "$dir/default.metallib" "$out/$name.metallib"
@@ -107,16 +107,18 @@ rm -f "$out"/*.metallib
 # configure with EMBED_LIBRARY=OFF, building only the ggml-metal-lib target —
 # the same kernel sources the binaries embed, so the shipped library cannot
 # drift from them. qwentts's ggml submodule and audio.cpp's vendored ggml are
-# complete trees configured directly; whisper.cpp's vendored ggml is partial
-# (no tests/examples/ggml.pc.in — it cannot be a -S root), so it is reached
-# through engine/align's CMakeLists, which add_subdirectory()s it.
+# complete trees configured directly; whisper.cpp's and llama.cpp's vendored
+# ggml trees are partial (no tests/examples/ggml.pc.in — they cannot be a -S
+# root), so they are reached through a parent CMakeLists that
+# add_subdirectory()s them: engine/align's and llama.cpp's own root.
 # GGML_METAL_MACOSX_VERSION_MIN pins the AIR target at macOS 14.0: the library
-# carries the bf16 kernels (patches/ggml/0005, patches/audiocpp/0004), which
-# need Metal language 3.1 — a lower target compiles them out and a missing
-# kernel is a crash, not a slower fallback. macOS 13.3 remains the app's floor:
-# on 13.x the patched ggml skips the library and uses the embedded sources
-# (patches/ggml/0003, patches/audiocpp/0003). The tensor library keeps its
-# intentional macOS 26 target (patches/ggml/0004).
+# carries the bf16 kernels (patches/ggml/0005, patches/audiocpp/0004,
+# patches/llamacpp/0001), which need Metal language 3.1 — a lower target
+# compiles them out and a missing kernel is a crash, not a slower fallback.
+# macOS 13.3 remains the app's floor: on 13.x the patched ggml skips the
+# library and uses the embedded sources (patches/ggml/0003,
+# patches/audiocpp/0003, patches/llamacpp/0001). The tensor library keeps its
+# intentional macOS 26 target (patches/ggml/0004, patches/llamacpp/0001).
 # The build dir is rebuilt from scratch every time: the metallib is a
 # custom_command whose DEPENDS does not include the compile flags, so a cached
 # dir keeps its stale .air files after GGML_METAL_MACOSX_VERSION_MIN or
@@ -280,11 +282,12 @@ echo "built $out/ox-align"
 
 # --- ox-llm (llama.cpp's llama-server; the meeting-notes model server) ---
 # llama.cpp carries its own ggml, so this engine takes none of engine/patches/ggml
-# and builds from its own tree. The binary is renamed ox-llm on copy: the Metal
-# library lookup keys on argv[0] (patches/ggml/0003), and every engine in out/
-# needs a name of its own.
+# and builds from its own tree — its metallib handling comes from
+# patches/llamacpp instead. The binary is renamed ox-llm on copy: the Metal
+# library lookup keys on argv[0] (patches/llamacpp/0001), and every engine in
+# out/ needs a name of its own.
 ll="$work/llama.cpp"
-stamp=$(echo "$LLAMACPP_REPO $LLAMACPP_COMMIT" | shasum -a 256 | cut -d' ' -f1)
+stamp=$( { echo "$LLAMACPP_REPO $LLAMACPP_COMMIT"; find "$here/patches/llamacpp" -name '*.patch' -type f | LC_ALL=C sort | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
 if ! fresh "$ll" "$stamp"; then
     rm -rf "$ll"
     git clone --quiet "$LLAMACPP_REPO" "$ll"
@@ -294,6 +297,9 @@ if ! fresh "$ll" "$stamp"; then
         echo "llama.cpp is $actual, expected the commit $LLAMACPP_COMMIT" >&2
         exit 1
     fi
+    for p in "$here"/patches/llamacpp/*.patch; do
+        git -C "$ll" apply "$p"
+    done
     echo "$stamp" > "$ll/.ox-say-stamp"
 fi
 include_copy "$ll/ggml" "$work/ggml-include-llm"
@@ -307,6 +313,12 @@ cmake -S "$ll" -B "$ll/build-$arch" "${cmake_flags[@]}" \
 cmake --build "$ll/build-$arch" --target llama-server -j "$jobs" > "$work/llm-build.log"
 cp "$ll/build-$arch/bin/llama-server" "$out/ox-llm"
 strip -x "$out/ox-llm"
+if [ -n "$metal_lib" ]; then
+    build_metal_lib "$ll" "$work/llm-metallib-$arch" \
+        -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+        -DLLAMA_BUILD_APP=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
+    copy_metal_libs "$work/llm-metallib-$arch/bin" ox-llm
+fi
 check_static "$out/ox-llm"
 check_dist "$out/ox-llm"
 # The daemon starts ox-llm with these flags (internal/daemon/meetings.go
