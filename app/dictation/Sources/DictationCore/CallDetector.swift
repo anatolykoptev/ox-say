@@ -178,6 +178,11 @@ public struct CallTracker {
     /// Consecutive ticks on which a browser held the microphone but its tab was unreadable.
     private var unreadableTicks = 0
 
+    /// The episode the tracker is in (nil between calls): `call|bundleID`, as `observe` keys it.
+    public var episodeKey: String? { episode }
+
+    public static func key(call: String, bundleID: String?) -> String { call + "|" + (bundleID ?? "") }
+
     public init() {}
 
     /// Forget the current call: the user said "don't record this one". The
@@ -190,13 +195,30 @@ public struct CallTracker {
     /// nil when idle, else how the recording began (only an auto-started one is
     /// stopped here); `callUnreadable` says a browser held the microphone but its
     /// tab could not be read — one such tick does not break the debounce.
+    /// `heldOnly` says `call` is only the current episode's memory (its browser
+    /// still holds the microphone, the page in front is not a call page): it keeps
+    /// the episode's identity — a decline or a user stop stands — but is not a live
+    /// call: it never starts or offers a recording, and an auto recording's silence
+    /// timer keeps running. Ignored unless `call` is the current episode.
     public mutating func observe(now: Date, call: String?, themActive: Bool, recording: Origin?,
-                                 bundleID: String? = nil, callUnreadable: Bool = false) -> Action {
-        if let call {
+                                 bundleID: String? = nil, callUnreadable: Bool = false, heldOnly: Bool = false) -> Action {
+        let key = call.map { Self.key(call: $0, bundleID: bundleID) }
+        let held = heldOnly && key != nil && key == episode
+        if held, recording != .auto {
+            // The call page is not in front but the browser still holds the microphone:
+            // the episode goes on, nothing is offered, and the debounce starts over when
+            // the call page returns.
+            unreadableTicks = 0
+            callSince = nil
+            quietSince = nil
+            idleSince = nil
+            if recording != nil { announced = true }
+            return .nothing
+        }
+        if let call, !held {
             unreadableTicks = 0
             quietSince = nil
             idleSince = nil
-            let key = call + "|" + (bundleID ?? "")
             if let episode, episode != key {
                 announced = false
                 declined = false
@@ -217,7 +239,7 @@ public struct CallTracker {
             }
             return .nothing
         }
-        if callUnreadable, callSince != nil, unreadableTicks < 1 {
+        if callUnreadable, !held, callSince != nil, unreadableTicks < 1 {
             unreadableTicks += 1
             return .nothing
         }
@@ -251,5 +273,87 @@ public struct CallTracker {
             }
         }
         return .nothing
+    }
+}
+
+/// One polling round of the call watcher: the microphone users go in, the
+/// detection and the tracker action come out. This is the piece the AppKit
+/// timer cannot decide for itself: a browser call stays a call while its
+/// browser holds the microphone — leaving the call tab is not hanging up, so
+/// a user stop or a "don't record this one" survives it (#241) — and a denied
+/// tab read is reported, not mistaken for "no call".
+public struct CallWatch {
+    /// What one round adds up to.
+    public struct Outcome: Equatable {
+        /// The call that counts this round: the detected one, else the call in
+        /// progress while its app still holds the microphone.
+        public var call: CallDetector.Detection.Call?
+        /// `call` is the episode's memory, not a page that reads as a call right
+        /// now: the tracker keeps its decline / user stop, never starts a recording
+        /// from it, and lets an auto recording's silence timer run.
+        public var heldOnly = false
+        /// What the tracker made of the round.
+        public var action: CallTracker.Action
+        /// A browser held the microphone and Automation for it is off — the app
+        /// must say so (notice.meeting.browser_denied): it looks exactly like
+        /// no call. Reported again after a read for that browser worked in between.
+        public var browserDenied = false
+    }
+
+    private var tracker = CallTracker()
+    /// The call last seen live. It is the episode's memory: consulted only while its
+    /// app still holds the microphone AND the tracker is still in that episode, and
+    /// dropped the moment either stops being true — a browser that grabs the
+    /// microphone for another site hours later is not that call.
+    private var lastCall: CallDetector.Detection.Call?
+    /// Browsers whose denied read was already reported. A browser leaves the set when
+    /// a read of it works, so a revoke after a grant is reported again.
+    private var deniedReported: Set<String> = []
+
+    public init() {}
+
+    /// Forget the current call: the user said "don't record this one". The
+    /// call is not offered again until it has ended.
+    public mutating func decline() { tracker.decline() }
+
+    /// `tab` reads a browser's front page (BrowserTabURL.read in the app); the rest
+    /// is what CallTracker.observe takes. `recording` is nil when no recording runs.
+    public mutating func observe(now: Date, users: [MicUser], tab: (String) -> BrowserTabURL.Result,
+                                 themActive: Bool, recording: CallTracker.Origin?) -> Outcome {
+        var reads: [String: BrowserTabURL.Result] = [:]
+        let detection = CallDetector.detect(of: users, tab: { id in
+            let result = tab(id)
+            reads[id] = result
+            return result
+        })
+        var call = detection.call
+        var heldOnly = false
+        // A browser call goes on while that browser holds the microphone,
+        // whichever tab is in front (#241) — as the same episode, never as a new call.
+        if call == nil, let last = lastCall {
+            if CallDetector.holds(users, bundleID: last.bundleID),
+               tracker.episodeKey == CallTracker.key(call: last.source, bundleID: last.bundleID) {
+                call = last
+                heldOnly = true
+            } else {
+                lastCall = nil
+            }
+        }
+        if let call, !heldOnly { lastCall = call }
+        let action = tracker.observe(now: now, call: call?.source, themActive: themActive,
+                                     recording: recording, bundleID: call?.bundleID,
+                                     callUnreadable: detection.browserUnreadable, heldOnly: heldOnly)
+        for (id, result) in reads {
+            if case .url = result { deniedReported.remove(id) }
+        }
+        var denied = false
+        if detection.browserDenied {
+            let fresh = reads.filter { $0.value == .denied }.keys.filter { !deniedReported.contains($0) }
+            if !fresh.isEmpty {
+                denied = true
+                deniedReported.formUnion(fresh)
+            }
+        }
+        return Outcome(call: call, heldOnly: heldOnly, action: action, browserDenied: denied)
     }
 }

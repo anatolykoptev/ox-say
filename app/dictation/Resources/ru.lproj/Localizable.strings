@@ -81,6 +81,10 @@
 "badge.record" = "Записать";
 "badge.not_now" = "Не сейчас";
 "badge.copy_consent" = "Скопировать фразу согласия";
+"badge.a11y.panel" = "Запись встречи";
+"badge.a11y.dot" = "Идёт запись";
+"badge.a11y.me" = "Уровень вашего микрофона";
+"badge.a11y.them" = "Уровень собеседников";
 "meeting.consent_phrase" = "Я записываю этот звонок, чтобы вести заметки. Все согласны?";
 "meeting.label.other" = "Собеседник";
 "notice.meeting.ready" = "Заметки о встрече готовы";
