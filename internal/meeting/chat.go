@@ -9,10 +9,15 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 )
 
 // HTTPChat speaks the OpenAI chat-completions protocol — llama-server's, and
 // any compatible cloud endpoint's. BaseURL has no trailing slash.
+//
+// The caller must not set Client.Timeout: it caps the whole exchange, and a
+// notes call on a slow CPU legitimately runs for many minutes. The Composer
+// puts a deadline on every call through the request context instead.
 type HTTPChat struct {
 	BaseURL string
 	// Key returns the bearer token, read per call: the daemon rewrites the
@@ -21,9 +26,46 @@ type HTTPChat struct {
 	Client *http.Client
 }
 
-// ErrTruncated: the model stopped at the token limit, so a structured answer
-// is cut off.
+// ErrTruncated: the model stopped at the token limit, so its answer, structured
+// or free text, is cut off.
 var ErrTruncated = errors.New("meeting: the model's answer hit the token limit")
+
+// StatusError: the model server answered with a status other than 200. Detail
+// is the server's own error type and message, never the raw body: a body can
+// echo the prompt, and the prompt is the user's meeting.
+type StatusError struct {
+	Code   int
+	Detail string
+}
+
+func (e *StatusError) Error() string {
+	if e.Detail == "" {
+		return fmt.Sprintf("meeting: notes model answered %d", e.Code)
+	}
+	return fmt.Sprintf("meeting: notes model answered %d: %s", e.Code, e.Detail)
+}
+
+// maxDetail caps the error message kept from the server, in characters.
+const maxDetail = 200
+
+// errorDetail reads llama-server's {"error":{"type":..,"message":..}}; any
+// other body gives "".
+func errorDetail(data []byte) string {
+	var e struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(data, &e) != nil {
+		return ""
+	}
+	d := strings.TrimSpace(strings.TrimSpace(e.Error.Type) + " " + strings.Join(strings.Fields(e.Error.Message), " "))
+	if utf8.RuneCountInString(d) > maxDetail {
+		d = string([]rune(d)[:maxDetail])
+	}
+	return d
+}
 
 type chatBody struct {
 	Messages       []chatMessage  `json:"messages"`
@@ -47,6 +89,7 @@ func (h HTTPChat) Complete(ctx context.Context, r Request) (string, error) {
 		Messages:     []chatMessage{{"system", r.System}, {"user", r.User}},
 		Temperature:  0.3,
 		TopP:         0.9,
+		CachePrompt:  true, // every call shares its system prompt; llama-server reuses the prefix
 		MaxTokens:    r.MaxTokens,
 		TemplateArgs: map[string]any{"enable_thinking": false},
 	}
@@ -70,7 +113,7 @@ func (h HTTPChat) Complete(ctx context.Context, r Request) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(key))
 	}
 	client := h.Client
 	if client == nil {
@@ -86,7 +129,7 @@ func (h HTTPChat) Complete(ctx context.Context, r Request) (string, error) {
 		return "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("meeting: notes model answered %d: %s", resp.StatusCode, strings.TrimSpace(string(data[:min(len(data), 300)])))
+		return "", &StatusError{Code: resp.StatusCode, Detail: errorDetail(data)}
 	}
 	var out struct {
 		Choices []struct {
@@ -97,7 +140,7 @@ func (h HTTPChat) Complete(ctx context.Context, r Request) (string, error) {
 	if err := json.Unmarshal(data, &out); err != nil || len(out.Choices) == 0 {
 		return "", fmt.Errorf("meeting: notes model sent an answer the daemon cannot read")
 	}
-	if out.Choices[0].FinishReason == "length" && r.Schema != nil {
+	if out.Choices[0].FinishReason == "length" {
 		return "", ErrTruncated
 	}
 	return out.Choices[0].Message.Content, nil

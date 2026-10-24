@@ -6,7 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"regexp"
+	"sort"
 	"strings"
+	"syscall"
+	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/voices"
@@ -24,6 +30,18 @@ const (
 	// summaryBudget caps the partial summaries sent to the merge call.
 	summaryBudget = 12000
 	maxAnswer     = 3000
+)
+
+const (
+	// callTimeout bounds one model call. Generous on purpose: a 16k-character
+	// chunk is a ~5k-token prompt, and on an Intel CPU llama-server reads the
+	// prompt at a few tokens a second and then writes the answer at about one,
+	// so a healthy call can take many minutes. The bound only exists so a hung
+	// server cannot hold the notes run forever.
+	callTimeout = 30 * time.Minute
+	// retryDelay is the pause before retrying a call that failed because the
+	// server was busy or not up yet (HTTP 503, connection refused).
+	retryDelay = 5 * time.Second
 )
 
 // ActionItem is one task; Who and When are empty when the transcript names
@@ -50,34 +68,61 @@ type Notes struct {
 	SkippedChunks []int `json:"skipped_chunks,omitempty"`
 }
 
-// Chunk splits text into pieces of at most max characters, breaking only at
-// line ends; one line longer than max is cut.
-func Chunk(text string, max int) []string {
+// turnPrefix matches the "[m:ss] Name: " a prompt line starts with.
+var turnPrefix = regexp.MustCompile(`^\[[0-9:]+\] [^:\n]{1,64}: `)
+
+// Chunk splits text into pieces of at most limit characters, breaking only at
+// line ends. A line longer than limit is cut, and every piece after the first
+// repeats the line's "[time] Speaker: " prefix so the model never reads an
+// unattributed fragment. A limit of zero or less means ChunkChars.
+func Chunk(text string, limit int) []string {
+	if limit <= 0 {
+		limit = ChunkChars
+	}
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
 	var out []string
 	var cur strings.Builder
 	flush := func() {
-		if cur.Len() > 0 {
-			out = append(out, strings.TrimRight(cur.String(), "\n"))
-			cur.Reset()
+		if s := strings.TrimRight(cur.String(), "\n"); strings.TrimSpace(s) != "" {
+			out = append(out, s)
 		}
+		cur.Reset()
 	}
 	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
-		for runeLen(line) > max {
+		if runeLen(line) > limit {
 			flush()
-			r := []rune(line)
-			out = append(out, string(r[:max]))
-			line = string(r[max:])
+			out = append(out, cutLine(line, limit)...)
+			continue
 		}
-		if runeLen(cur.String())+runeLen(line)+1 > max {
+		if runeLen(cur.String())+runeLen(line)+1 > limit {
 			flush()
 		}
 		cur.WriteString(line)
 		cur.WriteByte('\n')
 	}
 	flush()
+	return out
+}
+
+// cutLine cuts one overlong line into pieces of at most limit characters, each
+// continuation led by the line's own speaker prefix when it has one and the
+// prefix leaves room for text.
+func cutLine(line string, limit int) []string {
+	prefix := turnPrefix.FindString(line)
+	if runeLen(prefix) > limit/2 {
+		prefix = ""
+	}
+	r := []rune(line)
+	out := []string{string(r[:limit])}
+	r = r[limit:]
+	room := limit - runeLen(prefix)
+	for len(r) > 0 {
+		n := min(room, len(r))
+		out = append(out, prefix+string(r[:n]))
+		r = r[n:]
+	}
 	return out
 }
 
@@ -91,7 +136,20 @@ func isUnstated(s string) bool { return unstated[strings.ToLower(strings.TrimSpa
 // MergeChunks joins the per-chunk notes and removes repeats in code: the same
 // task found in two chunks, or twice in one, appears once, with the owner and
 // date when either copy had them. Order is first appearance.
-func MergeChunks(parts []ChunkNotes) Notes {
+//
+// Two lines are never merged when they differ in a number or, for decisions,
+// questions and tasks, in a proper name: "Pay Bob 500" and "Pay Ann 500" share
+// most words and are two facts. Key numbers merge only when identical after
+// normalization.
+//
+// Owners are compared as people, not as strings: "Анатолий", "Anatoliy" and
+// "Anatoly" are one person, "Ann" and "Anna" are two, and two different named
+// owners never merge, however alike their tasks. Labels is threaded in here
+// rather than applied in Compose because the merge is where owners are
+// compared: a spelling of the recorder's own name (Labels.Me) becomes that
+// label, so MergeChunks is correct for any caller. A named owner is never
+// mapped to Labels.Them: a group call has several far-side people.
+func MergeChunks(parts []ChunkNotes, l Labels) Notes {
 	var n Notes
 	var summaries []string
 	for _, p := range parts {
@@ -104,14 +162,17 @@ func MergeChunks(parts []ChunkNotes) Notes {
 		n.Numbers = append(n.Numbers, p.Numbers...)
 	}
 	n.Summary = strings.Join(summaries, "\n\n")
-	n.Decisions = dedupeLines(n.Decisions)
-	n.OpenQuestions = dedupeLines(n.OpenQuestions)
-	n.Numbers = dedupeLines(n.Numbers)
-	n.ActionItems = dedupeActions(n.ActionItems)
+	n.Decisions = dedupeLines(n.Decisions, true)
+	n.OpenQuestions = dedupeLines(n.OpenQuestions, true)
+	n.Numbers = dedupeLines(n.Numbers, false)
+	n.ActionItems = dedupeActions(n.ActionItems, l)
 	return n
 }
 
-func dedupeLines(in []string) []string {
+// dedupeLines drops repeats. fuzzy off: only lines equal after normalization
+// are one. fuzzy on: lines that share most words are one too, unless they
+// differ in a number or a proper name.
+func dedupeLines(in []string, fuzzy bool) []string {
 	var out []string
 	for _, s := range in {
 		s = strings.TrimSpace(s)
@@ -120,7 +181,7 @@ func dedupeLines(in []string) []string {
 		}
 		dup := false
 		for _, o := range out {
-			if voices.WordOverlap(s, o) >= similarLine {
+			if normKey(s) == normKey(o) || (fuzzy && voices.WordOverlap(s, o) >= similarLine && !factsDiffer(s, o)) {
 				dup = true
 				break
 			}
@@ -132,16 +193,17 @@ func dedupeLines(in []string) []string {
 	return out
 }
 
-func dedupeActions(in []ActionItem) []ActionItem {
+func dedupeActions(in []ActionItem, l Labels) []ActionItem {
 	var out []ActionItem
 	for _, a := range in {
 		a.What = strings.TrimSpace(a.What)
 		if a.What == "" {
 			continue
 		}
+		a.Who = canonicalOwner(a.Who, l)
 		merged := false
 		for i, o := range out {
-			if voices.WordOverlap(a.What, o.What) < similarAction || !sameOwner(a.Who, o.Who) {
+			if !sameTask(a, o) {
 				continue
 			}
 			if len(a.What) > len(o.What) {
@@ -163,9 +225,115 @@ func dedupeActions(in []ActionItem) []ActionItem {
 	return out
 }
 
-// sameOwner: two owners agree when either is unstated or they are the same name.
+// sameTask: a and o are one task. Never when their numbers or names differ,
+// when both state a different date, or when two different named people own
+// them ("Bob sends the deck", "Ann sends the deck" are two tasks); otherwise a
+// similarAction word overlap is enough.
+func sameTask(a, o ActionItem) bool {
+	if factsDiffer(a.What, o.What) || !sameOwner(a.Who, o.Who) {
+		return false
+	}
+	if !isUnstated(a.When) && !isUnstated(o.When) && normKey(a.When) != normKey(o.When) {
+		return false
+	}
+	return voices.WordOverlap(a.What, o.What) >= similarAction
+}
+
+// sameOwner: two owners agree when either is unstated or they are the same
+// person, one name spelled two ways.
 func sameOwner(a, b string) bool {
-	return isUnstated(a) || isUnstated(b) || strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+	return isUnstated(a) || isUnstated(b) || foldName(a) == foldName(b)
+}
+
+// canonicalOwner returns the speaker label when who is a spelling of the
+// recorder's own name (Labels.Me), and who unchanged otherwise. A call can have
+// many people on the far side, so a named owner is never mapped to Labels.Them:
+// every real name the model extracted stays.
+func canonicalOwner(who string, l Labels) string {
+	who = strings.TrimSpace(who)
+	if me := strings.TrimSpace(l.Me); !isUnstated(who) && me != "" && foldName(who) == foldName(me) {
+		return me
+	}
+	return who
+}
+
+var cyrillic = map[rune]string{
+	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "e", 'ж': "zh", 'з': "z",
+	'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m", 'н': "n", 'о': "o", 'п': "p", 'р': "r",
+	'с': "s", 'т': "t", 'у': "u", 'ф': "f", 'х': "kh", 'ц': "ts", 'ч': "ch", 'ш': "sh",
+	'щ': "sch", 'ы': "y", 'э': "e", 'ю': "yu", 'я': "ya",
+}
+
+var diacritics = strings.NewReplacer(
+	"á", "a", "à", "a", "â", "a", "ä", "a", "ã", "a", "å", "a",
+	"é", "e", "è", "e", "ê", "e", "ë", "e", "í", "i", "ì", "i", "î", "i", "ï", "i",
+	"ó", "o", "ò", "o", "ô", "o", "ö", "o", "õ", "o", "ú", "u", "ù", "u", "û", "u", "ü", "u",
+	"ý", "y", "ñ", "n", "ç", "c", "ß", "ss",
+)
+
+// foldName reduces a person's name to a key that is the same for its spellings:
+// lower case, Cyrillic written in Latin letters, accents removed, and the
+// common Russian ending -ий/-iy/-ij/-ii written -y ("Анатолий", "Anatoliy",
+// "Anatoly"). Exact equality of keys, never similarity: "Ann" and "Anna" are
+// two people.
+func foldName(s string) string {
+	var b strings.Builder
+	for _, r := range diacritics.Replace(strings.ToLower(s)) {
+		switch {
+		case cyrillic[r] != "":
+			b.WriteString(cyrillic[r])
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+		}
+	}
+	k := b.String()
+	for _, end := range []string{"iy", "ij", "ii"} {
+		if strings.HasSuffix(k, end) && len(k) > len(end) {
+			return strings.TrimSuffix(k, end) + "y"
+		}
+	}
+	return k
+}
+
+// factsDiffer: a and b disagree on a number or a proper name, so a word
+// overlap between them must not make them one line.
+func factsDiffer(a, b string) bool {
+	return numbersOf(a) != numbersOf(b) || namesMissing(a, b) || namesMissing(b, a)
+}
+
+var numberRun = regexp.MustCompile(`\d+(?:[.,]\d+)*`)
+
+// numbersOf is the sorted list of numbers in s, as one comparable string.
+func numbersOf(s string) string {
+	nums := numberRun.FindAllString(s, -1)
+	sort.Strings(nums)
+	return strings.Join(nums, " ")
+}
+
+// namesMissing: s has a capitalized word whose lower-case form t does not have
+// at all. Case is read this way (not "capitalized in both") so a sentence-start
+// "Use" matches "use" and "Bob" does not match "Ann".
+func namesMissing(s, t string) bool {
+	have := map[string]bool{}
+	for _, w := range tokens(t) {
+		have[strings.ToLower(w)] = true
+	}
+	for _, w := range tokens(s) {
+		r, _ := utf8.DecodeRuneInString(w)
+		if utf8.RuneCountInString(w) >= 2 && unicode.IsUpper(r) && !have[strings.ToLower(w)] {
+			return true
+		}
+	}
+	return false
+}
+
+func tokens(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+}
+
+// normKey is s lower-cased with punctuation and spacing removed.
+func normKey(s string) string {
+	return strings.ToLower(strings.Join(tokens(s), " "))
 }
 
 // Chat is the language model, behind the one call the notes need. Schema nil
@@ -249,6 +417,34 @@ type Composer struct {
 	Chat   Chat
 	Before func(ctx context.Context) error
 	Log    *slog.Logger
+	// CallTimeout bounds one model call; zero means the callTimeout constant.
+	CallTimeout time.Duration
+	// RetryDelay is the pause before retrying a busy or unreachable server;
+	// zero means the retryDelay constant.
+	RetryDelay time.Duration
+}
+
+func (c Composer) callTimeout() time.Duration {
+	if c.CallTimeout > 0 {
+		return c.CallTimeout
+	}
+	return callTimeout
+}
+
+func (c Composer) retryDelay() time.Duration {
+	if c.RetryDelay > 0 {
+		return c.RetryDelay
+	}
+	return retryDelay
+}
+
+// call is one model call under its own deadline, so a hung server cannot hold
+// the notes run forever. Before runs outside it: waiting for a dictation to
+// finish is not the model being slow.
+func (c Composer) call(ctx context.Context, r Request) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.callTimeout())
+	defer cancel()
+	return c.Chat.Complete(ctx, r)
 }
 
 // Compose writes the notes for the transcript text: one structured call per
@@ -264,7 +460,7 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 			if ctx.Err() != nil {
 				return Notes{}, ctx.Err()
 			}
-			c.logf("notes: chunk failed twice", slog.Int("chunk", i), slog.Any("error", err))
+			c.logf("notes: chunk failed", slog.Int("chunk", i), slog.Any("error", err))
 			skipped = append(skipped, i)
 			continue
 		}
@@ -273,12 +469,29 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 	if len(parts) == 0 {
 		return Notes{}, ErrNoNotes
 	}
-	n := MergeChunks(parts)
+	n := MergeChunks(parts, l)
 	n.SkippedChunks = skipped
 	if len(parts) > 1 {
 		n.Summary = c.mergeSummary(ctx, parts, n.Summary, lang)
 	}
 	return n, nil
+}
+
+// errEmptyNotes: the model returned valid JSON with nothing in it. The system
+// prompt asks for a summary of every part, so an all-empty answer is a failed
+// one, not a quiet part.
+var errEmptyNotes = errors.New("meeting: the notes model returned empty notes")
+
+func (n ChunkNotes) empty() bool {
+	return strings.TrimSpace(n.Summary) == "" && len(n.Decisions) == 0 && len(n.ActionItems) == 0 &&
+		len(n.OpenQuestions) == 0 && len(n.Numbers) == 0
+}
+
+// retryable: the server was busy or not up yet, so a retry should wait a
+// moment. A parse failure or an empty answer retries at once.
+func retryable(err error) bool {
+	var se *StatusError
+	return errors.Is(err, syscall.ECONNREFUSED) || (errors.As(err, &se) && se.Code == http.StatusServiceUnavailable)
 }
 
 func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int, text string) (ChunkNotes, error) {
@@ -290,20 +503,34 @@ func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int
 	}
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 && retryable(lastErr) {
+			select {
+			case <-time.After(c.retryDelay()):
+			case <-ctx.Done():
+				return ChunkNotes{}, ctx.Err()
+			}
+		}
 		if c.Before != nil {
 			if err := c.Before(ctx); err != nil {
 				return ChunkNotes{}, err
 			}
 		}
-		raw, err := c.Chat.Complete(ctx, req)
+		raw, err := c.call(ctx, req)
 		if err == nil {
 			var out ChunkNotes
 			if err = json.Unmarshal([]byte(raw), &out); err == nil {
-				return out, nil
+				if !out.empty() {
+					return out, nil
+				}
+				err = errEmptyNotes
 			}
 		}
 		if ctx.Err() != nil {
 			return ChunkNotes{}, ctx.Err()
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			// The call used its whole deadline; a second one would too.
+			return ChunkNotes{}, err
 		}
 		lastErr = err
 	}
@@ -311,7 +538,8 @@ func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int
 }
 
 // mergeSummary asks the model for one short summary of the partial ones; on
-// any failure the partial summaries stand as they are.
+// any failure (an error, a cut-off answer, an empty or oversized one) the
+// partial summaries stand as they are.
 func (c Composer) mergeSummary(ctx context.Context, parts []ChunkNotes, fallback, lang string) string {
 	var b strings.Builder
 	for i, p := range parts {
@@ -324,7 +552,7 @@ func (c Composer) mergeSummary(ctx context.Context, parts []ChunkNotes, fallback
 	if c.Before != nil && c.Before(ctx) != nil {
 		return fallback
 	}
-	out, err := c.Chat.Complete(ctx, Request{System: mergeSystem(lang), User: b.String(), MaxTokens: 800})
+	out, err := c.call(ctx, Request{System: mergeSystem(lang), User: b.String(), MaxTokens: 800})
 	out = strings.TrimSpace(out)
 	if err != nil || out == "" || runeLen(out) > 2000 {
 		return fallback

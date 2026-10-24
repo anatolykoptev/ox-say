@@ -54,7 +54,7 @@ func TestMergeChunksDedupesActionItemsInCode(t *testing.T) {
 		{Who: "Anatoly", What: "send the proposal after the call today", When: "Friday"},
 		{Who: "Other", What: "send the proposal after the call", When: ""}, // a different owner: a different task
 	}}
-	got := MergeChunks([]ChunkNotes{a, b}).ActionItems
+	got := MergeChunks([]ChunkNotes{a, b}, Labels{}).ActionItems
 	if len(got) != 3 {
 		t.Fatalf("items = %+v, want 3", got)
 	}
@@ -66,7 +66,7 @@ func TestMergeChunksDedupesActionItemsInCode(t *testing.T) {
 func TestMergeChunksDedupesDecisionsAndKeepsOrder(t *testing.T) {
 	a := ChunkNotes{Decisions: []string{"Use the final song version", "Messages, not Slack"}}
 	b := ChunkNotes{Decisions: []string{"use the final song version", "New Instagram account"}}
-	got := MergeChunks([]ChunkNotes{a, b}).Decisions
+	got := MergeChunks([]ChunkNotes{a, b}, Labels{}).Decisions
 	want := []string{"Use the final song version", "Messages, not Slack", "New Instagram account"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("decisions = %q, want %q", got, want)

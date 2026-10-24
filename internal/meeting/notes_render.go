@@ -2,6 +2,7 @@ package meeting
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -22,21 +23,21 @@ func NotesMarkdown(m Manifest, n Notes, lang string) string {
 		h = headings["en"]
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\n## %s\n\n%s\n", heading(m), h.summary, strings.TrimSpace(n.Summary))
+	fmt.Fprintf(&b, "# %s\n\n## %s\n\n%s\n", heading(m), h.summary, cleanBlock(n.Summary))
 	section := func(title string, items []string) {
 		if len(items) == 0 {
 			return
 		}
 		fmt.Fprintf(&b, "\n## %s\n\n", title)
 		for _, it := range items {
-			fmt.Fprintf(&b, "- %s\n", it)
+			fmt.Fprintf(&b, "- %s\n", cleanLine(it))
 		}
 	}
 	section(h.decisions, n.Decisions)
 	if len(n.ActionItems) > 0 {
 		fmt.Fprintf(&b, "\n## %s\n\n", h.actions)
 		for _, a := range n.ActionItems {
-			fmt.Fprintf(&b, "- [ ] %s — %s — %s\n", orDash(a.Who, h.unstated), a.What, orDash(a.When, h.unstated))
+			fmt.Fprintf(&b, "- [ ] %s — %s — %s\n", orDash(cleanLine(a.Who), h.unstated), cleanLine(a.What), orDash(cleanLine(a.When), h.unstated))
 		}
 	}
 	section(h.questions, n.OpenQuestions)
@@ -45,6 +46,32 @@ func NotesMarkdown(m Manifest, n Notes, lang string) string {
 		fmt.Fprintf(&b, "\n_%s_\n", fmt.Sprintf(h.partial, i+1))
 	}
 	return b.String()
+}
+
+// The notes are rendered by whatever opens notes.md, and the text comes from a
+// language model reading a transcript the user does not control. A model string
+// must stay inline text: no heading, quote, image or link of its own.
+
+var linkTarget = regexp.MustCompile(`\]\([^)\n]*\)?`)
+
+// cleanLine is one model string as a single inline line.
+func cleanLine(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	s = linkTarget.ReplaceAllString(s, "]")
+	if s != "" && strings.ContainsRune("#[!>", rune(s[0])) {
+		s = `\` + s
+	}
+	return s
+}
+
+// cleanBlock is a model string that may span lines (the summary): every line
+// is cleaned alone, blank lines are kept as paragraph breaks.
+func cleanBlock(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i, l := range lines {
+		lines[i] = cleanLine(l)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func orDash(s, unstated string) string {
