@@ -54,3 +54,39 @@
 "notice.update_available" = "A new OxSay version %@ is available — update from the menu";
 /* Shown after a dictation when a click on the update row was refused because it was running. */
 "notice.update_busy" = "A dictation was running, so the update did not start — click the update row again";
+
+/* Meetings: submenu, badge, notices and the first-run explanation. */
+"menu.meetings" = "Meetings";
+"menu.meeting.record" = "Record Meeting";
+"menu.meeting.stop" = "Stop Recording (%@)";
+"menu.meeting.open_folder" = "Open Notes Folder";
+"menu.meeting.choose_folder" = "Notes Folder…";
+"menu.meeting.auto_start" = "Record Calls Automatically";
+"menu.meeting.keep" = "Keep Audio";
+"menu.meeting.keep7" = "7 days";
+"menu.meeting.keep30" = "30 days";
+"menu.meeting.keep90" = "90 days";
+"menu.meeting.keep_forever" = "Never delete";
+"menu.meeting.your_name" = "Your Name in Transcripts…";
+"menu.meeting.install_model" = "Download Notes Model (2.7 GB)…";
+"menu.meeting.downloading" = "Downloading notes model… %@";
+"menu.meeting.needs_macos" = "Recording meetings needs macOS 14.2 or later";
+"badge.rec" = "REC %@";
+"badge.stop" = "Stop";
+"badge.dont_record" = "Don't record this one";
+"badge.prompt" = "Record this call?";
+"badge.record" = "Record";
+"badge.not_now" = "Not now";
+"badge.copy_consent" = "Copy consent phrase";
+"meeting.consent_phrase" = "I'm recording this call to take notes. Is that okay with everyone?";
+"meeting.label.other" = "Other";
+"notice.meeting.ready" = "Meeting notes are ready";
+"notice.meeting.no_system_audio" = "The other side was not recorded. Allow System Audio Recording for OxSay in System Settings → Privacy & Security.";
+"notice.meeting.notes_pending" = "The transcript is saved. Download the notes model to get notes.";
+"notice.meeting.failed" = "The meeting could not be processed: %@";
+"notice.meeting.start_failed" = "Recording could not start: %@";
+"meeting.explain.title" = "OxSay can record your calls";
+"meeting.explain.body" = "When a call starts in Zoom, Meet, Teams or another call app, OxSay records both sides on this Mac, writes a transcript and notes, and keeps the audio for 30 days. Nothing leaves your Mac. A red recording badge stays on screen, and you can stop it or skip a call at any time. Tell people you are recording: laws in some places require everyone's consent.";
+"meeting.explain.ok" = "Record Calls Automatically";
+"meeting.explain.manual" = "Only When I Choose";
+"notice.meeting.browser_denied" = "To notice Google Meet calls, allow OxSay to control your browser in System Settings → Privacy & Security → Automation.";
