@@ -62,6 +62,11 @@ const (
 	WarnEchoDropped   = "echo_dropped"         // DropEcho removed "me" turns it judged an echo of the far side
 )
 
+// WaitSTTModel is Manifest.WaitingFor while the recognizer's model file is
+// missing: no retry can cure it, but installing the model does, so the meeting
+// waits (its audio kept) instead of using up its automatic retries.
+const WaitSTTModel = "stt_model_missing"
+
 // Manifest is meeting.json: everything about a meeting except its audio and
 // text.
 type Manifest struct {
@@ -83,6 +88,11 @@ type Manifest struct {
 	EchoDropped  int    `json:"echo_dropped,omitempty"`
 	NotesPending string `json:"notes_pending,omitempty"` // model_missing | failed
 	AudioDeleted bool   `json:"audio_deleted,omitempty"`
+	// WaitingFor names what a failed meeting waits for instead of spending its
+	// automatic retries: WaitSTTModel while the speech recognizer's model is
+	// missing. Recover puts it back in the queue on every round, free of
+	// charge; Retry clears it.
+	WaitingFor string `json:"waiting_for,omitempty"`
 	// Attempts counts the times Recover put a failed meeting back in the
 	// queue; Retry and a finished meeting reset it.
 	Attempts int `json:"attempts,omitempty"`

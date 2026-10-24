@@ -202,12 +202,13 @@ func (r *Runner) Finish(id string, ended time.Time) (*Manifest, error) {
 
 // grewSince reports whether a meeting that is past recording needs its audio
 // read again. One still waiting for its transcript always does; one with a
-// transcript does when the files now hold more seconds than the transcript.
+// transcript does when the files now hold more seconds than the transcript;
+// that includes a failed one, whose transcript may be of a shorter recording.
 func grewSince(dir string, m *Manifest) bool {
 	switch m.Status {
 	case StatusQueued, StatusTranscribing:
 		return true
-	case StatusTranscribed, StatusSummarizing, StatusDone:
+	case StatusTranscribed, StatusSummarizing, StatusDone, StatusFailed:
 		return audioSeconds(dir) > m.DurationS+1
 	}
 	return false
@@ -247,7 +248,7 @@ func (r *Runner) Retry(id string) (*Manifest, error) {
 			refuse = fmt.Errorf("meeting: %s has no transcript and its audio is gone", id)
 			return
 		}
-		m.Status, m.NotesPending, m.Error, m.Attempts = next, "", "", 0
+		m.Status, m.NotesPending, m.Error, m.Attempts, m.WaitingFor = next, "", "", 0, ""
 	})
 	if err != nil {
 		return nil, err
@@ -262,10 +263,12 @@ func (r *Runner) Retry(id string) (*Manifest, error) {
 // RetryNotes is Retry under its first name.
 func (r *Runner) RetryNotes(id string) (*Manifest, error) { return r.Retry(id) }
 
-// resumeStatus is where a meeting that stopped goes next: the notes when the
-// transcript is on disk, the transcript while the audio is; false when neither is.
+// resumeStatus is where a meeting that stopped goes next: the notes when a
+// readable transcript is on disk and is not shorter than the audio (a stale one
+// is of a recording that has since grown), the transcript while the audio is;
+// false when neither is.
 func resumeStatus(dir string, m *Manifest) (Status, bool) {
-	if _, err := os.Stat(filepath.Join(dir, TranscriptJSON)); err == nil {
+	if transcriptReadable(dir) && !grewSince(dir, m) {
 		return StatusSummarizing, true
 	}
 	if m.AudioDeleted {
@@ -301,7 +304,10 @@ func (r *Runner) recoverAt(now time.Time) {
 }
 
 // retryFailed puts one failed meeting back in the queue, counting the attempt
-// in the manifest so a meeting that always fails is not retried forever.
+// in the manifest so a meeting that always fails is not retried forever. A
+// meeting waiting for the recognizer's model is put back on every round without
+// counting: it fails again at once while the model is missing, and no number of
+// retries is the wrong number once it is installed.
 func (r *Runner) retryFailed(m Manifest) {
 	dir, err := r.Store.Dir(m.ID)
 	if err != nil {
@@ -310,10 +316,14 @@ func (r *Runner) retryFailed(m Manifest) {
 	queued := false
 	if _, err := r.Store.Update(m.ID, func(m *Manifest) {
 		next, ok := resumeStatus(dir, m)
-		if m.Status != StatusFailed || m.Attempts >= maxAutoRetries || !ok {
+		waiting := m.WaitingFor != ""
+		if m.Status != StatusFailed || (m.Attempts >= maxAutoRetries && !waiting) || !ok {
 			return
 		}
-		m.Status, m.Error, m.Attempts = next, "", m.Attempts+1
+		m.Status, m.Error, m.WaitingFor = next, "", ""
+		if !waiting {
+			m.Attempts++
+		}
 		queued = true
 	}); err != nil {
 		r.Log.Warn("meeting: cannot retry a failed meeting", slog.String("id", m.ID), slog.Any("error", err))
@@ -425,7 +435,12 @@ func (r *Runner) stop(ctx context.Context, id string, err error) error {
 	if ctx.Err() != nil || errors.Is(err, ErrNotFound) {
 		return err
 	}
-	_, uerr := r.Store.Update(id, func(m *Manifest) { m.Status, m.Error = StatusFailed, err.Error() })
+	_, uerr := r.Store.Update(id, func(m *Manifest) {
+		m.Status, m.Error, m.WaitingFor = StatusFailed, err.Error(), ""
+		if permanent(err) {
+			m.WaitingFor = WaitSTTModel
+		}
+	})
 	if uerr != nil {
 		r.Log.Warn("meeting: cannot record a failure", slog.String("id", id), slog.Any("error", uerr))
 	}
@@ -440,6 +455,9 @@ func (r *Runner) stopNotes(ctx context.Context, id string, err error) error {
 		return err
 	}
 	_, uerr := r.Store.Update(id, func(m *Manifest) {
+		if requeued(m) {
+			return
+		}
 		m.Status, m.NotesPending, m.Error = StatusTranscribed, "failed", err.Error()
 	})
 	if uerr != nil {
@@ -526,6 +544,13 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 	// comes out as a transliteration. Say so instead of summarizing nonsense.
 	if script == "" && WordCount(turns) >= minNotesWords {
 		warnings = append(warnings, WarnLanguage)
+	}
+	// A Finish that queued the meeting again while it ran makes these turns
+	// those of the shorter recording: write nothing, the next round does.
+	if cur, err := r.Store.Load(id); err != nil {
+		return err
+	} else if cur.Status != StatusTranscribing {
+		return nil
 	}
 	raw, err := json.MarshalIndent(turns, "", " ")
 	if err != nil {
@@ -702,12 +727,29 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 	}
 	if r.NotesReady != nil {
 		if code := r.NotesReady(); code != "" {
-			_, err := r.Store.Update(id, func(m *Manifest) { m.Status, m.NotesPending = StatusTranscribed, code })
+			_, err := r.Store.Update(id, func(m *Manifest) {
+				if requeued(m) {
+					return
+				}
+				m.Status, m.NotesPending = StatusTranscribed, code
+			})
 			return err
 		}
 	}
-	if _, err := r.Store.Update(id, func(m *Manifest) { m.Status, m.NotesPending, m.Error = StatusSummarizing, "", "" }); err != nil {
+	// A Finish may have queued the meeting again since it was read: these
+	// notes would be of the shorter recording, and the next round starts over.
+	superseded := false
+	if _, err := r.Store.Update(id, func(m *Manifest) {
+		if requeued(m) {
+			superseded = true
+			return
+		}
+		m.Status, m.NotesPending, m.Error = StatusSummarizing, "", ""
+	}); err != nil {
 		return err
+	}
+	if superseded {
+		return nil
 	}
 	notes, err := Composer{Chat: r.Chat, Before: r.Before, Log: r.Log}.Compose(ctx, PromptText(*m, turns), m.Labels, m.Language)
 	if err != nil {

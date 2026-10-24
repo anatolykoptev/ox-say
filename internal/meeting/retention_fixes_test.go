@@ -146,28 +146,24 @@ func TestAudioIsMarkedDeletedOnlyWhenBothFilesAreGone(t *testing.T) {
 	}
 }
 
-// A failed meeting's audio does not outlive the retention period either; the
-// period counts from its start when it never got an end.
-// Mutation: internal/meeting/retention.go expired, delete the
-// `case m.Status == StatusFailed && ...` branch -> RED.
-func TestFailedMeetingsAudioFollowsRetentionToo(t *testing.T) {
+// A failed meeting that HAS a transcript follows the normal rule: its audio
+// goes with the retention period, counted from the end.
+// Mutation: internal/meeting/retention.go expired, drop `|| m.Status == StatusFailed`
+// from the status test -> RED.
+func TestFailedMeetingWithATranscriptFollowsRetention(t *testing.T) {
 	f := newFixture(t)
-	f.sleeps()
-	id := f.start(t, 20, 0, 5000, false)
-	_, _ = f.r.Store.Update(id, func(m *Manifest) { m.Status, m.Ended, m.Attempts = StatusFailed, nil, maxAutoRetries })
-	if f.r.SweepRetention() != 0 || !audioLeft(t, f, id) {
-		t.Fatal("audio of a meeting that failed moments ago was deleted")
-	}
-	f.now = t0.Add(31 * 24 * time.Hour)
+	id := expiredMeeting(t, f)
+	_, _ = f.r.Store.Update(id, func(m *Manifest) { m.Status, m.Error = StatusFailed, "notes failed" })
 	if n := f.r.SweepRetention(); n != 1 || audioLeft(t, f, id) {
-		t.Fatalf("swept %d; the failed meeting's audio is past 30 days from its start", n)
+		t.Fatalf("swept %d; the failed meeting's audio is past the period and its transcript exists", n)
 	}
 	if !f.load(t, id).AudioDeleted {
 		t.Error("manifest must say the audio is gone")
 	}
 }
 
-// ... but not while the automatic retries are still to come.
+// A failed meeting without a transcript is not swept while retries remain either
+// (and not afterwards; see TestAFailedMeetingWithoutATranscriptKeepsItsAudio).
 func TestAFailedMeetingStillBeingRetriedKeepsItsAudio(t *testing.T) {
 	f := newFixture(t)
 	id := f.start(t, 20, 0, 5000, false)

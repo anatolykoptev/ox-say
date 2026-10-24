@@ -386,7 +386,7 @@ func chunkSchema() map[string]any {
 var languageNames = map[string]string{
 	"en": "English", "ru": "Russian", "uk": "Ukrainian", "de": "German", "fr": "French",
 	"es": "Spanish", "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "pl": "Polish",
-	"sv": "Swedish", "da": "Danish", "cs": "Czech", "ro": "Romanian",
+	"sv": "Swedish", "da": "Danish", "cs": "Czech", "sk": "Slovak", "ro": "Romanian",
 }
 
 // languageRule names the output language. A small model told only "the same

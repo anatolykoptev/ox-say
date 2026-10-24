@@ -75,10 +75,8 @@ func (s *Store) SetSettings(st Settings) error {
 
 // SweepRetention deletes the audio of meetings that ended more than the
 // retention period ago and whose transcript exists. Transcripts and notes are
-// never touched. A meeting without a transcript keeps its audio: deleting it
-// would lose the only copy of what was said — unless it failed (the retries are
-// spent and the user has had the whole period to ask for another), in which
-// case the period counts from its end, or from its start when it never got one.
+// never touched. A meeting without a readable transcript keeps its audio, failed
+// or not: deleting it would lose the only copy of what was said.
 //
 // It deletes nothing when the settings cannot be read (logged once until they
 // can), and marks a meeting AudioDeleted only when both files are really gone;
@@ -111,31 +109,37 @@ func (r *Runner) SweepRetention() int {
 	return deleted
 }
 
-// expired reports a meeting whose audio is past the retention period and may go.
+// expired reports a meeting whose audio is past the retention period and may
+// go. Only a meeting whose transcript is on disk and readable qualifies, failed
+// or not: without one the audio is the only copy of what was said, and it stays
+// until the user retries or deletes the meeting.
 func (r *Runner) expired(m Manifest, days int) bool {
-	if m.AudioDeleted {
+	if m.AudioDeleted || m.Ended == nil {
 		return false
 	}
-	var since time.Time
-	switch {
-	case m.Status == StatusFailed && m.Attempts >= maxAutoRetries:
-		since = m.Started
-		if m.Ended != nil {
-			since = *m.Ended
-		}
-	case m.Ended != nil && (m.Status == StatusDone || m.Status == StatusTranscribed):
-		since = *m.Ended
-		dir, err := r.Store.Dir(m.ID)
-		if err != nil {
-			return false
-		}
-		if _, err := os.Stat(filepath.Join(dir, TranscriptJSON)); err != nil {
-			return false
-		}
+	switch m.Status {
+	case StatusDone, StatusTranscribed, StatusFailed:
 	default:
 		return false
 	}
-	return !r.Now().Before(since.Add(time.Duration(days) * 24 * time.Hour))
+	if r.Now().Before(m.Ended.Add(time.Duration(days) * 24 * time.Hour)) {
+		return false
+	}
+	dir, err := r.Store.Dir(m.ID)
+	if err != nil {
+		return false
+	}
+	return transcriptReadable(dir)
+}
+
+// transcriptReadable reports a transcript.json that is on disk and parses.
+func transcriptReadable(dir string) bool {
+	raw, err := os.ReadFile(filepath.Join(dir, TranscriptJSON))
+	if err != nil {
+		return false
+	}
+	var turns []Turn
+	return json.Unmarshal(raw, &turns) == nil
 }
 
 // deleteAudio removes a meeting's audio and work files and records it. False

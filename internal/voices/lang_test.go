@@ -28,6 +28,12 @@ func TestLanguage(t *testing.T) {
 		{"serbian", "Хвала свима што сте дошли данас, сада ћемо проћи кроз план и отворена питања за тим.", ""},
 		{"belarusian has both sets", "Дзякуй усім, што прыйшлі сёння, зараз мы разгледзім план і адкрытыя пытанні для каманды ў Мінску.", ""},
 		{"czech is not polish", "Děkuji všem, že jste dnes přišli, teď projdeme plán a otevřené otázky, které jsou před námi.", ""},
+		{"czech", "Já jsem dnes ráno řekl, že to je pro nás všechny velmi důležité, ale jak už jsme se bavili, nemáme na to dost času a musíme se rozhodnout.", "cs"},
+		{"czech second", "Děkuji vám všem, že jste přišli. Máme dnes před sebou několik věcí a já bych chtěl začít tím, co jsme minule nedokončili, protože to je pro nás důležité.", "cs"},
+		// Slovak shares most of Czech's function words; sa, ako, som, sú, nie
+		// and the like tell them apart.
+		{"slovak", "Ďakujem vám všetkým, že ste prišli. Dnes máme pred sebou niekoľko vecí a ja by som chcel začať tým, čo sme minule nedokončili, pretože to je pre nás dôležité.", "sk"},
+		{"slovak second", "Ja som dnes ráno povedal, že to je pre nás všetkých veľmi dôležité, ale ako sme sa už rozprávali, nemáme na to dosť času a musíme sa rozhodnúť.", "sk"},
 		{"finnish is unclaimed", "Kiitos kaikille että tulitte tänään, käymme nyt läpi suunnitelman ja avoimet kysymykset yhdessä.", ""},
 		{"too short", "ok thanks", ""},
 		{"cyrillic too short", "да", ""},

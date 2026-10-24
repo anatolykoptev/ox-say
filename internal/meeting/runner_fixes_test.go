@@ -272,8 +272,8 @@ func failedMeetingWithTranscript(t *testing.T, f *fixture) string {
 }
 
 // Retry resumes a failed meeting at the notes when the transcript exists.
-// Mutation: internal/meeting/runner.go resumeStatus, delete the TranscriptJSON
-// stat -> RED (the meeting is transcribed from scratch).
+// Mutation: internal/meeting/runner.go resumeStatus, make the first `if`
+// condition `false` -> RED (the meeting is transcribed from scratch).
 func TestRetryOfAFailedMeetingWithATranscriptWritesTheNotesOnly(t *testing.T) {
 	f := newFixture(t)
 	id := failedMeetingWithTranscript(t, f)

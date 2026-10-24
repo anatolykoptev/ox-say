@@ -114,8 +114,9 @@ func latinLanguage(text string) string {
 // language: articles, pronouns, prepositions, conjunctions and auxiliaries.
 // A word shared by several languages counts for each of them. Besides the
 // languages the notes name (en de fr es it pt nl pl) there are rows for
-// neighbours (sv da cs ro) that would otherwise be read as their closest
-// relative: a Czech text scored against Polish alone wins with Polish.
+// neighbours (sv da cs sk ro) that would otherwise be read as their closest
+// relative: a Czech text scored against Polish alone wins with Polish, and a
+// Slovak one scored against Czech alone wins with Czech.
 var functionWords = map[string]map[string]bool{
 	"en": wordSet("the and to of in that is it you for with this we on are have was but not be they so what can will there just i as at my your about a"),
 	"de": wordSet("der die das und ist nicht ich ein eine zu den mit von auf für es sich auch dass wir sie aber im dem wie nach bei noch nur wenn oder haben wird sind ja mal schon"),
@@ -128,6 +129,7 @@ var functionWords = map[string]map[string]bool{
 	"sv": wordSet("och det att i en som är på för med inte jag har till den av om ett vi kan men så de"),
 	"da": wordSet("og det at en til er på ikke jeg med for har af som den vi kan men så de et"),
 	"cs": wordSet("a je se na to že v s z do ale jak co ne tak jsem pro by už být má jsou"),
+	"sk": wordSet("a je sa na to že v s z do ale ako čo nie tak som pre by už byť má sú sme ste aj len keď alebo bol bola veľmi"),
 	"ro": wordSet("și în de la cu nu să un o este pe că sunt mai din pentru care ce dar fi am ai le"),
 }
 
