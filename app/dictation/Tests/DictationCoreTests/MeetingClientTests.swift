@@ -43,6 +43,39 @@ final class MeetingClientTests: XCTestCase {
         }
     }
 
+    /// The daemon's guard answers 415 to a POST without `Content-Type: application/json`
+    /// (CSRF defence), and URLSession sends no Content-Type for a bodiless POST. Every
+    /// action POST must therefore carry the header and a `{}` body.
+    /// Mutation: StudioClient.swift post(), put the header/body back inside `if let body`
+    /// -> RED (no Content-Type, no body on finish, notes retry, model install, stop).
+    func testBodilessPostsStillCarryJSON() async throws {
+        var seen: [URLRequest] = []
+        let c = client(#"{"id":"20261023-143000-abcdef","status":"queued"}"#) { seen.append($0) }
+        _ = try await c.finishMeeting(id: "20261023-143000-abcdef")
+        try await c.retryMeetingNotes(id: "20261023-143000-abcdef")
+        try await c.installNotesModel()
+        try await c.stopVoiceover(id: "j1")
+        XCTAssertEqual(seen.map { $0.url?.path }, [
+            "/v1/meetings/20261023-143000-abcdef/finish", "/v1/meetings/20261023-143000-abcdef/notes",
+            "/v1/meetings/notes-model/install", "/v1/produce/j1/cancel",
+        ])
+        for request in seen {
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json", "\(request.url?.path ?? "")")
+            XCTAssertEqual(request.httpBody.map { String(decoding: $0, as: UTF8.self) }, "{}", "\(request.url?.path ?? "")")
+        }
+    }
+
+    func testRetentionPutKeepsItsOwnBodyAndJSONHeader() async throws {
+        var seen: URLRequest?
+        let c = client("{}") { seen = $0 }
+        try await c.setMeetingRetention(days: 7)
+        XCTAssertEqual(seen?.httpMethod, "PUT")
+        XCTAssertEqual(seen?.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let body = try JSONSerialization.jsonObject(with: XCTUnwrap(seen?.httpBody)) as? [String: Any]
+        XCTAssertEqual(body?["retention_days"] as? Int, 7)
+    }
+
     func testCreateSendsLabelsAndEchoRiskAndNeedsTheDir() async throws {
         var seen: URLRequest?
         let c = client(#"{"id":"20261023-143000-abcdef","dir":"/d","status":"recording"}"#) { seen = $0 }

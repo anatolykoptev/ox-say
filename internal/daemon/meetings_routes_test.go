@@ -219,13 +219,10 @@ func TestMeetingMCPTools(t *testing.T) {
 
 func TestPagePagesByCharacters(t *testing.T) {
 	text := strings.Repeat("ж", 25)
-	p1, next := page(text, 0, 10)
-	p2, next2 := page(text, next, 10)
-	p3, next3 := page(text, next2, 10)
+	p1, next, _ := page(text, 0, 10)
+	p2, next2, _ := page(text, next, 10)
+	p3, next3, _ := page(text, next2, 10)
 	if len([]rune(p1)) != 10 || len([]rune(p2)) != 10 || len([]rune(p3)) != 5 || next3 != 0 || p1+p2+p3 != text {
 		t.Fatalf("pages = %d %d %d next %d", len([]rune(p1)), len([]rune(p2)), len([]rune(p3)), next3)
-	}
-	if got, n := page(text, 999, 10); got != "" || n != 0 {
-		t.Fatalf("past the end = %q %d", got, n)
 	}
 }

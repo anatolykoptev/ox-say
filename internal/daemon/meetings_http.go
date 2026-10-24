@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/meeting"
@@ -15,6 +16,8 @@ import (
 
 const (
 	maxTitleChars   = 200
+	maxLabelChars   = 80
+	maxSourceChars  = 40
 	defaultMeLabel  = "Me"
 	defaultThemName = "Other"
 )
@@ -105,24 +108,56 @@ func (d *Daemon) handleMeetingCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if utf8.RuneCountInString(in.Title) > maxTitleChars {
-		writeErr(w, http.StatusBadRequest, "title is too long")
-		return
+	title, source := cleanText(in.Title), cleanText(in.Source)
+	me, them := cleanText(in.Labels.Me), cleanText(in.Labels.Them)
+	for _, f := range []struct {
+		name, text string
+		max        int
+	}{{"title", title, maxTitleChars}, {"source", source, maxSourceChars}, {"labels.me", me, maxLabelChars}, {"labels.them", them, maxLabelChars}} {
+		if utf8.RuneCountInString(f.text) > f.max {
+			writeErr(w, http.StatusBadRequest, f.name+" is too long")
+			return
+		}
 	}
-	if strings.TrimSpace(in.Labels.Me) == "" {
-		in.Labels.Me = defaultMeLabel
+	if me == "" {
+		me = defaultMeLabel
 	}
-	if strings.TrimSpace(in.Labels.Them) == "" {
-		in.Labels.Them = defaultThemName
+	if them == "" {
+		them = defaultThemName
 	}
 	m, dir, err := d.Meet.Store.Create(meeting.Manifest{
-		Title: strings.TrimSpace(in.Title), Source: in.Source, Labels: in.Labels, EchoRisk: in.EchoRisk,
+		Title: title, Source: source, Labels: meeting.Labels{Me: me, Them: them}, EchoRisk: in.EchoRisk,
 	}, time.Now())
 	if err != nil {
 		d.writeMeetingErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, createMeetingResponse{Manifest: m, Dir: dir})
+	writeJSON(w, http.StatusCreated, createMeetingResponse{Manifest: d.publicManifest(m), Dir: dir})
+}
+
+// cleanText is a caller-chosen name (title, label, source) with every control
+// character — newline, tab, escape, NUL — turned into a space, and the ends
+// trimmed. These texts end up in markdown files and in a model prompt, where
+// a line break would start a new line of someone else's choosing.
+func cleanText(s string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s))
+}
+
+// publicManifest is m as it is served: the stored Error is the raw text of a
+// failed run and can name an absolute path (the home directory, a model
+// file), so it is cleaned here, where every route and tool that serves a
+// manifest passes, not where the runner stores it — meetings already on disk
+// carry the raw text too, and the stored text stays whole for the log.
+func (d *Daemon) publicManifest(m meeting.Manifest) meeting.Manifest {
+	if m.Error != "" {
+		m.Error = publicMessage(errors.New(m.Error), d.Cfg.Home)
+	}
+	return m
 }
 
 // meetingSummary is a meeting in a list: everything the app shows at a
@@ -140,7 +175,8 @@ type meetingSummary struct {
 	Error        string         `json:"error,omitempty"`
 }
 
-func summarize(m meeting.Manifest) meetingSummary {
+func (d *Daemon) summarize(m meeting.Manifest) meetingSummary {
+	m = d.publicManifest(m)
 	return meetingSummary{
 		ID: m.ID, Title: m.Title, Started: m.Started, DurationS: m.DurationS, Status: m.Status,
 		Language: m.Language, HasNotes: m.Status == meeting.StatusDone, NotesPending: m.NotesPending,
@@ -156,7 +192,7 @@ func (d *Daemon) handleMeetingList(w http.ResponseWriter, _ *http.Request) {
 	}
 	out := make([]meetingSummary, 0, len(list))
 	for _, m := range list {
-		out = append(out, summarize(m))
+		out = append(out, d.summarize(m))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"meetings": out})
 }
@@ -174,15 +210,30 @@ func (d *Daemon) handleMeetingGet(w http.ResponseWriter, r *http.Request) {
 		d.writeMeetingErr(w, err)
 		return
 	}
-	out := meetingDetail{Manifest: *m}
-	include := r.URL.Query().Get("include")
-	if strings.Contains(include, "notes") {
-		out.NotesMD, _ = d.Meet.Store.Text(m.ID, meeting.NotesMD)
+	out := meetingDetail{Manifest: d.publicManifest(*m)}
+	include := includeSet(r.URL.Query().Get("include"))
+	if include["notes"] {
+		if out.NotesMD, err = d.Meet.Store.Text(m.ID, meeting.NotesMD); err != nil {
+			d.writeMeetingErr(w, err)
+			return
+		}
 	}
-	if strings.Contains(include, "transcript") {
-		out.TranscriptMD, _ = d.Meet.Store.Text(m.ID, meeting.TranscriptMD)
+	if include["transcript"] {
+		if out.TranscriptMD, err = d.Meet.Store.Text(m.ID, meeting.TranscriptMD); err != nil {
+			d.writeMeetingErr(w, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// includeSet is the names in a comma-separated ?include= value.
+func includeSet(q string) map[string]bool {
+	set := map[string]bool{}
+	for _, name := range strings.Split(q, ",") {
+		set[strings.TrimSpace(name)] = true
+	}
+	return set
 }
 
 func (d *Daemon) handleMeetingFinish(w http.ResponseWriter, r *http.Request) {
@@ -191,7 +242,7 @@ func (d *Daemon) handleMeetingFinish(w http.ResponseWriter, r *http.Request) {
 		d.writeMeetingErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, m)
+	writeJSON(w, http.StatusAccepted, d.publicManifest(*m))
 }
 
 func (d *Daemon) handleMeetingNotes(w http.ResponseWriter, r *http.Request) {
@@ -200,22 +251,35 @@ func (d *Daemon) handleMeetingNotes(w http.ResponseWriter, r *http.Request) {
 		d.writeMeetingErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, m)
+	writeJSON(w, http.StatusAccepted, d.publicManifest(*m))
 }
 
+// errDeleteRefused is a meeting whose state forbids deleting it; the text is
+// the plain-words answer.
+type errDeleteRefused string
+
+func (e errDeleteRefused) Error() string { return string(e) }
+
+// handleMeetingDelete removes a meeting that nothing is working on. The state
+// check and the removal are one step under the store lock: the runner's
+// status changes take the same lock, so a meeting cannot be queued between
+// the check and the removal.
 func (d *Daemon) handleMeetingDelete(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	m, err := d.Meet.Store.Load(id)
+	err := d.Meet.Store.DeleteIf(r.PathValue("id"), func(m meeting.Manifest) error {
+		switch m.Status {
+		case meeting.StatusRecording:
+			return errDeleteRefused("this meeting is still recording; finish it before deleting")
+		case meeting.StatusQueued, meeting.StatusTranscribing, meeting.StatusSummarizing:
+			return errDeleteRefused("this meeting is still being processed; delete it when it is done")
+		}
+		return nil
+	})
+	var refused errDeleteRefused
+	if errors.As(err, &refused) {
+		writeErr(w, http.StatusConflict, refused.Error())
+		return
+	}
 	if err != nil {
-		d.writeMeetingErr(w, err)
-		return
-	}
-	switch m.Status {
-	case meeting.StatusQueued, meeting.StatusTranscribing, meeting.StatusSummarizing:
-		writeErr(w, http.StatusConflict, "this meeting is still being processed; delete it when it is done")
-		return
-	}
-	if err := d.Meet.Store.Delete(id); err != nil {
 		d.writeMeetingErr(w, err)
 		return
 	}
@@ -227,12 +291,19 @@ func (d *Daemon) handleMeetingSettings(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request) {
-	var in meeting.Settings
+	// A pointer: an absent field must not read as 0, which is "never delete".
+	var in struct {
+		RetentionDays *int `json:"retention_days"`
+	}
 	if err := decodeStrict(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := d.Meet.Store.SetSettings(in); err != nil {
+	if in.RetentionDays == nil {
+		writeErr(w, http.StatusBadRequest, "retention_days is required")
+		return
+	}
+	if err := d.Meet.Store.SetSettings(meeting.Settings{RetentionDays: *in.RetentionDays}); err != nil {
 		if errors.Is(err, os.ErrInvalid) {
 			writeErr(w, http.StatusBadRequest, "retention_days must be one of 0, 7, 30, 90")
 			return
@@ -240,7 +311,7 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 		d.writeMeetingErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, in)
+	writeJSON(w, http.StatusOK, d.Meet.Store.Settings())
 }
 
 func (d *Daemon) handleNotesModelInstall(w http.ResponseWriter, _ *http.Request) {

@@ -191,6 +191,30 @@ func (s *Store) Delete(id string) error {
 	return os.RemoveAll(dir)
 }
 
+// DeleteIf removes a meeting unless check refuses it. check sees the stored
+// manifest and runs under the store lock, the same lock Update takes, so no
+// status change can land between the check and the removal; its error is
+// returned and nothing is removed.
+func (s *Store) DeleteIf(id string, check func(Manifest) error) error {
+	dir, err := s.Dir(id)
+	if err != nil {
+		return err
+	}
+	if err := vproject.Contained(s.Root, dir); err != nil {
+		return ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, err := load(dir)
+	if err != nil {
+		return err
+	}
+	if err := check(*m); err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
+}
+
 // Text reads one of the meeting's text files (TranscriptMD or NotesMD).
 // Any other name is refused: the callers pass user-chosen ids and this keeps
 // the audio and the manifest out of their reach.
