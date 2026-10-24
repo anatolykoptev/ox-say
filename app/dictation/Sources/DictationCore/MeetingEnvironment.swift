@@ -5,17 +5,29 @@ import Foundation
 /// toward "speakers": mistaking headphones for speakers costs a gate that finds
 /// nothing to drop; the other mistake leaves the far side written twice.
 public enum OutputRoute {
-    /// CoreAudio transport types worn on the head or sitting in the ear.
-    static let headsetTransports: Set<String> = ["blue", "blea"]
+    /// Names that say the device is worn on the head or sits in the ear. A Bluetooth
+    /// output carries no such hint in its transport type — JBL, Jabra Speak, Poly
+    /// Sync, HomePod and a car are all "blue" — so only a name can vouch for it.
+    static let headphoneWords = ["airpods", "beats", "buds", "earbuds", "headphone", "headset", "earphone"]
+    /// Beats makes speakers too.
+    static let speakerWords = ["pill"]
+    /// Model prefixes: Sony WH-/WF-, Bose QC.
+    static let headphonePrefixes = ["wh-", "wf-", "qc"]
+
+    static func namesHeadphones(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        if speakerWords.contains(where: lowered.contains) { return false }
+        if headphoneWords.contains(where: lowered.contains) { return true }
+        let tokens = lowered.split(whereSeparator: { $0 == " " || $0 == "\u{2019}" || $0 == "'" })
+        return tokens.contains { token in headphonePrefixes.contains { token.hasPrefix($0) } }
+    }
 
     /// `transport`: the output device's transport type as its four-character code
     /// ("bltn" built-in, "blue"/"blea" Bluetooth, "usb ", "hdmi"…). `dataSource`: the
     /// built-in device's selected data source ("ispk" internal speakers, "hdpn"
     /// headphones), nil when it has none.
     public static func isLikelySpeakers(transport: String, dataSource: String?, name: String) -> Bool {
-        if headsetTransports.contains(transport) { return false }
-        let lowered = name.lowercased()
-        if lowered.contains("airpods") || lowered.contains("headphone") || lowered.contains("headset") { return false }
+        if namesHeadphones(name) { return false }
         if transport == "bltn" { return dataSource != "hdpn" }
         return true
     }
@@ -25,8 +37,10 @@ public enum OutputRoute {
 /// a browser holds the microphone.
 public enum BrowserTabURL {
     /// Nothing is launched: the script runs only if the browser already is.
-    public static func script(bundleID: String) -> String {
-        """
+    public static func script(bundleID: String) -> String? {
+        // The id is spliced into AppleScript source: refuse anything but a bundle id.
+        guard bundleID.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil else { return nil }
+        return """
         if application id "\(bundleID)" is running then
             with timeout of 1 second
                 tell application id "\(bundleID)" to return URL of active tab of front window
@@ -44,7 +58,8 @@ public enum BrowserTabURL {
     }
 
     public static func read(bundleID: String, runner: AppleScriptRunner) -> Result {
-        switch runner.run(script(bundleID: bundleID), timeout: 1.5) {
+        guard let source = script(bundleID: bundleID) else { return .unreadable }
+        switch runner.run(source, timeout: 1.5) {
         case .value(let text): return text.isEmpty ? .unreadable : .url(text)
         case .denied: return .denied
         case .timedOut, .failed: return .unreadable
