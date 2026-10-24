@@ -115,7 +115,7 @@ func TestComposeMapsEveryChunkThenMergesTheSummary(t *testing.T) {
 		f.replies = append(f.replies, replyJSON(t, ChunkNotes{Summary: "part summary", ActionItems: []ActionItem{{What: "send the deck"}}}))
 	}
 	f.replies = append(f.replies, "The merged summary.")
-	got, err := Composer{Chat: f}.Compose(context.Background(), text, Labels{Me: "Anatoly", Them: "Other"})
+	got, err := Composer{Chat: f}.Compose(context.Background(), text, Labels{Me: "Anatoly", Them: "Other"}, "en")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestComposeRetriesOnceThenSkipsAndSaysSo(t *testing.T) {
 	for i := 1; i < n; i++ {
 		f.replies = append(f.replies, "{broken", "{broken") // chunk i fails twice
 	}
-	got, err := Composer{Chat: f}.Compose(context.Background(), text, Labels{})
+	got, err := Composer{Chat: f}.Compose(context.Background(), text, Labels{}, "en")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestComposeRetriesOnceThenSkipsAndSaysSo(t *testing.T) {
 
 func TestComposeFailsWhenEveryChunkFails(t *testing.T) {
 	f := &fakeChat{errs: []error{errors.New("down"), errors.New("down")}}
-	_, err := Composer{Chat: f}.Compose(context.Background(), "[0:01] Me: hello there everyone\n", Labels{})
+	_, err := Composer{Chat: f}.Compose(context.Background(), "[0:01] Me: hello there everyone\n", Labels{}, "en")
 	if !errors.Is(err, ErrNoNotes) {
 		t.Fatalf("err = %v, want ErrNoNotes", err)
 	}
@@ -172,7 +172,7 @@ func TestComposeCallsBeforeEveryModelCall(t *testing.T) {
 	f := &fakeChat{replies: []string{replyJSON(t, ChunkNotes{Summary: "s"})}}
 	calls := 0
 	_, err := Composer{Chat: f, Before: func(context.Context) error { calls++; return nil }}.
-		Compose(context.Background(), "[0:01] Me: hello there everyone\n", Labels{})
+		Compose(context.Background(), "[0:01] Me: hello there everyone\n", Labels{}, "en")
 	if err != nil || calls != 1 {
 		t.Fatalf("Before ran %d times (err %v), want once per call", calls, err)
 	}
@@ -188,5 +188,45 @@ func TestNotesMarkdownLocalizesHeadingsAndFillsUnstated(t *testing.T) {
 	}
 	if !strings.Contains(NotesMarkdown(Manifest{}, n, "de"), "## Summary") {
 		t.Error("an unknown language falls back to English headings")
+	}
+}
+
+// The prompts name the output language. A 4B model told only "the transcript's
+// language" wrote a third of a Russian call's notes in English.
+// Mutation: internal/meeting/notes.go languageRule, return the final
+// "same language as the transcript" line for every lang -> RED.
+func TestComposeNamesTheOutputLanguageInBothPrompts(t *testing.T) {
+	text := strings.Repeat("[0:01] Me: "+strings.Repeat("word ", 30)+"\n", 300)
+	n := len(Chunk(text, ChunkChars))
+	for _, tc := range []struct{ lang, want string }{
+		{"ru", "Write every field in Russian."},
+		{"en", "Write every field in English."},
+	} {
+		f := &fakeChat{}
+		for i := 0; i < n; i++ {
+			f.replies = append(f.replies, replyJSON(t, ChunkNotes{Summary: "s"}))
+		}
+		f.replies = append(f.replies, "merged")
+		if _, err := (Composer{Chat: f}).Compose(context.Background(), text, Labels{Me: "A", Them: "B"}, tc.lang); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.reqs) != n+1 {
+			t.Fatalf("%s: %d calls, want %d", tc.lang, len(f.reqs), n+1)
+		}
+		for _, i := range []int{0, n} { // the first chunk call and the summary merge
+			if sys := f.reqs[i].System; !strings.Contains(sys, tc.want) || !strings.Contains(sys, "Never translate quotes, names or numbers") {
+				t.Errorf("%s: call %d system prompt lacks %q:\n%s", tc.lang, i, tc.want, sys)
+			}
+		}
+	}
+}
+
+func TestComposeUnknownLanguageFallsBackToTheTranscriptsOwn(t *testing.T) {
+	f := &fakeChat{replies: []string{replyJSON(t, ChunkNotes{Summary: "s"})}}
+	if _, err := (Composer{Chat: f}).Compose(context.Background(), "[0:01] Me: hello there everyone\n", Labels{}, "de"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.reqs[0].System, "same language as the transcript") {
+		t.Fatalf("unknown code must keep the generic rule: %q", f.reqs[0].System)
 	}
 }

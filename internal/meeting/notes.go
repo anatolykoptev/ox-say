@@ -208,18 +208,39 @@ func chunkSchema() map[string]any {
 	}
 }
 
-func chunkSystem(l Labels) string {
-	return "You write meeting notes from one part of a transcript. Write every field in the same language as the transcript. " +
+// languageNames maps a notes language code (the Manifest.Language the headings
+// use) to the name the prompts give the model. Adding a language is a row here
+// and a row in headings.
+var languageNames = map[string]string{"en": "English", "ru": "Russian"}
+
+// languageRule names the output language. A small model told only "the same
+// language as the transcript" drifts into English for part of the fields; a
+// code outside the table keeps that older wording.
+func languageRule(lang string) string {
+	const keep = "Never translate quotes, names or numbers. "
+	if name, ok := languageNames[lang]; ok {
+		return "Write every field in " + name + ". " + keep
+	}
+	return "Write every field in the same language as the transcript. " + keep
+}
+
+func chunkSystem(l Labels, lang string) string {
+	return "You write meeting notes from one part of a transcript. " + languageRule(lang) +
 		"Use ONLY facts stated in the transcript; never invent names, numbers, dates or owners. " +
 		fmt.Sprintf("The speakers are %q (the person who recorded the call) and %q (everyone else on the call); in \"who\" use these names, or a name said in the transcript. ", l.Me, l.Them) +
 		"If the owner or the date of an action item is not stated, leave that field an empty string. " +
-		"summary: 2-4 sentences. decisions: what was agreed. action_items: every task someone took on or was asked to do, one entry per task. " +
+		"Attribute each action to the person who said they will do it; do not swap who did what. " +
+		"Do not repeat the owner's name inside \"what\". " +
+		"summary: 2-4 sentences. decisions: what was agreed. " +
+		"action_items: every task someone took on or was asked to do, one entry per task; a task someone committed to with an owner belongs here, not only in decisions. " +
 		"open_questions: questions left unanswered. numbers: key numbers, amounts and dates with what they refer to. Skip small talk. " +
 		"Use empty lists when a part has nothing for a field."
 }
 
-const mergeSystem = "You merge partial meeting summaries into one summary of 3-5 lines. Write in the same language as the partial summaries. " +
-	"Use ONLY facts present in them; never invent names, numbers, dates or owners. Output the summary text only."
+func mergeSystem(lang string) string {
+	return "You merge partial meeting summaries into one summary of 3-5 lines. " + languageRule(lang) +
+		"Use ONLY facts present in them; never invent names, numbers, dates or owners. Output the summary text only."
+}
 
 // Composer runs the map-reduce. Before, when set, runs ahead of every model
 // call: the daemon passes the dictation yield so notes never starve a user who
@@ -231,13 +252,14 @@ type Composer struct {
 }
 
 // Compose writes the notes for the transcript text: one structured call per
-// chunk, a dedupe in code, and one short call to merge the summaries.
-func (c Composer) Compose(ctx context.Context, transcript string, l Labels) (Notes, error) {
+// chunk, a dedupe in code, and one short call to merge the summaries. lang is
+// the meeting's notes language, the same code NotesMarkdown takes.
+func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang string) (Notes, error) {
 	chunks := Chunk(transcript, ChunkChars)
 	var parts []ChunkNotes
 	var skipped []int
 	for i, ch := range chunks {
-		got, err := c.chunk(ctx, l, i, len(chunks), ch)
+		got, err := c.chunk(ctx, l, lang, i, len(chunks), ch)
 		if err != nil {
 			if ctx.Err() != nil {
 				return Notes{}, ctx.Err()
@@ -254,14 +276,14 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels) (Not
 	n := MergeChunks(parts)
 	n.SkippedChunks = skipped
 	if len(parts) > 1 {
-		n.Summary = c.mergeSummary(ctx, parts, n.Summary)
+		n.Summary = c.mergeSummary(ctx, parts, n.Summary, lang)
 	}
 	return n, nil
 }
 
-func (c Composer) chunk(ctx context.Context, l Labels, i, total int, text string) (ChunkNotes, error) {
+func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int, text string) (ChunkNotes, error) {
 	req := Request{
-		System:    chunkSystem(l),
+		System:    chunkSystem(l, lang),
 		User:      fmt.Sprintf("This is part %d of %d of a meeting transcript. Write the notes for this part only.\n\nTRANSCRIPT PART:\n%s", i+1, total, text),
 		Schema:    chunkSchema(),
 		MaxTokens: maxAnswer,
@@ -290,7 +312,7 @@ func (c Composer) chunk(ctx context.Context, l Labels, i, total int, text string
 
 // mergeSummary asks the model for one short summary of the partial ones; on
 // any failure the partial summaries stand as they are.
-func (c Composer) mergeSummary(ctx context.Context, parts []ChunkNotes, fallback string) string {
+func (c Composer) mergeSummary(ctx context.Context, parts []ChunkNotes, fallback, lang string) string {
 	var b strings.Builder
 	for i, p := range parts {
 		s := strings.TrimSpace(p.Summary)
@@ -302,7 +324,7 @@ func (c Composer) mergeSummary(ctx context.Context, parts []ChunkNotes, fallback
 	if c.Before != nil && c.Before(ctx) != nil {
 		return fallback
 	}
-	out, err := c.Chat.Complete(ctx, Request{System: mergeSystem, User: b.String(), MaxTokens: 800})
+	out, err := c.Chat.Complete(ctx, Request{System: mergeSystem(lang), User: b.String(), MaxTokens: 800})
 	out = strings.TrimSpace(out)
 	if err != nil || out == "" || runeLen(out) > 2000 {
 		return fallback
