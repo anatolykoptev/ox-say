@@ -305,3 +305,25 @@ func (w *Writer) Abort() error {
 	}
 	return err
 }
+
+// QuietestWindow returns the start index of the window-sample span with the
+// least energy, scanning in steps of half a window; the earliest wins a tie.
+// A clip shorter than window returns 0. A caller that must cut audio between
+// words cuts at start+window/2.
+func (c Clip) QuietestWindow(window int) int {
+	if window <= 0 || len(c.S) <= window {
+		return 0
+	}
+	step := max(1, window/2)
+	best, bestEnergy := 0, math.MaxFloat64
+	for from := 0; from+window <= len(c.S); from += step {
+		e := 0.0
+		for _, s := range c.S[from : from+window] {
+			e += float64(s) * float64(s)
+		}
+		if e < bestEnergy {
+			best, bestEnergy = from, e
+		}
+	}
+	return best
+}

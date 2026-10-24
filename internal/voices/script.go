@@ -75,15 +75,35 @@ func SameScript(a, b string) bool {
 	return sa != "" && sa == Script(b)
 }
 
-// TextsMatch reports whether a and b are, word for word, nearly the same
-// text: the share of words they have in common, over the longer text, is at
-// least matchThreshold. Case and punctuation are ignored.
-func TextsMatch(a, b string) bool {
+// WordOverlap is the share of words a and b have in common, over the longer
+// of the two texts (0..1). Case and punctuation are ignored; 0 when both are
+// empty.
+func WordOverlap(a, b string) float64 {
 	wa, wb := normWords(a), normWords(b)
 	longer := max(len(wa), len(wb))
 	if longer == 0 {
-		return false
+		return 0
 	}
+	return float64(commonWords(wa, wb)) / float64(longer)
+}
+
+// WordShare is the share of a's words that b also has (0..1): how much of a
+// is contained in b, however much longer b is. 0 when a has no words.
+func WordShare(a, b string) float64 {
+	wa := normWords(a)
+	if len(wa) == 0 {
+		return 0
+	}
+	return float64(commonWords(wa, normWords(b))) / float64(len(wa))
+}
+
+// TextsMatch reports whether a and b are, word for word, nearly the same
+// text: WordOverlap is at least matchThreshold.
+func TextsMatch(a, b string) bool {
+	return WordOverlap(a, b) >= matchThreshold
+}
+
+func commonWords(wa, wb []string) int {
 	bag := map[string]int{}
 	for _, w := range wb {
 		bag[w]++
@@ -95,7 +115,7 @@ func TextsMatch(a, b string) bool {
 			common++
 		}
 	}
-	return float64(common)/float64(longer) >= matchThreshold
+	return common
 }
 
 func normWords(text string) []string {
