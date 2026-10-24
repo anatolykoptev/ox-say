@@ -20,6 +20,7 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
+	"github.com/anatolykoptev/ox-say/internal/meeting"
 	"github.com/anatolykoptev/ox-say/internal/voices"
 )
 
@@ -40,6 +41,20 @@ type Daemon struct {
 	// VoxSup supervises audiocpp_server (VoxCPM2); nil on a discrete card,
 	// see config.VoxCPM2Unavailable.
 	VoxSup *engine.Supervisor
+
+	// LLMSup supervises ox-llm (llama-server), the meeting-notes model; it
+	// starts on the first notes call and stops after NotesIdleStop. Nil
+	// when NotesBin is empty — a Config literal without notes settings.
+	LLMSup *engine.Supervisor
+
+	// Meet takes recorded meetings through transcription and notes.
+	Meet *meeting.Runner
+	// meetCancel and meetDone stop and await StartMeetings' goroutines.
+	meetCancel context.CancelFunc
+	meetDone   chan struct{}
+	// notes is the single-flight guard and last error of the notes model
+	// download (InstallNotesModel).
+	notes notesInstall
 
 	ec  *engine.Client
 	log *slog.Logger
@@ -238,6 +253,22 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 			return nil, err
 		}
 	}
+	// A Config literal (tests) names no notes binary: no supervisor, and the
+	// notes engine reports itself unavailable in /status.
+	if cfg.NotesBin != "" {
+		if d.LLMSup, err = newLLMSupervisor(cfg, logger); err != nil {
+			sup.Shutdown()
+			if d.STTSup != nil {
+				d.STTSup.Shutdown()
+			}
+			if d.VoxSup != nil {
+				d.VoxSup.Shutdown()
+			}
+			_ = lockF.Close()
+			return nil, err
+		}
+	}
+	d.initMeetings()
 	d.prod = newProducer(d.producePorts())
 	d.prod.log = logger
 	return d, nil
@@ -517,6 +548,9 @@ type busySummary struct {
 	// request that counts in no other lane — a one-shot transcription
 	// upload — still marks the daemon busy here.
 	Interactive int `json:"interactive"`
+	// Meetings is the recorded meetings queued or running, plus a notes
+	// model download: a restart would lose the job's progress.
+	Meetings int `json:"meetings"`
 }
 
 // idle reports whether every lane is empty — the version handshake's
@@ -534,6 +568,7 @@ func (d *Daemon) busy() busySummary {
 		Designing:    int(d.designing.Load()),
 		Transcribing: int(d.transcribing.Load()),
 		Interactive:  int(d.inflight.Load()),
+		Meetings:     d.Meet.Active() + d.notesInstalling(),
 	}
 }
 
@@ -545,7 +580,11 @@ type statusSummary struct {
 	STTServer any `json:"stt_server"`
 	// VoxCPM2 is the studio-voice engine: available or not (with the reason
 	// in plain words), and its stopped/starting/ready state.
-	VoxCPM2 voxCPM2Status  `json:"voxcpm2"`
+	VoxCPM2 voxCPM2Status `json:"voxcpm2"`
+	// Notes is the meeting-notes engine: available, or the reason in plain
+	// words and as a code, the runtime state and the model download's
+	// progress.
+	Notes   notesStatus    `json:"notes"`
 	Voices  []voices.Voice `json:"voices"`
 	Config  map[string]any `json:"config"`
 	Version string         `json:"version"`
@@ -576,6 +615,7 @@ func (d *Daemon) Status() statusSummary {
 		Engine:    d.Sup.Status(),
 		STTServer: sttServer,
 		VoxCPM2:   d.voxStatus(),
+		Notes:     d.notesStatus(),
 		Voices:    list,
 		Config: map[string]any{
 			"addr":              d.Cfg.Addr,
@@ -609,6 +649,7 @@ func (d *Daemon) Status() statusSummary {
 // mid-flight — handlers keep their own guards and fail fast on the dead
 // supervisor rather than blocking shutdown.
 func (d *Daemon) Shutdown() {
+	d.StopMeetings()
 	d.StopProducer()
 	d.StopVoiceRepair()
 	d.Sup.Shutdown()
@@ -617,6 +658,9 @@ func (d *Daemon) Shutdown() {
 	}
 	if d.VoxSup != nil {
 		d.VoxSup.Shutdown()
+	}
+	if d.LLMSup != nil {
+		d.LLMSup.Shutdown()
 	}
 	if d.lockFile != nil {
 		_ = d.lockFile.Close()

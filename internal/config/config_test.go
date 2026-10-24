@@ -780,3 +780,49 @@ func TestNotesDefaultsAndIdleFloor(t *testing.T) {
 		t.Fatalf("a 0 s notes idle stop: %v", err)
 	}
 }
+
+// Only an EXPLICITLY set colliding OX_SAY_NOTES_PORT is a config error: a
+// user who moved another engine to 8098 before notes existed must not lose
+// the daemon to a feature behind a flag — the default collision blocks
+// notes with a reason instead (#243).
+// Mutations: internal/config/config.go loadNotes, drop the `rawPort != ""`
+// distinction (always error) -> RED (Load fails); NotesBlock, drop the
+// NotesPortBlocked check -> RED (code is engine_missing here, not
+// port_blocked).
+func TestDefaultNotesPortCollisionBlocksNotesOnly(t *testing.T) {
+	for _, tc := range []struct{ env, val string }{
+		{"OX_SAY_ENGINE_PORT", strconv.Itoa(DefaultNotesPort)},
+		{"OX_SAY_STT_PORT", strconv.Itoa(DefaultNotesPort)},
+		{"OX_SAY_VOXCPM2_PORT", strconv.Itoa(DefaultNotesPort)},
+		{"OX_SAY_ADDR", "127.0.0.1:" + strconv.Itoa(DefaultNotesPort)},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv("OX_SAY_HOME", t.TempDir())
+			t.Setenv(tc.env, tc.val)
+			c, err := Load(nil)
+			if err != nil {
+				t.Fatalf("a default notes port colliding with %s must not fail load: %v", tc.env, err)
+			}
+			if !c.NotesPortBlocked {
+				t.Fatal("the default collision was not recorded")
+			}
+			if code, _ := c.NotesBlock(); code != NotesReasonPortBlocked {
+				t.Fatalf("NotesBlock = %q, want %q", code, NotesReasonPortBlocked)
+			}
+		})
+	}
+}
+
+// The notes port's own range still holds for explicit and default values
+// alike; the default-collision carve-out is no license to skip validation.
+// Mutation: internal/config/config.go loadNotes, drop the
+// `c.NotesPort < 1 || c.NotesPort > 65535` check -> RED.
+func TestNotesPortRejectsBadValues(t *testing.T) {
+	for _, v := range []string{"0", "-1", "65536", "abc"} {
+		t.Setenv("OX_SAY_HOME", t.TempDir())
+		t.Setenv("OX_SAY_NOTES_PORT", v)
+		if _, err := Load(nil); err == nil || !strings.Contains(err.Error(), "OX_SAY_NOTES_PORT") {
+			t.Fatalf("OX_SAY_NOTES_PORT=%q: %v", v, err)
+		}
+	}
+}

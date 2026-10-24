@@ -88,6 +88,22 @@
 //     --serve, a corrupt model)
 //     OXSAY_FAKE_STT_NO_VAD=1       session routes answer 501 even when the
 //     spawn argv carries --vad
+//
+// Fake ox-llm (llama-server, the notes engine; selected on
+// OXSAY_FAKE_LLM=1): parses --port and --api-key-file, stamps
+// "llm-spawn-<pid>" under OXSAY_FAKE_DIR holding the full argv (one
+// argument per line, argv[0] first), then serves on 127.0.0.1:
+//
+//	GET  /health                -> 503 while OXSAY_FAKE_START_DELAY_MS has
+//	                               not passed (a model still loading), then 200
+//	POST /v1/chat/completions   -> 503 in the load window, 401 when the
+//	                               Authorization bearer differs from the key
+//	                               file's content, else a canned reply
+//
+//	OXSAY_FAKE_LLM=1            run the fake ox-llm
+//	OXSAY_FAKE_LLM_EXIT=1       exit 1 at once (the engine cannot load)
+//	OXSAY_FAKE_LLM_JSON         the message content /v1/chat/completions
+//	                            returns (default "the canned notes")
 package testutil
 
 import (
@@ -115,6 +131,9 @@ import (
 // FakeChildMain runs the fake engine when the env marker is set, then exits.
 // Call it first in every test package's TestMain.
 func FakeChildMain() {
+	if os.Getenv("OXSAY_FAKE_LLM") == "1" {
+		os.Exit(runFakeLLM(os.Args[1:]))
+	}
 	if os.Getenv("OXSAY_FAKE_VOX") == "1" && hasFlagArg(os.Args[1:], "--config") {
 		os.Exit(runFakeVox(os.Args[1:]))
 	}
@@ -215,6 +234,73 @@ func sttLog(rec string) {
 	}
 	_, _ = fmt.Fprintln(f, rec)
 	_ = f.Close()
+}
+
+// runFakeLLM is the fake ox-llm: a stand-in for llama-server as the notes
+// engine runs it. It stamps its argv for the caller to inspect, answers
+// /health like a model server that is still loading, and requires the
+// bearer key the spawn argv's --api-key-file names.
+func runFakeLLM(args []string) int {
+	var port int
+	var keyFile string
+	for i, a := range args {
+		switch {
+		case a == "--port" && i+1 < len(args):
+			port, _ = strconv.Atoi(args[i+1])
+		case a == "--api-key-file" && i+1 < len(args):
+			keyFile = args[i+1]
+		}
+	}
+	if dir := os.Getenv("OXSAY_FAKE_DIR"); dir != "" {
+		_ = os.WriteFile(filepath.Join(dir, "llm-spawn-"+strconv.Itoa(os.Getpid())), []byte(strings.Join(os.Args, "\n")), 0o644)
+	}
+	if os.Getenv("OXSAY_FAKE_LLM_EXIT") == "1" {
+		fmt.Fprintln(os.Stderr, "fake-llm: cannot load the model")
+		return 1
+	}
+	delay := envMS("OXSAY_FAKE_START_DELAY_MS")
+	started := time.Now()
+	loading := func() bool { return time.Since(started) < delay }
+	reply := os.Getenv("OXSAY_FAKE_LLM_JSON")
+	if reply == "" {
+		reply = "the canned notes"
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		if loading() {
+			http.Error(w, "loading", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if loading() {
+			http.Error(w, "loading", http.StatusServiceUnavailable)
+			return
+		}
+		if keyFile != "" {
+			want, _ := os.ReadFile(keyFile)
+			if r.Header.Get("Authorization") != "Bearer "+strings.TrimSpace(string(want)) {
+				http.Error(w, "bad key", http.StatusUnauthorized)
+				return
+			}
+		}
+		raw, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{
+				"message":       map[string]string{"role": "assistant", "content": reply},
+				"finish_reason": "stop",
+			}},
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(raw)
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake-llm: listen:", err)
+		return 2
+	}
+	_ = http.Serve(ln, mux)
+	return 0
 }
 
 // runFakeSTTServe is the fake resident ox-stt: it records its argv as a

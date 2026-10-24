@@ -272,3 +272,36 @@ func TestANotesFailureDoesNotUndoALaterFinish(t *testing.T) {
 		t.Fatalf("status = %s (pending %q), want queued", m.Status, m.NotesPending)
 	}
 }
+
+// A meeting waiting on the recognizer's model is not churned queued->failed
+// every Recover round while the model is still missing: the gate asks
+// TranscribeReady, and it goes back the round the model lands (#244).
+// Mutation: internal/meeting/runner.go retryFailed, delete the
+// `r.TranscribeReady` consult -> RED (the meeting is re-queued and its
+// waiting mark cleared while the model is still absent).
+func TestAWaitingMeetingStaysPutUntilTheModelArrives(t *testing.T) {
+	f := newFixture(t)
+	var ready atomic.Bool
+	f.r.TranscribeReady = func() string {
+		if !ready.Load() {
+			return WaitSTTModel
+		}
+		return ""
+	}
+	id := f.start(t, 20, 0, 5000, false)
+	f.r.Transcribe = func(context.Context, string) (*stt.Result, error) {
+		return nil, &stt.ModelError{}
+	}
+	_ = f.r.Process(context.Background(), id)
+	for range 3 {
+		f.r.Recover()
+	}
+	if m := f.load(t, id); m.Status != StatusFailed || m.WaitingFor != WaitSTTModel || m.Attempts != 0 {
+		t.Fatalf("manifest = %+v, want failed+waiting with no attempts spent", m)
+	}
+	ready.Store(true)
+	f.r.Recover()
+	if m := f.load(t, id); m.Status != StatusQueued || m.WaitingFor != "" {
+		t.Fatalf("after the model arrived: %+v, want queued", m)
+	}
+}

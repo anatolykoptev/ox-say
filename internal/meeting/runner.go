@@ -55,6 +55,12 @@ type Deps struct {
 	// code ("model_missing", "unsupported"); the transcript is then kept and
 	// the notes wait.
 	NotesReady func() string
+	// TranscribeReady returns "" when the recognizer can run. While it
+	// reports a reason a failed meeting waiting on the recognizer's model
+	// (WaitingFor == WaitSTTModel) is left alone in Recover: re-queuing it
+	// would fail it again at once, one wasted round-trip per housekeep
+	// round. Nil: no gate.
+	TranscribeReady func() string
 	// Before runs ahead of every recognizer or model call; the daemon passes
 	// the dictation yield. Nil: no waiting.
 	Before func(ctx context.Context) error
@@ -306,9 +312,14 @@ func (r *Runner) recoverAt(now time.Time) {
 // retryFailed puts one failed meeting back in the queue, counting the attempt
 // in the manifest so a meeting that always fails is not retried forever. A
 // meeting waiting for the recognizer's model is put back on every round without
-// counting: it fails again at once while the model is missing, and no number of
-// retries is the wrong number once it is installed.
+// counting — but only once the model is there: while TranscribeReady reports
+// it missing the meeting is left alone, or every round would re-queue it just
+// to fail again at once. No number of retries is the wrong number once the
+// model is installed.
 func (r *Runner) retryFailed(m Manifest) {
+	if m.WaitingFor == WaitSTTModel && r.TranscribeReady != nil && r.TranscribeReady() != "" {
+		return
+	}
 	dir, err := r.Store.Dir(m.ID)
 	if err != nil {
 		return
