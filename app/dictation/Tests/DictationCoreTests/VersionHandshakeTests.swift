@@ -154,8 +154,8 @@ final class VersionHandshakeTests: XCTestCase {
     func testThePassTakesTheDaemonsIdleFlagAndTheAppsWork() {
         let busyDaemon = DaemonStatus(version: "v0.1.22", studioAvailable: false, idle: false)
         let quietDaemon = DaemonStatus(version: "v0.1.22", studioAvailable: false, idle: true)
-        let quiet = VersionHandshake.AppWork(dictating: false, speaking: false, designing: false, followingVoiceover: false)
-        let dictating = VersionHandshake.AppWork(dictating: true, speaking: false, designing: false, followingVoiceover: false)
+        let quiet = VersionHandshake.AppWork(dictating: false, speaking: false, designing: false, followingVoiceover: false, recordingMeeting: false)
+        let dictating = VersionHandshake.AppWork(dictating: true, speaking: false, designing: false, followingVoiceover: false, recordingMeeting: false)
         var episode = VersionHandshake.Episode()
         XCTAssertEqual(episode.decide(app: "0.1.23", disk: "0.1.23", status: busyDaemon, work: quiet), .deferUntilIdle)
         XCTAssertEqual(episode.decide(app: "0.1.23", disk: "0.1.23", status: quietDaemon, work: dictating), .deferUntilIdle)
@@ -166,16 +166,16 @@ final class VersionHandshakeTests: XCTestCase {
 
     func testTheAppIsIdleOnlyWhenEveryLaneIsEmpty() {
         XCTAssertTrue(VersionHandshake.AppWork(dictating: false, speaking: false, designing: false,
-                                               followingVoiceover: false).idle)
+                                               followingVoiceover: false, recordingMeeting: false).idle)
         // Mutation: AppWork.idle, any one operand dropped -> its row RED.
         XCTAssertFalse(VersionHandshake.AppWork(dictating: true, speaking: false, designing: false,
-                                                followingVoiceover: false).idle)
+                                                followingVoiceover: false, recordingMeeting: false).idle)
         XCTAssertFalse(VersionHandshake.AppWork(dictating: false, speaking: true, designing: false,
-                                                followingVoiceover: false).idle)
+                                                followingVoiceover: false, recordingMeeting: false).idle)
         XCTAssertFalse(VersionHandshake.AppWork(dictating: false, speaking: false, designing: true,
-                                                followingVoiceover: false).idle)
+                                                followingVoiceover: false, recordingMeeting: false).idle)
         XCTAssertFalse(VersionHandshake.AppWork(dictating: false, speaking: false, designing: false,
-                                                followingVoiceover: true).idle)
+                                                followingVoiceover: true, recordingMeeting: false).idle)
     }
 
     // MARK: the repair target follows the table

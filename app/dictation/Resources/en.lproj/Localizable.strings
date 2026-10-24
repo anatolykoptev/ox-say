@@ -71,6 +71,9 @@
 "menu.meeting.install_model" = "Download Notes Model (2.7 GB)…";
 "menu.meeting.downloading" = "Downloading notes model… %@";
 "menu.meeting.needs_macos" = "Recording meetings needs macOS 14.2 or later";
+"menu.meeting.install_failed" = "Notes model download failed: %@";
+"menu.meeting.notes_need_update" = "Notes need an ox-say update";
+"menu.meeting.notes_unsupported" = "Notes are not available on this Mac";
 "badge.rec" = "REC %@";
 "badge.stop" = "Stop";
 "badge.dont_record" = "Don't record this one";

@@ -568,7 +568,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         VersionHandshake.AppWork(dictating: controller.state != .idle,
                                  speaking: speakInFlight || player.isActivelyPlaying,
                                  designing: studio.designing,
-                                 followingVoiceover: studio.followingVoiceover)
+                                 followingVoiceover: studio.followingVoiceover,
+                                 // Task 17 wires the live recording state
+                                 recordingMeeting: false)
     }
 
     /// Work in this process ended: a pass that held an action back runs

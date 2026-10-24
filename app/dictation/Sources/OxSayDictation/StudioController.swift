@@ -89,6 +89,8 @@ final class StudioController: NSObject {
         case .openVoiceoversFolder: openFolder()
         case .createVoice: designer.start()
         case .pickVoice, .pickDictationKey, .pickSpeakKey, .copyDictation, .pasteLastDictation: break
+        case .startMeeting, .stopMeeting, .installNotesModel, .openMeetingsFolder, .chooseMeetingsFolder,
+             .setMeetingName, .toggleMeetingAutoStart, .pickMeetingRetention: break
         }
     }
 
