@@ -283,7 +283,7 @@ engine_case() { # name with-audiocpp
     local d="$tmp/eng-$1" bin
     mkdir -p "$d/out/licenses" "$d/home"
     echo x > "$d/out/licenses/x.LICENSE"
-    for bin in tts-server ox-stt ox-align $( [ "$2" = yes ] && echo audiocpp_server ); do
+    for bin in tts-server ox-stt ox-align ox-llm $( [ "$2" = yes ] && echo audiocpp_server ); do
         printf '#!/bin/sh\n' > "$d/out/$bin"
         chmod +x "$d/out/$bin"
     done
@@ -295,9 +295,9 @@ engine_case() { # name with-audiocpp
         fi
     done
 }
-check "engines with audiocpp_server" "$(engine_case with yes)" "audiocpp_server ox-align ox-stt tts-server "
+check "engines with audiocpp_server" "$(engine_case with yes)" "audiocpp_server ox-align ox-llm ox-stt tts-server "
 check_in_log "with audiocpp: exit 0" "$tmp/eng-with/log" "rc=0"
-check "engines without audiocpp_server" "$(engine_case without no)" "ox-align ox-stt tts-server "
+check "engines without audiocpp_server" "$(engine_case without no)" "ox-align ox-llm ox-stt tts-server "
 check_in_log "without audiocpp: exit 0" "$tmp/eng-without/log" "rc=0"
 
 # --- J: audio.cpp is built only on request ---------------------------------
@@ -360,7 +360,7 @@ metal_case() { # name with-audiocpp with-libs
     local d="$tmp/metal-$1" bin
     mkdir -p "$d/out/licenses" "$d/home/engine"
     echo x > "$d/out/licenses/x.LICENSE"
-    for bin in tts-server ox-stt ox-align $( [ "$2" = yes ] && echo audiocpp_server ); do
+    for bin in tts-server ox-stt ox-align ox-llm $( [ "$2" = yes ] && echo audiocpp_server ); do
         printf '#!/bin/sh\n' > "$d/out/$bin"
         chmod +x "$d/out/$bin"
         if [ "$3" = yes ]; then
@@ -381,12 +381,12 @@ metal_case() { # name with-audiocpp with-libs
     done
 }
 check "metallibs installed next to engines" "$(metal_case libs yes yes)" \
-    "audiocpp_server audiocpp_server-tensor.metallib audiocpp_server.metallib ox-align ox-align-tensor.metallib ox-align.metallib ox-stt ox-stt-tensor.metallib ox-stt.metallib tts-server tts-server-tensor.metallib tts-server.metallib "
+    "audiocpp_server audiocpp_server-tensor.metallib audiocpp_server.metallib ox-align ox-align-tensor.metallib ox-align.metallib ox-llm ox-llm-tensor.metallib ox-llm.metallib ox-stt ox-stt-tensor.metallib ox-stt.metallib tts-server tts-server-tensor.metallib tts-server.metallib "
 # The stale audiocpp_server.metallib goes too: a package without the binary
 # cannot leave it — the old binary it would still serve stays, but it falls
 # back to its embedded source rather than load a library meant for it.
 check "stale metallibs removed on embedded install" "$(metal_case embed no no)" \
-    "audiocpp_server ox-align ox-stt tts-server "
+    "audiocpp_server ox-align ox-llm ox-stt tts-server "
 
 # Behaviour check for the install order: a stub mv on PATH records the
 # destination of every install — each engine's libraries must land before its
@@ -397,7 +397,7 @@ metal_order_case() {
     local d="$tmp/order" bin
     mkdir -p "$d/out/licenses" "$d/home/engine" "$d/bin"
     echo x > "$d/out/licenses/x.LICENSE"
-    for bin in tts-server ox-stt ox-align audiocpp_server; do
+    for bin in tts-server ox-stt ox-align ox-llm audiocpp_server; do
         printf '#!/bin/sh\n' > "$d/out/$bin"
         chmod +x "$d/out/$bin"
         echo lib > "$d/out/$bin.metallib"
@@ -420,6 +420,9 @@ ox-stt
 ox-align.metallib
 ox-align-tensor.metallib
 ox-align
+ox-llm.metallib
+ox-llm-tensor.metallib
+ox-llm
 audiocpp_server.metallib
 audiocpp_server-tensor.metallib
 audiocpp_server"

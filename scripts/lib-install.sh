@@ -169,7 +169,7 @@ oxs_render_agent() {
 # Copy then rename, so a running process keeps its old inode.
 oxs_install_engines() {
     local out=$1 bin lib
-    for bin in tts-server ox-stt ox-align; do
+    for bin in tts-server ox-stt ox-align ox-llm; do
         if [ ! -x "$out/$bin" ]; then
             echo "ox-say install: no $bin in $out" >&2
             exit 1
@@ -190,7 +190,7 @@ oxs_install_engines() {
     # by an older install must still go — the guards cannot tell it is stale.
     # The cleanup runs for audiocpp_server even when this package carries no
     # binary for it.
-    for bin in tts-server ox-stt ox-align audiocpp_server; do
+    for bin in tts-server ox-stt ox-align ox-llm audiocpp_server; do
         for lib in "$bin.metallib" "$bin-tensor.metallib"; do
             if [ -f "$out/$lib" ]; then
                 cp "$out/$lib" "$home/engine/$lib.new"

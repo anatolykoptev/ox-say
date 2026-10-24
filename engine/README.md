@@ -44,6 +44,17 @@ metallib build is skipped, says so on one line, and the engines still embed
 their sources. `OX_SAY_METAL_EMBED=1` skips the metallib build even when the
 toolchain is present (A/B tests).
 
+## ox-llm (llama.cpp's llama-server)
+
+The meeting-notes engine. `build.sh` builds `llama-server` from the llama.cpp
+commit in `pins.env` and ships it as `ox-llm`: llama.cpp vendors a ggml newer
+than whisper.cpp's, so none of `patches/ggml` applies, and the rename keeps the
+per-binary metallib lookup (`<argv[0]>.metallib`) working. The daemon starts it
+with `-c 16384 -fa on --jinja --no-ui -np 1 --cache-ram 0 --api-key-file …`
+(`internal/daemon/meetings.go`); the build fails if the pinned llama-server no
+longer lists those flags. The model (Qwen3.5-4B Q4_K_M) is not part of the
+package: `scripts/fetch-models.sh --notes-only` downloads it on first use.
+
 ## patches/ggml/0001-metal-amd-discrete-gpu.patch
 
 Makes the ggml Metal backend correct and usable on GPUs without unified

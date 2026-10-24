@@ -170,7 +170,7 @@ jobs:
           # VoxCPM2's server is optional for the installer, so a build that
           # silently dropped it would still install: pin it to the architecture
           # here. arm64 carries it, x86_64 must not.
-          bins="bin/ox-say engine/tts-server engine/ox-stt engine/ox-align"
+          bins="bin/ox-say engine/tts-server engine/ox-stt engine/ox-align engine/ox-llm"
           if [ "$ARCH" = arm64 ]; then
             test -x engine/audiocpp_server
             bins="$bins engine/audiocpp_server"
@@ -280,6 +280,8 @@ jobs:
           grep 'ox-say serve' usage.txt >/dev/null
           engine/tts-server --help > tts-help.txt 2>&1 || true
           grep 'qwentts.cpp' tts-help.txt >/dev/null
+          engine/ox-llm --help > llm-help.txt 2>&1 || true
+          grep -e '--api-key-file' llm-help.txt >/dev/null
           # the dictation app: signed, ours, carrying this version
           codesign --verify --strict app/OxSayDictation.app
           test "$(plutil -extract CFBundleIdentifier raw -o - app/OxSayDictation.app/Contents/Info.plist)" = io.github.anatolykoptev.ox-say.dictation
