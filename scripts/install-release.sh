@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install an unpacked ox-say release for the current user. get.sh downloads,
 # verifies and unpacks the release, then runs this from inside it:
-#   <release>/bin/ox-say, <release>/engine/{tts-server,ox-stt,ox-align,licenses/} (+ audiocpp_server on arm64),
+#   <release>/bin/ox-say, <release>/engine/{tts-server,ox-stt,ox-align,ox-llm,licenses/} (+ audiocpp_server on arm64),
 #   <release>/app/OxSayDictation.app, <release>/launchd/, <release>/scripts/,
 #   <release>/VERSION
 # Settings (OX_SAY_* variables): see scripts/lib-install.sh.
@@ -39,6 +39,9 @@ oxs_install_binary "$root/bin/ox-say"
 # get.sh deletes the extracted release tree, so the uninstaller must live
 # under $OX_SAY_HOME.
 cp "$root/scripts/uninstall.sh" "$home/uninstall.sh"
+# The daemon downloads the notes model on first use by running this copy
+# (fetch-models.sh --notes-only); get.sh deletes the release tree.
+cp "$root/scripts/fetch-models.sh" "$home/fetch-models.sh"
 # Third-party licenses for the Go binary ship in the release under licenses/go.
 # They go under engine/licenses, a directory ox-say owns, never a directory of
 # their own in OX_SAY_HOME, which may be shared with other things.

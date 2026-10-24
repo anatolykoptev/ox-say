@@ -114,7 +114,9 @@ jobs:
       # The installer's own tests need macOS (plutil); they are quick, so they
       # run before the long engine build.
       - name: Installer tests
-        run: bash scripts/test-lib-install.sh
+        run: |
+          bash scripts/test-lib-install.sh
+          bash scripts/test-fetch-models.sh
 
       - name: Build tools
         run: command -v cmake >/dev/null || brew install cmake

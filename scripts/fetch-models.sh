@@ -5,8 +5,10 @@
 #   Silero VAD v5.1.2 (MIT)                      ox-stt --serve --vad streaming sessions
 #   Whisper large-v3-turbo (MIT), --with-whisper  speech-to-text, 99 languages (1.6 GB)
 #   VoxCPM2 Q8_0 (Apache-2.0), --with-voxcpm2    quality text-to-speech, Apple Silicon only (3.0 GB)
+#   Qwen3.5-4B Q4_K_M (Apache-2.0), --notes-only  meeting notes (2.7 GB); fetches this one model and nothing else.
+#                                                 The daemon runs it from $OX_SAY_HOME/fetch-models.sh on the user's first use of notes.
 #
-# Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [dest]   (any order)
+# Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [--notes-only] [dest]   (any order)
 #   dest defaults to "$OX_SAY_HOME/models" (OX_SAY_HOME defaults to
 #   ~/Library/Application Support/ox-say).
 #   OX_SAY_MODELS_FROM=<dir> copies matching files from a local dir instead of
@@ -15,11 +17,13 @@ set -euo pipefail
 
 with_whisper=0
 with_voxcpm2=0
+notes_only=0
 dest=
 for arg in "$@"; do
     case "$arg" in
         --with-whisper) with_whisper=1 ;;
         --with-voxcpm2) with_voxcpm2=1 ;;
+        --notes-only) notes_only=1 ;;
         -*) echo "unknown option: $arg" >&2; exit 2 ;;
         *)
             if [ -n "$dest" ]; then
@@ -54,6 +58,14 @@ if [ "$with_voxcpm2" = 1 ]; then
     models+=("voxcpm2-q8_0.gguf c8e01ab4416011e12a28f24ede298a1aa5ce64b43f8e8aaad53b1e2fe7c96432 $voxcpm2")
 fi
 
+# Meeting notes (--notes-only): Qwen3.5-4B Q4_K_M, 2740937888 bytes, pinned to the repo commit
+# the notes spike measured. The daemon reports download progress from the size of the .part
+# file against config.NotesModelBytes, which must match this size.
+qwen35=https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523
+if [ "$notes_only" = 1 ]; then
+    models=("Qwen3.5-4B-Q4_K_M.gguf 00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4 $qwen35")
+fi
+
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
 mkdir -p "$dest"
@@ -70,7 +82,7 @@ for entry in "${models[@]}"; do
         cp "$OX_SAY_MODELS_FROM/$name" "$part"
     else
         echo "fetch   $name"
-        curl -fL --retry 3 -o "$part" "$base/$name"
+        curl -fL --retry 3 -C - -o "$part" "$base/$name"
     fi
     got=$(sha "$part")
     if [ "$got" != "$want" ]; then
@@ -82,6 +94,7 @@ for entry in "${models[@]}"; do
     echo "ok      $name"
 done
 
+if [ "$notes_only" = 1 ]; then exit 0; fi
 # The f16 Parakeet weights were the default until q8_0 replaced them (the same
 # FLEURS ru/en WER, half the RAM). Name a leftover copy; never delete it here: the
 # LaunchAgent's OX_SAY_STT_MODEL may name it, and a standalone run cannot see that.
