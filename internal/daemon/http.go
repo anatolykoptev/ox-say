@@ -43,6 +43,7 @@ func (d *Daemon) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/audio/voices/{name}", d.handleDeleteVoice)
 	mux.HandleFunc("GET /status", d.handleStatus)
 	d.produceRoutes(mux)
+	d.meetingRoutes(mux)
 }
 
 func writeErr(w http.ResponseWriter, status int, msg string) {

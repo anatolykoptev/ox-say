@@ -77,6 +77,7 @@ func (d *Daemon) RegisterTools(srv *mcp.Server) {
 	}, d.toolTranscribe)
 
 	d.registerProduceTools(srv)
+	d.registerMeetingTools(srv)
 }
 
 type speakToolIn struct {
