@@ -13,11 +13,24 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
         center.requestAuthorization(options: [.alert]) { _, _ in }
     }
 
-    func post(title: String, folder: URL?) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        if let folder { content.userInfo = [Self.folderKey: folder.path] }
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    /// `completion(true)` once the notification was handed to the system; `false`
+    /// when notifications are not allowed (or the system refused it) — the caller then
+    /// shows the same words on the menu's status line. Called on an arbitrary queue.
+    func post(title: String, folder: URL?, completion: @escaping (Bool) -> Void = { _ in }) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional:
+                let content = UNMutableNotificationContent()
+                content.title = title
+                if let folder { content.userInfo = [Self.folderKey: folder.path] }
+                center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) {
+                    completion($0 == nil)
+                }
+            default:
+                completion(false)
+            }
+        }
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,

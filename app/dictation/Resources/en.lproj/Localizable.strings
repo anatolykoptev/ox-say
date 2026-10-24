@@ -81,6 +81,10 @@
 "badge.record" = "Record";
 "badge.not_now" = "Not now";
 "badge.copy_consent" = "Copy consent phrase";
+"badge.a11y.panel" = "Meeting recording";
+"badge.a11y.dot" = "Recording";
+"badge.a11y.me" = "Your microphone level";
+"badge.a11y.them" = "Other side level";
 "meeting.consent_phrase" = "I'm recording this call to take notes. Is that okay with everyone?";
 "meeting.label.other" = "Other";
 "notice.meeting.ready" = "Meeting notes are ready";

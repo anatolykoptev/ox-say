@@ -47,15 +47,17 @@ enum CoreAudioProps {
 
 extension CoreAudioProps {
     /// The processes CoreAudio knows (macOS 14.2+): pid, bundle id and whether each has input running.
+    /// nil when CoreAudio itself failed — not the same as "no process has audio" (`[]`).
     @available(macOS 14.2, *)
-    static func audioProcesses() -> [(pid: Int32, bundleID: String, runningInput: Bool)] {
+    static func audioProcesses() -> [(pid: Int32, bundleID: String, runningInput: Bool)]? {
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
                                                  mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var size: UInt32 = 0
         let system = AudioObjectID(kAudioObjectSystemObject)
-        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else { return nil }
+        guard size > 0 else { return [] }
         var objects = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr else { return [] }
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr else { return nil }
         return objects.compactMap { object in
             guard let pid = uint32(object, kAudioProcessPropertyPID), let running = uint32(object, kAudioProcessPropertyIsRunningInput),
                   let bundle = string(object, kAudioProcessPropertyBundleID) else { return nil }

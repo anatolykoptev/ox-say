@@ -353,4 +353,117 @@ final class CallDetectorTests: XCTestCase {
         XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(114), url: Self.meetURL).action,
                        .callStarted(source: "meet"))
     }
+
+    // MARK: a call's memory ends with its episode
+
+    private static let docsURL = "https://docs.google.com/document/d/1AbC/edit"
+
+    /// Reviewer's repro: a Meet call, ten minutes with nobody on the microphone,
+    /// then voice typing in Docs. The Chrome mic hold is not a call and nothing
+    /// is recorded.
+    func testAStaleCallIsNotRevivedByAnotherSitesMicrophoneHold() {
+        var watch = CallWatch()
+        _ = watchTick(&watch, now: t0, url: Self.meetURL)
+        _ = watchTick(&watch, now: t0.addingTimeInterval(4), url: Self.meetURL)
+        for s in stride(from: 10.0, through: 600.0, by: 10.0) {
+            _ = watchTick(&watch, now: t0.addingTimeInterval(s), users: [], url: "")
+        }
+        for s in stride(from: 610.0, through: 700.0, by: 2.0) {
+            let outcome = watchTick(&watch, now: t0.addingTimeInterval(s), url: Self.docsURL)
+            XCTAssertNil(outcome.call, "docs.google.com is not a call (t+\(s))")
+            XCTAssertEqual(outcome.action, .nothing, "a non-call is never recorded (t+\(s))")
+        }
+    }
+
+    /// The same after a short gap, while the tracker's episode is still alive: a Meet
+    /// lobby for 2 s, the microphone let go for 30 s (a real hang-up), then voice search
+    /// in the same browser. Only dropping the memory when the hold ends stops this one.
+    /// Mutation: CallDetector.swift:339 (CallWatch.observe), replace `lastCall = nil` with `_ = 0` -> RED.
+    func testAHangupForgetsTheCallEvenWithinTheEpisode() {
+        var watch = CallWatch()
+        _ = watchTick(&watch, now: t0, url: Self.meetURL)
+        _ = watchTick(&watch, now: t0.addingTimeInterval(2), url: Self.meetURL)
+        for s in stride(from: 4.0, through: 30.0, by: 2.0) {
+            _ = watchTick(&watch, now: t0.addingTimeInterval(s), users: [], url: "")
+        }
+        for s in stride(from: 32.0, through: 60.0, by: 2.0) {
+            let outcome = watchTick(&watch, now: t0.addingTimeInterval(s), url: Self.docsURL)
+            XCTAssertNil(outcome.call, "voice search is not the call that ended (t+\(s))")
+            XCTAssertEqual(outcome.action, .nothing, "t+\(s)")
+        }
+    }
+
+    /// A browser that held the microphone from the call into voice typing never
+    /// emits callStarted from the held memory, however long it goes on.
+    /// Mutation: CallDetector.swift:345 (CallWatch.observe), pass `heldOnly: false` -> RED;
+    /// or CallDetector.swift:207 (CallTracker.observe) `if held, recording != .auto` -> `if false, …` -> RED.
+    func testAHeldCallNeverStartsARecording() {
+        var watch = CallWatch()
+        _ = watchTick(&watch, now: t0, url: Self.meetURL)
+        // the tab changes 2 s in, before the 4 s debounce, and the mic stays held
+        for s in stride(from: 2.0, through: 120.0, by: 2.0) {
+            let outcome = watchTick(&watch, now: t0.addingTimeInterval(s), url: Self.docsURL)
+            XCTAssertEqual(outcome.action, .nothing, "held only (t+\(s))")
+        }
+        // back on the Meet page the debounce starts over, then the call is offered
+        XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(130), url: Self.meetURL).action, .nothing)
+        XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(134), url: Self.meetURL).action,
+                       .callStarted(source: "meet"))
+    }
+
+    /// Reviewer's repro 2: the Meet tab is closed but the browser keeps the
+    /// microphone for another site. The auto recording still ends.
+    /// Mutation: CallDetector.swift:345 (CallWatch.observe), pass `heldOnly: false` -> RED.
+    func testAutoRecordingStopsWhenTheCallTabIsGoneButTheBrowserKeepsTheMic() {
+        var watch = CallWatch()
+        _ = watchTick(&watch, now: t0, url: Self.meetURL)
+        XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(4), url: Self.meetURL).action,
+                       .callStarted(source: "meet"))
+        _ = watchTick(&watch, now: t0.addingTimeInterval(6), url: Self.meetURL, recording: .auto)
+        let leave = t0.addingTimeInterval(10)
+        var stoppedAt: TimeInterval?
+        for s in stride(from: 0.0, through: 120.0, by: 2.0) {
+            let outcome = watchTick(&watch, now: leave.addingTimeInterval(s), url: "https://example.com/", recording: .auto)
+            if outcome.action == .stopRecording { stoppedAt = s; break }
+            XCTAssertEqual(outcome.action, .nothing)
+        }
+        XCTAssertEqual(stoppedAt, CallTracker.endAfter, "silent far side, no call page: the end timer runs")
+    }
+
+    func testHeldOnlyObservationsRunTheQuietTimerButNeverStart() {
+        var tr = CallTracker()
+        _ = tr.observe(now: t0, call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome")
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(1), call: "meet", themActive: false, recording: .auto,
+                                  bundleID: "com.google.Chrome"), .nothing)
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(2), call: "meet", themActive: false, recording: .auto,
+                                  bundleID: "com.google.Chrome", heldOnly: true), .nothing)
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(91), call: "meet", themActive: false, recording: .auto,
+                                  bundleID: "com.google.Chrome", heldOnly: true), .nothing)
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(92), call: "meet", themActive: false, recording: .auto,
+                                  bundleID: "com.google.Chrome", heldOnly: true), .stopRecording)
+        // after the auto stop the episode is re-armed, but a held-only tick cannot start it
+        for s in stride(from: 94.0, through: 140.0, by: 2.0) {
+            XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(s), call: "meet", themActive: false, recording: nil,
+                                      bundleID: "com.google.Chrome", heldOnly: true), .nothing)
+        }
+        XCTAssertNotNil(tr.episodeKey)
+    }
+
+    /// A revoke after a working read is told again.
+    /// Mutation: CallDetector.swift:347 (CallWatch.observe), replace `deniedReported.remove(id)` with `_ = id` -> RED.
+    func testARevokedAutomationIsReportedAgainAfterAWorkingRead() {
+        var watch = CallWatch()
+        var outcome = watch.observe(now: t0, users: chromeOnMic, tab: { _ in .denied }, themActive: false, recording: nil)
+        XCTAssertTrue(outcome.browserDenied)
+        outcome = watch.observe(now: t0.addingTimeInterval(2), users: chromeOnMic, tab: { _ in .denied },
+                                themActive: false, recording: nil)
+        XCTAssertFalse(outcome.browserDenied)
+        // the user allowed it: a read works
+        _ = watch.observe(now: t0.addingTimeInterval(4), users: chromeOnMic, tab: { _ in .url(Self.docsURL) },
+                          themActive: false, recording: nil)
+        // and revoked it again
+        outcome = watch.observe(now: t0.addingTimeInterval(6), users: chromeOnMic, tab: { _ in .denied },
+                                themActive: false, recording: nil)
+        XCTAssertTrue(outcome.browserDenied, "a later revoke is told again")
+    }
 }
