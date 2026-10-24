@@ -75,15 +75,15 @@ public struct StudioClient {
         return decoded
     }
 
-    /// A POST with a JSON body (empty for a bare action).
+    /// A POST with a JSON body. A bare action (`body: nil`) sends `{}`: the daemon
+    /// answers 415 to a POST without `Content-Type: application/json` (its CSRF
+    /// guard), and URLSession sends no Content-Type for a bodiless POST.
     func post(_ path: String, body: Data?, timeout: TimeInterval) -> URLRequest {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
-        if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = body
-        }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body ?? Data("{}".utf8)
         return request
     }
 

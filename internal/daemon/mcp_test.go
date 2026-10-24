@@ -84,6 +84,8 @@ var wantToolSchemas = map[string]struct{ props, required []string }{
 	"produce_status":  {[]string{"id", "chunk"}, nil},
 	"produce_edit":    {[]string{"id", "chunk", "action", "takes", "take", "text", "style", "pause_after", "pace", "chunks"}, []string{"id", "action"}},
 	"produce_control": {[]string{"id", "action", "allow_battery", "delete_outputs"}, []string{"id", "action"}},
+	"meetings_list":   {[]string{"limit"}, nil},
+	"meeting_get":     {[]string{"id", "part", "offset", "max_chars"}, []string{"id"}},
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -171,6 +173,8 @@ func TestMCPDescriptionsAreSelfSufficient(t *testing.T) {
 		"produce_status":    {"review", "chunk", "produce_edit", vproject.NoteNumbers},
 		"produce_edit":      {"regenerate", "pick", "edit", "delivery", "take", "produce_status", "pick is kept", "new takes", "user_pick", "ok even if"},
 		"produce_control":   {"resume", "cancel", "remove", "delete_outputs", "allow_battery", "for good", "not running"},
+		"meetings_list":     {"meeting_get", "status", "notes_pending", "has_notes"},
+		"meeting_get":       {"meetings_list", "notes", "transcript", "next_offset", "max_chars", "language"},
 	}
 	for tool, words := range need {
 		for _, w := range words {

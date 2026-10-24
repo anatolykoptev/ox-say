@@ -215,3 +215,41 @@ func TestListLogsWhatItSkips(t *testing.T) {
 		t.Fatalf("log = %q; want one line naming %s and no manifest text", out, bad)
 	}
 }
+
+// DeleteIf judges the manifest and removes the directory under one hold of the
+// store lock: a runner Update cannot slip a status change between the two.
+// Mutation: internal/meeting/store.go DeleteIf, call check before s.mu.Lock()
+// -> RED (the check ran outside the lock).
+func TestDeleteIfChecksUnderTheStoreLock(t *testing.T) {
+	s := &Store{Root: t.TempDir()}
+	m, dir, err := s.Create(Manifest{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusal := errors.New("not now")
+	err = s.DeleteIf(m.ID, func(got Manifest) error {
+		if s.mu.TryLock() {
+			s.mu.Unlock()
+			t.Error("check ran without the store lock")
+		}
+		if got.ID != m.ID || got.Status != StatusRecording {
+			t.Errorf("check saw %+v", got)
+		}
+		return refusal
+	})
+	if !errors.Is(err, refusal) {
+		t.Fatalf("err = %v, want the check's refusal", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("a refused delete removed the directory: %v", err)
+	}
+	if err := s.DeleteIf(m.ID, func(Manifest) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an allowed delete left the directory: %v", err)
+	}
+	if err := s.DeleteIf(m.ID, func(Manifest) error { return nil }); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteIf on a gone meeting = %v, want ErrNotFound", err)
+	}
+}
