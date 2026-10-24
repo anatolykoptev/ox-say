@@ -36,18 +36,22 @@ type Labels struct {
 
 // File names inside a meeting directory.
 const (
-	ManifestFile     = "meeting.json"
-	MePCM            = "me.pcm"
-	ThemPCM          = "them.pcm"
-	TranscriptJSON   = "transcript.json"
-	TranscriptMD     = "transcript.md"
-	NotesJSON        = "notes.json"
-	NotesMD          = "notes.md"
-	WorkDir          = "work"
-	ManifestVersion  = 1
-	SampleRate       = 16000
-	bytesPerSample   = 2
-	DefaultRetention = 30
+	ManifestFile   = "meeting.json"
+	MePCM          = "me.pcm"
+	ThemPCM        = "them.pcm"
+	TranscriptJSON = "transcript.json"
+	TranscriptMD   = "transcript.md"
+	// RawTranscriptJSON is the turns as merged before the echo gate ran,
+	// written only when DropEcho dropped turns: the way back from a turn that
+	// was wrongly judged an echo.
+	RawTranscriptJSON = "transcript.raw.json"
+	NotesJSON         = "notes.json"
+	NotesMD           = "notes.md"
+	WorkDir           = "work"
+	ManifestVersion   = 1
+	SampleRate        = 16000
+	bytesPerSample    = 2
+	DefaultRetention  = 30
 )
 
 // Warning codes a meeting can carry; the app turns them into plain words.
@@ -61,19 +65,22 @@ const (
 // Manifest is meeting.json: everything about a meeting except its audio and
 // text.
 type Manifest struct {
-	Version      int        `json:"version"`
-	ID           string     `json:"id"`
-	Title        string     `json:"title,omitempty"`
-	Source       string     `json:"source,omitempty"` // zoom, meet, teams, manual...
-	Started      time.Time  `json:"started"`
-	Ended        *time.Time `json:"ended,omitempty"`
-	Status       Status     `json:"status"`
-	Error        string     `json:"error,omitempty"`
-	Labels       Labels     `json:"labels"`
-	EchoRisk     bool       `json:"echo_risk,omitempty"` // the Mac played the call on speakers
-	Language     string     `json:"language,omitempty"`  // ru or en: the notes headings
-	DurationS    float64    `json:"duration_s,omitempty"`
-	Warnings     []string   `json:"warnings,omitempty"`
-	NotesPending string     `json:"notes_pending,omitempty"` // model_missing | failed
-	AudioDeleted bool       `json:"audio_deleted,omitempty"`
+	Version   int        `json:"version"`
+	ID        string     `json:"id"`
+	Title     string     `json:"title,omitempty"`
+	Source    string     `json:"source,omitempty"` // zoom, meet, teams, manual...
+	Started   time.Time  `json:"started"`
+	Ended     *time.Time `json:"ended,omitempty"`
+	Status    Status     `json:"status"`
+	Error     string     `json:"error,omitempty"`
+	Labels    Labels     `json:"labels"`
+	EchoRisk  bool       `json:"echo_risk,omitempty"` // the Mac played the call on speakers
+	Language  string     `json:"language,omitempty"`  // ru or en: the notes headings
+	DurationS float64    `json:"duration_s,omitempty"`
+	Warnings  []string   `json:"warnings,omitempty"`
+	// EchoDropped counts the "me" turns DropEcho removed; it goes with
+	// WarnEchoDropped so the app can say more than "some echo was dropped".
+	EchoDropped  int    `json:"echo_dropped,omitempty"`
+	NotesPending string `json:"notes_pending,omitempty"` // model_missing | failed
+	AudioDeleted bool   `json:"audio_deleted,omitempty"`
 }
