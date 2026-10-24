@@ -97,3 +97,32 @@
 "meeting.explain.ok" = "Record Calls Automatically";
 "meeting.explain.manual" = "Only When I Choose";
 "notice.meeting.browser_denied" = "To notice Google Meet calls, allow OxSay to control your browser in System Settings → Privacy & Security → Automation.";
+
+/* Speakers: naming, merging and splitting the voices of the other side. */
+"menu.meeting.speakers" = "Speakers";
+"menu.meeting.speakers_item" = "%@";
+"meeting.label.speaker" = "Speaker";
+"speakers.title" = "Speakers";
+"speakers.hint" = "Name the people on the call. The notes are updated with the names.";
+"speakers.split" = "Split by voice";
+"speakers.split_hint" = "The other side sounds like two different people.";
+"speakers.same_as" = "Same person as";
+"speakers.not_merged" = "—";
+"speakers.name_placeholder" = "Name";
+"speakers.save" = "Save";
+"speakers.cancel" = "Cancel";
+"speakers.failed" = "Could not save the speakers: %@";
+"notice.speakers.saved" = "Speakers saved. The notes are being written again.";
+"notice.speakers.names_saved" = "Names saved.";
+/* Why a meeting's voices were not told apart. */
+"menu.meeting.speakers_retry" = "Try Again: %@";
+"meeting.diar.failed.engine_error" = "Voices were not told apart: the voice engine stopped with an error.";
+"meeting.diar.failed.bad_output" = "Voices were not told apart: the voice engine's answer could not be read.";
+"meeting.diar.failed.timeout" = "Voices were not told apart: it took too long.";
+"meeting.diar.unavailable.os_too_old" = "Voices on a call are told apart only on macOS 15 or later.";
+"meeting.diar.unavailable.cpu_unsupported" = "Voices on a call are not told apart on this Mac's processor.";
+"meeting.diar.unavailable.engine_missing" = "Voices on a call are not told apart: this install has no voice engine. Update OxSay.";
+"meeting.diar.unavailable.models_missing" = "Voices on a call are not told apart: the voice models are not downloaded. Update OxSay.";
+"meeting.diar.unavailable.models_unusable" = "Voices on a call are not told apart: the voice models would not load on this Mac. Reinstall OxSay to download them again.";
+"meeting.diar.unavailable.too_long" = "Voices on a call are not told apart: the recording is longer than 2 hours.";
+"meeting.diar.unavailable.other" = "Voices on a call are not told apart on this Mac.";

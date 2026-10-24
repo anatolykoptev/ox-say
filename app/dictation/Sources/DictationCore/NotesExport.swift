@@ -96,6 +96,17 @@ public enum NotesExport {
         }
     }
 
+    /// Writes the texts again into the subfolder an earlier `write` made, for notes that were written
+    /// again after the speakers were named. Each file is replaced atomically; a folder the user has
+    /// since moved or deleted is an error (the caller then writes a new copy).
+    public static func refresh(info: MeetingInfo, at dir: URL, fm: FileManager = .default) throws {
+        guard info.notesMD != nil || info.transcriptMD != nil else { throw ExportError.nothingToWrite }
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { throw CocoaError(.fileNoSuchFile) }
+        if let notes = info.notesMD { try Data(notes.utf8).write(to: dir.appendingPathComponent("notes.md"), options: .atomic) }
+        if let text = info.transcriptMD { try Data(text.utf8).write(to: dir.appendingPathComponent("transcript.md"), options: .atomic) }
+    }
+
     /// Removes staging directories an earlier crash left in `folder`.
     private static func sweepStaleStaging(in folder: URL, fm: FileManager) {
         let keys: [URLResourceKey] = [.isDirectoryKey, .contentModificationDateKey]
