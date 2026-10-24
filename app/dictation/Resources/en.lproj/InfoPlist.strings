@@ -1,0 +1,4 @@
+/* The permission prompts' text; the Info.plist holds the English fallback. */
+"NSMicrophoneUsageDescription" = "OxSay Dictation records your voice while you hold the dictation key and sends it to the ox-say daemon on this Mac, which turns it into text. Nothing leaves your Mac.";
+"NSAppleEventsUsageDescription" = "OxSay pauses Music and Spotify while you dictate, so the microphone hears only you, and reads the address of your browser's current tab to notice a Google Meet call.";
+"NSAudioCaptureUsageDescription" = "OxSay records the audio of your calls on this Mac to write a transcript and notes. Nothing leaves your Mac.";

@@ -55,6 +55,7 @@ check_app() {
             Contents | Contents/Info.plist | Contents/PkgInfo | Contents/MacOS | "Contents/MacOS/$name" | \
                 Contents/Resources | "Contents/Resources/$icon_file" | \
                 Contents/Resources/*.lproj | Contents/Resources/*.lproj/Localizable.strings | \
+                Contents/Resources/*.lproj/InfoPlist.strings | \
                 Contents/_CodeSignature | Contents/_CodeSignature/CodeResources | Contents/CodeResources) ;;
             *)
                 echo "build.sh: $a holds $entry, which this script does not create; not replacing it" >&2
@@ -74,7 +75,7 @@ remove_app() {
     # Locale directories hold the Localizable.strings this script copies in.
     for lproj in "$a/Contents/Resources/"*.lproj; do
         [ -d "$lproj" ] || continue
-        rm -f "$lproj/Localizable.strings"
+        rm -f "$lproj/Localizable.strings" "$lproj/InfoPlist.strings"
         rmdir "$lproj"
     done
     # A bundle from before the icon has no Resources directory.
@@ -93,8 +94,9 @@ remove_app "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin/$name" "$app/Contents/MacOS/$name"
 cp "$icon" "$app/Contents/Resources/$icon_file"
-# The .lproj trees carry Localizable.strings; Bundle picks the locale by the
-# user's preferred languages, en when neither matches.
+# The .lproj trees carry Localizable.strings and InfoPlist.strings (the permission
+# prompts' text); Bundle picks the locale by the user's preferred languages, en
+# when neither matches.
 for lproj in "$here/Resources/"*.lproj; do
     cp -R "$lproj" "$app/Contents/Resources/"
 done
@@ -146,7 +148,11 @@ cat > "$app/Contents/Info.plist" <<EOF
     <!-- Pause Music While Dictating: the first Apple Event to Music or Spotify
          makes macOS ask for Automation access with this text. -->
     <key>NSAppleEventsUsageDescription</key>
-    <string>OxSay pauses Music and Spotify while you dictate, so the microphone hears only you.</string>
+    <string>OxSay pauses Music and Spotify while you dictate, so the microphone hears only you, and reads the address of your browser's current tab to notice a Google Meet call.</string>
+    <!-- Meeting recording: macOS asks for System Audio Recording with this text
+         the first time the process tap starts. -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>OxSay records the audio of your calls on this Mac to write a transcript and notes. Nothing leaves your Mac.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>OxSay Dictation records your voice while you hold the dictation key and sends it to the ox-say daemon on this Mac, which turns it into text. Nothing leaves your Mac.</string>
 </dict>
