@@ -36,18 +36,22 @@ type Labels struct {
 
 // File names inside a meeting directory.
 const (
-	ManifestFile     = "meeting.json"
-	MePCM            = "me.pcm"
-	ThemPCM          = "them.pcm"
-	TranscriptJSON   = "transcript.json"
-	TranscriptMD     = "transcript.md"
-	NotesJSON        = "notes.json"
-	NotesMD          = "notes.md"
-	WorkDir          = "work"
-	ManifestVersion  = 1
-	SampleRate       = 16000
-	bytesPerSample   = 2
-	DefaultRetention = 30
+	ManifestFile   = "meeting.json"
+	MePCM          = "me.pcm"
+	ThemPCM        = "them.pcm"
+	TranscriptJSON = "transcript.json"
+	TranscriptMD   = "transcript.md"
+	// RawTranscriptJSON is the turns as merged before the echo gate ran,
+	// written only when DropEcho dropped turns: the way back from a turn that
+	// was wrongly judged an echo.
+	RawTranscriptJSON = "transcript.raw.json"
+	NotesJSON         = "notes.json"
+	NotesMD           = "notes.md"
+	WorkDir           = "work"
+	ManifestVersion   = 1
+	SampleRate        = 16000
+	bytesPerSample    = 2
+	DefaultRetention  = 30
 )
 
 // Warning codes a meeting can carry; the app turns them into plain words.
@@ -58,22 +62,38 @@ const (
 	WarnEchoDropped   = "echo_dropped"         // DropEcho removed "me" turns it judged an echo of the far side
 )
 
+// WaitSTTModel is Manifest.WaitingFor while the recognizer's model file is
+// missing: no retry can cure it, but installing the model does, so the meeting
+// waits (its audio kept) instead of using up its automatic retries.
+const WaitSTTModel = "stt_model_missing"
+
 // Manifest is meeting.json: everything about a meeting except its audio and
 // text.
 type Manifest struct {
-	Version      int        `json:"version"`
-	ID           string     `json:"id"`
-	Title        string     `json:"title,omitempty"`
-	Source       string     `json:"source,omitempty"` // zoom, meet, teams, manual...
-	Started      time.Time  `json:"started"`
-	Ended        *time.Time `json:"ended,omitempty"`
-	Status       Status     `json:"status"`
-	Error        string     `json:"error,omitempty"`
-	Labels       Labels     `json:"labels"`
-	EchoRisk     bool       `json:"echo_risk,omitempty"` // the Mac played the call on speakers
-	Language     string     `json:"language,omitempty"`  // ru or en: the notes headings
-	DurationS    float64    `json:"duration_s,omitempty"`
-	Warnings     []string   `json:"warnings,omitempty"`
-	NotesPending string     `json:"notes_pending,omitempty"` // model_missing | failed
-	AudioDeleted bool       `json:"audio_deleted,omitempty"`
+	Version   int        `json:"version"`
+	ID        string     `json:"id"`
+	Title     string     `json:"title,omitempty"`
+	Source    string     `json:"source,omitempty"` // zoom, meet, teams, manual...
+	Started   time.Time  `json:"started"`
+	Ended     *time.Time `json:"ended,omitempty"`
+	Status    Status     `json:"status"`
+	Error     string     `json:"error,omitempty"`
+	Labels    Labels     `json:"labels"`
+	EchoRisk  bool       `json:"echo_risk,omitempty"` // the Mac played the call on speakers
+	Language  string     `json:"language,omitempty"`  // voices.Language of the speech, "" when unclear; picks the notes headings and names the language to the model
+	DurationS float64    `json:"duration_s,omitempty"`
+	Warnings  []string   `json:"warnings,omitempty"`
+	// EchoDropped counts the "me" turns DropEcho removed; it goes with
+	// WarnEchoDropped so the app can say more than "some echo was dropped".
+	EchoDropped  int    `json:"echo_dropped,omitempty"`
+	NotesPending string `json:"notes_pending,omitempty"` // model_missing | failed
+	AudioDeleted bool   `json:"audio_deleted,omitempty"`
+	// WaitingFor names what a failed meeting waits for instead of spending its
+	// automatic retries: WaitSTTModel while the speech recognizer's model is
+	// missing. Recover puts it back in the queue on every round, free of
+	// charge; Retry clears it.
+	WaitingFor string `json:"waiting_for,omitempty"`
+	// Attempts counts the times Recover put a failed meeting back in the
+	// queue; Retry and a finished meeting reset it.
+	Attempts int `json:"attempts,omitempty"`
 }

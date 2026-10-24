@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/anatolykoptev/ox-say/internal/voices"
 )
 
 func TestChunkBreaksOnLinesAndKeepsEveryLine(t *testing.T) {
@@ -201,6 +203,8 @@ func TestComposeNamesTheOutputLanguageInBothPrompts(t *testing.T) {
 	for _, tc := range []struct{ lang, want string }{
 		{"ru", "Write every field in Russian."},
 		{"en", "Write every field in English."},
+		{"de", "Write every field in German."},
+		{"uk", "Write every field in Ukrainian."},
 	} {
 		f := &fakeChat{}
 		for i := 0; i < n; i++ {
@@ -223,10 +227,24 @@ func TestComposeNamesTheOutputLanguageInBothPrompts(t *testing.T) {
 
 func TestComposeUnknownLanguageFallsBackToTheTranscriptsOwn(t *testing.T) {
 	f := &fakeChat{replies: []string{replyJSON(t, ChunkNotes{Summary: "s"})}}
-	if _, err := (Composer{Chat: f}).Compose(context.Background(), "[0:01] Me: hello there everyone\n", Labels{}, "de"); err != nil {
+	if _, err := (Composer{Chat: f}).Compose(context.Background(), "[0:01] Me: hello there everyone\n", Labels{}, "ja"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(f.reqs[0].System, "same language as the transcript") {
 		t.Fatalf("unknown code must keep the generic rule: %q", f.reqs[0].System)
+	}
+}
+
+// Every language the detector can return is named to the model. The check walks
+// the detector's own list, so a language added there without a row here fails.
+// Mutation: internal/meeting/notes.go languageNames, delete the "pl" entry -> RED.
+func TestEveryDetectedLanguageIsNamed(t *testing.T) {
+	for _, code := range voices.Languages() {
+		if languageNames[code] == "" {
+			t.Errorf("voices.Language can return %q but languageNames has no row for it", code)
+		}
+		if !strings.Contains(languageRule(code), languageNames[code]) {
+			t.Errorf("languageRule(%q) does not name %q", code, languageNames[code])
+		}
 	}
 }
