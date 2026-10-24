@@ -37,6 +37,14 @@ public struct MeetingMenuState: Equatable {
 }
 
 public enum MeetingMenu {
+    private static func unavailableKey(_ reasonCode: String?) -> L10nKey? {
+        switch reasonCode {
+        case "engine_missing": return .menuMeetingNotesNeedUpdate
+        case "unsupported": return .menuMeetingNotesUnsupported
+        default: return nil
+        }
+    }
+
     /// The rows of the Meetings submenu. `text` resolves a localization key
     /// (the app passes `L10nKey.text`; tests pass the raw key).
     public static func rows(_ s: MeetingMenuState, text: (L10nKey) -> String) -> [MenuRow] {
@@ -54,8 +62,19 @@ public enum MeetingMenu {
         if s.notes.installing {
             rows.append(.item(title: String(format: text(.menuMeetingDownloading), "\(s.notes.progressPercent)%"),
                               isOn: false, isEnabled: false, action: nil))
-        } else if s.notes.downloadWouldHelp {
-            rows.append(.item(title: text(.menuMeetingInstallModel), isOn: false, isEnabled: true, action: .installNotesModel))
+        } else {
+            // Why the notes are not there, when the user can read it: a failed
+            // download says so (and the Download row below retries); a Mac or an
+            // install that cannot make notes says so instead of showing nothing.
+            if let error = s.notes.installError {
+                rows.append(.item(title: String(format: text(.menuMeetingInstallFailed), error),
+                                  isOn: false, isEnabled: false, action: nil))
+            }
+            if s.notes.downloadWouldHelp {
+                rows.append(.item(title: text(.menuMeetingInstallModel), isOn: false, isEnabled: true, action: .installNotesModel))
+            } else if !s.notes.available, let why = unavailableKey(s.notes.reasonCode) {
+                rows.append(.item(title: text(why), isOn: false, isEnabled: false, action: nil))
+            }
         }
         rows.append(.item(title: text(.menuMeetingOpenFolder), isOn: false, isEnabled: true, action: .openMeetingsFolder))
         rows.append(.item(title: text(.menuMeetingChooseFolder), isOn: false, isEnabled: true, action: .chooseMeetingsFolder))

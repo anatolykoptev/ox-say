@@ -51,6 +51,42 @@ final class MeetingMenuTests: XCTestCase {
         guard case .item(_, _, false, nil) = r[0] else { return XCTFail("want a disabled row") }
     }
 
+    private func titles(_ rows: [MenuRow], text: (L10nKey) -> String) -> [(String, Bool)] {
+        rows.compactMap { if case .item(let t, _, let enabled, _) = $0 { return (t, enabled) } else { return nil } }
+    }
+
+    /// A failed download names its error in a disabled row and still offers the retry.
+    /// Mutation: MeetingMenu.rows, delete the `if let error = s.notes.installError` block -> RED.
+    func testAFailedDownloadShowsItsErrorAndTheRetry() {
+        let text: (L10nKey) -> String = { $0 == .menuMeetingInstallFailed ? "Failed: %@" : $0.rawValue }
+        let r = MeetingMenu.rows(state(notes: NotesStatus(reasonCode: "model_missing", installError: "disk full")), text: text)
+        let t = titles(r, text: text)
+        guard let failed = t.firstIndex(where: { $0.0 == "Failed: disk full" }) else { return XCTFail("no error row: \(t)") }
+        XCTAssertFalse(t[failed].1, "the error row is not clickable")
+        XCTAssertTrue(actions(r).contains(.installNotesModel), "the Download row is still there")
+        let install = t.firstIndex { $0.0 == L10nKey.menuMeetingInstallModel.rawValue }
+        XCTAssertNotNil(install)
+        XCTAssertGreaterThan(install ?? 0, failed, "error first, then the retry")
+        // A download in flight shows progress, not the old error.
+        let busy = MeetingMenu.rows(state(notes: NotesStatus(reasonCode: "model_missing", installing: true, progressPercent: 3,
+                                                             installError: "disk full")), text: text)
+        XCTAssertFalse(titles(busy, text: text).contains { $0.0 == "Failed: disk full" })
+    }
+
+    /// An engine that is missing or a Mac that cannot run notes says so, greyed.
+    /// Mutation: MeetingMenu.unavailableKey, return nil for "engine_missing" -> RED.
+    func testAnUnavailableNotesEngineGetsAnExplanatoryRow() {
+        for (code, key) in [("engine_missing", L10nKey.menuMeetingNotesNeedUpdate), ("unsupported", .menuMeetingNotesUnsupported)] {
+            let r = rows(state(notes: NotesStatus(reasonCode: code)))
+            let t = titles(r, text: { $0.rawValue })
+            guard let row = t.first(where: { $0.0 == key.rawValue }) else { return XCTFail("\(code): no row in \(t)") }
+            XCTAssertFalse(row.1)
+            XCTAssertFalse(actions(r).contains(.installNotesModel))
+        }
+        let ok = titles(rows(state(notes: NotesStatus(available: true))), text: { $0.rawValue })
+        XCTAssertFalse(ok.contains { $0.0 == L10nKey.menuMeetingNotesNeedUpdate.rawValue || $0.0 == L10nKey.menuMeetingNotesUnsupported.rawValue })
+    }
+
     func testBadgeClock() {
         XCTAssertEqual(MeetingBadgeModel.clock(0), "0:00")
         XCTAssertEqual(MeetingBadgeModel.clock(754), "12:34")

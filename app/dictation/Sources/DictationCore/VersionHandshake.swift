@@ -87,10 +87,11 @@ public enum VersionHandshake {
         public var designing: Bool
         /// A voiceover the app follows has not reached a terminal state.
         public var followingVoiceover: Bool
-        /// A meeting is being recorded: a relaunch would end it.
+        /// A meeting is being recorded: a relaunch would end it. No default: every
+        /// constructor must say, so a caller cannot silently report "not recording".
         public var recordingMeeting: Bool
 
-        public init(dictating: Bool, speaking: Bool, designing: Bool, followingVoiceover: Bool, recordingMeeting: Bool = false) {
+        public init(dictating: Bool, speaking: Bool, designing: Bool, followingVoiceover: Bool, recordingMeeting: Bool) {
             self.dictating = dictating
             self.speaking = speaking
             self.designing = designing
