@@ -67,6 +67,15 @@ type Config struct {
 	// which the child holds only in memory.
 	Replay func(ctx context.Context, baseURL string) error
 
+	// Prepare runs before every spawn. An error fails the start attempt and
+	// nothing is spawned: the notes engine writes its per-spawn bearer key
+	// here and refuses to start without a usable one.
+	Prepare func() error
+	// Verify runs once /health reports OK, before Replay. An error fails the
+	// start and the child is killed: the notes engine proves here that its
+	// server really requires the key.
+	Verify func(ctx context.Context, baseURL string) error
+
 	Logger *slog.Logger // nil → slog.Default()
 
 	// Tunables — zero values get sane defaults; tests override.
@@ -507,15 +516,26 @@ func (s *Supervisor) Shutdown() {
 	}
 }
 
-// run performs one start attempt in its own goroutine: spawn → health gate →
-// voice replay → commit Ready (or record the failure with backoff).
+// run performs one start attempt in its own goroutine: prepare → spawn →
+// health gate → verify → voice replay → commit Ready (or record the failure
+// with backoff).
 func (s *Supervisor) run() {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.StartupTimeout)
 	defer cancel()
 
-	c, err := s.spawn()
+	var c *child
+	var err error
+	if s.cfg.Prepare != nil {
+		err = s.cfg.Prepare()
+	}
+	if err == nil {
+		c, err = s.spawn()
+	}
 	if err == nil {
 		err = s.waitHealthy(ctx, c)
+	}
+	if err == nil && s.cfg.Verify != nil {
+		err = s.cfg.Verify(ctx, c.baseURL)
 	}
 	if err == nil && s.cfg.Replay != nil {
 		// Best-effort per spec ordering: a single corrupt voice file must not

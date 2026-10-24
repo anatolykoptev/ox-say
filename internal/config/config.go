@@ -143,6 +143,12 @@ type Config struct {
 	NotesModel    string        // OX_SAY_NOTES_MODEL: the notes GGUF
 	NotesPort     int           // OX_SAY_NOTES_PORT: loopback port the child binds
 	NotesIdleStop time.Duration // OX_SAY_NOTES_IDLE_STOP_SECS
+	// NotesPortBlocked is set by load when the DEFAULT notes port collides
+	// with another ox-say listener: an explicitly set colliding port is a
+	// load error, but a colliding default must not take the daemon down for
+	// a feature behind a flag — notes reports itself port_blocked instead
+	// (issue #243).
+	NotesPortBlocked bool
 
 	// HostMemoryBytes is the installed RAM read by load; 0 (a Config literal,
 	// or an unreadable host) means unknown and never blocks VoxCPM2.
@@ -405,8 +411,9 @@ func loadNotes(c *Config, get func(string) string, engineDir string) error {
 	if c.NotesModel = get("OX_SAY_NOTES_MODEL"); c.NotesModel == "" {
 		c.NotesModel = filepath.Join(c.Home, "models", NotesModelFile)
 	}
+	rawPort := get("OX_SAY_NOTES_PORT")
 	var err error
-	if c.NotesPort, err = intVar(get("OX_SAY_NOTES_PORT"), DefaultNotesPort); err != nil {
+	if c.NotesPort, err = intVar(rawPort, DefaultNotesPort); err != nil {
 		return fmt.Errorf("config: OX_SAY_NOTES_PORT: %w", err)
 	}
 	if c.NotesPort < 1 || c.NotesPort > 65535 {
@@ -415,7 +422,13 @@ func loadNotes(c *Config, get func(string) string, engineDir string) error {
 	addrPort, _ := strconv.Atoi(c.Port)
 	switch c.NotesPort {
 	case c.EnginePort, c.STTPort, c.VoxCPM2Port, addrPort:
-		return fmt.Errorf("config: OX_SAY_NOTES_PORT %d collides with another ox-say listener", c.NotesPort)
+		if rawPort != "" {
+			return fmt.Errorf("config: OX_SAY_NOTES_PORT %d collides with another ox-say listener", c.NotesPort)
+		}
+		// Only an explicitly set colliding port is a config error: a user who
+		// moved another engine to the default notes port before notes existed
+		// must not lose the daemon to a feature behind a flag (#243).
+		c.NotesPortBlocked = true
 	}
 	idle, err := intVar(get("OX_SAY_NOTES_IDLE_STOP_SECS"), DefaultNotesIdleStop)
 	if err != nil {
@@ -430,11 +443,13 @@ func loadNotes(c *Config, get func(string) string, engineDir string) error {
 
 // Codes for why the notes engine is unavailable. engine_missing: this install
 // has no ox-llm (update ox-say); model_missing: the download adds it;
-// unsupported: this Mac has too little memory.
+// unsupported: this Mac has too little memory; port_blocked: the default
+// notes port collides with another listener (set OX_SAY_NOTES_PORT).
 const (
 	NotesReasonEngineMissing = "engine_missing"
 	NotesReasonModelMissing  = "model_missing"
 	NotesReasonUnsupported   = "unsupported"
+	NotesReasonPortBlocked   = "port_blocked"
 )
 
 // NotesBlock reports why the notes engine cannot run, as a code for a program
@@ -444,6 +459,9 @@ func (c *Config) NotesBlock() (code, reason string) {
 	if c.HostMemoryBytes != 0 && c.HostMemoryBytes < NotesMinMemoryGB*bytesPerGB {
 		return NotesReasonUnsupported, fmt.Sprintf("Meeting notes need at least %d GB of memory; this Mac has %d GB.",
 			NotesMinMemoryGB, c.HostMemoryBytes/bytesPerGB)
+	}
+	if c.NotesPortBlocked {
+		return NotesReasonPortBlocked, fmt.Sprintf("The notes port %d is taken by another ox-say listener; set OX_SAY_NOTES_PORT to a free port.", c.NotesPort)
 	}
 	if !isRegularFile(c.NotesBin) {
 		return NotesReasonEngineMissing, "This ox-say install has no notes engine. Update ox-say."

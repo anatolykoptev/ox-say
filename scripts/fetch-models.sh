@@ -82,7 +82,8 @@ for entry in "${models[@]}"; do
         cp "$OX_SAY_MODELS_FROM/$name" "$part"
     else
         echo "fetch   $name"
-        curl -fL --retry 3 -C - -o "$part" "$base/$name"
+        # -sS: no progress meter (it would flood the daemon's stderr tail), errors kept
+        curl -fsSL --retry 3 -C - -o "$part" "$base/$name"
     fi
     got=$(sha "$part")
     if [ "$got" != "$want" ]; then

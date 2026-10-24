@@ -12,6 +12,10 @@
 #   * fetch-models.sh: change the notes sha256 -> the live acceptance probe
 #     (a real copy of the model) fails; this sandbox test cannot see it, because
 #     it only proves a WRONG file is refused (see Task 6 in the plan)
+#   * fetch-models.sh: change `curl -fsSL` to `curl -fL` -> the fake curl prints
+#     its progress meter (carriage returns) -> "no progress meter" fails
+#   * fetch-models.sh: change `curl -fsSL` to `curl -fsL` -> the fake curl is
+#     silent -> "curl's own error words" fails
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -39,6 +43,38 @@ else
     fail "files left in dest: $(ls "$tmp/dest")"
 fi
 case $out in *"copy    $name"*) pass "the local copy path ran for the notes model" ;; *) fail "OX_SAY_MODELS_FROM was not used: $out" ;; esac
+
+# A download that fails must say why in curl's words, and must not flood stderr
+# with the progress meter: the daemon shows the tail of that stderr to the user.
+# The fake curl behaves like the real one: -s drops the meter and the error,
+# -S brings the error back.
+mkdir -p "$tmp/bin" "$tmp/dest2"
+cat > "$tmp/bin/curl" <<'FAKE'
+#!/bin/bash
+silent=0; showerr=0
+for a in "$@"; do
+    case $a in
+        -*s*) [[ $a == --* ]] || silent=1 ;;
+    esac
+    case $a in
+        -*S*) [[ $a == --* ]] || showerr=1 ;;
+    esac
+done
+[ "$silent" = 0 ] && printf '  %% Total    %% Received\r  1  100M    1 1M\r  2  100M    2 2M\r' >&2
+if [ "$silent" = 0 ] || [ "$showerr" = 1 ]; then
+    echo "curl: (22) The requested URL returned error: 404" >&2
+fi
+exit 22
+FAKE
+chmod +x "$tmp/bin/curl"
+out=$(PATH="$tmp/bin:$PATH" OX_SAY_MODELS_FROM= bash "$root/scripts/fetch-models.sh" --notes-only "$tmp/dest2" 2>&1)
+rc=$?
+if [ "$rc" -ne 0 ]; then pass "a failed download fails the script (exit $rc)"; else fail "a failed download exited 0"; fi
+case $out in *"returned error: 404"*) pass "curl's own error words reach stderr" ;; *) fail "no curl error in: $out" ;; esac
+case $out in
+    *$'\r'*|*"% Total"*) fail "the progress meter reached stderr: $out" ;;
+    *) pass "no progress meter on stderr" ;;
+esac
 
 echo
 if [ "$fails" -eq 0 ]; then echo "all checks passed"; else echo "$fails check(s) failed" >&2; exit 1; fi
