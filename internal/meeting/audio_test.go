@@ -105,18 +105,56 @@ func mustBytes(r *bytes.Reader) []byte {
 	return b
 }
 
-// Mutation: internal/meeting/audio.go Silent, change `s > silentPeak` to
-// `s > 32000` -> RED (a faint positive sample counts as silence) (a quiet voice counts as silence and is never transcribed).
+// burst puts n samples of amplitude amp (alternating sign, so RMS == amp) into a
+// clip of total samples, starting at from.
+func burst(total, from, n int, amp int16) pcm.Clip {
+	c := pcm.Clip{Rate: SampleRate, S: make([]int16, total)}
+	for i := from; i < from+n && i < total; i++ {
+		c.S[i] = amp
+		if i%2 == 1 {
+			c.S[i] = -amp
+		}
+	}
+	return c
+}
+
+// Silence is judged by RMS over 100 ms windows: a faint voice is speech, a
+// click or a mic's noise floor is not.
+// Mutation: internal/meeting/audio.go Silent, change `> silentRMS` to
+// `> 32000` -> RED (a quiet voice counts as silence and is never transcribed);
+// change `minLoudWindows  = 2` to `= 1` -> RED (one click is loud again);
+// change `silentRMS       = 75` to `= 30` -> RED (the noise floor of 40 is loud).
 func TestSilent(t *testing.T) {
-	if !Silent(pcm.Clip{Rate: SampleRate, S: make([]int16, 100)}) {
+	const sec = 10 * SampleRate
+	if !Silent(pcm.Clip{Rate: SampleRate, S: make([]int16, sec)}) {
 		t.Fatal("zeros are silent")
 	}
-	for _, v := range []int16{400, -400} { // a faint voice, well above -60 dBFS, either polarity
-		quiet := pcm.Clip{Rate: SampleRate, S: make([]int16, 100)}
-		quiet.S[50] = v
-		if Silent(quiet) {
+	// a faint voice: half a second at 400 RMS (well above -60 dBFS), either polarity
+	for _, v := range []int16{400, -400} {
+		c := burst(sec, 3*SampleRate, SampleRate/2, v)
+		if Silent(c) {
 			t.Fatalf("a faint voice (%d) is not silence", v)
 		}
+	}
+	// a single full-scale sample, and a 5 ms click at 20000: neither is a word
+	for name, c := range map[string]pcm.Clip{
+		"one sample":   burst(sec, 3*SampleRate+800, 1, 32767),
+		"5 ms click":   burst(sec, 3*SampleRate+400, 80, 20000),
+		"click at end": burst(sec, sec-3, 3, 32767),
+	} {
+		if !Silent(c) {
+			t.Errorf("%s must not count as speech", name)
+		}
+	}
+	// the noise floor of a quiet room mic: loud samples now and then, RMS 40
+	noise := burst(sec, 0, sec, 40)
+	noise.S[1234], noise.S[99999] = 90, -90
+	if !Silent(noise) {
+		t.Error("a noise floor of RMS 40 must be silence")
+	}
+	// a short clip is judged by the windows it has
+	if Silent(burst(SampleRate/10, 0, SampleRate/10, 5000)) {
+		t.Error("a clip of one loud window is speech")
 	}
 }
 

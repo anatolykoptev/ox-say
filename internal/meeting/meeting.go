@@ -75,7 +75,7 @@ type Manifest struct {
 	Error     string     `json:"error,omitempty"`
 	Labels    Labels     `json:"labels"`
 	EchoRisk  bool       `json:"echo_risk,omitempty"` // the Mac played the call on speakers
-	Language  string     `json:"language,omitempty"`  // ru or en: the notes headings
+	Language  string     `json:"language,omitempty"`  // voices.Language of the speech, "" when unclear; picks the notes headings and names the language to the model
 	DurationS float64    `json:"duration_s,omitempty"`
 	Warnings  []string   `json:"warnings,omitempty"`
 	// EchoDropped counts the "me" turns DropEcho removed; it goes with
@@ -83,4 +83,7 @@ type Manifest struct {
 	EchoDropped  int    `json:"echo_dropped,omitempty"`
 	NotesPending string `json:"notes_pending,omitempty"` // model_missing | failed
 	AudioDeleted bool   `json:"audio_deleted,omitempty"`
+	// Attempts counts the times Recover put a failed meeting back in the
+	// queue; Retry and a finished meeting reset it.
+	Attempts int `json:"attempts,omitempty"`
 }

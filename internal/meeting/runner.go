@@ -25,9 +25,23 @@ const (
 	// staleRecording: a meeting still "recording" whose audio files have not
 	// grown for this long lost its app (a crash, a kill): it is finished with
 	// what reached the disk.
+	// The daemon calls Housekeep at least every minute: staleRecording must stay
+	// above twice that interval plus a flush, so a Mac sleep too short for the
+	// wake detector (a gap over 2x the interval) cannot age a live recording
+	// into staleness.
 	staleRecording = 3 * time.Minute
-	busyRetries    = 3
-	busyWait       = 5 * time.Second
+
+	// A recognizer call that fails is tried pieceAttempts times in all, so one
+	// hiccup (the engine restarting, a full queue) costs seconds, not the
+	// meeting. A full queue waits busyWait; any other error backs off from
+	// retryWait, doubling. No wait follows the last attempt.
+	pieceAttempts = 4
+	busyWait      = 5 * time.Second
+	retryWait     = 2 * time.Second
+
+	// maxAutoRetries bounds how often Recover puts a failed meeting back in
+	// the queue on its own; Retry (the user) starts the count again.
+	maxAutoRetries = 3
 )
 
 // Deps is everything the runner needs from outside. The daemon wires the
@@ -45,8 +59,9 @@ type Deps struct {
 	// the dictation yield. Nil: no waiting.
 	Before func(ctx context.Context) error
 	Now    func() time.Time
-	Sleep  func(time.Duration)
-	Log    *slog.Logger
+	// Sleep waits d or until ctx ends, returning ctx's error then.
+	Sleep func(ctx context.Context, d time.Duration) error
+	Log   *slog.Logger
 	// PieceSeconds is the recognizer piece length; 0 means DefaultPieceSeconds.
 	PieceSeconds int
 }
@@ -58,7 +73,12 @@ type Runner struct {
 	mu      sync.Mutex
 	pending map[string]bool
 	order   []string
+	running string          // the id Process is working on
+	dirty   map[string]bool // queued again while running: run once more
+	wokeAt  time.Time       // the last time Housekeep saw the Mac wake from sleep
 	wake    chan struct{}
+
+	retentionWarned bool // the unreadable-settings warning was logged
 }
 
 // NewRunner fills the defaults of d.
@@ -67,20 +87,36 @@ func NewRunner(d Deps) *Runner {
 		d.Now = time.Now
 	}
 	if d.Sleep == nil {
-		d.Sleep = time.Sleep
+		d.Sleep = sleepCtx
 	}
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
-	return &Runner{Deps: d, pending: map[string]bool{}, wake: make(chan struct{}, 1)}
+	return &Runner{Deps: d, pending: map[string]bool{}, dirty: map[string]bool{}, wake: make(chan struct{}, 1)}
 }
 
-// Enqueue schedules a meeting; a meeting already queued or running is not
-// queued twice.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// Enqueue schedules a meeting; a meeting already waiting in the queue is not
+// queued twice. One being processed right now is run once more when it is
+// done: whatever asked for it (a later Finish, a Retry) changed it after
+// Process read it.
 func (r *Runner) Enqueue(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.pending[id] {
+		if r.running == id {
+			r.dirty[id] = true
+		}
 		return
 	}
 	r.pending[id] = true
@@ -107,6 +143,7 @@ func (r *Runner) next() (string, bool) {
 	}
 	id := r.order[0]
 	r.order = r.order[1:]
+	r.running = id
 	return id, true
 }
 
@@ -126,20 +163,35 @@ func (r *Runner) Run(ctx context.Context) {
 			r.Log.Warn("meeting: processing failed", slog.String("id", id), slog.Any("error", err))
 		}
 		r.mu.Lock()
-		delete(r.pending, id)
+		r.running = ""
+		if r.dirty[id] {
+			delete(r.dirty, id)
+			r.order = append(r.order, id) // still pending: it goes round again
+		} else {
+			delete(r.pending, id)
+		}
 		r.mu.Unlock()
 	}
 }
 
 // Finish ends a recording: it stamps the end time and queues the meeting.
-// Calling it again for a meeting that is already past recording changes nothing.
+// Calling it again changes nothing, with one exception: Recover may have
+// finished the recording early (an app that looked dead, a Mac that slept),
+// and the app's real, later end then arrives. A later end re-queues the
+// meeting with it when the audio is longer than what was transcribed, so the
+// tail is not lost.
 func (r *Runner) Finish(id string, ended time.Time) (*Manifest, error) {
+	dir, err := r.Store.Dir(id)
+	if err != nil {
+		return nil, err
+	}
 	m, err := r.Store.Update(id, func(m *Manifest) {
-		if m.Status != StatusRecording {
-			return
+		switch {
+		case m.Status == StatusRecording:
+			m.Ended, m.Status = &ended, StatusQueued
+		case m.Ended != nil && ended.After(*m.Ended) && grewSince(dir, m):
+			m.Ended, m.Status, m.Error, m.NotesPending = &ended, StatusQueued, "", ""
 		}
-		m.Ended = &ended
-		m.Status = StatusQueued
 	})
 	if err != nil {
 		return nil, err
@@ -148,29 +200,89 @@ func (r *Runner) Finish(id string, ended time.Time) (*Manifest, error) {
 	return m, nil
 }
 
-// RetryNotes queues the notes step again for a meeting whose transcript is ready.
-func (r *Runner) RetryNotes(id string) (*Manifest, error) {
-	var bad bool
+// grewSince reports whether a meeting that is past recording needs its audio
+// read again. One still waiting for its transcript always does; one with a
+// transcript does when the files now hold more seconds than the transcript.
+func grewSince(dir string, m *Manifest) bool {
+	switch m.Status {
+	case StatusQueued, StatusTranscribing:
+		return true
+	case StatusTranscribed, StatusSummarizing, StatusDone:
+		return audioSeconds(dir) > m.DurationS+1
+	}
+	return false
+}
+
+func audioSeconds(dir string) float64 {
+	var longest int64
+	for _, name := range []string{MePCM, ThemPCM} {
+		if st, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			longest = max(longest, st.Size())
+		}
+	}
+	return float64(longest/bytesPerSample) / SampleRate
+}
+
+// Retry puts a meeting back to work from where it stopped. A failed one
+// resumes at the notes when its transcript exists, else at the transcript
+// (the pieces already recognized are not redone); a transcribed or done one
+// writes its notes again. It also clears the automatic-retry count. This is
+// what RetryNotes was: one entry point, because the user does not know (and
+// should not need to) which step failed.
+func (r *Runner) Retry(id string) (*Manifest, error) {
+	dir, err := r.Store.Dir(id)
+	if err != nil {
+		return nil, err
+	}
+	var refuse error
 	m, err := r.Store.Update(id, func(m *Manifest) {
-		if m.Status != StatusTranscribed && m.Status != StatusDone {
-			bad = true
+		switch m.Status {
+		case StatusFailed, StatusTranscribed, StatusDone:
+		default:
+			refuse = fmt.Errorf("meeting: %s cannot be retried while %s", id, m.Status)
 			return
 		}
-		m.Status, m.NotesPending, m.Error = StatusSummarizing, "", ""
+		next, ok := resumeStatus(dir, m)
+		if !ok {
+			refuse = fmt.Errorf("meeting: %s has no transcript and its audio is gone", id)
+			return
+		}
+		m.Status, m.NotesPending, m.Error, m.Attempts = next, "", "", 0
 	})
 	if err != nil {
 		return nil, err
 	}
-	if bad {
-		return m, fmt.Errorf("meeting: %s has no transcript yet", id)
+	if refuse != nil {
+		return m, refuse
 	}
 	r.Enqueue(id)
 	return m, nil
 }
 
-// Recover queues every meeting a stopped daemon left half done and finishes
-// the recordings whose app is gone. Call it once at start, then from Housekeep.
-func (r *Runner) Recover() {
+// RetryNotes is Retry under its first name.
+func (r *Runner) RetryNotes(id string) (*Manifest, error) { return r.Retry(id) }
+
+// resumeStatus is where a meeting that stopped goes next: the notes when the
+// transcript is on disk, the transcript while the audio is; false when neither is.
+func resumeStatus(dir string, m *Manifest) (Status, bool) {
+	if _, err := os.Stat(filepath.Join(dir, TranscriptJSON)); err == nil {
+		return StatusSummarizing, true
+	}
+	if m.AudioDeleted {
+		return "", false
+	}
+	return StatusQueued, true
+}
+
+// Recover queues every meeting a stopped daemon left half done, puts failed
+// ones back (at most maxAutoRetries times each) and finishes the recordings
+// whose app is gone. Call it once at start, then from Housekeep.
+func (r *Runner) Recover() { r.recoverAt(r.Now()) }
+
+// recoverAt is Recover judging staleness at now. Housekeep passes the instant
+// it measured the sleep gap at, so a sleep that begins after that measurement
+// cannot make a live recording look stale within the same round.
+func (r *Runner) recoverAt(now time.Time) {
 	list, err := r.Store.List()
 	if err != nil {
 		r.Log.Warn("meeting: cannot list meetings", slog.Any("error", err))
@@ -181,12 +293,38 @@ func (r *Runner) Recover() {
 		case StatusQueued, StatusTranscribing, StatusSummarizing:
 			r.Enqueue(m.ID)
 		case StatusRecording:
-			r.finishIfStale(m)
+			r.finishIfStale(m, now)
+		case StatusFailed:
+			r.retryFailed(m)
 		}
 	}
 }
 
-func (r *Runner) finishIfStale(m Manifest) {
+// retryFailed puts one failed meeting back in the queue, counting the attempt
+// in the manifest so a meeting that always fails is not retried forever.
+func (r *Runner) retryFailed(m Manifest) {
+	dir, err := r.Store.Dir(m.ID)
+	if err != nil {
+		return
+	}
+	queued := false
+	if _, err := r.Store.Update(m.ID, func(m *Manifest) {
+		next, ok := resumeStatus(dir, m)
+		if m.Status != StatusFailed || m.Attempts >= maxAutoRetries || !ok {
+			return
+		}
+		m.Status, m.Error, m.Attempts = next, "", m.Attempts+1
+		queued = true
+	}); err != nil {
+		r.Log.Warn("meeting: cannot retry a failed meeting", slog.String("id", m.ID), slog.Any("error", err))
+		return
+	}
+	if queued {
+		r.Enqueue(m.ID)
+	}
+}
+
+func (r *Runner) finishIfStale(m Manifest, now time.Time) {
 	dir, err := r.Store.Dir(m.ID)
 	if err != nil {
 		return
@@ -197,7 +335,15 @@ func (r *Runner) finishIfStale(m Manifest) {
 			last = st.ModTime()
 		}
 	}
-	if r.Now().Sub(last) < staleRecording {
+	// A recording whose files look old may only have slept with the Mac: its
+	// app was suspended too and writes again within moments. Staleness counts
+	// from the wake, not from the last write before it.
+	r.mu.Lock()
+	if r.wokeAt.After(last) {
+		last = r.wokeAt
+	}
+	r.mu.Unlock()
+	if now.Sub(last) < staleRecording {
 		return
 	}
 	if _, err := r.Finish(m.ID, last); err != nil {
@@ -205,13 +351,29 @@ func (r *Runner) finishIfStale(m Manifest) {
 	}
 }
 
-// Housekeep runs Recover and the retention sweep every interval until ctx ends.
+// Housekeep runs Recover and the retention sweep every interval until ctx
+// ends. It reads the wall clock between rounds: a gap of more than twice the
+// interval means the Mac slept, and recordings are not judged orphaned until
+// they have been quiet for staleRecording after the wake.
 func (r *Runner) Housekeep(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
+	// Round(0) drops the monotonic reading: on macOS it stands still while the
+	// Mac sleeps, which is exactly the gap this looks for.
+	last := r.Now().Round(0)
 	for {
-		r.Recover()
-		r.SweepRetention()
+		now := r.Now().Round(0)
+		if gap := now.Sub(last); gap > 2*every {
+			r.mu.Lock()
+			r.wokeAt = now
+			r.mu.Unlock()
+			r.Log.Info("meeting: the Mac slept; recordings are judged from now", slog.Duration("gap", gap))
+		}
+		last = now
+		r.recoverAt(now)
+		if n := r.SweepRetention(); n > 0 {
+			r.Log.Info("meeting: retention sweep", slog.Int("meetings", n))
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -221,8 +383,10 @@ func (r *Runner) Housekeep(ctx context.Context, every time.Duration) {
 }
 
 // Process runs the meeting's remaining steps. A daemon shutdown (ctx) leaves
-// the meeting where it was, so the next start resumes it; any other failure
-// marks it failed with the reason, and keeps its audio.
+// the meeting where it was, so the next start resumes it. A transcription
+// failure marks it failed with the reason and keeps its audio; a notes failure
+// that is not the model's refusal (the disk) leaves the transcript standing
+// and the notes pending.
 func (r *Runner) Process(ctx context.Context, id string) error {
 	m, err := r.Store.Load(id)
 	if errors.Is(err, ErrNotFound) {
@@ -235,11 +399,24 @@ func (r *Runner) Process(ctx context.Context, id string) error {
 		if err := r.transcribe(ctx, id); err != nil {
 			return r.stop(ctx, id, err)
 		}
+		m, err = r.Store.Load(id)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if m.Status != StatusTranscribed {
+			return nil // a later Finish queued it again: it runs once more
+		}
 	} else if m.Status != StatusSummarizing {
 		return nil
 	}
 	if err := r.summarize(ctx, id); err != nil {
-		return r.stop(ctx, id, err)
+		if errors.Is(err, errNoTranscript) {
+			return r.stop(ctx, id, err)
+		}
+		return r.stopNotes(ctx, id, err)
 	}
 	return nil
 }
@@ -254,6 +431,26 @@ func (r *Runner) stop(ctx context.Context, id string, err error) error {
 	}
 	return err
 }
+
+// stopNotes records a notes step that failed on the disk, not on the model:
+// the transcript stays, the meeting reads "transcribed, notes failed" exactly
+// like a model failure, and Retry writes the notes again.
+func (r *Runner) stopNotes(ctx context.Context, id string, err error) error {
+	if ctx.Err() != nil || errors.Is(err, ErrNotFound) {
+		return err
+	}
+	_, uerr := r.Store.Update(id, func(m *Manifest) {
+		m.Status, m.NotesPending, m.Error = StatusTranscribed, "failed", err.Error()
+	})
+	if uerr != nil {
+		r.Log.Warn("meeting: cannot record a notes failure", slog.String("id", id), slog.Any("error", uerr))
+	}
+	return err
+}
+
+// errNoTranscript: the notes step found no readable transcript.json, so the
+// meeting goes back to failed and Retry transcribes it again.
+var errNoTranscript = errors.New("meeting: no transcript to summarize")
 
 type channel struct {
 	file  string
@@ -273,8 +470,15 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(dir, WorkDir), 0o700); err != nil {
+	work := filepath.Join(dir, WorkDir)
+	if err := os.MkdirAll(work, 0o700); err != nil {
 		return err
+	}
+	// A crash mid-recognition leaves its clip behind: audio of the meeting
+	// outside the files retention knows about.
+	stale, _ := filepath.Glob(filepath.Join(work, "*.wav"))
+	for _, f := range stale {
+		_ = os.Remove(f)
 	}
 	words := map[string][]stt.Word{}
 	var warnings []string
@@ -309,16 +513,15 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 		}
 		turns = kept
 	}
-	lang := "en"
 	var spoken strings.Builder // the words only: speaker names would count as Latin letters
 	for _, t := range turns {
 		spoken.WriteString(t.Text)
 		spoken.WriteByte(' ')
 	}
+	// lang is "" when the speech does not say clearly: the notes then follow
+	// the transcript's own language (see languageRule) under English headings.
+	lang := voices.Language(spoken.String())
 	script := voices.Script(spoken.String())
-	if script == "cyrillic" {
-		lang = "ru"
-	}
 	// The recognizer reads 25 European languages; speech in another script
 	// comes out as a transliteration. Say so instead of summarizing nonsense.
 	if script == "" && WordCount(turns) >= minNotesWords {
@@ -334,10 +537,24 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 	if err := vproject.WriteAtomic(filepath.Join(dir, TranscriptMD), []byte(TranscriptMarkdown(*m, turns)), 0o600); err != nil {
 		return err
 	}
-	_, err = r.Store.Update(id, func(m *Manifest) {
+	superseded := false
+	if _, err = r.Store.Update(id, func(m *Manifest) {
+		if m.Status != StatusTranscribing {
+			superseded = true // a later Finish queued it again while it ran
+			return
+		}
 		m.Status, m.Language, m.DurationS, m.Warnings, m.EchoDropped = StatusTranscribed, lang, seconds, warnings, dropped
-	})
-	return err
+	}); err != nil {
+		return err
+	}
+	if !superseded {
+		// transcript.json holds everything the notes need. The piece caches
+		// only serve a resumed transcription, and they are the transcript's
+		// words a second time: nothing of the audio's text stays behind in
+		// work/ once the meeting has moved past this step.
+		_ = os.RemoveAll(work)
+	}
+	return nil
 }
 
 // channelWords recognizes one channel file. speech is false when the file is
@@ -411,19 +628,7 @@ func (r *Runner) recognize(ctx context.Context, dir string, ch channel, sp Span,
 		return nil, err
 	}
 	defer func() { _ = os.Remove(wav) }()
-	var res *stt.Result
-	var err error
-	for attempt := 0; attempt < busyRetries; attempt++ {
-		if r.Before != nil {
-			if err := r.Before(ctx); err != nil {
-				return nil, err
-			}
-		}
-		if res, err = r.Transcribe(ctx, wav); !errors.Is(err, stt.ErrBusy) {
-			break
-		}
-		r.Sleep(busyWait)
-	}
+	res, err := r.transcribePiece(ctx, wav)
 	if err != nil {
 		return nil, err
 	}
@@ -435,6 +640,43 @@ func (r *Runner) recognize(ctx context.Context, dir string, ch channel, sp Span,
 		out[i] = w
 	}
 	return out, nil
+}
+
+// transcribePiece is one recognizer call with its retries. A daemon shutdown
+// and a missing model are not retried; everything else (the engine restarting,
+// a full queue, a timeout) gets pieceAttempts tries, with the dictation yield
+// ahead of each and a wait between, but none after the last.
+func (r *Runner) transcribePiece(ctx context.Context, wav string) (*stt.Result, error) {
+	for attempt := 1; ; attempt++ {
+		if r.Before != nil {
+			if err := r.Before(ctx); err != nil {
+				return nil, err
+			}
+		}
+		res, err := r.Transcribe(ctx, wav)
+		if err == nil && res == nil {
+			err = errors.New("meeting: the recognizer returned no result")
+		}
+		if err == nil {
+			return res, nil
+		}
+		if ctx.Err() != nil || permanent(err) || attempt >= pieceAttempts {
+			return nil, err
+		}
+		wait := retryWait << (attempt - 1)
+		if errors.Is(err, stt.ErrBusy) {
+			wait = busyWait
+		}
+		if serr := r.Sleep(ctx, wait); serr != nil {
+			return nil, serr
+		}
+	}
+}
+
+// permanent reports an error a retry cannot cure.
+func permanent(err error) bool {
+	var model *stt.ModelError
+	return errors.As(err, &model)
 }
 
 // summarize writes the notes, or leaves the transcript waiting for them.
@@ -453,7 +695,7 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 		err = json.Unmarshal(raw, &turns)
 	}
 	if err != nil {
-		return fmt.Errorf("meeting: no transcript to summarize: %w", err)
+		return fmt.Errorf("%w: %w", errNoTranscript, err)
 	}
 	if WordCount(turns) < minNotesWords {
 		return r.writeNotes(id, dir, ShortNotesMarkdown(*m, m.Language), nil)
@@ -473,6 +715,9 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 			return ctx.Err()
 		}
 		_, uerr := r.Store.Update(id, func(m *Manifest) {
+			if requeued(m) {
+				return
+			}
 			m.Status, m.NotesPending, m.Error = StatusTranscribed, "failed", err.Error()
 		})
 		return uerr
@@ -493,6 +738,18 @@ func (r *Runner) writeNotes(id, dir, md string, n *Notes) error {
 	if err := vproject.WriteAtomic(filepath.Join(dir, NotesMD), []byte(md), 0o600); err != nil {
 		return err
 	}
-	_, err := r.Store.Update(id, func(m *Manifest) { m.Status, m.NotesPending, m.Error = StatusDone, "", "" })
+	_, err := r.Store.Update(id, func(m *Manifest) {
+		if requeued(m) {
+			return
+		}
+		m.Status, m.NotesPending, m.Error, m.Attempts = StatusDone, "", "", 0
+	})
 	return err
+}
+
+// requeued reports a meeting a later Finish sent back to the start while its
+// notes were being written: those notes are of the shorter recording, and the
+// meeting must stay queued so the next round redoes it.
+func requeued(m *Manifest) bool {
+	return m.Status == StatusQueued || m.Status == StatusTranscribing
 }

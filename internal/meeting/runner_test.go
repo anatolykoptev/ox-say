@@ -59,7 +59,7 @@ func newFixture(t *testing.T) *fixture {
 		Chat:       chat,
 		NotesReady: func() string { return f.notes },
 		Now:        func() time.Time { return f.now },
-		Sleep:      func(time.Duration) {},
+		Sleep:      func(context.Context, time.Duration) error { return nil },
 	})
 	return f
 }

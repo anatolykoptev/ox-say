@@ -379,7 +379,15 @@ func chunkSchema() map[string]any {
 // languageNames maps a notes language code (the Manifest.Language the headings
 // use) to the name the prompts give the model. Adding a language is a row here
 // and a row in headings.
-var languageNames = map[string]string{"en": "English", "ru": "Russian"}
+//
+// The codes are the ones voices.Language returns. Only en and ru have a
+// headings row; the others get English headings over notes the model writes in
+// the named language.
+var languageNames = map[string]string{
+	"en": "English", "ru": "Russian", "uk": "Ukrainian", "de": "German", "fr": "French",
+	"es": "Spanish", "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "pl": "Polish",
+	"sv": "Swedish", "da": "Danish", "cs": "Czech", "ro": "Romanian",
+}
 
 // languageRule names the output language. A small model told only "the same
 // language as the transcript" drifts into English for part of the fields; a

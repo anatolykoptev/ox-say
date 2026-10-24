@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/anatolykoptev/ox-say/internal/pcm"
 )
@@ -20,9 +21,20 @@ const (
 	// 12 s either side of the nominal cut, so it lands between words.
 	searchSamples = 12 * SampleRate
 	quietWindow   = SampleRate / 2
-	// silentPeak: a piece whose loudest sample is below this (about -60 dBFS)
-	// holds no speech and is not sent to the recognizer.
-	silentPeak = 30
+	// A piece holds speech when at least minLoudWindows of its 100 ms windows
+	// have an RMS above silentRMS. RMS, not the loudest sample: one click or a
+	// pop is a single sample far above any floor but fills a fraction of one
+	// window, and a mic's noise floor of ~40 has a loud sample now and then.
+	// silentRMS is about -58 dBFS: above the self-noise of a mic in a quiet
+	// room (30-60), far below any voice (a whisper at arm's length is 300+).
+	// Two windows, because a click that straddles a window boundary lights
+	// two, and anything shorter than 200 ms is not a word the recognizer can
+	// read. Errors here fall on the safe side: a noise piece sent to the
+	// recognizer costs one call that returns no words; speech dropped as
+	// silence is lost without a trace.
+	silentRMS      = 75
+	rmsWindow      = SampleRate / 10
+	minLoudWindows = 2
 )
 
 // Span is a run of samples [From, To) of one channel file.
@@ -76,11 +88,23 @@ func ReadClip(r io.ReaderAt, s Span) (pcm.Clip, error) {
 	return c, nil
 }
 
-// Silent reports a clip with no speech in it: nothing louder than silentPeak.
+// Silent reports a clip with no speech in it: fewer than minLoudWindows
+// windows of 100 ms whose RMS is above silentRMS. A short last window is
+// counted as if the missing samples were zeros, so a click at the end of a
+// piece is no louder than one in the middle.
 func Silent(c pcm.Clip) bool {
-	for _, s := range c.S {
-		if s > silentPeak || s < -silentPeak {
-			return false
+	windows := (len(c.S) + rmsWindow - 1) / rmsWindow
+	need := min(minLoudWindows, windows)
+	loud := 0
+	for from := 0; from < len(c.S); from += rmsWindow {
+		var sum float64
+		for _, s := range c.S[from:min(from+rmsWindow, len(c.S))] {
+			sum += float64(s) * float64(s)
+		}
+		if math.Sqrt(sum/rmsWindow) > silentRMS {
+			if loud++; loud >= need {
+				return false
+			}
 		}
 	}
 	return true

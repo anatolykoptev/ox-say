@@ -2,9 +2,12 @@ package meeting
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/vproject"
@@ -13,29 +16,55 @@ import (
 // SettingsFile holds the daemon-side meeting settings beside the meetings.
 const SettingsFile = "settings.json"
 
+// RetentionChoices are the audio retention periods the user can pick, in days;
+// 0 keeps the audio forever. Nothing else is accepted, read or written.
+var RetentionChoices = []int{0, 7, 30, 90}
+
 // Settings are the meeting settings the daemon itself needs. RetentionDays is
 // how long audio is kept after a meeting ends; 0 keeps it forever.
 type Settings struct {
 	RetentionDays int `json:"retention_days"`
 }
 
-// Settings reads settings.json; a missing or unreadable file means the
-// default of DefaultRetention days.
+func validRetention(days int) bool { return slices.Contains(RetentionChoices, days) }
+
+// LoadSettings reads settings.json. A file that does not exist means the
+// default of DefaultRetention days; a file that exists but cannot be read,
+// parsed or holds a period outside RetentionChoices is an error, not a default:
+// guessing 30 days over a "never" the user chose would delete audio they asked
+// to keep.
+func (s *Store) LoadSettings() (Settings, error) {
+	raw, err := os.ReadFile(filepath.Join(s.Root, SettingsFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return Settings{RetentionDays: DefaultRetention}, nil
+	}
+	if err != nil {
+		return Settings{}, err
+	}
+	var got Settings
+	if err := json.Unmarshal(raw, &got); err != nil {
+		return Settings{}, fmt.Errorf("meeting: %s: %w", SettingsFile, err)
+	}
+	if !validRetention(got.RetentionDays) {
+		return Settings{}, fmt.Errorf("meeting: %s: retention of %d days is not one of %v", SettingsFile, got.RetentionDays, RetentionChoices)
+	}
+	return got, nil
+}
+
+// Settings is LoadSettings for display: when the file is unusable it shows the
+// default. The retention sweep does not use it; it stops on the error.
 func (s *Store) Settings() Settings {
-	st := Settings{RetentionDays: DefaultRetention}
-	if raw, err := os.ReadFile(filepath.Join(s.Root, SettingsFile)); err == nil {
-		var got Settings
-		if json.Unmarshal(raw, &got) == nil && got.RetentionDays >= 0 {
-			st = got
-		}
+	st, err := s.LoadSettings()
+	if err != nil {
+		return Settings{RetentionDays: DefaultRetention}
 	}
 	return st
 }
 
-// SetSettings saves the settings; a negative retention is refused.
+// SetSettings saves the settings; a retention outside RetentionChoices is refused.
 func (s *Store) SetSettings(st Settings) error {
-	if st.RetentionDays < 0 {
-		return os.ErrInvalid
+	if !validRetention(st.RetentionDays) {
+		return fmt.Errorf("meeting: retention of %d days is not one of %v: %w", st.RetentionDays, RetentionChoices, os.ErrInvalid)
 	}
 	if err := os.MkdirAll(s.Root, 0o700); err != nil {
 		return err
@@ -47,10 +76,26 @@ func (s *Store) SetSettings(st Settings) error {
 // SweepRetention deletes the audio of meetings that ended more than the
 // retention period ago and whose transcript exists. Transcripts and notes are
 // never touched. A meeting without a transcript keeps its audio: deleting it
-// would lose the only copy of what was said.
+// would lose the only copy of what was said — unless it failed (the retries are
+// spent and the user has had the whole period to ask for another), in which
+// case the period counts from its end, or from its start when it never got one.
+//
+// It deletes nothing when the settings cannot be read (logged once until they
+// can), and marks a meeting AudioDeleted only when both files are really gone;
+// a file that would not go is tried again at the next sweep.
 func (r *Runner) SweepRetention() int {
-	days := r.Store.Settings().RetentionDays
-	if days == 0 {
+	st, err := r.Store.LoadSettings()
+	r.mu.Lock()
+	warn := err != nil && !r.retentionWarned
+	r.retentionWarned = err != nil
+	r.mu.Unlock()
+	if err != nil {
+		if warn {
+			r.Log.Warn("meeting: audio retention paused, the settings file is unusable", slog.Any("error", err))
+		}
+		return 0
+	}
+	if st.RetentionDays == 0 {
 		return 0
 	}
 	list, err := r.Store.List()
@@ -59,28 +104,65 @@ func (r *Runner) SweepRetention() int {
 	}
 	deleted := 0
 	for _, m := range list {
-		if m.AudioDeleted || m.Ended == nil || (m.Status != StatusDone && m.Status != StatusTranscribed) {
-			continue
+		if r.expired(m, st.RetentionDays) && r.deleteAudio(m) {
+			deleted++
 		}
-		if r.Now().Before(m.Ended.Add(time.Duration(days) * 24 * time.Hour)) {
-			continue
-		}
-		dir, err := r.Store.Dir(m.ID)
-		if err != nil {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(dir, TranscriptJSON)); err != nil {
-			continue
-		}
-		for _, name := range []string{MePCM, ThemPCM} {
-			_ = os.Remove(filepath.Join(dir, name))
-		}
-		_ = os.RemoveAll(filepath.Join(dir, WorkDir))
-		if _, err := r.Store.Update(m.ID, func(m *Manifest) { m.AudioDeleted = true }); err != nil {
-			r.Log.Warn("meeting: cannot record the audio deletion", slog.String("id", m.ID), slog.Any("error", err))
-			continue
-		}
-		deleted++
 	}
 	return deleted
+}
+
+// expired reports a meeting whose audio is past the retention period and may go.
+func (r *Runner) expired(m Manifest, days int) bool {
+	if m.AudioDeleted {
+		return false
+	}
+	var since time.Time
+	switch {
+	case m.Status == StatusFailed && m.Attempts >= maxAutoRetries:
+		since = m.Started
+		if m.Ended != nil {
+			since = *m.Ended
+		}
+	case m.Ended != nil && (m.Status == StatusDone || m.Status == StatusTranscribed):
+		since = *m.Ended
+		dir, err := r.Store.Dir(m.ID)
+		if err != nil {
+			return false
+		}
+		if _, err := os.Stat(filepath.Join(dir, TranscriptJSON)); err != nil {
+			return false
+		}
+	default:
+		return false
+	}
+	return !r.Now().Before(since.Add(time.Duration(days) * 24 * time.Hour))
+}
+
+// deleteAudio removes a meeting's audio and work files and records it. False
+// when a file would not go or the record could not be saved: the next sweep
+// tries again.
+func (r *Runner) deleteAudio(m Manifest) bool {
+	dir, err := r.Store.Dir(m.ID)
+	if err != nil {
+		return false
+	}
+	gone := true
+	for _, name := range []string{MePCM, ThemPCM} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			gone = false
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(dir, WorkDir)); err != nil {
+		gone = false
+	}
+	if !gone {
+		r.Log.Warn("meeting: audio could not be deleted, will retry", slog.String("id", m.ID))
+		return false
+	}
+	if _, err := r.Store.Update(m.ID, func(m *Manifest) { m.AudioDeleted = true }); err != nil {
+		r.Log.Warn("meeting: cannot record the audio deletion", slog.String("id", m.ID), slog.Any("error", err))
+		return false
+	}
+	r.Log.Info("meeting: audio deleted by retention", slog.String("id", m.ID))
+	return true
 }
