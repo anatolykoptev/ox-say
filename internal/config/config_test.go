@@ -261,6 +261,10 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_VOXCPM2_MODEL", "/tmp/oxk-4917/vox-x.gguf", "/tmp/oxk-4917/vox-x.gguf", func(c *Config) string { return c.VoxCPM2Model }},
 		{"OX_SAY_VOXCPM2_PORT", "18097", "18097", func(c *Config) string { return strconv.Itoa(c.VoxCPM2Port) }},
 		{"OX_SAY_TTS_MODEL", "voxcpm2", "voxcpm2", func(c *Config) string { return c.TTSModel }},
+		{"OX_SAY_NOTES_BIN", "/tmp/oxk-4917/ox-llm-x", "/tmp/oxk-4917/ox-llm-x", func(c *Config) string { return c.NotesBin }},
+		{"OX_SAY_NOTES_MODEL", "/tmp/oxk-4917/notes-x.gguf", "/tmp/oxk-4917/notes-x.gguf", func(c *Config) string { return c.NotesModel }},
+		{"OX_SAY_NOTES_PORT", "18098", "18098", func(c *Config) string { return strconv.Itoa(c.NotesPort) }},
+		{"OX_SAY_NOTES_IDLE_STOP_SECS", "67", "1m7s", func(c *Config) string { return c.NotesIdleStop.String() }},
 	}
 	keys := EnvKeys()
 	inTable := map[string]bool{}
@@ -699,4 +703,80 @@ func writeFakeExe(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// The notes engine says why it cannot run, in an order a UI can act on: too
+// little memory (nothing helps), no engine (update), no model (download).
+// Mutation: internal/config/config.go NotesBlock, swap the engine_missing and
+// model_missing checks -> RED (a Mac without ox-llm is offered a 2.7 GB
+// download that cannot help).
+func TestNotesBlock(t *testing.T) {
+	dir := t.TempDir()
+	bin, model := filepath.Join(dir, "ox-llm"), filepath.Join(dir, NotesModelFile)
+	c := &Config{NotesBin: bin, NotesModel: model, HostMemoryBytes: 16 * bytesPerGB}
+	if code, _ := c.NotesBlock(); code != NotesReasonEngineMissing {
+		t.Fatalf("no engine: code = %q", code)
+	}
+	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := c.NotesBlock(); code != NotesReasonModelMissing {
+		t.Fatalf("no model: code = %q", code)
+	}
+	if err := os.WriteFile(model, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, reason := c.NotesBlock(); code != "" || reason != "" {
+		t.Fatalf("ready: %q %q", code, reason)
+	}
+	c.HostMemoryBytes = 8 * bytesPerGB
+	if code, _ := c.NotesBlock(); code != NotesReasonUnsupported {
+		t.Fatalf("8 GB Mac: code = %q", code)
+	}
+	c.HostMemoryBytes = 0 // unknown memory never blocks
+	if code, _ := c.NotesBlock(); code != "" {
+		t.Fatalf("unknown memory: code = %q", code)
+	}
+}
+
+// Mutation: internal/config/config.go loadNotes, drop one listener from
+// `case c.EnginePort, c.STTPort, c.VoxCPM2Port, addrPort:` -> RED for that row.
+func TestNotesPortCollisionIsRefused(t *testing.T) {
+	for _, tc := range []struct{ env, val string }{
+		{"OX_SAY_ENGINE_PORT", "19098"},
+		{"OX_SAY_STT_PORT", "19098"},
+		{"OX_SAY_VOXCPM2_PORT", "19098"},
+		{"OX_SAY_ADDR", "127.0.0.1:19098"},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv("OX_SAY_HOME", t.TempDir())
+			t.Setenv(tc.env, tc.val)
+			t.Setenv("OX_SAY_NOTES_PORT", "19098")
+			if _, err := Load(nil); err == nil || !strings.Contains(err.Error(), "OX_SAY_NOTES_PORT") {
+				t.Fatalf("a notes port equal to %s: %v", tc.env, err)
+			}
+		})
+	}
+}
+
+// The defaults the installer and the notes supervisor rely on: a wrong default
+// binary name would read as "no notes engine" on every install, silently.
+// Mutations: internal/config/config.go loadNotes, rename "ox-llm" in the
+// default path -> RED; relax `if idle < 1` -> RED (a 0 s idle stop).
+func TestNotesDefaultsAndIdleFloor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("OX_SAY_HOME", home)
+	c, err := Load(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.NotesBin != filepath.Join(home, "engine", "ox-llm") ||
+		c.NotesModel != filepath.Join(home, "models", NotesModelFile) ||
+		c.NotesPort != DefaultNotesPort || c.NotesIdleStop != DefaultNotesIdleStop*time.Second {
+		t.Fatalf("notes defaults: %q %q %d %v", c.NotesBin, c.NotesModel, c.NotesPort, c.NotesIdleStop)
+	}
+	t.Setenv("OX_SAY_NOTES_IDLE_STOP_SECS", "0")
+	if _, err := Load(nil); err == nil || !strings.Contains(err.Error(), "OX_SAY_NOTES_IDLE_STOP_SECS") {
+		t.Fatalf("a 0 s notes idle stop: %v", err)
+	}
 }
