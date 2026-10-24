@@ -272,3 +272,23 @@ func TestNewWriterRejectsBadRate(t *testing.T) {
 		t.Fatal("rate 0 accepted")
 	}
 }
+
+// QuietestWindow finds the gap between two loud stretches.
+// Mutation: internal/pcm/pcm.go QuietestWindow, change `e < bestEnergy` to
+// `e > bestEnergy` -> RED (it returns the loudest window).
+func TestQuietestWindow(t *testing.T) {
+	c := Clip{Rate: 16000, S: make([]int16, 16000)}
+	for i := range c.S {
+		c.S[i] = 8000
+	}
+	for i := 6000; i < 7000; i++ { // a 1000-sample gap
+		c.S[i] = 0
+	}
+	got := c.QuietestWindow(500)
+	if got < 6000 || got > 6500 {
+		t.Fatalf("QuietestWindow = %d, want inside the gap [6000, 6500]", got)
+	}
+	if (Clip{Rate: 16000, S: make([]int16, 100)}).QuietestWindow(500) != 0 {
+		t.Fatal("a clip shorter than the window must return 0")
+	}
+}
