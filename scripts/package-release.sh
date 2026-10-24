@@ -49,9 +49,9 @@ fi
 # every user. That compile is what this release removes, so refuse to package
 # without the libraries. arm64 also carries <bin>-tensor.metallib (Metal4
 # devices; only a macOS 26 SDK toolchain builds them).
-metallibs="tts-server.metallib ox-stt.metallib ox-align.metallib"
+metallibs="tts-server.metallib ox-stt.metallib ox-align.metallib ox-llm.metallib"
 if [ "$arch" = arm64 ]; then
-    metallibs="$metallibs audiocpp_server.metallib tts-server-tensor.metallib ox-stt-tensor.metallib ox-align-tensor.metallib"
+    metallibs="$metallibs audiocpp_server.metallib tts-server-tensor.metallib ox-stt-tensor.metallib ox-align-tensor.metallib ox-llm-tensor.metallib"
 fi
 for lib in $metallibs; do
     if [ -s "$work/out/$lib" ]; then
