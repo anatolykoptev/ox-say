@@ -20,14 +20,17 @@ public struct DaemonStatus: Equatable {
     /// reports nothing, and guessing "busy" would pin the version
     /// handshake's actions forever.
     public var idle: Bool
+    /// The meeting-notes engine; unavailable (all defaults) from a daemon that predates it.
+    public var notes: NotesStatus
 
     public init(version: String?, studioAvailable: Bool, studioReason: String? = nil, studioReasonCode: String? = nil,
-                idle: Bool = true) {
+                idle: Bool = true, notes: NotesStatus = NotesStatus()) {
         self.version = version
         self.studioAvailable = studioAvailable
         self.studioReason = studioReason
         self.studioReasonCode = studioReasonCode
         self.idle = idle
+        self.notes = notes
     }
 
     public static let reasonModelMissing = "model_missing"
@@ -50,7 +53,8 @@ public struct DaemonStatus: Equatable {
                             studioAvailable: studio?["available"] as? Bool ?? false,
                             studioReason: nonEmpty(studio?["reason"] as? String),
                             studioReasonCode: nonEmpty(studio?["reason_code"] as? String),
-                            idle: obj["idle"] as? Bool ?? true)
+                            idle: obj["idle"] as? Bool ?? true,
+                            notes: NotesStatus.decode(obj["notes"] as? [String: Any]))
     }
 
     private static func nonEmpty(_ text: String?) -> String? {
