@@ -21,6 +21,25 @@ public enum Pinned {
         arm64 ? .cpuAndNeuralEngine : .cpuOnly
     }
 
+    /// The Core ML configuration the models are loaded with. main.swift calls this, so `swift test` exercises the
+    /// call it makes rather than a function it could bypass.
+    public static func mlConfiguration(arm64: Bool = runsOnArm64) -> MLModelConfiguration {
+        let ml = MLModelConfiguration()
+        ml.computeUnits = computeUnits(arm64: arm64)
+        return ml
+    }
+
+    /// The name of a compute-units value, for the line main.swift logs (test_cli.py reads it back from the binary).
+    public static func name(of units: MLComputeUnits) -> String {
+        switch units {
+        case .cpuOnly: "cpuOnly"
+        case .cpuAndGPU: "cpuAndGPU"
+        case .cpuAndNeuralEngine: "cpuAndNeuralEngine"
+        case .all: "all"
+        @unknown default: "unknown"
+        }
+    }
+
     public static var runsOnArm64: Bool {
         #if arch(arm64)
         true

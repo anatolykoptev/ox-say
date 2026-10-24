@@ -94,6 +94,21 @@ private func os(_ major: Int, _ minor: Int = 0) -> OperatingSystemVersion {
         #expect(Pinned.computeUnits(arm64: false) == .cpuOnly)
     }
 
+    /// main.swift builds the Core ML configuration through `Pinned.mlConfiguration`, so this is the call it makes.
+    @Test func theCoreMLConfigurationCarriesThePinnedComputeUnits() {
+        #expect(Pinned.mlConfiguration(arm64: true).computeUnits == .cpuAndNeuralEngine)
+        #expect(Pinned.mlConfiguration(arm64: false).computeUnits == .cpuOnly)
+        #expect(Pinned.mlConfiguration().computeUnits == Pinned.computeUnits(arm64: Pinned.runsOnArm64))
+    }
+
+    /// The name main.swift logs and test_cli.py reads back from the real binary's stderr.
+    @Test func computeUnitsHaveStableNames() {
+        #expect(Pinned.name(of: .cpuAndNeuralEngine) == "cpuAndNeuralEngine")
+        #expect(Pinned.name(of: .cpuOnly) == "cpuOnly")
+        #expect(Pinned.name(of: .all) == "all")
+        #expect(Pinned.name(of: .cpuAndGPU) == "cpuAndGPU")
+    }
+
     /// The loader accepts the models' revision marker only when it equals the revision the library asks for.
     @Test func theModelsRevisionIsTheOneTheLibraryAsksFor() {
         #expect(Pins.modelsRevision == Repo.diarizer.revision)

@@ -1,6 +1,7 @@
 import Foundation
 
-/// Process exit codes; the daemon maps them (internal/daemon/diarize.go).
+/// Process exit codes. The daemon maps them in Task 20b.2 (internal/daemon/diarize.go, `runDiarizer`); nothing on the
+/// Go side reads them yet.
 public enum ExitCode: Int32 {
     case ok = 0
     case failure = 1

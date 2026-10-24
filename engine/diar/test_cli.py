@@ -9,7 +9,10 @@ Needs no network and no Python packages. Mutation hooks: see the plan, Task 20a.
 """
 import argparse
 import json
+import math
 import os
+import platform
+import re
 import struct
 import subprocess
 import sys
@@ -103,9 +106,6 @@ class Contract(unittest.TestCase):
         self.assertEqual(fetched, [], "nothing may be downloaded into the models directory")
 
     def test_a_directory_without_the_revision_marker_is_exit_3(self):
-        d = self.path("m")
-        os.makedirs(d)
-        os.symlink(os.path.join(MODELS, "speaker-diarization"), os.path.join(d, "speaker-diarization"))
         # the marker lives inside the real directory; a copy of the tree without it is the failure we want
         copy = self.path("copy")
         subprocess.run(["ditto", os.path.join(MODELS, "speaker-diarization"), os.path.join(copy, "speaker-diarization")], check=True)
@@ -143,6 +143,38 @@ class Contract(unittest.TestCase):
         for s in d["speakers"]:
             total = sum(g["e"] - g["s"] for g in d["segments"] if g["spk"] == s["id"])
             self.assertAlmostEqual(total, s["speech_s"], delta=0.01 * len(d["segments"]))
+
+    # The pinned configuration and compute units, read back from the real binary at the call site in main.swift (a
+    # unit test can only read Pinned, not what main.swift hands the manager). FluidAudio logs how many 10 s windows it
+    # ran: with the pinned step ratio 0.1 that is one per second of audio, with the library's default (0.2) one per two
+    # seconds (swapping in `OfflineDiarizerConfig()` gave 90 windows on the 180 s clip instead of 180). The
+    # expected count is computed from the clip, not from ox-diar. The compute units are logged by main.swift from the
+    # configuration it passes to the model loader.
+    # Mutation: Sources/ox-diar/main.swift, `OfflineDiarizerManager(config: Pinned.config())` -> `OfflineDiarizerManager()`
+    # -> RED (windows=90); `Pinned.mlConfiguration()` -> `MLModelConfiguration()` -> RED (compute units all).
+    def test_the_pinned_configuration_is_what_runs(self):
+        if not CLIP:
+            self.skipTest("no --clip")
+        pcm = self.clip_pcm()
+        seconds = os.path.getsize(pcm) / 2 / 16000
+        r = run(pcm, self.path("o.json"), "--models", MODELS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        found = re.search(r"Segmentation timings: windows=(\d+)", r.stderr)
+        self.assertIsNotNone(found, "FluidAudio no longer logs its window count: read it from somewhere else\n" + r.stderr[-400:])
+        self.assertEqual(int(found.group(1)), math.ceil(seconds), "window step is not the pinned 0.1 of the 10 s window")
+        want = "cpuAndNeuralEngine" if platform.machine() == "arm64" else "cpuOnly"
+        self.assertIn(f"compute units {want}\n", r.stderr)
+
+    # An output path in a directory that does not exist is a failure before the run, not after twenty seconds of it.
+    # Mutation: Sources/ox-diar/main.swift, delete the `guard FileManager.default.fileExists(atPath: outDir` check -> RED.
+    def test_a_missing_output_directory_fails_before_the_run(self):
+        if not CLIP:
+            self.skipTest("no --clip")
+        started = time.time()
+        r = run(self.clip_pcm(), self.path("nope/o.json"), "--models", MODELS)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("output directory", r.stderr)
+        self.assertLess(time.time() - started, 2, "the diarization ran before the output path was checked")
 
     # The audio of a call must never reach a temporary file: FluidAudio's file path streams it to a float32
     # `fluidaudio-streaming-*.raw` file in the user's temporary directory (about 230 MB per hour) and only a `defer`

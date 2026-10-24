@@ -32,6 +32,13 @@ let version = Platform.effectiveVersion(
     assume: ProcessInfo.processInfo.environment["OX_DIAR_ASSUME_MACOS"])
 if let why = Platform.refusal(version: version) { die(.unsupportedOS, why) }
 
+// A missing output directory is a failure now, not after the diarization.
+let outDir = URL(fileURLWithPath: outPath).deletingLastPathComponent().path
+var isDirectory: ObjCBool = false
+guard FileManager.default.fileExists(atPath: outDir, isDirectory: &isDirectory), isDirectory.boolValue else {
+    die(.failure, "output directory \(outDir) does not exist")
+}
+
 // The audio is read here, whole, into memory: no FluidAudio call that writes it to a temporary file (see readPCM16).
 let samples: [Float]
 do {
@@ -48,8 +55,8 @@ let duration = Double(samples.count) / 16_000
 ModelHub.offlineMode = true
 
 // The configuration and the compute units are pinned in OxDiarCore (Pinned), where `swift test` reads them.
-let ml = MLModelConfiguration()
-ml.computeUnits = Pinned.computeUnits(arm64: Pinned.runsOnArm64)
+let ml = Pinned.mlConfiguration()
+FileHandle.standardError.write(Data("ox-diar: compute units \(Pinned.name(of: ml.computeUnits))\n".utf8))
 
 let started = Date()
 let models: OfflineDiarizerModels
@@ -80,8 +87,14 @@ let finished = Date()
 let answer = Diarization.make(
     duration: duration, segments: segments,
     timing: ["load": loaded.timeIntervalSince(started), "diarize": finished.timeIntervalSince(loaded)])
+let encoded: Data
 do {
-    try answer.encoded().write(to: URL(fileURLWithPath: outPath), options: .atomic)
+    encoded = try answer.encoded()
+} catch {
+    die(.failure, "cannot encode the answer: \(error.localizedDescription)")
+}
+do {
+    try encoded.write(to: URL(fileURLWithPath: outPath), options: .atomic)
 } catch {
     die(.failure, "cannot write \(outPath): \(error.localizedDescription)")
 }

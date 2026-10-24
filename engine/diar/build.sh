@@ -62,8 +62,8 @@ if [ ! -f "$checkout/LICENSE" ]; then
     echo "engine/diar/build.sh: no LICENSE in the FluidAudio checkout $checkout" >&2
     exit 1
 fi
-cp "$checkout/LICENSE" "$out/licenses/FluidAudio.LICENSE"
+cp -f "$checkout/LICENSE" "$out/licenses/FluidAudio.LICENSE"
 for f in "$checkout"/ThirdPartyLicenses/*.md; do
-    [ -f "$f" ] && cp "$f" "$out/licenses/FluidAudio-$(basename "$f")"
+    [ -f "$f" ] && cp -f "$f" "$out/licenses/FluidAudio-$(basename "$f")"
 done
 echo "built $out/ox-diar ($want)"
