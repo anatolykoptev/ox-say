@@ -168,26 +168,34 @@ func TestInstallNotesModelNeedsTheScript(t *testing.T) {
 	}
 }
 
-// The notes server's key is rewritten on every spawn and is private.
+// The notes server's key is rewritten on every spawn and is private; the
+// server's CORS is limited to localhost origins.
 // Mutation: internal/daemon/meetings.go writeNotesKey, change 0o600 to
 // 0o644 -> RED.
+// Mutation: internal/daemon/meetings.go notesServerArgs, delete the
+// `"--cors-origins", "localhost",` line -> RED (CORS stays open to any page).
 func TestNotesServerArgsWriteAPrivateKeyPerSpawn(t *testing.T) {
 	cfg := testCfg(t, t.TempDir())
 	cfg.NotesModel = "/m/notes.gguf"
-	a := notesServerArgs(cfg, 8098, testLogger(t))
+	if err := notesPrepare(cfg); err != nil {
+		t.Fatal(err)
+	}
+	a := notesServerArgs(cfg, 8098)
 	key := filepath.Join(cfg.RunDir(), notesKeyFile)
 	st, err := os.Stat(key)
 	if err != nil || st.Mode().Perm() != 0o600 {
 		t.Fatalf("key file = %v, %v; want mode 0600", st, err)
 	}
 	first, _ := os.ReadFile(key)
-	notesServerArgs(cfg, 8098, testLogger(t))
+	if err := notesPrepare(cfg); err != nil {
+		t.Fatal(err)
+	}
 	second, _ := os.ReadFile(key)
 	if bytes.Equal(first, second) {
 		t.Fatal("the key must change on every spawn")
 	}
 	joined := " " + strings.Join(a, " ") + " "
-	for _, want := range []string{" -c 16384 ", " --host 127.0.0.1 ", " --port 8098 ", " --jinja ", " -np 1 ", " --api-key-file " + key + " ", " -ngl 0 "} {
+	for _, want := range []string{" -c 16384 ", " --host 127.0.0.1 ", " --port 8098 ", " --jinja ", " -np 1 ", " --api-key-file " + key + " ", " -ngl 0 ", " --cors-origins localhost "} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("argv lacks %q: %s", want, joined)
 		}
@@ -232,7 +240,7 @@ func TestNotesBinSpawnsByAbsolutePath(t *testing.T) {
 		t.Fatalf("ox-llm spawned as argv[0] %q — not absolute", lines[0])
 	}
 	joined := " " + strings.Join(lines[1:], " ") + " "
-	for _, want := range []string{" --host 127.0.0.1 ", " --api-key-file "} {
+	for _, want := range []string{" --host 127.0.0.1 ", " --api-key-file ", " --cors-origins localhost "} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("spawn argv lacks %q: %s", want, joined)
 		}

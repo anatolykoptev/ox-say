@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,41 +74,146 @@ func notesBinPath(cfg *config.Config) string {
 }
 
 // notesServerArgs is ox-llm's argv: llama-server as the notes spike ran it.
-// The bearer key is written to a 0600 file per spawn — an argv is readable by
-// every process of the machine, and the server's CORS is open to any web page.
-// Layers go to the GPU only with unified memory; a discrete card stays with
-// the speech engines.
-func notesServerArgs(cfg *config.Config, port int, log *slog.Logger) []string {
+// The bearer key is a 0600 file written per spawn by notesPrepare — an argv is
+// readable by every process of the machine. CORS is limited to localhost
+// origins (v0.7.0's special value): the default is "*", which would let any web
+// page the user opens talk to the server. Layers go to the GPU only with
+// unified memory; a discrete card stays with the speech engines.
+func notesServerArgs(cfg *config.Config, port int) []string {
 	args := []string{
 		"-m", cfg.NotesModel, "-c", strconv.Itoa(notesCtx),
 		"--host", voxLoopbackHost, "--port", strconv.Itoa(port),
 		"-fa", "on", "--jinja", "--no-ui", "-np", "1", "--cache-ram", "0",
+		"--cors-origins", "localhost",
 	}
 	ngl := "0"
 	if cfg.UnifiedMemory() {
 		ngl = "99"
 	}
 	args = append(args, "-ngl", ngl)
-	keyPath := filepath.Join(cfg.RunDir(), notesKeyFile)
-	if err := writeNotesKey(keyPath); err != nil {
-		// The flag still names the file: the server refuses to start on a
-		// missing key file, so a failed write fails the start instead of
-		// running the server open.
-		log.Error("notes: cannot write the server key", slog.Any("error", err))
-	}
-	return append(args, "--api-key-file", keyPath)
+	return append(args, "--api-key-file", filepath.Join(cfg.RunDir(), notesKeyFile))
 }
 
-// writeNotesKey writes a fresh random bearer key, 0600.
-func writeNotesKey(path string) error {
+// notesKeyWrite puts the key bytes into the open temp file; a test replaces it
+// to fail or corrupt the write.
+var notesKeyWrite = func(f *os.File, key []byte) error {
+	_, err := f.Write(key)
+	return err
+}
+
+// notesPortTaken marks the start failure for a notes port another process
+// holds; /status turns it into the port_blocked reason.
+const notesPortTaken = "is in use by another process"
+
+// notesPrepare runs before every ox-llm spawn. llama-server reads the key file
+// at start: a missing file stops it, but an EMPTY one yields zero keys and the
+// server then runs with no auth at all — so the file must be written whole or
+// not exist, and is checked before the child is spawned. The port is checked
+// too: whatever else answered on it would receive the private meeting text.
+func notesPrepare(cfg *config.Config) error {
+	ln, err := net.Listen("tcp", net.JoinHostPort(voxLoopbackHost, strconv.Itoa(cfg.NotesPort)))
+	if err != nil {
+		return fmt.Errorf("notes: port %d %s; set OX_SAY_NOTES_PORT to a free port", cfg.NotesPort, notesPortTaken)
+	}
+	_ = ln.Close()
+	keyPath := filepath.Join(cfg.RunDir(), notesKeyFile)
+	if err := writeNotesKey(keyPath); err != nil {
+		return fmt.Errorf("notes: cannot write the server key: %w", err)
+	}
+	if err := checkNotesKey(keyPath); err != nil {
+		_ = os.Remove(keyPath)
+		return fmt.Errorf("notes: %w; not starting the server", err)
+	}
+	return nil
+}
+
+// writeNotesKey writes a fresh random bearer key, 0600, into a run dir that
+// only this user can enter. The key goes to a temp file (created exclusively,
+// never through a symlink) that replaces notes.key by rename, so a failed or
+// interrupted write never leaves a truncated key; on any error notes.key is
+// removed, so the start fails instead of running on a stale or empty key.
+func writeNotesKey(path string) (err error) {
+	defer func() {
+		if err != nil {
+			_ = os.Remove(path)
+		}
+	}()
 	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err = rand.Read(b[:]); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err = os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(hex.EncodeToString(b[:])+"\n"), 0o600)
+	if err = os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	_ = os.Remove(tmp) // a leftover from a killed run, or a planted link
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return err
+	}
+	err = notesKeyWrite(f, []byte(hex.EncodeToString(b[:])+"\n"))
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
+}
+
+// checkNotesKey refuses a key file the server must not be started with: not a
+// plain file, not 0600, or holding no key.
+func checkNotesKey(path string) error {
+	st, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("the server key is unreadable: %w", err)
+	}
+	if !st.Mode().IsRegular() {
+		return errors.New("the server key is not a regular file")
+	}
+	if st.Mode().Perm() != 0o600 {
+		return fmt.Errorf("the server key has mode %o, want 600", st.Mode().Perm())
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("the server key is unreadable: %w", err)
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return errors.New("the server key is empty")
+	}
+	return nil
+}
+
+// notesVerifyAuth runs once the server reports healthy. /v1/models needs the
+// key (only /health and the UI are public), so a keyless request must be
+// answered 401; anything else means the server runs open — to every local
+// process and, through CORS, to web pages — and the start fails.
+func notesVerifyAuth(ctx context.Context, baseURL string) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/models", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("notes: cannot check the server requires its key: %w", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		return fmt.Errorf("notes: the server answered %d to a request without its key; it is running open", resp.StatusCode)
+	}
+	return nil
 }
 
 // newLLMSupervisor builds the notes server's supervisor. The child holds
@@ -122,7 +229,9 @@ func newLLMSupervisor(cfg *config.Config, logger *slog.Logger) (*engine.Supervis
 		LogDir:         cfg.EngineLogDir,
 		PidPath:        filepath.Join(cfg.RunDir(), "notes.pid"),
 		Logger:         logger,
-		Args:           func(port int) []string { return notesServerArgs(cfg, port, logger) },
+		Args:           func(port int) []string { return notesServerArgs(cfg, port) },
+		Prepare:        func() error { return notesPrepare(cfg) },
+		Verify:         notesVerifyAuth,
 	})
 }
 
@@ -152,7 +261,11 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 // child.
 func (d *Daemon) notesKey() (string, error) {
 	raw, err := os.ReadFile(filepath.Join(d.Cfg.RunDir(), notesKeyFile))
-	return strings.TrimSpace(string(raw)), err
+	key := strings.TrimSpace(string(raw))
+	if err == nil && key == "" {
+		err = errors.New("the notes server key is empty")
+	}
+	return key, err
 }
 
 // initMeetings builds the meeting store and runner. The runner uses the same
@@ -221,6 +334,11 @@ type notesInstall struct {
 	mu      sync.Mutex
 	running bool
 	err     string
+	// ctx ends the download with the daemon: Shutdown cancels it and waits on wg.
+	ctx     context.Context
+	cancel  context.CancelFunc
+	stopped bool
+	wg      sync.WaitGroup
 }
 
 func (n *notesInstall) state() (running bool, err string) {
@@ -232,14 +350,41 @@ func (n *notesInstall) state() (running bool, err string) {
 // ErrNotesInstall is a refusal to start the notes model download.
 var ErrNotesInstall = errors.New("notes model download")
 
+// freeBytes is the free space under dir; a test replaces it.
+var freeBytes = func(dir string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}
+
+// lockPart takes the exclusive lock that marks a download in progress for a
+// model file. The download process inherits the descriptor, so the lock lives
+// as long as the fetch does — also when the daemon that started it is gone.
+func lockPart(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
 // InstallNotesModel downloads the notes model by running the installed
 // fetch-models.sh --notes-only: the one place that knows the model's URL and
-// SHA-256. It returns at once; /status reports the progress.
+// SHA-256. It returns at once; /status reports the progress. The download
+// belongs to the daemon: Shutdown kills it, and a lock next to the .part file
+// keeps a second daemon from starting a second writer on it.
 func (d *Daemon) InstallNotesModel() error {
-	if code, reason := d.Cfg.NotesBlock(); code == "" {
-		return fmt.Errorf("%w: the notes model is already installed", ErrNotesInstall)
-	} else if code == config.NotesReasonUnsupported || code == config.NotesReasonEngineMissing {
+	if code, reason := d.Cfg.NotesBlock(); code == config.NotesReasonUnsupported || code == config.NotesReasonEngineMissing {
 		return fmt.Errorf("%w: %s", ErrNotesInstall, reason)
+	}
+	if st, err := os.Stat(d.Cfg.NotesModel); err == nil && st.Mode().IsRegular() {
+		return fmt.Errorf("%w: the notes model is already installed", ErrNotesInstall)
 	}
 	if filepath.Base(d.Cfg.NotesModel) != config.NotesModelFile {
 		// The script writes the pinned file name; a model at another path is the
@@ -254,47 +399,109 @@ func (d *Daemon) InstallNotesModel() error {
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return fmt.Errorf("%w: %v", ErrNotesInstall, err)
 	}
-	if free, err := freeBytes(dest); err == nil && free < config.NotesModelBytes+notesDiskMargin {
-		return fmt.Errorf("%w: not enough free disk space: %d GB needed, %d GB free",
-			ErrNotesInstall, (config.NotesModelBytes+notesDiskMargin)>>30+1, free>>30)
+	if err := d.checkNotesDisk(dest); err != nil {
+		return err
 	}
 	// Single-flight under the lock (#225): two concurrent requests must not
 	// run two fetch processes appending to the same .part file.
 	d.notes.mu.Lock()
+	defer d.notes.mu.Unlock()
+	if d.notes.stopped {
+		return fmt.Errorf("%w: the daemon is shutting down", ErrNotesInstall)
+	}
 	if d.notes.running {
-		d.notes.mu.Unlock()
 		return fmt.Errorf("%w: a download is already running", ErrNotesInstall)
 	}
+	lock, err := lockPart(d.Cfg.NotesModel + ".part.lock")
+	if err != nil {
+		return fmt.Errorf("%w: a download is already running (another ox-say owns the .part file)", ErrNotesInstall)
+	}
+	if d.notes.ctx == nil {
+		d.notes.ctx, d.notes.cancel = context.WithCancel(context.Background())
+	}
+	cmd := exec.CommandContext(d.notes.ctx, script, "--notes-only", dest)
+	var tail bytes.Buffer
+	cmd.Stderr = &tail
+	// The fetch gets the lock as fd 3 and its own process group, so killing it
+	// takes curl with it.
+	cmd.ExtraFiles = []*os.File{lock}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	if err := cmd.Start(); err != nil {
+		_ = lock.Close()
+		return fmt.Errorf("%w: %v", ErrNotesInstall, err)
+	}
+	_ = lock.Close() // the child's copy keeps the lock
 	d.notes.running, d.notes.err = true, ""
-	d.notes.mu.Unlock()
-	go d.runNotesInstall(script, dest)
+	d.notes.wg.Add(1)
+	go d.runNotesInstall(d.notes.ctx, cmd, &tail)
 	return nil
 }
 
-func (d *Daemon) runNotesInstall(script, dest string) {
-	cmd := exec.Command(script, "--notes-only", dest)
-	var tail bytes.Buffer
-	cmd.Stderr = &tail
-	err := cmd.Run()
+// checkNotesDisk refuses a download the disk cannot hold. A .part file from an
+// earlier try already counts; a disk whose free space cannot be read does not
+// block the download (the fetch itself fails loudly on a full disk), but the
+// log says the check was skipped.
+func (d *Daemon) checkNotesDisk(dest string) error {
+	need := int64(config.NotesModelBytes + notesDiskMargin)
+	if st, err := os.Stat(d.Cfg.NotesModel + ".part"); err == nil {
+		need -= min(st.Size(), int64(config.NotesModelBytes))
+	}
+	free, err := freeBytes(dest)
+	if err != nil {
+		d.log.Warn("notes model download: cannot read the free disk space, downloading without the check", slog.Any("error", err))
+		return nil
+	}
+	if free < need {
+		return fmt.Errorf("%w: not enough free disk space: %d GB needed, %d GB free",
+			ErrNotesInstall, need>>30+1, free>>30)
+	}
+	return nil
+}
+
+func (d *Daemon) runNotesInstall(ctx context.Context, cmd *exec.Cmd, tail *bytes.Buffer) {
+	defer d.notes.wg.Done()
+	err := cmd.Wait()
 	d.notes.mu.Lock()
 	defer d.notes.mu.Unlock()
 	d.notes.running = false
-	if err != nil {
-		msg := strings.TrimSpace(tail.String())
-		if len(msg) > 300 {
-			msg = msg[len(msg)-300:]
-		}
+	if err != nil && ctx.Err() == nil {
+		msg := installTail(tail.String())
 		d.notes.err = "The download failed: " + msg
 		d.log.Warn("notes model download failed", slog.Any("error", err), slog.String("stderr", msg))
 	}
 }
 
-func freeBytes(dir string) (int64, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		return 0, err
+// installTail is the last words of a fetch's stderr for a person: a progress
+// meter redraws one line with carriage returns, so each line keeps only its
+// final redraw, and empty lines go.
+func installTail(raw string) string {
+	var lines []string
+	for _, line := range strings.Split(raw, "\n") {
+		if i := strings.LastIndex(strings.TrimRight(line, "\r"), "\r"); i >= 0 {
+			line = line[i+1:]
+		}
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
 	}
-	return int64(st.Bavail) * int64(st.Bsize), nil
+	msg := strings.Join(lines, "; ")
+	if len(msg) > 300 {
+		msg = msg[len(msg)-300:]
+	}
+	return msg
+}
+
+// StopNotesInstall ends a running model download with the daemon and waits for
+// it; the .part file stays and the next download resumes it. Shutdown calls it.
+func (d *Daemon) StopNotesInstall() {
+	d.notes.mu.Lock()
+	d.notes.stopped = true
+	if d.notes.cancel != nil {
+		d.notes.cancel()
+	}
+	d.notes.mu.Unlock()
+	d.notes.wg.Wait()
 }
 
 // notesStatus reports the notes engine for /status. A runtime start failure
@@ -316,6 +523,12 @@ func (d *Daemon) notesStatus() notesStatus {
 	if d.LLMSup != nil {
 		st := d.LLMSup.Status()
 		out.State, out.LastErr = st.State, st.LastErr
+		if strings.Contains(st.LastErr, notesPortTaken) {
+			// A foreign listener holds the port: the app shows the same reason
+			// as for a configured collision, and the meetings wait.
+			out.Available, out.ReasonCode = false, config.NotesReasonPortBlocked
+			out.Reason = fmt.Sprintf("The notes port %d is taken by another program; set OX_SAY_NOTES_PORT to a free port.", d.Cfg.NotesPort)
+		}
 	}
 	return out
 }

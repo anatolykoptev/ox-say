@@ -96,12 +96,20 @@
 //
 //	GET  /health                -> 503 while OXSAY_FAKE_START_DELAY_MS has
 //	                               not passed (a model still loading), then 200
+//	GET  /v1/models             -> 401 when the Authorization bearer differs
+//	                               from the key file's content, else 200
 //	POST /v1/chat/completions   -> 503 in the load window, 401 when the
 //	                               Authorization bearer differs from the key
 //	                               file's content, else a canned reply
 //
+// Like llama-server, it exits at once when --api-key-file names a file it
+// cannot read, and runs without auth when the file holds no key.
+//
 //	OXSAY_FAKE_LLM=1            run the fake ox-llm
 //	OXSAY_FAKE_LLM_EXIT=1       exit 1 at once (the engine cannot load)
+//	OXSAY_FAKE_LLM_OPEN=1       ignore the key: every route answers without
+//	                            auth, as llama-server does with an empty key
+//	                            file (zero keys = no auth, CORS "*")
 //	OXSAY_FAKE_LLM_JSON         the message content /v1/chat/completions
 //	                            returns (default "the canned notes")
 package testutil
@@ -265,6 +273,23 @@ func runFakeLLM(args []string) int {
 	if reply == "" {
 		reply = "the canned notes"
 	}
+	open := os.Getenv("OXSAY_FAKE_LLM_OPEN") == "1"
+	if keyFile != "" {
+		want, err := os.ReadFile(keyFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fake-llm: cannot read the api key file:", err)
+			return 1
+		}
+		open = open || strings.TrimSpace(string(want)) == ""
+	}
+	open = open || keyFile == ""
+	authed := func(r *http.Request) bool {
+		if open {
+			return true
+		}
+		want, _ := os.ReadFile(keyFile)
+		return r.Header.Get("Authorization") == "Bearer "+strings.TrimSpace(string(want))
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		if loading() {
@@ -273,17 +298,22 @@ func runFakeLLM(args []string) int {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad key", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"notes"}]}`))
+	})
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		if loading() {
 			http.Error(w, "loading", http.StatusServiceUnavailable)
 			return
 		}
-		if keyFile != "" {
-			want, _ := os.ReadFile(keyFile)
-			if r.Header.Get("Authorization") != "Bearer "+strings.TrimSpace(string(want)) {
-				http.Error(w, "bad key", http.StatusUnauthorized)
-				return
-			}
+		if !authed(r) {
+			http.Error(w, "bad key", http.StatusUnauthorized)
+			return
 		}
 		raw, _ := json.Marshal(map[string]any{
 			"choices": []map[string]any{{

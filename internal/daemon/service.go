@@ -650,6 +650,7 @@ func (d *Daemon) Status() statusSummary {
 // supervisor rather than blocking shutdown.
 func (d *Daemon) Shutdown() {
 	d.StopMeetings()
+	d.StopNotesInstall()
 	d.StopProducer()
 	d.StopVoiceRepair()
 	d.Sup.Shutdown()
