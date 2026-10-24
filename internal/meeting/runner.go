@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -70,6 +71,14 @@ type Deps struct {
 	Log   *slog.Logger
 	// PieceSeconds is the recognizer piece length; 0 means DefaultPieceSeconds.
 	PieceSeconds int
+	// Diarize runs the speaker diarizer on one 16 kHz mono s16le file (them.pcm)
+	// and returns ox-diar's JSON. Nil: the far side keeps one label. It may leave the answer in work/ for the
+	// length of the call (DiarizationJSON); it returns *DiarUnavailableError when the engine itself refused.
+	Diarize func(ctx context.Context, pcm string) ([]byte, error)
+	// DiarizeReady returns "" when Diarize can run on this Mac, else one of the DiarOSTooOld, DiarCPUUnsupported,
+	// DiarEngineMissing, DiarModelsMissing codes: the meeting then gets one far-side label, WarnDiarUnavailable
+	// and that reason, and the diarizer is not started.
+	DiarizeReady func() string
 }
 
 // Runner takes finished meetings through transcription and notes, one at a
@@ -281,6 +290,49 @@ func resumeStatus(dir string, m *Manifest) (Status, bool) {
 		return "", false
 	}
 	return StatusQueued, true
+}
+
+// RetryVoices tells the far side's voices apart again for a meeting where the diarizer broke
+// (WarnNoDiarization) and the far side's audio is still here: the meeting goes back to the transcript, and the
+// notes follow from it. That is a full transcription (the pieces of the first pass are gone once a transcript
+// stands, and the words are not kept), so it is its own call and Retry never makes it: the app calls Retry by
+// itself, at launch, for a meeting waiting on the notes model, and that must stay a matter of notes.
+func (r *Runner) RetryVoices(id string) (*Manifest, error) {
+	dir, err := r.Store.Dir(id)
+	if err != nil {
+		return nil, err
+	}
+	var refuse error
+	m, err := r.Store.Update(id, func(m *Manifest) {
+		switch m.Status {
+		case StatusFailed, StatusTranscribed, StatusDone:
+		default:
+			refuse = fmt.Errorf("meeting: %s cannot be retried while %s", id, m.Status)
+			return
+		}
+		if !wantsVoicesAgain(dir, m) {
+			refuse = fmt.Errorf("meeting: %s has no failed diarization to retry, or its far-side audio is gone", id)
+			return
+		}
+		m.Status, m.NotesPending, m.Error, m.Attempts, m.WaitingFor = StatusQueued, "", "", 0, ""
+	})
+	if err != nil {
+		return nil, err
+	}
+	if refuse != nil {
+		return m, refuse
+	}
+	r.Enqueue(id)
+	return m, nil
+}
+
+// wantsVoicesAgain: the diarizer broke on this meeting and there is far-side audio to try again on.
+func wantsVoicesAgain(dir string, m *Manifest) bool {
+	if !slices.Contains(m.Warnings, WarnNoDiarization) {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(dir, ThemPCM))
+	return err == nil
 }
 
 // Recover queues every meeting a stopped daemon left half done, puts failed
@@ -542,6 +594,18 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 		}
 		turns = kept
 	}
+	// The far side's voices, told apart after the echo gate: that gate measures
+	// whole channel turns, and voice turns sit edge to edge.
+	vr, err := r.voices(ctx, dir, words[SpeakerThem])
+	if err != nil {
+		return err
+	}
+	if vr.warn != "" {
+		warnings = append(warnings, vr.warn)
+	}
+	if vr.mode != "" {
+		turns = SplitByVoice(turns, vr.of)
+	}
 	var spoken strings.Builder // the words only: speaker names would count as Latin letters
 	for _, t := range turns {
 		spoken.WriteString(t.Text)
@@ -570,7 +634,14 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 	if err := vproject.WriteAtomic(filepath.Join(dir, TranscriptJSON), raw, 0o600); err != nil {
 		return err
 	}
-	if err := vproject.WriteAtomic(filepath.Join(dir, TranscriptMD), []byte(TranscriptMarkdown(*m, turns)), 0o600); err != nil {
+	shown := *m
+	shown.VoiceMode, shown.Voices = vr.mode, vr.voices
+	st, err := LoadSpeakers(dir)
+	if err != nil {
+		return err
+	}
+	shown, display := Present(shown, st, turns)
+	if err := vproject.WriteAtomic(filepath.Join(dir, TranscriptMD), []byte(TranscriptMarkdown(shown, display)), 0o600); err != nil {
 		return err
 	}
 	superseded := false
@@ -580,6 +651,7 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 			return
 		}
 		m.Status, m.Language, m.DurationS, m.Warnings, m.EchoDropped = StatusTranscribed, lang, seconds, warnings, dropped
+		m.VoiceMode, m.Voices, m.DiarReason = vr.mode, vr.voices, vr.reason
 	}); err != nil {
 		return err
 	}
@@ -762,7 +834,12 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 	if superseded {
 		return nil
 	}
-	notes, err := Composer{Chat: r.Chat, Before: r.Before, Log: r.Log}.Compose(ctx, PromptText(*m, turns), m.Labels, m.Language)
+	st, err := LoadSpeakers(dir)
+	if err != nil {
+		return err
+	}
+	shown, display := Present(*m, st, turns)
+	notes, err := Composer{Chat: r.Chat, Before: r.Before, Log: r.Log}.Compose(ctx, PromptText(shown, display), shown.Labels, m.Language)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()

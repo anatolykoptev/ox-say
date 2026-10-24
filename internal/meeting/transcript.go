@@ -22,7 +22,18 @@ func (l Labels) label(speaker string) string {
 	if speaker == SpeakerMe {
 		return l.Me
 	}
+	if n := strings.TrimSpace(l.Names[speaker]); n != "" {
+		return n
+	}
 	return l.Them
+}
+
+// turnLabel is the name printed for a turn: a far-side voice by its voice id.
+func (l Labels) turnLabel(t Turn) string {
+	if t.Speaker == SpeakerThem && t.Voice != "" {
+		return l.label(t.Voice)
+	}
+	return l.label(t.Speaker)
 }
 
 // TranscriptMarkdown is transcript.md: a title line, then one paragraph per
@@ -31,7 +42,7 @@ func TranscriptMarkdown(m Manifest, turns []Turn) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", heading(m))
 	for _, t := range turns {
-		fmt.Fprintf(&b, "**%s** [%s]: %s\n\n", m.Labels.label(t.Speaker), Clock(t.S), t.Text)
+		fmt.Fprintf(&b, "**%s** [%s]: %s\n\n", m.Labels.turnLabel(t), Clock(t.S), t.Text)
 	}
 	return b.String()
 }
@@ -41,7 +52,7 @@ func TranscriptMarkdown(m Manifest, turns []Turn) string {
 func PromptText(m Manifest, turns []Turn) string {
 	var b strings.Builder
 	for _, t := range turns {
-		fmt.Fprintf(&b, "[%s] %s: %s\n", Clock(t.S), m.Labels.label(t.Speaker), t.Text)
+		fmt.Fprintf(&b, "[%s] %s: %s\n", Clock(t.S), m.Labels.turnLabel(t), t.Text)
 	}
 	return b.String()
 }
