@@ -66,6 +66,11 @@ type ChunkNotes struct {
 type Notes struct {
 	ChunkNotes
 	SkippedChunks []int `json:"skipped_chunks,omitempty"`
+	// Labels is what the far side's voices were called (voice id -> label) in the text the model read, kept with
+	// the notes so a rename can be replayed from it exactly once: the substitution is the difference between this
+	// map and the new one, and a request applied twice finds nothing left to change. Set by the runner, never by
+	// the model.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // turnPrefix matches the "[m:ss] Name: " a prompt line starts with.

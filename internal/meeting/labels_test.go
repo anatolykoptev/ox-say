@@ -93,14 +93,14 @@ func TestARenameCorrectsTheNotesWithoutAskingTheModelAgain(t *testing.T) {
 		t.Errorf("transcript.md:\n%s", tr)
 	}
 	// renamed again, then swapped, still without the model
-	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan Petrov"}}); err != nil {
+	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Boris"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Olga", "them:2": "Ivan Petrov"}}); err != nil {
+	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Olga", "them:2": "Boris"}}); err != nil {
 		t.Fatal(err)
 	}
 	notes = readFile(t, dir, NotesMD)
-	if !strings.Contains(notes, "Olga and Ivan Petrov met.") || !strings.Contains(notes, "Olga — send the plan to Ivan Petrov") {
+	if !strings.Contains(notes, "Olga and Boris met.") || !strings.Contains(notes, "Olga — send the plan to Boris") {
 		t.Errorf("after the swap:\n%s", notes)
 	}
 	if len(chat.reqs) != asked {
@@ -132,10 +132,10 @@ func TestRenamingTheSingleFarSideLabelCorrectsOnlyOwners(t *testing.T) {
 	}
 	// a name the user gave is a name: renaming it again corrects it in free text too
 	setNoteText(t, dir, "Maria said hello")
-	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{SpeakerThem: "Maria Rossi"}}); err != nil {
+	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{SpeakerThem: "Masha"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := readFile(t, dir, NotesMD); !strings.Contains(got, "Maria Rossi said hello") {
+	if got := readFile(t, dir, NotesMD); !strings.Contains(got, "Masha said hello") {
 		t.Errorf("a user-given name in free text:\n%s", got)
 	}
 }
@@ -154,5 +154,120 @@ func setNoteText(t *testing.T, dir, summary string) {
 	}
 	if err := os.WriteFile(path, []byte(out), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// settledNotes is a processed group call whose notes read "Speaker 1 and Speaker 2 met. Other options were dropped."
+func settledNotes(t *testing.T) (*fixture, *fakeChat, string, string) {
+	t.Helper()
+	f := groupFixture(t, &diarFake{})
+	chat := setNotes(f, notesReply(t, "Speaker 1", "Speaker 1 and Speaker 2 met. Other options were dropped."))
+	id := f.start(t, 30, 30, 5000, false)
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := f.r.Store.Dir(id)
+	return f, chat, id, dir
+}
+
+// A rename is made by substitution only where that is unambiguous. Where a label is part of another label or name
+// (before or after), survives inside its replacement, or the notes hold it inside a longer word (an inflection,
+// text without spaces), nothing is substituted: the notes are queued to be written again, like after a merge, and
+// the notes on disk are left exactly as they were.
+// Mutations: internal/meeting/labels.go, `safe()`: add `return true` as its first line -> RED (the first three
+// cases rewrite the notes); `ambiguousIn`: add `return false` as its first line -> RED (the last three).
+func TestARenameIsSubstitutedOnlyWhenUnambiguous(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		pre    map[string]string // renames made first (safe ones)
+		text   string            // replaces "Other options were dropped." in the notes
+		final  map[string]string
+		queued bool
+		never  string // must not appear in notes.md
+	}{
+		{"a new name that holds another speaker's name", map[string]string{"them:1": "Anna", "them:2": "Anna Lee"}, "Anna Lee joined Anna.",
+			map[string]string{"them:1": "Anna Smith"}, true, "Anna Smith Lee"},
+		{"a new name that holds the old one", map[string]string{"them:1": "Ivan"}, "Ivan said so.",
+			map[string]string{"them:1": "Ivan Petrov"}, true, "Ivan Petrov Petrov"},
+		{"a name that holds a label", map[string]string{"them:2": "Speaker 1 (CFO)"}, "Speaker 1 (CFO) approved.",
+			map[string]string{"them:1": "Ivan"}, true, "Ivan (CFO)"},
+		{"a Russian inflection", map[string]string{"them:1": "Иван"}, "Ивану передали план.",
+			map[string]string{"them:1": "Пётр"}, true, "Пётру"},
+		{"Japanese without spaces", map[string]string{"them:1": "田中"}, "田中さんが決めた。",
+			map[string]string{"them:1": "佐藤"}, true, "佐藤さん"},
+		{"an inflected numbered label", nil, "Speakers 1 agreed.",
+			map[string]string{"them:1": "Ivan"}, true, "Ivans"},
+		{"a plain name stays cheap", map[string]string{"them:1": "Ivan"}, "Ivan said hello.",
+			map[string]string{"them:1": "Boris"}, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, chat, id, dir := settledNotes(t)
+			if tc.pre != nil {
+				if _, err := f.r.EditSpeakers(id, Edit{Rename: tc.pre}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			setNoteText(t, dir, tc.text)
+			before := readFile(t, dir, NotesMD)
+			asked := len(chat.reqs)
+			if _, err := f.r.EditSpeakers(id, Edit{Rename: tc.final}); err != nil {
+				t.Fatal(err)
+			}
+			after := readFile(t, dir, NotesMD)
+			if tc.never != "" && strings.Contains(after, tc.never) {
+				t.Errorf("notes.md was corrupted:\n%s", after)
+			}
+			if !tc.queued {
+				if f.load(t, id).Status != StatusDone || len(chat.reqs) != asked || !strings.Contains(after, "Boris said hello.") {
+					t.Errorf("a plain rename: status %s, model asked %d more times:\n%s", f.load(t, id).Status, len(chat.reqs)-asked, after)
+				}
+				return
+			}
+			if st := f.load(t, id).Status; st != StatusSummarizing {
+				t.Errorf("status = %s, want the notes queued", st)
+			}
+			if after != before {
+				t.Errorf("notes.md was touched although the notes are to be written again:\n%s", after)
+			}
+			if err := f.r.Process(context.Background(), id); err != nil {
+				t.Fatal(err)
+			}
+			if len(chat.reqs) <= asked {
+				t.Error("the model was not asked to write the notes again")
+			}
+		})
+	}
+}
+
+// The substitution is replayable: the notes carry the labels they were written under, so a request applied twice
+// (the first died after the notes were corrected and before the speakers were saved) changes nothing the second
+// time. A swap is the sharp case: replayed from the speakers alone it would swap back.
+// Mutation: internal/meeting/labels.go rewriteNotes, delete `n.Labels = c.labels` -> RED (the replay swaps back).
+func TestARenameAppliedTwiceChangesNothingTheSecondTime(t *testing.T) {
+	f, _, id, dir := settledNotes(t)
+	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan", "them:2": "Olga"}}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := os.ReadFile(filepath.Join(dir, SpeakersJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	swap := Edit{Rename: map[string]string{"them:1": "Olga", "them:2": "Ivan"}}
+	if _, err := f.r.EditSpeakers(id, swap); err != nil {
+		t.Fatal(err)
+	}
+	want := readFile(t, dir, NotesMD)
+	if !strings.Contains(want, "Olga and Ivan met.") {
+		t.Fatalf("the swap:\n%s", want)
+	}
+	writeFile(t, filepath.Join(dir, SpeakersJSON), string(snapshot)) // the state before the swap, as after a crash
+	if _, err := f.r.EditSpeakers(id, swap); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, dir, NotesMD); got != want {
+		t.Errorf("the replay changed the notes:\n%s\nwas\n%s", got, want)
+	}
+	if got := f.load(t, id).Status; got != StatusDone {
+		t.Errorf("status = %s", got)
 	}
 }

@@ -1,6 +1,7 @@
 package meeting
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -221,6 +222,61 @@ func TestParseDiarizationRefusesWhatItCannotUse(t *testing.T) {
 	} {
 		if _, err := ParseDiarization([]byte(bad)); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// The invariants Decide and AssignVoices rely on are checked where the answer is read: speaker ids are dense and
+// equal to their index, segments name a speaker and do not overlap or run backwards.
+// Mutations: internal/meeting/diarize.go ParseDiarization, delete the `sp.ID != i` check -> RED (the id cases);
+// change `prevEnd = s.E` to `prevEnd = s.S` -> RED (the overlap cases).
+func TestParseDiarizationEnforcesWhatTheRuleRelaysOn(t *testing.T) {
+	good := func() *Diarization {
+		d := diar(300, 200, 150)
+		d.Segments = []DiarSegment{seg(0, 5, 0), seg(5, 9, 1), seg(9.5, 12, 2)}
+		return d
+	}
+	parse := func(d *Diarization) error {
+		raw, err := json.Marshal(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = ParseDiarization(raw)
+		return err
+	}
+	if err := parse(good()); err != nil {
+		t.Fatalf("a valid answer: %v", err)
+	}
+	for name, mut := range map[string]func(d *Diarization){
+		"a gap in the ids":       func(d *Diarization) { d.Speakers[1].ID = 5 },
+		"a duplicate id":         func(d *Diarization) { d.Speakers[2].ID = 0 },
+		"ids not from zero":      func(d *Diarization) { d.Speakers[0].ID, d.Speakers[1].ID, d.Speakers[2].ID = 1, 2, 3 },
+		"overlapping segments":   func(d *Diarization) { d.Segments[1].S = 4 },
+		"a segment inside one":   func(d *Diarization) { d.Segments = []DiarSegment{seg(0, 10, 0), seg(2, 5, 1)} },
+		"a segment out of order": func(d *Diarization) { d.Segments[2], d.Segments[1] = d.Segments[1], d.Segments[2] },
+		"an unknown speaker":     func(d *Diarization) { d.Segments[0].Spk = 3 },
+		"an empty segment":       func(d *Diarization) { d.Segments[0].E = 0 },
+	} {
+		d := good()
+		mut(d)
+		if err := parse(d); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}
+
+// Two groups with the same overlap on a word: the lower group wins, whatever order the map is read in.
+// Mutation: internal/meeting/diarize.go voiceOfWord, change `g < best` to `g > best` -> RED.
+func TestAWordOverlappingTwoVoicesEquallyTakesTheLowerGroup(t *testing.T) {
+	d := diar(300, 200)
+	d.Segments = []DiarSegment{seg(0, 1, 0), seg(1, 2, 1)}
+	p := Decide(d)
+	if p.Group[0] >= p.Group[1] {
+		t.Fatalf("groups = %+v", p.Group)
+	}
+	for range 20 { // map order is random; the answer must not be
+		if got := voiceOfWord(stt.Word{W: "x", S: 0.5, E: 1.5}, d, p); got != p.Group[0] {
+			t.Fatalf("a tie went to group %d, want %d", got, p.Group[0])
 		}
 	}
 }

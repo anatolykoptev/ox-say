@@ -43,6 +43,9 @@ func (r *Runner) voices(ctx context.Context, dir string, words []stt.Word) (voic
 		}
 	}
 	raw, err := r.Diarize(ctx, filepath.Join(dir, ThemPCM))
+	// The daemon wrote the answer, voiceprints included, into work/ for this call: it goes the moment it has been
+	// read, on every way out (a failure, a shutdown, a run that a later Finish supersedes), not with the work dir.
+	defer r.dropVoiceprints(dir)
 	if ctx.Err() != nil {
 		return voiceResult{}, ctx.Err()
 	}
@@ -95,4 +98,11 @@ func dropVoiceState(dir string) error {
 		keep.Names = map[string]string{SpeakerThem: n}
 	}
 	return SaveSpeakers(dir, keep)
+}
+
+// dropVoiceprints removes the diarizer's answer file from work/. A file that is already gone is the usual case.
+func (r *Runner) dropVoiceprints(dir string) {
+	if err := os.Remove(filepath.Join(dir, WorkDir, DiarizationJSON)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		r.Log.Warn("meeting: cannot remove the diarizer's answer", slog.Any("error", err))
+	}
 }

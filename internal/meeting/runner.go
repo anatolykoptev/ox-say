@@ -94,6 +94,10 @@ type Runner struct {
 	wake    chan struct{}
 
 	retentionWarned bool // the unreadable-settings warning was logged
+
+	speakerMu sync.Map // meeting id -> *sync.Mutex: one speakers edit at a time per meeting
+	// afterSpeakersRead, when set, is called by EditSpeakers once it has read the state it will change (tests).
+	afterSpeakersRead func()
 }
 
 // NewRunner fills the defaults of d.
@@ -852,6 +856,7 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 		})
 		return uerr
 	}
+	notes.Labels = labelMap(*m, st, turns)
 	return r.writeNotes(id, dir, NotesMarkdown(*m, notes, m.Language), &notes)
 }
 
@@ -866,6 +871,9 @@ func (r *Runner) writeNotes(id, dir, md string, n *Notes) error {
 		}
 	}
 	if err := vproject.WriteAtomic(filepath.Join(dir, NotesMD), []byte(md), 0o600); err != nil {
+		return err
+	}
+	if err := clearNotesStale(dir); err != nil {
 		return err
 	}
 	_, err := r.Store.Update(id, func(m *Manifest) {

@@ -171,7 +171,12 @@ func (r *Runner) deleteAudio(m Manifest) bool {
 			gone = false
 		}
 	}
-	if err := os.RemoveAll(filepath.Join(dir, WorkDir)); err != nil {
+	for _, name := range workFiles {
+		if err := os.Remove(filepath.Join(dir, WorkDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			gone = false
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(dir, WorkDir)); err != nil { // the piece caches too
 		gone = false
 	}
 	if !gone {

@@ -92,7 +92,8 @@ type DiarSegment struct {
 }
 
 // ParseDiarization reads and validates ox-diar's JSON: a known version, every
-// segment inside the speaker list, ordered, with end after start.
+// speaker id equal to its index, every segment inside the speaker list, with end after start, and the segments
+// in order and not overlapping (the exclusive timeline Decide and AssignVoices rely on).
 func ParseDiarization(raw []byte) (*Diarization, error) {
 	var d Diarization
 	if err := json.Unmarshal(raw, &d); err != nil {
@@ -101,12 +102,17 @@ func ParseDiarization(raw []byte) (*Diarization, error) {
 	if d.Version != DiarizationVersion {
 		return nil, fmt.Errorf("meeting: diarization version %d, want %d", d.Version, DiarizationVersion)
 	}
-	prev := -1.0
-	for i, s := range d.Segments {
-		if s.Spk < 0 || s.Spk >= len(d.Speakers) || !(s.E > s.S) || s.S < prev {
-			return nil, fmt.Errorf("meeting: diarization segment %d is out of order or names no speaker", i)
+	for i, sp := range d.Speakers { // Decide and AssignVoices index by speaker id
+		if sp.ID != i {
+			return nil, fmt.Errorf("meeting: diarization speaker %d has id %d: ids must be dense and equal to their index", i, sp.ID)
 		}
-		prev = s.S
+	}
+	prevEnd := 0.0
+	for i, s := range d.Segments { // AssignVoices binary-searches the segments by end: they must not overlap
+		if s.Spk < 0 || s.Spk >= len(d.Speakers) || !(s.E > s.S) || s.S < prevEnd {
+			return nil, fmt.Errorf("meeting: diarization segment %d overlaps the one before, is out of order or names no speaker", i)
+		}
+		prevEnd = s.E
 	}
 	return &d, nil
 }

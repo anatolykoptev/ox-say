@@ -37,6 +37,10 @@ type SpeakerState struct {
 	Names   map[string]string `json:"names,omitempty"` // id -> display name
 	Merge   map[string]string `json:"merge,omitempty"` // id -> the id it was folded into
 	Split   bool              `json:"split,omitempty"` // the "split by voice" offer was taken
+	// NotesStale: the speakers were saved but the notes were not yet written (or queued) under them. It is set by
+	// the edit that changes who said what, cleared when notes are written, and makes the same request again queue
+	// the notes if the first attempt died between the two.
+	NotesStale bool `json:"notes_stale,omitempty"`
 }
 
 // LoadSpeakers reads speakers.json; a missing file is the empty state.
@@ -59,7 +63,7 @@ func LoadSpeakers(dir string) (SpeakerState, error) {
 // SaveSpeakers writes speakers.json atomically; an empty state removes the file.
 func SaveSpeakers(dir string, st SpeakerState) error {
 	path := filepath.Join(dir, SpeakersJSON)
-	if len(st.Names) == 0 && len(st.Merge) == 0 && !st.Split {
+	if len(st.Names) == 0 && len(st.Merge) == 0 && !st.Split && !st.NotesStale {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -145,8 +149,10 @@ func Present(m Manifest, st SpeakerState, raw []Turn) (Manifest, []Turn) {
 	l.Names = names
 	m.Labels = l
 	out := make([]Turn, 0, len(raw))
+	folded := make([]bool, 0, len(raw)) // out[i] holds a turn whose voice was merged or folded away
 	for _, t := range raw {
 		t.Words = nil
+		was := t.Voice
 		if t.Speaker == SpeakerThem {
 			if showsVoices(m, st) && t.Voice != "" {
 				t.Voice = st.resolveMerge(t.Voice)
@@ -154,12 +160,17 @@ func Present(m Manifest, st SpeakerState, raw []Turn) (Manifest, []Turn) {
 				t.Voice = ""
 			}
 		}
-		if n := len(out); n > 0 && out[n-1].Speaker == t.Speaker && out[n-1].Voice == t.Voice && t.S-out[n-1].E < joinGap {
+		changed := t.Speaker == SpeakerThem && t.Voice != was
+		// Only turns that voices were folded into one speaker are joined: a meeting without voices keeps its
+		// turns exactly as the channels gave them.
+		if n := len(out); n > 0 && (changed || folded[n-1]) && out[n-1].Speaker == t.Speaker && out[n-1].Voice == t.Voice && t.S-out[n-1].E < joinGap {
 			out[n-1].E = t.E
 			out[n-1].Text += " " + t.Text
+			folded[n-1] = folded[n-1] || changed
 			continue
 		}
 		out = append(out, t)
+		folded = append(folded, changed)
 	}
 	return m, out
 }
@@ -262,7 +273,7 @@ func (st SpeakerState) Apply(m Manifest, raw []Turn, e Edit) (SpeakerState, erro
 	if len(e.Rename)+len(e.Merge)+len(e.Unmerge) > MaxEdits {
 		return st, speakersErr("at most %d changes at once", MaxEdits)
 	}
-	next := SpeakerState{Version: SpeakersVersion, Split: st.Split, Names: map[string]string{}, Merge: map[string]string{}}
+	next := SpeakerState{Version: SpeakersVersion, Split: st.Split, NotesStale: st.NotesStale, Names: map[string]string{}, Merge: map[string]string{}}
 	for k, v := range st.Names {
 		next.Names[k] = v
 	}
@@ -335,7 +346,42 @@ func (st SpeakerState) Apply(m Manifest, raw []Turn, e Edit) (SpeakerState, erro
 	if len(next.Merge) == 0 {
 		next.Merge = nil
 	}
+	if err := checkDistinct(m, raw, next, e.Rename); err != nil {
+		return st, err
+	}
 	return next, nil
+}
+
+// checkDistinct refuses a name that reads as another far-side speaker: it is compared, as the transcript will
+// print it, with the label of every other voice (its default "Speaker 2" or the name given to it). Voices merged
+// into one share a label on purpose and are one speaker here.
+func checkDistinct(m Manifest, raw []Turn, next SpeakerState, rename map[string]string) error {
+	if len(rename) == 0 {
+		return nil
+	}
+	shown, _ := Present(m, next, raw)
+	ids := []string{SpeakerThem}
+	if showsVoices(m, next) {
+		ids = ids[:0]
+		for _, id := range voiceIDs(raw) {
+			if _, merged := next.Merge[id]; !merged {
+				ids = append(ids, id)
+			}
+		}
+	}
+	for id, name := range rename {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		self := next.resolveMerge(id)
+		for _, other := range ids {
+			if other != self && strings.EqualFold(shown.Labels.label(labelKey(other, m, next)), name) {
+				return speakersErr("another speaker is already called %q", name)
+			}
+		}
+	}
+	return nil
 }
 
 func checkName(name string) error {

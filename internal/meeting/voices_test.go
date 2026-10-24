@@ -33,6 +33,14 @@ const voiceprint = "0.31415927"
 func (d *diarFake) run(ctx context.Context, pcm string) ([]byte, error) {
 	d.calls.Add(1)
 	d.pcm = pcm
+	// the daemon's side of the contract: the answer, voiceprints in it, is a file in work/ for the length of the call
+	work := filepath.Join(filepath.Dir(pcm), WorkDir)
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(work, DiarizationJSON), []byte(`{"embedding":[`+voiceprint+`]}`), 0o600); err != nil {
+		return nil, err
+	}
 	if d.hold != nil {
 		if err := d.hold(ctx); err != nil {
 			return nil, err
@@ -80,9 +88,9 @@ func readFile(t *testing.T, dir, name string) string {
 }
 
 // Three voices on the far side: the transcript names them, the manifest says how many and in which
-// mode, the diarizer's answer is kept, and the notes are told there are separate people.
-// Mutations: internal/meeting/runner.go transcribe, delete `turns = SplitByVoice(turns, vr.of)` ->
-// RED (one far-side label); delete the `r.Diarize(` call's cache write in voices.go -> the cache test is RED.
+// mode, the diarizer's answer is not kept, and the notes are told there are separate people.
+// Mutation: internal/meeting/runner.go transcribe, replace `turns = SplitByVoice(turns, vr.of)` with `_ = vr` ->
+// RED (one far-side label).
 func TestAGroupCallGetsItsVoices(t *testing.T) {
 	d := &diarFake{}
 	f := groupFixture(t, d)
@@ -437,5 +445,165 @@ func TestRetentionDeletesAStrayVoiceprintWithTheAudio(t *testing.T) {
 	}
 	if v, err := f.r.Speakers(id); err != nil || len(v.Speakers) != 3 {
 		t.Errorf("the voices after the sweep: %+v %v", v, err)
+	}
+}
+
+func voiceprintLeft(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, WorkDir, DiarizationJSON))
+	return err == nil
+}
+
+// The diarizer's answer file holds voiceprints; it is removed the moment the answer has been read, whatever
+// became of the run: read and used, an error, an unreadable answer, a refusal, a daemon shutdown, a run a later
+// Finish superseded. (Runs that finish the transcript also remove work/ whole; the cases that do not are the ones
+// that matter, and voices() is called directly so the rest are measured at the point of the removal.)
+// Mutation: internal/meeting/voices.go, delete the `defer r.dropVoiceprints(dir)` line -> RED (every case).
+func TestTheVoiceprintFileIsGoneWhenTheRunEnds(t *testing.T) {
+	ws := words(1, strings.Repeat("alpha bravo charlie delta echo foxtrot golf hotel ", 5))
+	for name, d := range map[string]*diarFake{
+		"read and used": {},
+		"engine error":  {err: errors.New("ox-diar exited 1")},
+		"bad output":    {raw: []byte(`{"version":9}`)},
+		"refusal":       {err: &DiarUnavailableError{Reason: DiarOSTooOld}},
+		"timeout":       {err: context.DeadlineExceeded},
+	} {
+		f := groupFixture(t, d)
+		_, dir, err := f.r.Store.Create(Manifest{Labels: Labels{Me: "Anatoly", Them: "Other"}}, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.r.voices(context.Background(), dir, ws); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if d.calls.Load() != 1 {
+			t.Fatalf("%s: the diarizer ran %d times", name, d.calls.Load())
+		}
+		if voiceprintLeft(dir) {
+			t.Errorf("%s: work/%s is still there after the run", name, DiarizationJSON)
+		}
+	}
+	// a shutdown in the middle of the run
+	ctx, cancel := context.WithCancel(context.Background())
+	d := &diarFake{hold: func(ctx context.Context) error { cancel(); return ctx.Err() }}
+	f := groupFixture(t, d)
+	id := f.start(t, 30, 30, 5000, false)
+	dir, _ := f.r.Store.Dir(id)
+	if err := f.r.Process(ctx, id); err == nil {
+		t.Fatal("Process returned nil after the shutdown")
+	}
+	if voiceprintLeft(dir) {
+		t.Errorf("shutdown: work/%s is still there", DiarizationJSON)
+	}
+	// a run a later Finish superseded: the meeting is queued again while the diarizer works
+	var id2 string
+	var f2 *fixture
+	d2 := &diarFake{hold: func(context.Context) error {
+		_, err := f2.r.Store.Update(id2, func(m *Manifest) { m.Status = StatusQueued })
+		return err
+	}}
+	f2 = groupFixture(t, d2)
+	id2 = f2.start(t, 30, 30, 5000, false)
+	dir2, _ := f2.r.Store.Dir(id2)
+	if err := f2.r.Process(context.Background(), id2); err != nil {
+		t.Fatal(err)
+	}
+	if st := f2.load(t, id2).Status; st != StatusQueued {
+		t.Fatalf("the superseded run moved the meeting to %s", st)
+	}
+	if voiceprintLeft(dir2) {
+		t.Errorf("superseded: work/%s is still there", DiarizationJSON)
+	}
+}
+
+// settledGroup is a processed group call, three voices, notes written.
+func settledGroup(t *testing.T) (*fixture, string, string) {
+	t.Helper()
+	f := groupFixture(t, &diarFake{})
+	id := f.start(t, 30, 30, 5000, false)
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := f.r.Store.Dir(id)
+	return f, id, dir
+}
+
+// A merge saves the speakers marked "notes stale", queues the notes, and the mark goes when notes are written. The
+// same request again, after the first died with the speakers saved and the notes not queued, queues them.
+// Mutations: internal/meeting/speakers_runner.go EditSpeakers, delete the `if cur.NotesStale {` block -> RED
+// (the repeat does nothing); internal/meeting/runner.go writeNotes, delete `clearNotesStale(dir)` -> RED (the mark
+// outlives the notes).
+func TestAMergeThatDiedBeforeQueueingTheNotesIsFinishedByTheSameRequest(t *testing.T) {
+	f, id, dir := settledGroup(t)
+	merge := Edit{Merge: map[string]string{"them:3": "them:1"}}
+	if _, err := f.r.EditSpeakers(id, merge); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := LoadSpeakers(dir)
+	if !st.NotesStale || f.load(t, id).Status != StatusSummarizing {
+		t.Fatalf("after a merge: stale %v, status %s", st.NotesStale, f.load(t, id).Status)
+	}
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = LoadSpeakers(dir)
+	if st.NotesStale || f.load(t, id).Status != StatusDone {
+		t.Fatalf("after the notes: stale %v, status %s", st.NotesStale, f.load(t, id).Status)
+	}
+	// the request again, with nothing to change: nothing happens
+	if _, err := f.r.EditSpeakers(id, merge); err != nil || f.load(t, id).Status != StatusDone {
+		t.Fatalf("a repeat of a finished edit: %v, status %s", err, f.load(t, id).Status)
+	}
+	// the first attempt died after saving the speakers: marked, never queued
+	st.NotesStale = true
+	if err := SaveSpeakers(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.EditSpeakers(id, merge); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.load(t, id).Status; got != StatusSummarizing {
+		t.Fatalf("the repeat did not queue the notes: status %s", got)
+	}
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = LoadSpeakers(dir); st.NotesStale {
+		t.Error("the mark outlived the notes")
+	}
+}
+
+// Two edits of one meeting at once do not lose each other's change: the read-modify-write is one at a time.
+// The hook holds each edit after it has read the state until the other has read too (or 300 ms pass, which is
+// what happens when the second is kept waiting).
+// Mutation: internal/meeting/speakers_runner.go EditSpeakers, delete the `mu.(*sync.Mutex).Lock()` line -> RED
+// (one of the names is lost).
+func TestConcurrentSpeakerEditsDoNotLoseEachOther(t *testing.T) {
+	f, id, dir := settledGroup(t)
+	var arrived atomic.Int32
+	both := make(chan struct{})
+	f.r.afterSpeakersRead = func() {
+		if arrived.Add(1) == 2 {
+			close(both)
+		}
+		select {
+		case <-both:
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	errs := make(chan error, 2)
+	for voice, name := range map[string]string{"them:1": "Ivan", "them:2": "Olga"} {
+		go func() {
+			_, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{voice: name}})
+			errs <- err
+		}()
+	}
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, _ := LoadSpeakers(dir)
+	if st.Names["them:1"] != "Ivan" || st.Names["them:2"] != "Olga" {
+		t.Errorf("names after two edits at once = %v", st.Names)
 	}
 }

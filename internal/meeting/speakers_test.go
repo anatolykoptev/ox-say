@@ -183,3 +183,66 @@ func TestNotesNameTheVoices(t *testing.T) {
 		t.Errorf("single = %s", single)
 	}
 }
+
+// Only turns whose voice was merged or folded away are joined. A meeting without voices keeps the turns exactly as
+// the channels gave them, two seconds apart or not.
+// Mutation: internal/meeting/speakers.go Present, change `(changed || folded[n-1]) &&` to `true &&` -> RED
+// (two "me" turns 2 s apart become one paragraph in a meeting that has no diarizer).
+func TestPresentKeepsPlainTurnsApart(t *testing.T) {
+	plain := []Turn{
+		voiced(SpeakerMe, "", 0, 2, "first thing"),
+		voiced(SpeakerMe, "", 4, 6, "second thing"),
+		voiced(SpeakerThem, "", 7.2, 9, "reply one"),
+		voiced(SpeakerThem, "", 10.2, 12, "reply two"),
+		voiced(SpeakerThem, "", 14.9, 16, "reply three"),
+	}
+	for _, mode := range []string{"", VoicesOffer} { // the offer, not taken, with turns that carry no voice
+		m := manifest(mode)
+		_, got := Present(m, SpeakerState{}, plain)
+		if len(got) != len(plain) {
+			t.Fatalf("mode %q: %d turns became %d: %+v", mode, len(plain), len(got), got)
+		}
+		for i := range plain {
+			if got[i].Text != plain[i].Text || got[i].S != plain[i].S || got[i].E != plain[i].E {
+				t.Errorf("mode %q: turn %d changed: %+v", mode, i, got[i])
+			}
+		}
+	}
+	// the same gaps between voices folded into one label are joined (that is what folding is for)
+	two := []Turn{voiced(SpeakerThem, "them:1", 1, 3, "first voice here"), voiced(SpeakerThem, "them:2", 4.2, 5, "second voice there")}
+	if _, got := Present(manifest(VoicesOffer), SpeakerState{}, two); len(got) != 1 {
+		t.Errorf("folded voices are %d turns: %+v", len(got), got)
+	}
+}
+
+// A name that reads as another speaker is refused, whether it is that speaker's default label or the name given
+// to it; compared as the transcript prints it, ignoring case. Voices merged into one are one speaker, and a swap
+// in one request is fine.
+// Mutation: internal/meeting/speakers.go Apply, delete the `checkDistinct(m, raw, next, e.Rename)` call -> RED.
+func TestDuplicateNamesAreRefused(t *testing.T) {
+	m := manifest(VoicesAuto)
+	apply := func(st SpeakerState, e Edit) (SpeakerState, error) { return st.Apply(m, groupTurns, e) }
+	if _, err := apply(SpeakerState{}, Edit{Rename: map[string]string{"them:1": "Speaker 2"}}); !errors.Is(err, ErrSpeakers) {
+		t.Errorf("another voice's default label: %v", err)
+	}
+	named, err := apply(SpeakerState{}, Edit{Rename: map[string]string{"them:1": "Ivan", "them:2": "Olga"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := apply(named, Edit{Rename: map[string]string{"them:2": "ivan"}}); !errors.Is(err, ErrSpeakers) {
+		t.Errorf("another voice's name, other case: %v", err)
+	}
+	if _, err := apply(named, Edit{Rename: map[string]string{"them:1": "Olga", "them:2": "Ivan"}}); err != nil {
+		t.Errorf("a swap is refused: %v", err)
+	}
+	if _, err := apply(named, Edit{Rename: map[string]string{"them:1": "Ivan"}}); err != nil {
+		t.Errorf("a voice keeps its own name: %v", err)
+	}
+	merged, err := apply(named, Edit{Merge: map[string]string{"them:3": "them:1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := apply(merged, Edit{Rename: map[string]string{"them:1": "Ivan P"}}); err != nil {
+		t.Errorf("renaming a voice that others were merged into: %v", err)
+	}
+}
