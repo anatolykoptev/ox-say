@@ -35,6 +35,7 @@ public enum MeetingSettings {
     public static let exportedKey = "meetingsExported"
     public static let exportPathsKey = "meetingsExportPaths"
     public static let exportStaleKey = "meetingsExportStale"
+    public static let exportHashesKey = "meetingsExportHashes"
 
     public static func enabled(_ d: UserDefaults) -> Bool { d.bool(forKey: enabledKey) }
 
@@ -102,5 +103,18 @@ public enum MeetingSettings {
         var all = exportStale(d)
         if stale { all.insert(id) } else { all.remove(id) }
         d.set(Array(all.sorted().suffix(500)), forKey: exportStaleKey)
+    }
+
+    /// SHA-256 of each file `NotesExport` wrote for a meeting (file name -> hex), so a refresh can tell a copy the
+    /// user edited from one it wrote itself.
+    public static func exportHashes(_ id: String, _ d: UserDefaults) -> [String: String] {
+        ((d.dictionary(forKey: exportHashesKey) as? [String: [String: String]]) ?? [:])[id] ?? [:]
+    }
+
+    public static func setExportHashes(_ id: String, _ hashes: [String: String], _ d: UserDefaults) {
+        var all = (d.dictionary(forKey: exportHashesKey) as? [String: [String: String]]) ?? [:]
+        all[id] = hashes
+        for key in all.keys.sorted().dropLast(500) { all[key] = nil }
+        d.set(all, forKey: exportHashesKey)
     }
 }

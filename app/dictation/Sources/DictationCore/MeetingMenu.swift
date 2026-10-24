@@ -94,7 +94,7 @@ public enum MeetingMenu {
                     continue
                 }
                 rows.append(.item(title: text(problem.messageKey), isOn: false, isEnabled: false, action: nil))
-                if problem.canRetry {
+                if problem.canRetry, !r.audioGone {
                     rows.append(.item(title: String(format: text(.menuMeetingSpeakersRetry), name),
                                       isOn: false, isEnabled: true, action: .retryVoices(r.id)))
                 }

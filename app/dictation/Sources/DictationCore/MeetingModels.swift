@@ -22,10 +22,13 @@ public struct MeetingInfo: Equatable {
     public var voiceMode: String?
     /// The code behind a `diarization_failed` or `diarization_unavailable` warning (`DiarProblem`).
     public var diarReason: String?
+    /// Retention removed the recording (`audio_deleted`).
+    public var audioDeleted: Bool
 
     public init(id: String, dir: String? = nil, title: String = "", started: Date? = nil, status: Status,
                 notesPending: String? = nil, warnings: [String] = [], error: String? = nil,
-                notesMD: String? = nil, transcriptMD: String? = nil, voiceMode: String? = nil, diarReason: String? = nil) {
+                notesMD: String? = nil, transcriptMD: String? = nil, voiceMode: String? = nil, diarReason: String? = nil,
+                audioDeleted: Bool = false) {
         self.id = id
         self.dir = dir
         self.title = title
@@ -38,6 +41,7 @@ public struct MeetingInfo: Equatable {
         self.transcriptMD = transcriptMD
         self.voiceMode = voiceMode
         self.diarReason = diarReason
+        self.audioDeleted = audioDeleted
     }
 
     public var heardNoSystemAudio: Bool { warnings.contains("no_system_audio") }
@@ -71,7 +75,8 @@ public struct MeetingInfo: Equatable {
                            status: status, notesPending: nonEmpty(obj["notes_pending"] as? String),
                            warnings: obj["warnings"] as? [String] ?? [], error: nonEmpty(obj["error"] as? String),
                            notesMD: nonEmpty(obj["notes_md"] as? String), transcriptMD: nonEmpty(obj["transcript_md"] as? String),
-                           voiceMode: nonEmpty(obj["voice_mode"] as? String), diarReason: nonEmpty(obj["diar_reason"] as? String))
+                           voiceMode: nonEmpty(obj["voice_mode"] as? String), diarReason: nonEmpty(obj["diar_reason"] as? String),
+                           audioDeleted: obj["audio_deleted"] as? Bool ?? false)
     }
 
     private static func nonEmpty(_ s: String?) -> String? {

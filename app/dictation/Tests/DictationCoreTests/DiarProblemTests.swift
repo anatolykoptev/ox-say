@@ -83,22 +83,6 @@ final class DiarProblemTests: XCTestCase {
         XCTAssertFalse(actions.contains(.retryVoices("t")), "a timeout would only time out again")
         XCTAssertFalse(actions.contains(.editSpeakers("a")))
     }
-
-    /// A rename alone is corrected in the notes by the daemon; only merge, unmerge and split make it write them again.
-    /// Mutation: SpeakerEdits.rewritesNotes, drop `|| split != nil` -> RED.
-    func testOnlyAStructuralEditRewritesTheNotes() {
-        var e = SpeakerEdits()
-        e.rename = ["them:1": "Ivan"]
-        XCTAssertFalse(e.rewritesNotes)
-        e.split = true
-        XCTAssertTrue(e.rewritesNotes)
-        e.split = nil
-        e.unmerge = ["them:3"]
-        XCTAssertTrue(e.rewritesNotes)
-        e.unmerge = []
-        e.merge = ["them:3": "them:1"]
-        XCTAssertTrue(e.rewritesNotes)
-    }
 }
 
 final class DiarProblemClientTests: XCTestCase {

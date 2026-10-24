@@ -26,7 +26,7 @@ enum SpeakersPrompt {
         stack.spacing = 12
 
         var fields: [String: NSTextField] = [:]
-        var picks: [String: (button: NSPopUpButton, targets: [SpeakerInfo])] = [:]
+        var picks: [String: NSPopUpButton] = [:]
         for s in state.speakers {
             let row = NSStackView()
             row.orientation = .horizontal
@@ -40,13 +40,18 @@ enum SpeakersPrompt {
             if s.isVoice, !targets.isEmpty || s.mergedTo != nil {
                 let caption = NSTextField(labelWithString: L10nKey.speakersSameAs.text)
                 let button = NSPopUpButton(frame: .zero, pullsDown: false)
-                button.addItem(withTitle: L10nKey.speakersNotMerged.text)
+                // items carry the voice id they stand for, so two voices with the same title cannot shift the pick
+                button.menu?.addItem(NSMenuItem(title: L10nKey.speakersNotMerged.text, action: nil, keyEquivalent: ""))
                 // a voice already folded away keeps its current target in the list so the pick shows it
                 var choices = targets
                 if let to = s.mergedTo, !choices.contains(where: { $0.id == to }), let held = state.speakers.first(where: { $0.id == to }) { choices.append(held) }
-                choices.forEach { button.addItem(withTitle: $0.name.isEmpty ? $0.label : $0.name) }
-                if let to = s.mergedTo, let i = choices.firstIndex(where: { $0.id == to }) { button.selectItem(at: i + 1) }
-                picks[s.id] = (button, choices)
+                for choice in choices {
+                    let item = NSMenuItem(title: choice.name.isEmpty ? choice.label : choice.name, action: nil, keyEquivalent: "")
+                    item.representedObject = choice.id
+                    button.menu?.addItem(item)
+                    if choice.id == s.mergedTo { button.select(item) }
+                }
+                picks[s.id] = button
                 row.addArrangedSubview(caption)
                 row.addArrangedSubview(button)
             }
@@ -74,8 +79,7 @@ enum SpeakersPrompt {
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         for (id, field) in fields { draft.names[id] = field.stringValue }
         for (id, pick) in picks {
-            let i = pick.button.indexOfSelectedItem
-            draft.mergeInto[id] = i > 0 && i - 1 < pick.targets.count ? pick.targets[i - 1].id : nil
+            draft.mergeInto[id] = pick.selectedItem?.representedObject as? String
         }
         if let splitBox { draft.split = splitBox.state == .on }
         return draft

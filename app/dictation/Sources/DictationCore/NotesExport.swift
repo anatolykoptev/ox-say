@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Copies a finished meeting's notes and transcript into the user's notes
@@ -96,15 +97,63 @@ public enum NotesExport {
         }
     }
 
-    /// Writes the texts again into the subfolder an earlier `write` made, for notes that were written
-    /// again after the speakers were named. Each file is replaced atomically; a folder the user has
-    /// since moved or deleted is an error (the caller then writes a new copy).
-    public static func refresh(info: MeetingInfo, at dir: URL, fm: FileManager = .default) throws {
+    /// What `refresh` did.
+    public enum RefreshResult: Equatable {
+        case refreshed
+        /// These files were changed by the user (or cannot be shown untouched): nothing was replaced, and the caller
+        /// keeps the meeting stale.
+        case keptEdited([String])
+    }
+
+    /// SHA-256 (hex) of each text `write` puts in a copy, by file name: what the caller stores to recognise its own
+    /// files later.
+    public static func hashes(of info: MeetingInfo) -> [String: String] {
+        var out: [String: String] = [:]
+        if let notes = info.notesMD { out["notes.md"] = sha256(notes) }
+        if let text = info.transcriptMD { out["transcript.md"] = sha256(text) }
+        return out
+    }
+
+    private static func sha256(_ s: String) -> String { sha256(Data(s.utf8)) }
+
+    private static func sha256(_ d: Data) -> String { SHA256.hash(data: d).map { String(format: "%02x", $0) }.joined() }
+
+    /// Writes the texts again into the subfolder an earlier `write` made, for notes that were written again after
+    /// the speakers were named. `expected` is the hash of each file as it was written. A file that is there and no
+    /// longer matches (or has no stored hash) is the user's, and then nothing at all is replaced: the answer names
+    /// the files, so the notes are never new beside an old transcript. Otherwise both new texts are staged first
+    /// and only then moved into place. A folder the user has since moved or deleted is an error (the caller then
+    /// writes a new copy).
+    @discardableResult
+    public static func refresh(info: MeetingInfo, at dir: URL, expected: [String: String], fm: FileManager = .default,
+                               stage: (Data, URL) throws -> Void = { try $0.write(to: $1) }) throws -> RefreshResult {
         guard info.notesMD != nil || info.transcriptMD != nil else { throw ExportError.nothingToWrite }
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { throw CocoaError(.fileNoSuchFile) }
-        if let notes = info.notesMD { try Data(notes.utf8).write(to: dir.appendingPathComponent("notes.md"), options: .atomic) }
-        if let text = info.transcriptMD { try Data(text.utf8).write(to: dir.appendingPathComponent("transcript.md"), options: .atomic) }
+        let texts = [("notes.md", info.notesMD), ("transcript.md", info.transcriptMD)].compactMap { name, text in text.map { (name, Data($0.utf8)) } }
+        var edited: [String] = []
+        for (name, _) in texts {
+            let url = dir.appendingPathComponent(name)
+            guard fm.fileExists(atPath: url.path) else { continue }
+            if let have = try? Data(contentsOf: url), expected[name] == sha256(have) { continue }
+            edited.append(name)
+        }
+        if !edited.isEmpty { return .keptEdited(edited) }
+        var staged: [(temp: URL, final: URL)] = []
+        do {
+            for (name, data) in texts {
+                let temp = dir.appendingPathComponent("\(stagingPrefix)refresh-\(UUID().uuidString)-\(name)")
+                staged.append((temp, dir.appendingPathComponent(name)))
+                try stage(data, temp)
+            }
+        } catch {
+            for s in staged { try? fm.removeItem(at: s.temp) }
+            throw error
+        }
+        for s in staged {
+            _ = try fm.replaceItemAt(s.final, withItemAt: s.temp)
+        }
+        return .refreshed
     }
 
     /// Removes staging directories an earlier crash left in `folder`.

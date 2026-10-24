@@ -34,11 +34,16 @@ public struct SpeakersState: Equatable {
     /// The offered voices are shown.
     public var split: Bool
     public var speakers: [SpeakerInfo]
+    /// Only meaningful on the answer to an edit: the daemon queued the notes to be written again, so they are not
+    /// final yet (a merge, an unmerge, the split, or a rename it could not substitute safely). False: the notes are
+    /// final now and the exported copy can be refreshed at once. The app follows this, never the kind of edit it sent.
+    public var notesQueued: Bool
 
-    public init(mode: String = "", split: Bool = false, speakers: [SpeakerInfo] = []) {
+    public init(mode: String = "", split: Bool = false, speakers: [SpeakerInfo] = [], notesQueued: Bool = false) {
         self.mode = mode
         self.split = split
         self.speakers = speakers
+        self.notesQueued = notesQueued
     }
 
     /// Two voices were found and the transcript still has one far-side label: "split by voice" is on offer.
@@ -56,7 +61,8 @@ public struct SpeakersState: Equatable {
                                speechSeconds: s["speech_s"] as? Double ?? 0, sample: s["sample"] as? String ?? "",
                                mergedTo: (merged?.isEmpty ?? true) ? nil : merged)
         }
-        return SpeakersState(mode: obj["mode"] as? String ?? "", split: obj["split"] as? Bool ?? false, speakers: list)
+        return SpeakersState(mode: obj["mode"] as? String ?? "", split: obj["split"] as? Bool ?? false, speakers: list,
+                             notesQueued: obj["notes_queued"] as? Bool ?? false)
     }
 }
 
@@ -70,10 +76,6 @@ public struct SpeakerEdits: Equatable {
     public init() {}
 
     public var isEmpty: Bool { rename.isEmpty && merge.isEmpty && unmerge.isEmpty && split == nil }
-
-    /// A merge, an unmerge or the split changes who said what, so the daemon writes the notes again (minutes). A
-    /// rename alone is corrected in the notes at once, and the exported copy can be refreshed right away.
-    public var rewritesNotes: Bool { !merge.isEmpty || !unmerge.isEmpty || split != nil }
 
     public func body() -> Data {
         var obj: [String: Any] = [:]
@@ -100,21 +102,50 @@ public struct SpeakerDraft: Equatable {
     }
 
     /// The request that takes `state` to this draft. A name only counts when it
-    /// differs after trimming; an emptied field clears the name.
+    /// differs after trimming; an emptied field clears the name. A voice folded into another loses its name in the
+    /// daemon, so a name typed on it goes to the voice it joins when that one has none. Picks that the daemon would
+    /// refuse (a loop, or a chain through a voice that is itself folded away) are left out, see `standingMerges`.
     public func edits(against state: SpeakersState) -> SpeakerEdits {
         var e = SpeakerEdits()
+        let merges = standingMerges(against: state)
+        var folded: [(from: String, into: String, name: String)] = []
         for s in state.speakers {
-            let now = (names[s.id] ?? s.name).trimmingCharacters(in: .whitespacesAndNewlines)
-            if now != s.name.trimmingCharacters(in: .whitespacesAndNewlines) { e.rename[s.id] = now }
-            switch (s.mergedTo, mergeInto[s.id]) {
+            let typed = (names[s.id] ?? s.name).trimmingCharacters(in: .whitespacesAndNewlines)
+            let target = merges[s.id]
+            let newlyFolded = target != nil && target != s.mergedTo
+            if !newlyFolded, typed != s.name.trimmingCharacters(in: .whitespacesAndNewlines) { e.rename[s.id] = typed }
+            switch (s.mergedTo, target) {
             case let (old?, new?) where old != new: e.unmerge.append(s.id); e.merge[s.id] = new
             case (nil, let new?): e.merge[s.id] = new
             case (_?, nil): e.unmerge.append(s.id)
             default: break
             }
+            if newlyFolded, let target, !typed.isEmpty { folded.append((s.id, target, typed)) }
+        }
+        for f in folded.sorted(by: { $0.from < $1.from }) {
+            let own = state.speakers.first(where: { $0.id == f.into })?.name ?? ""
+            let current = (e.rename[f.into] ?? names[f.into] ?? own).trimmingCharacters(in: .whitespacesAndNewlines)
+            if current.isEmpty { e.rename[f.into] = f.name }
         }
         if split != state.split { e.split = split }
         return e
+    }
+
+    /// The picks of this draft that can all stand together: every target is a voice that is not itself folded away,
+    /// and nothing folded into a voice follows it elsewhere (no loops, no chains). The merges the meeting already has
+    /// come first, so a new pick never undoes one; among new picks the lower id wins. A pick that is left out shows
+    /// as "—" the next time the panel opens; the names typed beside it are still saved.
+    private func standingMerges(against state: SpeakersState) -> [String: String] {
+        var kept: [String: String] = [:]
+        func accept(_ from: String, _ into: String) {
+            guard from != into, kept[into] == nil, !kept.values.contains(from) else { return }
+            kept[from] = into
+        }
+        let ids = state.speakers.map(\.id).sorted()
+        let held = Dictionary(uniqueKeysWithValues: state.speakers.compactMap { s in s.mergedTo.map { (s.id, $0) } })
+        for id in ids { if let into = mergeInto[id], held[id] == into { accept(id, into) } }
+        for id in ids { if let into = mergeInto[id], held[id] != into { accept(id, into) } }
+        return kept
     }
 
     /// The voices `id` may be folded into: the other voices that are still
@@ -132,30 +163,33 @@ public struct MeetingMenuRecent: Equatable {
     public var started: Date?
     /// Set when the voices could not be told apart: the row says why instead of offering the names.
     public var problem: DiarProblem?
+    /// Retention removed the recording: a retry would transcribe nothing, so the row offers none.
+    public var audioGone: Bool
 
-    public init(id: String, title: String, started: Date? = nil, problem: DiarProblem? = nil) {
+    public init(id: String, title: String, started: Date? = nil, problem: DiarProblem? = nil, audioGone: Bool = false) {
         self.id = id
         self.title = title
         self.started = started
         self.problem = problem
+        self.audioGone = audioGone
     }
 
     /// The newest meetings with a transcript that have something to say about their speakers: voices to name, or a
-    /// problem. A problem that is the Mac's own (`unavailable`) is said once, for the newest meeting: it is the same
-    /// for all of them and would fill the menu.
+    /// problem. A problem that is the Mac's own (`unavailable`) is said once per reason, for the newest meeting that has
+    /// it: it is the same for all of them and would fill the menu. `too_long` is about one recording, not the Mac, so
+    /// it is said for each.
     public static func from(_ meetings: [MeetingInfo], limit: Int = 3) -> [MeetingMenuRecent] {
         var rows: [MeetingMenuRecent] = []
-        var saidUnavailable = false
+        var saidReasons: Set<String> = []
         for m in meetings where m.status == .done || m.status == .transcribed {
             let problem = m.diarProblem
             let hasVoices = m.voiceMode == "auto" || m.voiceMode == "offer"
-            if case .unavailable? = problem {
-                if saidUnavailable { continue }
-                saidUnavailable = true
+            if case .unavailable(let reason)? = problem {
+                if reason != "too_long", !saidReasons.insert(reason).inserted { continue }
             } else if problem == nil && !hasVoices {
                 continue
             }
-            rows.append(MeetingMenuRecent(id: m.id, title: m.title, started: m.started, problem: problem))
+            rows.append(MeetingMenuRecent(id: m.id, title: m.title, started: m.started, problem: problem, audioGone: m.audioDeleted))
             if rows.count == limit { break }
         }
         return rows
