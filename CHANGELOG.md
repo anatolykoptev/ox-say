@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.29](https://github.com/anatolykoptev/ox-say/compare/v0.1.28...v0.1.29) (2026-10-24)
+
+
+### Added
+
+* **app:** name, merge and split meeting speakers; say why there are none ([#259](https://github.com/anatolykoptev/ox-say/issues/259)) ([c459f38](https://github.com/anatolykoptev/ox-say/commit/c459f3880bb6337be6874573bf56a7c9c9655209))
+* **config:** notes engine settings (ox-llm binary, model, port, idle stop) ([#242](https://github.com/anatolykoptev/ox-say/issues/242)) ([4b9c28c](https://github.com/anatolykoptev/ox-say/commit/4b9c28c91ff8703f7e314b4db0797904c22713a0))
+* **daemon:** meeting HTTP routes and MCP tools ([#250](https://github.com/anatolykoptev/ox-say/issues/250)) ([4e69781](https://github.com/anatolykoptev/ox-say/commit/4e6978133c8623e1986aafe906e78a67a778d4af))
+* **daemon:** notes engine supervisor, meeting runner and model download ([#246](https://github.com/anatolykoptev/ox-say/issues/246)) ([cd8439e](https://github.com/anatolykoptev/ox-say/commit/cd8439ed44bbbd5a3b90141c27938c498883ee30))
+* **daemon:** run ox-diar for meeting voices; speakers over HTTP and MCP ([#257](https://github.com/anatolykoptev/ox-say/issues/257)) ([78f8ac3](https://github.com/anatolykoptev/ox-say/commit/78f8ac3d55d45d8a8a756b4f0287fa2abfde1c45))
+* **dictation:** call detection and the meeting auto start/stop debounce ([#234](https://github.com/anatolykoptev/ox-say/issues/234)) ([1548a65](https://github.com/anatolykoptev/ox-say/commit/1548a651f120a491ae608bd308ae178f1c110dc7))
+* **dictation:** call watcher, recording badge, notifier and 16 kHz converter ([#248](https://github.com/anatolykoptev/ox-say/issues/248)) ([564ec2d](https://github.com/anatolykoptev/ox-say/commit/564ec2d68d41df5bf0b067d4fdaf665d19408451))
+* **dictation:** meeting menu, notes export, channel writer and recording-is-work ([#245](https://github.com/anatolykoptev/ox-say/issues/245)) ([545d1eb](https://github.com/anatolykoptev/ox-say/commit/545d1ebba911707e9cc2320c4d5ccf6b4edc9dc7))
+* **dictation:** meeting models, daemon status notes block and client calls ([#231](https://github.com/anatolykoptev/ox-say/issues/231)) ([3000f37](https://github.com/anatolykoptev/ox-say/commit/3000f377050cf3ea4365af579ed1bc49b54ee767))
+* **dictation:** meeting settings and localized strings ([#226](https://github.com/anatolykoptev/ox-say/issues/226)) ([5f34771](https://github.com/anatolykoptev/ox-say/commit/5f3477124182bbb3867d2cba323d1aecb5b2a1d9))
+* **dictation:** permission prompt text for system audio recording and the browser tab ([#240](https://github.com/anatolykoptev/ox-say/issues/240)) ([c449d1f](https://github.com/anatolykoptev/ox-say/commit/c449d1f15ac4e73029435aa63afaf905c94972af))
+* **engine:** ox-diar, far-side speaker diarization on FluidAudio ([#253](https://github.com/anatolykoptev/ox-say/issues/253)) ([da641f5](https://github.com/anatolykoptev/ox-say/commit/da641f5678f533ebf78d2029364988a06ddf40ff))
+* **engine:** ox-llm (llama.cpp llama-server) in the engine build, installer and package ([#230](https://github.com/anatolykoptev/ox-say/issues/230)) ([182f37d](https://github.com/anatolykoptev/ox-say/commit/182f37d0e894fe543d9107ecf1e5c31a7b6bd648))
+* **engine:** precompiled Metal library for ox-llm ([#236](https://github.com/anatolykoptev/ox-say/issues/236)) ([e6c3edb](https://github.com/anatolykoptev/ox-say/commit/e6c3edb465d146a2291b7ddd9a2576b9c6d27946))
+* **meeting:** far-side voices, the speaker rule, renames and voices retry ([#254](https://github.com/anatolykoptev/ox-say/issues/254)) ([0cb2a57](https://github.com/anatolykoptev/ox-say/commit/0cb2a57ca17716b23b41829ea3aeb775bebc9bbb))
+* **meeting:** meeting store, channel merge and the speakers echo gate ([#228](https://github.com/anatolykoptev/ox-say/issues/228)) ([adac0f9](https://github.com/anatolykoptev/ox-say/commit/adac0f97e4a545f60c1bbeaa4da7baf2fbd53c52))
+* **meeting:** per-chunk structured notes with dedupe in code ([#233](https://github.com/anatolykoptev/ox-say/issues/233)) ([ed62147](https://github.com/anatolykoptev/ox-say/commit/ed621473710e7b53fc3bb61c549b30eebc9cb5e3))
+* **meeting:** resumable transcription and notes runner, audio retention ([#239](https://github.com/anatolykoptev/ox-say/issues/239)) ([6d60377](https://github.com/anatolykoptev/ox-say/commit/6d60377c8076073516d3aa07a519cd772d4a5a29))
+* **models:** fetch-models --notes-only for the meeting-notes model ([#224](https://github.com/anatolykoptev/ox-say/issues/224)) ([caf44f5](https://github.com/anatolykoptev/ox-say/commit/caf44f5747c70b4ad2528ed754044d1ad3a5fdb4))
+* **voices,pcm:** word-share and quietest-window helpers for meeting transcription ([#223](https://github.com/anatolykoptev/ox-say/issues/223)) ([634f96b](https://github.com/anatolykoptev/ox-say/commit/634f96b6d78daf3c6ff8df84eb34b99b084f7ac4))
+
 ## [0.1.28](https://github.com/anatolykoptev/ox-say/compare/v0.1.27...v0.1.28) (2026-10-23)
 
 
