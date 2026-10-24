@@ -32,6 +32,7 @@ func (d *Daemon) meetingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/meetings/{id}/notes", d.handleMeetingNotes)
 	mux.HandleFunc("DELETE /v1/meetings/{id}", d.handleMeetingDelete)
 	mux.HandleFunc("POST /v1/meetings/notes-model/install", d.handleNotesModelInstall)
+	d.speakersRoutes(mux)
 }
 
 // meetingRetryRefusals are the runner's wordings for "the meeting's own state
@@ -40,6 +41,7 @@ func (d *Daemon) meetingRoutes(mux *http.ServeMux) {
 var meetingRetryRefusals = []struct{ match, text string }{
 	{"cannot be retried while", "This meeting is still being processed; retry it when it is done."},
 	{"no transcript and its audio is gone", "This meeting cannot be retried: there is no transcript and its audio is gone."},
+	{"has no failed diarization to retry", "This meeting has no voice problem to retry, or its audio is gone."},
 }
 
 // meetingErrText is a meeting error in plain words: no internal meeting id
@@ -109,11 +111,11 @@ func (d *Daemon) handleMeetingCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	title, source := cleanText(in.Title), cleanText(in.Source)
-	me, them := cleanText(in.Labels.Me), cleanText(in.Labels.Them)
+	me, them, speaker := cleanText(in.Labels.Me), cleanText(in.Labels.Them), cleanText(in.Labels.Speaker)
 	for _, f := range []struct {
 		name, text string
 		max        int
-	}{{"title", title, maxTitleChars}, {"source", source, maxSourceChars}, {"labels.me", me, maxLabelChars}, {"labels.them", them, maxLabelChars}} {
+	}{{"title", title, maxTitleChars}, {"source", source, maxSourceChars}, {"labels.me", me, maxLabelChars}, {"labels.them", them, maxLabelChars}, {"labels.speaker", speaker, maxLabelChars}} {
 		if utf8.RuneCountInString(f.text) > f.max {
 			writeErr(w, http.StatusBadRequest, f.name+" is too long")
 			return
@@ -126,7 +128,7 @@ func (d *Daemon) handleMeetingCreate(w http.ResponseWriter, r *http.Request) {
 		them = defaultThemName
 	}
 	m, dir, err := d.Meet.Store.Create(meeting.Manifest{
-		Title: title, Source: source, Labels: meeting.Labels{Me: me, Them: them}, EchoRisk: in.EchoRisk,
+		Title: title, Source: source, Labels: meeting.Labels{Me: me, Them: them, Speaker: speaker}, EchoRisk: in.EchoRisk,
 	}, time.Now())
 	if err != nil {
 		d.writeMeetingErr(w, err)
@@ -173,6 +175,9 @@ type meetingSummary struct {
 	NotesPending string         `json:"notes_pending,omitempty"`
 	Warnings     []string       `json:"warnings,omitempty"`
 	Error        string         `json:"error,omitempty"`
+	Voices       int            `json:"voices,omitempty"`
+	VoiceMode    string         `json:"voice_mode,omitempty"`
+	DiarReason   string         `json:"diar_reason,omitempty"`
 }
 
 func (d *Daemon) summarize(m meeting.Manifest) meetingSummary {
@@ -180,7 +185,7 @@ func (d *Daemon) summarize(m meeting.Manifest) meetingSummary {
 	return meetingSummary{
 		ID: m.ID, Title: m.Title, Started: m.Started, DurationS: m.DurationS, Status: m.Status,
 		Language: m.Language, HasNotes: m.Status == meeting.StatusDone, NotesPending: m.NotesPending,
-		Warnings: m.Warnings, Error: m.Error,
+		Warnings: m.Warnings, Error: m.Error, Voices: m.Voices, VoiceMode: m.VoiceMode, DiarReason: m.DiarReason,
 	}
 }
 

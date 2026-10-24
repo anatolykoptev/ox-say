@@ -288,6 +288,9 @@ func (d *Daemon) initMeetings() {
 		},
 		Before: func(ctx context.Context) error { return d.waitQuiet(ctx, func() {}) },
 		Log:    d.log,
+		// The far side's voices (Task 20): ox-diar when this Mac can run it, one label and a reason when not.
+		Diarize:      d.diarizer,
+		DiarizeReady: d.diarReady,
 		// Without unified memory the recognizer runs on the CPU, far slower than
 		// real time, and one call holds it for dictation too: short pieces.
 		PieceSeconds: d.pieceSeconds(),
