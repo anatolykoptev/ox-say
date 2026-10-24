@@ -46,6 +46,10 @@ public enum MenuAction: Equatable {
     case toggleMeetingAutoStart
     /// The days of audio retention (0 = never delete).
     case pickMeetingRetention(Int)
+    /// Name, merge or split the speakers of the meeting with this id.
+    case editSpeakers(String)
+    /// Tell the voices of the meeting with this id apart again (the engine broke the first time).
+    case retryVoices(String)
 }
 
 public enum MenuRow: Equatable {

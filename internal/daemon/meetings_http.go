@@ -178,6 +178,8 @@ type meetingSummary struct {
 	Voices       int            `json:"voices,omitempty"`
 	VoiceMode    string         `json:"voice_mode,omitempty"`
 	DiarReason   string         `json:"diar_reason,omitempty"`
+	// AudioDeleted: retention removed the recording, so a voices retry (which transcribes it again) cannot run.
+	AudioDeleted bool `json:"audio_deleted,omitempty"`
 }
 
 func (d *Daemon) summarize(m meeting.Manifest) meetingSummary {
@@ -185,7 +187,7 @@ func (d *Daemon) summarize(m meeting.Manifest) meetingSummary {
 	return meetingSummary{
 		ID: m.ID, Title: m.Title, Started: m.Started, DurationS: m.DurationS, Status: m.Status,
 		Language: m.Language, HasNotes: m.Status == meeting.StatusDone, NotesPending: m.NotesPending,
-		Warnings: m.Warnings, Error: m.Error, Voices: m.Voices, VoiceMode: m.VoiceMode, DiarReason: m.DiarReason,
+		Warnings: m.Warnings, Error: m.Error, Voices: m.Voices, VoiceMode: m.VoiceMode, DiarReason: m.DiarReason, AudioDeleted: m.AudioDeleted,
 	}
 }
 

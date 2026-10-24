@@ -193,6 +193,11 @@ type SpeakersView struct {
 	// Split is true while the offered voices are shown.
 	Split    bool          `json:"split"`
 	Speakers []SpeakerView `json:"speakers"`
+	// NotesQueued is set only on the answer to an edit: true when the notes were queued to be written again by the
+	// model (a merge, an unmerge or the split, or a rename whose substitution was not safe), so they are not final
+	// yet; false when they are final now (a rename corrected in place, or nothing to change). The client decides
+	// from this, never from the kind of edit it sent.
+	NotesQueued bool `json:"notes_queued"`
 }
 
 // View lists the far side's speakers under st: the voices when they show, else

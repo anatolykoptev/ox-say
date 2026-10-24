@@ -33,6 +33,9 @@ public enum MeetingSettings {
     public static let explainedKey = "meetingsExplained"
     public static let nameKey = "meetingsYourName"
     public static let exportedKey = "meetingsExported"
+    public static let exportPathsKey = "meetingsExportPaths"
+    public static let exportStaleKey = "meetingsExportStale"
+    public static let exportHashesKey = "meetingsExportHashes"
 
     public static func enabled(_ d: UserDefaults) -> Bool { d.bool(forKey: enabledKey) }
 
@@ -78,5 +81,40 @@ public enum MeetingSettings {
         var all = exported(d)
         all.insert(id)
         d.set(Array(all.sorted().suffix(500)), forKey: exportedKey)
+    }
+
+    /// Where each exported meeting's copy went (id -> folder path), so a rename can rewrite it in place.
+    public static func exportPath(_ id: String, _ d: UserDefaults) -> String? {
+        (d.dictionary(forKey: exportPathsKey) as? [String: String])?[id]
+    }
+
+    public static func setExportPath(_ id: String, _ path: String, _ d: UserDefaults) {
+        var all = (d.dictionary(forKey: exportPathsKey) as? [String: String]) ?? [:]
+        all[id] = path
+        // the newest 500 by id: ids start with the date
+        for key in all.keys.sorted().dropLast(500) { all[key] = nil }
+        d.set(all, forKey: exportPathsKey)
+    }
+
+    /// Meetings whose speakers changed after they were copied: the copy is of the old names.
+    public static func exportStale(_ d: UserDefaults) -> Set<String> { Set(d.stringArray(forKey: exportStaleKey) ?? []) }
+
+    public static func setExportStale(_ id: String, _ stale: Bool, _ d: UserDefaults) {
+        var all = exportStale(d)
+        if stale { all.insert(id) } else { all.remove(id) }
+        d.set(Array(all.sorted().suffix(500)), forKey: exportStaleKey)
+    }
+
+    /// SHA-256 of each file `NotesExport` wrote for a meeting (file name -> hex), so a refresh can tell a copy the
+    /// user edited from one it wrote itself.
+    public static func exportHashes(_ id: String, _ d: UserDefaults) -> [String: String] {
+        ((d.dictionary(forKey: exportHashesKey) as? [String: [String: String]]) ?? [:])[id] ?? [:]
+    }
+
+    public static func setExportHashes(_ id: String, _ hashes: [String: String], _ d: UserDefaults) {
+        var all = (d.dictionary(forKey: exportHashesKey) as? [String: [String: String]]) ?? [:]
+        all[id] = hashes
+        for key in all.keys.sorted().dropLast(500) { all[key] = nil }
+        d.set(all, forKey: exportHashesKey)
     }
 }

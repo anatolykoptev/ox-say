@@ -18,10 +18,17 @@ public struct MeetingInfo: Equatable {
     public var error: String?
     public var notesMD: String?
     public var transcriptMD: String?
+    /// "auto" or "offer" when the daemon found several voices on the far side; nil otherwise.
+    public var voiceMode: String?
+    /// The code behind a `diarization_failed` or `diarization_unavailable` warning (`DiarProblem`).
+    public var diarReason: String?
+    /// Retention removed the recording (`audio_deleted`).
+    public var audioDeleted: Bool
 
     public init(id: String, dir: String? = nil, title: String = "", started: Date? = nil, status: Status,
                 notesPending: String? = nil, warnings: [String] = [], error: String? = nil,
-                notesMD: String? = nil, transcriptMD: String? = nil) {
+                notesMD: String? = nil, transcriptMD: String? = nil, voiceMode: String? = nil, diarReason: String? = nil,
+                audioDeleted: Bool = false) {
         self.id = id
         self.dir = dir
         self.title = title
@@ -32,9 +39,15 @@ public struct MeetingInfo: Equatable {
         self.error = error
         self.notesMD = notesMD
         self.transcriptMD = transcriptMD
+        self.voiceMode = voiceMode
+        self.diarReason = diarReason
+        self.audioDeleted = audioDeleted
     }
 
     public var heardNoSystemAudio: Bool { warnings.contains("no_system_audio") }
+
+    /// Why the far side has one label although voices were looked for, nil when nothing went wrong.
+    public var diarProblem: DiarProblem? { DiarProblem.of(warnings: warnings, reason: diarReason) }
 
     /// Nothing left for the daemon to do on its own.
     public var settled: Bool { status == .done || status == .transcribed || status == .failed }
@@ -61,7 +74,9 @@ public struct MeetingInfo: Equatable {
         return MeetingInfo(id: id, dir: obj["dir"] as? String, title: obj["title"] as? String ?? "", started: started,
                            status: status, notesPending: nonEmpty(obj["notes_pending"] as? String),
                            warnings: obj["warnings"] as? [String] ?? [], error: nonEmpty(obj["error"] as? String),
-                           notesMD: nonEmpty(obj["notes_md"] as? String), transcriptMD: nonEmpty(obj["transcript_md"] as? String))
+                           notesMD: nonEmpty(obj["notes_md"] as? String), transcriptMD: nonEmpty(obj["transcript_md"] as? String),
+                           voiceMode: nonEmpty(obj["voice_mode"] as? String), diarReason: nonEmpty(obj["diar_reason"] as? String),
+                           audioDeleted: obj["audio_deleted"] as? Bool ?? false)
     }
 
     private static func nonEmpty(_ s: String?) -> String? {
