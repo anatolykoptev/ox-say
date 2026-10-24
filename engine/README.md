@@ -45,6 +45,28 @@ metallib build is skipped, says so on one line, and the engines still embed
 their sources. `OX_SAY_METAL_EMBED=1` skips the metallib build even when the
 toolchain is present (A/B tests).
 
+## ox-diar (speaker diarization)
+
+A one-shot CLI that tells the voices of one recording apart: `ox-diar <pcm16k-mono-s16le> <out.json> --models DIR`, where
+the input is a meeting's raw channel file (the format of `them.pcm`) and DIR holds `speaker-diarization/` as
+`scripts/fetch-models.sh --diar-only` lays it out. It is a Swift package (`engine/diar`) on FluidAudio 0.17.7 (pinned with
+`exact:` and a committed `Package.resolved`), which runs the pyannote community-1 pipeline (segmentation, WeSpeaker,
+PLDA, VBx) on Core ML: `.cpuAndNeuralEngine` on Apple Silicon, so the GPU stays free for Parakeet (`probe_gpu.sh` proves
+it). There is no Intel build: Core ML cannot run the models on `.cpuOnly` (the Intel smoke of plan Task 20a failed), so
+the x86_64 package carries none and the daemon reports `cpu_unsupported`. The configuration is pinned in `OxDiarCore/Config.swift` (AHC threshold 0.7, step 0.1, no 1 s floor
+on a segment: the spike's `parity0`), where `swift test` reads it. The audio is read whole into memory and never written
+to a temporary file (FluidAudio's file path would stream a float32 copy to the user's temporary directory). It never
+touches the network (`ModelHub.offlineMode`), and it exits 5 on macOS older than 15, where Apple's BNNS bug can crash a
+prediction (FluidAudio issue 878). Exit 0 also for silence (empty lists), 2 usage, 3 models, 4 input missing or empty.
+
+The answer is `{version, duration_s, speakers:[{id, speech_s, embedding[256]}], segments:[{s, e, spk}], timing_s}`: the
+exclusive timeline, ids 0..n-1 by descending speech, each embedding the cluster's VBx centroid. The daemon reads it
+once, inside the meeting's `work/`, and the embeddings never reach the meeting directory (a voiceprint of people who
+never agreed to one). Building it needs Xcode 26 (Swift 6.2) and the engine only runs on macOS 15 or later, so
+`engine/build.sh` builds it when asked or able (`engine/want-diar.sh`). `test_cli.py` pins the contract and runs in CI on
+both architectures, `swift test` the pure parts, `test_der.py` scores three AMI mixes against their references (not in
+CI: it needs pyannote.metrics and the recordings).
+
 ## ox-llm (llama.cpp's llama-server)
 
 The meeting-notes engine. `build.sh` builds `llama-server` from the llama.cpp

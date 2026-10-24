@@ -205,6 +205,14 @@ oxs_install_engines() {
         mv "$home/engine/$bin.new" "$home/engine/$bin"
         echo "installed $home/engine/$bin"
     done
+    # ox-diar is no ggml engine: no Metal library to pair with, so it comes after the loop. Optional, like
+    # audiocpp_server: a package without it still installs (the daemon then reports the diarizer as engine_missing)
+    # and release.yml pins which architectures must carry it.
+    if [ -x "$out/ox-diar" ]; then
+        cp "$out/ox-diar" "$home/engine/ox-diar.new"
+        mv "$home/engine/ox-diar.new" "$home/engine/ox-diar"
+        echo "installed $home/engine/ox-diar"
+    fi
     cp "$out"/licenses/* "$home/engine/licenses/"
 }
 

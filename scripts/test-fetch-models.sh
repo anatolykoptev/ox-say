@@ -9,6 +9,12 @@
 #   * fetch-models.sh: delete the `models=("Qwen3.5-4B..."` line in the
 #     notes_only block -> the script goes for the other models too -> "only the
 #     notes model" fails
+#   * fetch-models.sh: delete the `models=("${diar_models[@]}")` line under `if [ "$diar_only" = 1 ]` ->
+#     --diar-only goes for the other models too -> "only the diarization models" fails
+#   * fetch-models.sh: delete the `rm -f "$dest/diar/speaker-diarization/.fluidaudio-revision"` line before the loop ->
+#     a failed fetch leaves an old marker -> "a failed fetch removes the marker of an earlier one" fails
+#   * fetch-models.sh: delete the `mv ... .fluidaudio-revision` line -> a complete fetch leaves no marker (the live
+#     acceptance probe sees it; this sandbox test only proves that a FAILED fetch leaves none)
 #   * fetch-models.sh: change the notes sha256 -> the live acceptance probe
 #     (a real copy of the model) fails; this sandbox test cannot see it, because
 #     it only proves a WRONG file is refused (see Task 6 in the plan)
@@ -43,6 +49,38 @@ else
     fail "files left in dest: $(ls "$tmp/dest")"
 fi
 case $out in *"copy    $name"*) pass "the local copy path ran for the notes model" ;; *) fail "OX_SAY_MODELS_FROM was not used: $out" ;; esac
+
+# --diar-only: the 24 diarization files, under <dest>/diar/speaker-diarization/, nothing else, and no revision
+# marker unless every file passed its checksum (FluidAudio refuses a directory without it).
+rel=Embedding.mlmodelc/analytics/coremldata.bin
+mkdir -p "$tmp/dfrom/diar/speaker-diarization/Embedding.mlmodelc/analytics" "$tmp/ddest"
+echo "not a model" > "$tmp/dfrom/diar/speaker-diarization/$rel"
+out=$(OX_SAY_MODELS_FROM="$tmp/dfrom" bash "$root/scripts/fetch-models.sh" --diar-only "$tmp/ddest" 2>&1)
+rc=$?
+if [ "$rc" -ne 0 ]; then pass "a wrong diarization file is refused (exit $rc)"; else fail "a wrong diarization file was accepted"; fi
+case $out in *"checksum mismatch for diar/speaker-diarization/$rel"*) pass "the mismatch names the diarization file" ;; *) fail "no mismatch message: $out" ;; esac
+case $out in
+    *qwen*|*parakeet*|*silero*|*Qwen3.5*) fail "--diar-only looked at another model: $out" ;;
+    *) pass "only the diarization models are looked at" ;;
+esac
+if [ ! -e "$tmp/ddest/diar/speaker-diarization/.fluidaudio-revision" ] && [ ! -e "$tmp/ddest/diar/speaker-diarization/$rel" ]; then
+    pass "no marker and no file left behind by a failed fetch"
+else
+    fail "files left in dest/diar: $(find "$tmp/ddest/diar" -type f 2>/dev/null)"
+fi
+n=$(grep -c '^    "[0-9a-f]\{64\}  [^ ]*"$' "$root/scripts/fetch-models.sh")
+if [ "$n" = 28 ]; then pass "the script lists 24 diarization files and 4 documents"; else fail "the script lists $n diarization entries, want 28"; fi
+
+# A marker from an earlier complete fetch must not outlive a failed one: the next run replaces files, and a marker over a
+# half-replaced set would tell the loader the models are all there.
+mkdir -p "$tmp/ddest2/diar/speaker-diarization"
+echo "df2625ac79a7ac6b65ad868fee6d80f320da4232" > "$tmp/ddest2/diar/speaker-diarization/.fluidaudio-revision"
+OX_SAY_MODELS_FROM="$tmp/dfrom" bash "$root/scripts/fetch-models.sh" --diar-only "$tmp/ddest2" > /dev/null 2>&1
+if [ ! -e "$tmp/ddest2/diar/speaker-diarization/.fluidaudio-revision" ]; then
+    pass "a failed fetch removes the marker of an earlier one"
+else
+    fail "the old revision marker survived a failed fetch"
+fi
 
 # A download that fails must say why in curl's words, and must not flood stderr
 # with the progress meter: the daemon shows the tail of that stderr to the user.

@@ -29,3 +29,16 @@ MIT-licensed, "Copyright (c) 2017" (its LICENSE names no holder):
   notice and this permission notice shall be included in all copies or
   substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
   WITHOUT WARRANTY OF ANY KIND.
+
+Speaker diarization (engine/diar, the ox-diar engine) runs FluidAudio (https://github.com/FluidInference/FluidAudio,
+Apache-2.0, Copyright Fluid Inference; its fastcluster and VBx notices ship in engine/licenses/) on the Core ML models
+of FluidInference/speaker-diarization-coreml, which scripts/fetch-models.sh downloads at a pinned revision. Those
+models are modified Core ML conversions, made by Fluid Inference, of the pyannote/speaker-diarization-community-1
+pipeline (https://huggingface.co/pyannote/speaker-diarization-community-1, CC-BY-4.0): pyannote's segmentation model,
+WeSpeaker's ResNet34-LM speaker embedding model (Wang et al., "Wespeaker: A research and production oriented speaker
+embedding learning toolkit", ICASSP 2023; trained on VoxCeleb, CC-BY-4.0 upstream), and the PLDA parameters of BUT
+Speech@FIT (Brno University of Technology, CC-BY-4.0, commercial use included). Credit: pyannote, WeSpeaker, BUT
+Speech@FIT and Fluid Inference. The model repository's own LICENSE, NOTICE.md, README.md (which carries the citations the
+licence asks us to retain) and PROVENANCE.md are downloaded beside the models by scripts/fetch-models.sh. Licence: Creative Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/).
+engine/diar/testdata/ami-es2004a-780-180s.flac is a 3-minute excerpt of the AMI Meeting Corpus recording ES2004a
+(headset mix), (c) the AMI consortium, CC BY 4.0 (https://groups.inf.ed.ac.uk/ami/corpus/license.shtml).

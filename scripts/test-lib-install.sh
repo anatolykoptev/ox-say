@@ -300,6 +300,29 @@ check_in_log "with audiocpp: exit 0" "$tmp/eng-with/log" "rc=0"
 check "engines without audiocpp_server" "$(engine_case without no)" "ox-align ox-llm ox-stt tts-server "
 check_in_log "without audiocpp: exit 0" "$tmp/eng-without/log" "rc=0"
 
+# --- I2: ox-diar is installed when the package carries it ----------------------
+# Mutation: drop the `if [ -x "$out/ox-diar" ]` block in oxs_install_engines -> the binary is missing -> RED.
+diar_case() { # name with-diar
+    local d="$tmp/diar-$1" bin
+    mkdir -p "$d/out/licenses" "$d/home"
+    echo x > "$d/out/licenses/x.LICENSE"
+    for bin in tts-server ox-stt ox-align ox-llm $( [ "$2" = yes ] && echo ox-diar ); do
+        printf '#!/bin/sh\n' > "$d/out/$bin"
+        chmod +x "$d/out/$bin"
+    done
+    bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/out'" >"$d/log" 2>&1
+    echo "rc=$?" >> "$d/log"
+    for f in "$d/home/engine"/*; do
+        if [ -f "$f" ]; then
+            printf '%s ' "$(basename "$f")"
+        fi
+    done
+}
+check "ox-diar installed with the other engines" "$(diar_case with yes)" "ox-align ox-diar ox-llm ox-stt tts-server "
+check_in_log "with ox-diar: exit 0" "$tmp/diar-with/log" "rc=0"
+check "a package without ox-diar still installs" "$(diar_case without no)" "ox-align ox-llm ox-stt tts-server "
+check_in_log "without ox-diar: exit 0" "$tmp/diar-without/log" "rc=0"
+
 # --- J: audio.cpp is built only on request ---------------------------------
 # A source install (scripts/install.sh -> engine/build.sh) must not clone and
 # build a second engine nobody asked for. Mutation (engine/want-audiocpp.sh:9):
@@ -346,6 +369,104 @@ n=$(grep -cE '^[^#]*if audiocpp_gate "[$]arch" "[$]out"; then' "$root/engine/bui
 check "build.sh guards the audio.cpp block with audiocpp_gate" "${n:-x}" 1
 n=$(grep -cE '^[^#]*OX_SAY_DIST=1 "[$]root/engine/build.sh"' "$root/scripts/package-release.sh" || true)
 check "package-release.sh builds with OX_SAY_DIST=1" "${n:-x}" 1
+
+# --- J2: ox-diar is built only where it can run -----------------------------
+# A source install on macOS 13/14 or with Xcode 16 must not fail on a Swift 6.2 package it cannot use. The tool
+# versions are stubs on PATH. Mutations (engine/want-diar.sh): drop the `[ "${OX_SAY_DIST:-0}" = 1 ] ||` term ->
+# "ox-diar built: dist on macOS 14" fails; change `-ge 15` to `-ge 14` -> "macOS 14, Swift 6.3" fails; change
+# `[ "$swift_minor" -ge 2 ]` to `-ge 1` -> "macOS 15, Swift 6.1" fails; (build.sh) change `if diar_gate "$out"; then` to
+# `if true; then` -> the call-site check fails.
+diar_stubs="$tmp/diar-stubs"
+mkdir -p "$diar_stubs"
+want_diar_case() { # name macOS swift-version want [env assignments...]
+    local name=$1 os=$2 sw=$3 want=$4 got=no d="$tmp/wd-$1"
+    shift 4
+    mkdir -p "$d"
+    printf '#!/bin/sh\necho %s\n' "$os" > "$d/sw_vers"
+    printf '#!/bin/sh\necho "Apple Swift version %s (swiftlang-6000.0.1)"\n' "$sw" > "$d/swift"
+    chmod +x "$d/sw_vers" "$d/swift"
+    if env -i PATH="$d:/usr/bin:/bin" "$@" bash -c ". '$root/engine/want-diar.sh'; want_diar"; then got=yes; fi
+    check "ox-diar built: $name" "$got" "$want"
+}
+want_diar_case "macOS 14, Swift 6.3" 14.8 6.3.3 no
+want_diar_case "macOS 15, Swift 6.1" 15.7 6.1.2 no
+want_diar_case "macOS 15, Swift 6.2" 15.7 6.2 yes
+want_diar_case "macOS 26, Swift 6.3" 26.5.1 6.3.3 yes
+want_diar_case "no usable swift" 26.5.1 garbage no
+want_diar_case "dist on macOS 14" 14.8 5.10 yes OX_SAY_DIST=1
+want_diar_case "with-diar on macOS 13" 13.6 5.10 yes OX_SAY_WITH_DIAR=1
+want_diar_case "dist=0 with-diar=0" 14.8 5.10 no OX_SAY_DIST=0 OX_SAY_WITH_DIAR=0
+gate_diar_case() { # name macOS swift want-continue want-stale-left [env assignments...]
+    local name=$1 os=$2 sw=$3 cont=$4 left=$5 d="$tmp/gd-$1" rc=stop stale=gone
+    shift 5
+    mkdir -p "$d/out"
+    : > "$d/out/ox-diar"
+    printf '#!/bin/sh\necho %s\n' "$os" > "$d/sw_vers"
+    printf '#!/bin/sh\necho "Apple Swift version %s (swiftlang-6000.0.1)"\n' "$sw" > "$d/swift"
+    chmod +x "$d/sw_vers" "$d/swift"
+    if env -i PATH="$d:/usr/bin:/bin" "$@" bash -c ". '$root/engine/want-diar.sh'; diar_gate '$d/out'" 2>"$d/err"; then rc=go; fi
+    if [ -e "$d/out/ox-diar" ]; then stale=left; fi
+    check "diar gate continues the build: $name" "$rc" "$cont"
+    check "stale ox-diar $name" "$stale" "$left"
+    if [ "$cont" = stop ]; then check_in_log "diar gate says why: $name" "$d/err" "ox-diar (speaker diarization) not built"; fi
+}
+gate_diar_case "macOS 14" 14.8 6.3.3 stop gone
+gate_diar_case "macOS 15, Swift 6.3" 15.7 6.3.3 go left
+gate_diar_case "dist on macOS 14" 14.8 5.10 go left OX_SAY_DIST=1
+n=$(grep -cE '^[^#]*diar_gate "[$]out"' "$root/engine/build.sh" || true)
+check "build.sh guards the ox-diar block with diar_gate" "${n:-x}" 1
+n=$(grep -cE '^[^#]*diar_build "[$]here" "[$]work" "[$]out"' "$root/engine/build.sh" || true)
+check "build.sh builds ox-diar through diar_build" "${n:-x}" 1
+n=$(grep -cE '^[^#]*"[$]arch" != arm64' "$root/engine/build.sh" || true)
+check "build.sh builds ox-diar on Apple Silicon only (the Intel smoke failed)" "${n:-x}" 1
+
+# --- J3: which mode opened the gate, and what a failing build does -------------
+# An automatic gate (macOS 15+ with Swift 6.2+, nobody asked) must never turn a source install that worked yesterday
+# into a failed one: its build failure drops the binary, warns once and goes on. A requested or release build
+# stays fatal. Mutations (engine/want-diar.sh): in diar_build change `[ "${DIAR_MODE:-}" = auto ]` to `false` -> the
+# automatic cases fail; in diar_mode swap the `dist` and `requested` branches' echo -> the mode cases fail; (build.sh)
+# call diar_build without the `diar_gate` result being used -> the call-site checks above fail.
+diar_mode_case() { # name macOS swift want [env assignments...]
+    local name=$1 os=$2 sw=$3 want=$4 got d="$tmp/dm-$1"
+    shift 4
+    mkdir -p "$d"
+    printf '#!/bin/sh\necho %s\n' "$os" > "$d/sw_vers"
+    printf '#!/bin/sh\necho "Apple Swift version %s (swiftlang-6000.0.1)"\n' "$sw" > "$d/swift"
+    chmod +x "$d/sw_vers" "$d/swift"
+    got=$(env -i PATH="$d:/usr/bin:/bin" "$@" bash -c ". '$root/engine/want-diar.sh'; diar_mode" 2>/dev/null || true)
+    check "ox-diar gate mode: $name" "$got" "$want"
+}
+diar_mode_case "release build" 14.8 5.10 dist OX_SAY_DIST=1
+diar_mode_case "release build beats a request" 26.5 6.3 dist OX_SAY_DIST=1 OX_SAY_WITH_DIAR=1
+diar_mode_case "requested" 13.6 5.10 requested OX_SAY_WITH_DIAR=1
+diar_mode_case "automatic" 15.7 6.3.3 auto
+diar_mode_case "not wanted" 14.8 6.3.3 ""
+diar_build_case() { # name macOS env-for-gate build-stub(ok|fail) check-stub(ok|fail) want-rc want-binary [env assignments...]
+    local name=$1 os=$2 build=$3 chk=$4 want_rc=$5 want_bin=$6 d="$tmp/db-$1" rc=0 bin=gone
+    shift 6
+    mkdir -p "$d/here/diar" "$d/out" "$d/work"
+    printf '#!/bin/sh\n: > "%s/out/ox-diar"\n[ %s = ok ]\n' "$d" "$build" > "$d/here/diar/build.sh"
+    chmod +x "$d/here/diar/build.sh"
+    printf '#!/bin/sh\necho %s\n' "$os" > "$d/sw_vers"
+    printf '#!/bin/sh\necho "Apple Swift version 6.3.3 (swiftlang-6000.0.1)"\n' > "$d/swift"
+    chmod +x "$d/sw_vers" "$d/swift"
+    : > "$d/out/ox-diar"
+    env -i PATH="$d:/usr/bin:/bin" "$@" bash -c "set -euo pipefail; . '$root/engine/want-diar.sh'
+        check_static() { [ $chk = ok ] || exit 1; }; check_dist() { :; }
+        diar_gate '$d/out'; diar_build '$d/here' '$d/work' '$d/out'; echo done" >"$d/log" 2>&1 || rc=$?
+    if [ -e "$d/out/ox-diar" ]; then bin=left; fi
+    check "ox-diar build, $name: exit status" "$rc" "$want_rc"
+    check "ox-diar build, $name: binary" "$bin" "$want_bin"
+}
+diar_build_case "automatic, build ok" 15.7 ok ok 0 left
+diar_build_case "automatic, build fails" 15.7 fail ok 0 gone
+diar_build_case "automatic, post-build check fails" 15.7 ok fail 0 gone
+check_in_log "automatic failure warns once and goes on" "$tmp/db-automatic, build fails/log" "warning: ox-diar did not build"
+check_in_log "automatic failure names the way to force it" "$tmp/db-automatic, build fails/log" "OX_SAY_WITH_DIAR=1"
+diar_build_case "requested, build fails" 15.7 fail ok 1 left OX_SAY_WITH_DIAR=1
+diar_build_case "release, build fails" 15.7 fail ok 1 left OX_SAY_DIST=1
+diar_build_case "release, post-build check fails" 15.7 ok fail 1 left OX_SAY_DIST=1
+diar_build_case "requested, build ok" 15.7 ok ok 0 left OX_SAY_WITH_DIAR=1
 
 # --- K: precompiled Metal libraries travel with the engines -----------------
 # oxs_install_engines installs <bin>.metallib and <bin>-tensor.metallib next
