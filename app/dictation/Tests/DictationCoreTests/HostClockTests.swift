@@ -19,6 +19,15 @@ final class HostClockTests: XCTestCase {
         XCTAssertEqual(HostClock.nanos(fromHostTicks: 300_000_000_000_000_000, timebase: apple), 12_500_000_000_000_000_000)
     }
 
+    /// A garbage mHostTime (or a hostile timebase) makes the result exceed 64 bits;
+    /// the conversion saturates instead of trapping inside the audio callback.
+    /// Mutation: HostClock.nanos, delete the `product.high >= denom` guard -> RED (trap).
+    func testAResultBeyond64BitsSaturatesInsteadOfTrapping() {
+        let wide = HostClock.Timebase(numer: UInt32.max, denom: 1)
+        XCTAssertEqual(HostClock.nanos(fromHostTicks: UInt64.max, timebase: wide), UInt64.max)
+        XCTAssertEqual(HostClock.nanos(fromHostTicks: UInt64.max, timebase: HostClock.Timebase(numer: 125, denom: 3)), UInt64.max)
+    }
+
     func testTheMachineTimebaseIsUsable() {
         XCTAssertNotEqual(HostClock.timebase.denom, 0)
         XCTAssertGreaterThan(HostClock.nanos(fromHostTicks: 1_000_000), 0)

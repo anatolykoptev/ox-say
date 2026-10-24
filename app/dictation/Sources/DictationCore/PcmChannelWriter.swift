@@ -36,9 +36,20 @@ public final class PcmChannelWriter {
     private var written = 0
     private let lock = NSLock()
     private var failed = 0
+    private var dropped = 0
+    private var padded = 0
 
     /// Writes that failed; the controller stops and tells the user on the first.
     public var failedWrites: Int { lock.withLock { failed } }
+
+    /// Samples cut off because the channel ran ahead of the clock (a head
+    /// trimmed in `append`, an overshoot cut in `finish`): the controller logs
+    /// it to show how the drift was handled.
+    public var droppedSamples: Int { lock.withLock { dropped } }
+
+    /// Samples of silence added for a late start, a lost stretch or the tail
+    /// up to the end time.
+    public var paddedSamples: Int { lock.withLock { padded } }
 
     /// `t0` is the meeting's start, in the same nanosecond clock `append` is given.
     public convenience init(url: URL, t0: UInt64) throws {
@@ -69,6 +80,7 @@ public final class PcmChannelWriter {
             // that is already written. Keep the position equal to the time.
             let drop = min(written - expected, chunk.count)
             chunk.removeFirst(drop)
+            dropped += drop
             if chunk.isEmpty { return }
         }
         guard failed == 0, write(Self.pcm16(chunk)) else { return }
@@ -87,6 +99,7 @@ public final class PcmChannelWriter {
             let n = min(Self.sampleRate, target - written)
             guard write(n == Self.sampleRate ? second : Data(count: n * 2)) else { return }
             written += n
+            padded += n
         }
     }
 
@@ -107,7 +120,11 @@ public final class PcmChannelWriter {
             let expected = Self.samples(at: nanos, since: t0)
             pad(to: expected)
             if failed == 0, written - expected > Self.gapTolerance {
-                do { try handle.truncate(atOffset: UInt64(expected) * 2); written = expected } catch { failed += 1 }
+                do {
+                    try handle.truncate(atOffset: UInt64(expected) * 2)
+                    dropped += written - expected
+                    written = expected
+                } catch { failed += 1 }
             }
         }
         try? handle.close()

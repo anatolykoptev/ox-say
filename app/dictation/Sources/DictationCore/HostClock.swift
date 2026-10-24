@@ -25,6 +25,9 @@ public enum HostClock {
     public static func nanos(fromHostTicks ticks: UInt64, timebase: Timebase = HostClock.timebase) -> UInt64 {
         guard timebase.denom != 0 else { return ticks }
         let product = ticks.multipliedFullWidth(by: UInt64(timebase.numer))
-        return UInt64(timebase.denom).dividingFullWidth(product).quotient
+        // A quotient past 64 bits (a garbage mHostTime) would trap; saturate.
+        let denom = UInt64(timebase.denom)
+        guard product.high < denom else { return UInt64.max }
+        return denom.dividingFullWidth(product).quotient
     }
 }

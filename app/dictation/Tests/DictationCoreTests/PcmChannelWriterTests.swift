@@ -36,8 +36,11 @@ final class PcmChannelWriterTests: XCTestCase {
         XCTAssertEqual(w.samples, 8000 + 1600)
         w.append([Float](repeating: 0.1, count: 1600), atNanos: t0 + 500_000_000 + 100_000_000 + 2_000_000_000) // 2 s lost
         XCTAssertEqual(w.samples, 8000 + 1600 + 32000 + 1600)
+        XCTAssertEqual(w.paddedSamples, 8000 + 32000, "the late start and the lost stretch")
+        XCTAssertEqual(w.droppedSamples, 0)
         w.finish(atNanos: t0 + 4_000_000_000)
         XCTAssertEqual(w.samples, 4 * 16000)
+        XCTAssertEqual(w.paddedSamples, 4 * 16000 - 1600 - 1600, "everything that is not audio is padding")
         let all = try samples(url)
         XCTAssertEqual(all.count, 4 * 16000)
         XCTAssertEqual(all[0], 0)
@@ -51,6 +54,8 @@ final class PcmChannelWriterTests: XCTestCase {
         w.append([Float](repeating: 0.1, count: 1600), atNanos: 0)
         w.append([Float](repeating: 0.1, count: 1600), atNanos: 100_000_000 + 40_000_000) // 40 ms late: jitter
         XCTAssertEqual(w.samples, 3200)
+        XCTAssertEqual(w.paddedSamples, 0)
+        XCTAssertEqual(w.droppedSamples, 0)
     }
 
     // MARK: a channel that runs AHEAD of the clock
@@ -67,9 +72,12 @@ final class PcmChannelWriterTests: XCTestCase {
         w.append([Float](repeating: 0.1, count: 16000), atNanos: t0) // 0 ... 1 s
         w.append([Float](repeating: 0.2, count: 1600), atNanos: t0 + 500_000_000) // wholly inside what is written
         XCTAssertEqual(w.samples, 16000, "a chunk wholly behind is dropped")
+        XCTAssertEqual(w.droppedSamples, 1600)
         let overlap = [Float](repeating: 0.2, count: 8000) + [Float](repeating: 0.3, count: 8000)
         w.append(overlap, atNanos: t0 + 500_000_000) // 0.5 ... 1.5 s, first half already written
         XCTAssertEqual(w.samples, 24000, "position equals time: 1.5 s")
+        XCTAssertEqual(w.droppedSamples, 1600 + 8000)
+        XCTAssertEqual(w.paddedSamples, 0)
         w.finish(atNanos: t0 + 1_500_000_000)
         let all = try samples(url)
         XCTAssertEqual(all.count, 24000)
@@ -143,6 +151,7 @@ final class PcmChannelWriterTests: XCTestCase {
         w.append([Float](repeating: 0.1, count: 16000), atNanos: 0)
         w.finish(atNanos: 500_000_000)
         XCTAssertEqual(w.samples, 8000)
+        XCTAssertEqual(w.droppedSamples, 8000, "the overshoot cut off the end")
         let onDisk = try samples(url)
         XCTAssertEqual(onDisk.count, 8000)
     }
