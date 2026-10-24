@@ -87,16 +87,19 @@ public enum VersionHandshake {
         public var designing: Bool
         /// A voiceover the app follows has not reached a terminal state.
         public var followingVoiceover: Bool
+        /// A meeting is being recorded: a relaunch would end it.
+        public var recordingMeeting: Bool
 
-        public init(dictating: Bool, speaking: Bool, designing: Bool, followingVoiceover: Bool) {
+        public init(dictating: Bool, speaking: Bool, designing: Bool, followingVoiceover: Bool, recordingMeeting: Bool = false) {
             self.dictating = dictating
             self.speaking = speaking
             self.designing = designing
             self.followingVoiceover = followingVoiceover
+            self.recordingMeeting = recordingMeeting
         }
 
         /// True only when every lane is empty.
-        public var idle: Bool { !(dictating || speaking || designing || followingVoiceover) }
+        public var idle: Bool { !(dictating || speaking || designing || followingVoiceover || recordingMeeting) }
     }
 
     /// How a kickstart command ended.

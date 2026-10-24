@@ -36,6 +36,16 @@ public enum MenuAction: Equatable {
     /// An index into `DictationHistory.texts` (newest first): copy it.
     case copyDictation(Int)
     case pasteLastDictation
+    // The Meetings submenu.
+    case startMeeting
+    case stopMeeting
+    case installNotesModel
+    case openMeetingsFolder
+    case chooseMeetingsFolder
+    case setMeetingName
+    case toggleMeetingAutoStart
+    /// The days of audio retention (0 = never delete).
+    case pickMeetingRetention(Int)
 }
 
 public enum MenuRow: Equatable {
