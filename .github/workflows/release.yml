@@ -61,13 +61,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # diar_xcode: engine/diar needs Swift 6.2 (Xcode 26) and the Intel image defaults to Xcode 16.4, which
-          # stays the compiler of every other engine; only ox-diar's build switches (engine/diar/build.sh). The same
-          # Xcode on both architectures: Package.resolved carries an originHash SwiftPM computes, and one toolchain
-          # keeps it from moving (build.sh fails if it does).
+          # diar_xcode: engine/diar needs Swift 6.2 (Xcode 26); the default Xcode stays the compiler of every other
+          # engine and only ox-diar's build switches (engine/diar/build.sh). Package.resolved carries an originHash
+          # SwiftPM computes, and one toolchain keeps it from moving (build.sh fails if it does). x86_64 builds no
+          # ox-diar (the Intel smoke failed, plan Task 20a), so it names none.
           - arch: x86_64
             runner: macos-15-intel
-            diar_xcode: /Applications/Xcode_26.3.app/Contents/Developer
           # macos-26: the macOS 26 SDK is what builds ggml-tensor.metallib,
           # the Metal4 kernel library M5/A19 devices use; macos-15's SDK 15
           # would silently ship a package that disables the tensor API there.
@@ -191,13 +190,15 @@ jobs:
           # VoxCPM2's server is optional for the installer, so a build that
           # silently dropped it would still install: pin it to the architecture
           # here. arm64 carries it, x86_64 must not.
-          bins="bin/ox-say engine/tts-server engine/ox-stt engine/ox-align engine/ox-llm engine/ox-diar"
+          bins="bin/ox-say engine/tts-server engine/ox-stt engine/ox-align engine/ox-llm"
           if [ "$ARCH" = arm64 ]; then
             test -x engine/audiocpp_server
-            bins="$bins engine/audiocpp_server"
+            test -x engine/ox-diar
+            bins="$bins engine/audiocpp_server engine/ox-diar"
             "$GITHUB_WORKSPACE/scripts/check-arm64-baseline.sh" engine/audiocpp_server
           else
             test ! -e engine/audiocpp_server
+            test ! -e engine/ox-diar
           fi
           for bin in $bins; do
             test "$(lipo -archs "$bin")" = "$ARCH"
@@ -305,12 +306,14 @@ jobs:
           grep -e '--api-key-file' llm-help.txt >/dev/null
           # ox-diar, the packaged binary, against its CLI contract on a real clip: exit codes, offline, the refusal on
           # macOS older than 15 (OX_DIAR_ASSUME_MACOS lowers the version the binary sees; no runner has macOS 14) and
-          # the 4 voices of the AMI excerpt. On the Intel runner this runs on .cpuOnly. The build tree goes first: the
+          # the 4 voices of the AMI excerpt, on the arm64 package only. The build tree goes first: the
           # packed binary must not lean on anything it was built beside (SwiftPM's FluidAudio_FluidAudio.bundle).
           rm -rf "$GITHUB_WORKSPACE/build"
-          afconvert -f WAVE -d LEI16@16000 -c 1 "$GITHUB_WORKSPACE/engine/diar/testdata/ami-es2004a-780-180s.flac" "$RUNNER_TEMP/diar-clip.wav"
-          python3 "$GITHUB_WORKSPACE/engine/diar/test_cli.py" --bin engine/ox-diar --models "$RUNNER_TEMP/diar-models/diar" \
-              --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4
+          if [ "$ARCH" = arm64 ]; then
+            afconvert -f WAVE -d LEI16@16000 -c 1 "$GITHUB_WORKSPACE/engine/diar/testdata/ami-es2004a-780-180s.flac" "$RUNNER_TEMP/diar-clip.wav"
+            python3 "$GITHUB_WORKSPACE/engine/diar/test_cli.py" --bin engine/ox-diar --models "$RUNNER_TEMP/diar-models/diar" \
+                --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4
+          fi
           # the dictation app: signed, ours, carrying this version
           codesign --verify --strict app/OxSayDictation.app
           test "$(plutil -extract CFBundleIdentifier raw -o - app/OxSayDictation.app/Contents/Info.plist)" = io.github.anatolykoptev.ox-say.dictation

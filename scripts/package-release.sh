@@ -30,7 +30,7 @@ VERSION="$version" "$root/app/dictation/build.sh"
 # i8mm/BF16/SME an M1 lacks. One such instruction is a SIGILL there, and a
 # build machine that has it would slip it in silently. The guards fail
 # closed on an otool error.
-for bin in tts-server ox-stt ox-align ox-llm ox-diar $( [ -f "$work/out/audiocpp_server" ] && echo audiocpp_server ); do
+for bin in tts-server ox-stt ox-align ox-llm $( [ -f "$work/out/ox-diar" ] && echo ox-diar ) $( [ -f "$work/out/audiocpp_server" ] && echo audiocpp_server ); do
     "$root/scripts/$baseline" "$work/out/$bin"
 done
 
@@ -38,7 +38,11 @@ rm -rf "$root/build/release" "$dist"
 mkdir -p "$stage/bin" "$stage/engine/licenses" "$stage/launchd" "$stage/scripts" "$dist"
 echo "$version" > "$stage/VERSION"
 cp "$root/build/ox-say-dist" "$stage/bin/ox-say"
-cp "$work"/out/tts-server "$work"/out/ox-stt "$work"/out/ox-align "$work"/out/ox-llm "$work"/out/ox-diar "$stage/engine/"
+cp "$work"/out/tts-server "$work"/out/ox-stt "$work"/out/ox-align "$work"/out/ox-llm "$stage/engine/"
+# ox-diar: the arm64 package only (the Intel smoke failed, plan Task 20a).
+if [ -f "$work/out/ox-diar" ]; then
+    cp "$work/out/ox-diar" "$stage/engine/"
+fi
 # VoxCPM2's server: the arm64 package only.
 if [ -f "$work/out/audiocpp_server" ]; then
     cp "$work/out/audiocpp_server" "$stage/engine/"

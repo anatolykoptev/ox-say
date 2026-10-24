@@ -100,15 +100,16 @@ jobs:
         if: runner.arch == 'ARM64'
         run: bash scripts/check-arm64-baseline_test.sh
 
-  # ox-diar (speaker diarization, engine/diar): a Swift package on FluidAudio's Core ML models. It runs per
-  # architecture it ships for. macos-15-intel is the Intel check of plan Task 20a: the same smoke on .cpuOnly, and
-  # its result decides whether the Intel package carries the engine. Xcode 26 because the manifest asks for Swift
-  # tools 6.2 (both images carry Xcode_26.3 beside their default).
+  # ox-diar (speaker diarization, engine/diar): a Swift package on FluidAudio's Core ML models, Apple Silicon only.
+  # The Intel leg of plan Task 20a (macos-15-intel, .cpuOnly) failed on its first run: Core ML cannot run the models
+  # there ("Unable to compute the prediction using ML Program", run 40100359856), so the Intel package carries no
+  # ox-diar (release.yml asserts that) and the daemon reports cpu_unsupported. Xcode 26 because the manifest asks for
+  # Swift tools 6.2.
   diar:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15-intel, macos-15]
+        runner: [macos-15]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:
@@ -117,7 +118,8 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: swift test
-        run: swift test --package-path engine/diar
+        # --force-resolved-versions: swift test must not rewrite Package.resolved before build.sh takes its copy to compare.
+        run: swift test --package-path engine/diar --force-resolved-versions
 
       - name: build ox-diar
         run: engine/diar/build.sh "$RUNNER_TEMP/diar-work" "$RUNNER_TEMP/diar-out"

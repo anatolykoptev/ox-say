@@ -360,11 +360,13 @@ echo "built $out/ox-llm"
 # 6.2) and macOS 15 to run: a source install on an older Mac or with older tools skips it (diar_gate,
 # engine/want-diar.sh), a distribution build never does. engine/diar/build.sh reads OX_SAY_DIAR_DEVELOPER_DIR for a
 # runner whose default Xcode is older.
-if diar_gate "$out"; then
-    "$here/diar/build.sh" "$work" "$out"
-    check_static "$out/ox-diar"
-    check_dist "$out/ox-diar"
-    echo "built $out/ox-diar"
+# Apple Silicon only: the Intel smoke of plan Task 20a failed (Core ML cannot run the models on .cpuOnly), so the
+# x86_64 package carries no ox-diar and the daemon reports cpu_unsupported there. Where the gate opens by itself, a
+# build that fails is dropped with a warning instead of failing the install (diar_build, engine/want-diar.sh).
+if [ "$arch" != arm64 ]; then
+    rm -f "$out/ox-diar"
+elif diar_gate "$out"; then
+    diar_build "$here" "$work" "$out"
 fi
 
 # Licences of audio.cpp's vendored dependencies, derived from the tree: a

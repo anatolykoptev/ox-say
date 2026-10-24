@@ -52,7 +52,8 @@ the input is a meeting's raw channel file (the format of `them.pcm`) and DIR hol
 `scripts/fetch-models.sh --diar-only` lays it out. It is a Swift package (`engine/diar`) on FluidAudio 0.17.7 (pinned with
 `exact:` and a committed `Package.resolved`), which runs the pyannote community-1 pipeline (segmentation, WeSpeaker,
 PLDA, VBx) on Core ML: `.cpuAndNeuralEngine` on Apple Silicon, so the GPU stays free for Parakeet (`probe_gpu.sh` proves
-it), `.cpuOnly` on Intel. The configuration is pinned in `OxDiarCore/Config.swift` (AHC threshold 0.7, step 0.1, no 1 s floor
+it). There is no Intel build: Core ML cannot run the models on `.cpuOnly` (the Intel smoke of plan Task 20a failed), so
+the x86_64 package carries none and the daemon reports `cpu_unsupported`. The configuration is pinned in `OxDiarCore/Config.swift` (AHC threshold 0.7, step 0.1, no 1 s floor
 on a segment: the spike's `parity0`), where `swift test` reads it. The audio is read whole into memory and never written
 to a temporary file (FluidAudio's file path would stream a float32 copy to the user's temporary directory). It never
 touches the network (`ModelHub.offlineMode`), and it exits 5 on macOS older than 15, where Apple's BNNS bug can crash a

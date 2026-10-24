@@ -69,8 +69,9 @@ fi
 # SHA-256, the rest by git blob id). Stored as <dest>/diar/speaker-diarization/<path>, the layout FluidAudio's offline
 # loader expects under `ox-diar --models <dest>/diar`. CC-BY-4.0 (attribution in NOTICE). The three documents the
 # licence asks us to keep (LICENSE, NOTICE.md, README.md with the citations) and PROVENANCE.md come with them. Bumping
-# the revision means new hashes, a new modelsRevision in engine/diar's Pins.swift (a unit test compares it with the
-# library's own pin) and a new DiarModelsRevision in internal/config; tests compare the three.
+# the revision means new hashes and a new modelsRevision in engine/diar's Pins.swift (a unit test compares it with the
+# library's own pin, and engine/diar/build.sh compares it with diar_rev). Task 20b.2 adds the Go side
+# (internal/config DiarModelsRevision) and TestDiarPinsAgreeAcrossLanguages, which compares the three.
 diar_rev=df2625ac79a7ac6b65ad868fee6d80f320da4232
 diar_url=https://huggingface.co/FluidInference/speaker-diarization-coreml/resolve/$diar_rev
 diar_files=(
@@ -125,6 +126,12 @@ fi
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
+# The marker says "every file below passed its checksum", so it cannot outlive the files it vouched for: drop it before
+# any diarization file is replaced; it is written again at the end, after the last file passed.
+if [ "$notes_only" != 1 ]; then
+    rm -f "$dest/diar/speaker-diarization/.fluidaudio-revision"
+fi
+
 mkdir -p "$dest"
 for entry in "${models[@]}"; do
     read -r name want base remote <<< "$entry"
@@ -156,7 +163,8 @@ done
 
 # FluidAudio's loader reads <dir>/.fluidaudio-revision and refuses the models when it is not the revision it was told
 # to expect (ox-diar sets it to diar_rev). It is written last, after every file above passed its checksum, so an
-# interrupted fetch has no marker: ox-diar cannot load it and the daemon (config.DiarBlock) does not call it ready.
+# interrupted fetch has no marker: ox-diar cannot load it, and the daemon will not call the models ready either
+# (Task 20b.2: Config.DiarModelsReady). An old marker is removed before any file is replaced, for the same reason.
 if [ "$notes_only" != 1 ]; then
     printf '%s\n' "$diar_rev" > "$dest/diar/speaker-diarization/.fluidaudio-revision.part"
     mv "$dest/diar/speaker-diarization/.fluidaudio-revision.part" "$dest/diar/speaker-diarization/.fluidaudio-revision"

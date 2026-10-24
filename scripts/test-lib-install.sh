@@ -413,8 +413,60 @@ gate_diar_case() { # name macOS swift want-continue want-stale-left [env assignm
 gate_diar_case "macOS 14" 14.8 6.3.3 stop gone
 gate_diar_case "macOS 15, Swift 6.3" 15.7 6.3.3 go left
 gate_diar_case "dist on macOS 14" 14.8 5.10 go left OX_SAY_DIST=1
-n=$(grep -cE '^[^#]*if diar_gate "[$]out"' "$root/engine/build.sh" || true)
+n=$(grep -cE '^[^#]*diar_gate "[$]out"' "$root/engine/build.sh" || true)
 check "build.sh guards the ox-diar block with diar_gate" "${n:-x}" 1
+n=$(grep -cE '^[^#]*diar_build "[$]here" "[$]work" "[$]out"' "$root/engine/build.sh" || true)
+check "build.sh builds ox-diar through diar_build" "${n:-x}" 1
+n=$(grep -cE '^[^#]*"[$]arch" != arm64' "$root/engine/build.sh" || true)
+check "build.sh builds ox-diar on Apple Silicon only (the Intel smoke failed)" "${n:-x}" 1
+
+# --- J3: which mode opened the gate, and what a failing build does -------------
+# An automatic gate (macOS 15+ with Swift 6.2+, nobody asked) must never turn a source install that worked yesterday
+# into a failed one: its build failure drops the binary, warns once and goes on. A requested or release build
+# stays fatal. Mutations (engine/want-diar.sh): in diar_build change `[ "${DIAR_MODE:-}" = auto ]` to `false` -> the
+# automatic cases fail; in diar_mode swap the `dist` and `requested` branches' echo -> the mode cases fail; (build.sh)
+# call diar_build without the `diar_gate` result being used -> the call-site checks above fail.
+diar_mode_case() { # name macOS swift want [env assignments...]
+    local name=$1 os=$2 sw=$3 want=$4 got d="$tmp/dm-$1"
+    shift 4
+    mkdir -p "$d"
+    printf '#!/bin/sh\necho %s\n' "$os" > "$d/sw_vers"
+    printf '#!/bin/sh\necho "Apple Swift version %s (swiftlang-6000.0.1)"\n' "$sw" > "$d/swift"
+    chmod +x "$d/sw_vers" "$d/swift"
+    got=$(env -i PATH="$d:/usr/bin:/bin" "$@" bash -c ". '$root/engine/want-diar.sh'; diar_mode" 2>/dev/null || true)
+    check "ox-diar gate mode: $name" "$got" "$want"
+}
+diar_mode_case "release build" 14.8 5.10 dist OX_SAY_DIST=1
+diar_mode_case "release build beats a request" 26.5 6.3 dist OX_SAY_DIST=1 OX_SAY_WITH_DIAR=1
+diar_mode_case "requested" 13.6 5.10 requested OX_SAY_WITH_DIAR=1
+diar_mode_case "automatic" 15.7 6.3.3 auto
+diar_mode_case "not wanted" 14.8 6.3.3 ""
+diar_build_case() { # name macOS env-for-gate build-stub(ok|fail) check-stub(ok|fail) want-rc want-binary [env assignments...]
+    local name=$1 os=$2 build=$3 chk=$4 want_rc=$5 want_bin=$6 d="$tmp/db-$1" rc=0 bin=gone
+    shift 6
+    mkdir -p "$d/here/diar" "$d/out" "$d/work"
+    printf '#!/bin/sh\n: > "%s/out/ox-diar"\n[ %s = ok ]\n' "$d" "$build" > "$d/here/diar/build.sh"
+    chmod +x "$d/here/diar/build.sh"
+    printf '#!/bin/sh\necho %s\n' "$os" > "$d/sw_vers"
+    printf '#!/bin/sh\necho "Apple Swift version 6.3.3 (swiftlang-6000.0.1)"\n' > "$d/swift"
+    chmod +x "$d/sw_vers" "$d/swift"
+    : > "$d/out/ox-diar"
+    env -i PATH="$d:/usr/bin:/bin" "$@" bash -c "set -euo pipefail; . '$root/engine/want-diar.sh'
+        check_static() { [ $chk = ok ] || exit 1; }; check_dist() { :; }
+        diar_gate '$d/out'; diar_build '$d/here' '$d/work' '$d/out'; echo done" >"$d/log" 2>&1 || rc=$?
+    if [ -e "$d/out/ox-diar" ]; then bin=left; fi
+    check "ox-diar build, $name: exit status" "$rc" "$want_rc"
+    check "ox-diar build, $name: binary" "$bin" "$want_bin"
+}
+diar_build_case "automatic, build ok" 15.7 ok ok 0 left
+diar_build_case "automatic, build fails" 15.7 fail ok 0 gone
+diar_build_case "automatic, post-build check fails" 15.7 ok fail 0 gone
+check_in_log "automatic failure warns once and goes on" "$tmp/db-automatic, build fails/log" "warning: ox-diar did not build"
+check_in_log "automatic failure names the way to force it" "$tmp/db-automatic, build fails/log" "OX_SAY_WITH_DIAR=1"
+diar_build_case "requested, build fails" 15.7 fail ok 1 left OX_SAY_WITH_DIAR=1
+diar_build_case "release, build fails" 15.7 fail ok 1 left OX_SAY_DIST=1
+diar_build_case "release, post-build check fails" 15.7 ok fail 1 left OX_SAY_DIST=1
+diar_build_case "requested, build ok" 15.7 ok ok 0 left OX_SAY_WITH_DIAR=1
 
 # --- K: precompiled Metal libraries travel with the engines -----------------
 # oxs_install_engines installs <bin>.metallib and <bin>-tensor.metallib next
