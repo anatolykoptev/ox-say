@@ -253,3 +253,55 @@ public struct CallTracker {
         return .nothing
     }
 }
+
+/// One polling round of the call watcher: the microphone users go in, the
+/// detection and the tracker action come out. This is the piece the AppKit
+/// timer cannot decide for itself: a browser call stays a call while its
+/// browser holds the microphone — leaving the call tab is not hanging up, so
+/// a user stop or a "don't record this one" survives it (#241) — and a denied
+/// tab read is reported, not mistaken for "no call".
+public struct CallWatch {
+    /// What one round adds up to.
+    public struct Outcome: Equatable {
+        /// The call that counts this round: the detected one, else the call in
+        /// progress while its app still holds the microphone.
+        public var call: CallDetector.Detection.Call?
+        /// What the tracker made of the round.
+        public var action: CallTracker.Action
+        /// A browser held the microphone and Automation for it is off — the app
+        /// must say so (notice.meeting.browser_denied): it looks exactly like
+        /// no call. Reported on the first denied round only.
+        public var browserDenied = false
+    }
+
+    private var tracker = CallTracker()
+    /// The call last seen, consulted only while its app still holds the microphone.
+    private var lastCall: CallDetector.Detection.Call?
+    private var deniedReported = false
+
+    public init() {}
+
+    /// Forget the current call: the user said "don't record this one". The
+    /// call is not offered again until it has ended.
+    public mutating func decline() { tracker.decline() }
+
+    /// `tab` reads a browser's front page (BrowserTabURL.read in the app); the rest
+    /// is what CallTracker.observe takes. `recording` is nil when no recording runs.
+    public mutating func observe(now: Date, users: [MicUser], tab: (String) -> BrowserTabURL.Result,
+                                 themActive: Bool, recording: CallTracker.Origin?) -> Outcome {
+        let detection = CallDetector.detect(of: users, tab: tab)
+        var call = detection.call
+        // A browser call goes on while that browser holds the microphone,
+        // whichever tab is in front (#241).
+        if call == nil, let last = lastCall, CallDetector.holds(users, bundleID: last.bundleID) {
+            call = last
+        }
+        if let call { lastCall = call }
+        let action = tracker.observe(now: now, call: call?.source, themActive: themActive,
+                                     recording: recording, bundleID: call?.bundleID,
+                                     callUnreadable: detection.browserUnreadable)
+        let denied = detection.browserDenied && !deniedReported
+        if denied { deniedReported = true }
+        return Outcome(call: call, action: action, browserDenied: denied)
+    }
+}

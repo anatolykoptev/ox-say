@@ -265,4 +265,92 @@ final class CallDetectorTests: XCTestCase {
         _ = two.observe(now: t0.addingTimeInterval(2), call: nil, themActive: false, recording: nil, callUnreadable: true)
         XCTAssertEqual(two.observe(now: t0.addingTimeInterval(4), call: "meet", themActive: false, recording: nil), .nothing)
     }
+
+    // MARK: watch
+
+    private static let meetURL = "https://meet.google.com/abc-defg-hij"
+    private let chromeOnMic = [MicUser(bundleID: "com.google.Chrome.helper", pid: 3)]
+
+    /// One polling round of a browser call: Chrome holds the microphone, `url`
+    /// is what its front tab reads as ("" = unreadable).
+    private func watchTick(_ watch: inout CallWatch, now: Date, users: [MicUser]? = nil, url: String,
+                           recording: CallTracker.Origin? = nil) -> CallWatch.Outcome {
+        watch.observe(now: now, users: users ?? chromeOnMic,
+                      tab: { _ in url.isEmpty ? .unreadable : .url(url) },
+                      themActive: false, recording: recording)
+    }
+
+    /// Issue #241's repro: the user stops a browser-call recording, keeps another
+    /// tab in front past the idle timeout, then returns to the Meet tab — all while
+    /// the browser never lets go of the microphone. The stop still stands.
+    /// Mutation: CallWatch.observe, delete the `if call == nil, let last = lastCall, …` block -> RED.
+    func testAUserStopSurvivesLeavingTheCallTab() {
+        var watch = CallWatch()
+        _ = watchTick(&watch, now: t0, url: Self.meetURL)
+        // the user records by hand for a while, then stops — a user stop
+        _ = watchTick(&watch, now: t0.addingTimeInterval(10), url: Self.meetURL, recording: .manual)
+        _ = watchTick(&watch, now: t0.addingTimeInterval(20), url: Self.meetURL)
+        // two minutes on another tab; the browser still holds the microphone
+        let outcome = watchTick(&watch, now: t0.addingTimeInterval(30), url: "")
+        XCTAssertEqual(outcome.call?.source, "meet", "the call goes on while the browser holds the mic")
+        XCTAssertEqual(outcome.call?.bundleID, "com.google.Chrome")
+        _ = watchTick(&watch, now: t0.addingTimeInterval(130), url: "")
+        // back on the Meet tab: the stop still stands, no second offer
+        XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(140), url: Self.meetURL).action, .nothing)
+        XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(145), url: Self.meetURL).action, .nothing)
+    }
+
+    /// "Don't record this one" stands while the browser call goes on in another tab.
+    /// Mutation: CallWatch.observe, delete the holds-fallback -> RED (the idle reset
+    /// clears `declined` and the call is offered again).
+    func testADeclinedCallSurvivesATabSwitch() {
+        var watch = CallWatch()
+        _ = watchTick(&watch, now: t0, url: Self.meetURL)
+        watch.decline()
+        for s in stride(from: 10.0, through: 120.0, by: 10.0) {
+            _ = watchTick(&watch, now: t0.addingTimeInterval(s), url: "")
+        }
+        // Meet is back in front: declined holds for the rest of the call
+        XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(130), url: Self.meetURL).action, .nothing)
+        XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(140), url: Self.meetURL).action, .nothing)
+        XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(150), url: Self.meetURL).action, .nothing)
+        // it ends only when the browser lets the microphone go for good
+        for s in stride(from: 160.0, through: 250.0, by: 10.0) {
+            _ = watchTick(&watch, now: t0.addingTimeInterval(s), users: [], url: "")
+        }
+        XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(260), url: Self.meetURL).action, .nothing)
+        XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(264), url: Self.meetURL).action,
+                       .callStarted(source: "meet"), "a new call after a real hang-up is offered again")
+    }
+
+    /// Automation denied reads exactly like "no call" to the detector; the app must
+    /// say so — once, not every poll (notice.meeting.browser_denied).
+    /// Mutations: CallWatch.observe, replace `browserDenied: …` with `browserDenied: false` -> RED;
+    /// or replace `!deniedReported` with `true` -> RED on the second assertion.
+    func testADeniedBrowserSurfacesTheNoticeOnce() {
+        var watch = CallWatch()
+        var outcome = watch.observe(now: t0, users: chromeOnMic, tab: { _ in .denied },
+                                    themActive: false, recording: nil)
+        XCTAssertNil(outcome.call)
+        XCTAssertEqual(outcome.action, .nothing)
+        XCTAssertTrue(outcome.browserDenied, "a denied read is not 'no call' — surface the notice")
+        outcome = watch.observe(now: t0.addingTimeInterval(2), users: chromeOnMic, tab: { _ in .denied },
+                                themActive: false, recording: nil)
+        XCTAssertFalse(outcome.browserDenied, "once per app run, not every poll")
+    }
+
+    /// The fallback keeps a call alive only while its app holds the microphone;
+    /// a real hang-up (the mic released for good) still ends the episode.
+    /// Mutation: CallWatch.observe, drop `CallDetector.holds(users, bundleID: last.bundleID)`
+    /// from the fallback guard (feed lastCall unconditionally) -> RED.
+    func testARealHangupStillEndsTheEpisode() {
+        var watch = CallWatch()
+        _ = watchTick(&watch, now: t0, url: Self.meetURL)
+        for s in stride(from: 10.0, through: 100.0, by: 10.0) {
+            _ = watchTick(&watch, now: t0.addingTimeInterval(s), users: [], url: "")
+        }
+        _ = watchTick(&watch, now: t0.addingTimeInterval(110), url: Self.meetURL)
+        XCTAssertEqual(watchTick(&watch, now: t0.addingTimeInterval(114), url: Self.meetURL).action,
+                       .callStarted(source: "meet"))
+    }
 }
