@@ -57,7 +57,7 @@ const VoxCPM2ModelFile = "voxcpm2-q8_0.gguf"
 // 16 GB Mac is unmeasured and Metal wires at most about 2/3 of RAM.
 const VoxCPM2MinMemoryGB = 24
 
-// NotesModelFile is the one model filename fetch-models.sh --with-notes and
+// NotesModelFile is the one model filename fetch-models.sh --notes-only and
 // the default path share (Qwen3.5-4B Q4_K_M, the notes spike's default).
 const NotesModelFile = "Qwen3.5-4B-Q4_K_M.gguf"
 
@@ -488,7 +488,7 @@ func (c *Config) NotesBlock() (code, reason string) {
 		return NotesReasonEngineMissing, "This ox-say install has no notes engine. Update ox-say."
 	}
 	if !isRegularFile(c.NotesModel) {
-		return NotesReasonModelMissing, "The notes model is not downloaded yet (about 2.7 GB)."
+		return NotesReasonModelMissing, fmt.Sprintf("The notes model is not downloaded yet (about %.1f GB).", float64(NotesModelBytes)/1e9)
 	}
 	return "", ""
 }
