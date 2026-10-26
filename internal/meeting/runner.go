@@ -95,7 +95,9 @@ type Runner struct {
 
 	retentionWarned bool // the unreadable-settings warning was logged
 
-	speakerMu sync.Map // meeting id -> *sync.Mutex: one speakers edit at a time per meeting
+	speakerLocks keyedLocks // one speakers edit at a time per meeting
+	// clearStale drops the notes-stale mark; nil is clearNotesStale (tests put a failure here).
+	clearStale func(dir string, m Manifest, written *Notes) error
 	// afterSpeakersRead, when set, is called by EditSpeakers once it has read the state it will change (tests).
 	afterSpeakersRead func()
 }
@@ -873,16 +875,25 @@ func (r *Runner) writeNotes(id, dir, md string, n *Notes) error {
 	if err := vproject.WriteAtomic(filepath.Join(dir, NotesMD), []byte(md), 0o600); err != nil {
 		return err
 	}
-	if err := clearNotesStale(dir); err != nil {
-		return err
-	}
-	_, err := r.Store.Update(id, func(m *Manifest) {
+	m, err := r.Store.Update(id, func(m *Manifest) {
 		if requeued(m) {
 			return
 		}
 		m.Status, m.NotesPending, m.Error, m.Attempts = StatusDone, "", "", 0
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// After the status: the notes are written and the meeting is done whatever becomes of the mark. A mark that
+	// stays only makes the next speakers edit queue the notes again.
+	clear := r.clearStale
+	if clear == nil {
+		clear = clearNotesStale
+	}
+	if cerr := clear(dir, *m, n); cerr != nil {
+		r.Log.Warn("meeting: cannot drop the notes-stale mark", slog.String("id", id), slog.Any("error", cerr))
+	}
+	return nil
 }
 
 // requeued reports a meeting a later Finish sent back to the start while its
@@ -890,4 +901,46 @@ func (r *Runner) writeNotes(id, dir, md string, n *Notes) error {
 // meeting must stay queued so the next round redoes it.
 func requeued(m *Manifest) bool {
 	return m.Status == StatusQueued || m.Status == StatusTranscribing
+}
+
+// keyedLocks is a mutex per key that exists only while somebody holds or awaits it.
+type keyedLocks struct {
+	mu sync.Mutex
+	m  map[string]*keyedLock
+}
+
+type keyedLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lock takes the key's lock and returns the function that releases it.
+func (k *keyedLocks) lock(key string) (unlock func()) {
+	k.mu.Lock()
+	if k.m == nil {
+		k.m = map[string]*keyedLock{}
+	}
+	l := k.m[key]
+	if l == nil {
+		l = &keyedLock{}
+		k.m[key] = l
+	}
+	l.refs++
+	k.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		k.mu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(k.m, key)
+		}
+		k.mu.Unlock()
+	}
+}
+
+// size is the number of keys with a lock (tests).
+func (k *keyedLocks) size() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return len(k.m)
 }

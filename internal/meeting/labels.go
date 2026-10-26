@@ -3,6 +3,7 @@ package meeting
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -280,11 +281,20 @@ func rewriteNotes(dir string, shown, m Manifest, before, after SpeakerState, tur
 	return false, vproject.WriteAtomic(filepath.Join(dir, NotesMD), []byte(NotesMarkdown(shown, n, shown.Language)), 0o600)
 }
 
-// clearNotesStale drops the "notes are to be written under these speakers" marker once they have been.
-func clearNotesStale(dir string) error {
+// clearNotesStale drops the "notes are to be written under these speakers" marker once they have been: when
+// written (the notes just saved) holds the labels they were written under, the marker goes only if those are the
+// labels now, because the speakers may have been edited while the model ran (the edit saved them and its request to
+// queue the notes was refused). Notes without labels (the too-short text) depend on no speaker.
+func clearNotesStale(dir string, m Manifest, written *Notes) error {
 	st, err := LoadSpeakers(dir)
 	if err != nil || !st.NotesStale {
 		return nil // an unreadable speakers.json is dropVoiceState's business
+	}
+	if written != nil {
+		turns, err := readTurns(dir)
+		if err != nil || !maps.Equal(labelMap(m, st, turns), written.Labels) {
+			return nil // written under other speakers: the mark stays, a repeat of the edit queues the notes again
+		}
 	}
 	st.NotesStale = false
 	return SaveSpeakers(dir, st)

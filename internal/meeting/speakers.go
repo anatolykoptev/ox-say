@@ -379,6 +379,9 @@ func checkDistinct(m Manifest, raw []Turn, next SpeakerState, rename map[string]
 		if name == "" {
 			continue
 		}
+		if strings.EqualFold(strings.TrimSpace(shown.Labels.Me), name) { // the owner is a speaker too
+			return speakersErr("another speaker is already called %q", name)
+		}
 		self := next.resolveMerge(id)
 		for _, other := range ids {
 			if other != self && strings.EqualFold(shown.Labels.label(labelKey(other, m, next)), name) {

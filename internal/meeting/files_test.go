@@ -107,7 +107,8 @@ func TestEveryMeetingFileIsAccountedFor(t *testing.T) {
 // Mutation: internal/meeting/retention.go deleteAudio, `for _, name := range audioFiles {` ->
 // `for _, name := range append(slices.Clone(audioFiles), NotesJSON) {` -> RED (the notes went with the audio);
 // delete the `for _, name := range workFiles {` loop together with the `os.RemoveAll(filepath.Join(dir, WorkDir))`
-// line -> RED (the diarizer's answer survives).
+// line -> RED (the diarizer's answer survives); delete only the `os.RemoveAll(filepath.Join(dir, WorkDir))` line
+// -> RED (the piece cache survives).
 func TestASweepTakesTheAudioAndTheWorkFilesAndKeepsTheRest(t *testing.T) {
 	f := newFixture(t)
 	id := expiredMeeting(t, f)
@@ -121,6 +122,8 @@ func TestASweepTakesTheAudioAndTheWorkFilesAndKeepsTheRest(t *testing.T) {
 	for _, name := range workFiles {
 		writeFile(t, filepath.Join(dir, WorkDir, name), "work")
 	}
+	piece := filepath.Join(dir, WorkDir, "them-0-30.json") // a piece cache: not a named work file, goes with work/ (#256)
+	writeFile(t, piece, "cached")
 	kept := map[string]string{}
 	for _, name := range keptFiles {
 		if name == ManifestFile {
@@ -146,6 +149,9 @@ func TestASweepTakesTheAudioAndTheWorkFilesAndKeepsTheRest(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, WorkDir, name)); err == nil {
 			t.Errorf("work/%s survived the sweep", name)
 		}
+	}
+	if _, err := os.Stat(piece); err == nil {
+		t.Errorf("the piece cache survived the sweep")
 	}
 	for name, want := range kept {
 		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != want {

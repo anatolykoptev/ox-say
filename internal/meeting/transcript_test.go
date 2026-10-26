@@ -36,3 +36,24 @@ func TestPromptTextIsOneLinePerTurn(t *testing.T) {
 		t.Fatalf("PromptText = %q", got)
 	}
 }
+
+// A name is text, not markup: the characters markdown reads are escaped where the name is printed bold, so a name
+// of "*x*" or "[a](http://e)" stays a name in the exported file (#256).
+// Mutation: internal/meeting/transcript.go TranscriptMarkdown, replace `escapeMarkdown(m.Labels.turnLabel(t))` with
+// `m.Labels.turnLabel(t)` -> RED.
+func TestTranscriptMarkdownEscapesNames(t *testing.T) {
+	m := Manifest{Started: t0, Labels: Labels{Me: "a*b_c", Them: "[x](http://e) `y` <b>"}}
+	md := TranscriptMarkdown(m, []Turn{
+		{Speaker: SpeakerMe, S: 1, E: 2, Text: "hi"},
+		{Speaker: SpeakerThem, S: 3, E: 4, Text: "yo"},
+	})
+	for _, want := range []string{"**a\\*b\\_c** [0:01]", "**\\[x\\](http://e) \\`y\\` \\<b\\>** [0:03]"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("transcript lacks %q:\n%s", want, md)
+		}
+	}
+	plain := TranscriptMarkdown(Manifest{Started: t0, Labels: Labels{Me: "Anatoly", Them: "Иван Петров"}}, []Turn{{Speaker: SpeakerMe, S: 1, Text: "hi"}})
+	if !strings.Contains(plain, "**Anatoly** [0:01]") {
+		t.Errorf("a plain name was changed:\n%s", plain)
+	}
+}

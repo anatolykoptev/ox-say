@@ -246,3 +246,16 @@ func TestDuplicateNamesAreRefused(t *testing.T) {
 		t.Errorf("renaming a voice that others were merged into: %v", err)
 	}
 }
+
+// A far-side voice cannot be given the owner's label: the transcript would print two people under one name (#256).
+// Mutation: internal/meeting/speakers.go checkDistinct, delete the `strings.EqualFold(strings.TrimSpace(shown.Labels.Me), name)`
+// condition -> RED.
+func TestAVoiceCannotTakeTheOwnersLabel(t *testing.T) {
+	m := manifest(VoicesAuto)
+	m.Labels.Me = "Anatoly"
+	for _, name := range []string{"Anatoly", "anatoly"} {
+		if _, err := (SpeakerState{}).Apply(m, groupTurns, Edit{Rename: map[string]string{"them:1": name}}); !errors.Is(err, ErrSpeakers) {
+			t.Errorf("a voice named %q like the owner: %v", name, err)
+		}
+	}
+}

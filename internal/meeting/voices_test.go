@@ -575,7 +575,7 @@ func TestAMergeThatDiedBeforeQueueingTheNotesIsFinishedByTheSameRequest(t *testi
 // Two edits of one meeting at once do not lose each other's change: the read-modify-write is one at a time.
 // The hook holds each edit after it has read the state until the other has read too (or 300 ms pass, which is
 // what happens when the second is kept waiting).
-// Mutation: internal/meeting/speakers_runner.go EditSpeakers, delete the `mu.(*sync.Mutex).Lock()` line -> RED
+// Mutation: internal/meeting/speakers_runner.go EditSpeakers, delete the `defer r.speakerLocks.lock(id)()` line -> RED
 // (one of the names is lost).
 func TestConcurrentSpeakerEditsDoNotLoseEachOther(t *testing.T) {
 	f, id, dir := settledGroup(t)
@@ -605,5 +605,76 @@ func TestConcurrentSpeakerEditsDoNotLoseEachOther(t *testing.T) {
 	st, _ := LoadSpeakers(dir)
 	if st.Names["them:1"] != "Ivan" || st.Names["them:2"] != "Olga" {
 		t.Errorf("names after two edits at once = %v", st.Names)
+	}
+}
+
+// Notes written while the speakers changed under the model are written under the old speakers: the mark stays, so a
+// repeat of the edit queues them again. The mark goes only when the labels the notes were written under are the
+// labels now (#256).
+// Mutation: internal/meeting/labels.go clearNotesStale, delete the `!maps.Equal(labelMap(m, st, turns), written.Labels)`
+// check -> RED (the mark is cleared over old attributions).
+func TestNotesWrittenUnderOldSpeakersDoNotClearTheMark(t *testing.T) {
+	f, id, dir := settledGroup(t)
+	if _, err := f.r.EditSpeakers(id, Edit{Merge: map[string]string{"them:3": "them:1"}}); err != nil {
+		t.Fatal(err)
+	}
+	once := false
+	f.r.Before = func(context.Context) error { // the model is about to run; an edit was saved meanwhile
+		if once {
+			return nil
+		}
+		once = true
+		st, _ := LoadSpeakers(dir)
+		st.Names = map[string]string{"them:2": "Olga"}
+		st.NotesStale = true
+		return SaveSpeakers(dir, st)
+	}
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := LoadSpeakers(dir); !st.NotesStale {
+		t.Error("the mark was cleared for notes written under the old speakers")
+	}
+	// the repeat of the edit finds the mark and queues the notes again
+	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:2": "Olga"}}); err != nil || f.load(t, id).Status != StatusSummarizing {
+		t.Fatalf("the repeat: %v, status %s", err, f.load(t, id).Status)
+	}
+	f.r.Before = nil
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := LoadSpeakers(dir); st.NotesStale {
+		t.Error("the mark outlived notes written under the current speakers")
+	}
+}
+
+// A failure to drop the mark after the notes are written must not turn a finished meeting into one whose notes
+// failed: the status is recorded first, the failure is logged, and the mark simply stays (the next edit repeats the
+// work) (#256).
+// Mutation: internal/meeting/runner.go writeNotes, move the clear above the `r.Store.Update(` and `return err` on
+// its failure -> RED.
+func TestAFailureToDropTheMarkLeavesTheMeetingDone(t *testing.T) {
+	f, id, _ := settledGroup(t)
+	if _, err := f.r.EditSpeakers(id, Edit{Merge: map[string]string{"them:3": "them:1"}}); err != nil {
+		t.Fatal(err)
+	}
+	f.r.clearStale = func(string, Manifest, *Notes) error { return errors.New("disk full") }
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if m := f.load(t, id); m.Status != StatusDone || m.NotesPending != "" {
+		t.Fatalf("status %s, notes pending %q", m.Status, m.NotesPending)
+	}
+}
+
+// The per-meeting edit locks do not pile up: once no edit holds or awaits one, it is dropped (#256).
+// Mutation: internal/meeting/runner.go keyedLocks.lock, delete the `delete(k.m, id)` line -> RED.
+func TestSpeakerLocksArePruned(t *testing.T) {
+	f, id, _ := settledGroup(t)
+	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan"}}); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.r.speakerLocks.size(); n != 0 {
+		t.Errorf("%d lock entries after the edit", n)
 	}
 }
