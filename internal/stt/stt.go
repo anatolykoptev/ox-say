@@ -18,7 +18,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -423,23 +422,6 @@ func queueLimit(n int) int {
 // right now; the HTTP route checks it before accepting an upload.
 func QueueFull(maxQueue int) bool { return waiting.Load() >= int32(queueLimit(maxQueue)) }
 
-// tailBuffer keeps the last max bytes written to it: enough of a tool's
-// stderr to explain a failure, bounded however much it prints.
-type tailBuffer struct {
-	max int
-	b   []byte
-}
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.b = append(t.b, p...)
-	if len(t.b) > t.max {
-		t.b = t.b[len(t.b)-t.max:]
-	}
-	return len(p), nil
-}
-
-func (t *tailBuffer) String() string { return string(t.b) }
-
 // convert turns any input ffmpeg reads into a 16 kHz mono PCM16 WAV temp
 // file of at most maxAudio and reports the decoded duration. A clip ffmpeg
 // ran against and refused is caller input; a missing binary or a kill on
@@ -459,11 +441,10 @@ func convert(ctx context.Context, audioPath string, maxAudio time.Duration) (wav
 			_ = os.Remove(tmpName)
 		}
 	}()
-	errb := &tailBuffer{max: stderrTail}
-	cmd := exec.CommandContext(ctx, ffmpeg,
+	args := []string{
 		"-hide_banner", "-loglevel", "error", "-y",
 		"-protocol_whitelist", "file",
-		"-i", "file:"+audioPath,
+		"-i", "file:" + audioPath,
 		// a small compressed upload can decode to hours of PCM: stop a second
 		// past the cap, and refuse (below) what is still longer than the cap
 		"-t", strconv.FormatFloat(maxAudio.Seconds()+1, 'f', 3, 64),
@@ -471,19 +452,15 @@ func convert(ctx context.Context, audioPath string, maxAudio time.Duration) (wav
 		"-ac", "1",
 		"-c:a", "pcm_s16le",
 		tmpName,
-	)
-	cmd.Stdout = errb
-	cmd.Stderr = errb
-	// no path in messages: over HTTP it is the upload's temp file
-	tail := func() string {
-		return strings.TrimSpace(strings.ReplaceAll(errb.String(), audioPath, "<input>"))
 	}
-	if err := cmd.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && ctx.Err() == nil {
-			return "", 0, &InputError{fmt.Sprintf("stt: cannot decode audio: %s", tail())}
+	if _, err := oneshot.Run(ctx, ffmpeg, args, oneshot.Options{StderrTail: stderrTail}); err != nil {
+		// no path in messages: over HTTP it is the upload's temp file
+		var exitErr *oneshot.ExitError
+		if errors.As(err, &exitErr) {
+			tail := strings.TrimSpace(strings.ReplaceAll(exitErr.Tail, audioPath, "<input>"))
+			return "", 0, &InputError{fmt.Sprintf("stt: cannot decode audio: %s", tail)}
 		}
-		return "", 0, fmt.Errorf("stt: ffmpeg: %w: %s", err, tail())
+		return "", 0, fmt.Errorf("stt: ffmpeg: %w", err)
 	}
 	fi, err := os.Stat(tmpName)
 	if err != nil {

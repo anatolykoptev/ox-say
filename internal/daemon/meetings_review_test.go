@@ -226,3 +226,22 @@ func TestIncludeIsACommaList(t *testing.T) {
 		t.Fatalf("include=transcript, notes = %+v", g)
 	}
 }
+
+// A bidi override or isolate (U+202A-202E, U+2066-2069) in a label would reorder the text around it in the
+// exported markdown; checkName refuses them in a rename, so create refuses them too, in every text it takes (#258).
+// Mutation: internal/daemon/meetings_http.go handleMeetingCreate, delete the `meeting.HasBidiControl(f.text)` check
+// -> RED.
+func TestCreateRefusesBidiOverrides(t *testing.T) {
+	_, mux := meetingFixture(t, nil)
+	for _, body := range []string{
+		`{"labels":{"speaker":"Sp‮eaker"}}`,
+		`{"labels":{"me":"a⁦b"}}`,
+		`{"labels":{"them":"a⁩b"}}`,
+		`{"title":"a‪b"}`,
+		`{"source":"a‭b"}`,
+	} {
+		if rec := call(t, mux, "POST", "/v1/meetings", body); rec.Code != http.StatusBadRequest {
+			t.Errorf("POST %s = %d, want 400", body, rec.Code)
+		}
+	}
+}

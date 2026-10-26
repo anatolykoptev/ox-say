@@ -699,16 +699,6 @@ func TestLongAudioUsesCLI(t *testing.T) {
 	}
 }
 
-// tailBuffer keeps only the last max bytes.
-func TestTailBuffer(t *testing.T) {
-	b := &tailBuffer{max: 8}
-	_, _ = b.Write([]byte("0123456789"))
-	_, _ = b.Write([]byte("abc"))
-	if got := b.String(); got != "56789abc" {
-		t.Fatalf("tail = %q", got)
-	}
-}
-
 // Input classification: relative path, missing file and an undecodable clip
 // are InputError (400); an ox-stt exit 1 is EngineError (500); a missing
 // model names scripts/fetch-models.sh.
@@ -766,5 +756,19 @@ func TestTranscribeErrors(t *testing.T) {
 		if !errors.As(err, &eErr) {
 			t.Fatalf("engine exit 1 err = %v (%T), want EngineError", err, err)
 		}
+	}
+}
+
+// An ox-stt that fails says why on stderr, and the dictation error carries those words (#258).
+// Mutation: internal/stt/stt.go Transcribe, change `strings.TrimSpace(exitErr.Tail)` to `""` -> RED.
+func TestEngineErrorCarriesTheStderrTail(t *testing.T) {
+	dir := t.TempDir()
+	opts, _ := fakeOpts(t, dir)
+	src := testutil.WriteTinyWAV(t, dir, "ok.wav")
+	t.Setenv("OXSAY_FAKE_STT_EXIT", "1")
+	_, err := Transcribe(context.Background(), src, opts)
+	var eErr *EngineError
+	if !errors.As(err, &eErr) || !strings.Contains(err.Error(), "fake-stt: transcription failed") {
+		t.Fatalf("err = %v (%T), want an EngineError carrying the stderr tail", err, err)
 	}
 }

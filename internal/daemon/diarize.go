@@ -20,11 +20,11 @@ const (
 	// asks first, so a meeting on macOS 14 says so instead of starting a process that exits 5. A test compares this
 	// number with engine/diar's Platform.minimumMajor.
 	diarMinMacOS = 15
-	// diarMinTimeout and diarTimeoutFactor bound one ox-diar run: an hour of audio takes about 21 seconds on the
-	// Neural Engine and about eighty on the CPU of an M-series Mac, so twice the audio's length, never under twenty
-	// minutes, is a run that hung.
-	diarMinTimeout    = 20 * time.Minute
-	diarTimeoutFactor = 2
+	// diarMinTimeout and diarTimeoutDivisor bound one ox-diar run: an hour of audio takes about 21 seconds on the
+	// Neural Engine and about eighty on the CPU of an M-series Mac, so a tenth of the audio's length (six minutes per
+	// hour, four and a half times the CPU figure), never under five minutes for the model load, is a run that hung.
+	diarMinTimeout     = 5 * time.Minute
+	diarTimeoutDivisor = 10
 	// diarBytesPerSecond is 16 kHz mono s16le.
 	diarBytesPerSecond = 32000
 	// diarMaxSeconds caps the recording ox-diar is given. It holds the whole channel in memory: measured at about
@@ -41,6 +41,7 @@ const (
 	diarWaitDelay = 5 * time.Second
 	// ox-diar's exit codes (engine/diar OxDiarCore.ExitCode).
 	diarExitModels        = 3
+	diarExitInput         = 4
 	diarExitUnsupportedOS = 5
 )
 
@@ -61,13 +62,19 @@ func (d *Daemon) diarReady() string {
 	if goArch == "amd64" { // the Intel smoke of plan Task 20a failed: the Intel package carries no ox-diar
 		return meeting.DiarCPUUnsupported
 	}
-	if st, err := os.Stat(d.Cfg.DiarBin); err != nil || !st.Mode().IsRegular() {
+	if st, err := os.Stat(d.Cfg.DiarBin); err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0o111 == 0 {
 		return meeting.DiarEngineMissing
 	}
 	if !d.Cfg.DiarModelsReady() {
 		return meeting.DiarModelsMissing
 	}
 	return ""
+}
+
+// diarTimeout is how long one ox-diar run on a channel of pcmBytes may take.
+func diarTimeout(pcmBytes int64) time.Duration {
+	audio := time.Duration(pcmBytes/diarBytesPerSecond) * time.Second
+	return max(diarMinTimeout, audio/diarTimeoutDivisor)
 }
 
 // diarizer is Deps.Diarize.
@@ -93,8 +100,7 @@ func runDiarizer(ctx context.Context, cfg *config.Config, pcmPath string) ([]byt
 	}
 	out := filepath.Join(work, meeting.DiarizationJSON)
 	defer func() { _ = os.Remove(out) }()
-	timeout := max(diarMinTimeout, time.Duration(diarTimeoutFactor)*time.Duration(st.Size()/diarBytesPerSecond)*time.Second)
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, diarTimeout(st.Size()))
 	defer cancel()
 	_, err = oneshot.Run(ctx, cfg.DiarBin, []string{pcmPath, out, "--models", cfg.DiarModelsDir()},
 		oneshot.Options{StderrTail: diarStderrKeep, WaitDelay: diarWaitDelay})
@@ -106,6 +112,10 @@ func runDiarizer(ctx context.Context, cfg *config.Config, pcmPath string) ([]byt
 		if errors.As(err, &exit) && exit.Code() == diarExitModels {
 			// the marker says the models are complete and they will not load: no retry changes that
 			return nil, &meeting.DiarUnavailableError{Reason: meeting.DiarModelsUnusable, Detail: strings.TrimSpace(exit.Tail)}
+		}
+		if errors.As(err, &exit) && exit.Code() == 99 {
+			// the daemon just stat-ed the file: unreadable now means a retry meets the same file
+			return nil, &meeting.DiarUnavailableError{Reason: meeting.DiarInputUnreadable, Detail: strings.TrimSpace(exit.Tail)}
 		}
 		return nil, fmt.Errorf("ox-diar: %w", err)
 	}

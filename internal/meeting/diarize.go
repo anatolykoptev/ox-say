@@ -37,19 +37,20 @@ const (
 // Why a meeting has no voices (Manifest.DiarReason). The unavailable ones are found before anything runs
 // (Deps.DiarizeReady, or ox-diar's own refusal); the others are what a run did.
 const (
-	DiarOSTooOld       = "os_too_old"      // macOS older than 15: Apple's BNNS bug can crash the Core ML models there
-	DiarCPUUnsupported = "cpu_unsupported" // this CPU is not covered (set only if the Intel smoke of Task 20a failed)
-	DiarEngineMissing  = "engine_missing"  // this install has no ox-diar
-	DiarModelsMissing  = "models_missing"  // the models were never fetched, or the fetch was cut short
-	DiarModelsUnusable = "models_unusable" // the models are all there and will not load (corrupt, or not plannable on this hardware)
-	DiarTooLong        = "too_long"        // the far-side recording is longer than ox-diar can hold in memory
-	DiarEngineError    = "engine_error"    // ox-diar exited with an error
-	DiarBadOutput      = "bad_output"      // ox-diar's answer could not be read
-	DiarTimeout        = "timeout"         // ox-diar ran past its limit
+	DiarOSTooOld        = "os_too_old"       // macOS older than 15: Apple's BNNS bug can crash the Core ML models there
+	DiarCPUUnsupported  = "cpu_unsupported"  // this CPU is not covered (set only if the Intel smoke of Task 20a failed)
+	DiarEngineMissing   = "engine_missing"   // this install has no ox-diar
+	DiarModelsMissing   = "models_missing"   // the models were never fetched, or the fetch was cut short
+	DiarModelsUnusable  = "models_unusable"  // the models are all there and will not load (corrupt, or not plannable on this hardware)
+	DiarInputUnreadable = "input_unreadable" // ox-diar could not read the channel file (exit 4): a retry meets the same file
+	DiarTooLong         = "too_long"         // the far-side recording is longer than ox-diar can hold in memory
+	DiarEngineError     = "engine_error"     // ox-diar exited with an error
+	DiarBadOutput       = "bad_output"       // ox-diar's answer could not be read
+	DiarTimeout         = "timeout"          // ox-diar ran past its limit
 )
 
 // DiarUnavailableError is what Deps.Diarize returns when ox-diar itself says this Mac cannot do it, for a reason that
-// trying again will not change: it exits 5 on macOS older than 15, and 3 when the models, though marked complete,
+// trying again will not change: it exits 5 on macOS older than 15, 4 when the channel file is unreadable, and 3 when the models, though marked complete,
 // will not load (a corrupt file, or a model Core ML cannot plan for this hardware). The meeting records
 // WarnDiarUnavailable, not WarnNoDiarization, so the app offers no "Try Again" that would transcribe the call a
 // second time for nothing. Detail is ox-diar's last words, for the log.
