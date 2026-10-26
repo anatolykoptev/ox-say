@@ -62,7 +62,7 @@ func (d *Daemon) diarReady() string {
 	if goArch == "amd64" { // the Intel smoke of plan Task 20a failed: the Intel package carries no ox-diar
 		return meeting.DiarCPUUnsupported
 	}
-	if st, err := os.Stat(d.Cfg.DiarBin); err != nil || !st.Mode().IsRegular() {
+	if st, err := os.Stat(d.Cfg.DiarBin); err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0o111 == 0 {
 		return meeting.DiarEngineMissing
 	}
 	if !d.Cfg.DiarModelsReady() {
@@ -113,7 +113,7 @@ func runDiarizer(ctx context.Context, cfg *config.Config, pcmPath string) ([]byt
 			// the marker says the models are complete and they will not load: no retry changes that
 			return nil, &meeting.DiarUnavailableError{Reason: meeting.DiarModelsUnusable, Detail: strings.TrimSpace(exit.Tail)}
 		}
-		if errors.As(err, &exit) && exit.Code() == 99 {
+		if errors.As(err, &exit) && exit.Code() == diarExitInput {
 			// the daemon just stat-ed the file: unreadable now means a retry meets the same file
 			return nil, &meeting.DiarUnavailableError{Reason: meeting.DiarInputUnreadable, Detail: strings.TrimSpace(exit.Tail)}
 		}
