@@ -118,7 +118,7 @@ func (r *Runner) EditSpeakers(id string, e Edit) (SpeakersView, error) {
 	if err != nil {
 		return SpeakersView{}, err
 	}
-	if needsModel {
+	if needsModel || cur.NotesStale {
 		return r.queueNotesAfter(id, dir, *m, next, turns, transcript)
 	}
 	if err := vproject.WriteAtomic(filepath.Join(dir, TranscriptMD), transcript, 0o600); err != nil {

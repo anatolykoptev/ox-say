@@ -70,3 +70,25 @@ func TestAnEditSaysWhetherTheNotesWereQueued(t *testing.T) {
 		}
 	})
 }
+
+// A rename while NotesStale is still set (an earlier merge saved the speakers and died before queueing the notes)
+// cannot be finished by substitution: the notes were written under the speakers before the merge. It queues them,
+// and the answer says so (#260 N5, #256).
+// Mutation: internal/meeting/speakers_runner.go EditSpeakers, change `if needsModel || cur.NotesStale {` to
+// `if needsModel {` -> RED.
+func TestARenameWhileTheNotesAreStaleQueuesThem(t *testing.T) {
+	f, _, id, dir := settledNotes(t)
+	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan"}}); err != nil {
+		t.Fatal(err)
+	}
+	setNoteText(t, dir, "Ivan said hello.")
+	st, _ := LoadSpeakers(dir)
+	st.NotesStale = true
+	if err := SaveSpeakers(dir, st); err != nil {
+		t.Fatal(err)
+	}
+	v, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Boris"}})
+	if err != nil || !v.NotesQueued || f.load(t, id).Status != StatusSummarizing {
+		t.Fatalf("notes_queued %v, err %v, status %s: a rename over stale notes must queue them", v.NotesQueued, err, f.load(t, id).Status)
+	}
+}

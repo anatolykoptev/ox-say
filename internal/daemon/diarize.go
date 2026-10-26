@@ -62,7 +62,7 @@ func (d *Daemon) diarReady() string {
 	if goArch == "amd64" { // the Intel smoke of plan Task 20a failed: the Intel package carries no ox-diar
 		return meeting.DiarCPUUnsupported
 	}
-	if st, err := os.Stat(d.Cfg.DiarBin); err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0o111 == 0 {
+	if st, err := os.Stat(d.Cfg.DiarBin); err != nil || !st.Mode().IsRegular() {
 		return meeting.DiarEngineMissing
 	}
 	if !d.Cfg.DiarModelsReady() {
