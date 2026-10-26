@@ -253,3 +253,80 @@ func TestDeleteIfChecksUnderTheStoreLock(t *testing.T) {
 		t.Fatalf("DeleteIf on a gone meeting = %v, want ErrNotFound", err)
 	}
 }
+
+// A delete takes the meeting out of the store under the lock (a rename to a tombstone) and unlinks the files after
+// letting it go: another meeting's Update, the runner's status write, does not wait for the unlink of a long
+// recording (#252). The unlink is held here until an Update of another meeting has gone through; with the unlink
+// under the lock that Update would never return.
+// Mutation: internal/meeting/store.go tombstone, change `os.Rename(dir, tomb)` to `s.unlink(dir)` -> RED (the Update
+// times out).
+func TestDeleteUnlinksOutsideTheStoreLock(t *testing.T) {
+	for name, del := range map[string]func(s *Store, id string) error{
+		"Delete":   func(s *Store, id string) error { return s.Delete(id) },
+		"DeleteIf": func(s *Store, id string) error { return s.DeleteIf(id, func(Manifest) error { return nil }) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &Store{Root: t.TempDir()}
+			gone, goneDir, err := s.Create(Manifest{}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			other, _, err := s.Create(Manifest{}, time.Now().Add(time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			started, release := make(chan string, 2), make(chan struct{})
+			s.removeAll = func(path string) error {
+				started <- path
+				<-release
+				return os.RemoveAll(path)
+			}
+			done := make(chan error, 1)
+			go func() { done <- del(s, gone.ID) }()
+			tomb := <-started
+			if _, err := os.Stat(goneDir); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the meeting is still in the store while its files are unlinked: %v", err)
+			}
+			if _, err := os.Stat(tomb); err != nil {
+				t.Errorf("the tombstone %s: %v", tomb, err)
+			}
+			upd := make(chan error, 1)
+			go func() { _, err := s.Update(other.ID, func(m *Manifest) { m.Title = "x" }); upd <- err }()
+			select {
+			case err := <-upd:
+				if err != nil {
+					t.Errorf("Update of another meeting: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Error("Update of another meeting waited for the unlink")
+			}
+			close(release)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(tomb); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the tombstone survived: %v", err)
+			}
+		})
+	}
+}
+
+// A tombstone a crash left behind (the daemon died between the rename and the unlink) is not a meeting and is
+// removed by the next List.
+// Mutation: internal/meeting/store.go List, delete the `s.sweepTombstones(entries)` call -> RED.
+func TestAStrayTombstoneIsSweptByList(t *testing.T) {
+	s := &Store{Root: t.TempDir()}
+	stray := filepath.Join(s.Root, tombstonePrefix+"20261023-150100-aaaaaa-1")
+	if err := os.MkdirAll(stray, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stray, ThemPCM), []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := s.List(); err != nil || len(list) != 0 {
+		t.Fatalf("List = %v, %v", list, err)
+	}
+	if _, err := os.Stat(stray); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the stray tombstone survived List: %v", err)
+	}
+}
