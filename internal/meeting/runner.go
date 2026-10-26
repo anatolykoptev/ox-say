@@ -45,6 +45,10 @@ const (
 	maxAutoRetries = 3
 )
 
+// retryBackoff is how long a failed meeting waits, by the number of automatic retries already spent, before Recover
+// puts it back in the queue: a failure that is not instant to cure (an engine restarting, a full disk) gets time.
+var retryBackoff = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute}
+
 // Deps is everything the runner needs from outside. The daemon wires the
 // real recognizer, model and dictation yield; tests wire fakes.
 type Deps struct {
@@ -389,6 +393,9 @@ func (r *Runner) retryFailed(m Manifest) {
 		if m.Status != StatusFailed || (m.Attempts >= maxAutoRetries && !waiting) || !ok {
 			return
 		}
+		if !waiting && m.FailedAt != nil && r.Now().Sub(*m.FailedAt) < retryBackoff[min(m.Attempts, len(retryBackoff)-1)] {
+			return
+		}
 		m.Status, m.Error, m.WaitingFor = next, "", ""
 		if !waiting {
 			m.Attempts++
@@ -504,8 +511,12 @@ func (r *Runner) stop(ctx context.Context, id string, err error) error {
 	if ctx.Err() != nil || errors.Is(err, ErrNotFound) {
 		return err
 	}
+	failedAt := r.Now()
 	_, uerr := r.Store.Update(id, func(m *Manifest) {
-		m.Status, m.Error, m.WaitingFor = StatusFailed, err.Error(), ""
+		if m.Status == StatusQueued { // a Finish queued the meeting again while this run failed: that run counts
+			return
+		}
+		m.Status, m.Error, m.WaitingFor, m.FailedAt = StatusFailed, err.Error(), "", &failedAt
 		if permanent(err) {
 			m.WaitingFor = WaitSTTModel
 		}

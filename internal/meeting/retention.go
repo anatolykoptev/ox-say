@@ -129,7 +129,8 @@ func (r *Runner) expired(m Manifest, days int) bool {
 	if err != nil {
 		return false
 	}
-	return transcriptReadable(dir)
+	// a recording longer than its transcript has a tail nobody has transcribed yet
+	return transcriptReadable(dir) && !grewSince(dir, &m)
 }
 
 // transcriptReadable reports a transcript.json that is on disk and parses.

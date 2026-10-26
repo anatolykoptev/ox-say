@@ -100,6 +100,7 @@ func TestAPlainFailureIsNotWaiting(t *testing.T) {
 	f.r.Transcribe = func(context.Context, string) (*stt.Result, error) { return nil, errors.New("engine crashed") }
 	id := f.start(t, 20, 0, 5000, false)
 	_ = f.r.Process(context.Background(), id)
+	f.now = f.now.Add(time.Hour) // past the backoff
 	f.r.Recover()
 	if m := f.load(t, id); m.WaitingFor != "" || m.Attempts != 1 {
 		t.Fatalf("manifest = %+v, want an ordinary failure that counts one attempt", m)
@@ -303,5 +304,59 @@ func TestAWaitingMeetingStaysPutUntilTheModelArrives(t *testing.T) {
 	f.r.Recover()
 	if m := f.load(t, id); m.Status != StatusQueued || m.WaitingFor != "" {
 		t.Fatalf("after the model arrived: %+v, want queued", m)
+	}
+}
+
+// A Finish that re-queues the meeting while its transcription runs is not overwritten by that run's failure: the
+// meeting stays queued for the next round and the attempt is not spent (#244).
+// Mutation: internal/meeting/runner.go stop, delete the `if m.Status == StatusQueued { return }` guard -> RED.
+func TestAFailureAfterALaterFinishDoesNotOverwriteTheRequeue(t *testing.T) {
+	f := newFixture(t)
+	f.sleeps()
+	id := f.start(t, 20, 0, 5000, false)
+	var once sync.Once
+	f.r.Transcribe = func(context.Context, string) (*stt.Result, error) {
+		once.Do(func() {
+			dir, _ := f.r.Store.Dir(id)
+			writePCM(t, dir, MePCM, 90, 5000)
+			if _, err := f.r.Finish(id, t0.Add(5*time.Hour)); err != nil {
+				t.Error(err)
+			}
+		})
+		return nil, errors.New("engine crashed")
+	}
+	_ = f.r.Process(context.Background(), id)
+	if m := f.load(t, id); m.Status != StatusQueued || m.Error != "" || m.Attempts != 0 {
+		t.Fatalf("status %s, error %q, attempts %d: want queued, untouched", m.Status, m.Error, m.Attempts)
+	}
+}
+
+// A failed meeting is put back in the queue after 1, 5 and 30 minutes, not on the next housekeeping round: three
+// attempts used to span about three rounds, too short for anything that is not instant to recover (#244).
+// Mutations: internal/meeting/runner.go retryFailed, delete the `r.Now().Sub(*m.FailedAt) < retryBackoff[...]` check
+// -> RED (queued at once); change `retryBackoff = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute}` to
+// `{time.Minute, time.Minute, time.Minute}` -> RED (the second wait).
+func TestAFailedMeetingIsRetriedAfterABackoff(t *testing.T) {
+	f := newFixture(t)
+	f.sleeps()
+	f.r.Transcribe = func(context.Context, string) (*stt.Result, error) { return nil, errors.New("engine crashed") }
+	id := f.start(t, 20, 0, 5000, false)
+	_ = f.r.Process(context.Background(), id)
+	for i, wait := range []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute} {
+		f.r.Recover()
+		if m := f.load(t, id); m.Status != StatusFailed || m.Attempts != i {
+			t.Fatalf("round %d at once: status %s, attempts %d: no retry before the backoff", i, m.Status, m.Attempts)
+		}
+		f.now = f.now.Add(wait - time.Second)
+		f.r.Recover()
+		if m := f.load(t, id); m.Status != StatusFailed || m.Attempts != i {
+			t.Fatalf("round %d, %v short of the backoff: status %s, attempts %d", i, time.Second, m.Status, m.Attempts)
+		}
+		f.now = f.now.Add(time.Second)
+		f.r.Recover()
+		if m := f.load(t, id); m.Status != StatusQueued || m.Attempts != i+1 {
+			t.Fatalf("round %d after %v: status %s, attempts %d: want queued", i, wait, m.Status, m.Attempts)
+		}
+		_ = f.r.Process(context.Background(), id)
 	}
 }
