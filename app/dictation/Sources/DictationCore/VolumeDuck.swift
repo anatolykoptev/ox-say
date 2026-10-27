@@ -22,6 +22,55 @@ public protocol SystemVolume: AnyObject {
     func device(forUID uid: String) -> UInt32?
 }
 
+/// What a standing duck owes: the device (by persistent UID), the level to
+/// give back and the level the duck left it at.
+public struct DuckRecord: Equatable {
+    public var uid: String
+    public var preDuck: Float
+    public var ducked: Float
+
+    public init(uid: String, preDuck: Float, ducked: Float) {
+        self.uid = uid
+        self.preDuck = preDuck
+        self.ducked = ducked
+    }
+}
+
+/// Where the duck's debt survives a crash or a SIGKILL. One record.
+public protocol DuckRecordStore: AnyObject {
+    func load() -> DuckRecord?
+    func save(_ record: DuckRecord)
+    func clear()
+}
+
+/// The store the app uses: three keys in the given defaults.
+public final class UserDefaultsDuckRecordStore: DuckRecordStore {
+    public static let uidKey = "soundDuckPending.uid"
+    public static let preDuckKey = "soundDuckPending.preDuck"
+    public static let duckedKey = "soundDuckPending.ducked"
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults) { self.defaults = defaults }
+
+    public func load() -> DuckRecord? {
+        guard let uid = defaults.string(forKey: Self.uidKey),
+              defaults.object(forKey: Self.preDuckKey) != nil,
+              defaults.object(forKey: Self.duckedKey) != nil else { return nil }
+        return DuckRecord(uid: uid, preDuck: defaults.float(forKey: Self.preDuckKey),
+                          ducked: defaults.float(forKey: Self.duckedKey))
+    }
+
+    public func save(_ record: DuckRecord) {
+        defaults.set(record.uid, forKey: Self.uidKey)
+        defaults.set(record.preDuck, forKey: Self.preDuckKey)
+        defaults.set(record.ducked, forKey: Self.duckedKey)
+    }
+
+    public func clear() {
+        for key in [Self.uidKey, Self.preDuckKey, Self.duckedKey] { defaults.removeObject(forKey: key) }
+    }
+}
+
 /// "Lower All Sound": on the key down the default output fades to a fraction
 /// of its level; on every ending it fades back to exactly the level it had.
 /// Restore wins: a level the user picked during the few seconds of a
@@ -29,9 +78,11 @@ public protocol SystemVolume: AnyObject {
 /// the larger harm — and no comparison of levels can tell every device's
 /// duck from a user change. A restore that could not be confirmed stays owed
 /// in memory, per device, and is applied by the next dictation on that device
-/// if the output is still as quiet as the duck left it. Nothing is persisted:
-/// a process that dies mid-dictation leaves the output quiet until the user
-/// raises it.
+/// if the output is still as quiet as the duck left it. While a duck stands,
+/// `{device uid, preDuck, ducked}` is kept in a `DuckRecordStore` and cleared
+/// after a confirmed restore; a process that died mid-dictation finds it at
+/// the next launch (`recoverInterrupted`) and gives the level back if the
+/// output still sits at the ducked level.
 ///
 /// Not thread safe: `SoundWhileDictatingRunner` feeds it from one serial
 /// queue, where `begin` and `end` alternate per generation.
@@ -81,6 +132,7 @@ public final class VolumeDuckCoordinator {
     private let log: (String) -> Void
     private let logError: (String) -> Void
     private let now: () -> Date
+    private let records: DuckRecordStore?
     private var duck: Duck?
     /// Unconfirmed restores by device UID. Dies with the process.
     private var owed: [String: Owed] = [:]
@@ -94,13 +146,16 @@ public final class VolumeDuckCoordinator {
     ///   lowered; `logError` gets a line without user content when a restore
     ///   cannot be confirmed.
     /// - `now` stamps and ages the owed restores.
+    /// - `records` keeps the standing duck's debt across a crash; nil keeps none.
     public init(volume: SystemVolume,
                 steps: Int = 5, stepDelay: TimeInterval = 0.05,
                 settleDelay: TimeInterval = 0.08,
                 log: @escaping (String) -> Void = { _ in },
                 logError: @escaping (String) -> Void = { _ in },
-                now: @escaping () -> Date = Date.init) {
+                now: @escaping () -> Date = Date.init,
+                records: DuckRecordStore? = nil) {
         self.volume = volume
+        self.records = records
         self.steps = steps
         self.stepDelay = stepDelay
         self.settleDelay = settleDelay
@@ -109,25 +164,57 @@ public final class VolumeDuckCoordinator {
         self.now = now
     }
 
-    /// A dictation (generation `generation`) started recording. Nothing is
-    /// ducked when the output is muted, silent, or has no software volume,
-    /// and a duck already standing is never re-ducked.
-    public func begin(generation: Int) {
-        guard duck == nil, let device = volume.defaultDevice(),
-              !volume.isMuted(device.id) else { return }
+    /// A dictation (generation `generation`) started recording. Returns whether
+    /// the sound is handled: true once the output was lowered, and also when
+    /// there was nothing audible to lower (muted, level 0) or a duck already
+    /// stands; false when an audible output could not be lowered (no default
+    /// device, no software volume — HDMI, a USB DAC, a Multi-Output device —
+    /// or an unreadable level), so the caller can pause the players instead.
+    @discardableResult
+    public func begin(generation: Int) -> Bool {
+        guard duck == nil else { return true }
+        guard let device = volume.defaultDevice() else { return false }
+        guard !volume.isMuted(device.id) else { return true }
         guard volume.isSettable(device.id) else {
             if !unsettableLogged {
                 unsettableLogged = true
-                log("output device has no settable volume: Lower All Sound does nothing")
+                log("output device has no settable volume: Lower All Sound falls back to Pause Music")
             }
-            return
+            return false
         }
-        guard let level = volume.volume(device.id), level > 0 else { return }
+        guard let level = volume.volume(device.id) else { return false }
+        guard level > 0 else { return true }
         let preDuck = owedPreDuck(device: device, level: level)
         let duck = Duck(generation: generation, deviceID: device.id, uid: device.uid,
                         preDuck: preDuck, ducked: preDuck * Self.duckFraction)
         self.duck = duck
+        if let uid = device.uid {
+            records?.save(DuckRecord(uid: uid, preDuck: duck.preDuck, ducked: duck.ducked))
+        }
         fade(from: level, to: duck.ducked, on: device.id)
+        return true
+    }
+
+    /// At launch: a record left by a process that died while ducked. If the
+    /// default output is that device and still sits about at the ducked level,
+    /// the pre-duck level is given back; if the user has moved it since (or
+    /// the device is no longer the default output) the record is dropped and
+    /// the level left alone. An unconfirmed restore keeps the record for the
+    /// next launch.
+    public func recoverInterrupted() {
+        guard duck == nil, let record = records?.load() else { return }
+        guard let device = volume.defaultDevice(), device.uid == record.uid,
+              let level = volume.volume(device.id),
+              abs(level - record.ducked) <= Self.confirmTolerance else {
+            records?.clear()
+            return
+        }
+        if fade(from: level, to: record.preDuck, on: device.id),
+           confirmed(record.preDuck, on: device.id) {
+            records?.clear()
+        } else {
+            logError("output volume recovery unconfirmed: level did not read back")
+        }
     }
 
     /// The dictation of `generation` ended: the level it took is given back.
@@ -191,6 +278,7 @@ public final class VolumeDuckCoordinator {
     }
 
     private func forgetOwed(for uid: String?) {
+        records?.clear()
         if let uid { owed[uid] = nil }
     }
 

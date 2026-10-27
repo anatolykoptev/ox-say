@@ -567,13 +567,13 @@ in the ox-say LaunchAgent), 127.0.0.1:8094 by default. When something goes
 wrong, or the text could not be pasted, the pill says why for a few seconds.
 
 What happens to sound while you hold the key is the **Settings → Sound While
-Dictating** submenu, with three choices. **Pause Music** (the default): Apple
+Dictating** submenu, with three choices. **Pause Music**: Apple
 Music and Spotify are paused if they are playing and resume from the same
 spot when you let go, cancel with Esc, or the recording ends; a player that
 was already paused stays paused, and one that is not running is never
 launched. The first time, macOS asks to let OxSay control Music or Spotify
-(System Settings → Privacy & Security → Automation). **Lower All Sound**:
-everything the Mac plays — Music, a browser, YouTube — keeps playing but
+(System Settings → Privacy & Security → Automation). **Lower All Sound**
+(the default): everything the Mac plays — Music, a browser, YouTube — keeps playing but
 fades to a fraction of its volume while you dictate, then fades back to
 exactly the level it had, even over a volume you changed during the dictation.
 If the app is killed mid-dictation the output stays quiet until you raise it.

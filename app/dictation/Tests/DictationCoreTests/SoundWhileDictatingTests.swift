@@ -514,46 +514,200 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
     }
 }
 
+final class InMemoryDuckRecordStore: DuckRecordStore {
+    var record: DuckRecord?
+    func load() -> DuckRecord? { record }
+    func save(_ record: DuckRecord) { self.record = record }
+    func clear() { record = nil }
+}
+
+/// Item: a crash or SIGKILL while ducked must not leave the output at 15%.
+final class VolumeDuckRecoveryTests: XCTestCase {
+    private func rig(level: Float = 0.8) -> (FakeSystemVolume, InMemoryDuckRecordStore, VolumeDuckCoordinator) {
+        let fake = FakeSystemVolume()
+        fake.level = level
+        let store = InMemoryDuckRecordStore()
+        return (fake, store, VolumeDuckCoordinator(volume: fake, stepDelay: 0, settleDelay: 0, records: store))
+    }
+
+    func testBeginReportsWhetherTheOutputWasLowered() {
+        let (_, _, ducked) = rig()
+        XCTAssertTrue(ducked.begin(generation: 1))
+
+        let (unsettable, _, a) = rig(); unsettable.settable = false
+        XCTAssertFalse(a.begin(generation: 1), "an output without a software volume is not handled")
+        let (gone, _, b) = rig(); gone.gone = true
+        XCTAssertFalse(b.begin(generation: 1), "no default device is not handled")
+        let (muted, _, c) = rig(); muted.muted = true
+        XCTAssertTrue(c.begin(generation: 1), "a muted output has nothing audible to lower")
+    }
+
+    func testTheDebtIsRecordedWhileDuckedAndClearedAfterAConfirmedRestore() {
+        let (fake, store, duck) = rig()
+        duck.begin(generation: 1)
+        let record = store.record
+        XCTAssertEqual(record?.uid, "fake-output")
+        XCTAssertEqual(record?.preDuck ?? 0, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(record?.ducked ?? 0, 0.12, accuracy: 0.0001)
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+        XCTAssertNil(store.record, "a confirmed restore clears the debt")
+    }
+
+    func testAnUnconfirmedRestoreKeepsTheDebt() {
+        let (fake, store, duck) = rig()
+        duck.begin(generation: 1)
+        fake.refuseWritesFrom = fake.writes.count
+        duck.end(generation: 1)
+        XCTAssertNotNil(store.record)
+    }
+
+    // Mutation: in VolumeDuckCoordinator.recoverInterrupted return at once
+    // (skip the launch restore) -> RED.
+    func testALaunchAfterACrashGivesTheLevelBack() {
+        let (fake, store, duck) = rig(level: 0.12)
+        store.record = DuckRecord(uid: "fake-output", preDuck: 0.8, ducked: 0.12)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+        XCTAssertNil(store.record)
+    }
+
+    func testALaunchLeavesAVolumeTheUserMovedAndDropsTheRecord() {
+        let (fake, store, duck) = rig(level: 0.5)
+        store.record = DuckRecord(uid: "fake-output", preDuck: 0.8, ducked: 0.12)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertNil(store.record)
+    }
+
+    func testALaunchOnAnotherDefaultOutputWritesNothing() {
+        let (fake, store, duck) = rig(level: 0.12)
+        store.record = DuckRecord(uid: "other-output", preDuck: 0.8, ducked: 0.12)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertNil(store.record)
+    }
+
+    func testALaunchWithoutARecordWritesNothing() {
+        let (fake, _, duck) = rig(level: 0.12)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [])
+    }
+
+    func testTheDefaultsStoreRoundTripsInAPrivateSuite() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UserDefaultsDuckRecordStore(defaults: defaults)
+        XCTAssertNil(store.load())
+        store.save(DuckRecord(uid: "u", preDuck: 0.75, ducked: 0.1125))
+        XCTAssertEqual(store.load(), DuckRecord(uid: "u", preDuck: 0.75, ducked: 0.1125))
+        store.clear()
+        XCTAssertNil(store.load())
+    }
+}
+
 final class SoundWhileDictatingSettingTests: XCTestCase {
-    // F3 — migration: the v0.1.24 bool, off, means the user opted out of sound
-    // handling; it maps to "Don't Touch". Mutation: in
-    // SoundWhileDictatingSetting.mode map legacy false to .pauseMusic -> RED.
+    private let key = SoundWhileDictatingSetting.defaultsKey
+    private let marker = SoundWhileDictatingSetting.defaultV2Key
+    private let legacy = SoundWhileDictatingSetting.legacyKey
+
+    // Fresh install: Lower All Sound is the default (a browser plays too).
+    // Mutation: in SoundWhileDictatingSetting.mode default `.lowerAllSound`
+    // -> `.pauseMusic` -> RED.
+    func testNothingStoredIsLowerAllSound() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .lowerAllSound)
+        XCTAssertEqual(defaults.string(forKey: key), "lowerAllSound")
+        XCTAssertTrue(defaults.bool(forKey: marker), "a fresh install is already on the new default")
+    }
+
+    // v0.1.25+ wrote "pauseMusic" on first read, so it is not a choice.
+    // Mutation: delete the migration branch in mode() -> RED.
+    func testAStoredPauseMusicWithoutTheMarkerMigratesOnce() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("pauseMusic", forKey: key)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .lowerAllSound)
+        XCTAssertEqual(defaults.string(forKey: key), "lowerAllSound")
+        XCTAssertTrue(defaults.bool(forKey: marker))
+    }
+
+    // After the migration a user's Pause Music pick sticks. Mutation: make
+    // mode() ignore the marker (migrate every stored pauseMusic) -> RED.
+    func testAPauseMusicPickAfterTheMigrationSticks() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("pauseMusic", forKey: key)
+        defaults.set(true, forKey: marker)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic)
+    }
+
+    // The pick path itself must set the marker: a pick made before mode()
+    // ever ran must not be migrated away on the next read.
+    func testChoosingPauseMusicSticksEvenOnAnUnmigratedStore() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("pauseMusic", forKey: key)
+        SoundWhileDictatingSetting.choose(.pauseMusic, in: defaults)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic)
+    }
+
+    func testDontTouchAndLowerAllAreKeptAndDontTouchSurvivesLaterReads() {
+        for mode in [SoundWhileDictating.dontTouch, .lowerAllSound] {
+            let (defaults, suite) = freshDefaults()
+            defaults.set(mode.rawValue, forKey: key)
+            XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), mode)
+            XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), mode)
+            defaults.removePersistentDomain(forName: suite)
+        }
+    }
+
+    // A kept pick must also set the marker, else a later Pause Music pick
+    // written straight to the key would be migrated away.
+    func testKeepingAStoredModeSetsTheMarker() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("dontTouch", forKey: key)
+        _ = SoundWhileDictatingSetting.mode(defaults)
+        XCTAssertTrue(defaults.bool(forKey: marker))
+    }
+
+    // F3 — the v0.1.24 bool, off, means the user opted out of sound handling.
+    // Mutation: in mode() map legacy false to the default -> RED.
     func testTheLegacyOffMigratesToDontTouch() {
         let (defaults, suite) = freshDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set(false, forKey: SoundWhileDictatingSetting.legacyKey)
+        defaults.set(false, forKey: legacy)
         XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .dontTouch)
-        XCTAssertNil(defaults.object(forKey: SoundWhileDictatingSetting.legacyKey),
-                     "the old key is read once, then gone")
-        XCTAssertEqual(defaults.string(forKey: SoundWhileDictatingSetting.defaultsKey), "dontTouch",
-                       "and the pick is stored under the new key")
+        XCTAssertNil(defaults.object(forKey: legacy), "the old key is read once, then gone")
+        XCTAssertEqual(defaults.string(forKey: key), "dontTouch")
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .dontTouch)
     }
 
-    func testTheLegacyOnAndItsAbsenceMigrateToPauseMusic() {
-        for legacy: Bool? in [true, nil] {
-            let (defaults, suite) = freshDefaults()
-            if let legacy { defaults.set(legacy, forKey: SoundWhileDictatingSetting.legacyKey) }
-            XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic,
-                           "legacy \(legacy == nil ? "absent" : "on") keeps today's behaviour")
-            XCTAssertNil(defaults.object(forKey: SoundWhileDictatingSetting.legacyKey))
-            defaults.removePersistentDomain(forName: suite)
-        }
+    func testTheLegacyOnMigratesToLowerAllSound() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: legacy)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .lowerAllSound)
+        XCTAssertNil(defaults.object(forKey: legacy))
     }
 
     func testAStoredModeWinsOverTheLegacyKey() {
         let (defaults, suite) = freshDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set("lowerAllSound", forKey: SoundWhileDictatingSetting.defaultsKey)
-        defaults.set(false, forKey: SoundWhileDictatingSetting.legacyKey)
+        defaults.set("lowerAllSound", forKey: key)
+        defaults.set(false, forKey: legacy)
         XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .lowerAllSound)
-        XCTAssertNil(defaults.object(forKey: SoundWhileDictatingSetting.legacyKey))
+        XCTAssertNil(defaults.object(forKey: legacy))
     }
 
-    func testAGarbageStoredValueFallsBackToTheMigration() {
+    func testAGarbageStoredValueFallsBackToTheDefault() {
         let (defaults, suite) = freshDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set("bogus", forKey: SoundWhileDictatingSetting.defaultsKey)
-        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic)
+        defaults.set("bogus", forKey: key)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .lowerAllSound)
     }
 }
 
@@ -704,6 +858,55 @@ final class SoundWhileDictatingAppGlueTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent(name)
         return try String(contentsOf: path, encoding: .utf8)
+    }
+
+    private func stripComments(_ text: String) -> String {
+        var code = text
+        for pattern in ["/\\*[\\s\\S]*?\\*/", "//[^\\n]*"] {
+            code = code.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        return code
+    }
+
+    // A menu pick must go through `choose` (it sets the default-V2 marker); a
+    // direct write of the key would be migrated away on the next read.
+    // Mutation: in AppDelegate.pickSoundMode put back
+    // `UserDefaults.standard.set(mode.rawValue, forKey: SoundWhileDictatingSetting.defaultsKey)` -> RED.
+    func testThePickGoesThroughChooseAndNothingElseWritesTheKey() throws {
+        let app = stripComments(try source("Sources/OxSayDictation/AppDelegate.swift"))
+        guard let start = app.range(of: "func pickSoundMode"),
+              let end = app[start.upperBound...].range(of: "\n    }\n") else {
+            return XCTFail("pickSoundMode not found")
+        }
+        let body = String(app[start.upperBound..<end.lowerBound])
+            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
+        XCTAssertTrue(body.contains("SoundWhileDictatingSetting.choose("),
+                      "pickSoundMode must store the pick through SoundWhileDictatingSetting.choose")
+
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources")
+        let files = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+        XCTAssertGreaterThan(files.count, 10, "the source walk found the tree")
+        for file in files where file.lastPathComponent != "SoundWhileDictating.swift" {
+            let code = stripComments(try String(contentsOf: file, encoding: .utf8))
+            XCTAssertFalse(code.contains("SoundWhileDictatingSetting.defaultsKey"),
+                           "\(file.lastPathComponent) must not touch the stored key; use choose/mode")
+            XCTAssertFalse(code.contains("\"soundWhileDictating\""),
+                           "\(file.lastPathComponent) must not spell the stored key")
+        }
+    }
+
+    // A killed process must get its level back at the next launch, and the
+    // "could not start" beep must not play into the restore ramp.
+    // Mutation: delete the `soundWhileDictating.recoverInterruptedDuck()` line
+    // in AppDelegate -> RED.
+    func testTheAppRecoversADuckAtLaunchAndBeepsAfterTheRestore() throws {
+        let app = stripComments(try source("Sources/OxSayDictation/AppDelegate.swift"))
+            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
+        XCTAssertTrue(app.contains("soundWhileDictating.recoverInterruptedDuck()"))
+        XCTAssertTrue(app.contains("soundWhileDictating.afterSettled { NSSound.beep() }"))
     }
 
     func testTheSystemSideHandsTheRealPiecesToTheWiring() throws {
