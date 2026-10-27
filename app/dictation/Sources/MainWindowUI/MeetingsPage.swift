@@ -8,9 +8,10 @@ struct MeetingsPage: View {
     @State private var confirmDelete = false
 
     var body: some View {
-        VStack(spacing: 0) {
+        // An inset, not a stacked row: the bar does not change how tall the page must be.
+        content
+        .safeAreaInset(edge: .top, spacing: 0) {
             if let notice = model.data.notice { NoticeBar(text: notice) { model.actions.dismissNotice() } }
-            content
         }
         .navigationTitle(L10nKey.sectionMeetings.text)
         .toolbar { toolbar }
@@ -67,6 +68,7 @@ struct MeetingsPage: View {
                     Divider()
                     detail
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }

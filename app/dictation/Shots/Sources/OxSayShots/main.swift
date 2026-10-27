@@ -52,6 +52,18 @@ struct Scene {
 
     func empty(_ d: MainWindowData) -> MainWindowData { var d = d; d.meetings = []; d.details = [:]; return d }
     func off(_ d: MainWindowData) -> MainWindowData { var d = d; d.meetingSettings.enabled = false; return d }
+    func loading(_ d: MainWindowData) -> MainWindowData { var d = d; d.meetings = []; d.details = [:]; d.meetingsLoad = .loading; return d }
+    func down(_ d: MainWindowData) -> MainWindowData {
+        var d = d; d.meetings = []; d.details = [:]
+        d.meetingsLoad = .failed(MeetingErrorText.sentence(StudioError.daemonUnreachable, action: .refresh))
+        return d
+    }
+    /// A short notice on top of the list (Copy as Markdown done).
+    func stale(_ d: MainWindowData) -> MainWindowData {
+        var d = d
+        d.notice = L10nKey.meetingErrDeleteBusy.text
+        return d
+    }
     let scenes: [Scene] = [
         Scene(name: "meetings-list", section: .meetings, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "meeting-notes", section: .meetings, meeting: "m7") { PreviewData.make(now: $0, ru: $1) },
@@ -61,6 +73,9 @@ struct Scene {
         Scene(name: "meetings-recording", section: .meetings, meeting: nil) { PreviewData.recording(now: $0, ru: $1) },
         Scene(name: "meetings-empty", section: .meetings, meeting: nil) { empty(PreviewData.make(now: $0, ru: $1)) },
         Scene(name: "meetings-off", section: .meetings, meeting: nil) { off(PreviewData.make(now: $0, ru: $1)) },
+        Scene(name: "meetings-loading", section: .meetings, meeting: nil) { loading(PreviewData.make(now: $0, ru: $1)) },
+        Scene(name: "meetings-down", section: .meetings, meeting: nil) { down(PreviewData.make(now: $0, ru: $1)) },
+        Scene(name: "meetings-notice", section: .meetings, meeting: "m7") { stale(PreviewData.make(now: $0, ru: $1)) },
         Scene(name: "dictation", section: .dictation, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "voices", section: .voices, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         // Settings is taller than a window: the shot is made as tall as the screen allows.
@@ -91,7 +106,9 @@ struct Scene {
                 model.initialMeetingTab = scene.tab
                 model.appsExpanded = scene.appsExpanded
                 model.clock = { now }
-                window.contentViewController = NSHostingController(rootView: MainWindowView(model: model))
+                let hosting = NSHostingController(rootView: MainWindowView(model: model))
+                hosting.sizingOptions = []
+                window.contentViewController = hosting
                 window.setContentSize(NSSize(width: size.width, height: scene.height))
                 window.title = "OxSay"
                 window.orderFrontRegardless()

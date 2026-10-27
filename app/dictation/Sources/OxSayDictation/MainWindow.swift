@@ -84,7 +84,10 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     private func makeWindow(_ source: MainWindowSource) -> NSWindow {
-        let window = NSWindow(contentViewController: NSHostingController(rootView: MainView(source: source)))
+        let hosting = NSHostingController(rootView: MainView(source: source))
+        // The content never resizes the window: a notice that wraps must not move the frame the user chose.
+        hosting.sizingOptions = []
+        let window = NSWindow(contentViewController: hosting)
         window.title = L10nKey.windowTitle.text
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.contentMinSize = NSSize(width: MainWindowSpec.minimumWidth,

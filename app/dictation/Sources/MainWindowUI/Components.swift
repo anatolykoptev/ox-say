@@ -141,8 +141,7 @@ struct NoticeBar: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: symbol).foregroundStyle(tint)
-            Text(text).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
+            Text(text).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
             if let actionTitle {
                 Button(actionTitle, action: action).controlSize(.small)
             } else {
