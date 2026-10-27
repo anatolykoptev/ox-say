@@ -20,6 +20,8 @@ struct MeetingDetailView: View {
     @ObservedObject var model: MainWindowModel
     let detail: MeetingDetail
     @State private var tab: MeetingTab
+    @State private var renaming = false
+    @State private var draftTitle = ""
 
     init(model: MainWindowModel, detail: MeetingDetail, tab: MeetingTab = .notes) {
         self.model = model
@@ -40,10 +42,24 @@ struct MeetingDetailView: View {
             .frame(maxWidth: 360)
             .padding(.horizontal, 24).padding(.bottom, 12)
             Divider()
-            switch tab {
-            case .notes: NotesTab(model: model, detail: detail, openSpeakers: { tab = .speakers })
-            case .transcript: TranscriptTab(detail: detail)
-            case .speakers: SpeakersTab(model: model, detail: detail)
+            if let sentence = model.data.detailError[info.id] {
+                Callout(symbol: "exclamationmark.triangle.fill", text: sentence) {
+                    Button(L10nKey.commonRetry.text) { model.actions.selectMeeting(info.id) }
+                }
+                .padding(24)
+                Spacer()
+            } else if model.data.detailLoading.contains(info.id), detail.info.notesMD == nil, detail.info.transcriptMD == nil {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text(L10nKey.meetingsLoading.text).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                switch tab {
+                case .notes: NotesTab(model: model, detail: detail, openSpeakers: { tab = .speakers })
+                case .transcript: TranscriptTab(detail: detail)
+                case .speakers: SpeakersTab(model: model, detail: detail)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -51,7 +67,7 @@ struct MeetingDetailView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(MeetingRowModel.title(of: info)).font(.title2.weight(.semibold)).lineLimit(2)
+            titleRow
             HStack(spacing: 6) {
                 if let started = info.started {
                     Text(started, format: .dateTime.day().month(.wide).hour().minute())
@@ -61,10 +77,54 @@ struct MeetingDetailView: View {
                 StatusLabel(status: MeetingRowModel.status(of: info))
             }
             .font(.subheadline).foregroundStyle(.secondary)
+            if let reason = MeetingRowModel.failureReason(of: info) {
+                Notice(symbol: "exclamationmark.triangle.fill", text: L10nKey.meetingFailedReason.text(reason), tint: .orange)
+            } else if info.status == .failed {
+                Notice(symbol: "exclamationmark.triangle.fill", text: L10nKey.meetingFailedGeneric.text, tint: .orange)
+            }
             if info.audioDeleted { Notice(symbol: "clock.arrow.circlepath", text: L10nKey.meetingAudioDeleted.text) }
             if info.heardNoSystemAudio { Notice(symbol: "exclamationmark.triangle.fill", text: L10nKey.noticeMeetingNoSystemAudio.text, tint: .orange) }
         }
         .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 12)
+    }
+}
+
+extension MeetingDetailView {
+    /// The title, with Rename beside it; while renaming, a field with Save and Cancel. A recording that is still being
+    /// processed cannot be renamed (the daemon refuses), so the button is off then.
+    @ViewBuilder var titleRow: some View {
+        if renaming {
+            HStack(spacing: 8) {
+                TextField(L10nKey.meetingsUntitled.text, text: $draftTitle)
+                    .textFieldStyle(.roundedBorder).font(.title3)
+                    .onSubmit(saveTitle)
+                Button(L10nKey.commonSave.text, action: saveTitle)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(draftTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button(L10nKey.commonCancel.text) { renaming = false }
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(MeetingRowModel.title(of: info)).font(.title2.weight(.semibold)).lineLimit(2)
+                Button {
+                    draftTitle = MeetingRowModel.title(of: info)
+                    renaming = true
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .help(L10nKey.meetingRename.text)
+                .accessibilityLabel(L10nKey.meetingRename.text)
+                .disabled(!info.settled)
+            }
+        }
+    }
+
+    private func saveTitle() {
+        let title = draftTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        renaming = false
+        model.actions.renameMeeting(info.id, title)
     }
 }
 
@@ -269,6 +329,12 @@ struct SpeakersTab: View {
                 if let problem = detail.info.diarProblem {
                     Label(problem.messageKey.text, systemImage: "info.circle")
                         .font(.callout).foregroundStyle(.secondary)
+                    if problem.canRetry, !detail.info.audioDeleted {
+                        Button(L10nKey.meetingVoicesRetry.text) { model.actions.retryVoices(detail.info.id) }
+                    }
+                } else if let error = detail.speakersError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.secondary)
+                    Button(L10nKey.commonRetry.text) { model.actions.selectMeeting(detail.info.id) }
                 } else {
                     Text(L10nKey.speakersHint.text).foregroundStyle(.secondary)
                 }
@@ -296,7 +362,13 @@ struct SpeakersTab: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onAppear { if draft == nil, let s = detail.speakers { draft = SpeakerDraft(from: s) } }
+        // The speakers may arrive after the tab does (or again after a save): the draft follows them.
+        .onAppear { resetDraft() }
+        .onChange(of: detail.speakers) { _ in resetDraft() }
+    }
+
+    private func resetDraft() {
+        draft = detail.speakers.map { SpeakerDraft(from: $0) }
     }
 
     /// The voices, or the single far-side label when the transcript has no voices.

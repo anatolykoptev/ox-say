@@ -6,7 +6,7 @@ import SwiftUI
 struct SettingsPage: View {
     @ObservedObject var model: MainWindowModel
 
-    private var s: Binding<MeetingSettingsValues> { $model.data.meetingSettings }
+    private var s: Binding<MeetingSettingsValues> { model.meetingSettings }
 
     var body: some View {
         Form {
@@ -28,7 +28,7 @@ struct SettingsPage: View {
             if s.wrappedValue.enabled {
                 ToggleRow(title: L10nKey.menuMeetingAutoStart.text, hint: L10nKey.settingsAutoFooter.text,
                           isOn: s.autoStart)
-                HintedRow(title: L10nKey.settingsFolder.text, hint: s.wrappedValue.folderPath) {
+                HintedRow(title: L10nKey.settingsFolder.text, hint: (s.wrappedValue.folderPath as NSString).abbreviatingWithTildeInPath) {
                     Button(L10nKey.commonChoose.text) { model.actions.chooseNotesFolder() }
                     Button(L10nKey.commonOpen.text) { model.actions.openNotesFolder() }
                 }
@@ -110,7 +110,7 @@ struct SettingsPage: View {
 
     private var general: some View {
         Section {
-            Toggle(L10nKey.settingsLogin.text, isOn: $model.data.about.startAtLogin)
+            Toggle(L10nKey.settingsLogin.text, isOn: model.startAtLogin)
             HintedRow(title: L10nKey.settingsEngine.text) {
                 if model.data.about.engineRunning {
                     Label(L10nKey.settingsEngineRunning.text, systemImage: "checkmark.circle.fill")

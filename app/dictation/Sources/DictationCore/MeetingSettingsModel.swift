@@ -174,6 +174,9 @@ public struct MeetingSettingsApplier {
 /// The dictation settings the window edits. Both live in UserDefaults and are read by the dictation code itself.
 public enum DictationSettings {
     public static let modeKey = "hotkeyMode"
+    /// The read-aloud voice picked for Russian and for English text (absent = the daemon's default).
+    public static let speakVoiceRUKey = "speakVoiceRU"
+    public static let speakVoiceENKey = "speakVoiceEN"
 
     public static func sound(_ d: UserDefaults) -> SoundWhileDictating { SoundWhileDictatingSetting.mode(d) }
 

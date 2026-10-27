@@ -42,6 +42,8 @@ protocol MeetingFeature: AnyObject {
     func rename(id: String, title: String) async throws
     /// Meetings were switched off: stops a recording, the call watcher and everything else that runs.
     func shutDown()
+    /// Auto-start (or a per-app pick) changed in the main window: the watcher and the menu follow.
+    func settingsChanged()
 }
 
 /// macOS before 14.2 has no process tap: the menu says so and nothing records.
@@ -66,6 +68,7 @@ final class UnsupportedMeetings: MeetingFeature {
     func requestVoicesAgain(id: String) async throws { throw StudioError.badResponse }
     func rename(id: String, title: String) async throws { throw StudioError.badResponse }
     func shutDown() {}
+    func settingsChanged() {}
 }
 
 @available(macOS 14.2, *)
@@ -565,6 +568,11 @@ final class MeetingController: NSObject, MeetingFeature {
         if let info = try? await host.client.meeting(id: id, withTexts: true) { export(info) }
     }
 
+    func settingsChanged() {
+        applyAutoStart()
+        render()
+    }
+
     func shutDown() {
         // A recording in progress ends the way the Stop button ends it, then everything that watches goes quiet.
         if current != nil { stop() }
@@ -579,22 +587,9 @@ final class MeetingController: NSObject, MeetingFeature {
 
     // MARK: settings
 
-    private func openFolder() {
-        let folder = MeetingSettings.folder(host.defaults)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(folder)
-    }
+    private func openFolder() { NotesFolder.open(host.defaults) }
 
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.directoryURL = MeetingSettings.folder(host.defaults)
-        panel.prompt = L10nKey.menuMeetingChooseFolder.text
-        NSApp.activate(ignoringOtherApps: true)
-        if panel.runModal() == .OK, let url = panel.url { MeetingSettings.setFolder(url, host.defaults) }
-    }
+    private func chooseFolder() { NotesFolder.choose(host.defaults) }
 
     private func askName() {
         let alert = NSAlert()

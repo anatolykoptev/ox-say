@@ -5,13 +5,11 @@ import SwiftUI
 struct DictationPage: View {
     @ObservedObject var model: MainWindowModel
 
-    private var d: Binding<DictationValues> { $model.data.dictation }
-
     var body: some View {
         Form {
             Section {
                 VStack(spacing: 10) {
-                    KeyCap(title: model.data.dictation.keys.first { $0.id == model.data.dictation.keyID }?.title ?? "")
+                    if let key = model.data.dictation.keyTitle { KeyCap(title: key) }
                     Text(L10nKey.dictationIntro.text)
                         .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
@@ -19,18 +17,12 @@ struct DictationPage: View {
                 .padding(.vertical, 6)
             }
             Section {
-                Picker(L10nKey.dictationKey.text, selection: d.keyID) {
-                    ForEach(model.data.dictation.keys) { k in
-                        Text(k.takenByMac ? "\(k.title) (\(L10nKey.dictationKeyTaken.text))" : k.title)
-                            .tag(k.id).disabled(k.takenByMac)
-                    }
-                }
                 VStack(alignment: .leading, spacing: 8) {
                     Text(L10nKey.dictationMode.text)
                     radio(L10nKey.dictationModeHold.text, .hold)
                     radio(L10nKey.dictationModeToggle.text, .toggle)
                 }
-                Picker(L10nKey.menuSoundWhileDictating.text, selection: d.sound) {
+                Picker(L10nKey.menuSoundWhileDictating.text, selection: model.sound) {
                     ForEach(SoundWhileDictating.allCases, id: \.self) { Text($0.titleKey.text).tag($0) }
                 }
             }
@@ -39,13 +31,8 @@ struct DictationPage: View {
                     Text(L10nKey.dictationRecentEmpty.text).foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(model.data.dictation.recent.enumerated()), id: \.offset) { _, text in
-                        HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            Text(text).lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 8)
-                            Button(L10nKey.commonCopy.text) { model.actions.copyDictation(text) }
-                        }
+                        Text(text).lineLimit(2).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     }
-                    Button(L10nKey.menuPasteLastDictation.text) { model.actions.pasteLastDictation() }
                 }
             } header: {
                 Text(L10nKey.menuRecentDictations.text)
@@ -58,7 +45,7 @@ struct DictationPage: View {
     }
 
     private func radio(_ title: String, _ choice: HotkeyMode) -> some View {
-        Button { model.data.dictation.mode = choice } label: {
+        Button { model.hotkeyMode.wrappedValue = choice } label: {
             HStack(spacing: 8) {
                 Image(systemName: model.data.dictation.mode == choice ? "largecircle.fill.circle" : "circle")
                     .foregroundStyle(model.data.dictation.mode == choice ? Color.accentColor : .secondary)

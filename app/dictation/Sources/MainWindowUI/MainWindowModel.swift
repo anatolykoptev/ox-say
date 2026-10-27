@@ -34,4 +34,42 @@ public final class MainWindowModel: ObservableObject {
 
     /// Meetings off: the Meetings page offers to turn them on instead of an empty list.
     var meetingsEnabled: Bool { data.meetingSettings.enabled }
+
+    /// What the Meetings page shows: one decision, in DictationCore.
+    var pageState: MeetingsPageState {
+        MeetingsPageState.of(enabled: meetingsEnabled, load: data.meetingsLoad, hasMeetings: !data.meetings.isEmpty,
+                             recording: data.recordingElapsed != nil)
+    }
+
+    /// The Settings values with every edit passed on to the app, which saves it where it lives. The page shows the
+    /// edit at once; the app reloads the values (and says why) when a save did not go through.
+    var meetingSettings: Binding<MeetingSettingsValues> {
+        Binding(get: { self.data.meetingSettings }, set: { self.setMeetingSettings($0) })
+    }
+
+    func setMeetingSettings(_ new: MeetingSettingsValues) {
+        let old = data.meetingSettings
+        data.meetingSettings = new
+        for change in MeetingSettingsModel.changes(from: old, to: new) { actions.changeMeetingSetting(change) }
+    }
+
+    var sound: Binding<SoundWhileDictating> {
+        Binding(get: { self.data.dictation.sound }, set: { self.data.dictation.sound = $0; self.actions.setSound($0) })
+    }
+
+    var hotkeyMode: Binding<HotkeyMode> {
+        Binding(get: { self.data.dictation.mode }, set: { self.data.dictation.mode = $0; self.actions.setHotkeyMode($0) })
+    }
+
+    func voice(_ slot: VoiceSlot) -> Binding<String?> {
+        Binding(get: { slot == .russian ? self.data.voices.russianVoice : self.data.voices.englishVoice },
+                set: {
+                    if slot == .russian { self.data.voices.russianVoice = $0 } else { self.data.voices.englishVoice = $0 }
+                    self.actions.pickVoice(slot, $0)
+                })
+    }
+
+    var startAtLogin: Binding<Bool> {
+        Binding(get: { self.data.about.startAtLogin }, set: { self.data.about.startAtLogin = $0; self.actions.setStartAtLogin($0) })
+    }
 }

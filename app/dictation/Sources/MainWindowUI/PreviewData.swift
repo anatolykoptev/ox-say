@@ -48,13 +48,14 @@ public enum PreviewData {
                     CallApp(id: "slack", name: "Slack", mode: .ask),
                     CallApp(id: "discord", name: "Discord", mode: .ask),
                     CallApp(id: "facetime", name: "FaceTime", mode: .ask),
+                    CallApp(id: "whatsapp", name: "WhatsApp", mode: .ask),
+                    CallApp(id: "telegram", name: "Telegram", mode: .ask),
                 ],
                 folderPath: "~/Documents/ox-say Meetings", retention: .month,
                 yourName: "", yourNameFallback: ru ? "Алексей Морозов" : "Alex Morgan", notesWriter: .ready),
             permissions: PermissionModel.items(microphone: .authorized, accessibility: true, notifications: .denied),
             dictation: DictationValues(
-                keys: [KeyChoice(id: "controlSpace", title: "⌃Space"), KeyChoice(id: "optionSpace", title: "⌥Space", takenByMac: true)],
-                keyID: "controlSpace", mode: .hold, sound: .pauseMusic,
+                keyTitle: "⌃Space", mode: .hold, sound: .lowerAllSound,
                 recent: ru
                     ? ["Напомни, пожалуйста, что созвон с Анной перенесли на четверг, на три часа дня.",
                        "Добавь в список покупок: молоко, хлеб и батарейки для пульта.",
@@ -65,9 +66,8 @@ public enum PreviewData {
                        "Thanks for the quick reply, I will read the document tonight and write back tomorrow.",
                        "Team meeting on Monday at ten in the morning."]),
             voices: VoicesValues(
-                speakKeys: [KeyChoice(id: "controlOptionSpace", title: "⌃⌥Space"), KeyChoice(id: "controlOptionS", title: "⌃⌥S")],
-                speakKeyID: "controlOptionS", voices: ["Anna", "Studio Mara", ru ? "Тёплый рассказчик" : "Warm narrator"],
-                russianVoice: "Anna", englishVoice: nil, studio: .installed, hasVoiceoversFolder: true),
+                voices: ["Anna", "Studio Mara", ru ? "Тёплый рассказчик" : "Warm narrator"],
+                russianVoice: "Anna", englishVoice: nil),
             about: AboutValues(version: "0.2.0", engineRunning: true, startAtLogin: true))
     }
 

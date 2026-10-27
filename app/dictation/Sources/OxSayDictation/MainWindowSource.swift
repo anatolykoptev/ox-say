@@ -1,0 +1,365 @@
+import AppKit
+import AVFoundation
+import DictationCore
+import MainWindowUI
+import UserNotifications
+
+/// What the main window needs of the app around it. Closures, so the source never reaches into AppDelegate.
+struct MainWindowHost {
+    var client: StudioClient
+    var defaults: UserDefaults
+    /// The running meeting feature, nil while meetings are off.
+    var meetings: () -> MeetingFeature?
+    /// Meetings were switched on or off in the window: create or tear down the feature, the menu item and the icon.
+    var meetingsEnabledChanged: () -> Void
+    var daemonStatus: () -> DaemonStatus?
+    var dictationKeyTitle: () -> String?
+    var recentDictations: () -> [String]
+    var knownVoices: () -> [String]
+    var setHotkeyMode: (HotkeyMode) -> Void
+    /// The sound pick was saved: the menu's check marks follow it.
+    var soundChanged: () -> Void
+    var pickVoice: (VoiceSlot, String?) -> Void
+    var startAtLogin: () -> Bool
+    var setStartAtLogin: (Bool) -> Void
+    var checkForUpdates: () -> Void
+}
+
+/// Fills the main window with what the app really has and carries out what the window asks. The window holds no timer:
+/// this class polls while the window is open and a meeting is still being processed, and ticks the clock of a running
+/// recording once a second; both stop when the window closes. Decisions are DictationCore's.
+@MainActor
+final class MainWindowSource {
+    let model: MainWindowModel
+    private let host: MainWindowHost
+    private let service: MeetingWindowService
+    private var visible = false
+    private var pollTask: Task<Void, Never>?
+    private var clockTimer: Timer?
+    private var refreshing = false
+
+    init(host: MainWindowHost) {
+        self.host = host
+        self.service = MeetingWindowService(client: host.client)
+        self.model = MainWindowModel(data: Self.blank(host))
+        model.actions = actions()
+    }
+
+    // MARK: window lifecycle
+
+    /// Every open: the data is read again, whatever it was when the window was last closed.
+    func windowOpened() {
+        visible = true
+        refresh()
+    }
+
+    func windowClosed() {
+        visible = false
+        pollTask?.cancel()
+        pollTask = nil
+        clockTimer?.invalidate()
+        clockTimer = nil
+    }
+
+    /// The meeting feature started or stopped a recording (or was switched off).
+    func recordingChanged() {
+        guard visible else { return }
+        syncRecording()
+        refresh()
+    }
+
+    /// A sentence the app said elsewhere (the status line) that the window must not miss while it is open.
+    func noticeFromApp(_ message: String) {
+        guard visible else { return }
+        model.data.notice = message
+    }
+
+    // MARK: reading
+
+    private func actions() -> MainWindowActions {
+        var a = MainWindowActions()
+        a.refresh = { [weak self] in self?.refresh() }
+        a.selectMeeting = { [weak self] id in self?.loadDetail(id) }
+        a.startRecording = { [weak self] in self?.host.meetings()?.startRecording() }
+        a.stopRecording = { [weak self] in self?.host.meetings()?.stop() }
+        a.deleteMeeting = { [weak self] id in self?.delete(id) }
+        a.renameMeeting = { [weak self] id, title in self?.rename(id, title) }
+        a.copyNotes = { [weak self] id in self?.copyNotes(id) }
+        a.openMeetingFolder = { [weak self] id in self?.openFolder(id) }
+        a.retryNotes = { [weak self] id in self?.retryNotes(id) }
+        a.retryVoices = { [weak self] id in self?.retryVoices(id) }
+        a.saveSpeakers = { [weak self] id, edits in self?.saveSpeakers(id, edits) }
+        a.changeMeetingSetting = { [weak self] change in self?.apply(change) }
+        a.openPermissionPane = { pane in
+            if let url = URL(string: pane.settingsURL) { NSWorkspace.shared.open(url) }
+        }
+        a.chooseNotesFolder = { [weak self] in
+            guard let self, NotesFolder.choose(self.host.defaults) else { return }
+            self.reloadSettings()
+        }
+        a.openNotesFolder = { [weak self] in
+            guard let self else { return }
+            NotesFolder.open(self.host.defaults)
+        }
+        a.downloadNotesWriter = { [weak self] in self?.downloadNotesWriter() }
+        a.checkForUpdates = { [weak self] in self?.host.checkForUpdates() }
+        a.setSound = { [weak self] mode in
+            guard let self else { return }
+            DictationSettings.setSound(mode, self.host.defaults)
+            self.host.soundChanged()
+        }
+        a.setHotkeyMode = { [weak self] mode in self?.host.setHotkeyMode(mode) }
+        a.pickVoice = { [weak self] slot, voice in self?.host.pickVoice(slot, voice) }
+        a.setStartAtLogin = { [weak self] on in
+            guard let self else { return }
+            self.host.setStartAtLogin(on)
+            self.model.data.about.startAtLogin = self.host.startAtLogin()
+        }
+        a.dismissNotice = { [weak self] in self?.model.data.notice = nil }
+        return a
+    }
+
+    /// Reads everything the window shows. The list and the settings come from the daemon, so they are awaited; a failed
+    /// read keeps what is on screen and says why.
+    func refresh() {
+        guard !refreshing else { return }
+        refreshing = true
+        syncRecording()
+        loadSimpleSections()
+        Task { @MainActor in
+            defer { refreshing = false }
+            let (list, load) = await service.list()
+            if let list { model.data.meetings = list }
+            model.data.meetingsLoad = load
+            await reloadSettingsAsync()
+            await reloadPermissions()
+            refreshSelectedDetail()
+            schedulePolling()
+        }
+    }
+
+    private func schedulePolling() {
+        pollTask?.cancel()
+        pollTask = nil
+        guard MeetingsPolling.needed(visible: visible, meetings: model.data.meetings) else { return }
+        pollTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(MeetingsPolling.interval * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.refresh()
+        }
+    }
+
+    /// The recording bar: elapsed time from the meeting feature itself, ticking once a second while one runs.
+    private func syncRecording() {
+        model.data.recordingElapsed = host.meetings()?.recordingElapsed
+        clockTimer?.invalidate()
+        clockTimer = nil
+        guard visible, model.data.recordingElapsed != nil else { return }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.model.data.recordingElapsed = self.host.meetings()?.recordingElapsed
+                if self.model.data.recordingElapsed == nil { self.syncRecording() }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        clockTimer = timer
+    }
+
+    private func loadSimpleSections() {
+        let d = host.defaults
+        model.data.dictation = DictationValues(keyTitle: host.dictationKeyTitle(), mode: DictationSettings.mode(d),
+                                               sound: DictationSettings.sound(d), recent: host.recentDictations())
+        model.data.voices = VoicesValues(voices: host.knownVoices(), russianVoice: d.string(forKey: "speakVoiceRU"),
+                                         englishVoice: d.string(forKey: "speakVoiceEN"))
+        model.data.about = AboutValues(version: AboutPanel.appVersion, engineRunning: host.daemonStatus() != nil,
+                                       startAtLogin: host.startAtLogin())
+    }
+
+    private func reloadSettings() { Task { @MainActor in await reloadSettingsAsync() } }
+
+    /// The settings from their stores; the daemon's retention wins over the app's copy.
+    private func reloadSettingsAsync() async {
+        let daemon = try? await host.client.meetingDaemonSettings()
+        let notes = host.daemonStatus()?.notes
+        model.data.meetingSettings = MeetingSettingsModel.load(
+            defaults: host.defaults, daemonRetention: daemon?.retention, notesWriter: NotesWriterState.of(notes),
+            fullName: NSFullUserName())
+    }
+
+    private func reloadPermissions() async {
+        let center = await UNUserNotificationCenter.current().notificationSettings()
+        let notifications: PermissionAuth = (center.authorizationStatus == .authorized || center.authorizationStatus == .provisional)
+            ? .authorized : (center.authorizationStatus == .notDetermined ? .notDetermined : .denied)
+        let mic: PermissionAuth
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: mic = .authorized
+        case .notDetermined: mic = .notDetermined
+        default: mic = .denied
+        }
+        model.data.permissions = PermissionModel.items(microphone: mic, accessibility: AXIsProcessTrusted(), notifications: notifications)
+    }
+
+    // MARK: meetings
+
+    private func loadDetail(_ id: String) {
+        model.data.detailLoading.insert(id)
+        model.data.detailError[id] = nil
+        Task { @MainActor in
+            defer { model.data.detailLoading.remove(id) }
+            switch await service.detail(id: id) {
+            case .success(let detail): model.data.details[id] = detail
+            case .failure(let failure): model.data.detailError[id] = failure.sentence
+            }
+        }
+    }
+
+    /// The chosen meeting is read again when the list says it moved on (processing finished, the notes arrived).
+    private func refreshSelectedDetail() {
+        guard let id = model.selectedMeeting, let row = model.data.meetings.first(where: { $0.id == id }) else { return }
+        guard let shown = model.data.details[id]?.info, shown.status != row.status || shown.title != row.title else { return }
+        loadDetail(id)
+    }
+
+    private func delete(_ id: String) {
+        Task { @MainActor in
+            switch await service.delete(id: id) {
+            case .done, .alreadyGone:
+                model.data.details[id] = nil
+                if model.selectedMeeting == id { model.selectedMeeting = nil }
+                model.data.meetings.removeAll { $0.id == id }
+                refresh()
+            case .failed(let sentence):
+                model.data.notice = sentence
+            }
+        }
+    }
+
+    private func rename(_ id: String, _ title: String) {
+        Task { @MainActor in
+            guard let meetings = host.meetings() else { return }
+            do {
+                try await meetings.rename(id: id, title: title)
+                loadDetail(id)
+                refresh()
+            } catch {
+                model.data.notice = MeetingErrorText.sentence(error, action: .rename)
+            }
+        }
+    }
+
+    private func saveSpeakers(_ id: String, _ edits: SpeakerEdits) {
+        Task { @MainActor in
+            guard let meetings = host.meetings() else { return }
+            do {
+                let state = try await meetings.saveSpeakers(id: id, edits: edits)
+                if var detail = model.data.details[id] { detail.speakers = state; model.data.details[id] = detail }
+                loadDetail(id)
+                refresh()
+            } catch {
+                model.data.notice = L10nKey.speakersFailed.text(MeetingErrorText.sentence(error, action: .speakers))
+            }
+        }
+    }
+
+    private func retryVoices(_ id: String) {
+        Task { @MainActor in
+            guard let meetings = host.meetings() else { return }
+            do {
+                try await meetings.requestVoicesAgain(id: id)
+                refresh()
+            } catch {
+                model.data.notice = L10nKey.speakersFailed.text(MeetingErrorText.sentence(error, action: .retry))
+            }
+        }
+    }
+
+    private func retryNotes(_ id: String) {
+        Task { @MainActor in
+            do {
+                try await host.client.retryMeetingNotes(id: id)
+                refresh()
+            } catch {
+                model.data.notice = MeetingErrorText.sentence(error, action: .retry)
+            }
+        }
+    }
+
+    /// The one clipboard write of the window, and only on the user's click: the notes' Markdown as the daemon wrote it.
+    private func copyNotes(_ id: String) {
+        guard let markdown = model.data.details[id]?.info.notesMD else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(markdown, forType: .string)
+        model.data.notice = L10nKey.meetingCopied.text
+    }
+
+    private func openFolder(_ id: String) {
+        let fm = FileManager.default
+        let target = MeetingFolderTarget.resolve(exportPath: MeetingSettings.exportPath(id, host.defaults),
+                                                 notesFolder: MeetingSettings.folder(host.defaults),
+                                                 exists: { fm.fileExists(atPath: $0) })
+        switch target {
+        case .copy(let url): NSWorkspace.shared.activateFileViewerSelecting([url])
+        case .notesFolder(let url): NSWorkspace.shared.open(url)
+        case .nowhere: model.data.notice = L10nKey.meetingFolderNone.text
+        }
+    }
+
+    private func downloadNotesWriter() {
+        Task { @MainActor in
+            do { try await host.client.installNotesModel() } catch {
+                model.data.notice = MeetingErrorText.sentence(error, action: .settings)
+            }
+            await reloadSettingsAsync()
+            schedulePollingForDownload()
+        }
+    }
+
+    /// The download has no meeting in the list to wait for: ask again in a few seconds while the window is open.
+    private func schedulePollingForDownload() {
+        guard visible, case .downloading = model.data.meetingSettings.notesWriter else { return }
+        pollTask?.cancel()
+        pollTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(MeetingsPolling.interval * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.refresh()
+        }
+    }
+
+    // MARK: settings
+
+    /// Saves one edit where it lives. A save that did not go through is said, and the page shows the stored value again.
+    private func apply(_ change: MeetingSettingsModel.Change) {
+        Task { @MainActor in
+            let applier = MeetingSettingsApplier(defaults: host.defaults, client: host.client)
+            if let failure = await applier.apply(change) {
+                model.data.notice = failure
+                await reloadSettingsAsync()
+                return
+            }
+            switch change {
+            case .enabled: host.meetingsEnabledChanged()
+            case .autoStart: host.meetings()?.settingsChanged()
+            case .retention, .mode, .name: break
+            }
+            if case .enabled(let on) = change, on, host.meetings() is UnsupportedMeetings {
+                model.data.notice = L10nKey.menuMeetingNeedsNewerMacOS.text
+            }
+            refresh()
+        }
+    }
+
+    // MARK: first values
+
+    /// What the window shows before the first read: nothing real yet, so nothing is made up.
+    private static func blank(_ host: MainWindowHost) -> MainWindowData {
+        MainWindowData(
+            meetings: [], meetingsLoad: .loading, details: [:],
+            meetingSettings: MeetingSettingsModel.load(defaults: host.defaults, daemonRetention: nil, notesWriter: .unavailable(.meetingErrDaemonDown),
+                                                       fullName: NSFullUserName()),
+            permissions: [],
+            dictation: DictationValues(keyTitle: nil, mode: DictationSettings.mode(host.defaults), sound: DictationSettings.sound(host.defaults), recent: []),
+            voices: VoicesValues(voices: [], russianVoice: nil, englishVoice: nil),
+            about: AboutValues(version: AboutPanel.appVersion, engineRunning: false, startAtLogin: false))
+    }
+}

@@ -1,62 +1,33 @@
 import DictationCore
 import Foundation
 
-public struct KeyChoice: Equatable, Identifiable {
-    public var id: String
-    public var title: String
-    /// macOS uses this combination itself; the row is greyed out.
-    public var takenByMac: Bool
-
-    public init(id: String, title: String, takenByMac: Bool = false) {
-        self.id = id
-        self.title = title
-        self.takenByMac = takenByMac
-    }
-}
-
 public struct DictationValues: Equatable {
-    public var keys: [KeyChoice]
-    public var keyID: String
+    /// The key that dictates now (e.g. "⌃Space"); nil when none is registered. Changing it stays in the menu bar.
+    public var keyTitle: String?
     public var mode: HotkeyMode
     public var sound: SoundWhileDictating
     /// The last dictations, newest first (memory only, as `DictationHistory` keeps them).
     public var recent: [String]
 
-    public init(keys: [KeyChoice], keyID: String, mode: HotkeyMode, sound: SoundWhileDictating, recent: [String]) {
-        self.keys = keys
-        self.keyID = keyID
+    public init(keyTitle: String?, mode: HotkeyMode, sound: SoundWhileDictating, recent: [String]) {
+        self.keyTitle = keyTitle
         self.mode = mode
         self.sound = sound
         self.recent = recent
     }
 }
 
-public enum StudioVoiceState: Equatable {
-    case installed
-    case missing
-    case unavailable(String)
-}
-
 public struct VoicesValues: Equatable {
-    public var speakKeys: [KeyChoice]
-    public var speakKeyID: String
     /// The voices registered on the daemon.
     public var voices: [String]
     /// nil is "Default voice"; `MenuSections.randomVoice` is "Random each time".
     public var russianVoice: String?
     public var englishVoice: String?
-    public var studio: StudioVoiceState
-    public var hasVoiceoversFolder: Bool
 
-    public init(speakKeys: [KeyChoice], speakKeyID: String, voices: [String], russianVoice: String?, englishVoice: String?,
-                studio: StudioVoiceState, hasVoiceoversFolder: Bool) {
-        self.speakKeys = speakKeys
-        self.speakKeyID = speakKeyID
+    public init(voices: [String], russianVoice: String?, englishVoice: String?) {
         self.voices = voices
         self.russianVoice = russianVoice
         self.englishVoice = englishVoice
-        self.studio = studio
-        self.hasVoiceoversFolder = hasVoiceoversFolder
     }
 }
 
@@ -72,39 +43,39 @@ public struct AboutValues: Equatable {
     }
 }
 
-/// One meeting as the detail pane needs it: the daemon's meeting (with the texts) and its speakers.
-public struct MeetingDetail: Equatable {
-    public var info: MeetingInfo
-    /// nil until the speakers were read.
-    public var speakers: SpeakersState?
-
-    public init(info: MeetingInfo, speakers: SpeakersState? = nil) {
-        self.info = info
-        self.speakers = speakers
-    }
-}
-
 /// Everything the window shows. Plain values: the app fills them (lazily, when the window
 /// opens), and the screenshot harness fills them with sample data.
 public struct MainWindowData: Equatable {
     /// The list: newest first, without the texts.
     public var meetings: [MeetingInfo]
+    /// How the last read of the list went; the list above is the last good one.
+    public var meetingsLoad: MeetingsLoad
     /// Details already read, by meeting id; a row is read when it is selected.
     public var details: [String: MeetingDetail]
+    /// Meetings whose detail is being read now, and why one could not be.
+    public var detailLoading: Set<String>
+    public var detailError: [String: String]
     /// Seconds into the recording that runs now; nil when none does.
     public var recordingElapsed: TimeInterval?
+    /// A sentence for the last thing that did not go through (or one that did); the window shows it until dismissed.
+    public var notice: String?
     public var meetingSettings: MeetingSettingsValues
     public var permissions: [PermissionItem]
     public var dictation: DictationValues
     public var voices: VoicesValues
     public var about: AboutValues
 
-    public init(meetings: [MeetingInfo], details: [String: MeetingDetail], recordingElapsed: TimeInterval? = nil,
-                meetingSettings: MeetingSettingsValues, permissions: [PermissionItem], dictation: DictationValues,
-                voices: VoicesValues, about: AboutValues) {
+    public init(meetings: [MeetingInfo], meetingsLoad: MeetingsLoad = .loaded, details: [String: MeetingDetail],
+                detailLoading: Set<String> = [], detailError: [String: String] = [:], recordingElapsed: TimeInterval? = nil,
+                notice: String? = nil, meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
+                dictation: DictationValues, voices: VoicesValues, about: AboutValues) {
         self.meetings = meetings
+        self.meetingsLoad = meetingsLoad
         self.details = details
+        self.detailLoading = detailLoading
+        self.detailError = detailError
         self.recordingElapsed = recordingElapsed
+        self.notice = notice
         self.meetingSettings = meetingSettings
         self.permissions = permissions
         self.dictation = dictation
@@ -121,21 +92,23 @@ public struct MainWindowActions {
     public var startRecording: () -> Void = {}
     public var stopRecording: () -> Void = {}
     public var deleteMeeting: (String) -> Void = { _ in }
+    public var renameMeeting: (String, String) -> Void = { _, _ in }
     public var copyNotes: (String) -> Void = { _ in }
     public var openMeetingFolder: (String) -> Void = { _ in }
     public var retryNotes: (String) -> Void = { _ in }
+    public var retryVoices: (String) -> Void = { _ in }
     public var saveSpeakers: (String, SpeakerEdits) -> Void = { _, _ in }
+    public var changeMeetingSetting: (MeetingSettingsModel.Change) -> Void = { _ in }
     public var openPermissionPane: (PermissionPane) -> Void = { _ in }
     public var chooseNotesFolder: () -> Void = {}
     public var openNotesFolder: () -> Void = {}
     public var downloadNotesWriter: () -> Void = {}
     public var checkForUpdates: () -> Void = {}
-    public var copyDictation: (String) -> Void = { _ in }
-    public var pasteLastDictation: () -> Void = {}
-    public var createVoice: () -> Void = {}
-    public var newVoiceover: () -> Void = {}
-    public var openVoiceoversFolder: () -> Void = {}
-    public var installStudioVoice: () -> Void = {}
+    public var setSound: (SoundWhileDictating) -> Void = { _ in }
+    public var setHotkeyMode: (HotkeyMode) -> Void = { _ in }
+    public var pickVoice: (VoiceSlot, String?) -> Void = { _, _ in }
+    public var setStartAtLogin: (Bool) -> Void = { _ in }
+    public var dismissNotice: () -> Void = {}
 
     public init() {}
 }

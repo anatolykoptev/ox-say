@@ -11,6 +11,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     /// The app delegate: the .appDelegate menu actions (About) go here.
     private weak var appDelegate: AppDelegate?
+    /// What the window shows, read from the daemon and the app's stores; made when the window is first opened.
+    private(set) var source: MainWindowSource?
 
     init(appDelegate: AppDelegate) {
         self.appDelegate = appDelegate
@@ -25,10 +27,14 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         // key-equivalent is matched against the main menu first, so dictation
         // into our own window needs it installed.
         MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular)
-        let window = self.window ?? makeWindow()
+        let source = self.source ?? MainActor.assumeIsolated { MainWindowSource(host: appDelegate.windowHost()) }
+        self.source = source
+        let window = self.window ?? makeWindow(source)
         self.window = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        // Every open reads the data again: a kept window does not run its view's task a second time.
+        MainActor.assumeIsolated { source.windowOpened() }
     }
 
     /// NSWindowDelegate: the window is going away. The app returns to
@@ -39,6 +45,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// other event would strand it under .accessory with no Dock tile to
     /// restore from — add no other trigger without handling that case.
     func windowWillClose(_ notification: Notification) {
+        MainActor.assumeIsolated { source?.windowClosed() }
         DispatchQueue.main.asyncAfter(deadline: .now() + WindowPolicy.accessoryRevertDelay) { [weak self] in
             self?.applyPolicy()
         }
@@ -76,8 +83,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
                                  visible: window.isVisible)
     }
 
-    private func makeWindow() -> NSWindow {
-        let window = NSWindow(contentViewController: NSHostingController(rootView: MainView()))
+    private func makeWindow(_ source: MainWindowSource) -> NSWindow {
+        let window = NSWindow(contentViewController: NSHostingController(rootView: MainView(source: source)))
         window.title = L10nKey.windowTitle.text
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.contentMinSize = NSSize(width: MainWindowSpec.minimumWidth,

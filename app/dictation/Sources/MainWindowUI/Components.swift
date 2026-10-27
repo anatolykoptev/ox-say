@@ -129,3 +129,28 @@ struct HintedRow<Trailing: View>: View {
         }
     }
 }
+
+/// A one-line message across the top of a page, with a close button, or (with `actionTitle`) a button of its own.
+struct NoticeBar: View {
+    let text: String
+    var symbol = "info.circle.fill"
+    var tint: Color = .accentColor
+    var actionTitle: String?
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol).foregroundStyle(tint)
+            Text(text).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            if let actionTitle {
+                Button(actionTitle, action: action).controlSize(.small)
+            } else {
+                Button(action: action) { Image(systemName: "xmark") }.buttonStyle(.borderless).help(L10nKey.commonCancel.text)
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(tint.opacity(0.12))
+    }
+}

@@ -8,30 +8,9 @@ struct MeetingsPage: View {
     @State private var confirmDelete = false
 
     var body: some View {
-        Group {
-            if !model.meetingsEnabled {
-                EmptyState(symbol: "person.2.slash", title: L10nKey.meetingsOffTitle.text,
-                           message: L10nKey.meetingsOffBody.text) {
-                    Button(L10nKey.meetingsTurnOn.text) { model.data.meetingSettings.enabled = true }
-                        .buttonStyle(.borderedProminent).controlSize(.large)
-                }
-            } else if model.data.meetings.isEmpty && model.data.recordingElapsed == nil {
-                VStack(spacing: 0) {
-                    EmptyState(symbol: "waveform.badge.mic", title: L10nKey.meetingsEmptyTitle.text,
-                               message: L10nKey.meetingsEmptyBody.text) {
-                        Button(L10nKey.menuMeetingRecord.text) { model.actions.startRecording() }
-                            .controlSize(.large)
-                    }
-                    PrivacyLine().padding(.bottom, 14)
-                }
-            } else {
-                HStack(spacing: 0) {
-                    MeetingList(model: model)
-                        .frame(width: 290)
-                    Divider()
-                    detail
-                }
-            }
+        VStack(spacing: 0) {
+            if let notice = model.data.notice { NoticeBar(text: notice) { model.actions.dismissNotice() } }
+            content
         }
         .navigationTitle(L10nKey.sectionMeetings.text)
         .toolbar { toolbar }
@@ -42,6 +21,53 @@ struct MeetingsPage: View {
             Button(L10nKey.commonCancel.text, role: .cancel) {}
         } message: {
             Text(L10nKey.meetingDeleteBody.text)
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch model.pageState {
+        case .off:
+            EmptyState(symbol: "person.2.slash", title: L10nKey.meetingsOffTitle.text,
+                       message: L10nKey.meetingsOffBody.text) {
+                Button(L10nKey.meetingsTurnOn.text) {
+                    var settings = model.data.meetingSettings
+                    settings.enabled = true
+                    model.setMeetingSettings(settings)
+                }
+                .buttonStyle(.borderedProminent).controlSize(.large)
+            }
+        case .loading:
+            VStack(spacing: 12) {
+                ProgressView()
+                Text(L10nKey.meetingsLoading.text).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .unreachable(let sentence):
+            EmptyState(symbol: "bolt.horizontal.circle", title: L10nKey.meetingsDownTitle.text, message: sentence) {
+                Button(L10nKey.commonRetry.text) { model.actions.refresh() }.controlSize(.large)
+            }
+        case .empty:
+            VStack(spacing: 0) {
+                EmptyState(symbol: "waveform.badge.mic", title: L10nKey.meetingsEmptyTitle.text,
+                           message: L10nKey.meetingsEmptyBody.text) {
+                    Button(L10nKey.menuMeetingRecord.text) { model.actions.startRecording() }
+                        .controlSize(.large)
+                }
+                PrivacyLine().padding(.bottom, 14)
+            }
+        case .list(let stale):
+            VStack(spacing: 0) {
+                if let stale {
+                    NoticeBar(text: stale, symbol: "exclamationmark.triangle.fill", tint: .orange,
+                              actionTitle: L10nKey.commonRetry.text) { model.actions.refresh() }
+                }
+                HStack(spacing: 0) {
+                    MeetingList(model: model)
+                        .frame(width: 290)
+                    Divider()
+                    detail
+                }
+            }
         }
     }
 
