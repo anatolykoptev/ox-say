@@ -27,7 +27,10 @@ func (d *Daemon) meetingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/meetings", d.handleMeetingList)
 	mux.HandleFunc("GET /v1/meetings/settings", d.handleMeetingSettings)
 	mux.HandleFunc("PUT /v1/meetings/settings", d.handleMeetingSettingsSet)
+	mux.HandleFunc("GET /v1/meetings/search", d.handleMeetingSearch)
 	mux.HandleFunc("GET /v1/meetings/{id}", d.handleMeetingGet)
+	mux.HandleFunc("PATCH /v1/meetings/{id}", d.handleMeetingRename)
+	mux.HandleFunc("GET /v1/meetings/{id}/audio", d.handleMeetingAudio)
 	mux.HandleFunc("POST /v1/meetings/{id}/finish", d.handleMeetingFinish)
 	mux.HandleFunc("POST /v1/meetings/{id}/notes", d.handleMeetingNotes)
 	mux.HandleFunc("DELETE /v1/meetings/{id}", d.handleMeetingDelete)
@@ -116,12 +119,8 @@ func (d *Daemon) handleMeetingCreate(w http.ResponseWriter, r *http.Request) {
 		name, text string
 		max        int
 	}{{"title", title, maxTitleChars}, {"source", source, maxSourceChars}, {"labels.me", me, maxLabelChars}, {"labels.them", them, maxLabelChars}, {"labels.speaker", speaker, maxLabelChars}} {
-		if utf8.RuneCountInString(f.text) > f.max {
-			writeErr(w, http.StatusBadRequest, f.name+" is too long")
-			return
-		}
-		if meeting.HasBidiControl(f.text) {
-			writeErr(w, http.StatusBadRequest, f.name+" holds a text-direction control character")
+		if msg := checkText(f.name, f.text, f.max); msg != "" {
+			writeErr(w, http.StatusBadRequest, msg)
 			return
 		}
 	}
@@ -139,6 +138,51 @@ func (d *Daemon) handleMeetingCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, createMeetingResponse{Manifest: d.publicManifest(m), Dir: dir})
+}
+
+// checkText is the refusal of a cleaned caller-chosen text (title, label, source), "" when it passes: at most max
+// characters and no text-direction control character.
+func checkText(name, text string, max int) string {
+	if utf8.RuneCountInString(text) > max {
+		return name + " is too long"
+	}
+	if meeting.HasBidiControl(text) {
+		return name + " holds a text-direction control character"
+	}
+	return ""
+}
+
+// handleMeetingRename is PATCH /v1/meetings/{id} with {"title": "..."}: the same cleaning, caps and refusals as at
+// create, then meeting.Runner.Rename (manifest and the headings of transcript.md and notes.md, under the meeting's
+// speakers lock). A meeting being recorded or processed is refused with 409, as a speakers edit is.
+func (d *Daemon) handleMeetingRename(w http.ResponseWriter, r *http.Request) {
+	// A pointer: an absent title must not read as "", which clears it.
+	var in struct {
+		Title *string `json:"title"`
+	}
+	if err := decodeStrict(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if in.Title == nil {
+		writeErr(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	title := cleanText(*in.Title)
+	if msg := checkText("title", title, maxTitleChars); msg != "" {
+		writeErr(w, http.StatusBadRequest, msg)
+		return
+	}
+	m, err := d.Meet.Rename(r.PathValue("id"), title)
+	if errors.Is(err, meeting.ErrSpeakersBusy) {
+		writeErr(w, http.StatusConflict, "this meeting is still being recorded or processed; rename it when it is done")
+		return
+	}
+	if err != nil {
+		d.writeMeetingErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d.publicManifest(*m))
 }
 
 // cleanText is a caller-chosen name (title, label, source) with every control

@@ -86,6 +86,7 @@ var wantToolSchemas = map[string]struct{ props, required []string }{
 	"produce_control": {[]string{"id", "action", "allow_battery", "delete_outputs"}, []string{"id", "action"}},
 	"meetings_list":   {[]string{"limit"}, nil},
 	"meeting_get":     {[]string{"id", "part", "offset", "max_chars"}, []string{"id"}},
+	"meetings_search": {[]string{"query"}, []string{"query"}},
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -175,6 +176,7 @@ func TestMCPDescriptionsAreSelfSufficient(t *testing.T) {
 		"produce_control":   {"resume", "cancel", "remove", "delete_outputs", "allow_battery", "for good", "not running"},
 		"meetings_list":     {"meeting_get", "status", "notes_pending", "has_notes"},
 		"meeting_get":       {"meetings_list", "notes", "transcript", "next_offset", "max_chars", "language"},
+		"meetings_search":   {"meeting_get", "title", "snippet", "start", "speaker", "50", "truncated"},
 	}
 	for tool, words := range need {
 		for _, w := range words {
