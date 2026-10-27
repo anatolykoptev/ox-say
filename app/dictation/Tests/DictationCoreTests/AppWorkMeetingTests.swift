@@ -25,6 +25,6 @@ final class AppWorkMeetingTests: XCTestCase {
               let end = source.range(of: "\n    }\n", range: start.upperBound..<source.endIndex)
         else { return XCTFail("appWork() not found") }
         let body = source[start.lowerBound..<end.upperBound]
-        XCTAssertTrue(body.contains("recordingMeeting:"), "appWork() does not report whether a meeting is recording")
+        XCTAssertTrue(body.contains("recordingMeeting: meetings?.isRecording"), "appWork() does not report whether a meeting is recording")
     }
 }

@@ -22,6 +22,9 @@ final class CallWatcher {
         /// Set once: a browser held the microphone with Automation off. The app
         /// shows notice.meeting.browser_denied — otherwise it reads as no call.
         var browserDenied: Bool
+        /// Set once: a browser holds the microphone and its tab has not been readable for several polls — an
+        /// Automation prompt nobody answered (#251). The app shows notice.meeting.browser_pending.
+        var browserNeedsPermission: Bool
     }
 
     var onTick: ((Tick) -> Void)?
@@ -67,14 +70,17 @@ final class CallWatcher {
             .map { MicUser(bundleID: $0.bundleID, pid: $0.pid) }
         let outcome = watch.observe(now: Date(), users: users, tab: readTab,
                                   themActive: themActive(), recording: recording())
-        onTick?(Tick(users: users, call: outcome.call, action: outcome.action, browserDenied: outcome.browserDenied))
+        onTick?(Tick(users: users, call: outcome.call, action: outcome.action, browserDenied: outcome.browserDenied,
+                     browserNeedsPermission: outcome.browserNeedsPermission))
     }
 
     /// Main thread: asks for a fresh read (a no-op while one is pending) and answers
     /// with the last completed one; before the first completes it is `.unreadable`,
     /// which the tracker tolerates for one round.
     private func readTab(_ bundleID: String) -> BrowserTabURL.Result {
-        let runner = runners[bundleID] ?? QueuedScriptRunner(label: bundleID)
+        // dropWhileBusy: a read stuck behind an unanswered Automation prompt holds the worker; the next polls are
+        // answered "unreadable" instead of piling scripts up behind it (#251).
+        let runner = runners[bundleID] ?? QueuedScriptRunner(label: bundleID, dropWhileBusy: true)
         runners[bundleID] = runner
         tabReads.request(bundleID) { BrowserTabURL.read(bundleID: bundleID, runner: runner) }
         return tabReads.latest(bundleID) ?? .unreadable

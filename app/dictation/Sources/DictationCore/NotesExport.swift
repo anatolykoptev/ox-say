@@ -50,6 +50,34 @@ public enum NotesExport {
 
     public enum ExportError: Error, Equatable {
         case nothingToWrite
+        /// `refresh` found no folder where the earlier copy was: the user moved or deleted it.
+        case folderMoved
+    }
+
+    /// Why a copy could not be made, in words for the status line: no Cocoa error dump, no path.
+    public static func explain(_ error: Error) -> String {
+        let ns = error as NSError
+        let missing = "the notes folder is not available (is its disk connected?)"
+        let readOnly = "the notes folder cannot be written to"
+        let full = "the disk is full"
+        switch ns.domain {
+        case NSCocoaErrorDomain:
+            switch ns.code {
+            case NSFileWriteOutOfSpaceError: return full
+            case NSFileWriteNoPermissionError, NSFileWriteVolumeReadOnlyError: return readOnly
+            case NSFileNoSuchFileError, NSFileReadNoSuchFileError: return missing
+            default: break
+            }
+        case NSPOSIXErrorDomain:
+            switch Int32(ns.code) {
+            case ENOSPC: return full
+            case EACCES, EPERM, EROFS: return readOnly
+            case ENOENT, ENOTDIR, ENODEV: return missing
+            default: break
+            }
+        default: break
+        }
+        return "the notes could not be saved to the notes folder"
     }
 
     /// Renames `from` to `to` without replacing, returning 0 or the errno.
@@ -129,7 +157,7 @@ public enum NotesExport {
                                stage: (Data, URL) throws -> Void = { try $0.write(to: $1) }) throws -> RefreshResult {
         guard info.notesMD != nil || info.transcriptMD != nil else { throw ExportError.nothingToWrite }
         var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { throw CocoaError(.fileNoSuchFile) }
+        guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { throw ExportError.folderMoved }
         let texts = [("notes.md", info.notesMD), ("transcript.md", info.transcriptMD)].compactMap { name, text in text.map { (name, Data($0.utf8)) } }
         var edited: [String] = []
         for (name, _) in texts {

@@ -23,6 +23,11 @@ public enum CallDetector {
         "com.apple.FaceTime": "facetime",
         "com.cisco.webexmeetingsapp": "webex",
         "com.hnc.Discord": "discord",
+        "net.whatsapp.WhatsApp": "whatsapp",
+        // Telegram: the Mac App Store app, the Mac App Store "Telegram Lite", and the direct Telegram Desktop build.
+        "ru.keepcoder.Telegram": "telegram",
+        "org.telegram.desktop": "telegram",
+        "com.tdesktop.Telegram": "telegram",
     ]
 
     /// Browsers whose active tab the app can read by Apple Events. Safari is not
@@ -50,7 +55,7 @@ public enum CallDetector {
     /// Sources that start a recording by themselves. Discord holds the
     /// microphone all day in a voice channel and FaceTime is usually a personal
     /// call: for those the badge asks first, whatever the auto-start setting says.
-    public static let autoStartSources: Set<String> = ["zoom", "teams", "webex", "meet"]
+    public static let autoStartSources: Set<String> = ["zoom", "teams", "webex", "meet", "oxpulse"]
 
     /// What the microphone users add up to.
     public struct Detection: Equatable {
@@ -126,6 +131,17 @@ public enum CallDetector {
 
 /// Recognizes a meeting page by its address.
 public enum MeetingURL {
+    /// An OxPulse call room (oxpulse-chat docs/url-contract.md): `/<22-char id>` (1:1), `/<LLLL-DDDDC>` or
+    /// `/r/<LLLL-DDDD…>` (group). The landing pages, the chat app (`/app/…`) and the burner/sealed chat shims
+    /// (`/c/…`, `/m/…`, or `?hint=burner|sealed`) are not calls.
+    private static func oxPulseIsRoom(_ url: URL) -> Bool {
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        if let hint = comps?.queryItems?.first(where: { $0.name == "hint" })?.value, hint == "burner" || hint == "sealed" { return false }
+        let path = url.path
+        let shapes = ["^/[A-Za-z0-9_-]{22}$", "^/[A-Z]{4}-[0-9]{4}[0-9A-Z]?$", "^/r/[A-Z]{4}-[0-9]{4}[0-9A-Z]?$"]
+        return shapes.contains { path.range(of: $0, options: .regularExpression) != nil }
+    }
+
     public static func source(of address: String) -> String? {
         guard let url = URL(string: address), let host = url.host?.lowercased() else { return nil }
         let path = url.path
@@ -135,6 +151,9 @@ public enum MeetingURL {
         }
         for zoom in ["zoom.us", "zoomgov.com"] where host == zoom || host.hasSuffix("." + zoom) {
             return path.hasPrefix("/wc/") || path.hasPrefix("/j/") ? "zoom" : nil
+        }
+        if host == "oxpulse.chat" || host.hasSuffix(".oxpulse.chat") {
+            return oxPulseIsRoom(url) ? "oxpulse" : nil
         }
         if host == "teams.microsoft.com" || host == "teams.live.com" {
             // The classic link keeps its route in the fragment ("/_#/l/meetup-join/…").
@@ -171,8 +190,14 @@ public struct CallTracker {
     private var callSince: Date?
     private var quietSince: Date?
     private var idleSince: Date?
-    private var announced = false
-    private var declined = false
+    /// Episodes (`call|bundleID`) already offered or recorded, and ones the user declined. They are remembered
+    /// per episode, not as one flag: two call holders that alternate (a Zoom app and a Meet tab) each keep their own
+    /// answer, so a decline of one is not forgotten when the other comes and goes (#241). The idle reset below
+    /// clears both.
+    private var announcedKeys: Set<String> = []
+    private var declinedKeys: Set<String> = []
+    /// `decline()` came while no episode existed yet: it applies to the next one.
+    private var declineNext = false
     /// Which app/page the current call episode belongs to; a different one is a new call.
     private var episode: String?
     /// Consecutive ticks on which a browser held the microphone but its tab was unreadable.
@@ -187,7 +212,9 @@ public struct CallTracker {
 
     /// Forget the current call: the user said "don't record this one". The
     /// call is not offered again until it has ended.
-    public mutating func decline() { declined = true }
+    public mutating func decline() {
+        if let episode { declinedKeys.insert(episode) } else { declineNext = true }
+    }
 
     /// One observation. `call` is the detected source or nil; `bundleID` is the app
     /// that holds it (a change of source or app starts a new call episode);
@@ -212,29 +239,30 @@ public struct CallTracker {
             callSince = nil
             quietSince = nil
             idleSince = nil
-            if recording != nil { announced = true }
+            if recording != nil, let episode { announcedKeys.insert(episode) }
             return .nothing
         }
         if let call, !held {
             unreadableTicks = 0
             quietSince = nil
             idleSince = nil
-            if let episode, episode != key {
-                announced = false
-                declined = false
-                callSince = nil
-            }
+            if let episode, episode != key { callSince = nil }
             episode = key
+            if declineNext, let key {
+                declinedKeys.insert(key)
+                declineNext = false
+            }
             if callSince == nil { callSince = now }
             if recording != nil {
                 // A recording is already running (the user started it, or we did): this
                 // call is taken care of. When it stops while the call goes on, a user's
                 // stop stays stopped; only an automatic stop re-arms (below).
-                announced = true
+                if let key { announcedKeys.insert(key) }
                 return .nothing
             }
-            if !announced, !declined, now.timeIntervalSince(callSince!) >= Self.startAfter {
-                announced = true
+            if let key, !announcedKeys.contains(key), !declinedKeys.contains(key),
+               now.timeIntervalSince(callSince!) >= Self.startAfter {
+                announcedKeys.insert(key)
                 return .callStarted(source: call)
             }
             return .nothing
@@ -255,7 +283,7 @@ public struct CallTracker {
                 if now.timeIntervalSince(quietSince!) >= Self.endAfter {
                     quietSince = nil
                     // The call may well go on (a muted listener, a long silence): offer it again.
-                    announced = false
+                    if let episode { announcedKeys.remove(episode) }
                     return .stopRecording
                 }
             }
@@ -267,8 +295,9 @@ public struct CallTracker {
             quietSince = nil
             if idleSince == nil { idleSince = now }
             if now.timeIntervalSince(idleSince!) >= Self.endAfter {
-                announced = false
-                declined = false
+                announcedKeys = []
+                declinedKeys = []
+                declineNext = false
                 episode = nil
             }
         }
@@ -298,8 +327,17 @@ public struct CallWatch {
         /// must say so (notice.meeting.browser_denied): it looks exactly like
         /// no call. Reported again after a read for that browser worked in between.
         public var browserDenied = false
+        /// A browser has held the microphone for several rounds in a row and its tab was never readable: an
+        /// Automation prompt that nobody answered looks like this (#251). Reported once, until a read works.
+        public var browserNeedsPermission = false
     }
 
+    /// Polls (2 s apart) of unreadable tab before the app says it is waiting for permission: long enough that one
+    /// slow read or a browser without a window stays silent.
+    public static let unreadableRoundsBeforeNotice = 5
+
+    private var unreadableRounds = 0
+    private var permissionReported = false
     private var tracker = CallTracker()
     /// The call last seen live. It is the episode's memory: consulted only while its
     /// app still holds the microphone AND the tracker is still in that episode, and
@@ -354,6 +392,18 @@ public struct CallWatch {
                 deniedReported.formUnion(fresh)
             }
         }
-        return Outcome(call: call, heldOnly: heldOnly, action: action, browserDenied: denied)
+        // Unreadable rounds in a row, with no call found and no read that worked this round.
+        var needsPermission = false
+        if detection.browserUnreadable, !reads.values.contains(where: { if case .url = $0 { return true } else { return false } }) {
+            unreadableRounds += 1
+            if unreadableRounds >= Self.unreadableRoundsBeforeNotice, !permissionReported {
+                permissionReported = true
+                needsPermission = true
+            }
+        } else {
+            unreadableRounds = 0
+            if reads.values.contains(where: { if case .url = $0 { return true } else { return false } }) { permissionReported = false }
+        }
+        return Outcome(call: call, heldOnly: heldOnly, action: action, browserDenied: denied, browserNeedsPermission: needsPermission)
     }
 }

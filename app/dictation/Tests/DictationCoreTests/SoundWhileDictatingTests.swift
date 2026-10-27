@@ -909,6 +909,34 @@ final class SoundWhileDictatingAppGlueTests: XCTestCase {
         XCTAssertTrue(app.contains("soundWhileDictating.afterSettled { NSSound.beep() }"))
     }
 
+    // While a call is on, dictation must not lower the far side: the app hands
+    // the meeting's call state to the runner, and the controller keeps it
+    // current. Limitation: with auto-start off and nothing recording, the
+    // watcher does not run, so a call is not seen.
+    // Mutation: pass `{ false }` for `callActive:` in AppDelegate -> RED.
+    func testTheAppPassesTheMeetingCallStateToTheRunner() throws {
+        let app = MeetingWiringTests.stripComments(try source("Sources/OxSayDictation/AppDelegate.swift"))
+            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
+        XCTAssertTrue(app.contains("SoundWhileDictatingSystem.makeRunner(callActive: { [callActivity] in callActivity.isActive })"))
+        XCTAssertTrue(app.contains("client: studioClient, defaults: .standard, callActivity: callActivity,"))
+        let system = try source("Sources/OxSayDictation/SoundWhileDictatingSystem.swift")
+            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
+        XCTAssertTrue(system.contains("callActive: callActive,"))
+        let wiring = try source("Sources/DictationCore/SoundWhileDictatingWiring.swift")
+            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
+        XCTAssertTrue(wiring.contains("callActive: callActive"))
+    }
+
+    // Mutation: MeetingController, delete the `host.callActivity.setRecording(` or
+    // `setCallSeen(` update -> RED.
+    func testTheMeetingControllerKeepsTheCallStateCurrent() throws {
+        let c = MeetingWiringTests.stripComments(try source("Sources/OxSayDictation/MeetingController.swift"))
+            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
+        XCTAssertTrue(c.contains("host.callActivity.setRecording(current != nil)"))
+        XCTAssertTrue(c.contains("host.callActivity.setCallSeen(tick.call != nil)"))
+        XCTAssertTrue(c.contains("host.callActivity.setCallSeen(false)"))
+    }
+
     func testTheSystemSideHandsTheRealPiecesToTheWiring() throws {
         let source = try source("Sources/OxSayDictation/SoundWhileDictatingSystem.swift")
             .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
