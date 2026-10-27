@@ -121,7 +121,8 @@ public enum Retry {
 
 /// Start and watcher decisions of the controller.
 public enum MeetingPolicy {
-    public enum CallStart: Equatable { case start, prompt }
+    /// `ignore`: the user said "don't record" for this app; nothing is started and nothing is offered.
+    public enum CallStart: Equatable { case start, prompt, ignore }
     public enum ManualStart: Equatable { case go, waitForInstall }
 
     /// The call watcher runs while auto-start is on, and also while an automatic recording is running even if the

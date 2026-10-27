@@ -29,6 +29,19 @@ protocol MeetingFeature: AnyObject {
     func menuWillOpen()
     /// Closes a recording in progress and hands it to the daemon; bounded, for quit.
     func stopForQuit()
+    /// Seconds into the recording that runs now; nil when none does. The main window's bar reads this.
+    var recordingElapsed: TimeInterval? { get }
+    /// The menu's "Record Meeting" and "Stop Recording" paths, for the main window's buttons.
+    func startRecording()
+    func stop()
+    /// The speakers edit of the main window: saved and followed up exactly as the menu's panel does.
+    func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState
+    /// The main window's "find voices again".
+    func requestVoicesAgain(id: String) async throws
+    /// The main window renamed a meeting: the copy in the notes folder is of the old title.
+    func rename(id: String, title: String) async throws
+    /// Meetings were switched off: stops a recording, the call watcher and everything else that runs.
+    func shutDown()
 }
 
 /// macOS before 14.2 has no process tap: the menu says so and nothing records.
@@ -46,6 +59,13 @@ final class UnsupportedMeetings: MeetingFeature {
     func daemonStatusChanged() {}
     func menuWillOpen() {}
     func stopForQuit() {}
+    var recordingElapsed: TimeInterval? { nil }
+    func startRecording() {}
+    func stop() {}
+    func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState { throw StudioError.badResponse }
+    func requestVoicesAgain(id: String) async throws { throw StudioError.badResponse }
+    func rename(id: String, title: String) async throws { throw StudioError.badResponse }
+    func shutDown() {}
 }
 
 @available(macOS 14.2, *)
@@ -74,6 +94,9 @@ final class MeetingController: NSObject, MeetingFeature {
     private var sleepObserver: NSObjectProtocol?
 
     var isRecording: Bool { current != nil }
+    var recordingElapsed: TimeInterval? { current == nil ? nil : recorder.elapsed }
+
+    func startRecording() { start(origin: .manual, source: "manual") }
 
     init(host: MeetingHost) {
         self.host = host
@@ -368,10 +391,11 @@ final class MeetingController: NSObject, MeetingFeature {
         switch tick.action {
         case .nothing: break
         case .callStarted(let source):
-            switch MeetingPolicy.onCallStarted(source: source, autoStart: MeetingSettings.autoStart(host.defaults),
-                                               autoSources: CallDetector.autoStartSources, installing: host.updateInstalling()) {
+            switch MeetingPolicy.onCallStarted(source: source, mode: CallPolicy.mode(for: source, host.defaults),
+                                               autoStart: MeetingSettings.autoStart(host.defaults), installing: host.updateInstalling()) {
             case .start: start(origin: .auto, source: source)
             case .prompt: badge.showPrompt(source: source)
+            case .ignore: break
             }
         case .stopRecording:
             stop()
@@ -493,18 +517,7 @@ final class MeetingController: NSObject, MeetingFeature {
                     let edits = draft.edits(against: state)
                     if edits.isEmpty { return }
                     let wasOffer = state.offersSplit
-                    state = try await host.client.editSpeakers(id: id, edits: edits)
-                    MeetingSettings.setExportStale(id, true, host.defaults)
-                    // Decide from the daemon's answer, never from the shape of the edit.
-                    if state.notesQueued {
-                        track(id)
-                        host.notify(L10nKey.noticeSpeakersSaved.text)
-                    } else {
-                        // A copy left alone or not made has said so; "saved" would bury that sentence.
-                        var said = false
-                        if let info = try? await host.client.meeting(id: id, withTexts: true) { said = export(info).told }
-                        if !said { host.notify(L10nKey.noticeSpeakersNamesSaved.text) }
-                    }
+                    state = try await saveSpeakers(id: id, edits: edits)
                     if !(wasOffer && !state.offersSplit) { return }
                 }
             } catch {
@@ -513,17 +526,55 @@ final class MeetingController: NSObject, MeetingFeature {
         }
     }
 
+    /// Sends the edits and follows them up. The menu's panel and the main window both come through here.
+    func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState {
+        let state = try await host.client.editSpeakers(id: id, edits: edits)
+        MeetingSettings.setExportStale(id, true, host.defaults)
+        // Decide from the daemon's answer, never from the shape of the edit.
+        if state.notesQueued {
+            track(id)
+            host.notify(L10nKey.noticeSpeakersSaved.text)
+        } else {
+            // A copy left alone or not made has said so; "saved" would bury that sentence.
+            var said = false
+            if let info = try? await host.client.meeting(id: id, withTexts: true) { said = export(info).told }
+            if !said { host.notify(L10nKey.noticeSpeakersNamesSaved.text) }
+        }
+        return state
+    }
+
     private func retryVoices(_ id: String) {
         Task { @MainActor in
-            do {
-                try await host.client.retryMeetingVoices(id: id)
-                // The transcript is written again: the copy in the notes folder is of the old one.
-                MeetingSettings.setExportStale(id, true, host.defaults)
-                track(id)
-            } catch {
+            do { try await requestVoicesAgain(id: id) } catch {
                 host.notify(L10nKey.speakersFailed.text("\(error)"))
             }
         }
+    }
+
+    func requestVoicesAgain(id: String) async throws {
+        try await host.client.retryMeetingVoices(id: id)
+        // The transcript is written again: the copy in the notes folder is of the old one.
+        MeetingSettings.setExportStale(id, true, host.defaults)
+        track(id)
+    }
+
+    func rename(id: String, title: String) async throws {
+        _ = try await host.client.renameMeeting(id: id, title: title)
+        // The copy in the notes folder carries the old title in its name and headings.
+        MeetingSettings.setExportStale(id, true, host.defaults)
+        if let info = try? await host.client.meeting(id: id, withTexts: true) { export(info) }
+    }
+
+    func shutDown() {
+        // A recording in progress ends the way the Stop button ends it, then everything that watches goes quiet.
+        if current != nil { stop() }
+        watcher.stop()
+        host.callActivity.setCallSeen(false)
+        badge.hide()
+        tick?.invalidate()
+        tick = nil
+        if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
+        sleepObserver = nil
     }
 
     // MARK: settings

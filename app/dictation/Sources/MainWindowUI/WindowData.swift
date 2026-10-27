@@ -1,115 +1,6 @@
 import DictationCore
 import Foundation
 
-/// The System Settings pages the "Fix" buttons open.
-public enum PermissionPane: String, CaseIterable, Equatable {
-    case microphone
-    case accessibility
-    case systemAudio
-    case automation
-
-    public var settingsURL: String {
-        let base = "x-apple.systempreferences:com.apple.preference.security?"
-        switch self {
-        case .microphone: return base + "Privacy_Microphone"
-        case .accessibility: return base + "Privacy_Accessibility"
-        case .systemAudio: return base + "Privacy_ScreenCapture"
-        case .automation: return base + "Privacy_Automation"
-        }
-    }
-}
-
-/// Whether a permission works. `unknown` is for the two macOS cannot be asked
-/// without showing a prompt (system audio, automation): the window says so
-/// instead of guessing.
-public enum PermissionState: Equatable {
-    case allowed
-    case needsAttention
-    case unknown
-}
-
-public struct PermissionItem: Equatable, Identifiable {
-    public var id: String
-    public var titleKey: L10nKey
-    public var whyKey: L10nKey
-    public var symbol: String
-    public var pane: PermissionPane
-    public var state: PermissionState
-
-    public init(id: String, titleKey: L10nKey, whyKey: L10nKey, symbol: String, pane: PermissionPane, state: PermissionState) {
-        self.id = id
-        self.titleKey = titleKey
-        self.whyKey = whyKey
-        self.symbol = symbol
-        self.pane = pane
-        self.state = state
-    }
-}
-
-/// What the window does with a call app it recognises.
-public enum CallAppMode: String, CaseIterable, Equatable {
-    case auto
-    case ask
-    case never
-
-    public var titleKey: L10nKey {
-        switch self {
-        case .auto: return .settingsAppsAuto
-        case .ask: return .settingsAppsAsk
-        case .never: return .settingsAppsNever
-        }
-    }
-}
-
-public struct CallApp: Equatable, Identifiable {
-    public var id: String
-    public var name: String
-    /// A line under the name (which browsers a web call is read in); nil for none.
-    public var noteKey: L10nKey?
-    public var mode: CallAppMode
-
-    public init(id: String, name: String, noteKey: L10nKey? = nil, mode: CallAppMode) {
-        self.id = id
-        self.name = name
-        self.noteKey = noteKey
-        self.mode = mode
-    }
-}
-
-public enum NotesWriterState: Equatable {
-    case ready
-    case missing
-    case downloading(percent: Int)
-    /// This Mac or this install cannot write notes; the text says why.
-    case unavailable(L10nKey)
-}
-
-/// The meeting settings the Settings page shows. The folder, retention, auto-start and name are
-/// `MeetingSettings` values (UserDefaults); the rest comes from the daemon or macOS.
-public struct MeetingSettingsValues: Equatable {
-    public var enabled: Bool
-    public var autoStart: Bool
-    public var apps: [CallApp]
-    public var folderPath: String
-    public var retention: MeetingRetention
-    public var yourName: String
-    /// What the name falls back to (the macOS full name).
-    public var yourNameFallback: String
-    public var notesWriter: NotesWriterState
-
-    public init(enabled: Bool, autoStart: Bool, apps: [CallApp], folderPath: String, retention: MeetingRetention,
-                yourName: String, yourNameFallback: String, notesWriter: NotesWriterState) {
-        self.enabled = enabled
-        self.autoStart = autoStart
-        self.apps = apps
-        self.folderPath = folderPath
-        self.retention = retention
-        self.yourName = yourName
-        self.yourNameFallback = yourNameFallback
-        self.notesWriter = notesWriter
-    }
-}
-
 public struct KeyChoice: Equatable, Identifiable {
     public var id: String
     public var title: String
@@ -123,20 +14,15 @@ public struct KeyChoice: Equatable, Identifiable {
     }
 }
 
-public enum DictationModeChoice: String, CaseIterable, Equatable {
-    case hold
-    case toggle
-}
-
 public struct DictationValues: Equatable {
     public var keys: [KeyChoice]
     public var keyID: String
-    public var mode: DictationModeChoice
+    public var mode: HotkeyMode
     public var sound: SoundWhileDictating
     /// The last dictations, newest first (memory only, as `DictationHistory` keeps them).
     public var recent: [String]
 
-    public init(keys: [KeyChoice], keyID: String, mode: DictationModeChoice, sound: SoundWhileDictating, recent: [String]) {
+    public init(keys: [KeyChoice], keyID: String, mode: HotkeyMode, sound: SoundWhileDictating, recent: [String]) {
         self.keys = keys
         self.keyID = keyID
         self.mode = mode

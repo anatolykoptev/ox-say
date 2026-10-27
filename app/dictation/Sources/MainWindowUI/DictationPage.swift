@@ -57,7 +57,7 @@ struct DictationPage: View {
         .navigationTitle(L10nKey.sectionDictation.text)
     }
 
-    private func radio(_ title: String, _ choice: DictationModeChoice) -> some View {
+    private func radio(_ title: String, _ choice: HotkeyMode) -> some View {
         Button { model.data.dictation.mode = choice } label: {
             HStack(spacing: 8) {
                 Image(systemName: model.data.dictation.mode == choice ? "largecircle.fill.circle" : "circle")
