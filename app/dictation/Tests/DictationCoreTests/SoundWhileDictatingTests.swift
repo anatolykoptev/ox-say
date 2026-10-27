@@ -768,6 +768,44 @@ final class SoundWhileDictatingAppGlueTests: XCTestCase {
         return try String(contentsOf: path, encoding: .utf8)
     }
 
+    private func stripComments(_ text: String) -> String {
+        var code = text
+        for pattern in ["/\\*[\\s\\S]*?\\*/", "//[^\\n]*"] {
+            code = code.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        return code
+    }
+
+    // A menu pick must go through `choose` (it sets the default-V2 marker); a
+    // direct write of the key would be migrated away on the next read.
+    // Mutation: in AppDelegate.pickSoundMode put back
+    // `UserDefaults.standard.set(mode.rawValue, forKey: SoundWhileDictatingSetting.defaultsKey)` -> RED.
+    func testThePickGoesThroughChooseAndNothingElseWritesTheKey() throws {
+        let app = stripComments(try source("Sources/OxSayDictation/AppDelegate.swift"))
+        guard let start = app.range(of: "func pickSoundMode"),
+              let end = app[start.upperBound...].range(of: "\n    }\n") else {
+            return XCTFail("pickSoundMode not found")
+        }
+        let body = String(app[start.upperBound..<end.lowerBound])
+            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
+        XCTAssertTrue(body.contains("SoundWhileDictatingSetting.choose("),
+                      "pickSoundMode must store the pick through SoundWhileDictatingSetting.choose")
+
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources")
+        let files = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+        XCTAssertGreaterThan(files.count, 10, "the source walk found the tree")
+        for file in files where file.lastPathComponent != "SoundWhileDictating.swift" {
+            let code = stripComments(try String(contentsOf: file, encoding: .utf8))
+            XCTAssertFalse(code.contains("SoundWhileDictatingSetting.defaultsKey"),
+                           "\(file.lastPathComponent) must not touch the stored key; use choose/mode")
+            XCTAssertFalse(code.contains("\"soundWhileDictating\""),
+                           "\(file.lastPathComponent) must not spell the stored key")
+        }
+    }
+
     func testTheSystemSideHandsTheRealPiecesToTheWiring() throws {
         let source = try source("Sources/OxSayDictation/SoundWhileDictatingSystem.swift")
             .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
