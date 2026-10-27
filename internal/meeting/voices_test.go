@@ -668,7 +668,7 @@ func TestAFailureToDropTheMarkLeavesTheMeetingDone(t *testing.T) {
 }
 
 // The per-meeting edit locks do not pile up: once no edit holds or awaits one, it is dropped (#256).
-// Mutation: internal/meeting/runner.go keyedLocks.lock, delete the `delete(k.m, id)` line -> RED.
+// Mutation: internal/meeting/runner.go keyedLocks.lock, delete the `delete(k.m, key)` line -> RED.
 func TestSpeakerLocksArePruned(t *testing.T) {
 	f, id, _ := settledGroup(t)
 	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan"}}); err != nil {
@@ -676,5 +676,91 @@ func TestSpeakerLocksArePruned(t *testing.T) {
 	}
 	if n := f.r.speakerLocks.size(); n != 0 {
 		t.Errorf("%d lock entries after the edit", n)
+	}
+}
+
+// An edit that lands while the notes' writer drops the stale mark is not lost: the writer reads the speakers and
+// saves them under the meeting's edit lock. The hook runs a merge once the writer has read the speakers (the edit
+// is allowed, the meeting is already done) and gives it 300 ms to finish: under the lock it waits for the writer,
+// without the lock it finishes first and the writer then saves the speakers it read before it (#262).
+// Mutation: internal/meeting/runner.go writeNotes, delete the `unlock := r.speakerLocks.lock(id)` line and the
+// `unlock()` after the clear -> RED (the merge and the mark the edit set are overwritten).
+func TestDroppingTheMarkDoesNotOverwriteAnEditThatLandedMeanwhile(t *testing.T) {
+	f, id, dir := settledGroup(t)
+	if _, err := f.r.EditSpeakers(id, Edit{Merge: map[string]string{"them:3": "them:1"}}); err != nil {
+		t.Fatal(err)
+	}
+	var armed atomic.Bool
+	armed.Store(true)
+	finished := make(chan struct{})
+	edit := make(chan error, 1)
+	f.r.afterSpeakersRead = func() {
+		if !armed.CompareAndSwap(true, false) {
+			return // the edit's own read
+		}
+		go func() {
+			_, err := f.r.EditSpeakers(id, Edit{Merge: map[string]string{"them:2": "them:1"}})
+			edit <- err
+			close(finished)
+		}()
+		select {
+		case <-finished:
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-edit; err != nil {
+		t.Fatal(err)
+	}
+	st, err := LoadSpeakers(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Merge["them:2"] != "them:1" || st.Merge["them:3"] != "them:1" {
+		t.Errorf("the merges after the edit and the writer = %v, want both", st.Merge)
+	}
+	if !st.NotesStale {
+		t.Error("the mark the edit set was dropped: the notes for its speakers would never be written")
+	}
+}
+
+// A lock is not pruned while another goroutine waits for it: when the holder lets go, the waiter takes the same lock,
+// and a third caller waits behind it instead of getting a fresh one (#262).
+// Mutation: internal/meeting/runner.go keyedLocks.lock, change `if l.refs--; l.refs == 0 {` to `if l.refs--; true {`
+// -> RED (the third caller gets in while the waiter holds the lock).
+func TestKeyedLockIsKeptWhileSomebodyWaits(t *testing.T) {
+	var k keyedLocks
+	unlockA := k.lock("m")
+	got := make(chan func(), 2)
+	go func() { got <- k.lock("m") }() // B waits for A
+	for {                              // until B has registered as a waiter
+		k.mu.Lock()
+		refs := 0
+		if l := k.m["m"]; l != nil {
+			refs = l.refs
+		}
+		k.mu.Unlock()
+		if refs == 2 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	unlockA()
+	unlockB := <-got // B holds the lock now
+	if n := k.size(); n != 1 {
+		t.Fatalf("%d lock entries while B holds the lock, want 1", n)
+	}
+	go func() { got <- k.lock("m") }() // C must wait behind B
+	select {
+	case <-got:
+		t.Fatal("a third caller took the lock while B held it: the entry was pruned under the waiter")
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlockB()
+	(<-got)()
+	if n := k.size(); n != 0 {
+		t.Errorf("%d lock entries after everybody let go", n)
 	}
 }

@@ -102,7 +102,7 @@ type Runner struct {
 	speakerLocks keyedLocks // one speakers edit at a time per meeting
 	// clearStale drops the notes-stale mark; nil is clearNotesStale (tests put a failure here).
 	clearStale func(dir string, m Manifest, written *Notes) error
-	// afterSpeakersRead, when set, is called by EditSpeakers once it has read the state it will change (tests).
+	// afterSpeakersRead, when set, is called by EditSpeakers and by the notes writer's clear once they have read the speakers they will change (tests).
 	afterSpeakersRead func()
 }
 
@@ -899,9 +899,15 @@ func (r *Runner) writeNotes(id, dir, md string, n *Notes) error {
 	// stays only makes the next speakers edit queue the notes again.
 	clear := r.clearStale
 	if clear == nil {
-		clear = clearNotesStale
+		clear = r.clearNotesStale
 	}
-	if cerr := clear(dir, *m, n); cerr != nil {
+	// Under the meeting's speakers lock: the meeting is done, so a speakers edit may be running, and the clear
+	// reads speakers.json and saves it whole. No caller of writeNotes holds the lock (only EditSpeakers takes it, and
+	// it does not write notes).
+	unlock := r.speakerLocks.lock(id)
+	cerr := clear(dir, *m, n)
+	unlock()
+	if cerr != nil {
 		r.Log.Warn("meeting: cannot drop the notes-stale mark", slog.String("id", id), slog.Any("error", cerr))
 	}
 	return nil

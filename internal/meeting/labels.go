@@ -285,10 +285,14 @@ func rewriteNotes(dir string, shown, m Manifest, before, after SpeakerState, tur
 // written (the notes just saved) holds the labels they were written under, the marker goes only if those are the
 // labels now, because the speakers may have been edited while the model ran (the edit saved them and its request to
 // queue the notes was refused). Notes without labels (the too-short text) depend on no speaker.
-func clearNotesStale(dir string, m Manifest, written *Notes) error {
+// The caller holds the meeting's speakers lock: this reads speakers.json and saves it whole.
+func (r *Runner) clearNotesStale(dir string, m Manifest, written *Notes) error {
 	st, err := LoadSpeakers(dir)
 	if err != nil || !st.NotesStale {
 		return nil // an unreadable speakers.json is dropVoiceState's business
+	}
+	if r.afterSpeakersRead != nil {
+		r.afterSpeakersRead()
 	}
 	if written != nil {
 		turns, err := readTurns(dir)
