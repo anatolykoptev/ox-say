@@ -630,6 +630,52 @@ final class SoundWhileDictatingWiringTests: XCTestCase {
         XCTAssertEqual(world.touched, [], "the duck path sends no Apple Events")
     }
 
+    // Lower All Sound on an output that cannot be lowered (HDMI, a USB DAC,
+    // a Multi-Output device) pauses the players instead and resumes them on
+    // release. Mutation: in SoundWhileDictatingRunner.dictationStateChanged
+    // drop the `pause.begin(generation: g)` fallback -> RED.
+    func testLowerAllSoundOnAnUnsettableOutputFallsBackToPausing() {
+        let suite = "ox-say-media-fallback-\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        let world = FakeScriptWorld([music: "playing", spotify: "playing"])
+        let fakeVolume = FakeSystemVolume()
+        fakeVolume.settable = false
+        let r = runner(world, defaults: defaults(suite, mode: .lowerAllSound), volume: fakeVolume)
+        r.dictationStateChanged(.recording); r.drain()
+        XCTAssertEqual([world.state(music), world.state(spotify)], ["paused", "paused"])
+        XCTAssertEqual(fakeVolume.writes, [])
+        r.dictationStateChanged(.transcribing); r.drain()
+        XCTAssertEqual([world.state(music), world.state(spotify)], ["playing", "playing"])
+    }
+
+    func testLowerAllSoundWithoutAnyVolumeAlsoFallsBackToPausing() {
+        let suite = "ox-say-media-novolume-\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        let world = FakeScriptWorld([music: "playing"])
+        let r = runner(world, defaults: defaults(suite, mode: .lowerAllSound), volume: nil)
+        r.dictationStateChanged(.recording); r.drain()
+        XCTAssertEqual(world.state(music), "paused")
+        r.dictationStateChanged(.idle); r.drain()
+        XCTAssertEqual(world.state(music), "playing")
+    }
+
+    // The crash path through the real wiring and the real defaults store (in
+    // a private suite): the first runner ducks and is never ended; a second
+    // one on the same defaults gives the level back at launch.
+    func testAKilledDuckIsRestoredByTheNextLaunch() {
+        let suite = "ox-say-media-crash-\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        let d = defaults(suite, mode: .lowerAllSound)
+        let fakeVolume = FakeSystemVolume()
+        let first = runner(FakeScriptWorld([:]), defaults: d, volume: fakeVolume)
+        first.dictationStateChanged(.recording); first.drain()
+        XCTAssertEqual(fakeVolume.level, 0.8 * VolumeDuckCoordinator.duckFraction, accuracy: 0.001)
+        // SIGKILL: no `.idle` ever reaches `first`. The next launch:
+        let second = runner(FakeScriptWorld([:]), defaults: d, volume: fakeVolume)
+        second.recoverInterruptedDuck(); second.drain()
+        XCTAssertEqual(fakeVolume.level, 0.8, accuracy: 0.0001)
+    }
+
     // Mutation: delete `coordinator.onPermissionDenied = onPermissionDenied`
     // in SoundWhileDictatingWiring.makeRunner -> RED.
     func testADeniedAutomationReachesTheNoticeOnce() {

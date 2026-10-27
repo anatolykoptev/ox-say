@@ -514,6 +514,98 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
     }
 }
 
+final class InMemoryDuckRecordStore: DuckRecordStore {
+    var record: DuckRecord?
+    func load() -> DuckRecord? { record }
+    func save(_ record: DuckRecord) { self.record = record }
+    func clear() { record = nil }
+}
+
+/// Item: a crash or SIGKILL while ducked must not leave the output at 15%.
+final class VolumeDuckRecoveryTests: XCTestCase {
+    private func rig(level: Float = 0.8) -> (FakeSystemVolume, InMemoryDuckRecordStore, VolumeDuckCoordinator) {
+        let fake = FakeSystemVolume()
+        fake.level = level
+        let store = InMemoryDuckRecordStore()
+        return (fake, store, VolumeDuckCoordinator(volume: fake, stepDelay: 0, settleDelay: 0, records: store))
+    }
+
+    func testBeginReportsWhetherTheOutputWasLowered() {
+        let (_, _, ducked) = rig()
+        XCTAssertTrue(ducked.begin(generation: 1))
+
+        let (unsettable, _, a) = rig(); unsettable.settable = false
+        XCTAssertFalse(a.begin(generation: 1), "an output without a software volume is not handled")
+        let (gone, _, b) = rig(); gone.gone = true
+        XCTAssertFalse(b.begin(generation: 1), "no default device is not handled")
+        let (muted, _, c) = rig(); muted.muted = true
+        XCTAssertTrue(c.begin(generation: 1), "a muted output has nothing audible to lower")
+    }
+
+    func testTheDebtIsRecordedWhileDuckedAndClearedAfterAConfirmedRestore() {
+        let (fake, store, duck) = rig()
+        duck.begin(generation: 1)
+        let record = store.record
+        XCTAssertEqual(record?.uid, "fake-output")
+        XCTAssertEqual(record?.preDuck ?? 0, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(record?.ducked ?? 0, 0.12, accuracy: 0.0001)
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+        XCTAssertNil(store.record, "a confirmed restore clears the debt")
+    }
+
+    func testAnUnconfirmedRestoreKeepsTheDebt() {
+        let (fake, store, duck) = rig()
+        duck.begin(generation: 1)
+        fake.refuseWritesFrom = fake.writes.count
+        duck.end(generation: 1)
+        XCTAssertNotNil(store.record)
+    }
+
+    // Mutation: in VolumeDuckCoordinator.recoverInterrupted return at once
+    // (skip the launch restore) -> RED.
+    func testALaunchAfterACrashGivesTheLevelBack() {
+        let (fake, store, duck) = rig(level: 0.12)
+        store.record = DuckRecord(uid: "fake-output", preDuck: 0.8, ducked: 0.12)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+        XCTAssertNil(store.record)
+    }
+
+    func testALaunchLeavesAVolumeTheUserMovedAndDropsTheRecord() {
+        let (fake, store, duck) = rig(level: 0.5)
+        store.record = DuckRecord(uid: "fake-output", preDuck: 0.8, ducked: 0.12)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertNil(store.record)
+    }
+
+    func testALaunchOnAnotherDefaultOutputWritesNothing() {
+        let (fake, store, duck) = rig(level: 0.12)
+        store.record = DuckRecord(uid: "other-output", preDuck: 0.8, ducked: 0.12)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertNil(store.record)
+    }
+
+    func testALaunchWithoutARecordWritesNothing() {
+        let (fake, _, duck) = rig(level: 0.12)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [])
+    }
+
+    func testTheDefaultsStoreRoundTripsInAPrivateSuite() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UserDefaultsDuckRecordStore(defaults: defaults)
+        XCTAssertNil(store.load())
+        store.save(DuckRecord(uid: "u", preDuck: 0.75, ducked: 0.1125))
+        XCTAssertEqual(store.load(), DuckRecord(uid: "u", preDuck: 0.75, ducked: 0.1125))
+        store.clear()
+        XCTAssertNil(store.load())
+    }
+}
+
 final class SoundWhileDictatingSettingTests: XCTestCase {
     private let key = SoundWhileDictatingSetting.defaultsKey
     private let marker = SoundWhileDictatingSetting.defaultV2Key
@@ -804,6 +896,17 @@ final class SoundWhileDictatingAppGlueTests: XCTestCase {
             XCTAssertFalse(code.contains("\"soundWhileDictating\""),
                            "\(file.lastPathComponent) must not spell the stored key")
         }
+    }
+
+    // A killed process must get its level back at the next launch, and the
+    // "could not start" beep must not play into the restore ramp.
+    // Mutation: delete the `soundWhileDictating.recoverInterruptedDuck()` line
+    // in AppDelegate -> RED.
+    func testTheAppRecoversADuckAtLaunchAndBeepsAfterTheRestore() throws {
+        let app = stripComments(try source("Sources/OxSayDictation/AppDelegate.swift"))
+            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
+        XCTAssertTrue(app.contains("soundWhileDictating.recoverInterruptedDuck()"))
+        XCTAssertTrue(app.contains("soundWhileDictating.afterSettled { NSSound.beep() }"))
     }
 
     func testTheSystemSideHandsTheRealPiecesToTheWiring() throws {

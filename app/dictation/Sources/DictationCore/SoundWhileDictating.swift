@@ -103,7 +103,11 @@ public final class SoundWhileDictatingRunner {
             queue.async { [pause, duck, mode] in
                 switch mode() {
                 case .pauseMusic: pause.begin(generation: g)
-                case .lowerAllSound: duck?.begin(generation: g)
+                case .lowerAllSound:
+                    // An output that cannot be lowered (no software volume, no
+                    // device, no duck at all) falls back to pausing the players;
+                    // the ending below ends both.
+                    if duck?.begin(generation: g) != true { pause.begin(generation: g) }
                 case .dontTouch: break
                 }
             }
@@ -115,6 +119,23 @@ public final class SoundWhileDictatingRunner {
                 pause.end(generation: g)
                 duck?.end(generation: g)
             }
+        }
+    }
+
+    /// At launch: gives back the level a killed process left ducked.
+    public func recoverInterruptedDuck() {
+        queue.async { [duck] in duck?.recoverInterrupted() }
+    }
+
+    /// Runs `body` on the main queue once the work queued so far (a restore
+    /// ramp) has finished, but after `timeout` at the latest — for a sound
+    /// that should not play into the ramp.
+    public func afterSettled(timeout: TimeInterval = 2, _ body: @escaping () -> Void) {
+        let done = DispatchSemaphore(value: 0)
+        queue.async { done.signal() }
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = done.wait(timeout: .now() + timeout)
+            DispatchQueue.main.async(execute: body)
         }
     }
 

@@ -254,6 +254,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Every way a recording ends (release, tap, esc, error, length cap)
         // changes this state, so one forward covers the media resume.
         controller.onState = { [weak self] state in self?.soundWhileDictating.dictationStateChanged(state); self?.show(state) }
+        // A process killed mid-duck left the output quiet: give it back now.
+        soundWhileDictating.recoverInterruptedDuck()
         controller.onError = { [weak self] message in self?.notice(message, kind: .outcome) }
         // One line per dictation, no text: read with
         // `log show --predicate 'subsystem == "io.github.anatolykoptev.ox-say.dictation"'`.
@@ -1309,7 +1311,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusLine.title = merged.message
         statusItem.button?.toolTip = merged.message
         overlay.showMessage(merged.message)
-        NSSound.beep()
+        // Not into the restore ramp of the dictation that just ended.
+        soundWhileDictating.afterSettled { NSSound.beep() }
     }
 
     @objc private func pickShortcut(_ sender: NSMenuItem) {

@@ -12,8 +12,10 @@ public enum SoundWhileDictatingWiring {
     /// - `isRunning`: the system's process list for a bundle id (no Apple Event).
     /// - `execute`: runs one AppleScript source; each player gets its own worker.
     /// - `volume`: the system output volume the duck drives; nil leaves
-    ///   "Lower All Sound" a no-op.
+    ///   "Lower All Sound" pause the players instead.
     /// - `defaults`: where the menu setting is read at every dictation.
+    /// - `duckRecords`: where a standing duck is remembered across a crash;
+    ///   defaults to keys in `defaults`.
     /// - `onPermissionDenied`: fires on a background queue, at most once.
     /// - `log` / `logError`: lines without user content.
     public static func makeRunner(
@@ -21,6 +23,7 @@ public enum SoundWhileDictatingWiring {
         execute: @escaping (String) -> ScriptOutcome = QueuedScriptRunner.executeWithNSAppleScript,
         volume: SystemVolume? = nil,
         defaults: UserDefaults,
+        duckRecords: DuckRecordStore? = nil,
         onPermissionDenied: @escaping () -> Void,
         log: @escaping (String) -> Void = { _ in },
         logError: @escaping (String) -> Void = { _ in }
@@ -33,7 +36,8 @@ public enum SoundWhileDictatingWiring {
         let pause = MediaPauseCoordinator(players: players, logError: logError)
         pause.onPermissionDenied = onPermissionDenied
         let duck = volume.map {
-            VolumeDuckCoordinator(volume: $0, log: log, logError: logError)
+            VolumeDuckCoordinator(volume: $0, log: log, logError: logError,
+                                  records: duckRecords ?? UserDefaultsDuckRecordStore(defaults: defaults))
         }
         return SoundWhileDictatingRunner(pause: pause, duck: duck,
                                          mode: { SoundWhileDictatingSetting.mode(defaults) })
