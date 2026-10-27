@@ -6,11 +6,15 @@ import SwiftUI
 /// click focuses the same NSWindow, never creates another. While it is open the
 /// app is `.regular` with a menu bar; when it closes the app returns to
 /// `.accessory` once nothing that counts is left on screen.
+@MainActor
 final class MainWindowController: NSObject, NSWindowDelegate {
     /// The single window; kept across close/reopen so its autosaved frame holds.
     private var window: NSWindow?
     /// The app delegate: the .appDelegate menu actions (About) go here.
     private weak var appDelegate: AppDelegate?
+    /// What the window shows, read from the daemon and the app's stores; made when the window is first opened.
+    private(set) var source: MainWindowSource?
+    private var observers: [NSObjectProtocol] = []
 
     init(appDelegate: AppDelegate) {
         self.appDelegate = appDelegate
@@ -25,10 +29,19 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         // key-equivalent is matched against the main menu first, so dictation
         // into our own window needs it installed.
         MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular)
-        let window = self.window ?? makeWindow()
+        let source = self.source ?? MainWindowSource(host: appDelegate.windowHost())
+        self.source = source
+        let window = self.window ?? makeWindow(source)
         self.window = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        // Every open reads the data again: a kept window does not run its view's task a second time.
+        source.windowOpened()
+    }
+
+    private func syncVisibility() {
+        guard let window else { return }
+        source?.visibilityChanged(window.occlusionState.contains(.visible) && !window.isMiniaturized)
     }
 
     /// NSWindowDelegate: the window is going away. The app returns to
@@ -39,6 +52,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// other event would strand it under .accessory with no Dock tile to
     /// restore from — add no other trigger without handling that case.
     func windowWillClose(_ notification: Notification) {
+        source?.windowClosed()
         DispatchQueue.main.asyncAfter(deadline: .now() + WindowPolicy.accessoryRevertDelay) { [weak self] in
             self?.applyPolicy()
         }
@@ -76,8 +90,11 @@ final class MainWindowController: NSObject, NSWindowDelegate {
                                  visible: window.isVisible)
     }
 
-    private func makeWindow() -> NSWindow {
-        let window = NSWindow(contentViewController: NSHostingController(rootView: MainView()))
+    private func makeWindow(_ source: MainWindowSource) -> NSWindow {
+        let hosting = NSHostingController(rootView: MainView(source: source))
+        // The content never resizes the window: a notice that wraps must not move the frame the user chose.
+        hosting.sizingOptions = []
+        let window = NSWindow(contentViewController: hosting)
         window.title = L10nKey.windowTitle.text
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.contentMinSize = NSSize(width: MainWindowSpec.minimumWidth,
@@ -85,6 +102,14 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         // One controller owns the one window for the app's whole run.
         window.isReleasedWhenClosed = false
         window.delegate = self
+        // Minimised, covered or the app hidden: the window stops asking the daemon and stops its clock.
+        let center = NotificationCenter.default
+        for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification,
+                     NSWindow.didDeminiaturizeNotification] {
+            observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.syncVisibility() }
+            })
+        }
         window.setFrameAutosaveName(MainWindowSpec.frameAutosaveName)
         if !window.setFrameUsingName(MainWindowSpec.frameAutosaveName) {
             window.center()

@@ -8,6 +8,7 @@ import ServiceManagement
 /// The menu-bar app: an icon that shows the dictation state, a menu with the
 /// settings, an overlay while dictating, and the wiring between the hotkey, the
 /// recorder, the ox-say daemon and the paste output.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -88,6 +89,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var studio: StudioController!
     /// Meeting notes: nil until the feature flag (MeetingSettings.enabledKey) is on.
     private var meetings: MeetingFeature?
+    /// The menu's "Meetings" row; present only while meetings are on (the main window can switch them).
+    private var meetingsMenuItem: NSMenuItem?
     /// The one main window; created on first "Open OxSay…", kept across closes.
     private lazy var mainWindow = MainWindowController(appDelegate: self)
     /// Runs once when the playback that was started with a completion ends on its own.
@@ -137,8 +140,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let shortcutsSubmenu = NSMenu()
     private var dictationKeyRows: [ShortcutMenu.Item] = []
     private var speakKeyRows: [ShortcutMenu.Item] = []
-    private let speakVoiceRUKey = "speakVoiceRU"
-    private let speakVoiceENKey = "speakVoiceEN"
+    private let speakVoiceRUKey = DictationSettings.speakVoiceRUKey
+    private let speakVoiceENKey = DictationSettings.speakVoiceENKey
     /// The single choice from before the per-language menus; migrated into
     /// both on first launch of a build that has them.
     private let legacySpeakVoiceKey = "speakVoice"
@@ -522,7 +525,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shortcutsSubmenu.autoenablesItems = false // or AppKit re-enables the greyed-out keys
         menu.addItem(submenuItem("Keyboard Shortcuts", shortcutsSubmenu))
         menu.addItem(submenuItem("Studio", studio.submenu))
-        if let meetings { menu.addItem(submenuItem(L10nKey.menuMeetings.text, meetings.submenu)) }
+        if let meetings {
+            let item = submenuItem(L10nKey.menuMeetings.text, meetings.submenu)
+            meetingsMenuItem = item
+            menu.addItem(item)
+        }
         menu.addItem(.separator())
         menu.addItem(recentItem)
         pasteLastItem.target = self
@@ -556,21 +563,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Asks the daemon for /status on every menu open; a failure clears the last
     /// answer so the About panel does not name a stale service version.
     private func refreshServiceStatus() {
-        let client = studioClient!
-        Task { @MainActor [weak self] in
-            let status = try? await client.status()
-            guard let self else { return }
-            self.serviceStatus = status
-            self.studio.statusChanged(status)
-            self.meetings?.daemonStatusChanged()
-            self.runVersionHandshake()
-        }
+        Task { await refreshServiceStatusNow() }
+    }
+
+    /// The same read, awaitable: the main window needs a fresh answer before it shows the notes writer and the engine.
+    private func refreshServiceStatusNow() async {
+        let status = try? await studioClient.status()
+        serviceStatus = status
+        studio.statusChanged(status)
+        meetings?.daemonStatusChanged()
+        runVersionHandshake()
     }
 
     /// The on-disk bundle's version, read from its Info.plist file — never
     /// Bundle.main, which caches the plist this process launched with, the
     /// exact stale answer the handshake exists to catch.
-    private static func diskVersion() -> String? {
+    nonisolated private static func diskVersion() -> String? {
         let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
         return (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
     }
@@ -740,13 +748,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetings = MeetingController(host: MeetingHost(
             client: studioClient, defaults: .standard, callActivity: callActivity,
             alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) },
-            notify: { [unowned self] message in self.notice(message) },
+            notify: { [unowned self] message in
+                self.notice(message)
+                self.mainWindow.source?.noticeFromApp(message)
+            },
             recordingChanged: { [unowned self] in
                 self.applyStatusIcon()
                 self.handshakeWorkEnded()
+                self.mainWindow.source?.recordingChanged()
             },
             daemonStatus: { [unowned self] in self.serviceStatus },
             updateInstalling: { [unowned self] in self.updateInstalling }))
+    }
+
+    /// The meetings switch changed in the main window: the feature, its menu item and the icon follow at once.
+    private func applyMeetingsEnabled() {
+        let on = MeetingSettings.enabled(UserDefaults.standard)
+        if on, meetings == nil {
+            setUpMeetings()
+            if let meetings, let menu = statusItem.menu {
+                let item = submenuItem(L10nKey.menuMeetings.text, meetings.submenu)
+                meetingsMenuItem = item
+                let after = menu.items.firstIndex { $0.submenu === studio.submenu }.map { $0 + 1 } ?? menu.items.count
+                menu.insertItem(item, at: after)
+            }
+            refreshServiceStatus()
+        } else if !on, let current = meetings {
+            current.shutDown()
+            meetings = nil
+            if let item = meetingsMenuItem { statusItem.menu?.removeItem(item) }
+            meetingsMenuItem = nil
+        }
+        applyStatusIcon()
+        handshakeWorkEnded()
+        mainWindow.source?.recordingChanged()
+    }
+
+    /// What the main window reads and does in the app.
+    func windowHost() -> MainWindowHost {
+        MainWindowHost(
+            client: studioClient, defaults: .standard,
+            meetings: { [unowned self] in self.meetings },
+            meetingsEnabledChanged: { [unowned self] in self.applyMeetingsEnabled() },
+            daemonStatus: { [unowned self] in self.serviceStatus },
+            refreshStatus: { [unowned self] in await self.refreshServiceStatusNow() },
+            dictationKeyTitle: { [unowned self] in self.active?.title },
+            recentDictations: { [unowned self] in self.controller.history.texts },
+            knownVoices: { [unowned self] in self.knownVoices ?? [] },
+            setHotkeyMode: { [unowned self] mode in self.applyHotkeyMode(mode) },
+            soundChanged: { [unowned self] in self.syncSoundModeItems() },
+            pickVoice: { [unowned self] slot, voice in
+                self.applyVoicePick(key: slot == .russian ? self.speakVoiceRUKey : self.speakVoiceENKey, voice: voice)
+            },
+            startAtLogin: { SMAppService.mainApp.status == .enabled },
+            setStartAtLogin: { [unowned self] on in
+                if (SMAppService.mainApp.status == .enabled) != on { self.toggleLogin() }
+            },
+            checkForUpdates: { [unowned self] in self.checkForUpdates() })
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
@@ -1325,8 +1383,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func pickVoice(_ sender: NSMenuItem) {
         guard let pick = sender.representedObject as? [String: String],
               let key = pick["key"], key == speakVoiceRUKey || key == speakVoiceENKey else { return }
-        if let name = pick["voice"] {
-            UserDefaults.standard.set(name, forKey: key)
+        applyVoicePick(key: key, voice: pick["voice"])
+    }
+
+    /// A read-aloud voice pick, from the Voice menu or the main window: stored, the menus rebuilt, a sample spoken.
+    private func applyVoicePick(key: String, voice: String?) {
+        if let voice {
+            UserDefaults.standard.set(voice, forKey: key)
         } else {
             UserDefaults.standard.removeObject(forKey: key)
         }
@@ -1367,7 +1430,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleMode() {
-        controller.mode = controller.mode == .hold ? .toggle : .hold
+        applyHotkeyMode(controller.mode == .hold ? .toggle : .hold)
+    }
+
+    /// Hold or toggle, from the menu row or the main window.
+    private func applyHotkeyMode(_ mode: HotkeyMode) {
+        controller.mode = mode
         UserDefaults.standard.set(controller.mode.rawValue, forKey: modeKey)
         toggleItem.state = controller.mode == .toggle ? .on : .off
         show(controller.state)

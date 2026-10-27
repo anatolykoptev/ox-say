@@ -22,6 +22,7 @@ struct MeetingHost {
 }
 
 /// What the app holds of the meeting feature, whatever the macOS version.
+@MainActor
 protocol MeetingFeature: AnyObject {
     var submenu: NSMenu { get }
     var isRecording: Bool { get }
@@ -29,9 +30,27 @@ protocol MeetingFeature: AnyObject {
     func menuWillOpen()
     /// Closes a recording in progress and hands it to the daemon; bounded, for quit.
     func stopForQuit()
+    /// Seconds into the recording that runs now; nil when none does. The main window's bar reads this.
+    var recordingElapsed: TimeInterval? { get }
+    /// The menu's "Record Meeting" and "Stop Recording" paths, for the main window's buttons.
+    func startRecording()
+    func stop()
+    /// The speakers edit of the main window: saved and followed up exactly as the menu's panel does.
+    func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState
+    /// The main window's "find voices again".
+    func requestVoicesAgain(id: String) async throws
+    /// The main window's "try again" for notes that could not be written: asked for again, then followed to the end.
+    func retryNotes(id: String) async throws
+    /// The main window renamed a meeting: the copy in the notes folder is of the old title.
+    func rename(id: String, title: String) async throws
+    /// Meetings were switched off: stops a recording, the call watcher and everything else that runs.
+    func shutDown()
+    /// Auto-start (or a per-app pick) changed in the main window: the watcher and the menu follow.
+    func settingsChanged()
 }
 
 /// macOS before 14.2 has no process tap: the menu says so and nothing records.
+@MainActor
 final class UnsupportedMeetings: MeetingFeature {
     let submenu = NSMenu()
     var isRecording: Bool { false }
@@ -46,9 +65,19 @@ final class UnsupportedMeetings: MeetingFeature {
     func daemonStatusChanged() {}
     func menuWillOpen() {}
     func stopForQuit() {}
+    var recordingElapsed: TimeInterval? { nil }
+    func startRecording() {}
+    func stop() {}
+    func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState { throw MeetingFeatureError.needsNewerMacOS }
+    func requestVoicesAgain(id: String) async throws { throw MeetingFeatureError.needsNewerMacOS }
+    func retryNotes(id: String) async throws { throw MeetingFeatureError.needsNewerMacOS }
+    func rename(id: String, title: String) async throws { throw MeetingFeatureError.needsNewerMacOS }
+    func shutDown() {}
+    func settingsChanged() {}
 }
 
 @available(macOS 14.2, *)
+@MainActor
 final class MeetingController: NSObject, MeetingFeature {
     let submenu = NSMenu()
     private let host: MeetingHost
@@ -65,6 +94,8 @@ final class MeetingController: NSObject, MeetingFeature {
     private var notesWereAvailable = false
     private var recent: [MeetingMenuRecent] = []
     private var starting = false
+    /// Meetings were switched off: a start still waiting for the daemon must not begin recording afterwards.
+    private var isShutDown = false
     /// The tick's decisions (stop, say) live in DictationCore; this carries them out.
     private var monitor = RecordingMonitor()
     /// Since when some other process has been playing audio without a break (nil = none is).
@@ -74,6 +105,9 @@ final class MeetingController: NSObject, MeetingFeature {
     private var sleepObserver: NSObjectProtocol?
 
     var isRecording: Bool { current != nil }
+    var recordingElapsed: TimeInterval? { current == nil ? nil : recorder.elapsed }
+
+    func startRecording() { start(origin: .manual, source: "manual") }
 
     init(host: MeetingHost) {
         self.host = host
@@ -165,9 +199,14 @@ final class MeetingController: NSObject, MeetingFeature {
             MeetingSettings.setAutoStart(!MeetingSettings.autoStart(host.defaults), host.defaults)
             applyAutoStart()
         case .pickMeetingRetention(let days):
+            // The daemon first, the app's copy only once it took it; a refusal is said, not swallowed.
             let pick = MeetingRetention(rawValue: days) ?? .month
-            MeetingSettings.setRetention(pick, host.defaults)
-            Task { try? await host.client.setMeetingRetention(days: pick.days) }
+            Task {
+                if let failure = await MeetingSettingsApplier(defaults: host.defaults, client: host.client).apply(.retention(pick)) {
+                    host.notify(failure)
+                }
+                render()
+            }
         case .editSpeakers(let id): editSpeakers(id)
         case .retryVoices(let id): retryVoices(id)
         default: break
@@ -178,7 +217,7 @@ final class MeetingController: NSObject, MeetingFeature {
     // MARK: recording
 
     private func start(origin: CallTracker.Origin, source: String) {
-        guard current == nil, !starting else { return }
+        guard current == nil, !starting, !isShutDown else { return }
         // An install relaunches the app. A recording started now would be ended by it: automatic starts are offered
         // instead (MeetingPolicy.onCallStarted), a manual one asks the user to wait.
         let installing = host.updateInstalling()
@@ -206,6 +245,11 @@ final class MeetingController: NSObject, MeetingFeature {
                                                                speaker: L10nKey.meetingLabelSpeaker.text,
                                                                echoRisk: MeetingRecorder.echoRisk())
                 created = info
+                // Switched off while the daemon was opening the meeting: close it through the usual path and record nothing.
+                if isShutDown {
+                    _ = try? await host.client.finishMeeting(id: info.id)
+                    return
+                }
                 guard let dir = info.dir else { throw StudioError.badResponse }
                 try recorder.start(into: URL(fileURLWithPath: dir, isDirectory: true))
                 current = (info, origin)
@@ -368,10 +412,11 @@ final class MeetingController: NSObject, MeetingFeature {
         switch tick.action {
         case .nothing: break
         case .callStarted(let source):
-            switch MeetingPolicy.onCallStarted(source: source, autoStart: MeetingSettings.autoStart(host.defaults),
-                                               autoSources: CallDetector.autoStartSources, installing: host.updateInstalling()) {
+            switch MeetingPolicy.onCallStarted(source: source, mode: CallPolicy.mode(for: source, host.defaults),
+                                               autoStart: MeetingSettings.autoStart(host.defaults), installing: host.updateInstalling()) {
             case .start: start(origin: .auto, source: source)
             case .prompt: badge.showPrompt(source: source)
+            case .ignore: break
             }
         case .stopRecording:
             stop()
@@ -493,18 +538,7 @@ final class MeetingController: NSObject, MeetingFeature {
                     let edits = draft.edits(against: state)
                     if edits.isEmpty { return }
                     let wasOffer = state.offersSplit
-                    state = try await host.client.editSpeakers(id: id, edits: edits)
-                    MeetingSettings.setExportStale(id, true, host.defaults)
-                    // Decide from the daemon's answer, never from the shape of the edit.
-                    if state.notesQueued {
-                        track(id)
-                        host.notify(L10nKey.noticeSpeakersSaved.text)
-                    } else {
-                        // A copy left alone or not made has said so; "saved" would bury that sentence.
-                        var said = false
-                        if let info = try? await host.client.meeting(id: id, withTexts: true) { said = export(info).told }
-                        if !said { host.notify(L10nKey.noticeSpeakersNamesSaved.text) }
-                    }
+                    state = try await saveSpeakers(id: id, edits: edits)
                     if !(wasOffer && !state.offersSplit) { return }
                 }
             } catch {
@@ -513,37 +547,81 @@ final class MeetingController: NSObject, MeetingFeature {
         }
     }
 
+    /// Sends the edits and follows them up. The menu's panel and the main window both come through here.
+    func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState {
+        let state = try await host.client.editSpeakers(id: id, edits: edits)
+        MeetingSettings.setExportStale(id, true, host.defaults)
+        // Decide from the daemon's answer, never from the shape of the edit.
+        if state.notesQueued {
+            track(id)
+            host.notify(L10nKey.noticeSpeakersSaved.text)
+        } else {
+            // A copy left alone or not made has said so; "saved" would bury that sentence.
+            var said = false
+            if let info = try? await host.client.meeting(id: id, withTexts: true) { said = export(info).told }
+            if !said { host.notify(L10nKey.noticeSpeakersNamesSaved.text) }
+        }
+        return state
+    }
+
     private func retryVoices(_ id: String) {
         Task { @MainActor in
-            do {
-                try await host.client.retryMeetingVoices(id: id)
-                // The transcript is written again: the copy in the notes folder is of the old one.
-                MeetingSettings.setExportStale(id, true, host.defaults)
-                track(id)
-            } catch {
+            do { try await requestVoicesAgain(id: id) } catch {
                 host.notify(L10nKey.speakersFailed.text("\(error)"))
             }
         }
     }
 
+    func requestVoicesAgain(id: String) async throws {
+        try await host.client.retryMeetingVoices(id: id)
+        // The transcript is written again: the copy in the notes folder is of the old one.
+        MeetingSettings.setExportStale(id, true, host.defaults)
+        track(id)
+    }
+
+    func retryNotes(id: String) async throws {
+        try await host.client.retryMeetingNotes(id: id)
+        track(id)
+    }
+
+    func rename(id: String, title: String) async throws {
+        _ = try await host.client.renameMeeting(id: id, title: title)
+        // The copy in the notes folder carries the old title in its name and headings. Only a finished `track` copies a
+        // meeting flagged stale, and a rename starts none, so a read that fails is tried again here and then said.
+        MeetingSettings.setExportStale(id, true, host.defaults)
+        for attempt in 1...3 {
+            if let info = try? await host.client.meeting(id: id, withTexts: true) {
+                export(info)
+                return
+            }
+            try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+        }
+        host.notify(L10nKey.noticeMeetingCopyStale.text)
+    }
+
+    func settingsChanged() {
+        applyAutoStart()
+        render()
+    }
+
+    func shutDown() {
+        isShutDown = true
+        // A recording in progress ends the way the Stop button ends it, then everything that watches goes quiet.
+        if current != nil { stop() }
+        watcher.stop()
+        host.callActivity.setCallSeen(false)
+        badge.hide()
+        tick?.invalidate()
+        tick = nil
+        if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
+        sleepObserver = nil
+    }
+
     // MARK: settings
 
-    private func openFolder() {
-        let folder = MeetingSettings.folder(host.defaults)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(folder)
-    }
+    private func openFolder() { NotesFolder.open(host.defaults) }
 
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.directoryURL = MeetingSettings.folder(host.defaults)
-        panel.prompt = L10nKey.menuMeetingChooseFolder.text
-        NSApp.activate(ignoringOtherApps: true)
-        if panel.runModal() == .OK, let url = panel.url { MeetingSettings.setFolder(url, host.defaults) }
-    }
+    private func chooseFolder() { NotesFolder.choose(host.defaults) }
 
     private func askName() {
         let alert = NSAlert()

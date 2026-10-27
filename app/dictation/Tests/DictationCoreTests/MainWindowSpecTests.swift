@@ -2,25 +2,28 @@ import XCTest
 @testable import DictationCore
 
 final class MainWindowSpecTests: XCTestCase {
-    /// Only Reel and Projects are live in P2; the rest of the model waits
-    /// behind the flag for its own phase.
-    func testTheSidebarShowsReelAndProjectsOnly() {
-        XCTAssertEqual(MainWindowSpec.visibleSections, [.reel, .projects])
-        XCTAssertFalse(MainWindowSpec.showsHiddenSections)
+    /// Meetings first, then Dictation, Voices and Settings; Reel and Projects have nothing behind
+    /// them and stay out of the sidebar.
+    func testTheSidebarShowsTheFourLiveSections() {
+        XCTAssertEqual(MainWindowSpec.visibleSections, [.meetings, .dictation, .voices, .settings])
+        XCTAssertFalse(MainWindowSpec.showsPlannedSections)
     }
 
-    func testTheHiddenSectionsExistInOrderBehindTheFlag() {
-        XCTAssertEqual(MainWindowSpec.sections(includeHidden: true),
-                       [.reel, .projects, .voices, .dictation, .settings])
+    func testThePlannedSectionsExistInOrderBehindTheFlag() {
+        XCTAssertEqual(MainWindowSpec.sections(includePlanned: true),
+                       [.meetings, .dictation, .voices, .settings, .reel, .projects])
         XCTAssertEqual(MainWindowSpec.visibleSections,
-                       MainWindowSpec.sections(includeHidden: MainWindowSpec.showsHiddenSections))
+                       MainWindowSpec.sections(includePlanned: MainWindowSpec.showsPlannedSections))
     }
 
     func testEverySectionHasItsStrings() {
         let keys = Set(L10nKey.allCases)
         for section in MainSection.allCases {
             XCTAssertTrue(keys.contains(section.titleKey), "\(section) has a title outside L10nKey")
-            XCTAssertTrue(keys.contains(section.placeholderKey), "\(section) has a placeholder outside L10nKey")
+            if let placeholder = section.placeholderKey {
+                XCTAssertTrue(keys.contains(placeholder), "\(section) has a placeholder outside L10nKey")
+            }
+            XCTAssertEqual(section.placeholderKey != nil, section.isPlanned, "only planned sections carry a placeholder")
         }
     }
 }

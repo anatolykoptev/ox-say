@@ -21,6 +21,23 @@ public enum MeetingRetention: Int, CaseIterable, Equatable {
     }
 }
 
+/// The settings the daemon keeps for meetings (`GET /v1/meetings/settings`): today only how long audio stays.
+public struct MeetingDaemonSettings: Equatable {
+    public var retentionDays: Int
+
+    public init(retentionDays: Int) { self.retentionDays = retentionDays }
+
+    public var retention: MeetingRetention { MeetingRetention(rawValue: retentionDays) ?? .month }
+
+    /// nil for an answer without a period, or with one that is not a choice: a guess could show "30 days" over a
+    /// "never" the user picked.
+    public static func decode(_ data: Data) -> MeetingDaemonSettings? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let days = obj["retention_days"] as? Int, MeetingRetention(rawValue: days) != nil else { return nil }
+        return MeetingDaemonSettings(retentionDays: days)
+    }
+}
+
 /// The meeting settings the app keeps itself (UserDefaults). Retention is also
 /// sent to the daemon, which deletes the audio; the folder, auto-start and the
 /// name never leave the app.
