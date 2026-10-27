@@ -63,7 +63,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Runs the picked mode — pause Music and Spotify, or duck the output —
     /// while a dictation records and undoes it after; driven by the
     /// controller's state changes (`controller.onState`).
-    private lazy var soundWhileDictating = SoundWhileDictatingSystem.makeRunner { [weak self] in
+    /// Whether the user is on a call (a meeting recording, or a call the
+    /// watcher sees); the meeting controller writes it, the sound runner reads it.
+    private let callActivity = CallActivity()
+    private lazy var soundWhileDictating = SoundWhileDictatingSystem.makeRunner(callActive: { [callActivity] in callActivity.isActive }) { [weak self] in
         DispatchQueue.main.async { self?.notice(L10nKey.noticeMediaDenied.text) }
     }
     private var hotKey: HotKey?
@@ -735,7 +738,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         meetings = MeetingController(host: MeetingHost(
-            client: studioClient, defaults: .standard,
+            client: studioClient, defaults: .standard, callActivity: callActivity,
             alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) },
             notify: { [unowned self] message in self.notice(message) },
             recordingChanged: { [unowned self] in

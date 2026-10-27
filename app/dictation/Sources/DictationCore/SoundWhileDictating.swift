@@ -64,6 +64,36 @@ public enum SoundWhileDictatingSetting {
     }
 }
 
+/// Whether the user is on a call, readable from any thread. The meeting
+/// feature writes it on the main thread; the sound runner reads it on its own
+/// queue. True while a meeting is being recorded (manual or automatic) or the
+/// call watcher currently sees a call.
+///
+/// Limitation: with auto-start off and nothing recording, the watcher does
+/// not run, so a call is not seen — no poller is started just for dictation.
+public final class CallActivity {
+    private let lock = NSLock()
+    private var recording = false
+    private var callSeen = false
+
+    public init() {}
+
+    public var isActive: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return recording || callSeen
+    }
+
+    public func setRecording(_ value: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        recording = value
+    }
+
+    public func setCallSeen(_ value: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        callSeen = value
+    }
+}
+
 /// Turns the controller's state transitions into the mode's work on a serial
 /// queue: "Pause Music" pauses the players, "Lower All Sound" ducks the
 /// output, "Don't Touch" does nothing — so the main thread (the hotkey)
@@ -75,6 +105,8 @@ public final class SoundWhileDictatingRunner {
     private let pause: MediaPauseCoordinator
     private let duck: VolumeDuckCoordinator?
     private let mode: () -> SoundWhileDictating
+    /// Read on the worker queue at the start of every recording.
+    private let callActive: () -> Bool
     private let queue: DispatchQueue
     private var generation = 0
     /// True from the recording's start until its end was queued.
@@ -83,10 +115,12 @@ public final class SoundWhileDictatingRunner {
     public init(pause: MediaPauseCoordinator,
                 duck: VolumeDuckCoordinator? = nil,
                 mode: @escaping () -> SoundWhileDictating,
+                callActive: @escaping () -> Bool = { false },
                 queue: DispatchQueue = DispatchQueue(label: "io.github.anatolykoptev.ox-say.dictation.media")) {
         self.pause = pause
         self.duck = duck
         self.mode = mode
+        self.callActive = callActive
         self.queue = queue
     }
 
@@ -100,14 +134,15 @@ public final class SoundWhileDictatingRunner {
             active = true
             generation += 1
             let g = generation
-            queue.async { [pause, duck, mode] in
+            queue.async { [pause, duck, mode, callActive] in
                 switch mode() {
                 case .pauseMusic: pause.begin(generation: g)
                 case .lowerAllSound:
                     // An output that cannot be lowered (no software volume, no
                     // device, no duck at all) falls back to pausing the players;
-                    // the ending below ends both.
-                    if duck?.begin(generation: g) != true { pause.begin(generation: g) }
+                    // the ending below ends both. On a call the far side is never
+                    // lowered: pause the players instead.
+                    if callActive() || duck?.begin(generation: g) != true { pause.begin(generation: g) }
                 case .dontTouch: break
                 }
             }

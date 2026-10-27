@@ -608,10 +608,11 @@ final class SoundWhileDictatingWiringTests: XCTestCase {
 
     private func runner(_ world: FakeScriptWorld, defaults: UserDefaults? = nil,
                         volume: SystemVolume? = nil,
+                        callActive: @escaping () -> Bool = { false },
                         onPermissionDenied: @escaping () -> Void = {},
                         logError: @escaping (String) -> Void = { _ in }) -> SoundWhileDictatingRunner {
         SoundWhileDictatingWiring.makeRunner(isRunning: world.isRunning, execute: world.execute,
-                                             volume: volume,
+                                             volume: volume, callActive: callActive,
                                              defaults: defaults ?? self.defaults(mode: .pauseMusic), onPermissionDenied: onPermissionDenied,
                                              logError: logError)
     }
@@ -691,6 +692,74 @@ final class SoundWhileDictatingWiringTests: XCTestCase {
         XCTAssertEqual(world.state(music), "paused")
         r.dictationStateChanged(.idle); r.drain()
         XCTAssertEqual(world.state(music), "playing")
+    }
+
+    // While the user is on a call, dictation must never lower the far side:
+    // Lower All Sound pauses the players instead, with no volume write, and
+    // the release resumes them. Mutation: in SoundWhileDictatingRunner
+    // .dictationStateChanged drop the `callActive()` branch -> RED.
+    func testLowerAllSoundOnACallPausesInsteadOfLowering() {
+        let suite = "ox-say-media-call-\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        let world = FakeScriptWorld([music: "playing", spotify: "playing"])
+        let fakeVolume = FakeSystemVolume()
+        let r = runner(world, defaults: defaults(suite, mode: .lowerAllSound), volume: fakeVolume, callActive: { true })
+        r.dictationStateChanged(.recording); r.drain()
+        XCTAssertEqual([world.state(music), world.state(spotify)], ["paused", "paused"])
+        XCTAssertEqual(fakeVolume.writes, [], "a call: the far side is never lowered")
+        r.dictationStateChanged(.transcribing); r.drain()
+        XCTAssertEqual([world.state(music), world.state(spotify)], ["playing", "playing"])
+        XCTAssertEqual(fakeVolume.writes, [])
+    }
+
+    func testLowerAllSoundWithoutACallStillDucks() {
+        let suite = "ox-say-media-nocall-\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        let world = FakeScriptWorld([music: "playing"])
+        let fakeVolume = FakeSystemVolume()
+        let r = runner(world, defaults: defaults(suite, mode: .lowerAllSound), volume: fakeVolume, callActive: { false })
+        r.dictationStateChanged(.recording); r.drain()
+        XCTAssertEqual(fakeVolume.level, 0.8 * VolumeDuckCoordinator.duckFraction, accuracy: 0.001)
+        XCTAssertEqual(world.touched, [])
+        r.dictationStateChanged(.idle); r.drain()
+        XCTAssertEqual(fakeVolume.level, 0.8, accuracy: 0.0001)
+    }
+
+    // The call state is read when each recording starts, not captured once.
+    // Mutation: in SoundWhileDictatingRunner read `callActive()` once in init
+    // and reuse it -> RED.
+    func testTheCallStateIsReadAtTheStartOfEachRecording() {
+        let suite = "ox-say-media-callflip-\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        let world = FakeScriptWorld([music: "playing"])
+        let fakeVolume = FakeSystemVolume()
+        let activity = CallActivity()
+        let r = runner(world, defaults: defaults(suite, mode: .lowerAllSound), volume: fakeVolume,
+                       callActive: { activity.isActive })
+        r.dictationStateChanged(.recording); r.drain()
+        XCTAssertFalse(fakeVolume.writes.isEmpty, "no call yet: ducked")
+        r.dictationStateChanged(.idle); r.drain()
+        let writesAfterFirst = fakeVolume.writes.count
+        XCTAssertEqual(world.state(music), "playing")
+
+        activity.setCallSeen(true)
+        r.dictationStateChanged(.recording); r.drain()
+        XCTAssertEqual(world.state(music), "paused", "a call began: paused, not lowered")
+        XCTAssertEqual(fakeVolume.writes.count, writesAfterFirst)
+        r.dictationStateChanged(.idle); r.drain()
+
+        activity.setCallSeen(false)
+        r.dictationStateChanged(.recording); r.drain()
+        XCTAssertGreaterThan(fakeVolume.writes.count, writesAfterFirst, "the call ended: ducked again")
+        r.dictationStateChanged(.idle); r.drain()
+    }
+
+    func testCallActivityIsTheOrOfARecordingAndASeenCall() {
+        let a = CallActivity()
+        XCTAssertFalse(a.isActive)
+        a.setRecording(true); XCTAssertTrue(a.isActive)
+        a.setCallSeen(true); a.setRecording(false); XCTAssertTrue(a.isActive)
+        a.setCallSeen(false); XCTAssertFalse(a.isActive)
     }
 
     // The crash path through the real wiring and the real defaults store (in

@@ -15,13 +15,15 @@ enum SoundWhileDictatingSystem {
     }
 
     /// `onPermissionDenied` fires on a background queue, at most once per launch.
-    static func makeRunner(onPermissionDenied: @escaping () -> Void) -> SoundWhileDictatingRunner {
+    static func makeRunner(callActive: @escaping () -> Bool,
+                           onPermissionDenied: @escaping () -> Void) -> SoundWhileDictatingRunner {
         // Notice level so the unified log keeps it; lines carry a bundle id
         // and an error code, never user content.
         let logger = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "media")
         return SoundWhileDictatingWiring.makeRunner(
             isRunning: isRunning,
             volume: CoreAudioSystemVolume(),
+            callActive: callActive,
             defaults: .standard,
             onPermissionDenied: onPermissionDenied,
             log: { logger.notice("\($0, privacy: .public)") },

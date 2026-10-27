@@ -8,6 +8,8 @@ import os
 struct MeetingHost {
     var client: StudioClient
     var defaults: UserDefaults
+    /// Told whether a call is on, for the dictation sound mode (it must not lower a call).
+    var callActivity: CallActivity
     /// A modal alert over every app; returns the pressed button.
     var alert: (_ title: String, _ text: String, _ buttons: [String]) -> NSApplication.ModalResponse
     /// A short message in the status line.
@@ -207,6 +209,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 guard let dir = info.dir else { throw StudioError.badResponse }
                 try recorder.start(into: URL(fileURLWithPath: dir, isDirectory: true))
                 current = (info, origin)
+                syncCallActivity()
                 monitor = RecordingMonitor()
                 playingSince = nil
                 playingPolledAt = .distantPast
@@ -283,6 +286,7 @@ final class MeetingController: NSObject, MeetingFeature {
     func stop() {
         guard let (info, _) = current else { return }
         current = nil
+        syncCallActivity()
         tick?.invalidate()
         tick = nil
         logSummary(recorder.stop(), id: info.id)
@@ -307,6 +311,7 @@ final class MeetingController: NSObject, MeetingFeature {
     func stopForQuit() {
         guard let (info, _) = current else { return }
         current = nil
+        syncCallActivity()
         tick?.invalidate()
         tick = nil
         logSummary(recorder.stop(), id: info.id)
@@ -339,17 +344,24 @@ final class MeetingController: NSObject, MeetingFeature {
 
     // MARK: detection
 
+    /// Tells the dictation sound mode whether a meeting is being recorded. The call watcher's half is set in `observe`
+    /// and cleared when the watcher stops. Limitation: with auto-start off and nothing recording the watcher does not
+    /// run, so a call is not seen; no poller is started just for dictation.
+    private func syncCallActivity() { host.callActivity.setRecording(current != nil) }
+
     private func applyAutoStart() {
         // An automatic recording's silence auto-stop needs the watcher even if auto-start was turned off mid-call.
         if MeetingPolicy.watcherShouldRun(autoStart: MeetingSettings.autoStart(host.defaults), recording: current?.origin) {
             watcher.start()
         } else {
             watcher.stop()
+            host.callActivity.setCallSeen(false)
         }
     }
 
     /// One poll of the call watcher: the tracker has decided (offer, start, stop); the notices it could not.
     private func observe(_ tick: CallWatcher.Tick) {
+        host.callActivity.setCallSeen(tick.call != nil)
         if let call = tick.call { lastSource = call.source }
         if tick.browserDenied { host.notify(L10nKey.noticeMeetingBrowserDenied.text) }
         if tick.browserNeedsPermission { host.notify(L10nKey.noticeMeetingBrowserPending.text) }

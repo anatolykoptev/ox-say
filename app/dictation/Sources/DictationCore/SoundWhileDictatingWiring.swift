@@ -13,6 +13,9 @@ public enum SoundWhileDictatingWiring {
     /// - `execute`: runs one AppleScript source; each player gets its own worker.
     /// - `volume`: the system output volume the duck drives; nil leaves
     ///   "Lower All Sound" pause the players instead.
+    /// - `callActive`: whether the user is on a call, read at every dictation's
+    ///   start on the runner's queue; true makes "Lower All Sound" pause the
+    ///   players instead of lowering the output.
     /// - `defaults`: where the menu setting is read at every dictation.
     /// - `duckRecords`: where a standing duck is remembered across a crash;
     ///   defaults to keys in `defaults`.
@@ -22,6 +25,7 @@ public enum SoundWhileDictatingWiring {
         isRunning: @escaping (String) -> Bool,
         execute: @escaping (String) -> ScriptOutcome = QueuedScriptRunner.executeWithNSAppleScript,
         volume: SystemVolume? = nil,
+        callActive: @escaping () -> Bool = { false },
         defaults: UserDefaults,
         duckRecords: DuckRecordStore? = nil,
         onPermissionDenied: @escaping () -> Void,
@@ -40,6 +44,7 @@ public enum SoundWhileDictatingWiring {
                                   records: duckRecords ?? UserDefaultsDuckRecordStore(defaults: defaults))
         }
         return SoundWhileDictatingRunner(pause: pause, duck: duck,
-                                         mode: { SoundWhileDictatingSetting.mode(defaults) })
+                                         mode: { SoundWhileDictatingSetting.mode(defaults) },
+                                         callActive: callActive)
     }
 }
