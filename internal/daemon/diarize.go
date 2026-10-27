@@ -50,6 +50,8 @@ const (
 var (
 	osMajor = macOSMajor
 	goArch  = runtime.GOARCH
+	// diarRun starts ox-diar; a variable so a test can see the context it is given.
+	diarRun = oneshot.Run
 )
 
 // diarReady is Deps.DiarizeReady: why this Mac cannot tell voices apart, "" when it can. An old macOS first (the
@@ -102,7 +104,7 @@ func runDiarizer(ctx context.Context, cfg *config.Config, pcmPath string) ([]byt
 	defer func() { _ = os.Remove(out) }()
 	ctx, cancel := context.WithTimeout(ctx, diarTimeout(st.Size()))
 	defer cancel()
-	_, err = oneshot.Run(ctx, cfg.DiarBin, []string{pcmPath, out, "--models", cfg.DiarModelsDir()},
+	_, err = diarRun(ctx, cfg.DiarBin, []string{pcmPath, out, "--models", cfg.DiarModelsDir()},
 		oneshot.Options{StderrTail: diarStderrKeep, WaitDelay: diarWaitDelay})
 	if err != nil {
 		var exit *oneshot.ExitError

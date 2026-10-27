@@ -13,6 +13,7 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
+	"github.com/anatolykoptev/ox-say/internal/oneshot"
 )
 
 // stubDiar writes an executable shell script standing in for ox-diar and a one-second channel file in a meeting
@@ -342,5 +343,32 @@ func TestDiarReadyNeedsTheExecBit(t *testing.T) {
 	osMajor = func() (int, bool) { return 15, true }
 	if got := (&Daemon{Cfg: cfg}).diarReady(); got != meeting.DiarEngineMissing {
 		t.Fatalf("non-executable engine: %q, want %q", got, meeting.DiarEngineMissing)
+	}
+}
+
+// runDiarizer gives ox-diar a deadline of diarTimeout(size of the channel file): the call site, not only the
+// function, is gated (#258).
+// Mutation: internal/daemon/diarize.go runDiarizer, change `diarTimeout(st.Size())` to `4*time.Hour` -> RED.
+func TestRunDiarizerUsesTheComputedTimeout(t *testing.T) {
+	cfg, pcm := stubDiar(t, `printf '{}' > "$2"`)
+	if err := os.Truncate(pcm, 3600*diarBytesPerSecond); err != nil {
+		t.Fatal(err)
+	}
+	was := diarRun
+	t.Cleanup(func() { diarRun = was })
+	var budget time.Duration
+	diarRun = func(ctx context.Context, bin string, args []string, opt oneshot.Options) ([]byte, error) {
+		dl, ok := ctx.Deadline()
+		if !ok {
+			t.Error("ox-diar was given no deadline")
+		}
+		budget = time.Until(dl)
+		return was(ctx, bin, args, opt)
+	}
+	if _, err := runDiarizer(context.Background(), cfg, pcm); err != nil {
+		t.Fatal(err)
+	}
+	if want := diarTimeout(3600 * diarBytesPerSecond); budget > want || budget < want-time.Minute {
+		t.Fatalf("deadline in %v, want about %v", budget, want)
 	}
 }
