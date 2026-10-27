@@ -118,5 +118,6 @@ public enum L10nKey: String, CaseIterable {
     case diarUnavailableModels = "meeting.diar.unavailable.models_missing"
     case diarUnavailableUnusable = "meeting.diar.unavailable.models_unusable"
     case diarUnavailableTooLong = "meeting.diar.unavailable.too_long"
+    case diarUnavailableUnreadable = "meeting.diar.unavailable.input_unreadable"
     case diarUnavailableOther = "meeting.diar.unavailable.other"
 }

@@ -125,4 +125,5 @@
 "meeting.diar.unavailable.models_missing" = "Голоса в звонке не разделены: голосовые модели не скачаны. Обновите OxSay.";
 "meeting.diar.unavailable.models_unusable" = "Голоса в звонке не разделены: голосовые модели не загрузились на этом Mac. Переустановите OxSay, чтобы скачать их заново.";
 "meeting.diar.unavailable.too_long" = "Голоса в звонке не разделены: запись длиннее 2 часов.";
+"meeting.diar.unavailable.input_unreadable" = "Голоса в звонке не разделены: запись не удалось прочитать.";
 "meeting.diar.unavailable.other" = "Голоса в звонке не разделяются на этом Mac.";
