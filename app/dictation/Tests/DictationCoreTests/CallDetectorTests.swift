@@ -466,4 +466,100 @@ final class CallDetectorTests: XCTestCase {
                                 themActive: false, recording: nil)
         XCTAssertTrue(outcome.browserDenied, "a later revoke is told again")
     }
+
+    // MARK: OxPulse (T17: the owner's calls are OxPulse in a browser)
+
+    /// OxPulse rooms live at the bare host: `/<22-char id>` for a 1:1 call, `/<LLLL-DDDDC>` or `/r/<id>` for a
+    /// group call (oxpulse-chat docs/url-contract.md). The landing pages, the chat app, and the burner/sealed
+    /// chat shims are not calls.
+    /// Mutation: MeetingURL.source, delete the `host == "oxpulse.chat"` branch -> RED.
+    func testOxPulseRoomsAreCalls() {
+        let opaque = "AbCdEfGhIjKlMnOpQrSt_-"
+        XCTAssertEqual(opaque.count, 22)
+        XCTAssertEqual(MeetingURL.source(of: "https://oxpulse.chat/\(opaque)"), "oxpulse")
+        XCTAssertEqual(MeetingURL.source(of: "https://oxpulse.chat/\(opaque)#k=abc"), "oxpulse")
+        XCTAssertEqual(MeetingURL.source(of: "https://oxpulse.chat/GBCD-12345"), "oxpulse")
+        XCTAssertEqual(MeetingURL.source(of: "https://oxpulse.chat/r/GBCD-1234"), "oxpulse")
+        XCTAssertEqual(MeetingURL.source(of: "https://OxPulse.chat/\(opaque)?audio=1"), "oxpulse")
+        for page in ["", "about", "pricing", "download", "app/new", "c/\(opaque)", "m/\(opaque)", "u/abcdef", "r/", "short"] {
+            XCTAssertNil(MeetingURL.source(of: "https://oxpulse.chat/\(page)"), page)
+        }
+        // chat, not a call
+        XCTAssertNil(MeetingURL.source(of: "https://oxpulse.chat/\(opaque)?hint=burner"))
+        XCTAssertNil(MeetingURL.source(of: "https://oxpulse.chat/\(opaque)?hint=sealed"))
+        // another host that merely contains the name
+        XCTAssertNil(MeetingURL.source(of: "https://oxpulse.chat.evil.example/\(opaque)"))
+        XCTAssertNil(MeetingURL.source(of: "https://notoxpulse.chat/\(opaque)"))
+        XCTAssertNil(MeetingURL.source(of: "https://example.com/\(opaque)"))
+    }
+
+    /// Through the detector: Brave holding the microphone on an OxPulse room is a call that starts by itself, like Meet.
+    /// Mutation: CallDetector.autoStartSources, drop "oxpulse" -> RED.
+    func testOxPulseInBraveStartsByItself() {
+        let brave = [MicUser(bundleID: "com.brave.Browser.helper", pid: 4)]
+        let call = CallDetector.match(of: brave, activeURL: { _ in "https://oxpulse.chat/AbCdEfGhIjKlMnOpQrSt_-" })
+        XCTAssertEqual(call?.source, "oxpulse")
+        XCTAssertEqual(call?.bundleID, "com.brave.Browser")
+        XCTAssertTrue(CallDetector.autoStartSources.contains("oxpulse"))
+        XCTAssertNil(CallDetector.match(of: brave, activeURL: { _ in "https://oxpulse.chat/pricing" }))
+    }
+
+    // MARK: an episode key flip keeps a stop (#241)
+
+    /// Two call holders that alternate (a Zoom app and a Meet tab) change the episode key each time. A decline
+    /// belongs to ITS episode: Zoom declined, Meet offered, back to Zoom: still declined.
+    /// Mutation: CallTracker.decline(), replace `declinedKeys.insert(episode)` with `declinedNow = true` that the
+    /// flip block clears (restore the single `declined` flag) -> RED.
+    func testADeclineSurvivesAFlipToAnotherCallAndBack() {
+        var tr = CallTracker()
+        _ = tr.observe(now: t0, call: "zoom", themActive: false, recording: nil, bundleID: "us.zoom.xos")
+        tr.decline()
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(6), call: "zoom", themActive: false, recording: nil, bundleID: "us.zoom.xos"), .nothing)
+        _ = tr.observe(now: t0.addingTimeInterval(8), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome")
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(12), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome"),
+                       .callStarted(source: "meet"), "the other call is a new episode and is offered")
+        _ = tr.observe(now: t0.addingTimeInterval(14), call: "zoom", themActive: false, recording: nil, bundleID: "us.zoom.xos")
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(20), call: "zoom", themActive: false, recording: nil, bundleID: "us.zoom.xos"), .nothing,
+                       "the declined call is not offered again because another call came and went")
+    }
+
+    /// A call that was announced (or recorded) and stopped by the user is not started again after a flip and back either.
+    /// Mutation: CallTracker.observe, restore `announced = false` in the episode-change block -> RED.
+    func testAnAnnouncedCallIsNotAnnouncedAgainAfterAFlip() {
+        var tr = CallTracker()
+        _ = tr.observe(now: t0, call: "zoom", themActive: false, recording: nil, bundleID: "us.zoom.xos")
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(4), call: "zoom", themActive: false, recording: nil, bundleID: "us.zoom.xos"), .callStarted(source: "zoom"))
+        _ = tr.observe(now: t0.addingTimeInterval(8), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome")
+        _ = tr.observe(now: t0.addingTimeInterval(12), call: "zoom", themActive: false, recording: nil, bundleID: "us.zoom.xos")
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(20), call: "zoom", themActive: false, recording: nil, bundleID: "us.zoom.xos"), .nothing)
+    }
+
+    // MARK: a browser read that never completes (#251)
+
+    /// A browser that holds the microphone while its tab cannot be read for several polls in a row — an unanswered
+    /// Automation prompt — must be said, once; a good read re-arms it.
+    /// Mutation: CallWatch.observe, change `>= Self.unreadableRoundsBeforeNotice` to `> 999` -> RED.
+    func testAStuckBrowserReadAsksForPermissionOnce() {
+        var watch = CallWatch()
+        var said: [Bool] = []
+        for i in 0..<7 {
+            said.append(watchTick(&watch, now: t0.addingTimeInterval(Double(i) * 2), url: "").browserNeedsPermission)
+        }
+        XCTAssertEqual(said, [false, false, false, false, true, false, false], "said once, after \(CallWatch.unreadableRoundsBeforeNotice) rounds")
+        // a read that works re-arms it
+        _ = watchTick(&watch, now: t0.addingTimeInterval(20), url: "https://example.com/")
+        var again: [Bool] = []
+        for i in 0..<5 {
+            again.append(watchTick(&watch, now: t0.addingTimeInterval(22 + Double(i) * 2), url: "").browserNeedsPermission)
+        }
+        XCTAssertEqual(again.last, true)
+    }
+
+    /// One slow read is not a stuck prompt.
+    func testAFewUnreadableRoundsSayNothing() {
+        var watch = CallWatch()
+        for i in 0..<3 { XCTAssertFalse(watchTick(&watch, now: t0.addingTimeInterval(Double(i) * 2), url: "").browserNeedsPermission) }
+        XCTAssertFalse(watchTick(&watch, now: t0.addingTimeInterval(8), url: Self.meetURL).browserNeedsPermission)
+        XCTAssertFalse(watchTick(&watch, now: t0.addingTimeInterval(10), url: "").browserNeedsPermission)
+    }
 }

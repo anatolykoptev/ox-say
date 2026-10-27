@@ -18,23 +18,49 @@ public protocol AppleScriptRunner {
 /// blocks the worker for about a second, not the 2-minute default. One runner
 /// per player, so a hung Music never queues Spotify's calls behind it.
 /// `execute` is NSAppleScript in the app and a stand-in in tests.
+///
+/// `dropWhileBusy` is for a poller (the call watcher's tab read): while an earlier script is still running on the
+/// worker — an Automation prompt nobody answered holds it far past its own `with timeout` — a new one is not queued
+/// behind it, it is dropped and answered `.timedOut`. Without it every poll adds a script that runs, one after the
+/// other, once the prompt clears (#251). A command that must reach its target (a media player's `play`) leaves it off.
 public final class QueuedScriptRunner: AppleScriptRunner {
     private final class Slot { var outcome: ScriptOutcome = .failed(0) }
 
     private let worker: DispatchQueue
     private let execute: (String) -> ScriptOutcome
+    private let dropWhileBusy: Bool
+    private let lock = NSLock()
+    private var pending = 0
+    private var dropped = 0
 
-    public init(label: String = "",
+    public init(label: String = "", dropWhileBusy: Bool = false,
                 execute: @escaping (String) -> ScriptOutcome = QueuedScriptRunner.executeWithNSAppleScript) {
         worker = DispatchQueue(label: "io.github.anatolykoptev.ox-say.dictation.applescript\(label.isEmpty ? "" : "." + label)")
         self.execute = execute
+        self.dropWhileBusy = dropWhileBusy
     }
 
+    /// A script is queued or running on the worker.
+    public var isBusy: Bool { lock.withLock { pending > 0 } }
+
+    /// Scripts a `dropWhileBusy` runner refused because the worker was occupied.
+    public var droppedWhileBusy: Int { lock.withLock { dropped } }
+
     public func run(_ source: String, timeout: TimeInterval) -> ScriptOutcome {
+        let admitted: Bool = lock.withLock {
+            if dropWhileBusy, pending > 0 {
+                dropped += 1
+                return false
+            }
+            pending += 1
+            return true
+        }
+        guard admitted else { return .timedOut }
         let slot = Slot()
         let done = DispatchSemaphore(value: 0)
-        worker.async { [execute] in
+        worker.async { [execute, self] in
             slot.outcome = execute(source)
+            lock.withLock { pending -= 1 }
             done.signal()
         }
         guard done.wait(timeout: .now() + timeout) == .success else { return .timedOut }

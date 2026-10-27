@@ -83,6 +83,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var speechClient: SpeechClient!
     private var studioClient: StudioClient!
     private var studio: StudioController!
+    /// Meeting notes: nil until the feature flag (MeetingSettings.enabledKey) is on.
+    private var meetings: MeetingFeature?
     /// The one main window; created on first "Open OxSay…", kept across closes.
     private lazy var mainWindow = MainWindowController(appDelegate: self)
     /// Runs once when the playback that was started with a completion ends on its own.
@@ -225,6 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speechClient = SpeechClient(baseURL: baseURL)
         studioClient = StudioClient(baseURL: baseURL)
         studio = StudioController(host: studioHost())
+        setUpMeetings()
         speakService.onSpeak = { [weak self] text in self?.speak(text) }
         NSApp.servicesProvider = speakService
         overlay.onPlaybackToggle = { [weak self] in self?.player.toggle() }
@@ -338,6 +341,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // A recording in progress is closed and handed to the daemon, not lost.
+        meetings?.stopForQuit()
         // Quitting mid-dictation must not leave the music paused or the output
         // ducked — bounded, so a hung player cannot hold the quit open.
         soundWhileDictating.dictationStateChanged(.idle)
@@ -447,6 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshVoices()
         refreshServiceStatus()
         studio.render()
+        meetings?.menuWillOpen()
         let plan = shortcutPlan()
         let open = ShortcutMenu.onOpen(plan, registered: active.flatMap { Shortcut.allCases.firstIndex(of: $0) },
                                        idle: controller.state == .idle)
@@ -513,6 +519,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shortcutsSubmenu.autoenablesItems = false // or AppKit re-enables the greyed-out keys
         menu.addItem(submenuItem("Keyboard Shortcuts", shortcutsSubmenu))
         menu.addItem(submenuItem("Studio", studio.submenu))
+        if let meetings { menu.addItem(submenuItem(L10nKey.menuMeetings.text, meetings.submenu)) }
         menu.addItem(.separator())
         menu.addItem(recentItem)
         pasteLastItem.target = self
@@ -552,6 +559,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             self.serviceStatus = status
             self.studio.statusChanged(status)
+            self.meetings?.daemonStatusChanged()
             self.runVersionHandshake()
         }
     }
@@ -571,8 +579,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                  speaking: speakInFlight || player.isActivelyPlaying,
                                  designing: studio.designing,
                                  followingVoiceover: studio.followingVoiceover,
-                                 // Task 17 wires the live recording state
-                                 recordingMeeting: false)
+                                 recordingMeeting: meetings?.isRecording ?? false)
     }
 
     /// Work in this process ended: a pass that held an action back runs
@@ -719,6 +726,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainWindow.open()
     }
 
+    /// The Meetings submenu and its recorder, behind the feature flag. macOS
+    /// before 14.2 has no process tap and gets a menu that says so.
+    private func setUpMeetings() {
+        guard MeetingSettings.enabled(.standard) else { return }
+        guard #available(macOS 14.2, *) else {
+            meetings = UnsupportedMeetings()
+            return
+        }
+        meetings = MeetingController(host: MeetingHost(
+            client: studioClient, defaults: .standard,
+            alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) },
+            notify: { [unowned self] message in self.notice(message) },
+            recordingChanged: { [unowned self] in
+                self.applyStatusIcon()
+                self.handshakeWorkEnded()
+            },
+            daemonStatus: { [unowned self] in self.serviceStatus }))
+    }
+
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.submenu = submenu
@@ -806,6 +832,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The status icon for `statusSymbol`, with a small dot at its corner while
     /// an update is on offer.
     private func applyStatusIcon() {
+        // A recording shows as a red dot in the menu bar for as long as it runs.
+        if meetings?.isRecording == true,
+           let rec = NSImage(systemSymbolName: "record.circle.fill", accessibilityDescription: "OxSay is recording a meeting") {
+            statusItem.button?.image = rec
+            statusItem.button?.contentTintColor = .systemRed
+            return
+        }
+        statusItem.button?.contentTintColor = nil
         guard let base = NSImage(systemSymbolName: statusSymbol, accessibilityDescription: "OxSay Dictation") else { return }
         guard updateOffer != nil else {
             statusItem.button?.image = base
@@ -1209,6 +1243,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// bundle but leaves this process alone, and `relaunch()` ends it once no
     /// dictation runs and opens the new copy.
     private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {
+        // The install relaunches the app: it must not end a recording.
+        guard meetings?.isRecording != true else {
+            runAlert(title: UpdateGate.busyAlertTitle, text: L10nKey.meetingUpdateBlocked.text, buttons: ["OK"])
+            return
+        }
         updateInstalling = true
         studio.render()
         // A running dictation owns the pill — the handshake pill guards the

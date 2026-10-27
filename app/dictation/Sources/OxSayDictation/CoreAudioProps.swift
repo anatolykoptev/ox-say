@@ -46,10 +46,10 @@ enum CoreAudioProps {
 }
 
 extension CoreAudioProps {
-    /// The processes CoreAudio knows (macOS 14.2+): pid, bundle id and whether each has input running.
+    /// The processes CoreAudio knows (macOS 14.2+): pid, bundle id and whether each has input / output running.
     /// nil when CoreAudio itself failed — not the same as "no process has audio" (`[]`).
     @available(macOS 14.2, *)
-    static func audioProcesses() -> [(pid: Int32, bundleID: String, runningInput: Bool)]? {
+    static func audioProcesses() -> [(pid: Int32, bundleID: String, runningInput: Bool, runningOutput: Bool)]? {
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
                                                  mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var size: UInt32 = 0
@@ -61,7 +61,8 @@ extension CoreAudioProps {
         return objects.compactMap { object in
             guard let pid = uint32(object, kAudioProcessPropertyPID), let running = uint32(object, kAudioProcessPropertyIsRunningInput),
                   let bundle = string(object, kAudioProcessPropertyBundleID) else { return nil }
-            return (Int32(bitPattern: pid), bundle, running != 0)
+            let playing = uint32(object, kAudioProcessPropertyIsRunningOutput) ?? 0
+            return (Int32(bitPattern: pid), bundle, running != 0, playing != 0)
         }
     }
 }

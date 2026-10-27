@@ -5,10 +5,12 @@ import Foundation
 extension StudioClient {
     /// POST /v1/meetings: opens a meeting and returns the directory to record into.
     public func createMeeting(title: String, source: String, me: String, them: String, speaker: String = "", echoRisk: Bool) async throws -> MeetingInfo {
-        var labels = ["me": me, "them": them]
-        if !speaker.isEmpty { labels["speaker"] = speaker }
+        // The daemon answers 400 to a text over its caps; a long display name must not stop a recording (#252).
+        var labels = ["me": MeetingLimits.clamp(me, to: MeetingLimits.labelMax), "them": MeetingLimits.clamp(them, to: MeetingLimits.labelMax)]
+        if !speaker.isEmpty { labels["speaker"] = MeetingLimits.clamp(speaker, to: MeetingLimits.labelMax) }
         let body = try JSONSerialization.data(withJSONObject: [
-            "title": title, "source": source, "labels": labels, "echo_risk": echoRisk,
+            "title": MeetingLimits.clamp(title, to: MeetingLimits.titleMax), "source": MeetingLimits.clamp(source, to: MeetingLimits.sourceMax),
+            "labels": labels, "echo_risk": echoRisk,
         ] as [String: Any])
         let data = try await succeed(post("v1/meetings", body: body, timeout: Self.quickTimeout))
         guard let info = MeetingInfo.decode(data), info.dir != nil else { throw StudioError.badResponse }

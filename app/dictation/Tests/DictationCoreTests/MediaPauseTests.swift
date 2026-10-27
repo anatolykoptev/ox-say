@@ -508,6 +508,40 @@ final class QueuedScriptRunnerTests: XCTestCase {
         XCTAssertEqual(runner.run("x", timeout: 0.2), .timedOut)
         XCTAssertLessThan(Date().timeIntervalSince(started), 0.8, "the caller is released at the timeout")
     }
+
+    /// A script stuck behind an unanswered Automation prompt holds the worker; polls that come while it does must not
+    /// pile up behind it (#251).
+    /// Mutation: QueuedScriptRunner.run, delete the `if dropWhileBusy, isBusy { … return .timedOut }` guard -> RED.
+    func testABusyWorkerIsNotQueuedBehind() {
+        let gate = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var executed: [String] = []
+        let runner = QueuedScriptRunner(dropWhileBusy: true) { source in
+            lock.lock(); executed.append(source); lock.unlock()
+            if source == "stuck" { gate.wait() }
+            return .value(source)
+        }
+        XCTAssertEqual(runner.run("stuck", timeout: 0.1), .timedOut)
+        XCTAssertTrue(runner.isBusy)
+        XCTAssertEqual(runner.run("second", timeout: 0.1), .timedOut)
+        XCTAssertEqual(runner.run("third", timeout: 0.1), .timedOut)
+        XCTAssertEqual(runner.droppedWhileBusy, 2)
+        gate.signal()
+        let deadline = Date().addingTimeInterval(3)
+        while runner.isBusy && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertFalse(runner.isBusy)
+        XCTAssertEqual(runner.run("fourth", timeout: 2), .value("fourth"))
+        lock.lock(); let ran = executed; lock.unlock()
+        XCTAssertEqual(ran, ["stuck", "fourth"], "nothing ran behind the stuck script")
+    }
+
+    /// The default runner (media players) keeps queueing: a `play` must still reach a player that was slow.
+    func testTheDefaultRunnerStillQueues() {
+        let runner = QueuedScriptRunner { _ in Thread.sleep(forTimeInterval: 0.2); return .value("ok") }
+        XCTAssertEqual(runner.run("a", timeout: 0.05), .timedOut)
+        XCTAssertEqual(runner.run("b", timeout: 2), .value("ok"))
+        XCTAssertEqual(runner.droppedWhileBusy, 0)
+    }
 }
 
 
@@ -731,7 +765,3 @@ final class SoundWhileDictatingWiringTests: XCTestCase {
         XCTAssertEqual(world.verbs(music).filter { $0 == "play" }.count, 1)
     }
 }
-
-/// The mode-aware glue checks live in SoundWhileDictatingAppGlueTests: system
-/// side, mode pass-through, and the bounded drain inside
-/// applicationWillTerminate.

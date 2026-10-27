@@ -97,6 +97,21 @@
 "meeting.explain.ok" = "Record Calls Automatically";
 "meeting.explain.manual" = "Only When I Choose";
 "notice.meeting.browser_denied" = "To notice Google Meet calls, allow OxSay to control your browser in System Settings → Privacy & Security → Automation.";
+"notice.meeting.tap_silent" = "OxSay hears nothing from the other side although sound is playing: turn OxSay on under Privacy & Security → Screen & System Audio Recording → System Audio Recording Only, or, if it is already on, switch it off and on again.";
+"meeting.tap_silent.title" = "System audio is silent";
+"meeting.tap_silent.open" = "Open Settings";
+"meeting.tap_silent.later" = "Not Now";
+"notice.meeting.copy_kept" = "The speaker names are saved, but your edited copy in the notes folder was left as it is.";
+"notice.meeting.cap_reached" = "Recording stopped after 2 hours, the longest the speakers can be told apart. Start a new recording if the call goes on.";
+"notice.meeting.browser_pending" = "OxSay is waiting for permission to read your browser's tab. If macOS asked, choose Allow; otherwise check System Settings → Privacy & Security → Automation.";
+"notice.meeting.slept" = "Recording stopped because the Mac went to sleep. What was recorded is being transcribed.";
+"meeting.update_blocked" = "A meeting is being recorded. Update when it ends.";
+"notice.meeting.mic_lost" = "The microphone is not being recorded: %@";
+"notice.meeting.tap_lost" = "System audio is not being recorded: %@";
+"notice.meeting.disk_full" = "The disk is full: the recording was stopped. What was recorded is kept.";
+"meeting.mic.allow" = "Allow microphone access, then start the recording again.";
+"meeting.mic.off" = "Microphone access is off. Turn it on in System Settings → Privacy & Security → Microphone.";
+"meeting.mic.none" = "No microphone input is available.";
 
 /* Speakers: naming, merging and splitting the voices of the other side. */
 "menu.meeting.speakers" = "Speakers";
