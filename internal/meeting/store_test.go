@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -328,5 +329,53 @@ func TestAStrayTombstoneIsSweptByList(t *testing.T) {
 	}
 	if _, err := os.Stat(stray); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the stray tombstone survived List: %v", err)
+	}
+}
+
+// A delete in flight is still unlinking its tombstone when another request lists the store: List leaves a tombstone
+// younger than the grace period to the delete that made it, and sweeps the ones a crash left (#262).
+// Mutation: internal/meeting/store.go sweepTombstones, delete the `time.Since(born) < tombstoneGrace` check -> RED
+// (the fresh tombstone is unlinked under the delete's feet).
+func TestListLeavesAFreshTombstoneToItsDelete(t *testing.T) {
+	s := &Store{Root: t.TempDir()}
+	fresh := filepath.Join(s.Root, tombstonePrefix+"20261023-150100-aaaaaa-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	if err := os.MkdirAll(fresh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.List(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("List swept a tombstone its delete is still unlinking: %v", err)
+	}
+	// a tombstone born past the grace period is a leftover
+	old := filepath.Join(s.Root, tombstonePrefix+"20261023-150100-bbbbbb-"+strconv.FormatInt(time.Now().Add(-2*tombstoneGrace).UnixNano(), 36))
+	if err := os.MkdirAll(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.List(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the old tombstone survived List: %v", err)
+	}
+}
+
+// A tombstone that cannot be unlinked is reported once per process, not by every List (#262).
+// Mutation: internal/meeting/store.go sweepTombstones, delete the `s.warned.LoadOrStore` check -> RED (three warnings).
+func TestAStuckTombstoneIsReportedOnce(t *testing.T) {
+	var logs bytes.Buffer
+	s := &Store{Root: t.TempDir(), Log: slog.New(slog.NewTextHandler(&logs, nil))}
+	s.removeAll = func(string) error { return errors.New("permission denied") }
+	if err := os.MkdirAll(filepath.Join(s.Root, tombstonePrefix+"20261023-150100-aaaaaa-1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if _, err := s.List(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := strings.Count(logs.String(), "cannot unlink a tombstone"); got != 1 {
+		t.Fatalf("%d warnings for one stuck tombstone in 3 Lists, want 1:\n%s", got, logs.String())
 	}
 }

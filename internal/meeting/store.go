@@ -29,6 +29,7 @@ type Store struct {
 	newID     func(time.Time) string // test seam; nil means vproject.NewID
 	removeAll func(string) error     // test seam; nil means os.RemoveAll
 	mu        sync.Mutex
+	warned    sync.Map // tombstone name -> struct{}: those whose failed unlink was logged
 }
 
 // Dir is the directory of meeting id; the id must be one NewID made.
@@ -185,6 +186,11 @@ func (s *Store) log() *slog.Logger {
 // lists or loads it.
 const tombstonePrefix = ".deleted-"
 
+// tombstoneGrace is how long a tombstone is left to the delete that made it. That delete unlinks it right after the
+// rename; a minute covers the unlink of a long recording on a slow disk, and a tombstone older than that is a
+// leftover of a crash or of a failed unlink.
+const tombstoneGrace = time.Minute
+
 // Delete removes a meeting and all its files.
 func (s *Store) Delete(id string) error {
 	return s.DeleteIf(id, nil)
@@ -250,15 +256,38 @@ func (s *Store) unlink(path string) error {
 	return os.RemoveAll(path)
 }
 
-// sweepTombstones unlinks the tombstones a crash (or a failed unlink) left among entries.
+// sweepTombstones unlinks the tombstones a crash (or a failed unlink) left among entries. A tombstone younger than
+// tombstoneGrace is skipped: its delete is most likely still unlinking it. One that cannot be unlinked is logged
+// once per process, not by every List.
 func (s *Store) sweepTombstones(entries []os.DirEntry) {
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), tombstonePrefix) {
-			if err := s.unlink(filepath.Join(s.Root, e.Name())); err != nil {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), tombstonePrefix) {
+			continue
+		}
+		if born := tombstoneBorn(e); time.Since(born) < tombstoneGrace {
+			continue
+		}
+		if err := s.unlink(filepath.Join(s.Root, e.Name())); err != nil {
+			if _, seen := s.warned.LoadOrStore(e.Name(), struct{}{}); !seen {
 				s.log().Warn("meeting: cannot unlink a tombstone", slog.String("dir", e.Name()), slog.Any("error", err))
 			}
 		}
 	}
+}
+
+// tombstoneBorn is when the tombstone was made: the time in the last part of its name (base 36, nanoseconds),
+// else the directory's modification time, else now (a tombstone of unknown age is left alone).
+func tombstoneBorn(e os.DirEntry) time.Time {
+	name := e.Name()
+	if i := strings.LastIndexByte(name, '-'); i >= 0 {
+		if ns, err := strconv.ParseInt(name[i+1:], 36, 64); err == nil {
+			return time.Unix(0, ns)
+		}
+	}
+	if fi, err := e.Info(); err == nil {
+		return fi.ModTime()
+	}
+	return time.Now()
 }
 
 // Text reads one of the meeting's text files (TranscriptMD or NotesMD).
