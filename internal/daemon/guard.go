@@ -13,8 +13,11 @@ import (
 )
 
 // Guard rejects what a web page can send to a loopback daemon. A Host that is
-// not a loopback address means DNS rebinding. Cross-site browser requests are
-// refused by http.CrossOriginProtection (Sec-Fetch-Site, else Origin). POST
+// not a loopback address means DNS rebinding. Cross-site browser requests that
+// change something (every method but GET, HEAD and OPTIONS) are refused by
+// http.CrossOriginProtection (Sec-Fetch-Site, else Origin); it lets a safe
+// method through, so a meetings read the browser marks cross-site or same-site
+// is refused here (crossSiteMeetingRead). POST
 // bodies must be JSON, so a cross-origin "simple" request (text/plain, form
 // data) fails even from a browser that sends neither header. go-mcpserver
 // protects /mcp alone; Guard wraps every route.
@@ -25,12 +28,35 @@ func Guard(next http.Handler) http.Handler {
 			writeErr(w, http.StatusForbidden, "host not allowed")
 			return
 		}
+		if crossSiteMeetingRead(r) {
+			writeErr(w, http.StatusForbidden, "cross-site request not allowed")
+			return
+		}
 		if r.Method == http.MethodPost && !postBodyOK(r) {
 			writeErr(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 			return
 		}
 		protected.ServeHTTP(w, r)
 	})
+}
+
+// crossSiteMeetingRead reports a GET or HEAD of /v1/meetings... that a browser sent from another site (or another
+// origin of this machine): `new Audio("http://127.0.0.1:PORT/v1/meetings/<id>/audio")` on any web page would
+// otherwise tell it whether a meeting exists and how long it is, and make the daemon mix audio. The app's
+// URLSession, AVPlayer and the MCP clients send no Sec-Fetch-Site; a typed address sends "none" and the daemon's own
+// pages "same-origin": all three pass.
+func crossSiteMeetingRead(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if p := r.URL.Path; p != "/v1/meetings" && !strings.HasPrefix(p, "/v1/meetings/") {
+		return false
+	}
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "cross-site", "same-site":
+		return true
+	}
+	return false
 }
 
 // postBodyOK requires JSON on every POST — except the transcriptions route,

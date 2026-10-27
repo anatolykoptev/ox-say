@@ -10,8 +10,9 @@ import (
 
 // handleMeetingAudio is GET /v1/meetings/{id}/audio: the meeting's two channels mixed into one mono 16 kHz WAV as
 // it is read, nothing written to disk. http.ServeContent answers Range requests, which AVPlayer needs to seek, and
-// HEAD. The request is a plain GET: Guard asks nothing of a GET but a loopback Host and no cross-site browser
-// headers, and AVPlayer sends neither a body nor a custom header.
+// HEAD. The request is a plain GET: Guard asks of a meetings GET a loopback Host and a Sec-Fetch-Site that is not
+// cross-site or same-site (crossSiteMeetingRead; http.CrossOriginProtection exempts GET, so Guard does it), and
+// AVPlayer sends neither that header, a body nor a custom header.
 func (d *Daemon) handleMeetingAudio(w http.ResponseWriter, r *http.Request) {
 	m, err := d.Meet.Store.Load(r.PathValue("id"))
 	if err != nil {

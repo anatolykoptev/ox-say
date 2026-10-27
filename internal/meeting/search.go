@@ -1,6 +1,7 @@
 package meeting
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -67,8 +68,9 @@ type SearchResult struct {
 
 // Search finds the meetings whose title, notes or transcript contain q: a substring match that ignores case and
 // diacritics (see foldRune). A meeting that is still being recorded or processed is searched by its title only: its
-// texts are being written or are about to be replaced. The query and the texts are never logged.
-func (s *Store) Search(q string) (SearchResult, error) {
+// texts are being written or are about to be replaced. The query and the texts are never logged. ctx is checked
+// between meetings: a cancelled search returns its error.
+func (s *Store) Search(ctx context.Context, q string) (SearchResult, error) {
 	q = strings.TrimSpace(q)
 	if q == "" {
 		return SearchResult{}, ErrSearchEmpty
@@ -83,6 +85,9 @@ func (s *Store) Search(q string) (SearchResult, error) {
 	}
 	res := SearchResult{Meetings: []SearchMeeting{}}
 	for _, m := range list {
+		if err := ctx.Err(); err != nil { // the caller is gone: stop reading files
+			return SearchResult{}, err
+		}
 		hits, skipped := s.searchMeeting(m, needle)
 		res.Skipped += skipped
 		if len(hits) == 0 {
@@ -149,13 +154,22 @@ func readSearchText(path string) (text string, skipped bool) {
 	return string(raw), false
 }
 
-// notesHits finds the needle in notes.md, up to limit hits. The headings (every line that starts with "#": the
-// title line and the section names) are not searched: a query for a section name would match every meeting. After
+// isMarkdownHeading reports an ATX heading line: one to six "#" and a space. "#42 fix" is text.
+func isMarkdownHeading(line string) bool {
+	n := 0
+	for n < len(line) && line[n] == '#' {
+		n++
+	}
+	return n >= 1 && n <= 6 && n < len(line) && line[n] == ' '
+}
+
+// notesHits finds the needle in notes.md, up to limit hits. The headings (the title line and the section names; see
+// isMarkdownHeading) are not searched: a query for a section name would match every meeting. After
 // a hit the search goes on past its snippet, so one paragraph is one hit.
 func notesHits(notes string, needle []rune, limit int) []Hit {
 	var body strings.Builder
 	for line := range strings.Lines(notes) {
-		if !strings.HasPrefix(line, "#") {
+		if !isMarkdownHeading(line) {
 			body.WriteString(line)
 		}
 	}
@@ -177,15 +191,11 @@ func notesHits(notes string, needle []rune, limit int) []Hit {
 // transcriptHits finds the needle in the turns as the transcript shows them (Present: speakers named, merged voices
 // folded), one hit per turn, up to limit. skipped: the transcript exists and could not be read.
 func transcriptHits(dir string, m Manifest, needle []rune, limit int) (hits []Hit, skipped bool) {
-	path := filepath.Join(dir, TranscriptJSON)
-	if fi, err := os.Stat(path); err == nil && fi.Size() > maxSearchFileBytes {
-		return nil, true
-	}
-	raw, err := readTurns(dir)
-	if errors.Is(err, ErrSpeakersBusy) { // no transcript yet
+	raw, err := readTurnsMax(dir, maxSearchFileBytes) // the bound is on the read itself, not on a stat before it
+	if errors.Is(err, ErrSpeakersBusy) {              // no transcript yet
 		return nil, false
 	}
-	if err != nil {
+	if err != nil { // unreadable, or over the bound
 		return nil, true
 	}
 	st, err := LoadSpeakers(dir)
@@ -286,7 +296,8 @@ var foldTable = sync.OnceValue(func() *[foldTableSize]rune {
 
 // foldRune is the character a search compares: lower case, and a letter with a mark as its plain letter (é as e,
 // ё as е). It is stdlib only (golang.org/x/text is not a dependency): the unicode tables give the case, the accents
-// table below the marks. й is deliberately not folded to и: to a Russian reader it is a letter of its own, and
+// table below the marks. Known limits, left out on purpose: no Unicode normalisation (a letter typed as a base letter
+// plus a combining mark does not match its precomposed form), and ß does not match "ss". й is deliberately not folded to и: to a Russian reader it is a letter of its own, and
 // "мои" must not find "мой".
 func foldRune(r rune) rune {
 	if r < utf8.RuneSelf {

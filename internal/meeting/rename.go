@@ -31,18 +31,28 @@ func (r *Runner) Rename(id, title string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	switch m.Status {
-	case StatusTranscribed, StatusDone, StatusFailed:
-	default:
+	if !renameable(m.Status) {
 		return nil, ErrSpeakersBusy
 	}
 	dir, err := r.Store.Dir(id)
 	if err != nil {
 		return nil, err
 	}
-	m, err = r.Store.Update(id, func(m *Manifest) { m.Title = title })
+	// The status is read again under the store lock, the one a Retry or a Finish takes to queue the meeting: a
+	// check made above could be stale by now. The manifest an Update does not change is saved as it was.
+	busy := false
+	m, err = r.Store.Update(id, func(m *Manifest) {
+		if !renameable(m.Status) {
+			busy = true
+			return
+		}
+		m.Title = title
+	})
 	if err != nil {
 		return nil, err
+	}
+	if busy {
+		return nil, ErrSpeakersBusy
 	}
 	line := "# " + heading(*m)
 	for _, name := range headingFiles {
@@ -77,4 +87,9 @@ func (r *Runner) rewriteHeading(path, line string) error {
 		return nil
 	}
 	return vproject.WriteAtomic(path, []byte(out), 0o600)
+}
+
+// renameable reports a status whose meeting is at rest (the states EditSpeakers accepts).
+func renameable(s Status) bool {
+	return s == StatusTranscribed || s == StatusDone || s == StatusFailed
 }

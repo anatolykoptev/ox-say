@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -396,6 +399,87 @@ func TestSearchTimingOver500Meetings(t *testing.T) {
 		t.Logf("search %q over 500 meetings: %v (%d meetings in the answer, truncated %v)", q, el, len(out.Meetings), out.Truncated)
 		if code != http.StatusOK || el > 30*time.Second {
 			t.Errorf("%q: %d in %v", q, code, el)
+		}
+	}
+}
+
+// A request the client dropped stops the scan: the context is checked between meetings.
+// Mutation: internal/daemon/meetings_search.go handleMeetingSearch, pass context.Background() instead of
+// r.Context() -> RED (the cancelled request is still answered).
+func TestSearchStopsWhenTheRequestIsCancelled(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	for i := range 5 {
+		seedMeeting(t, d, fmt.Sprintf("Sync %d", i), "", nil, searchT0.Add(time.Duration(i)*time.Hour))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest("GET", "/v1/meetings/search?q=sync", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Body.Len() != 0 {
+		t.Fatalf("a cancelled search was answered: %d %s", rec.Code, rec.Body)
+	}
+	if _, err := d.Meet.Store.Search(ctx, "sync"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Store.Search with a cancelled context: %v", err)
+	}
+	if n := d.searchGate.running.Load(); n != 0 {
+		t.Fatalf("the search slot leaked: %d", n)
+	}
+}
+
+// At most two searches scan at once; a third is told to come back (429, Retry-After) at once rather than held: the
+// app searches as the user types and cancels the stale one, so waiting would only queue work nobody reads. The
+// MCP tool shares the slots.
+// Mutation: internal/daemon/meetings_search.go handleMeetingSearch, delete the tryAcquire branch -> RED.
+func TestSearchIsCappedAtTwoAtOnce(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	seedMeeting(t, d, "Sync", "", nil, searchT0)
+	if !d.searchGate.tryAcquire() || !d.searchGate.tryAcquire() {
+		t.Fatal("the first two searches must get a slot")
+	}
+	rec := call(t, mux, "GET", "/v1/meetings/search?q=sync", "")
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("third search = %d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+	res, err := mcpSession(t, d).CallTool(t.Context(), &mcp.CallToolParams{Name: "meetings_search", Arguments: map[string]any{"query": "sync"}})
+	if err != nil || !res.IsError {
+		t.Fatalf("tool over the cap: err %v res %+v", err, res)
+	}
+	d.searchGate.release()
+	if rec := call(t, mux, "GET", "/v1/meetings/search?q=sync", ""); rec.Code != http.StatusOK {
+		t.Fatalf("after a release: %d %s", rec.Code, rec.Body)
+	}
+	if n := d.searchGate.running.Load(); n != 1 {
+		t.Fatalf("slots held = %d, want 1 (the one still taken by the test)", n)
+	}
+}
+
+// The size bound is enforced on the read itself: a transcript over it is skipped and counted, never read whole,
+// whatever its size was when something last looked.
+// Mutation: internal/meeting/search.go transcriptHits, call readTurnsMax(dir, 0) (no bound) -> RED.
+func TestSearchSkipsATranscriptOverTheSizeBound(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	big := strings.Repeat("слово ", (9<<20)/len("слово ")) + " редкийтермин"
+	seedMeeting(t, d, "Huge", "", []meeting.Turn{{Speaker: meeting.SpeakerMe, S: 1, E: 2, Text: big}}, searchT0)
+	rec := call(t, mux, "GET", "/v1/meetings/search?q="+url.QueryEscape("редкийтермин"), "")
+	var out struct {
+		Meetings []any `json:"meetings"`
+		Skipped  int   `json:"skipped"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusOK || len(out.Meetings) != 0 || out.Skipped != 1 {
+		t.Fatalf("%d %.200s", rec.Code, rec.Body)
+	}
+}
+
+// Only a Markdown heading (one to six # and a space) is left out of the notes search; "#42 fix" is text.
+// Mutation: internal/meeting/search.go notesHits, skip every line that starts with "#" -> RED.
+func TestSearchNotesSkipsHeadingsNotHashtags(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	seedMeeting(t, d, "Bugs", "# Bugs — x\n\n## Решения\n\n- #42 fix the login\n#7 also\n####### seven hashes\n", nil, searchT0)
+	for q, want := range map[string]int{"42 fix": 1, "#7 also": 1, "seven hashes": 1, "решения": 0} {
+		if out, _, body := search(t, mux, q); len(out.Meetings) != want {
+			t.Errorf("%q: %d meetings, want %d: %s", q, len(out.Meetings), want, body)
 		}
 	}
 }
