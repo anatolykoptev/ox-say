@@ -33,3 +33,26 @@ func TestNotesMarkdownKeepsModelTextInline(t *testing.T) {
 		t.Errorf("link text must survive, escaped:\n%s", md)
 	}
 }
+
+// A speaker's name may hold markup (checkName allows it) and the notes name the speaker in the action items: the
+// label is escaped there as in transcript.md (#256, #262). What the model wrote as the owner, which is not one of
+// the labels, is left as the model wrote it: it is not escaped twice.
+// Mutation: internal/meeting/notes_render.go ownerText, replace `return escapeMarkdown(line)` with `return line` -> RED.
+func TestNotesMarkdownEscapesSpeakerLabels(t *testing.T) {
+	m := Manifest{Title: "T", Labels: Labels{Me: "Me <i>", Them: "Other"}}
+	n := Notes{
+		ChunkNotes: ChunkNotes{ActionItems: []ActionItem{
+			{Who: "*x*", What: "a", When: "b"},
+			{Who: "<b>Ivan</b>", What: "c", When: "d"},
+			{Who: "Me <i>", What: "e", When: "f"},
+			{Who: "*model*", What: "g", When: "h"},
+		}},
+		Labels: map[string]string{"them:1": "*x*", "them:2": "<b>Ivan</b>"},
+	}
+	md := NotesMarkdown(m, n, "en")
+	for _, want := range []string{`- [ ] \*x\* — a — b`, `- [ ] \<b\>Ivan\</b\> — c — d`, `- [ ] Me \<i\> — e — f`, `- [ ] *model* — g — h`} {
+		if !strings.Contains(md, want) {
+			t.Errorf("notes lack %q:\n%s", want, md)
+		}
+	}
+}

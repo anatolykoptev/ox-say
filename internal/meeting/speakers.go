@@ -379,6 +379,9 @@ func checkDistinct(m Manifest, raw []Turn, next SpeakerState, rename map[string]
 		if name == "" {
 			continue
 		}
+		if strings.EqualFold(strings.TrimSpace(shown.Labels.Me), name) { // the owner is a speaker too
+			return speakersErr("another speaker is already called %q", name)
+		}
 		self := next.resolveMerge(id)
 		for _, other := range ids {
 			if other != self && strings.EqualFold(shown.Labels.label(labelKey(other, m, next)), name) {
@@ -389,12 +392,20 @@ func checkDistinct(m Manifest, raw []Turn, next SpeakerState, rename map[string]
 	return nil
 }
 
+// isBidiControl is a bidi embedding, override or isolate (U+202A-202E, U+2066-2069): it reorders the text around it.
+func isBidiControl(r rune) bool {
+	return (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069)
+}
+
+// HasBidiControl reports whether s holds one; the names a caller chooses must not.
+func HasBidiControl(s string) bool { return strings.IndexFunc(s, isBidiControl) >= 0 }
+
 func checkName(name string) error {
 	if len([]rune(name)) > MaxNameRunes {
 		return speakersErr("a name has at most %d characters", MaxNameRunes)
 	}
 	for _, r := range name {
-		if unicode.IsControl(r) || r == ' ' || r == ' ' || (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069) {
+		if unicode.IsControl(r) || r == ' ' || r == ' ' || isBidiControl(r) {
 			return speakersErr("a name cannot hold control characters")
 		}
 	}

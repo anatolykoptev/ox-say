@@ -116,6 +116,8 @@ type Manifest struct {
 	// missing. Recover puts it back in the queue on every round, free of
 	// charge; Retry clears it.
 	WaitingFor string `json:"waiting_for,omitempty"`
+	// FailedAt is when the meeting last failed; the automatic retries wait out a growing backoff from it.
+	FailedAt *time.Time `json:"failed_at,omitempty"`
 	// Attempts counts the times Recover put a failed meeting back in the
 	// queue; Retry and a finished meeting reset it.
 	Attempts int `json:"attempts,omitempty"`

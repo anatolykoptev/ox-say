@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,8 +26,10 @@ type Store struct {
 	// Log receives one line per meeting List had to skip; nil uses slog.Default.
 	Log *slog.Logger
 
-	newID func(time.Time) string // test seam; nil means vproject.NewID
-	mu    sync.Mutex
+	newID     func(time.Time) string // test seam; nil means vproject.NewID
+	removeAll func(string) error     // test seam; nil means os.RemoveAll
+	mu        sync.Mutex
+	warned    sync.Map // tombstone name -> struct{}: those whose failed unlink was logged
 }
 
 // Dir is the directory of meeting id; the id must be one NewID made.
@@ -151,6 +155,7 @@ func (s *Store) List() ([]Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.sweepTombstones(entries)
 	var out []Manifest
 	for _, e := range entries {
 		if !e.IsDir() || !vproject.ValidID(e.Name()) {
@@ -177,24 +182,29 @@ func (s *Store) log() *slog.Logger {
 	return slog.Default()
 }
 
+// tombstonePrefix names a directory a delete renamed out of the store; it is not a valid meeting id, so nothing
+// lists or loads it.
+const tombstonePrefix = ".deleted-"
+
+// tombstoneGrace is how long a tombstone is left to the delete that made it. That delete unlinks it right after the
+// rename; a minute covers the unlink of a long recording on a slow disk, and a tombstone older than that is a
+// leftover of a crash or of a failed unlink.
+const tombstoneGrace = time.Minute
+
 // Delete removes a meeting and all its files.
 func (s *Store) Delete(id string) error {
-	dir, err := s.Dir(id)
-	if err != nil {
-		return err
-	}
-	if err := vproject.Contained(s.Root, dir); err != nil {
-		return ErrNotFound
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return os.RemoveAll(dir)
+	return s.DeleteIf(id, nil)
 }
 
 // DeleteIf removes a meeting unless check refuses it. check sees the stored
 // manifest and runs under the store lock, the same lock Update takes, so no
 // status change can land between the check and the removal; its error is
-// returned and nothing is removed.
+// returned and nothing is removed; a nil check removes whatever the directory
+// holds, a manifest that cannot be read included (and a meeting already gone is
+// not an error). Under the lock the directory is only
+// renamed to a tombstone; the files are unlinked after the lock is released,
+// so the runner's status writes of other meetings do not wait for the unlink
+// of a long recording. A failed unlink is logged and retried by the next List.
 func (s *Store) DeleteIf(id string, check func(Manifest) error) error {
 	dir, err := s.Dir(id)
 	if err != nil {
@@ -203,16 +213,81 @@ func (s *Store) DeleteIf(id string, check func(Manifest) error) error {
 	if err := vproject.Contained(s.Root, dir); err != nil {
 		return ErrNotFound
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m, err := load(dir)
+	tomb, err := s.tombstone(dir, id, check)
 	if err != nil {
 		return err
 	}
-	if err := check(*m); err != nil {
-		return err
+	if tomb == "" {
+		return nil
 	}
-	return os.RemoveAll(dir)
+	if err := s.unlink(tomb); err != nil {
+		s.log().Warn("meeting deleted, its files could not be unlinked yet", slog.String("dir", filepath.Base(tomb)), slog.Any("error", err))
+	}
+	return nil
+}
+
+// tombstone checks the meeting and renames its directory away, under the store lock.
+func (s *Store) tombstone(dir, id string, check func(Manifest) error) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if check != nil {
+		m, err := load(dir)
+		if err != nil {
+			return "", err
+		}
+		if err := check(*m); err != nil {
+			return "", err
+		}
+	}
+	tomb := filepath.Join(s.Root, tombstonePrefix+id+"-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	if err := os.Rename(dir, tomb); err != nil {
+		if check == nil && errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("meeting: %w", err)
+	}
+	return tomb, nil
+}
+
+func (s *Store) unlink(path string) error {
+	if s.removeAll != nil {
+		return s.removeAll(path)
+	}
+	return os.RemoveAll(path)
+}
+
+// sweepTombstones unlinks the tombstones a crash (or a failed unlink) left among entries. A tombstone younger than
+// tombstoneGrace is skipped: its delete is most likely still unlinking it. One that cannot be unlinked is logged
+// once per process, not by every List.
+func (s *Store) sweepTombstones(entries []os.DirEntry) {
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), tombstonePrefix) {
+			continue
+		}
+		if born := tombstoneBorn(e); time.Since(born) < tombstoneGrace {
+			continue
+		}
+		if err := s.unlink(filepath.Join(s.Root, e.Name())); err != nil {
+			if _, seen := s.warned.LoadOrStore(e.Name(), struct{}{}); !seen {
+				s.log().Warn("meeting: cannot unlink a tombstone", slog.String("dir", e.Name()), slog.Any("error", err))
+			}
+		}
+	}
+}
+
+// tombstoneBorn is when the tombstone was made: the time in the last part of its name (base 36, nanoseconds),
+// else the directory's modification time, else now (a tombstone of unknown age is left alone).
+func tombstoneBorn(e os.DirEntry) time.Time {
+	name := e.Name()
+	if i := strings.LastIndexByte(name, '-'); i >= 0 {
+		if ns, err := strconv.ParseInt(name[i+1:], 36, 64); err == nil {
+			return time.Unix(0, ns)
+		}
+	}
+	if fi, err := e.Info(); err == nil {
+		return fi.ModTime()
+	}
+	return time.Now()
 }
 
 // Text reads one of the meeting's text files (TranscriptMD or NotesMD).

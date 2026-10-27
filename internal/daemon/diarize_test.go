@@ -13,6 +13,7 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
+	"github.com/anatolykoptev/ox-say/internal/oneshot"
 )
 
 // stubDiar writes an executable shell script standing in for ox-diar and a one-second channel file in a meeting
@@ -246,6 +247,9 @@ func TestDiarPinsAgreeAcrossLanguages(t *testing.T) {
 	if got := find("engine/diar/Sources/OxDiarCore/Platform.swift", `case models = (\d+)`); got != "3" || diarExitModels != 3 {
 		t.Errorf("models %s, diarExitModels %d", got, diarExitModels)
 	}
+	if got := find("engine/diar/Sources/OxDiarCore/Platform.swift", `case input = (\d+)`); got != "4" || diarExitInput != 4 {
+		t.Errorf("input %s, diarExitInput %d", got, diarExitInput)
+	}
 	// the lists in fetch-models.sh name 24 model files and 4 documents, each with a 64-hex SHA-256
 	if n := len(regexp.MustCompile(`(?m)^    "[0-9a-f]{64}  \S+"$`).FindAllString(read("scripts/fetch-models.sh"), -1)); n != 28 {
 		t.Errorf("fetch-models.sh lists %d diarization entries, want 28", n)
@@ -282,5 +286,89 @@ sleep 30
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// One ox-diar run is bounded tightly: the measured worst case is about 80 s per hour of audio (CPU; 21 s on the
+// Neural Engine), so the limit is a tenth of the audio's length (six minutes per hour, four and a half times the CPU
+// figure), never under five minutes for the model load. The old limit, twice the audio, let a hung process hold the
+// meeting queue for four hours (#258).
+// Mutations: internal/daemon/diarize.go diarTimeout, change `max(` to `min(` -> RED (the 2 h cap gets the floor);
+// change `diarTimeoutDivisor = 10` to `1` -> RED.
+func TestDiarTimeoutIsTightAndHasAFloor(t *testing.T) {
+	const hour = 3600 * diarBytesPerSecond
+	cases := map[string]struct {
+		bytes int64
+		want  time.Duration
+	}{
+		"a second":     {diarBytesPerSecond, diarMinTimeout},
+		"an hour":      {hour, 6 * time.Minute},
+		"the cap (2h)": {diarMaxPCMBytes, 12 * time.Minute},
+	}
+	for name, tc := range cases {
+		if got := diarTimeout(tc.bytes); got != tc.want {
+			t.Errorf("%s: timeout %v, want %v", name, got, tc.want)
+		}
+	}
+	const cpuWorstPerHour = 80 * time.Second
+	if got := diarTimeout(diarMaxPCMBytes); got < 3*2*cpuWorstPerHour {
+		t.Errorf("the cap's timeout %v is under three times the measured CPU run", got)
+	}
+}
+
+// ox-diar's exit 4 (the channel file is missing or unreadable) is "not available": nothing a retry changes, and no
+// "Try Again" for it. It used to read as engine_error, which offers a voices retry (#258).
+// Mutation: internal/daemon/diarize.go runDiarizer, delete the `exit.Code() == diarExitInput` branch -> RED.
+func TestRunDiarizerExit4IsUnavailableWithoutRetry(t *testing.T) {
+	cfg, pcm := stubDiar(t, `echo "cannot read the audio" >&2; exit 4`)
+	_, err := runDiarizer(context.Background(), cfg, pcm)
+	var un *meeting.DiarUnavailableError
+	if !errors.As(err, &un) || un.Reason != meeting.DiarInputUnreadable {
+		t.Fatalf("exit 4: %v", err)
+	}
+}
+
+// A file at DiarBin that cannot be executed is a missing engine, not an engine that fails when the first meeting
+// runs (#258).
+// Mutation: internal/daemon/diarize.go diarReady, delete `|| st.Mode().Perm()&0o111 == 0` -> RED.
+func TestDiarReadyNeedsTheExecBit(t *testing.T) {
+	home := t.TempDir()
+	cfg := &config.Config{Home: home, DiarBin: filepath.Join(home, "ox-diar")}
+	if err := os.WriteFile(cfg.DiarBin, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	was, wasArch := osMajor, goArch
+	t.Cleanup(func() { osMajor, goArch = was, wasArch })
+	goArch = "arm64"
+	osMajor = func() (int, bool) { return 15, true }
+	if got := (&Daemon{Cfg: cfg}).diarReady(); got != meeting.DiarEngineMissing {
+		t.Fatalf("non-executable engine: %q, want %q", got, meeting.DiarEngineMissing)
+	}
+}
+
+// runDiarizer gives ox-diar a deadline of diarTimeout(size of the channel file): the call site, not only the
+// function, is gated (#258).
+// Mutation: internal/daemon/diarize.go runDiarizer, change `diarTimeout(st.Size())` to `4*time.Hour` -> RED.
+func TestRunDiarizerUsesTheComputedTimeout(t *testing.T) {
+	cfg, pcm := stubDiar(t, `printf '{}' > "$2"`)
+	if err := os.Truncate(pcm, 3600*diarBytesPerSecond); err != nil {
+		t.Fatal(err)
+	}
+	was := diarRun
+	t.Cleanup(func() { diarRun = was })
+	var budget time.Duration
+	diarRun = func(ctx context.Context, bin string, args []string, opt oneshot.Options) ([]byte, error) {
+		dl, ok := ctx.Deadline()
+		if !ok {
+			t.Error("ox-diar was given no deadline")
+		}
+		budget = time.Until(dl)
+		return was(ctx, bin, args, opt)
+	}
+	if _, err := runDiarizer(context.Background(), cfg, pcm); err != nil {
+		t.Fatal(err)
+	}
+	if want := diarTimeout(3600 * diarBytesPerSecond); budget > want || budget < want-time.Minute {
+		t.Fatalf("deadline in %v, want about %v", budget, want)
 	}
 }

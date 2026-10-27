@@ -37,7 +37,7 @@ func NotesMarkdown(m Manifest, n Notes, lang string) string {
 	if len(n.ActionItems) > 0 {
 		fmt.Fprintf(&b, "\n## %s\n\n", h.actions)
 		for _, a := range n.ActionItems {
-			fmt.Fprintf(&b, "- [ ] %s — %s — %s\n", orDash(cleanLine(a.Who), h.unstated), cleanLine(a.What), orDash(cleanLine(a.When), h.unstated))
+			fmt.Fprintf(&b, "- [ ] %s — %s — %s\n", orDash(ownerText(a.Who, m, n), h.unstated), cleanLine(a.What), orDash(cleanLine(a.When), h.unstated))
 		}
 	}
 	section(h.questions, n.OpenQuestions)
@@ -72,6 +72,25 @@ func cleanBlock(s string) string {
 		lines[i] = cleanLine(l)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// ownerText is an action item's owner. When it is one of the speakers' labels (the recorder's, the far side's, a
+// voice's) it is the user's own text and may hold markup, so it is escaped as in transcript.md; anything else is
+// the model's string and is cleaned like the rest, not escaped twice.
+func ownerText(who string, m Manifest, n Notes) string {
+	line := strings.Join(strings.Fields(who), " ")
+	if line != "" {
+		labels := []string{m.Labels.Me, m.Labels.Them}
+		for _, l := range n.Labels {
+			labels = append(labels, l)
+		}
+		for _, l := range labels {
+			if strings.Join(strings.Fields(l), " ") == line {
+				return escapeMarkdown(line)
+			}
+		}
+	}
+	return cleanLine(who)
 }
 
 func orDash(s, unstated string) string {

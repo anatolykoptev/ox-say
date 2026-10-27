@@ -42,7 +42,26 @@ func TranscriptMarkdown(m Manifest, turns []Turn) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", heading(m))
 	for _, t := range turns {
-		fmt.Fprintf(&b, "**%s** [%s]: %s\n\n", m.Labels.turnLabel(t), Clock(t.S), t.Text)
+		fmt.Fprintf(&b, "**%s** [%s]: %s\n\n", escapeMarkdown(m.Labels.turnLabel(t)), Clock(t.S), t.Text)
+	}
+	return b.String()
+}
+
+// markdownSpecials are the characters a name must not carry into a markdown file as markup.
+const markdownSpecials = "\\`*_[]<>&"
+
+// escapeMarkdown makes a name inline text: each markup character gets a backslash. Names are allowed to hold them
+// (checkName); the renderer is where they are made harmless.
+func escapeMarkdown(s string) string {
+	if !strings.ContainsAny(s, markdownSpecials) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if strings.ContainsRune(markdownSpecials, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
 	}
 	return b.String()
 }

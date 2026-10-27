@@ -40,6 +40,7 @@ public enum DiarProblem: Equatable {
             case "models_missing": return .diarUnavailableModels
             case "models_unusable": return .diarUnavailableUnusable
             case "too_long": return .diarUnavailableTooLong
+            case "input_unreadable": return .diarUnavailableUnreadable
             default: return .diarUnavailableOther
             }
         }

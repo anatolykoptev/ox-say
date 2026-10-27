@@ -120,6 +120,10 @@ func (d *Daemon) handleMeetingCreate(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, f.name+" is too long")
 			return
 		}
+		if meeting.HasBidiControl(f.text) {
+			writeErr(w, http.StatusBadRequest, f.name+" holds a text-direction control character")
+			return
+		}
 	}
 	if me == "" {
 		me = defaultMeLabel

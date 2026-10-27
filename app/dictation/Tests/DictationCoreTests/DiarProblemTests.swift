@@ -22,6 +22,7 @@ final class DiarProblemTests: XCTestCase {
         XCTAssertFalse(DiarProblem.unavailable(reason: "os_too_old").canRetry)
         XCTAssertFalse(DiarProblem.unavailable(reason: "models_unusable").canRetry)
         XCTAssertFalse(DiarProblem.unavailable(reason: "too_long").canRetry, "a recording over two hours stays over two hours")
+        XCTAssertFalse(DiarProblem.unavailable(reason: "input_unreadable").canRetry, "the same file is unreadable again")
     }
 
     /// Every code the daemon can send has its own sentence, and a code from a newer daemon gets the general one.
@@ -32,12 +33,12 @@ final class DiarProblemTests: XCTestCase {
         let unavailable = ["os_too_old": L10nKey.diarUnavailableOS, "cpu_unsupported": .diarUnavailableCPU,
                            "engine_missing": .diarUnavailableEngine, "models_missing": .diarUnavailableModels,
                            "models_unusable": .diarUnavailableUnusable,
-                           "too_long": .diarUnavailableTooLong]
+                           "too_long": .diarUnavailableTooLong, "input_unreadable": .diarUnavailableUnreadable]
         for (code, key) in unavailable { XCTAssertEqual(DiarProblem.unavailable(reason: code).messageKey, key, code) }
         XCTAssertEqual(DiarProblem.failed(reason: "from_the_future").messageKey, .diarFailedEngine)
         XCTAssertEqual(DiarProblem.unavailable(reason: "from_the_future").messageKey, .diarUnavailableOther)
         let all = Set(failed.values).union(unavailable.values).union([.diarUnavailableOther])
-        XCTAssertEqual(all.count, 10, "each sentence is its own key")
+        XCTAssertEqual(all.count, 11, "each sentence is its own key")
     }
 
     func testTheMenuListsVoicesAndProblemsNewestFirstAndSaysAMacProblemOnce() {

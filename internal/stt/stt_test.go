@@ -699,16 +699,6 @@ func TestLongAudioUsesCLI(t *testing.T) {
 	}
 }
 
-// tailBuffer keeps only the last max bytes.
-func TestTailBuffer(t *testing.T) {
-	b := &tailBuffer{max: 8}
-	_, _ = b.Write([]byte("0123456789"))
-	_, _ = b.Write([]byte("abc"))
-	if got := b.String(); got != "56789abc" {
-		t.Fatalf("tail = %q", got)
-	}
-}
-
 // Input classification: relative path, missing file and an undecodable clip
 // are InputError (400); an ox-stt exit 1 is EngineError (500); a missing
 // model names scripts/fetch-models.sh.
@@ -766,5 +756,58 @@ func TestTranscribeErrors(t *testing.T) {
 		if !errors.As(err, &eErr) {
 			t.Fatalf("engine exit 1 err = %v (%T), want EngineError", err, err)
 		}
+	}
+}
+
+// An ox-stt that fails says why on stderr, and the dictation error carries those words (#258).
+// Mutation: internal/stt/stt.go Transcribe, change `strings.TrimSpace(exitErr.Tail)` to `""` -> RED.
+func TestEngineErrorCarriesTheStderrTail(t *testing.T) {
+	dir := t.TempDir()
+	opts, _ := fakeOpts(t, dir)
+	src := testutil.WriteTinyWAV(t, dir, "ok.wav")
+	t.Setenv("OXSAY_FAKE_STT_EXIT", "1")
+	_, err := Transcribe(context.Background(), src, opts)
+	var eErr *EngineError
+	if !errors.As(err, &eErr) || !strings.Contains(err.Error(), "fake-stt: transcription failed") {
+		t.Fatalf("err = %v (%T), want an EngineError carrying the stderr tail", err, err)
+	}
+}
+
+// A clip ffmpeg refuses is reported with ffmpeg's own words, and the path of the input is not among them: over
+// HTTP it is the upload's temp file (#262).
+// Mutations: internal/stt/stt.go convert, replace `strings.ReplaceAll(exitErr.Tail, audioPath, "<input>")` with
+// `exitErr.Tail` -> RED (the path leaks); with `""` -> RED (no ffmpeg words).
+func TestConvertErrorCarriesTheStderrTailWithoutThePath(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "fake-ffmpeg")
+	script := `#!/bin/sh
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-i" ]; then in="${2#file:}"; fi
+  shift
+done
+echo "$in: Invalid data found when processing input" >&2
+exit 1
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := ffmpeg
+	ffmpeg = fake
+	t.Cleanup(func() { ffmpeg = old })
+
+	src := filepath.Join(dir, "upload-secret.wav")
+	if err := os.WriteFile(src, []byte("not audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := convert(context.Background(), src, time.Minute)
+	var iErr *InputError
+	if !errors.As(err, &iErr) {
+		t.Fatalf("err = %v (%T), want an InputError", err, err)
+	}
+	if !strings.Contains(err.Error(), "<input>: Invalid data found when processing input") {
+		t.Errorf("the stderr tail did not reach the error: %v", err)
+	}
+	if strings.Contains(err.Error(), src) || strings.Contains(err.Error(), "upload-secret") {
+		t.Errorf("the error leaks the input path: %v", err)
 	}
 }

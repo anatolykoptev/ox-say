@@ -7,7 +7,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/anatolykoptev/ox-say/internal/vproject"
 )
@@ -64,9 +63,7 @@ func (r *Runner) Speakers(id string) (SpeakersView, error) {
 // saved with NotesStale before the notes are queued and the flag is cleared when notes are written, so a request
 // that died between the two is finished by the same request again.
 func (r *Runner) EditSpeakers(id string, e Edit) (SpeakersView, error) {
-	mu, _ := r.speakerMu.LoadOrStore(id, &sync.Mutex{})
-	mu.(*sync.Mutex).Lock()
-	defer mu.(*sync.Mutex).Unlock()
+	defer r.speakerLocks.lock(id)()
 	m, err := r.Store.Load(id)
 	if err != nil {
 		return SpeakersView{}, err
@@ -118,7 +115,7 @@ func (r *Runner) EditSpeakers(id string, e Edit) (SpeakersView, error) {
 	if err != nil {
 		return SpeakersView{}, err
 	}
-	if needsModel {
+	if needsModel || cur.NotesStale {
 		return r.queueNotesAfter(id, dir, *m, next, turns, transcript)
 	}
 	if err := vproject.WriteAtomic(filepath.Join(dir, TranscriptMD), transcript, 0o600); err != nil {

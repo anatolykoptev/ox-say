@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -854,5 +855,19 @@ func TestDiarModelsReady(t *testing.T) {
 		if got := c.DiarModelsReady(); got != want {
 			t.Errorf("marker %q: ready %v, want %v", revision, got, want)
 		}
+	}
+}
+
+// The size the app is told to expect is derived from NotesModelBytes, not written by hand (#243).
+// Mutation: internal/config/config.go NotesBlock, put a literal "about 9.9 GB" in the model_missing text -> RED.
+func TestNotesModelMissingTextNamesTheModelSize(t *testing.T) {
+	home := t.TempDir()
+	c := &Config{NotesBin: filepath.Join(home, "ox-llm"), NotesModel: filepath.Join(home, NotesModelFile), NotesPort: DefaultNotesPort, HostMemoryBytes: 32 << 30}
+	if err := os.WriteFile(c.NotesBin, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, msg := c.NotesBlock()
+	if code != NotesReasonModelMissing || !strings.Contains(msg, fmt.Sprintf("about %.1f GB", float64(NotesModelBytes)/1e9)) {
+		t.Fatalf("NotesBlock = %q, %q", code, msg)
 	}
 }

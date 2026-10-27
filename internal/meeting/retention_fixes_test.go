@@ -173,3 +173,23 @@ func TestAFailedMeetingStillBeingRetriedKeepsItsAudio(t *testing.T) {
 		t.Fatal("audio deleted before the retries were spent")
 	}
 }
+
+// A meeting whose recording was extended after its transcript (the transcript is of the shorter audio) keeps its
+// audio past the retention period, failed or done: the tail was never transcribed, and the sweep would lose it
+// (#244).
+// Mutation: internal/meeting/retention.go expired, change `return transcriptReadable(dir) && !grewSince(dir, &m)` to
+// `return transcriptReadable(dir)` -> RED.
+func TestAnExtendedRecordingKeepsItsAudioPastRetention(t *testing.T) {
+	for _, status := range []Status{StatusFailed, StatusDone} {
+		t.Run(string(status), func(t *testing.T) {
+			f := newFixture(t)
+			id := expiredMeeting(t, f)
+			dir, _ := f.r.Store.Dir(id)
+			writePCM(t, dir, MePCM, 90, 5000) // the recording grew; the transcript is of 20 s
+			_, _ = f.r.Store.Update(id, func(m *Manifest) { m.Status = status })
+			if f.r.SweepRetention() != 0 || !audioLeft(t, f, id) {
+				t.Fatal("audio with an untranscribed tail was swept")
+			}
+		})
+	}
+}

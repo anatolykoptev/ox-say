@@ -125,4 +125,5 @@
 "meeting.diar.unavailable.models_missing" = "Voices on a call are not told apart: the voice models are not downloaded. Update OxSay.";
 "meeting.diar.unavailable.models_unusable" = "Voices on a call are not told apart: the voice models would not load on this Mac. Reinstall OxSay to download them again.";
 "meeting.diar.unavailable.too_long" = "Voices on a call are not told apart: the recording is longer than 2 hours.";
+"meeting.diar.unavailable.input_unreadable" = "Voices on a call are not told apart: the recording could not be read.";
 "meeting.diar.unavailable.other" = "Voices on a call are not told apart on this Mac.";

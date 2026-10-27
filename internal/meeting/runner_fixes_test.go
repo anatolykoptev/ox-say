@@ -350,6 +350,7 @@ func TestRecoverRetriesFailedMeetingsABoundedNumberOfTimes(t *testing.T) {
 	id := f.start(t, 20, 0, 5000, false)
 	_ = f.r.Process(context.Background(), id) // fails: the original run
 	for range 6 {
+		f.now = f.now.Add(retryBackoff[len(retryBackoff)-1]) // past the backoff
 		f.r.Recover()
 		_ = f.r.Process(context.Background(), id)
 	}
@@ -378,7 +379,8 @@ func TestRecoverBringsAFailedMeetingToDone(t *testing.T) {
 	id := f.start(t, 20, 0, 5000, false)
 	_ = f.r.Process(context.Background(), id)
 	down.Store(false)
-	f.r = NewRunner(f.r.Deps) // the daemon restarted
+	f.r = NewRunner(f.r.Deps)    // the daemon restarted
+	f.now = f.now.Add(time.Hour) // past the backoff
 	f.r.Recover()
 	if err := f.r.Process(context.Background(), id); err != nil {
 		t.Fatal(err)
