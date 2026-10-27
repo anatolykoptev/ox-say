@@ -30,13 +30,45 @@ public enum MeetingsPageState: Equatable {
     }
 }
 
-/// When the open window asks the daemon again. Nothing runs while the window is closed or every meeting is settled.
+/// When the open window asks the daemon again. Nothing runs while the window is closed, hidden or covered, or when
+/// every meeting is settled and the notes writer is not downloading.
 public enum MeetingsPolling {
     public static let interval: TimeInterval = 3
 
-    public static func needed(visible: Bool, meetings: [MeetingInfo]) -> Bool {
-        visible && meetings.contains { !$0.settled }
+    public static func needed(visible: Bool, meetings: [MeetingInfo], writer: NotesWriterState = .ready) -> Bool {
+        guard visible else { return false }
+        if case .downloading = writer { return true }
+        return meetings.contains { !$0.settled }
     }
+}
+
+/// One read of everything at a time; a request that comes while one runs is not lost but runs once more afterwards
+/// (a delete, a rename or a started recording asks for a read exactly while another is in flight).
+public struct RefreshGate: Equatable {
+    private var running = false
+    private var again = false
+
+    public init() {}
+
+    /// True when the caller should start a read now.
+    public mutating func request() -> Bool {
+        if running { again = true; return false }
+        running = true
+        return true
+    }
+
+    /// The read ended. True when another pass is due.
+    public mutating func finish() -> Bool {
+        if again { again = false; return true }
+        running = false
+        return false
+    }
+}
+
+/// Why a meeting call cannot even be tried.
+public enum MeetingFeatureError: Error, Equatable {
+    case needsNewerMacOS
+    case switchedOff
 }
 
 /// What the user was doing when a call to the daemon failed: the sentence differs ("rename it when it is done").
@@ -48,20 +80,25 @@ public enum MeetingAction: CaseIterable, Equatable {
 /// with no mapping carry them through.
 public enum MeetingErrorText {
     public static func sentence(_ error: Error, action: MeetingAction, text: (L10nKey) -> String = { $0.text }) -> String {
+        if let error = error as? MeetingFeatureError {
+            return text(error == .needsNewerMacOS ? .meetingErrNeedsMac : .meetingErrOff)
+        }
         guard let error = error as? StudioError else { return text(.meetingErrGeneric) }
         switch error {
         case .daemonUnreachable: return text(.meetingErrDaemonDown)
         case .timedOut: return text(.meetingErrTimeout)
         case .badResponse: return text(.meetingErrBadResponse)
-        case .refused(let status, let message):
-            if status == 409 {
-                switch action {
-                case .delete: return text(.meetingErrDeleteBusy)
-                case .rename: return text(.meetingErrRenameBusy)
-                case .refresh, .speakers, .retry, .settings: return text(.meetingErrBusy)
-                }
+        case .refused(let status, _):
+            // The daemon's own words are English and name internals: they never reach the window.
+            switch (status, action) {
+            case (409, .delete): return text(.meetingErrDeleteBusy)
+            case (409, .rename): return text(.meetingErrRenameBusy)
+            case (409, _): return text(.meetingErrBusy)
+            case (404, _): return text(.meetingErrNotFound)
+            case (400, .rename): return text(.meetingErrRenameInvalid)
+            case (400, .settings): return text(.meetingErrSettingsInvalid)
+            default: return text(.meetingErrGeneric)
             }
-            return String(format: text(.meetingErrRefused), message)
         }
     }
 
@@ -73,12 +110,40 @@ public enum MeetingErrorText {
 }
 
 extension MeetingRowModel {
-    /// Why a recording did not finish, in the daemon's words with the terminal talk left out; nil when there is none
-    /// to give or the recording is fine.
-    public static func failureReason(of info: MeetingInfo) -> String? {
-        guard info.status == .failed || info.status == .transcribed, let error = info.error else { return nil }
-        let reason = PlainWords.clean(error, fallback: "")
-        return reason.isEmpty ? nil : reason
+    /// What to say about a recording that did not finish, in the user's language. The daemon's reason is free English
+    /// text that names internals, so it is not shown; the sentence says what did not happen. nil for a fine recording.
+    public static func failureSentence(of info: MeetingInfo, text: (L10nKey) -> String = { $0.text }) -> String? {
+        switch info.status {
+        case .failed: return text(.meetingFailedGeneric)
+        case .transcribed: return info.notesPending == "failed" ? text(.meetingNotesFailed) : nil
+        default: return nil
+        }
+    }
+
+    /// The title the list shows. A title the app itself gave a call ("Zoom call") is shown in the user's language; any
+    /// other title, including one the user typed, is shown as it is. What is stored never changes.
+    public static func displayTitle(of info: MeetingInfo, text: (L10nKey) -> String = { $0.text }) -> String {
+        let t = info.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let source = CallPolicy.sources.first(where: { MeetingLimits.title(forSource: $0) == t }),
+           let name = CallPolicy.names[source] {
+            return String(format: text(.meetingsTitleCall), name)
+        }
+        return title(of: info, text: text)
+    }
+}
+
+/// Notes are written from what other people said on a call: a link in them is theirs, not ours, and must not be one
+/// click from the user's browser.
+public enum InlineMarkdown {
+    public static func attributed(_ markdown: String) -> AttributedString {
+        let parsed = (try? AttributedString(markdown: markdown, options: .init(interpretedSyntax: .inlineOnly))) ?? AttributedString(markdown)
+        return removingLinks(parsed)
+    }
+
+    public static func removingLinks(_ text: AttributedString) -> AttributedString {
+        var out = text
+        for run in out.runs where run.link != nil { out[run.range].link = nil }
+        return out
     }
 }
 

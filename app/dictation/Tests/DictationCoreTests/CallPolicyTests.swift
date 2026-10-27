@@ -59,6 +59,13 @@ final class CallPolicyTests: XCTestCase {
         XCTAssertEqual(CallPolicy.sources.count, Set(CallPolicy.sources).count)
     }
 
+    func testThePictureRowsAreTheRealRegistryOnDefaults() {
+        let apps = CallPolicy.defaultApps()
+        XCTAssertEqual(apps.map(\.id), CallPolicy.sources)
+        XCTAssertTrue(apps.contains { $0.id == "oxpulse" })
+        XCTAssertEqual(apps.filter { $0.mode == .auto }.count, CallDetector.autoStartSources.filter { CallPolicy.sources.contains($0) }.count)
+    }
+
     func testTheSettingsRowsFollowTheStore() {
         let d = suite()
         CallPolicy.setMode(.never, for: "slack", d)

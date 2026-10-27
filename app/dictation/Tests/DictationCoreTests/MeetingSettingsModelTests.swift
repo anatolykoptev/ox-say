@@ -59,6 +59,21 @@ final class MeetingSettingsModelTests: XCTestCase {
 
     // MARK: diff
 
+    func testTheDaemonNotBeingAskedIsMarked() {
+        XCTAssertTrue(values(suite(), daemon: .week).retentionVerified)
+        XCTAssertFalse(values(suite(), daemon: nil).retentionVerified, "the page must not present the app's copy as fact")
+    }
+
+    /// A name is typed letter by letter; saving it must not read the whole page again.
+    /// Mutation: Change.needsRefresh, `.name` returns true -> RED.
+    func testOnlyTheMeetingsSwitchNeedsAFullRefresh() {
+        XCTAssertTrue(MeetingSettingsModel.Change.enabled(true).needsRefresh)
+        XCTAssertFalse(MeetingSettingsModel.Change.name("Anna ").needsRefresh)
+        XCTAssertFalse(MeetingSettingsModel.Change.retention(.week).needsRefresh)
+        XCTAssertFalse(MeetingSettingsModel.Change.autoStart(false).needsRefresh)
+        XCTAssertFalse(MeetingSettingsModel.Change.mode(source: "zoom", mode: .ask).needsRefresh)
+    }
+
     func testNothingChangedIsNoChange() {
         let v = values(suite())
         XCTAssertEqual(MeetingSettingsModel.changes(from: v, to: v), [])
@@ -114,7 +129,7 @@ final class MeetingSettingsModelTests: XCTestCase {
         XCTAssertEqual(MeetingSettings.retention(d), .month)
         let down = StudioClient(baseURL: URL(string: "http://127.0.0.1:8094")!) { _ in throw URLError(.cannotConnectToHost) }
         let unreachable = await MeetingSettingsApplier(defaults: d, client: down).apply(.retention(.forever), text: { $0.rawValue })
-        XCTAssertEqual(unreachable, "settings.save_failed")
+        XCTAssertEqual(unreachable, "meeting.error.daemon_down", "the sentence alone: no second wrapper around it")
         XCTAssertEqual(MeetingSettings.retention(d), .month)
     }
 }

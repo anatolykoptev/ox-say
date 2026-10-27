@@ -66,6 +66,11 @@ public enum CallPolicy {
     public static func apps(_ d: UserDefaults) -> [CallApp] {
         sources.map { CallApp(id: $0, name: names[$0] ?? $0, noteKey: browserNotes[$0], mode: mode(for: $0, d)) }
     }
+
+    /// The rows with every app on its default, for a picture that must not read anybody's settings.
+    public static func defaultApps() -> [CallApp] {
+        sources.map { CallApp(id: $0, name: names[$0] ?? $0, noteKey: browserNotes[$0], mode: defaultMode($0)) }
+    }
 }
 
 extension MeetingPolicy {

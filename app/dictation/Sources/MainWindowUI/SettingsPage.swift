@@ -32,15 +32,15 @@ struct SettingsPage: View {
                     Button(L10nKey.commonChoose.text) { model.actions.chooseNotesFolder() }
                     Button(L10nKey.commonOpen.text) { model.actions.openNotesFolder() }
                 }
-                HintedRow(title: L10nKey.settingsKeep.text, hint: L10nKey.settingsKeepFooter.text) {
+                HintedRow(title: L10nKey.settingsKeep.text,
+                          hint: s.wrappedValue.retentionVerified ? L10nKey.settingsKeepFooter.text : L10nKey.settingsKeepUnchecked.text) {
                     Picker("", selection: s.retention) {
                         ForEach(MeetingRetention.allCases, id: \.self) { Text($0.titleKey.text).tag($0) }
                     }
                     .labelsHidden().fixedSize()
                 }
                 HintedRow(title: L10nKey.settingsName.text) {
-                    TextField("", text: s.yourName, prompt: Text(s.wrappedValue.yourNameFallback))
-                        .labelsHidden().multilineTextAlignment(.trailing).frame(width: 220)
+                    NameField(saved: s.wrappedValue.yourName, fallback: s.wrappedValue.yourNameFallback) { s.yourName.wrappedValue = $0 }
                 }
                 notesWriter
             }
@@ -182,5 +182,25 @@ private struct PermissionRow: View {
         case .unknown:
             Label(L10nKey.permUnknown.text, systemImage: "questionmark.circle").foregroundStyle(.secondary)
         }
+    }
+}
+
+/// The name in transcripts. It is typed into a draft of its own and saved when the user presses Return or leaves the
+/// field, so a space at the end survives ("Anna " before "Karenina"), and a reload never overwrites what is being typed.
+private struct NameField: View {
+    let saved: String
+    let fallback: String
+    let commit: (String) -> Void
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField("", text: $draft, prompt: Text(fallback))
+            .labelsHidden().multilineTextAlignment(.trailing).frame(width: 220)
+            .focused($focused)
+            .onAppear { draft = saved }
+            .onSubmit { commit(draft) }
+            .onChange(of: focused) { isFocused in if !isFocused { commit(draft) } }
+            .onChange(of: saved) { new in if !focused { draft = new } }
     }
 }

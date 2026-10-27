@@ -50,6 +50,27 @@ final class MeetingWindowStateTests: XCTestCase {
         XCTAssertFalse(MeetingsPolling.needed(visible: true, meetings: []))
     }
 
+    /// A model download has no meeting in the list to wait for, but the status still has to be read.
+    /// Mutation: MeetingsPolling.needed, drop the `.downloading` line -> RED.
+    func testADownloadKeepsThePollGoingWhileTheWindowIsOpen() {
+        XCTAssertTrue(MeetingsPolling.needed(visible: true, meetings: [], writer: .downloading(percent: 40)))
+        XCTAssertFalse(MeetingsPolling.needed(visible: false, meetings: [], writer: .downloading(percent: 40)))
+        XCTAssertFalse(MeetingsPolling.needed(visible: true, meetings: [], writer: .ready))
+        XCTAssertFalse(MeetingsPolling.needed(visible: true, meetings: [], writer: .missing))
+    }
+
+    /// A refresh asked for while one runs is not lost.
+    /// Mutation: RefreshGate.request, delete `again = true` -> RED.
+    func testARefreshRequestedDuringARefreshRunsAgain() {
+        var gate = RefreshGate()
+        XCTAssertTrue(gate.request())
+        XCTAssertFalse(gate.request(), "one read at a time")
+        XCTAssertFalse(gate.request())
+        XCTAssertTrue(gate.finish(), "the requests that came meanwhile are answered by one more pass")
+        XCTAssertFalse(gate.finish(), "and then it is idle")
+        XCTAssertTrue(gate.request(), "a later request starts at once")
+    }
+
     // MARK: error sentences
 
     func testEveryTransportErrorHasASentence() {
@@ -61,20 +82,29 @@ final class MeetingWindowStateTests: XCTestCase {
         }
     }
 
-    /// A 409 means "busy" and says what the user was doing; any other refusal carries the daemon's words.
-    /// Mutation: MeetingErrorText.sentence, delete the `.delete` 409 arm -> RED.
-    func testBusyRefusalsNameTheAction() {
+    /// A 409 means "busy" and says what the user was doing; 404, 400 and everything else have localized sentences of
+    /// their own, and the daemon's English words never come through.
+    /// Mutation: MeetingErrorText.sentence, `case (409, .delete)` returns `.meetingErrBusy` -> RED.
+    func testRefusalsAreSaidInTheUsersLanguageNeverInTheDaemons() {
         func refused(_ status: Int, _ action: MeetingAction) -> String {
-            MeetingErrorText.sentence(StudioError.refused(status: status, message: "daemon words"), action: action, text: key)
+            MeetingErrorText.sentence(StudioError.refused(status: status, message: "daemon words in English"), action: action, text: key)
         }
         XCTAssertEqual(refused(409, .delete), "meeting.error.delete_busy")
         XCTAssertEqual(refused(409, .rename), "meeting.error.rename_busy")
         XCTAssertEqual(refused(409, .speakers), "meeting.error.busy")
         XCTAssertEqual(refused(409, .retry), "meeting.error.busy")
-        XCTAssertEqual(refused(500, .delete), "meeting.error.refused")
-        let words = MeetingErrorText.sentence(StudioError.refused(status: 400, message: "title too long"), action: .rename,
-                                              text: { $0 == .meetingErrRefused ? "No: %@" : $0.rawValue })
-        XCTAssertEqual(words, "No: title too long")
+        XCTAssertEqual(refused(404, .rename), "meeting.error.not_found")
+        XCTAssertEqual(refused(400, .rename), "meeting.error.rename_invalid")
+        XCTAssertEqual(refused(400, .settings), "meeting.error.settings_invalid")
+        XCTAssertEqual(refused(500, .delete), "meeting.error.generic")
+        XCTAssertEqual(refused(400, .delete), "meeting.error.generic")
+        let all = MeetingErrorText.sentence(StudioError.refused(status: 418, message: "teapot"), action: .refresh, text: { _ in "ok" })
+        XCTAssertFalse(all.contains("teapot"))
+    }
+
+    func testAMeetingFeatureThatCannotRunHasItsOwnSentences() {
+        XCTAssertEqual(MeetingErrorText.sentence(MeetingFeatureError.needsNewerMacOS, action: .rename, text: key), "meeting.error.needs_macos")
+        XCTAssertEqual(MeetingErrorText.sentence(MeetingFeatureError.switchedOff, action: .speakers, text: key), "meeting.error.off")
     }
 
     func testDeletingAMeetingThatIsAlreadyGoneIsNotAnError() {
@@ -85,17 +115,53 @@ final class MeetingWindowStateTests: XCTestCase {
 
     // MARK: row reasons
 
-    func testAFailedRowGivesTheDaemonsReasonInPlainWords() {
+    func testAFailedRowIsSaidInTheUsersLanguageNotTheDaemons() {
         var info = m("a", .failed)
         info.error = "the recording was empty"
-        XCTAssertEqual(MeetingRowModel.failureReason(of: info), "the recording was empty")
-        info.error = "transcription failed: `ox-say status` shows OX_SAY_STT missing"
-        XCTAssertNil(MeetingRowModel.failureReason(of: info), "jargon the user cannot act on is not shown")
+        XCTAssertEqual(MeetingRowModel.failureSentence(of: info, text: key), "meeting.failed.generic")
         info.error = nil
-        XCTAssertNil(MeetingRowModel.failureReason(of: info))
-        var done = m("b", .done)
-        done.error = "stale"
-        XCTAssertNil(MeetingRowModel.failureReason(of: done), "only a recording that did not finish has a reason line")
+        XCTAssertEqual(MeetingRowModel.failureSentence(of: info, text: key), "meeting.failed.generic")
+        var late = m("b", .transcribed)
+        late.notesPending = "failed"
+        late.error = "model said no"
+        XCTAssertEqual(MeetingRowModel.failureSentence(of: late, text: key), "meeting.notes.failed")
+        late.notesPending = "model_missing"
+        XCTAssertNil(MeetingRowModel.failureSentence(of: late, text: key))
+        XCTAssertNil(MeetingRowModel.failureSentence(of: m("c", .done), text: key))
+    }
+
+    // MARK: titles
+
+    /// Mutation: MeetingRowModel.displayTitle, return `title(of: info, text: text)` first -> RED.
+    func testATitleTheAppGaveIsShownInTheUsersLanguage() {
+        let ru: (L10nKey) -> String = { $0 == .meetingsTitleCall ? "Звонок в %@" : $0.rawValue }
+        func shown(_ title: String) -> String { MeetingRowModel.displayTitle(of: MeetingInfo(id: "a", title: title, status: .done), text: ru) }
+        XCTAssertEqual(shown(MeetingLimits.title(forSource: "zoom")), "Звонок в Zoom")
+        XCTAssertEqual(shown(MeetingLimits.title(forSource: "teams")), "Звонок в Microsoft Teams")
+        XCTAssertEqual(shown(MeetingLimits.title(forSource: "oxpulse")), "Звонок в OxPulse")
+        XCTAssertEqual(shown(MeetingLimits.title(forSource: "whatsapp")), "Звонок в WhatsApp")
+        XCTAssertEqual(shown(MeetingLimits.title(forSource: "meet")), "Звонок в Google Meet")
+    }
+
+    /// What the user typed is theirs.
+    func testAUsersOwnTitleIsNeverReplaced() {
+        let ru: (L10nKey) -> String = { $0 == .meetingsTitleCall ? "Звонок в %@" : $0.rawValue }
+        func shown(_ title: String) -> String { MeetingRowModel.displayTitle(of: MeetingInfo(id: "a", title: title, status: .done), text: ru) }
+        XCTAssertEqual(shown("Zoom call with Anna"), "Zoom call with Anna")
+        XCTAssertEqual(shown("Roadmap"), "Roadmap")
+        XCTAssertEqual(shown("zoom call"), "zoom call")
+        XCTAssertEqual(shown(""), "meetings.untitled")
+    }
+
+    // MARK: links
+
+    /// Mutation: InlineMarkdown.attributed, return `parsed` instead of `removingLinks(parsed)` -> RED.
+    func testNotesNeverCarryAClickableLink() {
+        let out = InlineMarkdown.attributed("Open [the invoice](https://evil.example/pay) now, <https://evil.example/x> and **bold**")
+        XCTAssertFalse(out.runs.contains { $0.link != nil }, "no run may be a link")
+        XCTAssertTrue(String(out.characters).contains("the invoice"))
+        XCTAssertTrue(String(out.characters).contains("bold"))
+        XCTAssertTrue(out.runs.contains { $0.inlinePresentationIntent != nil }, "bold is kept")
     }
 
     // MARK: Show in Finder

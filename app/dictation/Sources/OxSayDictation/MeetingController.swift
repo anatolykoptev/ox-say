@@ -22,6 +22,7 @@ struct MeetingHost {
 }
 
 /// What the app holds of the meeting feature, whatever the macOS version.
+@MainActor
 protocol MeetingFeature: AnyObject {
     var submenu: NSMenu { get }
     var isRecording: Bool { get }
@@ -38,6 +39,8 @@ protocol MeetingFeature: AnyObject {
     func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState
     /// The main window's "find voices again".
     func requestVoicesAgain(id: String) async throws
+    /// The main window's "try again" for notes that could not be written: asked for again, then followed to the end.
+    func retryNotes(id: String) async throws
     /// The main window renamed a meeting: the copy in the notes folder is of the old title.
     func rename(id: String, title: String) async throws
     /// Meetings were switched off: stops a recording, the call watcher and everything else that runs.
@@ -47,6 +50,7 @@ protocol MeetingFeature: AnyObject {
 }
 
 /// macOS before 14.2 has no process tap: the menu says so and nothing records.
+@MainActor
 final class UnsupportedMeetings: MeetingFeature {
     let submenu = NSMenu()
     var isRecording: Bool { false }
@@ -64,14 +68,16 @@ final class UnsupportedMeetings: MeetingFeature {
     var recordingElapsed: TimeInterval? { nil }
     func startRecording() {}
     func stop() {}
-    func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState { throw StudioError.badResponse }
-    func requestVoicesAgain(id: String) async throws { throw StudioError.badResponse }
-    func rename(id: String, title: String) async throws { throw StudioError.badResponse }
+    func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState { throw MeetingFeatureError.needsNewerMacOS }
+    func requestVoicesAgain(id: String) async throws { throw MeetingFeatureError.needsNewerMacOS }
+    func retryNotes(id: String) async throws { throw MeetingFeatureError.needsNewerMacOS }
+    func rename(id: String, title: String) async throws { throw MeetingFeatureError.needsNewerMacOS }
     func shutDown() {}
     func settingsChanged() {}
 }
 
 @available(macOS 14.2, *)
+@MainActor
 final class MeetingController: NSObject, MeetingFeature {
     let submenu = NSMenu()
     private let host: MeetingHost
@@ -88,6 +94,8 @@ final class MeetingController: NSObject, MeetingFeature {
     private var notesWereAvailable = false
     private var recent: [MeetingMenuRecent] = []
     private var starting = false
+    /// Meetings were switched off: a start still waiting for the daemon must not begin recording afterwards.
+    private var isShutDown = false
     /// The tick's decisions (stop, say) live in DictationCore; this carries them out.
     private var monitor = RecordingMonitor()
     /// Since when some other process has been playing audio without a break (nil = none is).
@@ -191,9 +199,14 @@ final class MeetingController: NSObject, MeetingFeature {
             MeetingSettings.setAutoStart(!MeetingSettings.autoStart(host.defaults), host.defaults)
             applyAutoStart()
         case .pickMeetingRetention(let days):
+            // The daemon first, the app's copy only once it took it; a refusal is said, not swallowed.
             let pick = MeetingRetention(rawValue: days) ?? .month
-            MeetingSettings.setRetention(pick, host.defaults)
-            Task { try? await host.client.setMeetingRetention(days: pick.days) }
+            Task {
+                if let failure = await MeetingSettingsApplier(defaults: host.defaults, client: host.client).apply(.retention(pick)) {
+                    host.notify(failure)
+                }
+                render()
+            }
         case .editSpeakers(let id): editSpeakers(id)
         case .retryVoices(let id): retryVoices(id)
         default: break
@@ -204,7 +217,7 @@ final class MeetingController: NSObject, MeetingFeature {
     // MARK: recording
 
     private func start(origin: CallTracker.Origin, source: String) {
-        guard current == nil, !starting else { return }
+        guard current == nil, !starting, !isShutDown else { return }
         // An install relaunches the app. A recording started now would be ended by it: automatic starts are offered
         // instead (MeetingPolicy.onCallStarted), a manual one asks the user to wait.
         let installing = host.updateInstalling()
@@ -232,6 +245,11 @@ final class MeetingController: NSObject, MeetingFeature {
                                                                speaker: L10nKey.meetingLabelSpeaker.text,
                                                                echoRisk: MeetingRecorder.echoRisk())
                 created = info
+                // Switched off while the daemon was opening the meeting: close it through the usual path and record nothing.
+                if isShutDown {
+                    _ = try? await host.client.finishMeeting(id: info.id)
+                    return
+                }
                 guard let dir = info.dir else { throw StudioError.badResponse }
                 try recorder.start(into: URL(fileURLWithPath: dir, isDirectory: true))
                 current = (info, origin)
@@ -561,11 +579,24 @@ final class MeetingController: NSObject, MeetingFeature {
         track(id)
     }
 
+    func retryNotes(id: String) async throws {
+        try await host.client.retryMeetingNotes(id: id)
+        track(id)
+    }
+
     func rename(id: String, title: String) async throws {
         _ = try await host.client.renameMeeting(id: id, title: title)
-        // The copy in the notes folder carries the old title in its name and headings.
+        // The copy in the notes folder carries the old title in its name and headings. Only a finished `track` copies a
+        // meeting flagged stale, and a rename starts none, so a read that fails is tried again here and then said.
         MeetingSettings.setExportStale(id, true, host.defaults)
-        if let info = try? await host.client.meeting(id: id, withTexts: true) { export(info) }
+        for attempt in 1...3 {
+            if let info = try? await host.client.meeting(id: id, withTexts: true) {
+                export(info)
+                return
+            }
+            try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+        }
+        host.notify(L10nKey.noticeMeetingCopyStale.text)
     }
 
     func settingsChanged() {
@@ -574,6 +605,7 @@ final class MeetingController: NSObject, MeetingFeature {
     }
 
     func shutDown() {
+        isShutDown = true
         // A recording in progress ends the way the Stop button ends it, then everything that watches goes quiet.
         if current != nil { stop() }
         watcher.stop()

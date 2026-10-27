@@ -85,18 +85,21 @@ public struct MeetingSettingsValues: Equatable {
     public var apps: [CallApp]
     public var folderPath: String
     public var retention: MeetingRetention
+    /// False when the daemon could not be asked: `retention` is the app's last copy, not a fact.
+    public var retentionVerified: Bool
     public var yourName: String
     /// What the name falls back to (the macOS full name).
     public var yourNameFallback: String
     public var notesWriter: NotesWriterState
 
     public init(enabled: Bool, autoStart: Bool, apps: [CallApp], folderPath: String, retention: MeetingRetention,
-                yourName: String, yourNameFallback: String, notesWriter: NotesWriterState) {
+                retentionVerified: Bool = true, yourName: String, yourNameFallback: String, notesWriter: NotesWriterState) {
         self.enabled = enabled
         self.autoStart = autoStart
         self.apps = apps
         self.folderPath = folderPath
         self.retention = retention
+        self.retentionVerified = retentionVerified
         self.yourName = yourName
         self.yourNameFallback = yourNameFallback
         self.notesWriter = notesWriter
@@ -111,6 +114,14 @@ public enum MeetingSettingsModel {
         case retention(MeetingRetention)
         case mode(source: String, mode: CallAppMode)
         case name(String)
+
+        /// Whether the page must read everything again after the save. A name is typed letter by letter and must not.
+        public var needsRefresh: Bool {
+            switch self {
+            case .enabled: return true
+            case .autoStart, .retention, .mode, .name: return false
+            }
+        }
     }
 
     /// `daemonRetention` is what the daemon reported, nil when it could not be asked; it wins because the daemon is what
@@ -120,7 +131,7 @@ public enum MeetingSettingsModel {
         MeetingSettingsValues(
             enabled: MeetingSettings.enabled(d), autoStart: MeetingSettings.autoStart(d), apps: CallPolicy.apps(d),
             folderPath: MeetingSettings.folder(d, home: home).path, retention: daemonRetention ?? MeetingSettings.retention(d),
-            yourName: d.string(forKey: MeetingSettings.nameKey) ?? "", yourNameFallback: fullName, notesWriter: notesWriter)
+            retentionVerified: daemonRetention != nil, yourName: d.string(forKey: MeetingSettings.nameKey) ?? "", yourNameFallback: fullName, notesWriter: notesWriter)
     }
 
     /// The edits that take `old` to `new`.
@@ -163,7 +174,7 @@ public struct MeetingSettingsApplier {
             do {
                 try await client.setMeetingRetention(days: pick.days)
             } catch {
-                return String(format: text(.settingsSaveFailed), MeetingErrorText.sentence(error, action: .settings, text: text))
+                return MeetingErrorText.sentence(error, action: .settings, text: text)
             }
             MeetingSettings.setRetention(pick, defaults)
         }

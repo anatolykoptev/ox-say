@@ -8,6 +8,7 @@ import ServiceManagement
 /// The menu-bar app: an icon that shows the dictation state, a menu with the
 /// settings, an overlay while dictating, and the wiring between the hotkey, the
 /// recorder, the ox-say daemon and the paste output.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -562,21 +563,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Asks the daemon for /status on every menu open; a failure clears the last
     /// answer so the About panel does not name a stale service version.
     private func refreshServiceStatus() {
-        let client = studioClient!
-        Task { @MainActor [weak self] in
-            let status = try? await client.status()
-            guard let self else { return }
-            self.serviceStatus = status
-            self.studio.statusChanged(status)
-            self.meetings?.daemonStatusChanged()
-            self.runVersionHandshake()
-        }
+        Task { await refreshServiceStatusNow() }
+    }
+
+    /// The same read, awaitable: the main window needs a fresh answer before it shows the notes writer and the engine.
+    private func refreshServiceStatusNow() async {
+        let status = try? await studioClient.status()
+        serviceStatus = status
+        studio.statusChanged(status)
+        meetings?.daemonStatusChanged()
+        runVersionHandshake()
     }
 
     /// The on-disk bundle's version, read from its Info.plist file — never
     /// Bundle.main, which caches the plist this process launched with, the
     /// exact stale answer the handshake exists to catch.
-    private static func diskVersion() -> String? {
+    nonisolated private static func diskVersion() -> String? {
         let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
         return (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
     }
@@ -748,12 +750,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) },
             notify: { [unowned self] message in
                 self.notice(message)
-                MainActor.assumeIsolated { self.mainWindow.source?.noticeFromApp(message) }
+                self.mainWindow.source?.noticeFromApp(message)
             },
             recordingChanged: { [unowned self] in
                 self.applyStatusIcon()
                 self.handshakeWorkEnded()
-                MainActor.assumeIsolated { self.mainWindow.source?.recordingChanged() }
+                self.mainWindow.source?.recordingChanged()
             },
             daemonStatus: { [unowned self] in self.serviceStatus },
             updateInstalling: { [unowned self] in self.updateInstalling }))
@@ -779,7 +781,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         applyStatusIcon()
         handshakeWorkEnded()
-        MainActor.assumeIsolated { mainWindow.source?.recordingChanged() }
+        mainWindow.source?.recordingChanged()
     }
 
     /// What the main window reads and does in the app.
@@ -789,6 +791,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             meetings: { [unowned self] in self.meetings },
             meetingsEnabledChanged: { [unowned self] in self.applyMeetingsEnabled() },
             daemonStatus: { [unowned self] in self.serviceStatus },
+            refreshStatus: { [unowned self] in await self.refreshServiceStatusNow() },
             dictationKeyTitle: { [unowned self] in self.active?.title },
             recentDictations: { [unowned self] in self.controller.history.texts },
             knownVoices: { [unowned self] in self.knownVoices ?? [] },

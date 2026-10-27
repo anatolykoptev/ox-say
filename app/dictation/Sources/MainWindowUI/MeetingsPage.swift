@@ -158,7 +158,7 @@ private struct MeetingRow: View {
         let status = MeetingRowModel.status(of: info)
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
-                Text(MeetingRowModel.title(of: info)).fontWeight(.medium).lineLimit(1)
+                Text(MeetingRowModel.displayTitle(of: info)).fontWeight(.medium).lineLimit(1)
                 Spacer(minLength: 6)
                 if let started = info.started {
                     Text(MeetingRowModel.time(started)).font(.caption).foregroundStyle(.secondary)

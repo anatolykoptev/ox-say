@@ -13,6 +13,8 @@ struct MainWindowHost {
     /// Meetings were switched on or off in the window: create or tear down the feature, the menu item and the icon.
     var meetingsEnabledChanged: () -> Void
     var daemonStatus: () -> DaemonStatus?
+    /// Reads /status now: the window's rows must not show what the last menu open saw.
+    var refreshStatus: () async -> Void
     var dictationKeyTitle: () -> String?
     var recentDictations: () -> [String]
     var knownVoices: () -> [String]
@@ -36,7 +38,7 @@ final class MainWindowSource {
     private var visible = false
     private var pollTask: Task<Void, Never>?
     private var clockTimer: Timer?
-    private var refreshing = false
+    private var gate = RefreshGate()
 
     init(host: MainWindowHost) {
         self.host = host
@@ -53,7 +55,20 @@ final class MainWindowSource {
         refresh()
     }
 
-    func windowClosed() {
+    func windowClosed() { stopClocks() }
+
+    /// Minimised, covered or the app hidden: nothing is polled and no clock ticks; shown again, it reads once.
+    func visibilityChanged(_ nowVisible: Bool) {
+        guard nowVisible != visible else { return }
+        if nowVisible {
+            visible = true
+            refresh()
+        } else {
+            stopClocks()
+        }
+    }
+
+    private func stopClocks() {
         visible = false
         pollTask?.cancel()
         pollTask = nil
@@ -120,20 +135,21 @@ final class MainWindowSource {
     }
 
     /// Reads everything the window shows. The list and the settings come from the daemon, so they are awaited; a failed
-    /// read keeps what is on screen and says why.
+    /// read keeps what is on screen and says why. A request made while a read runs makes one more pass.
     func refresh() {
-        guard !refreshing else { return }
-        refreshing = true
-        syncRecording()
-        loadSimpleSections()
+        guard gate.request() else { return }
         Task { @MainActor in
-            defer { refreshing = false }
-            let (list, load) = await service.list()
-            if let list { model.data.meetings = list }
-            model.data.meetingsLoad = load
-            await reloadSettingsAsync()
-            await reloadPermissions()
-            refreshSelectedDetail()
+            repeat {
+                syncRecording()
+                loadSimpleSections()
+                await host.refreshStatus()
+                let (list, load) = await service.list()
+                if let list { model.data.meetings = list }
+                model.data.meetingsLoad = load
+                await reloadSettingsAsync()
+                await reloadPermissions()
+                refreshSelectedDetail()
+            } while gate.finish()
             schedulePolling()
         }
     }
@@ -141,7 +157,7 @@ final class MainWindowSource {
     private func schedulePolling() {
         pollTask?.cancel()
         pollTask = nil
-        guard MeetingsPolling.needed(visible: visible, meetings: model.data.meetings) else { return }
+        guard MeetingsPolling.needed(visible: visible, meetings: model.data.meetings, writer: model.data.meetingSettings.notesWriter) else { return }
         pollTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(MeetingsPolling.interval * 1_000_000_000))
             guard !Task.isCancelled else { return }
@@ -152,9 +168,13 @@ final class MainWindowSource {
     /// The recording bar: elapsed time from the meeting feature itself, ticking once a second while one runs.
     private func syncRecording() {
         model.data.recordingElapsed = host.meetings()?.recordingElapsed
-        clockTimer?.invalidate()
-        clockTimer = nil
-        guard visible, model.data.recordingElapsed != nil else { return }
+        guard visible, model.data.recordingElapsed != nil else {
+            clockTimer?.invalidate()
+            clockTimer = nil
+            return
+        }
+        // Already ticking: a refresh does not rebuild the clock.
+        guard clockTimer == nil else { return }
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -237,8 +257,8 @@ final class MainWindowSource {
 
     private func rename(_ id: String, _ title: String) {
         Task { @MainActor in
-            guard let meetings = host.meetings() else { return }
             do {
+                guard let meetings = host.meetings() else { throw MeetingFeatureError.switchedOff }
                 try await meetings.rename(id: id, title: title)
                 loadDetail(id)
                 refresh()
@@ -250,8 +270,8 @@ final class MainWindowSource {
 
     private func saveSpeakers(_ id: String, _ edits: SpeakerEdits) {
         Task { @MainActor in
-            guard let meetings = host.meetings() else { return }
             do {
+                guard let meetings = host.meetings() else { throw MeetingFeatureError.switchedOff }
                 let state = try await meetings.saveSpeakers(id: id, edits: edits)
                 if var detail = model.data.details[id] { detail.speakers = state; model.data.details[id] = detail }
                 loadDetail(id)
@@ -264,8 +284,8 @@ final class MainWindowSource {
 
     private func retryVoices(_ id: String) {
         Task { @MainActor in
-            guard let meetings = host.meetings() else { return }
             do {
+                guard let meetings = host.meetings() else { throw MeetingFeatureError.switchedOff }
                 try await meetings.requestVoicesAgain(id: id)
                 refresh()
             } catch {
@@ -277,7 +297,8 @@ final class MainWindowSource {
     private func retryNotes(_ id: String) {
         Task { @MainActor in
             do {
-                try await host.client.retryMeetingNotes(id: id)
+                guard let meetings = host.meetings() else { throw MeetingFeatureError.switchedOff }
+                try await meetings.retryNotes(id: id)
                 refresh()
             } catch {
                 model.data.notice = MeetingErrorText.sentence(error, action: .retry)
@@ -310,19 +331,8 @@ final class MainWindowSource {
             do { try await host.client.installNotesModel() } catch {
                 model.data.notice = MeetingErrorText.sentence(error, action: .settings)
             }
-            await reloadSettingsAsync()
-            schedulePollingForDownload()
-        }
-    }
-
-    /// The download has no meeting in the list to wait for: ask again in a few seconds while the window is open.
-    private func schedulePollingForDownload() {
-        guard visible, case .downloading = model.data.meetingSettings.notesWriter else { return }
-        pollTask?.cancel()
-        pollTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(MeetingsPolling.interval * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            self?.refresh()
+            // The writer now reads "downloading", which keeps the poll going until it is done.
+            refresh()
         }
     }
 
@@ -345,7 +355,9 @@ final class MainWindowSource {
             if case .enabled(let on) = change, on, host.meetings() is UnsupportedMeetings {
                 model.data.notice = L10nKey.menuMeetingNeedsNewerMacOS.text
             }
-            refresh()
+            if case .retention = change { model.data.meetingSettings.retentionVerified = true }
+            // A name is typed letter by letter: only a change that alters other parts of the page reads it all again.
+            if change.needsRefresh { refresh() }
         }
     }
 

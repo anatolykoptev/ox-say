@@ -77,10 +77,8 @@ struct MeetingDetailView: View {
                 StatusLabel(status: MeetingRowModel.status(of: info))
             }
             .font(.subheadline).foregroundStyle(.secondary)
-            if let reason = MeetingRowModel.failureReason(of: info) {
-                Notice(symbol: "exclamationmark.triangle.fill", text: L10nKey.meetingFailedReason.text(reason), tint: .orange)
-            } else if info.status == .failed {
-                Notice(symbol: "exclamationmark.triangle.fill", text: L10nKey.meetingFailedGeneric.text, tint: .orange)
+            if info.status == .failed, let sentence = MeetingRowModel.failureSentence(of: info) {
+                Notice(symbol: "exclamationmark.triangle.fill", text: sentence, tint: .orange)
             }
             if info.audioDeleted { Notice(symbol: "clock.arrow.circlepath", text: L10nKey.meetingAudioDeleted.text) }
             if info.heardNoSystemAudio { Notice(symbol: "exclamationmark.triangle.fill", text: L10nKey.noticeMeetingNoSystemAudio.text, tint: .orange) }
@@ -105,9 +103,9 @@ extension MeetingDetailView {
             }
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(MeetingRowModel.title(of: info)).font(.title2.weight(.semibold)).lineLimit(2)
+                Text(MeetingRowModel.displayTitle(of: info)).font(.title2.weight(.semibold)).lineLimit(2)
                 Button {
-                    draftTitle = MeetingRowModel.title(of: info)
+                    draftTitle = MeetingRowModel.displayTitle(of: info)
                     renaming = true
                 } label: {
                     Image(systemName: "pencil")
@@ -253,7 +251,7 @@ private struct NotesSection: View {
     }
 
     private func inline(_ s: String) -> AttributedString {
-        (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnly))) ?? AttributedString(s)
+        InlineMarkdown.attributed(s)
     }
 }
 

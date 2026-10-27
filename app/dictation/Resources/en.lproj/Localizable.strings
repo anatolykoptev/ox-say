@@ -147,7 +147,6 @@
 /* The main window: sections, meetings, settings, dictation and voices. */
 "section.meetings" = "Meetings";
 "common.cancel" = "Cancel";
-"common.copy" = "Copy";
 "common.open" = "Open";
 "common.choose" = "Choose…";
 "privacy.line" = "Recordings, transcripts and notes stay on this Mac. Nothing is uploaded.";
@@ -188,7 +187,6 @@
 "meeting.people" = "People on this call";
 "meeting.name_them" = "Name them";
 "meeting.speakers.footnote" = "Names appear in the notes and in the transcript.";
-"meeting.speaker.other" = "Other side";
 "meeting.duration.min" = "%d min";
 "meeting.duration.hour_min" = "%d h %d min";
 "meeting.duration.sec" = "under a minute";
@@ -201,13 +199,12 @@
 "settings.apps.never" = "Don't record";
 "settings.apps.browsers" = "In Chrome, Brave, Arc or Edge";
 "settings.folder" = "Notes folder";
-"settings.folder.footer" = "A copy of each meeting's notes and transcript is saved here.";
 "settings.keep" = "Keep recordings for";
 "settings.keep.footer" = "After this time only the audio is deleted. Notes and transcripts stay until you delete them.";
 "settings.name" = "Your name in transcripts";
 "settings.notes_writer" = "Notes writer";
 "settings.notes_writer.ready" = "Ready";
-"settings.notes_writer.missing" = "Not downloaded yet · 2.7 GB";
+"settings.notes_writer.missing" = "Not downloaded yet";
 "settings.notes_writer.download" = "Download";
 "settings.notes_writer.footer" = "Notes are written on this Mac by a model that is downloaded once.";
 "settings.permissions" = "Permissions";
@@ -218,10 +215,6 @@
 "permission.accessibility.why" = "Pasting dictated text into other apps";
 "permission.system_audio" = "System Audio Recording";
 "permission.system_audio.why" = "Hearing the other side of a call";
-"permission.browsers" = "Automation: browsers";
-"permission.browsers.why" = "Noticing Google Meet calls in your browser";
-"permission.music" = "Automation: Music and Spotify";
-"permission.music.why" = "Pausing music while you dictate";
 "permission.state.allowed" = "Allowed";
 "permission.state.attention" = "Needs attention";
 "permission.state.unknown" = "Check in Settings";
@@ -235,8 +228,6 @@
 "settings.engine.running" = "Running";
 "settings.engine.down" = "Not responding";
 "dictation.intro" = "Press the key, speak, and your words appear where the cursor is.";
-"dictation.key" = "Dictation key";
-"dictation.key.taken" = "taken by macOS";
 "dictation.mode" = "How it works";
 "dictation.mode.hold" = "Hold the key while you speak";
 "dictation.mode.toggle" = "Press once to start, again to stop";
@@ -244,22 +235,12 @@
 "dictation.recent.footer" = "Kept in memory only. They disappear when you quit OxSay.";
 "voices.read_aloud" = "Read aloud";
 "voices.read_aloud.footer" = "Select text in any app, press the key, and OxSay reads it aloud.";
-"voices.key" = "Read-aloud key";
 "voices.russian" = "Voice for Russian text";
 "voices.english" = "Voice for English text";
 "voices.default" = "Default voice";
 "voices.random" = "Random each time";
 "voices.mine" = "My voices";
 "voices.mine.empty" = "No voices of your own yet.";
-"voices.create" = "Create a Voice…";
-"voices.create.footer" = "Describe a voice in words and OxSay makes it.";
-"voices.voiceovers" = "Voiceovers";
-"voices.new_voiceover" = "New Voiceover from Document…";
-"voices.open_folder" = "Open Voiceovers Folder";
-"voices.studio" = "Studio voice";
-"voices.studio.installed" = "Installed";
-"voices.studio.install" = "Install (about 3 GB)…";
-"voices.studio.footer" = "A high-quality voice that runs on this Mac.";
 "settings.apps.summary" = "Automatic: %d · Ask first: %d";
 "meeting.error.daemon_down" = "OxSay's background service isn't running. Try again in a moment.";
 "meeting.error.timeout" = "The service took too long to answer. Try again.";
@@ -267,7 +248,6 @@
 "meeting.error.delete_busy" = "This recording is still being made or processed. Delete it when it's done.";
 "meeting.error.rename_busy" = "This recording is still being made or processed. Rename it when it's done.";
 "meeting.error.busy" = "This recording is still being made or processed. Try again when it's done.";
-"meeting.error.refused" = "OxSay couldn't do that: %@";
 "meeting.error.generic" = "Something went wrong. Try again.";
 "meetings.loading" = "Loading recordings…";
 "meetings.down.title" = "Can't reach OxSay's service";
@@ -281,4 +261,11 @@
 "meeting.voices.retry" = "Find voices again";
 "permission.notifications" = "Notifications";
 "permission.notifications.why" = "Telling you when your notes are ready";
-"settings.save_failed" = "Couldn't save this setting: %@";
+"meeting.error.not_found" = "This recording no longer exists.";
+"meeting.error.rename_invalid" = "That title can't be used. Try a shorter one with plain characters.";
+"meeting.error.settings_invalid" = "The service doesn't accept that value.";
+"meeting.error.needs_macos" = "Meeting notes need macOS 14.2 or later.";
+"meeting.error.off" = "Meeting notes are switched off. Turn them on in Settings.";
+"meetings.title.call" = "%@ call";
+"settings.keep.unchecked" = "Couldn't check with the service. This is your last choice.";
+"notice.meeting.copy_stale" = "The title was changed, but the copy in your notes folder has not been updated.";

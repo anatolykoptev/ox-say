@@ -40,17 +40,7 @@ public enum PreviewData {
             meetings: meetings, details: details, recordingElapsed: nil,
             meetingSettings: MeetingSettingsValues(
                 enabled: true, autoStart: true,
-                apps: [
-                    CallApp(id: "zoom", name: "Zoom", mode: .auto),
-                    CallApp(id: "teams", name: "Microsoft Teams", mode: .auto),
-                    CallApp(id: "webex", name: "Webex", mode: .auto),
-                    CallApp(id: "meet", name: "Google Meet", noteKey: .settingsAppsBrowsers, mode: .auto),
-                    CallApp(id: "slack", name: "Slack", mode: .ask),
-                    CallApp(id: "discord", name: "Discord", mode: .ask),
-                    CallApp(id: "facetime", name: "FaceTime", mode: .ask),
-                    CallApp(id: "whatsapp", name: "WhatsApp", mode: .ask),
-                    CallApp(id: "telegram", name: "Telegram", mode: .ask),
-                ],
+                apps: CallPolicy.defaultApps(),
                 folderPath: "~/Documents/ox-say Meetings", retention: .month,
                 yourName: "", yourNameFallback: ru ? "Алексей Морозов" : "Alex Morgan", notesWriter: .ready),
             permissions: PermissionModel.items(microphone: .authorized, accessibility: true, notifications: .denied),
