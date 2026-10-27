@@ -515,45 +515,107 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
 }
 
 final class SoundWhileDictatingSettingTests: XCTestCase {
-    // F3 — migration: the v0.1.24 bool, off, means the user opted out of sound
-    // handling; it maps to "Don't Touch". Mutation: in
-    // SoundWhileDictatingSetting.mode map legacy false to .pauseMusic -> RED.
+    private let key = SoundWhileDictatingSetting.defaultsKey
+    private let marker = SoundWhileDictatingSetting.defaultV2Key
+    private let legacy = SoundWhileDictatingSetting.legacyKey
+
+    // Fresh install: Lower All Sound is the default (a browser plays too).
+    // Mutation: in SoundWhileDictatingSetting.mode default `.lowerAllSound`
+    // -> `.pauseMusic` -> RED.
+    func testNothingStoredIsLowerAllSound() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .lowerAllSound)
+        XCTAssertEqual(defaults.string(forKey: key), "lowerAllSound")
+        XCTAssertTrue(defaults.bool(forKey: marker), "a fresh install is already on the new default")
+    }
+
+    // v0.1.25+ wrote "pauseMusic" on first read, so it is not a choice.
+    // Mutation: delete the migration branch in mode() -> RED.
+    func testAStoredPauseMusicWithoutTheMarkerMigratesOnce() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("pauseMusic", forKey: key)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .lowerAllSound)
+        XCTAssertEqual(defaults.string(forKey: key), "lowerAllSound")
+        XCTAssertTrue(defaults.bool(forKey: marker))
+    }
+
+    // After the migration a user's Pause Music pick sticks. Mutation: make
+    // mode() ignore the marker (migrate every stored pauseMusic) -> RED.
+    func testAPauseMusicPickAfterTheMigrationSticks() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("pauseMusic", forKey: key)
+        defaults.set(true, forKey: marker)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic)
+    }
+
+    // The pick path itself must set the marker: a pick made before mode()
+    // ever ran must not be migrated away on the next read.
+    func testChoosingPauseMusicSticksEvenOnAnUnmigratedStore() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("pauseMusic", forKey: key)
+        SoundWhileDictatingSetting.choose(.pauseMusic, in: defaults)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic)
+    }
+
+    func testDontTouchAndLowerAllAreKeptAndDontTouchSurvivesLaterReads() {
+        for mode in [SoundWhileDictating.dontTouch, .lowerAllSound] {
+            let (defaults, suite) = freshDefaults()
+            defaults.set(mode.rawValue, forKey: key)
+            XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), mode)
+            XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), mode)
+            defaults.removePersistentDomain(forName: suite)
+        }
+    }
+
+    // A kept pick must also set the marker, else a later Pause Music pick
+    // written straight to the key would be migrated away.
+    func testKeepingAStoredModeSetsTheMarker() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("dontTouch", forKey: key)
+        _ = SoundWhileDictatingSetting.mode(defaults)
+        XCTAssertTrue(defaults.bool(forKey: marker))
+    }
+
+    // F3 — the v0.1.24 bool, off, means the user opted out of sound handling.
+    // Mutation: in mode() map legacy false to the default -> RED.
     func testTheLegacyOffMigratesToDontTouch() {
         let (defaults, suite) = freshDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set(false, forKey: SoundWhileDictatingSetting.legacyKey)
+        defaults.set(false, forKey: legacy)
         XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .dontTouch)
-        XCTAssertNil(defaults.object(forKey: SoundWhileDictatingSetting.legacyKey),
-                     "the old key is read once, then gone")
-        XCTAssertEqual(defaults.string(forKey: SoundWhileDictatingSetting.defaultsKey), "dontTouch",
-                       "and the pick is stored under the new key")
+        XCTAssertNil(defaults.object(forKey: legacy), "the old key is read once, then gone")
+        XCTAssertEqual(defaults.string(forKey: key), "dontTouch")
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .dontTouch)
     }
 
-    func testTheLegacyOnAndItsAbsenceMigrateToPauseMusic() {
-        for legacy: Bool? in [true, nil] {
-            let (defaults, suite) = freshDefaults()
-            if let legacy { defaults.set(legacy, forKey: SoundWhileDictatingSetting.legacyKey) }
-            XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic,
-                           "legacy \(legacy == nil ? "absent" : "on") keeps today's behaviour")
-            XCTAssertNil(defaults.object(forKey: SoundWhileDictatingSetting.legacyKey))
-            defaults.removePersistentDomain(forName: suite)
-        }
+    func testTheLegacyOnMigratesToLowerAllSound() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: legacy)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .lowerAllSound)
+        XCTAssertNil(defaults.object(forKey: legacy))
     }
 
     func testAStoredModeWinsOverTheLegacyKey() {
         let (defaults, suite) = freshDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set("lowerAllSound", forKey: SoundWhileDictatingSetting.defaultsKey)
-        defaults.set(false, forKey: SoundWhileDictatingSetting.legacyKey)
+        defaults.set("lowerAllSound", forKey: key)
+        defaults.set(false, forKey: legacy)
         XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .lowerAllSound)
-        XCTAssertNil(defaults.object(forKey: SoundWhileDictatingSetting.legacyKey))
+        XCTAssertNil(defaults.object(forKey: legacy))
     }
 
-    func testAGarbageStoredValueFallsBackToTheMigration() {
+    func testAGarbageStoredValueFallsBackToTheDefault() {
         let (defaults, suite) = freshDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set("bogus", forKey: SoundWhileDictatingSetting.defaultsKey)
-        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .pauseMusic)
+        defaults.set("bogus", forKey: key)
+        XCTAssertEqual(SoundWhileDictatingSetting.mode(defaults), .lowerAllSound)
     }
 }
 

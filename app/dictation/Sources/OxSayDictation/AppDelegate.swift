@@ -1344,7 +1344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func pickSoundMode(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let mode = SoundWhileDictating(rawValue: raw) else { return }
-        UserDefaults.standard.set(mode.rawValue, forKey: SoundWhileDictatingSetting.defaultsKey)
+        SoundWhileDictatingSetting.choose(mode, in: .standard)
         syncSoundModeItems()
     }
 

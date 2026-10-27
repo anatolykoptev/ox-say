@@ -3,9 +3,9 @@ import Foundation
 /// What the app does to sound while a dictation records — the three exclusive
 /// rows of the Settings → "Sound While Dictating" submenu.
 public enum SoundWhileDictating: String, CaseIterable {
-    /// Pause Music and Spotify — the v0.1.24 behaviour, and the default.
+    /// Pause Music and Spotify — the v0.1.24 behaviour; no longer the default.
     case pauseMusic
-    /// Fade the whole system output to a fraction of its level.
+    /// Fade the whole system output to a fraction of its level — the default.
     case lowerAllSound
     /// Leave every sound alone.
     case dontTouch
@@ -20,22 +20,46 @@ public enum SoundWhileDictating: String, CaseIterable {
     }
 }
 
-/// The persisted pick, and the one-time migration off the "Pause Music While
-/// Dictating" bool it replaces: an explicit off becomes "Don't Touch"; on or
-/// absent — the v0.1.24 default — becomes "Pause Music". The legacy key is
-/// read only on the first ask, then removed.
+/// The persisted pick, with two one-time migrations.
+///
+/// v0.1.24 had a "Pause Music While Dictating" bool: an explicit off becomes
+/// "Don't Touch"; on or absent becomes the default. The legacy key is read on
+/// the first ask, then removed.
+///
+/// The default is "Lower All Sound" (it covers a browser too; "Pause Music"
+/// only reaches Music and Spotify). v0.1.25+ stored "pauseMusic" on the first
+/// read, so a stored "pauseMusic" cannot be told from a choice. Until the
+/// `defaultV2Key` marker is set it is treated as that artefact and moved to
+/// "Lower All Sound", once; every `mode` read and every `choose` sets the
+/// marker, so a later Pause Music pick sticks.
 public enum SoundWhileDictatingSetting {
     public static let defaultsKey = "soundWhileDictating"
     /// The v0.1.24 bool, read once for migration.
     public static let legacyKey = "pauseMediaWhileDictating"
+    /// Set once the stored value is a real pick, not the pre-v2 write-back.
+    public static let defaultV2Key = "soundWhileDictatingDefaultV2"
+    public static let defaultMode = SoundWhileDictating.lowerAllSound
+
+    /// A user's pick. Sets the marker, so it is never migrated away.
+    public static func choose(_ mode: SoundWhileDictating, in defaults: UserDefaults) {
+        defaults.set(mode.rawValue, forKey: defaultsKey)
+        defaults.set(true, forKey: defaultV2Key)
+    }
 
     public static func mode(_ defaults: UserDefaults) -> SoundWhileDictating {
         defer { defaults.removeObject(forKey: legacyKey) }
         if let stored = defaults.string(forKey: defaultsKey),
-           let mode = SoundWhileDictating(rawValue: stored) { return mode }
+           let mode = SoundWhileDictating(rawValue: stored) {
+            if mode == .pauseMusic, !defaults.bool(forKey: defaultV2Key) {
+                choose(defaultMode, in: defaults)
+                return defaultMode
+            }
+            defaults.set(true, forKey: defaultV2Key)
+            return mode
+        }
         let mode: SoundWhileDictating =
-            (defaults.object(forKey: legacyKey) as? Bool) == false ? .dontTouch : .pauseMusic
-        defaults.set(mode.rawValue, forKey: defaultsKey)
+            (defaults.object(forKey: legacyKey) as? Bool) == false ? .dontTouch : defaultMode
+        choose(mode, in: defaults)
         return mode
     }
 }

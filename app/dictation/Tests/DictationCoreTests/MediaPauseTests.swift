@@ -568,7 +568,7 @@ final class SoundWhileDictatingWiringTests: XCTestCase {
     private func defaults(_ name: String = "ox-say-media-wiring-\(UUID().uuidString)",
                           mode: SoundWhileDictating? = nil) -> UserDefaults {
         let defaults = UserDefaults(suiteName: name)!
-        if let mode { defaults.set(mode.rawValue, forKey: SoundWhileDictatingSetting.defaultsKey) }
+        if let mode { SoundWhileDictatingSetting.choose(mode, in: defaults) }
         return defaults
     }
 
@@ -578,7 +578,7 @@ final class SoundWhileDictatingWiringTests: XCTestCase {
                         logError: @escaping (String) -> Void = { _ in }) -> SoundWhileDictatingRunner {
         SoundWhileDictatingWiring.makeRunner(isRunning: world.isRunning, execute: world.execute,
                                              volume: volume,
-                                             defaults: defaults ?? self.defaults(), onPermissionDenied: onPermissionDenied,
+                                             defaults: defaults ?? self.defaults(mode: .pauseMusic), onPermissionDenied: onPermissionDenied,
                                              logError: logError)
     }
 
