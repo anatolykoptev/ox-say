@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -16,10 +17,26 @@ import (
 var ErrSpeakersBusy = errors.New("meeting: the meeting is still being processed")
 
 // readTurns reads transcript.json; no file yet is ErrSpeakersBusy: the transcript is still to come.
-func readTurns(dir string) ([]Turn, error) {
-	raw, err := os.ReadFile(filepath.Join(dir, TranscriptJSON))
+func readTurns(dir string) ([]Turn, error) { return readTurnsMax(dir, 0) }
+
+// readTurnsMax is readTurns reading at most max bytes of transcript.json (0: no bound); a longer file is an error,
+// found while reading, not by a size taken before it.
+func readTurnsMax(dir string, max int64) ([]Turn, error) {
+	f, err := os.Open(filepath.Join(dir, TranscriptJSON))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrSpeakersBusy
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errNoTranscript, err)
+	}
+	defer func() { _ = f.Close() }()
+	var src io.Reader = f
+	if max > 0 {
+		src = io.LimitReader(f, max+1)
+	}
+	raw, err := io.ReadAll(src)
+	if err == nil && max > 0 && int64(len(raw)) > max {
+		err = fmt.Errorf("transcript.json is over %d bytes", max)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errNoTranscript, err)

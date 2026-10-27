@@ -30,6 +30,8 @@ type Daemon struct {
 	Sup   *engine.Supervisor
 	Store *voices.Store
 
+	searchGate searchGate // caps the meeting searches that scan at once (meetings_search.go)
+
 	// STTSup supervises the resident `ox-stt --serve` child; nil when
 	// OX_SAY_STT_SERVER=off. On a discrete card it decodes on the CPU
 	// (-ng): a resident process holding GPU memory for its whole life
