@@ -772,3 +772,42 @@ func TestEngineErrorCarriesTheStderrTail(t *testing.T) {
 		t.Fatalf("err = %v (%T), want an EngineError carrying the stderr tail", err, err)
 	}
 }
+
+// A clip ffmpeg refuses is reported with ffmpeg's own words, and the path of the input is not among them: over
+// HTTP it is the upload's temp file (#262).
+// Mutations: internal/stt/stt.go convert, replace `strings.ReplaceAll(exitErr.Tail, audioPath, "<input>")` with
+// `exitErr.Tail` -> RED (the path leaks); with `""` -> RED (no ffmpeg words).
+func TestConvertErrorCarriesTheStderrTailWithoutThePath(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "fake-ffmpeg")
+	script := `#!/bin/sh
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-i" ]; then in="${2#file:}"; fi
+  shift
+done
+echo "$in: Invalid data found when processing input" >&2
+exit 1
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := ffmpeg
+	ffmpeg = fake
+	t.Cleanup(func() { ffmpeg = old })
+
+	src := filepath.Join(dir, "upload-secret.wav")
+	if err := os.WriteFile(src, []byte("not audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := convert(context.Background(), src, time.Minute)
+	var iErr *InputError
+	if !errors.As(err, &iErr) {
+		t.Fatalf("err = %v (%T), want an InputError", err, err)
+	}
+	if !strings.Contains(err.Error(), "<input>: Invalid data found when processing input") {
+		t.Errorf("the stderr tail did not reach the error: %v", err)
+	}
+	if strings.Contains(err.Error(), src) || strings.Contains(err.Error(), "upload-secret") {
+		t.Errorf("the error leaks the input path: %v", err)
+	}
+}
