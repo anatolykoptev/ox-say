@@ -54,6 +54,32 @@ extension StudioClient {
         _ = try await succeed(post("v1/meetings/\(id)/voices", body: nil, timeout: Self.quickTimeout))
     }
 
+    /// PATCH /v1/meetings/{id}: the user's title. Trimmed and cut to the daemon's cap first (the daemon answers 400 to
+    /// a longer one). The answer is the meeting as it is now.
+    public func renameMeeting(id: String, title: String) async throws -> MeetingInfo {
+        let body = try JSONSerialization.data(withJSONObject: ["title": MeetingLimits.clamp(title, to: MeetingLimits.titleMax)])
+        var request = post("v1/meetings/\(id)", body: body, timeout: Self.quickTimeout)
+        request.httpMethod = "PATCH"
+        let data = try await succeed(request)
+        guard let info = MeetingInfo.decode(data) else { throw StudioError.badResponse }
+        return info
+    }
+
+    /// DELETE /v1/meetings/{id}: removes the meeting from the daemon. A meeting that is recording or being processed
+    /// answers 409 (`StudioError.refused(status: 409, …)`).
+    public func deleteMeeting(id: String) async throws {
+        var request = get("v1/meetings/\(id)")
+        request.httpMethod = "DELETE"
+        _ = try await succeed(request)
+    }
+
+    /// GET /v1/meetings/settings: what the daemon itself keeps (how long the audio stays).
+    public func meetingDaemonSettings() async throws -> MeetingDaemonSettings {
+        let data = try await succeed(get("v1/meetings/settings"))
+        guard let settings = MeetingDaemonSettings.decode(data) else { throw StudioError.badResponse }
+        return settings
+    }
+
     /// PUT /v1/meetings/settings: how long the daemon keeps audio (0 = forever).
     public func setMeetingRetention(days: Int) async throws {
         let body = try JSONSerialization.data(withJSONObject: ["retention_days": days])
