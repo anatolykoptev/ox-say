@@ -24,11 +24,13 @@ public struct MeetingInfo: Equatable {
     public var diarReason: String?
     /// Retention removed the recording (`audio_deleted`).
     public var audioDeleted: Bool
+    /// How long the call was, in seconds; nil until the recording is over.
+    public var durationSeconds: Double?
 
     public init(id: String, dir: String? = nil, title: String = "", started: Date? = nil, status: Status,
                 notesPending: String? = nil, warnings: [String] = [], error: String? = nil,
                 notesMD: String? = nil, transcriptMD: String? = nil, voiceMode: String? = nil, diarReason: String? = nil,
-                audioDeleted: Bool = false) {
+                audioDeleted: Bool = false, durationSeconds: Double? = nil) {
         self.id = id
         self.dir = dir
         self.title = title
@@ -42,6 +44,7 @@ public struct MeetingInfo: Equatable {
         self.voiceMode = voiceMode
         self.diarReason = diarReason
         self.audioDeleted = audioDeleted
+        self.durationSeconds = durationSeconds
     }
 
     public var heardNoSystemAudio: Bool { warnings.contains("no_system_audio") }
@@ -76,7 +79,8 @@ public struct MeetingInfo: Equatable {
                            warnings: obj["warnings"] as? [String] ?? [], error: nonEmpty(obj["error"] as? String),
                            notesMD: nonEmpty(obj["notes_md"] as? String), transcriptMD: nonEmpty(obj["transcript_md"] as? String),
                            voiceMode: nonEmpty(obj["voice_mode"] as? String), diarReason: nonEmpty(obj["diar_reason"] as? String),
-                           audioDeleted: obj["audio_deleted"] as? Bool ?? false)
+                           audioDeleted: obj["audio_deleted"] as? Bool ?? false,
+                           durationSeconds: (obj["duration_s"] as? Double).flatMap { $0 > 0 ? $0 : nil })
     }
 
     private static func nonEmpty(_ s: String?) -> String? {
