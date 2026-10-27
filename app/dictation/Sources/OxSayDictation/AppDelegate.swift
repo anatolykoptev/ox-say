@@ -742,7 +742,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.applyStatusIcon()
                 self.handshakeWorkEnded()
             },
-            daemonStatus: { [unowned self] in self.serviceStatus }))
+            daemonStatus: { [unowned self] in self.serviceStatus },
+            updateInstalling: { [unowned self] in self.updateInstalling }))
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
@@ -826,20 +827,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshPasteLastItem()
         statusSymbol = symbol
         applyStatusIcon()
-        statusItem.button?.contentTintColor = state == .recording ? .systemRed : nil
     }
 
     /// The status icon for `statusSymbol`, with a small dot at its corner while
     /// an update is on offer.
     private func applyStatusIcon() {
-        // A recording shows as a red dot in the menu bar for as long as it runs.
+        // One place decides symbol and tint from BOTH states: a dictation and a meeting recording.
+        let style = StatusIconStyle.style(meetingRecording: meetings?.isRecording == true,
+                                          dictationRecording: controller.state == .recording, dictationSymbol: statusSymbol)
+        statusItem.button?.contentTintColor = style.red ? .systemRed : nil
         if meetings?.isRecording == true,
-           let rec = NSImage(systemSymbolName: "record.circle.fill", accessibilityDescription: "OxSay is recording a meeting") {
+           let rec = NSImage(systemSymbolName: style.symbol, accessibilityDescription: "OxSay is recording a meeting") {
             statusItem.button?.image = rec
-            statusItem.button?.contentTintColor = .systemRed
             return
         }
-        statusItem.button?.contentTintColor = nil
         guard let base = NSImage(systemSymbolName: statusSymbol, accessibilityDescription: "OxSay Dictation") else { return }
         guard updateOffer != nil else {
             statusItem.button?.image = base

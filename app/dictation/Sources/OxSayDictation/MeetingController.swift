@@ -15,6 +15,8 @@ struct MeetingHost {
     /// The recording started or stopped: redraw the status icon, and let a held version handshake run.
     var recordingChanged: () -> Void
     var daemonStatus: () -> DaemonStatus?
+    /// An update is being installed: a recording started now would be ended by the relaunch.
+    var updateInstalling: () -> Bool
 }
 
 /// What the app holds of the meeting feature, whatever the macOS version.
@@ -46,9 +48,6 @@ final class UnsupportedMeetings: MeetingFeature {
 
 @available(macOS 14.2, *)
 final class MeetingController: NSObject, MeetingFeature {
-    /// What was already said during one recording: each is said once.
-    private enum Told { case silentTap, noSystemAudio, systemAudioStart }
-
     let submenu = NSMenu()
     private let host: MeetingHost
     private let recorder = MeetingRecorder()
@@ -64,7 +63,8 @@ final class MeetingController: NSObject, MeetingFeature {
     private var notesWereAvailable = false
     private var recent: [MeetingMenuRecent] = []
     private var starting = false
-    private var told: Set<Told> = []
+    /// The tick's decisions (stop, say) live in DictationCore; this carries them out.
+    private var monitor = RecordingMonitor()
     /// Since when some other process has been playing audio without a break (nil = none is).
     private var playingSince: Date?
     private var playingPolledAt = Date.distantPast
@@ -80,10 +80,15 @@ final class MeetingController: NSObject, MeetingFeature {
         submenu.autoenablesItems = false
         notifier.install()
         recorder.onSystemAudioFailed = { [weak self] why in
-            self?.told.insert(.systemAudioStart)
+            self?.monitor.systemAudioFailed = true
             self?.host.notify(L10nKey.noticeMeetingTapLost.text(why))
         }
+        recorder.onSystemAudioRecovered = { [weak self] in
+            self?.monitor.systemAudioFailed = false
+            self?.host.notify(L10nKey.noticeMeetingTapRecovered.text)
+        }
         recorder.onMicrophoneFailed = { [weak self] why in self?.host.notify(L10nKey.noticeMeetingMicLost.text(why)) }
+        recorder.onMicrophoneRecovered = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicRecovered.text) }
         badge.onStop = { [weak self] in self?.stop() }
         badge.onDontRecord = { [weak self] in self?.dontRecordThisOne() }
         badge.onRecord = { [weak self] in
@@ -172,6 +177,14 @@ final class MeetingController: NSObject, MeetingFeature {
 
     private func start(origin: CallTracker.Origin, source: String) {
         guard current == nil, !starting else { return }
+        // An install relaunches the app. A recording started now would be ended by it: automatic starts are offered
+        // instead (MeetingPolicy.onCallStarted), a manual one asks the user to wait.
+        let installing = host.updateInstalling()
+        if origin == .auto, installing { return }
+        if origin == .manual, MeetingPolicy.manualStart(installing: installing) == .waitForInstall {
+            host.notify(L10nKey.noticeMeetingWaitInstall.text)
+            return
+        }
         if origin == .auto, !explainedAndAllowed() { return }
         // Before a meeting exists in the daemon: a missing microphone permission leaves nothing to clean up.
         do { try MeetingRecorder.checkMicrophone() } catch {
@@ -194,7 +207,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 guard let dir = info.dir else { throw StudioError.badResponse }
                 try recorder.start(into: URL(fileURLWithPath: dir, isDirectory: true))
                 current = (info, origin)
-                told = []
+                monitor = RecordingMonitor()
                 playingSince = nil
                 playingPolledAt = .distantPast
                 badge.showRecording(auto: origin == .auto, elapsed: 0)
@@ -220,44 +233,30 @@ final class MeetingController: NSObject, MeetingFeature {
         guard current != nil else { return }
         let l = recorder.levels
         badge.update(elapsed: recorder.elapsed, me: l.me, them: l.them)
-        // The first failed write stops the recording and says so (#247): the rest would be a file with holes.
-        if recorder.writeFailed {
-            host.notify(L10nKey.noticeMeetingDiskFull.text)
-            stop()
-            return
-        }
-        if MeetingLimits.reachedCap(elapsed: recorder.elapsed) {
-            host.notify(L10nKey.noticeMeetingCapReached.text)
-            stop()
-            return
-        }
-        checkSystemAudio()
-    }
-
-    /// Said while the call is still on, not only afterwards: the tap can show as allowed and deliver only zeros
-    /// (P0a, 2026-10-26), or the other side can stay silent for 20 s.
-    private func checkSystemAudio() {
         pollPlaying()
         let stats = recorder.tapStats
-        let sample = SystemAudioGuard.Sample(callbacks: stats.callbacks, peak: stats.peak, elapsed: recorder.elapsed,
-                                             playingFor: playingSince.map { Date().timeIntervalSince($0) } ?? 0,
-                                             heardLoud: recorder.heardTheOtherSide)
-        switch SystemAudioGuard.assess(sample) {
-        case .silentTap:
-            if told.insert(.silentTap).inserted { tellSilentTap() }
-        case .noCallbacks:
-            // A tap that failed to start has been said already.
-            if !told.contains(.systemAudioStart), told.insert(.noSystemAudio).inserted {
-                host.notify(L10nKey.noticeMeetingNoSystemAudio.text)
+        let tick = RecordingMonitor.Tick(elapsed: recorder.elapsed, writeFailed: recorder.writeFailed,
+                                         callbacks: stats.callbacks, peak: stats.peak,
+                                         playingFor: playingSince.map { Date().timeIntervalSince($0) } ?? 0,
+                                         heardLoud: recorder.heardTheOtherSide, meLoud: l.me > Self.loudMic, dt: 0.25)
+        for action in monitor.observe(tick) {
+            switch action {
+            case .stop(.diskFull):
+                host.notify(L10nKey.noticeMeetingDiskFull.text)
+                stop()
+                return
+            case .stop(.cap):
+                host.notify(L10nKey.noticeMeetingCapReached.text)
+                stop()
+                return
+            case .say(.tapSilent): tellSilentTap()
+            case .say(.noSystemAudio): host.notify(L10nKey.noticeMeetingNoSystemAudio.text)
             }
-        case .otherSideQuiet:
-            if !told.contains(.silentTap), told.insert(.noSystemAudio).inserted {
-                host.notify(L10nKey.noticeMeetingNoSystemAudio.text)
-            }
-        case .waiting, .fine:
-            break
         }
     }
+
+    /// The microphone counts as loud (somebody on this side is talking) above this RMS, the recorder's own threshold.
+    private static let loudMic: Float = 0.003
 
     /// Once a second: is some other process playing audio, and since when. A CoreAudio error keeps the last answer.
     private func pollPlaying() {
@@ -272,18 +271,13 @@ final class MeetingController: NSObject, MeetingFeature {
         }
     }
 
+    /// Not a modal alert: a modal mid-call takes the focus and the next stray Return, and a wrong guess (a muted far
+    /// side) must cost nothing. The sentence goes to the status line, and — where notifications are allowed — to a
+    /// notification whose click opens the System Audio Recording pane.
     private func tellSilentTap() {
         let sentence = L10nKey.noticeMeetingTapSilent.text
         host.notify(sentence)
-        // Out of the timer callback: the alert is modal.
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            let pressed = self.host.alert(L10nKey.meetingTapSilentTitle.text, sentence,
-                                          [L10nKey.meetingTapSilentOpen.text, L10nKey.meetingTapSilentLater.text])
-            if pressed == .alertFirstButtonReturn, let url = URL(string: SystemAudioGuard.settingsURL) {
-                NSWorkspace.shared.open(url)
-            }
-        }
+        notifier.post(title: L10nKey.meetingTapSilentTitle.text, body: sentence, openURL: URL(string: SystemAudioGuard.settingsURL))
     }
 
     func stop() {
@@ -293,6 +287,7 @@ final class MeetingController: NSObject, MeetingFeature {
         tick = nil
         logSummary(recorder.stop(), id: info.id)
         badge.hide()
+        applyAutoStart()
         host.recordingChanged()
         Task { @MainActor in
             do { _ = try await host.client.finishMeeting(id: info.id) } catch {
@@ -332,7 +327,8 @@ final class MeetingController: NSObject, MeetingFeature {
         them dropped=\(s.themDropped, privacy: .public) padded=\(s.themPadded, privacy: .public) \
         failedWrites=\(s.failedWrites, privacy: .public) \
         micConversions failed=\(s.micConversions.failed, privacy: .public) empty=\(s.micConversions.empty, privacy: .public) \
-        tapConversions failed=\(s.tapConversions.failed, privacy: .public) empty=\(s.tapConversions.empty, privacy: .public)
+        tapConversions failed=\(s.tapConversions.failed, privacy: .public) empty=\(s.tapConversions.empty, privacy: .public) \
+        tapNilBuffers=\(s.tapNilBuffers, privacy: .public) tapExclusionMissing=\(s.tapExclusionMissing, privacy: .public)
         """)
     }
 
@@ -344,7 +340,12 @@ final class MeetingController: NSObject, MeetingFeature {
     // MARK: detection
 
     private func applyAutoStart() {
-        if MeetingSettings.autoStart(host.defaults) { watcher.start() } else { watcher.stop() }
+        // An automatic recording's silence auto-stop needs the watcher even if auto-start was turned off mid-call.
+        if MeetingPolicy.watcherShouldRun(autoStart: MeetingSettings.autoStart(host.defaults), recording: current?.origin) {
+            watcher.start()
+        } else {
+            watcher.stop()
+        }
     }
 
     /// One poll of the call watcher: the tracker has decided (offer, start, stop); the notices it could not.
@@ -355,10 +356,10 @@ final class MeetingController: NSObject, MeetingFeature {
         switch tick.action {
         case .nothing: break
         case .callStarted(let source):
-            if MeetingSettings.autoStart(host.defaults), CallDetector.autoStartSources.contains(source) {
-                start(origin: .auto, source: source)
-            } else {
-                badge.showPrompt(source: source)
+            switch MeetingPolicy.onCallStarted(source: source, autoStart: MeetingSettings.autoStart(host.defaults),
+                                               autoSources: CallDetector.autoStartSources, installing: host.updateInstalling()) {
+            case .start: start(origin: .auto, source: source)
+            case .prompt: badge.showPrompt(source: source)
             }
         case .stopRecording:
             stop()
@@ -455,19 +456,15 @@ final class MeetingController: NSObject, MeetingFeature {
     private func reconcile() {
         Task { @MainActor in
             guard let list = try? await host.client.meetings() else { return }
+            let notesAvailable = host.daemonStatus()?.notes.available == true
             for m in list.prefix(20) {
-                switch m.status {
-                case .queued, .transcribing, .summarizing: track(m.id)
-                case .done:
-                    if !MeetingSettings.exported(host.defaults).contains(m.id) { track(m.id) }
-                case .transcribed where m.notesPending == "model_missing":
-                    if host.daemonStatus()?.notes.available == true {
-                        try? await host.client.retryMeetingNotes(id: m.id)
-                        track(m.id)
-                    }
-                case .transcribed:
-                    if !MeetingSettings.exported(host.defaults).contains(m.id) { track(m.id) }
-                default: break
+                switch Reconcile.action(for: m, exported: MeetingSettings.exported(host.defaults), notesAvailable: notesAvailable,
+                                        currentID: current?.info.id) {
+                case .skip: break
+                case .track: track(m.id)
+                case .retryNotesThenTrack:
+                    try? await host.client.retryMeetingNotes(id: m.id)
+                    track(m.id)
                 }
             }
         }

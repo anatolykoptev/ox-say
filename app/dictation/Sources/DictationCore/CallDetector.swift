@@ -23,6 +23,11 @@ public enum CallDetector {
         "com.apple.FaceTime": "facetime",
         "com.cisco.webexmeetingsapp": "webex",
         "com.hnc.Discord": "discord",
+        "net.whatsapp.WhatsApp": "whatsapp",
+        // Telegram: the Mac App Store app, the Mac App Store "Telegram Lite", and the direct Telegram Desktop build.
+        "ru.keepcoder.Telegram": "telegram",
+        "org.telegram.desktop": "telegram",
+        "com.tdesktop.Telegram": "telegram",
     ]
 
     /// Browsers whose active tab the app can read by Apple Events. Safari is not

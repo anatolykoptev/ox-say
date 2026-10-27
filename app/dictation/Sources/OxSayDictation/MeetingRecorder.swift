@@ -26,6 +26,8 @@ final class MeetingRecorder {
         var meDropped = 0, mePadded = 0, themDropped = 0, themPadded = 0
         var micConversions: (failed: Int, empty: Int) = (0, 0)
         var tapConversions: (failed: Int, empty: Int) = (0, 0)
+        var tapNilBuffers = 0
+        var tapExclusionMissing = 0
         var failedWrites = 0
     }
 
@@ -33,16 +35,26 @@ final class MeetingRecorder {
     private static let activeWindow: TimeInterval = 3
     private static let loudRMS: Float = 0.003
 
-    /// Called on the main thread when the system audio could not be (re)started.
+    /// Called on the main thread when the system audio could not be (re)started: once per streak of failures.
+    /// The recorder goes on retrying (`Reacquire`) for as long as the recording runs.
     var onSystemAudioFailed: ((String) -> Void)?
-    /// Called on the main thread when the microphone could not be restarted after a route change.
+    /// ...and when a later attempt worked.
+    var onSystemAudioRecovered: (() -> Void)?
+    /// The same two for the microphone after a route change.
     var onMicrophoneFailed: ((String) -> Void)?
+    var onMicrophoneRecovered: (() -> Void)?
 
     private let mic = AVAudioEngine()
     private let micConverter = PCM16kConverter()
     private let tap = SystemAudioTap()
     private var me: PcmChannelWriter?
     private var them: PcmChannelWriter?
+    /// Guards `me` and `them`: the audio threads append under it and `stop` nils them under it, so a buffer that is
+    /// still in flight never meets a closed file or a half-assigned reference.
+    private let writersLock = NSLock()
+    private var tapRetry = Reacquire()
+    private var micRetry = Reacquire()
+    private var rateListener: (device: AudioObjectID, block: AudioObjectPropertyListenerBlock)?
     private var outputListener: AudioObjectPropertyListenerBlock?
     private var rebuildWork: DispatchWorkItem?
     private let lock = NSLock()
@@ -65,7 +77,7 @@ final class MeetingRecorder {
     /// What the tap has delivered: buffers that gave samples, and the largest absolute sample so far.
     var tapStats: (callbacks: Int, peak: Float) { lock.withLock { (tapCallbacks, tapPeak) } }
     /// A channel file could not be written (a full disk): the recording is incomplete.
-    var writeFailed: Bool { (me?.failedWrites ?? 0) > 0 || (them?.failedWrites ?? 0) > 0 }
+    var writeFailed: Bool { writersLock.withLock { (me?.failedWrites ?? 0) > 0 || (them?.failedWrites ?? 0) > 0 } }
     var elapsed: TimeInterval { started.map { Date().timeIntervalSince($0) } ?? 0 }
 
     /// Microphone permission, asked for BEFORE a meeting is opened in the daemon: a permission still undetermined is
@@ -84,14 +96,20 @@ final class MeetingRecorder {
     func start(into dir: URL) throws {
         try Self.checkMicrophone()
         let t0 = HostClock.nanos(fromHostTicks: AudioGetCurrentHostTime())
-        me = try PcmChannelWriter(url: dir.appendingPathComponent("me.pcm"), t0: t0)
+        let meWriter = try PcmChannelWriter(url: dir.appendingPathComponent("me.pcm"), t0: t0)
+        let themWriter: PcmChannelWriter
         do {
-            them = try PcmChannelWriter(url: dir.appendingPathComponent("them.pcm"), t0: t0)
+            themWriter = try PcmChannelWriter(url: dir.appendingPathComponent("them.pcm"), t0: t0)
         } catch {
-            me?.finish(atNanos: t0)
-            me = nil
+            meWriter.finish(atNanos: t0)
             throw error
         }
+        writersLock.withLock {
+            me = meWriter
+            them = themWriter
+        }
+        tapRetry = Reacquire()
+        micRetry = Reacquire()
         lock.withLock {
             meLevel = 0; themLevel = 0; themLoudAt = .distantPast; themEverLoud = false; tapCallbacks = 0; tapPeak = 0
         }
@@ -100,24 +118,25 @@ final class MeetingRecorder {
             try startMicrophone()
         } catch {
             // Neither writer may stay open on a recording that never began.
-            me?.finish(atNanos: t0)
-            them?.finish(atNanos: t0)
-            me = nil
-            them = nil
+            writersLock.withLock {
+                me?.finish(atNanos: t0)
+                them?.finish(atNanos: t0)
+                me = nil
+                them = nil
+            }
             throw error
         }
         // AirPods connecting or a new default input stops the engine; without this
         // the microphone channel would go silent for the rest of the call.
         micObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: mic, queue: .main) { [weak self] _ in
             guard let self, self.started != nil else { return }
-            self.mic.inputNode.removeTap(onBus: 0)
             self.mic.stop()
-            do { try self.startMicrophone() } catch { self.onMicrophoneFailed?("\(error)") }
+            self.restartMicrophone()
         }
 
         tap.onSamples = { [weak self] samples, nanos in
             guard let self else { return }
-            self.them?.append(samples, atNanos: nanos)
+            self.writersLock.withLock { self.them?.append(samples, atNanos: nanos) }
             let level = Self.rms(samples)
             let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
             self.lock.withLock {
@@ -130,13 +149,13 @@ final class MeetingRecorder {
                 }
             }
         }
+        started = Date()
         do {
             try tap.start(excludingPIDs: [getpid()], withMainSubDevice: useMainSubDevice)
         } catch {
-            // The microphone alone is still a recording; say what is missing.
-            DispatchQueue.main.async { [weak self] in self?.onSystemAudioFailed?("\(error)") }
+            // The microphone alone is still a recording; say what is missing, and keep trying.
+            DispatchQueue.main.async { [weak self] in self?.tapFailed("\(error)") }
         }
-        started = Date()
         watchOutputDevice()
     }
 
@@ -144,14 +163,33 @@ final class MeetingRecorder {
         let input = mic.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw StartError.microphone(L10nKey.meetingMicNone.text) }
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, when in
-            guard let self, let samples = self.micConverter.convert(buffer) else { return }
-            let ticks = when.isHostTimeValid ? when.hostTime : AudioGetCurrentHostTime()
-            self.me?.append(samples, atNanos: HostClock.nanos(fromHostTicks: ticks))
-            self.lock.withLock { self.meLevel = Self.rms(samples) }
+        // The one engine lives for the whole recording; a tap left on bus 0 (a start that failed, a restart) would make
+        // the next installTap raise an exception nothing can catch.
+        try EngineStart.start(removeTap: { input.removeTap(onBus: 0) }, installTap: {
+            input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, when in
+                guard let self, let samples = self.micConverter.convert(buffer) else { return }
+                let ticks = when.isHostTimeValid ? when.hostTime : AudioGetCurrentHostTime()
+                self.writersLock.withLock { self.me?.append(samples, atNanos: HostClock.nanos(fromHostTicks: ticks)) }
+                self.lock.withLock { self.meLevel = Self.rms(samples) }
+            }
+        }, start: {
+            mic.prepare()
+            try mic.start()
+        })
+    }
+
+    /// After a route change: start the microphone again, and keep trying (0.4, 1, 2, 4, then every 5 s) while the
+    /// recording runs. The user hears about the first failure of a streak and about the recovery.
+    private func restartMicrophone() {
+        guard started != nil else { return }
+        do {
+            try startMicrophone()
+            if micRetry.succeeded() { onMicrophoneRecovered?() }
+        } catch {
+            let step = micRetry.failed()
+            if step.notify { onMicrophoneFailed?("\(error)") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + step.delay) { [weak self] in self?.restartMicrophone() }
         }
-        mic.prepare()
-        try mic.start()
     }
 
     /// Stops both sources, pads both files to the same length and closes them. The numbers go back to the caller.
@@ -164,18 +202,24 @@ final class MeetingRecorder {
         mic.stop()
         tap.stop()
         let end = HostClock.nanos(fromHostTicks: AudioGetCurrentHostTime())
-        me?.finish(atNanos: end)
-        them?.finish(atNanos: end)
         var summary = Summary()
-        summary.meDropped = me?.droppedSamples ?? 0
-        summary.mePadded = me?.paddedSamples ?? 0
-        summary.themDropped = them?.droppedSamples ?? 0
-        summary.themPadded = them?.paddedSamples ?? 0
-        summary.failedWrites = (me?.failedWrites ?? 0) + (them?.failedWrites ?? 0)
+        // Under the lock the audio threads append with: a buffer still in flight finishes before the files close.
+        writersLock.withLock {
+            me?.finish(atNanos: end)
+            them?.finish(atNanos: end)
+            summary.meDropped = me?.droppedSamples ?? 0
+            summary.mePadded = me?.paddedSamples ?? 0
+            summary.themDropped = them?.droppedSamples ?? 0
+            summary.themPadded = them?.paddedSamples ?? 0
+            summary.failedWrites = (me?.failedWrites ?? 0) + (them?.failedWrites ?? 0)
+            me = nil
+            them = nil
+        }
         summary.micConversions = (micConverter.failedConversions, micConverter.emptyConversions)
-        summary.tapConversions = tap.conversionCounters
-        me = nil
-        them = nil
+        let tapCounters = tap.counters
+        summary.tapConversions = (tapCounters.failed, tapCounters.empty)
+        summary.tapNilBuffers = tapCounters.nilBuffers
+        summary.tapExclusionMissing = tapCounters.exclusionMissing
         started = nil
         return summary
     }
@@ -186,21 +230,48 @@ final class MeetingRecorder {
         return OutputRoute.isLikelySpeakers(transport: route.transport, dataSource: route.dataSource, name: route.name)
     }
 
-    // The tap is bound to the output device it started on; AirPods connecting
-    // mid-call would leave it silent, so a change rebuilds it. The gap is
-    // padded with silence by the channel writer.
+    // The tap is bound to the output device it started on; AirPods connecting mid-call would leave it silent, so a
+    // change of the default output rebuilds it. The same when the default device changes its sample rate in place
+    // (a call app switching it), which the tap's own format does not follow. The gap is padded with silence by the
+    // channel writer.
     private func watchOutputDevice() {
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
                                                  mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            DispatchQueue.main.async { self?.scheduleTapRebuild() }
+            DispatchQueue.main.async {
+                self?.watchSampleRate()
+                self?.scheduleTapRebuild(after: 0.4)
+            }
         }
         outputListener = block
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block)
+        watchSampleRate()
+    }
+
+    /// Listens for a sample-rate change on the current default output device (moved to the new device when it changes).
+    private func watchSampleRate() {
+        unwatchSampleRate()
+        guard let device = CoreAudioProps.defaultOutputDevice() else { return }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            DispatchQueue.main.async { self?.scheduleTapRebuild(after: 0.4) }
+        }
+        rateListener = (device, block)
+        AudioObjectAddPropertyListenerBlock(device, &address, DispatchQueue.main, block)
+    }
+
+    private func unwatchSampleRate() {
+        guard let (device, block) = rateListener else { return }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        AudioObjectRemovePropertyListenerBlock(device, &address, DispatchQueue.main, block)
+        rateListener = nil
     }
 
     private func unwatchOutputDevice() {
         rebuildWork?.cancel()
+        unwatchSampleRate()
         guard let block = outputListener else { return }
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
                                                  mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -208,18 +279,27 @@ final class MeetingRecorder {
         outputListener = nil
     }
 
-    private func scheduleTapRebuild() {
+    /// Builds the tap again after `delay`. A failure schedules the next attempt (`Reacquire`), a success ends the streak.
+    private func scheduleTapRebuild(after delay: TimeInterval) {
         rebuildWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.started != nil else { return }
             do {
                 try self.tap.start(excludingPIDs: [getpid()], withMainSubDevice: self.useMainSubDevice)
+                if self.tapRetry.succeeded() { self.onSystemAudioRecovered?() }
             } catch {
-                self.onSystemAudioFailed?("\(error)")
+                self.tapFailed("\(error)")
             }
         }
         rebuildWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func tapFailed(_ why: String) {
+        guard started != nil else { return }
+        let step = tapRetry.failed()
+        if step.notify { onSystemAudioFailed?(why) }
+        scheduleTapRebuild(after: step.delay)
     }
 
     private static func rms(_ samples: [Float]) -> Float {

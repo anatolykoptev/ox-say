@@ -3,14 +3,32 @@ import XCTest
 @testable import DictationCore
 
 /// The shim compiles DictationCore only, so the AppKit controller and recorder are not testable as code. What they
-/// must DO is decided in DictationCore; these tests read the app sources as text (as `AppWorkMeetingTests` does) and
-/// pin that the decisions are actually called, each from the place that matters. A mutation that deletes the call
-/// leaves every unit test green and makes one of these RED.
+/// must DO is decided in DictationCore (RecordingMonitor, MeetingPolicy, Reconcile, StatusIconStyle, Reacquire, ...,
+/// all tested behaviourally); these tests read the app sources as text, WITHOUT their comments, and pin that the
+/// decisions are called from the place that matters, with the exact expression. They prove the call is there, not that
+/// it behaves: the live run does that.
 final class MeetingWiringTests: XCTestCase {
     private func source(_ relative: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        return try String(contentsOf: root.appendingPathComponent("Sources/\(relative)"), encoding: .utf8)
+        return Self.stripComments(try String(contentsOf: root.appendingPathComponent("Sources/\(relative)"), encoding: .utf8))
+    }
+
+    /// Source without comments: a pinned call that is commented out must not pass. Block comments, and `//` to the end
+    /// of the line when it starts a token (a `//` inside "https://…" does not).
+    static func stripComments(_ text: String) -> String {
+        let blocks = text.replacingOccurrences(of: #"/\*[\s\S]*?\*/"#, with: "", options: .regularExpression)
+        return blocks.replacingOccurrences(of: #"(?m)(^|[ \t])//.*$"#, with: "$1", options: .regularExpression)
+    }
+
+    func testStripCommentsRemovesCommentedOutCalls() {
+        let text = "a()\n    // meetings?.stopForQuit()\n    /* b() */ c(\"https://x\") // d()\n"
+        let stripped = Self.stripComments(text)
+        XCTAssertFalse(stripped.contains("stopForQuit"))
+        XCTAssertFalse(stripped.contains("b()"))
+        XCTAssertFalse(stripped.contains("d()"))
+        XCTAssertTrue(stripped.contains("a()"))
+        XCTAssertTrue(stripped.contains("https://x"))
     }
 
     /// The text of `func name` up to the next function at the same indentation (or the end).
@@ -25,47 +43,57 @@ final class MeetingWiringTests: XCTestCase {
     }
 
     private func controller() throws -> String { try source("OxSayDictation/MeetingController.swift") }
+    private func app() throws -> String { try source("OxSayDictation/AppDelegate.swift") }
 
     // MARK: AppDelegate
 
     /// Mutation: AppDelegate.appWork(), replace `meetings?.isRecording ?? false` with `false` -> RED.
     func testAppWorkReportsTheLiveRecording() throws {
-        let app = try source("OxSayDictation/AppDelegate.swift")
-        let work = try XCTUnwrap(body(app, of: "private func appWork() -> VersionHandshake.AppWork {"))
+        let work = try XCTUnwrap(body(try app(), of: "private func appWork() -> VersionHandshake.AppWork {"))
         XCTAssertTrue(work.contains("recordingMeeting: meetings?.isRecording ?? false"), work)
     }
 
-    /// An update install relaunches the app and must not end a recording.
-    /// Mutation: AppDelegate.installUpdate, delete the `guard meetings?.isRecording != true` -> RED.
+    /// An update install relaunches the app and must not start under a recording: the exact guard, before the install.
+    /// Mutation: AppDelegate.installUpdate, `guard meetings?.isRecording != true else {` -> `guard true else {`, or
+    /// `... != true || true else {` -> RED.
     func testAnInstallNeverStartsUnderARecording() throws {
-        let app = try source("OxSayDictation/AppDelegate.swift")
-        let install = try XCTUnwrap(body(app, of: "private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {"))
-        let guardAt = try XCTUnwrap(install.range(of: "guard meetings?.isRecording != true"))
+        let install = try XCTUnwrap(body(try app(), of: "private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {"))
+        let guardAt = try XCTUnwrap(install.range(of: "guard meetings?.isRecording != true else {"))
         let installingAt = try XCTUnwrap(install.range(of: "updateInstalling = true"))
         XCTAssertLessThan(guardAt.lowerBound, installingAt.lowerBound, "the guard must come before the install begins")
+        let after = install[guardAt.upperBound...].prefix(160)
+        XCTAssertTrue(after.contains("return"), "the guard leaves the function")
     }
 
-    /// Quit closes a recording and hands it to the daemon.
-    /// Mutation: AppDelegate.applicationWillTerminate, delete `meetings?.stopForQuit()` -> RED.
+    /// Quit closes a recording and hands it to the daemon: the call, uncommented, in applicationWillTerminate.
+    /// Mutation: AppDelegate.applicationWillTerminate, delete or comment out `meetings?.stopForQuit()` -> RED.
     func testQuitStopsARecording() throws {
-        let app = try source("OxSayDictation/AppDelegate.swift")
-        let quit = try XCTUnwrap(body(app, of: "func applicationWillTerminate(_ notification: Notification) {"))
-        XCTAssertTrue(quit.contains("meetings?.stopForQuit()"))
+        let quit = try XCTUnwrap(body(try app(), of: "func applicationWillTerminate(_ notification: Notification) {"))
+        XCTAssertTrue(quit.contains("\n        meetings?.stopForQuit()\n"))
     }
 
-    /// The red dot ends with the recording: the tint must be cleared on the normal path.
-    /// Mutation: AppDelegate.applyStatusIcon, delete `statusItem.button?.contentTintColor = nil` -> RED.
-    func testTheRedDotEndsWithTheRecording() throws {
-        let app = try source("OxSayDictation/AppDelegate.swift")
-        let icon = try XCTUnwrap(body(app, of: "private func applyStatusIcon() {"))
-        XCTAssertTrue(icon.contains("contentTintColor = .systemRed"))
-        XCTAssertTrue(icon.contains("contentTintColor = nil"))
+    /// The icon's symbol and tint come from ONE decision over both states; nothing else sets the tint.
+    /// Mutation: AppDelegate.applyStatusIcon, delete `dictationRecording: controller.state == .recording` -> RED;
+    /// or a second `contentTintColor =` elsewhere -> RED.
+    func testTheStatusIconIsDecidedFromBothStatesInOnePlace() throws {
+        let text = try app()
+        let icon = try XCTUnwrap(body(text, of: "private func applyStatusIcon() {"))
+        XCTAssertTrue(icon.contains("StatusIconStyle.style(meetingRecording: meetings?.isRecording == true,"))
+        XCTAssertTrue(icon.contains("dictationRecording: controller.state == .recording"))
+        XCTAssertTrue(icon.contains("statusItem.button?.contentTintColor = style.red ? .systemRed : nil"))
+        XCTAssertEqual(text.components(separatedBy: "contentTintColor =").count - 1, 1, "only applyStatusIcon sets the tint")
     }
 
-    // MARK: recorder clock (#247)
+    /// The host tells the controller whether an update installs.
+    /// Mutation: AppDelegate.setUpMeetings, `updateInstalling: { false }` -> RED.
+    func testTheHostReportsTheInstall() throws {
+        let text = try app()
+        XCTAssertTrue(text.contains("updateInstalling: { [unowned self] in self.updateInstalling }"))
+    }
 
-    /// Every stamp is the buffer's CAPTURE time through HostClock, one t0 for both writers; a second clock
-    /// (AudioConvertHostTimeToNanos) or a delivery-time stamp shifts a channel.
+    // MARK: recorder and tap
+
+    /// Every stamp is the buffer's CAPTURE time through HostClock, one t0 for both writers.
     /// Mutation: MeetingRecorder, stamp the mic chunk with `HostClock.nanos(fromHostTicks: AudioGetCurrentHostTime())`
     /// instead of `ticks` -> RED.
     func testTheRecorderStampsCaptureTimeFromOneClock() throws {
@@ -75,71 +103,104 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertFalse(tap.contains("AudioConvertHostTimeToNanos"))
         XCTAssertTrue(recorder.contains("when.isHostTimeValid ? when.hostTime : AudioGetCurrentHostTime()"))
         XCTAssertTrue(recorder.contains("self.me?.append(samples, atNanos: HostClock.nanos(fromHostTicks: ticks))"))
-        XCTAssertTrue(tap.contains("HostClock.nanos(fromHostTicks: time.pointee.mHostTime)"))
+        XCTAssertTrue(tap.contains("time.pointee.mFlags.contains(.hostTimeValid) ? time.pointee.mHostTime : AudioGetCurrentHostTime()"))
+        XCTAssertTrue(tap.contains("HostClock.nanos(fromHostTicks: ticks)"))
         XCTAssertEqual(recorder.components(separatedBy: "PcmChannelWriter(url:").count - 1, 2)
         XCTAssertEqual(recorder.components(separatedBy: "t0: t0)").count - 1, 2, "both channels start at the same t0")
     }
 
-    /// Mutation: MeetingRecorder.start, delete the `if let micObserver` observer registration for
-    /// `.AVAudioEngineConfigurationChange` -> RED. And the tap rebuild on an output change.
-    func testTheRecorderFollowsRouteChanges() throws {
+    /// Writers are appended to and closed under one lock.
+    /// Mutation: MeetingRecorder, append `self.me?.append` outside `writersLock.withLock` -> RED.
+    func testWritersAreGuardedByOneLock() throws {
         let recorder = try source("OxSayDictation/MeetingRecorder.swift")
+        XCTAssertTrue(recorder.contains("self.writersLock.withLock { self.me?.append("))
+        XCTAssertTrue(recorder.contains("self.writersLock.withLock { self.them?.append("))
+        let stop = try XCTUnwrap(body(recorder, of: "func stop() -> Summary {"))
+        XCTAssertTrue(stop.contains("writersLock.withLock {"))
+        XCTAssertTrue(stop.contains("me?.finish(atNanos: end)"))
+    }
+
+    /// The microphone starts through the tap-safe path, the restart retries, the tap follows route AND rate changes
+    /// and retries with the shared policy.
+    /// Mutation: MeetingRecorder.startMicrophone, replace `EngineStart.start(` with direct `installTap` -> RED.
+    func testTheRecorderStartsAndRestartsSafely() throws {
+        let recorder = try source("OxSayDictation/MeetingRecorder.swift")
+        let mic = try XCTUnwrap(body(recorder, of: "private func startMicrophone() throws {"))
+        XCTAssertTrue(mic.contains("try EngineStart.start(removeTap: { input.removeTap(onBus: 0) }"))
         XCTAssertTrue(recorder.contains("forName: .AVAudioEngineConfigurationChange"))
-        XCTAssertTrue(recorder.contains("try self.startMicrophone()"))
+        XCTAssertTrue(recorder.contains("self.restartMicrophone()"))
+        let restart = try XCTUnwrap(body(recorder, of: "private func restartMicrophone() {"))
+        XCTAssertTrue(restart.contains("micRetry.failed()") && restart.contains("micRetry.succeeded()"))
+        XCTAssertTrue(restart.contains("self?.restartMicrophone()"), "a failed restart tries again")
+        let rebuild = try XCTUnwrap(body(recorder, of: "private func scheduleTapRebuild(after delay: TimeInterval) {"))
+        XCTAssertTrue(rebuild.contains("self.tapRetry.succeeded()"))
+        let failed = try XCTUnwrap(body(recorder, of: "private func tapFailed(_ why: String) {"))
+        XCTAssertTrue(failed.contains("tapRetry.failed()") && failed.contains("scheduleTapRebuild(after: step.delay)"))
         XCTAssertTrue(recorder.contains("kAudioHardwarePropertyDefaultOutputDevice"))
-        XCTAssertTrue(recorder.contains("scheduleTapRebuild()"))
+        XCTAssertTrue(recorder.contains("kAudioDevicePropertyNominalSampleRate"))
         XCTAssertTrue(recorder.contains("var useMainSubDevice = true"), "P0a branch A")
+    }
+
+    /// A rebuild builds the new tap before the old one is torn down, retries the self-process lookup, and counts.
+    /// Mutation: SystemAudioTap.start, move `old.teardown()` before `build(` -> RED.
+    func testTheTapBuildsBeforeItTearsDown() throws {
+        let tap = try source("OxSayDictation/SystemAudioTap.swift")
+        let start = try XCTUnwrap(body(tap, of: "func start(excludingPIDs pids: [pid_t], withMainSubDevice: Bool) throws {"))
+        let built = try XCTUnwrap(start.range(of: "try build(excluded: excluded, withMainSubDevice: withMainSubDevice)"))
+        let torn = try XCTUnwrap(start.range(of: "old.teardown()"))
+        XCTAssertLessThan(built.lowerBound, torn.lowerBound)
+        XCTAssertFalse(start.contains("stop()"), "no teardown before the new tap runs")
+        XCTAssertEqual(start.components(separatedBy: "teardown()").count - 1, 1, "the old tap is torn down once, after the new one runs")
+        XCTAssertTrue(start.contains("Retry.firstNonNil(attempts: 4"))
+        XCTAssertTrue(start.contains("exclusionMissing += 1"))
+        XCTAssertTrue(tap.contains("self.nilBuffers += 1"))
     }
 
     // MARK: controller
 
-    /// The first failed write stops and says so.
-    /// Mutation: MeetingController.refreshBadge, delete the `if recorder.writeFailed { … stop() }` block -> RED.
-    func testTheFirstFailedWriteStopsTheRecording() throws {
+    /// The tick is decided by RecordingMonitor and its actions are carried out: stops stop, the silent tap tells.
+    /// Mutation: MeetingController.refreshBadge, delete `case .stop(.cap):` handling -> RED.
+    func testTheTickCarriesOutTheMonitorsActions() throws {
         let tick = try XCTUnwrap(body(try controller(), of: "@objc private func refreshBadge() {"))
-        let failed = try XCTUnwrap(tick.range(of: "if recorder.writeFailed {"))
-        let tail = String(tick[failed.upperBound...])
-        let block = String(tail[..<tail.range(of: "}")!.lowerBound])
-        XCTAssertTrue(block.contains("noticeMeetingDiskFull"))
-        XCTAssertTrue(block.contains("stop()"))
+        XCTAssertTrue(tick.contains("for action in monitor.observe(tick) {"))
+        XCTAssertTrue(tick.contains("writeFailed: recorder.writeFailed"))
+        XCTAssertTrue(tick.contains("case .stop(.diskFull):") && tick.contains("noticeMeetingDiskFull"))
+        XCTAssertTrue(tick.contains("case .stop(.cap):") && tick.contains("noticeMeetingCapReached"))
+        XCTAssertTrue(tick.contains("case .say(.tapSilent): tellSilentTap()"))
+        XCTAssertTrue(tick.contains("case .say(.noSystemAudio): host.notify(L10nKey.noticeMeetingNoSystemAudio.text)"))
+        XCTAssertEqual(tick.components(separatedBy: "stop()").count - 1, 2)
     }
 
-    /// The recording stops at the cap and says so.
-    /// Mutation: MeetingController.refreshBadge, delete the `MeetingLimits.reachedCap(elapsed: …)` call -> RED.
-    func testTheRecordingStopsAtTheCap() throws {
-        let tick = try XCTUnwrap(body(try controller(), of: "@objc private func refreshBadge() {"))
-        let cap = try XCTUnwrap(tick.range(of: "if MeetingLimits.reachedCap(elapsed: recorder.elapsed) {"))
-        let tail = String(tick[cap.upperBound...])
-        let block = String(tail[..<tail.range(of: "}")!.lowerBound])
-        XCTAssertTrue(block.contains("noticeMeetingCapReached"))
-        XCTAssertTrue(block.contains("stop()"))
+    /// The silent-tap notice is NOT modal and its click opens the System Audio Recording pane.
+    /// Mutation: MeetingController.tellSilentTap, call `host.alert(` -> RED.
+    func testTheSilentTapNoticeIsNotModal() throws {
+        let tell = try XCTUnwrap(body(try controller(), of: "private func tellSilentTap() {"))
+        XCTAssertFalse(tell.contains("host.alert"))
+        XCTAssertFalse(tell.contains("runModal"))
+        XCTAssertTrue(tell.contains("host.notify(sentence)"))
+        XCTAssertTrue(tell.contains("openURL: URL(string: SystemAudioGuard.settingsURL)"))
+        let notifier = try source("OxSayDictation/MeetingNotifier.swift")
+        XCTAssertTrue(notifier.contains("NSWorkspace.shared.open(url)"))
     }
 
-    /// The silent-tap decision is asked every tick, with the recorder's numbers, and its verdict is acted on.
-    /// Mutation: MeetingController.checkSystemAudio, delete the `case .silentTap:` line's action
-    /// (`if told.insert(.silentTap).inserted { tellSilentTap() }`) -> RED.
-    func testTheSilentTapVerdictIsActedOn() throws {
+    /// Recorder failures reach the monitor and the user; a recovery clears the flag and says so.
+    /// Mutation: MeetingController.init, delete `self?.monitor.systemAudioFailed = false` -> RED.
+    func testRecorderCallbacksReachTheMonitor() throws {
         let text = try controller()
-        let tick = try XCTUnwrap(body(text, of: "@objc private func refreshBadge() {"))
-        XCTAssertTrue(tick.contains("checkSystemAudio()"))
-        let check = try XCTUnwrap(body(text, of: "private func checkSystemAudio() {"))
-        XCTAssertTrue(check.contains("SystemAudioGuard.assess(sample)"))
-        XCTAssertTrue(check.contains("recorder.tapStats"))
-        XCTAssertTrue(check.contains("case .silentTap:\n            if told.insert(.silentTap).inserted { tellSilentTap() }"), check)
-        let tell = try XCTUnwrap(body(text, of: "private func tellSilentTap() {"))
-        XCTAssertTrue(tell.contains("noticeMeetingTapSilent"))
-        XCTAssertTrue(tell.contains("SystemAudioGuard.settingsURL"))
-        XCTAssertTrue(tell.contains("NSWorkspace.shared.open(url)"))
+        XCTAssertTrue(text.contains("self?.monitor.systemAudioFailed = true"))
+        XCTAssertTrue(text.contains("self?.monitor.systemAudioFailed = false"))
+        XCTAssertTrue(text.contains("noticeMeetingTapRecovered"))
+        XCTAssertTrue(text.contains("recorder.onMicrophoneRecovered = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicRecovered.text) }"))
     }
 
     /// Sleep ends the recording through the same stop as the button.
-    /// Mutation: MeetingController.init, delete the `willSleepNotification` observer -> RED.
+    /// Mutation: MeetingController.init, `willSleepNotification` -> `didWakeNotification` -> RED.
     func testSleepStopsTheRecording() throws {
         let text = try controller()
-        XCTAssertTrue(text.contains("NSWorkspace.willSleepNotification"))
+        XCTAssertTrue(text.contains("forName: NSWorkspace.willSleepNotification"))
         let sleep = try XCTUnwrap(body(text, of: "private func stopForSleep() {"))
         XCTAssertTrue(sleep.contains("noticeMeetingSlept"))
-        XCTAssertTrue(sleep.contains("stop()"))
+        XCTAssertTrue(sleep.contains("\n        stop()\n"))
     }
 
     /// Quit waits for the daemon on the main thread: the task must not inherit the main actor.
@@ -148,11 +209,10 @@ final class MeetingWiringTests: XCTestCase {
         let quit = try XCTUnwrap(body(try controller(), of: "func stopForQuit() {\n"))
         XCTAssertTrue(quit.contains("Task.detached {"))
         XCTAssertTrue(quit.contains("done.wait(timeout: .now() + 3)"))
+        XCTAssertTrue(quit.contains("logSummary(recorder.stop(), id: info.id)"))
     }
 
-    /// The speakers rows open the panel and retry the voices, and the menu knows the recent meetings.
-    /// Mutation: MeetingController.choose, delete `case .editSpeakers(let id): editSpeakers(id)` -> RED
-    /// (the speakers rows do nothing).
+    /// Mutation: MeetingController.choose, delete `case .editSpeakers(let id): editSpeakers(id)` -> RED.
     func testTheSpeakersMenuIsWired() throws {
         let text = try controller()
         let choose = try XCTUnwrap(body(text, of: "@objc private func choose(_ sender: NSMenuItem) {"))
@@ -166,7 +226,7 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(start.contains("speaker: L10nKey.meetingLabelSpeaker.text"))
     }
 
-    /// Every copy goes through the ledger (`MeetingExporter`), and a staging failure or an edited copy reaches the user.
+    /// Every copy goes through the ledger.
     /// Mutation: MeetingController.export, replace `exporter.export(info)` with a direct `NotesExport.write` -> RED.
     func testExportsGoThroughTheLedger() throws {
         let text = try controller()
@@ -178,18 +238,34 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertFalse(text.contains("NotesExport.write"))
     }
 
-    /// The tracker is told about a decline and a recording the controller ran; a user stop stands (#241).
     /// Mutation: MeetingController.dontRecordThisOne, delete `watcher.decline()` -> RED.
     func testDeclineAndRecordingStateReachTheWatcher() throws {
         let text = try controller()
         let dont = try XCTUnwrap(body(text, of: "private func dontRecordThisOne() {"))
-        XCTAssertTrue(dont.contains("watcher.decline()"))
+        XCTAssertTrue(dont.contains("\n        watcher.decline()\n"))
         XCTAssertTrue(text.contains("watcher.recording = { [weak self] in self?.current?.origin }"))
         XCTAssertTrue(text.contains("watcher.themActive = { [weak self] in self?.recorder.themActive ?? false }"))
     }
 
-    /// The call watcher polls through a runner that refuses to queue behind a stuck script (#251) and the
-    /// "waiting for permission" notice reaches the user.
+    /// The watcher decision, the call-start decision, the manual-start gate and the reconcile decision are the policy's.
+    /// Mutation: MeetingController.applyAutoStart, `MeetingPolicy.watcherShouldRun(` -> `MeetingSettings.autoStart(` -> RED.
+    func testThePolicyDecidesAtTheCallSites() throws {
+        let text = try controller()
+        let auto = try XCTUnwrap(body(text, of: "private func applyAutoStart() {"))
+        XCTAssertTrue(auto.contains("MeetingPolicy.watcherShouldRun(autoStart: MeetingSettings.autoStart(host.defaults), recording: current?.origin)"))
+        let stop = try XCTUnwrap(body(text, of: "func stop() {\n"))
+        XCTAssertTrue(stop.contains("\n        applyAutoStart()\n"), "the watcher is re-evaluated when a recording ends")
+        let observe = try XCTUnwrap(body(text, of: "private func observe(_ tick: CallWatcher.Tick) {"))
+        XCTAssertTrue(observe.contains("MeetingPolicy.onCallStarted(source: source,"))
+        XCTAssertTrue(observe.contains("installing: host.updateInstalling()"))
+        let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String) {"))
+        XCTAssertTrue(start.contains("MeetingPolicy.manualStart(installing: installing) == .waitForInstall"))
+        XCTAssertTrue(start.contains("if origin == .auto, installing { return }"))
+        let reconcile = try XCTUnwrap(body(text, of: "private func reconcile() {"))
+        XCTAssertTrue(reconcile.contains("Reconcile.action(for: m,"))
+        XCTAssertTrue(reconcile.contains("currentID: current?.info.id"))
+    }
+
     /// Mutation: CallWatcher.readTab, `dropWhileBusy: true` -> `false` -> RED.
     func testTheWatcherNeverQueuesBehindAStuckRead() throws {
         let watcher = try source("OxSayDictation/CallWatcher.swift")
@@ -199,7 +275,6 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(text.contains("if tick.browserNeedsPermission { host.notify(L10nKey.noticeMeetingBrowserPending.text) }"))
     }
 
-    /// The notification falls back to the status line, the converter counters and the clock numbers are logged.
     /// Mutation: MeetingController.ready, delete the `guard !delivered` fallback -> RED.
     func testNotifierFallbackAndCountersAreUsed() throws {
         let text = try controller()
@@ -207,13 +282,13 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(ready.contains("guard !delivered else { return }"))
         XCTAssertTrue(ready.contains("self?.host.notify(title)"))
         let log = try XCTUnwrap(body(text, of: "private func logSummary("))
-        for field in ["meDropped", "mePadded", "themDropped", "themPadded", "failedWrites", "micConversions", "tapConversions"] {
+        for field in ["meDropped", "mePadded", "themDropped", "themPadded", "failedWrites", "micConversions", "tapConversions",
+                      "tapNilBuffers", "tapExclusionMissing"] {
             XCTAssertTrue(log.contains(field), field)
         }
         XCTAssertTrue(text.contains("logSummary(recorder.stop(), id: info.id)"))
     }
 
-    /// The microphone permission is settled before a meeting exists in the daemon.
     /// Mutation: MeetingController.start, delete the `MeetingRecorder.checkMicrophone()` call -> RED.
     func testTheMicrophoneIsCheckedBeforeAMeetingIsCreated() throws {
         let start = try XCTUnwrap(body(try controller(), of: "private func start(origin: CallTracker.Origin, source: String) {"))

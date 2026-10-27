@@ -53,7 +53,8 @@ final class CallDetectorTests: XCTestCase {
     func testOnlyWorkCallAppsStartByThemselves() {
         XCTAssertTrue(CallDetector.autoStartSources.isSuperset(of: ["zoom", "teams", "webex", "meet"]))
         for source in ["discord", "facetime", "slack"] { XCTAssertFalse(CallDetector.autoStartSources.contains(source), source) }
-        XCTAssertEqual(Set(CallDetector.nativeApps.values).subtracting(CallDetector.autoStartSources), ["slack", "facetime", "discord"])
+        XCTAssertEqual(Set(CallDetector.nativeApps.values).subtracting(CallDetector.autoStartSources),
+                       ["slack", "facetime", "discord", "whatsapp", "telegram"])
     }
 
     func testMeetingURLs() {
@@ -561,5 +562,21 @@ final class CallDetectorTests: XCTestCase {
         for i in 0..<3 { XCTAssertFalse(watchTick(&watch, now: t0.addingTimeInterval(Double(i) * 2), url: "").browserNeedsPermission) }
         XCTAssertFalse(watchTick(&watch, now: t0.addingTimeInterval(8), url: Self.meetURL).browserNeedsPermission)
         XCTAssertFalse(watchTick(&watch, now: t0.addingTimeInterval(10), url: "").browserNeedsPermission)
+    }
+
+    // MARK: WhatsApp and Telegram desktop: asked about, never started by themselves
+
+    /// Bundle ids, verified: WhatsApp from the installed app (mdls) ; Telegram: ru.keepcoder.Telegram (Mac App Store
+    /// "Telegram", Apple lookup id 747648890), org.telegram.desktop (Mac App Store "Telegram Lite", id 946399090, and
+    /// tdesktop's CMakeLists `build_macstore`), com.tdesktop.Telegram (tdesktop's direct build, same file).
+    /// Mutation: CallDetector.nativeApps, delete the "net.whatsapp.WhatsApp" entry -> RED.
+    func testWhatsAppAndTelegramAreCallsThatOnlyAsk() {
+        for (bundle, source) in [("net.whatsapp.WhatsApp", "whatsapp"), ("ru.keepcoder.Telegram", "telegram"),
+                                 ("org.telegram.desktop", "telegram"), ("com.tdesktop.Telegram", "telegram")] {
+            XCTAssertEqual(src([MicUser(bundleID: bundle, pid: 5)]), source, bundle)
+            XCTAssertFalse(CallDetector.autoStartSources.contains(source), "\(source) asks first, like Discord")
+        }
+        // a helper process of the app is the app
+        XCTAssertEqual(src([MicUser(bundleID: "net.whatsapp.WhatsApp.helper", pid: 6)]), "whatsapp")
     }
 }

@@ -94,8 +94,6 @@ public enum L10nKey: String, CaseIterable {
     // Recording: the silent tap, limits, sleep and the copy the user edited.
     case noticeMeetingTapSilent = "notice.meeting.tap_silent"
     case meetingTapSilentTitle = "meeting.tap_silent.title"
-    case meetingTapSilentOpen = "meeting.tap_silent.open"
-    case meetingTapSilentLater = "meeting.tap_silent.later"
     case noticeMeetingCopyKept = "notice.meeting.copy_kept"
     case noticeMeetingCapReached = "notice.meeting.cap_reached"
     case noticeMeetingBrowserPending = "notice.meeting.browser_pending"
@@ -104,6 +102,9 @@ public enum L10nKey: String, CaseIterable {
     case noticeMeetingMicLost = "notice.meeting.mic_lost"
     case noticeMeetingTapLost = "notice.meeting.tap_lost"
     case noticeMeetingDiskFull = "notice.meeting.disk_full"
+    case noticeMeetingTapRecovered = "notice.meeting.tap_recovered"
+    case noticeMeetingMicRecovered = "notice.meeting.mic_recovered"
+    case noticeMeetingWaitInstall = "notice.meeting.wait_install"
     case meetingMicAllow = "meeting.mic.allow"
     case meetingMicOff = "meeting.mic.off"
     case meetingMicNone = "meeting.mic.none"

@@ -13,12 +13,12 @@ final class SystemAudioGuardTests: XCTestCase {
     /// it off and on. Callbacks + digital silence + a process playing = say so.
     /// Mutation: SystemAudioGuard.assess, delete the `peak == 0, playingFor >= …` branch -> RED.
     func testCallbacksWithOnlyZerosWhileSomethingPlaysIsTheSilentTap() {
-        XCTAssertEqual(assess(), .silentTap)
+        XCTAssertEqual(assess(elapsed: 25, playingFor: SystemAudioGuard.playingBeforeVerdict), .silentTap)
     }
 
     func testNothingPlayingIsNotASilentTap() {
-        XCTAssertEqual(assess(playingFor: 0), .waiting)
-        XCTAssertEqual(assess(playingFor: SystemAudioGuard.playingBeforeVerdict - 0.5), .waiting)
+        XCTAssertEqual(assess(elapsed: 30, playingFor: 0), .otherSideQuiet)
+        XCTAssertEqual(assess(elapsed: 12, playingFor: SystemAudioGuard.playingBeforeVerdict - 0.5), .waiting)
     }
 
     func testAnyRealSampleMeansTheTapWorks() {
@@ -96,6 +96,7 @@ final class MeetingLimitsTests: XCTestCase {
 
     func testTheMeetingTitleNamesTheSource() {
         XCTAssertEqual(MeetingLimits.title(forSource: "oxpulse"), "OxPulse call")
+        XCTAssertEqual(MeetingLimits.title(forSource: "whatsapp"), "WhatsApp call")
         XCTAssertEqual(MeetingLimits.title(forSource: "zoom"), "Zoom call")
         XCTAssertEqual(MeetingLimits.title(forSource: "manual"), "")
         XCTAssertEqual(MeetingLimits.title(forSource: ""), "")

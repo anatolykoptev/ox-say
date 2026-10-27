@@ -15,8 +15,12 @@ public enum SystemAudioGuard {
         public var playingFor: TimeInterval
         /// The other side was audible at least once.
         public var heardLoud: Bool
+        /// How long the microphone channel has been loud in total: somebody on this side is talking.
+        public var micLoudFor: TimeInterval
 
-        public init(callbacks: Int, peak: Float, elapsed: TimeInterval, playingFor: TimeInterval, heardLoud: Bool) {
+        public init(callbacks: Int, peak: Float, elapsed: TimeInterval, playingFor: TimeInterval, heardLoud: Bool,
+                    micLoudFor: TimeInterval = 0) {
+            self.micLoudFor = micLoudFor
             self.callbacks = callbacks
             self.peak = peak
             self.elapsed = elapsed
@@ -40,8 +44,14 @@ public enum SystemAudioGuard {
 
     /// The tap gets this long to start delivering before anything is said.
     public static let settle: TimeInterval = 5
-    /// A process must have been playing this long before zeros mean a silent tap (a call's first second is silence).
-    public static let playingBeforeVerdict: TimeInterval = 5
+    /// A call app plays digital silence until the other side joins, and auto-start begins 4 s after the microphone
+    /// opens, so zeros mean a broken permission only after a process has played this long without a sample...
+    public static let playingBeforeVerdict: TimeInterval = 20
+    /// ...or when somebody on this side has been talking this long (cumulative) while something plays: a person speaks
+    /// to a person who is there, so a healthy call has produced far-side samples by now.
+    public static let micLoudBeforeVerdict: TimeInterval = 10
+    /// The "something plays" part of the microphone rule.
+    public static let playingWithMic: TimeInterval = 5
     /// The old rule: nobody audible on the other side for this long into a recording.
     public static let quietAfter: TimeInterval = 20
 
@@ -52,7 +62,8 @@ public enum SystemAudioGuard {
         if s.heardLoud { return .fine }
         guard s.elapsed >= settle else { return .waiting }
         if s.callbacks == 0 { return .noCallbacks }
-        if s.peak == 0, s.playingFor >= playingBeforeVerdict { return .silentTap }
+        if s.peak == 0, s.playingFor >= playingBeforeVerdict
+            || (s.playingFor >= playingWithMic && s.micLoudFor >= micLoudBeforeVerdict) { return .silentTap }
         if s.elapsed >= quietAfter { return .otherSideQuiet }
         return .waiting
     }
@@ -88,6 +99,7 @@ public enum MeetingLimits {
         switch source {
         case "", "manual": return ""
         case "oxpulse": return "OxPulse call"
+        case "whatsapp": return "WhatsApp call"
         default: return source.capitalized + " call"
         }
     }
