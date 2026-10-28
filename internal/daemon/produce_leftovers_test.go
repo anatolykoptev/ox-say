@@ -297,3 +297,33 @@ func TestProduceDigitOnlyScriptFollowsConfiguredLanguage(t *testing.T) {
 		}
 	}
 }
+
+// #165.2: a chunk the person accepted after listening is ok and carries no
+// failure reasons (they stay on the take itself); a chunk that is still in
+// review, including an unusable silent pick, keeps the pick's reasons.
+// Mutation: produce.go settle, `if c.Status == vproject.ChunkOK {` -> `if false {`
+// (the reasons stay on an accepted chunk) -> RED.
+func TestSettleDropsReasonsOfAnAcceptedUserPick(t *testing.T) {
+	failed := vproject.TakeRef{Key: "fail", Passed: false, WER: 0.4, Reasons: []string{"1 word differs"}}
+	silent := vproject.TakeRef{Key: "mute", Passed: false, Reasons: []string{reasonSilent}}
+	for name, tc := range map[string]struct {
+		take       vproject.TakeRef
+		userPick   bool
+		wantStatus string
+		wantReason bool
+	}{
+		"user pick of a failed take":  {failed, true, vproject.ChunkOK, false},
+		"automatic fallback":          {failed, false, vproject.ChunkReview, true},
+		"user pick of a silent take":  {silent, true, vproject.ChunkReview, true},
+		"user pick of a passing take": {vproject.TakeRef{Key: "good", Passed: true}, true, vproject.ChunkOK, false},
+	} {
+		c := &vproject.Chunk{Takes: []vproject.TakeRef{tc.take}, Pick: tc.take.Key, UserPick: tc.userPick}
+		settle(c)
+		if c.Status != tc.wantStatus || (len(c.Reasons) > 0) != tc.wantReason {
+			t.Errorf("%s: status %q reasons %v, want %q and reasons=%v", name, c.Status, c.Reasons, tc.wantStatus, tc.wantReason)
+		}
+		if len(c.Takes[0].Reasons) != len(tc.take.Reasons) {
+			t.Errorf("%s: the take's own reasons were touched: %v", name, c.Takes[0].Reasons)
+		}
+	}
+}

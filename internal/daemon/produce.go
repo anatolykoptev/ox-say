@@ -462,6 +462,9 @@ func settle(c *vproject.Chunk) {
 	if !pick.Passed && (!c.UserPick || isSilent(pick)) {
 		c.Status = vproject.ChunkReview
 	}
+	if c.Status == vproject.ChunkOK {
+		c.Reasons = nil // accepted after listening: the take keeps its own reasons (#165.2)
+	}
 }
 
 // better reports whether take a is a better fallback than b: audible over
