@@ -14,8 +14,10 @@ import (
 // (#156.7).
 type engineUse struct {
 	pid atomic.Int64
-	// seq is the engine.Guard.Seq the request holds while it waits on that
-	// child: the recycle ignores requests queued behind it (#338.1).
+	// seq is the request's send stamp (engine.Guard.MarkSent): the recycle
+	// ignores requests sent after it, queued behind it (#338.1). speechOn
+	// stores seq BEFORE pid, so a reader that sees pid > 0 sees the stamp; a
+	// zero stamp makes the recycle conservative (every request blocks it).
 	seq atomic.Uint64
 }
 

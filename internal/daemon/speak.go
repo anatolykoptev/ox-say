@@ -119,12 +119,17 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errEngineStart, err)
 	}
-	if use != nil {
-		use.pid.Store(int64(sup.Status().PID)) // the child this request goes to (#156.12b)
-		use.seq.Store(g.Seq())
-	}
 	if vox {
 		d.voxQoS.apply() // the child may have just started
+	}
+	if use != nil {
+		// The child this request goes to (#156.12b), stamped at the moment of
+		// sending: stamp first, pid second (see engineUse.seq).
+		pid := sup.Status().PID
+		use.seq.Store(g.MarkSent())
+		use.pid.Store(int64(pid))
+	} else {
+		g.MarkSent()
 	}
 	resp, err := d.ec.Speech(ctx, base, raw)
 	if err != nil {

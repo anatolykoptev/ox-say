@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -42,6 +43,11 @@ func TestRenderDeadlineRecyclesTheChildItReached(t *testing.T) {
 			}
 			if got := f.recycled(); len(got) != 1 || got[0] != fakeEnginePID {
 				t.Fatalf("recycled %v, want [%d]", got, fakeEnginePID)
+			}
+			// Mutation: produce_take.go recycle, pass 0 instead of use.seq.Load()
+			// -> the age rule is off (every request blocks) -> RED.
+			if got := f.recycledFrom(); len(got) != 1 || got[0] != fakeEngineSeq {
+				t.Fatalf("recycle carried send stamps %v, want [%d]", got, fakeEngineSeq)
 			}
 		})
 	}
@@ -231,12 +237,31 @@ func within(t *testing.T, what string, d time.Duration, ch <-chan error) error {
 	}
 }
 
+// spyPorts wraps the daemon's producer ports to observe the recycle and to
+// hold it back until the test says the scene is set - so the tests wait on
+// events, never on wall-clock margins.
+type spyPorts struct {
+	producePorts
+	gate    func()        // runs first inside Recycle; may block
+	entered chan struct{} // closed when Recycle is entered
+	once    sync.Once
+}
+
+func (p *spyPorts) Recycle(ctx context.Context, pid int, from uint64) {
+	p.once.Do(func() { close(p.entered) })
+	if p.gate != nil {
+		p.gate()
+	}
+	p.producePorts.Recycle(ctx, pid, from)
+}
+
 // #338.1: an interactive speak queued behind a wedged child holds a Guard but
 // is not being served, so it must not keep the wedged child alive. The render
 // deadline replaces the child anyway, the queued speak fails with the engine
 // transport error (the engine did not answer), and the next speak is served by
-// the fresh child.
-// Mutation: produce_wire.go portFuncs.Recycle, call d.VoxSup.Recycle(ctx, pid)
+// the fresh child. The recycle is held until the speak has reached the child
+// (the log has its line), so the speak is queued whatever the runner speed.
+// Mutation: produce_wire.go portFuncs.recycle, call d.VoxSup.Recycle(ctx, pid)
 // (wait for every guard) instead of RecycleWedged -> the recycle waits out
 // RecycleWait (30 s) behind the queued speak -> RED.
 func TestQueuedSpeakDoesNotKeepAWedgedChildAlive(t *testing.T) {
@@ -246,8 +271,10 @@ func TestQueuedSpeakDoesNotKeepAWedgedChildAlive(t *testing.T) {
 		t.Fatal(err)
 	}
 	wedged := d.VoxSup.Status().PID
-	shortDeadline(t, 800*time.Millisecond)
-	tk := &taker{ports: d.producePorts(), dir: t.TempDir()}
+	shortDeadline(t, time.Second)
+	spy := &spyPorts{producePorts: d.producePorts(), entered: make(chan struct{})}
+	spy.gate = func() { waitForLines(t, logPath, 2) } // the speak is queued behind the render
+	tk := &taker{ports: spy, dir: t.TempDir()}
 	rendered := make(chan error, 1)
 	go func() {
 		_, err := tk.renderWithin(context.Background(), takeSpec{Text: "ox-say is ready", Seed: 1, Cfg: 2, Steps: 10})
@@ -259,12 +286,11 @@ func TestQueuedSpeakDoesNotKeepAWedgedChildAlive(t *testing.T) {
 		_, err := d.speechOn(context.Background(), d.VoxSup, map[string]any{"model": "voxcpm2", "input": "hello there"})
 		spoke <- err
 	}()
-	waitForLines(t, logPath, 2) // the speak is queued behind it
-	if err := within(t, "the render", 10*time.Second, rendered); err == nil || !strings.Contains(err.Error(), "did not answer in time") {
+	if err := within(t, "the render", 20*time.Second, rendered); err == nil || !strings.Contains(err.Error(), "did not answer in time") {
 		t.Fatalf("render: %v", err)
 	}
 	var te *engineTransportError
-	if err := within(t, "the queued speak", 10*time.Second, spoke); !errors.As(err, &te) {
+	if err := within(t, "the queued speak", 20*time.Second, spoke); !errors.As(err, &te) {
 		t.Fatalf("the queued speak: %v, want the engine-did-not-answer transport error", err)
 	}
 	if _, err := d.speechOn(context.Background(), d.VoxSup, map[string]any{"model": "voxcpm2", "input": "again"}); err != nil {
@@ -311,7 +337,9 @@ func TestRecycleDoesNotKillARequestBeingAnswered(t *testing.T) {
 }
 
 // #338.3: a user cancel while the recycle is killing the old child ends the
-// job's wait at once; the kill carries on and the child still dies.
+// job's wait at once; the kill carries on and the child still dies. The cancel
+// is sent once the supervisor has marked the child stopped (the kill is under
+// way, SIGTERM ignored, 6 s grace), not after a sleep.
 // Mutation: produce_take.go recycle, pass context.Background() instead of ctx
 // to t.ports.Recycle -> the job waits out the SIGTERM grace -> RED.
 func TestCancelDuringTheRecycleKillEndsTheJobAtOnce(t *testing.T) {
@@ -322,8 +350,9 @@ func TestCancelDuringTheRecycleKillEndsTheJobAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	wedged := d.VoxSup.Status().PID
-	shortDeadline(t, 300*time.Millisecond)
-	tk := &taker{ports: d.producePorts(), dir: t.TempDir()}
+	shortDeadline(t, time.Second)
+	spy := &spyPorts{producePorts: d.producePorts(), entered: make(chan struct{})}
+	tk := &taker{ports: spy, dir: t.TempDir()}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	type res struct {
@@ -335,19 +364,29 @@ func TestCancelDuringTheRecycleKillEndsTheJobAtOnce(t *testing.T) {
 		_, err := tk.renderWithin(ctx, takeSpec{Text: "ox-say is ready", Seed: 1, Cfg: 2, Steps: 10})
 		ended <- res{err, time.Now()}
 	}()
-	waitForLines(t, logPath, 1)
-	time.Sleep(700 * time.Millisecond) // past the deadline: the kill (SIGTERM ignored, 6 s grace) is running
+	select {
+	case <-spy.entered:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the render deadline never asked for a recycle")
+	}
+	for d.VoxSup.Status().State != engine.StateStopped { // userStop set: the kill is running
+		select {
+		case <-ended:
+			t.Fatal("renderWithin returned before the kill started")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 	cancelled := time.Now()
 	cancel()
 	select {
 	case r := <-ended:
-		if lag := r.at.Sub(cancelled); lag > 2*time.Second {
+		if lag := r.at.Sub(cancelled); lag > 3*time.Second {
 			t.Fatalf("the job ended %s after the cancel, waiting out the kill", lag)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(20 * time.Second):
 		t.Fatal("renderWithin never returned")
 	}
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if syscall.Kill(wedged, 0) != nil {
 			return

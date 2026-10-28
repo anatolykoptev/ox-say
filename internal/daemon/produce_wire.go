@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -157,6 +158,10 @@ func (d *Daemon) producePorts() producePorts {
 				return
 			}
 			if err := d.VoxSup.RecycleWedged(ctx, pid, from); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					d.log.Info("produce: stopped waiting for the unresponsive voice engine to be replaced; it is still being stopped", "pid", pid, "error", err)
+					return
+				}
 				d.log.Warn("produce: the unresponsive voice engine was not restarted", "pid", pid, "error", err)
 			}
 		},

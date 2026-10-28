@@ -113,12 +113,11 @@ func TestRecycleGivesUpOnAStuckGuard(t *testing.T) {
 	}
 }
 
-// A request queued behind the wedged one (acquired after it) is not being
-// served, so it must not hold the recycle: RecycleWedged proceeds with it
-// still in flight, and the child is replaced.
-// Mutation: supervisor.go blockedLocked, drop the `g.seq < from` test (every
-// held guard blocks) -> the call waits RecycleWait and returns ErrRecycleBusy
-// -> RED.
+// A request sent after the wedged one is queued behind it, not being served, so
+// it must not hold the recycle: RecycleWedged proceeds with it still in
+// flight, and the child is replaced.
+// Mutation: supervisor.go blockedLocked, replace the condition with `true`
+// (every held guard blocks) -> ErrRecycleBusy after RecycleWait -> RED.
 func TestRecycleWedgedIgnoresRequestsQueuedBehindIt(t *testing.T) {
 	sup := recycleSup(t, 300*time.Millisecond)
 	if _, err := sup.EnsureReady(context.Background()); err != nil {
@@ -129,7 +128,9 @@ func TestRecycleWedgedIgnoresRequestsQueuedBehindIt(t *testing.T) {
 	queued := sup.Acquire()
 	defer wedged.Release()
 	defer queued.Release()
-	if err := sup.RecycleWedged(context.Background(), pid, wedged.Seq()); err != nil {
+	from := wedged.MarkSent()
+	queued.MarkSent()
+	if err := sup.RecycleWedged(context.Background(), pid, from); err != nil {
 		t.Fatalf("RecycleWedged with only a queued request in flight: %v", err)
 	}
 	if _, err := sup.EnsureReady(context.Background()); err != nil {
@@ -140,10 +141,10 @@ func TestRecycleWedgedIgnoresRequestsQueuedBehindIt(t *testing.T) {
 	}
 }
 
-// A request acquired BEFORE the wedged one may be the one the child is
-// answering (the wedged render queued behind it): it is never killed.
-// Mutation: supervisor.go blockedLocked, `g.seq < from` -> `false` (ignore
-// every guard) -> the child dies under the older request -> RED.
+// A request sent BEFORE the wedged one may be the one the child is answering
+// (the wedged render queued behind it): it is never killed.
+// Mutation: supervisor.go blockedLocked, condition -> `false` (every guard
+// ignored) -> the child dies under the older request -> RED.
 func TestRecycleWedgedWaitsForAnOlderRequest(t *testing.T) {
 	sup := recycleSup(t, 250*time.Millisecond)
 	if _, err := sup.EnsureReady(context.Background()); err != nil {
@@ -154,11 +155,78 @@ func TestRecycleWedgedWaitsForAnOlderRequest(t *testing.T) {
 	defer older.Release()
 	wedged := sup.Acquire()
 	defer wedged.Release()
-	if err := sup.RecycleWedged(context.Background(), pid, wedged.Seq()); !errors.Is(err, ErrRecycleBusy) {
+	older.MarkSent()
+	from := wedged.MarkSent()
+	if err := sup.RecycleWedged(context.Background(), pid, from); !errors.Is(err, ErrRecycleBusy) {
 		t.Fatalf("err = %v, want ErrRecycleBusy", err)
 	}
 	if st := sup.Status(); st.PID != pid || st.State != StateReady {
 		t.Fatalf("child touched under an older request: pid %d state %s", st.PID, st.State)
+	}
+}
+
+// Guard order is not send order. (a) A guard acquired BEFORE the wedged one
+// that writes to the child AFTER it is queued behind it: it must not make the
+// recycle wait out RecycleWait.
+// Mutation: supervisor.go blockedLocked, condition -> `true` -> RED.
+func TestRecycleWedgedIgnoresAnEarlierGuardThatSentLater(t *testing.T) {
+	sup := recycleSup(t, 300*time.Millisecond)
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pid := sup.Status().PID
+	early := sup.Acquire() // acquired first, e.g. still in EnsureReady
+	wedged := sup.Acquire()
+	defer early.Release()
+	defer wedged.Release()
+	from := wedged.MarkSent()
+	early.MarkSent() // reaches the child second
+	if err := sup.RecycleWedged(context.Background(), pid, from); err != nil {
+		t.Fatalf("an earlier-acquired guard that sent later held the recycle: %v", err)
+	}
+}
+
+// (b) A guard acquired AFTER the wedged one that writes to the child BEFORE it
+// is the request the child is answering: it is never killed.
+// Mutation: supervisor.go blockedLocked, condition -> `false` -> the child dies
+// under it -> RED.
+func TestRecycleWedgedWaitsForALaterGuardThatSentFirst(t *testing.T) {
+	sup := recycleSup(t, 250*time.Millisecond)
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pid := sup.Status().PID
+	wedged := sup.Acquire()
+	late := sup.Acquire() // acquired second
+	defer wedged.Release()
+	defer late.Release()
+	late.MarkSent() // but reached the child first
+	from := wedged.MarkSent()
+	if err := sup.RecycleWedged(context.Background(), pid, from); !errors.Is(err, ErrRecycleBusy) {
+		t.Fatalf("err = %v, want ErrRecycleBusy (the child is answering the other request)", err)
+	}
+	if st := sup.Status(); st.PID != pid || st.State != StateReady {
+		t.Fatalf("child touched under a request being answered: pid %d state %s", st.PID, st.State)
+	}
+}
+
+// A guard that has not written to the child has no answer in flight: it does
+// not hold the recycle.
+// Mutation: supervisor.go blockedLocked, drop `g.sent != 0 &&` -> an unsent
+// guard (sent 0 < from) blocks -> RED.
+func TestRecycleWedgedIgnoresAGuardThatHasNotSent(t *testing.T) {
+	sup := recycleSup(t, 300*time.Millisecond)
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pid := sup.Status().PID
+	unsent := sup.Acquire()
+	wedged := sup.Acquire()
+	defer unsent.Release()
+	defer wedged.Release()
+	from := wedged.MarkSent()
+	if err := sup.RecycleWedged(context.Background(), pid, from); err != nil {
+		t.Fatalf("a guard that never sent held the recycle: %v", err)
 	}
 }
 

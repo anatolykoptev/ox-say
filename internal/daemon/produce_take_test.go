@@ -55,6 +55,7 @@ type fakePorts struct {
 	hearHook    func()                              // non-nil: Hear calls it first
 	noPID       bool                                // Render never reaches an engine child: reports no pid
 	recycles    []int                               // pids Recycle was asked to stop
+	recycleFrom []uint64                            // the send stamp each Recycle call carried
 }
 
 func newFakePorts(t *testing.T) *fakePorts {
@@ -73,6 +74,7 @@ func toneClip(secs, gap float64) pcm.Clip {
 
 func (f *fakePorts) Render(ctx context.Context, p renderParams) (*synthOut, error) {
 	if u := engineUseOf(ctx); u != nil && !f.noPID {
+		u.seq.Store(fakeEngineSeq)
 		u.pid.Store(fakeEnginePID) // the child the request reached
 	}
 	f.mu.Lock()
@@ -188,10 +190,20 @@ func (f *fakePorts) Power(context.Context) (bool, bool) {
 // fakeEnginePID is the child every fakePorts render reports reaching.
 const fakeEnginePID = 4242
 
-func (f *fakePorts) Recycle(_ context.Context, pid int, _ uint64) {
+// fakeEngineSeq is the send stamp every fakePorts render reports.
+const fakeEngineSeq = 77
+
+func (f *fakePorts) Recycle(_ context.Context, pid int, from uint64) {
 	f.mu.Lock()
 	f.recycles = append(f.recycles, pid)
+	f.recycleFrom = append(f.recycleFrom, from)
 	f.mu.Unlock()
+}
+
+func (f *fakePorts) recycledFrom() []uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]uint64(nil), f.recycleFrom...)
 }
 
 func (f *fakePorts) recycled() []int {
