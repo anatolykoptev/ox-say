@@ -2,7 +2,6 @@ package meeting
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 )
 
@@ -52,40 +51,12 @@ func NotesMarkdown(m Manifest, n Notes, lang string) string {
 // language model reading a transcript the user does not control. A model string
 // must stay inline text: no heading, quote, image or link of its own.
 
-var linkTarget = regexp.MustCompile(`\]\(([^)\n]*)\)?`)
-
-// linkLike: the text between the parentheses of "](...)" is the target of a link a viewer would follow or fetch.
-func linkLike(target string) bool {
-	t := strings.ToLower(strings.TrimSpace(target))
-	if strings.Contains(t, "://") {
-		return true
-	}
-	for _, p := range []string{"mailto:", "tel:", "data:", "javascript:", "www.", "/", "#", "//"} {
-		if strings.HasPrefix(t, p) {
-			return true
-		}
-	}
-	return false
-}
-
-// neutralizeLinks leaves no inline link or image in s. It drops the target of a link-like "](...)" until none is
-// left ("[a](http://x)(http://y)" loses both: one pass would leave "[a](http://y)", a link made by the deletion), then
-// writes a backslash before the parenthesis of every "](" that remains ("x[i](y)" becomes "x[i]\(y)", literal text),
-// so no text, deleted or kept, can join into a link. An image is a link with a "!" in front, so it goes with it.
-func neutralizeLinks(s string) string {
-	for {
-		next := linkTarget.ReplaceAllStringFunc(s, func(m string) string {
-			if linkLike(linkTarget.FindStringSubmatch(m)[1]) {
-				return "]"
-			}
-			return m
-		})
-		if next == s {
-			break
-		}
-		s = next
-	}
-	return strings.ReplaceAll(s, "](", `]\(`)
+// escapeBrackets writes a backslash before every [ and ]. It only inserts, so it cannot join text into markup the way
+// deleting a link target did ("[a](http://x)(http://y)"), and without a bracket there is no link, image or reference
+// (a "[r]: url" definition, which defines the label for the whole document, included). The text stays as the model
+// wrote it; unescapeMarkdown and the app's unescaped read it back.
+func escapeBrackets(s string) string {
+	return strings.NewReplacer("[", `\[`, "]", `\]`).Replace(s)
 }
 
 // cleanLine is one model string as a single inline line.
@@ -94,9 +65,9 @@ func cleanLine(s string) string {
 	// A viewer that renders HTML fetches <img src=...> and <http://...> on its own: a privacy leak from whoever
 	// spoke in the recording. escapeMarkdown treats < as markup for the same reason.
 	s = escapeAngle(s)
-	// After escapeAngle: that doubles every backslash, which would undo the one neutralizeLinks adds.
-	s = neutralizeLinks(s)
-	if s != "" && strings.ContainsRune("#[!>", rune(s[0])) {
+	// After escapeAngle, which doubles every backslash and would double these.
+	s = escapeBrackets(s)
+	if s != "" && strings.ContainsRune("#!>", rune(s[0])) {
 		s = `\` + s
 	}
 	return s

@@ -16,7 +16,7 @@ func TestNotesMarkdownKeepsModelTextInline(t *testing.T) {
 		Numbers:       []string{"![i](u)"},
 	}}
 	md := NotesMarkdown(Manifest{Title: "T"}, n, "en")
-	for _, bad := range []string{"](http", "\n# Injected", "\n## Fake", "\n> quote", "\n![", "- # ", "- [click]", "- >", "- !["} {
+	for _, bad := range []string{"\n# Injected", "\n## Fake", "\n> quote", "\n![", "- # ", "- [click]", "- >", "- !["} {
 		if strings.Contains(md, bad) {
 			t.Errorf("notes contain %q:\n%s", bad, md)
 		}
@@ -29,7 +29,7 @@ func TestNotesMarkdownKeepsModelTextInline(t *testing.T) {
 	if strings.Count(md, "\n## ") != 5 { // summary, decisions, actions, questions, numbers
 		t.Errorf("the model added or removed sections:\n%s", md)
 	}
-	if !strings.Contains(md, `- \[click] to pay`) {
+	if !strings.Contains(md, `- \[click\](http://evil/z) to pay`) {
 		t.Errorf("link text must survive, escaped:\n%s", md)
 	}
 }

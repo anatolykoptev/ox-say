@@ -275,6 +275,15 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertTrue(rename.contains("host.notify(L10nKey.noticeMeetingCopyStale.text)"))
     }
 
+    /// A speaker's sample is what a third party said: it is shown verbatim, never read as a LocalizedStringKey (which
+    /// parses Markdown, links and images included).
+    /// Mutation: MeetingDetailView row, `Text(verbatim: "“\(sp.sample)”")` -> `Text("“\(sp.sample)”")` -> RED.
+    func testASpeakersSampleIsShownVerbatim() throws {
+        let detail = try source("MainWindowUI/MeetingDetailView.swift")
+        XCTAssertTrue(detail.contains("Text(verbatim: \"“\\(sp.sample)”\")"))
+        XCTAssertFalse(detail.contains("Text(\"“\\(sp.sample)”\")"))
+    }
+
     /// Titles the app gave are shown in the user's language; notes and transcript carry no links.
     /// Mutation: MeetingDetailView.inline, `AttributedString(markdown: s, …)` instead of `InlineMarkdown.attributed(s)` -> RED.
     func testTitlesAreLocalizedAndNotesHaveNoLinks() throws {

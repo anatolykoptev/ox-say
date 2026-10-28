@@ -214,4 +214,13 @@ final class MeetingPlaybackTests: XCTestCase {
         XCTAssertEqual(when, "#5 C:\\dir")
         XCTAssertEqual(what, "send \\[a\\]", "shown through the Markdown engine")
     }
+
+    /// The owner and the date of an action carry escaped brackets (`\[` `\]`) and the window shows them as typed.
+    /// Mutation: NotesDocument.parse, `who: TranscriptTurn.unescaped(parts[0], extra: "#!")` -> `who: parts[0]` -> RED.
+    func testActionOwnerAndWhenWithBracketsAreShownAsTyped() {
+        let md = "# T\n\n## Action items\n\n- [ ] Bob \\[CFO\\] — send it — Fri \\[r\\]: x\n"
+        guard case .action(let who, _, let when) = NotesDocument.parse(md).sections[0].items[0] else { return XCTFail("not an action") }
+        XCTAssertEqual(who, "Bob [CFO]")
+        XCTAssertEqual(when, "Fri [r]: x")
+    }
 }
