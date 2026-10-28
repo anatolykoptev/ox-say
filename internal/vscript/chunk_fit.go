@@ -12,11 +12,11 @@ type fitted struct {
 	plain bool
 }
 
-func (p fitted) spoken() string {
+func (p fitted) spoken(lang string) string {
 	if p.plain {
 		return spokenPlain(p.text)
 	}
-	return Spoken(p.text)
+	return spokenIn(lang, p.text)
 }
 
 // fitSpoken splits every chunk whose Spoken text exceeds MaxSpokenChars (numbers
@@ -30,13 +30,13 @@ func fitSpoken(chunks []string, o Options) []fitted {
 			out = append(out, fitted{text: c})
 			continue
 		}
-		out = append(out, split(c, o.MaxSpokenChars)...)
+		out = append(out, split(c, o.MaxSpokenChars, o.Language)...)
 	}
 	return out
 }
 
-func split(text string, limit int) []fitted {
-	if runes(Spoken(text)) <= limit {
+func split(text string, limit int, lang string) []fitted {
+	if runes(spokenIn(lang, text)) <= limit {
 		return []fitted{{text: text}}
 	}
 	cut := safeCut([]rune(text))
@@ -44,7 +44,7 @@ func split(text string, limit int) []fitted {
 		return []fitted{{text: text, plain: true}}
 	}
 	rs := []rune(text)
-	return append(split(strings.TrimSpace(string(rs[:cut])), limit), split(strings.TrimSpace(string(rs[cut:])), limit)...)
+	return append(split(strings.TrimSpace(string(rs[:cut])), limit, lang), split(strings.TrimSpace(string(rs[cut:])), limit, lang)...)
 }
 
 const (

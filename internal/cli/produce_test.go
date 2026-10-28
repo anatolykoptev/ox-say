@@ -543,3 +543,74 @@ func TestProduceLsCapNote(t *testing.T) {
 		t.Fatalf("no cap note:\n%s", out.String())
 	}
 }
+
+// #165.3: --help after produce prints the usage and exits 0, not "unknown flag".
+// Mutation: produce.go cmdProduce, delete the wantsHelp branch -> exit 2 -> RED.
+func TestProduceHelp(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"status", "--help"}, {"resume", "x", "-h"}} {
+		var out, errb bytes.Buffer
+		if code := cmdProduce(args, &out, &errb, time.Millisecond); code != 0 || !strings.Contains(out.String(), "usage:") || errb.Len() != 0 {
+			t.Errorf("%v: exit %d stdout %q stderr %q", args, code, out.String(), errb.String())
+		}
+	}
+}
+
+// #165.4: a 5xx while polling (a daemon shutting down answers 503) is waited
+// out like a dropped connection; a 4xx ends the wait.
+// Mutation: produce.go wait, drop the `ae.status < http.StatusInternalServerError`
+// test (any API error ends the wait) -> RED.
+func TestProducePollWaitsOutA503(t *testing.T) {
+	var polls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"id":"` + testProjectID + `","status":"running","progress":{},"chunks":[],"outputs":{},"notes":[]}`))
+		case polls.Add(1) <= 3:
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"shutting down"}}`))
+		default:
+			_, _ = w.Write([]byte(`{"id":"` + testProjectID + `","status":"done","progress":{},"chunks":[],"outputs":{},"notes":[]}`))
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("OX_SAY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+	var errb bytes.Buffer
+	if code := cmdProduce([]string{writeScript(t, "Привет.")}, io.Discard, &errb, time.Millisecond); code != 0 {
+		t.Fatalf("a 503 ended the wait: exit %d %q", code, errb.String())
+	}
+}
+
+// #165.5: --timeout ends the wait of a voiceover that is still running (exit 4,
+// the id and the way to check), a bad value is a usage error, and a run that
+// ends in time is not affected.
+// Mutation: produce.go wait, delete the deadline check -> the wait never ends -> RED.
+func TestProduceTimeout(t *testing.T) {
+	f := newFakeProduce(t, "running") // never finishes
+	done := make(chan int, 1)
+	var errb bytes.Buffer
+	go func() {
+		done <- cmdProduce([]string{writeScript(t, "Привет."), "--timeout", "60ms"}, io.Discard, &errb, 5*time.Millisecond)
+	}()
+	select {
+	case code := <-done:
+		if code != 4 || !strings.Contains(errb.String(), "still running after 60ms") || !strings.Contains(errb.String(), "produce status "+testProjectID) {
+			t.Errorf("exit %d stderr %q", code, errb.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("--timeout did not end the wait")
+	}
+	if f.created == nil {
+		t.Error("the project was not even created")
+	}
+	newFakeProduce(t, "done") // a bad value must be refused before any wait
+	for _, bad := range []string{"0", "-5m", "soon", "30"} {
+		errb.Reset()
+		if code := cmdProduce([]string{writeScript(t, "Привет."), "--timeout", bad}, io.Discard, &errb, time.Millisecond); code != 2 || !strings.Contains(errb.String(), "--timeout") {
+			t.Errorf("--timeout %s: exit %d %q", bad, code, errb.String())
+		}
+	}
+	if code := cmdProduce([]string{writeScript(t, "Привет."), "--timeout", "1m"}, io.Discard, io.Discard, time.Millisecond); code != 0 {
+		t.Errorf("a run that ends in time: exit %d", code)
+	}
+}

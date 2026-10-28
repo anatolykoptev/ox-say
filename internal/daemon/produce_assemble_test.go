@@ -843,7 +843,7 @@ func TestReassemblyNeverReplacesFilesThatAreNotItsOwn(t *testing.T) {
 		}
 		before := outputSet(t, b)
 		editForReassembly(a)
-		if err := p.assemble(a); err == nil || !strings.Contains(err.Error(), "already exists") {
+		if err := p.assemble(a); err == nil || !strings.Contains(err.Error(), "move or rename") {
 			t.Fatalf("A replaced B's files: %v", err)
 		}
 		for ext, was := range outputSet(t, b) {
@@ -863,7 +863,7 @@ func TestReassemblyNeverReplacesFilesThatAreNotItsOwn(t *testing.T) {
 			t.Fatal(err)
 		}
 		editForReassembly(a)
-		if err := p.assemble(a); err == nil || !strings.Contains(err.Error(), "already exists") {
+		if err := p.assemble(a); err == nil || !strings.Contains(err.Error(), "move or rename") {
 			t.Fatalf("the user's file was replaced: %v", err)
 		}
 		if raw, _ := os.ReadFile(wav); string(raw) != "my own recording" {

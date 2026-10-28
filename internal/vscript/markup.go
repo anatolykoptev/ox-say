@@ -4,6 +4,7 @@
 package vscript
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -27,11 +28,15 @@ const (
 
 // Options sizes chunks and the silences between them.
 type Options struct {
-	TargetChars    int     // a chunk grows by whole sentences up to this many runes
-	MaxChars       int     // a sentence longer than this is split at a clause
-	MinChars       int     // a shorter last chunk of a paragraph joins its predecessor
-	MaxScriptChars int     // the whole script
-	MaxSpokenChars int     // the engine's per-request cap on Chunk.Spoken, which numbers written as words make longer than Text; 0 = no cap
+	TargetChars    int // a chunk grows by whole sentences up to this many runes
+	MaxChars       int // a sentence longer than this is split at a clause
+	MinChars       int // a shorter last chunk of a paragraph joins its predecessor
+	MaxScriptChars int // the whole script
+	MaxSpokenChars int // the engine's per-request cap on Chunk.Spoken, which numbers written as words make longer than Text; 0 = no cap
+	// Language is the language the script is spoken in ("ru", "en"): only a
+	// Russian script has its numbers written as Russian words. "" = decided
+	// from the script given to Parse (ScriptLanguage).
+	Language       string
 	ChunkPause     float64 // seconds between chunks of one paragraph
 	ParagraphPause float64 // seconds between paragraphs
 }
@@ -80,6 +85,9 @@ func Parse(src string, o Options) ([]Chunk, error) {
 	if n := utf8.RuneCountInString(src); n > o.MaxScriptChars {
 		return nil, &LineError{1, fmt.Sprintf("the script is %d characters; the limit is %d", n, o.MaxScriptChars)}
 	}
+	if o.Language == "" {
+		o.Language = SpokenLanguage(src)
+	}
 	var out []Chunk
 	pending := 0.0
 	para := 0
@@ -106,7 +114,7 @@ func Parse(src string, o Options) ([]Chunk, error) {
 					out[n-1].PauseAfter = gapBefore(o, emitted, pending)
 				}
 				pending = 0
-				out = append(out, Chunk{Index: len(out), Paragraph: para, Text: fc.text, Spoken: fc.spoken(), Style: style})
+				out = append(out, Chunk{Index: len(out), Paragraph: para, Text: fc.text, Spoken: fc.spoken(o.Language), Style: style})
 				emitted = true
 			}
 		}
@@ -127,9 +135,9 @@ func Parse(src string, o Options) ([]Chunk, error) {
 func (o Options) validate() error {
 	switch {
 	case o.MinChars <= 0 || o.TargetChars <= o.MinChars || o.MaxChars < o.TargetChars:
-		return &LineError{1, fmt.Sprintf("chunk sizes must satisfy 0 < min (%d) < target (%d) <= max (%d)", o.MinChars, o.TargetChars, o.MaxChars)}
+		return fmt.Errorf("chunk sizes must satisfy 0 < min (%d) < target (%d) <= max (%d)", o.MinChars, o.TargetChars, o.MaxChars)
 	case o.MaxScriptChars <= 0 || o.ChunkPause < 0 || o.ParagraphPause < 0:
-		return &LineError{1, "script limit must be positive and pauses must not be negative"}
+		return errors.New("script limit must be positive and pauses must not be negative")
 	}
 	return nil
 }
@@ -244,4 +252,43 @@ func pauseSeconds(num, unit string) (float64, error) {
 		return 0, fmt.Errorf("a pause must be %.2f–%.0f s", MinPause, MaxPause)
 	}
 	return v, nil
+}
+
+// SpokenLanguage is ScriptLanguage of what is read aloud: the text of the
+// pieces with [style:] and [pause] directives and leading "(cue)" groups left
+// out, so a Russian cue word does not make an English script Russian. A script
+// whose directives are malformed is judged on the whole text; Parse reports the
+// error itself.
+func SpokenLanguage(src string) string {
+	var spoken strings.Builder
+	for _, b := range paragraphs(src) {
+		_, body, line, err := leadingStyle(b)
+		if err != nil {
+			return ScriptLanguage(src)
+		}
+		pieces, err := splitPauses(body, line)
+		if err != nil {
+			return ScriptLanguage(src)
+		}
+		for _, p := range pieces {
+			if p.pause == 0 {
+				spoken.WriteString(StripLeadingCues(p.text))
+				spoken.WriteByte(' ')
+			}
+		}
+	}
+	return ScriptLanguage(spoken.String())
+}
+
+// StripLeadingCues drops the "(…)" groups a text opens with (the engine reads
+// them as its style tag).
+func StripLeadingCues(text string) string {
+	for s := trimLead(text); strings.HasPrefix(s, "("); s = trimLead(text) {
+		_, rest, closed := strings.Cut(s[1:], ")")
+		if !closed {
+			return text
+		}
+		text = rest
+	}
+	return text
 }

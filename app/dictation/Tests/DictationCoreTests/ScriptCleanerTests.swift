@@ -344,4 +344,37 @@ final class ScriptCleanerTests: XCTestCase {
         XCTAssertEqual(markdown(text), "Text and more. Again.")
         XCTAssertEqual(markdown("Two[^1][^2] marks."), "Two marks.")
     }
+
+    // MARK: #175 leftovers
+
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, break out of the `while`
+    // after the first run -> RED (the front matter's 1...3 stay as stray digits).
+    func testRestartedPageNumberingIsDroppedRunByRun() {
+        let front = (1...3).map { "Preface text \($0) goes here.\n\($0)" }
+        let body = (1...4).map { "Body text \($0) goes here.\n\($0)" }
+        let expected = (1...3).flatMap { ["Preface", "text", "\($0)", "goes", "here."] } + (1...4).flatMap { ["Body", "text", "\($0)", "goes", "here."] }
+        XCTAssertEqual(words(front + body), expected)
+    }
+
+    // Mutation: MarkdownText.swift, `bracketed` -> `[^\[\]\n]*` (no nesting) -> RED
+    // (the address is spoken).
+    func testALinkWhoseTextHoldsBracketsIsReadAsItsText() {
+        XCTAssertEqual(markdown("See [the docs [beta]](https://example.com/a) now."), "See the docs beta now.")
+        XCTAssertEqual(markdown("![chart [fig 2]](img/a.png) end"), "chart fig 2 end")
+    }
+
+    // Mutation: MarkdownText.swift, in `plain`, return `clean(text)` before the code
+    // spans are held aside -> RED (the example's link syntax is stripped to "text").
+    // The brackets that remain are neutralised later by the directive rules, as for any text.
+    func testCodeIsSpokenAsWritten() {
+        XCTAssertEqual(markdown("Write `[text](url)` for a link, then [the docs](https://example.com)."),
+                       "Write ` text (url)` for a link, then the docs.")
+        XCTAssertEqual(markdown("Example:\n```\n[a](b) <b>x</b>\n```\nDone [c](d)."), "Example:\n```\na (b) <b>x</b>\n```\nDone c.")
+    }
+
+    // Mutation: MarkdownText.swift, in `clean`, skip `stripHTML` -> RED.
+    func testRawInlineHtmlIsNotSpoken() {
+        XCTAssertEqual(markdown("A <b>bold</b> move<br>and <span class=\"x\">more</span><!-- note --> here."), "A bold move\nand more here.")
+        XCTAssertEqual(markdown("When a < b and c > d, mail <me@example.com>."), "When a < b and c > d, mail.")
+    }
 }

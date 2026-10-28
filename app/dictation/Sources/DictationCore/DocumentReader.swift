@@ -106,6 +106,10 @@ public enum DocumentReader {
     /// the bytes, nearly all on one parity, is that pattern. Text in any other
     /// encoding has no NULs.
     static let utf16NulShare = 0.05
+    /// ...and at least this many NULs: a short ASCII text with one stray NUL is
+    /// not UTF-16 (1 NUL in 20 bytes is 5% on one parity). Real UTF-16 text has a
+    /// NUL for nearly every Latin letter, space or digit in it.
+    static let utf16MinNuls = 4
     static let utf16ParityShare = 0.95
     /// Bytes that are not UTF-8 in a file that is UTF-8: a cut-off last character,
     /// a stray byte from a paste. The file is UTF-8 when they are at most this
@@ -146,7 +150,7 @@ public enum DocumentReader {
         var nulsAt = [0, 0]
         for (index, byte) in data.enumerated() where byte == 0 { nulsAt[index % 2] += 1 }
         let nuls = nulsAt[0] + nulsAt[1]
-        guard nuls > 0, Double(nuls) >= Double(data.count) * utf16NulShare,
+        guard nuls >= utf16MinNuls, Double(nuls) >= Double(data.count) * utf16NulShare,
               Double(max(nulsAt[0], nulsAt[1])) >= Double(nuls) * utf16ParityShare else { return nil }
         // Latin text in UTF-16LE has its NULs in the odd bytes, in UTF-16BE in the even ones.
         return String(data: data, encoding: nulsAt[1] > nulsAt[0] ? .utf16LittleEndian : .utf16BigEndian)

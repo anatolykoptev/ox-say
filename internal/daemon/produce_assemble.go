@@ -56,6 +56,20 @@ var errOutputsKept = errors.New("the output files could not be put in place; the
 // count it.
 var syncOutputDir = vproject.SyncDir
 
+// syncPath fsyncs the file at path; a var so a test can observe it against the
+// rename.
+var syncPath = func(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	err = f.Sync()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
 // renameFile is os.Rename; a var so a test can stand in for another volume.
 var renameFile = os.Rename
 
@@ -88,6 +102,25 @@ func checkOutputs(stem string, overwrite bool, owned map[string]bool) error {
 	return nil
 }
 
+// checkProjectOutputs is checkOutputs for the assembly of an existing project.
+// When the project published before and a file at its output name is no longer
+// provably its own (edited, re-exported, moved back), resume and the chunk ops
+// have no overwrite flag to offer, so the answer says what the person can do:
+// move the files away (#156.10).
+func checkProjectOutputs(m *vproject.Manifest, stem string) error {
+	owned := ownedOutputs(m)
+	if m.Outputs.WAV != "" && !m.Settings.Overwrite {
+		for _, ext := range outputExts {
+			pth := stem + ext
+			if st, err := os.Lstat(pth); err == nil && st.Mode()&os.ModeSymlink == 0 && !owned[pth] {
+				return &requestError{fmt.Sprintf("%s was published by this voiceover but has since been changed or replaced; move or rename the files named %s.* beside it, then resume",
+					filepath.Base(pth), filepath.Base(stem))}
+			}
+		}
+	}
+	return checkOutputs(stem, m.Settings.Overwrite, owned)
+}
+
 // timeline is what streaming the chunks leaves besides the audio.
 type timeline struct {
 	segs  []stt.Segment
@@ -118,7 +151,7 @@ func (p *producer) assemble(j *job) error {
 	if err != nil {
 		return err
 	}
-	if err := checkOutputs(stem, m.Settings.Overwrite, ownedOutputs(m)); err != nil {
+	if err := checkProjectOutputs(m, stem); err != nil {
 		return err
 	}
 	work := filepath.Join(j.dir, vproject.WorkDir)
@@ -149,7 +182,7 @@ func (p *producer) assemble(j *job) error {
 		p.log.Warn("produce: loudness needed the peak limiter", slog.Float64("target_lufs", m.Settings.LUFS))
 	}
 	m.Notes = withNote(m.Notes, vproject.NoteLimitedLoudness, tl.limited)
-	if err := checkOutputs(stem, m.Settings.Overwrite, ownedOutputs(m)); err != nil { // write-time re-check
+	if err := checkProjectOutputs(m, stem); err != nil { // write-time re-check
 		return err
 	}
 	return diskErr(p.publish(j, stem, norm, tl, m))
@@ -258,10 +291,10 @@ func (tl *timeline) add(w *pcm.Writer, c *vproject.Chunk, clip pcm.Clip, heard [
 	}
 	tl.words = append(tl.words, ws...)
 	if err := w.Write(trimmed.Fade(fadeSec)); err != nil {
-		return err
+		return fmt.Errorf("chunk %d: %w", c.Index, err)
 	}
 	if err := writeSilence(w, trimmed.Rate, c.PauseAfter); err != nil {
-		return err
+		return fmt.Errorf("chunk %d: %w", c.Index, err)
 	}
 	c.StartS, c.EndS = round2(at), round2(at+dur)
 	tl.total = at + dur + c.PauseAfter
@@ -310,6 +343,7 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 	if err := os.MkdirAll(filepath.Dir(stem), outDirMode); err != nil {
 		return err
 	}
+	sweepOutputTemps(stem, tempSweepMinAge)
 	finalizeExport(j, m)
 	sum, err := fileSHA(norm)
 	if err != nil {
@@ -348,6 +382,28 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 	j.m.Notes = withNote(j.m.Notes, vproject.NoteLimitedLoudness, tl.limited)
 	p.mu.Unlock()
 	return nil
+}
+
+// sweepOutputTemps removes the crash leftovers of an earlier publish beside
+// stem: the staged temps of its five outputs (".reel.srt.tmp-123") that nobody
+// wrote to for minAge. It looks only at the names this project's outputs would
+// have, in the output directory itself; the files are the user's, so nothing
+// else there is touched.
+func sweepOutputTemps(stem string, minAge time.Duration) {
+	dir, base := filepath.Split(stem)
+	entries, _ := os.ReadDir(dir)
+	for _, ext := range outputExts {
+		prefix := vproject.TempPrefix(base + ext)
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+				continue
+			}
+			if info, err := e.Info(); err != nil || !info.Mode().IsRegular() || time.Since(info.ModTime()) < minAge {
+				continue
+			}
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 // finalizeExport sets on the clone that becomes the .manifest.json export what
@@ -406,7 +462,13 @@ func stageWAV(norm, dest string) (string, error) {
 	if err := os.Chmod(norm, outFileMode); err != nil {
 		return "", err
 	}
-	f, err := os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+vproject.TempMark+"*")
+	// The rename below is durable only if the audio is: ffmpeg wrote norm
+	// without an fsync, and a power cut after the rename could leave a WAV
+	// of the right name and no samples (#154.2).
+	if err := syncPath(norm); err != nil {
+		return "", &vproject.WriteError{Path: dest, Err: err}
+	}
+	f, err := os.CreateTemp(filepath.Dir(dest), vproject.TempPattern(filepath.Base(dest)))
 	if err != nil {
 		return "", err
 	}
@@ -445,7 +507,7 @@ func moveFile(src, dst string) error {
 		return err
 	}
 	defer func() { _ = in.Close() }()
-	out, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+vproject.TempMark+"*")
+	out, err := os.CreateTemp(filepath.Dir(dst), vproject.TempPattern(filepath.Base(dst)))
 	if err != nil {
 		return err
 	}

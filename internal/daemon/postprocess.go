@@ -27,6 +27,7 @@ const (
 	warnFFmpegFailed = "loudness was not normalised: ffmpeg could not process the audio, so the take keeps its original level"
 	warnTooQuiet     = "loudness was not normalised: the take is too quiet to raise to the target without boosting its noise, so it keeps its original level"
 	warnUnmeasurable = "loudness was not normalised: the take is silent or too short to measure, so it keeps its original level"
+	warnCancelled    = "loudness was not normalised: the request was cancelled, so the take keeps its original level"
 	warnFFmpegSlow   = "loudness was not normalised: ffmpeg took too long, so the take keeps its original level"
 )
 
@@ -95,7 +96,11 @@ func wavInfoFile(path string) (int, float64) {
 	defer func() { _ = f.Close() }()
 	head := make([]byte, wavHeadProbe)
 	n, _ := io.ReadFull(f, head)
-	return wavInfo(head[:n])
+	total := int64(n)
+	if st, err := f.Stat(); err == nil {
+		total = st.Size()
+	}
+	return wavInfoSized(head[:n], total)
 }
 
 // normalizeLoudness is loudnorm that cannot lose the take: when ffmpeg is
@@ -113,6 +118,10 @@ func (d *Daemon) normalizeLoudness(ctx context.Context, wav []byte, lufs float64
 			d.log.Warn("loudness needed the peak limiter", slog.Float64("target_lufs", lufs), slog.String("note", note))
 		}
 		return out, note
+	}
+	if errors.Is(ctx.Err(), context.Canceled) { // the caller left: not an ffmpeg failure
+		d.log.Debug("loudness normalisation cancelled; keeping the take as rendered", slog.Float64("target_lufs", lufs))
+		return wav, warnCancelled
 	}
 	d.log.Warn("loudness normalisation failed; keeping the take as rendered",
 		slog.Float64("target_lufs", lufs), slog.Any("error", err))

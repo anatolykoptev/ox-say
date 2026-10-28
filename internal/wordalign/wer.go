@@ -39,9 +39,15 @@ func isDigit(r rune) bool { return unicode.IsDigit(r) }
 
 // joinDigitGroups turns "1 000 000" (space, NBSP or narrow NBSP between groups
 // of exactly three digits after a first group of at most three) into 1000000.
+// A plain space joins only a run of two or more later groups, or the single
+// group "000": "в 3 100 домах" is a count and a number, not 3100. NBSP and
+// narrow NBSP always join (they are what typesetters write inside a number).
 func joinDigitGroups(s string) string {
 	return digitGroups.ReplaceAllStringFunc(s, func(run string) string {
 		groups := strings.FieldsFunc(run, func(r rune) bool { return !unicode.IsDigit(r) })
+		if len(groups) == 2 && groups[1] != "000" && !strings.ContainsAny(run, "\u00a0\u202f") {
+			return run
+		}
 		var out []string
 		acc, ok := groups[0], len(groups[0]) <= maxFirstGroup
 		for _, g := range groups[1:] {

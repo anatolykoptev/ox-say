@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -118,7 +119,7 @@ func (c *produceCmd) chunkRequestBody() (map[string]any, bool) {
 		}
 		if hasPause {
 			sec, err := strconv.ParseFloat(pause, 64)
-			if err != nil {
+			if err != nil || math.IsNaN(sec) || math.IsInf(sec, 0) {
 				outf(c.err, "ox-say: --pause %s: not a number\n", pause)
 				return nil, false
 			}
@@ -126,7 +127,7 @@ func (c *produceCmd) chunkRequestBody() (map[string]any, bool) {
 		}
 		if hasPace {
 			rate, err := strconv.ParseFloat(pace, 64)
-			if err != nil {
+			if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) {
 				outf(c.err, "ox-say: --pace %s: not a number\n", pace)
 				return nil, false
 			}

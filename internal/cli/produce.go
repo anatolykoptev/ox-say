@@ -21,10 +21,11 @@ import (
 
 // Exit codes of the produce commands that wait for a project.
 const (
-	exitDone   = 0
-	exitFailed = 1
-	exitUsage  = 2
-	exitReview = 3 // the file is ready, some chunks need a listen
+	exitDone         = 0
+	exitFailed       = 1
+	exitUsage        = 2
+	exitReview       = 3 // the file is ready, some chunks need a listen
+	exitWaitTimedOut = 4 // --timeout passed while the voiceover was still running
 )
 
 const (
@@ -37,7 +38,7 @@ const (
 	// maxTakes is the daemon's limit on takes per chunk.
 	maxTakes = daemon.MaxTakesPerChunk
 	// pollRetries is how many failed status requests in a row end the wait.
-	pollRetries = 3
+	pollRetries = 30
 	// defaultTermWidth is used when the terminal size cannot be read.
 	defaultTermWidth = 80
 	secondsPerMinute = 60
@@ -61,17 +62,18 @@ const (
 const produceUsage = `usage:
   ox-say produce <script.txt|-> [-v voice] [-i style] [-t title] [-o out.wav]
                  [--preset youtube|reels|voice-under-music] [--seed N] [--takes 1..3]
-                 [--clone-mode auto|reference|ultimate] [--overwrite] [--allow-battery] [--no-wait]
+                 [--clone-mode auto|reference|ultimate] [--overwrite] [--allow-battery] [--no-wait] [--timeout 30m]
   ox-say produce status <id> [--chunk N]
-  ox-say produce resume <id> [--allow-battery] [--no-wait]
+  ox-say produce resume <id> [--allow-battery] [--no-wait] [--timeout 30m]
   ox-say produce cancel <id>
-  ox-say produce chunk <id> <n> (--regen N | --pick KEY | --text "…" | --style "…" [--pause S] [--pace R] | --pause S [--pace R] | --pace R) [--no-wait]
+  ox-say produce chunk <id> <n> (--regen N | --pick KEY | --text "…" | --style "…" [--pause S] [--pace R] | --pause S [--pace R] | --pace R) [--no-wait] [--timeout 30m]
   ox-say produce rm [--delete-outputs] <id>
-  ox-say produce ls`
+  ox-say produce ls
+exit codes: 0 done, 1 failed, 2 usage, 3 done but chunks need a listen, 4 --timeout passed while it was still running`
 
 // produceFlags are the flags that carry a value; the rest are switches.
 var (
-	produceValueFlags  = []string{"v", "i", "t", "o", "preset", "seed", "takes", "clone-mode", "chunk", "regen", "pick", "text", "style", "pause", "pace"}
+	produceValueFlags  = []string{"v", "i", "t", "o", "preset", "seed", "takes", "clone-mode", "chunk", "regen", "pick", "text", "style", "pause", "pace", "timeout"}
 	produceSwitchNames = []string{"overwrite", "allow-battery", "no-wait", "delete-outputs"}
 )
 
@@ -207,16 +209,16 @@ type verbSpec struct {
 }
 
 // createSpec is `ox-say produce <script>`: any word that is not a verb names a script.
-var createSpec = verbSpec{args: 1, values: []string{"v", "i", "t", "o", "preset", "seed", "takes", "clone-mode"},
+var createSpec = verbSpec{args: 1, values: []string{"v", "i", "t", "o", "preset", "seed", "takes", "clone-mode", "timeout"},
 	switches: []string{"overwrite", "allow-battery", "no-wait"}}
 
 var produceVerbs = map[string]verbSpec{
 	"ls":     {},
 	"status": {args: 1, values: []string{"chunk"}},
-	"resume": {args: 1, switches: []string{"allow-battery", "no-wait"}},
+	"resume": {args: 1, values: []string{"timeout"}, switches: []string{"allow-battery", "no-wait"}},
 	"cancel": {args: 1},
 	"rm":     {args: 1, switches: []string{"delete-outputs"}},
-	"chunk":  {args: 2, values: []string{"regen", "pick", "text", "style", "pause", "pace"}, switches: []string{"no-wait"}},
+	"chunk":  {args: 2, values: []string{"regen", "pick", "text", "style", "pause", "pace", "timeout"}, switches: []string{"no-wait"}},
 }
 
 // flagText is a flag as the person typed it.
@@ -266,6 +268,10 @@ func checkUsage(verb string, spec verbSpec, vals map[string]string, sw map[strin
 // cmdProduce dispatches `ox-say produce …`; poll is the wait between status
 // requests (the Run case passes a second).
 func cmdProduce(args []string, stdout, stderr io.Writer, poll time.Duration) int {
+	if wantsHelp(args) {
+		outln(stdout, produceUsage)
+		return exitDone
+	}
 	vals, pos, err := pullFlags(args, produceValueFlags...)
 	if err != nil {
 		outln(stderr, "ox-say:", err)
@@ -287,6 +293,14 @@ func cmdProduce(args []string, stdout, stderr io.Writer, poll time.Duration) int
 		return exitUsage
 	}
 	c := &produceCmd{vals: vals, sw: switches, out: stdout, err: stderr, poll: poll}
+	if raw, given := vals["timeout"]; given {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			outf(stderr, "ox-say: --timeout %s: want a duration such as 90s or 30m\n", raw)
+			return exitUsage
+		}
+		c.timeout = d
+	}
 	switch verb {
 	case "ls":
 		return c.list()
@@ -318,12 +332,24 @@ func pullSwitches(pos []string, into map[string]bool) []string {
 	return rest
 }
 
+// wantsHelp reports a -h or --help among the arguments (a script path never
+// looks like one).
+func wantsHelp(args []string) bool {
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
 type produceCmd struct {
-	vals map[string]string
-	sw   map[string]bool
-	out  io.Writer
-	err  io.Writer
-	poll time.Duration
+	timeout time.Duration // 0: wait as long as it runs
+	vals    map[string]string
+	sw      map[string]bool
+	out     io.Writer
+	err     io.Writer
+	poll    time.Duration
 }
 
 // readScript reads the script from a file or, for "-", from stdin.
@@ -421,6 +447,10 @@ func (c *produceCmd) follow(data []byte) (int, *projectSummary) {
 		return exitDone, nil
 	}
 	final, err := c.wait(s.ID)
+	if errors.Is(err, errWaitTimedOut) {
+		outf(c.err, "ox-say: still running after %s; the voiceover keeps going. Check: ox-say produce status %s\n", c.timeout, s.ID)
+		return exitWaitTimedOut, nil
+	}
 	if err != nil {
 		var ae *apiError
 		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
@@ -443,11 +473,20 @@ func (c *produceCmd) wait(id string) (projectSummary, error) {
 	tty := isTerminal(c.err)
 	width := termWidth(c.err)
 	last, failures := "", 0
+	var deadline time.Time
+	if c.timeout > 0 {
+		deadline = time.Now().Add(c.timeout)
+	}
 	for {
 		time.Sleep(c.poll)
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return projectSummary{}, errWaitTimedOut
+		}
 		data, err := produceCall(http.MethodGet, producePath+"/"+url.PathEscape(id), nil)
 		var ae *apiError
-		if err != nil && (errors.As(err, &ae) || failures+1 >= pollRetries) {
+		// A 4xx answer is final (404: the project is gone). A 5xx (a daemon
+		// that is shutting down answers 503) and a transport error are waited out.
+		if err != nil && (errors.As(err, &ae) && ae.status < http.StatusInternalServerError || failures+1 >= pollRetries) {
 			return projectSummary{}, err
 		}
 		if err != nil {
@@ -478,6 +517,9 @@ func (c *produceCmd) wait(id string) (projectSummary, error) {
 		last = line
 	}
 }
+
+// errWaitTimedOut ends a wait that --timeout cut short.
+var errWaitTimedOut = errors.New("the wait timed out")
 
 // clearLine erases from the cursor to the end of the terminal line.
 const clearLine = "\x1b[K"

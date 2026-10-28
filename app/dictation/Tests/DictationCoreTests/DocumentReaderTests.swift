@@ -211,6 +211,15 @@ final class DocumentReaderTests: XCTestCase {
         }
     }
 
+    // Mutation: DocumentReader.swift, `utf16MinNuls` -> 1 -> RED (one stray NUL
+    // in 20 bytes of ASCII is read as UTF-16 and comes out as garbage).
+    func testAShortAsciiTextWithAStrayNulIsNotGuessedAsUtf16() throws {
+        let text = "short text\u{0} here"
+        XCTAssertGreaterThan(1.0 / Double(text.utf8.count), DocumentReader.utf16NulShare, "setup: the NUL is more than the NUL share")
+        let decoded = try DocumentReader.decode(try XCTUnwrap(text.data(using: .utf8)))
+        XCTAssertEqual(decoded, text)
+    }
+
     func testUtf16WithAByteOrderMarkIsRead() throws {
         let cyrillic = try DocumentReader.decode(try XCTUnwrap(russian.data(using: .utf16)))
         let latin = try DocumentReader.decode(try XCTUnwrap("Hello".data(using: .utf16)))

@@ -35,11 +35,31 @@ const (
 // the rate go in, the stretched clip comes out.
 type paceStretch func(pcm.Clip, float64) (pcm.Clip, error)
 
-// paceOK is the cached answer to "can this machine time-stretch": one
-// `ffmpeg -filters` listing scanned for atempo. A pace op on a host whose
-// ffmpeg is missing or lacks the filter is refused at op time; a project
-// with no paced chunk never pays the probe.
-var paceOK = sync.OnceValue(func() error {
+// paceOK answers "can this machine time-stretch": one `ffmpeg -filters`
+// listing scanned for atempo. A pace op on a host whose ffmpeg is missing or
+// lacks the filter is refused at op time; a project with no paced chunk never
+// pays the probe. Only a success is remembered: a failure (ffmpeg installed
+// while the daemon runs, a probe that failed once) is probed again by the next
+// pace op, so no restart is needed.
+var paceOK = func() error {
+	paceMu.Lock()
+	defer paceMu.Unlock()
+	if paceProven {
+		return nil
+	}
+	err := paceProbe()
+	paceProven = err == nil
+	return err
+}
+
+var (
+	paceMu     sync.Mutex
+	paceProven bool
+	// paceProbe runs the capability check; a var so a test can stand in for ffmpeg.
+	paceProbe = probeAtempo
+)
+
+func probeAtempo() error {
 	ctx, cancel := context.WithTimeout(context.Background(), paceProbeTimeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-filters").Output()
@@ -52,7 +72,7 @@ var paceOK = sync.OnceValue(func() error {
 		}
 	}
 	return errors.New("a pace change needs ffmpeg's atempo filter, which this ffmpeg build does not have")
-})
+}
 
 // atempoClip returns clip (already trimmed, at clip.Rate) stretched by
 // rate: one ffmpeg atempo, the WAV in on stdin, the result read back from

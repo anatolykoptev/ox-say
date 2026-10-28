@@ -191,6 +191,9 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 		return nil, err
 	}
 	d.lockFile = lockF
+	if n := sweepLoudnormTemps(cfg.CacheDir, loudnormTempMinAge); n > 0 {
+		logger.Info("loudness: removed leftover scratch files", slog.Int("files", n))
+	}
 	if err := store.SweepTemp(); err != nil {
 		logger.Warn("voices: cannot remove normalization leftovers", slog.Any("error", err))
 	}
@@ -578,7 +581,7 @@ func langHint(body map[string]any) string {
 // interrupt, counted per lane where the daemon itself can see it —
 // including load driven by CLI and MCP clients, which the app cannot.
 type busySummary struct {
-	// Produce is the running voiceover job (0 or 1).
+	// Produce is the running voiceover job, or a project delete in flight (0 or 1).
 	Produce int `json:"produce"`
 	// STTSessions is the count of open streaming-dictation sessions on the
 	// resident ox-stt server.
