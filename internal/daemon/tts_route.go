@@ -275,8 +275,8 @@ func (d *Daemon) synthesize(ctx context.Context, body map[string]any, model stri
 	return d.synthesizeQwenSplit(ctx, body)
 }
 
-// render = prepareSpeech + synthesize on a copy of params: the speak tool,
-// SynthesizeWAV and (later) voice design and the long-form producer.
+// render = prepareSpeech + synthesize on a copy of params: the speak tool
+// and (later) voice design and the long-form producer.
 func (d *Daemon) render(ctx context.Context, params map[string]any) (*synthOut, error) {
 	body := maps(params)
 	model, warning, err := d.prepareSpeech(body)

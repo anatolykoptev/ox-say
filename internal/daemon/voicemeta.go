@@ -47,21 +47,27 @@ func validateMeta(m voices.Meta) error {
 	return nil
 }
 
-// voxRefLimit is voxMaxRefSeconds as a variable: the store's own cap sits below
-// the window, so no real clip can exceed it and the add-path checks could never
-// fire in a test. Tests lower it; nothing else writes it.
-var voxRefLimit = float64(voxMaxRefSeconds)
+// voxRefLimit is the longest reference clip the encoder takes, in seconds. A
+// test lowers d.voxRefMax because the store's own cap sits below the window, so
+// no real clip could trip the add-path checks.
+func (d *Daemon) voxRefLimit() float64 {
+	if d.voxRefMax > 0 {
+		return d.voxRefMax
+	}
+	return float64(voxMaxRefSeconds)
+}
 
 // checkVoxReference refuses a reference clip the VoxCPM2 encoder cannot take
 // (voxMaxRefSeconds): past its window the engine answers HTTP 500. The words
 // are for the person who added the voice.
-func checkVoxReference(seconds float64) error {
-	if seconds <= voxRefLimit {
+func (d *Daemon) checkVoxReference(seconds float64) error {
+	limit := d.voxRefLimit()
+	if seconds <= limit {
 		return nil
 	}
 	return &requestError{fmt.Sprintf(
 		"this voice's recording is %.0f seconds long, and the studio voice engine can learn from at most %d seconds. Add the voice again from a shorter clip",
-		seconds, int(voxRefLimit))}
+		seconds, int(limit))}
 }
 
 // UpdateVoice changes a voice's preferred engine and/or default style; a nil
@@ -107,5 +113,5 @@ func (d *Daemon) checkStoredVoxReference(name string) error {
 	if err != nil {
 		return d.voiceReadError(name, err, false)
 	}
-	return checkVoxReference(secs)
+	return d.checkVoxReference(secs)
 }

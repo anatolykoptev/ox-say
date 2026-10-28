@@ -461,7 +461,7 @@ func TestSpeakHappyPath(t *testing.T) {
 // explicit name wins; "default" asks for the engine's random voice and is
 // stripped before the request reaches it. Asserted on the stamp the fake
 // child writes per speech request — the wire body, not the intent.
-// Mutation: drop the applyVoiceDefault call in SynthesizeWAV or
+// Mutation: drop the applyVoiceDefault call in Speak or
 // handleSpeech -> RED (the stamp shows no injected voice).
 func TestSpeakVoiceDefault(t *testing.T) {
 	dir := t.TempDir()

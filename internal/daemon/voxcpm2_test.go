@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -561,9 +563,7 @@ func TestAddVoiceMetaChecksInheritedEngine(t *testing.T) {
 	d, dir, _ := voxFixture(t, nil)
 	placeVoxVoice(t, d, "nar", config.TTSModelVoxCPM2, "", "", 2)
 	placeVoxVoice(t, d, "plain", "", "", "", 2)
-	old := voxRefLimit
-	voxRefLimit = 1
-	t.Cleanup(func() { voxRefLimit = old })
+	d.voxRefMax = 1
 	clip := testutil.WriteSilentWAV(t, dir, "c.wav", 3)
 	if _, _, err := d.AddVoice(context.Background(), "nar", clip, ""); err == nil || !strings.Contains(err.Error(), "shorter clip") {
 		t.Fatalf("re-adding a voxcpm2 voice with a too-long clip = %v, want refusal", err)
@@ -656,5 +656,40 @@ func TestVoxCPM2SupervisorStartupTimeoutIsPinned(t *testing.T) {
 	}
 	if built.StartupTimeout != 30*time.Second {
 		t.Fatalf("StartupTimeout = %s, want 30s", built.StartupTimeout)
+	}
+}
+
+// #139.3: the server config is replaced by rename, so a reader that has the old
+// file open (or a crash mid-write) never sees a truncated one, and no temp file
+// is left behind.
+// Mutation: voxcpm2.go voxcpm2ServerArgs, write the config in place with
+// os.WriteFile again -> the old handle reads the new bytes / a truncation -> RED.
+func TestVoxCPM2ServerConfigReplacedByRename(t *testing.T) {
+	cfg := &config.Config{Home: t.TempDir(), VoxCPM2Model: "m.gguf"}
+	if err := os.MkdirAll(cfg.RunDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := voxcpm2ServerArgs(cfg, 41001, testLogger(t))[1]
+	old, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	want, _ := os.ReadFile(path)
+	cfg.VoxCPM2Model = "second.gguf"
+	voxcpm2ServerArgs(cfg, 41002, testLogger(t))
+	got, _ := io.ReadAll(old)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("the previous file changed under its reader:\n%s", got)
+	}
+	now, _ := os.ReadFile(path)
+	if !bytes.Contains(now, []byte("second.gguf")) {
+		t.Fatalf("new config not in place:\n%s", now)
+	}
+	ents, _ := os.ReadDir(cfg.RunDir())
+	for _, e := range ents {
+		if e.Name() != voxcpm2ServerFile {
+			t.Errorf("stray file %s left in the run dir", e.Name())
+		}
 	}
 }

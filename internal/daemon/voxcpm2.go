@@ -93,12 +93,40 @@ func voxcpm2ServerArgs(cfg *config.Config, port int, log *slog.Logger) []string 
 	path := filepath.Join(cfg.RunDir(), voxcpm2ServerFile)
 	raw, err := json.MarshalIndent(voxcpm2ServerConfig(cfg, port), "", "  ")
 	if err == nil {
-		err = os.WriteFile(path, raw, 0o644)
+		err = writeFileAtomic(path, raw, 0o644)
 	}
 	if err != nil {
 		log.Error("voxcpm2: cannot write server config", slog.String("path", path), slog.Any("error", err))
 	}
 	return []string{"--config", path, "--no-ui"}
+}
+
+// writeFileAtomic replaces path with data through a temp file in the same
+// directory and a rename, so a reader (or a crash) sees the old file or the new
+// one, never a truncated one. A failure leaves no temp file.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Chmod(perm)
+	}
+	if err == nil {
+		err = f.Sync() // the data is on disk before the rename makes it the config
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }
 
 // newVoxSupervisor builds the voxcpm2 child's supervisor (audiocpp_server).
@@ -362,7 +390,7 @@ func (d *Daemon) resolveVoxVoice(body map[string]any) (v *voices.Voice, wavPath 
 	if err != nil {
 		return nil, "", d.voiceReadError(name, err, false)
 	}
-	if err := checkVoxReference(secs); err != nil {
+	if err := d.checkVoxReference(secs); err != nil {
 		return nil, "", err
 	}
 	return got, wavPath, nil
@@ -390,6 +418,14 @@ func (d *Daemon) voiceReadError(name string, err error, saving bool) error {
 	var typ *json.UnmarshalTypeError
 	if errors.Is(err, fs.ErrPermission) {
 		return &requestError{fmt.Sprintf("voice %q: its files cannot be read; check the file permissions of the voice (details are in the ox-say log)", name)}
+	}
+	// A file that is gone is either a voice removed while this read was under
+	// way (its metadata is gone too) or a half-removed one (RemoveVoice crashed
+	// between the two deletions): only the metadata tells them apart.
+	if errors.Is(err, fs.ErrNotExist) {
+		if _, gerr := d.Store.Get(name); errors.Is(gerr, voices.ErrNotFound) {
+			return &requestError{fmt.Sprintf("voice %q: %v", name, voices.ErrNotFound)}
+		}
 	}
 	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, voices.ErrBadWAV) || errors.As(err, &syn) || errors.As(err, &typ) {
 		fix := "add the voice again"

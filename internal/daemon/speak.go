@@ -94,19 +94,6 @@ func validateOutPath(path string, exts []string, overwrite bool) error {
 	return nil
 }
 
-// SynthesizeWAV renders params via the engine that serves them (see
-// prepareSpeech) and returns wav bytes. The in-flight guard is held for the
-// whole upstream request.
-func (d *Daemon) SynthesizeWAV(ctx context.Context, params map[string]any) ([]byte, error) {
-	params = maps(params)
-	d.normalizeSpeakText(params)
-	out, err := d.render(ctx, params)
-	if err != nil {
-		return nil, err
-	}
-	return out.WAV, nil
-}
-
 // synthesizeQwen renders a prepared body on the qwen3-tts child.
 func (d *Daemon) synthesizeQwen(ctx context.Context, body map[string]any) ([]byte, error) {
 	return d.speechOn(ctx, d.Sup, body)

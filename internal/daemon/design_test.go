@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -270,9 +272,7 @@ func TestSaveDesignedVoiceRefusesOverlongTake(t *testing.T) {
 	d, _, _ := designFixture(t)
 	t.Setenv("OXSAY_FAKE_VOX_SECS", "3")
 	res := designThree(t, d)
-	old := voxRefLimit
-	voxRefLimit = 1
-	t.Cleanup(func() { voxRefLimit = old })
+	d.voxRefMax = 1
 	_, err := saveTake(t, d, "toolong", res.Takes[0].Path)
 	if err == nil || !strings.Contains(err.Error(), "shorter clip") {
 		t.Fatalf("err %v, want the plain-words refusal", err)
@@ -690,6 +690,25 @@ func TestScrubRootBoundariesAndRemainder(t *testing.T) {
 		{"/Users/x.bak/a", "/Users/x", "/Users/x.bak/a"},
 		{"a/Users/x/b", "/Users/x", "a/Users/x/b"},
 		{"/Users/xé/a", "/Users/x", "/Users/xé/a"},
+		// #323.1: a delimiter inside a file name (the next character continues
+		// the name) is part of the name; one that ends a word is a boundary.
+		{"open /Users/x/a]b.wav now", "/Users/x", "open [path] now"},
+		{"open /Users/x/a(1).wav now", "/Users/x", "open [path] now"},
+		{"open /Users/x/it's.wav now", "/Users/x", "open [path] now"},
+		{`open /Users/x/a"b.wav now`, "/Users/x", "open [path] now"},
+		{"open /Users/x/a:b.wav now", "/Users/x", "open [path] now"},
+		{"open /Users/x/a`b.wav now", "/Users/x", "open [path] now"},
+		{"stat '/Users/x/a.wav': denied", "/Users/x", "stat '[path]': denied"},
+		{"open /Users/x/a.wav:12 now", "/Users/x", "open [path] now"},
+		{"open /Users/x/take[1]-2.wav now", "/Users/x", "open [path] now"},
+		{"open /Users/x/a(1)-b.wav now", "/Users/x", "open [path] now"},
+		{"open /Users/x/a(1)#b&c.wav now", "/Users/x", "open [path] now"},
+		{"failed: /Users/x/a.wav (retrying)", "/Users/x", "failed: [path] (retrying)"},
+		{"open /Users/x/a.wav: permission denied", "/Users/x", "open [path]: permission denied"},
+		{`{"path":"/Users/x/a.wav","n":1}`, "/Users/x", `{"path":"[path]","n":1}`},
+		{`{"path":"/Users/x/a.wav"}`, "/Users/x", `{"path":"[path]"}`},
+		{"see [a](/Users/x/a.wav) now", "/Users/x", "see [a]([path]) now"},
+		{"see `/Users/x/a.wav`, ok", "/Users/x", "see `[path]`, ok"},
 	} {
 		if got := scrubRoot(tc.in, tc.root); got != tc.want {
 			t.Errorf("scrubRoot(%q, %q) = %q, want %q", tc.in, tc.root, got, tc.want)
@@ -727,5 +746,74 @@ func TestSaveOverUnreadableVoiceMessages(t *testing.T) {
 	if err == nil || synthStatus(err) != http.StatusBadRequest || !strings.Contains(err.Error(), "permissions") ||
 		strings.Contains(err.Error(), "try again") || strings.Contains(err.Error(), "damaged") {
 		t.Fatalf("unreadable file: %v (status %d), want a 400 about permissions", err, synthStatus(err))
+	}
+}
+
+// #160.9: the design text cap is a spoken-duration cap, so a script that is
+// spoken slowly per character (CJK) gets fewer characters than Russian does.
+// Mutation: design.go validate, count every rune as one Latin/Cyrillic rune
+// (cost := units per rune only) -> the Chinese row is accepted -> RED.
+func TestDesignTextCapFollowsSpokenDuration(t *testing.T) {
+	in := func(text string) *DesignInput { return &DesignInput{Description: "d", Text: text, Takes: 1} }
+	for _, tc := range []struct {
+		name string
+		text string
+		ok   bool
+	}{
+		{"cyrillic at the cap", strings.Repeat("я", maxDesignText), true},
+		{"cyrillic over", strings.Repeat("я", maxDesignText+1), false},
+		{"chinese 80", strings.Repeat("好", 80), true},
+		{"chinese 81", strings.Repeat("好", 81), false},
+		{"chinese 150", strings.Repeat("好", 150), false},
+		{"kana 120", strings.Repeat("あ", 120), true},
+		{"kana 121", strings.Repeat("あ", 121), false},
+		{"hangul 121", strings.Repeat("가", 121), false},
+		{"mixed", strings.Repeat("好", 60) + strings.Repeat("a", 60), false},
+	} {
+		err := in(tc.text).validate(1 << 20)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: validate = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+	}
+	err := in(strings.Repeat("好", 150)).validate(1 << 20)
+	if err == nil || !strings.Contains(err.Error(), "longer than 80 characters") {
+		t.Errorf("the refusal for Chinese must state its own cap, got %v", err)
+	}
+}
+
+// #323.2: a voice removed while a speak was reading it is "no such voice", not
+// "damaged": the re-read tells removed from half-removed.
+// Mutation: voxcpm2.go voiceReadError, drop the ErrNotExist re-Get -> the row
+// for a fully removed voice says "damaged" -> RED.
+func TestVoiceReadErrorTellsRemovedFromHalfRemoved(t *testing.T) {
+	d, _, _ := voxFixture(t, nil)
+	placeVoxVoice(t, d, "half", config.TTSModelVoxCPM2, "", "", 2)
+	if err := os.Remove(d.Store.WAVPath("half")); err != nil {
+		t.Fatal(err)
+	}
+	gone := fmt.Errorf("open wav: %w", fs.ErrNotExist)
+	if err := d.voiceReadError("half", gone, false); err == nil || !strings.Contains(err.Error(), "damaged") {
+		t.Errorf("half-removed (json present): %v, want damaged", err)
+	}
+	if err := d.voiceReadError("never", gone, false); err == nil || strings.Contains(err.Error(), "damaged") || synthStatus(err) != http.StatusBadRequest {
+		t.Errorf("removed (json gone): %v (status %d), want the no-such-voice 400", err, synthStatus(err))
+	}
+}
+
+// #323.1 / #160.7: a path outside every known root is cut by the same rule as
+// the tail under a root, so a quote inside its file name does not leak.
+// Mutation: design.go scrubStrayPath, end the path at the first quote again
+// (regex `[^\s"'():]+`) -> the first row leaks "s.wav" -> RED.
+func TestScrubStrayPathKeepsGluedDelimiterInName(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"cannot open '/stray/it's.wav'", "cannot open '[path]'"},
+		{"cannot open /stray/take[1]-2.wav now", "cannot open [path] now"},
+		{"stat /stray/a.wav: denied", "stat [path]: denied"},
+		{"POST /v1/audio/speech failed", "POST /v1/audio/speech failed"},
+		{"a / b", "a / b"},
+	} {
+		if got := scrubStrayPath(tc.in); got != tc.want {
+			t.Errorf("scrubStrayPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
