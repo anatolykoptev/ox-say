@@ -37,6 +37,10 @@ const (
 	// cutTailSeconds is the audio kept after the last kept word's end so the
 	// word does not end on a hard edge.
 	cutTailSeconds = 0.15
+	// cutEndMarginSeconds is the audio kept after the last word of a transcript that has no next word: STT word times
+	// are quantised to ~80 ms, so a word's recorded end can fall before its last phoneme, and a cut exactly there
+	// clips it. It is one quantum, and the cut never goes past the limit (the end of the clip).
+	cutEndMarginSeconds = 0.08
 	// sentencePauseSeconds is the pause that counts as a sentence end even
 	// without punctuation.
 	sentencePauseSeconds = 0.5
@@ -141,10 +145,10 @@ func PlanCut(words []Word, limit float64) (Cut, bool) {
 	if pick < 0 {
 		pick = last
 	}
-	// No next word means the transcript ends here, but the audio may run on:
-	// at the cap, the onset of a word the STT did not complete. Keep no tail
-	// there rather than carry that onset into the reference.
-	tail := 0.0
+	// No next word means the transcript ends here, but the audio may run on: at the cap, the onset of a word the STT
+	// did not complete. Keep only the margin there (one STT quantum, see cutEndMarginSeconds), not the full tail:
+	// enough not to clip the last phoneme, too little to carry that onset into the reference.
+	tail := cutEndMarginSeconds
 	if pick+1 < len(words) {
 		tail = max(0, min(cutTailSeconds, (words[pick+1].S-words[pick].E)/2))
 	}
