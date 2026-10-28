@@ -102,6 +102,25 @@ func checkOutputs(stem string, overwrite bool, owned map[string]bool) error {
 	return nil
 }
 
+// checkProjectOutputs is checkOutputs for the assembly of an existing project.
+// When the project published before and a file at its output name is no longer
+// provably its own (edited, re-exported, moved back), resume and the chunk ops
+// have no overwrite flag to offer, so the answer says what the person can do:
+// move the files away (#156.10).
+func checkProjectOutputs(m *vproject.Manifest, stem string) error {
+	owned := ownedOutputs(m)
+	if m.Outputs.WAV != "" && !m.Settings.Overwrite {
+		for _, ext := range outputExts {
+			pth := stem + ext
+			if st, err := os.Lstat(pth); err == nil && st.Mode()&os.ModeSymlink == 0 && !owned[pth] {
+				return &requestError{fmt.Sprintf("%s was published by this voiceover but has since been changed or replaced; move or rename the files named %s.* beside it, then resume",
+					filepath.Base(pth), filepath.Base(stem))}
+			}
+		}
+	}
+	return checkOutputs(stem, m.Settings.Overwrite, owned)
+}
+
 // timeline is what streaming the chunks leaves besides the audio.
 type timeline struct {
 	segs  []stt.Segment
@@ -132,7 +151,7 @@ func (p *producer) assemble(j *job) error {
 	if err != nil {
 		return err
 	}
-	if err := checkOutputs(stem, m.Settings.Overwrite, ownedOutputs(m)); err != nil {
+	if err := checkProjectOutputs(m, stem); err != nil {
 		return err
 	}
 	work := filepath.Join(j.dir, vproject.WorkDir)
@@ -163,7 +182,7 @@ func (p *producer) assemble(j *job) error {
 		p.log.Warn("produce: loudness needed the peak limiter", slog.Float64("target_lufs", m.Settings.LUFS))
 	}
 	m.Notes = withNote(m.Notes, vproject.NoteLimitedLoudness, tl.limited)
-	if err := checkOutputs(stem, m.Settings.Overwrite, ownedOutputs(m)); err != nil { // write-time re-check
+	if err := checkProjectOutputs(m, stem); err != nil { // write-time re-check
 		return err
 	}
 	return diskErr(p.publish(j, stem, norm, tl, m))

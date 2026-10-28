@@ -93,7 +93,7 @@ func (d *Daemon) producePorts() producePorts {
 		mu.Unlock()
 		if pid := d.VoxSup.Status().PID; pid > 0 {
 			if err := setBackground(pid, on); err != nil {
-				d.log.Debug("produce: cannot set the engine's priority", "error", err)
+				d.log.Warn("produce: cannot set the engine's priority", "error", err)
 			}
 		}
 	}

@@ -240,13 +240,25 @@ func (p *producer) makeProject(m *vproject.Manifest, script string) (string, err
 	if err := os.Mkdir(dir, vproject.DirMode); err != nil {
 		return "", err
 	}
-	if err := os.Mkdir(filepath.Join(dir, vproject.TakesDir), vproject.DirMode); err != nil {
+	// A directory without a manifest is invisible to list and cannot be
+	// deleted through the API: any failure from here on removes it again.
+	fail := func(err error) (string, error) {
+		p.discard(dir)
 		return "", err
+	}
+	if err := os.Mkdir(filepath.Join(dir, vproject.TakesDir), vproject.DirMode); err != nil {
+		return fail(err)
 	}
 	if err := vproject.WriteAtomic(filepath.Join(dir, vproject.ScriptFile), []byte(script), vproject.FileMode); err != nil {
-		return "", err
+		return fail(err)
 	}
-	return dir, m.Save(dir)
+	// Until launch marks it running, a project that has not run is resumable:
+	// "interrupted", not an empty status that nothing maps.
+	m.Status = vproject.StatusInterrupted
+	if err := m.Save(dir); err != nil {
+		return fail(err)
+	}
+	return dir, nil
 }
 
 // refresh re-reads the voice and engine, recomputes effective styles, the
@@ -716,18 +728,35 @@ func (p *producer) list() ([]vproject.Summary, error) {
 	return out, nil
 }
 
+// removeAll is os.RemoveAll; a var so a test can hold a delete open.
+var removeAll = os.RemoveAll
+
 // remove deletes a project that is not running; its published outputs
-// stay unless deleteOutputs. The whole operation holds the producer lock, so
-// no launch can start on the project being removed.
+// stay unless deleteOutputs. The project is marked as being removed under the
+// lock, which makes launch answer busy, and the load and the delete run
+// outside it: a large delete must not block status, cancel or shutdown.
 func (p *producer) remove(id string, deleteOutputs bool) error {
 	if !vproject.ValidID(id) {
 		return errNoProject
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.cur != nil {
-		return &busyError{p.cur.m.ID}
+		busy := p.cur.m.ID
+		p.mu.Unlock()
+		return &busyError{busy}
 	}
+	if p.removing != "" {
+		busy := p.removing
+		p.mu.Unlock()
+		return &busyError{busy}
+	}
+	p.removing = id
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.removing = ""
+		p.mu.Unlock()
+	}()
 	j, err := p.loadProject(id)
 	if err != nil {
 		return err
@@ -737,7 +766,7 @@ func (p *producer) remove(id string, deleteOutputs bool) error {
 			return err
 		}
 	}
-	return os.RemoveAll(j.dir)
+	return removeAll(j.dir)
 }
 
 // ownedPaths is the one proof that the files at a project's output stem are
@@ -780,7 +809,10 @@ func ownedPaths(m *vproject.Manifest) ([]string, error) {
 		return nil, errNotOurs
 	}
 	if want := o.WAVSHA256; want != "" {
-		if got, err := fileSHA(stem + ".wav"); err != nil || got != want {
+		// A WAV that is gone (deleted by hand) leaves nothing of ours to
+		// protect: the siblings are vouched for by the export, and must not
+		// block the next assembly (#156.11).
+		if got, err := fileSHA(stem + ".wav"); err != nil && !errors.Is(err, os.ErrNotExist) || err == nil && got != want {
 			return nil, errNotOurs
 		}
 	}

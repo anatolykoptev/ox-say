@@ -121,10 +121,13 @@ type producer struct {
 	log   *slog.Logger
 	mu    sync.Mutex
 	cur   *job
-	ctx   context.Context // shutdown context: renders run under it
-	stop  context.CancelFunc
-	wg    sync.WaitGroup
-	once  sync.Once
+	// removing is the id of the project remove is deleting: the lock is not
+	// held across the delete, so launch and remove treat it as busy.
+	removing string
+	ctx      context.Context // shutdown context: renders run under it
+	stop     context.CancelFunc
+	wg       sync.WaitGroup
+	once     sync.Once
 }
 
 func newProducer(ports producePorts) *producer {
@@ -189,8 +192,14 @@ func (p *producer) active() int {
 func (p *producer) launch(j *job) (vproject.Summary, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.ctx == nil || p.ctx.Err() != nil { // shutdown began: wg.Add must not race wg.Wait
+		return vproject.Summary{}, errProducerStopped
+	}
 	if p.cur != nil {
 		return vproject.Summary{}, &busyError{p.cur.m.ID}
+	}
+	if p.removing != "" {
+		return vproject.Summary{}, &busyError{p.removing}
 	}
 	if n := vproject.SweepStaleTemp(j.dir, tempSweepMinAge); n > 0 {
 		p.log.Info("produce: removed crash leftovers", slog.String("job", j.m.ID), slog.Int("files", n))
@@ -201,6 +210,7 @@ func (p *producer) launch(j *job) (vproject.Summary, error) {
 	j.m.Status, j.m.Error = vproject.StatusRunning, ""
 	if err := j.m.Save(j.dir); err != nil {
 		p.cur = nil
+		j.stopWait() // the job never ran: release its context
 		return vproject.Summary{}, err
 	}
 	p.wg.Add(1)
@@ -522,6 +532,9 @@ func pruneTakes(j *job) (int, error) {
 		}
 	}
 	dir := filepath.Join(j.dir, vproject.TakesDir)
+	if st, err := os.Lstat(dir); err != nil || !st.IsDir() { // Lstat: a symlinked takes/ is not ours to prune
+		return 0, fmt.Errorf("produce: takes is not a directory of this project")
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return 0, err

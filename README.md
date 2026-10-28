@@ -317,6 +317,8 @@ battery*) so a long render does not drain the Mac. Plug in, or continue anyway w
 **Dictation always goes first:** while you are dictating or using Speak Selection, the voiceover waits
 (*waiting for dictation*) and carries on afterwards. While paused on battery the command keeps waiting for
 the end; `--no-wait` returns at once with the project id, so you can close the terminal and check later.
+`--timeout 30m` waits at most that long (`s`, `m`, `h`), then prints the project id and exits with code 4 while the
+voiceover keeps going.
 
 **How long it takes.** On a quiet Mac the engine makes speech at about 0.55 times real time (a lab measurement
 on an M5 Pro: 10 s of speech in about 5.5 s). A voiceover takes longer than that for three reasons: every
