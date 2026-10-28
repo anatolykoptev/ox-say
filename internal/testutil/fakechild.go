@@ -110,6 +110,8 @@
 //	OXSAY_FAKE_LLM_OPEN=1       ignore the key: every route answers without
 //	                            auth, as llama-server does with an empty key
 //	                            file (zero keys = no auth, CORS "*")
+//	OXSAY_FAKE_LLM_LOADING_SPAWNS=n  the first n spawns (counted by the stamps
+//	                            in OXSAY_FAKE_DIR) never become healthy
 //	OXSAY_FAKE_LLM_JSON         the message content /v1/chat/completions
 //	                            returns (default "the canned notes")
 package testutil
@@ -259,7 +261,11 @@ func runFakeLLM(args []string) int {
 			keyFile = args[i+1]
 		}
 	}
+	loadingSpawns, _ := strconv.Atoi(os.Getenv("OXSAY_FAKE_LLM_LOADING_SPAWNS"))
+	spawnIndex := 0
 	if dir := os.Getenv("OXSAY_FAKE_DIR"); dir != "" {
+		prior, _ := filepath.Glob(filepath.Join(dir, "llm-spawn-*"))
+		spawnIndex = len(prior)
 		_ = os.WriteFile(filepath.Join(dir, "llm-spawn-"+strconv.Itoa(os.Getpid())), []byte(strings.Join(os.Args, "\n")), 0o644)
 	}
 	if os.Getenv("OXSAY_FAKE_LLM_EXIT") == "1" {
@@ -267,6 +273,9 @@ func runFakeLLM(args []string) int {
 		return 1
 	}
 	delay := envMS("OXSAY_FAKE_START_DELAY_MS")
+	if spawnIndex < loadingSpawns {
+		delay = time.Hour // still loading when the supervisor's health wait ends
+	}
 	started := time.Now()
 	loading := func() bool { return time.Since(started) < delay }
 	reply := os.Getenv("OXSAY_FAKE_LLM_JSON")

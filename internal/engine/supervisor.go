@@ -584,6 +584,14 @@ type verifyFailure struct{ error }
 
 func (e *verifyFailure) Unwrap() error { return e.error }
 
+// IsVerifyRefusal reports whether err is a start whose child ran but was
+// refused by Verify — a deterministic outcome another start will repeat, as
+// opposed to a health timeout or a crashed child.
+func IsVerifyRefusal(err error) bool {
+	var vf *verifyFailure
+	return errors.As(err, &vf)
+}
+
 // spawn starts the child and installs the waiter goroutine.
 func (s *Supervisor) spawn() (*child, error) {
 	logf, err := s.openEngineLog()

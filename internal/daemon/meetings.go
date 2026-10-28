@@ -223,7 +223,12 @@ func notesVerifyAuth(ctx context.Context, baseURL string) error {
 // newLLMSupervisor builds the notes server's supervisor. The child holds
 // 4-7 GB while loaded, so a short idle stop returns it to zero between meetings.
 func newLLMSupervisor(cfg *config.Config, logger *slog.Logger) (*engine.Supervisor, error) {
-	return engine.New(engine.Config{
+	return engine.New(notesEngineConfig(cfg, logger))
+}
+
+// notesEngineConfig is the notes supervisor's configuration; tests tune it.
+func notesEngineConfig(cfg *config.Config, logger *slog.Logger) engine.Config {
+	return engine.Config{
 		Name:           "notes",
 		Bin:            notesBinPath(cfg),
 		Port:           cfg.NotesPort,
@@ -236,7 +241,7 @@ func newLLMSupervisor(cfg *config.Config, logger *slog.Logger) (*engine.Supervis
 		Args:           func(port int) []string { return notesServerArgs(cfg, port) },
 		Prepare:        func() error { return notesPrepare(cfg) },
 		Verify:         notesVerifyAuth,
-	})
+	}
 }
 
 // llmChat is the meeting.Chat over the supervised local server: it takes the
@@ -257,9 +262,12 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 		if ctx.Err() != nil {
 			return "", err
 		}
-		// Not the transcript's fault: Compose must not try the next chunk
-		// (each try reloads the model) and the meeting records this text.
-		return "", &meeting.EngineDownError{Err: err}
+		// Not the transcript's fault, so Compose must not go on chunk after
+		// chunk (each try loads the model) and the meeting records this text.
+		// A verify refusal or a shutdown will repeat: stop at once. A health
+		// timeout or a crashed child often succeeds on a second start (the
+		// model is then in the page cache): Compose may start once more.
+		return "", &meeting.EngineDownError{Err: err, Retryable: !engine.IsVerifyRefusal(err) && !errors.Is(err, engine.ErrShutdown)}
 	}
 	ctx, cancel := context.WithTimeout(ctx, notesCallTimeout)
 	defer cancel()

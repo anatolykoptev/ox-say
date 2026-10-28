@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,7 @@ func notesSettled(t *testing.T, d *Daemon, id string, spawns int, dir string) me
 // attempt.
 // Mutation: internal/meeting/notes.go Compose, skip the EngineDownError
 // return -> RED (the second chunk starts the engine again).
+// A verify refusal repeats, so it is never retried: 1 spawn per run.
 func TestOneNotesRunOfTwoChunksCostsOneStart(t *testing.T) {
 	d, dir := startNotesFake(t)
 	t.Setenv("OXSAY_FAKE_LLM_OPEN", "1")
@@ -96,5 +98,56 @@ func TestEveryNotesRunGetsExactlyOneRealStart(t *testing.T) {
 		if !strings.Contains(m.Error, "running open") {
 			t.Fatalf("run %d: meeting error = %q, want the cause", run, m.Error)
 		}
+	}
+}
+
+// notesCold gives the daemon a notes supervisor whose health wait is short, so
+// a fake that never becomes healthy times out in well under a second.
+func notesCold(t *testing.T, d *Daemon, neverHealthy int) {
+	t.Helper()
+	t.Setenv("OXSAY_FAKE_LLM_LOADING_SPAWNS", strconv.Itoa(neverHealthy))
+	t.Setenv("OXSAY_FAKE_LLM_JSON", `{"summary":"A planning call.","decisions":["Ship Friday"],"action_items":[],"open_questions":[],"numbers":[]}`)
+	cfg := notesEngineConfig(d.Cfg, d.log)
+	cfg.StartupTimeout, cfg.KillGrace = 600*time.Millisecond, 2*time.Second
+	sup, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.LLMSup.Shutdown()
+	d.LLMSup = sup
+	t.Cleanup(sup.Shutdown)
+}
+
+// A cold start that times out on health gets exactly one more start in the
+// same run (the second load is from the page cache), and the notes are written.
+// Mutation: internal/daemon/meetings.go llmChat.Complete, `Retryable:` set to
+// false -> RED (one spawn, no notes).
+func TestAColdStartTimeoutGetsOneMoreStartInTheSameRun(t *testing.T) {
+	d, dir := startNotesFake(t)
+	notesCold(t, d, 1)
+	n, err := meeting.Composer{Chat: llmChat{d: d}}.Compose(context.Background(), "hello there everyone", meeting.Labels{}, "en")
+	if err != nil || n.Summary == "" {
+		t.Fatalf("notes = %+v, err = %v, want notes after the second start", n, err)
+	}
+	if got := len(spawnStamps(t, dir)); got != 2 {
+		t.Fatalf("spawns = %d, want 2", got)
+	}
+}
+
+// A server that times out twice stops the run after exactly 2 starts, with
+// the cause, even for a transcript of several chunks.
+// Mutation: internal/meeting/notes.go Compose, disable the EngineDownError
+// return -> RED (the second chunk starts the engine again: 3 spawns).
+func TestAColdStartThatTimesOutTwiceStopsTheRunAfterTwoStarts(t *testing.T) {
+	d, dir := startNotesFake(t)
+	notesCold(t, d, 9)
+	text := strings.Repeat("word ", meeting.ChunkChars/5*2)
+	_, err := meeting.Composer{Chat: llmChat{d: d}}.Compose(context.Background(), text, meeting.Labels{}, "en")
+	var down *meeting.EngineDownError
+	if !errors.As(err, &down) || !strings.Contains(err.Error(), "healthy") {
+		t.Fatalf("err = %v, want the engine-down error naming the health timeout", err)
+	}
+	if got := len(spawnStamps(t, dir)); got != 2 {
+		t.Fatalf("spawns = %d, want 2", got)
 	}
 }
