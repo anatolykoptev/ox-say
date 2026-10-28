@@ -162,8 +162,10 @@ type Supervisor struct {
 	nextAttempt   time.Time
 	lastActivity  time.Time // last Ready commit or Guard release
 	guards        int
-	recyclers     int  // Recycle calls waiting for guards to drain; Release wakes them
-	gpuHeld       bool // the current generation owns cfg.GPU
+	held          map[*Guard]struct{} // guards in flight, for Recycle's age rule
+	sendSeq       uint64              // last send stamp handed out by Guard.MarkSent
+	recyclers     int                 // Recycle calls waiting for guards to drain; Release wakes them
+	gpuHeld       bool                // the current generation owns cfg.GPU
 
 	// pidMu makes the pidfile's read-check-remove (removePidFile) atomic
 	// against the next spawn's write: a superseded child's onExit runs after
@@ -499,14 +501,35 @@ func (s *Supervisor) Backoff() time.Duration {
 type Guard struct {
 	s    *Supervisor
 	once sync.Once
+	sent uint64 // send stamp; 0: the request has not been written to the child yet (under s.mu)
+}
+
+// MarkSent stamps the guard with the next send number and returns it. Call it
+// immediately before the request is written to the child: the stamps then
+// order requests by when the child received them, which is what RecycleWedged
+// needs (acquisition order is not send order - a request can acquire, then
+// spend a while in EnsureReady). A second call returns the first stamp.
+func (g *Guard) MarkSent() uint64 {
+	g.s.mu.Lock()
+	defer g.s.mu.Unlock()
+	if g.sent == 0 {
+		g.s.sendSeq++
+		g.sent = g.s.sendSeq
+	}
+	return g.sent
 }
 
 // Acquire takes an in-flight guard.
 func (s *Supervisor) Acquire() *Guard {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.guards++
-	s.mu.Unlock()
-	return &Guard{s: s}
+	g := &Guard{s: s}
+	if s.held == nil {
+		s.held = map[*Guard]struct{}{}
+	}
+	s.held[g] = struct{}{}
+	return g
 }
 
 // Release returns the guard; idle accounting restarts now.
@@ -514,6 +537,7 @@ func (g *Guard) Release() {
 	g.once.Do(func() {
 		g.s.mu.Lock()
 		g.s.guards--
+		delete(g.s.held, g)
 		g.s.lastActivity = time.Now()
 		if g.s.recyclers > 0 {
 			g.s.broadcastLocked()
@@ -529,7 +553,23 @@ func (g *Guard) Release() {
 // so a late caller can never stop a healthy successor. It waits, bounded by
 // RecycleWait and ctx, until no Guard is held, so a request in flight is never
 // killed: on timeout it returns ErrRecycleBusy and leaves the child alone.
+// Worst case before it returns: RecycleWait, then 2 x KillGrace (SIGTERM, then
+// SIGKILL) for the kill - 40 s with the defaults - cut short by ctx.
 func (s *Supervisor) Recycle(ctx context.Context, pid int) error {
+	return s.RecycleWedged(ctx, pid, 0)
+}
+
+// RecycleWedged is Recycle for a child that has not answered the request whose
+// Guard was stamped from by MarkSent. The child serves one request at a time,
+// in the order it received them, so a request sent at or after from is queued
+// behind the wedged one, and a Guard that has not sent yet has nothing in
+// flight: neither is being served, so neither holds the recycle (a sent one
+// fails when the child dies, which is what the user should see). A request
+// sent BEFORE from may be the one the child is answering right now, so it
+// still blocks, bounded by RecycleWait. from == 0 makes every Guard block.
+// Every Guard on this supervisor must call MarkSent before it sends, or the age
+// rule ignores it (a Guard that never stamped counts as not in flight).
+func (s *Supervisor) RecycleWedged(ctx context.Context, pid int, from uint64) error {
 	timer := time.NewTimer(s.cfg.RecycleWait)
 	defer timer.Stop()
 	s.mu.Lock()
@@ -547,15 +587,14 @@ func (s *Supervisor) Recycle(ctx context.Context, pid int) error {
 			s.mu.Unlock()
 			return nil
 		}
-		if s.guards == 0 {
+		if !s.blockedLocked(from) {
 			c.userStop = true
 			s.state = StateStopped
 			s.failCount = 0 // a deliberate stop clears crash/start backoff
 			s.broadcastLocked()
 			s.mu.Unlock()
 			s.log.Warn("engine recycled", slog.Int("pid", pid))
-			s.killChild(c)
-			return nil
+			return s.recycleKill(ctx, c)
 		}
 		ch := s.change
 		s.mu.Unlock()
@@ -564,8 +603,37 @@ func (s *Supervisor) Recycle(ctx context.Context, pid int) error {
 		case <-timer.C:
 			return ErrRecycleBusy
 		case <-ctx.Done():
+			// A cancel during the wait leaves the wedged child for the next
+			// render's deadline to recycle.
 			return ctx.Err()
 		}
+	}
+}
+
+// blockedLocked reports whether a held Guard keeps the recycle waiting: any
+// guard when from is 0, otherwise one that sent before from.
+func (s *Supervisor) blockedLocked(from uint64) bool {
+	for g := range s.held {
+		if from == 0 || (g.sent != 0 && g.sent < from) {
+			return true
+		}
+	}
+	return false
+}
+
+// recycleKill kills c in the background and waits for it, but gives up the
+// WAIT when ctx ends: the child still dies, only the caller stops waiting.
+func (s *Supervisor) recycleKill(ctx context.Context, c *child) error {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.killChild(c)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

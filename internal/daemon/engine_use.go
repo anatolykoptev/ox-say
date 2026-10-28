@@ -12,7 +12,14 @@ import (
 // the render gets no answer, to recycle exactly that child (#156.12b). Its
 // presence also marks the request as the producer's own, not interactive
 // (#156.7).
-type engineUse struct{ pid atomic.Int64 }
+type engineUse struct {
+	pid atomic.Int64
+	// seq is the request's send stamp (engine.Guard.MarkSent): the recycle
+	// ignores requests sent after it, queued behind it (#338.1). speechOn
+	// stores seq BEFORE pid, so a reader that sees pid > 0 sees the stamp; a
+	// zero stamp makes the recycle conservative (every request blocks it).
+	seq atomic.Uint64
+}
 
 type engineUseKey struct{}
 

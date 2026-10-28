@@ -13,6 +13,7 @@
 //	OXSAY_FAKE_SPEECH_BLOCK   speech blocks until the request context ends
 //	OXSAY_FAKE_SPEECH_DROP=1  speech closes the connection without answering
 //	OXSAY_FAKE_IGNORE_SIGTERM SIGTERM is ignored; only SIGKILL ends the child
+//	                          (the voxcpm2 fake too)
 //	OXSAY_FAKE_SPEECH_LOG     append-only file: one JSON line per speech body
 //	OXSAY_FAKE_SPEECH_RUNAWAY n | n+ | all: the n-th speech request (1-based,
 //	                          counted per child), every one from the n-th on
@@ -40,6 +41,12 @@
 //	                          child); every later request, on any child,
 //	                          answers normally
 //	OXSAY_FAKE_VOX_DELAY_MS   sleep before answering a speech request
+//	OXSAY_FAKE_VOX_WEDGE_FIRST path: the first child to get a speech request and
+//	                          create this file is wedged for good - it
+//	                          accepts every request from then on and answers
+//	                          none (a hung single-threaded engine, so later
+//	                          requests queue behind the first); children that
+//	                          find the file already there answer normally
 //
 // OXSAY_FAKE_TONE=1 makes both fakes answer a quiet sine instead of silence
 // or a click — audio a loudness meter can measure — at their engine's native
@@ -978,6 +985,9 @@ func hasFlagArg(args []string, want string) bool {
 // speech body as one JSON line to OXSAY_FAKE_VOX_LOG, and answers a silent WAV
 // of OXSAY_FAKE_VOX_SECS seconds (default 1).
 func runFakeVox(args []string) int {
+	if os.Getenv("OXSAY_FAKE_IGNORE_SIGTERM") == "1" {
+		signal.Notify(make(chan os.Signal, 1), syscall.SIGTERM) // only SIGKILL ends it
+	}
 	var path string
 	for i, a := range args {
 		if a == "--config" && i+1 < len(args) {
@@ -1004,6 +1014,7 @@ func runFakeVox(args []string) int {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	var mu sync.Mutex
+	wedged, wedgeChecked := false, false
 	mux.HandleFunc("POST /v1/audio/speech", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		if !json.Valid(body) {
@@ -1018,6 +1029,22 @@ func runFakeVox(args []string) int {
 				_ = f.Close()
 			}
 			mu.Unlock()
+		}
+		if first := os.Getenv("OXSAY_FAKE_VOX_WEDGE_FIRST"); first != "" {
+			mu.Lock()
+			if !wedgeChecked {
+				wedgeChecked = true
+				if f, err := os.OpenFile(first, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644); err == nil {
+					_ = f.Close()
+					wedged = true
+				}
+			}
+			isWedged := wedged
+			mu.Unlock()
+			if isWedged {
+				<-r.Context().Done()
+				return
+			}
 		}
 		if once := os.Getenv("OXSAY_FAKE_VOX_HANG_ONCE"); once != "" {
 			if f, err := os.OpenFile(once, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644); err == nil {
