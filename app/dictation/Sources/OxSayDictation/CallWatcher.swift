@@ -32,8 +32,8 @@ final class CallWatcher {
     /// and whether the other side was audible lately. The recorder wires both.
     var recording: () -> CallTracker.Origin? = { nil }
     var themActive: () -> Bool = { false }
-    /// The sources the user set to "Don't record": they never hide another call (#270).
-    var ignoredSources: () -> Set<String> = { [] }
+    /// The user's pick per source: it orders simultaneous calls (#270).
+    var modeFor: (String) -> CallAppMode = CallPolicy.defaultMode
 
     private var watch = CallWatch()
     private var runners: [String: QueuedScriptRunner] = [:]
@@ -72,7 +72,7 @@ final class CallWatcher {
             .map { MicUser(bundleID: $0.bundleID, pid: $0.pid) }
         let outcome = watch.observe(now: Date(), users: users, tab: readTab,
                                   themActive: themActive(), recording: recording(),
-                                  ignoring: ignoredSources())
+                                  mode: modeFor)
         onTick?(Tick(users: users, call: outcome.call, action: outcome.action, browserDenied: outcome.browserDenied,
                      browserNeedsPermission: outcome.browserNeedsPermission))
     }

@@ -22,7 +22,8 @@ public enum OutputRoute {
     static let headphonePrefixes = ["wh-", "wf-", "qc"]
 
     static func namesHeadphones(_ name: String) -> Bool {
-        let lowered = name.lowercased()
+        // NFC first: macOS reports names decomposed ("o" + U+0308) as often as precomposed.
+        let lowered = name.precomposedStringWithCanonicalMapping.lowercased()
         if speakerWords.contains(where: lowered.contains) { return false }
         if headphoneWords.contains(where: lowered.contains) { return true }
         let tokens = lowered.split(whereSeparator: { $0 == " " || $0 == "\u{2019}" || $0 == "'" })

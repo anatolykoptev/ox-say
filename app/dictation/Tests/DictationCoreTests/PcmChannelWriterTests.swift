@@ -88,8 +88,8 @@ final class PcmChannelWriterTests: XCTestCase {
 
     /// #266: an overlap SMALLER than the jitter tolerance (the two taps of a rebuild run side by side for a moment)
     /// is audio twice too. Every sample stamped before the written position is trimmed, not only past the tolerance.
-    /// Mutation: PcmChannelWriter.append, change `written - expected > 0` back to `written - expected > Self.gapTolerance`
-    /// -> RED (the 50 ms overlap is written twice).
+    /// Mutation: PcmChannelWriter.overlapAllowance = 1600 (100 ms; the old tolerance) -> RED (the 50 ms overlap is
+    /// written twice).
     func testAnOverlapBelowTheToleranceIsTrimmedToo() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -105,6 +105,36 @@ final class PcmChannelWriterTests: XCTestCase {
         let all = try samples(url)
         XCTAssertFalse(all.contains(6553), "0.2 is the duplicated stretch")
         XCTAssertEqual(all[16000], 9830) // 0.3 right after the first second
+    }
+
+    /// Timestamp jitter is not an overlap: a -300 ppm clock (it delivers a little LESS audio than the host time that
+    /// passes) with a noisy host time (sigma 2 ms) must lose no real audio. With no allowance the writer shaved ~12 ms
+    /// every 5 minutes (283 ms over two hours: `scripts/overlap-jitter-sim.py`).
+    /// Mutation: PcmChannelWriter.overlapAllowance = 0 -> RED (dropped > 0).
+    func testTimestampJitterDoesNotShaveRealAudio() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let t0: UInt64 = 2_000_000_000
+        let w = try PcmChannelWriter(url: url, t0: t0)
+        var seed: UInt64 = 12345
+        func uniform() -> Double { // LCG: deterministic, no system randomness
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Double(seed >> 11) / Double(1 << 53)
+        }
+        func gauss(_ sigma: Double) -> Double { ((0..<12).reduce(0.0) { acc, _ in acc + uniform() } - 6) * sigma }
+        let frames = 512, deviceRate = 48000.0 * (1 - 300e-6)
+        var framesTotal = 0, outPrev = 0
+        let chunks = 28_000 // ~5 minutes of 10.7 ms tap buffers
+        for _ in 0..<chunks {
+            let first = Double(framesTotal) / deviceRate
+            framesTotal += frames
+            let out = framesTotal / 3
+            let n = out - outPrev
+            outPrev = out
+            let host = max(0, first + gauss(0.002))
+            w.append([Float](repeating: 0.1, count: n), atNanos: t0 + UInt64(host * 1e9))
+        }
+        XCTAssertEqual(w.droppedSamples, 0, "jitter alone must not drop audio")
     }
 
     /// Jitter the other way (a chunk a little LATE) is still left alone: no padding under the tolerance.

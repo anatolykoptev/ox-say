@@ -141,9 +141,9 @@ final class MeetingController: NSObject, MeetingFeature {
         }
         watcher.recording = { [weak self] in self?.current?.origin }
         watcher.themActive = { [weak self] in self?.recorder.themActive ?? false }
-        watcher.ignoredSources = { [weak self] in
-            guard let self else { return [] }
-            return Set(CallPolicy.sources.filter { CallPolicy.mode(for: $0, self.host.defaults) == .never })
+        watcher.modeFor = { [weak self] source in
+            guard let self else { return CallPolicy.defaultMode(source) }
+            return CallPolicy.mode(for: source, self.host.defaults)
         }
         watcher.onTick = { [weak self] tick in self?.observe(tick) }
         // A closed lid ends the recording cleanly: the audio devices disappear under it, and what was recorded is

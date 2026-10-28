@@ -71,6 +71,9 @@ final class MeetingRecorder {
     private var themLoudAt = Date.distantPast
     private var themEverLoud = false
     private var tapCallbacks = 0
+    private var tapLastAt: Date?
+    /// Moved on by `start` and `stop`: a tap start's answer that arrives after its recording is dropped (#266).
+    private var tapGeneration = Generation()
     private var tapPeak: Float = 0
     private var micObserver: NSObjectProtocol?
     private(set) var started: Date?
@@ -120,7 +123,9 @@ final class MeetingRecorder {
         micChain.begin()
         lock.withLock {
             meLevel = 0; themLevel = 0; themLoudAt = .distantPast; themEverLoud = false; tapCallbacks = 0; tapPeak = 0
+            tapLastAt = nil
         }
+        tapGeneration.advance()
 
         do {
             try startMicrophone()
@@ -150,6 +155,7 @@ final class MeetingRecorder {
             self.lock.withLock {
                 self.themLevel = level
                 self.tapCallbacks += 1
+                self.tapLastAt = Date()
                 self.tapPeak = max(self.tapPeak, peak)
                 if level > Self.loudRMS {
                     self.themLoudAt = Date()
@@ -195,6 +201,7 @@ final class MeetingRecorder {
         if let micObserver { NotificationCenter.default.removeObserver(micObserver) }
         micObserver = nil
         micChain.cancel()
+        tapGeneration.advance()
         unwatchOutputDevice()
         mic.inputNode.removeTap(onBus: 0)
         mic.stop()
@@ -290,13 +297,16 @@ final class MeetingRecorder {
 
     /// Starts or rebuilds the tap off the main thread; the answer comes back to `tapStarted` on main.
     private func startTap() {
+        let token = tapGeneration.value
         tap.start(excludingPIDs: [getpid()], withMainSubDevice: useMainSubDevice) { [weak self] outcome in
-            self?.tapStarted(outcome)
+            self?.tapStarted(outcome, token: token)
         }
     }
 
-    private func tapStarted(_ outcome: SystemAudioTap.StartOutcome) {
-        guard started != nil else { return }
+    private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int) {
+        // An answer for a recording that is over (a start blocked on a permission prompt, then stop, then a new start)
+        // must not post a loss or burn the retry streak of the one running now.
+        guard started != nil, tapGeneration.isCurrent(token) else { return }
         switch outcome {
         case .started: if tapRetry.succeeded() { onSystemAudioRecovered?() }
         case .stopped: break
@@ -306,10 +316,12 @@ final class MeetingRecorder {
 
     private func tapFailed(_ why: String) {
         guard started != nil else { return }
-        // A rebuild that failed while the old tap goes on loses nothing: it is retried and logged, not announced (#266).
-        let kept = tap.isRunning
-        if kept { log.error("system audio tap: rebuild failed, the previous tap keeps recording: \(why, privacy: .public)") }
-        let step = tapRetry.failed(sourceLost: !kept)
+        // A rebuild that failed while the old tap still DELIVERS loses nothing: retried and logged, not announced. Once
+        // the old tap goes quiet, or enough rebuilds failed, the loss is told (`TapLoss`).
+        let silence = lock.withLock { tapLastAt.map { Date().timeIntervalSince($0) } }
+        let lost = TapLoss.isLost(hasTap: tap.isRunning, sinceLastBuffer: silence, consecutiveFailures: tapRetry.failures + 1)
+        if !lost { log.error("system audio tap: rebuild failed, the previous tap keeps delivering: \(why, privacy: .public)") }
+        let step = tapRetry.failed(sourceLost: lost)
         if step.notify { onSystemAudioFailed?(why) }
         scheduleTapRebuild(after: step.delay)
     }

@@ -30,6 +30,12 @@ public final class PcmChannelWriter {
     public static let sampleRate = 16000
     /// A gap shorter than this is clock jitter, not lost audio.
     public static let gapTolerance = 1600 // 100 ms
+    /// An overlap (a chunk stamped before the written position) at or below this is timestamp jitter, not duplicated
+    /// audio, and is kept; above it the whole overlap is trimmed. 20 ms: a rebuilt tap overlaps the old one by tens to
+    /// hundreds of ms, while host-time jitter of a real device is well under 2 ms (sigma). Measured with
+    /// `scripts/overlap-jitter-sim.py`: with no allowance a -300 ppm clock at sigma 2 ms loses 283 ms of real audio in
+    /// two hours; with 20 ms it loses none, and the rebuild overlap is still trimmed.
+    public static let overlapAllowance = 320 // 20 ms
 
     private let handle: FileHandle
     private let t0: UInt64
@@ -75,11 +81,12 @@ public final class PcmChannelWriter {
         var chunk = chunk
         if expected - written > Self.gapTolerance {
             pad(to: expected)
-        } else if written > expected {
+        } else if written - expected > Self.overlapAllowance {
             // The channel is ahead of the clock: its head would land in time
             // that is already written (a rebuilt tap runs beside the old one
             // for a moment, a device clock runs fast). Keep the position equal
-            // to the time; the tolerance only spares gaps, never duplicates.
+            // to the time. A few ms of jitter (`overlapAllowance`) is kept, so
+            // real speech is not shaved by a noisy timestamp.
             let drop = min(written - expected, chunk.count)
             chunk.removeFirst(drop)
             dropped += drop

@@ -44,6 +44,16 @@ final class MeetingEnvironmentTests: XCTestCase {
         }
     }
 
+    /// #241: macOS may report a device name decomposed ("o" + combining diaeresis).
+    /// Mutation: OutputRoute.namesHeadphones, drop `precomposedStringWithCanonicalMapping` -> RED.
+    func testADecomposedNameStillMatches() {
+        let nfd = "Kopfho\u{0308}rer von Anna"
+        XCTAssertNotEqual(Array(nfd.unicodeScalars), Array(nfd.precomposedStringWithCanonicalMapping.unicodeScalars),
+                          "the fixture is really decomposed (Swift == is canonical, so compare the scalars)")
+        XCTAssertFalse(OutputRoute.isLikelySpeakers(transport: "blue", dataSource: nil, name: nfd))
+        XCTAssertFalse(OutputRoute.isLikelySpeakers(transport: "blue", dataSource: nil, name: "Ohrho\u{0308}rer"))
+    }
+
     /// The safe direction: names that merely share a brand with headphones stay speakers.
     /// Mutation: OutputRoute.headphoneWords, add the bare "soundcore" or "jabra" -> RED.
     func testBrandsThatAlsoMakeSpeakersStaySpeakers() {
