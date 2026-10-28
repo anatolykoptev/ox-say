@@ -180,7 +180,7 @@ func (p *producer) ready() error {
 func (p *producer) active() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.cur == nil {
+	if p.cur == nil && p.removing == "" { // a delete in flight must not be killed by a restart
 		return 0
 	}
 	return 1

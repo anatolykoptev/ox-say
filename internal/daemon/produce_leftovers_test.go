@@ -200,3 +200,41 @@ func TestProduceLanguageGate(t *testing.T) {
 		t.Errorf("Russian: the engine was asked for %q", got)
 	}
 }
+
+// A restart gate asks active(): a delete in flight counts, or the daemon could
+// be stopped mid-RemoveAll and leave a manifest-less directory.
+// Mutation: produce.go active, drop `&& p.removing == ""` -> 0 during the delete -> RED.
+func TestActiveCountsARemoveInFlight(t *testing.T) {
+	f := newFakePorts(t)
+	p := startedProducer(t, f)
+	s, err := p.create(reelInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, p, s.ID)
+	if p.active() != 0 {
+		t.Fatal("idle producer reports active")
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	orig := removeAll
+	t.Cleanup(func() { removeAll = orig })
+	removeAll = func(path string) error {
+		close(entered)
+		<-release
+		return orig(path)
+	}
+	done := make(chan error, 1)
+	go func() { done <- p.remove(s.ID, false) }()
+	<-entered
+	got := p.active()
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got != 1 {
+		t.Errorf("active() = %d during a remove, want 1", got)
+	}
+	if p.active() != 0 {
+		t.Error("active() stays 1 after the remove")
+	}
+}

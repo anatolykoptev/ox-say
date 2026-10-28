@@ -625,7 +625,7 @@ func projectLanguage(m *vproject.Manifest) string {
 		b.WriteString(c.Text)
 		b.WriteByte(' ')
 	}
-	return vscript.ScriptLanguage(b.String())
+	return vscript.SpokenLanguage(b.String())
 }
 
 // editChunk replaces one chunk's text: one piece of text, no directives,

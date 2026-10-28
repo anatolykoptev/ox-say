@@ -82,11 +82,11 @@ func Parse(src string, o Options) ([]Chunk, error) {
 		return nil, err
 	}
 	src = strings.TrimPrefix(src, utf8BOM)
-	if o.Language == "" {
-		o.Language = ScriptLanguage(src)
-	}
 	if n := utf8.RuneCountInString(src); n > o.MaxScriptChars {
 		return nil, &LineError{1, fmt.Sprintf("the script is %d characters; the limit is %d", n, o.MaxScriptChars)}
+	}
+	if o.Language == "" {
+		o.Language = SpokenLanguage(src)
 	}
 	var out []Chunk
 	pending := 0.0
@@ -252,4 +252,43 @@ func pauseSeconds(num, unit string) (float64, error) {
 		return 0, fmt.Errorf("a pause must be %.2f–%.0f s", MinPause, MaxPause)
 	}
 	return v, nil
+}
+
+// SpokenLanguage is ScriptLanguage of what is read aloud: the text of the
+// pieces with [style:] and [pause] directives and leading "(cue)" groups left
+// out, so a Russian cue word does not make an English script Russian. A script
+// whose directives are malformed is judged on the whole text; Parse reports the
+// error itself.
+func SpokenLanguage(src string) string {
+	var spoken strings.Builder
+	for _, b := range paragraphs(src) {
+		_, body, line, err := leadingStyle(b)
+		if err != nil {
+			return ScriptLanguage(src)
+		}
+		pieces, err := splitPauses(body, line)
+		if err != nil {
+			return ScriptLanguage(src)
+		}
+		for _, p := range pieces {
+			if p.pause == 0 {
+				spoken.WriteString(stripLeadingCues(p.text))
+				spoken.WriteByte(' ')
+			}
+		}
+	}
+	return ScriptLanguage(spoken.String())
+}
+
+// stripLeadingCues drops the "(…)" groups a text opens with (the engine reads
+// them as its style tag).
+func stripLeadingCues(text string) string {
+	for s := trimLead(text); strings.HasPrefix(s, "("); s = trimLead(text) {
+		_, rest, closed := strings.Cut(s[1:], ")")
+		if !closed {
+			return text
+		}
+		text = rest
+	}
+	return text
 }

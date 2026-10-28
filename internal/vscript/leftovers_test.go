@@ -109,3 +109,26 @@ func TestScriptLanguage(t *testing.T) {
 		}
 	}
 }
+
+// Reviewer #311: Russian words in a cue or directive do not make an English
+// script Russian; a Russian script with an English quoted word stays Russian.
+// Mutation: markup.go Parse, `spokenLanguage(src)` -> `ScriptLanguage(src)` -> RED.
+func TestLanguageIsDecidedFromTheSpokenText(t *testing.T) {
+	for _, c := range []struct{ src, want string }{
+		{"(шёпотом) I have 25 apples.", "(шёпотом) I have 25 apples."},
+		{"[style: спокойно и тепло]\nI have 25 apples.", "I have 25 apples."},
+		{"Мне 25 лет, и я сказал «hello».", "Мне двадцать пять лет, и я сказал «hello»."},
+	} {
+		cs, err := Parse(c.src, testOpts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := c.want
+		if strings.HasPrefix(want, "(") {
+			want = "шёпотом — I have 25 apples." // the cue is folded by Spoken, the digits stay
+		}
+		if cs[0].Spoken != want {
+			t.Errorf("Parse(%q).Spoken = %q, want %q", c.src, cs[0].Spoken, want)
+		}
+	}
+}
