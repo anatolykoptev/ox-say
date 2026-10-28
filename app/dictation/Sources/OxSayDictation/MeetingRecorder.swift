@@ -71,7 +71,9 @@ final class MeetingRecorder {
     private var themLoudAt = Date.distantPast
     private var themEverLoud = false
     private var tapCallbacks = 0
-    private var tapLastAt: Date?
+    /// When the tap last delivered a buffer: `DispatchTime.uptimeNanoseconds`, monotonic, so a clock step cannot skew
+    /// the silent-tap judgement (`TapLoss.silence`).
+    private var tapLastNanos: UInt64?
     /// Moved on by `start` and `stop`: a tap start's answer that arrives after its recording is dropped (#266).
     private var tapGeneration = Generation()
     private var tapPeak: Float = 0
@@ -123,7 +125,7 @@ final class MeetingRecorder {
         micChain.begin()
         lock.withLock {
             meLevel = 0; themLevel = 0; themLoudAt = .distantPast; themEverLoud = false; tapCallbacks = 0; tapPeak = 0
-            tapLastAt = nil
+            tapLastNanos = nil
         }
         tapGeneration.advance()
 
@@ -155,7 +157,7 @@ final class MeetingRecorder {
             self.lock.withLock {
                 self.themLevel = level
                 self.tapCallbacks += 1
-                self.tapLastAt = Date()
+                self.tapLastNanos = DispatchTime.now().uptimeNanoseconds
                 self.tapPeak = max(self.tapPeak, peak)
                 if level > Self.loudRMS {
                     self.themLoudAt = Date()
@@ -318,7 +320,7 @@ final class MeetingRecorder {
         guard started != nil else { return }
         // A rebuild that failed while the old tap still DELIVERS loses nothing: retried and logged, not announced. Once
         // the old tap goes quiet, or enough rebuilds failed, the loss is told (`TapLoss`).
-        let silence = lock.withLock { tapLastAt.map { Date().timeIntervalSince($0) } }
+        let silence = lock.withLock { TapLoss.silence(lastNanos: tapLastNanos, nowNanos: DispatchTime.now().uptimeNanoseconds) }
         let lost = TapLoss.isLost(hasTap: tap.isRunning, sinceLastBuffer: silence, consecutiveFailures: tapRetry.failures + 1)
         if !lost { log.error("system audio tap: rebuild failed, the previous tap keeps delivering: \(why, privacy: .public)") }
         let step = tapRetry.failed(sourceLost: lost)

@@ -150,8 +150,11 @@ final class MeetingWiringTests: XCTestCase {
         // MeetingRecorder.tapFailed, replace `sourceLost: lost` with `sourceLost: true` -> RED.
         XCTAssertTrue(failed.contains("TapLoss.isLost(hasTap: tap.isRunning, sinceLastBuffer: silence, consecutiveFailures: tapRetry.failures + 1)"))
         XCTAssertTrue(failed.contains("tapRetry.failed(sourceLost: lost)"))
-        // Mutation: MeetingRecorder.onSamples, delete `self.tapLastAt = Date()` -> RED (the delivery clock never moves).
-        XCTAssertTrue(recorder.contains("self.tapLastAt = Date()"))
+        // Mutation: MeetingRecorder.onSamples, delete `self.tapLastNanos = DispatchTime.now().uptimeNanoseconds` -> RED (the delivery
+        // clock never moves); or stamp it with `Date()` again (a wall clock) -> RED.
+        XCTAssertTrue(recorder.contains("self.tapLastNanos = DispatchTime.now().uptimeNanoseconds"))
+        XCTAssertFalse(recorder.contains("tapLastAt"), "the delivery stamp is monotonic, not a Date")
+        XCTAssertTrue(failed.contains("TapLoss.silence(lastNanos: tapLastNanos, nowNanos: DispatchTime.now().uptimeNanoseconds)"))
         // #266: a completion belongs to its recording. Mutation: MeetingRecorder.tapStarted, drop
         // `tapGeneration.isCurrent(token)` -> RED.
         let started2 = try XCTUnwrap(body(recorder, of: "private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int) {"))
