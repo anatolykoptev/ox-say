@@ -173,6 +173,9 @@ fetch_part() {
         esac
         pass=$((pass + 1))
         [ "$pass" -le 3 ] || return "$rc"
+        # A fresh download (resume 0) that is retried has bytes by now: the next pass continues them, it does not
+        # truncate the file and start again from byte 0.
+        [ "$resume" = 1 ] || { resume=1; opts+=(-C -); }
         sleep $((pass * retry_unit))
     done
 }
@@ -206,6 +209,9 @@ for entry in "${models[@]}"; do
         # or the offset no longer fits it) would fail every later run the same way, so it is dropped and the file is
         # fetched once from the start. Nothing else drops it: a stall, a dropped line, a 5xx, a 404 or a 403 leave the
         # .part (a fresh request would meet the same error, and the bytes are what the next run resumes from).
+        # Which of the two signals arrives depends on curl: 8.7.1 (macOS) exits 0 on a 416 under -C - (it takes the
+        # file for complete) and the checksum check below drops a .part that is wrong; a curl that fails with 22 on
+        # the 416 lands in the arm here. Both ends in a clean fetch, so the arm stays for the curls that need it.
         rc=0
         resumed=0
         [ -s "$part" ] && resumed=1

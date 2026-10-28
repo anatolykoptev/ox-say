@@ -42,10 +42,18 @@ ours() {
 # all). A directory that holds anything else under a name of ours is not a
 # bundle remnant.
 partial_bundle() {
-    local listing
+    local f
     [ -d "$1" ] && [ ! -L "$1" ] && [ ! -e "$1/Contents/Info.plist" ] || return 1
-    listing=$(ls -A "$1" | grep -vx '.DS_Store' || true)
-    [ -z "$listing" ] || [ "$listing" = Contents ]
+    # A glob loop, not `ls -A | grep -vx`: the three patterns together name every entry but . and .., and a name is
+    # compared as a string (a grep pattern's dot would take "xDS_Store" for Finder's file). An unmatched pattern
+    # stays literal, hence the existence test.
+    for f in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        case ${f##*/} in
+            Contents | .DS_Store) ;;
+            *) return 1 ;;
+        esac
+    done
 }
 
 # The two staging copies, .new and .old: their names belong to this script, and
