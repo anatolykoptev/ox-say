@@ -9,6 +9,8 @@ import (
 // the Russian case endings of one stem (see inflectedForms); Latin names, which do not inflect, match exactly.
 // The pairs are run through MergeChunks: two decisions that differ only by the name must stay two lines unless the
 // name is one person's.
+// Mutation: internal/meeting/notes.go sameWordForm, replace the `if (ka == bridgeAY && kb == bareStem) || ...` condition with `false`,
+// i.e. let the -а/-я ending bridge to the bare word again -> RED (Александр/Александра and the other three).
 // Mutation: internal/meeting/notes.go sameWordForm, replace its body with the length rule `short := min(len(ra), len(rb));
 // if short < 5 { return false }; common := 0; for common < short && ra[common] == rb[common] { common++ };
 // return common >= short-1` (kept in oldLengthRule below) -> RED (Мария/Марина and the rest are merged).
@@ -21,8 +23,8 @@ func TestMergeNamesAreOneOnlyWhenOnePersonsForms(t *testing.T) {
 		return len(got) == 1
 	}
 	for _, p := range [][2]string{
-		{"Андрей", "Андрею"}, {"Андрей", "Андрея"}, {"Андрею", "Андрея"}, {"Сергей", "Сергею"}, {"Мария", "Марии"},
-		{"Иван", "Ивану"}, {"Иван", "Ивана"}, {"Игорь", "Игорю"}, {"Ольга", "Ольге"}, {"Андрей", "андрей"},
+		{"Андрей", "Андрею"}, {"Андрею", "Андрея"}, {"Сергей", "Сергею"}, {"Мария", "Марии"},
+		{"Иван", "Ивану"}, {"Игорь", "Игорю"}, {"Игорь", "Игоря"}, {"Ольга", "Ольге"}, {"Андрей", "андрей"},
 	} {
 		if !merged(p[0], p[1]) {
 			t.Errorf("%s and %s are one person and stayed two lines", p[0], p[1])
@@ -32,6 +34,8 @@ func TestMergeNamesAreOneOnlyWhenOnePersonsForms(t *testing.T) {
 		{"Мария", "Марина"}, {"Сергей", "Сергеев"}, {"Ивана", "Иванов"}, {"Maria", "Mario"}, {"Julia", "Julio"},
 		{"Daniel", "Daniela"}, {"Robert", "Roberta"}, {"Kristin", "Kristina"}, {"Andrew", "Andrews"},
 		{"Виктор", "Виктория"}, {"Никита", "Никитин"}, {"Ann", "Anna"}, {"Alexander", "Alexandra"}, {"Андрей", "Антон"},
+		// -а/-я against the bare word: a man's genitive or a woman's nominative, so two people in one meeting
+		{"Александр", "Александра"}, {"Евгений", "Евгения"}, {"Валерий", "Валерия"}, {"Иван", "Ивана"}, {"Андрей", "Андрея"},
 		{"Анна", "Анне"}, // under four letters of stem: not folded, a miss only costs a duplicate line
 	} {
 		if merged(p[0], p[1]) {
