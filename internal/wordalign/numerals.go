@@ -22,10 +22,15 @@ var numeralStems = []string{
 
 // numeralWords are the short or irregular numeral-lexicon forms matched whole.
 var numeralWords = map[string]bool{
-	"и": true, "семь": true, "семи": true, "семью": true, "сто": true, "ста": true, "ноль": true, "минус": true, "плюс": true, "запятая": true, "запятых": true,
+	"семь": true, "семи": true, "семью": true, "сто": true, "ста": true, "ноль": true, "минус": true, "плюс": true, "запятая": true, "запятых": true,
 	"целых": true, "целая": true, "целое": true, "целой": true, "целую": true, "полтора": true, "полторы": true,
 	"четверть": true, "четверти": true,
 }
+
+// notNumerals are stem+ending products that no number is ever spoken as but
+// that would fill a number slot for free ("трио", the heel "пята", the pole
+// "шест", "перва", "сота").
+var notNumerals = map[string]bool{"трио": true, "пята": true, "шест": true, "перва": true, "сота": true, "соты": true}
 
 // numeralEndings are the case, gender and number endings numeralStems take.
 var numeralEndings = map[string]bool{
@@ -39,6 +44,9 @@ var numeralEndings = map[string]bool{
 	"ую": true, "ьих": true, "ьими": true, "ном": true,
 }
 
+// fillerAnd is free inside a number only between two numeral words ("две тысячи и один").
+const fillerAnd = "и"
+
 // signUnits maps a sign written with a number to the stem of the unit word
 // that is spoken for it ("40%" = "сорок процентов").
 var signUnits = map[rune]string{'%': "процент", '₽': "руб", '°': "градус", '$': "доллар", '€': "евро"}
@@ -49,6 +57,9 @@ func hasDigit(w string) bool {
 
 // isNumeral reports whether w is a spoken number word (or itself digits).
 func isNumeral(w string) bool {
+	if notNumerals[w] {
+		return false
+	}
 	if hasDigit(w) || numeralWords[w] {
 		return true
 	}
@@ -70,9 +81,10 @@ func spanCost(tok string, words []string) int {
 		}
 	}
 	cost, unitUsed := 0, false
-	for _, w := range words {
+	for i, w := range words {
 		switch {
 		case isNumeral(w):
+		case w == fillerAnd && i > 0 && i < len(words)-1 && isNumeral(words[i-1]) && isNumeral(words[i+1]):
 		case !unitUsed && startsWithAny(w, units):
 			unitUsed = true
 		default:

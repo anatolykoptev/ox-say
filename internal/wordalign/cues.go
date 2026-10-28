@@ -2,6 +2,7 @@ package wordalign
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/voices"
@@ -33,7 +34,7 @@ func Cues(words []voices.Word) []Cue {
 			cur = nil
 		}
 	}
-	for _, w := range words {
+	for wi, w := range words {
 		if len(cur) > 0 && (utf8.RuneCountInString(strings.Join(cur, " "))+1+utf8.RuneCountInString(w.W) > MaxCueChars ||
 			!fits(strings.Join(cur, " ")+" "+w.W) || w.E-s > MaxCueSeconds) {
 			flush()
@@ -43,6 +44,9 @@ func Cues(words []voices.Word) []Cue {
 		}
 		cur, e = append(cur, w.W), w.E
 		if t := []rune(strings.TrimRight(w.W, "»\"”')")); len(t) > 0 && strings.ContainsRune(".!?…", t[len(t)-1]) {
+			if wi+1 < len(words) && continuesAfterAbbrev(w.W, words[wi+1].W) {
+				continue
+			}
 			flush()
 		}
 	}
@@ -77,3 +81,27 @@ func wrapLines(s string) []string {
 func fits(s string) bool { return len(wrapLines(s)) <= 2 }
 
 func wrap(s string) string { return strings.Join(wrapLines(s), "\n") }
+
+// neverEnd are abbreviations whose dot never closes a sentence; mayEnd ones
+// close it only when the next word starts a sentence (capital letter).
+var (
+	neverEnd = map[string]bool{"мр.": true, "мрс.": true, "г-н.": true, "проф.": true, "акад.": true, "доц.": true, "им.": true, "св.": true,
+		"т.е.": true, "т.к.": true, "т.н.": true, "т.ч.": true, "напр.": true, "ул.": true, "пр.": true, "пер.": true, "пл.": true,
+		"кв.": true, "корп.": true, "стр.": true, "рис.": true, "см.": true, "ср.": true, "dr.": true, "mr.": true, "mrs.": true, "st.": true, "e.g.": true, "i.e.": true}
+	mayEnd = map[string]bool{"т.д.": true, "т.п.": true, "др.": true, "руб.": true, "коп.": true, "тыс.": true, "млн.": true, "млрд.": true,
+		"трлн.": true, "etc.": true, "vs.": true, "г.": true, "гг.": true}
+)
+
+// continuesAfterAbbrev reports whether the dot ending w is an abbreviation's
+// and the cue goes on with next.
+func continuesAfterAbbrev(w, next string) bool {
+	lw := strings.ToLower(strings.TrimLeft(w, "«\"“(("))
+	if neverEnd[lw] {
+		return true
+	}
+	if !mayEnd[lw] {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(strings.TrimLeft(next, "«\"“(—–"))
+	return !unicode.IsUpper(r)
+}

@@ -43,14 +43,18 @@ func AlignWords(text string, heard []voices.Word, dur float64) []voices.Word {
 	return settle(out, dur)
 }
 
-// settle keeps every time inside [0, dur] and the starts non-decreasing, so
-// overlapping or overlong heard words cannot produce a backwards cue.
+// settle keeps every time inside [0, dur], the starts non-decreasing and every
+// end at or before the next start, so overlapping or overlong heard words
+// cannot produce a backwards or overlapping cue.
 func settle(words []voices.Word, dur float64) []voices.Word {
 	prev := 0.0
 	for i := range words {
 		s := min(max(words[i].S, prev, 0), dur)
 		words[i].S, words[i].E = s, min(max(words[i].E, s), dur)
 		prev = s
+	}
+	for i := 0; i+1 < len(words); i++ {
+		words[i].E = min(words[i].E, words[i+1].S)
 	}
 	return words
 }
