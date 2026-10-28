@@ -212,6 +212,27 @@ prints JSON: `text`, `segments` and `words` (`w`, `s`, `e`, `p`; seconds).
   `--chunk-s` (30) seconds at the quietest 10 ms frame near each window's end:
   one graph per chunk keeps each GPU command buffer under the macOS watchdog
   of a display GPU, and the encoder cost linear in length.
+- Edge context (#123, `stt/edge_pad.h`): Parakeet drops words when a decode
+  window has no quiet context at its edges (a tight 1.4 s clip decodes empty,
+  a 12 s session segment cut mid-speech loses 25-100 % of its words). Every
+  chunk is decoded as 1 s of comfort noise, the chunk, 1 s of comfort noise,
+  the noise 12 dB under the chunk's level (the RMS of its frames above
+  -60 dBFS); quiet runs at the chunk's own edges (digital silence, a far-down
+  room tone) get the same noise added. Token times are shifted back by the
+  pad and clamped to the chunk; tokens more than 0.5 s out in a pad are taken
+  for noise and dropped (stderr: `dropped N token(s) decoded from the edge
+  pad`). The margin and the final-period rule are load-bearing: TDT stamps
+  the first and last pieces of real speech a frame or two inside the pad,
+  and the final period sits at the last word's end. A chunk with no frame above
+  -60 dBFS is decoded as it is, so silence stays empty. Hence `--chunk-s` is
+  at most 47.99 s. The feature pipeline was compared with NeMo's
+  `FilterbankFeatures` and the model's own preprocessor config first: no
+  mismatch that changes a decode (dither is training-only in NeMo; the
+  per-feature statistics use one frame fewer than NeMo 2.3, measured
+  without effect), so the cure is context, not a library patch. Measured on
+  an M5 Pro GPU: +5 ms per short clip (29 -> 34 ms), +14 ms per 30 s chunk
+  (158 -> 171 ms).
+  `scripts/test-stt-edges.sh` is the model test (skips without the model).
 - `--engine whisper`: Whisper large-v3-turbo, 99 languages, one segment per
   word (`max_len` 1, split on word), beam search 5.
 - `-ng` runs on the CPU.
