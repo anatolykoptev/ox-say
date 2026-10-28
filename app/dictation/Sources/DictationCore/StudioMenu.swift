@@ -3,14 +3,14 @@ import Foundation
 /// What the Studio submenu shows, decided on every menu open from the daemon's
 /// /status and the voiceover the app is following. Pure: AppKit only draws the rows.
 public enum StudioMenu {
-    public static let installTitle = "Install Studio Voice (about 3 GB)…"
+    public static func installTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioInstallTitle) }
     public static let newVoiceoverTitle = "New Voiceover from Document…"
     public static let stopTitle = "Stop Voiceover"
     public static let continueTitle = "Continue on Battery Power"
     public static let folderTitle = "Open Voiceovers Folder"
-    public static let createVoiceTitle = "Create a Voice…"
+    public static func createVoiceTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioCreateVoice) }
     public static let noServiceTitle = "Studio needs the ox-say service, which is not answering"
-    public static let cannotRunTitle = "This Mac can't run the studio voice."
+    public static func cannotRunTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioCannotRun) }
     public static let checkingTitle = "Checking the ox-say service…"
 
     /// What the app knows of the daemon right now.
@@ -30,7 +30,8 @@ public enum StudioMenu {
     ///   - hasOutputFolder: the latest voiceover's folder exists on this Mac.
     ///   - readingDocument: a document is being read for a new voiceover; a second one waits.
     public static func rows(service: ServiceState, installing: Bool, job: ProduceJob?,
-                            serviceWaiting: Bool, hasOutputFolder: Bool, readingDocument: Bool = false) -> [MenuRow] {
+                            serviceWaiting: Bool, hasOutputFolder: Bool, readingDocument: Bool = false,
+                            text: (L10nKey) -> String = { $0.text }) -> [MenuRow] {
         let active = job.flatMap { $0.status.isTerminal ? nil : $0 }
         switch service {
         case .unknown:
@@ -40,14 +41,14 @@ public enum StudioMenu {
             return jobRows(active, waiting: serviceWaiting) + [disabled(noServiceTitle)]
         case .answered(let status):
             guard status.studioAvailable else {
-                guard status.installWouldHelp else { return [disabled(unavailableText(reason: status.studioReason))] }
-                return [.item(title: installTitle, isOn: false, isEnabled: !installing, action: .installStudioVoice)]
+                guard status.installWouldHelp else { return [disabled(unavailableText(reason: status.studioReason, text: text))] }
+                return [.item(title: installTitle(text: text), isOn: false, isEnabled: !installing, action: .installStudioVoice)]
             }
             var rows: [MenuRow] = [.item(title: newVoiceoverTitle, isOn: false, isEnabled: active == nil && !readingDocument, action: .newVoiceover)]
             rows += jobRows(active, waiting: serviceWaiting)
             rows.append(.item(title: folderTitle, isOn: false, isEnabled: hasOutputFolder, action: hasOutputFolder ? .openVoiceoversFolder : nil))
             rows.append(.separator)
-            rows.append(.item(title: createVoiceTitle, isOn: false, isEnabled: true, action: .createVoice))
+            rows.append(.item(title: createVoiceTitle(text: text), isOn: false, isEnabled: true, action: .createVoice))
             return rows
         }
     }
@@ -69,8 +70,8 @@ public enum StudioMenu {
 
     /// The daemon's reason the studio voice cannot run, in words for the owner; a
     /// reason that is nothing but a terminal instruction, or none, becomes the plain fallback.
-    public static func unavailableText(reason: String?) -> String {
-        PlainWords.clean(reason ?? "", fallback: cannotRunTitle)
+    public static func unavailableText(reason: String?, text: (L10nKey) -> String = { $0.text }) -> String {
+        PlainWords.clean(reason ?? "", fallback: cannotRunTitle(text: text))
     }
 
     /// The Voice popup of the voiceover form: "Default voice" (the daemon's own

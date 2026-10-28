@@ -142,6 +142,14 @@ public enum UpdateInstaller {
         }
     }
 
+    /// The pill that stays up while an install runs.
+    public static func installingPill(kind: Kind, tag: String, text: (L10nKey) -> String = { $0.text }) -> String {
+        switch kind {
+        case .update: return String(format: text(.updateInstallingPill), tag)
+        case .studioVoice: return text(.updateInstallingStudioPill)
+        }
+    }
+
     /// The failed alert's title.
     public static func failureTitle(kind: Kind, tag: String, text: (L10nKey) -> String = { $0.text }) -> String {
         switch kind {
@@ -285,7 +293,8 @@ public enum UpdateGate: Equatable {
     case proceed
     case installInProgress
 
-    public static let busyAlertTitle = "An update is already being installed."
+    public static func busyAlertTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.updateBusyTitle) }
+    public static func busyAlertText(text: (L10nKey) -> String = { $0.text }) -> String { text(.updateBusyText) }
 
     public static func decide(installing: Bool) -> UpdateGate {
         installing ? .installInProgress : .proceed

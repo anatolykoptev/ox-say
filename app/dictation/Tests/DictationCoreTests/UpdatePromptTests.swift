@@ -23,8 +23,8 @@ final class UpdatePromptTests: XCTestCase {
 
     func testEveryUpdateErrorIsAFailureCarryingItsReason() {
         for error in [UpdateError.unreachable("offline"), .http(403), .http(503), .badResponse] {
-            XCTAssertEqual(UpdatePrompt.make(local: "0.1.20", fetch: .failure(error)),
-                           .failed(reason: String(describing: error)), "\(error)")
+            XCTAssertEqual(UpdatePrompt.make(local: "0.1.20", fetch: .failure(error), text: ShippedStrings.localizer("en")),
+                           .failed(reason: error.message(text: ShippedStrings.localizer("en"))), "\(error)")
         }
     }
 

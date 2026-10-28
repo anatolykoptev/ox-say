@@ -2,6 +2,7 @@ import XCTest
 @testable import DictationCore
 
 final class StudioMenuTests: XCTestCase {
+    private let en = ShippedStrings.localizer("en")
     private let available = DaemonStatus(version: "v0.1.21", studioAvailable: true)
     private func unavailable(_ reason: String? = nil, code: String? = nil) -> DaemonStatus {
         DaemonStatus(version: "v0.1.21", studioAvailable: false, studioReason: reason, studioReasonCode: code)
@@ -13,7 +14,7 @@ final class StudioMenuTests: XCTestCase {
                       waiting: Bool = false, folder: Bool = false, reading: Bool = false) -> [MenuRow] {
         let service = status.map { StudioMenu.ServiceState.answered($0) } ?? .unreachable
         return StudioMenu.rows(service: service, installing: installing, job: job, serviceWaiting: waiting,
-                               hasOutputFolder: folder, readingDocument: reading)
+                               hasOutputFolder: folder, readingDocument: reading, text: en)
     }
     private func titles(_ rows: [MenuRow]) -> [String] {
         rows.map { row in
@@ -38,7 +39,7 @@ final class StudioMenuTests: XCTestCase {
 
     func testInstallRowIsDisabledWhileAnInstallRuns() {
         XCTAssertEqual(rows(unavailable(code: "model_missing"), installing: true),
-                       [.item(title: StudioMenu.installTitle, isOn: false, isEnabled: false, action: .installStudioVoice)])
+                       [.item(title: StudioMenu.installTitle(text: en), isOn: false, isEnabled: false, action: .installStudioVoice)])
     }
 
     /// Mutation: StudioMenu.swift rows, `guard status.installWouldHelp` -> `guard true` -> RED.
@@ -53,10 +54,10 @@ final class StudioMenuTests: XCTestCase {
     }
 
     func testReasonLosesTheTerminalInstruction() {
-        XCTAssertEqual(StudioMenu.unavailableText(reason: "The studio voice model is not downloaded yet. Run the installer with OX_SAY_WITH_VOXCPM2=1 to add it."),
+        XCTAssertEqual(StudioMenu.unavailableText(reason: "The studio voice model is not downloaded yet. Run the installer with OX_SAY_WITH_VOXCPM2=1 to add it.", text: en),
                        "The studio voice model is not downloaded yet.")
-        XCTAssertEqual(StudioMenu.unavailableText(reason: "Reinstall ox-say with OX_SAY_WITH_VOXCPM2=1."), "This Mac can't run the studio voice.")
-        XCTAssertEqual(StudioMenu.unavailableText(reason: ""), "This Mac can't run the studio voice.")
+        XCTAssertEqual(StudioMenu.unavailableText(reason: "Reinstall ox-say with OX_SAY_WITH_VOXCPM2=1.", text: en), "This Mac can't run the studio voice.")
+        XCTAssertEqual(StudioMenu.unavailableText(reason: "", text: en), "This Mac can't run the studio voice.")
     }
 
     func testDaemonErrorsLoseTerminalJargon() {
@@ -90,7 +91,7 @@ final class StudioMenuTests: XCTestCase {
     }
 
     func testBeforeTheFirstReplyTheServiceIsNeitherUpNorNotAnswering() {
-        let result = StudioMenu.rows(service: .unknown, installing: false, job: nil, serviceWaiting: false, hasOutputFolder: false)
+        let result = StudioMenu.rows(service: .unknown, installing: false, job: nil, serviceWaiting: false, hasOutputFolder: false, text: en)
         XCTAssertEqual(result, [.item(title: StudioMenu.checkingTitle, isOn: false, isEnabled: false, action: nil)])
         XCTAssertFalse(titles(result).contains(StudioMenu.noServiceTitle))
     }
