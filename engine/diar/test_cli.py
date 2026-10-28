@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import stat
 import struct
 import subprocess
 import sys
@@ -29,6 +30,91 @@ def run(*args, env=None):
     e.pop("OX_DIAR_ASSUME_MACOS", None)
     e.update(env or {})
     return subprocess.run([BIN, *args], capture_output=True, text=True, env=e, timeout=600)
+
+
+# What may appear in the shared temporary directory while ox-diar runs without being its audio. macOS system daemons
+# create their own per-daemon directories there at any moment: `com.apple.inputanalyticsd`,
+# `com.apple.ScopedBookmarkAgent` and `com.apple.Maps.mapssyncd` all showed up in real CI runs (diar, macos-15) and
+# failed a test that flagged every new entry. The rule: a new top-level entry is audio-suspect unless its name starts
+# with `com.apple.` AND it holds no regular file of AUDIO_FLOOR bytes or more, found recursively. A killed FluidAudio
+# stream file is float32 PCM, about 64 KB per second of 16 kHz audio, so 32 KB is half a second of it. Outside the
+# `com.apple.` namespace the rule is name-agnostic, as before. What cannot be checked counts against the entry: a
+# directory that cannot be listed under a `com.apple.` entry is suspect, and so is a file whose size cannot be read.
+AUDIO_FLOOR = 32 * 1024
+SYSTEM_PREFIX = "com.apple."
+
+
+def audio_suspect(path):
+    """Why `path` (a new top-level entry of a temporary directory) may hold audio, or None when it is a daemon's."""
+    if not os.path.basename(path).startswith(SYSTEM_PREFIX):
+        return f"{path}: a new entry outside {SYSTEM_PREFIX}*"
+    pending = [path]
+    while pending:
+        p = pending.pop()
+        try:
+            st = os.lstat(p)  # lstat: a symlink is not followed, so one cannot hide or fake a big file
+            if stat.S_ISDIR(st.st_mode):
+                pending.extend(os.path.join(p, n) for n in os.listdir(p))
+            elif stat.S_ISREG(st.st_mode) and st.st_size >= AUDIO_FLOOR:
+                return f"{p}: a regular file of {st.st_size} bytes (floor {AUDIO_FLOOR})"
+        except FileNotFoundError:
+            continue  # the daemon removed it while we looked: nothing is left to hold audio
+        except OSError as e:
+            return f"{p}: cannot be inspected ({e.strerror}), so it cannot be shown to hold no audio"
+    return None
+
+
+class AudioSuspectRule(unittest.TestCase):
+    """The classification above on fake trees; needs no models and no binary."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def make(self, rel, size=0):
+        p = os.path.join(self.tmp.name, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(b"\0" * size)
+        return os.path.join(self.tmp.name, rel.split("/")[0])
+
+    def test_a_daemon_directory_with_small_files_passes(self):
+        self.assertIsNone(audio_suspect(self.make("com.apple.inputanalyticsd/state.db", 4096)))
+        self.assertIsNone(audio_suspect(self.make("com.apple.ScopedBookmarkAgent/a/b/c.plist", AUDIO_FLOOR - 1)))
+        os.makedirs(os.path.join(self.tmp.name, "com.apple.Maps.mapssyncd"))
+        self.assertIsNone(audio_suspect(os.path.join(self.tmp.name, "com.apple.Maps.mapssyncd")))
+
+    def test_a_big_file_in_a_daemon_directory_fails_at_any_depth(self):
+        self.assertIn("1048576", audio_suspect(self.make("com.apple.fake/x.bin", 1 << 20)))
+        self.assertIsNotNone(audio_suspect(self.make("com.apple.deep/a/b/c/d.raw", AUDIO_FLOOR)))
+
+    def test_a_big_daemon_file_directly_in_the_directory_fails(self):
+        self.assertIsNotNone(audio_suspect(self.make("com.apple.loose", AUDIO_FLOOR)))
+
+    def test_any_name_outside_the_system_namespace_fails_even_when_empty(self):
+        self.assertIsNotNone(audio_suspect(self.make("fluidaudio-x.raw", 0)))
+        self.assertIsNotNone(audio_suspect(self.make("apple.com.x/y", 1)))
+        self.assertIsNotNone(audio_suspect(self.make("Com.apple.x/y", 1)))
+
+    def test_an_unreadable_big_file_fails(self):
+        d = self.make("com.apple.locked/big", AUDIO_FLOOR)
+        os.chmod(os.path.join(d, "big"), 0)
+        self.assertIsNotNone(audio_suspect(d))
+
+    def test_an_unlistable_directory_fails(self):
+        d = self.make("com.apple.sealed/inner/f", 1)
+        os.chmod(os.path.join(d, "inner"), 0)
+        self.addCleanup(os.chmod, os.path.join(d, "inner"), 0o700)
+        self.assertIn("cannot be inspected", audio_suspect(d))
+
+    def test_a_symlink_is_not_followed(self):
+        big = self.make("outside.bin", AUDIO_FLOOR * 2)
+        os.makedirs(os.path.join(self.tmp.name, "com.apple.link"))
+        os.symlink(big, os.path.join(self.tmp.name, "com.apple.link", "l"))
+        self.assertIsNone(audio_suspect(os.path.join(self.tmp.name, "com.apple.link")))
+
+    def test_an_entry_that_vanished_passes(self):
+        self.assertIsNone(audio_suspect(os.path.join(self.tmp.name, "com.apple.gone")))
 
 
 class Contract(unittest.TestCase):
@@ -178,14 +264,16 @@ class Contract(unittest.TestCase):
     # `fluidaudio-streaming-*.raw` file in the user's temporary directory (about 230 MB per hour) and only a `defer`
     # removes it, so a killed process leaves someone's call outside the meeting directory and outside retention.
     # ox-diar reads the channel into memory instead. The test runs it to the end, and again with a SIGKILL a second in,
-    # and looks for ANY new entry in that directory, whatever its name (a rename of FluidAudio's stream file, or
-    # another library's copy, must not slip past a name filter), and in $TMPDIR when that is a different directory.
-    # (Foundation on macOS takes its temporary directory from `confstr` (`getconf DARWIN_USER_TEMP_DIR`), not from
-    # $TMPDIR, so pointing TMPDIR elsewhere would protect nothing; both are watched.) Another process creating a file
-    # there during the run would fail this test: run it on a quiet machine, and allow-list a name only with evidence
-    # of which library writes it and that it holds no audio.
+    # and classifies every new entry in that directory with `audio_suspect` above, and in $TMPDIR when that is a
+    # different directory. (Foundation on macOS takes its temporary directory from `confstr`
+    # (`getconf DARWIN_USER_TEMP_DIR`), not from $TMPDIR, so pointing TMPDIR elsewhere would protect nothing; both are
+    # watched.) The rule is name-agnostic outside `com.apple.*` (a rename of FluidAudio's stream file, or another
+    # library's copy, must not slip past a name filter) and size-aware inside it, because system daemons create their
+    # own directories there while the test runs (`com.apple.inputanalyticsd`, `com.apple.ScopedBookmarkAgent`,
+    # `com.apple.Maps.mapssyncd` in real CI runs). Entries are classified when first seen and again at the end.
     # Mutation: Sources/ox-diar/main.swift, write the samples to a WAV beside the output and replace
-    # `manager.process(audio: samples)` with `manager.process(thatURL)` -> RED (the killed run leaves its stream file).
+    # `manager.process(audio: samples)` with `manager.process(thatURL)` -> RED (the killed run leaves its stream file,
+    # which is not `com.apple.*`).
     def test_no_audio_reaches_the_temporary_directory(self):
         if not CLIP:
             self.skipTest("no --clip")
@@ -195,6 +283,12 @@ class Contract(unittest.TestCase):
             watched.add(os.path.realpath(os.environ["TMPDIR"]))
         mine = lambda: {os.path.join(d, n) for d in watched for n in os.listdir(d)}
         before = mine()
+        verdicts = {}
+
+        def judge(paths):
+            for q in paths:
+                if verdicts.get(q) is None:
+                    verdicts[q] = audio_suspect(q)
         pcm = self.clip_pcm()
         env = dict(os.environ)
         env.pop("OX_DIAR_ASSUME_MACOS", None)
@@ -202,15 +296,16 @@ class Contract(unittest.TestCase):
             proc = subprocess.Popen([BIN, pcm, self.path("o.json"), "--models", MODELS], env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             started = time.time()
-            seen = set()
             while proc.poll() is None:
-                seen |= mine() - before
+                judge(mine() - before)
                 if kill_after is not None and time.time() - started > kill_after:
                     proc.kill()
                     proc.wait()
                     break
                 time.sleep(0.005)
-            self.assertEqual(seen | (mine() - before), set(), f"ox-diar left new files in {sorted(watched)} (kill_after={kill_after})")
+            judge(mine() - before)
+            suspects = sorted(v for v in verdicts.values() if v)
+            self.assertEqual(suspects, [], f"ox-diar left audio-suspect files in {sorted(watched)} (kill_after={kill_after})")
 
 
 if __name__ == "__main__":
