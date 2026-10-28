@@ -62,15 +62,22 @@ enum PDFTextLayout {
     /// `minPagesForPageNumbers` pages show one at the same edge and the numbers rise
     /// from page to page (gaps allowed: a page of pictures may print none). A number
     /// that breaks the rise is text ("the final score was" / "42"), and a PDF of one
-    /// page keeps what it has at its edge. A number anywhere else is text too, and so
+    /// page keeps what it has at its edge. Numbering that restarts is more than one
+    /// rising run, and each run is judged on its own. A number anywhere else is text too, and so
     /// is one beside another number (a list of "1", "2", "3" is not three page numbers).
     private static func dropPageNumbers(_ pages: [[String]]) -> [[String]] {
         var dropped = pages.map { _ in Set<Int>() }
         for edge in Edge.allCases {
-            let candidates = pages.indices.flatMap { pageNumberCandidates(pages[$0], page: $0, edge: edge) }
-            let rising = longestRisingRun(candidates)
-            guard rising.count >= minPagesForPageNumbers else { continue }
-            for candidate in rising { dropped[candidate.page].insert(candidate.line) }
+            var candidates = pages.indices.flatMap { pageNumberCandidates(pages[$0], page: $0, edge: edge) }
+            // Numbering that restarts (front matter 1...3, then the body 1...N) is
+            // several rising runs: each is dropped on its own evidence.
+            while true {
+                let rising = longestRisingRun(candidates)
+                guard rising.count >= minPagesForPageNumbers else { break }
+                for candidate in rising { dropped[candidate.page].insert(candidate.line) }
+                let gone = Set(rising.map { $0.page })
+                candidates.removeAll { gone.contains($0.page) }
+            }
         }
         return zip(pages, dropped).map { page, gone in page.indices.filter { !gone.contains($0) }.map { page[$0] } }
     }
