@@ -90,8 +90,8 @@ private func freshDefaults(_ label: String = "ox-say-sound") -> (UserDefaults, S
 }
 
 final class VolumeDuckCoordinatorTests: XCTestCase {
-    private func rig(level: Float = 0.8, log: @escaping (String) -> Void = { _ in },
-                     logError: @escaping (String) -> Void = { _ in },
+    private func rig(level: Float = 0.8, logError: @escaping (String) -> Void = { _ in },
+                     log: @escaping (String) -> Void = { _ in },
                      now: @escaping () -> Date = Date.init)
         -> (FakeSystemVolume, VolumeDuckCoordinator) {
         let fake = FakeSystemVolume()
@@ -493,7 +493,7 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
         var clock = Date(timeIntervalSinceReferenceDate: 1_000)
         var errors: [String] = []
         var notices: [String] = []
-        let (fake, duck) = rig(log: { notices.append($0) }, logError: { errors.append($0) }, now: { clock })
+        let (fake, duck) = rig(logError: { errors.append($0) }, log: { notices.append($0) }, now: { clock })
         func failedDuck(_ g: Int) {
             duck.begin(generation: g)
             fake.refusedWrites = 2
@@ -594,6 +594,25 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
         XCTAssertEqual(fake.level, 0, "the grid snapped the near-silent target to nothing")
         duck.end(generation: 1)
         XCTAssertEqual(errors, [], "a snapped-to-0 restore is inside the confirm tolerance")
+    }
+
+    // A refused first write after an expired owed entry: said once, not again on every retry inside the window.
+    // Mutation: begin, `if claimedOwed, let uid = device.uid { owed[uid] = earlierOwed }` -> `if let uid ...` -> RED.
+    func testARefusedBeginDoesNotRepeatAnExpiredOwedLine() {
+        var clock = Date(timeIntervalSinceReferenceDate: 1_000)
+        var errors: [String] = []
+        let (fake, duck) = rig(logError: { errors.append($0) }, now: { clock })
+        XCTAssertTrue(duck.begin(generation: 1))
+        fake.refusedWrites = 2
+        duck.end(generation: 1)
+        clock = clock.addingTimeInterval(VolumeDuckCoordinator.owedLifetime + 1)
+        errors.removeAll()
+        fake.refusedWrites = 1
+        XCTAssertFalse(duck.begin(generation: 2))
+        XCTAssertEqual(errors.filter { $0.contains("expired") }.count, 1, "\(errors)")
+        fake.refusedWrites = 1
+        XCTAssertFalse(duck.begin(generation: 3))
+        XCTAssertEqual(errors.filter { $0.contains("expired") }.count, 1, "the same line again on a retry: \(errors)")
     }
 }
 
@@ -981,25 +1000,6 @@ final class VolumeDuckRecoveryTests: XCTestCase {
         store.clear(uid: "b")
         XCTAssertEqual(store.loadAll(), [])
         XCTAssertNil(defaults.object(forKey: UserDefaultsDuckRecordStore.recordsKey))
-    }
-
-    // A refused first write after an expired owed entry: said once, not again on every retry inside the window.
-    // Mutation: begin, `if claimedOwed, let uid = device.uid { owed[uid] = earlierOwed }` -> `if let uid ...` -> RED.
-    func testARefusedBeginDoesNotRepeatAnExpiredOwedLine() {
-        var clock = Date(timeIntervalSinceReferenceDate: 1_000)
-        var errors: [String] = []
-        let (fake, duck) = rig(logError: { errors.append($0) }, now: { clock })
-        XCTAssertTrue(duck.begin(generation: 1))
-        fake.refusedWrites = 2
-        duck.end(generation: 1)
-        clock = clock.addingTimeInterval(VolumeDuckCoordinator.owedLifetime + 1)
-        errors.removeAll()
-        fake.refusedWrites = 1
-        XCTAssertFalse(duck.begin(generation: 2))
-        XCTAssertEqual(errors.filter { $0.contains("expired") }.count, 1, "\(errors)")
-        fake.refusedWrites = 1
-        XCTAssertFalse(duck.begin(generation: 3))
-        XCTAssertEqual(errors.filter { $0.contains("expired") }.count, 1, "the same line again on a retry: \(errors)")
     }
 
     func testTheDefaultsStoreRoundTripsAndReadsARecordWithoutATimestampAsUnstamped() {
