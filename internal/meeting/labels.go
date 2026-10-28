@@ -210,7 +210,9 @@ func looseExtension(s, ext string) bool {
 // two letters are an ordinary word that merely starts alike: a preposition or conjunction after a name ("Иван с
 // мужем", "Иван и Петя", "Ivan a plan" for " Смирнов", " Иванов", " Adams"), an initial. Three letters that then end
 // at a word edge ("Ivan Pet") are rarely a word of their own, and a miss costs one duplicated surname the user can
-// see, while a false hit sends a whole meeting's notes back to the model.
+// see, while a false hit sends a whole meeting's notes back to the model. Exactly three letters are a cut only when
+// the text ends there ("Ivan Pet"): with more text after them they are as likely a short word (" под столом" for
+// " Подгорный", " for me" for " Forrest"), and the model re-run that a false hit costs is the dearer error (#305).
 const minCutRunes = 3
 
 // truncatedExtension reports text that holds the first words of ext and stops at a word edge inside it: "Ivan Pet"
@@ -239,7 +241,7 @@ func truncatedExtension(rest, ext string) bool {
 				continue
 			}
 		}
-		return word >= minCutRunes && wordEdgeAfter(rest, end)
+		return wordEdgeAfter(rest, end) && (word > minCutRunes || word == minCutRunes && strings.TrimSpace(rest[end:]) == "")
 	}
 	return false
 }

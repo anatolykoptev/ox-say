@@ -27,7 +27,7 @@ func TestNotesSnippetHasNoMarkdownSyntax(t *testing.T) {
 		{"quote", "> quoted words\n", "quoted", "quoted words"},
 		{"italic and code", "_Partial: chunk 2_ and `code`\n", "chunk", "Partial: chunk 2 and code"},
 		{"strike", "this ~~old~~ plan\n", "old", "this old plan"},
-		{"escaped star stays", `price 5 \* 3 and \[x\]`+"\n", "5 *", "price 5 * 3 and [x]"},
+		{"escaped star stays", `price 5 \* 3 and \[x\]` + "\n", "5 *", "price 5 * 3 and [x]"},
 		{"snake_case stays", "see foo_bar_baz now\n", "foo_bar", "see foo_bar_baz now"},
 		{"hashtag and date stay", "- #42 fix on 2026-10-20\n", "#42", "#42 fix on 2026-10-20"},
 	}
