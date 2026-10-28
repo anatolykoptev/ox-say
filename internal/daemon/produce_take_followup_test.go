@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,5 +188,20 @@ func writeDetailT(t *testing.T, path string, d takeDetail) {
 	}
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A NaN or infinite Cfg must not collapse every key to sha256("") (#149.8):
+// json.Marshal fails on it, and two different takes would share one cache slot.
+// Mutation: produce_take.go key, ignore the Marshal error again -> RED.
+func TestTakeKeyStaysDistinctForNonFiniteCfg(t *testing.T) {
+	a := followupSpec("Раз два три.")
+	b := followupSpec("Совсем другой текст.")
+	a.Cfg, b.Cfg = math.NaN(), math.Inf(1)
+	if a.key() == b.key() {
+		t.Errorf("two different takes share key %s", a.key())
+	}
+	if a.key() == followupSpec("Раз два три.").key() {
+		t.Errorf("a NaN cfg shares the key of a finite one")
 	}
 }

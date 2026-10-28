@@ -37,3 +37,23 @@ func TestOptionErrorsAreNotLineErrors(t *testing.T) {
 		t.Errorf("option error = %v (LineError %v)", err, le)
 	}
 }
+
+// #149.7: the abbreviation expander never glues words, honours all-caps text
+// and keeps the closing dot of «и т.д.» before a closing quote or bracket;
+// the dotless "т.е" is a documented gap and stays as written.
+// Mutation: abbrev.go expandAbbreviations drops the separator after the
+// replacement -> "то естьт.к." -> RED (glued row).
+func TestSpokenAbbreviationEdges(t *testing.T) {
+	for in, want := range map[string]string{
+		"Это т.е.т.к. так.":                 "Это то есть так как так.",
+		"Яблоки и т.д.потом груши.":         "Яблоки и так далее потом груши.",
+		"ТАК Т.Е. ВСЁ":                      "ТАК ТО ЕСТЬ ВСЁ",
+		"Он сказал «яблоки и т.д.» и ушёл.": "Он сказал «яблоки и так далее.» и ушёл.",
+		"Яблоки (груши и т.д.) лежат.":      "Яблоки (груши и так далее.) лежат.",
+		"Это т.е без точки.":                "Это т.е без точки.",
+	} {
+		if got := Spoken(in); got != want {
+			t.Errorf("Spoken(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

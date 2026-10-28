@@ -53,12 +53,19 @@ func expandAbbreviations(text string) string {
 			start, end := m[4], m[5]
 			b.WriteString(text[last:start])
 			rep := f.spoken
-			if r, _ := utf8.DecodeRuneInString(text[start:end]); unicode.IsUpper(r) {
+			switch r, _ := utf8.DecodeRuneInString(text[start:end]); {
+			case allUpper(text[start:end]):
+				rep = strings.ToUpper(rep)
+			case unicode.IsUpper(r):
 				rep = upperFirst(rep)
 			}
 			b.WriteString(rep)
 			if f.endsSent && closesSentence(text[end:]) {
 				b.WriteByte('.')
+			}
+			// "т.е.т.к." or "и т.д.потом": never glue the next word on.
+			if next, _ := utf8.DecodeRuneInString(text[end:]); unicode.IsLetter(next) || unicode.IsDigit(next) {
+				b.WriteByte(' ')
 			}
 			last = end
 		}
@@ -66,6 +73,19 @@ func expandAbbreviations(text string) string {
 		text = b.String()
 	}
 	return text
+}
+
+// allUpper reports whether s has letters and none of them is lower case
+// ("Т.Е." in an all-caps line).
+func allUpper(s string) bool {
+	letters := false
+	for _, r := range s {
+		if unicode.IsLower(r) {
+			return false
+		}
+		letters = letters || unicode.IsUpper(r)
+	}
+	return letters
 }
 
 func upperFirst(s string) string {
@@ -81,5 +101,5 @@ func closesSentence(rest string) bool {
 		return true
 	}
 	r, _ := utf8.DecodeRuneInString(rest)
-	return unicode.IsUpper(r) || strings.ContainsRune("«\"—–(", r)
+	return unicode.IsUpper(r) || strings.ContainsRune("«\"—–(»”)", r)
 }

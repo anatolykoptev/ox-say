@@ -164,7 +164,10 @@ type takeSpec struct {
 }
 
 func (s takeSpec) key() string {
-	raw, _ := json.Marshal(s) // strings and numbers only: cannot fail
+	raw, err := json.Marshal(s)
+	if err != nil { // a NaN or infinite cfg: keep the key distinct instead of hashing ""
+		raw = []byte(fmt.Sprintf("%+v", s))
+	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:takeKeyBytes])
 }
