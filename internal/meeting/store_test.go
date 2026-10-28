@@ -379,3 +379,34 @@ func TestAStuckTombstoneIsReportedOnce(t *testing.T) {
 		t.Fatalf("%d warnings for one stuck tombstone in 3 Lists, want 1:\n%s", got, logs.String())
 	}
 }
+
+// A tombstone whose name says it was born in the future (the clock was set back after the delete, or the name was
+// made on a machine with a fast clock) would be "younger than the grace period" until the clock catches up, so a
+// crash leftover could stay for ever. The directory's modification time stands in then: a leftover that was last
+// touched long ago is swept, and one touched just now still belongs to a delete in flight and is left alone.
+// Mutation: internal/meeting/store.go tombstoneBorn, return `time.Unix(0, ns)` without the `After(time.Now())`
+// fallback -> RED (the leftover with the future suffix survives List).
+func TestListSweepsATombstoneWithAFutureSuffixByItsMtime(t *testing.T) {
+	s := &Store{Root: t.TempDir()}
+	future := strconv.FormatInt(time.Now().Add(365*24*time.Hour).UnixNano(), 36)
+	leftover := filepath.Join(s.Root, tombstonePrefix+"20261023-150100-cccccc-"+future)
+	inFlight := filepath.Join(s.Root, tombstonePrefix+"20261023-150100-dddddd-"+future)
+	for _, dir := range []string{leftover, inFlight} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	long := time.Now().Add(-2 * tombstoneGrace)
+	if err := os.Chtimes(leftover, long, long); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.List(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(leftover); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a leftover with a future-dated suffix survived List: %v", err)
+	}
+	if _, err := os.Stat(inFlight); err != nil {
+		t.Errorf("a tombstone touched just now was swept: %v", err)
+	}
+}

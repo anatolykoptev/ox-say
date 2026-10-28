@@ -16,8 +16,8 @@ import (
 // not a loopback address means DNS rebinding. Cross-site browser requests that
 // change something (every method but GET, HEAD and OPTIONS) are refused by
 // http.CrossOriginProtection (Sec-Fetch-Site, else Origin); it lets a safe
-// method through, so a meetings read the browser marks cross-site or same-site
-// is refused here (crossSiteMeetingRead). POST
+// method through, so every GET or HEAD the browser marks cross-site or same-site
+// is refused here (crossSiteRead), on every route except /health. POST
 // bodies must be JSON, so a cross-origin "simple" request (text/plain, form
 // data) fails even from a browser that sends neither header. go-mcpserver
 // protects /mcp alone; Guard wraps every route.
@@ -28,7 +28,7 @@ func Guard(next http.Handler) http.Handler {
 			writeErr(w, http.StatusForbidden, "host not allowed")
 			return
 		}
-		if crossSiteMeetingRead(r) {
+		if crossSiteRead(r) {
 			writeErr(w, http.StatusForbidden, "cross-site request not allowed")
 			return
 		}
@@ -40,16 +40,18 @@ func Guard(next http.Handler) http.Handler {
 	})
 }
 
-// crossSiteMeetingRead reports a GET or HEAD of /v1/meetings... that a browser sent from another site (or another
-// origin of this machine): `new Audio("http://127.0.0.1:PORT/v1/meetings/<id>/audio")` on any web page would
-// otherwise tell it whether a meeting exists and how long it is, and make the daemon mix audio. The app's
-// URLSession, AVPlayer and the MCP clients send no Sec-Fetch-Site; a typed address sends "none" and the daemon's own
-// pages "same-origin": all three pass.
-func crossSiteMeetingRead(r *http.Request) bool {
+// crossSiteRead reports a GET or HEAD that a browser sent from another site (or another origin of this machine).
+// Every route is covered, not a list of prefixes: `new Audio("http://127.0.0.1:PORT/v1/meetings/<id>/audio")` or an
+// <audio src> on a voice's reference audio, on any web page, would otherwise tell it what exists and how long it is,
+// and make the daemon work; so would /status (whether the user is recording or dictating). A route added tomorrow is
+// covered by construction. The app's URLSession, AVPlayer and the MCP clients send no Sec-Fetch-Site; a typed address
+// sends "none" and the daemon's own pages "same-origin": all three pass. /health carries nothing of the user's and
+// stays open to a liveness probe.
+func crossSiteRead(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
-	if p := r.URL.Path; p != "/v1/meetings" && !strings.HasPrefix(p, "/v1/meetings/") {
+	if r.URL.Path == "/health" {
 		return false
 	}
 	switch r.Header.Get("Sec-Fetch-Site") {

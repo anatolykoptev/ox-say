@@ -125,6 +125,12 @@ func load(dir string) (*Manifest, error) {
 
 // Update loads id, applies fn and saves the result, all under the store lock.
 func (s *Store) Update(id string, fn func(*Manifest)) (*Manifest, error) {
+	return s.Modify(id, func(m *Manifest) error { fn(m); return nil })
+}
+
+// Modify is Update whose fn can refuse: an error from fn returns as it is and the manifest is not saved. For a
+// change that must be decided on the record as it is under the store lock.
+func (s *Store) Modify(id string, fn func(*Manifest) error) (*Manifest, error) {
 	dir, err := s.Dir(id)
 	if err != nil {
 		return nil, err
@@ -135,7 +141,9 @@ func (s *Store) Update(id string, fn func(*Manifest)) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	fn(m)
+	if err := fn(m); err != nil {
+		return nil, err
+	}
 	m.ID = id // fn edits the record, it does not move it
 	if err := s.save(dir, m); err != nil {
 		return nil, err
@@ -276,12 +284,18 @@ func (s *Store) sweepTombstones(entries []os.DirEntry) {
 }
 
 // tombstoneBorn is when the tombstone was made: the time in the last part of its name (base 36, nanoseconds),
-// else the directory's modification time, else now (a tombstone of unknown age is left alone).
+// else the directory's modification time, else now (a tombstone of unknown age is left alone). A time in the name
+// that is after now is not believed (the clock moved back since, and trusting it would keep a leftover until the
+// clock catches up): the modification time answers instead. That can sweep a live delete's tombstone early only
+// when the directory was last written more than tombstoneGrace ago; unlinking a directory that is already being
+// unlinked is harmless.
 func tombstoneBorn(e os.DirEntry) time.Time {
 	name := e.Name()
 	if i := strings.LastIndexByte(name, '-'); i >= 0 {
 		if ns, err := strconv.ParseInt(name[i+1:], 36, 64); err == nil {
-			return time.Unix(0, ns)
+			if born := time.Unix(0, ns); !born.After(time.Now()) {
+				return born
+			}
 		}
 	}
 	if fi, err := e.Info(); err == nil {

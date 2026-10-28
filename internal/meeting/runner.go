@@ -104,6 +104,8 @@ type Runner struct {
 	clearStale func(dir string, m Manifest, written *Notes) error
 	// afterSpeakersRead, when set, is called by EditSpeakers and by the notes writer's clear once they have read the speakers they will change (tests).
 	afterSpeakersRead func()
+	// beforeRenameUpdate, when set, is called by Rename after its first status check and before the store update (tests).
+	beforeRenameUpdate func()
 }
 
 // NewRunner fills the defaults of d.

@@ -3,7 +3,6 @@ package daemon
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -11,7 +10,7 @@ import (
 // <audio> element on /v1/meetings/<id>/audio tells whether it exists and how long it is, and makes the daemon work).
 // Guard refuses a meetings read the browser marks cross-site or same-site; the app's URLSession, AVPlayer and the MCP
 // clients send no Sec-Fetch-Site, a page of the daemon's own origin sends same-origin, and a typed address sends none.
-// Mutation: internal/daemon/guard.go Guard, delete the `crossSiteMeetingRead(r)` branch -> RED.
+// Mutation: internal/daemon/guard.go Guard, delete the `crossSiteRead(r)` branch -> RED.
 func TestGuardRefusesCrossSiteMeetingReads(t *testing.T) {
 	d, _ := meetingFixture(t, nil)
 	t.Cleanup(d.Shutdown)
@@ -49,11 +48,5 @@ func TestGuardRefusesCrossSiteMeetingReads(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	if rec := serve(h, req); rec.Code != http.StatusForbidden {
 		t.Errorf("HEAD cross-site = %d", rec.Code)
-	}
-	// the refusal is Guard's, not a meetings rule on other routes
-	req = httptest.NewRequest("GET", "http://127.0.0.1:8094/status", nil)
-	req.Header.Set("Sec-Fetch-Site", "cross-site")
-	if rec := serve(h, req); strings.Contains(rec.Body.String(), "cross-site") {
-		t.Errorf("/status: %d %s", rec.Code, rec.Body)
 	}
 }

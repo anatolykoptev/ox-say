@@ -166,3 +166,44 @@ func TestRenameAndSpeakersEditAtOnceKeepBoth(t *testing.T) {
 		t.Errorf("manifest title = %q", got)
 	}
 }
+
+// The status is read again under the store lock: a Retry or a Finish that queued the meeting between Rename's first
+// check and its update wins, and the rename is refused without touching the manifest. The hook queues the meeting
+// in exactly that window and records the manifest file (identity, mtime, bytes) to prove nothing re-saved it.
+// Mutation: internal/meeting/rename.go Rename, drop the `!renameable(m.Status)` check inside the Store.Update
+// closure -> RED (the rename goes through on a queued meeting). Without the veto the same window re-saves the
+// manifest unchanged: RED on the file comparison.
+func TestRenameRefusesAMeetingThatTurnedBusyBeforeTheUpdate(t *testing.T) {
+	f, id, dir := settledGroup(t)
+	path := filepath.Join(dir, ManifestFile)
+	var before os.FileInfo
+	var beforeRaw []byte
+	f.r.beforeRenameUpdate = func() {
+		if _, err := f.r.Store.Update(id, func(m *Manifest) { m.Status = StatusQueued }); err != nil {
+			t.Error(err)
+			return
+		}
+		before, _ = os.Stat(path)
+		beforeRaw, _ = os.ReadFile(path)
+		time.Sleep(20 * time.Millisecond) // a later save would carry a later mtime
+	}
+	_, err := f.r.Rename(id, "Too late")
+	if !errors.Is(err, ErrSpeakersBusy) {
+		t.Fatalf("Rename on a meeting that turned busy = %v, want ErrSpeakersBusy", err)
+	}
+	if before == nil {
+		t.Fatal("the hook never ran")
+	}
+	got := f.load(t, id)
+	if got.Title == "Too late" || got.Status != StatusQueued {
+		t.Fatalf("manifest = title %q status %q", got.Title, got.Status)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if !os.SameFile(before, after) || !after.ModTime().Equal(before.ModTime()) || string(raw) != string(beforeRaw) {
+		t.Error("the refused rename re-saved the manifest")
+	}
+}
