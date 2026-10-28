@@ -307,9 +307,11 @@ func (r *Repair) Apply() error {
 			return fmt.Errorf("voices: %w", err)
 		}
 		r.tmp = ""
+		// The new WAV is already in place: failing now would leave it beside the old ref_text. Log and go on to the
+		// JSON rename, which is what makes the voice consistent.
 		if err := s.syncDir(s.dir); err != nil {
-			_ = os.Remove(metaTmp)
-			return fmt.Errorf("voices: %w", err)
+			slog.Warn("voice repair: the directory could not be synced after the new clip; going on",
+				slog.String("voice", r.Name), slog.Any("error", err))
 		}
 	}
 	if err := s.rename(metaTmp, s.metaPath(r.Name)); err != nil {

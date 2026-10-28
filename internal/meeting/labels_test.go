@@ -439,7 +439,7 @@ func TestAnExtensionWithoutItsSpaceIsNotDoubled(t *testing.T) {
 // notes back to the model. "Ivan Pet" at the end of the text, and a four-letter start ("Ivan Petr said"), stay partial.
 // Mutation: internal/meeting/labels.go minCutRunes = 3 -> 1 -> RED (the "not partial" rows).
 // Mutation: internal/meeting/labels.go truncatedExtension, `word >= minCutRunes+1 || ...` -> `word >= minCutRunes` -> RED
-// (" под столом", " про это", " for me").
+// (" под столом", " про это", " for me"); `endsAtCut` -> `TrimSpace(tail) == ""` -> RED (" Pet.", " Pet,").
 func TestAShortWordAfterANameIsNotACutSurname(t *testing.T) {
 	for _, tc := range []struct {
 		rest, ext string
@@ -451,7 +451,8 @@ func TestAShortWordAfterANameIsNotACutSurname(t *testing.T) {
 		{" Pet said", " Petrov", false}, {" Pet", " Petrov", true}, {" Пет", " Петров", true}, {" Petrov at", " Petrov Jr", true},
 		// #305.b: a three-letter word that starts like the surname, with more text after it, is a word of its own.
 		{" под столом", " Подгорный", false}, {" про это", " Прохоров", false}, {" for me", " Forrest", false},
-		{" Petr said", " Petrov", true}, {" Подг сказал", " Подгорный", true}, {" Pet.", " Petrov", false}, {" Pet \n", " Petrov", true},
+		{" Petr said", " Petrov", true}, {" Подг сказал", " Подгорный", true}, {" Pet.", " Petrov", true}, {" Pet,", " Petrov", true}, {" Pet!", " Petrov", true}, {" Pet»", " Petrov", true},
+		{" Pet. Then", " Petrov", true}, {" Pet.\nNext", " Petrov", true}, {" Pet, said", " Petrov", false}, {" Pet. then", " Petrov", false}, {" Pet \n", " Petrov", true},
 	} {
 		if got := partialExtension(tc.rest, tc.ext); got != tc.partial {
 			t.Errorf("partialExtension(%q, %q) = %v, want %v", tc.rest, tc.ext, got, tc.partial)

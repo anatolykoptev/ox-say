@@ -934,3 +934,33 @@ func TestRepairApplyFailsWhenTheClipCannotBeSynced(t *testing.T) {
 		t.Errorf("temp files left: %v", left)
 	}
 }
+
+// A directory sync that fails after the new WAV is renamed in must not abort Apply: the rename is done, and stopping
+// would leave the new audio beside the old ref_text. The repair completes and the voice is consistent.
+// Mutation: internal/voices/repair.go Apply, return the error of the syncDir after the WAV rename -> RED.
+func TestRepairApplyGoesOnWhenTheDirSyncAfterTheClipFails(t *testing.T) {
+	s, _ := newStore(t)
+	seedVoice(t, s, "longref", 20, words90())
+	s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), new(int)))
+	r, err := s.PrepareRepair(context.Background(), "longref")
+	if err != nil || r == nil {
+		t.Fatalf("PrepareRepair = %v, %v", r, err)
+	}
+	calls := 0
+	s.syncDir = func(string) error { // 1, 2: the backup pair; 3: after the new clip; 4: after the JSON
+		if calls++; calls == 3 {
+			return errors.New("simulated")
+		}
+		return nil
+	}
+	if err := r.Apply(); err != nil || calls != 4 {
+		t.Fatalf("Apply = %v after %d dir syncs, want it to complete after 4", err, calls)
+	}
+	v, _ := s.Get("longref")
+	if v.RefText != r.NewText {
+		t.Errorf("ref_text = %q, want the repaired text", v.RefText)
+	}
+	if d, _ := WAVSeconds(s.WAVPath("longref")); d > MaxRefSeconds || d < 10 {
+		t.Errorf("clip = %.2f s", d)
+	}
+}
