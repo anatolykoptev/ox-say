@@ -108,9 +108,22 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 	}
 	g := sup.Acquire()
 	defer g.Release()
+	// A request that is not the producer's own is interactive: while it uses
+	// the shared voxcpm2 child the child runs at normal priority (#156.7).
+	use := engineUseOf(ctx)
+	vox := d.VoxSup != nil && sup == d.VoxSup
+	if vox && use == nil {
+		defer d.voxQoS.beginInteractive()()
+	}
 	base, err := sup.EnsureReady(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errEngineStart, err)
+	}
+	if use != nil {
+		use.pid.Store(int64(sup.Status().PID)) // the child this request goes to (#156.12b)
+	}
+	if vox {
+		d.voxQoS.apply() // the child may have just started
 	}
 	resp, err := d.ec.Speech(ctx, base, raw)
 	if err != nil {
