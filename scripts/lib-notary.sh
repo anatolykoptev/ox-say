@@ -44,3 +44,9 @@ oxs_stapler_run() {
         attempt=$((attempt + 1))
     done
 }
+
+# oxs_versions_match <a> <b>: the two version strings are equal and not empty. Two bundles whose
+# Info.plist lack CFBundleShortVersionString both read as "" and would otherwise "match".
+oxs_versions_match() {
+    [ -n "$1" ] && [ "$1" = "$2" ]
+}

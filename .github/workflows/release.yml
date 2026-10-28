@@ -96,20 +96,10 @@ jobs:
         env:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
+          set -euo pipefail
           git fetch --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
-          commit=$(git rev-parse "$TAG^{commit}")
-          git merge-base --is-ancestor "$commit" "$GITHUB_SHA"
-          # ...and must be the release commit itself: the one whose manifest
-          # became this version. release-please adopts a tag that already
-          # exists, so a tag created on an older main commit would otherwise
-          # turn old code into a signed release under the new number.
-          want=${TAG#v}
-          got=$(git show "$commit:.release-please-manifest.json" | jq -r '."."')
-          before=$(git show "$commit^1:.release-please-manifest.json" | jq -r '."."')
-          if [ "$got" != "$want" ] || [ "$before" = "$want" ]; then
-            echo "$TAG points at $commit, which is not the commit that released $want (manifest $before -> $got)" >&2
-            exit 1
-          fi
+          # on the main line of this run's commit and the release commit itself (says why when not)
+          commit=$(scripts/check-release-tag.sh "$TAG" "$GITHUB_SHA")
           git checkout --detach "$commit"
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -172,12 +162,14 @@ jobs:
       # ox-diar's Core ML models (22 MB): fetch-models.sh checks every file against its pinned SHA-256 whatever the
       # cache held, so the cache only saves the download. Keyed by the hash of the script that pins them.
       - name: Cache the diarization models
+        if: matrix.arch == 'arm64'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/diar-models
           key: diar-models-${{ hashFiles('scripts/fetch-models.sh') }}
 
       - name: Diarization models
+        if: matrix.arch == 'arm64'
         run: bash scripts/fetch-models.sh --diar-only "$RUNNER_TEMP/diar-models"
 
       - name: Check the package
@@ -204,10 +196,11 @@ jobs:
           fi
           for bin in $bins; do
             test "$(lipo -archs "$bin")" = "$ARCH"
-            if otool -L "$bin" | grep '@rpath' >/dev/null; then
-              echo "$bin links @rpath libraries" >&2
-              exit 1
-            fi
+            # captured first: an otool error must fail the step, not read as "no @rpath"
+            libs=$(otool -L "$bin")
+            case $libs in
+              *@rpath*) echo "$bin links @rpath libraries" >&2; exit 1 ;;
+            esac
           done
           # The precompiled Metal libraries: every engine's <bin>.metallib
           # must be there and structurally sound — a missing or corrupt one is
@@ -353,7 +346,6 @@ jobs:
       contents: read
     env:
       SIGN_IDENTITY: "Developer ID Application: Anatoly Koptev (Z25C7QACUF)"
-      APPLE_TEAM_ID: Z25C7QACUF
       VERSION: ${{ needs.release-please.outputs.tag_name || format('dev-{0}', github.sha) }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -371,20 +363,10 @@ jobs:
         env:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
+          set -euo pipefail
           git fetch --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
-          commit=$(git rev-parse "$TAG^{commit}")
-          git merge-base --is-ancestor "$commit" "$GITHUB_SHA"
-          # ...and must be the release commit itself: the one whose manifest
-          # became this version. release-please adopts a tag that already
-          # exists, so a tag created on an older main commit would otherwise
-          # turn old code into a signed release under the new number.
-          want=${TAG#v}
-          got=$(git show "$commit:.release-please-manifest.json" | jq -r '."."')
-          before=$(git show "$commit^1:.release-please-manifest.json" | jq -r '."."')
-          if [ "$got" != "$want" ] || [ "$before" = "$want" ]; then
-            echo "$TAG points at $commit, which is not the commit that released $want (manifest $before -> $got)" >&2
-            exit 1
-          fi
+          # on the main line of this run's commit and the release commit itself (says why when not)
+          commit=$(scripts/check-release-tag.sh "$TAG" "$GITHUB_SHA")
           git checkout --detach "$commit"
 
       # Build the app here, from first-party Swift with no dependencies, before

@@ -79,6 +79,17 @@ runs "staple: persistent transient fails after 4 attempts" 1 4 transient
 runs "staple: non-transient error fails without retry" 1 1 ticket ok
 cat "$tmp/err" | grep -q "does not have a ticket" && pass "staple: the tool's message reaches stderr" || fail "staple: the tool's message was swallowed"
 
+# oxs_versions_match <a> <b>: equal and non-empty. Two apps whose Info.plist lack
+# CFBundleShortVersionString both read as "", which must not pass as a match.
+vm() { local rc=0; oxs_versions_match "$2" "$3" >/dev/null 2>&1 || rc=$?; [ "$rc" = 0 ] || rc=1; check "versions: $1" "$rc" "$4"; }
+vm "equal" "0.1.29" "0.1.29" 0
+vm "different" "0.1.29" "0.1.28" 1
+vm "both empty" "" "" 1
+vm "one empty" "0.1.29" "" 1
+vm "other empty" "" "0.1.29" 1
+n=$(grep -c 'oxs_versions_match' "$root/scripts/sign-release.sh" || true)
+check "sign-release.sh compares versions through the helper" "${n:-x}" 1
+
 for pat in 'oxs_stapler_staple "[$]app"' 'oxs_stapler_validate "[$]app"' 'oxs_stapler_validate "[$]checked"'; do
     n=$(grep -cE "^$pat" "$root/scripts/sign-release.sh" || true)
     check "sign-release.sh uses the helper: $pat" "${n:-x}" 1
