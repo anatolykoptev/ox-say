@@ -71,7 +71,9 @@
 "menu.meeting.stop" = "Stop Recording (%@)";
 "menu.meeting.open_folder" = "Open Notes Folder";
 "menu.meeting.choose_folder" = "Notes Folder…";
-"menu.meeting.auto_start" = "Record Calls Automatically";
+/* The "when a call starts" header of the Meetings submenu and its row in Settings — the global mode picker. */
+"settings.when_call" = "When a call starts";
+"settings.call.off" = "Off";
 "menu.meeting.keep" = "Keep Audio";
 "menu.meeting.keep7" = "7 days";
 "menu.meeting.keep30" = "30 days";
@@ -87,6 +89,13 @@
 "badge.stop" = "Stop";
 "badge.dont_record" = "Don't record this one";
 "badge.prompt" = "Record this call?";
+/* The detected-call prompt; %@ is the app or site ("Zoom call — record it?", "Google Meet call — record it?"). */
+"badge.prompt.call" = "%@ call — record it?";
+/* The prompt's quiet third action; %@ is the app. Sets "Don't record" for it, reversible in Settings. */
+"badge.dont_ask" = "Don't ask for %@";
+/* Before the first Apple Event to a browser whose Automation consent is undetermined; %@ is Chrome, Brave, Arc or Edge. */
+"badge.browser.consent" = "A call in %@? To notice Meet calls, ox-say must see the tab's address.";
+"badge.browser.allow" = "Allow…";
 "badge.record" = "Record";
 "badge.not_now" = "Not now";
 "badge.copy_consent" = "Copy consent phrase";
@@ -101,10 +110,15 @@
 "notice.meeting.notes_pending" = "The transcript is saved. Download the notes model to get notes.";
 "notice.meeting.failed" = "The meeting could not be processed: %@";
 "notice.meeting.start_failed" = "Recording could not start: %@";
-"meeting.explain.title" = "OxSay can record your calls";
-"meeting.explain.body" = "When a call starts in Zoom, Meet, Teams or another call app, OxSay records both sides on this Mac, writes a transcript and notes, and keeps the audio for 30 days. Nothing leaves your Mac. A red recording badge stays on screen, and you can stop it or skip a call at any time. Tell people you are recording: laws in some places require everyone's consent.";
-"meeting.explain.ok" = "Record Calls Automatically";
-"meeting.explain.manual" = "Only When I Choose";
+/* The one-time consent reminder before the first recording; it never changes a setting. */
+"meeting.remind.title" = "Before you record";
+"meeting.remind.body" = "OxSay records both sides of the call on this Mac, writes a transcript and notes, and %@. OxSay sends nothing anywhere. A red recording badge stays on screen, and you can stop at any time. Tell the other people you are recording: laws in some places require everyone's consent.";
+/* The %@ of the reminder when audio is kept N days (%d). */
+"meeting.remind.keep_days" = "keeps the audio for %d days";
+/* ...and when audio is kept until the user deletes it. */
+"meeting.remind.keep_forever" = "keeps the audio until you delete it";
+"meeting.remind.record" = "Record This Call";
+"meeting.remind.skip" = "Don't Record";
 "notice.meeting.browser_denied" = "To notice Google Meet calls, allow OxSay to control your browser in System Settings → Privacy & Security → Automation.";
 "notice.meeting.tap_silent" = "OxSay hears nothing from the other side although sound is playing: turn OxSay on under Privacy & Security → Screen & System Audio Recording → System Audio Recording Only, or, if it is already on, switch it off and on again.";
 "meeting.tap_silent.title" = "System audio is silent";
@@ -202,11 +216,13 @@
 "meeting.duration.sec" = "under a minute";
 "settings.meetings.toggle" = "Record calls and write notes";
 "settings.meetings.toggle_footer" = "OxSay records both sides of a call on this Mac, writes a transcript and notes, and tells the speakers apart. Tell people you are recording: in some places the law requires everyone's consent.";
-"settings.auto.footer" = "OxSay notices when a call begins and shows a red badge. You can stop a recording at any time.";
+"settings.auto.footer" = "When a call starts, OxSay asks, records by itself, or stays off — your pick above. A red badge shows during every recording.";
 "settings.apps.header" = "Calls in these apps";
 "settings.apps.auto" = "Record automatically";
 "settings.apps.ask" = "Ask me first";
 "settings.apps.never" = "Don't record";
+/* The per-app picker's option that follows the global mode; %@ is what the global mode does to that app, e.g. "As set above (Ask me first)". */
+"settings.apps.default" = "As set above (%@)";
 "settings.apps.browsers" = "In Chrome, Brave, Arc or Edge";
 "settings.folder" = "Notes folder";
 "settings.keep" = "Keep recordings for";

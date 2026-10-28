@@ -24,17 +24,18 @@ public struct MeetingMenuState: Equatable {
     public var supported: Bool
     public var recordingElapsed: TimeInterval?
     public var notes: NotesStatus
-    public var autoStart: Bool
+    /// The global "when a call starts" mode.
+    public var callMode: CallGlobalMode
     public var retention: MeetingRetention
     /// Meetings whose speakers can be named, newest first.
     public var recent: [MeetingMenuRecent]
 
-    public init(supported: Bool, recordingElapsed: TimeInterval?, notes: NotesStatus, autoStart: Bool, retention: MeetingRetention,
+    public init(supported: Bool, recordingElapsed: TimeInterval?, notes: NotesStatus, callMode: CallGlobalMode, retention: MeetingRetention,
                 recent: [MeetingMenuRecent] = []) {
         self.supported = supported
         self.recordingElapsed = recordingElapsed
         self.notes = notes
-        self.autoStart = autoStart
+        self.callMode = callMode
         self.retention = retention
         self.recent = recent
     }
@@ -102,7 +103,10 @@ public enum MeetingMenu {
             }
         }
         rows.append(.separator)
-        rows.append(.item(title: text(.menuMeetingAutoStart), isOn: s.autoStart, isEnabled: true, action: .toggleMeetingAutoStart))
+        rows.append(.header(text(.settingsWhenCall)))
+        for mode in CallGlobalMode.allCases {
+            rows.append(.item(title: text(mode.titleKey), isOn: mode == s.callMode, isEnabled: true, action: .pickMeetingCallMode(mode)))
+        }
         rows.append(.header(text(.menuMeetingKeep)))
         for r in MeetingRetention.allCases {
             rows.append(.item(title: text(r.titleKey), isOn: r == s.retention, isEnabled: true, action: .pickMeetingRetention(r.days)))

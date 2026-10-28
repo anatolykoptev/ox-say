@@ -479,7 +479,7 @@ final class MainWindowSource {
             }
             switch change {
             case .enabled: host.meetingsEnabledChanged()
-            case .autoStart: host.meetings()?.settingsChanged()
+            case .callMode: host.meetings()?.settingsChanged()
             case .retention, .mode, .name: break
             }
             if case .enabled(let on) = change, on, host.meetings() is UnsupportedMeetings {

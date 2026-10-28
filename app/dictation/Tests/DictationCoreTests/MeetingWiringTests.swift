@@ -207,7 +207,7 @@ final class MeetingWiringTests: XCTestCase {
     /// Mutation: MeetingController.start, restore `_ = try? await host.client.finishMeeting(id: created.id)` -> RED.
     func testAnAbortedStartDeletesTheEmptyMeetingAndTheRestIsWired() throws {
         let controller = try source("OxSayDictation/MeetingController.swift")
-        let start = try XCTUnwrap(body(controller, of: "private func start(origin: CallTracker.Origin, source: String) {"))
+        let start = try XCTUnwrap(body(controller, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
         XCTAssertTrue(start.contains("if let created, current == nil { discardEmpty(created.id) }"))
         XCTAssertFalse(start.contains("finishMeeting"), "no start path closes the empty meeting instead of deleting it")
         let discard = try XCTUnwrap(body(controller, of: "private func discardEmpty(_ id: String) {"))
@@ -219,7 +219,7 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(status.contains("retention push at launch failed"))
         XCTAssertTrue(controller.contains("watcher.modeFor = { [weak self] source in"))
         let watcher = try source("OxSayDictation/CallWatcher.swift")
-        XCTAssertTrue(watcher.contains("mode: modeFor)"))
+        XCTAssertTrue(watcher.contains("mode: modeFor,"))
     }
 
     /// #251: the badge keeps its left edge when its width changes while it is on screen.
@@ -322,7 +322,7 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(open.contains("MeetingMenuRecent.from(list)"))
         let render = try XCTUnwrap(body(text, of: "private func render() {"))
         XCTAssertTrue(render.contains("recent: recent"))
-        let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String) {"))
+        let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
         XCTAssertTrue(start.contains("speaker: L10nKey.meetingLabelSpeaker.text"))
     }
 
@@ -348,22 +348,96 @@ final class MeetingWiringTests: XCTestCase {
     }
 
     /// The watcher decision, the call-start decision, the manual-start gate and the reconcile decision are the policy's.
-    /// Mutation: MeetingController.applyAutoStart, `MeetingPolicy.watcherShouldRun(` -> `MeetingSettings.autoStart(` -> RED.
+    /// Mutation: MeetingController.applyCallMode, `MeetingPolicy.watcherShouldRun(` -> `MeetingSettings.callMode(` -> RED.
+    /// Mutation (F3): MeetingController.observe, `global: MeetingSettings.callMode(host.defaults)` -> `global: .ask` -> RED.
     func testThePolicyDecidesAtTheCallSites() throws {
         let text = try controller()
-        let auto = try XCTUnwrap(body(text, of: "private func applyAutoStart() {"))
-        XCTAssertTrue(auto.contains("MeetingPolicy.watcherShouldRun(autoStart: MeetingSettings.autoStart(host.defaults), recording: current?.origin)"))
+        let auto = try XCTUnwrap(body(text, of: "private func applyCallMode() {"))
+        XCTAssertTrue(auto.contains("let mode = MeetingSettings.callMode(host.defaults)"))
+        XCTAssertTrue(auto.contains("MeetingPolicy.watcherShouldRun(mode: mode, recording: current?.origin)"))
         let stop = try XCTUnwrap(body(text, of: "func stop() {\n"))
-        XCTAssertTrue(stop.contains("\n        applyAutoStart()\n"), "the watcher is re-evaluated when a recording ends")
+        XCTAssertTrue(stop.contains("\n        applyCallMode()\n"), "the watcher is re-evaluated when a recording ends")
         let observe = try XCTUnwrap(body(text, of: "private func observe(_ tick: CallWatcher.Tick) {"))
         XCTAssertTrue(observe.contains("MeetingPolicy.onCallStarted(source: source,"))
+        XCTAssertTrue(observe.contains("global: MeetingSettings.callMode(host.defaults)"), "the stored global mode, not a hard-wired one")
+        XCTAssertTrue(observe.contains("picked: CallPolicy.pickedMode(for: source, host.defaults)"))
         XCTAssertTrue(observe.contains("installing: host.updateInstalling()"))
-        let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String) {"))
+        let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
         XCTAssertTrue(start.contains("MeetingPolicy.manualStart(installing: installing) == .waitForInstall"))
         XCTAssertTrue(start.contains("if origin == .auto, installing { return }"))
         let reconcile = try XCTUnwrap(body(text, of: "private func reconcile() {"))
         XCTAssertTrue(reconcile.contains("Reconcile.action(for: m,"))
         XCTAssertTrue(reconcile.contains("currentID: current?.info.id"))
+    }
+
+    /// The one-time explanation runs at the first automatic start and at the first Record pressed on the prompt, but a
+    /// menu "Record a meeting" is the user's own act and never raises it (the dialog talks about calls, and its first
+    /// button would flip the global mode).
+    /// Mutation: MeetingController.start, `origin == .auto || offered` -> `true` -> RED.
+    func testTheExplanationIsForAutoStartsAndThePromptNotTheMenu() throws {
+        let text = try controller()
+        let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
+        XCTAssertTrue(start.contains("if origin == .auto || offered, !consentReminderAccepted() { return }"))
+        XCTAssertTrue(text.contains("self?.start(origin: .manual, source: self?.lastSource ?? \"\", offered: true)"),
+                      "the prompt's Record is the offered start")
+    }
+
+    /// The one-time dialog is a consent reminder: it can cancel this start, and it never writes the global mode or
+    /// an app's pick (a user who presses Record for one call must not end up on "Record automatically").
+    /// Mutation: MeetingController.consentReminderAccepted, add `MeetingSettings.setCallMode(.auto, host.defaults)` -> RED.
+    /// Mutation: same function, `guard pressed == .alertFirstButtonReturn else { return false }` removed -> RED.
+    func testTheConsentReminderNeverChangesASetting() throws {
+        let reminder = try XCTUnwrap(body(try controller(), of: "private func consentReminderAccepted() -> Bool {"))
+        XCTAssertFalse(reminder.contains("setCallMode"), "the reminder must not write the global mode")
+        XCTAssertFalse(reminder.contains("CallPolicy.setMode"), "nor a per-app pick")
+        XCTAssertFalse(reminder.contains("callMode"))
+        // Mutation: MeetingController.consentReminderAccepted, `retention: MeetingSettings.retention(host.defaults)` -> `.month` -> RED.
+        XCTAssertTrue(reminder.contains("ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text })"),
+                      "the reminder names the user's retention, not a hardwired one")
+        XCTAssertTrue(reminder.contains("guard pressed == .alertFirstButtonReturn else { return false }"), "Don't Record cancels the start")
+        XCTAssertTrue(reminder.contains("L10nKey.meetingRemindRecord.text, L10nKey.meetingRemindSkip.text"), "Record This Call is the default button")
+        let whole = try controller()
+        XCTAssertFalse(whole.contains("Only When I Choose"))
+    }
+
+    /// The badge's questions come down through OfferLifetime (Core-tested): the prompt when its call is really
+    /// over or another began, the consent question when the browser releases the microphone, and both when the
+    /// mode goes Off.
+    /// Mutation: MeetingController.observe, `{ badge.hide() }` after `offerLife.shouldHide(` -> `{ _ = 0 }` -> RED.
+    /// Mutation: MeetingController.applyCallMode, `badge.hide()` -> `_ = 0` -> RED.
+    func testTheOffersComeDownThroughTheCoreDecision() throws {
+        let text = try controller()
+        let observe = try XCTUnwrap(body(text, of: "private func observe(_ tick: CallWatcher.Tick) {"))
+        XCTAssertTrue(observe.contains("if offerLife.shouldHide(now: Date(), offer: offer, liveSource: tick.call?.source, users: tick.users) { badge.hide() }"))
+        let apply = try XCTUnwrap(body(text, of: "private func applyCallMode() {"))
+        XCTAssertTrue(apply.contains("if !OfferLifetime.offersAllowed(mode: mode) {\n            if case .recording = badge.mode {} else { badge.hide() }"))
+    }
+
+    /// "Don't ask for <App>" writes the per-app "Don't record" — reversible in Settings — and declines this call.
+    /// Mutation (F6): MeetingController.dontAskForThisApp, delete `CallPolicy.setMode(.never,` -> RED.
+    func testDontAskForThisAppStoresTheNever() throws {
+        let dont = try XCTUnwrap(body(try controller(), of: "private func dontAskForThisApp() {"))
+        XCTAssertTrue(dont.contains("CallPolicy.setMode(.never, for:"))
+        XCTAssertTrue(dont.contains("watcher.decline()"))
+        XCTAssertTrue(dont.contains("badge.hide()"))
+        let text = try controller()
+        XCTAssertTrue(text.contains("badge.onDontAsk = { [weak self] in self?.dontAskForThisApp() }"))
+    }
+
+    /// The Automation-consent badge is the pre-permission step: the watcher's tab gate is fed the real probe,
+    /// the badge offers the in-context Allow…, and Allow… is the first Apple Event.
+    /// Mutation (F5): CallWatcher.tick, drop `consent: consentFor` -> RED (undetermined reads its tab directly).
+    /// Mutation: MeetingController.observe, `badge.showBrowserConsent(browser: id)` removed -> RED.
+    func testTheBrowserConsentBadgeIsTheGate() throws {
+        let watcher = try source("OxSayDictation/CallWatcher.swift")
+        XCTAssertTrue(watcher.contains("consent: consentFor"), "the observe call carries the consent probe")
+        XCTAssertTrue(watcher.contains("AEDeterminePermissionToAutomateTarget(target.aeDesc"))
+        XCTAssertTrue(watcher.contains("kAEGetData), false)"), "askUserIfNeeded: false — the probe never prompts")
+        let observe = try XCTUnwrap(body(try controller(), of: "private func observe(_ tick: CallWatcher.Tick) {"))
+        XCTAssertTrue(observe.contains("badge.showBrowserConsent(browser: id)"))
+        let allow = try XCTUnwrap(body(try controller(), of: "private func allowBrowserAutomation() {"))
+        XCTAssertTrue(allow.contains("watcher.allowBrowserAutomation(id)"))
+        XCTAssertTrue(watcher.contains("_ = readTab(id)"), "Allow… sends the first real Apple Event")
     }
 
     /// Mutation: CallWatcher.readTab, `dropWhileBusy: true` -> `false` -> RED.
@@ -391,7 +465,7 @@ final class MeetingWiringTests: XCTestCase {
 
     /// Mutation: MeetingController.start, delete the `MeetingRecorder.checkMicrophone()` call -> RED.
     func testTheMicrophoneIsCheckedBeforeAMeetingIsCreated() throws {
-        let start = try XCTUnwrap(body(try controller(), of: "private func start(origin: CallTracker.Origin, source: String) {"))
+        let start = try XCTUnwrap(body(try controller(), of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
         let check = try XCTUnwrap(start.range(of: "MeetingRecorder.checkMicrophone()"))
         let create = try XCTUnwrap(start.range(of: "host.client.createMeeting("))
         XCTAssertLessThan(check.lowerBound, create.lowerBound)

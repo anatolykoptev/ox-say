@@ -290,23 +290,14 @@ final class RetryTests: XCTestCase {
 }
 
 final class MeetingPolicyTests: XCTestCase {
-    /// Turning auto-start off mid-call must not orphan an auto recording's silence auto-stop.
-    /// Mutation: MeetingPolicy.watcherShouldRun, drop `|| recording == .auto` -> RED.
+    /// Turning calls off mid-call must not orphan an auto recording's silence auto-stop.
+    /// Mutation (F4): MeetingPolicy.watcherShouldRun, `mode != .off ||` -> `true ||` (or drop the .off test) -> RED.
     func testTheWatcherKeepsRunningUnderAnAutoRecording() {
-        XCTAssertTrue(MeetingPolicy.watcherShouldRun(autoStart: false, recording: .auto))
-        XCTAssertFalse(MeetingPolicy.watcherShouldRun(autoStart: false, recording: .manual))
-        XCTAssertFalse(MeetingPolicy.watcherShouldRun(autoStart: false, recording: nil))
-        XCTAssertTrue(MeetingPolicy.watcherShouldRun(autoStart: true, recording: nil))
-    }
-
-    /// An auto-start while an update installs would be ended by the relaunch: it is offered instead.
-    /// Mutation: MeetingPolicy.onCallStarted, delete `!installing` -> RED.
-    func testNoAutoStartWhileAnUpdateInstalls() {
-        let auto: Set<String> = ["zoom"]
-        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "zoom", autoStart: true, autoSources: auto, installing: false), .start)
-        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "zoom", autoStart: true, autoSources: auto, installing: true), .prompt)
-        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "discord", autoStart: true, autoSources: auto, installing: false), .prompt)
-        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "zoom", autoStart: false, autoSources: auto, installing: false), .prompt)
+        XCTAssertTrue(MeetingPolicy.watcherShouldRun(mode: .off, recording: .auto))
+        XCTAssertFalse(MeetingPolicy.watcherShouldRun(mode: .off, recording: .manual))
+        XCTAssertFalse(MeetingPolicy.watcherShouldRun(mode: .off, recording: nil))
+        XCTAssertTrue(MeetingPolicy.watcherShouldRun(mode: .ask, recording: nil))
+        XCTAssertTrue(MeetingPolicy.watcherShouldRun(mode: .auto, recording: nil))
     }
 
     /// A manual start during an install asks the user to wait.
@@ -314,6 +305,25 @@ final class MeetingPolicyTests: XCTestCase {
     func testAManualStartWaitsForTheInstall() {
         XCTAssertEqual(MeetingPolicy.manualStart(installing: true), .waitForInstall)
         XCTAssertEqual(MeetingPolicy.manualStart(installing: false), .go)
+    }
+
+    /// A detected call becomes start / prompt / ignore from the effective mode: the per-app pick first, then the
+    /// global mode, and an install turns an automatic start into an offer (the relaunch would end a recording).
+    /// Mutation: MeetingPolicy.onCallStarted, `installing ? .prompt : .start` -> `.start` -> RED.
+    /// Mutation: MeetingPolicy.onCallStarted, `.never: return .ignore` -> `.prompt` -> RED.
+    func testADetectedCallFollowsTheEffectiveMode() {
+        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "zoom", global: .auto, picked: nil, installing: false), .start)
+        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "zoom", global: .auto, picked: nil, installing: true), .prompt,
+                       "an update install would end the recording: offer, don't start")
+        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "zoom", global: .ask, picked: nil, installing: false), .prompt)
+        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "slack", global: .auto, picked: nil, installing: false), .prompt,
+                       "a messenger holds the microphone all day: global auto still asks")
+        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "zoom", global: .off, picked: nil, installing: false), .ignore)
+        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "zoom", global: .auto, picked: .never, installing: false), .ignore)
+        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "zoom", global: .off, picked: .auto, installing: false), .ignore,
+                       "global Off overrides even an explicit per-app pick")
+        XCTAssertEqual(MeetingPolicy.onCallStarted(source: "slack", global: .ask, picked: .auto, installing: false), .start,
+                       "an explicit pick wins over the global mode")
     }
 }
 

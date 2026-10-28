@@ -81,11 +81,13 @@ public enum NotesWriterState: Equatable {
     case unavailable(L10nKey)
 }
 
-/// The meeting settings the Settings page shows. The folder, auto-start, per-app picks and name are `MeetingSettings` /
-/// `CallPolicy` values (UserDefaults); retention is the daemon's; the notes writer comes from the daemon's status.
+/// The meeting settings the Settings page shows. The folder, the global call mode, per-app picks and name are
+/// `MeetingSettings` / `CallPolicy` values (UserDefaults); retention is the daemon's; the notes writer comes
+/// from the daemon's status.
 public struct MeetingSettingsValues: Equatable {
     public var enabled: Bool
-    public var autoStart: Bool
+    /// The global "when a call starts" mode; a per-app row that was never picked follows it.
+    public var callMode: CallGlobalMode
     public var apps: [CallApp]
     public var folderPath: String
     public var retention: MeetingRetention
@@ -96,10 +98,10 @@ public struct MeetingSettingsValues: Equatable {
     public var yourNameFallback: String
     public var notesWriter: NotesWriterState
 
-    public init(enabled: Bool, autoStart: Bool, apps: [CallApp], folderPath: String, retention: MeetingRetention,
+    public init(enabled: Bool, callMode: CallGlobalMode, apps: [CallApp], folderPath: String, retention: MeetingRetention,
                 retentionVerified: Bool = true, yourName: String, yourNameFallback: String, notesWriter: NotesWriterState) {
         self.enabled = enabled
-        self.autoStart = autoStart
+        self.callMode = callMode
         self.apps = apps
         self.folderPath = folderPath
         self.retention = retention
@@ -114,16 +116,17 @@ public enum MeetingSettingsModel {
     /// One edit the user made on the page.
     public enum Change: Equatable {
         case enabled(Bool)
-        case autoStart(Bool)
+        case callMode(CallGlobalMode)
         case retention(MeetingRetention)
-        case mode(source: String, mode: CallAppMode)
+        /// A per-app pick, nil to return the row to "as set above".
+        case mode(source: String, mode: CallAppMode?)
         case name(String)
 
         /// Whether the page must read everything again after the save. A name is typed letter by letter and must not.
         public var needsRefresh: Bool {
             switch self {
             case .enabled: return true
-            case .autoStart, .retention, .mode, .name: return false
+            case .callMode, .retention, .mode, .name: return false
             }
         }
     }
@@ -133,7 +136,7 @@ public enum MeetingSettingsModel {
     public static func load(defaults d: UserDefaults, daemonRetention: MeetingRetention?, notesWriter: NotesWriterState,
                             fullName: String, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> MeetingSettingsValues {
         MeetingSettingsValues(
-            enabled: MeetingSettings.enabled(d), autoStart: MeetingSettings.autoStart(d), apps: CallPolicy.apps(d),
+            enabled: MeetingSettings.enabled(d), callMode: MeetingSettings.callMode(d), apps: CallPolicy.apps(d),
             folderPath: MeetingSettings.folder(d, home: home).path, retention: daemonRetention ?? MeetingSettings.retention(d),
             retentionVerified: daemonRetention != nil, yourName: d.string(forKey: MeetingSettings.nameKey) ?? "", yourNameFallback: fullName, notesWriter: notesWriter)
     }
@@ -142,7 +145,7 @@ public enum MeetingSettingsModel {
     public static func changes(from old: MeetingSettingsValues, to new: MeetingSettingsValues) -> [Change] {
         var out: [Change] = []
         if old.enabled != new.enabled { out.append(.enabled(new.enabled)) }
-        if old.autoStart != new.autoStart { out.append(.autoStart(new.autoStart)) }
+        if old.callMode != new.callMode { out.append(.callMode(new.callMode)) }
         if old.retention != new.retention { out.append(.retention(new.retention)) }
         if old.yourName != new.yourName { out.append(.name(new.yourName)) }
         for app in new.apps where old.apps.first(where: { $0.id == app.id })?.mode != app.mode {
@@ -168,8 +171,8 @@ public struct MeetingSettingsApplier {
         switch change {
         case .enabled(let on):
             defaults.set(on, forKey: MeetingSettings.enabledKey)
-        case .autoStart(let on):
-            MeetingSettings.setAutoStart(on, defaults)
+        case .callMode(let mode):
+            MeetingSettings.setCallMode(mode, defaults)
         case .mode(let source, let mode):
             CallPolicy.setMode(mode, for: source, defaults)
         case .name(let name):

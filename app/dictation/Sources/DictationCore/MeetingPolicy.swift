@@ -177,15 +177,10 @@ public enum MeetingPolicy {
     public enum CallStart: Equatable { case start, prompt, ignore }
     public enum ManualStart: Equatable { case go, waitForInstall }
 
-    /// The call watcher runs while auto-start is on, and also while an automatic recording is running even if the
-    /// user turned auto-start off meanwhile: its silence auto-stop needs the watcher.
-    public static func watcherShouldRun(autoStart: Bool, recording: CallTracker.Origin?) -> Bool {
-        autoStart || recording == .auto
-    }
-
-    /// A detected call: record by itself, or offer. Never by itself while an update installs (the relaunch would end it).
-    public static func onCallStarted(source: String, autoStart: Bool, autoSources: Set<String>, installing: Bool) -> CallStart {
-        autoStart && autoSources.contains(source) && !installing ? .start : .prompt
+    /// The call watcher runs while the global mode is not `off`, and also while an automatic recording is
+    /// running even if the user turned calls off meanwhile: its silence auto-stop needs the watcher.
+    public static func watcherShouldRun(mode: CallGlobalMode, recording: CallTracker.Origin?) -> Bool {
+        mode != .off || recording == .auto
     }
 
     public static func manualStart(installing: Bool) -> ManualStart { installing ? .waitForInstall : .go }

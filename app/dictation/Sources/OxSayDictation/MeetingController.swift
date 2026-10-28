@@ -45,7 +45,7 @@ protocol MeetingFeature: AnyObject {
     func rename(id: String, title: String) async throws
     /// Meetings were switched off: stops a recording, the call watcher and everything else that runs.
     func shutDown()
-    /// Auto-start (or a per-app pick) changed in the main window: the watcher and the menu follow.
+    /// The global call mode (or a per-app pick) changed in the main window: the watcher and the menu follow.
     func settingsChanged()
 }
 
@@ -57,7 +57,7 @@ final class UnsupportedMeetings: MeetingFeature {
 
     init() {
         submenu.autoenablesItems = false
-        let state = MeetingMenuState(supported: false, recordingElapsed: nil, notes: NotesStatus(), autoStart: false, retention: .month)
+        let state = MeetingMenuState(supported: false, recordingElapsed: nil, notes: NotesStatus(), callMode: .ask, retention: .month)
         MenuRenderer.fill(submenu, rows: MeetingMenu.rows(state, text: { $0.text }), target: self) { _ in (#selector(noop), 0) }
     }
 
@@ -102,6 +102,7 @@ final class MeetingController: NSObject, MeetingFeature {
     private var playingSince: Date?
     private var playingPolledAt = Date.distantPast
     private var lastSource = ""
+    private var offerLife = OfferLifetime()
     private var sleepObserver: NSObjectProtocol?
 
     var isRecording: Bool { current != nil }
@@ -129,12 +130,15 @@ final class MeetingController: NSObject, MeetingFeature {
         badge.onDontRecord = { [weak self] in self?.dontRecordThisOne() }
         badge.onRecord = { [weak self] in
             self?.badge.hide()
-            self?.start(origin: .manual, source: self?.lastSource ?? "")
+            self?.start(origin: .manual, source: self?.lastSource ?? "", offered: true)
         }
         badge.onNotNow = { [weak self] in
             self?.watcher.decline()
             self?.badge.hide()
         }
+        badge.onDontAsk = { [weak self] in self?.dontAskForThisApp() }
+        badge.onBrowserAllow = { [weak self] in self?.allowBrowserAutomation() }
+        badge.onBrowserNotNow = { [weak self] in self?.skipBrowserAutomation() }
         badge.onCopyConsent = {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(L10nKey.meetingConsentPhrase.text, forType: .string)
@@ -143,14 +147,15 @@ final class MeetingController: NSObject, MeetingFeature {
         watcher.themActive = { [weak self] in self?.recorder.themActive ?? false }
         watcher.modeFor = { [weak self] source in
             guard let self else { return CallPolicy.defaultMode(source) }
-            return CallPolicy.mode(for: source, self.host.defaults)
+            return CallPolicy.effectiveMode(for: source, global: MeetingSettings.callMode(self.host.defaults),
+                                            picked: CallPolicy.pickedMode(for: source, self.host.defaults))
         }
         watcher.onTick = { [weak self] tick in self?.observe(tick) }
         // A closed lid ends the recording cleanly: the audio devices disappear under it, and what was recorded is
         // handed to the daemon instead of waiting for its stale-recording sweep.
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil,
                                                                          queue: .main) { [weak self] _ in Task { @MainActor in self?.stopForSleep() } }
-        applyAutoStart()
+        applyCallMode()
         reconcile()
         render()
     }
@@ -188,7 +193,7 @@ final class MeetingController: NSObject, MeetingFeature {
     private func render() {
         let state = MeetingMenuState(supported: true, recordingElapsed: current == nil ? nil : recorder.elapsed,
                                      notes: host.daemonStatus()?.notes ?? NotesStatus(),
-                                     autoStart: MeetingSettings.autoStart(host.defaults),
+                                     callMode: MeetingSettings.callMode(host.defaults),
                                      retention: MeetingSettings.retention(host.defaults), recent: recent)
         MenuRenderer.fill(submenu, rows: MeetingMenu.rows(state, text: { $0.text }), target: self) { action in
             (#selector(choose(_:)), action)
@@ -204,9 +209,9 @@ final class MeetingController: NSObject, MeetingFeature {
         case .openMeetingsFolder: openFolder()
         case .chooseMeetingsFolder: chooseFolder()
         case .setMeetingName: askName()
-        case .toggleMeetingAutoStart:
-            MeetingSettings.setAutoStart(!MeetingSettings.autoStart(host.defaults), host.defaults)
-            applyAutoStart()
+        case .pickMeetingCallMode(let mode):
+            MeetingSettings.setCallMode(mode, host.defaults)
+            applyCallMode()
         case .pickMeetingRetention(let days):
             // The daemon first, the app's copy only once it took it; a refusal is said, not swallowed.
             let pick = MeetingRetention(rawValue: days) ?? .month
@@ -225,7 +230,9 @@ final class MeetingController: NSObject, MeetingFeature {
 
     // MARK: recording
 
-    private func start(origin: CallTracker.Origin, source: String) {
+    /// `offered`: the user pressed Record on the call prompt — the one-time explanation runs for it like for an
+    /// automatic start. A menu "Record a meeting" is her own act and skips it.
+    private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {
         guard current == nil, !starting, !isShutDown else { return }
         // An install relaunches the app. A recording started now would be ended by it: automatic starts are offered
         // instead (MeetingPolicy.onCallStarted), a manual one asks the user to wait.
@@ -235,7 +242,7 @@ final class MeetingController: NSObject, MeetingFeature {
             host.notify(L10nKey.noticeMeetingWaitInstall.text)
             return
         }
-        if origin == .auto, !explainedAndAllowed() { return }
+        if origin == .auto || offered, !consentReminderAccepted() { return }
         // Before a meeting exists in the daemon: a missing microphone permission leaves nothing to clean up.
         do { try MeetingRecorder.checkMicrophone() } catch {
             host.notify(L10nKey.noticeMeetingStartFailed.text("\(error)"))
@@ -358,7 +365,7 @@ final class MeetingController: NSObject, MeetingFeature {
         tick = nil
         logSummary(recorder.stop(), id: info.id)
         badge.hide()
-        applyAutoStart()
+        applyCallMode()
         host.recordingChanged()
         Task { @MainActor in
             do { _ = try await host.client.finishMeeting(id: info.id) } catch {
@@ -409,20 +416,49 @@ final class MeetingController: NSObject, MeetingFeature {
         if current?.origin == .auto { stop() } else { badge.hide() }
     }
 
+    /// The prompt's quiet third action: "Don't ask for <App>" is the app's per-app "Don't record"
+    /// (reversible in Settings), and this call is done asking.
+    private func dontAskForThisApp() {
+        guard case .prompt(let source) = badge.mode else { return }
+        CallPolicy.setMode(.never, for: source, host.defaults)
+        watcher.decline()
+        badge.hide()
+    }
+
+    /// "Allow…" on the Automation badge: the next read is the real one — macOS's own prompt is raised in
+    /// context now.
+    private func allowBrowserAutomation() {
+        guard case .browserConsent(let id) = badge.mode else { return }
+        badge.hide()
+        watcher.allowBrowserAutomation(id)
+    }
+
+    /// "Not now" on the Automation badge: nothing is sent to that browser until it lets the microphone go.
+    private func skipBrowserAutomation() {
+        guard case .browserConsent(let id) = badge.mode else { return }
+        watcher.skipBrowserAutomation(id)
+        badge.hide()
+    }
+
     // MARK: detection
 
     /// Tells the dictation sound mode whether a meeting is being recorded. The call watcher's half is set in `observe`
-    /// and cleared when the watcher stops. Limitation: with auto-start off and nothing recording the watcher does not
+    /// and cleared when the watcher stops. Limitation: with calls off and nothing recording the watcher does not
     /// run, so a call is not seen; no poller is started just for dictation.
     private func syncCallActivity() { host.callActivity.setRecording(current != nil) }
 
-    private func applyAutoStart() {
-        // An automatic recording's silence auto-stop needs the watcher even if auto-start was turned off mid-call.
-        if MeetingPolicy.watcherShouldRun(autoStart: MeetingSettings.autoStart(host.defaults), recording: current?.origin) {
+    private func applyCallMode() {
+        let mode = MeetingSettings.callMode(host.defaults)
+        // An automatic recording's silence auto-stop needs the watcher even if calls were turned off mid-call.
+        if MeetingPolicy.watcherShouldRun(mode: mode, recording: current?.origin) {
             watcher.start()
         } else {
             watcher.stop()
             host.callActivity.setCallSeen(false)
+        }
+        // Off means no offers: a prompt or consent badge that is still up must not keep asking.
+        if !OfferLifetime.offersAllowed(mode: mode) {
+            if case .recording = badge.mode {} else { badge.hide() }
         }
     }
 
@@ -432,11 +468,23 @@ final class MeetingController: NSObject, MeetingFeature {
         if let call = tick.call { lastSource = call.source }
         if tick.browserDenied { host.notify(L10nKey.noticeMeetingBrowserDenied.text) }
         if tick.browserNeedsPermission { host.notify(L10nKey.noticeMeetingBrowserPending.text) }
+        // The question on the badge outlives neither its call (a dropout of one poll is not the end), nor the
+        // browser's hold on the microphone: OfferLifetime decides, this only draws.
+        let offer: OfferLifetime.Offer?
+        switch badge.mode {
+        case .prompt(let source)?: offer = .prompt(source: source)
+        case .browserConsent(let id)?: offer = .browserConsent(browser: id)
+        default: offer = nil
+        }
+        if offerLife.shouldHide(now: Date(), offer: offer, liveSource: tick.call?.source, users: tick.users) { badge.hide() }
+        // A browser holds the microphone and nobody was asked about Automating it: ask in context before the
+        // first Apple Event — unless the badge is already serving a prompt or a recording.
+        if let id = tick.browserNeedsConsent, badge.mode == nil { badge.showBrowserConsent(browser: id) }
         switch tick.action {
         case .nothing: break
         case .callStarted(let source):
-            switch MeetingPolicy.onCallStarted(source: source, mode: CallPolicy.mode(for: source, host.defaults),
-                                               autoStart: MeetingSettings.autoStart(host.defaults), installing: host.updateInstalling()) {
+            switch MeetingPolicy.onCallStarted(source: source, global: MeetingSettings.callMode(host.defaults),
+                                               picked: CallPolicy.pickedMode(for: source, host.defaults), installing: host.updateInstalling()) {
             case .start: start(origin: .auto, source: source)
             case .prompt: badge.showPrompt(source: source)
             case .ignore: break
@@ -446,22 +494,20 @@ final class MeetingController: NSObject, MeetingFeature {
         }
     }
 
-    /// The one-time explanation and consent reminder before the first
-    /// automatic recording. "Only When I Choose" turns auto-start off and the
-    /// call is offered in the badge instead.
-    private func explainedAndAllowed() -> Bool {
+    /// The one-time consent reminder before the first recording that was offered or started automatically:
+    /// what is recorded, and to tell the others. It is a reminder only — it never writes the call mode or an
+    /// app's pick; "Don't Record" cancels this start and the reminder comes again next time.
+    private func consentReminderAccepted() -> Bool {
         if MeetingSettings.explained(host.defaults) { return true }
-        let pressed = host.alert(L10nKey.meetingExplainTitle.text, L10nKey.meetingExplainBody.text,
-                                 [L10nKey.meetingExplainOK.text, L10nKey.meetingExplainManual.text])
+        let pressed = host.alert(L10nKey.meetingRemindTitle.text,
+                                 ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text }),
+                                 [L10nKey.meetingRemindRecord.text, L10nKey.meetingRemindSkip.text])
+        guard pressed == .alertFirstButtonReturn else { return false }
         MeetingSettings.setExplained(host.defaults)
         // Creating the folder now makes macOS ask for Documents access here, with the
-        // explanation on screen, not at the end of the first call.
+        // reminder on screen, not at the end of the first call.
         try? FileManager.default.createDirectory(at: MeetingSettings.folder(host.defaults), withIntermediateDirectories: true)
-        if pressed == .alertFirstButtonReturn { return true }
-        MeetingSettings.setAutoStart(false, host.defaults)
-        applyAutoStart()
-        badge.showPrompt(source: lastSource)
-        return false
+        return true
     }
 
     // MARK: after the call
@@ -624,7 +670,7 @@ final class MeetingController: NSObject, MeetingFeature {
     }
 
     func settingsChanged() {
-        applyAutoStart()
+        applyCallMode()
         render()
     }
 

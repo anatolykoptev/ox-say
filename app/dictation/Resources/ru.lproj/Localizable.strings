@@ -71,7 +71,8 @@
 "menu.meeting.stop" = "Остановить запись (%@)";
 "menu.meeting.open_folder" = "Открыть папку с заметками";
 "menu.meeting.choose_folder" = "Папка для заметок…";
-"menu.meeting.auto_start" = "Записывать звонки автоматически";
+"settings.when_call" = "Когда начинается звонок";
+"settings.call.off" = "Выкл";
 "menu.meeting.keep" = "Хранить аудио";
 "menu.meeting.keep7" = "7 дней";
 "menu.meeting.keep30" = "30 дней";
@@ -87,6 +88,10 @@
 "badge.stop" = "Стоп";
 "badge.dont_record" = "Не записывать эту";
 "badge.prompt" = "Записать этот звонок?";
+"badge.prompt.call" = "Звонок в %@ — записать?";
+"badge.dont_ask" = "Не спрашивать про %@";
+"badge.browser.consent" = "Звонок в %@? Чтобы замечать звонки в Meet, ox-say должен видеть адрес вкладки.";
+"badge.browser.allow" = "Разрешить…";
 "badge.record" = "Записать";
 "badge.not_now" = "Не сейчас";
 "badge.copy_consent" = "Скопировать фразу согласия";
@@ -101,10 +106,14 @@
 "notice.meeting.notes_pending" = "Расшифровка сохранена. Скачайте модель для заметок, чтобы получить заметки.";
 "notice.meeting.failed" = "Не удалось обработать встречу: %@";
 "notice.meeting.start_failed" = "Не удалось начать запись: %@";
-"meeting.explain.title" = "OxSay может записывать ваши звонки";
-"meeting.explain.body" = "Когда начинается звонок в Zoom, Meet, Teams или другом приложении, OxSay записывает обе стороны на этом Mac, делает расшифровку и заметки и хранит звук 30 дней. Ничто не покидает ваш Mac. Красная метка записи остаётся на экране, остановить запись или пропустить звонок можно в любой момент. Предупреждайте участников о записи: в некоторых странах нужно согласие всех.";
-"meeting.explain.ok" = "Записывать звонки автоматически";
-"meeting.explain.manual" = "Только когда я выберу";
+"meeting.remind.title" = "Перед записью";
+"meeting.remind.body" = "OxSay записывает обе стороны звонка на этом Mac, делает расшифровку и заметки и %@. OxSay ничего никуда не отправляет. Красная метка записи остаётся на экране, остановить запись можно в любой момент. Предупредите участников о записи: в некоторых странах нужно согласие всех.";
+/* The %@ of the reminder when audio is kept N days (%d). */
+"meeting.remind.keep_days" = "хранит звук %d дней";
+/* ...and when audio is kept until the user deletes it. */
+"meeting.remind.keep_forever" = "хранит звук, пока вы его не удалите";
+"meeting.remind.record" = "Записать этот звонок";
+"meeting.remind.skip" = "Не записывать";
 "notice.meeting.browser_denied" = "Чтобы замечать звонки в Google Meet, разрешите OxSay управлять браузером в Системных настройках → Конфиденциальность и безопасность → Автоматизация.";
 "notice.meeting.tap_silent" = "OxSay не слышит собеседника, хотя звук играет: включите OxSay в разделе Конфиденциальность и безопасность → Запись экрана и системного звука → Только запись системного звука, а если он уже включён, выключите и снова включите.";
 "meeting.tap_silent.title" = "Системный звук не записывается";
@@ -202,11 +211,12 @@
 "meeting.duration.sec" = "меньше минуты";
 "settings.meetings.toggle" = "Записывать звонки и вести заметки";
 "settings.meetings.toggle_footer" = "OxSay записывает обе стороны звонка на этом Mac, делает расшифровку и заметки и различает, кто говорит. Предупреждайте участников о записи: в некоторых местах нужно согласие всех.";
-"settings.auto.footer" = "OxSay замечает начало звонка и показывает красную метку. Остановить запись можно в любой момент.";
+"settings.auto.footer" = "Когда начинается звонок, ox-say спрашивает, записывает сам или выключен — как выбрано выше. Во время записи всегда видна красная метка.";
 "settings.apps.header" = "Звонки в этих приложениях";
 "settings.apps.auto" = "Записывать сразу";
 "settings.apps.ask" = "Спрашивать";
 "settings.apps.never" = "Не записывать";
+"settings.apps.default" = "Как выбрано выше (%@)";
 "settings.apps.browsers" = "В Chrome, Brave, Arc или Edge";
 "settings.folder" = "Папка для заметок";
 "settings.keep" = "Хранить записи";

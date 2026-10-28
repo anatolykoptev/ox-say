@@ -38,15 +38,33 @@ public struct MeetingDaemonSettings: Equatable {
     }
 }
 
+/// The global "when a call starts" choice: ask about each call, record automatically, or do not watch
+/// for calls at all. A per-app pick (`CallPolicy.setMode`) overrides ask/auto; `off` overrides everything.
+public enum CallGlobalMode: String, CaseIterable, Sendable {
+    case ask = "ask"
+    case auto = "auto"
+    case off = "off"
+
+    public var titleKey: L10nKey {
+        switch self {
+        case .ask: return .settingsAppsAsk
+        case .auto: return .settingsAppsAuto
+        case .off: return .settingsCallOff
+        }
+    }
+}
+
 /// The meeting settings the app keeps itself (UserDefaults). Retention is also
-/// sent to the daemon, which deletes the audio; the folder, auto-start and the
-/// name never leave the app.
+/// sent to the daemon, which deletes the audio; the folder, the call mode and
+/// the name never leave the app.
 public enum MeetingSettings {
-    /// The feature flag: off until the release that ships meetings turns it on.
+    /// The feature flag: on unless the user turned meetings off.
     public static let enabledKey = "meetingsEnabled"
     public static let folderKey = "meetingsFolder"
     public static let retentionKey = "meetingsRetentionDays"
-    public static let autoStartKey = "meetingsAutoStart"
+    /// The global call mode (`CallGlobalMode`). The old `meetingsAutoStart` boolean is dead: the feature
+    /// itself shipped off, so nothing it could have meant is still true — the key is simply not read.
+    public static let callModeKey = "meetingsCallMode"
     public static let explainedKey = "meetingsExplained"
     public static let nameKey = "meetingsYourName"
     public static let exportedKey = "meetingsExported"
@@ -54,7 +72,8 @@ public enum MeetingSettings {
     public static let exportStaleKey = "meetingsExportStale"
     public static let exportHashesKey = "meetingsExportHashes"
 
-    public static func enabled(_ d: UserDefaults) -> Bool { d.bool(forKey: enabledKey) }
+    /// Meetings ship on: only a stored `false` turns them off.
+    public static func enabled(_ d: UserDefaults) -> Bool { (d.object(forKey: enabledKey) as? Bool) ?? true }
 
     /// Where the notes and transcripts are copied: the user's pick, else
     /// ~/Documents/ox-say Meetings.
@@ -73,10 +92,12 @@ public enum MeetingSettings {
 
     public static func setRetention(_ r: MeetingRetention, _ d: UserDefaults) { d.set(r.rawValue, forKey: retentionKey) }
 
-    /// On unless the user turned it off: recording starts by itself when a call is detected.
-    public static func autoStart(_ d: UserDefaults) -> Bool { (d.object(forKey: autoStartKey) as? Bool) ?? true }
+    /// The global call mode; an unset or unknown value asks first — nothing records by itself.
+    public static func callMode(_ d: UserDefaults) -> CallGlobalMode {
+        d.string(forKey: callModeKey).flatMap(CallGlobalMode.init(rawValue:)) ?? .ask
+    }
 
-    public static func setAutoStart(_ on: Bool, _ d: UserDefaults) { d.set(on, forKey: autoStartKey) }
+    public static func setCallMode(_ mode: CallGlobalMode, _ d: UserDefaults) { d.set(mode.rawValue, forKey: callModeKey) }
 
     /// The one-time explanation (and consent reminder) has been shown.
     public static func explained(_ d: UserDefaults) -> Bool { d.bool(forKey: explainedKey) }

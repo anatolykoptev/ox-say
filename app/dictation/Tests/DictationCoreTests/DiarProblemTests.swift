@@ -66,7 +66,7 @@ final class DiarProblemTests: XCTestCase {
             MeetingMenuRecent(id: "e", title: "Sync", problem: .failed(reason: "bad_output")),
             MeetingMenuRecent(id: "t", title: "Long", problem: .failed(reason: "timeout")),
         ]
-        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), autoStart: true,
+        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
                                      retention: .month, recent: recent)
         let rows = MeetingMenu.rows(state, text: { $0.rawValue })
         let items = rows.compactMap { row -> (String, Bool, MenuAction?)? in
@@ -147,7 +147,7 @@ final class VoicesTryAgainTests: XCTestCase {
         ]
         let recent = MeetingMenuRecent.from(list, limit: 10)
         XCTAssertEqual(recent.map(\.id), ["new", "r1", "r2"])
-        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), autoStart: true,
+        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
                                      retention: .month, recent: recent)
         let actions = MeetingMenu.rows(state, text: { $0.rawValue }).compactMap { row -> MenuAction? in
             if case .item(_, _, _, let a) = row { return a } else { return nil }

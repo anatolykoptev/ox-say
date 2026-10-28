@@ -1,5 +1,20 @@
+import ApplicationServices
 import DictationCore
 import Foundation
+
+/// macOS's Automation consent for a browser, asked WITHOUT raising its prompt
+/// (`AEDeterminePermissionToAutomateTarget` with `askUserIfNeeded: false`). An
+/// undetermined answer means the first Apple Event would raise macOS's prompt
+/// out of nowhere — the badge asks in context first.
+enum BrowserAutomationProbe {
+    static func consent(bundleID: String) -> BrowserConsent {
+        let target = NSAppleEventDescriptor(bundleIdentifier: bundleID)
+        let status = AEDeterminePermissionToAutomateTarget(target.aeDesc, AEEventClass(kCoreEventClass),
+                                                           AEEventID(kAEGetData), false)
+        // Every other answer — allowed, denied, refused — is decided by the tab read itself, as before.
+        return status == OSStatus(errAEEventWouldRequireUserConsent) ? .undetermined : .granted
+    }
+}
 
 /// Polls CoreAudio for the processes that have a microphone open, every two
 /// seconds, and feeds them to a CallWatch — detection, the debounce and the
@@ -25,6 +40,9 @@ final class CallWatcher {
         /// Set once: a browser holds the microphone and its tab has not been readable for several polls — an
         /// Automation prompt nobody answered (#251). The app shows notice.meeting.browser_pending.
         var browserNeedsPermission: Bool
+        /// A browser holds the microphone and its Automation consent is undetermined: it must be asked in
+        /// context (the badge) before the first Apple Event goes out.
+        var browserNeedsConsent: String?
     }
 
     var onTick: ((Tick) -> Void)?
@@ -34,6 +52,9 @@ final class CallWatcher {
     var themActive: () -> Bool = { false }
     /// The user's pick per source: it orders simultaneous calls (#270).
     var modeFor: (String) -> CallAppMode = CallPolicy.defaultMode
+    /// macOS's Automation consent per browser, without prompting. The real probe is the default; tests of the
+    /// app target that never run still see the seam next to the other injected answers.
+    var consentFor: (String) -> BrowserConsent = BrowserAutomationProbe.consent(bundleID:)
 
     private var watch = CallWatch()
     private var runners: [String: QueuedScriptRunner] = [:]
@@ -63,6 +84,16 @@ final class CallWatcher {
     /// "Don't record this one": the current call is not offered again.
     func decline() { watch.decline() }
 
+    /// "Allow…" was clicked for a browser: the consent check is done for it and the first real read goes out
+    /// now — macOS raises its own Automation prompt with the badge's words fresh.
+    func allowBrowserAutomation(_ id: String) {
+        watch.consentAsked(id)
+        _ = readTab(id)
+    }
+
+    /// "Not now" was clicked: no Apple Event to this browser until it lets the microphone go.
+    func skipBrowserAutomation(_ id: String) { watch.skipConsent(id) }
+
     private func tick() {
         let me = getpid()
         // A CoreAudio error is not "nobody has the microphone": skip the round.
@@ -72,9 +103,9 @@ final class CallWatcher {
             .map { MicUser(bundleID: $0.bundleID, pid: $0.pid) }
         let outcome = watch.observe(now: Date(), users: users, tab: readTab,
                                   themActive: themActive(), recording: recording(),
-                                  mode: modeFor)
+                                  mode: modeFor, consent: consentFor)
         onTick?(Tick(users: users, call: outcome.call, action: outcome.action, browserDenied: outcome.browserDenied,
-                     browserNeedsPermission: outcome.browserNeedsPermission))
+                     browserNeedsPermission: outcome.browserNeedsPermission, browserNeedsConsent: outcome.browserNeedsConsent))
     }
 
     /// Main thread: asks for a fresh read (a no-op while one is pending) and answers
