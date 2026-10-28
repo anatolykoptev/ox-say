@@ -32,9 +32,9 @@ public enum StandardMenuSelector {
         // Application, answered by NSApplication.
         "hide:", "unhide:", "hideOtherApplications:", "unhideAllApplications:",
         "terminate:", "arrangeInFront:", "miniaturizeAll:",
-        "orderFrontStandardAboutPanel:", "orderFrontPreferencesWindow:", "showHelp:",
+        "orderFrontStandardAboutPanel:", "showHelp:",
         // Window, answered by the focused NSWindow.
-        "close:", "performClose:", "miniaturize:", "deminiaturize:",
+        "performClose:", "miniaturize:", "deminiaturize:",
         "performMiniaturize:", "zoom:", "performZoom:", "toggleToolbarShown:",
     ]
 }

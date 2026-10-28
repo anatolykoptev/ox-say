@@ -108,18 +108,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// True when the last pass held an action back for work in flight: the
     /// moment that work ends, a fresh /status is read and the pass runs again.
     private var handshakeDeferred = false
-    /// The overlay's owner count when the handshake put its "Finishing the
-    /// update…" text up; nil when the handshake has no text showing. The pill
-    /// is cleared only while that count still stands — another owner taking it
-    /// moves the count on.
-    private var handshakePillOwner: Int?
-    /// The owner count each non-dictation pill below captured right after its
-    /// show; nil while that task has no pill up. A pill is cleared only while
-    /// its count still stands and no dictation runs (PillOwnership).
-    private var speakPillOwner: Int?
-    private var studioPillOwner: Int?
-    private var updateCheckPillOwner: Int?
-    private var installPillOwner: Int?
+    /// One slot per non-dictation pill: `beginPill` captures the overlay's
+    /// owner count right after the task's show, `endPill` is the only way the
+    /// task takes it down — while that count still stands and no dictation
+    /// runs; with one running, the dictation's look is put back (PillSlot).
+    /// The handshake's slot is its "Finishing the update…" text.
+    private var handshakePill = PillSlot()
+    private var speakPill = PillSlot()
+    private var studioPill = PillSlot()
+    private var updateCheckPill = PillSlot()
+    private var installPill = PillSlot()
+    /// The one tccutil reset that may run at a time.
+    private let repairRun = AccessibilityRepairRun()
     /// The "Installing…" line while an install runs, so the pill can come back
     /// when a dictation that held it ends; nil outside an install.
     private var installPillText: String?
@@ -277,12 +277,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // `log show --predicate 'subsystem == "io.github.anatolykoptev.ox-say.dictation"'`.
         // Notice level, so the unified log persists it.
         let timingLog = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "timing")
-        controller.onTiming = { timing in timingLog.notice("\(timing.line, privacy: .public)") }
+        // The id ties it to the `paste settled` line of the same delivery.
+        controller.onTiming = { [output] timing in
+            timingLog.notice("\(timing.line(deliveryID: output.deliverySerial), privacy: .public)")
+        }
         // A settled paste nobody read is what a paste that went nowhere looks
         // like — the dictation claimed `delivered` and reached no app.
-        output.onPasteSettled = { read in
-            let outcome = read ? "yes" : "no"
-            timingLog.notice("paste settled read=\(outcome, privacy: .public)")
+        output.onPasteSettled = { id, read in
+            timingLog.notice("\(PasteSettledLog.text(id: id, read: read), privacy: .public)")
         }
         output.onTypedOverRemoteClipboard = { chars, seconds in
             let ms = Int(seconds * 1000)
@@ -508,6 +510,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         repairItem.target = self
         openItem.target = self
         updateItem.target = self
+        // Under the managed top rows (Repair, Allow pasting, Open OxSay…), which
+        // syncTopRows inserts above this separator.
+        menu.addItem(.separator())
         menu.addItem(statusLine)
         speakHint.isEnabled = false
         menu.addItem(speakHint)
@@ -647,25 +652,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.showWorking()
         overlay.setWorkingText("Finishing the update…")
         overlay.setHintHidden(true)
-        handshakePillOwner = overlay.owner
+        beginPill(&handshakePill)
     }
 
     /// Clears a pill a task put up — only while the owner count its show
     /// captured still stands (nobody since took the pill) and no dictation is
     /// running: a late async finish must never hide the dictation's pill or a
     /// pill another owner shows now. The caller then drops its captured count.
-    private func finishPill(_ owner: Int?) {
-        if PillOwnership.shouldFinish(owner: owner, current: overlay.owner, dictation: controller.state) {
-            overlay.finish()
+    private func endPill(_ slot: inout PillSlot) {
+        switch slot.end(current: overlay.owner, dictation: controller.state) {
+        case .finish: overlay.finish()
+        case .restore(.listening): overlay.showListening()
+        case .restore(.working): overlay.showWorking()
+        case .leave: break
         }
+    }
+
+    /// Records the pill a task just put up; call right after its show.
+    private func beginPill(_ slot: inout PillSlot) {
+        slot.begin(owner: overlay.owner)
     }
 
     /// Clears the handshake's pill, but only while its own text is still the
     /// one showing: a speak, a studio pill or an install that took the overlay
     /// since keeps it.
     private func finishHandshakePill() {
-        defer { handshakePillOwner = nil }
-        finishPill(handshakePillOwner)
+        endPill(&handshakePill)
     }
 
     /// The user-chosen repair: reinstall the on-disk bundle's version over the
@@ -968,7 +980,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             overlay.showWorking()
             overlay.setWorkingText("Speaking…")
             overlay.setHintHidden(true)
-            speakPillOwner = overlay.owner
+            beginPill(&speakPill)
         }
         let client = speechClient!
         Task { @MainActor [weak self] in
@@ -980,16 +992,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // The reply can land after a dictation started: the playback
                 // pill is shown only while our own pill still stands and no
                 // dictation runs.
-                if PillOwnership.shouldFinish(owner: self.speakPillOwner, current: self.overlay.owner,
-                                              dictation: self.controller.state) {
+                if self.speakPill.stillOurs(current: self.overlay.owner, dictation: self.controller.state) {
                     self.overlay.showPlaying()
                 }
-                self.speakPillOwner = nil
+                self.speakPill = PillSlot()
             } catch {
                 guard let self, self.speakGeneration == generation else { return }
                 self.speakInFlight = false
-                self.finishPill(self.speakPillOwner)
-                self.speakPillOwner = nil
+                self.endPill(&self.speakPill)
                 self.notice(String(describing: error))
                 self.handshakeWorkEnded()
             }
@@ -1090,10 +1100,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.overlay.showWorking()
                     self.overlay.setWorkingText(text)
                     self.overlay.setHintHidden(true)
-                    self.studioPillOwner = self.overlay.owner
+                    self.beginPill(&self.studioPill)
                 } else {
-                    self.finishPill(self.studioPillOwner)
-                    self.studioPillOwner = nil
+                    self.endPill(&self.studioPill)
                 }
             },
             notify: { [unowned self] message in self.notice(message) },
@@ -1144,12 +1153,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.showWorking()
         overlay.setWorkingText("Checking for updates…")
         overlay.setHintHidden(true)
-        updateCheckPillOwner = overlay.owner
+        beginPill(&updateCheckPill)
         Task { @MainActor [weak self] in
             guard let self else { return }
             let fetch = await self.updater.fetchResult()
-            self.finishPill(self.updateCheckPillOwner)
-            self.updateCheckPillOwner = nil
+            self.endPill(&self.updateCheckPill)
             self.updateCheckRunning = false
             self.present(UpdatePrompt.make(local: local, fetch: fetch))
         }
@@ -1341,7 +1349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.showWorking()
         overlay.setWorkingText(text)
         overlay.setHintHidden(true)
-        installPillOwner = overlay.owner
+        beginPill(&installPill)
     }
 
     /// The install is over and the app stays: re-enable what it disabled and
@@ -1350,8 +1358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateInstalling = false
         installPillText = nil
         studio.render()
-        finishPill(self.installPillOwner)
-        installPillOwner = nil
+        endPill(&installPill)
     }
 
     /// The speak-selection hotkey press: read whatever is selected in the
@@ -1476,24 +1483,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// else's TCC state is touched.
     @objc private func allowPasting() {
         let failure = "Could not refresh the Accessibility permission: remove OxSayDictation with − in System Settings → Privacy & Security → Accessibility, then add it again."
-        guard let arguments = AccessibilityRepair.resetArguments(bundleID: Bundle.main.bundleIdentifier) else {
-            return notice(failure)
-        }
-        let reset = Process()
-        reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-        reset.arguments = arguments
-        do {
+        // The reset runs off the main thread (a stuck tccd must not hang the
+        // menu-bar app); the item is greyed until it ends, so a second click
+        // cannot start a second reset.
+        allowPastingItem.isEnabled = false
+        let started = repairRun.start(bundleID: Bundle.main.bundleIdentifier, launch: { arguments, onExit in
+            let reset = Process()
+            reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            reset.arguments = arguments
+            reset.terminationHandler = { process in
+                let status = process.terminationStatus
+                DispatchQueue.main.async { onExit(status) }
+            }
             try reset.run()
-        } catch {
-            return notice(failure)
+        }, completion: { [weak self] ok in
+            guard let self else { return }
+            self.allowPastingItem.isEnabled = true
+            guard ok else { return self.notice(failure) }
+            // The trust prompt carries its own "Open System Settings" button:
+            // opening the pane as well would show two UIs at once.
+            let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(prompt)
+        })
+        switch started {
+        case .started, .busy:
+            break
+        case .unavailable, .launchFailed:
+            allowPastingItem.isEnabled = true
+            notice(failure)
         }
-        reset.waitUntilExit()
-        guard reset.terminationStatus == 0 else {
-            return notice(failure)
-        }
-        let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(prompt)
-        openAccessibilitySettings()
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    /// The menu auto-enables every item whose target answers its action, which
+    /// would undo `allowPastingItem.isEnabled = false`; the Allow-pasting row
+    /// stays greyed while its reset runs.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        !(item === allowPastingItem && repairRun.isRunning)
     }
 }
 

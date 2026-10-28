@@ -86,7 +86,10 @@ final class PasteOutput: TextOutput {
     /// When a posted paste settles: whether the target app read the promised
     /// clipboard before the 3 s cap. `false` is what a paste that went nowhere
     /// looks like; feeds the `paste settled` log line.
-    var onPasteSettled: ((Bool) -> Void)?
+    var onPasteSettled: ((Int, Bool) -> Void)?
+    /// Counts every `deliver`; the id a timing line and the `paste settled`
+    /// line of the same delivery share.
+    private(set) var deliverySerial = 0
     /// A posted paste settled unread and the user's clipboard went back: the
     /// dictation is on neither the screen nor the clipboard, only in the
     /// history. The app says so, and the clipboard stays the user's.
@@ -103,7 +106,7 @@ final class PasteOutput: TextOutput {
     private let lending = SystemPasteboard(promised: true)
     private let plain = SystemPasteboard(promised: false)
     /// A paste whose clipboard has not been given back yet.
-    private var pending: (lease: ClipboardLease, timer: Timer, text: String)?
+    private var pending: (lease: ClipboardLease, timer: Timer, text: String, serial: Int)?
 
     func deliver(_ text: String) -> Delivery { deliver(text, to: target) }
 
@@ -113,6 +116,7 @@ final class PasteOutput: TextOutput {
         // A previous paste still waiting for its read: give its clipboard back
         // now, so this one borrows the user's contents and not the old dictation.
         settle()
+        deliverySerial += 1
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let moved = target != nil && front != target
         // Declared types only: reading a Universal Clipboard copy makes macOS
@@ -145,7 +149,7 @@ final class PasteOutput: TextOutput {
                     self?.settle()
                 }
             }
-            pending = (lease, timer, text)
+            pending = (lease, timer, text, deliverySerial)
             return .paste
         }
     }
@@ -157,7 +161,7 @@ final class PasteOutput: TextOutput {
         self.pending = nil
         pending.timer.invalidate()
         PasteSettlement.settle(lease: pending.lease, text: pending.text, read: lending.readAt != nil, plain: plain,
-                               onSettled: onPasteSettled,
+                               onSettled: { [onPasteSettled, serial = pending.serial] read in onPasteSettled?(serial, read) },
                                onNotice: onLateNotice, onUnread: onPasteUnread)
     }
 

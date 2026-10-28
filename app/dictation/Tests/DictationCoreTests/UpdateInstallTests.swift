@@ -110,7 +110,7 @@ final class UpdateInstallTests: XCTestCase {
         let body = try appDelegateBody("private func showInstallPill() {")
         guard let show = body.range(of: "overlay.showWorking()"),
               let text = body.range(of: "overlay.setWorkingText(text)"),
-              let owner = body.range(of: "installPillOwner = overlay.owner") else {
+              let owner = body.range(of: "beginPill(&installPill)") else {
             return XCTFail("showInstallPill lost the show, the text or the owner capture")
         }
         XCTAssertTrue(show.lowerBound < text.lowerBound && text.lowerBound < owner.lowerBound,

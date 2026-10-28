@@ -32,3 +32,43 @@ public enum AccessibilityRepair {
         return ["reset", "Accessibility", bundleID]
     }
 }
+
+/// One tccutil reset at a time, off the main thread. The process itself is the
+/// caller's: `launch` starts it and calls `onExit` with its status when it
+/// ends (on the main queue), so tests drive a fake and nothing real is reset.
+public final class AccessibilityRepairRun {
+    public enum Start: Equatable {
+        case started
+        /// A reset is already running.
+        case busy
+        /// No usable bundle id — nothing safe to reset.
+        case unavailable
+        /// The process could not be started.
+        case launchFailed
+    }
+
+    public private(set) var isRunning = false
+
+    public init() {}
+
+    public func start(bundleID: String?,
+                      launch: ([String], @escaping (Int32) -> Void) throws -> Void,
+                      completion: @escaping (Bool) -> Void) -> Start {
+        guard !isRunning else { return .busy }
+        guard let arguments = AccessibilityRepair.resetArguments(bundleID: bundleID) else { return .unavailable }
+        isRunning = true
+        var done = false
+        do {
+            try launch(arguments) { [weak self] status in
+                guard !done else { return }
+                done = true
+                self?.isRunning = false
+                completion(status == 0)
+            }
+        } catch {
+            isRunning = false
+            return .launchFailed
+        }
+        return .started
+    }
+}
