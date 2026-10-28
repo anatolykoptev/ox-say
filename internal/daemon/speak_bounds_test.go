@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -254,6 +255,10 @@ func TestRunawayIsAnError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "did not finish") {
 		t.Fatalf("Speak error = %v", err)
 	}
+	// Both tries failed: the message must not promise that another try works (#286).
+	if strings.Contains(err.Error(), "usually works") || !strings.Contains(err.Error(), "twice") {
+		t.Fatalf("final failure wording = %q", err)
+	}
 	if _, serr := os.Stat(out); serr == nil {
 		t.Fatal("a file was written for a runaway take")
 	}
@@ -276,7 +281,8 @@ func TestRunawayOnHTTP(t *testing.T) {
 	}
 	raw, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(raw), "did not finish") {
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(raw), "did not finish") ||
+		strings.Contains(string(raw), "usually works") || !strings.Contains(string(raw), "twice") {
 		t.Fatalf("status %d body %s", resp.StatusCode, raw)
 	}
 	if got := d.Status().TTSFaults.Runaways; got != 2 {
@@ -493,5 +499,78 @@ func TestNegativeSeedPinsNothing(t *testing.T) {
 	}
 	if s, _ := seedIn(speechLog(t, log2)[0]); s != 42 {
 		t.Fatalf("seed -1 with OX_SAY_SEED=42 reached the engine as %d", s)
+	}
+}
+
+// A client that sends the daemon's internal seed mark with a seed it pinned must still get the pinned-seed error:
+// the mark is the daemon's alone (#286).
+// Mutation: internal/daemon/http.go handleSpeech, delete the `delete(body, fieldSeedDefaulted)` after the decode
+// -> RED (the take is retried on a random seed: 2 engine requests, no "same seed").
+func TestClientCannotSendTheSeedMark(t *testing.T) {
+	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "all")
+	d, log := boundsDaemon(t, nil)
+	srv := routes(t, d)
+	for _, text := range []string{"ox-say is ready", russian(900)} { // the streaming path and the buffered one
+		body, _ := json.Marshal(map[string]any{"input": text, "response_format": "wav", "seed": 7, fieldSeedDefaulted: true})
+		before := len(speechLog(t, log))
+		resp, err := http.Post(srv.URL+"/v1/audio/speech", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(raw), "same seed") {
+			t.Fatalf("%d chars: %d %s", len(text), resp.StatusCode, raw)
+		}
+		if n := len(speechLog(t, log)) - before; n != 1 {
+			t.Fatalf("%d chars: a pinned seed was retried: %d engine requests", len(text), n)
+		}
+	}
+}
+
+// The MCP speak tool has a fixed deadline. A runaway whose retry cannot finish inside what is left of it is
+// reported as the runaway at once, not retried into a deadline error that hides the reason (#286).
+// Mutation: internal/daemon/speak_split.go synthesizeQwenSplit, make the `!retryFits(...)` clause `false &&` -> RED (the
+// take is retried: 2 engine requests).
+func TestRunawayRetryIsSkippedWhenTheDeadlineCannotFitIt(t *testing.T) {
+	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "all")
+	d, log := boundsDaemon(t, nil)
+	t0 := time.Now()
+	calls := 0
+	prev := speakNow
+	speakNow = func() time.Time { // the first try "took" 9 minutes
+		calls++
+		if calls == 1 {
+			return t0
+		}
+		return t0.Add(9 * time.Minute)
+	}
+	t.Cleanup(func() { speakNow = prev })
+	ctx, cancel := context.WithDeadline(context.Background(), t0.Add(10*time.Minute))
+	defer cancel()
+	_, err := d.Speak(ctx, SpeakInput{Text: "ox-say is ready"})
+	if err == nil || !strings.Contains(err.Error(), "did not finish") || !strings.Contains(err.Error(), "try again") {
+		t.Fatalf("error = %v: want the runaway message, not a deadline error", err)
+	}
+	if n := len(speechLog(t, log)); n != 1 {
+		t.Fatalf("engine saw %d requests, want 1 (the retry cannot fit)", n)
+	}
+}
+
+func TestRetryFits(t *testing.T) {
+	now := time.Now()
+	in := func(d time.Duration) context.Context {
+		ctx, cancel := context.WithDeadline(context.Background(), now.Add(d))
+		t.Cleanup(cancel)
+		return ctx
+	}
+	if !retryFits(context.Background(), now, now.Add(time.Hour)) {
+		t.Error("no deadline: the retry fits")
+	}
+	if !retryFits(in(10*time.Minute), now, now.Add(2*time.Minute)) {
+		t.Error("8 min left for a 2 min try: fits")
+	}
+	if retryFits(in(10*time.Minute), now, now.Add(9*time.Minute)) {
+		t.Error("1 min left for a 9 min try: does not fit")
 	}
 }

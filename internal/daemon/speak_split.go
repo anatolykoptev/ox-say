@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -37,14 +38,19 @@ const engineRunawayType = "generation_runaway"
 const (
 	runawayMessage       = "the speech engine did not finish the text and was stopped (it kept generating past its length budget); try again, the same text usually works, or shorten it"
 	runawayPinnedMessage = "the speech engine did not finish the text and was stopped (it kept generating past its length budget); it may repeat with the same seed, so use another seed or shorten the text"
+	// Both tries ran away: another try of the same text is not promised to work.
+	runawayRetriedMessage = "the speech engine did not finish the text and was stopped twice in a row (it kept generating past its length budget); shorten the text or change the voice"
 )
 
 // runawayError is a take the engine stopped at its frame budget.
-type runawayError struct{ pinned bool }
+type runawayError struct{ pinned, retried bool }
 
 func (e *runawayError) Error() string {
-	if e.pinned {
+	switch {
+	case e.pinned:
 		return runawayPinnedMessage
+	case e.retried:
+		return runawayRetriedMessage
 	}
 	return runawayMessage
 }
@@ -216,6 +222,7 @@ func (d *Daemon) synthesizeQwenSplit(ctx context.Context, body map[string]any) (
 	if len(parts) > 1 && !fixed {
 		body[fieldSeed] = randomSeed() // one voice for every piece
 	}
+	started := speakNow()
 	for attempt := 0; ; attempt++ {
 		out, err := d.renderParts(ctx, body, parts)
 		var rwe *runawayError
@@ -226,6 +233,12 @@ func (d *Daemon) synthesizeQwenSplit(ctx context.Context, body map[string]any) (
 			return nil, &runawayError{pinned: true}
 		}
 		if attempt > 0 {
+			return nil, &runawayError{retried: true}
+		}
+		// A long text re-renders whole (one voice): a retry that cannot finish before the caller's deadline would
+		// end as a deadline error and hide the reason, so the runaway is reported now.
+		if !retryFits(ctx, started, speakNow()) {
+			d.log.Warn("tts runaway: no retry, the deadline is too close")
 			return nil, err
 		}
 		d.log.Warn("tts runaway: retrying once on a fresh seed")
@@ -300,4 +313,14 @@ func abortResponse(w http.ResponseWriter) {
 		return
 	}
 	panic(http.ErrAbortHandler)
+}
+
+// speakNow is the clock of the retry budget; tests replace it.
+var speakNow = time.Now
+
+// retryFits reports whether a second try of a take that ran from started until now fits what ctx has left of its
+// deadline. Without a deadline it always does.
+func retryFits(ctx context.Context, started, now time.Time) bool {
+	dl, ok := ctx.Deadline()
+	return !ok || dl.Sub(now) >= now.Sub(started)
 }
