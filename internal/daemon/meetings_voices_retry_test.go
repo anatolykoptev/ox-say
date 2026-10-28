@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -206,5 +207,32 @@ func TestServedMeetingSaysWhetherVoicesCanBeRetried(t *testing.T) {
 	}
 	if servedRetryable(t, mux2, failed) {
 		t.Error("a failed (not unavailable) meeting is marked by the daemon field; that decision stays with the failed-kind rule")
+	}
+}
+
+// A meeting still being recorded or processed is never offered Try Again and its POST is refused the way the busy
+// path refuses (409, "still being processed"), whatever its reason and however ready diarization is.
+// Mutation: internal/meeting/runner.go VoicesRetryable, delete the `return false` under `default:` of the status
+// switch -> RED (served voices_retryable true while queued / transcribing / ...).
+func TestVoicesRetryIsNeverOfferedWhileTheMeetingIsInProgress(t *testing.T) {
+	for _, st := range []meeting.Status{meeting.StatusRecording, meeting.StatusQueued, meeting.StatusTranscribing, meeting.StatusSummarizing} {
+		d, mux, _, calls := voicesFixture(t)
+		id := unavailableMeeting(t, d, mux, meeting.DiarModelsMissing)
+		if !servedRetryable(t, mux, id) {
+			t.Fatalf("setup: a done meeting must offer the retry")
+		}
+		if _, err := d.Meet.Store.Update(id, func(m *meeting.Manifest) { m.Status = st }); err != nil {
+			t.Fatal(err)
+		}
+		if servedRetryable(t, mux, id) {
+			t.Errorf("%s: voices_retryable is true while the meeting is in progress", st)
+		}
+		rec := call(t, mux, "POST", "/v1/meetings/"+id+"/voices", "")
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "still being processed") {
+			t.Errorf("%s: POST = %d %s, want the busy 409", st, rec.Code, rec.Body)
+		}
+		if got := meetingManifest(t, d, id).Status; got != st || calls.Load() != 0 {
+			t.Errorf("%s: a refused retry moved the meeting to %s or ran the diarizer", st, got)
+		}
 	}
 }
