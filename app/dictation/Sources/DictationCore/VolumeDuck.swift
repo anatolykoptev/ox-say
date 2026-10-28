@@ -40,15 +40,23 @@ public struct DuckRecord: Equatable {
     }
 }
 
-/// Where the duck's debt survives a crash or a SIGKILL. One record.
+/// Where the duck's debt survives a crash or a SIGKILL: one record per device (by UID), so ducking one output never
+/// overwrites the debt of another that is absent (AirPods after a SIGKILL).
 public protocol DuckRecordStore: AnyObject {
-    func load() -> DuckRecord?
+    /// Every standing debt.
+    func loadAll() -> [DuckRecord]
+    /// Remembers `record`, replacing the record of the same device only.
     func save(_ record: DuckRecord)
-    func clear()
+    /// Forgets the record of the device `uid`; the others stay.
+    func clear(uid: String)
 }
 
-/// The store the app uses: four keys in the given defaults.
+/// The store the app uses: a dictionary of records by device UID in the given defaults. The earlier build kept ONE
+/// record in four flat keys; it is read once, folded into the dictionary and removed.
 public final class UserDefaultsDuckRecordStore: DuckRecordStore {
+    public static let recordsKey = "soundDuckPending.records"
+    private static let preDuck = "preDuck", ducked = "ducked", savedAt = "savedAt"
+    // The single-record keys of the earlier build.
     public static let uidKey = "soundDuckPending.uid"
     public static let preDuckKey = "soundDuckPending.preDuck"
     public static let duckedKey = "soundDuckPending.ducked"
@@ -57,28 +65,47 @@ public final class UserDefaultsDuckRecordStore: DuckRecordStore {
 
     public init(defaults: UserDefaults) { self.defaults = defaults }
 
-    public func load() -> DuckRecord? {
-        guard let uid = defaults.string(forKey: Self.uidKey),
-              defaults.object(forKey: Self.preDuckKey) != nil,
-              defaults.object(forKey: Self.duckedKey) != nil else { return nil }
-        let savedAt = defaults.object(forKey: Self.savedAtKey) as? Double
-        return DuckRecord(uid: uid, preDuck: defaults.float(forKey: Self.preDuckKey),
-                          ducked: defaults.float(forKey: Self.duckedKey),
-                          savedAt: savedAt.map(Date.init(timeIntervalSince1970:)))
+    public func loadAll() -> [DuckRecord] {
+        migrateLegacy()
+        return stored().compactMap { uid, fields -> DuckRecord? in
+            guard let pre = fields[Self.preDuck], let ducked = fields[Self.ducked] else { return nil }
+            return DuckRecord(uid: uid, preDuck: Float(pre), ducked: Float(ducked),
+                              savedAt: fields[Self.savedAt].map(Date.init(timeIntervalSince1970:)))
+        }.sorted { $0.uid < $1.uid }
     }
 
     public func save(_ record: DuckRecord) {
-        defaults.set(record.uid, forKey: Self.uidKey)
-        defaults.set(record.preDuck, forKey: Self.preDuckKey)
-        defaults.set(record.ducked, forKey: Self.duckedKey)
-        if let savedAt = record.savedAt {
-            defaults.set(savedAt.timeIntervalSince1970, forKey: Self.savedAtKey)
-        } else {
-            defaults.removeObject(forKey: Self.savedAtKey)
-        }
+        migrateLegacy()
+        var all = stored()
+        var fields = [Self.preDuck: Double(record.preDuck), Self.ducked: Double(record.ducked)]
+        if let savedAt = record.savedAt { fields[Self.savedAt] = savedAt.timeIntervalSince1970 }
+        all[record.uid] = fields
+        defaults.set(all, forKey: Self.recordsKey)
     }
 
-    public func clear() {
+    public func clear(uid: String) {
+        migrateLegacy()
+        var all = stored()
+        guard all.removeValue(forKey: uid) != nil else { return }
+        if all.isEmpty { defaults.removeObject(forKey: Self.recordsKey) } else { defaults.set(all, forKey: Self.recordsKey) }
+    }
+
+    private func stored() -> [String: [String: Double]] {
+        defaults.dictionary(forKey: Self.recordsKey) as? [String: [String: Double]] ?? [:]
+    }
+
+    /// A debt written by the single-record build is not lost by the upgrade: it joins the dictionary (a record already
+    /// there for the same device is newer and wins) and the flat keys go.
+    private func migrateLegacy() {
+        guard let uid = defaults.string(forKey: Self.uidKey) else { return }
+        var all = stored()
+        if all[uid] == nil, defaults.object(forKey: Self.preDuckKey) != nil, defaults.object(forKey: Self.duckedKey) != nil {
+            var fields = [Self.preDuck: Double(defaults.float(forKey: Self.preDuckKey)),
+                          Self.ducked: Double(defaults.float(forKey: Self.duckedKey))]
+            if let savedAt = defaults.object(forKey: Self.savedAtKey) as? Double { fields[Self.savedAt] = savedAt }
+            all[uid] = fields
+            defaults.set(all, forKey: Self.recordsKey)
+        }
         for key in [Self.uidKey, Self.preDuckKey, Self.duckedKey, Self.savedAtKey] { defaults.removeObject(forKey: key) }
     }
 }
@@ -91,7 +118,7 @@ public final class UserDefaultsDuckRecordStore: DuckRecordStore {
 /// duck from a user change. A restore that could not be confirmed stays owed
 /// in memory, per device, and is applied by the next dictation on that device
 /// if the output is still as quiet as the duck left it. While a duck stands,
-/// `{device uid, preDuck, ducked}` is kept in a `DuckRecordStore` and cleared
+/// `{device uid, preDuck, ducked}` is kept in a `DuckRecordStore` (one per device) and cleared
 /// after a confirmed restore; a process that died mid-dictation finds it at
 /// the next launch (`recoverInterrupted`) and gives the level back if the
 /// output still sits at the ducked level.
@@ -125,6 +152,11 @@ public final class VolumeDuckCoordinator {
     /// (NTP, a manual change) without the record counting as dated in the
     /// future.
     public static let clockSkewTolerance: TimeInterval = 5 * 60
+    /// How close to the ducked level an absent device must sit to be given its level back once its record is older than
+    /// `owedLifetime`: the grid's worst snap and the read slack, no more. A device that was away for hours and was set
+    /// low by the user in the meantime (a level within `confirmTolerance` of the duck) is then left alone; one that
+    /// kept the duck's own level reads back exactly there.
+    public static let staleRecordTolerance: Float = quantizationStep / 2 + readSlack
     /// How many settle-spaced reads a confirm takes before giving up — an
     /// output that applies volume asynchronously can keep answering the old
     /// level for the first few.
@@ -168,8 +200,9 @@ public final class VolumeDuckCoordinator {
     /// - `settleDelay` pauses before each confirm read, so an output that
     ///   applies volume asynchronously has landed the write first: 80 ms.
     /// - `log` gets one line at notice level when the output cannot be
-    ///   lowered; `logError` gets a line without user content when a restore
-    ///   cannot be confirmed.
+    ///   lowered and when an owed restore is claimed by the next duck;
+    ///   `logError` gets a line without user content when a restore cannot
+    ///   be confirmed or a record or owed entry is dropped.
     /// - `now` stamps and ages the owed restores.
     /// - `records` keeps the standing duck's debt across a crash; nil keeps none.
     public init(volume: SystemVolume,
@@ -215,7 +248,7 @@ public final class VolumeDuckCoordinator {
         guard let level = volume.volume(device.id) else { return false }
         guard level > 0 else { return true }
         let earlierOwed = device.uid.flatMap { owed[$0] }
-        let preDuck = owedPreDuck(device: device, level: level)
+        let (preDuck, claimedOwed) = owedPreDuck(device: device, level: level)
         let duck = Duck(generation: generation, deviceID: device.id, uid: device.uid,
                         preDuck: preDuck, ducked: preDuck * Self.duckFraction)
         self.duck = duck
@@ -232,7 +265,9 @@ public final class VolumeDuckCoordinator {
             // Nothing was lowered and the store was never touched: only the
             // owed restore this begin consumed goes back.
             self.duck = nil
-            if let uid = device.uid { owed[uid] = earlierOwed }
+            // Only an entry that was still good goes back: one that expired or was dropped has been said once and
+            // would be said again, word for word, by every retry inside the window.
+            if claimedOwed, let uid = device.uid { owed[uid] = earlierOwed }
             logError("output volume duck refused: the device did not take the first write")
             return false
         case .stopped:
@@ -250,12 +285,16 @@ public final class VolumeDuckCoordinator {
     /// the record is kept (and ages out). An unconfirmed restore keeps the
     /// record for the next launch.
     public func recoverInterrupted() {
-        guard duck == nil, let record = records?.load() else { return }
+        guard duck == nil, let records else { return }
+        for record in records.loadAll() { recover(record, in: records) }
+    }
+
+    private func recover(_ record: DuckRecord, in records: DuckRecordStore) {
         // An older record, one without a timestamp and one dated further in
         // the future than a clock step explains are dropped without a write.
         guard let savedAt = record.savedAt,
               (-Self.clockSkewTolerance..<Self.recordLifetime).contains(now().timeIntervalSince(savedAt)) else {
-            records?.clear()
+            records.clear(uid: record.uid)
             logError("output volume record dropped: too old, undated or dated in the future")
             return
         }
@@ -264,17 +303,22 @@ public final class VolumeDuckCoordinator {
         guard let deviceID = volume.device(forUID: record.uid),
               let level = volume.volume(deviceID) else {
             // Absent (unplugged, asleep): a later launch may find it. The
-            // record dies of age, never of absence.
+            // record dies of age, never of absence; and since the store keeps
+            // one record per device, another device's duck never overwrites it.
             logError("output volume record kept: the device is not present")
             return
         }
-        guard abs(level - record.ducked) <= Self.confirmTolerance else {
-            records?.clear()
+        // The older the record, the likelier the level is the user's own: past `owedLifetime` only the duck's own level,
+        // within the grid's snap, counts.
+        let aged = now().timeIntervalSince(savedAt) > Self.owedLifetime
+        let tolerance = aged ? Self.staleRecordTolerance : Self.confirmTolerance
+        guard abs(level - record.ducked) <= tolerance else {
+            records.clear(uid: record.uid)
             return
         }
         if fade(from: level, to: record.preDuck, on: deviceID) == .complete,
            confirmed(record.preDuck, on: deviceID) {
-            records?.clear()
+            records.clear(uid: record.uid)
         } else {
             logError("output volume recovery unconfirmed: level did not read back")
         }
@@ -358,11 +402,10 @@ public final class VolumeDuckCoordinator {
         if let uid { owed[uid] = nil }
     }
 
-    /// The store holds one record: it is cleared only when it is this
-    /// device's, never another device's debt.
+    /// Only this device's record goes, never another device's debt.
     private func forgetRecord(for uid: String?) {
-        guard let uid, records?.load()?.uid == uid else { return }
-        records?.clear()
+        guard let uid else { return }
+        records?.clear(uid: uid)
     }
 
     /// A restore counts as landed once a settled read sits within
@@ -389,20 +432,21 @@ public final class VolumeDuckCoordinator {
     /// moved it since, and so does an entry older than `owedLifetime`: the
     /// entry is dropped and the level read is theirs. Each outcome is one
     /// line without content. Entries of other devices are never touched.
-    private func owedPreDuck(device: (id: UInt32, uid: String?), level: Float) -> Float {
-        guard let uid = device.uid, let entry = owed.removeValue(forKey: uid) else { return level }
+    private func owedPreDuck(device: (id: UInt32, uid: String?), level: Float) -> (preDuck: Float, claimed: Bool) {
+        guard let uid = device.uid, let entry = owed.removeValue(forKey: uid) else { return (level, false) }
         guard now().timeIntervalSince(entry.since) < Self.owedLifetime else {
             logError("output volume owed restore expired")
-            return level
+            return (level, false)
         }
         let stillQuiet = level <= Self.stillQuietBound(entry.ducked)
         let atPartialLanding = level < entry.preDuck && abs(level - entry.landed) <= Self.readSlack
         guard stillQuiet || atPartialLanding else {
             logError("output volume owed restore dropped: the level was moved since")
-            return level
+            return (level, false)
         }
-        logError("output volume owed restore claimed")
-        return entry.preDuck
+        // A success path, not an error: notice level.
+        log("output volume owed restore claimed")
+        return (entry.preDuck, true)
     }
 
     /// The highest level that still counts as "as quiet as the duck left it":

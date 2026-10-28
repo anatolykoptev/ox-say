@@ -90,12 +90,13 @@ private func freshDefaults(_ label: String = "ox-say-sound") -> (UserDefaults, S
 }
 
 final class VolumeDuckCoordinatorTests: XCTestCase {
-    private func rig(level: Float = 0.8, logError: @escaping (String) -> Void = { _ in },
+    private func rig(level: Float = 0.8, log: @escaping (String) -> Void = { _ in },
+                     logError: @escaping (String) -> Void = { _ in },
                      now: @escaping () -> Date = Date.init)
         -> (FakeSystemVolume, VolumeDuckCoordinator) {
         let fake = FakeSystemVolume()
         fake.level = level
-        return (fake, VolumeDuckCoordinator(volume: fake, stepDelay: 0, logError: logError, now: now))
+        return (fake, VolumeDuckCoordinator(volume: fake, stepDelay: 0, log: log, logError: logError, now: now))
     }
 
     private let quiet = 0.8 * VolumeDuckCoordinator.duckFraction
@@ -487,11 +488,12 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
 
     // #216.3 — an owed entry that expires, is claimed or is overtaken by the
     // user is said once, without content (no level, no device).
-    // Mutation: in owedPreDuck drop the three logError calls -> RED.
+    // Mutation: in owedPreDuck drop the logError calls (expired, dropped) or the log call (claimed) -> RED.
     func testOwedEntriesAreLoggedWhenTheyExpireOrAreClaimed() {
         var clock = Date(timeIntervalSinceReferenceDate: 1_000)
         var errors: [String] = []
-        let (fake, duck) = rig(logError: { errors.append($0) }, now: { clock })
+        var notices: [String] = []
+        let (fake, duck) = rig(log: { notices.append($0) }, logError: { errors.append($0) }, now: { clock })
         func failedDuck(_ g: Int) {
             duck.begin(generation: g)
             fake.refusedWrites = 2
@@ -508,9 +510,13 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
         fake.level = 0.8
         failedDuck(3)
         errors.removeAll()
+        notices.removeAll()
         duck.begin(generation: 4)
-        XCTAssertEqual(errors.count, 1, "claim: \(errors)")
-        XCTAssertTrue(errors.first?.contains("claimed") ?? false, "\(errors)")
+        // A success path: notice level (`log`), not the error log.
+        // Mutation: owedPreDuck, `log("output volume owed restore claimed")` -> `logError(...)` -> RED.
+        XCTAssertEqual(errors, [], "a claim is not an error: \(errors)")
+        XCTAssertEqual(notices.count, 1, "claim: \(notices)")
+        XCTAssertTrue(notices.first?.contains("claimed") ?? false, "\(notices)")
         duck.end(generation: 4)
 
         fake.level = 0.8
@@ -592,10 +598,15 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
 }
 
 final class InMemoryDuckRecordStore: DuckRecordStore {
-    var record: DuckRecord?
-    func load() -> DuckRecord? { record }
-    func save(_ record: DuckRecord) { self.record = record }
-    func clear() { record = nil }
+    var records: [String: DuckRecord] = [:]
+    /// The single record of the one-device tests: reading gives the only record, writing replaces them all.
+    var record: DuckRecord? {
+        get { records.count == 1 ? records.values.first : nil }
+        set { records = newValue.map { [$0.uid: $0] } ?? [:] }
+    }
+    func loadAll() -> [DuckRecord] { records.values.sorted { $0.uid < $1.uid } }
+    func save(_ record: DuckRecord) { records[record.uid] = record }
+    func clear(uid: String) { records[uid] = nil }
 }
 
 /// Item: a crash or SIGKILL while ducked must not leave the output at 15%.
@@ -753,17 +764,17 @@ final class VolumeDuckRecoveryTests: XCTestCase {
         XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "the owed level survives the refused begin")
     }
 
-    // #265 item 2: the store holds one record. A confirmed restore of one
-    // device must not clear the record of another. Mutation: forgetOwed
-    // clears the store unconditionally -> RED.
+    // #265 item 2: a confirmed restore of one device must not clear the record
+    // of another. Mutation: forgetRecord, `records?.clear(uid: uid)` -> clear
+    // every record -> RED.
     func testAConfirmedRestoreLeavesAnotherDevicesRecord() {
         let (fake, store, duck) = rig()
         XCTAssertTrue(duck.begin(generation: 1))
         let other = record(uid: "other-output")
-        store.record = other
+        store.save(other)
         duck.end(generation: 1)
         XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
-        XCTAssertEqual(store.record, other, "the other device's debt is not ours to forget")
+        XCTAssertEqual(store.records, ["other-output": other], "the other device's debt is not ours to forget")
     }
 
     func testAConfirmedRestoreClearsItsOwnRecord() {
@@ -873,29 +884,147 @@ final class VolumeDuckRecoveryTests: XCTestCase {
         XCTAssertNil(store.record)
     }
 
-    func testTheDefaultsStoreRoundTripsAndReadsALegacyRecordAsUnstamped() {
+    // #301: one record per device. A duck on the default output must not overwrite the debt of an absent device (AirPods
+    // after a SIGKILL); both come back when their devices do.
+    // Mutation: VolumeDuckCoordinator.begin, `self.records?.save(...)` keeps only the new record (the store replaces
+    // every record on save) -> RED.
+    func testADuckOnAnotherDeviceKeepsAnAbsentDevicesDebt() {
+        let (fake, store, duck) = rig()
+        let airpods = record(uid: "airpods")
+        store.save(airpods)
+        XCTAssertTrue(duck.begin(generation: 1))
+        XCTAssertEqual(Set(store.records.keys), ["airpods", "fake-output"], "both debts stand")
+        XCTAssertEqual(store.records["airpods"], airpods)
+        duck.end(generation: 1)
+        XCTAssertEqual(Set(store.records.keys), ["airpods"], "a confirmed restore forgets only its own")
+        // The AirPods come back at the next launch, still where the duck left them.
+        fake.other = (id: 90, uid: "airpods", level: 0.12)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.other?.level ?? 0, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(store.records, [:])
+    }
+
+    // Every record is judged on its own at launch: one present and ducked, one absent, one the user moved.
+    // Mutation: recoverInterrupted, `for record in records.loadAll()` -> only the first record -> RED.
+    func testALaunchJudgesEveryRecordOnItsOwn() {
+        let (fake, store, duck) = rig(level: 0.5)
+        fake.other = (id: 90, uid: "airpods", level: 0.12)
+        store.save(record(uid: "airpods"))
+        store.save(record(uid: "absent"))
+        store.save(record(uid: "fake-output"))
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.other?.level ?? 0, 0.8, accuracy: 0.0001, "the ducked non-default device is restored")
+        XCTAssertEqual(fake.level, 0.5, accuracy: 0.0001, "the default output sits at 0.5: the user's, left alone")
+        XCTAssertEqual(Set(store.records.keys), ["absent"], "only the absent device's debt is kept")
+    }
+
+    // #301: a device absent for hours whose level the user set low in between must not be restored over it. Within the
+    // owed lifetime the wide match stays (a crash and a relaunch).
+    // Mutation: recover, `let tolerance = aged ? ... : ...` -> always `confirmTolerance` -> RED.
+    func testAnOldRecordIsMatchedTightly() {
+        func run(age: TimeInterval, level: Float) -> Float {
+            let (fake, store, duck) = rig(level: level)
+            store.record = record(age: age)
+            duck.recoverInterrupted()
+            return fake.level
+        }
+        let fresh = VolumeDuckCoordinator.owedLifetime - 1, old = VolumeDuckCoordinator.owedLifetime + 1
+        // 0.12 is the duck; 0.18 sits inside the wide tolerance (0.0725) and outside the tight one (0.04125).
+        XCTAssertEqual(run(age: fresh, level: 0.18), 0.8, accuracy: 0.0001, "a recent crash: the wide match restores")
+        XCTAssertEqual(run(age: old, level: 0.18), 0.18, accuracy: 0.0001, "hours later the user's own low level is left alone")
+        XCTAssertEqual(run(age: old, level: 0.12), 0.8, accuracy: 0.0001, "the duck's own level still reads back")
+        XCTAssertEqual(run(age: old, level: 0.12 + VolumeDuckCoordinator.staleRecordTolerance - 0.001), 0.8, accuracy: 0.0001,
+                       "a snap of the output's grid is within the tight match")
+    }
+
+    // The single-record build's four keys are read once, kept as a per-device record and removed.
+    // Mutation: UserDefaultsDuckRecordStore.migrateLegacy, return at once -> RED.
+    func testTheDefaultsStoreMigratesTheSingleRecordOfTheEarlierBuild() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("airpods", forKey: UserDefaultsDuckRecordStore.uidKey)
+        defaults.set(Float(0.8), forKey: UserDefaultsDuckRecordStore.preDuckKey)
+        defaults.set(Float(0.12), forKey: UserDefaultsDuckRecordStore.duckedKey)
+        defaults.set(1_800_000_000.0, forKey: UserDefaultsDuckRecordStore.savedAtKey)
+        let store = UserDefaultsDuckRecordStore(defaults: defaults)
+        XCTAssertEqual(store.loadAll(), [DuckRecord(uid: "airpods", preDuck: 0.8, ducked: 0.12,
+                                                    savedAt: Date(timeIntervalSince1970: 1_800_000_000))])
+        for key in [UserDefaultsDuckRecordStore.uidKey, UserDefaultsDuckRecordStore.preDuckKey,
+                    UserDefaultsDuckRecordStore.duckedKey, UserDefaultsDuckRecordStore.savedAtKey] {
+            XCTAssertNil(defaults.object(forKey: key), "the flat key \(key) is gone")
+        }
+        // A save right after an upgrade (without a load first) must not lose the old debt either.
+        let (again, suite2) = freshDefaults()
+        defer { again.removePersistentDomain(forName: suite2) }
+        again.set("airpods", forKey: UserDefaultsDuckRecordStore.uidKey)
+        again.set(Float(0.8), forKey: UserDefaultsDuckRecordStore.preDuckKey)
+        again.set(Float(0.12), forKey: UserDefaultsDuckRecordStore.duckedKey)
+        let second = UserDefaultsDuckRecordStore(defaults: again)
+        second.save(DuckRecord(uid: "speakers", preDuck: 0.5, ducked: 0.075))
+        XCTAssertEqual(second.loadAll().map(\.uid), ["airpods", "speakers"])
+    }
+
+    // The per-uid defaults store: two devices side by side, the right one cleared.
+    // Mutation: UserDefaultsDuckRecordStore.save, `all[record.uid] = fields` -> `all = [record.uid: fields]` -> RED.
+    func testTheDefaultsStoreKeepsOneRecordPerDevice() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UserDefaultsDuckRecordStore(defaults: defaults)
+        let a = DuckRecord(uid: "a", preDuck: 0.75, ducked: 0.1125, savedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        let b = DuckRecord(uid: "b", preDuck: 0.5, ducked: 0.075)
+        store.save(a); store.save(b)
+        XCTAssertEqual(store.loadAll(), [a, b])
+        store.save(DuckRecord(uid: "a", preDuck: 0.6, ducked: 0.09))
+        XCTAssertEqual(store.loadAll().map(\.preDuck), [0.6, 0.5], "a device's record is replaced, not duplicated")
+        store.clear(uid: "a")
+        XCTAssertEqual(store.loadAll(), [b])
+        store.clear(uid: "b")
+        XCTAssertEqual(store.loadAll(), [])
+        XCTAssertNil(defaults.object(forKey: UserDefaultsDuckRecordStore.recordsKey))
+    }
+
+    // A refused first write after an expired owed entry: said once, not again on every retry inside the window.
+    // Mutation: begin, `if claimedOwed, let uid = device.uid { owed[uid] = earlierOwed }` -> `if let uid ...` -> RED.
+    func testARefusedBeginDoesNotRepeatAnExpiredOwedLine() {
+        var clock = Date(timeIntervalSinceReferenceDate: 1_000)
+        var errors: [String] = []
+        let (fake, duck) = rig(logError: { errors.append($0) }, now: { clock })
+        XCTAssertTrue(duck.begin(generation: 1))
+        fake.refusedWrites = 2
+        duck.end(generation: 1)
+        clock = clock.addingTimeInterval(VolumeDuckCoordinator.owedLifetime + 1)
+        errors.removeAll()
+        fake.refusedWrites = 1
+        XCTAssertFalse(duck.begin(generation: 2))
+        XCTAssertEqual(errors.filter { $0.contains("expired") }.count, 1, "\(errors)")
+        fake.refusedWrites = 1
+        XCTAssertFalse(duck.begin(generation: 3))
+        XCTAssertEqual(errors.filter { $0.contains("expired") }.count, 1, "the same line again on a retry: \(errors)")
+    }
+
+    func testTheDefaultsStoreRoundTripsAndReadsARecordWithoutATimestampAsUnstamped() {
         let (defaults, suite) = freshDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = UserDefaultsDuckRecordStore(defaults: defaults)
         let stamped = DuckRecord(uid: "u", preDuck: 0.75, ducked: 0.1125,
                                  savedAt: Date(timeIntervalSince1970: 1_800_000_123.456))
         store.save(stamped)
-        XCTAssertEqual(store.load(), stamped)
-        // A record written by a build before the timestamp existed.
-        defaults.removeObject(forKey: UserDefaultsDuckRecordStore.savedAtKey)
-        XCTAssertNotNil(store.load(), "an old record still loads")
-        XCTAssertNil(store.load()?.savedAt)
+        XCTAssertEqual(store.loadAll(), [stamped])
+        // A record without the timestamp (the earlier build wrote none at first).
+        store.save(DuckRecord(uid: "u", preDuck: 0.75, ducked: 0.1125))
+        XCTAssertEqual(store.loadAll().count, 1, "an unstamped record still loads")
+        XCTAssertNil(store.loadAll().first?.savedAt)
     }
 
     func testTheDefaultsStoreRoundTripsInAPrivateSuite() {
         let (defaults, suite) = freshDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = UserDefaultsDuckRecordStore(defaults: defaults)
-        XCTAssertNil(store.load())
+        XCTAssertEqual(store.loadAll(), [])
         store.save(DuckRecord(uid: "u", preDuck: 0.75, ducked: 0.1125))
-        XCTAssertEqual(store.load(), DuckRecord(uid: "u", preDuck: 0.75, ducked: 0.1125))
-        store.clear()
-        XCTAssertNil(store.load())
+        XCTAssertEqual(store.loadAll(), [DuckRecord(uid: "u", preDuck: 0.75, ducked: 0.1125)])
+        store.clear(uid: "u")
+        XCTAssertEqual(store.loadAll(), [])
     }
 }
 
