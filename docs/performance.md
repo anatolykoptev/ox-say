@@ -81,8 +81,8 @@ measurement. The 1.7B Q8 talker is not fetched by
 
 ### Notes
 
-- tts-server first start (Metal library compile, excluded from the tables): 0.47 s
-- ox-stt (Metal) first start (Metal library compile, excluded from the tables): 0.23 s
+- tts-server first start (includes any Metal library compile; macOS caches compiled libraries, so later starts are fast; excluded from the tables): 0.47 s
+- ox-stt (Metal) first start (includes any Metal library compile; macOS caches compiled libraries, so later starts are fast; excluded from the tables): 0.23 s
 - TTS qwen-talker-0.6b-base-Q8_0.gguf: first synthesis after start took 1.48 s (excluded from the medians)
 - TTS qwen-talker-1.7b-base-Q8_0.gguf: first synthesis after start took 1.64 s (excluded from the medians)
 

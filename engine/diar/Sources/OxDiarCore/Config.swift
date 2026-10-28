@@ -1,5 +1,6 @@
 import CoreML
 import FluidAudio
+import Foundation
 
 /// The configuration and the compute units ox-diar runs with, as functions the unit tests can read: a different value
 /// is a different accuracy claim (or a GPU taken from Parakeet), and a test that only runs the binary cannot see it.
@@ -15,18 +16,36 @@ public enum Pinned {
         return config
     }
 
-    /// Apple Silicon: Neural Engine and CPU, the GPU stays free for Parakeet (measured 0 % against 98 % on `.all`).
-    /// Intel has no Neural Engine.
-    public static func computeUnits(arm64: Bool) -> MLComputeUnits {
-        arm64 ? .cpuAndNeuralEngine : .cpuOnly
+    /// Neural Engine and CPU, so the GPU stays free for Parakeet (measured 0 % against 98 % on `.all`). ox-diar has
+    /// no Intel build: the models failed on `.cpuOnly` on the Intel CI runner (plan Task 20a), and the x86_64 package
+    /// carries none, so there is no per-architecture choice to make.
+    public static let computeUnits: MLComputeUnits = .cpuAndNeuralEngine
+
+    /// The Core ML configuration the models are loaded with.
+    public static func mlConfiguration() -> MLModelConfiguration {
+        let ml = MLModelConfiguration()
+        ml.computeUnits = computeUnits
+        return ml
     }
 
-    /// The Core ML configuration the models are loaded with. main.swift calls this, so `swift test` exercises the
-    /// call it makes rather than a function it could bypass.
-    public static func mlConfiguration(arm64: Bool = runsOnArm64) -> MLModelConfiguration {
-        let ml = MLModelConfiguration()
-        ml.computeUnits = computeUnits(arm64: arm64)
-        return ml
+    /// Loads the models through `load`, handing it the pinned configuration, and logs the compute units of the
+    /// configuration it passed (test_cli.py reads that line back from the binary). `load` is a seam for
+    /// `swift test` only: the tests record what it receives, so a loader called with another configuration, or none,
+    /// is caught, which a log line or a free-standing `mlConfiguration()` check could not see.
+    public static func loadModels<Models>(
+        from directory: URL,
+        using load: (URL, MLModelConfiguration) async throws -> Models
+    ) async throws -> Models {
+        let ml = mlConfiguration()
+        FileHandle.standardError.write(Data("ox-diar: compute units \(name(of: ml.computeUnits))\n".utf8))
+        return try await load(directory, ml)
+    }
+
+    /// ox-diar's loader: FluidAudio's offline diarizer models from `directory`.
+    public static func loadModels(from directory: URL) async throws -> OfflineDiarizerModels {
+        try await loadModels(from: directory, using: { url, ml in
+            try await OfflineDiarizerModels.load(from: url, configuration: ml)
+        })
     }
 
     /// The name of a compute-units value, for the line main.swift logs (test_cli.py reads it back from the binary).
@@ -38,13 +57,5 @@ public enum Pinned {
         case .all: "all"
         @unknown default: "unknown"
         }
-    }
-
-    public static var runsOnArm64: Bool {
-        #if arch(arm64)
-        true
-        #else
-        false
-        #endif
     }
 }

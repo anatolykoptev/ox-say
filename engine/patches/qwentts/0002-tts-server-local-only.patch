@@ -64,7 +64,7 @@ index ca5bd8c..6c227c6 100644
  static int tts_server_run(const tts_backend & be, const server_config & cfg) {
      httplib::Server svr;
      g_svr = &svr;
-@@ -611,13 +648,43 @@ static int tts_server_run(const tts_backend & be, const server_config & cfg) {
+@@ -611,13 +648,45 @@ static int tts_server_run(const tts_backend & be, const server_config & cfg) {
  #endif
      });
  
@@ -90,6 +90,8 @@ index ca5bd8c..6c227c6 100644
 +        // handler runs ahead of the body read for every method
 +        // (Server::routing, httplib.cpp:7961 vs 8036).
 +        if (req.method != "GET" && req.method != "HEAD" && req.method != "POST" && req.method != "DELETE") {
++            // RFC 9110 15.5.6: a 405 names the methods the routes accept
++            res.set_header("Allow", "GET, HEAD, POST, DELETE");
 +            tts_json_error(res, 405, "method_not_allowed", "method not allowed");
 +            return httplib::Server::HandlerResponse::Handled;
 +        }

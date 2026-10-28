@@ -52,7 +52,7 @@ the input is a meeting's raw channel file (the format of `them.pcm`) and DIR hol
 `scripts/fetch-models.sh --diar-only` lays it out. It is a Swift package (`engine/diar`) on FluidAudio 0.17.7 (pinned with
 `exact:` and a committed `Package.resolved`), which runs the pyannote community-1 pipeline (segmentation, WeSpeaker,
 PLDA, VBx) on Core ML: `.cpuAndNeuralEngine` on Apple Silicon, so the GPU stays free for Parakeet (`probe_gpu.sh` proves
-it). There is no Intel build: Core ML cannot run the models on `.cpuOnly` (the Intel smoke of plan Task 20a failed), so
+it). There is no Intel build: the models failed on `.cpuOnly` on the Intel CI runner (the smoke of plan Task 20a), so
 the x86_64 package carries none and the daemon reports `cpu_unsupported`. The configuration is pinned in `OxDiarCore/Config.swift` (AHC threshold 0.7, step 0.1, no 1 s floor
 on a segment: the spike's `parity0`), where `swift test` reads it. The audio is read whole into memory and never written
 to a temporary file (FluidAudio's file path would stream a float32 copy to the user's temporary directory). It never
@@ -201,7 +201,7 @@ a prefix match would also accept `application/jsonx`. Methods other than GET,
 HEAD, POST and DELETE are refused with 405 ahead of routing: the refusal
 comes before the body is handled, but httplib still drains a framed body
 afterwards, up to its 32 MB cap (httplib 0.46.1; ox-stt has no drain). The 405
-carries no `Allow` header yet (#65). A request
+carries `Allow: GET, HEAD, POST, DELETE`. A request
 carrying Transfer-Encoding or a POST without Content-Length gets 411. When
 bound to loopback, which is how ox-say always starts it, the Host must be a
 loopback literal or `localhost` (DNS rebinding). A non-loopback bind (LAN
@@ -329,8 +329,8 @@ prints JSON: `text`, `segments` and `words` (`w`, `s`, `e`, `p`; seconds).
   HTTP guards (#65), as for tts-server's local-only patch: the server is for
   the daemon alone. A `Host` header that does not name loopback gets 403
   (DNS rebinding); a method other than GET, HEAD, POST and DELETE gets 405
-  before any body is read (ox-stt does not drain it; the 405 has no `Allow`
-  header yet); a request with `Transfer-Encoding`, or a POST without
+  before any body is read (ox-stt does not drain it; the 405 carries
+  `Allow: GET, HEAD, POST, DELETE`); a request with `Transfer-Encoding`, or a POST without
   `Content-Length`, gets 411; a POST whose `Content-Type` is not the route's
   exact media type (`audio/wav` for `/transcribe`, `application/json` or
   `application/octet-stream` for the session routes) gets 415; and the
