@@ -6,6 +6,8 @@
 # Mutations that must turn this RED:
 #   * check-release-tag.sh: test `git merge-base --is-ancestor` instead of first-parent membership —
 #     "a release commit that is only on a side branch" passes
+#   * check-release-tag.sh: drop the newest-release-commit loop — "the reverted release commit of a re-released
+#     version" passes
 #   * check-release-tag.sh: drop the `echo` before an `exit 1` — the "says why" checks fail
 #   * workflows/release.yml: inline the checks again instead of calling the script — "both jobs call it" fails
 set -u
@@ -70,6 +72,17 @@ errhas "wrong-commit refusal says why" "not the commit that released 0.1.9"
 run "no such tag" 1 bash "$script" v9.9.9 "$M"
 errhas "missing tag says why" "v9.9.9"
 run "tag on the first commit (no parent)" 1 bash -c "cd '$repo' && git tag v0.1.0 '$A' -f && bash '$script' v0.1.0 '$A'"
+
+# revert and re-release: two first-parent commits move the manifest to 0.4.0; only the newer one may be tagged
+git checkout -q -b rerelease "$A"
+manifest 0.4.0;  RA=$(commit "release 0.4.0")
+manifest 0.1.0;  commit "revert release 0.4.0" >/dev/null
+manifest 0.4.0;  RB=$(commit "release 0.4.0 again")
+head=$(git rev-parse HEAD)
+run "the reverted release commit of a re-released version" 1 bash -c "cd '$repo' && git tag v0.4.0 '$RA' && bash '$script' v0.4.0 '$head'"
+errhas "reverted-release refusal says why" "newer commit"
+run "the newest release commit of a re-released version" 0 bash -c "cd '$repo' && git tag -f v0.4.0 '$RB' >/dev/null && bash '$script' v0.4.0 '$head'"
+check "re-release prints the newer commit" "$(cat "$tmp/out")" "$RB"
 
 # no jq on PATH: a message about jq, not a bare failure
 mkdir "$tmp/nojq"
