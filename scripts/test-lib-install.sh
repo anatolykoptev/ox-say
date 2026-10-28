@@ -300,6 +300,17 @@ check_in_log "with audiocpp: exit 0" "$tmp/eng-with/log" "rc=0"
 check "engines without audiocpp_server" "$(engine_case without no)" "ox-align ox-llm ox-stt tts-server "
 check_in_log "without audiocpp: exit 0" "$tmp/eng-without/log" "rc=0"
 
+# --- I1: a build/engine/out from before ox-llm names the fix (#232 / #230) -----
+# Mutation: drop the hint from the missing-binary message in oxs_install_engines -> RED.
+d="$tmp/eng-stale"; mkdir -p "$d/build/engine/out" "$d/rel/engine" "$d/home"
+for bin in tts-server ox-stt ox-align; do printf '#!/bin/sh\n' > "$d/build/engine/out/$bin"; chmod +x "$d/build/engine/out/$bin"; cp "$d/build/engine/out/$bin" "$d/rel/engine/$bin"; done
+bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/build/engine/out'" >"$d/log" 2>&1
+check "stale build/engine/out: refused" "$?" "1"
+check_in_log "stale build/engine/out: names the missing engine" "$d/log" "no ox-llm in $d/build/engine/out"
+check_in_log "stale build/engine/out: says to re-run engine/build.sh" "$d/log" "re-run engine/build.sh"
+bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/rel/engine'" >"$d/log2" 2>&1
+if grep -qF "engine/build.sh" "$d/log2"; then fail "a release package is not told to run engine/build.sh"; else pass "a release package is not told to run engine/build.sh"; fi
+
 # --- I2: ox-diar is installed when the package carries it ----------------------
 # Mutation: drop the `if [ -x "$out/ox-diar" ]` block in oxs_install_engines -> the binary is missing -> RED.
 diar_case() { # name with-diar

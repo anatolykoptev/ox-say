@@ -65,10 +65,17 @@ jobs:
       - name: edge pad test
         run: c++ -std=c++17 -O1 -Wall -Wextra -Werror -o "$RUNNER_TEMP/edge-pad-test" engine/stt/edge_pad_test.cpp && "$RUNNER_TEMP/edge-pad-test"
 
-      # sign-release.sh's stapler-validate retry helper, against a fake xcrun;
-      # needs only bash.
+      # sign-release.sh's stapler staple/validate retry helper, against a fake
+      # xcrun; needs only bash.
       - name: notary helper test
         run: bash scripts/test-lib-notary.sh
+
+      # engine/lib-check.sh (build guards) against fake lipo/otool, and the
+      # release-tag check on throwaway git repos; need bash, git and jq.
+      - name: engine check and release tag tests
+        run: |
+          bash scripts/test-engine-checks.sh
+          bash scripts/test-check-release-tag.sh
 
   # The dictation app is Swift and AppKit, so it needs a macOS runner — one
   # per architecture ox-say ships for. The build step also assembles and

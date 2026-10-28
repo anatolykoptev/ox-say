@@ -78,11 +78,20 @@ func (r *report) host(ctx context.Context) {
 
 // envNote records the GGML_* and OX_SAY_* variables the engines inherit, so
 // a reader can audit that the Metal column ran with no tuning in effect.
-func (r *report) envNote() {
+func (r *report) envNote() { r.envNoteFrom(os.Environ()) }
+
+// envNoteFrom prints GGML_* tuning as name=value and OX_SAY_* by name only: the
+// note is committed, and an OX_SAY_* value can hold a URL with userinfo or a
+// home path (OX_SAY_GET_URL).
+func (r *report) envNoteFrom(environ []string) {
 	var vars []string
-	for _, kv := range os.Environ() {
-		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "GGML_") || strings.HasPrefix(k, "OX_SAY_") {
+	for _, kv := range environ {
+		k, _, _ := strings.Cut(kv, "=")
+		switch {
+		case strings.HasPrefix(k, "GGML_"):
 			vars = append(vars, kv)
+		case strings.HasPrefix(k, "OX_SAY_"):
+			vars = append(vars, k)
 		}
 	}
 	slices.Sort(vars)

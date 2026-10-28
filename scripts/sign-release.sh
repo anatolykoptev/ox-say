@@ -123,9 +123,11 @@ fi
 # The app to sign: the one built here, checked before the key touches it, and
 # of the same version as the app it replaces.
 check_bundle "$src_app"
-version_of() { plutil -extract CFBundleShortVersionString raw -o - "$1/Contents/Info.plist"; }
-if [ "$(version_of "$src_app")" != "$(version_of "$work/ox-say/app/OxSayDictation.app")" ]; then
-    echo "the app to sign is version $(version_of "$src_app"), the package's is $(version_of "$work/ox-say/app/OxSayDictation.app")" >&2
+version_of() { plutil -extract CFBundleShortVersionString raw -o - "$1/Contents/Info.plist" 2>/dev/null || true; }
+src_version=$(version_of "$src_app")
+pkg_version=$(version_of "$work/ox-say/app/OxSayDictation.app")
+if ! oxs_versions_match "$src_version" "$pkg_version"; then
+    echo "the app to sign is version '${src_version:-none}', the package's is '${pkg_version:-none}' (they must match and be set)" >&2
     exit 1
 fi
 rm -r "$work/ox-say/app/OxSayDictation.app"
@@ -165,7 +167,7 @@ if [ "$status" != Accepted ]; then
     fi
     exit 1
 fi
-xcrun stapler staple "$app"
+oxs_stapler_staple "$app"
 oxs_stapler_validate "$app"
 spctl --assess --type execute -vv "$app" 2> "$work/spctl.txt" || { cat "$work/spctl.txt" >&2; exit 1; }
 if ! grep -F 'source=Notarized Developer ID' "$work/spctl.txt" >/dev/null; then

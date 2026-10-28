@@ -25,6 +25,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/want-audiocpp.sh"
 # shellcheck source=want-diar.sh
 . "$here/want-diar.sh"
+# shellcheck source=lib-check.sh
+. "$here/lib-check.sh"
 
 work=${1:-"$here/../build/engine"}
 mkdir -p "$work"
@@ -174,27 +176,6 @@ set_cmake_flags() {
         -DGGML_OPENMP=OFF "-DCMAKE_C_FLAGS=-I$inc$opt" "-DCMAKE_CXX_FLAGS=-I$inc$opt")
 }
 
-# The output must be a thin binary of the target architecture with no @rpath
-# dependency.
-check_static() {
-    local libs archs
-    archs=$(lipo -archs "$1")
-    if [ "$archs" != "$arch" ]; then
-        echo "$1 is built for $archs, expected $arch" >&2
-        exit 1
-    fi
-    # Capture, then match: `otool | grep -q` under pipefail lets grep's early
-    # exit SIGPIPE otool and turn a hit into a pass.
-    libs=$(otool -L "$1")
-    case $libs in
-        *@rpath*)
-            echo "$1 still links @rpath libraries:" >&2
-            printf '%s\n' "$libs" >&2
-            exit 1
-            ;;
-    esac
-}
-
 mkdir -p "$out/licenses"
 
 # --- tts-server (qwentts.cpp) ---
@@ -228,6 +209,7 @@ fi
 strip -x "$out/tts-server"
 check_static "$out/tts-server"
 check_dist "$out/tts-server"
+check_patched "$out/tts-server"
 cp "$tts/LICENSE" "$out/licenses/qwentts.cpp.LICENSE"
 cp "$tts/ggml/LICENSE" "$out/licenses/ggml.LICENSE"
 cp "$tts/vendor/cpp-httplib/LICENSE" "$out/licenses/cpp-httplib.LICENSE"
@@ -267,6 +249,7 @@ fi
 strip -x "$out/ox-stt"
 check_static "$out/ox-stt"
 check_dist "$out/ox-stt"
+check_patched "$out/ox-stt"
 cp "$stt/LICENSE" "$out/licenses/whisper.cpp.LICENSE"
 echo "built $out/ox-stt"
 
@@ -281,6 +264,7 @@ if [ -n "$metal_lib" ]; then copy_metal_libs "$work/wsp-metallib-$arch/bin" ox-a
 strip -x "$out/ox-align"
 check_static "$out/ox-align"
 check_dist "$out/ox-align"
+check_patched "$out/ox-align"
 echo "built $out/ox-align"
 
 # --- ox-llm (llama.cpp's llama-server; the meeting-notes model server) ---
@@ -324,20 +308,9 @@ if [ -n "$metal_lib" ]; then
 fi
 check_static "$out/ox-llm"
 check_dist "$out/ox-llm"
-# The daemon starts ox-llm with these flags (internal/daemon/meetings.go
-# notesServerArgs); a llama.cpp bump that renames one would make every notes run
-# fail at spawn. Fail the build instead. The help text is captured whole: under
-# pipefail `| grep -q` can SIGPIPE the writer and fail a pass.
-llm_help=$("$out/ox-llm" --help 2>&1 || true)
-for flag in --api-key-file --cache-ram --flash-attn --jinja --no-ui --ctx-size --n-gpu-layers --parallel; do
-    case $llm_help in
-        *"$flag"*) ;;
-        *)
-            echo "engine/build.sh: the pinned llama-server no longer has $flag; the notes engine would not start" >&2
-            exit 1
-            ;;
-    esac
-done
+check_patched "$out/ox-llm"
+# The daemon starts ox-llm with these flags (internal/daemon/meetings.go notesServerArgs).
+check_help_flags "$out/ox-llm" --host --port --api-key-file --cache-ram --flash-attn --jinja --no-ui --ctx-size --n-gpu-layers --parallel
 cp "$ll/LICENSE" "$out/licenses/llama.cpp.LICENSE"
 # llama.cpp's own list of third-party licences, plus every licence under vendor/
 # (cpp-httplib and friends), derived from the tree: a hand list cannot notice one
@@ -364,7 +337,10 @@ echo "built $out/ox-llm"
 # x86_64 package carries no ox-diar and the daemon reports cpu_unsupported there. Where the gate opens by itself, a
 # build that fails is dropped with a warning instead of failing the install (diar_build, engine/want-diar.sh).
 if [ "$arch" != arm64 ]; then
-    rm -f "$out/ox-diar"
+    if [ -e "$out/ox-diar" ]; then
+        rm -f "$out/ox-diar"
+        echo "engine/build.sh: removed a stale ox-diar from $out: the $arch package carries none (Apple Silicon only)" >&2
+    fi
 elif diar_gate "$out"; then
     diar_build "$here" "$work" "$out"
 fi
@@ -457,6 +433,7 @@ if audiocpp_gate "$arch" "$out"; then
     strip -x "$out/audiocpp_server"
     check_static "$out/audiocpp_server"
     check_dist "$out/audiocpp_server"
+    check_patched "$out/audiocpp_server"
     cp "$ac/LICENSE" "$out/licenses/audio.cpp.LICENSE"
     copy_audiocpp_licenses "$ac" "$out/licenses"
     echo "built $out/audiocpp_server"
