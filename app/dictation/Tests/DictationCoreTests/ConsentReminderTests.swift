@@ -30,8 +30,8 @@ final class ConsentReminderTests: XCTestCase {
     /// Nothing is claimed about the notes folder, which the user may sync.
     func testNoClaimThatNothingLeavesTheMac() {
         for r in MeetingRetention.allCases {
-            XCTAssertTrue(keep(r, en).contains("ox-say sends nothing anywhere."))
-            XCTAssertTrue(keep(r, ru).contains("ox-say ничего никуда не отправляет."))
+            XCTAssertTrue(keep(r, en).contains("OxSay sends nothing anywhere."))
+            XCTAssertTrue(keep(r, ru).contains("OxSay ничего никуда не отправляет."))
             XCTAssertFalse(keep(r, en).contains("leaves your Mac"))
         }
     }
