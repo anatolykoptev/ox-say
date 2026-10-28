@@ -36,7 +36,9 @@ func NotesMarkdown(m Manifest, n Notes, lang string) string {
 	if len(n.ActionItems) > 0 {
 		fmt.Fprintf(&b, "\n## %s\n\n", h.actions)
 		for _, a := range n.ActionItems {
-			fmt.Fprintf(&b, "- [ ] %s — %s — %s\n", orDash(ownerText(a.Who, m, n), h.unstated), cleanLine(a.What), orDash(cleanLine(a.When), h.unstated))
+			// The app splits the line on " — ": a field that holds one would shift the parts.
+			fmt.Fprintf(&b, "- [ ] %s — %s — %s\n", inlineDash(orDash(ownerText(a.Who, m, n), h.unstated)),
+				inlineDash(cleanLine(a.What)), inlineDash(orDash(cleanLine(a.When), h.unstated)))
 		}
 	}
 	section(h.questions, n.OpenQuestions)
@@ -74,13 +76,44 @@ func cleanLine(s string) string {
 }
 
 // cleanBlock is a model string that may span lines (the summary): every line
-// is cleaned alone, blank lines are kept as paragraph breaks.
+// is cleaned alone, blank lines are kept as paragraph breaks. A line is also
+// kept from starting a block of its own (escapeBlockStart): the summary sits
+// between two headings, and a fence, a rule or a setext underline there would
+// hide or restyle the sections after it.
 func cleanBlock(s string) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	for i, l := range lines {
-		lines[i] = cleanLine(l)
+		lines[i] = escapeBlockStart(cleanLine(l))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// escapeBlockStart writes a backslash before whatever would start a block at the start of a line: a code fence
+// (` or ~), a list marker (- + * or "1." / "1)"), a setext underline or rule (= - * _), a table row or delimiter
+// (| :). cleanLine has done # ! > and [ ]; the line has no leading whitespace.
+func escapeBlockStart(l string) string {
+	if l == "" {
+		return l
+	}
+	if strings.IndexByte("`~-+*=|:_", l[0]) >= 0 {
+		return `\` + l
+	}
+	i := 0
+	for i < len(l) && l[i] >= '0' && l[i] <= '9' {
+		i++
+	}
+	if i > 0 && i < len(l) && (l[i] == '.' || l[i] == ')') {
+		return l[:i] + `\` + l[i:]
+	}
+	return l
+}
+
+// inlineDash keeps " — " (the separator of an action line) out of a field.
+func inlineDash(s string) string {
+	for strings.Contains(s, " — ") {
+		s = strings.ReplaceAll(s, " — ", " – ")
+	}
+	return s
 }
 
 // ownerText is an action item's owner. When it is one of the speakers' labels (the recorder's, the far side's, a
