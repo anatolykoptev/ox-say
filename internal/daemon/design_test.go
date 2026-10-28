@@ -700,6 +700,15 @@ func TestScrubRootBoundariesAndRemainder(t *testing.T) {
 		{"open /Users/x/a`b.wav now", "/Users/x", "open [path] now"},
 		{"stat '/Users/x/a.wav': denied", "/Users/x", "stat '[path]': denied"},
 		{"open /Users/x/a.wav:12 now", "/Users/x", "open [path] now"},
+		{"open /Users/x/take[1]-2.wav now", "/Users/x", "open [path] now"},
+		{"open /Users/x/a(1)-b.wav now", "/Users/x", "open [path] now"},
+		{"open /Users/x/a(1)#b&c.wav now", "/Users/x", "open [path] now"},
+		{"failed: /Users/x/a.wav (retrying)", "/Users/x", "failed: [path] (retrying)"},
+		{"open /Users/x/a.wav: permission denied", "/Users/x", "open [path]: permission denied"},
+		{`{"path":"/Users/x/a.wav","n":1}`, "/Users/x", `{"path":"[path]","n":1}`},
+		{`{"path":"/Users/x/a.wav"}`, "/Users/x", `{"path":"[path]"}`},
+		{"see [a](/Users/x/a.wav) now", "/Users/x", "see [a]([path]) now"},
+		{"see `/Users/x/a.wav`, ok", "/Users/x", "see `[path]`, ok"},
 	} {
 		if got := scrubRoot(tc.in, tc.root); got != tc.want {
 			t.Errorf("scrubRoot(%q, %q) = %q, want %q", tc.in, tc.root, got, tc.want)
@@ -788,5 +797,23 @@ func TestVoiceReadErrorTellsRemovedFromHalfRemoved(t *testing.T) {
 	}
 	if err := d.voiceReadError("never", gone, false); err == nil || strings.Contains(err.Error(), "damaged") || synthStatus(err) != http.StatusBadRequest {
 		t.Errorf("removed (json gone): %v (status %d), want the no-such-voice 400", err, synthStatus(err))
+	}
+}
+
+// #323.1 / #160.7: a path outside every known root is cut by the same rule as
+// the tail under a root, so a quote inside its file name does not leak.
+// Mutation: design.go scrubStrayPath, end the path at the first quote again
+// (regex `[^\s"'():]+`) -> the first row leaks "s.wav" -> RED.
+func TestScrubStrayPathKeepsGluedDelimiterInName(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"cannot open '/stray/it's.wav'", "cannot open '[path]'"},
+		{"cannot open /stray/take[1]-2.wav now", "cannot open [path] now"},
+		{"stat /stray/a.wav: denied", "stat [path]: denied"},
+		{"POST /v1/audio/speech failed", "POST /v1/audio/speech failed"},
+		{"a / b", "a / b"},
+	} {
+		if got := scrubStrayPath(tc.in); got != tc.want {
+			t.Errorf("scrubStrayPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

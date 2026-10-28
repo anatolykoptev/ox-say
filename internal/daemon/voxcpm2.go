@@ -114,6 +114,9 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err == nil {
 		err = f.Chmod(perm)
 	}
+	if err == nil {
+		err = f.Sync() // the data is on disk before the rename makes it the config
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

@@ -312,16 +312,42 @@ func (d *Daemon) privateRoots() []string {
 // absPath matches an absolute path inside an error message that is under none
 // of the known roots (a stray path from a tool). It stops at whitespace, and an
 // API route ("/v1/...") is not a path.
-var absPath = regexp.MustCompile(`(^|[\s"'(=])(/[^\s"'():]+)`)
+// The path ends where pathTailEnd says, the same rule scrubRoot applies below a
+// known root, so a delimiter inside a file name ("it's.wav") does not leak.
+var absPathStart = regexp.MustCompile(`(^|[\s"'(=])/`)
 
 func scrubStrayPath(s string) string {
-	return absPath.ReplaceAllStringFunc(s, func(m string) string {
-		parts := absPath.FindStringSubmatch(m)
-		if strings.HasPrefix(parts[2], "/v1/") {
-			return m
+	var b strings.Builder
+	for {
+		loc := absPathStart.FindStringIndex(s)
+		if loc == nil {
+			b.WriteString(s)
+			return b.String()
 		}
-		return parts[1] + "[path]"
-	})
+		slash := loc[1] - 1
+		rest := s[slash:]
+		end := pathTailEnd(rest)
+		if strings.HasPrefix(rest, "/v1/") || end == 1 {
+			// an API route (or a lone "/") is not a path
+			b.WriteString(s[:loc[1]])
+			s = s[loc[1]:]
+			continue
+		}
+		b.WriteString(s[:slash])
+		b.WriteString("[path]")
+		s = rest[end:]
+	}
+}
+
+// pathTailEnd is the length of the path that starts at rest[0] (a "/"): it runs
+// to the first place tailStopsAt says a message goes on.
+func pathTailEnd(rest string) int {
+	j := 1
+	for j < len(rest) && !tailStopsAt(rest, j) {
+		_, size := utf8.DecodeRuneInString(rest[j:])
+		j += size
+	}
+	return j
 }
 
 // scrubRoot replaces each occurrence of root, and the path below it (up to
@@ -350,12 +376,7 @@ func scrubRoot(s, root string) string {
 		b.WriteString("[path]")
 		rest := s[end:]
 		if strings.HasPrefix(rest, "/") {
-			j := 1
-			for j < len(rest) && !tailStopsAt(rest, j) {
-				_, size := utf8.DecodeRuneInString(rest[j:])
-				j += size
-			}
-			rest = rest[j:]
+			rest = rest[pathTailEnd(rest):]
 		}
 		s = rest
 	}
@@ -400,7 +421,7 @@ func pathStopsAt(s string, i int) bool {
 // rest[i]. A file name may hold nearly any character (# & ! $ { } \\ , ;), so the
 // tail ends only where a message ends a path: white space, or a quote, "(" ")"
 // ":", a closing bracket, backtick or tag edge that is NOT glued to a letter or
-// digit (a delimiter followed at once by more name, as in "a]b.wav" or
+// digit or a name character (a delimiter followed at once by more name, as in "a]b.wav" or
 // "a(1).wav", is part of the name), and sentence punctuation (. , ; ! ?) that is
 // followed by a delimiter or by the end of the text. White space always ends
 // the tail: it is how a message goes on after a path.
@@ -425,14 +446,18 @@ func tailStopsAt(rest string, i int) bool {
 	return false
 }
 
-// continuesName reports whether s goes on as part of a file name: a letter,
-// digit or "_", or a "." with one of those after it (an extension).
+// continuesName reports whether s goes on as part of a file name after a
+// delimiter: a letter, digit or one of "_ - # & + ~ @ %", or a "." "," ";" "!"
+// with a letter, digit or "_" right after it (an extension, "a),b"). A closing
+// quote or bracket followed by JSON or Markdown punctuation ("}", ",\"") is not
+// the name going on.
 func continuesName(s string) bool {
 	n, size := utf8.DecodeRuneInString(s)
-	if n == '.' {
+	if strings.ContainsRune(".,;!", n) {
 		n, _ = utf8.DecodeRuneInString(s[size:])
+		return unicode.IsLetter(n) || unicode.IsDigit(n) || n == '_'
 	}
-	return unicode.IsLetter(n) || unicode.IsDigit(n) || n == '_'
+	return unicode.IsLetter(n) || unicode.IsDigit(n) || strings.ContainsRune("_-#&+~@%", n)
 }
 
 func tailDelimiter(r rune) bool {
