@@ -107,7 +107,7 @@ final class ScriptCleanerTests: XCTestCase {
     }
 
     // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, change the evidence guard
-    // `rising.count >= minPagesForPageNumbers` to `rising.count >= 0` -> RED here
+    // `sequence.count >= minPagesForPageNumbers` to `sequence.count >= 0` -> RED here
     // (a one-page PDF loses its "4").
     func testANumberAtTheEdgeOfAOnePagePdfIsKept() {
         XCTAssertEqual(words(["Bake until golden.\nServes\n4"]), ["Bake", "until", "golden.", "Serves", "4"])
@@ -125,8 +125,8 @@ final class ScriptCleanerTests: XCTestCase {
         XCTAssertEqual(words(gaps), ["One.", "Two.", "Three", "is", "a", "picture.", "Four.", "Five."])
     }
 
-    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, replace `longestRisingRun(candidates)`
-    // with `candidates` -> RED here (the numbers that do not rise are dropped as well).
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, group every candidate into ONE sequence (`by: { _ in 0 }`)
+    // -> RED here (the numbers that do not go on as the pages do are dropped as well).
     func testNumbersThatDoNotRiseAreText() {
         XCTAssertEqual(words(["Final score.\n10", "Two.\n3", "Three.\n4", "Four.\n5"]), ["Final", "score.", "10", "Two.", "Three.", "Four."])
         XCTAssertEqual(words(["A.\n4", "B.\n4"]), ["A.", "4", "B.", "4"], "equal numbers do not rise")
@@ -347,13 +347,49 @@ final class ScriptCleanerTests: XCTestCase {
 
     // MARK: #175 leftovers
 
-    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, break out of the `while`
-    // after the first run -> RED (the front matter's 1...3 stay as stray digits).
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, keep only the first sequence (`.prefix(1)` on
+    // `sequences.values`) -> RED (one numbering's digits stay as stray digits).
     func testRestartedPageNumberingIsDroppedRunByRun() {
         let front = (1...3).map { "Preface text \($0) goes here.\n\($0)" }
         let body = (1...4).map { "Body text \($0) goes here.\n\($0)" }
         let expected = (1...3).flatMap { ["Preface", "text", "\($0)", "goes", "here."] } + (1...4).flatMap { ["Body", "text", "\($0)", "goes", "here."] }
         XCTAssertEqual(words(front + body), expected)
+    }
+
+    // #175 — a chapter number opening each page is text. Three chapters of three pages each print "1" on pages 1-3,
+    // "2" on pages 4-6, "3" on pages 7-9: the numbers rise, but they repeat on consecutive pages, so they are not a
+    // page-number sequence.
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, delete the `repeats` filter -> RED here (and the
+    // chapter numbers vanish from the spoken text).
+    func testAChapterNumberRepeatedOnConsecutivePagesIsKept() {
+        let pages = (0..<9).map { "\($0 / 3 + 1)\nChapter page \($0) text goes here." }
+        XCTAssertEqual(words(pages), (0..<9).flatMap { ["\($0 / 3 + 1)", "Chapter", "page", "\($0)", "text", "goes", "here."] })
+    }
+
+    // #175 — a plate (or any page without a printed number) between numbered pages does not stop the numbering:
+    // the numbers still rise, whether or not the plate was counted. Grouping by `value - page` let these through.
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, `longestRisingRun(candidates)` -> the largest group of
+    // `Dictionary(grouping: candidates, by: { $0.value - $0.page })` -> RED here.
+    func testPageNumbersSurviveAPlateOrASkippedCount() {
+        // Ten numbered pages, one unnumbered plate, then the page numbered 11.
+        var plate = (1...10).map { "Body page \($0) text goes here.\n\($0)" }
+        plate.append("A plate with no number.")
+        plate.append("Body page 11 text goes here.\n11")
+        let body = { (n: Int) in ["Body", "page", "\(n)", "text", "goes", "here."] }
+        XCTAssertEqual(words(plate), (1...10).flatMap(body) + ["A", "plate", "with", "no", "number."] + body(11),
+                       "the 11 after the plate was read aloud")
+        // Numbered page, plate, numbered page, plate ...: six numbers.
+        let alternating = (1...6).flatMap { ["Alt page \($0) text goes here.\n\($0)", "Plate only."] }
+        XCTAssertEqual(words(alternating).filter { Int($0) != nil }, (1...6).map(String.init), "only the digits of the body text stay")
+        // PDF page k prints 2k.
+        let doubled = (1...6).map { "Dbl page \($0) text goes here.\n\(2 * $0)" }
+        XCTAssertEqual(words(doubled), (1...6).flatMap { ["Dbl", "page", "\($0)", "text", "goes", "here."] })
+    }
+
+    // #175 — a long PDF with a real page number on every page is still cleaned (the grouping is one pass).
+    func testAHundredPagesOfPageNumbersAreAllDropped() {
+        let pages = (1...120).map { "Page body \($0) goes here.\n\($0)" }
+        XCTAssertEqual(words(pages), (1...120).flatMap { ["Page", "body", "\($0)", "goes", "here."] })
     }
 
     // Mutation: MarkdownText.swift, `bracketed` -> `[^\[\]\n]*` (no nesting) -> RED

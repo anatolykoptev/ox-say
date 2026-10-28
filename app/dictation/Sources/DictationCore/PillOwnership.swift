@@ -89,6 +89,24 @@ public enum PillVisibility {
     }
 }
 
+/// The window-server check of the pill is skipped while the screen is locked or the display sleeps; this
+/// remembers the show it was skipped for, so one unlock or wake can arm it again.
+public struct PillRecheck: Equatable {
+    private var pending: Int?
+
+    public init() {}
+
+    /// The check of show `show` was skipped.
+    public mutating func skipped(show: Int) { pending = show }
+
+    /// The screen unlocked or the display woke: true when exactly the skipped show is still the one up (`show` is
+    /// the overlay's current show count) and wanted. Spent either way, so one skip arms one check.
+    public mutating func resume(show: Int, wantsVisible: Bool) -> Bool {
+        defer { pending = nil }
+        return wantsVisible && pending == show
+    }
+}
+
 /// How long a pill message stays up.
 public enum PillTiming {
     public static let baseMessageSeconds: Double = 4
@@ -100,5 +118,64 @@ public enum PillTiming {
     public static func messageSeconds(characters: Int) -> Double {
         let reading = Double(max(0, characters)) / charactersPerSecond + 1.5
         return min(maxMessageSeconds, max(baseMessageSeconds, reading))
+    }
+}
+
+/// The pills of the Studio tasks that can run at once (a voice being designed
+/// while a document is read): one slot per task id, so one task's end never
+/// takes another's pill down. The pill shows the newest live task; when that
+/// task ends while the pill is still its own and nothing dictates, the
+/// next-newest live task is shown again instead of a blank pill.
+public struct TaskPills: Equatable {
+    private struct Entry: Equatable {
+        var task: String
+        var text: String
+        var slot: PillSlot
+    }
+
+    public struct Reveal: Equatable {
+        public let task: String
+        public let text: String
+    }
+
+    public struct Ended: Equatable {
+        /// The ended task's own slot: `AppDelegate.endPill` runs it as usual.
+        public let slot: PillSlot
+        /// Set when a still-live task's pill must be shown now; then the slot
+        /// is not ended (the reveal replaces the pill).
+        public let reveal: Reveal?
+    }
+
+    private var entries: [Entry] = []
+
+    public init() {}
+
+    public var liveTasks: [String] { entries.map(\.task) }
+
+    /// Records the task's pill right after its show. A live task begun again
+    /// (its text re-shown after a reveal) keeps its place in the order.
+    public mutating func begin(task: String, text: String, owner: Int) {
+        var slot = PillSlot()
+        slot.begin(owner: owner)
+        if let at = entries.firstIndex(where: { $0.task == task }) {
+            entries[at].text = text
+            entries[at].slot = slot
+        } else {
+            entries.append(Entry(task: task, text: text, slot: slot))
+        }
+    }
+
+    /// Removes the task. A reveal is asked for only when its pill is the one
+    /// showing (`current` is its owner count), no dictation runs and another
+    /// task is still live.
+    public mutating func end(task: String, current: Int, dictation: DictationState) -> Ended {
+        guard let at = entries.firstIndex(where: { $0.task == task }) else {
+            return Ended(slot: PillSlot(), reveal: nil)
+        }
+        let gone = entries.remove(at: at)
+        if gone.slot.stillOurs(current: current, dictation: dictation), let next = entries.last {
+            return Ended(slot: gone.slot, reveal: Reveal(task: next.task, text: next.text))
+        }
+        return Ended(slot: gone.slot, reveal: nil)
     }
 }

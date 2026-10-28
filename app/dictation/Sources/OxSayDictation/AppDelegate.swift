@@ -115,7 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The handshake's slot is its "Finishing the update…" text.
     private var handshakePill = PillSlot()
     private var speakPill = PillSlot()
-    private var studioPill = PillSlot()
+    /// Studio tasks can run at once (a voice design while a document is read): one slot per task.
+    private var studioPills = TaskPills()
     private var updateCheckPill = PillSlot()
     private var installPill = PillSlot()
     /// The one tccutil reset that may run at a time.
@@ -686,6 +687,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         slot.begin(owner: overlay.owner)
     }
 
+    /// A Studio task's pill: the newest live task shows.
+    private func showStudioPill(task: String, text: String) {
+        overlay.showWorking()
+        overlay.setWorkingText(text)
+        overlay.setHintHidden(true)
+        studioPills.begin(task: task, text: text, owner: overlay.owner)
+    }
+
+    /// Ends one Studio task's pill through the common endPill, or — when it was the one showing and another
+    /// task is still live — shows that task again instead of a blank pill.
+    private func endStudioPill(task: String) {
+        let ended = studioPills.end(task: task, current: overlay.owner, dictation: controller.state)
+        if let next = ended.reveal {
+            showStudioPill(task: next.task, text: next.text)
+        } else {
+            var slot = ended.slot
+            endPill(&slot)
+        }
+    }
+
     /// Clears the handshake's pill, but only while its own text is still the
     /// one showing: a speak, a studio pill or an install that took the overlay
     /// since keeps it.
@@ -1108,14 +1129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             client: studioClient, speech: speechClient,
             russianVoicePick: { [unowned self] in UserDefaults.standard.string(forKey: self.speakVoiceRUKey) },
             alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) },
-            pill: { [unowned self] text in
+            pill: { [unowned self] task, text in
                 if let text {
-                    self.overlay.showWorking()
-                    self.overlay.setWorkingText(text)
-                    self.overlay.setHintHidden(true)
-                    self.beginPill(&self.studioPill)
+                    self.showStudioPill(task: task, text: text)
                 } else {
-                    self.endPill(&self.studioPill)
+                    self.endStudioPill(task: task)
                 }
             },
             notify: { [unowned self] message in self.notice(message) },

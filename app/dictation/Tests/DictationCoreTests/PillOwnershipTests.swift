@@ -96,12 +96,19 @@ final class PillOwnershipTests: XCTestCase {
     func testEveryTaskPillGoesThroughTheBeginEndHelpers() {
         let source = Self.appDelegateSource
         XCTAssertFalse(source.isEmpty, "AppDelegate.swift unreadable — the wiring guard has nothing to check")
-        for slot in ["handshakePill", "speakPill", "studioPill", "updateCheckPill", "installPill"] {
+        for slot in ["handshakePill", "speakPill", "updateCheckPill", "installPill"] {
             XCTAssertTrue(source.contains("beginPill(&\(slot))") || source.contains("beginPill(&self.\(slot))"),
                           "\(slot) is never begun")
             XCTAssertTrue(source.contains("endPill(&\(slot))") || source.contains("endPill(&self.\(slot))"),
                           "\(slot) is never ended through endPill")
         }
+        // #191.6 — Studio tasks have one slot each (TaskPills): shown and ended through their own helpers,
+        // the end handing the task's slot to the common endPill.
+        // Mutation: back to a single `PillSlot` shared by every task -> RED (TaskPillsTests).
+        XCTAssertTrue(source.contains("studioPills.begin(task: task"), "studioPills is never begun")
+        let studioEnd = Self.appBody("private func endStudioPill(task: String) {")
+        XCTAssertTrue(studioEnd.contains("studioPills.end(task: task") && studioEnd.contains("endPill(&slot)"),
+                      "a Studio task's end must go through its own slot and the common endPill")
         XCTAssertEqual(source.components(separatedBy: ".end(current:").count - 1, 1,
                        "PillSlot.end must be consulted by endPill alone")
         XCTAssertEqual(source.components(separatedBy: "overlay.finish()").count - 1, 2,
@@ -116,6 +123,23 @@ final class PillOwnershipTests: XCTestCase {
         // call after showWorking() in endPill -> RED.
         XCTAssertTrue(end.contains("showWorking()\n            tickWorking()"),
                       "the restored working label waits a tick for its seconds")
+    }
+
+    /// #306.2/.3 — the skipped check is remembered and re-armed on unlock/wake, and the asleep test looks at the
+    /// display the panel is on, not the main one.
+    /// Mutation: restore `CGMainDisplayID()` in checkVisible's asleep test, or drop the `recheck.skipped(show:` call -> RED.
+    func testTheSkippedCheckIsRearmedAndTheAsleepTestUsesThePanelsDisplay() {
+        let check = Self.overlayBody("private func checkVisible(expected: Int, owner ownerAtShow: Int, healed: Bool) {")
+        XCTAssertTrue(check.contains("CGDisplayIsAsleep(panelDisplayID())"), "the asleep test must look at the panel's display")
+        XCTAssertFalse(check.contains("CGMainDisplayID()"), "the main display is not the panel's display")
+        XCTAssertTrue(check.contains("recheck.skipped(show: expected)"), "a skipped check is not remembered")
+        let back = Self.overlayBody("private func screenCameBack() {")
+        XCTAssertTrue(back.contains("recheck.resume(show: expected, wantsVisible: wantsVisible)") && back.contains("checkVisible("),
+                      "the unlock/wake must run the remembered check")
+        let source = (try? String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/OxSayDictation/Overlay.swift"), encoding: .utf8)) ?? ""
+        XCTAssertTrue(source.contains("screensDidWakeNotification") && source.contains("com.apple.screenIsUnlocked"),
+                      "the overlay no longer listens for the unlock and the display wake")
     }
 
     /// The overlay asks the controller whether a dictation runs before any

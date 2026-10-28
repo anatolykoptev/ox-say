@@ -124,12 +124,13 @@ extension StudioClient {
     /// The audio's address. A plain loopback URL: the daemon asks for no token (its guard checks the Host and
     /// refuses a browser's cross-site read), so AVPlayer needs no header and there is no secret to put anywhere.
     public func meetingAudioURL(id: String) -> URL {
-        baseURL.appendingPathComponent("v1/meetings/\(id)/audio")
+        baseURL.appendingPathComponent("v1/meetings/\(MeetingID.isSafe(id) ? id : MeetingID.inert)/audio")
     }
 
     /// HEAD on the audio before the player: AVPlayer reports a 410 as an unreadable file, which cannot be told from a
     /// broken one. A removed audio is said as such.
     public func probeMeetingAudio(id: String, text: (L10nKey) -> String = { $0.text }) async -> AudioProbe {
+        guard MeetingID.isSafe(id) else { return .failed(MeetingErrorText.sentence(StudioError.badResponse, action: .audio, text: text)) }
         var request = URLRequest(url: meetingAudioURL(id: id))
         request.httpMethod = "HEAD"
         request.timeoutInterval = Self.quickTimeout

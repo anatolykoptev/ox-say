@@ -181,6 +181,12 @@ private struct TurnRow: View {
         .contentShape(Rectangle())
     }
 
+    /// A `String`, not a literal: `.accessibilityLabel("...")` reads a literal as a localization key, so a speaker named
+    /// like a key, or one with a `%`, would be looked up and misread. The `String` overload speaks it as it is.
+    private var playFromHereLabel: String {
+        "\(L10nKey.playFromHere.text), \(turn.speaker) \(turn.time)"
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             SpeakerAvatar(name: turn.speaker, index: order, size: 26)
@@ -189,7 +195,7 @@ private struct TurnRow: View {
                     Button(action: play) { header(glyph: true) }
                         .buttonStyle(.plain)
                         .help(L10nKey.playFromHere.text)
-                        .accessibilityLabel("\(L10nKey.playFromHere.text), \(turn.speaker) \(turn.time)")
+                        .accessibilityLabel(playFromHereLabel)
                         .accessibilityAddTraits(.isButton)
                 } else {
                     header(glyph: false)

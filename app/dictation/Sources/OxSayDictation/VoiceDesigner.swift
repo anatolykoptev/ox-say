@@ -6,6 +6,8 @@ import DictationCore
 /// means) is in DictationCore; this drives the dialogs.
 final class VoiceDesigner {
     private let host: StudioHost
+    /// This task's pill slot (TaskPills): a document read at the same time has its own.
+    static let pillTask = "designing-voice"
     /// True from the form being answered until the takes are kept or dropped.
     private(set) var running = false
 
@@ -20,7 +22,7 @@ final class VoiceDesigner {
         guard !running, let form = StudioForms.designForm(preset: lastForm) else { return }
         lastForm = form
         running = true
-        host.pill("Designing a voice…")
+        host.pill(Self.pillTask, "Designing a voice…")
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
@@ -29,10 +31,10 @@ final class VoiceDesigner {
             }
             do {
                 let takes = try await self.host.client.designVoice(description: form.description, text: form.sentence)
-                self.host.pill(nil)
+                self.host.pill(Self.pillTask, nil)
                 await self.review(takes, typedName: form.name)
             } catch {
-                self.host.pill(nil)
+                self.host.pill(Self.pillTask, nil)
                 _ = self.host.alert("Couldn't create the voice", StudioController.plain(error), ["OK"])
             }
         }
