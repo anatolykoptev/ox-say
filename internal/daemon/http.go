@@ -124,6 +124,7 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		d.handleSpeechBuffered(w, r, bufferedSpeech{body: body, model: model, format: format, warning: warning, lufs: lufs})
 		return
 	}
+	w.Header().Set("X-Ox-Say-Model", model)
 	if warning != "" {
 		w.Header().Set("X-Ox-Say-Warning", warning)
 	}

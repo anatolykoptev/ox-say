@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -200,7 +201,7 @@ func lengthBudget(text string) float64 {
 func buildVoxCPM2(body map[string]any, v *voices.Voice, wavPath string) (*voxReq, error) {
 	input, _ := body[fieldInput].(string)
 	if n := utf8.RuneCountInString(input); n > maxVoxChars {
-		return nil, &requestError{fmt.Sprintf("voxcpm2 takes up to %d characters per request (got %d): split the script at sentence ends, or use the long-form producer for a whole script", maxVoxChars, n)}
+		return nil, &requestError{fmt.Sprintf("voxcpm2 takes up to %d characters per request (got %d, counted as spoken: in Russian text numbers and abbreviations are written out in words first, which makes them longer): split the script at sentence ends, or use the long-form producer for a whole script", maxVoxChars, n)}
 	}
 	style, err := voxStyle(body, v)
 	if err != nil {
@@ -353,17 +354,30 @@ func (d *Daemon) resolveVoxVoice(body map[string]any) (v *voices.Voice, wavPath 
 	}
 	got, err := d.Store.Get(name)
 	if err != nil {
-		return nil, "", &requestError{fmt.Sprintf("voice %q: %v", name, err)}
+		return nil, "", d.voiceReadError(name, err)
 	}
 	wavPath = d.Store.WAVPath(name)
 	secs, err := voices.WAVSeconds(wavPath)
 	if err != nil {
-		return nil, "", fmt.Errorf("voice %s: cannot read its recording: %w", name, err)
+		return nil, "", d.voiceReadError(name, err)
 	}
 	if err := checkVoxReference(secs); err != nil {
 		return nil, "", err
 	}
 	return got, wavPath, nil
+}
+
+// voiceReadError is a stored voice that cannot be read, in plain words for the
+// caller. A missing or badly named voice keeps its own message (it names no
+// path); anything else carries the absolute path of the voice store, so the
+// detail goes to the log and the caller is told what to do (#143.4).
+func (d *Daemon) voiceReadError(name string, err error) error {
+	var ie *voices.InputError
+	if errors.Is(err, voices.ErrNotFound) || errors.As(err, &ie) {
+		return &requestError{fmt.Sprintf("voice %q: %v", name, err)}
+	}
+	d.log.Error("voice: cannot read the stored voice", slog.String("voice", name), slog.Any("error", err))
+	return &requestError{fmt.Sprintf("voice %q: its recording or settings cannot be read; add the voice again (details are in the ox-say log)", name)}
 }
 
 // synthesizeVoxCPM2 renders a prepared body on the voxcpm2 child. The engine

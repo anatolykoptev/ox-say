@@ -32,6 +32,8 @@
 //	OXSAY_FAKE_VOX_SECS       seconds of silence the speech route answers
 //	                          (default 1; a long value stands in for a
 //	                          runaway take)
+//	OXSAY_FAKE_VOX_DROP=1     close the connection on a speech request
+//	                          without answering (a transport failure)
 //
 // OXSAY_FAKE_TONE=1 makes both fakes answer a quiet sine instead of silence
 // or a click — audio a loudness meter can measure — at their engine's native
@@ -965,6 +967,12 @@ func runFakeVox(args []string) int {
 				_ = f.Close()
 			}
 			mu.Unlock()
+		}
+		if os.Getenv("OXSAY_FAKE_VOX_DROP") == "1" {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				_ = conn.Close()
+			}
+			return
 		}
 		secs := 1.0
 		if s, err := strconv.ParseFloat(os.Getenv("OXSAY_FAKE_VOX_SECS"), 64); err == nil {
