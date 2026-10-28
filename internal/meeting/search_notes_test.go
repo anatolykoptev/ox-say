@@ -104,6 +104,28 @@ func TestStripMarkdownKeepsLiteralDelimiters(t *testing.T) {
 	}
 }
 
+// #320.2: a combining mark is part of the word it follows and an emoji or symbol next to a delimiter is CommonMark
+// punctuation (0.31: the P and S categories), so decomposed and precomposed text give the same answer and
+// "🎉_great_" is emphasis.
+// Mutation: internal/meeting/search.go isMDPunct, back to `unicode.IsPunct(r) || (r < utf8.RuneSelf && unicode.IsSymbol(r))`
+// -> the emoji and currency rows keep their underscores -> RED.
+func TestStripMarkdownMarksAndSymbolsNextToDelimiters(t *testing.T) {
+	for _, c := range []struct{ name, in, want string }{
+		{"emoji before emphasis", "🎉_great_ news", "🎉great news"},
+		{"emoji after emphasis", "a _great_🎉", "a great🎉"},
+		{"emoji before a star", "🎉**done**", "🎉done"},
+		{"currency before emphasis", "€_net_", "€net"},
+		{"decomposed accent is a word letter", "_e\u0301_", "e\u0301"},
+		{"decomposed accent inside snake_case", "cafe\u0301_au_lait", "cafe\u0301_au_lait"},
+		{"precomposed accent inside snake_case", "caf\u00e9_au_lait", "caf\u00e9_au_lait"},
+		{"mark after the closer stays a word", "_x_\u0301", "_x_\u0301"},
+	} {
+		if got := stripMarkdown(c.in); got != c.want {
+			t.Errorf("%s: stripMarkdown(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
 // The search sees what the snippet shows: "a__b" is not "ab".
 func TestNotesSearchDoesNotMatchAcrossLiteralDelimiters(t *testing.T) {
 	if hits := notesHits("rename a__b today\n", foldRunes("ab"), 5); len(hits) != 0 {

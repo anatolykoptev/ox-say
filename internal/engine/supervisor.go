@@ -176,6 +176,13 @@ type Supervisor struct {
 	idleDone  chan struct{}
 	closeOnce sync.Once
 
+	// bg counts the goroutines that can still touch the data dir after the caller sees a shutdown: every start
+	// attempt (run) and every waiter with its exit handler. EnsureReady fails with ErrShutdown at once, so without
+	// this Shutdown could return while a start was still creating the log, writing the pidfile or spawning a child
+	// (#347). Add runs under s.mu while the supervisor is not dead, or from a goroutine that is itself counted, so
+	// it never races Shutdown's Wait.
+	bg sync.WaitGroup
+
 	// ensureEntryHook, when set (tests only), runs inside EnsureReady
 	// after the caller's entry timestamp, before the first s.mu
 	// acquisition — it parks a caller in the window where an in-flight
@@ -401,7 +408,11 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 			gpuOwned = false // transferred: the generation now owns the token
 			s.lastErr = nil
 			s.broadcastLocked()
-			go s.run()
+			s.bg.Add(1)
+			go func() {
+				defer s.bg.Done()
+				s.run()
+			}()
 			ch := s.change
 			s.mu.Unlock()
 			select {
@@ -665,6 +676,19 @@ func (s *Supervisor) Shutdown() {
 				slog.Int("pid", c.cmd.Process.Pid))
 		}
 	}
+	// Return only when the start attempt and the exit handler have ended too: they write the log, the pidfile and
+	// the child's state, and the caller may remove the directory next. Bounded like the waits above: a Prepare or
+	// Replay that never returns must not hang shutdown.
+	bgDone := make(chan struct{})
+	go func() {
+		s.bg.Wait()
+		close(bgDone)
+	}()
+	select {
+	case <-bgDone:
+	case <-time.After(s.cfg.KillGrace):
+		s.log.Error("engine start attempt still running at the end of shutdown")
+	}
 }
 
 // run performs one start attempt in its own goroutine: prepare → spawn →
@@ -678,6 +702,11 @@ func (s *Supervisor) run() {
 	var err error
 	if s.cfg.Prepare != nil {
 		err = s.cfg.Prepare()
+	}
+	if err == nil && s.isDead() {
+		// A shutdown landed before the spawn: nothing is started for a supervisor that is gone (no log file, no
+		// pidfile, no child to kill again).
+		err = ErrShutdown
 	}
 	if err == nil {
 		c, err = s.spawn()
@@ -715,6 +744,12 @@ func (s *Supervisor) run() {
 	// finishStart re-validates ownership under s.mu: a child that died or a
 	// Shutdown that landed mid-start turns the attempt into a failed start.
 	s.finishStart(c, err)
+}
+
+func (s *Supervisor) isDead() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dead
 }
 
 // verifyFailure marks a start whose child ran but was refused by Verify.
@@ -773,7 +808,11 @@ func (s *Supervisor) spawn() (*child, error) {
 	s.writePidFile(c.cmd.Process.Pid)
 	// The waiter runs before registration so c.done is always closed, even
 	// when the shutdown check below refuses to adopt this child.
-	go s.waiter(c)
+	s.bg.Add(1) // from run(), which is itself counted
+	go func() {
+		defer s.bg.Done()
+		s.waiter(c)
+	}()
 	s.mu.Lock()
 	if s.dead {
 		s.mu.Unlock()

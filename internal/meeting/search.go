@@ -214,8 +214,9 @@ type delimRun struct {
 
 func isMDSpace(r rune) bool { return unicode.IsSpace(r) }
 
-// isMDPunct is CommonMark's "Unicode punctuation": the P categories and the ASCII symbols.
-func isMDPunct(r rune) bool { return unicode.IsPunct(r) || (r < utf8.RuneSelf && unicode.IsSymbol(r)) }
+// isMDPunct is CommonMark's "Unicode punctuation" (0.31): the P and S categories, so an emoji or a currency sign
+// next to a delimiter is punctuation, not a word. A combining mark (Mn) is neither: it stays part of its word.
+func isMDPunct(r rune) bool { return unicode.IsPunct(r) || unicode.IsSymbol(r) }
 
 // stripInline removes the inline syntax of one block. "~~" and "`" always go. A run of "*" or "_" goes only when
 // it is matched emphasis: an opener (left-flanking) with a later closer (right-flanking) of the same character.

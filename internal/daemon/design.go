@@ -311,10 +311,19 @@ func (d *Daemon) privateRoots() []string {
 
 // absPath matches an absolute path inside an error message that is under none
 // of the known roots (a stray path from a tool). It stops at whitespace, and an
-// API route ("/v1/...") is not a path.
+// API route ("/v1/...", or a bare "/v1") is not a path.
 // The path ends where pathTailEnd says, the same rule scrubRoot applies below a
 // known root, so a delimiter inside a file name ("it's.wav") does not leak.
-var absPathStart = regexp.MustCompile(`(^|[\s"'(=])/`)
+// It starts after the start of the text, white space, a quote, "(" or "=", and
+// after a Markdown or tag edge ("[", backtick, "<", ">").
+var absPathStart = regexp.MustCompile("(^|[\\s\"'(=\\[`<>])/")
+
+// apiRoute is a versioned API route, "/v1" or "/v1/...": a short API word, not
+// a file the user could have.
+var apiRoute = regexp.MustCompile(`^/v[0-9]+(/|$)`)
+
+// closingTag is what follows "<" in "</b>": the "/" there closes a tag.
+var closingTag = regexp.MustCompile(`^/[A-Za-z][A-Za-z0-9]*>`)
 
 func scrubStrayPath(s string) string {
 	var b strings.Builder
@@ -327,8 +336,9 @@ func scrubStrayPath(s string) string {
 		slash := loc[1] - 1
 		rest := s[slash:]
 		end := pathTailEnd(rest)
-		if strings.HasPrefix(rest, "/v1/") || end == 1 {
-			// an API route (or a lone "/") is not a path
+		afterLT := slash > 0 && s[slash-1] == '<'
+		if apiRoute.MatchString(rest[:end]) || end == 1 || (afterLT && closingTag.MatchString(rest)) {
+			// an API route, a closing tag (or a lone "/") is not a path
 			b.WriteString(s[:loc[1]])
 			s = s[loc[1]:]
 			continue
