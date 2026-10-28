@@ -81,19 +81,38 @@ func changesBetween(m Manifest, before, after SpeakerState, raw []Turn, stored m
 	return c
 }
 
+// extension is what a new label adds to the old one when it is the old one followed by more words ("Ivan" ->
+// "Ivan Petrov": " Petrov"). The addition must start at a word edge: "Ivan" -> "Ivanov" is another name, not a
+// surname added.
+func extension(old, to string) (string, bool) {
+	ext, ok := strings.CutPrefix(to, old)
+	if !ok || ext == "" {
+		return "", false
+	}
+	if r, _ := utf8.DecodeRuneInString(ext); isWordRune(r) {
+		return "", false
+	}
+	return ext, true
+}
+
 // safe reports whether substituting is unambiguous: no label that changes is part of any other label or name
-// involved (before or after), so "Anna" -> "Anna Smith" cannot reach "Anna Lee", the old label does not survive
-// inside its replacement (a second application would grow "Ivan Petrov Petrov"), and "Speaker 1" is not inside the
-// name "Speaker 1 (CFO)". A label equal to another (a swap) is fine: the pass is simultaneous.
+// involved (before or after), so "Anna" -> "Anna Smith" cannot reach "Anna Lee", and "Speaker 1" is not inside the
+// name "Speaker 1 (CFO)". The old label may stay inside its own replacement when that only adds words after it (a
+// surname): replaceLabels does not extend a name that already has them, so it cannot grow "Ivan Petrov Petrov".
+// A label equal to another (a swap) is fine: the pass is simultaneous.
 func (c labelChanges) safe() bool {
 	if c.conflict {
 		return false
 	}
 	for old := range c.free {
 		for _, x := range c.others {
-			if x != old && strings.Contains(x, old) {
-				return false
+			if x == old || !strings.Contains(x, old) {
+				continue
 			}
+			if _, own := extension(old, c.free[old]); own && x == c.free[old] {
+				continue
+			}
+			return false
 		}
 	}
 	return true
@@ -115,6 +134,9 @@ func (c labelChanges) ambiguousIn(n Notes) bool {
 				if !wordEdgeBefore(s, i) || !wordEdgeAfter(s, i+len(old)) {
 					return true
 				}
+				if ext, ok := extension(old, c.free[old]); ok && partialExtension(s[i+len(old):], ext) {
+					return true
+				}
 				from = i + len(old)
 			}
 			if inflected != nil && inflected.MatchString(s) {
@@ -123,6 +145,50 @@ func (c labelChanges) ambiguousIn(n Notes) bool {
 		}
 	}
 	return false
+}
+
+// matchExtension reports whether s starts with ext, taking any run of whitespace in s (two spaces, a tab, a line
+// break) for a run of whitespace in ext, and how many bytes of s that is. fold ignores case.
+func matchExtension(s, ext string, fold bool) (int, bool) {
+	n := 0
+	for _, er := range ext {
+		if unicode.IsSpace(er) {
+			k := 0
+			for n+k < len(s) {
+				r, w := utf8.DecodeRuneInString(s[n+k:])
+				if !unicode.IsSpace(r) {
+					break
+				}
+				k += w
+			}
+			if k == 0 {
+				return 0, false
+			}
+			n += k
+			continue
+		}
+		if n >= len(s) {
+			return 0, false
+		}
+		r, w := utf8.DecodeRuneInString(s[n:])
+		if r != er && !(fold && strings.EqualFold(string(r), string(er))) {
+			return 0, false
+		}
+		n += w
+	}
+	return n, true
+}
+
+// partialExtension reports text that starts like the extra words of a new name (ext, " Petrov") without being them
+// at a word edge: "Ivan Petrovich" or "Ivan petrov" after "Ivan". Substituting there would write "Ivan Petrov
+// Petrovich", so replaceLabels leaves it and the notes are written again. Text that holds the words exactly (across
+// any whitespace), or does not start like them, is not partial.
+func partialExtension(rest, ext string) bool {
+	if _, ok := matchExtension(rest, ext, true); !ok {
+		return false
+	}
+	n, exact := matchExtension(rest, ext, false)
+	return !exact || !wordEdgeAfter(rest, n)
 }
 
 // inflectedLabel matches a numbered label whose word is inflected ("Спикера 1" for "Спикер 1"), or nil for a label
@@ -219,6 +285,13 @@ func replaceLabels(s string, m map[string]string) string {
 		if hit != "" {
 			b.WriteString(m[hit])
 			i += len(hit)
+			// The new name is the old one and more words ("Ivan" -> "Ivan Petrov"): where the text already has
+			// them, they are the name and are not written twice.
+			if ext, ok := extension(hit, m[hit]); ok {
+				if n, found := matchExtension(s[i:], ext, false); found && wordEdgeAfter(s, i+n) {
+					i += n
+				}
+			}
 			continue
 		}
 		_, n := utf8.DecodeRuneInString(s[i:])
@@ -291,8 +364,8 @@ func (r *Runner) clearNotesStale(dir string, m Manifest, written *Notes) error {
 	if err != nil || !st.NotesStale {
 		return nil // an unreadable speakers.json is dropVoiceState's business
 	}
-	if r.afterSpeakersRead != nil {
-		r.afterSpeakersRead()
+	if afterSpeakersRead != nil {
+		afterSpeakersRead()
 	}
 	if written != nil {
 		turns, err := readTurns(dir)

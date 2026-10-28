@@ -128,7 +128,7 @@ func TestRenameAndSpeakersEditAtOnceKeepBoth(t *testing.T) {
 	f, id, dir := settledGroup(t)
 	done := make(chan error, 1)
 	armed := true
-	f.r.afterSpeakersRead = func() {
+	setAfterSpeakersRead(t, func() {
 		if !armed {
 			return
 		}
@@ -142,7 +142,7 @@ func TestRenameAndSpeakersEditAtOnceKeepBoth(t *testing.T) {
 			done <- err
 		case <-time.After(300 * time.Millisecond):
 		}
-	}
+	})
 	if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan"}}); err != nil {
 		t.Fatal(err)
 	}

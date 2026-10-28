@@ -581,7 +581,7 @@ func TestConcurrentSpeakerEditsDoNotLoseEachOther(t *testing.T) {
 	f, id, dir := settledGroup(t)
 	var arrived atomic.Int32
 	both := make(chan struct{})
-	f.r.afterSpeakersRead = func() {
+	setAfterSpeakersRead(t, func() {
 		if arrived.Add(1) == 2 {
 			close(both)
 		}
@@ -589,7 +589,7 @@ func TestConcurrentSpeakerEditsDoNotLoseEachOther(t *testing.T) {
 		case <-both:
 		case <-time.After(300 * time.Millisecond):
 		}
-	}
+	})
 	errs := make(chan error, 2)
 	for voice, name := range map[string]string{"them:1": "Ivan", "them:2": "Olga"} {
 		go func() {
@@ -694,7 +694,7 @@ func TestDroppingTheMarkDoesNotOverwriteAnEditThatLandedMeanwhile(t *testing.T) 
 	armed.Store(true)
 	finished := make(chan struct{})
 	edit := make(chan error, 1)
-	f.r.afterSpeakersRead = func() {
+	setAfterSpeakersRead(t, func() {
 		if !armed.CompareAndSwap(true, false) {
 			return // the edit's own read
 		}
@@ -707,7 +707,7 @@ func TestDroppingTheMarkDoesNotOverwriteAnEditThatLandedMeanwhile(t *testing.T) 
 		case <-finished:
 		case <-time.After(300 * time.Millisecond):
 		}
-	}
+	})
 	if err := f.r.Process(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}

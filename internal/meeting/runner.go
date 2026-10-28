@@ -102,11 +102,14 @@ type Runner struct {
 	speakerLocks keyedLocks // one speakers edit at a time per meeting
 	// clearStale drops the notes-stale mark; nil is clearNotesStale (tests put a failure here).
 	clearStale func(dir string, m Manifest, written *Notes) error
-	// afterSpeakersRead, when set, is called by EditSpeakers and by the notes writer's clear once they have read the speakers they will change (tests).
-	afterSpeakersRead func()
 	// beforeRenameUpdate, when set, is called by Rename after its first status check and before the store update (tests).
 	beforeRenameUpdate func()
 }
+
+// afterSpeakersRead is a test seam: when set, EditSpeakers and the notes writer's clear call it once they have read
+// the speakers they will change. It is a package variable, not a Runner field, so a production Runner carries no
+// test hook; only tests set it (setAfterSpeakersRead), and none of them runs in parallel.
+var afterSpeakersRead func()
 
 // NewRunner fills the defaults of d.
 func NewRunner(d Deps) *Runner {

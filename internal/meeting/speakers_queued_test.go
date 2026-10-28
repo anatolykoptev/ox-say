@@ -28,11 +28,11 @@ func TestAnEditSaysWhetherTheNotesWereQueued(t *testing.T) {
 	})
 	t.Run("unsafe rename", func(t *testing.T) {
 		f, _, id, dir := settledNotes(t)
-		if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan"}}); err != nil {
+		if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Anna", "them:2": "Anna Lee"}}); err != nil {
 			t.Fatal(err)
 		}
-		setNoteText(t, dir, "Ivan said so.")
-		v, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan Petrov"}})
+		setNoteText(t, dir, "Anna Lee joined Anna.")
+		v, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Anna Smith"}})
 		if err != nil || !v.NotesQueued || f.load(t, id).Status != StatusSummarizing {
 			t.Fatalf("notes_queued %v, err %v, status %s: a rename that was queued must say so", v.NotesQueued, err, f.load(t, id).Status)
 		}

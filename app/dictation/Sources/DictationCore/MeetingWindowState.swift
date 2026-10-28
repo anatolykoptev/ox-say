@@ -129,7 +129,7 @@ extension MeetingRowModel {
 }
 
 /// Notes are written from what other people said on a call: a link in them is theirs, not ours, and must not be one
-/// click from the user's browser.
+/// click from the user's browser, and no image of theirs may load.
 public enum InlineMarkdown {
     public static func attributed(_ markdown: String) -> AttributedString {
         let parsed = (try? AttributedString(markdown: markdown, options: .init(interpretedSyntax: .inlineOnly))) ?? AttributedString(markdown)
@@ -138,7 +138,11 @@ public enum InlineMarkdown {
 
     public static func removingLinks(_ text: AttributedString) -> AttributedString {
         var out = text
-        for run in out.runs where run.link != nil { out[run.range].link = nil }
+        for run in out.runs {
+            if run.link != nil { out[run.range].link = nil }
+            // A Markdown image is a link with a picture: a view that loads image attributes would fetch it on open.
+            if run.imageURL != nil { out[run.range].imageURL = nil }
+        }
         return out
     }
 }

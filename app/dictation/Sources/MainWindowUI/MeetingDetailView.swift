@@ -392,7 +392,7 @@ struct SpeakersTab: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 220)
                     if !sp.sample.isEmpty {
-                        Text("“\(sp.sample)”").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        Text(verbatim: "“\(sp.sample)”").font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
                     if sp.speechSeconds > 0 {
                         Text(L10nKey.meetingSpeakerTime.text(MeetingRowModel.duration(sp.speechSeconds) ?? ""))

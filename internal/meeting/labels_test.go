@@ -187,8 +187,6 @@ func TestARenameIsSubstitutedOnlyWhenUnambiguous(t *testing.T) {
 	}{
 		{"a new name that holds another speaker's name", map[string]string{"them:1": "Anna", "them:2": "Anna Lee"}, "Anna Lee joined Anna.",
 			map[string]string{"them:1": "Anna Smith"}, true, "Anna Smith Lee"},
-		{"a new name that holds the old one", map[string]string{"them:1": "Ivan"}, "Ivan said so.",
-			map[string]string{"them:1": "Ivan Petrov"}, true, "Ivan Petrov Petrov"},
 		{"a name that holds a label", map[string]string{"them:2": "Speaker 1 (CFO)"}, "Speaker 1 (CFO) approved.",
 			map[string]string{"them:1": "Ivan"}, true, "Ivan (CFO)"},
 		{"a Russian inflection", map[string]string{"them:1": "Иван"}, "Ивану передали план.",
@@ -239,6 +237,37 @@ func TestARenameIsSubstitutedOnlyWhenUnambiguous(t *testing.T) {
 	}
 }
 
+// Adding a surname to a name is the commonest rename and is made in place: the new label starts with the old one at a
+// word edge, so the only other label or name it may touch is its own. Where the notes already hold the whole new
+// name ("Ivan Petrov"), it is not extended again. Another speaker whose name holds the old one still queues the notes.
+// Mutations: internal/meeting/labels.go `safe()`, delete the `x == c.free[old]` exemption -> RED (the first case is
+// queued); replaceLabels, delete the `strings.HasPrefix(s[i+len(hit):], ext)` skip -> RED ("Ivan Petrov Petrov").
+func TestAddingASurnameIsSubstitutedInPlace(t *testing.T) {
+	for _, tc := range []struct{ text, want string }{
+		{"Ivan said so.", "Ivan Petrov said so."},
+		{"Ivan Petrov said so, Ivan agreed.", "Ivan Petrov said so, Ivan Petrov agreed."},
+		{"Ivan, Ivan.", "Ivan Petrov, Ivan Petrov."},
+	} {
+		f, chat, id, dir := settledNotes(t)
+		if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan"}}); err != nil {
+			t.Fatal(err)
+		}
+		setNoteText(t, dir, tc.text)
+		asked := len(chat.reqs)
+		v, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan Petrov"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		after := readFile(t, dir, NotesMD)
+		if v.NotesQueued || f.load(t, id).Status != StatusDone || len(chat.reqs) != asked {
+			t.Errorf("%q: queued %v, status %s, model asked %d more times: a surname must not run the model", tc.text, v.NotesQueued, f.load(t, id).Status, len(chat.reqs)-asked)
+		}
+		if !strings.Contains(after, tc.want) || strings.Contains(after, "Petrov Petrov") {
+			t.Errorf("%q: notes.md lacks %q:\n%s", tc.text, tc.want, after)
+		}
+	}
+}
+
 // The substitution is replayable: the notes carry the labels they were written under, so a request applied twice
 // (the first died after the notes were corrected and before the speakers were saved) changes nothing the second
 // time. A swap is the sharp case: replayed from the speakers alone it would swap back.
@@ -269,5 +298,89 @@ func TestARenameAppliedTwiceChangesNothingTheSecondTime(t *testing.T) {
 	}
 	if got := f.load(t, id).Status; got != StatusDone {
 		t.Errorf("status = %s", got)
+	}
+}
+
+// When the text already holds the start of the new name's extra words but not the words themselves (a longer word,
+// another case), substituting would write "Иван Петров Петрович" or "Ivan Petrov petrov": the notes are written
+// again by the model instead, and notes.md is left as it was. A new name that only continues the old word
+// ("Ivan" -> "Ivanov") is not a surname added after it and is queued too.
+// Mutations: internal/meeting/labels.go ambiguousIn, delete the `partialExtension(rest, ext)` clause -> RED (the
+// first two cases are substituted); extension(), delete the `isWordRune(r)` guard -> RED (the third is substituted).
+func TestAnExtensionThatIsOnlyPartlyThereIsWrittenAgain(t *testing.T) {
+	for _, tc := range []struct{ name, from, to, text string }{
+		{"a longer word", "Иван", "Иван Петров", "Иван Петрович согласился."},
+		{"another case", "Ivan", "Ivan Petrov", "Ivan petrov said so."},
+		{"a word continued", "Ivan", "Ivanov", "Ivan said so."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, chat, id, dir := settledNotes(t)
+			if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": tc.from}}); err != nil {
+				t.Fatal(err)
+			}
+			setNoteText(t, dir, tc.text)
+			before := readFile(t, dir, NotesMD)
+			asked := len(chat.reqs)
+			v, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": tc.to}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !v.NotesQueued || f.load(t, id).Status != StatusSummarizing {
+				t.Errorf("queued %v, status %s: the notes should be written again", v.NotesQueued, f.load(t, id).Status)
+			}
+			if after := readFile(t, dir, NotesMD); after != before {
+				t.Errorf("notes.md was touched:\n%s", after)
+			}
+			if err := f.r.Process(context.Background(), id); err != nil {
+				t.Fatal(err)
+			}
+			if len(chat.reqs) <= asked {
+				t.Error("the model was not asked to write the notes again")
+			}
+		})
+	}
+}
+
+func TestExtension(t *testing.T) {
+	for _, tc := range []struct {
+		old, to, ext string
+		ok           bool
+	}{
+		{"Ivan", "Ivan Petrov", " Petrov", true}, {"Ivan", "Ivanov", "", false}, {"Ivan", "Ivan", "", false}, {"Ivan", "Boris", "", false},
+	} {
+		if ext, ok := extension(tc.old, tc.to); ext != tc.ext || ok != tc.ok {
+			t.Errorf("extension(%q, %q) = %q, %v; want %q, %v", tc.old, tc.to, ext, ok, tc.ext, tc.ok)
+		}
+	}
+}
+
+// The extra words of a new name are matched across any whitespace the model put between them: "Иван  Петров" (two
+// spaces) and "Ivan\nPetrov" (a line break) already hold the surname and are not extended again.
+// Mutation: internal/meeting/labels.go replaceLabels, replace `matchExtension(s[i:], ext, false)` with
+// `strings.HasPrefix(s[i:], ext)` (and the same in partialExtension) -> RED ("Ivan Petrov Petrov").
+func TestWhitespaceInsideAnExtensionIsNotDoubled(t *testing.T) {
+	for _, tc := range []struct{ from, to, text, want string }{
+		{"Иван", "Иван Петров", "Иван  Петров согласился.", "Иван Петров согласился."},
+		{"Ivan", "Ivan Petrov", `Ivan\nPetrov said so.`, "Ivan Petrov said so."},
+		{"Ivan", "Ivan Petrov", `Ivan \t Petrov said so, Ivan too.`, "Ivan Petrov said so, Ivan Petrov too."},
+	} {
+		f, chat, id, dir := settledNotes(t)
+		if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": tc.from}}); err != nil {
+			t.Fatal(err)
+		}
+		setNoteText(t, dir, tc.text)
+		asked := len(chat.reqs)
+		v, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": tc.to}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		after := readFile(t, dir, NotesMD)
+		last := strings.Fields(tc.to)[1]
+		if strings.Contains(after, last+" "+last) || !strings.Contains(after, tc.want) {
+			t.Errorf("%q: notes.md lacks %q or doubles the surname:\n%s", tc.text, tc.want, after)
+		}
+		if v.NotesQueued || len(chat.reqs) != asked {
+			t.Errorf("%q: queued %v: a surname already there must not run the model", tc.text, v.NotesQueued)
+		}
 	}
 }
