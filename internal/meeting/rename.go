@@ -39,20 +39,19 @@ func (r *Runner) Rename(id, title string) (*Manifest, error) {
 		return nil, err
 	}
 	// The status is read again under the store lock, the one a Retry or a Finish takes to queue the meeting: a
-	// check made above could be stale by now. The manifest an Update does not change is saved as it was.
-	busy := false
-	m, err = r.Store.Update(id, func(m *Manifest) {
+	// check made above could be stale by now. A refusal returns before anything is saved.
+	if r.beforeRenameUpdate != nil {
+		r.beforeRenameUpdate()
+	}
+	m, err = r.Store.Modify(id, func(m *Manifest) error {
 		if !renameable(m.Status) {
-			busy = true
-			return
+			return ErrSpeakersBusy
 		}
 		m.Title = title
+		return nil
 	})
 	if err != nil {
 		return nil, err
-	}
-	if busy {
-		return nil, ErrSpeakersBusy
 	}
 	line := "# " + heading(*m)
 	for _, name := range headingFiles {

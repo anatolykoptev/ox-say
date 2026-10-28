@@ -125,6 +125,12 @@ func load(dir string) (*Manifest, error) {
 
 // Update loads id, applies fn and saves the result, all under the store lock.
 func (s *Store) Update(id string, fn func(*Manifest)) (*Manifest, error) {
+	return s.Modify(id, func(m *Manifest) error { fn(m); return nil })
+}
+
+// Modify is Update whose fn can refuse: an error from fn returns as it is and the manifest is not saved. For a
+// change that must be decided on the record as it is under the store lock.
+func (s *Store) Modify(id string, fn func(*Manifest) error) (*Manifest, error) {
 	dir, err := s.Dir(id)
 	if err != nil {
 		return nil, err
@@ -135,7 +141,9 @@ func (s *Store) Update(id string, fn func(*Manifest)) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	fn(m)
+	if err := fn(m); err != nil {
+		return nil, err
+	}
 	m.ID = id // fn edits the record, it does not move it
 	if err := s.save(dir, m); err != nil {
 		return nil, err
