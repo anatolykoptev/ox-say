@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/anatolykoptev/ox-say/internal/vproject"
+	"github.com/anatolykoptev/ox-say/internal/vscript"
 )
 
 // The job-level clone_mode on produce create pins the whole run: "reference"
@@ -323,5 +324,27 @@ func TestCloneModeInvalidIsRefused(t *testing.T) {
 	id := createDone(t, mux, `{"script":"Привет.","voice":"nar","clone_mode":"auto","out_path":"`+out+`"}`)
 	if got := manifestOf(t, f, id).Settings.CloneModePin; got != cloneAuto {
 		t.Fatalf("explicit auto stored %q", got)
+	}
+}
+
+// A project pinned to clone_mode ultimate cannot change its mode, and the voice may gain a saved style after the
+// project was made (#183): the run is refused, and the refusal must name the way out that exists in that situation,
+// clearing the voice's style, not only the options that a pinned project does not have (instructions, the mode).
+// Mutation: internal/daemon/voxcpm2.go voxCloneMode, reduce the ultimate-with-a-style message to "drop instructions
+// or use clone_mode reference" -> RED.
+func TestUltimateProjectWhoseVoiceGainedAStyleNamesTheWayOut(t *testing.T) {
+	chunks := []vscript.Chunk{{Spoken: "Привет."}}
+	voice := voiceFacts{Name: "nar", RefText: "Привет мир.", Style: "solemn"}
+	_, _, err := jobCloneMode(voice, "", chunks, cloneUltimate)
+	if err == nil {
+		t.Fatal("an ultimate project over a voice with a saved style was accepted")
+	}
+	for _, want := range []string{"voice's saved", "voice_update", "clone_mode reference"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+	if _, _, err := jobCloneMode(voiceFacts{Name: "nar", RefText: "Привет мир."}, "", chunks, cloneUltimate); err != nil {
+		t.Errorf("the same project over the voice without a style: %v", err)
 	}
 }
