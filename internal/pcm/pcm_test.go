@@ -292,3 +292,42 @@ func TestQuietestWindow(t *testing.T) {
 		t.Fatal("a clip shorter than the window must return 0")
 	}
 }
+
+// QuietestWindow's boundaries (#225.t): the earliest of equally quiet windows, a window that ends exactly at the end
+// of the clip, no window past the end, and a clip as long as the window. A clip is loud (8000) except where zero.
+// Mutations: internal/pcm/pcm.go:324 `e < bestEnergy` -> `e <= bestEnergy` -> RED (tie row); :319 `from+window <=
+// len(c.S)` -> `from+window < len(c.S)` -> RED (end row); -> `from < len(c.S)` -> panic, RED (past-the-end row).
+// `len(c.S) <= window` -> `<` is equivalent (one window at 0 either way): the "as long as the window" row documents it.
+func TestQuietestWindowBoundaries(t *testing.T) {
+	clip := func(n int, quiet ...[2]int) Clip {
+		c := Clip{Rate: 16000, S: make([]int16, n)}
+		for i := range c.S {
+			c.S[i] = 8000
+		}
+		for _, q := range quiet {
+			for i := q[0]; i < q[1]; i++ {
+				c.S[i] = 0
+			}
+		}
+		return c
+	}
+	for _, tc := range []struct {
+		name   string
+		c      Clip
+		window int
+		want   int
+	}{
+		{"the earliest of equally quiet windows wins", clip(1000, [2]int{200, 1000}), 400, 200},
+		{"a window ending at the end of the clip is scanned", clip(1000, [2]int{600, 1000}), 400, 600},
+		{"no window runs past the end (from+window <= len)", clip(1100, [2]int{700, 1100}), 400, 600},
+		{"a clip as long as the window", clip(400, [2]int{0, 400}), 400, 0},
+		{"a clip one sample longer than the window has one window", clip(401, [2]int{200, 401}), 400, 0},
+	} {
+		if got := tc.c.QuietestWindow(tc.window); got != tc.want {
+			t.Errorf("%s: QuietestWindow = %d, want %d", tc.name, got, tc.want)
+		}
+		if got := tc.c.QuietestWindow(tc.window); got+tc.window > len(tc.c.S) && got != 0 {
+			t.Errorf("%s: window [%d, %d) runs past the clip of %d", tc.name, got, got+tc.window, len(tc.c.S))
+		}
+	}
+}
