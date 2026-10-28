@@ -105,6 +105,8 @@ public enum L10nKey: String, CaseIterable {
     case noticeMeetingStartFailed = "notice.meeting.start_failed"
     case meetingRemindTitle = "meeting.remind.title"
     case meetingRemindBody = "meeting.remind.body"
+    case meetingRemindKeepDays = "meeting.remind.keep_days"
+    case meetingRemindKeepForever = "meeting.remind.keep_forever"
     case meetingRemindRecord = "meeting.remind.record"
     case meetingRemindSkip = "meeting.remind.skip"
     case noticeMeetingBrowserDenied = "notice.meeting.browser_denied"

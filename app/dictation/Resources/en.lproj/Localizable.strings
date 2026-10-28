@@ -112,7 +112,11 @@
 "notice.meeting.start_failed" = "Recording could not start: %@";
 /* The one-time consent reminder before the first recording; it never changes a setting. */
 "meeting.remind.title" = "Before you record";
-"meeting.remind.body" = "OxSay records both sides of the call on this Mac, writes a transcript and notes, and keeps the audio for 30 days. Nothing leaves your Mac. A red recording badge stays on screen, and you can stop at any time. Tell the other people you are recording: laws in some places require everyone's consent.";
+"meeting.remind.body" = "OxSay records both sides of the call on this Mac, writes a transcript and notes, and %@. ox-say sends nothing anywhere. A red recording badge stays on screen, and you can stop at any time. Tell the other people you are recording: laws in some places require everyone's consent.";
+/* The %@ of the reminder when audio is kept N days (%d). */
+"meeting.remind.keep_days" = "keeps the audio for %d days";
+/* ...and when audio is kept until the user deletes it. */
+"meeting.remind.keep_forever" = "keeps the audio until you delete it";
 "meeting.remind.record" = "Record This Call";
 "meeting.remind.skip" = "Don't Record";
 "notice.meeting.browser_denied" = "To notice Google Meet calls, allow OxSay to control your browser in System Settings → Privacy & Security → Automation.";

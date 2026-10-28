@@ -499,7 +499,8 @@ final class MeetingController: NSObject, MeetingFeature {
     /// app's pick; "Don't Record" cancels this start and the reminder comes again next time.
     private func consentReminderAccepted() -> Bool {
         if MeetingSettings.explained(host.defaults) { return true }
-        let pressed = host.alert(L10nKey.meetingRemindTitle.text, L10nKey.meetingRemindBody.text,
+        let pressed = host.alert(L10nKey.meetingRemindTitle.text,
+                                 ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text }),
                                  [L10nKey.meetingRemindRecord.text, L10nKey.meetingRemindSkip.text])
         guard pressed == .alertFirstButtonReturn else { return false }
         MeetingSettings.setExplained(host.defaults)

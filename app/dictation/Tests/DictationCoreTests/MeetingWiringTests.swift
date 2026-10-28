@@ -391,6 +391,9 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertFalse(reminder.contains("setCallMode"), "the reminder must not write the global mode")
         XCTAssertFalse(reminder.contains("CallPolicy.setMode"), "nor a per-app pick")
         XCTAssertFalse(reminder.contains("callMode"))
+        // Mutation: MeetingController.consentReminderAccepted, `retention: MeetingSettings.retention(host.defaults)` -> `.month` -> RED.
+        XCTAssertTrue(reminder.contains("ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text })"),
+                      "the reminder names the user's retention, not a hardwired one")
         XCTAssertTrue(reminder.contains("guard pressed == .alertFirstButtonReturn else { return false }"), "Don't Record cancels the start")
         XCTAssertTrue(reminder.contains("L10nKey.meetingRemindRecord.text, L10nKey.meetingRemindSkip.text"), "Record This Call is the default button")
         let whole = try controller()
