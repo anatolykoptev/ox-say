@@ -556,7 +556,7 @@ func langHint(body map[string]any) string {
 // interrupt, counted per lane where the daemon itself can see it —
 // including load driven by CLI and MCP clients, which the app cannot.
 type busySummary struct {
-	// Produce is the running voiceover job (0 or 1).
+	// Produce is the running voiceover job, or a project delete in flight (0 or 1).
 	Produce int `json:"produce"`
 	// STTSessions is the count of open streaming-dictation sessions on the
 	// resident ox-stt server.

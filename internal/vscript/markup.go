@@ -272,7 +272,7 @@ func SpokenLanguage(src string) string {
 		}
 		for _, p := range pieces {
 			if p.pause == 0 {
-				spoken.WriteString(stripLeadingCues(p.text))
+				spoken.WriteString(StripLeadingCues(p.text))
 				spoken.WriteByte(' ')
 			}
 		}
@@ -280,9 +280,9 @@ func SpokenLanguage(src string) string {
 	return ScriptLanguage(spoken.String())
 }
 
-// stripLeadingCues drops the "(…)" groups a text opens with (the engine reads
+// StripLeadingCues drops the "(…)" groups a text opens with (the engine reads
 // them as its style tag).
-func stripLeadingCues(text string) string {
+func StripLeadingCues(text string) string {
 	for s := trimLead(text); strings.HasPrefix(s, "("); s = trimLead(text) {
 		_, rest, closed := strings.Cut(s[1:], ")")
 		if !closed {

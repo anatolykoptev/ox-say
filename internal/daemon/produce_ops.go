@@ -622,10 +622,10 @@ func supersedeTakes(cur []string, ts []vproject.TakeRef) []string {
 func projectLanguage(m *vproject.Manifest) string {
 	var b strings.Builder
 	for _, c := range m.Chunks {
-		b.WriteString(c.Text)
+		b.WriteString(vscript.StripLeadingCues(c.Text)) // every chunk's cue, not only the first's
 		b.WriteByte(' ')
 	}
-	return vscript.SpokenLanguage(b.String())
+	return vscript.ScriptLanguage(b.String())
 }
 
 // editChunk replaces one chunk's text: one piece of text, no directives,

@@ -238,3 +238,22 @@ func TestActiveCountsARemoveInFlight(t *testing.T) {
 		t.Error("active() stays 1 after the remove")
 	}
 }
+
+// Every chunk's leading Russian cue is left out of the project language, not
+// only the first's: an English project stays English on the edit path.
+// Mutation: produce_ops.go projectLanguage, write c.Text without
+// vscript.StripLeadingCues -> the edit reads "двадцать пять" -> RED.
+func TestProjectLanguageIgnoresEveryChunksCue(t *testing.T) {
+	f := newFakePorts(t)
+	_, mux := produceMux(t, f)
+	out := filepath.Join(t.TempDir(), "v.wav")
+	id := createDone(t, mux, `{"script":"I have 25 apples today.\n\n(шёпотом) And 30 pears tomorrow.","voice":"nar","out_path":"`+out+`"}`)
+	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/0", `{"action":"edit","text":"2030."}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body)
+	}
+	waitDoneHTTP(t, mux, id)
+	if got := f.renders[len(f.renders)-1].Text; got != "2030." {
+		t.Errorf("edit in an English project with a later Russian cue: the engine was asked for %q", got)
+	}
+}
