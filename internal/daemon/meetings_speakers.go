@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/anatolykoptev/ox-say/internal/meeting"
@@ -17,6 +19,19 @@ func (d *Daemon) speakersRoutes(mux *http.ServeMux) {
 // transcription (meeting.Runner.RetryVoices), so it is its own route, not part of the notes retry.
 func (d *Daemon) handleVoicesRetry(w http.ResponseWriter, r *http.Request) {
 	m, err := d.Meet.RetryVoices(r.PathValue("id"))
+	var notReady *meeting.ErrVoicesNotReady
+	if errors.As(err, &notReady) {
+		// The models or engine are still missing at this moment (the app's check was stale): 503, not the 409 of "busy",
+		// with a stable code and the reason so the app says so in its own words.
+		d.log.Debug("voices retry refused", slog.String("reason", notReady.Reason))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+			"message": "Voices cannot be told apart yet: the voice engine or its models are not ready.",
+			"type":    http.StatusText(http.StatusServiceUnavailable), "code": "voices_not_ready", "reason": notReady.Reason,
+		}})
+		return
+	}
 	if err != nil {
 		d.writeMeetingErr(w, err)
 		return

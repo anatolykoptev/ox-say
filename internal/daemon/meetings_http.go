@@ -229,6 +229,9 @@ type meetingSummary struct {
 	DiarReason   string         `json:"diar_reason,omitempty"`
 	// AudioDeleted: retention removed the recording, so a voices retry (which transcribes it again) cannot run.
 	AudioDeleted bool `json:"audio_deleted,omitempty"`
+	// VoicesRetryable: voices were unavailable for a reason a retry can fix, diarization is ready now and the audio is
+	// here, so POST .../voices would be accepted. The app shows "Try Again" for an unavailable meeting by this field.
+	VoicesRetryable bool `json:"voices_retryable,omitempty"`
 }
 
 func (d *Daemon) summarize(m meeting.Manifest) meetingSummary {
@@ -237,6 +240,7 @@ func (d *Daemon) summarize(m meeting.Manifest) meetingSummary {
 		ID: m.ID, Title: m.Title, Started: m.Started, DurationS: m.DurationS, Status: m.Status,
 		Language: m.Language, HasNotes: m.Status == meeting.StatusDone, NotesPending: m.NotesPending,
 		Warnings: m.Warnings, Error: m.Error, FailReason: m.FailReason, Voices: m.Voices, VoiceMode: m.VoiceMode, DiarReason: m.DiarReason, AudioDeleted: m.AudioDeleted,
+		VoicesRetryable: d.Meet.VoicesRetryable(m),
 	}
 }
 
@@ -256,8 +260,9 @@ func (d *Daemon) handleMeetingList(w http.ResponseWriter, _ *http.Request) {
 // meetingDetail is one meeting with the texts the caller asked for.
 type meetingDetail struct {
 	meeting.Manifest
-	NotesMD      string `json:"notes_md,omitempty"`
-	TranscriptMD string `json:"transcript_md,omitempty"`
+	VoicesRetryable bool   `json:"voices_retryable,omitempty"` // see meetingSummary
+	NotesMD         string `json:"notes_md,omitempty"`
+	TranscriptMD    string `json:"transcript_md,omitempty"`
 }
 
 func (d *Daemon) handleMeetingGet(w http.ResponseWriter, r *http.Request) {
@@ -266,7 +271,7 @@ func (d *Daemon) handleMeetingGet(w http.ResponseWriter, r *http.Request) {
 		d.writeMeetingErr(w, err)
 		return
 	}
-	out := meetingDetail{Manifest: d.publicManifest(*m)}
+	out := meetingDetail{Manifest: d.publicManifest(*m), VoicesRetryable: d.Meet.VoicesRetryable(*m)}
 	include := includeSet(r.URL.Query().Get("include"))
 	if include["notes"] {
 		if out.NotesMD, err = d.Meet.Store.Text(m.ID, meeting.NotesMD); err != nil {
