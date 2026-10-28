@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -91,6 +92,9 @@ type Store struct {
 	// rename is os.Rename; tests swap it to simulate a crash between the
 	// steps of a repair.
 	rename func(string, string) error
+
+	// verdictMu guards the repair-verdict cache file (repair.go).
+	verdictMu sync.Mutex
 }
 
 // New creates the directory if needed and returns the store.

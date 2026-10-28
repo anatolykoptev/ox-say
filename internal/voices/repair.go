@@ -2,10 +2,13 @@ package voices
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,6 +27,17 @@ var ErrStillBroken = errors.New("voices: backup exists but voice still broken")
 // ErrChanged is returned by Repair.Apply when the voice was re-added or
 // edited between PrepareRepair and Apply.
 var ErrChanged = errors.New("voices: voice changed while repairing")
+
+// repairLogicVersion is part of every cached "transcript matches" verdict:
+// bump it whenever Diagnose, plan, TranscriptMatches or the cut logic change
+// in a way that could turn an old "fine" into "broken", so the next start
+// re-checks every voice once. (A var only so a test can bump it.)
+var repairLogicVersion = 1
+
+// verdictFile is the dotfile (List and SweepTemp leave it alone) that keeps
+// the "transcript matches" verdicts across daemon starts: without it a voice
+// whose clip sits at the cap is transcribed again on every start.
+const verdictFile = ".repair-verdicts.json"
 
 // stamp identifies the stored files a repair was computed from.
 type stamp struct {
@@ -137,6 +151,10 @@ func (s *Store) PrepareRepair(ctx context.Context, name string) (*Repair, error)
 	if Script(srcText) == "" {
 		return nil, fmt.Errorf("voice %s: %w", name, ErrScript)
 	}
+	key, keyErr := s.verdictKey(srcWav, srcText)
+	if keyErr == nil && s.verdictKnown(name, key) {
+		return nil, nil // checked before on these exact bytes and this exact text
+	}
 	if s.transcribe == nil {
 		return nil, ErrNoTranscriber
 	}
@@ -150,6 +168,9 @@ func (s *Store) PrepareRepair(ctx context.Context, name string) (*Repair, error)
 		return nil, err
 	}
 	if r.NewText == "" { // the transcript matches the stored text: nothing to repair
+		if keyErr == nil {
+			s.rememberVerdict(name, key)
+		}
 		return nil, nil
 	}
 	if haveBackup && r.NewText == v.RefText && (r.Cut == 0 || srcWav == s.WAVPath(name) && mainDur-r.Cut < capEpsilon) {
@@ -304,4 +325,62 @@ func (s *Store) copyAtomic(src, dst string) error {
 		return fmt.Errorf("voices: %w", err)
 	}
 	return nil
+}
+
+// verdictKey identifies what a "transcript matches" verdict was computed
+// from: the clip's size and mtime, the transcript text it was compared to,
+// and the repair logic's version. Any change to one of them is a re-check.
+func (s *Store) verdictKey(wav, text string) (string, error) {
+	st, err := os.Stat(wav)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.Sum256([]byte(text))
+	return fmt.Sprintf("v%d|%d|%d|%s", repairLogicVersion, st.Size(), st.ModTime().UnixNano(), hex.EncodeToString(h[:8])), nil
+}
+
+func (s *Store) readVerdicts() map[string]string {
+	m := map[string]string{}
+	raw, err := os.ReadFile(filepath.Join(s.dir, verdictFile))
+	if err != nil {
+		return m
+	}
+	if json.Unmarshal(raw, &m) != nil || m == nil {
+		return map[string]string{} // unreadable cache: re-check everything
+	}
+	return m
+}
+
+func (s *Store) verdictKnown(name, key string) bool {
+	s.verdictMu.Lock()
+	defer s.verdictMu.Unlock()
+	return s.readVerdicts()[name] == key
+}
+
+// rememberVerdict records that name's clip matched its transcript. Best
+// effort: a failed write costs one more transcription next start and is
+// logged, never a failed repair pass.
+func (s *Store) rememberVerdict(name, key string) {
+	s.verdictMu.Lock()
+	defer s.verdictMu.Unlock()
+	m := s.readVerdicts()
+	m[name] = key
+	raw, err := json.Marshal(m)
+	if err == nil {
+		var f *os.File
+		if f, err = os.CreateTemp(s.dir, ".normalize-verdicts-*"); err == nil {
+			tmp := f.Name()
+			_ = f.Close()
+			if err = s.writeFile(tmp, raw, 0o644); err == nil {
+				err = s.rename(tmp, filepath.Join(s.dir, verdictFile))
+			}
+			if err != nil {
+				_ = os.Remove(tmp)
+			}
+		}
+	}
+	if err != nil {
+		slog.Warn("voice repair: could not save the verdict; the voice will be re-checked next start",
+			slog.String("voice", name), slog.Any("error", err))
+	}
 }

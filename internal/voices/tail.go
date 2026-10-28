@@ -8,10 +8,11 @@ const (
 	// when the overrun is under a fifth of the text (measured references
 	// that ran 11, 6 and 4 words over scored 0.88-0.95 and still bled).
 	anchorWords = 3
-	// anchorWindow is how far from the end of the transcript the anchor may
-	// start: room for ASR dropping or splitting a word, not for a missing
-	// sentence.
-	anchorWindow = 6
+	// anchorDrop is how many words the recognizer may have dropped at the very
+	// end of the clip (a trailing word clipped by the audio edge). It is not
+	// room for a missing sentence, and it is not room for a tail that merely
+	// occurs earlier in the clip.
+	anchorDrop = 1
 	// anchorNeed is how many anchor words, in order, must match: one ASR
 	// error in the last words is tolerated, two are not.
 	anchorNeed = 2
@@ -25,25 +26,32 @@ func TranscriptMatches(ref, heard string) bool {
 	return TextsMatch(ref, heard) && tailAnchored(normWords(ref), normWords(heard))
 }
 
-// tailAnchored reports whether the last anchorWords words of ref occur, in
-// order and within edit tolerance, among the last anchorWindow words of heard.
+// tailAnchored reports whether the last anchorWords words of ref line up, word
+// for word and within SameWord tolerance, with the END of heard (at least
+// anchorNeed of them). The alignment is positional: ref's last word against
+// heard's last word, and so on backwards. Heard may end up to anchorDrop words
+// early (every ref word then sits one further from the end), never later: a
+// search for the tail words anywhere near the end would accept a reference
+// whose tail repeats words said earlier in the clip while its real ending was
+// cut off.
 func tailAnchored(ref, heard []string) bool {
 	if len(ref) == 0 || len(heard) == 0 {
 		return false
 	}
 	anchor := ref[max(0, len(ref)-anchorWords):]
-	window := heard[max(0, len(heard)-anchorWindow):]
-	matched, pos := 0, 0
-	for _, w := range anchor {
-		for j := pos; j < len(window); j++ {
-			if SameWord(w, window[j]) {
+	for drop := 0; drop <= anchorDrop; drop++ {
+		matched := 0
+		for i := range anchor { // i-th word from the end of both
+			j := len(heard) - 1 - i + drop
+			if j < len(heard) && j >= 0 && SameWord(anchor[len(anchor)-1-i], heard[j]) {
 				matched++
-				pos = j + 1
-				break
 			}
 		}
+		if matched >= min(anchorNeed, len(anchor)) {
+			return true
+		}
 	}
-	return matched >= min(anchorNeed, len(anchor))
+	return false
 }
 
 // SameWord is equality up to an ASR spelling slip: one edit per five letters

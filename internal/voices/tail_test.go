@@ -60,6 +60,29 @@ func TestTailAnchoredTolerance(t *testing.T) {
 	}
 }
 
+// A reference whose tail words also occur earlier in the clip must still end
+// where the audio ends: the repeated words are not an anchor.
+// Mutation: internal/voices/tail.go tailAnchored — search the last anchorWindow
+// heard words for an in-order hit (the old loop) instead of aligning the tail
+// -> RED for "tail words repeat earlier, ending cut".
+func TestTailAnchoredRepeatedTail(t *testing.T) {
+	ref := "alpha beta gamma delta alpha beta gamma"
+	for name, tc := range map[string]struct {
+		heard string
+		want  bool
+	}{
+		"tail words repeat earlier, ending cut": {"alpha beta gamma delta", false},
+		"cut two words short":                   {"alpha beta gamma delta alpha", false},
+		"whole clip":                            {"alpha beta gamma delta alpha beta gamma", true},
+		"last word dropped by the recognizer":   {"alpha beta gamma delta alpha beta", true},
+		"slip in the middle of the anchor":      {"alpha beta gamma delta alpha betta gamma", true},
+	} {
+		if got := tailAnchored(normWords(ref), normWords(tc.heard)); got != tc.want {
+			t.Errorf("%s: tailAnchored = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
 // SameWord forgives a spelling slip, not a different word.
 // Mutation: tail.go SameWord tolerance n/5 -> n/2 -> "тридцать"/"двадцать" and
 // "слон"/"стол" read as the same word -> RED.
