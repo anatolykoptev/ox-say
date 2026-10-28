@@ -436,12 +436,13 @@ mid-transcription waits out a short GPU run at worst (the tool's timeout
 is about 5 minutes). Longer audio runs with `-ng` without touching the
 lease. `on` lifts the length cap but, like `auto`, only takes a free lease
 and otherwise runs on the CPU — a transcription never waits for the GPU.
-With `on`, a `speak` that needs the engine can wait out a long GPU run.
-`off` never touches the card. On a discrete card `OX_SAY_STT_GPU=on` does
-not opt the resident server into the GPU — a process that holds GPU memory
-for its whole lifetime cannot take part in a per-run lease, so the server
-is always `-ng` there. Transcriptions run one at a time; up to 8 more
-wait, further ones get 503.
+With `on`, a `speak` that needs the engine can block behind a long GPU
+run, and over MCP fail after about 5 minutes. `off` never touches the card.
+On a discrete card `OX_SAY_STT_GPU=on` does not opt the resident server into
+the GPU — a process that holds GPU memory for its whole lifetime cannot take
+part in a per-run lease, so the server is always `-ng` there. Transcriptions
+run one at a time; up to 8 more wait,
+further ones get 503.
 
 ### HTTP API
 
@@ -510,15 +511,19 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_HOME` | `~/Library/Application Support/ox-say` | Engine, models, voices, run dir |
 | `OX_SAY_ADDR` | `127.0.0.1:8094` | Daemon listen address; loopback only, refused otherwise |
 | `OX_SAY_ENGINE_PORT` | `8095` | Loopback port for the engine child |
-| `OX_SAY_ENGINE_BIN` | `$OX_SAY_HOME/engine/tts-server` | |
+| `OX_SAY_ENGINE_BIN` | `<engine dir>/tts-server` | |
 | `OX_SAY_MODEL` | `$OX_SAY_HOME/models/qwen-talker-0.6b-base-Q8_0.gguf` | |
 | `OX_SAY_CODEC` | `$OX_SAY_HOME/models/qwen-tokenizer-12hz-F32.gguf` | |
 | `OX_SAY_MAX_BATCH` | `2` | |
 | `OX_SAY_TTS_MODEL` | `qwen3-tts` | Engine for a speech request that names no model and whose voice has no preference: `qwen3-tts` or `voxcpm2` |
-| `OX_SAY_VOXCPM2_BIN` | `$OX_SAY_HOME/engine/audiocpp_server` | The VoxCPM2 engine (audio.cpp's server); Apple Silicon only |
+| `OX_SAY_VOXCPM2_BIN` | `<engine dir>/audiocpp_server` | The VoxCPM2 engine (audio.cpp's server); Apple Silicon only |
 | `OX_SAY_VOXCPM2_MODEL` | `$OX_SAY_HOME/models/voxcpm2-q8_0.gguf` | VoxCPM2 weights (`OX_SAY_WITH_VOXCPM2=1` fetch) |
 | `OX_SAY_VOXCPM2_PORT` | `8097` | Loopback port the VoxCPM2 child binds |
-| `OX_SAY_DIAR_BIN` | `$OX_SAY_HOME/engine/ox-diar` | The speaker diarization engine (meeting voices); Apple Silicon, macOS 15 or later |
+| `OX_SAY_NOTES_BIN` | `<engine dir>/ox-llm` | The meeting-notes engine (llama.cpp's llama-server); Apple Silicon |
+| `OX_SAY_NOTES_MODEL` | `$OX_SAY_HOME/models/Qwen3.5-4B-Q4_K_M.gguf` | Notes model weights (about 2.7 GB, downloaded on request) |
+| `OX_SAY_NOTES_PORT` | `8098` | Loopback port the notes engine binds. Set explicitly, it must differ from the other listeners or the daemon refuses to start; left at the default, a collision turns notes off (`port_blocked` in `/status`) and the rest of the daemon runs |
+| `OX_SAY_NOTES_IDLE_STOP_SECS` | `120` | Stop the notes engine after N s idle |
+| `OX_SAY_DIAR_BIN` | `<engine dir>/ox-diar` | The speaker diarization engine (meeting voices); Apple Silicon, macOS 15 or later |
 | `OX_SAY_IDLE_STOP_SECS` | `300` | Stop the idle engine after N s; 0 = never |
 | `OX_SAY_STARTUP_TIMEOUT_SECS` | `180` | Covers the first-start Metal shader compile |
 | `OX_SAY_LANG` | empty | Default language; empty = engine auto-detect |
@@ -526,7 +531,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_ENGINE_LOG_DIR` | `~/Library/Logs/ox-say` | Child stdout/stderr go to `engine.log` here |
 | `OX_SAY_CACHE_DIR` | `~/Library/Caches/ox-say` | Default output dir for `speak` |
 | `OX_SAY_PRODUCE_OUT_DIR` | `~/Movies/ox-say` | Where `produce` publishes a finished voiceover when the request names no `out_path` (provisional default, pending the owner) |
-| `OX_SAY_STT_BIN` | `$OX_SAY_HOME/engine/ox-stt` | Speech-to-text binary |
+| `OX_SAY_STT_BIN` | `<engine dir>/ox-stt` | Speech-to-text binary |
 | `OX_SAY_STT_MODEL` | `$OX_SAY_HOME/models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin` | Parakeet weights |
 | `OX_SAY_STT_VAD_MODEL` | `$OX_SAY_HOME/models/ggml-silero-v5.1.2.bin` | Silero VAD model; enables the streaming session routes when present at STT-server spawn |
 | `OX_SAY_STT_WHISPER_MODEL` | `$OX_SAY_HOME/models/ggml-large-v3-turbo.bin` | Whisper weights (`--with-whisper` fetch) |
@@ -538,6 +543,16 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_STT_SERVER` | `on` | Resident `ox-stt --serve` for parakeet clips ≤ 300 s; `off` = per-call CLI only |
 | `OX_SAY_STT_PORT` | `8096` | Loopback port the STT server binds; must differ from `OX_SAY_ENGINE_PORT` and the daemon's port |
 | `OX_SAY_STT_IDLE_STOP_SECS` | `600` | Stop the STT server after N s idle; its idle cost is RAM, not VRAM |
+
+`<engine dir>` is the directory of the running daemon when it sits in an app
+bundle's `Contents/Helpers`, so the engines travel with the daemon and share
+its version; anywhere else it is `$OX_SAY_HOME/engine`. A user-set
+`OX_SAY_ENGINE_BIN`, `OX_SAY_STT_BIN`, `OX_SAY_VOXCPM2_BIN`,
+`OX_SAY_NOTES_BIN` or `OX_SAY_DIAR_BIN` overrides that for one engine and
+defeats the co-versioning, and the installer carries such a variable over from
+the installed agent. `GET /status` shows the path each engine resolved to
+under `config` (`engine_bin`, `stt_bin`, `voxcpm2_bin`, `notes_bin`,
+`diar_bin`).
 
 ## Dictation
 

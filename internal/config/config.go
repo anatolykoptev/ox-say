@@ -85,6 +85,15 @@ const (
 	GPUMemoryDiscrete = "discrete"
 )
 
+// OX_SAY_STT_GPU values: which device the per-call ox-stt CLI runs on (and,
+// with unified memory, the resident server too). STTGPUOff is the only one
+// the daemon and the stt package branch on besides STTGPUOn.
+const (
+	STTGPUAuto = "auto"
+	STTGPUOn   = "on"
+	STTGPUOff  = "off"
+)
+
 // hostUnifiedMemory reports whether this machine's GPU shares system memory:
 // every darwin/arm64 Mac is Apple Silicon. Intel Macs — and the linux CI
 // host — keep the discrete-card behaviour. A variable so tests can pin
@@ -302,70 +311,9 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	}
 	c.StartupTimeout = time.Duration(startSecs) * time.Second
 
-	if c.STTBin = get("OX_SAY_STT_BIN"); c.STTBin == "" {
-		c.STTBin = filepath.Join(engineDir, "ox-stt")
-	}
-	if c.STTModel = get("OX_SAY_STT_MODEL"); c.STTModel == "" {
-		c.STTModel = filepath.Join(c.Home, "models", "ggml-parakeet-tdt-0.6b-v3-q8_0.bin")
-	}
-	if c.STTVADModel = get("OX_SAY_STT_VAD_MODEL"); c.STTVADModel == "" {
-		c.STTVADModel = filepath.Join(c.Home, "models", "ggml-silero-v5.1.2.bin")
-	}
-	if c.STTWhisperModel = get("OX_SAY_STT_WHISPER_MODEL"); c.STTWhisperModel == "" {
-		c.STTWhisperModel = filepath.Join(c.Home, "models", "ggml-large-v3-turbo.bin")
-	}
-	c.STTGPU = orDefault(get("OX_SAY_STT_GPU"), "auto")
-	switch c.STTGPU {
-	case "auto", "on", "off":
-	default:
-		return nil, fmt.Errorf("config: OX_SAY_STT_GPU %q: want auto|on|off", c.STTGPU)
-	}
-	if c.GPUMemory, err = resolveGPUMemory(get("OX_SAY_GPU_MEMORY")); err != nil {
+	if err := loadSTT(c, get, engineDir); err != nil {
 		return nil, err
 	}
-	sttSecs, err := intVar(get("OX_SAY_STT_TIMEOUT_SECS"), DefaultSTTTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("config: OX_SAY_STT_TIMEOUT_SECS: %w", err)
-	}
-	if sttSecs < 1 || sttSecs > maxSTTSecs {
-		return nil, fmt.Errorf("config: OX_SAY_STT_TIMEOUT_SECS %d: want 1..%d", sttSecs, maxSTTSecs)
-	}
-	c.STTTimeout = time.Duration(sttSecs) * time.Second
-	if c.STTMaxUploadMB, err = int64Var(get("OX_SAY_STT_MAX_UPLOAD_MB"), DefaultSTTMaxUploadMB); err != nil {
-		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_UPLOAD_MB: %w", err)
-	}
-	if c.STTMaxUploadMB < 1 || c.STTMaxUploadMB > maxSTTUploadMB {
-		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_UPLOAD_MB %d: want 1..%d", c.STTMaxUploadMB, maxSTTUploadMB)
-	}
-	audioSecs, err := intVar(get("OX_SAY_STT_MAX_AUDIO_SECS"), DefaultSTTMaxAudio)
-	if err != nil {
-		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_AUDIO_SECS: %w", err)
-	}
-	if audioSecs < 1 || audioSecs > maxSTTSecs {
-		return nil, fmt.Errorf("config: OX_SAY_STT_MAX_AUDIO_SECS %d: want 1..%d", audioSecs, maxSTTSecs)
-	}
-	c.STTMaxAudio = time.Duration(audioSecs) * time.Second
-
-	c.STTServer = orDefault(get("OX_SAY_STT_SERVER"), "on")
-	switch c.STTServer {
-	case "on", "off":
-	default:
-		return nil, fmt.Errorf("config: OX_SAY_STT_SERVER %q: want on|off", c.STTServer)
-	}
-	if c.STTPort, err = intVar(get("OX_SAY_STT_PORT"), DefaultSTTPort); err != nil {
-		return nil, fmt.Errorf("config: OX_SAY_STT_PORT: %w", err)
-	}
-	if c.STTPort < 1 || c.STTPort > 65535 {
-		return nil, fmt.Errorf("config: OX_SAY_STT_PORT %d: want 1..65535", c.STTPort)
-	}
-	sttIdleSecs, err := intVar(get("OX_SAY_STT_IDLE_STOP_SECS"), DefaultSTTIdleStop)
-	if err != nil {
-		return nil, fmt.Errorf("config: OX_SAY_STT_IDLE_STOP_SECS: %w", err)
-	}
-	if sttIdleSecs < 1 {
-		return nil, fmt.Errorf("config: OX_SAY_STT_IDLE_STOP_SECS %d: want >= 1", sttIdleSecs)
-	}
-	c.STTIdleStop = time.Duration(sttIdleSecs) * time.Second
 
 	c.Host, c.Port, err = splitLoopbackAddr(c.Addr)
 	if err != nil {
@@ -400,6 +348,74 @@ func (c *Config) DiarModelsDir() string { return filepath.Join(c.Home, "models",
 func (c *Config) DiarModelsReady() bool {
 	raw, err := os.ReadFile(filepath.Join(c.DiarModelsDir(), "speaker-diarization", ".fluidaudio-revision"))
 	return err == nil && strings.TrimSpace(string(raw)) == DiarModelsRevision
+}
+
+// loadSTT reads the speech-to-text keys: paths, device, budgets and the
+// resident server. Its port is checked against the other listeners by load.
+func loadSTT(c *Config, get func(string) string, engineDir string) error {
+	var err error
+	if c.STTBin = get("OX_SAY_STT_BIN"); c.STTBin == "" {
+		c.STTBin = filepath.Join(engineDir, "ox-stt")
+	}
+	if c.STTModel = get("OX_SAY_STT_MODEL"); c.STTModel == "" {
+		c.STTModel = filepath.Join(c.Home, "models", "ggml-parakeet-tdt-0.6b-v3-q8_0.bin")
+	}
+	if c.STTVADModel = get("OX_SAY_STT_VAD_MODEL"); c.STTVADModel == "" {
+		c.STTVADModel = filepath.Join(c.Home, "models", "ggml-silero-v5.1.2.bin")
+	}
+	if c.STTWhisperModel = get("OX_SAY_STT_WHISPER_MODEL"); c.STTWhisperModel == "" {
+		c.STTWhisperModel = filepath.Join(c.Home, "models", "ggml-large-v3-turbo.bin")
+	}
+	if c.STTGPU, err = resolveSTTGPU(get("OX_SAY_STT_GPU")); err != nil {
+		return err
+	}
+	if c.GPUMemory, err = resolveGPUMemory(get("OX_SAY_GPU_MEMORY")); err != nil {
+		return err
+	}
+	sttSecs, err := intVar(get("OX_SAY_STT_TIMEOUT_SECS"), DefaultSTTTimeout)
+	if err != nil {
+		return fmt.Errorf("config: OX_SAY_STT_TIMEOUT_SECS: %w", err)
+	}
+	if sttSecs < 1 || sttSecs > maxSTTSecs {
+		return fmt.Errorf("config: OX_SAY_STT_TIMEOUT_SECS %d: want 1..%d", sttSecs, maxSTTSecs)
+	}
+	c.STTTimeout = time.Duration(sttSecs) * time.Second
+	if c.STTMaxUploadMB, err = int64Var(get("OX_SAY_STT_MAX_UPLOAD_MB"), DefaultSTTMaxUploadMB); err != nil {
+		return fmt.Errorf("config: OX_SAY_STT_MAX_UPLOAD_MB: %w", err)
+	}
+	if c.STTMaxUploadMB < 1 || c.STTMaxUploadMB > maxSTTUploadMB {
+		return fmt.Errorf("config: OX_SAY_STT_MAX_UPLOAD_MB %d: want 1..%d", c.STTMaxUploadMB, maxSTTUploadMB)
+	}
+	audioSecs, err := intVar(get("OX_SAY_STT_MAX_AUDIO_SECS"), DefaultSTTMaxAudio)
+	if err != nil {
+		return fmt.Errorf("config: OX_SAY_STT_MAX_AUDIO_SECS: %w", err)
+	}
+	if audioSecs < 1 || audioSecs > maxSTTSecs {
+		return fmt.Errorf("config: OX_SAY_STT_MAX_AUDIO_SECS %d: want 1..%d", audioSecs, maxSTTSecs)
+	}
+	c.STTMaxAudio = time.Duration(audioSecs) * time.Second
+
+	c.STTServer = orDefault(get("OX_SAY_STT_SERVER"), "on")
+	switch c.STTServer {
+	case "on", "off":
+	default:
+		return fmt.Errorf("config: OX_SAY_STT_SERVER %q: want on|off", c.STTServer)
+	}
+	if c.STTPort, err = intVar(get("OX_SAY_STT_PORT"), DefaultSTTPort); err != nil {
+		return fmt.Errorf("config: OX_SAY_STT_PORT: %w", err)
+	}
+	if c.STTPort < 1 || c.STTPort > 65535 {
+		return fmt.Errorf("config: OX_SAY_STT_PORT %d: want 1..65535", c.STTPort)
+	}
+	sttIdleSecs, err := intVar(get("OX_SAY_STT_IDLE_STOP_SECS"), DefaultSTTIdleStop)
+	if err != nil {
+		return fmt.Errorf("config: OX_SAY_STT_IDLE_STOP_SECS: %w", err)
+	}
+	if sttIdleSecs < 1 {
+		return fmt.Errorf("config: OX_SAY_STT_IDLE_STOP_SECS %d: want >= 1", sttIdleSecs)
+	}
+	c.STTIdleStop = time.Duration(sttIdleSecs) * time.Second
+	return nil
 }
 
 // loadVoxCPM2 reads the quality-engine keys and the default TTS model. It
@@ -585,6 +601,15 @@ func isBundleHelpersDir(dir string) bool {
 		return false
 	}
 	return filepath.Ext(filepath.Base(filepath.Dir(filepath.Dir(dir)))) == ".app"
+}
+
+// resolveSTTGPU validates OX_SAY_STT_GPU; empty means auto.
+func resolveSTTGPU(v string) (string, error) {
+	switch v = orDefault(v, STTGPUAuto); v {
+	case STTGPUAuto, STTGPUOn, STTGPUOff:
+		return v, nil
+	}
+	return "", fmt.Errorf("config: OX_SAY_STT_GPU %q: want %s|%s|%s", v, STTGPUAuto, STTGPUOn, STTGPUOff)
 }
 
 // resolveGPUMemory validates OX_SAY_GPU_MEMORY and resolves auto (the

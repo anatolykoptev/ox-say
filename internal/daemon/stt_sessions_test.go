@@ -20,6 +20,7 @@ import (
 	"github.com/anatolykoptev/go-mcpserver"
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
+	"github.com/anatolykoptev/ox-say/internal/testutil"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -692,5 +693,36 @@ func TestStatusSTTVADModel(t *testing.T) {
 	}
 	if cfg["stt_vad_model"] != vad {
 		t.Fatalf("stt_vad_model = %v, want %s", cfg["stt_vad_model"], vad)
+	}
+}
+
+// /status reports every engine path the daemon will spawn (#171), so a
+// user-set OX_SAY_*_BIN that defeats the bundle's co-versioning is visible.
+// Mutation: drop one of the "stt_bin", "voxcpm2_bin", "notes_bin", "diar_bin"
+// keys from the Status config map in service.go (Status, the Config literal)
+// -> RED (that key is nil).
+func TestStatusReportsAllEnginePaths(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	want := map[string]string{
+		"engine_bin":  filepath.Join(dir, "e", "tts-server"),
+		"stt_bin":     filepath.Join(dir, "e", "ox-stt"),
+		"voxcpm2_bin": filepath.Join(dir, "e", "audiocpp_server"),
+		"notes_bin":   filepath.Join(dir, "e", "ox-llm"),
+		"diar_bin":    filepath.Join(dir, "e", "ox-diar"),
+	}
+	d := newTestDaemonSTT(t, dir, func(c *config.Config) {
+		c.EngineBin = want["engine_bin"]
+		c.STTBin = want["stt_bin"]
+		c.VoxCPM2Bin = want["voxcpm2_bin"]
+		c.NotesBin = want["notes_bin"]
+		c.DiarBin = want["diar_bin"]
+		c.NotesPort = testutil.FreePort(t)
+	}, nil, nil)
+	cfg := d.Status().Config
+	for key, path := range want {
+		if cfg[key] != path {
+			t.Errorf("status config[%q] = %v, want %s", key, cfg[key], path)
+		}
 	}
 }

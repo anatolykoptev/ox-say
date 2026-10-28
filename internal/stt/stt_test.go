@@ -163,14 +163,14 @@ func TestTranscribeHappyPath(t *testing.T) {
 }
 
 // fakeLease implements Options.GPULease for the device-choice tests:
-// held gates TryAs/WaitAs like the real token; tries/waits count
-// acquisitions so a mode that must not touch the lease is provable.
+// held gates TryAs like the real token; tries counts acquisitions so a mode
+// that must not touch the lease is provable. The GPULease interface has no
+// wait, so a fake that could wait would only make "never waits" vacuous.
 // Release mirrors the real lease's contract: freeing a free token is a
 // bug and panics, so a double release in Transcribe fails the test.
 type fakeLease struct {
 	held  atomic.Bool
 	tries atomic.Int32
-	waits atomic.Int32
 }
 
 // Try is TryAs with an empty owner — tests keep the untagged call.
@@ -179,21 +179,6 @@ func (f *fakeLease) Try() bool { return f.TryAs("") }
 func (f *fakeLease) TryAs(string) bool {
 	f.tries.Add(1)
 	return f.held.CompareAndSwap(false, true)
-}
-
-// Wait is WaitAs with an empty owner.
-func (f *fakeLease) Wait(ctx context.Context) error { return f.WaitAs(ctx, "") }
-
-func (f *fakeLease) WaitAs(ctx context.Context, _ string) error {
-	f.waits.Add(1)
-	for !f.held.CompareAndSwap(false, true) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Millisecond):
-		}
-	}
-	return nil
 }
 
 func (f *fakeLease) Release() {
@@ -248,11 +233,8 @@ func TestDeviceChoice(t *testing.T) {
 		if got := hasArg(args, "-ng"); got != c.wantNG {
 			t.Fatalf("%s: -ng present = %v, want %v (argv %v)", c.name, got, c.wantNG, args)
 		}
-		if c.gpu == "off" && (lease.tries.Load() != 0 || lease.waits.Load() != 0) {
-			t.Fatalf("%s: off touched the lease (tries=%d waits=%d)", c.name, lease.tries.Load(), lease.waits.Load())
-		}
-		if lease.waits.Load() != 0 {
-			t.Fatalf("%s: a transcription waited for the lease", c.name)
+		if c.gpu == "off" && lease.tries.Load() != 0 {
+			t.Fatalf("%s: off touched the lease (tries=%d)", c.name, lease.tries.Load())
 		}
 	}
 }
@@ -332,8 +314,8 @@ func TestGPUOnLiftsTheLengthCap(t *testing.T) {
 	if args := runs[len(runs)-1].args; hasArg(args, "-ng") {
 		t.Fatalf("on-mode run on audio past %s went with -ng (argv %v)", autoGPUMaxAudio, args)
 	}
-	if lease.tries.Load() != 1 || lease.waits.Load() != 0 {
-		t.Fatalf("on-mode run: tries=%d waits=%d, want one try and no wait", lease.tries.Load(), lease.waits.Load())
+	if lease.tries.Load() != 1 {
+		t.Fatalf("on-mode run: tries=%d, want exactly one try", lease.tries.Load())
 	}
 	if lease.held.Load() {
 		t.Fatal("lease still held after the run")
@@ -363,7 +345,7 @@ func TestAutoGPUSkipsLongAudio(t *testing.T) {
 	if args := runs[len(runs)-1].args; !hasArg(args, "-ng") {
 		t.Fatalf("auto run on audio past %s went without -ng (argv %v)", autoGPUMaxAudio, args)
 	}
-	if n := lease.tries.Load() + lease.waits.Load(); n != 0 {
+	if n := lease.tries.Load(); n != 0 {
 		t.Fatalf("long auto run touched the lease (%d acquisitions)", n)
 	}
 
