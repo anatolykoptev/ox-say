@@ -89,16 +89,32 @@ private func os(_ major: Int, _ minor: Int = 0) -> OperatingSystemVersion {
         #expect(c.postProcessing.exclusiveSegments)
     }
 
-    @Test func theGPUIsLeftToParakeetOnAppleSilicon() {
-        #expect(Pinned.computeUnits(arm64: true) == .cpuAndNeuralEngine)
-        #expect(Pinned.computeUnits(arm64: false) == .cpuOnly)
+    @Test func theGPUIsLeftToParakeet() {
+        #expect(Pinned.computeUnits == .cpuAndNeuralEngine)
+        #expect(Pinned.mlConfiguration().computeUnits == .cpuAndNeuralEngine)
     }
 
-    /// main.swift builds the Core ML configuration through `Pinned.mlConfiguration`, so this is the call it makes.
-    @Test func theCoreMLConfigurationCarriesThePinnedComputeUnits() {
-        #expect(Pinned.mlConfiguration(arm64: true).computeUnits == .cpuAndNeuralEngine)
-        #expect(Pinned.mlConfiguration(arm64: false).computeUnits == .cpuOnly)
-        #expect(Pinned.mlConfiguration().computeUnits == Pinned.computeUnits(arm64: Pinned.runsOnArm64))
+    /// main.swift loads the models through `Pinned.loadModels(from:)`, which hands the loader its configuration.
+    /// A recording loader stands in for `OfflineDiarizerModels.load`, so this sees what is PASSED to it, not what is
+    /// logged: a loader called with a default configuration (or none) turns this red.
+    @Test func theLoaderIsHandedThePinnedComputeUnits() async throws {
+        var seen: [(URL, MLComputeUnits)] = []
+        let dir = URL(fileURLWithPath: "/models", isDirectory: true)
+        let marker = try await Pinned.loadModels(from: dir, using: { url, ml in
+            seen.append((url, ml.computeUnits))
+            return 42
+        })
+        #expect(marker == 42, "the loader's result is returned")
+        #expect(seen.count == 1)
+        #expect(seen.first?.0 == dir)
+        #expect(seen.first?.1 == .cpuAndNeuralEngine)
+    }
+
+    @Test func aLoaderFailureIsNotSwallowed() async {
+        struct Boom: Error {}
+        await #expect(throws: Boom.self) {
+            try await Pinned.loadModels(from: URL(fileURLWithPath: "/m"), using: { (_: URL, _: MLModelConfiguration) async throws -> Int in throw Boom() })
+        }
     }
 
     /// The name main.swift logs and test_cli.py reads back from the real binary's stderr.

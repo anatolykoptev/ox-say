@@ -11,7 +11,6 @@ import argparse
 import json
 import math
 import os
-import platform
 import re
 import struct
 import subprocess
@@ -162,8 +161,7 @@ class Contract(unittest.TestCase):
         found = re.search(r"Segmentation timings: windows=(\d+)", r.stderr)
         self.assertIsNotNone(found, "FluidAudio no longer logs its window count: read it from somewhere else\n" + r.stderr[-400:])
         self.assertEqual(int(found.group(1)), math.ceil(seconds), "window step is not the pinned 0.1 of the 10 s window")
-        want = "cpuAndNeuralEngine" if platform.machine() == "arm64" else "cpuOnly"
-        self.assertIn(f"compute units {want}\n", r.stderr)
+        self.assertIn("compute units cpuAndNeuralEngine\n", r.stderr)
 
     # An output path in a directory that does not exist is a failure before the run, not after twenty seconds of it.
     # Mutation: Sources/ox-diar/main.swift, delete the `guard FileManager.default.fileExists(atPath: outDir` check -> RED.
@@ -180,15 +178,22 @@ class Contract(unittest.TestCase):
     # `fluidaudio-streaming-*.raw` file in the user's temporary directory (about 230 MB per hour) and only a `defer`
     # removes it, so a killed process leaves someone's call outside the meeting directory and outside retention.
     # ox-diar reads the channel into memory instead. The test runs it to the end, and again with a SIGKILL a second in,
-    # and looks for new `fluidaudio*` files in that directory. (Foundation on macOS takes that directory from
-    # `confstr` (`getconf DARWIN_USER_TEMP_DIR`), not from $TMPDIR, so pointing TMPDIR elsewhere would protect nothing.)
+    # and looks for ANY new entry in that directory, whatever its name (a rename of FluidAudio's stream file, or
+    # another library's copy, must not slip past a name filter), and in $TMPDIR when that is a different directory.
+    # (Foundation on macOS takes its temporary directory from `confstr` (`getconf DARWIN_USER_TEMP_DIR`), not from
+    # $TMPDIR, so pointing TMPDIR elsewhere would protect nothing; both are watched.) Another process creating a file
+    # there during the run would fail this test: run it on a quiet machine, and allow-list a name only with evidence
+    # of which library writes it and that it holds no audio.
     # Mutation: Sources/ox-diar/main.swift, write the samples to a WAV beside the output and replace
     # `manager.process(audio: samples)` with `manager.process(thatURL)` -> RED (the killed run leaves its stream file).
     def test_no_audio_reaches_the_temporary_directory(self):
         if not CLIP:
             self.skipTest("no --clip")
         tmp = subprocess.run(["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True, check=True).stdout.strip()
-        mine = lambda: {n for n in os.listdir(tmp) if n.startswith("fluidaudio")}
+        watched = {os.path.realpath(tmp)}
+        if os.environ.get("TMPDIR"):
+            watched.add(os.path.realpath(os.environ["TMPDIR"]))
+        mine = lambda: {os.path.join(d, n) for d in watched for n in os.listdir(d)}
         before = mine()
         pcm = self.clip_pcm()
         env = dict(os.environ)
@@ -205,7 +210,7 @@ class Contract(unittest.TestCase):
                     proc.wait()
                     break
                 time.sleep(0.005)
-            self.assertEqual(seen | (mine() - before), set(), f"ox-diar wrote audio to {tmp} (kill_after={kill_after})")
+            self.assertEqual(seen | (mine() - before), set(), f"ox-diar left new files in {sorted(watched)} (kill_after={kill_after})")
 
 
 if __name__ == "__main__":
