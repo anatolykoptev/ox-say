@@ -366,7 +366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         active = nil
         let outcome = ShortcutRegistration.run(
             plan: plan, choices: Shortcut.allCases.map(choice), previous: previous,
-            attempt: { [weak self] index in
+            attempt: { [weak self] (index: Int) -> HotKey? in
                 let key = Shortcut.allCases[index]
                 guard let candidate = HotKey(keyCode: key.keyCode, modifiers: key.modifiers) else { return nil }
                 candidate.onDown = { self?.controller.keyDown() }
