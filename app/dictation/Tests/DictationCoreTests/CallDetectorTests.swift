@@ -535,6 +535,78 @@ final class CallDetectorTests: XCTestCase {
         XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(20), call: "zoom", themActive: false, recording: nil, bundleID: "us.zoom.xos"), .nothing)
     }
 
+    /// #241: the user's stop belongs to ITS episode. Zoom recorded by hand and stopped, a Meet tab comes and goes (the
+    /// episode key flips), Zoom is back: Zoom is not offered or started again.
+    /// Mutation: CallTracker.observe, delete `if let key { announcedKeys.insert(key) }` in the `recording != nil`
+    /// branch -> RED.
+    func testAUserStopSurvivesAFlipToAnotherCallAndBack() {
+        var tr = CallTracker()
+        let zoom = "us.zoom.xos", chrome = "com.google.Chrome"
+        _ = tr.observe(now: t0, call: "zoom", themActive: true, recording: .manual, bundleID: zoom)
+        _ = tr.observe(now: t0.addingTimeInterval(30), call: "zoom", themActive: true, recording: .manual, bundleID: zoom)
+        // the user stops it; the call goes on
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(40), call: "zoom", themActive: true, recording: nil, bundleID: zoom), .nothing)
+        // another call app takes over, then goes (the episode key flips twice)
+        _ = tr.observe(now: t0.addingTimeInterval(50), call: "meet", themActive: false, recording: nil, bundleID: chrome)
+        XCTAssertEqual(tr.episodeKey, "meet|com.google.Chrome")
+        _ = tr.observe(now: t0.addingTimeInterval(60), call: "zoom", themActive: true, recording: nil, bundleID: zoom)
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(80), call: "zoom", themActive: true, recording: nil, bundleID: zoom), .nothing,
+                       "the stopped call is not started again because another call came and went")
+    }
+
+    // MARK: a "Don't record" app does not hide an "Ask" app (#270)
+
+    /// Two call apps live, one set to "Don't record": the other one is the call that counts, in either order, so its
+    /// offer is not swallowed.
+    /// Mutation: CallDetector.detect, delete the `lRank != rRank` line of the selection -> RED.
+    func testAnIgnoredAppDoesNotHideAnAskApp() {
+        let zoom = MicUser(bundleID: "us.zoom.xos", pid: 1)       // would win: it starts by itself
+        let slack = MicUser(bundleID: "com.tinyspeck.slackmacgap", pid: 2)
+        for users in [[zoom, slack], [slack, zoom]] {
+            let d = CallDetector.detect(of: users, tab: { _ in .unreadable }, mode: { $0 == "zoom" ? .never : CallPolicy.defaultMode($0) })
+            XCTAssertEqual(d.call?.source, "slack", "zoom is 'Don't record'")
+        }
+        // nothing else live: the ignored call is still the call (the tracker keeps its episode)
+        XCTAssertEqual(CallDetector.detect(of: [zoom], tab: { _ in .unreadable }, mode: { _ in .never }).call?.source, "zoom")
+        // no ignores: the old order
+        XCTAssertEqual(CallDetector.detect(of: [slack, zoom], tab: { _ in .unreadable }).call?.source, "zoom")
+    }
+
+    /// The same through the watch round the app polls: the ignored app does not set the episode, so Slack is offered.
+    /// Mutation: CallWatch.observe, pass the default `mode` instead of its own to `CallDetector.detect` -> RED.
+    func testTheWatchRoundPrefersTheNonIgnoredHolder() {
+        var watch = CallWatch()
+        let users = [MicUser(bundleID: "us.zoom.xos", pid: 1), MicUser(bundleID: "com.tinyspeck.slackmacgap", pid: 2)]
+        func round(_ s: TimeInterval) -> CallWatch.Outcome {
+            watch.observe(now: t0.addingTimeInterval(s), users: users, tab: { _ in .unreadable }, themActive: false, recording: nil,
+                          mode: { $0 == "zoom" ? .never : CallPolicy.defaultMode($0) })
+        }
+        XCTAssertEqual(round(0).call?.source, "slack")
+        XCTAssertEqual(round(4).action, .callStarted(source: "slack"))
+    }
+
+    /// The order follows the user's pick, not the static auto-start list: Slack set to Record is not hidden by Zoom,
+    /// which merely defaults to it; Ask comes after Record; two of a kind keep the stable bundle-id order.
+    /// Mutation: CallDetector.detect, order by `autoStartSources.contains(…)` instead of `rank(mode(…))` -> RED.
+    func testHoldersAreOrderedByTheUsersPick() {
+        let zoom = MicUser(bundleID: "us.zoom.xos", pid: 1)
+        let slack = MicUser(bundleID: "com.tinyspeck.slackmacgap", pid: 2)
+        let facetime = MicUser(bundleID: "com.apple.FaceTime", pid: 3)
+        func pick(_ users: [MicUser], _ modes: [String: CallAppMode]) -> String? {
+            CallDetector.detect(of: users, tab: { _ in .unreadable }, mode: { modes[$0] ?? CallPolicy.defaultMode($0) }).call?.source
+        }
+        for users in [[zoom, slack], [slack, zoom]] {
+            XCTAssertEqual(pick(users, ["slack": .auto, "zoom": .ask]), "slack", "Record beats Ask even when Zoom defaults to auto")
+            XCTAssertEqual(pick(users, ["slack": .auto]), "slack", "tie of Record: the lowest bundle id, Slack")
+            XCTAssertEqual(pick(users, ["zoom": .auto, "slack": .never]), "zoom")
+            XCTAssertEqual(pick(users, [:]), "zoom", "defaults: Zoom auto, Slack ask")
+        }
+        for users in [[facetime, slack], [slack, facetime]] {
+            XCTAssertEqual(pick(users, ["facetime": .never]), "slack")
+            XCTAssertEqual(pick(users, ["slack": .never, "facetime": .never]), "facetime", "all ignored: the stable pick")
+        }
+    }
+
     // MARK: a browser read that never completes (#251)
 
     /// A browser that holds the microphone while its tab cannot be read for several polls in a row — an unanswered

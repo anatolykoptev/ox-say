@@ -17,7 +17,11 @@ import os
 /// running: CoreAudio allows several process taps and private aggregates at once (each is its own object, and the
 /// IO procs share this class's serial queue), so a failed rebuild leaves the working tap in place instead of
 /// recording nothing. For the instant both run, the same audio arrives twice; the channel writer drops the head of
-/// a chunk that lies before what is written, so the overlap does not reach the file.
+/// a chunk that lies before what is written (any overlap, however small), so it does not reach the file.
+///
+/// Starting is asynchronous (#266): the look-up of this app's own audio process object waits up to 150 ms for the
+/// object to appear, and that wait must not block the main thread. `start(…completion:)` does the work on a serial
+/// control queue and answers on the main thread; `stop()` is synchronous and wins over a start still in flight.
 @available(macOS 14.2, *)
 final class SystemAudioTap {
     struct Failure: Error, CustomStringConvertible {
@@ -50,7 +54,20 @@ final class SystemAudioTap {
     /// Samples at 16 kHz and the host time (nanoseconds, `HostClock`) of the first one.
     var onSamples: (([Float], UInt64) -> Void)?
 
+    /// What a start came to. `stopped`: `stop()` ran while it was in flight, the tap it built was torn down again.
+    enum StartOutcome {
+        case started
+        case stopped
+        case failed(Error)
+    }
+
     private var current: Instance?
+    /// Guards `current` and `epoch`: starts run on `control`, `stop()` and the readers on other threads.
+    private let stateLock = NSLock()
+    /// Moved on by `stop()`: a start that began before it must not install its tap afterwards.
+    private var epoch = 0
+    /// Starts run one at a time and never on the IO queue (they sleep while looking for this app's process object).
+    private let control = DispatchQueue(label: "io.github.anatolykoptev.ox-say.dictation.tap.control", qos: .userInitiated)
     private let queue = DispatchQueue(label: "io.github.anatolykoptev.ox-say.dictation.tap", qos: .userInitiated)
     private let log = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "meeting")
     private let counterLock = NSLock()
@@ -62,15 +79,33 @@ final class SystemAudioTap {
     /// Counters for the end-of-meeting line (#251): conversions that failed or came out empty, buffers that could not
     /// even be wrapped, and starts where ox-say's own process object could not be found for the exclusion.
     var counters: (failed: Int, empty: Int, nilBuffers: Int, exclusionMissing: Int) {
-        let live = current?.converter
+        let live = stateLock.withLock { current?.converter }
         return counterLock.withLock {
             (retiredFailed + (live?.failedConversions ?? 0), retiredEmpty + (live?.emptyConversions ?? 0), nilBuffers, exclusionMissing)
         }
     }
 
+    /// A tap is running (a failed rebuild leaves the old one in place, so this stays true through it).
+    var isRunning: Bool { stateLock.withLock { current != nil } }
+
+    /// Starts (or rebuilds) the tap off the main thread; `completion` runs on the main thread.
     /// `withMainSubDevice`: bind the aggregate device to the current default
     /// output device, the layout the AudioCap reference app uses and P0a measured as working.
-    func start(excludingPIDs pids: [pid_t], withMainSubDevice: Bool) throws {
+    func start(excludingPIDs pids: [pid_t], withMainSubDevice: Bool, completion: @escaping (StartOutcome) -> Void) {
+        let requested = stateLock.withLock { epoch }
+        control.async { [self] in
+            let outcome: StartOutcome
+            do {
+                outcome = try startNow(excludingPIDs: pids, withMainSubDevice: withMainSubDevice, epoch: requested) ? .started : .stopped
+            } catch {
+                outcome = .failed(error)
+            }
+            DispatchQueue.main.async { completion(outcome) }
+        }
+    }
+
+    /// Blocking: runs on `control`. False when `stop()` ran meanwhile.
+    private func startNow(excludingPIDs pids: [pid_t], withMainSubDevice: Bool, epoch requested: Int) throws -> Bool {
         var excluded: [AudioObjectID] = []
         for pid in pids {
             // The process object of this very app appears once it uses audio; give it a moment before giving up.
@@ -83,15 +118,24 @@ final class SystemAudioTap {
             }
         }
         let fresh = try build(excluded: excluded, withMainSubDevice: withMainSubDevice)
-        let old = current
-        current = fresh
-        if let old {
+        let swap: (old: Instance?, stale: Bool) = stateLock.withLock {
+            if epoch != requested { return (nil, true) }
+            let old = current
+            current = fresh
+            return (old, false)
+        }
+        if swap.stale {
+            fresh.teardown()
+            return false
+        }
+        if let old = swap.old {
             counterLock.withLock {
                 retiredFailed += old.converter.failedConversions
                 retiredEmpty += old.converter.emptyConversions
             }
             old.teardown()
         }
+        return true
     }
 
     private func build(excluded: [AudioObjectID], withMainSubDevice: Bool) throws -> Instance {
@@ -158,14 +202,18 @@ final class SystemAudioTap {
     }
 
     func stop() {
-        current?.teardown()
-        if let old = current {
+        let old: Instance? = stateLock.withLock {
+            epoch += 1
+            defer { current = nil }
+            return current
+        }
+        old?.teardown()
+        if let old {
             counterLock.withLock {
                 retiredFailed += old.converter.failedConversions
                 retiredEmpty += old.converter.emptyConversions
             }
         }
-        current = nil
     }
 
     private static func processObject(for pid: pid_t) -> AudioObjectID? {

@@ -79,7 +79,12 @@ public enum CallDetector {
     /// (once) only when it holds the microphone. When several calls are live, one
     /// that starts a recording by itself wins over one that only asks, then the
     /// lowest bundle id: the answer does not depend on the order of the process list.
-    public static func detect(of users: [MicUser], tab: (String) -> BrowserTabURL.Result) -> Detection {
+    /// `mode`: the user's pick per source (`CallPolicy.mode`). Holders are ordered by it — Record, then Ask, then
+    /// "Don't record" last (#270) — so a source set to Record is not hidden by one that merely defaults to it, and a
+    /// "Don't record" app never hides another call. It still counts when nothing else is live (the tracker keeps its
+    /// episode).
+    public static func detect(of users: [MicUser], tab: (String) -> BrowserTabURL.Result,
+                              mode: (String) -> CallAppMode = CallPolicy.defaultMode) -> Detection {
         var found: [Detection.Call] = []
         var asked: [String: BrowserTabURL.Result] = [:]
         var denied = false
@@ -101,12 +106,20 @@ public enum CallDetector {
             }
         }
         let best = found.min { l, r in
-            let lAuto = autoStartSources.contains(l.source), rAuto = autoStartSources.contains(r.source)
-            if lAuto != rAuto { return lAuto }
+            let lRank = rank(mode(l.source)), rRank = rank(mode(r.source))
+            if lRank != rRank { return lRank < rRank }
             if l.bundleID != r.bundleID { return l.bundleID < r.bundleID }
             return l.source < r.source
         }
         return Detection(call: best, browserDenied: best == nil && denied, browserUnreadable: best == nil && unreadable)
+    }
+
+    private static func rank(_ mode: CallAppMode) -> Int {
+        switch mode {
+        case .auto: return 0
+        case .ask: return 1
+        case .never: return 2
+        }
     }
 
     /// The call among the microphone users, or nil: its source name and the
@@ -356,14 +369,16 @@ public struct CallWatch {
 
     /// `tab` reads a browser's front page (BrowserTabURL.read in the app); the rest
     /// is what CallTracker.observe takes. `recording` is nil when no recording runs.
+    /// `mode`: the user's pick per source (see `CallDetector.detect`).
     public mutating func observe(now: Date, users: [MicUser], tab: (String) -> BrowserTabURL.Result,
-                                 themActive: Bool, recording: CallTracker.Origin?) -> Outcome {
+                                 themActive: Bool, recording: CallTracker.Origin?,
+                                 mode: (String) -> CallAppMode = CallPolicy.defaultMode) -> Outcome {
         var reads: [String: BrowserTabURL.Result] = [:]
         let detection = CallDetector.detect(of: users, tab: { id in
             let result = tab(id)
             reads[id] = result
             return result
-        })
+        }, mode: mode)
         var call = detection.call
         var heldOnly = false
         // A browser call goes on while that browser holds the microphone,

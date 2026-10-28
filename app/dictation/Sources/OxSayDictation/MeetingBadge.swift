@@ -108,20 +108,24 @@ final class MeetingBadge {
     private func layout(_ views: [NSView]) {
         stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
         views.forEach { stack.addArrangedSubview($0) }
-        resize()
+        resize(keepingPlace: false)
         panel.orderFrontRegardless()
     }
 
     /// Sizes the panel to what the stack holds now and centres it at the top of the
     /// screen. Called again whenever the content's width changes (the consent button
     /// hides, the clock outgrows its slot): a hidden arranged view drops out of the stack.
-    private func resize() {
+    /// `keepingPlace`: the badge is already on screen and only its width changed — it keeps its left edge instead of
+    /// re-centring, so the buttons stay under the pointer (#251). A new content is centred.
+    private func resize(keepingPlace: Bool) {
         panel.contentView?.layoutSubtreeIfNeeded()
         let size = stack.fittingSize
+        let left = keepingPlace && panel.isVisible ? Double(panel.frame.minX) : nil
         panel.setContentSize(NSSize(width: max(size.width, 220), height: 36))
         if let screen = NSScreen.main {
             let frame = screen.visibleFrame
-            panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.maxY - panel.frame.height - 8))
+            let x = BadgePlacement.originX(anchoredLeft: left, width: Double(panel.frame.width), screenMidX: Double(frame.midX))
+            panel.setFrameOrigin(NSPoint(x: x, y: frame.maxY - panel.frame.height - 8))
         }
     }
 
@@ -180,7 +184,7 @@ final class MeetingBadge {
                 changed = true
             }
         }
-        if changed { resize() }
+        if changed { resize(keepingPlace: true) }
     }
 
     func hide() {

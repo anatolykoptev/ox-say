@@ -129,6 +129,26 @@ final class ReacquireTests: XCTestCase {
     }
 
     /// The first failure of a streak is told; the retries are silent; a recovery is told; the next streak is told again.
+    /// #266: a rebuild that failed while the OLD tap keeps recording does not tell "system audio lost", and its
+    /// later success does not tell "recovered" either.
+    /// Mutation: Reacquire.failed, drop `sourceLost &&` from `notify` -> RED.
+    func testAFailureThatKeepsTheSourceIsNotToldNorItsRecovery() {
+        var r = Reacquire()
+        XCTAssertEqual(r.failed(sourceLost: false), Reacquire.Step(delay: 0.4, notify: false))
+        XCTAssertEqual(r.failed(sourceLost: false), Reacquire.Step(delay: 1, notify: false))
+        XCTAssertFalse(r.succeeded(), "nothing was told, so there is no recovery to tell")
+    }
+
+    /// Mutation: Reacquire.succeeded, `return told` -> `return attempts > 0` -> RED.
+    func testAStreakThatWasToldIsRecoveredToldOnce() {
+        var r = Reacquire()
+        XCTAssertTrue(r.failed(sourceLost: true).notify)
+        XCTAssertFalse(r.failed(sourceLost: false).notify)
+        XCTAssertTrue(r.succeeded())
+        XCTAssertFalse(r.succeeded())
+        XCTAssertTrue(r.failed(sourceLost: true).notify, "a later streak is told again")
+    }
+
     /// Mutation: Reacquire.failed, `notify: attempts == 0` -> `notify: true` -> RED.
     func testNoticesFollowTheStreak() {
         var r = Reacquire()
@@ -141,6 +161,73 @@ final class ReacquireTests: XCTestCase {
         XCTAssertEqual(r.failed().delay, 1)
         _ = r.succeeded()
         XCTAssertEqual(r.failed().delay, 0.4, "the backoff starts over after a recovery")
+    }
+}
+
+/// #266: the old tap is a source only while it delivers.
+final class TapLossTests: XCTestCase {
+    /// The rebuild keeps failing on the schedule `Reacquire` gives; `silence(t)` is how long the old tap has been quiet.
+    /// Returns the elapsed time at which the loss was told, nil if never within `failures` failures.
+    private func toldAt(failures: Int, silence: (TimeInterval) -> TimeInterval?) -> TimeInterval? {
+        var r = Reacquire()
+        var t: TimeInterval = 0
+        for _ in 0..<failures {
+            let lost = TapLoss.isLost(hasTap: true, sinceLastBuffer: silence(t), consecutiveFailures: r.failures + 1)
+            let step = r.failed(sourceLost: lost)
+            if step.notify { return t }
+            t += step.delay
+        }
+        return nil
+    }
+
+    /// Mutation: TapLoss.isLost, `return silent >= silentAfter` -> `return false` -> RED.
+    func testAnOldTapThatStillDeliversIsNotAnnounced() {
+        XCTAssertNil(toldAt(failures: 4) { _ in 0.01 }, "four failures while buffers keep coming: nothing told")
+        XCTAssertFalse(TapLoss.isLost(hasTap: true, sinceLastBuffer: 0.5, consecutiveFailures: 1))
+    }
+
+    /// An output switch left the old tap silent: the loss is told within the bound, at the fourth failure (3.4 s into
+    /// the streak), not never. Mutation: TapLoss.isLost, delete the `silent >= silentAfter` rule and raise failuresBeforeTelling to 99
+    /// -> RED.
+    func testASilentOldTapAndAFailingRebuildAreAnnouncedWithinTheBound() {
+        // quiet since t = 0 (the switch)
+        let at = toldAt(failures: 6) { $0 }
+        XCTAssertEqual(at, 3.4, "told at the fourth failure, the first past silentAfter")
+        XCTAssertLessThanOrEqual(at ?? 99, TapLoss.silentAfter + 1)
+        // quiet for 10 s already when the first rebuild fails: told at once
+        XCTAssertEqual(toldAt(failures: 3) { $0 + 10 }, 0)
+        XCTAssertTrue(TapLoss.isLost(hasTap: true, sinceLastBuffer: nil, consecutiveFailures: 1), "never delivered")
+    }
+
+    /// Mutation: TapLoss.isLost, delete the `consecutiveFailures >= failuresBeforeTelling` rule -> RED.
+    func testManyFailedRebuildsAreToldWhateverTheOldTapDoes() {
+        XCTAssertEqual(toldAt(failures: 6) { _ in 0.01 }, 7.4, "fifth failure, buffers still arriving")
+        XCTAssertTrue(TapLoss.isLost(hasTap: false, sinceLastBuffer: 0, consecutiveFailures: 1), "no tap at all")
+    }
+
+    /// "Recovered" is told only after a told loss.
+    /// Mutation: Reacquire.succeeded, `return told` -> `return attempts > 0` -> RED.
+    func testRecoveryIsToldOnlyAfterAToldLoss() {
+        var quiet = Reacquire()
+        _ = quiet.failed(sourceLost: TapLoss.isLost(hasTap: true, sinceLastBuffer: 0.1, consecutiveFailures: 1))
+        XCTAssertFalse(quiet.succeeded(), "the old tap never stopped: nothing to recover from")
+        var lostOne = Reacquire()
+        _ = lostOne.failed(sourceLost: TapLoss.isLost(hasTap: true, sinceLastBuffer: 5, consecutiveFailures: 1))
+        XCTAssertTrue(lostOne.succeeded())
+    }
+}
+
+final class GenerationTests: XCTestCase {
+    /// start 1 is slow; stop; start 2; start 1's answer must be recognised as stale.
+    /// Mutation: Generation.isCurrent, `token == value` -> `true` -> RED.
+    func testAnAnswerForAnEarlierRecordingIsStale() {
+        var g = Generation()
+        let first = g.advance()
+        XCTAssertTrue(g.isCurrent(first))
+        g.advance() // stop
+        let second = g.advance() // start 2
+        XCTAssertFalse(g.isCurrent(first))
+        XCTAssertTrue(g.isCurrent(second))
     }
 }
 

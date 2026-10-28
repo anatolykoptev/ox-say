@@ -76,21 +76,62 @@ public struct Reacquire {
     }
 
     private var attempts = 0
+    private var told = false
+
+    /// Failures in the current streak (0 after a success).
+    public var failures: Int { attempts }
 
     public init() {}
 
-    public mutating func failed() -> Step {
+    /// `sourceLost`: false when the failed restart left the old source recording (a tap rebuild that failed while the
+    /// old tap goes on). That failure is retried but not told, and a streak that was never told has no recovery to tell.
+    public mutating func failed(sourceLost: Bool = true) -> Step {
         let delay = attempts < Self.delays.count ? Self.delays[attempts] : Self.steadyDelay
-        let step = Step(delay: delay, notify: attempts == 0)
+        let step = Step(delay: delay, notify: sourceLost && !told)
+        told = told || step.notify
         attempts += 1
         return step
     }
 
-    /// True when this success ends a streak of failures (the recovery is told).
+    /// True when this success ends a streak of failures that was told (the recovery is told).
     public mutating func succeeded() -> Bool {
-        defer { attempts = 0 }
-        return attempts > 0
+        defer { attempts = 0; told = false }
+        return told
     }
+}
+
+/// Whether a failed tap rebuild means the system audio is lost (#266). The old tap is only a source while it DELIVERS:
+/// after an output switch it stays as an object but may be silent, and the far side then lands in the file as padding.
+/// So a failed rebuild is told when no tap exists, when the tap has delivered no buffer for `silentAfter`, or when
+/// `failuresBeforeTelling` rebuilds in a row failed whatever the old tap does.
+public enum TapLoss {
+    /// A running tap delivers a buffer every ~10 ms (zeros included), so 3 s without one is a dead tap and, at 16 kHz,
+    /// a 3 s hole in the far side: long enough to ignore a device settling, short enough to say it during the call.
+    public static let silentAfter: TimeInterval = 3
+    /// Failures land at 0, 0.4, 1.4, 3.4 and 7.4 s of a streak (`Reacquire` delays). A silent old tap is told at the
+    /// fourth (3.4 s, past `silentAfter`); this backstop is the fifth, 7.4 s in, for an old tap that keeps handing
+    /// out buffers (zeros from a device that is gone count as buffers) while the rebuild never succeeds: a device that
+    /// has not come back after seven seconds is not settling.
+    public static let failuresBeforeTelling = 5
+
+    /// `sinceLastBuffer`: seconds since the running tap last delivered a buffer, nil when it never has.
+    /// `consecutiveFailures`: failed rebuilds in this streak, the one being judged included.
+    public static func isLost(hasTap: Bool, sinceLastBuffer: TimeInterval?, consecutiveFailures: Int) -> Bool {
+        guard hasTap else { return true }
+        if consecutiveFailures >= failuresBeforeTelling { return true }
+        guard let silent = sinceLastBuffer else { return true }
+        return silent >= silentAfter
+    }
+}
+
+/// A counter that tells whether an answer belongs to the recording that asked: a completion that arrives after the
+/// recording ended (or after another began) is stale and is dropped (#266).
+public struct Generation {
+    public private(set) var value = 0
+    public init() {}
+    @discardableResult
+    public mutating func advance() -> Int { value += 1; return value }
+    public func isCurrent(_ token: Int) -> Bool { token == value }
 }
 
 /// Install a tap on an engine's input bus, start the engine. AVAudioEngine raises an uncatchable exception when a tap

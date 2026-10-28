@@ -8,14 +8,22 @@ public enum OutputRoute {
     /// Names that say the device is worn on the head or sits in the ear. A Bluetooth
     /// output carries no such hint in its transport type — JBL, Jabra Speak, Poly
     /// Sync, HomePod and a car are all "blue" — so only a name can vouch for it.
-    static let headphoneWords = ["airpods", "beats", "buds", "earbuds", "headphone", "headset", "earphone"]
+    ///
+    /// Added for en/ru/de (#241). Sources: Bose "QuietComfort" is headphones and earbuds only (Wikipedia, Bose
+    /// Corporation); Anker's Soundcore worn lines are Liberty, Life (incl. Life Q), P and Space, its speakers Flare,
+    /// Rave, Boom, Motion (Wikipedia, Anker Innovations; bare "soundcore" is therefore NOT a headphone word); Jabra
+    /// Elite is the earbud/headphone line, Speak the speakerphone line; the Russian and German words for headphones.
+    static let headphoneWords = ["airpods", "beats", "buds", "earbuds", "headphone", "headset", "earphone",
+                                 "quietcomfort", "jabra elite", "soundcore liberty", "soundcore life", "soundcore space",
+                                 "наушник", "гарнитур", "kopfhörer", "ohrhörer"]
     /// Beats makes speakers too.
     static let speakerWords = ["pill"]
     /// Model prefixes: Sony WH-/WF-, Bose QC.
     static let headphonePrefixes = ["wh-", "wf-", "qc"]
 
     static func namesHeadphones(_ name: String) -> Bool {
-        let lowered = name.lowercased()
+        // NFC first: macOS reports names decomposed ("o" + U+0308) as often as precomposed.
+        let lowered = name.precomposedStringWithCanonicalMapping.lowercased()
         if speakerWords.contains(where: lowered.contains) { return false }
         if headphoneWords.contains(where: lowered.contains) { return true }
         let tokens = lowered.split(whereSeparator: { $0 == " " || $0 == "\u{2019}" || $0 == "'" })
