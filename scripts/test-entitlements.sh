@@ -9,6 +9,8 @@
 # Mutations that must turn this RED:
 #   * make oxs_entitlements_check return 0 before the loops — every "fails" case
 #   * drop the plutil -p loop (the extra-key half) — "an extra key fails"
+#   * drop the key-count block (`got=$(plutil -convert xml1 ...` and its `if`) — "an empty
+#     key fails" and "a key with a newline fails" (plutil -p shows neither on one line)
 #   * drop the first loop (the missing-key half) — "a missing key fails"
 #   * compare `plutil -convert json` against the expected JSON string again —
 #     "the same keys in another order passes" is RED only where plutil lists
@@ -51,6 +53,10 @@ plist missing "$(k $A)"
 plist extra "$(k $A)$(k $B)$(k com.apple.security.cs.allow-jit)"
 plist notTrue "$(k $A)$(k $B false)"
 plist empty ""
+plist emptykey "$(k $A)$(k $B)<key></key><true/>"
+plist newlinekey "$(k $A)$(k $B)<key>x&#10;y</key><true/>"
+printf 'this is not a plist\n' >"$tmp/garbage.plist"
+: >"$tmp/zero.plist"
 printf '<?xml version="1.0"?><plist version="1.0"><array><true/></array></plist>\n' >"$tmp/array.plist"
 plutil -convert binary1 -o "$tmp/binary.plist" "$tmp/reordered.plist"
 
@@ -62,7 +68,11 @@ expect "an extra key fails" fail extra
 expect "a key that is false fails" fail notTrue
 expect "an empty dictionary fails" fail empty
 expect "a plist that is not a dictionary fails" fail array
-expect "a file that is not a plist fails" fail nonexistent
+expect "an empty key fails" fail emptykey
+expect "a key with a newline fails" fail newlinekey
+expect "a text file that is not a plist fails" fail garbage
+expect "a zero-byte file fails" fail zero
+expect "a file that does not exist fails" fail nonexistent
 
 # The failure names the key.
 oxs_entitlements_check "$tmp/extra.plist" 2>&1 | grep -q 'not allowed: com.apple.security.cs.allow-jit' &&

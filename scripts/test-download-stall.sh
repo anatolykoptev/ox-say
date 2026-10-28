@@ -3,7 +3,7 @@
 # listener that (a) sends headers and then nothing, (b) trickles below the stall limit, and (c) trickles
 # slowly but above it. (a) and (b) must end non-zero within a bound and say the download stalled; (c)
 # must finish its download. The stall window is shortened with OX_SAY_STALL_SECS so the test is quick;
-# the speed limit itself (1 KB/s) is the script's own. Compatible with /bin/bash 3.2; needs python3.
+# the speed limit itself (1 KB/s) is the script's own. Compatible with /bin/bash 3.2; needs python3 (fails without it; see below).
 #
 # Run: bash scripts/test-download-stall.sh
 #
@@ -12,6 +12,8 @@
 #     listener is never given up on -> "get.sh: a dead download ends" fails (killed by this test's bound)
 #   * fetch-models.sh: delete `--speed-limit 1024 --speed-time "$stall_secs"` -> same, "fetch-models.sh: ..." fails
 #   * get.sh: delete the `--speed-limit 1024 ...` from the SHA256SUMS curl -> "get.sh: a stalled SHA256SUMS" fails
+#   * delete the python3 `if ! command -v` block's `exit 1` lines (or make it `exit 0`) -> run with python3 hidden
+#     (PATH without it): "python3 not found" must exit 1, also with OX_SAY_TEST_SKIP_STALL=1 when CI is set
 #   * either script: raise --speed-limit above 2000 -> the healthy trickle (~2 KB/s) is killed -> "healthy" fails
 set -u
 
@@ -27,7 +29,20 @@ trap cleanup EXIT
 pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
-command -v python3 >/dev/null || { echo "python3 not found; skipping"; exit 0; }
+# The listener needs python3. A missing python3 must not turn the suite green unseen: it fails, with the reason, unless
+# OX_SAY_TEST_SKIP_STALL=1 says "skip" on purpose. In CI ($CI set) the skip is not honoured at all.
+if ! command -v python3 >/dev/null; then
+    if [ -n "${CI:-}" ]; then
+        echo "FAIL python3 not found in CI: the stall test needs it for its local listener; install it on the runner" >&2
+        exit 1
+    fi
+    if [ "${OX_SAY_TEST_SKIP_STALL:-0}" = 1 ]; then
+        echo "python3 not found; skipping (OX_SAY_TEST_SKIP_STALL=1)"
+        exit 0
+    fi
+    echo "FAIL python3 not found: the stall test needs it for its local listener. Install it, or set OX_SAY_TEST_SKIP_STALL=1 to skip it on a machine that has none (never honoured when CI is set)" >&2
+    exit 1
+fi
 
 # bounded SECS CMD...: run CMD, kill it after SECS; exit status 124 when it was killed.
 bounded() {
