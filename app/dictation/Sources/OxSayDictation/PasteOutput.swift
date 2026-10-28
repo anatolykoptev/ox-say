@@ -178,7 +178,7 @@ final class PasteOutput: TextOutput {
     /// The text stays on the clipboard and the notice says why it was not delivered.
     private func leaveOnClipboard(_ text: String, reason: ClipboardReason) -> Delivery {
         plain.writeText(text)
-        onNotice?(reason.message)
+        onNotice?(reason.message())
         return .clipboardOnly(reason: reason)
     }
 

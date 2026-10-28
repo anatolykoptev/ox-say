@@ -13,20 +13,26 @@ public enum SlowTranscription {
 
     /// - Parameter sttServerState: `stt_server.state` from the daemon's
     ///   /status, nil if it could not be read (or an older daemon without it).
-    public static func reason(sttServerState state: String?) -> String {
+    public static func reason(sttServerState state: String?, text: (L10nKey) -> String = { $0.text }) -> String {
         switch state {
         case "starting":
-            return "loading the speech model"
+            return text(.slowLoading)
         case "stopped", "crashed":
             // The daemon falls back to a slower path while the server is down.
-            return "the speech server is not running; using the slower path"
+            return text(.slowSlowerPath)
         case "off":
-            return "the speech server is off"
+            return text(.slowOff)
         case "ready":
-            return "decoding a long recording"
+            return text(.slowDecoding)
         default:
-            return "the daemon did not answer"
+            return text(.slowNoAnswer)
         }
+    }
+
+    /// The working pill after the first seconds: the elapsed time, and the reason when there is one.
+    public static func pillText(seconds: Int, reason: String?, text: (L10nKey) -> String = { $0.text }) -> String {
+        if let reason, !reason.isEmpty { return String(format: text(.pillTranscribingReason), String(seconds), reason) }
+        return String(format: text(.pillTranscribingSeconds), String(seconds))
     }
 
     /// The daemon's /status body → `stt_server.state`.

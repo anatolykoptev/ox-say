@@ -982,6 +982,20 @@ final class TranscriberControllerTests: XCTestCase {
         XCTAssertEqual(stateAtStart, .recording)
     }
 
+    /// A press that cannot record says so in the user's language (#333).
+    /// Mutation: DictationController.keyDown, `localize(.noticeRecordFailed)` -> a literal English sentence -> RED.
+    @MainActor
+    func testAPressThatCannotRecordSaysSoInRussian() {
+        struct NoPermission: LocalizedError { var errorDescription: String? { "no permission" } }
+        let rec = FakeRecorder(); rec.prepareError = NoPermission()
+        let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: FakeTranscriber())
+        var errors: [String] = []
+        c.onError = { errors.append($0) }
+        c.localize = ShippedStrings.localizer("ru")
+        c.keyDown()
+        XCTAssertEqual(errors, ["Не удалось начать запись: no permission"])
+    }
+
     // Mutation: move `try recorder.prepare()` below `transcriber.begin()` in
     // keyDown -> RED (a press without microphone permission would open a
     // daemon session, which cold-starts the speech-to-text server).
@@ -995,6 +1009,7 @@ final class TranscriberControllerTests: XCTestCase {
         var errors: [String] = []
         c.onState = { states.append($0) }
         c.onError = { errors.append($0) }
+        c.localize = ShippedStrings.localizer("en")
         c.keyDown()
         XCTAssertEqual(t.began, 0, "no session for a press that cannot record")
         XCTAssertEqual(rec.started, 0)
@@ -1016,6 +1031,7 @@ final class TranscriberControllerTests: XCTestCase {
         var errors: [String] = []
         c.onState = { states.append($0) }
         c.onError = { errors.append($0) }
+        c.localize = ShippedStrings.localizer("en")
         c.keyDown()
         XCTAssertEqual(t.began, 1)
         XCTAssertEqual(t.cancelled, 1)

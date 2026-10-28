@@ -2,6 +2,7 @@ import XCTest
 @testable import DictationCore
 
 final class ProduceModelsTests: XCTestCase {
+    private let en = ShippedStrings.localizer("en")
     /// A status summary as the daemon marshals it (vproject.Summary).
     private func summary(status: String, title: String = "Chapter one", done: Int = 3, total: Int = 10,
                          error: String? = nil, wav: String? = nil, reviewChunks: Int = 0) -> Data {
@@ -39,8 +40,8 @@ final class ProduceModelsTests: XCTestCase {
     func testFormatsMapToTheDaemonsPresets() {
         XCTAssertEqual(ProduceFormat.short.preset, "reels")
         XCTAssertEqual(ProduceFormat.long.preset, "youtube")
-        XCTAssertEqual(ProduceFormat.short.title, "Reels / Shorts (short)")
-        XCTAssertEqual(ProduceFormat.long.title, "YouTube (long)")
+        XCTAssertEqual(ProduceFormat.short.title(text: en), "Reels / Shorts (short)")
+        XCTAssertEqual(ProduceFormat.long.title(text: en), "YouTube (long)")
     }
 
     func testResumeBodyAllowsTheBattery() throws {
@@ -108,7 +109,7 @@ final class ProduceModelsTests: XCTestCase {
 
     func testProgressRowTexts() throws {
         func row(_ status: String, done: Int = 3, total: Int = 10, review: Int = 0) -> String {
-            ProduceText.progressRow(ProduceJob.decode(summary(status: status, done: done, total: total, reviewChunks: review))!)
+            ProduceText.progressRow(ProduceJob.decode(summary(status: status, done: done, total: total, reviewChunks: review))!, text: en)
         }
         XCTAssertEqual(row("running"), "“Chapter one” — 3 of 10 parts")
         XCTAssertEqual(row("running", done: 0, total: 0), "“Chapter one” — starting…")
@@ -122,15 +123,15 @@ final class ProduceModelsTests: XCTestCase {
 
     func testFinishAlerts() throws {
         let done = try XCTUnwrap(ProduceJob.decode(summary(status: "done", wav: "/Users/a/Movies/ox-say/Chapter one.wav")))
-        let ready = try XCTUnwrap(ProduceText.finishAlert(done))
+        let ready = try XCTUnwrap(ProduceText.finishAlert(done, text: en))
         XCTAssertEqual(ready.title, "Voiceover ready")
         XCTAssertEqual(ready.text, "Saved as Chapter one.wav.")
         let review = try XCTUnwrap(ProduceJob.decode(summary(status: "review", wav: "/x/Ch.wav", reviewChunks: 2)))
-        XCTAssertEqual(ProduceText.finishAlert(review)?.text, "Saved as Ch.wav. 2 parts need a listen. They are in the folder.")
+        XCTAssertEqual(ProduceText.finishAlert(review, text: en)?.text, "Saved as Ch.wav. 2 parts need a listen. They are in the folder.")
         let failed = try XCTUnwrap(ProduceJob.decode(summary(status: "failed", error: "the disk is full")))
-        XCTAssertEqual(ProduceText.finishAlert(failed)?.title, "The voiceover failed")
-        XCTAssertEqual(ProduceText.finishAlert(failed)?.text, "the disk is full")
+        XCTAssertEqual(ProduceText.finishAlert(failed, text: en)?.title, "The voiceover failed")
+        XCTAssertEqual(ProduceText.finishAlert(failed, text: en)?.text, "the disk is full")
         let cancelled = try XCTUnwrap(ProduceJob.decode(summary(status: "cancelled")))
-        XCTAssertNil(ProduceText.finishAlert(cancelled))
+        XCTAssertNil(ProduceText.finishAlert(cancelled, text: en))
     }
 }

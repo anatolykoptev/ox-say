@@ -7,11 +7,27 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
     case refused(status: Int, message: String)
     case badResponse
 
+    /// What the person reads, in their language. The daemon's own words in a refusal stay as it sent them; an empty
+    /// one is the app's sentence naming the status. `description` below stays English: it is for logs.
+    public func message(text: (L10nKey) -> String = { $0.text }) -> String {
+        switch self {
+        case .daemonUnreachable: return text(.studioErrorUnreachable)
+        case .timedOut: return text(.studioErrorTimedOut)
+        case .refused(let status, let message): return message.isEmpty ? String(format: text(.studioErrorRefused), String(status)) : message
+        case .badResponse: return text(.studioErrorBadResponse)
+        }
+    }
+
+    /// Any error as the person should read it: the app's own words for a StudioError, a plain fallback for the rest.
+    public static func plain(_ error: Error, text: (L10nKey) -> String = { $0.text }) -> String {
+        (error as? StudioError)?.message(text: text) ?? text(.studioPlainFallback)
+    }
+
     public var description: String {
         switch self {
         case .daemonUnreachable: return "The ox-say service is not running. Try restarting your Mac."
         case .timedOut: return "The ox-say service took too long to answer."
-        case .refused(_, let message): return message
+        case .refused(let status, let message): return message.isEmpty ? "The ox-say service answered with an error (\(status))." : message
         case .badResponse: return "The ox-say service sent an answer the app does not understand."
         }
     }
@@ -72,8 +88,8 @@ public struct StudioClient {
     static func refusal(status: Int, body: Data) -> StudioError {
         let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
         let message = (obj?["error"] as? [String: Any])?["message"] as? String ?? ""
-        return .refused(status: status, message: PlainWords.clean(
-            message, fallback: "The ox-say service answered with an error (\(status))."))
+        // An empty message is the app's sentence naming the status, worded when it is shown (StudioError.message).
+        return .refused(status: status, message: PlainWords.clean(message, fallback: ""))
     }
 
     /// GET /status: the daemon's version and whether the studio voice can run.
