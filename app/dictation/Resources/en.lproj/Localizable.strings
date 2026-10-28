@@ -40,6 +40,14 @@
 /* Shown when a dictation was pasted but no app took it. */
 "notice.paste_unread" = "The text did not paste — it is in the OxSay menu → Recent Dictations";
 
+/* The dictation key. %1$@ and %2$@ are key names such as ⌃Space. */
+"notice.hotkey.macos_moved" = "%1$@ is a macOS shortcut on this Mac, so dictation uses %2$@.";
+"notice.hotkey.macos_owns" = "%@ is a macOS shortcut on this Mac.";
+"notice.hotkey.fell_back" = "%1$@ is taken by another app, so dictation uses %2$@.";
+"notice.hotkey.taken" = "%@ is taken by another app and the other dictation key is a macOS shortcut, so dictation has no hotkey. Quit the app that holds it, then open this menu again.";
+"notice.hotkey.all_taken" = "Every dictation key (%@) is taken by another app, so dictation has no hotkey. Free one, then open this menu again.";
+"notice.hotkey.all_macos" = "Every dictation key is a macOS shortcut on this Mac. Free ⌃Space or ⌥Space in System Settings → Keyboard → Keyboard Shortcuts.";
+
 /* Settings → Sound While Dictating: what happens to sound while the key is held. */
 "menu.sound_while_dictating" = "Sound While Dictating";
 "menu.sound_pause_music" = "Pause Music";

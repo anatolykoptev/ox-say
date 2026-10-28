@@ -79,6 +79,10 @@ final class SystemPasteboard: NSObject, DictationPasteboard, NSPasteboardItemDat
 /// allowed or not safe, the text stays on the clipboard and `onNotice` says why.
 final class PasteOutput: TextOutput {
     var onNotice: ((String) -> Void)?
+    /// The clipboard could not be put back when the paste settled, seconds
+    /// after `deliver` returned: about a paste that already happened, so the
+    /// app must not tie it to whichever dictation is running by then.
+    var onLateNotice: ((String) -> Void)?
     /// When a posted paste settles: whether the target app read the promised
     /// clipboard before the 3 s cap. `false` is what a paste that went nowhere
     /// looks like; feeds the `paste settled` log line.
@@ -154,7 +158,7 @@ final class PasteOutput: TextOutput {
         pending.timer.invalidate()
         PasteSettlement.settle(lease: pending.lease, text: pending.text, read: lending.readAt != nil, plain: plain,
                                onSettled: onPasteSettled,
-                               onNotice: onNotice, onUnread: onPasteUnread)
+                               onNotice: onLateNotice, onUnread: onPasteUnread)
     }
 
     /// Types `text` into the frontmost app: key events carrying Unicode

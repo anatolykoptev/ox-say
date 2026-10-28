@@ -9,8 +9,11 @@ public enum ShortcutMenu {
         public var title: String
         public var keyCode: Int
         public var modifiers: Int
+        /// What the app stores for this key between launches.
+        public var id: String
 
-        public init(title: String, keyCode: Int, modifiers: Int) {
+        public init(title: String, keyCode: Int, modifiers: Int, id: String? = nil) {
+            self.id = id ?? title
             self.title = title
             self.keyCode = keyCode
             self.modifiers = modifiers
@@ -95,6 +98,95 @@ public enum ShortcutMenu {
                         isEnabled: free, isOn: index == key)
         }
         return Plan(key: key, items: items, movedFrom: movedFrom)
+    }
+
+    /// The key to try next when registering the plan: the planned key first,
+    /// then the other keys macOS does not own, in offered order; `failed` are
+    /// the indexes whose registration was refused (another app holds them).
+    /// nil when nothing is left, or when every key is a macOS shortcut.
+    public static func next(_ plan: Plan, failed: [Int]) -> Int? {
+        guard let planned = plan.key else { return nil }
+        if !failed.contains(planned) { return planned }
+        return plan.items.indices.first { plan.items[$0].isEnabled && !failed.contains($0) }
+    }
+
+    /// One thing worth telling the user after the keys were tried.
+    public enum Notice: Equatable {
+        /// macOS took a key and dictation moved to `now`.
+        case movedByMacOS(taken: String, now: String)
+        /// macOS took a key and no other key could be registered.
+        case macOSOwns(taken: String)
+        /// The planned key was refused by another app; dictation is on `now`.
+        case fellBack(failed: String, now: String)
+        /// The only key macOS leaves free was refused: dictation has no
+        /// hotkey and there is no other key to pick.
+        case taken(String)
+        /// Every key tried was refused; `String` lists them.
+        case allTaken(String)
+        /// Every offered key is a macOS shortcut: nothing could be tried.
+        case allMacOS
+
+        /// Which sentence it is, for the once-per-launch refusal gate.
+        public var kind: String {
+            switch self {
+            case .movedByMacOS: return "movedByMacOS"
+            case .macOSOwns: return "macOSOwns"
+            case .fellBack: return "fellBack"
+            case .taken: return "taken"
+            case .allTaken: return "allTaken"
+            case .allMacOS: return "allMacOS"
+            }
+        }
+
+        /// The macOS ones are told once per taken key, across launches; the
+        /// others once per failing key per launch.
+        public var isAboutMacOS: Bool {
+            switch self {
+            case .movedByMacOS, .macOSOwns: return true
+            case .fellBack, .taken, .allTaken, .allMacOS: return false
+            }
+        }
+
+        public var text: String {
+            switch self {
+            case .movedByMacOS(let taken, let now): return L10nKey.noticeHotkeyMacOSMoved.text(taken, now)
+            case .macOSOwns(let taken): return L10nKey.noticeHotkeyMacOSOwns.text(taken)
+            case .fellBack(let failed, let now): return L10nKey.noticeHotkeyFellBack.text(failed, now)
+            case .taken(let key): return L10nKey.noticeHotkeyTaken.text(key)
+            case .allTaken(let keys): return L10nKey.noticeHotkeyAllTaken.text(keys)
+            case .allMacOS: return L10nKey.noticeHotkeyAllMacOS.text
+            }
+        }
+    }
+
+    /// What to say once registration is over, in the order to say it: the
+    /// macOS part first. `registered` is the index that took, nil when none
+    /// did; `failed` the indexes another app refused. Nothing to say when the
+    /// planned key registered and macOS moved nothing.
+    public static func registrationNotices(plan: Plan, choices: [Choice], registered: Int?,
+                                           failed: [Int]) -> [Notice] {
+        guard plan.key != nil else { return [] }
+        func title(_ index: Int) -> String { choices[index].title }
+        var notices: [Notice] = []
+        if let from = plan.movedFrom, choices.indices.contains(from) {
+            notices.append(registered.map { .movedByMacOS(taken: title(from), now: title($0)) }
+                           ?? .macOSOwns(taken: title(from)))
+        }
+        let refused = failed.filter(choices.indices.contains).map(title)
+        guard !refused.isEmpty else { return notices }
+        if let registered {
+            notices.append(.fellBack(failed: refused.joined(separator: ", "), now: title(registered)))
+        } else if refused.count == 1 {
+            notices.append(.taken(refused[0]))
+        } else {
+            notices.append(.allTaken(refused.joined(separator: ", ")))
+        }
+        return notices
+    }
+
+    /// The parts as the one message the pill can hold, in order.
+    public static func sentence(_ notices: [Notice]) -> String {
+        notices.map(\.text).joined(separator: " ")
     }
 
     /// What opening the menu does with a fresh plan. Idle, a planned key that

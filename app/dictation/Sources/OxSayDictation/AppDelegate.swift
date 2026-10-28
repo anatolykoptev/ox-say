@@ -187,12 +187,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var termSource: DispatchSourceSignal?
     /// The key that is registered right now; what the menu tells the user to press.
     private var active: Shortcut?
-    private let fallbackNoticeKey = "fallbackNoticeShownFor"
     /// The key the last successful registration used, kept across launches.
     private let keyInUseKey = "dictationKeyInUse"
     /// The key last reported as held by another app, so an open menu does not
     /// repeat the notice and the beep while the conflict lasts.
-    private var registerFailNoticeShownFor: Shortcut?
+    private var registrationGates = RegistrationGates()
 
     /// What the system shortcuts right now mean for the offered keys: which
     /// one dictation should listen to and what each menu item shows.
@@ -207,7 +206,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func choice(_ shortcut: Shortcut) -> ShortcutMenu.Choice {
-        ShortcutMenu.Choice(title: shortcut.title, keyCode: Int(shortcut.keyCode), modifiers: Int(shortcut.modifiers))
+        ShortcutMenu.Choice(title: shortcut.title, keyCode: Int(shortcut.keyCode), modifiers: Int(shortcut.modifiers),
+                            id: shortcut.rawValue)
     }
 
     /// The same plan question for the speak-selection key: which offered
@@ -303,6 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.daemonRetry = DaemonRetry(probe: { [client] in await client.reachable() })
         controller.onRetry = { event in timingLog.notice("\(event.line, privacy: .public)") }
         output.onNotice = { [weak self] message in self?.notice(message, kind: .outcome) }
+        output.onLateNotice = { [weak self] message in self?.notice(.lateClipboard(message)) }
         output.onPasteUnread = { [weak self] in self?.notice(.unreadPaste(L10nKey.noticePasteUnread.text)) }
         recorder.onLevels = { [overlay] levels in overlay.setLevels(levels) }
         recorder.onEnded = { [weak self] reason in
@@ -363,43 +364,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         output.settle()
     }
 
-    /// Registers the plan's key. A forced move off a key macOS took is said
-    /// once per taken key (remembered across launches); a first registration
-    /// and a move back to a freed pick stay silent.
+    /// Registers the dictation key. `ShortcutRegistration.run` decides the
+    /// order of keys, what to say and when to stay quiet; this supplies the
+    /// real registration and shows the result.
     private func registerShortcut(_ plan: ShortcutMenu.Plan) {
+        let previous = active.flatMap { Shortcut.allCases.firstIndex(of: $0) }
         hotKey = nil
         active = nil
-        applyShortcutItems(plan.items)
-        guard let index = plan.key else {
-            notice("Every dictation key is a macOS shortcut on this Mac. Free ⌃Space or ⌥Space in System Settings → Keyboard → Keyboard Shortcuts.")
-            return
-        }
-        let key = Shortcut.allCases[index]
-        hotKey = HotKey(keyCode: key.keyCode, modifiers: key.modifiers)
-        hotKey?.onDown = { [weak self] in self?.controller.keyDown() }
-        hotKey?.onUp = { [weak self] in self?.controller.keyUp() }
-        guard hotKey != nil else {
-            // Once per key per launch: menuWillOpen re-registers while active
-            // stays nil, and the conflict usually outlasts the menu open.
-            if registerFailNoticeShownFor != key {
-                registerFailNoticeShownFor = key
-                notice("\(key.title) is taken by another app, so dictation has no hotkey. Pick another one in this menu.")
-            }
-            return
-        }
-        registerFailNoticeShownFor = nil
-        active = key
-        let defaults = UserDefaults.standard
-        defaults.set(key.rawValue, forKey: keyInUseKey)
-        if let from = plan.movedFrom {
-            let taken = Shortcut.allCases[from]
-            if defaults.string(forKey: fallbackNoticeKey) != taken.rawValue {
-                defaults.set(taken.rawValue, forKey: fallbackNoticeKey)
-                notice("\(taken.title) is a macOS shortcut on this Mac, so dictation uses \(key.title).")
-            }
-        } else {
-            defaults.removeObject(forKey: fallbackNoticeKey)
-        }
+        let outcome = ShortcutRegistration.run(
+            plan: plan, choices: Shortcut.allCases.map(choice), previous: previous,
+            attempt: { [weak self] (index: Int) -> HotKey? in
+                let key = Shortcut.allCases[index]
+                guard let candidate = HotKey(keyCode: key.keyCode, modifiers: key.modifiers) else { return nil }
+                candidate.onDown = { self?.controller.keyDown() }
+                candidate.onUp = { self?.controller.keyUp() }
+                return candidate
+            },
+            gates: &registrationGates, store: UserDefaults.standard)
+        hotKey = outcome.hotKey
+        active = outcome.registered.map { Shortcut.allCases[$0] }
+        if let inUse = outcome.keyInUse { UserDefaults.standard.set(inUse, forKey: keyInUseKey) }
+        applyShortcutItems(outcome.items)
+        if outcome.clearsStatusLine { lastNotice = nil }
+        if !outcome.notices.isEmpty { notice(ShortcutMenu.sentence(outcome.notices)) }
     }
 
     /// Registers the speak-selection key from the plan. The keypress fires
@@ -1511,4 +1498,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ = AXIsProcessTrustedWithOptions(prompt)
         openAccessibilitySettings()
     }
+}
+
+extension UserDefaults: ShortcutStore {
+    public func setString(_ value: String?, forKey key: String) { set(value, forKey: key) }
 }
