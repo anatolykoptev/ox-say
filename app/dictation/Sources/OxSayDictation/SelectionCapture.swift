@@ -8,11 +8,8 @@ import DictationCore
 /// DictationCore, so it runs against a fake pasteboard in tests.
 final class SelectionCapture {
     private let board = SystemPasteboard(promised: false)
-    /// A ⌘C result landed over a Universal Clipboard copy: the iPhone copy is
-    /// gone and cannot be put back. One log line, never user content.
-    var onRemoteCopy: (() -> Void)?
-    /// One report per speak press — the path taken and the AX read's error and
-    /// source, never content. Lets the real app's AX path be checked from the log.
+    /// One report per speak press — the path taken and every AX source's
+    /// result, never content. Lets the real app's AX path be checked from the log.
     var onSelection: ((SelectionReport) -> Void)?
 
     /// The selected text, or why it could not be read.
@@ -23,7 +20,6 @@ final class SelectionCapture {
                                 postCopy: postCommandC,
                                 spin: { RunLoop.current.run(until: Date().addingTimeInterval($0)) },
                                 readText: board.readText,
-                                onRemoteCopy: onRemoteCopy,
                                 onSelection: onSelection)
     }
 

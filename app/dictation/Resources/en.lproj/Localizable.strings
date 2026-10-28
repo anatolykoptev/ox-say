@@ -39,6 +39,8 @@
 "menu.paste_last_dictation" = "Paste Last Dictation";
 /* Shown when a dictation was pasted but no app took it. */
 "notice.paste_unread" = "The text did not paste — it is in the OxSay menu → Recent Dictations";
+/* Shown when the speak hotkey finds no selection through accessibility while the clipboard holds a Universal Clipboard copy: sending ⌘C would replace it for good. */
+"notice.selection_remote_clipboard" = "The selection can't be read in this app without replacing your iPhone copy: copy the text yourself (⌘C), then press the key again.";
 
 /* The dictation key. %1$@ and %2$@ are key names such as ⌃Space. */
 "notice.hotkey.macos_moved" = "%1$@ is a macOS shortcut on this Mac, so dictation uses %2$@.";

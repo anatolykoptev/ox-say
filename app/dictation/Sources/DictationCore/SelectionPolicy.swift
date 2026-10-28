@@ -16,10 +16,9 @@ public enum SelectionPlan: Equatable {
 /// is focused and the clipboard snapshot can be put back — a snapshot with
 /// problems or a secret inside is not safely restorable, so copying over it
 /// would destroy the user's clipboard silently. A remote (Universal Clipboard)
-/// clipboard is the exception: it is never read, so it cannot be restored, but
-/// declining would make speak-selection stop working after every iPhone copy —
-/// the copy proceeds and the clipboard is left holding the selection, as
-/// dictation leaves its text.
+/// clipboard is never read, so it cannot be restored: ⌘C over it replaces the
+/// user's iPhone copy for good. That press is declined with a notice instead
+/// (#220); AX text still speaks without touching the clipboard.
 public enum SelectionPolicy {
     /// Every caller must say whether the clipboard held a Universal Clipboard
     /// copy — the same reason `OutputPolicy.decide` has no default: a forgotten
@@ -39,7 +38,10 @@ public enum SelectionPolicy {
         if isWhitespaceOnly(axText) {
             return .decline("Nothing selected to speak.")
         }
-        guard clipboardRestorable || clipboardRemote else {
+        if clipboardRemote {
+            return .decline(L10nKey.noticeSelectionRemote.text)
+        }
+        guard clipboardRestorable else {
             return .decline("The selection did not come through.")
         }
         return .copy

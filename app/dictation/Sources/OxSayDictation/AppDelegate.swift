@@ -288,9 +288,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let ms = Int(seconds * 1000)
             timingLog.notice("clipboard held a Universal Clipboard copy: posted the text as keystrokes, clipboard untouched chars=\(chars, privacy: .public) post_ms=\(ms, privacy: .public)")
         }
-        capture.onRemoteCopy = {
-            timingLog.notice("speak-selection fell back to ⌘C over a Universal Clipboard copy: the remote copy is overwritten, not restored")
-        }
         // One line per speak press, no text: which path served the selection
         // (ax, copy, none) and the AX read's error code and source.
         capture.onSelection = { report in timingLog.notice("\(report.line, privacy: .public)") }

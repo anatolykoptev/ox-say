@@ -39,6 +39,8 @@
 "menu.paste_last_dictation" = "Вставить последнюю диктовку";
 /* Shown when a dictation was pasted but no app took it. */
 "notice.paste_unread" = "Текст не вставился — он в меню OxSay → Последние диктовки";
+/* Shown when the speak hotkey finds no selection through accessibility while the clipboard holds a Universal Clipboard copy: sending ⌘C would replace it for good. */
+"notice.selection_remote_clipboard" = "В этом приложении выделение не прочитать, не заменив скопированное на iPhone: скопируйте текст сами (⌘C) и нажмите клавишу ещё раз.";
 
 /* Клавиша диктовки. %1$@ и %2$@ — названия клавиш, например ⌃Space. */
 "notice.hotkey.macos_moved" = "%1$@ — системное сочетание macOS, поэтому диктовка работает на %2$@.";

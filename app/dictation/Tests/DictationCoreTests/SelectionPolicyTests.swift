@@ -54,13 +54,18 @@ final class SelectionPolicyTests: XCTestCase {
         }
     }
 
-    // Mutation: SelectionPolicy.plan `guard clipboardRestorable || clipboardRemote`
-    // -> `guard clipboardRestorable` -> RED (speak-selection stops working
-    // whenever the clipboard holds an iPhone copy and AX gives nothing).
-    func testRemoteClipboardStillCopies() {
+    // #220. Mutation: SelectionPolicy.plan, delete the `clipboardRemote`
+    // decline -> RED (⌘C replaces the iPhone copy for good).
+    func testRemoteClipboardDeclinesTheCopy() {
         XCTAssertEqual(SelectionPolicy.plan(axText: nil, secureInput: false,
                                             clipboardRestorable: false, clipboardRemote: true),
-                       .copy)
+                       .decline(L10nKey.noticeSelectionRemote.text))
+    }
+
+    func testAnAXSelectionStillWinsOverARemoteClipboard() {
+        XCTAssertEqual(SelectionPolicy.plan(axText: "x", secureInput: false,
+                                            clipboardRestorable: false, clipboardRemote: true),
+                       .speak("x"))
     }
 
     func testSecureFieldStillBlocksTheCopyOverARemoteClipboard() {
