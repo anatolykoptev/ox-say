@@ -34,6 +34,10 @@ const (
 	StateFailed State = "failed"
 )
 
+// ErrRecycleBusy is returned by Recycle when in-flight users did not finish
+// within RecycleWait: the child was left running, untouched.
+var ErrRecycleBusy = errors.New("engine: child still in use; not recycled")
+
 // ErrShutdown is returned by EnsureReady after Shutdown was called.
 var ErrShutdown = errors.New("engine: supervisor shut down")
 
@@ -95,11 +99,15 @@ type Config struct {
 	IdleTick    time.Duration // idle check interval (default min(IdleStop/2, 1s))
 	KillGrace   time.Duration // SIGTERM → SIGKILL escalation delay (default 5s)
 	LogMaxBytes int64         // engine.log truncation threshold (default 10MB)
+	// RecycleWait bounds how long Recycle waits for in-flight users (guards)
+	// to finish before it gives up without touching the child (default 30s).
+	RecycleWait time.Duration
 }
 
 const (
 	defaultKillGrace   = 5 * time.Second
 	defaultLogMaxBytes = 10 << 20
+	defaultRecycleWait = 30 * time.Second
 	readyResetAfter    = 60 * time.Second // Ready this long → crash backoff resets
 	// healthProbeInit is the first real wait between /health probes — the
 	// first probe fires at once. Each failure doubles it up to
@@ -154,6 +162,7 @@ type Supervisor struct {
 	nextAttempt   time.Time
 	lastActivity  time.Time // last Ready commit or Guard release
 	guards        int
+	recyclers     int  // Recycle calls waiting for guards to drain; Release wakes them
 	gpuHeld       bool // the current generation owns cfg.GPU
 
 	// pidMu makes the pidfile's read-check-remove (removePidFile) atomic
@@ -204,6 +213,9 @@ func New(cfg Config) (*Supervisor, error) {
 	}
 	if cfg.LogMaxBytes <= 0 {
 		cfg.LogMaxBytes = defaultLogMaxBytes
+	}
+	if cfg.RecycleWait <= 0 {
+		cfg.RecycleWait = defaultRecycleWait
 	}
 	if cfg.IdleStop > 0 && cfg.IdleTick <= 0 {
 		cfg.IdleTick = min(cfg.IdleStop/2, time.Second)
@@ -503,8 +515,58 @@ func (g *Guard) Release() {
 		g.s.mu.Lock()
 		g.s.guards--
 		g.s.lastActivity = time.Now()
+		if g.s.recyclers > 0 {
+			g.s.broadcastLocked()
+		}
 		g.s.mu.Unlock()
 	})
+}
+
+// Recycle stops the child whose pid is given so the next EnsureReady spawns a
+// fresh one - the way out of a child that accepts requests and never answers.
+// It acts only on the CURRENT, ready child with that pid: a pid that is not
+// current (the child was already replaced or is gone) is a no-op returning nil,
+// so a late caller can never stop a healthy successor. It waits, bounded by
+// RecycleWait and ctx, until no Guard is held, so a request in flight is never
+// killed: on timeout it returns ErrRecycleBusy and leaves the child alone.
+func (s *Supervisor) Recycle(ctx context.Context, pid int) error {
+	timer := time.NewTimer(s.cfg.RecycleWait)
+	defer timer.Stop()
+	s.mu.Lock()
+	s.recyclers++
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.recyclers--
+		s.mu.Unlock()
+	}()
+	for {
+		s.mu.Lock()
+		c := s.child
+		if s.dead || s.state != StateReady || c == nil || c.userStop || c.cmd.Process.Pid != pid {
+			s.mu.Unlock()
+			return nil
+		}
+		if s.guards == 0 {
+			c.userStop = true
+			s.state = StateStopped
+			s.failCount = 0 // a deliberate stop clears crash/start backoff
+			s.broadcastLocked()
+			s.mu.Unlock()
+			s.log.Warn("engine recycled", slog.Int("pid", pid))
+			s.killChild(c)
+			return nil
+		}
+		ch := s.change
+		s.mu.Unlock()
+		select {
+		case <-ch:
+		case <-timer.C:
+			return ErrRecycleBusy
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // Shutdown stops the idle loop and the child (SIGTERM, SIGKILL after the

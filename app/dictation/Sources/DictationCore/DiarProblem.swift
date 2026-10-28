@@ -21,6 +21,18 @@ public enum DiarProblem: Equatable {
         return false
     }
 
+    /// Whether the app offers "Try Again" for this problem on a meeting. A failed run is the app's own rule (`canRetry`).
+    /// An unavailable one is the daemon's: it alone knows whether diarization is ready now and whether the recording can
+    /// still be transcribed (`voices_retryable`), so a reason is never judged here; without that word nothing is offered,
+    /// because pressing it could only fail again. A recording retention removed has nothing to transcribe in either case.
+    public func offersRetry(daemonSaysRetryable: Bool, audioDeleted: Bool) -> Bool {
+        if audioDeleted { return false }
+        switch self {
+        case .failed: return canRetry
+        case .unavailable: return daemonSaysRetryable
+        }
+    }
+
     /// The sentence for the menu. A code this app does not know gets the general sentence of its kind, so a newer
     /// daemon never shows an empty row.
     public var messageKey: L10nKey {

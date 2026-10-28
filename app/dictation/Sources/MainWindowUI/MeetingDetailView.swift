@@ -321,7 +321,7 @@ struct SpeakersTab: View {
                 if let problem = detail.info.diarProblem {
                     Label(problem.messageKey.text, systemImage: "info.circle")
                         .font(.callout).foregroundStyle(.secondary)
-                    if problem.canRetry, !detail.info.audioDeleted {
+                    if detail.info.offersVoicesRetry {
                         Button(L10nKey.meetingVoicesRetry.text) { model.actions.retryVoices(detail.info.id) }
                     }
                 } else if let error = detail.speakersError {

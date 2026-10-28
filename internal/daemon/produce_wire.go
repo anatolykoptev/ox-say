@@ -31,6 +31,7 @@ type portFuncs struct {
 	quiet          func(context.Context, func()) error
 	power          func(context.Context) (bool, bool)
 	background     func(bool)
+	recycle        func(context.Context, int)
 	home           func() string
 	outputRoot     func() string
 }
@@ -53,6 +54,7 @@ func (f *portFuncs) Normalize(ctx context.Context, in, out string, lufs, dur flo
 func (f *portFuncs) Quiet(ctx context.Context, onWait func()) error { return f.quiet(ctx, onWait) }
 func (f *portFuncs) Power(ctx context.Context) (bool, bool)         { return f.power(ctx) }
 func (f *portFuncs) Background(on bool)                             { f.background(on) }
+func (f *portFuncs) Recycle(ctx context.Context, pid int)           { f.recycle(ctx, pid) }
 func (f *portFuncs) Home() string                                   { return f.home() }
 func (f *portFuncs) OutputRoot() string                             { return f.outputRoot() }
 
@@ -88,29 +90,15 @@ func engineIdentity(bin, model string) (string, error) {
 func (d *Daemon) producePorts() producePorts {
 	var idMu sync.Mutex
 	var engineID string // cached on success only: a failure is retried by the next job
-	var mu sync.Mutex
-	bg := false
-	applyQoS := func() {
-		if d.VoxSup == nil {
-			return
-		}
-		mu.Lock()
-		on := bg
-		mu.Unlock()
-		if pid := d.VoxSup.Status().PID; pid > 0 {
-			if err := setBackground(pid, on); err != nil {
-				d.log.Warn("produce: cannot set the engine's priority", "error", err)
-			}
-		}
-	}
+	qos := d.voxQoS
 	return &portFuncs{
 		// Render sends the typed request through the speech router's own map
 		// (every VoxCPM2 rule stays in voxcpm2.go) and keeps the child at the
 		// wanted QoS.
 		render: func(ctx context.Context, p renderParams) (*synthOut, error) {
-			applyQoS()
+			qos.apply()
 			out, err := d.render(ctx, p.body())
-			applyQoS() // the child may have (re)started for this request
+			qos.apply() // the child may have (re)started for this request
 			return out, err
 		},
 		// hear is the daemon's own STT through Transcribe, never an HTTP route: no stamp.
@@ -158,14 +146,17 @@ func (d *Daemon) producePorts() producePorts {
 			}
 			return id, err
 		},
-		normalize: strictNormalize,
-		quiet:     d.waitQuiet,
-		power:     powerState,
-		background: func(on bool) {
-			mu.Lock()
-			bg = on
-			mu.Unlock()
-			applyQoS()
+		normalize:  strictNormalize,
+		quiet:      d.waitQuiet,
+		power:      powerState,
+		background: qos.setBackground,
+		recycle: func(ctx context.Context, pid int) {
+			if d.VoxSup == nil {
+				return
+			}
+			if err := d.VoxSup.Recycle(ctx, pid); err != nil {
+				d.log.Warn("produce: the unresponsive voice engine was not restarted", "pid", pid, "error", err)
+			}
 		},
 		home: func() string { return d.Cfg.Home },
 		// outputRoot is the QF5 default (config.DefaultProduceOutDir), or the

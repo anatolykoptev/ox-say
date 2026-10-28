@@ -102,3 +102,86 @@ final class DiarProblemClientTests: XCTestCase {
         XCTAssertEqual(seen.first?.url?.path, "/v1/meetings/m1/voices")
     }
 }
+
+/// "Try Again" for voices that were unavailable (the voice engine or its models were missing when the call was
+/// recorded) is the daemon's decision: it computes `voices_retryable` per meeting from the same readiness check that
+/// decides the POST, and the app shows the button exactly when it says so.
+final class VoicesTryAgainTests: XCTestCase {
+    private func info(_ json: String) -> MeetingInfo { MeetingInfo.decode(Data(json.utf8))! }
+
+    /// Mutations: DiarProblem.offersRetry, `case .unavailable: return daemonSaysRetryable` -> `return false` -> RED (F4: the app
+    /// ignores the daemon field and never offers a retry for unavailable voices); -> `return true` -> RED (offered while not ready).
+    func testTheDecisionFollowsTheServedPayload() {
+        let cases: [(String, Bool)] = [
+            // unavailable, daemon says it can be retried: models arrived
+            (#"{"id":"a","status":"done","warnings":["diarization_unavailable"],"diar_reason":"models_missing","voices_retryable":true}"#, true),
+            (#"{"id":"a","status":"done","warnings":["diarization_unavailable"],"diar_reason":"engine_missing","voices_retryable":true}"#, true),
+            // unavailable, models not here yet: no button, the reason text stays
+            (#"{"id":"a","status":"done","warnings":["diarization_unavailable"],"diar_reason":"models_missing","voices_retryable":false}"#, false),
+            (#"{"id":"a","status":"done","warnings":["diarization_unavailable"],"diar_reason":"models_missing"}"#, false),
+            // a reason a retry cannot help stays hidden, whatever the field says is the daemon's business; the daemon sends false
+            (#"{"id":"a","status":"done","warnings":["diarization_unavailable"],"diar_reason":"input_unreadable","voices_retryable":false}"#, false),
+            (#"{"id":"a","status":"done","warnings":["diarization_unavailable"],"diar_reason":"too_long"}"#, false),
+            // audio removed by retention: nothing to transcribe
+            (#"{"id":"a","status":"done","warnings":["diarization_unavailable"],"diar_reason":"models_missing","voices_retryable":true,"audio_deleted":true}"#, false),
+            // the failed kind keeps the app's own rule and an older daemon (no field) still works
+            (#"{"id":"a","status":"done","warnings":["diarization_failed"],"diar_reason":"engine_error"}"#, true),
+            (#"{"id":"a","status":"done","warnings":["diarization_failed"],"diar_reason":"timeout"}"#, false),
+            // no problem, no button
+            (#"{"id":"a","status":"done","voices_retryable":true}"#, false),
+        ]
+        for (json, want) in cases {
+            XCTAssertEqual(info(json).offersVoicesRetry, want, json)
+        }
+    }
+
+    /// The menu offers the row from the same decision, and keeps a retryable meeting's own row although the Mac-wide
+    /// reason was already said for a newer one.
+    /// Mutations: MeetingMenu.rows, `problem.offersRetry(daemonSaysRetryable: r.voicesRetryable, ...)` -> `problem.canRetry` -> RED;
+    /// MeetingMenuRecent.from, delete `!m.offersVoicesRetry,` -> RED (the second retryable meeting disappears).
+    func testTheMenuOffersTryAgainForARetryableUnavailableMeeting() {
+        let list = [
+            MeetingInfo(id: "new", title: "New", status: .done, warnings: ["diarization_unavailable"], diarReason: "models_missing"),
+            MeetingInfo(id: "r1", title: "R1", status: .done, warnings: ["diarization_unavailable"], diarReason: "models_missing", voicesRetryable: true),
+            MeetingInfo(id: "r2", title: "R2", status: .done, warnings: ["diarization_unavailable"], diarReason: "models_missing", voicesRetryable: true),
+        ]
+        let recent = MeetingMenuRecent.from(list, limit: 10)
+        XCTAssertEqual(recent.map(\.id), ["new", "r1", "r2"])
+        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), autoStart: true,
+                                     retention: .month, recent: recent)
+        let actions = MeetingMenu.rows(state, text: { $0.rawValue }).compactMap { row -> MenuAction? in
+            if case .item(_, _, _, let a) = row { return a } else { return nil }
+        }
+        XCTAssertTrue(actions.contains(.retryVoices("r1")))
+        XCTAssertTrue(actions.contains(.retryVoices("r2")))
+        XCTAssertFalse(actions.contains(.retryVoices("new")), "models still missing for this one")
+    }
+
+    /// Race: the models were ready at the check and gone at the press (the daemon answers 503 voices_not_ready): a
+    /// sentence in the user's language, never the daemon's English and never the "busy" one.
+    /// Mutation: MeetingErrorText.sentence, delete `case (503, .retryVoices)` -> RED (generic sentence).
+    func testARefusedRetryAtPressTimeIsSaidPlainly() {
+        let refused = StudioError.refused(status: 503, message: "Voices cannot be told apart yet")
+        let en = ShippedStrings.localizer("en"), ru = ShippedStrings.localizer("ru")
+        XCTAssertEqual(MeetingErrorText.sentence(refused, action: .retryVoices, text: en),
+                       "The voice models are not ready yet. Try again when they have finished downloading.")
+        XCTAssertEqual(MeetingErrorText.sentence(refused, action: .retryVoices, text: ru),
+                       "Голосовые модели ещё не готовы. Попробуйте, когда они скачаются.")
+        XCTAssertNotEqual(MeetingErrorText.sentence(StudioError.refused(status: 409, message: "x"), action: .retryVoices, text: en),
+                          MeetingErrorText.sentence(refused, action: .retryVoices, text: en))
+    }
+
+    /// The POST goes through the existing client call with its JSON header and a 503 comes back as a refusal the
+    /// sentence above reads.
+    func testTheRefusalReachesTheAppAs503() async {
+        let c = StudioClient(baseURL: URL(string: "http://127.0.0.1:8094")!) { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!
+            let body = #"{"error":{"message":"Voices cannot be told apart yet: the voice engine or its models are not ready.","code":"voices_not_ready","reason":"models_missing"}}"#
+            return (Data(body.utf8), response)
+        }
+        do { try await c.retryMeetingVoices(id: "m1"); XCTFail("expected a refusal") } catch let error as StudioError {
+            guard case .refused(let status, _) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(status, 503)
+        } catch { XCTFail("\(error)") }
+    }
+}

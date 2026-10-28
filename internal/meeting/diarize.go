@@ -49,6 +49,16 @@ const (
 	DiarTimeout         = "timeout"          // ox-diar ran past its limit
 )
 
+// retryableUnavailable are the DiarReason codes of a WarnDiarUnavailable meeting that a later retry can fix, because
+// the cause lives in the install or the Mac and not in the recording: the engine or models arrive with a download or
+// an update, an OS upgrade clears os_too_old. Deps.DiarizeReady decides at the moment of the retry whether the cause is
+// gone. Not here: models_unusable (the models are all there and will not load: DiarizeReady would say ready and the run
+// fail again), input_unreadable (the same file), too_long (the same recording), and any code this build does not know.
+// The app mirrors the failed kind by itself (DiarProblem.canRetry); this table is the one source for unavailable.
+var retryableUnavailable = map[string]bool{
+	DiarOSTooOld: true, DiarCPUUnsupported: true, DiarEngineMissing: true, DiarModelsMissing: true,
+}
+
 // DiarUnavailableError is what Deps.Diarize returns when ox-diar itself says this Mac cannot do it, for a reason that
 // trying again will not change: it exits 5 on macOS older than 15, 4 when the channel file is unreadable, and 3 when the models, though marked complete,
 // will not load (a corrupt file, or a model Core ML cannot plan for this hardware). The meeting records

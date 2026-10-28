@@ -170,13 +170,17 @@ public struct MeetingMenuRecent: Equatable {
     public var problem: DiarProblem?
     /// Retention removed the recording: a retry would transcribe nothing, so the row offers none.
     public var audioGone: Bool
+    /// The daemon says a voices retry would be accepted now (`MeetingInfo.voicesRetryable`); only an unavailable problem reads it.
+    public var voicesRetryable: Bool
 
-    public init(id: String, title: String, started: Date? = nil, problem: DiarProblem? = nil, audioGone: Bool = false) {
+    public init(id: String, title: String, started: Date? = nil, problem: DiarProblem? = nil, audioGone: Bool = false,
+                voicesRetryable: Bool = false) {
         self.id = id
         self.title = title
         self.started = started
         self.problem = problem
         self.audioGone = audioGone
+        self.voicesRetryable = voicesRetryable
     }
 
     /// The newest meetings with a transcript that have something to say about their speakers: voices to name, or a
@@ -190,11 +194,13 @@ public struct MeetingMenuRecent: Equatable {
             let problem = m.diarProblem
             let hasVoices = m.voiceMode == "auto" || m.voiceMode == "offer"
             if case .unavailable(let reason)? = problem {
-                if reason != "too_long", !saidReasons.insert(reason).inserted { continue }
+                // A Mac-wide reason is said once, but a meeting that can be retried keeps its own row: the retry is for it.
+                if reason != "too_long", !m.offersVoicesRetry, !saidReasons.insert(reason).inserted { continue }
             } else if problem == nil && !hasVoices {
                 continue
             }
-            rows.append(MeetingMenuRecent(id: m.id, title: m.title, started: m.started, problem: problem, audioGone: m.audioDeleted))
+            rows.append(MeetingMenuRecent(id: m.id, title: m.title, started: m.started, problem: problem, audioGone: m.audioDeleted,
+                                         voicesRetryable: m.voicesRetryable))
             if rows.count == limit { break }
         }
         return rows

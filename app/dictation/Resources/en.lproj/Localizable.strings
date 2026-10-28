@@ -288,6 +288,7 @@
 "meeting.error.rename_busy" = "This recording is still being made or processed. Rename it when it's done.";
 "meeting.error.busy" = "This recording is still being made or processed. Try again when it's done.";
 "meeting.error.generic" = "Something went wrong. Try again.";
+"meeting.error.voices_not_ready" = "The voice models are not ready yet. Try again when they have finished downloading.";
 "meetings.loading" = "Loading recordings…";
 "meetings.down.title" = "Can't reach OxSay's service";
 "common.retry" = "Try Again";

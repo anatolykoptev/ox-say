@@ -112,6 +112,11 @@ type producePorts interface {
 	Quiet(ctx context.Context, onWait func()) error
 	Power(ctx context.Context) (onBattery, lowPower bool)
 	Background(on bool)
+	// Recycle stops the engine child with this pid, which accepted a render and
+	// never answered, so the next request gets a fresh one (#156.12b). It waits
+	// for requests in flight and does nothing if pid is no longer the current
+	// child. Failures are logged by the adapter: the render has already failed.
+	Recycle(ctx context.Context, pid int)
 	Home() string
 	OutputRoot() string
 }
@@ -335,6 +340,7 @@ var renderDeadline = func(chars int) time.Duration {
 func (t *taker) renderWithin(ctx context.Context, spec takeSpec) (*synthOut, error) {
 	rctx, cancel := context.WithTimeout(ctx, renderDeadline(utf8.RuneCountInString(spec.Text))+t.ports.ColdStartSlack())
 	defer cancel()
+	rctx, use := withEngineUse(rctx)
 	type answer struct {
 		out *synthOut
 		err error
@@ -347,6 +353,7 @@ func (t *taker) renderWithin(ctx context.Context, spec takeSpec) (*synthOut, err
 	select {
 	case a := <-got:
 		if a.err != nil && rctx.Err() != nil && ctx.Err() == nil {
+			t.recycle(ctx, use)
 			return nil, errors.New(errEngineTimeout)
 		}
 		return a.out, a.err
@@ -354,7 +361,19 @@ func (t *taker) renderWithin(ctx context.Context, spec takeSpec) (*synthOut, err
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		t.recycle(ctx, use)
 		return nil, errors.New(errEngineTimeout)
+	}
+}
+
+// recycle replaces the engine child a render reached and got no answer from
+// (the engine cannot cancel an inference, so it stays wedged and every later
+// request would queue behind it, #156.12b). It runs only on the deadline paths
+// of renderWithin - never for a take that came back and failed its checks, a
+// user cancel, or a deadline that hit before any child was reached (pid 0).
+func (t *taker) recycle(ctx context.Context, use *engineUse) {
+	if pid := int(use.pid.Load()); pid > 0 {
+		t.ports.Recycle(ctx, pid)
 	}
 }
 

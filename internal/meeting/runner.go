@@ -307,16 +307,25 @@ func resumeStatus(dir string, m *Manifest) (Status, bool) {
 	return StatusQueued, true
 }
 
+// ErrVoicesNotReady is what RetryVoices answers for a meeting whose voices are unavailable for a reason a retry can
+// fix, while Deps.DiarizeReady still says this Mac cannot run the diarizer. Reason is DiarizeReady's code.
+type ErrVoicesNotReady struct{ Reason string }
+
+func (e *ErrVoicesNotReady) Error() string { return "meeting: voices are not ready: " + e.Reason }
+
 // RetryVoices tells the far side's voices apart again for a meeting where the diarizer broke
-// (WarnNoDiarization) and the far side's audio is still here: the meeting goes back to the transcript, and the
-// notes follow from it. That is a full transcription (the pieces of the first pass are gone once a transcript
-// stands, and the words are not kept), so it is its own call and Retry never makes it: the app calls Retry by
-// itself, at launch, for a meeting waiting on the notes model, and that must stay a matter of notes.
+// (WarnNoDiarization), or that was recorded while this Mac could not run it (WarnDiarUnavailable for a reason in
+// retryableUnavailable) and now can (Deps.DiarizeReady, asked at this moment), and the far side's audio is still
+// here: the meeting goes back to the transcript, and the notes follow from it. That is a full transcription (the
+// pieces of the first pass are gone once a transcript stands, and the words are not kept), so it is its own call and
+// Retry never makes it: the app calls Retry by itself, at launch, for a meeting waiting on the notes model, and that
+// must stay a matter of notes. A fixable-but-not-yet-ready meeting is refused with *ErrVoicesNotReady.
 func (r *Runner) RetryVoices(id string) (*Manifest, error) {
 	dir, err := r.Store.Dir(id)
 	if err != nil {
 		return nil, err
 	}
+	notReady := r.diarNotReady()
 	var refuse error
 	m, err := r.Store.Update(id, func(m *Manifest) {
 		switch m.Status {
@@ -327,6 +336,10 @@ func (r *Runner) RetryVoices(id string) (*Manifest, error) {
 		}
 		if !wantsVoicesAgain(dir, m) {
 			refuse = fmt.Errorf("meeting: %s has no failed diarization to retry, or its far-side audio is gone", id)
+			return
+		}
+		if unavailableFixable(m) && notReady != "" {
+			refuse = &ErrVoicesNotReady{Reason: notReady}
 			return
 		}
 		m.Status, m.NotesPending, m.Error, m.FailReason, m.Attempts, m.WaitingFor = StatusQueued, "", "", "", 0, ""
@@ -341,9 +354,43 @@ func (r *Runner) RetryVoices(id string) (*Manifest, error) {
 	return m, nil
 }
 
-// wantsVoicesAgain: the diarizer broke on this meeting and there is far-side audio to try again on.
+// diarNotReady is Deps.DiarizeReady's answer: "" when the diarizer can run now. Without a diarizer there is nothing
+// to run, so that is not ready.
+func (r *Runner) diarNotReady() string {
+	if r.Diarize == nil {
+		return DiarEngineMissing
+	}
+	if r.DiarizeReady == nil {
+		return ""
+	}
+	return r.DiarizeReady()
+}
+
+// VoicesRetryable is whether a retry of m's voices would be accepted right now, for a meeting whose voices are
+// unavailable (the failed kind is judged by the app). It is what the served meeting reports as voices_retryable, so
+// the app shows "Try Again" exactly when RetryVoices would take it.
+func (r *Runner) VoicesRetryable(m Manifest) bool {
+	if !unavailableFixable(&m) || r.diarNotReady() != "" {
+		return false
+	}
+	switch m.Status {
+	case StatusFailed, StatusTranscribed, StatusDone:
+	default:
+		return false
+	}
+	dir, err := r.Store.Dir(m.ID)
+	return err == nil && wantsVoicesAgain(dir, &m)
+}
+
+// unavailableFixable: voices are unavailable for a reason that a later retry can fix.
+func unavailableFixable(m *Manifest) bool {
+	return slices.Contains(m.Warnings, WarnDiarUnavailable) && retryableUnavailable[m.DiarReason]
+}
+
+// wantsVoicesAgain: the diarizer broke on this meeting, or could not run and may now, and there is far-side audio to
+// try again on. Whether it may run now is the caller's question (RetryVoices asks Deps.DiarizeReady).
 func wantsVoicesAgain(dir string, m *Manifest) bool {
-	if !slices.Contains(m.Warnings, WarnNoDiarization) {
+	if !slices.Contains(m.Warnings, WarnNoDiarization) && !unavailableFixable(m) {
 		return false
 	}
 	_, err := os.Stat(filepath.Join(dir, ThemPCM))

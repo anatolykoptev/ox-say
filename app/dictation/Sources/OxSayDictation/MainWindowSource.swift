@@ -417,7 +417,7 @@ final class MainWindowSource {
                 try await meetings.requestVoicesAgain(id: id)
                 refresh()
             } catch {
-                model.data.notice = L10nKey.speakersFailed.text(MeetingErrorText.sentence(error, action: .retry))
+                model.data.notice = L10nKey.speakersFailed.text(MeetingErrorText.sentence(error, action: .retryVoices))
             }
         }
     }
