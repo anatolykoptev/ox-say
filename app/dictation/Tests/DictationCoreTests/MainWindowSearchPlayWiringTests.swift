@@ -44,6 +44,11 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         XCTAssertTrue(closed.contains("stopPlayback()"), "closed: stop")
         XCTAssertTrue(closed.contains("cancelSearchWork()"), "closed: no search outlives the window")
         XCTAssertTrue(closed.contains("windowOpen = false"))
+        // Every stop path goes through stopPlayback, and stopPlayback invalidates the probe on its way as well as
+        // stopping the player: a probe that answers late must not start audio after a stop.
+        let stopFn = flat(try body(w, of: "private func stopPlayback() {"))
+        XCTAssertTrue(stopFn.contains("playRequests.invalidate() audio.stop()"), "stop invalidates the request in flight")
+        XCTAssertEqual(w.components(separatedBy: "audio.stop()").count - 1, 1, "no other path stops the player without the invalidate")
         let cancel = try body(w, of: "private func cancelSearchWork() {")
         XCTAssertTrue(cancel.contains("searchTimer?.cancel()") && cancel.contains("searchRequest?.cancel()"))
         let opened = try body(w, of: "func windowOpened() {")
