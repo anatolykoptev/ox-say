@@ -350,3 +350,17 @@
 "clipboard.reason.promised_file" = "отложенный файл";
 "clipboard.reason.too_large" = "больше %@ МБ данных";
 "clipboard.reason.other_device" = "копия с другого устройства";
+"update.failed.download" = "Не удалось скачать установщик (curl завершился с кодом %@).";
+"update.failed.download_timeout_after" = "Установщик не скачался за %@ с: время вышло.";
+"update.failed.download_timeout" = "Установщик не скачался: время вышло.";
+"update.failed.download_start" = "Скачивание не началось: %@.";
+"update.failed.not_script" = "Скачанный установщик пуст или не является скриптом.";
+"update.failed.installer_exit" = "Установщик завершился с кодом %@.";
+"update.failed.installer_start" = "Установщик не удалось запустить: %@.";
+"update.failed.version_unchanged" = "Версия не изменилась: после установки ожидалась %1$@, сейчас %2$@.";
+"update.failed.version_unreadable" = "Версия не изменилась: после установки ожидалась %@, сейчас неизвестно.";
+"update.failed.daemon_version" = "Служба ox-say не дошла до %1$@ после установки; /status сообщает %2$@.";
+"update.failed.daemon_silent" = "Служба ox-say не дошла до %@ после установки; /status не ответил.";
+"update.failed.title" = "Не удалось обновиться до %@";
+"update.failed.title_studio" = "Не удалось установить студийный голос";
+"update.failed.log_pointer" = "%1$@ Вывод установщика записан в\n%2$@";

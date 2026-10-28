@@ -1358,8 +1358,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try? log?.close()
             if let failure {
                 self.endInstall()
-                runAlert(title: kind == .studioVoice ? "Installing the studio voice failed" : "Update to \(tag) failed",
-                         text: "\(failure.message) Its output is in\n\(Self.updateLogURL.path)",
+                runAlert(title: UpdateInstaller.failureTitle(kind: kind, tag: tag),
+                         text: failure.alertText(logPath: Self.updateLogURL.path),
                          buttons: ["OK"])
                 return
             }

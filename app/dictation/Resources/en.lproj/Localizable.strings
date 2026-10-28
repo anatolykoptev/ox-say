@@ -350,3 +350,17 @@
 "clipboard.reason.promised_file" = "a promised file";
 "clipboard.reason.too_large" = "more than %@ MB of data";
 "clipboard.reason.other_device" = "a clipboard copied on another device";
+"update.failed.download" = "Downloading the installer failed (curl exited with status %@).";
+"update.failed.download_timeout_after" = "Downloading the installer timed out after %@ s.";
+"update.failed.download_timeout" = "Downloading the installer timed out.";
+"update.failed.download_start" = "The download could not start: %@.";
+"update.failed.not_script" = "The downloaded installer was empty or not a script.";
+"update.failed.installer_exit" = "The installer exited with status %@.";
+"update.failed.installer_start" = "The installer could not start: %@.";
+"update.failed.version_unchanged" = "The version did not change: expected %1$@ after the install, found %2$@.";
+"update.failed.version_unreadable" = "The version did not change: expected %@ after the install, found unknown.";
+"update.failed.daemon_version" = "The ox-say service did not reach %1$@ after the install; /status reports %2$@.";
+"update.failed.daemon_silent" = "The ox-say service did not reach %@ after the install; /status reports nothing.";
+"update.failed.title" = "Update to %@ failed";
+"update.failed.title_studio" = "Installing the studio voice failed";
+"update.failed.log_pointer" = "%1$@ Its output is in\n%2$@";

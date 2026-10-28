@@ -109,28 +109,44 @@ public enum UpdateInstaller {
         /// The bundle updated but the daemon never reported the target on /status.
         case daemonNotOnVersion(expected: String, found: String?)
 
-        public var message: String {
+        /// The reason, in the user's language: `text` resolves a key (the bundle's by default, the shipped strings in
+        /// tests). The system's own error text inside `why` stays as the system wrote it.
+        public func message(text: (L10nKey) -> String = { $0.text }) -> String {
+            func fill(_ key: L10nKey, _ args: String...) -> String { String(format: text(key), arguments: args) }
             switch self {
             case .downloadFailed(let status):
-                return "Downloading the installer failed (curl exited with status \(status))."
+                return fill(.updateFailedDownload, String(status))
             case .downloadTimedOut(let seconds):
-                return seconds.map { "Downloading the installer timed out after \(Int($0)) s." }
-                    ?? "Downloading the installer timed out."
+                return seconds.map { fill(.updateFailedDownloadTimeoutAfter, String(Int($0))) }
+                    ?? text(.updateFailedDownloadTimeout)
             case .downloaderCouldNotStart(let why):
-                return "The download could not start: \(why)."
+                return fill(.updateFailedDownloadStart, why)
             case .notAScript:
-                return "The downloaded installer was empty or not a script."
+                return text(.updateFailedNotScript)
             case .installerFailed(let status):
-                return "The installer exited with status \(status)."
+                return fill(.updateFailedInstallerExit, String(status))
             case .couldNotStart(let why):
-                return "The installer could not start: \(why)."
+                return fill(.updateFailedInstallerStart, why)
             case .versionUnchanged(let expected, let found):
-                let now = found.map { "v\(UpdateInstaller.normalized($0))" } ?? "unknown"
-                return "The version did not change: expected \(expected) after the install, found \(now)."
+                guard let found else { return fill(.updateFailedVersionUnreadable, expected) }
+                return fill(.updateFailedVersionUnchanged, expected, "v\(UpdateInstaller.normalized(found))")
             case .daemonNotOnVersion(let expected, let found):
-                let now = found.map { "v\(UpdateInstaller.normalized($0))" } ?? "nothing"
-                return "The ox-say service did not reach \(expected) after the install; /status reports \(now)."
+                guard let found else { return fill(.updateFailedDaemonSilent, expected) }
+                return fill(.updateFailedDaemonVersion, expected, "v\(UpdateInstaller.normalized(found))")
             }
+        }
+
+        /// The alert's body: the reason, then where the installer's output went.
+        public func alertText(logPath: String, text: (L10nKey) -> String = { $0.text }) -> String {
+            String(format: text(.updateFailedLogPointer), message(text: text), logPath)
+        }
+    }
+
+    /// The failed alert's title.
+    public static func failureTitle(kind: Kind, tag: String, text: (L10nKey) -> String = { $0.text }) -> String {
+        switch kind {
+        case .update: return String(format: text(.updateFailedTitle), tag)
+        case .studioVoice: return text(.updateFailedTitleStudio)
         }
     }
 

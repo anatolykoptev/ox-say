@@ -1,6 +1,9 @@
 import XCTest
 @testable import DictationCore
 
+private let enText = ShippedStrings.localizer("en")
+private let ruText = ShippedStrings.localizer("ru")
+
 final class UpdateInstallTests: XCTestCase {
     func testDownloadIsAStandaloneCurlWithItsOwnExitStatus() {
         let argv = UpdateInstaller.downloadCommand(to: "/tmp/x.sh")
@@ -261,7 +264,7 @@ final class UpdateInstallTests: XCTestCase {
     func testUnchangedVersionIsAFailureNamingBothVersions() async {
         let f = await UpdateInstaller.verifyInstalled(version: "0.1.20", daemonVersion: { nil }, target: "v0.1.21")
         XCTAssertEqual(f, .versionUnchanged(expected: "v0.1.21", found: "0.1.20"))
-        XCTAssertEqual(f?.message, "The version did not change: expected v0.1.21 after the install, found v0.1.20.")
+        XCTAssertEqual(f?.message(text: enText), "The version did not change: expected v0.1.21 after the install, found v0.1.20.")
     }
 
     func testUnreadableInstalledVersionIsAFailure() async {
@@ -300,7 +303,7 @@ final class UpdateInstallTests: XCTestCase {
         }, target: "v0.1.22", checks: 3, interval: 0.001)
         XCTAssertEqual(failure, .daemonNotOnVersion(expected: "v0.1.22", found: "v0.1.21"))
         XCTAssertEqual(polls, 3, "bounded: exactly `checks` polls")
-        XCTAssertEqual(failure?.message,
+        XCTAssertEqual(failure?.message(text: enText),
                        "The ox-say service did not reach v0.1.22 after the install; /status reports v0.1.21.")
     }
 
@@ -351,10 +354,10 @@ final class UpdateInstallTests: XCTestCase {
     }
 
     func testFailureMessages() {
-        XCTAssertEqual(UpdateInstaller.Failure.downloadFailed(status: 22).message,
+        XCTAssertEqual(UpdateInstaller.Failure.downloadFailed(status: 22).message(text: enText),
                        "Downloading the installer failed (curl exited with status 22).")
-        XCTAssertEqual(UpdateInstaller.Failure.installerFailed(status: 1).message, "The installer exited with status 1.")
-        XCTAssertEqual(UpdateInstaller.Failure.couldNotStart("no such file").message, "The installer could not start: no such file.")
+        XCTAssertEqual(UpdateInstaller.Failure.installerFailed(status: 1).message(text: enText), "The installer exited with status 1.")
+        XCTAssertEqual(UpdateInstaller.Failure.couldNotStart("no such file").message(text: enText), "The installer could not start: no such file.")
     }
 
     func testCheckIsRefusedWhileInstalling() {
@@ -391,7 +394,7 @@ final class UpdateInstallRobustnessTests: XCTestCase {
                                                 installedVersion: { nil }, daemonVersion: { nil })
         XCTAssertEqual(failure, .downloadTimedOut(seconds: 0.3))
         XCTAssertLessThan(Date().timeIntervalSince(started), 5, "the run waited for the hung process")
-        XCTAssertTrue(failure?.message.contains("timed out") ?? false, failure?.message ?? "nil")
+        XCTAssertTrue(failure?.message(text: enText).contains("timed out") ?? false, failure?.message(text: enText) ?? "nil")
     }
 
     func testACurlThatCannotStartHasItsOwnText() async {
@@ -399,7 +402,7 @@ final class UpdateInstallRobustnessTests: XCTestCase {
                                                 downloadArgv: { _, _ in ["/nonexistent/curl"] },
                                                 installedVersion: { nil }, daemonVersion: { nil })
         guard case .downloaderCouldNotStart? = failure else { return XCTFail("got \(String(describing: failure))") }
-        XCTAssertTrue(failure?.message.hasPrefix("The download could not start:") ?? false, failure?.message ?? "nil")
+        XCTAssertTrue(failure?.message(text: enText).hasPrefix("The download could not start:") ?? false, failure?.message(text: enText) ?? "nil")
     }
 
     /// curl's own `--max-time` ends with exit 28 long before the app-side backstop: that is the timed-out sentence, not
@@ -410,8 +413,8 @@ final class UpdateInstallRobustnessTests: XCTestCase {
                                                 installedVersion: { nil }, daemonVersion: { nil })
         XCTAssertEqual(failure, .downloadTimedOut(seconds: nil))
         // exit 28 is `--max-time` (60 s) AND `--connect-timeout` (15 s): naming either figure is wrong half the time.
-        XCTAssertEqual(failure?.message, "Downloading the installer timed out.")
-        XCTAssertEqual(UpdateInstaller.Failure.downloadTimedOut(seconds: 90).message,
+        XCTAssertEqual(failure?.message(text: enText), "Downloading the installer timed out.")
+        XCTAssertEqual(UpdateInstaller.Failure.downloadTimedOut(seconds: 90).message(text: enText),
                        "Downloading the installer timed out after 90 s.", "the backstop knows its own figure")
         let other = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil,
                                               downloadArgv: { _, _ in ["/bin/sh", "-c", "exit 22"] },
@@ -504,5 +507,98 @@ final class UpdateInstallRobustnessTests: XCTestCase {
         let app = try source("Sources/OxSayDictation/AppDelegate.swift")
         XCTAssertTrue(app.contains("overlay.onMessageExpired = "), "AppDelegate never wires onMessageExpired")
         XCTAssertTrue(app.contains("InstallPill.restoreAfterNotice(installing: updateInstalling, dictation: controller.state)"))
+    }
+}
+
+// MARK: #325 — the update failure texts are in the user's language
+
+final class UpdateFailureL10nTests: XCTestCase {
+    /// One of every case, so a new `Failure` case cannot ship without a row here and in both string files.
+    private static let every: [(UpdateInstaller.Failure, en: String, ru: String)] = [
+        (.downloadFailed(status: 22),
+         "Downloading the installer failed (curl exited with status 22).",
+         "Не удалось скачать установщик (curl завершился с кодом 22)."),
+        (.downloadTimedOut(seconds: 90),
+         "Downloading the installer timed out after 90 s.",
+         "Установщик не скачался за 90 с: время вышло."),
+        (.downloadTimedOut(seconds: nil),
+         "Downloading the installer timed out.",
+         "Установщик не скачался: время вышло."),
+        (.downloaderCouldNotStart("no such file"),
+         "The download could not start: no such file.",
+         "Скачивание не началось: no such file."),
+        (.notAScript,
+         "The downloaded installer was empty or not a script.",
+         "Скачанный установщик пуст или не является скриптом."),
+        (.installerFailed(status: 1),
+         "The installer exited with status 1.",
+         "Установщик завершился с кодом 1."),
+        (.couldNotStart("no such file"),
+         "The installer could not start: no such file.",
+         "Установщик не удалось запустить: no such file."),
+        (.versionUnchanged(expected: "v0.1.21", found: "0.1.20"),
+         "The version did not change: expected v0.1.21 after the install, found v0.1.20.",
+         "Версия не изменилась: после установки ожидалась v0.1.21, сейчас v0.1.20."),
+        (.versionUnchanged(expected: "v0.1.21", found: nil),
+         "The version did not change: expected v0.1.21 after the install, found unknown.",
+         "Версия не изменилась: после установки ожидалась v0.1.21, сейчас неизвестно."),
+        (.daemonNotOnVersion(expected: "v0.1.22", found: "v0.1.21"),
+         "The ox-say service did not reach v0.1.22 after the install; /status reports v0.1.21.",
+         "Служба ox-say не дошла до v0.1.22 после установки; /status сообщает v0.1.21."),
+        (.daemonNotOnVersion(expected: "v0.1.22", found: nil),
+         "The ox-say service did not reach v0.1.22 after the install; /status reports nothing.",
+         "Служба ox-say не дошла до v0.1.22 после установки; /status не ответил."),
+    ]
+
+    /// Mutation: UpdateInstall.swift Failure.message, `.notAScript` back to its English literal -> RED on the Russian row.
+    func testEveryFailureReadsRightInBothLanguages() {
+        for row in Self.every {
+            XCTAssertEqual(row.0.message(text: ShippedStrings.localizer("en")), row.en)
+            XCTAssertEqual(row.0.message(text: ShippedStrings.localizer("ru")), row.ru)
+        }
+    }
+
+    /// Every case has a row above (the `switch` here has no default, so a new case does not compile until it is
+    /// listed), and none of its texts is a missing key.
+    func testEveryFailureCaseIsCoveredAndHasBothTexts() {
+        var seen = Set<String>()
+        for row in Self.every {
+            switch row.0 {
+            case .downloadFailed: seen.insert("downloadFailed")
+            case .downloadTimedOut: seen.insert("downloadTimedOut")
+            case .downloaderCouldNotStart: seen.insert("downloaderCouldNotStart")
+            case .notAScript: seen.insert("notAScript")
+            case .installerFailed: seen.insert("installerFailed")
+            case .couldNotStart: seen.insert("couldNotStart")
+            case .versionUnchanged: seen.insert("versionUnchanged")
+            case .daemonNotOnVersion: seen.insert("daemonNotOnVersion")
+            }
+            for locale in ["en", "ru"] {
+                XCTAssertFalse(row.0.message(text: ShippedStrings.localizer(locale)).contains("MISSING"), locale)
+            }
+        }
+        XCTAssertEqual(seen.count, 8)
+    }
+
+    /// The alert around the message is localized too: its title and the pointer to the log.
+    func testTheAlertTitleAndLogPointerAreInTheUsersLanguage() {
+        let path = "/tmp/ox-say-update.log"
+        XCTAssertEqual(UpdateInstaller.failureTitle(kind: .update, tag: "v0.1.22", text: enText), "Update to v0.1.22 failed")
+        XCTAssertEqual(UpdateInstaller.failureTitle(kind: .update, tag: "v0.1.22", text: ruText), "Не удалось обновиться до v0.1.22")
+        XCTAssertEqual(UpdateInstaller.failureTitle(kind: .studioVoice, tag: "v0.1.22", text: enText), "Installing the studio voice failed")
+        XCTAssertEqual(UpdateInstaller.failureTitle(kind: .studioVoice, tag: "v0.1.22", text: ruText), "Не удалось установить студийный голос")
+        XCTAssertEqual(UpdateInstaller.Failure.notAScript.alertText(logPath: path, text: enText),
+                       "The downloaded installer was empty or not a script. Its output is in\n\(path)")
+        XCTAssertEqual(UpdateInstaller.Failure.notAScript.alertText(logPath: path, text: ruText),
+                       "Скачанный установщик пуст или не является скриптом. Вывод установщика записан в\n\(path)")
+    }
+
+    /// The app shows exactly this text, not a message it builds itself.
+    func testTheAppShowsTheLocalizedAlertText() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let app = try String(contentsOf: root.appendingPathComponent("Sources/OxSayDictation/AppDelegate.swift"), encoding: .utf8)
+        XCTAssertTrue(app.contains("failure.alertText(logPath: Self.updateLogURL.path)"))
+        XCTAssertTrue(app.contains("UpdateInstaller.failureTitle(kind: kind, tag: tag)"))
+        XCTAssertFalse(app.contains("failure.message"), "the alert must not build its own English text")
     }
 }
