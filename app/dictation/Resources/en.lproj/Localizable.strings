@@ -110,10 +110,11 @@
 "notice.meeting.notes_pending" = "The transcript is saved. Download the notes model to get notes.";
 "notice.meeting.failed" = "The meeting could not be processed: %@";
 "notice.meeting.start_failed" = "Recording could not start: %@";
-"meeting.explain.title" = "OxSay can record your calls";
-"meeting.explain.body" = "When a call starts in Zoom, Meet, Teams or another call app, OxSay records both sides on this Mac, writes a transcript and notes, and keeps the audio for 30 days. Nothing leaves your Mac. A red recording badge stays on screen, and you can stop it or skip a call at any time. Tell people you are recording: laws in some places require everyone's consent.";
-"meeting.explain.ok" = "Record Calls Automatically";
-"meeting.explain.manual" = "Only When I Choose";
+/* The one-time consent reminder before the first recording; it never changes a setting. */
+"meeting.remind.title" = "Before you record";
+"meeting.remind.body" = "OxSay records both sides of the call on this Mac, writes a transcript and notes, and keeps the audio for 30 days. Nothing leaves your Mac. A red recording badge stays on screen, and you can stop at any time. Tell the other people you are recording: laws in some places require everyone's consent.";
+"meeting.remind.record" = "Record This Call";
+"meeting.remind.skip" = "Don't Record";
 "notice.meeting.browser_denied" = "To notice Google Meet calls, allow OxSay to control your browser in System Settings → Privacy & Security → Automation.";
 "notice.meeting.tap_silent" = "OxSay hears nothing from the other side although sound is playing: turn OxSay on under Privacy & Security → Screen & System Audio Recording → System Audio Recording Only, or, if it is already on, switch it off and on again.";
 "meeting.tap_silent.title" = "System audio is silent";

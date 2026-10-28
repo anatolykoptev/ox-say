@@ -141,6 +141,10 @@ public enum CallDetector {
         users.contains { canonical($0.bundleID) == bundleID }
     }
 
+    /// The sources a browser tab can turn out to be (`MeetingURL.source`): a browser is read only while one of
+    /// them is not "Don't record".
+    public static let browserSources: Set<String> = ["meet", "zoom", "oxpulse", "teams"]
+
     /// The display name of a browser, for the Automation-consent badge ("A call in Chrome?…").
     public static func browserName(_ bundleID: String) -> String {
         ["com.google.Chrome": "Chrome", "com.brave.Browser": "Brave",
@@ -386,6 +390,9 @@ public struct CallWatch {
     private var consentAsked: Set<String> = []
     /// Browsers the user said "Not now" to: no Apple Event for them until they let the microphone go.
     private var skippedConsent: Set<String> = []
+    /// macOS's decided Automation answers, kept while the browser holds the microphone: the lookup is a TCC query
+    /// and the poll runs every 2 s. An undetermined answer is never kept — the user may settle it any moment.
+    private var consentCache: [String: BrowserConsent] = [:]
 
     public init() {}
 
@@ -408,19 +415,27 @@ public struct CallWatch {
                                  themActive: Bool, recording: CallTracker.Origin?,
                                  mode: (String) -> CallAppMode = CallPolicy.defaultMode,
                                  consent: (String) -> BrowserConsent = { _ in .granted }) -> Outcome {
+        // A browser tab can only turn out to be a call source the user did not switch off: with all of them
+        // on "Don't record" no browser is asked about, let alone read.
+        let browsersWanted = CallDetector.browserSources.contains { mode($0) != .never }
         var browserIDs: Set<String> = []
         for user in users {
             let id = CallDetector.canonical(user.bundleID)
-            if CallDetector.browsers.contains(id) { browserIDs.insert(id) }
+            if browsersWanted, CallDetector.browsers.contains(id) { browserIDs.insert(id) }
         }
-        // A skipped browser that let the microphone go asks again on the next hold.
+        let detectUsers = browsersWanted ? users : users.filter { !CallDetector.browsers.contains(CallDetector.canonical($0.bundleID)) }
+        // A browser that let the microphone go is a new hold on its next grab: "Not now" and "Allow…" are
+        // forgotten (a later Automation reset is asked in context again) and so is the cached answer.
         skippedConsent.formIntersection(browserIDs)
+        consentAsked.formIntersection(browserIDs)
+        consentCache = consentCache.filter { browserIDs.contains($0.key) }
         var needsConsent: Set<String> = []
-        for id in browserIDs where !skippedConsent.contains(id) && !consentAsked.contains(id) && consent(id) == .undetermined {
-            needsConsent.insert(id)
+        for id in browserIDs where !skippedConsent.contains(id) && !consentAsked.contains(id) {
+            let answer = consentCache[id] ?? consent(id)
+            if answer == .undetermined { needsConsent.insert(id) } else { consentCache[id] = answer }
         }
         var reads: [String: BrowserTabURL.Result] = [:]
-        let detection = CallDetector.detect(of: users, tab: { id in
+        let detection = CallDetector.detect(of: detectUsers, tab: { id in
             // Undetermined or skipped: no Apple Event, and the answer is not a real read — neither the
             // debounce tolerance nor the "waiting for permission" count may see it.
             if needsConsent.contains(id) || skippedConsent.contains(id) { return .unreadable }

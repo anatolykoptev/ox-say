@@ -353,7 +353,8 @@ final class MeetingWiringTests: XCTestCase {
     func testThePolicyDecidesAtTheCallSites() throws {
         let text = try controller()
         let auto = try XCTUnwrap(body(text, of: "private func applyCallMode() {"))
-        XCTAssertTrue(auto.contains("MeetingPolicy.watcherShouldRun(mode: MeetingSettings.callMode(host.defaults), recording: current?.origin)"))
+        XCTAssertTrue(auto.contains("let mode = MeetingSettings.callMode(host.defaults)"))
+        XCTAssertTrue(auto.contains("MeetingPolicy.watcherShouldRun(mode: mode, recording: current?.origin)"))
         let stop = try XCTUnwrap(body(text, of: "func stop() {\n"))
         XCTAssertTrue(stop.contains("\n        applyCallMode()\n"), "the watcher is re-evaluated when a recording ends")
         let observe = try XCTUnwrap(body(text, of: "private func observe(_ tick: CallWatcher.Tick) {"))
@@ -376,9 +377,37 @@ final class MeetingWiringTests: XCTestCase {
     func testTheExplanationIsForAutoStartsAndThePromptNotTheMenu() throws {
         let text = try controller()
         let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
-        XCTAssertTrue(start.contains("if origin == .auto || offered, !explainedAndAllowed(origin: origin, source: source) { return }"))
+        XCTAssertTrue(start.contains("if origin == .auto || offered, !consentReminderAccepted() { return }"))
         XCTAssertTrue(text.contains("self?.start(origin: .manual, source: self?.lastSource ?? \"\", offered: true)"),
                       "the prompt's Record is the offered start")
+    }
+
+    /// The one-time dialog is a consent reminder: it can cancel this start, and it never writes the global mode or
+    /// an app's pick (a user who presses Record for one call must not end up on "Record automatically").
+    /// Mutation: MeetingController.consentReminderAccepted, add `MeetingSettings.setCallMode(.auto, host.defaults)` -> RED.
+    /// Mutation: same function, `guard pressed == .alertFirstButtonReturn else { return false }` removed -> RED.
+    func testTheConsentReminderNeverChangesASetting() throws {
+        let reminder = try XCTUnwrap(body(try controller(), of: "private func consentReminderAccepted() -> Bool {"))
+        XCTAssertFalse(reminder.contains("setCallMode"), "the reminder must not write the global mode")
+        XCTAssertFalse(reminder.contains("CallPolicy.setMode"), "nor a per-app pick")
+        XCTAssertFalse(reminder.contains("callMode"))
+        XCTAssertTrue(reminder.contains("guard pressed == .alertFirstButtonReturn else { return false }"), "Don't Record cancels the start")
+        XCTAssertTrue(reminder.contains("L10nKey.meetingRemindRecord.text, L10nKey.meetingRemindSkip.text"), "Record This Call is the default button")
+        let whole = try controller()
+        XCTAssertFalse(whole.contains("Only When I Choose"))
+    }
+
+    /// The badge's questions come down through OfferLifetime (Core-tested): the prompt when its call is really
+    /// over or another began, the consent question when the browser releases the microphone, and both when the
+    /// mode goes Off.
+    /// Mutation: MeetingController.observe, `{ badge.hide() }` after `offerLife.shouldHide(` -> `{ _ = 0 }` -> RED.
+    /// Mutation: MeetingController.applyCallMode, `badge.hide()` -> `_ = 0` -> RED.
+    func testTheOffersComeDownThroughTheCoreDecision() throws {
+        let text = try controller()
+        let observe = try XCTUnwrap(body(text, of: "private func observe(_ tick: CallWatcher.Tick) {"))
+        XCTAssertTrue(observe.contains("if offerLife.shouldHide(now: Date(), offer: offer, liveSource: tick.call?.source, users: tick.users) { badge.hide() }"))
+        let apply = try XCTUnwrap(body(text, of: "private func applyCallMode() {"))
+        XCTAssertTrue(apply.contains("if !OfferLifetime.offersAllowed(mode: mode) {\n            if case .recording = badge.mode {} else { badge.hide() }"))
     }
 
     /// "Don't ask for <App>" writes the per-app "Don't record" — reversible in Settings — and declines this call.
