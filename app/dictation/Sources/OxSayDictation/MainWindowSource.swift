@@ -40,8 +40,10 @@ final class MainWindowSource {
     private var clockTimer: Timer?
     private var gate = RefreshGate()
     private let audio = MeetingAudioPlayer()
-    /// Each click on a line is one request; a probe that comes back after another click or a stop is dropped.
-    private var playRequest = 0
+    /// Each click on a line is one request; a probe that comes back after another click, a stop or a close is dropped.
+    private var playRequests = PlayRequestGuard()
+    /// Open (shown, hidden or covered) until the window is closed. A hidden window keeps its audio playing.
+    private var windowOpen = false
     private var searchTimer: Task<Void, Never>?
     private var searchRequest: Task<Void, Never>?
 
@@ -58,23 +60,28 @@ final class MainWindowSource {
 
     /// Every open: the data is read again, whatever it was when the window was last closed.
     func windowOpened() {
+        windowOpen = true
         visible = true
+        // A search that was running when the window closed was cancelled: run it again rather than show a spinner.
+        if model.data.search.phase == .searching { searchEvent(.retry) }
         refresh()
     }
 
     func windowClosed() {
+        windowOpen = false
+        cancelSearchWork()
         stopPlayback()
         stopClocks()
     }
 
-    /// Minimised, covered or the app hidden: nothing is polled and no clock ticks; shown again, it reads once.
+    /// Minimised, covered or the app hidden: nothing is polled and no clock ticks; shown again, it reads once. The audio
+    /// is not touched: someone listening to a meeting while working in another app keeps hearing it.
     func visibilityChanged(_ nowVisible: Bool) {
         guard nowVisible != visible else { return }
         if nowVisible {
             visible = true
             refresh()
         } else {
-            stopPlayback()
             stopClocks()
         }
     }
@@ -249,10 +256,7 @@ final class MainWindowSource {
         for effect in effects {
             switch effect {
             case .cancelInFlight:
-                searchTimer?.cancel()
-                searchRequest?.cancel()
-                searchTimer = nil
-                searchRequest = nil
+                cancelSearchWork()
             case .startTimer(let generation, let delay):
                 searchTimer?.cancel()
                 searchTimer = Task { @MainActor [weak self] in
@@ -273,11 +277,19 @@ final class MainWindowSource {
         }
     }
 
+    /// The timer and the request that run now stop; nothing of a search outlives a closed window.
+    private func cancelSearchWork() {
+        searchTimer?.cancel()
+        searchRequest?.cancel()
+        searchTimer = nil
+        searchRequest = nil
+    }
+
     // MARK: playback
 
     /// Stops the audio and forgets any click whose probe is still on its way.
     private func stopPlayback() {
-        playRequest += 1
+        playRequests.invalidate()
         audio.stop()
     }
 
@@ -299,11 +311,10 @@ final class MainWindowSource {
         case .refused(.unavailable):
             break
         case .play(let start):
-            playRequest += 1
-            let request = playRequest
+            let request = playRequests.begin()
             Task { @MainActor in
                 let probe = await host.client.probeMeetingAudio(id: id)
-                guard request == playRequest, visible else { return }
+                guard playRequests.isCurrent(request, windowOpen: windowOpen) else { return }
                 switch probe {
                 case .available:
                     // The recording may have begun while the probe was on its way.

@@ -102,7 +102,7 @@ public enum PreviewData {
     public static func searchingNothing(now: Date = Date(), ru: Bool = L10nBundle.locale.identifier.hasPrefix("ru"),
                                         calendar: Calendar = .current) -> MainWindowData {
         var d = make(now: now, ru: ru, calendar: calendar)
-        d.search = MeetingSearchState(phase: .noResults, query: ru ? "йогурт" : "yoghurt")
+        d.search = MeetingSearchState(phase: .noResults(MeetingSearchResult(meetings: [], skipped: 2)), query: ru ? "йогурт" : "yoghurt")
         return d
     }
 

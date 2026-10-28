@@ -10,16 +10,18 @@ struct TranscriptTab: View {
     @State private var findOpen = false
     @FocusState private var findFocused: Bool
     @State private var query = ""
+    /// The parsed turns and the speakers' order, kept while the text is the same: a playback tick re-evaluates this
+    /// view, and a two-hour transcript must not be parsed again for it.
+    @State private var parsed = ParsedTranscript()
 
     private var info: MeetingInfo { detail.info }
 
     var body: some View {
-        let turns = info.transcriptMD.map(TranscriptTurn.parse) ?? []
+        let (turns, order) = parsed.read(info.transcriptMD)
         if turns.isEmpty {
             Text(L10nKey.meetingTranscriptNone.text).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            let order = speakerOrder(turns)
             let gate = PlaybackGate.decide(audioDeleted: info.audioDeleted, recordingRunning: model.data.recordingElapsed != nil,
                                            status: info.status)
             let playing = playingTurn(turns)
@@ -39,7 +41,9 @@ struct TranscriptTab: View {
                     }
                     .onAppear { scrollToFocus(turns, proxy) }
                     .onChange(of: model.focus) { _ in scrollToFocus(turns, proxy) }
-                    .onChange(of: find.current) { _ in scrollToCurrentMatch(proxy) }
+                    // The serial, not `current`: a new query that lands on the first match again, or Next with one
+                    // match, leaves `current` where it was and must still scroll.
+                    .onChange(of: find.serial) { _ in scrollToCurrentMatch(proxy) }
                 }
             }
             .background(shortcuts(turns))
@@ -91,12 +95,22 @@ struct TranscriptTab: View {
     /// ⌘F opens the bar, ⌘G and ⇧⌘G step through the matches. Invisible buttons: they exist only while this tab does.
     private func shortcuts(_ turns: [TranscriptTurn]) -> some View {
         ZStack {
-            Button("") { findOpen = true; findFocused = true; find.setQuery(query, turns: turns) }
+            Button("") { openFind(turns) }
                 .keyboardShortcut("f", modifiers: .command)
             Button("") { find.next() }.keyboardShortcut("g", modifiers: .command)
             Button("") { find.previous() }.keyboardShortcut("g", modifiers: [.command, .shift])
         }
         .opacity(0).frame(width: 0, height: 0).allowsHitTesting(false).accessibilityHidden(true)
+    }
+
+    /// ⌘F: opens the bar, or with the bar already open only focuses the field; the match the user is on stays.
+    private func openFind(_ turns: [TranscriptTurn]) {
+        if !findOpen {
+            findOpen = true
+            find.setQuery(query, turns: turns)
+        }
+        // The field exists only after the bar is drawn: focus on the next turn of the run loop, not in this transaction.
+        DispatchQueue.main.async { findFocused = true }
     }
 
     private func closeFind() {
@@ -124,10 +138,23 @@ struct TranscriptTab: View {
         return TurnClock.currentTurn(at: p.position, in: turns)
     }
 
-    private func speakerOrder(_ turns: [TranscriptTurn]) -> [String: Int] {
-        var order: [String: Int] = [:]
-        for t in turns where order[t.speaker] == nil { order[t.speaker] = order.count }
-        return order
+}
+
+/// The turns of one transcript text and the order their speakers first speak in, parsed once per text. A class, so
+/// reading it during a view update changes no state and triggers no update.
+final class ParsedTranscript {
+    private var text: String?
+    private var turns: [TranscriptTurn] = []
+    private var order: [String: Int] = [:]
+
+    func read(_ markdown: String?) -> ([TranscriptTurn], [String: Int]) {
+        if text != markdown || (text == nil && turns.isEmpty && markdown != nil) {
+            text = markdown
+            turns = markdown.map(TranscriptTurn.parse) ?? []
+            order = [:]
+            for t in turns where order[t.speaker] == nil { order[t.speaker] = order.count }
+        }
+        return (turns, order)
     }
 }
 
@@ -138,18 +165,34 @@ private struct TurnRow: View {
     let playing: Bool
     let marks: (ranges: [Range<Int>], current: Int?)
     let play: () -> Void
+    @State private var hovering = false
+
+    /// Speaker, time and the play glyph: the part of a turn that plays it. The words below stay a plain selectable text,
+    /// so a double or triple click selects them and never starts the audio.
+    private func header(glyph: Bool) -> some View {
+        HStack(spacing: 6) {
+            Text(turn.speaker).fontWeight(.semibold)
+            Text(turn.time).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            if glyph {
+                Image(systemName: playing ? "speaker.wave.2.fill" : "play.circle")
+                    .font(.caption).foregroundStyle(playing ? Color.accentColor : Color.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+    }
 
     var body: some View {
-        let row = HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             SpeakerAvatar(name: turn.speaker, index: order, size: 26)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(turn.speaker).fontWeight(.semibold)
-                    Text(turn.time).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                    if gate.showsAffordance {
-                        Image(systemName: playing ? "speaker.wave.2.fill" : "play.circle")
-                            .font(.caption).foregroundStyle(playing ? Color.accentColor : Color.secondary)
-                    }
+                if gate.showsAffordance {
+                    Button(action: play) { header(glyph: true) }
+                        .buttonStyle(.plain)
+                        .help(L10nKey.playFromHere.text)
+                        .accessibilityLabel("\(L10nKey.playFromHere.text), \(turn.speaker) \(turn.time)")
+                        .accessibilityAddTraits(.isButton)
+                } else {
+                    header(glyph: false)
                 }
                 // The turn's words as they are: no markup is read, so there is no link to make.
                 Text(Highlights.styled(TextHighlight.attributed(turn.text, ranges: marks.ranges, current: marks.current)))
@@ -158,12 +201,13 @@ private struct TurnRow: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(playing ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
-        if gate.showsAffordance {
-            row.contentShape(Rectangle()).onTapGesture(perform: play).help(L10nKey.playFromHere.text)
-        } else {
-            row
-        }
+        .background(rowFill, in: RoundedRectangle(cornerRadius: 8))
+        .onHover { hovering = $0 }
+    }
+
+    private var rowFill: Color {
+        if playing { return Color.accentColor.opacity(0.12) }
+        return hovering && gate.showsAffordance ? Color.primary.opacity(0.05) : Color.clear
     }
 }
 

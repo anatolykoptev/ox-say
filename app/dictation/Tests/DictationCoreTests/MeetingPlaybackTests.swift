@@ -132,4 +132,53 @@ final class MeetingPlaybackTests: XCTestCase {
             .probeMeetingAudio(id: "m", text: { $0.rawValue })
         XCTAssertEqual(down, .failed("meeting.error.daemon_down"))
     }
+
+    // MARK: a probe that comes back late
+
+    /// A HEAD probe resolves after the user stopped, picked another meeting or closed the window: it must not start
+    /// the audio. A hidden window is not a closed one: the audio the user asked for goes on.
+    /// Mutation: PlayRequestGuard.isCurrent, `request == current &&` removed -> RED; MainWindowSource.playTurn, the
+    /// guard line deleted -> RED (wiring test).
+    func testALateProbeIsDropped() {
+        var g = PlayRequestGuard()
+        let first = g.begin()
+        XCTAssertTrue(g.isCurrent(first, windowOpen: true))
+        let second = g.begin()
+        XCTAssertFalse(g.isCurrent(first, windowOpen: true), "another click")
+        XCTAssertTrue(g.isCurrent(second, windowOpen: true))
+        g.invalidate()
+        XCTAssertFalse(g.isCurrent(second, windowOpen: true), "stop, switch, close")
+        let third = g.begin()
+        XCTAssertFalse(g.isCurrent(third, windowOpen: false), "the window was closed")
+    }
+
+    // MARK: what is published while it plays
+
+    /// The mini player shows whole seconds and the highlight moves on whole seconds (a turn begins at one): a tick
+    /// inside the same second republishes nothing.
+    /// Mutation: PlaybackValues.publishes, compare `position` exactly instead of `Int(position)` -> RED.
+    func testPublishesOnlyWhenTheVisibleThingsChange() {
+        let a = PlaybackValues(meetingID: "m", isPlaying: true, position: 10.1, duration: 100.4)
+        XCTAssertTrue(a.publishes(after: nil))
+        XCTAssertFalse(PlaybackValues(meetingID: "m", isPlaying: true, position: 10.9, duration: 100.4).publishes(after: a))
+        XCTAssertTrue(PlaybackValues(meetingID: "m", isPlaying: true, position: 11.0, duration: 100.4).publishes(after: a))
+        XCTAssertTrue(PlaybackValues(meetingID: "m", isPlaying: false, position: 10.2, duration: 100.4).publishes(after: a), "pause")
+        let unknown = PlaybackValues(meetingID: "m", isPlaying: true, position: 10.2)
+        XCTAssertTrue(a.publishes(after: unknown), "the length became known")
+        XCTAssertFalse(PlaybackValues(meetingID: "m", isPlaying: true, position: 10.2, duration: 100.9).publishes(after: a))
+        XCTAssertTrue(PlaybackValues(meetingID: "n", isPlaying: true, position: 10.2, duration: 100.4).publishes(after: a))
+    }
+
+    // MARK: names in the transcript
+
+    /// transcript.md writes a name with a backslash before each markup character; the window and the locator use the
+    /// name as it is.
+    /// Mutation: TranscriptTurn.parse, `speaker: unescaped(name)` -> `speaker: name` -> RED.
+    func testSpeakerNamesAreUnescaped() {
+        let md = "# T\n\n**A\\*b\\_c\\[d** [1:05]: one\n\n**Plain** [1:05]: two\n"
+        let parsed = TranscriptTurn.parse(md)
+        XCTAssertEqual(parsed.map(\.speaker), ["A*b_c[d", "Plain"])
+        XCTAssertEqual(TurnLocator.turnID(start: 65.2, speaker: "Plain", in: parsed), 1)
+        XCTAssertEqual(TurnLocator.turnID(start: 65.2, speaker: "A*b_c[d", in: parsed), 0, "the daemon's shown name finds its turn")
+    }
 }

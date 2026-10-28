@@ -15,7 +15,11 @@ public struct MeetingFocus: Equatable {
 @MainActor
 public final class MainWindowModel: ObservableObject {
     @Published public var section: MainSection
-    @Published public var selectedMeeting: String?
+    @Published public var selectedMeeting: String? {
+        // A hit that was clicked in one meeting does not follow the user to another, or back to this one later.
+        didSet { if selectedMeeting != oldValue, !openingHit { focus = nil } }
+    }
+    private var openingHit = false
     @Published public var data: MainWindowData
     public var actions: MainWindowActions
     /// The search field's text.
@@ -43,8 +47,10 @@ public final class MainWindowModel: ObservableObject {
     /// A click on a search hit: the meeting opens at the hit (Notes for a notes or title hit, the Transcript at its line).
     func openHit(_ meetingID: String, _ hit: SearchHit) {
         focusSerial += 1
-        focus = MeetingFocus(meetingID: meetingID, destination: hit.destination, serial: focusSerial)
+        openingHit = true
         selectedMeeting = meetingID
+        openingHit = false
+        focus = MeetingFocus(meetingID: meetingID, destination: hit.destination, serial: focusSerial)
     }
 
     /// The meeting that is selected, with its texts when they were read.

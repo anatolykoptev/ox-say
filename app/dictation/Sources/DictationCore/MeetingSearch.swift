@@ -131,7 +131,8 @@ public struct MeetingSearchState: Equatable {
         case idle
         case searching
         case results(MeetingSearchResult)
-        case noResults
+        /// Nothing matched; the answer still says how many texts could not be searched.
+        case noResults(MeetingSearchResult)
         /// The daemon stayed busy through every retry. A quiet line with a button, not an error.
         case busy
         case failed(String)
@@ -224,7 +225,7 @@ public enum MeetingSearch {
             guard g == s.generation, s.phase == .searching else { return [] }
             switch answer {
             case .result(let r):
-                s.phase = r.meetings.isEmpty ? .noResults : .results(r)
+                s.phase = r.meetings.isEmpty ? .noResults(r) : .results(r)
                 return []
             case .busy(let after):
                 s.retries += 1

@@ -43,23 +43,6 @@ public struct AboutValues: Equatable {
     }
 }
 
-/// The meeting audio that plays now, for the mini player and the highlighted line. nil in `MainWindowData` when nothing plays.
-public struct PlaybackValues: Equatable {
-    public var meetingID: String
-    public var isPlaying: Bool
-    /// Seconds into the recording.
-    public var position: TimeInterval
-    /// Seconds in all; nil until the player knows.
-    public var duration: TimeInterval?
-
-    public init(meetingID: String, isPlaying: Bool, position: TimeInterval, duration: TimeInterval? = nil) {
-        self.meetingID = meetingID
-        self.isPlaying = isPlaying
-        self.position = position
-        self.duration = duration
-    }
-}
-
 /// Everything the window shows. Plain values: the app fills them (lazily, when the window
 /// opens), and the screenshot harness fills them with sample data.
 public struct MainWindowData: Equatable {

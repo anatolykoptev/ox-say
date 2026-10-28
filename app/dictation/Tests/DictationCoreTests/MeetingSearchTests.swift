@@ -157,7 +157,19 @@ final class MeetingSearchTests: XCTestCase {
         _ = MeetingSearch.reduce(&s, .typed("zzz"))
         _ = MeetingSearch.reduce(&s, .timerFired(generation: 1))
         _ = MeetingSearch.reduce(&s, .answered(generation: 1, .result(MeetingSearchResult(meetings: []))))
-        XCTAssertEqual(s.phase, .noResults)
+        XCTAssertEqual(s.phase, .noResults(MeetingSearchResult(meetings: [])))
+    }
+
+    /// "Nothing found" must not hide that some texts could not be searched.
+    /// Mutation: MeetingSearch.reduce, `.noResults(r)` -> `.noResults(MeetingSearchResult(meetings: []))` -> RED.
+    func testNoResultsKeepsTheSkippedCount() {
+        var s = MeetingSearchState()
+        _ = MeetingSearch.reduce(&s, .typed("zzz"))
+        _ = MeetingSearch.reduce(&s, .timerFired(generation: 1))
+        let r = MeetingSearchResult(meetings: [], skipped: 3)
+        _ = MeetingSearch.reduce(&s, .answered(generation: 1, .result(r)))
+        XCTAssertEqual(s.phase, .noResults(r))
+        XCTAssertEqual(r.footnote(text: { $0 == .searchSkipped ? "skipped %d" : $0.rawValue }), "skipped 3")
     }
 
     /// A 429 stays "searching" and tries again after the daemon's delay; it is no error. After a few tries a quiet

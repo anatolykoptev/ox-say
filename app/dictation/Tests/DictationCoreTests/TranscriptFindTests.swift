@@ -36,6 +36,29 @@ final class TranscriptFindTests: XCTestCase {
         XCTAssertNil(none.currentTurnID)
     }
 
+    /// The view scrolls when `serial` changes: it moves on every query change and every step, even where `current` stays
+    /// put (a new query whose first match is again index 0, Next with a single match).
+    /// Mutation: TranscriptFindState.setQuery, delete `serial += 1` -> RED (and the view's onChange key, see the wiring test).
+    func testSerialMovesOnEveryNavigation() {
+        var s = TranscriptFindState(query: "в", turns: turns)
+        let a = s.serial
+        s.setQuery("вс", turns: turns)
+        XCTAssertEqual(s.current, 0)
+        XCTAssertGreaterThan(s.serial, a, "a new query that lands on index 0 again still moves")
+        var one = TranscriptFindState(query: "нет", turns: turns)
+        let b = one.serial
+        one.next()
+        XCTAssertEqual(one.current, 0)
+        XCTAssertGreaterThan(one.serial, b, "Next with a single match still moves")
+        let c = one.serial
+        one.previous()
+        XCTAssertGreaterThan(one.serial, c)
+        var none = TranscriptFindState(query: "zzz", turns: turns)
+        let d = none.serial
+        none.next()
+        XCTAssertEqual(none.serial, d, "nothing to scroll to")
+    }
+
     /// An empty or blank query finds nothing; a new query starts at the first match.
     func testBlankQueryAndRestart() {
         XCTAssertTrue(TranscriptFindState(query: "", turns: turns).matches.isEmpty)

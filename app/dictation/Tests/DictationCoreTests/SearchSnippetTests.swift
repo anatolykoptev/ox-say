@@ -17,12 +17,16 @@ final class SearchSnippetTests: XCTestCase {
         XCTAssertEqual(matched(SearchSnippet.attributed("nothing here", query: "zzz")), [])
     }
 
-    /// A link in a snippet is text: no run carries a link, so a click goes nowhere.
-    /// Mutation: SearchSnippet.attributed, return the parsed text without `InlineMarkdown.removingLinks` -> RED.
-    func testNoLinkInASnippetIsClickable() {
-        let a = SearchSnippet.attributed("see [the budget](https://evil.example/x) and <https://evil.example/y> now", query: "budget")
+    /// A snippet is plain speech: shown as it is, so `*` and `_` stay visible and the highlight lands on them, and no
+    /// run is a link (nothing is parsed).
+    /// Mutation: SearchSnippet.attributed, build from `InlineMarkdown`-less parsing of `[text](url)` (a markdown parse) -> RED.
+    func testASnippetIsVerbatimAndHasNoLink() {
+        let text = "see [the budget](https://evil.example/x) and *bold* snake_case now"
+        let a = SearchSnippet.attributed(text, query: "budget")
+        XCTAssertEqual(String(a.characters), text, "nothing is parsed or dropped")
         XCTAssertTrue(a.runs.allSatisfy { $0.link == nil })
-        XCTAssertEqual(matched(a), ["budget"], "the words of the link are still found and shown")
-        XCTAssertFalse(String(a.characters).contains("evil.example/x"), "the address of a markdown link is not shown")
+        XCTAssertEqual(matched(a), ["budget"])
+        XCTAssertEqual(matched(SearchSnippet.attributed(text, query: "*bold*")), ["*bold*"])
+        XCTAssertEqual(matched(SearchSnippet.attributed(text, query: "snake_case")), ["snake_case"])
     }
 }

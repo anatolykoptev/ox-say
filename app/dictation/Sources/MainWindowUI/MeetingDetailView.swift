@@ -88,7 +88,11 @@ struct MeetingDetailView: View {
             if let focus, focus.meetingID == info.id { tab = MeetingTab(focus.destination) }
         }
         // Leaving the meeting (another one chosen, another section, the meeting deleted) stops the audio.
-        .onDisappear { model.actions.stopPlayback() }
+        .onDisappear {
+            model.actions.stopPlayback()
+            // The hit was for this visit; coming back to the meeting later opens it the plain way.
+            if model.focus?.meetingID == info.id { model.focus = nil }
+        }
     }
 
     private var header: some View {

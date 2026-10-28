@@ -44,11 +44,15 @@ struct SearchResults: View {
                 Text(L10nKey.searchSearching.text).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .noResults:
+        case .noResults(let result):
             VStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").font(.system(size: 30, weight: .light)).foregroundStyle(.tertiary)
                 Text(L10nKey.searchNoneTitle.text).font(.headline)
                 Text(L10nKey.searchNoneBody.text).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                // Texts that could not be searched are not "nothing": the line says so.
+                if let line = result.footnote() {
+                    Text(line).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.top, 4)
+                }
             }
             .padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity)

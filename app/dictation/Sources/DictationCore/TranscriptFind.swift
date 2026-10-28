@@ -13,6 +13,9 @@ public struct TranscriptFindState: Equatable {
     public private(set) var matches: [TranscriptMatch]
     /// An index into `matches`; nil when nothing matched.
     public private(set) var current: Int?
+    /// Moves on every new query and every step, even where `current` does not (a new query that lands on index 0
+    /// again, Next with a single match): the view scrolls when this changes, not when `current` does.
+    public private(set) var serial = 0
 
     public init(query: String = "", turns: [TranscriptTurn] = []) {
         self.query = query
@@ -28,16 +31,19 @@ public struct TranscriptFindState: Equatable {
             TextFold.ranges(of: new, in: turn.text).map { TranscriptMatch(turnID: turn.id, range: $0) }
         }
         current = matches.isEmpty ? nil : 0
+        serial += 1
     }
 
     public mutating func next() {
         guard let i = current else { return }
         current = (i + 1) % matches.count
+        serial += 1
     }
 
     public mutating func previous() {
         guard let i = current else { return }
         current = (i - 1 + matches.count) % matches.count
+        serial += 1
     }
 
     public var currentTurnID: Int? { current.map { matches[$0].turnID } }

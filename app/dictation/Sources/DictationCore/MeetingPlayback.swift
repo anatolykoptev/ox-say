@@ -144,3 +144,48 @@ extension StudioClient {
         }
     }
 }
+
+/// The meeting audio that plays now, for the mini player and the highlighted line.
+public struct PlaybackValues: Equatable {
+    public var meetingID: String
+    public var isPlaying: Bool
+    /// Seconds into the recording.
+    public var position: TimeInterval
+    /// Seconds in all; nil until the player knows.
+    public var duration: TimeInterval?
+
+    public init(meetingID: String, isPlaying: Bool, position: TimeInterval, duration: TimeInterval? = nil) {
+        self.meetingID = meetingID
+        self.isPlaying = isPlaying
+        self.position = position
+        self.duration = duration
+    }
+
+    /// Whether this differs from what was last published in a way anyone sees: the clock shows whole seconds and a
+    /// turn begins on one, so a tick inside the same second changes nothing on screen. Without this every tick
+    /// would re-render the whole window.
+    public func publishes(after last: PlaybackValues?) -> Bool {
+        guard let last else { return true }
+        return meetingID != last.meetingID || isPlaying != last.isPlaying || Int(position) != Int(last.position)
+            || duration.map { Int($0) } != last.duration.map { Int($0) }
+    }
+}
+
+/// Which request for the audio is the live one. A click starts a HEAD probe; its answer arrives later, and by then the
+/// user may have clicked another line, stopped, picked another meeting or closed the window. Only the newest request,
+/// with its window still open, may start the audio. A hidden window is still open: playback goes on under another app.
+public struct PlayRequestGuard {
+    private var current = 0
+
+    public init() {}
+
+    public mutating func begin() -> Int {
+        current += 1
+        return current
+    }
+
+    /// Stop, switch, close: every probe on its way is now stale.
+    public mutating func invalidate() { current += 1 }
+
+    public func isCurrent(_ request: Int, windowOpen: Bool) -> Bool { request == current && windowOpen }
+}

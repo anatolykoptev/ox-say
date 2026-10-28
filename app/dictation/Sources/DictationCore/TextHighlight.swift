@@ -42,11 +42,11 @@ extension AttributeDynamicLookup {
     }
 }
 
-/// A search snippet: untrusted text with the matched words emphasised and no link.
+/// A search snippet: what someone said, or a line of notes, shown as it is with the matched words marked. Nothing is
+/// parsed (a `*` or `_` is a character, not markup), so there is no link to make and the highlight lands on what was
+/// searched for.
 public enum SearchSnippet {
     public static func attributed(_ snippet: String, query: String) -> AttributedString {
-        var out = InlineMarkdown.attributed(snippet)
-        TextHighlight.mark(&out, ranges: TextFold.ranges(of: query, in: String(out.characters)), current: nil)
-        return out
+        TextHighlight.attributed(snippet, ranges: TextFold.ranges(of: query, in: snippet))
     }
 }
