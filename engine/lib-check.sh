@@ -4,7 +4,8 @@
 # `if ( … )` or a `&&` chain, as diar_build in want-diar.sh): a command substitution that fails
 # must not leave an empty string for the next test to pass.
 
-# check_static <binary>: a thin binary of $arch with no @rpath dependency.
+# check_static <binary>: a thin binary of $arch (set by the caller) with no @rpath dependency.
+# shellcheck disable=SC2154 # arch comes from engine/build.sh / the test
 check_static() {
     local libs archs
     archs=$(lipo -archs "$1") || { echo "$1: lipo could not read it" >&2; return 1; }
