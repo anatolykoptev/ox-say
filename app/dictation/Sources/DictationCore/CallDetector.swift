@@ -353,7 +353,9 @@ public struct CallTracker {
             }
         case .auto:
             idleSince = nil
-            if themActive {
+            // Anyone's speech keeps it only while a holder of the call remains; once the app or browser let go, it ends
+            // after `endAfter` whatever the microphone hears (a conversation in the room is not the call).
+            if held && themActive {
                 quietSince = nil
             } else {
                 if quietSince == nil { quietSince = now }

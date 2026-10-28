@@ -163,9 +163,11 @@ final class CallDetectorTests: XCTestCase {
         XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(90), call: nil, themActive: false, recording: .auto), .stopRecording)
 
         var heard = CallTracker()
-        for s in stride(from: 0.0, through: 120.0, by: 5.0) {
-            XCTAssertEqual(heard.observe(now: t0.addingTimeInterval(s), call: nil, themActive: true, recording: .auto), .nothing,
-                           "the other side is still talking at \(s) s")
+        let chrome = "com.google.Chrome"
+        _ = heard.observe(now: t0, call: "meet", themActive: true, recording: nil, bundleID: chrome)
+        for s in stride(from: 1.0, through: 120.0, by: 5.0) {
+            XCTAssertEqual(heard.observe(now: t0.addingTimeInterval(s), call: "meet", themActive: true, recording: .auto, bundleID: chrome, heldOnly: true),
+                           .nothing, "someone is still talking while the browser holds the microphone, at \(s) s")
         }
     }
 
@@ -932,5 +934,37 @@ extension CallDetectorTests {
         }
         XCTAssertEqual(reads, 1, "the read went out on the last poll")
         XCTAssertEqual(call?.source, "meet")
+    }
+
+    private func heldAuto(_ tr: inout CallTracker, at s: TimeInterval, active: Bool) -> CallTracker.Action {
+        tr.observe(now: t0.addingTimeInterval(s), call: "meet", themActive: active, recording: .auto, bundleID: "com.google.Chrome", heldOnly: true)
+    }
+
+    /// Once no holder of the call remains, an automatic recording stops after `endAfter` whoever is audible: the user
+    /// talking in the room afterwards must not keep recording a private conversation.
+    /// Mutation: CallTracker.observe, `case .auto:` `if held && themActive {` -> `if themActive {` -> RED.
+    func testAnAutoRecordingStopsWhenNoHolderRemainsEvenIfSomeoneTalks() {
+        var tr = CallTracker()
+        XCTAssertEqual(tr.observe(now: t0, call: nil, themActive: true, recording: .auto), .nothing)
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(CallTracker.endAfter - 1), call: nil, themActive: true, recording: .auto), .nothing)
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(CallTracker.endAfter), call: nil, themActive: true, recording: .auto),
+                       .stopRecording, "the user talking in the room does not keep it going")
+    }
+
+    /// While the browser still holds the microphone, the user's own speech alone keeps an automatic recording; nobody
+    /// speaking for `endAfter` ends it.
+    /// Mutation: CallTracker.observe, `case .auto:` `if held && themActive {` -> `if false {` -> RED (first half);
+    /// -> `if themActive {` is covered above.
+    func testAnAutoRecordingHeldByTheBrowserFollowsAnyonesSpeech() {
+        var talking = CallTracker()
+        _ = talking.observe(now: t0, call: "meet", themActive: true, recording: nil, bundleID: "com.google.Chrome")
+        for s in stride(from: 1.0, through: 4 * CallTracker.endAfter, by: 10.0) {
+            XCTAssertEqual(heldAuto(&talking, at: s, active: true), .nothing, "only the user talks, at \(s) s")
+        }
+        var quiet = CallTracker()
+        _ = quiet.observe(now: t0, call: "meet", themActive: true, recording: nil, bundleID: "com.google.Chrome")
+        XCTAssertEqual(heldAuto(&quiet, at: 1, active: false), .nothing)
+        XCTAssertEqual(heldAuto(&quiet, at: 1 + CallTracker.endAfter - 1, active: false), .nothing)
+        XCTAssertEqual(heldAuto(&quiet, at: 1 + CallTracker.endAfter, active: false), .stopRecording, "held and nobody speaking")
     }
 }
