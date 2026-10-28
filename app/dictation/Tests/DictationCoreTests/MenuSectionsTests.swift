@@ -13,7 +13,7 @@ final class MenuSectionsTests: XCTestCase {
     }
 
     func testVoiceMenuHasARussianAndAnEnglishSection() {
-        let rows = MenuSections.voiceRows(known: ["ru-anna", "en-sam"], russian: nil, english: nil)
+        let rows = MenuSections.voiceRows(known: ["ru-anna", "en-sam"], russian: nil, english: nil, text: ShippedStrings.localizer("en"))
         XCTAssertEqual(titles(rows), [
             "# Russian", "Default voice", "Random each time", "ru-anna", "en-sam",
             "---",
@@ -22,7 +22,7 @@ final class MenuSectionsTests: XCTestCase {
     }
 
     func testVoiceMenuMarksEachLanguagesOwnPick() {
-        let rows = MenuSections.voiceRows(known: ["ru-anna", "en-sam"], russian: "ru-anna", english: "default")
+        let rows = MenuSections.voiceRows(known: ["ru-anna", "en-sam"], russian: "ru-anna", english: "default", text: ShippedStrings.localizer("en"))
         let russianPick = MenuRow.item(title: "ru-anna", isOn: true, isEnabled: true, action: .pickVoice(.russian, name: "ru-anna"))
         let englishNotPicked = MenuRow.item(title: "ru-anna", isOn: false, isEnabled: true, action: .pickVoice(.english, name: "ru-anna"))
         let englishRandom = MenuRow.item(title: "Random each time", isOn: true, isEnabled: true, action: .pickVoice(.english, name: "default"))
@@ -34,17 +34,17 @@ final class MenuSectionsTests: XCTestCase {
     }
 
     func testNoPickChecksDefaultVoiceInBothSections() {
-        let rows = MenuSections.voiceRows(known: [], russian: nil, english: nil)
+        let rows = MenuSections.voiceRows(known: [], russian: nil, english: nil, text: ShippedStrings.localizer("en"))
         let defaults = rows.filter { $0 == .item(title: "Default voice", isOn: true, isEnabled: true, action: .pickVoice(.russian, name: nil)) ||
             $0 == .item(title: "Default voice", isOn: true, isEnabled: true, action: .pickVoice(.english, name: nil)) }
         XCTAssertEqual(defaults.count, 2)
     }
 
     func testVoiceMenuShowsLoadingUntilTheDaemonAnswers() {
-        let rows = MenuSections.voiceRows(known: nil, russian: nil, english: nil)
+        let rows = MenuSections.voiceRows(known: nil, russian: nil, english: nil, text: ShippedStrings.localizer("en"))
         let loading = MenuRow.item(title: "Loading…", isOn: false, isEnabled: false, action: nil)
         XCTAssertEqual(rows.filter { $0 == loading }.count, 2)
-        XCTAssertFalse(MenuSections.voiceRows(known: [], russian: nil, english: nil).contains(loading))
+        XCTAssertFalse(MenuSections.voiceRows(known: [], russian: nil, english: nil, text: ShippedStrings.localizer("en")).contains(loading))
     }
 
     private func keys(_ names: [String], on: Int, disabled: Set<Int> = []) -> [ShortcutMenu.Item] {
@@ -56,7 +56,7 @@ final class MenuSectionsTests: XCTestCase {
 
     func testShortcutsMenuHoldsTheDictationAndTheSpeakKeys() {
         let rows = MenuSections.shortcutRows(dictation: keys(["⌃Space", "⌥Space"], on: 0),
-                                             speak: keys(["⌃⌥S", "⌃⌥R"], on: 1))
+                                             speak: keys(["⌃⌥S", "⌃⌥R"], on: 1), text: ShippedStrings.localizer("en"))
         XCTAssertEqual(titles(rows), [
             "# Dictation", "⌃Space", "⌥Space",
             "---",

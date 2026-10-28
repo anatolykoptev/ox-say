@@ -19,8 +19,8 @@ enum StudioForms {
     /// A text, Markdown, Word, RTF, OpenDocument or PDF file, or nil when the person cancels.
     static func chooseDocument() -> URL? {
         let panel = NSOpenPanel()
-        panel.title = "Choose the document to voice"
-        panel.message = "Choose a text, Markdown, Word, PDF, RTF or OpenDocument file."
+        panel.title = L10nKey.studioChooseTitle.text
+        panel.message = L10nKey.studioChooseMessage.text
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = DocumentReader.supportedExtensions.compactMap { UTType(filenameExtension: $0) }

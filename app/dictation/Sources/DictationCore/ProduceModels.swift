@@ -48,10 +48,10 @@ public enum ProduceFormat: Equatable, CaseIterable {
     case short
     case long
 
-    public var title: String {
+    public func title(text: (L10nKey) -> String = { $0.text }) -> String {
         switch self {
-        case .short: return "Reels / Shorts (short)"
-        case .long: return "YouTube (long)"
+        case .short: return text(.produceFormatShort)
+        case .long: return text(.produceFormatLong)
         }
     }
 
@@ -154,48 +154,49 @@ public enum ProduceText {
         !job.status.isTerminal
     }
 
-    public static let waitingForServiceText = "waiting for the ox-say service…"
+    public typealias Text = (L10nKey) -> String
+
+    public static func waitingForServiceText(text: Text = { $0.text }) -> String { text(.produceWaitingService) }
 
     /// The menu's progress row: `“Title” — 3 of 10 parts`, or why it is not moving.
     /// `serviceWaiting`: the last poll got no answer, so the numbers may be old.
-    public static func progressRow(_ job: ProduceJob, serviceWaiting: Bool = false) -> String {
-        let name = job.title.isEmpty ? "Voiceover" : "“\(job.title)”"
-        return "\(name) — \(serviceWaiting ? waitingForServiceText : progressDetail(job))"
+    public static func progressRow(_ job: ProduceJob, serviceWaiting: Bool = false, text: Text = { $0.text }) -> String {
+        let name = job.title.isEmpty ? text(.produceDefaultName) : "“\(job.title)”"
+        return "\(name) — \(serviceWaiting ? waitingForServiceText(text: text) : progressDetail(job, text: text))"
     }
 
-    private static func progressDetail(_ job: ProduceJob) -> String {
+    private static func progressDetail(_ job: ProduceJob, text: Text) -> String {
         switch job.status {
-        case .pausedOnBattery: return "paused — on battery power"
-        case .waitingForDictation: return "paused — you are dictating"
-        case .review: return "ready — \(listenText(job.partsToReview))"
-        case .done: return "ready"
-        case .failed: return "failed"
-        case .cancelled: return "stopped"
-        case .interrupted: return "interrupted"
+        case .pausedOnBattery: return text(.producePausedBattery)
+        case .waitingForDictation: return text(.producePausedDictating)
+        case .review: return String(format: text(.produceReadyListen), listenText(job.partsToReview, text: text))
+        case .done: return text(.produceReady)
+        case .failed: return text(.produceFailed)
+        case .cancelled: return text(.produceStopped)
+        case .interrupted: return text(.produceInterrupted)
         case .running, .unknown:
-            return job.partsTotal > 0 ? "\(job.partsDone) of \(job.partsTotal) parts" : "starting…"
+            return job.partsTotal > 0 ? String(format: text(.produceParts), String(job.partsDone), String(job.partsTotal)) : text(.produceStarting)
         }
     }
 
-    private static func listenText(_ count: Int) -> String {
-        count == 1 ? "1 part needs a listen" : "\(count) parts need a listen"
+    private static func listenText(_ count: Int, text: Text) -> String {
+        count == 1 ? text(.produceListenOne) : String(format: text(.produceListenMany), String(count))
     }
 
-    /// The alert for a job that ended; nil for one that was stopped on purpose.
-    public static func finishAlert(_ job: ProduceJob) -> (title: String, text: String)? {
+    /// The alert for a job that ended; nil for one that was stopped on purpose. A failure's own reason is the daemon's text.
+    public static func finishAlert(_ job: ProduceJob, text: Text = { $0.text }) -> (title: String, text: String)? {
         switch job.status {
         case .done, .review:
-            let file = job.outputPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "the voiceover"
-            var text = "Saved as \(file)."
+            let file = job.outputPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? text(.produceFinishDefaultFile)
+            var saved = String(format: text(.produceFinishSaved), file)
             if job.status == .review {
-                text += " \(listenText(job.partsToReview)). They are in the folder."
+                saved += " \(listenText(job.partsToReview, text: text)). \(text(.produceFinishInFolder))"
             }
-            return ("Voiceover ready", text)
+            return (text(.produceFinishReadyTitle), saved)
         case .failed:
-            return ("The voiceover failed", job.error ?? "ox-say could not finish it.")
+            return (text(.produceFinishFailedTitle), job.error ?? text(.produceFinishFailedText))
         case .interrupted:
-            return ("The voiceover was interrupted",
-                    "ox-say stopped while it was working. Start it again with New Voiceover from Document.")
+            return (text(.produceFinishInterruptedTitle), text(.produceFinishInterruptedText))
         case .cancelled, .running, .waitingForDictation, .pausedOnBattery, .unknown:
             return nil
         }

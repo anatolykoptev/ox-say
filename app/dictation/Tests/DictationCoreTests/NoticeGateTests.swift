@@ -295,7 +295,7 @@ final class NeverLoseWiringTests: XCTestCase {
         XCTAssertTrue(body[moved.upperBound...].prefix(160).contains("leaveOnClipboard(text, reason: .focusMoved)"))
         XCTAssertTrue(body.contains("return leaveOnClipboard(text, reason: reason)"))
         let helper = requireBody("private func leaveOnClipboard(", in: "PasteOutput.swift")
-        XCTAssertTrue(helper.contains("plain.writeText(text)") && helper.contains("onNotice?(reason.message)"))
+        XCTAssertTrue(helper.contains("plain.writeText(text)") && helper.contains("onNotice?(reason.message())"))
     }
 
     // Mutation: delete the `output.onTypedOverRemoteClipboard = ...` block in

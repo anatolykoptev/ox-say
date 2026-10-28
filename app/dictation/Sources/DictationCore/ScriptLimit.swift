@@ -36,16 +36,18 @@ public enum ScriptLimit {
     }
 
     /// The live line under the text: its size, or why it cannot be started.
-    public static func statusLine(editorText: String) -> String {
+    public static func statusLine(editorText: String, text localized: (L10nKey) -> String = { $0.text }) -> String {
         let text = script(from: editorText)
         let length = count(text)
-        if length == 0 { return "There is no text to read yet." }
+        if length == 0 { return localized(.scriptNone) }
         let over = overBy(text)
         if over > 0 {
-            return "\(length) characters · \(over) over the limit of \(maxCharacters) (about \(minutes(characters: maxCharacters)) minutes)."
+            return String(format: localized(.scriptOver), String(length), String(over), String(maxCharacters),
+                          String(minutes(characters: maxCharacters)))
         }
         let m = minutes(characters: length)
-        return "\(length) characters · about \(m) \(m == 1 ? "minute" : "minutes")"
+        return m == 1 ? String(format: localized(.scriptOneMinute), String(length))
+                      : String(format: localized(.scriptMinutes), String(length), String(m))
     }
 
     /// The text can be started: it is not empty and not over the limit.

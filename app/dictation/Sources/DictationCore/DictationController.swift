@@ -165,6 +165,8 @@ public final class DictationController {
     public var minSeconds: Double = 0.3
     public var onState: ((DictationState) -> Void)?
     public var onError: ((String) -> Void)?
+    /// Where the words of `onError` come from: the bundle in the app, the shipped strings in tests.
+    public var localize: (L10nKey) -> String = { $0.text }
     /// A press while the previous dictation is still transcribing: ignored.
     public var onBusy: (() -> Void)?
     /// Once per transcribed dictation (not for a tap or a cancelled one): its
@@ -212,7 +214,7 @@ public final class DictationController {
             do {
                 try recorder.prepare()
             } catch {
-                onError?("Could not start recording: \(error.localizedDescription)")
+                onError?(String(format: localize(.noticeRecordFailed), error.localizedDescription))
                 return
             }
             // Route chunks before the microphone runs, so the first chunk has
@@ -228,7 +230,7 @@ public final class DictationController {
                 closeRoute()
                 transcriber.cancel()
                 state = .idle
-                onError?("Could not start recording: \(error.localizedDescription)")
+                onError?(String(format: localize(.noticeRecordFailed), error.localizedDescription))
             }
         case (.toggle, .recording):
             finish()

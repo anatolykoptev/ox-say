@@ -110,11 +110,11 @@ final class DocumentReaderTests: XCTestCase {
         defer { [rtf, scan].forEach { try? FileManager.default.removeItem(at: $0) } }
         let read = try await DocumentReader.readScript(rtf)
         let document = try await DocumentReader.read(rtf)
-        XCTAssertEqual(read, ReadScript(script: document.script, emptyMessage: document.emptyMessage))
+        XCTAssertEqual(read, ReadScript(script: document.script, emptyReason: document.emptyReason))
         XCTAssertEqual(read.script, "Привет, мир.\n\nSecond paragraph.")
         let empty = try await DocumentReader.readScript(scan)
         XCTAssertEqual(empty.script, "")
-        XCTAssertEqual(empty.emptyMessage, "This PDF has no text to read (it may be a scan).")
+        XCTAssertEqual(empty.emptyMessage(text: ShippedStrings.localizer("en")), "This PDF has no text to read (it may be a scan).")
     }
 
     func testAPdfWithoutATextLayerReadsAsEmptyAndSaysWhy() async throws {
@@ -129,14 +129,18 @@ final class DocumentReaderTests: XCTestCase {
         XCTAssertTrue(scan.write(to: url))
         let document = try await DocumentReader.read(url)
         XCTAssertEqual(document.script, "")
-        XCTAssertEqual(document.emptyMessage, "This PDF has no text to read (it may be a scan).")
+        XCTAssertEqual(Self.emptyText(document), "This PDF has no text to read (it may be a scan).")
+    }
+
+    private static func emptyText(_ document: ReadDocument) -> String {
+        ReadScript(script: document.script, emptyReason: document.emptyReason).emptyMessage(text: ShippedStrings.localizer("en"))
     }
 
     func testAPdfWhoseTextIsAllLayoutDoesNotSayItMayBeAScan() {
         let document = ReadDocument(pages: ["1", "2", "3"], source: .pdf)
         XCTAssertEqual(document.script, "")
-        XCTAssertEqual(document.emptyMessage, "ox-say could not find readable text in this PDF after cleaning it up.")
-        XCTAssertEqual(ReadDocument(pages: ["", "  \n"], source: .pdf).emptyMessage, "This PDF has no text to read (it may be a scan).")
+        XCTAssertEqual(Self.emptyText(document), "ox-say could not find readable text in this PDF after cleaning it up.")
+        XCTAssertEqual(Self.emptyText(ReadDocument(pages: ["", "  \n"], source: .pdf)), "This PDF has no text to read (it may be a scan).")
     }
 
     func testUnsupportedAndBrokenFilesAreSaidInPlainWords() async throws {

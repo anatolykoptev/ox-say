@@ -62,12 +62,12 @@ final class ScriptLimitTests: XCTestCase {
     }
 
     func testTheStatusLineSaysSizeMinutesAndOverrun() {
-        XCTAssertEqual(ScriptLimit.statusLine(editorText: ""), "There is no text to read yet.")
-        XCTAssertEqual(ScriptLimit.statusLine(editorText: " \n "), "There is no text to read yet.")
-        XCTAssertEqual(ScriptLimit.statusLine(editorText: "Hello."), "6 characters · about 1 minute")
-        XCTAssertEqual(ScriptLimit.statusLine(editorText: String(repeating: "я", count: 8340)), "8340 characters · about 10 minutes")
+        XCTAssertEqual(ScriptLimit.statusLine(editorText: "", text: ShippedStrings.localizer("en")), "There is no text to read yet.")
+        XCTAssertEqual(ScriptLimit.statusLine(editorText: " \n ", text: ShippedStrings.localizer("en")), "There is no text to read yet.")
+        XCTAssertEqual(ScriptLimit.statusLine(editorText: "Hello.", text: ShippedStrings.localizer("en")), "6 characters · about 1 minute")
+        XCTAssertEqual(ScriptLimit.statusLine(editorText: String(repeating: "я", count: 8340), text: ShippedStrings.localizer("en")), "8340 characters · about 10 minutes")
         let over = String(repeating: "я", count: ScriptLimit.maxCharacters + 7)
-        XCTAssertTrue(ScriptLimit.statusLine(editorText: over).contains("7 over the limit"))
+        XCTAssertTrue(ScriptLimit.statusLine(editorText: over, text: ShippedStrings.localizer("en")).contains("7 over the limit"))
         XCTAssertFalse(ScriptLimit.canStart(editorText: over))
         XCTAssertTrue(ScriptLimit.canStart(editorText: String(repeating: "я", count: ScriptLimit.maxCharacters)))
     }

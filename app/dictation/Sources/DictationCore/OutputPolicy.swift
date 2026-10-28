@@ -22,14 +22,11 @@ public enum ClipboardReason: Equatable {
     }
 
     /// The notice shown when the text stays on the clipboard.
-    public var message: String {
+    public func message(text: (L10nKey) -> String = { $0.text }) -> String {
         switch self {
-        case .accessibility:
-            return "Pasting needs the Accessibility permission — choose \"Allow pasting…\" in this app's menu. The text is on the clipboard."
-        case .secureInput:
-            return "Secure input is on (a password field, or Secure Keyboard Entry), so the text was not pasted. It is on the clipboard."
-        case .focusMoved:
-            return "You switched apps while it was transcribing, so the text was not pasted. It is on the clipboard."
+        case .accessibility: return text(.noticePasteAccessibility)
+        case .secureInput: return text(.noticePasteSecureInput)
+        case .focusMoved: return text(.noticePasteFocusMoved)
         }
     }
 }

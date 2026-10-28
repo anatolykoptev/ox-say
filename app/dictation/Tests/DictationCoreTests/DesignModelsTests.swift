@@ -126,7 +126,11 @@ final class DesignModelsTests: XCTestCase {
             }
         }
         XCTAssertEqual(failure(400, body), .refused(status: 400, message: "that is not a take made by voice design"))
-        XCTAssertEqual(failure(500, Data()), .refused(status: 500, message: "The ox-say service answered with an error (500)."))
+        // No message of the daemon's own: the app's sentence naming the status is worded when it is shown.
+        XCTAssertEqual(failure(500, Data()), .refused(status: 500, message: ""))
+        XCTAssertEqual(failure(500, Data())?.message(text: ShippedStrings.localizer("en")), "The ox-say service answered with an error (500).")
+        XCTAssertEqual(failure(500, Data())?.message(text: ShippedStrings.localizer("ru")), "Служба ox-say ответила ошибкой (500).")
+        XCTAssertEqual(failure(500, Data())?.description, "The ox-say service answered with an error (500).")
     }
 
     func testSaveDesignClientRetriesWithReplaceAfterA409() async throws {

@@ -74,26 +74,27 @@ final class StudioMenuTests: XCTestCase {
     func testRefusalMessagesArePlainToo() {
         let body = Data(#"{"error":{"message":"produce needs a saved voice: design one with voice_design or add one with voice_add"}}"#.utf8)
         XCTAssertEqual(StudioClient.refusal(status: 400, body: body),
-                       .refused(status: 400, message: "The ox-say service answered with an error (400)."))
+                       .refused(status: 400, message: ""), "jargon-only: the app words the status sentence when it shows it")
+        XCTAssertEqual(StudioClient.refusal(status: 400, body: body).message(text: en), "The ox-say service answered with an error (400).")
     }
 
     func testUnreachableDaemonDisablesStudio() {
         let result = rows(nil)
-        XCTAssertEqual(result, [.item(title: StudioMenu.noServiceTitle, isOn: false, isEnabled: false, action: nil)])
+        XCTAssertEqual(result, [.item(title: StudioMenu.noServiceTitle(text: en), isOn: false, isEnabled: false, action: nil)])
     }
 
     /// Mutation: StudioMenu.swift rows, `.unreachable` case returns only the
     /// noService row (drop `jobRows(...) +`) -> RED.
     func testOneFailedStatusKeepsTheFollowedVoiceoversRows() {
         let result = rows(nil, job: job(.running))
-        XCTAssertEqual(titles(result), ["“Ch 1” — 2 of 5 parts", "Stop Voiceover", StudioMenu.noServiceTitle])
+        XCTAssertEqual(titles(result), ["“Ch 1” — 2 of 5 parts", "Stop Voiceover", StudioMenu.noServiceTitle(text: en)])
         XCTAssertTrue(result.contains(.item(title: "Stop Voiceover", isOn: false, isEnabled: true, action: .stopVoiceover)))
     }
 
     func testBeforeTheFirstReplyTheServiceIsNeitherUpNorNotAnswering() {
         let result = StudioMenu.rows(service: .unknown, installing: false, job: nil, serviceWaiting: false, hasOutputFolder: false, text: en)
-        XCTAssertEqual(result, [.item(title: StudioMenu.checkingTitle, isOn: false, isEnabled: false, action: nil)])
-        XCTAssertFalse(titles(result).contains(StudioMenu.noServiceTitle))
+        XCTAssertEqual(result, [.item(title: StudioMenu.checkingTitle(text: en), isOn: false, isEnabled: false, action: nil)])
+        XCTAssertFalse(titles(result).contains(StudioMenu.noServiceTitle(text: en)))
     }
 
     func testAFollowedVoiceoverSaysItIsWaitingWhileTheServiceIsGone() {
@@ -152,8 +153,8 @@ final class StudioMenuTests: XCTestCase {
                 return false
             }
         }
-        XCTAssertEqual(newRow(false), .item(title: StudioMenu.newVoiceoverTitle, isOn: false, isEnabled: true, action: .newVoiceover))
-        XCTAssertEqual(newRow(true), .item(title: StudioMenu.newVoiceoverTitle, isOn: false, isEnabled: false, action: .newVoiceover))
+        XCTAssertEqual(newRow(false), .item(title: StudioMenu.newVoiceoverTitle(text: en), isOn: false, isEnabled: true, action: .newVoiceover))
+        XCTAssertEqual(newRow(true), .item(title: StudioMenu.newVoiceoverTitle(text: en), isOn: false, isEnabled: false, action: .newVoiceover))
     }
 }
 

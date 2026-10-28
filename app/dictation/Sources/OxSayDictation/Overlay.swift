@@ -14,7 +14,7 @@ final class Overlay {
     private let background: NSVisualEffectView
     private let bars = LevelBarsView(count: 9)
     private let spinner = NSProgressIndicator()
-    private let label = NSTextField(labelWithString: "Transcribing…")
+    private let label = NSTextField(labelWithString: L10nKey.pillTranscribing.text)
     private let hint = NSTextField(labelWithString: "esc")
     private let message = NSTextField(wrappingLabelWithString: "")
     /// The words decoded so far while dictating, next to the bars.
@@ -183,7 +183,7 @@ final class Overlay {
         spinner.isHidden = false
         spinner.startAnimation(nil)
         label.isHidden = false
-        setWorkingText("Transcribing…")
+        setWorkingText(L10nKey.pillTranscribing.text)
         show()
     }
 
