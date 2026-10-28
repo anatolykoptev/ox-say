@@ -85,9 +85,11 @@ func TestMeetingCallsOfTheAppPassTheGuard(t *testing.T) {
 		t.Fatalf("retention = %d %s", rec.Code, rec.Body)
 	}
 	// The voiceover stop is bodiless too (the same StudioClient.post): an
-	// unknown id is a 404 from the route, not a 415 from the guard.
-	if rec := serve(h, appRequest("POST", "/v1/produce/nope/cancel", "")); rec.Code == http.StatusUnsupportedMediaType {
-		t.Fatalf("voiceover stop = %d: refused by the guard", rec.Code)
+	// unknown id is a 404 from the route, not a 415 from the guard (#252: assert the real outcome).
+	// Mutation: internal/daemon/produce_ops.go:627, return nil in place of errNoProject for an invalid
+	// id -> RED (200, not 404).
+	if rec := serve(h, appRequest("POST", "/v1/produce/nope/cancel", "")); rec.Code != http.StatusNotFound {
+		t.Fatalf("voiceover stop = %d %s, want 404 from the route", rec.Code, rec.Body)
 	}
 	for _, p := range []string{"/v1/meetings", "/v1/meetings/" + created.ID, "/v1/meetings/settings"} {
 		if rec := serve(h, appRequest("GET", p, "")); rec.Code != http.StatusOK {

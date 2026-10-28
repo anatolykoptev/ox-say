@@ -26,7 +26,8 @@ type Turn struct {
 	E     float64 `json:"e"`
 	Text  string  `json:"text"`
 	// Words keeps the timing DropEcho needs; it is not written to the
-	// transcript. A turn without words is never judged an echo.
+	// transcript. Only MergeTurns fills it, so a turn reloaded from disk has
+	// none. A turn without words is never judged an echo.
 	Words []stt.Word `json:"-"`
 }
 

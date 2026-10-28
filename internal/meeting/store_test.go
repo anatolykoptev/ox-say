@@ -3,6 +3,7 @@ package meeting
 import (
 	"bytes"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -156,6 +157,9 @@ func TestStoreCreateGivesUpWhenEveryIDIsTaken(t *testing.T) {
 // in-memory edit for what is on disk.
 // Mutation: internal/meeting/store.go Update, return `m, s.save(dir, m)` -> RED.
 func TestStoreUpdateReturnsNilWhenTheSaveFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions, so the save cannot be made to fail")
+	}
 	s := newStore(t)
 	m, dir, err := s.Create(Manifest{Title: "x"}, t0)
 	if err != nil {
@@ -167,7 +171,7 @@ func TestStoreUpdateReturnsNilWhenTheSaveFails(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 	got, err := s.Update(m.ID, func(x *Manifest) { x.Status = StatusQueued })
 	if err == nil {
-		t.Skip("directory permissions do not stop writes here (running as root?)")
+		t.Fatal("Update on a read-only directory succeeded; the permission trick no longer fails the save")
 	}
 	if got != nil {
 		t.Fatalf("Update = %+v with error %v; want nil manifest", got, err)
@@ -408,5 +412,70 @@ func TestListSweepsATombstoneWithAFutureSuffixByItsMtime(t *testing.T) {
 	}
 	if _, err := os.Stat(inFlight); err != nil {
 		t.Errorf("a tombstone touched just now was swept: %v", err)
+	}
+}
+
+// Store.warned holds only the tombstones that are stuck now: a key goes when its sweep succeeds, and when its
+// tombstone is gone some other way (#263).
+// Mutation: internal/meeting/store.go sweepTombstones, delete the `s.warned.Delete(e.Name())` line -> RED (first
+// check); delete the `s.warned.Range(` block -> RED (second check).
+func TestWarnedTombstonesArePruned(t *testing.T) {
+	count := func(s *Store) (n int) {
+		s.warned.Range(func(_, _ any) bool { n++; return true })
+		return n
+	}
+	stuck := true
+	s := &Store{Root: t.TempDir(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	s.removeAll = func(p string) error {
+		if stuck {
+			return errors.New("permission denied")
+		}
+		return os.RemoveAll(p)
+	}
+	a := filepath.Join(s.Root, tombstonePrefix+"20261023-150100-aaaaaa-1")
+	b := filepath.Join(s.Root, tombstonePrefix+"20261023-150100-bbbbbb-1")
+	for _, d := range []string{a, b} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.List(); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(s); n != 2 {
+		t.Fatalf("%d warned names after a failing sweep, want 2", n)
+	}
+	if err := os.RemoveAll(b); err != nil { // gone by another route
+		t.Fatal(err)
+	}
+	if _, err := s.List(); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(s); n != 1 {
+		t.Fatalf("%d warned names after one tombstone vanished, want 1", n)
+	}
+	stuck = false
+	if _, err := s.List(); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(s); n != 0 {
+		t.Fatalf("%d warned names after the sweep succeeded, want 0", n)
+	}
+}
+
+// A failed first save leaves no empty directory behind (#229).
+// Mutation: internal/meeting/store.go Create, delete the `os.Remove(dir)` line -> RED.
+func TestCreateRemovesItsDirectoryWhenTheFirstSaveFails(t *testing.T) {
+	s := newStore(t)
+	s.saveFn = func(string, *Manifest) error { return errors.New("disk full") }
+	if _, _, err := s.Create(Manifest{Title: "x"}, t0); err == nil {
+		t.Fatal("Create succeeded with a failing save")
+	}
+	entries, err := os.ReadDir(s.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("%d entries left in the store after a failed Create, want 0", len(entries))
 	}
 }

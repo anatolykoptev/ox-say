@@ -26,8 +26,9 @@ type Store struct {
 	// Log receives one line per meeting List had to skip; nil uses slog.Default.
 	Log *slog.Logger
 
-	newID     func(time.Time) string // test seam; nil means vproject.NewID
-	removeAll func(string) error     // test seam; nil means os.RemoveAll
+	newID     func(time.Time) string              // test seam; nil means vproject.NewID
+	removeAll func(string) error                  // test seam; nil means os.RemoveAll
+	saveFn    func(dir string, m *Manifest) error // test seam; nil means s.save
 	mu        sync.Mutex
 	warned    sync.Map // tombstone name -> struct{}: those whose failed unlink was logged
 }
@@ -57,7 +58,14 @@ func (s *Store) Create(m Manifest, now time.Time) (Manifest, string, error) {
 	if err != nil {
 		return Manifest{}, "", err
 	}
-	if err := s.save(dir, &m); err != nil {
+	save := s.save
+	if s.saveFn != nil {
+		save = s.saveFn
+	}
+	if err := save(dir, &m); err != nil {
+		// No manifest, no meeting: the empty directory would stay for ever (List skips it, nothing sweeps it).
+		// os.Remove, not RemoveAll: if the failed save left anything inside, it stays rather than be deleted blind.
+		_ = os.Remove(dir)
 		return Manifest{}, "", err
 	}
 	return m, dir, nil
@@ -268,10 +276,12 @@ func (s *Store) unlink(path string) error {
 // tombstoneGrace is skipped: its delete is most likely still unlinking it. One that cannot be unlinked is logged
 // once per process, not by every List.
 func (s *Store) sweepTombstones(entries []os.DirEntry) {
+	present := map[string]bool{}
 	for _, e := range entries {
 		if !e.IsDir() || !strings.HasPrefix(e.Name(), tombstonePrefix) {
 			continue
 		}
+		present[e.Name()] = true
 		if born := tombstoneBorn(e); time.Since(born) < tombstoneGrace {
 			continue
 		}
@@ -279,8 +289,18 @@ func (s *Store) sweepTombstones(entries []os.DirEntry) {
 			if _, seen := s.warned.LoadOrStore(e.Name(), struct{}{}); !seen {
 				s.log().Warn("meeting: cannot unlink a tombstone", slog.String("dir", e.Name()), slog.Any("error", err))
 			}
+			continue
 		}
+		s.warned.Delete(e.Name()) // swept: a later failure under this name would be news again
 	}
+	// A warned name that is no longer among the tombstones (removed by hand, or by a delete's own unlink) is
+	// forgotten, so the map holds only the tombstones that are stuck now (#263).
+	s.warned.Range(func(k, _ any) bool {
+		if !present[k.(string)] {
+			s.warned.Delete(k)
+		}
+		return true
+	})
 }
 
 // tombstoneBorn is when the tombstone was made: the time in the last part of its name (base 36, nanoseconds),

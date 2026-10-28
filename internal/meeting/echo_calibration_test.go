@@ -182,3 +182,30 @@ func TestEchoContentShareCalibration(t *testing.T) {
 			echoContentShare, fe+fr, calibMaxFalseDrops, wenEN, wenRU)
 	}
 }
+
+// echoContentShare has a floor and a ceiling pinned at its edge (#279): the owner talking over the far side with
+// the same small words and a third of the content words is not an echo, two fifths is. The calibration above only
+// proves the chosen value on average; lowering it to 0.3 kept the suite green.
+// Mutation: internal/meeting/merge.go:64 `echoContentShare = 0.4` -> 0.3 -> RED (the 1/3 rows are dropped);
+// -> 0.5 -> RED (the 2/5 row is kept).
+func TestEchoContentShareEdges(t *testing.T) {
+	far := "can you send me the updated budget for the third quarter before the meeting tomorrow"
+	cases := []struct {
+		name, me string
+		echo     bool
+	}{
+		// content words send, other, plan: 1 of 3 shared; every small word is the far side's, so echoShare passes
+		{"1/3 content shared, in order", "can you send me the other plan for the", false},
+		{"1/3 content shared, other words", "can you send me the new plan for the", false},
+		// content words send, budget, other, new, plan: 2 of 5 shared, exactly the share
+		{"2/5 content shared", "can you send me the budget for the other new plan", true},
+	}
+	for _, c := range cases {
+		if share := voices.WordShare(c.me, far); share < echoShare {
+			t.Fatalf("%s: the row is mis-built, the plain share is %.2f, below echoShare", c.name, share)
+		}
+		if got := echoMatch(c.me, far, nil); got != c.echo {
+			t.Errorf("%s: echoMatch(%q) = %v, want %v", c.name, c.me, got, c.echo)
+		}
+	}
+}

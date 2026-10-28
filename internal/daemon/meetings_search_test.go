@@ -483,3 +483,36 @@ func TestSearchNotesSkipsHeadingsNotHashtags(t *testing.T) {
 		}
 	}
 }
+
+// A letter typed as a base letter plus a combining mark (a decomposed é, and the й of a Russian keyboard layout
+// that sends и + U+0306) finds its precomposed form and the other way round; й still does not become и (#268).
+// Mutation: internal/meeting/search.go matchOnce, delete the `text = norm.NFC.String(text)` line -> RED (a
+// decomposed text is not found by the precomposed query); the same in Search for `norm.NFC.String(q)` -> RED.
+func TestSearchNormalisesDecomposedLetters(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	seedMeeting(t, d, "Café мой друг", "", nil, searchT0)
+	d2, mux2 := meetingFixture(t, nil)
+	seedMeeting(t, d2, "Café мой друг", "", nil, searchT0)
+	d3, mux3 := meetingFixture(t, nil)
+	seedMeeting(t, d3, "Plan", "# Plan\n\n## Summary\n\nThe cafe\u0301 is open\n", nil, searchT0)
+	cases := []struct {
+		name string
+		mux  http.Handler
+		q    string
+		want bool
+	}{
+		{"precomposed query, decomposed notes", mux3, "caf\u00e9 is", true},
+		{"decomposed query, precomposed title", mux, "café", true},
+		{"decomposed й query, precomposed title", mux, "мой", true},
+		{"precomposed query, decomposed title", mux2, "café", true},
+		{"precomposed й query, decomposed title", mux2, "мой", true},
+		{"и is not й, decomposed title", mux2, "мои друг", false},
+		{"и is not й, decomposed query", mux, "мои друг", false},
+	}
+	for _, c := range cases {
+		out, code, body := search(t, c.mux, c.q)
+		if code != http.StatusOK || (len(out.Meetings) == 1) != c.want {
+			t.Errorf("%s: want match=%v, got %d %s", c.name, c.want, code, body)
+		}
+	}
+}

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Search limits. The scan is a plain read of the meetings' files, newest first, with no index: it stops once the
@@ -78,7 +80,7 @@ func (s *Store) Search(ctx context.Context, q string) (SearchResult, error) {
 	if utf8.RuneCountInString(q) > MaxQueryRunes {
 		return SearchResult{}, ErrSearchTooLong
 	}
-	needle := foldRunes(q)
+	needle := foldRunes(norm.NFC.String(q))
 	list, err := s.List()
 	if err != nil {
 		return SearchResult{}, err
@@ -173,7 +175,7 @@ func notesHits(notes string, needle []rune, limit int) []Hit {
 			body.WriteString(line)
 		}
 	}
-	text := unescapeMarkdown(body.String())
+	text := norm.NFC.String(unescapeMarkdown(body.String()))
 	orig := []rune(text)
 	hay := foldRunes(text)
 	var hits []Hit
@@ -218,6 +220,7 @@ func transcriptHits(dir string, m Manifest, needle []rune, limit int) (hits []Hi
 
 // matchOnce is the snippet around the first match of needle in text.
 func matchOnce(text string, needle []rune) (string, bool) {
+	text = norm.NFC.String(text) // a decomposed letter matches its precomposed form; the snippet shows the composed text
 	hay := foldRunes(text)
 	i := indexRunes(hay, needle, 0)
 	if i < 0 {
@@ -296,9 +299,9 @@ var foldTable = sync.OnceValue(func() *[foldTableSize]rune {
 })
 
 // foldRune is the character a search compares: lower case, and a letter with a mark as its plain letter (é as e,
-// ё as е). It is stdlib only (golang.org/x/text is not a dependency): the unicode tables give the case, the accents
-// table below the marks. Known limits, left out on purpose: no Unicode normalisation (a letter typed as a base letter
-// plus a combining mark does not match its precomposed form), and ß does not match "ss". й is deliberately not folded to и: to a Russian reader it is a letter of its own, and
+// ё as е). The unicode tables give the case, the accents
+// table below the marks. The callers normalise to NFC before folding (a letter typed as a base letter plus a combining mark matches its
+// precomposed form; й stays distinct from и either way). Known limit, left out on purpose: ß does not match "ss". й is deliberately not folded to и: to a Russian reader it is a letter of its own, and
 // "мои" must not find "мой".
 func foldRune(r rune) rune {
 	if r < utf8.RuneSelf {
