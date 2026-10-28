@@ -129,6 +129,26 @@ final class ReacquireTests: XCTestCase {
     }
 
     /// The first failure of a streak is told; the retries are silent; a recovery is told; the next streak is told again.
+    /// #266: a rebuild that failed while the OLD tap keeps recording does not tell "system audio lost", and its
+    /// later success does not tell "recovered" either.
+    /// Mutation: Reacquire.failed, drop `sourceLost &&` from `notify` -> RED.
+    func testAFailureThatKeepsTheSourceIsNotToldNorItsRecovery() {
+        var r = Reacquire()
+        XCTAssertEqual(r.failed(sourceLost: false), Reacquire.Step(delay: 0.4, notify: false))
+        XCTAssertEqual(r.failed(sourceLost: false), Reacquire.Step(delay: 1, notify: false))
+        XCTAssertFalse(r.succeeded(), "nothing was told, so there is no recovery to tell")
+    }
+
+    /// Mutation: Reacquire.succeeded, `return told` -> `return attempts > 0` -> RED.
+    func testAStreakThatWasToldIsRecoveredToldOnce() {
+        var r = Reacquire()
+        XCTAssertTrue(r.failed(sourceLost: true).notify)
+        XCTAssertFalse(r.failed(sourceLost: false).notify)
+        XCTAssertTrue(r.succeeded())
+        XCTAssertFalse(r.succeeded())
+        XCTAssertTrue(r.failed(sourceLost: true).notify, "a later streak is told again")
+    }
+
     /// Mutation: Reacquire.failed, `notify: attempts == 0` -> `notify: true` -> RED.
     func testNoticesFollowTheStreak() {
         var r = Reacquire()

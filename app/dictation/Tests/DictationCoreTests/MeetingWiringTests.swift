@@ -130,12 +130,21 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(recorder.contains("forName: .AVAudioEngineConfigurationChange"))
         XCTAssertTrue(recorder.contains("self.restartMicrophone()"))
         let restart = try XCTUnwrap(body(recorder, of: "private func restartMicrophone() {"))
-        XCTAssertTrue(restart.contains("micRetry.failed()") && restart.contains("micRetry.succeeded()"))
-        XCTAssertTrue(restart.contains("self?.restartMicrophone()"), "a failed restart tries again")
+        XCTAssertTrue(restart.contains("micChain.run()"), "a failed restart tries again, through the generation-guarded chain (#266)")
+        XCTAssertTrue(recorder.contains("micChain.begin()"), "a new recording starts a new chain")
+        let stopBody = try XCTUnwrap(body(recorder, of: "func stop() -> Summary {"))
+        XCTAssertTrue(stopBody.contains("micChain.cancel()"), "the recording that ended takes its pending retry with it")
+        XCTAssertFalse(recorder.contains("micRetry"), "no unguarded asyncAfter chain is left")
         let rebuild = try XCTUnwrap(body(recorder, of: "private func scheduleTapRebuild(after delay: TimeInterval) {"))
-        XCTAssertTrue(rebuild.contains("self.tapRetry.succeeded()"))
+        XCTAssertTrue(rebuild.contains("self.startTap()"))
+        let started = try XCTUnwrap(body(recorder, of: "private func tapStarted(_ outcome: SystemAudioTap.StartOutcome) {"))
+        XCTAssertTrue(started.contains("tapRetry.succeeded()"))
         let failed = try XCTUnwrap(body(recorder, of: "private func tapFailed(_ why: String) {"))
-        XCTAssertTrue(failed.contains("tapRetry.failed()") && failed.contains("scheduleTapRebuild(after: step.delay)"))
+        XCTAssertTrue(failed.contains("scheduleTapRebuild(after: step.delay)"))
+        // #266: "system audio lost" is told only when no tap is left. Mutation: MeetingRecorder.tapFailed, replace
+        // `sourceLost: !kept` with `sourceLost: true` -> RED.
+        XCTAssertTrue(failed.contains("let kept = tap.isRunning"))
+        XCTAssertTrue(failed.contains("tapRetry.failed(sourceLost: !kept)"))
         XCTAssertTrue(recorder.contains("kAudioHardwarePropertyDefaultOutputDevice"))
         XCTAssertTrue(recorder.contains("kAudioDevicePropertyNominalSampleRate"))
         XCTAssertTrue(recorder.contains("var useMainSubDevice = true"), "P0a branch A")
@@ -145,15 +154,68 @@ final class MeetingWiringTests: XCTestCase {
     /// Mutation: SystemAudioTap.start, move `old.teardown()` before `build(` -> RED.
     func testTheTapBuildsBeforeItTearsDown() throws {
         let tap = try source("OxSayDictation/SystemAudioTap.swift")
-        let start = try XCTUnwrap(body(tap, of: "func start(excludingPIDs pids: [pid_t], withMainSubDevice: Bool) throws {"))
+        let start = try XCTUnwrap(body(tap, of: "private func startNow(excludingPIDs pids: [pid_t], withMainSubDevice: Bool, epoch requested: Int) throws -> Bool {"))
         let built = try XCTUnwrap(start.range(of: "try build(excluded: excluded, withMainSubDevice: withMainSubDevice)"))
         let torn = try XCTUnwrap(start.range(of: "old.teardown()"))
         XCTAssertLessThan(built.lowerBound, torn.lowerBound)
         XCTAssertFalse(start.contains("stop()"), "no teardown before the new tap runs")
-        XCTAssertEqual(start.components(separatedBy: "teardown()").count - 1, 1, "the old tap is torn down once, after the new one runs")
+        XCTAssertEqual(start.components(separatedBy: "old.teardown()").count - 1, 1, "the old tap is torn down once, after the new one runs")
+        XCTAssertTrue(start.contains("if epoch != requested { return (nil, true) }"), "a stop() that ran meanwhile wins over this start")
+        XCTAssertTrue(start.contains("fresh.teardown()"), "...and the tap it built is not left running")
         XCTAssertTrue(start.contains("Retry.firstNonNil(attempts: 4"))
         XCTAssertTrue(start.contains("exclusionMissing += 1"))
         XCTAssertTrue(tap.contains("self.nilBuffers += 1"))
+    }
+
+    /// #266: the tap start (it sleeps up to 150 ms looking for this app's audio process) never runs on the main thread:
+    /// the recorder asks for it with a completion, the tap does the work on its own control queue.
+    /// Mutation: MeetingRecorder.start, call `try tap.startNow(` directly (or any synchronous start) -> RED; SystemAudioTap.start,
+    /// run the work without `control.async` -> RED.
+    func testTheTapStartsOffTheMainThread() throws {
+        let recorder = try source("OxSayDictation/MeetingRecorder.swift")
+        let tap = try source("OxSayDictation/SystemAudioTap.swift")
+        XCTAssertFalse(recorder.contains("try tap.start("), "no synchronous start from the recorder")
+        let startTap = try XCTUnwrap(body(recorder, of: "private func startTap() {"))
+        XCTAssertTrue(startTap.contains("tap.start(excludingPIDs: [getpid()], withMainSubDevice: useMainSubDevice)"))
+        let start = try XCTUnwrap(body(tap, of: "func start(excludingPIDs pids: [pid_t], withMainSubDevice: Bool, completion: @escaping (StartOutcome) -> Void) {"))
+        XCTAssertTrue(start.contains("control.async"))
+        XCTAssertTrue(start.contains("DispatchQueue.main.async { completion(outcome) }"))
+        XCTAssertTrue(tap.contains("private func startNow("), "the blocking part is private")
+        XCTAssertEqual(tap.components(separatedBy: "Thread.sleep").count - 1, 1)
+        let now = try XCTUnwrap(body(tap, of: "private func startNow(excludingPIDs pids: [pid_t], withMainSubDevice: Bool, epoch requested: Int) throws -> Bool {"))
+        XCTAssertTrue(now.contains("Thread.sleep"), "the only sleep is inside the blocking part")
+    }
+
+    /// #270: an aborted start deletes the empty meeting; the retention push at launch logs its failure; the watcher is
+    /// told which apps are "Don't record".
+    /// Mutation: MeetingController.start, restore `_ = try? await host.client.finishMeeting(id: created.id)` -> RED.
+    func testAnAbortedStartDeletesTheEmptyMeetingAndTheRestIsWired() throws {
+        let controller = try source("OxSayDictation/MeetingController.swift")
+        let start = try XCTUnwrap(body(controller, of: "private func start(origin: CallTracker.Origin, source: String) {"))
+        XCTAssertTrue(start.contains("if let created, current == nil { discardEmpty(created.id) }"))
+        XCTAssertFalse(start.contains("finishMeeting"), "no start path closes the empty meeting instead of deleting it")
+        let discard = try XCTUnwrap(body(controller, of: "private func discardEmpty(_ id: String) {"))
+        XCTAssertTrue(discard.contains("EmptyMeetingCleanup.discard("))
+        XCTAssertTrue(discard.contains("client.deleteMeeting(id: id)"))
+        XCTAssertTrue(discard.contains("log.error("), "what stays behind is logged")
+        let status = try XCTUnwrap(body(controller, of: "func daemonStatusChanged() {\n"))
+        XCTAssertFalse(status.contains("try? await"), "the retention push no longer swallows its error")
+        XCTAssertTrue(status.contains("retention push at launch failed"))
+        XCTAssertTrue(controller.contains("watcher.ignoredSources = {"))
+        let watcher = try source("OxSayDictation/CallWatcher.swift")
+        XCTAssertTrue(watcher.contains("ignoring: ignoredSources())"))
+    }
+
+    /// #251: the badge keeps its left edge when its width changes while it is on screen.
+    /// Mutation: MeetingBadge.update, `resize(keepingPlace: true)` -> `resize(keepingPlace: false)` -> RED.
+    func testTheBadgeKeepsItsPlaceWhenTheConsentButtonHides() throws {
+        let badge = try source("OxSayDictation/MeetingBadge.swift")
+        let update = try XCTUnwrap(body(badge, of: "func update(elapsed: TimeInterval, me: Float, them: Float) {"))
+        XCTAssertTrue(update.contains("if changed { resize(keepingPlace: true) }"))
+        let layout = try XCTUnwrap(body(badge, of: "private func layout(_ views: [NSView]) {"))
+        XCTAssertTrue(layout.contains("resize(keepingPlace: false)"), "new content is centred")
+        let resize = try XCTUnwrap(body(badge, of: "private func resize(keepingPlace: Bool) {"))
+        XCTAssertTrue(resize.contains("BadgePlacement.originX(anchoredLeft: left"))
     }
 
     // MARK: controller

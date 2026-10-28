@@ -141,6 +141,10 @@ final class MeetingController: NSObject, MeetingFeature {
         }
         watcher.recording = { [weak self] in self?.current?.origin }
         watcher.themActive = { [weak self] in self?.recorder.themActive ?? false }
+        watcher.ignoredSources = { [weak self] in
+            guard let self else { return [] }
+            return Set(CallPolicy.sources.filter { CallPolicy.mode(for: $0, self.host.defaults) == .never })
+        }
         watcher.onTick = { [weak self] tick in self?.observe(tick) }
         // A closed lid ends the recording cleanly: the audio devices disappear under it, and what was recorded is
         // handed to the daemon instead of waiting for its stale-recording sweep.
@@ -167,7 +171,12 @@ final class MeetingController: NSObject, MeetingFeature {
         if !retentionPushed, host.daemonStatus() != nil {
             retentionPushed = true
             let days = MeetingSettings.retention(host.defaults).days
-            Task { try? await host.client.setMeetingRetention(days: days) }
+            // A refusal is logged, not retried on every status poll: the next launch and every retention pick push it again.
+            Task {
+                do { try await host.client.setMeetingRetention(days: days) } catch {
+                    log.error("retention push at launch failed: \(String(describing: error), privacy: .public)")
+                }
+            }
         }
         // The notes model just arrived: meetings that waited for it get their notes.
         let available = host.daemonStatus()?.notes.available ?? false
@@ -247,7 +256,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 created = info
                 // Switched off while the daemon was opening the meeting: close it through the usual path and record nothing.
                 if isShutDown {
-                    _ = try? await host.client.finishMeeting(id: info.id)
+                    discardEmpty(info.id)
                     return
                 }
                 guard let dir = info.dir else { throw StudioError.badResponse }
@@ -263,9 +272,23 @@ final class MeetingController: NSObject, MeetingFeature {
             } catch {
                 host.notify(L10nKey.noticeMeetingStartFailed.text("\(error)"))
                 // A meeting the daemon opened but the recorder never started would sit as "recording".
-                if let created, current == nil { _ = try? await host.client.finishMeeting(id: created.id) }
+                if let created, current == nil { discardEmpty(created.id) }
             }
             render()
+        }
+    }
+
+    /// A meeting the daemon opened that nothing was recorded into would sit as "recording" or, finished, as an empty
+    /// row in the window (#270): it is finished and deleted. A task of its own, so a daemon that is slow to let go
+    /// does not hold the next start (`starting`) up; what stays behind is logged.
+    private func discardEmpty(_ id: String) {
+        let client = host.client
+        Task {
+            let outcome = await EmptyMeetingCleanup.discard(
+                finish: { _ = try await client.finishMeeting(id: id) },
+                delete: { try await client.deleteMeeting(id: id) },
+                sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) })
+            if case .left(let why) = outcome { log.error("empty meeting \(id, privacy: .public) was not deleted: \(why, privacy: .public)") }
         }
     }
 
@@ -589,14 +612,15 @@ final class MeetingController: NSObject, MeetingFeature {
         // The copy in the notes folder carries the old title in its name and headings. Only a finished `track` copies a
         // meeting flagged stale, and a rename starts none, so a read that fails is tried again here and then said.
         MeetingSettings.setExportStale(id, true, host.defaults)
-        for attempt in 1...3 {
-            if let info = try? await host.client.meeting(id: id, withTexts: true) {
-                export(info)
-                return
-            }
-            try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
-        }
-        host.notify(L10nKey.noticeMeetingCopyStale.text)
+        // Not awaited: the window's refresh must not wait for the retries (#270).
+        Task { await refreshCopy(id) }
+    }
+
+    private func refreshCopy(_ id: String) async {
+        let client = host.client
+        let info = await StaleCopyRefresh.run(read: { try? await client.meeting(id: id, withTexts: true) },
+                                              sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) })
+        if let info { export(info) } else { host.notify(L10nKey.noticeMeetingCopyStale.text) }
     }
 
     func settingsChanged() {

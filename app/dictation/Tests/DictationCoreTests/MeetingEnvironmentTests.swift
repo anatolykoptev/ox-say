@@ -29,6 +29,30 @@ final class MeetingEnvironmentTests: XCTestCase {
         }
     }
 
+    /// #241: common headphone names in en/ru/de are headphones. Sources: Bose's QuietComfort line is headphones and
+    /// earbuds only (Wikipedia, "Bose Corporation"); Anker's Soundcore worn lines are Liberty, Life, P, Space and
+    /// Life Q, its speakers Flare, Rave and Boom (Wikipedia, "Anker Innovations"); Jabra Elite is the earbud/headphone
+    /// line, Speak the speakerphone line; "наушники", "kopfhörer" and "ohrhörer" are the Russian and German words.
+    /// Mutation: OutputRoute.headphoneWords, drop "quietcomfort" -> RED.
+    func testCommonHeadphoneNamesInThreeLanguagesAreHeadphones() {
+        let worn = ["Bose QuietComfort 45", "Anatoly\u{2019}s QuietComfort Ultra", "Jabra Elite 85t", "Jabra Elite 10",
+                    "Soundcore Liberty 4", "soundcore Life Q30", "Soundcore Space One",
+                    "Наушники Anatoly", "Беспроводные наушники", "Kopfhörer von Anna", "Ohrhörer", "Гарнитура Bluetooth",
+                    "Galaxy Buds2 Pro", "Pixel Buds Pro", "WH-1000XM5", "Sony WF-C700N"]
+        for name in worn {
+            XCTAssertFalse(OutputRoute.isLikelySpeakers(transport: "blue", dataSource: nil, name: name), name)
+        }
+    }
+
+    /// The safe direction: names that merely share a brand with headphones stay speakers.
+    /// Mutation: OutputRoute.headphoneWords, add the bare "soundcore" or "jabra" -> RED.
+    func testBrandsThatAlsoMakeSpeakersStaySpeakers() {
+        for name in ["Soundcore Motion+", "Soundcore Boom 2", "Soundcore Flare 2", "Soundcore Rave", "Jabra Speak 510", "Bose SoundLink Max",
+                     "Колонка JBL", "Lautsprecher Küche", "Marshall Emberton"] {
+            XCTAssertTrue(OutputRoute.isLikelySpeakers(transport: "blue", dataSource: nil, name: name), name)
+        }
+    }
+
     private struct FakeRunner: AppleScriptRunner {
         var outcome: ScriptOutcome
         func run(_ source: String, timeout: TimeInterval) -> ScriptOutcome { outcome }

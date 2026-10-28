@@ -79,7 +79,9 @@ public enum CallDetector {
     /// (once) only when it holds the microphone. When several calls are live, one
     /// that starts a recording by itself wins over one that only asks, then the
     /// lowest bundle id: the answer does not depend on the order of the process list.
-    public static func detect(of users: [MicUser], tab: (String) -> BrowserTabURL.Result) -> Detection {
+    /// `ignoring`: sources the user set to "Don't record". They still count as a call when nothing else is live (the
+    /// tracker keeps their episode), but never hide another call that would be offered (#270).
+    public static func detect(of users: [MicUser], tab: (String) -> BrowserTabURL.Result, ignoring: Set<String> = []) -> Detection {
         var found: [Detection.Call] = []
         var asked: [String: BrowserTabURL.Result] = [:]
         var denied = false
@@ -101,6 +103,8 @@ public enum CallDetector {
             }
         }
         let best = found.min { l, r in
+            let lIgnored = ignoring.contains(l.source), rIgnored = ignoring.contains(r.source)
+            if lIgnored != rIgnored { return rIgnored }
             let lAuto = autoStartSources.contains(l.source), rAuto = autoStartSources.contains(r.source)
             if lAuto != rAuto { return lAuto }
             if l.bundleID != r.bundleID { return l.bundleID < r.bundleID }
@@ -356,14 +360,15 @@ public struct CallWatch {
 
     /// `tab` reads a browser's front page (BrowserTabURL.read in the app); the rest
     /// is what CallTracker.observe takes. `recording` is nil when no recording runs.
+    /// `ignoring`: the sources set to "Don't record" (see `CallDetector.detect`).
     public mutating func observe(now: Date, users: [MicUser], tab: (String) -> BrowserTabURL.Result,
-                                 themActive: Bool, recording: CallTracker.Origin?) -> Outcome {
+                                 themActive: Bool, recording: CallTracker.Origin?, ignoring: Set<String> = []) -> Outcome {
         var reads: [String: BrowserTabURL.Result] = [:]
         let detection = CallDetector.detect(of: users, tab: { id in
             let result = tab(id)
             reads[id] = result
             return result
-        })
+        }, ignoring: ignoring)
         var call = detection.call
         var heldOnly = false
         // A browser call goes on while that browser holds the microphone,

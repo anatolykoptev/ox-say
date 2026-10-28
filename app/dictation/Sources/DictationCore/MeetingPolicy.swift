@@ -76,20 +76,24 @@ public struct Reacquire {
     }
 
     private var attempts = 0
+    private var told = false
 
     public init() {}
 
-    public mutating func failed() -> Step {
+    /// `sourceLost`: false when the failed restart left the old source recording (a tap rebuild that failed while the
+    /// old tap goes on). That failure is retried but not told, and a streak that was never told has no recovery to tell.
+    public mutating func failed(sourceLost: Bool = true) -> Step {
         let delay = attempts < Self.delays.count ? Self.delays[attempts] : Self.steadyDelay
-        let step = Step(delay: delay, notify: attempts == 0)
+        let step = Step(delay: delay, notify: sourceLost && !told)
+        told = told || step.notify
         attempts += 1
         return step
     }
 
-    /// True when this success ends a streak of failures (the recovery is told).
+    /// True when this success ends a streak of failures that was told (the recovery is told).
     public mutating func succeeded() -> Bool {
-        defer { attempts = 0 }
-        return attempts > 0
+        defer { attempts = 0; told = false }
+        return told
     }
 }
 

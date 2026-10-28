@@ -75,9 +75,11 @@ public final class PcmChannelWriter {
         var chunk = chunk
         if expected - written > Self.gapTolerance {
             pad(to: expected)
-        } else if written - expected > Self.gapTolerance {
+        } else if written > expected {
             // The channel is ahead of the clock: its head would land in time
-            // that is already written. Keep the position equal to the time.
+            // that is already written (a rebuilt tap runs beside the old one
+            // for a moment, a device clock runs fast). Keep the position equal
+            // to the time; the tolerance only spares gaps, never duplicates.
             let drop = min(written - expected, chunk.count)
             chunk.removeFirst(drop)
             dropped += drop

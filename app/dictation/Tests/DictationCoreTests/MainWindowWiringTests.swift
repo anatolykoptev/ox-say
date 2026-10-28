@@ -109,7 +109,9 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertTrue(save.contains("if state.notesQueued {"))
         let rename = try body(controller, of: "func rename(id: String, title: String) async throws {\n")
         XCTAssertTrue(rename.contains("try await host.client.renameMeeting(id: id, title: title)"))
-        XCTAssertTrue(rename.contains("export(info)"), "the copy in the notes folder follows the new title through the ledger")
+        let refresh = try body(controller, of: "private func refreshCopy(_ id: String) async {\n")
+        XCTAssertTrue(rename.contains("Task { await refreshCopy(id) }"), "the copy follows the new title, off the refresh path")
+        XCTAssertTrue(refresh.contains("export(info)"), "the copy in the notes folder follows the new title through the ledger")
     }
 
     /// The only clipboard write of the window is Copy as Markdown, from the user's click.
@@ -180,7 +182,7 @@ final class MainWindowWiringTests: XCTestCase {
         let controller = try source("OxSayDictation/MeetingController.swift")
         let start = try body(controller, of: "private func start(origin: CallTracker.Origin, source: String) {")
         let created = try XCTUnwrap(start.range(of: "created = info"))
-        let flag = try XCTUnwrap(start.range(of: "if isShutDown {\n                    _ = try? await host.client.finishMeeting(id: info.id)\n                    return\n                }"))
+        let flag = try XCTUnwrap(start.range(of: "if isShutDown {\n                    discardEmpty(info.id)\n                    return\n                }"))
         let recorderStart = try XCTUnwrap(start.range(of: "try recorder.start(into:"))
         XCTAssertLessThan(created.lowerBound, flag.lowerBound)
         XCTAssertLessThan(flag.lowerBound, recorderStart.lowerBound, "checked before the recorder starts")
@@ -251,8 +253,14 @@ final class MainWindowWiringTests: XCTestCase {
     func testARenameThatCannotRefreshTheCopySaysSo() throws {
         let controller = try source("OxSayDictation/MeetingController.swift")
         let rename = try body(controller, of: "func rename(id: String, title: String) async throws {\n")
-        XCTAssertTrue(rename.contains("for attempt in 1...3 {"))
-        XCTAssertTrue(rename.contains("host.notify(L10nKey.noticeMeetingCopyStale.text)"))
+        let refresh = try body(controller, of: "private func refreshCopy(_ id: String) async {\n")
+        XCTAssertTrue(refresh.contains("StaleCopyRefresh.run(read:"))
+        XCTAssertTrue(refresh.contains("host.notify(L10nKey.noticeMeetingCopyStale.text)"))
+        // #270: the retries run in their own task; the caller (and the window's refresh behind it) never waits for them.
+        // Mutation: MeetingController.rename, replace `Task { await refreshCopy(id) }` with `await refreshCopy(id)` -> RED.
+        XCTAssertTrue(rename.contains("Task { await refreshCopy(id) }"))
+        XCTAssertFalse(rename.replacingOccurrences(of: "Task { await refreshCopy(id) }", with: "").contains("await refreshCopy"), "rename does not await the retries")
+        XCTAssertFalse(rename.contains("Task.sleep"))
     }
 
     /// Titles the app gave are shown in the user's language; notes and transcript carry no links.

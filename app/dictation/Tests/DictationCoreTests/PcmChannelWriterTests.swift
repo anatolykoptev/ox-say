@@ -86,6 +86,38 @@ final class PcmChannelWriterTests: XCTestCase {
         XCTAssertEqual(all[15999], 3276) // 0.1
     }
 
+    /// #266: an overlap SMALLER than the jitter tolerance (the two taps of a rebuild run side by side for a moment)
+    /// is audio twice too. Every sample stamped before the written position is trimmed, not only past the tolerance.
+    /// Mutation: PcmChannelWriter.append, change `written - expected > 0` back to `written - expected > Self.gapTolerance`
+    /// -> RED (the 50 ms overlap is written twice).
+    func testAnOverlapBelowTheToleranceIsTrimmedToo() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let t0: UInt64 = 1_000_000_000
+        let w = try PcmChannelWriter(url: url, t0: t0)
+        w.append([Float](repeating: 0.1, count: 16000), atNanos: t0) // 0 ... 1 s
+        // The new tap's first chunk starts 50 ms (800 samples) before the end of what is written.
+        let chunk = [Float](repeating: 0.2, count: 800) + [Float](repeating: 0.3, count: 800)
+        w.append(chunk, atNanos: t0 + 950_000_000)
+        XCTAssertEqual(w.samples, 16800, "position equals time: 1.05 s")
+        XCTAssertEqual(w.droppedSamples, 800)
+        w.finish(atNanos: t0 + 1_050_000_000)
+        let all = try samples(url)
+        XCTAssertFalse(all.contains(6553), "0.2 is the duplicated stretch")
+        XCTAssertEqual(all[16000], 9830) // 0.3 right after the first second
+    }
+
+    /// Jitter the other way (a chunk a little LATE) is still left alone: no padding under the tolerance.
+    func testALateChunkUnderTheToleranceIsStillNotPadded() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let w = try PcmChannelWriter(url: url, t0: 0)
+        w.append([Float](repeating: 0.1, count: 1600), atNanos: 0)
+        w.append([Float](repeating: 0.1, count: 1600), atNanos: 150_000_000) // 50 ms late
+        XCTAssertEqual(w.paddedSamples, 0)
+        XCTAssertEqual(w.droppedSamples, 0)
+    }
+
     /// Feeds `seconds` of a clock that runs `ppm` fast: a chunk every `chunk`
     /// host seconds carries `1 + ppm/1e6` times as many samples as the host
     /// time that passed.
