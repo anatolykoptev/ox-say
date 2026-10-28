@@ -191,7 +191,7 @@ func (r *Repair) plan(ctx context.Context, srcWav, srcText string, srcDur float6
 	if !SameScript(srcText, joinWords(words)) {
 		return fmt.Errorf("voice %s: the transcript's script differs from ref_text: %w", name, ErrScript)
 	}
-	if TranscriptMatches(srcText, joinWords(words)) {
+	if TranscriptMatchesTimed(srcText, words, srcDur) {
 		return nil // a correct transcript, e.g. an exact 20.0 s clip with its own text
 	}
 	if srcDur >= MaxRefSeconds-capEpsilon {

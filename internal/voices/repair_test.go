@@ -631,6 +631,30 @@ func TestRemoveDropsVerdict(t *testing.T) {
 	}
 }
 
+// Remove of a voice whose files are already gone still drops its verdict.
+// Mutation: internal/voices/store.go Remove — move forgetVerdict below the
+// `if missing { return ErrNotFound }` return -> RED.
+func TestRemoveMissingFilesDropsVerdict(t *testing.T) {
+	words := speechWords(60, 0.3, 0.03, 6)
+	s, _ := newStore(t)
+	seedVoice(t, s, "exact", 20, joinWords(words))
+	s.SetTranscriber(fixedWords(words, new(int)))
+	if _, err := s.PrepareRepair(context.Background(), "exact"); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{s.WAVPath("exact"), s.metaPath("exact")} {
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Remove("exact"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Remove = %v, want ErrNotFound", err)
+	}
+	if v := s.readVerdicts(); len(v) != 0 {
+		t.Fatalf("verdicts = %v, want none", v)
+	}
+}
+
 // A healthy at-cap voice whose transcript differs from ref_text only at the
 // very end (the recognizer adds, splits or drops a word there) is left alone:
 // rewriting a voice the user did not ask to change is worse than the bleed.
@@ -648,35 +672,55 @@ func TestRepairTailEdgesEndToEnd(t *testing.T) {
 		}
 		return out
 	}
-	timed := func(ws []string) []Word {
+	timed := func(ws []string, step float64) []Word {
 		out := make([]Word, len(ws))
 		for i, w := range ws {
-			out[i] = Word{W: w, S: float64(i) * 0.4, E: float64(i)*0.4 + 0.3}
+			out[i] = Word{W: w, S: float64(i) * step, E: float64(i)*step + step*0.75}
 		}
 		return out
 	}
+	cat := func(parts ...[]string) []string {
+		var out []string
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
+	sp := strings.Fields
 	lat, cyr := filler("w", 55, 'a'), filler("с", 55, 'а')
 	cases := []struct {
 		name         string
 		ref, heard   []string
 		wantRepaired bool
+		step         float64 // seconds per heard word; 0 = 0.4 (58+ words: speech runs to the 20 s clip end)
 	}{
-		{"healthy: trailing you", append(append([]string{}, lat...), "see", "you", "tomorrow"), append(append([]string{}, lat...), "see", "you", "tomorrow", "you"), false},
-		{"healthy: trailing thank you", append(append([]string{}, lat...), "see", "you", "tomorrow"), append(append([]string{}, lat...), "see", "you", "tomorrow", "thank", "you"), false},
-		{"healthy: trailing ага", append(append([]string{}, cyr...), "увидимся", "завтра", "вечером"), append(append([]string{}, cyr...), "увидимся", "завтра", "вечером", "ага"), false},
-		{"healthy: tonight split", append(append([]string{}, lat...), "see", "you", "tonight"), append(append([]string{}, lat...), "see", "you", "to", "night"), false},
-		{"healthy: сегодня split", append(append([]string{}, cyr...), "увидимся", "будем", "сегодня"), append(append([]string{}, cyr...), "увидимся", "будем", "се", "годня"), false},
-		{"healthy: last word dropped", append(append([]string{}, lat...), "see", "you", "tomorrow"), append(append([]string{}, lat...), "see", "you"), false},
-		{"cut: ref runs three words past the audio", append(append([]string{}, lat...), "see", "you", "tomorrow", "at", "the", "station"), append(append([]string{}, lat...), "see", "you", "tomorrow"), true},
+		{"healthy: trailing you", append(append([]string{}, lat...), "see", "you", "tomorrow"), append(append([]string{}, lat...), "see", "you", "tomorrow", "you"), false, 0},
+		{"healthy: trailing thank you", append(append([]string{}, lat...), "see", "you", "tomorrow"), append(append([]string{}, lat...), "see", "you", "tomorrow", "thank", "you"), false, 0},
+		{"healthy: trailing ага", append(append([]string{}, cyr...), "увидимся", "завтра", "вечером"), append(append([]string{}, cyr...), "увидимся", "завтра", "вечером", "ага"), false, 0},
+		{"healthy: tonight split", append(append([]string{}, lat...), "see", "you", "tonight"), append(append([]string{}, lat...), "see", "you", "to", "night"), false, 0},
+		{"healthy: сегодня split", append(append([]string{}, cyr...), "увидимся", "будем", "сегодня"), append(append([]string{}, cyr...), "увидимся", "будем", "се", "годня"), false, 0},
+		{"healthy: last word dropped", append(append([]string{}, lat...), "see", "you", "tomorrow"), append(append([]string{}, lat...), "see", "you"), false, 0},
+		{"cut: ref runs three words past the audio", append(append([]string{}, lat...), "see", "you", "tomorrow", "at", "the", "station"), append(append([]string{}, lat...), "see", "you", "tomorrow"), true, 0},
+		{"healthy: two fillers in the tail", cat(lat, sp("we went to the store today")), cat(lat, sp("we went um to the uh store today")), false, 0},
+		{"healthy: two russian fillers in the tail", cat(cyr, sp("мы пошли в магазин сегодня")), cat(cyr, sp("мы э пошли ну в магазин сегодня")), false, 0},
+		{"healthy: double short-word slip, speech ends before the clip end", cat(lat, sp("so we go to see her")), cat(lat, sp("so we go too sea her")), false, 0.3},
+		{"cut: double short-word slip, speech runs to the clip end", cat(lat, sp("so we go to see her")), cat(lat, sp("so we go too sea her")), true, 0},
+		{"cut: 5-word repeat, heard stops after and", cat(lat[:40], sp("we went to the store today and we went to the store today")), cat(lat[:40], sp("we went to the store today and")), true, 0.45},
+		{"cut: 5-word repeat, heard stops after and we", cat(lat[:40], sp("we went to the store today and we went to the store today")), cat(lat[:40], sp("we went to the store today and we")), true, 0.45},
+		{"cut: 6-word repeat, heard stops after and", cat(lat[:40], sp("then we went to the store today and then we went to the store today")), cat(lat[:40], sp("then we went to the store today and")), true, 0.45},
 		{"cut: repeated tail, ending cut",
 			append(append(append(append([]string{}, lat[:45]...), "alpha", "beta", "gamma"), lat[45:52]...), "alpha", "beta", "gamma"),
-			append(append(append([]string{}, lat[:45]...), "alpha", "beta", "gamma"), lat[45:49]...), true},
+			append(append(append([]string{}, lat[:45]...), "alpha", "beta", "gamma"), lat[45:49]...), true, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			step := c.step
+			if step == 0 {
+				step = 0.4
+			}
 			s, _ := newStore(t)
 			seedVoice(t, s, "tail", 20, strings.Join(c.ref, " "))
-			s.SetTranscriber(fixedWords(timed(c.heard), new(int)))
+			s.SetTranscriber(fixedWords(timed(c.heard, step), new(int)))
 			r, err := s.PrepareRepair(context.Background(), "tail")
 			if err != nil {
 				t.Fatalf("PrepareRepair: %v", err)

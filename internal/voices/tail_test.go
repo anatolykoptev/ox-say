@@ -83,6 +83,30 @@ func TestTailAnchoredRepeatedTail(t *testing.T) {
 	}
 }
 
+// The extra words after a matched tail may be the words that FOLLOW an earlier
+// occurrence of that phrase in the reference: the real ending was cut off.
+// Mutation: internal/voices/tail.go tailAnchoredWithin — drop the
+// repeatsEarlier call (accept on `f[n][m-e] <= budget` alone) -> RED.
+func TestTailAnchoredRepeatEarlier(t *testing.T) {
+	pre := "p0 p1 p2 p3 p4 p5 p6 p7 "
+	for name, tc := range map[string]struct {
+		ref, heard string
+		want       bool
+	}{
+		"5-word repeat, stops after and":    {pre + "we went to the store today and we went to the store today", pre + "we went to the store today and", false},
+		"5-word repeat, stops after and we": {pre + "we went to the store today and we went to the store today", pre + "we went to the store today and we", false},
+		"6-word repeat, stops after and":    {pre + "then we went to the store today and then we went to the store today", pre + "then we went to the store today and", false},
+		"5-word repeat, whole clip":         {pre + "we went to the store today and we went to the store today", pre + "we went to the store today and we went to the store today", true},
+		"whole clip with a trailing thanks": {pre + "we went to the store today and we went to the store today", pre + "we went to the store today and we went to the store today thanks", true},
+		"fillers inside the tail are free":  {pre + "we went to the store today", pre + "we went um to the uh store today", true},
+		"a content slip beyond the budget":  {pre + "we go to see her now", pre + "we go too sea her now", false},
+	} {
+		if got := tailAnchored(normWords(tc.ref), normWords(tc.heard)); got != tc.want {
+			t.Errorf("%s: tailAnchored = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
 // SameWord forgives a spelling slip, not a different word.
 // Mutation: tail.go SameWord tolerance n/5 -> n/2 -> "тридцать"/"двадцать" and
 // "слон"/"стол" read as the same word -> RED.
