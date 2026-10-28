@@ -26,8 +26,12 @@ struct SettingsPage: View {
             ToggleRow(title: L10nKey.settingsMeetingsToggle.text, hint: L10nKey.settingsMeetingsToggleFooter.text,
                       isOn: s.enabled)
             if s.wrappedValue.enabled {
-                ToggleRow(title: L10nKey.menuMeetingAutoStart.text, hint: L10nKey.settingsAutoFooter.text,
-                          isOn: s.autoStart)
+                HintedRow(title: L10nKey.settingsWhenCall.text, hint: L10nKey.settingsAutoFooter.text) {
+                    Picker("", selection: s.callMode) {
+                        ForEach(CallGlobalMode.allCases, id: \.self) { Text($0.titleKey.text).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
+                }
                 HintedRow(title: L10nKey.settingsFolder.text, hint: (s.wrappedValue.folderPath as NSString).abbreviatingWithTildeInPath) {
                     Button(L10nKey.commonChoose.text) { model.actions.chooseNotesFolder() }
                     Button(L10nKey.commonOpen.text) { model.actions.openNotesFolder() }
@@ -81,26 +85,32 @@ struct SettingsPage: View {
     // MARK: Which apps
 
     private var callApps: some View {
+        let global = s.wrappedValue.callMode
         let apps = model.data.meetingSettings.apps
-        let auto = apps.filter { $0.mode == .auto }.count
-        let ask = apps.filter { $0.mode == .ask }.count
+        let effective = { (app: CallApp) in CallPolicy.effectiveMode(for: app.id, global: global, picked: app.mode) }
+        let auto = apps.filter { effective($0) == .auto }.count
+        let ask = apps.filter { effective($0) == .ask }.count
+        // Under Off every app is off; the summary says so instead of two zero counts.
+        let summary = global == .off ? L10nKey.settingsCallOff.text : String(format: L10nKey.settingsAppsSummary.text, auto, ask)
         return Section {
             DisclosureGroup(isExpanded: $model.appsExpanded) {
                 ForEach(s.apps) { $app in
                     HintedRow(title: app.name, hint: app.noteKey?.text) {
                         Picker("", selection: $app.mode) {
-                            ForEach(CallAppMode.allCases, id: \.self) { Text($0.titleKey.text).tag($0) }
+                            Text(String(format: L10nKey.settingsAppsDefault.text,
+                                        CallPolicy.effectiveMode(for: app.id, global: global, picked: nil).titleKey.text))
+                                .tag(CallAppMode?.none)
+                            ForEach(CallAppMode.allCases, id: \.self) { m in Text(m.titleKey.text).tag(CallAppMode?.some(m)) }
                         }
                         .labelsHidden()
                         .fixedSize()
                     }
                 }
             } label: {
-                HintedRow(title: L10nKey.settingsAppsHeader.text,
-                          hint: String(format: L10nKey.settingsAppsSummary.text, auto, ask)) { EmptyView() }
+                HintedRow(title: L10nKey.settingsAppsHeader.text, hint: summary) { EmptyView() }
             }
         }
-        .disabled(!model.data.meetingSettings.autoStart)
+        .disabled(model.data.meetingSettings.callMode == .off)
     }
 
     // MARK: Permissions

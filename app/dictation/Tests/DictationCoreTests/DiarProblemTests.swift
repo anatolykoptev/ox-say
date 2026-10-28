@@ -66,7 +66,7 @@ final class DiarProblemTests: XCTestCase {
             MeetingMenuRecent(id: "e", title: "Sync", problem: .failed(reason: "bad_output")),
             MeetingMenuRecent(id: "t", title: "Long", problem: .failed(reason: "timeout")),
         ]
-        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), autoStart: true,
+        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
                                      retention: .month, recent: recent)
         let rows = MeetingMenu.rows(state, text: { $0.rawValue })
         let items = rows.compactMap { row -> (String, Bool, MenuAction?)? in

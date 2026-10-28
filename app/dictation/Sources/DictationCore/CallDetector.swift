@@ -140,6 +140,24 @@ public enum CallDetector {
     public static func holds(_ users: [MicUser], bundleID: String) -> Bool {
         users.contains { canonical($0.bundleID) == bundleID }
     }
+
+    /// The display name of a browser, for the Automation-consent badge ("A call in Chrome?…").
+    public static func browserName(_ bundleID: String) -> String {
+        ["com.google.Chrome": "Chrome", "com.brave.Browser": "Brave",
+         "company.thebrowser.Browser": "Arc", "com.microsoft.edgemac": "Edge"][bundleID] ?? bundleID
+    }
+}
+
+/// macOS's answer for "may ox-say send this browser an Apple Event", asked WITHOUT prompting
+/// (`AEDeterminePermissionToAutomateTarget` with `askUserIfNeeded: false`, in the app target).
+public enum BrowserConsent: Equatable {
+    /// Automation was already allowed — or macOS declined to answer; the read decides, as before.
+    case granted
+    /// Automation is off.
+    case denied
+    /// Nobody was asked yet: the first Apple Event would raise macOS's Automation prompt with no context,
+    /// so the badge asks first.
+    case undetermined
 }
 
 /// Recognizes a meeting page by its address.
@@ -343,6 +361,9 @@ public struct CallWatch {
         /// A browser has held the microphone for several rounds in a row and its tab was never readable: an
         /// Automation prompt that nobody answered looks like this (#251). Reported once, until a read works.
         public var browserNeedsPermission = false
+        /// A browser held the microphone while its Automation consent is undetermined — it must be asked in
+        /// context before the first Apple Event, so the round names it instead of reading its tab.
+        public var browserNeedsConsent: String?
     }
 
     /// Polls (2 s apart) of unreadable tab before the app says it is waiting for permission: long enough that one
@@ -360,6 +381,11 @@ public struct CallWatch {
     /// Browsers whose denied read was already reported. A browser leaves the set when
     /// a read of it works, so a revoke after a grant is reported again.
     private var deniedReported: Set<String> = []
+    /// Browsers the user already said "Allow…" to this episode: their read goes out (the macOS prompt
+    /// it raises is answered there), and the consent check is not run for them again.
+    private var consentAsked: Set<String> = []
+    /// Browsers the user said "Not now" to: no Apple Event for them until they let the microphone go.
+    private var skippedConsent: Set<String> = []
 
     public init() {}
 
@@ -367,14 +393,37 @@ public struct CallWatch {
     /// call is not offered again until it has ended.
     public mutating func decline() { tracker.decline() }
 
+    /// "Allow…" was clicked for this browser: its next read is the real one (and raises macOS's prompt).
+    public mutating func consentAsked(_ id: String) { consentAsked.insert(id); skippedConsent.remove(id) }
+
+    /// "Not now" was clicked: no Apple Event to this browser until it releases the microphone.
+    public mutating func skipConsent(_ id: String) { skippedConsent.insert(id) }
+
     /// `tab` reads a browser's front page (BrowserTabURL.read in the app); the rest
     /// is what CallTracker.observe takes. `recording` is nil when no recording runs.
     /// `mode`: the user's pick per source (see `CallDetector.detect`).
+    /// `consent` is macOS's Automation answer for a browser WITHOUT asking (`BrowserConsent`); a browser
+    /// whose answer is undetermined gets no Apple Event — the round names it for the in-context badge.
     public mutating func observe(now: Date, users: [MicUser], tab: (String) -> BrowserTabURL.Result,
                                  themActive: Bool, recording: CallTracker.Origin?,
-                                 mode: (String) -> CallAppMode = CallPolicy.defaultMode) -> Outcome {
+                                 mode: (String) -> CallAppMode = CallPolicy.defaultMode,
+                                 consent: (String) -> BrowserConsent = { _ in .granted }) -> Outcome {
+        var browserIDs: Set<String> = []
+        for user in users {
+            let id = CallDetector.canonical(user.bundleID)
+            if CallDetector.browsers.contains(id) { browserIDs.insert(id) }
+        }
+        // A skipped browser that let the microphone go asks again on the next hold.
+        skippedConsent.formIntersection(browserIDs)
+        var needsConsent: Set<String> = []
+        for id in browserIDs where !skippedConsent.contains(id) && !consentAsked.contains(id) && consent(id) == .undetermined {
+            needsConsent.insert(id)
+        }
         var reads: [String: BrowserTabURL.Result] = [:]
         let detection = CallDetector.detect(of: users, tab: { id in
+            // Undetermined or skipped: no Apple Event, and the answer is not a real read — neither the
+            // debounce tolerance nor the "waiting for permission" count may see it.
+            if needsConsent.contains(id) || skippedConsent.contains(id) { return .unreadable }
             let result = tab(id)
             reads[id] = result
             return result
@@ -393,9 +442,12 @@ public struct CallWatch {
             }
         }
         if let call, !heldOnly { lastCall = call }
+        // Only reads that actually went out count: a consent-gated browser is neither a stalled read
+        // for the debounce nor a "waiting for permission" below.
+        let realUnreadable = detection.call == nil && reads.values.contains(.unreadable)
         let action = tracker.observe(now: now, call: call?.source, themActive: themActive,
                                      recording: recording, bundleID: call?.bundleID,
-                                     callUnreadable: detection.browserUnreadable, heldOnly: heldOnly)
+                                     callUnreadable: realUnreadable, heldOnly: heldOnly)
         for (id, result) in reads {
             if case .url = result { deniedReported.remove(id) }
         }
@@ -409,7 +461,7 @@ public struct CallWatch {
         }
         // Unreadable rounds in a row, with no call found and no read that worked this round.
         var needsPermission = false
-        if detection.browserUnreadable, !reads.values.contains(where: { if case .url = $0 { return true } else { return false } }) {
+        if realUnreadable, !reads.values.contains(where: { if case .url = $0 { return true } else { return false } }) {
             unreadableRounds += 1
             if unreadableRounds >= Self.unreadableRoundsBeforeNotice, !permissionReported {
                 permissionReported = true
@@ -419,6 +471,7 @@ public struct CallWatch {
             unreadableRounds = 0
             if reads.values.contains(where: { if case .url = $0 { return true } else { return false } }) { permissionReported = false }
         }
-        return Outcome(call: call, heldOnly: heldOnly, action: action, browserDenied: denied, browserNeedsPermission: needsPermission)
+        return Outcome(call: call, heldOnly: heldOnly, action: action, browserDenied: denied,
+                       browserNeedsPermission: needsPermission, browserNeedsConsent: needsConsent.sorted().first)
     }
 }

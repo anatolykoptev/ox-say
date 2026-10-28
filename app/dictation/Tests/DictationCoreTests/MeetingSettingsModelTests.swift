@@ -22,8 +22,8 @@ final class MeetingSettingsModelTests: XCTestCase {
 
     func testFreshInstallLoadsTheDefaults() {
         let v = values(suite())
-        XCTAssertFalse(v.enabled, "meetings are off until the user turns them on")
-        XCTAssertTrue(v.autoStart)
+        XCTAssertTrue(v.enabled, "meetings ship on")
+        XCTAssertEqual(v.callMode, .ask, "and nothing records by itself")
         XCTAssertEqual(v.retention, .month)
         XCTAssertEqual(v.folderPath, "~/Documents/ox-say Meetings".replacingOccurrences(of: "~", with: "/Users/test"))
         XCTAssertEqual(v.yourName, "")
@@ -34,14 +34,14 @@ final class MeetingSettingsModelTests: XCTestCase {
     func testStoredValuesAreLoaded() {
         let d = suite()
         d.set(true, forKey: MeetingSettings.enabledKey)
-        MeetingSettings.setAutoStart(false, d)
+        MeetingSettings.setCallMode(.off, d)
         MeetingSettings.setRetention(.quarter, d)
         MeetingSettings.setFolder(URL(fileURLWithPath: "/Volumes/Notes"), d)
         MeetingSettings.setDisplayName("Alex", d)
         CallPolicy.setMode(.never, for: "discord", d)
         let v = values(d)
         XCTAssertTrue(v.enabled)
-        XCTAssertFalse(v.autoStart)
+        XCTAssertEqual(v.callMode, .off)
         XCTAssertEqual(v.retention, .quarter)
         XCTAssertEqual(v.folderPath, "/Volumes/Notes")
         XCTAssertEqual(v.yourName, "Alex")
@@ -70,7 +70,7 @@ final class MeetingSettingsModelTests: XCTestCase {
         XCTAssertTrue(MeetingSettingsModel.Change.enabled(true).needsRefresh)
         XCTAssertFalse(MeetingSettingsModel.Change.name("Anna ").needsRefresh)
         XCTAssertFalse(MeetingSettingsModel.Change.retention(.week).needsRefresh)
-        XCTAssertFalse(MeetingSettingsModel.Change.autoStart(false).needsRefresh)
+        XCTAssertFalse(MeetingSettingsModel.Change.callMode(.off).needsRefresh)
         XCTAssertFalse(MeetingSettingsModel.Change.mode(source: "zoom", mode: .ask).needsRefresh)
     }
 
@@ -82,27 +82,31 @@ final class MeetingSettingsModelTests: XCTestCase {
     func testEachEditedFieldIsOneChange() {
         let old = values(suite())
         var new = old
-        new.enabled = true
-        new.autoStart = false
+        new.enabled = false
+        new.callMode = .auto
         new.retention = .week
         new.yourName = "Alex"
         new.apps[new.apps.firstIndex { $0.id == "zoom" }!].mode = .never
         let changes = MeetingSettingsModel.changes(from: old, to: new)
-        XCTAssertEqual(changes, [.enabled(true), .autoStart(false), .retention(.week), .name("Alex"), .mode(source: "zoom", mode: .never)])
+        XCTAssertEqual(changes, [.enabled(false), .callMode(.auto), .retention(.week), .name("Alex"), .mode(source: "zoom", mode: .never)])
     }
 
     // MARK: save
 
-    func testEnablingAndAutoStartAndNameAndModeAreStored() async {
+    func testEnablingAndModeAndNameAndAppModeAreStored() async {
         let d = suite()
         let applier = MeetingSettingsApplier(defaults: d, client: client())
-        let results = [await applier.apply(.enabled(true)), await applier.apply(.autoStart(false)), await applier.apply(.name("  Alex  ")),
+        let results = [await applier.apply(.enabled(true)), await applier.apply(.callMode(.auto)), await applier.apply(.name("  Alex  ")),
                        await applier.apply(.mode(source: "slack", mode: .auto))]
         XCTAssertEqual(results.compactMap { $0 }, [])
         XCTAssertTrue(MeetingSettings.enabled(d))
-        XCTAssertFalse(MeetingSettings.autoStart(d))
+        XCTAssertEqual(MeetingSettings.callMode(d), .auto)
         XCTAssertEqual(MeetingSettings.displayName(d, fallback: "x"), "Alex")
-        XCTAssertEqual(CallPolicy.mode(for: "slack", d), .auto)
+        XCTAssertEqual(CallPolicy.pickedMode(for: "slack", d), .auto)
+        // "As set above" is stored as a removal.
+        let cleared = await applier.apply(.mode(source: "slack", mode: nil))
+        XCTAssertNil(cleared)
+        XCTAssertNil(CallPolicy.pickedMode(for: "slack", d))
     }
 
     /// The pick reaches the daemon (which deletes the audio) before the app remembers it.

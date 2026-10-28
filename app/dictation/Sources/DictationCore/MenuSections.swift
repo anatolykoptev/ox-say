@@ -43,7 +43,8 @@ public enum MenuAction: Equatable {
     case openMeetingsFolder
     case chooseMeetingsFolder
     case setMeetingName
-    case toggleMeetingAutoStart
+    /// The global "when a call starts" mode.
+    case pickMeetingCallMode(CallGlobalMode)
     /// The days of audio retention (0 = never delete).
     case pickMeetingRetention(Int)
     /// Name, merge or split the speakers of the meeting with this id.

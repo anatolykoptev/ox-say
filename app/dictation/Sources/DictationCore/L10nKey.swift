@@ -64,7 +64,9 @@ public enum L10nKey: String, CaseIterable {
     case menuMeetingStop = "menu.meeting.stop"
     case menuMeetingOpenFolder = "menu.meeting.open_folder"
     case menuMeetingChooseFolder = "menu.meeting.choose_folder"
-    case menuMeetingAutoStart = "menu.meeting.auto_start"
+    /// The "when a call starts" header of the Meetings submenu — the same words as the Settings row.
+    case settingsWhenCall = "settings.when_call"
+    case settingsCallOff = "settings.call.off"
     case menuMeetingKeep = "menu.meeting.keep"
     case menuMeetingKeep7 = "menu.meeting.keep7"
     case menuMeetingKeep30 = "menu.meeting.keep30"
@@ -80,6 +82,13 @@ public enum L10nKey: String, CaseIterable {
     case badgeStop = "badge.stop"
     case badgeDontRecord = "badge.dont_record"
     case badgePrompt = "badge.prompt"
+    /// The detected-call prompt that names the app ("Zoom call — record it?").
+    case badgePromptCall = "badge.prompt.call"
+    /// The quiet third action of the prompt: "Don't ask for <App>" (a reversible per-app "Don't record").
+    case badgeDontAsk = "badge.dont_ask"
+    /// The Automation-consent badge before the first Apple Event to a browser.
+    case badgeBrowserConsent = "badge.browser.consent"
+    case badgeBrowserAllow = "badge.browser.allow"
     case badgeRecord = "badge.record"
     case badgeNotNow = "badge.not_now"
     case badgeCopyConsent = "badge.copy_consent"
@@ -199,6 +208,8 @@ public enum L10nKey: String, CaseIterable {
     case settingsAppsAuto = "settings.apps.auto"
     case settingsAppsAsk = "settings.apps.ask"
     case settingsAppsNever = "settings.apps.never"
+    /// The per-app picker's "follow the global mode" option, named with what the global mode does to that app.
+    case settingsAppsDefault = "settings.apps.default"
     case settingsAppsBrowsers = "settings.apps.browsers"
     case settingsFolder = "settings.folder"
     case settingsKeep = "settings.keep"

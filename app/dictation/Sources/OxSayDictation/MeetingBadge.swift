@@ -3,19 +3,29 @@ import DictationCore
 
 /// The always-visible recording control: a small panel at the top of the screen
 /// with a red dot, the clock, a level for each side and a Stop button; or, when
-/// a call is detected and auto-start is off, a question with Record / Not now.
+/// a call is detected and its policy is to ask, a question that names the app
+/// with Record / Not now / Don't ask for <App>; or, before the first Apple Event
+/// to a browser, the Automation-consent question with Allow… / Not now.
 /// It is its own window, not the dictation pill, so a dictation never takes it
 /// down and a recording never waits for one.
 final class MeetingBadge {
     enum Mode: Equatable {
         case recording(auto: Bool)
         case prompt(source: String)
+        /// macOS's Automation answer for this browser is undetermined: ask in context before the first Apple Event.
+        case browserConsent(browser: String)
     }
 
     var onStop: (() -> Void)?
     var onDontRecord: (() -> Void)?
     var onRecord: (() -> Void)?
     var onNotNow: (() -> Void)?
+    /// "Don't ask for <App>": the prompt's third, quieter action.
+    var onDontAsk: (() -> Void)?
+    /// The Automation badge's "Allow…": the next tab read raises macOS's prompt in context.
+    var onBrowserAllow: (() -> Void)?
+    /// The Automation badge's "Not now": no Apple Event until the browser lets the microphone go.
+    var onBrowserNotNow: (() -> Void)?
     var onCopyConsent: (() -> Void)?
 
     private let panel: NSPanel
@@ -97,6 +107,13 @@ final class MeetingBadge {
         return b
     }
 
+    /// The prompt's least loud action, drawn smaller than the real buttons.
+    private func quietButton(_ title: String, _ action: @escaping () -> Void) -> NSButton {
+        let b = button(title, action)
+        b.bezelStyle = .inline
+        return b
+    }
+
     private static var handlerKey = 0
 
     private final class ActionTarget: NSObject {
@@ -150,17 +167,39 @@ final class MeetingBadge {
         update(elapsed: elapsed, me: 0, them: 0)
     }
 
+    /// The detected-call question, naming the app (or the site's app — a browser call says "Google Meet").
+    /// It never leaves by itself: `hide()` comes from the call ending, Not now, Record, or Don't ask.
     func showPrompt(source: String) {
         guard mode != .prompt(source: source) else { return }
         mode = .prompt(source: source)
         panel.setAccessibilityLabel(L10nKey.badgePrompt.text)
         consentButton = nil
         labelWidth.isActive = false
-        label.stringValue = L10nKey.badgePrompt.text
+        let app = CallPolicy.name(for: source)
+        label.stringValue = source.isEmpty ? L10nKey.badgePrompt.text : L10nKey.badgePromptCall.text(app)
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        var views: [NSView] = [label,
+                               button(L10nKey.badgeRecord.text) { [weak self] in self?.onRecord?() },
+                               button(L10nKey.badgeNotNow.text) { [weak self] in self?.onNotNow?() }]
+        if !source.isEmpty {
+            views.append(quietButton(L10nKey.badgeDontAsk.text(app)) { [weak self] in self?.onDontAsk?() })
+        }
+        layout(views)
+    }
+
+    /// The Automation-consent question before the first Apple Event to a browser (`browser` is its bundle id):
+    /// Allow… lets the real read raise macOS's own prompt here, Not now sends nothing until the mic is released.
+    func showBrowserConsent(browser id: String) {
+        guard mode != .browserConsent(browser: id) else { return }
+        mode = .browserConsent(browser: id)
+        panel.setAccessibilityLabel(L10nKey.badgeBrowserConsent.text(CallDetector.browserName(id)))
+        consentButton = nil
+        labelWidth.isActive = false
+        label.stringValue = L10nKey.badgeBrowserConsent.text(CallDetector.browserName(id))
         label.font = .systemFont(ofSize: 13, weight: .semibold)
         layout([label,
-                button(L10nKey.badgeRecord.text) { [weak self] in self?.onRecord?() },
-                button(L10nKey.badgeNotNow.text) { [weak self] in self?.onNotNow?() }])
+                button(L10nKey.badgeBrowserAllow.text) { [weak self] in self?.onBrowserAllow?() },
+                button(L10nKey.badgeNotNow.text) { [weak self] in self?.onBrowserNotNow?() }])
     }
 
     /// Redraws the clock and levels while recording.

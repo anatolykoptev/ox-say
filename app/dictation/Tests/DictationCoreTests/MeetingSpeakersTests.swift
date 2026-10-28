@@ -112,14 +112,14 @@ final class MeetingSpeakersTests: XCTestCase {
             MeetingInfo(id: "g", title: "Oldest", status: .done, voiceMode: "auto"),
         ]
         XCTAssertEqual(MeetingMenuRecent.from(list).map(\.id), ["a", "d", "e"])
-        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), autoStart: true,
+        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
                                      retention: .month, recent: MeetingMenuRecent.from(list))
         let rows = MeetingMenu.rows(state, text: { $0.rawValue })
         let actions = rows.compactMap { row -> MenuAction? in if case .item(_, _, _, let a) = row { return a } else { return nil } }
         XCTAssertEqual(actions.filter { if case .editSpeakers = $0 { return true } else { return false } },
                        [.editSpeakers("a"), .editSpeakers("d"), .editSpeakers("e")])
         XCTAssertTrue(rows.contains(.header("menu.meeting.speakers")))
-        let none = MeetingMenu.rows(MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), autoStart: true, retention: .month),
+        let none = MeetingMenu.rows(MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask, retention: .month),
                                     text: { $0.rawValue })
         XCTAssertFalse(none.contains(.header("menu.meeting.speakers")), "no header without a meeting to name")
     }
@@ -249,7 +249,7 @@ final class MeetingSpeakersReviewTests: XCTestCase {
             MeetingInfo(id: "here", title: "Here", status: .done, warnings: ["diarization_failed"], diarReason: "bad_output"),
         ]
         let recent = MeetingMenuRecent.from(list)
-        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), autoStart: true,
+        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
                                      retention: .month, recent: recent)
         let actions = MeetingMenu.rows(state, text: { $0.rawValue }).compactMap { row -> MenuAction? in
             if case .item(_, _, _, let a) = row { return a } else { return nil }

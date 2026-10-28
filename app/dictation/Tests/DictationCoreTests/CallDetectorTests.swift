@@ -636,6 +636,95 @@ final class CallDetectorTests: XCTestCase {
         XCTAssertFalse(watchTick(&watch, now: t0.addingTimeInterval(10), url: "").browserNeedsPermission)
     }
 
+    // MARK: the Automation-consent gate
+
+    /// An undetermined Automation consent must not raise macOS's prompt out of nowhere: the round names the
+    /// browser for the in-context badge instead of reading its tab — and it is neither an unreadable round
+    /// (the debounce) nor a "waiting for permission" one (the notice).
+    /// Mutation: CallWatch.observe, drop `needsConsent.contains(id) ||` from the tab gate -> RED
+    /// (the tab read goes out and `browserNeedsConsent` stays nil).
+    func testAnUndeterminedBrowserIsAskedBeforeTheFirstAppleEvent() {
+        var watch = CallWatch()
+        var tabReads = 0
+        func round(_ s: TimeInterval) -> CallWatch.Outcome {
+            watch.observe(now: t0.addingTimeInterval(s), users: chromeOnMic,
+                          tab: { _ in tabReads += 1; return .unreadable },
+                          themActive: false, recording: nil,
+                          consent: { _ in .undetermined })
+        }
+        let first = round(0)
+        XCTAssertEqual(tabReads, 0, "no Apple Event before the user is asked")
+        XCTAssertEqual(first.browserNeedsConsent, "com.google.Chrome")
+        XCTAssertFalse(first.browserNeedsPermission, "a consent-gated round is not an unreadable one")
+        XCTAssertNil(first.call)
+        for i in 1...7 {
+            let o = round(Double(i) * 2)
+            XCTAssertEqual(o.browserNeedsConsent, "com.google.Chrome")
+            XCTAssertFalse(o.browserNeedsPermission, "consent rounds never grow the unreadable count")
+        }
+        XCTAssertEqual(tabReads, 0, "the whole stretch sent no Apple Event")
+    }
+
+    /// "Allow…" ends the gate for the episode: the next read is the real one — macOS's own prompt is raised
+    /// by it, in the context the badge just gave. (The read's own answer decides afterwards: denied is denied.)
+    func testAllowLetsTheRealReadThrough() {
+        var watch = CallWatch()
+        var tabReads = 0
+        func round(_ s: TimeInterval) -> CallWatch.Outcome {
+            watch.observe(now: t0.addingTimeInterval(s), users: chromeOnMic,
+                          tab: { _ in tabReads += 1; return .url(Self.meetURL) },
+                          themActive: false, recording: nil,
+                          consent: { _ in .undetermined })
+        }
+        _ = round(0)
+        watch.consentAsked("com.google.Chrome")
+        let outcome = round(2)
+        XCTAssertEqual(tabReads, 1, "the first Apple Event goes out after Allow…")
+        XCTAssertNil(outcome.browserNeedsConsent)
+        XCTAssertEqual(outcome.call?.source, "meet")
+        // and it is not asked again this episode even while the probe still reports undetermined
+        _ = round(4)
+        XCTAssertEqual(tabReads, 2)
+    }
+
+    /// "Not now" sends no Apple Event and does not ask again while the hold goes on; the next hold
+    /// (after the microphone was released) asks again — a mute is not a "never".
+    /// Mutation: CallWatch.observe, delete `skippedConsent.formIntersection(browserIDs)` -> RED on the last assertion.
+    func testNotNowSendsNothingUntilTheMicIsReleased() {
+        var watch = CallWatch()
+        var tabReads = 0
+        func round(_ s: TimeInterval, users: [MicUser]) -> CallWatch.Outcome {
+            watch.observe(now: t0.addingTimeInterval(s), users: users,
+                          tab: { _ in tabReads += 1; return .unreadable },
+                          themActive: false, recording: nil,
+                          consent: { _ in .undetermined })
+        }
+        _ = round(0, users: chromeOnMic)
+        watch.skipConsent("com.google.Chrome")
+        for i in 1...8 {
+            let o = round(Double(i) * 2, users: chromeOnMic)
+            XCTAssertNil(o.browserNeedsConsent, "Not now: asked once, then quiet while the hold goes on")
+        }
+        XCTAssertEqual(tabReads, 0)
+        // the mic released and grabbed again: the question is new
+        _ = round(18, users: [])
+        let again = round(20, users: chromeOnMic)
+        XCTAssertEqual(again.browserNeedsConsent, "com.google.Chrome")
+        XCTAssertEqual(tabReads, 0)
+    }
+
+    /// A browser whose consent is already decided reads exactly as before: the tab read goes out and a call
+    /// page in it is a call.
+    func testADecidedConsentReadsAsBefore() {
+        var watch = CallWatch()
+        let outcome = watch.observe(now: t0, users: chromeOnMic,
+                                    tab: { _ in .url(Self.meetURL) },
+                                    themActive: false, recording: nil,
+                                    consent: { _ in .denied })
+        XCTAssertNil(outcome.browserNeedsConsent, "denied is a decided answer: the read decides, as before")
+        XCTAssertEqual(outcome.call?.source, "meet")
+    }
+
     // MARK: WhatsApp and Telegram desktop: asked about, never started by themselves
 
     /// Bundle ids, verified: WhatsApp from the installed app (mdls) ; Telegram: ru.keepcoder.Telegram (Mac App Store

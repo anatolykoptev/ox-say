@@ -6,8 +6,9 @@ final class MeetingMenuTests: XCTestCase {
     private func rows(_ s: MeetingMenuState) -> [MenuRow] {
         MeetingMenu.rows(s, text: { $0 == .menuMeetingStop ? "Stop (%@)" : $0.rawValue })
     }
-    private func state(recording: TimeInterval? = nil, notes: NotesStatus = NotesStatus(available: true), supported: Bool = true) -> MeetingMenuState {
-        MeetingMenuState(supported: supported, recordingElapsed: recording, notes: notes, autoStart: true, retention: .month)
+    private func state(recording: TimeInterval? = nil, notes: NotesStatus = NotesStatus(available: true), supported: Bool = true,
+                       callMode: CallGlobalMode = .ask) -> MeetingMenuState {
+        MeetingMenuState(supported: supported, recordingElapsed: recording, notes: notes, callMode: callMode, retention: .month)
     }
     private func actions(_ rows: [MenuRow]) -> [MenuAction] {
         rows.compactMap { if case .item(_, _, _, let a) = $0 { return a } else { return nil } }
@@ -34,6 +35,21 @@ final class MeetingMenuTests: XCTestCase {
         XCTAssertFalse(actions(rows(state(notes: NotesStatus(reasonCode: "unsupported")))).contains(.installNotesModel))
         let busy = rows(state(notes: NotesStatus(reasonCode: "model_missing", installing: true, progressPercent: 40)))
         XCTAssertFalse(actions(busy).contains(.installNotesModel))
+    }
+
+    /// The global mode is three rows under one header, and the pick is marked.
+    /// Mutation: MeetingMenu.rows, drop the `for mode in CallGlobalMode.allCases` loop (only the header stays) -> RED.
+    func testTheCallModeRowsMarkTheGlobalPick() {
+        for mode in CallGlobalMode.allCases {
+            let r = rows(state(callMode: mode))
+            let on = r.compactMap { row -> CallGlobalMode? in
+                if case .item(_, true, _, .pickMeetingCallMode(let m)) = row { return m } else { return nil }
+            }
+            XCTAssertEqual(on, [mode])
+        }
+        XCTAssertEqual(actions(rows(state())).filter { if case .pickMeetingCallMode = $0 { return true } else { return false } },
+                     [.pickMeetingCallMode(.ask), .pickMeetingCallMode(.auto), .pickMeetingCallMode(.off)])
+        XCTAssertTrue(rows(state()).contains(.header("settings.when_call")))
     }
 
     func testRetentionRowsMarkTheCurrentPick() {

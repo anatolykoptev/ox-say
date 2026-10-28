@@ -44,7 +44,7 @@ public enum PreviewData {
         return MainWindowData(
             meetings: meetings, details: details, recordingElapsed: nil,
             meetingSettings: MeetingSettingsValues(
-                enabled: true, autoStart: true,
+                enabled: true, callMode: .ask,
                 apps: CallPolicy.defaultApps(),
                 folderPath: "~/Documents/ox-say Meetings", retention: .month,
                 yourName: "", yourNameFallback: ru ? "Алексей Морозов" : "Alex Morgan", notesWriter: .ready),

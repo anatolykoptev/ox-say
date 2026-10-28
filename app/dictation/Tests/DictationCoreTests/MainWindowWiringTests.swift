@@ -90,7 +90,7 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertTrue(apply.contains("MeetingSettingsApplier(defaults: host.defaults, client: host.client)"))
         XCTAssertTrue(apply.contains("if let failure = await applier.apply(change) {\n                model.data.notice = failure\n                await reloadSettingsAsync()\n                return"))
         XCTAssertTrue(apply.contains("case .enabled: host.meetingsEnabledChanged()"))
-        XCTAssertTrue(apply.contains("case .autoStart: host.meetings()?.settingsChanged()"))
+        XCTAssertTrue(apply.contains("case .callMode: host.meetings()?.settingsChanged()"))
     }
 
     /// Rename and speakers go through the meeting feature, which also refreshes the notes-folder copy; the menu's panel
@@ -180,7 +180,7 @@ final class MainWindowWiringTests: XCTestCase {
     /// Mutation: MeetingController.start, delete the `if isShutDown {` block after createMeeting -> RED.
     func testSwitchingOffWhileAStartIsWaitingRecordsNothing() throws {
         let controller = try source("OxSayDictation/MeetingController.swift")
-        let start = try body(controller, of: "private func start(origin: CallTracker.Origin, source: String) {")
+        let start = try body(controller, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {")
         let created = try XCTUnwrap(start.range(of: "created = info"))
         let flag = try XCTUnwrap(start.range(of: "if isShutDown {\n                    discardEmpty(info.id)\n                    return\n                }"))
         let recorderStart = try XCTUnwrap(start.range(of: "try recorder.start(into:"))
@@ -338,11 +338,11 @@ final class MainWindowWiringTests: XCTestCase {
     }
 
     /// A call from an app set to "Don't record" is neither recorded nor offered.
-    /// Mutation: MeetingController.observe, delete `case .ignore: break` or pass `mode: .ask` -> RED (or no build).
+    /// Mutation: MeetingController.observe, delete `case .ignore: break` or pass `picked: nil` -> RED.
     func testThePerAppPickReachesTheCallDecision() throws {
         let controller = try source("OxSayDictation/MeetingController.swift")
         let observe = try body(controller, of: "private func observe(_ tick: CallWatcher.Tick) {")
-        XCTAssertTrue(observe.contains("mode: CallPolicy.mode(for: source, host.defaults)"))
+        XCTAssertTrue(observe.contains("picked: CallPolicy.pickedMode(for: source, host.defaults)"))
         XCTAssertTrue(observe.contains("case .ignore: break"))
         XCTAssertTrue(observe.contains("installing: host.updateInstalling()"))
     }
