@@ -57,3 +57,55 @@ func TestSpokenAbbreviationEdges(t *testing.T) {
 		}
 	}
 }
+
+// #180: an English script keeps its digits; a Russian one gets number words;
+// a script with no letters keeps the Russian reading it always had.
+// Mutation: markup.go Parse, `o.Language = ScriptLanguage(src)` removed ->
+// the English row gets "двадцать пять" -> RED.
+// Mutation: chunk_fit.go fitted.spoken, call Spoken instead of spokenIn -> RED.
+func TestSpokenFollowsTheScriptLanguage(t *testing.T) {
+	for _, c := range []struct{ src, want string }{
+		{"I am 25 years old.", "I am 25 years old."},
+		{"Мне 25 лет.", "Мне двадцать пять лет."},
+		{"Мне 25 years old.", "Мне двадцать пять years old."},
+		{"2026.", "две тысячи двадцать шесть."},
+	} {
+		cs, err := Parse(c.src, testOpts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cs[0].Spoken != c.want {
+			t.Errorf("Parse(%q).Spoken = %q, want %q", c.src, cs[0].Spoken, c.want)
+		}
+		if cs[0].Text != strings.TrimSpace(c.src) {
+			t.Errorf("Text = %q: the subtitles keep what was written", cs[0].Text)
+		}
+	}
+	// The English language also holds across the Spoken-length split.
+	o := testOpts
+	o.MaxSpokenChars = 40
+	long := "We shipped 1000 units in 2025, and then we sold another 2000 units in 2026 across all regions."
+	cs, err := Parse(long, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Length is judged on what is spoken: digits stay short, so this fits whole.
+	o.MaxSpokenChars = 60
+	one, err := Parse("We shipped 1000 units, in 2025, and 2000 in 2026.", o)
+	if err != nil || len(one) != 1 {
+		t.Errorf("an English sentence of 50 characters was split for a Russian reading it never gets: %d chunks, %v", len(one), err)
+	}
+	for _, ch := range cs {
+		if strings.ContainsAny(ch.Spoken, "абвгдежзиклмнопрстуфхцчшщыэюя") {
+			t.Errorf("English chunk %q got Russian words: %q", ch.Text, ch.Spoken)
+		}
+	}
+}
+
+func TestScriptLanguage(t *testing.T) {
+	for in, want := range map[string]string{"Привет": "ru", "Hello": "en", "Hello, привет": "ru", "2026 !": "", "": ""} {
+		if got := ScriptLanguage(in); got != want {
+			t.Errorf("ScriptLanguage(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

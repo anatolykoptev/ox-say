@@ -3,6 +3,7 @@ package daemon
 import (
 	"errors"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,5 +157,46 @@ func TestEditedOrMissingWAVOnReassembly(t *testing.T) {
 	}
 	if err := p.assemble(j); err != nil {
 		t.Errorf("siblings left after the WAV was deleted block the assembly: %v", err)
+	}
+}
+
+// #180: an English script reaches the engine with its digits; an edit keeps the
+// project's language; a Russian project still gets number words.
+// Mutation: produce_ops.go chunk, editChunk(.., projectLanguage(j.m)) ->
+// editChunk(.., "") -> the digits-only edit of the English project gets Russian
+// words -> RED.
+// Mutation: vscript markup.go Parse, `o.Language = ScriptLanguage(src)` removed
+// -> "I am двадцать пять" -> RED (also vscript TestSpokenFollowsTheScriptLanguage).
+func TestProduceLanguageGate(t *testing.T) {
+	f := newFakePorts(t)
+	_, mux := produceMux(t, f)
+	out := filepath.Join(t.TempDir(), "v.wav")
+	id := createDone(t, mux, `{"script":"I am 25 years old.","voice":"nar","out_path":"`+out+`"}`)
+	if got := f.renders[0].Text; got != "I am 25 years old." {
+		t.Errorf("the engine was asked for %q", got)
+	}
+	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/0", `{"action":"edit","text":"Now 30 are left."}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body)
+	}
+	waitDoneHTTP(t, mux, id)
+	if got := f.renders[len(f.renders)-1].Text; got != "Now 30 are left." {
+		t.Errorf("after the edit the engine was asked for %q", got)
+	}
+	// An edit that is only digits is read in the project's language.
+	rec = do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/0", `{"action":"edit","text":"2030."}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body)
+	}
+	waitDoneHTTP(t, mux, id)
+	if got := f.renders[len(f.renders)-1].Text; got != "2030." {
+		t.Errorf("a digits-only edit of an English project: the engine was asked for %q", got)
+	}
+
+	f2 := newFakePorts(t)
+	_, mux2 := produceMux(t, f2)
+	createDone(t, mux2, `{"script":"Мне 25 лет.","voice":"nar","out_path":"`+filepath.Join(t.TempDir(), "r.wav")+`"}`)
+	if got := f2.renders[0].Text; got != "Мне двадцать пять лет." {
+		t.Errorf("Russian: the engine was asked for %q", got)
 	}
 }

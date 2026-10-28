@@ -406,7 +406,7 @@ func (p *producer) chunk(id string, index int, op chunkOp) (vproject.Summary, er
 		}
 		j.regen[index] = op.Takes
 	case opEdit:
-		if err := editChunk(c, op.Text, j.m.Settings.Preset); err != nil {
+		if err := editChunk(c, op.Text, j.m.Settings.Preset, projectLanguage(j.m)); err != nil {
 			return vproject.Summary{}, err
 		}
 	case opDelivery:
@@ -439,23 +439,33 @@ func (p *producer) deliver(j *job, es []deliveryEntry) (vproject.Summary, error)
 	if err != nil {
 		return vproject.Summary{}, err
 	}
+	// The mode gate comes first: a batch that is a conflict on any host must
+	// not read as "no ffmpeg" on one without it.
+	eff, effAfter, err := p.deliveryModeGate(j, es, styles)
+	if err != nil {
+		return vproject.Summary{}, err
+	}
 	if needPace(es) {
 		if err := paceOK(); err != nil {
 			return vproject.Summary{}, &unavailableError{err.Error()}
 		}
 	}
-	eff, err := p.deliveryModeGate(j, es, styles)
-	if err != nil {
-		return vproject.Summary{}, err
-	}
 	p.mu.Lock()
 	assembleOnly := true
 	for i, e := range es {
 		c := &j.m.Chunks[*e.N]
-		// eff is nil only for pause-only batches, which have no style to apply.
-		if e.Style != nil && styles[i] != eff[*e.N] {
-			c.Superseded = supersedeTakes(c.Superseded, c.Takes)
-			c.Style, assembleOnly = styles[i], false
+		// The stored style and the effective one are different questions: the
+		// request is stored whenever the chunk's own field changes (a pin equal
+		// to the style it inherits still survives a later voice update), and
+		// takes are superseded and re-rendered only when the style the engine
+		// is asked for changes. eff and effAfter are nil only for batches with
+		// no style entry.
+		if e.Style != nil {
+			c.Style = styles[i]
+			if effAfter[*e.N] != eff[*e.N] {
+				c.Superseded = supersedeTakes(c.Superseded, c.Takes)
+				assembleOnly = false
+			}
 		}
 		if e.PauseAfter != nil {
 			c.PauseAfter = *e.PauseAfter
@@ -522,10 +532,11 @@ func deliveryPaceOK(r float64) bool {
 }
 
 // needPace reports whether the batch sets a real pace anywhere; clearing
-// one needs no atempo, and neither does anything else.
+// one (0) or setting the neutral 1.0 needs no atempo, and neither does
+// anything else (tl.add does not stretch at 1.0).
 func needPace(es []deliveryEntry) bool {
 	for _, e := range es {
-		if e.Pace != nil && *e.Pace != 0 {
+		if e.Pace != nil && *e.Pace != 0 && *e.Pace != 1 {
 			return true
 		}
 	}
@@ -537,9 +548,9 @@ func needPace(es []deliveryEntry) bool {
 // chunk, which is a recreate, not a delivery change). A job pinned to
 // reference at create cannot leave it; one pinned to ultimate refuses any
 // style op. It returns each chunk's effective style under the current state,
-// so a style op can tell a real change from a no-op — nil when no style op
-// can apply.
-func (p *producer) deliveryModeGate(j *job, es []deliveryEntry, styles []string) ([]string, error) {
+// so a style op can tell a real change from a no-op, and each chunk's effective
+// style once the batch is applied — both nil when no style op can apply.
+func (p *producer) deliveryModeGate(j *job, es []deliveryEntry, styles []string) (before, after []string, err error) {
 	pin := j.m.Settings.CloneModePin
 	styled := false
 	for _, e := range es {
@@ -551,42 +562,40 @@ func (p *producer) deliveryModeGate(j *job, es []deliveryEntry, styles []string)
 	switch pin {
 	case cloneUltimate:
 		if styled {
-			return nil, &conflictError{deliveryIsUltimate}
+			return nil, nil, &conflictError{deliveryIsUltimate}
 		}
-		return nil, nil
+		return nil, nil, nil
 	case cloneReference:
 		if !styled {
-			return nil, nil
+			return nil, nil, nil
 		}
 	}
 	facts, err := p.ports.Voice(j.m.Settings.Voice)
 	if err != nil {
-		return nil, fmt.Errorf("voice %q: %w", j.m.Settings.Voice, err)
+		return nil, nil, fmt.Errorf("voice %q: %w", j.m.Settings.Voice, err)
 	}
 	vc := make([]vscript.Chunk, len(j.m.Chunks))
 	for i, c := range j.m.Chunks {
 		vc[i] = vscript.Chunk{Style: c.Style, Spoken: c.Spoken}
 	}
-	before, eff, err := jobCloneMode(facts, j.m.Settings.Style, vc, pin)
+	modeBefore, before, err := jobCloneMode(facts, j.m.Settings.Style, vc, pin)
 	if err != nil {
-		return nil, err
-	}
-	if pin == cloneReference {
-		return eff, nil // pinned already: no style op moves the mode
+		return nil, nil, err
 	}
 	for i, e := range es {
 		if e.Style != nil {
 			vc[*e.N].Style = styles[i]
 		}
 	}
-	after, _, err := jobCloneMode(facts, j.m.Settings.Style, vc, pin)
+	modeAfter, after, err := jobCloneMode(facts, j.m.Settings.Style, vc, pin)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if after != before {
-		return nil, &conflictError{deliveryNeedsReference}
+	// Pinned to reference already: no style op moves the mode.
+	if pin != cloneReference && modeAfter != modeBefore {
+		return nil, nil, &conflictError{deliveryNeedsReference}
 	}
-	return eff, nil
+	return before, after, nil
 }
 
 // supersedeTakes moves the keys of ts onto cur, deduplicated, keeping at
@@ -607,10 +616,23 @@ func supersedeTakes(cur []string, ts []vproject.TakeRef) []string {
 	return cur
 }
 
+// projectLanguage is the language of a project's script, decided from the text
+// of all its chunks as Parse decided it from the script ("" for no letters).
+// An edit is spoken in the project's language, whatever its own words are.
+func projectLanguage(m *vproject.Manifest) string {
+	var b strings.Builder
+	for _, c := range m.Chunks {
+		b.WriteString(c.Text)
+		b.WriteByte(' ')
+	}
+	return vscript.ScriptLanguage(b.String())
+}
+
 // editChunk replaces one chunk's text: one piece of text, no directives,
 // within the preset's MaxChars.
-func editChunk(c *vproject.Chunk, text, preset string) error {
+func editChunk(c *vproject.Chunk, text, preset, lang string) error {
 	pr := presets[preset]
+	pr.opts.Language = lang
 	parsed, err := vscript.Parse(text, pr.opts)
 	if err != nil {
 		return &requestError{err.Error()}

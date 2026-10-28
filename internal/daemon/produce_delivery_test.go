@@ -273,10 +273,12 @@ func TestValidateDeliveryPauseBounds(t *testing.T) {
 }
 
 // A style set to what the chunk already resolves to — here the job's style
-// through the fallback chain — changes nothing: nothing supersedes, nothing
-// writes, nothing renders.
+// through the fallback chain — renders nothing and supersedes nothing, but it
+// is STORED: the pin must survive a later change of the job's or voice's style
+// (#183.a).
 // Mutation: produce_ops.go deliver, compare with c.Style instead of the
 // effective style -> the op supersedes and rewrites -> RED.
+// Mutation: produce_ops.go deliver, drop `c.Style = styles[i]` -> the pin is lost -> RED.
 func TestDeliveryStyleMatchingTheEffectiveIsANoOp(t *testing.T) {
 	f := newFakePorts(t)
 	_, mux := produceMux(t, f)
@@ -291,7 +293,35 @@ func TestDeliveryStyleMatchingTheEffectiveIsANoOp(t *testing.T) {
 		t.Fatalf("a no-op style rendered %d takes", got)
 	}
 	m := manifestOf(t, f, id)
-	if m.Chunks[1].Style != "" || len(m.Chunks[1].Superseded) != 0 {
+	if m.Chunks[1].Style != "calm" || len(m.Chunks[1].Superseded) != 0 {
+		t.Fatalf("an explicit pin equal to the inherited style: stored %q (want calm), superseded %v", m.Chunks[1].Style, m.Chunks[1].Superseded)
+	}
+}
+
+// Clearing a style on a chunk that has none of its own changes nothing it
+// stores and nothing it renders: no supersede, no render, and the run is the
+// assemble-only one that never enters the battery/dictation checkpoint
+// (#183.b).
+// Mutation: produce_ops.go deliver, supersede on `styles[i] != eff[*e.N]` (the
+// stored request against the effective style) -> a wasted render -> RED.
+func TestDeliveryClearingAnInheritedStyleIsANoOpRun(t *testing.T) {
+	f := newFakePorts(t)
+	_, mux := produceMux(t, f)
+	out := filepath.Join(t.TempDir(), "v.wav")
+	id := createDone(t, mux, `{"script":"Первое. Второе.\n\nТретье.\n\nЧетвёртое.","voice":"nar","style":"calm","out_path":"`+out+`"}`)
+	renders, quiet := len(f.renders), countEvent(f, "quiet")
+	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/1", `{"action":"delivery","style":""}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("delivery: %d %s", rec.Code, rec.Body)
+	}
+	waitDoneHTTP(t, mux, id)
+	if got := len(f.renders) - renders; got != 0 {
+		t.Fatalf("clearing an inherited style rendered %d takes", got)
+	}
+	if got := countEvent(f, "quiet") - quiet; got != 0 {
+		t.Fatalf("a no-op entered %d checkpoints", got)
+	}
+	if m := manifestOf(t, f, id); len(m.Chunks[1].Superseded) != 0 || m.Chunks[1].Style != "" {
 		t.Fatalf("a no-op changed chunk 1: style %q superseded %v", m.Chunks[1].Style, m.Chunks[1].Superseded)
 	}
 }

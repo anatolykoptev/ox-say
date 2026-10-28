@@ -97,6 +97,43 @@ func Spoken(text string) string {
 	return ExpandNumbers(spokenPlain(text))
 }
 
+// Languages ScriptLanguage names.
+const (
+	LangRussian = "ru"
+	LangEnglish = "en"
+)
+
+// ScriptLanguage is the language a text is written in, as far as number
+// words and abbreviations go: Russian when it holds any Cyrillic letter,
+// English when it holds Latin letters and no Cyrillic, "" when it holds no
+// letters at all (digits and punctuation only). The daemon's plain speech
+// resolves a request the same way (langHint).
+func ScriptLanguage(text string) string {
+	latin := false
+	for _, r := range text {
+		switch {
+		case unicode.Is(unicode.Cyrillic, r):
+			return LangRussian
+		case unicode.Is(unicode.Latin, r):
+			latin = true
+		}
+	}
+	if latin {
+		return LangEnglish
+	}
+	return ""
+}
+
+// spokenIn is Spoken for a script in lang: an English script keeps its digits
+// ("I am 25" must not become "I am двадцать пять"); any other language gets
+// the Russian reading, which is what an unset language has always meant.
+func spokenIn(lang, text string) string {
+	if lang == LangEnglish {
+		return spokenPlain(text)
+	}
+	return Spoken(text)
+}
+
 // SpokenInline is Spoken for a direct speech request: the same
 // abbreviations and numbers, but a leading "(…)" is never folded — there it
 // is the caller's own cue, which the engine parses as its style tag

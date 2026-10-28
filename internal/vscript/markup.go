@@ -28,11 +28,15 @@ const (
 
 // Options sizes chunks and the silences between them.
 type Options struct {
-	TargetChars    int     // a chunk grows by whole sentences up to this many runes
-	MaxChars       int     // a sentence longer than this is split at a clause
-	MinChars       int     // a shorter last chunk of a paragraph joins its predecessor
-	MaxScriptChars int     // the whole script
-	MaxSpokenChars int     // the engine's per-request cap on Chunk.Spoken, which numbers written as words make longer than Text; 0 = no cap
+	TargetChars    int // a chunk grows by whole sentences up to this many runes
+	MaxChars       int // a sentence longer than this is split at a clause
+	MinChars       int // a shorter last chunk of a paragraph joins its predecessor
+	MaxScriptChars int // the whole script
+	MaxSpokenChars int // the engine's per-request cap on Chunk.Spoken, which numbers written as words make longer than Text; 0 = no cap
+	// Language is the language the script is spoken in ("ru", "en"): only a
+	// Russian script has its numbers written as Russian words. "" = decided
+	// from the script given to Parse (ScriptLanguage).
+	Language       string
 	ChunkPause     float64 // seconds between chunks of one paragraph
 	ParagraphPause float64 // seconds between paragraphs
 }
@@ -78,6 +82,9 @@ func Parse(src string, o Options) ([]Chunk, error) {
 		return nil, err
 	}
 	src = strings.TrimPrefix(src, utf8BOM)
+	if o.Language == "" {
+		o.Language = ScriptLanguage(src)
+	}
 	if n := utf8.RuneCountInString(src); n > o.MaxScriptChars {
 		return nil, &LineError{1, fmt.Sprintf("the script is %d characters; the limit is %d", n, o.MaxScriptChars)}
 	}
@@ -107,7 +114,7 @@ func Parse(src string, o Options) ([]Chunk, error) {
 					out[n-1].PauseAfter = gapBefore(o, emitted, pending)
 				}
 				pending = 0
-				out = append(out, Chunk{Index: len(out), Paragraph: para, Text: fc.text, Spoken: fc.spoken(), Style: style})
+				out = append(out, Chunk{Index: len(out), Paragraph: para, Text: fc.text, Spoken: fc.spoken(o.Language), Style: style})
 				emitted = true
 			}
 		}
