@@ -47,6 +47,36 @@ final class DesignModelsTests: XCTestCase {
         XCTAssertNil(DesignForm.problem(description: "d", sentence: "x", name: ""), "an empty name takes the daemon's suggestion")
     }
 
+    /// Same cases as the daemon's TestDesignTextCapFollowsSpokenDuration (internal/daemon/design_test.go): the cap is on
+    /// spoken duration, so Chinese gets fewer characters than Russian. Mutation: DesignForm.sentenceUnits, price Han as
+    /// Latin (drop the Han branch) -> RED on the "chinese 81", "chinese 150" and "mixed" rows.
+    func testSentenceCapFollowsSpokenDurationLikeTheDaemon() {
+        func rep(_ s: String, _ n: Int) -> String { String(repeating: s, count: n) }
+        let rows: [(String, String, Bool)] = [
+            ("cyrillic at the cap", rep("я", 200), true),
+            ("cyrillic over", rep("я", 201), false),
+            ("latin at the cap", rep("a", 200), true),
+            ("chinese 80", rep("好", 80), true),
+            ("chinese 81", rep("好", 81), false),
+            ("chinese 150", rep("好", 150), false),
+            ("kana 120", rep("あ", 120), true),
+            ("kana 121", rep("あ", 121), false),
+            ("hangul 121", rep("가", 121), false),
+            ("thai 121", rep("ก", 121), false),
+            ("mixed", rep("好", 60) + rep("a", 60), false),
+        ]
+        for (name, text, ok) in rows {
+            let problem = DesignForm.problem(description: "d", sentence: text, name: "")
+            XCTAssertEqual(problem == nil, ok, "\(name): \(problem ?? "accepted")")
+        }
+        XCTAssertEqual(DesignForm.problem(description: "d", sentence: rep("好", 150), name: ""),
+                       "The sample sentence is too long: keep it under 80 characters.", "the refusal states its own cap")
+        XCTAssertEqual(DesignForm.problem(description: "d", sentence: rep("я", 201), name: ""),
+                       "The sample sentence is too long: keep it under 200 characters.")
+        XCTAssertEqual(DesignForm.sentenceCap(for: rep("あ", 150)), 120)
+        XCTAssertEqual(DesignForm.sentenceUnits(rep("好", 80)), 1200)
+    }
+
     func testAnEmptyNameFallsBackToTheTakesSuggestion() {
         let take = DesignTake(path: "/t.wav", durationSeconds: 5, suggestedName: "warm-narrator-2")
         XCTAssertEqual(DesignForm.saveName(typed: "", take: take), "warm-narrator-2")

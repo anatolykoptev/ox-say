@@ -83,7 +83,33 @@ public enum DesignRequest {
 public enum DesignForm {
     /// vscript.MaxStyleChars and design.go maxDesignText.
     public static let descriptionLimit = 300
+    /// The sample sentence is capped by spoken duration, like the daemon (design.go designTextUnits): 1/60 s per unit,
+    /// 6 per character at the Russian pace, so 200 Latin or Cyrillic characters fill the 20 s window (1200 units).
+    /// Han costs 15 (4 chars/s), kana, Hangul and Thai 10 (6 chars/s): conservative rates, not measured.
     public static let sentenceLimit = 200
+    static let unitsPerCharacter = 6
+    static let unitsPerHan = 15
+    static let unitsPerSyllable = 10
+    static let sentenceUnitLimit = sentenceLimit * unitsPerCharacter
+
+    private static let hanPattern = try! NSRegularExpression(pattern: #"\p{sc=Han}"#)
+    private static let syllablePattern = try! NSRegularExpression(pattern: #"[\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}\p{sc=Thai}]"#)
+
+    /// The slowest plausible spoken length of `text`, in 1/60 s; one unit rule with the daemon, counted per Unicode scalar.
+    public static func sentenceUnits(_ text: String) -> Int {
+        let whole = NSRange(text.startIndex..., in: text)
+        let han = hanPattern.numberOfMatches(in: text, range: whole)
+        let syllables = syllablePattern.numberOfMatches(in: text, range: whole)
+        let others = text.unicodeScalars.count - han - syllables
+        return others * unitsPerCharacter + han * unitsPerHan + syllables * unitsPerSyllable
+    }
+
+    /// How many characters of `text`'s own script fit: 200 for Russian, 80 for Chinese (the daemon's refusal figure).
+    public static func sentenceCap(for text: String) -> Int {
+        let units = sentenceUnits(text)
+        guard units > 0 else { return sentenceLimit }
+        return sentenceUnitLimit * text.unicodeScalars.count / units
+    }
     /// voices/store.go voiceNameRe.
     static let namePattern = "^[a-z0-9][a-z0-9_-]{0,31}$"
 
@@ -109,7 +135,7 @@ public enum DesignForm {
         if description.isEmpty { return "Describe the voice first." }
         if description.count > descriptionLimit { return "The description is too long: keep it under \(descriptionLimit) characters." }
         if sentence.isEmpty { return "Write a sample sentence for the voice to say." }
-        if sentence.count > sentenceLimit { return "The sample sentence is too long: keep it under \(sentenceLimit) characters." }
+        if sentenceUnits(sentence) > sentenceUnitLimit { return "The sample sentence is too long: keep it under \(sentenceCap(for: sentence)) characters." }
         if !name.isEmpty && !isValidName(name) {
             return "The name can use lowercase English letters, digits, - and _, up to 32 characters, and must start with a letter or digit."
         }
