@@ -12,6 +12,8 @@ public enum MeetingStatusLine: Equatable, CaseIterable {
     /// The transcript is there and the notes are not: the notes writer is missing or its run failed.
     case transcriptOnly
     case failed
+    /// A status a newer daemon added, on a meeting too old to still be running: shown plainly, nothing spins.
+    case unrecognized
 
     public var titleKey: L10nKey {
         switch self {
@@ -22,6 +24,7 @@ public enum MeetingStatusLine: Equatable, CaseIterable {
         case .ready: return .meetingsStatusReady
         case .transcriptOnly: return .meetingsStatusTranscriptOnly
         case .failed: return .meetingsStatusFailed
+        case .unrecognized: return .meetingsStatusUnrecognized
         }
     }
 
@@ -29,7 +32,7 @@ public enum MeetingStatusLine: Equatable, CaseIterable {
     public var isBusy: Bool {
         switch self {
         case .recording, .waiting, .transcribing, .writingNotes: return true
-        case .ready, .transcriptOnly, .failed: return false
+        case .ready, .transcriptOnly, .failed, .unrecognized: return false
         }
     }
 }
@@ -37,7 +40,7 @@ public enum MeetingStatusLine: Equatable, CaseIterable {
 /// How the Meetings list and a meeting's header write a `MeetingInfo`: status,
 /// title, length, day groups. Pure; every text takes the resolver and the locale.
 public enum MeetingRowModel {
-    public static func status(of info: MeetingInfo) -> MeetingStatusLine {
+    public static func status(of info: MeetingInfo, now: Date = Date()) -> MeetingStatusLine {
         switch info.status {
         case .recording: return .recording
         case .queued: return .waiting
@@ -46,9 +49,10 @@ public enum MeetingRowModel {
         case .done: return .ready
         case .failed: return .failed
         case .transcribed: return .transcriptOnly
-        // A status this app does not know is work it cannot see the end of: the row says "waiting", keeps its
-        // spinner and the window keeps checking, and settled stays false so nothing is offered on it.
-        case .unknown: return .waiting
+        // A status this app does not know is work it cannot see the end of: while the meeting is recent the row says
+        // "waiting", keeps its spinner and the window keeps checking, and settled stays false so nothing is offered
+        // on it. An old one stops there (MeetingInfo.inProgress): a neutral line, no spinner, no polling.
+        case .unknown: return info.inProgress(now: now) ? .waiting : .unrecognized
         }
     }
 

@@ -70,8 +70,9 @@ public enum MeetingMenu {
             // Why the notes are not there, when the user can read it: a failed
             // download says so (and the Download row below retries); a Mac or an
             // install that cannot make notes says so instead of showing nothing.
-            if let error = s.notes.installError {
-                rows.append(.item(title: String(format: text(.menuMeetingInstallFailed), capped(error)),
+            if s.notes.installError != nil {
+                // The app's own sentence for the daemon's code, the same as the window; the daemon's English text is for the log.
+                rows.append(.item(title: text(NotesWriterState.downloadFailureKey(s.notes.installErrorCode)),
                                   isOn: false, isEnabled: false, action: nil))
             }
             if s.notes.downloadWouldHelp {
@@ -107,12 +108,6 @@ public enum MeetingMenu {
             rows.append(.item(title: text(r.titleKey), isOn: r == s.retention, isEnabled: true, action: .pickMeetingRetention(r.days)))
         }
         return rows
-    }
-
-    /// A download error can be a paragraph; a menu row must not be as wide as it.
-    static func capped(_ message: String, limit: Int = 80) -> String {
-        let one = message.split(whereSeparator: \.isNewline).joined(separator: " ")
-        return one.count <= limit ? one : String(one.prefix(limit - 1)) + "…"
     }
 
     private static func recentDate(_ d: Date?) -> String {

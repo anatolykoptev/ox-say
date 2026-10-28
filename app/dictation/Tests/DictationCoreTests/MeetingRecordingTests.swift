@@ -295,20 +295,3 @@ final class MeetingExporterTests: XCTestCase {
         XCTAssertNil(MeetingExporter.Outcome.alreadyExported.noticeKey)
     }
 }
-
-final class MenuErrorCapTests: XCTestCase {
-    /// A long download error made the menu as wide as the error (#247).
-    /// Mutation: MeetingMenu.rows, pass `error` instead of `MeetingMenu.capped(error)` -> RED.
-    func testALongInstallErrorIsCapped() {
-        let long = String(repeating: "x", count: 500)
-        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(installError: long),
-                                     autoStart: true, retention: .month)
-        let titles = MeetingMenu.rows(state, text: { $0.rawValue + " %@" }).compactMap { row -> String? in
-            if case .item(let title, _, _, _) = row { return title }
-            return nil
-        }
-        let failed = titles.first { $0.hasPrefix("menu.meeting.install_failed") } ?? ""
-        XCTAssertLessThan(failed.count, 160)
-        XCTAssertTrue(failed.contains("…"))
-    }
-}

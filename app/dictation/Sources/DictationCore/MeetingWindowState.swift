@@ -35,10 +35,10 @@ public enum MeetingsPageState: Equatable {
 public enum MeetingsPolling {
     public static let interval: TimeInterval = 3
 
-    public static func needed(visible: Bool, meetings: [MeetingInfo], writer: NotesWriterState = .ready) -> Bool {
+    public static func needed(visible: Bool, meetings: [MeetingInfo], writer: NotesWriterState = .ready, now: Date = Date()) -> Bool {
         guard visible else { return false }
         if case .downloading = writer { return true }
-        return meetings.contains { !$0.settled }
+        return meetings.contains { $0.inProgress(now: now) }
     }
 }
 

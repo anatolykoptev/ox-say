@@ -26,7 +26,7 @@ final class MeetingModelsTests: XCTestCase {
     func testAnUnknownStatusIsKeptNotDropped() throws {
         let m = try XCTUnwrap(MeetingInfo.decode(Data(#"{"id":"x","status":"future_state"}"#.utf8)))
         XCTAssertEqual(m.status, .unknown("future_state"))
-        XCTAssertFalse(m.settled, "the app cannot tell the daemon is done: no delete, no retry")
+        XCTAssertFalse(m.settled, "the app cannot tell the daemon is done: nothing is retried or acted on (delete stays available)")
         XCTAssertEqual(MeetingRowModel.status(of: m), .waiting, "shown as work in progress, with the existing words")
         XCTAssertEqual(Reconcile.action(for: m, exported: [], notesAvailable: true, currentID: nil), .skip)
         XCTAssertEqual(PlaybackGate.decide(audioDeleted: false, recordingRunning: false, status: m.status), .notReady)

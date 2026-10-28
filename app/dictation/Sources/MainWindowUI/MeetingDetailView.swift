@@ -144,7 +144,7 @@ extension MeetingDetailView {
                 .buttonStyle(.borderless)
                 .help(L10nKey.meetingRename.text)
                 .accessibilityLabel(L10nKey.meetingRename.text)
-                .disabled(!info.settled)
+                .disabled(info.inProgress())
             }
         }
     }

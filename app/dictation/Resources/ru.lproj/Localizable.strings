@@ -79,7 +79,6 @@
 "menu.meeting.install_model" = "Скачать модель для заметок (2,7 ГБ)…";
 "menu.meeting.downloading" = "Скачивание модели для заметок… %@";
 "menu.meeting.needs_macos" = "Запись встреч требует macOS 14.2 или новее";
-"menu.meeting.install_failed" = "Не удалось скачать модель: %@";
 "menu.meeting.notes_need_update" = "Для заметок нужно обновить ox-say";
 "menu.meeting.notes_unsupported" = "Заметки недоступны на этом Mac";
 "badge.rec" = "ЗАПИСЬ %@";
@@ -168,6 +167,7 @@
 "meetings.status.ready" = "Готово";
 "meetings.status.transcript_only" = "Только расшифровка";
 "meetings.status.failed" = "Не получилось";
+"meetings.status.unrecognized" = "Статус неизвестен";
 "meetings.empty.title" = "Записей пока нет";
 "meetings.empty.body" = "Когда начнётся звонок в Zoom, Google Meet, Teams или другом приложении, OxSay может записать его, расшифровать, составить заметки и различить, кто говорит. Запись можно начать и самому.";
 "meetings.select" = "Выберите запись, чтобы прочитать заметки.";

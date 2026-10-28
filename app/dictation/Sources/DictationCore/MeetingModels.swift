@@ -76,6 +76,21 @@ public struct MeetingInfo: Equatable {
     /// Nothing left for the daemon to do on its own.
     public var settled: Bool { status == .done || status == .transcribed || status == .failed }
 
+    /// How long after its start a meeting in a status this app does not know still counts as work in progress: the 4 h
+    /// that tracking a recording allows.
+    public static let recentHorizon: TimeInterval = 4 * 3600
+
+    /// Work the window should keep watching: an unsettled meeting, or one in an unknown status while it is recent. An
+    /// old meeting in a status a newer daemon added is final as far as this app can tell: no spinner, no polling.
+    /// A meeting with no start time cannot be aged, so it counts as recent.
+    public func inProgress(now: Date = Date()) -> Bool {
+        if case .unknown = status {
+            guard let started else { return true }
+            return now.timeIntervalSince(started) < Self.recentHorizon
+        }
+        return !settled
+    }
+
     public static func decode(_ data: Data) -> MeetingInfo? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return decode(obj)

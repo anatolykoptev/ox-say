@@ -51,6 +51,32 @@ final class MeetingWindowStateTests: XCTestCase {
     }
 
     /// A model download has no meeting in the list to wait for, but the status still has to be read.
+    /// A status a newer daemon added keeps the window polling only while the meeting is recent (the 4 h that tracking
+    /// allows); an old one is shown neutral, with no spinner, no polling and Rename available.
+    /// Mutation: MeetingInfo.inProgress(now:), drop the recency test (return `true` for `.unknown`) -> RED.
+    /// Mutation: MeetingsPolling.needed, use `!$0.settled` in place of `$0.inProgress(now: now)` -> RED.
+    func testAnUnknownStatusIsPolledOnlyWhileRecent() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func unknown(hoursAgo: Double?) -> MeetingInfo {
+            MeetingInfo(id: "u", started: hoursAgo.map { now.addingTimeInterval(-$0 * 3600) }, status: .unknown("archived"))
+        }
+        XCTAssertTrue(MeetingsPolling.needed(visible: true, meetings: [unknown(hoursAgo: 1)], now: now))
+        XCTAssertTrue(MeetingsPolling.needed(visible: true, meetings: [unknown(hoursAgo: 3.9)], now: now))
+        XCTAssertFalse(MeetingsPolling.needed(visible: true, meetings: [unknown(hoursAgo: 4.1)], now: now), "an old one never polls")
+        XCTAssertFalse(MeetingsPolling.needed(visible: true, meetings: [unknown(hoursAgo: 4.1), m("a", .done)], now: now))
+        XCTAssertTrue(MeetingsPolling.needed(visible: true, meetings: [unknown(hoursAgo: 4.1), m("b", .queued)], now: now),
+                      "a real unsettled meeting still polls")
+        XCTAssertTrue(unknown(hoursAgo: 1).inProgress(now: now))
+        XCTAssertFalse(unknown(hoursAgo: 5).inProgress(now: now))
+        XCTAssertTrue(unknown(hoursAgo: nil).inProgress(now: now), "a meeting with no start time is treated as recent")
+        XCTAssertEqual(MeetingRowModel.status(of: unknown(hoursAgo: 1), now: now), .waiting)
+        let old = MeetingRowModel.status(of: unknown(hoursAgo: 5), now: now)
+        XCTAssertEqual(old, .unrecognized)
+        XCTAssertFalse(old.isBusy, "no spinner")
+        XCTAssertFalse(m("a", .done).inProgress(now: now))
+        XCTAssertTrue(m("a", .summarizing).inProgress(now: now))
+    }
+
     /// Mutation: MeetingsPolling.needed, drop the `.downloading` line -> RED.
     func testADownloadKeepsThePollGoingWhileTheWindowIsOpen() {
         XCTAssertTrue(MeetingsPolling.needed(visible: true, meetings: [], writer: .downloading(percent: 40)))
