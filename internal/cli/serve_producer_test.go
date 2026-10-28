@@ -25,10 +25,11 @@ import (
 func TestServeStartsAndStopsTheProducer(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("OX_SAY_HOME", home)
-	t.Setenv("OX_SAY_ADDR", "127.0.0.1:"+strconv.Itoa(testutil.FreePort(t)))
+	ports := testutil.FreePorts(t, 3)
+	t.Setenv("OX_SAY_ADDR", "127.0.0.1:"+strconv.Itoa(ports[0]))
 	t.Setenv("OX_SAY_ENGINE_LOG_DIR", filepath.Join(home, "logs"))
-	t.Setenv("OX_SAY_ENGINE_PORT", strconv.Itoa(testutil.FreePort(t)))
-	t.Setenv("OX_SAY_STT_PORT", strconv.Itoa(testutil.FreePort(t)))
+	t.Setenv("OX_SAY_ENGINE_PORT", strconv.Itoa(ports[1]))
+	t.Setenv("OX_SAY_STT_PORT", strconv.Itoa(ports[2]))
 
 	oldNew, oldServe := newDaemon, serve
 	defer func() { newDaemon, serve = oldNew, oldServe }()

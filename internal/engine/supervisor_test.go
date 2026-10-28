@@ -455,7 +455,8 @@ func TestReapOrphan(t *testing.T) {
 		t.Fatal(err)
 	}
 	pidPath := filepath.Join(runDir, "engine.pid")
-	port := testutil.FreePort(t)
+	ports := testutil.FreePorts(t, 2)
+	port := ports[0]
 
 	// Positive: fake child started by hand, pidfile written, Bin == test binary.
 	orphan := exec.Command(os.Args[0], "--port", strconv.Itoa(port))
@@ -489,7 +490,7 @@ func TestReapOrphan(t *testing.T) {
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(sleeper.Process.Pid)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sup2 := newTestSupervisor(t, dir, func(c *Config) { c.Port = testutil.FreePort(t) })
+	sup2 := newTestSupervisor(t, dir, func(c *Config) { c.Port = ports[1] })
 	defer sup2.Shutdown()
 	time.Sleep(200 * time.Millisecond)
 	if !processAlive(sleeper.Process.Pid) {

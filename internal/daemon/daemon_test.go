@@ -102,13 +102,14 @@ func testLogSaw(t *testing.T, sub string) bool {
 // asserting the per-call CLI path switch it off in sttSetup.
 func testCfg(t *testing.T, dir string) *config.Config {
 	t.Helper()
+	ports := testutil.FreePorts(t, 3)
 	return &config.Config{
 		Home:           filepath.Join(dir, "home"),
 		Addr:           "127.0.0.1:0",
-		EnginePort:     testutil.FreePort(t),
+		EnginePort:     ports[0],
 		TTSModel:       config.TTSModelQwen,
 		VoxCPM2Bin:     os.Args[0],
-		VoxCPM2Port:    testutil.FreePort(t),
+		VoxCPM2Port:    ports[1],
 		EngineBin:      os.Args[0],
 		Model:          "talker.gguf",
 		Codec:          "codec.gguf",
@@ -119,7 +120,7 @@ func testCfg(t *testing.T, dir string) *config.Config {
 		STTServer:      "on",
 		STTBin:         os.Args[0],
 		STTModel:       filepath.Join(dir, "parakeet.bin"),
-		STTPort:        testutil.FreePort(t),
+		STTPort:        ports[2],
 		STTGPU:         "auto",
 	}
 }

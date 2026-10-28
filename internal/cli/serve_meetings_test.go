@@ -63,10 +63,11 @@ func finishMeeting(t *testing.T, d *daemon.Daemon) string {
 func TestServeStartsAndStopsTheMeetingRunner(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("OX_SAY_HOME", home)
-	t.Setenv("OX_SAY_ADDR", "127.0.0.1:"+strconv.Itoa(testutil.FreePort(t)))
+	ports := testutil.FreePorts(t, 3)
+	t.Setenv("OX_SAY_ADDR", "127.0.0.1:"+strconv.Itoa(ports[0]))
 	t.Setenv("OX_SAY_ENGINE_LOG_DIR", filepath.Join(home, "logs"))
-	t.Setenv("OX_SAY_ENGINE_PORT", strconv.Itoa(testutil.FreePort(t)))
-	t.Setenv("OX_SAY_STT_PORT", strconv.Itoa(testutil.FreePort(t)))
+	t.Setenv("OX_SAY_ENGINE_PORT", strconv.Itoa(ports[1]))
+	t.Setenv("OX_SAY_STT_PORT", strconv.Itoa(ports[2]))
 
 	oldNew, oldServe := newDaemon, serve
 	defer func() { newDaemon, serve = oldNew, oldServe }()
@@ -128,11 +129,12 @@ func TestServeStartsAndStopsTheMeetingRunner(t *testing.T) {
 func TestServeFinishesAnOrphanedRecording(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("OX_SAY_HOME", home)
-	t.Setenv("OX_SAY_ADDR", "127.0.0.1:"+strconv.Itoa(testutil.FreePort(t)))
+	ports := testutil.FreePorts(t, 4)
+	t.Setenv("OX_SAY_ADDR", "127.0.0.1:"+strconv.Itoa(ports[0]))
 	t.Setenv("OX_SAY_ENGINE_LOG_DIR", filepath.Join(home, "logs"))
-	t.Setenv("OX_SAY_ENGINE_PORT", strconv.Itoa(testutil.FreePort(t)))
-	t.Setenv("OX_SAY_STT_PORT", strconv.Itoa(testutil.FreePort(t)))
-	t.Setenv("OX_SAY_NOTES_PORT", strconv.Itoa(testutil.FreePort(t)))
+	t.Setenv("OX_SAY_ENGINE_PORT", strconv.Itoa(ports[1]))
+	t.Setenv("OX_SAY_STT_PORT", strconv.Itoa(ports[2]))
+	t.Setenv("OX_SAY_NOTES_PORT", strconv.Itoa(ports[3]))
 
 	store := &meeting.Store{Root: filepath.Join(home, "meetings")}
 	m, dir, err := store.Create(meeting.Manifest{Title: "orphan"}, time.Now().Add(-3*time.Hour))
