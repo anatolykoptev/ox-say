@@ -507,7 +507,7 @@ func TestSearchNormalisesDecomposedLetters(t *testing.T) {
 		{"precomposed query, decomposed title", mux2, "café", true},
 		{"precomposed й query, decomposed title", mux2, "мой", true},
 		{"и is not й, decomposed title", mux2, "мои друг", false},
-		{"и is not й, decomposed query", mux, "мои друг", false},
+		{"и is not й, precomposed title", mux, "мои друг", false},
 	}
 	for _, c := range cases {
 		out, code, body := search(t, c.mux, c.q)

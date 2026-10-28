@@ -299,10 +299,10 @@ var foldTable = sync.OnceValue(func() *[foldTableSize]rune {
 })
 
 // foldRune is the character a search compares: lower case, and a letter with a mark as its plain letter (é as e,
-// ё as е). The unicode tables give the case, the accents
-// table below the marks. The callers normalise to NFC before folding (a letter typed as a base letter plus a combining mark matches its
-// precomposed form; й stays distinct from и either way). Known limit, left out on purpose: ß does not match "ss". й is deliberately not folded to и: to a Russian reader it is a letter of its own, and
-// "мои" must not find "мой".
+// ё as е). The unicode tables give the case, the accents table below the marks. The callers normalise to NFC before
+// folding, so a letter typed as a base letter plus a combining mark matches its precomposed form. й is deliberately
+// not folded to и: to a Russian reader it is a letter of its own, and "мои" must not find "мой". Known limit, left out
+// on purpose: ß does not match "ss".
 func foldRune(r rune) rune {
 	if r < utf8.RuneSelf {
 		if 'A' <= r && r <= 'Z' {

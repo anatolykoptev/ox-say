@@ -27,7 +27,10 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version-file: go.mod
+          # The newest 1.26.x, not the exact `go 1.26.0` floor in go.mod: setup-go v5.6.0 reads only the `go` line
+          # (it ignores a `toolchain` line), and a release binary must carry the latest stdlib security patches.
+          go-version: '1.26'
+          check-latest: true
 
       # ffmpeg is required by tests: voice normalization and the mp3/opus
       # transcode path shell out to it.

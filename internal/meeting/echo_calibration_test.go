@@ -186,7 +186,7 @@ func TestEchoContentShareCalibration(t *testing.T) {
 // echoContentShare has a floor and a ceiling pinned at its edge (#279): the owner talking over the far side with
 // the same small words and a third of the content words is not an echo, two fifths is. The calibration above only
 // proves the chosen value on average; lowering it to 0.3 kept the suite green.
-// Mutation: internal/meeting/merge.go:64 `echoContentShare = 0.4` -> 0.3 -> RED (the 1/3 rows are dropped);
+// Mutation: internal/meeting/merge.go:65 `echoContentShare = 0.4` -> 0.3 -> RED (the 1/3 rows are dropped);
 // -> 0.5 -> RED (the 2/5 row is kept).
 func TestEchoContentShareEdges(t *testing.T) {
 	far := "can you send me the updated budget for the third quarter before the meeting tomorrow"
