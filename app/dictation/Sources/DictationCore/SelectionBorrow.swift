@@ -19,7 +19,11 @@ public enum SelectionBorrow {
     ///   - postCopy: posts ⌘C to the frontmost app.
     ///   - spin: pumps the run loop briefly; the copy lands asynchronously.
     ///   - readText: the pasteboard's plain text, asked after the copy lands.
+    ///   - memory: the app's one `SlowClipboardMemory`, shared with the paste (`PasteOutput`): a clipboard whose read
+    ///     timed out is declined at once, with no read and no ⌘C, until something copies. No default: a caller that
+    ///     builds its own memory would not share what the paste learned.
     ///   - copyTimeout: how long to wait for the copy.
+    ///   - readLimit: how long the clipboard read before the copy may take (see `PasteboardSnapshot.readLimit`).
     ///   - onSelection: called once per press with the path taken (ax, copy, remote, none) and every AX
     ///     source's result (never user content).
     public static func capture(board: DictationPasteboard,
@@ -28,11 +32,13 @@ public enum SelectionBorrow {
                                postCopy: () -> Void,
                                spin: (TimeInterval) -> Void,
                                readText: () -> String?,
+                               memory: SlowClipboardMemory,
                                copyTimeout: TimeInterval = 0.4,
+                               readLimit: TimeInterval = PasteboardSnapshot.readLimit,
                                onSelection: ((SelectionReport) -> Void)? = nil) -> (text: String?, problem: String?) {
         let ax = selectedText()
         let (result, path) = run(ax: ax, board: board, secureInput: secureInput, postCopy: postCopy,
-                                 spin: spin, readText: readText, copyTimeout: copyTimeout)
+                                 spin: spin, readText: readText, memory: memory, copyTimeout: copyTimeout, readLimit: readLimit)
         onSelection?(SelectionReport(path: path, attempts: ax.attempts))
         return result
     }
@@ -43,7 +49,9 @@ public enum SelectionBorrow {
                             postCopy: () -> Void,
                             spin: (TimeInterval) -> Void,
                             readText: () -> String?,
-                            copyTimeout: TimeInterval) -> (result: (text: String?, problem: String?), path: SelectionPath) {
+                            memory: SlowClipboardMemory,
+                            copyTimeout: TimeInterval,
+                            readLimit: TimeInterval) -> (result: (text: String?, problem: String?), path: SelectionPath) {
         // AX is asked before the clipboard is looked at: when it hands over
         // the selection the clipboard is not touched at all, and on a
         // Universal Clipboard copy it is the only read that is safe — ⌘C
@@ -53,7 +61,7 @@ public enum SelectionBorrow {
         let axText = ax.secureField ? nil : ax.text
         let secure = secureInput() || ax.secureField
         let snapshot = SelectionPolicy.needsClipboard(axText: axText, secureInput: secure)
-            ? PasteboardSnapshot.capture(board, timeLimit: PasteboardSnapshot.readLimit) : nil
+            ? PasteboardSnapshot.capture(board, timeLimit: readLimit, memory: memory) : nil
         switch SelectionPolicy.plan(axText: axText, secureInput: secure,
                                     clipboardRestorable: snapshot.map { $0.isWhole && !$0.isSensitive } ?? false,
                                     clipboardRemote: snapshot?.isRemote ?? false,

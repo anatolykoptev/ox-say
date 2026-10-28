@@ -102,12 +102,48 @@ var sameWordProbes = [][2]string{
 	{"тридцать", "двадцать"},
 }
 
+// sameWordGenerated is a deterministic set of word pairs built from the rule's own inputs (length and edit count),
+// not from a person's list of cases: for every length 1..16 over a Latin and a Cyrillic base word, the base against
+// itself edited by 1..4 substitutions, 1..3 deletions, 1..3 insertions and one adjacent swap. A change to SameWord's
+// tolerance at any length or edit kind changes a verdict somewhere in it, so sameWordFingerprint cannot go stale
+// when a rule changes and nobody remembers to add a probe.
+func sameWordGenerated() [][2]string {
+	var out [][2]string
+	for _, alphabet := range []string{"abcdefghijklmnop", "сохранитьтридцат"} {
+		base := []rune(alphabet)
+		for n := 1; n <= len(base); n++ {
+			w := base[:n]
+			edit := func(f func([]rune) []rune) {
+				out = append(out, [2]string{string(w), string(f(append([]rune(nil), w...)))})
+			}
+			for k := 1; k <= 4 && k <= n; k++ {
+				edit(func(r []rune) []rune {
+					for i := 0; i < k; i++ {
+						r[len(r)-1-i*2%len(r)] = '#'
+					}
+					return r
+				})
+			}
+			for k := 1; k <= 3 && k < n; k++ {
+				edit(func(r []rune) []rune { return r[:len(r)-k] })
+			}
+			for k := 1; k <= 3; k++ {
+				edit(func(r []rune) []rune { return append(r, []rune("###")[:k]...) })
+			}
+			if n >= 2 {
+				edit(func(r []rune) []rune { r[0], r[1] = r[1], r[0]; return r })
+			}
+		}
+	}
+	return out
+}
+
 // sameWordFingerprint is a short hash of same's verdict on every probe pair. It goes into the verdict cache key
 // (tailParams), so a change in SameWord's result for any pair changes the key and every cached "transcript matches"
-// verdict is dropped, instead of staying valid for a rule that no longer exists.
+// verdict is dropped (the probes plus sameWordGenerated), instead of staying valid for a rule that no longer exists.
 func sameWordFingerprint(same func(a, b string) bool) string {
 	h := sha256.New()
-	for _, p := range sameWordProbes {
+	for _, p := range append(append([][2]string(nil), sameWordProbes...), sameWordGenerated()...) {
 		h.Write([]byte(p[0]))
 		h.Write([]byte{0})
 		h.Write([]byte(p[1]))

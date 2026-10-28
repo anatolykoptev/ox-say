@@ -36,7 +36,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     secureInput: { false },
                                                     postCopy: { copies += 1 },
                                                     spin: { _ in },
-                                                    readText: { board.text })
+                                                    readText: { board.text }, memory: SlowClipboardMemory())
         XCTAssertEqual(text, "the selection")
         XCTAssertNil(problem)
         XCTAssertEqual(copies, 0, "AX handed the selection over: ⌘C must never be sent")
@@ -56,7 +56,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     secureInput: { false },
                                                     postCopy: { copies += 1; board.userCopies("the selection") },
                                                     spin: { _ in },
-                                                    readText: { board.text })
+                                                    readText: { board.text }, memory: SlowClipboardMemory())
         XCTAssertEqual(text, "the selection")
         XCTAssertNil(problem)
         XCTAssertEqual(copies, 1)
@@ -76,7 +76,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     secureInput: { false },
                                                     postCopy: { copies += 1; board.userCopies("the selection") },
                                                     spin: { _ in },
-                                                    readText: { board.text })
+                                                    readText: { board.text }, memory: SlowClipboardMemory())
         XCTAssertNil(text)
         XCTAssertEqual(problem, L10nKey.noticeSelectionRemote.text)
         XCTAssertEqual(copies, 0, "⌘C over an iPhone copy replaces it for good")
@@ -97,7 +97,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     secureInput: { false },
                                                     postCopy: { copies += 1; board.userCopies("the selection") },
                                                     spin: { _ in },
-                                                    readText: { board.text })
+                                                    readText: { board.text }, memory: SlowClipboardMemory())
         XCTAssertNil(text)
         XCTAssertEqual(problem, L10nKey.noticeSelectionRemoteEmpty.text)
         XCTAssertEqual(copies, 0)
@@ -105,7 +105,7 @@ final class SelectionBorrowTests: XCTestCase {
         // An element that came back with an AX error is not an answer.
         let (_, failed) = SelectionBorrow.capture(board: remoteBoard(),
                                                   selectedText: { AXSelection(text: nil, hasElement: true, error: -25204, source: .app) },
-                                                  secureInput: { false }, postCopy: {}, spin: { _ in }, readText: { nil })
+                                                  secureInput: { false }, postCopy: {}, spin: { _ in }, readText: { nil }, memory: SlowClipboardMemory())
         XCTAssertEqual(failed, L10nKey.noticeSelectionRemote.text)
     }
 
@@ -128,7 +128,7 @@ final class SelectionBorrowTests: XCTestCase {
     func testACopyThatBringsNothingSaysNothingIsSelectedInTheUsersLanguage() {
         let board = FakePasteboard(text: "the user's copy")
         let (text, problem) = SelectionBorrow.capture(board: board, selectedText: { ax(nil) }, secureInput: { false },
-                                                      postCopy: {}, spin: { _ in }, readText: { board.text }, copyTimeout: 0)
+                                                      postCopy: {}, spin: { _ in }, readText: { board.text }, memory: SlowClipboardMemory(), copyTimeout: 0)
         XCTAssertNil(text)
         XCTAssertEqual(problem, L10nKey.noticeSelectionNothing.text)
     }
@@ -142,7 +142,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     secureInput: { false },
                                                     postCopy: { copies += 1 },
                                                     spin: { _ in },
-                                                    readText: { board.text })
+                                                    readText: { board.text }, memory: SlowClipboardMemory())
         XCTAssertEqual(text, "the selection")
         XCTAssertNil(problem)
         XCTAssertEqual(copies, 0)
@@ -160,7 +160,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     secureInput: { true },
                                                     postCopy: { copies += 1 },
                                                     spin: { _ in },
-                                                    readText: { board.text })
+                                                    readText: { board.text }, memory: SlowClipboardMemory())
         XCTAssertNil(text)
         XCTAssertEqual(problem, L10nKey.noticeSelectionPassword.text)
         XCTAssertEqual(copies, 0)
@@ -180,7 +180,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     secureInput: { false },
                                                     postCopy: { copies += 1; board.userCopies("hunter2") },
                                                     spin: { _ in },
-                                                    readText: { board.text })
+                                                    readText: { board.text }, memory: SlowClipboardMemory())
         XCTAssertNil(text, "a secure field's text must never be returned")
         XCTAssertEqual(problem, L10nKey.noticeSelectionPassword.text)
         XCTAssertEqual(copies, 0)
@@ -199,7 +199,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     secureInput: { false },
                                                     postCopy: { copies += 1; board.userCopies("hunter2") },
                                                     spin: { _ in },
-                                                    readText: { board.text })
+                                                    readText: { board.text }, memory: SlowClipboardMemory())
         XCTAssertNil(text)
         XCTAssertEqual(problem, L10nKey.noticeSelectionPassword.text)
         XCTAssertEqual(copies, 0, "⌘C must not be sent to a secure field")
@@ -219,7 +219,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     secureInput: { false },
                                                     postCopy: { copies += 1; board.userCopies("x") },
                                                     spin: { _ in },
-                                                    readText: { board.text })
+                                                    readText: { board.text }, memory: SlowClipboardMemory())
         XCTAssertNil(text)
         XCTAssertEqual(problem, L10nKey.noticeSelectionNothing.text)
         XCTAssertEqual(copies, 0)
@@ -241,6 +241,7 @@ final class SelectionBorrowTests: XCTestCase {
                                         postCopy: { if let copy { board.userCopies(copy) } },
                                         spin: { _ in },
                                         readText: { board.text },
+                                        memory: SlowClipboardMemory(),
                                         onSelection: { reports.append($0) })
             XCTAssertEqual(reports.count, 1, "exactly one report per press")
             return reports.first?.line
@@ -394,6 +395,66 @@ final class SelectionBorrowTests: XCTestCase {
         let capture = source("Sources/OxSayDictation/SelectionCapture.swift")
         XCTAssertTrue(capture.contains("func capture() -> (text: String?, problem: String?) {\n        SelectionBorrow.capture("),
                       "SelectionCapture must return SelectionBorrow's result unchanged")
+    }
+
+    // #319.1: a copy whose read timed out is remembered by the speak-selection path too. With AX giving no text, the
+    // first press waits the limit and declines; the next press on the SAME memory and an unchanged clipboard declines
+    // at once: no `data` call, no ⌘C. Mutation: SelectionBorrow.run, `memory: memory` -> `memory: SlowClipboardMemory()`
+    // at the PasteboardSnapshot.capture call -> RED (the second press reads the board again).
+    func testASlowClipboardIsDeclinedAtOnceOnTheSecondSelectionRead() {
+        let board = SlowPasteboard(text: "the user's big copy", delay: 1.5)
+        let memory = SlowClipboardMemory()
+        var copies = 0
+        func press() -> (text: String?, problem: String?) {
+            SelectionBorrow.capture(board: board, selectedText: { self.noElement() }, secureInput: { false },
+                                    postCopy: { copies += 1 }, spin: { _ in }, readText: { nil }, memory: memory)
+        }
+        // Shrink the wait: the production limit is 2 s.
+        let first = SelectionBorrow.capture(board: board, selectedText: { self.noElement() }, secureInput: { false },
+                                            postCopy: { copies += 1 }, spin: { _ in }, readText: { nil },
+                                            memory: memory, readLimit: 0.1)
+        XCTAssertNil(first.text)
+        XCTAssertEqual(board.reads, 1, "the first press reads once and gives up")
+        let second = press()
+        XCTAssertNil(second.text)
+        XCTAssertEqual(second.problem, first.problem, "declined the way the timeout declines")
+        XCTAssertEqual(board.reads, 1, "the second press must make no data call")
+        XCTAssertEqual(copies, 0, "⌘C is never sent over a clipboard that could not be read")
+        XCTAssertEqual(board.changeCount, 0, "no write")
+    }
+
+    // The memory is about one copy: a new copy moves the changeCount and is read again on the speak path as well.
+    // Mutation: SlowClipboardMemory.isSlow, `timedOutCount == changeCount` -> `timedOutCount != nil` -> RED.
+    func testANewCopyIsReadAgainOnTheSelectionPath() {
+        let board = SlowPasteboard(text: "slow", delay: 0.4)
+        let memory = SlowClipboardMemory()
+        _ = SelectionBorrow.capture(board: board, selectedText: { self.noElement() }, secureInput: { false },
+                                    postCopy: {}, spin: { _ in }, readText: { nil }, memory: memory, readLimit: 0.1)
+        Thread.sleep(forTimeInterval: 0.6)   // the abandoned read ends
+        let readsBefore = board.reads
+        board.inner.userCopies("a fast copy")
+        board.inner.items = [[("public.utf8-plain-text", Data("a fast copy".utf8))]]
+        _ = SelectionBorrow.capture(board: board, selectedText: { self.noElement() }, secureInput: { false },
+                                    postCopy: {}, spin: { _ in }, readText: { nil }, memory: memory, copyTimeout: 0)
+        XCTAssertGreaterThan(board.reads, readsBefore, "a copy made after the slow one must be read")
+    }
+
+    // #319.1 glue: the paste and the speak-selection copy share the app's ONE memory. A SelectionCapture that built its
+    // own, or an AppDelegate that gave each a fresh one, leaves every behaviour test green and the 2 s freeze in place.
+    // Mutations: AppDelegate, `SelectionCapture(slowClipboard: slowClipboard)` -> `SelectionCapture(slowClipboard:
+    // SlowClipboardMemory())`; SelectionCapture.capture, `memory: slowClipboard` -> `memory: SlowClipboardMemory()` -> RED.
+    func testThePasteAndTheSelectionCopyShareOneSlowClipboardMemory() {
+        let appDelegate = source("Sources/OxSayDictation/AppDelegate.swift")
+        XCTAssertEqual(appDelegate.components(separatedBy: "SlowClipboardMemory()").count - 1, 1,
+                       "AppDelegate must build exactly one SlowClipboardMemory")
+        XCTAssertTrue(appDelegate.contains("PasteOutput(slowClipboard: slowClipboard)"))
+        XCTAssertTrue(appDelegate.contains("SelectionCapture(slowClipboard: slowClipboard)"))
+        let capture = source("Sources/OxSayDictation/SelectionCapture.swift")
+        XCTAssertTrue(capture.contains("memory: slowClipboard,"), "SelectionCapture must hand SelectionBorrow the shared memory")
+        XCTAssertFalse(capture.contains("SlowClipboardMemory()"), "SelectionCapture must not build its own memory")
+        let paste = source("Sources/OxSayDictation/PasteOutput.swift")
+        XCTAssertFalse(paste.contains("SlowClipboardMemory()"), "PasteOutput must not build its own memory")
+        XCTAssertTrue(paste.contains("memory: slowClipboard"))
     }
 
     private func source(_ relative: String) -> String {

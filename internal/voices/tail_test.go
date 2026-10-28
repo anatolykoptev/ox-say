@@ -81,13 +81,13 @@ func TestSameWordRejectsDifferentWords(t *testing.T) {
 
 // The verdict cache key carries a fingerprint of SameWord over fixed pairs (#280.2). The expected verdicts are
 // written out here, independent of SameWord: a change of SameWord for any pair fails its row (so the change is
-// seen), and the fingerprint over those expected verdicts must equal the one the key uses (so the key moves with it).
+// seen). The broader generated set is pinned by TestSameWordGeneratedSetIsPinned.
 // "then"/"than" are one edit apart at four letters: SameWord calls them the same word on purpose. The tail check
 // asks whether the words the reference ends in are in the audio; an ASR that heard "than" for "then" heard the
 // word, and a reference that ran PAST the audio ends in words that are nowhere near the audio's, so the pair cannot
 // hide an overrun (#280.4).
 // Mutation: internal/voices/tail.go SameWord `max(1, n/5)` -> `max(1, n/4)` -> RED (the abcdefgh row and the
-// fingerprint equality).
+// fingerprint tests).
 func TestSameWordProbes(t *testing.T) {
 	want := map[[2]string]bool{
 		{"hello", "hello"}: true, {"cat", "cut"}: false, {"then", "than"}: true, {"stol", "slon"}: false,
@@ -106,10 +106,6 @@ func TestSameWordProbes(t *testing.T) {
 			t.Errorf("SameWord(%q, %q) = %v, want %v", p[0], p[1], got, exp)
 		}
 	}
-	oracle := func(a, b string) bool { return want[[2]string{a, b}] }
-	if got, exp := sameWordFingerprint(SameWord), sameWordFingerprint(oracle); got != exp {
-		t.Errorf("fingerprint of SameWord = %s, of the expected verdicts = %s", got, exp)
-	}
 	// One flipped verdict moves the fingerprint, and the key built from tailParams carries the fingerprint.
 	flipped := func(a, b string) bool {
 		if a == "then" {
@@ -123,4 +119,88 @@ func TestSameWordProbes(t *testing.T) {
 	if !strings.Contains(tailParams(), ",sw"+sameWordFingerprint(SameWord)) {
 		t.Errorf("tailParams %q does not carry the SameWord fingerprint", tailParams())
 	}
+}
+
+// #320.3: the fingerprint in the verdict cache key also covers sameWordGenerated, a machine-built set of word
+// pairs over every length and edit count, so a rule change that the eleven hand-picked probes do not show still
+// moves the key. The golden below is the fingerprint of today's SameWord over that set: a change of any verdict
+// fails this test and says the key moved on purpose (update the golden in the same commit). The variants prove the
+// set can see the usual ways the rule might change.
+// Mutation: tail.go SameWord `max(1, n/5)` -> `max(1, n/6)` -> RED here (golden). Mutation:
+// tail.go sameWordFingerprint, hash only sameWordProbes -> TestSameWordFingerprintCoversGeneratedSet RED.
+func TestSameWordGeneratedSetIsPinned(t *testing.T) {
+	const golden = "9c08ee45"
+	if n := len(sameWordGenerated()); n < 300 {
+		t.Fatalf("generated set shrank to %d pairs", n)
+	}
+	if got := sameWordFingerprint(SameWord); got != golden {
+		t.Errorf("SameWord changed a verdict on the generated set: fingerprint %s, pinned %s", got, golden)
+	}
+}
+
+func TestSameWordFingerprintCoversGeneratedSet(t *testing.T) {
+	base := sameWordFingerprint(SameWord)
+	variants := map[string]func(a, b string) bool{
+		"tolerance n/4":    func(a, b string) bool { return sameWithRule(a, b, 4, 4, 1) },
+		"tolerance n/6":    func(a, b string) bool { return sameWithRule(a, b, 4, 6, 1) },
+		"no minimum of 1":  func(a, b string) bool { return sameWithRule(a, b, 4, 5, 0) },
+		"short limit 3":    func(a, b string) bool { return sameWithRule(a, b, 3, 5, 1) },
+		"short limit 5":    func(a, b string) bool { return sameWithRule(a, b, 5, 5, 1) },
+		"minimum of 2":     func(a, b string) bool { return sameWithRule(a, b, 4, 5, 2) },
+		"equality only":    func(a, b string) bool { return a == b },
+		"always different": func(a, b string) bool { return false },
+	}
+	for name, same := range variants {
+		if sameWordFingerprint(same) == base {
+			t.Errorf("variant %q leaves the fingerprint unchanged: the generated set does not see it", name)
+		}
+	}
+	// A change visible ONLY on a generated pair (agreeing with SameWord on every hand-picked probe) must move the key.
+	probe := map[[2]string]bool{}
+	for _, p := range sameWordProbes {
+		probe[p] = true
+	}
+	var target [2]string
+	for _, p := range sameWordGenerated() {
+		if !probe[p] {
+			target = p
+			break
+		}
+	}
+	generatedOnly := func(a, b string) bool {
+		if [2]string{a, b} == target {
+			return !SameWord(a, b)
+		}
+		return SameWord(a, b)
+	}
+	if sameWordFingerprint(generatedOnly) == base {
+		t.Error("a verdict change on a generated-only pair leaves the fingerprint unchanged")
+	}
+	// And each variant differs from SameWord on a pair of the generated set itself, not only on a probe.
+	for name, same := range variants {
+		diff := false
+		for _, p := range sameWordGenerated() {
+			if same(p[0], p[1]) != SameWord(p[0], p[1]) {
+				diff = true
+				break
+			}
+		}
+		if !diff {
+			t.Errorf("variant %q agrees with SameWord on every generated pair", name)
+		}
+	}
+}
+
+// sameWithRule is SameWord with its three numbers exposed: the shortest word that may differ, the divisor of the
+// tolerance and its floor.
+func sameWithRule(a, b string, shortLimit, divisor, floor int) bool {
+	if a == b {
+		return true
+	}
+	ra, rb := []rune(a), []rune(b)
+	n := max(len(ra), len(rb))
+	if n < shortLimit {
+		return false
+	}
+	return editDistance(ra, rb) <= max(floor, n/divisor)
 }

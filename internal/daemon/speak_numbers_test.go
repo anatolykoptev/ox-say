@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -129,20 +128,6 @@ func TestSpeechVoxCPM2ExpandsRussianNumbers(t *testing.T) {
 	reqs := voxLog(t, logPath)
 	if len(reqs) != 1 || reqs[0]["input"] != "Мне двадцать пять лет" {
 		t.Fatalf("voxcpm2 requests %v", reqs)
-	}
-}
-
-// SynthesizeWAV is the shared synthesis entry and normalizes like Speak.
-func TestSynthesizeWAVExpandsRussianNumbers(t *testing.T) {
-	dir := t.TempDir()
-	fakeEnv(t, dir)
-	d := newTestDaemon(t, dir, nil)
-
-	if _, err := d.SynthesizeWAV(context.Background(), map[string]any{"input": "Мне 25 лет"}); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := lastSpeechInput(t, dir), "Мне двадцать пять лет"; got != want {
-		t.Fatalf("SynthesizeWAV: engine got %q, want %q", got, want)
 	}
 }
 

@@ -156,6 +156,11 @@ type Supervisor struct {
 	guards        int
 	gpuHeld       bool // the current generation owns cfg.GPU
 
+	// pidMu makes the pidfile's read-check-remove (removePidFile) atomic
+	// against the next spawn's write: a superseded child's onExit runs after
+	// the lease is released, so it can race a restart's writePidFile.
+	pidMu sync.Mutex
+
 	stopIdle  chan struct{}
 	idleDone  chan struct{}
 	closeOnce sync.Once
@@ -933,6 +938,8 @@ func (s *Supervisor) writePidFile(pid int) {
 	if s.cfg.PidPath == "" {
 		return
 	}
+	s.pidMu.Lock()
+	defer s.pidMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(s.cfg.PidPath), 0o755); err != nil {
 		s.log.Warn("engine: pidfile dir", slog.Any("error", err))
 		return
@@ -976,6 +983,8 @@ func (s *Supervisor) removePidFile(pid int) {
 	if s.cfg.PidPath == "" {
 		return
 	}
+	s.pidMu.Lock()
+	defer s.pidMu.Unlock()
 	data, err := os.ReadFile(s.cfg.PidPath)
 	if err != nil {
 		return

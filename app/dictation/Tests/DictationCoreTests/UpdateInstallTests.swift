@@ -408,8 +408,11 @@ final class UpdateInstallRobustnessTests: XCTestCase {
         let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil,
                                                 downloadArgv: { _, _ in ["/bin/sh", "-c", "exit 28"] },
                                                 installedVersion: { nil }, daemonVersion: { nil })
-        XCTAssertEqual(failure, .downloadTimedOut(seconds: UpdateInstaller.downloadMaxTime))
-        XCTAssertEqual(failure?.message, "Downloading the installer timed out after 60 s.")
+        XCTAssertEqual(failure, .downloadTimedOut(seconds: nil))
+        // exit 28 is `--max-time` (60 s) AND `--connect-timeout` (15 s): naming either figure is wrong half the time.
+        XCTAssertEqual(failure?.message, "Downloading the installer timed out.")
+        XCTAssertEqual(UpdateInstaller.Failure.downloadTimedOut(seconds: 90).message,
+                       "Downloading the installer timed out after 90 s.", "the backstop knows its own figure")
         let other = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil,
                                               downloadArgv: { _, _ in ["/bin/sh", "-c", "exit 22"] },
                                               installedVersion: { nil }, daemonVersion: { nil })

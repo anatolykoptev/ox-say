@@ -259,3 +259,27 @@ func readPidfile(pidPath string) int {
 	}
 	return pid
 }
+
+// A superseded child's onExit removes "its" pidfile after the next start has
+// already written a new one. removePidFile checks the file names the old pid
+// and then removes it; if the next spawn's writePidFile lands between that
+// check and the Remove, the new child's pidfile is deleted (issue #329:
+// "cannot read pidfile" after a restart). The check and the remove must be
+// atomic against writePidFile.
+// Mutation: drop pidMu.Lock() in removePidFile -> RED (the new pidfile is lost).
+func TestRemovePidFileNeverDeletesNewerPidfile(t *testing.T) {
+	dir := t.TempDir()
+	sup := newTestSupervisor(t, dir, nil)
+	oldPid, newPid := os.Getpid(), 1
+	for i := 0; i < 2000; i++ {
+		sup.writePidFile(oldPid)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); sup.removePidFile(oldPid) }()
+		go func() { defer wg.Done(); sup.writePidFile(newPid) }()
+		wg.Wait()
+		if got := readPidfile(sup.cfg.PidPath); got != newPid {
+			t.Fatalf("iteration %d: pidfile names %d, want %d: the old child's cleanup deleted the new child's pidfile", i, got, newPid)
+		}
+	}
+}

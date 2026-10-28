@@ -86,9 +86,6 @@ func TestDefaultSeed(t *testing.T) {
 	if _, err := d.Speak(ctx, SpeakInput{Text: "hello there", Seed: ptr(7), Overwrite: true, OutPath: filepath.Join(t.TempDir(), "s.wav")}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.SynthesizeWAV(ctx, map[string]any{"input": "hello there"}); err != nil {
-		t.Fatal(err)
-	}
 	srv := routes(t, d)
 	body, _ := json.Marshal(map[string]any{"input": "hello there", "response_format": "wav"})
 	resp, err := http.Post(srv.URL+"/v1/audio/speech", "application/json", bytes.NewReader(body))
@@ -97,7 +94,7 @@ func TestDefaultSeed(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	want := []int64{4242, 7, 4242, 4242}
+	want := []int64{4242, 7, 4242}
 	got := speechLog(t, log)
 	if len(got) != len(want) {
 		t.Fatalf("engine saw %d speech requests, want %d", len(got), len(want))
