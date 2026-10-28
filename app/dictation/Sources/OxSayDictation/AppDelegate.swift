@@ -266,7 +266,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // While a dictation runs the pill belongs to it: the overlay asks the
         // controller's state before letting any hide take it down.
         overlay.dictationState = { [weak self] in self?.controller?.state ?? .idle }
-        streamer.onText = { [overlay] text in overlay.setLiveText(text) }
+        streamer.onText = { [weak self] text in
+            guard let self, PillOwnership.acceptsLiveText(dictation: self.controller.state) else { return }
+            self.overlay.setLiveText(text)
+        }
         // Every way a recording ends (release, tap, esc, error, length cap)
         // changes this state, so one forward covers the media resume.
         controller.onState = { [weak self] state in self?.soundWhileDictating.dictationStateChanged(state); self?.show(state) }
@@ -1113,7 +1116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.playbackDone = onFinish
                 do {
                     try self.player.play(wav: wav)
-                    if showPill { self.overlay.showPlaying() }
+                    if showPill && PillOwnership.mayShowPlayback(dictation: self.controller.state) { self.overlay.showPlaying() }
                 } catch {
                     self.playbackDone = nil
                     self.notice(String(describing: error))

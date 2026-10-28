@@ -184,4 +184,31 @@ final class PillOwnershipTests: XCTestCase {
         XCTAssertTrue(body.contains("PillTiming.messageSeconds(characters: text.count)"))
         XCTAssertFalse(body.contains(".now() + 4"))
     }
+
+    /// A streaming reply that lands once the dictation is over, or while no dictation owns the pill, is dropped.
+    /// Mutation: PillOwnership.acceptsLiveText, return `true` -> RED.
+    func testLiveTextIsAcceptedOnlyWhileADictationRuns() {
+        XCTAssertTrue(PillOwnership.acceptsLiveText(dictation: .recording))
+        XCTAssertTrue(PillOwnership.acceptsLiveText(dictation: .transcribing))
+        XCTAssertFalse(PillOwnership.acceptsLiveText(dictation: .idle))
+    }
+
+    /// Mutation: PillOwnership.mayShowPlayback, return `true` -> RED.
+    func testPlaybackLooksOnlyTakeTheIdlePill() {
+        XCTAssertTrue(PillOwnership.mayShowPlayback(dictation: .idle))
+        XCTAssertFalse(PillOwnership.mayShowPlayback(dictation: .recording))
+        XCTAssertFalse(PillOwnership.mayShowPlayback(dictation: .transcribing))
+    }
+
+    /// The callers decide through those two functions. Mutation: AppDelegate, the streamer's `onText` closure without
+    /// the `PillOwnership.acceptsLiveText` guard -> RED; the studio `play` closure's `if showPill && PillOwnership.mayShowPlayback(...)`
+    /// back to `if showPill` -> RED.
+    func testTheLiveTextAndTheStudioPlaybackPillAreGated() {
+        let source = Self.appDelegateSource
+        XCTAssertFalse(source.isEmpty)
+        XCTAssertTrue(source.contains("streamer.onText = { [weak self] text in\n            guard let self, PillOwnership.acceptsLiveText(dictation: self.controller.state) else { return }\n            self.overlay.setLiveText(text)"))
+        XCTAssertFalse(source.contains("overlay.setLiveText(text) }"), "an ungated live-text hand-over is back")
+        XCTAssertTrue(source.contains("if showPill && PillOwnership.mayShowPlayback(dictation: self.controller.state) { self.overlay.showPlaying() }"))
+        XCTAssertEqual(source.components(separatedBy: "self.overlay.showPlaying()").count - 1, 2, "speak (gated by PillOwnership.shouldFinish) and studio")
+    }
 }
