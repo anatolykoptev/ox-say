@@ -1491,9 +1491,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// again for an app that is already listed (it may stay silent), and a
     /// click that shows nothing is worse than two windows; the pane is where the
     /// switch is. A reset that hangs is terminated after
-    /// `AccessibilityRepairRun.timeoutSeconds` and reported as a failure. The reset is scoped to this app's bundle id and the one
-    /// service, and offered only while the entry does not work — nothing
-    /// else's TCC state is touched.
+    /// `AccessibilityRepairRun.timeoutSeconds` and reported as a failure. The
+    /// reset is scoped to this app's bundle id and the one service, and
+    /// offered only while the entry does not work — nothing else's TCC state
+    /// is touched.
     @objc private func allowPasting() {
         let failure = "Could not refresh the Accessibility permission: remove OxSayDictation with − in System Settings → Privacy & Security → Accessibility, then add it again."
         // The reset runs off the main thread (a stuck tccd must not hang the
@@ -1504,13 +1505,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let reset = Process()
             reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
             reset.arguments = arguments
+            let ended = ProcessEnded()
             reset.terminationHandler = { process in
+                ended.mark()
                 let status = process.terminationStatus
                 DispatchQueue.main.async { onExit(status) }
             }
             try reset.run()
-            // terminate() on a process that already ended raises.
-            return { if reset.isRunning { reset.terminate() } }
+            let pid = reset.processIdentifier
+            // Not `reset.terminate()`: it raises on a process that exited between an `isRunning` check on this (main)
+            // thread and the call, while the termination handler runs on another. A signal is sent only while the
+            // handler has not run, and `kill` on a gone pid just fails.
+            return { ended.signalIfRunning(pid, SIGTERM) }
         }, completion: { [weak self] ok in
             guard let self else { return }
             self.allowPastingItem.isEnabled = true
@@ -1528,6 +1534,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             allowPastingItem.isEnabled = true
             notice(failure)
         }
+    }
+}
+
+/// Whether a child process's termination handler has run, readable from another thread.
+private final class ProcessEnded {
+    private let lock = NSLock()
+    private var ended = false
+    func mark() { lock.withLock { ended = true } }
+    /// `kill(pid, signal)` unless the process is known to have ended; the lock is held across the call, so the handler
+    /// cannot mark the exit between the check and the signal.
+    func signalIfRunning(_ pid: pid_t, _ signal: Int32) {
+        lock.withLock { if !ended { _ = kill(pid, signal) } }
     }
 }
 
