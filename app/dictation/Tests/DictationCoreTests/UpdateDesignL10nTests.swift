@@ -17,9 +17,9 @@ final class UpdateDesignL10nTests: XCTestCase {
             text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"]))
         XCTAssertEqual(UpdateDialogs.busy(text: ru), UpdateDialog(title: "Обновление уже устанавливается.",
             text: "Дождитесь окончания: ox-say перезапустится сам.", buttons: ["OK"]))
-        XCTAssertEqual(UpdateDialogs.repair(target: "0.1.21", text: ru), UpdateDialog(title: "Починить ox-say?",
+        XCTAssertEqual(UpdateDialogs.repair(target: "0.1.21", text: ru), UpdateDialog(title: "Восстановить ox-say?",
             text: "Приложение и служба ox-say работают на разных версиях. Будет заново установлена v0.1.21, она уже есть на диске; пока ox-say перезапускается, диктовка приостановится.",
-            buttons: ["Починить", "Отмена"]))
+            buttons: ["Восстановить", "Отмена"]))
         XCTAssertEqual(UpdateDialogs.repair(target: "0.1.21", text: en).buttons, ["Repair", "Cancel"])
         XCTAssertEqual(UpdateDialogs.repair(target: "0.1.21", text: en).text,
                        "The app and the ox-say service disagree on the version. This reinstalls v0.1.21, the version already on disk; dictation pauses while ox-say restarts.")
@@ -27,7 +27,7 @@ final class UpdateDesignL10nTests: XCTestCase {
             text: "Downloads the studio voice model once, about 3 GB. Dictation pauses for a few seconds while ox-say restarts.",
             buttons: ["Install", "Cancel"]))
         XCTAssertEqual(UpdateDialogs.studioVoice(text: ru), UpdateDialog(title: "Установить студийный голос?",
-            text: "Модель студийного голоса скачивается один раз, около 3 ГБ. На несколько секунд, пока ox-say перезапускается, диктовка приостановится.",
+            text: "Модель студийного голоса скачивается один раз, около 3 ГБ. Пока ox-say перезапускается, диктовка на несколько секунд приостановится.",
             buttons: ["Установить", "Отмена"]))
     }
 
@@ -66,7 +66,7 @@ final class UpdateDesignL10nTests: XCTestCase {
         XCTAssertEqual(UpdateInstaller.installingPill(kind: .studioVoice, tag: "v0.1.22", text: ru), "Устанавливаю студийный голос…")
         XCTAssertEqual(UpdateInstaller.installingPill(kind: .studioVoice, tag: "v0.1.22", text: en), "Installing the studio voice…")
         XCTAssertEqual(en(.updateRepairItem), "Repair ox-say…")
-        XCTAssertEqual(ru(.updateRepairItem), "Починить ox-say…")
+        XCTAssertEqual(ru(.updateRepairItem), "Восстановить ox-say…")
         XCTAssertEqual(en(.updateFinishingPill), "Finishing the update…")
         XCTAssertEqual(ru(.updateFinishingPill), "Завершаю обновление…")
         XCTAssertEqual(StudioMenu.installTitle(text: ru), "Установить студийный голос (около 3 ГБ)…")
@@ -99,26 +99,45 @@ final class UpdateDesignL10nTests: XCTestCase {
                        "В этом варианте могут быть посторонние звуки. Послушайте внимательно или возьмите следующий.")
         XCTAssertEqual(DesignForm.savedNotice(name: "anna", shortened: false, text: ru), "Голос «anna» сохранён")
         XCTAssertEqual(DesignForm.savedNotice(name: "anna", shortened: true, text: ru),
-                       "Голос «anna» сохранён. Запись оказалась длиннее, чем голос может хранить, поэтому её сократили.")
+                       "Голос «anna» сохранён. Запись оказалась длиннее, чем допускает голос, поэтому её сократили.")
         XCTAssertEqual(DesignForm.savedNotice(name: "anna", shortened: true, text: en),
                        "Voice “anna” saved. The recording was longer than a voice can keep, so it was shortened.")
         XCTAssertEqual(DesignForm.descriptionPlaceholder(text: ru),
-                       "Тёплый женский голос диктора лет тридцати, носитель русского языка, живой и дружелюбный")
+                       "Тёплый женский голос, диктор лет тридцати, родной язык — русский, живая и дружелюбная манера")
     }
 
-    /// Keys only the AppKit glue reads (form labels, buttons, alert titles): both texts exist, differ, and keep their placeholders.
-    func testEveryDialogKeyHasARealRussianText() {
+    /// Keys whose ru text is the en text on purpose: a brand, a bare placeholder, a glyph, the word OK as macOS Russian shows it.
+    private static let identicalByDesign: [String: String] = [
+        "menu.app": "the product name",
+        "window.title": "the product name",
+        "menu.meeting.speakers_item": "just the speaker's name, a bare %@",
+        "speakers.not_merged": "an em dash, no words",
+        "common.ok": "OK is the button's name in Russian macOS too",
+    ]
+
+    /// The format specifiers of a string, sorted: `%@`, `%1$@`, `%d`, `%%` ... ru must carry exactly the en ones.
+    private func specifiers(_ text: String) -> [String] {
+        let re = try! NSRegularExpression(pattern: #"%(?:\d+\$)?[-+ 0#]*\d*(?:\.\d+)?(?:l|ll|h)?[@dDiuUxXfFeEgGcCsSp%]"#)
+        let all = NSRange(text.startIndex..., in: text)
+        return re.matches(in: text, range: all).map { String(text[Range($0.range, in: text)!]) }.sorted()
+    }
+
+    /// EVERY key, not a hand-picked prefix: both files have it, ru keeps en's placeholders exactly (a dropped or swapped
+    /// `%2$@` is caught), and ru is Russian text unless the key is listed above. Mutation: ru `update.failed.log_pointer`
+    /// without `%2$@` -> RED here.
+    func testEveryKeyHasARealRussianTextWithTheSamePlaceholders() {
         let enT = ShippedStrings.table("en"), ruT = ShippedStrings.table("ru")
-        let mine = L10nKey.allCases.filter { $0.rawValue.hasPrefix("update.") && !$0.rawValue.hasPrefix("update.failed.")
-            || $0.rawValue.hasPrefix("design.") || $0.rawValue.hasPrefix("studio.") }
-        XCTAssertGreaterThan(mine.count, 40)
-        for key in mine {
-            let e = enT[key.rawValue] ?? "", r = ruT[key.rawValue] ?? ""
-            XCTAssertFalse(e.isEmpty || r.isEmpty, key.rawValue)
-            XCTAssertNotEqual(e, r, "\(key.rawValue) is not translated")
-            XCTAssertNotNil(r.range(of: "[А-Яа-я]", options: .regularExpression), "\(key.rawValue) has no Russian")
-            XCTAssertEqual(e.components(separatedBy: "%@").count, r.components(separatedBy: "%@").count, "\(key.rawValue): %@ count")
-            XCTAssertEqual(e.contains("%1$@"), r.contains("%1$@"), key.rawValue)
+        XCTAssertGreaterThan(L10nKey.allCases.count, 300)
+        for key in L10nKey.allCases {
+            let id = key.rawValue
+            guard let e = enT[id], let r = ruT[id], !e.isEmpty, !r.isEmpty else { XCTFail("\(id) is missing or empty"); continue }
+            XCTAssertEqual(specifiers(r), specifiers(e), "\(id): ru placeholders differ from en")
+            if Self.identicalByDesign[id] != nil { continue }
+            XCTAssertNotEqual(e, r, "\(id) is not translated")
+            XCTAssertNotNil(r.range(of: "[А-Яа-яЁё]", options: .regularExpression), "\(id) has no Russian")
+        }
+        for id in Self.identicalByDesign.keys {
+            XCTAssertEqual(enT[id], ruT[id], "\(id) is listed as identical by design but differs; drop it from the list")
         }
     }
 

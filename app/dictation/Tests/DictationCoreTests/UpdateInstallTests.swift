@@ -547,7 +547,7 @@ final class UpdateFailureL10nTests: XCTestCase {
          "После установки служба ox-say не обновилась до v0.1.22: /status сообщает v0.1.21."),
         (.daemonNotOnVersion(expected: "v0.1.22", found: nil),
          "The ox-say service did not reach v0.1.22 after the install; /status reports nothing.",
-         "После установки служба ox-say не обновилась до v0.1.22: /status не ответил."),
+         "После установки служба ox-say не обновилась до v0.1.22: /status не сообщил версию."),
     ]
 
     /// Mutation: UpdateInstall.swift Failure.message, `.notAScript` back to its English literal -> RED on the Russian row.
