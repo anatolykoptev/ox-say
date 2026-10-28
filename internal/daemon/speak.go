@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -126,12 +127,12 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 	}
 	resp, err := d.ec.Speech(ctx, base, raw)
 	if err != nil {
-		return nil, fmt.Errorf("engine speech: %w", err)
+		return nil, d.transportError(ctx, err)
 	}
 	defer resp.Body.Close()
 	wav, err := readAllCap(resp.Body, maxEngineWAVBytes)
 	if err != nil {
-		return nil, fmt.Errorf("engine speech: %w", err)
+		return nil, d.transportError(ctx, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		if isRunaway(wav) {
@@ -142,6 +143,19 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 			msg: fmt.Sprintf("engine speech: %s: %s", resp.Status, strings.TrimSpace(string(wav)))}
 	}
 	return wav, nil
+}
+
+// transportError classifies a failed engine call: the caller's own cancel or
+// deadline stays as it is (nobody is waiting for a status), anything else is
+// the engine failing to answer (502, #143.3).
+func (d *Daemon) transportError(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		// The caller's own cancel or deadline: its reason, not the transport
+		// error, which names the child's address.
+		return fmt.Errorf("engine speech: %w", ctx.Err())
+	}
+	d.log.Warn("engine speech: no usable answer", slog.Any("error", err))
+	return &engineTransportError{err: err}
 }
 
 // Speak synthesizes text to a file — the shared core of the `speak` MCP tool.
@@ -270,6 +284,11 @@ func formatExt(format string) string {
 // writeFile writes audio to path; without overwrite the file is created
 // exclusively (a second writer fails rather than clobbering).
 func writeFile(path string, data []byte, overwrite bool) error {
+	return writeFileMode(path, data, overwrite, 0o644)
+}
+
+// writeFileMode is writeFile with the permission bits of a new file.
+func writeFileMode(path string, data []byte, overwrite bool, mode os.FileMode) error {
 	flags := os.O_WRONLY | os.O_CREATE
 	if overwrite {
 		// Never follow a planted symlink onto an unrelated file.
@@ -280,7 +299,7 @@ func writeFile(path string, data []byte, overwrite bool) error {
 	} else {
 		flags |= os.O_EXCL
 	}
-	f, err := os.OpenFile(path, flags, 0o644)
+	f, err := os.OpenFile(path, flags, mode)
 	if err != nil {
 		if os.IsExist(err) {
 			return fmt.Errorf("%q exists; set overwrite to replace it", path)

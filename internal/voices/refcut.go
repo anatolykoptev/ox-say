@@ -3,6 +3,7 @@ package voices
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -220,6 +221,15 @@ func WordsPerSecond(text string, dur float64) float64 {
 	return float64(n) / dur
 }
 
+// ErrBadWAV marks a file that is not a readable PCM WAV (as opposed to one that
+// could not be opened or read just now): errors.Is(err, ErrBadWAV).
+var ErrBadWAV = errors.New("voices: not a readable WAV")
+
+type wavError struct{ msg string }
+
+func (e *wavError) Error() string        { return e.msg }
+func (e *wavError) Is(target error) bool { return target == ErrBadWAV }
+
 // WAVSeconds returns the duration of a PCM WAV file by its fmt/data chunks.
 func WAVSeconds(path string) (float64, error) {
 	f, err := os.Open(path)
@@ -233,20 +243,20 @@ func WAVSeconds(path string) (float64, error) {
 	}
 	hdr := make([]byte, wavHeaderMin)
 	if _, err := io.ReadFull(f, hdr); err != nil || string(hdr[:4]) != "RIFF" || string(hdr[8:12]) != "WAVE" {
-		return 0, fmt.Errorf("voices: %s is not a WAV file", path)
+		return 0, &wavError{fmt.Sprintf("voices: %s is not a WAV file", path)}
 	}
 	var bytesPerSec float64
 	for {
 		ch := make([]byte, chunkHeader)
 		if _, err := io.ReadFull(f, ch); err != nil {
-			return 0, fmt.Errorf("voices: %s has no data chunk", path)
+			return 0, &wavError{fmt.Sprintf("voices: %s has no data chunk", path)}
 		}
 		size := int64(binary.LittleEndian.Uint32(ch[4:]))
 		switch string(ch[:4]) {
 		case "fmt ":
 			body := make([]byte, size)
 			if _, err := io.ReadFull(f, body); err != nil || size < wavFmtMin {
-				return 0, fmt.Errorf("voices: %s has a bad fmt chunk", path)
+				return 0, &wavError{fmt.Sprintf("voices: %s has a bad fmt chunk", path)}
 			}
 			rate := float64(binary.LittleEndian.Uint32(body[4:]))
 			bytesPerSec = rate * float64(binary.LittleEndian.Uint16(body[2:])) * float64(binary.LittleEndian.Uint16(body[14:])) / 8
@@ -256,7 +266,7 @@ func WAVSeconds(path string) (float64, error) {
 				size = rest // streamed header or truncated file
 			}
 			if bytesPerSec <= 0 {
-				return 0, fmt.Errorf("voices: %s: data before fmt", path)
+				return 0, &wavError{fmt.Sprintf("voices: %s: data before fmt", path)}
 			}
 			return float64(size) / bytesPerSec, nil
 		default:

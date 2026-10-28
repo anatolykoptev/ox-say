@@ -105,7 +105,7 @@ func (d *Daemon) checkStoredVoxReference(name string) error {
 	}
 	secs, err := voices.WAVSeconds(d.Store.WAVPath(name))
 	if err != nil {
-		return fmt.Errorf("voice %s: cannot read its recording: %w", name, err)
+		return d.voiceReadError(name, err, false)
 	}
 	return checkVoxReference(secs)
 }

@@ -11,6 +11,7 @@
 //	OXSAY_FAKE_EXIT_MS        exit(1) after this many ms
 //	OXSAY_FAKE_EXIT_ONCE      with EXIT_MS: only self-exit once per FAKE_DIR
 //	OXSAY_FAKE_SPEECH_BLOCK   speech blocks until the request context ends
+//	OXSAY_FAKE_SPEECH_DROP=1  speech closes the connection without answering
 //	OXSAY_FAKE_IGNORE_SIGTERM SIGTERM is ignored; only SIGKILL ends the child
 //	OXSAY_FAKE_SPEECH_LOG     append-only file: one JSON line per speech body
 //	OXSAY_FAKE_SPEECH_RUNAWAY n | n+ | all: the n-th speech request (1-based,
@@ -32,6 +33,8 @@
 //	OXSAY_FAKE_VOX_SECS       seconds of silence the speech route answers
 //	                          (default 1; a long value stands in for a
 //	                          runaway take)
+//	OXSAY_FAKE_VOX_DROP=1     close the connection on a speech request
+//	                          without answering (a transport failure)
 //
 // OXSAY_FAKE_TONE=1 makes both fakes answer a quiet sine instead of silence
 // or a click — audio a loudness meter can measure — at their engine's native
@@ -725,6 +728,12 @@ func runFakeChild() int {
 			}
 			return
 		}
+		if os.Getenv("OXSAY_FAKE_SPEECH_DROP") == "1" {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				_ = conn.Close()
+			}
+			return
+		}
 		if os.Getenv("OXSAY_FAKE_SPEECH_BLOCK") == "1" {
 			if dir != "" {
 				_ = os.WriteFile(filepath.Join(dir, "speech-started"), nil, 0o644)
@@ -965,6 +974,12 @@ func runFakeVox(args []string) int {
 				_ = f.Close()
 			}
 			mu.Unlock()
+		}
+		if os.Getenv("OXSAY_FAKE_VOX_DROP") == "1" {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				_ = conn.Close()
+			}
+			return
 		}
 		secs := 1.0
 		if s, err := strconv.ParseFloat(os.Getenv("OXSAY_FAKE_VOX_SECS"), 64); err == nil {

@@ -143,10 +143,17 @@ type Pending struct {
 	notice  string
 	tmp     string
 	meta    Meta
+	// fresh: Commit keeps nothing of a voice it replaces.
+	fresh bool
 }
 
 // SetMeta sets the metadata Commit will persist with the voice.
 func (p *Pending) SetMeta(m Meta) { p.meta = m }
+
+// Fresh makes Commit persist exactly the metadata of SetMeta, inheriting
+// nothing (no engine, no style) from a voice of the same name it replaces: the
+// new voice is a different voice, not a re-add of the old one.
+func (p *Pending) Fresh() { p.fresh = true }
 
 // Seconds is the duration of the normalised clip waiting to be committed.
 func (p *Pending) Seconds() (float64, error) { return WAVSeconds(p.tmp) }
@@ -261,6 +268,9 @@ func (p *Pending) Commit() (*Voice, error) {
 // preference with Update.
 func (p *Pending) inheritedMeta() Meta {
 	m := p.meta
+	if p.fresh {
+		return m
+	}
 	prev, err := p.s.Get(p.name)
 	if err != nil {
 		return m

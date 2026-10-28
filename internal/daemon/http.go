@@ -124,6 +124,7 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		d.handleSpeechBuffered(w, r, bufferedSpeech{body: body, model: model, format: format, warning: warning, lufs: lufs})
 		return
 	}
+	w.Header().Set("X-Ox-Say-Model", model)
 	if warning != "" {
 		w.Header().Set("X-Ox-Say-Warning", warning)
 	}
@@ -150,7 +151,7 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 		resp, err = d.ec.Speech(r.Context(), base, raw)
 		if err != nil {
-			writeErr(w, http.StatusBadGateway, fmt.Sprintf("engine speech: %v", err))
+			writeErr(w, http.StatusBadGateway, d.transportError(r.Context(), err).Error())
 			return
 		}
 		if resp.StatusCode/100 == 2 {
@@ -186,7 +187,7 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	case "mp3", "opus":
 		wav, err := readAllCap(resp.Body, 256<<20)
 		if err != nil {
-			writeErr(w, http.StatusBadGateway, fmt.Sprintf("engine speech: %v", err))
+			writeErr(w, http.StatusBadGateway, d.transportError(r.Context(), err).Error())
 			return
 		}
 		out, err := transcode(r.Context(), wav, format)
@@ -361,8 +362,12 @@ type updateVoiceRequest struct {
 
 func (d *Daemon) handleUpdateVoice(w http.ResponseWriter, r *http.Request) {
 	var req updateVoiceRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+	// Strict: a field this route does not apply (designed_from, a typo) is a
+	// 400, not a 200 that changed nothing (#141.3).
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: only engine and style can be changed")
 		return
 	}
 	v, err := d.UpdateVoice(r.PathValue("name"), req.Engine, req.Style)

@@ -209,3 +209,22 @@ func TestSynthStatus(t *testing.T) {
 		}
 	}
 }
+
+// PATCH refuses a field it does not apply instead of answering 200 with
+// nothing changed (#141.3): designed_from is deliberately not updatable.
+// Mutation: internal/daemon/http.go handleUpdateVoice — delete the
+// DisallowUnknownFields call -> RED (200, nothing applied).
+func TestPatchVoiceRefusesUnknownField(t *testing.T) {
+	d, url, _ := metaServer(t)
+	seedStoredVoice(t, d, "nar", 8, "hello")
+	good := readMeta(t, d, "nar")
+	for _, body := range []string{`{"designed_from":"x"}`, `{"style":"calm","seed":1}`, `{"enginee":"x"}`} {
+		code, resp := doJSON(t, http.MethodPatch, url+"/v1/audio/voices/nar", body)
+		if code != http.StatusBadRequest {
+			t.Errorf("PATCH %s = %d %s, want 400", body, code, resp)
+		}
+	}
+	if got := readMeta(t, d, "nar"); got != good {
+		t.Fatalf("a refused PATCH changed the file:\n%s\n%s", good, got)
+	}
+}

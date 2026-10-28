@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/voices"
@@ -73,6 +75,23 @@ type engineError struct {
 
 func (e *engineError) Error() string { return e.msg }
 
+// engineTransportError is an engine child that was started but did not answer
+// (a dropped connection, a body past the cap): the gateway failed, not the
+// caller, so it maps to 502 like the qwen passthrough does. The detail names
+// the child's address and goes to the log; the message does not.
+type engineTransportError struct{ err error }
+
+func (e *engineTransportError) Error() string {
+	return "engine speech: the speech engine did not answer; try again (details are in the ox-say log)"
+}
+func (e *engineTransportError) Unwrap() error { return e.err }
+
+// transientError is a failure that may pass on its own (a file that could not
+// be read just now): HTTP 503, the caller may retry.
+type transientError struct{ msg string }
+
+func (e *transientError) Error() string { return e.msg }
+
 // errEngineStart marks a child that failed to become ready (HTTP 503).
 var errEngineStart = errors.New("engine failed to start")
 
@@ -84,8 +103,12 @@ func synthStatus(err error) int {
 	var ee *engineError
 	var ce *conflictError
 	var rwe *runawayError
+	var te *engineTransportError
+	var tre *transientError
 	switch {
-	case errors.As(err, &rwe):
+	case errors.As(err, &tre):
+		return http.StatusServiceUnavailable
+	case errors.As(err, &rwe), errors.As(err, &te):
 		return http.StatusBadGateway
 	case errors.As(err, &ce):
 		return http.StatusConflict
@@ -127,10 +150,16 @@ func (d *Daemon) prepareSpeech(body map[string]any) (model, warning string, err 
 	d.applyVoiceDefault(body)
 	d.applySeedDefault(body)
 	m, _ := body[fieldModel].(string)
-	switch name := strings.TrimSpace(m); name {
+	name := strings.TrimSpace(m)
+	switch low := strings.ToLower(name); low {
 	case config.TTSModelVoxCPM2, config.TTSModelQwen:
-		model = name
+		model = low
 	default:
+		if strings.HasPrefix(low, "vox") {
+			// "voxcpm-2", "voxcpm": a near miss must not look like a success on
+			// the wrong engine (#143.1).
+			warning = fmt.Sprintf("model %q is not a model name here, so the default engine spoke; the studio voice model is %q", clipRunes(name, maxEchoedModelRunes), config.TTSModelVoxCPM2)
+		}
 		model = d.Cfg.TTSModel
 		if vname, _ := body[fieldVoice].(string); vname != "" {
 			if v, gerr := d.Store.Get(vname); gerr == nil && v.Engine != "" {
@@ -139,7 +168,10 @@ func (d *Daemon) prepareSpeech(body map[string]any) (model, warning string, err 
 		}
 		if model == config.TTSModelVoxCPM2 {
 			if why := d.voxUnavailable(); why != "" {
-				model, warning = config.TTSModelQwen, "spoken by qwen3-tts: "+why
+				vname, _ := body[fieldVoice].(string)
+				d.log.Warn("voice preference overridden: spoken by qwen3-tts", slog.String("voice", vname), slog.String("reason", why))
+				model = config.TTSModelQwen
+				warning = strings.TrimPrefix(warning+"; spoken by qwen3-tts: "+why, "; ")
 				// The caller never asked for voxcpm2 (the voice or the daemon
 				// default did), so its quality knobs must not turn a call that
 				// can be spoken into a 400 on this host: drop them and say so.
@@ -157,6 +189,24 @@ func (d *Daemon) prepareSpeech(body map[string]any) (model, warning string, err 
 		}
 	}
 	return model, warning, nil
+}
+
+// maxEchoedModelRunes bounds a caller's model name echoed back in a header.
+const maxEchoedModelRunes = 64
+
+// clipRunes cuts s to n runes, marking the cut, and drops control characters:
+// the result goes into an HTTP header.
+func clipRunes(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }
 
 // dropVoxOnlyFields removes the voxcpm2 knobs from body and returns the names

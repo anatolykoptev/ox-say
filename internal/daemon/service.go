@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -382,6 +383,20 @@ func (d *Daemon) AddVoice(ctx context.Context, name, audioPath, refText string) 
 // already cuts every clip to voices.MaxRefSeconds, and the check below refuses
 // it should that cap ever outgrow voxMaxRefSeconds.
 func (d *Daemon) AddVoiceMeta(ctx context.Context, name, audioPath, refText string, m voices.Meta) (v *voices.Voice, registered bool, err error) {
+	return d.addVoice(ctx, name, audioPath, refText, m, addOpts{})
+}
+
+// addOpts are the extra rules of a save that is not a plain add.
+type addOpts struct {
+	// createOnly refuses (409) when the name is taken, decided under voiceMu in
+	// the same step as the write: an early check outside the lock cannot see a
+	// save that commits during this one's Prepare.
+	createOnly bool
+	// fresh keeps nothing of a voice this one replaces (voices.Pending.Fresh).
+	fresh bool
+}
+
+func (d *Daemon) addVoice(ctx context.Context, name, audioPath, refText string, m voices.Meta, o addOpts) (v *voices.Voice, registered bool, err error) {
 	if err := validateMeta(m); err != nil {
 		return nil, false, err
 	}
@@ -408,8 +423,18 @@ func (d *Daemon) AddVoiceMeta(ctx context.Context, name, audioPath, refText stri
 		}
 	}
 	pending.SetMeta(m)
+	if o.fresh {
+		pending.Fresh()
+	}
 	d.voiceMu.Lock()
 	defer d.voiceMu.Unlock()
+	if o.createOnly {
+		if _, gerr := d.Store.Get(name); gerr == nil {
+			return nil, false, errVoiceExists(name)
+		} else if !errors.Is(gerr, voices.ErrNotFound) {
+			return nil, false, d.voiceReadError(name, gerr, true)
+		}
+	}
 	v, err = pending.Commit()
 	if err != nil {
 		return nil, false, err

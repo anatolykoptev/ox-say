@@ -640,3 +640,21 @@ func TestPreferredVoxKnobsDroppedOnFallback(t *testing.T) {
 		t.Fatalf("explicit qwen3-tts with a knob: %v, want the refusal", err)
 	}
 }
+
+// The child's start budget is pinned on the engine.Config the supervisor is
+// built from: a zero would silently fall back to the supervisor's 180 s
+// default, and a wedged start would hold every voxcpm2 request that long
+// (#139.2).
+// Mutation: voxcpm2.go newVoxSupervisor, `StartupTimeout: voxStartupTimeout`
+// -> `StartupTimeout: 0` -> RED.
+func TestVoxCPM2SupervisorStartupTimeoutIsPinned(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{Home: dir, VoxCPM2Bin: os.Args[0], VoxCPM2Port: testutil.FreePort(t), EngineLogDir: dir}
+	var built engine.Config
+	if _, err := newVoxSupervisor(cfg, testLogger(t), func(c *engine.Config) { built = *c }); err != nil {
+		t.Fatal(err)
+	}
+	if built.StartupTimeout != 30*time.Second {
+		t.Fatalf("StartupTimeout = %s, want 30s", built.StartupTimeout)
+	}
+}
