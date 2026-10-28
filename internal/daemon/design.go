@@ -312,7 +312,7 @@ func scrubRoot(s, root string) string {
 		rest := s[end:]
 		if strings.HasPrefix(rest, "/") {
 			j := 1
-			for j < len(rest) && !pathStopsAt(rest, j) {
+			for j < len(rest) && !tailStopsAt(rest, j) {
 				_, size := utf8.DecodeRuneInString(rest[j:])
 				j += size
 			}
@@ -355,6 +355,33 @@ func pathStopsAt(s string, i int) bool {
 		return n != '/' && !isPathSegmentRune(n)
 	}
 	return !isPathSegmentRune(r)
+}
+
+// tailStopsAt reports whether the file-name tail after a root stops before
+// rest[i]. A file name may hold nearly any character (# & ! $ { } \\ , ;), so the
+// tail ends only where a message ends a path: white space, a quote, "(" ")" ":",
+// a closing bracket or backtick or a tag edge, and sentence punctuation (. , ; !
+// ?) that is followed by one of those or by the end of the text.
+func tailStopsAt(rest string, i int) bool {
+	if i >= len(rest) {
+		return true
+	}
+	r, size := utf8.DecodeRuneInString(rest[i:])
+	if tailDelimiter(r) {
+		return true
+	}
+	if strings.ContainsRune(".,;!?", r) {
+		if i+size >= len(rest) {
+			return true
+		}
+		n, _ := utf8.DecodeRuneInString(rest[i+size:])
+		return tailDelimiter(n)
+	}
+	return false
+}
+
+func tailDelimiter(r rune) bool {
+	return unicode.IsSpace(r) || strings.ContainsRune("\"'():]`><", r)
 }
 
 func firstRune(s string) rune {

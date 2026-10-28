@@ -327,13 +327,17 @@ func (s *Store) Update(name string, fn func(*Voice)) (*Voice, error) {
 	return v, nil
 }
 
-// Remove deletes a voice's wav+json. Unknown names yield ErrNotFound.
+// Remove deletes a voice's json+wav. Unknown names yield ErrNotFound. The json
+// goes FIRST: List and Get find a voice by its json, so a crash between the two
+// deletions leaves an orphan recording nobody lists, not a listed voice whose
+// recording is gone; a speak that races the removal sees "no such voice", never
+// "damaged, add it again".
 func (s *Store) Remove(name string) error {
 	if err := ValidateName(name); err != nil {
 		return err
 	}
 	var missing bool
-	for _, p := range []string{s.WAVPath(name), s.metaPath(name)} {
+	for _, p := range []string{s.metaPath(name), s.WAVPath(name)} {
 		switch err := os.Remove(p); {
 		case err == nil:
 		case errors.Is(err, fs.ErrNotExist):

@@ -333,3 +333,37 @@ func TestUpdateFailedRenameKeepsVoiceAndLeavesNoTemp(t *testing.T) {
 		t.Fatalf("temp files left behind: %v", left)
 	}
 }
+
+// Remove drops the json first: when the removal stops after the first deletion
+// (here the recording cannot be deleted) the voice is already gone from List and
+// Get answers ErrNotFound, never a listed voice with no recording.
+// Mutation: store.go Remove, the old order (WAVPath before metaPath) -> the voice
+// is still listed -> RED.
+func TestRemoveInterruptedLeavesNoListedVoice(t *testing.T) {
+	s, _ := newStore(t)
+	seedVoice(t, s, "half", 3, "hello there")
+	wav := s.WAVPath("half")
+	if err := os.Remove(wav); err != nil {
+		t.Fatal(err)
+	}
+	// A non-empty directory in place of the recording: os.Remove fails on it,
+	// which stops Remove after its first deletion.
+	if err := os.MkdirAll(filepath.Join(wav, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove("half"); err == nil {
+		t.Fatal("Remove succeeded although the recording could not be deleted")
+	}
+	if _, err := s.Get("half"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get after an interrupted Remove = %v, want ErrNotFound", err)
+	}
+	list, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range list {
+		if v.Name == "half" {
+			t.Errorf("an interrupted Remove left %q in the list", v.Name)
+		}
+	}
+}
