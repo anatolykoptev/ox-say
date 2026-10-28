@@ -59,6 +59,28 @@ final class MeetingSpeakersTests: XCTestCase {
         XCTAssertNil(SpeakerDraft(from: offer).edits(against: offer).split)
     }
 
+    /// The user merged "Speaker 2" into Anna, then picks a target the daemon would refuse. The merge they already have
+    /// must stay: the payload sent has no unmerge (#260 N1).
+    /// Mutation: SpeakerDraft.standingMerges, delete the restore of the held target after a rejected pick -> RED.
+    func testARejectedNewPickKeepsTheHeldMerge() {
+        let held = SpeakersState(mode: "auto", split: false, speakers: [
+            SpeakerInfo(id: "them:1", name: "Anna", label: "Anna", speechSeconds: 120, sample: "hello"),
+            SpeakerInfo(id: "them:2", label: "Anna", speechSeconds: 30, sample: "yes", mergedTo: "them:1"),
+            SpeakerInfo(id: "them:3", label: "Anna", speechSeconds: 12, sample: "agreed", mergedTo: "them:1"),
+        ])
+        var d = SpeakerDraft(from: held)
+        d.mergeInto["them:2"] = "them:3"   // them:3 is itself folded away: a chain
+        var e = d.edits(against: held)
+        XCTAssertTrue(e.unmerge.isEmpty, "a refused pick is not a request to split the speakers")
+        XCTAssertTrue(e.merge.isEmpty)
+        d.mergeInto["them:2"] = "them:2"    // a loop
+        e = d.edits(against: held)
+        XCTAssertTrue(e.unmerge.isEmpty)
+        XCTAssertTrue(e.merge.isEmpty)
+        d.mergeInto["them:2"] = nil         // a deliberate "—" still splits
+        XCTAssertEqual(d.edits(against: held).unmerge, ["them:2"])
+    }
+
     /// A voice can be folded into a voice that is still standing, never into itself, a merged one,
     /// or one that others were folded into (no chains).
     /// Mutation: SpeakerDraft.mergeTargets, delete the `guard !mergeInto.values.contains(id)` line -> RED.

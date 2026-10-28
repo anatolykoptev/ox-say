@@ -46,6 +46,9 @@ public enum MeetingRowModel {
         case .done: return .ready
         case .failed: return .failed
         case .transcribed: return .transcriptOnly
+        // A status this app does not know is work it cannot see the end of: the row says "waiting", keeps its
+        // spinner and the window keeps checking, and settled stays false so nothing is offered on it.
+        case .unknown: return .waiting
         }
     }
 

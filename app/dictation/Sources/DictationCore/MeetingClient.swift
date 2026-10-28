@@ -27,6 +27,7 @@ extension StudioClient {
     /// GET /v1/meetings/{id}, with the notes and transcript texts when asked.
     public func meeting(id: String, withTexts: Bool = false) async throws -> MeetingInfo {
         var request = get("v1/meetings/\(id)")
+        if withTexts { request.timeoutInterval = Self.meetingTextsTimeout }
         if withTexts, let url = request.url, var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             parts.queryItems = [URLQueryItem(name: "include", value: "notes,transcript")]
             request.url = parts.url

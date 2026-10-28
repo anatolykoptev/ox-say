@@ -3,7 +3,24 @@ import Foundation
 /// A meeting as the daemon reports it (`/v1/meetings`). Decoded by hand so an
 /// added or missing field never fails the whole answer.
 public struct MeetingInfo: Equatable {
-    public enum Status: String { case recording, queued, transcribing, transcribed, summarizing, done, failed }
+    /// `unknown` carries a status a newer daemon added: the meeting stays in the list and nothing acts on it.
+    public enum Status: Equatable {
+        case recording, queued, transcribing, transcribed, summarizing, done, failed
+        case unknown(String)
+
+        public init(wire raw: String) {
+            switch raw {
+            case "recording": self = .recording
+            case "queued": self = .queued
+            case "transcribing": self = .transcribing
+            case "transcribed": self = .transcribed
+            case "summarizing": self = .summarizing
+            case "done": self = .done
+            case "failed": self = .failed
+            default: self = .unknown(raw)
+            }
+        }
+    }
 
     public var id: String
     /// The directory the app writes me.pcm and them.pcm into; set on create.
@@ -69,14 +86,15 @@ public struct MeetingInfo: Equatable {
 
     static func decode(_ obj: [String: Any]) -> MeetingInfo? {
         guard let id = obj["id"] as? String, !id.isEmpty,
-              let raw = obj["status"] as? String, let status = Status(rawValue: raw) else { return nil }
+              let raw = obj["status"] as? String else { return nil }
+        let status = Status(wire: raw)
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let plain = ISO8601DateFormatter()
         let started = (obj["started"] as? String).flatMap { iso.date(from: $0) ?? plain.date(from: $0) }
         return MeetingInfo(id: id, dir: obj["dir"] as? String, title: obj["title"] as? String ?? "", started: started,
                            status: status, notesPending: nonEmpty(obj["notes_pending"] as? String),
-                           warnings: obj["warnings"] as? [String] ?? [], error: nonEmpty(obj["error"] as? String),
+                           warnings: (obj["warnings"] as? [Any])?.compactMap { $0 as? String } ?? [], error: nonEmpty(obj["error"] as? String),
                            notesMD: nonEmpty(obj["notes_md"] as? String), transcriptMD: nonEmpty(obj["transcript_md"] as? String),
                            voiceMode: nonEmpty(obj["voice_mode"] as? String), diarReason: nonEmpty(obj["diar_reason"] as? String),
                            audioDeleted: obj["audio_deleted"] as? Bool ?? false,

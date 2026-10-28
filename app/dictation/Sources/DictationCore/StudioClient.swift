@@ -27,6 +27,10 @@ public struct StudioClient {
     public static let quickTimeout: TimeInterval = 10
     /// Starting a voiceover only checks the script and launches the job.
     public static let startTimeout: TimeInterval = 30
+    /// A meeting read with its notes and transcript: the daemon reads them from disk, a long call is megabytes, and it may
+    /// be busy transcribing another one. The same bound as starting a job, the one middle tier here; the 660 s of a
+    /// voice design is generation, not a read.
+    public static let meetingTextsTimeout: TimeInterval = startTimeout
     public static let designTimeout: TimeInterval = 660
 
     public var baseURL: URL

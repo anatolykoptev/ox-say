@@ -158,6 +158,9 @@ public enum Reconcile {
             return exported.contains(info.id) ? .skip : .track
         case .failed:
             return .skip
+        case .unknown:
+            // A newer daemon's state: touch nothing the app cannot classify; a later launch sees it settled.
+            return .skip
         }
     }
 }

@@ -15,11 +15,33 @@ final class MeetingModelsTests: XCTestCase {
         XCTAssertTrue(m.settled)
     }
 
-    func testAnUnknownStatusOrMissingIDIsNotAMeeting() {
-        XCTAssertNil(MeetingInfo.decode(Data(#"{"id":"x","status":"weird"}"#.utf8)))
+    func testAMissingIDIsNotAMeeting() {
         XCTAssertNil(MeetingInfo.decode(Data(#"{"status":"done"}"#.utf8)))
+        XCTAssertNil(MeetingInfo.decode(Data(#"{"id":"x"}"#.utf8)), "no status at all is still not a meeting")
         XCTAssertNil(MeetingInfo.decode(Data("[]".utf8)))
-        XCTAssertEqual(MeetingInfo.decodeList(Data(#"{"meetings":[{"id":"a","status":"done"},{"id":"b","status":"nope"}]}"#.utf8))?.count, 1)
+    }
+
+    /// A newer daemon may add a status (#231). The meeting must still be a meeting: shown, never acted on.
+    /// Mutation: MeetingInfo.decode(_:), answer `return nil` for a status the enum does not know -> RED.
+    func testAnUnknownStatusIsKeptNotDropped() throws {
+        let m = try XCTUnwrap(MeetingInfo.decode(Data(#"{"id":"x","status":"future_state"}"#.utf8)))
+        XCTAssertEqual(m.status, .unknown("future_state"))
+        XCTAssertFalse(m.settled, "the app cannot tell the daemon is done: no delete, no retry")
+        XCTAssertEqual(MeetingRowModel.status(of: m), .waiting, "shown as work in progress, with the existing words")
+        XCTAssertEqual(Reconcile.action(for: m, exported: [], notesAvailable: true, currentID: nil), .skip)
+        XCTAssertEqual(PlaybackGate.decide(audioDeleted: false, recordingRunning: false, status: m.status), .notReady)
+        XCTAssertNil(MeetingRowModel.failureSentence(of: m))
+        let list = try XCTUnwrap(MeetingInfo.decodeList(Data(#"{"meetings":[{"id":"a","status":"done"},{"id":"b","status":"nope"}]}"#.utf8)))
+        XCTAssertEqual(list.map(\.id), ["a", "b"], "the list keeps the meeting it cannot classify")
+    }
+
+    /// One element that is not a string must not cost the array (#231): `no_system_audio` is what tells the user why
+    /// the other side is silent.
+    /// Mutation: MeetingInfo.decode(_:), `warnings` back to `as? [String] ?? []` -> RED.
+    func testWarningsKeepTheStringsAroundAStrayElement() throws {
+        let m = try XCTUnwrap(MeetingInfo.decode(Data(#"{"id":"x","status":"done","warnings":[7,"no_system_audio",null,{"a":1}]}"#.utf8)))
+        XCTAssertEqual(m.warnings, ["no_system_audio"])
+        XCTAssertTrue(m.heardNoSystemAudio)
     }
 
     func testStatusCarriesTheNotesBlock() throws {
@@ -100,6 +122,28 @@ final class MeetingClientTests: XCTestCase {
         XCTAssertEqual(m.notesMD, "n")
         XCTAssertEqual(seen?.url?.query, "include=notes,transcript")
         XCTAssertEqual(seen?.url?.path, "/v1/meetings/a")
+    }
+
+    /// Create and finish already succeeded in the daemon when the answer comes back: an unknown status must not throw.
+    /// Mutation: MeetingInfo.decode(_:), `return nil` for an unknown status -> RED.
+    func testCreateAndFinishSurviveAnUnknownStatus() async throws {
+        let created = try await client(#"{"id":"20261023-143000-abcdef","dir":"/d","status":"future_state"}"#)
+            .createMeeting(title: "", source: "", me: "a", them: "b", echoRisk: false)
+        XCTAssertEqual(created.status, .unknown("future_state"))
+        let finished = try await client(#"{"id":"20261023-143000-abcdef","status":"future_state"}"#).finishMeeting(id: "20261023-143000-abcdef")
+        XCTAssertEqual(finished.status, .unknown("future_state"))
+    }
+
+    /// The texts of a long call are read from disk by a daemon that may be busy transcribing: more than the 10 s of a
+    /// status read (#231). Without texts the read stays quick.
+    /// Mutation: StudioClient.meeting(id:withTexts:), drop the `request.timeoutInterval = Self.meetingTextsTimeout` line -> RED.
+    func testReadingTheTextsHasALongerTimeout() async throws {
+        var withTexts: URLRequest?, plain: URLRequest?
+        _ = try await client(#"{"id":"a","status":"done"}"#) { withTexts = $0 }.meeting(id: "a", withTexts: true)
+        _ = try await client(#"{"id":"a","status":"done"}"#) { plain = $0 }.meeting(id: "a")
+        XCTAssertEqual(withTexts?.timeoutInterval, StudioClient.meetingTextsTimeout)
+        XCTAssertGreaterThan(StudioClient.meetingTextsTimeout, StudioClient.quickTimeout)
+        XCTAssertEqual(plain?.timeoutInterval, StudioClient.quickTimeout)
     }
 
     func testRetentionIsAPutAndARefusalCarriesTheDaemonsWords() async throws {
