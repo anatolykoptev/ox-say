@@ -212,6 +212,33 @@ prints JSON: `text`, `segments` and `words` (`w`, `s`, `e`, `p`; seconds).
   `--chunk-s` (30) seconds at the quietest 10 ms frame near each window's end:
   one graph per chunk keeps each GPU command buffer under the macOS watchdog
   of a display GPU, and the encoder cost linear in length.
+- Edge context (#123, `stt/edge_pad.h`): Parakeet drops words when a decode
+  window has no quiet context at its edges (a tight 1.4 s clip decodes empty,
+  a 12 s session segment cut mid-speech loses 25-100 % of its words). Every
+  chunk is decoded as 1 s of comfort noise, the chunk, 1 s of comfort noise,
+  the noise 12 dB under the chunk's level: the mean power of its 10 ms frames
+  above -60 dBFS, each clamped to the 90th-percentile frame + 10 dB, so one
+  click cannot lift it. Frames at or under -80 dBFS at the chunk's own edges
+  (digital silence, a fade, dither) get the same noise added; that bound is
+  absolute, so quiet speech at an edge (a far speaker before a near one) is
+  never touched. Token times are shifted back by the pad and clamped to the
+  chunk; they sit on parakeet's 80 ms token grid of the padded signal, 40 ms
+  off an unpadded decode's (a 0.96 s pad keeps the grid but lost more cuts).
+  Tokens more than 0.5 s out in a pad are taken for noise and dropped
+  (stderr: `dropped N token(s) decoded from the edge pad`); punctuation right
+  after a kept piece stays with it. A chunk with no frame above -60 dBFS is
+  decoded as it is, so silence stays empty. Hence `--chunk-s` is at most
+  47.99 s. The feature pipeline was compared with NeMo's
+  `FilterbankFeatures` and the model's own preprocessor config first: no
+  mismatch that changes a decode (dither is training-only in NeMo; the
+  per-feature statistics use one frame fewer than NeMo 2.3, measured
+  without effect), so the cure is context, not a library patch. Residual:
+  one-shot cuts every 0.5 s across a speaker change lose the second speaker
+  in 1 of 94 windows (four take pairs), against 30 of 70 unpadded (three). Measured on an M5 Pro GPU:
+  +5 ms per short clip (29 -> 34 ms), +11 ms per 30 s chunk (158 -> 169 ms).
+  The token loop is `edge_pad::map_segment`, unit-tested in CI
+  (`edge_pad_test.cpp`); `scripts/test-stt-edges.sh` is the model test
+  (skips without the model).
 - `--engine whisper`: Whisper large-v3-turbo, 99 languages, one segment per
   word (`max_len` 1, split on word), beam search 5.
 - `-ng` runs on the CPU.
