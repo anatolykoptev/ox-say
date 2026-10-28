@@ -37,12 +37,24 @@ ours() {
         [ "$(plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null || true)" = "$bundle_id" ]
 }
 
-# The staging copy: its name belongs to this script, and a copy an interrupted
-# run left behind may lack its Info.plist. Removed when it is a real directory
-# that is ours or has no Info.plist at all; anything else is refused.
+# A bundle an interrupted copy or removal left half done: no Info.plist, and
+# nothing in the directory but Contents and Finder's .DS_Store (or nothing at
+# all). A directory that holds anything else under a name of ours is not a
+# bundle remnant.
+partial_bundle() {
+    local listing
+    [ -d "$1" ] && [ ! -L "$1" ] && [ ! -e "$1/Contents/Info.plist" ] || return 1
+    listing=$(ls -A "$1" | grep -vx '.DS_Store' || true)
+    [ -z "$listing" ] || [ "$listing" = Contents ]
+}
+
+# The two staging copies, .new and .old: their names belong to this script, and
+# a copy an interrupted run left behind may lack its Info.plist (a half-made
+# .new, or a .old whose removal was cut off). Removed when it is a real
+# directory that is ours or a partial bundle; anything else is refused.
 clear_staging() {
     if [ -e "$1" ] || [ -L "$1" ]; then
-        if [ -d "$1" ] && [ ! -L "$1" ] && { ours "$1" || [ ! -e "$1/Contents/Info.plist" ]; }; then
+        if [ -d "$1" ] && [ ! -L "$1" ] && { ours "$1" || partial_bundle "$1"; }; then
             rm -r "$1"
         else
             echo "install-app.sh: $1 is not an OxSay Dictation staging copy; not replacing it" >&2
@@ -77,7 +89,7 @@ fi
 
 mkdir -p "$dir"
 clear_staging "$new"
-clear_ours "$old"
+clear_staging "$old"
 ditto "$src" "$new"
 
 app_relaunches=0

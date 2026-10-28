@@ -115,6 +115,26 @@ jobs:
         if: runner.arch == 'ARM64'
         run: bash scripts/check-arm64-baseline_test.sh
 
+  # The installer shell scripts (lib-install, fetch-models, get.sh) have their own tests; before this job they ran only
+  # in release.yml, so a PR that broke fetch-models.sh stayed green until a release. They need macOS (plutil, shasum,
+  # get.sh refuses elsewhere), python3 (the stall test's local listener) and Go (test-lib-install builds ox-say).
+  # Quick: about 2 minutes of test time on an arm64 runner, one runner, no matrix.
+  installers:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      - name: installer tests
+        run: |
+          bash scripts/test-lib-install.sh
+          bash scripts/test-fetch-models.sh
+          bash scripts/test-download-stall.sh
+
   # ox-diar (speaker diarization, engine/diar): a Swift package on FluidAudio's Core ML models, Apple Silicon only.
   # The Intel leg of plan Task 20a (macos-15-intel, .cpuOnly) failed on its first run: Core ML cannot run the models
   # there ("Unable to compute the prediction using ML Program", run 40100359856), so the Intel package carries no

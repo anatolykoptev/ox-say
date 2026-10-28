@@ -248,6 +248,24 @@ oxs_load_agent() {
 # space), so "ox-say" is one word in the phrase and "oxsay", "ox say" or
 # "Oxay" on the heard side stay within the two spare words.
 # Usage: oxs_selftest_heard_ok <heard> <phrase>.
+# oxs_mcp_registered <`claude mcp get` output> <url>: succeeds when that output describes an http server at exactly
+# <url>. Whole-line matches on the `URL:` and `Type:` lines: a substring match accepted a longer URL that merely
+# contains ours (http://h:8080/mcp inside http://h:8080/mcp/old) and said nothing of the transport, so an
+# sse entry at the right URL passed as ours. An output in another shape is "not registered": the caller registers
+# again, which is the safe direction.
+oxs_mcp_registered() {
+    local line url=0 type=0
+    while IFS= read -r line; do
+        line=${line#"${line%%[![:space:]]*}"} # trim leading blanks
+        line=${line%"${line##*[![:space:]]}"} # trim trailing blanks
+        [ "$line" = "URL: $2" ] && url=1
+        [ "$line" = "Type: http" ] && type=1
+    done <<EOF
+$1
+EOF
+    [ "$url" = 1 ] && [ "$type" = 1 ]
+}
+
 oxs_selftest_norm() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d "'-" | tr -c 'a-z0-9' ' '
 }

@@ -18,6 +18,17 @@
 #   * fetch-models.sh: change the notes sha256 -> the live acceptance probe
 #     (a real copy of the model) fails; this sandbox test cannot see it, because
 #     it only proves a WRONG file is refused (see Task 6 in the plan)
+#   * fetch-models.sh: put `--retry 3` back into the opts of fetch_part (the `local opts=(` line) -> curl would
+#     restart a stalled pass from the run's own offset -> "no curl --retry" fails
+#   * fetch-models.sh: drop 28 from the `case $rc in 28 | 18 | 52 | 56)` line in fetch_part -> a stall is not
+#     retried in the shell -> "a stall is resumed from the current .part" and "stalls that never end" fail
+#   * fetch-models.sh: delete the `fetch_part "$base/$remote" "$part" 0` self-heal call (or the `[ "$resumed" = 1 ]`
+#     guard) -> "an unresumable .part is dropped" fails
+#   * fetch-models.sh: delete the `case $name in diar/*) rm -f "$diar_marker" ;; esac` line and put
+#     `rm -f "$dest/diar/speaker-diarization/.fluidaudio-revision"` before the loop -> "an unrelated failure keeps the
+#     marker" fails (and the delete alone makes "a failed fetch removes the marker" fail)
+#   * fetch-models.sh: delete the `--notes-only ... --with-whisper` conflict check -> "an option for another set is
+#     refused" fails
 #   * fetch-models.sh: change `curl -fsSL` to `curl -fL` -> the fake curl prints
 #     its progress meter (carriage returns) -> "no progress meter" fails
 #   * fetch-models.sh: change `curl -fsSL` to `curl -fsL` -> the fake curl is
@@ -31,6 +42,13 @@ trap 'find "$tmp" -depth -delete 2>/dev/null || true' EXIT
 pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
+# Nothing here may reach the network: a curl first on PATH that fails loudly and leaves a trace. A mutant that skips
+# the OX_SAY_MODELS_FROM copy (or a test that forgets its own stub) would otherwise download from Hugging Face.
+mkdir -p "$tmp/nonet"
+printf '#!/bin/sh\necho "curl $*" >> "%s/nonet-calls"\necho "curl: stub, no network in this test" >&2\nexit 99\n' "$tmp" > "$tmp/nonet/curl"
+chmod +x "$tmp/nonet/curl"
+PATH="$tmp/nonet:$PATH"
+
 name=Qwen3.5-4B-Q4_K_M.gguf
 mkdir -p "$tmp/from" "$tmp/dest"
 echo "not the model" > "$tmp/from/$name"
@@ -40,7 +58,7 @@ rc=$?
 if [ "$rc" -ne 0 ]; then pass "a wrong notes model is refused (exit $rc)"; else fail "a wrong notes model was accepted"; fi
 case $out in *"checksum mismatch for $name"*) pass "the mismatch names the file" ;; *) fail "no mismatch message: $out" ;; esac
 case $out in
-    *fetch*) fail "--notes-only tried to download something: $out" ;;
+    *"fetch   "*) fail "--notes-only tried to download something: $out" ;;
     *) pass "only the notes model is looked at" ;;
 esac
 if [ ! -e "$tmp/dest/$name" ] && [ ! -e "$tmp/dest/$name.part" ]; then
@@ -113,6 +131,145 @@ case $out in
     *$'\r'*|*"% Total"*) fail "the progress meter reached stderr: $out" ;;
     *) pass "no progress meter on stderr" ;;
 esac
+
+# --- option conflicts: a set selector next to an option for another set is refused, not half-obeyed ---
+for combo in "--notes-only --with-whisper" "--diar-only --with-voxcpm2" "--notes-only --diar-only"; do
+    # shellcheck disable=SC2086
+    out=$(bash "$root/scripts/fetch-models.sh" $combo "$tmp/dconf" 2>&1)
+    rc=$?
+    if [ "$rc" -eq 2 ] && [ ! -e "$tmp/dconf" ]; then pass "an option for another set is refused ($combo)"; else fail "$combo: exit $rc, $out"; fi
+done
+
+# --- the download loop, with a scripted curl ---------------------------------------------------------------------
+# The fake appends to the file after -o when it is given -C - (resume), else truncates it, like curl. Per call it
+# does what $d/script says on that line (rc:<n>[:<http status>] prints the status like curl -w): "stall:<text>" writes <text> then exits 28, "ok:<text>" writes it and
+# exits 0, "rc:<n>" writes nothing and exits n. It logs argv and the size of the file it was handed.
+fakecurl() { # dir
+    mkdir -p "$1/bin"
+    cat > "$1/bin/curl" <<'FAKE'
+#!/bin/bash
+d=$(dirname "$(dirname "$0")")
+out= resume=0 prev=
+for a in "$@"; do
+    [ "$prev" = -o ] && out=$a
+    [ "$prev" = -C ] && [ "$a" = - ] && resume=1
+    prev=$a
+done
+n=$(( $(cat "$d/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/n"
+echo "call $n resume=$resume size=$(wc -c < "$out" 2>/dev/null | tr -d ' ') args=$*" >> "$d/calls"
+line=$(sed -n "${n}p" "$d/script")
+[ -n "$line" ] || line=${last:-rc:99}
+kind=${line%%:*}; arg=${line#*:}; code=
+case $kind:$arg in rc:*:*) code=${arg#*:}; arg=${arg%%:*} ;; esac
+[ "$resume" = 1 ] || : > "$out"
+case $kind in
+    stall) printf '%s' "$arg" >> "$out"; exit 28 ;;
+    ok) printf '%s' "$arg" >> "$out"; exit 0 ;;
+    rc) printf '%s' "$code"; exit "$arg" ;;
+esac
+FAKE
+    chmod +x "$1/bin/curl"
+}
+run_fetch() { # dir dest
+    PATH="$1/bin:$PATH" OX_SAY_MODELS_FROM='' OX_SAY_STALL_SECS=1 bash "$root/scripts/fetch-models.sh" --notes-only "$2" 2>&1
+}
+
+# A stall is resumed in the shell from what the .part holds now: pass 2 sees the 3 bytes pass 1 wrote, and no pass
+# is a curl --retry (that would restart from the run's own offset).
+d="$tmp/stall1"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'stall:abc\nok:defg\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in *"checksum mismatch"*) pass "a stall is resumed from the current .part, and the download completes" ;; *) fail "stall1: exit $rc: $out" ;; esac
+if [ "$(wc -l < "$d/calls" | tr -d ' ')" = 2 ] && sed -n 2p "$d/calls" | grep -q 'resume=1 size=3 '; then
+    pass "a stall is resumed from the current .part (pass 2 starts at byte 3)"
+else
+    fail "stall1 calls: $(cat "$d/calls")"
+fi
+if grep -q -- '--retry' "$d/calls"; then fail "curl was given --retry: $(cat "$d/calls")"; else pass "no curl --retry (the shell owns the retry)"; fi
+
+# Stalls that never end: 4 passes (the first and 3 retries), then the stall is named, and the .part is kept for the next run.
+d="$tmp/stall2"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'stall:aa\nstall:bb\nstall:cc\nstall:dd\nstall:ee\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+if [ "$rc" -ne 0 ] && [ "$(wc -l < "$d/calls" | tr -d ' ')" = 4 ]; then pass "stalls that never end stop after 4 passes (exit $rc)"; else fail "stall2: exit $rc calls=$(cat "$d/calls")"; fi
+case $out in *"stalled"*) pass "the stall is named on stderr" ;; *) fail "stall2: no stall message: $out" ;; esac
+if [ "$(cat "$d/dest/$name.part" 2>/dev/null)" = aabbccdd ]; then pass "the partial download is kept for the next run"; else fail "stall2 .part: $(cat "$d/dest/$name.part" 2>/dev/null)"; fi
+
+# A .part the server refuses to resume (curl exit 22 on HTTP 416): dropped, fetched once from the start, no -C.
+d="$tmp/heal"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'stale bytes that no longer fit' > "$d/dest/$name.part"
+printf 'rc:22:416\nok:fresh\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in *"checksum mismatch"*) pass "an unresumable .part is dropped and the file fetched from the start" ;; *) fail "heal: exit $rc: $out" ;; esac
+if sed -n 2p "$d/calls" | grep -q 'resume=0 size= '; then pass "the second try is a fresh download, not a resume"; else fail "heal calls: $(cat "$d/calls")"; fi
+# A 503 is transient: retried with the .part kept and -C - on the retry; a 404 keeps the .part and is not retried.
+d="$tmp/t503"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'keep' > "$d/dest/$name.part"
+printf 'rc:22:503\nok:rest\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in *"checksum mismatch"*) pass "a 503 on a resume is retried and the download completes" ;; *) fail "t503: exit $rc: $out" ;; esac
+if [ "$(wc -l < "$d/calls" | tr -d ' ')" = 2 ] && sed -n 2p "$d/calls" | grep -q 'resume=1 size=4 '; then
+    pass "the retry after a 503 resumes from the kept .part"
+else
+    fail "t503 calls: $(cat "$d/calls")"
+fi
+d="$tmp/t404"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'keep' > "$d/dest/$name.part"
+printf 'rc:22:404\nok:x\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+if [ "$rc" -ne 0 ] && [ "$(wc -l < "$d/calls" | tr -d ' ')" = 1 ] && [ "$(cat "$d/dest/$name.part")" = keep ]; then
+    pass "a 404 is not retried and keeps the .part"
+else
+    fail "t404: exit $rc calls=$(cat "$d/calls") part=$(cat "$d/dest/$name.part" 2>/dev/null)"
+fi
+case $out in *"HTTP 404"*) pass "the failure names the HTTP status" ;; *) fail "t404 message: $out" ;; esac
+# ... but an empty or missing .part that fails is a plain failure, with no second try.
+d="$tmp/noheal"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'rc:22\nok:x\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+if [ "$rc" -ne 0 ] && [ "$(wc -l < "$d/calls" | tr -d ' ')" = 1 ]; then pass "a failure with nothing to resume is not retried"; else fail "noheal: exit $rc calls=$(cat "$d/calls")"; fi
+case $out in *"failed (curl exit 22)"*) pass "the failure names curl's exit status" ;; *) fail "noheal: $out" ;; esac
+
+# The marker: a failure on an unrelated model, before the diarization files, must not take the marker of intact
+# diarization files with it. The fake shasum vouches for a file holding "intact" with the pinned hash from the script's
+# own table, so the 28 files count as passed without shipping 22 MB of models.
+d="$tmp/marker"; mkdir -p "$d/bin" "$d/dest/diar/speaker-diarization" "$d/from"
+cat > "$d/bin/shasum" <<FAKE
+#!/bin/bash
+f=\${3:-}
+case \$f in
+    */speaker-diarization/*)
+        if [ "\$(cat "\$f")" = intact ]; then
+            rel=\${f#*/speaker-diarization/}
+            grep -m1 "^    \"[0-9a-f]\{64\}  \$rel\"\\$" "$root/scripts/fetch-models.sh" | sed 's/^    "\([0-9a-f]*\) .*/\1  -/'
+            exit 0
+        fi ;;
+esac
+exec /usr/bin/shasum "\$@"
+FAKE
+chmod +x "$d/bin/shasum"
+grep '^    "[0-9a-f]\{64\}  ' "$root/scripts/fetch-models.sh" | sed 's/^    "[0-9a-f]*  \(.*\)"$/\1/' | while IFS= read -r rel; do
+    mkdir -p "$d/dest/diar/speaker-diarization/$(dirname "$rel")"
+    printf intact > "$d/dest/diar/speaker-diarization/$rel"
+done
+echo df2625ac79a7ac6b65ad868fee6d80f320da4232 > "$d/dest/diar/speaker-diarization/.fluidaudio-revision"
+echo "not the model" > "$d/from/qwen-talker-0.6b-base-Q8_0.gguf"
+PATH="$d/bin:$PATH" OX_SAY_MODELS_FROM="$d/from" bash "$root/scripts/fetch-models.sh" "$d/dest" > "$d/out" 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] && grep -q 'checksum mismatch for qwen-talker' "$d/out"; then pass "(setup) an unrelated model fails first"; else fail "marker setup: exit $rc: $(cat "$d/out")"; fi
+if [ -e "$d/dest/diar/speaker-diarization/.fluidaudio-revision" ]; then
+    pass "an unrelated failure keeps the marker of intact diarization files"
+else
+    fail "an unrelated failure removed the diarization marker"
+fi
+
+if [ -e "$tmp/nonet-calls" ]; then fail "the no-network curl stub was reached: $(cat "$tmp/nonet-calls")"; else pass "no test reached the network"; fi
 
 echo
 if [ "$fails" -eq 0 ]; then echo "all checks passed"; else echo "$fails check(s) failed" >&2; exit 1; fi

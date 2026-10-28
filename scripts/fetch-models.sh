@@ -39,6 +39,17 @@ for arg in "$@"; do
             ;;
     esac
 done
+# --notes-only and --diar-only each replace the model list; an option for another model would be dropped without a word.
+if [ "$notes_only" = 1 ] && [ "$diar_only" = 1 ]; then
+    echo "--notes-only and --diar-only select different model sets; give one" >&2
+    exit 2
+fi
+if [ "$notes_only" = 1 ] || [ "$diar_only" = 1 ]; then
+    if [ "$with_whisper" = 1 ] || [ "$with_voxcpm2" = 1 ]; then
+        echo "--with-whisper and --with-voxcpm2 do not combine with --notes-only or --diar-only: those fetch one set and nothing else" >&2
+        exit 2
+    fi
+fi
 home=${OX_SAY_HOME:-"$HOME/Library/Application Support/ox-say"}
 dest=${dest:-"$home/models"}
 
@@ -129,11 +140,42 @@ stall_secs=${OX_SAY_STALL_SECS:-30}
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
-# The marker says "every file below passed its checksum", so it cannot outlive the files it vouched for: drop it before
-# any diarization file is replaced; it is written again at the end, after the last file passed.
-if [ "$notes_only" != 1 ]; then
-    rm -f "$dest/diar/speaker-diarization/.fluidaudio-revision"
-fi
+diar_marker="$dest/diar/speaker-diarization/.fluidaudio-revision"
+
+# Seconds per retry pass to wait before the next one (pass * unit); OX_SAY_RETRY_SLEEP_UNIT=0 turns it off for tests.
+retry_unit=${OX_SAY_RETRY_SLEEP_UNIT:-2}
+
+# fetch_part <url> <part> <resume 0|1>: one download into <part>. Transient failures are tried again here in the
+# shell, up to 3 more passes with a growing pause, and each pass resumes (-C -) from the bytes <part> holds now:
+#   - a stall (28) or a dropped or refused line (6, 7, 18, 35, 52, 56)
+#   - an HTTP 408, 429 or 5xx (curl -f turns every HTTP error into exit 22; the status comes from -w)
+# curl's own --retry would not do: with -C - it re-reads the offset it started the run with, so a 3 GB model that
+# stalls near the end would be fetched again from where that run began.
+# Returns curl's last exit status; fetch_code holds the last HTTP status (empty when curl got none).
+fetch_code=
+fetch_part() {
+    local url=$1 part=$2 resume=$3 pass=0 rc
+    local opts=(-fsSL --connect-timeout 15 --speed-limit 1024 --speed-time "$stall_secs" -w '%{http_code}')
+    if [ "$resume" = 1 ]; then opts+=(-C -); else rm -f "$part"; fi
+    while :; do
+        rc=0
+        fetch_code=$(curl "${opts[@]}" -o "$part" "$url") || rc=$?
+        [ "$rc" -eq 0 ] && return 0
+        case $rc in
+            6 | 7 | 18 | 28 | 35 | 52 | 56) ;;
+            22)
+                case $fetch_code in
+                    408 | 429 | 5??) ;;
+                    *) return "$rc" ;;
+                esac
+                ;;
+            *) return "$rc" ;;
+        esac
+        pass=$((pass + 1))
+        [ "$pass" -le 3 ] || return "$rc"
+        sleep $((pass * retry_unit))
+    done
+}
 
 mkdir -p "$dest"
 for entry in "${models[@]}"; do
@@ -146,6 +188,10 @@ for entry in "${models[@]}"; do
         continue
     fi
     part="$target.part"
+    # The marker says "every diarization file passed its checksum". This one did not, so it is about to be replaced (or
+    # is missing): the marker goes now, and is written again at the end. Dropped here and not before the loop, a
+    # failure on an unrelated model earlier in the list would take the marker of intact diarization files with it.
+    case $name in diar/*) rm -f "$diar_marker" ;; esac
     if [ -n "${OX_SAY_MODELS_FROM:-}" ] && [ -f "$OX_SAY_MODELS_FROM/$name" ]; then
         echo "copy    $name"
         cp "$OX_SAY_MODELS_FROM/$name" "$part"
@@ -154,16 +200,26 @@ for entry in "${models[@]}"; do
         # -sS: no progress meter (it would flood the daemon's stderr tail), errors kept
         # A dead line must end, not hang (an install waits on this): connect in 15 s, and give up on a
         # transfer that stays under 1 KB/s for $stall_secs s (an average over that window; a slow but alive
-        # line is never cut). A stall is curl exit 28; --retry 3 resumes it (-C -). Not a total bound: a 3 GB
-        # model on a slow line takes as long as it needs.
+        # line is never cut). A stall is curl exit 28; fetch_part resumes it from the .part (-C -). Not a total
+        # bound: a 3 GB model on a slow line takes as long as it needs.
+        # A .part the server will not resume (curl exit 33, or HTTP 412 / 416 on the Range request: the object changed
+        # or the offset no longer fits it) would fail every later run the same way, so it is dropped and the file is
+        # fetched once from the start. Nothing else drops it: a stall, a dropped line, a 5xx, a 404 or a 403 leave the
+        # .part (a fresh request would meet the same error, and the bytes are what the next run resumes from).
         rc=0
-        curl -fsSL --retry 3 -C - --connect-timeout 15 --speed-limit 1024 --speed-time "$stall_secs" \
-            -o "$part" "$base/$remote" || rc=$?
+        resumed=0
+        [ -s "$part" ] && resumed=1
+        fetch_part "$base/$remote" "$part" 1 || rc=$?
+        if [ "$resumed" = 1 ] && { [ "$rc" -eq 33 ] || { [ "$rc" -eq 22 ] && { [ "$fetch_code" = 412 ] || [ "$fetch_code" = 416 ]; }; }; }; then
+            echo "resuming $name failed (curl exit $rc${fetch_code:+, HTTP $fetch_code}); fetching it again from the start" >&2
+            rc=0
+            fetch_part "$base/$remote" "$part" 0 || rc=$?
+        fi
         if [ "$rc" -ne 0 ]; then
             if [ "$rc" -eq 28 ]; then
                 echo "download of $name stalled (under 1 KB/s for $stall_secs s); check the network and run it again" >&2
             else
-                echo "download of $name failed (curl exit $rc)" >&2
+                echo "download of $name failed (curl exit $rc)${fetch_code:+; HTTP $fetch_code}" >&2
             fi
             exit 1
         fi
@@ -181,7 +237,8 @@ done
 # FluidAudio's loader reads <dir>/.fluidaudio-revision and refuses the models when it is not the revision it was told
 # to expect (ox-diar sets it to diar_rev). It is written last, after every file above passed its checksum, so an
 # interrupted fetch has no marker: ox-diar cannot load it, and the daemon will not call the models ready either
-# (Task 20b.2: Config.DiarModelsReady). An old marker is removed before any file is replaced, for the same reason.
+# (Task 20b.2: Config.DiarModelsReady). An old marker is removed before the first diarization file is fetched, for the
+# same reason.
 if [ "$notes_only" != 1 ]; then
     printf '%s\n' "$diar_rev" > "$dest/diar/speaker-diarization/.fluidaudio-revision.part"
     mv "$dest/diar/speaker-diarization/.fluidaudio-revision.part" "$dest/diar/speaker-diarization/.fluidaudio-revision"

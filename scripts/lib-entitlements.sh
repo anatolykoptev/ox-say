@@ -20,7 +20,7 @@ oxs_entitlements_json() {
 # keys above, each a boolean true — whatever order the plist lists them in
 # (plutil -convert json does not promise one). Says what differs on stderr.
 oxs_entitlements_check() {
-    local plist=$1 key path listed ok=0
+    local plist=$1 key path listed ok=0 want=0 got
     for key in $OXS_ENTITLEMENT_KEYS; do
         path=${key//./\\.} # plutil reads an unescaped dot as a nested key
         if [ "$(plutil -type "$path" "$plist" 2>/dev/null)" != bool ] ||
@@ -29,7 +29,7 @@ oxs_entitlements_check() {
             ok=1
         fi
     done
-    # the top-level keys, as plutil -p prints them (two-space indent)
+    # Name the extra keys plutil -p can show on one line (two-space indent).
     listed=$(plutil -p "$plist" 2>/dev/null | sed -n 's/^  "\(.*\)" => .*/\1/p') || true
     while IFS= read -r key; do
         [ -n "$key" ] || continue
@@ -40,5 +40,15 @@ oxs_entitlements_check() {
     done <<EOF
 $listed
 EOF
+    # The naming loop above is blind to a key that is empty or holds a newline (plutil -p
+    # prints it over no or two lines), so the count decides: the xml1 form opens every key
+    # (nested ones too, and an allowed key holding a dict already failed above) with a
+    # line that starts with <key>. More keys than the allowed ones means an extra one.
+    for key in $OXS_ENTITLEMENT_KEYS; do want=$((want + 1)); done
+    got=$(plutil -convert xml1 -o - "$plist" 2>/dev/null | grep -c '^[[:space:]]*<key>') || true
+    if [ "${got:-0}" -ne "$want" ]; then
+        echo "entitlement dictionary holds ${got:-0} keys, want exactly $want" >&2
+        ok=1
+    fi
     return $ok
 }

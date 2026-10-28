@@ -57,22 +57,20 @@ oxs_wait_version "$version"
 mcp_url="http://$addr/mcp"
 if [ "${OX_SAY_NO_MCP:-0}" != 1 ] && command -v claude >/dev/null; then
     # Asked from / so a project- or local-scope entry of the caller's cwd does
-    # not answer for the user scope. Replace it only when the URL is not ours:
-    # a failed add after the remove would lose a working registration.
+    # not answer for the user scope. Replace it only when it is not an http
+    # server at exactly our URL: a failed add after the remove would lose a
+    # working registration.
     current=$(cd / && claude mcp get ox-say 2>/dev/null || true)
-    case "$current" in
-        *"$mcp_url"*)
-            echo "the MCP server ox-say is registered with Claude Code ($mcp_url)"
-            ;;
-        *)
-            (cd / && claude mcp remove --scope user ox-say >/dev/null 2>&1) || true
-            if (cd / && claude mcp add --transport http --scope user ox-say "$mcp_url" >/dev/null); then
-                echo "registered the MCP server ox-say with Claude Code ($mcp_url)"
-            else
-                echo "could not register the MCP server; run: claude mcp add --transport http --scope user ox-say $mcp_url" >&2
-            fi
-            ;;
-    esac
+    if oxs_mcp_registered "$current" "$mcp_url"; then
+        echo "the MCP server ox-say is registered with Claude Code ($mcp_url)"
+    else
+        (cd / && claude mcp remove --scope user ox-say >/dev/null 2>&1) || true
+        if (cd / && claude mcp add --transport http --scope user ox-say "$mcp_url" >/dev/null); then
+            echo "registered the MCP server ox-say with Claude Code ($mcp_url)"
+        else
+            echo "could not register the MCP server; run: claude mcp add --transport http --scope user ox-say $mcp_url" >&2
+        fi
+    fi
 else
     echo "MCP: claude mcp add --transport http --scope user ox-say $mcp_url"
 fi

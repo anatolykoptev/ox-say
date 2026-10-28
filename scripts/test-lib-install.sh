@@ -8,6 +8,10 @@
 # Mutations that must turn this RED:
 #   * restore the render loop in lib-install.sh that writes every OX_SAY_*
 #     variable (drop the oxs_daemon_var filter) — scenario A fails
+#   * replace the `[ "$line" = "URL: $2" ]` test in oxs_mcp_registered by a `case $line in *"$2"*` substring — the
+#     longer-url, prefix-host and url-only-in-args cases fail; drop the `Type: http` test — the sse and no-type cases fail
+#   * weaken render_shape_ok to the old `^[^#]*[$][(]oxs_render_agent` regex — the dollar-paren-space, backtick and
+#     line-break cases fail
 #   * write the render call in scenario-installer.sh back as
 #     tmp=$(oxs_render_agent …) — the broken-template scenario fails:
 #     bash clears `set -e` inside $(…) so the install step gets reached
@@ -210,11 +214,95 @@ fi
 check_in_log "refusal names the fix" "$tmp/nokeys.log" "oxs_env_keys_from"
 
 # --- F: the real installers call the render as a plain statement -----------
-# Scenario D proves the shape on a copy; this pins the real call sites to it.
+# Scenario D proves the shape on a copy; this pins the real call sites to it. render_shape_ok <file>: exactly one
+# code line (comments skipped) names oxs_render_agent, it starts in column 0 as a command, and the code line before
+# it does not open a $( ), backtick, pipe, && / || or continuation that would swallow it. The old pin was a regex for
+# `$(oxs_render_agent` and missed `$( oxs_render_agent`, a backtick form and a break after `$(`.
+render_shape_ok() {
+    awk '
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*$/ { next }
+        /oxs_render_agent/ {
+            n++
+            if ($0 !~ /^oxs_render_agent[[:space:]]/) bad = 1
+            if (prev ~ /([$][(]|[(]|`|[|]|&&|[|][|]|\\)[[:space:]]*$/) bad = 1
+        }
+        { prev = $0 }
+        END { exit (n == 1 && !bad) ? 0 : 1 }
+    ' "$1"
+}
 for f in install.sh install-release.sh; do
-    n=$(grep -cE '^[^#]*[$][(]oxs_render_agent' "$root/scripts/$f" || true) # code, not comments
-    check "$f renders without \$(…), so errexit applies" "${n:-x}" 0
+    if render_shape_ok "$root/scripts/$f"; then
+        pass "$f renders with one plain oxs_render_agent statement, so errexit applies"
+    else
+        fail "$f: oxs_render_agent is not a single plain statement"
+    fi
 done
+# The shape check itself, on the variants the old regex let through.
+shape_case() { # name want(ok|bad) body
+    printf '%s\n' "$3" > "$tmp/shape-$1.sh"
+    if render_shape_ok "$tmp/shape-$1.sh"; then got=ok; else got=bad; fi
+    check "render shape: $1" "$got" "$2"
+}
+shape_case plain ok 'oxs_render_agent "$a" "$b"'
+shape_case commented-mention ok '# tmp=$(oxs_render_agent x)
+oxs_render_agent "$a" "$b"'
+shape_case dollar-paren bad 'tmp=$(oxs_render_agent "$a" "$b")'
+shape_case dollar-paren-space bad 'tmp=$( oxs_render_agent "$a" "$b")'
+shape_case backticks bad 'tmp=`oxs_render_agent "$a" "$b"`'
+shape_case backticks-space bad 'tmp=` oxs_render_agent "$a" "$b"`'
+shape_case line-break-after-paren bad 'tmp=$(
+oxs_render_agent "$a" "$b")'
+shape_case line-break-after-backtick bad 'tmp=`
+oxs_render_agent "$a" "$b"`'
+shape_case piped bad 'echo x |
+oxs_render_agent "$a" "$b"'
+shape_case continued bad 'true &&
+oxs_render_agent "$a" "$b"'
+shape_case twice bad 'oxs_render_agent "$a" "$b"
+oxs_render_agent "$a" "$c"'
+shape_case absent bad 'echo nothing'
+shape_case indented bad '  oxs_render_agent "$a" "$b"'
+
+# --- F2: the MCP registration is an exact http URL, not a substring ---------
+mcp="http://127.0.0.1:8080/mcp"
+mcp_case() { # name want(yes|no) output
+    if ( . "$root/scripts/lib-install.sh" && oxs_mcp_registered "$3" "$mcp" ); then got=yes; else got=no; fi
+    check "mcp registered: $1" "$got" "$2"
+}
+mcp_case exact yes "ox-say:
+  Scope: User config (available in all your projects)
+  Status: ✓ Connected
+  Type: http
+  URL: $mcp
+"
+mcp_case exact-no-indent yes "Type: http
+URL: $mcp"
+mcp_case longer-url no "ox-say:
+  Type: http
+  URL: ${mcp}/old"
+mcp_case longer-port no "ox-say:
+  Type: http
+  URL: http://127.0.0.1:80801/mcp"
+mcp_case prefix-host no "ox-say:
+  Type: http
+  URL: http://evil.example/?x=$mcp"
+mcp_case sse-transport no "ox-say:
+  Type: sse
+  URL: $mcp"
+mcp_case no-type-line no "ox-say:
+  URL: $mcp"
+mcp_case url-only-in-args no "ox-say:
+  Type: http
+  Args: $mcp"
+mcp_case empty no ""
+mcp_case other-url no "ox-say:
+  Type: http
+  URL: http://127.0.0.1:9999/mcp"
+n=$(grep -cE '^[^#]*oxs_mcp_registered' "$root/scripts/install-release.sh" || true)
+check "install-release.sh asks oxs_mcp_registered" "${n:-x}" 1
+n=$(grep -cE '^[^#]*[*]"[$]mcp_url"[*]' "$root/scripts/install-release.sh" || true)
+check "install-release.sh has no \$mcp_url substring match" "${n:-x}" 0
 
 # --- G: the self-test accepts the phrase, not any text containing "ready" ---
 # The 2026-10-14 old-Mac install passed with a 15 s hallucination because
