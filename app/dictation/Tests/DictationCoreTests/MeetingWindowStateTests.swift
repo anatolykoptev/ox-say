@@ -284,8 +284,8 @@ final class NotesWriterStateTests: XCTestCase {
         XCTAssertEqual(NotesWriterState.of(NotesStatus(available: true)), .ready)
         XCTAssertEqual(NotesWriterState.of(NotesStatus(installing: true, progressPercent: 41)), .downloading(percent: 41))
         XCTAssertEqual(NotesWriterState.of(NotesStatus(reasonCode: "model_missing")), .missing)
-        XCTAssertEqual(NotesWriterState.of(NotesStatus(reasonCode: "model_missing", installError: "no space")), .missing,
-                       "a failed download can be tried again")
+        XCTAssertEqual(NotesWriterState.of(NotesStatus(reasonCode: "model_missing", installError: "no space")), .downloadFailed(.settingsNotesWriterDownloadOther),
+                       "a failed download says so, and can be tried again")
         XCTAssertEqual(NotesWriterState.of(NotesStatus(reasonCode: "unsupported")), .unavailable(.menuMeetingNotesUnsupported))
         XCTAssertEqual(NotesWriterState.of(NotesStatus(reasonCode: "engine_missing")), .unavailable(.menuMeetingNotesNeedUpdate))
         XCTAssertEqual(NotesWriterState.of(NotesStatus(reasonCode: nil)), .unavailable(.menuMeetingNotesNeedUpdate),

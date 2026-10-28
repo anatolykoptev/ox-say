@@ -42,6 +42,7 @@ final class MainWindowSource {
     private let audio = MeetingAudioPlayer()
     /// Each click on a line is one request; a probe that comes back after another click, a stop or a close is dropped.
     private var playRequests = PlayRequestGuard()
+    private var detailReads = DetailReads()
     /// Open (shown, hidden or covered) until the window is closed. A hidden window keeps its audio playing.
     private var windowOpen = false
     private var searchTimer: Task<Void, Never>?
@@ -338,15 +339,20 @@ final class MainWindowSource {
 
     // MARK: meetings
 
+    /// One read per meeting at a time (`DetailReads`): a polling pass that finds one running asks for one more after it.
     private func loadDetail(_ id: String) {
+        guard let token = detailReads.request(id) else { return }
         model.data.detailLoading.insert(id)
         model.data.detailError[id] = nil
         Task { @MainActor in
-            defer { model.data.detailLoading.remove(id) }
-            switch await service.detail(id: id) {
+            let result = await service.detail(id: id)
+            let outcome = detailReads.finish(id, token: token)
+            guard outcome.apply else { return } // given up (the meeting was deleted): nothing of it lands
+            switch result {
             case .success(let detail): model.data.details[id] = detail
             case .failure(let failure): model.data.detailError[id] = failure.sentence
             }
+            if outcome.rerun { loadDetail(id) } else { model.data.detailLoading.remove(id) }
         }
     }
 
@@ -361,6 +367,8 @@ final class MainWindowSource {
         Task { @MainActor in
             switch await service.delete(id: id) {
             case .done, .alreadyGone:
+                detailReads.cancel(id)
+                model.data.detailLoading.remove(id)
                 model.data.details[id] = nil
                 if model.selectedMeeting == id { model.selectedMeeting = nil }
                 model.data.meetings.removeAll { $0.id == id }

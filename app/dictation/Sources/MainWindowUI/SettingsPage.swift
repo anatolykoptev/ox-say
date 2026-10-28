@@ -55,9 +55,20 @@ struct SettingsPage: View {
             case .ready:
                 Label(L10nKey.settingsNotesWriterReady.text, systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green).labelStyle(.titleAndIcon)
+            case .engineFailed(let why):
+                VStack(alignment: .trailing, spacing: 4) {
+                    Label(L10nKey.settingsNotesWriterReady.text, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green).labelStyle(.titleAndIcon)
+                    Text(why.text).font(.callout).foregroundStyle(.orange).multilineTextAlignment(.trailing)
+                }
             case .missing:
                 Text(L10nKey.settingsNotesWriterMissing.text).font(.callout).foregroundStyle(.secondary)
                 Button(L10nKey.settingsNotesWriterDownload.text) { model.actions.downloadNotesWriter() }
+            case .downloadFailed(let why):
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(why.text).font(.callout).foregroundStyle(.orange).multilineTextAlignment(.trailing)
+                    Button(L10nKey.settingsNotesWriterDownload.text) { model.actions.downloadNotesWriter() }
+                }
             case .downloading(let percent):
                 ProgressView(value: Double(percent), total: 100).frame(width: 110)
                 Text("\(percent)%").monospacedDigit().foregroundStyle(.secondary)

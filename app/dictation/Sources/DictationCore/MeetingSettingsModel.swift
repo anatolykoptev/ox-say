@@ -71,7 +71,11 @@ public enum PermissionModel {
 
 public enum NotesWriterState: Equatable {
     case ready
+    /// The notes can run, but the last start of the notes model failed; the sentence says so. Notes stay available.
+    case engineFailed(L10nKey)
     case missing
+    /// Not downloaded, and the last download failed; the sentence says why, the Download action stays.
+    case downloadFailed(L10nKey)
     case downloading(percent: Int)
     /// This Mac or this install cannot write notes; the text says why.
     case unavailable(L10nKey)
