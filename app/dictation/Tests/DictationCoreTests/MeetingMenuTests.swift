@@ -55,16 +55,17 @@ final class MeetingMenuTests: XCTestCase {
         rows.compactMap { if case .item(let t, _, let enabled, _) = $0 { return (t, enabled) } else { return nil } }
     }
 
-    /// A failed download says why in a disabled row, in the app's own sentence for the daemon's code (the same ones as the
-    /// window), and still offers the retry. The daemon's English text is never put in the menu.
+    /// A failed download says why in a disabled row, in the app's own short sentence for the daemon's code (the window has
+    /// the long ones), and still offers the retry. The daemon's English text is never put in the menu.
     /// Mutation: MeetingMenu.rows, delete the `if s.notes.installError != nil` block -> RED; or title the row with
     /// `installError` instead of the sentence -> RED.
     func testAFailedDownloadShowsItsSentenceAndTheRetry() {
         let text: (L10nKey) -> String = { $0.rawValue }
         let cases: [(String?, L10nKey)] = [
-            ("network", .settingsNotesWriterDownloadNetwork), ("disk_full", .settingsNotesWriterDownloadDisk),
-            ("checksum", .settingsNotesWriterDownloadChecksum), ("other", .settingsNotesWriterDownloadOther),
-            ("from_the_future", .settingsNotesWriterDownloadOther), (nil, .settingsNotesWriterDownloadOther),
+            ("network", .menuMeetingInstallFailedNetwork), ("disk_full", .menuMeetingInstallFailedDisk),
+            ("checksum", .menuMeetingInstallFailedChecksum), ("server", .menuMeetingInstallFailedServer),
+            ("other", .menuMeetingInstallFailedOther),
+            ("from_the_future", .menuMeetingInstallFailedOther), (nil, .menuMeetingInstallFailedOther),
         ]
         for (code, key) in cases {
             let r = MeetingMenu.rows(state(notes: NotesStatus(reasonCode: "model_missing", installError: "The download failed: curl: (6) Could not resolve host",
@@ -81,7 +82,7 @@ final class MeetingMenuTests: XCTestCase {
         // A download in flight shows progress, not the old error.
         let busy = MeetingMenu.rows(state(notes: NotesStatus(reasonCode: "model_missing", installing: true, progressPercent: 3,
                                                              installError: "disk full", installErrorCode: "disk_full")), text: text)
-        XCTAssertFalse(titles(busy, text: text).contains { $0.0 == L10nKey.settingsNotesWriterDownloadDisk.rawValue })
+        XCTAssertFalse(titles(busy, text: text).contains { $0.0 == L10nKey.menuMeetingInstallFailedDisk.rawValue })
     }
 
     /// An engine that is missing or a Mac that cannot run notes says so, greyed.

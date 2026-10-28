@@ -548,23 +548,33 @@ func TestInstallErrorCarriesCurlsWordsNotTheMeter(t *testing.T) {
 }
 
 // A failed download carries a stable code beside curl's words: the window shows its own sentence for the code and
-// never the English text. The codes are the ones the fetch can produce: no network, a full disk, a file that does not
-// match its checksum, anything else.
+// never the English text. The rows are real curl and fetch-models.sh texts; each code is a cause a person can act on.
 // Mutations: internal/daemon/meetings.go notesStatus, delete `InstallCode: icode` -> RED (every row);
-// installFailureCode, delete the "No space left" arm -> RED (disk_full rows); the "checksum mismatch" arm -> RED.
+// installFailureCode, delete the "No space left" arm -> RED (disk_full rows); the "checksum mismatch" arm -> RED;
+// `case "22"` returning "network" -> RED (http rows); `"stalled"` arm deleted -> RED (stall row).
 func TestAFailedDownloadHasAStableCode(t *testing.T) {
 	cases := []struct{ name, stderr, want string }{
 		{"no network", "curl: (6) Could not resolve host: huggingface.co", "network"},
-		{"refused", "curl: (7) Failed to connect to huggingface.co port 443", "network"},
-		{"server error", "curl: (22) The requested URL returned error: 503", "network"},
-		{"curl cannot write", "curl: (23) Failure writing output to destination", "disk_full"},
-		{"disk full", "mv: write error: No space left on device", "disk_full"},
+		{"refused", "curl: (7) Failed to connect to huggingface.co port 443 after 15003 ms: Couldn't connect to server", "network"},
+		{"timeout", "curl: (28) Operation timed out after 30001 milliseconds with 0 bytes received", "network"},
+		{"stall", "download of qwen.gguf stalled (under 1 KB/s for 30 s); check the network and run it again", "network"},
+		{"reset", "curl: (56) Recv failure: Connection reset by peer", "network"},
+		{"empty reply", "curl: (52) Empty reply from server", "network"},
+		{"script exit code", "download of qwen.gguf failed (curl exit 56)", "network"},
+		{"http 404", "curl: (22) The requested URL returned error: 404", "server"},
+		{"http 503 and the script's line", "curl: (22) The requested URL returned error: 503; download of qwen.gguf failed (curl exit 22)", "server"},
+		{"curl cannot write, no evidence", "curl: (23) Failure writing output to destination", "other"},
+		{"curl cannot write, disk full", "curl: (23) Failure writing output to destination; mv: write error: No space left on device", "disk_full"},
+		{"disk full", "mv: rename a to b: No space left on device", "disk_full"},
+		{"tls", "curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to huggingface.co:443", "other"},
+		{"certificate", "curl: (60) SSL certificate problem: unable to get local issuer certificate", "other"},
+		{"proxy", "curl: (5) Could not resolve proxy: p.example", "other"},
 		{"checksum", "checksum mismatch for qwen.gguf: got aa, want bb", "checksum"},
 		{"anything else", "something unexpected", "other"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := installFixture(t, "#!/bin/sh\nprintf '%s\\n' '"+tc.stderr+"' >&2\nexit 1\n")
+			d := installFixture(t, "#!/bin/sh\ncat >&2 <<'EOT'\n"+tc.stderr+"\nEOT\nexit 1\n")
 			if err := d.InstallNotesModel(); err != nil {
 				t.Fatal(err)
 			}

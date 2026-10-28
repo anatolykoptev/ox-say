@@ -10,55 +10,68 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/anatolykoptev/ox-say/internal/stt"
 )
 
 // Every place that marks a meeting failed (Status failed, or the notes pending as "failed") goes through markFailed /
-// markNotesFailed, which set Manifest.FailReason with it. The sites are found in the source, not listed here: a new
-// `m.Status = StatusFailed` or `m.NotesPending = "failed"` anywhere else in the package, written by hand with no code,
-// fails this test.
+// markNotesFailed, which set Manifest.FailReason with it. The sites are found in the source of this package and of the
+// daemon, not listed here: a statement `m.Status = StatusFailed`, a composite literal `Manifest{Status: StatusFailed}`,
+// a `meeting.StatusFailed` from another package, or a `NotesPending: "failed"`, written anywhere else by hand with no
+// code, fails this test.
 // Mutation: internal/meeting/runner.go stop, replace the `m.markFailed(err, &failedAt)` line with
 // `m.Status, m.Error, m.FailedAt = StatusFailed, err.Error(), &failedAt` -> RED.
+// Mutation: add `_ = Manifest{Status: StatusFailed}` to any function of runner.go -> RED (composite literal).
+// Mutation: add `_ = meeting.Manifest{NotesPending: "failed"}` to a daemon function -> RED (other package).
 func TestEveryFailureSiteSetsACode(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	fset := token.NewFileSet()
 	marked := 0
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
+	for _, dir := range []string{".", "../daemon"} {
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil || len(files) == 0 {
+			t.Fatalf("no sources in %s: %v", dir, err)
 		}
-		file, err := parser.ParseFile(fset, name, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, decl := range file.Decls {
-			fd, ok := decl.(*ast.FuncDecl)
-			if !ok || fd.Body == nil {
+		for _, name := range files {
+			if strings.HasSuffix(name, "_test.go") {
 				continue
 			}
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				as, ok := n.(*ast.AssignStmt)
-				if !ok {
+			file, err := parser.ParseFile(fset, name, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, decl := range file.Decls {
+				fd, ok := decl.(*ast.FuncDecl)
+				if !ok || fd.Body == nil {
+					continue
+				}
+				allowed := dir == "." && (fd.Name.Name == "markFailed" || fd.Name.Name == "markNotesFailed")
+				ast.Inspect(fd.Body, func(n ast.Node) bool {
+					var hits []ast.Node
+					switch v := n.(type) {
+					case *ast.AssignStmt: // m.Status = StatusFailed, m.Status, m.Error = StatusFailed, ...
+						for i, lhs := range v.Lhs {
+							if i < len(v.Rhs) && isFailureField(lhs) && marksFailure(v.Rhs[i]) {
+								hits = append(hits, v)
+							}
+						}
+					case *ast.KeyValueExpr: // Manifest{Status: StatusFailed}
+						if isFailureField(v.Key) && marksFailure(v.Value) {
+							hits = append(hits, v)
+						}
+					}
+					for _, h := range hits {
+						if allowed {
+							marked++
+						} else {
+							t.Errorf("%s: %s marks a meeting failed without a reason code; use markFailed / markNotesFailed",
+								fset.Position(h.Pos()), fd.Name.Name)
+						}
+					}
 					return true
-				}
-				for _, rhs := range as.Rhs {
-					if !marksFailure(rhs) {
-						continue
-					}
-					if fd.Name.Name == "markFailed" || fd.Name.Name == "markNotesFailed" {
-						marked++
-					} else {
-						t.Errorf("%s: %s marks a meeting failed without a reason code; use markFailed / markNotesFailed",
-							fset.Position(as.Pos()), fd.Name.Name)
-					}
-				}
-				return true
-			})
+				})
+			}
 		}
 	}
 	if marked < 2 {
@@ -66,10 +79,26 @@ func TestEveryFailureSiteSetsACode(t *testing.T) {
 	}
 }
 
+// isFailureField: the left side (or key) names a Manifest's Status or NotesPending, as `m.Status` or a bare key.
+func isFailureField(e ast.Expr) bool {
+	switch v := e.(type) {
+	case *ast.Ident:
+		return v.Name == "Status" || v.Name == "NotesPending"
+	case *ast.SelectorExpr:
+		return v.Sel.Name == "Status" || v.Sel.Name == "NotesPending"
+	}
+	return false
+}
+
+// marksFailure: the value is StatusFailed (bare in this package, `meeting.StatusFailed` outside it) or the literal
+// "failed". A `vproject.StatusFailed` is another type's constant and does not count.
 func marksFailure(e ast.Expr) bool {
 	switch v := e.(type) {
 	case *ast.Ident:
 		return v.Name == "StatusFailed"
+	case *ast.SelectorExpr:
+		x, ok := v.X.(*ast.Ident)
+		return ok && x.Name == "meeting" && v.Sel.Name == "StatusFailed"
 	case *ast.BasicLit:
 		s, err := strconv.Unquote(v.Value)
 		return err == nil && s == "failed"
@@ -78,7 +107,8 @@ func marksFailure(e ast.Expr) bool {
 }
 
 // Each way a run can fail leaves its own code, next to the free text kept for the log.
-// Mutation: internal/meeting/fail_reason.go failReason, delete the `case errors.As(err, &model)` arm -> RED
+// Mutation: internal/meeting/fail_reason.go failReason, move `case errors.As(err, &path)` above the ENOSPC case -> RED
+// (the disk full rows); delete the `case errors.As(err, &model)` arm -> RED
 // (speech_model_missing); delete the `errors.As(err, &down)` arm -> RED (the three notes_engine_* rows).
 func TestAFailedRunRecordsItsCode(t *testing.T) {
 	down := func(reason string) error { return &EngineDownError{Err: errors.New("raw english"), Reason: reason} }
@@ -100,7 +130,9 @@ func TestAFailedRunRecordsItsCode(t *testing.T) {
 		{"model missing", speech(&stt.ModelError{}), StatusFailed, "", FailSpeechModelMissing},
 		{"busy", speech(stt.ErrBusy), StatusFailed, "", FailSpeechBusy},
 		{"engine broke", speech(errors.New("boom")), StatusFailed, "", FailSpeechFailed},
-		{"disk", speech(&os.PathError{Op: "write", Path: "x", Err: os.ErrPermission}), StatusFailed, "", FailStorage},
+		{"file error", speech(&os.PathError{Op: "write", Path: "x", Err: os.ErrPermission}), StatusFailed, "", FailStorage},
+		{"disk full", speech(&os.PathError{Op: "write", Path: "x", Err: syscall.ENOSPC}), StatusFailed, "", FailDiskFull},
+		{"rename onto a full disk", speech(&os.LinkError{Op: "rename", Old: "a", New: "b", Err: syscall.ENOSPC}), StatusFailed, "", FailDiskFull},
 		{"notes: engine start", notes(down(FailNotesEngineStart)), StatusTranscribed, "failed", FailNotesEngineStart},
 		{"notes: verify refused", notes(down(FailNotesEngineVerify)), StatusTranscribed, "failed", FailNotesEngineVerify},
 		{"notes: timed out", notes(down(FailNotesEngineTimeout)), StatusTranscribed, "failed", FailNotesEngineTimeout},

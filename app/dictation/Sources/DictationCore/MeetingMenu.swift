@@ -71,8 +71,8 @@ public enum MeetingMenu {
             // download says so (and the Download row below retries); a Mac or an
             // install that cannot make notes says so instead of showing nothing.
             if s.notes.installError != nil {
-                // The app's own sentence for the daemon's code, the same as the window; the daemon's English text is for the log.
-                rows.append(.item(title: text(NotesWriterState.downloadFailureKey(s.notes.installErrorCode)),
+                // The app's own short sentence for the daemon's code (the window has the long one); the daemon's English text is for the log.
+                rows.append(.item(title: text(NotesWriterState.menuDownloadFailureKey(s.notes.installErrorCode)),
                                   isOn: false, isEnabled: false, action: nil))
             }
             if s.notes.downloadWouldHelp {

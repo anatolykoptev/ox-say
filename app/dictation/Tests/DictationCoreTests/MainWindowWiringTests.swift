@@ -226,6 +226,26 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertTrue(retry.contains("track(id)"))
     }
 
+    /// The meeting view asks one Core function what to show for a failure, and shows exactly that: the header sentence
+    /// with Try Again, the notes callout with the code's sentence. No view picks a sentence of its own.
+    /// Mutation: MeetingDetailView, the callout text back to `info.notesPending == "failed" ? L10nKey.meetingNotesFailed.text : ...` -> RED.
+    /// Mutation: MeetingDetailView, the header block restored to `info.status == .failed, let sentence = ...` -> RED.
+    /// Mutation: MeetingDetailView, the Try Again button removed or wired to another action -> RED.
+    /// Mutation: MeetingDetailView, the Rename gate `.disabled(info.inProgress())` -> `.disabled(!info.settled)` -> RED.
+    func testTheMeetingViewShowsTheFailureNoticeAndItsAction() throws {
+        let view = try source("MainWindowUI/MeetingDetailView.swift")
+        XCTAssertTrue(view.contains("if let failure = MeetingFailureNotice.of(info), !failure.notes {"))
+        XCTAssertTrue(view.contains("Notice(symbol: \"exclamationmark.triangle.fill\", text: failure.sentence, tint: .orange)"))
+        XCTAssertTrue(view.contains("if failure.canRetry {\n                    Button(L10nKey.commonRetry.text) { model.actions.retryNotes(info.id) }.controlSize(.small)"))
+        XCTAssertTrue(view.contains("let failure = MeetingFailureNotice.of(info).flatMap { $0.notes ? $0 : nil }"))
+        XCTAssertTrue(view.contains("Callout(symbol: \"arrow.down.circle\", text: failure?.sentence ?? L10nKey.meetingNotesNeedModel.text) {\n                if failure != nil {"))
+        XCTAssertTrue(view.contains("Button(L10nKey.meetingNotesRetry.text) { model.actions.retryNotes(info.id) }"))
+        XCTAssertFalse(view.contains("L10nKey.meetingNotesFailed.text"), "the generic notes sentence is the Core's fallback, not the view's")
+        XCTAssertFalse(view.contains("failureSentence"), "the view does not build a failure sentence itself")
+        XCTAssertTrue(view.contains(".disabled(info.inProgress())"))
+        XCTAssertFalse(view.contains(".disabled(!info.settled)"))
+    }
+
     /// Meetings off, or macOS too old: a sentence that says so, never "bad response".
     func testAFeatureThatCannotRunSaysWhy() throws {
         let text = try window()

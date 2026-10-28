@@ -54,6 +54,7 @@ final class MeetingWindowStateTests: XCTestCase {
     /// A status a newer daemon added keeps the window polling only while the meeting is recent (the 4 h that tracking
     /// allows); an old one is shown neutral, with no spinner, no polling and Rename available.
     /// Mutation: MeetingInfo.inProgress(now:), drop the recency test (return `true` for `.unknown`) -> RED.
+    /// Mutation: same, `guard let started else { return false }` -> `return true`; or `abs(...)` -> the bare difference -> RED.
     /// Mutation: MeetingsPolling.needed, use `!$0.settled` in place of `$0.inProgress(now: now)` -> RED.
     func testAnUnknownStatusIsPolledOnlyWhileRecent() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -68,7 +69,11 @@ final class MeetingWindowStateTests: XCTestCase {
                       "a real unsettled meeting still polls")
         XCTAssertTrue(unknown(hoursAgo: 1).inProgress(now: now))
         XCTAssertFalse(unknown(hoursAgo: 5).inProgress(now: now))
-        XCTAssertTrue(unknown(hoursAgo: nil).inProgress(now: now), "a meeting with no start time is treated as recent")
+        XCTAssertFalse(unknown(hoursAgo: nil).inProgress(now: now), "a meeting with no start time is not 'recent for ever'")
+        XCTAssertFalse(MeetingsPolling.needed(visible: true, meetings: [unknown(hoursAgo: nil)], now: now))
+        XCTAssertTrue(unknown(hoursAgo: -1).inProgress(now: now), "a start an hour ahead (a wrong clock) is recent within the horizon")
+        XCTAssertFalse(unknown(hoursAgo: -5).inProgress(now: now), "a start far in the future is not recent for ever")
+        XCTAssertFalse(MeetingsPolling.needed(visible: true, meetings: [unknown(hoursAgo: -5)], now: now))
         XCTAssertEqual(MeetingRowModel.status(of: unknown(hoursAgo: 1), now: now), .waiting)
         let old = MeetingRowModel.status(of: unknown(hoursAgo: 5), now: now)
         XCTAssertEqual(old, .unrecognized)

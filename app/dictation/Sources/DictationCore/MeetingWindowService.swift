@@ -94,7 +94,19 @@ extension NotesWriterState {
         case "network": return .settingsNotesWriterDownloadNetwork
         case "disk_full": return .settingsNotesWriterDownloadDisk
         case "checksum": return .settingsNotesWriterDownloadChecksum
+        case "server": return .settingsNotesWriterDownloadServer
         default: return .settingsNotesWriterDownloadOther
+        }
+    }
+
+    /// The short sentence for the same failure in the menu (a menu row stays one short line).
+    static func menuDownloadFailureKey(_ code: String?) -> L10nKey {
+        switch code {
+        case "network": return .menuMeetingInstallFailedNetwork
+        case "disk_full": return .menuMeetingInstallFailedDisk
+        case "checksum": return .menuMeetingInstallFailedChecksum
+        case "server": return .menuMeetingInstallFailedServer
+        default: return .menuMeetingInstallFailedOther
         }
     }
 }

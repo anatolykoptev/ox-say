@@ -19,7 +19,8 @@ const (
 	FailSpeechBusy         = "speech_busy"          // the recognizer's queue stayed full through every retry
 	FailSpeechFailed       = "speech_failed"        // the recognizer broke or timed out through every retry
 	FailNoTranscript       = "no_transcript"        // the notes step found no readable transcript
-	FailStorage            = "storage"              // a file of the meeting could not be read or written
+	FailDiskFull           = "disk_full"            // the disk has no room (ENOSPC): freeing space cures it
+	FailStorage            = "storage"              // a file of the meeting could not be read or written, for another reason
 	// The notes engine did not run (notes.EngineDownError): how its start ended.
 	FailNotesEngineStart   = "notes_engine_start"   // the child did not start or crashed
 	FailNotesEngineVerify  = "notes_engine_verify"  // the child ran and the daemon's check refused it
@@ -50,7 +51,9 @@ func failReason(err error, notes bool) string {
 		return FailNotesEngineStart
 	case errors.Is(err, ErrNoNotes):
 		return FailNotesEmpty
-	case errors.As(err, &path), errors.As(err, &link), errors.Is(err, syscall.ENOSPC):
+	case errors.Is(err, syscall.ENOSPC):
+		return FailDiskFull
+	case errors.As(err, &path), errors.As(err, &link):
 		return FailStorage
 	case notes:
 		return FailNotesFailed

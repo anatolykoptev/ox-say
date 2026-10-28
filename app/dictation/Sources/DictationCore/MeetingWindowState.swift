@@ -113,11 +113,7 @@ extension MeetingRowModel {
     /// What to say about a recording that did not finish, in the user's language. The daemon's reason is free English
     /// text that names internals, so it is not shown; the sentence is the app's own for the daemon's `fail_reason` code. nil for a fine recording.
     public static func failureSentence(of info: MeetingInfo, text: (L10nKey) -> String = { $0.text }) -> String? {
-        switch info.status {
-        case .failed: return text(MeetingFailure.key(code: info.failReason, notes: false))
-        case .transcribed: return info.notesPending == "failed" ? text(MeetingFailure.key(code: info.failReason, notes: true)) : nil
-        default: return nil
-        }
+        MeetingFailureNotice.of(info, text: text)?.sentence
     }
 
     /// The title the list shows. A title the app itself gave a call ("Zoom call") is shown in the user's language; any

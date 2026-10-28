@@ -107,8 +107,11 @@ struct MeetingDetailView: View {
                 StatusLabel(status: MeetingRowModel.status(of: info))
             }
             .font(.subheadline).foregroundStyle(.secondary)
-            if info.status == .failed, let sentence = MeetingRowModel.failureSentence(of: info) {
-                Notice(symbol: "exclamationmark.triangle.fill", text: sentence, tint: .orange)
+            if let failure = MeetingFailureNotice.of(info), !failure.notes {
+                Notice(symbol: "exclamationmark.triangle.fill", text: failure.sentence, tint: .orange)
+                if failure.canRetry {
+                    Button(L10nKey.commonRetry.text) { model.actions.retryNotes(info.id) }.controlSize(.small)
+                }
             }
             if info.audioDeleted { Notice(symbol: "clock.arrow.circlepath", text: L10nKey.meetingAudioDeleted.text) }
             if info.heardNoSystemAudio { Notice(symbol: "exclamationmark.triangle.fill", text: L10nKey.noticeMeetingNoSystemAudio.text, tint: .orange) }
@@ -216,8 +219,9 @@ private struct NotesTab: View {
                 NotesSection(section: section)
             }
         } else if info.transcriptMD != nil, info.notesPending == "model_missing" || info.status == .transcribed {
-            Callout(symbol: "arrow.down.circle", text: info.notesPending == "failed" ? L10nKey.meetingNotesFailed.text : L10nKey.meetingNotesNeedModel.text) {
-                if info.notesPending == "failed" {
+            let failure = MeetingFailureNotice.of(info).flatMap { $0.notes ? $0 : nil }
+            Callout(symbol: "arrow.down.circle", text: failure?.sentence ?? L10nKey.meetingNotesNeedModel.text) {
+                if failure != nil {
                     Button(L10nKey.meetingNotesRetry.text) { model.actions.retryNotes(info.id) }
                 } else {
                     Button(L10nKey.meetingNotesGoSettings.text) { model.section = .settings }

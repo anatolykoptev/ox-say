@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,7 +64,7 @@ type notesStatus struct {
 	Installing  bool         `json:"installing,omitempty"`
 	ProgressPct int          `json:"progress_pct,omitempty"`
 	InstallErr  string       `json:"install_error,omitempty"`
-	// InstallCode is the stable code behind InstallErr: network, disk_full, checksum or other. The app shows its own
+	// InstallCode is the stable code behind InstallErr: network, disk_full, checksum, server or other. The app shows its own
 	// sentence for it; InstallErr stays the fetch's English words for the log and the menu.
 	InstallCode string `json:"install_error_code,omitempty"`
 }
@@ -383,17 +384,41 @@ func (n *notesInstall) state() (running bool, err, code string) {
 	return n.running, n.err, n.code
 }
 
-// installFailureCode sorts a failed fetch's last words into the few causes a person can act on. The fetch script
-// (scripts/fetch-models.sh) speaks through curl and its own checksum line, so those are the texts read here.
+// curlExit finds curl's exit number in a fetch's last words: curl's own "curl: (N) ..." line, or the script's
+// "download of X failed (curl exit N)".
+var curlExit = regexp.MustCompile(`curl: \((\d+)\)|curl exit (\d+)`)
+
+// installFailureCode sorts a failed fetch's last words into the few causes a person can act on:
+//
+//	checksum  the file arrived but does not match its pinned hash
+//	disk_full the disk said so ("No space left", a write error); curl's (23) alone is not evidence
+//	network   no route: resolve (6), connect (7), partial file (18), timeout (28), empty reply (52), send/recv (55, 56),
+//	          or the script's "stalled" line
+//	server    curl -f saw an HTTP 4xx/5xx (22): the server answered, so the network is fine
+//	other     everything else: TLS (35, 60), a proxy (5, 97), an unknown text
+//
+// The fetch script (scripts/fetch-models.sh) speaks through curl and its own lines, so those are the texts read here.
 func installFailureCode(tail string) string {
 	low := strings.ToLower(tail)
 	switch {
 	case strings.Contains(low, "checksum mismatch"):
 		return "checksum"
-	case strings.Contains(low, "no space left"), strings.Contains(low, "curl: (23)"), strings.Contains(low, "disk full"):
+	case strings.Contains(low, "no space left"), strings.Contains(low, "write error"), strings.Contains(low, "disk full"):
 		return "disk_full"
-	case strings.Contains(low, "curl: ("):
+	case strings.Contains(low, "stalled"):
 		return "network"
+	}
+	if m := curlExit.FindStringSubmatch(tail); m != nil {
+		n := m[1]
+		if n == "" {
+			n = m[2]
+		}
+		switch n {
+		case "6", "7", "18", "28", "52", "55", "56":
+			return "network"
+		case "22":
+			return "server"
+		}
 	}
 	return "other"
 }

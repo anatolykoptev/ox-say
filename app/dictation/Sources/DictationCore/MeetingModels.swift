@@ -82,11 +82,12 @@ public struct MeetingInfo: Equatable {
 
     /// Work the window should keep watching: an unsettled meeting, or one in an unknown status while it is recent. An
     /// old meeting in a status a newer daemon added is final as far as this app can tell: no spinner, no polling.
-    /// A meeting with no start time cannot be aged, so it counts as recent.
+    /// A meeting with no start time cannot be shown to be recent, so it does not count; a start in the future (a wrong
+    /// clock) counts only within the same horizon, so neither can keep the window polling for ever.
     public func inProgress(now: Date = Date()) -> Bool {
         if case .unknown = status {
-            guard let started else { return true }
-            return now.timeIntervalSince(started) < Self.recentHorizon
+            guard let started else { return false }
+            return abs(now.timeIntervalSince(started)) < Self.recentHorizon
         }
         return !settled
     }
