@@ -35,10 +35,14 @@ final class FakeSystemVolume: SystemVolume {
     /// Writes at this index and later are refused — a fade stopped midway.
     var refuseWritesFrom: Int?
     private(set) var writes: [Float] = []
+    /// A second, present output that is not the default: reads, writes and
+    /// UID lookup reach it by its id.
+    var other: (id: UInt32, uid: String, level: Float)?
 
     func defaultDevice() -> (id: UInt32, uid: String?)? { gone ? nil : device }
     func isSettable(_: UInt32) -> Bool { settable }
     func volume(_ id: UInt32) -> Float? {
+        if let other, other.id == id { return other.level }
         guard !gone, !unreadable, let device, device.id == id else { return nil }
         if pendingWrite != nil, lagLeft > 0 {
             lagLeft -= 1
@@ -51,7 +55,8 @@ final class FakeSystemVolume: SystemVolume {
         return reportedLevel ?? level
     }
     func isMuted(_: UInt32) -> Bool { muted }
-    func setVolume(_: UInt32, _ newLevel: Float) -> Bool {
+    func setVolume(_ id: UInt32, _ newLevel: Float) -> Bool {
+        if other?.id == id { other?.level = newLevel; writes.append(newLevel); return true }
         _ = gate?.wait(timeout: .now() + 1)
         writes.append(newLevel)
         if let refuseWritesFrom, writes.count > refuseWritesFrom { return false }
@@ -72,6 +77,7 @@ final class FakeSystemVolume: SystemVolume {
         return last
     }
     func device(forUID uid: String) -> UInt32? {
+        if let other, other.uid == uid { return other.id }
         guard !gone, let device, device.uid == uid else { return nil }
         return device.id
     }
@@ -416,6 +422,39 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
         XCTAssertEqual(fake.level, 0.25, accuracy: 0.0001, "the original level is still owed")
     }
 
+    // #216.2 — a restore that stopped partway leaves the output between the
+    // duck and the original (0.256 of 0.8 -> 0.12): above `stillQuietBound`,
+    // but it is the failed restore's level, not the user's. The next
+    // dictation still owes the original 0.8.
+    // Mutation: in owedPreDuck delete the `entry.landed` branch (the
+    // `abs(level - entry.landed)` guard) -> the 0.256 is taken as the user's
+    // and stays (RED).
+    func testAPartialRestoreIsStillOwedItsOriginalLevel() {
+        let (fake, duck) = rig()
+        duck.begin(generation: 1)
+        fake.refuseWritesFrom = fake.writes.count + 1 // the first restore step lands, the rest are refused
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.256, accuracy: 0.001, "the restore stopped at its first step")
+        fake.refuseWritesFrom = nil
+        duck.begin(generation: 2)
+        duck.end(generation: 2)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "the original level is still owed")
+    }
+
+    // The partial level must be where the failed restore left it: a user who
+    // moved the output since (0.256 -> 0.35) chose that level.
+    func testAUserLevelAfterAPartialRestoreIsTheirOwn() {
+        let (fake, duck) = rig()
+        duck.begin(generation: 1)
+        fake.refuseWritesFrom = fake.writes.count + 1
+        duck.end(generation: 1)
+        fake.refuseWritesFrom = nil
+        fake.level = 0.35
+        duck.begin(generation: 2)
+        duck.end(generation: 2)
+        XCTAssertEqual(fake.level, 0.35, accuracy: 0.0001)
+    }
+
     // #200.1 — an owed restore is forgotten after `owedLifetime`: the output
     // that sits at the duck's level five minutes on was most likely put there
     // by the user. Mutation: in owedPreDuck delete the `owedLifetime` guard
@@ -444,6 +483,44 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
         duck.begin(generation: 2)
         duck.end(generation: 2)
         XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "inside the lifetime the original level comes back")
+    }
+
+    // #216.3 — an owed entry that expires, is claimed or is overtaken by the
+    // user is said once, without content (no level, no device).
+    // Mutation: in owedPreDuck drop the three logError calls -> RED.
+    func testOwedEntriesAreLoggedWhenTheyExpireOrAreClaimed() {
+        var clock = Date(timeIntervalSinceReferenceDate: 1_000)
+        var errors: [String] = []
+        let (fake, duck) = rig(logError: { errors.append($0) }, now: { clock })
+        func failedDuck(_ g: Int) {
+            duck.begin(generation: g)
+            fake.refusedWrites = 2
+            duck.end(generation: g)
+        }
+        failedDuck(1)
+        errors.removeAll()
+        clock = clock.addingTimeInterval(VolumeDuckCoordinator.owedLifetime + 1)
+        duck.begin(generation: 2)
+        XCTAssertEqual(errors.count, 1, "expiry: \(errors)")
+        XCTAssertTrue(errors.first?.contains("expired") ?? false, "\(errors)")
+        duck.end(generation: 2)
+
+        fake.level = 0.8
+        failedDuck(3)
+        errors.removeAll()
+        duck.begin(generation: 4)
+        XCTAssertEqual(errors.count, 1, "claim: \(errors)")
+        XCTAssertTrue(errors.first?.contains("claimed") ?? false, "\(errors)")
+        duck.end(generation: 4)
+
+        fake.level = 0.8
+        failedDuck(5)
+        errors.removeAll()
+        fake.level = 0.5
+        duck.begin(generation: 6)
+        XCTAssertEqual(errors.count, 1, "overtaken: \(errors)")
+        XCTAssertTrue(errors.first?.contains("dropped") ?? false, "\(errors)")
+        XCTAssertFalse(errors.joined().contains("fake-output"))
     }
 
     // G2 — an owed restore belongs to its device: a dictation on another
@@ -591,9 +668,48 @@ final class VolumeDuckRecoveryTests: XCTestCase {
         XCTAssertNil(store.record)
     }
 
-    func testALaunchOnAnotherDefaultOutputWritesNothing() {
+    // #265 leftover: a record whose device is absent (unplugged AirPods) is
+    // kept for a later launch, not dropped; nothing is written. The 24 h
+    // lifetime still bounds it.
+    // Mutation: in recoverInterrupted make the absent-device branch
+    // `records?.clear()` -> RED.
+    func testALaunchWhileTheDeviceIsAbsentKeepsTheRecord() {
         let (fake, store, duck) = rig(level: 0.12)
-        store.record = record(uid: "other-output")
+        let kept = record(uid: "airpods")
+        store.record = kept
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertEqual(store.record, kept, "the device may be back at a later launch")
+        XCTAssertEqual(errors.count, 1, "kept loudly, once: \(errors)")
+        XCTAssertFalse(errors.joined().contains("airpods"))
+    }
+
+    func testAnAbsentDevicesRecordStillDiesOfAge() {
+        let (fake, store, duck) = rig(level: 0.12)
+        store.record = record(uid: "airpods", age: VolumeDuckCoordinator.recordLifetime + 1)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertNil(store.record)
+    }
+
+    // The ducked device is present but not the default output: it is found by
+    // UID and given its level back there.
+    // Mutation: in recoverInterrupted require `device.uid == record.uid` of
+    // the default device again -> the level stays ducked (RED).
+    func testALaunchRestoresADuckedDeviceThatIsNotTheDefault() {
+        let (fake, store, duck) = rig(level: 0.5)
+        fake.other = (id: 90, uid: "airpods", level: 0.12)
+        store.record = record(uid: "airpods")
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.other?.level ?? 0, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(fake.level, 0.5, accuracy: 0.0001, "the default output is left alone")
+        XCTAssertNil(store.record)
+    }
+
+    func testALaunchLeavesANonDefaultDeviceTheUserMoved() {
+        let (fake, store, duck) = rig(level: 0.5)
+        fake.other = (id: 90, uid: "airpods", level: 0.4)
+        store.record = record(uid: "airpods")
         duck.recoverInterrupted()
         XCTAssertEqual(fake.writes, [])
         XCTAssertNil(store.record)
@@ -1084,6 +1200,15 @@ final class SoundWhileDictatingAppGlueTests: XCTestCase {
             .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
         XCTAssertTrue(app.contains("soundWhileDictating.recoverInterruptedDuck()"))
         XCTAssertTrue(app.contains("soundWhileDictating.afterSettled { NSSound.beep() }"))
+    }
+
+    // #265 leftover: the "busy" beep (a key press while transcribing) waits for
+    // the restore ramp like the notice beep does.
+    // Mutation: AppDelegate `controller.onBusy = { NSSound.beep() }` -> RED.
+    func testTheBusyBeepWaitsForTheRestoreRamp() throws {
+        let app = stripComments(try source("Sources/OxSayDictation/AppDelegate.swift"))
+            .components(separatedBy: .whitespacesAndNewlines).joined(separator: " ")
+        XCTAssertTrue(app.contains("controller.onBusy = { [weak self] in self?.soundWhileDictating.afterSettled { NSSound.beep() } }"))
     }
 
     // While a call is on, dictation must not lower the far side: the app hands
