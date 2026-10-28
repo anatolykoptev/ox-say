@@ -1,0 +1,131 @@
+diff --git a/src/frame-budget.h b/src/frame-budget.h
+new file mode 100644
+index 0000000..bce4557
+--- /dev/null
++++ b/src/frame-budget.h
+@@ -0,0 +1,16 @@
++#pragma once
++// frame-budget.h: the most frames one request may generate, derived from the
++// length of its text. Speech runs at 12.5 frames/s, so a talker that never
++// emits EOS would otherwise run to max_new_tokens (2048 frames, 164 s) for a
++// three-word request. The constants come from measured speech rates; the
++// derivation is in engine/README.md "Speech length".
++
++#define QT_FRAME_BUDGET_PER_TOKEN 8
++#define QT_FRAME_BUDGET_BASE      60
++
++// n_text_tokens is the utterance's BPE token count (PromptBuilderOutput::N_text).
++// The result never exceeds max_new_tokens (the caller's cap).
++static inline int qt_frame_budget(int n_text_tokens, int max_new_tokens) {
++    const long long b = (long long) QT_FRAME_BUDGET_PER_TOKEN * (n_text_tokens < 0 ? 0 : n_text_tokens) + QT_FRAME_BUDGET_BASE;
++    return b < (long long) max_new_tokens ? (int) b : max_new_tokens;
++}
+diff --git a/src/pipeline-tts.cpp b/src/pipeline-tts.cpp
+index 7e64d76..94116f4 100644
+--- a/src/pipeline-tts.cpp
++++ b/src/pipeline-tts.cpp
+@@ -9,6 +9,7 @@
+ #include "code-predictor-forward.h"
+ #include "codec-chunked-decode.h"
+ #include "debug.h"
++#include "frame-budget.h"
+ #include "ggml.h"
+ #include "pipeline-codec.h"
+ #include "prompt-builder.h"
+@@ -509,6 +510,7 @@ struct TtsSlot {
+ 
+     // AR state, one to one with the single sequence loop.
+     int                  step;            // frames emitted so far
++    int                  frame_budget;    // frames this request may emit before it counts as a runaway
+     int64_t              subseq_counter;  // Philox subsequence cursor
+     std::vector<int32_t> talker_history;  // emitted c0, feeds repetition penalty
+     std::vector<int32_t> prev_ids;        // previous frame codes [num_code_groups]
+@@ -817,6 +819,7 @@ bool tts_engine_admit(TtsEngine * e, TtsJob * job) {
+     s.ref_codes_ptr    = NULL;
+     s.ref_codes_T      = 0;
+     s.step             = 0;
++    s.frame_budget     = params->max_new_tokens;
+     s.subseq_counter   = 0;
+     s.prev_overlay     = NULL;
+     s.pending_c0       = -1;
+@@ -877,6 +880,9 @@ bool tts_engine_admit(TtsEngine * e, TtsJob * job) {
+         return tts_admit_fail(job, QT_STATUS_GENERATE_FAILED);
+     }
+     s.perf.build_ms = t_build.ms();
++    s.frame_budget  = qt_frame_budget(s.prompt.N_text, params->max_new_tokens);
++    qt_log(QT_LOG_INFO, "[Pipeline] Frame budget %d (%d text tokens, cap %d)", s.frame_budget, s.prompt.N_text,
++           params->max_new_tokens);
+ 
+     if (params->dump_dir) {
+         DebugDumper d;
+@@ -1316,8 +1322,15 @@ void tts_engine_step(TtsEngine * e, std::vector<TtsJob *> * retired) {
+                     if ((s.step % 8) == 0) {
+                         qt_log(QT_LOG_INFO, "[Pipeline] Generated %d frames (slot %d)", s.step, i);
+                     }
+-                    if (s.step >= p->max_new_tokens) {
+-                        s.finished = true;
++                    if (s.step >= s.frame_budget) {
++                        // The talker never emitted EOS inside the budget: the
++                        // audio so far is NOT the text (cut off, or looping).
++                        // That is an error, never a take that passes as done.
++                        qt_set_error("runaway: no end after %d frames (budget %d, %d text tokens)", s.step,
++                                     s.frame_budget, s.prompt.N_text);
++                        qt_log(QT_LOG_ERROR, "[Pipeline] %s (slot %d)", qt_last_error(), i);
++                        s.finished   = true;
++                        s.fin_status = QT_STATUS_GENERATE_FAILED;
+                     }
+                 }
+             }
+diff --git a/src/tts-server.h b/src/tts-server.h
+index 6c227c6..673bc80 100644
+--- a/src/tts-server.h
++++ b/src/tts-server.h
+@@ -272,6 +272,16 @@ static bool tts_parse_request(const std::string & body, tts_request & req, std::
+ // Map an ABI status to an HTTP code. The two ABIs share numeric values:
+ // -1 invalid params, -2 mode/instruct invalid -> client error ; the rest
+ // are server side failures.
++// A take whose talker hit its frame budget without ending (qt_synthesize
++// failed with "runaway: ..."). Not a qt_status: it only exists between the
++// backend adapter and the HTTP layer, which answers it with a typed error so
++// the supervising process can tell it from a crash.
++#define TTS_RC_RUNAWAY (-100)
++
++static const char * tts_error_type(int rc) {
++    return rc == TTS_RC_RUNAWAY ? "generation_runaway" : "server_error";
++}
++
+ static int tts_status_to_http(int rc) {
+     if (rc == 0) {
+         return 200;
+@@ -304,7 +314,7 @@ static void tts_handle_speech(const tts_backend & be, const httplib::Request & h
+         std::string synth_err;
+         int         rc = be.synthesize(req, sink, synth_err);
+         if (rc != 0) {
+-            tts_json_error(res, tts_status_to_http(rc), "server_error",
++            tts_json_error(res, tts_status_to_http(rc), tts_error_type(rc),
+                            synth_err.empty() ? "synthesis failed" : synth_err.c_str());
+             return;
+         }
+@@ -369,7 +379,7 @@ static void tts_handle_speech(const tts_backend & be, const httplib::Request & h
+             err          = st->err;
+             lk.unlock();
+             st->th.join();
+-            tts_json_error(res, tts_status_to_http(rc), "server_error", err.empty() ? "synthesis failed" : err.c_str());
++            tts_json_error(res, tts_status_to_http(rc), tts_error_type(rc), err.empty() ? "synthesis failed" : err.c_str());
+             return;
+         }
+     }
+diff --git a/tools/tts-server.cpp b/tools/tts-server.cpp
+index 58c014a..16a7237 100644
+--- a/tools/tts-server.cpp
++++ b/tools/tts-server.cpp
+@@ -316,6 +316,9 @@ int main(int argc, char ** argv) {
+         qt_audio_free(&out);
+         if (rc != QT_STATUS_OK) {
+             err = qt_last_error();
++            if (rc == QT_STATUS_GENERATE_FAILED && err.compare(0, 8, "runaway:") == 0) {
++                return TTS_RC_RUNAWAY;
++            }
+             return (int) rc;
+         }
+         return 0;

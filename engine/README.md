@@ -129,6 +129,67 @@ Xcode's `otool` prints SME/SVE words as `.long 0x...`) and an empty disassembly,
 that cannot see an instruction fails the build instead of passing it. `scripts/check-arm64-baseline_test.sh` assembles one probe per
 instruction family (and M1-legal controls) and checks the guard against the real engine binaries.
 
+## Speech length (#122, #91)
+
+Measured on the pinned engine (qwentts `6fae929`, `qwen-talker-0.6b-base-Q8_0`, M-series Mac), sentences
+of 1 to 55 text tokens, 5 voices per language (no voice, three same-language clones, one other-language
+clone), seed 7, 315 requests. Speech runs at 12.5 frames/s.
+
+| text, voices | takes | frames/token p50 | p99 | max | frames/char p50 | p99 | chars/token |
+|---|---|---|---|---|---|---|---|
+| en, en voices or none | 120 | 3.41 | 5.50 | 5.85 | 0.71 | 2.70 | 4.88 |
+| en, ru voice | 30 | 4.37 | 16.40 | 20.00 | 0.88 | 7.83 | 4.88 |
+| ru, ru voices or none | 132 | 2.70 | 5.53 | 10.00 | 0.94 | 3.23 | 2.94 |
+| ru, en voice | 32 | 2.91 | 4.05 | 4.12 | 1.01 | 1.67 | 2.92 |
+
+The high tails are 1 to 3 token texts ("Yes.", a name): a fixed lead and tail of silence dominates.
+The shortest take that needed the most room was 20 frames per token at 2 tokens (40 frames, 3.2 s).
+Long texts are slower per token than short ones are fast per frame: 600 to 3000 chars ran 2.0 to
+2.8 frames/token (en 3002 chars: 1685 frames, 135 s; ru 2603 chars: 1805 frames, 144 s).
+
+**Frame budget (patch 0003).** A request may emit at most `8 x text tokens + 60` frames (and never more
+than `max_new_tokens`, default 2048). Every one of 314 normal takes ended at or under 57% of its
+budget (the worst: 26 tokens, 152 frames, budget 268), so the bound is 1.76 times the slowest take
+measured, and 8 frames/token is 1.4 times the slowest per-token rate of any sentence of 8 or more
+tokens (5.85). The constant 60 frames (4.8 s) covers the lead and tail of a one-word take. A 3-word
+request that runs away is stopped at under 7 s, not 164 s. The bound sits in the engine because only the
+engine has the BPE token count and sees the talker not emitting EOS; the daemon can only guess from
+characters (2.9 to 4.9 chars/token). Hitting the budget (or a `max_new_tokens` set by the caller) is an
+error, not a short take: HTTP 502, type `generation_runaway` on the wav route, and a failed transfer on
+the streaming (pcm) route, whose 200 has already gone out. The daemon counts both under
+`/status` `tts_faults`. Natural runaways were seen twice in 630 requests (a Russian sentence with an
+English voice ran the full 2048 frames = 163.84 s unpatched; with the patch one ru-voice sentence stopped
+at 436 frames after 6 s). They are not reproducible on demand, so
+`scripts/test-tts-frame-budget.sh` forces the same code path with `max_new_tokens: 5`.
+
+**Long input.** Unpatched, a text the model cannot finish in 2048 frames comes back as a WAV of 163.84 s
+with a 200 and no sign of the cut. Where it stops covering the text (transcribed with Parakeet, 16 kHz):
+
+| text | chars | audio | EOS | words heard / in text | last words heard |
+|---|---|---|---|---|---|
+| en | 3002 | 134.8 s | yes | 542 / 542 | "...the animals out to the fields" (correct end) |
+| en | 4165 | 163.84 s | no | 653 / 749 | "...the new version fixed the bridge" (mid-text) |
+| ru | 1602 | 108.2 s | yes | 222 / 220 | correct end |
+| ru | 2036 | 163.84 s | no | 279 / 279 | "...о цене на рыбку по линии" (end garbled) |
+| ru | 2603 | 144.4 s | yes | 354 / 354 | correct end |
+| ru | 3037 | 163.84 s | no | 368 / 413 | cut mid-text |
+| ru | 4071 | 163.84 s | no | 343 / 554 | cut mid-text |
+
+So Russian is cut or garbled from about 2000 chars and English from about 3300, both well under the
+daemon's 5000-character limit; the point depends on the take's pace. The daemon therefore speaks
+qwen3-tts input in pieces of at most 600 characters (`qwenChunkChars`, `internal/daemon/speak_split.go`),
+cut at sentence ends, all on one seed, joined with 0.25 s of silence. 600 characters is 25 to 60 s of
+audio, under a third of the cap.
+
+## patches/qwentts/0003-frame-budget-runaway.patch
+
+Adds `src/frame-budget.h` (`qt_frame_budget`, the constants above) and replaces the silent
+`max_new_tokens` stop in `tts_engine_step` with a failed take: the request's budget is derived from
+`PromptBuilderOutput::N_text` when the slot is admitted (logged as `Frame budget N (T text tokens, cap C)`),
+and reaching it without EOS fails the take with `runaway: no end after N frames ...`. `tts-server`
+answers that as `generation_runaway` (a typed error the daemon recognises) instead of a plain 502.
+Verified by `scripts/test-tts-frame-budget.sh` against a built engine.
+
 ## patches/qwentts/0002-tts-server-local-only.patch
 
 Upstream `tts-server` answers every origin (`Access-Control-Allow-Origin: *`),

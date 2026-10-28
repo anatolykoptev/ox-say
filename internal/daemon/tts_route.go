@@ -21,7 +21,28 @@ const (
 	fieldModel    = "model"
 	fieldSeed     = "seed"
 	fieldInstruct = "instructions"
+	// fieldSeedDefaulted marks (in the daemon only, never sent) a seed that
+	// came from OX_SAY_SEED and not from the caller.
+	fieldSeedDefaulted = "_ox_seed_defaulted"
 )
+
+// seedFixed is the seed the request pins: present and not negative (-1 asks
+// the engine to draw one, so it pins nothing).
+func seedFixed(body map[string]any) (int64, bool) {
+	if s := seedOf(body); s != nil && *s >= 0 {
+		return *s, true
+	}
+	return 0, false
+}
+
+// popSeedDefaulted removes the fieldSeedDefaulted mark and reports it.
+func popSeedDefaulted(body map[string]any) bool {
+	_, ok := body[fieldSeedDefaulted]
+	delete(body, fieldSeedDefaulted)
+	return ok
+}
+
+type seedDefaultedKey struct{}
 
 // maxEngineWAVBytes caps one rendered take read from an engine child.
 const maxEngineWAVBytes = 256 << 20
@@ -62,7 +83,10 @@ func synthStatus(err error) int {
 	var ie *voices.InputError
 	var ee *engineError
 	var ce *conflictError
+	var rwe *runawayError
 	switch {
+	case errors.As(err, &rwe):
+		return http.StatusBadGateway
 	case errors.As(err, &ce):
 		return http.StatusConflict
 	case errors.As(err, &re), errors.As(err, &ie):
@@ -101,6 +125,7 @@ var voxOnlyFields = []string{"cfg_value", "inference_timesteps", "clone_mode"}
 func (d *Daemon) prepareSpeech(body map[string]any) (model, warning string, err error) {
 	d.applyLanguageDefault(body)
 	d.applyVoiceDefault(body)
+	d.applySeedDefault(body)
 	m, _ := body[fieldModel].(string)
 	switch name := strings.TrimSpace(m); name {
 	case config.TTSModelVoxCPM2, config.TTSModelQwen:
@@ -190,15 +215,14 @@ func (d *Daemon) normalizeSpeakText(body map[string]any) {
 
 // synthesize renders a prepared body on model. It applies no defaults.
 func (d *Daemon) synthesize(ctx context.Context, body map[string]any, model string) (*synthOut, error) {
+	if popSeedDefaulted(body) {
+		ctx = context.WithValue(ctx, seedDefaultedKey{}, true)
+	}
 	body["response_format"] = "wav"
 	if model == config.TTSModelVoxCPM2 {
 		return d.synthesizeVoxCPM2(ctx, body)
 	}
-	wav, err := d.synthesizeQwen(ctx, body)
-	if err != nil {
-		return nil, err
-	}
-	return &synthOut{WAV: wav, Model: config.TTSModelQwen, Seed: seedOf(body)}, nil
+	return d.synthesizeQwenSplit(ctx, body)
 }
 
 // render = prepareSpeech + synthesize on a copy of params: the speak tool,

@@ -12,6 +12,15 @@
 //	OXSAY_FAKE_EXIT_ONCE      with EXIT_MS: only self-exit once per FAKE_DIR
 //	OXSAY_FAKE_SPEECH_BLOCK   speech blocks until the request context ends
 //	OXSAY_FAKE_IGNORE_SIGTERM SIGTERM is ignored; only SIGKILL ends the child
+//	OXSAY_FAKE_SPEECH_LOG     append-only file: one JSON line per speech body
+//	OXSAY_FAKE_SPEECH_RUNAWAY n | n+ | all: the n-th speech request (1-based,
+//	                          counted per child), every one from the n-th on
+//	                          ("n+"), or every one ("all") answers like the real engine whose talker
+//	                          never emitted EOS and hit its frame budget:
+//	                          502 + error type "generation_runaway"
+//	OXSAY_FAKE_SPEECH_ABORT   n: the n-th speech request starts a 200 stream
+//	                          and cuts the connection mid-body (the engine's
+//	                          answer to a failure after the stream began)
 //
 // Fake audiocpp_server (the voxcpm2 child; selected on OXSAY_FAKE_VOX=1 AND a
 // --config flag in argv, checked first): reads host/port from the --config
@@ -570,6 +579,20 @@ func runFakeSTT(args []string) int {
 	return 0
 }
 
+// runawayAt reports whether the nth speech request is one the knob
+// OXSAY_FAKE_SPEECH_RUNAWAY ("n", "n+" or "all") makes run away.
+func runawayAt(spec string, nth int) bool {
+	if spec == "all" {
+		return true
+	}
+	from := strings.HasSuffix(spec, "+")
+	n, err := strconv.Atoi(strings.TrimSuffix(spec, "+"))
+	if err != nil || n < 1 {
+		return false
+	}
+	return nth == n || (from && nth > n)
+}
+
 func runFakeChild() int {
 	fs := flag.NewFlagSet("fake-child", flag.ContinueOnError)
 	port := fs.Int("port", 0, "")
@@ -596,6 +619,7 @@ func runFakeChild() int {
 
 	var mu sync.Mutex
 	registry := map[string]string{} // name → ref_text
+	speechN := 0                    // speech requests served (guarded by mu)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -668,6 +692,38 @@ func runFakeChild() int {
 				http.Error(w, "unknown voice", http.StatusBadRequest)
 				return
 			}
+		}
+		if logPath := os.Getenv("OXSAY_FAKE_SPEECH_LOG"); logPath != "" {
+			raw, _ := json.Marshal(body)
+			if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+				_, _ = f.Write(append(raw, '\n'))
+				_ = f.Close()
+			}
+		}
+		mu.Lock()
+		speechN++
+		nth := speechN
+		mu.Unlock()
+		if runawayAt(os.Getenv("OXSAY_FAKE_SPEECH_RUNAWAY"), nth) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+				"type":    "generation_runaway",
+				"message": "generation ran past its frame budget without ending",
+			}})
+			return
+		}
+		if n, _ := strconv.Atoi(os.Getenv("OXSAY_FAKE_SPEECH_ABORT")); n > 0 && nth == n {
+			w.Header().Set("Content-Type", "audio/pcm")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(make([]byte, 4800))
+			w.(http.Flusher).Flush()
+			if hj, ok := w.(http.Hijacker); ok {
+				if c, _, err := hj.Hijack(); err == nil {
+					_ = c.Close()
+				}
+			}
+			return
 		}
 		if os.Getenv("OXSAY_FAKE_SPEECH_BLOCK") == "1" {
 			if dir != "" {

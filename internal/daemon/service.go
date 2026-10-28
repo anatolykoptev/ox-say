@@ -103,7 +103,10 @@ type Daemon struct {
 	// speaking, designing and transcribing count in-flight work /status
 	// reports under busy: a restart kills any of them mid-request, and all
 	// can be driven by CLI and MCP clients nothing else can see.
-	speaking     atomic.Int64
+	speaking atomic.Int64
+	// runaways and streamAborts back /status tts_faults.
+	runaways     atomic.Int64
+	streamAborts atomic.Int64
 	designing    atomic.Int64
 	transcribing atomic.Int64
 
@@ -486,6 +489,22 @@ func (d *Daemon) applyVoiceDefault(body map[string]any) {
 	}
 }
 
+// applySeedDefault gives a request that names no seed the daemon's
+// OX_SAY_SEED, so the voice stays the same from one request to the next. A
+// request seed is left alone; a negative one is the engine's "draw a random
+// seed" and counts as none. It marks body (fieldSeedDefaulted) when it filled
+// the seed, so a later runaway may be retried on a fresh seed — a seed the
+// caller pinned must not be swapped behind their back.
+func (d *Daemon) applySeedDefault(body map[string]any) {
+	if d.Cfg.Seed == nil {
+		return
+	}
+	if _, ok := seedFixed(body); !ok {
+		body[fieldSeed] = *d.Cfg.Seed
+		body[fieldSeedDefaulted] = true
+	}
+}
+
 // configuredVoice picks the configured voice for a language code: the
 // per-language OX_SAY_VOICE_<LANG> wins, then the global OX_SAY_VOICE.
 func (d *Daemon) configuredVoice(lang string) string {
@@ -595,6 +614,9 @@ type statusSummary struct {
 	// version handshake — checks Idle first.
 	Busy busySummary `json:"busy"`
 	Idle bool        `json:"idle"`
+	// TTSFaults counts speech takes the engine failed to finish since the
+	// daemon started (see ttsFaults).
+	TTSFaults ttsFaults `json:"tts_faults"`
 }
 
 var version = "dev"
@@ -639,9 +661,10 @@ func (d *Daemon) Status() statusSummary {
 			"stt_vad_model":     d.Cfg.STTVADModel,
 			"tts_model":         d.Cfg.TTSModel,
 		},
-		Version: version,
-		Busy:    busy,
-		Idle:    busy.idle(),
+		Version:   version,
+		Busy:      busy,
+		Idle:      busy.idle(),
+		TTSFaults: ttsFaults{Runaways: d.runaways.Load(), StreamAborts: d.streamAborts.Load()},
 	}
 }
 

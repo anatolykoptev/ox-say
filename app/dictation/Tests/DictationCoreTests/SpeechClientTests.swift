@@ -69,6 +69,34 @@ final class SpeechClientTests: XCTestCase {
         }
     }
 
+    /// The daemon answers a stopped take as 502 with the typed code; the app shows a
+    /// sentence, not the JSON. Any other error body stays the raw .http.
+    /// Mutation: SpeechClient.failure, return .http for every body -> RED.
+    func testRunawayBecomesASentenceNotRawJson() async {
+        let json = #"{"error":{"message":"the speech engine did not finish","type":"generation_runaway"}}"#
+        let (client, _) = fakeSend(data: Data(json.utf8), status: 502)
+        do {
+            _ = try await client.speak("hello")
+            XCTFail("a 502 must throw")
+        } catch let error as SpeechError {
+            XCTAssertEqual(error, .runaway)
+            XCTAssertEqual(error.description, L10nKey.noticeSpeechRunaway.text)
+            XCTAssertFalse(error.description.contains("{"), "raw JSON reached the user")
+        } catch {
+            XCTFail("want SpeechError, got \(error)")
+        }
+        let (other, _) = fakeSend(data: Data(#"{"error":{"message":"engine busy","type":"Bad Gateway"}}"#.utf8), status: 502)
+        do {
+            _ = try await other.speak("hello")
+            XCTFail("a 502 must throw")
+        } catch let error as SpeechError {
+            guard case .http(502, let body) = error else { return XCTFail("want .http(502), got \(error)") }
+            XCTAssertTrue(body.contains("engine busy"))
+        } catch {
+            XCTFail("want SpeechError, got \(error)")
+        }
+    }
+
     func testEmptyBodyIsBadResponse() async {
         let (client, _) = fakeSend(data: Data())
         do {
