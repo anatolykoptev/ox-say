@@ -50,8 +50,9 @@ const farSide = "so the plan is to ship the release on friday after the review"
 
 // On speakers the microphone hears the far side a moment late; that echo is
 // dropped, the owner's own sentence is kept.
-// Mutation: internal/meeting/merge.go isEcho, change `>= echoShare` to
-// `>= 2` -> RED (the echo stays in the transcript).
+// Mutation: internal/meeting/echo_match.go echoMatchAt, change the final
+// `return lcs(...) == common || sharesBigram(...)` to `return false` -> RED
+// (the echo stays in the transcript).
 func TestDropEchoRemovesTheFarSideHeardOnTheMic(t *testing.T) {
 	them := words(10, farSide)
 	echo := words(10.3, "plan is to ship the release on friday after review") // recognizer dropped two words
@@ -130,8 +131,8 @@ func TestDropEchoKeepsAConfirmationAfterTheFarSide(t *testing.T) {
 
 // An acoustic echo is simultaneous with the far side: it starts a fraction of
 // a second late and overlaps it.
-// Mutation: internal/meeting/merge.go isEcho, change `>= echoShare` to `>= 2`
-// -> RED.
+// Mutation: internal/meeting/echo_match.go echoMatchAt, change the final
+// `return lcs(...) == common || sharesBigram(...)` to `return false` -> RED.
 func TestDropEchoRemovesAnEchoThatOverlapsTheFarSide(t *testing.T) {
 	text := "давайте тогда отправим предложение в пятницу до обеда"
 	them := spaced(0, 0.5, text)
@@ -186,7 +187,7 @@ func TestDropEchoCountsWhatItDrops(t *testing.T) {
 // be judged an echo just because those words also occur in the far side's
 // sentence. Realistic talk-over turns, en and ru.
 // Mutation F1: internal/meeting/merge.go isEcho, replace the echoMatch call
-// with `voices.WordShare(t.Text, near.String()) >= echoShare` -> RED.
+// with `voices.WordShare(t.Text, near.String()) >= 0.7` -> RED.
 func TestDropEchoKeepsTalkOverMadeOfCommonWords(t *testing.T) {
 	cases := []struct{ name, them, me string }{
 		{"en", "and that is why I do not think it is the right time to hire",
@@ -249,5 +250,103 @@ func TestTurnGapExceedsTwiceTheEchoLatency(t *testing.T) {
 	gap, lat := turnGap, echoLatency
 	if gap <= 2*lat {
 		t.Fatalf("turnGap = %v must exceed 2*echoLatency = %v", gap, 2*lat)
+	}
+}
+
+// Languages without a stopword list: common-word talk-over must still be kept,
+// because the meeting's own frequent words count like stopwords. The meeting
+// needs at least fnMinTurns turns to derive anything; fillerMeeting builds one
+// from sentences of the language, far apart in time from the turn under test.
+func fillerMeeting(sentences []string) (me, them []stt.Word) {
+	at := 100.0
+	for i, s := range sentences {
+		if i%2 == 0 {
+			them = append(them, spaced(at, 0.4, s)...)
+		} else {
+			me = append(me, spaced(at, 0.4, s)...)
+		}
+		at += 20
+	}
+	return
+}
+
+var langCases = []struct {
+	name, far, talkOver, echo string
+	filler                    []string
+}{
+	{"de", "das ist ja nicht so einfach wie ich es mir vorgestellt habe ich weiss es nicht",
+		"ja ja das ist so ich weiss es", "wir müssen den termin auf ende nächsten monats verschieben",
+		[]string{"das ist ja so ich weiss es nicht", "ich weiss das ist so schwierig", "ja das ist wirklich ein problem",
+			"ich weiss es nicht das ist ja so", "es ist ja so wie es ist", "ja ich denke das ist so",
+			"das ist so ich weiss", "ja es ist so", "ich weiss ja das ist es", "das ist ja nicht so", "ja ich weiss das ist es", "ist das so ja"}},
+	{"es", "es que no lo se pero creo que de verdad podemos terminar el viernes",
+		"si si es que no lo se de verdad", "tenemos que mover la fecha al final del próximo mes",
+		[]string{"es que no lo se de verdad", "si es que no lo se", "no lo se es que de verdad", "si creo que es de verdad",
+			"es que si no lo se", "no es que lo se de verdad", "si es de verdad que no", "es que no lo se si",
+			"de verdad que no lo se", "si no lo se es que", "es que de verdad no lo se", "no se si es que de verdad"}},
+	{"fr", "c'est pas ça que je voulais dire je sais bien que ce n'est pas simple",
+		"oui oui c'est ça je sais bien", "nous devons repousser la date à la fin du mois prochain",
+		[]string{"oui c'est ça je sais bien", "je sais bien que c'est ça", "oui je sais c'est bien ça", "c'est ça oui je sais",
+			"bien sûr je sais c'est ça", "oui c'est bien ça je sais", "je sais bien oui c'est ça", "c'est bien ça je sais oui",
+			"oui je sais bien c'est ça", "ça c'est bien je sais oui", "c'est oui je sais bien ça", "je sais c'est ça bien oui"}},
+}
+
+// Mutation: internal/meeting/merge.go DropEcho, pass `nil` instead of
+// `frequentWords(turns)` to isEcho -> RED.
+func TestDropEchoKeepsTalkOverInLanguagesWithoutAStopwordList(t *testing.T) {
+	for _, c := range langCases {
+		t.Run(c.name, func(t *testing.T) {
+			fme, fthem := fillerMeeting(c.filler)
+			them := append(spaced(0, 0.4, c.far), fthem...)
+			me := append(spaced(0.2, 0.4, c.talkOver), fme...)
+			got, dropped := DropEcho(MergeTurns(me, them))
+			if dropped != 0 {
+				t.Fatalf("dropped = %d, the owner's talk-over %q must be kept: %+v", dropped, c.talkOver, got)
+			}
+		})
+	}
+}
+
+func TestDropEchoStillRemovesEchoInLanguagesWithoutAStopwordList(t *testing.T) {
+	far := map[string]string{
+		"de": "wir müssen den termin auf das ende des nächsten monats verschieben weil der lieferant spät ist",
+		"es": "tenemos que mover la fecha límite al final del próximo mes porque el proveedor se retrasa",
+		"fr": "nous devons repousser la date limite à la fin du mois prochain parce que le fournisseur est en retard",
+	}
+	for _, c := range langCases {
+		t.Run(c.name, func(t *testing.T) {
+			fme, fthem := fillerMeeting(c.filler)
+			them := append(spaced(0, 0.4, far[c.name]), fthem...)
+			me := append(spaced(0.2, 0.4, c.echo), fme...)
+			got, dropped := DropEcho(MergeTurns(me, them))
+			if dropped != 1 {
+				t.Fatalf("dropped = %d, want the echo %q dropped: %+v", dropped, c.echo, got)
+			}
+		})
+	}
+}
+
+// A meeting shorter than fnMinTurns derives no function words: with no list
+// for its language the talk-over is judged on order alone. Pinned so the
+// limit stays visible.
+func TestFrequentWordsNeedsAMeetingOfMinimumSize(t *testing.T) {
+	short := []Turn{{Text: "das ist so"}, {Text: "das ist ja"}, {Text: "das ist es"}}
+	if got := frequentWords(short); got != nil {
+		t.Fatalf("frequentWords of %d turns = %v, want nil", len(short), got)
+	}
+	long := make([]Turn, fnMinTurns)
+	for i := range long {
+		long[i] = Turn{Text: "das ist so"}
+	}
+	if !frequentWords(long)["das"] {
+		t.Fatalf("a word in every turn of a %d-turn meeting must be frequent", fnMinTurns)
+	}
+}
+
+// "ее" is how recognizers often spell "её".
+// Mutation: internal/meeting/echo_match.go stopwords, remove "ее" -> RED.
+func TestRussianStopwordsKnowTheYoSpelling(t *testing.T) {
+	if got := contentTokens("её ее", nil); len(got) != 0 {
+		t.Fatalf("contentTokens = %v, want none", got)
 	}
 }

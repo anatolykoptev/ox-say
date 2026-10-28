@@ -47,8 +47,21 @@ const (
 	// an echo — it is too short to tell from an answer.
 	echoMinWords = 3
 	// echoShare: this share of a "me" turn's words also present in the nearby
-	// "them" speech makes it an echo.
+	// "them" speech is the first condition of an echo.
 	echoShare = 0.7
+	// echoContentShare: this share of its content words (see echoMatch) must
+	// also be there, in order. Calibrated by TestEchoContentShareCalibration
+	// (seeded; echo drops en/ru of ~1900 slices, old gate in brackets; talk-over
+	// false drops of 16+16 realistic turns):
+	//   share  10% err   20% err   30% err   (old gate: 1857/1903, 1765/1699, 1547/1408)
+	//   0.3    1857/1903 1764/1699 1545/1408   false 0/0
+	//   0.4    1856/1903 1756/1699 1529/1407   false 0/0
+	//   0.5    1855/1903 1743/1699 1499/1407   false 0/0
+	//   0.6    1789/1888 1580/1654 1222/1335   false 0/0
+	//   0.7    1649/1773 1263/1410  852/ 997   false 0/0
+	// 0.4: within 0.5% of the old gate's drops at 20% error, no false drop.
+	// Higher keeps echoes the old gate dropped (doubled lines).
+	echoContentShare = 0.4
 )
 
 // MergeTurns groups each channel's words into turns and orders all turns by
@@ -97,8 +110,9 @@ func group(words []stt.Word, speaker string) []Turn {
 func DropEcho(turns []Turn) ([]Turn, int) {
 	out := make([]Turn, 0, len(turns))
 	dropped := 0
+	fn := frequentWords(turns)
 	for _, t := range turns {
-		if t.Speaker == SpeakerMe && isEcho(t, turns) {
+		if t.Speaker == SpeakerMe && isEcho(t, turns, fn) {
 			dropped++
 			continue
 		}
@@ -108,7 +122,8 @@ func DropEcho(turns []Turn) ([]Turn, int) {
 }
 
 // isEcho: a "me" turn of at least echoMinWords words is an echo when
-//  1. echoMatch: at least echoShare of its content (non-stopword) words are
+//  1. echoMatch: at least echoShare of its words and echoContentShare of its
+//     content (non-stopword, and not frequent in this meeting) words are
 //     among the "them" words spoken inside [t.S-echoLatency, t.E+echoLatency]
 //     (a word counts by its midpoint), in the same order or sharing a content
 //     bigram, and
@@ -120,7 +135,7 @@ func DropEcho(turns []Turn) ([]Turn, int) {
 // what an acoustic echo is. The owner repeating or confirming what the other
 // person just finished ("да, в пятницу до обеда") matches the words but fails
 // the time test and is kept.
-func isEcho(t Turn, all []Turn) bool {
+func isEcho(t Turn, all []Turn, fn map[string]bool) bool {
 	dur := t.E - t.S
 	if len(strings.Fields(t.Text)) < echoMinWords || dur <= 0 {
 		return false
@@ -143,5 +158,5 @@ func isEcho(t Turn, all []Turn) bool {
 	if overlap < echoOverlap*dur {
 		return false
 	}
-	return echoMatch(t.Text, near.String())
+	return echoMatch(t.Text, near.String(), fn)
 }
