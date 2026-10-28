@@ -15,6 +15,7 @@ public enum L10nKey: String, CaseIterable {
     case noticeHotkeyFellBack = "notice.hotkey.fell_back"
     case noticeHotkeyTaken = "notice.hotkey.taken"
     case noticeHotkeyAllTaken = "notice.hotkey.all_taken"
+    case noticeHotkeyAllMacOS = "notice.hotkey.all_macos"
     // The automatic update check: the status menu's install row and the one notice per version.
     case menuUpdateAvailable = "menu.update_available"
     case noticeUpdateAvailable = "notice.update_available"

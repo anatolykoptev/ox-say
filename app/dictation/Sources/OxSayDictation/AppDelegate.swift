@@ -187,12 +187,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var termSource: DispatchSourceSignal?
     /// The key that is registered right now; what the menu tells the user to press.
     private var active: Shortcut?
-    private let fallbackNoticeKey = "fallbackNoticeShownFor"
     /// The key the last successful registration used, kept across launches.
     private let keyInUseKey = "dictationKeyInUse"
     /// The key last reported as held by another app, so an open menu does not
     /// repeat the notice and the beep while the conflict lasts.
-    private var registerFailNoticeShownFor: Shortcut?
+    private var registrationGates = RegistrationGates()
 
     /// What the system shortcuts right now mean for the offered keys: which
     /// one dictation should listen to and what each menu item shows.
@@ -357,60 +356,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         output.settle()
     }
 
-    /// Registers the plan's key, then the other free key when another app
-    /// refuses it (`ShortcutMenu.next` decides the order). A forced move off a
-    /// key macOS took is said once per taken key (remembered across launches);
-    /// a refused key once per launch; a first registration and a move back to
-    /// a freed pick stay silent. Both are said in one message, macOS first.
+    /// Registers the dictation key. `ShortcutRegistration.run` decides the
+    /// order of keys, what to say and when to stay quiet; this supplies the
+    /// real registration and shows the result.
     private func registerShortcut(_ plan: ShortcutMenu.Plan) {
+        let previous = active.flatMap { Shortcut.allCases.firstIndex(of: $0) }
         hotKey = nil
         active = nil
-        applyShortcutItems(plan.items)
-        guard let plannedIndex = plan.key else {
-            notice("Every dictation key is a macOS shortcut on this Mac. Free ⌃Space or ⌥Space in System Settings → Keyboard → Keyboard Shortcuts.")
-            return
-        }
-        var failed: [Int] = []
-        var registered: Int?
-        while let index = ShortcutMenu.next(plan, failed: failed) {
-            let key = Shortcut.allCases[index]
-            let candidate = HotKey(keyCode: key.keyCode, modifiers: key.modifiers)
-            candidate?.onDown = { [weak self] in self?.controller.keyDown() }
-            candidate?.onUp = { [weak self] in self?.controller.keyUp() }
-            if let candidate {
+        let outcome = ShortcutRegistration.run(
+            plan: plan, choices: Shortcut.allCases.map(choice), previous: previous,
+            attempt: { [self] index in
+                let key = Shortcut.allCases[index]
+                guard let candidate = HotKey(keyCode: key.keyCode, modifiers: key.modifiers) else { return false }
+                candidate.onDown = { [weak self] in self?.controller.keyDown() }
+                candidate.onUp = { [weak self] in self?.controller.keyUp() }
                 hotKey = candidate
-                registered = index
-                break
-            }
-            failed.append(index)
-        }
-        let defaults = UserDefaults.standard
-        if let registered {
-            // A status line left by an earlier failure no longer describes
-            // this key; whatever is said below replaces it.
-            lastNotice = nil
+                return true
+            },
+            gates: &registrationGates, store: UserDefaults.standard)
+        applyShortcutItems(outcome.items)
+        if let registered = outcome.registered {
             let key = Shortcut.allCases[registered]
             active = key
-            defaults.set(key.rawValue, forKey: keyInUseKey)
-            if plan.movedFrom == nil { defaults.removeObject(forKey: fallbackNoticeKey) }
+            UserDefaults.standard.set(key.rawValue, forKey: keyInUseKey)
         }
-        let planned = Shortcut.allCases[plannedIndex]
-        // Menu opens re-register while the conflict lasts: say it once per key.
-        let refusedBefore = registerFailNoticeShownFor == planned
-        registerFailNoticeShownFor = failed.contains(plannedIndex) ? planned : nil
-        let parts = ShortcutMenu.registrationNotices(
-            plan: plan, choices: Shortcut.allCases.map(choice), registered: registered, failed: failed
-        ).filter { part in
-            if part.isAboutMacOS {
-                guard let from = plan.movedFrom else { return false }
-                let taken = Shortcut.allCases[from].rawValue
-                guard defaults.string(forKey: fallbackNoticeKey) != taken else { return false }
-                defaults.set(taken, forKey: fallbackNoticeKey)
-                return true
-            }
-            return !refusedBefore
-        }
-        if !parts.isEmpty { notice(ShortcutMenu.sentence(parts)) }
+        if outcome.clearsStatusLine { lastNotice = nil }
+        if !outcome.notices.isEmpty { notice(ShortcutMenu.sentence(outcome.notices)) }
     }
 
     /// Registers the speak-selection key from the plan. The keypress fires
@@ -1522,4 +1493,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ = AXIsProcessTrustedWithOptions(prompt)
         openAccessibilitySettings()
     }
+}
+
+extension UserDefaults: ShortcutStore {
+    public func setString(_ value: String?, forKey key: String) { set(value, forKey: key) }
 }

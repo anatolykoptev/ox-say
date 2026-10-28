@@ -96,6 +96,116 @@ final class HotkeyFallbackTests: XCTestCase {
         XCTAssertFalse(ShortcutMenu.Notice.allTaken("a").isAboutMacOS)
     }
 
+    // MARK: ShortcutRegistration.run (loop + gates, with fakes)
+
+    final class FakeStore: ShortcutStore {
+        var values: [String: String] = [:]
+        func string(forKey key: String) -> String? { values[key] }
+        func setString(_ value: String?, forKey key: String) { values[key] = value }
+    }
+
+    /// Runs one registration where `works` are the indexes another app does not hold.
+    private func run(_ plan: ShortcutMenu.Plan, works: Set<Int>, previous: Int? = nil,
+                     gates: inout RegistrationGates, store: FakeStore,
+                     attempts: inout [Int]) -> ShortcutRegistration.Outcome {
+        var tried: [Int] = []
+        let outcome = ShortcutRegistration.run(plan: plan, choices: offers, previous: previous,
+                                               attempt: { tried.append($0); return works.contains($0) },
+                                               gates: &gates, store: store)
+        attempts = tried
+        return outcome
+    }
+
+    private func run(_ plan: ShortcutMenu.Plan, works: Set<Int>, previous: Int? = nil,
+                     gates: inout RegistrationGates, store: FakeStore) -> ShortcutRegistration.Outcome {
+        var attempts: [Int] = []
+        return run(plan, works: works, previous: previous, gates: &gates, store: store, attempts: &attempts)
+    }
+
+    // Mutation: ShortcutRegistration.run `while let index = next(...)` -> `if let` -> RED.
+    func testTheLoopTriesTheSecondKeyAfterTheFirstIsRefused() {
+        var gates = RegistrationGates(), attempts: [Int] = []
+        let out = run(relaunchOnOpt, works: [0], gates: &gates, store: FakeStore(), attempts: &attempts)
+        XCTAssertEqual(attempts, [1, 0])
+        XCTAssertEqual(out.registered, 0)
+        XCTAssertEqual(out.failed, [1])
+        XCTAssertEqual(out.notices, [.fellBack(failed: "⌥Space", now: "⌃Space")])
+    }
+
+    // Mutation: the refusal filter `return !refusedBefore` -> `return true` -> RED
+    // (notice and beep on every menu open while the conflict lasts).
+    func testARefusalIsSaidOncePerKeyAcrossMenuOpens() {
+        var gates = RegistrationGates(); let store = FakeStore()
+        XCTAssertEqual(run(relaunchOnOpt, works: [0], gates: &gates, store: store).notices.count, 1)
+        XCTAssertEqual(run(relaunchOnOpt, works: [0], previous: 0, gates: &gates, store: store).notices, [],
+                       "the same refusal repeated on a second menu open")
+    }
+
+    // Mutation: drop the store reset when macOS moved nothing -> RED.
+    func testAMacOSMoveIsToldOncePerTakenKeyAndToldAgainAfterItWasFreed() {
+        let moved = ShortcutMenu.plan(stored: ctrl, active: nil, choices: offers, system: macOwnsCtrl)
+        let freed = ShortcutMenu.plan(stored: ctrl, active: nil, choices: offers, system: [])
+        var gates = RegistrationGates(); let store = FakeStore()
+        XCTAssertEqual(run(moved, works: [1], gates: &gates, store: store).notices,
+                       [.movedByMacOS(taken: "⌃Space", now: "⌥Space")])
+        XCTAssertEqual(run(moved, works: [1], previous: 1, gates: &gates, store: store).notices, [], "told twice")
+        XCTAssertEqual(run(freed, works: [0], previous: 1, gates: &gates, store: store).notices, [])
+        XCTAssertEqual(run(moved, works: [1], previous: 0, gates: &gates, store: store).notices,
+                       [.movedByMacOS(taken: "⌃Space", now: "⌥Space")], "macOS took it again and nobody was told")
+    }
+
+    // Mutation: key the refusal gate on the planned key alone -> RED.
+    func testAnAllTakenAfterAFallbackIsNotSwallowedByTheEarlierFallbackNotice() {
+        var gates = RegistrationGates(); let store = FakeStore()
+        _ = run(relaunchOnOpt, works: [0], gates: &gates, store: store)
+        let out = run(relaunchOnOpt, works: [], previous: 0, gates: &gates, store: store)
+        XCTAssertNil(out.registered)
+        XCTAssertEqual(out.notices, [.allTaken("⌥Space, ⌃Space")], "the user is not told dictation has no key")
+    }
+
+    // Mutation: `clearsStatusLine` true on every success -> RED.
+    func testOnlyAChangedKeyClearsTheStatusLine() {
+        var gates = RegistrationGates(); let store = FakeStore()
+        XCTAssertTrue(run(relaunchOnOpt, works: [1], previous: nil, gates: &gates, store: store).clearsStatusLine)
+        XCTAssertFalse(run(relaunchOnOpt, works: [1], previous: 1, gates: &gates, store: store).clearsStatusLine,
+                       "an idle menu open must not wipe an unrelated status line")
+        XCTAssertTrue(run(relaunchOnOpt, works: [0], previous: 1, gates: &gates, store: store).clearsStatusLine)
+        XCTAssertFalse(run(relaunchOnOpt, works: [], previous: nil, gates: &gates, store: store).clearsStatusLine)
+    }
+
+    // Mutation: build `items` from plan.items unchanged -> RED.
+    func testTheMenuTicksTheKeyDictationIsOnNotThePlannedOne() {
+        var gates = RegistrationGates()
+        let out = run(relaunchOnOpt, works: [0], gates: &gates, store: FakeStore())
+        XCTAssertEqual(out.items.map(\.isOn), [true, false])
+        let none = run(relaunchOnOpt, works: [], gates: &gates, store: FakeStore())
+        XCTAssertEqual(none.items.map(\.isOn), [false, false])
+    }
+
+    func testEveryKeyBeingAMacOSShortcutIsALocalizedNotice() {
+        let plan = ShortcutMenu.plan(stored: nil, active: nil, choices: offers, system: macOwnsCtrl + macOwnsOpt)
+        var gates = RegistrationGates(); var attempts: [Int] = []
+        let out = run(plan, works: [0, 1], gates: &gates, store: FakeStore(), attempts: &attempts)
+        XCTAssertEqual(attempts, [])
+        XCTAssertEqual(out.notices, [.allMacOS])
+        withLocale("en") { XCTAssertTrue(ShortcutMenu.Notice.allMacOS.text.hasPrefix("Every dictation key is a macOS shortcut")) }
+        withLocale("ru") { XCTAssertTrue(ShortcutMenu.Notice.allMacOS.text.range(of: "[А-Яа-я]", options: .regularExpression) != nil) }
+    }
+
+    // The only way a lone refusal happens is that the other key is a macOS
+    // shortcut: "pick another one" would send the user to a greyed-out row.
+    func testALoneRefusalDoesNotTellTheUserToPickAnotherKey() {
+        for (code, banned) in [("en", "Pick another"), ("ru", "Выберите другую")] {
+            withLocale(code) {
+                XCTAssertFalse(ShortcutMenu.Notice.taken("⌥Space").text.contains(banned))
+            }
+        }
+        let plan = ShortcutMenu.plan(stored: nil, active: nil, lastSession: opt, choices: offers, system: macOwnsCtrl)
+        var gates = RegistrationGates()
+        let out = run(plan, works: [], gates: &gates, store: FakeStore())
+        XCTAssertEqual(out.notices, [.taken("⌥Space")])
+    }
+
     // MARK: wording (en + ru)
 
     private var packageRoot: URL {
@@ -117,7 +227,7 @@ final class HotkeyFallbackTests: XCTestCase {
         withLocale("en") {
             XCTAssertEqual(
                 ShortcutMenu.sentence([.macOSOwns(taken: "⌃Space"), .taken("⌥Space")]),
-                "⌃Space is a macOS shortcut on this Mac. ⌥Space is taken by another app, so dictation has no hotkey. Pick another one in this menu.")
+                "⌃Space is a macOS shortcut on this Mac. ⌥Space is taken by another app and the other dictation key is a macOS shortcut, so dictation has no hotkey. Quit the app that holds it, then open this menu again.")
             XCTAssertEqual(ShortcutMenu.sentence([.fellBack(failed: "⌥Space", now: "⌃Space")]),
                            "⌥Space is taken by another app, so dictation uses ⌃Space.")
             XCTAssertEqual(ShortcutMenu.sentence([.movedByMacOS(taken: "⌃Space", now: "⌥Space")]),
@@ -129,14 +239,14 @@ final class HotkeyFallbackTests: XCTestCase {
         withLocale("ru") {
             let all: [ShortcutMenu.Notice] = [
                 .movedByMacOS(taken: "⌃Space", now: "⌥Space"), .macOSOwns(taken: "⌃Space"),
-                .fellBack(failed: "⌥Space", now: "⌃Space"), .taken("⌥Space"), .allTaken("⌥Space, ⌃Space"),
+                .fellBack(failed: "⌥Space", now: "⌃Space"), .taken("⌥Space"), .allTaken("⌥Space, ⌃Space"), .allMacOS,
             ]
             for notice in all {
                 let text = notice.text
                 XCTAssertTrue(text.range(of: "[А-Яа-я]", options: .regularExpression) != nil,
                               "\(notice) has no Russian text: \(text)")
                 XCTAssertFalse(text.contains("%"), "\(notice) left a placeholder unfilled: \(text)")
-                XCTAssertTrue(text.contains("Space"), "\(notice) lost its key name: \(text)")
+                if notice != .allMacOS { XCTAssertTrue(text.contains("Space"), "\(notice) lost its key name: \(text)") }
             }
         }
     }
@@ -169,28 +279,16 @@ final class HotkeyFallbackTests: XCTestCase {
         return String(text[start.upperBound..<end.lowerBound])
     }
 
-    // Mutation: in registerShortcut, build the HotKey from `plan.key` once
-    // instead of looping over `ShortcutMenu.next` -> RED (the second key is
-    // never tried).
-    func testRegisterShortcutWalksThePlansKeysAndReportsFromTheCoreDecision() {
+    // The glue only supplies the real attempt and shows what the Core returns.
+    // Mutation: ignore `outcome.clearsStatusLine`, `outcome.items` or
+    // `outcome.notices` in registerShortcut -> RED.
+    func testRegisterShortcutAppliesTheCoreOutcome() {
         let register = Self.body("private func registerShortcut(_ plan: ShortcutMenu.Plan) {", in: "AppDelegate.swift")
         XCTAssertFalse(register.isEmpty, "registerShortcut not found")
-        XCTAssertTrue(register.contains("ShortcutMenu.next(plan, failed:"), "registerShortcut ignores the plan's other keys")
-        XCTAssertTrue(register.contains("ShortcutMenu.registrationNotices("), "the notices are not the Core decision")
-        XCTAssertFalse(register.contains("guard hotKey != nil"), "the failure return is back, before the macOS notice")
-    }
-
-    // Mutation: delete `lastNotice = nil` from registerShortcut -> RED (a stale
-    // status line survives the recovery).
-    func testARegistrationThatSucceedsClearsTheStaleStatusLine() {
-        let register = Self.body("private func registerShortcut(_ plan: ShortcutMenu.Plan) {", in: "AppDelegate.swift")
-        XCTAssertTrue(register.contains("lastNotice = nil"), "registerShortcut leaves the stale status line")
-        guard let cleared = register.range(of: "lastNotice = nil"),
-              let said = register.range(of: "notice(ShortcutMenu.sentence(") else {
-            return XCTFail("registerShortcut lost the clear or the sentence")
-        }
-        XCTAssertLessThan(cleared.lowerBound, said.lowerBound,
-                          "the clear must come before the notice, or it erases the sentence it just raised")
+        XCTAssertTrue(register.contains("ShortcutRegistration.run("), "registerShortcut does not use the Core decision")
+        XCTAssertTrue(register.contains("if outcome.clearsStatusLine { lastNotice = nil }"))
+        XCTAssertTrue(register.contains("applyShortcutItems(outcome.items)"))
+        XCTAssertTrue(register.contains("ShortcutMenu.sentence(outcome.notices)"))
     }
 
     // Mutation: tag the late notice `.outcome` again, or wire `onNotice` to

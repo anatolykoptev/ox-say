@@ -115,17 +115,32 @@ public enum ShortcutMenu {
         case macOSOwns(taken: String)
         /// The planned key was refused by another app; dictation is on `now`.
         case fellBack(failed: String, now: String)
-        /// The only key tried was refused: dictation has no hotkey.
+        /// The only key macOS leaves free was refused: dictation has no
+        /// hotkey and there is no other key to pick.
         case taken(String)
         /// Every key tried was refused; `String` lists them.
         case allTaken(String)
+        /// Every offered key is a macOS shortcut: nothing could be tried.
+        case allMacOS
+
+        /// Which sentence it is, for the once-per-launch refusal gate.
+        public var kind: String {
+            switch self {
+            case .movedByMacOS: return "movedByMacOS"
+            case .macOSOwns: return "macOSOwns"
+            case .fellBack: return "fellBack"
+            case .taken: return "taken"
+            case .allTaken: return "allTaken"
+            case .allMacOS: return "allMacOS"
+            }
+        }
 
         /// The macOS ones are told once per taken key, across launches; the
         /// others once per failing key per launch.
         public var isAboutMacOS: Bool {
             switch self {
             case .movedByMacOS, .macOSOwns: return true
-            case .fellBack, .taken, .allTaken: return false
+            case .fellBack, .taken, .allTaken, .allMacOS: return false
             }
         }
 
@@ -136,6 +151,7 @@ public enum ShortcutMenu {
             case .fellBack(let failed, let now): return L10nKey.noticeHotkeyFellBack.text(failed, now)
             case .taken(let key): return L10nKey.noticeHotkeyTaken.text(key)
             case .allTaken(let keys): return L10nKey.noticeHotkeyAllTaken.text(keys)
+            case .allMacOS: return L10nKey.noticeHotkeyAllMacOS.text
             }
         }
     }
