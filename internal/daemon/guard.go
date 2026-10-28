@@ -16,8 +16,8 @@ import (
 // not a loopback address means DNS rebinding. Cross-site browser requests that
 // change something (every method but GET, HEAD and OPTIONS) are refused by
 // http.CrossOriginProtection (Sec-Fetch-Site, else Origin); it lets a safe
-// method through, so a meetings read the browser marks cross-site or same-site
-// is refused here (crossSiteMeetingRead). POST
+// method through, so every GET or HEAD the browser marks cross-site or same-site
+// is refused here (crossSiteRead), on every route except /health. POST
 // bodies must be JSON, so a cross-origin "simple" request (text/plain, form
 // data) fails even from a browser that sends neither header. go-mcpserver
 // protects /mcp alone; Guard wraps every route.
