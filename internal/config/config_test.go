@@ -909,3 +909,32 @@ func TestNotesModelMissingTextNamesTheModelSize(t *testing.T) {
 		t.Fatalf("NotesBlock = %q, %q", code, msg)
 	}
 }
+
+// The installer's VoxCPM2 memory floor (scripts/lib-install.sh) and
+// VoxCPM2MinMemoryGB are one number written twice; a drift would let the
+// installer fetch a 2B model the daemon then refuses, or the reverse (#139.5).
+// Mutation: config.go VoxCPM2MinMemoryGB 24 -> 32 -> RED.
+func TestVoxCPM2MemoryFloorMatchesInstaller(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "lib-install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bytes int64
+	for _, line := range strings.Split(string(raw), "\n") {
+		if rest, ok := strings.CutPrefix(line, "oxs_voxcpm2_min_bytes="); ok {
+			f := strings.Fields(rest)
+			if len(f) == 0 {
+				t.Fatalf("empty assignment: %q", line)
+			}
+			if bytes, err = strconv.ParseInt(f[0], 10, 64); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if bytes == 0 {
+		t.Fatal("oxs_voxcpm2_min_bytes not found in scripts/lib-install.sh")
+	}
+	if want := int64(VoxCPM2MinMemoryGB) << 30; bytes != want {
+		t.Fatalf("installer floor %d bytes, config floor %d GB = %d bytes", bytes, VoxCPM2MinMemoryGB, want)
+	}
+}

@@ -97,6 +97,13 @@ func TestGuard(t *testing.T) {
 		{"ipv6 loopback GET", "GET", "/status", "[::1]:8094", "", "", nil, http.StatusOK},
 		{"cli POST reaches the handler", "POST", "/v1/audio/speech", "127.0.0.1:8094", "application/json", `{}`, nil, http.StatusBadRequest},
 		{"json with charset reaches the handler", "POST", "/v1/audio/speech", "127.0.0.1:8094", "application/json; charset=utf-8", `{}`, nil, http.StatusBadRequest},
+		// PATCH /v1/audio/voices/{name} changes a voice's engine and style (#141.4)
+		{"rebinding PATCH voice", "PATCH", "/v1/audio/voices/nobody", "attacker.example:8094", "application/json", `{"style":"x"}`, nil, http.StatusForbidden},
+		{"cross-site PATCH voice", "PATCH", "/v1/audio/voices/nobody", "127.0.0.1:8094", "application/json", `{"style":"x"}`,
+			map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"cross-origin PATCH voice without Sec-Fetch-Site", "PATCH", "/v1/audio/voices/nobody", "127.0.0.1:8094", "application/json", `{"style":"x"}`,
+			map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		{"cli PATCH voice reaches the handler", "PATCH", "/v1/audio/voices/nobody", "127.0.0.1:8094", "application/json", `{"style":"x"}`, nil, http.StatusNotFound},
 		{"cli DELETE reaches the handler", "DELETE", "/v1/audio/voices/nobody", "127.0.0.1:8094", "", "", nil, http.StatusNotFound},
 		// produce: rebinding is refused for every method; CrossOriginProtection
 		// refuses cross-site POST/DELETE but lets safe GETs through by design

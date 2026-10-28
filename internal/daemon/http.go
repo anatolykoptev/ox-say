@@ -361,8 +361,12 @@ type updateVoiceRequest struct {
 
 func (d *Daemon) handleUpdateVoice(w http.ResponseWriter, r *http.Request) {
 	var req updateVoiceRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid JSON body")
+	// Strict: a field this route does not apply (designed_from, a typo) is a
+	// 400, not a 200 that changed nothing (#141.3).
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: only engine and style can be changed")
 		return
 	}
 	v, err := d.UpdateVoice(r.PathValue("name"), req.Engine, req.Style)

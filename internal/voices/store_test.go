@@ -306,3 +306,30 @@ func TestUpdateFailedWriteKeepsVoice(t *testing.T) {
 		t.Fatalf("voice changed despite the failed write: %+v", v)
 	}
 }
+
+// A failed rename leaves the voice as it was and removes the temp file the
+// update wrote (#141.6).
+// Mutation: internal/voices/store.go Update — delete the `_ = os.Remove(tmp)`
+// after the failed s.rename -> RED (a .meta temp file is left in the store).
+func TestUpdateFailedRenameKeepsVoiceAndLeavesNoTemp(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip := testutil.WriteSilentWAV(t, t.TempDir(), "c.wav", 3)
+	if _, err := s.Add(context.Background(), "nar", clip, ""); err != nil {
+		t.Fatal(err)
+	}
+	s.rename = func(string, string) error { return errors.New("cross-device") }
+	if _, err := s.Update("nar", func(v *Voice) { v.Style = "x" }); err == nil {
+		t.Fatal("Update with a failing rename succeeded")
+	}
+	if v, _ := s.Get("nar"); v.Style != "" {
+		t.Fatalf("voice changed despite the failed rename: %+v", v)
+	}
+	left, _ := filepath.Glob(filepath.Join(dir, "*.meta"))
+	if len(left) != 0 {
+		t.Fatalf("temp files left behind: %v", left)
+	}
+}
