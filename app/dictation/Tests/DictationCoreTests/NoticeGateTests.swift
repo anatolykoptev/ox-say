@@ -201,7 +201,7 @@ final class PasteLastGuardTests: XCTestCase {
 }
 
 /// AppKit wiring the unit tests cannot reach, gated by reading the sources —
-/// the style of `PillOwnershipTests.testNonDictationPillClearsAreOwnerScoped`.
+/// the style of `PillOwnershipTests.testEveryTaskPillGoesThroughTheBeginEndHelpers`.
 final class NeverLoseWiringTests: XCTestCase {
     private static func source(_ file: String) -> String {
         let path = URL(fileURLWithPath: #filePath)

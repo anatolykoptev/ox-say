@@ -74,12 +74,15 @@ final class Overlay {
         panel.contentView = background
 
         bars.frame = NSRect(x: 22, y: 0, width: 96, height: size.height)
+        bars.autoresizingMask = [.height]
         background.addSubview(bars)
 
         hint.font = .systemFont(ofSize: 10, weight: .medium)
         hint.textColor = .tertiaryLabelColor
         hint.sizeToFit()
         hint.frame.origin = NSPoint(x: size.width - hint.frame.width - 14, y: (size.height - hint.frame.height) / 2)
+        // Pinned to the right edge, centred vertically, while the window resizes.
+        hint.autoresizingMask = [.minXMargin, .minYMargin, .maxYMargin]
         background.addSubview(hint)
 
         spinner.style = .spinning
@@ -324,7 +327,9 @@ final class Overlay {
             self.hide()
         }
         messageTimeout = timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: timeout)
+        // Long text needs more than the flat few seconds (the Russian remote-clipboard notice fills all three lines).
+        let seconds = PillTiming.messageSeconds(characters: text.count)
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: timeout)
     }
 
     private func leaveMessage() {
@@ -358,27 +363,31 @@ final class Overlay {
         } else {
             panel.setContentSize(newSize)
         }
-        background.frame = NSRect(origin: .zero, size: size)
+        // The content view, the bars and the esc hint follow the window by
+        // their autoresizing masks, frame by frame as it animates: laying them
+        // out for newSize here would put the hint outside the still-small
+        // window (clipped) for the 150 ms of a grow.
         background.maskImage = Overlay.pill(radius: min(size.height, pillSize.height) / 2)
-        bars.frame.size.height = size.height
-        hint.frame.origin = NSPoint(x: size.width - hint.frame.width - 14, y: (size.height - hint.frame.height) / 2)
     }
 
     private func hide() {
+        if let state = dictationState?(), let look = PillDictationLook(dictation: state) {
+            // A hide landing mid-dictation must not take the pill — it belongs
+            // to the dictation until the key is up. Put the dictation look
+            // back instead of fading out — before anything is wiped, so the
+            // words decoded so far do not flicker away and back.
+            overlayLog.error("overlay hide during dictation: re-showing kind=\(String(describing: look), privacy: .public) owner=\(self.owner, privacy: .public)")
+            switch look {
+            case .listening: showListening()
+            case .working: showWorking()
+            }
+            return
+        }
         leavePlaying()
         bars.stop()
         spinner.stopAnimation(nil)
         liveText.stringValue = ""
         liveText.isHidden = true
-        if let state = dictationState?(), state != .idle {
-            // A hide landing mid-dictation must not take the pill — it belongs
-            // to the dictation until the key is up. Put the dictation look
-            // back instead of fading out.
-            let look = state == .recording ? "listening" : "working"
-            overlayLog.error("overlay hide during dictation: re-showing kind=\(look, privacy: .public) owner=\(self.owner, privacy: .public)")
-            if state == .recording { showListening() } else { showWorking() }
-            return
-        }
         overlayLog.notice("overlay hide kind=\(self.kind, privacy: .public) owner=\(self.owner, privacy: .public)")
         wantsVisible = false
         let fading = shown
@@ -434,6 +443,13 @@ final class Overlay {
     /// logged at fault and re-shown once, then checked a second time.
     private func checkVisible(expected: Int, owner ownerAtShow: Int, healed: Bool) {
         guard shown == expected, wantsVisible else { return }
+        // A pill cannot be onscreen while the display sleeps or the screen is
+        // locked: that is not a fault, and a self-heal would fight the lock.
+        guard PillVisibility.expectsOnscreen(screenLocked: Self.sessionScreenLocked(),
+                                             displayAsleep: CGDisplayIsAsleep(CGMainDisplayID()) != 0) else {
+            overlayLog.notice("overlay check skipped: screen locked or display asleep owner=\(ownerAtShow, privacy: .public)")
+            return
+        }
         let server = windowServerState()
         let frame = NSStringFromRect(panel.frame)
         let visibleFrame = (NSScreen.screens.first { $0.frame.intersects(panel.frame) } ?? NSScreen.main)
@@ -453,6 +469,11 @@ final class Overlay {
                 self?.checkVisible(expected: expected, owner: ownerAtShow, healed: true)
             }
         }
+    }
+
+    /// The login session's lock state, from the same dictionary the lock screen publishes.
+    private static func sessionScreenLocked() -> Bool {
+        (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
     }
 
     /// The pill's window as the window server sees it: onscreen and alpha.

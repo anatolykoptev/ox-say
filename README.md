@@ -648,13 +648,13 @@ Three logs describe a dictation without recording what was said:
   ```
 
   A line looks like this:
-  `outcome=delivered path=stream recorded_s=11.30 release_to_text_ms=2057 tail_s=0.30 segments_before_release=0 session_create_ms=3`.
+  `outcome=delivered path=stream recorded_s=11.30 release_to_text_ms=2057 tail_s=0.30 segments_before_release=0 session_create_ms=3 delivery=paste id=12`.
   - `path`: `stream`, `fallback` (the session failed and the recording was sent whole) or `one-shot`.
   - `tail_s`: audio not yet acknowledged when the key was released.
   - `session_create_ms`: time to open the session. It is large when the STT server had to start, and `none` when no session opened (the one-shot path, a failed create, or a create still in flight at release).
-  - `delivery`: how the text reached the user — `paste`, or `clipboard` plus `clipboard_reason=accessibility|secure_input|focus_moved`. `none` when the dictation was empty or failed.
+  - `delivery`: how the text reached the user — `paste`, `typed` (keystrokes, while the clipboard held a copy from another device), or `clipboard` plus `clipboard_reason=accessibility|secure_input|focus_moved`. `none` when the dictation was empty or failed.
 
-  When a paste was posted, a second line follows once it settles: `paste settled read=yes|no`. `read=no` means the target app never read the clipboard before the 3 s cap — the paste went nowhere.
+  When a paste was posted, a second line follows once it settles: `paste settled id=12 read=yes|no`. The `id` is the same as on that dictation's line, so two quick dictations do not interleave. A paste also settles early, when the next dictation starts or the app quits. `read=no` means no app had read the clipboard by the time it settled — the paste probably went nowhere; any app counts as a read, a clipboard manager too.
 
   In zsh, type `/usr/bin/log`: plain `log` is a shell builtin.
 - **The daemon writes one line per closed segment to `~/Library/Logs/ox-say/ox-say.log`:**
@@ -674,7 +674,10 @@ after every rebuild, and a stale entry in System Settings → Privacy & Security
 the app's menu offers **Allow pasting… (Accessibility is off)** at the top: it
 resets this app's own Accessibility entry (`tccutil reset Accessibility
 <bundle id>`) so the permission prompt can store a grant matching the running
-build, then re-asks and opens the pane. If the item is missing or the reset
+build, then raises the permission prompt and opens the Accessibility pane (the
+prompt can stay silent for an app that is already listed; the pane is where the
+switch is). The menu row stays greyed while the reset runs, and a reset that
+hangs is stopped after 10 s and reported as a failure. If the item is missing or the reset
 fails, remove OxSayDictation with − in the pane and add it again. The same
 happens once when updating from ox-say 0.1.x, whose app was signed ad hoc. See
 the header of `app/dictation/build.sh`.

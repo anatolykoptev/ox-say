@@ -66,8 +66,9 @@ public struct DictationTiming: Equatable {
     }
 
     /// The log line: key=value pairs, fixed order, no text. The delivery
-    /// fields, then the retry fields, are appended last; every earlier key is byte-identical to before
-    /// they existed — something may parse them.
+    /// fields, then the retry fields, are appended after the original keys;
+    /// every earlier key is byte-identical to before they existed — something
+    /// may parse them. `line(deliveryID:)` adds `id=` after all of these.
     public var line: String {
         var parts = [
             "outcome=\(outcome.rawValue)",
@@ -98,7 +99,22 @@ public struct DictationTiming: Equatable {
         return parts.joined(separator: " ")
     }
 
+    /// The log line with the id of the delivery it reports appended last, so
+    /// the `paste settled` line of the same paste can be matched to it. A
+    /// dictation that delivered nothing has no id.
+    public func line(deliveryID: Int?) -> String {
+        guard delivery != nil, let deliveryID else { return line }
+        return line + " id=\(deliveryID)"
+    }
+
     private static func seconds(_ s: Double) -> String {
         String(format: "%.2f", s)
+    }
+}
+
+/// The `paste settled` log line, carrying the id of the delivery it settles.
+public enum PasteSettledLog {
+    public static func text(id: Int, read: Bool) -> String {
+        "paste settled id=\(id) read=\(read ? "yes" : "no")"
     }
 }

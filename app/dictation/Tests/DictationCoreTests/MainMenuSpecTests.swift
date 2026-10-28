@@ -119,6 +119,18 @@ final class MainMenuSpecTests: XCTestCase {
         }
     }
 
+    /// #187 — the allowlist names only selectors AppKit answers in this app.
+    /// `close:` is not a responder selector (the action is `performClose:`) and
+    /// nothing here implements `orderFrontPreferencesWindow:`: a row naming
+    /// either would render dead while the membership test above stayed green.
+    /// Mutation: re-add either name to StandardMenuSelector.names
+    /// (MainMenuSpec.swift) -> RED.
+    func testTheAllowlistHoldsNoSelectorNothingAnswers() {
+        XCTAssertFalse(StandardMenuSelector.names.contains("close:"))
+        XCTAssertFalse(StandardMenuSelector.names.contains("orderFrontPreferencesWindow:"))
+        XCTAssertTrue(StandardMenuSelector.names.contains("performClose:"))
+    }
+
     /// Every row's title is a known localization key, so the W4 key-set check
     /// covers the menu without a hand-maintained list.
     func testEveryTitleIsAKnownLocalizationKey() {
