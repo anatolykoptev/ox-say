@@ -44,13 +44,15 @@ type fakePorts struct {
 	engineID    string
 	normErr     error
 	normCalls   int
-	normHook    func()        // non-nil: Normalize calls it first
-	normNoop    bool          // Normalize reports success and writes nothing
-	normOut     []byte        // non-nil: Normalize writes these bytes instead of its input
-	normLimited bool          // Normalize reports a hard-limited take
-	outRoot     string        // non-empty: OutputRoot answers it
-	hang        chan struct{} // non-nil: Render ignores its context and waits for this
-	events      []string      // "quiet", "render", "hear" in call order
+	normHook    func()                              // non-nil: Normalize calls it first
+	normNoop    bool                                // Normalize reports success and writes nothing
+	normOut     []byte                              // non-nil: Normalize writes these bytes instead of its input
+	normLimited bool                                // Normalize reports a hard-limited take
+	outRoot     string                              // non-empty: OutputRoot answers it
+	hang        chan struct{}                       // non-nil: Render ignores its context and waits for this
+	events      []string                            // "quiet", "render", "hear" in call order
+	quietFn     func(context.Context, func()) error // non-nil: replaces Quiet
+	hearHook    func()                              // non-nil: Hear calls it first
 }
 
 func newFakePorts(t *testing.T) *fakePorts {
@@ -105,6 +107,9 @@ func (f *fakePorts) Render(ctx context.Context, p renderParams) (*synthOut, erro
 }
 
 func (f *fakePorts) Hear(_ context.Context, _ string) ([]voices.Word, error) {
+	if f.hearHook != nil {
+		f.hearHook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.hears++
@@ -150,6 +155,9 @@ func (f *fakePorts) Normalize(_ context.Context, in, out string, _, _ float64) (
 	return dyn, os.WriteFile(out, raw, 0o600)
 }
 func (f *fakePorts) Quiet(ctx context.Context, onWait func()) error {
+	if f.quietFn != nil {
+		return f.quietFn(ctx, onWait)
+	}
 	f.mu.Lock()
 	f.events = append(f.events, "quiet")
 	f.mu.Unlock()

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -326,4 +327,60 @@ func TestSettleDropsReasonsOfAnAcceptedUserPick(t *testing.T) {
 			t.Errorf("%s: the take's own reasons were touched: %v", name, c.Takes[0].Reasons)
 		}
 	}
+}
+
+// #156.13: a cancel that arrives while the job waits for dictation AFTER a take
+// was rendered still gates that take (it is kept), and the take is heard under
+// "running", not under a stale "waiting_for_dictation".
+// Mutation: produce.go quiet, drop the setStatus(running) on the error path
+// (restore it only when err == nil) -> RED.
+func TestStatusLeavesWaitingWhenACancelEndsTheWait(t *testing.T) {
+	f := newFakePorts(t)
+	inGate := make(chan struct{})
+	f.quietFn = func(ctx context.Context, onWait func()) error {
+		f.mu.Lock()
+		rendered := len(f.renders) > 0
+		f.mu.Unlock()
+		if !rendered {
+			return nil
+		}
+		onWait()
+		close(inGate)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	p := startedProducer(t, f)
+	statusAtHear := make(chan string, 1)
+	f.hearHook = func() {
+		p.mu.Lock()
+		st := p.cur.m.Status
+		p.mu.Unlock()
+		select {
+		case statusAtHear <- st:
+		default:
+		}
+	}
+	in := reelInput(t)
+	in.Script = "Одно предложение."
+	s, err := p.create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-inGate:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the job never waited for dictation after a render")
+	}
+	if err := p.cancel(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-statusAtHear:
+		if got != vproject.StatusRunning {
+			t.Errorf("the rendered take was heard under status %q, want running", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the rendered take was dropped by the cancel instead of being gated")
+	}
+	waitTerminal(t, p, s.ID)
 }

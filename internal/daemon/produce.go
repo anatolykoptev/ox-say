@@ -314,10 +314,12 @@ func (p *producer) checkpoint(j *job) error {
 func (p *producer) quiet(j *job) func(context.Context) error {
 	return func(context.Context) error {
 		err := p.ports.Quiet(j.ctx, func() { p.setStatus(j, vproject.StatusWaitingForDictation) })
+		// Whatever ended the wait, the job is no longer waiting: a rendered take
+		// is still heard and kept after a cancel, and must not show "waiting".
+		p.setStatus(j, vproject.StatusRunning)
 		if err != nil && j.cancel.Load() {
 			return errCancelled
 		}
-		p.setStatus(j, vproject.StatusRunning)
 		return err
 	}
 }
