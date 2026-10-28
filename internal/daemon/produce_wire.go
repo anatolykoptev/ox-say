@@ -114,6 +114,10 @@ func (d *Daemon) producePorts() producePorts {
 			return out, err
 		},
 		// hear is the daemon's own STT through Transcribe, never an HTTP route: no stamp.
+		// A dictation that starts while this Hear runs waits for it: stt serialises
+		// transcriptions on purpose (a second ox-stt would contend for GPU memory),
+		// and one take's Hear is seconds. Cancelling it for the dictation would
+		// repeat the work and could starve the producer (#156.14).
 		hear: d.voiceWords,
 		// voice reads the voice live and re-checks its clip (#141.2).
 		voice: func(name string) (voiceFacts, error) {

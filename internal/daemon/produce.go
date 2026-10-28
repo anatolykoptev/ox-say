@@ -314,10 +314,12 @@ func (p *producer) checkpoint(j *job) error {
 func (p *producer) quiet(j *job) func(context.Context) error {
 	return func(context.Context) error {
 		err := p.ports.Quiet(j.ctx, func() { p.setStatus(j, vproject.StatusWaitingForDictation) })
+		// Whatever ended the wait, the job is no longer waiting: a rendered take
+		// is still heard and kept after a cancel, and must not show "waiting".
+		p.setStatus(j, vproject.StatusRunning)
 		if err != nil && j.cancel.Load() {
 			return errCancelled
 		}
-		p.setStatus(j, vproject.StatusRunning)
 		return err
 	}
 }
@@ -461,6 +463,12 @@ func settle(c *vproject.Chunk) {
 	c.Status = vproject.ChunkOK
 	if !pick.Passed && (!c.UserPick || isSilent(pick)) {
 		c.Status = vproject.ChunkReview
+	}
+	if c.Status == vproject.ChunkOK {
+		// An ok chunk shows no failure reasons: a user pick overrode them, and the take
+		// keeps its own in the manifest (#165.2). A plausibility note is no failure and
+		// stays (#143.6).
+		c.Reasons = noteReasons(c.Reasons)
 	}
 }
 
@@ -607,3 +615,14 @@ const (
 	MaxTakesPerChunk  = maxTakesPerChunk
 	MaxListedProjects = maxListedProjects
 )
+
+// noteReasons is rs without the failure reasons: only the "note: ..." ones remain (nil when none).
+func noteReasons(rs []string) []string {
+	var out []string
+	for _, r := range rs {
+		if strings.HasPrefix(r, noteReason) {
+			out = append(out, r)
+		}
+	}
+	return out
+}

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -296,4 +297,97 @@ func TestProduceDigitOnlyScriptFollowsConfiguredLanguage(t *testing.T) {
 			}
 		}
 	}
+}
+
+// #165.2: a chunk the person accepted after listening is ok and carries no
+// failure reasons (they stay on the take itself); a chunk that is still in
+// review, including an unusable silent pick, keeps the pick's reasons.
+// Mutation: produce.go settle, `noteReasons(c.Reasons)` -> `nil` (the old blanket clear) -> RED on
+// the note cases; `if c.Status == vproject.ChunkOK {` -> `if false {` -> RED on the failed pick.
+func TestSettleDropsReasonsOfAnAcceptedUserPick(t *testing.T) {
+	failed := vproject.TakeRef{Key: "fail", Passed: false, WER: 0.4, Reasons: []string{"1 word differs"}}
+	silent := vproject.TakeRef{Key: "mute", Passed: false, Reasons: []string{reasonSilent}}
+	for name, tc := range map[string]struct {
+		take       vproject.TakeRef
+		userPick   bool
+		wantStatus string
+		wantReason bool
+	}{
+		"user pick of a failed take":   {failed, true, vproject.ChunkOK, false},
+		"automatic fallback":           {failed, false, vproject.ChunkReview, true},
+		"user pick of a silent take":   {silent, true, vproject.ChunkReview, true},
+		"user pick of a passing take":  {vproject.TakeRef{Key: "good", Passed: true}, true, vproject.ChunkOK, false},
+		"passing take with a note":     {vproject.TakeRef{Key: "n", Passed: true, Reasons: []string{noteReason + "duration implausible"}}, false, vproject.ChunkOK, true},
+		"failed user pick with a note": {vproject.TakeRef{Key: "fn", Passed: false, Reasons: []string{"1 word differs", noteReason + "duration implausible"}}, true, vproject.ChunkOK, true},
+	} {
+		c := &vproject.Chunk{Takes: []vproject.TakeRef{tc.take}, Pick: tc.take.Key, UserPick: tc.userPick}
+		settle(c)
+		if c.Status != tc.wantStatus || (len(c.Reasons) > 0) != tc.wantReason {
+			t.Errorf("%s: status %q reasons %v, want %q and reasons=%v", name, c.Status, c.Reasons, tc.wantStatus, tc.wantReason)
+		}
+		for _, r := range c.Reasons {
+			if c.Status == vproject.ChunkOK && !strings.HasPrefix(r, noteReason) {
+				t.Errorf("%s: failure reason %q left on an ok chunk", name, r)
+			}
+		}
+		if len(c.Takes[0].Reasons) != len(tc.take.Reasons) {
+			t.Errorf("%s: the take's own reasons were touched: %v", name, c.Takes[0].Reasons)
+		}
+	}
+}
+
+// #156.13: a cancel that arrives while the job waits for dictation AFTER a take
+// was rendered still gates that take (it is kept), and the take is heard under
+// "running", not under a stale "waiting_for_dictation".
+// Mutation: produce.go quiet, drop the setStatus(running) on the error path
+// (restore it only when err == nil) -> RED.
+func TestStatusLeavesWaitingWhenACancelEndsTheWait(t *testing.T) {
+	f := newFakePorts(t)
+	inGate := make(chan struct{})
+	f.quietFn = func(ctx context.Context, onWait func()) error {
+		f.mu.Lock()
+		rendered := len(f.renders) > 0
+		f.mu.Unlock()
+		if !rendered {
+			return nil
+		}
+		onWait()
+		close(inGate)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	p := startedProducer(t, f)
+	statusAtHear := make(chan string, 1)
+	f.hearHook = func() {
+		p.mu.Lock()
+		st := p.cur.m.Status
+		p.mu.Unlock()
+		select {
+		case statusAtHear <- st:
+		default:
+		}
+	}
+	in := reelInput(t)
+	in.Script = "Одно предложение."
+	s, err := p.create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-inGate:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the job never waited for dictation after a render")
+	}
+	if err := p.cancel(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-statusAtHear:
+		if got != vproject.StatusRunning {
+			t.Errorf("the rendered take was heard under status %q, want running", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the rendered take was dropped by the cancel instead of being gated")
+	}
+	waitTerminal(t, p, s.ID)
 }

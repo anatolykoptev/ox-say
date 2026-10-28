@@ -169,55 +169,177 @@ func isMarkdownHeading(line string) bool {
 // list item "- " "* " "+ " "1. ", task box "[ ]" "[x]"), the inline markers (emphasis "*" and "_", strike "~~", code
 // "`"), and the escapes the writer adds (unescapeMarkdown). The result is plain untrusted text: nothing here makes
 // a link, so the app, which renders a snippet without links, has none to draw. An escaped marker ("\*") is a
-// literal character and stays; an underscore inside a word ("snake_case") is not emphasis and stays.
+// literal character and stays. "*" and "_" go only where they are emphasis (stripInline), so "2*3=6", "snake_case"
+// and "a__b" keep every character.
 func stripMarkdown(s string) string {
-	var b strings.Builder
+	var out strings.Builder
+	var block []rune // the paragraph or list item being read: emphasis may span its lines
+	flush := func() {
+		out.WriteString(stripInline(block))
+		block = block[:0]
+	}
 	for line := range strings.Lines(s) {
-		line = stripBlockMarker(line)
-		rs := []rune(line)
-		for i := 0; i < len(rs); i++ {
-			r := rs[i]
-			switch {
-			case r == '\\' && i+1 < len(rs) && rs[i+1] < utf8.RuneSelf && strings.IndexByte(unescapable, byte(rs[i+1])) >= 0:
-				i++
-				b.WriteRune(rs[i])
-			case r == '*' || r == '`':
-			case r == '~' && i+1 < len(rs) && rs[i+1] == '~':
-				i++
-			case r == '_' && !(i > 0 && i+1 < len(rs) && isWordRune(rs[i-1]) && isWordRune(rs[i+1])):
-			default:
-				b.WriteRune(r)
+		rest, item := stripBlockMarker(line)
+		switch {
+		case strings.TrimSpace(rest) == "":
+			flush()
+			out.WriteString(rest)
+		case item:
+			flush()
+			fallthrough
+		default:
+			block = append(block, []rune(rest)...)
+		}
+	}
+	flush()
+	return out.String()
+}
+
+// mdCell is one rune of a block, with what stripInline decided about it.
+type mdCell struct {
+	r    rune
+	lit  bool // an escaped character: never a delimiter
+	drop bool
+}
+
+// delimRun is a maximal run of one emphasis character, "*" or "_", and what CommonMark says it can do
+// (https://spec.commonmark.org/0.31.2/#emphasis-and-strong-emphasis): left is how many of its characters are
+// still unmatched.
+type delimRun struct {
+	start, n, left int
+	ch             rune
+	canOpen        bool
+	canClose       bool
+}
+
+func isMDSpace(r rune) bool { return unicode.IsSpace(r) }
+
+// isMDPunct is CommonMark's "Unicode punctuation": the P categories and the ASCII symbols.
+func isMDPunct(r rune) bool { return unicode.IsPunct(r) || (r < utf8.RuneSelf && unicode.IsSymbol(r)) }
+
+// stripInline removes the inline syntax of one block. "~~" and "`" always go. A run of "*" or "_" goes only when
+// it is matched emphasis: an opener (left-flanking) with a later closer (right-flanking) of the same character.
+// A run inside a word is flanked both ways, so "_" there can neither open nor close ("snake_case", "a__b") and a
+// lone "*" ("2*3=6") has no partner; both stay. A dunder name between "__" ("__init__") is an identifier far more
+// often than strong emphasis, so it stays too.
+func stripInline(rs []rune) string {
+	cells := make([]mdCell, 0, len(rs))
+	for i := 0; i < len(rs); i++ {
+		switch r := rs[i]; {
+		case r == '\\' && i+1 < len(rs) && rs[i+1] < utf8.RuneSelf && strings.IndexByte(unescapable, byte(rs[i+1])) >= 0:
+			i++
+			cells = append(cells, mdCell{r: rs[i], lit: true})
+		case r == '`':
+		case r == '~' && i+1 < len(rs) && rs[i+1] == '~':
+			i++
+		default:
+			cells = append(cells, mdCell{r: r})
+		}
+	}
+	stacks := map[rune][]*delimRun{'*': nil, '_': nil}
+	for i := 0; i < len(cells); {
+		c := cells[i]
+		if c.lit || (c.r != '*' && c.r != '_') {
+			i++
+			continue
+		}
+		run := &delimRun{start: i, ch: c.r}
+		for i < len(cells) && !cells[i].lit && cells[i].r == run.ch {
+			i++
+		}
+		run.n = i - run.start
+		run.left = run.n
+		prev, next := ' ', ' ' // the block's edges count as whitespace
+		if run.start > 0 {
+			prev = cells[run.start-1].r
+		}
+		if i < len(cells) {
+			next = cells[i].r
+		}
+		left := !isMDSpace(next) && (!isMDPunct(next) || isMDSpace(prev) || isMDPunct(prev))
+		right := !isMDSpace(prev) && (!isMDPunct(prev) || isMDSpace(next) || isMDPunct(next))
+		if run.ch == '*' {
+			run.canOpen, run.canClose = left, right
+		} else {
+			run.canOpen = left && (!right || isMDPunct(prev))
+			run.canClose = right && (!left || isMDPunct(next))
+		}
+		st := stacks[run.ch]
+		for run.canClose && run.left > 0 && len(st) > 0 {
+			op := st[len(st)-1]
+			matchDelims(cells, op, run)
+			if op.left == 0 {
+				st = st[:len(st)-1]
 			}
+		}
+		if run.canOpen && run.left > 0 {
+			st = append(st, run)
+		}
+		stacks[run.ch] = st
+	}
+	var b strings.Builder
+	for _, c := range cells {
+		if !c.drop {
+			b.WriteRune(c.r)
 		}
 	}
 	return b.String()
 }
 
+// matchDelims pairs the innermost characters of opener op with the first of closer cl and drops them, unless the
+// pair is a dunder name.
+func matchDelims(cells []mdCell, op, cl *delimRun) {
+	k := min(op.left, cl.left)
+	inner := cells[op.start+op.left : cl.start+cl.n-cl.left]
+	if !(k == 2 && op.ch == '_' && op.n == 2 && cl.n == 2 && isDunderName(inner)) {
+		for x := 0; x < k; x++ {
+			cells[op.start+op.left-1-x].drop = true
+			cells[cl.start+cl.n-cl.left+x].drop = true
+		}
+	}
+	op.left -= k
+	cl.left -= k
+}
+
+// isDunderName reports the lowercase identifier between "__" and "__" in "__init__" or "__main__".
+func isDunderName(cells []mdCell) bool {
+	if len(cells) == 0 || cells[0].r == '_' || cells[len(cells)-1].r == '_' {
+		return false
+	}
+	for _, c := range cells {
+		if c.lit || !(c.r >= 'a' && c.r <= 'z' || c.r >= '0' && c.r <= '9' || c.r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 // stripBlockMarker drops the block syntax at the start of one line: leading blanks, quote marks, one list marker and a
-// task box. "#42 fix" and "2026-10-20" are text, so a number needs its "." or ")" and a space to be a marker.
-func stripBlockMarker(line string) string {
+// task box. "#42 fix" and "2026-10-20" are text, so a number needs its "." or ")" and a space to be a marker. item
+// reports a list marker or task box: a new item, so emphasis does not run on from the line before.
+func stripBlockMarker(line string) (rest string, item bool) {
 	line = strings.TrimLeft(line, " \t")
 	for strings.HasPrefix(line, ">") {
 		line = strings.TrimLeft(line[1:], " \t")
 	}
 	switch {
 	case len(line) >= 2 && strings.IndexByte("-+*", line[0]) >= 0 && line[1] == ' ':
-		line = strings.TrimLeft(line[2:], " ")
+		line, item = strings.TrimLeft(line[2:], " "), true
 	default:
 		i := 0
 		for i < len(line) && line[i] >= '0' && line[i] <= '9' {
 			i++
 		}
 		if i > 0 && i+1 < len(line) && (line[i] == '.' || line[i] == ')') && line[i+1] == ' ' {
-			line = strings.TrimLeft(line[i+2:], " ")
+			line, item = strings.TrimLeft(line[i+2:], " "), true
 		}
 	}
 	for _, box := range []string{"[ ] ", "[x] ", "[X] "} {
 		if rest, ok := strings.CutPrefix(line, box); ok {
-			return rest
+			return rest, true
 		}
 	}
-	return line
+	return line, item
 }
 
 // notesHits finds the needle in notes.md, up to limit hits. The headings (the title line and the section names; see

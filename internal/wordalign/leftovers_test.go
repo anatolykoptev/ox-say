@@ -34,7 +34,17 @@ func TestWERLexiconRejectsNonNumbers(t *testing.T) {
 			t.Errorf("isNumeral(%q) = true", w)
 		}
 	}
-	for _, w := range []string{"три", "пять", "шесть", "первая", "сотый", "сорока", "треть", "нуль"} {
+	// The rest of the heel, the pole and the honeycomb: stem+ending products
+	// that are no form of the number (no blind labels exist yet to prove more).
+	for _, w := range []string{"пяте", "пяту", "пяты", "пятам", "пятах", "пятами",
+		"шеста", "шесту", "шесты", "шесте", "шестов", "шестам", "шестах", "шестами",
+		"сотов", "сотам", "сотах", "сотами", "соте"} {
+		if isNumeral(w) {
+			t.Errorf("isNumeral(%q) = true", w)
+		}
+	}
+	for _, w := range []string{"три", "пять", "шесть", "первая", "сотый", "сорока", "треть", "нуль",
+		"шестом", "шестой", "шестых", "сотой", "сотых", "пятой", "пятью", "пяти", "шести"} {
 		if !isNumeral(w) {
 			t.Errorf("isNumeral(%q) = false", w)
 		}
