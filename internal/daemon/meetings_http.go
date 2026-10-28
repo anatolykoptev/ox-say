@@ -223,6 +223,7 @@ type meetingSummary struct {
 	NotesPending string         `json:"notes_pending,omitempty"`
 	Warnings     []string       `json:"warnings,omitempty"`
 	Error        string         `json:"error,omitempty"`
+	FailReason   string         `json:"fail_reason,omitempty"`
 	Voices       int            `json:"voices,omitempty"`
 	VoiceMode    string         `json:"voice_mode,omitempty"`
 	DiarReason   string         `json:"diar_reason,omitempty"`
@@ -235,7 +236,7 @@ func (d *Daemon) summarize(m meeting.Manifest) meetingSummary {
 	return meetingSummary{
 		ID: m.ID, Title: m.Title, Started: m.Started, DurationS: m.DurationS, Status: m.Status,
 		Language: m.Language, HasNotes: m.Status == meeting.StatusDone, NotesPending: m.NotesPending,
-		Warnings: m.Warnings, Error: m.Error, Voices: m.Voices, VoiceMode: m.VoiceMode, DiarReason: m.DiarReason, AudioDeleted: m.AudioDeleted,
+		Warnings: m.Warnings, Error: m.Error, FailReason: m.FailReason, Voices: m.Voices, VoiceMode: m.VoiceMode, DiarReason: m.DiarReason, AudioDeleted: m.AudioDeleted,
 	}
 }
 

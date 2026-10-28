@@ -86,19 +86,22 @@ const WaitSTTModel = "stt_model_missing"
 // Manifest is meeting.json: everything about a meeting except its audio and
 // text.
 type Manifest struct {
-	Version   int        `json:"version"`
-	ID        string     `json:"id"`
-	Title     string     `json:"title,omitempty"`
-	Source    string     `json:"source,omitempty"` // zoom, meet, teams, manual...
-	Started   time.Time  `json:"started"`
-	Ended     *time.Time `json:"ended,omitempty"`
-	Status    Status     `json:"status"`
-	Error     string     `json:"error,omitempty"`
-	Labels    Labels     `json:"labels"`
-	EchoRisk  bool       `json:"echo_risk,omitempty"` // the Mac played the call on speakers
-	Language  string     `json:"language,omitempty"`  // voices.Language of the speech, "" when unclear; picks the notes headings and names the language to the model
-	DurationS float64    `json:"duration_s,omitempty"`
-	Warnings  []string   `json:"warnings,omitempty"`
+	Version int        `json:"version"`
+	ID      string     `json:"id"`
+	Title   string     `json:"title,omitempty"`
+	Source  string     `json:"source,omitempty"` // zoom, meet, teams, manual...
+	Started time.Time  `json:"started"`
+	Ended   *time.Time `json:"ended,omitempty"`
+	Status  Status     `json:"status"`
+	Error   string     `json:"error,omitempty"`
+	// FailReason is the code behind Error (the Fail* constants), "" when nothing failed or for a failure recorded
+	// before codes existed. The app turns it into a sentence; Error stays English text for the log.
+	FailReason string   `json:"fail_reason,omitempty"`
+	Labels     Labels   `json:"labels"`
+	EchoRisk   bool     `json:"echo_risk,omitempty"` // the Mac played the call on speakers
+	Language   string   `json:"language,omitempty"`  // voices.Language of the speech, "" when unclear; picks the notes headings and names the language to the model
+	DurationS  float64  `json:"duration_s,omitempty"`
+	Warnings   []string `json:"warnings,omitempty"`
 	// VoiceMode is VoicesAuto or VoicesOffer when the diarizer found several
 	// substantial voices on the far side (Voices of them), "" otherwise.
 	VoiceMode string `json:"voice_mode,omitempty"`

@@ -151,3 +151,32 @@ func TestAColdStartThatTimesOutTwiceStopsTheRunAfterTwoStarts(t *testing.T) {
 		t.Fatalf("spawns = %d, want 2", got)
 	}
 }
+
+// The error of a notes engine that did not run says how the start ended, so the meeting can record a code (and the
+// window a sentence) instead of the English text.
+// Mutation: internal/daemon/meetings.go engineDownReason, return meeting.FailNotesEngineStart at the top -> RED (both rows).
+func TestEngineDownErrorSaysHowTheStartEnded(t *testing.T) {
+	req := meeting.Request{System: "s", User: "u"}
+	d, _ := startNotesFake(t)
+	t.Setenv("OXSAY_FAKE_LLM_OPEN", "1")
+	_, err := (llmChat{d: d}).Complete(context.Background(), req)
+	var down *meeting.EngineDownError
+	if !errors.As(err, &down) || down.Reason != meeting.FailNotesEngineVerify {
+		t.Fatalf("a refused check: err = %v, reason %q, want %s", err, reasonOf(down), meeting.FailNotesEngineVerify)
+	}
+
+	d2, _ := startNotesFake(t)
+	notesCold(t, d2, 9)
+	_, err = (llmChat{d: d2}).Complete(context.Background(), req)
+	down = nil
+	if !errors.As(err, &down) || down.Reason != meeting.FailNotesEngineTimeout {
+		t.Fatalf("a health timeout: err = %v, reason %q, want %s", err, reasonOf(down), meeting.FailNotesEngineTimeout)
+	}
+}
+
+func reasonOf(e *meeting.EngineDownError) string {
+	if e == nil {
+		return ""
+	}
+	return e.Reason
+}

@@ -2,7 +2,11 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net"
 	"os"
 	"path/filepath"
@@ -543,6 +547,40 @@ func TestInstallErrorCarriesCurlsWordsNotTheMeter(t *testing.T) {
 	}
 }
 
+// A failed download carries a stable code beside curl's words: the window shows its own sentence for the code and
+// never the English text. The codes are the ones the fetch can produce: no network, a full disk, a file that does not
+// match its checksum, anything else.
+// Mutations: internal/daemon/meetings.go notesStatus, delete `InstallCode: icode` -> RED (every row);
+// installFailureCode, delete the "No space left" arm -> RED (disk_full rows); the "checksum mismatch" arm -> RED.
+func TestAFailedDownloadHasAStableCode(t *testing.T) {
+	cases := []struct{ name, stderr, want string }{
+		{"no network", "curl: (6) Could not resolve host: huggingface.co", "network"},
+		{"refused", "curl: (7) Failed to connect to huggingface.co port 443", "network"},
+		{"server error", "curl: (22) The requested URL returned error: 503", "network"},
+		{"curl cannot write", "curl: (23) Failure writing output to destination", "disk_full"},
+		{"disk full", "mv: write error: No space left on device", "disk_full"},
+		{"checksum", "checksum mismatch for qwen.gguf: got aa, want bb", "checksum"},
+		{"anything else", "something unexpected", "other"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := installFixture(t, "#!/bin/sh\nprintf '%s\\n' '"+tc.stderr+"' >&2\nexit 1\n")
+			if err := d.InstallNotesModel(); err != nil {
+				t.Fatal(err)
+			}
+			testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to fail")
+			n := d.Status().Notes
+			if n.InstallErr == "" || n.InstallCode != tc.want {
+				t.Fatalf("install_error %q, install_error_code %q; want a code %q", n.InstallErr, n.InstallCode, tc.want)
+			}
+			raw, _ := json.Marshal(n)
+			if !strings.Contains(string(raw), `"install_error_code":"`+tc.want+`"`) {
+				t.Fatalf("status JSON = %s", raw)
+			}
+		})
+	}
+}
+
 // --- refusals ---------------------------------------------------------------
 
 // A model on disk is "already installed" even when the notes are blocked for
@@ -563,5 +601,43 @@ func TestInstallRefusesWhenTheModelIsThereButNotesAreBlockedElsewhere(t *testing
 	}
 	if err := d.InstallNotesModel(); err == nil || !strings.Contains(err.Error(), "already installed") {
 		t.Fatalf("err = %v, want \"already installed\"", err)
+	}
+}
+
+// Every code installFailureCode can return, but the catch-all, has its sentence in the app. The codes are read from the
+// function's return statements, so a new one cannot be added without a row in NotesWriterState.downloadFailureKey.
+// Mutation: MeetingWindowService.swift, delete `case "checksum": return .settingsNotesWriterDownloadChecksum` -> RED.
+func TestEveryInstallFailureCodeHasASwiftSentence(t *testing.T) {
+	swift, err := os.ReadFile("../../app/dictation/Sources/DictationCore/MeetingWindowService.swift")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "meetings.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var codes []string
+	for _, decl := range file.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == "installFailureCode" {
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if rs, ok := n.(*ast.ReturnStmt); ok {
+					for _, r := range rs.Results {
+						if lit, ok := r.(*ast.BasicLit); ok {
+							v, _ := strconv.Unquote(lit.Value)
+							codes = append(codes, v)
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	if len(codes) < 4 {
+		t.Fatalf("read only %d codes from installFailureCode: %v", len(codes), codes)
+	}
+	for _, c := range codes {
+		if c != "other" && !strings.Contains(string(swift), `case "`+c+`":`) {
+			t.Errorf("the install failure %q has no case in MeetingWindowService.swift", c)
+		}
 	}
 }

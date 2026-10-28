@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -599,5 +600,23 @@ func TestMidWindowHealthCaughtWithinProbeCap(t *testing.T) {
 	}
 	if el := time.Since(start); el >= 450*time.Millisecond {
 		t.Fatalf("EnsureReady on a ~350ms-ready child took %s — startup probes are not on the ≤25 ms grid", el)
+	}
+}
+
+// A start that ran out of time says so in a way callers can tell from a crash or a refused check: the notes run
+// records "did not answer in time" for the user, not the English text.
+// Mutation: internal/engine/supervisor.go waitHealthy, return `fmt.Errorf("engine did not become healthy within %s", s.cfg.StartupTimeout)`
+// in place of `&startTimeout{...}` -> RED.
+func TestAHealthTimeoutIsATypedStartTimeout(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_START_DELAY_MS", "60000")
+	sup := newTestSupervisor(t, dir, func(c *Config) { c.StartupTimeout = 300 * time.Millisecond })
+	_, err := sup.EnsureReady(context.Background())
+	if !IsStartTimeout(err) {
+		t.Fatalf("err = %v, want a start timeout", err)
+	}
+	if IsStartTimeout(errors.New("engine did not become healthy")) || IsStartTimeout(nil) || IsStartTimeout(&verifyFailure{errors.New("x")}) {
+		t.Fatal("only the supervisor's own timeout is a start timeout")
 	}
 }

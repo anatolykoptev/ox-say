@@ -63,6 +63,9 @@ type notesStatus struct {
 	Installing  bool         `json:"installing,omitempty"`
 	ProgressPct int          `json:"progress_pct,omitempty"`
 	InstallErr  string       `json:"install_error,omitempty"`
+	// InstallCode is the stable code behind InstallErr: network, disk_full, checksum or other. The app shows its own
+	// sentence for it; InstallErr stays the fetch's English words for the log and the menu.
+	InstallCode string `json:"install_error_code,omitempty"`
 }
 
 // notesBinPath is the path ox-llm is spawned by: always absolute, because the
@@ -267,11 +270,22 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 		// A verify refusal or a shutdown will repeat: stop at once. A health
 		// timeout or a crashed child often succeeds on a second start (the
 		// model is then in the page cache): Compose may start once more.
-		return "", &meeting.EngineDownError{Err: err, Retryable: !engine.IsVerifyRefusal(err) && !errors.Is(err, engine.ErrShutdown)}
+		return "", &meeting.EngineDownError{Err: err, Retryable: !engine.IsVerifyRefusal(err) && !errors.Is(err, engine.ErrShutdown), Reason: engineDownReason(err)}
 	}
 	ctx, cancel := context.WithTimeout(ctx, notesCallTimeout)
 	defer cancel()
 	return meeting.HTTPChat{BaseURL: base, Key: c.d.notesKey}.Complete(ctx, r)
+}
+
+// engineDownReason is how a failed notes-engine start ended, as the code the meeting records.
+func engineDownReason(err error) string {
+	switch {
+	case engine.IsVerifyRefusal(err):
+		return meeting.FailNotesEngineVerify
+	case engine.IsStartTimeout(err):
+		return meeting.FailNotesEngineTimeout
+	}
+	return meeting.FailNotesEngineStart
 }
 
 // notesKey reads the bearer the current spawn's --api-key-file names. The
@@ -355,6 +369,7 @@ type notesInstall struct {
 	mu      sync.Mutex
 	running bool
 	err     string
+	code    string // installFailureCode of err
 	// ctx ends the download with the daemon: Shutdown cancels it and waits on wg.
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -362,10 +377,25 @@ type notesInstall struct {
 	wg      sync.WaitGroup
 }
 
-func (n *notesInstall) state() (running bool, err string) {
+func (n *notesInstall) state() (running bool, err, code string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.running, n.err
+	return n.running, n.err, n.code
+}
+
+// installFailureCode sorts a failed fetch's last words into the few causes a person can act on. The fetch script
+// (scripts/fetch-models.sh) speaks through curl and its own checksum line, so those are the texts read here.
+func installFailureCode(tail string) string {
+	low := strings.ToLower(tail)
+	switch {
+	case strings.Contains(low, "checksum mismatch"):
+		return "checksum"
+	case strings.Contains(low, "no space left"), strings.Contains(low, "curl: (23)"), strings.Contains(low, "disk full"):
+		return "disk_full"
+	case strings.Contains(low, "curl: ("):
+		return "network"
+	}
+	return "other"
 }
 
 // ErrNotesInstall is a refusal to start the notes model download.
@@ -453,7 +483,7 @@ func (d *Daemon) InstallNotesModel() error {
 		return fmt.Errorf("%w: %v", ErrNotesInstall, err)
 	}
 	_ = lock.Close() // the child's copy keeps the lock
-	d.notes.running, d.notes.err = true, ""
+	d.notes.running, d.notes.err, d.notes.code = true, "", ""
 	d.notes.wg.Add(1)
 	go d.runNotesInstall(d.notes.ctx, cmd, &tail)
 	return nil
@@ -488,7 +518,7 @@ func (d *Daemon) runNotesInstall(ctx context.Context, cmd *exec.Cmd, tail *bytes
 	d.notes.running = false
 	if err != nil && ctx.Err() == nil {
 		msg := installTail(tail.String())
-		d.notes.err = "The download failed: " + msg
+		d.notes.err, d.notes.code = "The download failed: "+msg, installFailureCode(msg)
 		d.log.Warn("notes model download failed", slog.Any("error", err), slog.String("stderr", msg))
 	}
 }
@@ -529,8 +559,8 @@ func (d *Daemon) StopNotesInstall() {
 // surfaces as the supervisor's state plus last_error — never as
 // "unsupported", which is a config-level judgement (#243).
 func (d *Daemon) notesStatus() notesStatus {
-	running, ierr := d.notes.state()
-	out := notesStatus{Installing: running, InstallErr: ierr}
+	running, ierr, icode := d.notes.state()
+	out := notesStatus{Installing: running, InstallErr: ierr, InstallCode: icode}
 	if running {
 		if st, err := os.Stat(d.Cfg.NotesModel + ".part"); err == nil {
 			out.ProgressPct = int(min(99, st.Size()*100/config.NotesModelBytes))
@@ -563,7 +593,7 @@ func (d *Daemon) notesStatus() notesStatus {
 
 // notesInstalling is 1 while the notes model downloads.
 func (d *Daemon) notesInstalling() int {
-	if running, _ := d.notes.state(); running {
+	if running, _, _ := d.notes.state(); running {
 		return 1
 	}
 	return 0
