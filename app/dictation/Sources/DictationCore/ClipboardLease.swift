@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 
 /// The pasteboard as dictation output sees it: `NSPasteboard.general` in the app,
@@ -50,6 +51,35 @@ public struct PasteboardSnapshot: Equatable {
     public init(items: [[PasteboardEntry]], problems: [String] = []) {
         self.items = items
         self.problems = problems
+    }
+
+    /// How long the main thread waits for the clipboard's data before it gives the user's copy up (see `capture`).
+    public static let readLimit: TimeInterval = 2
+
+    /// `capture(board)` on a background queue, waited for at most `timeLimit` seconds. A type provided lazily (a big
+    /// image copied in Preview) is materialised by the READ, which can take seconds and, on the main thread, freezes
+    /// the app and the key the user holds; and the 64 MB cap only applies after that read. On a timeout the result is
+    /// a snapshot that is not the user's copy ("took too long to read"), so it is not put back and the lease says so;
+    /// the read goes on in the background and its result is dropped. nil `timeLimit` reads in place, as `capture`.
+    public static func capture(_ board: DictationPasteboard, timeLimit: TimeInterval?) -> PasteboardSnapshot {
+        guard let timeLimit else { return capture(board) }
+        let box = SnapshotBox()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.set(capture(board))
+            done.signal()
+        }
+        if done.wait(timeout: .now() + timeLimit) == .success, let snapshot = box.value { return snapshot }
+        var late = PasteboardSnapshot(items: [])
+        late.report("a copy that took too long to read")
+        return late
+    }
+
+    private final class SnapshotBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var snapshot: PasteboardSnapshot?
+        var value: PasteboardSnapshot? { lock.withLock { snapshot } }
+        func set(_ new: PasteboardSnapshot) { lock.withLock { snapshot = new } }
     }
 
     /// Copies every type of every item on `board`, in declared order. A
@@ -105,7 +135,7 @@ public struct PasteboardSnapshot: Equatable {
         items.map { $0.filter { !PasteboardMarker.remote.contains($0.type) } }
     }
 
-    private mutating func report(_ problem: String) {
+    fileprivate mutating func report(_ problem: String) {
         if !problems.contains(problem) { problems.append(problem) }
     }
 
@@ -113,8 +143,15 @@ public struct PasteboardSnapshot: Equatable {
     /// asking runs the source's provider on this thread. Apple's promise UTIs
     /// all carry "promise" (com.apple.pasteboard.promised-file,
     /// com.apple.pasteboard.promised-file-url, com.apple.NSFilePromise).
+    ///
+    /// The legacy `NSFilesPromisePboardType` and `NSPromiseContentsPboardType` surface as `dyn.*` identifiers whose
+    /// text does not carry the word; their pasteboard-type name is recovered from the identifier.
     private static func isPromisedType(_ type: String) -> Bool {
-        type.lowercased().contains("promise")
+        if type.lowercased().contains("promise") { return true }
+        guard type.hasPrefix("dyn."),
+              let legacy = UTTypeCopyPreferredTagWithClass(type as CFString, kUTTagClassNSPboardType)?.takeRetainedValue() as String?
+        else { return false }
+        return legacy.lowercased().contains("promise")
     }
 
     /// Marked by its writer as a secret (nspasteboard.org convention, used by
@@ -170,9 +207,10 @@ public final class ClipboardLease {
     /// user's own.
     public private(set) var notice: String?
 
-    public init(board: DictationPasteboard, text: String) {
+    /// `readLimit`: how long the snapshot of the user's clipboard may take (`PasteboardSnapshot.capture(_:timeLimit:)`).
+    public init(board: DictationPasteboard, text: String, readLimit: TimeInterval = PasteboardSnapshot.readLimit) {
         self.board = board
-        self.original = PasteboardSnapshot.capture(board)
+        self.original = PasteboardSnapshot.capture(board, timeLimit: readLimit)
         self.ourChange = board.writeText(text)
     }
 

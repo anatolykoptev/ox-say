@@ -53,7 +53,7 @@ public enum SelectionBorrow {
         let axText = ax.secureField ? nil : ax.text
         let secure = secureInput() || ax.secureField
         let snapshot = SelectionPolicy.needsClipboard(axText: axText, secureInput: secure)
-            ? PasteboardSnapshot.capture(board) : nil
+            ? PasteboardSnapshot.capture(board, timeLimit: PasteboardSnapshot.readLimit) : nil
         switch SelectionPolicy.plan(axText: axText, secureInput: secure,
                                     clipboardRestorable: snapshot.map { $0.problems.isEmpty && !$0.isSensitive } ?? false,
                                     clipboardRemote: snapshot?.isRemote ?? false,
