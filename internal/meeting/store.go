@@ -29,6 +29,8 @@ type Store struct {
 	newID     func(time.Time) string              // test seam; nil means vproject.NewID
 	removeAll func(string) error                  // test seam; nil means os.RemoveAll
 	saveFn    func(dir string, m *Manifest) error // test seam; nil means s.save
+	inRetire  func()                              // test seam: Retire, under the lock, after the check and before the renames
+	afterLock func()                              // test seam: Retire, after the lock is released and before the unlink
 	mu        sync.Mutex
 	warned    sync.Map // tombstone name -> struct{}: those whose failed unlink was logged
 }
@@ -261,6 +263,79 @@ func (s *Store) tombstone(dir, id string, check func(Manifest) error) (string, e
 			return "", nil
 		}
 		return "", fmt.Errorf("meeting: %w", err)
+	}
+	return tomb, nil
+}
+
+// Retire takes files out of a meeting, the way DeleteIf takes out a meeting: under the store lock it asks check
+// about the record as it is, renames names (in the order given; one that does not exist is skipped) into a
+// tombstone directory beside the meetings, and lets mark change the record, which is saved; the unlink comes after
+// the lock is released, so a long recording does not stall the other meetings' status writes. A check that refuses
+// returns its error and nothing is touched; a rename or save that fails puts back what was moved. Because the
+// decision, the renames and the record are one locked step, a Retry that queues the meeting either comes first (and
+// check refuses) or comes after (and finds the files gone). A tombstone whose unlink failed, or that a crash left,
+// is swept by List like a deleted meeting's.
+func (s *Store) Retire(id string, names []string, check func(*Manifest) error, mark func(*Manifest)) error {
+	dir, err := s.Dir(id)
+	if err != nil {
+		return err
+	}
+	tomb, err := s.retireLocked(dir, id, names, check, mark)
+	if err != nil {
+		return err
+	}
+	if s.afterLock != nil {
+		s.afterLock()
+	}
+	if err := s.unlink(tomb); err != nil {
+		s.log().Warn("meeting files retired, could not be unlinked yet", slog.String("dir", filepath.Base(tomb)), slog.Any("error", err))
+	}
+	return nil
+}
+
+func (s *Store) retireLocked(dir, id string, names []string, check func(*Manifest) error, mark func(*Manifest)) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, err := load(dir)
+	if err != nil {
+		return "", err
+	}
+	if err := check(m); err != nil {
+		return "", err
+	}
+	if s.inRetire != nil {
+		s.inRetire()
+	}
+	tomb := filepath.Join(s.Root, tombstonePrefix+id+"-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	if err := os.Mkdir(tomb, 0o700); err != nil {
+		return "", fmt.Errorf("meeting: %w", err)
+	}
+	var moved []string
+	undo := func() {
+		for i := len(moved) - 1; i >= 0; i-- {
+			_ = os.Rename(filepath.Join(tomb, moved[i]), filepath.Join(dir, moved[i]))
+		}
+		_ = os.Remove(tomb)
+	}
+	for _, name := range names {
+		if err := os.Rename(filepath.Join(dir, name), filepath.Join(tomb, name)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			undo()
+			return "", fmt.Errorf("meeting: %w", err)
+		}
+		moved = append(moved, name)
+	}
+	mark(m)
+	m.ID = id
+	save := s.save
+	if s.saveFn != nil {
+		save = s.saveFn
+	}
+	if err := save(dir, m); err != nil {
+		undo()
+		return "", err
 	}
 	return tomb, nil
 }

@@ -104,6 +104,9 @@ type Runner struct {
 	clearStale func(dir string, m Manifest, written *Notes) error
 	// beforeRenameUpdate, when set, is called by Rename after its first status check and before the store update (tests).
 	beforeRenameUpdate func()
+	// beforeAudioDelete, when set, is called by the retention sweep after it judged a meeting expired and before it
+	// takes the store lock to delete (tests make a retry land in that gap).
+	beforeAudioDelete func()
 }
 
 // afterSpeakersRead is a test seam: when set, EditSpeakers and the notes writer's clear call it once they have read
@@ -369,17 +372,30 @@ func (r *Runner) diarNotReady() string {
 // VoicesRetryable is whether a retry of m's voices would be accepted right now, for a meeting whose voices are
 // unavailable (the failed kind is judged by the app). It is what the served meeting reports as voices_retryable, so
 // the app shows "Try Again" exactly when RetryVoices would take it.
-func (r *Runner) VoicesRetryable(m Manifest) bool {
-	if !unavailableFixable(&m) || r.diarNotReady() != "" {
-		return false
+func (r *Runner) VoicesRetryable(m Manifest) bool { return r.VoicesRetryer()(m) }
+
+// VoicesRetryer is VoicesRetryable for a list of meetings: the diarizer's readiness is asked at most once, on the
+// first meeting whose answer depends on it, and that answer serves the rest of the list. A list is one moment.
+func (r *Runner) VoicesRetryer() func(Manifest) bool {
+	asked, notReady := false, ""
+	return func(m Manifest) bool {
+		if !unavailableFixable(&m) {
+			return false
+		}
+		switch m.Status {
+		case StatusFailed, StatusTranscribed, StatusDone:
+		default:
+			return false
+		}
+		if !asked {
+			notReady, asked = r.diarNotReady(), true
+		}
+		if notReady != "" {
+			return false
+		}
+		dir, err := r.Store.Dir(m.ID)
+		return err == nil && wantsVoicesAgain(dir, &m)
 	}
-	switch m.Status {
-	case StatusFailed, StatusTranscribed, StatusDone:
-	default:
-		return false
-	}
-	dir, err := r.Store.Dir(m.ID)
-	return err == nil && wantsVoicesAgain(dir, &m)
 }
 
 // unavailableFixable: voices are unavailable for a reason that a later retry can fix.
@@ -612,11 +628,14 @@ var channels = []channel{{MePCM, SpeakerMe}, {ThemPCM, SpeakerThem}}
 // transcribe recognizes both channels piece by piece, caching each piece so a
 // restart resumes where it stopped, then merges them into the transcript.
 func (r *Runner) transcribe(ctx context.Context, id string) error {
-	m, err := r.Store.Update(id, func(m *Manifest) { m.Status = StatusTranscribing })
+	dir, err := r.Store.Dir(id)
 	if err != nil {
 		return err
 	}
-	dir, err := r.Store.Dir(id)
+	if kept, err := r.keepFinishedWithoutAudio(id, dir); kept || err != nil {
+		return err
+	}
+	m, err := r.Store.Update(id, func(m *Manifest) { m.Status = StatusTranscribing })
 	if err != nil {
 		return err
 	}
@@ -732,6 +751,56 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 		_ = os.RemoveAll(work)
 	}
 	return nil
+}
+
+// keepFinishedWithoutAudio stops a transcription that is missing part of its recording from blanking (or halving) a
+// meeting that already has a transcript. A missing channel file reads as a silent one (a capture that heard
+// nothing), so without this a queued run over deleted audio would overwrite transcript.json with an empty one, and
+// over a half-deleted pair (one file left by a crash or a failed unlink) with one that lacks a side's turns. The
+// transcript, the notes and the speakers stay as they are; the meeting goes back to done (or to transcribed when it
+// never got notes, and the run then goes on to write them) with AudioDeleted set when no channel file remains (else the retention sweep finishes the removal), and no failure is recorded: the
+// meeting did not fail, it just cannot be transcribed again. The reason is in the log.
+//
+// A channel counts as gone when its file is missing and the meeting either records its audio as deleted or did not
+// record that channel as silent when it was transcribed (WarnNoMicAudio / WarnNoSystemAudio): a side that never
+// had audio is not a loss. kept is false, with no error, for every meeting this does not concern.
+func (r *Runner) keepFinishedWithoutAudio(id, dir string) (kept bool, err error) {
+	if !transcriptReadable(dir) {
+		return false, nil
+	}
+	m, err := r.Store.Load(id)
+	if err != nil {
+		return false, err
+	}
+	gone, left := false, false // a channel lost, and a channel file still here
+	for _, ch := range []struct{ file, silent string }{{MePCM, WarnNoMicAudio}, {ThemPCM, WarnNoSystemAudio}} {
+		_, err := os.Stat(filepath.Join(dir, ch.file))
+		if err == nil {
+			left = true
+		}
+		if errors.Is(err, os.ErrNotExist) && (m.AudioDeleted || !slices.Contains(m.Warnings, ch.silent)) {
+			gone = true
+		}
+	}
+	if !gone {
+		return false, nil // present, or never there, or unknowable: transcribe as asked
+	}
+	notes, _ := os.ReadFile(filepath.Join(dir, NotesMD))
+	_, err = r.Store.Update(id, func(m *Manifest) {
+		m.Status = StatusTranscribed
+		if len(notes) > 0 {
+			m.Status = StatusDone
+		}
+		// Only when nothing of the recording is left: a surviving file must stay visible to the retention sweep
+		// (expired is false for a meeting marked deleted), or it would outlive the user's retention period.
+		m.AudioDeleted = !left
+		m.Error, m.FailReason = "", ""
+	})
+	if err != nil {
+		return false, err
+	}
+	r.Log.Warn("meeting: a queued transcription found the recording incomplete; kept the transcript and notes", slog.String("id", id))
+	return true, nil
 }
 
 // channelWords recognizes one channel file. speech is false when the file is

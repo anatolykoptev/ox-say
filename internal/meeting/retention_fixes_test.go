@@ -2,6 +2,7 @@ package meeting
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,35 +115,67 @@ func TestSetSettingsAcceptsOnlyTheOfferedPeriods(t *testing.T) {
 	}
 }
 
-// AudioDeleted is a claim that the audio is gone; it is made only when it is.
-// Mutation: internal/meeting/retention.go deleteAudio, delete `gone = false`
-// in the os.Remove error branch -> RED (the manifest says gone, the file is there).
-func TestAudioIsMarkedDeletedOnlyWhenBothFilesAreGone(t *testing.T) {
+// AudioDeleted is a claim that the audio is out of the meeting; it is made only when it is. When the files cannot
+// be moved, nothing is: the meeting keeps both files (a half move is put back) and the next sweep tries again.
+// Mutation: internal/meeting/store.go retireLocked, delete the `undo()` after the failed save (next test) -> RED.
+func TestAudioIsMarkedDeletedOnlyWhenTheFilesAreOutOfTheMeeting(t *testing.T) {
 	f := newFixture(t)
 	id := expiredMeeting(t, f)
 	dir, _ := f.r.Store.Dir(id)
-	me := filepath.Join(dir, MePCM)
-	// me.pcm cannot be removed: a non-empty directory stands in for a locked file.
-	_ = os.Remove(me)
-	if err := os.MkdirAll(filepath.Join(me, "x"), 0o700); err != nil {
+	// me.pcm cannot be moved: its place is an immovable name (a directory made read-only cannot give up a child).
+	_ = os.Remove(filepath.Join(dir, MePCM))
+	locked := filepath.Join(dir, MePCM)
+	if err := os.MkdirAll(filepath.Join(locked, "x"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(dir, 0o500); err != nil { // no entry can leave the meeting directory
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 	if n := f.r.SweepRetention(); n != 0 {
-		t.Fatalf("swept %d, want 0 while a file will not go", n)
+		t.Fatalf("swept %d, want 0 while the files will not move", n)
 	}
+	_ = os.Chmod(dir, 0o700)
 	if f.load(t, id).AudioDeleted {
-		t.Fatal("AudioDeleted set with audio still on disk")
+		t.Fatal("AudioDeleted set with audio still in the meeting")
 	}
-	if _, err := os.Stat(filepath.Join(dir, ThemPCM)); err == nil {
-		t.Error("them.pcm should still have been removed")
+	if _, err := os.Stat(filepath.Join(dir, ThemPCM)); err != nil {
+		t.Errorf("a failed move left the meeting without them.pcm: %v", err)
 	}
-	_ = os.RemoveAll(me) // the lock is released
+	left, _ := filepath.Glob(filepath.Join(f.r.Store.Root, tombstonePrefix+"*"))
+	if len(left) != 0 {
+		t.Errorf("a failed move left tombstones: %v", left)
+	}
 	if n := f.r.SweepRetention(); n != 1 || !f.load(t, id).AudioDeleted {
 		t.Fatalf("the next sweep did not finish the job (%d)", n)
 	}
-	// A file that was already gone (ENOENT) counts as gone.
+	// A meeting already done with is not swept again.
 	if n := f.r.SweepRetention(); n != 0 {
 		t.Fatalf("a deleted meeting was swept again (%d)", n)
+	}
+}
+
+// The record could not be saved after the files were moved: they are put back, no tombstone stays, and the next
+// sweep does it all.
+func TestAFailedSaveAfterTheMoveGivesTheAudioBack(t *testing.T) {
+	f := newFixture(t)
+	id := expiredMeeting(t, f)
+	dir, _ := f.r.Store.Dir(id)
+	f.r.Store.saveFn = func(string, *Manifest) error { return errors.New("disk full") }
+	if n := f.r.SweepRetention(); n != 0 {
+		t.Fatalf("swept %d with a record that cannot be saved", n)
+	}
+	for _, name := range audioFiles {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s was not given back: %v", name, err)
+		}
+	}
+	if left, _ := filepath.Glob(filepath.Join(f.r.Store.Root, tombstonePrefix+"*")); len(left) != 0 {
+		t.Errorf("tombstones left: %v", left)
+	}
+	f.r.Store.saveFn = nil
+	if n := f.r.SweepRetention(); n != 1 {
+		t.Fatalf("the next sweep deleted %d", n)
 	}
 }
 
