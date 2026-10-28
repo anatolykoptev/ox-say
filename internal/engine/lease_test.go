@@ -41,8 +41,8 @@ func (h *infoLog) saw(sub string) bool {
 	return false
 }
 
-// The lease itself: one token; Try fails while held; Wait parks until
-// released or ctx ends; WaitOr also wakes on abort.
+// The lease itself: one token; Try fails while held; WaitOrAs parks until
+// released, ctx ends, or abort closes.
 func TestGPULeasePrimitive(t *testing.T) {
 	l := NewGPULease()
 	if !l.Try() {
@@ -59,54 +59,60 @@ func TestGPULeasePrimitive(t *testing.T) {
 		t.Fatal("Held = true after Release")
 	}
 
-	// Wait parks: a caller on a held lease must surface in Waiters and
+	// WaitOrAs parks: a caller on a held lease must surface in Waiters and
 	// only proceed once released.
 	if !l.Try() {
 		t.Fatal("re-take failed")
 	}
 	got := make(chan error, 1)
-	go func() { got <- l.Wait(context.Background()) }()
+	go func() {
+		ok, err := l.WaitOrAs(context.Background(), nil, "")
+		if err == nil && !ok {
+			err = errors.New("WaitOrAs returned (false, nil) with no abort")
+		}
+		got <- err
+	}()
 	testutil.WaitFor(t, 5*time.Second, func() bool { return l.Waiters() == 1 }, "waiter to park")
 	select {
 	case err := <-got:
-		t.Fatalf("Wait returned %v while the lease was held", err)
+		t.Fatalf("WaitOrAs returned %v while the lease was held", err)
 	default:
 	}
 	l.Release()
 	if err := <-got; err != nil {
-		t.Fatalf("Wait after release: %v", err)
+		t.Fatalf("WaitOrAs after release: %v", err)
 	}
-	l.Release() // the Wait above now owns the token
+	l.Release() // the WaitOrAs above now owns the token
 
-	// WaitOr returns (false, nil) on abort, ctx error on a deadline.
+	// WaitOrAs returns (false, nil) on abort, ctx error on a deadline.
 	if !l.Try() {
 		t.Fatal("re-take failed")
 	}
 	abort := make(chan struct{})
 	okCh := make(chan bool, 1)
 	go func() {
-		ok, err := l.WaitOr(context.Background(), abort)
+		ok, err := l.WaitOrAs(context.Background(), abort, "")
 		if err != nil {
-			t.Errorf("WaitOr: %v", err)
+			t.Errorf("WaitOrAs: %v", err)
 		}
 		okCh <- ok
 	}()
-	testutil.WaitFor(t, 5*time.Second, func() bool { return l.Waiters() == 1 }, "WaitOr waiter to park")
+	testutil.WaitFor(t, 5*time.Second, func() bool { return l.Waiters() == 1 }, "WaitOrAs waiter to park")
 	close(abort)
 	if ok := <-okCh; ok {
-		t.Fatal("WaitOr acquired on abort")
+		t.Fatal("WaitOrAs acquired on abort")
 	}
 	if !l.Held() {
-		t.Fatal("lease lost the token across WaitOr's aborted wait")
+		t.Fatal("lease lost the token across WaitOrAs's aborted wait")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	if ok, err := l.WaitOr(ctx, nil); ok || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("WaitOr on a held lease = (%v, %v), want (false, DeadlineExceeded)", ok, err)
+	if ok, err := l.WaitOrAs(ctx, nil, ""); ok || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitOrAs on a held lease = (%v, %v), want (false, DeadlineExceeded)", ok, err)
 	}
 	l.Release()
-	if err := l.Wait(context.Background()); err != nil {
-		t.Fatal(err)
+	if ok, err := l.WaitOrAs(context.Background(), nil, ""); !ok || err != nil {
+		t.Fatalf("WaitOrAs on a free lease = (%v, %v), want (true, nil)", ok, err)
 	}
 	l.Release()
 }
@@ -148,8 +154,8 @@ func TestGPUOwnerInStatus(t *testing.T) {
 		c.GPU = lease
 		c.Logger = slog.New(rec)
 	})
-	if err := lease.WaitAs(context.Background(), "transcription"); err != nil {
-		t.Fatal(err)
+	if !lease.TryAs("transcription") {
+		t.Fatal("TryAs on a free lease failed")
 	}
 	if got := lease.Owner(); got != "transcription" {
 		t.Fatalf("Owner() = %q, want transcription", got)
@@ -262,7 +268,7 @@ func TestGPULeaseWaitBoundByCallerCtx(t *testing.T) {
 }
 
 // Shutdown must abort a parked lease wait: the broadcast closes s.change,
-// WaitOr's abort case fires, and the caller re-checks into s.dead.
+// WaitOrAs's abort case fires, and the caller re-checks into s.dead.
 // Mutation: wait on the lease without the abort channel -> RED (the caller
 // stays parked past Shutdown and the receive deadline trips).
 func TestGPULeaseWaitAbortedByShutdown(t *testing.T) {

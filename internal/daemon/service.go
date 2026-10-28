@@ -149,7 +149,7 @@ func sttStartupTimeout(d time.Duration) time.Duration {
 // GPU unless OX_SAY_STT_GPU=off.
 func STTServeArgs(cfg *config.Config, port int) []string {
 	args := []string{"--serve", "--port", strconv.Itoa(port), "-m", cfg.STTModel}
-	if !cfg.UnifiedMemory() || cfg.STTGPU == "off" {
+	if !cfg.UnifiedMemory() || cfg.STTGPU == config.STTGPUOff {
 		args = append(args, "-ng")
 	}
 	// Streaming sessions need the silero VAD model; without the file the
@@ -645,6 +645,10 @@ func (d *Daemon) Status() statusSummary {
 			"addr":              d.Cfg.Addr,
 			"engine_port":       d.Cfg.EnginePort,
 			"engine_bin":        d.Cfg.EngineBin,
+			"stt_bin":           d.Cfg.STTBin,
+			"voxcpm2_bin":       d.Cfg.VoxCPM2Bin,
+			"notes_bin":         d.Cfg.NotesBin,
+			"diar_bin":          d.Cfg.DiarBin,
 			"model":             d.Cfg.Model,
 			"codec":             d.Cfg.Codec,
 			"max_batch":         d.Cfg.MaxBatch,

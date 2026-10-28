@@ -198,7 +198,10 @@ the audio and register voices. Here the ox-say daemon is its only client:
 the CORS headers are gone and POST bodies must be JSON (no cross-site simple
 request) — exactly `application/json`, case-insensitive, parameters allowed;
 a prefix match would also accept `application/jsonx`. Methods other than GET,
-HEAD, POST and DELETE are refused before any body is read (405), a request
+HEAD, POST and DELETE are refused with 405 ahead of routing: the refusal
+comes before the body is handled, but httplib still drains a framed body
+afterwards, up to its 32 MB cap (httplib 0.46.1; ox-stt has no drain). The 405
+carries no `Allow` header yet (#65). A request
 carrying Transfer-Encoding or a POST without Content-Length gets 411. When
 bound to loopback, which is how ox-say always starts it, the Host must be a
 loopback literal or `localhost` (DNS rebinding). A non-loopback bind (LAN
@@ -323,6 +326,15 @@ prints JSON: `text`, `segments` and `words` (`w`, `s`, `e`, `p`; seconds).
   not taken and may be retried. Fairness: `decode_mu` is shared, so a long
   `/transcribe` delays session decodes and the other way round — a `/finish`
   can hit its 60 s bound queued behind a very long one-shot.
+  HTTP guards (#65), as for tts-server's local-only patch: the server is for
+  the daemon alone. A `Host` header that does not name loopback gets 403
+  (DNS rebinding); a method other than GET, HEAD, POST and DELETE gets 405
+  before any body is read (ox-stt does not drain it; the 405 has no `Allow`
+  header yet); a request with `Transfer-Encoding`, or a POST without
+  `Content-Length`, gets 411; a POST whose `Content-Type` is not the route's
+  exact media type (`audio/wav` for `/transcribe`, `application/json` or
+  `application/octet-stream` for the session routes) gets 415; and the
+  session routes answer 501 when the server runs without `--vad`.
 
 Measured on a 347 s English interview (Radeon Pro 5500M, i9-9880H), with the
 Parakeet f16 weights that were the default then: Parakeet 9.6 s on the GPU

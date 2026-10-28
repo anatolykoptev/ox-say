@@ -28,7 +28,7 @@ import (
 // supervisor surfaces in Status while a start is parked on the lease.
 type GPULease struct {
 	sem     chan struct{}
-	waiters atomic.Int32 // callers parked in Wait/WaitOr — observability for tests
+	waiters atomic.Int32 // callers parked in WaitOrAs — observability for tests
 	owner   atomic.Value // string: the tag passed to the winning acquisition
 }
 
@@ -51,34 +51,12 @@ func (l *GPULease) TryAs(owner string) bool {
 	}
 }
 
-// Wait blocks for the lease until it is free or ctx ends.
-func (l *GPULease) Wait(ctx context.Context) error {
-	return l.WaitAs(ctx, "")
-}
-
-// WaitAs is Wait that tags the holder for Owner.
-func (l *GPULease) WaitAs(ctx context.Context, owner string) error {
-	l.waiters.Add(1)
-	defer l.waiters.Add(-1)
-	select {
-	case l.sem <- struct{}{}:
-		l.owner.Store(owner)
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// WaitOr is Wait plus an abort channel: closing abort returns (false, nil)
-// so the caller can re-check whatever the abort signals. The supervisor
-// passes its change-broadcast channel so a state transition — Shutdown,
-// another caller's committed start — wakes a parked caller instead of
-// leaving it on the lease until ctx ends.
-func (l *GPULease) WaitOr(ctx context.Context, abort <-chan struct{}) (bool, error) {
-	return l.WaitOrAs(ctx, abort, "")
-}
-
-// WaitOrAs is WaitOr that tags the holder for Owner.
+// WaitOrAs blocks for the lease until it is free, ctx ends, or abort closes
+// (then it returns (false, nil) so the caller can re-check whatever the abort
+// signals). The supervisor passes its change-broadcast channel so a state
+// transition — Shutdown, another caller's committed start — wakes a parked
+// caller instead of leaving it on the lease until ctx ends. The holder is
+// tagged with owner for Owner.
 func (l *GPULease) WaitOrAs(ctx context.Context, abort <-chan struct{}, owner string) (bool, error) {
 	l.waiters.Add(1)
 	defer l.waiters.Add(-1)
@@ -123,7 +101,7 @@ func (l *GPULease) Owner() string {
 	return s
 }
 
-// Waiters reports how many callers are parked in Wait/WaitOr.
+// Waiters reports how many callers are parked in WaitOrAs.
 func (l *GPULease) Waiters() int {
 	return int(l.waiters.Load())
 }

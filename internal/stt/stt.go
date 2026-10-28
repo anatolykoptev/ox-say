@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/oneshot"
 )
 
@@ -93,7 +94,7 @@ type Options struct {
 	Bin          string        // ox-stt binary
 	Model        string        // parakeet model
 	WhisperModel string        // whisper model
-	GPU          string        // "auto" (default) | "on" | "off"
+	GPU          string        // config.STTGPUAuto (default) | STTGPUOn | STTGPUOff
 	GPULease     GPULease      // nil → no arbitration (auto/on behave as if the GPU were free)
 	Timeout      time.Duration // fixed allowance: bounds the conversion alone and seeds the engine's base + k×duration budget; 0 → DefaultTimeout
 	MaxAudio     time.Duration // audio past this is not decoded; 0 → DefaultMaxAudio
@@ -281,7 +282,7 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	// gives the GPU the CPU's rate, so whichever device the run lands on —
 	// the resident server is on the GPU with unified memory — the budget
 	// stays the conservative CPU one.
-	timeout := sttTimeout(engine, opts.GPU == "on", secs, base)
+	timeout := sttTimeout(engine, opts.GPU == config.STTGPUOn, secs, base)
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	// a deadline of ours, not the caller going away
@@ -323,12 +324,12 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 	// audio length (autoGPUMaxAudio), so a speak's parked start waits out a
 	// short run at worst; on takes the GPU whenever it is free, whatever
 	// the length.
-	gpu := opts.GPU != "off"
+	gpu := opts.GPU != config.STTGPUOff
 	if l := opts.GPULease; gpu && l != nil {
 		// The 0.05 s mirrors convert's duration slop (the WAV header is
 		// wider than the 44 bytes secs subtracts).
 		short := secs <= autoGPUMaxAudio.Seconds()+0.05
-		gpu = (opts.GPU == "on" || short) && l.TryAs("transcription")
+		gpu = (opts.GPU == config.STTGPUOn || short) && l.TryAs("transcription")
 		if gpu {
 			defer l.Release()
 		}
