@@ -199,9 +199,33 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertTrue(refresh.contains("guard gate.request() else { return }"))
         XCTAssertTrue(refresh.contains("} while gate.finish()"))
         XCTAssertTrue(refresh.contains("await host.refreshStatus()"), "the daemon status is read fresh, not what the last menu open saw")
+        // A hung /status must not delay the list read ("unreachable" is that read's answer): the status read starts
+        // first, runs beside the list, and is awaited at the end of the pass.
+        // Mutation: MainWindowSource.refresh, `let status = Task { @MainActor in await host.refreshStatus() }` ->
+        // `await host.refreshStatus()` before the list read -> RED.
+        let started = try XCTUnwrap(refresh.range(of: "let status = Task { @MainActor in await host.refreshStatus() }"))
+        let listed = try XCTUnwrap(refresh.range(of: "await service.list()"))
+        let joined = try XCTUnwrap(refresh.range(of: "await status.value"))
+        let shown = try XCTUnwrap(refresh.range(of: "model.data.meetingsLoad = load"))
+        XCTAssertLessThan(started.lowerBound, listed.lowerBound, "the status read starts before the list read")
+        XCTAssertLessThan(shown.lowerBound, joined.lowerBound, "the list's answer is shown before the status read is waited for")
+        XCTAssertEqual(refresh.components(separatedBy: "host.refreshStatus()").count - 1, 1, "one status read per pass")
         let app = try source("OxSayDictation/AppDelegate.swift")
         XCTAssertTrue(app.contains("refreshStatus: { [unowned self] in await self.refreshServiceStatusNow() }"))
         XCTAssertTrue(app.contains("serviceStatus = status"))
+    }
+
+    /// One open is one pass: the controller asks for the read (`windowOpened`) and the view does not ask again from a
+    /// `.task`, which gave the first open two passes.
+    /// Mutation: MainWindowView, add `.task { model.actions.refresh() }` back -> RED.
+    func testAnOpenAsksForOnePassNotTwo() throws {
+        let view = MeetingWiringTests.stripComments(try source("MainWindowUI/MainWindowView.swift"))
+        XCTAssertFalse(view.contains(".task"), "the view asks for its own read on appear")
+        XCTAssertFalse(view.contains("actions.refresh()"))
+        let controller = try source("OxSayDictation/MainWindow.swift")
+        XCTAssertTrue(MeetingWiringTests.stripComments(controller).contains("source.windowOpened()"))
+        let opened = try body(try window(), of: "func windowOpened() {")
+        XCTAssertEqual(opened.components(separatedBy: "refresh()").count - 1, 1)
     }
 
     /// A name typed letter by letter is saved on Return or when the field is left, and never triggers a full read.

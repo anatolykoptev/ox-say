@@ -35,7 +35,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         self.window = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        // Every open reads the data again: a kept window does not run its view's task a second time.
+        // Every open reads the data again, here and nowhere else: the view has no `.task` of its own, which made
+        // the first open run two passes.
         source.windowOpened()
     }
 

@@ -335,9 +335,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.refreshServiceStatus()
-            guard let self, AutoUpdateSchedule.wakeCheckAllowed(now: Date(), lastAttempt: self.lastAutoUpdateAttempt) else { return }
-            self.backgroundUpdateCheck()
+            // The notification arrives on the main queue, but the closure is not known to be main-actor isolated.
+            Task { @MainActor in
+                self?.refreshServiceStatus()
+                guard let self, AutoUpdateSchedule.wakeCheckAllowed(now: Date(), lastAttempt: self.lastAutoUpdateAttempt) else { return }
+                self.backgroundUpdateCheck()
+            }
         }
         startAutoUpdateChecks()
         studio.render()
@@ -933,7 +936,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         workingStarted = Date()
         slowReason = nil
         workingGeneration += 1
-        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.tickWorking() }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.tickWorking() } }
         // .common: keep counting while the status-bar menu is open
         RunLoop.main.add(timer, forMode: .common)
         workingTimer = timer
@@ -1174,10 +1177,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startAutoUpdateChecks() {
         let timers = [
             Timer(timeInterval: AutoUpdateSchedule.firstDelay, repeats: false) { [weak self] _ in
-                self?.backgroundUpdateCheck()
+                Task { @MainActor in self?.backgroundUpdateCheck() }
             },
             Timer(timeInterval: AutoUpdateSchedule.tick, repeats: true) { [weak self] _ in
-                self?.backgroundUpdateCheck()
+                Task { @MainActor in self?.backgroundUpdateCheck() }
             },
         ]
         // .common: keep firing while the status-bar menu is open
