@@ -83,12 +83,39 @@ public enum DesignRequest {
 public enum DesignForm {
     /// vscript.MaxStyleChars and design.go maxDesignText.
     public static let descriptionLimit = 300
+    /// The sample sentence is capped by spoken duration, like the daemon (design.go designTextUnits): 1/60 s per unit,
+    /// 6 per character at the Russian pace, so 200 Latin or Cyrillic characters fill the 20 s window (1200 units).
+    /// Han costs 15 (4 chars/s), kana, Hangul and Thai 10 (6 chars/s): conservative rates, not measured.
     public static let sentenceLimit = 200
+    static let unitsPerCharacter = 6
+    static let unitsPerHan = 15
+    static let unitsPerSyllable = 10
+    static let sentenceUnitLimit = sentenceLimit * unitsPerCharacter
+
+    private static let hanPattern = try! NSRegularExpression(pattern: #"\p{sc=Han}"#)
+    private static let syllablePattern = try! NSRegularExpression(pattern: #"[\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}\p{sc=Thai}]"#)
+
+    /// The slowest plausible spoken length of `text`, in 1/60 s; one unit rule with the daemon, counted per Unicode scalar.
+    public static func sentenceUnits(_ text: String) -> Int {
+        let whole = NSRange(text.startIndex..., in: text)
+        let han = hanPattern.numberOfMatches(in: text, range: whole)
+        let syllables = syllablePattern.numberOfMatches(in: text, range: whole)
+        let others = text.unicodeScalars.count - han - syllables
+        return others * unitsPerCharacter + han * unitsPerHan + syllables * unitsPerSyllable
+    }
+
+    /// How many characters of `text`'s own script fit: 200 for Russian, 80 for Chinese (the daemon's refusal figure).
+    public static func sentenceCap(for text: String) -> Int {
+        let units = sentenceUnits(text)
+        guard units > 0 else { return sentenceLimit }
+        return sentenceUnitLimit * text.unicodeScalars.count / units
+    }
     /// voices/store.go voiceNameRe.
     static let namePattern = "^[a-z0-9][a-z0-9_-]{0,31}$"
 
-    public static let descriptionPlaceholder =
-        "A warm female narrator in her thirties, native Russian speaker, lively and friendly"
+    public static func descriptionPlaceholder(text: (L10nKey) -> String = { $0.text }) -> String {
+        text(.designFormDescriptionPlaceholder)
+    }
     public static let defaultSentence =
         "Здравствуйте! Рада познакомиться, сегодня мы вместе расскажем вам что-то интересное."
 
@@ -103,30 +130,35 @@ public enum DesignForm {
 
     /// The first thing wrong with the form, in plain words; nil when it can be sent.
     /// An empty name is fine: the daemon suggests one per take.
-    public static func problem(description: String, sentence: String, name: String) -> String? {
+    public static func problem(description: String, sentence: String, name: String,
+                               text: (L10nKey) -> String = { $0.text }) -> String? {
         let description = description.trimmingCharacters(in: .whitespacesAndNewlines)
         let sentence = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
-        if description.isEmpty { return "Describe the voice first." }
-        if description.count > descriptionLimit { return "The description is too long: keep it under \(descriptionLimit) characters." }
-        if sentence.isEmpty { return "Write a sample sentence for the voice to say." }
-        if sentence.count > sentenceLimit { return "The sample sentence is too long: keep it under \(sentenceLimit) characters." }
-        if !name.isEmpty && !isValidName(name) {
-            return "The name can use lowercase English letters, digits, - and _, up to 32 characters, and must start with a letter or digit."
+        if description.isEmpty { return text(.designProblemDescribe) }
+        if description.count > descriptionLimit { return String(format: text(.designProblemDescriptionLong), String(descriptionLimit)) }
+        if sentence.isEmpty { return text(.designProblemSentenceEmpty) }
+        if sentenceUnits(sentence) > sentenceUnitLimit {
+            return String(format: text(.designProblemSentenceLong), String(sentenceCap(for: sentence)))
         }
+        if !name.isEmpty && !isValidName(name) { return text(.designProblemName) }
         return nil
     }
 
     /// "Take 2 of 3".
-    public static func takeTitle(index: Int, count: Int) -> String { "Take \(index + 1) of \(count)" }
+    public static func takeTitle(index: Int, count: Int, text: (L10nKey) -> String = { $0.text }) -> String {
+        String(format: text(.designTakeTitle), String(index + 1), String(count))
+    }
 
-    /// The daemon's warning about a take, in words for a listener.
-    public static func warningText(_ warning: String) -> String {
-        if warning.contains("babble") {
-            return "This take may contain stray sounds. Listen closely, or try the next take."
-        }
+    /// The daemon's warning about a take, in words for a listener. A warning the app does not know is the daemon's
+    /// own English sentence, capitalized.
+    public static func warningText(_ warning: String, text: (L10nKey) -> String = { $0.text }) -> String {
+        if warning.contains("babble") { return text(.designTakeBabble) }
         return warning.prefix(1).uppercased() + warning.dropFirst()
     }
 
-    /// What the daemon's notice about a saved voice (it only says a long clip was cut) means to a listener.
-    public static let shortenedNotice = "The recording was longer than a voice can keep, so it was shortened."
+    /// The line under a kept voice: "Voice “x” saved", and the daemon's note that the clip was cut.
+    public static func savedNotice(name: String, shortened: Bool, text: (L10nKey) -> String = { $0.text }) -> String {
+        let saved = String(format: text(.designSaved), name)
+        return shortened ? saved + ". " + text(.designShortened) : saved
+    }
 }

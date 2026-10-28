@@ -22,7 +22,7 @@ final class VoiceDesigner {
         guard !running, let form = StudioForms.designForm(preset: lastForm) else { return }
         lastForm = form
         running = true
-        host.pill(Self.pillTask, "Designing a voice…")
+        host.pill(Self.pillTask, L10nKey.designDesigningPill.text)
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
@@ -35,12 +35,12 @@ final class VoiceDesigner {
                 await self.review(takes, typedName: form.name)
             } catch {
                 self.host.pill(Self.pillTask, nil)
-                _ = self.host.alert("Couldn't create the voice", StudioController.plain(error), ["OK"])
+                _ = self.host.alert(L10nKey.designFailedTitle.text, StudioController.plain(error), [L10nKey.commonOk.text])
             }
         }
     }
 
-    /// Plays each take and asks; "Next Take" cycles so an earlier one can be reconsidered.
+    /// Plays each take and asks; the next-take button cycles so an earlier one can be reconsidered.
     private func review(_ takes: [DesignTake], typedName: String) async {
         var index = 0
         var replay = true
@@ -50,10 +50,11 @@ final class VoiceDesigner {
             if replay { play(take) }
             replay = true
             let name = DesignForm.saveName(typed: typedName, take: take)
-            var text = "It will be saved as “\(name)”."
+            var text = L10nKey.designTakeSavedAs.text(name)
             if let warning = take.warning { text = DesignForm.warningText(warning) + "\n\n" + text }
             let answer = host.alert(DesignForm.takeTitle(index: index, count: takes.count), text,
-                                    ["Keep This Voice", "Next Take", "Play Again", "Cancel"])
+                                    [L10nKey.designTakeKeep.text, L10nKey.designTakeNext.text,
+                                     L10nKey.designTakeReplay.text, L10nKey.commonCancel.text])
             switch answer {
             case .alertFirstButtonReturn:
                 if await save(name: name, take: take) { return }
@@ -70,7 +71,7 @@ final class VoiceDesigner {
 
     private func play(_ take: DesignTake) {
         guard let wav = try? Data(contentsOf: URL(fileURLWithPath: take.path)) else {
-            _ = host.alert("Couldn't play the take", "The recording could not be opened.", ["OK"])
+            _ = host.alert(L10nKey.designPlayFailedTitle.text, L10nKey.designPlayFailedText.text, [L10nKey.commonOk.text])
             return
         }
         host.play(wav, false, nil)
@@ -81,18 +82,19 @@ final class VoiceDesigner {
         do {
             var outcome = try await host.client.saveDesign(name: name, take: take.path, replace: false)
             if outcome == .nameTaken {
-                let sure = host.alert("A voice named “\(name)” exists", "Replace it with this one?", ["Replace", "Cancel"])
+                let sure = host.alert(L10nKey.designExistsTitle.text(name), L10nKey.designExistsText.text,
+                                      [L10nKey.designExistsButton.text, L10nKey.commonCancel.text])
                 guard sure == .alertFirstButtonReturn else { return false }
                 outcome = try await host.client.saveDesign(name: name, take: take.path, replace: true)
             }
             guard case .saved(let voice) = outcome else {
-                _ = host.alert("Couldn't save the voice", "A voice with this name already exists.", ["OK"])
+                _ = host.alert(L10nKey.designSaveFailedTitle.text, L10nKey.designSaveFailedExists.text, [L10nKey.commonOk.text])
                 return false
             }
-            host.notify("Voice “\(voice.name)” saved" + (voice.notice == nil ? "" : ". " + DesignForm.shortenedNotice))
+            host.notify(DesignForm.savedNotice(name: voice.name, shortened: voice.notice != nil))
             return true
         } catch {
-            _ = host.alert("Couldn't save the voice", StudioController.plain(error), ["OK"])
+            _ = host.alert(L10nKey.designSaveFailedTitle.text, StudioController.plain(error), [L10nKey.commonOk.text])
             return false
         }
     }

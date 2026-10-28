@@ -34,7 +34,7 @@ enum StudioForms {
         var values = preset
         while true {
             let description = NSTextField(string: values.description)
-            description.placeholderString = DesignForm.descriptionPlaceholder
+            description.placeholderString = DesignForm.descriptionPlaceholder()
             description.usesSingleLineMode = false
             description.cell?.wraps = true
             description.cell?.isScrollable = false
@@ -42,15 +42,16 @@ enum StudioForms {
             description.frame.size = NSSize(width: fieldWidth, height: descriptionHeight)
             let sentence = NSTextField(string: values.sentence)
             let name = NSTextField(string: values.name)
-            name.placeholderString = "Optional — ox-say suggests one"
+            name.placeholderString = L10nKey.designFormNamePlaceholder.text
 
             let alert = NSAlert()
-            alert.messageText = "Create a Voice"
-            alert.informativeText = "Describe who should speak. ox-say makes three takes to choose from."
-            alert.accessoryView = stack([labeled("Describe the voice", description),
-                                         labeled("Sample sentence", sentence), labeled("Name", name)])
-            alert.addButton(withTitle: "Create")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = L10nKey.designFormTitle.text
+            alert.informativeText = L10nKey.designFormInfo.text
+            alert.accessoryView = stack([labeled(L10nKey.designFormDescriptionLabel.text, description),
+                                         labeled(L10nKey.designFormSentenceLabel.text, sentence),
+                                         labeled(L10nKey.designFormNameLabel.text, name)])
+            alert.addButton(withTitle: L10nKey.designFormCreate.text)
+            alert.addButton(withTitle: L10nKey.commonCancel.text)
             NSApp.activate(ignoringOtherApps: true)
             guard alert.runModal() == .alertFirstButtonReturn else { return nil }
             values = VoiceDesign(description: description.stringValue, sentence: sentence.stringValue, name: name.stringValue)
@@ -58,9 +59,9 @@ enum StudioForms {
                 return values
             }
             let notice = NSAlert()
-            notice.messageText = "Check the form"
+            notice.messageText = L10nKey.designFormCheckTitle.text
             notice.informativeText = problem
-            notice.addButton(withTitle: "OK")
+            notice.addButton(withTitle: L10nKey.commonOk.text)
             notice.runModal()
         }
     }

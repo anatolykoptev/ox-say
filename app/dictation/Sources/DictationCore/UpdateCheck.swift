@@ -5,6 +5,15 @@ public enum UpdateError: Error, Equatable, CustomStringConvertible {
     case http(Int)
     case badResponse
 
+    /// What the person reads, in their language. `description` below stays English: it is for logs.
+    public func message(text: (L10nKey) -> String = { $0.text }) -> String {
+        switch self {
+        case .unreachable(let why): return String(format: text(.updateErrorUnreachable), why)
+        case .http(let code): return String(format: text(.updateErrorHttp), String(code))
+        case .badResponse: return text(.updateErrorBadResponse)
+        }
+    }
+
     public var description: String {
         switch self {
         case .unreachable(let why): return "Update check failed (\(why))"

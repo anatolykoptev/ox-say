@@ -12,10 +12,11 @@ public enum UpdatePrompt: Equatable {
 
     /// Maps the installed version and the fetch outcome to the prompt.
     public static func make(local: String,
-                            fetch: Result<(tag: String, url: URL?, body: String), UpdateError>) -> UpdatePrompt {
+                            fetch: Result<(tag: String, url: URL?, body: String), UpdateError>,
+                            text: (L10nKey) -> String = { $0.text }) -> UpdatePrompt {
         switch fetch {
         case .failure(let error):
-            return .failed(reason: String(describing: error))
+            return .failed(reason: error.message(text: text))
         case .success(let release):
             guard UpdateChecker.isNewer(release.tag, than: local) else { return .upToDate(version: local) }
             return .available(remote: release.tag, local: local,

@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Repair for a version split the kickstart could not fix: the same
     /// conditional top slot, offered only while the daemon stays off the
     /// on-disk bundle's version.
-    private let repairItem = NSMenuItem(title: "Repair ox-say…",
+    private let repairItem = NSMenuItem(title: L10nKey.updateRepairItem.text,
                                         action: #selector(repairOxSay), keyEquivalent: "")
     /// The always-present top row that opens the main window.
     private let openItem = NSMenuItem(title: L10nKey.menuOpenOxSay.text,
@@ -549,7 +549,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(submenuItem("Settings", buildSettingsMenu()))
         menu.addItem(.separator())
         menu.addItem(withTitle: "About OxSay", action: #selector(showAbout), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "").target = self
+        menu.addItem(withTitle: L10nKey.settingsCheckUpdates.text, action: #selector(checkForUpdates), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Quit OxSay", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(.separator())
         footerItem.isEnabled = false
@@ -664,7 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func showHandshakePill() {
         guard controller.state == .idle else { return }
         overlay.showWorking()
-        overlay.setWorkingText("Finishing the update…")
+        overlay.setWorkingText(L10nKey.updateFinishingPill.text)
         overlay.setHintHidden(true)
         beginPill(&handshakePill)
     }
@@ -723,13 +723,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func repairOxSay() {
         guard let target = handshake.repairTarget else { return }
         guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
-            runAlert(title: UpdateGate.busyAlertTitle,
-                     text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
+            runAlert(UpdateDialogs.busy())
             return
         }
-        let sure = runAlert(title: "Repair ox-say?",
-                            text: "The app and the ox-say service disagree on the version. This reinstalls v\(target), the version already on disk; dictation pauses while ox-say restarts.",
-                            buttons: ["Repair", "Cancel"])
+        let sure = runAlert(UpdateDialogs.repair(target: target))
         guard sure == .alertFirstButtonReturn else { return }
         installUpdate(tag: UpdateInstaller.tag(forVersion: target), kind: .update)
     }
@@ -1162,12 +1159,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// installed version with the studio model switched on.
     private func installStudioVoice() {
         guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
-            runAlert(title: UpdateGate.busyAlertTitle, text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
+            runAlert(UpdateDialogs.busy())
             return
         }
-        let sure = runAlert(title: "Install the studio voice?",
-                            text: "Downloads the studio voice model once, about 3 GB. Dictation pauses for a few seconds while ox-say restarts.",
-                            buttons: ["Install", "Cancel"])
+        let sure = runAlert(UpdateDialogs.studioVoice())
         guard sure == .alertFirstButtonReturn else { return }
         installUpdate(tag: UpdateInstaller.tag(forVersion: AboutPanel.appVersion), kind: .studioVoice)
     }
@@ -1177,14 +1172,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// a pill message times out and is easy to miss.
     @objc private func checkForUpdates() {
         guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
-            runAlert(title: UpdateGate.busyAlertTitle, text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
+            runAlert(UpdateDialogs.busy())
             return
         }
         guard !updateCheckRunning else { return }
         updateCheckRunning = true
         let local = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
         overlay.showWorking()
-        overlay.setWorkingText("Checking for updates…")
+        overlay.setWorkingText(L10nKey.updateCheckingPill.text)
         overlay.setHintHidden(true)
         beginPill(&updateCheckPill)
         Task { @MainActor [weak self] in
@@ -1261,7 +1256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // An install (or its relaunch wait) comes first: a click then must not
         // claim the update did not start.
         guard UpdateGate.decide(installing: updateInstalling) == .proceed else {
-            runAlert(title: UpdateGate.busyAlertTitle, text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"])
+            runAlert(UpdateDialogs.busy())
             return
         }
         // Not while a dictation runs. The row stays; the notice (shown once the
@@ -1276,15 +1271,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Renders the prompt; the pure decision is UpdatePrompt.make.
     private func present(_ prompt: UpdatePrompt) {
         switch prompt {
-        case .upToDate(let version):
-            runAlert(title: "You're up to date", text: "ox-say v\(version) is the newest version.", buttons: ["OK"])
+        case .upToDate:
+            runAlert(UpdateDialogs.prompt(prompt))
         case .available(let remote, let local, let notes, let url):
             confirmInstall(remote: remote, local: local, notes: notes, url: url)
-        case .failed(let reason):
-            if runAlert(title: "Couldn't check for updates", text: reason, buttons: ["Try Again", "OK"]) == .alertFirstButtonReturn {
+        case .failed:
+            if runAlert(UpdateDialogs.prompt(prompt)) == .alertFirstButtonReturn {
                 checkForUpdates()
             }
         }
+    }
+
+    @discardableResult
+    func runAlert(_ dialog: UpdateDialog) -> NSApplication.ModalResponse {
+        runAlert(title: dialog.title, text: dialog.text, buttons: dialog.buttons)
     }
 
     /// Shows a modal alert over every app and returns the pressed button.
@@ -1302,9 +1302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Update / Later / Release Notes…; the notes button opens the release page
     /// and asks again, so reading them does not forfeit the decision.
     private func confirmInstall(remote: String, local: String, notes: String, url: URL?) {
-        let text = notes.isEmpty ? "You have v\(local)." : "You have v\(local).\n\n\(notes)"
-        let buttons = url == nil ? ["Update", "Later"] : ["Update", "Later", "Release Notes…"]
-        switch runAlert(title: "ox-say \(remote) is available", text: text, buttons: buttons) {
+        switch runAlert(UpdateDialogs.prompt(.available(remote: remote, local: local, notes: notes, url: url))) {
         case .alertFirstButtonReturn:
             installUpdate(tag: remote, kind: .update)
         case .alertThirdButtonReturn:
@@ -1339,7 +1337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func installUpdate(tag: String, kind: UpdateInstaller.Kind) {
         // The install relaunches the app: it must not end a recording.
         guard meetings?.isRecording != true else {
-            runAlert(title: UpdateGate.busyAlertTitle, text: L10nKey.meetingUpdateBlocked.text, buttons: ["OK"])
+            runAlert(title: UpdateGate.busyAlertTitle(), text: L10nKey.meetingUpdateBlocked.text, buttons: [L10nKey.commonOk.text])
             return
         }
         updateInstalling = true
@@ -1347,7 +1345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // A running dictation owns the pill — the handshake pill guards the
         // same way. Shown over it, "Installing…" would replace the recording's
         // look and then outlive the install through the whole relaunch wait.
-        installPillText = kind == .studioVoice ? "Installing the studio voice…" : "Installing \(tag)…"
+        installPillText = UpdateInstaller.installingPill(kind: kind, tag: tag)
         if controller.state == .idle { showInstallPill() }
         Task { @MainActor in
             let log = Self.openUpdateLog()
@@ -1358,9 +1356,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try? log?.close()
             if let failure {
                 self.endInstall()
-                runAlert(title: kind == .studioVoice ? "Installing the studio voice failed" : "Update to \(tag) failed",
-                         text: "\(failure.message) Its output is in\n\(Self.updateLogURL.path)",
-                         buttons: ["OK"])
+                runAlert(title: UpdateInstaller.failureTitle(kind: kind, tag: tag),
+                         text: failure.alertText(logPath: Self.updateLogURL.path),
+                         buttons: [L10nKey.commonOk.text])
                 return
             }
             // On success `updateInstalling` stays set until the process ends:
