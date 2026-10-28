@@ -98,7 +98,8 @@ run "no manifest at the tag" 1 bash "$script" v0.2.0 "$NM"
 errhas "missing manifest says so" ".release-please-manifest.json"
 
 # both release.yml jobs use the script and none keeps its own copy of the checks
-n=$(grep -c 'scripts/check-release-tag.sh' "$root/.github/workflows/release.yml" || true)
+# (comment lines are not calls: the file's header comment names the script too)
+n=$(grep -v '^[[:space:]]*#' "$root/.github/workflows/release.yml" | grep -c 'scripts/check-release-tag.sh' || true)
 check "release.yml calls the script in both jobs" "$n" 2
 n=$(grep -c 'merge-base --is-ancestor' "$root/.github/workflows/release.yml" || true)
 check "release.yml has no inline ancestor test" "$n" 0

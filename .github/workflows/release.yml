@@ -9,14 +9,14 @@
 # so `releases/latest` never points at an asset-less release while the build
 # runs — or forever after one that fails.
 #
-# Recovering from a squatted tag. The release tag check (scripts/check-release-tag, called below) refuses a tag for the next version that
+# Recovering from a squatted tag. The release tag check (scripts/check-release-tag.sh, called below) refuses a tag for the next version that
 # does not point at the newest main-line commit that moved .release-please-manifest.json to that version
 # (someone created vX.Y.Z early, on another commit), and the immutable-tags ruleset has no bypass, so the
 # release stays blocked until the tag is gone. Only the repository owner can do this, in this order:
 #   1. Settings > Rules > Rulesets: set the tag ruleset to Disabled (do not delete it).
 #   2. git push origin :refs/tags/vX.Y.Z   (and delete the draft release for it, if release-please made one)
 #   3. Set the ruleset back to Active.
-#   4. Re-run the failed workflow run on main; release-please creates the tag on the release commit.
+#   4. Re-run the failed workflow run on main; if no tag appears, create it on the release commit by hand.
 # Nothing in the repo changes the rulesets: that stays an owner action.
 
 name: Release
