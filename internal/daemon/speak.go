@@ -223,8 +223,8 @@ func (d *Daemon) Speak(ctx context.Context, in SpeakInput) (*SpeakResult, error)
 	if err != nil {
 		return nil, err
 	}
-	elapsed := time.Since(start)
 	d.normalizeTake(ctx, rendered, in.LoudnessLUFS)
+	elapsed := time.Since(start) // render and normalisation
 	wav := rendered.WAV
 
 	audio := wav

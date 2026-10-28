@@ -164,6 +164,7 @@ func TestNormalizeLoudnessKeepsTheTakeWhenFFmpegFails(t *testing.T) {
 		"ffmpeg writes 0": func() { useFakeFFmpeg(t, "exit 0") },
 	} {
 		setup()
+		buf.Reset()
 		got, warn := d.normalizeLoudness(context.Background(), take, testTargetLUFS)
 		if !bytes.Equal(got, take) {
 			t.Errorf("%s: the take was not returned untouched (%d bytes, want %d)", name, len(got), len(take))
@@ -174,9 +175,9 @@ func TestNormalizeLoudnessKeepsTheTakeWhenFFmpegFails(t *testing.T) {
 		if strings.ContainsAny(warn, "\r\n") {
 			t.Errorf("%s: warning %q cannot be a header value", name, warn)
 		}
-	}
-	if !strings.Contains(buf.String(), "loudness") || !strings.Contains(buf.String(), "level=WARN") {
-		t.Errorf("the failure was not logged: %q", buf.String())
+		if !strings.Contains(buf.String(), "loudness") || !strings.Contains(buf.String(), "level=WARN") {
+			t.Errorf("%s: the failure was not logged: %q", name, buf.String())
+		}
 	}
 }
 
@@ -190,6 +191,9 @@ func TestNormalizeLoudnessNamesAMissingFFmpeg(t *testing.T) {
 }
 
 // A hung ffmpeg ends at the deadline and the take is returned, not held.
+// Mutation: postprocess.go normalizeLoudness, `case errors.Is(ctx.Err(),
+// context.DeadlineExceeded):` -> `case false:` -> the generic "could not
+// process" warning -> RED.
 func TestNormalizeLoudnessGivesUpOnAHungFFmpeg(t *testing.T) {
 	d, _, _ := voxFixture(t, nil)
 	useFakeFFmpeg(t, "exec /bin/sleep 30")
@@ -199,8 +203,11 @@ func TestNormalizeLoudnessGivesUpOnAHungFFmpeg(t *testing.T) {
 	take := toneBytes(testutil.QwenRate)
 	start := time.Now()
 	got, warn := d.normalizeLoudness(context.Background(), take, testTargetLUFS)
-	if time.Since(start) > 10*time.Second || !bytes.Equal(got, take) || warn == "" {
-		t.Fatalf("hung ffmpeg: %v, kept=%v, warning %q", time.Since(start), bytes.Equal(got, take), warn)
+	if time.Since(start) > 10*time.Second || !bytes.Equal(got, take) {
+		t.Fatalf("hung ffmpeg: %v, kept=%v", time.Since(start), bytes.Equal(got, take))
+	}
+	if warn != warnFFmpegSlow {
+		t.Errorf("warning %q, want the \"took too long\" one (%q)", warn, warnFFmpegSlow)
 	}
 }
 
@@ -246,15 +253,21 @@ func TestSpeechLoudnessOverHTTP(t *testing.T) {
 }
 
 // Asking for nothing changes nothing: the qwen take streams through
-// byte-identical, the voxcpm2 take is the engine's own.
-// A request that does not ask is not touched at all.
+// byte-identical, the voxcpm2 take is the engine's own. An explicit
+// `"loudness_lufs": null` counts as not asking, and the field is not
+// forwarded to the engine as a null.
 func TestSpeechWithoutLoudnessIsUntouched(t *testing.T) {
 	t.Setenv("OXSAY_FAKE_TONE", "1")
 	d, _, _ := voxFixture(t, nil)
 	for model, rate := range map[string]int{"qwen3-tts": testutil.QwenRate, "voxcpm2": testutil.VoxRate} {
-		rec := postSpeech(d, speechBody(model, ``))
-		if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), toneBytes(rate)) {
-			t.Errorf("%s: %d, %d bytes — not the engine's own take", model, rec.Code, rec.Body.Len())
+		for name, extra := range map[string]string{"absent": ``, "null": `,"loudness_lufs":null`} {
+			rec := postSpeech(d, speechBody(model, extra))
+			if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), toneBytes(rate)) {
+				t.Errorf("%s/%s: %d, %d bytes — not the engine's own take", model, name, rec.Code, rec.Body.Len())
+			}
+			if w := rec.Header().Get("X-Ox-Say-Warning"); w != "" {
+				t.Errorf("%s/%s: unexpected warning %q", model, name, w)
+			}
 		}
 	}
 }
@@ -315,7 +328,8 @@ func TestSpeechRefusesAnInsaneLoudnessBeforeRendering(t *testing.T) {
 
 // ffmpeg failing on the HTTP path answers 200 with the engine's own take and a
 // warning header — never a 500 that loses the render.
-// Mutation: F3 above (normalizeLoudness returns nil on failure) -> RED here.
+// Mutation: postprocess.go normalizeLoudness, the default branch
+// `return wav, warnFFmpegFailed` -> `return nil, ...` -> RED here.
 func TestSpeechLoudnessFFmpegFailureKeepsTheTake(t *testing.T) {
 	t.Setenv("OXSAY_FAKE_TONE", "1")
 	d, _, _ := voxFixture(t, nil)
@@ -326,6 +340,24 @@ func TestSpeechLoudnessFFmpegFailureKeepsTheTake(t *testing.T) {
 	}
 	if w := rec.Header().Get("X-Ox-Say-Warning"); !strings.Contains(w, "not normalised") {
 		t.Errorf("X-Ox-Say-Warning = %q", w)
+	}
+}
+
+// elapsed_s is the whole wall time of the call, normalisation included: a slow
+// ffmpeg pass must show in it.
+// Mutation: speak.go Speak, move `elapsed := time.Since(start)` back above
+// d.normalizeTake -> elapsed_s excludes the pass -> RED.
+func TestSpeakElapsedIncludesNormalisation(t *testing.T) {
+	t.Setenv("OXSAY_FAKE_TONE", "1")
+	d, _, _ := voxFixture(t, nil)
+	useFakeFFmpeg(t, "/bin/sleep 1.5; exit 1")
+	lufs := testTargetLUFS
+	res, err := d.Speak(context.Background(), SpeakInput{Text: testPhrase, Model: "voxcpm2", LoudnessLUFS: &lufs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ElapsedS < 1.4 {
+		t.Errorf("elapsed_s = %.2f: the 1.5 s normalisation pass is missing from it", res.ElapsedS)
 	}
 }
 
