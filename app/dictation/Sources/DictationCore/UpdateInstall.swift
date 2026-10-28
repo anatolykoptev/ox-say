@@ -98,7 +98,9 @@ public enum UpdateInstaller {
     /// Why an install did not produce the new version; `message` is the alert text.
     public enum Failure: Equatable {
         case downloadFailed(status: Int32)
-        case downloadTimedOut(seconds: TimeInterval)
+        /// `seconds` is the app-side backstop that fired; nil for curl's own exit 28, which both `--max-time` and
+        /// `--connect-timeout` produce, so the limit that ran out is not known.
+        case downloadTimedOut(seconds: TimeInterval?)
         case downloaderCouldNotStart(String)
         case notAScript
         case installerFailed(status: Int32)
@@ -112,7 +114,8 @@ public enum UpdateInstaller {
             case .downloadFailed(let status):
                 return "Downloading the installer failed (curl exited with status \(status))."
             case .downloadTimedOut(let seconds):
-                return "Downloading the installer timed out after \(Int(seconds)) s."
+                return seconds.map { "Downloading the installer timed out after \(Int($0)) s." }
+                    ?? "Downloading the installer timed out."
             case .downloaderCouldNotStart(let why):
                 return "The download could not start: \(why)."
             case .notAScript:
@@ -191,7 +194,7 @@ public enum UpdateInstaller {
         switch await runProcess(download, log: log, timeout: downloadBackstop) {
         case .failure(is ProcessTimedOut): return .downloadTimedOut(seconds: downloadBackstop)
         case .failure(let error): return .downloaderCouldNotStart(error.localizedDescription)
-        case .success(let status) where status == curlTimedOutStatus: return .downloadTimedOut(seconds: downloadMaxTime)
+        case .success(let status) where status == curlTimedOutStatus: return .downloadTimedOut(seconds: nil)
         case .success(let status) where status != 0: return .downloadFailed(status: status)
         case .success: break
         }

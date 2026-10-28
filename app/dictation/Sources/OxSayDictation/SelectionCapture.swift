@@ -8,9 +8,13 @@ import DictationCore
 /// DictationCore, so it runs against a fake pasteboard in tests.
 final class SelectionCapture {
     private let board = SystemPasteboard(promised: false)
+    /// The app's one memory of a slow clipboard, shared with `PasteOutput`.
+    private let slowClipboard: SlowClipboardMemory
     /// One report per speak press — the path taken and every AX source's
     /// result, never content. Lets the real app's AX path be checked from the log.
     var onSelection: ((SelectionReport) -> Void)?
+
+    init(slowClipboard: SlowClipboardMemory) { self.slowClipboard = slowClipboard }
 
     /// The selected text, or why it could not be read.
     func capture() -> (text: String?, problem: String?) {
@@ -20,6 +24,7 @@ final class SelectionCapture {
                                 postCopy: postCommandC,
                                 spin: { RunLoop.current.run(until: Date().addingTimeInterval($0)) },
                                 readText: board.readText,
+                                memory: slowClipboard,
                                 onSelection: onSelection)
     }
 
