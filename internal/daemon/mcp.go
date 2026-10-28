@@ -98,6 +98,7 @@ type speakToolIn struct {
 }
 
 func (d *Daemon) toolSpeak(ctx context.Context, _ *mcp.CallToolRequest, in speakToolIn) (*mcp.CallToolResult, SpeakResult, error) {
+	defer d.beginInteractive()()
 	res, err := d.Speak(ctx, SpeakInput{
 		Text:               in.Text,
 		Voice:              in.Voice,

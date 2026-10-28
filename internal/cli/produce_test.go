@@ -547,7 +547,7 @@ func TestProduceLsCapNote(t *testing.T) {
 // #165.3: --help after produce prints the usage and exits 0, not "unknown flag".
 // Mutation: produce.go cmdProduce, delete the wantsHelp branch -> exit 2 -> RED.
 func TestProduceHelp(t *testing.T) {
-	for _, args := range [][]string{{"--help"}, {"-h"}, {"status", "--help"}, {"resume", "x", "-h"}} {
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"status", "--help"}, {"resume", "x", "-h"}, {"x.txt", "--text=a", "-h"}} {
 		var out, errb bytes.Buffer
 		if code := cmdProduce(args, &out, &errb, time.Millisecond); code != 0 || !strings.Contains(out.String(), "usage:") || errb.Len() != 0 {
 			t.Errorf("%v: exit %d stdout %q stderr %q", args, code, out.String(), errb.String())
@@ -612,5 +612,52 @@ func TestProduceTimeout(t *testing.T) {
 	}
 	if code := cmdProduce([]string{writeScript(t, "Привет."), "--timeout", "1m"}, io.Discard, io.Discard, time.Millisecond); code != 0 {
 		t.Errorf("a run that ends in time: exit %d", code)
+	}
+}
+
+// #313.2: a flag's value is not a flag. `--text -h` writes "-h" as the text;
+// it is not a request for help. A bare -h after a value flag's value still is.
+// Mutation: produce.go wantsHelp, drop the skip of a value flag's value
+// (`i++`) -> RED.
+func TestWantsHelpSkipsFlagValues(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"chunk", "id", "0", "--text", "-h"}, false},
+		{[]string{"chunk", "id", "0", "--text", "--help"}, false},
+		{[]string{"x.txt", "-v", "-h"}, false},
+		{[]string{"x.txt", "--style", "-h", "-h"}, true},
+		{[]string{"x.txt", "--text=-h"}, false},
+		{[]string{"x.txt", "--no-wait", "-h"}, true},
+		{[]string{"-h"}, true},
+		{[]string{"status", "--help"}, true},
+	} {
+		if got := wantsHelp(c.args); got != c.want {
+			t.Errorf("wantsHelp(%q) = %v, want %v", c.args, got, c.want)
+		}
+	}
+}
+
+// #313.3: on a terminal the progress line is erased before the --timeout
+// message, so the message does not start in the middle of "running · chunk 0/3".
+// Mutation: produce.go wait, delete the deferred clear -> the stream ends with
+// the progress line and no erase before the message -> RED.
+func TestProduceTimeoutClearsProgressLineOnTerminal(t *testing.T) {
+	newFakeProduce(t, "running")
+	old := isTerminalFn
+	isTerminalFn = func(io.Writer) bool { return true }
+	t.Cleanup(func() { isTerminalFn = old })
+	var errb bytes.Buffer
+	if code := cmdProduce([]string{writeScript(t, "Привет."), "--timeout", "60ms"}, io.Discard, &errb, 5*time.Millisecond); code != 4 {
+		t.Fatalf("exit %d: %q", code, errb.String())
+	}
+	got := errb.String()
+	msg := strings.Index(got, "ox-say: still running")
+	if msg < 0 {
+		t.Fatalf("no timeout message: %q", got)
+	}
+	if want := "\r" + clearLine + "\r"; !strings.HasSuffix(got[:msg], want) {
+		t.Errorf("the progress line was not erased before the message: %q", got)
 	}
 }

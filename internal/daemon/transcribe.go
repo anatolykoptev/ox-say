@@ -349,6 +349,7 @@ type transcribeToolOut struct {
 }
 
 func (d *Daemon) toolTranscribe(ctx context.Context, _ *mcp.CallToolRequest, in transcribeToolIn) (*mcp.CallToolResult, transcribeToolOut, error) {
+	defer d.beginInteractive()()
 	if in.AudioPath == "" {
 		return nil, transcribeToolOut{}, fmt.Errorf("audio_path is required")
 	}

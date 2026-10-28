@@ -665,6 +665,31 @@ func TestScrubRootBoundariesAndRemainder(t *testing.T) {
 		{"open /database/x: denied", "/data", "open /database/x: denied"},
 		{"open /x/data/y: denied", "/data", "open /x/data/y: denied"},
 		{"a /data/1 and (/data/2) end", "/data", "a [path] and ([path]) end"},
+		// #310.2: any character that cannot sit inside a path segment is a
+		// boundary, not a hand-listed few.
+		{"GET file:///Users/x/v/a.wav failed", "/Users/x", "GET file://[path] failed"},
+		{"see [/Users/x/v/a.wav] now", "/Users/x", "see [[path]] now"},
+		{"see [/Users/x] now", "/Users/x", "see [[path]] now"},
+		{"ran `/Users/x/bin/tool` twice", "/Users/x", "ran `[path]` twice"},
+		{"a,/Users/x/v;b", "/Users/x", "a,[path]"},
+		{"a;/Users/x,b", "/Users/x", "a;[path],b"},
+		{`C:\/Users/x\y`, "/Users/x", `C:\[path]\y`},
+		{"cannot open /Users/x.", "/Users/x", "cannot open [path]."},
+		{"cannot open /Users/x/a.wav.", "/Users/x", "cannot open [path]."},
+		{"cannot open /Users/x/a.wav, retry", "/Users/x", "cannot open [path], retry"},
+		{"<b>/Users/x/a</b>", "/Users/x", "<b>[path]</b>"},
+		{"путь /Users/x/Иван/а.wav нет", "/Users/x", "путь [path] нет"},
+		// A file name keeps its odd characters: the whole tail is scrubbed.
+		{"open /Users/x/Movies/clip#2,final.wav now", "/Users/x", "open [path] now"},
+		{"open /Users/x/Movies/a&b!.wav now", "/Users/x", "open [path] now"},
+		{`open /Users/x/a\b.wav now`, "/Users/x", "open [path] now"},
+		{"open /Users/x/a$b{c}.wav now", "/Users/x", "open [path] now"},
+		{"open /Users/x/a.wav!", "/Users/x", "open [path]!"},
+		{"open (/Users/x/a.wav, b) and /Users/x/c.wav; then", "/Users/x", "open ([path], b) and [path]; then"},
+		{"/Users/xavier/a", "/Users/x", "/Users/xavier/a"},
+		{"/Users/x.bak/a", "/Users/x", "/Users/x.bak/a"},
+		{"a/Users/x/b", "/Users/x", "a/Users/x/b"},
+		{"/Users/xé/a", "/Users/x", "/Users/xé/a"},
 	} {
 		if got := scrubRoot(tc.in, tc.root); got != tc.want {
 			t.Errorf("scrubRoot(%q, %q) = %q, want %q", tc.in, tc.root, got, tc.want)
@@ -673,7 +698,7 @@ func TestScrubRootBoundariesAndRemainder(t *testing.T) {
 }
 
 // Saving over a voice that cannot be read: damaged settings point to replace,
-// a read that failed just now is a 503 "try again" that never says to re-record.
+// a file nobody may read says to check its permissions (never to re-record).
 // Mutation: voxcpm2.go voiceReadError, drop the `saving` branch -> "add the
 // voice again" in the save flow -> RED.
 func TestSaveOverUnreadableVoiceMessages(t *testing.T) {
@@ -699,8 +724,8 @@ func TestSaveOverUnreadableVoiceMessages(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(meta("dup"), 0o644) })
 	_, err = saveTake(t, d, "dup", res.Takes[1].Path)
-	if err == nil || synthStatus(err) != http.StatusServiceUnavailable || !strings.Contains(err.Error(), "try again") ||
-		strings.Contains(err.Error(), "again from") || strings.Contains(err.Error(), "damaged") {
-		t.Fatalf("I/O failure: %v (status %d), want a 503 try-again", err, synthStatus(err))
+	if err == nil || synthStatus(err) != http.StatusBadRequest || !strings.Contains(err.Error(), "permissions") ||
+		strings.Contains(err.Error(), "try again") || strings.Contains(err.Error(), "damaged") {
+		t.Fatalf("unreadable file: %v (status %d), want a 400 about permissions", err, synthStatus(err))
 	}
 }
