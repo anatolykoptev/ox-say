@@ -200,22 +200,24 @@ public struct TranscriptTurn: Equatable, Identifiable {
     /// is `\`. `extra` adds the characters the notes writer also escapes at the start of a model line (`#`, `!`).
     static func unescaped(_ name: String, extra: String = "") -> String {
         guard name.contains("\\") else { return name }
-        let specials = Set("\\`*_[]<>&" + extra)
-        var out = ""
+        // Scalars, not Characters: the daemon escapes per rune, so `\*` followed by a combining mark is `*` plus the
+        // mark, while as one Character ("*" + mark) it would not be in `specials` and keep its backslash.
+        let specials = Set(("\\`*_[]<>&" + extra).unicodeScalars)
+        var out = String.UnicodeScalarView()
         var escaping = false
-        for ch in name {
+        for scalar in name.unicodeScalars {
             if escaping {
-                if !specials.contains(ch) { out.append("\\") }
-                out.append(ch)
+                if !specials.contains(scalar) { out.append("\\") }
+                out.append(scalar)
                 escaping = false
-            } else if ch == "\\" {
+            } else if scalar == "\\" {
                 escaping = true
             } else {
-                out.append(ch)
+                out.append(scalar)
             }
         }
         if escaping { out.append("\\") }
-        return out
+        return String(out)
     }
 }
 

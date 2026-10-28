@@ -67,8 +67,14 @@ final class MeetingAudioPlayer {
 
     func seek(to seconds: TimeInterval) {
         guard let player else { return }
-        player.seek(to: CMTime(seconds: max(0, seconds), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
-        report()
+        // Reported when the seek has landed, as `play` does: a paused scrub would otherwise publish the position it
+        // left and wait for the periodic observer to notice the jump.
+        player.seek(to: CMTime(seconds: max(0, seconds), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.player === player else { return }
+                self.report()
+            }
+        }
     }
 
     /// Stops and lets go of everything; safe to call when nothing plays.
