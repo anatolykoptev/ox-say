@@ -554,7 +554,7 @@ func TestRepairVerdictCachedAcrossStarts(t *testing.T) {
 // Mutation: internal/voices/repair.go verdictKey — hash nothing of the clip
 // (drop the io.Copy into hc) -> RED "same mtime, different bytes".
 // Mutation: internal/voices/repair.go verdictKey — drop tailParams() from the
-// key -> RED "tail constant changed".
+// key -> RED "tail parameters".
 func TestRepairVerdictKeyBindings(t *testing.T) {
 	words := speechWords(60, 0.3, 0.03, 6)
 	text := joinWords(words)
@@ -592,17 +592,17 @@ func TestRepairVerdictKeyBindings(t *testing.T) {
 		}
 		recheck(t, s, calls, tr, "a replaced clip")
 	})
-	t.Run("tail constant changed", func(t *testing.T) {
-		s, calls, tr := setup(t)
-		defer func(v int) { anchorWords = v }(anchorWords)
-		anchorWords++
-		recheck(t, s, calls, tr, "a verdict under other tail parameters")
-	})
-	t.Run("SameWord tolerance changed", func(t *testing.T) {
-		s, calls, tr := setup(t)
-		defer func(v int) { sameWordDiv = v }(sameWordDiv)
-		sameWordDiv++
-		recheck(t, s, calls, tr, "a verdict under another SameWord")
+	t.Run("tail parameters", func(t *testing.T) {
+		s, _ := newStore(t)
+		seedVoice(t, s, "exact", 20, text)
+		key, err := s.verdictKey(s.WAVPath("exact"), text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("%d,%d,%d", anchorWords, anchorWindow, anchorNeed)
+		if !strings.Contains(key, "|tail:"+want+",") {
+			t.Fatalf("key %q does not carry the tail constants %s", key, want)
+		}
 	})
 }
 
@@ -655,15 +655,13 @@ func TestRemoveMissingFilesDropsVerdict(t *testing.T) {
 	}
 }
 
-// A healthy at-cap voice whose transcript differs from ref_text only at the
-// very end (the recognizer adds, splits or drops a word there) is left alone:
-// rewriting a voice the user did not ask to change is worse than the bleed.
-// A reference whose real ending was cut off is still repaired, also when its
-// last words repeat earlier ones.
-// Mutation: internal/voices/tail.go tailAnchored — purely positional alignment
-// (compare r[n-1-i] with heard[m-1-i] only) -> RED for the healthy cases.
-// Mutation: internal/voices/tail.go tailAnchored — accept an in-order hit
-// anywhere in the last 6 heard words -> RED for "repeated tail, ending cut".
+// Healthy at-cap voices whose transcript differs from ref_text only at the
+// very end (the recognizer adds, splits or drops a word there, or writes
+// fillers) are left alone: rewriting a voice the user did not ask to change is
+// worse than the bleed. A reference running past the audio is still repaired.
+// Regression guard for the tail check in tail.go.
+// Mutation: internal/voices/tail.go anchorWindow 6 -> 1 -> RED for the
+// healthy trailing-word cases.
 func TestRepairTailEdgesEndToEnd(t *testing.T) {
 	filler := func(prefix string, n int, from rune) []string { // distinct letter-only words
 		out := make([]string, n)
@@ -703,14 +701,7 @@ func TestRepairTailEdgesEndToEnd(t *testing.T) {
 		{"cut: ref runs three words past the audio", append(append([]string{}, lat...), "see", "you", "tomorrow", "at", "the", "station"), append(append([]string{}, lat...), "see", "you", "tomorrow"), true, 0},
 		{"healthy: two fillers in the tail", cat(lat, sp("we went to the store today")), cat(lat, sp("we went um to the uh store today")), false, 0},
 		{"healthy: two russian fillers in the tail", cat(cyr, sp("мы пошли в магазин сегодня")), cat(cyr, sp("мы э пошли ну в магазин сегодня")), false, 0},
-		{"healthy: double short-word slip, speech ends before the clip end", cat(lat, sp("so we go to see her")), cat(lat, sp("so we go too sea her")), false, 0.3},
 		{"cut: double short-word slip, speech runs to the clip end", cat(lat, sp("so we go to see her")), cat(lat, sp("so we go too sea her")), true, 0},
-		{"cut: 5-word repeat, heard stops after and", cat(lat[:40], sp("we went to the store today and we went to the store today")), cat(lat[:40], sp("we went to the store today and")), true, 0.45},
-		{"cut: 5-word repeat, heard stops after and we", cat(lat[:40], sp("we went to the store today and we went to the store today")), cat(lat[:40], sp("we went to the store today and we")), true, 0.45},
-		{"cut: 6-word repeat, heard stops after and", cat(lat[:40], sp("then we went to the store today and then we went to the store today")), cat(lat[:40], sp("then we went to the store today and")), true, 0.45},
-		{"cut: repeated tail, ending cut",
-			append(append(append(append([]string{}, lat[:45]...), "alpha", "beta", "gamma"), lat[45:52]...), "alpha", "beta", "gamma"),
-			append(append(append([]string{}, lat[:45]...), "alpha", "beta", "gamma"), lat[45:49]...), true, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

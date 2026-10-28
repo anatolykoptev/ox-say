@@ -34,6 +34,15 @@ var ErrChanged = errors.New("voices: voice changed while repairing")
 // re-checks every voice once. (A var only so a test can bump it.)
 var repairLogicVersion = 1
 
+// tailParams identifies the tail check (tail.go) for the verdict cache: its
+// constants, so changing one re-checks every voice by itself. SameWord's
+// tolerance is a literal in tail.go; bump tailSameWordRev when it changes.
+const tailSameWordRev = 1
+
+func tailParams() string {
+	return fmt.Sprintf("tail:%d,%d,%d,sw%d", anchorWords, anchorWindow, anchorNeed, tailSameWordRev)
+}
+
 // verdictFile is the dotfile (List and SweepTemp leave it alone) that keeps
 // the "transcript matches" verdicts across daemon starts: without it a voice
 // whose clip sits at the cap is transcribed again on every start.
@@ -191,7 +200,7 @@ func (r *Repair) plan(ctx context.Context, srcWav, srcText string, srcDur float6
 	if !SameScript(srcText, joinWords(words)) {
 		return fmt.Errorf("voice %s: the transcript's script differs from ref_text: %w", name, ErrScript)
 	}
-	if TranscriptMatchesTimed(srcText, words, srcDur) {
+	if TranscriptMatches(srcText, joinWords(words)) {
 		return nil // a correct transcript, e.g. an exact 20.0 s clip with its own text
 	}
 	if srcDur >= MaxRefSeconds-capEpsilon {
