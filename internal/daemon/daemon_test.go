@@ -171,6 +171,10 @@ func newTestDaemonVox(t *testing.T, dir string, editCfg func(*config.Config), tu
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Registered before Shutdown's cleanup, so it runs after it: whatever
+	// child the test (or the code under test) spawned must be gone by then.
+	before := testutil.ChildProcs(t)
+	t.Cleanup(func() { testutil.NoNewChildren(t, before) })
 	t.Cleanup(d.Shutdown)
 	return d
 }

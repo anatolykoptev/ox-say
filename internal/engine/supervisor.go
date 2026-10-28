@@ -27,10 +27,18 @@ const (
 	StateStarting State = "starting"
 	StateReady    State = "ready"
 	StateCrashed  State = "crashed"
+	// StateFailed is terminal until the cool-down passes: the child ran but
+	// Verify refused it MaxVerifyFailures starts in a row, so no further
+	// start is attempted (see GiveUpCooldown).
+	StateFailed State = "failed"
 )
 
 // ErrShutdown is returned by EnsureReady after Shutdown was called.
 var ErrShutdown = errors.New("engine: supervisor shut down")
+
+// ErrGaveUp is returned by EnsureReady while the supervisor is in
+// StateFailed: it stopped retrying a start whose Verify keeps failing.
+var ErrGaveUp = errors.New("engine: gave up starting")
 
 // Config controls the supervisor.
 type Config struct {
@@ -76,6 +84,20 @@ type Config struct {
 	// server really requires the key.
 	Verify func(ctx context.Context, baseURL string) error
 
+	// VerifyTimeout bounds one Verify call, separate from StartupTimeout so
+	// a slow model load cannot starve it and a hung Verify cannot eat the
+	// startup budget. Zero: 10s — one loopback request.
+	VerifyTimeout time.Duration
+	// MaxVerifyFailures is how many starts in a row may end with the child
+	// running and Verify refusing it before the supervisor gives up
+	// (StateFailed). Each of those starts reloads the model, so an
+	// unbounded retry drains the battery for nothing. Zero: 3.
+	MaxVerifyFailures int
+	// GiveUpCooldown is how long StateFailed lasts; after it the next
+	// EnsureReady makes one probe start, and that start failing Verify
+	// again re-enters StateFailed at once. Zero: 15 min.
+	GiveUpCooldown time.Duration
+
 	Logger *slog.Logger // nil → slog.Default()
 
 	// Tunables — zero values get sane defaults; tests override.
@@ -113,6 +135,8 @@ type Status struct {
 	// lives, "transcription" for a GPU ox-stt run; empty when the card is
 	// free or no lease is wired.
 	GPUHeldBy string `json:"gpu_held_by,omitempty"`
+	// RetryInS is the seconds left of the failed state's cool-down.
+	RetryInS float64 `json:"retry_in_s,omitempty"`
 }
 
 // Supervisor owns one child process generation at a time.
@@ -138,10 +162,15 @@ type Supervisor struct {
 	starts        int
 	restarts      int
 	failCount     int // consecutive crash/start failures (drives backoff)
-	nextAttempt   time.Time
-	lastActivity  time.Time // last Ready commit or Guard release
-	guards        int
-	gpuHeld       bool // the current generation owns cfg.GPU
+	// verifyFails counts consecutive starts where the child ran and Verify
+	// refused it; any other outcome zeroes it. gaveUpAt stamps the entry
+	// into StateFailed.
+	verifyFails  int
+	gaveUpAt     time.Time
+	nextAttempt  time.Time
+	lastActivity time.Time // last Ready commit or Guard release
+	guards       int
+	gpuHeld      bool // the current generation owns cfg.GPU
 
 	stopIdle  chan struct{}
 	idleDone  chan struct{}
@@ -180,6 +209,15 @@ func New(cfg Config) (*Supervisor, error) {
 	}
 	if cfg.KillGrace <= 0 {
 		cfg.KillGrace = defaultKillGrace
+	}
+	if cfg.VerifyTimeout <= 0 {
+		cfg.VerifyTimeout = 10 * time.Second
+	}
+	if cfg.MaxVerifyFailures <= 0 {
+		cfg.MaxVerifyFailures = 3
+	}
+	if cfg.GiveUpCooldown <= 0 {
+		cfg.GiveUpCooldown = 15 * time.Minute
 	}
 	if cfg.LogMaxBytes <= 0 {
 		cfg.LogMaxBytes = defaultLogMaxBytes
@@ -309,6 +347,17 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 				s.mu.Unlock()
 				return "", fmt.Errorf("engine: start failed: %w", err)
 			}
+			if s.state == StateFailed {
+				// Terminal until the cool-down ends: no spawn, no model
+				// load. The caller (the notes runner, /status) gets the
+				// state and the cause at once instead of a 30 s wait.
+				if rem := s.gaveUpAt.Add(s.cfg.GiveUpCooldown).Sub(time.Now()); rem > 0 {
+					err := fmt.Errorf("%w after %d failed checks of the server (last: %v); next try in %s",
+						ErrGaveUp, s.verifyFails, s.lastErr, rem.Round(time.Second))
+					s.mu.Unlock()
+					return "", err
+				}
+			}
 			if d := time.Until(s.nextAttempt); d > 0 {
 				ch := s.change
 				s.mu.Unlock()
@@ -408,6 +457,9 @@ func (s *Supervisor) Status() Status {
 	}
 	if s.lastErr != nil {
 		st.LastErr = s.lastErr.Error()
+	}
+	if s.state == StateFailed {
+		st.RetryInS = max(time.Until(s.gaveUpAt.Add(s.cfg.GiveUpCooldown)).Seconds(), 0)
 	}
 	if s.child != nil {
 		st.PID = s.child.cmd.Process.Pid
@@ -535,7 +587,14 @@ func (s *Supervisor) run() {
 		err = s.waitHealthy(ctx, c)
 	}
 	if err == nil && s.cfg.Verify != nil {
-		err = s.cfg.Verify(ctx, c.baseURL)
+		// Its own budget: after a slow model load the startup context has
+		// little left, and a hung Verify must not hold the whole startup.
+		vctx, vcancel := context.WithTimeout(context.Background(), s.cfg.VerifyTimeout)
+		err = s.cfg.Verify(vctx, c.baseURL)
+		vcancel()
+		if err != nil {
+			err = &verifyFailure{err}
+		}
 	}
 	if err == nil && s.cfg.Replay != nil {
 		// Best-effort per spec ordering: a single corrupt voice file must not
@@ -552,6 +611,11 @@ func (s *Supervisor) run() {
 	// Shutdown that landed mid-start turns the attempt into a failed start.
 	s.finishStart(c, err)
 }
+
+// verifyFailure marks a start whose child ran but was refused by Verify.
+type verifyFailure struct{ error }
+
+func (e *verifyFailure) Unwrap() error { return e.error }
 
 // spawn starts the child and installs the waiter goroutine.
 func (s *Supervisor) spawn() (*child, error) {
@@ -728,6 +792,12 @@ func (s *Supervisor) finishStart(c *child, err error) {
 		s.attemptErr = err
 		s.attemptGen = s.startGen // still this run's gen: no new attempt can launch while state is Starting
 		s.attemptDoneAt = time.Now()
+		var vf *verifyFailure
+		if errors.As(err, &vf) {
+			s.verifyFails++
+		} else {
+			s.verifyFails = 0
+		}
 		if s.state != StateCrashed {
 			// onExit may already have classified this child as crashed and
 			// charged the backoff — never count one death twice.
@@ -735,11 +805,20 @@ func (s *Supervisor) finishStart(c *child, err error) {
 			s.failCount++
 			s.nextAttempt = time.Now().Add(s.backoffLocked())
 		}
+		if s.verifyFails >= s.cfg.MaxVerifyFailures && !s.dead {
+			// The child runs and is refused again and again: every retry
+			// reloads the model for the same answer. Stop, and stay
+			// stopped for the cool-down; Backoff() reports it too.
+			s.state = StateFailed
+			s.gaveUpAt = time.Now()
+			s.nextAttempt = s.gaveUpAt.Add(s.cfg.GiveUpCooldown)
+		}
 		retryIn = time.Until(s.nextAttempt)
 	} else {
 		c.readyAt = time.Now()
 		s.lastActivity = c.readyAt
 		s.attemptErr = nil
+		s.verifyFails = 0
 		// failCount is NOT cleared here: an engine that reaches Ready and then
 		// crashes on every request must keep escalating its backoff. It clears
 		// after readyResetAfter of Ready (onExit) or on a clean idle stop.

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -526,6 +527,12 @@ func (d *Daemon) notesStatus() notesStatus {
 	if d.LLMSup != nil {
 		st := d.LLMSup.Status()
 		out.State, out.LastErr = st.State, st.LastErr
+		if st.State == engine.StateFailed {
+			// The supervisor stopped reloading a model the server check keeps
+			// refusing; say so instead of showing a plain "stopped".
+			out.Reason = fmt.Sprintf("The notes model would not start, so ox-say stopped retrying. It tries again in about %d minutes; restarting ox-say tries at once.",
+				max(1, int(math.Ceil(st.RetryInS/60))))
+		}
 		if strings.Contains(st.LastErr, notesPortTaken) {
 			// A foreign listener holds the port: the app shows the same reason
 			// as for a configured collision, and the meetings wait.
