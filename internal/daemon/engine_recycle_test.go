@@ -213,6 +213,19 @@ func voxFixtureTuned(t *testing.T, tune func(*engine.Config)) (d *Daemon, logPat
 	return d, logPath
 }
 
+// linesReach reports whether the file holds at least n lines within limit; safe
+// from any goroutine.
+func linesReach(path string, n int, limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(path); err == nil && strings.Count(string(b), "\n") >= n {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
 // waitForLines waits until the file holds at least n lines.
 func waitForLines(t *testing.T, path string, n int) {
 	t.Helper()
@@ -273,7 +286,11 @@ func TestQueuedSpeakDoesNotKeepAWedgedChildAlive(t *testing.T) {
 	wedged := d.VoxSup.Status().PID
 	shortDeadline(t, time.Second)
 	spy := &spyPorts{producePorts: d.producePorts(), entered: make(chan struct{})}
-	spy.gate = func() { waitForLines(t, logPath, 2) } // the speak is queued behind the render
+	spy.gate = func() { // the speak is queued behind the render
+		if !linesReach(logPath, 2, 20*time.Second) {
+			t.Errorf("the queued speak never reached the engine") // not Fatalf: this is not the test goroutine
+		}
+	}
 	tk := &taker{ports: spy, dir: t.TempDir()}
 	rendered := make(chan error, 1)
 	go func() {
@@ -309,7 +326,7 @@ func TestQueuedSpeakDoesNotKeepAWedgedChildAlive(t *testing.T) {
 // ignored entirely) -> the child dies under the speak -> RED.
 func TestRecycleDoesNotKillARequestBeingAnswered(t *testing.T) {
 	d, logPath := voxFixtureTuned(t, nil)
-	t.Setenv("OXSAY_FAKE_VOX_DELAY_MS", "1500")
+	t.Setenv("OXSAY_FAKE_VOX_DELAY_MS", "2500")
 	if _, err := d.VoxSup.EnsureReady(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +337,10 @@ func TestRecycleDoesNotKillARequestBeingAnswered(t *testing.T) {
 		spoke <- err
 	}()
 	waitForLines(t, logPath, 1)
-	shortDeadline(t, 300*time.Millisecond)
+	// 1 s: far longer than the render needs to reach the warm child (it must
+	// have stored its pid before the deadline matters), shorter than the 2.5 s
+	// the speak takes, so the speak is still being answered when it fires.
+	shortDeadline(t, time.Second)
 	tk := &taker{ports: d.producePorts(), dir: t.TempDir()}
 	if _, err := tk.renderWithin(context.Background(), takeSpec{Text: "queued behind the speak", Seed: 1, Cfg: 2, Steps: 10}); err == nil {
 		t.Fatal("the render should have hit its deadline")

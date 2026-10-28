@@ -567,6 +567,8 @@ func (s *Supervisor) Recycle(ctx context.Context, pid int) error {
 // fails when the child dies, which is what the user should see). A request
 // sent BEFORE from may be the one the child is answering right now, so it
 // still blocks, bounded by RecycleWait. from == 0 makes every Guard block.
+// Every Guard on this supervisor must call MarkSent before it sends, or the age
+// rule ignores it (a Guard that never stamped counts as not in flight).
 func (s *Supervisor) RecycleWedged(ctx context.Context, pid int, from uint64) error {
 	timer := time.NewTimer(s.cfg.RecycleWait)
 	defer timer.Stop()
