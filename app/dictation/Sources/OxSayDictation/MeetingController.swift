@@ -590,7 +590,7 @@ final class MeetingController: NSObject, MeetingFeature {
     private func retryVoices(_ id: String) {
         Task { @MainActor in
             do { try await requestVoicesAgain(id: id) } catch {
-                host.notify(L10nKey.speakersFailed.text("\(error)"))
+                host.notify(L10nKey.speakersFailed.text(MeetingErrorText.sentence(error, action: .retryVoices)))
             }
         }
     }

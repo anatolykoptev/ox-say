@@ -74,6 +74,8 @@ public enum MeetingFeatureError: Error, Equatable {
 /// What the user was doing when a call to the daemon failed: the sentence differs ("rename it when it is done").
 public enum MeetingAction: CaseIterable, Equatable {
     case refresh, rename, delete, speakers, retry, settings, search, audio
+    /// "Try Again" for the voices: a 503 means the voice models are still not ready.
+    case retryVoices
     /// Closing a recording that was running.
     case finish
 }
@@ -95,6 +97,7 @@ public enum MeetingErrorText {
             switch (status, action) {
             case (409, .delete): return text(.meetingErrDeleteBusy)
             case (409, .rename): return text(.meetingErrRenameBusy)
+            case (503, .retryVoices): return text(.meetingErrVoicesNotReady)
             case (409, _): return text(.meetingErrBusy)
             case (404, _): return text(.meetingErrNotFound)
             case (400, .rename): return text(.meetingErrRenameInvalid)

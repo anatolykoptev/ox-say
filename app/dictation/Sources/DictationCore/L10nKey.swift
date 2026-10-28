@@ -263,6 +263,7 @@ public enum L10nKey: String, CaseIterable {
     case meetingErrRenameBusy = "meeting.error.rename_busy"
     case meetingErrBusy = "meeting.error.busy"
     case meetingErrGeneric = "meeting.error.generic"
+    case meetingErrVoicesNotReady = "meeting.error.voices_not_ready"
     case meetingsLoading = "meetings.loading"
     case meetingsDownTitle = "meetings.down.title"
     case commonRetry = "common.retry"
