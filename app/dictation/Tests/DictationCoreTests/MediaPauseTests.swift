@@ -683,6 +683,28 @@ final class SoundWhileDictatingWiringTests: XCTestCase {
         XCTAssertEqual([world.state(music), world.state(spotify)], ["playing", "playing"])
     }
 
+    // #265: an output that says its volume is settable but refuses the write
+    // is not ducked: the players are paused instead, and the release resumes
+    // them without a volume write. Mutation: in SoundWhileDictatingRunner
+    // .dictationStateChanged treat a false `duck.begin` as handled
+    // (`duck?.begin(generation: g) == nil`) -> RED.
+    func testLowerAllSoundOnAnOutputThatRefusesTheWritePausesInstead() {
+        let suite = "ox-say-media-refused-\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        let world = FakeScriptWorld([music: "playing", spotify: "playing"])
+        let fakeVolume = FakeSystemVolume()
+        fakeVolume.refusedWrites = 1
+        let r = runner(world, defaults: defaults(suite, mode: .lowerAllSound), volume: fakeVolume)
+        r.dictationStateChanged(.recording); r.drain()
+        XCTAssertEqual([world.state(music), world.state(spotify)], ["paused", "paused"],
+                       "music never plays on at full volume over the dictation")
+        XCTAssertEqual(fakeVolume.level, 0.8, accuracy: 0.0001)
+        r.dictationStateChanged(.transcribing); r.drain()
+        XCTAssertEqual([world.state(music), world.state(spotify)], ["playing", "playing"])
+        XCTAssertEqual(fakeVolume.writes.count, 1, "only the refused write was attempted")
+        XCTAssertEqual(fakeVolume.level, 0.8, accuracy: 0.0001)
+    }
+
     func testLowerAllSoundWithoutAnyVolumeAlsoFallsBackToPausing() {
         let suite = "ox-say-media-novolume-\(UUID().uuidString)"
         defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }

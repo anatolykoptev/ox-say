@@ -523,11 +523,19 @@ final class InMemoryDuckRecordStore: DuckRecordStore {
 
 /// Item: a crash or SIGKILL while ducked must not leave the output at 15%.
 final class VolumeDuckRecoveryTests: XCTestCase {
+    private var clock = Date(timeIntervalSince1970: 1_800_000_000)
+
     private func rig(level: Float = 0.8) -> (FakeSystemVolume, InMemoryDuckRecordStore, VolumeDuckCoordinator) {
         let fake = FakeSystemVolume()
         fake.level = level
         let store = InMemoryDuckRecordStore()
-        return (fake, store, VolumeDuckCoordinator(volume: fake, stepDelay: 0, settleDelay: 0, records: store))
+        return (fake, store, VolumeDuckCoordinator(volume: fake, stepDelay: 0, settleDelay: 0,
+                                                   now: { [unowned self] in self.clock }, records: store))
+    }
+
+    /// A record the duck left `age` seconds before the rig's clock.
+    private func record(uid: String = "fake-output", age: TimeInterval = 30) -> DuckRecord {
+        DuckRecord(uid: uid, preDuck: 0.8, ducked: 0.12, savedAt: clock.addingTimeInterval(-age))
     }
 
     func testBeginReportsWhetherTheOutputWasLowered() {
@@ -566,7 +574,7 @@ final class VolumeDuckRecoveryTests: XCTestCase {
     // (skip the launch restore) -> RED.
     func testALaunchAfterACrashGivesTheLevelBack() {
         let (fake, store, duck) = rig(level: 0.12)
-        store.record = DuckRecord(uid: "fake-output", preDuck: 0.8, ducked: 0.12)
+        store.record = record()
         duck.recoverInterrupted()
         XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
         XCTAssertNil(store.record)
@@ -574,7 +582,7 @@ final class VolumeDuckRecoveryTests: XCTestCase {
 
     func testALaunchLeavesAVolumeTheUserMovedAndDropsTheRecord() {
         let (fake, store, duck) = rig(level: 0.5)
-        store.record = DuckRecord(uid: "fake-output", preDuck: 0.8, ducked: 0.12)
+        store.record = record()
         duck.recoverInterrupted()
         XCTAssertEqual(fake.writes, [])
         XCTAssertNil(store.record)
@@ -582,7 +590,7 @@ final class VolumeDuckRecoveryTests: XCTestCase {
 
     func testALaunchOnAnotherDefaultOutputWritesNothing() {
         let (fake, store, duck) = rig(level: 0.12)
-        store.record = DuckRecord(uid: "other-output", preDuck: 0.8, ducked: 0.12)
+        store.record = record(uid: "other-output")
         duck.recoverInterrupted()
         XCTAssertEqual(fake.writes, [])
         XCTAssertNil(store.record)
@@ -592,6 +600,113 @@ final class VolumeDuckRecoveryTests: XCTestCase {
         let (fake, _, duck) = rig(level: 0.12)
         duck.recoverInterrupted()
         XCTAssertEqual(fake.writes, [])
+    }
+
+    // #265 item 1: a device that reports a settable volume but refuses the
+    // first write was not ducked. begin says so (the caller pauses the players
+    // instead) and no debt, record or owed restore is left for a duck that
+    // never happened. Mutation: VolumeDuckCoordinator.begin drop the refused
+    // first write (`_ = fade(...)`, `return true`) -> RED.
+    func testARefusedFirstWriteIsNotHandledAndLeavesNoDebt() {
+        let (fake, store, duck) = rig()
+        fake.refusedWrites = 1
+        XCTAssertFalse(duck.begin(generation: 1), "a refused write did not lower the output")
+        XCTAssertNil(store.record, "no duck happened, so nothing is owed")
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+        let before = fake.writes.count
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.writes.count, before, "the end of a dictation that never ducked writes nothing")
+    }
+
+    // The refused begin must not eat the owed restore of an earlier failed
+    // one: the next working dictation still gives back the original level.
+    func testARefusedFirstWriteKeepsAnEarlierOwedRestore() {
+        let (fake, _, duck) = rig()
+        XCTAssertTrue(duck.begin(generation: 1))
+        fake.refuseWritesFrom = fake.writes.count
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.12, accuracy: 0.0001, "the restore failed: the output sits at the duck")
+        fake.refuseWritesFrom = nil
+        fake.refusedWrites = 1
+        XCTAssertFalse(duck.begin(generation: 2))
+        XCTAssertTrue(duck.begin(generation: 3))
+        duck.end(generation: 3)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "the owed level survives the refused begin")
+    }
+
+    // #265 item 2: the store holds one record. A confirmed restore of one
+    // device must not clear the record of another. Mutation: forgetOwed
+    // clears the store unconditionally -> RED.
+    func testAConfirmedRestoreLeavesAnotherDevicesRecord() {
+        let (fake, store, duck) = rig()
+        XCTAssertTrue(duck.begin(generation: 1))
+        let other = record(uid: "other-output")
+        store.record = other
+        duck.end(generation: 1)
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(store.record, other, "the other device's debt is not ours to forget")
+    }
+
+    func testAConfirmedRestoreClearsItsOwnRecord() {
+        let (_, store, duck) = rig()
+        XCTAssertTrue(duck.begin(generation: 1))
+        duck.end(generation: 1)
+        XCTAssertNil(store.record)
+    }
+
+    // #265 item 3: the record carries when the duck was taken, and a record
+    // older than recordLifetime is dropped without a write. Mutation:
+    // recoverInterrupted ignore the age -> RED.
+    func testTheDuckStampsItsRecord() {
+        let (_, store, duck) = rig()
+        XCTAssertTrue(duck.begin(generation: 1))
+        XCTAssertEqual(store.record?.savedAt, clock)
+    }
+
+    func testAStaleRecordIsDroppedAndTheLevelLeftAlone() {
+        let (fake, store, duck) = rig(level: 0.12)
+        store.record = record(age: VolumeDuckCoordinator.recordLifetime + 1)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [], "an old record must not set the volume")
+        XCTAssertNil(store.record)
+    }
+
+    func testARecordJustInsideTheLifetimeStillRecovers() {
+        let (fake, store, duck) = rig(level: 0.12)
+        store.record = record(age: VolumeDuckCoordinator.recordLifetime - 1)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001)
+        XCTAssertNil(store.record)
+    }
+
+    func testARecordWithoutATimestampIsStale() {
+        let (fake, store, duck) = rig(level: 0.12)
+        store.record = DuckRecord(uid: "fake-output", preDuck: 0.8, ducked: 0.12)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertNil(store.record)
+    }
+
+    func testARecordFromTheFutureIsStale() {
+        let (fake, store, duck) = rig(level: 0.12)
+        store.record = record(age: -3600)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertNil(store.record)
+    }
+
+    func testTheDefaultsStoreRoundTripsAndReadsALegacyRecordAsUnstamped() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UserDefaultsDuckRecordStore(defaults: defaults)
+        let stamped = DuckRecord(uid: "u", preDuck: 0.75, ducked: 0.1125,
+                                 savedAt: Date(timeIntervalSince1970: 1_800_000_123.456))
+        store.save(stamped)
+        XCTAssertEqual(store.load(), stamped)
+        // A record written by a build before the timestamp existed.
+        defaults.removeObject(forKey: UserDefaultsDuckRecordStore.savedAtKey)
+        XCTAssertNotNil(store.load(), "an old record still loads")
+        XCTAssertNil(store.load()?.savedAt)
     }
 
     func testTheDefaultsStoreRoundTripsInAPrivateSuite() {
