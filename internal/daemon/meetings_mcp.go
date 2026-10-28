@@ -83,6 +83,7 @@ type meetingGetOut struct {
 	NotesPending string         `json:"notes_pending,omitempty"`
 	Warnings     []string       `json:"warnings,omitempty"`
 	Error        string         `json:"error,omitempty"`
+	FailReason   string         `json:"fail_reason,omitempty"`
 	Voices       int            `json:"voices,omitempty"`
 	VoiceMode    string         `json:"voice_mode,omitempty"`
 	NotesMD      string         `json:"notes_md,omitempty"`
@@ -105,7 +106,7 @@ func (d *Daemon) toolMeetingGet(_ context.Context, _ *mcp.CallToolRequest, in me
 	}
 	pm := d.publicManifest(*m)
 	out := meetingGetOut{ID: m.ID, Title: m.Title, Started: m.Started, DurationS: m.DurationS, Status: m.Status,
-		Language: m.Language, NotesPending: m.NotesPending, Warnings: m.Warnings, Error: pm.Error,
+		Language: m.Language, NotesPending: m.NotesPending, Warnings: m.Warnings, Error: pm.Error, FailReason: m.FailReason,
 		Voices: m.Voices, VoiceMode: m.VoiceMode}
 	if part != "transcript" {
 		if out.NotesMD, err = d.Meet.Store.Text(m.ID, meeting.NotesMD); err != nil {

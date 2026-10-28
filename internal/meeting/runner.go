@@ -217,7 +217,7 @@ func (r *Runner) Finish(id string, ended time.Time) (*Manifest, error) {
 		case m.Status == StatusRecording:
 			m.Ended, m.Status = &ended, StatusQueued
 		case m.Ended != nil && ended.After(*m.Ended) && grewSince(dir, m):
-			m.Ended, m.Status, m.Error, m.NotesPending = &ended, StatusQueued, "", ""
+			m.Ended, m.Status, m.Error, m.NotesPending, m.FailReason = &ended, StatusQueued, "", "", ""
 		}
 	})
 	if err != nil {
@@ -275,7 +275,7 @@ func (r *Runner) Retry(id string) (*Manifest, error) {
 			refuse = fmt.Errorf("meeting: %s has no transcript and its audio is gone", id)
 			return
 		}
-		m.Status, m.NotesPending, m.Error, m.Attempts, m.WaitingFor = next, "", "", 0, ""
+		m.Status, m.NotesPending, m.Error, m.FailReason, m.Attempts, m.WaitingFor = next, "", "", "", 0, ""
 	})
 	if err != nil {
 		return nil, err
@@ -326,7 +326,7 @@ func (r *Runner) RetryVoices(id string) (*Manifest, error) {
 			refuse = fmt.Errorf("meeting: %s has no failed diarization to retry, or its far-side audio is gone", id)
 			return
 		}
-		m.Status, m.NotesPending, m.Error, m.Attempts, m.WaitingFor = StatusQueued, "", "", 0, ""
+		m.Status, m.NotesPending, m.Error, m.FailReason, m.Attempts, m.WaitingFor = StatusQueued, "", "", "", 0, ""
 	})
 	if err != nil {
 		return nil, err
@@ -398,7 +398,7 @@ func (r *Runner) retryFailed(m Manifest) {
 		if !waiting && m.FailedAt != nil && r.Now().Sub(*m.FailedAt) < retryBackoff[min(m.Attempts, len(retryBackoff)-1)] {
 			return
 		}
-		m.Status, m.Error, m.WaitingFor = next, "", ""
+		m.Status, m.Error, m.FailReason, m.WaitingFor = next, "", "", ""
 		if !waiting {
 			m.Attempts++
 		}
@@ -518,7 +518,7 @@ func (r *Runner) stop(ctx context.Context, id string, err error) error {
 		if m.Status == StatusQueued { // a Finish queued the meeting again while this run failed: that run counts
 			return
 		}
-		m.Status, m.Error, m.WaitingFor, m.FailedAt = StatusFailed, err.Error(), "", &failedAt
+		m.markFailed(err, &failedAt)
 		if permanent(err) {
 			m.WaitingFor = WaitSTTModel
 		}
@@ -540,7 +540,7 @@ func (r *Runner) stopNotes(ctx context.Context, id string, err error) error {
 		if requeued(m) {
 			return
 		}
-		m.Status, m.NotesPending, m.Error = StatusTranscribed, "failed", err.Error()
+		m.markNotesFailed(err)
 	})
 	if uerr != nil {
 		r.Log.Warn("meeting: cannot record a notes failure", slog.String("id", id), slog.Any("error", uerr))
@@ -846,7 +846,7 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 			superseded = true
 			return
 		}
-		m.Status, m.NotesPending, m.Error = StatusSummarizing, "", ""
+		m.Status, m.NotesPending, m.Error, m.FailReason = StatusSummarizing, "", "", ""
 	}); err != nil {
 		return err
 	}
@@ -867,7 +867,7 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 			if requeued(m) {
 				return
 			}
-			m.Status, m.NotesPending, m.Error = StatusTranscribed, "failed", err.Error()
+			m.markNotesFailed(err)
 		})
 		return uerr
 	}
@@ -892,7 +892,7 @@ func (r *Runner) writeNotes(id, dir, md string, n *Notes) error {
 		if requeued(m) {
 			return
 		}
-		m.Status, m.NotesPending, m.Error, m.Attempts = StatusDone, "", "", 0
+		m.Status, m.NotesPending, m.Error, m.FailReason, m.Attempts = StatusDone, "", "", "", 0
 	})
 	if err != nil {
 		return err

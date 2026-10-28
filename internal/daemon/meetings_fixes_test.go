@@ -2,7 +2,11 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net"
 	"os"
 	"path/filepath"
@@ -543,6 +547,50 @@ func TestInstallErrorCarriesCurlsWordsNotTheMeter(t *testing.T) {
 	}
 }
 
+// A failed download carries a stable code beside curl's words: the window shows its own sentence for the code and
+// never the English text. The rows are real curl and fetch-models.sh texts; each code is a cause a person can act on.
+// Mutations: internal/daemon/meetings.go notesStatus, delete `InstallCode: icode` -> RED (every row);
+// installFailureCode, delete the "No space left" arm -> RED (disk_full rows); the "checksum mismatch" arm -> RED;
+// `case "22"` returning "network" -> RED (http rows); `"stalled"` arm deleted -> RED (stall row).
+func TestAFailedDownloadHasAStableCode(t *testing.T) {
+	cases := []struct{ name, stderr, want string }{
+		{"no network", "curl: (6) Could not resolve host: huggingface.co", "network"},
+		{"refused", "curl: (7) Failed to connect to huggingface.co port 443 after 15003 ms: Couldn't connect to server", "network"},
+		{"timeout", "curl: (28) Operation timed out after 30001 milliseconds with 0 bytes received", "network"},
+		{"stall", "download of qwen.gguf stalled (under 1 KB/s for 30 s); check the network and run it again", "network"},
+		{"reset", "curl: (56) Recv failure: Connection reset by peer", "network"},
+		{"empty reply", "curl: (52) Empty reply from server", "network"},
+		{"script exit code", "download of qwen.gguf failed (curl exit 56)", "network"},
+		{"http 404", "curl: (22) The requested URL returned error: 404", "server"},
+		{"http 503 and the script's line", "curl: (22) The requested URL returned error: 503; download of qwen.gguf failed (curl exit 22)", "server"},
+		{"curl cannot write, no evidence", "curl: (23) Failure writing output to destination", "other"},
+		{"curl cannot write, disk full", "curl: (23) Failure writing output to destination; mv: write error: No space left on device", "disk_full"},
+		{"disk full", "mv: rename a to b: No space left on device", "disk_full"},
+		{"tls", "curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to huggingface.co:443", "other"},
+		{"certificate", "curl: (60) SSL certificate problem: unable to get local issuer certificate", "other"},
+		{"proxy", "curl: (5) Could not resolve proxy: p.example", "other"},
+		{"checksum", "checksum mismatch for qwen.gguf: got aa, want bb", "checksum"},
+		{"anything else", "something unexpected", "other"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := installFixture(t, "#!/bin/sh\ncat >&2 <<'EOT'\n"+tc.stderr+"\nEOT\nexit 1\n")
+			if err := d.InstallNotesModel(); err != nil {
+				t.Fatal(err)
+			}
+			testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to fail")
+			n := d.Status().Notes
+			if n.InstallErr == "" || n.InstallCode != tc.want {
+				t.Fatalf("install_error %q, install_error_code %q; want a code %q", n.InstallErr, n.InstallCode, tc.want)
+			}
+			raw, _ := json.Marshal(n)
+			if !strings.Contains(string(raw), `"install_error_code":"`+tc.want+`"`) {
+				t.Fatalf("status JSON = %s", raw)
+			}
+		})
+	}
+}
+
 // --- refusals ---------------------------------------------------------------
 
 // A model on disk is "already installed" even when the notes are blocked for
@@ -563,5 +611,81 @@ func TestInstallRefusesWhenTheModelIsThereButNotesAreBlockedElsewhere(t *testing
 	}
 	if err := d.InstallNotesModel(); err == nil || !strings.Contains(err.Error(), "already installed") {
 		t.Fatalf("err = %v, want \"already installed\"", err)
+	}
+}
+
+// curl's (23) is "failure writing output": on a full disk it says nothing about the disk. On a (23) the daemon looks at the
+// free space of the models directory itself: short of what the rest of the model needs -> disk_full, else other.
+// Mutation: internal/daemon/meetings.go installFailure, delete the `if free < need` branch (always "other") -> RED (short row).
+// Mutation: same function, return "disk_full" for every (23) -> RED (roomy row).
+// Mutation: same function, test the code "other" without the curl (23) guard -> RED (the unrelated "other" row).
+func TestACurl23FailureLooksAtTheDisk(t *testing.T) {
+	cases := []struct {
+		name, stderr string
+		freeAfter    int64
+		want         string
+	}{
+		{"23 and the disk is short", "curl: (23) Failure writing output to destination", 0, "disk_full"},
+		{"23 and the disk has room", "curl: (23) Failure writing output to destination", 1 << 40, "other"},
+		{"not a 23, disk short: stays other", "something unexpected", 0, "other"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := installFixture(t, "#!/bin/sh\ncat >&2 <<'EOT'\n"+tc.stderr+"\nEOT\nexit 23\n")
+			calls := 0
+			// The start-up check sees a roomy disk (the download is allowed); the check after the failure sees tc.freeAfter.
+			withFreeBytes(t, func(string) (int64, error) {
+				calls++
+				if calls == 1 {
+					return 1 << 40, nil
+				}
+				return tc.freeAfter, nil
+			})
+			if err := d.InstallNotesModel(); err != nil {
+				t.Fatal(err)
+			}
+			testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to fail")
+			if got := d.Status().Notes.InstallCode; got != tc.want {
+				t.Fatalf("install_error_code = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Every code installFailureCode can return, but the catch-all, has its sentence in the app. The codes are read from the
+// function's return statements, so a new one cannot be added without a row in NotesWriterState.downloadFailureKey.
+// Mutation: MeetingWindowService.swift, delete `case "checksum": return .settingsNotesWriterDownloadChecksum` -> RED.
+func TestEveryInstallFailureCodeHasASwiftSentence(t *testing.T) {
+	swift, err := os.ReadFile("../../app/dictation/Sources/DictationCore/MeetingWindowService.swift")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "meetings.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var codes []string
+	for _, decl := range file.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == "installFailureCode" {
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if rs, ok := n.(*ast.ReturnStmt); ok {
+					for _, r := range rs.Results {
+						if lit, ok := r.(*ast.BasicLit); ok {
+							v, _ := strconv.Unquote(lit.Value)
+							codes = append(codes, v)
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	if len(codes) < 4 {
+		t.Fatalf("read only %d codes from installFailureCode: %v", len(codes), codes)
+	}
+	for _, c := range codes {
+		if c != "other" && !strings.Contains(string(swift), `case "`+c+`":`) {
+			t.Errorf("the install failure %q has no case in MeetingWindowService.swift", c)
+		}
 	}
 }

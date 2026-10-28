@@ -39,6 +39,9 @@ public struct MeetingInfo: Equatable {
     public var voiceMode: String?
     /// The code behind a `diarization_failed` or `diarization_unavailable` warning (`DiarProblem`).
     public var diarReason: String?
+    /// The daemon's stable code for why the meeting (or its notes) failed (`fail_reason`); nil when none, or for a
+    /// failure recorded before codes existed. `MeetingFailure` turns it into a sentence.
+    public var failReason: String?
     /// Retention removed the recording (`audio_deleted`).
     public var audioDeleted: Bool
     /// How long the call was, in seconds; nil until the recording is over.
@@ -47,7 +50,7 @@ public struct MeetingInfo: Equatable {
     public init(id: String, dir: String? = nil, title: String = "", started: Date? = nil, status: Status,
                 notesPending: String? = nil, warnings: [String] = [], error: String? = nil,
                 notesMD: String? = nil, transcriptMD: String? = nil, voiceMode: String? = nil, diarReason: String? = nil,
-                audioDeleted: Bool = false, durationSeconds: Double? = nil) {
+                audioDeleted: Bool = false, durationSeconds: Double? = nil, failReason: String? = nil) {
         self.id = id
         self.dir = dir
         self.title = title
@@ -62,6 +65,7 @@ public struct MeetingInfo: Equatable {
         self.diarReason = diarReason
         self.audioDeleted = audioDeleted
         self.durationSeconds = durationSeconds
+        self.failReason = failReason
     }
 
     public var heardNoSystemAudio: Bool { warnings.contains("no_system_audio") }
@@ -71,6 +75,22 @@ public struct MeetingInfo: Equatable {
 
     /// Nothing left for the daemon to do on its own.
     public var settled: Bool { status == .done || status == .transcribed || status == .failed }
+
+    /// How long after its start a meeting in a status this app does not know still counts as work in progress: the 4 h
+    /// that tracking a recording allows.
+    public static let recentHorizon: TimeInterval = 4 * 3600
+
+    /// Work the window should keep watching: an unsettled meeting, or one in an unknown status while it is recent. An
+    /// old meeting in a status a newer daemon added is final as far as this app can tell: no spinner, no polling.
+    /// A meeting with no start time cannot be shown to be recent, so it does not count; a start in the future (a wrong
+    /// clock) counts only within the same horizon, so neither can keep the window polling for ever.
+    public func inProgress(now: Date = Date()) -> Bool {
+        if case .unknown = status {
+            guard let started else { return false }
+            return abs(now.timeIntervalSince(started)) < Self.recentHorizon
+        }
+        return !settled
+    }
 
     public static func decode(_ data: Data) -> MeetingInfo? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
@@ -98,7 +118,8 @@ public struct MeetingInfo: Equatable {
                            notesMD: nonEmpty(obj["notes_md"] as? String), transcriptMD: nonEmpty(obj["transcript_md"] as? String),
                            voiceMode: nonEmpty(obj["voice_mode"] as? String), diarReason: nonEmpty(obj["diar_reason"] as? String),
                            audioDeleted: obj["audio_deleted"] as? Bool ?? false,
-                           durationSeconds: (obj["duration_s"] as? Double).flatMap { $0 > 0 ? $0 : nil })
+                           durationSeconds: (obj["duration_s"] as? Double).flatMap { $0 > 0 ? $0 : nil },
+                           failReason: nonEmpty(obj["fail_reason"] as? String))
     }
 
     private static func nonEmpty(_ s: String?) -> String? {
@@ -111,19 +132,23 @@ public struct MeetingInfo: Equatable {
 /// and the model download's progress.
 public struct NotesStatus: Equatable {
     public var available: Bool
-    /// "engine_missing" (update ox-say), "model_missing" (a download helps), "unsupported" (this Mac cannot).
+    /// "engine_missing" (update ox-say), "model_missing" (a download helps), "unsupported" (this Mac cannot), or
+    /// "notes_engine_failed" while `available` stays true: the last start of the notes model was refused.
     public var reasonCode: String?
     public var installing: Bool
     public var progressPercent: Int
     public var installError: String?
+    /// The stable code behind `installError` ("network", "disk_full", "checksum", "other"); nil from an older daemon.
+    public var installErrorCode: String?
 
     public init(available: Bool = false, reasonCode: String? = nil, installing: Bool = false,
-                progressPercent: Int = 0, installError: String? = nil) {
+                progressPercent: Int = 0, installError: String? = nil, installErrorCode: String? = nil) {
         self.available = available
         self.reasonCode = reasonCode
         self.installing = installing
         self.progressPercent = progressPercent
         self.installError = installError
+        self.installErrorCode = installErrorCode
     }
 
     /// The download is what the daemon says would fix it.
@@ -137,6 +162,6 @@ public struct NotesStatus: Equatable {
         }
         return NotesStatus(available: obj["available"] as? Bool ?? false, reasonCode: text("reason_code"),
                            installing: obj["installing"] as? Bool ?? false,
-                           progressPercent: obj["progress_pct"] as? Int ?? 0, installError: text("install_error"))
+                           progressPercent: obj["progress_pct"] as? Int ?? 0, installError: text("install_error"), installErrorCode: text("install_error_code"))
     }
 }

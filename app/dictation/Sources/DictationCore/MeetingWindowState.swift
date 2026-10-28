@@ -35,10 +35,10 @@ public enum MeetingsPageState: Equatable {
 public enum MeetingsPolling {
     public static let interval: TimeInterval = 3
 
-    public static func needed(visible: Bool, meetings: [MeetingInfo], writer: NotesWriterState = .ready) -> Bool {
+    public static func needed(visible: Bool, meetings: [MeetingInfo], writer: NotesWriterState = .ready, now: Date = Date()) -> Bool {
         guard visible else { return false }
         if case .downloading = writer { return true }
-        return meetings.contains { !$0.settled }
+        return meetings.contains { $0.inProgress(now: now) }
     }
 }
 
@@ -111,13 +111,9 @@ public enum MeetingErrorText {
 
 extension MeetingRowModel {
     /// What to say about a recording that did not finish, in the user's language. The daemon's reason is free English
-    /// text that names internals, so it is not shown; the sentence says what did not happen. nil for a fine recording.
+    /// text that names internals, so it is not shown; the sentence is the app's own for the daemon's `fail_reason` code. nil for a fine recording.
     public static func failureSentence(of info: MeetingInfo, text: (L10nKey) -> String = { $0.text }) -> String? {
-        switch info.status {
-        case .failed: return text(.meetingFailedGeneric)
-        case .transcribed: return info.notesPending == "failed" ? text(.meetingNotesFailed) : nil
-        default: return nil
-        }
+        MeetingFailureNotice.of(info, text: text)?.sentence
     }
 
     /// The title the list shows. A title the app itself gave a call ("Zoom call") is shown in the user's language; any
@@ -158,5 +154,42 @@ public enum MeetingFolderTarget: Equatable {
         if let exportPath, exists(exportPath) { return .copy(URL(fileURLWithPath: exportPath, isDirectory: true)) }
         if exists(notesFolder.path) { return .notesFolder(notesFolder) }
         return .nowhere
+    }
+}
+
+/// The reads of an open meeting's detail: one in flight per meeting, so a polling pass cannot stack up reads against
+/// a busy daemon, and the answer of a read that was given up (the meeting was deleted) never lands.
+public struct DetailReads: Equatable {
+    public struct Outcome: Equatable {
+        /// The answer belongs to the latest read of this meeting and may be shown.
+        public var apply: Bool
+        /// Another read was asked for while this one ran.
+        public var rerun: Bool
+    }
+
+    private var inFlight: [String: Int] = [:]
+    private var again: Set<String> = []
+    private var counter = 0
+
+    public init() {}
+
+    /// A token to start a read with, or nil when one is already running (it will be followed by one more).
+    public mutating func request(_ id: String) -> Int? {
+        if inFlight[id] != nil { again.insert(id); return nil }
+        counter += 1
+        inFlight[id] = counter
+        return counter
+    }
+
+    public mutating func finish(_ id: String, token: Int) -> Outcome {
+        guard inFlight[id] == token else { return Outcome(apply: false, rerun: false) }
+        inFlight[id] = nil
+        return Outcome(apply: true, rerun: again.remove(id) != nil)
+    }
+
+    /// The running read of `id` is given up: its answer is dropped and the next request starts a new one.
+    public mutating func cancel(_ id: String) {
+        inFlight[id] = nil
+        again.remove(id)
     }
 }

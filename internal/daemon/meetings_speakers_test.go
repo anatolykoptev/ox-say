@@ -217,3 +217,33 @@ func TestCreateStoresTheSpeakerWord(t *testing.T) {
 		t.Errorf("an over-long speaker word = %d, want 400", rec.Code)
 	}
 }
+
+// The code of a failed meeting reaches the list, the detail and meeting_get; the free text stays beside it.
+// Mutations: internal/daemon/meetings_http.go summarize, delete `FailReason: m.FailReason` -> RED (the list lacks it);
+// internal/daemon/meetings_mcp.go toolMeetingGet, delete `FailReason: m.FailReason` -> RED; the detail embeds the
+// manifest, so deleting the `fail_reason` tag in internal/meeting/meeting.go -> RED.
+func TestFailReasonReachesTheListTheDetailAndMCP(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	id := groupMeeting(t, d, mux, meeting.StatusDone)
+	if _, err := d.Meet.Store.Update(id, func(m *meeting.Manifest) {
+		m.Status, m.Error, m.FailReason = meeting.StatusFailed, "stt: model x not found", meeting.FailSpeechModelMissing
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var list struct {
+		Meetings []map[string]any `json:"meetings"`
+	}
+	_ = json.Unmarshal(call(t, mux, "GET", "/v1/meetings", "").Body.Bytes(), &list)
+	if len(list.Meetings) != 1 || list.Meetings[0]["fail_reason"] != meeting.FailSpeechModelMissing || list.Meetings[0]["error"] == "" {
+		t.Errorf("list = %v", list.Meetings)
+	}
+	var detail map[string]any
+	_ = json.Unmarshal(call(t, mux, "GET", "/v1/meetings/"+id, "").Body.Bytes(), &detail)
+	if detail["fail_reason"] != meeting.FailSpeechModelMissing {
+		t.Errorf("detail = %v", detail)
+	}
+	got := callMCP(t, mcpSession(t, d), "meeting_get", map[string]any{"id": id, "part": "transcript"})
+	if got["fail_reason"] != meeting.FailSpeechModelMissing {
+		t.Errorf("meeting_get = %v", got)
+	}
+}

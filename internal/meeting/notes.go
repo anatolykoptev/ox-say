@@ -468,6 +468,9 @@ func mergeSystem(lang string) string {
 type EngineDownError struct {
 	Err       error
 	Retryable bool
+	// Reason is how the start ended, one of FailNotesEngineStart (also when empty), FailNotesEngineVerify or
+	// FailNotesEngineTimeout; the meeting records it as its FailReason.
+	Reason string
 }
 
 func (e *EngineDownError) Error() string { return e.Err.Error() }

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,6 +64,9 @@ type notesStatus struct {
 	Installing  bool         `json:"installing,omitempty"`
 	ProgressPct int          `json:"progress_pct,omitempty"`
 	InstallErr  string       `json:"install_error,omitempty"`
+	// InstallCode is the stable code behind InstallErr: network, disk_full, checksum, server or other. The app shows its own
+	// sentence for it; InstallErr stays the fetch's English words for the log and the menu.
+	InstallCode string `json:"install_error_code,omitempty"`
 }
 
 // notesBinPath is the path ox-llm is spawned by: always absolute, because the
@@ -267,11 +271,22 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 		// A verify refusal or a shutdown will repeat: stop at once. A health
 		// timeout or a crashed child often succeeds on a second start (the
 		// model is then in the page cache): Compose may start once more.
-		return "", &meeting.EngineDownError{Err: err, Retryable: !engine.IsVerifyRefusal(err) && !errors.Is(err, engine.ErrShutdown)}
+		return "", &meeting.EngineDownError{Err: err, Retryable: !engine.IsVerifyRefusal(err) && !errors.Is(err, engine.ErrShutdown), Reason: engineDownReason(err)}
 	}
 	ctx, cancel := context.WithTimeout(ctx, notesCallTimeout)
 	defer cancel()
 	return meeting.HTTPChat{BaseURL: base, Key: c.d.notesKey}.Complete(ctx, r)
+}
+
+// engineDownReason is how a failed notes-engine start ended, as the code the meeting records.
+func engineDownReason(err error) string {
+	switch {
+	case engine.IsVerifyRefusal(err):
+		return meeting.FailNotesEngineVerify
+	case engine.IsStartTimeout(err):
+		return meeting.FailNotesEngineTimeout
+	}
+	return meeting.FailNotesEngineStart
 }
 
 // notesKey reads the bearer the current spawn's --api-key-file names. The
@@ -355,6 +370,7 @@ type notesInstall struct {
 	mu      sync.Mutex
 	running bool
 	err     string
+	code    string // installFailureCode of err
 	// ctx ends the download with the daemon: Shutdown cancels it and waits on wg.
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -362,10 +378,49 @@ type notesInstall struct {
 	wg      sync.WaitGroup
 }
 
-func (n *notesInstall) state() (running bool, err string) {
+func (n *notesInstall) state() (running bool, err, code string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.running, n.err
+	return n.running, n.err, n.code
+}
+
+// curlExit finds curl's exit number in a fetch's last words: curl's own "curl: (N) ..." line, or the script's
+// "download of X failed (curl exit N)".
+var curlExit = regexp.MustCompile(`curl: \((\d+)\)|curl exit (\d+)`)
+
+// installFailureCode sorts a failed fetch's last words into the few causes a person can act on:
+//
+//	checksum  the file arrived but does not match its pinned hash
+//	disk_full the disk said so ("No space left", a write error); curl's (23) alone is not evidence
+//	network   no route: resolve (6), connect (7), partial file (18), timeout (28), empty reply (52), send/recv (55, 56),
+//	          or the script's "stalled" line
+//	server    curl -f saw an HTTP 4xx/5xx (22): the server answered, so the network is fine
+//	other     everything else: TLS (35, 60), a proxy (5, 97), an unknown text
+//
+// The fetch script (scripts/fetch-models.sh) speaks through curl and its own lines, so those are the texts read here.
+func installFailureCode(tail string) string {
+	low := strings.ToLower(tail)
+	switch {
+	case strings.Contains(low, "checksum mismatch"):
+		return "checksum"
+	case strings.Contains(low, "no space left"), strings.Contains(low, "write error"), strings.Contains(low, "disk full"):
+		return "disk_full"
+	case strings.Contains(low, "stalled"):
+		return "network"
+	}
+	if m := curlExit.FindStringSubmatch(tail); m != nil {
+		n := m[1]
+		if n == "" {
+			n = m[2]
+		}
+		switch n {
+		case "6", "7", "18", "28", "52", "55", "56":
+			return "network"
+		case "22":
+			return "server"
+		}
+	}
+	return "other"
 }
 
 // ErrNotesInstall is a refusal to start the notes model download.
@@ -453,7 +508,7 @@ func (d *Daemon) InstallNotesModel() error {
 		return fmt.Errorf("%w: %v", ErrNotesInstall, err)
 	}
 	_ = lock.Close() // the child's copy keeps the lock
-	d.notes.running, d.notes.err = true, ""
+	d.notes.running, d.notes.err, d.notes.code = true, "", ""
 	d.notes.wg.Add(1)
 	go d.runNotesInstall(d.notes.ctx, cmd, &tail)
 	return nil
@@ -464,10 +519,7 @@ func (d *Daemon) InstallNotesModel() error {
 // block the download (the fetch itself fails loudly on a full disk), but the
 // log says the check was skipped.
 func (d *Daemon) checkNotesDisk(dest string) error {
-	need := int64(config.NotesModelBytes + notesDiskMargin)
-	if st, err := os.Stat(d.Cfg.NotesModel + ".part"); err == nil {
-		need -= min(st.Size(), int64(config.NotesModelBytes))
-	}
+	need := d.notesDiskNeed()
 	free, err := freeBytes(dest)
 	if err != nil {
 		d.log.Warn("notes model download: cannot read the free disk space, downloading without the check", slog.Any("error", err))
@@ -480,6 +532,30 @@ func (d *Daemon) checkNotesDisk(dest string) error {
 	return nil
 }
 
+// notesDiskNeed is the free space the rest of the model download needs: the model and a margin, less what a .part file
+// from an earlier try already holds.
+func (d *Daemon) notesDiskNeed() int64 {
+	need := int64(config.NotesModelBytes + notesDiskMargin)
+	if st, err := os.Stat(d.Cfg.NotesModel + ".part"); err == nil {
+		need -= min(st.Size(), int64(config.NotesModelBytes))
+	}
+	return need
+}
+
+// installFailure is installFailureCode, plus one look at the disk: curl's (23), "failure writing output", is what a full
+// disk looks like to curl, and its text says nothing about the disk. When the models directory has less free space than
+// the rest of the download needs, that (23) is a full disk.
+func (d *Daemon) installFailure(tail string) string {
+	code := installFailureCode(tail)
+	if code != "other" || !strings.Contains(tail, "curl: (23)") && !strings.Contains(tail, "curl exit 23") {
+		return code
+	}
+	if free, err := freeBytes(filepath.Dir(d.Cfg.NotesModel)); err == nil && free < d.notesDiskNeed() {
+		return "disk_full"
+	}
+	return code
+}
+
 func (d *Daemon) runNotesInstall(ctx context.Context, cmd *exec.Cmd, tail *bytes.Buffer) {
 	defer d.notes.wg.Done()
 	err := cmd.Wait()
@@ -488,7 +564,7 @@ func (d *Daemon) runNotesInstall(ctx context.Context, cmd *exec.Cmd, tail *bytes
 	d.notes.running = false
 	if err != nil && ctx.Err() == nil {
 		msg := installTail(tail.String())
-		d.notes.err = "The download failed: " + msg
+		d.notes.err, d.notes.code = "The download failed: "+msg, d.installFailure(msg)
 		d.log.Warn("notes model download failed", slog.Any("error", err), slog.String("stderr", msg))
 	}
 }
@@ -529,8 +605,8 @@ func (d *Daemon) StopNotesInstall() {
 // surfaces as the supervisor's state plus last_error — never as
 // "unsupported", which is a config-level judgement (#243).
 func (d *Daemon) notesStatus() notesStatus {
-	running, ierr := d.notes.state()
-	out := notesStatus{Installing: running, InstallErr: ierr}
+	running, ierr, icode := d.notes.state()
+	out := notesStatus{Installing: running, InstallErr: ierr, InstallCode: icode}
 	if running {
 		if st, err := os.Stat(d.Cfg.NotesModel + ".part"); err == nil {
 			out.ProgressPct = int(min(99, st.Size()*100/config.NotesModelBytes))
@@ -563,7 +639,7 @@ func (d *Daemon) notesStatus() notesStatus {
 
 // notesInstalling is 1 while the notes model downloads.
 func (d *Daemon) notesInstalling() int {
-	if running, _ := d.notes.state(); running {
+	if running, _, _ := d.notes.state(); running {
 		return 1
 	}
 	return 0

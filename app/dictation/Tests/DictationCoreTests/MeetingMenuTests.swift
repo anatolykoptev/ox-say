@@ -55,22 +55,34 @@ final class MeetingMenuTests: XCTestCase {
         rows.compactMap { if case .item(let t, _, let enabled, _) = $0 { return (t, enabled) } else { return nil } }
     }
 
-    /// A failed download names its error in a disabled row and still offers the retry.
-    /// Mutation: MeetingMenu.rows, delete the `if let error = s.notes.installError` block -> RED.
-    func testAFailedDownloadShowsItsErrorAndTheRetry() {
-        let text: (L10nKey) -> String = { $0 == .menuMeetingInstallFailed ? "Failed: %@" : $0.rawValue }
-        let r = MeetingMenu.rows(state(notes: NotesStatus(reasonCode: "model_missing", installError: "disk full")), text: text)
-        let t = titles(r, text: text)
-        guard let failed = t.firstIndex(where: { $0.0 == "Failed: disk full" }) else { return XCTFail("no error row: \(t)") }
-        XCTAssertFalse(t[failed].1, "the error row is not clickable")
-        XCTAssertTrue(actions(r).contains(.installNotesModel), "the Download row is still there")
-        let install = t.firstIndex { $0.0 == L10nKey.menuMeetingInstallModel.rawValue }
-        XCTAssertNotNil(install)
-        XCTAssertGreaterThan(install ?? 0, failed, "error first, then the retry")
+    /// A failed download says why in a disabled row, in the app's own short sentence for the daemon's code (the window has
+    /// the long ones), and still offers the retry. The daemon's English text is never put in the menu.
+    /// Mutation: MeetingMenu.rows, delete the `if s.notes.installError != nil` block -> RED; or title the row with
+    /// `installError` instead of the sentence -> RED.
+    func testAFailedDownloadShowsItsSentenceAndTheRetry() {
+        let text: (L10nKey) -> String = { $0.rawValue }
+        let cases: [(String?, L10nKey)] = [
+            ("network", .menuMeetingInstallFailedNetwork), ("disk_full", .menuMeetingInstallFailedDisk),
+            ("checksum", .menuMeetingInstallFailedChecksum), ("server", .menuMeetingInstallFailedServer),
+            ("other", .menuMeetingInstallFailedOther),
+            ("from_the_future", .menuMeetingInstallFailedOther), (nil, .menuMeetingInstallFailedOther),
+        ]
+        for (code, key) in cases {
+            let r = MeetingMenu.rows(state(notes: NotesStatus(reasonCode: "model_missing", installError: "The download failed: curl: (6) Could not resolve host",
+                                                              installErrorCode: code)), text: text)
+            let t = titles(r, text: text)
+            guard let failed = t.firstIndex(where: { $0.0 == key.rawValue }) else { return XCTFail("\(code ?? "nil"): no sentence row: \(t)") }
+            XCTAssertFalse(t[failed].1, "the error row is not clickable")
+            XCTAssertFalse(t.contains { $0.0.contains("curl") }, "no daemon text in the menu")
+            XCTAssertTrue(actions(r).contains(.installNotesModel), "the Download row is still there")
+            let install = t.firstIndex { $0.0 == L10nKey.menuMeetingInstallModel.rawValue }
+            XCTAssertNotNil(install)
+            XCTAssertGreaterThan(install ?? 0, failed, "error first, then the retry")
+        }
         // A download in flight shows progress, not the old error.
         let busy = MeetingMenu.rows(state(notes: NotesStatus(reasonCode: "model_missing", installing: true, progressPercent: 3,
-                                                             installError: "disk full")), text: text)
-        XCTAssertFalse(titles(busy, text: text).contains { $0.0 == "Failed: disk full" })
+                                                             installError: "disk full", installErrorCode: "disk_full")), text: text)
+        XCTAssertFalse(titles(busy, text: text).contains { $0.0 == L10nKey.menuMeetingInstallFailedDisk.rawValue })
     }
 
     /// An engine that is missing or a Mac that cannot run notes says so, greyed.

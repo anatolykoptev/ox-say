@@ -24,10 +24,14 @@ final class MeetingModelsTests: XCTestCase {
     /// A newer daemon may add a status (#231). The meeting must still be a meeting: shown, never acted on.
     /// Mutation: MeetingInfo.decode(_:), answer `return nil` for a status the enum does not know -> RED.
     func testAnUnknownStatusIsKeptNotDropped() throws {
-        let m = try XCTUnwrap(MeetingInfo.decode(Data(#"{"id":"x","status":"future_state"}"#.utf8)))
+        let started = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-600))
+        let m = try XCTUnwrap(MeetingInfo.decode(Data(#"{"id":"x","status":"future_state","started":"\#(started)"}"#.utf8)))
         XCTAssertEqual(m.status, .unknown("future_state"))
-        XCTAssertFalse(m.settled, "the app cannot tell the daemon is done: no delete, no retry")
-        XCTAssertEqual(MeetingRowModel.status(of: m), .waiting, "shown as work in progress, with the existing words")
+        XCTAssertFalse(m.settled, "the app cannot tell the daemon is done: nothing is retried or acted on (delete stays available)")
+        XCTAssertEqual(MeetingRowModel.status(of: m), .waiting, "recent: shown as work in progress, with the existing words")
+        var old = m
+        old.started = Date().addingTimeInterval(-5 * 3600)
+        XCTAssertEqual(MeetingRowModel.status(of: old), .unrecognized, "old: neutral, nothing spins")
         XCTAssertEqual(Reconcile.action(for: m, exported: [], notesAvailable: true, currentID: nil), .skip)
         XCTAssertEqual(PlaybackGate.decide(audioDeleted: false, recordingRunning: false, status: m.status), .notReady)
         XCTAssertNil(MeetingRowModel.failureSentence(of: m))

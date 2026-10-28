@@ -584,6 +584,20 @@ type verifyFailure struct{ error }
 
 func (e *verifyFailure) Unwrap() error { return e.error }
 
+// startTimeout marks a start whose child never answered /health within the startup budget.
+type startTimeout struct{ after time.Duration }
+
+func (e *startTimeout) Error() string {
+	return fmt.Sprintf("engine did not become healthy within %s", e.after)
+}
+
+// IsStartTimeout reports whether err is a start that ran out of its startup budget: the child may only be slow to
+// load, so another start can succeed.
+func IsStartTimeout(err error) bool {
+	var st *startTimeout
+	return errors.As(err, &st)
+}
+
 // IsVerifyRefusal reports whether err is a start whose child ran but was
 // refused by Verify — a deterministic outcome another start will repeat, as
 // opposed to a health timeout or a crashed child.
@@ -812,7 +826,7 @@ func (s *Supervisor) waitHealthy(ctx context.Context, c *child) error {
 		case <-c.done:
 			return fmt.Errorf("engine exited during startup: %w", c.waitErr)
 		case <-ctx.Done():
-			return fmt.Errorf("engine did not become healthy within %s", s.cfg.StartupTimeout)
+			return &startTimeout{s.cfg.StartupTimeout}
 		case <-time.After(delay):
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

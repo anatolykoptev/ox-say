@@ -79,10 +79,34 @@ extension NotesWriterState {
     /// The Settings row for the daemon's notes engine; nil is a daemon that could not be asked.
     public static func of(_ status: NotesStatus?) -> NotesWriterState {
         guard let status else { return .unavailable(.meetingErrDaemonDown) }
-        if status.available { return .ready }
+        if status.available { return status.reasonCode == "notes_engine_failed" ? .engineFailed(.settingsNotesWriterEngineFailed) : .ready }
         if status.installing { return .downloading(percent: status.progressPercent) }
-        if status.reasonCode == "model_missing" { return .missing }
+        if status.reasonCode == "model_missing" {
+            return status.installError == nil ? .missing : .downloadFailed(downloadFailureKey(status.installErrorCode))
+        }
         if status.reasonCode == "unsupported" { return .unavailable(.menuMeetingNotesUnsupported) }
         return .unavailable(.menuMeetingNotesNeedUpdate)
+    }
+
+    /// The sentence for a failed download; a code this app does not know (or none) gets the general one.
+    static func downloadFailureKey(_ code: String?) -> L10nKey {
+        switch code {
+        case "network": return .settingsNotesWriterDownloadNetwork
+        case "disk_full": return .settingsNotesWriterDownloadDisk
+        case "checksum": return .settingsNotesWriterDownloadChecksum
+        case "server": return .settingsNotesWriterDownloadServer
+        default: return .settingsNotesWriterDownloadOther
+        }
+    }
+
+    /// The short sentence for the same failure in the menu (a menu row stays one short line).
+    static func menuDownloadFailureKey(_ code: String?) -> L10nKey {
+        switch code {
+        case "network": return .menuMeetingInstallFailedNetwork
+        case "disk_full": return .menuMeetingInstallFailedDisk
+        case "checksum": return .menuMeetingInstallFailedChecksum
+        case "server": return .menuMeetingInstallFailedServer
+        default: return .menuMeetingInstallFailedOther
+        }
     }
 }
