@@ -662,20 +662,25 @@ func TestReassemblyFirstRenameFailureKeepsThePreviousSet(t *testing.T) {
 	noTemps(t, filepath.Dir(dest))
 }
 
-// One directory sync after the burst, once the last rename is done (#154.9).
+// One directory sync after the burst, once the last file is placed - renamed
+// over the project's own, or linked at a new name (#154.9).
 // Mutation: produce_assemble.go publish, delete the syncOutputDir call -> RED.
 // Mutation: move the syncOutputDir call into the rename loop -> 5 calls -> RED.
 func TestPublishSyncsTheOutputDirOnceAfterTheBurst(t *testing.T) {
 	f := newFakePorts(t)
 	p, j := assembleFixture(t, f)
 	var renamed, syncs, renamedAtSync int
-	origRename, origSync := renameFile, syncOutputDir
-	t.Cleanup(func() { renameFile, syncOutputDir = origRename, origSync })
+	origRename, origLink, origSync := renameFile, linkFile, syncOutputDir
+	t.Cleanup(func() { renameFile, linkFile, syncOutputDir = origRename, origLink, origSync })
 	renameFile = func(from, to string) error {
 		if strings.Contains(filepath.Base(from), vproject.TempMark) && !strings.Contains(filepath.Base(to), vproject.TempMark) {
 			renamed++
 		}
 		return origRename(from, to)
+	}
+	linkFile = func(from, to string) error { // a first publish claims its names with link(2)
+		renamed++
+		return origLink(from, to)
 	}
 	syncOutputDir = func(dir string) error {
 		syncs++

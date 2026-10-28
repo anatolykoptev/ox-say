@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"math"
 	"os"
@@ -73,6 +74,10 @@ var syncPath = func(path string) error {
 // renameFile is os.Rename; a var so a test can stand in for another volume.
 var renameFile = os.Rename
 
+// linkFile is os.Link; a var so a test can stand in for a volume without hard
+// links.
+var linkFile = os.Link
+
 // outputStem is the common prefix of the five outputs of outPath, which must
 // be an absolute .wav (any case).
 func outputStem(outPath string) (string, error) {
@@ -107,18 +112,18 @@ func checkOutputs(stem string, overwrite bool, owned map[string]bool) error {
 // provably its own (edited, re-exported, moved back), resume and the chunk ops
 // have no overwrite flag to offer, so the answer says what the person can do:
 // move the files away (#156.10).
-func checkProjectOutputs(m *vproject.Manifest, stem string) error {
+func checkProjectOutputs(m *vproject.Manifest, stem string) (map[string]bool, error) {
 	owned := ownedOutputs(m)
 	if m.Outputs.WAV != "" && !m.Settings.Overwrite {
 		for _, ext := range outputExts {
 			pth := stem + ext
 			if st, err := os.Lstat(pth); err == nil && st.Mode()&os.ModeSymlink == 0 && !owned[pth] {
-				return &requestError{fmt.Sprintf("%s was published by this voiceover but has since been changed or replaced; move or rename the files named %s.* beside it, then resume",
+				return nil, &requestError{fmt.Sprintf("%s was published by this voiceover but has since been changed or replaced; move or rename the files named %s.* beside it, then resume",
 					filepath.Base(pth), filepath.Base(stem))}
 			}
 		}
 	}
-	return checkOutputs(stem, m.Settings.Overwrite, owned)
+	return owned, checkOutputs(stem, m.Settings.Overwrite, owned)
 }
 
 // timeline is what streaming the chunks leaves besides the audio.
@@ -151,7 +156,7 @@ func (p *producer) assemble(j *job) error {
 	if err != nil {
 		return err
 	}
-	if err := checkProjectOutputs(m, stem); err != nil {
+	if _, err := checkProjectOutputs(m, stem); err != nil {
 		return err
 	}
 	work := filepath.Join(j.dir, vproject.WorkDir)
@@ -182,10 +187,11 @@ func (p *producer) assemble(j *job) error {
 		p.log.Warn("produce: loudness needed the peak limiter", slog.Float64("target_lufs", m.Settings.LUFS))
 	}
 	m.Notes = withNote(m.Notes, vproject.NoteLimitedLoudness, tl.limited)
-	if err := checkProjectOutputs(m, stem); err != nil { // write-time re-check
+	owned, err := checkProjectOutputs(m, stem) // write-time re-check
+	if err != nil {
 		return err
 	}
-	return diskErr(p.publish(j, stem, norm, tl, m))
+	return diskErr(p.publish(j, stem, norm, tl, m, owned))
 }
 
 // stream writes the timeline into f and closes it. On any error the temp
@@ -339,7 +345,7 @@ type staged struct{ tmp, dest string }
 // staged set into place, the WAV last. If a rename in that burst fails, the
 // whole output set (new and old) is removed rather than left mixed. The job's
 // manifest records chunk times and outputs only when everything succeeded.
-func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.Manifest) error {
+func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.Manifest, owned map[string]bool) error {
 	if err := os.MkdirAll(filepath.Dir(stem), outDirMode); err != nil {
 		return err
 	}
@@ -355,17 +361,24 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 	if err != nil {
 		return err
 	}
+	replaceable := func(dest string) bool { return m.Settings.Overwrite || owned[dest] }
 	for k, s := range set {
-		if err := renameFile(s.tmp, s.dest); err != nil {
+		if err := placeStaged(s, replaceable(s.dest)); err != nil {
 			if k == 0 {
 				// Nothing was replaced yet: drop the staged temps only and keep
 				// the previous good set (#154.8).
 				for _, st := range set {
 					_ = os.Remove(st.tmp)
 				}
+				if errors.Is(err, fs.ErrExist) {
+					return &requestError{fmt.Sprintf("%s appeared while the files were being written and was left alone; choose another output name or set overwrite", filepath.Base(s.dest))}
+				}
 				return fmt.Errorf("%w: %v", errOutputsKept, err)
 			}
-			removeOutputs(set, m.Outputs)
+			removeOutputs(set, k, replaceable)
+			if errors.Is(err, fs.ErrExist) {
+				return fmt.Errorf("%w: %s appeared while the files were being written and was left alone", errOutputsRemoved, filepath.Base(s.dest))
+			}
 			return fmt.Errorf("%w: %v", errOutputsRemoved, err)
 		}
 	}
@@ -481,16 +494,41 @@ func stageWAV(norm, dest string) (string, error) {
 	return tmp, nil
 }
 
-// removeOutputs deletes the five output files and any staged temp left: never
-// a directory, which is the user's.
-func removeOutputs(set []staged, out vproject.Outputs) {
-	paths := []string{out.WAV, out.SRT, out.VTT, out.Words, out.Manifest}
-	for _, s := range set {
-		paths = append(paths, s.tmp)
+// placeStaged puts one staged file at its destination. A destination the
+// project may replace (its own earlier output, or overwrite was asked for) is
+// renamed over. Any other is claimed with link(2), which fails if a file
+// appeared there since the check: the no-clobber promise is kept to the end,
+// not only up to a pre-check (#154.3). A volume without hard links gets the
+// rename, which keeps only the pre-check.
+func placeStaged(s staged, replace bool) error {
+	if replace {
+		return renameFile(s.tmp, s.dest)
 	}
-	for _, path := range paths {
-		if st, err := os.Lstat(path); err == nil && !st.IsDir() {
-			_ = os.Remove(path)
+	err := linkFile(s.tmp, s.dest)
+	switch {
+	case err == nil:
+		_ = os.Remove(s.tmp)
+		return nil
+	case errors.Is(err, fs.ErrExist):
+		return err
+	default:
+		return renameFile(s.tmp, s.dest)
+	}
+}
+
+// removeOutputs undoes a burst that failed at set[k]: it deletes what the burst
+// placed (set[:k]), the previous files it was about to replace, and every
+// staged temp. A destination the project may not replace and did not place -
+// a file that appeared there, or the one that refused the link - is the
+// user's and stays; so does any directory.
+func removeOutputs(set []staged, k int, replaceable func(dest string) bool) {
+	for i, s := range set {
+		_ = os.Remove(s.tmp)
+		if i >= k && !replaceable(s.dest) {
+			continue
+		}
+		if st, err := os.Lstat(s.dest); err == nil && !st.IsDir() {
+			_ = os.Remove(s.dest)
 		}
 	}
 }
