@@ -142,25 +142,38 @@ sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
 diar_marker="$dest/diar/speaker-diarization/.fluidaudio-revision"
 
-# fetch_part <url> <part> <resume 0|1>: one download into <part>. Stops only for good: a stall (exit 28) or a drop
-# mid-transfer (18, 52, 56) is tried again here in the shell, up to 3 more passes, and each pass resumes from the
-# bytes <part> holds now. curl's own --retry would not do that: with -C - it re-reads the offset it started the run
-# with, so a 3 GB model that stalls near the end would be fetched again from where that run began.
-# Returns curl's last exit status.
+# Seconds per retry pass to wait before the next one (pass * unit); OX_SAY_RETRY_SLEEP_UNIT=0 turns it off for tests.
+retry_unit=${OX_SAY_RETRY_SLEEP_UNIT:-2}
+
+# fetch_part <url> <part> <resume 0|1>: one download into <part>. Transient failures are tried again here in the
+# shell, up to 3 more passes with a growing pause, and each pass resumes (-C -) from the bytes <part> holds now:
+#   - a stall (28) or a dropped or refused line (6, 7, 18, 35, 52, 56)
+#   - an HTTP 408, 429 or 5xx (curl -f turns every HTTP error into exit 22; the status comes from -w)
+# curl's own --retry would not do: with -C - it re-reads the offset it started the run with, so a 3 GB model that
+# stalls near the end would be fetched again from where that run began.
+# Returns curl's last exit status; fetch_code holds the last HTTP status (empty when curl got none).
+fetch_code=
 fetch_part() {
     local url=$1 part=$2 resume=$3 pass=0 rc
-    local opts=(-fsSL --connect-timeout 15 --speed-limit 1024 --speed-time "$stall_secs")
+    local opts=(-fsSL --connect-timeout 15 --speed-limit 1024 --speed-time "$stall_secs" -w '%{http_code}')
     if [ "$resume" = 1 ]; then opts+=(-C -); else rm -f "$part"; fi
     while :; do
         rc=0
-        curl "${opts[@]}" -o "$part" "$url" || rc=$?
+        fetch_code=$(curl "${opts[@]}" -o "$part" "$url") || rc=$?
+        [ "$rc" -eq 0 ] && return 0
         case $rc in
-            28 | 18 | 52 | 56)
-                pass=$((pass + 1))
-                [ "$pass" -le 3 ] && continue
+            6 | 7 | 18 | 28 | 35 | 52 | 56) ;;
+            22)
+                case $fetch_code in
+                    408 | 429 | 5??) ;;
+                    *) return "$rc" ;;
+                esac
                 ;;
+            *) return "$rc" ;;
         esac
-        return "$rc"
+        pass=$((pass + 1))
+        [ "$pass" -le 3 ] || return "$rc"
+        sleep $((pass * retry_unit))
     done
 }
 
@@ -189,16 +202,16 @@ for entry in "${models[@]}"; do
         # transfer that stays under 1 KB/s for $stall_secs s (an average over that window; a slow but alive
         # line is never cut). A stall is curl exit 28; fetch_part resumes it from the .part (-C -). Not a total
         # bound: a 3 GB model on a slow line takes as long as it needs.
-        # A .part the server will not resume (its size no longer fits the file, a changed object: HTTP 416) would
-        # fail every later run the same way, so a refused resume of a non-empty .part is dropped and the file is
-        # fetched once from the start (curl exit 22 with -f, or 33). A stall or a dropped line keeps its .part: that is the
-        # progress the next run resumes from.
+        # A .part the server will not resume (curl exit 33, or HTTP 412 / 416 on the Range request: the object changed
+        # or the offset no longer fits it) would fail every later run the same way, so it is dropped and the file is
+        # fetched once from the start. Nothing else drops it: a stall, a dropped line, a 5xx, a 404 or a 403 leave the
+        # .part (a fresh request would meet the same error, and the bytes are what the next run resumes from).
         rc=0
         resumed=0
         [ -s "$part" ] && resumed=1
         fetch_part "$base/$remote" "$part" 1 || rc=$?
-        if [ "$resumed" = 1 ] && { [ "$rc" -eq 22 ] || [ "$rc" -eq 33 ]; }; then
-            echo "resuming $name failed (curl exit $rc); fetching it again from the start" >&2
+        if [ "$resumed" = 1 ] && { [ "$rc" -eq 33 ] || { [ "$rc" -eq 22 ] && { [ "$fetch_code" = 412 ] || [ "$fetch_code" = 416 ]; }; }; }; then
+            echo "resuming $name failed (curl exit $rc${fetch_code:+, HTTP $fetch_code}); fetching it again from the start" >&2
             rc=0
             fetch_part "$base/$remote" "$part" 0 || rc=$?
         fi
@@ -206,7 +219,7 @@ for entry in "${models[@]}"; do
             if [ "$rc" -eq 28 ]; then
                 echo "download of $name stalled (under 1 KB/s for $stall_secs s); check the network and run it again" >&2
             else
-                echo "download of $name failed (curl exit $rc)" >&2
+                echo "download of $name failed (curl exit $rc)${fetch_code:+; HTTP $fetch_code}" >&2
             fi
             exit 1
         fi

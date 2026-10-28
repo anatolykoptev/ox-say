@@ -142,7 +142,7 @@ done
 
 # --- the download loop, with a scripted curl ---------------------------------------------------------------------
 # The fake appends to the file after -o when it is given -C - (resume), else truncates it, like curl. Per call it
-# does what $d/script says on that line: "stall:<text>" writes <text> then exits 28, "ok:<text>" writes it and
+# does what $d/script says on that line (rc:<n>[:<http status>] prints the status like curl -w): "stall:<text>" writes <text> then exits 28, "ok:<text>" writes it and
 # exits 0, "rc:<n>" writes nothing and exits n. It logs argv and the size of the file it was handed.
 fakecurl() { # dir
     mkdir -p "$1/bin"
@@ -159,12 +159,13 @@ n=$(( $(cat "$d/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/n"
 echo "call $n resume=$resume size=$(wc -c < "$out" 2>/dev/null | tr -d ' ') args=$*" >> "$d/calls"
 line=$(sed -n "${n}p" "$d/script")
 [ -n "$line" ] || line=${last:-rc:99}
-kind=${line%%:*}; arg=${line#*:}
+kind=${line%%:*}; arg=${line#*:}; code=
+case $kind:$arg in rc:*:*) code=${arg#*:}; arg=${arg%%:*} ;; esac
 [ "$resume" = 1 ] || : > "$out"
 case $kind in
     stall) printf '%s' "$arg" >> "$out"; exit 28 ;;
     ok) printf '%s' "$arg" >> "$out"; exit 0 ;;
-    rc) exit "$arg" ;;
+    rc) printf '%s' "$code"; exit "$arg" ;;
 esac
 FAKE
     chmod +x "$1/bin/curl"
@@ -200,10 +201,33 @@ if [ "$(cat "$d/dest/$name.part" 2>/dev/null)" = aabbccdd ]; then pass "the part
 d="$tmp/heal"; mkdir -p "$d" "$d/dest"
 fakecurl "$d"
 printf 'stale bytes that no longer fit' > "$d/dest/$name.part"
-printf 'rc:22\nok:fresh\n' > "$d/script"
+printf 'rc:22:416\nok:fresh\n' > "$d/script"
 out=$(run_fetch "$d" "$d/dest"); rc=$?
 case $out in *"checksum mismatch"*) pass "an unresumable .part is dropped and the file fetched from the start" ;; *) fail "heal: exit $rc: $out" ;; esac
 if sed -n 2p "$d/calls" | grep -q 'resume=0 size= '; then pass "the second try is a fresh download, not a resume"; else fail "heal calls: $(cat "$d/calls")"; fi
+# A 503 is transient: retried with the .part kept and -C - on the retry; a 404 keeps the .part and is not retried.
+d="$tmp/t503"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'keep' > "$d/dest/$name.part"
+printf 'rc:22:503\nok:rest\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in *"checksum mismatch"*) pass "a 503 on a resume is retried and the download completes" ;; *) fail "t503: exit $rc: $out" ;; esac
+if [ "$(wc -l < "$d/calls" | tr -d ' ')" = 2 ] && sed -n 2p "$d/calls" | grep -q 'resume=1 size=4 '; then
+    pass "the retry after a 503 resumes from the kept .part"
+else
+    fail "t503 calls: $(cat "$d/calls")"
+fi
+d="$tmp/t404"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'keep' > "$d/dest/$name.part"
+printf 'rc:22:404\nok:x\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+if [ "$rc" -ne 0 ] && [ "$(wc -l < "$d/calls" | tr -d ' ')" = 1 ] && [ "$(cat "$d/dest/$name.part")" = keep ]; then
+    pass "a 404 is not retried and keeps the .part"
+else
+    fail "t404: exit $rc calls=$(cat "$d/calls") part=$(cat "$d/dest/$name.part" 2>/dev/null)"
+fi
+case $out in *"HTTP 404"*) pass "the failure names the HTTP status" ;; *) fail "t404 message: $out" ;; esac
 # ... but an empty or missing .part that fails is a plain failure, with no second try.
 d="$tmp/noheal"; mkdir -p "$d" "$d/dest"
 fakecurl "$d"

@@ -38,12 +38,13 @@ ours() {
 }
 
 # A bundle an interrupted copy or removal left half done: no Info.plist, and
-# nothing in the directory but Contents (or nothing at all). A directory that
-# holds anything else under a name of ours is not a bundle remnant.
+# nothing in the directory but Contents and Finder's .DS_Store (or nothing at
+# all). A directory that holds anything else under a name of ours is not a
+# bundle remnant.
 partial_bundle() {
     local listing
     [ -d "$1" ] && [ ! -L "$1" ] && [ ! -e "$1/Contents/Info.plist" ] || return 1
-    listing=$(ls -A "$1")
+    listing=$(ls -A "$1" | grep -vx '.DS_Store' || true)
     [ -z "$listing" ] || [ "$listing" = Contents ]
 }
 

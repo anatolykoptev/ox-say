@@ -4,7 +4,7 @@
 #
 #   bash app/dictation/test-install-app.sh
 #
-# Mutations that must turn this RED: in install-app.sh replace `clear_staging "$old"` by `clear_ours "$old"` - the
+# Mutations that must turn this RED: drop `| grep -vx '.DS_Store'` from partial_bundle - the .DS_Store scenario fails; in install-app.sh replace `clear_staging "$old"` by `clear_ours "$old"` - the
 # partial .old scenario fails; make `partial_bundle` always succeed (`return 0` first) - the "real directory with other
 # content" scenarios fail; delete the `for _ in 1 2 ... 10` wait loop - the "waits for the old copy to exit" scenario
 # fails; drop the `[ ! -L "$1" ]` test from `clear_staging` - the symlinked staging scenarios fail; make `ours` skip the
@@ -228,6 +228,17 @@ if [ "$rc" -ne 0 ] && [ "$(marker "$tmp/p/.OxSayDictation.app.old")" = foreign ]
     pass "a foreign bundle under the .old name is refused"
 else
     fail "foreign .old: rc=$rc"
+fi
+
+# Q0: Finder's .DS_Store beside Contents does not make a partial staging copy foreign
+mkdir -p "$tmp/q0/.OxSayDictation.app.old/Contents/MacOS"
+: > "$tmp/q0/.OxSayDictation.app.old/.DS_Store"
+run "$tmp/src/OxSayDictation.app" "$tmp/q0"
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$tmp/q0/.OxSayDictation.app.old" ] && [ "$(marker "$tmp/q0/OxSayDictation.app")" = new ]; then
+    pass "a .DS_Store beside Contents in a partial staging copy is cleared with it"
+else
+    fail ".DS_Store: rc=$rc $(cat "$tmp/out")"
 fi
 
 # Q: a real directory under a staging name that is not a bundle remnant (no Info.plist, but holds other files) is

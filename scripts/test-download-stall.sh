@@ -14,6 +14,9 @@
 #   * get.sh: delete the `--speed-limit 1024 ...` from the SHA256SUMS curl -> "get.sh: a stalled SHA256SUMS" fails
 #   * delete the python3 `if ! command -v` block's `exit 1` lines (or make it `exit 0`) -> run with python3 hidden
 #     (PATH without it): "python3 not found" must exit 1, also with OX_SAY_TEST_SKIP_STALL=1 when CI is set
+#   * fetch-models.sh: in fetch_part drop `408 | 429 | 5??) ;;` (so a 22 returns at once) -> the 503 and 429 cases fail
+#   * fetch-models.sh: heal on every 22 (`[ "$rc" -eq 22 ]` without the 412/416 test) -> the 503-always and 404 cases
+#     fail (the .part is deleted)
 #   * either script: raise --speed-limit above 2000 -> the healthy trickle (~2 KB/s) is killed -> "healthy" fails
 set -u
 
@@ -64,12 +67,40 @@ bounded() {
 # /ok trickles 200 B every 0.1 s (about 2 KB/s, above it) for 6000 bytes. Anything else: 404.
 cat > "$tmp/server.py" <<'PY'
 import socketserver, sys, time
+LOG = sys.argv[1]
+SEEN = {}
+BODY = b"z" * 6000
 class H(socketserver.StreamRequestHandler):
     def handle(self):
         line = self.rfile.readline().decode("latin1")
-        while self.rfile.readline() not in (b"\r\n", b"\n", b""):
-            pass
+        rng = ""
+        while True:
+            h = self.rfile.readline()
+            if h in (b"\r\n", b"\n", b""):
+                break
+            if h.lower().startswith(b"range:"):
+                rng = h.decode("latin1").split(":", 1)[1].strip()
         path = line.split(" ")[1] if " " in line else ""
+        # /once<status>/x answers <status> to its first request and the body after; /always<status>/x always;
+        # /range<status>/x answers <status> to a Range request and the whole body to a plain one.
+        # Every request is logged as "<path> <Range header or ->".
+        with open(LOG, "a") as f:
+            f.write(path + " " + (rng or "-") + "\n")
+        SEEN[path] = SEEN.get(path, 0) + 1
+        for kind in ("once", "always", "range"):
+            if path.startswith("/" + kind):
+                status = path[len(kind) + 1:len(kind) + 4]
+                fail = (kind == "once" and SEEN[path] == 1) or kind == "always" or (kind == "range" and rng)
+                if fail:
+                    self.wfile.write(("HTTP/1.1 %s X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" % status).encode())
+                    return
+                start = int(rng.split("=")[1].split("-")[0]) if rng else 0
+                body = BODY[start:]
+                head = "HTTP/1.1 %s OK\r\nContent-Length: %d\r\nConnection: close\r\n" % ("206" if rng else "200", len(body))
+                if rng:
+                    head += "Content-Range: bytes %d-%d/%d\r\n" % (start, len(BODY) - 1, len(BODY))
+                self.wfile.write((head + "\r\n").encode() + body)
+                return
         if "/mixed/" in path:
             path = "/stall" if path.endswith("SHA256SUMS") else "/ok"
         try:
@@ -95,13 +126,14 @@ s = S(("127.0.0.1", 0), H)
 print(s.server_address[1], flush=True)
 s.serve_forever()
 PY
-python3 "$tmp/server.py" > "$tmp/port" 2>/dev/null &
+python3 "$tmp/server.py" "$tmp/reqlog" > "$tmp/port" 2>/dev/null &
 server_pid=$!
 n=0; while [ ! -s "$tmp/port" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
 port=$(cat "$tmp/port")
 [ -n "$port" ] || { echo "listener did not start"; exit 1; }
 
 export OX_SAY_STALL_SECS=2
+export OX_SAY_RETRY_SLEEP_UNIT=0
 
 # --- fetch-models.sh: real curl, URL rewritten to the listener by a shim ---
 mkdir -p "$tmp/bin"
@@ -128,6 +160,57 @@ echo ok > "$tmp/path"
 PATH="$tmp/bin:$PATH" OX_SAY_MODELS_FROM= bounded 60 bash "$root/scripts/fetch-models.sh" --notes-only "$tmp/d2"; rc=$?
 out=$(cat "$tmp/out")
 case $out in *"checksum mismatch"*) pass "fetch-models.sh: a healthy slow trickle completes its download" ;; *) fail "fetch-models.sh: healthy trickle did not finish (exit $rc): $out" ;; esac
+
+# --- fetch-models.sh: HTTP errors, with real curl and a real status line ---
+# fetch <path>: run the notes fetch against /<path>; the destination is $tmp/h-<n>, the .part pre-seeded when $seed is set.
+hn=0
+fetch_http() {
+    hn=$((hn + 1)); hd="$tmp/h-$hn"; mkdir -p "$hd"
+    echo "$1" > "$tmp/path"
+    : > "$tmp/reqlog"
+    if [ -n "${seed:-}" ]; then printf '%s' "$seed" > "$hd/Qwen3.5-4B-Q4_K_M.gguf.part"; fi
+    PATH="$tmp/bin:$PATH" OX_SAY_MODELS_FROM= bounded 60 bash "$root/scripts/fetch-models.sh" --notes-only "$hd"; rc=$?
+    out=$(cat "$tmp/out"); reqs=$(wc -l < "$tmp/reqlog" | tr -d ' ')
+}
+part="Qwen3.5-4B-Q4_K_M.gguf.part"
+
+seed= fetch_http once503/fresh
+case $out in *"checksum mismatch"*) pass "fetch-models.sh: a 503 on a fresh fetch is retried and the download completes" ;; *) fail "fetch-models.sh: 503 once, fresh (exit $rc): $out" ;; esac
+[ "$reqs" = 2 ] && pass "fetch-models.sh: one retry after the 503 (2 requests)" || fail "fetch-models.sh: 503 once, fresh: $reqs requests"
+
+seed= fetch_http once429/fresh
+case $out in *"checksum mismatch"*) pass "fetch-models.sh: a 429 is retried and the download completes" ;; *) fail "fetch-models.sh: 429 once (exit $rc): $out" ;; esac
+
+seed=$(head -c 2000 /dev/zero | tr '\0' z) fetch_http once503/resume
+case $out in *"checksum mismatch"*) pass "fetch-models.sh: a 503 on a resume is retried and the download completes" ;; *) fail "fetch-models.sh: 503 once, resume (exit $rc): $out" ;; esac
+if [ "$reqs" = 2 ] && [ "$(grep -c ' bytes=2000-$' "$tmp/reqlog")" = 2 ]; then
+    pass "fetch-models.sh: both requests of the resume carry Range from byte 2000 (the .part was not dropped)"
+else
+    fail "fetch-models.sh: 503 once, resume: $(cat "$tmp/reqlog")"
+fi
+
+seed=$(head -c 2000 /dev/zero | tr '\0' z) fetch_http always503/resume
+if [ "$rc" -ne 0 ] && [ "$reqs" = 4 ] && [ "$(wc -c < "$hd/$part" | tr -d ' ')" = 2000 ]; then
+    pass "fetch-models.sh: a 503 that never ends stops after 4 requests, naming it, with the 2000-byte .part kept"
+else
+    fail "fetch-models.sh: 503 always (exit $rc, $reqs requests, part $(wc -c < "$hd/$part" 2>/dev/null))"
+fi
+case $out in *"HTTP 503"*) pass "fetch-models.sh: the failure names HTTP 503" ;; *) fail "fetch-models.sh: no HTTP 503 in: $out" ;; esac
+
+seed=$(head -c 2000 /dev/zero | tr '\0' z) fetch_http always404/resume
+if [ "$rc" -ne 0 ] && [ "$reqs" = 1 ] && [ "$(wc -c < "$hd/$part" | tr -d ' ')" = 2000 ]; then
+    pass "fetch-models.sh: a 404 on a resume is not retried and keeps the .part (a fresh request would 404 too)"
+else
+    fail "fetch-models.sh: 404 (exit $rc, $reqs requests, part $(wc -c < "$hd/$part" 2>/dev/null))"
+fi
+
+seed=$(head -c 2000 /dev/zero | tr '\0' z) fetch_http range412/resume
+case $out in *"checksum mismatch"*) pass "fetch-models.sh: a resume the server refuses (412) falls back to one fresh download" ;; *) fail "fetch-models.sh: 412 on resume (exit $rc): $out" ;; esac
+if [ "$reqs" = 2 ] && sed -n 1p "$tmp/reqlog" | grep -q ' bytes=2000-$' && sed -n 2p "$tmp/reqlog" | grep -q ' -$'; then
+    pass "fetch-models.sh: the fallback request carries no Range"
+else
+    fail "fetch-models.sh: 412 on resume: $(cat "$tmp/reqlog")"
+fi
 
 # --- get.sh: real curl against OX_SAY_GET_URL; needs macOS (it refuses elsewhere) ---
 if [ "$(uname -s)" = Darwin ]; then
