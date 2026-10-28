@@ -66,8 +66,9 @@ public struct DictationTiming: Equatable {
     }
 
     /// The log line: key=value pairs, fixed order, no text. The delivery
-    /// fields, then the retry fields, are appended last; every earlier key is byte-identical to before
-    /// they existed — something may parse them.
+    /// fields, then the retry fields, are appended after the original keys;
+    /// every earlier key is byte-identical to before they existed — something
+    /// may parse them. `line(deliveryID:)` adds `id=` after all of these.
     public var line: String {
         var parts = [
             "outcome=\(outcome.rawValue)",

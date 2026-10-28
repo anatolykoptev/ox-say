@@ -663,7 +663,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch slot.end(current: overlay.owner, dictation: controller.state) {
         case .finish: overlay.finish()
         case .restore(.listening): overlay.showListening()
-        case .restore(.working): overlay.showWorking()
+        case .restore(.working):
+            overlay.showWorking()
+            tickWorking()
         case .leave: break
         }
     }
@@ -1476,9 +1478,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
-    /// "Allow pasting…": reset this app's own Accessibility entry so the trust
-    /// prompt can store a grant matching the running build, then re-ask and
-    /// open the pane. The reset is scoped to this app's bundle id and the one
+    /// "Allow pasting…": reset this app's own Accessibility entry so a new grant
+    /// can match the running build, then raise the trust prompt AND open the
+    /// Accessibility pane. Both, because the prompt is not guaranteed to show
+    /// again for an app that is already listed (it may stay silent), and a
+    /// click that shows nothing is worse than two windows; the pane is where the
+    /// switch is. A reset that hangs is terminated after
+    /// `AccessibilityRepairRun.timeoutSeconds` and reported as a failure. The reset is scoped to this app's bundle id and the one
     /// service, and offered only while the entry does not work — nothing
     /// else's TCC state is touched.
     @objc private func allowPasting() {
@@ -1496,14 +1502,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 DispatchQueue.main.async { onExit(status) }
             }
             try reset.run()
+            // terminate() on a process that already ended raises.
+            return { if reset.isRunning { reset.terminate() } }
         }, completion: { [weak self] ok in
             guard let self else { return }
             self.allowPastingItem.isEnabled = true
             guard ok else { return self.notice(failure) }
-            // The trust prompt carries its own "Open System Settings" button:
-            // opening the pane as well would show two UIs at once.
+            // The prompt may stay silent for an app that is already listed, so
+            // the pane opens too: it is where the switch is.
             let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(prompt)
+            self.openAccessibilitySettings()
         })
         switch started {
         case .started, .busy:

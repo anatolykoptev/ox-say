@@ -34,8 +34,11 @@ public enum AccessibilityRepair {
 }
 
 /// One tccutil reset at a time, off the main thread. The process itself is the
-/// caller's: `launch` starts it and calls `onExit` with its status when it
-/// ends (on the main queue), so tests drive a fake and nothing real is reset.
+/// caller's: `launch` starts it, calls `onExit` with its status when it ends
+/// (on the main queue) and returns a way to terminate it. A reset that does not
+/// end within `timeoutSeconds` (a stuck tccd) is terminated, so the exit path
+/// runs and the caller hears a failure instead of keeping a greyed row for the
+/// session. Tests drive a fake and a hand-made clock; nothing real is reset.
 public final class AccessibilityRepairRun {
     public enum Start: Equatable {
         case started
@@ -47,28 +50,50 @@ public final class AccessibilityRepairRun {
         case launchFailed
     }
 
+    /// tccutil answers in well under a second; 10 s is far past slow yet short
+    /// enough that the user is not left with a dead menu row.
+    public static let timeoutSeconds: TimeInterval = 10
+    /// How long a process that ignores the termination gets before the run is
+    /// freed anyway.
+    public static let graceSeconds: TimeInterval = 2
+
     public private(set) var isRunning = false
 
     public init() {}
 
     public func start(bundleID: String?,
-                      launch: ([String], @escaping (Int32) -> Void) throws -> Void,
+                      launch: ([String], @escaping (Int32) -> Void) throws -> () -> Void,
+                      schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void = { delay, block in
+                          DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: block)
+                      },
                       completion: @escaping (Bool) -> Void) -> Start {
         guard !isRunning else { return .busy }
         guard let arguments = AccessibilityRepair.resetArguments(bundleID: bundleID) else { return .unavailable }
         isRunning = true
-        var done = false
+        // Per-run state: a timeout of an earlier run finds its own `done` set.
+        let state = RunState()
+        let finish: (Bool) -> Void = { [weak self] ok in
+            guard !state.done else { return }
+            state.done = true
+            self?.isRunning = false
+            completion(ok)
+        }
+        let terminate: () -> Void
         do {
-            try launch(arguments) { [weak self] status in
-                guard !done else { return }
-                done = true
-                self?.isRunning = false
-                completion(status == 0)
-            }
+            terminate = try launch(arguments) { status in finish(status == 0) }
         } catch {
             isRunning = false
             return .launchFailed
         }
+        schedule(Self.timeoutSeconds) {
+            guard !state.done else { return }
+            terminate()
+            // The termination normally reports through onExit; a process that
+            // ignores it must not hold the run for good.
+            schedule(Self.graceSeconds) { finish(false) }
+        }
         return .started
     }
+
+    private final class RunState { var done = false }
 }

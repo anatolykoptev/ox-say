@@ -674,7 +674,10 @@ after every rebuild, and a stale entry in System Settings → Privacy & Security
 the app's menu offers **Allow pasting… (Accessibility is off)** at the top: it
 resets this app's own Accessibility entry (`tccutil reset Accessibility
 <bundle id>`) so the permission prompt can store a grant matching the running
-build, then re-asks and opens the pane. If the item is missing or the reset
+build, then raises the permission prompt and opens the Accessibility pane (the
+prompt can stay silent for an app that is already listed; the pane is where the
+switch is). The menu row stays greyed while the reset runs, and a reset that
+hangs is stopped after 10 s and reported as a failure. If the item is missing or the reset
 fails, remove OxSayDictation with − in the pane and add it again. The same
 happens once when updating from ox-say 0.1.x, whose app was signed ad hoc. See
 the header of `app/dictation/build.sh`.

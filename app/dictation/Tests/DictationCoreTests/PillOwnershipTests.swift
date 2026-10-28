@@ -111,6 +111,11 @@ final class PillOwnershipTests: XCTestCase {
         let end = Self.appBody("private func endPill(_ slot: inout PillSlot) {")
         XCTAssertTrue(end.contains("overlay.finish()") && end.contains("showListening()") && end.contains("showWorking()"),
                       "endPill must finish, or put the dictation look back")
+        // The restored "Transcribing…" label gets its elapsed seconds back at
+        // once, not at the next one-second tick. Mutation: drop the tickWorking()
+        // call after showWorking() in endPill -> RED.
+        XCTAssertTrue(end.contains("showWorking()\n            tickWorking()"),
+                      "the restored working label waits a tick for its seconds")
     }
 
     /// The overlay asks the controller whether a dictation runs before any
@@ -120,26 +125,43 @@ final class PillOwnershipTests: XCTestCase {
     }
 
     /// #191.3 — hide() asks about the dictation BEFORE it wipes the live text,
-    /// so a hide that is refused mid-dictation does not blank the words.
-    /// Mutation: move `liveText.stringValue = ""` above the dictationState
-    /// guard in Overlay.hide -> RED.
+    /// and the refused branch (up to its `return`) touches no live text at all:
+    /// a hide refused mid-dictation must not blank the words.
+    /// Mutation: insert `liveText.stringValue = ""` inside the dictation
+    /// branch of Overlay.hide, or above the guard -> RED.
     func testHideChecksTheDictationBeforeWipingLiveText() {
         let body = Self.overlayBody("private func hide() {")
         guard let guardAt = body.range(of: "dictationState?()"),
-              let wipe = body.range(of: "liveText.stringValue = \"\"") else {
-            return XCTFail("hide() lost the dictation guard or the live-text wipe")
+              let ret = body.range(of: "return\n", range: guardAt.upperBound..<body.endIndex) else {
+            return XCTFail("hide() lost the dictation guard or its return")
         }
-        XCTAssertLessThan(guardAt.lowerBound, wipe.lowerBound, "live text is wiped before the dictation guard")
+        let upToReturn = body[body.startIndex..<ret.upperBound]
+        XCTAssertFalse(upToReturn.contains("liveText.stringValue"),
+                       "live text is assigned before the dictation branch returns")
+        XCTAssertFalse(upToReturn.contains("liveText.isHidden"),
+                       "live text is hidden before the dictation branch returns")
+        XCTAssertTrue(body[ret.upperBound...].contains("liveText.stringValue = \"\""),
+                      "the ordinary hide no longer clears the live text")
     }
 
-    /// #191.4 — resize() leaves the layout of the children to autoresizing: the
-    /// window animates to the new frame, and a child placed for the target size
-    /// at once (the esc hint) sits outside the shrinking-or-growing window.
-    /// Mutation: re-add `hint.frame.origin = ...size.width...` in Overlay.resize -> RED.
-    func testResizeDoesNotLayChildrenOutForTheTargetSize() {
+    /// #191.4 — resize() assigns no frame computed from the target size to any
+    /// view; the only frame it sets is the panel's own, which animates. A view
+    /// placed for newSize at once sits outside the still-small window.
+    /// Mutation: add any `<view>.frame... = ` / `setFrameOrigin` / `setFrameSize`
+    /// line to Overlay.resize -> RED.
+    func testResizeDoesNotLayChildrenOutForTheTargetSize() throws {
         let body = Self.overlayBody("private func resize(to newSize: NSSize, animated: Bool = false) {")
-        XCTAssertFalse(body.contains("hint.frame.origin"), "the esc hint is placed for the target size while the window animates")
-        XCTAssertFalse(body.contains("background.frame ="), "the background is laid out for the target size while the window animates")
+            .split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        let assignment = try NSRegularExpression(pattern: #"\.frame(\.(origin|size)(\.\w+)?)?\s*=(?!=)"#)
+        let range = NSRange(body.startIndex..., in: body)
+        XCTAssertEqual(assignment.numberOfMatches(in: body, range: range), 0,
+                       "a view frame is assigned inside resize()")
+        XCTAssertFalse(body.contains("setFrameOrigin") || body.contains("setFrameSize"))
+        let setFrames = body.components(separatedBy: "setFrame(").count - 1
+        let panelSetFrames = body.components(separatedBy: "panel.animator().setFrame(").count - 1
+            + body.components(separatedBy: "panel.setFrame(").count - 1
+        XCTAssertEqual(setFrames, panelSetFrames, "setFrame on something other than the panel")
     }
 
     /// #191.7 — the visibility check does not log a fault for a pill that
