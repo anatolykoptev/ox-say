@@ -321,8 +321,16 @@ func wavDuration(wav []byte) float64 {
 }
 
 // wavInfo walks the RIFF chunks and returns the sample rate and the PCM
-// duration; both are 0 when wav is not a PCM WAV.
+// duration; both are 0 when wav is not a PCM WAV. A data size that claims more
+// than the bytes present (a streaming header's 0xFFFFFFFF) counts as the bytes
+// present.
 func wavInfo(wav []byte) (rate int, secs float64) {
+	return wavInfoSized(wav, int64(len(wav)))
+}
+
+// wavInfoSized is wavInfo for a wav that is only the head of a file of total
+// bytes: the data size is clamped to what the whole file holds.
+func wavInfoSized(wav []byte, total int64) (rate int, secs float64) {
 	if len(wav) < 44 || string(wav[:4]) != "RIFF" || string(wav[8:12]) != "WAVE" {
 		return 0, 0
 	}
@@ -338,7 +346,7 @@ func wavInfo(wav []byte) (rate int, secs float64) {
 			bits = int(binary.LittleEndian.Uint16(body[14:]))
 		}
 		if id == "data" {
-			dataSize = size
+			dataSize = min(size, max(0, total-int64(off+8)))
 			break
 		}
 		off += 8 + int(size) + int(size&1) // chunks are 2-aligned

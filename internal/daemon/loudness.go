@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -277,7 +278,7 @@ func loudnorm(ctx context.Context, dir string, wav []byte, lufs float64) (out []
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, "", err
 	}
-	f, err := os.CreateTemp(dir, ".loudnorm-*.wav")
+	f, err := os.CreateTemp(dir, loudnormTempPrefix+"*.wav")
 	if err != nil {
 		return nil, "", err
 	}
@@ -334,4 +335,31 @@ func loudnormFileReport(ctx context.Context, in, out string, lufs float64) (limi
 	}()
 	o, err := levelTo(ctx, loudnormSource{path: in}, secs, rate, out, lufs)
 	return o.limited(), err
+}
+
+// loudnormTempPrefix starts the scratch files of loudnorm (and their ".try"
+// attempts) in the cache directory.
+// loudnormTempMinAge is how old a scratch file is before the startup sweep takes it.
+const loudnormTempMinAge = time.Hour
+
+const loudnormTempPrefix = ".loudnorm-"
+
+// sweepLoudnormTemps removes loudnorm scratch files in dir that nobody wrote to
+// for minAge: a daemon killed mid-ffmpeg leaves them behind. A fresh file may
+// have a live writer and stays. It returns how many it removed.
+func sweepLoudnormTemps(dir string, minAge time.Duration) int {
+	entries, _ := os.ReadDir(dir)
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), loudnormTempPrefix) {
+			continue
+		}
+		if info, err := e.Info(); err != nil || time.Since(info.ModTime()) < minAge {
+			continue
+		}
+		if os.Remove(filepath.Join(dir, e.Name())) == nil {
+			n++
+		}
+	}
+	return n
 }

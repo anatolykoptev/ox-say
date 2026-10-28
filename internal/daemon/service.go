@@ -190,6 +190,9 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 		return nil, err
 	}
 	d.lockFile = lockF
+	if n := sweepLoudnormTemps(cfg.CacheDir, loudnormTempMinAge); n > 0 {
+		logger.Info("loudness: removed leftover scratch files", slog.Int("files", n))
+	}
 	if err := store.SweepTemp(); err != nil {
 		logger.Warn("voices: cannot remove normalization leftovers", slog.Any("error", err))
 	}
