@@ -187,8 +187,6 @@ func TestARenameIsSubstitutedOnlyWhenUnambiguous(t *testing.T) {
 	}{
 		{"a new name that holds another speaker's name", map[string]string{"them:1": "Anna", "them:2": "Anna Lee"}, "Anna Lee joined Anna.",
 			map[string]string{"them:1": "Anna Smith"}, true, "Anna Smith Lee"},
-		{"a new name that holds the old one", map[string]string{"them:1": "Ivan"}, "Ivan said so.",
-			map[string]string{"them:1": "Ivan Petrov"}, true, "Ivan Petrov Petrov"},
 		{"a name that holds a label", map[string]string{"them:2": "Speaker 1 (CFO)"}, "Speaker 1 (CFO) approved.",
 			map[string]string{"them:1": "Ivan"}, true, "Ivan (CFO)"},
 		{"a Russian inflection", map[string]string{"them:1": "Иван"}, "Ивану передали план.",
@@ -236,6 +234,37 @@ func TestARenameIsSubstitutedOnlyWhenUnambiguous(t *testing.T) {
 				t.Error("the model was not asked to write the notes again")
 			}
 		})
+	}
+}
+
+// Adding a surname to a name is the commonest rename and is made in place: the new label starts with the old one at a
+// word edge, so the only other label or name it may touch is its own. Where the notes already hold the whole new
+// name ("Ivan Petrov"), it is not extended again. Another speaker whose name holds the old one still queues the notes.
+// Mutations: internal/meeting/labels.go `safe()`, delete the `x == c.free[old]` exemption -> RED (the first case is
+// queued); replaceLabels, delete the `strings.HasPrefix(s[i+len(hit):], ext)` skip -> RED ("Ivan Petrov Petrov").
+func TestAddingASurnameIsSubstitutedInPlace(t *testing.T) {
+	for _, tc := range []struct{ text, want string }{
+		{"Ivan said so.", "Ivan Petrov said so."},
+		{"Ivan Petrov said so, Ivan agreed.", "Ivan Petrov said so, Ivan Petrov agreed."},
+		{"Ivan, Ivan.", "Ivan Petrov, Ivan Petrov."},
+	} {
+		f, chat, id, dir := settledNotes(t)
+		if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan"}}); err != nil {
+			t.Fatal(err)
+		}
+		setNoteText(t, dir, tc.text)
+		asked := len(chat.reqs)
+		v, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": "Ivan Petrov"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		after := readFile(t, dir, NotesMD)
+		if v.NotesQueued || f.load(t, id).Status != StatusDone || len(chat.reqs) != asked {
+			t.Errorf("%q: queued %v, status %s, model asked %d more times: a surname must not run the model", tc.text, v.NotesQueued, f.load(t, id).Status, len(chat.reqs)-asked)
+		}
+		if !strings.Contains(after, tc.want) || strings.Contains(after, "Petrov Petrov") {
+			t.Errorf("%q: notes.md lacks %q:\n%s", tc.text, tc.want, after)
+		}
 	}
 }
 

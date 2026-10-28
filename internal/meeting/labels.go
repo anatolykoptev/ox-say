@@ -81,19 +81,38 @@ func changesBetween(m Manifest, before, after SpeakerState, raw []Turn, stored m
 	return c
 }
 
+// extension is what a new label adds to the old one when it is the old one followed by more words ("Ivan" ->
+// "Ivan Petrov": " Petrov"). The addition must start at a word edge: "Ivan" -> "Ivanov" is another name, not a
+// surname added.
+func extension(old, to string) (string, bool) {
+	ext, ok := strings.CutPrefix(to, old)
+	if !ok || ext == "" {
+		return "", false
+	}
+	if r, _ := utf8.DecodeRuneInString(ext); isWordRune(r) {
+		return "", false
+	}
+	return ext, true
+}
+
 // safe reports whether substituting is unambiguous: no label that changes is part of any other label or name
-// involved (before or after), so "Anna" -> "Anna Smith" cannot reach "Anna Lee", the old label does not survive
-// inside its replacement (a second application would grow "Ivan Petrov Petrov"), and "Speaker 1" is not inside the
-// name "Speaker 1 (CFO)". A label equal to another (a swap) is fine: the pass is simultaneous.
+// involved (before or after), so "Anna" -> "Anna Smith" cannot reach "Anna Lee", and "Speaker 1" is not inside the
+// name "Speaker 1 (CFO)". The old label may stay inside its own replacement when that only adds words after it (a
+// surname): replaceLabels does not extend a name that already has them, so it cannot grow "Ivan Petrov Petrov".
+// A label equal to another (a swap) is fine: the pass is simultaneous.
 func (c labelChanges) safe() bool {
 	if c.conflict {
 		return false
 	}
 	for old := range c.free {
 		for _, x := range c.others {
-			if x != old && strings.Contains(x, old) {
-				return false
+			if x == old || !strings.Contains(x, old) {
+				continue
 			}
+			if _, own := extension(old, c.free[old]); own && x == c.free[old] {
+				continue
+			}
+			return false
 		}
 	}
 	return true
@@ -219,6 +238,11 @@ func replaceLabels(s string, m map[string]string) string {
 		if hit != "" {
 			b.WriteString(m[hit])
 			i += len(hit)
+			// The new name is the old one and more words ("Ivan" -> "Ivan Petrov"): where the text already has
+			// them, they are the name and are not written twice.
+			if ext, ok := extension(hit, m[hit]); ok && strings.HasPrefix(s[i:], ext) && wordEdgeAfter(s, i+len(ext)) {
+				i += len(ext)
+			}
 			continue
 		}
 		_, n := utf8.DecodeRuneInString(s[i:])
@@ -291,8 +315,8 @@ func (r *Runner) clearNotesStale(dir string, m Manifest, written *Notes) error {
 	if err != nil || !st.NotesStale {
 		return nil // an unreadable speakers.json is dropVoiceState's business
 	}
-	if r.afterSpeakersRead != nil {
-		r.afterSpeakersRead()
+	if afterSpeakersRead != nil {
+		afterSpeakersRead()
 	}
 	if written != nil {
 		turns, err := readTurns(dir)

@@ -102,8 +102,8 @@ func (r *Runner) EditSpeakers(id string, e Edit) (SpeakersView, error) {
 	if err != nil {
 		return SpeakersView{}, err
 	}
-	if r.afterSpeakersRead != nil {
-		r.afterSpeakersRead()
+	if afterSpeakersRead != nil {
+		afterSpeakersRead()
 	}
 	next, err := cur.Apply(*m, turns, e)
 	if err != nil {

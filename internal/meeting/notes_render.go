@@ -52,15 +52,41 @@ func NotesMarkdown(m Manifest, n Notes, lang string) string {
 // language model reading a transcript the user does not control. A model string
 // must stay inline text: no heading, quote, image or link of its own.
 
-var linkTarget = regexp.MustCompile(`\]\([^)\n]*\)?`)
+var linkTarget = regexp.MustCompile(`\]\(([^)\n]*)\)?`)
+
+// linkLike: the text between the parentheses of "](...)" is the target of a link a viewer would follow or fetch.
+func linkLike(target string) bool {
+	t := strings.ToLower(strings.TrimSpace(target))
+	if strings.Contains(t, "://") {
+		return true
+	}
+	for _, p := range []string{"mailto:", "tel:", "data:", "javascript:", "www.", "/", "#", "//"} {
+		if strings.HasPrefix(t, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// neutralizeLinks drops the target of a link ("[a](http://x)" becomes "[a]"), and keeps what is not one ("x[i](y)")
+// as text that cannot form a link: the backslash before the parenthesis makes it literal.
+func neutralizeLinks(s string) string {
+	return linkTarget.ReplaceAllStringFunc(s, func(m string) string {
+		if linkLike(linkTarget.FindStringSubmatch(m)[1]) {
+			return "]"
+		}
+		return `]\(` + m[2:]
+	})
+}
 
 // cleanLine is one model string as a single inline line.
 func cleanLine(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
-	s = linkTarget.ReplaceAllString(s, "]")
 	// A viewer that renders HTML fetches <img src=...> and <http://...> on its own: a privacy leak from whoever
 	// spoke in the recording. escapeMarkdown treats < as markup for the same reason.
 	s = escapeAngle(s)
+	// After escapeAngle: that doubles every backslash, which would undo the one neutralizeLinks adds.
+	s = neutralizeLinks(s)
 	if s != "" && strings.ContainsRune("#[!>", rune(s[0])) {
 		s = `\` + s
 	}

@@ -326,21 +326,51 @@ func numbersOf(s string) string {
 	return strings.Join(nums, " ")
 }
 
-// namesMissing: s has a capitalized word whose lower-case form t does not have
-// at all. Case is read this way (not "capitalized in both") so a sentence-start
-// "Use" matches "use" and "Bob" does not match "Ann".
+// namesMissing: s has a capitalized word that t does not have in any form. Case is read this way (not "capitalized
+// in both") so a sentence-start "Use" matches "use" and "Bob" does not match "Ann". Forms of one word match
+// (sameWordForm): Russian inflection makes one name "Андрей" in one line and "Андрею" in the next.
 func namesMissing(s, t string) bool {
-	have := map[string]bool{}
-	for _, w := range tokens(t) {
-		have[strings.ToLower(w)] = true
-	}
+	have := tokens(t)
 	for _, w := range tokens(s) {
 		r, _ := utf8.DecodeRuneInString(w)
-		if utf8.RuneCountInString(w) >= 2 && unicode.IsUpper(r) && !have[strings.ToLower(w)] {
+		if utf8.RuneCountInString(w) < 2 || !unicode.IsUpper(r) {
+			continue
+		}
+		found := false
+		for _, h := range have {
+			if sameWordForm(w, h) {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return true
 		}
 	}
 	return false
+}
+
+// minStemRunes is the length from which two words may be forms of one: shorter ones ("Ann"/"Anna", "Mark"/"Marc")
+// are different names more often than inflections of one.
+const minStemRunes = 5
+
+// sameWordForm: a and b are one word up to case, or forms of one word: both have minStemRunes letters or more and
+// they share all but the last letter of the shorter ("Андрей", "Андрею", "Андрея"). "Alexander" and "Alexandra"
+// share seven of nine and stay two names. A miss costs a duplicate line, a false match a wrong merge.
+func sameWordForm(a, b string) bool {
+	if strings.EqualFold(a, b) {
+		return true
+	}
+	ra, rb := []rune(strings.ToLower(a)), []rune(strings.ToLower(b))
+	short := min(len(ra), len(rb))
+	if short < minStemRunes {
+		return false
+	}
+	common := 0
+	for common < short && ra[common] == rb[common] {
+		common++
+	}
+	return common >= short-1
 }
 
 func tokens(s string) []string {
