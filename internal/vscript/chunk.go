@@ -110,7 +110,7 @@ func unparen(text string) string {
 	for strings.HasPrefix(s, "(") {
 		inner, rest, closed := strings.Cut(s[1:], ")")
 		rest = trimLead(strings.TrimLeft(rest, ")"))
-		inner = strings.TrimSpace(inner)
+		inner = strings.TrimSpace(trimLead(inner))
 		switch {
 		case !closed:
 			s = trimLead(inner)

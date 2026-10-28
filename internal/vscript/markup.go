@@ -4,6 +4,7 @@
 package vscript
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -127,9 +128,9 @@ func Parse(src string, o Options) ([]Chunk, error) {
 func (o Options) validate() error {
 	switch {
 	case o.MinChars <= 0 || o.TargetChars <= o.MinChars || o.MaxChars < o.TargetChars:
-		return &LineError{1, fmt.Sprintf("chunk sizes must satisfy 0 < min (%d) < target (%d) <= max (%d)", o.MinChars, o.TargetChars, o.MaxChars)}
+		return fmt.Errorf("chunk sizes must satisfy 0 < min (%d) < target (%d) <= max (%d)", o.MinChars, o.TargetChars, o.MaxChars)
 	case o.MaxScriptChars <= 0 || o.ChunkPause < 0 || o.ParagraphPause < 0:
-		return &LineError{1, "script limit must be positive and pauses must not be negative"}
+		return errors.New("script limit must be positive and pauses must not be negative")
 	}
 	return nil
 }
