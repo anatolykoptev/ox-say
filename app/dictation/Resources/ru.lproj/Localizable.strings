@@ -330,3 +330,14 @@
 "play.position" = "Позиция воспроизведения";
 "play.stop" = "Остановить воспроизведение";
 "notice.speech_runaway" = "Голос не смог дочитать этот текст и был остановлен. Попробуйте ещё раз или выделите меньше текста.";
+"meeting.failed.where_retry" = "Откройте встречу и нажмите «Повторить».";
+"meeting.notes.failed.engine_start.final" = "Составитель заметок не запустился.";
+"meeting.notes.failed.engine_verify.final" = "Составитель заметок запустился, но не прошёл самопроверку и был остановлен.";
+"meeting.notes.failed.engine_timeout.final" = "Составитель заметок запускался слишком долго.";
+"meeting.notes.failed.empty.final" = "Составитель заметок не смог составить заметки по этой расшифровке.";
+"meeting.notes.failed.storage.final" = "Заметки не удалось сохранить: не получилось записать файл.";
+"meeting.notes.failed.disk_full.final" = "Заметки не удалось сохранить: на диске нет места.";
+"notice.export.folder_missing" = "папка заметок недоступна (подключён ли её диск?)";
+"notice.export.read_only" = "в папку заметок нельзя записывать";
+"notice.export.disk_full" = "на диске нет места";
+"notice.export.other" = "заметки не удалось сохранить в папку заметок";

@@ -124,6 +124,8 @@ final class MeetingWindowStateTests: XCTestCase {
         XCTAssertEqual(refused(409, .rename), "meeting.error.rename_busy")
         XCTAssertEqual(refused(409, .speakers), "meeting.error.busy")
         XCTAssertEqual(refused(409, .retry), "meeting.error.busy")
+        XCTAssertEqual(refused(409, .finish), "meeting.error.busy", "stopping a recording the daemon is still busy with")
+        XCTAssertEqual(refused(500, .finish), "meeting.error.generic", "the daemon's refusal text never reaches the pill")
         XCTAssertEqual(refused(404, .rename), "meeting.error.not_found")
         XCTAssertEqual(refused(400, .rename), "meeting.error.rename_invalid")
         XCTAssertEqual(refused(400, .settings), "meeting.error.settings_invalid")

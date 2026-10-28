@@ -181,6 +181,31 @@ final class NotesExportTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: other.path), "only our own prefix is touched")
         XCTAssertTrue(fm.fileExists(atPath: out.appendingPathComponent("notes.md").path))
     }
+
+    // MARK: the failure sentence (localized)
+
+    /// The export notice goes through the keys, so a Russian user reads Russian.
+    /// Mutation: NotesExport.explain, `case ENOSPC: return text(.noticeExportDiskFull)` -> `.noticeExportOther` -> RED.
+    func testAnExportFailureIsSaidThroughTheKeys() {
+        let key: (L10nKey) -> String = { $0.rawValue }
+        func posix(_ code: Int32) -> NSError { NSError(domain: NSPOSIXErrorDomain, code: Int(code)) }
+        XCTAssertEqual(NotesExport.explain(posix(ENOSPC), text: key), "notice.export.disk_full")
+        XCTAssertEqual(NotesExport.explain(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError), text: key), "notice.export.disk_full")
+        for code in [EACCES, EPERM, EROFS] { XCTAssertEqual(NotesExport.explain(posix(code), text: key), "notice.export.read_only") }
+        XCTAssertEqual(NotesExport.explain(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError), text: key), "notice.export.read_only")
+        for code in [ENOENT, ENOTDIR, ENODEV] { XCTAssertEqual(NotesExport.explain(posix(code), text: key), "notice.export.folder_missing") }
+        XCTAssertEqual(NotesExport.explain(NSError(domain: NSCocoaErrorDomain, code: NSFileNoSuchFileError), text: key), "notice.export.folder_missing")
+        XCTAssertEqual(NotesExport.explain(posix(EIO), text: key), "notice.export.other")
+    }
+
+    func testTheExportSentencesExistInBothLanguages() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        for (locale, needle) in [("en", "the disk is full"), ("ru", "на диске нет места")] {
+            let text = try String(contentsOf: root.appendingPathComponent("Resources/\(locale).lproj/Localizable.strings"), encoding: .utf8)
+            XCTAssertTrue(text.contains("\"notice.export.disk_full\" = \"\(needle)\""), locale)
+            for k in ["folder_missing", "read_only", "other"] { XCTAssertTrue(text.contains("\"notice.export.\(k)\" = \""), "\(locale) \(k)") }
+        }
+    }
 }
 
 /// A disk that takes notes.md and refuses transcript.md.

@@ -362,7 +362,7 @@ final class MeetingController: NSObject, MeetingFeature {
         host.recordingChanged()
         Task { @MainActor in
             do { _ = try await host.client.finishMeeting(id: info.id) } catch {
-                host.notify(L10nKey.noticeMeetingFailed.text("\(error)"))
+                host.notify(L10nKey.noticeMeetingFailed.text(MeetingErrorText.sentence(error, action: .finish)))
             }
             track(info.id)
             render()

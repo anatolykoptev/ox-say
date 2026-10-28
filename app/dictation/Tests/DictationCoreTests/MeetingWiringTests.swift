@@ -247,6 +247,15 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertFalse(finished.contains("noticeMeetingFailed"))
     }
 
+    /// Stopping a meeting whose close the daemon refused says it in the user's words (MeetingErrorText), never `"\(error)"`,
+    /// which is the daemon's English text for a refusal.
+    /// Mutation: MeetingController.stop, `MeetingErrorText.sentence(error, action: .finish)` -> `"\(error)"` -> RED.
+    func testAFailedCloseOfTheMeetingIsNotTheDaemonsText() throws {
+        let stop = try XCTUnwrap(body(try controller(), of: "    func stop() {\n        guard let (info, _) = current"))
+        XCTAssertTrue(stop.contains("host.notify(L10nKey.noticeMeetingFailed.text(MeetingErrorText.sentence(error, action: .finish)))"))
+        XCTAssertFalse(stop.contains("\\(error)"))
+    }
+
     /// Mutation: MeetingController.refreshBadge, delete `case .stop(.cap):` handling -> RED.
     func testTheTickCarriesOutTheMonitorsActions() throws {
         let tick = try XCTUnwrap(body(try controller(), of: "@objc private func refreshBadge() {"))

@@ -325,4 +325,15 @@ public enum L10nKey: String, CaseIterable {
     case noticeMeetingCopyStale = "notice.meeting.copy_stale"
     // Speak Selection: the voice engine stopped a take that did not end.
     case noticeSpeechRunaway = "notice.speech_runaway"
+    case meetingFailedWhereRetry = "meeting.failed.where_retry"
+    case meetingNotesEngineStartFinal = "meeting.notes.failed.engine_start.final"
+    case meetingNotesEngineVerifyFinal = "meeting.notes.failed.engine_verify.final"
+    case meetingNotesEngineTimeoutFinal = "meeting.notes.failed.engine_timeout.final"
+    case meetingNotesEmptyFinal = "meeting.notes.failed.empty.final"
+    case meetingNotesStorageFinal = "meeting.notes.failed.storage.final"
+    case meetingNotesDiskFullFinal = "meeting.notes.failed.disk_full.final"
+    case noticeExportFolderMissing = "notice.export.folder_missing"
+    case noticeExportReadOnly = "notice.export.read_only"
+    case noticeExportDiskFull = "notice.export.disk_full"
+    case noticeExportOther = "notice.export.other"
 }

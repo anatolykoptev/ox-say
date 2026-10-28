@@ -330,3 +330,14 @@
 "play.position" = "Playback position";
 "play.stop" = "Stop playback";
 "notice.speech_runaway" = "The voice did not finish this text and was stopped. Try again, or select less text.";
+"meeting.failed.where_retry" = "Open the meeting and press Try Again.";
+"meeting.notes.failed.engine_start.final" = "The notes writer did not start.";
+"meeting.notes.failed.engine_verify.final" = "The notes writer started but failed its self-check, so it was stopped.";
+"meeting.notes.failed.engine_timeout.final" = "The notes writer took too long to start.";
+"meeting.notes.failed.empty.final" = "The notes writer could not make notes from this transcript.";
+"meeting.notes.failed.storage.final" = "The notes could not be saved: a file could not be written.";
+"meeting.notes.failed.disk_full.final" = "The notes could not be saved: the disk is full.";
+"notice.export.folder_missing" = "the notes folder is not available (is its disk connected?)";
+"notice.export.read_only" = "the notes folder cannot be written to";
+"notice.export.disk_full" = "the disk is full";
+"notice.export.other" = "the notes could not be saved to the notes folder";
