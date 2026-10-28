@@ -8,6 +8,8 @@
 #   2. the release commit itself: the one whose manifest became this version. release-please adopts a tag
 #      that already exists, so a tag created on an older main commit would otherwise turn old code into a
 #      signed release under the new number.
+#   3. the NEWEST such commit on that line. A revert followed by a re-release leaves two commits that move the
+#      manifest to the same version; a squatted tag on the reverted one must not win.
 # Every refusal says why on stderr. scripts/test-check-release-tag.sh covers all of it.
 set -euo pipefail
 
@@ -40,4 +42,18 @@ if [ "$got" != "$want" ] || [ "$before" = "$want" ]; then
     echo "check-release-tag: $tag points at $commit, which is not the commit that released $want (manifest $before -> $got)" >&2
     exit 1
 fi
+# Walk the main line newest first up to the tag's commit: any commit before it that also made this transition
+# is a newer release commit. A commit whose manifest or parent cannot be read is not a release commit.
+while IFS= read -r c; do
+    [ "$c" = "$commit" ] && break
+    cg=$(git show "$c:.release-please-manifest.json" 2>/dev/null | jq -r '."."' 2>/dev/null) || continue
+    [ "$cg" = "$want" ] || continue
+    cb=$(git show "$c^1:.release-please-manifest.json" 2>/dev/null | jq -r '."."' 2>/dev/null) || continue
+    if [ "$cb" != "$want" ]; then
+        echo "check-release-tag: $tag points at $commit, but a newer commit $c on the main line also released $want (a revert and re-release); the tag must be on the newest" >&2
+        exit 1
+    fi
+done <<EOF2
+$mainline
+EOF2
 printf '%s\n' "$commit"

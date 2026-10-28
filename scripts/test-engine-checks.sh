@@ -11,6 +11,8 @@
 #   * engine/lib-check.sh: drop the empty-help test in check_help_flags — "empty --help" cases fail
 #   * engine/build.sh: delete one `check_patched "$out/<engine>"` call — the wiring check for it fails
 #   * engine/lib-check.sh: reword OXS_METALLIB_PATCH_MARKER — "patch file carries the marker" fails for all three
+#   * engine/stt/ox-stt.cpp or engine/patches/qwentts/0002-*.patch: delete the 405's set_header("Allow", …) or drop a
+#     method from it — "the 405 sets Allow to the accepted methods" fails
 #   * engine/build.sh: drop `--cors-origins` from the check_help_flags "$out/ox-llm" line — "checks every flag the
 #     daemon passes" fails (the flags are read from internal/daemon/meetings.go notesServerArgs)
 set -u
@@ -135,6 +137,16 @@ for flag in $want; do
         *" $flag "*) pass "build.sh checks ox-llm's --help for $flag" ;;
         *) fail "build.sh does not check ox-llm's --help for $flag (the daemon passes it)" ;;
     esac
+done
+
+# Every 405 names the methods the route accepts in Allow (RFC 9110 15.5.6, #65): the value must equal the list the
+# guard in front of it compares against, read from the code, not a second copy. A tts-server patch line is a "+" line.
+for f in engine/stt/ox-stt.cpp engine/patches/qwentts/0002-tts-server-local-only.patch; do
+    guard=$(awk '/req\.method != "GET"/ {on=1} on {print} on && /\{[[:space:]]*$/ {exit}' "$root/$f")
+    methods=$(printf '%s\n' "$guard" | grep -o 'method != "[A-Z]*"' | grep -o '"[A-Z]*"' | tr -d '"' | paste -sd, - | sed 's/,/, /g')
+    allow=$(grep -o 'set_header("Allow", "[^"]*")' "$root/$f" | sed 's/.*"Allow", "//; s/")$//')
+    check "$f: the guard's methods were found" "$([ -n "$methods" ] && echo yes || echo no)" yes
+    check "$f: the 405 sets Allow to the accepted methods" "$allow" "$methods"
 done
 
 echo

@@ -307,7 +307,7 @@ func voxCloneMode(body map[string]any, v *voices.Voice, style, input string) (ul
 		case v.RefText == "":
 			return false, &requestError{fmt.Sprintf("clone_mode ultimate needs a voice with ref_text; %q has none", v.Name)}
 		case style != "":
-			return false, &requestError{"clone_mode ultimate continues the reference's own delivery and ignores a style: drop instructions or use clone_mode reference"}
+			return false, &requestError{"clone_mode ultimate continues the reference's own delivery and ignores a style (the request's, or the voice's saved one): drop instructions, clear the voice's style with voice_update (style \"\"), or use clone_mode reference"}
 		}
 		return true, nil
 	}

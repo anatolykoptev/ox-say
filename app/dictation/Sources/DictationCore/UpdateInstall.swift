@@ -8,17 +8,20 @@ public enum UpdateInstaller {
 
     /// Step 1: download get.sh to `file`. argv, never a shell string: curl's own
     /// exit status is the step's result, with no pipeline to swallow it.
-    /// What step 1 downloads is get.sh itself (about 6 KB on 2026-10-27; the 33 MB
+    /// What step 1 downloads is get.sh itself (6,989 bytes on 2026-10-28; the 33 MB
     /// release tarball is fetched later by get.sh, not by this step). So the bound
-    /// is generous for a hostile line yet short enough to be a failure notice, not
+    /// is generous for a poor line yet short enough to be a failure notice, not
     /// a hang: curl gives up on connecting after 15 s and on the whole transfer
-    /// after 60 s (6 KB at 100 B/s still fits).
+    /// after 60 s. That is a floor of about 117 B/s for get.sh; a line slower than
+    /// that times out here, as it would long before the tarball finished.
     public static let downloadConnectTimeout: TimeInterval = 15
     public static let downloadMaxTime: TimeInterval = 60
     /// The app-side kill if curl itself does not honour its bound (a stalled
     /// resolver, a wedged process): after curl's own limit, so curl's exit
     /// status (28) wins whenever it works.
     public static let downloadBackstop: TimeInterval = 90
+    /// curl's exit status for an operation that ran past `--max-time` (or a connect/read timeout).
+    static let curlTimedOutStatus: Int32 = 28
     /// A script starts with `#!`: two bytes.
     public static let scriptHeadLength = 2
     public static func downloadCommand(to file: String, from source: String = scriptURL) -> [String] {
@@ -188,6 +191,7 @@ public enum UpdateInstaller {
         switch await runProcess(download, log: log, timeout: downloadBackstop) {
         case .failure(is ProcessTimedOut): return .downloadTimedOut(seconds: downloadBackstop)
         case .failure(let error): return .downloaderCouldNotStart(error.localizedDescription)
+        case .success(let status) where status == curlTimedOutStatus: return .downloadTimedOut(seconds: downloadMaxTime)
         case .success(let status) where status != 0: return .downloadFailed(status: status)
         case .success: break
         }
@@ -276,12 +280,25 @@ public enum UpdateGate: Equatable {
 public enum InstalledApp {
     public static let bundleName = "OxSayDictation.app"
 
-    /// The installed bundle when it is there (its Info.plist exists), otherwise
-    /// the bundle this process runs from.
+    /// The installed bundle when it is there (its Info.plist exists) and not older than the running one, otherwise
+    /// the bundle this process runs from: a dev build or a copy run from a download folder next to an old
+    /// ~/Applications copy must not be offered a "repair" down to it. A version that cannot be read sorts oldest
+    /// (`UpdateChecker.isNewer`), so an unreadable installed copy is never preferred to a readable running one.
+    /// `version` reads a bundle's `CFBundleShortVersionString` from its Info.plist file.
     public static func bundleURL(running: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                                 exists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> URL {
+                                 exists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) },
+                                 version: (URL) -> String? = plistVersion(of:)) -> URL {
         let installed = home.appendingPathComponent("Applications").appendingPathComponent(bundleName)
-        return exists(installed.appendingPathComponent("Contents/Info.plist")) ? installed : running
+        guard exists(installed.appendingPathComponent("Contents/Info.plist")) else { return running }
+        let installedVersion = version(installed) ?? ""
+        let runningVersion = version(running) ?? ""
+        return UpdateChecker.isNewer(runningVersion, than: installedVersion) ? running : installed
+    }
+
+    /// The version in the bundle's Info.plist FILE, never `Bundle`, which caches the plist a process launched with.
+    public static func plistVersion(of bundle: URL) -> String? {
+        let plist = bundle.appendingPathComponent("Contents/Info.plist")
+        return NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"] as? String
     }
 }
 

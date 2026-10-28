@@ -55,13 +55,10 @@ let duration = Double(samples.count) / 16_000
 ModelHub.offlineMode = true
 
 // The configuration and the compute units are pinned in OxDiarCore (Pinned), where `swift test` reads them.
-let ml = Pinned.mlConfiguration()
-FileHandle.standardError.write(Data("ox-diar: compute units \(Pinned.name(of: ml.computeUnits))\n".utf8))
-
 let started = Date()
 let models: OfflineDiarizerModels
 do {
-    models = try await OfflineDiarizerModels.load(from: modelsDir, configuration: ml)
+    models = try await Pinned.loadModels(from: modelsDir)
 } catch {
     die(.models, "cannot load the models from \(modelsDir.path): \(error.localizedDescription)")
 }

@@ -104,7 +104,8 @@
 // Fake ox-llm (llama-server, the notes engine; selected on
 // OXSAY_FAKE_LLM=1): parses --port and --api-key-file, stamps
 // "llm-spawn-<pid>" under OXSAY_FAKE_DIR holding the full argv (one
-// argument per line, argv[0] first), then serves on 127.0.0.1:
+// argument per line, argv[0] first) and "llm-metal-<pid>" holding the child's GGML_METAL_CONCURRENCY_DISABLE
+// ("unset" when absent), then serves on 127.0.0.1:
 //
 //	GET  /health                -> 503 while OXSAY_FAKE_START_DELAY_MS has
 //	                               not passed (a model still loading), then 200
@@ -279,6 +280,12 @@ func runFakeLLM(args []string) int {
 		prior, _ := filepath.Glob(filepath.Join(dir, "llm-spawn-*"))
 		spawnIndex = len(prior)
 		_ = os.WriteFile(filepath.Join(dir, "llm-spawn-"+strconv.Itoa(os.Getpid())), []byte(strings.Join(os.Args, "\n")), 0o644)
+		// The one variable the notes engine's spawn sets on a discrete card (#238): "unset" when it is not in the env.
+		metal, set := os.LookupEnv("GGML_METAL_CONCURRENCY_DISABLE")
+		if !set {
+			metal = "unset"
+		}
+		_ = os.WriteFile(filepath.Join(dir, "llm-metal-"+strconv.Itoa(os.Getpid())), []byte(metal), 0o644)
 	}
 	if os.Getenv("OXSAY_FAKE_LLM_EXIT") == "1" {
 		fmt.Fprintln(os.Stderr, "fake-llm: cannot load the model")

@@ -210,7 +210,9 @@ func looseExtension(s, ext string) bool {
 // two letters are an ordinary word that merely starts alike: a preposition or conjunction after a name ("Иван с
 // мужем", "Иван и Петя", "Ivan a plan" for " Смирнов", " Иванов", " Adams"), an initial. Three letters that then end
 // at a word edge ("Ivan Pet") are rarely a word of their own, and a miss costs one duplicated surname the user can
-// see, while a false hit sends a whole meeting's notes back to the model.
+// see, while a false hit sends a whole meeting's notes back to the model. Exactly three letters are a cut only when
+// the text ends there ("Ivan Pet"): with more text after them they are as likely a short word (" под столом" for
+// " Подгорный", " for me" for " Forrest"), and the model re-run that a false hit costs is the dearer error (#305).
 const minCutRunes = 3
 
 // truncatedExtension reports text that holds the first words of ext and stops at a word edge inside it: "Ivan Pet"
@@ -239,9 +241,31 @@ func truncatedExtension(rest, ext string) bool {
 				continue
 			}
 		}
-		return word >= minCutRunes && wordEdgeAfter(rest, end)
+		return wordEdgeAfter(rest, end) && (word > minCutRunes || word == minCutRunes && endsAtCut(rest[end:]))
 	}
 	return false
+}
+
+// closingMarks end a clause, a sentence or a quotation or bracket around a name.
+const closingMarks = ".,;:!?)]}»\"'”’"
+
+// endsAtCut reports that after a cut-short word the text is over: nothing, or closing punctuation followed by the
+// end of the text, a line break, or the next sentence (a space and a capital letter). "Ivan Pet." and "Ivan Pet,
+// said" differ from " Pet said": the first two are a name cut short, the last a word of its own.
+func endsAtCut(tail string) bool {
+	rest := strings.TrimLeft(tail, closingMarks)
+	if len(rest) == len(tail) { // no punctuation: only blanks may follow
+		return strings.TrimSpace(tail) == ""
+	}
+	if strings.TrimSpace(rest) == "" {
+		return true
+	}
+	blanks := strings.TrimLeft(rest, " \t\u00a0")
+	if strings.HasPrefix(blanks, "\n") || strings.HasPrefix(blanks, "\r") {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(blanks)
+	return len(blanks) < len(rest) && unicode.IsUpper(r)
 }
 
 // partialExtension reports text that starts like the extra words of a new name (ext, " Petrov") without being them

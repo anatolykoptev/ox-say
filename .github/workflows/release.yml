@@ -8,6 +8,16 @@
 # "force-tag-creation": true) and published only after the package is attached,
 # so `releases/latest` never points at an asset-less release while the build
 # runs — or forever after one that fails.
+#
+# Recovering from a squatted tag. The release tag check (scripts/check-release-tag, called below) refuses a tag for the next version that
+# does not point at the newest main-line commit that moved .release-please-manifest.json to that version
+# (someone created vX.Y.Z early, on another commit), and the immutable-tags ruleset has no bypass, so the
+# release stays blocked until the tag is gone. Only the repository owner can do this, in this order:
+#   1. Settings > Rules > Rulesets: set the tag ruleset to Disabled (do not delete it).
+#   2. git push origin :refs/tags/vX.Y.Z   (and delete the draft release for it, if release-please made one)
+#   3. Set the ruleset back to Active.
+#   4. Re-run the failed workflow run on main; release-please creates the tag on the release commit.
+# Nothing in the repo changes the rulesets: that stays an owner action.
 
 name: Release
 
@@ -187,17 +197,17 @@ jobs:
           # VoxCPM2's server is optional for the installer, so a build that
           # silently dropped it would still install: pin it to the architecture
           # here. arm64 carries it, x86_64 must not.
-          bins="bin/ox-say engine/tts-server engine/ox-stt engine/ox-align engine/ox-llm"
+          bins=(bin/ox-say engine/tts-server engine/ox-stt engine/ox-align engine/ox-llm)
           if [ "$ARCH" = arm64 ]; then
             test -x engine/audiocpp_server
             test -x engine/ox-diar
-            bins="$bins engine/audiocpp_server engine/ox-diar"
+            bins+=(engine/audiocpp_server engine/ox-diar)
             "$GITHUB_WORKSPACE/scripts/check-arm64-baseline.sh" engine/audiocpp_server
           else
             test ! -e engine/audiocpp_server
             test ! -e engine/ox-diar
           fi
-          for bin in $bins; do
+          for bin in "${bins[@]}"; do
             test "$(lipo -archs "$bin")" = "$ARCH"
             # captured first: an otool error must fail the step, not read as "no @rpath"
             libs=$(otool -L "$bin")
@@ -209,9 +219,9 @@ jobs:
           # must be there and structurally sound — a missing or corrupt one is
           # a first-run compile for users. arm64 adds the Metal4 tensor
           # libraries built by the macOS 26 SDK.
-          metallibs="engine/tts-server.metallib engine/ox-stt.metallib engine/ox-align.metallib engine/ox-llm.metallib"
+          metallibs=(engine/tts-server.metallib engine/ox-stt.metallib engine/ox-align.metallib engine/ox-llm.metallib)
           if [ "$ARCH" = arm64 ]; then
-            metallibs="$metallibs engine/audiocpp_server.metallib engine/tts-server-tensor.metallib engine/ox-stt-tensor.metallib engine/ox-align-tensor.metallib engine/ox-llm-tensor.metallib"
+            metallibs+=(engine/audiocpp_server.metallib engine/tts-server-tensor.metallib engine/ox-stt-tensor.metallib engine/ox-align-tensor.metallib engine/ox-llm-tensor.metallib)
           fi
           # Structural checks, runnable without a Metal device: the container
           # must be a real MetalLib with a function list, and an ordinary
@@ -223,7 +233,7 @@ jobs:
           # compile defines on bfloat-capable devices: without them a bf16 op
           # aborts on a missing function. The -tensor libraries intentionally
           # target macOS 26 (Metal4 devices only) and are exempt.
-          for lib in $metallibs; do
+          for lib in "${metallibs[@]}"; do
             test -s "$lib" || { echo "$lib missing from the package" >&2; exit 1; }
             xcrun -sdk macosx air-readobj --file-headers "$lib" > air-headers.txt
             grep -q 'MagicWord: MTLB' air-headers.txt || { echo "$lib is not a MetalLib container" >&2; exit 1; }
@@ -288,7 +298,7 @@ jobs:
           EOF
           swiftc -o metal-load metal-load.swift
           rc=0
-          ./metal-load $metallibs || rc=$?
+          ./metal-load "${metallibs[@]}" || rc=$?
           case $rc in
             0) ;;
             3) echo "no Metal device on this runner — load check skipped, the AIR-target and function-count checks above stand in" ;;
@@ -399,7 +409,11 @@ jobs:
           security set-keychain-settings -lut 3600 "$SIGN_KEYCHAIN"
           security unlock-keychain -p "$kcpass" "$SIGN_KEYCHAIN"
           printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$p12"
-          # -x: the private key cannot be exported from the keychain again
+          # -x: the private key cannot be exported from the keychain again.
+          # -P is the only way `security import` takes the passphrase (man security: no stdin, file or env
+          # form; without it, a GUI prompt a CI runner cannot answer), so it sits on argv. The exposure is
+          # confined to this step on an ephemeral runner, visible only to processes of this job; the value
+          # is a masked secret in the log.
           security import "$p12" -k "$SIGN_KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -x -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$SIGN_KEYCHAIN" > /dev/null
           # codesign looks the identity up in the search list: put ours first,

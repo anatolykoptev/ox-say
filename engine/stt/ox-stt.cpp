@@ -969,6 +969,8 @@ int serve(const args & a) {
         if (req.method != "GET" && req.method != "HEAD" && req.method != "POST" &&
             req.method != "DELETE") {
             res.status = 405;
+            // RFC 9110 15.5.6: a 405 names the methods the routes accept
+            res.set_header("Allow", "GET, HEAD, POST, DELETE");
             res.set_content(error_json("method not allowed"), "application/json");
             return httplib::Server::HandlerResponse::Handled;
         }

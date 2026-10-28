@@ -55,6 +55,9 @@ type Config struct {
 	// port; nil keeps the tts-server argv
 	// (--model/--codec/--host/--port/--max-batch).
 	Args func(port int) []string
+	// Env is added to the child's environment (KEY=VALUE, after the daemon's own, so it wins); nil keeps the
+	// daemon's environment as it is.
+	Env []string
 
 	StartupTimeout time.Duration // covers first-start Metal shader compile (~60s)
 	IdleStop       time.Duration // 0 = never stop for idleness
@@ -613,6 +616,9 @@ func (s *Supervisor) spawn() (*child, error) {
 		return nil, err
 	}
 	cmd := exec.Command(s.cfg.Bin, s.childArgs()...)
+	if len(s.cfg.Env) > 0 {
+		cmd.Env = append(os.Environ(), s.cfg.Env...)
+	}
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	if err := cmd.Start(); err != nil {
