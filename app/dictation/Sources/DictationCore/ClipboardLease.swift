@@ -96,9 +96,27 @@ public struct PasteboardSnapshot: Equatable {
         }
         if done.wait(timeout: .now() + timeLimit) == .success, let snapshot = box.value { return snapshot }
         box.cancel()
+        return unread
+    }
+
+    /// The snapshot of a clipboard that was not read (it timed out, now or on an earlier look): nothing in it, `timedOut` set.
+    static var unread: PasteboardSnapshot {
         var late = PasteboardSnapshot(items: [])
         late.timedOut = true
         return late
+    }
+
+    /// `capture(_:timeLimit:)` that does not read a copy `memory` already knows to be slow: while the pasteboard's
+    /// `changeCount` is still that of the slow copy the answer is `unread` at once, with no `data` call. A read that
+    /// times out is remembered, one that finishes ends the memory. The one place both clipboard readers (the paste
+    /// and the speak-selection copy) take their bounded snapshot, so neither can forget the memory.
+    public static func capture(_ board: DictationPasteboard, timeLimit: TimeInterval,
+                               memory: SlowClipboardMemory) -> PasteboardSnapshot {
+        let count = board.changeCount
+        if memory.isSlow(at: count) { return unread }
+        let snapshot = capture(board, timeLimit: timeLimit)
+        if snapshot.timedOut { memory.remember(count) } else { memory.forget() }
+        return snapshot
     }
 
     private final class SnapshotBox: @unchecked Sendable {
@@ -278,19 +296,18 @@ public enum ClipboardBorrow {
 
     /// - Parameters:
     ///   - memory: the caller's `SlowClipboardMemory`; a copy that timed out is not read again until the clipboard changes.
-    ///   - focusMoved: asked whenever the answer is `.typed`, after the wait: the frontmost app may have changed
-    ///     during the up-to-`readLimit` read. No default: a caller that forgets it types into the wrong app.
+    ///   - focusMoved: asked after the read, whatever its outcome: the frontmost app may have changed during the
+    ///     up-to-`readLimit` read, and both the keystrokes of `.typed` and the ⌘V that follows a `.lease` would go to
+    ///     it. A lease is only made when focus is still where it was, so nothing is written for a paste that
+    ///     would land elsewhere. No default: a caller that forgets it pastes into the wrong app.
     public static func take(board: DictationPasteboard, text: String, memory: SlowClipboardMemory,
                             focusMoved: () -> Bool,
                             readLimit: TimeInterval = PasteboardSnapshot.readLimit) -> ClipboardBorrow {
-        let count = board.changeCount
-        if memory.isSlow(at: count) { return typedUnlessFocusMoved(focusMoved) }
-        let original = PasteboardSnapshot.capture(board, timeLimit: readLimit)
-        if original.timedOut {
-            memory.remember(count)
-            return typedUnlessFocusMoved(focusMoved)
-        }
-        memory.forget()
+        let original = PasteboardSnapshot.capture(board, timeLimit: readLimit, memory: memory)
+        if original.timedOut { return typedUnlessFocusMoved(focusMoved) }
+        // The read may have taken up to `readLimit`: focus can have moved while it finished in time, and a lease
+        // writes the text and the caller pastes it — into whichever app is in front now. Decided BEFORE the write.
+        if focusMoved() { return .focusMoved }
         return .lease(ClipboardLease(board: board, original: original, text: text))
     }
 

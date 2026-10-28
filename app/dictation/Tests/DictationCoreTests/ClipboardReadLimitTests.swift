@@ -98,7 +98,8 @@ final class ClipboardReadLimitTests: XCTestCase {
     func testTheSpeakSelectionSnapshotIsBoundedAndATimeoutIsNotRestorable() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let text = try String(contentsOf: root.appendingPathComponent("Sources/DictationCore/SelectionBorrow.swift"), encoding: .utf8)
-        XCTAssertTrue(text.contains("PasteboardSnapshot.capture(board, timeLimit: PasteboardSnapshot.readLimit)"))
+        XCTAssertTrue(text.contains("readLimit: TimeInterval = PasteboardSnapshot.readLimit"), "the production limit stays the default")
+        XCTAssertTrue(text.contains("PasteboardSnapshot.capture(board, timeLimit: readLimit, memory: memory)"))
         XCTAssertTrue(text.contains("snapshot.map { $0.isWhole && !$0.isSensitive }"))
     }
 
@@ -106,18 +107,16 @@ final class ClipboardReadLimitTests: XCTestCase {
 
     /// A copy that timed out is not read again while nothing has copied since: every later dictation would otherwise
     /// wait the whole limit and make the source app materialise the copy once more.
-    /// Mutation: ClipboardBorrow.take, delete `if memory.isSlow(at: count) { return typedUnlessFocusMoved(focusMoved) }`
-    /// -> RED (the second take reads again and waits the limit).
+    /// Mutation: PasteboardSnapshot.capture(_:timeLimit:memory:), delete `if memory.isSlow(at: count) { return unread }`
+    /// -> RED (the second take reads again: `reads == 1` fails).
     func testASlowClipboardIsNotReadAgainWhileItsChangeCountIsUnchanged() {
         let board = SlowPasteboard(text: "the user's big copy", delay: 1.5)
         let memory = SlowClipboardMemory()
         XCTAssertEqual(ClipboardBorrow.take(board: board, text: "one", memory: memory, focusMoved: { false },
                                             readLimit: 0.2).delivery, .typed)
         XCTAssertEqual(board.reads, 1, "the first take reads once and gives up")
-        let started = Date()
         let second = ClipboardBorrow.take(board: board, text: "two", memory: memory, focusMoved: { false }, readLimit: 0.2)
         XCTAssertEqual(second.delivery, .typed)
-        XCTAssertLessThan(Date().timeIntervalSince(started), 0.1, "the second take must not wait for a read")
         XCTAssertEqual(board.reads, 1, "the second take must make no data call")
         XCTAssertEqual(board.changeCount, 0, "no clear, no write")
         XCTAssertEqual(board.text, "the user's big copy")
@@ -152,6 +151,23 @@ final class ClipboardReadLimitTests: XCTestCase {
         let stayed = ClipboardBorrow.take(board: board, text: "t", memory: SlowClipboardMemory(), focusMoved: { false },
                                           readLimit: 0.1)
         XCTAssertEqual(stayed.delivery, .typed)
+    }
+
+    /// #319.4: focus that moved during a read that FINISHED in time. The lease writes the text and the caller pastes
+    /// it; into the new front app that is the wrong place. No lease is made and the board is untouched.
+    /// Mutation: ClipboardBorrow.take, delete `if focusMoved() { return .focusMoved }` -> RED (a `.lease` is returned).
+    func testFocusMovingDuringAReadThatFinishesInTimeDoesNotPaste() {
+        let board = SlowPasteboard(text: "the user's copy", delay: 0.01)
+        let moved = ClipboardBorrow.take(board: board, text: "dictated", memory: SlowClipboardMemory(), focusMoved: { true },
+                                         readLimit: 5)
+        XCTAssertEqual(moved.delivery, .clipboardOnly(reason: .focusMoved))
+        XCTAssertEqual(board.changeCount, 0, "no lease, no write over the user's copy")
+        XCTAssertEqual(board.text, "the user's copy")
+        guard case .lease(let lease) = ClipboardBorrow.take(board: board, text: "dictated", memory: SlowClipboardMemory(),
+                                                            focusMoved: { false }, readLimit: 5) else {
+            return XCTFail("focus that stayed still pastes as before")
+        }
+        XCTAssertTrue(lease.release())
     }
 
     /// The same answer on the remembered fast path (focus is asked after every `.typed`).

@@ -74,7 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var escapeKey: HotKey?
     private var controller: DictationController!
     private let recorder = MicRecorder()
-    private let output = PasteOutput()
+    /// The one memory of a clipboard that was too slow to read: the paste and the speak-selection copy share it.
+    private let slowClipboard = SlowClipboardMemory()
+    private lazy var output = PasteOutput(slowClipboard: slowClipboard)
     /// Plain-text clipboard writes for a click in Recent Dictations.
     private let clipboard = SystemPasteboard(promised: false)
     private let recentSubmenu = NSMenu()
@@ -159,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The speak-selection hotkey and its menu state; mirrors the dictation
     /// key machinery with its own offered combinations.
     private var speakHotKey: HotKey?
-    private let capture = SelectionCapture()
+    private lazy var capture = SelectionCapture(slowClipboard: slowClipboard)
     private let speakShortcutKey = "speakShortcut"
     private let speakKeyInUseKey = "speakKeyInUse"
     private var speakActive: SpeakShortcut?

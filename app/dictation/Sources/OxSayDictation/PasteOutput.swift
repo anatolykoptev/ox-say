@@ -109,9 +109,12 @@ final class PasteOutput: TextOutput {
     private let lending = SystemPasteboard(promised: true)
     private let plain = SystemPasteboard(promised: false)
     /// The clipboard copy whose read timed out: not read again until the clipboard changes.
-    private let slowClipboard = SlowClipboardMemory()
+    private let slowClipboard: SlowClipboardMemory
     /// A paste whose clipboard has not been given back yet.
     private var pending: (lease: ClipboardLease, timer: Timer, text: String, serial: Int)?
+
+    /// - Parameter slowClipboard: the app's one memory, shared with the speak-selection copy (`SelectionCapture`).
+    init(slowClipboard: SlowClipboardMemory) { self.slowClipboard = slowClipboard }
 
     func deliver(_ text: String) -> Delivery { deliver(text, to: target) }
 
