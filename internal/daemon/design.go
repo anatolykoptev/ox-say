@@ -33,6 +33,17 @@ const (
 	// maxDesignText keeps a take inside the reference window (voices.MaxRefSeconds)
 	// even at the slowest pace, so a saved take is never trimmed or re-transcribed.
 	maxDesignText = int(voices.MaxRefSeconds * designSlowCharsPerSec)
+	// The cap is on spoken duration, counted in 1/60 s so the sums stay exact.
+	// Every rune costs designUnitsPerChar (6 = the Russian pace above) except the
+	// scripts below, which are spoken slower per character. The CJK figures are
+	// conservative published speech rates (Mandarin about 4-6 characters/s,
+	// Japanese kana and Korean syllable blocks about 6-8/s), NOT measured on
+	// VoxCPM2: a too-low figure only refuses a line that would have fit.
+	designUnitsPerSec  = 60
+	designUnitsPerChar = designUnitsPerSec / int(designSlowCharsPerSec) // 6
+	designUnitsHan     = designUnitsPerSec / 4                          // 15: 4 chars/s
+	designUnitsSyll    = designUnitsPerSec / 6                          // 10: 6 chars/s
+	maxDesignUnits     = int(voices.MaxRefSeconds) * designUnitsPerSec
 	// designToolSlack is added to the MCP design budget for the file writes.
 	designToolSlack = 30 * time.Second
 	// maxNameChars is the longest voice name (voices.ValidateName).
@@ -60,7 +71,7 @@ const (
 // DesignInput asks VoxCPM2 for a voice from a description alone.
 type DesignInput struct {
 	Description string `json:"description" jsonschema:"Describe the speaker: gender, age, pitch, timbre, pace, accent or native language, mood, use (max 300 chars). Example: A clear, pleasant female narrator in her thirties, native Russian speaker, friendly and professional"`
-	Text        string `json:"text" jsonschema:"1-2 sentences in the target language, 5-15 s spoken (max 200 chars, so a take stays under the 20 s a saved voice can keep); it is also the saved voice's transcript"`
+	Text        string `json:"text" jsonschema:"1-2 sentences in the target language, 5-15 s spoken (max 200 chars, fewer for Chinese, Japanese and Korean, so a take stays under the 20 s a saved voice can keep); it is also the saved voice's transcript"`
 	Takes       int    `json:"takes,omitempty" jsonschema:"How many candidate takes, 1-4 (default 3)"`
 	Seed        *int64 `json:"seed,omitempty" jsonschema:"Seed of the first take; the others use the next seeds. Same seed, same take"`
 }
@@ -121,14 +132,42 @@ func (in *DesignInput) validate(seedRange int64) error {
 		return &requestError{fmt.Sprintf("description is longer than %d characters", maxStyleChars)}
 	case strings.TrimSpace(in.Text) == "":
 		return &requestError{"text is required: one or two sentences in the voice's language"}
-	case utf8.RuneCountInString(in.Text) > maxDesignText:
-		return &requestError{fmt.Sprintf("text is longer than %d characters", maxDesignText)}
+	case designTextTooLong(in.Text):
+		return &requestError{fmt.Sprintf("text is longer than %d characters", designTextCap(in.Text))}
 	case in.Takes < 0 || in.Takes > maxDesignTakes:
 		return &requestError{fmt.Sprintf("takes must be 1..%d", maxDesignTakes)}
 	case in.Seed != nil && (*in.Seed < 0 || *in.Seed > seedRange):
 		return &requestError{fmt.Sprintf("seed must be 0..%d so every take has a valid seed", seedRange)}
 	}
 	return nil
+}
+
+// designTextUnits is the slowest plausible spoken length of text in 1/60 s.
+func designTextUnits(text string) int {
+	units := 0
+	for _, r := range text {
+		switch {
+		case unicode.Is(unicode.Han, r):
+			units += designUnitsHan
+		case unicode.Is(unicode.Hiragana, r), unicode.Is(unicode.Katakana, r), unicode.Is(unicode.Hangul, r), unicode.Is(unicode.Thai, r):
+			units += designUnitsSyll
+		default:
+			units += designUnitsPerChar
+		}
+	}
+	return units
+}
+
+func designTextTooLong(text string) bool { return designTextUnits(text) > maxDesignUnits }
+
+// designTextCap is how many characters of text's own script fit the window, for
+// the refusal message: 200 for Russian, 80 for Chinese.
+func designTextCap(text string) int {
+	n, units := utf8.RuneCountInString(text), designTextUnits(text)
+	if units == 0 {
+		return maxDesignText
+	}
+	return maxDesignUnits * n / units
 }
 
 // designDir is the one directory design takes are written to and read from.
@@ -359,16 +398,22 @@ func pathStopsAt(s string, i int) bool {
 
 // tailStopsAt reports whether the file-name tail after a root stops before
 // rest[i]. A file name may hold nearly any character (# & ! $ { } \\ , ;), so the
-// tail ends only where a message ends a path: white space, a quote, "(" ")" ":",
-// a closing bracket or backtick or a tag edge, and sentence punctuation (. , ; !
-// ?) that is followed by one of those or by the end of the text.
+// tail ends only where a message ends a path: white space, or a quote, "(" ")"
+// ":", a closing bracket, backtick or tag edge that is NOT glued to a letter or
+// digit (a delimiter followed at once by more name, as in "a]b.wav" or
+// "a(1).wav", is part of the name), and sentence punctuation (. , ; ! ?) that is
+// followed by a delimiter or by the end of the text. White space always ends
+// the tail: it is how a message goes on after a path.
 func tailStopsAt(rest string, i int) bool {
 	if i >= len(rest) {
 		return true
 	}
 	r, size := utf8.DecodeRuneInString(rest[i:])
 	if tailDelimiter(r) {
-		return true
+		if unicode.IsSpace(r) || i+size >= len(rest) {
+			return true
+		}
+		return !continuesName(rest[i+size:])
 	}
 	if strings.ContainsRune(".,;!?", r) {
 		if i+size >= len(rest) {
@@ -378,6 +423,16 @@ func tailStopsAt(rest string, i int) bool {
 		return tailDelimiter(n)
 	}
 	return false
+}
+
+// continuesName reports whether s goes on as part of a file name: a letter,
+// digit or "_", or a "." with one of those after it (an extension).
+func continuesName(s string) bool {
+	n, size := utf8.DecodeRuneInString(s)
+	if n == '.' {
+		n, _ = utf8.DecodeRuneInString(s[size:])
+	}
+	return unicode.IsLetter(n) || unicode.IsDigit(n) || n == '_'
 }
 
 func tailDelimiter(r rune) bool {

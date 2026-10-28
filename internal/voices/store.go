@@ -330,8 +330,10 @@ func (s *Store) Update(name string, fn func(*Voice)) (*Voice, error) {
 // Remove deletes a voice's json+wav. Unknown names yield ErrNotFound. The json
 // goes FIRST: List and Get find a voice by its json, so a crash between the two
 // deletions leaves an orphan recording nobody lists, not a listed voice whose
-// recording is gone; a speak that races the removal sees "no such voice", never
-// "damaged, add it again".
+// recording is gone; a speak that races the removal sees "no such voice". One
+// that passed Get before the json delete and reads the wav after the wav delete
+// gets a not-exist error from the wav; the daemon's voiceReadError re-reads the
+// metadata to tell that from a half-removed voice.
 func (s *Store) Remove(name string) error {
 	if err := ValidateName(name); err != nil {
 		return err

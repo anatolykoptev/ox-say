@@ -72,6 +72,9 @@ type Daemon struct {
 	// voice written while replayVoices runs could otherwise be missing
 	// from both the store snapshot and the live child.
 	voiceMu sync.Mutex
+	// voxRefMax overrides the reference-clip limit in seconds; zero means
+	// voxMaxRefSeconds. Set by tests only.
+	voxRefMax float64
 
 	// replayAfterSnapshot, when set (tests only), runs inside replayVoices
 	// after the store snapshot, with voiceMu held.
@@ -424,7 +427,7 @@ func (d *Daemon) addVoice(ctx context.Context, name, audioPath, refText string, 
 	if d.effectiveEngine(name, m) == config.TTSModelVoxCPM2 {
 		secs, serr := pending.Seconds()
 		if serr == nil {
-			serr = checkVoxReference(secs)
+			serr = d.checkVoxReference(secs)
 		}
 		if serr != nil {
 			return nil, false, serr
