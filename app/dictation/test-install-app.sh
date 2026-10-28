@@ -4,7 +4,7 @@
 #
 #   bash app/dictation/test-install-app.sh
 #
-# Mutations that must turn this RED: drop `| grep -vx '.DS_Store'` from partial_bundle - the .DS_Store scenario fails; in install-app.sh replace `clear_staging "$old"` by `clear_ours "$old"` - the
+# Mutations that must turn this RED: drop the `.DS_Store` case from the partial_bundle loop - the .DS_Store scenario fails; let that loop accept any name - the Q1 scenarios fail; in install-app.sh replace `clear_staging "$old"` by `clear_ours "$old"` - the
 # partial .old scenario fails; make `partial_bundle` always succeed (`return 0` first) - the "real directory with other
 # content" scenarios fail; delete the `for _ in 1 2 ... 10` wait loop - the "waits for the old copy to exit" scenario
 # fails; drop the `[ ! -L "$1" ]` test from `clear_staging` - the symlinked staging scenarios fail; make `ours` skip the
@@ -240,6 +240,21 @@ if [ "$rc" -eq 0 ] && [ ! -e "$tmp/q0/.OxSayDictation.app.old" ] && [ "$(marker 
 else
     fail ".DS_Store: rc=$rc $(cat "$tmp/out")"
 fi
+
+# Q1: only the exact name .DS_Store is Finder's: "xDS_Store" (the dot of the pattern is not a wildcard) and a ..name are
+# other files, so the directory is not a remnant and is kept
+for odd in xDS_Store ..hidden .other; do
+    d="$tmp/q1-$odd"
+    mkdir -p "$d/.OxSayDictation.app.old/Contents/MacOS"
+    echo mine > "$d/.OxSayDictation.app.old/$odd"
+    run "$tmp/src/OxSayDictation.app" "$d"
+    rc=$?
+    if [ "$rc" -ne 0 ] && [ "$(cat "$d/.OxSayDictation.app.old/$odd" 2>/dev/null)" = mine ]; then
+        pass "a file named $odd beside Contents is not Finder's .DS_Store: the directory is refused and kept"
+    else
+        fail "$odd: rc=$rc $(cat "$tmp/out")"
+    fi
+done
 
 # Q: a real directory under a staging name that is not a bundle remnant (no Info.plist, but holds other files) is
 # refused: the name alone does not make a directory ours to delete

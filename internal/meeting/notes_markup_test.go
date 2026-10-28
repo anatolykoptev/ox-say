@@ -164,3 +164,121 @@ func TestRandomModelTextNeverRendersMarkup(t *testing.T) {
 		t.Errorf("%d of %d random inputs rendered markup; first: %s", bad, n, first)
 	}
 }
+
+// topLevelShape renders md as GFM and lists the kinds of the document's top-level blocks as letters: H heading,
+// P paragraph, L list, and the block kind's own name for anything else (a code block, a table, a quote, a rule, raw
+// HTML). Model text in the summary may only add paragraphs.
+func topLevelShape(md string) string {
+	src := []byte(md)
+	root := goldmark.New(goldmark.WithExtensions(gmext.GFM), goldmark.WithRendererOptions(gmhtml.WithUnsafe())).
+		Parser().Parse(text.NewReader(src))
+	var b strings.Builder
+	for c := root.FirstChild(); c != nil; c = c.NextSibling() {
+		switch c.Kind().String() {
+		case "Heading":
+			b.WriteString("H")
+		case "Paragraph":
+			b.WriteString("P")
+		case "List":
+			b.WriteString("L")
+		default:
+			b.WriteString("<" + c.Kind().String() + ">")
+		}
+	}
+	return b.String()
+}
+
+var summaryShape = regexp.MustCompile(`^HHP+HLHL$`)
+
+// The summary is a model string that spans lines. Whatever its lines start with, it stays paragraphs: a lone fence
+// must not swallow Decisions and Action items, "===" or "---" must not turn the line above into a heading, and a
+// marker must not make a list, a table, a rule or a quote of its own (#303 R1).
+// Mutation: internal/meeting/notes_render.go cleanBlock, replace `escapeBlockStart(cleanLine(l))` with `cleanLine(l)`
+// -> RED (the fences, setext lines, lists and tables render as blocks).
+func TestSummaryLinesNeverBecomeBlocks(t *testing.T) {
+	for _, in := range []string{
+		"intro\n```\nmore", "intro\n~~~\nmore", "```go\nx", "intro\n====\nmore", "intro\n---\nmore", "intro\n===",
+		"- a\n- b", "* a", "+ a", "1. a\n2. b", "7) a", "123456789. a",
+		"| a | b |\n|---|---|\n| 1 | 2 |", "a | b\n--|--\n1 | 2", "a | b\n:-:|:-:\n1 | 2", ":--|--:",
+		"***", "___", "- - -", "* * *", "> quote", "# heading", "<div>", "!x",
+		"first\n\n```\n\nsecond", "-5 degrees", "**Topic:** body", "_em_ text", "+x", "=x",
+	} {
+		n := Notes{ChunkNotes: ChunkNotes{Summary: in, Decisions: []string{"d"}, ActionItems: []ActionItem{{Who: "Bob", What: "x", When: "Friday"}}}}
+		md := NotesMarkdown(Manifest{Title: "T"}, n, "en")
+		if got := topLevelShape(md); !summaryShape.MatchString(got) {
+			t.Errorf("summary %q renders as %s, want headings, paragraphs and the two lists:\n%s", in, got, md)
+		}
+	}
+}
+
+var blockTokens = []string{"```", "~~~", "===", "---", "-", "+", "*", "1.", "2)", "|", "a | b", "--|--", ":-:", "***", "___", "> ", "# ", "\n", "\n\n", " ", "x", "\t", "<", "&"}
+
+// Random summaries, built from block markers, never render anything but paragraphs between the summary heading and
+// the next section.
+// Mutation: internal/meeting/notes_render.go cleanBlock, as above -> RED.
+func TestRandomSummaryNeverRendersBlocks(t *testing.T) {
+	n := 4000
+	if v, err := strconv.Atoi(os.Getenv("OX_FUZZ_N")); err == nil && v > 0 {
+		n = v
+	}
+	r := rand.New(rand.NewSource(303))
+	bad, first := 0, ""
+	for i := 0; i < n; i++ {
+		var sb strings.Builder
+		for j, k := 0, 1+r.Intn(12); j < k; j++ {
+			sb.WriteString(blockTokens[r.Intn(len(blockTokens))])
+			if r.Intn(3) == 0 {
+				sb.WriteString(" ")
+			}
+		}
+		p := sb.String()
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		md := NotesMarkdown(Manifest{Title: "T"}, Notes{ChunkNotes: ChunkNotes{Summary: p, Decisions: []string{"d"},
+			ActionItems: []ActionItem{{Who: "Bob", What: "x", When: "Friday"}}}}, "en")
+		if got := topLevelShape(md); !summaryShape.MatchString(got) {
+			if bad++; first == "" {
+				first = fmt.Sprintf("input %q renders as %s", p, got)
+			}
+		}
+	}
+	if bad > 0 {
+		t.Errorf("%d of %d random summaries rendered a block; first: %s", bad, n, first)
+	}
+}
+
+// Action lines are split on " — " by the app, so a model field (or a label) that holds one would shift the parts.
+// Mutation: internal/meeting/notes_render.go NotesMarkdown, drop the `inlineDash(...)` calls on the action line
+// -> RED.
+func TestActionFieldsKeepTheirSeparator(t *testing.T) {
+	n := Notes{ChunkNotes: ChunkNotes{ActionItems: []ActionItem{
+		{Who: "Ana — CFO", What: "send the plan — today — now", When: "Friday — noon"},
+		{Who: "Bob", What: "a — — b", When: "x"},
+	}}}
+	md := NotesMarkdown(Manifest{Title: "T"}, n, "en")
+	for _, line := range strings.Split(md, "\n") {
+		if !strings.HasPrefix(line, "- [ ] ") {
+			continue
+		}
+		if parts := strings.Split(strings.TrimPrefix(line, "- [ ] "), " — "); len(parts) != 3 {
+			t.Errorf("%q splits into %d parts on the separator, want 3", line, len(parts))
+		}
+	}
+}
+
+// A summary line that starts with **bold** or _emphasis_ keeps it: only a list marker, a rule or a setext line is
+// escaped, not every leading * or _.
+// Mutation: internal/meeting/notes_render.go escapeBlockStart, escape every leading `*` and `_` -> RED.
+func TestSummaryKeepsLeadingEmphasis(t *testing.T) {
+	md := NotesMarkdown(Manifest{Title: "T"}, Notes{ChunkNotes: ChunkNotes{Summary: "**Topic:** body\n_em_ text"}}, "en")
+	var b bytes.Buffer
+	if err := goldmark.New(goldmark.WithExtensions(gmext.GFM)).Convert([]byte(md), &b); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<strong>Topic:</strong>", "<em>em</em>"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("no %s in:\n%s", want, b.String())
+		}
+	}
+}

@@ -86,7 +86,7 @@ func unescapeMarkdown(s string) string {
 	return b.String()
 }
 
-const unescapable = markdownSpecials + "#!>"
+const unescapable = markdownSpecials + "#!>~-+=|:.)"
 
 // headingLine is the first line of transcript.md and notes.md. Rename rewrites it, so one function builds it. The
 // title renders as typed: markup is escaped, not removed; whitespace (a newline would end the heading) is collapsed.

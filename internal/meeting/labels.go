@@ -147,24 +147,24 @@ func (c labelChanges) ambiguousIn(n Notes) bool {
 	return false
 }
 
-// matchExtension reports whether s starts with ext, taking any run of whitespace in s (two spaces, a tab, a line
-// break) for a run of whitespace in ext, and how many bytes of s that is. fold ignores case.
+// inlineSpace is the whitespace a name's words may be separated by: a line break is a sentence or paragraph
+// boundary of the notes, not the space of a name.
+func inlineSpace(r rune) bool { return r == ' ' || r == '\t' || r == '\u00a0' || r == '\u202f' }
+
+// matchExtension reports whether s starts with ext, taking any run of spaces, tabs and no-break spaces in s (also
+// none: "Ivan(CFO)" holds " (CFO)") for a run of whitespace in ext, and how many bytes of s that is. A line break
+// does not match: "Ivan\nPetrov" is two paragraphs, and joining them would lose the break. fold ignores case.
 func matchExtension(s, ext string, fold bool) (int, bool) {
 	n := 0
 	for _, er := range ext {
 		if unicode.IsSpace(er) {
-			k := 0
-			for n+k < len(s) {
-				r, w := utf8.DecodeRuneInString(s[n+k:])
-				if !unicode.IsSpace(r) {
+			for n < len(s) {
+				r, w := utf8.DecodeRuneInString(s[n:])
+				if !inlineSpace(r) {
 					break
 				}
-				k += w
+				n += w
 			}
-			if k == 0 {
-				return 0, false
-			}
-			n += k
 			continue
 		}
 		if n >= len(s) {
@@ -179,13 +179,79 @@ func matchExtension(s, ext string, fold bool) (int, bool) {
 	return n, true
 }
 
+// looseExtension is matchExtension across any whitespace, line breaks included, ignoring case: whether the text
+// holds the extra words of the name at all.
+func looseExtension(s, ext string) bool {
+	n := 0
+	for _, er := range ext {
+		if unicode.IsSpace(er) {
+			for n < len(s) {
+				r, w := utf8.DecodeRuneInString(s[n:])
+				if !unicode.IsSpace(r) {
+					break
+				}
+				n += w
+			}
+			continue
+		}
+		if n >= len(s) {
+			return false
+		}
+		r, w := utf8.DecodeRuneInString(s[n:])
+		if r != er && !strings.EqualFold(string(r), string(er)) {
+			return false
+		}
+		n += w
+	}
+	return true
+}
+
+// minCutRunes is how many letters of the extension the text must already hold to count as a cut-short word. One or
+// two letters are an ordinary word that merely starts alike: a preposition or conjunction after a name ("Иван с
+// мужем", "Иван и Петя", "Ivan a plan" for " Смирнов", " Иванов", " Adams"), an initial. Three letters that then end
+// at a word edge ("Ivan Pet") are rarely a word of their own, and a miss costs one duplicated surname the user can
+// see, while a false hit sends a whole meeting's notes back to the model.
+const minCutRunes = 3
+
+// truncatedExtension reports text that holds the first words of ext and stops at a word edge inside it: "Ivan Pet"
+// or "Ivan Petrov" for " Petrov Jr". The name would be written after them as "Ivan Petrov Pet".
+func truncatedExtension(rest, ext string) bool {
+	n, end, word := 0, 0, 0
+	for _, er := range ext {
+		if unicode.IsSpace(er) {
+			for n < len(rest) {
+				r, w := utf8.DecodeRuneInString(rest[n:])
+				if !unicode.IsSpace(r) {
+					break
+				}
+				n += w
+			}
+			continue
+		}
+		if n < len(rest) {
+			r, w := utf8.DecodeRuneInString(rest[n:])
+			if r == er || strings.EqualFold(string(r), string(er)) {
+				if isWordRune(r) {
+					word++
+				}
+				n += w
+				end = n
+				continue
+			}
+		}
+		return word >= minCutRunes && wordEdgeAfter(rest, end)
+	}
+	return false
+}
+
 // partialExtension reports text that starts like the extra words of a new name (ext, " Petrov") without being them
-// at a word edge: "Ivan Petrovich" or "Ivan petrov" after "Ivan". Substituting there would write "Ivan Petrov
-// Petrovich", so replaceLabels leaves it and the notes are written again. Text that holds the words exactly (across
-// any whitespace), or does not start like them, is not partial.
+// at a word edge: "Ivan Petrovich" or "Ivan petrov" after "Ivan", words cut short ("Ivan Pet"), or the words with
+// a line break between them ("Ivan\nPetrov"). Substituting there would write "Ivan Petrov Petrovich", "Ivan
+// Petrov Pet" or lose the break, so replaceLabels leaves it and the notes are written again. Text that holds the
+// words exactly (across spaces and tabs), or does not start like them, is not partial.
 func partialExtension(rest, ext string) bool {
-	if _, ok := matchExtension(rest, ext, true); !ok {
-		return false
+	if !looseExtension(rest, ext) {
+		return truncatedExtension(rest, ext)
 	}
 	n, exact := matchExtension(rest, ext, false)
 	return !exact || !wordEdgeAfter(rest, n)

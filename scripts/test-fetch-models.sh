@@ -24,6 +24,10 @@
 #     retried in the shell -> "a stall is resumed from the current .part" and "stalls that never end" fail
 #   * fetch-models.sh: delete the `fetch_part "$base/$remote" "$part" 0` self-heal call (or the `[ "$resumed" = 1 ]`
 #     guard) -> "an unresumable .part is dropped" fails
+#   * fetch-models.sh: drop `-w '%{http_code}'` from the `local opts=(` line of fetch_part -> the fake curl prints no
+#     status -> "the retry after a 503 resumes" and "the failure names the HTTP status" fail (the fake honours -w)
+#   * fetch-models.sh: delete the `[ "$resume" = 1 ] || { resume=1; opts+=(-C -); }` line in fetch_part -> "after the
+#     self-heal, a retry resumes from the fresh .part" fails
 #   * fetch-models.sh: delete the `case $name in diar/*) rm -f "$diar_marker" ;; esac` line and put
 #     `rm -f "$dest/diar/speaker-diarization/.fluidaudio-revision"` before the loop -> "an unrelated failure keeps the
 #     marker" fails (and the delete alone makes "a failed fetch removes the marker" fail)
@@ -142,19 +146,24 @@ done
 
 # --- the download loop, with a scripted curl ---------------------------------------------------------------------
 # The fake appends to the file after -o when it is given -C - (resume), else truncates it, like curl. Per call it
-# does what $d/script says on that line (rc:<n>[:<http status>] prints the status like curl -w): "stall:<text>" writes <text> then exits 28, "ok:<text>" writes it and
-# exits 0, "rc:<n>" writes nothing and exits n. It logs argv and the size of the file it was handed.
+# does what $d/script says on that line: "stall:<text>" writes <text> then exits 28, "ok:<text>" writes it and
+# exits 0, "rc:<n>[:<http status>]" writes nothing and exits n. It logs argv and the size of the file it was handed.
+# Like curl it prints the HTTP status ONLY when it is given -w '%{http_code}' (200 after "ok", the scripted status
+# after "rc:<n>:<status>", else 000), so a script that stops asking for it loses the status and the retry decisions
+# that read it.
 fakecurl() { # dir
     mkdir -p "$1/bin"
     cat > "$1/bin/curl" <<'FAKE'
 #!/bin/bash
 d=$(dirname "$(dirname "$0")")
-out= resume=0 prev=
+out= resume=0 prev= wfmt=
 for a in "$@"; do
     [ "$prev" = -o ] && out=$a
     [ "$prev" = -C ] && [ "$a" = - ] && resume=1
+    [ "$prev" = -w ] && wfmt=$a
     prev=$a
 done
+status() { [ -n "$wfmt" ] && printf '%s' "${wfmt//%\{http_code\}/$1}"; return 0; }
 n=$(( $(cat "$d/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/n"
 echo "call $n resume=$resume size=$(wc -c < "$out" 2>/dev/null | tr -d ' ') args=$*" >> "$d/calls"
 line=$(sed -n "${n}p" "$d/script")
@@ -163,9 +172,9 @@ kind=${line%%:*}; arg=${line#*:}; code=
 case $kind:$arg in rc:*:*) code=${arg#*:}; arg=${arg%%:*} ;; esac
 [ "$resume" = 1 ] || : > "$out"
 case $kind in
-    stall) printf '%s' "$arg" >> "$out"; exit 28 ;;
-    ok) printf '%s' "$arg" >> "$out"; exit 0 ;;
-    rc) printf '%s' "$code"; exit "$arg" ;;
+    stall) printf '%s' "$arg" >> "$out"; status 000; exit 28 ;;
+    ok) printf '%s' "$arg" >> "$out"; status 200; exit 0 ;;
+    rc) status "${code:-000}"; exit "$arg" ;;
 esac
 FAKE
     chmod +x "$1/bin/curl"
@@ -205,6 +214,19 @@ printf 'rc:22:416\nok:fresh\n' > "$d/script"
 out=$(run_fetch "$d" "$d/dest"); rc=$?
 case $out in *"checksum mismatch"*) pass "an unresumable .part is dropped and the file fetched from the start" ;; *) fail "heal: exit $rc: $out" ;; esac
 if sed -n 2p "$d/calls" | grep -q 'resume=0 size= '; then pass "the second try is a fresh download, not a resume"; else fail "heal calls: $(cat "$d/calls")"; fi
+# After the self-heal the fresh download is itself resumed when it stalls: pass 2 sees the bytes pass 1 wrote and
+# sends -C - (it must not start over from byte 0 on every retry).
+d="$tmp/heal2"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'stale bytes that no longer fit' > "$d/dest/$name.part"
+printf 'rc:22:416\nstall:abc\nok:defg\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in *"checksum mismatch"*) pass "a stall after the self-heal completes" ;; *) fail "heal2: exit $rc: $out" ;; esac
+if [ "$(wc -l < "$d/calls" | tr -d ' ')" = 3 ] && sed -n 2p "$d/calls" | grep -q 'resume=0 size= ' && sed -n 3p "$d/calls" | grep -q 'resume=1 size=3 '; then
+    pass "after the self-heal, a retry resumes from the fresh .part (-C -)"
+else
+    fail "heal2 calls: $(cat "$d/calls")"
+fi
 # A 503 is transient: retried with the .part kept and -C - on the retry; a 404 keeps the .part and is not retried.
 d="$tmp/t503"; mkdir -p "$d" "$d/dest"
 fakecurl "$d"

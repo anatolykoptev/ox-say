@@ -312,6 +312,13 @@ func TestAnExtensionThatIsOnlyPartlyThereIsWrittenAgain(t *testing.T) {
 		{"a longer word", "Иван", "Иван Петров", "Иван Петрович согласился."},
 		{"another case", "Ivan", "Ivan Petrov", "Ivan petrov said so."},
 		{"a word continued", "Ivan", "Ivanov", "Ivan said so."},
+		// #305: a paragraph break is not the space of a name ("Ivan Petrov asked why" would join two sentences).
+		{"a line break inside", "Ivan", "Ivan Petrov", `I met Ivan\nPetrov asked why`},
+		{"a paragraph break inside", "Ivan", "Ivan Petrov", `I met Ivan\n\nPetrov asked why`},
+		// #305: "Ivan Pet" would become "Ivan Petrov Pet".
+		{"a truncated surname", "Ivan", "Ivan Petrov", "I met Ivan Pet at noon."},
+		{"a truncated surname at the end", "Ivan", "Ivan Petrov", "I met Ivan Pet"},
+		{"a surname with a part missing", "Ivan", "Ivan Petrov Jr", "I met Ivan Petrov at noon."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, chat, id, dir := settledNotes(t)
@@ -361,7 +368,7 @@ func TestExtension(t *testing.T) {
 func TestWhitespaceInsideAnExtensionIsNotDoubled(t *testing.T) {
 	for _, tc := range []struct{ from, to, text, want string }{
 		{"Иван", "Иван Петров", "Иван  Петров согласился.", "Иван Петров согласился."},
-		{"Ivan", "Ivan Petrov", `Ivan\nPetrov said so.`, "Ivan Petrov said so."},
+		{"Ivan", "Ivan Petrov", `Ivan\u00a0Petrov said so.`, "Ivan Petrov said so."},
 		{"Ivan", "Ivan Petrov", `Ivan \t Petrov said so, Ivan too.`, "Ivan Petrov said so, Ivan Petrov too."},
 	} {
 		f, chat, id, dir := settledNotes(t)
@@ -382,5 +389,61 @@ func TestWhitespaceInsideAnExtensionIsNotDoubled(t *testing.T) {
 		if v.NotesQueued || len(chat.reqs) != asked {
 			t.Errorf("%q: queued %v: a surname already there must not run the model", tc.text, v.NotesQueued)
 		}
+	}
+}
+
+// matchExtension crosses spaces, tabs and no-break spaces, never a line break; the zero-length run is a match too.
+// Mutation: internal/meeting/labels.go matchExtension, use unicode.IsSpace instead of inlineSpace -> RED (the
+// line-break rows match).
+func TestMatchExtensionStaysOnTheLine(t *testing.T) {
+	for _, tc := range []struct {
+		s, ext string
+		n      int
+		ok     bool
+	}{
+		{" Petrov x", " Petrov", 7, true},
+		{" \t\u00a0Petrov", " Petrov", 1 + 1 + 2 + 6, true},
+		{"\nPetrov", " Petrov", 0, false},
+		{" \n Petrov", " Petrov", 0, false},
+		{"\r\nPetrov", " Petrov", 0, false},
+		// A name that adds a word with a non-word start is written with or without the space.
+		{"(CFO) said", " (CFO)", 5, true},
+	} {
+		if n, ok := matchExtension(tc.s, tc.ext, false); n != tc.n || ok != tc.ok {
+			t.Errorf("matchExtension(%q, %q) = %d, %v; want %d, %v", tc.s, tc.ext, n, ok, tc.n, tc.ok)
+		}
+	}
+}
+
+// A new name that adds a word starting with a non-word character is not doubled when the text has it without the
+// space ("Ivan(CFO)"), which is what the zero-length whitespace match is for.
+// Mutation: internal/meeting/labels.go matchExtension, restore the `if k == 0 { return 0, false }` guard -> RED
+// ("Ivan (CFO)(CFO) said").
+func TestAnExtensionWithoutItsSpaceIsNotDoubled(t *testing.T) {
+	if got, want := replaceLabels("Ivan(CFO) said", map[string]string{"Ivan": "Ivan (CFO)"}), "Ivan (CFO) said"; got != want {
+		t.Errorf("replaceLabels = %q, want %q", got, want)
+	}
+}
+
+// A word that merely starts like the surname, or has one or two of its letters, is not a cut-short surname: the
+// commonest Russian phrasing after a name is a one-letter preposition or conjunction, and none of these may send the
+// notes back to the model. "Ivan Pet" stays partial.
+// Mutation: internal/meeting/labels.go minCutRunes = 3 -> 1 -> RED (the "not partial" rows).
+func TestAShortWordAfterANameIsNotACutSurname(t *testing.T) {
+	for _, tc := range []struct {
+		rest, ext string
+		partial   bool
+	}{
+		{" с мужем", " Смирнов", false}, {" в офисе", " Волков", false}, {" и Петя", " Иванов", false},
+		{" I think", " Ivanov", false}, {" a plan", " Adams", false}, {" to go", " Tolstoy", false},
+		{" (C) done", " (CFO)", false}, {" C-level", " CFO", false}, {" Pe said", " Petrov", false},
+		{" Pet said", " Petrov", true}, {" Pet", " Petrov", true}, {" Пет", " Петров", true}, {" Petrov at", " Petrov Jr", true},
+	} {
+		if got := partialExtension(tc.rest, tc.ext); got != tc.partial {
+			t.Errorf("partialExtension(%q, %q) = %v, want %v", tc.rest, tc.ext, got, tc.partial)
+		}
+	}
+	if got, want := replaceLabels("Иван с мужем и Иван и Петя", map[string]string{"Иван": "Иван Смирнов"}), "Иван Смирнов с мужем и Иван Смирнов и Петя"; got != want {
+		t.Errorf("replaceLabels = %q, want %q", got, want)
 	}
 }

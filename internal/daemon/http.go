@@ -90,6 +90,9 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	// The mark is the daemon's own (applySeedDefault); a client that sends it would turn a pinned seed into one the
+	// daemon may swap on a retry.
+	delete(body, fieldSeedDefaulted)
 	input, _ := body["input"].(string)
 	if input == "" {
 		writeErr(w, http.StatusBadRequest, `"input" is required`)
@@ -143,6 +146,11 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		upstream["response_format"] = "wav"
 	}
 	var resp *http.Response
+	// Decided before the loop: the retry writes a seed into upstream (which is body for wav), and that seed is not
+	// the caller's.
+	_, fixed := seedFixed(body)
+	pinned := fixed && !seedDefaulted
+	started := speakNow()
 	for attempt := 0; ; attempt++ {
 		raw, err := json.Marshal(upstream)
 		if err != nil {
@@ -169,12 +177,8 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = resp.Body.Close()
 		d.noteRunaway("/v1/audio/speech", utf8.RuneCountInString(input))
-		pinned := false
-		if _, fixed := seedFixed(body); fixed && !seedDefaulted {
-			pinned = true
-		}
-		if pinned || attempt > 0 {
-			writeSynthErr(w, &runawayError{pinned: pinned})
+		if pinned || attempt > 0 || !retryFits(r.Context(), started, speakNow()) {
+			writeSynthErr(w, &runawayError{pinned: pinned, retried: attempt > 0})
 			return
 		}
 		// A seed the daemon filled in (or none): the same text on another seed usually ends.

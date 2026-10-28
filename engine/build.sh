@@ -310,7 +310,7 @@ check_static "$out/ox-llm"
 check_dist "$out/ox-llm"
 check_patched "$out/ox-llm"
 # The daemon starts ox-llm with these flags (internal/daemon/meetings.go notesServerArgs).
-check_help_flags "$out/ox-llm" --host --port --api-key-file --cache-ram --flash-attn --jinja --no-ui --ctx-size --n-gpu-layers --parallel
+check_help_flags "$out/ox-llm" --host --port --api-key-file --cors-origins --cache-ram --flash-attn --jinja --no-ui --ctx-size --n-gpu-layers --parallel
 cp "$ll/LICENSE" "$out/licenses/llama.cpp.LICENSE"
 # llama.cpp's own list of third-party licences, plus every licence under vendor/
 # (cpp-httplib and friends), derived from the tree: a hand list cannot notice one

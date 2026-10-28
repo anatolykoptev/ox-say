@@ -10,6 +10,9 @@
 #   * engine/lib-check.sh: make check_patched always `return 0` — "binary without the marker" fails
 #   * engine/lib-check.sh: drop the empty-help test in check_help_flags — "empty --help" cases fail
 #   * engine/build.sh: delete one `check_patched "$out/<engine>"` call — the wiring check for it fails
+#   * engine/lib-check.sh: reword OXS_METALLIB_PATCH_MARKER — "patch file carries the marker" fails for all three
+#   * engine/build.sh: drop `--cors-origins` from the check_help_flags "$out/ox-llm" line — "checks every flag the
+#     daemon passes" fails (the flags are read from internal/daemon/meetings.go notesServerArgs)
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -108,6 +111,30 @@ check "build.sh checks ox-llm's --help for --host" "${n:-x}" 1
 for bin in tts-server ox-stt ox-align ox-llm audiocpp_server; do
     n=$(grep -cE "^[[:space:]]*check_patched \"\\\$(out|work)/$bin\"" "$root/engine/build.sh" || true)
     check "build.sh runs check_patched on $bin" "${n:-x}" 1
+done
+
+# The marker is a literal copied from the patches: the three patches that add the string must still carry it, or
+# every engine build would fail at release time (and the unit test above only compares the constant with itself).
+for patch in ggml/0003-metal-per-binary-metallib.patch audiocpp/0003-metal-per-binary-metallib.patch llamacpp/0001-metal-per-binary-metallib.patch; do
+    f="$root/engine/patches/$patch"
+    n=0
+    [ -f "$f" ] && { n=$(grep -cF -- "$OXS_METALLIB_PATCH_MARKER" "$f" || true); }
+    [ "${n:-0}" -ge 1 ] && n=1
+    check "patch file carries the marker: $patch" "$n" 1
+done
+
+# Every long flag the daemon starts ox-llm with is in the --help check (read from the daemon, not a second list).
+want=$(awk '/^func notesServerArgs/,/^}/' "$root/internal/daemon/meetings.go" | grep -o '"--[a-z0-9-]*"' | tr -d '"' | sort -u)
+# Every `"--` literal must have been read as a plain flag: a `"--x=%d"` or a concatenated flag would drop out of the list.
+fn=$(awk '/^func notesServerArgs/,/^}/' "$root/internal/daemon/meetings.go")
+check "every -- literal of notesServerArgs is a plain flag" "$(printf '%s\n' "$fn" | grep -o '"--' | wc -l | tr -d ' ')" "$(printf '%s\n' "$want" | grep -c .)"
+check "daemon's ox-llm flags were found" "$([ -n "$want" ] && echo yes || echo no)" yes
+line=$(grep -E '^check_help_flags "\$out/ox-llm"' "$root/engine/build.sh" || true)
+for flag in $want; do
+    case " $line " in
+        *" $flag "*) pass "build.sh checks ox-llm's --help for $flag" ;;
+        *) fail "build.sh does not check ox-llm's --help for $flag (the daemon passes it)" ;;
+    esac
 done
 
 echo
