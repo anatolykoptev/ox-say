@@ -125,6 +125,9 @@ done
 
 # Every long flag the daemon starts ox-llm with is in the --help check (read from the daemon, not a second list).
 want=$(awk '/^func notesServerArgs/,/^}/' "$root/internal/daemon/meetings.go" | grep -o '"--[a-z0-9-]*"' | tr -d '"' | sort -u)
+# Every `"--` literal must have been read as a plain flag: a `"--x=%d"` or a concatenated flag would drop out of the list.
+fn=$(awk '/^func notesServerArgs/,/^}/' "$root/internal/daemon/meetings.go")
+check "every -- literal of notesServerArgs is a plain flag" "$(printf '%s\n' "$fn" | grep -o '"--' | wc -l | tr -d ' ')" "$(printf '%s\n' "$want" | grep -c .)"
 check "daemon's ox-llm flags were found" "$([ -n "$want" ] && echo yes || echo no)" yes
 line=$(grep -E '^check_help_flags "\$out/ox-llm"' "$root/engine/build.sh" || true)
 for flag in $want; do

@@ -89,14 +89,22 @@ func cleanBlock(s string) string {
 }
 
 // escapeBlockStart writes a backslash before whatever would start a block at the start of a line: a code fence
-// (` or ~), a list marker (- + * or "1." / "1)"), a setext underline or rule (= - * _), a table row or delimiter
-// (| :). cleanLine has done # ! > and [ ]; the line has no leading whitespace.
+// (` or ~), a list marker (- + * followed by a space or nothing, "1." / "1)"), a thematic break or setext underline (a
+// line made only of - * _ = and spaces), a table row or delimiter (| :). A leading **bold** or _emphasis_ is inline
+// text and is left alone. cleanLine has done # ! > and [ ]; the line has no leading whitespace.
 func escapeBlockStart(l string) string {
 	if l == "" {
 		return l
 	}
-	if strings.IndexByte("`~-+*=|:_", l[0]) >= 0 {
+	switch l[0] {
+	case '`', '~', '|', ':':
 		return `\` + l
+	case '-', '+', '*', '_', '=':
+		// The second Trim is a table delimiter row ("--|--", "-:|:-"), which cleanLine's first character test misses.
+		if strings.Trim(l, "-*_= ") == "" || strings.Trim(l, "-:| ") == "" || (l[0] != '_' && l[0] != '=' && (len(l) == 1 || l[1] == ' ')) {
+			return `\` + l
+		}
+		return l
 	}
 	i := 0
 	for i < len(l) && l[i] >= '0' && l[i] <= '9' {

@@ -201,7 +201,7 @@ func TestSummaryLinesNeverBecomeBlocks(t *testing.T) {
 		"- a\n- b", "* a", "+ a", "1. a\n2. b", "7) a", "123456789. a",
 		"| a | b |\n|---|---|\n| 1 | 2 |", "a | b\n--|--\n1 | 2", "a | b\n:-:|:-:\n1 | 2", ":--|--:",
 		"***", "___", "- - -", "* * *", "> quote", "# heading", "<div>", "!x",
-		"first\n\n```\n\nsecond",
+		"first\n\n```\n\nsecond", "-5 degrees", "**Topic:** body", "_em_ text", "+x", "=x",
 	} {
 		n := Notes{ChunkNotes: ChunkNotes{Summary: in, Decisions: []string{"d"}, ActionItems: []ActionItem{{Who: "Bob", What: "x", When: "Friday"}}}}
 		md := NotesMarkdown(Manifest{Title: "T"}, n, "en")
@@ -263,6 +263,22 @@ func TestActionFieldsKeepTheirSeparator(t *testing.T) {
 		}
 		if parts := strings.Split(strings.TrimPrefix(line, "- [ ] "), " — "); len(parts) != 3 {
 			t.Errorf("%q splits into %d parts on the separator, want 3", line, len(parts))
+		}
+	}
+}
+
+// A summary line that starts with **bold** or _emphasis_ keeps it: only a list marker, a rule or a setext line is
+// escaped, not every leading * or _.
+// Mutation: internal/meeting/notes_render.go escapeBlockStart, escape every leading `*` and `_` -> RED.
+func TestSummaryKeepsLeadingEmphasis(t *testing.T) {
+	md := NotesMarkdown(Manifest{Title: "T"}, Notes{ChunkNotes: ChunkNotes{Summary: "**Topic:** body\n_em_ text"}}, "en")
+	var b bytes.Buffer
+	if err := goldmark.New(goldmark.WithExtensions(gmext.GFM)).Convert([]byte(md), &b); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<strong>Topic:</strong>", "<em>em</em>"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("no %s in:\n%s", want, b.String())
 		}
 	}
 }

@@ -424,3 +424,26 @@ func TestAnExtensionWithoutItsSpaceIsNotDoubled(t *testing.T) {
 		t.Errorf("replaceLabels = %q, want %q", got, want)
 	}
 }
+
+// A word that merely starts like the surname, or has one or two of its letters, is not a cut-short surname: the
+// commonest Russian phrasing after a name is a one-letter preposition or conjunction, and none of these may send the
+// notes back to the model. "Ivan Pet" stays partial.
+// Mutation: internal/meeting/labels.go minCutRunes = 3 -> 1 -> RED (the "not partial" rows).
+func TestAShortWordAfterANameIsNotACutSurname(t *testing.T) {
+	for _, tc := range []struct {
+		rest, ext string
+		partial   bool
+	}{
+		{" с мужем", " Смирнов", false}, {" в офисе", " Волков", false}, {" и Петя", " Иванов", false},
+		{" I think", " Ivanov", false}, {" a plan", " Adams", false}, {" to go", " Tolstoy", false},
+		{" (C) done", " (CFO)", false}, {" C-level", " CFO", false}, {" Pe said", " Petrov", false},
+		{" Pet said", " Petrov", true}, {" Pet", " Petrov", true}, {" Пет", " Петров", true}, {" Petrov at", " Petrov Jr", true},
+	} {
+		if got := partialExtension(tc.rest, tc.ext); got != tc.partial {
+			t.Errorf("partialExtension(%q, %q) = %v, want %v", tc.rest, tc.ext, got, tc.partial)
+		}
+	}
+	if got, want := replaceLabels("Иван с мужем и Иван и Петя", map[string]string{"Иван": "Иван Смирнов"}), "Иван Смирнов с мужем и Иван Смирнов и Петя"; got != want {
+		t.Errorf("replaceLabels = %q, want %q", got, want)
+	}
+}

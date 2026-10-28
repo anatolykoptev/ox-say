@@ -206,10 +206,17 @@ func looseExtension(s, ext string) bool {
 	return true
 }
 
+// minCutRunes is how many letters of the extension the text must already hold to count as a cut-short word. One or
+// two letters are an ordinary word that merely starts alike: a preposition or conjunction after a name ("Иван с
+// мужем", "Иван и Петя", "Ivan a plan" for " Смирнов", " Иванов", " Adams"), an initial. Three letters that then end
+// at a word edge ("Ivan Pet") are rarely a word of their own, and a miss costs one duplicated surname the user can
+// see, while a false hit sends a whole meeting's notes back to the model.
+const minCutRunes = 3
+
 // truncatedExtension reports text that holds the first words of ext and stops at a word edge inside it: "Ivan Pet"
 // or "Ivan Petrov" for " Petrov Jr". The name would be written after them as "Ivan Petrov Pet".
 func truncatedExtension(rest, ext string) bool {
-	n, end, word := 0, 0, false
+	n, end, word := 0, 0, 0
 	for _, er := range ext {
 		if unicode.IsSpace(er) {
 			for n < len(rest) {
@@ -224,13 +231,15 @@ func truncatedExtension(rest, ext string) bool {
 		if n < len(rest) {
 			r, w := utf8.DecodeRuneInString(rest[n:])
 			if r == er || strings.EqualFold(string(r), string(er)) {
-				word = word || isWordRune(r)
+				if isWordRune(r) {
+					word++
+				}
 				n += w
 				end = n
 				continue
 			}
 		}
-		return word && wordEdgeAfter(rest, end)
+		return word >= minCutRunes && wordEdgeAfter(rest, end)
 	}
 	return false
 }
