@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -474,6 +475,28 @@ func TestEnvKeysMatchSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The app reads the daemon's address from the LaunchAgent (DaemonAddress.swift), and names the installer's
+	// switches: a Swift literal is a read too (#24.3).
+	swift, err := swiftEnvLiterals(filepath.Join(root, "app", "dictation", "Sources"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, where := range swift {
+		if reason, ok := appOnlyEnvKeys[key]; ok {
+			if inTable[key] {
+				t.Errorf("%s is listed app-only (%s) but is in EnvKeys: drop it from appOnlyEnvKeys", key, reason)
+			}
+			continue
+		}
+		if _, seen := read[key]; !seen {
+			read[key] = where
+		}
+	}
+	for key, reason := range appOnlyEnvKeys {
+		if _, ok := swift[key]; !ok {
+			t.Errorf("appOnlyEnvKeys lists %s (%s) but no Swift source names it any more", key, reason)
+		}
+	}
 	for key, where := range read {
 		if !inTable[key] {
 			t.Errorf("%s is read at %s but missing from EnvKeys", key, where)
@@ -483,6 +506,71 @@ func TestEnvKeysMatchSource(t *testing.T) {
 		if _, ok := read[k]; !ok {
 			t.Errorf("EnvKeys entry %s is never read", k)
 		}
+	}
+}
+
+// appOnlyEnvKeys are the OX_SAY_ names the Swift app mentions that the daemon never reads, so they are not in
+// EnvKeys (the set the LaunchAgent may carry). Each has its reason; a new Swift literal that is neither in EnvKeys
+// nor here fails TestEnvKeysMatchSource.
+var appOnlyEnvKeys = map[string]string{
+	"OX_SAY_WITH_VOXCPM2":   "the installer's switch for the studio voice model (UpdateInstall.studioVoiceVariable); the app passes it to get.sh, the daemon never reads it",
+	"OX_SAY_APP_RELAUNCHES": "tells install-app.sh the app relaunches itself (UpdateInstall.appRelaunchesVariable); installer scripts only",
+}
+
+var swiftEnvLiteral = regexp.MustCompile(`"(OX_SAY_[A-Z0-9_]+)"`)
+
+// swiftEnvLiterals is every "OX_SAY_*" string literal in the Swift sources under root, key -> first file:line. A
+// mention in a comment is not a literal and does not count.
+func swiftEnvLiterals(root string) (map[string]string, error) {
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".swift") {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
+			for _, m := range swiftEnvLiteral.FindAllStringSubmatch(line, -1) {
+				if _, seen := out[m[1]]; !seen {
+					out[m[1]] = path + ":" + strconv.Itoa(i+1)
+				}
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
+// The Swift scan finds a literal in any Swift file below the root and ignores comment mentions; a root that does
+// not exist is an error, not an empty scan (a moved directory must not silence the check).
+// Mutation: internal/config/config_test.go swiftEnvLiterals, drop the `.swift` suffix test -> RED (the .md literal
+// is found).
+func TestSwiftEnvScan(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "A", "B"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(rel, text string) {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("A/B/x.swift", "let a = \"OX_SAY_DEEP\"\n/// OX_SAY_IN_DOC and \"OX_SAY_IN_DOC_QUOTED\"\n")
+	write("A/notes.md", "\"OX_SAY_NOT_SWIFT\"\n")
+	got, err := swiftEnvLiterals(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.HasSuffix(got["OX_SAY_DEEP"], "x.swift:1") {
+		t.Errorf("literals = %v, want only OX_SAY_DEEP at x.swift:1", got)
+	}
+	if _, err := swiftEnvLiterals(filepath.Join(dir, "missing")); err == nil {
+		t.Error("a missing root must be an error")
 	}
 }
 
