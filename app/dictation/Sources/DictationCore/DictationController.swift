@@ -67,12 +67,15 @@ public enum DaemonRetryEvent: Equatable {
     case recovered(waitedMs: Int)
     /// The wait ran out without an answer, or the second upload failed too.
     case gaveUp(waitedMs: Int)
+    /// The dictation was cancelled (Esc) or superseded during the wait or the upload.
+    case cancelled(waitedMs: Int)
 
     public var line: String {
         switch self {
         case .started: return "daemon retry started"
         case .recovered(let ms): return "daemon retry recovered waited_ms=\(ms)"
         case .gaveUp(let ms): return "daemon retry gave_up waited_ms=\(ms)"
+        case .cancelled(let ms): return "daemon retry cancelled waited_ms=\(ms)"
         }
     }
 }
@@ -82,7 +85,8 @@ public enum DaemonRetryEvent: Equatable {
 /// restarting — an install reloads its agent, a crash is relaunched — so its
 /// health is polled and the held audio is uploaded once more when it answers.
 public struct DaemonRetry {
-    /// The wait is capped here in wall-clock time, probes included: about an
+    /// The wait is capped here in system-uptime seconds (they stop while the Mac
+    /// sleeps), probes included: about an
     /// agent reload, not a cold start. It ends at the first check after the
     /// budget, so it can overshoot by one probe's own timeout (3 s), no more.
     public var budget: TimeInterval
@@ -173,7 +177,7 @@ public final class DictationController {
     /// polled for an answer and the held audio uploaded once more. nil
     /// reports the failure at once.
     public var daemonRetry: DaemonRetry?
-    /// The retry's start and end, for the log: no text.
+    /// The retry's start and its one terminal event, for the log: no text.
     public var onRetry: ((DaemonRetryEvent) -> Void)?
     /// Every delivered dictation, pasted or left on the clipboard: what a paste
     /// that went nowhere cannot lose.
@@ -326,7 +330,10 @@ public final class DictationController {
                     }
                 }
             }
-            guard started == generation else { return }
+            guard started == generation else {
+                if retried { onRetry?(.cancelled(waitedMs: waitedMs)) }
+                return
+            }
             if retried {
                 if case .success = result { onRetry?(.recovered(waitedMs: waitedMs)) } else { onRetry?(.gaveUp(waitedMs: waitedMs)) }
             }

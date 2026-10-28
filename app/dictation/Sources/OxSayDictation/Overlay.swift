@@ -289,6 +289,10 @@ final class Overlay {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
+    /// Asked when a message's few seconds are up, before the pill hides: true
+    /// means the app has shown another pill in its place.
+    var onMessageExpired: (() -> Bool)?
+
     /// Says what went wrong (or where the text went) for a few seconds.
     func showMessage(_ text: String) {
         owner += 1
@@ -315,6 +319,8 @@ final class Overlay {
         let timeout = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.showingMessage = false
+            // The app may put its own pill back (an install still running).
+            if self.onMessageExpired?() == true { return }
             self.hide()
         }
         messageTimeout = timeout

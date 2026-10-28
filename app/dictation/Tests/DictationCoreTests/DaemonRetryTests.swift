@@ -91,6 +91,8 @@ final class DaemonRetryTests: XCTestCase {
             throw TranscriptionError.daemonUnreachable("connection refused")
         }
         c.onError = { _ in errors += 1 }
+        var events: [DaemonRetryEvent] = []
+        c.onRetry = { events.append($0) }
         var probes = 0
         let clock = FakeClock()
         c.daemonRetry = DaemonRetry(probe: { [weak c] in
@@ -106,6 +108,10 @@ final class DaemonRetryTests: XCTestCase {
         XCTAssertEqual(attempts, 1, "a cancelled dictation is never re-uploaded")
         XCTAssertEqual(errors, 0, "Esc means silence, not an error notice")
         XCTAssertEqual(out.delivered, [])
+        // #221.2: the wait that began also ends in the log.
+        // Mutation: DictationController.finish, delete the `onRetry?(.cancelled(...))` call -> RED.
+        XCTAssertEqual(events, [.started, .cancelled(waitedMs: 2000)])
+        XCTAssertEqual(DaemonRetryEvent.cancelled(waitedMs: 1000).line, "daemon retry cancelled waited_ms=1000")
     }
 
     // The wait's own bounds, on the struct: it ends on the first answer,
