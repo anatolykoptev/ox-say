@@ -75,7 +75,6 @@ final class MeetingRecorder {
     private var meLevel: Float = 0
     private var themLevel: Float = 0
     private var themLoudAt = Date.distantPast
-    private var meLoudAt = Date.distantPast
     private var themEverLoud = false
     private var tapCallbacks = 0
     /// When the tap last delivered a buffer: `DispatchTime.uptimeNanoseconds`, monotonic, so a clock step cannot skew
@@ -91,9 +90,6 @@ final class MeetingRecorder {
 
     var levels: (me: Float, them: Float) { lock.withLock { (meLevel, themLevel) } }
     var themActive: Bool { lock.withLock { Date().timeIntervalSince(themLoudAt) < Self.activeWindow } }
-    /// The user spoke lately: with the far side's voice it is the call's activity for the silence timer.
-    var meActive: Bool { lock.withLock { Date().timeIntervalSince(meLoudAt) < Self.activeWindow } }
-    var anyoneActive: Bool { themActive || meActive }
     /// The other side was audible at least once since the recording began: false
     /// after a while means the system audio permission is off or the tap is silent.
     var heardTheOtherSide: Bool { lock.withLock { themEverLoud } }
@@ -134,7 +130,7 @@ final class MeetingRecorder {
         tapRetry = Reacquire()
         micChain.begin()
         lock.withLock {
-            meLevel = 0; themLevel = 0; themLoudAt = .distantPast; meLoudAt = .distantPast; themEverLoud = false; tapCallbacks = 0; tapPeak = 0
+            meLevel = 0; themLevel = 0; themLoudAt = .distantPast; themEverLoud = false; tapCallbacks = 0; tapPeak = 0
             tapLastNanos = nil
         }
         tapGeneration.advance()
@@ -192,10 +188,7 @@ final class MeetingRecorder {
                 guard let self, let samples = self.micConverter.convert(buffer) else { return }
                 let ticks = when.isHostTimeValid ? when.hostTime : AudioGetCurrentHostTime()
                 self.writersLock.withLock { self.me?.append(samples, atNanos: HostClock.nanos(fromHostTicks: ticks)) }
-                self.lock.withLock {
-                    self.meLevel = Self.rms(samples)
-                    if self.meLevel > Self.loudRMS { self.meLoudAt = Date() }
-                }
+                self.lock.withLock { self.meLevel = Self.rms(samples) }
             }
         }, start: {
             mic.prepare()

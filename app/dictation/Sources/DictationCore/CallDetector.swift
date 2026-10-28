@@ -223,15 +223,7 @@ public enum MeetingURL {
 /// Debounced both ways — a mute releases the browser's microphone for a while,
 /// and a call that is only muted still plays the other side's voice.
 public struct CallTracker {
-    /// How a recording began. `offered` is a Record pressed on the prompt: started by the user, so it carries the
-    /// manual badge and Stop, but it ends with the call like an automatic one (`endsWithTheCall`): a Record pressed
-    /// after the call really ended must not record an empty room until someone remembers to stop it.
-    public enum Origin: Equatable {
-        case manual, auto, offered
-
-        /// The tracker stops this recording by itself (silence for `auto`, no holder left for `offered`).
-        public var endsWithTheCall: Bool { self != .manual }
-    }
+    public enum Origin: Equatable { case manual, auto }
 
     public enum Action: Equatable {
         case nothing
@@ -268,8 +260,7 @@ public struct CallTracker {
 
     public static func key(call: String, bundleID: String?) -> String { call + "|" + (bundleID ?? "") }
 
-    /// The prompt for the current episode went down without an answer (its call vanished, or only the browser's microphone
-    /// hold kept it): the episode is no longer "already offered", so the call that returns is offered again. A decline stands.
+    /// The prompt for the current episode went down without an answer (its call vanished): the episode is no longer "already offered", so the call that returns is offered again. A decline stands.
     public mutating func offerWithdrawn() {
         if let episode { announcedKeys.remove(episode) }
     }
@@ -340,22 +331,9 @@ public struct CallTracker {
         unreadableTicks = 0
         callSince = nil
         switch recording {
-        case .offered:
-            // The user pressed Record on the prompt: it ends only when no holder of the call remains (the app or browser
-            // released the microphone) for `endAfter`. Never on silence while the call is held: a Meet call goes on
-            // whichever tab is in front (#241) and a quiet far side is not a hang-up.
-            idleSince = nil
-            if quietSince == nil { quietSince = now }
-            if now.timeIntervalSince(quietSince!) >= Self.endAfter {
-                quietSince = nil
-                if let episode { announcedKeys.remove(episode) }
-                return .stopRecording
-            }
         case .auto:
             idleSince = nil
-            // Anyone's speech keeps it only while a holder of the call remains; once the app or browser let go, it ends
-            // after `endAfter` whatever the microphone hears (a conversation in the room is not the call).
-            if held && themActive {
+            if themActive {
                 quietSince = nil
             } else {
                 if quietSince == nil { quietSince = now }
@@ -493,6 +471,7 @@ public struct CallWatch {
         var newNoAnswer: String?
         for id in browserIDs where !skippedConsent.contains(id) && !consentAsked.contains(id) {
             var answer = consentCache[id] ?? consent(id)
+            let asked = answer
             if answer == .notRunning {
                 let polls = notRunningPolls[id, default: 0] + 1
                 notRunningPolls[id] = polls
@@ -506,7 +485,8 @@ public struct CallWatch {
             case .notRunning:
                 noAnswer.insert(id)
                 if noAnswerReported.insert(id).inserted, newNoAnswer == nil { newNoAnswer = id }
-            case .granted, .denied: consentCache[id] = answer
+            // An answer promoted from "not running" is not kept: every poll asks again and the read path stays open.
+            case .granted, .denied: if asked != .notRunning { consentCache[id] = answer }
             }
         }
         var reads: [String: BrowserTabURL.Result] = [:]

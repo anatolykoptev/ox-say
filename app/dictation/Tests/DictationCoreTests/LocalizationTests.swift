@@ -92,10 +92,10 @@ final class LocalizationTests: XCTestCase {
         XCTAssertTrue(ShippedStrings.table("ru")["meeting.diar.unavailable.retry_now"]?.contains("можно найти") == true)
     }
 
-    /// Every automatic stop says so.
+    /// Every automatic stop says so, neutrally (it can also be a muted listener, not only a hang-up).
     /// Mutation: ru "notice.meeting.call_ended" emptied -> RED.
     func testTheCallEndedNoticeExists() {
-        XCTAssertEqual(ShippedStrings.table("en")["notice.meeting.call_ended"], "Recording stopped: the call ended.")
-        XCTAssertEqual(ShippedStrings.table("ru")["notice.meeting.call_ended"], "Запись остановлена: звонок закончился.")
+        XCTAssertEqual(ShippedStrings.table("en")["notice.meeting.call_ended"], "Recording stopped automatically: nobody on the call has spoken for a while.")
+        XCTAssertEqual(ShippedStrings.table("ru")["notice.meeting.call_ended"], "Запись остановлена автоматически: в звонке давно никто не говорит.")
     }
 }

@@ -124,7 +124,7 @@
 "meeting.update_blocked" = "Идёт запись встречи. Обновитесь, когда она закончится.";
 "notice.meeting.mic_lost" = "Микрофон не записывается.";
 "notice.meeting.tap_lost" = "Системный звук не записывается.";
-"notice.meeting.call_ended" = "Запись остановлена: звонок закончился.";
+"notice.meeting.call_ended" = "Запись остановлена автоматически: в звонке давно никто не говорит.";
 "notice.meeting.disk_full" = "Диск заполнен: запись остановлена. Записанное сохранено.";
 "notice.meeting.tap_recovered" = "Системный звук снова записывается.";
 "notice.meeting.mic_recovered" = "Микрофон снова записывается.";

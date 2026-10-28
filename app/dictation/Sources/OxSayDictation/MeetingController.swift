@@ -144,7 +144,7 @@ final class MeetingController: NSObject, MeetingFeature {
             NSPasteboard.general.setString(L10nKey.meetingConsentPhrase.text, forType: .string)
         }
         watcher.recording = { [weak self] in self?.current?.origin }
-        watcher.themActive = { [weak self] in self?.recorder.anyoneActive ?? false }
+        watcher.themActive = { [weak self] in self?.recorder.themActive ?? false }
         watcher.modeFor = { [weak self] source in
             guard let self else { return CallPolicy.defaultMode(source) }
             return CallPolicy.effectiveMode(for: source, global: MeetingSettings.callMode(self.host.defaults),
@@ -269,7 +269,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 }
                 guard let dir = info.dir else { throw StudioError.badResponse }
                 try recorder.start(into: URL(fileURLWithPath: dir, isDirectory: true))
-                current = (info, offered ? .offered : origin)
+                current = (info, origin)
                 syncCallActivity()
                 monitor = RecordingMonitor()
                 playingSince = nil

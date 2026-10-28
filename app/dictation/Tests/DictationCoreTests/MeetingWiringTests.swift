@@ -344,7 +344,7 @@ final class MeetingWiringTests: XCTestCase {
         let dont = try XCTUnwrap(body(text, of: "private func dontRecordThisOne() {"))
         XCTAssertTrue(dont.contains("\n        watcher.decline()\n"))
         XCTAssertTrue(text.contains("watcher.recording = { [weak self] in self?.current?.origin }"))
-        XCTAssertTrue(text.contains("watcher.themActive = { [weak self] in self?.recorder.anyoneActive ?? false }"))
+        XCTAssertTrue(text.contains("watcher.themActive = { [weak self] in self?.recorder.themActive ?? false }"))
     }
 
     /// The watcher decision, the call-start decision, the manual-start gate and the reconcile decision are the policy's.
@@ -516,13 +516,6 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(mic.contains("microphone: restart failed: \\(String(describing: error), privacy: .public)"))
     }
 
-    /// #342.6: Record on the prompt starts a recording that ends with the call, like an automatic one.
-    /// Mutation: MeetingController.start, `current = (info, offered ? .offered : origin)` -> `current = (info, origin)` -> RED.
-    func testAPromptStartedRecordingIsTrackedAsOffered() throws {
-        let start = try XCTUnwrap(body(try controller(), of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
-        XCTAssertTrue(start.contains("current = (info, offered ? .offered : origin)"))
-    }
-
     /// #342.8: the probe maps macOS's status in Core; the watcher logs a browser that has no answer, once per hold.
     /// Mutation: BrowserAutomationProbe.consent, `BrowserConsent.from(status: status)` -> `.granted` -> RED.
     func testTheWatcherPassesTheHeldOnlyFlagAndTheProbeStatusToCore() throws {
@@ -534,14 +527,12 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(probe.contains("return BrowserConsent.from(status: status)"))
     }
 
-    /// Every automatic stop says so; the user's own speech counts as activity for the silence timer.
+    /// An automatic stop (the tracker's silence rule) says so.
     /// Mutation: MeetingController.observe, delete the notify before `stop()` in `.stopRecording` -> RED.
-    /// Mutation: MeetingController.init, `recorder.anyoneActive` -> `recorder.themActive` -> RED.
-    func testAnAutomaticStopSaysSoAndMyOwnSpeechCounts() throws {
+    func testAnAutomaticStopSaysSo() throws {
         let observe = try XCTUnwrap(body(try controller(), of: "private func observe(_ tick: CallWatcher.Tick) {"))
         XCTAssertTrue(observe.contains("case .stopRecording:\n            host.notify(L10nKey.noticeMeetingCallEnded.text)\n            stop()"))
         let recorder = try source("OxSayDictation/MeetingRecorder.swift")
-        XCTAssertTrue(recorder.contains("var anyoneActive: Bool { themActive || meActive }"))
-        XCTAssertTrue(recorder.contains("self.meLoudAt = Date()"))
+        XCTAssertFalse(recorder.contains("anyoneActive"), "the stop rule is the far side's silence, as on main")
     }
 }
