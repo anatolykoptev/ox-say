@@ -66,3 +66,50 @@ func TestNotesSnippetOffsetsFollowTheStrippedText(t *testing.T) {
 		}
 	}
 }
+
+// #320.1: "*" and "_" go only as emphasis delimiters at a word edge (CommonMark flanking); text that merely
+// contains them keeps every character, so a snippet never shows words the notes do not have and "a__b" does not
+// match "ab".
+// Mutation: internal/meeting/search.go stripInline, mark every cell of every run dropped (right after
+// `run.n = i - run.start`) -> the keep cases go RED. Mutation: matchDelims, `if true || !(k == 2 ...` (the
+// isDunderName guard off) -> "__init__" loses its underscores -> RED. Mutation: stripInline, the "_" rule
+// `canOpen = left; canClose = right` (no intra-word exception) -> "snake_case" loses its underscores -> RED.
+func TestStripMarkdownKeepsLiteralDelimiters(t *testing.T) {
+	for _, c := range []struct{ name, in, want string }{
+		{"star between digits", "2*3=6", "2*3=6"},
+		{"dunder name", "__init__", "__init__"},
+		{"dunder in a sentence", "call __main__ first", "call __main__ first"},
+		{"doubled underscore in a word", "a__b", "a__b"},
+		{"snake_case", "foo_bar_baz", "foo_bar_baz"},
+		{"spaced stars", "5 * 3 * 2", "5 * 3 * 2"},
+		{"lone opening star", "*star", "*star"},
+		{"lone closing underscore", "end_", "end_"},
+		{"bold", "**bold** text", "bold text"},
+		{"italic star", "an *em* word", "an em word"},
+		{"italic underscore", "an _em_ word", "an em word"},
+		{"strong underscore", "__Important__ note", "Important note"},
+		{"bold italic", "***both***", "both"},
+		{"nested", "**bold *nested* more**", "bold nested more"},
+		{"strong around a dunder", "**__init__**", "__init__"},
+		{"cyrillic", "**Решение**: да", "Решение: да"},
+		{"emphasis spans a line break", "**bold\ncontinues** here", "bold\ncontinues here"},
+		{"emphasis stops at a list item", "- *a\n- b*", "*a\nb*"},
+		{"emphasis stops at a blank line", "*a\n\nb*", "*a\n\nb*"},
+		{"punctuation before the closer", "(**done**)", "(done)"},
+		{"escaped stars", `\*not em\*`, "*not em*"},
+	} {
+		if got := stripMarkdown(c.in); got != c.want {
+			t.Errorf("%s: stripMarkdown(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// The search sees what the snippet shows: "a__b" is not "ab".
+func TestNotesSearchDoesNotMatchAcrossLiteralDelimiters(t *testing.T) {
+	if hits := notesHits("rename a__b today\n", foldRunes("ab"), 5); len(hits) != 0 {
+		t.Errorf("%q matched \"ab\": %+v", "a__b", hits)
+	}
+	if got := firstNotesSnippet(t, "the product 2*3=6 here\n", "2*3"); got != "the product 2*3=6 here" {
+		t.Errorf("snippet = %q", got)
+	}
+}
