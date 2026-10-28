@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -141,5 +142,60 @@ func TestFailedStateResumesAfterTheCooldown(t *testing.T) {
 	}
 	if sup.State() != StateReady {
 		t.Fatalf("state = %s, want ready", sup.State())
+	}
+}
+
+// A child that dies between /health and Verify is an ordinary failed start:
+// it must not be booked as the server being refused.
+// Mutation: supervisor.go run(), delete the `case <-c.done:` branch (always
+// wrap in verifyFailure) -> RED (the state is failed after one start).
+func TestAChildDyingDuringVerifyIsNotAVerifyFailure(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	var sup *Supervisor
+	sup = newTestSupervisor(t, dir, func(c *Config) {
+		c.MaxVerifyFailures = 1
+		c.Verify = func(context.Context, string) error {
+			pid := sup.Status().PID
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			for sup.Status().PID != 0 { // onExit has reaped the child
+				time.Sleep(10 * time.Millisecond)
+			}
+			return errors.New("connection reset")
+		}
+	})
+	if _, err := sup.EnsureReady(context.Background()); err == nil || errors.Is(err, ErrGaveUp) {
+		t.Fatalf("err = %v, want a plain start failure", err)
+	}
+	if st := sup.State(); st == StateFailed {
+		t.Fatalf("state = %s: a dead child was counted as a refused server", st)
+	}
+}
+
+// AllowProbe lets exactly one start through the cool-down; a call that does
+// not come from the user stays blocked, and the probe is consumed by its start.
+// Mutation: supervisor.go EnsureReady, drop `&& !s.probeGranted` -> RED (the
+// granted call is refused, no spawn).
+func TestAllowProbeGrantsExactlyOneStartInsideTheCooldown(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	sup := newTestSupervisor(t, dir, func(c *Config) {
+		c.MaxVerifyFailures = 2
+		c.Verify = func(context.Context, string) error { return errors.New("server runs open") }
+	})
+	giveUp(t, sup)
+	starts := sup.Status().Starts
+	if _, err := sup.EnsureReady(context.Background()); !errors.Is(err, ErrGaveUp) || sup.Status().Starts != starts {
+		t.Fatalf("an automatic call in the cool-down = %v, starts %d -> %d, want blocked", err, starts, sup.Status().Starts)
+	}
+	sup.AllowProbe()
+	if _, err := sup.EnsureReady(context.Background()); err == nil || errors.Is(err, ErrGaveUp) {
+		t.Fatalf("the granted call = %v, want a real start that fails Verify", err)
+	}
+	if got := sup.Status().Starts; got != starts+1 {
+		t.Fatalf("starts = %d, want exactly one probe (%d)", got, starts+1)
+	}
+	if _, err := sup.EnsureReady(context.Background()); !errors.Is(err, ErrGaveUp) || sup.Status().Starts != starts+1 {
+		t.Fatalf("after the probe: %v, starts %d — the grant must be consumed", err, sup.Status().Starts)
 	}
 }

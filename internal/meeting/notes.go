@@ -448,6 +448,15 @@ func mergeSystem(lang string) string {
 		"Use ONLY facts present in them; never invent names, numbers, dates or owners. Output the summary text only."
 }
 
+// EngineDownError is a model call that failed because the notes engine could
+// not be started (or has been given up on), not because of the transcript.
+// Another chunk or a second attempt would only start it again, so Compose
+// stops at the first one and returns it for the meeting to record.
+type EngineDownError struct{ Err error }
+
+func (e *EngineDownError) Error() string { return e.Err.Error() }
+func (e *EngineDownError) Unwrap() error { return e.Err }
+
 // Composer runs the map-reduce. Before, when set, runs ahead of every model
 // call: the daemon passes the dictation yield so notes never starve a user who
 // is dictating.
@@ -497,6 +506,10 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 		if err != nil {
 			if ctx.Err() != nil {
 				return Notes{}, ctx.Err()
+			}
+			var down *EngineDownError
+			if errors.As(err, &down) {
+				return Notes{}, err
 			}
 			c.logf("notes: chunk failed", slog.Int("chunk", i), slog.Any("error", err))
 			skipped = append(skipped, i)
@@ -568,6 +581,10 @@ func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			// The call used its whole deadline; a second one would too.
+			return ChunkNotes{}, err
+		}
+		var down *EngineDownError
+		if errors.As(err, &down) {
 			return ChunkNotes{}, err
 		}
 		lastErr = err

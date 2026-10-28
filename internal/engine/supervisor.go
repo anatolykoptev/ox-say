@@ -165,8 +165,11 @@ type Supervisor struct {
 	// verifyFails counts consecutive starts where the child ran and Verify
 	// refused it; any other outcome zeroes it. gaveUpAt stamps the entry
 	// into StateFailed.
-	verifyFails  int
-	gaveUpAt     time.Time
+	verifyFails int
+	gaveUpAt    time.Time
+	// probeGranted: AllowProbe let one start through the cool-down; the
+	// start commit consumes it.
+	probeGranted bool
 	nextAttempt  time.Time
 	lastActivity time.Time // last Ready commit or Guard release
 	guards       int
@@ -351,7 +354,7 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 				// Terminal until the cool-down ends: no spawn, no model
 				// load. The caller (the notes runner, /status) gets the
 				// state and the cause at once instead of a 30 s wait.
-				if rem := s.gaveUpAt.Add(s.cfg.GiveUpCooldown).Sub(time.Now()); rem > 0 {
+				if rem := s.gaveUpAt.Add(s.cfg.GiveUpCooldown).Sub(time.Now()); rem > 0 && !s.probeGranted {
 					err := fmt.Errorf("%w after %d failed checks of the server (last: %v); next try in %s",
 						ErrGaveUp, s.verifyFails, s.lastErr, rem.Round(time.Second))
 					s.mu.Unlock()
@@ -409,6 +412,7 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 			}
 			s.startGen++
 			waitGen = s.startGen
+			s.probeGranted = false
 			s.attemptErr = nil
 			s.state = StateStarting
 			s.gpuHeld = gpuOwned
@@ -425,6 +429,28 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 			}
 		}
 	}
+}
+
+// AllowProbe lets exactly one start through the failed state's cool-down: an
+// explicit user action (the meeting's notes retry) calls it, automatic
+// callers never do. The probe failing Verify again re-enters StateFailed with
+// a fresh cool-down; outside StateFailed it does nothing.
+func (s *Supervisor) AllowProbe() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == StateFailed && !s.dead {
+		s.probeGranted = true
+		s.nextAttempt = time.Now()
+		s.broadcastLocked()
+	}
+}
+
+// DenyProbe withdraws an unused AllowProbe grant (the action that asked for
+// it turned out not to start the engine).
+func (s *Supervisor) DenyProbe() {
+	s.mu.Lock()
+	s.probeGranted = false
+	s.mu.Unlock()
 }
 
 // State reports the lifecycle state.
@@ -593,7 +619,14 @@ func (s *Supervisor) run() {
 		err = s.cfg.Verify(vctx, c.baseURL)
 		vcancel()
 		if err != nil {
-			err = &verifyFailure{err}
+			select {
+			case <-c.done:
+				// The child died between /health and Verify (crash, OOM):
+				// an ordinary failed start, not the server being refused,
+				// so it must not count toward giving up.
+			default:
+				err = &verifyFailure{err}
+			}
 		}
 	}
 	if err == nil && s.cfg.Replay != nil {

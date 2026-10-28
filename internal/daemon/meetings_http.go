@@ -301,7 +301,20 @@ func (d *Daemon) handleMeetingFinish(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Daemon) handleMeetingNotes(w http.ResponseWriter, r *http.Request) {
+	// This route is the user's Retry: it gets one probe start of a notes
+	// engine that gave up. Granted before the run is queued (the runner may
+	// ask for the engine at once) and withdrawn when the retry does not lead
+	// to the notes step. Automatic callers (the housekeeping retry, a speakers
+	// edit) never pass here, so they stay blocked.
+	if d.LLMSup != nil {
+		d.LLMSup.AllowProbe()
+	}
 	m, err := d.Meet.Retry(r.PathValue("id"))
+	if err != nil || m.Status != meeting.StatusSummarizing {
+		if d.LLMSup != nil {
+			d.LLMSup.DenyProbe()
+		}
+	}
 	if err != nil {
 		d.writeMeetingErr(w, err)
 		return

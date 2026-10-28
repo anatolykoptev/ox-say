@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
 	"os"
@@ -49,17 +48,24 @@ const (
 
 const stateNotesUnavailable engine.State = "unavailable"
 
+// notesReasonEngineFailed is the reason_code of /status notes while the
+// supervisor has given up on a model the server check keeps refusing.
+const notesReasonEngineFailed = "notes_engine_failed"
+
 // notesStatus is the /status "notes" value: whether meeting notes can run,
 // and the model download's progress.
 type notesStatus struct {
-	Available   bool         `json:"available"`
-	Reason      string       `json:"reason,omitempty"`
-	ReasonCode  string       `json:"reason_code,omitempty"`
-	State       engine.State `json:"state"`
-	LastErr     string       `json:"last_error,omitempty"`
-	Installing  bool         `json:"installing,omitempty"`
-	ProgressPct int          `json:"progress_pct,omitempty"`
-	InstallErr  string       `json:"install_error,omitempty"`
+	Available  bool         `json:"available"`
+	Reason     string       `json:"reason,omitempty"`
+	ReasonCode string       `json:"reason_code,omitempty"`
+	State      engine.State `json:"state"`
+	LastErr    string       `json:"last_error,omitempty"`
+	// RetryInS is the seconds left before the failed engine tries again by
+	// itself; a notes retry from the user tries at once.
+	RetryInS    float64 `json:"retry_in_s,omitempty"`
+	Installing  bool    `json:"installing,omitempty"`
+	ProgressPct int     `json:"progress_pct,omitempty"`
+	InstallErr  string  `json:"install_error,omitempty"`
 }
 
 // notesBinPath is the path ox-llm is spawned by: always absolute, because the
@@ -250,7 +256,13 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	defer g.Release()
 	base, err := c.d.LLMSup.EnsureReady(ctx)
 	if err != nil {
-		return "", fmt.Errorf("the notes model failed to start: %w", err)
+		err = fmt.Errorf("the notes model failed to start: %w", err)
+		if ctx.Err() != nil {
+			return "", err
+		}
+		// Not the transcript's fault: Compose must not try the next chunk
+		// (each try reloads the model) and the meeting records this text.
+		return "", &meeting.EngineDownError{Err: err}
 	}
 	ctx, cancel := context.WithTimeout(ctx, notesCallTimeout)
 	defer cancel()
@@ -529,9 +541,10 @@ func (d *Daemon) notesStatus() notesStatus {
 		out.State, out.LastErr = st.State, st.LastErr
 		if st.State == engine.StateFailed {
 			// The supervisor stopped reloading a model the server check keeps
-			// refusing; say so instead of showing a plain "stopped".
-			out.Reason = fmt.Sprintf("The notes model would not start, so ox-say stopped retrying. It tries again in about %d minutes; restarting ox-say tries at once.",
-				max(1, int(math.Ceil(st.RetryInS/60))))
+			// refusing; say so instead of showing a plain "stopped". The text
+			// holds no countdown (retry_in_s has it), so it is true at any time.
+			out.ReasonCode, out.RetryInS = notesReasonEngineFailed, st.RetryInS
+			out.Reason = "The notes model would not start, so ox-say stopped retrying. Retry the notes to try once more, or restart ox-say."
 		}
 		if strings.Contains(st.LastErr, notesPortTaken) {
 			// A foreign listener holds the port: the app shows the same reason
