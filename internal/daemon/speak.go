@@ -121,6 +121,7 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 	}
 	if use != nil {
 		use.pid.Store(int64(sup.Status().PID)) // the child this request goes to (#156.12b)
+		use.seq.Store(g.Seq())
 	}
 	if vox {
 		d.voxQoS.apply() // the child may have just started

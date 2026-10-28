@@ -31,7 +31,7 @@ type portFuncs struct {
 	quiet          func(context.Context, func()) error
 	power          func(context.Context) (bool, bool)
 	background     func(bool)
-	recycle        func(context.Context, int)
+	recycle        func(context.Context, int, uint64)
 	home           func() string
 	outputRoot     func() string
 }
@@ -54,9 +54,11 @@ func (f *portFuncs) Normalize(ctx context.Context, in, out string, lufs, dur flo
 func (f *portFuncs) Quiet(ctx context.Context, onWait func()) error { return f.quiet(ctx, onWait) }
 func (f *portFuncs) Power(ctx context.Context) (bool, bool)         { return f.power(ctx) }
 func (f *portFuncs) Background(on bool)                             { f.background(on) }
-func (f *portFuncs) Recycle(ctx context.Context, pid int)           { f.recycle(ctx, pid) }
-func (f *portFuncs) Home() string                                   { return f.home() }
-func (f *portFuncs) OutputRoot() string                             { return f.outputRoot() }
+func (f *portFuncs) Recycle(ctx context.Context, pid int, from uint64) {
+	f.recycle(ctx, pid, from)
+}
+func (f *portFuncs) Home() string       { return f.home() }
+func (f *portFuncs) OutputRoot() string { return f.outputRoot() }
 
 // strictNormalize is the Normalize port: the STRICT loudnormFileReport
 // under a timeout proportional to the duration. It must never be the soft
@@ -150,11 +152,11 @@ func (d *Daemon) producePorts() producePorts {
 		quiet:      d.waitQuiet,
 		power:      powerState,
 		background: qos.setBackground,
-		recycle: func(ctx context.Context, pid int) {
+		recycle: func(ctx context.Context, pid int, from uint64) {
 			if d.VoxSup == nil {
 				return
 			}
-			if err := d.VoxSup.Recycle(ctx, pid); err != nil {
+			if err := d.VoxSup.RecycleWedged(ctx, pid, from); err != nil {
 				d.log.Warn("produce: the unresponsive voice engine was not restarted", "pid", pid, "error", err)
 			}
 		},

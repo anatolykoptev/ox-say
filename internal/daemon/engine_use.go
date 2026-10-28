@@ -12,7 +12,12 @@ import (
 // the render gets no answer, to recycle exactly that child (#156.12b). Its
 // presence also marks the request as the producer's own, not interactive
 // (#156.7).
-type engineUse struct{ pid atomic.Int64 }
+type engineUse struct {
+	pid atomic.Int64
+	// seq is the engine.Guard.Seq the request holds while it waits on that
+	// child: the recycle ignores requests queued behind it (#338.1).
+	seq atomic.Uint64
+}
 
 type engineUseKey struct{}
 

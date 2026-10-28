@@ -188,7 +188,7 @@ func (f *fakePorts) Power(context.Context) (bool, bool) {
 // fakeEnginePID is the child every fakePorts render reports reaching.
 const fakeEnginePID = 4242
 
-func (f *fakePorts) Recycle(_ context.Context, pid int) {
+func (f *fakePorts) Recycle(_ context.Context, pid int, _ uint64) {
 	f.mu.Lock()
 	f.recycles = append(f.recycles, pid)
 	f.mu.Unlock()

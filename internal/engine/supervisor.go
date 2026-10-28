@@ -162,8 +162,10 @@ type Supervisor struct {
 	nextAttempt   time.Time
 	lastActivity  time.Time // last Ready commit or Guard release
 	guards        int
-	recyclers     int  // Recycle calls waiting for guards to drain; Release wakes them
-	gpuHeld       bool // the current generation owns cfg.GPU
+	held          map[*Guard]struct{} // guards in flight, for Recycle's age rule
+	guardSeq      uint64              // last Guard.Seq handed out
+	recyclers     int                 // Recycle calls waiting for guards to drain; Release wakes them
+	gpuHeld       bool                // the current generation owns cfg.GPU
 
 	// pidMu makes the pidfile's read-check-remove (removePidFile) atomic
 	// against the next spawn's write: a superseded child's onExit runs after
@@ -499,14 +501,24 @@ func (s *Supervisor) Backoff() time.Duration {
 type Guard struct {
 	s    *Supervisor
 	once sync.Once
+	seq  uint64
 }
+
+// Seq orders guards by acquisition (1, 2, ...): a lower Seq was acquired first.
+func (g *Guard) Seq() uint64 { return g.seq }
 
 // Acquire takes an in-flight guard.
 func (s *Supervisor) Acquire() *Guard {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.guards++
-	s.mu.Unlock()
-	return &Guard{s: s}
+	s.guardSeq++
+	g := &Guard{s: s, seq: s.guardSeq}
+	if s.held == nil {
+		s.held = map[*Guard]struct{}{}
+	}
+	s.held[g] = struct{}{}
+	return g
 }
 
 // Release returns the guard; idle accounting restarts now.
@@ -514,6 +526,7 @@ func (g *Guard) Release() {
 	g.once.Do(func() {
 		g.s.mu.Lock()
 		g.s.guards--
+		delete(g.s.held, g)
 		g.s.lastActivity = time.Now()
 		if g.s.recyclers > 0 {
 			g.s.broadcastLocked()
@@ -529,7 +542,20 @@ func (g *Guard) Release() {
 // so a late caller can never stop a healthy successor. It waits, bounded by
 // RecycleWait and ctx, until no Guard is held, so a request in flight is never
 // killed: on timeout it returns ErrRecycleBusy and leaves the child alone.
+// Worst case before it returns: RecycleWait, then 2 x KillGrace (SIGTERM, then
+// SIGKILL) for the kill - 40 s with the defaults - cut short by ctx.
 func (s *Supervisor) Recycle(ctx context.Context, pid int) error {
+	return s.RecycleWedged(ctx, pid, 0)
+}
+
+// RecycleWedged is Recycle for a child that has not answered the request whose
+// Guard has Seq from. The child serves one request at a time, so a Guard
+// acquired at or after from is queued behind the wedged request and is not
+// being served: it does not hold the recycle (it fails when the child dies,
+// which is what the user should see). A Guard acquired BEFORE from may be the
+// request the child is answering right now, so it still blocks, bounded by
+// RecycleWait. from == 0 ignores no guard.
+func (s *Supervisor) RecycleWedged(ctx context.Context, pid int, from uint64) error {
 	timer := time.NewTimer(s.cfg.RecycleWait)
 	defer timer.Stop()
 	s.mu.Lock()
@@ -547,15 +573,14 @@ func (s *Supervisor) Recycle(ctx context.Context, pid int) error {
 			s.mu.Unlock()
 			return nil
 		}
-		if s.guards == 0 {
+		if !s.blockedLocked(from) {
 			c.userStop = true
 			s.state = StateStopped
 			s.failCount = 0 // a deliberate stop clears crash/start backoff
 			s.broadcastLocked()
 			s.mu.Unlock()
 			s.log.Warn("engine recycled", slog.Int("pid", pid))
-			s.killChild(c)
-			return nil
+			return s.recycleKill(ctx, c)
 		}
 		ch := s.change
 		s.mu.Unlock()
@@ -564,8 +589,37 @@ func (s *Supervisor) Recycle(ctx context.Context, pid int) error {
 		case <-timer.C:
 			return ErrRecycleBusy
 		case <-ctx.Done():
+			// A cancel during the wait leaves the wedged child for the next
+			// render's deadline to recycle.
 			return ctx.Err()
 		}
+	}
+}
+
+// blockedLocked reports whether a held Guard keeps the recycle waiting: any
+// guard when from is 0, otherwise one acquired before from.
+func (s *Supervisor) blockedLocked(from uint64) bool {
+	for g := range s.held {
+		if from == 0 || g.seq < from {
+			return true
+		}
+	}
+	return false
+}
+
+// recycleKill kills c in the background and waits for it, but gives up the
+// WAIT when ctx ends: the child still dies, only the caller stops waiting.
+func (s *Supervisor) recycleKill(ctx context.Context, c *child) error {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.killChild(c)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

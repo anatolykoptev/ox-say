@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -110,4 +111,84 @@ func TestRecycleGivesUpOnAStuckGuard(t *testing.T) {
 	if st := sup.Status(); st.PID != pid || st.State != StateReady {
 		t.Fatalf("child touched although busy: pid %d state %s", st.PID, st.State)
 	}
+}
+
+// A request queued behind the wedged one (acquired after it) is not being
+// served, so it must not hold the recycle: RecycleWedged proceeds with it
+// still in flight, and the child is replaced.
+// Mutation: supervisor.go blockedLocked, drop the `g.seq < from` test (every
+// held guard blocks) -> the call waits RecycleWait and returns ErrRecycleBusy
+// -> RED.
+func TestRecycleWedgedIgnoresRequestsQueuedBehindIt(t *testing.T) {
+	sup := recycleSup(t, 300*time.Millisecond)
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pid := sup.Status().PID
+	wedged := sup.Acquire()
+	queued := sup.Acquire()
+	defer wedged.Release()
+	defer queued.Release()
+	if err := sup.RecycleWedged(context.Background(), pid, wedged.Seq()); err != nil {
+		t.Fatalf("RecycleWedged with only a queued request in flight: %v", err)
+	}
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sup.Status().PID == pid {
+		t.Fatal("the wedged child was not replaced")
+	}
+}
+
+// A request acquired BEFORE the wedged one may be the one the child is
+// answering (the wedged render queued behind it): it is never killed.
+// Mutation: supervisor.go blockedLocked, `g.seq < from` -> `false` (ignore
+// every guard) -> the child dies under the older request -> RED.
+func TestRecycleWedgedWaitsForAnOlderRequest(t *testing.T) {
+	sup := recycleSup(t, 250*time.Millisecond)
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pid := sup.Status().PID
+	older := sup.Acquire()
+	defer older.Release()
+	wedged := sup.Acquire()
+	defer wedged.Release()
+	if err := sup.RecycleWedged(context.Background(), pid, wedged.Seq()); !errors.Is(err, ErrRecycleBusy) {
+		t.Fatalf("err = %v, want ErrRecycleBusy", err)
+	}
+	if st := sup.Status(); st.PID != pid || st.State != StateReady {
+		t.Fatalf("child touched under an older request: pid %d state %s", st.PID, st.State)
+	}
+}
+
+// A user cancel while the old child is being killed ends the call at once;
+// the kill itself carries on and the child still dies.
+// Mutation: supervisor.go recycleKill, call s.killChild(c) inline instead of
+// in the goroutine behind the select -> the call returns only after the
+// SIGTERM grace -> RED.
+func TestRecycleReturnsOnCancelWhileKilling(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_IGNORE_SIGTERM", "1")
+	sup := newTestSupervisor(t, dir, func(c *Config) { c.RecycleWait = time.Second; c.KillGrace = 3 * time.Second })
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pid := sup.Status().PID
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	start := time.Now()
+	err := sup.Recycle(ctx, pid)
+	if el := time.Since(start); !errors.Is(err, context.Canceled) || el > 2*time.Second {
+		t.Fatalf("Recycle = %v after %s, want context.Canceled well inside the 3 s SIGTERM grace", err, el)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(pid, 0) != nil { // gone
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("the old child survived: the kill must continue after the cancel")
 }

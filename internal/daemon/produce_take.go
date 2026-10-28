@@ -113,10 +113,13 @@ type producePorts interface {
 	Power(ctx context.Context) (onBattery, lowPower bool)
 	Background(on bool)
 	// Recycle stops the engine child with this pid, which accepted a render and
-	// never answered, so the next request gets a fresh one (#156.12b). It waits
-	// for requests in flight and does nothing if pid is no longer the current
-	// child. Failures are logged by the adapter: the render has already failed.
-	Recycle(ctx context.Context, pid int)
+	// never answered, so the next request gets a fresh one (#156.12b). from is
+	// the render's engine.Guard.Seq: requests that queued behind it are not
+	// being served and do not hold the recycle, older ones are waited for. It
+	// does nothing if pid is no longer the current child, and returns early
+	// when ctx ends (the kill carries on). Failures are logged by the adapter:
+	// the render has already failed.
+	Recycle(ctx context.Context, pid int, from uint64)
 	Home() string
 	OutputRoot() string
 }
@@ -371,9 +374,12 @@ func (t *taker) renderWithin(ctx context.Context, spec takeSpec) (*synthOut, err
 // request would queue behind it, #156.12b). It runs only on the deadline paths
 // of renderWithin - never for a take that came back and failed its checks, a
 // user cancel, or a deadline that hit before any child was reached (pid 0).
+// It blocks at most RecycleWait (30 s) for a request older than the render, then
+// the kill (SIGTERM, 5 s, SIGKILL, 5 s): ~40 s in all, cut short the moment ctx
+// ends - the kill continues in the background and the child still dies.
 func (t *taker) recycle(ctx context.Context, use *engineUse) {
 	if pid := int(use.pid.Load()); pid > 0 {
-		t.ports.Recycle(ctx, pid)
+		t.ports.Recycle(ctx, pid, use.seq.Load())
 	}
 }
 
