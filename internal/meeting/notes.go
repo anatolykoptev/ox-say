@@ -326,112 +326,18 @@ func numbersOf(s string) string {
 	return strings.Join(nums, " ")
 }
 
-// namesMissing: s has a capitalized word that t does not have in any form. Case is read this way (not "capitalized
-// in both") so a sentence-start "Use" matches "use" and "Bob" does not match "Ann". Forms of one word match
-// (sameWordForm): Russian inflection makes one name "Андрей" in one line and "Андрею" in the next.
+// namesMissing: s has a capitalized word whose lower-case form t does not have
+// at all. Case is read this way (not "capitalized in both") so a sentence-start
+// "Use" matches "use" and "Bob" does not match "Ann".
 func namesMissing(s, t string) bool {
-	have := tokens(t)
+	have := map[string]bool{}
+	for _, w := range tokens(t) {
+		have[strings.ToLower(w)] = true
+	}
 	for _, w := range tokens(s) {
 		r, _ := utf8.DecodeRuneInString(w)
-		if utf8.RuneCountInString(w) < 2 || !unicode.IsUpper(r) {
-			continue
-		}
-		found := false
-		for _, h := range have {
-			if sameWordForm(w, h) {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if utf8.RuneCountInString(w) >= 2 && unicode.IsUpper(r) && !have[strings.ToLower(w)] {
 			return true
-		}
-	}
-	return false
-}
-
-// minStemRunes is the shortest stem two forms may share: "Анна" and "Анне" (stem "анн") are left as two words, and a
-// miss costs a duplicate line where a false match costs a wrong merge.
-const minStemRunes = 4
-
-// caseEndings are the endings a Russian first name or surname takes in the other cases, as a closed set: -а -я
-// (genitive, or nominative of a woman's name), -у -ю (dative), -е (prepositional, dative), -и -ы (genitive, dative of
-// -а/-я names), -ой -ей (genitive, dative, instrumental of -а/-я), -ом -ем (instrumental), -ою -ею (instrumental, old
-// feminine), -ам -ям -ах -ях (plural). An ending outside it (-ов, -ев, -ин, -ина, -ия after a consonant stem) is part
-// of the word: "Сергеев" is not a form of "Сергей", "Иванов" is not a form of "Ивана", "Никитин" not of "Никита".
-var caseEndings = []string{"а", "я", "у", "ю", "е", "и", "ы", "ой", "ей", "ом", "ем", "ою", "ею", "ам", "ям", "ах", "ях"}
-
-// How a stem was reached from a word: the word as it is, or with its final й dropped (bareStem); with -а or -я taken
-// off (bridgeAY); or with any other case ending (otherEnding), or the soft sign dropped (Игорь).
-const (
-	bareStem    = "bare"
-	bridgeAY    = "ay"
-	otherEnding = "other"
-)
-
-// inflectedForms lists the stems a lower-case Cyrillic word can have, each with the ways it was reached: the word
-// itself, the word without one case ending, and for a nominative ending in -й after и, е or а (Андрей, Сергей) the
-// word without that letter, which is the stem the other cases are built on (Андрею: "андре"). A word ending in -ь
-// (Игорь) gives its stem as an ordinary ending. Stems under minStemRunes are dropped.
-func inflectedForms(w string) map[string]map[string]bool {
-	out := map[string]map[string]bool{}
-	add := func(stem, how string) {
-		if utf8.RuneCountInString(stem) >= minStemRunes {
-			if out[stem] == nil {
-				out[stem] = map[string]bool{}
-			}
-			out[stem][how] = true
-		}
-	}
-	add(w, bareStem)
-	for _, e := range caseEndings {
-		if stem, ok := strings.CutSuffix(w, e); ok {
-			how := otherEnding
-			if e == "а" || e == "я" {
-				how = bridgeAY
-			}
-			add(stem, how)
-		}
-	}
-	if strings.HasSuffix(w, "ий") || strings.HasSuffix(w, "ей") || strings.HasSuffix(w, "ай") {
-		add(strings.TrimSuffix(w, "й"), bareStem)
-	}
-	if stem, ok := strings.CutSuffix(w, "ь"); ok {
-		add(stem, otherEnding)
-	}
-	return out
-}
-
-func isCyrillicWord(w string) bool {
-	for _, r := range w {
-		if !unicode.Is(unicode.Cyrillic, r) {
-			return false
-		}
-	}
-	return w != ""
-}
-
-// sameWordForm: a and b are one word up to case, or two Russian case forms of one name (inflectedForms share a
-// stem). Latin names do not inflect and match only exactly: "Maria"/"Mario", "Daniel"/"Daniela" are two people.
-// A stem shared only because one word is the bare name and the other has -а or -я does not count: "Александр" and
-// "Александра", "Евгений" and "Евгения", "Иван" and "Ивана" are a man and a woman, or the same man's genitive, and
-// the two cannot be told apart. A miss costs a duplicate line, a false match a lost task, so they stay two.
-func sameWordForm(a, b string) bool {
-	if strings.EqualFold(a, b) {
-		return true
-	}
-	if !isCyrillicWord(a) || !isCyrillicWord(b) {
-		return false
-	}
-	fb := inflectedForms(strings.ToLower(b))
-	for stem, hows := range inflectedForms(strings.ToLower(a)) {
-		for ka := range hows {
-			for kb := range fb[stem] {
-				if (ka == bridgeAY && kb == bareStem) || (ka == bareStem && kb == bridgeAY) {
-					continue // the -а/-я bridge
-				}
-				return true
-			}
 		}
 	}
 	return false

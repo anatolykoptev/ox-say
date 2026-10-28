@@ -147,20 +147,48 @@ func (c labelChanges) ambiguousIn(n Notes) bool {
 	return false
 }
 
+// matchExtension reports whether s starts with ext, taking any run of whitespace in s (two spaces, a tab, a line
+// break) for a run of whitespace in ext, and how many bytes of s that is. fold ignores case.
+func matchExtension(s, ext string, fold bool) (int, bool) {
+	n := 0
+	for _, er := range ext {
+		if unicode.IsSpace(er) {
+			k := 0
+			for n+k < len(s) {
+				r, w := utf8.DecodeRuneInString(s[n+k:])
+				if !unicode.IsSpace(r) {
+					break
+				}
+				k += w
+			}
+			if k == 0 {
+				return 0, false
+			}
+			n += k
+			continue
+		}
+		if n >= len(s) {
+			return 0, false
+		}
+		r, w := utf8.DecodeRuneInString(s[n:])
+		if r != er && !(fold && strings.EqualFold(string(r), string(er))) {
+			return 0, false
+		}
+		n += w
+	}
+	return n, true
+}
+
 // partialExtension reports text that starts like the extra words of a new name (ext, " Petrov") without being them
 // at a word edge: "Ivan Petrovich" or "Ivan petrov" after "Ivan". Substituting there would write "Ivan Petrov
-// Petrovich", so replaceLabels leaves it and the notes are written again. Text that holds the words exactly, or
-// does not start like them, is not partial.
+// Petrovich", so replaceLabels leaves it and the notes are written again. Text that holds the words exactly (across
+// any whitespace), or does not start like them, is not partial.
 func partialExtension(rest, ext string) bool {
-	n := utf8.RuneCountInString(ext)
-	if utf8.RuneCountInString(rest) < n {
+	if _, ok := matchExtension(rest, ext, true); !ok {
 		return false
 	}
-	head := string([]rune(rest)[:n])
-	if !strings.EqualFold(head, ext) {
-		return false
-	}
-	return head != ext || !wordEdgeAfter(rest, len(ext))
+	n, exact := matchExtension(rest, ext, false)
+	return !exact || !wordEdgeAfter(rest, n)
 }
 
 // inflectedLabel matches a numbered label whose word is inflected ("Спикера 1" for "Спикер 1"), or nil for a label
@@ -259,8 +287,10 @@ func replaceLabels(s string, m map[string]string) string {
 			i += len(hit)
 			// The new name is the old one and more words ("Ivan" -> "Ivan Petrov"): where the text already has
 			// them, they are the name and are not written twice.
-			if ext, ok := extension(hit, m[hit]); ok && strings.HasPrefix(s[i:], ext) && wordEdgeAfter(s, i+len(ext)) {
-				i += len(ext)
+			if ext, ok := extension(hit, m[hit]); ok {
+				if n, found := matchExtension(s[i:], ext, false); found && wordEdgeAfter(s, i+n) {
+					i += n
+				}
 			}
 			continue
 		}

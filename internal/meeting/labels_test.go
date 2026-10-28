@@ -353,3 +353,34 @@ func TestExtension(t *testing.T) {
 		}
 	}
 }
+
+// The extra words of a new name are matched across any whitespace the model put between them: "Иван  Петров" (two
+// spaces) and "Ivan\nPetrov" (a line break) already hold the surname and are not extended again.
+// Mutation: internal/meeting/labels.go replaceLabels, replace `matchExtension(s[i:], ext, false)` with
+// `strings.HasPrefix(s[i:], ext)` (and the same in partialExtension) -> RED ("Ivan Petrov Petrov").
+func TestWhitespaceInsideAnExtensionIsNotDoubled(t *testing.T) {
+	for _, tc := range []struct{ from, to, text, want string }{
+		{"Иван", "Иван Петров", "Иван  Петров согласился.", "Иван Петров согласился."},
+		{"Ivan", "Ivan Petrov", `Ivan\nPetrov said so.`, "Ivan Petrov said so."},
+		{"Ivan", "Ivan Petrov", `Ivan \t Petrov said so, Ivan too.`, "Ivan Petrov said so, Ivan Petrov too."},
+	} {
+		f, chat, id, dir := settledNotes(t)
+		if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": tc.from}}); err != nil {
+			t.Fatal(err)
+		}
+		setNoteText(t, dir, tc.text)
+		asked := len(chat.reqs)
+		v, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": tc.to}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		after := readFile(t, dir, NotesMD)
+		last := strings.Fields(tc.to)[1]
+		if strings.Contains(after, last+" "+last) || !strings.Contains(after, tc.want) {
+			t.Errorf("%q: notes.md lacks %q or doubles the surname:\n%s", tc.text, tc.want, after)
+		}
+		if v.NotesQueued || len(chat.reqs) != asked {
+			t.Errorf("%q: queued %v: a surname already there must not run the model", tc.text, v.NotesQueued)
+		}
+	}
+}
