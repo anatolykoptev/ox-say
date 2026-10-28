@@ -87,3 +87,20 @@ func TestComposeStopsAfterTwoRetryableStartFailures(t *testing.T) {
 		t.Fatalf("model calls = %d, want 2", chat.calls)
 	}
 }
+
+// The run's one extra start is spent on chunk 1; a retryable failure on
+// chunk 2 then stops the run: 3 model calls, not a fresh retry per chunk.
+// Mutation: notes.go chunk, delete `*restarts--` -> RED (the budget never runs
+// out, chunk 2 restarts too and the run ends with err = nil).
+func TestComposeSpendsItsOneExtraStartAcrossChunks(t *testing.T) {
+	chat := &scriptChat{errs: []error{startTimeout, nil, startTimeout, nil}}
+	text := strings.Repeat("word ", ChunkChars/5*2)
+	_, err := Composer{Chat: chat}.Compose(context.Background(), text, Labels{}, "en")
+	var down *EngineDownError
+	if !errors.As(err, &down) {
+		t.Fatalf("err = %v, want the engine-down error", err)
+	}
+	if chat.calls != 3 {
+		t.Fatalf("model calls = %d, want 3 (chunk 1 twice, chunk 2 once)", chat.calls)
+	}
+}
