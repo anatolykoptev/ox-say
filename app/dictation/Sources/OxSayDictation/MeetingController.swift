@@ -149,7 +149,7 @@ final class MeetingController: NSObject, MeetingFeature {
         // A closed lid ends the recording cleanly: the audio devices disappear under it, and what was recorded is
         // handed to the daemon instead of waiting for its stale-recording sweep.
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil,
-                                                                         queue: .main) { [weak self] _ in self?.stopForSleep() }
+                                                                         queue: .main) { [weak self] _ in Task { @MainActor in self?.stopForSleep() } }
         applyAutoStart()
         reconcile()
         render()
