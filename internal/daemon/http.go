@@ -102,9 +102,10 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.normalizeSpeakText(body)
+	spoken, _ := body[fieldInput].(string) // as the engine will get it: numbers may have grown it
 	// A normalised take is buffered, whichever engine rendered it. Without a
 	// target the qwen path streams through unchanged.
-	if model == config.TTSModelVoxCPM2 || lufs != nil {
+	if model == config.TTSModelVoxCPM2 || lufs != nil || utf8.RuneCountInString(spoken) > qwenChunkChars {
 		d.handleSpeechBuffered(w, r, bufferedSpeech{body: body, model: model, format: format, warning: warning, lufs: lufs})
 		return
 	}
@@ -138,6 +139,11 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 
 	if resp.StatusCode/100 != 2 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		if isRunaway(msg) {
+			d.noteRunaway("/v1/audio/speech", utf8.RuneCountInString(input))
+			writeErr(w, http.StatusBadGateway, runawayMessage)
+			return
+		}
 		if ct := resp.Header.Get("Content-Type"); ct != "" {
 			w.Header().Set("Content-Type", ct)
 		}
@@ -168,7 +174,16 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Length", cl)
 		}
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		src := &recordingReader{r: resp.Body}
+		_, _ = io.Copy(w, src)
+		if src.err != nil && r.Context().Err() == nil {
+			// The engine failed after the 200 went out (a take that hit its
+			// frame budget, or a crash): break the transfer, never let a cut
+			// audio end like a finished one.
+			d.streamAborts.Add(1)
+			d.log.Warn("tts stream cut by the engine after it started", slog.Any("error", src.err), slog.Int("chars", utf8.RuneCountInString(input)))
+			abortResponse(w)
+		}
 	}
 }
 

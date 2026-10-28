@@ -196,6 +196,38 @@ func TestFlagOverridesEnv(t *testing.T) {
 	}
 }
 
+// OX_SAY_SEED is the daemon-default seed: absent = no default (nil), 0 and the
+// engine's 32-bit maximum are valid, and anything else is refused at load
+// rather than silently dropped (a typo must not turn into a random voice).
+func TestLoadSeed(t *testing.T) {
+	c, err := Load(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Seed != nil {
+		t.Fatalf("no OX_SAY_SEED: Seed = %d, want nil", *c.Seed)
+	}
+	for _, ok := range []struct {
+		in   string
+		want int64
+	}{{"0", 0}, {"7", 7}, {"4294967295", 4294967295}} {
+		t.Setenv("OX_SAY_SEED", ok.in)
+		c, err := Load(nil)
+		if err != nil {
+			t.Fatalf("OX_SAY_SEED=%s: %v", ok.in, err)
+		}
+		if c.Seed == nil || *c.Seed != ok.want {
+			t.Fatalf("OX_SAY_SEED=%s: Seed = %v, want %d", ok.in, c.Seed, ok.want)
+		}
+	}
+	for _, bad := range []string{"-1", "4294967296", "abc", "1.5", "0x10"} {
+		t.Setenv("OX_SAY_SEED", bad)
+		if _, err := Load(nil); err == nil {
+			t.Fatalf("OX_SAY_SEED=%s accepted", bad)
+		}
+	}
+}
+
 // STT bounds: a zero or negative timeout, audio cap or upload cap, and an
 // upload cap that would overflow MB<<20, are refused at load.
 func TestLoadSTTBounds(t *testing.T) {
@@ -244,6 +276,12 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_VOICE_RU", "testvoiceru", "testvoiceru", func(c *Config) string { return c.VoiceRU }},
 		{"OX_SAY_VOICE_EN", "testvoiceen", "testvoiceen", func(c *Config) string { return c.VoiceEN }},
 		{"OX_SAY_ENGINE_LOG_DIR", "/tmp/oxk-4917/logs", "/tmp/oxk-4917/logs", func(c *Config) string { return c.EngineLogDir }},
+		{"OX_SAY_SEED", "4242", "4242", func(c *Config) string {
+			if c.Seed == nil {
+				return "<unset>"
+			}
+			return strconv.FormatInt(*c.Seed, 10)
+		}},
 		{"OX_SAY_CACHE_DIR", "/tmp/oxk-4917/cache", "/tmp/oxk-4917/cache", func(c *Config) string { return c.CacheDir }},
 		{"OX_SAY_PRODUCE_OUT_DIR", "/tmp/oxk-4917/produce-out", "/tmp/oxk-4917/produce-out", func(c *Config) string { return c.ProduceOutDir }},
 		{"OX_SAY_STT_BIN", "/tmp/oxk-4917/ox-stt-x", "/tmp/oxk-4917/ox-stt-x", func(c *Config) string { return c.STTBin }},

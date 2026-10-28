@@ -101,6 +101,7 @@ var voxOnlyFields = []string{"cfg_value", "inference_timesteps", "clone_mode"}
 func (d *Daemon) prepareSpeech(body map[string]any) (model, warning string, err error) {
 	d.applyLanguageDefault(body)
 	d.applyVoiceDefault(body)
+	d.applySeedDefault(body)
 	m, _ := body[fieldModel].(string)
 	switch name := strings.TrimSpace(m); name {
 	case config.TTSModelVoxCPM2, config.TTSModelQwen:
@@ -194,11 +195,7 @@ func (d *Daemon) synthesize(ctx context.Context, body map[string]any, model stri
 	if model == config.TTSModelVoxCPM2 {
 		return d.synthesizeVoxCPM2(ctx, body)
 	}
-	wav, err := d.synthesizeQwen(ctx, body)
-	if err != nil {
-		return nil, err
-	}
-	return &synthOut{WAV: wav, Model: config.TTSModelQwen, Seed: seedOf(body)}, nil
+	return d.synthesizeQwenSplit(ctx, body)
 }
 
 // render = prepareSpeech + synthesize on a copy of params: the speak tool,

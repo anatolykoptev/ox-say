@@ -111,10 +111,14 @@ type Config struct {
 	StartupTimeout time.Duration
 	Lang           string // OX_SAY_LANG: default language; empty = engine auto
 	Voice          string // OX_SAY_VOICE: default cloned voice; empty = engine random
-	VoiceRU        string // OX_SAY_VOICE_RU: default for Russian speech; empty = Voice
-	VoiceEN        string // OX_SAY_VOICE_EN: default for English speech; empty = Voice
-	EngineLogDir   string // OX_SAY_ENGINE_LOG_DIR: child stdout/stderr log dir
-	CacheDir       string // OX_SAY_CACHE_DIR: default output dir for speak
+	// Seed is OX_SAY_SEED: the seed a speech request gets when its caller
+	// passes none, so the voice stays the same between requests. nil = unset
+	// (every request draws its own).
+	Seed         *int64
+	VoiceRU      string // OX_SAY_VOICE_RU: default for Russian speech; empty = Voice
+	VoiceEN      string // OX_SAY_VOICE_EN: default for English speech; empty = Voice
+	EngineLogDir string // OX_SAY_ENGINE_LOG_DIR: child stdout/stderr log dir
+	CacheDir     string // OX_SAY_CACHE_DIR: default output dir for speak
 	// ProduceOutDir is OX_SAY_PRODUCE_OUT_DIR: where `produce` publishes a
 	// finished voiceover when the request names no out_path. The default
 	// (DefaultProduceOutDir under the user's home) is the owner's provisional
@@ -174,6 +178,7 @@ var flagNames = map[string]string{
 	"startup-timeout":   "OX_SAY_STARTUP_TIMEOUT_SECS",
 	"lang":              "OX_SAY_LANG",
 	"voice":             "OX_SAY_VOICE",
+	"seed":              "OX_SAY_SEED",
 	"voice-ru":          "OX_SAY_VOICE_RU",
 	"voice-en":          "OX_SAY_VOICE_EN",
 	"engine-log-dir":    "OX_SAY_ENGINE_LOG_DIR",
@@ -261,6 +266,9 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 		Voice:         get("OX_SAY_VOICE"),
 		VoiceRU:       get("OX_SAY_VOICE_RU"),
 		VoiceEN:       get("OX_SAY_VOICE_EN"),
+	}
+	if c.Seed, err = seedVar(get("OX_SAY_SEED")); err != nil {
+		return nil, err
 	}
 	if c.Home == "" {
 		c.Home = filepath.Join(homeDir, "Library", "Application Support", "ox-say")
@@ -611,6 +619,24 @@ func intVar(v string, def int) (int, error) {
 		return 0, fmt.Errorf("invalid integer %q", v)
 	}
 	return n, nil
+}
+
+// MaxSeed is the largest seed either speech engine takes (an unsigned 32-bit
+// integer; VoxCPM2 refuses more, and qwen3-tts treats a negative one as "draw
+// a random seed").
+const MaxSeed = 1<<32 - 1
+
+// seedVar parses OX_SAY_SEED: empty = no daemon default (nil), else 0..MaxSeed.
+// A value outside it is an error, not a silent fallback to a random voice.
+func seedVar(v string) (*int64, error) {
+	if v == "" {
+		return nil, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 || n > MaxSeed {
+		return nil, fmt.Errorf("config: OX_SAY_SEED %q: want an integer in 0..%d", v, int64(MaxSeed))
+	}
+	return &n, nil
 }
 
 func int64Var(v string, def int64) (int64, error) {
