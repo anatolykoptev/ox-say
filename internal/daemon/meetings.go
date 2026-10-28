@@ -48,6 +48,10 @@ const (
 
 const stateNotesUnavailable engine.State = "unavailable"
 
+// notesReasonEngineFailed is the reason_code of /status notes while the last
+// start was refused by the server check.
+const notesReasonEngineFailed = "notes_engine_failed"
+
 // notesStatus is the /status "notes" value: whether meeting notes can run,
 // and the model download's progress.
 type notesStatus struct {
@@ -219,7 +223,12 @@ func notesVerifyAuth(ctx context.Context, baseURL string) error {
 // newLLMSupervisor builds the notes server's supervisor. The child holds
 // 4-7 GB while loaded, so a short idle stop returns it to zero between meetings.
 func newLLMSupervisor(cfg *config.Config, logger *slog.Logger) (*engine.Supervisor, error) {
-	return engine.New(engine.Config{
+	return engine.New(notesEngineConfig(cfg, logger))
+}
+
+// notesEngineConfig is the notes supervisor's configuration; tests tune it.
+func notesEngineConfig(cfg *config.Config, logger *slog.Logger) engine.Config {
+	return engine.Config{
 		Name:           "notes",
 		Bin:            notesBinPath(cfg),
 		Port:           cfg.NotesPort,
@@ -232,7 +241,7 @@ func newLLMSupervisor(cfg *config.Config, logger *slog.Logger) (*engine.Supervis
 		Args:           func(port int) []string { return notesServerArgs(cfg, port) },
 		Prepare:        func() error { return notesPrepare(cfg) },
 		Verify:         notesVerifyAuth,
-	})
+	}
 }
 
 // llmChat is the meeting.Chat over the supervised local server: it takes the
@@ -249,7 +258,16 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	defer g.Release()
 	base, err := c.d.LLMSup.EnsureReady(ctx)
 	if err != nil {
-		return "", fmt.Errorf("the notes model failed to start: %w", err)
+		err = fmt.Errorf("the notes model failed to start: %w", err)
+		if ctx.Err() != nil {
+			return "", err
+		}
+		// Not the transcript's fault, so Compose must not go on chunk after
+		// chunk (each try loads the model) and the meeting records this text.
+		// A verify refusal or a shutdown will repeat: stop at once. A health
+		// timeout or a crashed child often succeeds on a second start (the
+		// model is then in the page cache): Compose may start once more.
+		return "", &meeting.EngineDownError{Err: err, Retryable: !engine.IsVerifyRefusal(err) && !errors.Is(err, engine.ErrShutdown)}
 	}
 	ctx, cancel := context.WithTimeout(ctx, notesCallTimeout)
 	defer cancel()
@@ -526,6 +544,13 @@ func (d *Daemon) notesStatus() notesStatus {
 	if d.LLMSup != nil {
 		st := d.LLMSup.Status()
 		out.State, out.LastErr = st.State, st.LastErr
+		if st.State == engine.StateFailed {
+			// The last start was refused by the server check; say so instead of
+			// showing a plain "stopped". Informational: a notes retry starts the
+			// engine again (after the short backoff) and a success clears it.
+			out.ReasonCode = notesReasonEngineFailed
+			out.Reason = "The notes model did not start: its server check failed. Retry the notes to try again."
+		}
 		if strings.Contains(st.LastErr, notesPortTaken) {
 			// A foreign listener holds the port: the app shows the same reason
 			// as for a configured collision, and the meetings wait.

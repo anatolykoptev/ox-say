@@ -448,6 +448,20 @@ func mergeSystem(lang string) string {
 		"Use ONLY facts present in them; never invent names, numbers, dates or owners. Output the summary text only."
 }
 
+// EngineDownError is a model call that failed because the notes engine could
+// not be started, not because of the transcript. Another chunk would only
+// start it again, so Compose stops and returns it for the meeting to record.
+// Retryable marks a start that may well succeed a second time (a health
+// timeout on a cold load, a crashed child): Compose allows exactly one more
+// start per run for those, and none for the rest (a verify refusal repeats).
+type EngineDownError struct {
+	Err       error
+	Retryable bool
+}
+
+func (e *EngineDownError) Error() string { return e.Err.Error() }
+func (e *EngineDownError) Unwrap() error { return e.Err }
+
 // Composer runs the map-reduce. Before, when set, runs ahead of every model
 // call: the daemon passes the dictation yield so notes never starve a user who
 // is dictating.
@@ -492,11 +506,16 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 	chunks := Chunk(transcript, ChunkChars)
 	var parts []ChunkNotes
 	var skipped []int
+	restarts := 1 // extra engine starts this run may spend on a retryable failure
 	for i, ch := range chunks {
-		got, err := c.chunk(ctx, l, lang, i, len(chunks), ch)
+		got, err := c.chunk(ctx, l, lang, i, len(chunks), ch, &restarts)
 		if err != nil {
 			if ctx.Err() != nil {
 				return Notes{}, ctx.Err()
+			}
+			var down *EngineDownError
+			if errors.As(err, &down) {
+				return Notes{}, err
 			}
 			c.logf("notes: chunk failed", slog.Int("chunk", i), slog.Any("error", err))
 			skipped = append(skipped, i)
@@ -532,7 +551,7 @@ func retryable(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED) || (errors.As(err, &se) && se.Code == http.StatusServiceUnavailable)
 }
 
-func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int, text string) (ChunkNotes, error) {
+func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int, text string, restarts *int) (ChunkNotes, error) {
 	req := Request{
 		System:    chunkSystem(l, lang),
 		User:      fmt.Sprintf("This is part %d of %d of a meeting transcript. Write the notes for this part only.\n\nTRANSCRIPT PART:\n%s", i+1, total, text),
@@ -569,6 +588,13 @@ func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int
 		if errors.Is(err, context.DeadlineExceeded) {
 			// The call used its whole deadline; a second one would too.
 			return ChunkNotes{}, err
+		}
+		var down *EngineDownError
+		if errors.As(err, &down) {
+			if !down.Retryable || attempt > 0 || *restarts <= 0 {
+				return ChunkNotes{}, err
+			}
+			*restarts-- // the run's one extra start
 		}
 		lastErr = err
 	}

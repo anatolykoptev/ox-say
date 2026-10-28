@@ -27,6 +27,11 @@ const (
 	StateStarting State = "starting"
 	StateReady    State = "ready"
 	StateCrashed  State = "crashed"
+	// StateFailed is informational: the child ran but Verify refused it, so
+	// the last start failed. It blocks nothing — the next EnsureReady waits
+	// the ordinary backoff (at most 30 s) and starts again — and a
+	// successful start replaces it with Ready.
+	StateFailed State = "failed"
 )
 
 // ErrShutdown is returned by EnsureReady after Shutdown was called.
@@ -75,6 +80,11 @@ type Config struct {
 	// start and the child is killed: the notes engine proves here that its
 	// server really requires the key.
 	Verify func(ctx context.Context, baseURL string) error
+
+	// VerifyTimeout bounds one Verify call, separate from StartupTimeout so
+	// a slow model load cannot starve it and a hung Verify cannot eat the
+	// startup budget. Zero: 10s — one loopback request.
+	VerifyTimeout time.Duration
 
 	Logger *slog.Logger // nil → slog.Default()
 
@@ -180,6 +190,9 @@ func New(cfg Config) (*Supervisor, error) {
 	}
 	if cfg.KillGrace <= 0 {
 		cfg.KillGrace = defaultKillGrace
+	}
+	if cfg.VerifyTimeout <= 0 {
+		cfg.VerifyTimeout = 10 * time.Second
 	}
 	if cfg.LogMaxBytes <= 0 {
 		cfg.LogMaxBytes = defaultLogMaxBytes
@@ -535,7 +548,20 @@ func (s *Supervisor) run() {
 		err = s.waitHealthy(ctx, c)
 	}
 	if err == nil && s.cfg.Verify != nil {
-		err = s.cfg.Verify(ctx, c.baseURL)
+		// Its own budget: after a slow model load the startup context has
+		// little left, and a hung Verify must not hold the whole startup.
+		vctx, vcancel := context.WithTimeout(context.Background(), s.cfg.VerifyTimeout)
+		err = s.cfg.Verify(vctx, c.baseURL)
+		vcancel()
+		if err != nil {
+			select {
+			case <-c.done:
+				// The child died between /health and Verify (crash, OOM):
+				// an ordinary failed start, not the server being refused.
+			default:
+				err = &verifyFailure{err}
+			}
+		}
 	}
 	if err == nil && s.cfg.Replay != nil {
 		// Best-effort per spec ordering: a single corrupt voice file must not
@@ -551,6 +577,19 @@ func (s *Supervisor) run() {
 	// finishStart re-validates ownership under s.mu: a child that died or a
 	// Shutdown that landed mid-start turns the attempt into a failed start.
 	s.finishStart(c, err)
+}
+
+// verifyFailure marks a start whose child ran but was refused by Verify.
+type verifyFailure struct{ error }
+
+func (e *verifyFailure) Unwrap() error { return e.error }
+
+// IsVerifyRefusal reports whether err is a start whose child ran but was
+// refused by Verify — a deterministic outcome another start will repeat, as
+// opposed to a health timeout or a crashed child.
+func IsVerifyRefusal(err error) bool {
+	var vf *verifyFailure
+	return errors.As(err, &vf)
 }
 
 // spawn starts the child and installs the waiter goroutine.
@@ -732,6 +771,10 @@ func (s *Supervisor) finishStart(c *child, err error) {
 			// onExit may already have classified this child as crashed and
 			// charged the backoff — never count one death twice.
 			s.state = StateStopped
+			var vf *verifyFailure
+			if errors.As(err, &vf) {
+				s.state = StateFailed
+			}
 			s.failCount++
 			s.nextAttempt = time.Now().Add(s.backoffLocked())
 		}
