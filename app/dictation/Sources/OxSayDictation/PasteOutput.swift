@@ -54,7 +54,7 @@ final class SystemPasteboard: NSObject, DictationPasteboard, NSPasteboardItemDat
 
     func restore(_ snapshot: PasteboardSnapshot) {
         pasteboard.clearContents()
-        let items = snapshot.restorableItems.map { entries -> NSPasteboardItem in
+        let items = snapshot.items.map { entries -> NSPasteboardItem in
             let item = NSPasteboardItem()
             for entry in entries { item.setData(entry.data, forType: NSPasteboard.PasteboardType(entry.type)) }
             // The user's copy is already in any clipboard history; putting it back
@@ -108,6 +108,8 @@ final class PasteOutput: TextOutput {
 
     private let lending = SystemPasteboard(promised: true)
     private let plain = SystemPasteboard(promised: false)
+    /// The clipboard copy whose read timed out: not read again until the clipboard changes.
+    private let slowClipboard = SlowClipboardMemory()
     /// A paste whose clipboard has not been given back yet.
     private var pending: (lease: ClipboardLease, timer: Timer, text: String, serial: Int)?
 
@@ -121,7 +123,7 @@ final class PasteOutput: TextOutput {
         settle()
         deliverySerial += 1
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let moved = target != nil && front != target
+        let moved = OutputPolicy.focusMoved(target: target, front: front)
         // Declared types only: reading a Universal Clipboard copy makes macOS
         // fetch it from the other device. Decided before any lease exists — a
         // ClipboardLease writes the text at init, which would destroy the copy.
@@ -129,9 +131,7 @@ final class PasteOutput: TextOutput {
         switch OutputPolicy.decide(secureInput: IsSecureEventInputEnabled(), focusMoved: moved,
                                    accessibilityTrusted: AXIsProcessTrusted(), clipboardRemote: remote) {
         case .clipboardOnly(let reason):
-            plain.writeText(text)
-            onNotice?(reason.message)
-            return .clipboardOnly(reason: reason)
+            return leaveOnClipboard(text, reason: reason)
         case .typed:
             let started = Date()
             postTypedText(text)
@@ -141,7 +141,9 @@ final class PasteOutput: TextOutput {
             // The clipboard is read BEFORE anything is written: one that cannot be read in time would be cleared with
             // nothing to put back, so the text is typed and the clipboard is not touched.
             let lease: ClipboardLease
-            switch ClipboardBorrow.take(board: lending, text: text) {
+            // The wait can take seconds: focus is asked again when it ends in `.typed`, with the same rule.
+            switch ClipboardBorrow.take(board: lending, text: text, memory: slowClipboard,
+                                        focusMoved: { OutputPolicy.focusMoved(target: target, front: NSWorkspace.shared.frontmostApplication?.processIdentifier) }) {
             case .typed:
                 let started = Date()
                 postTypedText(text)
@@ -149,6 +151,8 @@ final class PasteOutput: TextOutput {
                 return .typed
             case .lease(let borrowed):
                 lease = borrowed
+            case .focusMoved:
+                return leaveOnClipboard(text, reason: .focusMoved)
             }
             let posted = Date()
             postCommandV()
@@ -166,6 +170,13 @@ final class PasteOutput: TextOutput {
             pending = (lease, timer, text, deliverySerial)
             return .paste
         }
+    }
+
+    /// The text stays on the clipboard and the notice says why it was not delivered.
+    private func leaveOnClipboard(_ text: String, reason: ClipboardReason) -> Delivery {
+        plain.writeText(text)
+        onNotice?(reason.message)
+        return .clipboardOnly(reason: reason)
     }
 
     /// Gives a borrowed clipboard back now. Also called before the app quits: the

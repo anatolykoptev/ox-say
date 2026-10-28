@@ -46,6 +46,9 @@ final class SelectionCapture {
         guard AXIsProcessTrusted() else {
             return AXSelection(hasElement: false, error: AXError.apiDisabled.rawValue, source: source)
         }
+        // On the system-wide element (the `.systemWide` source) this sets the process-wide default, not a limit for
+        // this one call: every AX element this app queries later answers within `axTimeout` too, until another
+        // call changes it. On an app's element it bounds that app only.
         AXUIElementSetMessagingTimeout(root, Self.axTimeout)
         var focused: CFTypeRef?
         let focusError = AXUIElementCopyAttributeValue(root, kAXFocusedUIElementAttribute as CFString, &focused)
@@ -56,6 +59,7 @@ final class SelectionCapture {
             return AXSelection(hasElement: false, error: AXError.noValue.rawValue, source: source)
         }
         let element = focused as! AXUIElement
+        // The focused element: bound for this element alone (the process-wide default is set on `root` above).
         AXUIElementSetMessagingTimeout(element, Self.axTimeout)
         var subrole: CFTypeRef?
         _ = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
