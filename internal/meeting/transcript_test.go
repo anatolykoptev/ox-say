@@ -57,3 +57,29 @@ func TestTranscriptMarkdownEscapesNames(t *testing.T) {
 		t.Errorf("a plain name was changed:\n%s", plain)
 	}
 }
+
+// A rendering viewer fetches <img src=...> and <http://...> by itself: turn text is third-party speech and the
+// title is user text, so no < reaches transcript.md unescaped, and normal text is unchanged (#235).
+// Mutations: transcript.go TranscriptMarkdown, `escapeAngle(t.Text)` -> `t.Text` -> RED (F6); the title line
+// `headingLine(m)` -> `"# " + heading(m)` -> RED (F7).
+func TestTranscriptMarkdownEscapesAngleBracketsInTitleAndTurns(t *testing.T) {
+	img := "<img src=http://example.invalid/x.png>"
+	m := Manifest{Title: img, Started: t0, Labels: Labels{Me: "A", Them: "B"}}
+	md := TranscriptMarkdown(m, []Turn{
+		{Speaker: SpeakerMe, S: 1, Text: "see " + img},
+		{Speaker: SpeakerThem, S: 2, Text: "<http://example.invalid/a> and 3 < 4, plain words"},
+	})
+	for i, c := range md {
+		if c == '<' && (i == 0 || md[i-1] != '\\') {
+			t.Fatalf("unescaped < at %d:\n%s", i, md)
+		}
+	}
+	for _, want := range []string{`# \<img src=http://example.invalid/x.png> — `, `**A** [0:01]: see \<img`, `plain words`} {
+		if !strings.Contains(md, want) {
+			t.Errorf("transcript lacks %q:\n%s", want, md)
+		}
+	}
+	if got := TranscriptMarkdown(Manifest{Started: t0, Labels: Labels{Me: "A"}}, []Turn{{Speaker: SpeakerMe, S: 1, Text: "Привет, как дела? (ok) #1"}}); !strings.Contains(got, "**A** [0:01]: Привет, как дела? (ok) #1\n") {
+		t.Errorf("normal text was changed:\n%s", got)
+	}
+}

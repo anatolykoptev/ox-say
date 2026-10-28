@@ -53,7 +53,7 @@ func (r *Runner) Rename(id, title string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	line := "# " + heading(*m)
+	line := headingLine(*m)
 	for _, name := range headingFiles {
 		if err := r.rewriteHeading(filepath.Join(dir, name), line); err != nil {
 			return nil, fmt.Errorf("meeting: %s: %w", name, err)

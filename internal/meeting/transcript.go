@@ -40,9 +40,9 @@ func (l Labels) turnLabel(t Turn) string {
 // turn, "**Name** [m:ss]: text".
 func TranscriptMarkdown(m Manifest, turns []Turn) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\n", heading(m))
+	fmt.Fprintf(&b, "%s\n\n", headingLine(m))
 	for _, t := range turns {
-		fmt.Fprintf(&b, "**%s** [%s]: %s\n\n", escapeMarkdown(m.Labels.turnLabel(t)), Clock(t.S), t.Text)
+		fmt.Fprintf(&b, "**%s** [%s]: %s\n\n", escapeMarkdown(m.Labels.turnLabel(t)), Clock(t.S), escapeAngle(t.Text))
 	}
 	return b.String()
 }
@@ -64,6 +64,17 @@ func escapeMarkdown(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// escapeAngle makes < literal. A viewer that renders HTML fetches <img src=...> and opens <http://...> on its own, so
+// third-party speech and titles must not carry an unescaped one into a markdown file. Everything else is left as it is.
+func escapeAngle(s string) string {
+	return strings.ReplaceAll(s, "<", `\<`)
+}
+
+// headingLine is the first line of transcript.md and notes.md. Rename rewrites it, so one function builds it.
+func headingLine(m Manifest) string {
+	return "# " + cleanLine(heading(m))
 }
 
 // PromptText is the transcript the language model reads: one line per turn,
