@@ -134,6 +134,9 @@ func (c labelChanges) ambiguousIn(n Notes) bool {
 				if !wordEdgeBefore(s, i) || !wordEdgeAfter(s, i+len(old)) {
 					return true
 				}
+				if ext, ok := extension(old, c.free[old]); ok && partialExtension(s[i+len(old):], ext) {
+					return true
+				}
 				from = i + len(old)
 			}
 			if inflected != nil && inflected.MatchString(s) {
@@ -142,6 +145,22 @@ func (c labelChanges) ambiguousIn(n Notes) bool {
 		}
 	}
 	return false
+}
+
+// partialExtension reports text that starts like the extra words of a new name (ext, " Petrov") without being them
+// at a word edge: "Ivan Petrovich" or "Ivan petrov" after "Ivan". Substituting there would write "Ivan Petrov
+// Petrovich", so replaceLabels leaves it and the notes are written again. Text that holds the words exactly, or
+// does not start like them, is not partial.
+func partialExtension(rest, ext string) bool {
+	n := utf8.RuneCountInString(ext)
+	if utf8.RuneCountInString(rest) < n {
+		return false
+	}
+	head := string([]rune(rest)[:n])
+	if !strings.EqualFold(head, ext) {
+		return false
+	}
+	return head != ext || !wordEdgeAfter(rest, len(ext))
 }
 
 // inflectedLabel matches a numbered label whose word is inflected ("Спикера 1" for "Спикер 1"), or nil for a label

@@ -350,27 +350,68 @@ func namesMissing(s, t string) bool {
 	return false
 }
 
-// minStemRunes is the length from which two words may be forms of one: shorter ones ("Ann"/"Anna", "Mark"/"Marc")
-// are different names more often than inflections of one.
-const minStemRunes = 5
+// minStemRunes is the shortest stem two forms may share: "Анна" and "Анне" (stem "анн") are left as two words, and a
+// miss costs a duplicate line where a false match costs a wrong merge.
+const minStemRunes = 4
 
-// sameWordForm: a and b are one word up to case, or forms of one word: both have minStemRunes letters or more and
-// they share all but the last letter of the shorter ("Андрей", "Андрею", "Андрея"). "Alexander" and "Alexandra"
-// share seven of nine and stay two names. A miss costs a duplicate line, a false match a wrong merge.
+// caseEndings are the endings a Russian first name or surname takes in the other cases, as a closed set: -а -я
+// (genitive, or nominative of a woman's name), -у -ю (dative), -е (prepositional, dative), -и -ы (genitive, dative of
+// -а/-я names), -ой -ей (genitive, dative, instrumental of -а/-я), -ом -ем (instrumental), -ою -ею (instrumental, old
+// feminine), -ам -ям -ах -ях (plural). An ending outside it (-ов, -ев, -ин, -ина, -ия after a consonant stem) is part
+// of the word: "Сергеев" is not a form of "Сергей", "Иванов" is not a form of "Ивана", "Никитин" not of "Никита".
+var caseEndings = []string{"а", "я", "у", "ю", "е", "и", "ы", "ой", "ей", "ом", "ем", "ою", "ею", "ам", "ям", "ах", "ях"}
+
+// inflectedForms lists the stems a lower-case Cyrillic word can have: the word itself, the word without one case
+// ending, and for a nominative ending in -й after и, е or а (Андрей, Сергей) or in -ь (Игорь) the word without that
+// letter, which is the stem the other cases are built on (Андрею, Андрея: "андре"; Игорю: "игор"). Stems under
+// minStemRunes are dropped.
+func inflectedForms(w string) map[string]bool {
+	out := map[string]bool{}
+	add := func(stem string) {
+		if utf8.RuneCountInString(stem) >= minStemRunes {
+			out[stem] = true
+		}
+	}
+	add(w)
+	for _, e := range caseEndings {
+		if stem, ok := strings.CutSuffix(w, e); ok {
+			add(stem)
+		}
+	}
+	if strings.HasSuffix(w, "ий") || strings.HasSuffix(w, "ей") || strings.HasSuffix(w, "ай") {
+		add(strings.TrimSuffix(w, "й"))
+	}
+	if stem, ok := strings.CutSuffix(w, "ь"); ok {
+		add(stem)
+	}
+	return out
+}
+
+func isCyrillicWord(w string) bool {
+	for _, r := range w {
+		if !unicode.Is(unicode.Cyrillic, r) {
+			return false
+		}
+	}
+	return w != ""
+}
+
+// sameWordForm: a and b are one word up to case, or two Russian case forms of one name (inflectedForms share a
+// stem). Latin names do not inflect and match only exactly: "Maria"/"Mario", "Daniel"/"Daniela" are two people.
 func sameWordForm(a, b string) bool {
 	if strings.EqualFold(a, b) {
 		return true
 	}
-	ra, rb := []rune(strings.ToLower(a)), []rune(strings.ToLower(b))
-	short := min(len(ra), len(rb))
-	if short < minStemRunes {
+	if !isCyrillicWord(a) || !isCyrillicWord(b) {
 		return false
 	}
-	common := 0
-	for common < short && ra[common] == rb[common] {
-		common++
+	fb := inflectedForms(strings.ToLower(b))
+	for stem := range inflectedForms(strings.ToLower(a)) {
+		if fb[stem] {
+			return true
+		}
 	}
-	return common >= short-1
+	return false
 }
 
 func tokens(s string) []string {

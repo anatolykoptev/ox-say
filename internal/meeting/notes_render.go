@@ -68,15 +68,24 @@ func linkLike(target string) bool {
 	return false
 }
 
-// neutralizeLinks drops the target of a link ("[a](http://x)" becomes "[a]"), and keeps what is not one ("x[i](y)")
-// as text that cannot form a link: the backslash before the parenthesis makes it literal.
+// neutralizeLinks leaves no inline link or image in s. It drops the target of a link-like "](...)" until none is
+// left ("[a](http://x)(http://y)" loses both: one pass would leave "[a](http://y)", a link made by the deletion), then
+// writes a backslash before the parenthesis of every "](" that remains ("x[i](y)" becomes "x[i]\(y)", literal text),
+// so no text, deleted or kept, can join into a link. An image is a link with a "!" in front, so it goes with it.
 func neutralizeLinks(s string) string {
-	return linkTarget.ReplaceAllStringFunc(s, func(m string) string {
-		if linkLike(linkTarget.FindStringSubmatch(m)[1]) {
-			return "]"
+	for {
+		next := linkTarget.ReplaceAllStringFunc(s, func(m string) string {
+			if linkLike(linkTarget.FindStringSubmatch(m)[1]) {
+				return "]"
+			}
+			return m
+		})
+		if next == s {
+			break
 		}
-		return `]\(` + m[2:]
-	})
+		s = next
+	}
+	return strings.ReplaceAll(s, "](", `]\(`)
 }
 
 // cleanLine is one model string as a single inline line.

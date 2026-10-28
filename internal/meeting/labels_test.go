@@ -300,3 +300,56 @@ func TestARenameAppliedTwiceChangesNothingTheSecondTime(t *testing.T) {
 		t.Errorf("status = %s", got)
 	}
 }
+
+// When the text already holds the start of the new name's extra words but not the words themselves (a longer word,
+// another case), substituting would write "Иван Петров Петрович" or "Ivan Petrov petrov": the notes are written
+// again by the model instead, and notes.md is left as it was. A new name that only continues the old word
+// ("Ivan" -> "Ivanov") is not a surname added after it and is queued too.
+// Mutations: internal/meeting/labels.go ambiguousIn, delete the `partialExtension(rest, ext)` clause -> RED (the
+// first two cases are substituted); extension(), delete the `isWordRune(r)` guard -> RED (the third is substituted).
+func TestAnExtensionThatIsOnlyPartlyThereIsWrittenAgain(t *testing.T) {
+	for _, tc := range []struct{ name, from, to, text string }{
+		{"a longer word", "Иван", "Иван Петров", "Иван Петрович согласился."},
+		{"another case", "Ivan", "Ivan Petrov", "Ivan petrov said so."},
+		{"a word continued", "Ivan", "Ivanov", "Ivan said so."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, chat, id, dir := settledNotes(t)
+			if _, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": tc.from}}); err != nil {
+				t.Fatal(err)
+			}
+			setNoteText(t, dir, tc.text)
+			before := readFile(t, dir, NotesMD)
+			asked := len(chat.reqs)
+			v, err := f.r.EditSpeakers(id, Edit{Rename: map[string]string{"them:1": tc.to}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !v.NotesQueued || f.load(t, id).Status != StatusSummarizing {
+				t.Errorf("queued %v, status %s: the notes should be written again", v.NotesQueued, f.load(t, id).Status)
+			}
+			if after := readFile(t, dir, NotesMD); after != before {
+				t.Errorf("notes.md was touched:\n%s", after)
+			}
+			if err := f.r.Process(context.Background(), id); err != nil {
+				t.Fatal(err)
+			}
+			if len(chat.reqs) <= asked {
+				t.Error("the model was not asked to write the notes again")
+			}
+		})
+	}
+}
+
+func TestExtension(t *testing.T) {
+	for _, tc := range []struct {
+		old, to, ext string
+		ok           bool
+	}{
+		{"Ivan", "Ivan Petrov", " Petrov", true}, {"Ivan", "Ivanov", "", false}, {"Ivan", "Ivan", "", false}, {"Ivan", "Boris", "", false},
+	} {
+		if ext, ok := extension(tc.old, tc.to); ext != tc.ext || ok != tc.ok {
+			t.Errorf("extension(%q, %q) = %q, %v; want %q, %v", tc.old, tc.to, ext, ok, tc.ext, tc.ok)
+		}
+	}
+}

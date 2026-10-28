@@ -5,47 +5,56 @@ import (
 	"testing"
 )
 
-// A name in two grammatical forms is one name: "Андрей" and "Андрею" must not keep two copies of one decision apart
-// (#235). Names that differ, or differ by one letter, still do: the stem rule is for words of five letters or more.
-// Mutation: internal/meeting/notes.go namesMissing, replace the `sameWordForm(w, h)` test in the loop over the
-// other line's words with `strings.EqualFold(w, h)` -> RED (the inflected pair stays two lines).
-func TestMergeTreatsAnInflectedNameAsTheSameName(t *testing.T) {
-	merged := []struct{ a, b string }{
-		{"Передать финальный план съёмки Андрею завтра до обеда в студии", "Передать финальный план съёмки Андрей завтра до обеда в студии"},
-		{"Андрею передали финальный план съёмки завтра до обеда в студии", "Андрей получил финальный план съёмки завтра до обеда в студии"},
+// A name in two grammatical forms is one name, and two names that merely start alike are two (#235). The forms are
+// the Russian case endings of one stem (see inflectedForms); Latin names, which do not inflect, match exactly.
+// The pairs are run through MergeChunks: two decisions that differ only by the name must stay two lines unless the
+// name is one person's.
+// Mutation: internal/meeting/notes.go sameWordForm, replace its body with the length rule `short := min(len(ra), len(rb));
+// if short < 5 { return false }; common := 0; for common < short && ra[common] == rb[common] { common++ };
+// return common >= short-1` (kept in oldLengthRule below) -> RED (Мария/Марина and the rest are merged).
+func TestMergeNamesAreOneOnlyWhenOnePersonsForms(t *testing.T) {
+	line := func(name string) string {
+		return "Pay " + name + " 500 dollars for the shoot in the studio tomorrow morning"
 	}
-	for _, tc := range merged {
-		got := mergeLines(t, ChunkNotes{Decisions: []string{tc.a}}, ChunkNotes{Decisions: []string{tc.b}}).Decisions
-		if len(got) != 1 {
-			t.Errorf("%q and %q stayed %d lines: %q", tc.a, tc.b, len(got), got)
+	merged := func(a, b string) bool {
+		got := mergeLines(t, ChunkNotes{Decisions: []string{line(a)}}, ChunkNotes{Decisions: []string{line(b)}}).Decisions
+		return len(got) == 1
+	}
+	for _, p := range [][2]string{
+		{"Андрей", "Андрею"}, {"Андрей", "Андрея"}, {"Андрею", "Андрея"}, {"Сергей", "Сергею"}, {"Мария", "Марии"},
+		{"Иван", "Ивану"}, {"Иван", "Ивана"}, {"Игорь", "Игорю"}, {"Ольга", "Ольге"}, {"Андрей", "андрей"},
+	} {
+		if !merged(p[0], p[1]) {
+			t.Errorf("%s and %s are one person and stayed two lines", p[0], p[1])
 		}
 	}
-	apart := []struct{ a, b string }{
-		{"Pay Ann 500 dollars for the shoot in the studio tomorrow", "Pay Anna 500 dollars for the shoot in the studio tomorrow"},
-		{"Pay Alexander 500 dollars for the shoot in the studio tomorrow", "Pay Alexandra 500 dollars for the shoot in the studio tomorrow"},
-		{"Передать финальный план съёмки Андрею завтра до обеда в студии", "Передать финальный план съёмки Антону завтра до обеда в студии"},
-	}
-	for _, tc := range apart {
-		got := mergeLines(t, ChunkNotes{Decisions: []string{tc.a}}, ChunkNotes{Decisions: []string{tc.b}}).Decisions
-		if len(got) != 2 {
-			t.Errorf("%q and %q were merged: %q", tc.a, tc.b, got)
+	for _, p := range [][2]string{
+		{"Мария", "Марина"}, {"Сергей", "Сергеев"}, {"Ивана", "Иванов"}, {"Maria", "Mario"}, {"Julia", "Julio"},
+		{"Daniel", "Daniela"}, {"Robert", "Roberta"}, {"Kristin", "Kristina"}, {"Andrew", "Andrews"},
+		{"Виктор", "Виктория"}, {"Никита", "Никитин"}, {"Ann", "Anna"}, {"Alexander", "Alexandra"}, {"Андрей", "Антон"},
+		{"Анна", "Анне"}, // under four letters of stem: not folded, a miss only costs a duplicate line
+	} {
+		if merged(p[0], p[1]) {
+			t.Errorf("%s and %s are two people and were merged", p[0], p[1])
 		}
 	}
 }
 
-func TestSameWordForm(t *testing.T) {
-	for _, tc := range []struct {
-		a, b string
-		want bool
-	}{
-		{"андрей", "андрею", true}, {"андрей", "андрея", true}, {"Andrew", "Andrew", true},
-		{"ann", "anna", false}, {"анне", "анна", false}, {"alexander", "alexandra", false},
-		{"boris", "bobby", false}, {"андрей", "андрюша", false},
-	} {
-		if got := sameWordForm(tc.a, tc.b); got != tc.want {
-			t.Errorf("sameWordForm(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
-		}
+// oldLengthRule is the rule sameWordForm had first, kept for the mutation above.
+func oldLengthRule(a, b string) bool {
+	if strings.EqualFold(a, b) {
+		return true
 	}
+	ra, rb := []rune(strings.ToLower(a)), []rune(strings.ToLower(b))
+	short := min(len(ra), len(rb))
+	if short < 5 {
+		return false
+	}
+	common := 0
+	for common < short && ra[common] == rb[common] {
+		common++
+	}
+	return common >= short-1
 }
 
 // A model string that holds something link-shaped loses the link, not the text around it (#235): the target of a
