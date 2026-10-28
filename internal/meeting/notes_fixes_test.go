@@ -275,3 +275,72 @@ func TestComposeKeepsPartialSummariesWhenTheMergeCallIsCutOff(t *testing.T) {
 		t.Fatalf("summary = %q, err %v, want the joined partial summaries", got.Summary, err)
 	}
 }
+
+// One person spelled in Cyrillic and in Latin is one owner (#235). Real driver: MergeChunks.
+// Mutations: internal/meeting/notes.go sameOwner `foldName(a) == foldName(b)` -> `a == b` RED (F1);
+// foldName, drop the ь/ъ rule (cyrillic table entries) -> RED (F3).
+func TestMergeFoldsCyrillicAndLatinSpellingsOfOnePerson(t *testing.T) {
+	groups := [][]string{
+		{"Игорь", "Igor"},
+		{"Юлия", "Julia", "Yulia", "Юлія"},
+		{"Алексей", "Alexey", "Aleksei", "Aleksej"},
+		{"Дмитрий", "Dmitry", "Dmitrii", "Dmitriy"},
+		{"Юрий", "Yury"},
+		{"Мария", "Maria", "Марія"},
+		{"Євген", "Yevgen"},
+		{"Ґанна", "Ganna"},
+		{"Ольга", "Olga"},
+	}
+	for _, g := range groups {
+		for _, other := range g[1:] {
+			a := ChunkNotes{ActionItems: []ActionItem{{Who: g[0], What: "send the final report to the client today"}}}
+			b := ChunkNotes{ActionItems: []ActionItem{{Who: other, What: "send the final report to the client"}}}
+			got := MergeChunks([]ChunkNotes{a, b}, Labels{Me: "Me", Them: "Them"}).ActionItems
+			if len(got) != 1 {
+				t.Errorf("%q and %q: items = %+v, want one task (one person)", g[0], other, got)
+			}
+		}
+	}
+}
+
+// Different people stay different.
+func TestFoldNameKeepsDifferentPeopleApart(t *testing.T) {
+	for _, pair := range [][2]string{{"Анна", "Яна"}, {"Олег", "Ольга"}, {"Саша", "Маша"}, {"Ann", "Anna"}, {"Иван", "Ивана"}, {"Игорь", "Игорь2"}} {
+		if foldName(pair[0]) == foldName(pair[1]) {
+			t.Errorf("%q and %q fold to the same key %q", pair[0], pair[1], foldName(pair[0]))
+		}
+	}
+}
+
+// The user's own name in the other script takes the label.
+// Mutation: internal/meeting/notes.go canonicalOwner, `foldName(who) == foldName(me)` -> `who == me` -> RED (F2).
+func TestMergeMapsOtherScriptSpellingOfMeToTheLabel(t *testing.T) {
+	a := ChunkNotes{ActionItems: []ActionItem{{Who: "Igor", What: "send the final report to the client"}}}
+	got := MergeChunks([]ChunkNotes{a}, Labels{Me: "Игорь", Them: "Them"}).ActionItems
+	if len(got) != 1 || got[0].Who != "Игорь" {
+		t.Fatalf("items = %+v, want the owner mapped to the label Игорь", got)
+	}
+}
+
+// Different people never fold together, through the real paths (the merge and the mapping of the recorder's own
+// name to the label), not only through foldName.
+// Mutation: internal/meeting/notes.go foldName, re-add the bare trailing y/i strip -> RED.
+func TestDifferentPeopleNeverMerge(t *testing.T) {
+	pairs := [][2]string{{"Al", "Ali"}, {"Brad", "Brady"}, {"Sam", "Sami"}, {"Kay", "Kai"}, {"Bill", "Billy"},
+		{"Арсен", "Арсений"}, {"Артём", "Артемий"}, {"Николай", "Никола"}, {"Василий", "Василь"}, {"Георгий", "Георг"}}
+	task := "send the final report to the client"
+	for _, p := range pairs {
+		a := ChunkNotes{ActionItems: []ActionItem{{Who: p[0], What: task}}}
+		b := ChunkNotes{ActionItems: []ActionItem{{Who: p[1], What: task}}}
+		if got := MergeChunks([]ChunkNotes{a, b}, Labels{Me: "Me", Them: "Them"}).ActionItems; len(got) != 2 {
+			t.Errorf("%v: merged into %+v", p, got)
+		}
+		for i, me := range p {
+			other := p[1-i]
+			got := MergeChunks([]ChunkNotes{{ActionItems: []ActionItem{{Who: other, What: task}}}}, Labels{Me: me, Them: "Them"}).ActionItems
+			if len(got) != 1 || got[0].Who != other {
+				t.Errorf("Me=%q: owner %q was relabelled: %+v", me, other, got)
+			}
+		}
+	}
+}

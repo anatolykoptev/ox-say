@@ -152,7 +152,7 @@ public struct NotesDocument: Equatable {
                 let body = String(line.dropFirst(6))
                 let parts = body.components(separatedBy: " — ")
                 if parts.count == 3 {
-                    current.items.append(.action(who: parts[0], what: parts[1], when: parts[2]))
+                    current.items.append(.action(who: TranscriptTurn.unescaped(parts[0], extra: "#!"), what: parts[1], when: TranscriptTurn.unescaped(parts[2], extra: "#!")))
                 } else {
                     current.items.append(.action(who: "", what: body, when: ""))
                 }
@@ -184,15 +184,16 @@ public struct TranscriptTurn: Equatable, Identifiable {
             let rest = line[close.upperBound...]
             guard let end = rest.range(of: "]: ") else { continue }
             turns.append(TranscriptTurn(id: turns.count, speaker: unescaped(name), time: String(rest[..<end.lowerBound]),
-                                        text: String(rest[end.upperBound...])))
+                                        text: unescaped(String(rest[end.upperBound...]))))
         }
         return turns
     }
 
-    /// `\*` is `*`: a backslash before one of the characters the daemon escapes (`escapeMarkdown`) is dropped.
-    static func unescaped(_ name: String) -> String {
+    /// `\*` is `*`: a backslash before one of the characters the daemon escapes (`escapeMarkdown`) is dropped, so `\\`
+    /// is `\`. `extra` adds the characters the notes writer also escapes at the start of a model line (`#`, `!`).
+    static func unescaped(_ name: String, extra: String = "") -> String {
         guard name.contains("\\") else { return name }
-        let specials = Set("\\`*_[]<>&")
+        let specials = Set("\\`*_[]<>&" + extra)
         var out = ""
         var escaping = false
         for ch in name {

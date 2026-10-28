@@ -267,7 +267,14 @@ var cyrillic = map[rune]string{
 	'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m", 'н': "n", 'о': "o", 'п': "p", 'р': "r",
 	'с': "s", 'т': "t", 'у': "u", 'ф': "f", 'х': "kh", 'ц': "ts", 'ч': "ch", 'ш': "sh",
 	'щ': "sch", 'ы': "y", 'э': "e", 'ю': "yu", 'я': "ya",
+	// The soft and hard signs are not pronounced in the Latin spelling (Игорь, Igor); the Ukrainian letters follow
+	// the same table.
+	'ь': "-", 'ъ': "-", 'і': "i", 'ї': "yi", 'є': "ye", 'ґ': "g",
 }
+
+// latinVariants are the spellings of one sound that transliteration of the same name gives, written as one. Applied in
+// order on the folded key: j is y (Julia, Yulia, Alexej), then ia/iya/iu are ya/yu, ei is ey, x is ks.
+var latinVariants = strings.NewReplacer("j", "y", "iya", "ya", "ia", "ya", "iu", "yu", "ei", "ey", "x", "ks")
 
 var diacritics = strings.NewReplacer(
 	"á", "a", "à", "a", "â", "a", "ä", "a", "ã", "a", "å", "a",
@@ -276,26 +283,30 @@ var diacritics = strings.NewReplacer(
 	"ý", "y", "ñ", "n", "ç", "c", "ß", "ss",
 )
 
-// foldName reduces a person's name to a key that is the same for its spellings:
-// lower case, Cyrillic written in Latin letters, accents removed, and the
-// common Russian ending -ий/-iy/-ij/-ii written -y ("Анатолий", "Anatoliy",
-// "Anatoly"). Exact equality of keys, never similarity: "Ann" and "Anna" are
-// two people.
+// foldName reduces a person's name to a key that is the same for its spellings: lower case, Cyrillic (Russian and
+// Ukrainian) written in Latin letters with the soft and hard signs dropped, accents removed, the Latin variants of one
+// sound written one way (Юлия/Julia/Yulia, Алексей/Alexey/Aleksei), and the Russian ending -ий/-iy/-ij/-ii
+// written -y ("Дмитрий", "Dmitry", "Dmitrii"). Exact equality of keys, never similarity: "Ann" and "Anna" are two people.
+// Not the search fold (foldRune / TextFold), which has a different job.
 func foldName(s string) string {
 	var b strings.Builder
 	for _, r := range diacritics.Replace(strings.ToLower(s)) {
 		switch {
+		case cyrillic[r] == "-":
 		case cyrillic[r] != "":
 			b.WriteString(cyrillic[r])
 		case unicode.IsLetter(r) || unicode.IsDigit(r):
 			b.WriteRune(r)
 		}
 	}
-	k := b.String()
-	for _, end := range []string{"iy", "ij", "ii"} {
-		if strings.HasSuffix(k, end) && len(k) > len(end) {
-			return strings.TrimSuffix(k, end) + "y"
-		}
+	k := latinVariants.Replace(b.String())
+	// -ий/-iy/-ij/-ii are one ending. A bare -y/-i is NOT dropped: Al/Ali, Brad/Brady, Артём/Артемий are different
+	// people, and a miss (Dmitri vs Дмитрий) costs a duplicate line where a false merge costs a wrong owner.
+	if strings.HasSuffix(k, "ii") && len(k) > 2 {
+		return strings.TrimSuffix(k, "ii") + "y"
+	}
+	if strings.HasSuffix(k, "iy") && len(k) > 2 {
+		return strings.TrimSuffix(k, "iy") + "y"
 	}
 	return k
 }

@@ -207,3 +207,17 @@ func TestRenameRefusesAMeetingThatTurnedBusyBeforeTheUpdate(t *testing.T) {
 		t.Error("the refused rename re-saved the manifest")
 	}
 }
+
+// A rename rewrites the headings the same way the renderers write them: a title with < is escaped in both files.
+// Mutation: internal/meeting/rename.go Rename, `line := headingLine(*m)` -> `"# " + heading(*m)` -> RED.
+func TestRenameEscapesAngleBracketsInTheHeadings(t *testing.T) {
+	f, id, dir := settledGroup(t)
+	if _, err := f.r.Rename(id, "<img src=http://example.invalid/x.png>"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range headingFiles {
+		if h := firstLine(t, dir, name); !strings.HasPrefix(h, `# \<img src=http://example.invalid/x.png\> — `) {
+			t.Errorf("%s heading = %q", name, h)
+		}
+	}
+}

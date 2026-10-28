@@ -173,8 +173,9 @@ func notesHits(notes string, needle []rune, limit int) []Hit {
 			body.WriteString(line)
 		}
 	}
-	orig := []rune(body.String())
-	hay := foldRunes(body.String())
+	text := unescapeMarkdown(body.String())
+	orig := []rune(text)
+	hay := foldRunes(text)
 	var hits []Hit
 	for from := 0; len(hits) < limit; {
 		i := indexRunes(hay, needle, from)

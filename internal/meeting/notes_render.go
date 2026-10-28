@@ -23,7 +23,7 @@ func NotesMarkdown(m Manifest, n Notes, lang string) string {
 		h = headings["en"]
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\n## %s\n\n%s\n", heading(m), h.summary, cleanBlock(n.Summary))
+	fmt.Fprintf(&b, "%s\n\n## %s\n\n%s\n", headingLine(m), h.summary, cleanBlock(n.Summary))
 	section := func(title string, items []string) {
 		if len(items) == 0 {
 			return
@@ -58,6 +58,9 @@ var linkTarget = regexp.MustCompile(`\]\([^)\n]*\)?`)
 func cleanLine(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	s = linkTarget.ReplaceAllString(s, "]")
+	// A viewer that renders HTML fetches <img src=...> and <http://...> on its own: a privacy leak from whoever
+	// spoke in the recording. escapeMarkdown treats < as markup for the same reason.
+	s = escapeAngle(s)
 	if s != "" && strings.ContainsRune("#[!>", rune(s[0])) {
 		s = `\` + s
 	}
@@ -107,5 +110,5 @@ func ShortNotesMarkdown(m Manifest, lang string) string {
 	if !ok {
 		h = headings["en"]
 	}
-	return fmt.Sprintf("# %s\n\n%s\n", heading(m), h.short)
+	return fmt.Sprintf("%s\n\n%s\n", headingLine(m), h.short)
 }
