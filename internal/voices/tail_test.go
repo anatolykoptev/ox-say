@@ -3,6 +3,7 @@ package voices
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +76,51 @@ func TestSameWordRejectsDifferentWords(t *testing.T) {
 		if !SameWord(c[0], c[1]) {
 			t.Errorf("SameWord(%q, %q) = false", c[0], c[1])
 		}
+	}
+}
+
+// The verdict cache key carries a fingerprint of SameWord over fixed pairs (#280.2). The expected verdicts are
+// written out here, independent of SameWord: a change of SameWord for any pair fails its row (so the change is
+// seen), and the fingerprint over those expected verdicts must equal the one the key uses (so the key moves with it).
+// "then"/"than" are one edit apart at four letters: SameWord calls them the same word on purpose. The tail check
+// asks whether the words the reference ends in are in the audio; an ASR that heard "than" for "then" heard the
+// word, and a reference that ran PAST the audio ends in words that are nowhere near the audio's, so the pair cannot
+// hide an overrun (#280.4).
+// Mutation: internal/voices/tail.go SameWord `max(1, n/5)` -> `max(1, n/4)` -> RED (the abcdefgh row and the
+// fingerprint equality).
+func TestSameWordProbes(t *testing.T) {
+	want := map[[2]string]bool{
+		{"hello", "hello"}: true, {"cat", "cut"}: false, {"then", "than"}: true, {"stol", "slon"}: false,
+		{"hello", "hallo"}: true, {"hello", "hxllx"}: false, {"abcdefghij", "abcdefghxx"}: true,
+		{"abcdefghij", "abcdefgxxx"}: false, {"abcdefgh", "abcdefxx"}: false, {"сохранит", "сохранить"}: true, {"тридцать", "двадцать"}: false,
+	}
+	if len(want) != len(sameWordProbes) {
+		t.Fatalf("%d expected verdicts for %d probe pairs", len(want), len(sameWordProbes))
+	}
+	for _, p := range sameWordProbes {
+		exp, ok := want[p]
+		if !ok {
+			t.Fatalf("probe pair %q has no expected verdict here", p)
+		}
+		if got := SameWord(p[0], p[1]); got != exp {
+			t.Errorf("SameWord(%q, %q) = %v, want %v", p[0], p[1], got, exp)
+		}
+	}
+	oracle := func(a, b string) bool { return want[[2]string{a, b}] }
+	if got, exp := sameWordFingerprint(SameWord), sameWordFingerprint(oracle); got != exp {
+		t.Errorf("fingerprint of SameWord = %s, of the expected verdicts = %s", got, exp)
+	}
+	// One flipped verdict moves the fingerprint, and the key built from tailParams carries the fingerprint.
+	flipped := func(a, b string) bool {
+		if a == "then" {
+			return !SameWord(a, b)
+		}
+		return SameWord(a, b)
+	}
+	if sameWordFingerprint(flipped) == sameWordFingerprint(SameWord) {
+		t.Error("flipping one pair's verdict did not change the fingerprint")
+	}
+	if !strings.Contains(tailParams(), ",sw"+sameWordFingerprint(SameWord)) {
+		t.Errorf("tailParams %q does not carry the SameWord fingerprint", tailParams())
 	}
 }

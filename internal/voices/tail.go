@@ -1,5 +1,10 @@
 package voices
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+)
+
 const (
 	// anchorWords is how many words at the end of a ref_text must be found at
 	// the end of the transcript. The bleed this guards against is the ref_text
@@ -78,4 +83,39 @@ func editDistance(a, b []rune) int {
 		prev = cur
 	}
 	return prev[len(b)]
+}
+
+// sameWordProbes are the word pairs whose SameWord verdicts make up sameWordFingerprint: both sides of every
+// branch (equal, under four letters, the tolerance at several lengths, Cyrillic runes). A pair is added here when
+// SameWord gains a rule the existing pairs do not show.
+var sameWordProbes = [][2]string{
+	{"hello", "hello"},
+	{"cat", "cut"},
+	{"then", "than"}, // one edit at four letters is a spelling slip to SameWord; see TestSameWordProbes
+	{"stol", "slon"},
+	{"hello", "hallo"},
+	{"hello", "hxllx"},
+	{"abcdefghij", "abcdefghxx"},
+	{"abcdefghij", "abcdefgxxx"},
+	{"abcdefgh", "abcdefxx"},
+	{"сохранит", "сохранить"},
+	{"тридцать", "двадцать"},
+}
+
+// sameWordFingerprint is a short hash of same's verdict on every probe pair. It goes into the verdict cache key
+// (tailParams), so a change in SameWord's result for any pair changes the key and every cached "transcript matches"
+// verdict is dropped, instead of staying valid for a rule that no longer exists.
+func sameWordFingerprint(same func(a, b string) bool) string {
+	h := sha256.New()
+	for _, p := range sameWordProbes {
+		h.Write([]byte(p[0]))
+		h.Write([]byte{0})
+		h.Write([]byte(p[1]))
+		if same(p[0], p[1]) {
+			h.Write([]byte{0, '1'})
+		} else {
+			h.Write([]byte{0, '0'})
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil)[:4])
 }

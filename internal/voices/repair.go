@@ -35,12 +35,11 @@ var ErrChanged = errors.New("voices: voice changed while repairing")
 var repairLogicVersion = 1
 
 // tailParams identifies the tail check (tail.go) for the verdict cache: its
-// constants, so changing one re-checks every voice by itself. SameWord's
-// tolerance is a literal in tail.go; bump tailSameWordRev when it changes.
-const tailSameWordRev = 1
-
+// constants and a fingerprint of how SameWord judges a fixed set of word
+// pairs, so changing a constant or SameWord's tolerance re-checks every
+// voice by itself (no number to remember to bump).
 func tailParams() string {
-	return fmt.Sprintf("tail:%d,%d,%d,sw%d", anchorWords, anchorWindow, anchorNeed, tailSameWordRev)
+	return fmt.Sprintf("tail:%d,%d,%d,sw%s", anchorWords, anchorWindow, anchorNeed, sameWordFingerprint(SameWord))
 }
 
 // verdictFile is the dotfile (List and SweepTemp leave it alone) that keeps
