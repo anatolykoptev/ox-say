@@ -256,6 +256,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let streamer = StreamingTranscriber(baseURL: baseURL)
         let mode = HotkeyMode(rawValue: UserDefaults.standard.string(forKey: modeKey) ?? "") ?? .hold
         controller = DictationController(recorder: recorder, output: output, mode: mode, transcriber: streamer)
+        // A notice that replaced the "Installing…" pill gives it back when its
+        // few seconds are up, while the install still runs.
+        overlay.onMessageExpired = { [weak self] in
+            guard let self, InstallPill.restoreAfterNotice(installing: updateInstalling, dictation: controller.state) else { return false }
+            showInstallPill()
+            return installPillText != nil
+        }
         // While a dictation runs the pill belongs to it: the overlay asks the
         // controller's state before letting any hide take it down.
         overlay.dictationState = { [weak self] in self?.controller?.state ?? .idle }
@@ -575,11 +582,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runVersionHandshake()
     }
 
-    /// The on-disk bundle's version, read from its Info.plist file — never
-    /// Bundle.main, which caches the plist this process launched with, the
-    /// exact stale answer the handshake exists to catch.
+    /// The installed bundle's version (~/Applications, else the running copy),
+    /// read from its Info.plist file — never Bundle.main, which caches the plist
+    /// this process launched with, the exact stale answer the handshake exists to catch.
     nonisolated private static func diskVersion() -> String? {
-        let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
+        let plist = InstalledApp.bundleURL(running: Bundle.main.bundleURL).appendingPathComponent("Contents/Info.plist")
         return (NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"]) as? String
     }
 
@@ -711,7 +718,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             log.error("relaunch: dictation still not idle after \(Int(InstallTermination.idleTimeout), privacy: .public) s; relaunching over it")
         }
         let argv = InstallTermination.openAfterExit(pid: ProcessInfo.processInfo.processIdentifier,
-                                                    bundlePath: Bundle.main.bundleURL.path)
+                                                    bundlePath: InstalledApp.bundleURL(running: Bundle.main.bundleURL).path)
         let waiter = Process()
         waiter.executableURL = URL(fileURLWithPath: argv[0])
         waiter.arguments = Array(argv.dropFirst())

@@ -124,6 +124,9 @@ if [ "$diar_only" = 1 ]; then
     models=("${diar_models[@]}")
 fi
 
+# Seconds a download may stay under 1 KB/s before it is given up on; OX_SAY_STALL_SECS shortens it for tests.
+stall_secs=${OX_SAY_STALL_SECS:-30}
+
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
 # The marker says "every file below passed its checksum", so it cannot outlive the files it vouched for: drop it before
@@ -149,7 +152,21 @@ for entry in "${models[@]}"; do
     else
         echo "fetch   $name"
         # -sS: no progress meter (it would flood the daemon's stderr tail), errors kept
-        curl -fsSL --retry 3 -C - -o "$part" "$base/$remote"
+        # A dead line must end, not hang (an install waits on this): connect in 15 s, and give up on a
+        # transfer that stays under 1 KB/s for $stall_secs s (an average over that window; a slow but alive
+        # line is never cut). A stall is curl exit 28; --retry 3 resumes it (-C -). Not a total bound: a 3 GB
+        # model on a slow line takes as long as it needs.
+        rc=0
+        curl -fsSL --retry 3 -C - --connect-timeout 15 --speed-limit 1024 --speed-time "$stall_secs" \
+            -o "$part" "$base/$remote" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            if [ "$rc" -eq 28 ]; then
+                echo "download of $name stalled (under 1 KB/s for $stall_secs s); check the network and run it again" >&2
+            else
+                echo "download of $name failed (curl exit $rc)" >&2
+            fi
+            exit 1
+        fi
     fi
     got=$(sha "$part")
     if [ "$got" != "$want" ]; then

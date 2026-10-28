@@ -127,14 +127,18 @@ final class UpdateInstallTests: XCTestCase {
     func testTheInstallPillReturnsWhenTheDictationThatHeldItEnds() throws {
         let show = try appDelegateBody("private func show(")
         guard let idle = show.range(of: "case .idle:"),
-              let finish = show.range(of: "overlay.finish()"),
-              let pill = show.range(of: "if updateInstalling { showInstallPill() }"),
-              let release = show.range(of: "noticeGate.release(state: controller.state)"),
-              let recording = show.range(of: "case .recording:") else {
+              let recording = show.range(of: "case .recording:", range: idle.upperBound..<show.endIndex) else {
+            return XCTFail("show(.idle) not found")
+        }
+        // Every anchor is searched inside the `.idle` case only: an earlier
+        // `overlay.finish()` or release in another case must not satisfy the order.
+        let idleCase = String(show[idle.lowerBound..<recording.lowerBound])
+        guard let finish = idleCase.range(of: "overlay.finish()"),
+              let pill = idleCase.range(of: "if updateInstalling { showInstallPill() }"),
+              let release = idleCase.range(of: "noticeGate.release(state: controller.state)") else {
             return XCTFail("show(.idle) does not bring the install pill back")
         }
-        XCTAssertTrue(idle.lowerBound < finish.lowerBound && finish.lowerBound < pill.lowerBound
-                      && pill.lowerBound < release.lowerBound && release.lowerBound < recording.lowerBound,
+        XCTAssertTrue(finish.lowerBound < pill.lowerBound && pill.lowerBound < release.lowerBound,
                       "the install pill must come after overlay.finish() and before the notice release, inside .idle")
         let end = try appDelegateBody("private func endInstall() {")
         XCTAssertTrue(end.contains("installPillText = nil"), "the pill text outlives the install")
@@ -356,5 +360,112 @@ final class UpdateInstallTests: XCTestCase {
     func testCheckIsRefusedWhileInstalling() {
         XCTAssertEqual(UpdateGate.decide(installing: true), .installInProgress)
         XCTAssertEqual(UpdateGate.decide(installing: false), .proceed)
+    }
+}
+
+
+// MARK: #135 — the download is bounded, the installed copy is the one read, #221.1 the pill returns
+
+final class UpdateInstallRobustnessTests: XCTestCase {
+    private func flag(_ name: String, in argv: [String]) -> Double? {
+        guard let i = argv.firstIndex(of: name), argv.indices.contains(i + 1) else { return nil }
+        return Double(argv[i + 1])
+    }
+
+    func testTheDownloadCarriesACurlConnectAndTotalBound() {
+        let argv = UpdateInstaller.downloadCommand(to: "/tmp/x.sh")
+        XCTAssertEqual(flag("--connect-timeout", in: argv), UpdateInstaller.downloadConnectTimeout)
+        XCTAssertEqual(flag("--max-time", in: argv), UpdateInstaller.downloadMaxTime)
+        XCTAssertGreaterThan(UpdateInstaller.downloadBackstop, UpdateInstaller.downloadMaxTime,
+                             "the backstop must let curl's own bound fire first")
+    }
+
+    /// A download that never exits ends in `.downloadTimedOut`, and the process is killed.
+    /// Mutation: UpdateInstall.swift run(), the download `runProcess(download, log: log, timeout: downloadBackstop)`
+    /// without `timeout:` -> RED (the fake sleeps 20 s, then the script check fails: not .downloadTimedOut).
+    func testADownloadThatNeverExitsEndsInATimeoutFailure() async {
+        let started = Date()
+        let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil,
+                                                downloadBackstop: 0.3,
+                                                downloadArgv: { _, _ in ["/bin/sleep", "20"] },
+                                                installedVersion: { nil }, daemonVersion: { nil })
+        XCTAssertEqual(failure, .downloadTimedOut(seconds: 0.3))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5, "the run waited for the hung process")
+        XCTAssertTrue(failure?.message.contains("timed out") ?? false, failure?.message ?? "nil")
+    }
+
+    func testACurlThatCannotStartHasItsOwnText() async {
+        let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil,
+                                                downloadArgv: { _, _ in ["/nonexistent/curl"] },
+                                                installedVersion: { nil }, daemonVersion: { nil })
+        guard case .downloaderCouldNotStart? = failure else { return XCTFail("got \(String(describing: failure))") }
+        XCTAssertTrue(failure?.message.hasPrefix("The download could not start:") ?? false, failure?.message ?? "nil")
+    }
+
+    func testTheScriptHeadReadHasANamedLength() {
+        XCTAssertEqual(UpdateInstaller.scriptHeadLength, 2, "`#!` is two bytes")
+    }
+
+    // The installed copy, not the running one.
+    func testTheInstalledCopyIsReadWhenItExists() {
+        let home = URL(fileURLWithPath: "/Users/sample")
+        let running = URL(fileURLWithPath: "/Volumes/Download/OxSayDictation.app")
+        let installed = InstalledApp.bundleURL(running: running, home: home, exists: { $0.path == "/Users/sample/Applications/OxSayDictation.app/Contents/Info.plist" })
+        XCTAssertEqual(installed.path, "/Users/sample/Applications/OxSayDictation.app")
+    }
+
+    func testTheRunningCopyIsTheFallbackWhenNothingIsInstalled() {
+        let running = URL(fileURLWithPath: "/Volumes/Download/OxSayDictation.app")
+        let got = InstalledApp.bundleURL(running: running, home: URL(fileURLWithPath: "/Users/sample"), exists: { _ in false })
+        XCTAssertEqual(got, running)
+    }
+
+    private func source(_ relative: String) throws -> String {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent(relative)
+        return try String(contentsOf: path, encoding: .utf8)
+    }
+
+    /// Mutation: AppDelegate.diskVersion reads `Bundle.main.bundleURL` again -> RED.
+    func testDiskVersionReadsTheInstalledCopy() throws {
+        let text = try source("Sources/OxSayDictation/AppDelegate.swift")
+        guard let start = text.range(of: "nonisolated private static func diskVersion() -> String? {"),
+              let end = text.range(of: "\n    }\n", range: start.upperBound..<text.endIndex) else { return XCTFail("diskVersion not found") }
+        let body = text[start.lowerBound..<end.upperBound]
+        XCTAssertTrue(body.contains("InstalledApp.bundleURL(running: Bundle.main.bundleURL)"), "diskVersion does not read the installed copy")
+    }
+
+    /// Mutation: AppDelegate.relaunch passes `Bundle.main.bundleURL.path` again -> RED
+    /// (a copy run from elsewhere would reopen itself, the old version).
+    func testRelaunchOpensTheInstalledCopy() throws {
+        let text = try source("Sources/OxSayDictation/AppDelegate.swift")
+        guard let start = text.range(of: "private func relaunch() async -> Bool {"),
+              let end = text.range(of: "\n    }\n", range: start.upperBound..<text.endIndex) else { return XCTFail("relaunch not found") }
+        XCTAssertTrue(text[start.lowerBound..<end.upperBound].contains("bundlePath: InstalledApp.bundleURL(running: Bundle.main.bundleURL).path)"))
+    }
+
+    // #221.1
+    func testTheInstallPillReturnsAfterANoticeOnlyWhileInstallingAndIdle() {
+        XCTAssertTrue(InstallPill.restoreAfterNotice(installing: true, dictation: .idle))
+        XCTAssertFalse(InstallPill.restoreAfterNotice(installing: false, dictation: .idle), "no install, no pill")
+        XCTAssertFalse(InstallPill.restoreAfterNotice(installing: true, dictation: .recording), "a dictation owns the pill")
+        XCTAssertFalse(InstallPill.restoreAfterNotice(installing: true, dictation: .transcribing))
+    }
+
+    /// Mutation: Overlay.showMessage's timeout closure drops the `onMessageExpired` consult -> RED;
+    /// AppDelegate drops the `overlay.onMessageExpired =` wiring -> RED.
+    func testTheNoticeTimeoutGivesTheInstallPillBack() throws {
+        let overlay = try source("Sources/OxSayDictation/Overlay.swift")
+        guard let start = overlay.range(of: "let timeout = DispatchWorkItem { [weak self] in"),
+              let end = overlay.range(of: "messageTimeout = timeout", range: start.upperBound..<overlay.endIndex) else { return XCTFail("timeout closure not found") }
+        let closure = overlay[start.lowerBound..<end.lowerBound]
+        guard let ask = closure.range(of: "onMessageExpired?()"), let hide = closure.range(of: "self.hide()") else {
+            return XCTFail("the message timeout does not ask the app before hiding")
+        }
+        XCTAssertLessThan(ask.lowerBound, hide.lowerBound)
+        let app = try source("Sources/OxSayDictation/AppDelegate.swift")
+        XCTAssertTrue(app.contains("overlay.onMessageExpired = "), "AppDelegate never wires onMessageExpired")
+        XCTAssertTrue(app.contains("InstallPill.restoreAfterNotice(installing: updateInstalling, dictation: controller.state)"))
     }
 }

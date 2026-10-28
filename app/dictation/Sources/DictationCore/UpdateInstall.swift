@@ -8,8 +8,23 @@ public enum UpdateInstaller {
 
     /// Step 1: download get.sh to `file`. argv, never a shell string: curl's own
     /// exit status is the step's result, with no pipeline to swallow it.
+    /// What step 1 downloads is get.sh itself (about 6 KB on 2026-10-27; the 33 MB
+    /// release tarball is fetched later by get.sh, not by this step). So the bound
+    /// is generous for a hostile line yet short enough to be a failure notice, not
+    /// a hang: curl gives up on connecting after 15 s and on the whole transfer
+    /// after 60 s (6 KB at 100 B/s still fits).
+    public static let downloadConnectTimeout: TimeInterval = 15
+    public static let downloadMaxTime: TimeInterval = 60
+    /// The app-side kill if curl itself does not honour its bound (a stalled
+    /// resolver, a wedged process): after curl's own limit, so curl's exit
+    /// status (28) wins whenever it works.
+    public static let downloadBackstop: TimeInterval = 90
+    /// A script starts with `#!`: two bytes.
+    public static let scriptHeadLength = 2
     public static func downloadCommand(to file: String, from source: String = scriptURL) -> [String] {
-        ["/usr/bin/curl", "-fsSL", "-o", file, source]
+        ["/usr/bin/curl", "-fsSL",
+         "--connect-timeout", String(Int(downloadConnectTimeout)), "--max-time", String(Int(downloadMaxTime)),
+         "-o", file, source]
     }
 
     /// Step 2: run the downloaded script, pinned to the tag the user accepted so
@@ -80,6 +95,8 @@ public enum UpdateInstaller {
     /// Why an install did not produce the new version; `message` is the alert text.
     public enum Failure: Equatable {
         case downloadFailed(status: Int32)
+        case downloadTimedOut(seconds: TimeInterval)
+        case downloaderCouldNotStart(String)
         case notAScript
         case installerFailed(status: Int32)
         case couldNotStart(String)
@@ -91,6 +108,10 @@ public enum UpdateInstaller {
             switch self {
             case .downloadFailed(let status):
                 return "Downloading the installer failed (curl exited with status \(status))."
+            case .downloadTimedOut(let seconds):
+                return "Downloading the installer timed out after \(Int(seconds)) s."
+            case .downloaderCouldNotStart(let why):
+                return "The download could not start: \(why)."
             case .notAScript:
                 return "The downloaded installer was empty or not a script."
             case .installerFailed(let status):
@@ -156,20 +177,23 @@ public enum UpdateInstaller {
     /// shell's 0 for a failed download). nil on success; otherwise the first step
     /// that failed. Output of both steps goes to `log`.
     public static func run(kind: Kind, tag: String, log: FileHandle?, scriptSource: String = scriptURL,
+                           downloadBackstop: TimeInterval = downloadBackstop,
+                           downloadArgv: (String, String) -> [String] = { downloadCommand(to: $0, from: $1) },
                            installedVersion: () -> String?,
                            daemonVersion: () async -> String?) async -> Failure? {
         let script = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-get-\(UUID().uuidString).sh")
         defer { try? FileManager.default.removeItem(at: script) }
 
-        let download = Command(argv: downloadCommand(to: script.path, from: scriptSource), environment: [:])
-        switch await runProcess(download, log: log) {
-        case .failure(let error): return .couldNotStart(error.localizedDescription)
+        let download = Command(argv: downloadArgv(script.path, scriptSource), environment: [:])
+        switch await runProcess(download, log: log, timeout: downloadBackstop) {
+        case .failure(is ProcessTimedOut): return .downloadTimedOut(seconds: downloadBackstop)
+        case .failure(let error): return .downloaderCouldNotStart(error.localizedDescription)
         case .success(let status) where status != 0: return .downloadFailed(status: status)
         case .success: break
         }
         let head = (try? FileHandle(forReadingFrom: script)).flatMap { handle -> Data? in
             defer { try? handle.close() }
-            return try? handle.read(upToCount: 2)
+            return try? handle.read(upToCount: scriptHeadLength)
         } ?? Data()
         guard isScript(head: head) else { return .notAScript }
 
@@ -242,5 +266,30 @@ public enum UpdateGate: Equatable {
 
     public static func decide(installing: Bool) -> UpdateGate {
         installing ? .installInProgress : .proceed
+    }
+}
+
+/// Which copy of the app is "the installed one". get.sh installs to
+/// ~/Applications/OxSayDictation.app; a copy run from a download folder or a
+/// disk image is not it, and its own Info.plist says nothing about what the
+/// installer just wrote.
+public enum InstalledApp {
+    public static let bundleName = "OxSayDictation.app"
+
+    /// The installed bundle when it is there (its Info.plist exists), otherwise
+    /// the bundle this process runs from.
+    public static func bundleURL(running: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                                 exists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> URL {
+        let installed = home.appendingPathComponent("Applications").appendingPathComponent(bundleName)
+        return exists(installed.appendingPathComponent("Contents/Info.plist")) ? installed : running
+    }
+}
+
+/// The "Installing…" pill and a notice that replaces it.
+public enum InstallPill {
+    /// When a notice's pill times out: the install pill goes back up instead of
+    /// the overlay hiding, while the install runs and no dictation owns the pill.
+    public static func restoreAfterNotice(installing: Bool, dictation: DictationState) -> Bool {
+        installing && dictation == .idle
     }
 }

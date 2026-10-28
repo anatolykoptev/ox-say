@@ -238,7 +238,7 @@ final class InstallTerminationWiringTests: XCTestCase {
         let relaunch = body("@MainActor @discardableResult private func relaunch() async -> Bool {")
         XCTAssertTrue(relaunch.contains("InstallTermination.openAfterExit(pid: ProcessInfo.processInfo.processIdentifier,"),
                       "the waiter is not given this process's pid")
-        XCTAssertTrue(relaunch.contains("bundlePath: Bundle.main.bundleURL.path)"), "the waiter is not given this bundle's path")
+        XCTAssertTrue(relaunch.contains("bundlePath: InstalledApp.bundleURL(running: Bundle.main.bundleURL).path)"), "the waiter is not given the installed bundle's path")
         XCTAssertFalse(relaunch.contains("/usr/bin/open") || relaunch.contains("\"-n\""),
                        "relaunch() opens the new copy itself while this process still holds the hotkey")
         guard let `catch` = relaunch.range(of: "} catch {"), let terminate = relaunch.range(of: "NSApp.terminate(nil)") else {
