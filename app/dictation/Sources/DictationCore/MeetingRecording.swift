@@ -132,13 +132,16 @@ public struct MeetingExporter {
     private let defaults: UserDefaults
     private let fm: FileManager
     private let stage: (Data, URL) throws -> Void
+    private let replace: ((URL, URL) throws -> Void)?
 
-    /// `stage` writes one staged text during a refresh; tests make it fail.
+    /// `stage` writes one staged text during a refresh and `replace` moves it into place; tests make them fail.
     public init(defaults: UserDefaults, fm: FileManager = .default,
-                stage: @escaping (Data, URL) throws -> Void = { try $0.write(to: $1) }) {
+                stage: @escaping (Data, URL) throws -> Void = { try $0.write(to: $1) },
+                replace: ((URL, URL) throws -> Void)? = nil) {
         self.defaults = defaults
         self.fm = fm
         self.stage = stage
+        self.replace = replace
     }
 
     public func export(_ info: MeetingInfo) -> Outcome {
@@ -153,7 +156,7 @@ public struct MeetingExporter {
             if let path = MeetingSettings.exportPath(info.id, defaults) {
                 let dir = URL(fileURLWithPath: path, isDirectory: true)
                 do {
-                    switch try NotesExport.refresh(info: info, at: dir, expected: MeetingSettings.exportHashes(info.id, defaults), fm: fm, stage: stage) {
+                    switch try NotesExport.refresh(info: info, at: dir, expected: MeetingSettings.exportHashes(info.id, defaults), fm: fm, stage: stage, replace: replace) {
                     case .refreshed:
                         // Merge: a text this meeting does not have yet (notes still pending) keeps its stored hash.
                         let merged = MeetingSettings.exportHashes(info.id, defaults).merging(NotesExport.hashes(of: info)) { _, new in new }
@@ -163,6 +166,11 @@ public struct MeetingExporter {
                     case .keptEdited:
                         return .keptEdited(dir)
                     }
+                } catch let partial as NotesExport.PartialRefresh {
+                    // Some texts are new already: they are ours, so the next refresh does not take them for an edit.
+                    let merged = MeetingSettings.exportHashes(info.id, defaults).merging(partial.replaced) { _, new in new }
+                    MeetingSettings.setExportHashes(info.id, merged, defaults)
+                    return .failed(NotesExport.explain(partial.underlying))
                 } catch NotesExport.ExportError.folderMoved {
                     // The folder was moved or deleted: a new copy below.
                 } catch {

@@ -366,15 +366,24 @@ final class ScriptCleanerTests: XCTestCase {
         XCTAssertEqual(words(pages), (0..<9).flatMap { ["\($0 / 3 + 1)", "Chapter", "page", "\($0)", "text", "goes", "here."] })
     }
 
-    // #175 — numbers that rise but not as the pages do (a chapter number on the first page of each chapter only) are
-    // not a page-number sequence either: page 1, 4, 7 print 1, 2, 3.
-    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, group the candidates by `_ in 0` (one sequence)
-    // instead of `value - page` -> RED here.
-    func testNumbersThatRiseSlowerThanThePagesAreKept() {
-        let pages = (0..<9).map { $0 % 3 == 0 ? "\($0 / 3 + 1)\nChapter page text goes here." : "Chapter page text goes here." }
-        let spoken = words(pages)
-        XCTAssertEqual(spoken.filter { ["1", "2", "3"].contains($0) }, ["1", "2", "3"], "a chapter number was dropped as a page number")
-        XCTAssertEqual(spoken.count, 9 * 5 + 3)
+    // #175 — a plate (or any page without a printed number) between numbered pages does not stop the numbering:
+    // the numbers still rise, whether or not the plate was counted. Grouping by `value - page` let these through.
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, `longestRisingRun(candidates)` -> the largest group of
+    // `Dictionary(grouping: candidates, by: { $0.value - $0.page })` -> RED here.
+    func testPageNumbersSurviveAPlateOrASkippedCount() {
+        // Ten numbered pages, one unnumbered plate, then the page numbered 11.
+        var plate = (1...10).map { "Body page \($0) text goes here.\n\($0)" }
+        plate.append("A plate with no number.")
+        plate.append("Body page 11 text goes here.\n11")
+        let body = { (n: Int) in ["Body", "page", "\(n)", "text", "goes", "here."] }
+        XCTAssertEqual(words(plate), (1...10).flatMap(body) + ["A", "plate", "with", "no", "number."] + body(11),
+                       "the 11 after the plate was read aloud")
+        // Numbered page, plate, numbered page, plate ...: six numbers.
+        let alternating = (1...6).flatMap { ["Alt page \($0) text goes here.\n\($0)", "Plate only."] }
+        XCTAssertEqual(words(alternating).filter { Int($0) != nil }, (1...6).map(String.init), "only the digits of the body text stay")
+        // PDF page k prints 2k.
+        let doubled = (1...6).map { "Dbl page \($0) text goes here.\n\(2 * $0)" }
+        XCTAssertEqual(words(doubled), (1...6).flatMap { ["Dbl", "page", "\($0)", "text", "goes", "here."] })
     }
 
     // #175 — a long PDF with a real page number on every page is still cleaned (the grouping is one pass).

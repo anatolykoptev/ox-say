@@ -156,8 +156,9 @@ final class MeetingExporterTests: XCTestCase {
             ((try? fm.contentsOfDirectory(atPath: root.path)) ?? []).filter { !$0.hasPrefix(".") }.sorted()
         }
 
-        func exporter(stage: @escaping (Data, URL) throws -> Void = { try $0.write(to: $1) }) -> MeetingExporter {
-            MeetingExporter(defaults: defaults, stage: stage)
+        func exporter(stage: @escaping (Data, URL) throws -> Void = { try $0.write(to: $1) },
+                      replace: ((URL, URL) throws -> Void)? = nil) -> MeetingExporter {
+            MeetingExporter(defaults: defaults, stage: stage, replace: replace)
         }
 
         func firstExport() throws -> URL {
@@ -220,6 +221,36 @@ final class MeetingExporterTests: XCTestCase {
         XCTAssertFalse(why.isEmpty)
         XCTAssertEqual(f.copies().count, 1, "no second copy")
         XCTAssertTrue(MeetingSettings.exportStale(f.defaults).contains("m1"), "still stale, to try again")
+    }
+
+    /// #260.N4 follow-up: the second replace fails after notes.md is already new. The ledger takes the new notes.md
+    /// as ours, so the next refresh (replace working again) finishes transcript.md instead of answering `.keptEdited`
+    /// forever.
+    /// Mutation: MeetingExporter.export, delete the `catch let partial as NotesExport.PartialRefresh` branch's ledger
+    /// write (`setExportHashes`) -> RED (the retry answers keptEdited and the transcript stays old).
+    func testAPartialRefreshFailureIsFinishedByTheNextRefresh() throws {
+        let f = Fixture(); defer { f.clean() }
+        let dir = try f.firstExport()
+        MeetingSettings.setExportStale("m1", true, f.defaults)
+        let v2 = f.info(notes: "notes v2", transcript: "text v2")
+        var calls = 0
+        let failing: (URL, URL) throws -> Void = { original, temp in
+            calls += 1
+            if calls == 2 { throw CocoaError(.fileWriteOutOfSpace) }
+            _ = try FileManager.default.replaceItemAt(original, withItemAt: temp)
+        }
+        guard case .failed(let why) = f.exporter(replace: failing).export(v2) else { return XCTFail("the partial failure must be reported") }
+        XCTAssertFalse(why.isEmpty)
+        let notesAfterFailure = try f.text(dir, "notes.md"), transcriptAfterFailure = try f.text(dir, "transcript.md")
+        XCTAssertEqual(notesAfterFailure, "notes v2")
+        XCTAssertEqual(transcriptAfterFailure, "text v1")
+        XCTAssertTrue(MeetingSettings.exportStale(f.defaults).contains("m1"), "still stale, to try again")
+        let again = f.exporter().export(v2)
+        XCTAssertEqual(again, .refreshed(dir), "the new notes.md is ours: \(again)")
+        let notesAfterRetry = try f.text(dir, "notes.md"), transcriptAfterRetry = try f.text(dir, "transcript.md")
+        XCTAssertEqual(notesAfterRetry, "notes v2")
+        XCTAssertEqual(transcriptAfterRetry, "text v2")
+        XCTAssertEqual(f.copies().count, 1, "no second copy")
     }
 
     func testAMovedFolderGetsANewCopyAndTheLedgerFollows() throws {

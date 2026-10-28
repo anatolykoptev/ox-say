@@ -220,9 +220,10 @@ final class NotesExportTests: XCTestCase {
         }
         var thrown: Error?
         do { try NotesExport.refresh(info: again, at: dir, expected: NotesExport.hashes(of: first), fm: fm, replace: replace) } catch { thrown = error }
-        let error = try XCTUnwrap(thrown, "a failed replace must reach the caller")
-        XCTAssertEqual((error as NSError).code, NSFileWriteOutOfSpaceError)
-        XCTAssertEqual(NotesExport.explain(error, text: { $0.rawValue }), L10nKey.noticeExportDiskFull.rawValue,
+        let partial = try XCTUnwrap(thrown as? NotesExport.PartialRefresh, "a failed replace must reach the caller, with what did land")
+        XCTAssertEqual((partial.underlying as NSError).code, NSFileWriteOutOfSpaceError)
+        XCTAssertEqual(partial.replaced, ["notes.md": NotesExport.hashes(of: again)["notes.md"]!], "only the file that was replaced")
+        XCTAssertEqual(NotesExport.explain(partial, text: { $0.rawValue }), L10nKey.noticeExportDiskFull.rawValue,
                        "the failure must surface as the localized disk-full notice")
         let names = try fm.contentsOfDirectory(atPath: dir.path).sorted()
         XCTAssertEqual(names, ["notes.md", "transcript.md"], "staging temps were left in the meeting folder: \(names)")
