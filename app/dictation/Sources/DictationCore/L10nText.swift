@@ -26,4 +26,10 @@ extension L10nKey {
     public func text(_ argument: String) -> String {
         String(format: text, argument)
     }
+
+    /// The text with its `%1$@` and `%2$@` filled in (positional, so a
+    /// translation may swap the two).
+    public func text(_ first: String, _ second: String) -> String {
+        String(format: text, first, second)
+    }
 }

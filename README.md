@@ -3,8 +3,8 @@
 Local speech for **Macs** — natively on Apple Silicon's GPU, and on Intel Macs' AMD GPU:
 - text-to-speech with voice cloning;
 - speech-to-text with word timestamps;
-- dictation: hold ⌃Space in any app, speak, and the text is typed where the
-  cursor is (a menu-bar app, see [Dictation](#dictation)).
+- dictation: hold ⌃Space (⌥Space when ⌃Space is taken) in any app, speak,
+  and the text is typed where the cursor is (a menu-bar app, see [Dictation](#dictation)).
 
 The engine build also produces `ox-align`, a wav2vec2 tool that emits
 per-frame CTC emissions — the first phase of a forced aligner (see
@@ -540,8 +540,8 @@ Environment variables (flags on `serve` override them):
 
 ## Dictation
 
-`app/dictation` is a menu-bar app: hold ⌃Space, speak, release, and the text
-appears where the cursor is, in any app. The daemon transcribes it, so nothing
+`app/dictation` is a menu-bar app: hold ⌃Space (⌥Space when macOS or another app owns
+⌃Space), speak, release, and the text appears where the cursor is, in any app. The daemon transcribes it, so nothing
 leaves the Mac. While you speak, a pill at the bottom of the screen shows bars
 that move with your voice; Esc cancels. **Keyboard Shortcuts** in the menu
 switches the key to ⌥Space, and **Settings** turns on toggle mode (press to

@@ -48,6 +48,15 @@ public struct NoticeGate {
             Notice(message: message, kind: .unrelated, priority: .lostText)
         }
 
+        /// The clipboard could not be put back once the paste settled, seconds
+        /// after delivery. It is about the paste that already happened, not
+        /// about the dictation now running or the next one, so it is
+        /// `.unrelated`: a later dictation's `endedReason` must not be spent
+        /// on it.
+        public static func lateClipboard(_ message: String) -> Notice {
+            Notice(message: message, kind: .unrelated)
+        }
+
         /// A newer release was found.
         public static func updateAvailable(_ message: String, tag: String) -> Notice {
             Notice(message: message, kind: .unrelated, priority: .low, announces: tag)
