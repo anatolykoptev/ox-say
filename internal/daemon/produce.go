@@ -465,7 +465,10 @@ func settle(c *vproject.Chunk) {
 		c.Status = vproject.ChunkReview
 	}
 	if c.Status == vproject.ChunkOK {
-		c.Reasons = nil // accepted after listening: the take keeps its own reasons (#165.2)
+		// An ok chunk shows no failure reasons: a user pick overrode them, and the take
+		// keeps its own in the manifest (#165.2). A plausibility note is no failure and
+		// stays (#143.6).
+		c.Reasons = noteReasons(c.Reasons)
 	}
 }
 
@@ -612,3 +615,14 @@ const (
 	MaxTakesPerChunk  = maxTakesPerChunk
 	MaxListedProjects = maxListedProjects
 )
+
+// noteReasons is rs without the failure reasons: only the "note: ..." ones remain (nil when none).
+func noteReasons(rs []string) []string {
+	var out []string
+	for _, r := range rs {
+		if strings.HasPrefix(r, noteReason) {
+			out = append(out, r)
+		}
+	}
+	return out
+}

@@ -78,6 +78,9 @@ var renameFile = os.Rename
 // links.
 var linkFile = os.Link
 
+// removeFile is os.Remove for the temp left after a link; a var so a test can make it fail.
+var removeFile = os.Remove
+
 // outputStem is the common prefix of the five outputs of outPath, which must
 // be an absolute .wav (any case).
 func outputStem(outPath string) (string, error) {
@@ -363,7 +366,12 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 	}
 	replaceable := func(dest string) bool { return m.Settings.Overwrite || owned[dest] }
 	for k, s := range set {
-		if err := placeStaged(s, replaceable(s.dest)); err != nil {
+		left, err := placeStaged(s, replaceable(s.dest))
+		if left != nil {
+			p.log.Warn("produce: cannot remove a staged temp after publishing; it will be swept later",
+				slog.String("file", filepath.Base(s.tmp)), slog.Any("error", errors.Unwrap(left)))
+		}
+		if err != nil {
 			if k == 0 {
 				// Nothing was replaced yet: drop the staged temps only and keep
 				// the previous good set (#154.8).
@@ -500,19 +508,24 @@ func stageWAV(norm, dest string) (string, error) {
 // appeared there since the check: the no-clobber promise is kept to the end,
 // not only up to a pre-check (#154.3). A volume without hard links gets the
 // rename, which keeps only the pre-check.
-func placeStaged(s staged, replace bool) error {
+//
+// leftover is set when the link worked but the staged temp could not be unlinked: the publish
+// succeeded, and the temp (a second hard link to the output) is reaped by sweepOutputTemps.
+func placeStaged(s staged, replace bool) (leftover, err error) {
 	if replace {
-		return renameFile(s.tmp, s.dest)
+		return nil, renameFile(s.tmp, s.dest)
 	}
-	err := linkFile(s.tmp, s.dest)
+	err = linkFile(s.tmp, s.dest)
 	switch {
 	case err == nil:
-		_ = os.Remove(s.tmp)
-		return nil
+		if rerr := removeFile(s.tmp); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+			return rerr, nil
+		}
+		return nil, nil
 	case errors.Is(err, fs.ErrExist):
-		return err
+		return nil, err
 	default:
-		return renameFile(s.tmp, s.dest)
+		return nil, renameFile(s.tmp, s.dest)
 	}
 }
 

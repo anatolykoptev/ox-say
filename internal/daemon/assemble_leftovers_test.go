@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,4 +164,56 @@ func TestPublishFallsBackToRenameWithoutHardLinks(t *testing.T) {
 			t.Errorf("%s: %v", ext, err)
 		}
 	}
+}
+
+// A staged temp that cannot be unlinked after its link is a leftover, not a failed publish: the outputs
+// are in place, a WARN names the temp without its directory, and the sweep reaps it once it is old.
+// Mutation: produce_assemble.go placeStaged, return the removeFile error as err -> the publish fails -> RED.
+// Mutation: publish, drop the `left != nil` Warn -> RED on the log. Mutation: sweepOutputTemps, skip
+// every entry -> the old temp survives -> RED.
+func TestUnlinkFailureAfterLinkIsWarnedAndSwept(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	var buf bytes.Buffer
+	p.log = slog.New(slog.NewTextHandler(&buf, nil))
+	orig := removeFile
+	t.Cleanup(func() { removeFile = orig })
+	removeFile = func(path string) error {
+		if strings.Contains(filepath.Base(path), vproject.TempMark) {
+			return &os.PathError{Op: "remove", Path: path, Err: syscall.EACCES}
+		}
+		return orig(path)
+	}
+	if err := p.assemble(j); err != nil {
+		t.Fatalf("a failed temp unlink failed the publish: %v", err)
+	}
+	stem := assembledStem(j)
+	for _, ext := range outputExts {
+		if _, err := os.Lstat(stem + ext); err != nil {
+			t.Errorf("%s: %v", ext, err)
+		}
+	}
+	log := buf.String()
+	if !strings.Contains(log, "level=WARN") || !strings.Contains(log, "staged temp") || strings.Contains(log, filepath.Dir(stem)) {
+		t.Errorf("want a WARN naming the temp without its directory: %q", log)
+	}
+	dir := filepath.Dir(stem)
+	var temps []string
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), vproject.TempMark) {
+			temps = append(temps, filepath.Join(dir, e.Name()))
+		}
+	}
+	if len(temps) == 0 {
+		t.Fatal("no leftover temp: the failing unlink was not reached")
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	for _, tp := range temps {
+		if err := os.Chtimes(tp, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweepOutputTemps(stem, tempSweepMinAge)
+	noTemps(t, dir)
 }
