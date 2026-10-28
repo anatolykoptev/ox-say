@@ -331,6 +331,7 @@ func (s *Store) Remove(name string) error {
 			return fmt.Errorf("voices: %w", err)
 		}
 	}
+	s.forgetVerdict(name)
 	if missing {
 		return ErrNotFound
 	}

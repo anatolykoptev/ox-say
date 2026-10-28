@@ -328,15 +328,27 @@ func (s *Store) copyAtomic(src, dst string) error {
 }
 
 // verdictKey identifies what a "transcript matches" verdict was computed
-// from: the clip's size and mtime, the transcript text it was compared to,
-// and the repair logic's version. Any change to one of them is a re-check.
+// from: the clip's bytes (hashed: a clip replaced with its mtime preserved
+// must not keep a stale "fine") and mtime, the transcript text it was compared
+// to, the repair logic's version and the tail check's parameters. Any change
+// to one of them is a re-check.
 func (s *Store) verdictKey(wav, text string) (string, error) {
-	st, err := os.Stat(wav)
+	f, err := os.Open(wav)
 	if err != nil {
 		return "", err
 	}
-	h := sha256.Sum256([]byte(text))
-	return fmt.Sprintf("v%d|%d|%d|%s", repairLogicVersion, st.Size(), st.ModTime().UnixNano(), hex.EncodeToString(h[:8])), nil
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	hc := sha256.New()
+	if _, err := io.Copy(hc, f); err != nil {
+		return "", err
+	}
+	ht := sha256.Sum256([]byte(text))
+	return fmt.Sprintf("v%d|%s|%d|%s|%s", repairLogicVersion, tailParams(), st.ModTime().UnixNano(),
+		hex.EncodeToString(hc.Sum(nil)[:12]), hex.EncodeToString(ht[:8])), nil
 }
 
 func (s *Store) readVerdicts() map[string]string {
@@ -365,22 +377,45 @@ func (s *Store) rememberVerdict(name, key string) {
 	defer s.verdictMu.Unlock()
 	m := s.readVerdicts()
 	m[name] = key
-	raw, err := json.Marshal(m)
-	if err == nil {
-		var f *os.File
-		if f, err = os.CreateTemp(s.dir, ".normalize-verdicts-*"); err == nil {
-			tmp := f.Name()
-			_ = f.Close()
-			if err = s.writeFile(tmp, raw, 0o644); err == nil {
-				err = s.rename(tmp, filepath.Join(s.dir, verdictFile))
-			}
-			if err != nil {
-				_ = os.Remove(tmp)
-			}
-		}
-	}
-	if err != nil {
+	if err := s.saveVerdicts(m); err != nil {
 		slog.Warn("voice repair: could not save the verdict; the voice will be re-checked next start",
 			slog.String("voice", name), slog.Any("error", err))
 	}
+}
+
+// forgetVerdict drops name's entry (Remove): a voice added later under the
+// same name must not inherit it. Best effort like rememberVerdict; a stale
+// entry cannot match a different clip anyway, since the key hashes the bytes.
+func (s *Store) forgetVerdict(name string) {
+	s.verdictMu.Lock()
+	defer s.verdictMu.Unlock()
+	m := s.readVerdicts()
+	if _, ok := m[name]; !ok {
+		return
+	}
+	delete(m, name)
+	if err := s.saveVerdicts(m); err != nil {
+		slog.Warn("voice repair: could not drop the verdict of a removed voice",
+			slog.String("voice", name), slog.Any("error", err))
+	}
+}
+
+func (s *Store) saveVerdicts(m map[string]string) error {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(s.dir, ".normalize-verdicts-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_ = f.Close()
+	if err = s.writeFile(tmp, raw, 0o644); err == nil {
+		err = s.rename(tmp, filepath.Join(s.dir, verdictFile))
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }

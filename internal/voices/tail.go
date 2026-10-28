@@ -1,22 +1,40 @@
 package voices
 
-const (
-	// anchorWords is how many words at the end of a ref_text must be found at
-	// the end of the transcript. The bleed this guards against is the ref_text
-	// tail past the audio: a reference that ends in words the clip never says
-	// makes the model speak them. An overall similarity ratio cannot see it
-	// when the overrun is under a fifth of the text (measured references
-	// that ran 11, 6 and 4 words over scored 0.88-0.95 and still bled).
-	anchorWords = 3
-	// anchorDrop is how many words the recognizer may have dropped at the very
-	// end of the clip (a trailing word clipped by the audio edge). It is not
-	// room for a missing sentence, and it is not room for a tail that merely
-	// occurs earlier in the clip.
-	anchorDrop = 1
-	// anchorNeed is how many anchor words, in order, must match: one ASR
-	// error in the last words is tolerated, two are not.
-	anchorNeed = 2
+import "fmt"
+
+// The tail alignment's parameters. They are vars only so a test can change
+// one; tailParams folds every one of them (and SameWord's tolerance) into the
+// repair verdict cache key, so a change here re-checks every voice by itself.
+var (
+	// anchorWords is how many words at the end of a ref_text are aligned to
+	// the end of the transcript. The bleed this guards against is the
+	// ref_text tail past the audio: a reference that ends in words the clip
+	// never says makes the model speak them. An overall similarity ratio
+	// cannot see it when the overrun is under a fifth of the text (measured
+	// references that ran 11, 6 and 4 words over scored 0.88-0.95 and still
+	// bled). The window must be wide enough that a tail phrase said earlier
+	// in the clip cannot stand in for the real ending.
+	anchorWords = 5
+	// anchorFree is how many extra words the recognizer may have appended
+	// after the reference's last word ("thank you", "ага"): not part of the
+	// reference, not a sign that the reference runs past the audio.
+	anchorFree = 2
+	// anchorBudget is how many word edits (substitution, insertion, deletion,
+	// one word split in two or two merged into one) the aligned tail may need:
+	// one recognizer slip is tolerated, two are not. A reference of two words
+	// or fewer tolerates none.
+	anchorBudget = 1
+	// sameWordMinLen and sameWordDiv define SameWord: words under
+	// sameWordMinLen letters must be equal; longer ones may differ by
+	// max(1, len/sameWordDiv) edits.
+	sameWordMinLen = 4
+	sameWordDiv    = 5
 )
+
+// tailParams identifies the tail check's behaviour for the verdict cache.
+func tailParams() string {
+	return fmt.Sprintf("tail:%d,%d,%d,%d,%d", anchorWords, anchorFree, anchorBudget, sameWordMinLen, sameWordDiv)
+}
 
 // TranscriptMatches reports whether heard (the STT transcript of a clip) is
 // the clip's ref_text: the words agree loosely overall (TextsMatch, tolerant
@@ -26,46 +44,68 @@ func TranscriptMatches(ref, heard string) bool {
 	return TextsMatch(ref, heard) && tailAnchored(normWords(ref), normWords(heard))
 }
 
-// tailAnchored reports whether the last anchorWords words of ref line up, word
-// for word and within SameWord tolerance, with the END of heard (at least
-// anchorNeed of them). The alignment is positional: ref's last word against
-// heard's last word, and so on backwards. Heard may end up to anchorDrop words
-// early (every ref word then sits one further from the end), never later: a
-// search for the tail words anywhere near the end would accept a reference
-// whose tail repeats words said earlier in the clip while its real ending was
-// cut off.
+// tailAnchored reports whether the last anchorWords words of ref are the end
+// of heard: a word-level edit alignment of the ref tail against heard, where
+// the alignment may start anywhere in heard but must finish within anchorFree
+// words of its end, costs at most anchorBudget edits and counts SameWord
+// words as equal. A recognizer that adds, drops or splits a word at the end
+// still anchors; a reference whose tail merely occurs earlier in the clip (its
+// real ending cut off) does not, because the words before the repeat then
+// disagree as well.
 func tailAnchored(ref, heard []string) bool {
 	if len(ref) == 0 || len(heard) == 0 {
 		return false
 	}
-	anchor := ref[max(0, len(ref)-anchorWords):]
-	for drop := 0; drop <= anchorDrop; drop++ {
-		matched := 0
-		for i := range anchor { // i-th word from the end of both
-			j := len(heard) - 1 - i + drop
-			if j < len(heard) && j >= 0 && SameWord(anchor[len(anchor)-1-i], heard[j]) {
-				matched++
-			}
+	r := ref[max(0, len(ref)-anchorWords):]
+	budget := anchorBudget
+	if len(r) <= 2 {
+		budget = 0
+	}
+	n, m := len(r), len(heard)
+	// d[i][j]: fewest edits aligning r[:i] to a stretch of heard ending at j.
+	d := make([][]int, n+1)
+	for i := range d {
+		d[i] = make([]int, m+1)
+		if i > 0 {
+			d[i][0] = i
 		}
-		if matched >= min(anchorNeed, len(anchor)) {
+	}
+	for i := 1; i <= n; i++ {
+		for j := 1; j <= m; j++ {
+			sub := 1
+			if SameWord(r[i-1], heard[j-1]) {
+				sub = 0
+			}
+			best := min(d[i-1][j-1]+sub, d[i-1][j]+1, d[i][j-1]+1)
+			if j >= 2 && SameWord(r[i-1], heard[j-2]+heard[j-1]) { // ref word split in two
+				best = min(best, d[i-1][j-2]+1)
+			}
+			if i >= 2 && SameWord(r[i-2]+r[i-1], heard[j-1]) { // two ref words merged
+				best = min(best, d[i-2][j-1]+1)
+			}
+			d[i][j] = best
+		}
+	}
+	for e := 0; e <= anchorFree && e <= m; e++ {
+		if d[n][m-e] <= budget {
 			return true
 		}
 	}
 	return false
 }
 
-// SameWord is equality up to an ASR spelling slip: one edit per five letters
-// (at least one for words of four letters or more).
+// SameWord is equality up to an ASR spelling slip: one edit per sameWordDiv
+// letters (at least one for words of sameWordMinLen letters or more).
 func SameWord(a, b string) bool {
 	if a == b {
 		return true
 	}
 	ra, rb := []rune(a), []rune(b)
 	n := max(len(ra), len(rb))
-	if n < 4 {
+	if n < sameWordMinLen {
 		return false
 	}
-	return editDistance(ra, rb) <= max(1, n/5)
+	return editDistance(ra, rb) <= max(1, n/sameWordDiv)
 }
 
 func editDistance(a, b []rune) int {

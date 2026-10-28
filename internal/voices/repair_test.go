@@ -549,14 +549,158 @@ func TestRepairVerdictCachedAcrossStarts(t *testing.T) {
 	})
 }
 
+// The verdict is bound to the clip's bytes, not just to its size and mtime, and
+// to the tail check's parameters.
+// Mutation: internal/voices/repair.go verdictKey — hash nothing of the clip
+// (drop the io.Copy into hc) -> RED "same mtime, different bytes".
+// Mutation: internal/voices/repair.go verdictKey — drop tailParams() from the
+// key -> RED "tail constant changed".
+func TestRepairVerdictKeyBindings(t *testing.T) {
+	words := speechWords(60, 0.3, 0.03, 6)
+	text := joinWords(words)
+	setup := func(t *testing.T) (*Store, *int, Transcriber) {
+		s, _ := newStore(t)
+		seedVoice(t, s, "exact", 20, text)
+		calls := new(int)
+		tr := fixedWords(words, calls)
+		s.SetTranscriber(tr)
+		if _, err := s.PrepareRepair(context.Background(), "exact"); err != nil || *calls != 1 {
+			t.Fatalf("first start: %v, %d calls", err, *calls)
+		}
+		return s, calls, tr
+	}
+	recheck := func(t *testing.T, s *Store, calls *int, tr Transcriber, what string) {
+		t.Helper()
+		s = startAgain(t, s, tr)
+		if _, err := s.PrepareRepair(context.Background(), "exact"); err != nil {
+			t.Fatal(err)
+		}
+		if *calls != 2 {
+			t.Fatalf("transcriber called %d times, want 2: %s must be re-checked", *calls, what)
+		}
+	}
+	t.Run("same mtime, different bytes", func(t *testing.T) {
+		s, calls, tr := setup(t)
+		st, _ := os.Stat(s.WAVPath("exact"))
+		b := testutil.SilentWAV(20)
+		b[len(b)-1] ^= 0x01 // same length
+		if err := os.WriteFile(s.WAVPath("exact"), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(s.WAVPath("exact"), st.ModTime(), st.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+		recheck(t, s, calls, tr, "a replaced clip")
+	})
+	t.Run("tail constant changed", func(t *testing.T) {
+		s, calls, tr := setup(t)
+		defer func(v int) { anchorWords = v }(anchorWords)
+		anchorWords++
+		recheck(t, s, calls, tr, "a verdict under other tail parameters")
+	})
+	t.Run("SameWord tolerance changed", func(t *testing.T) {
+		s, calls, tr := setup(t)
+		defer func(v int) { sameWordDiv = v }(sameWordDiv)
+		sameWordDiv++
+		recheck(t, s, calls, tr, "a verdict under another SameWord")
+	})
+}
+
+// Remove takes the voice's verdict with it.
+// Mutation: internal/voices/store.go Remove — delete the forgetVerdict call
+// -> RED.
+func TestRemoveDropsVerdict(t *testing.T) {
+	words := speechWords(60, 0.3, 0.03, 6)
+	s, _ := newStore(t)
+	seedVoice(t, s, "exact", 20, joinWords(words))
+	seedVoice(t, s, "other", 20, joinWords(words))
+	s.SetTranscriber(fixedWords(words, new(int)))
+	for _, n := range []string{"exact", "other"} {
+		if _, err := s.PrepareRepair(context.Background(), n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(s.readVerdicts()) != 2 {
+		t.Fatalf("verdicts = %v, want two", s.readVerdicts())
+	}
+	if err := s.Remove("exact"); err != nil {
+		t.Fatal(err)
+	}
+	if v := s.readVerdicts(); len(v) != 1 || v["other"] == "" {
+		t.Fatalf("verdicts after Remove = %v, want only other", v)
+	}
+}
+
+// A healthy at-cap voice whose transcript differs from ref_text only at the
+// very end (the recognizer adds, splits or drops a word there) is left alone:
+// rewriting a voice the user did not ask to change is worse than the bleed.
+// A reference whose real ending was cut off is still repaired, also when its
+// last words repeat earlier ones.
+// Mutation: internal/voices/tail.go tailAnchored — purely positional alignment
+// (compare r[n-1-i] with heard[m-1-i] only) -> RED for the healthy cases.
+// Mutation: internal/voices/tail.go tailAnchored — accept an in-order hit
+// anywhere in the last 6 heard words -> RED for "repeated tail, ending cut".
+func TestRepairTailEdgesEndToEnd(t *testing.T) {
+	filler := func(prefix string, n int, from rune) []string { // distinct letter-only words
+		out := make([]string, n)
+		for i := range out {
+			out[i] = prefix + string(from+rune(i%26)) + string(from+rune(i/26))
+		}
+		return out
+	}
+	timed := func(ws []string) []Word {
+		out := make([]Word, len(ws))
+		for i, w := range ws {
+			out[i] = Word{W: w, S: float64(i) * 0.4, E: float64(i)*0.4 + 0.3}
+		}
+		return out
+	}
+	lat, cyr := filler("w", 55, 'a'), filler("с", 55, 'а')
+	cases := []struct {
+		name         string
+		ref, heard   []string
+		wantRepaired bool
+	}{
+		{"healthy: trailing you", append(append([]string{}, lat...), "see", "you", "tomorrow"), append(append([]string{}, lat...), "see", "you", "tomorrow", "you"), false},
+		{"healthy: trailing thank you", append(append([]string{}, lat...), "see", "you", "tomorrow"), append(append([]string{}, lat...), "see", "you", "tomorrow", "thank", "you"), false},
+		{"healthy: trailing ага", append(append([]string{}, cyr...), "увидимся", "завтра", "вечером"), append(append([]string{}, cyr...), "увидимся", "завтра", "вечером", "ага"), false},
+		{"healthy: tonight split", append(append([]string{}, lat...), "see", "you", "tonight"), append(append([]string{}, lat...), "see", "you", "to", "night"), false},
+		{"healthy: сегодня split", append(append([]string{}, cyr...), "увидимся", "будем", "сегодня"), append(append([]string{}, cyr...), "увидимся", "будем", "се", "годня"), false},
+		{"healthy: last word dropped", append(append([]string{}, lat...), "see", "you", "tomorrow"), append(append([]string{}, lat...), "see", "you"), false},
+		{"cut: ref runs three words past the audio", append(append([]string{}, lat...), "see", "you", "tomorrow", "at", "the", "station"), append(append([]string{}, lat...), "see", "you", "tomorrow"), true},
+		{"cut: repeated tail, ending cut",
+			append(append(append(append([]string{}, lat[:45]...), "alpha", "beta", "gamma"), lat[45:52]...), "alpha", "beta", "gamma"),
+			append(append(append([]string{}, lat[:45]...), "alpha", "beta", "gamma"), lat[45:49]...), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, _ := newStore(t)
+			seedVoice(t, s, "tail", 20, strings.Join(c.ref, " "))
+			s.SetTranscriber(fixedWords(timed(c.heard), new(int)))
+			r, err := s.PrepareRepair(context.Background(), "tail")
+			if err != nil {
+				t.Fatalf("PrepareRepair: %v", err)
+			}
+			if (r != nil) != c.wantRepaired {
+				t.Fatalf("repair = %v, want %v", r != nil, c.wantRepaired)
+			}
+			if r != nil {
+				r.Discard()
+			}
+		})
+	}
+}
+
 // Crash safety, judged by outcome. Apply is five mutating operations (backup
 // wav, backup json, main json temp, main wav, main json). For every k, the
 // process dies after k of them completed; the next start (fresh Store,
 // SweepTemp, a normal pass) must leave the voice as exactly the original pair
 // or exactly the repaired pair, with the original always recoverable: never a
 // lost clip, never a clip with another clip's transcript.
-// Mutation: internal/voices/repair.go Apply — swap the final two operations
-// (rename the main json before the main wav) -> RED "crash after 4".
+// Mutation: internal/voices/repair.go Apply — move the backup block after the
+// main-file writes -> RED for every k ("repaired voice without its original in
+// the backup", "neither original nor repaired"). Swapping only the last two
+// operations stays GREEN on purpose: the restart heals that state.
 func TestRepairCrashAfterEveryOperation(t *testing.T) {
 	tr := fixedWords(speechWords(60, 0.3, 0.1, 6), new(int))
 	// The repaired outcome, from an uninterrupted run.
