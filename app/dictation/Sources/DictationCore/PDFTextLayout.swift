@@ -20,7 +20,7 @@ enum PDFTextLayout {
     /// A page number is at most this many digits (a four-digit line is a year).
     static let maxPageNumberDigits = 3
     /// A bare number at the edge of a page is dropped as a page number only when at
-    /// least this many pages show one at the same edge, rising from page to page:
+    /// least this many pages show one at the same edge, going on as the pages do:
     /// one such line alone is as likely to be the last word of the page ("Serves" / "4").
     static let minPagesForPageNumbers = 2
 
@@ -59,24 +59,25 @@ enum PDFTextLayout {
 
     /// The page numbers the pages print at their top or bottom, taken out. A bare
     /// number there is a page number only on evidence: at least
-    /// `minPagesForPageNumbers` pages show one at the same edge and the numbers rise
-    /// from page to page (gaps allowed: a page of pictures may print none). A number
-    /// that breaks the rise is text ("the final score was" / "42"), and a PDF of one
-    /// page keeps what it has at its edge. Numbering that restarts is more than one
-    /// rising run, and each run is judged on its own. A number anywhere else is text too, and so
-    /// is one beside another number (a list of "1", "2", "3" is not three page numbers).
+    /// `minPagesForPageNumbers` pages show one at the same edge and the numbers go
+    /// on as the pages do (a page of pictures may print none, but then the next
+    /// number is still its page's: value minus page index stays the same). A number
+    /// that breaks the sequence is text ("the final score was" / "42"), and so is one
+    /// that repeats on the next or the previous page: a chapter number opening each
+    /// page of its chapter is not a page counter. A PDF of one page keeps what it has
+    /// at its edge. Numbering that restarts is a second sequence, judged on its own. A
+    /// number anywhere else is text too, and so is one beside another number (a list
+    /// of "1", "2", "3" is not three page numbers).
     private static func dropPageNumbers(_ pages: [[String]]) -> [[String]] {
         var dropped = pages.map { _ in Set<Int>() }
         for edge in Edge.allCases {
-            var candidates = pages.indices.flatMap { pageNumberCandidates(pages[$0], page: $0, edge: edge) }
-            // Numbering that restarts (front matter 1...3, then the body 1...N) is
-            // several rising runs: each is dropped on its own evidence.
-            while true {
-                let rising = longestRisingRun(candidates)
-                guard rising.count >= minPagesForPageNumbers else { break }
-                for candidate in rising { dropped[candidate.page].insert(candidate.line) }
-                let gone = Set(rising.map { $0.page })
-                candidates.removeAll { gone.contains($0.page) }
+            let candidates = pages.indices.flatMap { pageNumberCandidates(pages[$0], page: $0, edge: edge) }
+            let valueOnPage = Dictionary(candidates.map { ($0.page, $0.value) }, uniquingKeysWith: { first, _ in first })
+            let repeats = { (c: Candidate) in valueOnPage[c.page - 1] == c.value || valueOnPage[c.page + 1] == c.value }
+            // One pass: the candidates that go on as the pages do share the same value - page.
+            let sequences = Dictionary(grouping: candidates.filter { !repeats($0) }, by: { $0.value - $0.page })
+            for sequence in sequences.values where sequence.count >= minPagesForPageNumbers {
+                for candidate in sequence { dropped[candidate.page].insert(candidate.line) }
             }
         }
         return zip(pages, dropped).map { page, gone in page.indices.filter { !gone.contains($0) }.map { page[$0] } }
@@ -99,16 +100,6 @@ enum PDFTextLayout {
     private static func pageNumberValue(_ line: String) -> Int? {
         guard let match = digits.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) else { return nil }
         return Int((line as NSString).substring(with: match.range))
-    }
-
-    /// The longest run of candidates, in page order, whose values strictly rise.
-    private static func longestRisingRun(_ candidates: [Candidate]) -> [Candidate] {
-        var best: [[Candidate]] = []
-        for (index, candidate) in candidates.enumerated() {
-            let before = (0..<index).filter { candidates[$0].value < candidate.value }.max { best[$0].count < best[$1].count }
-            best.append((before.map { best[$0] } ?? []) + [candidate])
-        }
-        return best.max { $0.count < $1.count } ?? []
     }
 
     /// Header and footer lines that repeat on most of the pages long enough to have

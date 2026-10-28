@@ -151,7 +151,8 @@ public enum NotesExport {
     /// writes a new copy).
     @discardableResult
     public static func refresh(info: MeetingInfo, at dir: URL, expected: [String: String], fm: FileManager = .default,
-                               stage: (Data, URL) throws -> Void = { try $0.write(to: $1) }) throws -> RefreshResult {
+                               stage: (Data, URL) throws -> Void = { try $0.write(to: $1) },
+                               replace: ((_ original: URL, _ staged: URL) throws -> Void)? = nil) throws -> RefreshResult {
         guard info.notesMD != nil || info.transcriptMD != nil else { throw ExportError.nothingToWrite }
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { throw ExportError.folderMoved }
@@ -175,8 +176,17 @@ public enum NotesExport {
             for s in staged { try? fm.removeItem(at: s.temp) }
             throw error
         }
-        for s in staged {
-            _ = try fm.replaceItemAt(s.final, withItemAt: s.temp)
+        var replaced = 0
+        do {
+            for s in staged {
+                if let replace { try replace(s.final, s.temp) } else { _ = try fm.replaceItemAt(s.final, withItemAt: s.temp) }
+                replaced += 1
+            }
+        } catch {
+            // A replace failed (a full disk, a revoked permission): the texts not yet moved into place leave their
+            // hidden temps in the user's meeting folder. Take them down; the caller reports the failure.
+            for s in staged.dropFirst(replaced) { try? fm.removeItem(at: s.temp) }
+            throw error
         }
         return .refreshed
     }

@@ -10,8 +10,9 @@ struct StudioHost {
     var russianVoicePick: () -> String?
     /// Shows a modal alert over every app and returns the pressed button.
     var alert: (_ title: String, _ text: String, _ buttons: [String]) -> NSApplication.ModalResponse
-    /// The pill with this text, or hides it for nil.
-    var pill: (String?) -> Void
+    /// The pill of Studio task `task` with this text, or that task's end for nil. Each task has its own
+    /// slot: one ending never takes another's pill down (TaskPills).
+    var pill: (_ task: String, _ text: String?) -> Void
     /// A short message in the status line and on the pill.
     var notify: (String) -> Void
     /// Plays a WAV; `onFinish` runs once when it ends on its own.
@@ -34,6 +35,7 @@ final class StudioController: NSObject {
     private var latestFolder: URL?
     /// A document is being read: the menu row waits and the pill says so.
     private var readingDocument = false
+    static let readingPillTask = "reading-document"
     private lazy var follower = VoiceoverFollower(
         source: VoiceoverFollower.Source(voiceover: { [client = host.client] in try await client.voiceover(id: $0) },
                                          voiceovers: { [client = host.client] in try await client.voiceovers() }),
@@ -155,11 +157,11 @@ final class StudioController: NSObject {
     private func readScript(_ file: URL) async -> String? {
         readingDocument = true
         render()
-        host.pill("Reading the document…")
+        host.pill(Self.readingPillTask, "Reading the document…")
         defer {
             readingDocument = false
             render()
-            host.pill(nil)
+            host.pill(Self.readingPillTask, nil)
         }
         do {
             let read = try await DocumentReader.readScript(file)

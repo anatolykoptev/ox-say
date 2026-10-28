@@ -124,6 +124,33 @@ final class Overlay {
             button.isHidden = true
             background.addSubview(button)
         }
+        // #306.2: a check the lock or a sleeping display skipped runs once more when the screen is back.
+        let wake: (Notification) -> Void = { [weak self] _ in self?.screenCameBack() }
+        screenObservers = [
+            NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main, using: wake),
+            DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main, using: wake),
+        ]
+    }
+
+    /// Observers of the unlock and the display wake, held for the overlay's life.
+    private var screenObservers: [NSObjectProtocol] = []
+    /// The show whose visibility check the lock or a sleeping display skipped.
+    private var recheck = PillRecheck()
+
+    /// The screen unlocked or a display woke: the skipped check of the pill still up runs once, after the window
+    /// server has had its 250 ms to put the window back.
+    private func screenCameBack() {
+        let expected = shown
+        guard recheck.resume(show: expected, wantsVisible: wantsVisible) else { return }
+        let ownerAtShow = owner
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.checkVisible(expected: expected, owner: ownerAtShow, healed: false)
+        }
+    }
+
+    /// The display the pill is on; the main one while the panel has no screen yet.
+    private func panelDisplayID() -> CGDirectDisplayID {
+        (panel.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
     }
 
     /// Counts the times a new owner took the pill (listening, working,
@@ -446,8 +473,9 @@ final class Overlay {
         // A pill cannot be onscreen while the display sleeps or the screen is
         // locked: that is not a fault, and a self-heal would fight the lock.
         guard PillVisibility.expectsOnscreen(screenLocked: Self.sessionScreenLocked(),
-                                             displayAsleep: CGDisplayIsAsleep(CGMainDisplayID()) != 0) else {
+                                             displayAsleep: CGDisplayIsAsleep(panelDisplayID()) != 0) else {
             overlayLog.notice("overlay check skipped: screen locked or display asleep owner=\(ownerAtShow, privacy: .public)")
+            recheck.skipped(show: expected)
             return
         }
         let server = windowServerState()

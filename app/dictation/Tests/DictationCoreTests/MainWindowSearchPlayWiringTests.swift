@@ -96,9 +96,23 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         XCTAssertTrue(f.contains("if gate.showsAffordance { Button(action: play) { header(glyph: true) }"))
         XCTAssertTrue(f.contains("} else { header(glyph: false) }"))
         XCTAssertFalse(t.contains("onTapGesture"), "no tap on the row: a double click selects a word and must not play")
-        XCTAssertTrue(f.contains(".accessibilityLabel(\"\\(L10nKey.playFromHere.text), \\(turn.speaker) \\(turn.time)\") .accessibilityAddTraits(.isButton)"))
+        XCTAssertTrue(f.contains(".accessibilityLabel(playFromHereLabel) .accessibilityAddTraits(.isButton)"))
         XCTAssertTrue(t.contains("let playing = playingTurn(turns)"))
         XCTAssertTrue(t.contains("TurnClock.currentTurn(at: p.position, in: turns)"))
+    }
+
+    /// #303.R3 — a speaker's name is data: `.accessibilityLabel("...")` with an interpolated literal is a
+    /// `LocalizedStringKey`, which looks the text up and misreads a `%` or a key-like name. Every label is built as a
+    /// `String` first.
+    /// Mutation: TranscriptTab, `.accessibilityLabel(playFromHereLabel)` -> `.accessibilityLabel("\(turn.speaker)")` -> RED.
+    func testNoAccessibilityLabelIsAStringLiteral() throws {
+        for file in ["TranscriptTab", "SearchPane", "MeetingDetailView"] {
+            let t = try source("Sources/MainWindowUI/\(file).swift")
+            XCTAssertFalse(t.contains(".accessibilityLabel(\""), "\(file): a literal label is read as a localization key")
+        }
+        let t = try source("Sources/MainWindowUI/TranscriptTab.swift")
+        XCTAssertTrue(t.contains("private var playFromHereLabel: String {"))
+        XCTAssertTrue(flat(t).contains("\"\\(L10nKey.playFromHere.text), \\(turn.speaker) \\(turn.time)\" }"))
     }
 
     /// Find scrolls on the state's serial (not on `current`, which does not move for 0 → 0), ⌘F with the bar open keeps

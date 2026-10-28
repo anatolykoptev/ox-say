@@ -107,7 +107,7 @@ final class ScriptCleanerTests: XCTestCase {
     }
 
     // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, change the evidence guard
-    // `rising.count >= minPagesForPageNumbers` to `rising.count >= 0` -> RED here
+    // `sequence.count >= minPagesForPageNumbers` to `sequence.count >= 0` -> RED here
     // (a one-page PDF loses its "4").
     func testANumberAtTheEdgeOfAOnePagePdfIsKept() {
         XCTAssertEqual(words(["Bake until golden.\nServes\n4"]), ["Bake", "until", "golden.", "Serves", "4"])
@@ -125,8 +125,8 @@ final class ScriptCleanerTests: XCTestCase {
         XCTAssertEqual(words(gaps), ["One.", "Two.", "Three", "is", "a", "picture.", "Four.", "Five."])
     }
 
-    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, replace `longestRisingRun(candidates)`
-    // with `candidates` -> RED here (the numbers that do not rise are dropped as well).
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, group every candidate into ONE sequence (`by: { _ in 0 }`)
+    // -> RED here (the numbers that do not go on as the pages do are dropped as well).
     func testNumbersThatDoNotRiseAreText() {
         XCTAssertEqual(words(["Final score.\n10", "Two.\n3", "Three.\n4", "Four.\n5"]), ["Final", "score.", "10", "Two.", "Three.", "Four."])
         XCTAssertEqual(words(["A.\n4", "B.\n4"]), ["A.", "4", "B.", "4"], "equal numbers do not rise")
@@ -347,13 +347,40 @@ final class ScriptCleanerTests: XCTestCase {
 
     // MARK: #175 leftovers
 
-    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, break out of the `while`
-    // after the first run -> RED (the front matter's 1...3 stay as stray digits).
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, keep only the first sequence (`.prefix(1)` on
+    // `sequences.values`) -> RED (one numbering's digits stay as stray digits).
     func testRestartedPageNumberingIsDroppedRunByRun() {
         let front = (1...3).map { "Preface text \($0) goes here.\n\($0)" }
         let body = (1...4).map { "Body text \($0) goes here.\n\($0)" }
         let expected = (1...3).flatMap { ["Preface", "text", "\($0)", "goes", "here."] } + (1...4).flatMap { ["Body", "text", "\($0)", "goes", "here."] }
         XCTAssertEqual(words(front + body), expected)
+    }
+
+    // #175 — a chapter number opening each page is text. Three chapters of three pages each print "1" on pages 1-3,
+    // "2" on pages 4-6, "3" on pages 7-9: the numbers rise, but they repeat on consecutive pages, so they are not a
+    // page-number sequence.
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, delete the `repeats` filter -> RED here (and the
+    // chapter numbers vanish from the spoken text).
+    func testAChapterNumberRepeatedOnConsecutivePagesIsKept() {
+        let pages = (0..<9).map { "\($0 / 3 + 1)\nChapter page \($0) text goes here." }
+        XCTAssertEqual(words(pages), (0..<9).flatMap { ["\($0 / 3 + 1)", "Chapter", "page", "\($0)", "text", "goes", "here."] })
+    }
+
+    // #175 — numbers that rise but not as the pages do (a chapter number on the first page of each chapter only) are
+    // not a page-number sequence either: page 1, 4, 7 print 1, 2, 3.
+    // Mutation: PDFTextLayout.swift, in `dropPageNumbers`, group the candidates by `_ in 0` (one sequence)
+    // instead of `value - page` -> RED here.
+    func testNumbersThatRiseSlowerThanThePagesAreKept() {
+        let pages = (0..<9).map { $0 % 3 == 0 ? "\($0 / 3 + 1)\nChapter page text goes here." : "Chapter page text goes here." }
+        let spoken = words(pages)
+        XCTAssertEqual(spoken.filter { ["1", "2", "3"].contains($0) }, ["1", "2", "3"], "a chapter number was dropped as a page number")
+        XCTAssertEqual(spoken.count, 9 * 5 + 3)
+    }
+
+    // #175 — a long PDF with a real page number on every page is still cleaned (the grouping is one pass).
+    func testAHundredPagesOfPageNumbersAreAllDropped() {
+        let pages = (1...120).map { "Page body \($0) goes here.\n\($0)" }
+        XCTAssertEqual(words(pages), (1...120).flatMap { ["Page", "body", "\($0)", "goes", "here."] })
     }
 
     // Mutation: MarkdownText.swift, `bracketed` -> `[^\[\]\n]*` (no nesting) -> RED
