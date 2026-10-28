@@ -148,8 +148,8 @@ func transcriptReadable(dir string) bool {
 // reads the constants from the source, so a file added without deciding is a red test, not a voiceprint that
 // outlives the retention period.
 var (
-	// audioFiles are removed one by one.
-	audioFiles = []string{MePCM, ThemPCM}
+	// audioFiles are moved out one by one, the far side's first (retiredNames).
+	audioFiles = []string{ThemPCM, MePCM}
 	// workFiles live inside WorkDir, which is removed whole.
 	workFiles = []string{DiarizationJSON}
 	// keptFiles stay for the life of the meeting.
@@ -161,63 +161,38 @@ var (
 // errNotDue: by the time the sweep held the store lock the meeting was no longer one whose audio may go.
 var errNotDue = errors.New("meeting: audio is not due for deletion")
 
-// deleteAudio removes a meeting's audio and work files and records it. False when the meeting is no longer due, a
-// file would not go or the record could not be saved: the next sweep tries again.
+// deleteAudio removes a meeting's audio and work files and records it. False when the meeting is no longer due, the
+// files could not be moved or the record could not be saved: the next sweep tries again.
 //
-// The decision and the delete are made under the store lock, the lock a retry takes to queue the meeting (Retry,
-// RetryVoices, retryFailed all go through Store.Update). expired is asked again on the record as it is now: a
-// meeting that a retry has queued, or that the runner has begun, is no longer done/transcribed/failed and is left
-// alone, and a retry that comes after sees the files gone and refuses. Judging a stale list and deleting later
-// left a gap in which a queued transcription lost the audio it was queued for.
+// The decision, the move and the record are one step under the store lock (Store.Retire), the lock a retry takes to
+// queue a meeting (Retry, RetryVoices, retryFailed all go through Store.Update). expired is asked again on the record
+// as it is now: a meeting that a retry has queued, or that the runner has begun, is no longer done/transcribed/failed
+// and is left alone, and a retry that comes after finds the files gone. The files are renamed to a tombstone under
+// the lock and unlinked after it, so a long recording does not stall the other meetings. them.pcm goes first: a
+// rename that fails halfway leaves no far-side file, never a far-side file without the mic.
 func (r *Runner) deleteAudio(m Manifest, days int) bool {
 	if r.beforeAudioDelete != nil {
 		r.beforeAudioDelete()
 	}
-	dir, err := r.Store.Dir(m.ID)
-	if err != nil {
-		return false
-	}
-	stuck := false
-	_, err = r.Store.Modify(m.ID, func(cur *Manifest) error {
-		if !r.expired(*cur, days) {
-			return errNotDue
-		}
-		if !removeAudio(dir) {
-			stuck = true
-			return errors.New("meeting: audio could not be deleted")
-		}
-		cur.AudioDeleted = true // saved only if it all went, and under the same lock
-		return nil
-	})
+	err := r.Store.Retire(m.ID, retiredNames,
+		func(cur *Manifest) error {
+			if !r.expired(*cur, days) {
+				return errNotDue
+			}
+			return nil
+		},
+		func(cur *Manifest) { cur.AudioDeleted = true })
 	switch {
 	case errors.Is(err, errNotDue):
 		return false
-	case stuck:
-		r.Log.Warn("meeting: audio could not be deleted, will retry", slog.String("id", m.ID))
-		return false
 	case err != nil:
-		r.Log.Warn("meeting: cannot record the audio deletion", slog.String("id", m.ID), slog.Any("error", err))
+		r.Log.Warn("meeting: audio could not be deleted, will retry", slog.String("id", m.ID), slog.Any("error", err))
 		return false
 	}
 	r.Log.Info("meeting: audio deleted by retention", slog.String("id", m.ID))
 	return true
 }
 
-// removeAudio deletes the audio files and the work directory; false when something would not go.
-func removeAudio(dir string) bool {
-	gone := true
-	for _, name := range audioFiles {
-		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			gone = false
-		}
-	}
-	for _, name := range workFiles {
-		if err := os.Remove(filepath.Join(dir, WorkDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			gone = false
-		}
-	}
-	if err := os.RemoveAll(filepath.Join(dir, WorkDir)); err != nil { // the piece caches too
-		gone = false
-	}
-	return gone
-}
+// retiredNames are what retention moves out of a meeting, in this order: audioFiles, then the work directory (which
+// holds workFiles and the piece caches).
+var retiredNames = []string{ThemPCM, MePCM, WorkDir}

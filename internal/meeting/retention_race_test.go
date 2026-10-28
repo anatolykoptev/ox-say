@@ -2,8 +2,10 @@ package meeting
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -117,14 +119,160 @@ func TestAQueuedMeetingWhoseAudioIsGoneKeepsItsTranscriptAndNotes(t *testing.T) 
 		}
 	}
 	m := f.load(t, id)
-	if m.Status != StatusDone || m.FailReason != FailStorage || !strings.Contains(m.Error, "recording") {
-		t.Errorf("manifest = status %s reason %q error %q, want done with reason %s", m.Status, m.FailReason, m.Error, FailStorage)
+	if m.Status != StatusDone || m.FailReason != "" || m.Error != "" {
+		t.Errorf("manifest = status %s reason %q error %q, want a plain done (a finished meeting carries no failure)", m.Status, m.FailReason, m.Error)
 	}
 	if !m.AudioDeleted {
 		t.Errorf("the manifest does not say the audio is gone: %+v", m)
 	}
 	if contains(m.Warnings, WarnNoSystemAudio) || contains(m.Warnings, WarnNoMicAudio) {
 		t.Errorf("a missing recording was read as a silent one: %v", m.Warnings)
+	}
+}
+
+// A pair left half-deleted (a crash, a failed unlink) must not let a retry rewrite the transcript from one side:
+// the far side is gone and the mic file stays, or the other way round.
+// F5 mutation: internal/meeting/runner.go keepFinishedWithoutAudio, make the loop's condition require both files
+// missing (`gone = true` only when the other channel is missing too) -> RED (the user's turns are rewritten away).
+func TestAHalfDeletedPairNeverRewritesTheTranscriptFromOneSide(t *testing.T) {
+	for _, gone := range []string{MePCM, ThemPCM} {
+		t.Run(gone, func(t *testing.T) {
+			f, id, dir := unavailableDone(t)
+			tr := readFile(t, dir, TranscriptJSON)
+			notes := readFile(t, dir, NotesMD)
+			if err := os.Remove(filepath.Join(dir, gone)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.r.Store.Update(id, func(m *Manifest) { m.Status = StatusQueued }); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.r.Process(context.Background(), id); err != nil {
+				t.Fatal(err)
+			}
+			if got := readFile(t, dir, TranscriptJSON); got != tr {
+				t.Errorf("transcript.json was rewritten from half a recording:\n%s", got)
+			}
+			if got := readFile(t, dir, NotesMD); got != notes {
+				t.Errorf("notes.md changed")
+			}
+			if m := f.load(t, id); m.Status != StatusDone || !m.AudioDeleted {
+				t.Errorf("manifest = %+v", m)
+			}
+		})
+	}
+}
+
+// A meeting whose mic never had audio (recorded as silent) and whose far side is still here is not "incomplete":
+// it is transcribed again as asked.
+func TestASideThatNeverHadAudioIsNotALoss(t *testing.T) {
+	f, id, dir := unavailableDone(t)
+	if err := os.Remove(filepath.Join(dir, MePCM)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.Store.Update(id, func(m *Manifest) { m.Status = StatusQueued; m.Warnings = append(m.Warnings, WarnNoMicAudio) }); err != nil {
+		t.Fatal(err)
+	}
+	if kept, err := f.r.keepFinishedWithoutAudio(id, dir); kept || err != nil {
+		t.Errorf("kept = %v, %v; want the transcription to go ahead", kept, err)
+	}
+}
+
+// A transcribed meeting that goes on to its notes carries no stale reason while the notes wait for the model.
+func TestAKeptMeetingWaitingForTheNotesModelCarriesNoReason(t *testing.T) {
+	f, id, dir := unavailableDone(t)
+	for _, name := range append(append([]string{}, audioFiles...), NotesJSON, NotesMD) {
+		_ = os.Remove(filepath.Join(dir, name))
+	}
+	f.notes = "model_missing"
+	if _, err := f.r.Store.Update(id, func(m *Manifest) { m.Status = StatusQueued }); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.r.Process(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	m := f.load(t, id)
+	if m.Status != StatusTranscribed || m.NotesPending == "" || m.FailReason != "" || m.Error != "" || !m.AudioDeleted {
+		t.Errorf("manifest = %+v", m)
+	}
+}
+
+// The decision to delete and the move of the files are one step under the store lock, and the unlink is not.
+// F6 mutation: internal/meeting/store.go retireLocked, move the rename loop out of the locked function (do it in
+// Retire after retireLocked returns) -> RED: the retry in the gap is accepted and queues a meeting whose audio is
+// then moved away.
+func TestRetentionMovesTheAudioInTheSameLockedStepAsTheDecision(t *testing.T) {
+	f, id, dir := unavailableDone(t)
+	locked, gap := false, false
+	f.r.Store.inRetire = func() {
+		locked = !f.r.Store.mu.TryLock() // held by the retire step itself
+		if _, err := os.Stat(filepath.Join(dir, ThemPCM)); err != nil {
+			t.Errorf("them.pcm was moved before the decision was made: %v", err)
+		}
+	}
+	f.r.Store.afterLock = func() {
+		gap = true
+		// the lock is free again, the unlink has not begun: a retry now must find the audio gone
+		if _, err := f.r.RetryVoices(id); err == nil {
+			t.Error("a retry in the gap after the lock was accepted: its audio is moved away")
+		}
+		if _, err := os.Stat(filepath.Join(dir, ThemPCM)); err == nil {
+			t.Error("them.pcm still has its name after the locked step")
+		}
+	}
+	if n := f.r.SweepRetention(); n != 1 {
+		t.Fatalf("swept %d", n)
+	}
+	if !locked || !gap {
+		t.Fatalf("seams not reached: locked=%v gap=%v", locked, gap)
+	}
+	m := f.load(t, id)
+	if !m.AudioDeleted || m.Status != StatusDone {
+		t.Errorf("manifest = %+v", m)
+	}
+	left, _ := filepath.Glob(filepath.Join(f.r.Store.Root, tombstonePrefix+"*"))
+	if len(left) != 0 {
+		t.Errorf("tombstones left after the unlink: %v", left)
+	}
+}
+
+// An unlink that fails leaves a tombstone holding the audio; the List sweep removes it once it is old enough, so a
+// crash between the rename and the unlink does not keep a recording past its retention.
+func TestAnAudioTombstoneLeftByAFailedUnlinkIsSweptLater(t *testing.T) {
+	f, id, dir := unavailableDone(t)
+	fail := true
+	f.r.Store.removeAll = func(p string) error {
+		if fail {
+			return errors.New("busy")
+		}
+		return os.RemoveAll(p)
+	}
+	if n := f.r.SweepRetention(); n != 1 {
+		t.Fatalf("swept %d", n)
+	}
+	left, _ := filepath.Glob(filepath.Join(f.r.Store.Root, tombstonePrefix+"*"))
+	if len(left) != 1 {
+		t.Fatalf("tombstones = %v, want the one with the audio", left)
+	}
+	if _, err := os.Stat(filepath.Join(left[0], ThemPCM)); err != nil {
+		t.Errorf("the tombstone does not hold them.pcm: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ThemPCM)); err == nil {
+		t.Error("the audio still has its place in the meeting")
+	}
+	fail = false
+	old := time.Now().Add(-2 * tombstoneGrace)
+	if err := os.Chtimes(left[0], old, old); err != nil { // the name's time is "now"; age it through a rename
+		t.Fatal(err)
+	}
+	renamed := filepath.Join(f.r.Store.Root, tombstonePrefix+id+"-"+strconv.FormatInt(old.UnixNano(), 36))
+	if err := os.Rename(left[0], renamed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.Store.List(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(renamed); err == nil {
+		t.Error("the old tombstone was not swept")
 	}
 }
 

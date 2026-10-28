@@ -753,20 +753,33 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 	return nil
 }
 
-// keepFinishedWithoutAudio stops a transcription that has no recording to read from blanking a meeting that already
-// has a transcript. A missing channel file reads as a silent one (a capture that heard nothing), so without this a
-// queued run over deleted audio would overwrite transcript.json with an empty one. The transcript, the notes and
-// the speakers stay as they are; the meeting goes back to done (or to transcribed when it never got notes, and the
-// run then goes on to write them) with FailStorage (the app has a sentence for it; a code of its own would need strings in the app) and a sentence in Error, and AudioDeleted says what is true.
-// kept is false, with no error, for every meeting this does not concern.
+// keepFinishedWithoutAudio stops a transcription that is missing part of its recording from blanking (or halving) a
+// meeting that already has a transcript. A missing channel file reads as a silent one (a capture that heard
+// nothing), so without this a queued run over deleted audio would overwrite transcript.json with an empty one, and
+// over a half-deleted pair (one file left by a crash or a failed unlink) with one that lacks a side's turns. The
+// transcript, the notes and the speakers stay as they are; the meeting goes back to done (or to transcribed when it
+// never got notes, and the run then goes on to write them) with AudioDeleted set, and no failure is recorded: the
+// meeting did not fail, it just cannot be transcribed again. The reason is in the log.
+//
+// A channel counts as gone when its file is missing and the meeting either records its audio as deleted or did not
+// record that channel as silent when it was transcribed (WarnNoMicAudio / WarnNoSystemAudio): a side that never
+// had audio is not a loss. kept is false, with no error, for every meeting this does not concern.
 func (r *Runner) keepFinishedWithoutAudio(id, dir string) (kept bool, err error) {
 	if !transcriptReadable(dir) {
 		return false, nil
 	}
-	for _, name := range audioFiles {
-		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
-			return false, nil // present, or unknowable: transcribe as asked
+	m, err := r.Store.Load(id)
+	if err != nil {
+		return false, err
+	}
+	gone := false
+	for _, ch := range []struct{ file, silent string }{{MePCM, WarnNoMicAudio}, {ThemPCM, WarnNoSystemAudio}} {
+		if _, err := os.Stat(filepath.Join(dir, ch.file)); errors.Is(err, os.ErrNotExist) && (m.AudioDeleted || !slices.Contains(m.Warnings, ch.silent)) {
+			gone = true
 		}
+	}
+	if !gone {
+		return false, nil // present, or never there, or unknowable: transcribe as asked
 	}
 	notes, _ := os.ReadFile(filepath.Join(dir, NotesMD))
 	_, err = r.Store.Update(id, func(m *Manifest) {
@@ -775,13 +788,12 @@ func (r *Runner) keepFinishedWithoutAudio(id, dir string) (kept bool, err error)
 			m.Status = StatusDone
 		}
 		m.AudioDeleted = true
-		m.FailReason = FailStorage
-		m.Error = "meeting: the recording is no longer on disk, so it could not be transcribed again; the transcript and notes are kept"
+		m.Error, m.FailReason = "", ""
 	})
 	if err != nil {
 		return false, err
 	}
-	r.Log.Warn("meeting: a queued transcription found no recording; kept the transcript", slog.String("id", id))
+	r.Log.Warn("meeting: a queued transcription found the recording incomplete; kept the transcript and notes", slog.String("id", id))
 	return true, nil
 }
 
