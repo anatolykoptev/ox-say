@@ -59,67 +59,18 @@ func TestAHungVerifyIsBounded(t *testing.T) {
 	}
 }
 
-func giveUp(t *testing.T, sup *Supervisor) error {
-	t.Helper()
-	for i := 0; i < 6; i++ {
-		_, err := sup.EnsureReady(context.Background())
-		if errors.Is(err, ErrGaveUp) {
-			return err
-		}
-		if err == nil {
-			t.Fatal("EnsureReady succeeded although Verify always fails")
-		}
-	}
-	t.Fatalf("no give-up after 6 starts; starts=%d state=%s", sup.Status().Starts, sup.State())
-	return nil
-}
-
-// A child that runs but fails Verify every time is retried MaxVerifyFailures
-// times, then the supervisor stops: terminal state, last error kept, no spawn.
+// A Verify refusal is informational: the state reads failed with the cause,
+// nothing is blocked (each EnsureReady makes a real start after the ordinary
+// backoff), and a successful start clears it.
 // Mutation: supervisor.go finishStart, delete the
-// `s.verifyFails >= s.cfg.MaxVerifyFailures` branch (no cap) -> RED (never
-// gives up; spawns keep coming).
-func TestPersistentVerifyFailureGivesUp(t *testing.T) {
-	dir := t.TempDir()
-	fakeEnv(t, dir)
-	sup := newTestSupervisor(t, dir, func(c *Config) {
-		c.MaxVerifyFailures = 2
-		c.Verify = func(context.Context, string) error { return errors.New("server runs open") }
-	})
-	err := giveUp(t, sup)
-	st := sup.Status()
-	if st.State != StateFailed || st.Starts != 2 {
-		t.Fatalf("status = %+v, want failed after exactly 2 starts", st)
-	}
-	if st.LastErr == "" || st.RetryInS <= 0 {
-		t.Fatalf("status = %+v, want last_error and retry_in_s", st)
-	}
-	if got := err.Error(); !strings.Contains(got, "server runs open") {
-		t.Fatalf("give-up error %q hides the cause", got)
-	}
-	t0 := time.Now()
-	if _, err := sup.EnsureReady(context.Background()); !errors.Is(err, ErrGaveUp) || time.Since(t0) > time.Second {
-		t.Fatalf("EnsureReady in the failed state = %v after %s, want an immediate ErrGaveUp", err, time.Since(t0))
-	}
-	if sup.Status().Starts != 2 {
-		t.Fatalf("a start was spawned in the failed state: %+v", sup.Status())
-	}
-	if sup.Backoff() <= 0 {
-		t.Fatal("Backoff must report the cool-down while failed")
-	}
-}
-
-// After the cool-down one probe start is made: failing again re-enters the
-// failed state after a single spawn; passing makes the engine Ready.
-// Mutation: supervisor.go EnsureReady, delete the cool-down expiry (always
-// return ErrGaveUp) -> RED (no probe start).
-func TestFailedStateResumesAfterTheCooldown(t *testing.T) {
+// `s.state = StateFailed` line -> RED (state stays stopped).
+// Mutation: supervisor.go EnsureReady default branch, return an error when
+// s.state == StateFailed -> RED (no second start).
+func TestAVerifyRefusalIsInformationalAndClears(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
 	var ok atomic.Bool
 	sup := newTestSupervisor(t, dir, func(c *Config) {
-		c.MaxVerifyFailures = 2
-		c.GiveUpCooldown = 400 * time.Millisecond
 		c.Verify = func(context.Context, string) error {
 			if ok.Load() {
 				return nil
@@ -127,34 +78,32 @@ func TestFailedStateResumesAfterTheCooldown(t *testing.T) {
 			return errors.New("server runs open")
 		}
 	})
-	giveUp(t, sup)
-	time.Sleep(450 * time.Millisecond)
-	if _, err := sup.EnsureReady(context.Background()); err == nil || errors.Is(err, ErrGaveUp) && sup.Status().Starts != 3 {
-		t.Fatalf("probe: err=%v starts=%d, want one more spawn", err, sup.Status().Starts)
-	}
-	if sup.State() != StateFailed || sup.Status().Starts != 3 {
-		t.Fatalf("after a failed probe: %+v, want failed with 3 starts", sup.Status())
+	for want := 1; want <= 3; want++ {
+		if _, err := sup.EnsureReady(context.Background()); err == nil || !strings.Contains(err.Error(), "server runs open") {
+			t.Fatalf("call %d: err = %v, want the verify cause", want, err)
+		}
+		if st := sup.Status(); st.State != StateFailed || st.LastErr == "" || st.Starts != want {
+			t.Fatalf("call %d: status = %+v, want failed with last_error and %d starts", want, st, want)
+		}
 	}
 	ok.Store(true)
-	time.Sleep(450 * time.Millisecond)
 	if _, err := sup.EnsureReady(context.Background()); err != nil {
-		t.Fatalf("probe with a passing verify: %v", err)
+		t.Fatalf("a start that passes Verify: %v", err)
 	}
-	if sup.State() != StateReady {
-		t.Fatalf("state = %s, want ready", sup.State())
+	if st := sup.Status(); st.State != StateReady || st.LastErr != "" {
+		t.Fatalf("status = %+v, want ready with the failure cleared", st)
 	}
 }
 
 // A child that dies between /health and Verify is an ordinary failed start:
 // it must not be booked as the server being refused.
 // Mutation: supervisor.go run(), delete the `case <-c.done:` branch (always
-// wrap in verifyFailure) -> RED (the state is failed after one start).
+// wrap in verifyFailure) -> RED (the state is failed).
 func TestAChildDyingDuringVerifyIsNotAVerifyFailure(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
 	var sup *Supervisor
 	sup = newTestSupervisor(t, dir, func(c *Config) {
-		c.MaxVerifyFailures = 1
 		c.Verify = func(context.Context, string) error {
 			pid := sup.Status().PID
 			_ = syscall.Kill(pid, syscall.SIGKILL)
@@ -164,38 +113,10 @@ func TestAChildDyingDuringVerifyIsNotAVerifyFailure(t *testing.T) {
 			return errors.New("connection reset")
 		}
 	})
-	if _, err := sup.EnsureReady(context.Background()); err == nil || errors.Is(err, ErrGaveUp) {
+	if _, err := sup.EnsureReady(context.Background()); err == nil {
 		t.Fatalf("err = %v, want a plain start failure", err)
 	}
 	if st := sup.State(); st == StateFailed {
 		t.Fatalf("state = %s: a dead child was counted as a refused server", st)
-	}
-}
-
-// AllowProbe lets exactly one start through the cool-down; a call that does
-// not come from the user stays blocked, and the probe is consumed by its start.
-// Mutation: supervisor.go EnsureReady, drop `&& !s.probeGranted` -> RED (the
-// granted call is refused, no spawn).
-func TestAllowProbeGrantsExactlyOneStartInsideTheCooldown(t *testing.T) {
-	dir := t.TempDir()
-	fakeEnv(t, dir)
-	sup := newTestSupervisor(t, dir, func(c *Config) {
-		c.MaxVerifyFailures = 2
-		c.Verify = func(context.Context, string) error { return errors.New("server runs open") }
-	})
-	giveUp(t, sup)
-	starts := sup.Status().Starts
-	if _, err := sup.EnsureReady(context.Background()); !errors.Is(err, ErrGaveUp) || sup.Status().Starts != starts {
-		t.Fatalf("an automatic call in the cool-down = %v, starts %d -> %d, want blocked", err, starts, sup.Status().Starts)
-	}
-	sup.AllowProbe()
-	if _, err := sup.EnsureReady(context.Background()); err == nil || errors.Is(err, ErrGaveUp) {
-		t.Fatalf("the granted call = %v, want a real start that fails Verify", err)
-	}
-	if got := sup.Status().Starts; got != starts+1 {
-		t.Fatalf("starts = %d, want exactly one probe (%d)", got, starts+1)
-	}
-	if _, err := sup.EnsureReady(context.Background()); !errors.Is(err, ErrGaveUp) || sup.Status().Starts != starts+1 {
-		t.Fatalf("after the probe: %v, starts %d — the grant must be consumed", err, sup.Status().Starts)
 	}
 }

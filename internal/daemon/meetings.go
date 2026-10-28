@@ -48,24 +48,21 @@ const (
 
 const stateNotesUnavailable engine.State = "unavailable"
 
-// notesReasonEngineFailed is the reason_code of /status notes while the
-// supervisor has given up on a model the server check keeps refusing.
+// notesReasonEngineFailed is the reason_code of /status notes while the last
+// start was refused by the server check.
 const notesReasonEngineFailed = "notes_engine_failed"
 
 // notesStatus is the /status "notes" value: whether meeting notes can run,
 // and the model download's progress.
 type notesStatus struct {
-	Available  bool         `json:"available"`
-	Reason     string       `json:"reason,omitempty"`
-	ReasonCode string       `json:"reason_code,omitempty"`
-	State      engine.State `json:"state"`
-	LastErr    string       `json:"last_error,omitempty"`
-	// RetryInS is the seconds left before the failed engine tries again by
-	// itself; a notes retry from the user tries at once.
-	RetryInS    float64 `json:"retry_in_s,omitempty"`
-	Installing  bool    `json:"installing,omitempty"`
-	ProgressPct int     `json:"progress_pct,omitempty"`
-	InstallErr  string  `json:"install_error,omitempty"`
+	Available   bool         `json:"available"`
+	Reason      string       `json:"reason,omitempty"`
+	ReasonCode  string       `json:"reason_code,omitempty"`
+	State       engine.State `json:"state"`
+	LastErr     string       `json:"last_error,omitempty"`
+	Installing  bool         `json:"installing,omitempty"`
+	ProgressPct int          `json:"progress_pct,omitempty"`
+	InstallErr  string       `json:"install_error,omitempty"`
 }
 
 // notesBinPath is the path ox-llm is spawned by: always absolute, because the
@@ -540,11 +537,11 @@ func (d *Daemon) notesStatus() notesStatus {
 		st := d.LLMSup.Status()
 		out.State, out.LastErr = st.State, st.LastErr
 		if st.State == engine.StateFailed {
-			// The supervisor stopped reloading a model the server check keeps
-			// refusing; say so instead of showing a plain "stopped". The text
-			// holds no countdown (retry_in_s has it), so it is true at any time.
-			out.ReasonCode, out.RetryInS = notesReasonEngineFailed, st.RetryInS
-			out.Reason = "The notes model would not start, so ox-say stopped retrying. Retry the notes to try once more, or restart ox-say."
+			// The last start was refused by the server check; say so instead of
+			// showing a plain "stopped". Informational: a notes retry starts the
+			// engine again (after the short backoff) and a success clears it.
+			out.ReasonCode = notesReasonEngineFailed
+			out.Reason = "The notes model did not start: its server check failed. Retry the notes to try again."
 		}
 		if strings.Contains(st.LastErr, notesPortTaken) {
 			// A foreign listener holds the port: the app shows the same reason
