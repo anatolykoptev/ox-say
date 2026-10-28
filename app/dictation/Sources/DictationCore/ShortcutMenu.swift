@@ -9,8 +9,11 @@ public enum ShortcutMenu {
         public var title: String
         public var keyCode: Int
         public var modifiers: Int
+        /// What the app stores for this key between launches.
+        public var id: String
 
-        public init(title: String, keyCode: Int, modifiers: Int) {
+        public init(title: String, keyCode: Int, modifiers: Int, id: String? = nil) {
+            self.id = id ?? title
             self.title = title
             self.keyCode = keyCode
             self.modifiers = modifiers

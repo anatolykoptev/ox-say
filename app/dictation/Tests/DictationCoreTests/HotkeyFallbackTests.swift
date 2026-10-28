@@ -105,19 +105,21 @@ final class HotkeyFallbackTests: XCTestCase {
     }
 
     /// Runs one registration where `works` are the indexes another app does not hold.
+    final class FakeKey {}
+
     private func run(_ plan: ShortcutMenu.Plan, works: Set<Int>, previous: Int? = nil,
                      gates: inout RegistrationGates, store: FakeStore,
-                     attempts: inout [Int]) -> ShortcutRegistration.Outcome {
+                     attempts: inout [Int]) -> ShortcutRegistration.Outcome<FakeKey> {
         var tried: [Int] = []
         let outcome = ShortcutRegistration.run(plan: plan, choices: offers, previous: previous,
-                                               attempt: { tried.append($0); return works.contains($0) },
+                                               attempt: { tried.append($0); return works.contains($0) ? FakeKey() : nil },
                                                gates: &gates, store: store)
         attempts = tried
         return outcome
     }
 
     private func run(_ plan: ShortcutMenu.Plan, works: Set<Int>, previous: Int? = nil,
-                     gates: inout RegistrationGates, store: FakeStore) -> ShortcutRegistration.Outcome {
+                     gates: inout RegistrationGates, store: FakeStore) -> ShortcutRegistration.Outcome<FakeKey> {
         var attempts: [Int] = []
         return run(plan, works: works, previous: previous, gates: &gates, store: store, attempts: &attempts)
     }
@@ -130,6 +132,27 @@ final class HotkeyFallbackTests: XCTestCase {
         XCTAssertEqual(out.registered, 0)
         XCTAssertEqual(out.failed, [1])
         XCTAssertEqual(out.notices, [.fellBack(failed: "⌥Space", now: "⌃Space")])
+    }
+
+    // Mutation: `keyInUse: nil`, or the winner replaced by another attempt's
+    // handle / dropped (`hotKey: nil`) -> RED.
+    func testTheOutcomeCarriesTheWinningRegistrationAndTheKeyToRemember() {
+        var gates = RegistrationGates()
+        var made: [FakeKey] = []
+        weak var refused: FakeKey?
+        let out = ShortcutRegistration.run(plan: relaunchOnOpt, choices: offers, previous: nil, attempt: { (index: Int) -> FakeKey? in
+            let key = FakeKey(); made.append(key)
+            if index == 1 { refused = key; made.removeAll(); return nil }
+            return key
+        }, gates: &gates, store: FakeStore())
+        XCTAssertEqual(out.registered, 0)
+        XCTAssertTrue(out.hotKey === made.first, "the outcome must hand back the registration that took")
+        XCTAssertNil(refused, "a refused attempt's registration must not be retained")
+        XCTAssertEqual(out.keyInUse, "⌃Space")
+        XCTAssertEqual(ShortcutMenu.Choice(title: "x", keyCode: 1, modifiers: 2, id: "controlSpace").id, "controlSpace")
+        let none = run(relaunchOnOpt, works: [], gates: &gates, store: FakeStore())
+        XCTAssertNil(none.hotKey)
+        XCTAssertNil(none.keyInUse, "nothing registered: the remembered key stays")
     }
 
     // Mutation: the refusal filter `return !refusedBefore` -> `return true` -> RED
@@ -279,16 +302,25 @@ final class HotkeyFallbackTests: XCTestCase {
         return String(text[start.upperBound..<end.lowerBound])
     }
 
-    // The glue only supplies the real attempt and shows what the Core returns.
-    // Mutation: ignore `outcome.clearsStatusLine`, `outcome.items` or
-    // `outcome.notices` in registerShortcut -> RED.
+    // The remaining glue lines cannot move into Core; each is pinned exactly.
+    // Mutation: delete `hotKey = outcome.hotKey` (nothing listens), delete
+    // `active = ...` (the menu forgets the key), register `plan.key!` instead
+    // of the outcome's, or drop the keyInUse write -> RED.
     func testRegisterShortcutAppliesTheCoreOutcome() {
         let register = Self.body("private func registerShortcut(_ plan: ShortcutMenu.Plan) {", in: "AppDelegate.swift")
         XCTAssertFalse(register.isEmpty, "registerShortcut not found")
-        XCTAssertTrue(register.contains("ShortcutRegistration.run("), "registerShortcut does not use the Core decision")
-        XCTAssertTrue(register.contains("if outcome.clearsStatusLine { lastNotice = nil }"))
-        XCTAssertTrue(register.contains("applyShortcutItems(outcome.items)"))
-        XCTAssertTrue(register.contains("ShortcutMenu.sentence(outcome.notices)"))
+        for line in [
+            "ShortcutRegistration.run(",
+            "        hotKey = outcome.hotKey\n",
+            "        active = outcome.registered.map { Shortcut.allCases[$0] }\n",
+            "        if let inUse = outcome.keyInUse { UserDefaults.standard.set(inUse, forKey: keyInUseKey) }\n",
+            "        if outcome.clearsStatusLine { lastNotice = nil }\n",
+            "        applyShortcutItems(outcome.items)\n",
+            "        if !outcome.notices.isEmpty { notice(ShortcutMenu.sentence(outcome.notices)) }",
+        ] {
+            XCTAssertTrue(register.contains(line), "registerShortcut lost: \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        XCTAssertFalse(register.contains("plan.key!"), "the glue registers the plan's key, not the outcome's")
     }
 
     // Mutation: tag the late notice `.outcome` again, or wire `onNotice` to

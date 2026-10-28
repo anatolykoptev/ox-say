@@ -206,7 +206,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func choice(_ shortcut: Shortcut) -> ShortcutMenu.Choice {
-        ShortcutMenu.Choice(title: shortcut.title, keyCode: Int(shortcut.keyCode), modifiers: Int(shortcut.modifiers))
+        ShortcutMenu.Choice(title: shortcut.title, keyCode: Int(shortcut.keyCode), modifiers: Int(shortcut.modifiers),
+                            id: shortcut.rawValue)
     }
 
     /// The same plan question for the speak-selection key: which offered
@@ -365,21 +366,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         active = nil
         let outcome = ShortcutRegistration.run(
             plan: plan, choices: Shortcut.allCases.map(choice), previous: previous,
-            attempt: { [self] index in
+            attempt: { [weak self] index in
                 let key = Shortcut.allCases[index]
-                guard let candidate = HotKey(keyCode: key.keyCode, modifiers: key.modifiers) else { return false }
-                candidate.onDown = { [weak self] in self?.controller.keyDown() }
-                candidate.onUp = { [weak self] in self?.controller.keyUp() }
-                hotKey = candidate
-                return true
+                guard let candidate = HotKey(keyCode: key.keyCode, modifiers: key.modifiers) else { return nil }
+                candidate.onDown = { self?.controller.keyDown() }
+                candidate.onUp = { self?.controller.keyUp() }
+                return candidate
             },
             gates: &registrationGates, store: UserDefaults.standard)
+        hotKey = outcome.hotKey
+        active = outcome.registered.map { Shortcut.allCases[$0] }
+        if let inUse = outcome.keyInUse { UserDefaults.standard.set(inUse, forKey: keyInUseKey) }
         applyShortcutItems(outcome.items)
-        if let registered = outcome.registered {
-            let key = Shortcut.allCases[registered]
-            active = key
-            UserDefaults.standard.set(key.rawValue, forKey: keyInUseKey)
-        }
         if outcome.clearsStatusLine { lastNotice = nil }
         if !outcome.notices.isEmpty { notice(ShortcutMenu.sentence(outcome.notices)) }
     }

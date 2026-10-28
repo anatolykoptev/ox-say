@@ -20,9 +20,15 @@ public enum ShortcutRegistration {
     /// Where the key macOS last took (and was announced) is remembered.
     public static let macOSNoticeKey = "fallbackNoticeShownFor"
 
-    public struct Outcome: Equatable {
+    public struct Outcome<Handle: AnyObject> {
         /// The index that registered; nil when none did.
         public var registered: Int?
+        /// The registration that took, handed back so the caller keeps exactly
+        /// this one; refused attempts are not retained.
+        public var hotKey: Handle?
+        /// The `Choice.id` to remember as the key in use; nil leaves the
+        /// remembered one alone (nothing registered).
+        public var keyInUse: String?
         /// Indexes another app refused, in the order tried.
         public var failed: [Int]
         /// What to say now (gates applied), macOS first.
@@ -37,10 +43,10 @@ public enum ShortcutRegistration {
 
     /// - Parameters:
     ///   - previous: the index registered before this run (nil: none).
-    ///   - attempt: tries to register an index; true when it took.
-    public static func run(plan: ShortcutMenu.Plan, choices: [ShortcutMenu.Choice], previous: Int?,
-                           attempt: (Int) -> Bool, gates: inout RegistrationGates,
-                           store: ShortcutStore) -> Outcome {
+    ///   - attempt: tries to register an index; the registration when it took, nil when refused.
+    public static func run<Handle: AnyObject>(plan: ShortcutMenu.Plan, choices: [ShortcutMenu.Choice], previous: Int?,
+                           attempt: (Int) -> Handle?, gates: inout RegistrationGates,
+                           store: ShortcutStore) -> Outcome<Handle> {
         func items(on registered: Int?) -> [ShortcutMenu.Item] {
             plan.items.indices.map {
                 ShortcutMenu.Item(title: plan.items[$0].title, isEnabled: plan.items[$0].isEnabled,
@@ -49,13 +55,14 @@ public enum ShortcutRegistration {
         }
         guard let planned = plan.key else {
             gates.refusalShown = nil
-            return Outcome(registered: nil, failed: [], notices: [.allMacOS], clearsStatusLine: false,
+            return Outcome(registered: nil, hotKey: nil, keyInUse: nil, failed: [], notices: [.allMacOS], clearsStatusLine: false,
                            items: items(on: nil))
         }
         var failed: [Int] = []
         var registered: Int?
+        var winner: Handle?
         while let index = ShortcutMenu.next(plan, failed: failed) {
-            if attempt(index) { registered = index; break }
+            if let handle = attempt(index) { registered = index; winner = handle; break }
             failed.append(index)
         }
         if registered != nil && plan.movedFrom == nil { store.setString(nil, forKey: macOSNoticeKey) }
@@ -72,7 +79,8 @@ public enum ShortcutRegistration {
             store.setString(choices[from].title, forKey: macOSNoticeKey)
             return true
         }
-        return Outcome(registered: registered, failed: failed, notices: notices,
+        return Outcome(registered: registered, hotKey: winner,
+                       keyInUse: registered.map { choices[$0].id }, failed: failed, notices: notices,
                        clearsStatusLine: registered != nil && registered != previous,
                        items: items(on: registered))
     }
