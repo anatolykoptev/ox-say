@@ -115,12 +115,16 @@ public final class VolumeDuckCoordinator {
     /// device is usually within minutes; past this, a level that happens to
     /// match the duck is more likely the user's own than a leftover.
     public static let owedLifetime: TimeInterval = 5 * 60
-    /// How long a persisted record stays good: a crash mid-dictation is
-    /// found by the relaunch within minutes (the app restarts itself, or the
-    /// user opens it again); past this, a level that happens to sit at the
-    /// ducked one is more likely the user's own, and a week-old record must
-    /// never set someone's volume.
-    public static let recordLifetime: TimeInterval = 10 * 60
+    /// How long a persisted record stays good: a crash or power loss
+    /// followed by the next working day's launch must still give the level
+    /// back (the level-match check in `recoverInterrupted` is the real guard
+    /// against a record that no longer applies); after a day the user has
+    /// lived with that level, and an older record must never set it.
+    public static let recordLifetime: TimeInterval = 24 * 60 * 60
+    /// How far the clock may have stepped back since the record was written
+    /// (NTP, a manual change) without the record counting as dated in the
+    /// future.
+    public static let clockSkewTolerance: TimeInterval = 5 * 60
     /// How many settle-spaced reads a confirm takes before giving up — an
     /// output that applies volume asynchronously can keep answering the old
     /// level for the first few.
@@ -187,11 +191,12 @@ public final class VolumeDuckCoordinator {
     /// there was nothing audible to lower (muted, level 0) or a duck already
     /// stands; false when an audible output could not be lowered (no default
     /// device, no software volume — HDMI, a USB DAC, a Multi-Output device —
-    /// an unreadable level, or a device that refused the very first write),
-    /// so the caller can pause the players instead. A refused first write
-    /// leaves no duck, record or owed restore behind; a fade that stops after
-    /// the first write is a duck that stands (the level is already lower and
-    /// the restore is owed).
+    /// an unreadable level, or a device that refused a write of the fade), so
+    /// the caller can pause the players instead. A refused first write leaves
+    /// no duck, record or owed restore behind, and the record is saved only
+    /// once that write was accepted. A fade that stops after the first write
+    /// also returns false, but the duck stands: the level is already lower
+    /// and `end` restores it.
     @discardableResult
     public func begin(generation: Int) -> Bool {
         guard duck == nil else { return true }
@@ -211,35 +216,43 @@ public final class VolumeDuckCoordinator {
         let duck = Duck(generation: generation, deviceID: device.id, uid: device.uid,
                         preDuck: preDuck, ducked: preDuck * Self.duckFraction)
         self.duck = duck
-        if let uid = device.uid {
-            records?.save(DuckRecord(uid: uid, preDuck: duck.preDuck, ducked: duck.ducked, savedAt: now()))
+        let result = fade(from: level, to: duck.ducked, on: device.id) {
+            if let uid = device.uid {
+                self.records?.save(DuckRecord(uid: uid, preDuck: duck.preDuck, ducked: duck.ducked,
+                                              savedAt: self.now()))
+            }
         }
-        if fade(from: level, to: duck.ducked, on: device.id) == .refusedFirst {
-            // Nothing was lowered: the debt this begin wrote, and the owed
-            // restore it consumed, go back to how they were.
+        switch result {
+        case .complete:
+            return true
+        case .refusedFirst:
+            // Nothing was lowered and the store was never touched: only the
+            // owed restore this begin consumed goes back.
             self.duck = nil
-            forgetRecord(for: device.uid)
             if let uid = device.uid { owed[uid] = earlierOwed }
             logError("output volume duck refused: the device did not take the first write")
             return false
+        case .stopped:
+            logError("output volume duck incomplete: the device stopped taking writes")
+            return false
         }
-        return true
     }
 
     /// At launch: a record left by a process that died while ducked. If the
     /// default output is that device, the record is younger than
-    /// `recordLifetime` (an older one, one without a timestamp and one dated
-    /// in the future are dropped without a write) and it still sits about at
-    /// the ducked level,
+    /// `recordLifetime` and it still sits about at the ducked level,
     /// the pre-duck level is given back; if the user has moved it since (or
     /// the device is no longer the default output) the record is dropped and
     /// the level left alone. An unconfirmed restore keeps the record for the
     /// next launch.
     public func recoverInterrupted() {
         guard duck == nil, let record = records?.load() else { return }
+        // An older record, one without a timestamp and one dated further in
+        // the future than a clock step explains are dropped without a write.
         guard let savedAt = record.savedAt,
-              (0..<Self.recordLifetime).contains(now().timeIntervalSince(savedAt)) else {
+              (-Self.clockSkewTolerance..<Self.recordLifetime).contains(now().timeIntervalSince(savedAt)) else {
             records?.clear()
+            logError("output volume record dropped: too old, undated or dated in the future")
             return
         }
         guard let device = volume.defaultDevice(), device.uid == record.uid,
@@ -272,12 +285,15 @@ public final class VolumeDuckCoordinator {
     }
 
     /// The few-step ramp; stops early when the device stops taking writes,
-    /// and says how far it got.
-    private func fade(from: Float, to: Float, on deviceID: UInt32) -> Fade {
+    /// and says how far it got. `afterFirstWrite` runs once the first write
+    /// was accepted.
+    private func fade(from: Float, to: Float, on deviceID: UInt32,
+                      afterFirstWrite: () -> Void = {}) -> Fade {
         for step in 1...max(1, steps) {
             if step > 1 && stepDelay > 0 { Thread.sleep(forTimeInterval: stepDelay) }
             let level = from + (to - from) * Float(step) / Float(max(1, steps))
             guard volume.setVolume(deviceID, level) else { return step == 1 ? .refusedFirst : .stopped }
+            if step == 1 { afterFirstWrite() }
         }
         return .complete
     }

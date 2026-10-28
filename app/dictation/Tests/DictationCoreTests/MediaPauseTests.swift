@@ -705,6 +705,25 @@ final class SoundWhileDictatingWiringTests: XCTestCase {
         XCTAssertEqual(fakeVolume.level, 0.8, accuracy: 0.0001)
     }
 
+    // A fade that stops after the first accepted write leaves the output
+    // half-lowered: the players are paused too, and the release gives the
+    // pre-duck level back. Mutation: in VolumeDuckCoordinator.begin return
+    // true for `.stopped` -> RED.
+    func testAFadeThatStopsMidwayPausesAndTheReleaseRestores() {
+        let suite = "ox-say-media-stopped-\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }
+        let world = FakeScriptWorld([music: "playing"])
+        let fakeVolume = FakeSystemVolume()
+        fakeVolume.refuseWritesFrom = 2
+        let r = runner(world, defaults: defaults(suite, mode: .lowerAllSound), volume: fakeVolume)
+        r.dictationStateChanged(.recording); r.drain()
+        XCTAssertEqual(world.state(music), "paused", "music does not play on at nearly full volume")
+        fakeVolume.refuseWritesFrom = nil
+        r.dictationStateChanged(.transcribing); r.drain()
+        XCTAssertEqual(world.state(music), "playing")
+        XCTAssertEqual(fakeVolume.level, 0.8, accuracy: 0.0001)
+    }
+
     func testLowerAllSoundWithoutAnyVolumeAlsoFallsBackToPausing() {
         let suite = "ox-say-media-novolume-\(UUID().uuidString)"
         defer { UserDefaults(suiteName: suite)!.removePersistentDomain(forName: suite) }

@@ -334,7 +334,7 @@ final class VolumeDuckCoordinatorTests: XCTestCase {
     func testAPartiallyFadedDuckStillRestores() {
         let (fake, duck) = rig()
         fake.refuseWritesFrom = 2 // the third step on never lands
-        duck.begin(generation: 1)
+        XCTAssertFalse(duck.begin(generation: 1), "a half-lowered output is not handled: the caller also pauses")
         XCTAssertEqual(fake.level, 0.528, accuracy: 0.0001,
                        "stopped between the level and the target")
         fake.refuseWritesFrom = nil
@@ -525,11 +525,14 @@ final class InMemoryDuckRecordStore: DuckRecordStore {
 final class VolumeDuckRecoveryTests: XCTestCase {
     private var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
+    private var errors: [String] = []
+
     private func rig(level: Float = 0.8) -> (FakeSystemVolume, InMemoryDuckRecordStore, VolumeDuckCoordinator) {
         let fake = FakeSystemVolume()
         fake.level = level
         let store = InMemoryDuckRecordStore()
         return (fake, store, VolumeDuckCoordinator(volume: fake, stepDelay: 0, settleDelay: 0,
+                                                   logError: { [unowned self] in self.errors.append($0) },
                                                    now: { [unowned self] in self.clock }, records: store))
     }
 
@@ -661,6 +664,65 @@ final class VolumeDuckRecoveryTests: XCTestCase {
         let (_, store, duck) = rig()
         XCTAssertTrue(duck.begin(generation: 1))
         XCTAssertEqual(store.record?.savedAt, clock)
+    }
+
+    // A crash or power loss followed by the next working day's launch must
+    // still give the level back; only a day-old record is dropped.
+    // Mutation: recordLifetime back to 10 minutes -> RED (8 hours).
+    func testACrashIsRecoveredByALaterLaunch() {
+        for age: TimeInterval in [11 * 60, 8 * 3600] {
+            let (fake, store, duck) = rig(level: 0.12)
+            store.record = record(age: age)
+            duck.recoverInterrupted()
+            XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "a record \(age) s old is recovered")
+            XCTAssertNil(store.record)
+        }
+        let (fake, store, duck) = rig(level: 0.12)
+        store.record = record(age: 25 * 3600)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [], "after a day the user has lived with that level")
+        XCTAssertNil(store.record)
+    }
+
+    // A small backwards clock step must not drop a fresh record.
+    // Mutation: no skew tolerance (elapsed must be >= 0) -> RED.
+    func testASmallBackwardsClockStepStillRecovers() {
+        for age: TimeInterval in [-2, -4 * 60] {
+            let (fake, store, duck) = rig(level: 0.12)
+            store.record = record(age: age)
+            duck.recoverInterrupted()
+            XCTAssertEqual(fake.level, 0.8, accuracy: 0.0001, "elapsed \(-age) s negative is tolerated")
+        }
+        let (fake, store, duck) = rig(level: 0.12)
+        store.record = record(age: -10 * 60)
+        duck.recoverInterrupted()
+        XCTAssertEqual(fake.writes, [])
+        XCTAssertNil(store.record)
+    }
+
+    // Dropping a record is said once, without content.
+    // Mutation: drop the logError in recoverInterrupted -> RED.
+    func testADroppedRecordIsLogged() {
+        let (_, store, duck) = rig(level: 0.12)
+        store.record = record(age: 25 * 3600)
+        duck.recoverInterrupted()
+        XCTAssertEqual(errors.count, 1)
+        store.record = DuckRecord(uid: "fake-output", preDuck: 0.8, ducked: 0.12)
+        duck.recoverInterrupted()
+        XCTAssertEqual(errors.count, 2, "an unstamped record is dropped loudly too")
+        XCTAssertFalse(errors.joined().contains("fake-output"), "no device id in the log")
+    }
+
+    // A refused begin never touches the store: an earlier record that is
+    // still owed survives. Mutation: save the record before the first write
+    // -> RED.
+    func testARefusedBeginKeepsAnEarlierPersistedRecord() {
+        let (fake, store, duck) = rig()
+        let earlier = record(age: 60)
+        store.record = earlier
+        fake.refusedWrites = 1
+        XCTAssertFalse(duck.begin(generation: 1))
+        XCTAssertEqual(store.record, earlier)
     }
 
     func testAStaleRecordIsDroppedAndTheLevelLeftAlone() {
