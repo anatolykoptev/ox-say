@@ -181,3 +181,73 @@ func TestDropEchoCountsWhatItDrops(t *testing.T) {
 		t.Fatalf("kept %d turns, dropped %d; want 3 kept (2 far side + own), 2 dropped", len(got), dropped)
 	}
 }
+
+// #229: the owner talking OVER the far side with short, common words must not
+// be judged an echo just because those words also occur in the far side's
+// sentence. Realistic talk-over turns, en and ru.
+// Mutation F1: internal/meeting/merge.go isEcho, replace the echoMatch call
+// with `voices.WordShare(t.Text, near.String()) >= echoShare` -> RED.
+func TestDropEchoKeepsTalkOverMadeOfCommonWords(t *testing.T) {
+	cases := []struct{ name, them, me string }{
+		{"en", "and that is why I do not think it is the right time to hire",
+			"I do and that is the"},
+		{"ru", "и поэтому я не думаю что это сейчас правильное время для найма",
+			"и вот я не что это"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			them := spaced(0, 0.4, c.them)
+			me := spaced(0.2, 0.4, c.me)
+			got, dropped := DropEcho(MergeTurns(me, them))
+			if len(got) != 2 || dropped != 0 {
+				t.Fatalf("turns = %+v, dropped = %d; the owner's own turn must be kept", got, dropped)
+			}
+		})
+	}
+}
+
+// Content words alone are not enough: the same words in another order, with no
+// shared pair, are the owner listing items back, not a re-capture.
+// Mutation F2: internal/meeting/merge.go isEcho, make echoMatch skip the
+// order/bigram check (return the content-word share alone) -> RED.
+func TestDropEchoKeepsContentWordsInAnotherOrder(t *testing.T) {
+	cases := []struct{ name, them, me string }{
+		{"en", "so the budget hiring timeline approval",
+			"approval timeline hiring budget"},
+		{"ru", "итак бюджет найм срок согласование",
+			"согласование срок найм бюджет"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			them := spaced(0, 0.25, c.them)
+			me := spaced(0.1, 0.25, c.me)
+			got, dropped := DropEcho(MergeTurns(me, them))
+			if len(got) != 2 || dropped != 0 {
+				t.Fatalf("turns = %+v, dropped = %d; both must be kept", got, dropped)
+			}
+		})
+	}
+}
+
+// A read-back of exactly three words (two of them content words) is still an
+// echo; the gate must not demand four.
+// Mutation F4: internal/meeting/merge.go, set echoMinWords to 4 -> RED.
+func TestDropEchoRemovesAThreeWordReadBack(t *testing.T) {
+	them := spaced(0, 0.4, "send the proposal")
+	echo := spaced(0.2, 0.4, "send the proposal")
+	got, dropped := DropEcho(MergeTurns(echo, them))
+	if len(got) != 1 || got[0].Speaker != SpeakerThem || dropped != 1 {
+		t.Fatalf("turns = %+v, dropped = %d; want only the far side, 1 dropped", got, dropped)
+	}
+}
+
+// Merging relies on turns of one channel being more than 2*echoLatency apart,
+// so the widened far-side turns in isEcho stay disjoint and overlap is not
+// double-counted.
+// Mutation F3: internal/meeting/merge.go, set echoLatency to 0.7 -> RED.
+func TestTurnGapExceedsTwiceTheEchoLatency(t *testing.T) {
+	gap, lat := turnGap, echoLatency
+	if gap <= 2*lat {
+		t.Fatalf("turnGap = %v must exceed 2*echoLatency = %v", gap, 2*lat)
+	}
+}

@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/anatolykoptev/ox-say/internal/stt"
-	"github.com/anatolykoptev/ox-say/internal/voices"
 )
 
 // Speakers of a Turn.
@@ -109,8 +108,10 @@ func DropEcho(turns []Turn) ([]Turn, int) {
 }
 
 // isEcho: a "me" turn of at least echoMinWords words is an echo when
-//  1. at least echoShare of its words are among the "them" words spoken inside
-//     [t.S-echoLatency, t.E+echoLatency] (a word counts by its midpoint), and
+//  1. echoMatch: at least echoShare of its content (non-stopword) words are
+//     among the "them" words spoken inside [t.S-echoLatency, t.E+echoLatency]
+//     (a word counts by its midpoint), in the same order or sharing a content
+//     bigram, and
 //  2. "them" turns, each widened by echoLatency on both sides, cover at least
 //     echoOverlap of t's own duration. (Widened turns stay disjoint: turns in
 //     a channel are more than turnGap > 2*echoLatency apart.)
@@ -142,5 +143,5 @@ func isEcho(t Turn, all []Turn) bool {
 	if overlap < echoOverlap*dur {
 		return false
 	}
-	return voices.WordShare(t.Text, near.String()) >= echoShare
+	return echoMatch(t.Text, near.String())
 }
