@@ -983,6 +983,28 @@ final class VolumeDuckRecoveryTests: XCTestCase {
         XCTAssertEqual(second.loadAll().map(\.uid), ["airpods", "speakers"])
     }
 
+    // Downgrade, then upgrade again: the flat keys and a dictionary record for the same device both exist. The NEWER
+    // one by savedAt wins, in either order; an undated legacy record never beats a dated one.
+    // Mutation: UserDefaultsDuckRecordStore.migrateLegacy, `legacyWins = storedSavedAt.map { legacySavedAt > $0 } ?? true`
+    // -> `true` (or `all[uid] == nil` only) -> RED in one of the two orders.
+    func testMigrationKeepsTheNewerOfTheLegacyAndTheStoredRecord() {
+        func run(legacyAt: Double?, storedAt: Double) -> DuckRecord? {
+            let (defaults, suite) = freshDefaults()
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let store = UserDefaultsDuckRecordStore(defaults: defaults)
+            store.save(DuckRecord(uid: "airpods", preDuck: 0.5, ducked: 0.075, savedAt: Date(timeIntervalSince1970: storedAt)))
+            defaults.set("airpods", forKey: UserDefaultsDuckRecordStore.uidKey)
+            defaults.set(Float(0.9), forKey: UserDefaultsDuckRecordStore.preDuckKey)
+            defaults.set(Float(0.135), forKey: UserDefaultsDuckRecordStore.duckedKey)
+            if let legacyAt { defaults.set(legacyAt, forKey: UserDefaultsDuckRecordStore.savedAtKey) }
+            return store.loadAll().first
+        }
+        XCTAssertEqual(run(legacyAt: 2_000, storedAt: 1_000)?.preDuck ?? 0, 0.9, accuracy: 0.0001, "the legacy record is newer")
+        XCTAssertEqual(run(legacyAt: 1_000, storedAt: 2_000)?.preDuck ?? 0, 0.5, accuracy: 0.0001, "the stored record is newer")
+        XCTAssertEqual(run(legacyAt: nil, storedAt: 2_000)?.preDuck ?? 0, 0.5, accuracy: 0.0001, "undated never beats dated")
+        XCTAssertEqual(run(legacyAt: 1_000, storedAt: 1_000)?.preDuck ?? 0, 0.5, accuracy: 0.0001, "a tie keeps the stored one")
+    }
+
     // The per-uid defaults store: two devices side by side, the right one cleared.
     // Mutation: UserDefaultsDuckRecordStore.save, `all[record.uid] = fields` -> `all = [record.uid: fields]` -> RED.
     func testTheDefaultsStoreKeepsOneRecordPerDevice() {

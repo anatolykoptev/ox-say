@@ -289,6 +289,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         output.onPasteSettled = { id, read in
             timingLog.notice("\(PasteSettledLog.text(id: id, read: read), privacy: .public)")
         }
+        output.onTypedOverSlowClipboard = { chars, seconds in
+            let ms = Int(seconds * 1000)
+            timingLog.notice("clipboard read took too long: posted the text as keystrokes, clipboard untouched chars=\(chars, privacy: .public) post_ms=\(ms, privacy: .public)")
+        }
         output.onTypedOverRemoteClipboard = { chars, seconds in
             let ms = Int(seconds * 1000)
             timingLog.notice("clipboard held a Universal Clipboard copy: posted the text as keystrokes, clipboard untouched chars=\(chars, privacy: .public) post_ms=\(ms, privacy: .public)")

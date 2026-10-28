@@ -405,4 +405,9 @@ final class SelectionBorrowTests: XCTestCase {
         XCTAssertFalse(text.isEmpty, "\(relative) unreadable")
         return text
     }
+
+    /// Mutation: Resources/ru.lproj, notice.selection_password back to "Выбрано поле для пароля." -> RED.
+    func testTheRussianPasswordDeclineSaysWhereTheCursorIs() {
+        XCTAssertEqual(ShippedStrings.table("ru")["notice.selection_password"], "Курсор в поле для пароля.")
+    }
 }

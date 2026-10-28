@@ -340,4 +340,9 @@ public enum L10nKey: String, CaseIterable {
     case noticeSelectionNothing = "notice.selection_nothing"
     case noticeSelectionFailed = "notice.selection_failed"
     case noticeSelectionRemoteEmpty = "notice.selection_remote_empty"
+    case clipboardNotPutBack = "clipboard.not_put_back"
+    case clipboardReasonJoin = "clipboard.reason.join"
+    case clipboardReasonPromised = "clipboard.reason.promised_file"
+    case clipboardReasonTooLarge = "clipboard.reason.too_large"
+    case clipboardReasonOtherDevice = "clipboard.reason.other_device"
 }

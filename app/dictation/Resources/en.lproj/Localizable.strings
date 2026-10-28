@@ -227,7 +227,7 @@
 "meeting.failed.speech_failed.final" = "OxSay couldn't finish this recording: speech recognition stopped or took too long.";
 "meeting.failed.no_transcript.final" = "OxSay couldn't finish this recording: its transcript is missing.";
 "meeting.failed.storage.final" = "OxSay couldn't finish this recording: a file could not be read or written.";
-"meeting.failed.disk_full.final" = "OxSay couldn't finish this recording: the disk is full.";
+"meeting.failed.disk_full.final" = "OxSay couldn't finish this recording: the disk is full. Free some space.";
 "meeting.notes.failed.disk_full" = "The notes could not be saved: the disk is full. Free some space, then press Try Again.";
 "settings.notes_writer.download_failed.server" = "The download failed: the download server refused the request or is unavailable. Try again later.";
 "menu.meeting.install_failed.network" = "Notes download failed: no connection";
@@ -336,7 +336,7 @@
 "meeting.notes.failed.engine_timeout.final" = "The notes writer took too long to start.";
 "meeting.notes.failed.empty.final" = "The notes writer could not make notes from this transcript.";
 "meeting.notes.failed.storage.final" = "The notes could not be saved: a file could not be written.";
-"meeting.notes.failed.disk_full.final" = "The notes could not be saved: the disk is full.";
+"meeting.notes.failed.disk_full.final" = "The notes could not be saved: the disk is full. Free some space.";
 "notice.export.folder_missing" = "the notes folder is not available (is its disk connected?)";
 "notice.export.read_only" = "the notes folder cannot be written to";
 "notice.export.disk_full" = "the disk is full";
@@ -345,3 +345,8 @@
 "notice.selection_nothing" = "Nothing selected to speak.";
 "notice.selection_failed" = "The selection did not come through.";
 "notice.selection_remote_empty" = "Nothing seems to be selected. Select the text and press the key again, or copy it (⌘C) first.";
+"clipboard.not_put_back" = "The earlier clipboard was not put back: it held %@. The dictated text is on the clipboard.";
+"clipboard.reason.join" = " and ";
+"clipboard.reason.promised_file" = "a promised file";
+"clipboard.reason.too_large" = "more than %@ MB of data";
+"clipboard.reason.other_device" = "a clipboard copied on another device";

@@ -99,6 +99,9 @@ final class PasteOutput: TextOutput {
     /// alone: character count and seconds the posting took (the time to
     /// enqueue the events, not to deliver them). A log line, not a notice.
     var onTypedOverRemoteClipboard: ((Int, TimeInterval) -> Void)?
+    /// The clipboard could not be read within `PasteboardSnapshot.readLimit` (a big lazy copy), so it was left exactly
+    /// as it was and the text was typed: character count and the enqueue time. A log line, not a notice.
+    var onTypedOverSlowClipboard: ((Int, TimeInterval) -> Void)?
     /// The app that had focus when the recording stopped; the paste goes there
     /// or nowhere.
     var target: pid_t?
@@ -135,7 +138,18 @@ final class PasteOutput: TextOutput {
             onTypedOverRemoteClipboard?(text.count, Date().timeIntervalSince(started))
             return .typed
         case .paste:
-            let lease = ClipboardLease(board: lending, text: text)
+            // The clipboard is read BEFORE anything is written: one that cannot be read in time would be cleared with
+            // nothing to put back, so the text is typed and the clipboard is not touched.
+            let lease: ClipboardLease
+            switch ClipboardBorrow.take(board: lending, text: text) {
+            case .typed:
+                let started = Date()
+                postTypedText(text)
+                onTypedOverSlowClipboard?(text.count, Date().timeIntervalSince(started))
+                return .typed
+            case .lease(let borrowed):
+                lease = borrowed
+            }
             let posted = Date()
             postCommandV()
             // Give the clipboard back once the app has read the text and had a

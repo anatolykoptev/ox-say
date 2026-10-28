@@ -94,17 +94,27 @@ public final class UserDefaultsDuckRecordStore: DuckRecordStore {
         defaults.dictionary(forKey: Self.recordsKey) as? [String: [String: Double]] ?? [:]
     }
 
-    /// A debt written by the single-record build is not lost by the upgrade: it joins the dictionary (a record already
-    /// there for the same device is newer and wins) and the flat keys go.
+    /// A debt written by the single-record build is not lost by the upgrade: it joins the dictionary and the flat keys
+    /// go. When the dictionary already holds a record for the same device (a downgrade, then an upgrade again, leaves
+    /// both), the NEWER one by `savedAt` wins; an undated record never beats a dated one, and on a tie the dictionary's
+    /// stays.
     private func migrateLegacy() {
         guard let uid = defaults.string(forKey: Self.uidKey) else { return }
         var all = stored()
-        if all[uid] == nil, defaults.object(forKey: Self.preDuckKey) != nil, defaults.object(forKey: Self.duckedKey) != nil {
-            var fields = [Self.preDuck: Double(defaults.float(forKey: Self.preDuckKey)),
-                          Self.ducked: Double(defaults.float(forKey: Self.duckedKey))]
-            if let savedAt = defaults.object(forKey: Self.savedAtKey) as? Double { fields[Self.savedAt] = savedAt }
-            all[uid] = fields
-            defaults.set(all, forKey: Self.recordsKey)
+        if defaults.object(forKey: Self.preDuckKey) != nil, defaults.object(forKey: Self.duckedKey) != nil {
+            let legacySavedAt = defaults.object(forKey: Self.savedAtKey) as? Double
+            let storedSavedAt = all[uid]?[Self.savedAt]
+            let legacyWins: Bool
+            if all[uid] == nil { legacyWins = true }
+            else if let legacySavedAt { legacyWins = storedSavedAt.map { legacySavedAt > $0 } ?? true }
+            else { legacyWins = false }
+            if legacyWins {
+                var fields = [Self.preDuck: Double(defaults.float(forKey: Self.preDuckKey)),
+                              Self.ducked: Double(defaults.float(forKey: Self.duckedKey))]
+                if let legacySavedAt { fields[Self.savedAt] = legacySavedAt }
+                all[uid] = fields
+                defaults.set(all, forKey: Self.recordsKey)
+            }
         }
         for key in [Self.uidKey, Self.preDuckKey, Self.duckedKey, Self.savedAtKey] { defaults.removeObject(forKey: key) }
     }

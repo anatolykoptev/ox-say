@@ -319,4 +319,18 @@ final class MeetingFailureTests: XCTestCase {
         }
         return out
     }
+
+    /// The ".final" disk-full sentences keep "free some space", and the pill's suffix adds only WHERE the button is.
+    /// Mutation: Resources/en.lproj, drop " Free some space." from meeting.failed.disk_full.final -> RED.
+    func testTheDiskFullPillKeepsItsAdviceAndTheSuffixOnlyAddsWhere() {
+        for (locale, advice, where_) in [("en", "Free some space.", "Open the meeting and press Try Again."),
+                                         ("ru", "Освободите место.", "Откройте встречу и нажмите «Повторить».")] {
+            let say = ShippedStrings.localizer(locale)
+            XCTAssertTrue(say(.meetingFailedDiskFullFinal).hasSuffix(advice), locale)
+            XCTAssertTrue(say(.meetingNotesDiskFullFinal).hasSuffix(advice), locale)
+            XCTAssertEqual(say(.meetingFailedWhereRetry), where_)
+            XCTAssertEqual(MeetingFailureNotice.announcement(for: failed("disk_full"), text: say)?.hasSuffix(advice + " " + where_), true, locale)
+            XCTAssertEqual(MeetingFailureNotice.announcement(for: notesFailed("disk_full"), text: say)?.hasSuffix(advice + " " + where_), true, locale)
+        }
+    }
 }

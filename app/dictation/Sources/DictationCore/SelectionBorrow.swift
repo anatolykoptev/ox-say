@@ -55,7 +55,7 @@ public enum SelectionBorrow {
         let snapshot = SelectionPolicy.needsClipboard(axText: axText, secureInput: secure)
             ? PasteboardSnapshot.capture(board, timeLimit: PasteboardSnapshot.readLimit) : nil
         switch SelectionPolicy.plan(axText: axText, secureInput: secure,
-                                    clipboardRestorable: snapshot.map { $0.problems.isEmpty && !$0.isSensitive } ?? false,
+                                    clipboardRestorable: snapshot.map { $0.isWhole && !$0.isSensitive } ?? false,
                                     clipboardRemote: snapshot?.isRemote ?? false,
                                     axAnswered: ax.hasElement && ax.error == 0) {
         case .speak(let text): return ((text, nil), .ax)
