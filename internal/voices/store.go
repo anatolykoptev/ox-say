@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/anatolykoptev/ox-say/internal/vproject"
 )
 
 // voiceNameRe constrains names to a safe file-name alphabet; the name becomes
@@ -93,6 +95,11 @@ type Store struct {
 	// steps of a repair.
 	rename func(string, string) error
 
+	// syncFile fsyncs the file at a path, syncDir a directory (so the renames into it survive a power cut). Repair.Apply
+	// orders them against the renames of its commit protocol; tests swap them to see that order or to fail one.
+	syncFile func(string) error
+	syncDir  func(string) error
+
 	// verdictMu guards the repair-verdict cache file (repair.go).
 	verdictMu sync.Mutex
 }
@@ -102,7 +109,7 @@ func New(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("voices: %w", err)
 	}
-	return &Store{dir: dir, ffmpeg: "ffmpeg", writeFile: os.WriteFile, rename: os.Rename}, nil
+	return &Store{dir: dir, ffmpeg: "ffmpeg", writeFile: os.WriteFile, rename: os.Rename, syncFile: syncFile, syncDir: vproject.SyncDir}, nil
 }
 
 // SetTranscriber wires the word-timestamp source used to keep a reference
@@ -391,4 +398,17 @@ func (s *Store) List() ([]Voice, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// syncFile fsyncs the file at path (a write must already be complete and closed).
+func syncFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = f.Sync()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }

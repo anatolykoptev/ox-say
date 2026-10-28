@@ -198,8 +198,23 @@ func TestPlanCut(t *testing.T) {
 		{
 			name:     "plain: last word within the cap; no gap, so no tail",
 			words:    speechWords(100, 0.3, 0.0, 0),
-			wantLast: 65, // ends at 19.8
+			wantLast: 65, // ends at 19.8; 65 is not the last word, the next starts at once
 			wantAt:   19.8,
+			wantOK:   true,
+		},
+		{
+			// #280.4: the last phoneme must not be clipped by a quantised word end.
+			name:     "the transcript's last word gets one STT quantum of margin",
+			words:    []Word{{W: "a", S: 0, E: 5}, {W: "b", S: 5, E: 10.0}},
+			wantLast: 1,
+			wantAt:   10.08,
+			wantOK:   true,
+		},
+		{
+			name:     "the margin never goes past the end of the clip",
+			words:    []Word{{W: "a", S: 0, E: 5}, {W: "b", S: 5, E: 19.97}},
+			wantLast: 1,
+			wantAt:   20.0,
 			wantOK:   true,
 		},
 		{

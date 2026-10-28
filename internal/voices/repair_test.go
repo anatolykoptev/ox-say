@@ -851,3 +851,116 @@ func TestRepairKeepsVoiceMeta(t *testing.T) {
 		t.Fatalf("backup of the original lost the metadata: %v %s", err, raw)
 	}
 }
+
+// Apply is power-loss safe (#280.3): every file is fsynced before the rename that names it, and the directory is
+// fsynced between the steps a power cut must not reorder (backup WAV before the backup JSON marker, the marker
+// before the main files, the new WAV before the JSON that vouches for it) and after the last rename. The order is
+// pinned as the sequence of sync and rename calls of one repair that cuts the clip.
+// Mutations in internal/voices/repair.go (each -> RED, the sequence differs): Apply, delete the
+// `s.syncFile(metaTmp)` call; delete the `s.syncFile(r.tmp)` call; delete the `s.syncDir(s.dir)` that follows the
+// main WAV rename; delete the last `s.syncDir(s.dir)`; copyAtomic, delete `s.syncFile(tmp)` or its trailing
+// `s.syncDir(s.dir)`.
+func TestRepairApplyOrdersSyncsAroundTheRenames(t *testing.T) {
+	s, _ := newStore(t)
+	seedVoice(t, s, "longref", 20, words90())
+	s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), new(int)))
+	var events []string
+	label := func(p string) string {
+		b := filepath.Base(p)
+		switch {
+		case strings.HasPrefix(b, ".normalize-orig-"):
+			return "backup-tmp"
+		case strings.HasSuffix(b, ".meta"):
+			return "meta-tmp"
+		case strings.HasPrefix(b, ".normalize-repair-") && strings.HasSuffix(b, ".wav"):
+			return "clip-tmp"
+		}
+		return b
+	}
+	s.syncFile = func(p string) error { events = append(events, "sync "+label(p)); return syncFile(p) }
+	s.syncDir = func(string) error { events = append(events, "syncdir"); return nil }
+	s.rename = func(o, n string) error {
+		events = append(events, "rename "+label(o)+" -> "+label(n))
+		return os.Rename(o, n)
+	}
+	r, err := s.PrepareRepair(context.Background(), "longref")
+	if err != nil || r == nil {
+		t.Fatalf("PrepareRepair = %v, %v", r, err)
+	}
+	events = nil // the preparation is not under test
+	if err := r.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"sync backup-tmp", "rename backup-tmp -> longref.orig.wav", "syncdir",
+		"sync backup-tmp", "rename backup-tmp -> longref.orig.json", "syncdir",
+		"sync meta-tmp", "sync clip-tmp", "rename clip-tmp -> longref.wav", "syncdir",
+		"rename meta-tmp -> longref.json", "syncdir",
+	}
+	if strings.Join(events, "\n") != strings.Join(want, "\n") {
+		t.Errorf("Apply's sync/rename order:\n%s\nwant:\n%s", strings.Join(events, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A sync that fails before a commit rename fails the repair and leaves the voice and the store as they were: no new
+// WAV or JSON, no temp file.
+// Mutation: internal/voices/repair.go Apply, ignore the error of `s.syncFile(r.tmp)` -> RED (the repair is applied
+// although its clip is not known to be on disk).
+func TestRepairApplyFailsWhenTheClipCannotBeSynced(t *testing.T) {
+	s, _ := newStore(t)
+	seedVoice(t, s, "longref", 20, words90())
+	s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), new(int)))
+	origWAV, _ := os.ReadFile(s.WAVPath("longref"))
+	origJSON, _ := os.ReadFile(s.metaPath("longref"))
+	r, err := s.PrepareRepair(context.Background(), "longref")
+	if err != nil || r == nil {
+		t.Fatalf("PrepareRepair = %v, %v", r, err)
+	}
+	s.syncFile = func(p string) error {
+		if strings.HasPrefix(filepath.Base(p), ".normalize-repair-") && strings.HasSuffix(p, ".wav") {
+			return errors.New("simulated I/O error")
+		}
+		return syncFile(p)
+	}
+	if err := r.Apply(); err == nil {
+		t.Fatal("Apply succeeded although the clip could not be synced")
+	}
+	gotWAV, _ := os.ReadFile(s.WAVPath("longref"))
+	gotJSON, _ := os.ReadFile(s.metaPath("longref"))
+	if !bytes.Equal(gotWAV, origWAV) || !bytes.Equal(gotJSON, origJSON) {
+		t.Error("the voice changed although Apply failed before its commit")
+	}
+	if left, _ := filepath.Glob(filepath.Join(s.dir, ".normalize-repair-*")); len(left) != 0 {
+		t.Errorf("temp files left: %v", left)
+	}
+}
+
+// A directory sync that fails after the new WAV is renamed in must not abort Apply: the rename is done, and stopping
+// would leave the new audio beside the old ref_text. The repair completes and the voice is consistent.
+// Mutation: internal/voices/repair.go Apply, return the error of the syncDir after the WAV rename -> RED.
+func TestRepairApplyGoesOnWhenTheDirSyncAfterTheClipFails(t *testing.T) {
+	s, _ := newStore(t)
+	seedVoice(t, s, "longref", 20, words90())
+	s.SetTranscriber(fixedWords(speechWords(60, 0.3, 0.1, 6), new(int)))
+	r, err := s.PrepareRepair(context.Background(), "longref")
+	if err != nil || r == nil {
+		t.Fatalf("PrepareRepair = %v, %v", r, err)
+	}
+	calls := 0
+	s.syncDir = func(string) error { // 1, 2: the backup pair; 3: after the new clip; 4: after the JSON
+		if calls++; calls == 3 {
+			return errors.New("simulated")
+		}
+		return nil
+	}
+	if err := r.Apply(); err != nil || calls != 4 {
+		t.Fatalf("Apply = %v after %d dir syncs, want it to complete after 4", err, calls)
+	}
+	v, _ := s.Get("longref")
+	if v.RefText != r.NewText {
+		t.Errorf("ref_text = %q, want the repaired text", v.RefText)
+	}
+	if d, _ := WAVSeconds(s.WAVPath("longref")); d > MaxRefSeconds || d < 10 {
+		t.Errorf("clip = %.2f s", d)
+	}
+}

@@ -165,6 +165,61 @@ func isMarkdownHeading(line string) bool {
 	return n >= 1 && n <= 6 && n < len(line) && line[n] == ' '
 }
 
+// stripMarkdown is notes.md text as a reader sees it, without the syntax: the block markers at a line start (quote,
+// list item "- " "* " "+ " "1. ", task box "[ ]" "[x]"), the inline markers (emphasis "*" and "_", strike "~~", code
+// "`"), and the escapes the writer adds (unescapeMarkdown). The result is plain untrusted text: nothing here makes
+// a link, so the app, which renders a snippet without links, has none to draw. An escaped marker ("\*") is a
+// literal character and stays; an underscore inside a word ("snake_case") is not emphasis and stays.
+func stripMarkdown(s string) string {
+	var b strings.Builder
+	for line := range strings.Lines(s) {
+		line = stripBlockMarker(line)
+		rs := []rune(line)
+		for i := 0; i < len(rs); i++ {
+			r := rs[i]
+			switch {
+			case r == '\\' && i+1 < len(rs) && rs[i+1] < utf8.RuneSelf && strings.IndexByte(unescapable, byte(rs[i+1])) >= 0:
+				i++
+				b.WriteRune(rs[i])
+			case r == '*' || r == '`':
+			case r == '~' && i+1 < len(rs) && rs[i+1] == '~':
+				i++
+			case r == '_' && !(i > 0 && i+1 < len(rs) && isWordRune(rs[i-1]) && isWordRune(rs[i+1])):
+			default:
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
+}
+
+// stripBlockMarker drops the block syntax at the start of one line: leading blanks, quote marks, one list marker and a
+// task box. "#42 fix" and "2026-10-20" are text, so a number needs its "." or ")" and a space to be a marker.
+func stripBlockMarker(line string) string {
+	line = strings.TrimLeft(line, " \t")
+	for strings.HasPrefix(line, ">") {
+		line = strings.TrimLeft(line[1:], " \t")
+	}
+	switch {
+	case len(line) >= 2 && strings.IndexByte("-+*", line[0]) >= 0 && line[1] == ' ':
+		line = strings.TrimLeft(line[2:], " ")
+	default:
+		i := 0
+		for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+			i++
+		}
+		if i > 0 && i+1 < len(line) && (line[i] == '.' || line[i] == ')') && line[i+1] == ' ' {
+			line = strings.TrimLeft(line[i+2:], " ")
+		}
+	}
+	for _, box := range []string{"[ ] ", "[x] ", "[X] "} {
+		if rest, ok := strings.CutPrefix(line, box); ok {
+			return rest
+		}
+	}
+	return line
+}
+
 // notesHits finds the needle in notes.md, up to limit hits. The headings (the title line and the section names; see
 // isMarkdownHeading) are not searched: a query for a section name would match every meeting. After
 // a hit the search goes on past its snippet, so one paragraph is one hit.
@@ -175,7 +230,9 @@ func notesHits(notes string, needle []rune, limit int) []Hit {
 			body.WriteString(line)
 		}
 	}
-	text := norm.NFC.String(unescapeMarkdown(body.String()))
+	// Stripped BEFORE the text is folded and searched: every index below (the match, the snippet window) then belongs
+	// to the text the snippet shows, whatever the markers took out.
+	text := norm.NFC.String(stripMarkdown(body.String()))
 	orig := []rune(text)
 	hay := foldRunes(text)
 	var hits []Hit
