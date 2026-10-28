@@ -77,6 +77,13 @@ func TestCuesAbbreviationDoesNotEndCue(t *testing.T) {
 		{"Это важно, т.е. очень срочно.", []string{"Это важно, т.е. очень срочно."}},
 		{"Яблоки, груши и т.д. Потом уехали.", []string{"Яблоки, груши и т.д.", "Потом уехали."}},
 		{"Конец и т.д.", []string{"Конец и т.д."}},
+		// #313.4: an initial is not a sentence end; "г." as "year" still is.
+		{"Ivan G. Petrov arrived.", []string{"Ivan G. Petrov arrived."}},
+		{"Иван Г. Петров пришёл.", []string{"Иван Г. Петров пришёл."}},
+		{"Mr. J. R. R. Tolkien wrote.", []string{"Mr. J. R. R. Tolkien wrote."}},
+		{"Это было в 2026 г. Потом уехали.", []string{"Это было в 2026 г.", "Потом уехали."}},
+		{"Это было в 2026 г. и потом.", []string{"Это было в 2026 г. и потом."}},
+		{"Вариант Б. потом", []string{"Вариант Б.", "потом"}},
 	} {
 		var got []string
 		for _, cue := range Cues(mk(c.in)) {

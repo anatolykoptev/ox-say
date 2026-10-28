@@ -54,8 +54,17 @@ public enum NotesExport {
         case folderMoved
     }
 
+    /// `refresh` moved some of the new texts into place and failed on a later one. `replaced` holds the hash of each
+    /// file that IS new now (by file name), so the caller can record them as its own: the next refresh then does not
+    /// take the new `notes.md` for the user's edit and can finish the rest.
+    public struct PartialRefresh: Error {
+        public let replaced: [String: String]
+        public let underlying: Error
+    }
+
     /// Why a copy could not be made, in the user's language and words for the status line: no Cocoa error dump, no path.
     public static func explain(_ error: Error, text: (L10nKey) -> String = { $0.text }) -> String {
+        if let partial = error as? PartialRefresh { return explain(partial.underlying, text: text) }
         let ns = error as NSError
         switch ns.domain {
         case NSCocoaErrorDomain:
@@ -151,7 +160,8 @@ public enum NotesExport {
     /// writes a new copy).
     @discardableResult
     public static func refresh(info: MeetingInfo, at dir: URL, expected: [String: String], fm: FileManager = .default,
-                               stage: (Data, URL) throws -> Void = { try $0.write(to: $1) }) throws -> RefreshResult {
+                               stage: (Data, URL) throws -> Void = { try $0.write(to: $1) },
+                               replace: ((_ original: URL, _ staged: URL) throws -> Void)? = nil) throws -> RefreshResult {
         guard info.notesMD != nil || info.transcriptMD != nil else { throw ExportError.nothingToWrite }
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { throw ExportError.folderMoved }
@@ -164,19 +174,33 @@ public enum NotesExport {
             edited.append(name)
         }
         if !edited.isEmpty { return .keptEdited(edited) }
-        var staged: [(temp: URL, final: URL)] = []
+        var staged: [(temp: URL, final: URL, hash: String)] = []
         do {
             for (name, data) in texts {
                 let temp = dir.appendingPathComponent("\(stagingPrefix)refresh-\(UUID().uuidString)-\(name)")
-                staged.append((temp, dir.appendingPathComponent(name)))
+                staged.append((temp, dir.appendingPathComponent(name), sha256(data)))
                 try stage(data, temp)
             }
         } catch {
             for s in staged { try? fm.removeItem(at: s.temp) }
             throw error
         }
-        for s in staged {
-            _ = try fm.replaceItemAt(s.final, withItemAt: s.temp)
+        var replaced = 0
+        do {
+            for s in staged {
+                if let replace { try replace(s.final, s.temp) } else { _ = try fm.replaceItemAt(s.final, withItemAt: s.temp) }
+                replaced += 1
+            }
+        } catch {
+            // A replace failed (a full disk, a revoked permission): the texts not yet moved into place leave their
+            // hidden temps in the user's meeting folder. Take them down; the caller reports the failure.
+            for s in staged.dropFirst(replaced) { try? fm.removeItem(at: s.temp) }
+            // Texts already moved into place are new: say which, or the next refresh reads them as the user's edit.
+            if replaced > 0 {
+                let done = Dictionary(uniqueKeysWithValues: staged.prefix(replaced).map { ($0.final.lastPathComponent, $0.hash) })
+                throw PartialRefresh(replaced: done, underlying: error)
+            }
+            throw error
         }
         return .refreshed
     }

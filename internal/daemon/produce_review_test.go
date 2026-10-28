@@ -255,3 +255,34 @@ func TestEngineIDErrorIsNotCached(t *testing.T) {
 		t.Fatalf("identity changed: %q vs %q", again, id)
 	}
 }
+
+// #156.12: a render that has to start the engine first gets the engine's start
+// budget on top of its deadline; a take that is slow only because the engine
+// was cold must not fail the job as a wedge.
+// Mutation: produce_take.go renderWithin, drop `+ t.ports.ColdStartSlack()`
+// -> the cold-start render is cut at the plain deadline -> RED.
+func TestColdStartExtendsRenderDeadline(t *testing.T) {
+	old := renderDeadline
+	renderDeadline = func(int) time.Duration { return 150 * time.Millisecond }
+	t.Cleanup(func() { renderDeadline = old })
+	for name, c := range map[string]struct {
+		cold time.Duration
+		want string
+	}{
+		"engine cold: start budget added": {cold: 2 * time.Second, want: vproject.StatusDone},
+		"engine ready: plain deadline":    {cold: 0, want: vproject.StatusFailed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakePorts(t)
+			f.renderDelay, f.coldStart = 500*time.Millisecond, c.cold
+			p := startedProducer(t, f)
+			s, err := p.create(reelInput(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := waitTerminal(t, p, s.ID); got.Status != c.want {
+				t.Fatalf("status %s (%s), want %s", got.Status, got.Error, c.want)
+			}
+		})
+	}
+}

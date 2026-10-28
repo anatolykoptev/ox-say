@@ -44,12 +44,36 @@ var numeralEndings = map[string]bool{
 	"ую": true, "ьих": true, "ьими": true, "ном": true,
 }
 
+// englishNumerals is the English number-word lexicon a digit token may absorb:
+// cardinals and ordinals 0-19, tens, hundred/thousand/million/billion/trillion,
+// their plurals ("nineties", "hundreds") and the words a decimal or a negative
+// number is read with. Hyphenated forms ("twenty-five") reach the aligner as
+// separate words (Words splits on "-"), so each part is matched on its own, as
+// "twenty twenty six" years are.
+var englishNumerals = map[string]bool{}
+
+func init() {
+	for _, w := range strings.Fields(`zero one two three four five six seven eight nine ten eleven twelve
+		thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy
+		eighty ninety hundred thousand million billion trillion
+		first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth fourteenth
+		fifteenth sixteenth seventeenth eighteenth nineteenth twentieth thirtieth fortieth fiftieth sixtieth
+		seventieth eightieth ninetieth hundredth thousandth millionth billionth
+		twenties thirties forties fifties sixties seventies eighties nineties hundreds thousands millions billions
+		point minus plus`) {
+		englishNumerals[w] = true
+	}
+}
+
 // fillerAnd is free inside a number only between two numeral words ("две тысячи и один").
-const fillerAnd = "и"
+var fillerAnds = map[string]bool{"и": true, "and": true}
 
 // signUnits maps a sign written with a number to the stem of the unit word
 // that is spoken for it ("40%" = "сорок процентов").
-var signUnits = map[rune]string{'%': "процент", '₽': "руб", '°': "градус", '$': "доллар", '€': "евро"}
+var signUnits = map[rune][]string{
+	'%': {"процент", "percent"}, '₽': {"руб", "ruble", "rouble"}, '°': {"градус", "degree"},
+	'$': {"доллар", "dollar"}, '€': {"евро", "euro"},
+}
 
 func hasDigit(w string) bool {
 	return strings.IndexFunc(w, isDigit) >= 0
@@ -60,7 +84,7 @@ func isNumeral(w string) bool {
 	if notNumerals[w] {
 		return false
 	}
-	if hasDigit(w) || numeralWords[w] {
+	if hasDigit(w) || numeralWords[w] || englishNumerals[w] {
 		return true
 	}
 	for _, st := range numeralStems {
@@ -76,15 +100,13 @@ func isNumeral(w string) bool {
 func spanCost(tok string, words []string) int {
 	var units []string
 	for _, r := range tok {
-		if u, ok := signUnits[r]; ok {
-			units = append(units, u)
-		}
+		units = append(units, signUnits[r]...)
 	}
 	cost, unitUsed := 0, false
 	for i, w := range words {
 		switch {
 		case isNumeral(w):
-		case w == fillerAnd && i > 0 && i < len(words)-1 && isNumeral(words[i-1]) && isNumeral(words[i+1]):
+		case fillerAnds[w] && i > 0 && i < len(words)-1 && isNumeral(words[i-1]) && isNumeral(words[i+1]):
 		case !unitUsed && startsWithAny(w, units):
 			unitUsed = true
 		default:

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"math"
 	"os"
@@ -371,9 +372,12 @@ func (d *Daemon) resolveVoxVoice(body map[string]any) (v *voices.Voice, wavPath 
 // caller; the detail (it carries the absolute path of the voice store) goes to
 // the log (#143.4). Three kinds:
 //   - missing or badly named: its own message, a 400;
-//   - damaged (metadata that does not decode, a recording that is not a WAV): a
-//     400 telling the person to re-add the voice, or, when saving over it, to
-//     pass replace;
+//   - damaged (metadata that does not decode, a recording that is not a WAV, a
+//     recording that is gone while its metadata stays: RemoveVoice crashed
+//     half-way): a 400 telling the person to re-add the voice, or, when
+//     saving over it, to pass replace;
+//   - a file the daemon may not read: a 400 to check its permissions, because
+//     trying again never changes it;
 //   - anything else is an I/O failure that may pass (EMFILE, EIO, a file busy):
 //     a 503 "try again". It never tells anyone to re-record a good voice.
 func (d *Daemon) voiceReadError(name string, err error, saving bool) error {
@@ -384,7 +388,10 @@ func (d *Daemon) voiceReadError(name string, err error, saving bool) error {
 	d.log.Error("voice: cannot read the stored voice", slog.String("voice", name), slog.Any("error", err))
 	var syn *json.SyntaxError
 	var typ *json.UnmarshalTypeError
-	if errors.Is(err, voices.ErrBadWAV) || errors.As(err, &syn) || errors.As(err, &typ) {
+	if errors.Is(err, fs.ErrPermission) {
+		return &requestError{fmt.Sprintf("voice %q: its files cannot be read; check the file permissions of the voice (details are in the ox-say log)", name)}
+	}
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, voices.ErrBadWAV) || errors.As(err, &syn) || errors.As(err, &typ) {
 		fix := "add the voice again"
 		if saving {
 			fix = "pass replace to overwrite it"

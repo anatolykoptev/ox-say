@@ -19,6 +19,9 @@ import (
 // of secs per request and "hears" the request's text (or an override per
 // render index). Shared by F1-3, F1-4 and F1-5 tests.
 type fakePorts struct {
+	coldStart   time.Duration // ColdStartSlack: the engine start budget a render may need on top
+	renderDelay time.Duration // Render takes this long (or ctx ends)
+	lang        string        // ConfiguredLanguage: OX_SAY_LANG as the speak route resolves it
 	mu          sync.Mutex
 	home        string
 	secs        float64
@@ -81,6 +84,13 @@ func (f *fakePorts) Render(ctx context.Context, p renderParams) (*synthOut, erro
 	if hang != nil {
 		<-hang
 	}
+	if f.renderDelay > 0 {
+		select {
+		case <-time.After(f.renderDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if block != nil {
 		select {
 		case <-block:
@@ -115,6 +125,8 @@ func (f *fakePorts) Hear(_ context.Context, _ string) ([]voices.Word, error) {
 
 func (f *fakePorts) Voice(string) (voiceFacts, error) { return f.voice, f.voiceErr }
 func (f *fakePorts) DefaultVoice(string) string       { return "nar" }
+func (f *fakePorts) ColdStartSlack() time.Duration    { return f.coldStart }
+func (f *fakePorts) ConfiguredLanguage() string       { return f.lang }
 func (f *fakePorts) Unavailable() string              { return f.unavailable }
 func (f *fakePorts) EngineID() (string, error)        { return f.engineID, nil }
 func (f *fakePorts) Normalize(_ context.Context, in, out string, _, _ float64) (bool, error) {

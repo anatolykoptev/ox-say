@@ -198,6 +198,38 @@ final class NotesExportTests: XCTestCase {
         XCTAssertEqual(NotesExport.explain(posix(EIO), text: key), "notice.export.other")
     }
 
+    /// #260.N4 — the second replace fails: the not-yet-replaced temp is removed, so no hidden
+    /// `.ox-say-...refresh-*` file stays in the user's meeting folder, and the failure reaches the caller (which shows
+    /// it through `explain`).
+    /// Mutation: NotesExport.refresh, delete the cleanup in the catch around the replace loop -> RED.
+    func testAFailedSecondReplaceLeavesNoStagingTempsAndReportsTheFailure() throws {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("ox-refresh-fail-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: folder) }
+        let first = MeetingInfo(id: "a", title: "Plan", started: Date(timeIntervalSince1970: 1_700_000_000), status: .done, notesMD: "old notes", transcriptMD: "old text")
+        let dir = try NotesExport.write(info: first, in: folder, fm: fm)
+        var again = first
+        again.notesMD = "new notes"
+        again.transcriptMD = "new text"
+        // A disk whose second replace fails (full, say): the first one went through.
+        var replaceCalls = 0
+        let replace: (URL, URL) throws -> Void = { original, temp in
+            replaceCalls += 1
+            if replaceCalls == 2 { throw CocoaError(.fileWriteOutOfSpace) }
+            _ = try fm.replaceItemAt(original, withItemAt: temp)
+        }
+        var thrown: Error?
+        do { try NotesExport.refresh(info: again, at: dir, expected: NotesExport.hashes(of: first), fm: fm, replace: replace) } catch { thrown = error }
+        let partial = try XCTUnwrap(thrown as? NotesExport.PartialRefresh, "a failed replace must reach the caller, with what did land")
+        XCTAssertEqual((partial.underlying as NSError).code, NSFileWriteOutOfSpaceError)
+        XCTAssertEqual(partial.replaced, ["notes.md": NotesExport.hashes(of: again)["notes.md"]!], "only the file that was replaced")
+        XCTAssertEqual(NotesExport.explain(partial, text: { $0.rawValue }), L10nKey.noticeExportDiskFull.rawValue,
+                       "the failure must surface as the localized disk-full notice")
+        let names = try fm.contentsOfDirectory(atPath: dir.path).sorted()
+        XCTAssertEqual(names, ["notes.md", "transcript.md"], "staging temps were left in the meeting folder: \(names)")
+        XCTAssertEqual(replaceCalls, 2)
+    }
+
     func testTheExportSentencesExistInBothLanguages() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         for (locale, needle) in [("en", "the disk is full"), ("ru", "на диске нет места")] {

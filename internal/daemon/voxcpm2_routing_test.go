@@ -101,11 +101,12 @@ func TestVoxCPM2TransportFailureIs502(t *testing.T) {
 // fmt.Errorf("voice %s: cannot read its recording: %w", name, err) -> the path
 // is in the body (and the status 500) -> RED. Mutation: voiceReadError, drop
 // the ErrBadWAV/json test (everything transient) -> the damaged rows answer 503
-// -> RED. Mutation: drop the transient branch (everything damaged) -> the
-// unreadable row answers 400 -> RED.
+// -> RED. Mutation: drop the fs.ErrNotExist case -> the nowav row answers 503
+// try-again -> RED. Mutation: drop the fs.ErrPermission case -> nometa and
+// wavlocked answer 503 -> RED.
 func TestVoxCPM2UnreadableVoiceDoesNotLeakPath(t *testing.T) {
 	d, dir, _ := voxFixture(t, nil)
-	for _, n := range []string{"badwav", "badmeta", "nometa"} {
+	for _, n := range []string{"badwav", "badmeta", "nometa", "nowav", "wavlocked"} {
 		placeVoxVoice(t, d, n, config.TTSModelVoxCPM2, "", "", 3)
 	}
 	if err := os.WriteFile(d.Store.WAVPath("badwav"), []byte("not a wav at all"), 0o644); err != nil {
@@ -119,13 +120,25 @@ func TestVoxCPM2UnreadableVoiceDoesNotLeakPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(metaOf("nometa"), 0o644) })
+	// #310.1: RemoveVoice used to drop the wav first, so a crash left a .json
+	// whose recording is gone; and a recording nobody may read. Neither passes
+	// by trying again.
+	if err := os.Remove(d.Store.WAVPath("nowav")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(d.Store.WAVPath("wavlocked"), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(d.Store.WAVPath("wavlocked"), 0o644) })
 	for name, want := range map[string]struct {
 		code int
 		text string
 	}{
-		"badwav":  {http.StatusBadRequest, "add the voice again"},
-		"badmeta": {http.StatusBadRequest, "add the voice again"},
-		"nometa":  {http.StatusServiceUnavailable, "try again"},
+		"badwav":    {http.StatusBadRequest, "add the voice again"},
+		"badmeta":   {http.StatusBadRequest, "add the voice again"},
+		"nometa":    {http.StatusBadRequest, "permissions"},
+		"wavlocked": {http.StatusBadRequest, "permissions"},
+		"nowav":     {http.StatusBadRequest, "add the voice again"},
 	} {
 		rec := postSpeech(d, `{"input":"hi","model":"voxcpm2","voice":"`+name+`"}`)
 		if rec.Code != want.code || !strings.Contains(rec.Body.String(), want.text) {
@@ -134,8 +147,8 @@ func TestVoxCPM2UnreadableVoiceDoesNotLeakPath(t *testing.T) {
 		if strings.Contains(rec.Body.String(), dir) || strings.Contains(rec.Body.String(), "/") {
 			t.Errorf("%s: the body shows a path: %s", name, bodyText(rec))
 		}
-		if want.code == http.StatusServiceUnavailable && strings.Contains(rec.Body.String(), "add the voice again") {
-			t.Errorf("%s: a transient failure tells the person to re-add the voice", name)
+		if strings.Contains(rec.Body.String(), "try again") {
+			t.Errorf("%s: a permanent failure says to try again: %s", name, bodyText(rec))
 		}
 	}
 	if !testLogSaw(t, "badwav") {

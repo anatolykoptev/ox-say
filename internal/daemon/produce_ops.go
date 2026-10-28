@@ -121,7 +121,7 @@ func (p *producer) newManifest(in produceInput) (*vproject.Manifest, error) {
 	if n := utf8.RuneCountInString(in.Script); n == 0 || n > maxProduceChars {
 		return nil, &requestError{fmt.Sprintf("the script must have 1–%d characters (about 48 minutes of speech); it has %d", maxProduceChars, n)}
 	}
-	chunks, err := vscript.Parse(in.Script, pr.opts)
+	chunks, err := vscript.Parse(in.Script, p.scriptOpts(in.Script, pr.opts))
 	if err != nil {
 		return nil, &requestError{err.Error()}
 	}
@@ -406,7 +406,7 @@ func (p *producer) chunk(id string, index int, op chunkOp) (vproject.Summary, er
 		}
 		j.regen[index] = op.Takes
 	case opEdit:
-		if err := editChunk(c, op.Text, j.m.Settings.Preset, projectLanguage(j.m)); err != nil {
+		if err := editChunk(c, op.Text, j.m.Settings.Preset, p.projectLanguage(j.m)); err != nil {
 			return vproject.Summary{}, err
 		}
 	case opDelivery:
@@ -616,16 +616,30 @@ func supersedeTakes(cur []string, ts []vproject.TakeRef) []string {
 	return cur
 }
 
+// scriptOpts pins the language of a script that has no letters (only digits and
+// punctuation) to the configured one, as the speak route does; a script with
+// letters keeps being judged by them (vscript.SpokenLanguage in Parse).
+func (p *producer) scriptOpts(script string, o vscript.Options) vscript.Options {
+	if o.Language == "" && vscript.SpokenLanguage(script) == "" {
+		o.Language = p.ports.ConfiguredLanguage()
+	}
+	return o
+}
+
 // projectLanguage is the language of a project's script, decided from the text
-// of all its chunks as Parse decided it from the script ("" for no letters).
-// An edit is spoken in the project's language, whatever its own words are.
-func projectLanguage(m *vproject.Manifest) string {
+// of all its chunks as Parse decided it from the script (the configured
+// language for no letters). An edit is spoken in the project's language,
+// whatever its own words are.
+func (p *producer) projectLanguage(m *vproject.Manifest) string {
 	var b strings.Builder
 	for _, c := range m.Chunks {
 		b.WriteString(vscript.StripLeadingCues(c.Text)) // every chunk's cue, not only the first's
 		b.WriteByte(' ')
 	}
-	return vscript.ScriptLanguage(b.String())
+	if l := vscript.ScriptLanguage(b.String()); l != "" {
+		return l
+	}
+	return p.ports.ConfiguredLanguage()
 }
 
 // editChunk replaces one chunk's text: one piece of text, no directives,
