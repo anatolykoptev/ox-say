@@ -95,6 +95,12 @@ var (
 // continuesAfterAbbrev reports whether the dot ending w is an abbreviation's
 // and the cue goes on with next.
 func continuesAfterAbbrev(w, next string) bool {
+	if isInitial(w) {
+		// "Ivan G. Petrov", "Иван Г. Петров": a capital letter with a dot is
+		// a name's initial when a capitalised word follows.
+		r, _ := utf8.DecodeRuneInString(strings.TrimLeft(next, "«\"“(—–"))
+		return unicode.IsUpper(r)
+	}
 	lw := strings.ToLower(strings.TrimLeft(w, "«\"“(("))
 	if neverEnd[lw] {
 		return true
@@ -104,4 +110,11 @@ func continuesAfterAbbrev(w, next string) bool {
 	}
 	r, _ := utf8.DecodeRuneInString(strings.TrimLeft(next, "«\"“(—–"))
 	return !unicode.IsUpper(r)
+}
+
+// isInitial is a single capital letter and a dot ("G.", "Г."), nothing else
+// but opening quotes before it.
+func isInitial(w string) bool {
+	r := []rune(strings.TrimLeft(w, "«\"“(("))
+	return len(r) == 2 && unicode.IsUpper(r[0]) && r[1] == '.'
 }

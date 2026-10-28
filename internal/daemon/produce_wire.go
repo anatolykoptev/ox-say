@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
+	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/voices"
 )
 
@@ -17,18 +19,20 @@ const exportsSubdir = "exports"
 // portFuncs implements producePorts with closures; (*Daemon).producePorts
 // fills it, so no type in the producer holds a *Daemon.
 type portFuncs struct {
-	render       func(context.Context, renderParams) (*synthOut, error)
-	hear         func(context.Context, string) ([]voices.Word, error)
-	voice        func(string) (voiceFacts, error)
-	defaultVoice func(string) string
-	unavailable  func() string
-	engineID     func() (string, error)
-	normalize    func(context.Context, string, string, float64, float64) (bool, error)
-	quiet        func(context.Context, func()) error
-	power        func(context.Context) (bool, bool)
-	background   func(bool)
-	home         func() string
-	outputRoot   func() string
+	render         func(context.Context, renderParams) (*synthOut, error)
+	hear           func(context.Context, string) ([]voices.Word, error)
+	voice          func(string) (voiceFacts, error)
+	defaultVoice   func(string) string
+	configuredLang func() string
+	coldStart      func() time.Duration
+	unavailable    func() string
+	engineID       func() (string, error)
+	normalize      func(context.Context, string, string, float64, float64) (bool, error)
+	quiet          func(context.Context, func()) error
+	power          func(context.Context) (bool, bool)
+	background     func(bool)
+	home           func() string
+	outputRoot     func() string
 }
 
 func (f *portFuncs) Render(ctx context.Context, p renderParams) (*synthOut, error) {
@@ -39,6 +43,8 @@ func (f *portFuncs) Hear(ctx context.Context, path string) ([]voices.Word, error
 }
 func (f *portFuncs) Voice(name string) (voiceFacts, error) { return f.voice(name) }
 func (f *portFuncs) DefaultVoice(lang string) string       { return f.defaultVoice(lang) }
+func (f *portFuncs) ConfiguredLanguage() string            { return f.configuredLang() }
+func (f *portFuncs) ColdStartSlack() time.Duration         { return f.coldStart() }
 func (f *portFuncs) Unavailable() string                   { return f.unavailable() }
 func (f *portFuncs) EngineID() (string, error)             { return f.engineID() }
 func (f *portFuncs) Normalize(ctx context.Context, in, out string, lufs, dur float64) (bool, error) {
@@ -125,8 +131,17 @@ func (d *Daemon) producePorts() producePorts {
 			}
 			return voiceFacts{Name: v.Name, RefText: v.RefText, Style: v.Style, SHA: sha}, nil
 		},
-		defaultVoice: d.configuredVoice,
-		unavailable:  d.voxUnavailable,
+		defaultVoice:   d.configuredVoice,
+		configuredLang: d.configuredLang,
+		// The deadline of a render that finds the engine down must also cover
+		// its start, or a good take on a cold engine fails as a wedge (#156.12).
+		coldStart: func() time.Duration {
+			if d.VoxSup != nil && d.VoxSup.State() != engine.StateReady {
+				return voxStartupTimeout
+			}
+			return 0
+		},
+		unavailable: d.voxUnavailable,
 		engineID: func() (string, error) {
 			idMu.Lock()
 			defer idMu.Unlock()

@@ -406,6 +406,11 @@ func (d *Daemon) addVoice(ctx context.Context, name, audioPath, refText string, 
 	if err := d.Store.ValidateInput(name, audioPath); err != nil {
 		return nil, false, err
 	}
+	// Lock order: Sup.Acquire is not a lock a holder can wait on. It bumps a
+	// counter under the supervisor's s.mu, a leaf mutex never held across a
+	// wait (the start goroutine runs Replay, which takes voiceMu, with s.mu
+	// released), so taking it before or after voiceMu cannot form a cycle
+	// (#310.3). RemoveVoice takes them in the other order for that reason.
 	g := d.Sup.Acquire()
 	defer g.Release()
 	if d.slowPrepare != nil {
@@ -479,6 +484,9 @@ func (d *Daemon) RemoveVoice(ctx context.Context, name string) error {
 	if err := d.Store.Remove(name); err != nil {
 		return err
 	}
+	// voiceMu then Acquire, the reverse of addVoice, is safe: Acquire only
+	// takes the supervisor's leaf s.mu for a counter bump and never waits on
+	// voiceMu's holder (see addVoice, #310.3).
 	g := d.Sup.Acquire()
 	defer g.Release()
 	if base, ok := d.Sup.LiveURL(); ok {
@@ -547,6 +555,14 @@ func (d *Daemon) configuredVoice(lang string) string {
 		}
 	}
 	return d.Cfg.Voice
+}
+
+// configuredLang is the default language (OX_SAY_LANG) as langHint resolves a
+// request's language field: what the speak route falls back to for input that
+// has no letters of its own, and what produce falls back to for a script with
+// none. "" when unset or not a language the daemon knows.
+func (d *Daemon) configuredLang() string {
+	return langHint(map[string]any{"language": d.Cfg.Lang})
 }
 
 // langHint resolves a request's language to a short code. A recognized

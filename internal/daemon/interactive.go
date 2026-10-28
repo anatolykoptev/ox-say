@@ -30,12 +30,20 @@ var interactiveRoutes = []string{
 // interactive counts a request in flight and stamps when it ends.
 func (d *Daemon) interactive(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		d.inflight.Add(1)
-		defer func() {
-			d.lastInteractiveEnd.Store(time.Now().UnixNano())
-			d.inflight.Add(-1)
-		}()
+		defer d.beginInteractive()()
 		h(w, r)
+	}
+}
+
+// beginInteractive counts one interactive request in flight; the returned func
+// ends it and stamps the end. The HTTP routes (interactive) and the MCP speak
+// and transcribe tools share it: a person speaking through MCP is as
+// interactive as one through HTTP, and the producer yields to both (#156.8).
+func (d *Daemon) beginInteractive() (end func()) {
+	d.inflight.Add(1)
+	return func() {
+		d.lastInteractiveEnd.Store(time.Now().UnixNano())
+		d.inflight.Add(-1)
 	}
 }
 

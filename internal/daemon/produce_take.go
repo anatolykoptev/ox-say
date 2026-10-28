@@ -97,6 +97,12 @@ type producePorts interface {
 	Hear(ctx context.Context, wavPath string) ([]voices.Word, error)
 	Voice(name string) (voiceFacts, error)
 	DefaultVoice(lang string) string
+	// ConfiguredLanguage is OX_SAY_LANG as the speak route resolves it ("ru",
+	// "en" or ""): the language of a script that has no letters.
+	ConfiguredLanguage() string
+	// ColdStartSlack is the time a render may need to start the engine first:
+	// its start budget when the engine is not ready, else 0.
+	ColdStartSlack() time.Duration
 	Unavailable() string
 	EngineID() (string, error)
 	// Normalize writes in at lufs to out; limited reports that the peak limiter
@@ -327,7 +333,7 @@ var renderDeadline = func(chars int) time.Duration {
 // is called in its own goroutine so even one that ignores its context cannot
 // hold the job: the job fails in plain words and the late answer is dropped.
 func (t *taker) renderWithin(ctx context.Context, spec takeSpec) (*synthOut, error) {
-	rctx, cancel := context.WithTimeout(ctx, renderDeadline(utf8.RuneCountInString(spec.Text)))
+	rctx, cancel := context.WithTimeout(ctx, renderDeadline(utf8.RuneCountInString(spec.Text))+t.ports.ColdStartSlack())
 	defer cancel()
 	type answer struct {
 		out *synthOut

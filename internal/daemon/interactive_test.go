@@ -137,3 +137,27 @@ func TestDictationNeverWaitsForARender(t *testing.T) {
 // dictationBudget is generous for a fake child on a loaded CI box; a wait on
 // the producer would run to the render's end, which here never comes.
 const dictationBudget = 5 * time.Second
+
+// #156.8: the MCP speak and transcribe tools are interactive like their HTTP
+// routes: in flight while they run, and their end is stamped so the producer
+// waits out the quiet window.
+// Mutation: mcp.go toolSpeak, delete `defer d.beginInteractive()()` -> RED;
+// transcribe.go toolTranscribe, likewise -> RED.
+func TestMCPToolsAreInteractive(t *testing.T) {
+	for name, call := range map[string]func(d *Daemon){
+		"speak":      func(d *Daemon) { _, _, _ = d.toolSpeak(context.Background(), nil, speakToolIn{}) },
+		"transcribe": func(d *Daemon) { _, _, _ = d.toolTranscribe(context.Background(), nil, transcribeToolIn{}) },
+	} {
+		d, _, _ := voxFixture(t, nil)
+		if d.lastInteractiveEnd.Load() != 0 {
+			t.Fatalf("%s: stamp not zero at start", name)
+		}
+		call(d)
+		if d.lastInteractiveEnd.Load() == 0 {
+			t.Errorf("%s: the end of the call was not stamped as interactive", name)
+		}
+		if n := d.inflight.Load(); n != 0 {
+			t.Errorf("%s: %d still counted in flight after the call", name, n)
+		}
+	}
+}

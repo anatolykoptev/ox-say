@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
@@ -289,8 +290,6 @@ func scrubStrayPath(s string) string {
 // message is kept. A match must be a whole path component at both ends: root
 // "/data" is not "/database" and not the tail of "/x/data".
 func scrubRoot(s, root string) string {
-	const before = " \t\n\"'(=:"
-	const after = " \t\n\"'():"
 	var b strings.Builder
 	for {
 		i := strings.Index(s, root)
@@ -299,8 +298,10 @@ func scrubRoot(s, root string) string {
 			return b.String()
 		}
 		end := i + len(root)
-		boundedBefore := i == 0 || strings.IndexByte(before, s[i-1]) >= 0
-		boundedAfter := end == len(s) || s[end] == '/' || strings.IndexByte(after, s[end]) >= 0
+		// A segment character before the match means the root is the tail of a
+		// longer name; a "/" before it is an empty segment ("file:///Users").
+		boundedBefore := i == 0 || !isPathSegmentRune(lastRune(s[:i]))
+		boundedAfter := end >= len(s) || s[end] == '/' || pathStopsAt(s, end)
 		if !boundedBefore || !boundedAfter {
 			b.WriteString(s[:end])
 			s = s[end:]
@@ -310,14 +311,55 @@ func scrubRoot(s, root string) string {
 		b.WriteString("[path]")
 		rest := s[end:]
 		if strings.HasPrefix(rest, "/") {
-			cut := strings.IndexAny(rest, after)
-			if cut < 0 {
-				return b.String()
+			j := 1
+			for j < len(rest) && !pathStopsAt(rest, j) {
+				_, size := utf8.DecodeRuneInString(rest[j:])
+				j += size
 			}
-			rest = rest[cut:]
+			rest = rest[j:]
 		}
 		s = rest
 	}
+}
+
+func lastRune(s string) rune {
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return r
+}
+
+// isPathSegmentRune is a character that can be part of a path component in a
+// message: letters, digits and a few joiners. Everything else (space, quotes,
+// brackets, commas, semicolons, backslash, "/", "=", ":", backtick, "<>") ends
+// or precedes a path.
+func isPathSegmentRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune("_-.~+@%", r)
+}
+
+// pathStopsAt reports whether a path running through s[i-1] stops before
+// s[i]: at the end of the text or before a character that cannot be in a
+// segment ("/" continues the path). A "." stops it only as a sentence period
+// (nothing segment-like after it), so "/data.bak" is not "/data".
+func pathStopsAt(s string, i int) bool {
+	if i >= len(s) {
+		return true
+	}
+	r, size := utf8.DecodeRuneInString(s[i:])
+	if r == '/' {
+		return false
+	}
+	if r == '.' {
+		if i+size >= len(s) {
+			return true
+		}
+		n := firstRune(s[i+size:])
+		return n != '/' && !isPathSegmentRune(n)
+	}
+	return !isPathSegmentRune(r)
+}
+
+func firstRune(s string) rune {
+	r, _ := utf8.DecodeRuneInString(s)
+	return r
 }
 
 // publicError is err as the caller of the design routes and tools may see it:

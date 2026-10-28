@@ -257,3 +257,43 @@ func TestProjectLanguageIgnoresEveryChunksCue(t *testing.T) {
 		t.Errorf("edit in an English project with a later Russian cue: the engine was asked for %q", got)
 	}
 }
+
+// #313.5: a script with no letters has no language of its own, so it is read in
+// the configured one (OX_SAY_LANG), as the speak route reads it; with none
+// configured it is Russian, as it always was. A script with letters ignores it.
+// Mutation: produce_ops.go newManifest, drop the scriptOpts fallback (parse
+// with pr.opts) -> "2030" becomes "две тысячи тридцать" under en -> RED.
+// Mutation: produce_ops.go projectLanguage, the final `return p.ports.
+// ConfiguredLanguage()` -> `return ""` -> the digits-only edit of an English
+// digits-only project gets Russian words -> RED.
+func TestProduceDigitOnlyScriptFollowsConfiguredLanguage(t *testing.T) {
+	for _, c := range []struct{ lang, script, want string }{
+		{"en", "2030", "2030"},
+		{"ru", "2030", "две тысячи тридцать"},
+		{"", "2030", "две тысячи тридцать"},
+		{"en", "Мне 25 лет.", "Мне двадцать пять лет."},
+		{"ru", "I am 25 years old.", "I am 25 years old."},
+	} {
+		f := newFakePorts(t)
+		f.lang = c.lang
+		_, mux := produceMux(t, f)
+		id := createDone(t, mux, `{"script":"`+c.script+`","voice":"nar","out_path":"`+filepath.Join(t.TempDir(), "v.wav")+`"}`)
+		if got := f.renders[0].Text; got != c.want {
+			t.Errorf("OX_SAY_LANG=%q script %q: the engine was asked for %q, want %q", c.lang, c.script, got, c.want)
+		}
+		if c.script == "2030" {
+			rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/0", `{"action":"edit","text":"2020"}`)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("edit: %d %s", rec.Code, rec.Body)
+			}
+			waitDoneHTTP(t, mux, id)
+			want := "2020"
+			if c.lang != "en" {
+				want = "две тысячи двадцать"
+			}
+			if got := f.renders[len(f.renders)-1].Text; got != want {
+				t.Errorf("OX_SAY_LANG=%q edit: the engine was asked for %q, want %q", c.lang, got, want)
+			}
+		}
+	}
+}

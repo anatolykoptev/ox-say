@@ -335,9 +335,14 @@ func pullSwitches(pos []string, into map[string]bool) []string {
 // wantsHelp reports a -h or --help among the arguments (a script path never
 // looks like one).
 func wantsHelp(args []string) bool {
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if a == "-h" || a == "--help" {
 			return true
+		}
+		// A value flag's next argument is its value, whatever it looks like.
+		if strings.HasPrefix(a, "-") && !strings.Contains(a, "=") && contains(produceValueFlags, strings.TrimLeft(a, "-")) {
+			i++
 		}
 	}
 	return false
@@ -470,9 +475,16 @@ func (c *produceCmd) follow(data []byte) (int, *projectSummary) {
 // request that fails is retried pollRetries times in a row before giving up;
 // a 404 ends at once (the project is gone).
 func (c *produceCmd) wait(id string) (projectSummary, error) {
-	tty := isTerminal(c.err)
+	tty := isTerminalFn(c.err)
 	width := termWidth(c.err)
 	last, failures := "", 0
+	// Whatever ends the wait (done, timeout, lost contact, a removed project),
+	// the next thing printed starts on a clean line.
+	defer func() {
+		if tty && last != "" {
+			outf(c.err, "\r%s\r", clearLine)
+		}
+	}()
 	var deadline time.Time
 	if c.timeout > 0 {
 		deadline = time.Now().Add(c.timeout)
@@ -503,9 +515,6 @@ func (c *produceCmd) wait(id string) (projectSummary, error) {
 			line = fitLine(line, width) // a pipe or log keeps the whole line
 		}
 		if !s.active() {
-			if tty && last != "" {
-				outf(c.err, "\r%s\r", clearLine)
-			}
 			return s, nil
 		}
 		switch {
@@ -542,6 +551,9 @@ func termWidth(w io.Writer) int {
 	}
 	return defaultTermWidth
 }
+
+// isTerminalFn is isTerminal; a test swaps it for a fake terminal.
+var isTerminalFn = isTerminal
 
 // isTerminal reports whether w is a character device (a terminal).
 func isTerminal(w io.Writer) bool {
