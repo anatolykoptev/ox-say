@@ -167,7 +167,8 @@ public struct NotesDocument: Equatable {
     }
 }
 
-/// One turn of the transcript: who spoke, when, and what.
+/// One turn of the transcript: who spoke, when, and what. `speaker` is the name as the user typed it: transcript.md
+/// writes it with a backslash before each markup character, and parsing takes them out again.
 public struct TranscriptTurn: Equatable, Identifiable {
     public var id: Int
     public var speaker: String
@@ -182,9 +183,41 @@ public struct TranscriptTurn: Equatable, Identifiable {
             let name = String(line[line.index(line.startIndex, offsetBy: 2)..<close.lowerBound])
             let rest = line[close.upperBound...]
             guard let end = rest.range(of: "]: ") else { continue }
-            turns.append(TranscriptTurn(id: turns.count, speaker: name, time: String(rest[..<end.lowerBound]),
+            turns.append(TranscriptTurn(id: turns.count, speaker: unescaped(name), time: String(rest[..<end.lowerBound]),
                                         text: String(rest[end.upperBound...])))
         }
         return turns
+    }
+
+    /// `\*` is `*`: a backslash before one of the characters the daemon escapes (`escapeMarkdown`) is dropped.
+    static func unescaped(_ name: String) -> String {
+        guard name.contains("\\") else { return name }
+        let specials = Set("\\`*_[]<>&")
+        var out = ""
+        var escaping = false
+        for ch in name {
+            if escaping {
+                if !specials.contains(ch) { out.append("\\") }
+                out.append(ch)
+                escaping = false
+            } else if ch == "\\" {
+                escaping = true
+            } else {
+                out.append(ch)
+            }
+        }
+        if escaping { out.append("\\") }
+        return out
+    }
+}
+
+extension MeetingRowModel {
+    /// What a rename sends: the draft trimmed, or nil when there is nothing to send. The field starts with the title the
+    /// window SHOWS (an auto title is localized there), so a draft the user did not change must not become their own
+    /// title, in whatever language the window happened to be in (#270). An empty draft is no title.
+    public static func renamedTitle(draft: String, shown: String) -> String? {
+        let t = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, t != shown.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        return t
     }
 }

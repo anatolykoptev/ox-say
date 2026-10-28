@@ -40,6 +40,12 @@ public struct StudioClient {
 
     /// The daemon's answer to one request: its body, or why there is none.
     func perform(_ request: URLRequest) async throws -> (data: Data, status: Int) {
+        let (data, response) = try await performWithResponse(request)
+        return (data, response?.statusCode ?? 200)
+    }
+
+    /// `perform` with the response itself, for the callers that read a header (Retry-After).
+    func performWithResponse(_ request: URLRequest) async throws -> (data: Data, response: HTTPURLResponse?) {
         let data: Data, response: URLResponse
         do {
             (data, response) = try await send(request)
@@ -48,7 +54,7 @@ public struct StudioClient {
         } catch {
             throw StudioError.daemonUnreachable
         }
-        return (data, (response as? HTTPURLResponse)?.statusCode ?? 200)
+        return (data, response as? HTTPURLResponse)
     }
 
     func get(_ path: String, timeout: TimeInterval = StudioClient.quickTimeout) -> URLRequest {

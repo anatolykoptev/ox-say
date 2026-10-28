@@ -39,25 +39,43 @@ final class MainWindowSource {
     private var pollTask: Task<Void, Never>?
     private var clockTimer: Timer?
     private var gate = RefreshGate()
+    private let audio = MeetingAudioPlayer()
+    /// Each click on a line is one request; a probe that comes back after another click, a stop or a close is dropped.
+    private var playRequests = PlayRequestGuard()
+    /// Open (shown, hidden or covered) until the window is closed. A hidden window keeps its audio playing.
+    private var windowOpen = false
+    private var searchTimer: Task<Void, Never>?
+    private var searchRequest: Task<Void, Never>?
 
     init(host: MainWindowHost) {
         self.host = host
         self.service = MeetingWindowService(client: host.client)
         self.model = MainWindowModel(data: Self.blank(host))
         model.actions = actions()
+        audio.onChange = { [weak self] values in self?.model.data.playback = values }
+        audio.onFailure = { [weak self] in self?.model.data.notice = L10nKey.playFailed.text }
     }
 
     // MARK: window lifecycle
 
     /// Every open: the data is read again, whatever it was when the window was last closed.
     func windowOpened() {
+        windowOpen = true
         visible = true
+        // A search that was running when the window closed was cancelled: run it again rather than show a spinner.
+        if model.data.search.phase == .searching { searchEvent(.retry) }
         refresh()
     }
 
-    func windowClosed() { stopClocks() }
+    func windowClosed() {
+        windowOpen = false
+        cancelSearchWork()
+        stopPlayback()
+        stopClocks()
+    }
 
-    /// Minimised, covered or the app hidden: nothing is polled and no clock ticks; shown again, it reads once.
+    /// Minimised, covered or the app hidden: nothing is polled and no clock ticks; shown again, it reads once. The audio
+    /// is not touched: someone listening to a meeting while working in another app keeps hearing it.
     func visibilityChanged(_ nowVisible: Bool) {
         guard nowVisible != visible else { return }
         if nowVisible {
@@ -78,6 +96,8 @@ final class MainWindowSource {
 
     /// The meeting feature started or stopped a recording (or was switched off).
     func recordingChanged() {
+        // A call's audio never plays while a recording runs, visible window or not.
+        if host.meetings()?.recordingElapsed != nil { stopPlayback() }
         guard visible else { return }
         syncRecording()
         refresh()
@@ -94,7 +114,7 @@ final class MainWindowSource {
     private func actions() -> MainWindowActions {
         var a = MainWindowActions()
         a.refresh = { [weak self] in self?.refresh() }
-        a.selectMeeting = { [weak self] id in self?.loadDetail(id) }
+        a.selectMeeting = { [weak self] id in self?.selectMeeting(id) }
         a.startRecording = { [weak self] in self?.host.meetings()?.startRecording() }
         a.stopRecording = { [weak self] in self?.host.meetings()?.stop() }
         a.deleteMeeting = { [weak self] id in self?.delete(id) }
@@ -131,6 +151,12 @@ final class MainWindowSource {
             self.model.data.about.startAtLogin = self.host.startAtLogin()
         }
         a.dismissNotice = { [weak self] in self?.model.data.notice = nil }
+        a.searchTyped = { [weak self] text in self?.searchEvent(.typed(text)) }
+        a.retrySearch = { [weak self] in self?.searchEvent(.retry) }
+        a.playTurn = { [weak self] id, turn in self?.playTurn(id, turn) }
+        a.togglePlayback = { [weak self] in self?.audio.toggle() }
+        a.seekPlayback = { [weak self] seconds in self?.audio.seek(to: seconds) }
+        a.stopPlayback = { [weak self] in self?.stopPlayback() }
         return a
     }
 
@@ -218,6 +244,96 @@ final class MainWindowSource {
         default: mic = .denied
         }
         model.data.permissions = PermissionModel.items(microphone: mic, accessibility: AXIsProcessTrusted(), notifications: notifications)
+    }
+
+    // MARK: search
+
+    /// The search runs as DictationCore decides: the state is the core's, and this carries out its effects.
+    private func searchEvent(_ event: MeetingSearchEvent) {
+        var state = model.data.search
+        let effects = MeetingSearch.reduce(&state, event)
+        model.data.search = state
+        for effect in effects {
+            switch effect {
+            case .cancelInFlight:
+                cancelSearchWork()
+            case .startTimer(let generation, let delay):
+                searchTimer?.cancel()
+                searchTimer = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    guard !Task.isCancelled else { return }
+                    self?.searchEvent(.timerFired(generation: generation))
+                }
+            case .run(let generation, let query):
+                searchRequest?.cancel()
+                let client = host.client
+                searchRequest = Task { @MainActor [weak self] in
+                    let answer = await client.searchMeetings(query: query)
+                    // A cancelled request is a stale one: its answer, whatever it is, is not read.
+                    guard !Task.isCancelled else { return }
+                    self?.searchEvent(.answered(generation: generation, answer))
+                }
+            }
+        }
+    }
+
+    /// The timer and the request that run now stop; nothing of a search outlives a closed window.
+    private func cancelSearchWork() {
+        searchTimer?.cancel()
+        searchRequest?.cancel()
+        searchTimer = nil
+        searchRequest = nil
+    }
+
+    // MARK: playback
+
+    /// Stops the audio and forgets any click whose probe is still on its way.
+    private func stopPlayback() {
+        playRequests.invalidate()
+        audio.stop()
+    }
+
+    private func selectMeeting(_ id: String) {
+        if audio.activeMeeting != id { stopPlayback() }
+        loadDetail(id)
+    }
+
+    /// A click on a transcript line. The gate is read here, from the live recording state, not from what the page
+    /// drew: a recording that began a moment ago still refuses.
+    private func playTurn(_ id: String, _ turn: TranscriptTurn) {
+        guard let info = model.data.details[id]?.info else { return }
+        let gate = PlaybackGate.decide(audioDeleted: info.audioDeleted, recordingRunning: host.meetings()?.recordingElapsed != nil,
+                                       status: info.status)
+        switch PlaybackPlan.start(turn: turn, gate: gate) {
+        case .refused(.recording):
+            stopPlayback()
+            model.data.notice = L10nKey.playBlockedRecording.text
+        case .refused(.unavailable):
+            break
+        case .play(let start):
+            let request = playRequests.begin()
+            Task { @MainActor in
+                let probe = await host.client.probeMeetingAudio(id: id)
+                guard playRequests.isCurrent(request, windowOpen: windowOpen) else { return }
+                switch probe {
+                case .available:
+                    // The recording may have begun while the probe was on its way.
+                    guard host.meetings()?.recordingElapsed == nil else {
+                        model.data.notice = L10nKey.playBlockedRecording.text
+                        return
+                    }
+                    audio.play(url: host.client.meetingAudioURL(id: id), meetingID: id, from: start)
+                case .removed:
+                    // Retention took it: the line says so once (the header notice) and offers no play any more.
+                    model.data.details[id]?.info.audioDeleted = true
+                    if let i = model.data.meetings.firstIndex(where: { $0.id == id }) { model.data.meetings[i].audioDeleted = true }
+                case .stillRecording:
+                    model.data.notice = L10nKey.playBlockedRecording.text
+                case .failed(let sentence):
+                    model.data.notice = sentence
+                }
+            }
+        }
     }
 
     // MARK: meetings
@@ -340,6 +456,8 @@ final class MainWindowSource {
 
     /// Saves one edit where it lives. A save that did not go through is said, and the page shows the stored value again.
     private func apply(_ change: MeetingSettingsModel.Change) {
+        // Switching meetings off ends the audio at once, whatever the save then says.
+        if case .enabled(false) = change { stopPlayback() }
         Task { @MainActor in
             let applier = MeetingSettingsApplier(defaults: host.defaults, client: host.client)
             if let failure = await applier.apply(change) {
