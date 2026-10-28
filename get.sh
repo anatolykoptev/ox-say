@@ -113,15 +113,36 @@ main() {
     trap 'cleanup; exit 130' INT
     trap 'cleanup; exit 143' TERM
 
+    # A dead line must end, not hang: curl gives up connecting after 15 s and abandons a transfer that stays
+    # under 1 KB/s for $stall_secs s (an average over that window, so a slow but alive line is never cut: even
+    # a 56k modem moves 5 KB/s). A stall is curl exit 28; --retry 3 retries it, so a fully dead line ends in
+    # about 4 x $stall_secs + 7 s. This is a stall guard, not a total bound: a 33 MB package on a slow line may
+    # take as long as it needs. OX_SAY_STALL_SECS shortens the window for tests.
+    stall_secs=${OX_SAY_STALL_SECS:-30}
     echo "downloading ox-say ($version)"
-    if ! curl -fL --retry 3 --progress-bar -o "$tmp/$asset" "$url/$asset"; then
+    rc=0
+    curl -fL --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-time "$stall_secs" --progress-bar \
+        -o "$tmp/$asset" "$url/$asset" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        if [ "$rc" -eq 28 ]; then
+            echo "ox-say: the download of $asset stalled (under 1 KB/s for $stall_secs s); check the network and run it again." >&2
+        fi
         echo "ox-say: could not download $asset for $version." >&2
-        if [ "$arch" = arm64 ]; then
+        if [ "$arch" = arm64 ] && [ "$rc" -ne 28 ]; then
             echo "This release may have no Apple Silicon package: pick a newer version, or build from source with scripts/install.sh." >&2
         fi
         exit 1
     fi
-    curl -fsSL --retry 3 -o "$tmp/SHA256SUMS" "$url/SHA256SUMS"
+    rc=0
+    curl -fsSL --retry 3 --connect-timeout 15 --speed-limit 1024 --speed-time "$stall_secs" \
+        -o "$tmp/SHA256SUMS" "$url/SHA256SUMS" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        if [ "$rc" -eq 28 ]; then
+            echo "ox-say: the download of SHA256SUMS stalled (under 1 KB/s for $stall_secs s); check the network and run it again." >&2
+        fi
+        echo "ox-say: could not download SHA256SUMS for $version; nothing was installed." >&2
+        exit 1
+    fi
     want=$(awk -v a="$asset" '$2 == a || $2 == "*" a { print $1 }' "$tmp/SHA256SUMS")
     got=$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')
     if [ -z "$want" ]; then
