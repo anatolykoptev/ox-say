@@ -291,7 +291,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // One line per speak press, no text: which path served the selection
         // (ax, copy, none) and the AX read's error code and source.
         capture.onSelection = { report in timingLog.notice("\(report.line, privacy: .public)") }
-        controller.onBusy = { NSSound.beep() }
+        // Not into the restore ramp of the dictation that just ended.
+        controller.onBusy = { [weak self] in self?.soundWhileDictating.afterSettled { NSSound.beep() } }
         // A transcription that fails while its recording is still held can be
         // the daemon restarting — an install reloads its agent, a crash is
         // relaunched: poll /status on the same client and upload the held audio

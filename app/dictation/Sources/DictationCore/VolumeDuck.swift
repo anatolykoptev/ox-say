@@ -140,11 +140,14 @@ public final class VolumeDuckCoordinator {
     }
 
     /// A restore that did not land: the level the device is owed, the level
-    /// the duck left it at, and when the restore failed.
+    /// the duck left it at, when the restore failed and the level the failed
+    /// restore left the device at (a fade that stopped partway sits between
+    /// the duck and the original).
     private struct Owed {
         let preDuck: Float
         let ducked: Float
         let since: Date
+        let landed: Float
     }
 
     private let volume: SystemVolume
@@ -241,10 +244,11 @@ public final class VolumeDuckCoordinator {
     /// At launch: a record left by a process that died while ducked. If the
     /// default output is that device, the record is younger than
     /// `recordLifetime` and it still sits about at the ducked level,
-    /// the pre-duck level is given back; if the user has moved it since (or
-    /// the device is no longer the default output) the record is dropped and
-    /// the level left alone. An unconfirmed restore keeps the record for the
-    /// next launch.
+    /// the pre-duck level is given back; if the user has moved it since the
+    /// record is dropped and the level left alone. The device is resolved by
+    /// its UID whether or not it is the default output; while it is absent
+    /// the record is kept (and ages out). An unconfirmed restore keeps the
+    /// record for the next launch.
     public func recoverInterrupted() {
         guard duck == nil, let record = records?.load() else { return }
         // An older record, one without a timestamp and one dated further in
@@ -255,14 +259,21 @@ public final class VolumeDuckCoordinator {
             logError("output volume record dropped: too old, undated or dated in the future")
             return
         }
-        guard let device = volume.defaultDevice(), device.uid == record.uid,
-              let level = volume.volume(device.id),
-              abs(level - record.ducked) <= Self.confirmTolerance else {
+        // The device is found by its UID, default output or not: AirPods that
+        // stopped being the default since the crash still owe their level.
+        guard let deviceID = volume.device(forUID: record.uid),
+              let level = volume.volume(deviceID) else {
+            // Absent (unplugged, asleep): a later launch may find it. The
+            // record dies of age, never of absence.
+            logError("output volume record kept: the device is not present")
+            return
+        }
+        guard abs(level - record.ducked) <= Self.confirmTolerance else {
             records?.clear()
             return
         }
-        if fade(from: level, to: record.preDuck, on: device.id) == .complete,
-           confirmed(record.preDuck, on: device.id) {
+        if fade(from: level, to: record.preDuck, on: deviceID) == .complete,
+           confirmed(record.preDuck, on: deviceID) {
             records?.clear()
         } else {
             logError("output volume recovery unconfirmed: level did not read back")
@@ -306,19 +317,18 @@ public final class VolumeDuckCoordinator {
     /// whatever the read says: at a tiny pre-duck level the still-ducked
     /// level sits inside `confirmTolerance` of the target.
     private func restore(_ duck: Duck) {
-        let owedBack = Owed(preDuck: duck.preDuck, ducked: duck.ducked, since: now())
         let deviceID: UInt32
         if volume.volume(duck.deviceID) != nil {
             deviceID = duck.deviceID
         } else if let uid = duck.uid, let found = volume.device(forUID: uid) {
             deviceID = found
         } else {
-            keepOwed(owedBack, for: duck.uid)
+            keepOwed(owing(duck, landed: duck.ducked), for: duck.uid)
             logError("output volume restore deferred: the device is gone")
             return
         }
         guard let current = volume.volume(deviceID) else {
-            keepOwed(owedBack, for: duck.uid)
+            keepOwed(owing(duck, landed: duck.ducked), for: duck.uid)
             logError("output volume restore deferred: the volume cannot be read")
             return
         }
@@ -330,9 +340,13 @@ public final class VolumeDuckCoordinator {
         if volume.setVolume(deviceID, duck.preDuck), confirmed(duck.preDuck, on: deviceID) {
             forgetOwed(for: duck.uid)
         } else {
-            keepOwed(owedBack, for: duck.uid)
+            keepOwed(owing(duck, landed: volume.volume(deviceID) ?? current), for: duck.uid)
             logError("output volume restore unconfirmed: level did not read back")
         }
+    }
+
+    private func owing(_ duck: Duck, landed: Float) -> Owed {
+        Owed(preDuck: duck.preDuck, ducked: duck.ducked, since: now(), landed: landed)
     }
 
     private func keepOwed(_ entry: Owed, for uid: String?) {
@@ -368,14 +382,26 @@ public final class VolumeDuckCoordinator {
     /// The level a new duck owes back: normally the level just read — but
     /// when this device's last restore never landed and the output still sits
     /// where that duck left it, what is owed is the earlier pre-duck, not the
-    /// quiet level a failed restore left behind. A level clearly above the
-    /// ducked one means the user moved it since, and so does an entry older
-    /// than `owedLifetime`: the entry is dropped and the level read is theirs.
-    /// Entries of other devices are never touched.
+    /// quiet level a failed restore left behind. "Where it left it" is the
+    /// duck's level, or the level a restore that stopped partway landed at
+    /// (above `stillQuietBound`, yet still the leftover while the output
+    /// has not moved from it). A level clearly above both means the user
+    /// moved it since, and so does an entry older than `owedLifetime`: the
+    /// entry is dropped and the level read is theirs. Each outcome is one
+    /// line without content. Entries of other devices are never touched.
     private func owedPreDuck(device: (id: UInt32, uid: String?), level: Float) -> Float {
         guard let uid = device.uid, let entry = owed.removeValue(forKey: uid) else { return level }
-        guard now().timeIntervalSince(entry.since) < Self.owedLifetime else { return level }
-        guard level <= Self.stillQuietBound(entry.ducked) else { return level }
+        guard now().timeIntervalSince(entry.since) < Self.owedLifetime else {
+            logError("output volume owed restore expired")
+            return level
+        }
+        let stillQuiet = level <= Self.stillQuietBound(entry.ducked)
+        let atPartialLanding = level < entry.preDuck && abs(level - entry.landed) <= Self.readSlack
+        guard stillQuiet || atPartialLanding else {
+            logError("output volume owed restore dropped: the level was moved since")
+            return level
+        }
+        logError("output volume owed restore claimed")
         return entry.preDuck
     }
 
