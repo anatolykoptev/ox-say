@@ -30,6 +30,23 @@ public enum MeetingFailure {
     }
 }
 
+extension MeetingFailure {
+    /// The same sentence without "press Try Again", for a failure the window offers no retry for (the audio was deleted
+    /// by retention, which also deletes the audio of failed meetings). A sentence that already gives no such advice is
+    /// returned as it is.
+    static func withoutRetryAdvice(_ key: L10nKey) -> L10nKey {
+        switch key {
+        case .meetingFailedSpeechBusy: return .meetingFailedSpeechBusyFinal
+        case .meetingFailedSpeech: return .meetingFailedSpeechFinal
+        case .meetingFailedNoTranscript: return .meetingFailedNoTranscriptFinal
+        case .meetingFailedStorage: return .meetingFailedStorageFinal
+        case .meetingFailedDiskFull: return .meetingFailedDiskFullFinal
+        case .meetingFailedGeneric: return .meetingFailedGenericFinal
+        default: return key
+        }
+    }
+}
+
 /// What the window shows for a meeting that failed, and the one thing the user can do about it. Both a recording that
 /// did not finish (`.failed`) and notes that could not be written (`.transcribed` with `notes_pending` "failed") come
 /// through here, so the header, the notes callout and the list agree and no view picks a sentence of its own.
@@ -43,12 +60,21 @@ public struct MeetingFailureNotice: Equatable {
     /// the audio is gone, or the speech model is missing (the daemon finishes the recording by itself once it is installed).
     public var canRetry: Bool
 
+    /// What a finished meeting that failed announces (the pill, the menu's status line): the sentence of `of`, never the
+    /// daemon's own text. nil when nothing failed.
+    public static func announcement(for info: MeetingInfo, text: (L10nKey) -> String = { $0.text }) -> String? {
+        of(info, text: text)?.sentence
+    }
+
     public static func of(_ info: MeetingInfo, text: (L10nKey) -> String = { $0.text }) -> MeetingFailureNotice? {
         switch info.status {
         case .failed:
             let waitsForModel = info.failReason == "speech_model_missing"
-            return MeetingFailureNotice(sentence: text(MeetingFailure.key(code: info.failReason, notes: false)), notes: false,
-                                        canRetry: !info.audioDeleted && !waitsForModel)
+            let canRetry = !info.audioDeleted && !waitsForModel
+            // Where there is no button, the sentence gives no advice that points to one.
+            let key = MeetingFailure.key(code: info.failReason, notes: false)
+            return MeetingFailureNotice(sentence: text(canRetry ? key : MeetingFailure.withoutRetryAdvice(key)), notes: false,
+                                        canRetry: canRetry)
         case .transcribed:
             guard info.notesPending == "failed" else { return nil }
             return MeetingFailureNotice(sentence: text(MeetingFailure.key(code: info.failReason, notes: true)), notes: true, canRetry: true)

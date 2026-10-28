@@ -159,6 +159,19 @@ final class MeetingWiringTests: XCTestCase {
     // MARK: controller
 
     /// The tick is decided by RecordingMonitor and its actions are carried out: stops stop, the silent tap tells.
+    /// What a finished meeting announces when it failed is the localized sentence from the daemon's code (the same one the
+    /// window shows), never the daemon's English `error`.
+    /// Mutation: MeetingController.finished, `host.notify(MeetingFailureNotice.announcement(for: info) ?? L10nKey.meetingFailedGeneric.text)`
+    /// -> `host.notify(L10nKey.noticeMeetingFailed.text(info.error ?? ""))` -> RED; the notes variant back to
+    /// `else if let error = info.error { host.notify(L10nKey.noticeMeetingFailed.text(error)) }` -> RED.
+    func testAFailedMeetingIsAnnouncedInTheUsersWordsNotTheDaemons() throws {
+        let finished = try XCTUnwrap(body(try controller(), of: "private func finished(id: String, status: MeetingInfo) async {\n"))
+        XCTAssertTrue(finished.contains("host.notify(MeetingFailureNotice.announcement(for: info) ?? L10nKey.meetingFailedGeneric.text)"))
+        XCTAssertTrue(finished.contains("} else if let sentence = MeetingFailureNotice.announcement(for: info) {\n                host.notify(sentence)"))
+        XCTAssertFalse(finished.contains("info.error"), "the daemon's text never reaches the pill")
+        XCTAssertFalse(finished.contains("noticeMeetingFailed"))
+    }
+
     /// Mutation: MeetingController.refreshBadge, delete `case .stop(.cap):` handling -> RED.
     func testTheTickCarriesOutTheMonitorsActions() throws {
         let tick = try XCTUnwrap(body(try controller(), of: "@objc private func refreshBadge() {"))

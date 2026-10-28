@@ -464,7 +464,7 @@ final class MeetingController: NSObject, MeetingFeature {
         if info.heardNoSystemAudio { host.notify(L10nKey.noticeMeetingNoSystemAudio.text) }
         switch info.status {
         case .failed:
-            host.notify(L10nKey.noticeMeetingFailed.text(info.error ?? ""))
+            host.notify(MeetingFailureNotice.announcement(for: info) ?? L10nKey.meetingFailedGeneric.text)
         case .transcribed where info.notesPending == "model_missing":
             // Not copied yet: the folder gets the transcript and the notes together, once the model is there.
             host.notify(L10nKey.noticeMeetingNotesPending.text)
@@ -474,8 +474,8 @@ final class MeetingController: NSObject, MeetingFeature {
                 // A copy that failed has said so; "ready" would contradict it.
                 if folder.failed { return }
                 ready(folder: folder.dir)
-            } else if let error = info.error {
-                host.notify(L10nKey.noticeMeetingFailed.text(error))
+            } else if let sentence = MeetingFailureNotice.announcement(for: info) {
+                host.notify(sentence)
             }
         default: break
         }

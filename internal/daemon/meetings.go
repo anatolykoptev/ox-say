@@ -519,10 +519,7 @@ func (d *Daemon) InstallNotesModel() error {
 // block the download (the fetch itself fails loudly on a full disk), but the
 // log says the check was skipped.
 func (d *Daemon) checkNotesDisk(dest string) error {
-	need := int64(config.NotesModelBytes + notesDiskMargin)
-	if st, err := os.Stat(d.Cfg.NotesModel + ".part"); err == nil {
-		need -= min(st.Size(), int64(config.NotesModelBytes))
-	}
+	need := d.notesDiskNeed()
 	free, err := freeBytes(dest)
 	if err != nil {
 		d.log.Warn("notes model download: cannot read the free disk space, downloading without the check", slog.Any("error", err))
@@ -535,6 +532,30 @@ func (d *Daemon) checkNotesDisk(dest string) error {
 	return nil
 }
 
+// notesDiskNeed is the free space the rest of the model download needs: the model and a margin, less what a .part file
+// from an earlier try already holds.
+func (d *Daemon) notesDiskNeed() int64 {
+	need := int64(config.NotesModelBytes + notesDiskMargin)
+	if st, err := os.Stat(d.Cfg.NotesModel + ".part"); err == nil {
+		need -= min(st.Size(), int64(config.NotesModelBytes))
+	}
+	return need
+}
+
+// installFailure is installFailureCode, plus one look at the disk: curl's (23), "failure writing output", is what a full
+// disk looks like to curl, and its text says nothing about the disk. When the models directory has less free space than
+// the rest of the download needs, that (23) is a full disk.
+func (d *Daemon) installFailure(tail string) string {
+	code := installFailureCode(tail)
+	if code != "other" || !strings.Contains(tail, "curl: (23)") && !strings.Contains(tail, "curl exit 23") {
+		return code
+	}
+	if free, err := freeBytes(filepath.Dir(d.Cfg.NotesModel)); err == nil && free < d.notesDiskNeed() {
+		return "disk_full"
+	}
+	return code
+}
+
 func (d *Daemon) runNotesInstall(ctx context.Context, cmd *exec.Cmd, tail *bytes.Buffer) {
 	defer d.notes.wg.Done()
 	err := cmd.Wait()
@@ -543,7 +564,7 @@ func (d *Daemon) runNotesInstall(ctx context.Context, cmd *exec.Cmd, tail *bytes
 	d.notes.running = false
 	if err != nil && ctx.Err() == nil {
 		msg := installTail(tail.String())
-		d.notes.err, d.notes.code = "The download failed: "+msg, installFailureCode(msg)
+		d.notes.err, d.notes.code = "The download failed: "+msg, d.installFailure(msg)
 		d.log.Warn("notes model download failed", slog.Any("error", err), slog.String("stderr", msg))
 	}
 }

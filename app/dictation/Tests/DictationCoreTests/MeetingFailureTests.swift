@@ -163,18 +163,25 @@ final class MeetingFailureTests: XCTestCase {
         XCTAssertEqual(MeetingFailureNotice.of(goneNotes, text: key)?.canRetry, true, "the transcript stands: the notes can be written again")
     }
 
-    /// The advice in a sentence names an action that exists: "Try Again" only where the button is offered, "Reinstall
-    /// OxSay" only for the missing speech model.
-    /// Mutation: Resources/en.lproj, put "Press Try Again." on the `speech_model_missing` sentence -> RED.
+    /// The advice in a sentence names an action that exists: "Try Again" is in the sentence exactly when the button is
+    /// shown, for every code, with the audio there and with it deleted by retention (which deletes it for failed meetings
+    /// too). "Reinstall OxSay" only for the missing speech model.
+    /// Mutation: MeetingFailureNotice.of, build the sentence with `retry: true` always -> RED (audio-deleted rows).
+    /// Mutation: Resources/en.lproj, put "Press Try Again." on the speech_model_missing sentence -> RED.
     func testASentenceOnlyAdvisesAnActionThatIsOffered() throws {
         let en = try values(of: "en"), ru = try values(of: "ru")
-        let recordingCodes = ["speech_model_missing", "speech_busy", "speech_failed", "no_transcript", "storage", "disk_full"]
+        let recordingCodes = ["speech_model_missing", "speech_busy", "speech_failed", "no_transcript", "storage", "disk_full", "from_the_future", nil] as [String?]
         for code in recordingCodes {
-            let notice = MeetingFailureNotice.of(failed(code), text: { try! XCTUnwrap(en[$0.rawValue]) })
-            let sentence = try XCTUnwrap(notice).sentence
-            let sentenceRu = try XCTUnwrap(MeetingFailureNotice.of(failed(code), text: { try! XCTUnwrap(ru[$0.rawValue]) })).sentence
-            XCTAssertEqual(sentence.contains("Try Again"), notice?.canRetry, "\(code): the advice must match the button")
-            XCTAssertEqual(sentenceRu.contains("«Повторить»"), notice?.canRetry, "\(code) ru")
+            for audioDeleted in [false, true] {
+                var info = failed(code)
+                info.audioDeleted = audioDeleted
+                let notice = try XCTUnwrap(MeetingFailureNotice.of(info, text: { self.v(en, $0.rawValue) }))
+                let noticeRu = try XCTUnwrap(MeetingFailureNotice.of(info, text: { self.v(ru, $0.rawValue) }))
+                let label = "\(code ?? "nil") audioDeleted=\(audioDeleted)"
+                XCTAssertFalse(notice.sentence.isEmpty, label)
+                XCTAssertEqual(notice.sentence.contains("Try Again"), notice.canRetry, "\(label): the advice must match the button: \(notice.sentence)")
+                XCTAssertEqual(noticeRu.sentence.contains("«Повторить»"), notice.canRetry, "\(label) ru: \(noticeRu.sentence)")
+            }
         }
         XCTAssertTrue(v(en, "meeting.failed.speech_model_missing").contains("Reinstall OxSay"))
         XCTAssertTrue(v(ru, "meeting.failed.speech_model_missing").contains("Переустановите OxSay"))
@@ -185,15 +192,34 @@ final class MeetingFailureTests: XCTestCase {
         XCTAssertEqual(ru["meeting.notes.retry"], "Повторить")
     }
 
+    /// The notification (pill, status line) says the same localized sentence as the window, from the daemon's code, and
+    /// never the daemon's English text. The Core decides; the controller's two call sites are pinned in MeetingWiringTests.
+    /// Mutation: MeetingFailureNotice.announcement, return `info.error` -> RED.
+    func testTheNotificationIsTheLocalizedSentenceNeverTheDaemonsText() throws {
+        let rec = failed("speech_busy")
+        XCTAssertEqual(MeetingFailureNotice.announcement(for: rec, text: key), "meeting.failed.speech_busy")
+        XCTAssertEqual(MeetingFailureNotice.announcement(for: failed(nil), text: key), "meeting.failed.generic")
+        XCTAssertEqual(MeetingFailureNotice.announcement(for: notesFailed("notes_empty"), text: key), "meeting.notes.failed.empty")
+        XCTAssertEqual(MeetingFailureNotice.announcement(for: notesFailed(nil), text: key), "meeting.notes.failed")
+        for info in [rec, failed(nil), notesFailed("notes_empty"), notesFailed(nil)] {
+            XCTAssertFalse((MeetingFailureNotice.announcement(for: info, text: { _ in "x" }) ?? "").contains(info.error ?? "?"))
+        }
+        XCTAssertNil(MeetingFailureNotice.announcement(for: MeetingInfo(id: "d", status: .done, error: "stale"), text: key), "a finished meeting announces no failure")
+        XCTAssertNil(MeetingFailureNotice.announcement(for: MeetingInfo(id: "t", status: .transcribed, error: "x"), text: key),
+                     "transcribed without a failed notes run has nothing to announce")
+    }
+
     /// The Settings row cannot retry anything: it points to the meeting. The notes engine has one name everywhere the
     /// user reads it: the Settings row's own term.
-    /// Mutation: Resources/en.lproj, put "Retry the notes." back on settings.notes_writer.engine_failed -> RED.
+    /// Mutation: Resources/en.lproj, put "Open the meeting and press Try Again on its notes." back on settings.notes_writer.engine_failed -> RED.
     func testSettingsPointsToTheMeetingAndTheEngineHasOneName() throws {
         let en = try values(of: "en"), ru = try values(of: "ru")
         let enSettings = v(en, "settings.notes_writer.engine_failed"), ruSettings = v(ru, "settings.notes_writer.engine_failed")
-        XCTAssertTrue(enSettings.contains("Open the meeting"), enSettings)
+        XCTAssertTrue(enSettings.contains("next notes run"), enSettings)
+        XCTAssertFalse(enSettings.lowercased().contains("meeting"), "it must not point to a meeting that may be gone: \(enSettings)")
         XCTAssertFalse(enSettings.lowercased().contains("retry the notes"), enSettings)
-        XCTAssertTrue(ruSettings.contains("Откройте встречу"), ruSettings)
+        XCTAssertTrue(ruSettings.contains("при следующем"), ruSettings)
+        XCTAssertFalse(ruSettings.lowercased().contains("встреч"), ruSettings)
         let term = v(en, "settings.notes_writer").lowercased(), termRu = v(ru, "settings.notes_writer").lowercased()
         XCTAssertEqual(term, "notes writer")
         for k in ["meeting.notes.failed.engine_start", "meeting.notes.failed.engine_verify", "meeting.notes.failed.engine_timeout",
@@ -222,6 +248,8 @@ final class MeetingFailureTests: XCTestCase {
     func testEverySentenceExistsInEnglishAndRussian() throws {
         let keys: [L10nKey] = [
             .meetingFailedSpeechModel, .meetingFailedSpeechBusy, .meetingFailedSpeech, .meetingFailedNoTranscript, .meetingFailedStorage, .meetingFailedDiskFull,
+            .meetingFailedSpeechBusyFinal, .meetingFailedSpeechFinal, .meetingFailedNoTranscriptFinal, .meetingFailedStorageFinal,
+            .meetingFailedDiskFullFinal, .meetingFailedGenericFinal,
             .meetingNotesEngineStart, .meetingNotesEngineVerify, .meetingNotesEngineTimeout, .meetingNotesEmpty, .meetingNotesStorage, .meetingNotesDiskFull,
             .settingsNotesWriterEngineFailed, .settingsNotesWriterDownloadNetwork, .settingsNotesWriterDownloadDisk,
             .settingsNotesWriterDownloadChecksum, .settingsNotesWriterDownloadServer, .settingsNotesWriterDownloadOther,

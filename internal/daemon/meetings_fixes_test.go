@@ -614,6 +614,44 @@ func TestInstallRefusesWhenTheModelIsThereButNotesAreBlockedElsewhere(t *testing
 	}
 }
 
+// curl's (23) is "failure writing output": on a full disk it says nothing about the disk. On a (23) the daemon looks at the
+// free space of the models directory itself: short of what the rest of the model needs -> disk_full, else other.
+// Mutation: internal/daemon/meetings.go installFailure, delete the `if free < need` branch (always "other") -> RED (short row).
+// Mutation: same function, return "disk_full" for every (23) -> RED (roomy row).
+// Mutation: same function, test the code "other" without the curl (23) guard -> RED (the unrelated "other" row).
+func TestACurl23FailureLooksAtTheDisk(t *testing.T) {
+	cases := []struct {
+		name, stderr string
+		freeAfter    int64
+		want         string
+	}{
+		{"23 and the disk is short", "curl: (23) Failure writing output to destination", 0, "disk_full"},
+		{"23 and the disk has room", "curl: (23) Failure writing output to destination", 1 << 40, "other"},
+		{"not a 23, disk short: stays other", "something unexpected", 0, "other"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := installFixture(t, "#!/bin/sh\ncat >&2 <<'EOT'\n"+tc.stderr+"\nEOT\nexit 23\n")
+			calls := 0
+			// The start-up check sees a roomy disk (the download is allowed); the check after the failure sees tc.freeAfter.
+			withFreeBytes(t, func(string) (int64, error) {
+				calls++
+				if calls == 1 {
+					return 1 << 40, nil
+				}
+				return tc.freeAfter, nil
+			})
+			if err := d.InstallNotesModel(); err != nil {
+				t.Fatal(err)
+			}
+			testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to fail")
+			if got := d.Status().Notes.InstallCode; got != tc.want {
+				t.Fatalf("install_error_code = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // Every code installFailureCode can return, but the catch-all, has its sentence in the app. The codes are read from the
 // function's return statements, so a new one cannot be added without a row in NotesWriterState.downloadFailureKey.
 // Mutation: MeetingWindowService.swift, delete `case "checksum": return .settingsNotesWriterDownloadChecksum` -> RED.
