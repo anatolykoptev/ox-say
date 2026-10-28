@@ -172,6 +172,9 @@ oxs_install_engines() {
     for bin in tts-server ox-stt ox-align ox-llm; do
         if [ ! -x "$out/$bin" ]; then
             echo "ox-say install: no $bin in $out" >&2
+            case $out in
+                */build/engine/out) echo "ox-say install: that build is older than this checkout; re-run engine/build.sh" >&2 ;;
+            esac
             exit 1
         fi
     done
