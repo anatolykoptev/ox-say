@@ -387,10 +387,10 @@ final class SelectionBorrowTests: XCTestCase {
     // problem the capture returns on the pill; dropping it would make the
     // hotkey go silent over an iPhone copy.
     // Mutation: AppDelegate.speakSelection, `overlay.showMessage(problem ??
-    // "Nothing selected to speak.")` -> `overlay.showMessage("")` -> RED.
+    // L10nKey.noticeSelectionNothing.text)` -> `overlay.showMessage("")` -> RED.
     func testTheDeclineReachesThePill() {
         let appDelegate = source("Sources/OxSayDictation/AppDelegate.swift")
-        XCTAssertTrue(appDelegate.contains("overlay.showMessage(problem ?? \"Nothing selected to speak.\")"),
+        XCTAssertTrue(appDelegate.contains("overlay.showMessage(problem ?? L10nKey.noticeSelectionNothing.text)"),
                       "speakSelection no longer shows the capture's problem")
         let capture = source("Sources/OxSayDictation/SelectionCapture.swift")
         XCTAssertTrue(capture.contains("func capture() -> (text: String?, problem: String?) {\n        SelectionBorrow.capture("),

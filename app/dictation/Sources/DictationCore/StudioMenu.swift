@@ -4,14 +4,14 @@ import Foundation
 /// /status and the voiceover the app is following. Pure: AppKit only draws the rows.
 public enum StudioMenu {
     public static func installTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioInstallTitle) }
-    public static let newVoiceoverTitle = "New Voiceover from Document…"
-    public static let stopTitle = "Stop Voiceover"
-    public static let continueTitle = "Continue on Battery Power"
-    public static let folderTitle = "Open Voiceovers Folder"
+    public static func newVoiceoverTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioNewVoiceover) }
+    public static func stopTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioStopVoiceover) }
+    public static func continueTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioContinueBattery) }
+    public static func folderTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioOpenFolder) }
     public static func createVoiceTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioCreateVoice) }
-    public static let noServiceTitle = "Studio needs the ox-say service, which is not answering"
+    public static func noServiceTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioNoService) }
     public static func cannotRunTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioCannotRun) }
-    public static let checkingTitle = "Checking the ox-say service…"
+    public static func checkingTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.studioChecking) }
 
     /// What the app knows of the daemon right now.
     public enum ServiceState: Equatable {
@@ -35,18 +35,18 @@ public enum StudioMenu {
         let active = job.flatMap { $0.status.isTerminal ? nil : $0 }
         switch service {
         case .unknown:
-            return jobRows(active, waiting: serviceWaiting) + [disabled(checkingTitle)]
+            return jobRows(active, waiting: serviceWaiting, text: text) + [disabled(checkingTitle(text: text))]
         case .unreachable:
             // A voiceover the app is following keeps its rows: the service is only not answering.
-            return jobRows(active, waiting: serviceWaiting) + [disabled(noServiceTitle)]
+            return jobRows(active, waiting: serviceWaiting, text: text) + [disabled(noServiceTitle(text: text))]
         case .answered(let status):
             guard status.studioAvailable else {
                 guard status.installWouldHelp else { return [disabled(unavailableText(reason: status.studioReason, text: text))] }
                 return [.item(title: installTitle(text: text), isOn: false, isEnabled: !installing, action: .installStudioVoice)]
             }
-            var rows: [MenuRow] = [.item(title: newVoiceoverTitle, isOn: false, isEnabled: active == nil && !readingDocument, action: .newVoiceover)]
-            rows += jobRows(active, waiting: serviceWaiting)
-            rows.append(.item(title: folderTitle, isOn: false, isEnabled: hasOutputFolder, action: hasOutputFolder ? .openVoiceoversFolder : nil))
+            var rows: [MenuRow] = [.item(title: newVoiceoverTitle(text: text), isOn: false, isEnabled: active == nil && !readingDocument, action: .newVoiceover)]
+            rows += jobRows(active, waiting: serviceWaiting, text: text)
+            rows.append(.item(title: folderTitle(text: text), isOn: false, isEnabled: hasOutputFolder, action: hasOutputFolder ? .openVoiceoversFolder : nil))
             rows.append(.separator)
             rows.append(.item(title: createVoiceTitle(text: text), isOn: false, isEnabled: true, action: .createVoice))
             return rows
@@ -58,12 +58,12 @@ public enum StudioMenu {
     }
 
     /// The followed voiceover's progress, Stop and (on battery) Continue rows.
-    private static func jobRows(_ job: ProduceJob?, waiting: Bool) -> [MenuRow] {
+    private static func jobRows(_ job: ProduceJob?, waiting: Bool, text: (L10nKey) -> String) -> [MenuRow] {
         guard let job else { return [] }
-        var rows = [disabled(ProduceText.progressRow(job, serviceWaiting: waiting)),
-                    MenuRow.item(title: stopTitle, isOn: false, isEnabled: true, action: .stopVoiceover)]
+        var rows = [disabled(ProduceText.progressRow(job, serviceWaiting: waiting, text: text)),
+                    MenuRow.item(title: stopTitle(text: text), isOn: false, isEnabled: true, action: .stopVoiceover)]
         if job.status == .pausedOnBattery {
-            rows.append(.item(title: continueTitle, isOn: false, isEnabled: true, action: .continueOnBattery))
+            rows.append(.item(title: continueTitle(text: text), isOn: false, isEnabled: true, action: .continueOnBattery))
         }
         return rows
     }

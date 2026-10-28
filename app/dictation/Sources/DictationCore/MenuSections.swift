@@ -9,10 +9,10 @@ public enum VoiceSlot: Equatable, CaseIterable {
     case russian
     case english
 
-    public var title: String {
+    public func title(text: (L10nKey) -> String = { $0.text }) -> String {
         switch self {
-        case .russian: return "Russian"
-        case .english: return "English"
+        case .russian: return text(.voiceSlotRussian)
+        case .english: return text(.voiceSlotEnglish)
         }
     }
 }
@@ -59,33 +59,34 @@ public enum MenuRow: Equatable {
 }
 
 public enum MenuSections {
-    public static let defaultVoiceTitle = "Default voice"
-    public static let randomVoiceTitle = "Random each time"
-    public static let loadingTitle = "Loading…"
-    public static let dictationHeader = "Dictation"
-    public static let speakHeader = "Speak Selection"
+    public static func defaultVoiceTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.voicesDefault) }
+    public static func randomVoiceTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.voicesRandom) }
+    public static func loadingTitle(text: (L10nKey) -> String = { $0.text }) -> String { text(.menuLoading) }
+    public static func dictationHeader(text: (L10nKey) -> String = { $0.text }) -> String { text(.sectionDictation) }
+    public static func speakHeader(text: (L10nKey) -> String = { $0.text }) -> String { text(.menuSpeakSelection) }
     /// The pref value that means "the engine's random voice".
     public static let randomVoice = "default"
 
     /// The Voice submenu: per language a header, "Default voice", "Random each
     /// time", then the daemon's voices (or "Loading…" until the first answer).
     /// `known` nil means no answer yet.
-    public static func voiceRows(known: [String]?, russian: String?, english: String?) -> [MenuRow] {
+    public static func voiceRows(known: [String]?, russian: String?, english: String?,
+                                 text: (L10nKey) -> String = { $0.text }) -> [MenuRow] {
         var rows: [MenuRow] = []
         for slot in VoiceSlot.allCases {
             if !rows.isEmpty { rows.append(.separator) }
             let current = slot == .russian ? russian : english
-            rows.append(.header(slot.title))
-            rows.append(.item(title: defaultVoiceTitle, isOn: current == nil, isEnabled: true,
+            rows.append(.header(slot.title(text: text)))
+            rows.append(.item(title: defaultVoiceTitle(text: text), isOn: current == nil, isEnabled: true,
                               action: .pickVoice(slot, name: nil)))
-            rows.append(.item(title: randomVoiceTitle, isOn: current == randomVoice, isEnabled: true,
+            rows.append(.item(title: randomVoiceTitle(text: text), isOn: current == randomVoice, isEnabled: true,
                               action: .pickVoice(slot, name: randomVoice)))
             for name in known ?? [] {
                 rows.append(.item(title: name, isOn: name == current, isEnabled: true,
                                   action: .pickVoice(slot, name: name)))
             }
             if known == nil {
-                rows.append(.item(title: loadingTitle, isOn: false, isEnabled: false, action: nil))
+                rows.append(.item(title: loadingTitle(text: text), isOn: false, isEnabled: false, action: nil))
             }
         }
         return rows
@@ -93,14 +94,15 @@ public enum MenuSections {
 
     /// The Keyboard Shortcuts submenu: the dictation keys, then the speak keys,
     /// each row keeping the state the plan gave it (checked, greyed out, "a macOS shortcut").
-    public static func shortcutRows(dictation: [ShortcutMenu.Item], speak: [ShortcutMenu.Item]) -> [MenuRow] {
-        var rows: [MenuRow] = [.header(dictationHeader)]
+    public static func shortcutRows(dictation: [ShortcutMenu.Item], speak: [ShortcutMenu.Item],
+                                    text: (L10nKey) -> String = { $0.text }) -> [MenuRow] {
+        var rows: [MenuRow] = [.header(dictationHeader(text: text))]
         for (index, item) in dictation.enumerated() {
             rows.append(.item(title: item.title, isOn: item.isOn, isEnabled: item.isEnabled,
                               action: .pickDictationKey(index)))
         }
         rows.append(.separator)
-        rows.append(.header(speakHeader))
+        rows.append(.header(speakHeader(text: text)))
         for (index, item) in speak.enumerated() {
             rows.append(.item(title: item.title, isOn: item.isOn, isEnabled: item.isEnabled,
                               action: .pickSpeakKey(index)))

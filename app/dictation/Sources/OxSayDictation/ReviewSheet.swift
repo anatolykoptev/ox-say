@@ -23,8 +23,8 @@ final class ReviewSheet: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private let textView: NSTextView
     private let scroll = NSTextView.scrollableTextView()
     private let status = NSTextField(labelWithString: "")
-    private let startButton = NSButton(title: "Start", target: nil, action: nil)
-    private let trimButton = NSButton(title: "Keep the First Part", target: nil, action: nil)
+    private let startButton = NSButton(title: L10nKey.reviewStart.text, target: nil, action: nil)
+    private let trimButton = NSButton(title: L10nKey.reviewKeepFirst.text, target: nil, action: nil)
     private let titleField: NSTextField
     private let formatPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -39,9 +39,9 @@ final class ReviewSheet: NSObject, NSTextViewDelegate, NSWindowDelegate {
         titleField = NSTextField(string: draft.title)
         self.voiceNames = voiceNames
         super.init()
-        formatPopup.addItems(withTitles: ProduceFormat.allCases.map(\.title))
+        formatPopup.addItems(withTitles: ProduceFormat.allCases.map { $0.title() })
         formatPopup.selectItem(at: ProduceFormat.allCases.firstIndex(of: draft.format) ?? 0)
-        voicePopup.addItems(withTitles: voiceNames.map { $0 ?? "Default voice" })
+        voicePopup.addItems(withTitles: voiceNames.map { $0 ?? L10nKey.voicesDefault.text })
         voicePopup.selectItem(at: voiceNames.firstIndex { $0 == draft.voice } ?? 0)
         configureEditor(draft.script)
         build()
@@ -83,16 +83,16 @@ final class ReviewSheet: NSObject, NSTextViewDelegate, NSWindowDelegate {
     }
 
     private func build() {
-        panel.title = "New Voiceover"
+        panel.title = L10nKey.reviewTitle.text
         panel.delegate = self
         panel.isReleasedWhenClosed = false
         status.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         startButton.keyEquivalent = "\r"
         startButton.keyEquivalentModifierMask = .command
-        startButton.toolTip = "Start the voiceover (\(Self.startKeyHint))"
+        startButton.toolTip = L10nKey.reviewStartTip.text(Self.startKeyHint)
         startButton.target = self
         startButton.action = #selector(start)
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        let cancel = NSButton(title: L10nKey.commonCancel.text, target: self, action: #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
         trimButton.target = self
         trimButton.action = #selector(keepFirstPart)
@@ -101,10 +101,10 @@ final class ReviewSheet: NSObject, NSTextViewDelegate, NSWindowDelegate {
         let buttons = NSStackView(views: [trimButton, spacer, cancel, startButton])
         buttons.orientation = .horizontal
         let form = NSStackView(views: [
-            StudioForms.labeled("Title", titleField, width: Self.editorSize.width),
-            StudioForms.labeled("Format", formatPopup, width: Self.editorSize.width),
-            StudioForms.labeled("Voice", voicePopup, width: Self.editorSize.width),
-            StudioForms.labeled("Text — check it and fix anything before ox-say reads it", scroll, width: Self.editorSize.width),
+            StudioForms.labeled(L10nKey.reviewLabelTitle.text, titleField, width: Self.editorSize.width),
+            StudioForms.labeled(L10nKey.reviewLabelFormat.text, formatPopup, width: Self.editorSize.width),
+            StudioForms.labeled(L10nKey.menuVoice.text, voicePopup, width: Self.editorSize.width),
+            StudioForms.labeled(L10nKey.reviewLabelText.text, scroll, width: Self.editorSize.width),
             status, buttons,
         ])
         form.orientation = .vertical

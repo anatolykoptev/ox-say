@@ -71,7 +71,8 @@ public enum ShortcutMenu {
     /// starts at login) neither claims a key freed meanwhile nor moves off a
     /// key macOS took without saying so.
     public static func plan(stored: Choice?, active: Choice?, lastSession: Choice? = nil,
-                            choices: [Choice], system: [SystemShortcut]) -> Plan {
+                            choices: [Choice], system: [SystemShortcut],
+                            text: (L10nKey) -> String = { $0.text }) -> Plan {
         let active = active ?? lastSession
         func isFree(_ choice: Choice) -> Bool {
             !ShortcutConflict.taken(keyCode: choice.keyCode, modifiers: choice.modifiers, by: system)
@@ -94,7 +95,7 @@ public enum ShortcutMenu {
         let items = choices.indices.map { index in
             let choice = choices[index]
             let free = isFree(choice)
-            return Item(title: free ? choice.title : "\(choice.title) (a macOS shortcut)",
+            return Item(title: free ? choice.title : String(format: text(.menuShortcutMacOS), choice.title),
                         isEnabled: free, isOn: index == key)
         }
         return Plan(key: key, items: items, movedFrom: movedFrom)

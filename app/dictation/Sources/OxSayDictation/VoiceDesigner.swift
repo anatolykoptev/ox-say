@@ -35,7 +35,7 @@ final class VoiceDesigner {
                 await self.review(takes, typedName: form.name)
             } catch {
                 self.host.pill(Self.pillTask, nil)
-                _ = self.host.alert(L10nKey.designFailedTitle.text, StudioController.plain(error), [L10nKey.commonOk.text])
+                _ = self.host.alert(L10nKey.designFailedTitle.text, StudioError.plain(error), [L10nKey.commonOk.text])
             }
         }
     }
@@ -94,7 +94,7 @@ final class VoiceDesigner {
             host.notify(DesignForm.savedNotice(name: voice.name, shortened: voice.notice != nil))
             return true
         } catch {
-            _ = host.alert(L10nKey.designSaveFailedTitle.text, StudioController.plain(error), [L10nKey.commonOk.text])
+            _ = host.alert(L10nKey.designSaveFailedTitle.text, StudioError.plain(error), [L10nKey.commonOk.text])
             return false
         }
     }

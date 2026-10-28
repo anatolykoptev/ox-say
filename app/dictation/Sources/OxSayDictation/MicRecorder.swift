@@ -90,7 +90,7 @@ final class MicRecorder: Recorder {
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
-            self?.end("The microphone changed while recording.")
+            self?.end(L10nKey.recordingEndedMicChanged.text)
         }
     }
 
@@ -131,7 +131,7 @@ final class MicRecorder: Recorder {
         onLevels?(meter.levels(chunk))
         if appended == .full {
             DispatchQueue.main.async { [weak self] in
-                self?.end("Recordings stop after \(Int(self?.maxSeconds ?? 0)) seconds.")
+                self?.end(L10nKey.recordingEndedCap.text(String(Int(self?.maxSeconds ?? 0))))
             }
         }
     }

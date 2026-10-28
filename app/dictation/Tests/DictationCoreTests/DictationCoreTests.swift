@@ -189,7 +189,7 @@ final class OutputPolicyTests: XCTestCase {
             return XCTFail("without Accessibility a posted Cmd+V is dropped silently")
         }
         XCTAssertEqual(reason.code, "accessibility")
-        XCTAssertTrue(reason.message.contains("Allow pasting"),
+        XCTAssertTrue(reason.message(text: ShippedStrings.localizer("en")).contains("Allow pasting"),
                       "the notice must point at the menu item that repairs the grant")
     }
 
@@ -604,13 +604,13 @@ final class ShortcutMenuTests: XCTestCase {
     // unmarked). This guards the rows' computation only: whether menuWillOpen
     // applies them is AppKit glue that swift test does not link.
     func testTheItemsFollowTheSystemShortcuts() {
-        let taken = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: stock)
+        let taken = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: stock, text: ShippedStrings.localizer("en"))
         XCTAssertEqual(taken.items[0], ShortcutMenu.Item(title: "⌃Space (a macOS shortcut)", isEnabled: false, isOn: false))
         XCTAssertEqual(taken.items[1], ShortcutMenu.Item(title: "⌥Space", isEnabled: true, isOn: true))
 
         // The same call after the key is freed un-greys it: the refresh path
         // asks again every menu open, so the answer must come from `system`.
-        let freed = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: [])
+        let freed = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: [], text: ShippedStrings.localizer("en"))
         XCTAssertEqual(freed.items[0], ShortcutMenu.Item(title: "⌃Space", isEnabled: true, isOn: false))
     }
 
@@ -620,7 +620,7 @@ final class ShortcutMenuTests: XCTestCase {
     // Mutation: `key = choices.firstIndex(where: isFree)` in the no-stored
     // branch of ShortcutMenu.plan -> RED (⌃Space is silently claimed).
     func testAWorkingKeyIsNotMovedForPreference() {
-        let plan = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: [])
+        let plan = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: [], text: ShippedStrings.localizer("en"))
         XCTAssertEqual(plan.key, 1, "⌥Space is registered and still free: stay on it")
         XCTAssertNil(plan.movedFrom, "no move, nothing to announce")
         XCTAssertTrue(plan.items[1].isOn)
@@ -630,34 +630,34 @@ final class ShortcutMenuTests: XCTestCase {
     // ShortcutMenu.plan -> RED (a forced move goes back to silent).
     func testLosingTheActiveKeyMovesAndMarksIt() {
         let optTaken = [SystemShortcut(keyCode: space, modifiers: option, enabled: true)]
-        let plan = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: optTaken)
+        let plan = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: optTaken, text: ShippedStrings.localizer("en"))
         XCTAssertEqual(plan.key, 0, "⌥Space is taken: fall back to free ⌃Space")
         XCTAssertEqual(plan.movedFrom, 1, "the move off ⌥Space earns a notice")
         XCTAssertEqual(plan.items[1], ShortcutMenu.Item(title: "⌥Space (a macOS shortcut)", isEnabled: false, isOn: false))
     }
 
     func testAStoredPickThatMacOSTookFallsBack() {
-        let plan = ShortcutMenu.plan(stored: ctrl, active: opt, choices: offers, system: stock)
+        let plan = ShortcutMenu.plan(stored: ctrl, active: opt, choices: offers, system: stock, text: ShippedStrings.localizer("en"))
         XCTAssertEqual(plan.key, 1)
         XCTAssertEqual(plan.movedFrom, 0)
     }
 
     func testAFreeStoredPickWinsOverTheActiveKey() {
-        let plan = ShortcutMenu.plan(stored: opt, active: ctrl, choices: offers, system: [])
+        let plan = ShortcutMenu.plan(stored: opt, active: ctrl, choices: offers, system: [], text: ShippedStrings.localizer("en"))
         XCTAssertEqual(plan.key, 1)
         XCTAssertNil(plan.movedFrom)
     }
 
     func testNothingFreeRegistersNothing() {
         let all = stock + [SystemShortcut(keyCode: space, modifiers: option, enabled: true)]
-        let plan = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: all)
+        let plan = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: all, text: ShippedStrings.localizer("en"))
         XCTAssertNil(plan.key)
         XCTAssertTrue(plan.items.allSatisfy { !$0.isEnabled && !$0.isOn })
         XCTAssertEqual(plan.movedFrom, 1)
     }
 
     func testFirstLaunchTakesTheFirstFreeKeySilently() {
-        let plan = ShortcutMenu.plan(stored: nil, active: nil, choices: offers, system: stock)
+        let plan = ShortcutMenu.plan(stored: nil, active: nil, choices: offers, system: stock, text: ShippedStrings.localizer("en"))
         XCTAssertEqual(plan.key, 1)
         XCTAssertNil(plan.movedFrom, "an initial choice is not a move")
     }
@@ -667,19 +667,19 @@ final class ShortcutMenuTests: XCTestCase {
     // ShortcutMenu.plan -> RED (the relaunch silently claims ⌃Space, freed
     // since the last session).
     func testARelaunchKeepsTheLastSessionsKey() {
-        let plan = ShortcutMenu.plan(stored: nil, active: nil, lastSession: opt, choices: offers, system: [])
+        let plan = ShortcutMenu.plan(stored: nil, active: nil, lastSession: opt, choices: offers, system: [], text: ShippedStrings.localizer("en"))
         XCTAssertEqual(plan.key, 1, "⌥Space worked last session and is still free: stay on it")
         XCTAssertNil(plan.movedFrom)
     }
 
     func testARelaunchAnnouncesTheMoveOffAKeyMacOSTook() {
-        let plan = ShortcutMenu.plan(stored: nil, active: nil, lastSession: ctrl, choices: offers, system: stock)
+        let plan = ShortcutMenu.plan(stored: nil, active: nil, lastSession: ctrl, choices: offers, system: stock, text: ShippedStrings.localizer("en"))
         XCTAssertEqual(plan.key, 1)
         XCTAssertEqual(plan.movedFrom, 0, "⌃Space became a macOS shortcut between launches: say so")
     }
 
     func testTheRegisteredKeyOutranksTheLastSession() {
-        let plan = ShortcutMenu.plan(stored: nil, active: ctrl, lastSession: opt, choices: offers, system: [])
+        let plan = ShortcutMenu.plan(stored: nil, active: ctrl, lastSession: opt, choices: offers, system: [], text: ShippedStrings.localizer("en"))
         XCTAssertEqual(plan.key, 0)
         XCTAssertNil(plan.movedFrom)
     }
@@ -689,7 +689,7 @@ final class ShortcutMenuTests: XCTestCase {
     // unconditionally from ShortcutMenu.onOpen -> RED (⌃Space is checked
     // while ⌥Space is the key that works).
     func testABusyMenuOpenKeepsTheCheckmarkOnTheRegisteredKey() {
-        let plan = ShortcutMenu.plan(stored: ctrl, active: opt, choices: offers, system: [])
+        let plan = ShortcutMenu.plan(stored: ctrl, active: opt, choices: offers, system: [], text: ShippedStrings.localizer("en"))
         XCTAssertEqual(plan.key, 0)
         let open = ShortcutMenu.onOpen(plan, registered: 1, idle: false)
         XCTAssertFalse(open.register, "nothing re-registers mid-dictation")
@@ -700,14 +700,14 @@ final class ShortcutMenuTests: XCTestCase {
     // Mutation: drop `idle &&` in ShortcutMenu.onOpen -> RED in the busy test
     // above (a key change would re-register mid-dictation).
     func testAnIdleMenuOpenRegistersAChangedKey() {
-        let plan = ShortcutMenu.plan(stored: ctrl, active: opt, choices: offers, system: [])
+        let plan = ShortcutMenu.plan(stored: ctrl, active: opt, choices: offers, system: [], text: ShippedStrings.localizer("en"))
         let open = ShortcutMenu.onOpen(plan, registered: 1, idle: true)
         XCTAssertTrue(open.register)
         XCTAssertEqual(open.items, plan.items)
     }
 
     func testAnIdleMenuOpenWithTheSameKeyOnlyRefreshes() {
-        let plan = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: [])
+        let plan = ShortcutMenu.plan(stored: nil, active: opt, choices: offers, system: [], text: ShippedStrings.localizer("en"))
         let open = ShortcutMenu.onOpen(plan, registered: 1, idle: true)
         XCTAssertFalse(open.register)
         XCTAssertEqual(open.items, plan.items)
@@ -746,12 +746,12 @@ final class SlowTranscriptionTests: XCTestCase {
     // Mutation: return "decoding a long recording" for every state in
     // SlowTranscription.reason -> RED (a dead speech server would go unnamed).
     func testTheReasonFollowsTheSttServerState() {
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "starting"), "loading the speech model")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "stopped"), "the speech server is not running; using the slower path")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "crashed"), "the speech server is not running; using the slower path")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "off"), "the speech server is off")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "ready"), "decoding a long recording")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: nil), "the daemon did not answer")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "starting", text: ShippedStrings.localizer("en")), "loading the speech model")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "stopped", text: ShippedStrings.localizer("en")), "the speech server is not running; using the slower path")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "crashed", text: ShippedStrings.localizer("en")), "the speech server is not running; using the slower path")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "off", text: ShippedStrings.localizer("en")), "the speech server is off")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "ready", text: ShippedStrings.localizer("en")), "decoding a long recording")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: nil, text: ShippedStrings.localizer("en")), "the daemon did not answer")
     }
 
     // Mutation: read "engine" instead of "stt_server" in

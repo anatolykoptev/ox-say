@@ -106,20 +106,26 @@ final class StudioController: NSObject {
 
     // MARK: finishing
 
+    /// Shows `dialog` over every app and returns the pressed button.
+    @discardableResult
+    private func show(_ dialog: UpdateDialog) -> NSApplication.ModalResponse {
+        host.alert(dialog.title, dialog.text, dialog.buttons)
+    }
+
     /// "Voiceover ready" with Show in Finder / Play / OK, or why it failed.
     private func presentFinish(_ finished: ProduceJob) {
-        guard let (title, text) = ProduceText.finishAlert(finished) else { return }
+        guard let dialog = StudioDialogs.finished(finished) else { return }
         guard let path = finished.outputPath else {
-            _ = host.alert(title, text, ["OK"])
+            show(dialog)
             return
         }
         let url = URL(fileURLWithPath: path)
-        switch host.alert(title, text, ["Show in Finder", "Play", "OK"]) {
+        switch show(dialog) {
         case .alertFirstButtonReturn:
             NSWorkspace.shared.activateFileViewerSelecting([url])
         case .alertSecondButtonReturn:
             guard let wav = try? Data(contentsOf: url, options: .mappedIfSafe) else {
-                _ = host.alert("Couldn't play the voiceover", "The file could not be opened. It may have been moved.", ["OK"])
+                show(StudioDialogs.playFailed())
                 return
             }
             host.play(wav, true) { [weak self] in self?.presentFinish(finished) }
@@ -135,7 +141,7 @@ final class StudioController: NSObject {
         Task { @MainActor [weak self] in
             guard let self, let script = await self.readScript(file) else { return }
             guard let voices = try? await self.host.speech.voices() else {
-                _ = self.host.alert("The ox-say service isn't answering", "Try again in a moment.", ["OK"])
+                self.show(StudioDialogs.serviceDown())
                 return
             }
             let choices = StudioMenu.voiceChoices(voices: voices, russianPick: self.host.russianVoicePick())
@@ -147,7 +153,7 @@ final class StudioController: NSObject {
                     try await client.startVoiceover(script: draft.script, title: draft.title, voice: draft.voice, format: draft.format)
                 },
                 failed: { error in
-                    _ = self.host.alert("Couldn't start the voiceover", Self.plain(error) + " Your text is kept in the next window.", ["OK"])
+                    self.show(StudioDialogs.startFailed(error))
                 })
             if let started { self.follower.follow(started) }
         }
@@ -157,7 +163,7 @@ final class StudioController: NSObject {
     private func readScript(_ file: URL) async -> String? {
         readingDocument = true
         render()
-        host.pill(Self.readingPillTask, "Reading the document…")
+        host.pill(Self.readingPillTask, L10nKey.studioReadingPill.text)
         defer {
             readingDocument = false
             render()
@@ -165,25 +171,23 @@ final class StudioController: NSObject {
         }
         do {
             let read = try await DocumentReader.readScript(file)
-            if read.script.isEmpty { _ = host.alert("Nothing to read", read.emptyMessage, ["OK"]) }
+            if read.script.isEmpty { show(StudioDialogs.nothingToRead(read)) }
             return read.script.isEmpty ? nil : read.script
         } catch {
-            let why = (error as? DocumentError)?.description ?? "The file could not be opened."
-            _ = host.alert("Couldn't read that file", why, ["OK"])
+            show(StudioDialogs.readFailed(error))
             return nil
         }
     }
 
     private func stopVoiceover() {
         guard let job = follower.job else { return }
-        let sure = host.alert("Stop this voiceover?", "ox-say stops after the part it is working on. What is already made is not turned into a finished file.",
-                              ["Stop Voiceover", "Keep Going"])
+        let sure = show(StudioDialogs.stop())
         guard sure == .alertFirstButtonReturn else { return }
         Task { @MainActor [weak self] in
             do {
                 try await self?.host.client.stopVoiceover(id: job.id)
             } catch {
-                _ = self?.host.alert("Couldn't stop the voiceover", Self.plain(error), ["OK"])
+                self?.show(StudioDialogs.stopFailed(error))
             }
         }
     }
@@ -194,7 +198,7 @@ final class StudioController: NSObject {
             do {
                 try await self?.host.client.continueOnBattery(id: job.id)
             } catch {
-                _ = self?.host.alert("Couldn't continue the voiceover", Self.plain(error), ["OK"])
+                self?.show(StudioDialogs.continueFailed(error))
             }
         }
     }
@@ -203,8 +207,4 @@ final class StudioController: NSObject {
         if let latestFolder { NSWorkspace.shared.open(latestFolder) }
     }
 
-    /// An error as the person should read it.
-    static func plain(_ error: Error) -> String {
-        (error as? StudioError)?.description ?? "Something went wrong. Try again."
-    }
 }

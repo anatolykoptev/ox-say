@@ -653,15 +653,15 @@ final class MeetingController: NSObject, MeetingFeature {
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.stringValue = MeetingSettings.displayName(host.defaults, fallback: NSFullUserName())
         alert.accessoryView = field
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L10nKey.commonOk.text)
+        alert.addButton(withTitle: L10nKey.commonCancel.text)
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn { MeetingSettings.setDisplayName(field.stringValue, host.defaults) }
     }
 
     private func installModel() {
         Task { @MainActor in
-            do { try await host.client.installNotesModel() } catch { host.notify("\(error)") }
+            do { try await host.client.installNotesModel() } catch { host.notify(StudioError.plain(error)) }
             render()
         }
     }

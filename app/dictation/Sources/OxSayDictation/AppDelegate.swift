@@ -14,7 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     /// Repair for a stale Accessibility grant; sits at the top of the menu
     /// only while the permission does not work (recomputed each open).
-    private let allowPastingItem = NSMenuItem(title: "Allow pasting… (Accessibility is off)",
+    private let allowPastingItem = NSMenuItem(title: L10nKey.menuAllowPasting.text,
                                               action: #selector(allowPasting), keyEquivalent: "")
     /// Repair for a version split the kickstart could not fix: the same
     /// conditional top slot, offered only while the daemon stays off the
@@ -46,8 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Whether the Allow-pasting row is due, as of the last menu open; a
     /// handshake pass ending on an open menu re-syncs against it.
     private var wantAllowPasting = false
-    private let toggleItem = NSMenuItem(title: "Toggle Mode (press to start, press again to stop)", action: #selector(toggleMode), keyEquivalent: "")
-    private let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
+    private let toggleItem = NSMenuItem(title: L10nKey.menuToggleMode.text, action: #selector(toggleMode), keyEquivalent: "")
+    private let loginItem = NSMenuItem(title: L10nKey.menuStartAtLogin.text, action: #selector(toggleLogin), keyEquivalent: "")
     /// "Sound While Dictating": a submenu of three exclusive rows — pause the
     /// music players, lower the whole output, or leave everything alone.
     private let soundSubmenu = NSMenu()
@@ -410,7 +410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speakActive = nil
         applySpeakShortcutItems(plan.items)
         guard let index = plan.key else {
-            notice("Every speak key is a macOS shortcut on this Mac. Free one in System Settings → Keyboard → Keyboard Shortcuts.")
+            notice(L10nKey.noticeSpeakAllMacOS.text)
             return
         }
         let key = SpeakShortcut.allCases[index]
@@ -419,7 +419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard speakHotKey != nil else {
             if speakRegisterFailFor != key {
                 speakRegisterFailFor = key
-                notice("\(key.title) is taken by another app, so speaking has no hotkey. Pick another one in this menu.")
+                notice(L10nKey.noticeSpeakTaken.text(key.title))
             }
             return
         }
@@ -429,7 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defaults.set(key.rawValue, forKey: speakKeyInUseKey)
         if let from = plan.movedFrom {
             let taken = SpeakShortcut.allCases[from]
-            notice("\(taken.title) is a macOS shortcut on this Mac, so speaking uses \(key.title).")
+            notice(L10nKey.noticeSpeakMoved.text(taken.title, key.title))
         }
     }
 
@@ -483,8 +483,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             applySpeakShortcutItems(speakOpen.items)
         }
-        speakHint.title = speakActive.map { "Speak: \($0.title) on a selection, or right-click → Services" }
-            ?? "Speak: select text, then right-click → Services"
+        speakHint.title = speakActive.map { L10nKey.menuSpeakHintKey.text($0.title) }
+            ?? L10nKey.menuSpeakHintNone.text
         // A grant recorded for a differently-signed build (an ad-hoc build's
         // cdhash, an older release) never matches again and the Settings
         // toggle cannot fix it; the repair item is offered only while the
@@ -531,10 +531,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speakHint.isEnabled = false
         menu.addItem(speakHint)
         menu.addItem(.separator())
-        menu.addItem(submenuItem("Voice", voiceSubmenu))
+        menu.addItem(submenuItem(L10nKey.menuVoice.text, voiceSubmenu))
         shortcutsSubmenu.autoenablesItems = false // or AppKit re-enables the greyed-out keys
-        menu.addItem(submenuItem("Keyboard Shortcuts", shortcutsSubmenu))
-        menu.addItem(submenuItem("Studio", studio.submenu))
+        menu.addItem(submenuItem(L10nKey.menuKeyboardShortcuts.text, shortcutsSubmenu))
+        menu.addItem(submenuItem(L10nKey.menuStudio.text, studio.submenu))
         if let meetings {
             let item = submenuItem(L10nKey.menuMeetings.text, meetings.submenu)
             meetingsMenuItem = item
@@ -546,11 +546,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(pasteLastItem)
         rebuildRecentMenu()
         menu.addItem(.separator())
-        menu.addItem(submenuItem("Settings", buildSettingsMenu()))
+        menu.addItem(submenuItem(L10nKey.menuSettings.text, buildSettingsMenu()))
         menu.addItem(.separator())
-        menu.addItem(withTitle: "About OxSay", action: #selector(showAbout), keyEquivalent: "").target = self
+        menu.addItem(withTitle: L10nKey.menuAppAbout.text, action: #selector(showAbout), keyEquivalent: "").target = self
         menu.addItem(withTitle: L10nKey.settingsCheckUpdates.text, action: #selector(checkForUpdates), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Quit OxSay", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(withTitle: L10nKey.menuAppQuit.text, action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(.separator())
         footerItem.isEnabled = false
         menu.addItem(footerItem)
@@ -862,8 +862,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         syncSoundModeItems()
         settings.addItem(soundItem)
         settings.addItem(.separator())
-        settings.addItem(withTitle: "Microphone Access…", action: #selector(openMicrophoneSettings), keyEquivalent: "").target = self
-        settings.addItem(withTitle: "Accessibility Access…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
+        settings.addItem(withTitle: L10nKey.menuMicrophoneAccess.text, action: #selector(openMicrophoneSettings), keyEquivalent: "").target = self
+        settings.addItem(withTitle: L10nKey.menuAccessibilityAccess.text, action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
         return settings
     }
 
@@ -873,8 +873,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .idle:
             symbol = "mic"
             statusLine.title = lastNotice ?? active.map { key in
-                controller.mode == .hold ? "Hold \(key.title) and speak" : "Press \(key.title) to start and stop"
-            } ?? "No dictation key"
+                controller.mode == .hold ? L10nKey.statusHold.text(key.title) : L10nKey.statusPress.text(key.title)
+            } ?? L10nKey.statusNoKey.text
             overlay.finish()
             // An install still running has no pill once the dictation that held
             // it ends; a notice released below replaces it, as it would any pill.
@@ -896,11 +896,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             symbol = "mic.fill"
             lastNotice = nil
             statusItem.button?.toolTip = nil
-            statusLine.title = "Listening… (esc cancels)"
+            statusLine.title = L10nKey.statusListening.text
             overlay.showListening()
         case .transcribing:
             symbol = "ellipsis.circle"
-            statusLine.title = "Transcribing… (esc cancels)"
+            statusLine.title = L10nKey.statusTranscribing.text
             // The paste goes to the app the user was dictating into, or nowhere.
             output.target = NSWorkspace.shared.frontmostApplication?.processIdentifier
             overlay.showWorking()
@@ -981,11 +981,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         guard seconds >= 3 else { return }
-        if let reason = slowReason, !reason.isEmpty {
-            overlay.setWorkingText("Transcribing… \(seconds)s · \(reason)")
-        } else {
-            overlay.setWorkingText("Transcribing… \(seconds)s")
-        }
+        overlay.setWorkingText(SlowTranscription.pillText(seconds: seconds, reason: slowReason))
     }
 
     /// Sends the text to the daemon with the pick for its script's language.
@@ -1011,7 +1007,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // pill over the recording's look.
         if controller.state == .idle {
             overlay.showWorking()
-            overlay.setWorkingText("Speaking…")
+            overlay.setWorkingText(L10nKey.pillSpeaking.text)
             overlay.setHintHidden(true)
             beginPill(&speakPill)
         }
@@ -1399,7 +1395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let text {
             speak(text)
         } else {
-            overlay.showMessage(problem ?? "Nothing selected to speak.")
+            overlay.showMessage(problem ?? L10nKey.noticeSelectionNothing.text)
         }
     }
 
@@ -1478,7 +1474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try SMAppService.mainApp.register()
             }
         } catch {
-            notice("Start at login: \(error.localizedDescription)")
+            notice(L10nKey.noticeLoginFailed.text(error.localizedDescription))
         }
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
@@ -1518,7 +1514,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// offered only while the entry does not work — nothing else's TCC state
     /// is touched.
     @objc private func allowPasting() {
-        let failure = "Could not refresh the Accessibility permission: remove OxSayDictation with − in System Settings → Privacy & Security → Accessibility, then add it again."
+        let failure = L10nKey.noticeAccessibilityRefresh.text
         // The reset runs off the main thread (a stuck tccd must not hang the
         // menu-bar app); the item is greyed until it ends, so a second click
         // cannot start a second reset.
