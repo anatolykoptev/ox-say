@@ -56,3 +56,32 @@ func TestNotesMarkdownEscapesSpeakerLabels(t *testing.T) {
 		}
 	}
 }
+
+// A rendering viewer fetches <img src=...> and <http://...> by itself, so no < from the model or the title
+// reaches notes.md unescaped, in any section (#235).
+// Mutations: notes_render.go cleanLine, remove the `<` escape -> RED (F4); NotesMarkdown, heading(m) without
+// cleanLine -> RED (F5).
+func TestNotesMarkdownEscapesAngleBrackets(t *testing.T) {
+	img := "<img src=http://example.invalid/x.png>"
+	auto := "<http://example.invalid/a>"
+	n := Notes{ChunkNotes: ChunkNotes{
+		Summary:       img,
+		Decisions:     []string{auto},
+		ActionItems:   []ActionItem{{Who: img, What: auto, When: img}},
+		OpenQuestions: []string{img},
+		Numbers:       []string{auto},
+	}}
+	md := NotesMarkdown(Manifest{Title: img}, n, "en")
+	short := ShortNotesMarkdown(Manifest{Title: img}, "en")
+	for name, out := range map[string]string{"notes": md, "short": short} {
+		for i, c := range out {
+			if c == '<' && (i == 0 || out[i-1] != '\\') {
+				t.Errorf("%s: unescaped < at %d:\n%s", name, i, out)
+				break
+			}
+		}
+	}
+	if strings.Count(md, `\<`) < 8 {
+		t.Errorf("want every writer escaped (title, summary, decision, owner, what, when, question, number):\n%s", md)
+	}
+}
