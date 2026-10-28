@@ -20,7 +20,6 @@ import (
 	"github.com/anatolykoptev/go-mcpserver"
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
-	"github.com/anatolykoptev/ox-say/internal/testutil"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -717,7 +716,6 @@ func TestStatusReportsAllEnginePaths(t *testing.T) {
 		c.VoxCPM2Bin = want["voxcpm2_bin"]
 		c.NotesBin = want["notes_bin"]
 		c.DiarBin = want["diar_bin"]
-		c.NotesPort = testutil.FreePort(t)
 	}, nil, nil)
 	cfg := d.Status().Config
 	for key, path := range want {

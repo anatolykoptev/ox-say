@@ -5,7 +5,9 @@ import "testing"
 // FreePorts must hand out pairwise distinct ports: its listeners all stay
 // open until every port is chosen, so the kernel cannot return one twice.
 // Mutation: fakechild.go FreePorts - close each listener right after taking
-// its port (instead of after the loop) -> RED (duplicate port).
+// its port (instead of after the loop) -> RED (duplicate port) only when the
+// kernel reuses a just-closed port. It did not on idle macOS or linux/arm64,
+// so this test guards the contract; it cannot force the kernel to reuse a port.
 func TestFreePortsAreDistinct(t *testing.T) {
 	const n, rounds = 8, 200
 	for r := 0; r < rounds; r++ {

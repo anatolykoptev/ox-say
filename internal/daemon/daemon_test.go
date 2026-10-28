@@ -102,7 +102,7 @@ func testLogSaw(t *testing.T, sub string) bool {
 // asserting the per-call CLI path switch it off in sttSetup.
 func testCfg(t *testing.T, dir string) *config.Config {
 	t.Helper()
-	ports := testutil.FreePorts(t, 3)
+	ports := testutil.FreePorts(t, 4)
 	return &config.Config{
 		Home:           filepath.Join(dir, "home"),
 		Addr:           "127.0.0.1:0",
@@ -121,6 +121,7 @@ func testCfg(t *testing.T, dir string) *config.Config {
 		STTBin:         os.Args[0],
 		STTModel:       filepath.Join(dir, "parakeet.bin"),
 		STTPort:        ports[2],
+		NotesPort:      ports[3],
 		STTGPU:         "auto",
 	}
 }
@@ -883,11 +884,13 @@ func TestDaemonHomeLock(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
 	home := filepath.Join(dir, "home")
-	mkCfg := func() *config.Config {
+	// d1 and d2 are alive together, so they get distinct engine ports.
+	ports := testutil.FreePorts(t, 2)
+	mkCfg := func(port int) *config.Config {
 		return &config.Config{
 			Home:           home,
 			Addr:           "127.0.0.1:0",
-			EnginePort:     testutil.FreePort(t),
+			EnginePort:     port,
 			EngineBin:      os.Args[0],
 			Model:          "talker.gguf",
 			Codec:          "codec.gguf",
@@ -898,11 +901,11 @@ func TestDaemonHomeLock(t *testing.T) {
 		}
 	}
 
-	d1, err := newDaemon(mkCfg(), testLogger(t), nil, nil, nil)
+	d1, err := newDaemon(mkCfg(ports[0]), testLogger(t), nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d2, err := newDaemon(mkCfg(), testLogger(t), nil, nil, nil); err == nil {
+	if d2, err := newDaemon(mkCfg(ports[1]), testLogger(t), nil, nil, nil); err == nil {
 		d2.Shutdown()
 		t.Fatal("second daemon on the same home started successfully")
 	} else if !strings.Contains(err.Error(), "another daemon") {
@@ -910,7 +913,7 @@ func TestDaemonHomeLock(t *testing.T) {
 	}
 	d1.Shutdown()
 	// The lock is released on shutdown — a later daemon can take it.
-	d3, err := newDaemon(mkCfg(), testLogger(t), nil, nil, nil)
+	d3, err := newDaemon(mkCfg(ports[0]), testLogger(t), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("daemon after lock release: %v", err)
 	}

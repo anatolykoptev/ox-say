@@ -17,7 +17,6 @@ import (
 	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
 	"github.com/anatolykoptev/ox-say/internal/stt"
-	"github.com/anatolykoptev/ox-say/internal/testutil"
 )
 
 // meetingFixture is a daemon whose recognizer and notes model are fakes.
@@ -100,7 +99,7 @@ func TestInstallNotesModelRunsTheFetchScript(t *testing.T) {
 		bin := filepath.Join(filepath.Dir(c.Home), "ox-llm")
 		_ = os.MkdirAll(filepath.Dir(bin), 0o755)
 		_ = os.WriteFile(bin, []byte("x"), 0o755)
-		c.NotesBin, c.NotesPort = bin, testutil.FreePort(t)
+		c.NotesBin = bin
 		c.NotesModel = filepath.Join(c.Home, "models", config.NotesModelFile)
 		model = c.NotesModel
 	})
@@ -139,7 +138,7 @@ func TestInstallNotesModelReportsAFailure(t *testing.T) {
 		bin := filepath.Join(filepath.Dir(c.Home), "ox-llm")
 		_ = os.MkdirAll(filepath.Dir(bin), 0o755)
 		_ = os.WriteFile(bin, []byte("x"), 0o755)
-		c.NotesBin, c.NotesPort = bin, testutil.FreePort(t)
+		c.NotesBin = bin
 		c.NotesModel = filepath.Join(c.Home, "models", config.NotesModelFile)
 	})
 	_ = os.MkdirAll(d.Cfg.Home, 0o755)
@@ -161,7 +160,7 @@ func TestInstallNotesModelNeedsTheScript(t *testing.T) {
 		bin := filepath.Join(filepath.Dir(c.Home), "ox-llm")
 		_ = os.MkdirAll(filepath.Dir(bin), 0o755)
 		_ = os.WriteFile(bin, []byte("x"), 0o755)
-		c.NotesBin, c.NotesPort = bin, testutil.FreePort(t)
+		c.NotesBin = bin
 		c.NotesModel = filepath.Join(c.Home, "models", config.NotesModelFile)
 	})
 	if err := d.InstallNotesModel(); err == nil || !strings.Contains(err.Error(), fetchModelsScript) {
@@ -230,7 +229,7 @@ func TestNotesBinSpawnsByAbsolutePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, _ := meetingFixture(t, func(c *config.Config) {
-		c.NotesBin, c.NotesPort = rel, testutil.FreePort(t)
+		c.NotesBin = rel
 		c.NotesModel = filepath.Join(dir, "notes.gguf")
 	})
 	if _, err := d.LLMSup.EnsureReady(context.Background()); err != nil {
@@ -264,7 +263,7 @@ func TestNotesCallWaitsForTheModelToLoad(t *testing.T) {
 	t.Setenv("OXSAY_FAKE_LLM", "1")
 	t.Setenv("OXSAY_FAKE_START_DELAY_MS", "400")
 	d, _ := meetingFixture(t, func(c *config.Config) {
-		c.NotesBin, c.NotesPort = os.Args[0], testutil.FreePort(t)
+		c.NotesBin = os.Args[0]
 		c.NotesModel = filepath.Join(dir, "notes.gguf")
 	})
 	start := time.Now()
@@ -291,7 +290,7 @@ func TestAFailedNotesStartIsReportedAsFailed(t *testing.T) {
 		model = filepath.Join(dir, "models", config.NotesModelFile)
 		_ = os.MkdirAll(filepath.Dir(model), 0o755)
 		_ = os.WriteFile(model, []byte("x"), 0o600)
-		c.NotesBin, c.NotesPort, c.NotesModel = os.Args[0], testutil.FreePort(t), model
+		c.NotesBin, c.NotesModel = os.Args[0], model
 	})
 	if _, err := (llmChat{d: d}).Complete(context.Background(), meeting.Request{System: "s", User: "u"}); err == nil {
 		t.Fatal("a start that fails must surface an error")
@@ -368,7 +367,7 @@ func TestInstallNotesModelRefusesAForeignFileName(t *testing.T) {
 		bin := filepath.Join(filepath.Dir(c.Home), "ox-llm")
 		_ = os.MkdirAll(filepath.Dir(bin), 0o755)
 		_ = os.WriteFile(bin, []byte("x"), 0o755)
-		c.NotesBin, c.NotesPort = bin, testutil.FreePort(t)
+		c.NotesBin = bin
 		c.NotesModel = filepath.Join(c.Home, "models", "my-own-model.gguf")
 	})
 	if err := d.InstallNotesModel(); err == nil || !strings.Contains(err.Error(), "different file") {
@@ -417,7 +416,7 @@ func TestNotesChildGetsTheMetalConcurrencySettingOnlyOnADiscreteCard(t *testing.
 		t.Setenv("GGML_METAL_CONCURRENCY_DISABLE", "") // registers the restore; the next line makes it absent
 		_ = os.Unsetenv("GGML_METAL_CONCURRENCY_DISABLE")
 		d, _ := meetingFixture(t, func(c *config.Config) {
-			c.NotesBin, c.NotesPort, c.GPUMemory = os.Args[0], testutil.FreePort(t), tc.memory
+			c.NotesBin, c.GPUMemory = os.Args[0], tc.memory
 			c.NotesModel = filepath.Join(dir, "notes.gguf")
 		})
 		if _, err := d.LLMSup.EnsureReady(context.Background()); err != nil {

@@ -70,7 +70,7 @@ func startNotesFake(t *testing.T) (*Daemon, string) {
 		model := filepath.Join(dir, "models", config.NotesModelFile)
 		_ = os.MkdirAll(filepath.Dir(model), 0o755)
 		_ = os.WriteFile(model, []byte("x"), 0o600)
-		c.NotesBin, c.NotesPort, c.NotesModel = os.Args[0], testutil.FreePort(t), model
+		c.NotesBin, c.NotesModel = os.Args[0], model
 	})
 	return d, dir
 }
@@ -280,7 +280,7 @@ func TestInitMeetingsWiresTheDependencies(t *testing.T) {
 	dir := t.TempDir()
 	model := filepath.Join(dir, config.NotesModelFile)
 	ready := newTestDaemonSTT(t, dir, func(c *config.Config) {
-		c.NotesBin, c.NotesPort, c.NotesModel = os.Args[0], testutil.FreePort(t), model
+		c.NotesBin, c.NotesModel = os.Args[0], model
 	}, nil, nil)
 	if got := ready.Meet.NotesReady(); got != config.NotesReasonModelMissing {
 		t.Errorf("no model: NotesReady = %q, want %q", got, config.NotesReasonModelMissing)
@@ -375,7 +375,7 @@ func installFixture(t *testing.T, script string) *Daemon {
 		bin := filepath.Join(filepath.Dir(c.Home), "ox-llm")
 		_ = os.MkdirAll(filepath.Dir(bin), 0o755)
 		_ = os.WriteFile(bin, []byte("x"), 0o755)
-		c.NotesBin, c.NotesPort = bin, testutil.FreePort(t)
+		c.NotesBin = bin
 		c.NotesModel = filepath.Join(c.Home, "models", config.NotesModelFile)
 	})
 	_ = os.MkdirAll(d.Cfg.Home, 0o755)
