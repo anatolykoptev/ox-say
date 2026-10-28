@@ -102,7 +102,7 @@ func (r *Runner) SweepRetention() int {
 	}
 	deleted := 0
 	for _, m := range list {
-		if r.expired(m, st.RetentionDays) && r.deleteAudio(m) {
+		if r.expired(m, st.RetentionDays) && r.deleteAudio(m, st.RetentionDays) {
 			deleted++
 		}
 	}
@@ -158,14 +158,53 @@ var (
 	rootFiles = []string{SettingsFile}
 )
 
-// deleteAudio removes a meeting's audio and work files and records it. False
-// when a file would not go or the record could not be saved: the next sweep
-// tries again.
-func (r *Runner) deleteAudio(m Manifest) bool {
+// errNotDue: by the time the sweep held the store lock the meeting was no longer one whose audio may go.
+var errNotDue = errors.New("meeting: audio is not due for deletion")
+
+// deleteAudio removes a meeting's audio and work files and records it. False when the meeting is no longer due, a
+// file would not go or the record could not be saved: the next sweep tries again.
+//
+// The decision and the delete are made under the store lock, the lock a retry takes to queue the meeting (Retry,
+// RetryVoices, retryFailed all go through Store.Update). expired is asked again on the record as it is now: a
+// meeting that a retry has queued, or that the runner has begun, is no longer done/transcribed/failed and is left
+// alone, and a retry that comes after sees the files gone and refuses. Judging a stale list and deleting later
+// left a gap in which a queued transcription lost the audio it was queued for.
+func (r *Runner) deleteAudio(m Manifest, days int) bool {
+	if r.beforeAudioDelete != nil {
+		r.beforeAudioDelete()
+	}
 	dir, err := r.Store.Dir(m.ID)
 	if err != nil {
 		return false
 	}
+	stuck := false
+	_, err = r.Store.Modify(m.ID, func(cur *Manifest) error {
+		if !r.expired(*cur, days) {
+			return errNotDue
+		}
+		if !removeAudio(dir) {
+			stuck = true
+			return errors.New("meeting: audio could not be deleted")
+		}
+		cur.AudioDeleted = true // saved only if it all went, and under the same lock
+		return nil
+	})
+	switch {
+	case errors.Is(err, errNotDue):
+		return false
+	case stuck:
+		r.Log.Warn("meeting: audio could not be deleted, will retry", slog.String("id", m.ID))
+		return false
+	case err != nil:
+		r.Log.Warn("meeting: cannot record the audio deletion", slog.String("id", m.ID), slog.Any("error", err))
+		return false
+	}
+	r.Log.Info("meeting: audio deleted by retention", slog.String("id", m.ID))
+	return true
+}
+
+// removeAudio deletes the audio files and the work directory; false when something would not go.
+func removeAudio(dir string) bool {
 	gone := true
 	for _, name := range audioFiles {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -180,14 +219,5 @@ func (r *Runner) deleteAudio(m Manifest) bool {
 	if err := os.RemoveAll(filepath.Join(dir, WorkDir)); err != nil { // the piece caches too
 		gone = false
 	}
-	if !gone {
-		r.Log.Warn("meeting: audio could not be deleted, will retry", slog.String("id", m.ID))
-		return false
-	}
-	if _, err := r.Store.Update(m.ID, func(m *Manifest) { m.AudioDeleted = true }); err != nil {
-		r.Log.Warn("meeting: cannot record the audio deletion", slog.String("id", m.ID), slog.Any("error", err))
-		return false
-	}
-	r.Log.Info("meeting: audio deleted by retention", slog.String("id", m.ID))
-	return true
+	return gone
 }

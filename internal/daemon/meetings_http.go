@@ -234,13 +234,19 @@ type meetingSummary struct {
 	VoicesRetryable bool `json:"voices_retryable,omitempty"`
 }
 
-func (d *Daemon) summarize(m meeting.Manifest) meetingSummary {
+// summarizer is summarize for a whole list: the diarizer's readiness is asked once for all of it.
+func (d *Daemon) summarizer() func(meeting.Manifest) meetingSummary {
+	retryable := d.Meet.VoicesRetryer()
+	return func(m meeting.Manifest) meetingSummary { return d.summary(m, retryable(m)) }
+}
+
+func (d *Daemon) summary(m meeting.Manifest, retryable bool) meetingSummary {
 	m = d.publicManifest(m)
 	return meetingSummary{
 		ID: m.ID, Title: m.Title, Started: m.Started, DurationS: m.DurationS, Status: m.Status,
 		Language: m.Language, HasNotes: m.Status == meeting.StatusDone, NotesPending: m.NotesPending,
 		Warnings: m.Warnings, Error: m.Error, FailReason: m.FailReason, Voices: m.Voices, VoiceMode: m.VoiceMode, DiarReason: m.DiarReason, AudioDeleted: m.AudioDeleted,
-		VoicesRetryable: d.Meet.VoicesRetryable(m),
+		VoicesRetryable: retryable,
 	}
 }
 
@@ -251,8 +257,9 @@ func (d *Daemon) handleMeetingList(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	out := make([]meetingSummary, 0, len(list))
+	summarize := d.summarizer()
 	for _, m := range list {
-		out = append(out, d.summarize(m))
+		out = append(out, summarize(m))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"meetings": out})
 }

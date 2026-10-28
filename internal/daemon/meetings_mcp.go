@@ -60,8 +60,9 @@ func (d *Daemon) toolMeetingsList(_ context.Context, _ *mcp.CallToolRequest, in 
 	}
 	limit = min(limit, maxMeetingsListed)
 	out := meetingsListOut{Meetings: []meetingSummary{}}
+	summarize := d.summarizer()
 	for _, m := range list[:min(limit, len(list))] {
-		out.Meetings = append(out.Meetings, d.summarize(m))
+		out.Meetings = append(out.Meetings, summarize(m))
 	}
 	return nil, out, nil
 }
