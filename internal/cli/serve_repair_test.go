@@ -27,12 +27,13 @@ import (
 // RED (the voice is never repaired).
 func TestServeRepairsBrokenVoice(t *testing.T) {
 	home := t.TempDir()
-	port := testutil.FreePort(t)
+	ports := testutil.FreePorts(t, 3)
+	port := ports[0]
 	t.Setenv("OX_SAY_HOME", home)
 	t.Setenv("OX_SAY_ADDR", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	t.Setenv("OX_SAY_ENGINE_LOG_DIR", filepath.Join(home, "logs"))
-	t.Setenv("OX_SAY_ENGINE_PORT", strconv.Itoa(testutil.FreePort(t)))
-	t.Setenv("OX_SAY_STT_PORT", strconv.Itoa(testutil.FreePort(t)))
+	t.Setenv("OX_SAY_ENGINE_PORT", strconv.Itoa(ports[1]))
+	t.Setenv("OX_SAY_STT_PORT", strconv.Itoa(ports[2]))
 
 	vdir := filepath.Join(home, "voices")
 	if err := os.MkdirAll(vdir, 0o755); err != nil {

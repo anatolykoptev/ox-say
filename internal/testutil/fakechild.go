@@ -790,7 +790,39 @@ func envMS(key string) time.Duration {
 	return time.Duration(v) * time.Millisecond
 }
 
-// FreePort returns a free loopback TCP port.
+// FreePorts returns n pairwise distinct free loopback TCP ports. All n
+// listeners stay open until every port is chosen, so the kernel cannot hand
+// the same port out twice (calling FreePort n times can, because each call
+// closes its listener before returning). Use it whenever one test needs more
+// than one port.
+//
+// Residual window: the listeners are closed before FreePorts returns, so
+// another process can still grab a port before the caller binds it. That is
+// the same race a single FreePort call has.
+func FreePorts(t *testing.T, n int) []int {
+	t.Helper()
+	ports := make([]int, 0, n)
+	lns := make([]net.Listener, 0, n)
+	defer func() {
+		for _, ln := range lns {
+			_ = ln.Close()
+		}
+	}()
+	for i := 0; i < n; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lns = append(lns, ln)
+		ports = append(ports, ln.Addr().(*net.TCPAddr).Port)
+	}
+	return ports
+}
+
+// FreePort returns a free loopback TCP port. It closes the listener before
+// returning, so another process can take the port before the caller binds
+// it, and two calls may return the same port: a test that needs several
+// ports must use FreePorts.
 func FreePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

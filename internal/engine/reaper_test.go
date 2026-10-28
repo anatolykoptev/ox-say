@@ -96,7 +96,8 @@ func TestReapOrphanWrongStartToken(t *testing.T) {
 	dir, pidPath := reapTestDir(t)
 	fakeEnv(t, dir)
 
-	orphan := fakeOrphan(t, testutil.FreePort(t))
+	ports := testutil.FreePorts(t, 2)
+	orphan := fakeOrphan(t, ports[0])
 	// A killed-but-unwaited child is a zombie and kill(pid,0) still reports
 	// it alive — survival must be asserted on Wait not returning, not on
 	// processAlive.
@@ -118,7 +119,7 @@ func TestReapOrphanWrongStartToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = newTestSupervisor(t, dir, func(c *Config) { c.Port = testutil.FreePort(t) })
+	_ = newTestSupervisor(t, dir, func(c *Config) { c.Port = ports[1] })
 	// The fake child does not trap SIGTERM, so a kill would surface here
 	// within milliseconds; 500ms leaves ample slack on a loaded box.
 	select {
@@ -134,7 +135,8 @@ func TestReapOrphanMatchingStartToken(t *testing.T) {
 	dir, pidPath := reapTestDir(t)
 	fakeEnv(t, dir)
 
-	orphan := fakeOrphan(t, testutil.FreePort(t))
+	ports := testutil.FreePorts(t, 2)
+	orphan := fakeOrphan(t, ports[0])
 	token, err := processStartTime(orphan.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +148,7 @@ func TestReapOrphanMatchingStartToken(t *testing.T) {
 	waitDone := make(chan struct{})
 	go func() { _ = orphan.Wait(); close(waitDone) }()
 
-	_ = newTestSupervisor(t, dir, func(c *Config) { c.Port = testutil.FreePort(t) })
+	_ = newTestSupervisor(t, dir, func(c *Config) { c.Port = ports[1] })
 	testutil.WaitFor(t, 3*time.Second, func() bool {
 		return !processAlive(orphan.Process.Pid)
 	}, "orphan kill")
@@ -160,7 +162,8 @@ func TestReapOrphanOldFormatPidfile(t *testing.T) {
 	dir, pidPath := reapTestDir(t)
 	fakeEnv(t, dir)
 
-	orphan := fakeOrphan(t, testutil.FreePort(t))
+	ports := testutil.FreePorts(t, 2)
+	orphan := fakeOrphan(t, ports[0])
 	if err := os.WriteFile(pidPath,
 		[]byte(strconv.Itoa(orphan.Process.Pid)), 0o644); err != nil {
 		t.Fatal(err)
@@ -168,7 +171,7 @@ func TestReapOrphanOldFormatPidfile(t *testing.T) {
 	waitDone := make(chan struct{})
 	go func() { _ = orphan.Wait(); close(waitDone) }()
 
-	_ = newTestSupervisor(t, dir, func(c *Config) { c.Port = testutil.FreePort(t) })
+	_ = newTestSupervisor(t, dir, func(c *Config) { c.Port = ports[1] })
 	testutil.WaitFor(t, 3*time.Second, func() bool {
 		return !processAlive(orphan.Process.Pid)
 	}, "orphan kill on an old-format pidfile")
