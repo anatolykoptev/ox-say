@@ -11,6 +11,7 @@
 //	OXSAY_FAKE_EXIT_MS        exit(1) after this many ms
 //	OXSAY_FAKE_EXIT_ONCE      with EXIT_MS: only self-exit once per FAKE_DIR
 //	OXSAY_FAKE_SPEECH_BLOCK   speech blocks until the request context ends
+//	OXSAY_FAKE_SPEECH_DROP=1  speech closes the connection without answering
 //	OXSAY_FAKE_IGNORE_SIGTERM SIGTERM is ignored; only SIGKILL ends the child
 //	OXSAY_FAKE_SPEECH_LOG     append-only file: one JSON line per speech body
 //	OXSAY_FAKE_SPEECH_RUNAWAY n | n+ | all: the n-th speech request (1-based,
@@ -724,6 +725,12 @@ func runFakeChild() int {
 				if c, _, err := hj.Hijack(); err == nil {
 					_ = c.Close()
 				}
+			}
+			return
+		}
+		if os.Getenv("OXSAY_FAKE_SPEECH_DROP") == "1" {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				_ = conn.Close()
 			}
 			return
 		}

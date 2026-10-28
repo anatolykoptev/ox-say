@@ -554,7 +554,7 @@ func TestPublicErrorScrubsKnownRootsWithSpaces(t *testing.T) {
 	d.Cfg.CacheDir = filepath.Join(d.Cfg.Home, "cache dir")
 	for _, msg := range []string{
 		"stat " + d.Cfg.Home + "/voices/nar.wav: no such file",
-		"open " + d.Cfg.CacheDir + "/design/a b.wav: permission denied",
+		"open " + d.Cfg.CacheDir + "/design/a.wav: permission denied",
 	} {
 		got := d.publicError(&requestError{msg}).Error()
 		if strings.Contains(got, "Support") || strings.Contains(got, "cache dir") || strings.Contains(got, "ox-say") ||
@@ -648,5 +648,59 @@ func TestDesignSaveHintMentionsReplace(t *testing.T) {
 	d, _, _ := designFixture(t)
 	if res := designThree(t, d); !strings.Contains(res.SaveHint, "--replace") {
 		t.Fatalf("save hint %q does not mention --replace", res.SaveHint)
+	}
+}
+
+// scrubRoot keeps the rest of the message when nothing delimits the path, and
+// matches whole path components only.
+// Mutation: design.go scrubRoot, end the path at a quote/colon/paren only (drop
+// whitespace from the cut set) -> the first row loses " no such file" -> RED. Mutation:
+// make boundedAfter always true -> "/database" is rewritten -> RED. Mutation:
+// make boundedBefore always true -> "/x/data" is rewritten -> RED.
+func TestScrubRootBoundariesAndRemainder(t *testing.T) {
+	for _, tc := range []struct{ in, root, want string }{
+		{"stat /data/voices/a.wav no such file", "/data", "stat [path] no such file"},
+		{"stat /data/voices/a.wav", "/data", "stat [path]"},
+		{"open /data: denied", "/data", "open [path]: denied"},
+		{"open /database/x: denied", "/data", "open /database/x: denied"},
+		{"open /x/data/y: denied", "/data", "open /x/data/y: denied"},
+		{"a /data/1 and (/data/2) end", "/data", "a [path] and ([path]) end"},
+	} {
+		if got := scrubRoot(tc.in, tc.root); got != tc.want {
+			t.Errorf("scrubRoot(%q, %q) = %q, want %q", tc.in, tc.root, got, tc.want)
+		}
+	}
+}
+
+// Saving over a voice that cannot be read: damaged settings point to replace,
+// a read that failed just now is a 503 "try again" that never says to re-record.
+// Mutation: voxcpm2.go voiceReadError, drop the `saving` branch -> "add the
+// voice again" in the save flow -> RED.
+func TestSaveOverUnreadableVoiceMessages(t *testing.T) {
+	d, _, _ := designFixture(t)
+	res := designThree(t, d)
+	meta := func(name string) string { return strings.TrimSuffix(d.Store.WAVPath(name), ".wav") + ".json" }
+	if _, err := saveTake(t, d, "dup", res.Takes[0].Path); err != nil {
+		t.Fatal(err)
+	}
+	good, _ := os.ReadFile(meta("dup"))
+	if err := os.WriteFile(meta("dup"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := saveTake(t, d, "dup", res.Takes[1].Path)
+	if err == nil || synthStatus(err) != http.StatusBadRequest || !strings.Contains(err.Error(), "replace") || strings.Contains(err.Error(), "add the voice again") {
+		t.Fatalf("damaged: %v (status %d), want a 400 pointing to replace", err, synthStatus(err))
+	}
+	if err := os.WriteFile(meta("dup"), good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(meta("dup"), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(meta("dup"), 0o644) })
+	_, err = saveTake(t, d, "dup", res.Takes[1].Path)
+	if err == nil || synthStatus(err) != http.StatusServiceUnavailable || !strings.Contains(err.Error(), "try again") ||
+		strings.Contains(err.Error(), "again from") || strings.Contains(err.Error(), "damaged") {
+		t.Fatalf("I/O failure: %v (status %d), want a 503 try-again", err, synthStatus(err))
 	}
 }

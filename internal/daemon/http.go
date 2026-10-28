@@ -151,7 +151,7 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		}
 		resp, err = d.ec.Speech(r.Context(), base, raw)
 		if err != nil {
-			writeErr(w, http.StatusBadGateway, fmt.Sprintf("engine speech: %v", err))
+			writeErr(w, http.StatusBadGateway, d.transportError(r.Context(), err).Error())
 			return
 		}
 		if resp.StatusCode/100 == 2 {
@@ -187,7 +187,7 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	case "mp3", "opus":
 		wav, err := readAllCap(resp.Body, 256<<20)
 		if err != nil {
-			writeErr(w, http.StatusBadGateway, fmt.Sprintf("engine speech: %v", err))
+			writeErr(w, http.StatusBadGateway, d.transportError(r.Context(), err).Error())
 			return
 		}
 		out, err := transcode(r.Context(), wav, format)

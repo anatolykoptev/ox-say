@@ -432,7 +432,7 @@ func (d *Daemon) addVoice(ctx context.Context, name, audioPath, refText string, 
 		if _, gerr := d.Store.Get(name); gerr == nil {
 			return nil, false, errVoiceExists(name)
 		} else if !errors.Is(gerr, voices.ErrNotFound) {
-			return nil, false, d.voiceReadError(name, gerr)
+			return nil, false, d.voiceReadError(name, gerr, true)
 		}
 	}
 	v, err = pending.Commit()

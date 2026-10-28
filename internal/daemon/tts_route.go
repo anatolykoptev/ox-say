@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/voices"
@@ -85,6 +86,12 @@ func (e *engineTransportError) Error() string {
 }
 func (e *engineTransportError) Unwrap() error { return e.err }
 
+// transientError is a failure that may pass on its own (a file that could not
+// be read just now): HTTP 503, the caller may retry.
+type transientError struct{ msg string }
+
+func (e *transientError) Error() string { return e.msg }
+
 // errEngineStart marks a child that failed to become ready (HTTP 503).
 var errEngineStart = errors.New("engine failed to start")
 
@@ -97,7 +104,10 @@ func synthStatus(err error) int {
 	var ce *conflictError
 	var rwe *runawayError
 	var te *engineTransportError
+	var tre *transientError
 	switch {
+	case errors.As(err, &tre):
+		return http.StatusServiceUnavailable
 	case errors.As(err, &rwe), errors.As(err, &te):
 		return http.StatusBadGateway
 	case errors.As(err, &ce):
@@ -148,7 +158,7 @@ func (d *Daemon) prepareSpeech(body map[string]any) (model, warning string, err 
 		if strings.HasPrefix(low, "vox") {
 			// "voxcpm-2", "voxcpm": a near miss must not look like a success on
 			// the wrong engine (#143.1).
-			warning = fmt.Sprintf("model %q is not a model name here, so the default engine spoke; the studio voice model is %q", name, config.TTSModelVoxCPM2)
+			warning = fmt.Sprintf("model %q is not a model name here, so the default engine spoke; the studio voice model is %q", clipRunes(name, maxEchoedModelRunes), config.TTSModelVoxCPM2)
 		}
 		model = d.Cfg.TTSModel
 		if vname, _ := body[fieldVoice].(string); vname != "" {
@@ -179,6 +189,24 @@ func (d *Daemon) prepareSpeech(body map[string]any) (model, warning string, err 
 		}
 	}
 	return model, warning, nil
+}
+
+// maxEchoedModelRunes bounds a caller's model name echoed back in a header.
+const maxEchoedModelRunes = 64
+
+// clipRunes cuts s to n runes, marking the cut, and drops control characters:
+// the result goes into an HTTP header.
+func clipRunes(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }
 
 // dropVoxOnlyFields removes the voxcpm2 knobs from body and returns the names

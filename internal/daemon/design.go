@@ -284,9 +284,13 @@ func scrubStrayPath(s string) string {
 	})
 }
 
-// scrubRoot replaces every occurrence of root, and what follows it up to a
-// quote, colon, parenthesis or line end, with "[path]".
+// scrubRoot replaces each occurrence of root, and the path below it (up to
+// whitespace, a quote, colon or parenthesis), with "[path]"; the rest of the
+// message is kept. A match must be a whole path component at both ends: root
+// "/data" is not "/database" and not the tail of "/x/data".
 func scrubRoot(s, root string) string {
+	const before = " \t\n\"'(=:"
+	const after = " \t\n\"'():"
 	var b strings.Builder
 	for {
 		i := strings.Index(s, root)
@@ -294,14 +298,25 @@ func scrubRoot(s, root string) string {
 			b.WriteString(s)
 			return b.String()
 		}
+		end := i + len(root)
+		boundedBefore := i == 0 || strings.IndexByte(before, s[i-1]) >= 0
+		boundedAfter := end == len(s) || s[end] == '/' || strings.IndexByte(after, s[end]) >= 0
+		if !boundedBefore || !boundedAfter {
+			b.WriteString(s[:end])
+			s = s[end:]
+			continue
+		}
 		b.WriteString(s[:i])
 		b.WriteString("[path]")
-		rest := s[i+len(root):]
-		end := strings.IndexAny(rest, "\"'():\n")
-		if end < 0 {
-			return b.String()
+		rest := s[end:]
+		if strings.HasPrefix(rest, "/") {
+			cut := strings.IndexAny(rest, after)
+			if cut < 0 {
+				return b.String()
+			}
+			rest = rest[cut:]
 		}
-		s = rest[end:]
+		s = rest
 	}
 }
 
@@ -476,7 +491,7 @@ func (d *Daemon) SaveDesignedVoice(ctx context.Context, in SaveDesignInput) (*vo
 			return nil, false, errVoiceExists(in.Name)
 		}
 		if !errors.Is(gerr, voices.ErrNotFound) {
-			return nil, false, d.voiceReadError(in.Name, gerr)
+			return nil, false, d.voiceReadError(in.Name, gerr, true)
 		}
 	}
 	seed := rec.Seed

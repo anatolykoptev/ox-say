@@ -150,7 +150,9 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 // the engine failing to answer (502, #143.3).
 func (d *Daemon) transportError(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
-		return fmt.Errorf("engine speech: %w", err)
+		// The caller's own cancel or deadline: its reason, not the transport
+		// error, which names the child's address.
+		return fmt.Errorf("engine speech: %w", ctx.Err())
 	}
 	d.log.Warn("engine speech: no usable answer", slog.Any("error", err))
 	return &engineTransportError{err: err}

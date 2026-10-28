@@ -354,12 +354,12 @@ func (d *Daemon) resolveVoxVoice(body map[string]any) (v *voices.Voice, wavPath 
 	}
 	got, err := d.Store.Get(name)
 	if err != nil {
-		return nil, "", d.voiceReadError(name, err)
+		return nil, "", d.voiceReadError(name, err, false)
 	}
 	wavPath = d.Store.WAVPath(name)
 	secs, err := voices.WAVSeconds(wavPath)
 	if err != nil {
-		return nil, "", d.voiceReadError(name, err)
+		return nil, "", d.voiceReadError(name, err, false)
 	}
 	if err := checkVoxReference(secs); err != nil {
 		return nil, "", err
@@ -368,16 +368,30 @@ func (d *Daemon) resolveVoxVoice(body map[string]any) (v *voices.Voice, wavPath 
 }
 
 // voiceReadError is a stored voice that cannot be read, in plain words for the
-// caller. A missing or badly named voice keeps its own message (it names no
-// path); anything else carries the absolute path of the voice store, so the
-// detail goes to the log and the caller is told what to do (#143.4).
-func (d *Daemon) voiceReadError(name string, err error) error {
+// caller; the detail (it carries the absolute path of the voice store) goes to
+// the log (#143.4). Three kinds:
+//   - missing or badly named: its own message, a 400;
+//   - damaged (metadata that does not decode, a recording that is not a WAV): a
+//     400 telling the person to re-add the voice, or, when saving over it, to
+//     pass replace;
+//   - anything else is an I/O failure that may pass (EMFILE, EIO, a file busy):
+//     a 503 "try again". It never tells anyone to re-record a good voice.
+func (d *Daemon) voiceReadError(name string, err error, saving bool) error {
 	var ie *voices.InputError
 	if errors.Is(err, voices.ErrNotFound) || errors.As(err, &ie) {
 		return &requestError{fmt.Sprintf("voice %q: %v", name, err)}
 	}
 	d.log.Error("voice: cannot read the stored voice", slog.String("voice", name), slog.Any("error", err))
-	return &requestError{fmt.Sprintf("voice %q: its recording or settings cannot be read; add the voice again (details are in the ox-say log)", name)}
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	if errors.Is(err, voices.ErrBadWAV) || errors.As(err, &syn) || errors.As(err, &typ) {
+		fix := "add the voice again"
+		if saving {
+			fix = "pass replace to overwrite it"
+		}
+		return &requestError{fmt.Sprintf("voice %q: its recording or settings are damaged; %s (details are in the ox-say log)", name, fix)}
+	}
+	return &transientError{fmt.Sprintf("voice %q could not be read just now; try again (details are in the ox-say log)", name)}
 }
 
 // synthesizeVoxCPM2 renders a prepared body on the voxcpm2 child. The engine
