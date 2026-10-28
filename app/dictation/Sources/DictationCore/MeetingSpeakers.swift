@@ -144,7 +144,12 @@ public struct SpeakerDraft: Equatable {
         let ids = state.speakers.map(\.id).sorted()
         let held = Dictionary(uniqueKeysWithValues: state.speakers.compactMap { s in s.mergedTo.map { (s.id, $0) } })
         for id in ids { if let into = mergeInto[id], held[id] == into { accept(id, into) } }
-        for id in ids { if let into = mergeInto[id], held[id] != into { accept(id, into) } }
+        for id in ids {
+            guard let into = mergeInto[id], held[id] != into else { continue }
+            accept(id, into)
+            // A refused new pick leaves the merge the user already has; only an explicit "—" (no pick) splits it.
+            if kept[id] == nil, let old = held[id] { accept(id, old) }
+        }
         return kept
     }
 

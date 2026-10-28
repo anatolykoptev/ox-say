@@ -70,7 +70,7 @@ public struct MeetingSearchResult: Equatable {
             }
             let started = (m["started"] as? String).flatMap { iso.date(from: $0) ?? plain.date(from: $0) }
             return SearchedMeeting(id: id, title: m["title"] as? String ?? "", started: started,
-                                   status: (m["status"] as? String).flatMap(MeetingInfo.Status.init(rawValue:)), hits: hits)
+                                   status: (m["status"] as? String).map(MeetingInfo.Status.init(wire:)), hits: hits)
         }
         return MeetingSearchResult(meetings: meetings, truncated: obj["truncated"] as? Bool ?? false,
                                    skipped: obj["skipped"] as? Int ?? 0)

@@ -14,7 +14,9 @@ public enum PlaybackGate: Equatable {
 
     public static func decide(audioDeleted: Bool, recordingRunning: Bool, status: MeetingInfo.Status) -> PlaybackGate {
         if audioDeleted { return .audioRemoved }
+        // An unknown status may be a recording that a newer daemon names differently: no audio file to trust yet.
         if status == .recording { return .notReady }
+        if case .unknown = status { return .notReady }
         if recordingRunning { return .blockedByRecording }
         return .allowed
     }
