@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -203,6 +204,11 @@ func TestNotesServerArgsWriteAPrivateKeyPerSpawn(t *testing.T) {
 	if strings.Contains(joined, string(first[:len(first)-1])) {
 		t.Error("the key itself must never be in the argv")
 	}
+	// `-ngl 0` (asserted above) and the Metal env go together (#238.c); the full pairing is in
+	// TestNotesEnginePinsCPUDecodeAndMetalConcurrencyTogether.
+	if env := notesEngineConfig(cfg, nil).Env; !slices.Equal(env, []string{"GGML_METAL_CONCURRENCY_DISABLE=1"}) {
+		t.Errorf("with -ngl 0 the notes child env = %q, want GGML_METAL_CONCURRENCY_DISABLE=1", env)
+	}
 }
 
 // ox-llm must be spawned by an absolute path: it finds its Metal library
@@ -367,5 +373,62 @@ func TestInstallNotesModelRefusesAForeignFileName(t *testing.T) {
 	})
 	if err := d.InstallNotesModel(); err == nil || !strings.Contains(err.Error(), "different file") {
 		t.Fatalf("err = %v, want a refusal to download over the user's own model path", err)
+	}
+}
+
+// Without unified memory the notes server decodes on the CPU (`-ngl 0`) AND its Metal graph runs without concurrency
+// (GGML_METAL_CONCURRENCY_DISABLE=1): llama.cpp's own ggml has none of the engine's AMD patch, and the two settings
+// belong together (#238.c). With unified memory the layers go to the GPU and the variable is not set. The argv and
+// the env come from the same memory-model decision, so they are pinned together.
+// Mutation: internal/daemon/meetings.go notesEngineConfig, drop the `Env: notesServerEnv(cfg),` line -> RED.
+func TestNotesEnginePinsCPUDecodeAndMetalConcurrencyTogether(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		memory  string
+		wantNGL string
+		wantEnv []string
+	}{
+		{"discrete", config.GPUMemoryDiscrete, " -ngl 0 ", []string{"GGML_METAL_CONCURRENCY_DISABLE=1"}},
+		{"unified", config.GPUMemoryUnified, " -ngl 99 ", nil},
+	} {
+		cfg := testCfg(t, t.TempDir())
+		cfg.NotesModel, cfg.GPUMemory = "/m/notes.gguf", tc.memory
+		ec := notesEngineConfig(cfg, nil)
+		joined := " " + strings.Join(ec.Args(8098), " ") + " "
+		if !strings.Contains(joined, tc.wantNGL) {
+			t.Errorf("%s: argv lacks %q: %s", tc.name, tc.wantNGL, joined)
+		}
+		if !slices.Equal(ec.Env, tc.wantEnv) {
+			t.Errorf("%s: Env = %q, want %q", tc.name, ec.Env, tc.wantEnv)
+		}
+	}
+}
+
+// The variable reaches the spawned ox-llm (the supervisor passes Config.Env on), and only on a discrete card.
+// Mutation: internal/engine/supervisor.go spawn, delete the `cmd.Env = ...` line -> RED.
+func TestNotesChildGetsTheMetalConcurrencySettingOnlyOnADiscreteCard(t *testing.T) {
+	for _, tc := range []struct{ memory, want string }{
+		{config.GPUMemoryDiscrete, "1"},
+		{config.GPUMemoryUnified, "unset"},
+	} {
+		dir := t.TempDir()
+		t.Setenv("OXSAY_FAKE_LLM", "1")
+		t.Setenv("OXSAY_FAKE_DIR", dir)
+		t.Setenv("GGML_METAL_CONCURRENCY_DISABLE", "") // registers the restore; the next line makes it absent
+		_ = os.Unsetenv("GGML_METAL_CONCURRENCY_DISABLE")
+		d, _ := meetingFixture(t, func(c *config.Config) {
+			c.NotesBin, c.NotesPort, c.GPUMemory = os.Args[0], testutil.FreePort(t), tc.memory
+			c.NotesModel = filepath.Join(dir, "notes.gguf")
+		})
+		if _, err := d.LLMSup.EnsureReady(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		marks, err := filepath.Glob(filepath.Join(dir, "llm-metal-*"))
+		if err != nil || len(marks) != 1 {
+			t.Fatalf("%s: env stamps = %v, %v", tc.memory, marks, err)
+		}
+		if raw, _ := os.ReadFile(marks[0]); string(raw) != tc.want {
+			t.Errorf("%s: GGML_METAL_CONCURRENCY_DISABLE in the child = %q, want %q", tc.memory, raw, tc.want)
+		}
 	}
 }

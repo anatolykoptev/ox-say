@@ -94,12 +94,27 @@ func notesServerArgs(cfg *config.Config, port int) []string {
 		"-fa", "on", "--jinja", "--no-ui", "-np", "1", "--cache-ram", "0",
 		"--cors-origins", "localhost",
 	}
-	ngl := "0"
-	if cfg.UnifiedMemory() {
-		ngl = "99"
-	}
-	args = append(args, "-ngl", ngl)
+	args = append(args, "-ngl", notesGPULayers(cfg))
 	return append(args, "--api-key-file", filepath.Join(cfg.RunDir(), notesKeyFile))
+}
+
+// notesGPULayers is the -ngl value: all layers on the GPU with unified memory, none without.
+func notesGPULayers(cfg *config.Config) string {
+	if cfg.UnifiedMemory() {
+		return "99"
+	}
+	return "0"
+}
+
+// notesServerEnv is what ox-llm's spawn adds to the environment. Without unified memory (the CPU decode of
+// `-ngl 0`) Metal runs with its graph concurrency off: the engine's own ggml reads the variable through
+// engine/patches/ggml/0001, and llama.cpp's ggml has no such patch, so the daemon sets it for the child as defence in
+// depth (#238). It is decided from the same memory model as notesGPULayers, so the two cannot disagree.
+func notesServerEnv(cfg *config.Config) []string {
+	if notesGPULayers(cfg) == "0" {
+		return []string{"GGML_METAL_CONCURRENCY_DISABLE=1"}
+	}
+	return nil
 }
 
 // notesKeyWrite puts the key bytes into the open temp file; a test replaces it
@@ -248,6 +263,7 @@ func notesEngineConfig(cfg *config.Config, logger *slog.Logger) engine.Config {
 		PidPath:        filepath.Join(cfg.RunDir(), "notes.pid"),
 		Logger:         logger,
 		Args:           func(port int) []string { return notesServerArgs(cfg, port) },
+		Env:            notesServerEnv(cfg),
 		Prepare:        func() error { return notesPrepare(cfg) },
 		Verify:         notesVerifyAuth,
 	}
