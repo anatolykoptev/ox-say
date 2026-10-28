@@ -30,7 +30,16 @@ var numeralWords = map[string]bool{
 // notNumerals are stem+ending products that no number is ever spoken as but
 // that would fill a number slot for free ("трио", the heel "пята", the pole
 // "шест", "перва", "сота").
-var notNumerals = map[string]bool{"трио": true, "пята": true, "шест": true, "перва": true, "сота": true, "соты": true}
+var notNumerals = map[string]bool{
+	"трио": true, "пята": true, "шест": true, "перва": true, "сота": true, "соты": true,
+	// the heel "пята", the pole "шест" and the honeycomb "сота" in the cases
+	// that are no form of пятый/шестой/сотый (those keep "пятой", "шестом",
+	// "сотых" ...). Only clear non-numbers: the rest of the lexicon is
+	// calibrated against the owner's blind labels once they exist (#146.2).
+	"пяте": true, "пяту": true, "пяты": true, "пятам": true, "пятах": true, "пятами": true,
+	"шеста": true, "шесту": true, "шесты": true, "шесте": true, "шестов": true, "шестам": true, "шестах": true, "шестами": true,
+	"сотов": true, "сотам": true, "сотах": true, "сотами": true, "соте": true,
+}
 
 // numeralEndings are the case, gender and number endings numeralStems take.
 var numeralEndings = map[string]bool{
