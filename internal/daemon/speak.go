@@ -282,6 +282,11 @@ func formatExt(format string) string {
 // writeFile writes audio to path; without overwrite the file is created
 // exclusively (a second writer fails rather than clobbering).
 func writeFile(path string, data []byte, overwrite bool) error {
+	return writeFileMode(path, data, overwrite, 0o644)
+}
+
+// writeFileMode is writeFile with the permission bits of a new file.
+func writeFileMode(path string, data []byte, overwrite bool, mode os.FileMode) error {
 	flags := os.O_WRONLY | os.O_CREATE
 	if overwrite {
 		// Never follow a planted symlink onto an unrelated file.
@@ -292,7 +297,7 @@ func writeFile(path string, data []byte, overwrite bool) error {
 	} else {
 		flags |= os.O_EXCL
 	}
-	f, err := os.OpenFile(path, flags, 0o644)
+	f, err := os.OpenFile(path, flags, mode)
 	if err != nil {
 		if os.IsExist(err) {
 			return fmt.Errorf("%q exists; set overwrite to replace it", path)

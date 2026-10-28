@@ -52,6 +52,10 @@ func cmdVoiceDesign(args []string, stdout, stderr io.Writer) int {
 			outf(stderr, "ox-say: -%s wants a whole number, got %q\n", flagName, vals[flagName])
 			return 2
 		}
+		if flagName == "n" && n < 1 {
+			outln(stderr, "ox-say: -n must be at least 1 (leave it out for the default)")
+			return 2
+		}
 		body[key] = n
 	}
 	raw, err := postJSON(daemonURL()+"/v1/audio/voices/design", body)

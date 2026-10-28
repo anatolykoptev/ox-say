@@ -93,3 +93,17 @@ func TestVoiceSaveReplaceFlag(t *testing.T) {
 		t.Fatalf("body %v", *body)
 	}
 }
+
+// `-n 0` is refused here instead of silently meaning the daemon's default of 3.
+// Mutation: cmdVoiceDesign, delete the `n < 1` check -> the request is sent
+// with takes 0 -> RED.
+func TestVoiceDesignRefusesZeroTakes(t *testing.T) {
+	path, _ := stubDaemon(t, designReply)
+	for _, n := range []string{"0", "-1"} {
+		var out, errb strings.Builder
+		code := Run([]string{"voice", "design", "warm voice", "-t", "Привет.", "-n", n}, &out, &errb, "test")
+		if code != 2 || !strings.Contains(errb.String(), "-n") || *path != "" {
+			t.Errorf("-n %s: exit %d, stderr %q, daemon called %q; want exit 2 and no request", n, code, errb.String(), *path)
+		}
+	}
+}

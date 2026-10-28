@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -364,8 +366,9 @@ func TestDesignTextCapAndOverlongTake(t *testing.T) {
 
 // Saving onto an existing name is refused (409) unless replace is set, and a
 // replaced designed voice does not inherit the old voice's style.
-// Mutation R-exists: design.go SaveDesignedVoice, delete the exists check -> RED.
-// Mutation R-style: design.go SaveDesignedVoice, delete the style clear -> RED.
+// Mutation R-exists: design.go SaveDesignedVoice, delete the early exists check AND service.go addVoice's createOnly check -> RED.
+// Mutation R-style: service.go addVoice, delete the `pending.Fresh()` call -> RED.
+// (R-exists also holds at the early check, and under voiceMu: see TestConcurrentSavesOntoOneNameKeepOne.)
 func TestSaveDesignedVoiceExistingName(t *testing.T) {
 	d, _, _ := designFixture(t)
 	res := designThree(t, d)
@@ -463,5 +466,187 @@ func TestPublicErrorWithholdsPaths(t *testing.T) {
 	}
 	if keep := d.publicError(&requestError{"seed must be 0..5 and/or more"}); keep.Error() != "seed must be 0..5 and/or more" {
 		t.Fatalf("a message without a path was changed: %v", keep)
+	}
+}
+
+// #160.8: the exists check and the write are one step under voiceMu. Two saves
+// of different takes onto the same new name both pass the early check while
+// each other's Prepare is in flight; exactly one may land, the other is a 409,
+// and the voice on disk is the winner's, not a silent replacement.
+// Mutation: service.go addVoice, delete the `d.Store.Get(name)` create-only
+// check under voiceMu -> both succeed -> RED.
+func TestConcurrentSavesOntoOneNameKeepOne(t *testing.T) {
+	d, _, _ := designFixture(t)
+	res := designThree(t, d)
+	var arrived atomic.Int32
+	d.slowPrepare = func() { // both saves are past the early check before either commits
+		arrived.Add(1)
+		for deadline := time.Now().Add(5 * time.Second); arrived.Load() < 2 && time.Now().Before(deadline); {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	t.Cleanup(func() { d.slowPrepare = nil })
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = saveTake(t, d, "race", res.Takes[i].Path)
+		}()
+	}
+	wg.Wait()
+	won := -1
+	for i, err := range errs {
+		switch {
+		case err == nil && won < 0:
+			won = i
+		case err == nil:
+			t.Fatalf("both saves succeeded: the later one silently replaced the first")
+		case synthStatus(err) != http.StatusConflict:
+			t.Fatalf("save %d: %v (status %d), want 409", i, err, synthStatus(err))
+		}
+	}
+	if won < 0 {
+		t.Fatal("neither save succeeded")
+	}
+	if v, _ := d.Store.Get("race"); v == nil || v.Seed == nil || *v.Seed != res.Takes[won].Seed {
+		t.Fatalf("stored voice %+v is not the winner's take (seed %d)", v, res.Takes[won].Seed)
+	}
+}
+
+// #160.8: a failure to read the existing voice other than "not found" is an
+// error, not "absent": saving over a voice whose metadata cannot be read would
+// replace it unseen.
+// Mutation: design.go SaveDesignedVoice, treat every Get error as absent again
+// (`gerr == nil && !in.Replace` stays, drop the ErrNotFound test) -> RED.
+func TestSaveRefusesWhenExistingVoiceUnreadable(t *testing.T) {
+	d, _, _ := designFixture(t)
+	res := designThree(t, d)
+	if _, err := saveTake(t, d, "dup", res.Takes[0].Path); err != nil {
+		t.Fatal(err)
+	}
+	meta := strings.TrimSuffix(d.Store.WAVPath("dup"), ".wav") + ".json"
+	if err := os.Chmod(meta, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(meta, 0o644) })
+	_, err := saveTake(t, d, "dup", res.Takes[1].Path)
+	if err == nil {
+		t.Fatal("a save onto an unreadable voice succeeded")
+	}
+	if strings.Contains(d.publicError(err).Error(), "/") {
+		t.Fatalf("the refusal shows a path: %v", err)
+	}
+	if got, ierr := os.Stat(d.Store.WAVPath("dup")); ierr != nil || got.Size() == 0 {
+		t.Fatal("the unreadable voice's audio was replaced")
+	}
+}
+
+// #160.7: the scrub knows the daemon's own folders. A root with a space in it
+// ("Application Support", the default home) must not leave its tail in the
+// message, and a URL-like route in the text stays readable.
+// Mutation: design.go publicError, delete the loop over d.privateRoots() ->
+// the generic pattern stops at the space -> RED.
+func TestPublicErrorScrubsKnownRootsWithSpaces(t *testing.T) {
+	d, _, _ := designFixture(t)
+	d.Cfg.Home = filepath.Join(t.TempDir(), "Library", "Application Support", "ox-say")
+	d.Cfg.CacheDir = filepath.Join(d.Cfg.Home, "cache dir")
+	for _, msg := range []string{
+		"stat " + d.Cfg.Home + "/voices/nar.wav: no such file",
+		"open " + d.Cfg.CacheDir + "/design/a b.wav: permission denied",
+	} {
+		got := d.publicError(&requestError{msg}).Error()
+		if strings.Contains(got, "Support") || strings.Contains(got, "cache dir") || strings.Contains(got, "ox-say") ||
+			strings.Contains(got, "nar.wav") || !strings.Contains(got, "[path]") {
+			t.Errorf("%q -> %q: a part of the path survived", msg, got)
+		}
+	}
+	if got := d.publicError(&requestError{"POST /v1/audio/speech failed"}).Error(); !strings.Contains(got, "/v1/audio/speech") {
+		t.Errorf("a route was rewritten: %q", got)
+	}
+}
+
+// #160.4: the description a voice records is the one the engine heard
+// (sanitised), not the raw request text with its brackets and line breaks.
+// Mutation: design.go designTake, record `in.Description` instead of
+// `sanitizeStyle(in.Description)` -> RED.
+func TestDesignedFromRecordsTheSanitisedDescription(t *testing.T) {
+	d, _, _ := designFixture(t)
+	res, err := d.DesignVoice(context.Background(), DesignInput{Description: "calm) (loud\n​ voice", Text: testText, Takes: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := saveTake(t, d, "clean", res.Takes[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.DesignedFrom != "calm loud voice" {
+		t.Fatalf("designed_from = %q, want %q", v.DesignedFrom, "calm loud voice")
+	}
+}
+
+// #160.5: takes are private to the user: a 0700 folder (also one made earlier
+// as 0755) and 0600 files.
+// Mutation: design.go designTake, writeFileMode(..., 0o600) -> 0o644 -> RED;
+// DesignVoice, drop the os.Chmod(designDir, 0o700) -> RED.
+func TestDesignTakesArePrivate(t *testing.T) {
+	d, _, _ := designFixture(t)
+	if err := os.MkdirAll(d.designDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := designThree(t, d)
+	if st, err := os.Stat(d.designDir()); err != nil || st.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("design folder mode %v (%v), want no group/other access", st.Mode().Perm(), err)
+	}
+	for _, tk := range res.Takes {
+		for _, p := range []string{tk.Path, strings.TrimSuffix(tk.Path, takeExt) + takeMetaExt} {
+			if st, err := os.Stat(p); err != nil || st.Mode().Perm()&0o077 != 0 {
+				t.Errorf("%s mode %v (%v), want no group/other access", filepath.Base(p), st.Mode().Perm(), err)
+			}
+		}
+	}
+}
+
+// #160.1: takes older than a week are removed when a new design starts; newer
+// ones, a take's record and files that are not takes are left alone.
+// Mutation: design.go DesignVoice, delete the d.pruneOldTakes() call -> RED.
+func TestDesignPrunesOldTakes(t *testing.T) {
+	d, _, _ := designFixture(t)
+	if err := os.MkdirAll(d.designDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(name string, age time.Duration) string {
+		p := filepath.Join(d.designDir(), name)
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().Add(-age)
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	oldWAV, oldJSON := mk("old.wav", 8*24*time.Hour), mk("old.json", 8*24*time.Hour)
+	newWAV, newJSON := mk("new.wav", 24*time.Hour), mk("new.json", 24*time.Hour)
+	other := mk("notes.txt", 30*24*time.Hour)
+	designThree(t, d)
+	for _, p := range []string{oldWAV, oldJSON} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s survived", filepath.Base(p))
+		}
+	}
+	for _, p := range []string{newWAV, newJSON, other} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s was removed", filepath.Base(p))
+		}
+	}
+}
+
+// #160.10: the save hint tells how to overwrite a name that exists.
+func TestDesignSaveHintMentionsReplace(t *testing.T) {
+	d, _, _ := designFixture(t)
+	if res := designThree(t, d); !strings.Contains(res.SaveHint, "--replace") {
+		t.Fatalf("save hint %q does not mention --replace", res.SaveHint)
 	}
 }

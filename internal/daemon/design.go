@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,13 @@ const (
 	takeMetaExt     = ".json"
 	secondsRound    = 100 // durations are reported to 10 ms
 	maxDesignBody   = 1 << 20
+	// designDirMode and designFileMode keep takes (a person's synthesised
+	// voice, and the text spoken) private to the user.
+	designDirMode  = 0o700
+	designFileMode = 0o600
+	// designTakeTTL is how long a take stays after it was made; a take is a
+	// preview, and Save copies it into the voice store.
+	designTakeTTL = 7 * 24 * time.Hour
 )
 
 // DesignInput asks VoxCPM2 for a voice from a description alone.
@@ -150,9 +158,15 @@ func (d *Daemon) DesignVoice(ctx context.Context, in DesignInput) (*DesignResult
 	if why := d.voxUnavailable(); why != "" {
 		return nil, &unavailableError{why}
 	}
-	if err := os.MkdirAll(d.designDir(), 0o755); err != nil {
+	if err := os.MkdirAll(d.designDir(), designDirMode); err != nil {
 		return nil, d.diskError("create the takes folder", err)
 	}
+	// MkdirAll leaves an existing folder as it was: one made by an older
+	// version is tightened too.
+	if err := os.Chmod(d.designDir(), designDirMode); err != nil {
+		d.log.Warn("design: cannot restrict the takes folder", slog.Any("error", err))
+	}
+	d.pruneOldTakes()
 	base := min(designSeed(), maxVoxSeed-int64(takes)+1)
 	if in.Seed != nil {
 		base = *in.Seed
@@ -171,7 +185,7 @@ func (d *Daemon) DesignVoice(ctx context.Context, in DesignInput) (*DesignResult
 	for i, t := range res.Takes {
 		lines[i] = "ox-say voice save " + t.SuggestedName + " " + shellQuote(t.Path)
 	}
-	res.SaveHint = "keep a take with one of: " + strings.Join(lines, "  |  ") + "   (MCP: voice_design_save {name, take})"
+	res.SaveHint = "keep a take with one of: " + strings.Join(lines, "  |  ") + "   (MCP: voice_design_save {name, take}; a name already in use needs --replace, or replace: true)"
 	return res, nil
 }
 
@@ -185,12 +199,12 @@ func (d *Daemon) designTake(ctx context.Context, in DesignInput, stamp string, s
 		return nil, err
 	}
 	stem := filepath.Join(d.designDir(), fmt.Sprintf("%s-%s-%d", stamp, slugify(in.Description), seed))
-	if err := writeFile(stem+takeExt, out.WAV, false); err != nil {
+	if err := writeFileMode(stem+takeExt, out.WAV, false, designFileMode); err != nil {
 		return nil, d.diskError("write the take", err)
 	}
-	rec, err := json.Marshal(designRecord{Description: in.Description, Text: in.Text, Seed: seed})
+	rec, err := json.Marshal(designRecord{Description: sanitizeStyle(in.Description), Text: in.Text, Seed: seed})
 	if err == nil {
-		err = writeFile(stem+takeMetaExt, rec, false)
+		err = writeFileMode(stem+takeMetaExt, rec, false, designFileMode)
 	}
 	if err != nil {
 		if rerr := os.Remove(stem + takeExt); rerr != nil {
@@ -205,6 +219,30 @@ func (d *Daemon) designTake(ctx context.Context, in DesignInput, stamp string, s
 	return &DesignTake{Path: stem + takeExt, Seed: seed, DurationS: secs, Warning: out.Warning}, nil
 }
 
+// pruneOldTakes removes takes (and their records) older than designTakeTTL.
+// Only regular .wav and .json files are touched, so a folder the user put in
+// there, or a symlink, is left alone. A failure is logged and never fails a
+// design.
+func (d *Daemon) pruneOldTakes() {
+	entries, err := os.ReadDir(d.designDir())
+	if err != nil {
+		d.log.Warn("design: cannot list the takes folder", slog.Any("error", err))
+		return
+	}
+	cutoff := time.Now().Add(-designTakeTTL)
+	for _, e := range entries {
+		if ext := filepath.Ext(e.Name()); !e.Type().IsRegular() || (ext != takeExt && ext != takeMetaExt) {
+			continue
+		}
+		if info, err := e.Info(); err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(d.designDir(), e.Name())); err != nil {
+			d.log.Warn("design: cannot remove an old take", slog.String("file", e.Name()), slog.Any("error", err))
+		}
+	}
+}
+
 // diskError logs a filesystem failure with its path and returns the same
 // failure in plain words, without the path.
 func (d *Daemon) diskError(what string, err error) error {
@@ -212,17 +250,75 @@ func (d *Daemon) diskError(what string, err error) error {
 	return fmt.Errorf("could not %s: the computer refused the file write (details are in the ox-say log)", what)
 }
 
-// absPath matches an absolute path inside an error message.
-var absPath = regexp.MustCompile(`(^|[\s"'(=])/[^\s"'():]+`)
+// privateRoots are the folders the daemon owns, longest first: home, cache,
+// the voice store, logs, and the user's home. A path under one of them is the
+// daemon's own business; the default home sits in "Application Support", so a
+// pattern that stops at whitespace would leave the tail of it in the message.
+func (d *Daemon) privateRoots() []string {
+	roots := []string{d.Cfg.Home, d.Cfg.CacheDir, d.Cfg.EngineLogDir, filepath.Dir(d.Store.WAVPath("x"))}
+	if h, err := os.UserHomeDir(); err == nil {
+		roots = append(roots, h)
+	}
+	var out []string
+	for _, r := range roots {
+		if r = filepath.Clean(r); r != "" && r != "." && r != string(filepath.Separator) {
+			out = append(out, r)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+// absPath matches an absolute path inside an error message that is under none
+// of the known roots (a stray path from a tool). It stops at whitespace, and an
+// API route ("/v1/...") is not a path.
+var absPath = regexp.MustCompile(`(^|[\s"'(=])(/[^\s"'():]+)`)
+
+func scrubStrayPath(s string) string {
+	return absPath.ReplaceAllStringFunc(s, func(m string) string {
+		parts := absPath.FindStringSubmatch(m)
+		if strings.HasPrefix(parts[2], "/v1/") {
+			return m
+		}
+		return parts[1] + "[path]"
+	})
+}
+
+// scrubRoot replaces every occurrence of root, and what follows it up to a
+// quote, colon, parenthesis or line end, with "[path]".
+func scrubRoot(s, root string) string {
+	var b strings.Builder
+	for {
+		i := strings.Index(s, root)
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:i])
+		b.WriteString("[path]")
+		rest := s[i+len(root):]
+		end := strings.IndexAny(rest, "\"'():\n")
+		if end < 0 {
+			return b.String()
+		}
+		s = rest[end:]
+	}
+}
 
 // publicError is err as the caller of the design routes and tools may see it:
-// absolute paths replaced by "[path]", the original in the log. Statuses are
-// unaffected (synthStatus reads the typed error, so the wrapped one is kept).
+// the daemon's own folders (and what follows them, spaces included, up to a
+// quote, colon or parenthesis) and any other absolute path replaced by
+// "[path]", the original in the log. Statuses are unaffected (synthStatus reads
+// the typed error, so the wrapped one is kept).
 func (d *Daemon) publicError(err error) error {
 	if err == nil {
 		return nil
 	}
-	clean := absPath.ReplaceAllString(err.Error(), "${1}[path]")
+	clean := err.Error()
+	for _, root := range d.privateRoots() {
+		clean = scrubRoot(clean, root)
+	}
+	clean = scrubStrayPath(clean)
 	if clean == err.Error() {
 		return err
 	}
@@ -371,25 +467,29 @@ func (d *Daemon) SaveDesignedVoice(ctx context.Context, in SaveDesignInput) (*vo
 	} else if secs > voices.MaxRefSeconds {
 		return nil, false, &requestError{fmt.Sprintf("this take is %.0f s, too long to keep as a voice (the limit is %.0f s): use a shorter line", secs, voices.MaxRefSeconds)}
 	}
-	existing, gerr := d.Store.Get(in.Name)
-	if gerr == nil && !in.Replace {
-		return nil, false, &conflictError{fmt.Sprintf("a voice named %q already exists; choose another name or pass replace", in.Name)}
-	}
-	seed := rec.Seed
-	v, registered, err := d.AddVoiceMeta(ctx, in.Name, take, rec.Text, voices.Meta{
-		Engine: config.TTSModelVoxCPM2, DesignedFrom: rec.Description, Seed: &seed,
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	if gerr == nil && existing.Style != "" {
-		// The store keeps a replaced voice's style; a designed voice starts with none.
-		empty := ""
-		if v, err = d.UpdateVoice(in.Name, nil, &empty); err != nil {
-			return nil, false, err
+	// An early answer, before the up-to-60 s Prepare. It is not the decision:
+	// addVoice repeats it under voiceMu in the same step as the write, which
+	// is what makes two concurrent saves of one name safe. A voice that cannot
+	// be read is not "absent": saving over it would replace it unseen.
+	if _, gerr := d.Store.Get(in.Name); !in.Replace {
+		if gerr == nil {
+			return nil, false, errVoiceExists(in.Name)
+		}
+		if !errors.Is(gerr, voices.ErrNotFound) {
+			return nil, false, d.voiceReadError(in.Name, gerr)
 		}
 	}
-	return v, registered, nil
+	seed := rec.Seed
+	// fresh: a replaced voice keeps nothing of the old one (its style
+	// included), in the same commit as the new audio.
+	return d.addVoice(ctx, in.Name, take, rec.Text, voices.Meta{
+		Engine: config.TTSModelVoxCPM2, DesignedFrom: rec.Description, Seed: &seed,
+	}, addOpts{createOnly: !in.Replace, fresh: true})
+}
+
+// errVoiceExists is the 409 for a save onto a taken name.
+func errVoiceExists(name string) error {
+	return &conflictError{fmt.Sprintf("a voice named %q already exists; choose another name, or pass replace (--replace on the command line)", name)}
 }
 
 func (d *Daemon) handleDesignVoice(w http.ResponseWriter, r *http.Request) {
