@@ -247,8 +247,9 @@ func (s *Store) backupPath(name, ext string) string {
 }
 
 // Apply backs the original pair up and swaps the repaired voice in. Every
-// file lands by write-to-temp then rename, so a crash leaves either the old
-// file or the new one. Order is the recovery protocol: the backup WAV, then
+// file lands by write-to-temp, fsync, rename, and the directory is fsynced
+// between the steps that must not be reordered by a power cut, so a crash or a
+// power loss leaves either the old file or the new one. Order is the recovery protocol: the backup WAV, then
 // the backup JSON (the commit marker — only a complete backup counts), then
 // the main WAV, then the main JSON. A crash anywhere leaves a state
 // PrepareRepair converges from: no marker -> the main files are untouched;
@@ -288,16 +289,36 @@ func (r *Repair) Apply() error {
 		_ = os.Remove(metaTmp)
 		return fmt.Errorf("voices: %w", err)
 	}
+	// Power-loss safety: every file is on disk before the rename that names it, and the new WAV's name is durable
+	// before the JSON that vouches for it can be (a JSON that survived without its WAV would pair the new text with
+	// the old audio, the very mismatch a repair removes). The last directory sync only makes the finished repair
+	// durable: a failure there leaves the voice repaired in place, so it is logged and not returned.
+	if err := s.syncFile(metaTmp); err != nil {
+		_ = os.Remove(metaTmp)
+		return fmt.Errorf("voices: %w", err)
+	}
 	if r.tmp != "" {
+		if err := s.syncFile(r.tmp); err != nil {
+			_ = os.Remove(metaTmp)
+			return fmt.Errorf("voices: %w", err)
+		}
 		if err := s.rename(r.tmp, s.WAVPath(r.Name)); err != nil {
 			_ = os.Remove(metaTmp)
 			return fmt.Errorf("voices: %w", err)
 		}
 		r.tmp = ""
+		if err := s.syncDir(s.dir); err != nil {
+			_ = os.Remove(metaTmp)
+			return fmt.Errorf("voices: %w", err)
+		}
 	}
 	if err := s.rename(metaTmp, s.metaPath(r.Name)); err != nil {
 		_ = os.Remove(metaTmp)
 		return fmt.Errorf("voices: %w", err)
+	}
+	if err := s.syncDir(s.dir); err != nil {
+		slog.Warn("voice repair: the directory could not be synced after the repair; the voice is repaired in place",
+			slog.String("voice", r.Name), slog.Any("error", err))
 	}
 	return nil
 }
@@ -316,9 +337,6 @@ func (s *Store) copyAtomic(src, dst string) error {
 	}
 	tmp := out.Name()
 	_, err = io.Copy(out, in)
-	if err == nil {
-		err = out.Sync()
-	}
 	if cerr := out.Close(); err == nil {
 		err = cerr
 	}
@@ -326,10 +344,18 @@ func (s *Store) copyAtomic(src, dst string) error {
 		err = os.Chmod(tmp, 0o644)
 	}
 	if err == nil {
+		err = s.syncFile(tmp) // the bytes are on disk before the name is
+	}
+	if err == nil {
 		err = s.rename(tmp, dst)
 	}
 	if err != nil {
 		_ = os.Remove(tmp)
+		return fmt.Errorf("voices: %w", err)
+	}
+	// The next step of the protocol is only safe once this name is durable: the backup JSON (the commit marker) must
+	// not reach the disk before the backup WAV it vouches for.
+	if err := s.syncDir(s.dir); err != nil {
 		return fmt.Errorf("voices: %w", err)
 	}
 	return nil
