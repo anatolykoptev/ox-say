@@ -144,7 +144,7 @@ final class MeetingController: NSObject, MeetingFeature {
             NSPasteboard.general.setString(L10nKey.meetingConsentPhrase.text, forType: .string)
         }
         watcher.recording = { [weak self] in self?.current?.origin }
-        watcher.themActive = { [weak self] in self?.recorder.themActive ?? false }
+        watcher.themActive = { [weak self] in self?.recorder.anyoneActive ?? false }
         watcher.modeFor = { [weak self] source in
             guard let self else { return CallPolicy.defaultMode(source) }
             return CallPolicy.effectiveMode(for: source, global: MeetingSettings.callMode(self.host.defaults),
@@ -245,6 +245,7 @@ final class MeetingController: NSObject, MeetingFeature {
         if origin == .auto || offered, !consentReminderAccepted() { return }
         // Before a meeting exists in the daemon: a missing microphone permission leaves nothing to clean up.
         do { try MeetingRecorder.checkMicrophone() } catch {
+            log.error("meeting start failed: \(String(describing: error), privacy: .public)")
             host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
             return
         }
@@ -277,6 +278,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 startTick()
                 host.recordingChanged()
             } catch {
+                log.error("meeting start failed: \(String(describing: error), privacy: .public)")
                 host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
                 // A meeting the daemon opened but the recorder never started would sit as "recording".
                 if let created, current == nil { discardEmpty(created.id) }
@@ -416,7 +418,7 @@ final class MeetingController: NSObject, MeetingFeature {
         if current?.origin == .auto { stop() } else { badge.hide() }
     }
 
-    /// The prompt's quiet third action: "Don't ask for <App>" is the app's per-app "Never ask"
+    /// The prompt's quiet third action: "Don't ask for <App>" is the app's per-app "Don't record"
     /// (reversible in Settings), and this call is done asking.
     private func dontAskForThisApp() {
         guard case .prompt(let source) = badge.mode else { return }
@@ -476,7 +478,7 @@ final class MeetingController: NSObject, MeetingFeature {
         case .browserConsent(let id)?: offer = .browserConsent(browser: id)
         default: offer = nil
         }
-        if case .hide(let why) = offerLife.verdict(now: Date(), offer: offer, liveSource: tick.call?.source, heldOnly: tick.heldOnly, users: tick.users) {
+        if case .hide(let why) = offerLife.verdict(now: Date(), offer: offer, liveSource: tick.call?.source, users: tick.users) {
             badge.hide()
             // Taken down without an answer, about a call that may return: asked about again when it does.
             if why.withdrawsOffer { watcher.offerWithdrawn() }
@@ -494,6 +496,7 @@ final class MeetingController: NSObject, MeetingFeature {
             case .ignore: break
             }
         case .stopRecording:
+            host.notify(L10nKey.noticeMeetingCallEnded.text)
             stop()
         }
     }
@@ -615,6 +618,7 @@ final class MeetingController: NSObject, MeetingFeature {
                     if !(wasOffer && !state.offersSplit) { return }
                 }
             } catch {
+                log.error("meeting speakers failed: \(String(describing: error), privacy: .public)")
                 host.notify(L10nKey.speakersFailed.text(MeetingErrorText.sentence(error, action: .speakers)))
             }
         }
@@ -711,7 +715,10 @@ final class MeetingController: NSObject, MeetingFeature {
 
     private func installModel() {
         Task { @MainActor in
-            do { try await host.client.installNotesModel() } catch { host.notify(MeetingErrorText.sentence(error, action: .installModel)) }
+            do { try await host.client.installNotesModel() } catch {
+                log.error("meeting notes model failed: \(String(describing: error), privacy: .public)")
+                host.notify(MeetingErrorText.sentence(error, action: .installModel))
+            }
             render()
         }
     }

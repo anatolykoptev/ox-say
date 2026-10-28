@@ -77,11 +77,12 @@ final class LocalizationTests: XCTestCase {
         }
     }
 
-    /// #342.3: the per-app pick says what the badge says ("Don't ask for X"), not "Don't record".
-    /// Mutation: en "settings.apps.never" back to "Don't record" -> RED.
-    func testThePerAppNeverPickReadsLikeTheBadge() {
-        XCTAssertEqual(ShippedStrings.table("en")["settings.apps.never"], "Never ask")
-        XCTAssertEqual(ShippedStrings.table("ru")["settings.apps.never"], "Не спрашивать")
+    /// #342.3: the per-app pick stays "Don't record": unambiguous next to "Record automatically" / "Ask me first" (the
+    /// badge's "Don't ask for X" is a different sentence about the same pick).
+    /// Mutation: en "settings.apps.never" -> "Never ask" -> RED.
+    func testThePerAppNeverPickStaysUnambiguous() {
+        XCTAssertEqual(ShippedStrings.table("en")["settings.apps.never"], "Don't record")
+        XCTAssertEqual(ShippedStrings.table("ru")["settings.apps.never"], "Не записывать")
     }
 
     /// #340.3: a row that now offers Try Again must not keep the old reason.
@@ -89,5 +90,12 @@ final class LocalizationTests: XCTestCase {
     func testTheRetryableRowSaysTheVoicesCanBeFoundNow() {
         XCTAssertTrue(ShippedStrings.table("en")["meeting.diar.unavailable.retry_now"]?.contains("can be found now") == true)
         XCTAssertTrue(ShippedStrings.table("ru")["meeting.diar.unavailable.retry_now"]?.contains("можно найти") == true)
+    }
+
+    /// Every automatic stop says so.
+    /// Mutation: ru "notice.meeting.call_ended" emptied -> RED.
+    func testTheCallEndedNoticeExists() {
+        XCTAssertEqual(ShippedStrings.table("en")["notice.meeting.call_ended"], "Recording stopped: the call ended.")
+        XCTAssertEqual(ShippedStrings.table("ru")["notice.meeting.call_ended"], "Запись остановлена: звонок закончился.")
     }
 }

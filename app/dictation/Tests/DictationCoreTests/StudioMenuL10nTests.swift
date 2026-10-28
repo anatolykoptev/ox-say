@@ -148,7 +148,7 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(ScriptLimit.statusLine(editorText: "Привет.", text: ru), "7 симв. · около 1 мин")
         XCTAssertEqual(ScriptLimit.statusLine(editorText: String(repeating: "я", count: 8340), text: ru), "8340 симв. · около 10 мин")
         XCTAssertEqual(ScriptLimit.statusLine(editorText: String(repeating: "я", count: ScriptLimit.maxCharacters + 7), text: ru),
-                       "40007 симв. · превышает лимит в 40000 на 7 (лимит — около 48 мин).")
+                       "40007 симв. · превышает лимит в 40000 на 7 (это около 48 мин).")
         XCTAssertEqual(ScriptLimit.statusLine(editorText: String(repeating: "x", count: ScriptLimit.maxCharacters + 7), text: en),
                        "40007 characters · 7 over the limit of 40000 (about 48 minutes).")
         let rows = MenuSections.voiceRows(known: ["anna"], russian: nil, english: nil, text: ru)

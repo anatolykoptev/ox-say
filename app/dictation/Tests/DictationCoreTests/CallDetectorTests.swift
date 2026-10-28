@@ -818,33 +818,35 @@ extension CallDetectorTests {
     private var chromeMic: [MicUser] { [MicUser(bundleID: "com.google.Chrome.helper", pid: 3)] }
 
     /// #342.6: a Record pressed on a prompt whose call is already over must not record an empty room until Stop: the
-    /// recording the prompt started ends with the call, by the same silence rule as an automatic one.
-    /// Mutation: CallTracker.observe, `case .auto, .offered:` -> `case .auto:` (and `.offered` left with `.manual`) -> RED.
-    func testARecordingStartedFromThePromptStopsOnSilenceLikeAnAutomaticOne() {
+    /// recording the prompt started ends once no holder of the call remains (the app or browser released the microphone)
+    /// for `endAfter`, whoever is still audible.
+    /// Mutation: CallTracker.observe, `case .offered:` threshold `>= Self.endAfter` -> `>= .infinity` -> RED.
+    /// Mutation: same block, `if quietSince == nil {` -> `if themActive { quietSince = nil } else if quietSince == nil {` -> RED (silence rule).
+    func testAPromptStartedRecordingEndsWhenNoHolderRemains() {
         var tr = CallTracker()
-        XCTAssertEqual(tr.observe(now: t0, call: nil, themActive: false, recording: .offered), .nothing)
-        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(CallTracker.endAfter - 1), call: nil, themActive: false, recording: .offered), .nothing)
-        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(CallTracker.endAfter), call: nil, themActive: false, recording: .offered),
-                       .stopRecording)
-        var heard = CallTracker()
-        for s in stride(from: 0.0, through: 300.0, by: 5.0) {
-            XCTAssertEqual(heard.observe(now: t0.addingTimeInterval(s), call: nil, themActive: true, recording: .offered), .nothing,
-                           "the other side is talking at \(s) s")
-        }
+        XCTAssertEqual(tr.observe(now: t0, call: nil, themActive: true, recording: .offered), .nothing)
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(CallTracker.endAfter - 1), call: nil, themActive: true, recording: .offered), .nothing)
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(CallTracker.endAfter), call: nil, themActive: true, recording: .offered),
+                       .stopRecording, "the holder is gone: it ends")
+        // a holder that comes back restarts the count
+        var back = CallTracker()
+        _ = back.observe(now: t0, call: nil, themActive: false, recording: .offered)
+        _ = back.observe(now: t0.addingTimeInterval(80), call: "meet", themActive: false, recording: .offered, bundleID: "com.google.Chrome")
+        XCTAssertEqual(back.observe(now: t0.addingTimeInterval(100), call: nil, themActive: false, recording: .offered), .nothing)
     }
 
-    /// The silence timer of a prompt-started recording keeps running while the browser holds the microphone for another
-    /// site (heldOnly), as an automatic one's does.
-    /// Mutation: CallTracker.observe, `if held, !(recording?.endsWithTheCall ?? false) {` -> `if held, recording != .auto {` -> RED.
-    func testAHeldOnlyBrowserDoesNotKeepAPromptStartedRecordingAlive() {
+    /// The user pressed Record: while the call app or browser still holds the microphone, a quiet far side (or the user on
+    /// another tab, heldOnly) never stops it.
+    /// Mutation: CallTracker.observe, `if held, recording != .auto {` -> `if held, recording == nil {` -> RED (held falls to the timer).
+    func testAHeldOrLiveCallNeverStopsAPromptStartedRecording() {
         var tr = CallTracker()
         let chrome = "com.google.Chrome"
         _ = tr.observe(now: t0, call: "meet", themActive: false, recording: nil, bundleID: chrome)
         _ = tr.observe(now: t0.addingTimeInterval(4), call: "meet", themActive: false, recording: nil, bundleID: chrome)
-        _ = tr.observe(now: t0.addingTimeInterval(6), call: "meet", themActive: false, recording: .offered, bundleID: chrome)
-        _ = tr.observe(now: t0.addingTimeInterval(8), call: "meet", themActive: false, recording: .offered, bundleID: chrome, heldOnly: true)
-        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(8 + CallTracker.endAfter), call: "meet", themActive: false, recording: .offered,
-                                  bundleID: chrome, heldOnly: true), .stopRecording)
+        for s in stride(from: 6.0, through: 6.0 + 4 * CallTracker.endAfter, by: 10.0) {
+            XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(s), call: "meet", themActive: false, recording: .offered,
+                                      bundleID: chrome, heldOnly: true), .nothing, "at \(s) s")
+        }
     }
 
     /// Only a recording that ends with the call needs the watcher once the global mode is Off.
@@ -904,7 +906,8 @@ extension CallDetectorTests {
         XCTAssertNil(first.browserNeedsConsent, "nobody was asked: no badge")
         XCTAssertNil(first.call)
         XCTAssertEqual(reads, 0, "no Apple Event to a browser that is still launching")
-        _ = round(2, answer: .notRunning)
+        XCTAssertEqual(first.browserNoAnswer, "com.google.Chrome", "reported once, for the log")
+        XCTAssertNil(round(2, answer: .notRunning).browserNoAnswer, "once per hold")
         XCTAssertEqual(probes, 2, "looked up again, not kept")
         let third = round(4, answer: .undetermined)
         XCTAssertEqual(third.browserNeedsConsent, "com.google.Chrome", "the real answer applies as soon as there is one")
@@ -913,4 +916,21 @@ extension CallDetectorTests {
         XCTAssertEqual(reads, 1)
     }
 
+    /// A helper bundle that always answers -600 is not a silent dead end: after `notRunningPollsBeforeRead` polls in a row
+    /// the pre-#345 behaviour applies (the answer counts as decided, the real read goes out, and its unreadable/permission
+    /// notice path works).
+    /// Mutation: CallWatch.observe, `notRunningPolls[id, default: 0] >= Self.notRunningPollsBeforeRead` -> `false` -> RED.
+    func testABrowserThatKeepsAnsweringNotRunningIsReadAnyway() {
+        var watch = CallWatch()
+        var reads = 0
+        var call: CallDetector.Detection.Call?
+        for i in 0..<CallWatch.notRunningPollsBeforeRead {
+            let o = watch.observe(now: t0.addingTimeInterval(Double(i) * 2), users: chromeMic, tab: { _ in reads += 1; return .url(Self.meetURL) },
+                                  themActive: false, recording: nil, consent: { _ in .notRunning })
+            call = o.call
+            if i < CallWatch.notRunningPollsBeforeRead - 1 { XCTAssertEqual(reads, 0, "poll \(i)") }
+        }
+        XCTAssertEqual(reads, 1, "the read went out on the last poll")
+        XCTAssertEqual(call?.source, "meet")
+    }
 }

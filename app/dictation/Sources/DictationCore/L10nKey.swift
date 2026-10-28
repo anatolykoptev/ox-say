@@ -84,7 +84,7 @@ public enum L10nKey: String, CaseIterable {
     case badgePrompt = "badge.prompt"
     /// The detected-call prompt that names the app ("Zoom call — record it?").
     case badgePromptCall = "badge.prompt.call"
-    /// The quiet third action of the prompt: "Don't ask for <App>" (a reversible per-app "Never ask").
+    /// The quiet third action of the prompt: "Don't ask for <App>" (a reversible per-app "Don't record").
     case badgeDontAsk = "badge.dont_ask"
     /// The Automation-consent badge before the first Apple Event to a browser.
     case badgeBrowserConsent = "badge.browser.consent"
@@ -120,6 +120,7 @@ public enum L10nKey: String, CaseIterable {
     case meetingUpdateBlocked = "meeting.update_blocked"
     case noticeMeetingMicLost = "notice.meeting.mic_lost"
     case noticeMeetingTapLost = "notice.meeting.tap_lost"
+    case noticeMeetingCallEnded = "notice.meeting.call_ended"
     case noticeMeetingDiskFull = "notice.meeting.disk_full"
     case noticeMeetingTapRecovered = "notice.meeting.tap_recovered"
     case noticeMeetingMicRecovered = "notice.meeting.mic_recovered"

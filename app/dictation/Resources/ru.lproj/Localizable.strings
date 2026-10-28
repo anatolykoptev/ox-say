@@ -124,6 +124,7 @@
 "meeting.update_blocked" = "Идёт запись встречи. Обновитесь, когда она закончится.";
 "notice.meeting.mic_lost" = "Микрофон не записывается.";
 "notice.meeting.tap_lost" = "Системный звук не записывается.";
+"notice.meeting.call_ended" = "Запись остановлена: звонок закончился.";
 "notice.meeting.disk_full" = "Диск заполнен: запись остановлена. Записанное сохранено.";
 "notice.meeting.tap_recovered" = "Системный звук снова записывается.";
 "notice.meeting.mic_recovered" = "Микрофон снова записывается.";
@@ -216,7 +217,7 @@
 "settings.apps.header" = "Звонки в этих приложениях";
 "settings.apps.auto" = "Записывать сразу";
 "settings.apps.ask" = "Спрашивать";
-"settings.apps.never" = "Не спрашивать";
+"settings.apps.never" = "Не записывать";
 "settings.apps.default" = "Как выбрано выше (%@)";
 "settings.apps.browsers" = "В Chrome, Brave, Arc или Edge";
 "settings.folder" = "Папка для заметок";
@@ -502,7 +503,7 @@
 "doc.empty.scan" = "В этом PDF нет текста для чтения (возможно, это скан).";
 "doc.empty.none" = "В этом документе нет текста для чтения.";
 "script.status.none" = "Читать пока нечего: текста нет.";
-"script.status.over" = "%1$@ симв. · превышает лимит в %3$@ на %2$@ (лимит — около %4$@ мин).";
+"script.status.over" = "%1$@ симв. · превышает лимит в %3$@ на %2$@ (это около %4$@ мин).";
 "script.status.one_minute" = "%@ симв. · около 1 мин";
 "script.status.minutes" = "%1$@ симв. · около %2$@ мин";
 "review.title" = "Новая озвучка";

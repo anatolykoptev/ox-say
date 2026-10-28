@@ -91,7 +91,7 @@
 "badge.prompt" = "Record this call?";
 /* The detected-call prompt; %@ is the app or site ("Zoom call — record it?", "Google Meet call — record it?"). */
 "badge.prompt.call" = "%@ call — record it?";
-/* The prompt's quiet third action; %@ is the app. Sets the per-app pick "Never ask" for it, reversible in Settings. */
+/* The prompt's quiet third action; %@ is the app. Sets "Don't record" for it, reversible in Settings. */
 "badge.dont_ask" = "Don't ask for %@";
 /* Before the first Apple Event to a browser whose Automation consent is undetermined; %@ is Chrome, Brave, Arc or Edge. */
 "badge.browser.consent" = "A call in %@? To notice Meet calls, ox-say must see the tab's address.";
@@ -129,6 +129,7 @@
 "meeting.update_blocked" = "A meeting is being recorded. Update when it ends.";
 "notice.meeting.mic_lost" = "The microphone is not being recorded.";
 "notice.meeting.tap_lost" = "System audio is not being recorded.";
+"notice.meeting.call_ended" = "Recording stopped: the call ended.";
 "notice.meeting.disk_full" = "The disk is full: the recording was stopped. What was recorded is kept.";
 "notice.meeting.tap_recovered" = "System audio is being recorded again.";
 "notice.meeting.mic_recovered" = "The microphone is being recorded again.";
@@ -221,7 +222,7 @@
 "settings.apps.header" = "Calls in these apps";
 "settings.apps.auto" = "Record automatically";
 "settings.apps.ask" = "Ask me first";
-"settings.apps.never" = "Never ask";
+"settings.apps.never" = "Don't record";
 /* The per-app picker's option that follows the global mode; %@ is what the global mode does to that app, e.g. "As set above (Ask me first)". */
 "settings.apps.default" = "As set above (%@)";
 "settings.apps.browsers" = "In Chrome, Brave, Arc or Edge";

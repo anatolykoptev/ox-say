@@ -344,7 +344,7 @@ final class MeetingWiringTests: XCTestCase {
         let dont = try XCTUnwrap(body(text, of: "private func dontRecordThisOne() {"))
         XCTAssertTrue(dont.contains("\n        watcher.decline()\n"))
         XCTAssertTrue(text.contains("watcher.recording = { [weak self] in self?.current?.origin }"))
-        XCTAssertTrue(text.contains("watcher.themActive = { [weak self] in self?.recorder.themActive ?? false }"))
+        XCTAssertTrue(text.contains("watcher.themActive = { [weak self] in self?.recorder.anyoneActive ?? false }"))
     }
 
     /// The watcher decision, the call-start decision, the manual-start gate and the reconcile decision are the policy's.
@@ -408,8 +408,8 @@ final class MeetingWiringTests: XCTestCase {
     func testTheOffersComeDownThroughTheCoreDecision() throws {
         let text = try controller()
         let observe = try XCTUnwrap(body(text, of: "private func observe(_ tick: CallWatcher.Tick) {"))
-        XCTAssertTrue(observe.contains("if case .hide(let why) = offerLife.verdict(now: Date(), offer: offer, liveSource: tick.call?.source, heldOnly: tick.heldOnly, users: tick.users) {\n            badge.hide()\n"))
-        // #342.1/6/7: a prompt withdrawn by absence or by a browser that only holds the microphone un-announces its episode.
+        XCTAssertTrue(observe.contains("if case .hide(let why) = offerLife.verdict(now: Date(), offer: offer, liveSource: tick.call?.source, users: tick.users) {\n            badge.hide()\n"))
+        // #342.1/6/7: a prompt withdrawn by the call's absence un-announces its episode.
         // Mutation: MeetingController.observe, delete `if why.withdrawsOffer { watcher.offerWithdrawn() }` -> RED.
         XCTAssertTrue(observe.contains("if why.withdrawsOffer { watcher.offerWithdrawn() }"))
         let apply = try XCTUnwrap(body(text, of: "private func applyCallMode() {"))
@@ -495,6 +495,12 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(speakers.contains("L10nKey.speakersFailed.text(MeetingErrorText.sentence(error, action: .speakers))"))
         let install = try XCTUnwrap(body(text, of: "private func installModel() {"))
         XCTAssertTrue(install.contains("host.notify(MeetingErrorText.sentence(error, action: .installModel))"))
+        // The real error is logged where the user gets the generic sentence.
+        // Mutation: delete the `log.error(` line of any of the four catches -> RED.
+        let logLine = "log.error(\"meeting %@ failed: \\(String(describing: error), privacy: .public)\")"
+        XCTAssertEqual(start.components(separatedBy: logLine.replacingOccurrences(of: "%@", with: "start")).count - 1, 2)
+        XCTAssertTrue(speakers.contains(logLine.replacingOccurrences(of: "%@", with: "speakers")))
+        XCTAssertTrue(install.contains(logLine.replacingOccurrences(of: "%@", with: "notes model")))
         XCTAssertTrue(text.contains("recorder.onSystemAudioFailed = { [weak self] in"))
         XCTAssertTrue(text.contains("host.notify(L10nKey.noticeMeetingTapLost.text)"))
         XCTAssertTrue(text.contains("recorder.onMicrophoneFailed = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicLost.text) }"))
@@ -517,15 +523,25 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(start.contains("current = (info, offered ? .offered : origin)"))
     }
 
-    /// #342.1: the tick says when the call is only the browser's hold; #342.8: the probe maps macOS's status in Core.
-    /// Mutation: CallWatcher.tick, drop `heldOnly: outcome.heldOnly` -> RED (the prompt never learns it is stale).
+    /// #342.8: the probe maps macOS's status in Core; the watcher logs a browser that has no answer, once per hold.
     /// Mutation: BrowserAutomationProbe.consent, `BrowserConsent.from(status: status)` -> `.granted` -> RED.
     func testTheWatcherPassesTheHeldOnlyFlagAndTheProbeStatusToCore() throws {
         let watcher = try source("OxSayDictation/CallWatcher.swift")
-        XCTAssertTrue(watcher.contains("heldOnly: outcome.heldOnly"))
-        XCTAssertTrue(watcher.contains("var heldOnly: Bool"))
+        XCTAssertFalse(watcher.contains("heldOnly"), "no prompt is withdrawn for a browser's hold (#241)")
+        XCTAssertTrue(watcher.contains("if let id = outcome.browserNoAnswer {"))
         XCTAssertTrue(watcher.contains("func offerWithdrawn() { watch.offerWithdrawn() }"))
         let probe = try XCTUnwrap(body(watcher, of: "static func consent(bundleID: String) -> BrowserConsent {"))
         XCTAssertTrue(probe.contains("return BrowserConsent.from(status: status)"))
+    }
+
+    /// Every automatic stop says so; the user's own speech counts as activity for the silence timer.
+    /// Mutation: MeetingController.observe, delete the notify before `stop()` in `.stopRecording` -> RED.
+    /// Mutation: MeetingController.init, `recorder.anyoneActive` -> `recorder.themActive` -> RED.
+    func testAnAutomaticStopSaysSoAndMyOwnSpeechCounts() throws {
+        let observe = try XCTUnwrap(body(try controller(), of: "private func observe(_ tick: CallWatcher.Tick) {"))
+        XCTAssertTrue(observe.contains("case .stopRecording:\n            host.notify(L10nKey.noticeMeetingCallEnded.text)\n            stop()"))
+        let recorder = try source("OxSayDictation/MeetingRecorder.swift")
+        XCTAssertTrue(recorder.contains("var anyoneActive: Bool { themActive || meActive }"))
+        XCTAssertTrue(recorder.contains("self.meLoudAt = Date()"))
     }
 }

@@ -18,11 +18,6 @@ public struct OfferLifetime {
     /// withdraws the offer (see `Reason.withdrawsOffer`), so a call that returns is asked about again.
     public static let callGoneAfter: TimeInterval = 90
 
-    /// Polls (2 s apart) a prompt survives with its call held only by the browser's microphone while the front tab is
-    /// not a call: long enough that a glance at another tab keeps the question, short enough that a Record pressed
-    /// later is not pressed on a call that ended.
-    public static let notInFrontPolls = 5
-
     public enum Verdict: Equatable {
         case keep
         case hide(Reason)
@@ -31,8 +26,6 @@ public struct OfferLifetime {
     public enum Reason: Equatable {
         /// The call has been gone for `callGoneAfter`.
         case callGone
-        /// The browser still holds the microphone, but its front tab has not been a call for `notInFrontPolls` polls.
-        case callNotInFront
         /// Another call took over: the question is about the wrong one.
         case otherCall
         /// The consent question's browser released the microphone.
@@ -41,37 +34,26 @@ public struct OfferLifetime {
         /// The question went down without an answer from the user, about a call that may well return: the tracker must
         /// forget it asked, so the returning call is offered again. Not for `otherCall` (the tracker's episode is the
         /// other call's by now) or the consent question (no episode).
-        public var withdrawsOffer: Bool { self == .callGone || self == .callNotInFront }
+        public var withdrawsOffer: Bool { self == .callGone }
     }
 
     private var absentSince: Date?
-    private var heldPolls = 0
 
     public init() {}
 
     /// Calls and consent questions are only raised while the global mode watches for calls.
     public static func offersAllowed(mode: CallGlobalMode) -> Bool { mode != .off }
 
-    /// One poll. `liveSource` is the call the watcher sees now (nil = none), `heldOnly` says that call is only the
-    /// episode's memory kept alive by its browser's microphone (the front tab is not a call), `users` the microphone
-    /// holders. `.hide` when the badge's `offer` must come down, with why.
-    public mutating func verdict(now: Date, offer: Offer?, liveSource: String?, heldOnly: Bool = false, users: [MicUser]) -> Verdict {
-        guard let offer else { absentSince = nil; heldPolls = 0; return .keep }
+    /// One poll. `liveSource` is the call the watcher sees now (nil = none; a browser call counts while its browser
+    /// holds the microphone, whichever tab is in front, #241), `users` the microphone holders. `.hide` when the badge's `offer` must come down, with why.
+    public mutating func verdict(now: Date, offer: Offer?, liveSource: String?, users: [MicUser]) -> Verdict {
+        guard let offer else { absentSince = nil; return .keep }
         switch offer {
         case .browserConsent(let id):
             absentSince = nil
-            heldPolls = 0
             return CallDetector.holds(users, bundleID: id) ? .keep : .hide(.browserReleased)
         case .prompt(let source):
-            if liveSource == source {
-                absentSince = nil
-                guard heldOnly else { heldPolls = 0; return .keep }
-                heldPolls += 1
-                guard heldPolls >= Self.notInFrontPolls else { return .keep }
-                heldPolls = 0
-                return .hide(.callNotInFront)
-            }
-            heldPolls = 0
+            if liveSource == source { absentSince = nil; return .keep }
             // Another call took over: this question is about the wrong one.
             if liveSource != nil { absentSince = nil; return .hide(.otherCall) }
             let since = absentSince ?? now

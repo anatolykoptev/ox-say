@@ -229,7 +229,7 @@ public struct CallTracker {
     public enum Origin: Equatable {
         case manual, auto, offered
 
-        /// The tracker stops this recording by itself when the call and the far side have both gone quiet.
+        /// The tracker stops this recording by itself (silence for `auto`, no holder left for `offered`).
         public var endsWithTheCall: Bool { self != .manual }
     }
 
@@ -297,7 +297,7 @@ public struct CallTracker {
                                  bundleID: String? = nil, callUnreadable: Bool = false, heldOnly: Bool = false) -> Action {
         let key = call.map { Self.key(call: $0, bundleID: bundleID) }
         let held = heldOnly && key != nil && key == episode
-        if held, !(recording?.endsWithTheCall ?? false) {
+        if held, recording != .auto {
             // The call page is not in front but the browser still holds the microphone:
             // the episode goes on, nothing is offered, and the debounce starts over when
             // the call page returns.
@@ -340,7 +340,18 @@ public struct CallTracker {
         unreadableTicks = 0
         callSince = nil
         switch recording {
-        case .auto, .offered:
+        case .offered:
+            // The user pressed Record on the prompt: it ends only when no holder of the call remains (the app or browser
+            // released the microphone) for `endAfter`. Never on silence while the call is held: a Meet call goes on
+            // whichever tab is in front (#241) and a quiet far side is not a hang-up.
+            idleSince = nil
+            if quietSince == nil { quietSince = now }
+            if now.timeIntervalSince(quietSince!) >= Self.endAfter {
+                quietSince = nil
+                if let episode { announcedKeys.remove(episode) }
+                return .stopRecording
+            }
+        case .auto:
             idleSince = nil
             if themActive {
                 quietSince = nil
@@ -399,11 +410,17 @@ public struct CallWatch {
         /// A browser held the microphone while its Automation consent is undetermined — it must be asked in
         /// context before the first Apple Event, so the round names it instead of reading its tab.
         public var browserNeedsConsent: String?
+        /// A browser holds the microphone and macOS cannot answer for it yet (-600): reported once per hold, for the log.
+        public var browserNoAnswer: String?
     }
 
     /// Polls (2 s apart) of unreadable tab before the app says it is waiting for permission: long enough that one
     /// slow read or a browser without a window stays silent.
     public static let unreadableRoundsBeforeNotice = 5
+
+    /// Polls in a row a browser may answer "not running" before the answer counts as decided and the real read goes out
+    /// (its unreadable / permission notices then work): a helper bundle that always answers -600 is no silent dead end.
+    public static let notRunningPollsBeforeRead = 3
 
     private var unreadableRounds = 0
     private var permissionReported = false
@@ -424,6 +441,9 @@ public struct CallWatch {
     /// macOS's decided Automation answers, kept while the browser holds the microphone: the lookup is a TCC query
     /// and the poll runs every 2 s. An undetermined answer is never kept — the user may settle it any moment — nor is a missing one (`notRunning`).
     private var consentCache: [String: BrowserConsent] = [:]
+    /// Consecutive `notRunning` answers per browser, and the browsers whose no-answer was already reported this hold.
+    private var notRunningPolls: [String: Int] = [:]
+    private var noAnswerReported: Set<String> = []
 
     public init() {}
 
@@ -463,14 +483,27 @@ public struct CallWatch {
         skippedConsent.formIntersection(browserIDs)
         consentAsked.formIntersection(browserIDs)
         consentCache = consentCache.filter { browserIDs.contains($0.key) }
+        notRunningPolls = notRunningPolls.filter { browserIDs.contains($0.key) }
+        noAnswerReported.formIntersection(browserIDs)
         var needsConsent: Set<String> = []
         // No answer yet (the browser is launching): looked up again next poll, and no Apple Event meanwhile.
         var noAnswer: Set<String> = []
+        var newNoAnswer: String?
         for id in browserIDs where !skippedConsent.contains(id) && !consentAsked.contains(id) {
-            let answer = consentCache[id] ?? consent(id)
+            var answer = consentCache[id] ?? consent(id)
+            if answer == .notRunning {
+                let polls = notRunningPolls[id, default: 0] + 1
+                notRunningPolls[id] = polls
+                // Still no answer after several polls: as before this rule, the read decides.
+                if polls >= Self.notRunningPollsBeforeRead { answer = .granted }
+            } else {
+                notRunningPolls[id] = nil
+            }
             switch answer {
             case .undetermined: needsConsent.insert(id)
-            case .notRunning: noAnswer.insert(id)
+            case .notRunning:
+                noAnswer.insert(id)
+                if noAnswerReported.insert(id).inserted, newNoAnswer == nil { newNoAnswer = id }
             case .granted, .denied: consentCache[id] = answer
             }
         }
@@ -527,6 +560,7 @@ public struct CallWatch {
             if reads.values.contains(where: { if case .url = $0 { return true } else { return false } }) { permissionReported = false }
         }
         return Outcome(call: call, heldOnly: heldOnly, action: action, browserDenied: denied,
-                       browserNeedsPermission: needsPermission, browserNeedsConsent: needsConsent.sorted().first)
+                       browserNeedsPermission: needsPermission, browserNeedsConsent: needsConsent.sorted().first,
+                       browserNoAnswer: newNoAnswer)
     }
 }
