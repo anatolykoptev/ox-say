@@ -25,7 +25,7 @@ final class SelectionPolicyTests: XCTestCase {
     func testWhitespaceSelectionDeclinesAndEmptyFallsBack() {
         XCTAssertEqual(SelectionPolicy.plan(axText: "  \n ", secureInput: false, clipboardRestorable: true,
                                             clipboardRemote: false),
-                       .decline("Nothing selected to speak."))
+                       .decline(L10nKey.noticeSelectionNothing.text))
         XCTAssertEqual(SelectionPolicy.plan(axText: "", secureInput: false, clipboardRestorable: true,
                                             clipboardRemote: false),
                        .copy)
@@ -43,7 +43,7 @@ final class SelectionPolicyTests: XCTestCase {
                                      clipboardRemote: false) else {
             return XCTFail("a secure field must not see a synthetic ⌘C")
         }
-        XCTAssertTrue(reason.contains("password"))
+        XCTAssertEqual(reason, L10nKey.noticeSelectionPassword.text)
     }
 
     func testUnrestorableClipboardBlocksTheCopy() {

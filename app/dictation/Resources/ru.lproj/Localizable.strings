@@ -341,3 +341,7 @@
 "notice.export.read_only" = "в папку заметок нельзя записывать";
 "notice.export.disk_full" = "на диске нет места";
 "notice.export.other" = "заметки не удалось сохранить в папку заметок";
+"notice.selection_password" = "Выбрано поле для пароля.";
+"notice.selection_nothing" = "Нечего озвучить: ничего не выделено.";
+"notice.selection_failed" = "Выделенный текст получить не удалось.";
+"notice.selection_remote_empty" = "Похоже, ничего не выделено. Выделите текст и нажмите клавишу снова или сначала скопируйте его (⌘C).";

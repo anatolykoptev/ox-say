@@ -341,3 +341,7 @@
 "notice.export.read_only" = "the notes folder cannot be written to";
 "notice.export.disk_full" = "the disk is full";
 "notice.export.other" = "the notes could not be saved to the notes folder";
+"notice.selection_password" = "A password field is focused.";
+"notice.selection_nothing" = "Nothing selected to speak.";
+"notice.selection_failed" = "The selection did not come through.";
+"notice.selection_remote_empty" = "Nothing seems to be selected. Select the text and press the key again, or copy it (⌘C) first.";

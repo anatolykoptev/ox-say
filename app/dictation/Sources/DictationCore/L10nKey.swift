@@ -336,4 +336,8 @@ public enum L10nKey: String, CaseIterable {
     case noticeExportReadOnly = "notice.export.read_only"
     case noticeExportDiskFull = "notice.export.disk_full"
     case noticeExportOther = "notice.export.other"
+    case noticeSelectionPassword = "notice.selection_password"
+    case noticeSelectionNothing = "notice.selection_nothing"
+    case noticeSelectionFailed = "notice.selection_failed"
+    case noticeSelectionRemoteEmpty = "notice.selection_remote_empty"
 }

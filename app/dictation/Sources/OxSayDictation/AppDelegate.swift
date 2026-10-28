@@ -291,7 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             timingLog.notice("clipboard held a Universal Clipboard copy: posted the text as keystrokes, clipboard untouched chars=\(chars, privacy: .public) post_ms=\(ms, privacy: .public)")
         }
         // One line per speak press, no text: which path served the selection
-        // (ax, copy, none) and the AX read's error code and source.
+        // (ax, copy, remote, none) and the AX read's error code and source.
         capture.onSelection = { report in timingLog.notice("\(report.line, privacy: .public)") }
         // Not into the restore ramp of the dictation that just ended.
         controller.onBusy = { [weak self] in self?.soundWhileDictating.afterSettled { NSSound.beep() } }

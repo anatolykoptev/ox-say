@@ -23,26 +23,29 @@ public enum SelectionPolicy {
     /// Every caller must say whether the clipboard held a Universal Clipboard
     /// copy — the same reason `OutputPolicy.decide` has no default: a forgotten
     /// flag reads as "local", and the risky copy proceeds without a word.
+    /// `axAnswered`: AX returned a focused element and read it without an error, so an empty selection is the app's
+    /// answer ("nothing is selected"), not a read that could not be made. It only changes the wording of the iPhone-copy
+    /// decline: the long "can't be read in this app" sentence is wrong where AX worked.
     public static func plan(axText: String?, secureInput: Bool, clipboardRestorable: Bool,
-                            clipboardRemote: Bool) -> SelectionPlan {
+                            clipboardRemote: Bool, axAnswered: Bool = false) -> SelectionPlan {
         if let axText, !axText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .speak(axText)
         }
         if secureInput {
-            return .decline("A password field is focused.")
+            return .decline(L10nKey.noticeSelectionPassword.text)
         }
         // AX answered with a selection that is only whitespace: the app has
         // said what is selected, and ⌘C would copy the same blanks. An empty
         // string stays ambiguous (no selection, or an app whose AX does not
         // know), so it still falls through to the copy.
         if isWhitespaceOnly(axText) {
-            return .decline("Nothing selected to speak.")
+            return .decline(L10nKey.noticeSelectionNothing.text)
         }
         if clipboardRemote {
-            return .decline(L10nKey.noticeSelectionRemote.text)
+            return .decline((axAnswered ? L10nKey.noticeSelectionRemoteEmpty : L10nKey.noticeSelectionRemote).text)
         }
         guard clipboardRestorable else {
-            return .decline("The selection did not come through.")
+            return .decline(L10nKey.noticeSelectionFailed.text)
         }
         return .copy
     }

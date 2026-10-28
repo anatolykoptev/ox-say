@@ -10,7 +10,8 @@ public enum SelectionBorrow {
     /// The selected text, or why it could not be read.
     /// - Parameters:
     ///   - board: the general pasteboard.
-    ///   - selectedText: the AX read of the focused element. A secure field
+    ///   - selectedText: the AX read of the focused element, system-wide first and the frontmost app's own element when
+    ///     that gave no text (`AXSelection.read`), with the outcome of every source it asked. A secure field
     ///     (subrole `AXSecureTextField`) is refused: its text is dropped and
     ///     ⌘C is never sent, the same outcome as `secureInput`. Nil or empty
     ///     text sends the plan toward the ⌘C fallback.
@@ -19,7 +20,7 @@ public enum SelectionBorrow {
     ///   - spin: pumps the run loop briefly; the copy lands asynchronously.
     ///   - readText: the pasteboard's plain text, asked after the copy lands.
     ///   - copyTimeout: how long to wait for the copy.
-    ///   - onSelection: called once per press with the path taken and every AX
+    ///   - onSelection: called once per press with the path taken (ax, copy, remote, none) and every AX
     ///     source's result (never user content).
     public static func capture(board: DictationPasteboard,
                                selectedText: () -> AXSelection,
@@ -55,7 +56,8 @@ public enum SelectionBorrow {
             ? PasteboardSnapshot.capture(board) : nil
         switch SelectionPolicy.plan(axText: axText, secureInput: secure,
                                     clipboardRestorable: snapshot.map { $0.problems.isEmpty && !$0.isSensitive } ?? false,
-                                    clipboardRemote: snapshot?.isRemote ?? false) {
+                                    clipboardRemote: snapshot?.isRemote ?? false,
+                                    axAnswered: ax.hasElement && ax.error == 0) {
         case .speak(let text): return ((text, nil), .ax)
         case .decline(let reason):
             // An iPhone copy is left alone: no ⌘C, no write, no read of its data.
@@ -63,7 +65,7 @@ public enum SelectionBorrow {
         case .copy: break
         }
         // `.copy` is only planned when the snapshot was taken.
-        guard let snapshot else { return ((nil, "The selection did not come through."), .none) }
+        guard let snapshot else { return ((nil, L10nKey.noticeSelectionFailed.text), .none) }
         let before = board.changeCount
         postCopy()
         // The copy lands on the pasteboard asynchronously; a selection-less
@@ -80,7 +82,7 @@ public enum SelectionBorrow {
         defer { if !snapshot.isRemote && afterCopy != before && board.changeCount == afterCopy { board.restore(snapshot) } }
         guard afterCopy != before, let text = readText(),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return ((nil, "Nothing selected to speak."), .none)
+            return ((nil, L10nKey.noticeSelectionNothing.text), .none)
         }
         return ((text, nil), .copy)
     }
