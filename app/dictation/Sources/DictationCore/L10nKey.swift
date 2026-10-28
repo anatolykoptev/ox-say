@@ -16,6 +16,8 @@ public enum L10nKey: String, CaseIterable {
     case noticeHotkeyTaken = "notice.hotkey.taken"
     case noticeHotkeyAllTaken = "notice.hotkey.all_taken"
     case noticeHotkeyAllMacOS = "notice.hotkey.all_macos"
+    // The speak hotkey over an iPhone copy in an app whose selection AX cannot read.
+    case noticeSelectionRemote = "notice.selection_remote_clipboard"
     // The automatic update check: the status menu's install row and the one notice per version.
     case menuUpdateAvailable = "menu.update_available"
     case noticeUpdateAvailable = "notice.update_available"

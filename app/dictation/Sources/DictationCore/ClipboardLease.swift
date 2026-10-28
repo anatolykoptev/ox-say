@@ -22,7 +22,7 @@ extension DictationPasteboard {
     /// Declared types only — reading the data behind any of them makes macOS
     /// fetch the contents from that device, which shows a panel and stalls.
     public var holdsRemoteCopy: Bool {
-        declaredItems.contains { $0.contains(where: PasteboardMarker.remote.contains) }
+        PasteboardMarker.declaresRemote(declaredItems)
     }
 }
 
@@ -65,12 +65,15 @@ public struct PasteboardSnapshot: Equatable {
     public static func capture(_ board: DictationPasteboard) -> PasteboardSnapshot {
         var snapshot = PasteboardSnapshot(items: [])
         var bytes = 0
-        if board.holdsRemoteCopy {
+        // Asked once: the same list decides "remote" and is enumerated below, so
+        // a remote copy landing in between cannot get its marker type read.
+        let declared = board.declaredItems
+        if PasteboardMarker.declaresRemote(declared) {
             snapshot.isRemote = true
             snapshot.report("a clipboard copied on another device")
             return snapshot
         }
-        capture: for (index, types) in board.declaredItems.enumerated() {
+        capture: for (index, types) in declared.enumerated() {
             var entries: [PasteboardEntry] = []
             for type in types {
                 if isPromisedType(type) {
@@ -137,6 +140,11 @@ public enum PasteboardMarker {
     public static let remoteClipboard = "com.apple.is-remote-clipboard"
     /// Declaring any of these means the contents live on another device.
     public static let remote = [remoteClipboard]
+
+    /// Any item declares a remote marker.
+    public static func declaresRemote(_ declaredItems: [[String]]) -> Bool {
+        declaredItems.contains { $0.contains(where: remote.contains) }
+    }
     /// Added to the user's contents when they are put back: it is not a new copy,
     /// so clipboard managers skip it. Must not overlap `sensitive`, or the next
     /// dictation would take the restored contents for a secret and drop them.

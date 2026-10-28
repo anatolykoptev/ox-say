@@ -58,47 +58,51 @@ final class SelectionBorrowTests: XCTestCase {
         XCTAssertEqual(board.text, "the user's copy", "the borrow puts the user's copy back")
     }
 
-    // Anchored wiring: the remote flag the snapshot finds must reach the plan.
-    // With `clipboardRemote: false` at the call site, an iPhone copy's snapshot
-    // reads "unrestorable" and the borrow is declined — speak-selection stops
-    // working after every iPhone copy, exactly #214's symptom.
-    // Mutation: SelectionBorrow.capture, `clipboardRemote: snapshot?.isRemote
-    // ?? false` -> `clipboardRemote: false` -> RED.
-    func testTheRemoteFlagReachesThePlan() {
+    // #220: AX gave nothing and the clipboard is an iPhone copy. ⌘C would
+    // replace it for good (a remote copy cannot be restored), so the press is
+    // declined with the localized notice and the clipboard is not touched.
+    // Mutation: SelectionBorrow.run, `clipboardRemote: snapshot?.isRemote ?? false`
+    // -> `clipboardRemote: false` -> RED (⌘C is sent over the iPhone copy).
+    func testARemoteClipboardWithNoAXSelectionIsDeclinedWithoutTheCopy() {
         let board = remoteBoard()
-        var remoteCopies = 0
+        var copies = 0
         let (text, problem) = SelectionBorrow.capture(board: board,
                                                     selectedText: { ax(nil) },
                                                     secureInput: { false },
-                                                    postCopy: { board.userCopies("the selection") },
+                                                    postCopy: { copies += 1; board.userCopies("the selection") },
                                                     spin: { _ in },
-                                                    readText: { board.text },
-                                                    onRemoteCopy: { remoteCopies += 1 })
-        XCTAssertEqual(text, "the selection", "⌘C over a remote copy still reads the selection")
-        XCTAssertNil(problem)
-        XCTAssertEqual(remoteCopies, 1, "a ⌘C landing over a remote copy is logged once")
-        XCTAssertEqual(board.text, "the selection",
-                       "a remote snapshot is never restored: the clipboard keeps the copy")
+                                                    readText: { board.text })
+        XCTAssertNil(text)
+        XCTAssertEqual(problem, L10nKey.noticeSelectionRemote.text)
+        XCTAssertEqual(copies, 0, "⌘C over an iPhone copy replaces it for good")
+        XCTAssertEqual(board.changeCount, 0, "the clipboard is not written")
         XCTAssertEqual(board.reads, [], "the remote copy's data is never read")
+        XCTAssertEqual(board.text, "copied on the iPhone")
+        XCTAssertTrue(board.declaredItems.joined().contains(PasteboardMarker.remoteClipboard))
     }
 
-    // The other side of the same line: ⌘C lands nothing, so the remote copy
-    // was never overwritten and nothing is logged.
-    func testARemoteClipboardWithNoCopyComingNeedsNoLog() {
+    // The decline is a different message from the others and names the way out.
+    func testTheRemoteDeclineIsItsOwnLocalizedNotice() {
+        let others = ["A password field is focused.", "Nothing selected to speak.",
+                      "The selection did not come through."]
+        XCTAssertFalse(others.contains(L10nKey.noticeSelectionRemote.text))
+    }
+
+    // AX text wins over a remote clipboard: nothing declined, nothing touched.
+    func testAXTextOverARemoteClipboardIsSpokenUntouched() {
         let board = remoteBoard()
-        var remoteCopies = 0
+        var copies = 0
         let (text, problem) = SelectionBorrow.capture(board: board,
-                                                    selectedText: { ax(nil) },
+                                                    selectedText: { ax("the selection") },
                                                     secureInput: { false },
-                                                    postCopy: {},
+                                                    postCopy: { copies += 1 },
                                                     spin: { _ in },
-                                                    readText: { board.text },
-                                                    onRemoteCopy: { remoteCopies += 1 })
-        XCTAssertNil(text)
-        XCTAssertEqual(problem, "Nothing selected to speak.")
-        XCTAssertEqual(remoteCopies, 0, "the remote copy survived: there is nothing to log")
-        XCTAssertTrue(board.declaredItems.joined().contains(PasteboardMarker.remoteClipboard),
-                      "a selection-less ⌘C writes nothing: the iPhone copy is still there")
+                                                    readText: { board.text })
+        XCTAssertEqual(text, "the selection")
+        XCTAssertNil(problem)
+        XCTAssertEqual(copies, 0)
+        XCTAssertEqual(board.changeCount, 0)
+        XCTAssertEqual(board.reads, [])
     }
 
     // A secure field gets neither AX nor ⌘C — the decline comes before any
@@ -178,12 +182,13 @@ final class SelectionBorrowTests: XCTestCase {
         XCTAssertEqual(board.reads, [])
     }
 
-    // The log line: one report per press, path and AX read's error/source.
+    // The log line: one report per press, path plus every source's result.
     // Mutation: SelectionBorrow.capture, `onSelection?(...)` deleted -> RED;
-    // `path: path` -> `path: .ax` -> RED in the copy/none cases.
-    func testEachPressReportsThePathAndTheAXRead() {
-        func press(_ read: AXSelection, copy: String? = nil) -> SelectionReport? {
-            let board = FakePasteboard(text: "the user's copy")
+    // `path: path` -> `path: .ax` -> RED in the copy/none cases;
+    // `attempts: ax.attempts` -> `[ax.attempt]` -> RED in the two-source case.
+    func testEachPressReportsThePathAndEverySourcesResult() {
+        func press(_ read: AXSelection, copy: String? = nil, remote: Bool = false) -> String? {
+            let board = remote ? remoteBoard() : FakePasteboard(text: "the user's copy")
             var reports: [SelectionReport] = []
             _ = SelectionBorrow.capture(board: board,
                                         selectedText: { read },
@@ -193,22 +198,28 @@ final class SelectionBorrowTests: XCTestCase {
                                         readText: { board.text },
                                         onSelection: { reports.append($0) })
             XCTAssertEqual(reports.count, 1, "exactly one report per press")
-            return reports.first
+            return reports.first?.line
         }
-        XCTAssertEqual(press(ax("hello"))?.line, "selection path=ax ax_err=0 source=systemwide")
-        XCTAssertEqual(press(ax("hello", source: .app))?.line, "selection path=ax ax_err=0 source=app")
-        XCTAssertEqual(press(ax(nil, error: -25212, source: .app), copy: "copied")?.line,
-                       "selection path=copy ax_err=-25212 source=app")
-        XCTAssertEqual(press(ax(nil, error: -25205))?.line,
-                       "selection path=none ax_err=-25205 source=systemwide",
+        XCTAssertEqual(press(ax("hello")), "selection path=ax ax=systemwide:0")
+        XCTAssertEqual(press(ax("hello", source: .app)), "selection path=ax ax=app:0")
+        XCTAssertEqual(press(ax(nil, error: -25212, source: .app), copy: "copied"),
+                       "selection path=copy ax=app:-25212")
+        XCTAssertEqual(press(ax(nil, error: -25205)), "selection path=none ax=systemwide:-25205",
                        "AX gave nothing and ⌘C copied nothing")
-        XCTAssertEqual(press(ax("pw", secureField: true))?.line,
-                       "selection path=none ax_err=0 source=systemwide",
-                       "a refused secure field is not an ax read")
+        XCTAssertEqual(press(ax("pw", secureField: true)), "selection path=none ax=systemwide:secure",
+                       "a refused secure field is not an ax read: no success code")
+        XCTAssertEqual(press(ax(nil), remote: true), "selection path=remote ax=systemwide:0",
+                       "declined over an iPhone copy")
+        let both = AXSelection.read(
+            systemWide: { AXSelection(hasElement: false, error: -25204, source: .systemWide) },
+            app: { AXSelection(hasElement: false, error: -25212, source: .app) })
+        XCTAssertEqual(press(both), "selection path=none ax=systemwide:-25204,app:-25212",
+                       "both sources' results are logged, not only the last")
     }
 
     // The source choice: the system-wide element first; the frontmost app's
-    // only when the first yields no focused element.
+    // when the first yields no focused element OR no text (Chromium answers
+    // the system-wide query with an element that has no AXSelectedText).
     // Mutation: AXSelection.read, `first.hasElement ? first : app()` ->
     // `app()` -> RED; `-> first` -> RED (the fallback never runs).
     func testTheSystemWideElementWinsAndTheAppIsTheFallback() {
@@ -217,35 +228,62 @@ final class SelectionBorrowTests: XCTestCase {
         let fromApp = AXSelection(text: "app", hasElement: true, error: 0, source: .app)
         let got = AXSelection.read(systemWide: { wide }, app: { appAsked += 1; return fromApp })
         XCTAssertEqual(got, wide)
-        XCTAssertEqual(appAsked, 0, "the app element is not queried when the system-wide one answers")
+        XCTAssertEqual(appAsked, 0, "the app element is not queried when the system-wide one has text")
 
         let refused = AXSelection(hasElement: false, error: -25204, source: .systemWide)
-        XCTAssertEqual(AXSelection.read(systemWide: { refused }, app: { appAsked += 1; return fromApp }), fromApp)
+        let viaApp = AXSelection.read(systemWide: { refused }, app: { appAsked += 1; return fromApp })
+        XCTAssertEqual(viaApp.text, "app")
+        XCTAssertEqual(viaApp.source, .app)
         XCTAssertEqual(appAsked, 1)
 
         let noneEither = AXSelection(hasElement: false, error: -25212, source: .app)
         XCTAssertEqual(AXSelection.read(systemWide: { refused }, app: { noneEither }).source, .app,
-                       "both failed: the report says the app source was the last one tried")
+                       "both failed with no element: the app source is the one reported")
     }
 
-    // Wiring guard: the app forwards the remote-copy line to the unified log —
-    // without it the loss happens silently. Anchored on both source files:
-    // SelectionCapture must pass the hook through, AppDelegate must set it.
-    func testTheAppWiresTheRemoteCopyLine() {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // DictationCoreTests
-            .deletingLastPathComponent() // Tests
-            .deletingLastPathComponent() // package root
-        let capture = (try? String(contentsOf: root.appendingPathComponent("Sources/OxSayDictation/SelectionCapture.swift"),
-                                   encoding: .utf8)) ?? ""
-        XCTAssertFalse(capture.isEmpty, "SelectionCapture.swift unreadable")
-        XCTAssertTrue(capture.contains("onRemoteCopy: onRemoteCopy"),
-                      "SelectionCapture drops the remote-copy hook — the fallback is never logged")
-        let appDelegate = (try? String(contentsOf: root.appendingPathComponent("Sources/OxSayDictation/AppDelegate.swift"),
-                                       encoding: .utf8)) ?? ""
-        XCTAssertFalse(appDelegate.isEmpty, "AppDelegate.swift unreadable")
-        XCTAssertTrue(appDelegate.contains("capture.onRemoteCopy = {"),
-                      "no log line is wired for a ⌘C over a Universal Clipboard copy")
+    // #222: the system-wide read returns an element that has no text. The app
+    // source is asked next, and its text wins.
+    // Mutation: AXSelection.read, `first.hasElement && hasText(first)` ->
+    // `first.hasElement` -> RED (the app source is never asked).
+    func testAnElementWithoutTextSendsTheReadToTheAppSource() {
+        let bare = AXSelection(text: nil, hasElement: true, error: -25212, source: .systemWide)
+        let fromApp = AXSelection(text: "chromium text", hasElement: true, error: 0, source: .app)
+        let got = AXSelection.read(systemWide: { bare }, app: { fromApp })
+        XCTAssertEqual(got.text, "chromium text")
+        XCTAssertEqual(got.source, .app)
+        XCTAssertEqual(got.attempts.map(\.source), [.systemWide, .app])
+        XCTAssertEqual(got.attempts.map(\.error), [-25212, 0])
+        let empty = AXSelection(text: "", hasElement: true, error: 0, source: .systemWide)
+        XCTAssertEqual(AXSelection.read(systemWide: { empty }, app: { fromApp }).text, "chromium text",
+                       "an empty selection string is no text either")
+    }
+
+    // Neither source has text: the system-wide element (which exists) is the
+    // answer, and the report keeps both results.
+    func testNoTextAnywhereKeepsTheFirstElementAndBothResults() {
+        let bare = AXSelection(text: nil, hasElement: true, error: -25212, source: .systemWide)
+        let appBare = AXSelection(text: nil, hasElement: true, error: -25205, source: .app)
+        let got = AXSelection.read(systemWide: { bare }, app: { appBare })
+        XCTAssertEqual(got.source, .systemWide)
+        XCTAssertEqual(got.attempts.map(\.error), [-25212, -25205])
+    }
+
+    // A secure field found by either source is refused whole: the app source
+    // is not asked after a secure system-wide element, and a secure app element
+    // wins over a bare system-wide one.
+    // Mutation: AXSelection.read, delete the `first.secureField` early return
+    // or the `second.secureField` pick -> RED.
+    func testASecureElementFromEitherSourceStaysSecure() {
+        var appAsked = 0
+        let secureWide = AXSelection(text: nil, secureField: true, hasElement: true, error: 0, source: .systemWide)
+        let appText = AXSelection(text: "visible", hasElement: true, error: 0, source: .app)
+        let got = AXSelection.read(systemWide: { secureWide }, app: { appAsked += 1; return appText })
+        XCTAssertTrue(got.secureField)
+        XCTAssertEqual(appAsked, 0)
+
+        let bare = AXSelection(text: nil, hasElement: true, error: -25212, source: .systemWide)
+        let secureApp = AXSelection(text: nil, secureField: true, hasElement: true, error: 0, source: .app)
+        XCTAssertTrue(AXSelection.read(systemWide: { bare }, app: { secureApp }).secureField)
     }
 
     // Wiring guard for the one log line per speak press: SelectionCapture must
@@ -277,6 +315,40 @@ final class SelectionBorrowTests: XCTestCase {
                      "readText: board.readText"] {
             XCTAssertTrue(capture.contains(seam), "SelectionCapture no longer passes `\(seam)` — a stub stands in for the platform")
         }
+    }
+
+    // #222: the real AX read is platform code the fakes above never run. The
+    // secure-subrole mapping and the two-source read must stay wired: a
+    // mapping that never matches reads a password field's text; a read that
+    // bypasses `AXSelection.read` loses the app-source fallback.
+    // Mutations: SelectionCapture.read, `kAXSecureTextFieldSubrole` -> any
+    // other subrole; `secureField: secure` -> `secureField: false`;
+    // `AXSelection.read(` -> a direct `read(from: AXUIElementCreateSystemWide()...)`
+    // -> each RED.
+    func testTheCaptureMapsTheSecureSubroleAndReadsThroughBothSources() {
+        let capture = source("Sources/OxSayDictation/SelectionCapture.swift")
+        for pin in ["let secure = (subrole as? String) == (kAXSecureTextFieldSubrole as String)",
+                    "secureField: secure,",
+                    "kAXSubroleAttribute",
+                    "AXSelection.read(",
+                    "systemWide: { read(from: AXUIElementCreateSystemWide(), source: .systemWide) }",
+                    "return read(from: AXUIElementCreateApplication(pid), source: .app)"] {
+            XCTAssertTrue(capture.contains(pin), "SelectionCapture no longer contains `\(pin)`")
+        }
+    }
+
+    // #220: the decline's text reaches the user. AppDelegate shows the
+    // problem the capture returns on the pill; dropping it would make the
+    // hotkey go silent over an iPhone copy.
+    // Mutation: AppDelegate.speakSelection, `overlay.showMessage(problem ??
+    // "Nothing selected to speak.")` -> `overlay.showMessage("")` -> RED.
+    func testTheDeclineReachesThePill() {
+        let appDelegate = source("Sources/OxSayDictation/AppDelegate.swift")
+        XCTAssertTrue(appDelegate.contains("overlay.showMessage(problem ?? \"Nothing selected to speak.\")"),
+                      "speakSelection no longer shows the capture's problem")
+        let capture = source("Sources/OxSayDictation/SelectionCapture.swift")
+        XCTAssertTrue(capture.contains("func capture() -> (text: String?, problem: String?) {\n        SelectionBorrow.capture("),
+                      "SelectionCapture must return SelectionBorrow's result unchanged")
     }
 
     private func source(_ relative: String) -> String {
