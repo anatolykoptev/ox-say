@@ -42,6 +42,9 @@ public struct MeetingInfo: Equatable {
     /// The daemon's stable code for why the meeting (or its notes) failed (`fail_reason`); nil when none, or for a
     /// failure recorded before codes existed. `MeetingFailure` turns it into a sentence.
     public var failReason: String?
+    /// The daemon's word that a voices retry of a meeting with unavailable voices would be accepted now
+    /// (`voices_retryable`): diarization is ready, the reason is one a retry can fix, the audio is here.
+    public var voicesRetryable: Bool
     /// Retention removed the recording (`audio_deleted`).
     public var audioDeleted: Bool
     /// How long the call was, in seconds; nil until the recording is over.
@@ -50,7 +53,8 @@ public struct MeetingInfo: Equatable {
     public init(id: String, dir: String? = nil, title: String = "", started: Date? = nil, status: Status,
                 notesPending: String? = nil, warnings: [String] = [], error: String? = nil,
                 notesMD: String? = nil, transcriptMD: String? = nil, voiceMode: String? = nil, diarReason: String? = nil,
-                audioDeleted: Bool = false, durationSeconds: Double? = nil, failReason: String? = nil) {
+                audioDeleted: Bool = false, durationSeconds: Double? = nil, failReason: String? = nil,
+                voicesRetryable: Bool = false) {
         self.id = id
         self.dir = dir
         self.title = title
@@ -63,6 +67,7 @@ public struct MeetingInfo: Equatable {
         self.transcriptMD = transcriptMD
         self.voiceMode = voiceMode
         self.diarReason = diarReason
+        self.voicesRetryable = voicesRetryable
         self.audioDeleted = audioDeleted
         self.durationSeconds = durationSeconds
         self.failReason = failReason
@@ -72,6 +77,11 @@ public struct MeetingInfo: Equatable {
 
     /// Why the far side has one label although voices were looked for, nil when nothing went wrong.
     public var diarProblem: DiarProblem? { DiarProblem.of(warnings: warnings, reason: diarReason) }
+
+    /// Whether "Try Again" for the voices is offered: see `DiarProblem.offersRetry`.
+    public var offersVoicesRetry: Bool {
+        diarProblem?.offersRetry(daemonSaysRetryable: voicesRetryable, audioDeleted: audioDeleted) ?? false
+    }
 
     /// Nothing left for the daemon to do on its own.
     public var settled: Bool { status == .done || status == .transcribed || status == .failed }
@@ -119,7 +129,8 @@ public struct MeetingInfo: Equatable {
                            voiceMode: nonEmpty(obj["voice_mode"] as? String), diarReason: nonEmpty(obj["diar_reason"] as? String),
                            audioDeleted: obj["audio_deleted"] as? Bool ?? false,
                            durationSeconds: (obj["duration_s"] as? Double).flatMap { $0 > 0 ? $0 : nil },
-                           failReason: nonEmpty(obj["fail_reason"] as? String))
+                           failReason: nonEmpty(obj["fail_reason"] as? String),
+                           voicesRetryable: obj["voices_retryable"] as? Bool ?? false)
     }
 
     private static func nonEmpty(_ s: String?) -> String? {
