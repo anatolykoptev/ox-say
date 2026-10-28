@@ -116,15 +116,15 @@ final class MeetingController: NSObject, MeetingFeature {
         super.init()
         submenu.autoenablesItems = false
         notifier.install()
-        recorder.onSystemAudioFailed = { [weak self] why in
+        recorder.onSystemAudioFailed = { [weak self] in
             self?.monitor.systemAudioFailed = true
-            self?.host.notify(L10nKey.noticeMeetingTapLost.text(why))
+            self?.host.notify(L10nKey.noticeMeetingTapLost.text)
         }
         recorder.onSystemAudioRecovered = { [weak self] in
             self?.monitor.systemAudioFailed = false
             self?.host.notify(L10nKey.noticeMeetingTapRecovered.text)
         }
-        recorder.onMicrophoneFailed = { [weak self] why in self?.host.notify(L10nKey.noticeMeetingMicLost.text(why)) }
+        recorder.onMicrophoneFailed = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicLost.text) }
         recorder.onMicrophoneRecovered = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicRecovered.text) }
         badge.onStop = { [weak self] in self?.stop() }
         badge.onDontRecord = { [weak self] in self?.dontRecordThisOne() }
@@ -245,7 +245,7 @@ final class MeetingController: NSObject, MeetingFeature {
         if origin == .auto || offered, !consentReminderAccepted() { return }
         // Before a meeting exists in the daemon: a missing microphone permission leaves nothing to clean up.
         do { try MeetingRecorder.checkMicrophone() } catch {
-            host.notify(L10nKey.noticeMeetingStartFailed.text("\(error)"))
+            host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
             return
         }
         starting = true
@@ -268,7 +268,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 }
                 guard let dir = info.dir else { throw StudioError.badResponse }
                 try recorder.start(into: URL(fileURLWithPath: dir, isDirectory: true))
-                current = (info, origin)
+                current = (info, offered ? .offered : origin)
                 syncCallActivity()
                 monitor = RecordingMonitor()
                 playingSince = nil
@@ -277,7 +277,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 startTick()
                 host.recordingChanged()
             } catch {
-                host.notify(L10nKey.noticeMeetingStartFailed.text("\(error)"))
+                host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
                 // A meeting the daemon opened but the recorder never started would sit as "recording".
                 if let created, current == nil { discardEmpty(created.id) }
             }
@@ -416,7 +416,7 @@ final class MeetingController: NSObject, MeetingFeature {
         if current?.origin == .auto { stop() } else { badge.hide() }
     }
 
-    /// The prompt's quiet third action: "Don't ask for <App>" is the app's per-app "Don't record"
+    /// The prompt's quiet third action: "Don't ask for <App>" is the app's per-app "Never ask"
     /// (reversible in Settings), and this call is done asking.
     private func dontAskForThisApp() {
         guard case .prompt(let source) = badge.mode else { return }
@@ -476,7 +476,11 @@ final class MeetingController: NSObject, MeetingFeature {
         case .browserConsent(let id)?: offer = .browserConsent(browser: id)
         default: offer = nil
         }
-        if offerLife.shouldHide(now: Date(), offer: offer, liveSource: tick.call?.source, users: tick.users) { badge.hide() }
+        if case .hide(let why) = offerLife.verdict(now: Date(), offer: offer, liveSource: tick.call?.source, heldOnly: tick.heldOnly, users: tick.users) {
+            badge.hide()
+            // Taken down without an answer, about a call that may return: asked about again when it does.
+            if why.withdrawsOffer { watcher.offerWithdrawn() }
+        }
         // A browser holds the microphone and nobody was asked about Automating it: ask in context before the
         // first Apple Event — unless the badge is already serving a prompt or a recording.
         if let id = tick.browserNeedsConsent, badge.mode == nil { badge.showBrowserConsent(browser: id) }
@@ -611,7 +615,7 @@ final class MeetingController: NSObject, MeetingFeature {
                     if !(wasOffer && !state.offersSplit) { return }
                 }
             } catch {
-                host.notify(L10nKey.speakersFailed.text("\(error)"))
+                host.notify(L10nKey.speakersFailed.text(MeetingErrorText.sentence(error, action: .speakers)))
             }
         }
     }
@@ -707,7 +711,7 @@ final class MeetingController: NSObject, MeetingFeature {
 
     private func installModel() {
         Task { @MainActor in
-            do { try await host.client.installNotesModel() } catch { host.notify(StudioError.plain(error)) }
+            do { try await host.client.installNotesModel() } catch { host.notify(MeetingErrorText.sentence(error, action: .installModel)) }
             render()
         }
     }

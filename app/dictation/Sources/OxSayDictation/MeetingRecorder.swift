@@ -13,13 +13,15 @@ import os
 /// burst after a stall is placed where it was recorded instead of being padded and then trimmed.
 @available(macOS 14.2, *)
 final class MeetingRecorder {
-    enum StartError: Error, CustomStringConvertible {
+    enum StartError: UserFacingError, CustomStringConvertible {
+        /// The sentence is already in the user's language (the permission texts).
         case microphone(String)
         var description: String {
             switch self {
             case .microphone(let why): return why
             }
         }
+        var userText: String { description }
     }
 
     /// What a finished recording did with the clock: logged by the controller as numbers, never as content.
@@ -36,13 +38,14 @@ final class MeetingRecorder {
     private static let activeWindow: TimeInterval = 3
     private static let loudRMS: Float = 0.003
 
-    /// Called on the main thread when the system audio could not be (re)started: once per streak of failures.
+    /// Called on the main thread when the system audio could not be (re)started: once per streak of failures. It carries
+    /// no reason: the framework's error is English and goes to the log, the app says the loss in the user's language.
     /// The recorder goes on retrying (`Reacquire`) for as long as the recording runs.
-    var onSystemAudioFailed: ((String) -> Void)?
+    var onSystemAudioFailed: (() -> Void)?
     /// ...and when a later attempt worked.
     var onSystemAudioRecovered: (() -> Void)?
     /// The same two for the microphone after a route change.
-    var onMicrophoneFailed: ((String) -> Void)?
+    var onMicrophoneFailed: (() -> Void)?
     var onMicrophoneRecovered: (() -> Void)?
 
     private let mic = AVAudioEngine()
@@ -59,7 +62,10 @@ final class MeetingRecorder {
     private lazy var micChain = RetryChain(
         attempt: { [weak self] in try self?.startMicrophone() },
         schedule: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) },
-        onFailed: { [weak self] why in self?.onMicrophoneFailed?(why) },
+        onFailed: { [weak self] error in
+            self?.log.error("microphone: restart failed: \(String(describing: error), privacy: .public)")
+            self?.onMicrophoneFailed?()
+        },
         onRecovered: { [weak self] in self?.onMicrophoneRecovered?() })
     private let log = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "meeting")
     private var rateListener: (device: AudioObjectID, block: AudioObjectPropertyListenerBlock)?
@@ -312,19 +318,20 @@ final class MeetingRecorder {
         switch outcome {
         case .started: if tapRetry.succeeded() { onSystemAudioRecovered?() }
         case .stopped: break
-        case .failed(let error): tapFailed("\(error)")
+        case .failed(let error): tapFailed(error)
         }
     }
 
-    private func tapFailed(_ why: String) {
+    private func tapFailed(_ error: Error) {
         guard started != nil else { return }
+        log.error("system audio tap: failed: \(String(describing: error), privacy: .public)")
         // A rebuild that failed while the old tap still DELIVERS loses nothing: retried and logged, not announced. Once
         // the old tap goes quiet, or enough rebuilds failed, the loss is told (`TapLoss`).
         let silence = lock.withLock { TapLoss.silence(lastNanos: tapLastNanos, nowNanos: DispatchTime.now().uptimeNanoseconds) }
         let lost = TapLoss.isLost(hasTap: tap.isRunning, sinceLastBuffer: silence, consecutiveFailures: tapRetry.failures + 1)
-        if !lost { log.error("system audio tap: rebuild failed, the previous tap keeps delivering: \(why, privacy: .public)") }
+        if !lost { log.error("system audio tap: rebuild failed, the previous tap keeps delivering") }
         let step = tapRetry.failed(sourceLost: lost)
-        if step.notify { onSystemAudioFailed?(why) }
+        if step.notify { onSystemAudioFailed?() }
         scheduleTapRebuild(after: step.delay)
     }
 

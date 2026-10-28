@@ -16,7 +16,7 @@ final class RetryChainTests: XCTestCase {
     private struct Boom: Error {}
 
     private func chain(_ sched: FakeScheduler, attempt: @escaping () throws -> Void,
-                       failed: @escaping (String) -> Void = { _ in }, recovered: @escaping () -> Void = {}) -> RetryChain {
+                       failed: @escaping (Error) -> Void = { _ in }, recovered: @escaping () -> Void = {}) -> RetryChain {
         RetryChain(attempt: attempt, schedule: { sched.schedule($0, $1) }, onFailed: failed, onRecovered: recovered)
     }
 
@@ -58,7 +58,7 @@ final class RetryChainTests: XCTestCase {
     func testTheCurrentChainRetriesToldOnceAndRecovers() {
         let sched = FakeScheduler()
         var attempts = 0
-        var failures: [String] = []
+        var failures: [Error] = []
         var recovered = 0
         let c = chain(sched, attempt: { attempts += 1; if attempts < 3 { throw Boom() } },
                       failed: { failures.append($0) }, recovered: { recovered += 1 })
@@ -99,5 +99,18 @@ final class RetryChainTests: XCTestCase {
         c.cancel()
         sched.runNext()
         XCTAssertEqual(attempts, 1)
+    }
+
+    /// #337: the chain hands over the error itself, never a string of it: the app logs it and says its own sentence, so
+    /// the framework's English cannot reach a Russian user through this callback.
+    /// Mutation: RetryChain.step, `onFailed(error)` -> `onFailed(CancellationError())` -> RED.
+    func testTheFirstFailureOfAStreakIsHandedOverAsTheErrorItself() {
+        let sched = FakeScheduler()
+        var heard: [Error] = []
+        let c = chain(sched, attempt: { throw Boom() }, failed: { heard.append($0) })
+        c.begin()
+        c.run()
+        XCTAssertEqual(heard.count, 1)
+        XCTAssertTrue(heard.first is Boom, "got \(String(describing: heard.first))")
     }
 }

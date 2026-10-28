@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 import XCTest
 @testable import DictationCore
@@ -810,4 +811,106 @@ extension CallDetectorTests {
         }
         XCTAssertEqual(undeterminedProbes, 3, "undetermined is never cached: the user may settle it any moment")
     }
+}
+
+// MARK: X19 — a prompt-started recording, a withdrawn offer, a browser that is not running yet
+extension CallDetectorTests {
+    private var chromeMic: [MicUser] { [MicUser(bundleID: "com.google.Chrome.helper", pid: 3)] }
+
+    /// #342.6: a Record pressed on a prompt whose call is already over must not record an empty room until Stop: the
+    /// recording the prompt started ends with the call, by the same silence rule as an automatic one.
+    /// Mutation: CallTracker.observe, `case .auto, .offered:` -> `case .auto:` (and `.offered` left with `.manual`) -> RED.
+    func testARecordingStartedFromThePromptStopsOnSilenceLikeAnAutomaticOne() {
+        var tr = CallTracker()
+        XCTAssertEqual(tr.observe(now: t0, call: nil, themActive: false, recording: .offered), .nothing)
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(CallTracker.endAfter - 1), call: nil, themActive: false, recording: .offered), .nothing)
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(CallTracker.endAfter), call: nil, themActive: false, recording: .offered),
+                       .stopRecording)
+        var heard = CallTracker()
+        for s in stride(from: 0.0, through: 300.0, by: 5.0) {
+            XCTAssertEqual(heard.observe(now: t0.addingTimeInterval(s), call: nil, themActive: true, recording: .offered), .nothing,
+                           "the other side is talking at \(s) s")
+        }
+    }
+
+    /// The silence timer of a prompt-started recording keeps running while the browser holds the microphone for another
+    /// site (heldOnly), as an automatic one's does.
+    /// Mutation: CallTracker.observe, `if held, !(recording?.endsWithTheCall ?? false) {` -> `if held, recording != .auto {` -> RED.
+    func testAHeldOnlyBrowserDoesNotKeepAPromptStartedRecordingAlive() {
+        var tr = CallTracker()
+        let chrome = "com.google.Chrome"
+        _ = tr.observe(now: t0, call: "meet", themActive: false, recording: nil, bundleID: chrome)
+        _ = tr.observe(now: t0.addingTimeInterval(4), call: "meet", themActive: false, recording: nil, bundleID: chrome)
+        _ = tr.observe(now: t0.addingTimeInterval(6), call: "meet", themActive: false, recording: .offered, bundleID: chrome)
+        _ = tr.observe(now: t0.addingTimeInterval(8), call: "meet", themActive: false, recording: .offered, bundleID: chrome, heldOnly: true)
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(8 + CallTracker.endAfter), call: "meet", themActive: false, recording: .offered,
+                                  bundleID: chrome, heldOnly: true), .stopRecording)
+    }
+
+    /// Only a recording that ends with the call needs the watcher once the global mode is Off.
+    /// Mutation: MeetingPolicy.watcherShouldRun, `recording?.endsWithTheCall == true` -> `recording == .auto` -> RED.
+    func testThePromptStartedRecordingKeepsTheWatcherRunningWhenCallsAreOff() {
+        XCTAssertTrue(MeetingPolicy.watcherShouldRun(mode: .off, recording: .offered))
+        XCTAssertTrue(MeetingPolicy.watcherShouldRun(mode: .off, recording: .auto))
+        XCTAssertFalse(MeetingPolicy.watcherShouldRun(mode: .off, recording: .manual))
+    }
+
+    /// #342.6/7: a prompt that went down without an answer (the call vanished, or the browser holds the mic for another
+    /// site) withdraws its offer: the call that returns is offered again. A decline stands.
+    /// Mutation: CallTracker.offerWithdrawn, delete `announcedKeys.remove(episode)` -> RED.
+    func testAWithdrawnOfferIsMadeAgainWhenTheCallReturns() {
+        var tr = CallTracker()
+        _ = tr.observe(now: t0, call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome")
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(4), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome"),
+                       .callStarted(source: "meet"))
+        _ = tr.observe(now: t0.addingTimeInterval(6), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome", heldOnly: true)
+        tr.offerWithdrawn()
+        _ = tr.observe(now: t0.addingTimeInterval(30), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome")
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(34), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome"),
+                       .callStarted(source: "meet"), "back in front: asked again")
+    }
+
+    func testAWithdrawnOfferDoesNotUndoADecline() {
+        var tr = CallTracker()
+        _ = tr.observe(now: t0, call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome")
+        tr.decline()
+        tr.offerWithdrawn()
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(10), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome"),
+                       .nothing)
+    }
+
+    /// The probe's status codes come from macOS's headers, not from a list of mine: the app maps the raw OSStatus through
+    /// `BrowserConsent.from(status:)`.
+    /// Mutation: BrowserConsent.from, `status == -600 ? .notRunning` branch removed -> RED.
+    func testTheProbeStatusMapping() {
+        XCTAssertEqual(BrowserConsent.from(status: OSStatus(errAEEventWouldRequireUserConsent)), .undetermined)
+        XCTAssertEqual(BrowserConsent.from(status: OSStatus(procNotFound)), .notRunning, "-600: the browser is launching")
+        XCTAssertEqual(BrowserConsent.from(status: noErr), .granted)
+        XCTAssertEqual(BrowserConsent.from(status: OSStatus(errAEEventNotPermitted)), .granted, "denied is decided by the read itself")
+    }
+
+    /// #342.8: -600 (the browser's process cannot be reached yet) is "ask again next poll": no Apple Event goes to it
+    /// (that would launch it), no consent badge (nobody was asked), and the answer is never kept as granted — the next
+    /// poll looks again and the real answer applies.
+    /// Mutation: CallWatch.observe, `case .notRunning:` branch -> cache it (`consentCache[id] = answer`) -> RED.
+    func testANotRunningBrowserIsAskedAgainNextPollAndNotReadMeanwhile() {
+        var watch = CallWatch()
+        var reads = 0, probes = 0
+        func round(_ s: TimeInterval, answer: BrowserConsent) -> CallWatch.Outcome {
+            watch.observe(now: t0.addingTimeInterval(s), users: chromeMic, tab: { _ in reads += 1; return .url(Self.meetURL) },
+                          themActive: false, recording: nil, consent: { _ in probes += 1; return answer })
+        }
+        let first = round(0, answer: .notRunning)
+        XCTAssertNil(first.browserNeedsConsent, "nobody was asked: no badge")
+        XCTAssertNil(first.call)
+        XCTAssertEqual(reads, 0, "no Apple Event to a browser that is still launching")
+        _ = round(2, answer: .notRunning)
+        XCTAssertEqual(probes, 2, "looked up again, not kept")
+        let third = round(4, answer: .undetermined)
+        XCTAssertEqual(third.browserNeedsConsent, "com.google.Chrome", "the real answer applies as soon as there is one")
+        let fourth = round(6, answer: .granted)
+        XCTAssertEqual(fourth.call?.source, "meet")
+        XCTAssertEqual(reads, 1)
+    }
+
 }

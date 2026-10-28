@@ -319,7 +319,7 @@ struct SpeakersTab: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let problem = detail.info.diarProblem {
-                    Label(problem.messageKey.text, systemImage: "info.circle")
+                    Label(problem.shownKey(daemonSaysRetryable: detail.info.voicesRetryable, audioDeleted: detail.info.audioDeleted).text, systemImage: "info.circle")
                         .font(.callout).foregroundStyle(.secondary)
                     if detail.info.offersVoicesRetry {
                         Button(L10nKey.meetingVoicesRetry.text) { model.actions.retryVoices(detail.info.id) }

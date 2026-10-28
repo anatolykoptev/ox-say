@@ -91,7 +91,7 @@
 "badge.prompt" = "Record this call?";
 /* The detected-call prompt; %@ is the app or site ("Zoom call — record it?", "Google Meet call — record it?"). */
 "badge.prompt.call" = "%@ call — record it?";
-/* The prompt's quiet third action; %@ is the app. Sets "Don't record" for it, reversible in Settings. */
+/* The prompt's quiet third action; %@ is the app. Sets the per-app pick "Never ask" for it, reversible in Settings. */
 "badge.dont_ask" = "Don't ask for %@";
 /* Before the first Apple Event to a browser whose Automation consent is undetermined; %@ is Chrome, Brave, Arc or Edge. */
 "badge.browser.consent" = "A call in %@? To notice Meet calls, ox-say must see the tab's address.";
@@ -127,8 +127,8 @@
 "notice.meeting.browser_pending" = "OxSay is waiting for permission to read your browser's tab. If macOS asked, choose Allow; otherwise check System Settings → Privacy & Security → Automation.";
 "notice.meeting.slept" = "Recording stopped because the Mac went to sleep. What was recorded is being transcribed.";
 "meeting.update_blocked" = "A meeting is being recorded. Update when it ends.";
-"notice.meeting.mic_lost" = "The microphone is not being recorded: %@";
-"notice.meeting.tap_lost" = "System audio is not being recorded: %@";
+"notice.meeting.mic_lost" = "The microphone is not being recorded.";
+"notice.meeting.tap_lost" = "System audio is not being recorded.";
 "notice.meeting.disk_full" = "The disk is full: the recording was stopped. What was recorded is kept.";
 "notice.meeting.tap_recovered" = "System audio is being recorded again.";
 "notice.meeting.mic_recovered" = "The microphone is being recorded again.";
@@ -162,6 +162,7 @@
 "meeting.diar.unavailable.cpu_unsupported" = "Voices on a call are not told apart on Intel Macs.";
 "meeting.diar.unavailable.engine_missing" = "Voices on a call are not told apart: this install has no voice engine. Update OxSay.";
 "meeting.diar.unavailable.models_missing" = "Voices on a call are not told apart: the voice models are not downloaded. Update OxSay.";
+"meeting.diar.unavailable.retry_now" = "Voices on this call were not told apart, but they can be found now. Try again.";
 "meeting.diar.unavailable.models_unusable" = "Voices on a call are not told apart: the voice models would not load on this Mac. Reinstall OxSay to download them again.";
 "meeting.diar.unavailable.too_long" = "Voices on a call are not told apart: the recording is longer than 2 hours.";
 "meeting.diar.unavailable.input_unreadable" = "Voices on a call are not told apart: the recording could not be read.";
@@ -220,7 +221,7 @@
 "settings.apps.header" = "Calls in these apps";
 "settings.apps.auto" = "Record automatically";
 "settings.apps.ask" = "Ask me first";
-"settings.apps.never" = "Don't record";
+"settings.apps.never" = "Never ask";
 /* The per-app picker's option that follows the global mode; %@ is what the global mode does to that app, e.g. "As set above (Ask me first)". */
 "settings.apps.default" = "As set above (%@)";
 "settings.apps.browsers" = "In Chrome, Brave, Arc or Edge";
@@ -481,6 +482,8 @@
 "studio.progress.waiting_service" = "waiting for the ox-say service…";
 "studio.progress.listen_one" = "1 part needs a listen";
 "studio.progress.listen_many" = "%@ parts need a listen";
+"studio.finish.listen_one" = "1 part needs a listen";
+"studio.finish.listen_many" = "%@ parts need a listen";
 "studio.finish.ready_title" = "Voiceover ready";
 "studio.finish.saved" = "Saved as %@.";
 "studio.finish.default_file" = "the voiceover";

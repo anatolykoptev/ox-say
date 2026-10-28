@@ -33,6 +33,17 @@ public enum DiarProblem: Equatable {
         }
     }
 
+    /// The sentence to show for a meeting. An unavailable reason is a fact about the moment of the recording: when the
+    /// daemon now says a retry would be accepted, it is stale ("models missing" although they are ready), so the row says
+    /// the voices can be found now. `too_long` is about the recording itself and stays.
+    public func shownKey(daemonSaysRetryable: Bool, audioDeleted: Bool) -> L10nKey {
+        if case .unavailable(let reason) = self, reason != "too_long",
+           offersRetry(daemonSaysRetryable: daemonSaysRetryable, audioDeleted: audioDeleted) {
+            return .diarUnavailableRetryNow
+        }
+        return messageKey
+    }
+
     /// The sentence for the menu. A code this app does not know gets the general sentence of its kind, so a newer
     /// daemon never shows an empty row.
     public var messageKey: L10nKey {

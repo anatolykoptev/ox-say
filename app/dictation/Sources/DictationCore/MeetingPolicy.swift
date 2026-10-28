@@ -180,7 +180,7 @@ public enum MeetingPolicy {
     /// The call watcher runs while the global mode is not `off`, and also while an automatic recording is
     /// running even if the user turned calls off meanwhile: its silence auto-stop needs the watcher.
     public static func watcherShouldRun(mode: CallGlobalMode, recording: CallTracker.Origin?) -> Bool {
-        mode != .off || recording == .auto
+        mode != .off || recording?.endsWithTheCall == true
     }
 
     public static func manualStart(installing: Bool) -> ManualStart { installing ? .waitForInstall : .go }

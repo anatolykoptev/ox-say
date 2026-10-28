@@ -162,6 +162,23 @@ public enum BrowserConsent: Equatable {
     /// Nobody was asked yet: the first Apple Event would raise macOS's Automation prompt with no context,
     /// so the badge asks first.
     case undetermined
+    /// The browser's process cannot be reached right now (macOS answers -600 while it is launching).
+    case notRunning
+
+    /// `errAEEventWouldRequireUserConsent`: asked WITHOUT prompting, macOS says the first Apple Event would raise its dialog.
+    private static let wouldRequireConsent: OSStatus = -1744
+    /// `procNotFound`: the target process cannot be reached right now (a browser that is still launching).
+    private static let procNotFound: OSStatus = -600
+
+    /// The raw `AEDeterminePermissionToAutomateTarget` status. Every other answer — allowed, denied, refused — is decided
+    /// by the tab read itself, as before.
+    public static func from(status: OSStatus) -> BrowserConsent {
+        switch status {
+        case wouldRequireConsent: return .undetermined
+        case procNotFound: return .notRunning
+        default: return .granted
+        }
+    }
 }
 
 /// Recognizes a meeting page by its address.
@@ -206,7 +223,15 @@ public enum MeetingURL {
 /// Debounced both ways — a mute releases the browser's microphone for a while,
 /// and a call that is only muted still plays the other side's voice.
 public struct CallTracker {
-    public enum Origin: Equatable { case manual, auto }
+    /// How a recording began. `offered` is a Record pressed on the prompt: started by the user, so it carries the
+    /// manual badge and Stop, but it ends with the call like an automatic one (`endsWithTheCall`): a Record pressed
+    /// after the call really ended must not record an empty room until someone remembers to stop it.
+    public enum Origin: Equatable {
+        case manual, auto, offered
+
+        /// The tracker stops this recording by itself when the call and the far side have both gone quiet.
+        public var endsWithTheCall: Bool { self != .manual }
+    }
 
     public enum Action: Equatable {
         case nothing
@@ -243,6 +268,12 @@ public struct CallTracker {
 
     public static func key(call: String, bundleID: String?) -> String { call + "|" + (bundleID ?? "") }
 
+    /// The prompt for the current episode went down without an answer (its call vanished, or only the browser's microphone
+    /// hold kept it): the episode is no longer "already offered", so the call that returns is offered again. A decline stands.
+    public mutating func offerWithdrawn() {
+        if let episode { announcedKeys.remove(episode) }
+    }
+
     public init() {}
 
     /// Forget the current call: the user said "don't record this one". The
@@ -266,7 +297,7 @@ public struct CallTracker {
                                  bundleID: String? = nil, callUnreadable: Bool = false, heldOnly: Bool = false) -> Action {
         let key = call.map { Self.key(call: $0, bundleID: bundleID) }
         let held = heldOnly && key != nil && key == episode
-        if held, recording != .auto {
+        if held, !(recording?.endsWithTheCall ?? false) {
             // The call page is not in front but the browser still holds the microphone:
             // the episode goes on, nothing is offered, and the debounce starts over when
             // the call page returns.
@@ -309,7 +340,7 @@ public struct CallTracker {
         unreadableTicks = 0
         callSince = nil
         switch recording {
-        case .auto:
+        case .auto, .offered:
             idleSince = nil
             if themActive {
                 quietSince = nil
@@ -391,7 +422,7 @@ public struct CallWatch {
     /// Browsers the user said "Not now" to: no Apple Event for them until they let the microphone go.
     private var skippedConsent: Set<String> = []
     /// macOS's decided Automation answers, kept while the browser holds the microphone: the lookup is a TCC query
-    /// and the poll runs every 2 s. An undetermined answer is never kept — the user may settle it any moment.
+    /// and the poll runs every 2 s. An undetermined answer is never kept — the user may settle it any moment — nor is a missing one (`notRunning`).
     private var consentCache: [String: BrowserConsent] = [:]
 
     public init() {}
@@ -399,6 +430,9 @@ public struct CallWatch {
     /// Forget the current call: the user said "don't record this one". The
     /// call is not offered again until it has ended.
     public mutating func decline() { tracker.decline() }
+
+    /// The prompt came down unanswered (see `CallTracker.offerWithdrawn`).
+    public mutating func offerWithdrawn() { tracker.offerWithdrawn() }
 
     /// "Allow…" was clicked for this browser: its next read is the real one (and raises macOS's prompt).
     public mutating func consentAsked(_ id: String) { consentAsked.insert(id); skippedConsent.remove(id) }
@@ -430,15 +464,21 @@ public struct CallWatch {
         consentAsked.formIntersection(browserIDs)
         consentCache = consentCache.filter { browserIDs.contains($0.key) }
         var needsConsent: Set<String> = []
+        // No answer yet (the browser is launching): looked up again next poll, and no Apple Event meanwhile.
+        var noAnswer: Set<String> = []
         for id in browserIDs where !skippedConsent.contains(id) && !consentAsked.contains(id) {
             let answer = consentCache[id] ?? consent(id)
-            if answer == .undetermined { needsConsent.insert(id) } else { consentCache[id] = answer }
+            switch answer {
+            case .undetermined: needsConsent.insert(id)
+            case .notRunning: noAnswer.insert(id)
+            case .granted, .denied: consentCache[id] = answer
+            }
         }
         var reads: [String: BrowserTabURL.Result] = [:]
         let detection = CallDetector.detect(of: detectUsers, tab: { id in
-            // Undetermined or skipped: no Apple Event, and the answer is not a real read — neither the
+            // Undetermined, skipped or not answering yet: no Apple Event, and the answer is not a real read — neither the
             // debounce tolerance nor the "waiting for permission" count may see it.
-            if needsConsent.contains(id) || skippedConsent.contains(id) { return .unreadable }
+            if needsConsent.contains(id) || skippedConsent.contains(id) || noAnswer.contains(id) { return .unreadable }
             let result = tab(id)
             reads[id] = result
             return result

@@ -108,8 +108,8 @@ final class UserFacingLiteralGuardTests: XCTestCase {
     }
 
     private static let callSink = try! NSRegularExpression(
-        pattern: #"(?<!func )(?<![\w.])notice\(|(?<!func )(?<![\w])(?:\w+\.)*(?:showMessage|leaveMessage|setWorkingText|runAlert|addButton|addItem|submenuItem|alert|pill|notify|onError|onNotice|disabled|header|end)\??\(|(?<![\w])\.item\((?=title:)|(?<![\w])Item\((?=title:)|(?<![\w])NSTextField\(|(?<![\w.])(?:NSMenuItem|NSButton)\("#)
-    private static let assignSink = try! NSRegularExpression(pattern: #"\.(?:messageText|informativeText|message|title)\s=\s(?!=)|\.(?:placeholderString|toolTip)\s=\s(?!=)|\bstatic let \w*(?:Title|Text|Header)\s=\s"#)
+        pattern: #"(?<!func )(?<![\w.])notice\(|(?<!func )(?<![\w])(?:\w+\.)*(?:showMessage|leaveMessage|setWorkingText|runAlert|addButton|addItem|submenuItem|alert|pill|notify|onError|onNotice|disabled|header|end|setAccessibilityLabel|setAccessibilityTitle|setAccessibilityHelp)\??\(|(?<![\w])\.item\((?=title:)|(?<![\w])Item\((?=title:)|(?<![\w])NSTextField\(|(?<![\w.])(?:NSMenuItem|NSButton|NSMenu|UpdateDialog)\("#)
+    private static let assignSink = try! NSRegularExpression(pattern: #"\.(?:messageText|informativeText|message|title)\s=\s(?!=)|\.(?:placeholderString|toolTip|stringValue|accessibilityLabel|accessibilityTitle|accessibilityHelp)\s=\s(?!=)|\bstatic let \w*(?:Title|Text|Header)\s=\s"#)
 
     /// Every English literal handed directly to a sink in `source`.
     static func findings(in source: String, file: String) -> [Finding] {
@@ -214,10 +214,18 @@ final class UserFacingLiteralGuardTests: XCTestCase {
         statusLine.title = lastNotice ?? active.map { key in
             "Hold \\(key)"
         } ?? "Idle"
+        let d = UpdateDialog(title: "Stop it?", text: "Really stop", buttons: ["Yes please", "No thanks"])
+        field.stringValue = "Hello there"
+        let m = NSMenu(title: "Voices")
+        panel.setAccessibilityLabel("Recording now")
+        view.setAccessibilityHelp("Press to stop")
+        view.accessibilityLabel = "Level meter"
         """
         let hits = Self.findings(in: sample, file: "t.swift").map(\.literal)
         for want in ["Something broke", "Big", "Keep Going", "Quit", "Choose a file", "Pick one", "Nothing selected", " is taken",
-                     "Oops", "Try again", "OK", "Reading…", "Speaking…", "Hold ", "Idle"] {
+                     "Oops", "Try again", "OK", "Reading…", "Speaking…", "Hold ", "Idle",
+                     "Stop it?", "Really stop", "Yes please", "No thanks", "Hello there", "Voices", "Recording now", "Press to stop",
+                     "Level meter"] {
             XCTAssertTrue(hits.contains(want), "missed \(want) in \(hits)")
         }
     }
@@ -235,6 +243,11 @@ final class UserFacingLiteralGuardTests: XCTestCase {
         notice(L10nKey.updateCheckingPill.text("1.2"))
         item.title = "…"
         notice(String(describing: error))
+        field.stringValue = L10nKey.hello.text
+        let d = UpdateDialog(title: text(.a), text: "\\(x) \\(y)", buttons: [text(.commonOk)])
+        let menu = NSMenu()
+        panel.setAccessibilityLabel(L10nKey.badgeA11yPanel.text)
+        view.accessibilityLabel = L10nKey.badgeA11yDot.text
         """
         XCTAssertEqual(Self.findings(in: sample, file: "t.swift"), [])
     }

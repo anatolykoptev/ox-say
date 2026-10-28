@@ -11,8 +11,8 @@ enum BrowserAutomationProbe {
         let target = NSAppleEventDescriptor(bundleIdentifier: bundleID)
         let status = AEDeterminePermissionToAutomateTarget(target.aeDesc, AEEventClass(kCoreEventClass),
                                                            AEEventID(kAEGetData), false)
-        // Every other answer — allowed, denied, refused — is decided by the tab read itself, as before.
-        return status == OSStatus(errAEEventWouldRequireUserConsent) ? .undetermined : .granted
+        // The mapping (undetermined, not running yet, everything else decided by the tab read) lives in Core.
+        return BrowserConsent.from(status: status)
     }
 }
 
@@ -43,6 +43,8 @@ final class CallWatcher {
         /// A browser holds the microphone and its Automation consent is undetermined: it must be asked in
         /// context (the badge) before the first Apple Event goes out.
         var browserNeedsConsent: String?
+        /// `call` is only the episode's memory, kept alive by its browser's microphone while the front tab is not a call.
+        var heldOnly: Bool
     }
 
     var onTick: ((Tick) -> Void)?
@@ -84,6 +86,9 @@ final class CallWatcher {
     /// "Don't record this one": the current call is not offered again.
     func decline() { watch.decline() }
 
+    /// The prompt came down unanswered: the call that returns is offered again.
+    func offerWithdrawn() { watch.offerWithdrawn() }
+
     /// "Allow…" was clicked for a browser: the consent check is done for it and the first real read goes out
     /// now — macOS raises its own Automation prompt with the badge's words fresh.
     func allowBrowserAutomation(_ id: String) {
@@ -105,7 +110,8 @@ final class CallWatcher {
                                   themActive: themActive(), recording: recording(),
                                   mode: modeFor, consent: consentFor)
         onTick?(Tick(users: users, call: outcome.call, action: outcome.action, browserDenied: outcome.browserDenied,
-                     browserNeedsPermission: outcome.browserNeedsPermission, browserNeedsConsent: outcome.browserNeedsConsent))
+                     browserNeedsPermission: outcome.browserNeedsPermission, browserNeedsConsent: outcome.browserNeedsConsent,
+                     heldOnly: outcome.heldOnly))
     }
 
     /// Main thread: asks for a fresh read (a no-op while one is pending) and answers

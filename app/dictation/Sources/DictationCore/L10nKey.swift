@@ -84,7 +84,7 @@ public enum L10nKey: String, CaseIterable {
     case badgePrompt = "badge.prompt"
     /// The detected-call prompt that names the app ("Zoom call — record it?").
     case badgePromptCall = "badge.prompt.call"
-    /// The quiet third action of the prompt: "Don't ask for <App>" (a reversible per-app "Don't record").
+    /// The quiet third action of the prompt: "Don't ask for <App>" (a reversible per-app "Never ask").
     case badgeDontAsk = "badge.dont_ask"
     /// The Automation-consent badge before the first Apple Event to a browser.
     case badgeBrowserConsent = "badge.browser.consent"
@@ -152,6 +152,7 @@ public enum L10nKey: String, CaseIterable {
     case diarUnavailableCPU = "meeting.diar.unavailable.cpu_unsupported"
     case diarUnavailableEngine = "meeting.diar.unavailable.engine_missing"
     case diarUnavailableModels = "meeting.diar.unavailable.models_missing"
+    case diarUnavailableRetryNow = "meeting.diar.unavailable.retry_now"
     case diarUnavailableUnusable = "meeting.diar.unavailable.models_unusable"
     case diarUnavailableTooLong = "meeting.diar.unavailable.too_long"
     case diarUnavailableUnreadable = "meeting.diar.unavailable.input_unreadable"
@@ -474,6 +475,8 @@ public enum L10nKey: String, CaseIterable {
     case produceWaitingService = "studio.progress.waiting_service"
     case produceListenOne = "studio.progress.listen_one"
     case produceListenMany = "studio.progress.listen_many"
+    case produceFinishListenOne = "studio.finish.listen_one"
+    case produceFinishListenMany = "studio.finish.listen_many"
     case produceFinishReadyTitle = "studio.finish.ready_title"
     case produceFinishSaved = "studio.finish.saved"
     case produceFinishDefaultFile = "studio.finish.default_file"
