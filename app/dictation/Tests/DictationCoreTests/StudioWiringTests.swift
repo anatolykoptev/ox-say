@@ -49,7 +49,7 @@ final class StudioWiringTests: XCTestCase {
         let studio = try body(app, of: "private func installStudioVoice() {")
         XCTAssertTrue(studio.contains("installUpdate(tag: UpdateInstaller.tag(forVersion: AboutPanel.appVersion), kind: .studioVoice)"))
         XCTAssertEqual(app.components(separatedBy: "kind: .studioVoice").count - 1, 1, "only the studio voice install")
-        XCTAssertEqual(app.components(separatedBy: "installUpdate(tag:").count - 1, 4, "four install call sites")
+        XCTAssertEqual(app.components(separatedBy: "installUpdate(tag:").count - 1, 5, "four install call sites and the declaration")
         XCTAssertEqual(app.components(separatedBy: "kind: .update)").count - 1, 3, "repair, the prompt and the manual check")
         XCTAssertTrue(app.contains("installUpdate(tag: UpdateInstaller.tag(forVersion: target), kind: .update)"))
         XCTAssertTrue(app.contains("installUpdate(tag: remote, kind: .update)"))
