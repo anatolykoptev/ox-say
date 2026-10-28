@@ -37,4 +37,19 @@ final class TextFoldTests: XCTestCase {
         // An emoji is one Character but several scalars: the offsets still count Characters.
         XCTAssertEqual(TextFold.ranges(of: "ok", in: "👩‍👩‍👧 ok"), [2..<4])
     }
+
+    /// A letter typed as a base letter plus a combining mark finds its precomposed form and the reverse (as the daemon's
+    /// search does, `TestSearchNormalisesDecomposedLetters`); й still is not и; the ranges stay offsets in the ORIGINAL
+    /// text, where a decomposed letter is one Character.
+    /// Mutation: TextFold.swift `ranges`, drop `precomposedStringWithCanonicalMapping` on the needle and on the
+    /// haystack Character -> RED.
+    func testDecomposedLettersMatchPrecomposedOnes() {
+        XCTAssertTrue(found("cafe\u{301}", in: "Café société"))
+        XCTAssertTrue(found("café", in: "Cafe\u{301} société"))
+        XCTAssertTrue(found("мои\u{306}", in: "Ёжик пришёл, мой друг"))
+        XCTAssertTrue(found("мой", in: "Ёжик пришёл, мои\u{306} друг"))
+        XCTAssertFalse(found("мои друг", in: "Ёжик пришёл, мои\u{306} друг"), "й is not и, decomposed or not")
+        XCTAssertEqual(TextFold.ranges(of: "societe", in: "Cafe\u{301} socie\u{301}te\u{301}"), [5..<12])
+        XCTAssertEqual(TextFold.ranges(of: "e", in: "e\u{301}e"), [0..<1, 1..<2])
+    }
 }

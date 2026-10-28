@@ -118,6 +118,11 @@ const notesPortTaken = "is in use by another process"
 // server then runs with no auth at all — so the file must be written whole or
 // not exist, and is checked before the child is spawned. The port is checked
 // too: whatever else answered on it would receive the private meeting text.
+//
+// Known window: the port is free when checked (listen, then close) and the child binds it a moment later, so another
+// process can take it in between. That cannot leak the key or the text: Verify sends no key, and a foreign server
+// that answers on the port fails the start (the notes engine is not reported ready). There is no way to hand the
+// listening socket to llama-server, so the check narrows the window and does not close it.
 func notesPrepare(cfg *config.Config) error {
 	ln, err := net.Listen("tcp", net.JoinHostPort(voxLoopbackHost, strconv.Itoa(cfg.NotesPort)))
 	if err != nil {
@@ -438,16 +443,56 @@ var freeBytes = func(dir string) (int64, error) {
 // lockPart takes the exclusive lock that marks a download in progress for a
 // model file. The download process inherits the descriptor, so the lock lives
 // as long as the fetch does — also when the daemon that started it is gone.
+//
+// The lock file is removed when a download ends (removePartLock), so a lock taken on a file that was unlinked
+// between the open and the flock would guard nothing: the next caller creates a new file and locks that, and two
+// writers share the .part. After the flock the path must still name the file that was locked; otherwise the lock is
+// dropped and taken again.
 func lockPart(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	for range lockPartTries {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		if lockPartAfterFlock != nil {
+			lockPartAfterFlock()
+		}
+		if sameFile(f, path) {
+			return f, nil
+		}
+		_ = f.Close() // unlinked under us: this lock is on a file nobody else will find
+	}
+	return nil, fmt.Errorf("the lock file %s keeps being replaced", filepath.Base(path))
+}
+
+const lockPartTries = 3
+
+// lockPartAfterFlock is a test seam between the flock and the check that the path still names the locked file.
+var lockPartAfterFlock func()
+
+func sameFile(f *os.File, path string) bool {
+	a, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return false
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = f.Close()
-		return nil, err
+	b, err := os.Stat(path)
+	return err == nil && os.SameFile(a, b)
+}
+
+// removePartLock deletes the lock file of a download that has ended: it would otherwise stay next to the model for
+// ever, zero bytes. It is deleted only while holding the lock itself: a download that another ox-say started holds
+// the lock, and its file must stay. A failure to lock or remove leaves the file, which is harmless.
+func removePartLock(path string) {
+	f, err := lockPart(path)
+	if err != nil {
+		return
 	}
-	return f, nil
+	_ = os.Remove(path)
+	_ = f.Close()
 }
 
 // InstallNotesModel downloads the notes model by running the installed
@@ -561,6 +606,7 @@ func (d *Daemon) runNotesInstall(ctx context.Context, cmd *exec.Cmd, tail *bytes
 	err := cmd.Wait()
 	d.notes.mu.Lock()
 	defer d.notes.mu.Unlock()
+	removePartLock(d.Cfg.NotesModel + ".part.lock")
 	d.notes.running = false
 	if err != nil && ctx.Err() == nil {
 		msg := installTail(tail.String())

@@ -689,3 +689,62 @@ func TestEveryInstallFailureCodeHasASwiftSentence(t *testing.T) {
 		}
 	}
 }
+
+// The zero-byte .part.lock does not outlive the download that took it (#249).
+// Mutation: internal/daemon/meetings.go runNotesInstall, delete the `removePartLock(...)` line -> RED.
+func TestTheLockFileGoesWhenTheDownloadEnds(t *testing.T) {
+	d := installFixture(t, "#!/bin/sh\nexit 0\n")
+	lockPath := d.Cfg.NotesModel + ".part.lock"
+	if err := d.InstallNotesModel(); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to end")
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the lock file is still there after the download: %v", err)
+	}
+}
+
+// Only the owner of the lock may remove the file: another ox-say's running download keeps its lock file.
+// Mutation: internal/daemon/meetings.go removePartLock, replace `lockPart(path)` with a plain os.Remove -> RED.
+func TestRemovePartLockLeavesAHeldLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.gguf.part.lock")
+	held, err := lockPart(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removePartLock(path)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("a held lock file was removed: %v", err)
+	}
+	_ = held.Close()
+	removePartLock(path)
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a free lock file stayed: %v", err)
+	}
+}
+
+// A lock whose file is unlinked between the flock and the check is not a lock: lockPart takes it again on the file
+// the path names now, so two callers cannot both hold "the" lock (#249).
+// Mutation: internal/daemon/meetings.go lockPart, replace `sameFile(f, path)` with true -> RED.
+func TestLockPartRetriesWhenTheFileIsReplaced(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.gguf.part.lock")
+	calls := 0
+	lockPartAfterFlock = func() {
+		if calls++; calls == 1 {
+			_ = os.Remove(path)
+		}
+	}
+	t.Cleanup(func() { lockPartAfterFlock = nil })
+	f, err := lockPart(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if !sameFile(f, path) {
+		t.Fatal("the returned lock is not on the file the path names")
+	}
+	if second, err := lockPart(path); err == nil {
+		_ = second.Close()
+		t.Fatal("a second caller got the lock too")
+	}
+}

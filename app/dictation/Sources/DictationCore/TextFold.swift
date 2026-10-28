@@ -3,7 +3,8 @@ import Foundation
 /// The comparison the daemon's search makes (`internal/meeting/search.go` foldRune), so the window's find and its
 /// emphasis of a snippet match exactly where the daemon matched: lower case, and a letter with a mark as its plain
 /// letter (é as e, ё as е). й is deliberately not и: to a Russian reader it is a letter of its own, and "мои" must not
-/// find "мой". Like the daemon's, the fold is per scalar and does no Unicode normalisation.
+/// find "мой". Like the daemon's, the fold is per scalar, after both texts are put in NFC (a letter typed as a base letter plus a
+/// combining mark matches its precomposed form).
 public enum TextFold {
     /// Lower-case letters with a mark (or a stroke) and the plain letter each stands for. The daemon's table.
     private static let accents: [Unicode.Scalar: Unicode.Scalar] = {
@@ -42,19 +43,20 @@ public enum TextFold {
     /// The text as the search compares it (for tests and for the needle).
     public static func folded(_ text: String) -> String {
         var out = String.UnicodeScalarView()
-        for s in text.unicodeScalars { out.append(scalar(s)) }
+        for s in text.precomposedStringWithCanonicalMapping.unicodeScalars { out.append(scalar(s)) }
         return String(out)
     }
 
     /// Where `needle` occurs in `text` ignoring case and marks: Character offsets, left to right, not overlapping.
     /// An empty needle occurs nowhere.
     public static func ranges(of needle: String, in text: String) -> [Range<Int>] {
-        let pattern = needle.unicodeScalars.map(scalar)
+        let pattern = needle.precomposedStringWithCanonicalMapping.unicodeScalars.map(scalar)
         guard !pattern.isEmpty else { return [] }
         var hay: [Unicode.Scalar] = []
         var charOf: [Int] = []
         for (offset, ch) in text.enumerated() {
-            for s in ch.unicodeScalars {
+            // NFC per Character: a decomposed letter is one Character, so its offset stays an offset in `text`.
+            for s in String(ch).precomposedStringWithCanonicalMapping.unicodeScalars {
                 hay.append(scalar(s))
                 charOf.append(offset)
             }
