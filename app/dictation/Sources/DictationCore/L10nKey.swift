@@ -286,4 +286,6 @@ public enum L10nKey: String, CaseIterable {
     case meetingsTitleCall = "meetings.title.call"
     case settingsKeepUnchecked = "settings.keep.unchecked"
     case noticeMeetingCopyStale = "notice.meeting.copy_stale"
+    // Speak Selection: the voice engine stopped a take that did not end.
+    case noticeSpeechRunaway = "notice.speech_runaway"
 }

@@ -247,7 +247,7 @@ func TestSplitSpeech(t *testing.T) {
 // Mutation: in speechOn, treat the runaway status as success (skip the
 // non-200 branch) -> RED.
 func TestRunawayIsAnError(t *testing.T) {
-	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "1")
+	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "all")
 	d, _ := boundsDaemon(t, nil)
 	out := filepath.Join(t.TempDir(), "x.wav")
 	_, err := d.Speak(context.Background(), SpeakInput{Text: "ox-say is ready", OutPath: out})
@@ -257,8 +257,8 @@ func TestRunawayIsAnError(t *testing.T) {
 	if _, serr := os.Stat(out); serr == nil {
 		t.Fatal("a file was written for a runaway take")
 	}
-	if got := d.Status().TTSFaults.Runaways; got != 1 {
-		t.Fatalf("runaways counted = %d, want 1", got)
+	if got := d.Status().TTSFaults.Runaways; got != 2 { // the take and its one retry
+		t.Fatalf("runaways counted = %d, want 2", got)
 	}
 	if !testLogSaw(t, "runaway") {
 		t.Error("no runaway line in the daemon log")
@@ -266,7 +266,7 @@ func TestRunawayIsAnError(t *testing.T) {
 }
 
 func TestRunawayOnHTTP(t *testing.T) {
-	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "1")
+	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "all")
 	d, _ := boundsDaemon(t, nil)
 	srv := routes(t, d)
 	body, _ := json.Marshal(map[string]any{"input": "ox-say is ready", "response_format": "wav"})
@@ -279,15 +279,19 @@ func TestRunawayOnHTTP(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(raw), "did not finish") {
 		t.Fatalf("status %d body %s", resp.StatusCode, raw)
 	}
-	if got := d.Status().TTSFaults.Runaways; got != 1 {
-		t.Fatalf("runaways counted = %d, want 1", got)
+	if got := d.Status().TTSFaults.Runaways; got != 2 {
+		t.Fatalf("runaways counted = %d, want 2", got)
+	}
+	var typed struct{ Error struct{ Type string } }
+	if err := json.Unmarshal(raw, &typed); err != nil || typed.Error.Type != "generation_runaway" {
+		t.Fatalf("error body has no typed code the app can read: %s", raw)
 	}
 }
 
 // One piece of a split text running away fails the WHOLE request: the take
 // is never delivered with a hole in it.
 func TestRunawayInOnePieceFailsTheTake(t *testing.T) {
-	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "2")
+	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "2+")
 	d, _ := boundsDaemon(t, nil)
 	out := filepath.Join(t.TempDir(), "x.wav")
 	if _, err := d.Speak(context.Background(), SpeakInput{Text: russian(4600), OutPath: out}); err == nil {
@@ -321,7 +325,7 @@ func TestCutStreamIsNotACleanEnd(t *testing.T) {
 
 // The MCP speak tool reports a runaway as a tool error carrying the reason.
 func TestRunawayOverMCP(t *testing.T) {
-	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "1")
+	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "all")
 	d, _ := boundsDaemon(t, nil)
 	cs := mcpSession(t, d)
 	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "speak", Arguments: map[string]any{"text": "ox-say is ready"}})
@@ -331,5 +335,163 @@ func TestRunawayOverMCP(t *testing.T) {
 	raw, _ := json.Marshal(res.Content)
 	if !res.IsError || !strings.Contains(string(raw), "did not finish") {
 		t.Fatalf("speak tool result: isError=%v content=%s", res.IsError, raw)
+	}
+}
+
+func digitsRu() string { return strings.Repeat("25 ", 190) } // 570 chars typed, ~2600 spoken
+
+// The split decision is made on the text the ENGINE gets: Russian numerals
+// are written out (570 typed chars become ~2600 spoken), so measuring the
+// typed text sends a short, digit-heavy input to the engine whole — #91 again.
+// Mutation: http.go, measure `input` instead of `spoken` -> RED.
+func TestDigitHeavyRussianIsSplitOnHTTP(t *testing.T) {
+	for _, format := range []string{"pcm", "wav", ""} {
+		d, log := boundsDaemon(t, nil)
+		srv := routes(t, d)
+		body, _ := json.Marshal(map[string]any{"input": digitsRu(), "response_format": format, "language": "ru"})
+		resp, err := http.Post(srv.URL+"/v1/audio/speech", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		calls := speechLog(t, log)
+		if len(calls) < 2 {
+			t.Fatalf("format %q: %d engine call(s) for a text that speaks to ~2600 chars", format, len(calls))
+		}
+		for _, c := range calls {
+			in, _ := c["input"].(string)
+			if n := utf8.RuneCountInString(in); n > qwenChunkChars {
+				t.Fatalf("format %q: engine got a %d-char piece, limit %d", format, n, qwenChunkChars)
+			}
+		}
+	}
+}
+
+// The same operand on the Speak (CLI-free file route, MCP) path.
+func TestDigitHeavyRussianIsSplitOnSpeak(t *testing.T) {
+	d, log := boundsDaemon(t, nil)
+	if _, err := d.Speak(context.Background(), SpeakInput{Text: digitsRu(), Language: "ru"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := speechLog(t, log)
+	if len(calls) < 2 {
+		t.Fatalf("%d engine call(s)", len(calls))
+	}
+	for _, c := range calls {
+		in, _ := c["input"].(string)
+		if n := utf8.RuneCountInString(in); n > qwenChunkChars {
+			t.Fatalf("engine got a %d-char piece", n)
+		}
+	}
+}
+
+// A runaway on a seed the daemon filled in (OX_SAY_SEED) or on none is
+// retried once on a fresh seed: the same seed would repeat it.
+// Mutation: drop the retry loop in synthesizeQwenSplit / handleSpeech -> RED.
+func TestRunawayRetriesOnAFreshSeed(t *testing.T) {
+	ptr := func(v int64) *int64 { return &v }
+	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "1")
+	d, log := boundsDaemon(t, ptr(42))
+	res, err := d.Speak(context.Background(), SpeakInput{Text: "ox-say is ready"})
+	if err != nil {
+		t.Fatalf("a daemon-default seed runaway must be retried: %v", err)
+	}
+	calls := speechLog(t, log)
+	if len(calls) != 2 {
+		t.Fatalf("engine saw %d requests, want 2", len(calls))
+	}
+	s0, _ := seedIn(calls[0])
+	s1, ok := seedIn(calls[1])
+	if s0 != 42 || !ok || s1 == 42 {
+		t.Fatalf("seeds %d then %d: the retry must use a fresh one", s0, s1)
+	}
+	if res.Seed == nil || *res.Seed != s1 {
+		t.Fatalf("result seed %v, the take was made on %d", res.Seed, s1)
+	}
+
+	// the streaming-capable HTTP route retries too (qwen, short text)
+	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "1")
+	d2, log2 := boundsDaemon(t, ptr(42))
+	srv := routes(t, d2)
+	body, _ := json.Marshal(map[string]any{"input": "ox-say is ready", "response_format": "wav"})
+	resp, err := http.Post(srv.URL+"/v1/audio/speech", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	calls = speechLog(t, log2)
+	if resp.StatusCode != http.StatusOK || len(calls) != 2 {
+		t.Fatalf("HTTP: status %d after %d engine requests", resp.StatusCode, len(calls))
+	}
+	if a, _ := seedIn(calls[0]); a != 42 {
+		t.Fatalf("first seed %d", a)
+	}
+	if b, _ := seedIn(calls[1]); b == 42 {
+		t.Fatal("HTTP retry reused the seed")
+	}
+	if _, leaked := calls[0][fieldSeedDefaulted]; leaked {
+		t.Fatal("the daemon's internal seed mark reached the engine")
+	}
+}
+
+// A seed the request pinned is NOT swapped: the take fails, and the message
+// does not promise that trying again helps.
+func TestRunawayOnAPinnedSeedSaysSo(t *testing.T) {
+	ptr := func(v int64) *int64 { return &v }
+	t.Setenv("OXSAY_FAKE_SPEECH_RUNAWAY", "all")
+	d, log := boundsDaemon(t, ptr(42))
+	seven := int64(7)
+	_, err := d.Speak(context.Background(), SpeakInput{Text: "ox-say is ready", Seed: &seven})
+	if err == nil || !strings.Contains(err.Error(), "same seed") || strings.Contains(err.Error(), "try again") {
+		t.Fatalf("error = %v", err)
+	}
+	if n := len(speechLog(t, log)); n != 1 {
+		t.Fatalf("a pinned seed was retried: %d engine requests", n)
+	}
+	srv := routes(t, d)
+	body, _ := json.Marshal(map[string]any{"input": "ox-say is ready", "response_format": "wav", "seed": 7})
+	resp, err := http.Post(srv.URL+"/v1/audio/speech", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(raw), "same seed") {
+		t.Fatalf("HTTP: %d %s", resp.StatusCode, raw)
+	}
+	if n := len(speechLog(t, log)); n != 2 { // 1 from Speak + 1 here, no retry
+		t.Fatalf("HTTP pinned seed retried: %d total engine requests", n)
+	}
+}
+
+// seed -1 is the engine's "draw a random seed": it pins nothing. The split
+// path must replace it (else the pieces are different voices) and the daemon
+// default must replace it too.
+// Mutation: seedFixed accepts negatives -> RED.
+func TestNegativeSeedPinsNothing(t *testing.T) {
+	ptr := func(v int64) *int64 { return &v }
+	d, log := boundsDaemon(t, nil)
+	if _, err := d.Speak(context.Background(), SpeakInput{Text: russian(1800), Language: "ru", Seed: ptr(-1)}); err != nil {
+		t.Fatal(err)
+	}
+	calls := speechLog(t, log)
+	if len(calls) < 2 {
+		t.Fatalf("%d calls", len(calls))
+	}
+	first, _ := seedIn(calls[0])
+	for i, c := range calls {
+		if s, ok := seedIn(c); !ok || s < 0 || s != first {
+			t.Fatalf("piece %d seed %d (present %v), piece 0 seed %d: pieces must share one non-negative seed", i, s, ok, first)
+		}
+	}
+
+	d2, log2 := boundsDaemon(t, ptr(42))
+	if _, err := d2.Speak(context.Background(), SpeakInput{Text: "ox-say is ready", Seed: ptr(-1)}); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := seedIn(speechLog(t, log2)[0]); s != 42 {
+		t.Fatalf("seed -1 with OX_SAY_SEED=42 reached the engine as %d", s)
 	}
 }

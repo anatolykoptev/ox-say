@@ -5,6 +5,9 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
     case timedOut
     case http(Int, String)
     case badResponse
+    /// The engine stopped a take that did not end inside its length budget (the
+    /// daemon's typed `generation_runaway` error). Not worth showing as raw JSON.
+    case runaway
 
     public var description: String {
         switch self {
@@ -12,6 +15,7 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
         case .timedOut: return "The ox-say daemon took too long to answer. A cold voice engine start takes a while."
         case .http(let code, let body): return "The ox-say daemon answered \(code): \(body)"
         case .badResponse: return "The ox-say daemon sent a response without audio."
+        case .runaway: return L10nKey.noticeSpeechRunaway.text
         }
     }
 }
@@ -35,6 +39,17 @@ public struct SpeechClient {
     /// What the daemon accepts as the text to speak. Empty and whitespace-only
     /// selections are not worth a round trip; the service turns them into an
     /// error instead.
+    /// The error for a non-2xx answer: the typed runaway code in the daemon's
+    /// `{"error":{"type":...}}` body becomes `.runaway`, anything else stays the
+    /// raw `.http` it always was.
+    static func failure(status: Int, body: Data) -> SpeechError {
+        if let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+           let error = obj["error"] as? [String: Any], error["type"] as? String == "generation_runaway" {
+            return .runaway
+        }
+        return .http(status, String(decoding: body.prefix(300), as: UTF8.self))
+    }
+
     public static func input(_ text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -53,7 +68,7 @@ public struct SpeechClient {
             throw SpeechError.daemonUnreachable(error.localizedDescription)
         }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw SpeechError.http(http.statusCode, String(decoding: data.prefix(300), as: UTF8.self))
+            throw Self.failure(status: http.statusCode, body: data)
         }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let list = obj["voices"] as? [[String: Any]] else {
@@ -87,7 +102,7 @@ public struct SpeechClient {
             throw SpeechError.daemonUnreachable(error.localizedDescription)
         }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw SpeechError.http(http.statusCode, String(decoding: data.prefix(300), as: UTF8.self))
+            throw Self.failure(status: http.statusCode, body: data)
         }
         guard !data.isEmpty else { throw SpeechError.badResponse }
         return data

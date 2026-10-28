@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,8 +32,22 @@ const chunkPause = 0.25
 // when a take hit its frame budget without the talker ending it.
 const engineRunawayType = "generation_runaway"
 
-// runawayMessage is what the caller reads when a take ran away.
-const runawayMessage = "the speech engine did not finish the text and was stopped (it kept generating past its length budget); try again, the same text usually works, or shorten it"
+// What the caller reads when a take ran away. With a seed the caller pinned
+// the same text runs away again, so that message does not promise a retry.
+const (
+	runawayMessage       = "the speech engine did not finish the text and was stopped (it kept generating past its length budget); try again, the same text usually works, or shorten it"
+	runawayPinnedMessage = "the speech engine did not finish the text and was stopped (it kept generating past its length budget); it may repeat with the same seed, so use another seed or shorten the text"
+)
+
+// runawayError is a take the engine stopped at its frame budget.
+type runawayError struct{ pinned bool }
+
+func (e *runawayError) Error() string {
+	if e.pinned {
+		return runawayPinnedMessage
+	}
+	return runawayMessage
+}
 
 // ttsFaults is /status tts_faults: takes the engine failed to finish since the
 // daemon started. Runaways are classified (the engine said why); StreamAborts
@@ -189,18 +204,47 @@ func runsAfter(s string, cut func(rune) bool) []string {
 // synthesizeQwenSplit renders body's input on the qwen engine. Text longer than
 // qwenChunkChars is spoken piece by piece, all pieces on ONE seed (one voice)
 // and joined with a short pause; any piece failing fails the whole take.
+// A take the engine stops at its frame budget is retried once on a fresh seed
+// when the seed was the daemon's or none; a seed the caller pinned would only
+// repeat it, so there the error says so.
 func (d *Daemon) synthesizeQwenSplit(ctx context.Context, body map[string]any) (*synthOut, error) {
 	input, _ := body[fieldInput].(string)
 	parts := splitSpeech(input, qwenChunkChars)
+	defaulted, _ := ctx.Value(seedDefaultedKey{}).(bool)
+	_, fixed := seedFixed(body)
+	pinned := fixed && !defaulted
+	if len(parts) > 1 && !fixed {
+		body[fieldSeed] = randomSeed() // one voice for every piece
+	}
+	for attempt := 0; ; attempt++ {
+		out, err := d.renderParts(ctx, body, parts)
+		var rwe *runawayError
+		if !errors.As(err, &rwe) {
+			return out, err
+		}
+		if pinned {
+			return nil, &runawayError{pinned: true}
+		}
+		if attempt > 0 {
+			return nil, err
+		}
+		d.log.Warn("tts runaway: retrying once on a fresh seed")
+		body[fieldSeed] = randomSeed()
+	}
+}
+
+// renderParts speaks parts in order on body's seed and joins them.
+func (d *Daemon) renderParts(ctx context.Context, body map[string]any, parts []string) (*synthOut, error) {
+	var seed *int64
+	if s, ok := seedFixed(body); ok {
+		seed = &s
+	}
 	if len(parts) == 1 {
 		wav, err := d.synthesizeQwen(ctx, body)
 		if err != nil {
 			return nil, err
 		}
-		return &synthOut{WAV: wav, Model: "qwen3-tts", Seed: seedOf(body)}, nil
-	}
-	if seedOf(body) == nil {
-		body[fieldSeed] = randomSeed()
+		return &synthOut{WAV: wav, Model: "qwen3-tts", Seed: seed}, nil
 	}
 	var joined pcm.Clip
 	for i, p := range parts {
@@ -208,6 +252,10 @@ func (d *Daemon) synthesizeQwenSplit(ctx context.Context, body map[string]any) (
 		b[fieldInput] = p
 		wav, err := d.synthesizeQwen(ctx, b)
 		if err != nil {
+			var rwe *runawayError
+			if errors.As(err, &rwe) {
+				return nil, err
+			}
 			return nil, fmt.Errorf("part %d of %d: %w", i+1, len(parts), err)
 		}
 		c, err := pcm.Decode(wav)
@@ -223,7 +271,7 @@ func (d *Daemon) synthesizeQwenSplit(ctx context.Context, body map[string]any) (
 		}
 		joined.S = append(joined.S, c.S...)
 	}
-	return &synthOut{WAV: joined.Encode(), Model: "qwen3-tts", Seed: seedOf(body)}, nil
+	return &synthOut{WAV: joined.Encode(), Model: "qwen3-tts", Seed: seed}, nil
 }
 
 // recordingReader remembers the error its source returned, so a copy can tell

@@ -54,6 +54,21 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	})
 }
 
+// writeSynthErr is writeErr for a synthesis error; a runaway also carries its
+// typed code, which the app reads to show a sentence instead of the raw JSON.
+func writeSynthErr(w http.ResponseWriter, err error) {
+	var rwe *runawayError
+	if errors.As(err, &rwe) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"message": err.Error(), "type": engineRunawayType},
+		})
+		return
+	}
+	writeErr(w, synthStatus(err), err.Error())
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -120,37 +135,52 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 	defer g.Release()
 
+	seedDefaulted := popSeedDefaulted(body)
 	upstream := body
 	if format == "mp3" || format == "opus" {
 		upstream = maps(body)
 		upstream["response_format"] = "wav"
 	}
-	raw, err := json.Marshal(upstream)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	resp, err := d.ec.Speech(r.Context(), base, raw)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, fmt.Sprintf("engine speech: %v", err))
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode/100 != 2 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		if isRunaway(msg) {
-			d.noteRunaway("/v1/audio/speech", utf8.RuneCountInString(input))
-			writeErr(w, http.StatusBadGateway, runawayMessage)
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		raw, err := json.Marshal(upstream)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if ct := resp.Header.Get("Content-Type"); ct != "" {
-			w.Header().Set("Content-Type", ct)
+		resp, err = d.ec.Speech(r.Context(), base, raw)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, fmt.Sprintf("engine speech: %v", err))
+			return
 		}
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(msg)
-		return
+		if resp.StatusCode/100 == 2 {
+			break
+		}
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		if !isRunaway(msg) {
+			_ = resp.Body.Close()
+			if ct := resp.Header.Get("Content-Type"); ct != "" {
+				w.Header().Set("Content-Type", ct)
+			}
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(msg)
+			return
+		}
+		_ = resp.Body.Close()
+		d.noteRunaway("/v1/audio/speech", utf8.RuneCountInString(input))
+		pinned := false
+		if _, fixed := seedFixed(body); fixed && !seedDefaulted {
+			pinned = true
+		}
+		if pinned || attempt > 0 {
+			writeSynthErr(w, &runawayError{pinned: pinned})
+			return
+		}
+		// A seed the daemon filled in (or none): the same text on another seed usually ends.
+		upstream[fieldSeed] = randomSeed()
+		d.log.Warn("tts runaway: retrying once on a fresh seed", slog.String("route", "/v1/audio/speech"))
 	}
+	defer resp.Body.Close()
 
 	switch format {
 	case "mp3", "opus":
@@ -213,7 +243,7 @@ func (d *Daemon) handleSpeechBuffered(w http.ResponseWriter, r *http.Request, re
 	}
 	out, err := d.synthesize(r.Context(), req.body, req.model)
 	if err != nil {
-		writeErr(w, synthStatus(err), err.Error())
+		writeSynthErr(w, err)
 		return
 	}
 	out.addWarning(req.warning)

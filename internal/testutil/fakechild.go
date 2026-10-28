@@ -13,8 +13,9 @@
 //	OXSAY_FAKE_SPEECH_BLOCK   speech blocks until the request context ends
 //	OXSAY_FAKE_IGNORE_SIGTERM SIGTERM is ignored; only SIGKILL ends the child
 //	OXSAY_FAKE_SPEECH_LOG     append-only file: one JSON line per speech body
-//	OXSAY_FAKE_SPEECH_RUNAWAY n: the n-th speech request (1-based, counted per
-//	                          child) answers like the real engine whose talker
+//	OXSAY_FAKE_SPEECH_RUNAWAY n | n+ | all: the n-th speech request (1-based,
+//	                          counted per child), every one from the n-th on
+//	                          ("n+"), or every one ("all") answers like the real engine whose talker
 //	                          never emitted EOS and hit its frame budget:
 //	                          502 + error type "generation_runaway"
 //	OXSAY_FAKE_SPEECH_ABORT   n: the n-th speech request starts a 200 stream
@@ -578,6 +579,20 @@ func runFakeSTT(args []string) int {
 	return 0
 }
 
+// runawayAt reports whether the nth speech request is one the knob
+// OXSAY_FAKE_SPEECH_RUNAWAY ("n", "n+" or "all") makes run away.
+func runawayAt(spec string, nth int) bool {
+	if spec == "all" {
+		return true
+	}
+	from := strings.HasSuffix(spec, "+")
+	n, err := strconv.Atoi(strings.TrimSuffix(spec, "+"))
+	if err != nil || n < 1 {
+		return false
+	}
+	return nth == n || (from && nth > n)
+}
+
 func runFakeChild() int {
 	fs := flag.NewFlagSet("fake-child", flag.ContinueOnError)
 	port := fs.Int("port", 0, "")
@@ -689,7 +704,7 @@ func runFakeChild() int {
 		speechN++
 		nth := speechN
 		mu.Unlock()
-		if n, _ := strconv.Atoi(os.Getenv("OXSAY_FAKE_SPEECH_RUNAWAY")); n > 0 && nth == n {
+		if runawayAt(os.Getenv("OXSAY_FAKE_SPEECH_RUNAWAY"), nth) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{

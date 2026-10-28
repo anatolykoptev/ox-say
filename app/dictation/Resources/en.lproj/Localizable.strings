@@ -291,3 +291,4 @@
 "play.failed" = "The audio could not be played.";
 "play.position" = "Playback position";
 "play.stop" = "Stop playback";
+"notice.speech_runaway" = "The voice did not finish this text and was stopped. Try again, or select less text.";

@@ -136,7 +136,7 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 	if resp.StatusCode != http.StatusOK {
 		if isRunaway(wav) {
 			d.noteRunaway("engine call", utf8.RuneCountInString(fmt.Sprint(body[fieldInput])))
-			return nil, &engineError{status: http.StatusBadGateway, msg: runawayMessage}
+			return nil, &runawayError{}
 		}
 		return nil, &engineError{status: resp.StatusCode,
 			msg: fmt.Sprintf("engine speech: %s: %s", resp.Status, strings.TrimSpace(string(wav)))}

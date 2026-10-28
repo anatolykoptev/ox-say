@@ -491,13 +491,17 @@ func (d *Daemon) applyVoiceDefault(body map[string]any) {
 
 // applySeedDefault gives a request that names no seed the daemon's
 // OX_SAY_SEED, so the voice stays the same from one request to the next. A
-// seed in the request, whatever it is, is left alone.
+// request seed is left alone; a negative one is the engine's "draw a random
+// seed" and counts as none. It marks body (fieldSeedDefaulted) when it filled
+// the seed, so a later runaway may be retried on a fresh seed — a seed the
+// caller pinned must not be swapped behind their back.
 func (d *Daemon) applySeedDefault(body map[string]any) {
 	if d.Cfg.Seed == nil {
 		return
 	}
-	if _, ok := body[fieldSeed]; !ok {
+	if _, ok := seedFixed(body); !ok {
 		body[fieldSeed] = *d.Cfg.Seed
+		body[fieldSeedDefaulted] = true
 	}
 }
 
