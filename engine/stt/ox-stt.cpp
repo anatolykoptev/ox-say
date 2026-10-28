@@ -75,10 +75,7 @@ namespace {
 
 constexpr int SR = 16000;
 
-struct word {
-    std::string w;
-    double s, e, p;
-};
+using word = edge_pad::word;  // {w, s, e, p}
 
 struct segment {
     double s, e;
@@ -297,29 +294,7 @@ std::vector<size_t> chunk_bounds(const std::vector<float> & x, size_t max_len) {
     return b;
 }
 
-bool is_punct(const std::string & t) {
-    if (t.empty()) {
-        return false;
-    }
-    for (unsigned char c : t) {
-        if (!std::ispunct(c)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 void no_log(ggml_log_level, const char *, void *) {}
-
-std::string strip_marker(const char * tok) {
-    std::string s = tok;
-    const std::string mark = "\xE2\x96\x81";  // U+2581, SentencePiece word boundary
-    size_t p;
-    while ((p = s.find(mark)) != std::string::npos) {
-        s.erase(p, mark.size());
-    }
-    return s;
-}
 
 // Loads the model and checks --chunk-s against its audio context once; the returned context is
 // reused for every decode (CLI: one run; --serve: one per request).
@@ -369,57 +344,18 @@ bool decode_parakeet(parakeet_context * ctx, const args & a, const std::vector<f
         const double end = (double) b[c + 1] / SR;
         int n_dropped = 0;  // tokens the decoder made out of a pad alone
         for (int i = 0; i < parakeet_full_n_segments(ctx); ++i) {
-            std::vector<std::string> kept;  // raw pieces of the tokens that map into the chunk
-            int n_in_word = 0;  // tokens averaged into the current word's p
-            bool prev_kept = false;
+            std::vector<edge_pad::token> toks;
             for (int j = 0; j < parakeet_full_n_tokens(ctx, i); ++j) {
                 const parakeet_token_data d = parakeet_full_get_token_data(ctx, i, j);
-                const char * raw = parakeet_full_get_token_text(ctx, i, j);
-                const std::string t = strip_marker(raw);
-                int64_t t0 = d.t0, t1 = d.t1;
-                // Punctuation carries the time of the word before it (parakeet collapses it there),
-                // which may reach into the pad; it is appended to that word, not taken for noise.
-                const bool trailing_punct = prev_kept && n_in_word > 0 && is_punct(t) && !d.is_word_start;
-                if (is_padded && !edge_pad::place(t0, t1, lay) && !trailing_punct) {
-                    ++n_dropped;
-                    n_in_word = 0;  // a kept continuation piece starts a word of its own
-                    prev_kept = false;
-                    continue;
-                }
-                prev_kept = true;
-                kept.emplace_back(raw);
-                if (t.empty()) {
-                    if (d.is_word_start) {
-                        n_in_word = 0;  // a lone boundary marker: the next token starts a word
-                    }
-                    continue;
-                }
-                if (is_punct(t) && !d.is_word_start && !r.words.empty() && n_in_word > 0) {
-                    r.words.back().w += t;  // punctuation: no timing of its own, not part of p
-                } else if (d.is_word_start || r.words.empty() || n_in_word == 0) {
-                    r.words.push_back({ t, off + t0 / 100.0, off + t1 / 100.0, d.p });
-                    n_in_word = 1;
-                } else {
-                    word & w = r.words.back();
-                    w.w += t;
-                    w.e = std::max(w.e, off + t1 / 100.0);
-                    w.p = (w.p * n_in_word + d.p) / (n_in_word + 1);
-                    ++n_in_word;
-                }
+                toks.push_back({ parakeet_full_get_token_text(ctx, i, j), d.t0, d.t1, d.p, d.is_word_start });
             }
-            if (is_padded && kept.empty()) {
-                continue;  // the whole segment came from the pads: nothing was said
+            const edge_pad::segment_result sr = edge_pad::map_segment(
+                toks, parakeet_full_get_segment_text(ctx, i), parakeet_full_get_segment_t0(ctx, i),
+                parakeet_full_get_segment_t1(ctx, i), is_padded ? &lay : nullptr, off, end, r.words);
+            n_dropped += sr.n_dropped;
+            if (sr.keep) {
+                r.segments.push_back({ sr.s, sr.e, sr.text });
             }
-            int64_t s0 = parakeet_full_get_segment_t0(ctx, i), s1 = parakeet_full_get_segment_t1(ctx, i);
-            if (is_padded) {
-                edge_pad::place(s0, s1, lay);
-            }
-            // The library's text holds every token; rebuild it when some were dropped so that
-            // "text" and "words" cannot disagree.
-            const int n_tok = parakeet_full_n_tokens(ctx, i);
-            r.segments.push_back({ off + s0 / 100.0, std::min(end, off + s1 / 100.0),
-                                   (int) kept.size() == n_tok ? std::string(parakeet_full_get_segment_text(ctx, i))
-                                                              : edge_pad::join_pieces(kept) });
         }
         if (n_dropped > 0) {
             fprintf(stderr, "ox-stt: chunk at %.2f s: dropped %d token(s) decoded from the edge pad\n", off, n_dropped);

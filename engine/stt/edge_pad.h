@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -23,11 +24,12 @@
 
 namespace edge_pad {
 
-constexpr size_t  kPadSamples = 16000;  // 1 s at 16 kHz on each side: 100 hops of 160 samples
-constexpr int64_t kPadFrames  = 100;    // the same 1 s in parakeet's token time unit (10 ms)
-constexpr double  kRelDb      = -12.0;  // pad RMS relative to the chunk RMS
+constexpr size_t  kPadSamples = 16000;  // 1 s on each side: 100 mel hops (see the grid note at place())
+constexpr int64_t kPadFrames  = 100;    // the same pad in parakeet's token time unit (10 ms)
+constexpr double  kRelDb      = -12.0;  // pad RMS relative to the chunk level
 constexpr double  kFloorDbfs  = -60.0;  // frames at or under this RMS count as silence
-constexpr double  kFillBelowDb = -10.0; // edge frames this far under the pad level get the pad noise too
+constexpr double  kFillDbfs   = -80.0;  // edge frames at or under this get the pad noise (see pad())
+constexpr double  kClampDb    = 10.0;   // level: frame powers clamped to the 90th percentile + this
 constexpr int64_t kDropMarginFrames = 50;  // 0.5 s: see place()
 constexpr uint64_t kSeed      = 0x6f782d7374742d31ull;  // fixed: the same audio decodes the same way
 
@@ -77,44 +79,55 @@ struct layout {
 // A chunk of n samples in 10 ms units, rounded up: a token in the last partial hop is speech.
 inline int64_t chunk_frames(size_t n) { return (int64_t) ((n + 159) / 160); }
 
-// out = noise | x | noise, each noise kPadSamples long at the chunk's level + rel_db dB, where the
-// level is the RMS of the chunk's 10 ms frames above the floor (digital silence in a file does not
-// lower it). Quiet runs at the chunk's own edges (frames more than kFillBelowDb under the pad level:
-// digital silence, a dither floor, a far-down room tone) get the same noise added: a pad outside a
-// second of digital zeros gives the decoder no usable context, and that input stays empty
-// otherwise. Interior pauses are left alone.
+// out = noise | x | noise, each noise kPadSamples long at the chunk's level + rel_db dB.
+//
+// Level: the mean power of the chunk's 10 ms frames above the floor, each frame clamped to the
+// 90th-percentile frame power + kClampDb, so digital silence does not lower it and one click does
+// not lift it (a full-scale 10 ms click over -50 dBFS speech would otherwise put the pad 13 dB
+// over the speech).
+//
+// Edge fill: runs of frames at or under kFillDbfs (-80 dBFS) at the chunk's own start and end get
+// the same noise added. That bound is absolute on purpose: it is under anything a microphone
+// delivers (a quiet room through a laptop mic is -60..-45 dBFS, PCM16's step -96 dBFS), so it
+// only ever catches digital silence, a fade-out tail or dither - and a pad outside a second of
+// digital zeros gives the decoder no usable context (that input stays empty otherwise). A bound
+// relative to the chunk level filled quiet speech (a far speaker before a near one) with noise
+// louder than it and moved lo past it, losing the words. Interior pauses are left alone.
+//
 // Returns false and leaves out/lay untouched when x is empty or has no frame above the floor:
 // silence must stay silence, so the caller decodes x as it is.
 inline bool pad(const float * x, size_t n, std::vector<float> & out, layout & lay, double rel_db = kRelDb) {
     const size_t hop = 160;
     const size_t nf  = n / hop + (n % hop ? 1 : 0);
-    std::vector<double> fdb(nf);
-    double e = 0.0;
-    size_t ne = 0;
+    std::vector<double> fdb(nf), pw;  // per-frame dBFS; power of the frames above the floor
     for (size_t k = 0; k < nf; ++k) {
         const size_t s0 = k * hop, len = std::min(hop, n - s0);
         fdb[k] = rms_dbfs(x + s0, len);
         if (fdb[k] > kFloorDbfs) {
-            for (size_t i = s0; i < s0 + len; ++i) {
-                e += (double) x[i] * (double) x[i];
-            }
-            ne += len;
+            pw.push_back(std::pow(10.0, fdb[k] / 10.0));
         }
     }
-    if (ne == 0) {
+    if (pw.empty()) {
         return false;
     }
-    const double level = 10.0 * std::log10(e / (double) ne);
+    std::vector<double> sorted = pw;
+    const size_t k90 = (sorted.size() - 1) * 9 / 10;
+    std::nth_element(sorted.begin(), sorted.begin() + (std::ptrdiff_t) k90, sorted.end());
+    const double cap = sorted[k90] * std::pow(10.0, kClampDb / 10.0);
+    double e = 0.0;
+    for (double v : pw) {
+        e += std::min(v, cap);
+    }
+    const double level = 10.0 * std::log10(e / (double) pw.size());
     const double amp   = std::pow(10.0, (level + rel_db) / 20.0);
-    const double fill  = level + rel_db + kFillBelowDb;
     size_t lead = 0, trail = 0;  // whole frames from the start / from the end
-    while (lead < nf && fdb[lead] < fill) {
+    while (lead < nf && fdb[lead] <= kFillDbfs) {
         ++lead;
     }
-    while (trail < nf - lead && fdb[nf - 1 - trail] < fill) {
+    while (trail < nf - lead && fdb[nf - 1 - trail] <= kFillDbfs) {
         ++trail;
     }
-    const size_t lead_n  = lead * hop;                           // lead < nf: some frame is >= level
+    const size_t lead_n  = lead * hop;                           // lead < nf: some frame is above the floor
     const size_t trail_n = trail ? n - (nf - trail) * hop : 0;  // the last frame may be short
     out.assign(n + 2 * kPadSamples, 0.0f);
     noise g{ kSeed };
@@ -140,6 +153,10 @@ inline bool pad(const float * x, size_t n, std::vector<float> & out, layout & la
 // load-bearing: TDT stamps a token at the encoder frame (80 ms) it was emitted on, which for the
 // first and last pieces of real speech is often one or two frames inside the pad ("Than|ks" would
 // lose "Than" to a margin of 0).
+// Grid: token times are encoder frames (80 ms) of the PADDED signal, and 1 s is 12.5 of them, so
+// mapped times sit on an 80 ms grid offset by 40 ms from an unpadded decode's: they are exact to
+// the 10 ms tick, but no finer than +-40 ms. A 0.96 s pad keeps the grid but was measured worse:
+// 6 of 94 cut windows lost the second speaker against 1 of 94 with 1 s (four take pairs).
 inline bool place(int64_t & t0, int64_t & t1, const layout & lay) {
     if (t1 <= lay.lo - kDropMarginFrames || t0 >= lay.hi + kDropMarginFrames) {
         return false;
@@ -150,13 +167,16 @@ inline bool place(int64_t & t0, int64_t & t1, const layout & lay) {
     return true;
 }
 
+// parakeet's own control pieces (parakeet.cpp is_sentencepiece_control): they carry no text.
+inline bool is_control(const std::string & p) { return p == "<unk>" || p == "<s>" || p == "</s>" || p == "[BLANK]"; }
+
 // Segment text from raw SentencePiece pieces, by the rules parakeet's own segment text uses:
-// U+2581 is a space (none ahead of the first character), control pieces ("<unk>", ...) are dropped.
+// U+2581 is a space (none ahead of the first character), control pieces are dropped.
 inline std::string join_pieces(const std::vector<std::string> & pieces) {
     const std::string mark = "\xE2\x96\x81";
     std::string text;
     for (const std::string & p : pieces) {
-        if (p.size() >= 2 && p.front() == '<' && p.back() == '>') {
+        if (is_control(p)) {
             continue;
         }
         for (size_t i = 0; i < p.size();) {
@@ -171,6 +191,114 @@ inline std::string join_pieces(const std::vector<std::string> & pieces) {
         }
     }
     return text;
+}
+
+// A piece without its U+2581 word-boundary marks.
+inline std::string strip_marker(const std::string & piece) {
+    std::string s = piece;
+    const std::string mark = "\xE2\x96\x81";
+    size_t p;
+    while ((p = s.find(mark)) != std::string::npos) {
+        s.erase(p, mark.size());
+    }
+    return s;
+}
+
+inline bool is_punct(const std::string & t) {
+    if (t.empty()) {
+        return false;
+    }
+    for (unsigned char c : t) {
+        if (!std::ispunct(c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// One decoded token: its raw piece, times on the decoded timeline (10 ms units), probability.
+struct token {
+    std::string piece;
+    int64_t     t0, t1;
+    double      p;
+    bool        word_start;
+};
+
+struct word {
+    std::string w;
+    double      s, e, p;  // seconds; p averaged over the word's pieces (punctuation excluded)
+};
+
+struct segment_result {
+    bool        keep = false;  // false: every token came from the pads, nothing was said
+    double      s = 0.0, e = 0.0;
+    std::string text;
+    int         n_dropped = 0;  // tokens the decoder made out of a pad alone
+};
+
+// The token loop of decode_parakeet for one parakeet segment of one chunk: appends the segment's
+// words to `words` (words of earlier segments are not touched) and returns its span and text.
+// lay is null for a chunk decoded as it is (under the floor): every token is kept on its own time
+// and the text is the library's. With a pad, tokens map back through place(); a dropped token
+// resets the word, so a kept continuation piece starts a word of its own. Punctuation right after
+// a kept piece is exempt from the drop: parakeet stamps it at that piece's end, which may reach
+// into the pad - it belongs to that word (also a word-start piece, the vocab has U+2581"-" and
+// U+2581"'"), not to the noise, and it takes the previous kept piece's mapped end as its time.
+// When anything was dropped the text is rebuilt from the kept pieces, so text and words agree.
+inline segment_result map_segment(const std::vector<token> & toks, const std::string & lib_text, int64_t seg_t0,
+                                  int64_t seg_t1, const layout * lay, double off, double end,
+                                  std::vector<word> & words) {
+    segment_result r;
+    std::vector<std::string> kept;
+    int     n_in_word = 0;  // pieces averaged into the current word's p
+    bool    prev_kept = false;
+    int64_t prev_t1   = 0;  // mapped end of the last kept piece
+    for (const token & d : toks) {
+        const std::string t = strip_marker(d.piece);
+        int64_t t0 = d.t0, t1 = d.t1;
+        if (lay && !place(t0, t1, *lay)) {
+            if (!(prev_kept && is_punct(t))) {
+                ++r.n_dropped;
+                n_in_word = 0;
+                prev_kept = false;
+                continue;
+            }
+            t0 = t1 = prev_t1;
+        }
+        prev_kept = true;
+        prev_t1   = t1;
+        kept.push_back(d.piece);
+        if (t.empty()) {
+            if (d.word_start) {
+                n_in_word = 0;  // a lone boundary marker: the next piece starts a word
+            }
+            continue;
+        }
+        if (is_punct(t) && !d.word_start && !words.empty() && n_in_word > 0) {
+            words.back().w += t;  // punctuation: no timing of its own, not part of p
+        } else if (d.word_start || words.empty() || n_in_word == 0) {
+            words.push_back({ t, off + t0 / 100.0, off + t1 / 100.0, d.p });
+            n_in_word = 1;
+        } else {
+            word & w = words.back();
+            w.w += t;
+            w.e = std::max(w.e, off + t1 / 100.0);
+            w.p = (w.p * n_in_word + d.p) / (n_in_word + 1);
+            ++n_in_word;
+        }
+    }
+    if (lay && kept.empty()) {
+        return r;
+    }
+    int64_t s0 = seg_t0, s1 = seg_t1;
+    if (lay) {
+        place(s0, s1, *lay);
+    }
+    r.keep = true;
+    r.s    = off + s0 / 100.0;
+    r.e    = std::min(end, off + s1 / 100.0);
+    r.text = r.n_dropped == 0 ? lib_text : join_pieces(kept);
+    return r;
 }
 
 }  // namespace edge_pad

@@ -20,10 +20,14 @@
 #   * engine/stt/ox-stt.cpp decode_parakeet: pass the raw chunk to parakeet_full
 #     (`x.data() + b[c], (int) n`) instead of the padded one -> "tight ready-en-deniro-s4" fails
 #     with 0 words, and the cuts and the session stream fall under their floors
-#   * decode_parakeet: push words with the raw padded times (d.t0 / d.t1) instead of the placed
-#     t0 / t1 -> word times land 1 s late -> the "starts by" / "ends within the clip" checks fail
+#   * edge_pad.h map_segment(): push words with the raw padded times (d.t0 / d.t1) instead of the
+#     placed t0 / t1 -> word times land 1 s late -> the "starts by" / "ends within the clip" checks
+#     fail (and edge_pad_test's t_map_segment_padded, in CI)
 #   * edge_pad.h place(): set kDropMarginFrames to 0 -> "Thanks" loses "Than" -> the edge-word check fails
-#   * decode_parakeet: drop the trailing_punct exemption -> "soon." loses its period -> the edge-word check fails
+#   * edge_pad.h map_segment(): drop the punctuation exemption -> "soon." loses its period -> the
+#     edge-word check fails (edge_pad_test's t_map_segment_padded fails too, in CI)
+#   * edge_pad.h pad(): fill edge frames by a bound relative to the chunk level (level + kRelDb - 10)
+#     instead of kFillDbfs -> "head -32 dB" / "head -36 dB" lose "Thanks a lot."
 #   * edge_pad.h pad(): drop the floor check -> edge_pad_test's t_floor fails (not run against this
 #     script: the silence controls here guard the outcome, not the mechanism)
 set -u
@@ -229,8 +233,30 @@ for name, first, last in [("thanks-en-freeman-s5.wav", "Thanks", "soon."),
     for path, ws in [("one-shot", transcribe(x)["words"]), ("session", session(x))]:
         got = (ws[0]["w"], ws[-1]["w"]) if ws else ("", "")
         check(got == (first, last), "%s %s: first/last word %r/%r (got %r/%r)" % (path, name[:-4], first, last, got[0], got[1]))
+    # Session word times are on the same timeline as one-shot ones (the pad shift is not applied
+    # twice or forgotten on either path).
+    one, ses = transcribe(x)["words"], session(x)
+    if [w["w"] for w in one] == [w["w"] for w in ses] and one:
+        worst = max(max(abs(a["s"] - b["s"]), abs(a["e"] - b["e"])) for a, b in zip(one, ses))
+        check(worst <= 0.15, "%s: session word times match one-shot within 0.15 s (worst %.2f s)" % (name[:-4], worst))
+    else:
+        fail("%s: session and one-shot words differ: %s | %s" % (name[:-4], said(one), said(ses)))
 
-# 6. Silence and noise stay empty: chunks under the floor are not padded, and noise alone is not speech.
+# 6. Quiet speech at the edges stays speech: the first or last 0.8 s of the clip attenuated by
+#    26-36 dB (a far speaker before or after a near one) must keep all six words. A fill bound
+#    relative to the chunk level put noise louder than that speech over it and dropped its tokens
+#    ("Thanks a lot." lost at -32 and -36 dB).
+x = load("thanks-en-freeman-s5.wav")
+for where in ("head", "tail"):
+    for db in (26, 30, 32, 36):
+        g = 10 ** (-db / 20.0)
+        n = int(0.8 * SR)
+        y = [v * g for v in x[:n]] + x[n:] if where == "head" else x[:-n] + [v * g for v in x[-n:]]
+        ws = transcribe(y)["words"]
+        ok_words = len(ws) >= 6 and ws[0]["w"].startswith("Thank") and ws[-1]["w"].startswith("soon")
+        check(ok_words, "%s -%d dB: all six words (got %d: %s)" % (where, db, len(ws), said(ws)))
+
+# 7. Silence and noise stay empty: chunks under the floor are not padded, and noise alone is not speech.
 rng = random.Random(7)
 for label, x in [("1 s digital zeros", [0.0] * SR), ("3 s digital zeros", [0.0] * (3 * SR))] + [
         ("2 s white noise %d dBFS" % db, [rng.gauss(0.0, 10 ** (db / 20)) for _ in range(2 * SR)]) for db in (-50, -40, -30)]:
