@@ -44,6 +44,9 @@ type Daemon struct {
 	// VoxSup supervises audiocpp_server (VoxCPM2); nil on a discrete card,
 	// see config.VoxCPM2Unavailable.
 	VoxSup *engine.Supervisor
+	// voxQoS arbitrates the VoxCPM2 child's priority between the producer's
+	// background job and interactive speak; nil without a VoxSup.
+	voxQoS *qosGate
 
 	// LLMSup supervises ox-llm (llama-server), the meeting-notes model; it
 	// starts on the first notes call and stops after NotesIdleStop. Nil
@@ -281,6 +284,13 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 		}
 	}
 	d.initMeetings()
+	if d.VoxSup != nil {
+		d.voxQoS = &qosGate{
+			pid: func() int { return d.VoxSup.Status().PID },
+			set: setBackground,
+			log: logger,
+		}
+	}
 	d.prod = newProducer(d.producePorts())
 	d.prod.log = logger
 	return d, nil

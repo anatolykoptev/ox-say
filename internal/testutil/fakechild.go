@@ -35,6 +35,11 @@
 //	                          runaway take)
 //	OXSAY_FAKE_VOX_DROP=1     close the connection on a speech request
 //	                          without answering (a transport failure)
+//	OXSAY_FAKE_VOX_HANG_ONCE  path: the first speech request that finds no such
+//	                          file creates it and never answers (a wedged
+//	                          child); every later request, on any child,
+//	                          answers normally
+//	OXSAY_FAKE_VOX_DELAY_MS   sleep before answering a speech request
 //
 // OXSAY_FAKE_TONE=1 makes both fakes answer a quiet sine instead of silence
 // or a click — audio a loudness meter can measure — at their engine's native
@@ -1013,6 +1018,16 @@ func runFakeVox(args []string) int {
 				_ = f.Close()
 			}
 			mu.Unlock()
+		}
+		if once := os.Getenv("OXSAY_FAKE_VOX_HANG_ONCE"); once != "" {
+			if f, err := os.OpenFile(once, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644); err == nil {
+				_ = f.Close()
+				<-r.Context().Done()
+				return
+			}
+		}
+		if ms, err := strconv.Atoi(os.Getenv("OXSAY_FAKE_VOX_DELAY_MS")); err == nil && ms > 0 {
+			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
 		if os.Getenv("OXSAY_FAKE_VOX_DROP") == "1" {
 			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
