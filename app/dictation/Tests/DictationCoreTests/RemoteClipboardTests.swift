@@ -49,18 +49,15 @@ final class RemoteClipboardTests: XCTestCase {
         XCTAssertFalse(FakePasteboard(text: "local copy").holdsRemoteCopy)
     }
 
-    // Mutation: return `items` instead of the filtered list from
-    // PasteboardSnapshot.restorableItems -> RED (the restored clipboard still
-    // looks remote, and every later dictation hits the fetch again).
-    func testRestoreNeverWritesTheRemoteMarkerBack() {
-        let snapshot = PasteboardSnapshot(items: [[
-            PasteboardEntry(type: "public.utf8-plain-text", data: Data("a".utf8)),
-            PasteboardEntry(type: remoteType, data: Data()),
-        ]])
-        let board = FakePasteboard(text: "x")
-        board.restore(snapshot)
-        XCTAssertFalse(board.declaredItems.joined().contains(remoteType))
-        XCTAssertEqual(board.text, "a")
+    // #158.5: the one reachable way to a lease over a remote copy (it lands between PasteOutput's declared-type check
+    // and the capture) tells the user why, in their language. Mutation: PasteboardSnapshot.capture, delete
+    // `snapshot.report(.otherDevice)` -> RED (the notice is gone, the clipboard is silently not put back).
+    func testALeaseOverARemoteCopyNamesTheOtherDeviceInBothLanguages() {
+        for (locale, phrase) in [("en", "another device"), ("ru", "другого устройства")] {
+            let lease = ClipboardLease(board: remoteBoard(), text: "dictated text")
+            XCTAssertFalse(lease.release(text: ShippedStrings.localizer(locale)))
+            XCTAssertTrue(lease.notice?.contains(phrase) ?? false, "\(locale): \(lease.notice ?? "nil")")
+        }
     }
 
     // #158 (1): a multi-item copy can carry the marker on any item, not only

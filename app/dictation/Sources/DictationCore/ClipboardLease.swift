@@ -163,13 +163,6 @@ public struct PasteboardSnapshot: Equatable {
     /// that device, which shows a panel and stalls the paste.
     public private(set) var isRemote = false
 
-    /// The entries a restore may write: never the remote marker. Written back,
-    /// it would make our own restored copy look remote, and every later
-    /// dictation would trigger the fetch again.
-    public var restorableItems: [[PasteboardEntry]] {
-        items.map { $0.filter { !PasteboardMarker.remote.contains($0.type) } }
-    }
-
     fileprivate mutating func report(_ problem: PasteboardProblem) {
         if !problems.contains(problem) { problems.append(problem) }
     }
@@ -279,12 +272,30 @@ public enum ClipboardBorrow {
     case lease(ClipboardLease)
     /// The clipboard could not be read in time and was left exactly as it was.
     case typed
+    /// Like `.typed`, but the frontmost app is no longer the one the dictation was for: keystrokes would go to the
+    /// wrong app. The caller leaves the text on the clipboard, as for focus that moved before the wait.
+    case focusMoved
 
-    public static func take(board: DictationPasteboard, text: String,
+    /// - Parameters:
+    ///   - memory: the caller's `SlowClipboardMemory`; a copy that timed out is not read again until the clipboard changes.
+    ///   - focusMoved: asked whenever the answer is `.typed`, after the wait: the frontmost app may have changed
+    ///     during the up-to-`readLimit` read. No default: a caller that forgets it types into the wrong app.
+    public static func take(board: DictationPasteboard, text: String, memory: SlowClipboardMemory,
+                            focusMoved: () -> Bool,
                             readLimit: TimeInterval = PasteboardSnapshot.readLimit) -> ClipboardBorrow {
+        let count = board.changeCount
+        if memory.isSlow(at: count) { return typedUnlessFocusMoved(focusMoved) }
         let original = PasteboardSnapshot.capture(board, timeLimit: readLimit)
-        if original.timedOut { return .typed }
+        if original.timedOut {
+            memory.remember(count)
+            return typedUnlessFocusMoved(focusMoved)
+        }
+        memory.forget()
         return .lease(ClipboardLease(board: board, original: original, text: text))
+    }
+
+    private static func typedUnlessFocusMoved(_ focusMoved: () -> Bool) -> ClipboardBorrow {
+        focusMoved() ? .focusMoved : .typed
     }
 
     /// How the text reaches the user.
@@ -292,6 +303,21 @@ public enum ClipboardBorrow {
         switch self {
         case .lease: return .paste
         case .typed: return .typed
+        case .focusMoved: return .clipboardOnly(reason: .focusMoved)
         }
     }
+}
+
+/// The clipboard copy whose read timed out, remembered by the caller (one per output, not a global). While the
+/// pasteboard's `changeCount` is still that of the slow copy, `ClipboardBorrow.take` types at once: reading it again
+/// would cost the whole limit on every dictation and make the source app materialise the copy each time. Any write
+/// to the clipboard moves the count and ends the memory.
+public final class SlowClipboardMemory {
+    private var timedOutCount: Int?
+
+    public init() {}
+
+    func isSlow(at changeCount: Int) -> Bool { timedOutCount == changeCount }
+    func remember(_ changeCount: Int) { timedOutCount = changeCount }
+    func forget() { timedOutCount = nil }
 }

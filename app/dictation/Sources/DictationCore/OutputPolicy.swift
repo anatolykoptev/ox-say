@@ -47,6 +47,12 @@ public enum Delivery: Equatable {
 }
 
 public enum OutputPolicy {
+    /// The frontmost app is not the one that had focus when the recording stopped (`target`; nil when none was
+    /// recorded). One rule for the check before the clipboard wait and the one after it.
+    public static func focusMoved(target: Int32?, front: Int32?) -> Bool {
+        target != nil && front != target
+    }
+
     /// Decides how to deliver dictated text.
     /// - Parameters:
     ///   - secureInput: `IsSecureEventInputEnabled()`: a password field (or an app

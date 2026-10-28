@@ -402,6 +402,20 @@ final class UpdateInstallRobustnessTests: XCTestCase {
         XCTAssertTrue(failure?.message.hasPrefix("The download could not start:") ?? false, failure?.message ?? "nil")
     }
 
+    /// curl's own `--max-time` ends with exit 28 long before the app-side backstop: that is the timed-out sentence, not
+    /// "curl exited with status 28". Mutation: UpdateInstall.swift run(), delete the `curlTimedOutStatus` case -> RED.
+    func testCurlsOwnTimeoutIsTheTimedOutSentence() async {
+        let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil,
+                                                downloadArgv: { _, _ in ["/bin/sh", "-c", "exit 28"] },
+                                                installedVersion: { nil }, daemonVersion: { nil })
+        XCTAssertEqual(failure, .downloadTimedOut(seconds: UpdateInstaller.downloadMaxTime))
+        XCTAssertEqual(failure?.message, "Downloading the installer timed out after 60 s.")
+        let other = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil,
+                                              downloadArgv: { _, _ in ["/bin/sh", "-c", "exit 22"] },
+                                              installedVersion: { nil }, daemonVersion: { nil })
+        XCTAssertEqual(other, .downloadFailed(status: 22), "only 28 is a timeout")
+    }
+
     func testTheScriptHeadReadHasANamedLength() {
         XCTAssertEqual(UpdateInstaller.scriptHeadLength, 2, "`#!` is two bytes")
     }
@@ -410,8 +424,28 @@ final class UpdateInstallRobustnessTests: XCTestCase {
     func testTheInstalledCopyIsReadWhenItExists() {
         let home = URL(fileURLWithPath: "/Users/sample")
         let running = URL(fileURLWithPath: "/Volumes/Download/OxSayDictation.app")
-        let installed = InstalledApp.bundleURL(running: running, home: home, exists: { $0.path == "/Users/sample/Applications/OxSayDictation.app/Contents/Info.plist" })
+        let installed = InstalledApp.bundleURL(running: running, home: home, exists: { $0.path == "/Users/sample/Applications/OxSayDictation.app/Contents/Info.plist" },
+                                                version: { _ in "0.1.28" })
         XCTAssertEqual(installed.path, "/Users/sample/Applications/OxSayDictation.app")
+    }
+
+    /// The installed copy is offered only when it is not older than the running one: a dev build run next to an
+    /// old ~/Applications copy must not be "repaired" down to it. Reads versions through a fake, never ~/Applications.
+    /// Mutation: InstalledApp.bundleURL, delete the `isNewer` check (always the installed copy) -> RED.
+    func testAnOlderInstalledCopyIsNotPreferredToTheRunningOne() {
+        let home = URL(fileURLWithPath: "/Users/sample")
+        let running = URL(fileURLWithPath: "/Volumes/Build/OxSayDictation.app")
+        let installedPath = "/Users/sample/Applications/OxSayDictation.app"
+        func pick(installed: String?, running runningVersion: String?) -> String {
+            InstalledApp.bundleURL(running: running, home: home, exists: { _ in true },
+                                   version: { $0.path == installedPath ? installed : runningVersion }).path
+        }
+        XCTAssertEqual(pick(installed: "0.1.20", running: "0.1.28"), running.path, "older installed copy")
+        XCTAssertEqual(pick(installed: "0.1.28", running: "0.1.28"), installedPath, "same version")
+        XCTAssertEqual(pick(installed: "0.1.29", running: "0.1.28"), installedPath, "newer installed copy")
+        XCTAssertEqual(pick(installed: "0.1.9", running: "0.1.10"), running.path, "numeric, not text, order")
+        XCTAssertEqual(pick(installed: "0.1.20", running: nil), installedPath, "running version unknown: keep the old rule")
+        XCTAssertEqual(pick(installed: nil, running: "0.1.28"), running.path, "installed version unreadable")
     }
 
     func testTheRunningCopyIsTheFallbackWhenNothingIsInstalled() {

@@ -270,7 +270,7 @@ final class NeverLoseWiringTests: XCTestCase {
     // `lease = ClipboardLease(...)`-style fall-through (no `return .typed`) -> RED.
     func testASlowClipboardIsTypedNotWrittenOver() {
         let body = requireBody("func deliver(_ text: String, to target: pid_t?) -> Delivery {", in: "PasteOutput.swift")
-        guard let take = body.range(of: "switch ClipboardBorrow.take(board: lending, text: text) {"),
+        guard let take = body.range(of: "switch ClipboardBorrow.take(board: lending, text: text, memory: slowClipboard,"),
               let typed = body.range(of: "case .typed:", range: take.upperBound..<body.endIndex),
               let lease = body.range(of: "case .lease(let borrowed):", range: typed.upperBound..<body.endIndex)
         else { return XCTFail("the paste branch lost its ClipboardBorrow switch") }
@@ -280,6 +280,22 @@ final class NeverLoseWiringTests: XCTestCase {
         let app = Self.source("AppDelegate.swift")
         XCTAssertTrue(app.contains("output.onTypedOverSlowClipboard = { chars, seconds in"))
         XCTAssertTrue(app.contains("clipboard read took too long: posted the text as keystrokes, clipboard untouched chars="))
+    }
+
+    // #314.2: PasteOutput hands ClipboardBorrow the same focus rule it asked OutputPolicy.decide with, and a borrow that
+    // says focus moved leaves the text on the clipboard the way the pre-wait focus-moved path does.
+    // Mutation: PasteOutput.deliver, `focusMoved: { false }` instead of the OutputPolicy.focusMoved rule -> RED;
+    // delete the `.focusMoved` case (or its `leaveOnClipboard`) -> RED.
+    func testASlowClipboardRechecksFocusAndDeclinesLikeTheEarlyPath() {
+        let body = requireBody("func deliver(_ text: String, to target: pid_t?) -> Delivery {", in: "PasteOutput.swift")
+        XCTAssertEqual(body.components(separatedBy: "OutputPolicy.focusMoved(target: target, front: ").count - 1, 2,
+                       "the rule must be asked before decide AND handed to ClipboardBorrow.take")
+        XCTAssertTrue(body.contains("focusMoved: { OutputPolicy.focusMoved(target: target, front: "))
+        guard let moved = body.range(of: "case .focusMoved:") else { return XCTFail("the borrow's focusMoved case is not handled") }
+        XCTAssertTrue(body[moved.upperBound...].prefix(160).contains("leaveOnClipboard(text, reason: .focusMoved)"))
+        XCTAssertTrue(body.contains("return leaveOnClipboard(text, reason: reason)"))
+        let helper = requireBody("private func leaveOnClipboard(", in: "PasteOutput.swift")
+        XCTAssertTrue(helper.contains("plain.writeText(text)") && helper.contains("onNotice?(reason.message)"))
     }
 
     // Mutation: delete the `output.onTypedOverRemoteClipboard = ...` block in
