@@ -1,6 +1,7 @@
 import ApplicationServices
 import DictationCore
 import Foundation
+import os
 
 /// macOS's Automation consent for a browser, asked WITHOUT raising its prompt
 /// (`AEDeterminePermissionToAutomateTarget` with `askUserIfNeeded: false`). An
@@ -11,8 +12,8 @@ enum BrowserAutomationProbe {
         let target = NSAppleEventDescriptor(bundleIdentifier: bundleID)
         let status = AEDeterminePermissionToAutomateTarget(target.aeDesc, AEEventClass(kCoreEventClass),
                                                            AEEventID(kAEGetData), false)
-        // Every other answer — allowed, denied, refused — is decided by the tab read itself, as before.
-        return status == OSStatus(errAEEventWouldRequireUserConsent) ? .undetermined : .granted
+        // The mapping (undetermined, not running yet, everything else decided by the tab read) lives in Core.
+        return BrowserConsent.from(status: status)
     }
 }
 
@@ -61,6 +62,7 @@ final class CallWatcher {
     private let tabReads = BrowserTabReads(queue: DispatchQueue(label: "io.github.anatolykoptev.ox-say.dictation.tabreads",
                                                                  qos: .utility, attributes: .concurrent))
     private var timer: Timer?
+    private let log = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "meeting")
 
     func start() {
         guard timer == nil else { return }
@@ -84,6 +86,9 @@ final class CallWatcher {
     /// "Don't record this one": the current call is not offered again.
     func decline() { watch.decline() }
 
+    /// The prompt came down unanswered: the call that returns is offered again.
+    func offerWithdrawn() { watch.offerWithdrawn() }
+
     /// "Allow…" was clicked for a browser: the consent check is done for it and the first real read goes out
     /// now — macOS raises its own Automation prompt with the badge's words fresh.
     func allowBrowserAutomation(_ id: String) {
@@ -104,6 +109,9 @@ final class CallWatcher {
         let outcome = watch.observe(now: Date(), users: users, tab: readTab,
                                   themActive: themActive(), recording: recording(),
                                   mode: modeFor, consent: consentFor)
+        if let id = outcome.browserNoAnswer {
+            log.info("browser \(id, privacy: .public) holds the microphone but macOS cannot answer for it yet (-600); asking again")
+        }
         onTick?(Tick(users: users, call: outcome.call, action: outcome.action, browserDenied: outcome.browserDenied,
                      browserNeedsPermission: outcome.browserNeedsPermission, browserNeedsConsent: outcome.browserNeedsConsent))
     }

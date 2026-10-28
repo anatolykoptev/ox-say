@@ -22,7 +22,7 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(StudioMenu.newVoiceoverTitle(text: ru), "Новая озвучка из документа…")
         XCTAssertEqual(StudioMenu.stopTitle(text: en), "Stop Voiceover")
         XCTAssertEqual(StudioMenu.stopTitle(text: ru), "Остановить озвучку")
-        XCTAssertEqual(StudioMenu.continueTitle(text: ru), "Продолжить от батареи")
+        XCTAssertEqual(StudioMenu.continueTitle(text: ru), "Продолжить работу от батареи")
         XCTAssertEqual(StudioMenu.folderTitle(text: en), "Open Voiceovers Folder")
         XCTAssertEqual(StudioMenu.folderTitle(text: ru), "Открыть папку с озвучками")
         XCTAssertEqual(StudioMenu.noServiceTitle(text: en), "Studio needs the ox-say service, which is not answering")
@@ -37,7 +37,7 @@ final class StudioMenuL10nTests: XCTestCase {
             .item(title: "Новая озвучка из документа…", isOn: false, isEnabled: false, action: .newVoiceover),
             .item(title: "“Глава” — пауза — работа от батареи", isOn: false, isEnabled: false, action: nil),
             .item(title: "Остановить озвучку", isOn: false, isEnabled: true, action: .stopVoiceover),
-            .item(title: "Продолжить от батареи", isOn: false, isEnabled: true, action: .continueOnBattery),
+            .item(title: "Продолжить работу от батареи", isOn: false, isEnabled: true, action: .continueOnBattery),
             .item(title: "Открыть папку с озвучками", isOn: false, isEnabled: true, action: .openVoiceoversFolder),
             .separator,
             .item(title: "Создать голос…", isOn: false, isEnabled: true, action: .createVoice),
@@ -55,8 +55,8 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(ProduceText.progressRow(job(.running, title: ""), text: en), "Voiceover — 3 of 10 parts")
         XCTAssertEqual(ProduceText.progressRow(job(.waitingForDictation), text: ru), "“Глава” — пауза — вы диктуете")
         XCTAssertEqual(ProduceText.progressRow(job(.done), text: ru), "“Глава” — готово")
-        XCTAssertEqual(ProduceText.progressRow(job(.review, review: 1), text: ru), "“Глава” — готово — Нужно прослушать частей: 1")
-        XCTAssertEqual(ProduceText.progressRow(job(.review, review: 3), text: ru), "“Глава” — готово — Нужно прослушать частей: 3")
+        XCTAssertEqual(ProduceText.progressRow(job(.review, review: 1), text: ru), "“Глава” — готово — нужно прослушать 1 часть")
+        XCTAssertEqual(ProduceText.progressRow(job(.review, review: 3), text: ru), "“Глава” — готово — нужно прослушать части (3)")
         XCTAssertEqual(ProduceText.progressRow(job(.failed), text: ru), "“Глава” — не получилось")
         XCTAssertEqual(ProduceText.progressRow(job(.cancelled), text: ru), "“Глава” — остановлена")
         XCTAssertEqual(ProduceText.progressRow(job(.interrupted), text: ru), "“Глава” — прервана")
@@ -66,7 +66,7 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(ProduceText.finishAlert(done, text: ru)?.title, "Озвучка готова")
         XCTAssertEqual(ProduceText.finishAlert(done, text: ru)?.text, "Сохранено как Ch.wav.")
         XCTAssertEqual(ProduceText.finishAlert(job(.review, review: 2, wav: "/x/Ch.wav"), text: ru)?.text,
-                       "Сохранено как Ch.wav. Нужно прослушать частей: 2. Эти части лежат в папке.")
+                       "Сохранено как Ch.wav. Нужно прослушать части (2). Эти части лежат в папке.")
         XCTAssertEqual(ProduceText.finishAlert(job(.done), text: ru)?.text, "Сохранено как файл озвучки.")
         XCTAssertEqual(ProduceText.finishAlert(job(.failed), text: ru)?.title, "Не удалось сделать озвучку")
         XCTAssertEqual(ProduceText.finishAlert(job(.failed), text: ru)?.text, "ox-say не смог её закончить.")
@@ -101,7 +101,7 @@ final class StudioMenuL10nTests: XCTestCase {
             text: "ox-say stops after the part it is working on. What is already made is not turned into a finished file.",
             buttons: ["Stop Voiceover", "Keep Going"]))
         XCTAssertEqual(StudioDialogs.stop(text: ru), UpdateDialog(title: "Остановить эту озвучку?",
-            text: "ox-say остановится после той части, над которой работает. Из уже готового итоговый файл не соберётся.",
+            text: "ox-say остановится после той части, над которой работает. Итоговый файл из уже готовых частей не соберётся.",
             buttons: ["Остановить озвучку", "Продолжить"]))
         XCTAssertEqual(StudioDialogs.stopFailed(Boom(), text: en), UpdateDialog(title: "Couldn't stop the voiceover",
             text: "Something went wrong. Try again.", buttons: ["OK"]))
@@ -148,7 +148,7 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(ScriptLimit.statusLine(editorText: "Привет.", text: ru), "7 симв. · около 1 мин")
         XCTAssertEqual(ScriptLimit.statusLine(editorText: String(repeating: "я", count: 8340), text: ru), "8340 симв. · около 10 мин")
         XCTAssertEqual(ScriptLimit.statusLine(editorText: String(repeating: "я", count: ScriptLimit.maxCharacters + 7), text: ru),
-                       "40007 симв. · на 7 больше лимита в 40000 (около 48 мин).")
+                       "40007 симв. · превышает лимит в 40000 на 7 (это около 48 мин).")
         XCTAssertEqual(ScriptLimit.statusLine(editorText: String(repeating: "x", count: ScriptLimit.maxCharacters + 7), text: en),
                        "40007 characters · 7 over the limit of 40000 (about 48 minutes).")
         let rows = MenuSections.voiceRows(known: ["anna"], russian: nil, english: nil, text: ru)
@@ -170,7 +170,7 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(SlowTranscription.pillText(seconds: 12, reason: nil, text: ru), "Расшифровываю… 12 с")
         XCTAssertEqual(SlowTranscription.pillText(seconds: 12, reason: SlowTranscription.reason(sttServerState: "starting", text: ru), text: ru),
                        "Расшифровываю… 12 с · загружается модель распознавания речи")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "crashed", text: ru), "речевой сервер не запущен, работает более медленный путь")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "crashed", text: ru), "речевой сервер не запущен, будет дольше")
         XCTAssertEqual(SlowTranscription.reason(sttServerState: "off", text: ru), "речевой сервер выключен")
         XCTAssertEqual(SlowTranscription.reason(sttServerState: "ready", text: ru), "расшифровывается длинная запись")
         XCTAssertEqual(SlowTranscription.reason(sttServerState: nil, text: ru), "служба не ответила")
@@ -216,7 +216,7 @@ final class StudioMenuL10nTests: XCTestCase {
              "Не удалось обновить разрешение универсального доступа: удалите OxSayDictation кнопкой − в Системных настройках → Конфиденциальность и безопасность → Универсальный доступ, затем добавьте снова."),
             (.reviewTitle, "New Voiceover", "Новая озвучка"), (.reviewStart, "Start", "Начать"), (.reviewKeepFirst, "Keep the First Part", "Оставить только начало"),
             (.reviewLabelTitle, "Title", "Название"), (.reviewLabelFormat, "Format", "Формат"),
-            (.reviewLabelText, "Text — check it and fix anything before ox-say reads it", "Текст: проверьте его и поправьте всё нужное, пока ox-say его не прочитал"),
+            (.reviewLabelText, "Text — check it and fix anything before ox-say reads it", "Текст: проверьте его и поправьте всё нужное, прежде чем ox-say его прочитает"),
         ]
         for (key, e, r) in pairs {
             XCTAssertEqual(en(key), e, key.rawValue)

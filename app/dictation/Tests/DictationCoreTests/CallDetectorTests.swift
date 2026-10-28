@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 import XCTest
 @testable import DictationCore
@@ -809,5 +810,104 @@ extension CallDetectorTests {
                               themActive: false, recording: nil, consent: { _ in undeterminedProbes += 1; return .undetermined })
         }
         XCTAssertEqual(undeterminedProbes, 3, "undetermined is never cached: the user may settle it any moment")
+    }
+}
+
+// MARK: X19 — a withdrawn offer, a browser that is not running yet
+extension CallDetectorTests {
+    private var chromeMic: [MicUser] { [MicUser(bundleID: "com.google.Chrome.helper", pid: 3)] }
+
+    /// #342.6/7: a prompt that went down without an answer (the call vanished
+    /// site) withdraws its offer: the call that returns is offered again. A decline stands.
+    /// Mutation: CallTracker.offerWithdrawn, delete `announcedKeys.remove(episode)` -> RED.
+    func testAWithdrawnOfferIsMadeAgainWhenTheCallReturns() {
+        var tr = CallTracker()
+        _ = tr.observe(now: t0, call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome")
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(4), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome"),
+                       .callStarted(source: "meet"))
+        _ = tr.observe(now: t0.addingTimeInterval(6), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome", heldOnly: true)
+        tr.offerWithdrawn()
+        _ = tr.observe(now: t0.addingTimeInterval(30), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome")
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(34), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome"),
+                       .callStarted(source: "meet"), "back in front: asked again")
+    }
+
+    func testAWithdrawnOfferDoesNotUndoADecline() {
+        var tr = CallTracker()
+        _ = tr.observe(now: t0, call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome")
+        tr.decline()
+        tr.offerWithdrawn()
+        XCTAssertEqual(tr.observe(now: t0.addingTimeInterval(10), call: "meet", themActive: false, recording: nil, bundleID: "com.google.Chrome"),
+                       .nothing)
+    }
+
+    /// The probe's status codes come from macOS's headers, not from a list of mine: the app maps the raw OSStatus through
+    /// `BrowserConsent.from(status:)`.
+    /// Mutation: BrowserConsent.from, `status == -600 ? .notRunning` branch removed -> RED.
+    func testTheProbeStatusMapping() {
+        XCTAssertEqual(BrowserConsent.from(status: OSStatus(errAEEventWouldRequireUserConsent)), .undetermined)
+        XCTAssertEqual(BrowserConsent.from(status: OSStatus(procNotFound)), .notRunning, "-600: the browser is launching")
+        XCTAssertEqual(BrowserConsent.from(status: noErr), .granted)
+        XCTAssertEqual(BrowserConsent.from(status: OSStatus(errAEEventNotPermitted)), .granted, "denied is decided by the read itself")
+    }
+
+    /// #342.8: -600 (the browser's process cannot be reached yet) is "ask again next poll": no Apple Event goes to it
+    /// (that would launch it), no consent badge (nobody was asked), and the answer is never kept as granted — the next
+    /// poll looks again and the real answer applies.
+    /// Mutation: CallWatch.observe, `case .notRunning:` branch -> cache it (`consentCache[id] = answer`) -> RED.
+    func testANotRunningBrowserIsAskedAgainNextPollAndNotReadMeanwhile() {
+        var watch = CallWatch()
+        var reads = 0, probes = 0
+        func round(_ s: TimeInterval, answer: BrowserConsent) -> CallWatch.Outcome {
+            watch.observe(now: t0.addingTimeInterval(s), users: chromeMic, tab: { _ in reads += 1; return .url(Self.meetURL) },
+                          themActive: false, recording: nil, consent: { _ in probes += 1; return answer })
+        }
+        let first = round(0, answer: .notRunning)
+        XCTAssertNil(first.browserNeedsConsent, "nobody was asked: no badge")
+        XCTAssertNil(first.call)
+        XCTAssertEqual(reads, 0, "no Apple Event to a browser that is still launching")
+        XCTAssertEqual(first.browserNoAnswer, "com.google.Chrome", "reported once, for the log")
+        XCTAssertNil(round(2, answer: .notRunning).browserNoAnswer, "once per hold")
+        XCTAssertEqual(probes, 2, "looked up again, not kept")
+        let third = round(4, answer: .undetermined)
+        XCTAssertEqual(third.browserNeedsConsent, "com.google.Chrome", "the real answer applies as soon as there is one")
+        let fourth = round(6, answer: .granted)
+        XCTAssertEqual(fourth.call?.source, "meet")
+        XCTAssertEqual(reads, 1)
+    }
+
+    /// A helper bundle that always answers -600 is not a silent dead end: after `notRunningPollsBeforeRead` polls in a row
+    /// the pre-#345 behaviour applies (the answer counts as decided, the real read goes out, and its unreadable/permission
+    /// notice path works).
+    /// Mutation: CallWatch.observe, `notRunningPolls[id, default: 0] >= Self.notRunningPollsBeforeRead` -> `false` -> RED.
+    func testABrowserThatKeepsAnsweringNotRunningIsReadAnyway() {
+        var watch = CallWatch()
+        var reads = 0
+        var call: CallDetector.Detection.Call?
+        for i in 0..<CallWatch.notRunningPollsBeforeRead {
+            let o = watch.observe(now: t0.addingTimeInterval(Double(i) * 2), users: chromeMic, tab: { _ in reads += 1; return .url(Self.meetURL) },
+                                  themActive: false, recording: nil, consent: { _ in .notRunning })
+            call = o.call
+            if i < CallWatch.notRunningPollsBeforeRead - 1 { XCTAssertEqual(reads, 0, "poll \(i)") }
+        }
+        XCTAssertEqual(reads, 1, "the read went out on the last poll")
+        XCTAssertEqual(call?.source, "meet")
+    }
+
+    /// #345 minor: an answer promoted from "not running" after the polls is not kept as decided: every poll asks again, the
+    /// read path stays open.
+    /// Mutation: CallWatch.observe, `if asked != .notRunning { consentCache[id] = answer }` -> `consentCache[id] = answer` -> RED.
+    func testAPromotedNotRunningAnswerIsAskedAgainEveryPoll() {
+        var watch = CallWatch()
+        var probes = 0
+        let polls = CallWatch.notRunningPollsBeforeRead + 3
+        for i in 0..<polls {
+            _ = watch.observe(now: t0.addingTimeInterval(Double(i) * 2), users: chromeMic, tab: { _ in .url(Self.meetURL) },
+                              themActive: false, recording: nil, consent: { _ in probes += 1; return .notRunning })
+        }
+        XCTAssertEqual(probes, polls, "asked on every poll, never cached as decided")
+        let after = watch.observe(now: t0.addingTimeInterval(100), users: chromeMic, tab: { _ in .url(Self.meetURL) },
+                                  themActive: false, recording: nil, consent: { _ in .undetermined })
+        XCTAssertEqual(after.browserNeedsConsent, "com.google.Chrome", "a real answer later still applies")
     }
 }

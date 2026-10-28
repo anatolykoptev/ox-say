@@ -74,16 +74,26 @@ public enum MeetingFeatureError: Error, Equatable {
 /// What the user was doing when a call to the daemon failed: the sentence differs ("rename it when it is done").
 public enum MeetingAction: CaseIterable, Equatable {
     case refresh, rename, delete, speakers, retry, settings, search, audio
+    /// Starting a recording: the meeting is opened in the daemon, then the recorder starts.
+    case start
+    /// "Download the notes model" from the menu.
+    case installModel
     /// "Try Again" for the voices: a 503 means the voice models are still not ready.
     case retryVoices
     /// Closing a recording that was running.
     case finish
 }
 
+/// An error whose text the app already wrote in the user's language (a refused microphone permission).
+public protocol UserFacingError: Error {
+    var userText: String { get }
+}
+
 /// A failed call in the user's language and plain words. The daemon's own refusal texts are English; only the ones
 /// with no mapping carry them through.
 public enum MeetingErrorText {
     public static func sentence(_ error: Error, action: MeetingAction, text: (L10nKey) -> String = { $0.text }) -> String {
+        if let error = error as? UserFacingError { return error.userText }
         if let error = error as? MeetingFeatureError {
             return text(error == .needsNewerMacOS ? .meetingErrNeedsMac : .meetingErrOff)
         }

@@ -144,7 +144,7 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(rebuild.contains("self.startTap()"))
         let started = try XCTUnwrap(body(recorder, of: "private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int) {"))
         XCTAssertTrue(started.contains("tapRetry.succeeded()"))
-        let failed = try XCTUnwrap(body(recorder, of: "private func tapFailed(_ why: String) {"))
+        let failed = try XCTUnwrap(body(recorder, of: "private func tapFailed(_ error: Error) {"))
         XCTAssertTrue(failed.contains("scheduleTapRebuild(after: step.delay)"))
         // #266: "system audio lost" is told when the old tap no longer delivers (TapLoss). Mutation:
         // MeetingRecorder.tapFailed, replace `sourceLost: lost` with `sourceLost: true` -> RED.
@@ -403,12 +403,15 @@ final class MeetingWiringTests: XCTestCase {
     /// The badge's questions come down through OfferLifetime (Core-tested): the prompt when its call is really
     /// over or another began, the consent question when the browser releases the microphone, and both when the
     /// mode goes Off.
-    /// Mutation: MeetingController.observe, `{ badge.hide() }` after `offerLife.shouldHide(` -> `{ _ = 0 }` -> RED.
+    /// Mutation: MeetingController.observe, `badge.hide()` after `offerLife.verdict(` -> `_ = 0` -> RED.
     /// Mutation: MeetingController.applyCallMode, `badge.hide()` -> `_ = 0` -> RED.
     func testTheOffersComeDownThroughTheCoreDecision() throws {
         let text = try controller()
         let observe = try XCTUnwrap(body(text, of: "private func observe(_ tick: CallWatcher.Tick) {"))
-        XCTAssertTrue(observe.contains("if offerLife.shouldHide(now: Date(), offer: offer, liveSource: tick.call?.source, users: tick.users) { badge.hide() }"))
+        XCTAssertTrue(observe.contains("if case .hide(let why) = offerLife.verdict(now: Date(), offer: offer, liveSource: tick.call?.source, users: tick.users) {\n            badge.hide()\n"))
+        // #342.1/6/7: a prompt withdrawn by the call's absence un-announces its episode.
+        // Mutation: MeetingController.observe, delete `if why.withdrawsOffer { watcher.offerWithdrawn() }` -> RED.
+        XCTAssertTrue(observe.contains("if why.withdrawsOffer { watcher.offerWithdrawn() }"))
         let apply = try XCTUnwrap(body(text, of: "private func applyCallMode() {"))
         XCTAssertTrue(apply.contains("if !OfferLifetime.offersAllowed(mode: mode) {\n            if case .recording = badge.mode {} else { badge.hide() }"))
     }
@@ -469,5 +472,67 @@ final class MeetingWiringTests: XCTestCase {
         let check = try XCTUnwrap(start.range(of: "MeetingRecorder.checkMicrophone()"))
         let create = try XCTUnwrap(start.range(of: "host.client.createMeeting("))
         XCTAssertLessThan(check.lowerBound, create.lowerBound)
+    }
+
+    // MARK: X19
+
+    /// #337.1: no error text of the daemon or of a framework reaches a user-visible sink in the meeting code: every
+    /// failure is said through MeetingErrorText (or, for a lost audio source, as a fixed notice with the error logged).
+    /// Mutation: MeetingController.start, `MeetingErrorText.sentence(error, action: .start)` -> `"\(error)"` -> RED.
+    /// Mutation: MeetingController.editSpeakers, the same for `.speakers` -> RED.
+    /// Mutation: MeetingController.installModel, `MeetingErrorText.sentence(error, action: .installModel)` -> `StudioError.plain(error)` -> RED.
+    func testNoRawErrorTextReachesTheUserFromTheMeetingCode() throws {
+        for file in ["OxSayDictation/MeetingController.swift", "OxSayDictation/MeetingRecorder.swift", "DictationCore/RetryChain.swift"] {
+            let text = try source(file)
+            XCTAssertFalse(text.contains("\"\\(error)\""), "\(file) hands an error's description on as a string")
+            XCTAssertFalse(text.contains("StudioError.plain("), "\(file) shows the daemon's own words")
+        }
+        let text = try controller()
+        let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
+        XCTAssertEqual(start.components(separatedBy: "L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start))").count - 1, 2,
+                       "the microphone check and the daemon/recorder start both")
+        let speakers = try XCTUnwrap(body(text, of: "private func editSpeakers(_ id: String) {"))
+        XCTAssertTrue(speakers.contains("L10nKey.speakersFailed.text(MeetingErrorText.sentence(error, action: .speakers))"))
+        let install = try XCTUnwrap(body(text, of: "private func installModel() {"))
+        XCTAssertTrue(install.contains("host.notify(MeetingErrorText.sentence(error, action: .installModel))"))
+        // The real error is logged where the user gets the generic sentence.
+        // Mutation: delete the `log.error(` line of any of the four catches -> RED.
+        let logLine = "log.error(\"meeting %@ failed: \\(String(describing: error), privacy: .public)\")"
+        XCTAssertEqual(start.components(separatedBy: logLine.replacingOccurrences(of: "%@", with: "start")).count - 1, 2)
+        XCTAssertTrue(speakers.contains(logLine.replacingOccurrences(of: "%@", with: "speakers")))
+        XCTAssertTrue(install.contains(logLine.replacingOccurrences(of: "%@", with: "notes model")))
+        XCTAssertTrue(text.contains("recorder.onSystemAudioFailed = { [weak self] in"))
+        XCTAssertTrue(text.contains("host.notify(L10nKey.noticeMeetingTapLost.text)"))
+        XCTAssertTrue(text.contains("recorder.onMicrophoneFailed = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicLost.text) }"))
+        let recorder = try source("OxSayDictation/MeetingRecorder.swift")
+        XCTAssertTrue(recorder.contains("var onSystemAudioFailed: (() -> Void)?"))
+        XCTAssertTrue(recorder.contains("var onMicrophoneFailed: (() -> Void)?"))
+        XCTAssertTrue(recorder.contains("case .failed(let error): tapFailed(error)"))
+        let failed = try XCTUnwrap(body(recorder, of: "private func tapFailed(_ error: Error) {"))
+        XCTAssertTrue(failed.contains("log.error(\"system audio tap: failed: \\(String(describing: error), privacy: .public)\")"), "the reason goes to the log")
+        let chain = try XCTUnwrap(recorder.range(of: "private lazy var micChain = RetryChain("))
+        XCTAssertTrue(recorder[chain.lowerBound...].prefix(700).contains("self?.onMicrophoneFailed?()"))
+        let mic = try source("OxSayDictation/MeetingRecorder.swift")
+        XCTAssertTrue(mic.contains("microphone: restart failed: \\(String(describing: error), privacy: .public)"))
+    }
+
+    /// #342.8: the probe maps macOS's status in Core; the watcher logs a browser that has no answer, once per hold.
+    /// Mutation: BrowserAutomationProbe.consent, `BrowserConsent.from(status: status)` -> `.granted` -> RED.
+    func testTheWatcherPassesTheHeldOnlyFlagAndTheProbeStatusToCore() throws {
+        let watcher = try source("OxSayDictation/CallWatcher.swift")
+        XCTAssertFalse(watcher.contains("heldOnly"), "no prompt is withdrawn for a browser's hold (#241)")
+        XCTAssertTrue(watcher.contains("if let id = outcome.browserNoAnswer {"))
+        XCTAssertTrue(watcher.contains("func offerWithdrawn() { watch.offerWithdrawn() }"))
+        let probe = try XCTUnwrap(body(watcher, of: "static func consent(bundleID: String) -> BrowserConsent {"))
+        XCTAssertTrue(probe.contains("return BrowserConsent.from(status: status)"))
+    }
+
+    /// An automatic stop (the tracker's silence rule) says so.
+    /// Mutation: MeetingController.observe, delete the notify before `stop()` in `.stopRecording` -> RED.
+    func testAnAutomaticStopSaysSo() throws {
+        let observe = try XCTUnwrap(body(try controller(), of: "private func observe(_ tick: CallWatcher.Tick) {"))
+        XCTAssertTrue(observe.contains("case .stopRecording:\n            host.notify(L10nKey.noticeMeetingCallEnded.text)\n            stop()"))
+        let recorder = try source("OxSayDictation/MeetingRecorder.swift")
+        XCTAssertFalse(recorder.contains("anyoneActive"), "the stop rule is the far side's silence, as on main")
     }
 }

@@ -122,8 +122,9 @@
 "notice.meeting.browser_pending" = "OxSay ждёт разрешения читать вкладку браузера. Если macOS спросила, нажмите «Разрешить»; иначе проверьте Системные настройки → Конфиденциальность и безопасность → Автоматизация.";
 "notice.meeting.slept" = "Запись остановлена: Mac уснул. Записанное расшифровывается.";
 "meeting.update_blocked" = "Идёт запись встречи. Обновитесь, когда она закончится.";
-"notice.meeting.mic_lost" = "Микрофон не записывается: %@";
-"notice.meeting.tap_lost" = "Системный звук не записывается: %@";
+"notice.meeting.mic_lost" = "Микрофон не записывается.";
+"notice.meeting.tap_lost" = "Системный звук не записывается.";
+"notice.meeting.call_ended" = "Запись остановлена автоматически: в звонке давно никто не говорит.";
 "notice.meeting.disk_full" = "Диск заполнен: запись остановлена. Записанное сохранено.";
 "notice.meeting.tap_recovered" = "Системный звук снова записывается.";
 "notice.meeting.mic_recovered" = "Микрофон снова записывается.";
@@ -157,6 +158,7 @@
 "meeting.diar.unavailable.cpu_unsupported" = "На Mac с процессором Intel голоса в звонке не разделяются.";
 "meeting.diar.unavailable.engine_missing" = "Голоса в звонке не разделены: в этой установке нет голосового движка. Обновите OxSay.";
 "meeting.diar.unavailable.models_missing" = "Голоса в звонке не разделены: голосовые модели не скачаны. Обновите OxSay.";
+"meeting.diar.unavailable.retry_now" = "Голоса в этом звонке не были разделены, но теперь их можно найти. Попробуйте ещё раз.";
 "meeting.diar.unavailable.models_unusable" = "Голоса в звонке не разделены: голосовые модели не загрузились на этом Mac. Переустановите OxSay, чтобы скачать их заново.";
 "meeting.diar.unavailable.too_long" = "Голоса в звонке не разделены: запись длиннее 2 часов.";
 "meeting.diar.unavailable.input_unreadable" = "Голоса в звонке не разделены: запись не удалось прочитать.";
@@ -449,7 +451,7 @@
 "studio.read_failed.title" = "Не удалось прочитать файл";
 "studio.open_failed" = "Не удалось открыть файл.";
 "studio.stop.title" = "Остановить эту озвучку?";
-"studio.stop.text" = "ox-say остановится после той части, над которой работает. Из уже готового итоговый файл не соберётся.";
+"studio.stop.text" = "ox-say остановится после той части, над которой работает. Итоговый файл из уже готовых частей не соберётся.";
 "studio.stop.button" = "Остановить озвучку";
 "studio.stop.keep_going" = "Продолжить";
 "studio.stop_failed.title" = "Не удалось остановить озвучку";
@@ -458,7 +460,7 @@
 "studio.choose.title" = "Выберите документ для озвучки";
 "studio.choose.message" = "Выберите текстовый файл, Markdown, Word, PDF, RTF или OpenDocument.";
 "studio.menu.new_voiceover" = "Новая озвучка из документа…";
-"studio.menu.continue_battery" = "Продолжить от батареи";
+"studio.menu.continue_battery" = "Продолжить работу от батареи";
 "studio.menu.open_folder" = "Открыть папку с озвучками";
 "studio.menu.no_service" = "Студии нужна служба ox-say, а она не отвечает";
 "studio.menu.checking" = "Проверяю службу ox-say…";
@@ -473,8 +475,10 @@
 "studio.progress.parts" = "частей: %1$@ из %2$@";
 "studio.progress.starting" = "запускается…";
 "studio.progress.waiting_service" = "жду службу ox-say…";
-"studio.progress.listen_one" = "Нужно прослушать частей: 1";
-"studio.progress.listen_many" = "Нужно прослушать частей: %@";
+"studio.progress.listen_one" = "нужно прослушать 1 часть";
+"studio.progress.listen_many" = "нужно прослушать части (%@)";
+"studio.finish.listen_one" = "Нужно прослушать 1 часть";
+"studio.finish.listen_many" = "Нужно прослушать части (%@)";
 "studio.finish.ready_title" = "Озвучка готова";
 "studio.finish.saved" = "Сохранено как %@.";
 "studio.finish.default_file" = "файл озвучки";
@@ -499,7 +503,7 @@
 "doc.empty.scan" = "В этом PDF нет текста для чтения (возможно, это скан).";
 "doc.empty.none" = "В этом документе нет текста для чтения.";
 "script.status.none" = "Читать пока нечего: текста нет.";
-"script.status.over" = "%1$@ симв. · на %2$@ больше лимита в %3$@ (около %4$@ мин).";
+"script.status.over" = "%1$@ симв. · превышает лимит в %3$@ на %2$@ (это около %4$@ мин).";
 "script.status.one_minute" = "%@ симв. · около 1 мин";
 "script.status.minutes" = "%1$@ симв. · около %2$@ мин";
 "review.title" = "Новая озвучка";
@@ -508,7 +512,7 @@
 "review.keep_first" = "Оставить только начало";
 "review.label.title" = "Название";
 "review.label.format" = "Формат";
-"review.label.text" = "Текст: проверьте его и поправьте всё нужное, пока ox-say его не прочитал";
+"review.label.text" = "Текст: проверьте его и поправьте всё нужное, прежде чем ox-say его прочитает";
 "menu.voice" = "Голос";
 "menu.keyboard_shortcuts" = "Сочетания клавиш";
 "menu.studio" = "Студия";
@@ -534,7 +538,7 @@
 "pill.transcribing_reason" = "Расшифровываю… %1$@ с · %2$@";
 "pill.speaking" = "Читаю вслух…";
 "slow.loading" = "загружается модель распознавания речи";
-"slow.slower_path" = "речевой сервер не запущен, работает более медленный путь";
+"slow.slower_path" = "речевой сервер не запущен, будет дольше";
 "slow.off" = "речевой сервер выключен";
 "slow.decoding" = "расшифровывается длинная запись";
 "slow.no_answer" = "служба не ответила";

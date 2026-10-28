@@ -12,16 +12,16 @@ public final class RetryChain {
 
     private let attempt: () throws -> Void
     private let schedule: Schedule
-    private let onFailed: (String) -> Void
+    private let onFailed: (Error) -> Void
     private let onRecovered: () -> Void
     private var generation = 0
     private var reacquire = Reacquire()
 
     /// `attempt` starts the source and throws when it could not; `schedule` runs a closure after a delay (the main
-    /// queue in the app, a fake in tests). `onFailed` hears the first failure of a streak, `onRecovered` the success
+    /// queue in the app, a fake in tests). `onFailed` hears the error that began a streak (the app logs it and says a sentence of its own), `onRecovered` the success
     /// that ends one.
     public init(attempt: @escaping () throws -> Void, schedule: @escaping Schedule,
-                onFailed: @escaping (String) -> Void, onRecovered: @escaping () -> Void) {
+                onFailed: @escaping (Error) -> Void, onRecovered: @escaping () -> Void) {
         self.attempt = attempt
         self.schedule = schedule
         self.onFailed = onFailed
@@ -51,7 +51,7 @@ public final class RetryChain {
             if reacquire.succeeded() { onRecovered() }
         } catch {
             let next = reacquire.failed()
-            if next.notify { onFailed("\(error)") }
+            if next.notify { onFailed(error) }
             schedule(next.delay) { [weak self] in
                 guard let self, self.generation == mine else { return }
                 self.step(mine)

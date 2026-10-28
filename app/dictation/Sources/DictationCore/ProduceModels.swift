@@ -169,7 +169,7 @@ public enum ProduceText {
         switch job.status {
         case .pausedOnBattery: return text(.producePausedBattery)
         case .waitingForDictation: return text(.producePausedDictating)
-        case .review: return String(format: text(.produceReadyListen), listenText(job.partsToReview, text: text))
+        case .review: return String(format: text(.produceReadyListen), listenText(job.partsToReview, sentence: false, text: text))
         case .done: return text(.produceReady)
         case .failed: return text(.produceFailed)
         case .cancelled: return text(.produceStopped)
@@ -179,8 +179,11 @@ public enum ProduceText {
         }
     }
 
-    private static func listenText(_ count: Int, text: Text) -> String {
-        count == 1 ? text(.produceListenOne) : String(format: text(.produceListenMany), String(count))
+    /// "1 part needs a listen" in the two places it appears: continuing a progress row after a dash (`sentence` false: Russian
+    /// starts it lower case), or as a sentence of its own in the finish alert (`sentence` true: it starts a capital).
+    private static func listenText(_ count: Int, sentence: Bool, text: Text) -> String {
+        if sentence { return count == 1 ? text(.produceFinishListenOne) : String(format: text(.produceFinishListenMany), String(count)) }
+        return count == 1 ? text(.produceListenOne) : String(format: text(.produceListenMany), String(count))
     }
 
     /// The alert for a job that ended; nil for one that was stopped on purpose. A failure's own reason is the daemon's text.
@@ -190,7 +193,7 @@ public enum ProduceText {
             let file = job.outputPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? text(.produceFinishDefaultFile)
             var saved = String(format: text(.produceFinishSaved), file)
             if job.status == .review {
-                saved += " \(listenText(job.partsToReview, text: text)). \(text(.produceFinishInFolder))"
+                saved += " \(listenText(job.partsToReview, sentence: true, text: text)). \(text(.produceFinishInFolder))"
             }
             return (text(.produceFinishReadyTitle), saved)
         case .failed:

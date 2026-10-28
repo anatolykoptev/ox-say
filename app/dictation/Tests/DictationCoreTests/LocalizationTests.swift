@@ -48,4 +48,54 @@ final class LocalizationTests: XCTestCase {
         let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         XCTAssertTrue(text.contains("Ролик"), "ru.lproj must translate the sidebar")
     }
+
+    /// #337.1: the reason of a lost microphone or system-audio tap is a framework error in English; the notice says the
+    /// loss in the user's language and the reason goes to the log.
+    /// Mutation: en "notice.meeting.tap_lost" gets ": %@" back -> RED.
+    func testTheLostSourceNoticesCarryNoRawReason() {
+        for locale in ["en", "ru"] {
+            let table = ShippedStrings.table(locale)
+            for key in ["notice.meeting.mic_lost", "notice.meeting.tap_lost"] {
+                XCTAssertFalse((table[key] ?? "%").contains("%"), "\(locale) \(key) takes a reason: \(table[key] ?? "")")
+            }
+        }
+    }
+
+    /// #337.3: the progress row continues a dash, so its Russian form is lower case; the sentence form that follows
+    /// "Сохранено как X." starts with a capital.
+    /// Mutation: ru "studio.progress.listen_one" back to "Нужно прослушать частей: 1" -> RED.
+    func testTheRussianListenRowContinuesTheLineAndTheSentenceStartsOne() {
+        let ru = ShippedStrings.table("ru")
+        for key in ["studio.progress.listen_one", "studio.progress.listen_many"] {
+            XCTAssertTrue(ru[key]?.first?.isLowercase == true, "\(key) is a row form: \(ru[key] ?? "")")
+        }
+        for key in ["studio.finish.listen_one", "studio.finish.listen_many"] {
+            XCTAssertTrue(ru[key]?.first?.isUppercase == true, "\(key) is a sentence form: \(ru[key] ?? "")")
+        }
+        for key in ["studio.progress.listen_many", "studio.finish.listen_many"] {
+            XCTAssertFalse(ru[key]?.contains("частей: ") ?? true, "no \"частей: N\" calque: \(ru[key] ?? "")")
+        }
+    }
+
+    /// #342.3: the per-app pick stays "Don't record": unambiguous next to "Record automatically" / "Ask me first" (the
+    /// badge's "Don't ask for X" is a different sentence about the same pick).
+    /// Mutation: en "settings.apps.never" -> "Never ask" -> RED.
+    func testThePerAppNeverPickStaysUnambiguous() {
+        XCTAssertEqual(ShippedStrings.table("en")["settings.apps.never"], "Don't record")
+        XCTAssertEqual(ShippedStrings.table("ru")["settings.apps.never"], "Не записывать")
+    }
+
+    /// #340.3: a row that now offers Try Again must not keep the old reason.
+    /// Mutation: ru "meeting.diar.unavailable.retry_now" loses «можно найти» -> RED.
+    func testTheRetryableRowSaysTheVoicesCanBeFoundNow() {
+        XCTAssertTrue(ShippedStrings.table("en")["meeting.diar.unavailable.retry_now"]?.contains("can be found now") == true)
+        XCTAssertTrue(ShippedStrings.table("ru")["meeting.diar.unavailable.retry_now"]?.contains("можно найти") == true)
+    }
+
+    /// Every automatic stop says so, neutrally (it can also be a muted listener, not only a hang-up).
+    /// Mutation: ru "notice.meeting.call_ended" emptied -> RED.
+    func testTheCallEndedNoticeExists() {
+        XCTAssertEqual(ShippedStrings.table("en")["notice.meeting.call_ended"], "Recording stopped automatically: nobody on the call has spoken for a while.")
+        XCTAssertEqual(ShippedStrings.table("ru")["notice.meeting.call_ended"], "Запись остановлена автоматически: в звонке давно никто не говорит.")
+    }
 }

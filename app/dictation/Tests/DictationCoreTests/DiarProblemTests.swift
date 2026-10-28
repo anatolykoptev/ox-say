@@ -57,6 +57,33 @@ final class DiarProblemTests: XCTestCase {
         XCTAssertEqual(MeetingMenuRecent.from(list, limit: 2).count, 2)
     }
 
+    /// #340.3: an unavailable row that now offers Try Again no longer says why it was unavailable ("models missing"
+    /// although the models are ready); it says the voices can be found now. Only when the app really offers the retry.
+    /// Mutation: DiarProblem.shownKey, drop `offersRetry(...)` from the condition -> RED (a stale reason keeps its text
+    /// only if the retry is offered, so the not-retryable case turns RED).
+    func testARetryableUnavailableRowDropsTheStaleReason() {
+        let models = DiarProblem.unavailable(reason: "models_missing")
+        XCTAssertEqual(models.shownKey(daemonSaysRetryable: true, audioDeleted: false), .diarUnavailableRetryNow)
+        XCTAssertEqual(models.shownKey(daemonSaysRetryable: false, audioDeleted: false), .diarUnavailableModels, "not ready: the reason stands")
+        XCTAssertEqual(models.shownKey(daemonSaysRetryable: true, audioDeleted: true), .diarUnavailableModels, "no audio: no retry, the reason stands")
+        XCTAssertEqual(DiarProblem.unavailable(reason: "too_long").shownKey(daemonSaysRetryable: true, audioDeleted: false),
+                       .diarUnavailableTooLong, "a recording over two hours is still over two hours")
+        XCTAssertEqual(DiarProblem.failed(reason: "bad_output").shownKey(daemonSaysRetryable: true, audioDeleted: false), .diarFailedOutput)
+    }
+
+    /// Mutation: MeetingMenu.rows, `text(problem.shownKey(...))` -> `text(problem.messageKey)` -> RED.
+    func testTheMenuRowOfARetryableMeetingSaysTheVoicesCanBeFoundNow() {
+        let recent = [MeetingMenuRecent(id: "a", title: "Standup", problem: .unavailable(reason: "models_missing"), voicesRetryable: true),
+                      MeetingMenuRecent(id: "b", title: "Plan", problem: .unavailable(reason: "models_missing"), voicesRetryable: false)]
+        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
+                                     retention: .month, recent: recent)
+        let titles = MeetingMenu.rows(state, text: { $0.rawValue }).compactMap { row -> String? in
+            if case .item(let title, _, _, _) = row { return title } else { return nil }
+        }
+        XCTAssertTrue(titles.contains("meeting.diar.unavailable.retry_now"), "\(titles)")
+        XCTAssertTrue(titles.contains("meeting.diar.unavailable.models_missing"), "the meeting that cannot be retried keeps its reason")
+    }
+
     /// A problem is a disabled sentence; a failure also gets a "Try Again" row; voices get the naming row.
     /// Mutation: MeetingMenu.rows, change `if problem.canRetry {` to `if true {` -> RED (a Mac that cannot do it offers a retry).
     func testTheRowsForProblemsAndVoices() {
