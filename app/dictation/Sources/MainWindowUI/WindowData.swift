@@ -43,6 +43,23 @@ public struct AboutValues: Equatable {
     }
 }
 
+/// The meeting audio that plays now, for the mini player and the highlighted line. nil in `MainWindowData` when nothing plays.
+public struct PlaybackValues: Equatable {
+    public var meetingID: String
+    public var isPlaying: Bool
+    /// Seconds into the recording.
+    public var position: TimeInterval
+    /// Seconds in all; nil until the player knows.
+    public var duration: TimeInterval?
+
+    public init(meetingID: String, isPlaying: Bool, position: TimeInterval, duration: TimeInterval? = nil) {
+        self.meetingID = meetingID
+        self.isPlaying = isPlaying
+        self.position = position
+        self.duration = duration
+    }
+}
+
 /// Everything the window shows. Plain values: the app fills them (lazily, when the window
 /// opens), and the screenshot harness fills them with sample data.
 public struct MainWindowData: Equatable {
@@ -59,6 +76,10 @@ public struct MainWindowData: Equatable {
     public var recordingElapsed: TimeInterval?
     /// A sentence for the last thing that did not go through (or one that did); the window shows it until dismissed.
     public var notice: String?
+    /// The search over the meetings; `.idle` shows the days.
+    public var search: MeetingSearchState
+    /// The meeting audio that plays now.
+    public var playback: PlaybackValues?
     public var meetingSettings: MeetingSettingsValues
     public var permissions: [PermissionItem]
     public var dictation: DictationValues
@@ -67,7 +88,8 @@ public struct MainWindowData: Equatable {
 
     public init(meetings: [MeetingInfo], meetingsLoad: MeetingsLoad = .loaded, details: [String: MeetingDetail],
                 detailLoading: Set<String> = [], detailError: [String: String] = [:], recordingElapsed: TimeInterval? = nil,
-                notice: String? = nil, meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
+                notice: String? = nil, search: MeetingSearchState = MeetingSearchState(), playback: PlaybackValues? = nil,
+                meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
                 dictation: DictationValues, voices: VoicesValues, about: AboutValues) {
         self.meetings = meetings
         self.meetingsLoad = meetingsLoad
@@ -76,6 +98,8 @@ public struct MainWindowData: Equatable {
         self.detailError = detailError
         self.recordingElapsed = recordingElapsed
         self.notice = notice
+        self.search = search
+        self.playback = playback
         self.meetingSettings = meetingSettings
         self.permissions = permissions
         self.dictation = dictation
@@ -109,6 +133,15 @@ public struct MainWindowActions {
     public var pickVoice: (VoiceSlot, String?) -> Void = { _, _ in }
     public var setStartAtLogin: (Bool) -> Void = { _ in }
     public var dismissNotice: () -> Void = {}
+    /// The search field's text, as typed (the app debounces, cancels and retries).
+    public var searchTyped: (String) -> Void = { _ in }
+    public var retrySearch: () -> Void = {}
+    /// A click on a transcript line: play that meeting from this line (the app decides whether it may).
+    public var playTurn: (String, TranscriptTurn) -> Void = { _, _ in }
+    public var togglePlayback: () -> Void = {}
+    public var seekPlayback: (TimeInterval) -> Void = { _ in }
+    /// The meeting is left, the window hides or the user stops it: the audio stops.
+    public var stopPlayback: () -> Void = {}
 
     public init() {}
 }

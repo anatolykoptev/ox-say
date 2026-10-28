@@ -188,3 +188,14 @@ public struct TranscriptTurn: Equatable, Identifiable {
         return turns
     }
 }
+
+extension MeetingRowModel {
+    /// What a rename sends: the draft trimmed, or nil when there is nothing to send. The field starts with the title the
+    /// window SHOWS (an auto title is localized there), so a draft the user did not change must not become their own
+    /// title, in whatever language the window happened to be in (#270). An empty draft is no title.
+    public static func renamedTitle(draft: String, shown: String) -> String? {
+        let t = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, t != shown.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        return t
+    }
+}

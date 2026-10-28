@@ -200,6 +200,8 @@ private struct NameField: View {
             .focused($focused)
             .onAppear { draft = saved }
             .onSubmit { commit(draft) }
+            // A name typed and then left by a click on another section is saved, not lost.
+            .onDisappear { commit(draft) }
             .onChange(of: focused) { isFocused in if !isFocused { commit(draft) } }
             .onChange(of: saved) { new in if !focused { draft = new } }
     }

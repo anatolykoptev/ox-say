@@ -13,6 +13,16 @@ public enum MeetingTab: String, CaseIterable, Identifiable {
     }
 }
 
+extension MeetingTab {
+    /// The tab a search hit opens.
+    init(_ destination: HitDestination) {
+        switch destination {
+        case .notes: self = .notes
+        case .transcript: self = .transcript
+        }
+    }
+}
+
 /// One recording: its title and facts, a notice when something needs saying, and three tabs.
 /// The texts are parsed when the meeting is chosen; the transcript is a lazy stack, so a two-hour
 /// call costs what is on screen.
@@ -26,7 +36,12 @@ struct MeetingDetailView: View {
     init(model: MainWindowModel, detail: MeetingDetail, tab: MeetingTab = .notes) {
         self.model = model
         self.detail = detail
-        _tab = State(initialValue: tab)
+        // A search hit that was clicked opens its meeting on the tab where it matched.
+        if let focus = model.focus, focus.meetingID == detail.info.id {
+            _tab = State(initialValue: MeetingTab(focus.destination))
+        } else {
+            _tab = State(initialValue: tab)
+        }
     }
 
     private var info: MeetingInfo { detail.info }
@@ -57,12 +72,23 @@ struct MeetingDetailView: View {
             } else {
                 switch tab {
                 case .notes: NotesTab(model: model, detail: detail, openSpeakers: { tab = .speakers })
-                case .transcript: TranscriptTab(detail: detail)
+                case .transcript: TranscriptTab(model: model, detail: detail)
                 case .speakers: SpeakersTab(model: model, detail: detail)
                 }
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let playback = model.data.playback, playback.meetingID == info.id {
+                MiniPlayer(model: model, values: playback)
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // A click on a hit in the list while this meeting is open moves it to the hit's tab.
+        .onChange(of: model.focus) { focus in
+            if let focus, focus.meetingID == info.id { tab = MeetingTab(focus.destination) }
+        }
+        // Leaving the meeting (another one chosen, another section, the meeting deleted) stops the audio.
+        .onDisappear { model.actions.stopPlayback() }
     }
 
     private var header: some View {
@@ -105,6 +131,7 @@ extension MeetingDetailView {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(MeetingRowModel.displayTitle(of: info)).font(.title2.weight(.semibold)).lineLimit(2)
                 Button {
+                    // The field starts with the title shown; saving it unchanged sends nothing (see renamedTitle).
                     draftTitle = MeetingRowModel.displayTitle(of: info)
                     renaming = true
                 } label: {
@@ -119,9 +146,8 @@ extension MeetingDetailView {
     }
 
     private func saveTitle() {
-        let title = draftTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
         renaming = false
+        guard let title = MeetingRowModel.renamedTitle(draft: draftTitle, shown: MeetingRowModel.displayTitle(of: info)) else { return }
         model.actions.renameMeeting(info.id, title)
     }
 }
@@ -270,46 +296,6 @@ private struct Callout<Actions: View>: View {
         }
         .padding(14)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
-    }
-}
-
-// MARK: Transcript
-
-private struct TranscriptTab: View {
-    let detail: MeetingDetail
-
-    var body: some View {
-        let turns = detail.info.transcriptMD.map(TranscriptTurn.parse) ?? []
-        if turns.isEmpty {
-            Text(L10nKey.meetingTranscriptNone.text).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            let order = speakerOrder(turns)
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(turns) { t in
-                        HStack(alignment: .top, spacing: 12) {
-                            SpeakerAvatar(name: t.speaker, index: order[t.speaker] ?? 0, size: 26)
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
-                                    Text(t.speaker).fontWeight(.semibold)
-                                    Text(t.time).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                                }
-                                Text(t.text).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                            }
-                        }
-                    }
-                }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    private func speakerOrder(_ turns: [TranscriptTurn]) -> [String: Int] {
-        var order: [String: Int] = [:]
-        for t in turns where order[t.speaker] == nil { order[t.speaker] = order.count }
-        return order
     }
 }
 

@@ -130,16 +130,22 @@ private struct MeetingList: View {
             if let elapsed = model.data.recordingElapsed {
                 RecordingBanner(elapsed: elapsed) { model.actions.stopRecording() }
             }
-            List(selection: $model.selectedMeeting) {
-                ForEach(groups.indices, id: \.self) { g in
-                    Section(groups[g].title) {
-                        ForEach(groups[g].meetings, id: \.id) { m in
-                            MeetingRow(info: m).tag(m.id)
+            SearchField(model: model)
+            Divider()
+            if model.data.search.phase == .idle {
+                List(selection: $model.selectedMeeting) {
+                    ForEach(groups.indices, id: \.self) { g in
+                        Section(groups[g].title) {
+                            ForEach(groups[g].meetings, id: \.id) { m in
+                                MeetingRow(info: m).tag(m.id)
+                            }
                         }
                     }
                 }
+                .listStyle(.inset)
+            } else {
+                SearchResults(model: model)
             }
-            .listStyle(.inset)
             Divider()
             PrivacyLine()
                 .frame(maxWidth: .infinity, alignment: .leading)

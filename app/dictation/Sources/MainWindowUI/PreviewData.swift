@@ -30,6 +30,11 @@ public enum PreviewData {
                         durationSeconds: 51 * 60),
         ]
         var details: [String: MeetingDetail] = [zoom.info.id: zoom]
+        // A call whose audio retention removed: the transcript is there, the play affordance is not.
+        var removed = meetings[4]
+        removed.transcriptMD = transcript(ru: ru, short: false)
+        removed.notesMD = notes(ru: ru)
+        details[removed.id] = MeetingDetail(info: removed, speakers: zoom.speakers)
         // A call where the notes writer was missing: transcript only.
         var late = meetings[3]
         late.transcriptMD = transcript(ru: ru, short: true)
@@ -65,6 +70,47 @@ public enum PreviewData {
     public static func recording(now: Date = Date(), ru: Bool = L10nBundle.locale.identifier.hasPrefix("ru")) -> MainWindowData {
         var d = make(now: now, ru: ru)
         d.recordingElapsed = 12 * 60 + 34
+        return d
+    }
+
+    /// Search results for a word the sample call has in its notes and its transcript. One snippet carries a link, to
+    /// show that it is text.
+    public static func searching(now: Date = Date(), ru: Bool = L10nBundle.locale.identifier.hasPrefix("ru"),
+                                 calendar: Calendar = .current) -> MainWindowData {
+        var d = make(now: now, ru: ru, calendar: calendar)
+        let query = ru ? "оплату" : "payment"
+        let day = calendar.date(bySettingHour: 14, minute: 30, second: 0, of: now) ?? now
+        let result = MeetingSearchResult(meetings: [
+            SearchedMeeting(id: "m7", title: "Zoom call", started: day, status: .done, hits: [
+                SearchHit(field: .notes, snippet: ru ? "…Борис — Проверить оплату на настоящей карте — 5 ноября…"
+                                                     : "…Boris — Test the [payment](https://example.com/pay) flow on a real card — 5 November…"),
+                SearchHit(field: .transcript, snippet: ru ? "…Оплату я проверю на настоящей карте до пятницы. Тестовый режим всё не покрывает."
+                                                          : "…I'll test the payment on a real card before Friday. Test mode doesn't cover…",
+                          start: 41, speaker: ru ? "Борис" : "Boris"),
+            ]),
+            SearchedMeeting(id: "m1", title: "Meet call", started: calendar.date(byAdding: .day, value: -11, to: day), status: .done, hits: [
+                SearchHit(field: .transcript, snippet: ru ? "…не забыть проверить оплату до запуска, иначе письмо уйдёт зря…"
+                                                          : "…don't forget to check the payment before launch, or the email goes out for nothing…",
+                          start: 312, speaker: ru ? "Анна" : "Anna"),
+            ]),
+        ], truncated: true)
+        d.search = MeetingSearchState(phase: .results(result), query: query)
+        return d
+    }
+
+    /// A search that found nothing.
+    public static func searchingNothing(now: Date = Date(), ru: Bool = L10nBundle.locale.identifier.hasPrefix("ru"),
+                                        calendar: Calendar = .current) -> MainWindowData {
+        var d = make(now: now, ru: ru, calendar: calendar)
+        d.search = MeetingSearchState(phase: .noResults, query: ru ? "йогурт" : "yoghurt")
+        return d
+    }
+
+    /// The sample call playing from the third line.
+    public static func playing(now: Date = Date(), ru: Bool = L10nBundle.locale.identifier.hasPrefix("ru"),
+                               calendar: Calendar = .current) -> MainWindowData {
+        var d = make(now: now, ru: ru, calendar: calendar)
+        d.playback = PlaybackValues(meetingID: "m7", isPlaying: true, position: 47, duration: 42 * 60)
         return d
     }
 

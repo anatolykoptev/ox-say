@@ -27,6 +27,8 @@ struct Scene {
     var tab: MeetingTab = .notes
     var height: CGFloat = 680
     var appsExpanded = false
+    var query: (Bool) -> String = { _ in "" }
+    var find: ((Bool) -> String)?
     var data: (Date, Bool) -> MainWindowData
 }
 
@@ -76,6 +78,12 @@ struct Scene {
         Scene(name: "meetings-loading", section: .meetings, meeting: nil) { loading(PreviewData.make(now: $0, ru: $1)) },
         Scene(name: "meetings-down", section: .meetings, meeting: nil) { down(PreviewData.make(now: $0, ru: $1)) },
         Scene(name: "meetings-notice", section: .meetings, meeting: "m7") { stale(PreviewData.make(now: $0, ru: $1)) },
+        // MW3: search, find in the transcript, play from a line.
+        Scene(name: "search-results", section: .meetings, meeting: "m7", query: { $0 ? "оплату" : "payment" }) { PreviewData.searching(now: $0, ru: $1) },
+        Scene(name: "search-none", section: .meetings, meeting: nil, query: { $0 ? "йогурт" : "yoghurt" }) { PreviewData.searchingNothing(now: $0, ru: $1) },
+        Scene(name: "transcript-find", section: .meetings, meeting: "m7", tab: .transcript, find: { $0 ? "пятниц" : "friday" }) { PreviewData.make(now: $0, ru: $1) },
+        Scene(name: "transcript-playing", section: .meetings, meeting: "m7", tab: .transcript) { PreviewData.playing(now: $0, ru: $1) },
+        Scene(name: "audio-removed", section: .meetings, meeting: "m5", tab: .transcript) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "dictation", section: .dictation, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "voices", section: .voices, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         // Settings is taller than a window: the shot is made as tall as the screen allows.
@@ -104,6 +112,8 @@ struct Scene {
                 let model = MainWindowModel(data: scene.data(now, lang == "ru"), section: scene.section,
                                             selectedMeeting: scene.meeting)
                 model.initialMeetingTab = scene.tab
+                model.queryText = scene.query(lang == "ru")
+                model.initialFind = scene.find?(lang == "ru")
                 model.appsExpanded = scene.appsExpanded
                 model.clock = { now }
                 let hosting = NSHostingController(rootView: MainWindowView(model: model))
@@ -117,12 +127,23 @@ struct Scene {
                 window.displayIfNeeded()
                 RunLoop.main.run(until: Date().addingTimeInterval(0.5))
                 let file = out.appendingPathComponent("\(scene.name)-\(lang)-\(dark ? "dark" : "light").png")
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-                p.arguments = ["-x", "-o", "-l\(window.windowNumber)", file.path]
-                try? p.run()
-                p.waitUntilExit()
-                print("\(p.terminationStatus == 0 ? "ok " : "ERR") \(file.path)")
+                var captured = false
+                if ProcessInfo.processInfo.environment["SHOTS_VIEW_CAPTURE"] == nil {
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                    p.arguments = ["-x", "-o", "-l\(window.windowNumber)", file.path]
+                    try? p.run()
+                    p.waitUntilExit()
+                    captured = p.terminationStatus == 0
+                }
+                // The screen is locked or the window is not on it (a night run): draw the window's views instead.
+                // No title bar and no toolbar, but the content is the same.
+                if !captured, let view = window.contentView?.superview ?? window.contentView,
+                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    captured = (rep.representation(using: .png, properties: [:])).flatMap { try? $0.write(to: file) } != nil
+                }
+                print("\(captured ? "ok " : "ERR") \(file.path)")
             }
         }
     }

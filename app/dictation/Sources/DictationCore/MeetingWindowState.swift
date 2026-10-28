@@ -73,7 +73,7 @@ public enum MeetingFeatureError: Error, Equatable {
 
 /// What the user was doing when a call to the daemon failed: the sentence differs ("rename it when it is done").
 public enum MeetingAction: CaseIterable, Equatable {
-    case refresh, rename, delete, speakers, retry, settings
+    case refresh, rename, delete, speakers, retry, settings, search, audio
 }
 
 /// A failed call in the user's language and plain words. The daemon's own refusal texts are English; only the ones

@@ -1,6 +1,14 @@
 import DictationCore
 import SwiftUI
 
+/// Where a meeting opens when a search hit was clicked: the tab, and for a transcript hit the line.
+public struct MeetingFocus: Equatable {
+    public var meetingID: String
+    public var destination: HitDestination
+    /// Distinguishes two clicks on the same hit.
+    public var serial: Int
+}
+
 /// The window's state: which section and which meeting are selected, and the data.
 /// It holds no timer and no observer. The app calls `refresh` when the window opens and on
 /// the events it already has (a meeting finished, a setting changed), so a closed window costs nothing.
@@ -10,8 +18,15 @@ public final class MainWindowModel: ObservableObject {
     @Published public var selectedMeeting: String?
     @Published public var data: MainWindowData
     public var actions: MainWindowActions
+    /// The search field's text.
+    @Published public var queryText = ""
+    /// The hit that was clicked last; the open meeting follows it.
+    @Published public var focus: MeetingFocus?
+    private var focusSerial = 0
     /// The tab a chosen meeting opens on.
     public var initialMeetingTab: MeetingTab = .notes
+    /// The text the transcript's find opens with; the screenshot harness sets it, the app leaves it nil.
+    public var initialFind: String?
     /// Whether Settings shows the per-app list; it starts folded, because most people never open it.
     @Published public var appsExpanded = false
     /// "Now", for the day headings; a test or the harness pins it.
@@ -23,6 +38,13 @@ public final class MainWindowModel: ObservableObject {
         self.actions = actions
         self.section = section
         self.selectedMeeting = selectedMeeting
+    }
+
+    /// A click on a search hit: the meeting opens at the hit (Notes for a notes or title hit, the Transcript at its line).
+    func openHit(_ meetingID: String, _ hit: SearchHit) {
+        focusSerial += 1
+        focus = MeetingFocus(meetingID: meetingID, destination: hit.destination, serial: focusSerial)
+        selectedMeeting = meetingID
     }
 
     /// The meeting that is selected, with its texts when they were read.
