@@ -79,3 +79,13 @@ func TestTranscriptMarkdownEscapesAngleBracketsInTitleAndTurns(t *testing.T) {
 		t.Errorf("normal text was changed:\n%s", got)
 	}
 }
+
+// The app (DictationCore TranscriptTurn.parse, MeetingPlaybackTests.testTurnTextRoundTripsTheGoWriter) pins the same
+// bytes: turn text is escaped with escapeMarkdown, and the app takes the backslashes out again.
+func TestTranscriptMarkdownTurnTextContract(t *testing.T) {
+	m := Manifest{Started: t0, Labels: Labels{Me: "A"}}
+	md := TranscriptMarkdown(m, []Turn{{Speaker: SpeakerMe, S: 1, Text: `[Music] AT&T snake_case 3 > 2 C:\dir`}})
+	if want := `**A** [0:01]: \[Music\] AT\&T snake\_case 3 \> 2 C:\\dir` + "\n"; !strings.Contains(md, want) {
+		t.Fatalf("transcript lacks %q:\n%s", want, md)
+	}
+}

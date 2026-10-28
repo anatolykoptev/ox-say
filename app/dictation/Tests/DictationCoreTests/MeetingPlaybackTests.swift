@@ -181,4 +181,37 @@ final class MeetingPlaybackTests: XCTestCase {
         XCTAssertEqual(TurnLocator.turnID(start: 65.2, speaker: "Plain", in: parsed), 1)
         XCTAssertEqual(TurnLocator.turnID(start: 65.2, speaker: "A*b_c[d", in: parsed), 0, "the daemon's shown name finds its turn")
     }
+
+    // MARK: turn text and action owners
+
+    /// transcript.md escapes turn text as the speaker names are (Go `escapeMarkdown`); the window and the find show and
+    /// match the words as they were said.
+    /// Mutation: TranscriptTurn.parse, `text: unescaped(text)` -> `text: text` -> RED.
+    func testTurnTextIsShownAsTyped() {
+        let md = "**A** [0:01]: \\[Music\\] one\n\n**A** [0:02]: AT\\&T\n\n**A** [0:03]: snake\\_case\n\n**A** [0:04]: 3 \\> 2\n\n**A** [0:05]: C:\\\\dir\n\n**A** [0:06]: plain \\n text\n"
+        XCTAssertEqual(TranscriptTurn.parse(md).map(\.text), ["[Music] one", "AT&T", "snake_case", "3 > 2", "C:\\dir", "plain \\n text"])
+        let find = TranscriptFindState(query: "AT&T", turns: TranscriptTurn.parse(md))
+        XCTAssertEqual(find.matches.count, 1, "find matches the words, not the escapes")
+    }
+
+    /// The line the Go writer produces for `[Music] AT&T snake_case 3 > 2 C:\dir` (Go test
+    /// TestTranscriptMarkdownTurnTextContract in internal/meeting/transcript_test.go pins these bytes).
+    /// Mutation: TranscriptTurn.parse, `text: unescaped(text)` -> `text: text` -> RED.
+    func testTurnTextRoundTripsTheGoWriter() {
+        let md = "# T\n\n**A** [0:01]: \\[Music\\] AT\\&T snake\\_case 3 \\> 2 C:\\\\dir\n\n"
+        XCTAssertEqual(TranscriptTurn.parse(md).first?.text, "[Music] AT&T snake_case 3 > 2 C:\\dir")
+    }
+
+    /// notes.md writes an owner and a date with escapes (Go `escapeMarkdown` for speaker labels, `cleanLine` for the
+    /// model's); the window shows both as plain text, so they are unescaped when read. The action text is shown as
+    /// Markdown and keeps its escapes.
+    /// Mutation: NotesDocument.parse, `who: TranscriptTurn.unescaped(parts[0], extra: "#!")` -> `who: parts[0]` -> RED;
+    /// the same for `when:` -> RED.
+    func testActionOwnerAndWhenAreShownAsTyped() {
+        let md = "# T\n\n## Action items\n\n- [ ] Me \\<i\\> \\*x\\* — send \\[a\\] — \\#5 C:\\\\dir\n"
+        guard case .action(let who, let what, let when) = NotesDocument.parse(md).sections[0].items[0] else { return XCTFail("not an action") }
+        XCTAssertEqual(who, "Me <i> *x*")
+        XCTAssertEqual(when, "#5 C:\\dir")
+        XCTAssertEqual(what, "send \\[a\\]", "shown through the Markdown engine")
+    }
 }
