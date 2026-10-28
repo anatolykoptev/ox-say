@@ -70,8 +70,9 @@ ox-say itself is Apache-2.0, and the default models are Apache-2.0 and CC-BY-4.0
 
 ## Status
 
-- Engines: pinned upstream plus patches, static `tts-server`, `ox-stt` and `ox-align`, verified on
-  a Radeon Pro 5500M and an Apple M5 Pro.
+- Engines: pinned upstream plus patches, static `tts-server`, `ox-stt`, `ox-align` and `ox-llm`
+  (the meeting-notes model server), verified on a Radeon Pro 5500M and an Apple M5 Pro. Speaker
+  diarization (`ox-diar`) is a separate Core ML engine for Apple Silicon.
 - Daemon, CLI and MCP server: `cmd/ox-say`.
 - Releases: one macOS package per architecture, `ox-say-macos-arm64.tar.gz` (built on GitHub's
   `macos-15` runner) and `ox-say-macos-x86_64.tar.gz` (built on `macos-15-intel`), with one combined
