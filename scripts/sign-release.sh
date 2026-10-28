@@ -165,7 +165,7 @@ if [ "$status" != Accepted ]; then
     fi
     exit 1
 fi
-xcrun stapler staple "$app"
+oxs_stapler_staple "$app"
 oxs_stapler_validate "$app"
 spctl --assess --type execute -vv "$app" 2> "$work/spctl.txt" || { cat "$work/spctl.txt" >&2; exit 1; }
 if ! grep -F 'source=Notarized Developer ID' "$work/spctl.txt" >/dev/null; then
