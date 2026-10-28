@@ -11,6 +11,11 @@ final class SelectionBorrowTests: XCTestCase {
         AXSelection(text: text, secureField: secureField, hasElement: true, error: error, source: source)
     }
 
+    /// AX could not read the focused element at all (no element, an error code).
+    private func noElement() -> AXSelection {
+        AXSelection(text: nil, secureField: false, hasElement: false, error: -25212, source: .app)
+    }
+
     private func remoteBoard() -> FakePasteboard {
         let board = FakePasteboard(text: "copied on the iPhone")
         board.items[0].append((type: "public.rtf", data: Data("rtf".utf8)))
@@ -67,7 +72,7 @@ final class SelectionBorrowTests: XCTestCase {
         let board = remoteBoard()
         var copies = 0
         let (text, problem) = SelectionBorrow.capture(board: board,
-                                                    selectedText: { ax(nil) },
+                                                    selectedText: { noElement() },
                                                     secureInput: { false },
                                                     postCopy: { copies += 1; board.userCopies("the selection") },
                                                     spin: { _ in },
@@ -81,11 +86,51 @@ final class SelectionBorrowTests: XCTestCase {
         XCTAssertTrue(board.declaredItems.joined().contains(PasteboardMarker.remoteClipboard))
     }
 
-    // The decline is a different message from the others and names the way out.
-    func testTheRemoteDeclineIsItsOwnLocalizedNotice() {
-        let others = ["A password field is focused.", "Nothing selected to speak.",
-                      "The selection did not come through."]
-        XCTAssertFalse(others.contains(L10nKey.noticeSelectionRemote.text))
+    // AX worked: it found the focused element and it has no selection (Safari or Notes with nothing selected). The iPhone
+    // copy is still left alone, but the sentence must not claim the selection "can't be read in this app".
+    // Mutation: SelectionBorrow.run, `axAnswered: ax.hasElement && ax.error == 0` -> `axAnswered: false` -> RED.
+    func testARemoteClipboardWhereAXAnsweredSaysNothingIsSelected() {
+        let board = remoteBoard()
+        var copies = 0
+        let (text, problem) = SelectionBorrow.capture(board: board,
+                                                    selectedText: { ax(nil) },
+                                                    secureInput: { false },
+                                                    postCopy: { copies += 1; board.userCopies("the selection") },
+                                                    spin: { _ in },
+                                                    readText: { board.text })
+        XCTAssertNil(text)
+        XCTAssertEqual(problem, L10nKey.noticeSelectionRemoteEmpty.text)
+        XCTAssertEqual(copies, 0)
+        XCTAssertEqual(board.reads, [])
+        // An element that came back with an AX error is not an answer.
+        let (_, failed) = SelectionBorrow.capture(board: remoteBoard(),
+                                                  selectedText: { AXSelection(text: nil, hasElement: true, error: -25204, source: .app) },
+                                                  secureInput: { false }, postCopy: {}, spin: { _ in }, readText: { nil })
+        XCTAssertEqual(failed, L10nKey.noticeSelectionRemote.text)
+    }
+
+    // Every decline is a localized key, never an English literal, and they are all different.
+    // Mutation: SelectionPolicy.plan, `.decline(L10nKey.noticeSelectionNothing.text)` -> `.decline("Nothing selected to speak.")` -> RED.
+    func testTheDeclinesAreLocalizedAndDistinct() {
+        let keys: [L10nKey] = [.noticeSelectionRemote, .noticeSelectionRemoteEmpty, .noticeSelectionPassword,
+                               .noticeSelectionNothing, .noticeSelectionFailed]
+        XCTAssertEqual(Set(keys.map(\.text)).count, keys.count)
+        func plan(_ ax: String?, secure: Bool = false, restorable: Bool = true, remote: Bool = false) -> SelectionPlan {
+            SelectionPolicy.plan(axText: ax, secureInput: secure, clipboardRestorable: restorable, clipboardRemote: remote)
+        }
+        XCTAssertEqual(plan(nil, secure: true), .decline(L10nKey.noticeSelectionPassword.text))
+        XCTAssertEqual(plan("  "), .decline(L10nKey.noticeSelectionNothing.text))
+        XCTAssertEqual(plan(nil, restorable: false), .decline(L10nKey.noticeSelectionFailed.text))
+    }
+
+    // The two copy-path declines of the driver itself.
+    // Mutation: SelectionBorrow.run, the final `(nil, L10nKey.noticeSelectionNothing.text)` -> `(nil, "Nothing selected to speak.")` -> RED.
+    func testACopyThatBringsNothingSaysNothingIsSelectedInTheUsersLanguage() {
+        let board = FakePasteboard(text: "the user's copy")
+        let (text, problem) = SelectionBorrow.capture(board: board, selectedText: { ax(nil) }, secureInput: { false },
+                                                      postCopy: {}, spin: { _ in }, readText: { board.text }, copyTimeout: 0)
+        XCTAssertNil(text)
+        XCTAssertEqual(problem, L10nKey.noticeSelectionNothing.text)
     }
 
     // AX text wins over a remote clipboard: nothing declined, nothing touched.
@@ -117,7 +162,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     spin: { _ in },
                                                     readText: { board.text })
         XCTAssertNil(text)
-        XCTAssertEqual(problem, "A password field is focused.")
+        XCTAssertEqual(problem, L10nKey.noticeSelectionPassword.text)
         XCTAssertEqual(copies, 0)
         XCTAssertEqual(board.changeCount, 0)
         XCTAssertEqual(board.reads, [])
@@ -137,7 +182,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     spin: { _ in },
                                                     readText: { board.text })
         XCTAssertNil(text, "a secure field's text must never be returned")
-        XCTAssertEqual(problem, "A password field is focused.")
+        XCTAssertEqual(problem, L10nKey.noticeSelectionPassword.text)
         XCTAssertEqual(copies, 0)
         XCTAssertEqual(board.changeCount, 0)
         XCTAssertEqual(board.reads, [])
@@ -156,7 +201,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     spin: { _ in },
                                                     readText: { board.text })
         XCTAssertNil(text)
-        XCTAssertEqual(problem, "A password field is focused.")
+        XCTAssertEqual(problem, L10nKey.noticeSelectionPassword.text)
         XCTAssertEqual(copies, 0, "⌘C must not be sent to a secure field")
         XCTAssertEqual(board.changeCount, 0)
     }
@@ -176,7 +221,7 @@ final class SelectionBorrowTests: XCTestCase {
                                                     spin: { _ in },
                                                     readText: { board.text })
         XCTAssertNil(text)
-        XCTAssertEqual(problem, "Nothing selected to speak.")
+        XCTAssertEqual(problem, L10nKey.noticeSelectionNothing.text)
         XCTAssertEqual(copies, 0)
         XCTAssertEqual(board.changeCount, 0)
         XCTAssertEqual(board.reads, [])
@@ -359,5 +404,10 @@ final class SelectionBorrowTests: XCTestCase {
         let text = (try? String(contentsOf: root.appendingPathComponent(relative), encoding: .utf8)) ?? ""
         XCTAssertFalse(text.isEmpty, "\(relative) unreadable")
         return text
+    }
+
+    /// Mutation: Resources/ru.lproj, notice.selection_password back to "Выбрано поле для пароля." -> RED.
+    func testTheRussianPasswordDeclineSaysWhereTheCursorIs() {
+        XCTAssertEqual(ShippedStrings.table("ru")["notice.selection_password"], "Курсор в поле для пароля.")
     }
 }

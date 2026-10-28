@@ -169,13 +169,17 @@ final class MainWindowSource {
             repeat {
                 syncRecording()
                 loadSimpleSections()
-                await host.refreshStatus()
+                // The daemon status is read beside the list, not before it: a hung /status must not hold back the
+                // list read, whose answer ("unreachable" included) is what the window shows. It is awaited at the
+                // end of the pass, so passes never overlap it.
+                let status = Task { @MainActor in await host.refreshStatus() }
                 let (list, load) = await service.list()
                 if let list { model.data.meetings = list }
                 model.data.meetingsLoad = load
                 await reloadSettingsAsync()
                 await reloadPermissions()
                 refreshSelectedDetail()
+                await status.value
             } while gate.finish()
             schedulePolling()
         }

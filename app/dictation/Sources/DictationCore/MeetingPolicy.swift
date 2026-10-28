@@ -114,7 +114,18 @@ public enum TapLoss {
     /// has not come back after seven seconds is not settling.
     public static let failuresBeforeTelling = 5
 
-    /// `sinceLastBuffer`: seconds since the running tap last delivered a buffer, nil when it never has.
+    /// Seconds between the last buffer and now, from two readings of a MONOTONIC clock in nanoseconds (the recorder
+    /// uses `DispatchTime.uptimeNanoseconds`): a wall-clock step (NTP, a manual change) cannot make a live tap look
+    /// silent or a dead one look alive. nil when no buffer has arrived; a reading that went backwards counts as 0.
+    public static func silence(lastNanos: UInt64?, nowNanos: UInt64) -> TimeInterval? {
+        guard let lastNanos else { return nil }
+        return nowNanos >= lastNanos ? Double(nowNanos - lastNanos) / 1e9 : 0
+    }
+
+    /// `sinceLastBuffer`: seconds since the running tap last delivered a buffer, nil when it never has. A nil counts as
+    /// lost at once: a rebuild that fails before the first buffer of the recording was ever delivered is told
+    /// without waiting. That window is the first milliseconds of a recording (the tap delivers every ~10 ms), so the
+    /// behaviour is kept.
     /// `consecutiveFailures`: failed rebuilds in this streak, the one being judged included.
     public static func isLost(hasTap: Bool, sinceLastBuffer: TimeInterval?, consecutiveFailures: Int) -> Bool {
         guard hasTap else { return true }

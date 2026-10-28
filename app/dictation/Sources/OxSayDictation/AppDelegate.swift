@@ -266,7 +266,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // While a dictation runs the pill belongs to it: the overlay asks the
         // controller's state before letting any hide take it down.
         overlay.dictationState = { [weak self] in self?.controller?.state ?? .idle }
-        streamer.onText = { [overlay] text in overlay.setLiveText(text) }
+        streamer.onText = { [weak self] text in
+            guard let self, PillOwnership.acceptsLiveText(dictation: self.controller.state) else { return }
+            self.overlay.setLiveText(text)
+        }
         // Every way a recording ends (release, tap, esc, error, length cap)
         // changes this state, so one forward covers the media resume.
         controller.onState = { [weak self] state in self?.soundWhileDictating.dictationStateChanged(state); self?.show(state) }
@@ -286,12 +289,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         output.onPasteSettled = { id, read in
             timingLog.notice("\(PasteSettledLog.text(id: id, read: read), privacy: .public)")
         }
+        output.onTypedOverSlowClipboard = { chars, seconds in
+            let ms = Int(seconds * 1000)
+            timingLog.notice("clipboard read took too long: posted the text as keystrokes, clipboard untouched chars=\(chars, privacy: .public) post_ms=\(ms, privacy: .public)")
+        }
         output.onTypedOverRemoteClipboard = { chars, seconds in
             let ms = Int(seconds * 1000)
             timingLog.notice("clipboard held a Universal Clipboard copy: posted the text as keystrokes, clipboard untouched chars=\(chars, privacy: .public) post_ms=\(ms, privacy: .public)")
         }
         // One line per speak press, no text: which path served the selection
-        // (ax, copy, none) and the AX read's error code and source.
+        // (ax, copy, remote, none) and the AX read's error code and source.
         capture.onSelection = { report in timingLog.notice("\(report.line, privacy: .public)") }
         // Not into the restore ramp of the dictation that just ended.
         controller.onBusy = { [weak self] in self?.soundWhileDictating.afterSettled { NSSound.beep() } }
@@ -332,9 +339,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.refreshServiceStatus()
-            guard let self, AutoUpdateSchedule.wakeCheckAllowed(now: Date(), lastAttempt: self.lastAutoUpdateAttempt) else { return }
-            self.backgroundUpdateCheck()
+            // The notification arrives on the main queue, but the closure is not known to be main-actor isolated.
+            Task { @MainActor in
+                self?.refreshServiceStatus()
+                guard let self, AutoUpdateSchedule.wakeCheckAllowed(now: Date(), lastAttempt: self.lastAutoUpdateAttempt) else { return }
+                self.backgroundUpdateCheck()
+            }
         }
         startAutoUpdateChecks()
         studio.render()
@@ -930,7 +940,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         workingStarted = Date()
         slowReason = nil
         workingGeneration += 1
-        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.tickWorking() }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.tickWorking() } }
         // .common: keep counting while the status-bar menu is open
         RunLoop.main.add(timer, forMode: .common)
         workingTimer = timer
@@ -1113,7 +1123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.playbackDone = onFinish
                 do {
                     try self.player.play(wav: wav)
-                    if showPill { self.overlay.showPlaying() }
+                    if showPill && PillOwnership.mayShowPlayback(dictation: self.controller.state) { self.overlay.showPlaying() }
                 } catch {
                     self.playbackDone = nil
                     self.notice(String(describing: error))
@@ -1171,10 +1181,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startAutoUpdateChecks() {
         let timers = [
             Timer(timeInterval: AutoUpdateSchedule.firstDelay, repeats: false) { [weak self] _ in
-                self?.backgroundUpdateCheck()
+                Task { @MainActor in self?.backgroundUpdateCheck() }
             },
             Timer(timeInterval: AutoUpdateSchedule.tick, repeats: true) { [weak self] _ in
-                self?.backgroundUpdateCheck()
+                Task { @MainActor in self?.backgroundUpdateCheck() }
             },
         ]
         // .common: keep firing while the status-bar menu is open
@@ -1485,9 +1495,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// again for an app that is already listed (it may stay silent), and a
     /// click that shows nothing is worse than two windows; the pane is where the
     /// switch is. A reset that hangs is terminated after
-    /// `AccessibilityRepairRun.timeoutSeconds` and reported as a failure. The reset is scoped to this app's bundle id and the one
-    /// service, and offered only while the entry does not work — nothing
-    /// else's TCC state is touched.
+    /// `AccessibilityRepairRun.timeoutSeconds` and reported as a failure. The
+    /// reset is scoped to this app's bundle id and the one service, and
+    /// offered only while the entry does not work — nothing else's TCC state
+    /// is touched.
     @objc private func allowPasting() {
         let failure = "Could not refresh the Accessibility permission: remove OxSayDictation with − in System Settings → Privacy & Security → Accessibility, then add it again."
         // The reset runs off the main thread (a stuck tccd must not hang the
@@ -1498,13 +1509,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let reset = Process()
             reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
             reset.arguments = arguments
+            let ended = ProcessEnded()
             reset.terminationHandler = { process in
+                ended.mark()
                 let status = process.terminationStatus
                 DispatchQueue.main.async { onExit(status) }
             }
             try reset.run()
-            // terminate() on a process that already ended raises.
-            return { if reset.isRunning { reset.terminate() } }
+            let pid = reset.processIdentifier
+            // Not `reset.terminate()`: it raises on a process that exited between an `isRunning` check on this (main)
+            // thread and the call, while the termination handler runs on another. A signal is sent only while the
+            // handler has not run, and `kill` on a gone pid just fails.
+            return { ended.signalIfRunning(pid, SIGTERM) }
         }, completion: { [weak self] ok in
             guard let self else { return }
             self.allowPastingItem.isEnabled = true
@@ -1522,6 +1538,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             allowPastingItem.isEnabled = true
             notice(failure)
         }
+    }
+}
+
+/// Whether a child process's termination handler has run, readable from another thread.
+private final class ProcessEnded {
+    private let lock = NSLock()
+    private var ended = false
+    func mark() { lock.withLock { ended = true } }
+    /// `kill(pid, signal)` unless the process is known to have ended; the lock is held across the call, so the handler
+    /// cannot mark the exit between the check and the signal.
+    func signalIfRunning(_ pid: pid_t, _ signal: Int32) {
+        lock.withLock { if !ended { _ = kill(pid, signal) } }
     }
 }
 

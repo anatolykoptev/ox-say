@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 /// The pasteboard as dictation output sees it: `NSPasteboard.general` in the app,
 /// a fake in tests.
@@ -37,19 +38,77 @@ public struct PasteboardEntry: Equatable {
     }
 }
 
+/// Why a snapshot is not exactly what the user had.
+public enum PasteboardProblem: Equatable {
+    /// A file promise: reading it runs the source app's provider.
+    case promisedFile
+    /// More data than `PasteboardSnapshot.maxBytes`.
+    case tooLarge(megabytes: Int)
+    /// A Universal Clipboard copy: its data lives on another device.
+    case otherDevice
+
+    /// The reason in the user's language, as a phrase for `clipboard.not_put_back`.
+    public func phrase(_ text: (L10nKey) -> String) -> String {
+        switch self {
+        case .promisedFile: return text(.clipboardReasonPromised)
+        case .tooLarge(let megabytes): return String(format: text(.clipboardReasonTooLarge), String(megabytes))
+        case .otherDevice: return text(.clipboardReasonOtherDevice)
+        }
+    }
+}
+
 /// The pasteboard contents: the types of every item in each item's declared
 /// order, with their data — plus the reasons the snapshot is not a whole copy.
 public struct PasteboardSnapshot: Equatable {
     public var items: [[PasteboardEntry]]
     /// Why the snapshot is not exactly what the user had. Non-empty means it
     /// must not be put back: it would be a different clipboard, silently.
-    public private(set) var problems: [String]
+    public private(set) var problems: [PasteboardProblem]
+    /// The read did not finish in time (`capture(_:timeLimit:)`): there is no snapshot of the user's copy at all.
+    /// Whoever sees this must leave the clipboard alone: nothing could put it back.
+    public private(set) var timedOut = false
+    /// A whole copy of what the user had: nothing is missing, so it may be put back.
+    public var isWhole: Bool { problems.isEmpty && !timedOut }
     /// Holding more than this for a restore costs more than the restore saves.
     public static let maxBytes = 64 * 1024 * 1024
 
-    public init(items: [[PasteboardEntry]], problems: [String] = []) {
+    public init(items: [[PasteboardEntry]], problems: [PasteboardProblem] = []) {
         self.items = items
         self.problems = problems
+    }
+
+    /// How long the main thread waits for the clipboard's data before it gives the user's copy up (see `capture`).
+    public static let readLimit: TimeInterval = 2
+
+    /// `capture(board)` on a background queue, waited for at most `timeLimit` seconds. A type provided lazily (a big
+    /// image copied in Preview) is materialised by the READ, which can take seconds and, on the main thread, freezes
+    /// the app and the key the user holds; and the 64 MB cap only applies after that read. On a timeout the result is
+    /// a snapshot with `timedOut` set and nothing in it: the caller must not write over the clipboard (nothing could
+    /// bring the user's copy back). The background read is told to stop before its next `data` call and its result
+    /// is dropped. nil `timeLimit` reads in place, as `capture`.
+    public static func capture(_ board: DictationPasteboard, timeLimit: TimeInterval?) -> PasteboardSnapshot {
+        guard let timeLimit else { return capture(board) }
+        let box = SnapshotBox()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.set(capture(board, shouldContinue: { !box.cancelled }))
+            done.signal()
+        }
+        if done.wait(timeout: .now() + timeLimit) == .success, let snapshot = box.value { return snapshot }
+        box.cancel()
+        var late = PasteboardSnapshot(items: [])
+        late.timedOut = true
+        return late
+    }
+
+    private final class SnapshotBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var snapshot: PasteboardSnapshot?
+        private var isCancelled = false
+        var value: PasteboardSnapshot? { lock.withLock { snapshot } }
+        var cancelled: Bool { lock.withLock { isCancelled } }
+        func set(_ new: PasteboardSnapshot) { lock.withLock { snapshot = new } }
+        func cancel() { lock.withLock { isCancelled = true } }
     }
 
     /// Copies every type of every item on `board`, in declared order. A
@@ -63,6 +122,11 @@ public struct PasteboardSnapshot: Equatable {
     /// paste it either, so the restore loses nothing a reader could get, and
     /// refusing the restore over it would throw away everything else.
     public static func capture(_ board: DictationPasteboard) -> PasteboardSnapshot {
+        capture(board, shouldContinue: { true })
+    }
+
+    /// `shouldContinue` is asked before every `data` read: false stops the capture there (the timed-out background read).
+    static func capture(_ board: DictationPasteboard, shouldContinue: () -> Bool) -> PasteboardSnapshot {
         var snapshot = PasteboardSnapshot(items: [])
         var bytes = 0
         // Asked once: the same list decides "remote" and is enumerated below, so
@@ -70,20 +134,21 @@ public struct PasteboardSnapshot: Equatable {
         let declared = board.declaredItems
         if PasteboardMarker.declaresRemote(declared) {
             snapshot.isRemote = true
-            snapshot.report("a clipboard copied on another device")
+            snapshot.report(.otherDevice)
             return snapshot
         }
         capture: for (index, types) in declared.enumerated() {
             var entries: [PasteboardEntry] = []
             for type in types {
                 if isPromisedType(type) {
-                    snapshot.report("a promised file")
+                    snapshot.report(.promisedFile)
                     continue
                 }
+                guard shouldContinue() else { break capture }
                 guard let data = board.data(item: index, forType: type) else { continue }
                 bytes += data.count
                 if bytes > maxBytes {
-                    snapshot.report("more than \(maxBytes / (1024 * 1024)) MB of data")
+                    snapshot.report(.tooLarge(megabytes: maxBytes / (1024 * 1024)))
                     break capture
                 }
                 entries.append(PasteboardEntry(type: type, data: data))
@@ -105,7 +170,7 @@ public struct PasteboardSnapshot: Equatable {
         items.map { $0.filter { !PasteboardMarker.remote.contains($0.type) } }
     }
 
-    private mutating func report(_ problem: String) {
+    fileprivate mutating func report(_ problem: PasteboardProblem) {
         if !problems.contains(problem) { problems.append(problem) }
     }
 
@@ -113,9 +178,17 @@ public struct PasteboardSnapshot: Equatable {
     /// asking runs the source's provider on this thread. Apple's promise UTIs
     /// all carry "promise" (com.apple.pasteboard.promised-file,
     /// com.apple.pasteboard.promised-file-url, com.apple.NSFilePromise).
+    ///
+    /// The legacy `NSFilesPromisePboardType` and `NSPromiseContentsPboardType` surface as `dyn.*` identifiers whose
+    /// text does not carry the word; their pasteboard-type name is recovered from the identifier.
     private static func isPromisedType(_ type: String) -> Bool {
-        type.lowercased().contains("promise")
+        if type.lowercased().contains("promise") { return true }
+        guard type.hasPrefix("dyn."), let legacy = UTType(type)?.tags[legacyPasteboardTagClass] else { return false }
+        return legacy.contains { $0.lowercased().contains("promise") }
     }
+
+    /// The tag class of the old NSPasteboard type names (`kUTTagClassNSPboardType`, deprecated as a constant).
+    static let legacyPasteboardTagClass = UTTagClass(rawValue: "com.apple.nspboard-type")
 
     /// Marked by its writer as a secret (nspasteboard.org convention, used by
     /// password managers). Such contents are not put back.
@@ -170,23 +243,55 @@ public final class ClipboardLease {
     /// user's own.
     public private(set) var notice: String?
 
-    public init(board: DictationPasteboard, text: String) {
+    /// Only `ClipboardBorrow.take` makes a lease in the app, so one is never made over a snapshot that timed out.
+    init(board: DictationPasteboard, original: PasteboardSnapshot, text: String) {
         self.board = board
-        self.original = PasteboardSnapshot.capture(board)
+        self.original = original
         self.ourChange = board.writeText(text)
+    }
+
+    /// Reads the clipboard in place and borrows it: for tests, where reading cannot stall.
+    convenience init(board: DictationPasteboard, text: String) {
+        self.init(board: board, original: PasteboardSnapshot.capture(board), text: text)
     }
 
     /// Restores the original contents if the clipboard still holds our text.
     /// Returns whether it did. Only the first call can: restoring is a write.
+    /// `text` words the notice in the user's language.
     @discardableResult
-    public func release() -> Bool {
+    public func release(text: (L10nKey) -> String = { $0.text }) -> Bool {
         guard board.changeCount == ourChange else { return false }
         guard !original.isSensitive else { return false }
         guard original.problems.isEmpty else {
-            notice = "The earlier clipboard was not put back: it held \(original.problems.joined(separator: " and ")). The dictated text is on the clipboard."
+            let reasons = original.problems.map { $0.phrase(text) }.joined(separator: text(.clipboardReasonJoin))
+            notice = String(format: text(.clipboardNotPutBack), reasons)
             return false
         }
         board.restore(original)
         return true
+    }
+}
+
+/// How a paste gets the clipboard. The snapshot is taken BEFORE anything is written: a clipboard that could not be
+/// read in time (`readLimit`) is never touched, because writing the dictated text would clear the user's copy with
+/// nothing to put back. The text is typed instead, as over a Universal Clipboard copy.
+public enum ClipboardBorrow {
+    case lease(ClipboardLease)
+    /// The clipboard could not be read in time and was left exactly as it was.
+    case typed
+
+    public static func take(board: DictationPasteboard, text: String,
+                            readLimit: TimeInterval = PasteboardSnapshot.readLimit) -> ClipboardBorrow {
+        let original = PasteboardSnapshot.capture(board, timeLimit: readLimit)
+        if original.timedOut { return .typed }
+        return .lease(ClipboardLease(board: board, original: original, text: text))
+    }
+
+    /// How the text reaches the user.
+    public var delivery: Delivery {
+        switch self {
+        case .lease: return .paste
+        case .typed: return .typed
+        }
     }
 }

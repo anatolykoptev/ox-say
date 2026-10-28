@@ -197,16 +197,51 @@ final class MeetingFailureTests: XCTestCase {
     /// Mutation: MeetingFailureNotice.announcement, return `info.error` -> RED.
     func testTheNotificationIsTheLocalizedSentenceNeverTheDaemonsText() throws {
         let rec = failed("speech_busy")
-        XCTAssertEqual(MeetingFailureNotice.announcement(for: rec, text: key), "meeting.failed.speech_busy")
-        XCTAssertEqual(MeetingFailureNotice.announcement(for: failed(nil), text: key), "meeting.failed.generic")
-        XCTAssertEqual(MeetingFailureNotice.announcement(for: notesFailed("notes_empty"), text: key), "meeting.notes.failed.empty")
-        XCTAssertEqual(MeetingFailureNotice.announcement(for: notesFailed(nil), text: key), "meeting.notes.failed")
+        let where_ = " meeting.failed.where_retry"
+        XCTAssertEqual(MeetingFailureNotice.announcement(for: rec, text: key), "meeting.failed.speech_busy.final" + where_)
+        XCTAssertEqual(MeetingFailureNotice.announcement(for: failed(nil), text: key), "meeting.failed.generic.final" + where_)
+        XCTAssertEqual(MeetingFailureNotice.announcement(for: notesFailed("notes_empty"), text: key), "meeting.notes.failed.empty.final" + where_)
+        XCTAssertEqual(MeetingFailureNotice.announcement(for: notesFailed(nil), text: key), "meeting.notes.failed" + where_)
         for info in [rec, failed(nil), notesFailed("notes_empty"), notesFailed(nil)] {
             XCTAssertFalse((MeetingFailureNotice.announcement(for: info, text: { _ in "x" }) ?? "").contains(info.error ?? "?"))
         }
         XCTAssertNil(MeetingFailureNotice.announcement(for: MeetingInfo(id: "d", status: .done, error: "stale"), text: key), "a finished meeting announces no failure")
         XCTAssertNil(MeetingFailureNotice.announcement(for: MeetingInfo(id: "t", status: .transcribed, error: "x"), text: key),
                      "transcribed without a failed notes run has nothing to announce")
+    }
+
+    /// The pill has no button, so it never says "press Try Again" as if it did: it says where the button is, and only
+    /// when there is one (the audio gone, or the speech model missing, has none).
+    /// Mutation: MeetingFailureNotice.announcement, return `of(info, text: text)?.sentence` (the window's sentence) -> RED.
+    func testThePillNamesWhereTheButtonIsOnlyWhenThereIsOne() {
+        var gone = failed("speech_failed")
+        gone.audioDeleted = true
+        XCTAssertEqual(MeetingFailureNotice.announcement(for: gone, text: key), "meeting.failed.speech_failed.final")
+        XCTAssertEqual(MeetingFailureNotice.announcement(for: failed("speech_model_missing"), text: key), "meeting.failed.speech_model_missing")
+        for code in [nil, "speech_busy", "speech_failed", "no_transcript", "storage", "disk_full"] as [String?] {
+            let said = MeetingFailureNotice.announcement(for: failed(code), text: key) ?? ""
+            XCTAssertTrue(said.hasSuffix("meeting.failed.where_retry"), "\(code ?? "nil"): \(said)")
+        }
+        for code in [nil, "notes_engine_start", "notes_engine_verify", "notes_engine_timeout", "notes_empty", "storage", "disk_full"] as [String?] {
+            let said = MeetingFailureNotice.announcement(for: notesFailed(code), text: key) ?? ""
+            XCTAssertTrue(said.hasSuffix("meeting.failed.where_retry"), "\(code ?? "nil"): \(said)")
+            XCTAssertFalse(said.contains("Try Again") || said.contains("«Повторить»"), said)
+        }
+    }
+
+    /// Every pill sentence, in both languages, never points at a button that is not on the pill.
+    func testNoPillSentenceSaysPressTryAgainOnItsOwn() throws {
+        let en = try values(of: "en"), ru = try values(of: "ru")
+        for info in [failed(nil), failed("speech_busy"), failed("speech_failed"), failed("no_transcript"), failed("storage"), failed("disk_full"),
+                     notesFailed(nil), notesFailed("notes_engine_start"), notesFailed("notes_engine_verify"), notesFailed("notes_engine_timeout"),
+                     notesFailed("notes_empty"), notesFailed("storage"), notesFailed("disk_full")] {
+            let e = MeetingFailureNotice.announcement(for: info, text: { v(en, $0.rawValue) }) ?? ""
+            let r = MeetingFailureNotice.announcement(for: info, text: { v(ru, $0.rawValue) }) ?? ""
+            XCTAssertTrue(e.hasSuffix("Open the meeting and press Try Again."), e)
+            XCTAssertTrue(r.hasSuffix("Откройте встречу и нажмите «Повторить»."), r)
+            XCTAssertEqual(e.components(separatedBy: "Try Again").count - 1, 1, e)
+            XCTAssertEqual(r.components(separatedBy: "«Повторить»").count - 1, 1, r)
+        }
     }
 
     /// The Settings row cannot retry anything: it points to the meeting. The notes engine has one name everywhere the
@@ -249,7 +284,9 @@ final class MeetingFailureTests: XCTestCase {
         let keys: [L10nKey] = [
             .meetingFailedSpeechModel, .meetingFailedSpeechBusy, .meetingFailedSpeech, .meetingFailedNoTranscript, .meetingFailedStorage, .meetingFailedDiskFull,
             .meetingFailedSpeechBusyFinal, .meetingFailedSpeechFinal, .meetingFailedNoTranscriptFinal, .meetingFailedStorageFinal,
-            .meetingFailedDiskFullFinal, .meetingFailedGenericFinal,
+            .meetingFailedDiskFullFinal, .meetingFailedGenericFinal, .meetingFailedWhereRetry,
+            .meetingNotesEngineStartFinal, .meetingNotesEngineVerifyFinal, .meetingNotesEngineTimeoutFinal, .meetingNotesEmptyFinal,
+            .meetingNotesStorageFinal, .meetingNotesDiskFullFinal,
             .meetingNotesEngineStart, .meetingNotesEngineVerify, .meetingNotesEngineTimeout, .meetingNotesEmpty, .meetingNotesStorage, .meetingNotesDiskFull,
             .settingsNotesWriterEngineFailed, .settingsNotesWriterDownloadNetwork, .settingsNotesWriterDownloadDisk,
             .settingsNotesWriterDownloadChecksum, .settingsNotesWriterDownloadServer, .settingsNotesWriterDownloadOther,
@@ -281,5 +318,19 @@ final class MeetingFailureTests: XCTestCase {
             out[String(parts[0].dropFirst())] = String(parts[1].dropLast(2))
         }
         return out
+    }
+
+    /// The ".final" disk-full sentences keep "free some space", and the pill's suffix adds only WHERE the button is.
+    /// Mutation: Resources/en.lproj, drop " Free some space." from meeting.failed.disk_full.final -> RED.
+    func testTheDiskFullPillKeepsItsAdviceAndTheSuffixOnlyAddsWhere() {
+        for (locale, advice, where_) in [("en", "Free some space.", "Open the meeting and press Try Again."),
+                                         ("ru", "Освободите место.", "Откройте встречу и нажмите «Повторить».")] {
+            let say = ShippedStrings.localizer(locale)
+            XCTAssertTrue(say(.meetingFailedDiskFullFinal).hasSuffix(advice), locale)
+            XCTAssertTrue(say(.meetingNotesDiskFullFinal).hasSuffix(advice), locale)
+            XCTAssertEqual(say(.meetingFailedWhereRetry), where_)
+            XCTAssertEqual(MeetingFailureNotice.announcement(for: failed("disk_full"), text: say)?.hasSuffix(advice + " " + where_), true, locale)
+            XCTAssertEqual(MeetingFailureNotice.announcement(for: notesFailed("disk_full"), text: say)?.hasSuffix(advice + " " + where_), true, locale)
+        }
     }
 }

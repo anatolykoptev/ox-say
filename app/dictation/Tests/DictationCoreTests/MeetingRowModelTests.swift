@@ -60,4 +60,19 @@ final class MeetingRowModelTests: XCTestCase {
         XCTAssertEqual(turns.map(\.time), ["0:04", "1:02:03"])
         XCTAssertEqual(turns[0].text, "Hello: there")
     }
+
+    /// The daemon escapes per rune; a backslash before a special that is followed by a combining mark must still go.
+    /// Mutation: MeetingRowModel.unescaped, iterate `name` (Characters) instead of `name.unicodeScalars` -> RED.
+    func testUnescapeWorksPerScalarNotPerCharacter() {
+        let acute = "\u{301}"
+        XCTAssertEqual(TranscriptTurn.unescaped("a\\*" + acute + "b"), "a*" + acute + "b")
+        XCTAssertEqual(TranscriptTurn.unescaped("\\_" + acute), "_" + acute)
+        XCTAssertEqual(TranscriptTurn.unescaped("x\\#" + acute, extra: "#"), "x#" + acute)
+        // The plain cases are unchanged.
+        XCTAssertEqual(TranscriptTurn.unescaped("Ann \\*B\\*"), "Ann *B*")
+        XCTAssertEqual(TranscriptTurn.unescaped("a\\\\b"), "a\\b")
+        XCTAssertEqual(TranscriptTurn.unescaped("a\\qb"), "a\\qb", "a backslash before a non-special stays")
+        XCTAssertEqual(TranscriptTurn.unescaped("end\\"), "end\\")
+        XCTAssertEqual(TranscriptTurn.unescaped("Zoë 🎤 \\[x\\]"), "Zoë 🎤 [x]")
+    }
 }

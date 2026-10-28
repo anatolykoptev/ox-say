@@ -187,4 +187,16 @@ final class AccessibilityRepairWiringTests: XCTestCase {
               let status = b.range(of: "menu.addItem(statusLine)") else { return XCTFail("buildMenu changed shape") }
         XCTAssertLessThan(sep.lowerBound, status.lowerBound, "the top rows run straight into the status line")
     }
+
+    /// The terminate of a hung reset must not race the process's own exit: `Process.terminate()` raises when the
+    /// process ended between the check and the call, so the app sends a signal under the termination handler's lock.
+    /// Mutation: AppDelegate.allowPasting, `ended.signalIfRunning(pid, SIGTERM)` -> `if reset.isRunning { reset.terminate() }` -> RED.
+    func testTheTerminateOfAHungResetCannotRaceItsExit() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = MeetingWiringTests.stripComments(try String(contentsOf: root.appendingPathComponent("Sources/OxSayDictation/AppDelegate.swift"), encoding: .utf8))
+        XCTAssertTrue(source.contains("return { ended.signalIfRunning(pid, SIGTERM) }"))
+        XCTAssertFalse(source.contains("reset.terminate()"), "Process.terminate() raises on a process that already ended")
+        XCTAssertTrue(source.contains("ended.mark()\n                let status = process.terminationStatus"), "the handler marks the exit before reporting it")
+        XCTAssertTrue(source.contains("lock.withLock { if !ended { _ = kill(pid, signal) } }"), "the signal is sent under the lock")
+    }
 }

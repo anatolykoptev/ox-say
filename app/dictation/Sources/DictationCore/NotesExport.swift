@@ -54,30 +54,27 @@ public enum NotesExport {
         case folderMoved
     }
 
-    /// Why a copy could not be made, in words for the status line: no Cocoa error dump, no path.
-    public static func explain(_ error: Error) -> String {
+    /// Why a copy could not be made, in the user's language and words for the status line: no Cocoa error dump, no path.
+    public static func explain(_ error: Error, text: (L10nKey) -> String = { $0.text }) -> String {
         let ns = error as NSError
-        let missing = "the notes folder is not available (is its disk connected?)"
-        let readOnly = "the notes folder cannot be written to"
-        let full = "the disk is full"
         switch ns.domain {
         case NSCocoaErrorDomain:
             switch ns.code {
-            case NSFileWriteOutOfSpaceError: return full
-            case NSFileWriteNoPermissionError, NSFileWriteVolumeReadOnlyError: return readOnly
-            case NSFileNoSuchFileError, NSFileReadNoSuchFileError: return missing
+            case NSFileWriteOutOfSpaceError: return text(.noticeExportDiskFull)
+            case NSFileWriteNoPermissionError, NSFileWriteVolumeReadOnlyError: return text(.noticeExportReadOnly)
+            case NSFileNoSuchFileError, NSFileReadNoSuchFileError: return text(.noticeExportFolderMissing)
             default: break
             }
         case NSPOSIXErrorDomain:
             switch Int32(ns.code) {
-            case ENOSPC: return full
-            case EACCES, EPERM, EROFS: return readOnly
-            case ENOENT, ENOTDIR, ENODEV: return missing
+            case ENOSPC: return text(.noticeExportDiskFull)
+            case EACCES, EPERM, EROFS: return text(.noticeExportReadOnly)
+            case ENOENT, ENOTDIR, ENODEV: return text(.noticeExportFolderMissing)
             default: break
             }
         default: break
         }
-        return "the notes could not be saved to the notes folder"
+        return text(.noticeExportOther)
     }
 
     /// Renames `from` to `to` without replacing, returning 0 or the errno.

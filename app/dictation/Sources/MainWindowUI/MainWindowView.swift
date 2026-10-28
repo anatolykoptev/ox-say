@@ -28,7 +28,6 @@ public struct MainWindowView: View {
         }
         .frame(minWidth: MainWindowSpec.minimumWidth, minHeight: MainWindowSpec.minimumHeight)
         .environment(\.locale, L10nBundle.locale)
-        .task { model.actions.refresh() }
     }
 
     private var sectionBinding: Binding<MainSection?> {

@@ -7,6 +7,19 @@ import Foundation
 /// speak) and no dictation is running: a completion landing mid-recording must
 /// never take the dictation's pill away.
 public enum PillOwnership {
+    /// Live text belongs to the dictation that produced it. A streaming reply can land after the dictation ended, or
+    /// after another owner (a message, the install or playback pill) took the pill: it is dropped, so it never
+    /// reaches a pill that is not the dictation's.
+    public static func acceptsLiveText(dictation: DictationState) -> Bool {
+        dictation != .idle
+    }
+
+    /// The playback look (pause, position, stop) replaces the pill's current look, so it is shown only where no
+    /// dictation runs: a recording keeps its own.
+    public static func mayShowPlayback(dictation: DictationState) -> Bool {
+        dictation == .idle
+    }
+
     /// `owner` is the overlay's owner count captured right after the task's
     /// show (nil when the task never showed one); `current` is that count now;
     /// `dictation` is the controller's state.

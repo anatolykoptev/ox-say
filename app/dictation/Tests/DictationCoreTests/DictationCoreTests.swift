@@ -157,7 +157,7 @@ final class ClipboardLeaseTests: XCTestCase {
             [("com.apple.pasteboard.promised-file", nil)],
         ]
         let lease = ClipboardLease(board: board, text: "dictated text")
-        XCTAssertFalse(lease.release())
+        XCTAssertFalse(lease.release(text: ShippedStrings.localizer("en")))
         XCTAssertEqual(lease.notice,
                        "The earlier clipboard was not put back: it held a promised file. The dictated text is on the clipboard.")
     }

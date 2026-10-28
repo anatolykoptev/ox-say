@@ -74,7 +74,7 @@ final class StudioController: NSObject {
     /// voiceover's folder, and pick up a voiceover already running.
     func statusChanged(_ new: DaemonStatus?) {
         service = new.map { .answered($0) } ?? .unreachable
-        if new != nil { follower.serviceAnswered() }
+        if StudioPickup.lookOnStatus(new) { follower.serviceAnswered() }
         if new?.studioAvailable == true { refreshFolder() }
         render()
     }

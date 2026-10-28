@@ -364,3 +364,25 @@ final class StatusIconStyleTests: XCTestCase {
         XCTAssertEqual(StatusIconStyle.style(meetingRecording: false, dictationRecording: true, dictationSymbol: "mic.fill").symbol, "mic.fill")
     }
 }
+
+final class TapSilenceClockTests: XCTestCase {
+    /// Mutation: TapLoss.silence, `Double(nowNanos - lastNanos) / 1e9` -> `Double(nowNanos - lastNanos) / 1e6` -> RED.
+    func testSilenceIsTheMonotonicDifferenceInSeconds() {
+        XCTAssertEqual(TapLoss.silence(lastNanos: 5_000_000_000, nowNanos: 8_500_000_000) ?? -1, 3.5, accuracy: 0.0001)
+        XCTAssertEqual(TapLoss.silence(lastNanos: 7, nowNanos: 7), 0)
+        XCTAssertNil(TapLoss.silence(lastNanos: nil, nowNanos: 1), "no buffer yet")
+    }
+
+    /// A reading that went backwards must not trap on the unsigned subtraction, nor read as a long silence.
+    func testAReadingThatWentBackwardsIsNotASilence() {
+        XCTAssertEqual(TapLoss.silence(lastNanos: 9_000_000_000, nowNanos: 1_000_000_000), 0)
+    }
+
+    func testTheThresholdIsJudgedOnTheMonotonicDifference() {
+        let silent = TapLoss.silence(lastNanos: 1_000_000_000, nowNanos: 1_000_000_000 + UInt64(TapLoss.silentAfter * 1e9))
+        XCTAssertTrue(TapLoss.isLost(hasTap: true, sinceLastBuffer: silent, consecutiveFailures: 1))
+        let live = TapLoss.silence(lastNanos: 1_000_000_000, nowNanos: 1_000_000_000 + UInt64((TapLoss.silentAfter - 0.5) * 1e9))
+        XCTAssertFalse(TapLoss.isLost(hasTap: true, sinceLastBuffer: live, consecutiveFailures: 1))
+        XCTAssertTrue(TapLoss.isLost(hasTap: true, sinceLastBuffer: nil, consecutiveFailures: 1), "never delivered: told at once (documented)")
+    }
+}

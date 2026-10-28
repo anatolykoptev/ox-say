@@ -150,8 +150,11 @@ final class MeetingWiringTests: XCTestCase {
         // MeetingRecorder.tapFailed, replace `sourceLost: lost` with `sourceLost: true` -> RED.
         XCTAssertTrue(failed.contains("TapLoss.isLost(hasTap: tap.isRunning, sinceLastBuffer: silence, consecutiveFailures: tapRetry.failures + 1)"))
         XCTAssertTrue(failed.contains("tapRetry.failed(sourceLost: lost)"))
-        // Mutation: MeetingRecorder.onSamples, delete `self.tapLastAt = Date()` -> RED (the delivery clock never moves).
-        XCTAssertTrue(recorder.contains("self.tapLastAt = Date()"))
+        // Mutation: MeetingRecorder.onSamples, delete `self.tapLastNanos = DispatchTime.now().uptimeNanoseconds` -> RED (the delivery
+        // clock never moves); or stamp it with `Date()` again (a wall clock) -> RED.
+        XCTAssertTrue(recorder.contains("self.tapLastNanos = DispatchTime.now().uptimeNanoseconds"))
+        XCTAssertFalse(recorder.contains("tapLastAt"), "the delivery stamp is monotonic, not a Date")
+        XCTAssertTrue(failed.contains("TapLoss.silence(lastNanos: tapLastNanos, nowNanos: DispatchTime.now().uptimeNanoseconds)"))
         // #266: a completion belongs to its recording. Mutation: MeetingRecorder.tapStarted, drop
         // `tapGeneration.isCurrent(token)` -> RED.
         let started2 = try XCTUnwrap(body(recorder, of: "private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int) {"))
@@ -245,6 +248,15 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(finished.contains("} else if let sentence = MeetingFailureNotice.announcement(for: info) {\n                host.notify(sentence)"))
         XCTAssertFalse(finished.contains("info.error"), "the daemon's text never reaches the pill")
         XCTAssertFalse(finished.contains("noticeMeetingFailed"))
+    }
+
+    /// Stopping a meeting whose close the daemon refused says it in the user's words (MeetingErrorText), never `"\(error)"`,
+    /// which is the daemon's English text for a refusal.
+    /// Mutation: MeetingController.stop, `MeetingErrorText.sentence(error, action: .finish)` -> `"\(error)"` -> RED.
+    func testAFailedCloseOfTheMeetingIsNotTheDaemonsText() throws {
+        let stop = try XCTUnwrap(body(try controller(), of: "    func stop() {\n        guard let (info, _) = current"))
+        XCTAssertTrue(stop.contains("host.notify(L10nKey.noticeMeetingFailed.text(MeetingErrorText.sentence(error, action: .finish)))"))
+        XCTAssertFalse(stop.contains("\\(error)"))
     }
 
     /// Mutation: MeetingController.refreshBadge, delete `case .stop(.cap):` handling -> RED.

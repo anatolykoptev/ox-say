@@ -42,6 +42,12 @@ extension MeetingFailure {
         case .meetingFailedStorage: return .meetingFailedStorageFinal
         case .meetingFailedDiskFull: return .meetingFailedDiskFullFinal
         case .meetingFailedGeneric: return .meetingFailedGenericFinal
+        case .meetingNotesEngineStart: return .meetingNotesEngineStartFinal
+        case .meetingNotesEngineVerify: return .meetingNotesEngineVerifyFinal
+        case .meetingNotesEngineTimeout: return .meetingNotesEngineTimeoutFinal
+        case .meetingNotesEmpty: return .meetingNotesEmptyFinal
+        case .meetingNotesStorage: return .meetingNotesStorageFinal
+        case .meetingNotesDiskFull: return .meetingNotesDiskFullFinal
         default: return key
         }
     }
@@ -62,8 +68,12 @@ public struct MeetingFailureNotice: Equatable {
 
     /// What a finished meeting that failed announces (the pill, the menu's status line): the sentence of `of`, never the
     /// daemon's own text. nil when nothing failed.
+    /// The pill has no button, so the sentence is the one without "press Try Again", followed by where the button is when
+    /// there is one: in the meeting.
     public static func announcement(for info: MeetingInfo, text: (L10nKey) -> String = { $0.text }) -> String? {
-        of(info, text: text)?.sentence
+        guard let notice = of(info, text: text) else { return nil }
+        let base = text(MeetingFailure.withoutRetryAdvice(MeetingFailure.key(code: info.failReason, notes: notice.notes)))
+        return notice.canRetry ? base + " " + text(.meetingFailedWhereRetry) : base
     }
 
     public static func of(_ info: MeetingInfo, text: (L10nKey) -> String = { $0.text }) -> MeetingFailureNotice? {

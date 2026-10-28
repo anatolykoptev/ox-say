@@ -240,7 +240,7 @@ final class NeverLoseWiringTests: XCTestCase {
     func testDeliverChecksRemoteBeforeBorrowingTheClipboard() {
         let body = requireBody("func deliver(_ text: String, to target: pid_t?) -> Delivery {", in: "PasteOutput.swift")
         guard let remote = body.range(of: "holdsRemoteCopy"),
-              let lease = body.range(of: "ClipboardLease(") else {
+              let lease = body.range(of: "ClipboardBorrow.take(") else {
             return XCTFail("deliver(_:to:) must detect a remote clipboard and only then decide how to deliver")
         }
         XCTAssertLessThan(remote.lowerBound, lease.lowerBound,
@@ -261,8 +261,25 @@ final class NeverLoseWiringTests: XCTestCase {
             return XCTFail("deliver(_:to:) lost its `.typed` case")
         }
         let typed = body[typedStart.upperBound..<typedEnd.lowerBound]
-        XCTAssertFalse(typed.contains("writeText") || typed.contains("ClipboardLease("),
+        XCTAssertFalse(typed.contains("writeText") || typed.contains("ClipboardLease(") || typed.contains("ClipboardBorrow"),
                        "the typed path must leave the clipboard untouched")
+    }
+
+    // A clipboard that cannot be read in time is never written over: the paste branch asks ClipboardBorrow, and on
+    // `.typed` types the text without touching the board. Mutation: PasteOutput.deliver, `case .typed:` of the borrow ->
+    // `lease = ClipboardLease(...)`-style fall-through (no `return .typed`) -> RED.
+    func testASlowClipboardIsTypedNotWrittenOver() {
+        let body = requireBody("func deliver(_ text: String, to target: pid_t?) -> Delivery {", in: "PasteOutput.swift")
+        guard let take = body.range(of: "switch ClipboardBorrow.take(board: lending, text: text) {"),
+              let typed = body.range(of: "case .typed:", range: take.upperBound..<body.endIndex),
+              let lease = body.range(of: "case .lease(let borrowed):", range: typed.upperBound..<body.endIndex)
+        else { return XCTFail("the paste branch lost its ClipboardBorrow switch") }
+        let slow = body[typed.upperBound..<lease.lowerBound]
+        XCTAssertTrue(slow.contains("postTypedText(text)") && slow.contains("onTypedOverSlowClipboard?(") && slow.contains("return .typed"))
+        XCTAssertFalse(slow.contains("writeText") || slow.contains("plain.") || slow.contains("lending."))
+        let app = Self.source("AppDelegate.swift")
+        XCTAssertTrue(app.contains("output.onTypedOverSlowClipboard = { chars, seconds in"))
+        XCTAssertTrue(app.contains("clipboard read took too long: posted the text as keystrokes, clipboard untouched chars="))
     }
 
     // Mutation: delete the `output.onTypedOverRemoteClipboard = ...` block in

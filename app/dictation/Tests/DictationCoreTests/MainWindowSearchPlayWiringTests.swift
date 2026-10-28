@@ -203,4 +203,14 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         let d = try source("Sources/MainWindowUI/MeetingDetailView.swift")
         XCTAssertTrue(d.contains("guard let title = MeetingRowModel.renamedTitle(draft: draftTitle, shown: MeetingRowModel.displayTitle(of: info)) else { return }"))
     }
+
+    /// A seek reports its position from the completion handler, not before the seek has landed.
+    /// Mutation: MeetingAudioPlayer.seek, add `report()` back before the handler (or drop it from the handler) -> RED.
+    func testASeekReportsWhenItHasLanded() throws {
+        let player = try source("Sources/OxSayDictation/MeetingAudioPlayer.swift")
+        let seek = try XCTUnwrap(body(player, of: "func seek(to seconds: TimeInterval) {"))
+        let flatSeek = flat(seek)
+        XCTAssertTrue(flatSeek.contains("toleranceAfter: .zero) { [weak self] _ in Task { @MainActor in guard let self, self.player === player else { return } self.report() } }"))
+        XCTAssertEqual(seek.components(separatedBy: "report()").count - 1, 1, "reported once, from the handler")
+    }
 }
