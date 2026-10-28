@@ -53,6 +53,8 @@ type fakePorts struct {
 	events      []string                            // "quiet", "render", "hear" in call order
 	quietFn     func(context.Context, func()) error // non-nil: replaces Quiet
 	hearHook    func()                              // non-nil: Hear calls it first
+	noPID       bool                                // Render never reaches an engine child: reports no pid
+	recycles    []int                               // pids Recycle was asked to stop
 }
 
 func newFakePorts(t *testing.T) *fakePorts {
@@ -70,6 +72,9 @@ func toneClip(secs, gap float64) pcm.Clip {
 }
 
 func (f *fakePorts) Render(ctx context.Context, p renderParams) (*synthOut, error) {
+	if u := engineUseOf(ctx); u != nil && !f.noPID {
+		u.pid.Store(fakeEnginePID) // the child the request reached
+	}
 	f.mu.Lock()
 	idx := len(f.renders)
 	f.renders = append(f.renders, p)
@@ -179,6 +184,22 @@ func (f *fakePorts) Power(context.Context) (bool, bool) {
 	defer f.mu.Unlock()
 	return f.onBattery, false
 }
+
+// fakeEnginePID is the child every fakePorts render reports reaching.
+const fakeEnginePID = 4242
+
+func (f *fakePorts) Recycle(_ context.Context, pid int) {
+	f.mu.Lock()
+	f.recycles = append(f.recycles, pid)
+	f.mu.Unlock()
+}
+
+func (f *fakePorts) recycled() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int(nil), f.recycles...)
+}
+
 func (f *fakePorts) Background(on bool) { f.mu.Lock(); f.bg = append(f.bg, on); f.mu.Unlock() }
 func (f *fakePorts) Home() string       { return f.home }
 func (f *fakePorts) OutputRoot() string {
