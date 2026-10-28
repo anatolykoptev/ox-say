@@ -42,7 +42,7 @@ func TranscriptMarkdown(m Manifest, turns []Turn) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n", headingLine(m))
 	for _, t := range turns {
-		fmt.Fprintf(&b, "**%s** [%s]: %s\n\n", escapeMarkdown(m.Labels.turnLabel(t)), Clock(t.S), escapeAngle(t.Text))
+		fmt.Fprintf(&b, "**%s** [%s]: %s\n\n", escapeMarkdown(m.Labels.turnLabel(t)), Clock(t.S), escapeMarkdown(t.Text))
 	}
 	return b.String()
 }
@@ -66,15 +66,32 @@ func escapeMarkdown(s string) string {
 	return b.String()
 }
 
-// escapeAngle makes < literal. A viewer that renders HTML fetches <img src=...> and opens <http://...> on its own, so
-// third-party speech and titles must not carry an unescaped one into a markdown file. Everything else is left as it is.
+// escapeAngle makes a model string safe from raw HTML: the backslash first (so an input `\<` cannot cancel the
+// escape), then <. A viewer that renders HTML fetches <img src=...> and opens <http://...> on its own. Other
+// markdown in a model string stays as the model wrote it (see cleanLine); unescapeMarkdown is its inverse.
 func escapeAngle(s string) string {
-	return strings.ReplaceAll(s, "<", `\<`)
+	return strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), "<", `\<`)
 }
 
-// headingLine is the first line of transcript.md and notes.md. Rename rewrites it, so one function builds it.
+// unescapeMarkdown undoes the escapes this package writes (a backslash before an ASCII punctuation character), so a
+// search matches and shows the text as the user sees it.
+func unescapeMarkdown(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) && strings.IndexByte(unescapable, s[i+1]) >= 0 {
+			i++
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+const unescapable = markdownSpecials + "#!>"
+
+// headingLine is the first line of transcript.md and notes.md. Rename rewrites it, so one function builds it. The
+// title renders as typed: markup is escaped, not removed; whitespace (a newline would end the heading) is collapsed.
 func headingLine(m Manifest) string {
-	return "# " + cleanLine(heading(m))
+	return "# " + escapeMarkdown(strings.Join(strings.Fields(heading(m)), " "))
 }
 
 // PromptText is the transcript the language model reads: one line per turn,

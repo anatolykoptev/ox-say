@@ -285,7 +285,7 @@ func TestMergeFoldsCyrillicAndLatinSpellingsOfOnePerson(t *testing.T) {
 		{"Юлия", "Julia", "Yulia", "Юлія"},
 		{"Алексей", "Alexey", "Aleksei", "Aleksej"},
 		{"Дмитрий", "Dmitry", "Dmitrii", "Dmitriy"},
-		{"Юрий", "Yuri", "Yury"},
+		{"Юрий", "Yury"},
 		{"Мария", "Maria", "Марія"},
 		{"Євген", "Yevgen"},
 		{"Ґанна", "Ganna"},
@@ -319,5 +319,28 @@ func TestMergeMapsOtherScriptSpellingOfMeToTheLabel(t *testing.T) {
 	got := MergeChunks([]ChunkNotes{a}, Labels{Me: "Игорь", Them: "Them"}).ActionItems
 	if len(got) != 1 || got[0].Who != "Игорь" {
 		t.Fatalf("items = %+v, want the owner mapped to the label Игорь", got)
+	}
+}
+
+// Different people never fold together, through the real paths (the merge and the mapping of the recorder's own
+// name to the label), not only through foldName.
+// Mutation: internal/meeting/notes.go foldName, re-add the bare trailing y/i strip -> RED.
+func TestDifferentPeopleNeverMerge(t *testing.T) {
+	pairs := [][2]string{{"Al", "Ali"}, {"Brad", "Brady"}, {"Sam", "Sami"}, {"Kay", "Kai"}, {"Bill", "Billy"},
+		{"Арсен", "Арсений"}, {"Артём", "Артемий"}, {"Николай", "Никола"}, {"Василий", "Василь"}, {"Георгий", "Георг"}}
+	task := "send the final report to the client"
+	for _, p := range pairs {
+		a := ChunkNotes{ActionItems: []ActionItem{{Who: p[0], What: task}}}
+		b := ChunkNotes{ActionItems: []ActionItem{{Who: p[1], What: task}}}
+		if got := MergeChunks([]ChunkNotes{a, b}, Labels{Me: "Me", Them: "Them"}).ActionItems; len(got) != 2 {
+			t.Errorf("%v: merged into %+v", p, got)
+		}
+		for i, me := range p {
+			other := p[1-i]
+			got := MergeChunks([]ChunkNotes{{ActionItems: []ActionItem{{Who: other, What: task}}}}, Labels{Me: me, Them: "Them"}).ActionItems
+			if len(got) != 1 || got[0].Who != other {
+				t.Errorf("Me=%q: owner %q was relabelled: %+v", me, other, got)
+			}
+		}
 	}
 }

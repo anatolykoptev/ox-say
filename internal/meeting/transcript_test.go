@@ -69,12 +69,8 @@ func TestTranscriptMarkdownEscapesAngleBracketsInTitleAndTurns(t *testing.T) {
 		{Speaker: SpeakerMe, S: 1, Text: "see " + img},
 		{Speaker: SpeakerThem, S: 2, Text: "<http://example.invalid/a> and 3 < 4, plain words"},
 	})
-	for i, c := range md {
-		if c == '<' && (i == 0 || md[i-1] != '\\') {
-			t.Fatalf("unescaped < at %d:\n%s", i, md)
-		}
-	}
-	for _, want := range []string{`# \<img src=http://example.invalid/x.png> — `, `**A** [0:01]: see \<img`, `plain words`} {
+	assertAnglesEscaped(t, "transcript", md)
+	for _, want := range []string{`# \<img src=http://example.invalid/x.png\> — `, `**A** [0:01]: see \<img`, `plain words`} {
 		if !strings.Contains(md, want) {
 			t.Errorf("transcript lacks %q:\n%s", want, md)
 		}

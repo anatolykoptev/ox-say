@@ -285,8 +285,8 @@ var diacritics = strings.NewReplacer(
 
 // foldName reduces a person's name to a key that is the same for its spellings: lower case, Cyrillic (Russian and
 // Ukrainian) written in Latin letters with the soft and hard signs dropped, accents removed, the Latin variants of one
-// sound written one way (Юлия/Julia/Yulia, Алексей/Alexey/Aleksei), and the Russian ending -ий/-iy/-ij/-ii/-y/-i
-// dropped ("Дмитрий", "Dmitry", "Dmitrii"). Exact equality of keys, never similarity: "Ann" and "Anna" are two people.
+// sound written one way (Юлия/Julia/Yulia, Алексей/Alexey/Aleksei), and the Russian ending -ий/-iy/-ij/-ii
+// written -y ("Дмитрий", "Dmitry", "Dmitrii"). Exact equality of keys, never similarity: "Ann" and "Anna" are two people.
 // Not the search fold (foldRune / TextFold), which has a different job.
 func foldName(s string) string {
 	var b strings.Builder
@@ -300,10 +300,13 @@ func foldName(s string) string {
 		}
 	}
 	k := latinVariants.Replace(b.String())
-	for _, end := range []string{"iy", "ii", "y", "i"} {
-		if strings.HasSuffix(k, end) && len(k) > len(end) {
-			return strings.TrimSuffix(k, end)
-		}
+	// -ий/-iy/-ij/-ii are one ending. A bare -y/-i is NOT dropped: Al/Ali, Brad/Brady, Артём/Артемий are different
+	// people, and a miss (Dmitri vs Дмитрий) costs a duplicate line where a false merge costs a wrong owner.
+	if strings.HasSuffix(k, "ii") && len(k) > 2 {
+		return strings.TrimSuffix(k, "ii") + "y"
+	}
+	if strings.HasSuffix(k, "iy") && len(k) > 2 {
+		return strings.TrimSuffix(k, "iy") + "y"
 	}
 	return k
 }

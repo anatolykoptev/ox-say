@@ -216,7 +216,7 @@ func TestRenameEscapesAngleBracketsInTheHeadings(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range headingFiles {
-		if h := firstLine(t, dir, name); !strings.HasPrefix(h, `# \<img src=http://example.invalid/x.png> — `) {
+		if h := firstLine(t, dir, name); !strings.HasPrefix(h, `# \<img src=http://example.invalid/x.png\> — `) {
 			t.Errorf("%s heading = %q", name, h)
 		}
 	}
