@@ -132,6 +132,7 @@ func TestAQueuedMeetingWhoseAudioIsGoneKeepsItsTranscriptAndNotes(t *testing.T) 
 
 // A pair left half-deleted (a crash, a failed unlink) must not let a retry rewrite the transcript from one side:
 // the far side is gone and the mic file stays, or the other way round.
+// Mutation (unconditional `m.AudioDeleted = true` in the guard) -> RED at the first sweep: the survivor stays.
 // F5 mutation: internal/meeting/runner.go keepFinishedWithoutAudio, make the loop's condition require both files
 // missing (`gone = true` only when the other channel is missing too) -> RED (the user's turns are rewritten away).
 func TestAHalfDeletedPairNeverRewritesTheTranscriptFromOneSide(t *testing.T) {
@@ -155,8 +156,23 @@ func TestAHalfDeletedPairNeverRewritesTheTranscriptFromOneSide(t *testing.T) {
 			if got := readFile(t, dir, NotesMD); got != notes {
 				t.Errorf("notes.md changed")
 			}
-			if m := f.load(t, id); m.Status != StatusDone || !m.AudioDeleted {
-				t.Errorf("manifest = %+v", m)
+			if m := f.load(t, id); m.Status != StatusDone || m.AudioDeleted {
+				t.Errorf("manifest = %+v; want done with AudioDeleted false while a channel file remains", m)
+			}
+			// the survivor still goes with the retention period
+			if n := f.r.SweepRetention(); n != 1 {
+				t.Fatalf("the sweep removed %d meetings' audio, want the half pair finished", n)
+			}
+			for _, name := range audioFiles {
+				if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+					t.Errorf("%s survived the retention sweep", name)
+				}
+			}
+			if !f.load(t, id).AudioDeleted {
+				t.Error("AudioDeleted not set after the survivor went")
+			}
+			if got := readFile(t, dir, TranscriptJSON); got != tr {
+				t.Error("the sweep touched the transcript")
 			}
 		})
 	}
@@ -359,5 +375,23 @@ func TestAVoicesRetryKeepsTheFarSideNameAndTheTitle(t *testing.T) {
 	}
 	if tr := readFile(t, dir, TranscriptMD); !strings.Contains(tr, "**Maria**") || !strings.HasPrefix(tr, "# Budget call") {
 		t.Errorf("transcript after the retry:\n%s", tr)
+	}
+}
+
+// A meeting deleted while the sweep was about to retire its audio is nothing to do, not a warning.
+func TestRetentionIgnoresAMeetingDeletedMeanwhile(t *testing.T) {
+	f, id, _ := unavailableDone(t)
+	var logs syncBuf
+	f.logTo(&logs)
+	f.r.beforeAudioDelete = func() {
+		if err := f.r.Store.Delete(id); err != nil {
+			t.Error(err)
+		}
+	}
+	if n := f.r.SweepRetention(); n != 0 {
+		t.Errorf("swept %d", n)
+	}
+	if strings.Contains(logs.String(), "could not be deleted") {
+		t.Errorf("a meeting deleted meanwhile was logged as a failure:\n%s", logs.String())
 	}
 }

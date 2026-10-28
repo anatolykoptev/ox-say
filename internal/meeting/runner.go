@@ -758,7 +758,7 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 // nothing), so without this a queued run over deleted audio would overwrite transcript.json with an empty one, and
 // over a half-deleted pair (one file left by a crash or a failed unlink) with one that lacks a side's turns. The
 // transcript, the notes and the speakers stay as they are; the meeting goes back to done (or to transcribed when it
-// never got notes, and the run then goes on to write them) with AudioDeleted set, and no failure is recorded: the
+// never got notes, and the run then goes on to write them) with AudioDeleted set when no channel file remains (else the retention sweep finishes the removal), and no failure is recorded: the
 // meeting did not fail, it just cannot be transcribed again. The reason is in the log.
 //
 // A channel counts as gone when its file is missing and the meeting either records its audio as deleted or did not
@@ -772,9 +772,13 @@ func (r *Runner) keepFinishedWithoutAudio(id, dir string) (kept bool, err error)
 	if err != nil {
 		return false, err
 	}
-	gone := false
+	gone, left := false, false // a channel lost, and a channel file still here
 	for _, ch := range []struct{ file, silent string }{{MePCM, WarnNoMicAudio}, {ThemPCM, WarnNoSystemAudio}} {
-		if _, err := os.Stat(filepath.Join(dir, ch.file)); errors.Is(err, os.ErrNotExist) && (m.AudioDeleted || !slices.Contains(m.Warnings, ch.silent)) {
+		_, err := os.Stat(filepath.Join(dir, ch.file))
+		if err == nil {
+			left = true
+		}
+		if errors.Is(err, os.ErrNotExist) && (m.AudioDeleted || !slices.Contains(m.Warnings, ch.silent)) {
 			gone = true
 		}
 	}
@@ -787,7 +791,9 @@ func (r *Runner) keepFinishedWithoutAudio(id, dir string) (kept bool, err error)
 		if len(notes) > 0 {
 			m.Status = StatusDone
 		}
-		m.AudioDeleted = true
+		// Only when nothing of the recording is left: a surviving file must stay visible to the retention sweep
+		// (expired is false for a meeting marked deleted), or it would outlive the user's retention period.
+		m.AudioDeleted = !left
 		m.Error, m.FailReason = "", ""
 	})
 	if err != nil {

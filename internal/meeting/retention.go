@@ -183,7 +183,7 @@ func (r *Runner) deleteAudio(m Manifest, days int) bool {
 		},
 		func(cur *Manifest) { cur.AudioDeleted = true })
 	switch {
-	case errors.Is(err, errNotDue):
+	case errors.Is(err, errNotDue), errors.Is(err, ErrNotFound): // not due, or deleted meanwhile: nothing to do
 		return false
 	case err != nil:
 		r.Log.Warn("meeting: audio could not be deleted, will retry", slog.String("id", m.ID), slog.Any("error", err))
