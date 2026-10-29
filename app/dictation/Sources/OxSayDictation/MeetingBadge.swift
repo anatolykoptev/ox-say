@@ -41,6 +41,8 @@ final class MeetingBadge {
     private(set) var mode: Mode?
     /// The display the panel was last placed on, so a display change can tell whether it is still there.
     private var placedOn: UInt32?
+    /// The panel's left edge from that display's left: kept across a change of the arrangement, whose global coordinates shift.
+    private var placedOffset: Double?
     private var screenObserver: NSObjectProtocol?
 
     /// The widest clock the label shows (digits are monospaced): 9:59:59.
@@ -146,14 +148,14 @@ final class MeetingBadge {
     private func resize(keepingPlace: Bool) {
         panel.contentView?.layoutSubtreeIfNeeded()
         let size = stack.fittingSize
-        let left = keepingPlace && panel.isVisible ? Double(panel.frame.minX) : nil
+        let offset = keepingPlace && panel.isVisible ? placedOffset : nil
         panel.setContentSize(NSSize(width: max(size.width, 220), height: 36))
-        place(anchoredLeft: left, onScreen: keepingPlace ? placedOn : nil)
+        place(anchoredOffset: offset, onScreen: keepingPlace ? placedOn : nil)
     }
 
     /// Puts the panel on a screen that exists now: `BadgePlacement.place` decides which one and where (DictationCore,
     /// table-tested); this reads the screens and moves the window.
-    private func place(anchoredLeft: Double?, onScreen: UInt32?) {
+    private func place(anchoredOffset: Double?, onScreen: UInt32?) {
         let screens = NSScreen.screens.compactMap { screen -> BadgePlacement.Screen? in
             guard let id = Self.displayID(screen) else { return nil }
             let frame = screen.visibleFrame
@@ -161,9 +163,10 @@ final class MeetingBadge {
         }
         // No screens (the lid closed, the display asleep): the badge stays where it is; the next change places it.
         guard let spot = BadgePlacement.place(screens: screens, placedOn: onScreen, main: NSScreen.main.flatMap(Self.displayID),
-                                              anchoredLeft: anchoredLeft, width: Double(panel.frame.width),
+                                              anchoredOffset: anchoredOffset, width: Double(panel.frame.width),
                                               height: Double(panel.frame.height)) else { return }
         placedOn = spot.screenID
+        placedOffset = spot.offset
         panel.setFrameOrigin(NSPoint(x: spot.x, y: spot.y))
     }
 
@@ -176,7 +179,7 @@ final class MeetingBadge {
     /// content is placed when it appears.
     private func screensChanged() {
         guard panel.isVisible, mode != nil else { return }
-        place(anchoredLeft: Double(panel.frame.minX), onScreen: placedOn)
+        place(anchoredOffset: placedOffset, onScreen: placedOn)
     }
 
     func showRecording(auto: Bool, elapsed: TimeInterval) {

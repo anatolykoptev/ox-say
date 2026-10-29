@@ -303,6 +303,34 @@ final class SpeechErrorL10nTests: XCTestCase {
         XCTAssertEqual(source.components(separatedBy: "LogDetail.privateText(error), privacy: .private").count - 1, 5)
     }
 
+    /// #358: no way for an error's own text to reach a `.public` log in the meeting controller or the cleanup, however it
+    /// is spelled: an interpolation that names `error`/`failure` and is not `LogDetail.publicText(...)`, `String(describing:)`
+    /// of anything, or `"\(error)"` inside a string of RetryChain.
+    /// Mutation: MeetingController, any `.public` interpolation of `\(error)` / `\(error.localizedDescription)` -> RED;
+    /// RetryChain.discard, `"delete: \(LogDetail.publicText(error))"` -> `"delete: \(error)"` -> RED.
+    func testNoErrorTextReachesAPublicLogInTheMeetingCode() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        func stripped(_ f: String) throws -> String {
+            MeetingWiringTests.stripComments(try String(contentsOf: root.appendingPathComponent("Sources/\(f)"), encoding: .utf8))
+        }
+        let interpolation = try NSRegularExpression(pattern: #"\\\(([^()]*(?:\([^()]*\))?[^()]*)\)"#)
+        for file in ["OxSayDictation/MeetingController.swift", "DictationCore/RetryChain.swift"] {
+            let text = try stripped(file)
+            let range = NSRange(text.startIndex..., in: text)
+            for match in interpolation.matches(in: text, range: range) {
+                let whole = Range(match.range, in: text)!
+                let expr = String(text[Range(match.range(at: 1), in: text)!])
+                let tail = text[whole.upperBound...].prefix(40)
+                let isPublicLog = expr.contains(", privacy: .public")
+                let named = expr.range(of: #"\b(error|failure|err)\b|String\(describing:"#, options: .regularExpression) != nil
+                if isPublicLog { XCTAssertFalse(named && !expr.contains("LogDetail.publicText("), "\(file): \\(\(expr)) at a public log, then \(tail)") }
+                if file.hasSuffix("RetryChain.swift") {
+                    XCTAssertFalse(named && !expr.contains("LogDetail."), "\(file): an error interpolated into a string: \(expr)")
+                }
+            }
+        }
+    }
+
     /// #346: the microphone sentence says what is wrong in the fewest words.
     /// Mutation: ru Localizable.strings `recorder.error.no_input` back to the old sentence -> RED.
     func testTheRussianNoMicrophoneSentenceIsShort() {

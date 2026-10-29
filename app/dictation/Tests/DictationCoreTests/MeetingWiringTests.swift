@@ -233,8 +233,8 @@ final class MeetingWiringTests: XCTestCase {
         let layout = try XCTUnwrap(body(badge, of: "private func layout(_ views: [NSView]) {"))
         XCTAssertTrue(layout.contains("resize(keepingPlace: false)"), "new content is centred")
         let resize = try XCTUnwrap(body(badge, of: "private func resize(keepingPlace: Bool) {"))
-        XCTAssertTrue(resize.contains("place(anchoredLeft: left, onScreen: keepingPlace ? placedOn : nil)"))
-        let place = try XCTUnwrap(body(badge, of: "private func place(anchoredLeft: Double?, onScreen: UInt32?) {"))
+        XCTAssertTrue(resize.contains("place(anchoredOffset: offset, onScreen: keepingPlace ? placedOn : nil)"))
+        let place = try XCTUnwrap(body(badge, of: "private func place(anchoredOffset: Double?, onScreen: UInt32?) {"))
         XCTAssertTrue(place.contains("BadgePlacement.place(screens: screens, placedOn: onScreen"))
     }
 
@@ -249,11 +249,12 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(badge.contains("NotificationCenter.default.removeObserver(screenObserver)"))
         let changed = try XCTUnwrap(body(badge, of: "private func screensChanged() {"))
         XCTAssertTrue(changed.contains("guard panel.isVisible, mode != nil else { return }"))
-        XCTAssertTrue(changed.contains("place(anchoredLeft: Double(panel.frame.minX), onScreen: placedOn)"))
-        let place = try XCTUnwrap(body(badge, of: "private func place(anchoredLeft: Double?, onScreen: UInt32?) {"))
-        XCTAssertTrue(place.contains("placedOn = spot.screenID"))
+        XCTAssertTrue(changed.contains("place(anchoredOffset: placedOffset, onScreen: placedOn)"))
+        let place = try XCTUnwrap(body(badge, of: "private func place(anchoredOffset: Double?, onScreen: UInt32?) {"))
+        XCTAssertTrue(place.contains("placedOn = spot.screenID") && place.contains("placedOffset = spot.offset"))
         XCTAssertTrue(place.contains("panel.setFrameOrigin(NSPoint(x: spot.x, y: spot.y))"))
         XCTAssertFalse(badge.contains("BadgePlacement.originX"), "the position is decided in one place")
+        XCTAssertFalse(badge.contains("panel.frame.minX"), "a global x does not survive a change of the arrangement")
     }
 
     // MARK: controller

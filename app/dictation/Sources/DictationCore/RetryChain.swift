@@ -67,8 +67,9 @@ public enum EmptyMeetingCleanup {
         case deleted
         /// The daemon no longer has it.
         case gone
-        /// Still there; the text says why (logged, never shown: the user already got the start failure).
-        case left(String)
+        /// Still there. `why` says so with the daemon's status only: safe for the public log. `detail` holds the
+        /// daemon's own words, for the private log. Neither is ever shown: the user already got the start failure.
+        case left(why: String, detail: String)
     }
 
     /// A finished meeting is queued for a moment, and the daemon refuses to delete one it is working on (409).
@@ -77,23 +78,28 @@ public enum EmptyMeetingCleanup {
     public static func discard(finish: () async throws -> Void, delete: () async throws -> Void,
                                sleep: (TimeInterval) async -> Void) async -> Outcome {
         var finishFailure: String?
+        var details: [String] = []
         do { try await finish() } catch {
             if isNotFound(error) { return .gone }
-            finishFailure = "finish: \(error)"
+            finishFailure = "finish: \(LogDetail.publicText(error))"
+            details.append(LogDetail.privateText(error))
         }
         var last = ""
+        var lastDetail = ""
         for attempt in 0...waits.count {
             do {
                 try await delete()
                 return .deleted
             } catch {
                 if isNotFound(error) { return .gone }
-                last = "delete: \(error)"
+                last = "delete: \(LogDetail.publicText(error))"
+                lastDetail = LogDetail.privateText(error)
                 guard case StudioError.refused(let status, _) = error, status == 409 else { break }
                 if attempt < waits.count { await sleep(waits[attempt]) }
             }
         }
-        return .left([finishFailure, last].compactMap { $0 }.joined(separator: "; "))
+        return .left(why: [finishFailure, last].compactMap { $0 }.joined(separator: "; "),
+                     detail: (details + [lastDetail]).filter { !$0.isEmpty }.joined(separator: "; "))
     }
 
     private static func isNotFound(_ error: Error) -> Bool {
@@ -141,6 +147,9 @@ public enum BadgePlacement {
         public var screenID: UInt32
         public var x: Double
         public var y: Double
+        /// `x` from the screen's left edge: what to keep when the screens move about (a monitor left of this one is
+        /// unplugged and every coordinate shifts).
+        public var offset: Double
     }
 
     /// The gap under the top of the screen.
@@ -149,16 +158,17 @@ public enum BadgePlacement {
     /// Where the badge goes among the screens that exist now. The screen it already sits on keeps it (`placedOn`); when
     /// that one is gone (unplugged during a prompt) or the badge is new, the main screen takes it, else the first
     /// one; no screens at all (the lid closed, the display asleep) is nil, and the badge stays where it is until the
-    /// next change. A badge that stays on its screen keeps its left edge (#251), moved only as far as the screen's new
-    /// size needs; one that moved screens is centred on the new one. The result always lies inside its screen.
-    public static func place(screens: [Screen], placedOn: UInt32?, main: UInt32?, anchoredLeft: Double?,
+    /// next change. A badge that stays on its screen keeps its left edge (#251) as a distance from that screen's left
+    /// (`anchoredOffset`, from a former `Placement.offset`), so a shifted arrangement does not move it; it is moved only
+    /// as far as the screen's new size needs; one that moved screens is centred on the new one. The result always lies inside its screen.
+    public static func place(screens: [Screen], placedOn: UInt32?, main: UInt32?, anchoredOffset: Double?,
                              width: Double, height: Double) -> Placement? {
         let kept = placedOn.flatMap { id in screens.first { $0.id == id } }
         guard let screen = kept ?? main.flatMap({ id in screens.first { $0.id == id } }) ?? screens.first else { return nil }
-        let left = kept == nil ? nil : anchoredLeft
+        let left = kept == nil ? nil : anchoredOffset.map { screen.minX + $0 }
         let x = originX(anchoredLeft: left, width: width, screenMidX: screen.midX)
         let room = screen.maxX - screen.minX - width
         let inside = room > 0 ? min(max(x, screen.minX), screen.minX + room) : screen.minX
-        return Placement(screenID: screen.id, x: inside, y: screen.maxY - height - topMargin)
+        return Placement(screenID: screen.id, x: inside, y: screen.maxY - height - topMargin, offset: inside - screen.minX)
     }
 }

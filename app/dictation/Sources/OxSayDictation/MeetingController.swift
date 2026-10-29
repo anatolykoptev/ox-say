@@ -297,7 +297,9 @@ final class MeetingController: NSObject, MeetingFeature {
                 finish: { _ = try await client.finishMeeting(id: id) },
                 delete: { try await client.deleteMeeting(id: id) },
                 sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) })
-            if case .left(let why) = outcome { log.error("empty meeting \(id, privacy: .public) was not deleted: \(why, privacy: .public)") }
+            if case .left(let why, let detail) = outcome {
+                log.error("empty meeting \(id, privacy: .public) was not deleted: \(why, privacy: .public) \(detail, privacy: .private)")
+            }
         }
     }
 
