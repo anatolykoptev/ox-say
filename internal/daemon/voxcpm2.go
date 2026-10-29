@@ -24,9 +24,14 @@ import (
 const (
 	voxcpm2ServerFile = "voxcpm2-server.json"
 	// voxLoopbackHost is the only address the child binds and the daemon
-	// dials. audio.cpp's loopback guard (patch 0002) refuses "localhost" and
-	// "[::1]" as Host headers, so a name or an IPv6 literal would be refused
-	// (issue #137.3).
+	// dials (engine.Supervisor.baseURL). audio.cpp's loopback guard (patch
+	// 0002) accepts only the "127.0.0.1" and "localhost" Host literals —
+	// "[::1]" and even upper-case "LOCALHOST" are refused, so the daemon
+	// must dial the IPv4 literal, never a resolved name (issue #137.3).
+	// The guard's Content-Type check is a prefix match, so
+	// "application/jsonx" would pass — harmless: a cross-site "simple"
+	// request cannot send it (issue #137.4); the daemon always sends
+	// application/json (engine/client.go).
 	voxLoopbackHost = "127.0.0.1"
 	// voxStartupTimeout is the child's start budget: measured 8 s for the
 	// first-ever start (6.2 s of it the Metal library compile), 1.2–2 s after.
