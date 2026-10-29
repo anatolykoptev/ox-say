@@ -44,7 +44,7 @@ func TestAMeetingsListAsksTheDiarizerReadinessOnce(t *testing.T) {
 		t.Errorf("MCP list: readiness probed %d times for %d meetings, want 1", got, len(ids))
 	}
 	for _, m := range out.Meetings {
-		if !m.VoicesRetryable {
+		if m.VoicesRetryable == nil || !*m.VoicesRetryable {
 			t.Errorf("MCP list: %s is not voices_retryable", m.ID)
 		}
 	}

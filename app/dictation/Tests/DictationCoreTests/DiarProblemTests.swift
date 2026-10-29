@@ -136,8 +136,10 @@ final class DiarProblemClientTests: XCTestCase {
 final class VoicesTryAgainTests: XCTestCase {
     private func info(_ json: String) -> MeetingInfo { MeetingInfo.decode(Data(json.utf8))! }
 
-    /// Mutations: DiarProblem.offersRetry, `case .unavailable: return daemonSaysRetryable` -> `return false` -> RED (F4: the app
-    /// ignores the daemon field and never offers a retry for unavailable voices); -> `return true` -> RED (offered while not ready).
+    /// Mutations: DiarProblem.offersRetry, `case .unavailable: return daemonSaysRetryable ?? false` -> `return false` -> RED (F4: the app
+    /// ignores the daemon field and never offers a retry for unavailable voices); -> `return true` -> RED (offered while not ready);
+    /// `case .failed: return canRetry && (daemonSaysRetryable ?? true)` -> `return canRetry` -> RED (#340: a half-deleted failed
+    /// meeting shows a Try Again the POST refuses); `?? true` -> `?? false` -> RED (an older daemon's failed meeting loses its button).
     func testTheDecisionFollowsTheServedPayload() {
         let cases: [(String, Bool)] = [
             // unavailable, daemon says it can be retried: models arrived
@@ -151,9 +153,15 @@ final class VoicesTryAgainTests: XCTestCase {
             (#"{"id":"a","status":"done","warnings":["diarization_unavailable"],"diar_reason":"too_long"}"#, false),
             // audio removed by retention: nothing to transcribe
             (#"{"id":"a","status":"done","warnings":["diarization_unavailable"],"diar_reason":"models_missing","voices_retryable":true,"audio_deleted":true}"#, false),
-            // the failed kind keeps the app's own rule and an older daemon (no field) still works
+            // the failed kind: an older daemon (no field) keeps the app's own rule (canRetry) ...
             (#"{"id":"a","status":"done","warnings":["diarization_failed"],"diar_reason":"engine_error"}"#, true),
             (#"{"id":"a","status":"done","warnings":["diarization_failed"],"diar_reason":"timeout"}"#, false),
+            // ... and a daemon that serves the field decides: yes where its POST would accept, no for a half-deleted
+            // meeting (the POST answers 409), and the app's own no for a timeout still stands
+            (#"{"id":"a","status":"done","warnings":["diarization_failed"],"diar_reason":"engine_error","voices_retryable":true}"#, true),
+            (#"{"id":"a","status":"done","warnings":["diarization_failed"],"diar_reason":"bad_output","voices_retryable":false}"#, false),
+            (#"{"id":"a","status":"done","warnings":["diarization_failed"],"diar_reason":"engine_error","voices_retryable":true,"audio_deleted":true}"#, false),
+            (#"{"id":"a","status":"done","warnings":["diarization_failed"],"diar_reason":"timeout","voices_retryable":true}"#, false),
             // no problem, no button
             (#"{"id":"a","status":"done","voices_retryable":true}"#, false),
         ]
@@ -182,6 +190,27 @@ final class VoicesTryAgainTests: XCTestCase {
         XCTAssertTrue(actions.contains(.retryVoices("r1")))
         XCTAssertTrue(actions.contains(.retryVoices("r2")))
         XCTAssertFalse(actions.contains(.retryVoices("new")), "models still missing for this one")
+    }
+
+    /// #340 (failed kind): the menu row of a failed meeting follows the served field too. A half-deleted one (the daemon
+    /// says no) keeps its problem sentence and has no Try Again; one the daemon accepts, and one from an older daemon,
+    /// get it.
+    /// Mutation: MeetingMenu.rows, `problem.offersRetry(daemonSaysRetryable: r.voicesRetryable, ...)` -> `problem.canRetry` -> RED.
+    func testTheMenuRowOfAFailedMeetingFollowsTheServedField() {
+        let list = [
+            MeetingInfo(id: "half", title: "Half", status: .done, warnings: ["diarization_failed"], diarReason: "engine_error", voicesRetryable: false),
+            MeetingInfo(id: "ok", title: "Ok", status: .done, warnings: ["diarization_failed"], diarReason: "engine_error", voicesRetryable: true),
+            MeetingInfo(id: "old", title: "Old", status: .done, warnings: ["diarization_failed"], diarReason: "engine_error"),
+        ]
+        let recent = MeetingMenuRecent.from(list, limit: 10)
+        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
+                                     retention: .month, recent: recent)
+        let actions = MeetingMenu.rows(state, text: { $0.rawValue }).compactMap { row -> MenuAction? in
+            if case .item(_, _, _, let a) = row { return a } else { return nil }
+        }
+        XCTAssertFalse(actions.contains(.retryVoices("half")), "the daemon refuses this retry (409)")
+        XCTAssertTrue(actions.contains(.retryVoices("ok")))
+        XCTAssertTrue(actions.contains(.retryVoices("old")), "no word from an older daemon: the app's own rule")
     }
 
     /// Race: the models were ready at the check and gone at the press (the daemon answers 503 voices_not_ready): a
