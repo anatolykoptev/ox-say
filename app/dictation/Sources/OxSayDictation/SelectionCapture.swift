@@ -14,7 +14,7 @@ final class SelectionCapture {
     /// result, never content. Lets the real app's AX path be checked from the log.
     var onSelection: ((SelectionReport) -> Void)? {
         // Always set, so the press ends at the report SelectionBorrow makes once per press, whoever listens.
-        get { [self] report in gate.end(); reporter?(report) }
+        get { { [self] report in gate.end(); reporter?(report) } }
         set { reporter = newValue }
     }
     private var reporter: ((SelectionReport) -> Void)?

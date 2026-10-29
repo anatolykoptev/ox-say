@@ -465,6 +465,6 @@ final class ChromiumAXWakeTests: XCTestCase {
         XCTAssertLessThan(install.lowerBound, press.lowerBound)
         XCTAssertLessThan(press.lowerBound, capture.lowerBound)
         let cap = MeetingWiringTests.stripComments(try String(contentsOf: dir.appendingPathComponent("SelectionCapture.swift"), encoding: .utf8))
-        XCTAssertTrue(cap.contains("get { [self] report in gate.end(); reporter?(report) }"))
+        XCTAssertTrue(cap.contains("get { { [self] report in gate.end(); reporter?(report) } }"))
     }
 }
