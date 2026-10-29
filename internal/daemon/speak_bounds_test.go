@@ -285,9 +285,19 @@ func TestRunawayOnHTTP(t *testing.T) {
 	if got := d.Status().TTSFaults.Runaways; got != 2 {
 		t.Fatalf("runaways counted = %d, want 2", got)
 	}
-	var typed struct{ Error struct{ Type string } }
+	var typed struct {
+		Error struct {
+			Type    string
+			Retried bool
+		}
+	}
 	if err := json.Unmarshal(raw, &typed); err != nil || typed.Error.Type != "generation_runaway" {
 		t.Fatalf("error body has no typed code the app can read: %s", raw)
+	}
+	// #286: the app words a take that already ran twice differently from a first failure; the body says which.
+	// Mutation: internal/daemon/http.go writeSynthErr, drop the "retried" member -> RED here.
+	if !typed.Error.Retried {
+		t.Fatalf("a take that ran away on both tries must say so for the app: %s", raw)
 	}
 }
 

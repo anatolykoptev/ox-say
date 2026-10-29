@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -603,15 +604,33 @@ func (d *Daemon) notesDiskNeed() int64 {
 	return need
 }
 
+// dirWritable reports whether a file can be created in dir. Only a permission refusal says no: any other error (the disk
+// itself is full, say) leaves the question open and counts as writable, so the free-space check decides.
+func dirWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".write-probe-*")
+	if err != nil {
+		return !errors.Is(err, fs.ErrPermission)
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
+}
+
 // installFailure is installFailureCode, plus one look at the disk: curl's (23), "failure writing output", is what a full
 // disk looks like to curl, and its text says nothing about the disk. When the models directory has less free space than
-// the rest of the download needs, that (23) is a full disk.
+// the rest of the download needs, that (23) is a full disk, unless the directory also refuses the write: then the
+// permissions are the cause the person can act on, not the space.
 func (d *Daemon) installFailure(tail string) string {
 	code := installFailureCode(tail)
 	if code != "other" || !strings.Contains(tail, "curl: (23)") && !strings.Contains(tail, "curl exit 23") {
 		return code
 	}
-	if free, err := freeBytes(filepath.Dir(d.Cfg.NotesModel)); err == nil && free < d.notesDiskNeed() {
+	dir := filepath.Dir(d.Cfg.NotesModel)
+	if !dirWritable(dir) {
+		return code
+	}
+	if free, err := freeBytes(dir); err == nil && free < d.notesDiskNeed() {
 		return "disk_full"
 	}
 	return code

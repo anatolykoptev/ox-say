@@ -619,19 +619,31 @@ func TestInstallRefusesWhenTheModelIsThereButNotesAreBlockedElsewhere(t *testing
 // Mutation: internal/daemon/meetings.go installFailure, delete the `if free < need` branch (always "other") -> RED (short row).
 // Mutation: same function, return "disk_full" for every (23) -> RED (roomy row).
 // Mutation: same function, test the code "other" without the curl (23) guard -> RED (the unrelated "other" row).
+// Mutation: same function, delete the writability probe (`if !dirWritable(dir)`) -> RED (the read-only row).
 func TestACurl23FailureLooksAtTheDisk(t *testing.T) {
 	cases := []struct {
 		name, stderr string
 		freeAfter    int64
 		want         string
+		lockDir      bool // the script leaves the models directory read-only, as a permission-denied (23) does
 	}{
-		{"23 and the disk is short", "curl: (23) Failure writing output to destination", 0, "disk_full"},
-		{"23 and the disk has room", "curl: (23) Failure writing output to destination", 1 << 40, "other"},
-		{"not a 23, disk short: stays other", "something unexpected", 0, "other"},
+		{"23 and the disk is short", "curl: (23) Failure writing output to destination", 0, "disk_full", false},
+		{"23 and the disk has room", "curl: (23) Failure writing output to destination", 1 << 40, "other", false},
+		{"not a 23, disk short: stays other", "something unexpected", 0, "other", false},
+		// #295.4: a nearly full disk that also refuses the write is a permissions problem, not a full disk.
+		{"23, disk short, directory not writable", "curl: (23) Failure writing output to destination", 0, "other", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := installFixture(t, "#!/bin/sh\ncat >&2 <<'EOT'\n"+tc.stderr+"\nEOT\nexit 23\n")
+			lock := ""
+			if tc.lockDir {
+				lock = "chmod 0555 \"$(dirname \"$0\")/models\"\n"
+			}
+			d := installFixture(t, "#!/bin/sh\n"+lock+"cat >&2 <<'EOT'\n"+tc.stderr+"\nEOT\nexit 23\n")
+			if err := os.MkdirAll(filepath.Dir(d.Cfg.NotesModel), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(filepath.Dir(d.Cfg.NotesModel), 0o755) })
 			calls := 0
 			// The start-up check sees a roomy disk (the download is allowed); the check after the failure sees tc.freeAfter.
 			withFreeBytes(t, func(string) (int64, error) {

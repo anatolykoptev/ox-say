@@ -97,6 +97,25 @@ final class SpeechClientTests: XCTestCase {
         }
     }
 
+    /// #286: a take the daemon already ran twice (its body says `"retried": true`) must not be told to "try again".
+    /// Mutation: SpeechClient.failure, ignore `error["retried"]` (always `.runaway`) -> RED.
+    func testARunawayAfterTheDaemonsRetryDoesNotAskForAnother() async {
+        let json = #"{"error":{"message":"stopped twice in a row","type":"generation_runaway","retried":true}}"#
+        let (client, _) = fakeSend(data: Data(json.utf8), status: 502)
+        do {
+            _ = try await client.speak("hello")
+            XCTFail("a 502 must throw")
+        } catch let error as SpeechError {
+            XCTAssertEqual(error, .runawayRetried)
+            XCTAssertNotEqual(error.message(), SpeechError.runaway.message())
+            XCTAssertEqual(error.message(), L10nKey.noticeSpeechRunawayRetried.text)
+        } catch {
+            XCTFail("want SpeechError, got \(error)")
+        }
+        let (first, _) = fakeSend(data: Data(#"{"error":{"type":"generation_runaway","retried":false}}"#.utf8), status: 502)
+        do { _ = try await first.speak("hello"); XCTFail("must throw") } catch { XCTAssertEqual(error as? SpeechError, .runaway) }
+    }
+
     func testEmptyBodyIsBadResponse() async {
         let (client, _) = fakeSend(data: Data())
         do {
