@@ -95,6 +95,40 @@ final class SpeechErrorL10nTests: XCTestCase {
         XCTAssertEqual(details.first as? TranscriptionError, .timedOut)
     }
 
+    /// Every `onError` call site hands the real error to `onErrorDetail` (the log): a failed recording start would otherwise
+    /// leave no trace of its cause. Mutation: DictationController `prepare()` catch, delete `onErrorDetail?(error)` -> RED.
+    @MainActor
+    func testAFailedPrepareLogsTheRealError() {
+        struct NoMic: Error, Equatable {}
+        let rec = FakeRecorder(); rec.prepareError = NoMic()
+        var errors: [String] = []
+        var details: [Error] = []
+        let c = DictationController(recorder: rec, output: FakeOutput()) { _ in "" }
+        c.localize = en
+        c.onError = { errors.append($0) }
+        c.onErrorDetail = { details.append($0) }
+        c.keyDown()
+        XCTAssertEqual(errors.count, 1)
+        XCTAssertEqual(details.map { $0 as? NoMic }, [NoMic()], "the cause of a refused recording never reached the log")
+    }
+
+    /// Mutation: DictationController `recorder.start()` catch, delete `onErrorDetail?(error)` -> RED.
+    @MainActor
+    func testAFailedRecordingStartLogsTheRealError() {
+        struct NoMic: Error, Equatable {}
+        let rec = FakeRecorder(); rec.startError = NoMic()
+        var errors: [String] = []
+        var details: [Error] = []
+        let c = DictationController(recorder: rec, output: FakeOutput()) { _ in "" }
+        c.localize = en
+        c.onError = { errors.append($0) }
+        c.onErrorDetail = { details.append($0) }
+        c.keyDown()
+        XCTAssertEqual(errors.count, 1)
+        XCTAssertEqual(details.map { $0 as? NoMic }, [NoMic()], "the cause of a failed recording start never reached the log")
+        XCTAssertEqual(c.state, .idle)
+    }
+
     func testTheSlowerPathReasonFitsThePill() {
         XCTAssertEqual(SlowTranscription.reason(sttServerState: "stopped", text: en), "speech server off — slower")
         XCTAssertLessThanOrEqual(ru(.slowSlowerPath).count, 32)
