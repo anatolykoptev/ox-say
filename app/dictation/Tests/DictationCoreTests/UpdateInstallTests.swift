@@ -413,42 +413,94 @@ final class UpdateInstallRobustnessTests: XCTestCase {
         func cleanUp() { try? FileManager.default.removeItem(at: dir) }
     }
 
-    /// #356: the installer run (get.sh -> install-release.sh -> fetch-models, restart, self-test) has a hard ceiling, so a
-    /// wedged daemon or installer ends in the failure alert instead of holding `updateInstalling` (and, since #355, the
-    /// refusal of dictation and read-aloud) until the app is quit.
-    /// Mutation: UpdateInstall.swift run(), the install `runProcess(installer(...), log: log, timeout: installerCeiling)`
-    /// without `timeout:` -> RED (the fake sleeps 20 s; the run returns after it with .installerFailed, not .installerTimedOut).
-    func testAnInstallerThatNeverExitsEndsInATimeoutFailureAndFreesDaemonWork() async throws {
+    /// A counted clock and a scripted progress value: each poll moves the clock 60 s and asks `step` for the value, so
+    /// "20 minutes without progress" is 20 polls, however fast the test runs. `step(poll)` may also act (open a gate).
+    private final class CountedWatch: @unchecked Sendable {
+        private let lock = NSLock()
+        private(set) var polls = 0
+        private var time = 0.0
+        let step: (Int) -> UInt64
+
+        init(step: @escaping (Int) -> UInt64) { self.step = step }
+
+        var watch: UpdateInstaller.IdleWatch {
+            .init(idleLimit: UpdateInstaller.installerIdleLimit, pollInterval: 0.01,
+                  progress: { [self] in
+                      lock.lock()
+                      polls += 1
+                      let n = polls
+                      lock.unlock()
+                      return step(n)
+                  },
+                  now: { [self] in
+                      lock.lock()
+                      defer { lock.unlock() }
+                      time += 60
+                      return time
+                  })
+        }
+    }
+
+    /// #356: an installer that stalls (no progress for the idle limit) ends in the failure alert instead of holding
+    /// `updateInstalling` (and, since #355, the refusal of dictation and read-aloud) until the app is quit.
+    /// Mutation: UpdateInstall.swift run(), the install `runProcess(..., log: log, idle: watch)` without `idle:` -> RED
+    /// (the fake sleeps 20 s; the run returns after it with nil/.versionUnchanged, not .installerTimedOut).
+    func testAnInstallerThatStallsIsEndedAtTheIdleLimitAndFreesDaemonWork() async throws {
         let rig = try ScriptRig()
         defer { rig.cleanUp() }
+        let counted = CountedWatch { _ in 7 }
         let started = Date()
         let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil, scriptSource: rig.source,
-                                                installerCeiling: 0.3,
+                                                installerWatch: counted.watch,
                                                 installer: { _, _, _ in .init(argv: ["/bin/sleep", "20"], environment: [:]) },
                                                 installedVersion: { "0.1.22" }, daemonVersion: { "v0.1.22" })
-        XCTAssertEqual(failure, .installerTimedOut(seconds: 0.3))
-        XCTAssertLessThan(Date().timeIntervalSince(started), 5, "the run waited for the wedged installer")
+        XCTAssertEqual(failure, .installerTimedOut(seconds: UpdateInstaller.installerIdleLimit))
+        XCTAssertGreaterThanOrEqual(counted.polls, 20, "ended before the limit of counted minutes without progress")
+        XCTAssertLessThanOrEqual(counted.polls, 22)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10, "the run waited for the stalled installer")
         // Any failure makes AppDelegate.installUpdate call endInstall() (pinned in InstallTerminationTests), which clears
         // `updateInstalling`; with it clear, the gate lets dictation and read-aloud start again.
         XCTAssertFalse(UpdateGate.allowsNewDaemonWork(installing: true))
         XCTAssertTrue(UpdateGate.allowsNewDaemonWork(installing: false))
     }
 
-    /// The ceiling ends the installer's whole process tree, not only the shell get.sh started: a self-test `ox-say say`
-    /// left running would keep the daemon wedged. Killed by PID (descendants found through the parent links), never by name.
-    /// Mutation: UpdateInstall.swift runProcess, the timeout block's `ProcessTree.kill(` call reduced to
-    /// `kill(p.processIdentifier, SIGKILL)` -> RED (the grandchild `sleep` survives).
-    func testTheCeilingKillsTheInstallersGrandchildrenToo() async throws {
+    /// A slow but alive install is never cut: progress for three times the idle limit, then the installer finishes.
+    /// Mutation: UpdateInstall.swift IdleWatcher.stalled(), delete `lastChange = t` -> RED (killed at the limit).
+    func testAnInstallerThatKeepsProgressingPastTheIdleLimitIsNotKilled() async throws {
+        let rig = try ScriptRig()
+        defer { rig.cleanUp() }
+        let gate = rig.dir.appendingPathComponent("gate")
+        let counted = CountedWatch { n in
+            if n == 60 { FileManager.default.createFile(atPath: gate.path, contents: Data()) }
+            return UInt64(n)
+        }
+        let script = "while [ ! -e '\(gate.path)' ]; do sleep 0.02; done"
+        let failure = await UpdateInstaller.run(kind: .studioVoice, tag: "v0.1.22", log: nil, scriptSource: rig.source,
+                                                installerWatch: counted.watch,
+                                                installer: { _, _, _ in .init(argv: ["/bin/sh", "-c", script], environment: [:]) },
+                                                installedVersion: { "0.1.22" }, daemonVersion: { "v0.1.22" })
+        XCTAssertNil(failure, "an install that keeps making progress was ended")
+        XCTAssertGreaterThanOrEqual(counted.polls, 60)
+    }
+
+    /// The stalled installer is asked to leave first (get.sh's TERM trap removes its temp dirs), its whole tree is gone
+    /// and its cleanup has finished BEFORE the run reports the failure: the alert and `endInstall()` never meet a live
+    /// installer. The fake's TERM trap takes a second and then writes a marker.
+    /// Mutations: UpdateInstall.swift terminateThenKill, the first loop sends SIGKILL instead of SIGTERM -> RED (no marker);
+    /// runProcess `expire`, `once.resume(.failure(ProcessTimedOut()))` moved above the terminate call -> RED (no marker yet).
+    func testTheStalledInstallerCleansUpBeforeTheFailureIsReported() async throws {
         let rig = try ScriptRig()
         defer { rig.cleanUp() }
         let pidFile = rig.dir.appendingPathComponent("grandchild.pid")
-        defer { try? FileManager.default.removeItem(at: pidFile) }
-        let script = "sleep 600 & echo $! > '\(pidFile.path)'; wait"
+        let marker = rig.dir.appendingPathComponent("cleaned")
+        let script = "trap 'sleep 1; echo cleaned > \"\(marker.path)\"; exit 0' TERM; sleep 600 & echo $! > '\(pidFile.path)'; wait"
+        let counted = CountedWatch { _ in 7 }
         let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil, scriptSource: rig.source,
-                                                installerCeiling: 1.0,
+                                                installerWatch: counted.watch,
                                                 installer: { _, _, _ in .init(argv: ["/bin/sh", "-c", script], environment: [:]) },
                                                 installedVersion: { nil }, daemonVersion: { nil })
-        XCTAssertEqual(failure, .installerTimedOut(seconds: 1.0))
+        XCTAssertEqual(failure, .installerTimedOut(seconds: UpdateInstaller.installerIdleLimit))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "the run reported before the installer's TERM cleanup finished (or it never got TERM)")
         let text = try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         let grandchild = try XCTUnwrap(Int32(text), "the fake installer never recorded its child")
         var alive = true
@@ -458,32 +510,73 @@ final class UpdateInstallRobustnessTests: XCTestCase {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         if alive { _ = kill(grandchild, SIGKILL) }
-        XCTAssertFalse(alive, "the installer's child survived the ceiling")
+        XCTAssertFalse(alive, "the installer's child survived")
     }
 
-    /// The ceiling is derived, not guessed: the fixed allowance (daemon restart, self-test) plus the largest download of
-    /// the kind at a slow line's rate, and the studio install (the 3 GB model on top) gets more than a plain update.
-    /// Mutation: UpdateInstall.swift installerCeiling(kind:), drop the `studioVoiceBytes` term -> RED.
-    func testTheInstallerCeilingCoversTheLargestDownloadOnASlowLine() {
-        let update = UpdateInstaller.installerCeiling(kind: .update)
-        let studio = UpdateInstaller.installerCeiling(kind: .studioVoice)
-        XCTAssertGreaterThan(studio, update)
-        XCTAssertGreaterThanOrEqual(studio - update, UpdateInstaller.studioVoiceBytes / UpdateInstaller.slowLineBytesPerSecond - 1)
-        XCTAssertGreaterThanOrEqual(update, UpdateInstaller.installerFixedAllowance)
-        XCTAssertGreaterThan(UpdateInstaller.studioVoiceBytes, 2.9e9, "the studio model is about 3 GB (scripts/fetch-models.sh)")
-        XCTAssertLessThan(studio, 2 * 3600, "a ceiling over two hours is not a ceiling")
+    /// A process that ignores TERM is killed after the grace, and so is what it started (read again before the KILL).
+    /// Mutation: UpdateInstall.swift terminateThenKill, delete the final `SIGKILL` loop -> RED (the run waits out `sleep`).
+    func testAnInstallerThatIgnoresTermIsKilledAfterTheGrace() async throws {
+        let rig = try ScriptRig()
+        defer { rig.cleanUp() }
+        let counted = CountedWatch { _ in 7 }
+        let pidFile = rig.dir.appendingPathComponent("stubborn.pid")
+        let script = "trap '' TERM; echo $$ > '\(pidFile.path)'; while :; do sleep 0.05; done"
+        let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil, scriptSource: rig.source,
+                                                installerWatch: counted.watch,
+                                                installer: { _, _, _ in .init(argv: ["/bin/sh", "-c", script], environment: [:]) },
+                                                installedVersion: { nil }, daemonVersion: { nil })
+        XCTAssertEqual(failure, .installerTimedOut(seconds: UpdateInstaller.installerIdleLimit))
+        let text = try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        let pid = try XCTUnwrap(Int32(text))
+        var alive = true
+        for _ in 0..<40 {
+            alive = kill(pid, 0) == 0
+            if !alive { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if alive { _ = kill(pid, SIGKILL) }
+        XCTAssertFalse(alive, "an installer that ignores TERM survived the grace")
     }
 
-    /// The call site applies the kind's ceiling by default (a default of nil would leave the installer unbounded).
-    /// Mutation: UpdateInstall.swift run(), the `installerCeiling:` parameter default -> `.infinity` -> RED.
-    func testRunDefaultsToTheKindsCeiling() throws {
+    /// The idle limit outlasts the longest silent stretch the scripts allow: the self-test's three calls of 300 s each.
+    /// Mutation: UpdateInstall.swift installerIdleLimit 1200 -> 600 -> RED.
+    func testTheIdleLimitOutlastsTheSelfTest() {
+        XCTAssertGreaterThan(UpdateInstaller.installerIdleLimit, 3 * 300 + 100)
+    }
+
+    /// What counts as progress: the log growing, or the models directory changing. Mutation: installProgress ignores
+    /// the models directory (the silent model fetch looks idle) -> RED; ignores the log -> RED.
+    func testProgressIsTheLogAndTheModelsDirectory() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-progress-\(UUID().uuidString)")
+        let models = dir.appendingPathComponent("models/nested")
+        try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
+        let logURL = dir.appendingPathComponent("log")
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let log = try FileHandle(forWritingTo: logURL)
+        defer { try? log.close(); try? FileManager.default.removeItem(at: dir) }
+        let root = dir.appendingPathComponent("models")
+        let start = UpdateInstaller.installProgress(log: log, models: root)
+        try log.write(contentsOf: Data("progress".utf8))
+        let afterLog = UpdateInstaller.installProgress(log: log, models: root)
+        XCTAssertNotEqual(afterLog, start, "log growth is not progress")
+        try Data(repeating: 0, count: 100).write(to: models.appendingPathComponent("m.gguf.part"))
+        XCTAssertNotEqual(UpdateInstaller.installProgress(log: log, models: root), afterLog, "a growing .part is not progress")
+        XCTAssertEqual(UpdateInstaller.installProgress(log: nil, models: dir.appendingPathComponent("absent")), 0)
+        let env = ["OX_SAY_HOME": "/tmp/x"]
+        XCTAssertEqual(UpdateInstaller.modelsDirectory(environment: env).path, "/tmp/x/models")
+        XCTAssertTrue(UpdateInstaller.modelsDirectory(environment: [:], home: URL(fileURLWithPath: "/Users/u")).path
+            .hasSuffix("/Users/u/Library/Application Support/ox-say/models"))
+    }
+
+    /// The call site watches by default (a nil watch would leave the installer unbounded).
+    /// Mutation: UpdateInstall.swift run(), the default `IdleWatch(idleLimit: installerIdleLimit` -> `.infinity` -> RED.
+    func testRunWatchesTheInstallerByDefault() throws {
         let path = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/DictationCore/UpdateInstall.swift")
         let source = try String(contentsOf: path, encoding: .utf8)
-        XCTAssertTrue(source.contains("installerCeiling: TimeInterval? = nil"))
-        XCTAssertTrue(source.contains("let ceiling = installerCeiling ?? Self.installerCeiling(kind: kind)"))
-        XCTAssertTrue(source.contains("log: log, timeout: ceiling)"))
+        XCTAssertTrue(source.contains("installerWatch ?? IdleWatch(idleLimit: installerIdleLimit, pollInterval: progressPollInterval"))
+        XCTAssertTrue(source.contains("log: log, idle: watch)"))
     }
 
     func testACurlThatCannotStartHasItsOwnText() async {
@@ -622,9 +715,9 @@ final class UpdateFailureL10nTests: XCTestCase {
         (.installerFailed(status: 1),
          "The installer exited with status 1.",
          "Установщик завершился с кодом 1."),
-        (.installerTimedOut(seconds: 1500),
-         "The installer did not finish within 25 minutes and was stopped.",
-         "Установщик не завершился за 25 мин и был остановлен."),
+        (.installerTimedOut(seconds: 1200),
+         "The installer made no progress for 20 minutes and was stopped. Downloaded files are kept — run Update again to continue.",
+         "Установка не продвигалась 20 мин и была остановлена. Скачанное сохранено — запустите обновление снова, чтобы продолжить."),
         (.couldNotStart("no such file"),
          "The installer could not start: no such file.",
          "Установщик не удалось запустить: no such file."),

@@ -367,6 +367,12 @@ timeout_status() { ( . "$root/scripts/lib-install.sh"; oxs_timeout "$@" ) >/dev/
 check "oxs_timeout passes a command's own status" "$(timeout_status 5 sh -c 'exit 7')" 7
 check "oxs_timeout passes success" "$(timeout_status 5 true)" 0
 check "oxs_timeout reports 124 on expiry" "$(timeout_status 1 sleep 30)" 124
+# a grandchild holding the capture pipe must not keep the caller (the 2 s limit, not the 8 s sleep, ends it)
+# Mutation: lib-install.sh oxs_timeout, `kill -9 $(oxs_tree "$pid")` -> `kill -9 "$pid"` -> RED (8 s).
+gc_start=$SECONDS
+( . "$root/scripts/lib-install.sh"; out=$(oxs_timeout 2 sh -c 'sleep 8 & echo $! > "'"$tmp"'/gc.pid"; wait') ) >/dev/null 2>&1
+if [ $((SECONDS - gc_start)) -lt 6 ]; then pass "oxs_timeout does not wait for a grandchild holding the pipe"; else fail "oxs_timeout waited $((SECONDS - gc_start)) s for a grandchild"; fi
+if [ -s "$tmp/gc.pid" ] && kill -0 "$(cat "$tmp/gc.pid")" 2>/dev/null; then kill -9 "$(cat "$tmp/gc.pid")" 2>/dev/null; fail "oxs_timeout left its grandchild running"; else pass "oxs_timeout stopped the grandchild"; fi
 check "oxs_timeout keeps stdout" "$( . "$root/scripts/lib-install.sh"; oxs_timeout 5 echo hi )" hi
 
 # --- H: VoxCPM2 is opt-in, Apple Silicon with >= 24 GB only -----------------
