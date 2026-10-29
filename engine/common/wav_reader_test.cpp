@@ -13,7 +13,11 @@
 // --- allocation counter: sample-sized allocations made while armed -------------------------------
 static std::atomic<size_t> g_big_min{0};  // 0 = disarmed
 static std::atomic<int>    g_big_count{0};
-void * operator new(size_t n) {
+// All replaced forms pair malloc with free, and are noinline: GCC's -Wmismatched-new-delete otherwise
+// inlines operator delete into callers, sees free() applied to the result of the (builtin-allocator)
+// operator new and warns, although the replaced pair is consistent.
+#define NOINL __attribute__((noinline))
+NOINL void * operator new(size_t n) {
     const size_t m = g_big_min.load();
     if (m && n >= m) {
         g_big_count++;
@@ -22,8 +26,11 @@ void * operator new(size_t n) {
     if (!p) throw std::bad_alloc();
     return p;
 }
-void operator delete(void * p) noexcept { free(p); }
-void operator delete(void * p, size_t) noexcept { free(p); }
+NOINL void * operator new[](size_t n) { return operator new(n); }
+NOINL void operator delete(void * p) noexcept { free(p); }
+NOINL void operator delete[](void * p) noexcept { free(p); }
+NOINL void operator delete(void * p, size_t) noexcept { free(p); }
+NOINL void operator delete[](void * p, size_t) noexcept { free(p); }
 
 static int g_fail = 0;
 static const char * g_cur = "";
