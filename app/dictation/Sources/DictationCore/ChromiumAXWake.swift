@@ -25,7 +25,7 @@ public enum WebAppKind: String, Equatable {
     ]
     private static let electronIDs: Set<String> = [
         "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.tinyspeck.slackmacgap",
-        "com.hnc.Discord", "notion.id", "md.obsidian", "com.figma.Desktop", "com.spotify.client",
+        "com.hnc.Discord", "notion.id", "md.obsidian", "com.figma.Desktop",
     ]
 
     /// nil for an app that is neither: it is never touched.
@@ -34,34 +34,51 @@ public enum WebAppKind: String, Equatable {
             if electronIDs.contains(id) { return .electron }
             if chromiumIDs.contains(id) { return .chromium }
         }
-        // The bundle decides for the rest: Electron ships its own framework; a
-        // Chromium browser ships "<Name> Framework.framework" beside
-        // "<Name> Helper*.app"; CEF embedders ship the CEF framework. A framework
-        // with no matching helper (Sparkle, an SDK) is not an engine.
-        let entries = app.frameworks
+        // The bundle decides for the rest: Electron ships its own framework; CEF
+        // embedders ship the CEF framework; a Chromium browser ships
+        // "<Name> Framework.framework" whose own Versions/*/Helpers holds
+        // "<Name> Helper*.app" (the real layout of Chrome and Brave; the framework
+        // dir alone is not enough: Sparkle or an SDK has no helpers). Listed
+        // lazily: only here, when the bundle id did not decide.
+        let entries = app.list("Frameworks")
         if entries.contains("Electron Framework.framework") { return .electron }
         if entries.contains("Chromium Embedded Framework.framework") { return .chromium }
         let suffix = " Framework.framework"
         for entry in entries where entry.hasSuffix(suffix) {
             let name = String(entry.dropLast(suffix.count))
-            if !name.isEmpty, entries.contains(where: { $0.hasPrefix(name + " Helper") && $0.hasSuffix(".app") }) {
-                return .chromium
+            guard !name.isEmpty else { continue }
+            let versions = "Frameworks/\(entry)/Versions"
+            for version in app.list(versions) {
+                if app.list("\(versions)/\(version)/Helpers")
+                    .contains(where: { $0.hasPrefix(name + " Helper") && $0.hasSuffix(".app") }) {
+                    return .chromium
+                }
             }
         }
         return nil
     }
 }
 
-/// What the app target learned about the frontmost app: its bundle id and the
-/// entries of its `Contents/Frameworks`. Plain values, so classification runs
-/// against fixtures.
-public struct AppIdentity: Equatable {
+/// The frontmost app as classification sees it: its bundle id and a lister of
+/// directories inside its `Contents` (names only, relative path such as
+/// "Frameworks"). A closure, so classification lists the bundle only when the
+/// bundle id did not decide, and runs against fixture trees in tests.
+public struct AppIdentity {
     public var bundleID: String?
-    public var frameworks: [String]
+    public var list: (String) -> [String]
 
-    public init(bundleID: String?, frameworks: [String]) {
+    public init(bundleID: String?, list: @escaping (String) -> [String]) {
         self.bundleID = bundleID
-        self.frameworks = frameworks
+        self.list = list
+    }
+
+    /// The real bundle: directory listings only, nothing is opened or run.
+    public static func onDisk(bundleID: String?, contents: URL?) -> AppIdentity {
+        AppIdentity(bundleID: bundleID) { path in
+            guard let contents else { return [] }
+            let dir = contents.appendingPathComponent(path).path
+            return (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        }
     }
 }
 
@@ -72,6 +89,18 @@ public enum AXAttributeValue: Equatable {
     case unsupported
     /// Any other AXError (raw value).
     case error(Int32)
+
+    /// One `AXUIElementCopyAttributeValue` outcome as a value. `boolean` is the
+    /// value when it came back as a CFBoolean, nil for any other type. A success
+    /// that is not a boolean is an error, never "off": an unknown value must not
+    /// be read as a licence to switch the attribute off.
+    public static func decode(error: Int32, boolean: Bool?) -> AXAttributeValue {
+        switch error {
+        case 0: return boolean.map { .bool($0) } ?? .error(-25201) // kAXErrorIllegalArgument
+        case -25205, -25212: return .unsupported // kAXErrorAttributeUnsupported, kAXErrorNoValue
+        default: return .error(error)
+        }
+    }
 }
 
 /// The AX seam for the application element's boolean attributes. The real one
@@ -99,6 +128,8 @@ public struct AXWake: Equatable {
         case nothing
         /// The attribute was already on; nothing was changed.
         case alreadyOn
+        /// VoiceOver or Switch Control is on: the attribute is never written.
+        case assistiveTech
         case setFailed(Int32)
         case readFailed(Int32)
 
@@ -107,6 +138,7 @@ public struct AXWake: Equatable {
             case .found: return "found"
             case .nothing: return "nothing"
             case .alreadyOn: return "already-on"
+            case .assistiveTech: return "assistive-tech"
             case .setFailed(let c): return "set-failed(\(c))"
             case .readFailed(let c): return "read-failed(\(c))"
             }
@@ -143,21 +175,40 @@ public enum ChromiumAXWake {
     ///   - first: the ordinary AX read. With text or a secure field it is returned as it is.
     ///   - identity: the frontmost app; asked only when `first` has no text.
     ///   - attributes: its AXApplication element.
+    ///   - assistiveTechOn: VoiceOver or Switch Control is running. Then the attribute is
+    ///     NOT written at all: the user's tree may depend on it, and a write (even the
+    ///     restore) could drop it; the press falls to the ordinary path.
     ///   - retry: the same selection read again.
     ///   - spin: pumps the run loop for the given seconds between retries.
-    ///   - now: the clock the wait is measured on, so a slow AX call spends the budget too.
+    ///   - now: the clock the wait is measured on.
     /// - Returns: the retry's read when it answered, else `first`; `wake` says what was tried.
+    ///
+    /// Time: `wait` is a deadline on `now`. No retry starts once it has passed, but an
+    /// AX call already begun runs to its own 0.3 s messaging timeout, so a hung app costs
+    /// at most `wait` + one read (the system-wide and the app source, 3 calls each) +
+    /// the read of the old value, the set and the restore, about 0.4 + 1.8 + 0.9 s.
+    ///
+    /// Restore: the value goes back only when its read returned an actual `false`. When
+    /// it was unknowable (`.unsupported`: Electron does not publish AXManualAccessibility
+    /// for reading) nothing is written back, so a tree somebody else relies on is never
+    /// switched off; for Electron the attribute is the documented, glitch-free switch.
     public static func read(first: AXSelection,
                             identity: () -> AppIdentity?,
                             attributes: AXAppAttributes,
+                            assistiveTechOn: () -> Bool = { false },
                             retry: () -> AXSelection,
                             spin: (TimeInterval) -> Void,
                             now: () -> Date,
                             policy: WakePolicy = defaultPolicy) -> AXSelection {
         if first.hasText || first.secureField { return first }
         guard let app = identity(), let kind = WebAppKind.classify(app) else { return first }
-        let name = kind.attribute
         var base = first
+        if assistiveTechOn() {
+            base.wake = AXWake(kind: kind, outcome: .assistiveTech)
+            return base
+        }
+        let name = kind.attribute
+        var knownOff = false
         switch attributes.read(name) {
         case .error(let code):
             // The old value is unknown: it could not be put back, so it is not changed.
@@ -167,7 +218,9 @@ public enum ChromiumAXWake {
             // Already on: the first read had the tree, a retry changes nothing.
             base.wake = AXWake(kind: kind, outcome: .alreadyOn)
             return base
-        case .bool(false), .unsupported:
+        case .bool(false):
+            knownOff = true
+        case .unsupported:
             break
         }
         let setError = attributes.write(name, true)
@@ -178,9 +231,7 @@ public enum ChromiumAXWake {
         let deadline = now().addingTimeInterval(wait)
         var result = base
         var outcome = AXWake.Outcome.nothing
-        repeat {
-            // Never past the deadline: the last pause is cut to what is left.
-            spin(max(0, min(step, deadline.timeIntervalSince(now()))))
+        while true {
             let next = retry()
             if next.hasText || next.secureField {
                 result = next
@@ -188,8 +239,13 @@ public enum ChromiumAXWake {
                 outcome = .found
                 break
             }
-        } while deadline.timeIntervalSince(now()) > 0.001
-        let restoreError = policy == .restore ? attributes.write(name, false) : 0
+            // The deadline is checked before every AX call, not only after the pauses.
+            let remaining = deadline.timeIntervalSince(now())
+            if remaining <= 0.001 { break }
+            spin(min(step, remaining))
+            if deadline.timeIntervalSince(now()) <= 0.001 { break }
+        }
+        let restoreError = (policy == .restore && knownOff) ? attributes.write(name, false) : 0
         result.wake = AXWake(kind: kind, outcome: outcome, restoreError: restoreError)
         return result
     }

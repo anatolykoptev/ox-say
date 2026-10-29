@@ -24,9 +24,14 @@ final class ChromiumAXWakeTests: XCTestCase {
         }
     }
 
-    private let chrome = AppIdentity(bundleID: "com.google.Chrome", frameworks: [])
-    private let slack = AppIdentity(bundleID: "com.tinyspeck.slackmacgap", frameworks: [])
-    private let safari = AppIdentity(bundleID: "com.apple.Safari", frameworks: [])
+    /// An app whose bundle tree is a dictionary of directory listings (relative to Contents).
+    private func app(_ id: String?, tree: [String: [String]] = [:]) -> AppIdentity {
+        AppIdentity(bundleID: id, list: { tree[$0] ?? [] })
+    }
+
+    private var chrome: AppIdentity { app("com.google.Chrome") }
+    private var slack: AppIdentity { app("com.tinyspeck.slackmacgap") }
+    private var safari: AppIdentity { app("com.apple.Safari") }
 
     private func nothing() -> AXSelection {
         AXSelection(text: nil, hasElement: false, error: -25212, source: .app)
@@ -39,6 +44,7 @@ final class ChromiumAXWakeTests: XCTestCase {
     /// Runs the wake over a scripted retry sequence; `spin` advances a fake clock.
     private func run(_ identity: AppIdentity?, fake: Fake, first: AXSelection? = nil,
                      retries: [AXSelection] = [], policy: WakePolicy = .restore,
+                     assistive: Bool = false,
                      retryCount: UnsafeMutablePointer<Int>? = nil,
                      spun: UnsafeMutablePointer<TimeInterval>? = nil) -> AXSelection {
         var clock = Date(timeIntervalSince1970: 1_000)
@@ -47,6 +53,7 @@ final class ChromiumAXWakeTests: XCTestCase {
             first: first ?? nothing(),
             identity: { identity },
             attributes: fake,
+            assistiveTechOn: { assistive },
             retry: {
                 retryCount?.pointee += 1
                 fake.log.append("retry")
@@ -153,13 +160,65 @@ final class ChromiumAXWakeTests: XCTestCase {
         XCTAssertEqual(result.wake?.outcome, .readFailed(-25204))
     }
 
-    // Electron does not publish AXManualAccessibility for reading: unsupported
-    // means "off", and off is what is restored.
-    func testAnUnsupportedPreviousValueIsRestoredToFalse() {
+    // Electron does not publish AXManualAccessibility for reading: the old value is
+    // unknowable, so false is never written back (a tree VoiceOver relies on stays).
+    // Mutation F5: ChromiumAXWake.read, `(policy == .restore && knownOff)` ->
+    // `(policy == .restore)` -> RED.
+    func testAnUnsupportedPreviousValueIsNeverRestoredToFalse() {
         let fake = Fake()
         fake.values["AXManualAccessibility"] = .unsupported
-        _ = run(slack, fake: fake, retries: [found("x")])
-        XCTAssertEqual(fake.log.last, "write AXManualAccessibility=false")
+        let result = run(slack, fake: fake, retries: [found("x")])
+        XCTAssertEqual(fake.log, ["read AXManualAccessibility", "write AXManualAccessibility=true", "retry"])
+        XCTAssertEqual(result.text, "x")
+        XCTAssertEqual(result.wake?.restoreError, 0)
+    }
+
+    // VoiceOver or Switch Control on: the attribute is not read, set or restored.
+    // Mutation F4: ChromiumAXWake.read, delete the `assistiveTechOn()` guard -> RED.
+    func testAssistiveTechMeansNoAttributeWriteAtAll() {
+        for kindApp in [chrome, slack] {
+            let fake = Fake()
+            var retries = 0
+            let result = run(kindApp, fake: fake, assistive: true, retryCount: &retries)
+            XCTAssertEqual(fake.log, [], "no AX call at all")
+            XCTAssertEqual(retries, 0)
+            XCTAssertEqual(result.wake?.outcome, .assistiveTech)
+        }
+    }
+
+    // A non-boolean success (a CFNumber) is an error, never "off".
+    // Mutation F6: AXAttributeValue.decode, `?? .error(-25201)` -> `?? .bool(false)` -> RED.
+    func testDecodeNeverReadsAnUnknownValueAsOff() {
+        XCTAssertEqual(AXAttributeValue.decode(error: 0, boolean: nil), .error(-25201))
+        XCTAssertEqual(AXAttributeValue.decode(error: 0, boolean: true), .bool(true))
+        XCTAssertEqual(AXAttributeValue.decode(error: 0, boolean: false), .bool(false))
+        XCTAssertEqual(AXAttributeValue.decode(error: -25205, boolean: nil), .unsupported)
+        XCTAssertEqual(AXAttributeValue.decode(error: -25212, boolean: nil), .unsupported)
+        XCTAssertEqual(AXAttributeValue.decode(error: -25204, boolean: nil), .error(-25204))
+    }
+
+    // The earlier trail survives a successful retry: the log keeps every source.
+    // Mutation F7: ChromiumAXWake.read, delete `result.trail = first.attempts + next.attempts` -> RED.
+    func testTheRetryKeepsTheEarlierSourcesInTheTrail() {
+        let fake = Fake()
+        let first = AXSelection(text: nil, hasElement: false, error: -25204, source: .systemWide)
+        let next = AXSelection(text: "t", hasElement: true, error: 0, source: .app)
+        let result = run(chrome, fake: fake, first: first, retries: [next])
+        XCTAssertEqual(result.trail, [AXSelection.Attempt(source: .systemWide, error: -25204),
+                                      AXSelection.Attempt(source: .app, error: 0)])
+    }
+
+    // No AX call starts once the deadline passed, even when the pause overshot it.
+    // Mutation F8: ChromiumAXWake.read, delete the `if deadline.timeIntervalSince(now()) <= 0.001 { break }`
+    // after the spin -> RED.
+    func testNoRetryStartsAfterTheDeadline() {
+        let fake = Fake()
+        var clock = Date(timeIntervalSince1970: 1_000)
+        var retries = 0
+        _ = ChromiumAXWake.read(first: nothing(), identity: { self.chrome }, attributes: fake,
+                                retry: { retries += 1; return self.nothing() },
+                                spin: { _ in clock = clock.addingTimeInterval(1) }, now: { clock })
+        XCTAssertEqual(retries, 1, "the pause overshot the deadline: no second read")
     }
 
     // Already on (the user's own setting or another tool): leave it as found, no retry
@@ -260,46 +319,99 @@ final class ChromiumAXWakeTests: XCTestCase {
 
     // MARK: classification
 
+    /// The real layout of a Chromium browser (see the installed Chrome and Brave): the helpers live
+    /// inside the framework's Versions/<v>/Helpers, not beside it.
+    private func chromiumTree(_ name: String) -> [String: [String]] {
+        let fw = "Frameworks/\(name) Framework.framework"
+        return ["Frameworks": ["\(name) Framework.framework", "Sparkle.framework"],
+                "\(fw)/Versions": ["1.2.3", "Current"],
+                "\(fw)/Versions/1.2.3/Helpers": ["\(name) Helper (Renderer).app", "\(name) Helper.app"],
+                "\(fw)/Versions/Current/Helpers": ["\(name) Helper (Renderer).app", "\(name) Helper.app"]]
+    }
+
     func testKnownBrowsersAndElectronAppsAreRecognisedByBundleID() {
         for id in ["com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac", "org.chromium.Chromium"] {
-            XCTAssertEqual(WebAppKind.classify(AppIdentity(bundleID: id, frameworks: [])), .chromium, id)
+            XCTAssertEqual(WebAppKind.classify(app(id)), .chromium, id)
         }
         for id in ["com.microsoft.VSCode", "com.tinyspeck.slackmacgap"] {
-            XCTAssertEqual(WebAppKind.classify(AppIdentity(bundleID: id, frameworks: [])), .electron, id)
+            XCTAssertEqual(WebAppKind.classify(app(id)), .electron, id)
         }
+    }
+
+    // Spotify is CEF, not Electron: the id list does not claim it either way.
+    func testSpotifyIsNotInTheElectronIDList() {
+        XCTAssertNil(WebAppKind.classify(app("com.spotify.client")))
+    }
+
+    // The bundle is listed only when the id did not decide.
+    func testAKnownIDListsNothing() {
+        var listings = 0
+        let known = AppIdentity(bundleID: "com.google.Chrome", list: { _ in listings += 1; return [] })
+        XCTAssertEqual(WebAppKind.classify(known), .chromium)
+        XCTAssertEqual(listings, 0)
+        let unknown = AppIdentity(bundleID: "com.example.x", list: { _ in listings += 1; return [] })
+        XCTAssertNil(WebAppKind.classify(unknown))
+        XCTAssertGreaterThan(listings, 0)
     }
 
     // A new Electron app no list knows: the bundle's own framework gives it away.
     func testAnUnknownElectronAppIsRecognisedByItsFramework() {
-        let id = AppIdentity(bundleID: "com.example.newapp",
-                             frameworks: ["Electron Framework.framework", "Squirrel.framework", "NewApp Helper.app"])
+        let id = app("com.example.newapp", tree: ["Frameworks": ["Electron Framework.framework", "Squirrel.framework"]])
         XCTAssertEqual(WebAppKind.classify(id), .electron)
     }
 
-    // A new Chromium browser: "<Name> Framework.framework" beside "<Name> Helper*.app".
-    func testAnUnknownChromiumBrowserIsRecognisedByFrameworkAndHelpers() {
-        let id = AppIdentity(bundleID: "com.example.newbrowser",
-                             frameworks: ["Newbrowser Framework.framework", "Newbrowser Helper (Renderer).app",
-                                          "Newbrowser Helper (GPU).app"])
-        XCTAssertEqual(WebAppKind.classify(id), .chromium)
+    // A new Chromium browser, in the real layout: "<Name> Framework.framework/Versions/*/Helpers/<Name> Helper*.app".
+    // Mutation F9: WebAppKind.classify, look beside the framework (`app.list("Frameworks")`) instead of its
+    // Versions/*/Helpers -> RED.
+    func testAnUnknownChromiumBrowserIsRecognisedByTheRealLayout() {
+        XCTAssertEqual(WebAppKind.classify(app("com.example.newbrowser", tree: chromiumTree("Newbrowser"))), .chromium)
+    }
+
+    // Helpers beside the framework is a layout no browser has: not a match.
+    func testHelpersBesideTheFrameworkAreNotTheRealLayout() {
+        let id = app("com.example.fiction", tree: ["Frameworks": ["Fiction Framework.framework", "Fiction Helper (GPU).app"]])
+        XCTAssertNil(WebAppKind.classify(id))
     }
 
     func testCEFEmbeddersAreChromium() {
-        let id = AppIdentity(bundleID: "com.example.cef", frameworks: ["Chromium Embedded Framework.framework"])
+        let id = app("com.example.cef", tree: ["Frameworks": ["Chromium Embedded Framework.framework"]])
         XCTAssertEqual(WebAppKind.classify(id), .chromium)
     }
 
-    // A "Framework" with no matching helper is not a browser (Sparkle, plain SDK bundles).
+    // A "Framework" with no helpers (Sparkle, an SDK) is not a browser.
     func testAnOrdinaryFrameworkIsNotChromium() {
-        let id = AppIdentity(bundleID: "com.example.native",
-                             frameworks: ["Sparkle.framework", "Foo Framework.framework", "Bar Helper.app"])
+        let id = app("com.example.native", tree: ["Frameworks": ["Foo Framework.framework", "Bar Helper.app"],
+                                                  "Frameworks/Foo Framework.framework/Versions": ["A"],
+                                                  "Frameworks/Foo Framework.framework/Versions/A/Helpers": ["Other.app"]])
         XCTAssertNil(WebAppKind.classify(id))
     }
 
     func testSafariAndNativeAppsAreNotWebApps() {
-        XCTAssertNil(WebAppKind.classify(AppIdentity(bundleID: "com.apple.Safari", frameworks: [])))
-        XCTAssertNil(WebAppKind.classify(AppIdentity(bundleID: "com.apple.TextEdit", frameworks: [])))
-        XCTAssertNil(WebAppKind.classify(AppIdentity(bundleID: nil, frameworks: [])))
+        XCTAssertNil(WebAppKind.classify(app("com.apple.Safari")))
+        XCTAssertNil(WebAppKind.classify(app("com.apple.TextEdit")))
+        XCTAssertNil(WebAppKind.classify(app(nil)))
+    }
+
+    // The classifier against the REAL bundle trees of installed apps: directory listings only, no AX.
+    // The bundle id is withheld so the structure alone decides. CI has none of these apps: skipped.
+    func testTheStructuralRuleOnTheRealInstalledBundles() {
+        let cases: [(path: String, kind: WebAppKind?)] = [
+            ("/Applications/Google Chrome.app", .chromium), ("/Applications/Brave Browser.app", .chromium),
+            ("/Applications/Slack.app", .electron), ("/Applications/Visual Studio Code.app", .electron),
+            ("/Applications/Safari.app", nil), ("/System/Applications/TextEdit.app", nil),
+        ]
+        var checked = 0
+        var skipped: [String] = []
+        for c in cases {
+            let contents = URL(fileURLWithPath: c.path).appendingPathComponent("Contents")
+            guard FileManager.default.fileExists(atPath: contents.path) else { skipped.append(c.path); continue }
+            let kind = WebAppKind.classify(AppIdentity.onDisk(bundleID: nil, contents: contents))
+            XCTAssertEqual(kind, c.kind, "\(c.path) classified as \(String(describing: kind))")
+            checked += 1
+        }
+        // The shim's XCTest has no XCTSkip: say so on the log and pass vacuously.
+        if checked == 0 { print("SKIPPED testTheStructuralRuleOnTheRealInstalledBundles: none of the sample apps is installed here: \(skipped)") }
+        else { print("real bundles checked: \(checked), not installed: \(skipped)") }
     }
 
     // MARK: app wiring
@@ -319,6 +431,40 @@ final class ChromiumAXWakeTests: XCTestCase {
         XCTAssertTrue(body.contains("return ChromiumAXWake.read(first: first,"))
         XCTAssertTrue(body.contains("retry: once,"), "the retry is the same selection read")
         XCTAssertTrue(body.contains("AppElementAttributes(root:"), "the AX seam is the app element's")
-        XCTAssertTrue(source.contains("Contents/Frameworks"), "the bundle structure is the identity signal")
+        XCTAssertTrue(body.contains("assistiveTechOn:") && body.contains("isVoiceOverEnabled")
+                      && body.contains("isSwitchControlEnabled"), "the assistive-tech check is wired")
+        XCTAssertTrue(source.contains("AppIdentity.onDisk("), "the bundle structure is the identity signal")
+    }
+
+    // MARK: one press at a time
+
+    func testASecondPressInsideTheFirstIsRefused() {
+        let gate = CaptureGate()
+        XCTAssertTrue(gate.begin())
+        XCTAssertFalse(gate.begin(), "a press delivered while the capture spins the run loop")
+        gate.end()
+        XCTAssertTrue(gate.begin(), "the next press after the first ended")
+        gate.end()
+        gate.end()
+        XCTAssertTrue(gate.begin(), "an extra end is harmless")
+    }
+
+    /// Mutation F10: AppDelegate.speakSelection, delete `guard capture.beginPress() else { return }` -> RED;
+    /// SelectionCapture, `gate.end()` removed from the onSelection getter -> RED (the next press is refused for good).
+    func testTheAppGuardsOnePressAtATime() throws {
+        let dir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/OxSayDictation")
+        let delegate = MeetingWiringTests.stripComments(try String(contentsOf: dir.appendingPathComponent("AppDelegate.swift"), encoding: .utf8))
+        let start = try XCTUnwrap(delegate.range(of: "private func speakSelection() {"))
+        let end = try XCTUnwrap(delegate.range(of: "\n    }\n", range: start.upperBound..<delegate.endIndex))
+        let body = String(delegate[start.lowerBound..<end.upperBound])
+        let install = try XCTUnwrap(body.range(of: "guard !refuseSpeechWhileUpdating() else { return }"))
+        let press = try XCTUnwrap(body.range(of: "guard capture.beginPress() else { return }"))
+        let capture = try XCTUnwrap(body.range(of: "capture.capture()"))
+        XCTAssertLessThan(install.lowerBound, press.lowerBound)
+        XCTAssertLessThan(press.lowerBound, capture.lowerBound)
+        let cap = MeetingWiringTests.stripComments(try String(contentsOf: dir.appendingPathComponent("SelectionCapture.swift"), encoding: .utf8))
+        XCTAssertTrue(cap.contains("get { [self] report in gate.end(); reporter?(report) }"))
     }
 }

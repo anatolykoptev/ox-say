@@ -12,7 +12,17 @@ final class SelectionCapture {
     private let slowClipboard: SlowClipboardMemory
     /// One report per speak press — the path taken and every AX source's
     /// result, never content. Lets the real app's AX path be checked from the log.
-    var onSelection: ((SelectionReport) -> Void)?
+    var onSelection: ((SelectionReport) -> Void)? {
+        // Always set, so the press ends at the report SelectionBorrow makes once per press, whoever listens.
+        get { [self] report in gate.end(); reporter?(report) }
+        set { reporter = newValue }
+    }
+    private var reporter: ((SelectionReport) -> Void)?
+    /// One press at a time: the capture spins the run loop, which delivers a second hotkey press inside the first.
+    private let gate = CaptureGate()
+
+    /// True when the press may start; the matching `onSelection` of `capture()` ends it.
+    func beginPress() -> Bool { gate.begin() }
 
     init(slowClipboard: SlowClipboardMemory) { self.slowClipboard = slowClipboard }
 
@@ -52,20 +62,18 @@ final class SelectionCapture {
         return ChromiumAXWake.read(first: first,
                                    identity: { Self.identity(of: front) },
                                    attributes: AppElementAttributes(root: root),
+                                   assistiveTechOn: {
+                                       NSWorkspace.shared.isVoiceOverEnabled || NSWorkspace.shared.isSwitchControlEnabled
+                                   },
                                    retry: once,
                                    spin: { RunLoop.current.run(until: Date().addingTimeInterval($0)) },
                                    now: Date.init)
     }
 
-    /// The bundle id and the entries of `Contents/Frameworks`: what tells an
-    /// Electron/Chromium app apart when no bundle-id list knows it.
+    /// The bundle id and a lister of the bundle's `Contents` (read only when the id does not decide).
     private static func identity(of app: NSRunningApplication) -> AppIdentity {
-        var frameworks: [String] = []
-        if let url = app.bundleURL?.appendingPathComponent("Contents/Frameworks"),
-           let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) {
-            frameworks = names
-        }
-        return AppIdentity(bundleID: app.bundleIdentifier, frameworks: frameworks)
+        AppIdentity.onDisk(bundleID: app.bundleIdentifier,
+                           contents: app.bundleURL?.appendingPathComponent("Contents"))
     }
 
     /// A hung target must not freeze the main thread: every element queried
@@ -119,12 +127,13 @@ private struct AppElementAttributes: AXAppAttributes {
         let error = AXUIElementCopyAttributeValue(root, name as CFString, &value)
         switch error {
         case .success:
-            guard let value, CFGetTypeID(value) == CFBooleanGetTypeID() else { return .unsupported }
-            return .bool(CFBooleanGetValue((value as! CFBoolean)))
-        case .attributeUnsupported, .noValue:
-            return .unsupported
+            let boolean: Bool? = {
+                guard let value, CFGetTypeID(value) == CFBooleanGetTypeID() else { return nil }
+                return CFBooleanGetValue((value as! CFBoolean))
+            }()
+            return AXAttributeValue.decode(error: error.rawValue, boolean: boolean)
         default:
-            return .error(error.rawValue)
+            return AXAttributeValue.decode(error: error.rawValue, boolean: nil)
         }
     }
 
