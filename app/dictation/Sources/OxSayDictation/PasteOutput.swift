@@ -217,8 +217,11 @@ final class PasteOutput: TextOutput {
         // Only Command: a modifier still held from the hotkey must not turn this into ⌃⌘V.
         let down = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: true)
         down?.flags = .maskCommand
+        // The event's string is filled from the layout's plain table: say "v" outright (Dvorak – QWERTY ⌘).
+        down?.keyboardSetUnicodeString(stringLength: PasteKey.commandVUnits.count, unicodeString: PasteKey.commandVUnits)
         let up = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: false)
         up?.flags = .maskCommand
+        up?.keyboardSetUnicodeString(stringLength: PasteKey.commandVUnits.count, unicodeString: PasteKey.commandVUnits)
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
     }

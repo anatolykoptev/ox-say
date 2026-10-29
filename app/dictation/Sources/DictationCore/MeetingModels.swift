@@ -42,9 +42,10 @@ public struct MeetingInfo: Equatable {
     /// The daemon's stable code for why the meeting (or its notes) failed (`fail_reason`); nil when none, or for a
     /// failure recorded before codes existed. `MeetingFailure` turns it into a sentence.
     public var failReason: String?
-    /// The daemon's word that a voices retry of a meeting with unavailable voices would be accepted now
-    /// (`voices_retryable`): diarization is ready, the reason is one a retry can fix, the audio is here.
-    public var voicesRetryable: Bool
+    /// The daemon's word that a voices retry would be accepted now (`voices_retryable`): for unavailable voices,
+    /// diarization is ready, the reason is one a retry can fix, the audio is here; for a failed run, the audio is here.
+    /// nil when the daemon did not say (no voices problem, or a daemon that predates the field for the failed kind).
+    public var voicesRetryable: Bool?
     /// Retention removed the recording (`audio_deleted`).
     public var audioDeleted: Bool
     /// How long the call was, in seconds; nil until the recording is over.
@@ -54,7 +55,7 @@ public struct MeetingInfo: Equatable {
                 notesPending: String? = nil, warnings: [String] = [], error: String? = nil,
                 notesMD: String? = nil, transcriptMD: String? = nil, voiceMode: String? = nil, diarReason: String? = nil,
                 audioDeleted: Bool = false, durationSeconds: Double? = nil, failReason: String? = nil,
-                voicesRetryable: Bool = false) {
+                voicesRetryable: Bool? = nil) {
         self.id = id
         self.dir = dir
         self.title = title
@@ -130,7 +131,7 @@ public struct MeetingInfo: Equatable {
                            audioDeleted: obj["audio_deleted"] as? Bool ?? false,
                            durationSeconds: (obj["duration_s"] as? Double).flatMap { $0 > 0 ? $0 : nil },
                            failReason: nonEmpty(obj["fail_reason"] as? String),
-                           voicesRetryable: obj["voices_retryable"] as? Bool ?? false)
+                           voicesRetryable: obj["voices_retryable"] as? Bool)
     }
 
     private static func nonEmpty(_ s: String?) -> String? {
