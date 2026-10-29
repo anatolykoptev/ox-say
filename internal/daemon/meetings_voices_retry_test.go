@@ -152,6 +152,60 @@ func TestVoicesRetryNeedsTheFarSideAudio(t *testing.T) {
 	}
 }
 
+// #340: an external deletion of me.pcm (a crash, a failed unlink, a user) leaves them.pcm behind. The retry would be
+// accepted and then bounced by the transcription's half-deleted-audio guard, so "Try Again" did nothing until the
+// retention date. It is offered and accepted only when the mic file is here or the manifest records the mic as silent
+// (a side that never had audio is not a loss).
+// Mutation: internal/meeting/runner.go wantsVoicesAgain, `return !(transcriptReadable(dir) && channelLost(err, m,
+// WarnNoMicAudio))` -> `return true` -> RED (served voices_retryable true, POST 202) in the rows with the mic file gone.
+func TestVoicesRetryNeedsTheMicFileUnlessTheMicWasSilent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		warns   []string
+		deleted bool
+		rmMe    bool
+		want    bool
+	}{
+		{"mic file here", []string{meeting.WarnDiarUnavailable}, false, false, true},
+		{"mic file gone, mic not recorded silent", []string{meeting.WarnDiarUnavailable}, false, true, false},
+		{"failed kind, mic file gone", []string{meeting.WarnNoDiarization}, false, true, false},
+		{"mic file gone, mic recorded silent", []string{meeting.WarnDiarUnavailable, meeting.WarnNoMicAudio}, false, true, true},
+		{"mic recorded silent but audio marked deleted", []string{meeting.WarnDiarUnavailable, meeting.WarnNoMicAudio}, true, true, false},
+	} {
+		d, mux, _, calls := voicesFixture(t)
+		id := unavailableMeeting(t, d, mux, meeting.DiarModelsMissing)
+		dir, _ := d.Meet.Store.Dir(id)
+		// a finished meeting has a transcript, which is what makes a missing mic file a loss
+		if err := os.WriteFile(filepath.Join(dir, meeting.TranscriptJSON), []byte("[]"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if tc.rmMe {
+			if err := os.Remove(filepath.Join(dir, meeting.MePCM)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := d.Meet.Store.Update(id, func(m *meeting.Manifest) { m.Warnings = tc.warns; m.AudioDeleted = tc.deleted }); err != nil {
+			t.Fatal(err)
+		}
+		if tc.warns[0] == meeting.WarnDiarUnavailable {
+			if got := servedRetryable(t, mux, id); got != tc.want {
+				t.Errorf("%s: voices_retryable = %v, want %v", tc.name, got, tc.want)
+			}
+		}
+		rec := call(t, mux, "POST", "/v1/meetings/"+id+"/voices", "")
+		wantCode := http.StatusConflict
+		if tc.want {
+			wantCode = http.StatusAccepted
+		}
+		if rec.Code != wantCode {
+			t.Errorf("%s: POST = %d %s, want %d", tc.name, rec.Code, rec.Body, wantCode)
+		}
+		if !tc.want && (d.Meet.Active() != 0 || calls.Load() != 0) {
+			t.Errorf("%s: a refused retry queued work", tc.name)
+		}
+	}
+}
+
 // servedRetryable reads voices_retryable from the JSON the daemon serves for one meeting, in the list and in the
 // detail, and fails when the two disagree.
 func servedRetryable(t *testing.T, mux http.Handler, id string) bool {

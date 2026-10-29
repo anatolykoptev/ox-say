@@ -800,6 +800,53 @@ func TestVoiceReadErrorTellsRemovedFromHalfRemoved(t *testing.T) {
 	}
 }
 
+// #328.1: a stray path glued to a Markdown or tag edge is still a path.
+// Mutation: design.go absPathStart, drop `[`, backtick, `<` and `>` from the
+// start class -> every row but the first leaks -> RED.
+func TestScrubStrayPathAfterMarkupEdge(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"see [/tmp/a](x) now", "see [[path]](x) now"},
+		{"<b>/tmp/c</b>", "<b>[path]</b>"},
+		{"ran `/tmp/a.wav` twice", "ran `[path]` twice"},
+		{"a>/tmp/a.wav now", "a>[path] now"},
+		{"x <b>/v1</b> y", "x <b>/v1</b> y"},
+		{"open (/tmp/a.wav)", "open ([path])"},
+	} {
+		if got := scrubStrayPath(tc.in); got != tc.want {
+			t.Errorf("scrubStrayPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// #328.2: a bare API word ("/v1", "/v2") is not a path; a comma or colon glued
+// to a file name stays inside it (a name may hold both), so the rest of the
+// word is scrubbed with it rather than leaked.
+// Mutation: design.go scrubStrayPath, accept only the "/v1/" prefix again ->
+// the "/v1" and "/v2" rows are scrubbed -> RED.
+func TestScrubStrayPathKeepsBareAPIWord(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"GET /v1 failed", "GET /v1 failed"},
+		{"GET /v1: denied", "GET /v1: denied"},
+		{"GET /v2/models failed", "GET /v2/models failed"},
+		{"GET /v1x failed", "GET [path] failed"},
+		{"GET /v10 failed", "GET /v10 failed"},
+		{"POST /v1/speak failed", "POST /v1/speak failed"},
+		{"GET /v1/meetings/abc/voices failed", "GET /v1/meetings/abc/voices failed"},
+		{"open /v1/Users/anatolykoptev/x.wav now", "open [path] now"},
+		{"open /v1/../../Users/x now", "open [path] now"},
+		{"open /v1/tmp/x now", "open [path] now"},
+		{"open /v7/x.wav now", "open [path] now"},
+		{"open /v2026/a now", "open [path] now"},
+		{"open /Users/x/a.wav,b now", "open [path] now"},
+		{"open /Users/x/a.wav:permission now", "open [path] now"},
+		{"open /tmp/clip#2,final.wav now", "open [path] now"},
+	} {
+		if got := scrubStrayPath(tc.in); got != tc.want {
+			t.Errorf("scrubStrayPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // #323.1 / #160.7: a path outside every known root is cut by the same rule as
 // the tail under a root, so a quote inside its file name does not leak.
 // Mutation: design.go scrubStrayPath, end the path at the first quote again

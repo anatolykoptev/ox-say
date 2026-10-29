@@ -101,8 +101,11 @@ func TestVoicesRetryRoute(t *testing.T) {
 	}
 	broken := groupMeeting(t, d, mux, meeting.StatusDone)
 	dir, _ := d.Meet.Store.Dir(broken)
-	if err := os.WriteFile(filepath.Join(dir, meeting.ThemPCM), make([]byte, 64000), 0o600); err != nil {
-		t.Fatal(err)
+	// both channels: with the mic file gone and a transcript standing, the transcription would bounce the retry (#340)
+	for _, name := range []string{meeting.ThemPCM, meeting.MePCM} {
+		if err := os.WriteFile(filepath.Join(dir, name), make([]byte, 64000), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := d.Meet.Store.Update(broken, func(m *meeting.Manifest) {
 		m.VoiceMode, m.Voices, m.Warnings, m.DiarReason = "", 0, []string{meeting.WarnNoDiarization}, meeting.DiarEngineError
