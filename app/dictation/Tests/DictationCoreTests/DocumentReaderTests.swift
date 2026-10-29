@@ -206,20 +206,24 @@ final class DocumentReaderTests: XCTestCase {
         XCTAssertEqual(decoded, String(repeating: russian, count: 5))
     }
 
-    /// #175: `NSString.stringEncoding(for:)` takes about a minute on 50 MB of Windows-1251. The guess is made on a sample
-    /// spread over the file and the whole file is then decoded once, so a big file costs a decode, not a guess.
-    /// 8 MB took 9 s before; the bound is loose for a loaded host.
-    /// Mutation: DocumentReader.decode, `if data.count > 2 * guessSampleBytes {` -> `if false {` -> RED (the time bound).
-    func testABigWindows1251FileIsDecodedWithoutGuessingOnAllOfIt() throws {
+    /// #175: `NSString.stringEncoding(for:)` takes about a minute on 50 MB of Windows-1251. A big file is guessed on a
+    /// sample spread over it (never on the file) and decoded once. Structural, not timed: the buffers the guesser receives.
+    /// Mutation: DocumentReader.decode, `if data.count > 2 * guessSampleBytes {` -> `if false {` -> RED (the guesser gets the whole file).
+    /// Mutation: DocumentReader.decode, `let sample = guessSample(data)` -> `let sample = data.prefix(guessSampleBytes)` -> RED (not the sample).
+    func testABigWindows1251FileIsGuessedOnTheSampleNotOnAllOfIt() throws {
         let paragraph = russian + "Съешь же ещё этих мягких французских булок, да выпей чаю. "
-        let text = String(repeating: paragraph, count: 8_000_000 / paragraph.utf16.count)
+        let text = String(repeating: "Plain ASCII header line for the file.\n", count: 2_000)
+            + String(repeating: paragraph, count: 3_000_000 / paragraph.utf16.count)
         let data = try XCTUnwrap(text.data(using: .windowsCP1251))
-        XCTAssertGreaterThan(data.count, 7_000_000)
-        let started = Date()
+        XCTAssertGreaterThan(data.count, 2 * DocumentReader.guessSampleBytes)
+        var seen: [Data] = []
+        DocumentReader.guessSpy = { seen.append($0) }
+        defer { DocumentReader.guessSpy = nil }
         let decoded = try DocumentReader.decode(data)
-        let took = Date().timeIntervalSince(started)
         XCTAssertEqual(decoded, text)
-        XCTAssertLessThan(took, 4, "decoding \(data.count) bytes took \(took) s")
+        XCTAssertEqual(seen.count, 1, "one guess")
+        XCTAssertEqual(seen.first, DocumentReader.guessSample(data), "the guesser receives the spread sample")
+        XCTAssertLessThanOrEqual(seen.first?.count ?? .max, DocumentReader.guessSampleBytes)
     }
 
     /// The sample is spread over the file: Russian text that starts after a long ASCII head is in it, and what is decoded

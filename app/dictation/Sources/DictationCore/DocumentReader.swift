@@ -162,12 +162,15 @@ public enum DocumentReader {
         // it, the guess is made on everything, as it always was.
         if data.count > 2 * guessSampleBytes {
             var sampled: NSString?
-            let encoding = NSString.stringEncoding(for: guessSample(data), encodingOptions: [.suggestedEncodingsKey: suggested],
+            let sample = guessSample(data)
+            guessSpy?(sample)
+            let encoding = NSString.stringEncoding(for: sample, encodingOptions: [.suggestedEncodingsKey: suggested],
                                                    convertedString: &sampled, usedLossyConversion: nil)
             if suggested.contains(encoding), let whole = String(data: data, encoding: String.Encoding(rawValue: encoding)),
                !whole.unicodeScalars.contains("\u{0}") { return whole }
         }
         var converted: NSString?
+        guessSpy?(data)
         _ = NSString.stringEncoding(for: data, encodingOptions: [.suggestedEncodingsKey: suggested],
                                     convertedString: &converted, usedLossyConversion: nil)
         guard let guessed = converted as String?, !guessed.unicodeScalars.contains("\u{0}") else { throw DocumentError.unknownEncoding }
@@ -177,6 +180,9 @@ public enum DocumentReader {
     /// What the encoding guess reads of a big file: `guessChunks` pieces of the same size spread evenly over it, so
     /// text that starts after a long ASCII head is still seen. The encodings guessed between are single-byte, so a piece
     /// cut anywhere is fine.
+    /// Test seam: sees every buffer handed to the encoding guesser, so a test asserts the work (bytes guessed on) instead
+    /// of a wall-clock bound.
+    nonisolated(unsafe) static var guessSpy: ((Data) -> Void)?
     static let guessSampleBytes = 256 * 1024
     static let guessChunks = 16
     static func guessSample(_ data: Data) -> Data {

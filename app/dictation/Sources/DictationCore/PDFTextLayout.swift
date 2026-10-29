@@ -209,10 +209,15 @@ enum PDFTextLayout {
     /// Joins two lines of one paragraph: `informa-` + `tion` is one word; a
     /// hyphen after a letter and before a capital stays (`Ivanov-Petrov`).
     static func join(_ head: String, _ tail: String) -> String {
+        joinCalls += 1
         var joined = head
         append(tail, to: &joined)
         return joined
     }
+
+    /// Test seam: how many times the copying `join` ran. Building a paragraph does not call it (only a paragraph
+    /// continued on the next page does), so a test asserts the work instead of a wall-clock bound.
+    nonisolated(unsafe) static var joinCalls = 0
 
     /// `join`, in place: a paragraph of many lines is built in linear time (a page of 40 000 lines took 9 s when every
     /// join copied the whole head, #175).
