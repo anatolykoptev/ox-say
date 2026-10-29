@@ -70,11 +70,24 @@ check_help_flags() {
 }
 
 # write_pins_stamp <pins.env> <out-dir>: out-dir/pins.env, the upstream repos and commits the binaries
-# in out-dir were built from (the repo and commit lines of engine/pins.env, nothing else). ox-say-bench
-# reports them from here, not from the checkout it happens to run in, whose pins.env may have moved on.
+# in out-dir were built from: the repo and commit lines of engine/pins.env for the engines whose binary is
+# in out-dir, nothing else (an engine a gate skipped, such as audio.cpp on Intel, leaves no pin behind).
+# ox-say-bench reports them from here, not from the checkout it happens to run in, whose pins.env may have moved on.
 write_pins_stamp() {
-    local src=$1 out=$2
+    local src=$1 out=$2 prefixes="" bin p
     [ -f "$src" ] || { echo "engine/lib-check.sh: $src is missing; cannot stamp the pins" >&2; return 1; }
-    grep -E '^[A-Z0-9_]+_(REPO|COMMIT)=' "$src" > "$out/pins.env.tmp" || { rm -f "$out/pins.env.tmp"; echo "engine/lib-check.sh: $src has no *_REPO or *_COMMIT lines" >&2; return 1; }
+    for bin in tts-server ox-stt ox-align ox-llm ox-diar audiocpp_server; do
+        [ -f "$out/$bin" ] || continue
+        case $bin in
+            tts-server) p="QWENTTS|GGML" ;;
+            ox-stt | ox-align) p="WHISPER" ;;
+            ox-llm) p="LLAMACPP" ;;
+            ox-diar) p="DIAR|FLUIDAUDIO" ;;
+            audiocpp_server) p="AUDIOCPP" ;;
+        esac
+        prefixes="${prefixes:+$prefixes|}$p"
+    done
+    [ -n "$prefixes" ] || { echo "engine/lib-check.sh: no engine binary in $out; nothing to stamp" >&2; return 1; }
+    grep -E "^($prefixes)_(REPO|COMMIT)=" "$src" > "$out/pins.env.tmp" || { rm -f "$out/pins.env.tmp"; echo "engine/lib-check.sh: $src has no pin for the engines in $out" >&2; return 1; }
     mv "$out/pins.env.tmp" "$out/pins.env"
 }

@@ -110,3 +110,23 @@ func TestPinsComeFromTheStampNextToTheBinaries(t *testing.T) {
 		t.Fatalf("stamp: %q", got)
 	}
 }
+
+// The report starts from the engine directory it was given: its pins line is
+// the stamp there, and the footnote count is the -runs value.
+// Mutation: main.go newReport, `r.host(ctx, o.engineDir)` -> `r.host(ctx, ".")`
+// -> RED.
+func TestNewReportReadsPinsNextToTheEngineBinaries(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "pins.env"), []byte("QWENTTS_COMMIT=aaaaaaaaaaaaaaa\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	r := newReport(t.Context(), options{engineDir: dir, runs: 7})
+	if got := strings.Join(r.hostLines, "\n"); !strings.Contains(got, "QWENTTS_COMMIT=aaaaaaa") {
+		t.Fatalf("host lines lack the stamped pins:\n%s", got)
+	}
+	r.single("x")
+	if !strings.Contains(r.markdown(), "median of 7 warm runs") {
+		t.Fatalf("the run count did not reach the report")
+	}
+}

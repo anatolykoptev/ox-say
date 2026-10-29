@@ -82,18 +82,32 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ox-say-bench:", err)
 		os.Exit(2)
 	}
-	unlock, err := lockRun()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err = runLocked(ctx, o, bench)
+	stop()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ox-say-bench:", err)
 		os.Exit(1)
 	}
-	defer unlock()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := bench(ctx, o); err != nil {
-		fmt.Fprintln(os.Stderr, "ox-say-bench:", err)
-		os.Exit(1)
+}
+
+// runLocked runs the measurements while holding the bench lock; run is not
+// called when another bench holds it.
+func runLocked(ctx context.Context, o options, run func(context.Context, options) error) error {
+	unlock, err := lockRun()
+	if err != nil {
+		return err
 	}
+	defer unlock()
+	return run(ctx, o)
+}
+
+// newReport starts the report: the run count its footnote names and the host
+// lines, with the engine pins read from the stamp next to o.engineDir's binaries.
+func newReport(ctx context.Context, o options) *report {
+	r := &report{runs: o.runs}
+	r.host(ctx, o.engineDir)
+	return r
 }
 
 // bench runs every measurement. A failing TTS model or STT device is
@@ -124,8 +138,7 @@ func bench(ctx context.Context, o options) error {
 	if err != nil {
 		return err
 	}
-	r := &report{runs: o.runs}
-	r.host(ctx, o.engineDir)
+	r := newReport(ctx, o)
 	warmShaders(ctx, o, r)
 	for _, m := range o.ttsModels {
 		if err := measureTTS(ctx, o, cl, m, r); err != nil {

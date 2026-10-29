@@ -90,8 +90,10 @@ measurement. The 1.7B Q8 talker is not fetched by
 
 The same bench on the signed x86_64 release engines built by `release.yml` on `macos-15-intel`
 from `main` at 56a700c, so these rows are comparable with the M5 section. Two host lines below
-are corrected tool artifacts: the bench reads `engine/pins.env` from its working directory and
-printed `?` (the values are the pins of `main` at 56a700c), and Intel Macs have no performance
+are corrected tool artifacts: that bench version read `engine/pins.env` from its working directory and
+printed `?` (the values are the pins of `main` at 56a700c; the bench now reads the `pins.env` stamp
+that `engine/build.sh` writes next to the binaries in `<work>/out`, and release or installed engines
+carry no stamp, so their pins print "unknown" unless the bench is pointed at a source build's `<work>/out`), and Intel Macs have no performance
 levels, so the CPU is given as 8 cores / 16 threads. The Metal columns were measured with both
 engines allowed on the GPU at once (the bench forces unified-memory behaviour); on a discrete
 4 GB card the daemon by default keeps the resident STT server on the CPU (`-ng`) and gives the
