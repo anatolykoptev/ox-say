@@ -39,6 +39,9 @@ final class MeetingBadge {
     private let labelWidth: NSLayoutConstraint
     private var consentButton: NSButton?
     private(set) var mode: Mode?
+    /// The display the panel was last placed on, so a display change can tell whether it is still there.
+    private var placedOn: UInt32?
+    private var screenObserver: NSObjectProtocol?
 
     /// The widest clock the label shows (digits are monospaced): 9:59:59.
     private static let widestElapsed: TimeInterval = 10 * 3600 - 1
@@ -92,6 +95,12 @@ final class MeetingBadge {
             stack.topAnchor.constraint(equalTo: background.topAnchor),
             stack.bottomAnchor.constraint(equalTo: background.bottomAnchor),
         ])
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                                                 object: nil, queue: .main) { [weak self] _ in self?.screensChanged() }
+    }
+
+    deinit {
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
     }
 
     var isVisible: Bool { panel.isVisible }
@@ -139,11 +148,35 @@ final class MeetingBadge {
         let size = stack.fittingSize
         let left = keepingPlace && panel.isVisible ? Double(panel.frame.minX) : nil
         panel.setContentSize(NSSize(width: max(size.width, 220), height: 36))
-        if let screen = NSScreen.main {
+        place(anchoredLeft: left, onScreen: keepingPlace ? placedOn : nil)
+    }
+
+    /// Puts the panel on a screen that exists now: `BadgePlacement.place` decides which one and where (DictationCore,
+    /// table-tested); this reads the screens and moves the window.
+    private func place(anchoredLeft: Double?, onScreen: UInt32?) {
+        let screens = NSScreen.screens.compactMap { screen -> BadgePlacement.Screen? in
+            guard let id = Self.displayID(screen) else { return nil }
             let frame = screen.visibleFrame
-            let x = BadgePlacement.originX(anchoredLeft: left, width: Double(panel.frame.width), screenMidX: Double(frame.midX))
-            panel.setFrameOrigin(NSPoint(x: x, y: frame.maxY - panel.frame.height - 8))
+            return BadgePlacement.Screen(id: id, minX: Double(frame.minX), maxX: Double(frame.maxX), maxY: Double(frame.maxY))
         }
+        // No screens (the lid closed, the display asleep): the badge stays where it is; the next change places it.
+        guard let spot = BadgePlacement.place(screens: screens, placedOn: onScreen, main: NSScreen.main.flatMap(Self.displayID),
+                                              anchoredLeft: anchoredLeft, width: Double(panel.frame.width),
+                                              height: Double(panel.frame.height)) else { return }
+        placedOn = spot.screenID
+        panel.setFrameOrigin(NSPoint(x: spot.x, y: spot.y))
+    }
+
+    private static func displayID(_ screen: NSScreen) -> UInt32? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+    }
+
+    /// A display was plugged, unplugged or changed its size: a badge that is up (prompt, consent question or recording)
+    /// is placed again on a screen that still exists (#342.4). Nothing to do for a badge that is not on screen: its next
+    /// content is placed when it appears.
+    private func screensChanged() {
+        guard panel.isVisible, mode != nil else { return }
+        place(anchoredLeft: Double(panel.frame.minX), onScreen: placedOn)
     }
 
     func showRecording(auto: Bool, elapsed: TimeInterval) {

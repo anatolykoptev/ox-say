@@ -109,6 +109,16 @@ public struct PillRecheck: Equatable {
 
 /// How long a pill message stays up.
 public enum PillTiming {
+    /// How long the pill takes to change width while it is on screen. A growing live text animates; every other resize
+    /// snaps, with a zero duration through the same animator, which cuts a grow still in flight short instead of
+    /// racing it: a plain `setFrame` beside an animator-driven one leaves the final width to whichever writes last
+    /// (#191.5).
+    public static let resizeAnimationSeconds: Double = 0.15
+
+    public static func resizeSeconds(animated: Bool) -> Double {
+        animated ? resizeAnimationSeconds : 0
+    }
+
     public static let baseMessageSeconds: Double = 4
     public static let maxMessageSeconds: Double = 12
     /// A comfortable reading speed for a short notice.

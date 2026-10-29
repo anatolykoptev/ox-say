@@ -124,4 +124,41 @@ public enum BadgePlacement {
     public static func originX(anchoredLeft: Double?, width: Double, screenMidX: Double) -> Double {
         anchoredLeft ?? screenMidX - width / 2
     }
+
+    /// One display's usable area (below the menu bar, beside the Dock) in the global coordinates AppKit uses.
+    public struct Screen: Equatable {
+        public var id: UInt32
+        public var minX: Double
+        public var maxX: Double
+        public var maxY: Double
+        public init(id: UInt32, minX: Double, maxX: Double, maxY: Double) {
+            self.id = id; self.minX = minX; self.maxX = maxX; self.maxY = maxY
+        }
+        var midX: Double { (minX + maxX) / 2 }
+    }
+
+    public struct Placement: Equatable {
+        public var screenID: UInt32
+        public var x: Double
+        public var y: Double
+    }
+
+    /// The gap under the top of the screen.
+    public static let topMargin: Double = 8
+
+    /// Where the badge goes among the screens that exist now. The screen it already sits on keeps it (`placedOn`); when
+    /// that one is gone (unplugged during a prompt) or the badge is new, the main screen takes it, else the first
+    /// one; no screens at all (the lid closed, the display asleep) is nil, and the badge stays where it is until the
+    /// next change. A badge that stays on its screen keeps its left edge (#251), moved only as far as the screen's new
+    /// size needs; one that moved screens is centred on the new one. The result always lies inside its screen.
+    public static func place(screens: [Screen], placedOn: UInt32?, main: UInt32?, anchoredLeft: Double?,
+                             width: Double, height: Double) -> Placement? {
+        let kept = placedOn.flatMap { id in screens.first { $0.id == id } }
+        guard let screen = kept ?? main.flatMap({ id in screens.first { $0.id == id } }) ?? screens.first else { return nil }
+        let left = kept == nil ? nil : anchoredLeft
+        let x = originX(anchoredLeft: left, width: width, screenMidX: screen.midX)
+        let room = screen.maxX - screen.minX - width
+        let inside = room > 0 ? min(max(x, screen.minX), screen.minX + room) : screen.minX
+        return Placement(screenID: screen.id, x: inside, y: screen.maxY - height - topMargin)
+    }
 }

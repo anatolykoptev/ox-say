@@ -101,4 +101,47 @@ final class BadgePlacementTests: XCTestCase {
         XCTAssertEqual(BadgePlacement.originX(anchoredLeft: 500, width: 300, screenMidX: 720), 500)
         XCTAssertEqual(BadgePlacement.originX(anchoredLeft: nil, width: 300, screenMidX: 720), 570, "a new badge is centred")
     }
+
+    private let laptop = BadgePlacement.Screen(id: 1, minX: 0, maxX: 1440, maxY: 875)
+    private let external = BadgePlacement.Screen(id: 2, minX: 1440, maxX: 3360, maxY: 1055)
+
+    /// #342.4: a display change re-places the badge on the screen it is on, keeping its left edge.
+    /// Mutation: BadgePlacement.place, `let kept = ...` -> `let kept: Screen? = nil` -> RED (it jumps to the main screen).
+    func testABadgeStaysOnItsScreenWhenAnotherOneChanges() {
+        let p = BadgePlacement.place(screens: [laptop, external], placedOn: 2, main: 1, anchoredLeft: 2000, width: 300, height: 36)
+        XCTAssertEqual(p, BadgePlacement.Placement(screenID: 2, x: 2000, y: 1055 - 36 - 8))
+    }
+
+    /// #342.4: the screen the badge was on is unplugged: it moves to the main screen, centred, not left off screen.
+    /// Mutation: BadgePlacement.place, `let left = kept == nil ? nil : anchoredLeft` -> `let left = anchoredLeft` -> RED.
+    func testABadgeWhoseScreenWentMovesToTheMainScreenCentred() {
+        let p = BadgePlacement.place(screens: [laptop], placedOn: 2, main: 1, anchoredLeft: 2000, width: 300, height: 36)
+        XCTAssertEqual(p, BadgePlacement.Placement(screenID: 1, x: 570, y: 875 - 36 - 8))
+    }
+
+    /// Mutation: BadgePlacement.place, drop the `main.flatMap` arm -> RED (the first screen is taken instead).
+    func testTheMainScreenIsPreferredOverTheFirstOne() {
+        let p = BadgePlacement.place(screens: [laptop, external], placedOn: nil, main: 2, anchoredLeft: nil, width: 300, height: 36)
+        XCTAssertEqual(p?.screenID, 2)
+        XCTAssertEqual(p?.x, 2400 - 150)
+        let none = BadgePlacement.place(screens: [laptop, external], placedOn: 9, main: 8, anchoredLeft: nil, width: 300, height: 36)
+        XCTAssertEqual(none?.screenID, 1, "neither is there: the first screen")
+    }
+
+    /// Mutation: BadgePlacement.place, `return Placement(...)` with `x` instead of `inside` -> RED.
+    func testASmallerScreenPullsTheBadgeBackInside() {
+        // The screen it is on shrank (a resolution change): the old left edge would put the badge half off it.
+        let shrunk = BadgePlacement.Screen(id: 1, minX: 0, maxX: 1024, maxY: 700)
+        let p = BadgePlacement.place(screens: [shrunk], placedOn: 1, main: 1, anchoredLeft: 1000, width: 300, height: 36)
+        XCTAssertEqual(p?.x, 724)
+        let left = BadgePlacement.place(screens: [shrunk], placedOn: 1, main: 1, anchoredLeft: -50, width: 300, height: 36)
+        XCTAssertEqual(left?.x, 0)
+        let wide = BadgePlacement.place(screens: [BadgePlacement.Screen(id: 1, minX: 0, maxX: 200, maxY: 700)],
+                                        placedOn: 1, main: 1, anchoredLeft: 40, width: 300, height: 36)
+        XCTAssertEqual(wide?.x, 0, "a badge wider than the screen starts at its edge")
+    }
+
+    func testNoScreensIsNoPlacement() {
+        XCTAssertNil(BadgePlacement.place(screens: [], placedOn: 1, main: 1, anchoredLeft: 10, width: 300, height: 36))
+    }
 }

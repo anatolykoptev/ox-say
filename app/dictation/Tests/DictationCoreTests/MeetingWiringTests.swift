@@ -233,7 +233,27 @@ final class MeetingWiringTests: XCTestCase {
         let layout = try XCTUnwrap(body(badge, of: "private func layout(_ views: [NSView]) {"))
         XCTAssertTrue(layout.contains("resize(keepingPlace: false)"), "new content is centred")
         let resize = try XCTUnwrap(body(badge, of: "private func resize(keepingPlace: Bool) {"))
-        XCTAssertTrue(resize.contains("BadgePlacement.originX(anchoredLeft: left"))
+        XCTAssertTrue(resize.contains("place(anchoredLeft: left, onScreen: keepingPlace ? placedOn : nil)"))
+        let place = try XCTUnwrap(body(badge, of: "private func place(anchoredLeft: Double?, onScreen: UInt32?) {"))
+        XCTAssertTrue(place.contains("BadgePlacement.place(screens: screens, placedOn: onScreen"))
+    }
+
+    /// #342.4: a display change re-places a badge that is up, on a screen that still exists.
+    /// Mutations: MeetingBadge.init, delete the `didChangeScreenParametersNotification` observer -> RED;
+    /// `screensChanged`, delete the `place(` line -> RED; its `onScreen: placedOn` -> `onScreen: nil` -> RED; the
+    /// `guard panel.isVisible, mode != nil` -> `guard true` -> RED (a hidden badge would reappear).
+    func testTheBadgeIsPlacedAgainWhenTheDisplaysChange() throws {
+        let badge = try source("OxSayDictation/MeetingBadge.swift")
+        XCTAssertTrue(badge.contains("forName: NSApplication.didChangeScreenParametersNotification"))
+        XCTAssertTrue(badge.contains("{ [weak self] _ in self?.screensChanged() }"))
+        XCTAssertTrue(badge.contains("NotificationCenter.default.removeObserver(screenObserver)"))
+        let changed = try XCTUnwrap(body(badge, of: "private func screensChanged() {"))
+        XCTAssertTrue(changed.contains("guard panel.isVisible, mode != nil else { return }"))
+        XCTAssertTrue(changed.contains("place(anchoredLeft: Double(panel.frame.minX), onScreen: placedOn)"))
+        let place = try XCTUnwrap(body(badge, of: "private func place(anchoredLeft: Double?, onScreen: UInt32?) {"))
+        XCTAssertTrue(place.contains("placedOn = spot.screenID"))
+        XCTAssertTrue(place.contains("panel.setFrameOrigin(NSPoint(x: spot.x, y: spot.y))"))
+        XCTAssertFalse(badge.contains("BadgePlacement.originX"), "the position is decided in one place")
     }
 
     // MARK: controller
@@ -499,7 +519,7 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(install.contains("host.notify(MeetingErrorText.sentence(error, action: .installModel))"))
         // The real error is logged where the user gets the generic sentence.
         // Mutation: delete the `log.error(` line of any of the four catches -> RED.
-        let logLine = "log.error(\"meeting %@ failed: \\(String(describing: error), privacy: .public)\")"
+        let logLine = "log.error(\"meeting %@ failed: \\(LogDetail.publicText(error), privacy: .public) \\(LogDetail.privateText(error), privacy: .private)\")"
         XCTAssertEqual(start.components(separatedBy: logLine.replacingOccurrences(of: "%@", with: "start")).count - 1, 2)
         XCTAssertTrue(speakers.contains(logLine.replacingOccurrences(of: "%@", with: "speakers")))
         XCTAssertTrue(install.contains(logLine.replacingOccurrences(of: "%@", with: "notes model")))

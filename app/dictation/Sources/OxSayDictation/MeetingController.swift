@@ -179,7 +179,7 @@ final class MeetingController: NSObject, MeetingFeature {
             // A refusal is logged, not retried on every status poll: the next launch and every retention pick push it again.
             Task {
                 do { try await host.client.setMeetingRetention(days: days) } catch {
-                    log.error("retention push at launch failed: \(String(describing: error), privacy: .public)")
+                    log.error("retention push at launch failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
                 }
             }
         }
@@ -245,7 +245,7 @@ final class MeetingController: NSObject, MeetingFeature {
         if origin == .auto || offered, !consentReminderAccepted() { return }
         // Before a meeting exists in the daemon: a missing microphone permission leaves nothing to clean up.
         do { try MeetingRecorder.checkMicrophone() } catch {
-            log.error("meeting start failed: \(String(describing: error), privacy: .public)")
+            log.error("meeting start failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
             host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
             return
         }
@@ -278,7 +278,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 startTick()
                 host.recordingChanged()
             } catch {
-                log.error("meeting start failed: \(String(describing: error), privacy: .public)")
+                log.error("meeting start failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
                 host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
                 // A meeting the daemon opened but the recorder never started would sit as "recording".
                 if let created, current == nil { discardEmpty(created.id) }
@@ -618,7 +618,7 @@ final class MeetingController: NSObject, MeetingFeature {
                     if !(wasOffer && !state.offersSplit) { return }
                 }
             } catch {
-                log.error("meeting speakers failed: \(String(describing: error), privacy: .public)")
+                log.error("meeting speakers failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
                 host.notify(L10nKey.speakersFailed.text(MeetingErrorText.sentence(error, action: .speakers)))
             }
         }
@@ -716,7 +716,7 @@ final class MeetingController: NSObject, MeetingFeature {
     private func installModel() {
         Task { @MainActor in
             do { try await host.client.installNotesModel() } catch {
-                log.error("meeting notes model failed: \(String(describing: error), privacy: .public)")
+                log.error("meeting notes model failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
                 host.notify(MeetingErrorText.sentence(error, action: .installModel))
             }
             render()

@@ -376,17 +376,17 @@ final class Overlay {
         if panel.isVisible {
             let frame = NSRect(x: panel.frame.midX - newSize.width / 2, y: panel.frame.minY,
                                width: newSize.width, height: newSize.height)
-            if animated {
-                // setFrame(_:display:animate:) spends the animation on the main
-                // thread — on every live-text update that stalls the run loop.
-                // The animator inside a group lets the window server drive it.
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.15
-                    panel.animator().setFrame(frame, display: true)
-                }
-            } else {
-                panel.setFrame(frame, display: true)
+            // One path for every visible resize, through the animator: a snap is a zero-duration animation, which
+            // replaces a grow still in flight. A plain setFrame beside an animator-driven one leaves the final width to
+            // whichever writes last (#191.5), as show() does for alpha.
+            // setFrame(_:display:animate:) spends the animation on the main thread — on every live-text update that
+            // stalls the run loop. The animator inside a group lets the window server drive it.
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = PillTiming.resizeSeconds(animated: animated)
+                panel.animator().setFrame(frame, display: true)
             }
+            // A snap also lands synchronously, the next line of the caller reads the frame.
+            if !animated { panel.setFrame(frame, display: true) }
         } else {
             panel.setContentSize(newSize)
         }
