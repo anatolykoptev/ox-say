@@ -172,6 +172,10 @@ public final class DictationController {
     public var localize: (L10nKey) -> String = { $0.text }
     /// A press while the previous dictation is still transcribing: ignored.
     public var onBusy: (() -> Void)?
+    /// Asked when a press would START a dictation (idle only: a press that ends a recording is never refused).
+    /// false: nothing starts, `onStartRefused` says so. The app uses it while an update installs (#211).
+    public var startAllowed: () -> Bool = { true }
+    public var onStartRefused: (() -> Void)?
     /// Once per transcribed dictation (not for a tap or a cancelled one): its
     /// timing, with no text, for the log.
     public var onTiming: ((DictationTiming) -> Void)?
@@ -214,6 +218,10 @@ public final class DictationController {
     public func keyDown() {
         switch (mode, state) {
         case (_, .idle):
+            guard startAllowed() else {
+                onStartRefused?()
+                return
+            }
             do {
                 try recorder.prepare()
             } catch {

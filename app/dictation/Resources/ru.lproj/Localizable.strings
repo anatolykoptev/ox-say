@@ -64,6 +64,8 @@
 "notice.update_available" = "Доступна новая версия OxSay %@ — обновление в меню";
 /* Показывается после диктовки, если нажатие на строку обновления было отклонено из-за неё. */
 "notice.update_busy" = "Шла диктовка, поэтому обновление не началось — нажмите на строку обновления ещё раз";
+"notice.updating.dictation" = "ox-say обновляется — диктовка скоро вернётся.";
+"notice.updating.speak" = "ox-say обновляется — чтение вслух скоро вернётся.";
 
 /* Meetings: submenu, badge, notices and the first-run explanation. */
 "menu.meetings" = "Встречи";

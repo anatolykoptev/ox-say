@@ -299,6 +299,13 @@ public enum UpdateGate: Equatable {
     public static func decide(installing: Bool) -> UpdateGate {
         installing ? .installInProgress : .proceed
     }
+
+    /// #211: whether work that needs the daemon may START now. The installer restarts the daemon before the app
+    /// swap and then self-tests for minutes; a dictation begun in that window loses its text, a read-aloud its
+    /// voice. Work already running is not asked: the gate guards the start only.
+    public static func allowsNewDaemonWork(installing: Bool) -> Bool {
+        !installing
+    }
 }
 
 /// Which copy of the app is "the installed one". get.sh installs to
