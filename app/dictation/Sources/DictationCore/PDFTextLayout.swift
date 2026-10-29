@@ -36,7 +36,7 @@ enum PDFTextLayout {
             page.split(separator: "\n", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
         })
         var out: [String] = []
-        for var page in dropRunningLines(lines).map { pageParagraphs($0, counter: counter) } {
+        for var page in dropRunningLines(lines).map({ pageParagraphs($0, counter: counter) }) {
             guard !page.isEmpty else { continue }
             if let last = out.last, continues(last, with: page[0]) { out[out.count - 1] = join(last, page.removeFirst(), counter: counter) }
             out += page
