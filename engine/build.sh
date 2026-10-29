@@ -15,7 +15,7 @@
 # Output: <work-dir>/out/{tts-server,ox-stt,ox-align,ox-llm,ox-diar,audiocpp_server (arm64),
 #                        each <bin>.metallib (+<bin>-tensor.metallib on a
 #                        macOS 26 SDK) when the Metal toolchain is present,
-#                        licenses/}
+#                        licenses/, pins.env (the repo and commit pins this build used)}
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -177,6 +177,8 @@ set_cmake_flags() {
 }
 
 mkdir -p "$out/licenses"
+# An interrupted build must not leave the previous build's pins next to new binaries; the stamp is written last.
+rm -f "$out/pins.env"
 
 # --- tts-server (qwentts.cpp) ---
 tts="$work/qwentts"
@@ -438,3 +440,6 @@ if audiocpp_gate "$arch" "$out"; then
     copy_audiocpp_licenses "$ac" "$out/licenses"
     echo "built $out/audiocpp_server"
 fi
+
+# The commits these binaries were built from, for ox-say-bench's report.
+write_pins_stamp "$here/pins.env" "$out"
