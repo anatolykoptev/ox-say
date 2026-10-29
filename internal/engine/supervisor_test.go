@@ -491,7 +491,7 @@ func TestShutdownWaitsForTheExitHandler(t *testing.T) {
 
 // A wedged child (its exit never observed) costs Shutdown one more grace period, not two: the wait for the start
 // attempt and exit handler is skipped once the exit wait has timed out.
-// Mutation: supervisor.go Shutdown, delete the `if exitMissed { return }` block -> RED (Shutdown takes a second grace).
+// Mutation: supervisor.go Shutdown, delete the `if exitMissed { return }` block -> RED by assertion (the second wait is entered).
 func TestShutdownWedgedChildCostsOneGrace(t *testing.T) {
 	dir := t.TempDir()
 	const grace = 300 * time.Millisecond
@@ -506,11 +506,9 @@ func TestShutdownWedgedChildCostsOneGrace(t *testing.T) {
 	sup.mu.Unlock()
 	sup.bg.Add(1) // a stuck exit handler
 	t.Cleanup(sup.bg.Done)
-	start := time.Now()
 	sup.Shutdown()
-	// killChild waits out SIGTERM and SIGKILL (2 graces), the exit wait one more; the bg wait must add nothing.
-	if took, limit := time.Since(start), 3*grace+grace/2; took > limit {
-		t.Errorf("Shutdown took %v, want under %v", took, limit)
+	if n := sup.bgWaits.Load(); n != 0 {
+		t.Errorf("Shutdown entered the start-attempt wait %d times after the exit wait timed out, want 0", n)
 	}
 }
 

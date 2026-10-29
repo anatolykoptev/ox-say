@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -188,6 +189,9 @@ type Supervisor struct {
 	// acquisition — it parks a caller in the window where an in-flight
 	// start attempt can conclude unseen.
 	ensureEntryHook func()
+
+	// bgWaits counts the times Shutdown entered its wait for the start attempt and exit handler (tests only read it).
+	bgWaits atomic.Int32
 }
 
 // child is one spawned engine process generation.
@@ -685,6 +689,7 @@ func (s *Supervisor) Shutdown() {
 	// Return only when the start attempt and the exit handler have ended too: they write the log, the pidfile and
 	// the child's state, and the caller may remove the directory next. Bounded like the waits above: a Prepare or
 	// Replay that never returns must not hang shutdown.
+	s.bgWaits.Add(1)
 	bgDone := make(chan struct{})
 	go func() {
 		s.bg.Wait()
