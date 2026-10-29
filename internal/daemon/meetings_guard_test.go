@@ -86,8 +86,8 @@ func TestMeetingCallsOfTheAppPassTheGuard(t *testing.T) {
 	}
 	// The voiceover stop is bodiless too (the same StudioClient.post): an
 	// unknown id is a 404 from the route, not a 415 from the guard (#252: assert the real outcome).
-	// Mutation: internal/daemon/produce_ops.go:627, return nil in place of errNoProject for an invalid
-	// id -> RED (200, not 404).
+	// Mutation: internal/daemon/produce_ops.go producer.cancel, the `!vproject.ValidID(id)` branch,
+	// return nil in place of errNoProject -> RED (200 "cancelling", not 404).
 	if rec := serve(h, appRequest("POST", "/v1/produce/nope/cancel", "")); rec.Code != http.StatusNotFound {
 		t.Fatalf("voiceover stop = %d %s, want 404 from the route", rec.Code, rec.Body)
 	}
