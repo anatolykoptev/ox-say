@@ -31,15 +31,41 @@ final class SelectionCapture {
     /// The focused element's AXSelectedText — the clipboard-free path. The
     /// system-wide element is asked first; when it yields no focused element
     /// (some callers get -25204 from it) the frontmost app's own element is.
+    /// A Chromium/Electron app that still yields nothing is asked to publish its
+    /// tree and read again (`ChromiumAXWake`, #220) before ⌘C is considered.
     private func selectedText() -> AXSelection {
-        AXSelection.read(
-            systemWide: { read(from: AXUIElementCreateSystemWide(), source: .systemWide) },
-            app: {
-                guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
-                    return AXSelection(hasElement: false, error: AXError.noValue.rawValue, source: .app)
-                }
-                return read(from: AXUIElementCreateApplication(pid), source: .app)
-            })
+        let front = NSWorkspace.shared.frontmostApplication
+        func once() -> AXSelection {
+            AXSelection.read(
+                systemWide: { read(from: AXUIElementCreateSystemWide(), source: .systemWide) },
+                app: {
+                    guard let pid = front?.processIdentifier else {
+                        return AXSelection(hasElement: false, error: AXError.noValue.rawValue, source: .app)
+                    }
+                    return read(from: AXUIElementCreateApplication(pid), source: .app)
+                })
+        }
+        let first = once()
+        guard AXIsProcessTrusted(), let front else { return first }
+        let root = AXUIElementCreateApplication(front.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, Self.axTimeout)
+        return ChromiumAXWake.read(first: first,
+                                   identity: { Self.identity(of: front) },
+                                   attributes: AppElementAttributes(root: root),
+                                   retry: once,
+                                   spin: { RunLoop.current.run(until: Date().addingTimeInterval($0)) },
+                                   now: Date.init)
+    }
+
+    /// The bundle id and the entries of `Contents/Frameworks`: what tells an
+    /// Electron/Chromium app apart when no bundle-id list knows it.
+    private static func identity(of app: NSRunningApplication) -> AppIdentity {
+        var frameworks: [String] = []
+        if let url = app.bundleURL?.appendingPathComponent("Contents/Frameworks"),
+           let names = try? FileManager.default.contentsOfDirectory(atPath: url.path) {
+            frameworks = names
+        }
+        return AppIdentity(bundleID: app.bundleIdentifier, frameworks: frameworks)
     }
 
     /// A hung target must not freeze the main thread: every element queried
@@ -81,5 +107,28 @@ final class SelectionCapture {
         guard let events = PasteKey.commandEvents(.c, keyCode: c, source: source) else { return }
         events.down.post(tap: .cghidEventTap)
         events.up.post(tap: .cghidEventTap)
+    }
+}
+
+/// The AXApplication element's boolean attributes, for `ChromiumAXWake`.
+private struct AppElementAttributes: AXAppAttributes {
+    let root: AXUIElement
+
+    func read(_ name: String) -> AXAttributeValue {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(root, name as CFString, &value)
+        switch error {
+        case .success:
+            guard let value, CFGetTypeID(value) == CFBooleanGetTypeID() else { return .unsupported }
+            return .bool(CFBooleanGetValue((value as! CFBoolean)))
+        case .attributeUnsupported, .noValue:
+            return .unsupported
+        default:
+            return .error(error.rawValue)
+        }
+    }
+
+    func write(_ name: String, _ value: Bool) -> Int32 {
+        AXUIElementSetAttributeValue(root, name as CFString, (value ? kCFBooleanTrue : kCFBooleanFalse) as CFTypeRef).rawValue
     }
 }
