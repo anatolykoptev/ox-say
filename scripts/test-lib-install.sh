@@ -323,8 +323,10 @@ check "install-release.sh runs the self-test through oxs_selftest_roundtrip" "${
 n=$(grep -cE '^[^#(]*oxs_selftest_heard_ok "[$]heard"' "$root/scripts/lib-install.sh" || true)
 check "lib-install.sh roundtrip asks oxs_selftest_heard_ok" "${n:-x}" 1
 # every ox-say call of the self-test is bounded (#356): none runs bare in install-release.sh
-n=$(grep -cE '^[^#]*"[$]bindir/ox-say" (say|transcribe)' "$root/scripts/install-release.sh" || true)
-check "install-release.sh calls ox-say say/transcribe only through oxs_timeout" "${n:-x}" 1
+n=$(grep -E '^[^#]*"[$]bindir/ox-say" (say|transcribe)' "$root/scripts/install-release.sh" | grep -cv 'oxs_timeout' || true)
+check "install-release.sh runs no ox-say say/transcribe call outside oxs_timeout" "${n:-x}" 0
+n=$(grep -cE '^[^#]*oxs_timeout .*"[$]bindir/ox-say" transcribe "[$]st/mac.aiff"' "$root/scripts/install-release.sh" || true)
+check "install-release.sh bounds the warm-up transcribe" "${n:-x}" 1
 n=$(grep -cE '^[^#]*oxs_timeout "[$]secs" "[$]oxsay" (say|transcribe)' "$root/scripts/lib-install.sh" || true)
 check "oxs_selftest_roundtrip bounds both say and transcribe" "${n:-x}" 2
 
