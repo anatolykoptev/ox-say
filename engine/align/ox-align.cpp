@@ -34,6 +34,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../common/wav_reader.h"
+
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
 #endif
@@ -162,88 +164,6 @@ bool parse(int argc, char ** argv, args & a) {
         return false;
     }
     return true;
-}
-
-// ---------------------------------------------------------------------------
-// WAV reader — identical to engine/stt/ox-stt.cpp (same reader logic on purpose)
-
-uint32_t rd32(const unsigned char * p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t) p[3] << 24; }
-uint16_t rd16(const unsigned char * p) { return (uint16_t) (p[0] | p[1] << 8); }
-
-// 16 kHz mono PCM16 or float32 WAV -> float samples
-bool read_wav(const std::string & path, std::vector<float> & out, std::string & err) {
-    FILE * f = fopen(path.c_str(), "rb");
-    if (!f) {
-        err = "cannot open " + path;
-        return false;
-    }
-    std::vector<unsigned char> buf;
-    if (fseek(f, 0, SEEK_END) == 0) {
-        const long size = ftell(f);
-        if (size > 0) {
-            buf.reserve((size_t) size);
-        }
-        fseek(f, 0, SEEK_SET);
-    }
-    unsigned char tmp[1 << 16];
-    size_t n;
-    while ((n = fread(tmp, 1, sizeof(tmp), f)) > 0) {
-        buf.insert(buf.end(), tmp, tmp + n);
-    }
-    fclose(f);
-    if (buf.size() < 12 || memcmp(buf.data(), "RIFF", 4) != 0 || memcmp(buf.data() + 8, "WAVE", 4) != 0) {
-        err = "not a RIFF/WAVE file";
-        return false;
-    }
-    int fmt = 0, ch = 0, bits = 0;
-    uint32_t rate = 0;
-    for (size_t off = 12; off + 8 <= buf.size();) {
-        const uint32_t len = rd32(&buf[off + 4]);
-        const size_t body = off + 8;
-        if (body + len > buf.size() && memcmp(&buf[off], "data", 4) != 0) {
-            break;
-        }
-        if (memcmp(&buf[off], "fmt ", 4) == 0 && len >= 16) {
-            fmt  = rd16(&buf[body]);
-            ch   = rd16(&buf[body + 2]);
-            rate = rd32(&buf[body + 4]);
-            bits = rd16(&buf[body + 14]);
-            if (fmt == 0xFFFE && len >= 26) {  // WAVE_FORMAT_EXTENSIBLE: sub-format code
-                fmt = rd16(&buf[body + 24]);
-            }
-        } else if (memcmp(&buf[off], "data", 4) == 0) {
-            if (rate != SR || ch != 1 || !((fmt == 1 && bits == 16) || (fmt == 3 && bits == 32))) {
-                err = "need 16 kHz mono PCM16 or float32 (got rate " + std::to_string(rate) + ", channels " +
-                      std::to_string(ch) + ", format " + std::to_string(fmt) + "/" + std::to_string(bits) + " bit)";
-                return false;
-            }
-            // a streaming writer leaves the length 0 or 0xFFFFFFFF: take the rest of the file
-            const size_t avail = (len == 0 || len == 0xFFFFFFFFu) ? buf.size() - body : std::min<size_t>(len, buf.size() - body);
-            if (fmt == 1) {
-                out.resize(avail / 2);
-                for (size_t i = 0; i < out.size(); ++i) {
-                    out[i] = (int16_t) rd16(&buf[body + 2 * i]) / 32768.0f;
-                }
-            } else {
-                out.resize(avail / 4);
-                memcpy(out.data(), &buf[body], out.size() * 4);
-                for (float v : out) {
-                    if (!std::isfinite(v)) {
-                        err = "float WAV has non-finite samples";
-                        return false;
-                    }
-                }
-            }
-            if (out.empty()) {
-                err = "no audio samples";
-                return false;
-            }
-            return true;
-        }
-        off = body + len + (len & 1);
-    }
-    err = "no data chunk";
-    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1359,8 +1279,20 @@ static int run(int argc, char ** argv) {
 
     // the WAV first: a bad or missing file must fail before a backend is
     // initialised and a model loaded (#13)
-    std::vector<float> x;
-    if (!read_wav(a.file, x, err)) {
+    //
+    // The samples are decoded straight into xp, the buffer the windows are cut from:
+    // xp padded to whole windows of `win` samples with `ctx` zeros on each side. The
+    // unpadded signal never exists as a second copy. n_in is the decoded sample count.
+    const int64_t win = a.win_samples;
+    const int64_t ctx = a.ctx_samples;
+    int64_t n_in = 0;
+    int64_t ext  = 0;
+    std::vector<float> xp;
+    if (!oxwav::read_file_padded(a.file, xp, err, (size_t) ctx, [&](size_t n) {
+            n_in = (int64_t) n;
+            ext  = ((-n_in) % win + win) % win;
+            return (size_t) (ctx + ext);
+        })) {
         fprintf(stderr, "ox-align: %s\n", err.c_str());
         return 1;
     }
@@ -1415,16 +1347,8 @@ static int run(int argc, char ** argv) {
         fprintf(stderr, "ox-align: dumping activations to %s\n", g_dump_dir.c_str());
     }
 
-    // windowing mirrors the reference: xp padded to whole windows of `win`
-    // samples with `ctx` on each side; per call the model sees win+2*ctx
+    // windowing mirrors the reference: per call the model sees win+2*ctx
     // samples and the ctx frames at both ends are dropped.
-    const int64_t win = a.win_samples;
-    const int64_t ctx = a.ctx_samples;
-    const int64_t n_in = (int64_t) x.size();
-    const int64_t ext = ((-n_in) % win + win) % win;
-    std::vector<float> xp((size_t) (ctx + n_in + ctx + ext), 0.0f);
-    memcpy(xp.data() + ctx, x.data(), x.size() * sizeof(float));
-    std::vector<float>().swap(x);   // xp is the working copy from here
     const int64_t n_win = ((int64_t) xp.size() - 2 * ctx) / win;
     const int64_t slice = win + 2 * ctx;
 
