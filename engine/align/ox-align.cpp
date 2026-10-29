@@ -1286,12 +1286,10 @@ static int run(int argc, char ** argv) {
     const int64_t win = a.win_samples;
     const int64_t ctx = a.ctx_samples;
     int64_t n_in = 0;
-    int64_t ext  = 0;
     std::vector<float> xp;
     if (!oxwav::read_file_padded(a.file, xp, err, (size_t) ctx, [&](size_t n) {
             n_in = (int64_t) n;
-            ext  = ((-n_in) % win + win) % win;
-            return (size_t) (ctx + ext);
+            return oxwav::window_tail(n, win, ctx);
         })) {
         fprintf(stderr, "ox-align: %s\n", err.c_str());
         return 1;

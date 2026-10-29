@@ -1,5 +1,5 @@
 diff --git a/app/server/runtime.cpp b/app/server/runtime.cpp
-index e6b1df5a..09128c7f 100644
+index cebd62fd..f77c0ec5 100644
 --- a/app/server/runtime.cpp
 +++ b/app/server/runtime.cpp
 @@ -1201,6 +1201,24 @@ HttpResponse ServerState::handle_request(const HttpRequest & request, bool use_f

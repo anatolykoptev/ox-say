@@ -1,20 +1,50 @@
 diff --git a/app/server/runtime.cpp b/app/server/runtime.cpp
-index 1259ddf5..be95ccb7 100644
+index 1259ddf5..cebd62fd 100644
 --- a/app/server/runtime.cpp
 +++ b/app/server/runtime.cpp
-@@ -2124,6 +2124,11 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
+@@ -2124,6 +2124,29 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
          request.options["instruction"] = value->as_string();
      }
  
 +    // ox-say: one bound on reference audio, shared by the voice_ref base64
-+    // payload below and the prompt_audio file added after reference_text
-+    // (ox-say #137.2).
++    // payload below, the voice_ref path forms and the prompt_audio file added
++    // after reference_text (ox-say #137.2, #366).
 +    constexpr size_t kMaxVoiceRefBytes = size_t{5} * 1024 * 1024;
++    // ox-say: every reference file is decoded whole, so it is checked before the
++    // read: a non-regular file (a FIFO would block the decode, a device never
++    // ends) and a file over the cap both answer a clean 400 (CapacityError, the
++    // one error that maps to 400), not a hang or a decode-time allocation spike.
++    // A missing or unstat-able path falls through to read_audio_buffer, which
++    // reports an unreadable file as before (ox-say #366).
++    const auto read_reference_file = [&](const std::filesystem::path & path, const char * what) {
++        std::error_code ec;
++        const auto status = std::filesystem::status(path, ec);
++        if (!ec && std::filesystem::exists(status) && !std::filesystem::is_regular_file(status)) {
++            throw engine::runtime::CapacityError(std::string(what) + " is not a regular file");
++        }
++        const auto size = std::filesystem::file_size(path, ec);
++        if (!ec && size > kMaxVoiceRefBytes) {
++            throw engine::runtime::CapacityError(std::string(what) + " exceeds the 5 MiB limit");
++        }
++        return minitts::cli::read_audio_buffer(path);
++    };
 +
      bool voice_field_is_preset = false;
      const auto * preset = select_voice_preset(model, body, voice_field_is_preset);
      // Resolved once at registration (refresh_model_option_flags): calling
-@@ -2196,7 +2201,6 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
+@@ -2187,16 +2210,15 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
+             voice.speaker = engine::runtime::VoiceReference{};
+         }
+         if (value->is_string()) {
+-            voice.speaker->audio = minitts::cli::read_audio_buffer(resolve_path(request_base_, value->as_string()));
++            voice.speaker->audio = read_reference_file(resolve_path(request_base_, value->as_string()), "voice_ref");
+         } else if (value->is_object()) {
+             const auto & type = engine::io::json::require_string(*value, "type");
+             if (type == "path") {
+-                voice.speaker->audio = minitts::cli::read_audio_buffer(
+-                    resolve_path(request_base_, engine::io::json::require_string(*value, "path")));
++                voice.speaker->audio = read_reference_file(
++                    resolve_path(request_base_, engine::io::json::require_string(*value, "path")), "voice_ref");
              } else if (type == "base64") {
                  // Bound the inline reference audio so a huge base64 payload cannot
                  // blow up host RAM through decode + f32 expansion (~3x its size).
@@ -22,26 +52,18 @@ index 1259ddf5..be95ccb7 100644
                  // 4/3 expansion plus slack for a data URI prefix and whitespace.
                  constexpr size_t kMaxVoiceRefB64Length = ((kMaxVoiceRefBytes + 2) / 3) * 4 + 4096;
                  const auto & data = engine::io::json::require_string(*value, "data");
-@@ -2223,6 +2227,23 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
+@@ -2223,6 +2245,15 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
      if (const auto * value = body.find("reference_text")) {
          request.options["reference_text"] = value->as_string();
      }
 +    // ox-say: "ultimate" cloning — VoxCPM2 continues from prompt audio plus its
 +    // transcript (reference_text). The speech route otherwise only fills the
 +    // reference (voice_ref), and reference_text alone is then ignored. The file
-+    // is decoded whole like the voice_ref path, so it takes the same 5 MiB cap,
-+    // stat'ed before the decode: over it the answer is a clean 400
-+    // (CapacityError), not a decode-time allocation spike. A stat failure falls
-+    // through to read_audio_buffer, which reports an unreadable file as before
-+    // (ox-say #137.2).
++    // is decoded whole like the voice_ref path, so it takes the same checks
++    // (read_reference_file: regular file, 5 MiB cap) before the decode
++    // (ox-say #137.2, #366).
 +    if (const auto * value = body.find("prompt_audio")) {
-+        const auto prompt_path = resolve_path(request_base_, value->as_string());
-+        std::error_code size_error;
-+        const auto prompt_size = std::filesystem::file_size(prompt_path, size_error);
-+        if (!size_error && prompt_size > kMaxVoiceRefBytes) {
-+            throw engine::runtime::CapacityError("prompt_audio exceeds the 5 MiB limit");
-+        }
-+        request.audio_input = minitts::cli::read_audio_buffer(prompt_path);
++        request.audio_input = read_reference_file(resolve_path(request_base_, value->as_string()), "prompt_audio");
 +    }
      const auto * speed = body.find("speed");
      if (speed == nullptr) {

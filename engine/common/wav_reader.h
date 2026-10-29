@@ -147,6 +147,14 @@ bool read_file_padded(const std::string & path, std::vector<float> & out, std::s
     return read_bytes_padded(buf.data(), buf.size(), out, err, head, tail);
 }
 
+// ox-align's tail: `ctx` zeros of context plus enough zeros to round the n decoded samples up to whole
+// windows of `win` samples (so n < win gets one padded window, n = win none). win must be > 0.
+inline size_t window_tail(size_t n, int64_t win, int64_t ctx) {
+    const int64_t ni  = (int64_t) n;
+    const int64_t ext = ((-ni) % win + win) % win;
+    return (size_t) (ctx + ext);
+}
+
 inline bool read_bytes(const unsigned char * buf, size_t size, std::vector<float> & out, std::string & err) {
     return read_bytes_padded(buf, size, out, err, 0, [](size_t) { return (size_t) 0; });
 }
