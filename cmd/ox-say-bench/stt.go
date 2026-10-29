@@ -71,7 +71,7 @@ func sttConfig(o options, dev device) engine.Config {
 }
 
 func measureSTT(ctx context.Context, o options, cl *clips, dev device, r *report) error {
-	c, err := startChild(ctx, o.work, "stt", sttConfig(o, dev))
+	c, err := startChild(ctx, o.work, o.pidDir, "stt", sttConfig(o, dev))
 	if err != nil {
 		return err
 	}
@@ -287,12 +287,12 @@ func measureContention(ctx context.Context, o options, cl *clips, r *report) err
 	if len(o.ttsModels) == 0 {
 		return nil
 	}
-	tts, err := startChild(ctx, o.work, "tts-load", ttsConfig(o, o.ttsModels[0]))
+	tts, err := startChild(ctx, o.work, o.pidDir, "tts-load", ttsConfig(o, o.ttsModels[0]))
 	if err != nil {
 		return err
 	}
 	defer tts.stop()
-	sc, err := startChild(ctx, o.work, "stt-load", sttConfig(o, devices[0]))
+	sc, err := startChild(ctx, o.work, o.pidDir, "stt-load", sttConfig(o, devices[0]))
 	if err != nil {
 		return err
 	}

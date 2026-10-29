@@ -152,15 +152,18 @@ retry_unit=${OX_SAY_RETRY_SLEEP_UNIT:-2}
 # curl's own --retry would not do: with -C - it re-reads the offset it started the run with, so a 3 GB model that
 # stalls near the end would be fetched again from where that run began.
 # Returns curl's last exit status; fetch_code holds the last HTTP status (empty when curl got none).
-# progress_tick <part>: print "progress <name> <bytes>" every $progress_secs s, until killed.
+# progress_tick <part> <parent>: print "progress <name> <bytes>" every $progress_secs s, until killed, or until the
+# parent (the script's pid, captured by the caller before backgrounding) is gone: a Ctrl-C of a terminal install
+# kills the script, and the ticker, running on its own, must not outlive it and keep printing (#299).
 progress_secs=${OX_SAY_PROGRESS_SECS:-30}
 progress_tick() {
-    local part=$1 n=0
+    local part=$1 parent=$2 n=0
     # TERM from fetch_part ends it at once; the 1 s sleep runs on its own and cannot hold a pipe open
     trap 'exit 0' TERM
     while :; do
         sleep 1 >/dev/null 2>&1 &
         wait $!
+        kill -0 "$parent" 2>/dev/null || exit 0
         n=$((n + 1))
         if [ "$n" -ge "$progress_secs" ]; then
             n=0
@@ -179,7 +182,7 @@ fetch_part() {
         # The download is silent (-sS), and an installer that makes no output looks wedged to the app's watchdog
         # (#356): while curl runs, one line every $progress_secs says how many bytes <part> holds. The line is the
         # app's progress signal; it needs no knowledge of where OX_SAY_HOME points.
-        progress_tick "$part" &
+        progress_tick "$part" "$$" &
         ticker=$!
         fetch_code=$(curl "${opts[@]}" -o "$part" "$url") || rc=$?
         kill "$ticker" 2>/dev/null || true

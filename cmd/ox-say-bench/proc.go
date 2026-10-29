@@ -44,12 +44,12 @@ type child struct {
 }
 
 // childConfig fills cfg for the child called name: its port, log and pidfile.
-func childConfig(work, name string, port int, cfg engine.Config) engine.Config {
+func childConfig(work, pidDir, name string, port int, cfg engine.Config) engine.Config {
 	cfg.Name = name
 	cfg.Port = port
 	cfg.LogName = name + ".log"
 	cfg.LogDir = filepath.Join(work, "logs")
-	cfg.PidPath = pidPath(name)
+	cfg.PidPath = pidPath(pidDir, name)
 	cfg.StartupTimeout = startupTimeout
 	cfg.Logger = slog.New(slog.DiscardHandler)
 	return cfg
@@ -58,12 +58,12 @@ func childConfig(work, name string, port int, cfg engine.Config) engine.Config {
 // startChild spawns an engine through engine.Supervisor — the daemon's own
 // spawn, health and kill path — and starts sampling its RSS. cfg carries
 // Bin and either Model/Codec (tts-server) or Args (ox-stt).
-func startChild(ctx context.Context, work, name string, cfg engine.Config) (*child, error) {
+func startChild(ctx context.Context, work, pidDir, name string, cfg engine.Config) (*child, error) {
 	port, err := freePort()
 	if err != nil {
 		return nil, err
 	}
-	sup, err := engine.New(childConfig(work, name, port, cfg))
+	sup, err := engine.New(childConfig(work, pidDir, name, port, cfg))
 	if err != nil {
 		return nil, err
 	}
@@ -178,15 +178,18 @@ func pidDir() (string, error) {
 	return dir, nil
 }
 
-// pidPath is the pidfile of the engine child called name; "" (no pidfile, so no
-// reaping) when pidDir is unusable.
-func pidPath(name string) string {
-	dir, err := pidDir()
-	if err != nil {
+// pidPath is the pidfile of the engine child called name in dir, the pidDir
+// runLocked resolved once for the whole run; "" (no pidfile, so no reaping)
+// when dir is empty, i.e. pidDir was unusable.
+func pidPath(dir, name string) string {
+	if dir == "" {
 		return ""
 	}
 	return filepath.Join(dir, name+".pid")
 }
+
+// resolvePidDir is pidDir; a test replaces it to count the evaluations.
+var resolvePidDir = pidDir
 
 // flock is syscall.Flock; a test replaces it.
 var flock = syscall.Flock
@@ -196,9 +199,9 @@ var flock = syscall.Flock
 // process, so a killed bench never leaves it held. Only EWOULDBLOCK means
 // another bench holds it; any other flock error is returned as it is. When
 // pidDir is unusable there is nothing shared to protect: warn and run without
-// the lock.
-func lockRun() (unlock func(), err error) {
-	dir, derr := pidDir()
+// the lock. dir and derr are pidDir's answer, evaluated once by the caller so
+// the lock and the pidfiles are always in the same directory.
+func lockRun(dir string, derr error) (unlock func(), err error) {
 	if derr != nil {
 		fmt.Fprintf(os.Stderr, "ox-say-bench: warning: %v; running without the pidfile lock and without reaping orphaned engines\n", derr)
 		return func() {}, nil

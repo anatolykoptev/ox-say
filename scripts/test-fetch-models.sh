@@ -310,6 +310,35 @@ sizes=$(printf '%s\n' "$out" | sed -n 's/^progress Qwen3.5-4B-Q4_K_M.gguf.part \
 if [ "${lines:-0}" -ge 2 ] && [ "${sizes:-0}" -ge 2 ]; then pass "a slow download prints progress lines with growing sizes"; else fail "progress lines: $lines lines, $sizes sizes in: $out"; fi
 if pgrep -f "$d/bin" >/dev/null 2>&1; then fail "the progress ticker outlived the download"; else pass "the progress ticker stops with the download"; fi
 
+# #299.c1: the ticker follows its parent. A Ctrl-C of a terminal install kills the script while the ticker runs on its
+# own; it must notice within one tick (1 s here) and stop printing. The script is SIGKILLed mid-download (the fake curl
+# hangs), then the output file must stop growing. Mutation: delete the `kill -0 "$parent"` line in progress_tick ->
+# the ticker prints on after its parent is gone -> RED.
+d="$tmp/orphan"; mkdir -p "$d/bin" "$d/dest"
+cat > "$d/bin/curl" <<'FAKE'
+#!/bin/bash
+echo $$ > "$ORPHAN_CURL_PID"
+exec sleep 30
+FAKE
+chmod +x "$d/bin/curl"
+ORPHAN_CURL_PID="$d/curl.pid" PATH="$d/bin:$PATH" OX_SAY_MODELS_FROM='' OX_SAY_PROGRESS_SECS=1 \
+    bash "$root/scripts/fetch-models.sh" --notes-only "$d/dest" > "$d/out" 2>&1 &
+script=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q "^progress" "$d/out" && break; sleep 1; done
+if grep -q "^progress" "$d/out"; then
+    kill -9 "$script" 2>/dev/null || true
+    wait "$script" 2>/dev/null || true
+    sleep 3 # one tick to notice, one to spare
+    before=$(wc -l < "$d/out" | tr -d ' ')
+    sleep 3
+    after=$(wc -l < "$d/out" | tr -d ' ')
+    if [ "$before" = "$after" ]; then pass "the progress ticker stops when its parent is killed"; else fail "the ticker printed on after its parent died ($before -> $after lines)"; fi
+else
+    kill -9 "$script" 2>/dev/null || true
+    fail "no progress line appeared within 10 s; cannot test the orphaned ticker"
+fi
+[ -s "$d/curl.pid" ] && kill "$(cat "$d/curl.pid")" 2>/dev/null || true
+
 if [ -e "$tmp/nonet-calls" ]; then fail "the no-network curl stub was reached: $(cat "$tmp/nonet-calls")"; else pass "no test reached the network"; fi
 
 echo

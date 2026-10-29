@@ -31,7 +31,8 @@ const (
 	// The guard's Content-Type check is a prefix match, so
 	// "application/jsonx" would pass — harmless: a cross-site "simple"
 	// request cannot send it (issue #137.4); the daemon always sends
-	// application/json (engine/client.go).
+	// application/json (the synth POST is d.ec.Speech, called from speechOn in
+	// speak.go; engine.Client.Speech sets the header).
 	voxLoopbackHost = "127.0.0.1"
 	// voxStartupTimeout is the child's start budget: measured 8 s for the
 	// first-ever start (6.2 s of it the Metal library compile), 1.2–2 s after.
@@ -199,6 +200,11 @@ const (
 	// bounds generation itself (plan D8).
 	budgetBaseSec     = 3.0
 	budgetCharsPerSec = 6.0
+	// spokenCharsPerDigit is what one digit costs once spoken: the engine
+	// reads "2026" as words ("twenty twenty-six"), not four characters. Russian
+	// text arrives with numbers already written out; this covers the languages
+	// where digits reach the engine as digits (#143.6).
+	spokenCharsPerDigit = 4
 	// The engine's runaway guard, at the upstream defaults the owner's A/B ran
 	// with (audio.cpp include/engine/models/voxcpm2/types.h).
 	voxRetryTimes    = 3
@@ -222,9 +228,19 @@ type voxReq struct {
 	seed      int64
 }
 
-// lengthBudget is the longest plausible speech for text, in seconds.
+// lengthBudget is the longest plausible speech for text, in seconds. Each
+// ASCII digit counts as spokenCharsPerDigit characters: the engine speaks digits
+// as words, so a digit-heavy line is longer spoken than written.
 func lengthBudget(text string) float64 {
-	return budgetBaseSec + float64(utf8.RuneCountInString(text))/budgetCharsPerSec
+	n := 0
+	for _, r := range text {
+		if r >= '0' && r <= '9' {
+			n += spokenCharsPerDigit
+		} else {
+			n++
+		}
+	}
+	return budgetBaseSec + float64(n)/budgetCharsPerSec
 }
 
 // buildVoxCPM2 maps a prepared speech body and its resolved voice (nil = no

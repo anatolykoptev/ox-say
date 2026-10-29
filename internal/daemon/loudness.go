@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -195,12 +196,79 @@ func levelFilter(gainDB float64, limit bool, rate int) string {
 		f, rate*limiterOversample, ceiling, limiterAttackMs, limiterReleaseMs, rate)
 }
 
+// renderArgs is ffmpeg's argv for one levelling render.
+func renderArgs(src loudnormSource, out string, rate int, filter string) []string {
+	args := append([]string{"-hide_banner", "-nostats", "-loglevel", "error", "-y"}, src.args()...)
+	return append(args, "-af", filter, "-ar", strconv.Itoa(rate), "-c:a", levelCodec(src), "-f", "wav", out)
+}
+
+// levelCodec is the PCM codec the levelled file is written in: the input's own
+// sample format, so a 24-bit or float take is not squeezed to 16 bits (the
+// engines and the producer's assembly write 16-bit PCM, for which this is
+// pcm_s16le as before). An unreadable header or a format ffmpeg's WAV muxer has
+// no PCM codec for falls back to pcm_s16le.
+func levelCodec(src loudnormSource) string {
+	head := src.wav
+	if head == nil {
+		f, err := os.Open(src.path)
+		if err != nil {
+			return "pcm_s16le"
+		}
+		defer func() { _ = f.Close() }()
+		buf := make([]byte, wavHeadProbe)
+		n, _ := io.ReadFull(f, buf)
+		head = buf[:n]
+	}
+	tag, bits := wavSampleFormat(head)
+	switch {
+	case tag == wavFormatFloat && bits == 32:
+		return "pcm_f32le"
+	case tag == wavFormatFloat && bits == 64:
+		return "pcm_f64le"
+	case tag == wavFormatPCM && bits == 24:
+		return "pcm_s24le"
+	case tag == wavFormatPCM && bits == 32:
+		return "pcm_s32le"
+	}
+	return "pcm_s16le"
+}
+
+const (
+	wavFormatPCM        = 1
+	wavFormatFloat      = 3
+	wavFormatExtensible = 0xFFFE
+)
+
+// wavSampleFormat reads the format tag (the sub-format of a WAVE_FORMAT_EXTENSIBLE
+// header) and the bits per sample from a WAV header; 0, 0 when there is none.
+func wavSampleFormat(wav []byte) (tag, bits int) {
+	if len(wav) < 12 || string(wav[:4]) != "RIFF" || string(wav[8:12]) != "WAVE" {
+		return 0, 0
+	}
+	for off := 12; off+8 <= len(wav); {
+		size := int(binary.LittleEndian.Uint32(wav[off+4:]))
+		body := wav[off+8:]
+		if string(wav[off:off+4]) == "fmt " && len(body) >= 16 {
+			tag = int(binary.LittleEndian.Uint16(body))
+			bits = int(binary.LittleEndian.Uint16(body[14:]))
+			if tag == wavFormatExtensible && size >= 26 && len(body) >= 26 {
+				tag = int(binary.LittleEndian.Uint16(body[24:]))
+			}
+			return tag, bits
+		}
+		if size < 0 || size > len(body) {
+			return 0, 0
+		}
+		off += 8 + size + size&1
+	}
+	return 0, 0
+}
+
 // renderLevel applies filter to src into out at rate and checks the result:
 // ffmpeg can exit 0 and leave nothing, or leave the wrong rate, and neither may
 // pass for a levelled file.
 func renderLevel(ctx context.Context, src loudnormSource, out string, rate int, filter string) error {
-	args := append([]string{"-hide_banner", "-nostats", "-loglevel", "error", "-y"}, src.args()...)
-	args = append(args, "-af", filter, "-ar", strconv.Itoa(rate), "-c:a", "pcm_s16le", "-f", "wav", out)
+	args := renderArgs(src, out, rate, filter)
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stdin = src.stdin()
 	cmd.WaitDelay = loudnormWaitDelay
