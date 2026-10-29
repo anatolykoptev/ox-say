@@ -39,6 +39,23 @@ final class MeetingSpeakersTests: XCTestCase {
         XCTAssertTrue(spaced.edits(against: threeVoices).isEmpty, "spaces around a name are not a rename")
     }
 
+    /// The daemon refuses a speaker name over 60 characters with a 400 that would lose every other edit in the same
+    /// Save: the name is cut first (#252).
+    /// Mutation: SpeakerDraft.edits, drop the `MeetingLimits.clamp(..., to: MeetingLimits.nameMax)` on `typed` -> RED.
+    func testASpeakerNameIsCutToTheDaemonsCap() {
+        var d = SpeakerDraft(from: threeVoices)
+        d.names["them:2"] = String(repeating: "Ж", count: 100)
+        XCTAssertEqual(d.edits(against: threeVoices).rename["them:2"]?.unicodeScalars.count, MeetingLimits.nameMax)
+        // a name typed on a voice folded into a nameless one moves to it: cut as well
+        let nameless = SpeakersState(mode: "auto", split: false, speakers: [
+            SpeakerInfo(id: "them:1", label: "Speaker 1"), SpeakerInfo(id: "them:2", label: "Speaker 2")])
+        var f = SpeakerDraft(from: nameless)
+        f.names["them:2"] = String(repeating: "Ж", count: 100)
+        f.mergeInto["them:2"] = "them:1"
+        let e = f.edits(against: nameless)
+        XCTAssertEqual(e.rename["them:1"]?.unicodeScalars.count, MeetingLimits.nameMax)
+    }
+
     func testRenameMergeUnmergeAndSplit() {
         var d = SpeakerDraft(from: threeVoices)
         d.names["them:2"] = " Olga "

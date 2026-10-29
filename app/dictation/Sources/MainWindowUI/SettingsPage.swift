@@ -220,6 +220,8 @@ private struct NameField: View {
             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 220)
             .focused($focused)
             .onAppear { draft = saved }
+            // The field stops at the daemon's label cap: what is typed is what a transcript will say.
+            .onChange(of: draft) { new in let cut = MeetingLimits.cap(new, to: MeetingLimits.labelMax); if cut != new { draft = cut } }
             .onSubmit { commit(draft) }
             // A name typed and then left by a click on another section is saved, not lost.
             .onDisappear { commit(draft) }

@@ -110,7 +110,8 @@ public enum MeetingSettings {
         return stored.isEmpty ? fallback : stored
     }
 
-    public static func setDisplayName(_ name: String, _ d: UserDefaults) { d.set(name, forKey: nameKey) }
+    /// Stored cut to the daemon's label cap, so what the field shows afterwards is what a transcript will say.
+    public static func setDisplayName(_ name: String, _ d: UserDefaults) { d.set(MeetingLimits.clamp(name, to: MeetingLimits.labelMax), forKey: nameKey) }
 
     /// Meeting ids already copied into the notes folder.
     public static func exported(_ d: UserDefaults) -> Set<String> { Set(d.stringArray(forKey: exportedKey) ?? []) }
