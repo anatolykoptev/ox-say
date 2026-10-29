@@ -184,7 +184,7 @@ func paragraphs(src string) []block {
 func leadingStyle(b block) (style, body string, bodyLine int, err error) {
 	body, bodyLine = b.text, b.line
 	m := directiveRe.FindStringSubmatchIndex(body)
-	if m == nil || strings.TrimSpace(body[:m[0]]) != "" {
+	if m == nil || trimLead(body[:m[0]]) != "" {
 		return "", body, bodyLine, nil
 	}
 	sm := styleRe.FindStringSubmatch(strings.TrimSpace(body[m[2]:m[3]]))

@@ -44,6 +44,7 @@ type options struct {
 	runs      int
 	idle      time.Duration
 	keep      bool
+	pidDir    string // set by runLocked: the pidfile directory, "" when unusable
 }
 
 func parseFlags() (options, error) {
@@ -94,11 +95,13 @@ func main() {
 // runLocked runs the measurements while holding the bench lock; run is not
 // called when another bench holds it.
 func runLocked(ctx context.Context, o options, run func(context.Context, options) error) error {
-	unlock, err := lockRun()
+	dir, derr := resolvePidDir() // once: the lock and every pidfile share this answer
+	unlock, err := lockRun(dir, derr)
 	if err != nil {
 		return err
 	}
 	defer unlock()
+	o.pidDir = dir
 	return run(ctx, o)
 }
 
@@ -181,7 +184,7 @@ func bench(ctx context.Context, o options) error {
 // would otherwise land in whichever row ran first. It is reported as a note.
 func warmShaders(ctx context.Context, o options, r *report) {
 	warm := func(label, name string, cfg engine.Config) {
-		c, err := startChild(ctx, o.work, name, cfg)
+		c, err := startChild(ctx, o.work, o.pidDir, name, cfg)
 		if err != nil {
 			r.fail("%s first start failed: %v", label, err)
 			return

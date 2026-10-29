@@ -507,7 +507,7 @@ func (d *Daemon) publicError(err error) error {
 	if clean == err.Error() {
 		return err
 	}
-	d.log.Warn("design: error with a path withheld from the caller", slog.Any("error", err))
+	d.log.Warn("error with a path withheld from the caller", slog.Any("error", err))
 	return &scrubbedError{msg: clean, err: err}
 }
 

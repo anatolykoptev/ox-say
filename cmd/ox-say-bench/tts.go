@@ -71,7 +71,7 @@ func measureTTS(ctx context.Context, o options, cl *clips, model string, r *repo
 	if _, err := os.Stat(model); err != nil {
 		return err
 	}
-	c, err := startChild(ctx, o.work, "tts", ttsConfig(o, model))
+	c, err := startChild(ctx, o.work, o.pidDir, "tts", ttsConfig(o, model))
 	if err != nil {
 		return err
 	}

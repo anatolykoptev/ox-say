@@ -534,6 +534,13 @@ func (g *Guard) MarkSent() uint64 {
 	return g.sent
 }
 
+// SendSeq is the last send stamp handed out by MarkSent (0: none yet).
+func (s *Supervisor) SendSeq() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sendSeq
+}
+
 // Acquire takes an in-flight guard.
 func (s *Supervisor) Acquire() *Guard {
 	s.mu.Lock()
