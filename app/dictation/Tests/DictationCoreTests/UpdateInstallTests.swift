@@ -455,8 +455,9 @@ final class UpdateInstallRobustnessTests: XCTestCase {
                                                 installer: { _, _, _ in .init(argv: ["/bin/sleep", "20"], environment: [:]) },
                                                 installedVersion: { "0.1.22" }, daemonVersion: { "v0.1.22" })
         XCTAssertEqual(failure, .installerTimedOut(seconds: UpdateInstaller.installerIdleLimit))
-        XCTAssertGreaterThanOrEqual(counted.polls, 20, "ended before the limit of counted minutes without progress")
-        XCTAssertLessThanOrEqual(counted.polls, 22)
+        let minutes = Int(UpdateInstaller.installerIdleLimit / 60)
+        XCTAssertGreaterThanOrEqual(counted.polls, minutes, "ended before the limit of counted minutes without progress")
+        XCTAssertLessThanOrEqual(counted.polls, minutes + 2)
         XCTAssertLessThan(Date().timeIntervalSince(started), 10, "the run waited for the stalled installer")
         // Any failure makes AppDelegate.installUpdate call endInstall() (pinned in InstallTerminationTests), which clears
         // `updateInstalling`; with it clear, the gate lets dictation and read-aloud start again.
@@ -539,33 +540,51 @@ final class UpdateInstallRobustnessTests: XCTestCase {
     }
 
     /// The idle limit outlasts the longest silent stretch the scripts allow: the self-test's three calls of 300 s each.
-    /// Mutation: UpdateInstall.swift installerIdleLimit 1200 -> 600 -> RED.
+    /// Mutation: UpdateInstall.swift installerIdleLimit 1500 -> 600 -> RED.
     func testTheIdleLimitOutlastsTheSelfTest() {
         XCTAssertGreaterThan(UpdateInstaller.installerIdleLimit, 3 * 300 + 100)
     }
 
-    /// What counts as progress: the log growing, or the models directory changing. Mutation: installProgress ignores
-    /// the models directory (the silent model fetch looks idle) -> RED; ignores the log -> RED.
-    func testProgressIsTheLogAndTheModelsDirectory() throws {
+    /// What counts as progress: the log growing. The installer's own output (get.sh's bar, fetch-models.sh's
+    /// "progress" lines, the self-test's lines) is what a slow download shows; a download that prints only through the
+    /// log for longer than the idle limit is not killed, however the models directory is named.
+    /// Mutation: installProgress ignores the log (`?? 0` → `0`) -> RED on both tests.
+    func testProgressIsTheLog() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-progress-\(UUID().uuidString)")
-        let models = dir.appendingPathComponent("models/nested")
-        try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let logURL = dir.appendingPathComponent("log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let log = try FileHandle(forWritingTo: logURL)
         defer { try? log.close(); try? FileManager.default.removeItem(at: dir) }
-        let root = dir.appendingPathComponent("models")
-        let start = UpdateInstaller.installProgress(log: log, models: root)
-        try log.write(contentsOf: Data("progress".utf8))
-        let afterLog = UpdateInstaller.installProgress(log: log, models: root)
-        XCTAssertNotEqual(afterLog, start, "log growth is not progress")
-        try Data(repeating: 0, count: 100).write(to: models.appendingPathComponent("m.gguf.part"))
-        XCTAssertNotEqual(UpdateInstaller.installProgress(log: log, models: root), afterLog, "a growing .part is not progress")
-        XCTAssertEqual(UpdateInstaller.installProgress(log: nil, models: dir.appendingPathComponent("absent")), 0)
-        let env = ["OX_SAY_HOME": "/tmp/x"]
-        XCTAssertEqual(UpdateInstaller.modelsDirectory(environment: env).path, "/tmp/x/models")
-        XCTAssertTrue(UpdateInstaller.modelsDirectory(environment: [:], home: URL(fileURLWithPath: "/Users/u")).path
-            .hasSuffix("/Users/u/Library/Application Support/ox-say/models"))
+        let start = UpdateInstaller.installProgress(log: log)
+        try log.write(contentsOf: Data("progress m.gguf.part 100 bytes\n".utf8))
+        XCTAssertNotEqual(UpdateInstaller.installProgress(log: log), start, "log growth is not progress")
+        XCTAssertEqual(UpdateInstaller.installProgress(log: nil), 0)
+    }
+
+    /// A slow download whose only sign of life is a progress line in the log, for three times the idle limit: with the
+    /// real log signal it is not killed. Mutation: `installProgress` returns a constant -> RED (killed at the limit).
+    func testAnInstallerThatOnlyPrintsProgressLinesIsNotKilled() async throws {
+        let rig = try ScriptRig()
+        defer { rig.cleanUp() }
+        let logURL = rig.dir.appendingPathComponent("log")
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let log = try FileHandle(forWritingTo: logURL)
+        defer { try? log.close() }
+        let gate = rig.dir.appendingPathComponent("gate")
+        let counted = CountedWatch { n in
+            // the fake download's "progress <file> <bytes>" line, one per poll
+            try? log.write(contentsOf: Data("progress model.gguf.part \(n * 1000) bytes\n".utf8))
+            if n == 90 { FileManager.default.createFile(atPath: gate.path, contents: Data()) }
+            return UpdateInstaller.installProgress(log: log)
+        }
+        let script = "while [ ! -e '\(gate.path)' ]; do sleep 0.02; done"
+        let failure = await UpdateInstaller.run(kind: .studioVoice, tag: "v0.1.22", log: log, scriptSource: rig.source,
+                                                installerWatch: counted.watch,
+                                                installer: { _, _, _ in .init(argv: ["/bin/sh", "-c", script], environment: [:]) },
+                                                installedVersion: { "0.1.22" }, daemonVersion: { "v0.1.22" })
+        XCTAssertNil(failure, "a download that only prints progress lines was ended")
+        XCTAssertGreaterThanOrEqual(counted.polls, 90)
     }
 
     /// The call site watches by default (a nil watch would leave the installer unbounded).
@@ -715,9 +734,9 @@ final class UpdateFailureL10nTests: XCTestCase {
         (.installerFailed(status: 1),
          "The installer exited with status 1.",
          "Установщик завершился с кодом 1."),
-        (.installerTimedOut(seconds: 1200),
-         "The installer made no progress for 20 minutes and was stopped. Downloaded files are kept — run Update again to continue.",
-         "Установка не продвигалась 20 мин и была остановлена. Скачанное сохранено — запустите обновление снова, чтобы продолжить."),
+        (.installerTimedOut(seconds: 1500),
+         "The installer made no progress for 25 minutes and was stopped. Downloaded files are kept — run Update again to continue.",
+         "Установка не продвигалась 25 мин и была остановлена. Скачанное сохранено — запустите обновление снова, чтобы продолжить."),
         (.couldNotStart("no such file"),
          "The installer could not start: no such file.",
          "Установщик не удалось запустить: no such file."),

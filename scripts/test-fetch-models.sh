@@ -291,6 +291,25 @@ else
     fail "an unrelated failure removed the diarization marker"
 fi
 
+# #356: a slow download is not silent. The installer's output reaches the app's log, and the app ends an install whose
+# log stays still for 25 minutes; curl runs with -s, so fetch-models.sh itself prints "progress <file> <bytes>" while a
+# file downloads. The fake curl grows the .part in two steps 3 s apart; with OX_SAY_PROGRESS_SECS=1 two lines carry two
+# different sizes. Mutation: delete the `progress_tick "$part" &` line in fetch_part -> no line -> RED.
+d="$tmp/slow"; mkdir -p "$d/bin" "$d/dest"
+cat > "$d/bin/curl" <<'FAKE'
+#!/bin/bash
+out= prev=
+for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done
+printf 12345 >> "$out"; sleep 3; printf 67890 >> "$out"; sleep 3
+printf 200
+FAKE
+chmod +x "$d/bin/curl"
+out=$(PATH="$d/bin:$PATH" OX_SAY_MODELS_FROM='' OX_SAY_PROGRESS_SECS=1 bash "$root/scripts/fetch-models.sh" --notes-only "$d/dest" 2>&1)
+lines=$(printf '%s\n' "$out" | grep -c '^progress Qwen3.5-4B-Q4_K_M.gguf.part [0-9]* bytes$' || true)
+sizes=$(printf '%s\n' "$out" | sed -n 's/^progress Qwen3.5-4B-Q4_K_M.gguf.part \([0-9]*\) bytes$/\1/p' | sort -u | wc -l | tr -d ' ')
+if [ "${lines:-0}" -ge 2 ] && [ "${sizes:-0}" -ge 2 ]; then pass "a slow download prints progress lines with growing sizes"; else fail "progress lines: $lines lines, $sizes sizes in: $out"; fi
+if pgrep -f "$d/bin" >/dev/null 2>&1; then fail "the progress ticker outlived the download"; else pass "the progress ticker stops with the download"; fi
+
 if [ -e "$tmp/nonet-calls" ]; then fail "the no-network curl stub was reached: $(cat "$tmp/nonet-calls")"; else pass "no test reached the network"; fi
 
 echo

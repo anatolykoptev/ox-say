@@ -31,7 +31,10 @@ oxs_fetch_models "$root/scripts/fetch-models.sh"
 # stop the install.
 tmpdir=$(mktemp -d)
 tmp="$tmpdir/agent.plist"
-trap 'rm -f "$tmp"; rmdir "$tmpdir" 2>/dev/null || true' EXIT
+trap 'rm -f "$tmp"; rmdir "$tmpdir" 2>/dev/null || true; [ -z "${st:-}" ] || find "$st" -depth -delete 2>/dev/null || true' EXIT
+# the app ends a wedged install with TERM (#356); the EXIT trap above then cleans up
+trap 'exit 143' TERM
+trap 'exit 130' INT
 oxs_render_agent "$root/launchd/$label.plist.in" "$tmp"
 
 # 2. Swap in the engines and the binary, then reload the agent.
@@ -98,6 +101,7 @@ if [ "${OX_SAY_NO_SELFTEST:-0}" != 1 ]; then
     for voice in Samantha Alex Daniel Karen Moira; do
         if grep -E "^$voice " "$st/voices.txt" >/dev/null; then
             if say -v "$voice" -o "$st/mac.aiff" "ox-say is ready" 2>/dev/null; then
+                echo "self-test: warming up speech-to-text"
                 oxs_timeout "${OX_SAY_SELFTEST_SECS:-300}" "$bindir/ox-say" transcribe "$st/mac.aiff" >/dev/null 2>&1 || true
             fi
             break

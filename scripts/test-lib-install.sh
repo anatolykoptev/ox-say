@@ -375,6 +375,21 @@ if [ $((SECONDS - gc_start)) -lt 6 ]; then pass "oxs_timeout does not wait for a
 if [ -s "$tmp/gc.pid" ] && kill -0 "$(cat "$tmp/gc.pid")" 2>/dev/null; then kill -9 "$(cat "$tmp/gc.pid")" 2>/dev/null; fail "oxs_timeout left its grandchild running"; else pass "oxs_timeout stopped the grandchild"; fi
 check "oxs_timeout keeps stdout" "$( . "$root/scripts/lib-install.sh"; oxs_timeout 5 echo hi )" hi
 
+# #356: the app ends a wedged install with TERM. install-release.sh has an EXIT trap that removes its temp dirs, so TERM
+# and INT must turn into an exit (143 / 130) for that trap to run. Mutation: delete either trap line -> RED.
+n=$(grep -cE "^trap 'exit 143' TERM" "$root/scripts/install-release.sh" || true)
+check "install-release.sh exits on TERM (so its EXIT trap cleans up)" "${n:-x}" 1
+n=$(grep -cE "^trap 'exit 130' INT" "$root/scripts/install-release.sh" || true)
+check "install-release.sh exits on INT" "${n:-x}" 1
+n=$(grep -cE '^trap .*find "[$]st" -depth -delete' "$root/scripts/install-release.sh" || true)
+check "install-release.sh's EXIT trap also removes the self-test dir" "${n:-x}" 1
+# the self-test prints a line before each bounded call, so it is never silent for longer than one call (the app's idle limit)
+selftest_lines=$( . "$root/scripts/lib-install.sh"; fake=$(mktemp -d "$tmp/sl.XXXXXX"); printf '#!/bin/sh\ncase "$1" in say) : > "$3" ;; transcribe) echo "ox-say is ready" ;; esac\n' > "$fake/ox-say"; chmod +x "$fake/ox-say"; OX_SAY_SELFTEST_SECS=5 oxs_selftest_roundtrip "$fake/ox-say" "$fake/a.wav" "ox-say is ready" )
+case $selftest_lines in
+    *"self-test: speaking"*"self-test: transcribing"*) pass "the self-test announces each bounded call" ;;
+    *) fail "self-test output: [$selftest_lines]" ;;
+esac
+
 # --- H: VoxCPM2 is opt-in, Apple Silicon with >= 24 GB only -----------------
 # A stub fetch records its argv; stub uname and sysctl on PATH play the host.
 # Mutation (lib-install.sh oxs_fetch_models): drop the oxs_voxcpm2_ok call ->

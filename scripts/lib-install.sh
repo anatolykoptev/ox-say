@@ -324,7 +324,10 @@ oxs_timeout() {
 oxs_selftest_roundtrip() {
     local oxsay=$1 wav=$2 phrase=$3 secs=${OX_SAY_SELFTEST_SECS:-300}
     heard=
+    # a line before each call: the app ends an install that prints nothing for a long time (#356)
+    echo "self-test: speaking (up to $secs s)"
     oxs_timeout "$secs" "$oxsay" say -o "$wav" "$phrase" >/dev/null || return 1
+    echo "self-test: transcribing (up to $secs s)"
     heard=$(oxs_timeout "$secs" "$oxsay" transcribe "$wav") || return 1
     oxs_selftest_heard_ok "$heard" "$phrase"
 }

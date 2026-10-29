@@ -26,34 +26,25 @@ public enum UpdateInstaller {
     /// installer ends in the failure alert and `updateInstalling` is cleared, instead of refusing dictation and
     /// read-aloud until the app is quit. It is an idle limit and not a wall-clock one: the scripts bound a stalled
     /// line but deliberately not a slow one (a 3 GB model "takes as long as it needs"), and a total bound cut a
-    /// slow but alive 5 Mbit line at 49 minutes of a 2 hour studio install. Progress is the update log growing (get.sh's
-    /// progress bar, the installer's own lines) or the models directory changing in size (the model fetch is
-    /// silent; it grows `*.part` files there). There is no absolute cap: every step that can run for ever has its own
-    /// bound in the scripts (curl --speed-limit, oxs_timeout), so an install that keeps progressing is a finite one.
-    /// 20 minutes: longer than the longest silent stretch the scripts allow, the self-test's three calls of up to
-    /// 300 s each (15 minutes) plus the daemon restart wait (about 100 s).
-    public static let installerIdleLimit: TimeInterval = 1200
-    /// How often progress is looked at (two stats and an offset read).
+    /// slow but alive 5 Mbit line at 49 minutes of a 2 hour studio install.
+    /// Progress is the update log growing, and nothing else: the app cannot know where the installer writes its
+    /// models (OX_SAY_HOME comes from the installed LaunchAgent, not from this process), so the scripts say it in the
+    /// log. get.sh's progress bar and fetch-models.sh's "progress <file> <bytes>" line (every 30 s while a model
+    /// downloads, OX_SAY_PROGRESS_SECS) cover the downloads; install-release.sh prints a line before each bounded
+    /// self-test call.
+    /// Steps with a bound of their own: curl (--speed-limit), the self-test calls (oxs_timeout, 300 s each). Steps
+    /// with none, which only this limit covers: `say -v '?'` and `say -o` (the system voice), `claude mcp get/add`,
+    /// `launchctl` and the daemon wait. There is no absolute cap: an install that keeps printing progress is
+    /// downloading, and a download is finite.
+    /// 25 minutes: well beyond the longest silent stretch left, one bounded self-test call (300 s) or the daemon
+    /// restart wait (about 100 s), and beyond three of them in a row (15 minutes) in case a line goes unprinted.
+    public static let installerIdleLimit: TimeInterval = 1500
+    /// How often progress is looked at (one offset read).
     public static let progressPollInterval: TimeInterval = 5
 
-    /// The models directory the installer's fetch writes into (OX_SAY_HOME as the scripts read it).
-    public static func modelsDirectory(environment: [String: String] = ProcessInfo.processInfo.environment,
-                                       home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        let base = environment["OX_SAY_HOME"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
-            ?? home.appendingPathComponent("Library/Application Support/ox-say")
-        return base.appendingPathComponent("models")
-    }
-
-    /// A number that changes whenever the installer does something visible: the log's size plus the bytes under
-    /// the models directory. Any change counts (a model replaced by a smaller one is still work).
-    public static func installProgress(log: FileHandle?, models: URL) -> UInt64 {
-        var total = (try? log?.offset()) ?? 0
-        if let files = FileManager.default.enumerator(at: models, includingPropertiesForKeys: [.fileSizeKey]) {
-            for case let url as URL in files {
-                total &+= UInt64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-            }
-        }
-        return total
+    /// A number that changes whenever the installer prints: the log's size.
+    public static func installProgress(log: FileHandle?) -> UInt64 {
+        (try? log?.offset()) ?? 0
     }
 
     /// What `runProcess` consults: `progress` is read every `pollInterval`; the process is ended when its value
@@ -308,9 +299,8 @@ public enum UpdateInstaller {
         } ?? Data()
         guard isScript(head: head) else { return .notAScript }
 
-        let modelsDirectory = Self.modelsDirectory()
         let watch = installerWatch ?? IdleWatch(idleLimit: installerIdleLimit, pollInterval: progressPollInterval,
-                                                progress: { installProgress(log: log, models: modelsDirectory) })
+                                                progress: { installProgress(log: log) })
         switch await runProcess(installer(kind, script.path, tag), log: log, idle: watch) {
         case .failure(is ProcessTimedOut): return .installerTimedOut(seconds: watch.idleLimit)
         case .failure(let error): return .couldNotStart(error.localizedDescription)
