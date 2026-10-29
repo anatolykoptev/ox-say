@@ -31,14 +31,14 @@ enum PDFTextLayout {
 
     /// `pages` hold normalised text (line breaks are "\n"). Paragraphs are
     /// separated by one blank line.
-    static func paragraphs(_ pages: [String]) -> String {
+    static func paragraphs(_ pages: [String], counter: JoinCounter? = nil) -> String {
         let lines = dropPageNumbers(pages.map { page in
             page.split(separator: "\n", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
         })
         var out: [String] = []
-        for var page in dropRunningLines(lines).map(pageParagraphs) {
+        for var page in dropRunningLines(lines).map { pageParagraphs($0, counter: counter) } {
             guard !page.isEmpty else { continue }
-            if let last = out.last, continues(last, with: page[0]) { out[out.count - 1] = join(last, page.removeFirst()) }
+            if let last = out.last, continues(last, with: page[0]) { out[out.count - 1] = join(last, page.removeFirst(), counter: counter) }
             out += page
         }
         return out.joined(separator: "\n\n")
@@ -173,7 +173,7 @@ enum PDFTextLayout {
 
     /// One page's paragraphs, each a single line of text. A page with blank lines
     /// keeps them as the paragraph ends; one without is cut after short lines.
-    private static func pageParagraphs(_ lines: [String]) -> [String] {
+    private static func pageParagraphs(_ lines: [String], counter: JoinCounter?) -> [String] {
         var groups: [[String]] = [[]]
         let hasBlankLines = lines.contains("")
         let usual = usualLength(lines)
@@ -189,6 +189,7 @@ enum PDFTextLayout {
         return groups.filter { !$0.isEmpty }.map { group in
             var joined = group[0]
             for line in group.dropFirst() { append(line, to: &joined) }
+            _ = counter  // the lines of a group are appended in place, never through the copying `join`
             return joined
         }
     }
@@ -208,16 +209,17 @@ enum PDFTextLayout {
 
     /// Joins two lines of one paragraph: `informa-` + `tion` is one word; a
     /// hyphen after a letter and before a capital stays (`Ivanov-Petrov`).
-    static func join(_ head: String, _ tail: String) -> String {
-        joinCalls += 1
+    static func join(_ head: String, _ tail: String, counter: JoinCounter? = nil) -> String {
+        counter?.calls += 1
         var joined = head
         append(tail, to: &joined)
         return joined
     }
 
-    /// Test seam: how many times the copying `join` ran. Building a paragraph does not call it (only a paragraph
-    /// continued on the next page does), so a test asserts the work instead of a wall-clock bound.
-    nonisolated(unsafe) static var joinCalls = 0
+    /// Test seam, passed in by the caller (no shared state): counts the copying `join`s of one `paragraphs` run.
+    /// Building a paragraph does not use it (only a paragraph continued on the next page does), so a test asserts the
+    /// work instead of a wall-clock bound.
+    final class JoinCounter { var calls = 0 }
 
     /// `join`, in place: a paragraph of many lines is built in linear time (a page of 40 000 lines took 9 s when every
     /// join copied the whole head, #175).

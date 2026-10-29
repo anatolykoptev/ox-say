@@ -166,7 +166,10 @@ public enum DocumentReader {
             guessSpy?(sample)
             let encoding = NSString.stringEncoding(for: sample, encodingOptions: [.suggestedEncodingsKey: suggested],
                                                    convertedString: &sampled, usedLossyConversion: nil)
-            if suggested.contains(encoding), let whole = String(data: data, encoding: String.Encoding(rawValue: encoding)),
+            // A sample with little non-ASCII in it cannot tell Windows-1251 from Windows-1252, and every 1251 byte also
+            // decodes as 1252, so a wrong guess would come out as silent mojibake: such a file is guessed on all of it.
+            let evidence = sample.reduce(0) { $1 >= 0x80 ? $0 + 1 : $0 }
+            if Double(evidence) >= Double(sample.count) * minEvidenceShare, suggested.contains(encoding), let whole = String(data: data, encoding: String.Encoding(rawValue: encoding)),
                !whole.unicodeScalars.contains("\u{0}") { return whole }
         }
         var converted: NSString?
@@ -184,6 +187,10 @@ public enum DocumentReader {
     /// of a wall-clock bound.
     nonisolated(unsafe) static var guessSpy: ((Data) -> Void)?
     static let guessSampleBytes = 256 * 1024
+    /// A sample is trusted only when at least this share of its bytes is non-ASCII (1 %: about 2 600 of 262 144). Text
+    /// in Russian has half its bytes there, so a file whose Cyrillic is a tenth of it clears this by a wide margin;
+    /// a mostly ASCII file with a few Russian words does not, and is guessed whole.
+    static let minEvidenceShare = 0.01
     static let guessChunks = 16
     static func guessSample(_ data: Data) -> Data {
         let size = guessSampleBytes / guessChunks

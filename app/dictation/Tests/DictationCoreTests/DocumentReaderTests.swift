@@ -226,6 +226,30 @@ final class DocumentReaderTests: XCTestCase {
         XCTAssertLessThanOrEqual(seen.first?.count ?? .max, DocumentReader.guessSampleBytes)
     }
 
+    /// A mostly ASCII file with a few Russian words: the sample holds too few non-ASCII bytes to name the encoding (it can
+    /// say Windows-1252, which decodes every 1251 byte without complaint and gives "Ïðèâåò"). Such a file is guessed whole.
+    /// Mutation: DocumentReader.decode, delete `Double(evidence) >= Double(sample.count) * minEvidenceShare,` from the `if` -> RED
+    /// (the guesser is only ever given the sample, and the sparse file may come out as mojibake).
+    func testASparseCyrillicFileIsNotDecodedOnAThinSample() throws {
+        var lines: [String] = []
+        for index in 0..<24_000 { lines.append("Plain ASCII line number \(index) of a long English log file.") }
+        // Scattered words, placed deterministically; several land inside the sampled chunks.
+        for (n, at) in stride(from: 700, to: 24_000, by: 1_400).enumerated() { lines[at] += " Привет, мир \(n) — это тест."}
+        let text = lines.joined(separator: "\n")
+        let data = try XCTUnwrap(text.data(using: .windowsCP1251))
+        XCTAssertGreaterThan(data.count, 2 * DocumentReader.guessSampleBytes)
+        let sample = DocumentReader.guessSample(data)
+        let high = sample.filter { $0 >= 0x80 }.count
+        XCTAssertGreaterThan(high, 0, "setup: the sample must hold some evidence, just too little")
+        XCTAssertLessThan(Double(high), Double(sample.count) * DocumentReader.minEvidenceShare, "setup: and below the share")
+        var seen: [Data] = []
+        DocumentReader.guessSpy = { seen.append($0) }
+        defer { DocumentReader.guessSpy = nil }
+        let decoded = try DocumentReader.decode(data)
+        XCTAssertEqual(seen, [sample, data], "a thin sample is looked at, not trusted: the guesser then gets the whole file")
+        XCTAssertTrue(decoded.contains("Привет, мир 3 — это тест."), String(decoded.prefix(80)))
+    }
+
     /// The sample is spread over the file: Russian text that starts after a long ASCII head is in it, and what is decoded
     /// stays right (a guess that sees only ASCII names an encoding that is not tried, and the whole file is guessed).
     /// Mutation: DocumentReader.guessSample, return `data.prefix(guessSampleBytes)` -> RED (no Cyrillic byte in the sample).
