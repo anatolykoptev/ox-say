@@ -398,6 +398,120 @@ func TestShutdownDuringStartupKillsChild(t *testing.T) {
 	}, "engine port freed after shutdown")
 }
 
+// #347: Shutdown returns only when nothing the supervisor started can still write into its data dir. EnsureReady
+// returns ErrShutdown at once, so a start attempt that was still before the spawn (Prepare, the log open, exec) kept
+// running after Shutdown: it created engine.log and the pidfile, spawned a child and killed it, while the owner was
+// already removing the directory ("TempDir RemoveAll cleanup: directory not empty", ~1 in 3000 runs under load).
+// Mutation: supervisor.go Shutdown, delete the `s.bg.Wait()` wait (the bounded wait for run and waiter goroutines)
+// -> RED (Shutdown returns while Prepare is still blocked). Mutation: run(), delete the shutdown check before
+// spawn -> RED (a child is spawned and engine.log created after Shutdown).
+func TestShutdownWaitsForAStartBeforeSpawn(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	entered, release := make(chan struct{}), make(chan struct{})
+	sup := newTestSupervisor(t, dir, func(c *Config) {
+		c.Prepare = func() error {
+			close(entered)
+			<-release
+			return nil
+		}
+	})
+	go func() { _, _ = sup.EnsureReady(context.Background()) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start attempt never reached Prepare")
+	}
+	returned := make(chan struct{})
+	go func() {
+		sup.Shutdown()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+		t.Fatal("Shutdown returned while a start attempt was still running")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return after the start attempt ended")
+	}
+	// Nothing was spawned for a supervisor that was already shut down: no child, no log, no pidfile.
+	for _, name := range []string{"logs", "run"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			t.Errorf("%s/ was created after Shutdown", name)
+		}
+	}
+	if m, _ := filepath.Glob(filepath.Join(dir, "spawn-*")); len(m) != 0 {
+		t.Errorf("a child was spawned after Shutdown: %v", m)
+	}
+}
+
+// #347: the waiter's exit handler removes the pidfile after it publishes the exit, so Shutdown (which waits for the
+// exit) used to return with that removal still pending. Holding the pidfile lock keeps the handler there: Shutdown
+// must wait for it, and the pidfile is gone when it returns.
+// Mutation: supervisor.go spawn, start the waiter without the bg.Add(1)/Done wrapper (`go s.waiter(c)`) -> RED
+// (Shutdown returns while the handler is blocked).
+func TestShutdownWaitsForTheExitHandler(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	t.Setenv("OXSAY_FAKE_START_DELAY_MS", "800")
+	sup := newTestSupervisor(t, dir, nil)
+	pidPath := sup.cfg.PidPath
+	go func() { _, _ = sup.EnsureReady(context.Background()) }()
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		sup.mu.Lock()
+		defer sup.mu.Unlock()
+		return sup.child != nil
+	}, "child registered")
+	sup.pidMu.Lock() // the exit handler's pidfile removal now blocks
+	returned := make(chan struct{})
+	go func() {
+		sup.Shutdown()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+		sup.pidMu.Unlock()
+		t.Fatal("Shutdown returned while the exit handler was still pending")
+	case <-time.After(300 * time.Millisecond):
+	}
+	sup.pidMu.Unlock()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return after the exit handler finished")
+	}
+	if _, err := os.Stat(pidPath); err == nil {
+		t.Error("the pidfile outlived Shutdown")
+	}
+}
+
+// A wedged child (its exit never observed) costs Shutdown one more grace period, not two: the wait for the start
+// attempt and exit handler is skipped once the exit wait has timed out.
+// Mutation: supervisor.go Shutdown, delete the `if exitMissed { return }` block -> RED by assertion (the second wait is entered).
+func TestShutdownWedgedChildCostsOneGrace(t *testing.T) {
+	dir := t.TempDir()
+	const grace = 300 * time.Millisecond
+	sup := newTestSupervisor(t, dir, func(c *Config) { c.KillGrace = grace })
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	sup.mu.Lock()
+	sup.child = &child{cmd: cmd, done: make(chan struct{})} // done is never closed: the exit is never observed
+	sup.mu.Unlock()
+	sup.bg.Add(1) // a stuck exit handler
+	t.Cleanup(sup.bg.Done)
+	sup.Shutdown()
+	if n := sup.bgWaits.Load(); n != 0 {
+		t.Errorf("Shutdown entered the start-attempt wait %d times after the exit wait timed out, want 0", n)
+	}
+}
+
 // Shutdown landing after /health — while run() sits in the Replay step —
 // must still kill the child and must be reported as a shutdown, not a
 // crash. Mutation: drop the s.dead check in finishStart -> RED (last

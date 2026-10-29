@@ -403,14 +403,29 @@ func unavailableFixable(m *Manifest) bool {
 	return slices.Contains(m.Warnings, WarnDiarUnavailable) && retryableUnavailable[m.DiarReason]
 }
 
+// channelLost: a channel file is missing (statErr is its Stat error) and that is a loss, not a side that never had
+// audio: the meeting records its audio as deleted, or did not record this channel as silent (silent is
+// WarnNoMicAudio / WarnNoSystemAudio) when it was transcribed. keepFinishedWithoutAudio and wantsVoicesAgain share
+// it, so a retry is offered exactly where the transcription would not bounce it.
+func channelLost(statErr error, m *Manifest, silent string) bool {
+	return errors.Is(statErr, os.ErrNotExist) && (m.AudioDeleted || !slices.Contains(m.Warnings, silent))
+}
+
 // wantsVoicesAgain: the diarizer broke on this meeting, or could not run and may now, and there is far-side audio to
-// try again on. Whether it may run now is the caller's question (RetryVoices asks Deps.DiarizeReady).
+// try again on, and the mic side is not half-deleted. Whether it may run now is the caller's question (RetryVoices asks
+// Deps.DiarizeReady).
 func wantsVoicesAgain(dir string, m *Manifest) bool {
 	if !slices.Contains(m.Warnings, WarnNoDiarization) && !unavailableFixable(m) {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(dir, ThemPCM))
-	return err == nil
+	if _, err := os.Stat(filepath.Join(dir, ThemPCM)); err != nil {
+		return false
+	}
+	// An external half deletion (the mic file gone, the far side left) over a finished transcript is bounced by
+	// keepFinishedWithoutAudio, so the retry would be accepted and then do nothing: it is not offered. A mic recorded
+	// as silent never had a file; with no transcript yet the run goes on and reads the missing mic as silence.
+	_, err := os.Stat(filepath.Join(dir, MePCM))
+	return !(transcriptReadable(dir) && channelLost(err, m, WarnNoMicAudio))
 }
 
 // Recover queues every meeting a stopped daemon left half done, puts failed
@@ -778,7 +793,7 @@ func (r *Runner) keepFinishedWithoutAudio(id, dir string) (kept bool, err error)
 		if err == nil {
 			left = true
 		}
-		if errors.Is(err, os.ErrNotExist) && (m.AudioDeleted || !slices.Contains(m.Warnings, ch.silent)) {
+		if channelLost(err, m, ch.silent) {
 			gone = true
 		}
 	}
