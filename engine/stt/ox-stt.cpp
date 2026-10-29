@@ -45,6 +45,7 @@
 #include "parakeet.h"
 #include "whisper.h"
 
+#include "../common/wav_reader.h"
 #include "edge_pad.h"
 #include "segmenter.h"
 
@@ -169,87 +170,13 @@ bool parse(int argc, char ** argv, args & a) {
     return a.port == 0 && !a.file.empty() && a.vad.empty();
 }
 
-uint32_t rd32(const unsigned char * p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t) p[3] << 24; }
-uint16_t rd16(const unsigned char * p) { return (uint16_t) (p[0] | p[1] << 8); }
-
-// 16 kHz mono PCM16 or float32 WAV -> float samples
+// 16 kHz mono PCM16 or float32 WAV -> float samples (the reader ox-align shares: engine/common/wav_reader.h)
 bool read_wav_bytes(const unsigned char * buf, size_t size, std::vector<float> & out, std::string & err) {
-    if (size < 12 || memcmp(buf, "RIFF", 4) != 0 || memcmp(buf + 8, "WAVE", 4) != 0) {
-        err = "not a RIFF/WAVE file";
-        return false;
-    }
-    int fmt = 0, ch = 0, bits = 0;
-    uint32_t rate = 0;
-    for (size_t off = 12; off + 8 <= size;) {
-        const uint32_t len = rd32(buf + off + 4);
-        const size_t body = off + 8;
-        if (body + len > size && memcmp(buf + off, "data", 4) != 0) {
-            break;
-        }
-        if (memcmp(buf + off, "fmt ", 4) == 0 && len >= 16) {
-            fmt  = rd16(buf + body);
-            ch   = rd16(buf + body + 2);
-            rate = rd32(buf + body + 4);
-            bits = rd16(buf + body + 14);
-            if (fmt == 0xFFFE && len >= 26) {  // WAVE_FORMAT_EXTENSIBLE: sub-format code
-                fmt = rd16(buf + body + 24);
-            }
-        } else if (memcmp(buf + off, "data", 4) == 0) {
-            if (rate != SR || ch != 1 || !((fmt == 1 && bits == 16) || (fmt == 3 && bits == 32))) {
-                err = "need 16 kHz mono PCM16 or float32 (got rate " + std::to_string(rate) + ", channels " +
-                      std::to_string(ch) + ", format " + std::to_string(fmt) + "/" + std::to_string(bits) + " bit)";
-                return false;
-            }
-            // a streaming writer leaves the length 0 or 0xFFFFFFFF: take the rest of the file
-            const size_t avail = (len == 0 || len == 0xFFFFFFFFu) ? size - body : std::min<size_t>(len, size - body);
-            if (fmt == 1) {
-                out.resize(avail / 2);
-                for (size_t i = 0; i < out.size(); ++i) {
-                    out[i] = (int16_t) rd16(buf + body + 2 * i) / 32768.0f;
-                }
-            } else {
-                out.resize(avail / 4);
-                memcpy(out.data(), buf + body, out.size() * 4);
-                for (float v : out) {
-                    if (!std::isfinite(v)) {
-                        err = "float WAV has non-finite samples";
-                        return false;
-                    }
-                }
-            }
-            if (out.empty()) {
-                err = "no audio samples";
-                return false;
-            }
-            return true;
-        }
-        off = body + len + (len & 1);
-    }
-    err = "no data chunk";
-    return false;
+    return oxwav::read_bytes(buf, size, out, err);
 }
 
 bool read_wav(const std::string & path, std::vector<float> & out, std::string & err) {
-    FILE * f = fopen(path.c_str(), "rb");
-    if (!f) {
-        err = "cannot open " + path;
-        return false;
-    }
-    std::vector<unsigned char> buf;
-    if (fseek(f, 0, SEEK_END) == 0) {
-        const long size = ftell(f);
-        if (size > 0) {
-            buf.reserve((size_t) size);
-        }
-        fseek(f, 0, SEEK_SET);
-    }
-    unsigned char tmp[1 << 16];
-    size_t n;
-    while ((n = fread(tmp, 1, sizeof(tmp), f)) > 0) {
-        buf.insert(buf.end(), tmp, tmp + n);
-    }
-    fclose(f);
-    return read_wav_bytes(buf.data(), buf.size(), out, err);
+    return oxwav::read_file(path, out, err);
 }
 
 // chunk boundaries (sample offsets): windows of at most max_len samples, each cut at the centre of the
