@@ -103,13 +103,15 @@ func (d *Daemon) synthesizeQwen(ctx context.Context, body map[string]any) ([]byt
 // Without it a speak that is itself the wedged request holds its Guard until
 // its caller gives up, so every later render queues behind it and
 // RecycleWedged waits out RecycleWait for that older guard, repeatedly
-// (#338). Derived like a render's deadline, for the longest text a speak
-// takes (maxSpeakChars): the audio it makes (estCharsPerSec) times
-// renderBudgetRTF (4.0, against the slowest measured RTF of about 1 for
-// voxcpm2 and 0.58-0.61 for qwen) plus renderSlack for a cold child — about
-// 25 minutes, far above any legitimate speak. A var so a test can shorten it.
+// (#338). Only vox speaks get it, and those are capped at maxVoxChars, so it is
+// derived like a render's deadline for that text: the audio it makes
+// (estCharsPerSec) times renderBudgetRTF (4.0) plus renderSlack for a cold
+// child — about 6 minutes. No VoxCPM2 RTF is measured in the repo
+// (docs/performance.md covers Qwen3-TTS, RTF 0.22-0.28; VoxCPM2Block needs
+// unified memory, so it only runs on Apple Silicon); 4.0 is the producer's own
+// budget over its measured warm 0.58. A var so a test can shorten it.
 var interactiveSpeakCeiling = func() time.Duration {
-	chars := float64(maxSpeakChars)
+	chars := float64(maxVoxChars)
 	return time.Duration(chars/estCharsPerSec*renderBudgetRTF*float64(time.Second)) + renderSlack
 }()
 
