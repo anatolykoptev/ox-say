@@ -62,7 +62,7 @@ func writeSynthErr(w http.ResponseWriter, err error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{"message": err.Error(), "type": engineRunawayType},
+			"error": map[string]any{"message": err.Error(), "type": engineRunawayType, "retried": rwe.retried},
 		})
 		return
 	}

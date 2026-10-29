@@ -12,7 +12,7 @@ final class SpeechErrorL10nTests: XCTestCase {
 
     private let speechCases: [SpeechError] = [
         .daemonUnreachable("Could not connect to the server."), .timedOut, .http(502, #"{"error":{"message":"engine busy"}}"#),
-        .badResponse, .runaway,
+        .badResponse, .runaway, .runawayRetried,
     ]
     private let transcriptionCases: [TranscriptionError] = [
         .daemonUnreachable("Could not connect to the server."), .timedOut, .http(503, "queue full"), .badResponse,

@@ -145,6 +145,56 @@ public struct Generation {
     public func isCurrent(_ token: Int) -> Bool { token == value }
 }
 
+/// What the recorder does with the answer of a tap start or rebuild (#266, #302): the stale-answer guard, the retry
+/// streak and the loss judgement, in one place that a test can drive. The recorder only carries the action out.
+public struct TapRecovery {
+    public enum Outcome: Equatable { case started, stopped, failed }
+
+    public enum Action: Equatable {
+        /// The answer belongs to a recording that is over (or another one): nothing changes, nothing is told.
+        case ignore
+        /// Nothing to do (a stop, or a start that ended no told streak).
+        case nothing
+        /// A start that ends a streak whose loss was told: tell the recovery.
+        case recovered
+        /// Build the tap again after `after` seconds. `tellLoss`: say "system audio lost" now. `previousKeepsDelivering`:
+        /// the failed rebuild lost nothing (the old tap still delivers), for the log.
+        case rebuild(after: TimeInterval, tellLoss: Bool, previousKeepsDelivering: Bool)
+    }
+
+    private var retry = Reacquire()
+    private var generation = Generation()
+
+    public init() {}
+
+    /// The token a start request carries and its answer returns.
+    public var token: Int { generation.value }
+
+    /// A recording begins: a fresh streak, and answers to earlier requests are stale.
+    public mutating func begin() {
+        retry = Reacquire()
+        generation.advance()
+    }
+
+    /// The recording ends: answers still in flight are stale.
+    public mutating func end() { generation.advance() }
+
+    /// `recording`: a recording is running now. `hasTap`/`sinceLastBuffer`: the tap's state when the answer arrives,
+    /// read only for a failure (see `TapLoss`).
+    public mutating func answer(_ outcome: Outcome, token: Int, recording: Bool, hasTap: Bool,
+                                sinceLastBuffer: TimeInterval?) -> Action {
+        guard recording, generation.isCurrent(token) else { return .ignore }
+        switch outcome {
+        case .started: return retry.succeeded() ? .recovered : .nothing
+        case .stopped: return .nothing
+        case .failed:
+            let lost = TapLoss.isLost(hasTap: hasTap, sinceLastBuffer: sinceLastBuffer, consecutiveFailures: retry.failures + 1)
+            let step = retry.failed(sourceLost: lost)
+            return .rebuild(after: step.delay, tellLoss: step.notify, previousKeepsDelivering: !lost)
+        }
+    }
+}
+
 /// Install a tap on an engine's input bus, start the engine. AVAudioEngine raises an uncatchable exception when a tap
 /// is installed on a bus that already has one, so a leftover is removed first and a failed start removes its own.
 public enum EngineStart {
