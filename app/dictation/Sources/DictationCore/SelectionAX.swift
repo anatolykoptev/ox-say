@@ -24,6 +24,8 @@ public struct AXSelection: Equatable {
     /// Every source `read` asked, in order, when it asked more than one; empty
     /// for a single read. Content-free: it feeds the log line.
     public var trail: [Attempt]
+    /// What waking a Chromium/Electron app for this read did; nil when no wake was tried.
+    public var wake: AXWake?
 
     /// What one source's read came to, without its content.
     public struct Attempt: Equatable {
@@ -41,13 +43,14 @@ public struct AXSelection: Equatable {
     }
 
     public init(text: String? = nil, secureField: Bool = false, hasElement: Bool,
-                error: Int32, source: Source, trail: [Attempt] = []) {
+                error: Int32, source: Source, trail: [Attempt] = [], wake: AXWake? = nil) {
         self.text = text
         self.secureField = secureField
         self.hasElement = hasElement
         self.error = error
         self.source = source
         self.trail = trail
+        self.wake = wake
     }
 
     /// This read as one log entry.
@@ -91,10 +94,12 @@ public enum SelectionPath: String, Equatable {
 public struct SelectionReport: Equatable {
     public var path: SelectionPath
     public var attempts: [AXSelection.Attempt]
+    public var wake: AXWake?
 
-    public init(path: SelectionPath, attempts: [AXSelection.Attempt]) {
+    public init(path: SelectionPath, attempts: [AXSelection.Attempt], wake: AXWake? = nil) {
         self.path = path
         self.attempts = attempts
+        self.wake = wake
     }
 
     /// `selection path=ax|copy|none|remote ax=<source>:<code>[,<source>:<code>]`
@@ -103,5 +108,6 @@ public struct SelectionReport: Equatable {
     public var line: String {
         let asked = attempts.map { "\($0.source.rawValue):\($0.secure ? "secure" : String($0.error))" }
         return "selection path=\(path.rawValue) ax=\(asked.joined(separator: ","))"
+            + (wake.map { " wake=\($0.logText)" } ?? "")
     }
 }

@@ -12,7 +12,17 @@ final class SelectionCapture {
     private let slowClipboard: SlowClipboardMemory
     /// One report per speak press — the path taken and every AX source's
     /// result, never content. Lets the real app's AX path be checked from the log.
-    var onSelection: ((SelectionReport) -> Void)?
+    var onSelection: ((SelectionReport) -> Void)? {
+        // Always set, so the press ends at the report SelectionBorrow makes once per press, whoever listens.
+        get { { [self] report in gate.end(); reporter?(report) } }
+        set { reporter = newValue }
+    }
+    private var reporter: ((SelectionReport) -> Void)?
+    /// One press at a time: the capture spins the run loop, which delivers a second hotkey press inside the first.
+    private let gate = CaptureGate()
+
+    /// True when the press may start; the matching `onSelection` of `capture()` ends it.
+    func beginPress() -> Bool { gate.begin() }
 
     init(slowClipboard: SlowClipboardMemory) { self.slowClipboard = slowClipboard }
 
@@ -31,15 +41,39 @@ final class SelectionCapture {
     /// The focused element's AXSelectedText — the clipboard-free path. The
     /// system-wide element is asked first; when it yields no focused element
     /// (some callers get -25204 from it) the frontmost app's own element is.
+    /// A Chromium/Electron app that still yields nothing is asked to publish its
+    /// tree and read again (`ChromiumAXWake`, #220) before ⌘C is considered.
     private func selectedText() -> AXSelection {
-        AXSelection.read(
-            systemWide: { read(from: AXUIElementCreateSystemWide(), source: .systemWide) },
-            app: {
-                guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
-                    return AXSelection(hasElement: false, error: AXError.noValue.rawValue, source: .app)
-                }
-                return read(from: AXUIElementCreateApplication(pid), source: .app)
-            })
+        let front = NSWorkspace.shared.frontmostApplication
+        func once() -> AXSelection {
+            AXSelection.read(
+                systemWide: { read(from: AXUIElementCreateSystemWide(), source: .systemWide) },
+                app: {
+                    guard let pid = front?.processIdentifier else {
+                        return AXSelection(hasElement: false, error: AXError.noValue.rawValue, source: .app)
+                    }
+                    return read(from: AXUIElementCreateApplication(pid), source: .app)
+                })
+        }
+        let first = once()
+        guard AXIsProcessTrusted(), let front else { return first }
+        let root = AXUIElementCreateApplication(front.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, Self.axTimeout)
+        return ChromiumAXWake.read(first: first,
+                                   identity: { Self.identity(of: front) },
+                                   attributes: AppElementAttributes(root: root),
+                                   assistiveTechOn: {
+                                       NSWorkspace.shared.isVoiceOverEnabled || NSWorkspace.shared.isSwitchControlEnabled
+                                   },
+                                   retry: once,
+                                   spin: { RunLoop.current.run(until: Date().addingTimeInterval($0)) },
+                                   now: Date.init)
+    }
+
+    /// The bundle id and a lister of the bundle's `Contents` (read only when the id does not decide).
+    private static func identity(of app: NSRunningApplication) -> AppIdentity {
+        AppIdentity.onDisk(bundleID: app.bundleIdentifier,
+                           contents: app.bundleURL?.appendingPathComponent("Contents"))
     }
 
     /// A hung target must not freeze the main thread: every element queried
@@ -81,5 +115,29 @@ final class SelectionCapture {
         guard let events = PasteKey.commandEvents(.c, keyCode: c, source: source) else { return }
         events.down.post(tap: .cghidEventTap)
         events.up.post(tap: .cghidEventTap)
+    }
+}
+
+/// The AXApplication element's boolean attributes, for `ChromiumAXWake`.
+private struct AppElementAttributes: AXAppAttributes {
+    let root: AXUIElement
+
+    func read(_ name: String) -> AXAttributeValue {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(root, name as CFString, &value)
+        switch error {
+        case .success:
+            let boolean: Bool? = {
+                guard let value, CFGetTypeID(value) == CFBooleanGetTypeID() else { return nil }
+                return CFBooleanGetValue((value as! CFBoolean))
+            }()
+            return AXAttributeValue.decode(error: error.rawValue, boolean: boolean)
+        default:
+            return AXAttributeValue.decode(error: error.rawValue, boolean: nil)
+        }
+    }
+
+    func write(_ name: String, _ value: Bool) -> Int32 {
+        AXUIElementSetAttributeValue(root, name as CFString, (value ? kCFBooleanTrue : kCFBooleanFalse) as CFTypeRef).rawValue
     }
 }

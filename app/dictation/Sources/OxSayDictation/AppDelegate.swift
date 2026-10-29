@@ -1415,6 +1415,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// frontmost app and speak it, or say on the pill why nothing came.
     private func speakSelection() {
         guard !refuseSpeechWhileUpdating() else { return }
+        guard capture.beginPress() else { return }
         let (text, problem) = capture.capture()
         if let text {
             speak(text)

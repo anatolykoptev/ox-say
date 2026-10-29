@@ -39,7 +39,7 @@ public enum SelectionBorrow {
         let ax = selectedText()
         let (result, path) = run(ax: ax, board: board, secureInput: secureInput, postCopy: postCopy,
                                  spin: spin, readText: readText, memory: memory, copyTimeout: copyTimeout, readLimit: readLimit)
-        onSelection?(SelectionReport(path: path, attempts: ax.attempts))
+        onSelection?(SelectionReport(path: path, attempts: ax.attempts, wake: ax.wake))
         return result
     }
 
