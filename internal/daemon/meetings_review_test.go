@@ -55,13 +55,18 @@ func TestSettingsPutWithoutRetentionIsRefusedAndChangesNothing(t *testing.T) {
 
 // A recording meeting is deleted by no route either: its app is still writing.
 // Mutation: internal/daemon/meetings_http.go handleMeetingDelete, drop
-// meeting.StatusRecording from the refused case -> RED.
+// meeting.StatusRecording from the refused case -> RED. The 409 carries words
+// the app shows as they are (#252): the message in the refusal is replaced by
+// "conflict" -> RED.
 func TestMeetingDeleteRefusedWhileRecording(t *testing.T) {
 	d, mux := meetingFixture(t, nil)
 	m, dir, _ := d.Meet.Store.Create(meeting.Manifest{}, time.Now())
 	rec := call(t, mux, "DELETE", "/v1/meetings/"+m.ID, "")
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("delete while recording = %d %s, want 409", rec.Code, rec.Body)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "still recording") || strings.Contains(body, m.ID) || strings.Contains(body, dir) {
+		t.Fatalf("the refusal must say in plain words that the meeting is still recording, with no id or path: %s", body)
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("the recording's directory is gone: %v", err)

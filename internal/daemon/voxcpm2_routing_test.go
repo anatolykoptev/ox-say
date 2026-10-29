@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -276,5 +277,29 @@ func TestVoxCPM2EngineErrorDoesNotLeakVoicePath(t *testing.T) {
 	}
 	if !testLogSaw(t, d.Store.WAVPath("nar")) {
 		t.Error("the original error was not logged")
+	}
+}
+
+// #162.4: the MCP speak tool gets the same words as HTTP: the engine's error
+// names the voice recording's path, the tool's caller reads "[path]". Only
+// the engine's answer is scrubbed (here), not the caller's own out_path, which
+// Speak's other errors still quote.
+// Mutation: voxcpm2.go synthesizeVoxCPM2, `return nil, d.publicError(err)`
+// after speechOn -> `return nil, err` -> the path is in the tool error -> RED.
+func TestMCPSpeakEngineErrorDoesNotLeakVoicePath(t *testing.T) {
+	d, dir, _ := voxFixture(t, nil)
+	placeVoxVoice(t, d, "nar", config.TTSModelVoxCPM2, "", "", 3)
+	t.Setenv("OXSAY_FAKE_VOX_FAIL", "1")
+	_, _, err := d.toolSpeak(context.Background(), nil, speakToolIn{Text: "hi", Model: "voxcpm2", Voice: "nar"})
+	if err == nil {
+		t.Fatal("speak against a failing engine succeeded")
+	}
+	if msg := err.Error(); strings.Contains(msg, dir) || strings.Contains(msg, d.Store.WAVPath("nar")) || !strings.Contains(msg, "[path]") {
+		t.Fatalf("the tool error shows the voice path (or lost its words): %s", msg)
+	}
+	own := filepath.Join(dir, "nope", "own.wav")
+	_, _, err = d.toolSpeak(context.Background(), nil, speakToolIn{Text: "hi", OutPath: own})
+	if err == nil || !strings.Contains(err.Error(), filepath.Dir(own)) {
+		t.Fatalf("the caller's own out_path was withheld from its own error: %v", err)
 	}
 }
