@@ -1,20 +1,6 @@
 import AVFoundation
 import DictationCore
 
-enum RecorderError: LocalizedError {
-    case noInput
-    case notAllowed
-    case askedForPermission
-
-    var errorDescription: String? {
-        switch self {
-        case .noInput: return "No microphone input is available."
-        case .notAllowed: return "Microphone access is off. Turn it on in System Settings → Privacy & Security → Microphone."
-        case .askedForPermission: return "Allow microphone access, then try again."
-        }
-    }
-}
-
 /// Records the default input device as 16 kHz mono float samples, which is what
 /// the daemon's speech-to-text wants.
 final class MicRecorder: Recorder {
