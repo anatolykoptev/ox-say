@@ -668,13 +668,19 @@ func (s *Supervisor) Shutdown() {
 	// Wait briefly for the waiter goroutine to publish the exit so State()
 	// settles — bounded: an uninterruptible child (killChild already logged
 	// it and gave up) must not hang shutdown forever.
+	exitMissed := false
 	if c != nil {
 		select {
 		case <-c.done:
 		case <-time.After(s.cfg.KillGrace):
+			exitMissed = true
 			s.log.Error("engine exit not observed during shutdown",
 				slog.Int("pid", c.cmd.Process.Pid))
 		}
+	}
+	if exitMissed {
+		// The waiter is stuck with a wedged child: waiting for it again would only burn a second grace period.
+		return
 	}
 	// Return only when the start attempt and the exit handler have ended too: they write the log, the pidfile and
 	// the child's state, and the caller may remove the directory next. Bounded like the waits above: a Prepare or

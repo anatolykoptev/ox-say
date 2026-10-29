@@ -489,6 +489,31 @@ func TestShutdownWaitsForTheExitHandler(t *testing.T) {
 	}
 }
 
+// A wedged child (its exit never observed) costs Shutdown one more grace period, not two: the wait for the start
+// attempt and exit handler is skipped once the exit wait has timed out.
+// Mutation: supervisor.go Shutdown, delete the `if exitMissed { return }` block -> RED (Shutdown takes a second grace).
+func TestShutdownWedgedChildCostsOneGrace(t *testing.T) {
+	dir := t.TempDir()
+	const grace = 300 * time.Millisecond
+	sup := newTestSupervisor(t, dir, func(c *Config) { c.KillGrace = grace })
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	sup.mu.Lock()
+	sup.child = &child{cmd: cmd, done: make(chan struct{})} // done is never closed: the exit is never observed
+	sup.mu.Unlock()
+	sup.bg.Add(1) // a stuck exit handler
+	t.Cleanup(sup.bg.Done)
+	start := time.Now()
+	sup.Shutdown()
+	// killChild waits out SIGTERM and SIGKILL (2 graces), the exit wait one more; the bg wait must add nothing.
+	if took, limit := time.Since(start), 3*grace+grace/2; took > limit {
+		t.Errorf("Shutdown took %v, want under %v", took, limit)
+	}
+}
+
 // Shutdown landing after /health — while run() sits in the Replay step —
 // must still kill the child and must be reported as a shutdown, not a
 // crash. Mutation: drop the s.dead check in finishStart -> RED (last

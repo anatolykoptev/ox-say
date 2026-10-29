@@ -318,9 +318,20 @@ func (d *Daemon) privateRoots() []string {
 // after a Markdown or tag edge ("[", backtick, "<", ">").
 var absPathStart = regexp.MustCompile("(^|[\\s\"'(=\\[`<>])/")
 
-// apiRoute is a versioned API route, "/v1" or "/v1/...": a short API word, not
-// a file the user could have.
-var apiRoute = regexp.MustCompile(`^/v[0-9]+(/|$)`)
+// apiRoute is a versioned API route: "/v1" optionally followed by lowercase route segments, no dots (so no "..").
+var apiRoute = regexp.MustCompile(`^/v[0-9]{1,2}(/[a-z0-9_-]+)*$`)
+
+// rootSegments are first path segments of the file system, never a route: "/v1/tmp/x" is a path.
+var rootSegments = map[string]bool{"users": true, "home": true, "tmp": true, "var": true, "private": true, "etc": true,
+	"volumes": true, "library": true, "opt": true, "root": true, "system": true, "applications": true}
+
+func isAPIRoute(p string) bool {
+	if !apiRoute.MatchString(p) {
+		return false
+	}
+	parts := strings.Split(p, "/") // "", "v1", first, ...
+	return len(parts) < 3 || !rootSegments[parts[2]]
+}
 
 // closingTag is what follows "<" in "</b>": the "/" there closes a tag.
 var closingTag = regexp.MustCompile(`^/[A-Za-z][A-Za-z0-9]*>`)
@@ -337,7 +348,7 @@ func scrubStrayPath(s string) string {
 		rest := s[slash:]
 		end := pathTailEnd(rest)
 		afterLT := slash > 0 && s[slash-1] == '<'
-		if apiRoute.MatchString(rest[:end]) || end == 1 || (afterLT && closingTag.MatchString(rest)) {
+		if isAPIRoute(rest[:end]) || end == 1 || (afterLT && closingTag.MatchString(rest)) {
 			// an API route, a closing tag (or a lone "/") is not a path
 			b.WriteString(s[:loc[1]])
 			s = s[loc[1]:]
