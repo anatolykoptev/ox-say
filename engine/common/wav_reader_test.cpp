@@ -10,6 +10,8 @@
 #include <new>
 #include <random>
 
+#include <unistd.h>
+
 // --- allocation counter: sample-sized allocations made while armed -------------------------------
 static std::atomic<size_t> g_big_min{0};  // 0 = disarmed
 static std::atomic<int>    g_big_count{0};
@@ -261,6 +263,88 @@ static void t_single_allocation() {
     CHECK(xp.capacity() == xp.size());
 }
 
+// ox-align's real layout (#363.1): oxwav::window_tail (the function ox-align passes as the tail) must give
+// the buffer ox-align's pre-#362 code built by hand: ctx zeros, the samples, then ctx + ext zeros, with ext
+// rounding the signal up to whole windows. The legacy construction below is that code, verbatim.
+static std::vector<float> legacy_xp(const std::vector<float> & x, int64_t ctx, int64_t win) {
+    const int64_t n_in = (int64_t) x.size();
+    const int64_t ext  = ((-n_in) % win + win) % win;
+    std::vector<float> xp((size_t) (ctx + n_in + ctx + ext), 0.0f);
+    memcpy(xp.data() + ctx, x.data(), x.size() * sizeof(float));
+    return xp;
+}
+static void t_window_tail_matches_legacy() {
+    const int64_t win = 6, ctx = 4;  // ox-align's shape: head = ctx
+    for (int64_t n : { 1, 2, 5, 6, 7, 11, 12, 13 }) {  // n < win, n = win, n = win + 1, and past a window
+        std::vector<int16_t> s((size_t) n);
+        for (size_t i = 0; i < s.size(); ++i) s[i] = (int16_t) (1000 * (i + 1));
+        Bytes w = riff({ fmt_chunk(1, 1, 16000, 16), pcm16_data(s) });
+        R plain = rd(w);
+        CHECK(plain.ok);
+        std::vector<float> xp; std::string err;
+        CHECK(oxwav::read_bytes_padded(w.data(), w.size(), xp, err, (size_t) ctx,
+                                       [&](size_t k) { return oxwav::window_tail(k, win, ctx); }));
+        const std::vector<float> want = legacy_xp(plain.x, ctx, win);
+        CHECK(xp.size() == want.size());
+        CHECK(xp == want);
+        CHECK(((int64_t) xp.size() - 2 * ctx) % win == 0);  // whole windows between the contexts
+    }
+    // n < win is the case the old test formula never reached: one window, padded up
+    CHECK(oxwav::window_tail(1, win, ctx) == (size_t) (ctx + win - 1));
+    CHECK(oxwav::window_tail(win, win, ctx) == (size_t) ctx);
+    CHECK(oxwav::window_tail(win + 1, win, ctx) == (size_t) (ctx + win - 1));
+}
+
+// --- the file path (#363.2) ------------------------------------------------------------------------
+static std::string temp_path() {
+    const char * d = getenv("TMPDIR");
+    std::string t = std::string(d && *d ? d : "/tmp") + "/oxwav-test-XXXXXX";
+    int fd = mkstemp(&t[0]);
+    if (fd < 0) { fprintf(stderr, "mkstemp failed\n"); exit(2); }
+    close(fd);
+    return t;
+}
+static void t_file_missing() {
+    const std::string base = temp_path();
+    remove(base.c_str());  // a path that was just free
+    const std::string path = base;
+    std::vector<float> a, b; std::string ea, eb;
+    CHECK(!oxwav::read_file(path, a, ea));
+    CHECK(ea == "cannot open " + path);
+    CHECK(!oxwav::read_file_padded(path, b, eb, 3, [](size_t) { return (size_t) 3; }));
+    CHECK(eb == "cannot open " + path);
+}
+static void t_file_matches_bytes() {
+    Bytes w = riff({ fmt_chunk(1, 1, 16000, 16), pcm16_data(kS) });
+    const std::string path = temp_path();
+    FILE * f = fopen(path.c_str(), "wb");
+    CHECK(f != nullptr);
+    if (!f) return;
+    CHECK(fwrite(w.data(), 1, w.size(), f) == w.size());
+    fclose(f);
+    R viaBytes = rd(w);
+    std::vector<float> viaFile, viaFilePadded; std::string e1, e2;
+    CHECK(oxwav::read_file(path, viaFile, e1));
+    CHECK(viaFile == viaBytes.x);
+    CHECK(!viaFile.empty());
+    const size_t head = 3;
+    CHECK(oxwav::read_file_padded(path, viaFilePadded, e2, head, [](size_t) { return (size_t) 2; }));
+    CHECK(viaFilePadded.size() == head + viaBytes.x.size() + 2);
+    CHECK(std::equal(viaBytes.x.begin(), viaBytes.x.end(), viaFilePadded.begin() + head));
+    // a bad file through the file path gives the same message as through the bytes
+    Bytes bad = riff({ fmt_chunk(1, 2, 16000, 16), pcm16_data(kS) });
+    FILE * g = fopen(path.c_str(), "wb");
+    CHECK(g != nullptr);
+    if (g) {
+        CHECK(fwrite(bad.data(), 1, bad.size(), g) == bad.size());
+        fclose(g);
+        std::vector<float> x; std::string e3;
+        CHECK(!oxwav::read_file(path, x, e3));
+        CHECK(e3 == rd(bad).err);
+    }
+    remove(path.c_str());
+}
+
 // --- differential: mangled WAVs, old reader vs shared reader ---------------------------------------
 static void t_differential() {
     std::mt19937 rng(20261028);
@@ -297,7 +381,8 @@ int main() {
     RUN(t_pcm16); RUN(t_float32); RUN(t_float32_nonfinite); RUN(t_wrong_rate); RUN(t_stereo); RUN(t_truncated_data);
     RUN(t_truncated_to_nothing); RUN(t_streaming_length); RUN(t_missing_fmt); RUN(t_no_data_chunk); RUN(t_not_riff);
     RUN(t_odd_chunks); RUN(t_extra_chunks_before_data); RUN(t_extensible);
-    RUN(t_padded); RUN(t_padded_errors_same); RUN(t_single_allocation); RUN(t_differential);
+    RUN(t_padded); RUN(t_padded_errors_same); RUN(t_single_allocation);
+    RUN(t_window_tail_matches_legacy); RUN(t_file_missing); RUN(t_file_matches_bytes); RUN(t_differential);
     if (g_fail) { fprintf(stderr, "%d check(s) failed\n", g_fail); return 1; }
     printf("wav_reader_test: ok\n");
     return 0;
