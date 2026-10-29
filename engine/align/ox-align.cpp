@@ -1357,6 +1357,14 @@ static int run(int argc, char ** argv) {
     }
     const auto t0 = std::chrono::steady_clock::now();
 
+    // the WAV first: a bad or missing file must fail before a backend is
+    // initialised and a model loaded (#13)
+    std::vector<float> x;
+    if (!read_wav(a.file, x, err)) {
+        fprintf(stderr, "ox-align: %s\n", err.c_str());
+        return 1;
+    }
+
     // backends: first GPU (unless -ng), then CPU
     ggml_backend_load_all();
     engine e;
@@ -1400,12 +1408,6 @@ static int run(int argc, char ** argv) {
             fprintf(stderr, "ox-align: %s\n", err.c_str());
             return 1;
         }
-    }
-
-    std::vector<float> x;
-    if (!read_wav(a.file, x, err)) {
-        fprintf(stderr, "ox-align: %s\n", err.c_str());
-        return 1;
     }
 
     g_dump_dir = a.dump_dir;

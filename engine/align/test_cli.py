@@ -142,6 +142,9 @@ def main() -> int:
 
         empty = os.path.join(tmp, "empty.wav")
         empty_wav(empty)
+        garbage = os.path.join(tmp, "garbage.wav")
+        with open(garbage, "wb") as gf:
+            gf.write(b"not a wav file at all")
 
         cases = []
         for name, _, _, _, _, want in bad_models:
@@ -179,6 +182,14 @@ def main() -> int:
              "--context"),
             ("flag:window-neg", no_model, wav, ["--window", "-30"], "--window"),
             ("wav:empty", src, empty, [], "no audio samples"),
+            # the WAV is read before the model loads (#13): a bad WAV must not
+            # cost a model load, so with a model that does not exist the error
+            # is still the WAV's
+            ("wav:before-model-empty", no_model, empty, [], "no audio samples"),
+            ("wav:before-model-garbage", no_model, garbage, [],
+             "not a RIFF/WAVE"),
+            ("wav:before-model-missing", no_model,
+             os.path.join(tmp, "absent.wav"), [], "cannot open"),
         ]
 
         for tag, model, clip, extra, want in cases:

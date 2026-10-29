@@ -99,6 +99,22 @@ func (d *Daemon) synthesizeQwen(ctx context.Context, body map[string]any) ([]byt
 	return d.speechOn(ctx, d.Sup, body)
 }
 
+// interactiveSpeakCeiling bounds one interactive speak on the voxcpm2 child.
+// Without it a speak that is itself the wedged request holds its Guard until
+// its caller gives up, so every later render queues behind it and
+// RecycleWedged waits out RecycleWait for that older guard, repeatedly
+// (#338). Only vox speaks get it, and those are capped at maxVoxChars, so it is
+// derived like a render's deadline for that text: the audio it makes
+// (estCharsPerSec) times renderBudgetRTF (4.0) plus renderSlack for a cold
+// child — about 6 minutes. No VoxCPM2 RTF is measured in the repo
+// (docs/performance.md covers Qwen3-TTS, RTF 0.22-0.28; VoxCPM2Block needs
+// unified memory, so it only runs on Apple Silicon); 4.0 is the producer's own
+// budget over its measured warm 0.58. A var so a test can shorten it.
+var interactiveSpeakCeiling = func() time.Duration {
+	chars := float64(maxVoxChars)
+	return time.Duration(chars/estCharsPerSec*renderBudgetRTF*float64(time.Second)) + renderSlack
+}()
+
 // speechOn POSTs one prepared body to sup's child and returns the WAV — the
 // shared shape of every engine call (Acquire, EnsureReady, Speech, status).
 func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[string]any) ([]byte, error) {
@@ -112,8 +128,12 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 	// the shared voxcpm2 child the child runs at normal priority (#156.7).
 	use := engineUseOf(ctx)
 	vox := d.VoxSup != nil && sup == d.VoxSup
+	callerCtx := ctx
 	if vox && use == nil {
 		defer d.voxQoS.beginInteractive()()
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, interactiveSpeakCeiling)
+		defer cancel()
 	}
 	base, err := sup.EnsureReady(ctx)
 	if err != nil {
@@ -133,12 +153,12 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 	}
 	resp, err := d.ec.Speech(ctx, base, raw)
 	if err != nil {
-		return nil, d.transportError(ctx, err)
+		return nil, d.transportError(callerCtx, err)
 	}
 	defer resp.Body.Close()
 	wav, err := readAllCap(resp.Body, maxEngineWAVBytes)
 	if err != nil {
-		return nil, d.transportError(ctx, err)
+		return nil, d.transportError(callerCtx, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		if isRunaway(wav) {
