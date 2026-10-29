@@ -188,6 +188,27 @@ final class PillOwnershipTests: XCTestCase {
         XCTAssertEqual(setFrames, panelSetFrames, "setFrame on something other than the panel")
     }
 
+    /// #191.5 — a snap resize while an animated one is in flight must end at the snap's width. AppKit's window animator
+    /// keeps driving the frame to its own target after a plain setFrame, so a snap goes through the animator too, with
+    /// the zero duration Core names, which replaces the grow; the plain setFrame follows it, never leads.
+    /// That AppKit really leaves the stale width needs a live window: see the issue's stress step.
+    /// Mutations (call site): Overlay.resize, `context.duration = PillTiming.resizeSeconds(animated: animated)` ->
+    /// `context.duration = 0.15` -> RED; wrap the animator call in `if animated {` (the old split) -> RED; move the
+    /// plain `panel.setFrame(` above the group -> RED.
+    func testASnapResizeGoesThroughTheAnimatorToo() throws {
+        XCTAssertEqual(PillTiming.resizeSeconds(animated: true), 0.15)
+        XCTAssertEqual(PillTiming.resizeSeconds(animated: false), 0)
+        let body = Self.overlayBody("private func resize(to newSize: NSSize, animated: Bool = false) {")
+            .split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        XCTAssertTrue(body.contains("context.duration = PillTiming.resizeSeconds(animated: animated)"))
+        XCTAssertFalse(body.contains("if animated {"), "the animator must not be reserved for the animated resize")
+        let animator = try XCTUnwrap(body.range(of: "panel.animator().setFrame(frame, display: true)"))
+        let plain = try XCTUnwrap(body.range(of: "if !animated { panel.setFrame(frame, display: true) }"))
+        XCTAssertLessThan(animator.lowerBound, plain.lowerBound, "the plain setFrame leads the animator")
+        XCTAssertEqual(body.components(separatedBy: "panel.setFrame(").count - 1, 1)
+    }
+
     /// #191.7 — the visibility check does not log a fault for a pill that
     /// cannot be on screen (display asleep, screen locked).
     /// Mutation: move the PillVisibility guard below the fault log in

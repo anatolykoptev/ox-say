@@ -273,6 +273,71 @@ final class SpeechErrorL10nTests: XCTestCase {
         XCTAssertEqual(source.components(separatedBy: "LogDetail.privateText(error), privacy: .private").count - 1, 3)
     }
 
+    /// #346: a daemon refusal carries the daemon's own words (a meeting id, a file name): status and size are public,
+    /// the words only private.
+    /// Mutation: LogDetail.publicText, delete the `StudioError` arm -> RED.
+    func testARefusalsWordsAreNeverInThePublicLogText() {
+        let words = "no such meeting: standup-with-anna.m4a"
+        let refused: Error = StudioError.refused(status: 404, message: words)
+        let pub = LogDetail.publicText(refused)
+        XCTAssertFalse(pub.contains("standup"), pub)
+        XCTAssertTrue(pub.contains("404") && pub.contains("messageBytes=\(words.utf8.count)"), pub)
+        XCTAssertEqual(LogDetail.privateText(refused), words)
+        for plain in [StudioError.daemonUnreachable, .timedOut, .badResponse] {
+            XCTAssertEqual(LogDetail.publicText(plain), plain.description)
+            XCTAssertEqual(LogDetail.privateText(plain), "")
+        }
+    }
+
+    private func meetingController() throws -> String {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return MeetingWiringTests.stripComments(try String(contentsOf: root.appendingPathComponent("Sources/OxSayDictation/MeetingController.swift"), encoding: .utf8))
+    }
+
+    /// #346: the five error logs of the meeting controller go through LogDetail like the AppDelegate's.
+    /// Mutation: MeetingController, any log line back to `String(describing: error), privacy: .public` -> RED.
+    func testNoMeetingControllerLogLineWritesAnErrorsDescriptionPublicly() throws {
+        let source = try meetingController()
+        XCTAssertFalse(source.contains("String(describing: error), privacy: .public"))
+        XCTAssertEqual(source.components(separatedBy: "LogDetail.publicText(error), privacy: .public").count - 1, 5)
+        XCTAssertEqual(source.components(separatedBy: "LogDetail.privateText(error), privacy: .private").count - 1, 5)
+    }
+
+    /// #358: no way for an error's own text to reach a `.public` log in the meeting controller or the cleanup, however it
+    /// is spelled: an interpolation that names `error`/`failure` and is not `LogDetail.publicText(...)`, `String(describing:)`
+    /// of anything, or `"\(error)"` inside a string of RetryChain.
+    /// Mutation: MeetingController, any `.public` interpolation of `\(error)` / `\(error.localizedDescription)` -> RED;
+    /// RetryChain.discard, `"delete: \(LogDetail.publicText(error))"` -> `"delete: \(error)"` -> RED.
+    func testNoErrorTextReachesAPublicLogInTheMeetingCode() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        func stripped(_ f: String) throws -> String {
+            MeetingWiringTests.stripComments(try String(contentsOf: root.appendingPathComponent("Sources/\(f)"), encoding: .utf8))
+        }
+        let interpolation = try NSRegularExpression(pattern: #"\\\(([^()]*(?:\([^()]*\))?[^()]*)\)"#)
+        for file in ["OxSayDictation/MeetingController.swift", "DictationCore/RetryChain.swift"] {
+            let text = try stripped(file)
+            let range = NSRange(text.startIndex..., in: text)
+            for match in interpolation.matches(in: text, range: range) {
+                let whole = Range(match.range, in: text)!
+                let expr = String(text[Range(match.range(at: 1), in: text)!])
+                let tail = text[whole.upperBound...].prefix(40)
+                let isPublicLog = expr.contains(", privacy: .public")
+                let named = expr.range(of: #"\b(error|failure|err)\b|String\(describing:"#, options: .regularExpression) != nil
+                if isPublicLog { XCTAssertFalse(named && !expr.contains("LogDetail.publicText("), "\(file): \\(\(expr)) at a public log, then \(tail)") }
+                if file.hasSuffix("RetryChain.swift") {
+                    XCTAssertFalse(named && !expr.contains("LogDetail."), "\(file): an error interpolated into a string: \(expr)")
+                }
+            }
+        }
+    }
+
+    /// #346: the microphone sentence says what is wrong in the fewest words.
+    /// Mutation: ru Localizable.strings `recorder.error.no_input` back to the old sentence -> RED.
+    func testTheRussianNoMicrophoneSentenceIsShort() {
+        XCTAssertEqual(RecorderError.noInput.message(text: ru), "Микрофон недоступен.")
+        XCTAssertEqual(RecorderError.noInput.message(text: en), "No microphone input is available.")
+    }
+
     // MARK: one term for the daemon
 
     func testTheDaemonIsCalledTheOxSayServiceEverywhere() {

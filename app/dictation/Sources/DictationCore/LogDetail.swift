@@ -11,6 +11,10 @@ public enum LogDetail {
         case let e as TranscriptionError:
             if case .http(let code, let body) = e { return "http status=\(code) bodyBytes=\(body.utf8.count)" }
             return e.description
+        case let e as StudioError:
+            // The daemon's own words in a refusal can name a meeting or a file.
+            if case .refused(let status, let message) = e { return "refused status=\(status) messageBytes=\(message.utf8.count)" }
+            return e.description
         default:
             return String(describing: error)
         }
@@ -23,6 +27,8 @@ public enum LogDetail {
             if case .http(_, let body) = e { return body }
         case let e as TranscriptionError:
             if case .http(_, let body) = e { return body }
+        case let e as StudioError:
+            if case .refused(_, let message) = e { return message }
         default:
             break
         }
