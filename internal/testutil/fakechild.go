@@ -36,6 +36,9 @@
 //	                          runaway take)
 //	OXSAY_FAKE_VOX_DROP=1     close the connection on a speech request
 //	                          without answering (a transport failure)
+//	OXSAY_FAKE_VOX_FAIL=1     answer HTTP 500 with a message that names the
+//	                          request's voice_ref path (the real engine does
+//	                          when it cannot open the recording)
 //	OXSAY_FAKE_VOX_HANG_ONCE  path: the first speech request that finds no such
 //	                          file creates it and never answers (a wedged
 //	                          child); every later request, on any child,
@@ -1055,6 +1058,16 @@ func runFakeVox(args []string) int {
 		}
 		if ms, err := strconv.Atoi(os.Getenv("OXSAY_FAKE_VOX_DELAY_MS")); err == nil && ms > 0 {
 			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
+		if os.Getenv("OXSAY_FAKE_VOX_FAIL") == "1" {
+			var req struct {
+				VoiceRef struct {
+					Path string `json:"path"`
+				} `json:"voice_ref"`
+			}
+			_ = json.Unmarshal(body, &req)
+			http.Error(w, "cannot open reference audio "+req.VoiceRef.Path+": decode failed", http.StatusInternalServerError)
+			return
 		}
 		if os.Getenv("OXSAY_FAKE_VOX_DROP") == "1" {
 			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {

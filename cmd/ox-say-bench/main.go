@@ -82,6 +82,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ox-say-bench:", err)
 		os.Exit(2)
 	}
+	unlock, err := lockRun()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ox-say-bench:", err)
+		os.Exit(1)
+	}
+	defer unlock()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := bench(ctx, o); err != nil {
@@ -109,7 +115,7 @@ func bench(ctx context.Context, o options) error {
 	}
 	o.work = work
 	fmt.Fprintln(os.Stderr, "ox-say-bench: scratch directory", o.work)
-	for _, sub := range []string{"clips", "logs", "run"} {
+	for _, sub := range []string{"clips", "logs"} {
 		if err := os.MkdirAll(filepath.Join(o.work, sub), dirPerm); err != nil {
 			return err
 		}
@@ -118,8 +124,8 @@ func bench(ctx context.Context, o options) error {
 	if err != nil {
 		return err
 	}
-	r := &report{}
-	r.host(ctx)
+	r := &report{runs: o.runs}
+	r.host(ctx, o.engineDir)
 	warmShaders(ctx, o, r)
 	for _, m := range o.ttsModels {
 		if err := measureTTS(ctx, o, cl, m, r); err != nil {

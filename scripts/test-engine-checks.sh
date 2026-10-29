@@ -13,6 +13,10 @@
 #   * engine/lib-check.sh: reword OXS_METALLIB_PATCH_MARKER — "patch file carries the marker" fails for all three
 #   * engine/stt/ox-stt.cpp or engine/patches/qwentts/0002-*.patch: delete the 405's set_header("Allow", …) or drop a
 #     method from it — "the 405 sets Allow to the accepted methods" fails
+#   * engine/lib-check.sh: make write_pins_stamp copy the whole file (comments, other keys) or write nothing — "the pins
+#     stamp holds the repo and commit lines only" / "no stamp" fails
+#   * engine/build.sh: delete the `write_pins_stamp` call, or move it above the engine builds — "build.sh writes the pins
+#     stamp last" fails; delete the `rm -f "$out/pins.env"` line — "build.sh drops a stale pins stamp first" fails
 #   * engine/build.sh: drop `--cors-origins` from the check_help_flags "$out/ox-llm" line — "checks every flag the
 #     daemon passes" fails (the flags are read from internal/daemon/meetings.go notesServerArgs)
 set -u
@@ -114,6 +118,22 @@ for bin in tts-server ox-stt ox-align ox-llm audiocpp_server; do
     n=$(grep -cE "^[[:space:]]*check_patched \"\\\$(out|work)/$bin\"" "$root/engine/build.sh" || true)
     check "build.sh runs check_patched on $bin" "${n:-x}" 1
 done
+
+# write_pins_stamp: out/pins.env records the commits the binaries were built from (the bench reports them), and
+# only those lines: the repo urls and commits, not comments or other assignments.
+mkdir -p "$tmp/stamp-out"
+printf '# a comment\nQWENTTS_REPO=https://example.invalid/q\nQWENTTS_COMMIT=aaa111\nNOT_A_PIN=1\nWHISPER_COMMIT=bbb222\n' > "$tmp/pins.env"
+write_pins_stamp "$tmp/pins.env" "$tmp/stamp-out"
+check "the pins stamp holds the repo and commit lines only" "$(tr '\n' ' ' < "$tmp/stamp-out/pins.env" 2>/dev/null)" "QWENTTS_REPO=https://example.invalid/q QWENTTS_COMMIT=aaa111 WHISPER_COMMIT=bbb222 "
+rc=0; write_pins_stamp "$tmp/absent.env" "$tmp/stamp-out" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] || rc=1
+check "no pins.env to stamp from fails" "$rc" 1
+# build.sh drops a stale stamp first (an interrupted build must not leave the previous build's pins next to new
+# binaries) and writes the stamp as its last step, after the last engine.
+n=$(grep -cE '^rm -f "\$out/pins.env"' "$root/engine/build.sh" || true)
+check "build.sh drops a stale pins stamp first" "${n:-x}" 1
+last=$(grep -nE '^(check_patched|write_pins_stamp|echo "built )|^[[:space:]]+(check_patched|echo "built )' "$root/engine/build.sh" | tail -1 | grep -c 'write_pins_stamp' || true)
+check "build.sh writes the pins stamp last" "${last:-x}" 1
 
 # The marker is a literal copied from the patches: the three patches that add the string must still carry it, or
 # every engine build would fail at release time (and the unit test above only compares the constant with itself).

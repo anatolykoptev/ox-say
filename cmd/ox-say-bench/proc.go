@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/engine"
@@ -52,7 +55,7 @@ func startChild(ctx context.Context, work, name string, cfg engine.Config) (*chi
 	cfg.Port = port
 	cfg.LogName = name + ".log"
 	cfg.LogDir = filepath.Join(work, "logs")
-	cfg.PidPath = filepath.Join(work, "run", name+".pid")
+	cfg.PidPath = pidPath(name)
 	cfg.StartupTimeout = startupTimeout
 	cfg.Logger = slog.New(slog.DiscardHandler)
 	sup, err := engine.New(cfg)
@@ -144,4 +147,37 @@ func (s *rssSampler) stop() float64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return float64(s.peak) / kibPerMiB
+}
+
+// pidDir is where the engine children's pidfiles live: one directory per user,
+// the same on every run. The supervisor reaps an orphan through its pidfile when
+// it starts, so a bench that was SIGKILLed has its children reaped by the next
+// one, which a per-run scratch directory could never do. A failure to make it
+// is not fatal (the bench still measures), the pidfile just cannot be written.
+func pidDir() string {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		base = os.TempDir()
+	}
+	dir := filepath.Join(base, "ox-say-bench", "run")
+	_ = os.MkdirAll(dir, 0o700)
+	return dir
+}
+
+// pidPath is the pidfile of the engine child called name.
+func pidPath(name string) string { return filepath.Join(pidDir(), name+".pid") }
+
+// lockRun takes the lock that keeps two benches apart: they share pidDir, and
+// each would reap the other's live children as orphans. The lock goes with the
+// process, so a killed bench never leaves it held.
+func lockRun() (unlock func(), err error) {
+	f, err := os.OpenFile(filepath.Join(pidDir(), ".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("bench lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, errors.New("another ox-say-bench is already running (it shares the engine pidfile directory); wait for it to finish")
+	}
+	return func() { _ = f.Close() }, nil
 }

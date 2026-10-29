@@ -94,7 +94,7 @@ func measureTTS(ctx context.Context, o options, cl *clips, model string, r *repo
 	r.note("TTS %s: first synthesis after start took %.2f s (excluded from the medians)",
 		filepath.Base(model), first.total.Seconds())
 	for _, tc := range ttsCases {
-		row, err := ttsMedians(ctx, ec, c.base, tc, o.runs)
+		row, err := ttsMedians(tc, o.runs, func(tc ttsCase) (ttsRun, error) { return synth(ctx, ec, c.base, tc) })
 		if err != nil {
 			return err
 		}
@@ -104,10 +104,17 @@ func measureTTS(ctx context.Context, o options, cl *clips, model string, r *repo
 	return nil
 }
 
-func ttsMedians(ctx context.Context, ec *engine.Client, base string, tc ttsCase, runs int) (ttsRow, error) {
+// ttsMedians is the warm medians of one case. It discards one synthesis first:
+// the first cloned and the first Russian synthesis of a model pay for their own
+// warm-up (voice conditioning, the language's tokenizer path) and would sit in
+// the median otherwise.
+func ttsMedians(tc ttsCase, runs int, run func(ttsCase) (ttsRun, error)) (ttsRow, error) {
+	if _, err := run(tc); err != nil {
+		return ttsRow{}, err
+	}
 	var first, rtf []float64
 	for range runs {
-		m, err := synth(ctx, ec, base, tc)
+		m, err := run(tc)
 		if err != nil {
 			return ttsRow{}, err
 		}

@@ -23,6 +23,7 @@ type report struct {
 	notes     []string
 	partial   []string // why the run is incomplete; empty on a full run
 	singles   bool     // some row is a single run, not a median
+	runs      int      // -runs: how many warm runs each median is of
 }
 
 const singleMark = " †"
@@ -56,7 +57,7 @@ func (r *report) sttCell(row, dev, val string) {
 	r.stt[row][dev] = val
 }
 
-func (r *report) host(ctx context.Context) {
+func (r *report) host(ctx context.Context, engineDir string) {
 	q := func(name string, args ...string) string {
 		out, err := exec.CommandContext(ctx, name, args...).Output()
 		if err != nil {
@@ -66,11 +67,10 @@ func (r *report) host(ctx context.Context) {
 	}
 	r.hostLines = []string{
 		"Chip: " + q("sysctl", "-n", "machdep.cpu.brand_string"),
-		"Cores: " + q("sysctl", "-n", "hw.perflevel0.physicalcpu") + " performance + " +
-			q("sysctl", "-n", "hw.perflevel1.physicalcpu") + " efficiency",
+		coresLine(q),
 		"Memory (bytes): " + q("sysctl", "-n", "hw.memsize"),
 		"macOS: " + q("sw_vers", "-productVersion"),
-		"Engine pins (engine/pins.env): " + pins(),
+		"Engine pins (from the build stamp): " + pinsFrom(engineDir),
 		"Date: " + time.Now().Format(time.DateOnly),
 	}
 	r.envNote()
@@ -102,12 +102,26 @@ func (r *report) envNoteFrom(environ []string) {
 	r.note("environment inherited by the engines: %s", strings.Join(vars, " "))
 }
 
-// pins reads the engine commits from engine/pins.env; run from the repo
-// root that built the engines.
-func pins() string {
-	data, err := os.ReadFile(filepath.Join("engine", "pins.env"))
+// coresLine is the host's core count: performance and efficiency cores on Apple
+// Silicon, else the plain physical count.
+func coresLine(q func(name string, args ...string) string) string {
+	perf, eff := q("sysctl", "-n", "hw.perflevel0.physicalcpu"), q("sysctl", "-n", "hw.perflevel1.physicalcpu")
+	if perf == "?" || perf == "" || eff == "?" || eff == "" {
+		// Intel has no performance levels: say how many cores there are, not
+		// "8 performance +  efficiency".
+		return "Cores: " + q("sysctl", "-n", "hw.physicalcpu")
+	}
+	return "Cores: " + perf + " performance + " + eff + " efficiency"
+}
+
+// pinsFrom reads the engine commits from the pins.env stamp that engine/build.sh
+// leaves next to the binaries: those are the commits the binaries under test were
+// built from. The checkout's own engine/pins.env says what the NEXT build would
+// use, which may not be what is in engineDir, so it is never a fallback.
+func pinsFrom(engineDir string) string {
+	data, err := os.ReadFile(filepath.Join(engineDir, "pins.env"))
 	if err != nil {
-		return "?"
+		return "unknown (no pins.env next to the engine binaries; build them with engine/build.sh)"
 	}
 	var out []string
 	for _, l := range strings.Split(string(data), "\n") {
@@ -159,7 +173,7 @@ func (r *report) markdown() string {
 		b.WriteString("\n")
 	}
 	if r.singles {
-		b.WriteString("\n† single run; every other latency row is the median of -runs warm runs.\n")
+		fmt.Fprintf(&b, "\n† single run; every other latency row is the median of %d warm runs.\n", r.runs)
 	}
 	if len(r.notes) > 0 {
 		b.WriteString("\n### Notes\n\n")

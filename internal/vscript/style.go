@@ -31,3 +31,9 @@ func CleanStyle(s string) string {
 	}
 	return strings.Join(strings.Fields(b.String()), " ")
 }
+
+// StartsWithParen reports whether s opens with "(" once leading white space and
+// format characters (zero-width spaces, BOM, bidi marks) are skipped: the engine
+// would read that "(" as a style tag, and strings.TrimSpace does not see through
+// a format character.
+func StartsWithParen(s string) bool { return strings.HasPrefix(trimLead(s), "(") }

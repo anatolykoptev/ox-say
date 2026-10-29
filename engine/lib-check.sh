@@ -68,3 +68,13 @@ check_help_flags() {
         esac
     done
 }
+
+# write_pins_stamp <pins.env> <out-dir>: out-dir/pins.env, the upstream repos and commits the binaries
+# in out-dir were built from (the repo and commit lines of engine/pins.env, nothing else). ox-say-bench
+# reports them from here, not from the checkout it happens to run in, whose pins.env may have moved on.
+write_pins_stamp() {
+    local src=$1 out=$2
+    [ -f "$src" ] || { echo "engine/lib-check.sh: $src is missing; cannot stamp the pins" >&2; return 1; }
+    grep -E '^[A-Z0-9_]+_(REPO|COMMIT)=' "$src" > "$out/pins.env.tmp" || { rm -f "$out/pins.env.tmp"; echo "engine/lib-check.sh: $src has no *_REPO or *_COMMIT lines" >&2; return 1; }
+    mv "$out/pins.env.tmp" "$out/pins.env"
+}
