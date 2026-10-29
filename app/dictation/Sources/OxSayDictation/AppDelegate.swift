@@ -232,6 +232,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Once, before anything reads the per-app picks (#342.2).
+        CallPolicy.migrateStaleAutoPicks(UserDefaults.standard)
         let baseURL = DaemonAddress.url(agentPlist: try? Data(contentsOf: DaemonAddress.agentPlist))
         let client = TranscriptionClient(baseURL: baseURL)
         self.client = client
@@ -280,6 +282,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onState = { [weak self] state in self?.soundWhileDictating.dictationStateChanged(state); self?.show(state) }
         // A process killed mid-duck left the output quiet: give it back now.
         soundWhileDictating.recoverInterruptedDuck()
+        // An update installing restarts the daemon: a dictation started now would lose its text (#211).
+        controller.startAllowed = { [weak self] in UpdateGate.allowsNewDaemonWork(installing: self?.updateInstalling ?? false) }
+        controller.onStartRefused = { [weak self] in self?.notice(L10nKey.noticeUpdatingDictation.text) }
         controller.onError = { [weak self] message in self?.notice(message, kind: .outcome) }
         controller.onErrorDetail = { [weak self] error in
             self?.errorLog.error("dictation failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
@@ -991,6 +996,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Sends the text to the daemon with the pick for its script's language.
     private func speak(_ text: String) {
+        guard !refuseSpeechWhileUpdating() else { return }
         let defaults = UserDefaults.standard
         let voice = VoicePick.voice(for: text,
                                     russian: defaults.string(forKey: speakVoiceRUKey),
@@ -1397,9 +1403,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         endPill(&installPill)
     }
 
+    /// Read-aloud needs the daemon, which an installing update restarts (#211): true, with a notice, when a new
+    /// request must not start now.
+    private func refuseSpeechWhileUpdating() -> Bool {
+        guard !UpdateGate.allowsNewDaemonWork(installing: updateInstalling) else { return false }
+        notice(L10nKey.noticeUpdatingSpeak.text)
+        return true
+    }
+
     /// The speak-selection hotkey press: read whatever is selected in the
     /// frontmost app and speak it, or say on the pill why nothing came.
     private func speakSelection() {
+        guard !refuseSpeechWhileUpdating() else { return }
         let (text, problem) = capture.capture()
         if let text {
             speak(text)

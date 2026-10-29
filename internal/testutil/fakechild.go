@@ -44,6 +44,8 @@
 //	                          child); every later request, on any child,
 //	                          answers normally
 //	OXSAY_FAKE_VOX_DELAY_MS   sleep before answering a speech request
+//	OXSAY_FAKE_VOX_STALL_BODY=1 send the 200 header, flush it, then no body
+//	                          until the client goes away
 //	OXSAY_FAKE_VOX_WEDGE_FIRST path: the first child to get a speech request and
 //	                          create this file is wedged for good - it
 //	                          accepts every request from then on and answers
@@ -1073,6 +1075,13 @@ func runFakeVox(args []string) int {
 			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
 				_ = conn.Close()
 			}
+			return
+		}
+		if os.Getenv("OXSAY_FAKE_VOX_STALL_BODY") == "1" {
+			w.Header().Set("Content-Type", "audio/wav")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
 			return
 		}
 		secs := 1.0

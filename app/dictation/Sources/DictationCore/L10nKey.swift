@@ -22,6 +22,9 @@ public enum L10nKey: String, CaseIterable {
     case menuUpdateAvailable = "menu.update_available"
     case noticeUpdateAvailable = "notice.update_available"
     case noticeUpdateBusy = "notice.update_busy"
+    // #211: a dictation or read-aloud pressed while an update installs (the daemon restarts in that window).
+    case noticeUpdatingDictation = "notice.updating.dictation"
+    case noticeUpdatingSpeak = "notice.updating.speak"
     // Sound While Dictating: the Settings submenu, its three exclusive rows,
     // and the Automation notice Pause Music can still raise.
     case menuSoundWhileDictating = "menu.sound_while_dictating"

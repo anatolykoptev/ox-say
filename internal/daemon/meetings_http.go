@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -229,9 +230,11 @@ type meetingSummary struct {
 	DiarReason   string         `json:"diar_reason,omitempty"`
 	// AudioDeleted: retention removed the recording, so a voices retry (which transcribes it again) cannot run.
 	AudioDeleted bool `json:"audio_deleted,omitempty"`
-	// VoicesRetryable: voices were unavailable for a reason a retry can fix, diarization is ready now and the audio is
-	// here, so POST .../voices would be accepted. The app shows "Try Again" for an unavailable meeting by this field.
-	VoicesRetryable bool `json:"voices_retryable,omitempty"`
+	// VoicesRetryable: whether POST .../voices would be accepted now, for a meeting with a voices problem (unavailable for
+	// a reason a retry can fix with diarization ready now, or a diarizer that broke) whose audio is here. A pointer, so
+	// that a "no" is served as false while a meeting with no voices problem, and a daemon that predates the field for
+	// the failed kind, serve nothing: the app tells the two apart.
+	VoicesRetryable *bool `json:"voices_retryable,omitempty"`
 }
 
 // summarizer is summarize for a whole list: the diarizer's readiness is asked once for all of it.
@@ -246,8 +249,17 @@ func (d *Daemon) summary(m meeting.Manifest, retryable bool) meetingSummary {
 		ID: m.ID, Title: m.Title, Started: m.Started, DurationS: m.DurationS, Status: m.Status,
 		Language: m.Language, HasNotes: m.Status == meeting.StatusDone, NotesPending: m.NotesPending,
 		Warnings: m.Warnings, Error: m.Error, FailReason: m.FailReason, Voices: m.Voices, VoiceMode: m.VoiceMode, DiarReason: m.DiarReason, AudioDeleted: m.AudioDeleted,
-		VoicesRetryable: retryable,
+		VoicesRetryable: voicesField(m, retryable),
 	}
+}
+
+// voicesField is the served voices_retryable: the answer for a meeting that has a voices problem, nothing for one that
+// has none.
+func voicesField(m meeting.Manifest, retryable bool) *bool {
+	if !slices.Contains(m.Warnings, meeting.WarnNoDiarization) && !slices.Contains(m.Warnings, meeting.WarnDiarUnavailable) {
+		return nil
+	}
+	return &retryable
 }
 
 func (d *Daemon) handleMeetingList(w http.ResponseWriter, _ *http.Request) {
@@ -267,7 +279,7 @@ func (d *Daemon) handleMeetingList(w http.ResponseWriter, _ *http.Request) {
 // meetingDetail is one meeting with the texts the caller asked for.
 type meetingDetail struct {
 	meeting.Manifest
-	VoicesRetryable bool   `json:"voices_retryable,omitempty"` // see meetingSummary
+	VoicesRetryable *bool  `json:"voices_retryable,omitempty"` // see meetingSummary
 	NotesMD         string `json:"notes_md,omitempty"`
 	TranscriptMD    string `json:"transcript_md,omitempty"`
 }
@@ -278,7 +290,7 @@ func (d *Daemon) handleMeetingGet(w http.ResponseWriter, r *http.Request) {
 		d.writeMeetingErr(w, err)
 		return
 	}
-	out := meetingDetail{Manifest: d.publicManifest(*m), VoicesRetryable: d.Meet.VoicesRetryable(*m)}
+	out := meetingDetail{Manifest: d.publicManifest(*m), VoicesRetryable: voicesField(*m, d.Meet.VoicesRetryable(*m))}
 	include := includeSet(r.URL.Query().Get("include"))
 	if include["notes"] {
 		if out.NotesMD, err = d.Meet.Store.Text(m.ID, meeting.NotesMD); err != nil {

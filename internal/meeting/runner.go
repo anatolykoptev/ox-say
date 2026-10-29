@@ -370,8 +370,8 @@ func (r *Runner) diarNotReady() string {
 }
 
 // VoicesRetryable is whether a retry of m's voices would be accepted right now, for a meeting whose voices are
-// unavailable (the failed kind is judged by the app). It is what the served meeting reports as voices_retryable, so
-// the app shows "Try Again" exactly when RetryVoices would take it.
+// unavailable or whose diarizer broke. It is what the served meeting reports as voices_retryable, so the app shows
+// "Try Again" exactly when RetryVoices would take it (the app still keeps its own timeout rule for a failed run).
 func (r *Runner) VoicesRetryable(m Manifest) bool { return r.VoicesRetryer()(m) }
 
 // VoicesRetryer is VoicesRetryable for a list of meetings: the diarizer's readiness is asked at most once, on the
@@ -379,7 +379,7 @@ func (r *Runner) VoicesRetryable(m Manifest) bool { return r.VoicesRetryer()(m) 
 func (r *Runner) VoicesRetryer() func(Manifest) bool {
 	asked, notReady := false, ""
 	return func(m Manifest) bool {
-		if !unavailableFixable(&m) {
+		if !slices.Contains(m.Warnings, WarnNoDiarization) && !unavailableFixable(&m) {
 			return false
 		}
 		switch m.Status {
@@ -387,11 +387,15 @@ func (r *Runner) VoicesRetryer() func(Manifest) bool {
 		default:
 			return false
 		}
-		if !asked {
-			notReady, asked = r.diarNotReady(), true
-		}
-		if notReady != "" {
-			return false
+		// Readiness is asked only where RetryVoices asks it: an unavailable-and-fixable meeting. A run that broke is
+		// retried whenever its audio is here.
+		if unavailableFixable(&m) {
+			if !asked {
+				notReady, asked = r.diarNotReady(), true
+			}
+			if notReady != "" {
+				return false
+			}
 		}
 		dir, err := r.Store.Dir(m.ID)
 		return err == nil && wantsVoicesAgain(dir, &m)

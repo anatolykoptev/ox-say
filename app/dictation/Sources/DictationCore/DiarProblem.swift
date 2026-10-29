@@ -21,22 +21,25 @@ public enum DiarProblem: Equatable {
         return false
     }
 
-    /// Whether the app offers "Try Again" for this problem on a meeting. A failed run is the app's own rule (`canRetry`).
-    /// An unavailable one is the daemon's: it alone knows whether diarization is ready now and whether the recording can
-    /// still be transcribed (`voices_retryable`), so a reason is never judged here; without that word nothing is offered,
-    /// because pressing it could only fail again. A recording retention removed has nothing to transcribe in either case.
-    public func offersRetry(daemonSaysRetryable: Bool, audioDeleted: Bool) -> Bool {
+    /// Whether the app offers "Try Again" for this problem on a meeting. The daemon decides from the same rule that
+    /// answers the POST (`voices_retryable`): for an unavailable problem it alone knows whether diarization is ready now
+    /// and the recording can still be transcribed, so a reason is never judged here and without that word nothing is
+    /// offered, because pressing it could only fail again. For a failed run the daemon's word is `nil` only when it
+    /// predates the field; then the app's own rule (`canRetry`) stands. When it speaks, both must agree: a half-deleted
+    /// meeting the daemon refuses (409) has no button, and a timeout stays the app's own no. A recording retention
+    /// removed has nothing to transcribe in either case.
+    public func offersRetry(daemonSaysRetryable: Bool?, audioDeleted: Bool) -> Bool {
         if audioDeleted { return false }
         switch self {
-        case .failed: return canRetry
-        case .unavailable: return daemonSaysRetryable
+        case .failed: return canRetry && (daemonSaysRetryable ?? true)
+        case .unavailable: return daemonSaysRetryable ?? false
         }
     }
 
     /// The sentence to show for a meeting. An unavailable reason is a fact about the moment of the recording: when the
     /// daemon now says a retry would be accepted, it is stale ("models missing" although they are ready), so the row says
     /// the voices can be found now. `too_long` is about the recording itself and stays.
-    public func shownKey(daemonSaysRetryable: Bool, audioDeleted: Bool) -> L10nKey {
+    public func shownKey(daemonSaysRetryable: Bool?, audioDeleted: Bool) -> L10nKey {
         if case .unavailable(let reason) = self, reason != "too_long",
            offersRetry(daemonSaysRetryable: daemonSaysRetryable, audioDeleted: audioDeleted) {
             return .diarUnavailableRetryNow

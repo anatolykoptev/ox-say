@@ -1227,6 +1227,8 @@ func (s *Supervisor) reapOrphan() {
 			return
 		}
 		if start != token {
+			s.log.Info("engine: pidfile start token does not match the live process; leaving pid running",
+				slog.Int("pid", pid))
 			return
 		}
 	}

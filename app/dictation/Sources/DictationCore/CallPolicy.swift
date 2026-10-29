@@ -59,6 +59,27 @@ public enum CallPolicy {
         CallDetector.autoStartSources.contains(source) ? .auto : .ask
     }
 
+    /// The retired boolean the global call mode replaced (see `MeetingSettings.callModeKey`).
+    public static let legacyAutoStartKey = "meetingsAutoStart"
+    /// Set once `migrateStaleAutoPicks` has run, so it never runs twice.
+    public static let pickMigrationKey = "meetingsCallPolicyAutoMigrated"
+
+    /// #342.2: once, on the first launch that has this code. Under the old scheme a stored per-app `auto` pick was
+    /// dormant while `meetingsAutoStart` was false; since #341 an explicit pick beats the global Ask, so such an app
+    /// would now record without a prompt. A stored `false` therefore drops every `auto` pick (the row returns to
+    /// "as set above"); `ask`/`never` picks stay. An absent or true flag means the user meant auto: picks stay.
+    /// The dead key is removed and the marker set either way.
+    public static func migrateStaleAutoPicks(_ d: UserDefaults) {
+        guard !d.bool(forKey: pickMigrationKey) else { return }
+        if (d.object(forKey: legacyAutoStartKey) as? Bool) == false,
+           let all = d.dictionary(forKey: defaultsKey) as? [String: String] {
+            let kept = all.filter { $0.value != CallAppMode.auto.rawValue }
+            if kept.isEmpty { d.removeObject(forKey: defaultsKey) } else { d.set(kept, forKey: defaultsKey) }
+        }
+        d.removeObject(forKey: legacyAutoStartKey)
+        d.set(true, forKey: pickMigrationKey)
+    }
+
     /// The stored pick for an app, or nil when the row follows the global mode.
     public static func pickedMode(for source: String, _ d: UserDefaults) -> CallAppMode? {
         (d.dictionary(forKey: defaultsKey) as? [String: String])?[source].flatMap(CallAppMode.init(rawValue:))

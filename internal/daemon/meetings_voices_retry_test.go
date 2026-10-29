@@ -253,14 +253,95 @@ func TestServedMeetingSaysWhetherVoicesCanBeRetried(t *testing.T) {
 	if servedRetryable(t, mux, unreadable) {
 		t.Error("input_unreadable offers a retry: it would meet the same file")
 	}
-	// a failed run is the app's own business (DiarProblem.canRetry): the daemon does not claim it here
-	d2, mux2, _, _ := voicesFixture(t)
-	failed := unavailableMeeting(t, d2, mux2, meeting.DiarEngineError)
-	if _, err := d2.Meet.Store.Update(failed, func(m *meeting.Manifest) { m.Warnings = []string{meeting.WarnNoDiarization} }); err != nil {
+}
+
+// servedRetryableField is servedRetryable for the failed kind: the app must tell "the daemon says no" (false) from "an
+// older daemon that serves no word" (absent), so it reports whether the field is in the JSON at all, in the list and
+// in the detail alike.
+func servedRetryableField(t *testing.T, mux http.Handler, id string) (present, value bool) {
+	t.Helper()
+	var detail map[string]any
+	rec := call(t, mux, "GET", "/v1/meetings/"+id, "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("detail: %v %s", err, rec.Body)
+	}
+	var list struct{ Meetings []map[string]any }
+	rec = call(t, mux, "GET", "/v1/meetings", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("list: %v %s", err, rec.Body)
+	}
+	var inList any
+	for _, m := range list.Meetings {
+		if m["id"] == id {
+			inList = m["voices_retryable"]
+		}
+	}
+	inDetail, ok := detail["voices_retryable"]
+	if inList != inDetail {
+		t.Fatalf("list says %v, detail says %v", inList, inDetail)
+	}
+	return ok, inDetail == true
+}
+
+// #340 (failed kind): the app used to decide Try Again for a failed run alone, so a half-deleted failed meeting showed a
+// button the POST refuses (409). The daemon now serves voices_retryable for the failed kind as well, from the same
+// rule the POST uses, and serves it as an explicit false (not an omitted field) so the app can tell a "no" from an
+// older daemon.
+// Mutations: internal/meeting/runner.go VoicesRetryer, `if !slices.Contains(m.Warnings, WarnNoDiarization) && !unavailableFixable(&m)` -> `if !unavailableFixable(&m)`
+// -> RED (failed kind served false); internal/daemon/meetings_http.go summarizer / handleMeetingGet, `voicesField(m, ...)`
+// -> `&retryable` or nil for the failed kind -> RED (field absent / wrong).
+func TestServedMeetingSaysWhetherAFailedRunCanBeRetried(t *testing.T) {
+	d, mux, _, _ := voicesFixture(t)
+	failed := unavailableMeeting(t, d, mux, meeting.DiarEngineError)
+	if _, err := d.Meet.Store.Update(failed, func(m *meeting.Manifest) { m.Warnings = []string{meeting.WarnNoDiarization} }); err != nil {
 		t.Fatal(err)
 	}
-	if servedRetryable(t, mux2, failed) {
-		t.Error("a failed (not unavailable) meeting is marked by the daemon field; that decision stays with the failed-kind rule")
+	if present, v := servedRetryableField(t, mux, failed); !present || !v {
+		t.Errorf("a failed run with both channels here: present=%v value=%v, want served true", present, v)
+	}
+	// the failed kind does not wait for diarization to be ready: RetryVoices only asks readiness for the unavailable kind
+	// (a failed run is not a missing-model problem), so a not-ready answer must not turn the served word to false
+	d2, mux2, ready2, _ := voicesFixture(t)
+	failed2 := unavailableMeeting(t, d2, mux2, meeting.DiarEngineError)
+	if _, err := d2.Meet.Store.Update(failed2, func(m *meeting.Manifest) { m.Warnings = []string{meeting.WarnNoDiarization} }); err != nil {
+		t.Fatal(err)
+	}
+	ready2.set(meeting.DiarModelsMissing)
+	if present, v := servedRetryableField(t, mux2, failed2); !present || !v {
+		t.Errorf("a failed run while diarization is not ready: present=%v value=%v, want served true (the POST accepts it)", present, v)
+	}
+	if rec := call(t, mux2, "POST", "/v1/meetings/"+failed2+"/voices", ""); rec.Code != http.StatusAccepted {
+		t.Errorf("setup: the POST for that failed run = %d %s, want 202", rec.Code, rec.Body)
+	}
+
+	// half deleted (mic file gone over a finished transcript): the POST bounces it, so the daemon says no, explicitly
+	d3, mux3, _, _ := voicesFixture(t)
+	half := unavailableMeeting(t, d3, mux3, meeting.DiarEngineError)
+	dir, _ := d3.Meet.Store.Dir(half)
+	if err := os.WriteFile(filepath.Join(dir, meeting.TranscriptJSON), []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, meeting.MePCM)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d3.Meet.Store.Update(half, func(m *meeting.Manifest) { m.Warnings = []string{meeting.WarnNoDiarization} }); err != nil {
+		t.Fatal(err)
+	}
+	if present, v := servedRetryableField(t, mux3, half); !present || v {
+		t.Errorf("a half-deleted failed run: present=%v value=%v, want an explicit false", present, v)
+	}
+	if rec := call(t, mux3, "POST", "/v1/meetings/"+half+"/voices", ""); rec.Code != http.StatusConflict {
+		t.Errorf("setup: the POST for the half-deleted run = %d %s, want 409", rec.Code, rec.Body)
+	}
+
+	// a meeting with no voices problem carries no word at all
+	d4, mux4, _, _ := voicesFixture(t)
+	clean := unavailableMeeting(t, d4, mux4, "")
+	if _, err := d4.Meet.Store.Update(clean, func(m *meeting.Manifest) { m.Warnings = nil; m.DiarReason = "" }); err != nil {
+		t.Fatal(err)
+	}
+	if present, _ := servedRetryableField(t, mux4, clean); present {
+		t.Error("a meeting without a voices problem serves voices_retryable")
 	}
 }
 

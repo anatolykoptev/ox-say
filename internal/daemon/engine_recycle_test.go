@@ -445,3 +445,112 @@ func TestColdStartedChildIsLoweredWhileTheFirstRenderRuns(t *testing.T) {
 	}
 	ports.Background(false)
 }
+
+// #338 residual: an interactive speak has no deadline of its own, so one that
+// is itself the wedged request on the vox child would hold its guard until the
+// caller gave up, and every recycle waited 30 s for it. A ceiling on the
+// interactive request ends it as an engine-did-not-answer error, and the
+// render's recycle that follows finds no older guard and replaces the child.
+// Mutation: speak.go speechOn, delete the context.WithTimeout(ctx,
+// interactiveSpeakCeiling) call (the `ctx, cancel = ...` line in the
+// `vox && use == nil` branch) -> the wedged speak never ends -> RED.
+func TestWedgedInteractiveSpeakEndsAtItsCeiling(t *testing.T) {
+	d, logPath := voxFixtureTuned(t, nil)
+	t.Setenv("OXSAY_FAKE_VOX_WEDGE_FIRST", filepath.Join(filepath.Dir(logPath), "wedged-child"))
+	if _, err := d.VoxSup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wedged := d.VoxSup.Status().PID
+	old := interactiveSpeakCeiling
+	interactiveSpeakCeiling = 200 * time.Millisecond // child is already warm: only the request is timed
+	t.Cleanup(func() { interactiveSpeakCeiling = old })
+
+	spoke := make(chan error, 1)
+	go func() {
+		// context.Background(): the caller never gives up, as a long-lived MCP client.
+		_, err := d.speechOn(context.Background(), d.VoxSup, map[string]any{"model": "voxcpm2", "input": "hello there"})
+		spoke <- err
+	}()
+	var te *engineTransportError
+	if err := within(t, "the wedged interactive speak", 20*time.Second, spoke); !errors.As(err, &te) {
+		t.Fatalf("the wedged speak: %v, want the engine-did-not-answer transport error", err)
+	}
+	// The child is still wedged. A render now hits its deadline and recycles:
+	// the speak's guard is gone, so the recycle replaces the child at once.
+	shortDeadline(t, time.Second)
+	tk := &taker{ports: d.producePorts(), dir: t.TempDir()}
+	if _, err := tk.renderWithin(context.Background(), takeSpec{Text: "ox-say is ready", Seed: 1, Cfg: 2, Steps: 10}); err == nil ||
+		!strings.Contains(err.Error(), "did not answer in time") {
+		t.Fatalf("render: %v", err)
+	}
+	if _, err := d.speechOn(context.Background(), d.VoxSup, map[string]any{"model": "voxcpm2", "input": "again"}); err != nil {
+		t.Fatalf("the next speak after the recycle: %v", err)
+	}
+	if st := d.VoxSup.Status(); st.PID == wedged || st.State != engine.StateReady {
+		t.Fatalf("pid %d (wedged %d) state %s: the wedged child was not replaced", st.PID, wedged, st.State)
+	}
+}
+
+// speakErr runs one interactive vox speak under ctx and returns its error once
+// the child has the request (log line 1).
+func speakErr(t *testing.T, d *Daemon, logPath string, ctx context.Context, cancel func()) error {
+	t.Helper()
+	spoke := make(chan error, 1)
+	go func() {
+		_, err := d.speechOn(ctx, d.VoxSup, map[string]any{"model": "voxcpm2", "input": "hello there"})
+		spoke <- err
+	}()
+	if cancel != nil {
+		waitForLines(t, logPath, 1)
+		cancel()
+	}
+	return within(t, "the interactive speak", 20*time.Second, spoke)
+}
+
+// A client that cancels an interactive vox speak gets its own cancel back,
+// not "engine did not answer", at both transport sites: the request (the
+// wedged child sends nothing) and the body read (headers sent, body stalls).
+// Mutations: speak.go speechOn, `d.transportError(callerCtx, err)` ->
+// `d.transportError(context.Background(), err)` at the Speech call (first)
+// or at the readAllCap call (second) -> RED.
+func TestCallerCancelOfInteractiveSpeakReadsAsCancel(t *testing.T) {
+	for name, env := range map[string]string{"request": "OXSAY_FAKE_VOX_WEDGE_FIRST", "body": "OXSAY_FAKE_VOX_STALL_BODY"} {
+		t.Run(name, func(t *testing.T) {
+			d, logPath := voxFixtureTuned(t, nil)
+			if env == "OXSAY_FAKE_VOX_STALL_BODY" {
+				t.Setenv(env, "1")
+			} else {
+				t.Setenv(env, filepath.Join(filepath.Dir(logPath), "wedged-child"))
+			}
+			if _, err := d.VoxSup.EnsureReady(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			err := speakErr(t, d, logPath, ctx, cancel)
+			var te *engineTransportError
+			if errors.As(err, &te) || !errors.Is(err, context.Canceled) {
+				t.Fatalf("caller cancel read as %v, want context.Canceled", err)
+			}
+		})
+	}
+}
+
+// The ceiling firing while the body is being read is the engine failing to
+// answer, not the caller's deadline.
+// Mutation: speak.go speechOn, `d.transportError(callerCtx, err)` ->
+// `d.transportError(ctx, err)` at the readAllCap call -> RED.
+func TestCeilingDuringBodyReadIsATransportError(t *testing.T) {
+	d, logPath := voxFixtureTuned(t, nil)
+	t.Setenv("OXSAY_FAKE_VOX_STALL_BODY", "1")
+	if _, err := d.VoxSup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	old := interactiveSpeakCeiling
+	interactiveSpeakCeiling = 200 * time.Millisecond
+	t.Cleanup(func() { interactiveSpeakCeiling = old })
+	var te *engineTransportError
+	if err := speakErr(t, d, logPath, context.Background(), nil); !errors.As(err, &te) {
+		t.Fatalf("ceiling during the body read: %v, want the engine-did-not-answer transport error", err)
+	}
+}

@@ -81,8 +81,11 @@ final class SelectionCapture {
         // Only Command: a modifier still held from the hotkey must not turn this into ⌃⌥C.
         let down = CGEvent(keyboardEventSource: source, virtualKey: c, keyDown: true)
         down?.flags = .maskCommand
+        // The event's string is filled from the layout's plain table: say "c" outright (Dvorak – QWERTY ⌘).
+        down?.keyboardSetUnicodeString(stringLength: PasteKey.commandCUnits.count, unicodeString: PasteKey.commandCUnits)
         let up = CGEvent(keyboardEventSource: source, virtualKey: c, keyDown: false)
         up?.flags = .maskCommand
+        up?.keyboardSetUnicodeString(stringLength: PasteKey.commandCUnits.count, unicodeString: PasteKey.commandCUnits)
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
     }

@@ -170,11 +170,11 @@ public struct MeetingMenuRecent: Equatable {
     public var problem: DiarProblem?
     /// Retention removed the recording: a retry would transcribe nothing, so the row offers none.
     public var audioGone: Bool
-    /// The daemon says a voices retry would be accepted now (`MeetingInfo.voicesRetryable`); only an unavailable problem reads it.
-    public var voicesRetryable: Bool
+    /// The daemon's word on whether a voices retry would be accepted now (`MeetingInfo.voicesRetryable`); nil when it said none.
+    public var voicesRetryable: Bool?
 
     public init(id: String, title: String, started: Date? = nil, problem: DiarProblem? = nil, audioGone: Bool = false,
-                voicesRetryable: Bool = false) {
+                voicesRetryable: Bool? = nil) {
         self.id = id
         self.title = title
         self.started = started
