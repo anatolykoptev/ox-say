@@ -282,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         soundWhileDictating.recoverInterruptedDuck()
         controller.onError = { [weak self] message in self?.notice(message, kind: .outcome) }
         controller.onErrorDetail = { [weak self] error in
-            self?.errorLog.error("dictation failed: \(String(describing: error), privacy: .public)")
+            self?.errorLog.error("dictation failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
         }
         // One line per dictation, no text: read with
         // `log show --predicate 'subsystem == "io.github.anatolykoptev.ox-say.dictation"'`.
@@ -1036,7 +1036,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self, self.speakGeneration == generation else { return }
                 self.speakInFlight = false
                 self.endPill(&self.speakPill)
-                self.errorLog.error("speak failed (playing=\(playing, privacy: .public)): \(String(describing: error), privacy: .public)")
+                self.errorLog.error("speak failed (playing=\(playing, privacy: .public)): \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
                 self.notice(SpeechError.plain(error, whilePlaying: playing))
                 self.handshakeWorkEnded()
             }
@@ -1147,7 +1147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     if showPill && PillOwnership.mayShowPlayback(dictation: self.controller.state) { self.overlay.showPlaying() }
                 } catch {
                     self.playbackDone = nil
-                    self.errorLog.error("voiceover playback failed: \(String(describing: error), privacy: .public)")
+                    self.errorLog.error("voiceover playback failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
                     self.notice(L10nKey.playFailed.text)
                 }
             },

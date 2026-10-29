@@ -170,10 +170,10 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(SlowTranscription.pillText(seconds: 12, reason: nil, text: ru), "Расшифровываю… 12 с")
         XCTAssertEqual(SlowTranscription.pillText(seconds: 12, reason: SlowTranscription.reason(sttServerState: "starting", text: ru), text: ru),
                        "Расшифровываю… 12 с · загружается модель распознавания речи")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "crashed", text: ru), "сервер речи выключен — медленнее")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "off", text: ru), "речевой сервер выключен")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "crashed", text: ru), "ox-say не запущена — медленнее")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "off", text: ru), "служба ox-say выключена")
         XCTAssertEqual(SlowTranscription.reason(sttServerState: "ready", text: ru), "расшифровывается длинная запись")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: nil, text: ru), "служба не ответила")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: nil, text: ru), "служба ox-say не ответила")
         XCTAssertEqual(ClipboardReason.accessibility.message(text: en),
                        "Pasting needs the Accessibility permission — choose \"Allow pasting…\" in this app's menu. The text is on the clipboard.")
         XCTAssertEqual(ClipboardReason.accessibility.message(text: ru),

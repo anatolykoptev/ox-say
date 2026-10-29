@@ -8,6 +8,10 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
     /// The engine stopped a take that did not end inside its length budget (the
     /// daemon's typed `generation_runaway` error). Not worth showing as raw JSON.
     case runaway
+    /// The text is over the daemon's limit; caught before the request so the person is told what to do.
+    case tooLong(max: Int)
+    /// The daemon answered 503: the speech engine is starting or failed to start.
+    case engineUnavailable
 
     public var description: String {
         switch self {
@@ -16,6 +20,8 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
         case .http(let code, let body): return "The ox-say daemon answered \(code): \(body)"
         case .badResponse: return "The ox-say daemon sent a response without audio."
         case .runaway: return "The ox-say speech engine stopped a take that did not end."
+        case .tooLong(let max): return "The text is longer than \(max) characters."
+        case .engineUnavailable: return "The ox-say speech engine is not ready (503)."
         }
     }
 
@@ -28,6 +34,8 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
         case .http(let code, _): return String(format: text(.speechErrorHttp), String(code))
         case .badResponse: return text(.speechErrorBadResponse)
         case .runaway: return text(.noticeSpeechRunaway)
+        case .tooLong(let max): return String(format: text(.speechErrorTooLong), String(max))
+        case .engineUnavailable: return text(.speechErrorEngineUnavailable)
         }
     }
 
@@ -42,6 +50,8 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
 /// Sends text to the ox-say daemon's OpenAI-compatible `POST /v1/audio/speech`
 /// and returns the audio bytes, and lists the voices registered on it.
 public struct SpeechClient {
+    /// The daemon's limit on one speak request, in characters (`maxSpeakChars` in internal/daemon/speak.go; a test pins it).
+    public static let maxInputChars = 5000
     public typealias Send = (URLRequest) async throws -> (Data, URLResponse)
 
     public var baseURL: URL
@@ -66,6 +76,7 @@ public struct SpeechClient {
            let error = obj["error"] as? [String: Any], error["type"] as? String == "generation_runaway" {
             return .runaway
         }
+        if status == 503 { return .engineUnavailable }
         return .http(status, String(decoding: body.prefix(300), as: UTF8.self))
     }
 
@@ -100,6 +111,8 @@ public struct SpeechClient {
     /// engine's default voice; a non-nil `language` pins the request's
     /// language instead of letting the daemon infer it.
     public func speak(_ text: String, voice: String? = nil, language: String? = nil) async throws -> Data {
+        // The daemon counts characters (runes) and refuses more; say so before the round trip.
+        if text.unicodeScalars.count > Self.maxInputChars { throw SpeechError.tooLong(max: Self.maxInputChars) }
         // The fast engine, always: a voice that prefers voxcpm2 must not slow speak-selection down.
         var body: [String: Any] = ["input": text, "response_format": format, "model": "qwen3-tts"]
         if let voice { body["voice"] = voice }

@@ -218,7 +218,7 @@ public final class DictationController {
                 try recorder.prepare()
             } catch {
                 onErrorDetail?(error)
-                onError?(String(format: localize(.noticeRecordFailed), error.localizedDescription))
+                onError?(String(format: localize(.noticeRecordFailed), RecorderError.reason(error, text: localize)))
                 return
             }
             // Route chunks before the microphone runs, so the first chunk has
@@ -235,7 +235,7 @@ public final class DictationController {
                 transcriber.cancel()
                 state = .idle
                 onErrorDetail?(error)
-                onError?(String(format: localize(.noticeRecordFailed), error.localizedDescription))
+                onError?(String(format: localize(.noticeRecordFailed), RecorderError.reason(error, text: localize)))
             }
         case (.toggle, .recording):
             finish()

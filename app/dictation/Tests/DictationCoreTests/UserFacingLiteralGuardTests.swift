@@ -11,14 +11,34 @@ final class UserFacingLiteralGuardTests: XCTestCase {
     private static let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         .deletingLastPathComponent().appendingPathComponent("Sources")
 
-    /// Literals that may stay English, one reason each. Key: `<path under Sources>: <literal text, interpolations removed>`.
-    /// A call whose literal is not here is a finding; an entry that matches nothing fails `testTheAllowlistHasNoStaleEntry`.
-    static let allowlist: [String: String] = [
-        "OxSayDictation/AppDelegate.swift: q": "the Cmd+Q key equivalent of the Quit row, not text",
-        "OxSayDictation/Overlay.swift: esc": "the Esc key cap on the pill; macOS Russian labels the key esc too",
-        "OxSayDictation/AppDelegate.swift: .localizedDescription": "the macOS sign-in error (SMAppService), worded by the system in the user's language, inside the localized noticeLoginFailed sentence",
-        "DictationCore/DictationController.swift: .localizedDescription": "the AVFoundation recorder error, worded by the system in the user's language, inside the localized noticeRecordFailed sentence",
+    /// Findings that may stay, one reason each. Key: `<path under Sources>: <literal text, interpolations removed, or the
+    /// error-description needle>`; `count` is how many times it occurs in that file. A finding whose key is absent, or whose
+    /// occurrences differ from `count`, is reported (a second `.localizedDescription` in an allowlisted file is NOT waved
+    /// through); an entry that matches nothing, or a different number of times, fails `testTheAllowlistHasNoStaleEntry`.
+    static let allowlist: [String: (count: Int, reason: String)] = [
+        "OxSayDictation/AppDelegate.swift: q": (1, "the Cmd+Q key equivalent of the Quit row, not text"),
+        "OxSayDictation/Overlay.swift: esc": (1, "the Esc key cap on the pill; macOS Russian labels the key esc too"),
+        "OxSayDictation/AppDelegate.swift: .localizedDescription": (1, "the macOS sign-in error (SMAppService), worded by the system in the user's language, inside the localized noticeLoginFailed sentence"),
     ]
+
+    /// The findings not covered by `allow`: key missing, or occurring a different number of times than allowed.
+    static func unlisted(_ found: [Finding], allow: [String: (count: Int, reason: String)]) -> [Finding] {
+        var counts: [String: Int] = [:]
+        for f in found { counts[f.key, default: 0] += 1 }
+        return found.filter { allow[$0.key]?.count != counts[$0.key] }
+    }
+
+    /// Allowlist problems: an entry whose key occurs a different number of times than it says, or has no reason.
+    static func staleEntries(_ found: [Finding], allow: [String: (count: Int, reason: String)]) -> [String] {
+        var counts: [String: Int] = [:]
+        for f in found { counts[f.key, default: 0] += 1 }
+        var bad: [String] = []
+        for (key, entry) in allow {
+            if counts[key, default: 0] != entry.count { bad.append("\(key): allowlisted \(entry.count)x, found \(counts[key, default: 0])x") }
+            if entry.reason.isEmpty { bad.append("\(key): needs a reason") }
+        }
+        return bad.sorted()
+    }
 
     struct Finding: Equatable, CustomStringConvertible {
         var file: String
@@ -254,18 +274,26 @@ final class UserFacingLiteralGuardTests: XCTestCase {
         XCTAssertGreaterThan(files.count, 60, "the scan found the app sources")
         var found: [Finding] = []
         for (path, text) in files { found += Self.findings(in: text, file: path) }
-        let unlisted = found.filter { Self.allowlist[$0.key] == nil }
+        let unlisted = Self.unlisted(found, allow: Self.allowlist)
         XCTAssertTrue(unlisted.isEmpty, "English literals at user-facing sinks (use an L10nKey, or allowlist with a reason): "
                       + unlisted.map(\.description).joined(separator: " | "))
     }
 
     func testTheAllowlistHasNoStaleEntry() {
-        var seen = Set<String>()
-        for (path, text) in Self.sourceFiles() { for f in Self.findings(in: text, file: path) { seen.insert(f.key) } }
-        for (key, reason) in Self.allowlist {
-            XCTAssertTrue(seen.contains(key), "allowlist entry \(key) matches nothing; drop it")
-            XCTAssertFalse(reason.isEmpty, "allowlist entry \(key) needs a reason")
-        }
+        var found: [Finding] = []
+        for (path, text) in Self.sourceFiles() { found += Self.findings(in: text, file: path) }
+        XCTAssertEqual(Self.staleEntries(found, allow: Self.allowlist), [])
+    }
+
+    /// The allowlist is keyed by file + needle + count: a second occurrence in an allowlisted file is a finding again.
+    /// Mutation: `unlisted(_:allow:)`, compare `allow[$0.key] == nil` instead of the counts -> RED.
+    func testAnAllowlistedNeedleAllowsExactlyItsCount() {
+        func f(_ line: Int) -> Finding { Finding(file: "A.swift", line: line, literal: ".localizedDescription", sink: "notice") }
+        let allow: [String: (count: Int, reason: String)] = ["A.swift: .localizedDescription": (1, "system worded")]
+        XCTAssertEqual(Self.unlisted([f(1)], allow: allow), [])
+        XCTAssertEqual(Self.unlisted([f(1), f(9)], allow: allow).count, 2, "a second occurrence slipped through")
+        XCTAssertEqual(Self.staleEntries([f(1), f(9)], allow: allow).count, 1)
+        XCTAssertEqual(Self.staleEntries([], allow: allow).count, 1)
     }
 
     // MARK: the scanner itself

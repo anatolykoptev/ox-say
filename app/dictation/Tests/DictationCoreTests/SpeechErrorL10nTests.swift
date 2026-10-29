@@ -130,7 +130,7 @@ final class SpeechErrorL10nTests: XCTestCase {
     }
 
     func testTheSlowerPathReasonFitsThePill() {
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "stopped", text: en), "speech server off — slower")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "stopped", text: en), "ox-say service off — slower")
         XCTAssertLessThanOrEqual(ru(.slowSlowerPath).count, 32)
         XCTAssertLessThanOrEqual(en(.slowSlowerPath).count, 32)
     }
@@ -150,6 +150,141 @@ final class SpeechErrorL10nTests: XCTestCase {
                      #"errorLog.error("speak failed (playing="#, "self.notice(SpeechError.plain(error, whilePlaying: playing))",
                      #"errorLog.error("voiceover playback failed: "#, "self.notice(L10nKey.playFailed.text)"] {
             XCTAssertTrue(source.contains(want), "AppDelegate lost: \(want)")
+        }
+    }
+
+    // MARK: the microphone (RecorderError) at both controller sites
+
+    func testEveryRecorderErrorReadsInRussian() {
+        for error in [RecorderError.noInput, .notAllowed, .askedForPermission] {
+            let ruText = error.message(text: ru)
+            XCTAssertTrue(hasCyrillic(ruText), "\(error): \(ruText)")
+            XCTAssertNotEqual(ruText, error.errorDescription)
+            XCTAssertNotEqual(error.message(text: en), ruText)
+            XCTAssertEqual(error.message(text: en), error.errorDescription, "the en sentence is the old text")
+        }
+    }
+
+    @MainActor
+    private func recordFailure(prepare: Error? = nil, start: Error? = nil, localize: @escaping (L10nKey) -> String) -> [String] {
+        let rec = FakeRecorder(); rec.prepareError = prepare; rec.startError = start
+        var errors: [String] = []
+        let c = DictationController(recorder: rec, output: FakeOutput()) { _ in "" }
+        c.localize = localize
+        c.onError = { errors.append($0) }
+        c.keyDown()
+        return errors
+    }
+
+    /// Mutation: DictationController `prepare()` catch, `RecorderError.reason(error, text: localize)` ->
+    /// `error.localizedDescription` -> RED (the English LocalizedError text reaches the pill).
+    @MainActor
+    func testAPrepareFailureReadsInTheUsersLanguage() {
+        for error in [RecorderError.noInput, .notAllowed, .askedForPermission] {
+            XCTAssertEqual(recordFailure(prepare: error, localize: ru), [String(format: ru(.noticeRecordFailed), error.message(text: ru))])
+            XCTAssertEqual(recordFailure(prepare: error, localize: en), [String(format: en(.noticeRecordFailed), error.message(text: en))])
+        }
+    }
+
+    /// Mutation: DictationController `recorder.start()` catch, same replacement -> RED.
+    @MainActor
+    func testAStartFailureReadsInTheUsersLanguage() {
+        for error in [RecorderError.noInput, .notAllowed, .askedForPermission] {
+            XCTAssertEqual(recordFailure(start: error, localize: ru), [String(format: ru(.noticeRecordFailed), error.message(text: ru))])
+        }
+    }
+
+    /// Any other error (AVFoundation's, English on a Russian Mac) gets the localized fallback, never its own words.
+    @MainActor
+    func testAnotherRecorderErrorGetsTheFallbackAtBothSites() {
+        struct Odd: Error, LocalizedError { var errorDescription: String? { "The operation couldn't be completed." } }
+        let want = [String(format: ru(.noticeRecordFailed), ru(.noticeErrorFallback))]
+        XCTAssertEqual(recordFailure(prepare: Odd(), localize: ru), want)
+        XCTAssertEqual(recordFailure(start: Odd(), localize: ru), want)
+    }
+
+    // MARK: speak limits (#346 review)
+
+    /// The limit is the daemon's own: pinned against internal/daemon/speak.go.
+    func testTheTextLimitIsTheDaemonsLimit() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let go = try String(contentsOf: root.appendingPathComponent("internal/daemon/speak.go"), encoding: .utf8)
+        let m = try XCTUnwrap(go.range(of: #"const maxSpeakChars = \d+"#, options: .regularExpression), "maxSpeakChars not found")
+        XCTAssertEqual(Int(go[m].split(separator: " ").last ?? ""), SpeechClient.maxInputChars)
+    }
+
+    /// Mutation: SpeechClient.speak, delete the `.tooLong` pre-check -> RED (the request is sent).
+    func testATextOverTheLimitIsRefusedBeforeTheRequest() async {
+        var sent = 0
+        let client = SpeechClient { req in sent += 1; return (Data("RIFF".utf8), HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!) }
+        let long = String(repeating: "я", count: SpeechClient.maxInputChars + 1)
+        do {
+            _ = try await client.speak(long)
+            XCTFail("a text over the limit must throw")
+        } catch let error as SpeechError {
+            XCTAssertEqual(error, .tooLong(max: SpeechClient.maxInputChars))
+            XCTAssertTrue(error.message(text: ru).contains("5000"), error.message(text: ru))
+            XCTAssertTrue(hasCyrillic(error.message(text: ru)))
+            XCTAssertEqual(error.message(text: en), "Text too long — select less (max 5000 characters).")
+        } catch { XCTFail("\(error)") }
+        XCTAssertEqual(sent, 0, "the request went out")
+        _ = try? await client.speak(String(repeating: "я", count: SpeechClient.maxInputChars))
+        XCTAssertEqual(sent, 1, "a text exactly at the limit is sent")
+    }
+
+    /// Mutation: SpeechClient.failure, delete the `status == 503` line -> RED.
+    func testA503BecomesTheEngineNotReadySentence() async {
+        let client = SpeechClient { req in (Data("engine failed to start: boom".utf8), HTTPURLResponse(url: req.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!) }
+        do {
+            _ = try await client.speak("hi")
+            XCTFail("a 503 must throw")
+        } catch let error as SpeechError {
+            XCTAssertEqual(error, .engineUnavailable)
+            XCTAssertTrue(hasCyrillic(error.message(text: ru)))
+            XCTAssertFalse(error.message(text: ru).contains("503"))
+        } catch { XCTFail("\(error)") }
+        let other = SpeechClient { req in (Data("x".utf8), HTTPURLResponse(url: req.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!) }
+        do { _ = try await other.speak("hi"); XCTFail() } catch let error as SpeechError {
+            XCTAssertEqual(error, .http(500, "x"))
+        } catch { XCTFail("\(error)") }
+    }
+
+    // MARK: the log keeps a body private
+
+    /// Mutation: LogDetail.publicText, return `e.description` for `.http` -> RED.
+    func testAnHttpBodyIsNeverInThePublicLogText() {
+        let body = "echo: my private words"
+        for error in [SpeechError.http(400, body) as Error, TranscriptionError.http(400, body)] {
+            let pub = LogDetail.publicText(error)
+            XCTAssertFalse(pub.contains("private words"), pub)
+            XCTAssertTrue(pub.contains("400") && pub.contains("bodyBytes=\(body.utf8.count)"), pub)
+            XCTAssertEqual(LogDetail.privateText(error), body)
+        }
+        XCTAssertEqual(LogDetail.publicText(SpeechError.timedOut), SpeechError.timedOut.description)
+        XCTAssertEqual(LogDetail.privateText(SpeechError.timedOut), "")
+    }
+
+    /// Mutation: AppDelegate, a log line back to `String(describing: error), privacy: .public` -> RED.
+    func testNoAppDelegateLogLineWritesAnErrorsDescriptionPublicly() throws {
+        let source = try appDelegate()
+        XCTAssertFalse(source.contains("String(describing: error), privacy: .public"))
+        XCTAssertEqual(source.components(separatedBy: "LogDetail.publicText(error), privacy: .public").count - 1, 3)
+        XCTAssertEqual(source.components(separatedBy: "LogDetail.privateText(error), privacy: .private").count - 1, 3)
+    }
+
+    // MARK: one term for the daemon
+
+    func testTheDaemonIsCalledTheOxSayServiceEverywhere() {
+        let keys: [L10nKey] = [.speechErrorUnreachable, .speechErrorTimedOut, .speechErrorHttp, .speechErrorBadResponse,
+                               .transcribeErrorUnreachable, .transcribeErrorTimedOut, .transcribeErrorHttp, .transcribeErrorBadResponse,
+                               .slowSlowerPath, .slowOff, .slowNoAnswer]
+        for key in keys {
+            let e = en(key).lowercased(), r = ru(key).lowercased()
+            XCTAssertTrue(e.contains("ox-say service") || e.contains("ox-say"), "\(key): \(e)")
+            XCTAssertTrue(r.contains("ox-say"), "\(key): \(r)")
+            for bad in ["daemon", "speech server"] { XCTAssertFalse(e.contains(bad), "\(key): \(e)") }
+            for bad in ["речевой сервер", "сервер речи", "демон"] { XCTAssertFalse(r.contains(bad), "\(key): \(r)") }
         }
     }
 }
