@@ -15,8 +15,27 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
         case .timedOut: return "The ox-say daemon took too long to answer. A cold voice engine start takes a while."
         case .http(let code, let body): return "The ox-say daemon answered \(code): \(body)"
         case .badResponse: return "The ox-say daemon sent a response without audio."
-        case .runaway: return L10nKey.noticeSpeechRunaway.text
+        case .runaway: return "The ox-say speech engine stopped a take that did not end."
         }
+    }
+
+    /// What the person reads, in their language. `description` stays English: it is for logs. The daemon's own words
+    /// (the system's reason, a response body) stay out of the sentence; the status number is enough to report.
+    public func message(text: (L10nKey) -> String = { $0.text }) -> String {
+        switch self {
+        case .daemonUnreachable: return text(.speechErrorUnreachable)
+        case .timedOut: return text(.speechErrorTimedOut)
+        case .http(let code, _): return String(format: text(.speechErrorHttp), String(code))
+        case .badResponse: return text(.speechErrorBadResponse)
+        case .runaway: return text(.noticeSpeechRunaway)
+        }
+    }
+
+    /// Any failure of a speak request as the person should read it: the app's own words for a SpeechError, "the audio
+    /// could not be played" for a failure once the clip was in hand, a plain fallback for the rest.
+    public static func plain(_ error: Error, whilePlaying: Bool = false, text: (L10nKey) -> String = { $0.text }) -> String {
+        if whilePlaying { return text(.playFailed) }
+        return (error as? SpeechError)?.message(text: text) ?? text(.noticeErrorFallback)
     }
 }
 

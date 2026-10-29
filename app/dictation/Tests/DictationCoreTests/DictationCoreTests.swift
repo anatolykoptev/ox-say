@@ -747,8 +747,8 @@ final class SlowTranscriptionTests: XCTestCase {
     // SlowTranscription.reason -> RED (a dead speech server would go unnamed).
     func testTheReasonFollowsTheSttServerState() {
         XCTAssertEqual(SlowTranscription.reason(sttServerState: "starting", text: ShippedStrings.localizer("en")), "loading the speech model")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "stopped", text: ShippedStrings.localizer("en")), "the speech server is not running; using the slower path")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "crashed", text: ShippedStrings.localizer("en")), "the speech server is not running; using the slower path")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "stopped", text: ShippedStrings.localizer("en")), "speech server off — slower")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "crashed", text: ShippedStrings.localizer("en")), "speech server off — slower")
         XCTAssertEqual(SlowTranscription.reason(sttServerState: "off", text: ShippedStrings.localizer("en")), "the speech server is off")
         XCTAssertEqual(SlowTranscription.reason(sttServerState: "ready", text: ShippedStrings.localizer("en")), "decoding a long recording")
         XCTAssertEqual(SlowTranscription.reason(sttServerState: nil, text: ShippedStrings.localizer("en")), "the daemon did not answer")

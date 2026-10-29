@@ -80,8 +80,8 @@ final class SpeechClientTests: XCTestCase {
             XCTFail("a 502 must throw")
         } catch let error as SpeechError {
             XCTAssertEqual(error, .runaway)
-            XCTAssertEqual(error.description, L10nKey.noticeSpeechRunaway.text)
-            XCTAssertFalse(error.description.contains("{"), "raw JSON reached the user")
+            XCTAssertEqual(error.message(), L10nKey.noticeSpeechRunaway.text)
+            XCTAssertFalse(error.message().contains("{"), "raw JSON reached the user")
         } catch {
             XCTFail("want SpeechError, got \(error)")
         }

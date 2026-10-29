@@ -544,7 +544,7 @@
 "pill.transcribing_reason" = "Transcribing… %1$@s · %2$@";
 "pill.speaking" = "Speaking…";
 "slow.loading" = "loading the speech model";
-"slow.slower_path" = "the speech server is not running; using the slower path";
+"slow.slower_path" = "speech server off — slower";
 "slow.off" = "the speech server is off";
 "slow.decoding" = "decoding a long recording";
 "slow.no_answer" = "the daemon did not answer";
@@ -560,3 +560,12 @@
 "menu.shortcut_macos" = "%@ (a macOS shortcut)";
 "recording.ended.mic_changed" = "The microphone changed while recording.";
 "recording.ended.cap" = "Recordings stop after %@ seconds.";
+"speech.error.unreachable" = "The ox-say speech server is not running. Try restarting your Mac.";
+"speech.error.timed_out" = "The speech server took too long to answer. A cold voice start takes a while; try again.";
+"speech.error.http" = "The speech server answered with an error (%@).";
+"speech.error.bad_response" = "The speech server sent a reply without audio.";
+"transcribe.error.unreachable" = "The ox-say service is not running. Try restarting your Mac.";
+"transcribe.error.timed_out" = "The transcription took too long. The service may be busy; try again.";
+"transcribe.error.http" = "The transcription failed: the service answered with an error (%@).";
+"transcribe.error.bad_response" = "The service sent a reply without text.";
+"notice.error.fallback" = "Something went wrong. Try again.";

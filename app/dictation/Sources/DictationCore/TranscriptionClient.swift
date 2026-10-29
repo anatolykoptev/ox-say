@@ -14,6 +14,21 @@ public enum TranscriptionError: Error, Equatable, CustomStringConvertible {
         case .badResponse: return "The ox-say daemon sent a response without text."
         }
     }
+
+    /// What the person reads, in their language; `description` stays English for logs.
+    public func message(text: (L10nKey) -> String = { $0.text }) -> String {
+        switch self {
+        case .daemonUnreachable: return text(.transcribeErrorUnreachable)
+        case .timedOut: return text(.transcribeErrorTimedOut)
+        case .http(let code, _): return String(format: text(.transcribeErrorHttp), String(code))
+        case .badResponse: return text(.transcribeErrorBadResponse)
+        }
+    }
+
+    /// Any failure of a transcription as the person should read it.
+    public static func plain(_ error: Error, text: (L10nKey) -> String = { $0.text }) -> String {
+        (error as? TranscriptionError)?.message(text: text) ?? text(.noticeErrorFallback)
+    }
 }
 
 /// Sends a recording to the ox-say daemon's OpenAI-compatible

@@ -341,6 +341,16 @@ public enum L10nKey: String, CaseIterable {
     case noticeMeetingCopyStale = "notice.meeting.copy_stale"
     // Speak Selection: the voice engine stopped a take that did not end.
     case noticeSpeechRunaway = "notice.speech_runaway"
+    // Failures of the speak, playback and dictation paths, in the user's words (#346).
+    case speechErrorUnreachable = "speech.error.unreachable"
+    case speechErrorTimedOut = "speech.error.timed_out"
+    case speechErrorHttp = "speech.error.http"
+    case speechErrorBadResponse = "speech.error.bad_response"
+    case transcribeErrorUnreachable = "transcribe.error.unreachable"
+    case transcribeErrorTimedOut = "transcribe.error.timed_out"
+    case transcribeErrorHttp = "transcribe.error.http"
+    case transcribeErrorBadResponse = "transcribe.error.bad_response"
+    case noticeErrorFallback = "notice.error.fallback"
     case meetingFailedWhereRetry = "meeting.failed.where_retry"
     case meetingNotesEngineStartFinal = "meeting.notes.failed.engine_start.final"
     case meetingNotesEngineVerifyFinal = "meeting.notes.failed.engine_verify.final"

@@ -46,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Whether the Allow-pasting row is due, as of the last menu open; a
     /// handshake pass ending on an open menu re-syncs against it.
     private var wantAllowPasting = false
+    /// What actually failed behind a sentence shown to the user: the pill speaks the user's language, this keeps the cause.
+    private let errorLog = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "errors")
     private let toggleItem = NSMenuItem(title: L10nKey.menuToggleMode.text, action: #selector(toggleMode), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: L10nKey.menuStartAtLogin.text, action: #selector(toggleLogin), keyEquivalent: "")
     /// "Sound While Dictating": a submenu of three exclusive rows — pause the
@@ -279,6 +281,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // A process killed mid-duck left the output quiet: give it back now.
         soundWhileDictating.recoverInterruptedDuck()
         controller.onError = { [weak self] message in self?.notice(message, kind: .outcome) }
+        controller.onErrorDetail = { [weak self] error in
+            self?.errorLog.error("dictation failed: \(String(describing: error), privacy: .public)")
+        }
         // One line per dictation, no text: read with
         // `log show --predicate 'subsystem == "io.github.anatolykoptev.ox-say.dictation"'`.
         // Notice level, so the unified log persists it.
@@ -1013,10 +1018,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let client = speechClient!
         Task { @MainActor [weak self] in
+            var playing = false
             do {
                 let wav = try await client.speak(text, voice: voice, language: language)
                 guard let self, self.speakGeneration == generation else { return }
                 self.speakInFlight = false
+                playing = true
                 try self.player.play(wav: wav)
                 // The reply can land after a dictation started: the playback
                 // pill is shown only while our own pill still stands and no
@@ -1029,7 +1036,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self, self.speakGeneration == generation else { return }
                 self.speakInFlight = false
                 self.endPill(&self.speakPill)
-                self.notice(String(describing: error))
+                self.errorLog.error("speak failed (playing=\(playing, privacy: .public)): \(String(describing: error), privacy: .public)")
+                self.notice(SpeechError.plain(error, whilePlaying: playing))
                 self.handshakeWorkEnded()
             }
         }
@@ -1139,7 +1147,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     if showPill && PillOwnership.mayShowPlayback(dictation: self.controller.state) { self.overlay.showPlaying() }
                 } catch {
                     self.playbackDone = nil
-                    self.notice(String(describing: error))
+                    self.errorLog.error("voiceover playback failed: \(String(describing: error), privacy: .public)")
+                    self.notice(L10nKey.playFailed.text)
                 }
             },
             stopPlayback: { [unowned self] in
