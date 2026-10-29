@@ -44,7 +44,7 @@ final class MeetingWiringTests: XCTestCase {
 
     private func startTapCaptures(_ recorder: String) -> Bool {
         guard let body = body(recorder, of: "private func startTap() {") else { return false }
-        return body.contains("let token = tapGeneration.value") && body.contains("self?.tapStarted(outcome, token: token)")
+        return body.contains("let token = tapRecovery.token") && body.contains("self?.tapStarted(outcome, token: token)")
     }
 
     private func controller() throws -> String { try source("OxSayDictation/MeetingController.swift") }
@@ -143,24 +143,26 @@ final class MeetingWiringTests: XCTestCase {
         let rebuild = try XCTUnwrap(body(recorder, of: "private func scheduleTapRebuild(after delay: TimeInterval) {"))
         XCTAssertTrue(rebuild.contains("self.startTap()"))
         let started = try XCTUnwrap(body(recorder, of: "private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int) {"))
-        XCTAssertTrue(started.contains("tapRetry.succeeded()"))
-        let failed = try XCTUnwrap(body(recorder, of: "private func tapFailed(_ error: Error) {"))
-        XCTAssertTrue(failed.contains("scheduleTapRebuild(after: step.delay)"))
+        XCTAssertTrue(started.contains("case .recovered: onSystemAudioRecovered?()"))
+        let failed = started
+        XCTAssertTrue(failed.contains("scheduleTapRebuild(after: delay)"))
         // #266: "system audio lost" is told when the old tap no longer delivers (TapLoss). Mutation:
         // MeetingRecorder.tapFailed, replace `sourceLost: lost` with `sourceLost: true` -> RED.
-        XCTAssertTrue(failed.contains("TapLoss.isLost(hasTap: tap.isRunning, sinceLastBuffer: silence, consecutiveFailures: tapRetry.failures + 1)"))
-        XCTAssertTrue(failed.contains("tapRetry.failed(sourceLost: lost)"))
+        // The judgement itself is TapRecovery.answer (driven in TapRecoveryTests); the recorder hands it the tap's state and
+        // carries the action out. Mutation: MeetingRecorder.tapStarted, `if tellLoss {` -> `if true {` -> RED.
+        XCTAssertTrue(failed.contains("tapRecovery.answer(kind, token: token, recording: started != nil, hasTap: tap.isRunning, sinceLastBuffer: silence)"))
+        XCTAssertTrue(failed.contains("if tellLoss { onSystemAudioFailed?() }"))
         // Mutation: MeetingRecorder.onSamples, delete `self.tapLastNanos = DispatchTime.now().uptimeNanoseconds` -> RED (the delivery
         // clock never moves); or stamp it with `Date()` again (a wall clock) -> RED.
         XCTAssertTrue(recorder.contains("self.tapLastNanos = DispatchTime.now().uptimeNanoseconds"))
         XCTAssertFalse(recorder.contains("tapLastAt"), "the delivery stamp is monotonic, not a Date")
         XCTAssertTrue(failed.contains("TapLoss.silence(lastNanos: tapLastNanos, nowNanos: DispatchTime.now().uptimeNanoseconds)"))
         // #266: a completion belongs to its recording. Mutation: MeetingRecorder.tapStarted, drop
-        // `tapGeneration.isCurrent(token)` -> RED.
-        let started2 = try XCTUnwrap(body(recorder, of: "private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int) {"))
-        XCTAssertTrue(started2.contains("guard started != nil, tapGeneration.isCurrent(token) else { return }"))
+        // `generation.isCurrent(token)` in TapRecovery.answer -> RED (TapRecoveryTests); the recorder passes its token.
+        XCTAssertTrue(started.contains("token: token"))
         XCTAssertTrue(startTapCaptures(recorder))
-        XCTAssertEqual(recorder.components(separatedBy: "tapGeneration.advance()").count - 1, 2, "start and stop")
+        XCTAssertEqual(recorder.components(separatedBy: "tapRecovery.begin()").count - 1, 1, "start")
+        XCTAssertEqual(recorder.components(separatedBy: "tapRecovery.end()").count - 1, 1, "stop")
         XCTAssertTrue(recorder.contains("kAudioHardwarePropertyDefaultOutputDevice"))
         XCTAssertTrue(recorder.contains("kAudioDevicePropertyNominalSampleRate"))
         XCTAssertTrue(recorder.contains("var useMainSubDevice = true"), "P0a branch A")
@@ -507,9 +509,9 @@ final class MeetingWiringTests: XCTestCase {
         let recorder = try source("OxSayDictation/MeetingRecorder.swift")
         XCTAssertTrue(recorder.contains("var onSystemAudioFailed: (() -> Void)?"))
         XCTAssertTrue(recorder.contains("var onMicrophoneFailed: (() -> Void)?"))
-        XCTAssertTrue(recorder.contains("case .failed(let error): tapFailed(error)"))
-        let failed = try XCTUnwrap(body(recorder, of: "private func tapFailed(_ error: Error) {"))
-        XCTAssertTrue(failed.contains("log.error(\"system audio tap: failed: \\(String(describing: error), privacy: .public)\")"), "the reason goes to the log")
+        XCTAssertTrue(recorder.contains("case .failed(let error): kind = .failed; failure = error"))
+        let failed = try XCTUnwrap(body(recorder, of: "private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int) {"))
+        XCTAssertTrue(failed.contains("log.error(\"system audio tap: failed: \\(String(describing: failure), privacy: .public)\")"), "the reason goes to the log")
         let chain = try XCTUnwrap(recorder.range(of: "private lazy var micChain = RetryChain("))
         XCTAssertTrue(recorder[chain.lowerBound...].prefix(700).contains("self?.onMicrophoneFailed?()"))
         let mic = try source("OxSayDictation/MeetingRecorder.swift")

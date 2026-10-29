@@ -56,7 +56,6 @@ final class MeetingRecorder {
     /// Guards `me` and `them`: the audio threads append under it and `stop` nils them under it, so a buffer that is
     /// still in flight never meets a closed file or a half-assigned reference.
     private let writersLock = NSLock()
-    private var tapRetry = Reacquire()
     /// The microphone's restart chain; one per recording (`begin` in `start`, `cancel` in `stop`), so a timer left from
     /// an earlier recording cannot restart the engine next to the new one (#266).
     private lazy var micChain = RetryChain(
@@ -81,7 +80,7 @@ final class MeetingRecorder {
     /// the silent-tap judgement (`TapLoss.silence`).
     private var tapLastNanos: UInt64?
     /// Moved on by `start` and `stop`: a tap start's answer that arrives after its recording is dropped (#266).
-    private var tapGeneration = Generation()
+    private var tapRecovery = TapRecovery()
     private var tapPeak: Float = 0
     private var micObserver: NSObjectProtocol?
     private(set) var started: Date?
@@ -127,13 +126,12 @@ final class MeetingRecorder {
             me = meWriter
             them = themWriter
         }
-        tapRetry = Reacquire()
         micChain.begin()
         lock.withLock {
             meLevel = 0; themLevel = 0; themLoudAt = .distantPast; themEverLoud = false; tapCallbacks = 0; tapPeak = 0
             tapLastNanos = nil
         }
-        tapGeneration.advance()
+        tapRecovery.begin()
 
         do {
             try startMicrophone()
@@ -209,7 +207,7 @@ final class MeetingRecorder {
         if let micObserver { NotificationCenter.default.removeObserver(micObserver) }
         micObserver = nil
         micChain.cancel()
-        tapGeneration.advance()
+        tapRecovery.end()
         unwatchOutputDevice()
         mic.inputNode.removeTap(onBus: 0)
         mic.stop()
@@ -305,34 +303,34 @@ final class MeetingRecorder {
 
     /// Starts or rebuilds the tap off the main thread; the answer comes back to `tapStarted` on main.
     private func startTap() {
-        let token = tapGeneration.value
+        let token = tapRecovery.token
         tap.start(excludingPIDs: [getpid()], withMainSubDevice: useMainSubDevice) { [weak self] outcome in
             self?.tapStarted(outcome, token: token)
         }
     }
 
     private func tapStarted(_ outcome: SystemAudioTap.StartOutcome, token: Int) {
-        // An answer for a recording that is over (a start blocked on a permission prompt, then stop, then a new start)
-        // must not post a loss or burn the retry streak of the one running now.
-        guard started != nil, tapGeneration.isCurrent(token) else { return }
-        switch outcome {
-        case .started: if tapRetry.succeeded() { onSystemAudioRecovered?() }
-        case .stopped: break
-        case .failed(let error): tapFailed(error)
-        }
-    }
-
-    private func tapFailed(_ error: Error) {
-        guard started != nil else { return }
-        log.error("system audio tap: failed: \(String(describing: error), privacy: .public)")
+        // The decisions (a stale answer, the retry streak, whether the system audio is lost) are `TapRecovery`'s; this
+        // reads the tap's state and carries the action out.
         // A rebuild that failed while the old tap still DELIVERS loses nothing: retried and logged, not announced. Once
         // the old tap goes quiet, or enough rebuilds failed, the loss is told (`TapLoss`).
         let silence = lock.withLock { TapLoss.silence(lastNanos: tapLastNanos, nowNanos: DispatchTime.now().uptimeNanoseconds) }
-        let lost = TapLoss.isLost(hasTap: tap.isRunning, sinceLastBuffer: silence, consecutiveFailures: tapRetry.failures + 1)
-        if !lost { log.error("system audio tap: rebuild failed, the previous tap keeps delivering") }
-        let step = tapRetry.failed(sourceLost: lost)
-        if step.notify { onSystemAudioFailed?() }
-        scheduleTapRebuild(after: step.delay)
+        let kind: TapRecovery.Outcome
+        var failure: Error?
+        switch outcome {
+        case .started: kind = .started
+        case .stopped: kind = .stopped
+        case .failed(let error): kind = .failed; failure = error
+        }
+        switch tapRecovery.answer(kind, token: token, recording: started != nil, hasTap: tap.isRunning, sinceLastBuffer: silence) {
+        case .ignore, .nothing: break
+        case .recovered: onSystemAudioRecovered?()
+        case .rebuild(let delay, let tellLoss, let previousKeepsDelivering):
+            if let failure { log.error("system audio tap: failed: \(String(describing: failure), privacy: .public)") }
+            if previousKeepsDelivering { log.error("system audio tap: rebuild failed, the previous tap keeps delivering") }
+            if tellLoss { onSystemAudioFailed?() }
+            scheduleTapRebuild(after: delay)
+        }
     }
 
     private static func rms(_ samples: [Float]) -> Float {

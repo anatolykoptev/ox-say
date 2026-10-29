@@ -8,6 +8,9 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
     /// The engine stopped a take that did not end inside its length budget (the
     /// daemon's typed `generation_runaway` error). Not worth showing as raw JSON.
     case runaway
+    /// The same, after the daemon already ran the take twice and both ran away (the error body says `"retried": true`):
+    /// another try of the same text is not promised to work, so the sentence does not ask for one.
+    case runawayRetried
     /// The text is over the daemon's limit; caught before the request so the person is told what to do.
     case tooLong(max: Int)
     /// The daemon answered 503: the speech engine is starting or failed to start.
@@ -20,6 +23,7 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
         case .http(let code, let body): return "The ox-say daemon answered \(code): \(body)"
         case .badResponse: return "The ox-say daemon sent a response without audio."
         case .runaway: return "The ox-say speech engine stopped a take that did not end."
+        case .runawayRetried: return "The ox-say speech engine stopped a take that did not end, on both tries."
         case .tooLong(let max): return "The text is longer than \(max) characters."
         case .engineUnavailable: return "The ox-say speech engine is not ready (503)."
         }
@@ -34,6 +38,7 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
         case .http(let code, _): return String(format: text(.speechErrorHttp), String(code))
         case .badResponse: return text(.speechErrorBadResponse)
         case .runaway: return text(.noticeSpeechRunaway)
+        case .runawayRetried: return text(.noticeSpeechRunawayRetried)
         case .tooLong(let max): return String(format: text(.speechErrorTooLong), String(max))
         case .engineUnavailable: return text(.speechErrorEngineUnavailable)
         }
@@ -65,21 +70,21 @@ public struct SpeechClient {
         self.send = send
     }
 
-    /// What the daemon accepts as the text to speak. Empty and whitespace-only
-    /// selections are not worth a round trip; the service turns them into an
-    /// error instead.
     /// The error for a non-2xx answer: the typed runaway code in the daemon's
-    /// `{"error":{"type":...}}` body becomes `.runaway`, anything else stays the
-    /// raw `.http` it always was.
+    /// `{"error":{"type":...}}` body becomes `.runaway` (`.runawayRetried` when the body says both tries ran away),
+    /// anything else stays the raw `.http` it always was.
     static func failure(status: Int, body: Data) -> SpeechError {
         if let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
            let error = obj["error"] as? [String: Any], error["type"] as? String == "generation_runaway" {
-            return .runaway
+            return error["retried"] as? Bool == true ? .runawayRetried : .runaway
         }
         if status == 503 { return .engineUnavailable }
         return .http(status, String(decoding: body.prefix(300), as: UTF8.self))
     }
 
+    /// What the daemon accepts as the text to speak. Empty and whitespace-only
+    /// selections are not worth a round trip; the service turns them into an
+    /// error instead.
     public static func input(_ text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed

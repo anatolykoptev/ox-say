@@ -206,6 +206,37 @@ final class DocumentReaderTests: XCTestCase {
         XCTAssertEqual(decoded, String(repeating: russian, count: 5))
     }
 
+    /// #175: `NSString.stringEncoding(for:)` takes about a minute on 50 MB of Windows-1251. The guess is made on a sample
+    /// spread over the file and the whole file is then decoded once, so a big file costs a decode, not a guess.
+    /// 8 MB took 9 s before; the bound is loose for a loaded host.
+    /// Mutation: DocumentReader.decode, `if data.count > 2 * guessSampleBytes {` -> `if false {` -> RED (the time bound).
+    func testABigWindows1251FileIsDecodedWithoutGuessingOnAllOfIt() throws {
+        let paragraph = russian + "Съешь же ещё этих мягких французских булок, да выпей чаю. "
+        let text = String(repeating: paragraph, count: 8_000_000 / paragraph.utf16.count)
+        let data = try XCTUnwrap(text.data(using: .windowsCP1251))
+        XCTAssertGreaterThan(data.count, 7_000_000)
+        let started = Date()
+        let decoded = try DocumentReader.decode(data)
+        let took = Date().timeIntervalSince(started)
+        XCTAssertEqual(decoded, text)
+        XCTAssertLessThan(took, 4, "decoding \(data.count) bytes took \(took) s")
+    }
+
+    /// The sample is spread over the file: Russian text that starts after a long ASCII head is in it, and what is decoded
+    /// stays right (a guess that sees only ASCII names an encoding that is not tried, and the whole file is guessed).
+    /// Mutation: DocumentReader.guessSample, return `data.prefix(guessSampleBytes)` -> RED (no Cyrillic byte in the sample).
+    func testTheSampleSeesCyrillicThatStartsLateInTheFile() throws {
+        let head = String(repeating: "Plain ASCII header line for the file.\n", count: 30_000)
+        let text = head + String(repeating: russian, count: 20_000)
+        let data = try XCTUnwrap(text.data(using: .windowsCP1251))
+        XCTAssertGreaterThan(data.count, 2 * DocumentReader.guessSampleBytes)
+        let sample = DocumentReader.guessSample(data)
+        XCTAssertEqual(sample.count, DocumentReader.guessSampleBytes)
+        XCTAssertTrue(sample.contains { $0 >= 0xC0 }, "the sample holds no Cyrillic letter")
+        let decoded = try DocumentReader.decode(data)
+        XCTAssertEqual(decoded, text)
+    }
+
     func testUtf16WithoutAByteOrderMarkIsRecognisedByItsNulBytes() throws {
         for text in ["Hello world, this is plain text. ", russian] {
             let little = try DocumentReader.decode(try XCTUnwrap(text.data(using: .utf16LittleEndian)))

@@ -186,7 +186,11 @@ enum PDFTextLayout {
             let endsShort = !hasBlankLines && Double(line.count) < Double(usual) * shortLineRatio
             if endsShort, index < lines.count - 1 { groups.append([]) }
         }
-        return groups.filter { !$0.isEmpty }.map { $0.dropFirst().reduce($0[0], join) }
+        return groups.filter { !$0.isEmpty }.map { group in
+            var joined = group[0]
+            for line in group.dropFirst() { append(line, to: &joined) }
+            return joined
+        }
     }
 
     private static func usualLength(_ lines: [String]) -> Int {
@@ -205,10 +209,20 @@ enum PDFTextLayout {
     /// Joins two lines of one paragraph: `informa-` + `tion` is one word; a
     /// hyphen after a letter and before a capital stays (`Ivanov-Petrov`).
     static func join(_ head: String, _ tail: String) -> String {
-        let chars = Array(head)
-        guard chars.last == "-", chars.count >= 2, chars[chars.count - 2].isLetter, let first = tail.first, first.isLetter else {
-            return head + " " + tail
+        var joined = head
+        append(tail, to: &joined)
+        return joined
+    }
+
+    /// `join`, in place: a paragraph of many lines is built in linear time (a page of 40 000 lines took 9 s when every
+    /// join copied the whole head, #175).
+    private static func append(_ tail: String, to head: inout String) {
+        guard head.last == "-", let before = head.dropLast().last, before.isLetter, let first = tail.first, first.isLetter else {
+            head += " "
+            head += tail
+            return
         }
-        return first.isLowercase ? String(head.dropLast()) + tail : head + tail
+        if first.isLowercase { head.removeLast() }
+        head += tail
     }
 }

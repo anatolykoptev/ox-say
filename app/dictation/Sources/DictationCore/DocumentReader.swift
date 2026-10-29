@@ -156,12 +156,38 @@ public enum DocumentReader {
         if let text = String(data: data, encoding: .utf8) { return text }
         let lossy = String(decoding: data, as: UTF8.self)
         if mostlyUtf8(lossy) { return lossy }
+        let suggested: [UInt] = [String.Encoding.windowsCP1252.rawValue, String.Encoding.windowsCP1251.rawValue]
+        // `NSString.stringEncoding(for:)` takes about a minute on 50 MB (#175): the guess is made on a sample spread over
+        // the file and the whole file is decoded once with the encoding it names. If that encoding cannot decode all of
+        // it, the guess is made on everything, as it always was.
+        if data.count > 2 * guessSampleBytes {
+            var sampled: NSString?
+            let encoding = NSString.stringEncoding(for: guessSample(data), encodingOptions: [.suggestedEncodingsKey: suggested],
+                                                   convertedString: &sampled, usedLossyConversion: nil)
+            if suggested.contains(encoding), let whole = String(data: data, encoding: String.Encoding(rawValue: encoding)),
+               !whole.unicodeScalars.contains("\u{0}") { return whole }
+        }
         var converted: NSString?
-        _ = NSString.stringEncoding(for: data, encodingOptions: [.suggestedEncodingsKey: [String.Encoding.windowsCP1252.rawValue,
-                                                                                          String.Encoding.windowsCP1251.rawValue]],
+        _ = NSString.stringEncoding(for: data, encodingOptions: [.suggestedEncodingsKey: suggested],
                                     convertedString: &converted, usedLossyConversion: nil)
         guard let guessed = converted as String?, !guessed.unicodeScalars.contains("\u{0}") else { throw DocumentError.unknownEncoding }
         return guessed
+    }
+
+    /// What the encoding guess reads of a big file: `guessChunks` pieces of the same size spread evenly over it, so
+    /// text that starts after a long ASCII head is still seen. The encodings guessed between are single-byte, so a piece
+    /// cut anywhere is fine.
+    static let guessSampleBytes = 256 * 1024
+    static let guessChunks = 16
+    static func guessSample(_ data: Data) -> Data {
+        let size = guessSampleBytes / guessChunks
+        let step = (data.count - size) / (guessChunks - 1)
+        var sample = Data()
+        for index in 0..<guessChunks {
+            let start = data.startIndex + index * step
+            sample.append(data[start..<start + size])
+        }
+        return sample
     }
 
     private static func utf16WithMark(_ data: Data) -> String? {

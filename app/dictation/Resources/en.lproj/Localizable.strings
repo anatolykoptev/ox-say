@@ -349,6 +349,7 @@
 "play.position" = "Playback position";
 "play.stop" = "Stop playback";
 "notice.speech_runaway" = "The voice did not finish this text and was stopped. Try again, or select less text.";
+"notice.speech_runaway.retried" = "The voice did not finish this text, even on a second try. Select less text, or choose another voice.";
 "meeting.failed.where_retry" = "Open the meeting and press Try Again.";
 "meeting.notes.failed.engine_start.final" = "The notes writer did not start.";
 "meeting.notes.failed.engine_verify.final" = "The notes writer started but failed its self-check, so it was stopped.";
