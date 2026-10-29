@@ -1,3 +1,5 @@
+import CoreGraphics
+
 /// ⌘V must press the key that types "v" with ⌘ held, not the QWERTY V
 /// position: on Dvorak the QWERTY V key is "k", and the letter v sits on the
 /// QWERTY "." key. Layouts switch tables under ⌘: Russian, Ukrainian, Hebrew and
@@ -35,5 +37,34 @@ public enum PasteKey {
             return code
         }
         return ansiC
+    }
+
+    /// Which letter a synthetic ⌘ shortcut presses: ⌘V pastes the dictation, ⌘C copies the selection to speak.
+    public enum CommandLetter {
+        case v, c
+
+        public var units: [UInt16] {
+            switch self {
+            case .v: return PasteKey.commandVUnits
+            case .c: return PasteKey.commandCUnits
+            }
+        }
+    }
+
+    /// The key-down and key-up of a synthetic ⌘`letter` on `keyCode`, NOT posted: the one place the events are built,
+    /// so the app posts exactly what the tests read back. Only ⌘ is set (a modifier still held from the hotkey must not
+    /// turn this into ⌃⌘V), and the string is set outright: the event's own is filled from the layout's plain table,
+    /// which under "Dvorak – QWERTY ⌘" is not the letter the chosen key types with ⌘. nil when the system refuses to
+    /// make an event.
+    public static func commandEvents(_ letter: CommandLetter, keyCode: CGKeyCode,
+                                     source: CGEventSource?) -> (down: CGEvent, up: CGEvent)? {
+        let units = letter.units
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else { return nil }
+        for event in [down, up] {
+            event.flags = .maskCommand
+            event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+        }
+        return (down, up)
     }
 }

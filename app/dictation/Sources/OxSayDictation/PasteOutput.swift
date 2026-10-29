@@ -214,16 +214,9 @@ final class PasteOutput: TextOutput {
     private func postCommandV() {
         let source = CGEventSource(stateID: .combinedSessionState)
         let v = CGKeyCode(PasteKey.commandV(lookup: PasteOutput.layoutCharacter()))
-        // Only Command: a modifier still held from the hotkey must not turn this into ⌃⌘V.
-        let down = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: true)
-        down?.flags = .maskCommand
-        // The event's string is filled from the layout's plain table: say "v" outright (Dvorak – QWERTY ⌘).
-        down?.keyboardSetUnicodeString(stringLength: PasteKey.commandVUnits.count, unicodeString: PasteKey.commandVUnits)
-        let up = CGEvent(keyboardEventSource: source, virtualKey: v, keyDown: false)
-        up?.flags = .maskCommand
-        up?.keyboardSetUnicodeString(stringLength: PasteKey.commandVUnits.count, unicodeString: PasteKey.commandVUnits)
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
+        guard let events = PasteKey.commandEvents(.v, keyCode: v, source: source) else { return }
+        events.down.post(tap: .cghidEventTap)
+        events.up.post(tap: .cghidEventTap)
     }
 
     /// Maps a virtual key code to the character it types with ⌘ held in the

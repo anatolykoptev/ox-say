@@ -62,10 +62,24 @@ final class EmptyMeetingCleanupTests: XCTestCase {
     func testAnUnreachableDaemonLeavesTheMeetingAndSaysWhy() async {
         let calls = Calls()
         let outcome = await run(calls, finish: { throw StudioError.daemonUnreachable }, delete: { throw StudioError.daemonUnreachable })
-        guard case .left(let why) = outcome else { return XCTFail("expected .left, got \(outcome)") }
+        guard case .left(let why, _) = outcome else { return XCTFail("expected .left, got \(outcome)") }
         XCTAssertTrue(why.contains("not running"), why)
         XCTAssertEqual(calls.delete, 1)
         XCTAssertTrue(calls.slept.isEmpty)
+    }
+
+    /// #358: a refusal's words (a meeting id, a file name) are in the private part of what is left, never the public one.
+    /// Mutation: EmptyMeetingCleanup.discard, `"delete: \(LogDetail.publicText(error))"` -> `"delete: \(error)"` -> RED
+    /// (likewise the `finish: ` one).
+    func testARefusalsWordsStayOutOfThePublicPartOfWhatIsLeft() async {
+        let calls = Calls()
+        let words = "meeting standup-with-anna.m4a is busy"
+        let outcome = await run(calls, finish: { throw StudioError.refused(status: 500, message: words) },
+                                delete: { throw StudioError.refused(status: 500, message: words) })
+        guard case .left(let why, let detail) = outcome else { return XCTFail("expected .left, got \(outcome)") }
+        XCTAssertFalse(why.contains("standup"), why)
+        XCTAssertTrue(why.contains("finish: refused status=500") && why.contains("delete: refused status=500"), why)
+        XCTAssertTrue(detail.contains(words), detail)
     }
 }
 
@@ -100,5 +114,59 @@ final class BadgePlacementTests: XCTestCase {
     func testAShrinkingBadgeKeepsItsLeftEdge() {
         XCTAssertEqual(BadgePlacement.originX(anchoredLeft: 500, width: 300, screenMidX: 720), 500)
         XCTAssertEqual(BadgePlacement.originX(anchoredLeft: nil, width: 300, screenMidX: 720), 570, "a new badge is centred")
+    }
+
+    private let laptop = BadgePlacement.Screen(id: 1, minX: 0, maxX: 1440, maxY: 875)
+    private let external = BadgePlacement.Screen(id: 2, minX: 1440, maxX: 3360, maxY: 1055)
+
+    /// #342.4: a display change re-places the badge on the screen it is on, keeping its left edge.
+    /// Mutation: BadgePlacement.place, `let kept = ...` -> `let kept: Screen? = nil` -> RED (it jumps to the main screen).
+    func testABadgeStaysOnItsScreenWhenAnotherOneChanges() {
+        let p = BadgePlacement.place(screens: [laptop, external], placedOn: 2, main: 1, anchoredOffset: 560, width: 300, height: 36)
+        XCTAssertEqual(p, BadgePlacement.Placement(screenID: 2, x: 2000, y: 1055 - 36 - 8, offset: 560))
+    }
+
+    /// #342.4: the screen the badge was on is unplugged: it moves to the main screen, centred, not left off screen.
+    /// Mutation: BadgePlacement.place, `let left = kept == nil ? nil : anchoredOffset.map { screen.minX + $0 }` -> `let left = anchoredOffset` -> RED.
+    func testABadgeWhoseScreenWentMovesToTheMainScreenCentred() {
+        let p = BadgePlacement.place(screens: [laptop], placedOn: 2, main: 1, anchoredOffset: 560, width: 300, height: 36)
+        XCTAssertEqual(p, BadgePlacement.Placement(screenID: 1, x: 570, y: 875 - 36 - 8, offset: 570))
+    }
+
+    /// Mutation: BadgePlacement.place, drop the `main.flatMap` arm -> RED (the first screen is taken instead).
+    func testTheMainScreenIsPreferredOverTheFirstOne() {
+        let p = BadgePlacement.place(screens: [laptop, external], placedOn: nil, main: 2, anchoredOffset: nil, width: 300, height: 36)
+        XCTAssertEqual(p?.screenID, 2)
+        XCTAssertEqual(p?.x, 2400 - 150)
+        let none = BadgePlacement.place(screens: [laptop, external], placedOn: 9, main: 8, anchoredOffset: nil, width: 300, height: 36)
+        XCTAssertEqual(none?.screenID, 1, "neither is there: the first screen")
+    }
+
+    /// Mutation: BadgePlacement.place, `return Placement(...)` with `x` instead of `inside` -> RED.
+    func testASmallerScreenPullsTheBadgeBackInside() {
+        // The screen it is on shrank (a resolution change): the old left edge would put the badge half off it.
+        let shrunk = BadgePlacement.Screen(id: 1, minX: 0, maxX: 1024, maxY: 700)
+        let p = BadgePlacement.place(screens: [shrunk], placedOn: 1, main: 1, anchoredOffset: 1000, width: 300, height: 36)
+        XCTAssertEqual(p?.x, 724)
+        let left = BadgePlacement.place(screens: [shrunk], placedOn: 1, main: 1, anchoredOffset: -50, width: 300, height: 36)
+        XCTAssertEqual(left?.x, 0)
+        let wide = BadgePlacement.place(screens: [BadgePlacement.Screen(id: 1, minX: 0, maxX: 200, maxY: 700)],
+                                        placedOn: 1, main: 1, anchoredOffset: 40, width: 300, height: 36)
+        XCTAssertEqual(wide?.x, 0, "a badge wider than the screen starts at its edge")
+    }
+
+    /// #358: the badge's display survives but the arrangement shifts its origin (the monitor to its left is unplugged and
+    /// the external one now starts at 0): the badge keeps its distance from its screen's left, not its old global x.
+    /// Mutation: BadgePlacement.place, `anchoredOffset.map { screen.minX + $0 }` -> `anchoredOffset` -> RED.
+    func testAShiftedArrangementKeepsTheBadgesPlaceOnItsScreen() {
+        let first = BadgePlacement.place(screens: [laptop, external], placedOn: 2, main: 1, anchoredOffset: 560, width: 300, height: 36)
+        XCTAssertEqual(first?.offset, 560)
+        let moved = BadgePlacement.Screen(id: 2, minX: 0, maxX: 1920, maxY: 1055)
+        let again = BadgePlacement.place(screens: [moved], placedOn: 2, main: 2, anchoredOffset: first?.offset, width: 300, height: 36)
+        XCTAssertEqual(again, BadgePlacement.Placement(screenID: 2, x: 560, y: 1055 - 36 - 8, offset: 560))
+    }
+
+    func testNoScreensIsNoPlacement() {
+        XCTAssertNil(BadgePlacement.place(screens: [], placedOn: 1, main: 1, anchoredOffset: 10, width: 300, height: 36))
     }
 }
