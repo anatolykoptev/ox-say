@@ -10,16 +10,20 @@ import (
 	"strings"
 )
 
+// bootIDPath is a var so a test can point it elsewhere.
+var bootIDPath = "/proc/sys/kernel/random/boot_id"
+
 // processExe returns the executable path of a live process via /proc.
 func processExe(pid int) (string, error) {
 	return os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
 }
 
 // processStartTime returns an opaque token identifying the process's start
-// instant: /proc/<pid>/stat field 22, in clock ticks since boot. It is only
-// ever compared to another read of the same function — writePidFile stamps
-// it next to the pid, reapOrphan re-reads it — so no unit conversion is
-// needed.
+// instant: the boot id plus /proc/<pid>/stat field 22, in clock ticks since
+// boot. The ticks alone repeat across boots (#73), so bootScopedToken prefixes
+// /proc/sys/kernel/random/boot_id. It is only ever compared to another read of
+// the same function — writePidFile stamps it next to the pid, reapOrphan
+// re-reads it — so no unit conversion is needed.
 func processStartTime(pid int) (string, error) {
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
@@ -37,5 +41,9 @@ func processStartTime(pid int) (string, error) {
 	if len(fields) <= 19 {
 		return "", fmt.Errorf("/proc/%d/stat: short field list", pid)
 	}
-	return fields[19], nil
+	boot, err := os.ReadFile(bootIDPath)
+	if err != nil {
+		return "", fmt.Errorf("boot id: %w", err)
+	}
+	return bootScopedToken(string(boot), fields[19])
 }

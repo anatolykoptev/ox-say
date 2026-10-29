@@ -99,6 +99,20 @@ func (d *Daemon) synthesizeQwen(ctx context.Context, body map[string]any) ([]byt
 	return d.speechOn(ctx, d.Sup, body)
 }
 
+// interactiveSpeakCeiling bounds one interactive speak on the voxcpm2 child.
+// Without it a speak that is itself the wedged request holds its Guard until
+// its caller gives up, so every later render queues behind it and
+// RecycleWedged waits out RecycleWait for that older guard, repeatedly
+// (#338). Derived like a render's deadline, for the longest text a speak
+// takes (maxSpeakChars): the audio it makes (estCharsPerSec) times
+// renderBudgetRTF (4.0, against the slowest measured RTF of about 1 for
+// voxcpm2 and 0.58-0.61 for qwen) plus renderSlack for a cold child — about
+// 25 minutes, far above any legitimate speak. A var so a test can shorten it.
+var interactiveSpeakCeiling = func() time.Duration {
+	chars := float64(maxSpeakChars)
+	return time.Duration(chars/estCharsPerSec*renderBudgetRTF*float64(time.Second)) + renderSlack
+}()
+
 // speechOn POSTs one prepared body to sup's child and returns the WAV — the
 // shared shape of every engine call (Acquire, EnsureReady, Speech, status).
 func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[string]any) ([]byte, error) {
@@ -112,8 +126,12 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 	// the shared voxcpm2 child the child runs at normal priority (#156.7).
 	use := engineUseOf(ctx)
 	vox := d.VoxSup != nil && sup == d.VoxSup
+	callerCtx := ctx
 	if vox && use == nil {
 		defer d.voxQoS.beginInteractive()()
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, interactiveSpeakCeiling)
+		defer cancel()
 	}
 	base, err := sup.EnsureReady(ctx)
 	if err != nil {
@@ -133,12 +151,12 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 	}
 	resp, err := d.ec.Speech(ctx, base, raw)
 	if err != nil {
-		return nil, d.transportError(ctx, err)
+		return nil, d.transportError(callerCtx, err)
 	}
 	defer resp.Body.Close()
 	wav, err := readAllCap(resp.Body, maxEngineWAVBytes)
 	if err != nil {
-		return nil, d.transportError(ctx, err)
+		return nil, d.transportError(callerCtx, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		if isRunaway(wav) {

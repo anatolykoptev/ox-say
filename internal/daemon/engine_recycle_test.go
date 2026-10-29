@@ -445,3 +445,48 @@ func TestColdStartedChildIsLoweredWhileTheFirstRenderRuns(t *testing.T) {
 	}
 	ports.Background(false)
 }
+
+// #338 residual: an interactive speak has no deadline of its own, so one that
+// is itself the wedged request on the vox child would hold its guard until the
+// caller gave up, and every recycle waited 30 s for it. A ceiling on the
+// interactive request ends it as an engine-did-not-answer error, and the
+// render's recycle that follows finds no older guard and replaces the child.
+// Mutation: speak.go speechOn, delete the context.WithTimeout(ctx,
+// interactiveSpeakCeiling) call (the `ctx, cancel = ...` line in the
+// `vox && use == nil` branch) -> the wedged speak never ends -> RED.
+func TestWedgedInteractiveSpeakEndsAtItsCeiling(t *testing.T) {
+	d, logPath := voxFixtureTuned(t, nil)
+	t.Setenv("OXSAY_FAKE_VOX_WEDGE_FIRST", filepath.Join(filepath.Dir(logPath), "wedged-child"))
+	if _, err := d.VoxSup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wedged := d.VoxSup.Status().PID
+	old := interactiveSpeakCeiling
+	interactiveSpeakCeiling = 200 * time.Millisecond // child is already warm: only the request is timed
+	t.Cleanup(func() { interactiveSpeakCeiling = old })
+
+	spoke := make(chan error, 1)
+	go func() {
+		// context.Background(): the caller never gives up, as a long-lived MCP client.
+		_, err := d.speechOn(context.Background(), d.VoxSup, map[string]any{"model": "voxcpm2", "input": "hello there"})
+		spoke <- err
+	}()
+	var te *engineTransportError
+	if err := within(t, "the wedged interactive speak", 20*time.Second, spoke); !errors.As(err, &te) {
+		t.Fatalf("the wedged speak: %v, want the engine-did-not-answer transport error", err)
+	}
+	// The child is still wedged. A render now hits its deadline and recycles:
+	// the speak's guard is gone, so the recycle replaces the child at once.
+	shortDeadline(t, time.Second)
+	tk := &taker{ports: d.producePorts(), dir: t.TempDir()}
+	if _, err := tk.renderWithin(context.Background(), takeSpec{Text: "ox-say is ready", Seed: 1, Cfg: 2, Steps: 10}); err == nil ||
+		!strings.Contains(err.Error(), "did not answer in time") {
+		t.Fatalf("render: %v", err)
+	}
+	if _, err := d.speechOn(context.Background(), d.VoxSup, map[string]any{"model": "voxcpm2", "input": "again"}); err != nil {
+		t.Fatalf("the next speak after the recycle: %v", err)
+	}
+	if st := d.VoxSup.Status(); st.PID == wedged || st.State != engine.StateReady {
+		t.Fatalf("pid %d (wedged %d) state %s: the wedged child was not replaced", st.PID, wedged, st.State)
+	}
+}
