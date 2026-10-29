@@ -340,14 +340,16 @@ struct SpeakersTab: View {
                         }
                     }
                     .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+                    let refusal = draft?.refusal(against: s)
                     HStack {
-                        Text(L10nKey.meetingSpeakersFootnote.text).font(.caption).foregroundStyle(.secondary)
+                        Text((refusal ?? .meetingSpeakersFootnote).text).font(.caption)
+                            .foregroundStyle(refusal == nil ? Color.secondary : Color.red)
                         Spacer()
                         Button(L10nKey.speakersSave.text) {
                             if let d = draft { model.actions.saveSpeakers(detail.info.id, d.edits(against: s)) }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(draft.map { $0.edits(against: s).isEmpty } ?? true)
+                        .disabled(draft.map { $0.refusal(against: s) != nil || $0.edits(against: s).isEmpty } ?? true)
                     }
                 }
             }
@@ -428,7 +430,9 @@ struct SpeakersTab: View {
     }
 
     private func nameBinding(_ sp: SpeakerInfo) -> Binding<String> {
-        Binding(get: { draft?.names[sp.id] ?? sp.name }, set: { draft?.names[sp.id] = MeetingLimits.cap($0, to: MeetingLimits.nameMax) })
+        Binding(get: { draft?.names[sp.id] ?? sp.name }, set: { new in
+            draft?.names[sp.id] = MeetingLimits.cap(new, to: MeetingLimits.nameMax, keeping: draft?.names[sp.id] ?? sp.name)
+        })
     }
 
     private func mergeBinding(_ sp: SpeakerInfo) -> Binding<String> {

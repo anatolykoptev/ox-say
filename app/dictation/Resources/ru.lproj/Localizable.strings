@@ -148,6 +148,7 @@
 "speakers.name_placeholder" = "Имя";
 "speakers.save" = "Сохранить";
 "speakers.cancel" = "Отмена";
+"speakers.name_needs_letter" = "В имени должна быть хотя бы одна буква или цифра.";
 "speakers.failed" = "Не удалось сохранить собеседников: %@";
 "notice.speakers.saved" = "Собеседники сохранены. Заметки пишутся заново.";
 "notice.speakers.names_saved" = "Имена сохранены.";
@@ -464,7 +465,7 @@
 "studio.choose.title" = "Выберите документ для озвучки";
 "studio.choose.message" = "Выберите текстовый файл, Markdown, Word, PDF, RTF или OpenDocument.";
 "studio.menu.new_voiceover" = "Новая озвучка из документа…";
-"studio.menu.continue_battery" = "Продолжить работу от батареи";
+"studio.menu.continue_battery" = "Продолжить озвучку от батареи";
 "studio.menu.open_folder" = "Открыть папку с озвучками";
 "studio.menu.no_service" = "Студии нужна служба ox-say, а она не отвечает";
 "studio.menu.checking" = "Проверяю службу ox-say…";
@@ -507,7 +508,7 @@
 "doc.empty.scan" = "В этом PDF нет текста для чтения (возможно, это скан).";
 "doc.empty.none" = "В этом документе нет текста для чтения.";
 "script.status.none" = "Читать пока нечего: текста нет.";
-"script.status.over" = "%1$@ симв. · превышает лимит в %3$@ на %2$@ (это около %4$@ мин).";
+"script.status.over" = "%1$@ симв. · %2$@ сверх лимита в %3$@ (около %4$@ мин).";
 "script.status.one_minute" = "%@ симв. · около 1 мин";
 "script.status.minutes" = "%1$@ симв. · около %2$@ мин";
 "review.title" = "Новая озвучка";
@@ -516,7 +517,7 @@
 "review.keep_first" = "Оставить только начало";
 "review.label.title" = "Название";
 "review.label.format" = "Формат";
-"review.label.text" = "Текст: проверьте его и поправьте всё нужное, прежде чем ox-say его прочитает";
+"review.label.text" = "Текст: проверьте и поправьте, что нужно, перед озвучкой";
 "menu.voice" = "Голос";
 "menu.keyboard_shortcuts" = "Сочетания клавиш";
 "menu.studio" = "Студия";

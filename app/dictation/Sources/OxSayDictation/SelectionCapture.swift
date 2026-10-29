@@ -12,30 +12,27 @@ final class SelectionCapture {
     private let slowClipboard: SlowClipboardMemory
     /// One report per speak press — the path taken and every AX source's
     /// result, never content. Lets the real app's AX path be checked from the log.
-    var onSelection: ((SelectionReport) -> Void)? {
-        // Always set, so the press ends at the report SelectionBorrow makes once per press, whoever listens.
-        get { { [self] report in gate.end(); reporter?(report) } }
-        set { reporter = newValue }
-    }
-    private var reporter: ((SelectionReport) -> Void)?
+    var onSelection: ((SelectionReport) -> Void)?
     /// One press at a time: the capture spins the run loop, which delivers a second hotkey press inside the first.
     private let gate = CaptureGate()
 
-    /// True when the press may start; the matching `onSelection` of `capture()` ends it.
+    /// True when the press may start; `capture()` ends it, however it returns.
     func beginPress() -> Bool { gate.begin() }
 
     init(slowClipboard: SlowClipboardMemory) { self.slowClipboard = slowClipboard }
 
     /// The selected text, or why it could not be read.
     func capture() -> (text: String?, problem: String?) {
-        SelectionBorrow.capture(board: board,
-                                selectedText: selectedText,
-                                secureInput: IsSecureEventInputEnabled,
-                                postCopy: postCommandC,
-                                spin: { RunLoop.current.run(until: Date().addingTimeInterval($0)) },
-                                readText: board.readText,
-                                memory: slowClipboard,
-                                onSelection: onSelection)
+        gate.ending {
+            SelectionBorrow.capture(board: board,
+                                    selectedText: selectedText,
+                                    secureInput: IsSecureEventInputEnabled,
+                                    postCopy: postCommandC,
+                                    spin: { RunLoop.current.run(until: Date().addingTimeInterval($0)) },
+                                    readText: board.readText,
+                                    memory: slowClipboard,
+                                    onSelection: onSelection)
+        }
     }
 
     /// The focused element's AXSelectedText — the clipboard-free path. The

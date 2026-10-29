@@ -22,7 +22,7 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(StudioMenu.newVoiceoverTitle(text: ru), "Новая озвучка из документа…")
         XCTAssertEqual(StudioMenu.stopTitle(text: en), "Stop Voiceover")
         XCTAssertEqual(StudioMenu.stopTitle(text: ru), "Остановить озвучку")
-        XCTAssertEqual(StudioMenu.continueTitle(text: ru), "Продолжить работу от батареи")
+        XCTAssertEqual(StudioMenu.continueTitle(text: ru), "Продолжить озвучку от батареи")
         XCTAssertEqual(StudioMenu.folderTitle(text: en), "Open Voiceovers Folder")
         XCTAssertEqual(StudioMenu.folderTitle(text: ru), "Открыть папку с озвучками")
         XCTAssertEqual(StudioMenu.noServiceTitle(text: en), "Studio needs the ox-say service, which is not answering")
@@ -37,7 +37,7 @@ final class StudioMenuL10nTests: XCTestCase {
             .item(title: "Новая озвучка из документа…", isOn: false, isEnabled: false, action: .newVoiceover),
             .item(title: "“Глава” — пауза — работа от батареи", isOn: false, isEnabled: false, action: nil),
             .item(title: "Остановить озвучку", isOn: false, isEnabled: true, action: .stopVoiceover),
-            .item(title: "Продолжить работу от батареи", isOn: false, isEnabled: true, action: .continueOnBattery),
+            .item(title: "Продолжить озвучку от батареи", isOn: false, isEnabled: true, action: .continueOnBattery),
             .item(title: "Открыть папку с озвучками", isOn: false, isEnabled: true, action: .openVoiceoversFolder),
             .separator,
             .item(title: "Создать голос…", isOn: false, isEnabled: true, action: .createVoice),
@@ -148,7 +148,7 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(ScriptLimit.statusLine(editorText: "Привет.", text: ru), "7 симв. · около 1 мин")
         XCTAssertEqual(ScriptLimit.statusLine(editorText: String(repeating: "я", count: 8340), text: ru), "8340 симв. · около 10 мин")
         XCTAssertEqual(ScriptLimit.statusLine(editorText: String(repeating: "я", count: ScriptLimit.maxCharacters + 7), text: ru),
-                       "40007 симв. · превышает лимит в 40000 на 7 (это около 48 мин).")
+                       "40007 симв. · 7 сверх лимита в 40000 (около 48 мин).")
         XCTAssertEqual(ScriptLimit.statusLine(editorText: String(repeating: "x", count: ScriptLimit.maxCharacters + 7), text: en),
                        "40007 characters · 7 over the limit of 40000 (about 48 minutes).")
         let rows = MenuSections.voiceRows(known: ["anna"], russian: nil, english: nil, text: ru)
@@ -216,7 +216,7 @@ final class StudioMenuL10nTests: XCTestCase {
              "Не удалось обновить разрешение универсального доступа: удалите OxSayDictation кнопкой − в Системных настройках → Конфиденциальность и безопасность → Универсальный доступ, затем добавьте снова."),
             (.reviewTitle, "New Voiceover", "Новая озвучка"), (.reviewStart, "Start", "Начать"), (.reviewKeepFirst, "Keep the First Part", "Оставить только начало"),
             (.reviewLabelTitle, "Title", "Название"), (.reviewLabelFormat, "Format", "Формат"),
-            (.reviewLabelText, "Text — check it and fix anything before ox-say reads it", "Текст: проверьте его и поправьте всё нужное, прежде чем ox-say его прочитает"),
+            (.reviewLabelText, "Text — check it and fix anything before ox-say reads it", "Текст: проверьте и поправьте, что нужно, перед озвучкой"),
         ]
         for (key, e, r) in pairs {
             XCTAssertEqual(en(key), e, key.rawValue)

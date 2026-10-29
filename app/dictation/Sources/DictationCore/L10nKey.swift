@@ -144,6 +144,7 @@ public enum L10nKey: String, CaseIterable {
     case speakersNamePlaceholder = "speakers.name_placeholder"
     case speakersSave = "speakers.save"
     case speakersCancel = "speakers.cancel"
+    case speakersNameNeedsLetter = "speakers.name_needs_letter"
     case speakersFailed = "speakers.failed"
     case noticeSpeakersSaved = "notice.speakers.saved"
     case noticeSpeakersNamesSaved = "notice.speakers.names_saved"

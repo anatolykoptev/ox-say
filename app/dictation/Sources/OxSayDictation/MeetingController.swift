@@ -613,6 +613,8 @@ final class MeetingController: NSObject, MeetingFeature {
                 var state = try await host.client.speakers(id: id)
                 let title = recent.first(where: { $0.id == id })?.title ?? ""
                 while let draft = SpeakersPrompt.ask(title: title, state: state) {
+                    // A name the daemon would refuse with a 400 is told here instead of sent.
+                    if let refusal = draft.refusal(against: state) { host.notify(refusal.text); return }
                     let edits = draft.edits(against: state)
                     if edits.isEmpty { return }
                     let wasOffer = state.offersSplit
