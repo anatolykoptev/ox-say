@@ -110,10 +110,10 @@ public struct SpeakerDraft: Equatable {
         let merges = standingMerges(against: state)
         var folded: [(from: String, into: String, name: String)] = []
         for s in state.speakers {
-            let typed = (names[s.id] ?? s.name).trimmingCharacters(in: .whitespacesAndNewlines)
+            let typed = MeetingLimits.clamp(names[s.id] ?? s.name, to: MeetingLimits.nameMax)
             let target = merges[s.id]
             let newlyFolded = target != nil && target != s.mergedTo
-            if !newlyFolded, typed != s.name.trimmingCharacters(in: .whitespacesAndNewlines) { e.rename[s.id] = typed }
+            if !newlyFolded, typed != MeetingLimits.clamp(s.name, to: MeetingLimits.nameMax) { e.rename[s.id] = typed }
             switch (s.mergedTo, target) {
             case let (old?, new?) where old != new: e.unmerge.append(s.id); e.merge[s.id] = new
             case (nil, let new?): e.merge[s.id] = new
@@ -124,7 +124,7 @@ public struct SpeakerDraft: Equatable {
         }
         for f in folded.sorted(by: { $0.from < $1.from }) {
             let own = state.speakers.first(where: { $0.id == f.into })?.name ?? ""
-            let current = (e.rename[f.into] ?? names[f.into] ?? own).trimmingCharacters(in: .whitespacesAndNewlines)
+            let current = MeetingLimits.clamp(e.rename[f.into] ?? names[f.into] ?? own, to: MeetingLimits.nameMax)
             if current.isEmpty { e.rename[f.into] = f.name }
         }
         if split != state.split { e.split = split }

@@ -84,14 +84,26 @@ public enum MeetingLimits {
     public static let titleMax = 200
     public static let labelMax = 80
     public static let sourceMax = 40
+    /// A speaker's name (internal/meeting/speakers.go, `MaxNameRunes`).
+    public static let nameMax = 60
 
-    /// `text` trimmed and cut to `limit` Unicode scalars (the daemon counts runes).
+    /// `text` cut to at most `limit` Unicode scalars (the daemon counts runes), as typed (not trimmed). A character
+    /// that does not fit is dropped whole: no half an emoji family, no base letter without its accent.
+    public static func cap(_ text: String, to limit: Int) -> String {
+        guard text.unicodeScalars.count > limit else { return text }
+        var out = ""
+        var used = 0
+        for ch in text {
+            used += ch.unicodeScalars.count
+            if used > limit { break }
+            out.append(ch)
+        }
+        return out
+    }
+
+    /// `text` trimmed and cut to `limit` runes on a character boundary.
     public static func clamp(_ text: String, to limit: Int) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.unicodeScalars.count > limit else { return trimmed }
-        var out = String.UnicodeScalarView()
-        out.append(contentsOf: trimmed.unicodeScalars.prefix(limit))
-        return String(out).trimmingCharacters(in: .whitespacesAndNewlines)
+        cap(text.trimmingCharacters(in: .whitespacesAndNewlines), to: limit).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The meeting's working title for a call source, "" for a manual recording (the daemon then names it by date).

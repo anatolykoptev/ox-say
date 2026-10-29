@@ -77,7 +77,7 @@ enum SpeakersPrompt {
         alert.accessoryView = stack
 
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        for (id, field) in fields { draft.names[id] = field.stringValue }
+        for (id, field) in fields { draft.names[id] = MeetingLimits.cap(field.stringValue, to: MeetingLimits.nameMax) }
         for (id, pick) in picks {
             draft.mergeInto[id] = pick.selectedItem?.representedObject as? String
         }

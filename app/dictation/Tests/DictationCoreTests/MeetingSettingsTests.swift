@@ -55,6 +55,17 @@ final class MeetingSettingsTests: XCTestCase {
         XCTAssertEqual(MeetingRetention.forever.days, 0)
     }
 
+    /// The stored name is the one that is sent: a name over the daemon's label cap is cut where it is saved, so the
+    /// Settings field shows what a transcript will say (#252).
+    /// Mutation: MeetingSettings.setDisplayName, store `name` without MeetingLimits.clamp -> RED.
+    func testASavedNameIsCutToTheLabelCap() {
+        let d = defaults()
+        MeetingSettings.setDisplayName(String(repeating: "Ж", count: 120), d)
+        XCTAssertEqual(MeetingSettings.displayName(d, fallback: "x").unicodeScalars.count, MeetingLimits.labelMax)
+        MeetingSettings.setDisplayName(String(repeating: "a", count: 79) + "👨‍👩‍👧", d)
+        XCTAssertEqual(MeetingSettings.displayName(d, fallback: "x"), String(repeating: "a", count: 79), "no half an emoji")
+    }
+
     func testFolderModeNameAndExported() {
         let d = defaults()
         MeetingSettings.setFolder(URL(fileURLWithPath: "/tmp/notes"), d)

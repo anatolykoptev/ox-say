@@ -94,6 +94,53 @@ final class MeetingLimitsTests: XCTestCase {
         XCTAssertLessThanOrEqual(MeetingLimits.clamp(family, to: 80).unicodeScalars.count, 80)
     }
 
+    private func goConstant(_ file: String, _ name: String) throws -> Int {
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let text = try String(contentsOf: repo.appendingPathComponent(file), encoding: .utf8)
+        let re = try NSRegularExpression(pattern: name + #"\s*=\s*(\d+)"#)
+        let m = try XCTUnwrap(re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), "\(name) not found in \(file)")
+        return Int(text[Range(m.range(at: 1), in: text)!])!
+    }
+
+    /// The app's caps are the daemon's: a cap raised in Go and not here would cut text for nothing, one lowered in Go
+    /// and not here would be a 400 again (#252).
+    /// Mutation: MeetingLimits.labelMax, set it to 81 (likewise titleMax, sourceMax, nameMax) -> RED.
+    func testTheCapsAreTheDaemonsCaps() throws {
+        let titleMax = try goConstant("internal/daemon/meetings_http.go", "maxTitleChars")
+        XCTAssertEqual(MeetingLimits.titleMax, titleMax)
+        let labelMax = try goConstant("internal/daemon/meetings_http.go", "maxLabelChars")
+        XCTAssertEqual(MeetingLimits.labelMax, labelMax)
+        let sourceMax = try goConstant("internal/daemon/meetings_http.go", "maxSourceChars")
+        XCTAssertEqual(MeetingLimits.sourceMax, sourceMax)
+        let nameMax = try goConstant("internal/meeting/speakers.go", "MaxNameRunes")
+        XCTAssertEqual(MeetingLimits.nameMax, nameMax)
+    }
+
+    /// The daemon counts runes; the cut must not leave half a character (a family emoji, a base letter without its
+    /// accent) at the end.
+    /// Mutation: MeetingLimits.clamp, cut `trimmed.unicodeScalars.prefix(limit)` instead of whole characters -> RED.
+    func testTheCutKeepsWholeCharacters() {
+        let family = "👨‍👩‍👧"
+        XCTAssertEqual(family.unicodeScalars.count, 5)
+        let text = String(repeating: "a", count: 78) + family
+        let cut = MeetingLimits.clamp(text, to: 80)
+        XCTAssertEqual(cut, String(repeating: "a", count: 78), "a character that does not fit is dropped whole")
+        let accents = String(repeating: "e\u{301}", count: 50)
+        let cutAccents = MeetingLimits.clamp(accents, to: 81)
+        XCTAssertEqual(cutAccents.unicodeScalars.count, 80)
+        XCTAssertEqual(cutAccents.count, 40)
+    }
+
+    /// What a field holds while typing: cut, never trimmed (a trailing space is the next word's start).
+    /// Mutation: MeetingLimits.cap, trim the result -> RED.
+    func testCapKeepsSpacesWhileTyping() {
+        XCTAssertEqual(MeetingLimits.cap("ab  ", to: 3), "ab ")
+        XCTAssertEqual(MeetingLimits.cap(" ab", to: 10), " ab")
+        XCTAssertEqual(MeetingLimits.cap(String(repeating: "я", count: 90), to: 80).unicodeScalars.count, 80)
+    }
+
     func testTheMeetingTitleNamesTheSource() {
         XCTAssertEqual(MeetingLimits.title(forSource: "oxpulse"), "OxPulse call")
         XCTAssertEqual(MeetingLimits.title(forSource: "whatsapp"), "WhatsApp call")

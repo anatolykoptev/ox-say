@@ -428,7 +428,7 @@ struct SpeakersTab: View {
     }
 
     private func nameBinding(_ sp: SpeakerInfo) -> Binding<String> {
-        Binding(get: { draft?.names[sp.id] ?? sp.name }, set: { draft?.names[sp.id] = $0 })
+        Binding(get: { draft?.names[sp.id] ?? sp.name }, set: { draft?.names[sp.id] = MeetingLimits.cap($0, to: MeetingLimits.nameMax) })
     }
 
     private func mergeBinding(_ sp: SpeakerInfo) -> Binding<String> {
