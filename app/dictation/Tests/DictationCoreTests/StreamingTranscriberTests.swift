@@ -986,14 +986,13 @@ final class TranscriberControllerTests: XCTestCase {
     /// Mutation: DictationController.keyDown, `localize(.noticeRecordFailed)` -> a literal English sentence -> RED.
     @MainActor
     func testAPressThatCannotRecordSaysSoInRussian() {
-        struct NoPermission: LocalizedError { var errorDescription: String? { "no permission" } }
-        let rec = FakeRecorder(); rec.prepareError = NoPermission()
+        let rec = FakeRecorder(); rec.prepareError = RecorderError.notAllowed
         let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: FakeTranscriber())
         var errors: [String] = []
         c.onError = { errors.append($0) }
         c.localize = ShippedStrings.localizer("ru")
         c.keyDown()
-        XCTAssertEqual(errors, ["Не удалось начать запись: no permission"])
+        XCTAssertEqual(errors, ["Не удалось начать запись: " + RecorderError.notAllowed.message(text: ShippedStrings.localizer("ru"))])
     }
 
     // Mutation: move `try recorder.prepare()` below `transcriber.begin()` in
@@ -1001,8 +1000,7 @@ final class TranscriberControllerTests: XCTestCase {
     // daemon session, which cold-starts the speech-to-text server).
     @MainActor
     func testAPressThatCannotRecordOpensNoSession() {
-        struct NoPermission: LocalizedError { var errorDescription: String? { "no permission" } }
-        let rec = FakeRecorder(); rec.prepareError = NoPermission()
+        let rec = FakeRecorder(); rec.prepareError = RecorderError.notAllowed
         let t = FakeTranscriber()
         let c = DictationController(recorder: rec, output: FakeOutput(), mode: .hold, transcriber: t)
         var states: [DictationState] = []
@@ -1015,7 +1013,7 @@ final class TranscriberControllerTests: XCTestCase {
         XCTAssertEqual(rec.started, 0)
         XCTAssertNil(rec.onSamples)
         XCTAssertEqual(states, [])
-        XCTAssertEqual(errors, ["Could not start recording: no permission"])
+        XCTAssertEqual(errors, ["Could not start recording: " + RecorderError.notAllowed.message(text: ShippedStrings.localizer("en"))])
     }
 
     // Mutation: drop `transcriber.cancel()` (or `closeRoute()`) in keyDown's
@@ -1038,7 +1036,7 @@ final class TranscriberControllerTests: XCTestCase {
         XCTAssertNil(rec.onSamples, "the route is closed")
         XCTAssertEqual(c.state, .idle)
         XCTAssertEqual(states, [.recording, .idle])
-        XCTAssertEqual(errors, ["Could not start recording: engine failed"])
+        XCTAssertEqual(errors, ["Could not start recording: Something went wrong. Try again."], "an unknown error reads as the fallback, never as its own English")
         rec.startError = nil
         c.keyDown()
         XCTAssertEqual(c.state, .recording, "a failed start must not wedge the next press")

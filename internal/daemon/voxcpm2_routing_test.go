@@ -234,3 +234,47 @@ func TestVoxCPM2CapExplainsNumberExpansion(t *testing.T) {
 		t.Fatalf("a refused request reached the engine (%d)", n)
 	}
 }
+
+// #143.5: the "text starts with (" guard must not be hidden by format
+// characters. The engine reads the first "(" of the text as the style tag; a
+// zero-width space or BOM in front is invisible to strings.TrimSpace, so the
+// guard let the second tag through. Where Cf is stripped: in the style (CleanStyle,
+// it is put inside our own tag) and here, in front of the "(" test; the spoken
+// text itself is left as the caller wrote it.
+// Mutation: voxcpm2.go buildVoxCPM2, `vscript.StartsWithParen(input)` ->
+// `strings.HasPrefix(strings.TrimSpace(input), "(")` -> RED.
+func TestVoxCPM2ParenGuardSeesThroughFormatCharacters(t *testing.T) {
+	for _, in := range []string{"\u200b(aside) x", "\ufeff (aside) x", "\u202e(aside) x", " \u200b\u200d(aside) x"} {
+		_, err := buildVoxCPM2(map[string]any{"input": in, "instructions": "calm"}, nil, "")
+		if err == nil || !strings.Contains(err.Error(), "style tag") {
+			t.Errorf("input %q with a style: err %v, want the style-tag refusal", in, err)
+		}
+	}
+	// No style: the caller's own tag is theirs to write, and a text that merely
+	// holds a zero-width space is untouched.
+	r, err := buildVoxCPM2(map[string]any{"input": "a\u200bb"}, nil, "")
+	if err != nil || r.body["input"] != "a\u200bb" {
+		t.Fatalf("a zero-width space inside the text was changed: %v %v", r, err)
+	}
+}
+
+// #143.4: the engine's own error body can carry the absolute path of the voice
+// recording it was given (voice_ref.path); the caller gets the status and the
+// words, never the path. The original stays in the log.
+// Mutation: voxcpm2.go synthesizeVoxCPM2, `return nil, d.publicError(err)` after
+// speechOn -> `return nil, err` -> the path is in the body -> RED.
+func TestVoxCPM2EngineErrorDoesNotLeakVoicePath(t *testing.T) {
+	d, dir, _ := voxFixture(t, nil)
+	placeVoxVoice(t, d, "nar", config.TTSModelVoxCPM2, "", "", 3)
+	t.Setenv("OXSAY_FAKE_VOX_FAIL", "1")
+	rec := postSpeech(d, `{"input":"hi","model":"voxcpm2","voice":"nar"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("%d %s, want the engine's 500 kept", rec.Code, bodyText(rec))
+	}
+	if body := rec.Body.String(); strings.Contains(body, dir) || strings.Contains(body, d.Store.WAVPath("nar")) || !strings.Contains(body, "[path]") {
+		t.Fatalf("the engine's error shows the voice path (or lost its words): %s", bodyText(rec))
+	}
+	if !testLogSaw(t, d.Store.WAVPath("nar")) {
+		t.Error("the original error was not logged")
+	}
+}

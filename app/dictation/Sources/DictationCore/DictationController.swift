@@ -165,6 +165,9 @@ public final class DictationController {
     public var minSeconds: Double = 0.3
     public var onState: ((DictationState) -> Void)?
     public var onError: ((String) -> Void)?
+    /// The real error behind each `onError` call, for the log: the pill gets a sentence in the user's language, the
+    /// log keeps what actually failed.
+    public var onErrorDetail: ((Error) -> Void)?
     /// Where the words of `onError` come from: the bundle in the app, the shipped strings in tests.
     public var localize: (L10nKey) -> String = { $0.text }
     /// A press while the previous dictation is still transcribing: ignored.
@@ -214,7 +217,8 @@ public final class DictationController {
             do {
                 try recorder.prepare()
             } catch {
-                onError?(String(format: localize(.noticeRecordFailed), error.localizedDescription))
+                onErrorDetail?(error)
+                onError?(String(format: localize(.noticeRecordFailed), RecorderError.reason(error, text: localize)))
                 return
             }
             // Route chunks before the microphone runs, so the first chunk has
@@ -230,7 +234,8 @@ public final class DictationController {
                 closeRoute()
                 transcriber.cancel()
                 state = .idle
-                onError?(String(format: localize(.noticeRecordFailed), error.localizedDescription))
+                onErrorDetail?(error)
+                onError?(String(format: localize(.noticeRecordFailed), RecorderError.reason(error, text: localize)))
             }
         case (.toggle, .recording):
             finish()
@@ -351,7 +356,8 @@ public final class DictationController {
             case .success:
                 outcome = .empty
             case .failure(let error):
-                onError?(String(describing: error))
+                onErrorDetail?(error)
+                onError?(TranscriptionError.plain(error, text: localize))
                 outcome = .failed
             }
             onTiming?(DictationTiming(recordedSeconds: seconds, releaseToTextMs: elapsedMs,

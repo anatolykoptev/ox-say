@@ -59,6 +59,7 @@ final class DaemonRetryTests: XCTestCase {
             attempts += 1
             throw TranscriptionError.daemonUnreachable("connection refused")
         }
+        c.localize = ShippedStrings.localizer("en")
         c.onError = { errors.append($0) }
         var probes = 0
         var sleeps = 0
@@ -71,7 +72,7 @@ final class DaemonRetryTests: XCTestCase {
         XCTAssertEqual(attempts, 1, "the daemon never answered: no second upload")
         XCTAssertEqual(probes, 4, "a probe at once, then one after each of the budget's seconds")
         XCTAssertEqual(sleeps, 3, "a sleep between probes only")
-        XCTAssertEqual(errors, ["The ox-say daemon is not reachable (connection refused). Is it running? Try `ox-say status`."],
+        XCTAssertEqual(errors, [TranscriptionError.daemonUnreachable("connection refused").message(text: ShippedStrings.localizer("en"))],
                        "the failure is reported as before")
         XCTAssertEqual(out.delivered, [])
     }
@@ -189,6 +190,7 @@ final class DaemonRetryTests: XCTestCase {
             attempts += 1
             throw error
         }
+        c.localize = ShippedStrings.localizer("en")
         c.onError = { errors.append($0) }
         c.onRetry = { events.append($0) }
         c.onTiming = { timing = $0 }
@@ -205,7 +207,7 @@ final class DaemonRetryTests: XCTestCase {
         let r = await failOnce(.timedOut)
         XCTAssertEqual(r.attempts, 1, "a timed-out upload is not sent again: the daemon is busy, not dead")
         XCTAssertEqual(r.probes, 0, "no wait for a daemon that answered")
-        XCTAssertEqual(r.errors, [TranscriptionError.timedOut.description])
+        XCTAssertEqual(r.errors, [TranscriptionError.timedOut.message(text: ShippedStrings.localizer("en"))])
         XCTAssertEqual(r.events, [])
         XCTAssertEqual(r.timing?.retried, false)
     }
@@ -215,7 +217,7 @@ final class DaemonRetryTests: XCTestCase {
         let r = await failOnce(.http(400, "invalid multipart body"))
         XCTAssertEqual(r.attempts, 1, "a 4xx fails the same way again")
         XCTAssertEqual(r.probes, 0)
-        XCTAssertEqual(r.errors, [TranscriptionError.http(400, "invalid multipart body").description])
+        XCTAssertEqual(r.errors, [TranscriptionError.http(400, "invalid multipart body").message(text: ShippedStrings.localizer("en"))])
         XCTAssertEqual(r.events, [])
     }
 
@@ -224,7 +226,7 @@ final class DaemonRetryTests: XCTestCase {
         let r = await failOnce(.badResponse)
         XCTAssertEqual(r.attempts, 1)
         XCTAssertEqual(r.probes, 0)
-        XCTAssertEqual(r.errors, [TranscriptionError.badResponse.description])
+        XCTAssertEqual(r.errors, [TranscriptionError.badResponse.message(text: ShippedStrings.localizer("en"))])
         XCTAssertEqual(r.events, [])
     }
 

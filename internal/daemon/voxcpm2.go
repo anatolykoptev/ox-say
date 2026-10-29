@@ -12,7 +12,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -236,7 +235,7 @@ func buildVoxCPM2(body map[string]any, v *voices.Voice, wavPath string) (*voxReq
 	if err != nil {
 		return nil, err
 	}
-	if style != "" && strings.HasPrefix(strings.TrimSpace(input), "(") {
+	if style != "" && vscript.StartsWithParen(input) {
 		return nil, &requestError{`text starts with "(" which voxcpm2 reads as a style tag; with instructions set, rephrase the start`}
 	}
 	ultimate, err := voxCloneMode(body, v, style, input)
@@ -456,7 +455,9 @@ func (d *Daemon) synthesizeVoxCPM2(ctx context.Context, body map[string]any) (*s
 	start := time.Now()
 	wav, err := d.speechOn(ctx, d.VoxSup, req.body)
 	if err != nil {
-		return nil, err
+		// The engine's own answer can name the recording it was handed (#143.4):
+		// the caller gets the words without the path, the log keeps the original.
+		return nil, d.publicError(err)
 	}
 	dur := wavDuration(wav)
 	seed := req.seed
