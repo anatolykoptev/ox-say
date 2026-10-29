@@ -110,10 +110,11 @@ public struct SpeakerDraft: Equatable {
         let merges = standingMerges(against: state)
         var folded: [(from: String, into: String, name: String)] = []
         for s in state.speakers {
-            let typed = MeetingLimits.clamp(names[s.id] ?? s.name, to: MeetingLimits.nameMax)
+            let stored = MeetingLimits.clamp(s.name, to: MeetingLimits.nameMax)
+            let typed = Self.sendable(names[s.id] ?? s.name, stored: stored)
             let target = merges[s.id]
             let newlyFolded = target != nil && target != s.mergedTo
-            if !newlyFolded, typed != MeetingLimits.clamp(s.name, to: MeetingLimits.nameMax) { e.rename[s.id] = typed }
+            if !newlyFolded, typed != stored { e.rename[s.id] = typed }
             switch (s.mergedTo, target) {
             case let (old?, new?) where old != new: e.unmerge.append(s.id); e.merge[s.id] = new
             case (nil, let new?): e.merge[s.id] = new
@@ -124,11 +125,31 @@ public struct SpeakerDraft: Equatable {
         }
         for f in folded.sorted(by: { $0.from < $1.from }) {
             let own = state.speakers.first(where: { $0.id == f.into })?.name ?? ""
-            let current = MeetingLimits.clamp(e.rename[f.into] ?? names[f.into] ?? own, to: MeetingLimits.nameMax)
+            let current = Self.sendable(e.rename[f.into] ?? names[f.into] ?? own, stored: MeetingLimits.clamp(own, to: MeetingLimits.nameMax))
             if current.isEmpty { e.rename[f.into] = f.name }
         }
         if split != state.split { e.split = split }
         return e
+    }
+
+    /// The name to send for `raw`: cleaned the way the daemon requires and cut to the cap. A name the daemon would
+    /// refuse and that cannot be repaired, or one that the cut would empty (one huge Character), is not sent: the
+    /// stored name stays. "" (an emptied field) is a real edit and clears the name.
+    private static func sendable(_ raw: String, stored: String) -> String {
+        let cleaned = MeetingLimits.speakerName(raw)
+        let typed = MeetingLimits.clamp(cleaned, to: MeetingLimits.nameMax)
+        if typed.isEmpty { return cleaned.isEmpty ? "" : stored }
+        return MeetingLimits.hasLetterOrDigit(typed) ? typed : stored
+    }
+
+    /// The sentence to show instead of saving: a typed name that holds no letter or digit, which the daemon refuses
+    /// and which cannot be repaired by dropping characters. nil when every name can be sent.
+    public func refusal(against state: SpeakersState) -> L10nKey? {
+        for s in state.speakers {
+            let typed = MeetingLimits.clamp(MeetingLimits.speakerName(names[s.id] ?? s.name), to: MeetingLimits.nameMax)
+            if !typed.isEmpty, !MeetingLimits.hasLetterOrDigit(typed) { return .speakersNameNeedsLetter }
+        }
+        return nil
     }
 
     /// The picks of this draft that can all stand together: every target is a voice that is not itself folded away,

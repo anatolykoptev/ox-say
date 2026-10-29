@@ -101,9 +101,60 @@ public enum MeetingLimits {
         return out
     }
 
-    /// `text` trimmed and cut to `limit` runes on a character boundary.
+    /// `cap`, except that a non-empty `text` never becomes "": when its first Character alone is longer than `limit`
+    /// (61+ combining marks on one letter) the cut would be empty, and the edit is refused by returning `previous`,
+    /// so a name already stored is not wiped by a paste of one huge Character.
+    public static func cap(_ text: String, to limit: Int, keeping previous: String) -> String {
+        let cut = cap(text, to: limit)
+        return cut.isEmpty && !text.isEmpty ? previous : cut
+    }
+
+    /// What a name field shows after a keystroke: the text cut to `limit`, the edit refused (`previous`) when the
+    /// cut would empty a non-empty text, and the text left alone while an input method has marked (uncommitted)
+    /// text in the field — cutting then would commit or cancel the composition; the cut follows at the commit.
+    public static func live(_ text: String, previous: String, to limit: Int, marked: Bool) -> String {
+        marked ? text : cap(text, to: limit, keeping: previous)
+    }
+
+    /// The daemon refuses a text-direction control, an embedding, override or isolate, which reorders the text
+    /// around it (`isBidiControl` in internal/meeting/speakers.go; `MeetingNameRulesTests` reads the Go source).
+    public static let bidiControls: [ClosedRange<UInt32>] = [0x202A...0x202E, 0x2066...0x2069]
+    /// The line and paragraph separators, which `checkName` refuses next to the control characters.
+    public static let nameSeparators: [UInt32] = [0x2028, 0x2029]
+
+    static func isBidiControl(_ scalar: Unicode.Scalar) -> Bool { bidiControls.contains { $0.contains(scalar.value) } }
+
+    /// `text` without the text-direction controls: invisible, so dropping them keeps what the user sees.
+    public static func withoutBidiControls(_ text: String) -> String {
+        var out = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars where !isBidiControl(scalar) { out.append(scalar) }
+        return String(out)
+    }
+
+    /// A speaker name as the daemon will take it: text-direction controls dropped, every control character and
+    /// line/paragraph separator turned into a space (as the daemon does for a title), trimmed. Not cut: see `clamp`.
+    public static func speakerName(_ raw: String) -> String {
+        var out = String.UnicodeScalarView()
+        for scalar in withoutBidiControls(raw).unicodeScalars {
+            let spaced = scalar.properties.generalCategory == .control || nameSeparators.contains(scalar.value)
+            out.append(spaced ? " " : scalar)
+        }
+        return String(out).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The daemon refuses a non-empty name without a letter or a digit (Go `unicode.IsLetter` / `IsDigit`).
+    public static func hasLetterOrDigit(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            switch scalar.properties.generalCategory {
+            case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter, .decimalNumber: return true
+            default: return false
+            }
+        }
+    }
+
+    /// `text` without text-direction controls, trimmed and cut to `limit` runes on a character boundary.
     public static func clamp(_ text: String, to limit: Int) -> String {
-        cap(text.trimmingCharacters(in: .whitespacesAndNewlines), to: limit).trimmingCharacters(in: .whitespacesAndNewlines)
+        cap(withoutBidiControls(text).trimmingCharacters(in: .whitespacesAndNewlines), to: limit).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The meeting's working title for a call source, "" for a manual recording (the daemon then names it by date).

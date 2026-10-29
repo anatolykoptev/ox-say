@@ -16,6 +16,13 @@ public final class CaptureGate {
         return true
     }
 
+    /// Runs the in-flight press's capture and ends the press on every way out of it, so no code path (a new early
+    /// return, a moved report call) can leave the speak hotkey refused for good.
+    public func ending<T>(_ capture: () -> T) -> T {
+        defer { end() }
+        return capture()
+    }
+
     /// The in-flight press is done. Harmless when none is.
     public func end() { busy = false }
 }

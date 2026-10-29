@@ -179,6 +179,74 @@ final class MeetingSpeakersTests: XCTestCase {
         MeetingSettings.setExportStale("a", false, d)
         XCTAssertTrue(MeetingSettings.exportStale(d).isEmpty)
     }
+
+    // MARK: name rules (#361)
+
+    /// A stored name the daemon holds over 60 (written by an older build) is compared cut as well: the same text typed
+    /// back is not a rename. The right-hand clamp is what makes an untouched draft empty.
+    /// Mutation: MeetingSpeakers.swift:116 (SpeakerDraft.edits), compare against `s.name` instead of `stored` -> RED.
+    func testAStoredNameOverTheCapIsNotARenameWhenLeftAlone() {
+        let long = String(repeating: "Я", count: 70)
+        let state = SpeakersState(mode: "auto", split: false, speakers: [SpeakerInfo(id: "them:1", name: long, label: long)])
+        var d = SpeakerDraft(from: state)
+        XCTAssertTrue(d.edits(against: state).isEmpty, "the untouched stored name is cut to 60 on both sides")
+        d.names["them:1"] = String(repeating: "Я", count: 60)
+        XCTAssertTrue(d.edits(against: state).isEmpty, "typing the cut name back changes nothing")
+        d.names["them:1"] = String(repeating: "Я", count: 59)
+        XCTAssertEqual(d.edits(against: state).rename["them:1"], String(repeating: "Я", count: 59))
+    }
+
+    /// One Character longer than the cap (a letter with 70 combining marks) cuts to "": a stored name must not be
+    /// cleared by it.
+    /// Mutation: MeetingSpeakers.swift:113 (SpeakerDraft.edits), `Self.sendable(...)` -> `MeetingLimits.clamp(names[s.id] ?? s.name, to: MeetingLimits.nameMax)` -> RED.
+    func testOneHugeCharacterDoesNotClearAStoredName() {
+        let huge = "e" + String(repeating: "\u{301}", count: 70)
+        var d = SpeakerDraft(from: threeVoices)
+        d.names["them:1"] = huge
+        XCTAssertNil(d.edits(against: threeVoices).rename["them:1"], "the stored name stays")
+        XCTAssertNil(d.refusal(against: threeVoices), "not a refusal: nothing to say, the name is kept")
+        d.names["them:1"] = ""
+        XCTAssertEqual(d.edits(against: threeVoices).rename["them:1"], "", "an emptied field still clears the name")
+    }
+
+    /// Text-direction controls and control characters are removed or turned into a space before the name goes out, so
+    /// the daemon's checkName never answers 400 for them.
+    /// Mutation: MeetingSpeakers.swift:113 (SpeakerDraft.edits), pass `names[s.id] ?? s.name` to clamp without `speakerName` -> RED.
+    func testTheDaemonsRefusedCharactersNeverGoOut() {
+        var d = SpeakerDraft(from: threeVoices)
+        d.names["them:2"] = "\u{202E}Anna\u{2066}"
+        XCTAssertEqual(d.edits(against: threeVoices).rename["them:2"], "Anna")
+        d.names["them:2"] = "Anna\tLee\u{2028}Ng\u{7F}"
+        XCTAssertEqual(d.edits(against: threeVoices).rename["them:2"], "Anna Lee Ng")
+        d.names["them:2"] = "\u{202E}\u{2069}"
+        XCTAssertNil(d.edits(against: threeVoices).rename["them:2"], "only controls: nothing left, the field reads as unchanged")
+    }
+
+    /// No letter or digit cannot be repaired by stripping: nothing is sent and the sentence is given.
+    /// Mutation: MeetingSpeakers.swift:113 (SpeakerDraft.edits), drop the `hasLetterOrDigit` guard in `sendable` -> RED.
+    func testANameWithoutALetterOrDigitIsRefused() {
+        var d = SpeakerDraft(from: threeVoices)
+        XCTAssertNil(d.refusal(against: threeVoices))
+        d.names["them:2"] = "?!"
+        XCTAssertNil(d.edits(against: threeVoices).rename["them:2"], "not sent")
+        XCTAssertEqual(d.refusal(against: threeVoices), .speakersNameNeedsLetter)
+        d.names["them:2"] = "Анна 2"
+        XCTAssertNil(d.refusal(against: threeVoices))
+        d.names["them:2"] = "٣"  // an Arabic-Indic digit is a digit
+        XCTAssertNil(d.refusal(against: threeVoices))
+    }
+
+    /// A refused sentence exists in both languages with no placeholder.
+    func testTheRefusalSentenceIsLocalised() throws {
+        for lang in ["en", "ru"] {
+            let url = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Resources/\(lang).lproj/Localizable.strings")
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let line = try XCTUnwrap(text.split(separator: "\n").first { $0.hasPrefix("\"speakers.name_needs_letter\"") }, lang)
+            XCTAssertFalse(line.contains("%"), lang)
+        }
+    }
 }
 
 final class MeetingSpeakersReviewTests: XCTestCase {

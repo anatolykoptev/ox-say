@@ -372,4 +372,109 @@ final class MeetingExporterTests: XCTestCase {
         XCTAssertNil(MeetingExporter.Outcome.refreshed(url).noticeKey)
         XCTAssertNil(MeetingExporter.Outcome.alreadyExported.noticeKey)
     }
+
+    // MARK: what the daemon's checkName / checkText refuse (#361.5, #361.6)
+
+    private func goSource(_ file: String) throws -> String {
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        return try String(contentsOf: repo.appendingPathComponent(file), encoding: .utf8)
+    }
+
+    private func hexValues(in text: String, pattern: String) throws -> [UInt32] {
+        let re = try NSRegularExpression(pattern: pattern)
+        return re.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
+            UInt32(text[Range($0.range(at: 1), in: text)!], radix: 16)
+        }
+    }
+
+    private func goFunc(_ source: String, _ name: String) throws -> String {
+        let start = try XCTUnwrap(source.range(of: "func \(name)("), "\(name) not found")
+        let end = try XCTUnwrap(source.range(of: "\n}\n", range: start.upperBound..<source.endIndex))
+        return String(source[start.lowerBound..<end.upperBound])
+    }
+
+    /// The character sets the app strips are the daemon's: read from the Go source, so a set widened there and not
+    /// here would be a 400 again.
+    /// Mutation: MeetingLimits.bidiControls, change `0x2069` to `0x2068` (or nameSeparators `0x2029` to `0x202F`) -> RED.
+    func testTheRefusedCharacterSetsAreTheDaemons() throws {
+        let speakers = try goSource("internal/meeting/speakers.go")
+        let bidi = try goFunc(speakers, "isBidiControl")
+        let bounds = try hexValues(in: bidi, pattern: #"0x([0-9A-Fa-f]{4})"#)
+        XCTAssertEqual(bounds, MeetingLimits.bidiControls.flatMap { [$0.lowerBound, $0.upperBound] })
+        let check = try goFunc(speakers, "checkName")
+        // the Go source holds the two separators as literal characters between quotes
+        let quoted = try NSRegularExpression(pattern: "'([^'\\n])'").matches(in: check, range: NSRange(check.startIndex..., in: check))
+            .map { check[Range($0.range(at: 1), in: check)!].unicodeScalars.first!.value }
+        XCTAssertEqual(quoted, MeetingLimits.nameSeparators)
+        XCTAssertTrue(check.contains("unicode.IsControl(r)"), "controls are refused")
+        XCTAssertTrue(check.contains("isBidiControl(r)"))
+        XCTAssertTrue(check.contains("unicode.IsLetter(r) || unicode.IsDigit(r)"), "a name needs a letter or a digit")
+        let http = try goFunc(try goSource("internal/daemon/meetings_http.go"), "checkText")
+        XCTAssertTrue(http.contains("meeting.HasBidiControl(text)"), "titles, labels and sources: bidi controls only")
+        let clean = try goFunc(try goSource("internal/daemon/meetings_http.go"), "cleanText")
+        XCTAssertTrue(clean.contains("unicode.IsControl(r)"), "the daemon turns controls in a title into a space itself")
+    }
+
+    /// Mutation: MeetingLimits.isBidiControl, `contains` -> `false` -> RED (the boundaries stay in).
+    func testBidiControlsAreRemovedAtTheBoundaries() {
+        for v: UInt32 in [0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069] {
+            let c = String(Unicode.Scalar(v)!)
+            XCTAssertEqual(MeetingLimits.withoutBidiControls("a\(c)b"), "ab", String(v, radix: 16))
+        }
+        for v: UInt32 in [0x2029, 0x202F, 0x2065, 0x206A, 0x200E] {  // neighbours (and LRM, which the daemon allows) stay
+            let c = String(Unicode.Scalar(v)!)
+            XCTAssertEqual(MeetingLimits.withoutBidiControls("a\(c)b"), "a\(c)b", String(v, radix: 16))
+        }
+    }
+
+    /// A title, label or source goes out without the controls checkText refuses.
+    /// Mutation: MeetingLimits.clamp, drop `withoutBidiControls(text)` -> RED.
+    func testClampDropsTextDirectionControls() {
+        XCTAssertEqual(MeetingLimits.clamp("\u{202E}Standup\u{2069}", to: 200), "Standup")
+        XCTAssertEqual(MeetingLimits.clamp("\u{202E}", to: 80), "")
+    }
+
+    func testSpeakerNameRules() {
+        XCTAssertEqual(MeetingLimits.speakerName("  Anna\u{202E}\tLee \u{2029}"), "Anna Lee")
+        XCTAssertTrue(MeetingLimits.hasLetterOrDigit("Анна"))
+        XCTAssertTrue(MeetingLimits.hasLetterOrDigit("?7?"))
+        XCTAssertFalse(MeetingLimits.hasLetterOrDigit("?! -_"))
+        XCTAssertFalse(MeetingLimits.hasLetterOrDigit("😀"))
+        XCTAssertFalse(MeetingLimits.hasLetterOrDigit(""))
+    }
+
+    /// One Character longer than the limit: `cap` gives "" (nothing fits), `cap(keeping:)` refuses the edit.
+    /// Mutation: MeetingLimits.cap(_:to:keeping:), return `cut` unconditionally -> RED.
+    func testAHugeFirstCharacterIsRefusedNotErased() {
+        let huge = "e" + String(repeating: "\u{301}", count: 70)
+        XCTAssertEqual(MeetingLimits.cap(huge, to: 60), "", "the primitive is unchanged")
+        XCTAssertEqual(MeetingLimits.cap(huge, to: 60, keeping: "Ivan"), "Ivan")
+        XCTAssertEqual(MeetingLimits.cap("", to: 60, keeping: "Ivan"), "", "an emptied field is an edit")
+        XCTAssertEqual(MeetingLimits.cap("Ivan the Terrible", to: 4, keeping: "Ivan"), "Ivan")
+    }
+
+    /// While an input method holds marked text in the field the text is left alone; the cut follows at the commit.
+    /// Mutation: MeetingLimits.live, ignore `marked` -> RED.
+    func testNoCutWhileAnInputMethodComposes() {
+        let long = String(repeating: "a", count: 70)
+        XCTAssertEqual(MeetingLimits.live(long, previous: "x", to: 60, marked: true), long)
+        XCTAssertEqual(MeetingLimits.live(long, previous: "x", to: 60, marked: false), String(repeating: "a", count: 60))
+        XCTAssertEqual(MeetingLimits.live("e" + String(repeating: "\u{301}", count: 70), previous: "Ivan", to: 60, marked: false), "Ivan")
+    }
+
+    /// The Speakers prompt cuts as the user types, like the other two fields; the AppKit glue (an
+    /// NSTextFieldDelegate on every name field) is not built by the test target, so it is pinned as text.
+    /// Mutation: SpeakersPrompt, delete `field.delegate = nameCap` -> RED.
+    func testTheSpeakersPromptCapsWhileTyping() throws {
+        let src = try MeetingWiringTests.stripComments(String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/OxSayDictation/SpeakersPrompt.swift"), encoding: .utf8))
+        XCTAssertTrue(src.contains("field.delegate = nameCap"))
+        XCTAssertTrue(src.contains("func controlTextDidChange"))
+        XCTAssertTrue(src.contains("MeetingLimits.live(field.stringValue"))
+        XCTAssertTrue(src.contains("hasMarkedText()"), "a composition is not cut")
+        XCTAssertTrue(src.contains("MeetingLimits.nameMax"))
+    }
 }

@@ -153,6 +153,7 @@
 "speakers.name_placeholder" = "Name";
 "speakers.save" = "Save";
 "speakers.cancel" = "Cancel";
+"speakers.name_needs_letter" = "A name needs at least one letter or digit.";
 "speakers.failed" = "Could not save the speakers: %@";
 "notice.speakers.saved" = "Speakers saved. The notes are being written again.";
 "notice.speakers.names_saved" = "Names saved.";

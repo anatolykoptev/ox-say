@@ -8,6 +8,29 @@ import DictationCore
 /// daemon's state (SpeakerDraft.edits) and the request are the caller's.
 @MainActor
 enum SpeakersPrompt {
+    /// Cuts a name field to the daemon's cap as the user types, like the Settings and meeting-page fields. Nothing is
+    /// cut while an input method has marked text in the field (that would commit or cancel the composition); the cut
+    /// follows when the composition ends. An edit that the cut would empty is refused (`MeetingLimits.live`).
+    private final class NameCap: NSObject, NSTextFieldDelegate {
+        private var shown: [ObjectIdentifier: String] = [:]
+
+        func remember(_ field: NSTextField) { shown[ObjectIdentifier(field)] = field.stringValue }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            let key = ObjectIdentifier(field)
+            let editor = field.currentEditor() as? NSTextView
+            let next = MeetingLimits.live(field.stringValue, previous: shown[key] ?? "", to: MeetingLimits.nameMax,
+                                          marked: editor?.hasMarkedText() ?? false)
+            if next != field.stringValue {
+                let caret = editor?.selectedRange.location ?? next.utf16.count
+                field.stringValue = next
+                field.currentEditor()?.selectedRange = NSRange(location: min(caret, next.utf16.count), length: 0)
+            }
+            shown[key] = next
+        }
+    }
+
     private static let fieldWidth: CGFloat = 170
     private static let sampleWidth: CGFloat = 380
 
@@ -25,6 +48,7 @@ enum SpeakersPrompt {
         stack.alignment = .leading
         stack.spacing = 12
 
+        let nameCap = NameCap()
         var fields: [String: NSTextField] = [:]
         var picks: [String: NSPopUpButton] = [:]
         for s in state.speakers {
@@ -34,6 +58,8 @@ enum SpeakersPrompt {
             let field = NSTextField(string: s.name)
             field.placeholderString = s.name.isEmpty ? s.label : L10nKey.speakersNamePlaceholder.text
             field.widthAnchor.constraint(equalToConstant: fieldWidth).isActive = true
+            field.delegate = nameCap
+            nameCap.remember(field)
             fields[s.id] = field
             row.addArrangedSubview(field)
             let targets = draft.mergeTargets(for: s.id, in: state)
@@ -77,6 +103,7 @@ enum SpeakersPrompt {
         alert.accessoryView = stack
 
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        withExtendedLifetime(nameCap) {}
         for (id, field) in fields { draft.names[id] = MeetingLimits.cap(field.stringValue, to: MeetingLimits.nameMax) }
         for (id, pick) in picks {
             draft.mergeInto[id] = pick.selectedItem?.representedObject as? String

@@ -209,8 +209,8 @@ final class ChromiumAXWakeTests: XCTestCase {
     }
 
     // No AX call starts once the deadline passed, even when the pause overshot it.
-    // Mutation F8: ChromiumAXWake.read, delete the `if deadline.timeIntervalSince(now()) <= 0.001 { break }`
-    // after the spin -> RED.
+    // Mutation F8: ChromiumAXWake.read, the loop's `if remaining <= 0.001 { break }` -> `if remaining <= -1000 { break }`
+    // -> RED (the clock keeps running past the deadline and the reads go on).
     func testNoRetryStartsAfterTheDeadline() {
         let fake = Fake()
         var clock = Date(timeIntervalSince1970: 1_000)
@@ -233,6 +233,22 @@ final class ChromiumAXWakeTests: XCTestCase {
         XCTAssertEqual(result.wake?.outcome, .alreadyOn)
     }
 
+    // The tree needs a moment after the set: the first read waits one step too, whether or not it then finds text.
+    // Mutation: ChromiumAXWake.read, move `spin(min(step, remaining))` below `let next = retry()` -> RED.
+    func testTheFirstRetryWaitsOneStep() {
+        for script in [[found("x")], [AXSelection]()] {
+            let fake = Fake()
+            var events: [String] = []
+            var clock = Date(timeIntervalSince1970: 1_000)
+            var queue = script
+            _ = ChromiumAXWake.read(first: nothing(), identity: { self.chrome }, attributes: fake,
+                                    retry: { events.append("retry"); return queue.isEmpty ? self.nothing() : queue.removeFirst() },
+                                    spin: { events.append("spin \($0)"); clock = clock.addingTimeInterval($0) }, now: { clock })
+            XCTAssertEqual(Array(events.prefix(2)), ["spin \(ChromiumAXWake.step)", "retry"])
+            XCTAssertEqual(fake.log.prefix(2), ["read AXEnhancedUserInterface", "write AXEnhancedUserInterface=true"])
+        }
+    }
+
     // The tree appears a moment after the set: the read is repeated until it does.
     func testALateTreeIsFoundOnALaterRetry() {
         let fake = Fake()
@@ -250,7 +266,9 @@ final class ChromiumAXWakeTests: XCTestCase {
         _ = run(chrome, fake: fake, retryCount: &retries, spun: &spun)
         XCTAssertLessThanOrEqual(spun, ChromiumAXWake.wait + 0.0001)
         XCTAssertGreaterThan(retries, 1, "a bounded wait still retries more than once")
-        XCTAssertLessThanOrEqual(retries, Int(ChromiumAXWake.wait / ChromiumAXWake.step) + 1)
+        // every retry follows a pause of one step, so there are never more reads than whole steps in the wait
+        XCTAssertLessThanOrEqual(retries, Int((ChromiumAXWake.wait / ChromiumAXWake.step).rounded()))
+        XCTAssertEqual(spun, ChromiumAXWake.wait, accuracy: 0.0001, "the whole wait is used by an app that never answers")
     }
 
     // A slow AX call eats the budget too: the bound is the clock, not the retry count.
@@ -450,7 +468,7 @@ final class ChromiumAXWakeTests: XCTestCase {
     }
 
     /// Mutation F10: AppDelegate.speakSelection, delete `guard capture.beginPress() else { return }` -> RED;
-    /// SelectionCapture, `gate.end()` removed from the onSelection getter -> RED (the next press is refused for good).
+    /// SelectionCapture.capture, `gate.ending {` -> a bare call -> RED (here and in the behaviour tests below).
     func testTheAppGuardsOnePressAtATime() throws {
         let dir = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -464,7 +482,60 @@ final class ChromiumAXWakeTests: XCTestCase {
         let capture = try XCTUnwrap(body.range(of: "capture.capture()"))
         XCTAssertLessThan(install.lowerBound, press.lowerBound)
         XCTAssertLessThan(press.lowerBound, capture.lowerBound)
+        // The press ends where the capture ends, not in a report callback somebody may move.
         let cap = MeetingWiringTests.stripComments(try String(contentsOf: dir.appendingPathComponent("SelectionCapture.swift"), encoding: .utf8))
-        XCTAssertTrue(cap.contains("get { { [self] report in gate.end(); reporter?(report) } }"))
+        let fn = try XCTUnwrap(cap.range(of: "func capture() -> (text: String?, problem: String?) {"))
+        let fnEnd = try XCTUnwrap(cap.range(of: "\n    }\n", range: fn.upperBound..<cap.endIndex))
+        let captureBody = String(cap[fn.lowerBound..<fnEnd.upperBound])
+        XCTAssertTrue(captureBody.contains("gate.ending {"), "the capture runs inside the gate")
+        XCTAssertTrue(captureBody.contains("SelectionBorrow.capture("))
+        XCTAssertEqual(cap.components(separatedBy: "gate.end").count - 1, 1, "the gate ends in one place only (`gate.ending`)")
+        XCTAssertFalse(cap.contains("reporter"), "the report callback no longer carries the gate")
+    }
+
+    // The press ends on every way out of the capture: each path of SelectionBorrow, with and without a listener.
+    // Mutation: CaptureGate.ending, delete `defer { end() }` -> RED (the next begin() is refused).
+    func testACaptureEndsThePressOnEveryExit() {
+        let paths: [(String, () -> (AXSelection, FakePasteboard))] = [
+            ("ax text", { (self.found("selected"), FakePasteboard(text: "old")) }),
+            ("secure field", { (AXSelection(text: nil, secureField: true, hasElement: true, error: 0, source: .app), FakePasteboard(text: "old")) }),
+            ("nothing selected: the copy times out", { (self.nothing(), FakePasteboard(text: "old")) }),
+        ]
+        for (name, make) in paths {
+            for listening in [true, false] {
+                let gate = CaptureGate()
+                XCTAssertTrue(gate.begin(), name)
+                let (ax, board) = make()
+                var reports = 0
+                let result = gate.ending {
+                    SelectionBorrow.capture(board: board, selectedText: { ax }, secureInput: { false }, postCopy: {},
+                                            spin: { _ in }, readText: { nil }, memory: SlowClipboardMemory(), copyTimeout: 0,
+                                            onSelection: listening ? { _ in reports += 1 } : nil)
+                }
+                _ = result
+                XCTAssertEqual(reports, listening ? 1 : 0, name)
+                XCTAssertTrue(gate.begin(), "\(name) (listener: \(listening)): the next press must not be refused for good")
+            }
+        }
+        // an iPhone copy is declined without ⌘C: another exit
+        let remote = FakePasteboard(text: "copied on the iPhone")
+        remote.items[0].append((type: PasteboardMarker.remoteClipboard, data: Data()))
+        let gate = CaptureGate()
+        XCTAssertTrue(gate.begin())
+        _ = gate.ending {
+            SelectionBorrow.capture(board: remote, selectedText: { self.nothing() }, secureInput: { false }, postCopy: {},
+                                    spin: { _ in }, readText: { nil }, memory: SlowClipboardMemory())
+        }
+        XCTAssertTrue(gate.begin(), "declined on an iPhone copy")
+    }
+
+    // While the capture runs the gate stays shut: a press delivered inside it is refused.
+    func testTheGateStaysShutDuringTheCapture() {
+        let gate = CaptureGate()
+        XCTAssertTrue(gate.begin())
+        var insideRefused = false
+        gate.ending { insideRefused = !gate.begin() }
+        XCTAssertTrue(insideRefused)
+        XCTAssertTrue(gate.begin())
     }
 }

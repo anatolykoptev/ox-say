@@ -393,7 +393,7 @@ final class SelectionBorrowTests: XCTestCase {
         XCTAssertTrue(appDelegate.contains("overlay.showMessage(problem ?? L10nKey.noticeSelectionNothing.text)"),
                       "speakSelection no longer shows the capture's problem")
         let capture = source("Sources/OxSayDictation/SelectionCapture.swift")
-        XCTAssertTrue(capture.contains("func capture() -> (text: String?, problem: String?) {\n        SelectionBorrow.capture("),
+        XCTAssertTrue(capture.contains("func capture() -> (text: String?, problem: String?) {\n        gate.ending {\n            SelectionBorrow.capture("),
                       "SelectionCapture must return SelectionBorrow's result unchanged")
     }
 
