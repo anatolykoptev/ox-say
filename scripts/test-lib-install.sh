@@ -318,8 +318,77 @@ for heard in "$halluc" "" "ox-say is steady" "ox say is not ready at all really"
 done
 n=$(grep -cE '^[^#]*[*]ready[*]' "$root/scripts/install-release.sh" || true)
 check "install-release.sh has no *ready* substring pass" "${n:-x}" 0
-n=$(grep -cE '^[^#]*oxs_selftest_heard_ok' "$root/scripts/install-release.sh" || true)
-check "install-release.sh calls oxs_selftest_heard_ok" "${n:-x}" 1
+n=$(grep -cE '^[^#]*oxs_selftest_roundtrip' "$root/scripts/install-release.sh" || true)
+check "install-release.sh runs the self-test through oxs_selftest_roundtrip" "${n:-x}" 1
+n=$(grep -cE '^[^#(]*oxs_selftest_heard_ok "[$]heard"' "$root/scripts/lib-install.sh" || true)
+check "lib-install.sh roundtrip asks oxs_selftest_heard_ok" "${n:-x}" 1
+# every ox-say call of the self-test is bounded (#356): none runs bare in install-release.sh
+n=$(grep -E '^[^#]*"[$]bindir/ox-say" (say|transcribe)' "$root/scripts/install-release.sh" | grep -cv 'oxs_timeout' || true)
+check "install-release.sh runs no ox-say say/transcribe call outside oxs_timeout" "${n:-x}" 0
+n=$(grep -cE '^[^#]*oxs_timeout .*"[$]bindir/ox-say" transcribe "[$]st/mac.aiff"' "$root/scripts/install-release.sh" || true)
+check "install-release.sh bounds the warm-up transcribe" "${n:-x}" 1
+n=$(grep -cE '^[^#]*oxs_timeout "[$]secs" "[$]oxsay" (say|transcribe)' "$root/scripts/lib-install.sh" || true)
+check "oxs_selftest_roundtrip bounds both say and transcribe" "${n:-x}" 2
+
+# --- G2: a daemon that never answers fails the self-test, it does not hang it (#356) ---
+# A fake ox-say that sleeps for ever on `say` (or on `transcribe`) must end the round trip at OX_SAY_SELFTEST_SECS.
+# Mutations: lib-install.sh oxs_selftest_roundtrip, run the `say` call without oxs_timeout -> the say case runs 30 s and
+# fails the 15 s bound; same for `transcribe`; oxs_timeout returning 0 on expiry -> the status checks fail.
+fake_oxsay() { # name mode: the fake's say/transcribe either answers or sleeps 30 s
+    local d="$tmp/fake-$1"
+    mkdir -p "$d"
+    cat >"$d/ox-say" <<FAKE
+#!/bin/sh
+case "\$1" in
+    say) [ "$2" = say-hangs ] && { echo "\$\$" > "$d/hung.pid"; exec sleep 30; }; : > "\$3" ;;
+    transcribe) [ "$2" = transcribe-hangs ] && { exec sleep 30; }; echo "ox-say is ready" ;;
+esac
+FAKE
+    chmod +x "$d/ox-say"
+}
+roundtrip_case() { # name mode want-status
+    local name=$1 mode=$2 want=$3 started=$SECONDS rc=0
+    fake_oxsay "$name" "$mode"
+    ( . "$root/scripts/lib-install.sh"; OX_SAY_SELFTEST_SECS=1 oxs_selftest_roundtrip "$tmp/fake-$name/ox-say" "$tmp/fake-$name/a.wav" "ox-say is ready" ) >"$tmp/fake-$name/log" 2>&1 || rc=$?
+    check "self-test round trip [$name] status" "$([ "$rc" = 0 ] && echo ok || echo fail)" "$want"
+    if [ "$want" = fail ]; then
+        if [ $((SECONDS - started)) -lt 15 ]; then pass "self-test round trip [$name] ended at its ceiling"; else fail "self-test round trip [$name] waited for the wedged call"; fi
+        check_in_log "self-test round trip [$name] says it timed out" "$tmp/fake-$name/log" "timed out after 1 s"
+    fi
+}
+roundtrip_case answers answers ok
+roundtrip_case say-hangs say-hangs fail
+roundtrip_case transcribe-hangs transcribe-hangs fail
+# the killed fake is gone (its pid was recorded by PID, killed by PID)
+if [ -s "$tmp/fake-say-hangs/hung.pid" ] && kill -0 "$(cat "$tmp/fake-say-hangs/hung.pid")" 2>/dev/null; then
+    kill -9 "$(cat "$tmp/fake-say-hangs/hung.pid")" 2>/dev/null; fail "the wedged say call was left running"
+else pass "the wedged say call was stopped"; fi
+timeout_status() { ( . "$root/scripts/lib-install.sh"; oxs_timeout "$@" ) >/dev/null 2>&1; echo $?; }
+check "oxs_timeout passes a command's own status" "$(timeout_status 5 sh -c 'exit 7')" 7
+check "oxs_timeout passes success" "$(timeout_status 5 true)" 0
+check "oxs_timeout reports 124 on expiry" "$(timeout_status 1 sleep 30)" 124
+# a grandchild holding the capture pipe must not keep the caller (the 2 s limit, not the 8 s sleep, ends it)
+# Mutation: lib-install.sh oxs_timeout, `kill -9 $(oxs_tree "$pid")` -> `kill -9 "$pid"` -> RED (8 s).
+gc_start=$SECONDS
+( . "$root/scripts/lib-install.sh"; out=$(oxs_timeout 2 sh -c 'sleep 8 & echo $! > "'"$tmp"'/gc.pid"; wait') ) >/dev/null 2>&1
+if [ $((SECONDS - gc_start)) -lt 6 ]; then pass "oxs_timeout does not wait for a grandchild holding the pipe"; else fail "oxs_timeout waited $((SECONDS - gc_start)) s for a grandchild"; fi
+if [ -s "$tmp/gc.pid" ] && kill -0 "$(cat "$tmp/gc.pid")" 2>/dev/null; then kill -9 "$(cat "$tmp/gc.pid")" 2>/dev/null; fail "oxs_timeout left its grandchild running"; else pass "oxs_timeout stopped the grandchild"; fi
+check "oxs_timeout keeps stdout" "$( . "$root/scripts/lib-install.sh"; oxs_timeout 5 echo hi )" hi
+
+# #356: the app ends a wedged install with TERM. install-release.sh has an EXIT trap that removes its temp dirs, so TERM
+# and INT must turn into an exit (143 / 130) for that trap to run. Mutation: delete either trap line -> RED.
+n=$(grep -cE "^trap 'exit 143' TERM" "$root/scripts/install-release.sh" || true)
+check "install-release.sh exits on TERM (so its EXIT trap cleans up)" "${n:-x}" 1
+n=$(grep -cE "^trap 'exit 130' INT" "$root/scripts/install-release.sh" || true)
+check "install-release.sh exits on INT" "${n:-x}" 1
+n=$(grep -cE '^trap .*find "[$]st" -depth -delete' "$root/scripts/install-release.sh" || true)
+check "install-release.sh's EXIT trap also removes the self-test dir" "${n:-x}" 1
+# the self-test prints a line before each bounded call, so it is never silent for longer than one call (the app's idle limit)
+selftest_lines=$( . "$root/scripts/lib-install.sh"; fake=$(mktemp -d "$tmp/sl.XXXXXX"); printf '#!/bin/sh\ncase "$1" in say) : > "$3" ;; transcribe) echo "ox-say is ready" ;; esac\n' > "$fake/ox-say"; chmod +x "$fake/ox-say"; OX_SAY_SELFTEST_SECS=5 oxs_selftest_roundtrip "$fake/ox-say" "$fake/a.wav" "ox-say is ready" )
+case $selftest_lines in
+    *"self-test: speaking"*"self-test: transcribing"*) pass "the self-test announces each bounded call" ;;
+    *) fail "self-test output: [$selftest_lines]" ;;
+esac
 
 # --- H: VoxCPM2 is opt-in, Apple Silicon with >= 24 GB only -----------------
 # A stub fetch records its argv; stub uname and sysctl on PATH play the host.

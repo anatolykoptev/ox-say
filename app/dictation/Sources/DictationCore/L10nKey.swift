@@ -387,6 +387,7 @@ public enum L10nKey: String, CaseIterable {
     case updateFailedDownloadStart = "update.failed.download_start"
     case updateFailedNotScript = "update.failed.not_script"
     case updateFailedInstallerExit = "update.failed.installer_exit"
+    case updateFailedInstallerTimeout = "update.failed.installer_timeout"
     case updateFailedInstallerStart = "update.failed.installer_start"
     case updateFailedVersionUnchanged = "update.failed.version_unchanged"
     case updateFailedVersionUnreadable = "update.failed.version_unreadable"

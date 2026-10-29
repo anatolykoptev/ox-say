@@ -280,6 +280,58 @@ oxs_selftest_heard_ok() {
     [ "$ready" = 1 ] && [ "$n" -le $((phrase_n + 2)) ]
 }
 
+# oxs_tree <pid>: the pid and every descendant of it (pgrep -P), read before anything is signalled.
+oxs_tree() {
+    local child
+    echo "$1"
+    for child in $(pgrep -P "$1" 2>/dev/null || true); do
+        oxs_tree "$child"
+    done
+}
+
+# oxs_timeout <secs> <cmd> [args...]: run <cmd>, kill it (by PID, never by name) when it is still running after
+# <secs> together with its descendants, and say so on stderr. Status: the command's own, or 124 when it was killed. macOS ships no timeout(1).
+# stdout stays the command's, so `heard=$(oxs_timeout 300 ox-say transcribe f)` captures its answer.
+# #356: a wedged daemon made `ox-say say` / `ox-say transcribe` in the self-test wait for ever, and with them the
+# installer and the app that started it.
+oxs_timeout() {
+    local secs=$1 pid ticks=0 limit status
+    shift
+    limit=$((secs * 10))
+    "$@" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$ticks" -ge "$limit" ]; then
+            # the command and everything it started: a grandchild that inherited the capture pipe of
+            # `$(oxs_timeout ...)` would otherwise hold the caller for as long as it runs
+            # shellcheck disable=SC2046
+            kill -9 $(oxs_tree "$pid") 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            echo "timed out after ${secs} s, stopped: $*" >&2
+            return 124
+        fi
+        sleep 0.1
+        ticks=$((ticks + 1))
+    done
+    status=0
+    wait "$pid" || status=$?
+    return "$status"
+}
+
+# oxs_selftest_roundtrip <ox-say> <wav> <phrase>: speak the phrase to <wav>, transcribe it back into $heard, succeed
+# when oxs_selftest_heard_ok accepts it. Each call has its own ceiling (OX_SAY_SELFTEST_SECS, default 300: the
+# first run loads the models, "up to a few minutes"), so a daemon that never answers fails the self-test loudly.
+oxs_selftest_roundtrip() {
+    local oxsay=$1 wav=$2 phrase=$3 secs=${OX_SAY_SELFTEST_SECS:-300}
+    heard=
+    # a line before each call: the app ends an install that prints nothing for a long time (#356)
+    echo "self-test: speaking (up to $secs s)"
+    oxs_timeout "$secs" "$oxsay" say -o "$wav" "$phrase" >/dev/null || return 1
+    echo "self-test: transcribing (up to $secs s)"
+    heard=$(oxs_timeout "$secs" "$oxsay" transcribe "$wav") || return 1
+    oxs_selftest_heard_ok "$heard" "$phrase"
+}
+
 # Wait for this version to answer, not a stale daemon on the same address.
 oxs_wait_version() {
     local version=$1 got=

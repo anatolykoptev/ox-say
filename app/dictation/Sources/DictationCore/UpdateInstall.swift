@@ -22,6 +22,71 @@ public enum UpdateInstaller {
     public static let downloadBackstop: TimeInterval = 90
     /// curl's exit status for an operation that ran past `--max-time` (or a connect/read timeout).
     static let curlTimedOutStatus: Int32 = 28
+    /// #356: the installer run (step 2) ends when it makes no progress for `installerIdleLimit`, so a wedged daemon or
+    /// installer ends in the failure alert and `updateInstalling` is cleared, instead of refusing dictation and
+    /// read-aloud until the app is quit. It is an idle limit and not a wall-clock one: the scripts bound a stalled
+    /// line but deliberately not a slow one (a 3 GB model "takes as long as it needs"), and a total bound cut a
+    /// slow but alive 5 Mbit line at 49 minutes of a 2 hour studio install.
+    /// Progress is the update log growing, and nothing else: the app cannot know where the installer writes its
+    /// models (OX_SAY_HOME comes from the installed LaunchAgent, not from this process), so the scripts say it in the
+    /// log. get.sh's progress bar and fetch-models.sh's "progress <file> <bytes>" line (every 30 s while a model
+    /// downloads, OX_SAY_PROGRESS_SECS) cover the downloads; install-release.sh prints a line before each bounded
+    /// self-test call.
+    /// Steps with a bound of their own: curl (--speed-limit), the self-test calls (oxs_timeout, 300 s each). Steps
+    /// with none, which only this limit covers: `say -v '?'` and `say -o` (the system voice), `claude mcp get/add`,
+    /// `launchctl` and the daemon wait. There is no absolute cap: an install that keeps printing progress is
+    /// downloading, and a download is finite.
+    /// 25 minutes: well beyond the longest silent stretch left, one bounded self-test call (300 s) or the daemon
+    /// restart wait (about 100 s), and beyond three of them in a row (15 minutes) in case a line goes unprinted.
+    public static let installerIdleLimit: TimeInterval = 1500
+    /// How often progress is looked at (one offset read).
+    public static let progressPollInterval: TimeInterval = 5
+
+    /// A number that changes whenever the installer prints: the log's size.
+    public static func installProgress(log: FileHandle?) -> UInt64 {
+        (try? log?.offset()) ?? 0
+    }
+
+    /// What `runProcess` consults: `progress` is read every `pollInterval`; the process is ended when its value
+    /// has not changed for `idleLimit` seconds of `now`. Injected so a test runs on a counted clock.
+    public struct IdleWatch {
+        public var idleLimit: TimeInterval
+        public var pollInterval: TimeInterval
+        public var progress: () -> UInt64
+        public var now: () -> TimeInterval
+
+        public init(idleLimit: TimeInterval, pollInterval: TimeInterval, progress: @escaping () -> UInt64,
+                    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+            self.idleLimit = idleLimit
+            self.pollInterval = pollInterval
+            self.progress = progress
+            self.now = now
+        }
+    }
+
+    final class IdleWatcher: @unchecked Sendable {
+        private let watch: IdleWatch
+        private var last: UInt64
+        private var lastChange: TimeInterval
+
+        init(_ watch: IdleWatch) {
+            self.watch = watch
+            last = watch.progress()
+            lastChange = watch.now()
+        }
+
+        /// True when the progress value has not changed for the idle limit.
+        func stalled() -> Bool {
+            let value = watch.progress()
+            let t = watch.now()
+            if value != last {
+                last = value
+                lastChange = t
+            }
+            return t - lastChange >= watch.idleLimit
+        }
+    }
+
     /// A script starts with `#!`: two bytes.
     public static let scriptHeadLength = 2
     public static func downloadCommand(to file: String, from source: String = scriptURL) -> [String] {
@@ -104,6 +169,8 @@ public enum UpdateInstaller {
         case downloaderCouldNotStart(String)
         case notAScript
         case installerFailed(status: Int32)
+        /// #356: the installer made no progress for `seconds` (`installerIdleLimit`) and its process tree was ended.
+        case installerTimedOut(seconds: TimeInterval)
         case couldNotStart(String)
         case versionUnchanged(expected: String, found: String?)
         /// The bundle updated but the daemon never reported the target on /status.
@@ -125,6 +192,8 @@ public enum UpdateInstaller {
                 return text(.updateFailedNotScript)
             case .installerFailed(let status):
                 return fill(.updateFailedInstallerExit, String(status))
+            case .installerTimedOut(let seconds):
+                return fill(.updateFailedInstallerTimeout, String(Int((seconds / 60).rounded(.up))))
             case .couldNotStart(let why):
                 return fill(.updateFailedInstallerStart, why)
             case .versionUnchanged(let expected, let found):
@@ -209,6 +278,8 @@ public enum UpdateInstaller {
     public static func run(kind: Kind, tag: String, log: FileHandle?, scriptSource: String = scriptURL,
                            downloadBackstop: TimeInterval = downloadBackstop,
                            downloadArgv: (String, String) -> [String] = { downloadCommand(to: $0, from: $1) },
+                           installerWatch: IdleWatch? = nil,
+                           installer: (Kind, String, String) -> Command = { command(kind: $0, script: $1, tag: $2) },
                            installedVersion: () -> String?,
                            daemonVersion: () async -> String?) async -> Failure? {
         let script = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-get-\(UUID().uuidString).sh")
@@ -228,7 +299,10 @@ public enum UpdateInstaller {
         } ?? Data()
         guard isScript(head: head) else { return .notAScript }
 
-        switch await runProcess(command(kind: kind, script: script.path, tag: tag), log: log) {
+        let watch = installerWatch ?? IdleWatch(idleLimit: installerIdleLimit, pollInterval: progressPollInterval,
+                                                progress: { installProgress(log: log) })
+        switch await runProcess(installer(kind, script.path, tag), log: log, idle: watch) {
+        case .failure(is ProcessTimedOut): return .installerTimedOut(seconds: watch.idleLimit)
         case .failure(let error): return .couldNotStart(error.localizedDescription)
         case .success(let status) where status != 0: return .installerFailed(status: status)
         case .success: break
@@ -239,7 +313,8 @@ public enum UpdateInstaller {
     /// Runs one command with stdout and stderr in the log; the result is its exit
     /// status, or the error when it could not start. The command's own variables
     /// are added to the app's environment.
-    static func runProcess(_ command: Command, log: FileHandle?, timeout: TimeInterval? = nil) async -> Result<Int32, Error> {
+    static func runProcess(_ command: Command, log: FileHandle?, timeout: TimeInterval? = nil,
+                           idle: IdleWatch? = nil) async -> Result<Int32, Error> {
         await withCheckedContinuation { continuation in
             let once = ResumeOnce(continuation)
             let p = Process()
@@ -249,7 +324,7 @@ public enum UpdateInstaller {
             p.standardInput = FileHandle.nullDevice
             p.standardOutput = log ?? FileHandle.nullDevice
             p.standardError = log ?? FileHandle.nullDevice
-            p.terminationHandler = { _ = once.resume(.success($0.terminationStatus)) }
+            p.terminationHandler = { _ = once.resume(.success($0.terminationStatus), unlessExpiring: true) }
             do {
                 try p.run()
             } catch {
@@ -257,10 +332,24 @@ public enum UpdateInstaller {
                 _ = once.resume(.failure(error))
                 return
             }
-            guard let timeout else { return }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                // Only the timeout that wins the race ends the process.
-                if once.resume(.failure(ProcessTimedOut())), p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            // The watchdogs. Only one that wins the race ends the process, and the continuation is resumed AFTER the
+            // tree is gone: a caller that shows the failure (and lets dictation start again) must not find the
+            // installer still running.
+            let expire: @Sendable () -> Void = {
+                guard once.beginExpiry() else { return }
+                if p.isRunning { ProcessTree.terminateThenKill(root: p.processIdentifier) }
+                _ = once.resume(.failure(ProcessTimedOut()))
+            }
+            if let timeout { DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { expire() } }
+            if let idle {
+                let watcher = IdleWatcher(idle)
+                @Sendable func poll() {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + idle.pollInterval) {
+                        if once.isDone { return }
+                        if watcher.stalled() { expire() } else { poll() }
+                    }
+                }
+                poll()
             }
         }
     }
@@ -276,16 +365,76 @@ public enum UpdateInstaller {
 
         init(_ continuation: CheckedContinuation<Result<Int32, Error>, Never>) { self.continuation = continuation }
 
-        /// True when this call was the one that resumed.
-        func resume(_ result: Result<Int32, Error>) -> Bool {
+        private var expiring = false
+
+        /// True when this call was the one that resumed. A termination that arrives while a watchdog is ending the
+        /// process (`unlessExpiring`) does not resume: the watchdog does, once the tree is gone, with its own result.
+        func resume(_ result: Result<Int32, Error>, unlessExpiring: Bool = false) -> Bool {
             lock.lock()
+            if unlessExpiring && expiring { lock.unlock(); return false }
             let taken = continuation
             continuation = nil
             lock.unlock()
             taken?.resume(returning: result)
             return taken != nil
         }
+
+        /// True for the one watchdog that may now end the process (nothing resumed yet, nobody else expiring).
+        func beginExpiry() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard continuation != nil, !expiring else { return false }
+            expiring = true
+            return true
+        }
+
+        var isDone: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return continuation == nil
+        }
     }
+}
+
+/// Ends a process and everything it started, by PID (never by name).
+enum ProcessTree {
+    /// Children of `pid`, via libproc.
+    static func children(of pid: pid_t) -> [pid_t] {
+        var buffer = [pid_t](repeating: 0, count: 256)
+        let bytes = proc_listchildpids(pid, &buffer, Int32(buffer.count * MemoryLayout<pid_t>.size))
+        guard bytes > 0 else { return [] }
+        // The return value is a byte count on some releases and a pid count on others; the buffer starts zeroed, so
+        // the non-zero entries are the children either way.
+        return buffer.filter { $0 > 0 }
+    }
+
+    /// `root` and every descendant, root first.
+    static func tree(root: pid_t) -> [pid_t] {
+        var found = [root]
+        var index = 0
+        while index < found.count {
+            for child in children(of: found[index]) where !found.contains(child) { found.append(child) }
+            index += 1
+        }
+        return found
+    }
+
+    /// SIGTERM to the whole tree, `grace` seconds to leave (get.sh's TERM trap removes its temp dirs), then SIGKILL to
+    /// whatever is left. The tree is read before the first signal (a terminated parent would hand its children to
+    /// launchd and out of reach) and again before the KILL, for processes started in the grace.
+    static func terminateThenKill(root: pid_t, grace: TimeInterval = 3) {
+        let first = tree(root: root)
+        for pid in first { _ = Darwin.kill(pid, SIGTERM) }
+        let deadline = Date().addingTimeInterval(grace)
+        while Date() < deadline, first.contains(where: alive) { usleep(50_000) }
+        var survivors = Set(first.filter(alive))
+        if alive(root) { survivors.formUnion(tree(root: root)) }
+        for pid in survivors { _ = Darwin.kill(pid, SIGKILL) }
+    }
+
+    /// Signal 0 succeeds on a zombie too; the root is the app's own child and is reaped promptly by Foundation, and an
+    /// orphan is reaped by launchd.
+    private static func alive(_ pid: pid_t) -> Bool { Darwin.kill(pid, 0) == 0 }
 }
 
 /// Whether Check for Updates may start while an install is running.
