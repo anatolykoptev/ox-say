@@ -397,6 +397,95 @@ final class UpdateInstallRobustnessTests: XCTestCase {
         XCTAssertTrue(failure?.message(text: enText).contains("timed out") ?? false, failure?.message(text: enText) ?? "nil")
     }
 
+    /// A downloadable get.sh that passes the script check; the installer under test is injected, so it never runs.
+    private struct ScriptRig {
+        let dir: URL
+        let source: String
+
+        init() throws {
+            dir = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-ceiling-test-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let file = dir.appendingPathComponent("get.sh")
+            try "#!/bin/sh\nexit 0\n".write(to: file, atomically: true, encoding: .utf8)
+            source = "file://" + file.path
+        }
+
+        func cleanUp() { try? FileManager.default.removeItem(at: dir) }
+    }
+
+    /// #356: the installer run (get.sh -> install-release.sh -> fetch-models, restart, self-test) has a hard ceiling, so a
+    /// wedged daemon or installer ends in the failure alert instead of holding `updateInstalling` (and, since #355, the
+    /// refusal of dictation and read-aloud) until the app is quit.
+    /// Mutation: UpdateInstall.swift run(), the install `runProcess(installer(...), log: log, timeout: installerCeiling)`
+    /// without `timeout:` -> RED (the fake sleeps 20 s; the run returns after it with .installerFailed, not .installerTimedOut).
+    func testAnInstallerThatNeverExitsEndsInATimeoutFailureAndFreesDaemonWork() async throws {
+        let rig = try ScriptRig()
+        defer { rig.cleanUp() }
+        let started = Date()
+        let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil, scriptSource: rig.source,
+                                                installerCeiling: 0.3,
+                                                installer: { _, _, _ in .init(argv: ["/bin/sleep", "20"], environment: [:]) },
+                                                installedVersion: { "0.1.22" }, daemonVersion: { "v0.1.22" })
+        XCTAssertEqual(failure, .installerTimedOut(seconds: 0.3))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5, "the run waited for the wedged installer")
+        // Any failure makes AppDelegate.installUpdate call endInstall() (pinned in InstallTerminationTests), which clears
+        // `updateInstalling`; with it clear, the gate lets dictation and read-aloud start again.
+        XCTAssertFalse(UpdateGate.allowsNewDaemonWork(installing: true))
+        XCTAssertTrue(UpdateGate.allowsNewDaemonWork(installing: false))
+    }
+
+    /// The ceiling ends the installer's whole process tree, not only the shell get.sh started: a self-test `ox-say say`
+    /// left running would keep the daemon wedged. Killed by PID (descendants found through the parent links), never by name.
+    /// Mutation: UpdateInstall.swift runProcess, the timeout block's `ProcessTree.kill(` call reduced to
+    /// `kill(p.processIdentifier, SIGKILL)` -> RED (the grandchild `sleep` survives).
+    func testTheCeilingKillsTheInstallersGrandchildrenToo() async throws {
+        let rig = try ScriptRig()
+        defer { rig.cleanUp() }
+        let pidFile = rig.dir.appendingPathComponent("grandchild.pid")
+        defer { try? FileManager.default.removeItem(at: pidFile) }
+        let script = "sleep 600 & echo $! > '\(pidFile.path)'; wait"
+        let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil, scriptSource: rig.source,
+                                                installerCeiling: 1.0,
+                                                installer: { _, _, _ in .init(argv: ["/bin/sh", "-c", script], environment: [:]) },
+                                                installedVersion: { nil }, daemonVersion: { nil })
+        XCTAssertEqual(failure, .installerTimedOut(seconds: 1.0))
+        let text = try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        let grandchild = try XCTUnwrap(Int32(text), "the fake installer never recorded its child")
+        var alive = true
+        for _ in 0..<40 {
+            alive = kill(grandchild, 0) == 0
+            if !alive { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if alive { _ = kill(grandchild, SIGKILL) }
+        XCTAssertFalse(alive, "the installer's child survived the ceiling")
+    }
+
+    /// The ceiling is derived, not guessed: the fixed allowance (daemon restart, self-test) plus the largest download of
+    /// the kind at a slow line's rate, and the studio install (the 3 GB model on top) gets more than a plain update.
+    /// Mutation: UpdateInstall.swift installerCeiling(kind:), drop the `studioVoiceBytes` term -> RED.
+    func testTheInstallerCeilingCoversTheLargestDownloadOnASlowLine() {
+        let update = UpdateInstaller.installerCeiling(kind: .update)
+        let studio = UpdateInstaller.installerCeiling(kind: .studioVoice)
+        XCTAssertGreaterThan(studio, update)
+        XCTAssertGreaterThanOrEqual(studio - update, UpdateInstaller.studioVoiceBytes / UpdateInstaller.slowLineBytesPerSecond - 1)
+        XCTAssertGreaterThanOrEqual(update, UpdateInstaller.installerFixedAllowance)
+        XCTAssertGreaterThan(UpdateInstaller.studioVoiceBytes, 2.9e9, "the studio model is about 3 GB (scripts/fetch-models.sh)")
+        XCTAssertLessThan(studio, 2 * 3600, "a ceiling over two hours is not a ceiling")
+    }
+
+    /// The call site applies the kind's ceiling by default (a default of nil would leave the installer unbounded).
+    /// Mutation: UpdateInstall.swift run(), the `installerCeiling:` parameter default -> `.infinity` -> RED.
+    func testRunDefaultsToTheKindsCeiling() throws {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/DictationCore/UpdateInstall.swift")
+        let source = try String(contentsOf: path, encoding: .utf8)
+        XCTAssertTrue(source.contains("installerCeiling: TimeInterval? = nil"))
+        XCTAssertTrue(source.contains("let ceiling = installerCeiling ?? Self.installerCeiling(kind: kind)"))
+        XCTAssertTrue(source.contains("log: log, timeout: ceiling)"))
+    }
+
     func testACurlThatCannotStartHasItsOwnText() async {
         let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil,
                                                 downloadArgv: { _, _ in ["/nonexistent/curl"] },
@@ -533,6 +622,9 @@ final class UpdateFailureL10nTests: XCTestCase {
         (.installerFailed(status: 1),
          "The installer exited with status 1.",
          "Установщик завершился с кодом 1."),
+        (.installerTimedOut(seconds: 1500),
+         "The installer did not finish within 25 minutes and was stopped.",
+         "Установщик не завершился за 25 мин и был остановлен."),
         (.couldNotStart("no such file"),
          "The installer could not start: no such file.",
          "Установщик не удалось запустить: no such file."),
@@ -569,6 +661,7 @@ final class UpdateFailureL10nTests: XCTestCase {
             case .downloaderCouldNotStart: seen.insert("downloaderCouldNotStart")
             case .notAScript: seen.insert("notAScript")
             case .installerFailed: seen.insert("installerFailed")
+            case .installerTimedOut: seen.insert("installerTimedOut")
             case .couldNotStart: seen.insert("couldNotStart")
             case .versionUnchanged: seen.insert("versionUnchanged")
             case .daemonNotOnVersion: seen.insert("daemonNotOnVersion")
@@ -577,7 +670,7 @@ final class UpdateFailureL10nTests: XCTestCase {
                 XCTAssertFalse(row.0.message(text: ShippedStrings.localizer(locale)).contains("MISSING"), locale)
             }
         }
-        XCTAssertEqual(seen.count, 8)
+        XCTAssertEqual(seen.count, 9)
     }
 
     /// The alert around the message is localized too: its title and the pointer to the log.

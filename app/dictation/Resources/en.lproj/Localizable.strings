@@ -377,6 +377,7 @@
 "update.failed.download_start" = "The download could not start: %@.";
 "update.failed.not_script" = "The downloaded installer was empty or not a script.";
 "update.failed.installer_exit" = "The installer exited with status %@.";
+"update.failed.installer_timeout" = "The installer did not finish within %@ minutes and was stopped.";
 "update.failed.installer_start" = "The installer could not start: %@.";
 "update.failed.version_unchanged" = "The version did not change: expected %1$@ after the install, found %2$@.";
 "update.failed.version_unreadable" = "The version did not change: expected %@ after the install, found unknown.";

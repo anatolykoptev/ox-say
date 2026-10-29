@@ -7,6 +7,7 @@
 # Settings (OX_SAY_* variables): see scripts/lib-install.sh.
 #   OX_SAY_NO_MCP=1        do not register the MCP server with Claude Code
 #   OX_SAY_NO_SELFTEST=1   skip the speak-and-transcribe check
+#   OX_SAY_SELFTEST_SECS=N each self-test call may take N seconds (default 300), then the self-test fails
 #   OX_SAY_NO_DICTATION=1  do not install the dictation app
 set -euo pipefail
 
@@ -97,18 +98,16 @@ if [ "${OX_SAY_NO_SELFTEST:-0}" != 1 ]; then
     for voice in Samantha Alex Daniel Karen Moira; do
         if grep -E "^$voice " "$st/voices.txt" >/dev/null; then
             if say -v "$voice" -o "$st/mac.aiff" "ox-say is ready" 2>/dev/null; then
-                "$bindir/ox-say" transcribe "$st/mac.aiff" >/dev/null 2>&1 || true
+                oxs_timeout "${OX_SAY_SELFTEST_SECS:-300}" "$bindir/ox-say" transcribe "$st/mac.aiff" >/dev/null 2>&1 || true
             fi
             break
         fi
     done
     # no `| grep -q` here: under pipefail its early exit can SIGPIPE the writer
     # and fail a pipeline that matched
-    if "$bindir/ox-say" say -o "$wav" "$phrase" >/dev/null &&
-        heard=$("$bindir/ox-say" transcribe "$wav"); then
-        if oxs_selftest_heard_ok "$heard" "$phrase"; then
-            ok=1
-        fi
+    # each call has its own ceiling (oxs_timeout), so a daemon that never answers fails the self-test (#356)
+    if oxs_selftest_roundtrip "$bindir/ox-say" "$wav" "$phrase"; then
+        ok=1
     fi
     rm -f "$wav" "$st/mac.aiff" "$st/voices.txt"
     rmdir "$st"

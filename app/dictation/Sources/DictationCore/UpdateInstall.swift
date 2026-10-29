@@ -22,6 +22,27 @@ public enum UpdateInstaller {
     public static let downloadBackstop: TimeInterval = 90
     /// curl's exit status for an operation that ran past `--max-time` (or a connect/read timeout).
     static let curlTimedOutStatus: Int32 = 28
+    /// #356: the hard ceiling on the installer run (step 2), so a wedged daemon or installer ends in the failure alert
+    /// and `updateInstalling` is cleared, instead of refusing dictation and read-aloud until the app is quit. The
+    /// scripts bound a stalled line but deliberately not a slow one (a 3 GB model "takes as long as it needs"), so the
+    /// total is bounded here: the fixed work (daemon restart, model load in the self-test, "up to a few minutes") plus
+    /// the largest download of the kind at a slow line's rate.
+    /// Largest download: the package (33 MB) and, when a model changed, whisper (1.6 GB); the studio voice adds
+    /// VoxCPM2 (2.96 GB). Figures from scripts/fetch-models.sh and get.sh.
+    public static let installerFixedAllowance: TimeInterval = 600
+    /// 2 MB/s, about 16 Mbit/s: a poor but alive line. Slower than this and the install is cut with the alert; the
+    /// downloads resume from their .part files on the next try.
+    public static let slowLineBytesPerSecond: Double = 2_000_000
+    public static let packageBytes: Double = 33_000_000
+    public static let whisperBytes: Double = 1_600_000_000
+    public static let studioVoiceBytes: Double = 2_960_000_000
+
+    public static func installerCeiling(kind: Kind) -> TimeInterval {
+        var bytes = packageBytes + whisperBytes
+        if kind == .studioVoice { bytes += studioVoiceBytes }
+        return installerFixedAllowance + bytes / slowLineBytesPerSecond
+    }
+
     /// A script starts with `#!`: two bytes.
     public static let scriptHeadLength = 2
     public static func downloadCommand(to file: String, from source: String = scriptURL) -> [String] {
@@ -104,6 +125,8 @@ public enum UpdateInstaller {
         case downloaderCouldNotStart(String)
         case notAScript
         case installerFailed(status: Int32)
+        /// #356: the installer ran past its ceiling (`installerCeiling(kind:)`) and its process tree was killed.
+        case installerTimedOut(seconds: TimeInterval)
         case couldNotStart(String)
         case versionUnchanged(expected: String, found: String?)
         /// The bundle updated but the daemon never reported the target on /status.
@@ -125,6 +148,8 @@ public enum UpdateInstaller {
                 return text(.updateFailedNotScript)
             case .installerFailed(let status):
                 return fill(.updateFailedInstallerExit, String(status))
+            case .installerTimedOut(let seconds):
+                return fill(.updateFailedInstallerTimeout, String(Int((seconds / 60).rounded(.up))))
             case .couldNotStart(let why):
                 return fill(.updateFailedInstallerStart, why)
             case .versionUnchanged(let expected, let found):
@@ -209,6 +234,8 @@ public enum UpdateInstaller {
     public static func run(kind: Kind, tag: String, log: FileHandle?, scriptSource: String = scriptURL,
                            downloadBackstop: TimeInterval = downloadBackstop,
                            downloadArgv: (String, String) -> [String] = { downloadCommand(to: $0, from: $1) },
+                           installerCeiling: TimeInterval? = nil,
+                           installer: (Kind, String, String) -> Command = { command(kind: $0, script: $1, tag: $2) },
                            installedVersion: () -> String?,
                            daemonVersion: () async -> String?) async -> Failure? {
         let script = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-get-\(UUID().uuidString).sh")
@@ -228,7 +255,9 @@ public enum UpdateInstaller {
         } ?? Data()
         guard isScript(head: head) else { return .notAScript }
 
-        switch await runProcess(command(kind: kind, script: script.path, tag: tag), log: log) {
+        let ceiling = installerCeiling ?? Self.installerCeiling(kind: kind)
+        switch await runProcess(installer(kind, script.path, tag), log: log, timeout: ceiling) {
+        case .failure(is ProcessTimedOut): return .installerTimedOut(seconds: ceiling)
         case .failure(let error): return .couldNotStart(error.localizedDescription)
         case .success(let status) where status != 0: return .installerFailed(status: status)
         case .success: break
@@ -260,7 +289,8 @@ public enum UpdateInstaller {
             guard let timeout else { return }
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 // Only the timeout that wins the race ends the process.
-                if once.resume(.failure(ProcessTimedOut())), p.isRunning { kill(p.processIdentifier, SIGKILL) }
+                // The whole tree: get.sh runs install-release.sh, which runs the daemon client of the self-test.
+                if once.resume(.failure(ProcessTimedOut())), p.isRunning { ProcessTree.kill(root: p.processIdentifier) }
             }
         }
     }
@@ -285,6 +315,36 @@ public enum UpdateInstaller {
             taken?.resume(returning: result)
             return taken != nil
         }
+    }
+}
+
+/// Ends a process and everything it started, by PID (never by name).
+enum ProcessTree {
+    /// Children of `pid`, via libproc.
+    static func children(of pid: pid_t) -> [pid_t] {
+        var buffer = [pid_t](repeating: 0, count: 256)
+        let bytes = proc_listchildpids(pid, &buffer, Int32(buffer.count * MemoryLayout<pid_t>.size))
+        guard bytes > 0 else { return [] }
+        // The return value is a byte count on some releases and a pid count on others; the buffer starts zeroed, so
+        // the non-zero entries are the children either way.
+        return buffer.filter { $0 > 0 }
+    }
+
+    /// `root` and every descendant, root first.
+    static func tree(root: pid_t) -> [pid_t] {
+        var found = [root]
+        var index = 0
+        while index < found.count {
+            for child in children(of: found[index]) where !found.contains(child) { found.append(child) }
+            index += 1
+        }
+        return found
+    }
+
+    /// SIGKILL to the whole tree. The tree is read before the first signal: a killed parent would
+    /// otherwise hand its children to launchd and out of reach.
+    static func kill(root: pid_t) {
+        for pid in tree(root: root) { _ = Darwin.kill(pid, SIGKILL) }
     }
 }
 
