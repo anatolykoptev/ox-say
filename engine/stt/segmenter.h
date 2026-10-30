@@ -29,7 +29,15 @@ struct seg_params {
     float off_p = 0.35f;        // in speech, a window counts as silence at p < off_p
     int close_ms = 400;         // continuous silence that closes a segment
     int min_speech_ms = 250;    // segments with less speech are dropped
-    int pad_pre_ms = 200;       // pad before the onset window (clamped to prev end / 0)
+    int pad_pre_ms = 200;       // pad before the onset (clamped to prev end / 0)
+    // Quiet leading speech never reaches on_p (Silero hovers at 0.2-0.48 over
+    // the first words, #379). At the onset the segment reaches back over the
+    // contiguous run of windows with p >= warm_p, at most warm_max_ms, then
+    // pad_pre_ms more. Measured on 1080 FLEURS clips: noise floor ~0.01, the
+    // run before a first onset is <= 1056 ms at warm_p 0.15; warm_max_ms 0
+    // switches the reach-back off.
+    float warm_p = 0.15f;
+    int warm_max_ms = 1200;
     int pad_post_ms = 200;      // pad after the last speech window (within closing silence)
     int cap_ms = 12000;         // open segments are force-cut at this length
     int cap_quiet_ms = 150;     // quiet stretch whose centre becomes the cut
@@ -59,6 +67,7 @@ public:
         : p_(p),
           pad_pre_((uint64_t) p.pad_pre_ms * SEG_SR / 1000),
           pad_post_((uint64_t) p.pad_post_ms * SEG_SR / 1000),
+          warm_max_((uint64_t) p.warm_max_ms * SEG_SR / 1000),
           close_((uint64_t) p.close_ms * SEG_SR / 1000),
           min_sp_((uint64_t) p.min_speech_ms * SEG_SR / 1000),
           cap_((uint64_t) p.cap_ms * SEG_SR / 1000),
@@ -83,6 +92,14 @@ public:
             const size_t wl = std::min<size_t>(SEG_WIN, n_samples - off);
             pos_ += wl;
             const float p = probs[i];
+            if (p >= p_.warm_p) {
+                if (!warm_) {
+                    warm_ = true;
+                    warm_start_ = w0;
+                }
+            } else {
+                warm_ = false;
+            }
             if (!in_speech_) {
                 if (p >= p_.on_p) {
                     in_speech_ = true;
@@ -90,7 +107,12 @@ public:
                     speech_samples_ = wl;
                     min_p_ = p;
                     quiet_run_ = quiet_max_ = 0;
-                    seg_start_ = w0 > pad_pre_ ? w0 - pad_pre_ : 0;
+                    // reach back over the warm run that led into this onset
+                    uint64_t from = w0;
+                    if (warm_ && warm_max_ > 0) {
+                        from = std::max(warm_start_, w0 > warm_max_ ? w0 - warm_max_ : 0);
+                    }
+                    seg_start_ = from > pad_pre_ ? from - pad_pre_ : 0;
                     if (seg_start_ < prev_end_) {
                         seg_start_ = prev_end_;
                     }
@@ -133,7 +155,7 @@ public:
 
     // Lowest absolute offset a future emit can still reference: the open
     // segment's start while in speech; while silent, nothing before the next
-    // onset's pre-pad reach or the previous segment's end. Monotone — the
+    // onset's warm + pre-pad reach or the previous segment's end. Monotone — the
     // caller may drop buffered audio below it.
     uint64_t floor() const { return floor_; }
 
@@ -146,7 +168,7 @@ private:
         if (in_speech_) {
             f = seg_start_;
         } else {
-            f = pos_ > pad_pre_ ? pos_ - pad_pre_ : 0;
+            f = pos_ > pad_pre_ + warm_max_ ? pos_ - pad_pre_ - warm_max_ : 0;
             if (f < prev_end_) {
                 f = prev_end_;
             }
@@ -253,7 +275,7 @@ private:
     }
 
     seg_params p_;
-    const uint64_t pad_pre_, pad_post_, close_, min_sp_, cap_, cap_lookback_, cap_quiet_, keep_;
+    const uint64_t pad_pre_, pad_post_, warm_max_, close_, min_sp_, cap_, cap_lookback_, cap_quiet_, keep_;
 
     uint64_t pos_ = 0;             // real samples consumed
     uint64_t seg_start_ = 0;       // open segment's start (post-pad)
@@ -262,6 +284,8 @@ private:
     uint64_t prev_end_ = 0;        // end of the last emitted segment (pre-pad floor)
     uint64_t floor_ = 0;           // see bump_floor()
     bool in_speech_ = false;
+    bool warm_ = false;            // the previous windows form a run of p >= warm_p
+    uint64_t warm_start_ = 0;      // first sample of that run
 
     float min_p_ = 1.0f;        // lowest p since the open segment's start
     uint64_t quiet_run_ = 0;    // current consecutive p < off_p stretch, samples
