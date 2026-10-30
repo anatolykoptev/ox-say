@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.30](https://github.com/anatolykoptev/ox-say/compare/v0.1.29...v0.1.30) (2026-10-30)
+
+
+### Documentation
+
+* **readme:** bring the README up to v0.1.29 (meetings, installer, Intel figures, re-decode, licences) ([#391](https://github.com/anatolykoptev/ox-say/issues/391)) ([63382d1](https://github.com/anatolykoptev/ox-say/commit/63382d1cb006fda5843a277f6e174311b49a82cd))
+
 ## [0.1.29](https://github.com/anatolykoptev/ox-say/compare/v0.1.28...v0.1.29) (2026-10-30)
 
 
