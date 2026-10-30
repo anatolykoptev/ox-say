@@ -37,6 +37,8 @@
 #     its progress meter (carriage returns) -> "no progress meter" fails
 #   * fetch-models.sh: change `curl -fsSL` to `curl -fsL` -> the fake curl is
 #     silent -> "curl's own error words" fails
+#   * fetch-models.sh: delete the `echo "resuming $name from ...` line (or the `[ -s "$part" ]` condition around it) -> "a
+#     rerun over a .part says it is resuming" / "a fresh download does not say resuming" fail
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -338,6 +340,31 @@ else
     fail "no progress line appeared within 10 s; cannot test the orphaned ticker"
 fi
 [ -s "$d/curl.pid" ] && kill "$(cat "$d/curl.pid")" 2>/dev/null || true
+
+# A rerun over a .part says it resumes, and from how much (#372.2): the log of a restart and of a resume must differ.
+d="$tmp/resumeline"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+dd if=/dev/zero of="$d/dest/$name.part" bs=1048576 count=3 2>/dev/null
+printf 'ok:rest\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in
+    *"resuming $name from 3 MB"*) pass "a rerun over a .part says it is resuming, and from how many MB" ;;
+    *) fail "resumeline: exit $rc: $out" ;;
+esac
+case $out in
+    *"fetch   $name"*) fail "a resume also printed the fresh-download line: $out" ;;
+    *) pass "a resume does not claim to be a fresh fetch" ;;
+esac
+if sed -n 1p "$d/calls" | grep -q 'resume=1 size=3145728 '; then pass "and the download did resume from those bytes"; else fail "resumeline calls: $(cat "$d/calls")"; fi
+d="$tmp/freshline"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'ok:all\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in
+    *"resuming "*) fail "a fresh download said resuming: $out" ;;
+    *"fetch   $name"*) pass "a fresh download does not say resuming" ;;
+    *) fail "freshline: exit $rc: $out" ;;
+esac
 
 if [ -e "$tmp/nonet-calls" ]; then fail "the no-network curl stub was reached: $(cat "$tmp/nonet-calls")"; else pass "no test reached the network"; fi
 

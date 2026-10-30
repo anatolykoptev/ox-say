@@ -72,6 +72,7 @@
 //	OXSAY_FAKE_STT_DELAY_MS   sleep before answering (overlap window)
 //	OXSAY_FAKE_STT_EXIT=1     print a message on stderr and exit 1
 //	OXSAY_FAKE_STT_BLOCK=1    block until killed
+//	OXSAY_FAKE_STT_KILL=1     SIGKILL itself with nothing on stderr (an engine killed from outside)
 //	OXSAY_FAKE_STT_JSON       payload to print instead of the canned result
 //
 // Fake ox-stt --serve (selected on OXSAY_FAKE_STT=1 AND a --serve flag in
@@ -601,6 +602,10 @@ func runFakeSTT(args []string) int {
 	if os.Getenv("OXSAY_FAKE_STT_EXIT") == "1" {
 		fmt.Fprintln(os.Stderr, "fake-stt: transcription failed")
 		return 1
+	}
+	if os.Getenv("OXSAY_FAKE_STT_KILL") == "1" {
+		_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+		select {} // the signal is not synchronous
 	}
 	fmt.Println(sttResultJSON())
 	return 0

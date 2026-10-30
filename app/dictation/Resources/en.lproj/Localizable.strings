@@ -409,6 +409,8 @@
 "update.studio.button" = "Install";
 "update.uptodate.title" = "You're up to date";
 "update.uptodate.text" = "ox-say v%@ is the newest version.";
+"update.dev.title" = "This is a development build";
+"update.dev.text" = "ox-say v%@ is a development build, not a release. Updates are offered to released versions only.";
 "update.check_failed.title" = "Couldn't check for updates";
 "update.available.title" = "ox-say %@ is available";
 "update.available.have" = "You have v%@.";

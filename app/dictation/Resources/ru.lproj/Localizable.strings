@@ -403,6 +403,8 @@
 "update.studio.button" = "Установить";
 "update.uptodate.title" = "У вас последняя версия";
 "update.uptodate.text" = "ox-say v%@ — самая новая версия.";
+"update.dev.title" = "Это сборка для разработки";
+"update.dev.text" = "ox-say v%@ — сборка для разработки, а не релиз. Обновления предлагаются только для выпущенных версий.";
 "update.check_failed.title" = "Не удалось проверить обновления";
 "update.available.title" = "Вышла новая версия ox-say %@";
 "update.available.have" = "У вас v%@.";

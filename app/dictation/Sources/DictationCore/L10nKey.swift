@@ -420,6 +420,8 @@ public enum L10nKey: String, CaseIterable {
     case updateStudioButton = "update.studio.button"
     case updateUptodateTitle = "update.uptodate.title"
     case updateUptodateText = "update.uptodate.text"
+    case updateDevTitle = "update.dev.title"
+    case updateDevText = "update.dev.text"
     case updateCheckFailedTitle = "update.check_failed.title"
     case updateAvailableTitle = "update.available.title"
     case updateAvailableHave = "update.available.have"

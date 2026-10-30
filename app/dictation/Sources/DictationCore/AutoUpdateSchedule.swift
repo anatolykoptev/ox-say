@@ -79,7 +79,7 @@ public enum AutoUpdateSchedule {
         switch UpdatePrompt.make(local: local, fetch: fetch) {
         case .failed:
             return .unchanged
-        case .upToDate:
+        case .upToDate, .developmentBuild:
             state.lastCheck = now
             return .clear
         case .available(let remote, _, _, _):

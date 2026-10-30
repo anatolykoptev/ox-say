@@ -1282,7 +1282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Renders the prompt; the pure decision is UpdatePrompt.make.
     private func present(_ prompt: UpdatePrompt) {
         switch prompt {
-        case .upToDate:
+        case .upToDate, .developmentBuild:
             runAlert(UpdateDialogs.prompt(prompt))
         case .available(let remote, let local, let notes, let url):
             confirmInstall(remote: remote, local: local, notes: notes, url: url)

@@ -21,6 +21,39 @@ final class UpdatePromptTests: XCTestCase {
         XCTAssertEqual(prompt, .available(remote: "v0.1.21", local: "0.1.20", notes: "Fixes\n• paste works", url: page))
     }
 
+    /// #372.3: a dev build carries version 0.0.0 (build.sh), older than every release; offering the latest release to it
+    /// would be a "downgrade" for a build made from newer code. No prompt for it, whatever GitHub answered.
+    /// Mutation: UpdatePrompt.make, delete the `isDevelopmentBuild(local)` guard -> RED.
+    func testADevBuildIsNeverOfferedARelease() {
+        XCTAssertEqual(UpdatePrompt.make(local: "0.0.0", fetch: release("v0.1.21")), .developmentBuild(version: "0.0.0"))
+        XCTAssertEqual(UpdatePrompt.make(local: "0.0.0", fetch: .failure(.http(403))), .developmentBuild(version: "0.0.0"),
+                       "nothing to check, so a failed check is not shown either")
+        guard case .available = UpdatePrompt.make(local: "0.0.1", fetch: release("v0.1.21")) else {
+            return XCTFail("a real (if very old) release is still offered the update")
+        }
+    }
+
+    /// Mutation: UpdateChecker.isDevelopmentBuild, `== [0, 0, 0]` -> `!= [0, 0, 0]` -> RED.
+    func testOnlyVersionZeroIsADevBuild() {
+        XCTAssertTrue(UpdateChecker.isDevelopmentBuild("0.0.0"))
+        XCTAssertTrue(UpdateChecker.isDevelopmentBuild("v0.0.0"))
+        XCTAssertFalse(UpdateChecker.isDevelopmentBuild("0.0.1"))
+        XCTAssertFalse(UpdateChecker.isDevelopmentBuild("0.1.0"))
+        XCTAssertFalse(UpdateChecker.isDevelopmentBuild("1.0.0"))
+        XCTAssertFalse(UpdateChecker.isDevelopmentBuild(""), "an unreadable version is not a dev build")
+        XCTAssertFalse(UpdateChecker.isDevelopmentBuild("garbage"))
+    }
+
+    /// The background check offers a dev build nothing: no row, no notice, and it counts as an answered check.
+    /// Mutation: UpdatePrompt.make, delete the `isDevelopmentBuild(local)` guard -> RED (the dev build is offered v0.1.21).
+    func testTheBackgroundCheckOffersADevBuildNothing() {
+        var state = AutoUpdateState()
+        let now = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(AutoUpdateSchedule.apply(fetch: release("v0.1.21"), local: "0.0.0", now: now, state: &state), .clear)
+        XCTAssertEqual(state.lastCheck, now)
+        XCTAssertNil(state.lastNotifiedVersion)
+    }
+
     func testEveryUpdateErrorIsAFailureCarryingItsReason() {
         for error in [UpdateError.unreachable("offline"), .http(403), .http(503), .badResponse] {
             XCTAssertEqual(UpdatePrompt.make(local: "0.1.20", fetch: .failure(error), text: ShippedStrings.localizer("en")),

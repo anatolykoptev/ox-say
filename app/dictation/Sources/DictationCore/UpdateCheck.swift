@@ -78,6 +78,13 @@ public struct UpdateChecker {
         triple(local).lexicographicallyPrecedes(triple(remote))
     }
 
+    /// A development build: `app/dictation/build.sh` stamps version 0.0.0 when `VERSION` is not a release (`dev-<sha>`
+    /// from a manual CI run, or a local build). It is older than every release by number, but it is not a release
+    /// that can be updated: the newest release may be older than the code it was built from.
+    public static func isDevelopmentBuild(_ version: String) -> Bool {
+        triple(version) == [0, 0, 0]
+    }
+
     static func triple(_ tag: String) -> [Int] {
         var t = tag.trimmingCharacters(in: .whitespaces)
         if t.hasPrefix("v") || t.hasPrefix("V") { t.removeFirst() }

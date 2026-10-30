@@ -42,6 +42,18 @@ final class UpdateDesignL10nTests: XCTestCase {
                                     buttons: ["Повторить", "OK"]))
     }
 
+    /// #372.3: the dev-build answer, in both languages.
+    func testTheDevBuildAnswerReadsRightInBothLanguages() {
+        XCTAssertEqual(UpdateDialogs.prompt(.developmentBuild(version: "0.0.0"), text: en),
+                       UpdateDialog(title: "This is a development build",
+                                    text: "ox-say v0.0.0 is a development build, not a release. Updates are offered to released versions only.",
+                                    buttons: ["OK"]))
+        XCTAssertEqual(UpdateDialogs.prompt(.developmentBuild(version: "0.0.0"), text: ru),
+                       UpdateDialog(title: "Это сборка для разработки",
+                                    text: "ox-say v0.0.0 — сборка для разработки, а не релиз. Обновления предлагаются только для выпущенных версий.",
+                                    buttons: ["OK"]))
+    }
+
     func testTheAvailableAlertCarriesNotesAndTheNotesButtonOnlyWithAPage() {
         let page = URL(string: "https://x.test/r")
         XCTAssertEqual(UpdateDialogs.prompt(.available(remote: "v0.1.22", local: "0.1.21", notes: "Fixes", url: page), text: ru),
