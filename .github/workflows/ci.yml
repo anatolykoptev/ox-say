@@ -68,6 +68,11 @@ jobs:
       - name: edge pad test
         run: c++ -std=c++17 -O1 -Wall -Wextra -Werror -o "$RUNNER_TEMP/edge-pad-test" engine/stt/edge_pad_test.cpp && "$RUNNER_TEMP/edge-pad-test"
 
+      # redecode.h (the finish re-decode decision, #88) is pure C++17 too; the
+      # decode it gates needs the model, so only the decision is tested here.
+      - name: redecode test
+        run: c++ -std=c++17 -O1 -Wall -Wextra -Werror -o "$RUNNER_TEMP/redecode-test" engine/stt/redecode_test.cpp && "$RUNNER_TEMP/redecode-test"
+
       # wav_reader.h (the one WAV reader behind ox-stt and ox-align, #13) is pure C++17 too; its test
       # also diffs it against the pre-move ox-stt reader on a mangled-WAV corpus.
       - name: wav reader test

@@ -27,7 +27,13 @@
 //            POST /sessions/<id>/finish  -> flushes the open segment, waits out the queued decodes,
 //                                 200 with the same fields plus "done":true and the whole "text";
 //                                 500 "decode failed" (the session is deleted) after a decode
-//                                 failure, 504 when the 60 s drain bound is hit
+//                                 failure, 504 when the 60 s drain bound is hit. Re-decode at
+//                                 release (#88): a session that was cut (more than one segment)
+//                                 and whose audio fits --redecode-max-s (15; 0 disables) is
+//                                 decoded once more whole, through the same padded decode path
+//                                 as /transcribe, and that text answers as "text" with
+//                                 "redecoded":true; a failed or empty re-decode answers the
+//                                 streamed text instead (one stderr line says why)
 //            DELETE /sessions/<id>       -> drops the session and its queued work
 //          without --vad the session routes answer 501. The Host header must name loopback.
 //          Anything else is refused (403, 405, 411, 415); methods other than GET, HEAD, POST
@@ -47,6 +53,7 @@
 
 #include "../common/wav_reader.h"
 #include "edge_pad.h"
+#include "redecode.h"
 #include "segmenter.h"
 
 #include "httplib.h"
@@ -95,6 +102,7 @@ struct args {
     bool gpu = true, verbose = false, serve = false;
     int port = 0;  // set to a valid 1..65535 value by parse, or flagged invalid
     double chunk_s = 30.0;
+    double redecode_max_s = 15.0;  // --serve only: re-decode at finish, 0 disables
 };
 
 void usage(const char * argv0) {
@@ -102,7 +110,7 @@ void usage(const char * argv0) {
             "usage: %s -m model -f audio.wav [--engine parakeet|whisper] [-l lang] [--prompt text]\n"
             "          [-t threads] [-ng] [--chunk-s 30] [-o out.json] [-v]\n"
             "       %s --serve -m model --port port [--vad silero-vad.bin] [-t threads] [-ng]\n"
-            "          [--chunk-s 30] [-v]\n"
+            "          [--chunk-s 30] [--redecode-max-s 15] [-v]\n"
             "audio must be a 16 kHz mono WAV (PCM16 or float32): ffmpeg -i in -ar 16000 -ac 1 out.wav\n"
             "--vad enables the /sessions routes: POST /sessions, then raw little-endian float32\n"
             "mono 16 kHz PCM chunks to /sessions/<id>/audio, POST /sessions/<id>/finish or\n"
@@ -139,6 +147,9 @@ bool parse(int argc, char ** argv, args & a) {
         } else if (k == "--chunk-s") {
             if (!next(v)) return false;
             a.chunk_s = atof(v.c_str());
+        } else if (k == "--redecode-max-s") {
+            if (!next(v)) return false;
+            a.redecode_max_s = atof(v.c_str());
         } else if (k == "--serve") {
             a.serve = true;
         } else if (k == "--vad") {
@@ -159,7 +170,8 @@ bool parse(int argc, char ** argv, args & a) {
         }
     }
     if (a.model.empty() || (a.engine != "parakeet" && a.engine != "whisper") ||
-        !std::isfinite(a.chunk_s) || a.chunk_s < 5.0) {
+        !std::isfinite(a.chunk_s) || a.chunk_s < 5.0 || !std::isfinite(a.redecode_max_s) ||
+        a.redecode_max_s < 0.0) {
         return false;
     }
     if (a.serve) {
@@ -493,9 +505,11 @@ const char * cut_name(oxstt::seg_cut c) {
 // Segment/words JSON shared by POST .../audio and .../finish: the segments
 // decoded since the session's previous response. `done` adds "done":true and
 // the session's full "text" (segments joined with single spaces, as
-// result_json joins them).
+// result_json joins them); `redecoded` marks that text as the whole-recording
+// re-decode the finish ran (#88), not the join of the streamed segments —
+// those stay in the answer for their cut diagnostics.
 std::string session_json(const std::vector<decoded_seg> & segs, size_t from, size_t pending, bool done,
-                         const std::string & text) {
+                         const std::string & text, bool redecoded = false) {
     std::string o = "{\"segments\":[";
     for (size_t i = from; i < segs.size(); ++i) {
         o += (i > from ? "," : "") + std::string("{\"s\":") + num(segs[i].s) + ",\"e\":" +
@@ -518,6 +532,9 @@ std::string session_json(const std::vector<decoded_seg> & segs, size_t from, siz
     if (done) {
         o += ",\"done\":true,\"text\":";
         json_str(o, text);
+        if (redecoded) {
+            o += ",\"redecoded\":true";
+        }
     }
     o += "}";
     return o;
@@ -535,6 +552,8 @@ struct session {
     std::vector<float> audio;        // samples [audio_base, audio_base+size)
     uint64_t           audio_base = 0;
     uint64_t           vad_pos = 0;      // samples already run through VAD
+    std::vector<float> re_pcm;       // the whole recording while a finish re-decode stays possible
+    bool               re_dropped = false;  // re_pcm freed past --redecode-max-s: never re-decode
     std::vector<decoded_seg> results;    // decoded segments in order
     size_t             returned = 0;     // results below this were already sent
     size_t             inflight = 0;     // segments queued or decoding
@@ -1096,6 +1115,20 @@ int serve(const args & a) {
                 return;
             }
             s->audio.insert(s->audio.end(), fresh.begin(), fresh.end());
+            // Keep the whole recording while the finish re-decode can still
+            // run (#88): s->audio is trimmed under pump_session, so the copy
+            // lives here, bounded at --redecode-max-s + 1 s. Past the bound it
+            // is freed (swap, not clear) and never refilled — a longer session
+            // streams exactly as before.
+            if (a.redecode_max_s > 0.0 && !s->re_dropped) {
+                const size_t cap = (size_t) ((a.redecode_max_s + 1.0) * SR);
+                if (s->re_pcm.size() + fresh.size() <= cap) {
+                    s->re_pcm.insert(s->re_pcm.end(), fresh.begin(), fresh.end());
+                } else {
+                    std::vector<float>().swap(s->re_pcm);
+                    s->re_dropped = true;
+                }
+            }
             ok = pump_session(s);
         }
         if (!ok) {
@@ -1139,7 +1172,9 @@ int serve(const args & a) {
         }
         s->touch.store(now_s());
         int status = 0;  // 0 = ok, else the error response
-        std::string out, emsg;
+        std::string out, emsg, text;
+        size_t segs_from = 0;            // results index the answer starts at
+        std::vector<float> re_pcm;       // the whole recording when a re-decode stays possible
         {
             std::unique_lock<std::mutex> sl(s->mu);
             if (s->failed) {
@@ -1178,12 +1213,20 @@ int serve(const args & a) {
                             status = 500;
                             emsg = "decode failed";
                         } else {
-                            std::string text;
                             for (const decoded_seg & d : s->results) {
                                 text += (text.empty() ? "" : " ") + d.text;
                             }
-                            out = session_json(s->results, s->returned, s->inflight, true, text);
+                            segs_from = s->returned;
                             s->returned = s->results.size();
+                            // Re-decode at release (#88): the decision runs
+                            // under mu; the decode runs unlocked below — no
+                            // lock is held across a decode (lock order above).
+                            const uint64_t total = s->audio_base + (uint64_t) s->audio.size();
+                            if (!s->re_dropped && s->re_pcm.size() == total &&
+                                oxstt::should_redecode(s->results.size(), (double) total / SR,
+                                                       a.redecode_max_s)) {
+                                re_pcm.swap(s->re_pcm);
+                            }
                         }
                     } else {
                         status = 504;
@@ -1199,7 +1242,47 @@ int serve(const args & a) {
                 s->cv.notify_all();
             }
         }
+        bool redecoded = false;
+        if (status == 0 && !re_pcm.empty()) {
+            // The whole recording once, exactly the decode /transcribe runs —
+            // same chunking and edge pad inside decode_parakeet — serialized
+            // with the session worker and /transcribe by decode_mu.
+            const auto t0 = std::chrono::steady_clock::now();
+            result rr;
+            std::string rerr;
+            bool rok;
+            {
+                std::lock_guard<std::mutex> dl(decode_mu);
+                last_decode.store(now_s());
+                rok = decode_parakeet(ctx, a, re_pcm, rr, rerr);
+            }
+            last_decode.store(now_s());
+            const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - t0)
+                                     .count();
+            std::string rtext;
+            if (rok) {
+                for (const segment & sg : rr.segments) {
+                    rtext += (rtext.empty() ? "" : " ") + sg.text;
+                }
+            }
+            redecoded = rok && !rtext.empty();
+            text = oxstt::final_text(rok, rtext, text);
+            if (redecoded) {
+                fprintf(stderr, "ox-stt: session %s re-decoded %.2f s in %lld ms\n",
+                        id.c_str(), (double) re_pcm.size() / SR, ms);
+            } else {
+                // a failed or empty re-decode must never lose text: the
+                // streamed join answers instead, and one line says why
+                fprintf(stderr, "ox-stt: session %s re-decode %s; answering the streamed text\n",
+                        id.c_str(), rok ? "returned no text" : rerr.c_str());
+            }
+        }
         if (status == 0) {
+            // The session left `sessions` before draining and its inflight is
+            // 0: nothing else can reach its results, so the answer builds
+            // without mu.
+            out = session_json(s->results, segs_from, s->inflight, true, text, redecoded);
             res.set_content(out, "application/json");
         } else {
             res.status = status;

@@ -166,6 +166,9 @@ func STTServeArgs(cfg *config.Config, port int) []string {
 	if _, err := os.Stat(cfg.STTVADModel); err == nil {
 		args = append(args, "--vad", cfg.STTVADModel)
 	}
+	// Re-decode at release (#88): /finish on a cut session shorter than this
+	// decodes the whole recording once through the /transcribe path.
+	args = append(args, "--redecode-max-s", "15")
 	return args
 }
 
