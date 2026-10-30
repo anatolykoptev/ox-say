@@ -20,6 +20,22 @@ inline bool should_redecode(size_t n_segments, double total_s, double max_s) {
     return max_s > 0.0 && n_segments > 1 && total_s <= max_s;
 }
 
+// Whether the whole-recording decode fits the time budget, judged by the
+// session's own measured speed: decode_ms_sum milliseconds spent decoding
+// decoded_s_sum seconds of segments predicts decode_ms_sum / decoded_s_sum
+// ms per second of audio, times the recording's total_s. The re-decode runs
+// only when that prediction is at most budget_ms (inclusive). No measurement
+// (decoded_s_sum <= 0) or a budget <= 0 never fits: with nothing known the
+// cheap answer (the streamed text) wins. Apple Silicon predicts ~150 ms for
+// 15 s; an Intel CPU decode ~5 s (#378 item 4).
+inline bool redecode_fits(double decode_ms_sum, double decoded_s_sum, double total_s,
+                          double budget_ms) {
+    if (!(decoded_s_sum > 0.0) || !(budget_ms > 0.0)) {
+        return false;
+    }
+    return decode_ms_sum / decoded_s_sum * total_s <= budget_ms;
+}
+
 // What the finish answer's "text" is: the re-decoded text only when the
 // re-decode ran AND produced text. A failed or empty re-decode must never
 // lose the text the streamed segments already decoded — it answers the
