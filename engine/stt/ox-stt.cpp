@@ -754,11 +754,15 @@ int serve(const args & a) {
             // (or never arrived). Do not read; fail the session like a failed
             // decode, so /audio and /finish answer 500 and the client falls
             // back to one-shot.
-            fprintf(stderr,
-                    "ox-stt: segment [%llu,%llu) is outside the session buffer [%llu,%llu); failing the session\n",
-                    (unsigned long long) r.s, (unsigned long long) r.e,
-                    (unsigned long long) s.audio_base,
-                    (unsigned long long) (s.audio_base + (uint64_t) s.audio.size()));
+            // One line per failed session: a pump can emit several unreadable
+            // segments in a row, and only the first one is news.
+            if (!s.failed) {
+                fprintf(stderr,
+                        "ox-stt: segment [%llu,%llu) is outside the session buffer [%llu,%llu); failing the session\n",
+                        (unsigned long long) r.s, (unsigned long long) r.e,
+                        (unsigned long long) s.audio_base,
+                        (unsigned long long) (s.audio_base + (uint64_t) s.audio.size()));
+            }
             s.failed = true;
             s.cv.notify_all();
             return;

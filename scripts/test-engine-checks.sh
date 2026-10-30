@@ -127,7 +127,7 @@ done
 # the pinned ggml commit is orphaned upstream and stays fetchable only through the fork's pin tag
 # (#375), so an update that ran against .gitmodules' upstream URL could silently get nothing.
 tts_sec=$(awk '/^# --- tts-server/,/^# --- ox-stt/' "$root/engine/build.sh")
-url_ln=$(printf '%s\n' "$tts_sec" | grep -n 'config submodule\.ggml\.url "\$GGML_REPO"' | head -1 | cut -d: -f1)
+url_ln=$(printf '%s\n' "$tts_sec" | grep -n '^[[:space:]]*git -C "\$tts" config submodule\.ggml\.url "\$GGML_REPO"' | head -1 | cut -d: -f1)
 upd_ln=$(printf '%s\n' "$tts_sec" | grep -n '^[[:space:]]*git -C "\$tts" submodule update' | head -1 | cut -d: -f1)
 rc=0; { [ -n "$url_ln" ] && [ -n "$upd_ln" ] && [ "$url_ln" -lt "$upd_ln" ]; } || rc=1
 check "build.sh repoints submodule.ggml.url at GGML_REPO before submodule update" "$rc" 0
