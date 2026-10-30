@@ -580,6 +580,31 @@ func TestSTTSessionVADArg(t *testing.T) {
 	}
 }
 
+// The resident server spawns with re-decode at release on (#88): a cut
+// session's finish re-decodes the whole recording below 15 s.
+// Mutation: drop the --redecode-max-s append in STTServeArgs -> RED.
+func TestSTTServeRedecodeArg(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemonSTT(t, dir, nil, nil, nil)
+	log := sttSetupServer(t, d, dir)
+	sttVADModel(t, d, dir)
+	srv := transcriptionServer(t, d)
+	if code, body := sessReq(t, http.MethodPost, sessBase(srv), "application/json", []byte("{}")); code != http.StatusOK {
+		t.Fatalf("create: status %d body %s", code, body)
+	}
+	argv := lastServeArgv(t, log)
+	found := false
+	for i, a := range argv {
+		if a == "--redecode-max-s" {
+			found = i+1 < len(argv) && argv[i+1] == "15"
+		}
+	}
+	if !found {
+		t.Fatalf("serve argv %v missing --redecode-max-s 15", argv)
+	}
+}
+
 // Bodies past the caps are refused at the daemon: an audio chunk over
 // 1,920,000 bytes (30 s of 16 kHz f32le mono) and a JSON route body over
 // 4 KB both get 413 and never reach the server.

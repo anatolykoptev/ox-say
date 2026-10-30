@@ -334,6 +334,16 @@ prints JSON: `text`, `segments` and `words` (`w`, `s`, `e`, `p`; seconds).
   not taken and may be retried. Fairness: `decode_mu` is shared, so a long
   `/transcribe` delays session decodes and the other way round — a `/finish`
   can hit its 60 s bound queued behind a very long one-shot.
+  Re-decode at release (#88): streamed VAD joins lose ~1.5–2 WER points, so
+  `/finish` on a session that produced more than one segment and whose audio
+  is at most `--redecode-max-s` seconds (15; 0 disables) decodes the whole
+  recording once more — the same padded path `/transcribe` runs, under the
+  same `decode_mu` — and answers that text with `"redecoded":true`. The
+  session keeps its PCM while it can still qualify (the bound plus 1 s of
+  slack; ~1 MB) and frees it the moment it runs longer. A failed or empty
+  re-decode answers the streamed text instead (one stderr line); a
+  single-segment session never pays the extra decode. The decision is
+  unit-tested (`redecode_test.cpp`).
   HTTP guards (#65), as for tts-server's local-only patch: the server is for
   the daemon alone. A `Host` header that does not name loopback gets 403
   (DNS rebinding); a method other than GET, HEAD, POST and DELETE gets 405
