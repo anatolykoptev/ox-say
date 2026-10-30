@@ -86,15 +86,28 @@ public enum RecordPrompt {
 public enum StartBadge {
     public enum Action: Equatable { case keep, hide }
 
-    /// A failed start hides the question its OWN press showed — what the press did before the question existed (the
-    /// badge was hidden first, the prompt stays answered for this episode; the failure's own notice says why).
-    /// `questionSource`: the call source of the Record question on the badge now, nil when the badge is not one.
-    /// `pressedSource`: the source of the Record press that began this start, nil for a start that was not one (auto,
-    /// menu, hotkey). An unrelated start that fails must not take down an answerable question (#374.1). A started
-    /// recording has its own badge; a badge that is not the question is never touched.
-    public static func afterAttempt(started: Bool, questionSource: String?, pressedSource: String?) -> Action {
-        guard !started, let questionSource, questionSource == pressedSource else { return .keep }
-        return .hide
+    /// The Record question on the badge now.
+    public enum Question: Equatable {
+        /// The press's tab read is running; the buttons are disabled and nothing can be answered.
+        case checking(source: String)
+        /// The question itself, with its Record / Cancel buttons.
+        case confirm(source: String)
+    }
+
+    /// A failed start takes a question down — what the press did before the question existed (the badge was hidden
+    /// first, the prompt stays answered for this episode; the failure's own notice says why).
+    /// - `.checking` has no answerable button and ends with its own read; if a start that is not its press (auto, menu,
+    ///   hotkey) was in flight when the read returned, the read left the badge alone and this failure is the last thing
+    ///   that can take it down, so it always does.
+    /// - `.confirm` is answerable: only a failure of ITS OWN press (`pressedSource`, nil for a start that was not a
+    ///   press) hides it, an unrelated start that fails leaves it up (#374.1).
+    /// A started recording has its own badge; a badge that is not a question is never touched.
+    public static func afterAttempt(started: Bool, question: Question?, pressedSource: String?) -> Action {
+        guard !started, let question else { return .keep }
+        switch question {
+        case .checking: return .hide
+        case .confirm(let source): return source == pressedSource ? .hide : .keep
+        }
     }
 }
 

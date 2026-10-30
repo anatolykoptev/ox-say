@@ -354,7 +354,7 @@ final class MeetingWiringTests: XCTestCase {
     func testExportsGoThroughTheLedger() throws {
         let text = try controller()
         XCTAssertTrue(text.contains("MeetingExporter(defaults: host.defaults)"))
-        let export = try XCTUnwrap(body(text, of: "private func export(_ info: MeetingInfo)"))
+        let export = try XCTUnwrap(body(text, of: "private func export(_ info: MeetingInfo, say:"))
         XCTAssertTrue(export.contains("exporter.export(info)"))
         XCTAssertTrue(export.contains("noticeMeetingCopyKept"))
         XCTAssertTrue(export.contains("noticeMeetingFailed"))
@@ -443,8 +443,9 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(attempt.contains("let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started, pressed: offered ? source : nil) }"),
                       "only the press of the question settles it")
         let settle = try XCTUnwrap(body(text, of: "private func settleBadge(started: Bool, pressed: String?) {"))
-        XCTAssertTrue(settle.contains("StartBadge.afterAttempt(started: started, questionSource: question, pressedSource: pressed) == .hide { badge.hide() }"))
-        XCTAssertTrue(settle.contains("case .recordChecking(let shown)?, .recordConfirm(let shown)?: question = shown"))
+        XCTAssertTrue(settle.contains("StartBadge.afterAttempt(started: started, question: question, pressedSource: pressed) == .hide { badge.hide() }"))
+        XCTAssertTrue(settle.contains("case .recordChecking(let shown)?: question = .checking(source: shown)"))
+        XCTAssertTrue(settle.contains("case .recordConfirm(let shown)?: question = .confirm(source: shown)"))
         XCTAssertTrue(attempt.contains("guard current == nil, !starting, !isShutDown else { done(false); return }"))
         XCTAssertEqual(attempt.components(separatedBy: "done(false)").count - 1, 5,
                        "in-flight guard, install x2, consent, microphone check each report a failed start")

@@ -207,14 +207,28 @@ public struct SpeakersSavePlan: Equatable {
         self.refused = refused
     }
 
-    /// The sentence that names the refused voices (by what the transcript prints for them), or nil when none was
-    /// refused. `saved`: the rest of the draft was sent and accepted, so the sentence says that too and replaces the
-    /// plain "saved" notice.
-    public func notice(saved: Bool) -> String? {
+    /// The sentence that names the refused voices (by what the transcript prints for them), nil when none was refused.
+    public func refusedSentence(text: (L10nKey) -> String = { $0.text }) -> String? {
         guard !refused.isEmpty else { return nil }
-        let labels = refused.map(\.label).joined(separator: ", ")
-        return (saved ? L10nKey.noticeSpeakersSavedSomeRefused : L10nKey.noticeSpeakersRefused).text(labels)
+        return String(format: text(.noticeSpeakersRefused), refused.map(\.label).joined(separator: ", "))
     }
+}
+
+/// What a menu save says and does once the daemon has answered: ONE notice per save (a second banner would bury the
+/// first, and the status-line fallback keeps only the last sentence), and whether the panel opens again.
+public enum SpeakersSaved {
+    /// The save's single notice. `exportSentence`: what the notes-folder copy had to say (a copy left alone, a copy
+    /// that could not be made) — it stands in for "names saved", which would bury it. `refused`: the plan's sentence
+    /// for names that were not sent; it is appended, never a second notice.
+    public static func notice(refused: String?, notesQueued: Bool, exportSentence: String?,
+                              text: (L10nKey) -> String = { $0.text }) -> String {
+        let base = notesQueued ? text(.noticeSpeakersSaved) : (exportSentence ?? text(.noticeSpeakersNamesSaved))
+        guard let refused else { return base }
+        return base + " " + refused
+    }
+
+    /// The split was on offer and the answer says it is taken: the panel opens again on the new state (the voices).
+    public static func reopens(wasOffer: Bool, answer: SpeakersState) -> Bool { wasOffer && !answer.offersSplit }
 }
 
 /// The Recent Meetings rows of the Meetings submenu: meetings whose speakers can be named.

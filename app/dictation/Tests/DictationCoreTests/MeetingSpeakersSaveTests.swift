@@ -35,29 +35,23 @@ final class MeetingSpeakersSaveTests: XCTestCase {
         XCTAssertEqual(plan.refused.map(\.label), ["Speaker 2"])
     }
 
-    /// The notice names the refused voice(s), with and without a save before it.
-    /// Mutation: SpeakersSavePlan.notice, drop the `labels` argument from the text call -> RED.
-    func testTheNoticeNamesTheRefusedVoices() throws {
+    /// The sentence names the refused voice(s).
+    /// Mutation: SpeakersSavePlan.refusedSentence, drop the labels argument from the format -> RED.
+    func testTheSentenceNamesTheRefusedVoices() throws {
         try english {
             var d = SpeakerDraft(from: voices)
             d.names["them:2"] = "?!"
             d.names["them:3"] = "…"
-            let plan = d.savePlan(against: voices)
-            let refusedOnly = plan.notice(saved: false) ?? ""
-            XCTAssertTrue(refusedOnly.contains("Speaker 2, Speaker 3"), refusedOnly)
-            XCTAssertFalse(refusedOnly.lowercased().hasPrefix("saved"), "nothing was sent: it must not say saved")
-            let afterSave = plan.notice(saved: true) ?? ""
-            XCTAssertTrue(afterSave.contains("Speaker 2, Speaker 3"), afterSave)
-            XCTAssertTrue(afterSave.hasPrefix("Saved."), "the rest was saved and the sentence says so: \(afterSave)")
+            let sentence = d.savePlan(against: voices).refusedSentence() ?? ""
+            XCTAssertEqual(sentence, "Not saved: Speaker 2, Speaker 3. A name needs at least one letter or digit.")
         }
     }
 
-    func testACleanDraftHasNoRefusalNotice() {
+    func testACleanDraftHasNoRefusalSentence() {
         var d = SpeakerDraft(from: voices)
         d.names["them:1"] = "Anna"
         let plan = d.savePlan(against: voices)
-        XCTAssertNil(plan.notice(saved: true))
-        XCTAssertNil(plan.notice(saved: false))
+        XCTAssertNil(plan.refusedSentence())
         XCTAssertTrue(plan.refused.isEmpty)
         XCTAssertFalse(plan.edits.isEmpty)
     }
@@ -69,8 +63,42 @@ final class MeetingSpeakersSaveTests: XCTestCase {
             d.names["them:2"] = "?!"
             let plan = d.savePlan(against: voices)
             XCTAssertTrue(plan.edits.isEmpty)
-            XCTAssertTrue((plan.notice(saved: false) ?? "").contains("Speaker 2"))
+            XCTAssertTrue((plan.refusedSentence() ?? "").contains("Speaker 2"))
         }
+    }
+
+    /// One notice per save (#383 review): the refused names are appended to the sentence the save would have said, and the
+    /// copy's own sentence stands in for "names saved" when the export had one -- never a second banner.
+    /// Mutation: SpeakersSaved.notice, drop `base + " " + refused` (return `refused`) -> RED.
+    /// Mutation: SpeakersSaved.notice, drop the `exportSentence ??` (always "Names saved.") -> RED.
+    func testASaveSaysOneThingWithTheRefusedNamesInIt() throws {
+        try english {
+            var d = SpeakerDraft(from: voices)
+            d.names["them:1"] = "Anna"
+            d.names["them:2"] = "?!"
+            let plan = d.savePlan(against: voices)
+            let refused = plan.refusedSentence()
+            XCTAssertEqual(SpeakersSaved.notice(refused: refused, notesQueued: false, exportSentence: nil),
+                           "Names saved. Not saved: Speaker 2. A name needs at least one letter or digit.")
+            XCTAssertEqual(SpeakersSaved.notice(refused: refused, notesQueued: true, exportSentence: nil),
+                           "Speakers saved. The notes are being written again. Not saved: Speaker 2. A name needs at least one letter or digit.")
+            XCTAssertEqual(SpeakersSaved.notice(refused: refused, notesQueued: false, exportSentence: "The copy was edited, so it was kept."),
+                           "The copy was edited, so it was kept. Not saved: Speaker 2. A name needs at least one letter or digit.",
+                           "the export sentence is kept, not buried by \"saved\"")
+            XCTAssertEqual(SpeakersSaved.notice(refused: nil, notesQueued: false, exportSentence: nil), "Names saved.")
+            XCTAssertEqual(SpeakersSaved.notice(refused: nil, notesQueued: false, exportSentence: "The copy was edited, so it was kept."),
+                           "The copy was edited, so it was kept.")
+        }
+    }
+
+    /// The re-open after the split offer is taken is independent of refused names.
+    /// Mutation: SpeakersSaved.reopens, `wasOffer && !answer.offersSplit` -> `false` -> RED.
+    func testThePanelReopensWhenTheSplitWasTaken() {
+        let offer = SpeakersState(mode: "offer", split: false, speakers: [])
+        let taken = SpeakersState(mode: "offer", split: true, speakers: [])
+        XCTAssertTrue(SpeakersSaved.reopens(wasOffer: true, answer: taken))
+        XCTAssertFalse(SpeakersSaved.reopens(wasOffer: true, answer: offer))
+        XCTAssertFalse(SpeakersSaved.reopens(wasOffer: false, answer: taken))
     }
 
     /// #371.2: a leftover "?!" in a voice that is folded into another goes nowhere, so it blocks nothing.
@@ -114,9 +142,10 @@ final class MeetingSpeakersSaveTests: XCTestCase {
         let end = try XCTUnwrap(tail.range(of: "func saveSpeakers(id: String"))
         let body = String(tail[..<end.lowerBound])
         XCTAssertTrue(body.contains("let plan = draft.savePlan(against: state)"))
-        XCTAssertTrue(body.contains("plan.notice(saved: true)"))
-        XCTAssertTrue(body.contains("plan.notice(saved: false)"))
-        XCTAssertTrue(body.contains("try await saveSpeakers(id: id, edits: plan.edits)"))
+        XCTAssertTrue(body.contains("plan.refusedSentence()"))
+        XCTAssertTrue(body.contains("try await saveSpeakers(id: id, edits: plan.edits, refused: plan.refusedSentence())"))
+        XCTAssertTrue(body.contains("SpeakersSaved.reopens(wasOffer: wasOffer, answer: state)"), "the split re-open survives a partial save")
+        XCTAssertFalse(body.contains("host.notify(sentence); return }"), "no second notice after the save")
         XCTAssertFalse(body.contains(".refusal(against:"), "all-or-nothing is back")
     }
 
