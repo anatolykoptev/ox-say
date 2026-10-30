@@ -182,11 +182,27 @@ rm -f "$out/pins.env"
 
 # --- tts-server (qwentts.cpp) ---
 tts="$work/qwentts"
-stamp=$( { echo "$QWENTTS_REPO $QWENTTS_COMMIT $GGML_COMMIT"; ggml_patches | xargs cat; find "$here/patches/qwentts" -name '*.patch' -type f | LC_ALL=C sort | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
+stamp=$( { echo "$QWENTTS_REPO $QWENTTS_COMMIT $GGML_REPO $GGML_COMMIT"; ggml_patches | xargs cat; find "$here/patches/qwentts" -name '*.patch' -type f | LC_ALL=C sort | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
 if ! fresh "$tts" "$stamp"; then
     rm -rf "$tts"
     git clone --quiet "$QWENTTS_REPO" "$tts"
     git -C "$tts" checkout --quiet "$QWENTTS_COMMIT"
+    # Upstream ServeurpersoCom/ggml force-pushes master on every fork sync, so the pinned commit is
+    # kept alive only by the ox-say-pin-<first 7 of GGML_COMMIT> tag of our fork. A missing or
+    # misplaced tag fails the build here: the orphan SHA still fetches upstream today, so it would
+    # pass everything and break at GitHub's next gc. For an annotated tag the peeled refs/tags/*^{}
+    # line is what resolves to the commit.
+    ggml_tag="ox-say-pin-${GGML_COMMIT:0:7}"
+    ggml_refs=$(git ls-remote "$GGML_REPO" "refs/tags/$ggml_tag" "refs/tags/$ggml_tag^{}")
+    ggml_pin=$(printf '%s\n' "$ggml_refs" | awk -v r="refs/tags/$ggml_tag^{}" '$2 == r {print $1}')
+    [ -n "$ggml_pin" ] || ggml_pin=$(printf '%s\n' "$ggml_refs" | awk -v r="refs/tags/$ggml_tag" '$2 == r {print $1}')
+    if [ "$ggml_pin" != "$GGML_COMMIT" ]; then
+        echo "engine/build.sh: $GGML_REPO has no tag $ggml_tag at $GGML_COMMIT — push it to the fork first: git tag $ggml_tag $GGML_COMMIT; git push $GGML_REPO $ggml_tag" >&2
+        exit 1
+    fi
+    # submodule.ggml.url in .git/config overrides .gitmodules: the update below clones ggml from the
+    # fork, where the tag keeps the pinned commit fetchable.
+    git -C "$tts" config submodule.ggml.url "$GGML_REPO"
     git -C "$tts" submodule update --quiet --init --recursive
     actual=$(git -C "$tts/ggml" rev-parse HEAD)
     if [ "$actual" != "$GGML_COMMIT" ]; then

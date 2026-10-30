@@ -4,6 +4,14 @@
 ggml submodule is at the recorded commit, applies the patches below and
 builds a static `tts-server`.
 
+The pinned ggml commit is fetched from our fork (`GGML_REPO`,
+anatolykoptev/ggml2), not upstream `ServeurpersoCom/ggml`: upstream
+force-pushes `master` on every fork sync, which orphans the pinned commit for
+GitHub's gc. The fork keeps it reachable via tag `ox-say-pin-<first 7 of the
+commit>`; `build.sh` fails before the submodule fetch when that tag is absent
+or points elsewhere, so bumping `GGML_COMMIT` starts with pushing the tag to
+the fork.
+
 ## Metal shaders: precompiled libraries, embedded fallback
 
 Every engine binary always embeds the Metal sources
