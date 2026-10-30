@@ -354,9 +354,11 @@ static void t_diag_reset_between_segments() {
     s.add(20, 0.9f);   // seg 2: onset resets both counters
     s.add(13, 0.3f);   // closes seg 2
     const std::vector<seg_range> got = run(s);
-    if (!eq(got, { {1920, 29824}, {30592, 47232} })) {
+    // The 0.3 closing silence is a warm run (p >= warm_p), so seg 2 reaches back
+    // to seg 1's end (29824) instead of stopping at the 200 ms pre-pad (30592).
+    if (!eq(got, { {1920, 29824}, {29824, 47232} })) {
         dump("t_diag_reset_between_segments", got);
-        CHECK(false, "expected exactly [{1920,29824},{30592,47232}]");
+        CHECK(false, "expected exactly [{1920,29824},{29824,47232}]");
     }
     CHECK(got[0].min_p == 0.1f && got[0].quiet_ms == 416, "seg 1 diagnostics wrong");
     CHECK(got[1].min_p == 0.3f, "seg 2 min_p inherited seg 1's 0.1 dip");
@@ -403,6 +405,100 @@ static void t_cap_finish_min_p() {
     CHECK(got[1].min_p == 0.9f, "continuation min_p is the reset sentinel, not 0.9");
 }
 
+// Quiet leading speech (#379): the VAD hovers at 0.2-0.48 for the first words
+// and only crosses on_p later. The segment must start at the contiguous warm
+// stretch (p >= 0.15) before the onset, plus the usual 200 ms pre-pad, not at
+// the onset. Silence here is 0.02 (the real noise floor), not the 0.1 other
+// tests use.
+// RED when: segmenter.h onset `seg_start_` uses the onset window w0 instead of
+// the warm-stretch start (start 1920 -> 12160).
+static void t_warm_stretch_extends_onset() {
+    stream s;
+    s.add(10, 0.02f);  // 0..5119 silence
+    s.add(20, 0.30f);  // 5120..15359 quiet leading words, never reaches on_p
+    s.add(30, 0.90f);  // onset window starts at 15360
+    s.add(30, 0.02f);  // closes after 6400 samples of silence
+    const std::vector<seg_range> got = run(s);
+    if (!eq(got, { {1920, 15360 + 30 * 512 + 3200} })) {
+        dump("t_warm_stretch_extends_onset", got);
+        CHECK(false, "expected exactly [{1920,33920}]: warm start 5120 - 3200 pad");
+    }
+    CHECK(run(s, 1) == got && run(s, 9) == got, "warm start differs across chunk sizes");
+}
+
+// The reach back is bounded by warm_max_ms (1200 ms = 19200 samples).
+// RED when: the warm_max_ clamp is removed (start 19584 -> 0 = stretch start 1024 - pad).
+static void t_warm_stretch_bounded() {
+    stream s;
+    s.add(2, 0.02f);   // 0..1023
+    s.add(80, 0.30f);  // 1024..41983 long quiet stretch
+    s.add(30, 0.90f);  // onset at 41984
+    s.add(30, 0.02f);
+    const std::vector<seg_range> got = run(s);
+    // start = (41984 - 19200) - 3200 = 19584
+    if (!eq(got, { {19584, 41984 + 30 * 512 + 3200} })) {
+        dump("t_warm_stretch_bounded", got);
+        CHECK(false, "expected start 19584: 1200 ms warm bound + 200 ms pad");
+    }
+}
+
+// A warm stretch right after a segment never reaches into it.
+// RED when: the prev_end clamp at the onset is removed (second start falls
+// below the first segment's end 13440).
+static void t_warm_stretch_clamped_to_prev_end() {
+    stream s;
+    s.add(20, 0.90f);  // speech 0..10239
+    s.add(13, 0.20f);  // closing silence at p 0.2 (below off_p, above warm_p): end = 13440
+    s.add(30, 0.30f);  // quiet words
+    s.add(20, 0.90f);  // onset
+    s.add(13, 0.02f);
+    const std::vector<seg_range> got = run(s);
+    CHECK(got.size() == 2, "expected two segments");
+    if (got.size() == 2) {
+        CHECK(got[1].s >= got[0].e, "warm stretch reached into the previous segment");
+    }
+}
+
+// Below warm_p (0.15) nothing extends: same as t_one_utterance's pre-pad.
+// RED when: warm_p 0.15 -> 0.05 (the 0.1 stretch now extends the start).
+static void t_warm_below_threshold_ignored() {
+    stream s;
+    s.add(20, 0.10f);
+    s.add(30, 0.90f);
+    s.add(30, 0.10f);
+    const std::vector<seg_range> got = run(s);
+    if (!eq(got, { {7040, 28800} })) {
+        dump("t_warm_below_threshold_ignored", got);
+        CHECK(false, "expected exactly [{7040,28800}]");
+    }
+}
+
+// Warm windows are not speech: a blip after a quiet stretch is still dropped.
+// RED when: the warm windows are added to speech_samples_ (the blip survives).
+static void t_warm_stretch_not_speech() {
+    stream s;
+    s.add(10, 0.02f);
+    s.add(20, 0.30f);
+    s.add(3, 0.90f);   // 96 ms of onset-level probability
+    s.add(30, 0.02f);
+    CHECK(run(s).empty(), "warm stretch counted toward min_speech");
+}
+
+// The caller drops audio below floor(); it must keep the warm reach, or the
+// extended start would point at audio already erased.
+// RED when: floor() out of speech uses pad_pre only (floor 5120 -> 12928).
+static void t_warm_floor_keeps_reach() {
+    stream s;
+    s.add(10, 0.02f);
+    s.add(40, 0.30f);  // 40 warm windows: pos 25600, onset not reached
+    segmenter seg;
+    std::vector<seg_range> out;
+    seg.feed(s.p.data(), s.p.size(), s.x.data(), s.x.size(), out);
+    CHECK(out.empty(), "no segment yet");
+    // a later onset at pos 25600 starts at 25600 - 19200 - 3200 = 3200
+    CHECK(seg.floor() <= 3200, "floor() above the earliest start a future onset can claim");
+}
+
 int main() {
     t_one_utterance();
     t_short_pause_no_split();
@@ -421,6 +517,12 @@ int main() {
     t_diag_reset_between_segments();
     t_cap_straddle_quiet();
     t_cap_finish_min_p();
+    t_warm_stretch_extends_onset();
+    t_warm_stretch_bounded();
+    t_warm_stretch_clamped_to_prev_end();
+    t_warm_below_threshold_ignored();
+    t_warm_stretch_not_speech();
+    t_warm_floor_keeps_reach();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
