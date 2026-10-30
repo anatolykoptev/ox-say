@@ -143,7 +143,8 @@ final class MeetingSpeakersSaveTests: XCTestCase {
         let body = String(tail[..<end.lowerBound])
         // The decisions (one notice, nothing sent when all is refused) are SpeakersSaveRun's, see SpeakersSaveRunTests;
         // what stays pinned is that the panel goes through the plan and the runner.
-        XCTAssertTrue(body.contains("let plan = draft.savePlan(against: state)"))
+        XCTAssertTrue(body.contains("let plan = draft.savePlan(against: state, owner: owner)"))
+        XCTAssertTrue(body.contains("(try? await host.client.meeting(id: id))?.ownerLabel"))
         XCTAssertTrue(body.contains("try await SpeakersSaveRun.run(\n                        plan: plan,"))
         XCTAssertTrue(body.contains("notify: { host.notify($0) }"))
         XCTAssertEqual(body.components(separatedBy: "host.notify(").count - 1, 2, "the runner's notify and the failure's own")
@@ -262,14 +263,57 @@ final class MeetingSpeakersSaveTests: XCTestCase {
         }
     }
 
-    /// #384.5: the window's refusal line names the voice, with the plan's own sentence.
+    /// #384.5: the window's line names the voice, with the plan's own sentence.
     func testTheWindowsRefusalLineNamesTheVoice() throws {
         try english {
             var d = SpeakerDraft(from: voices)
             d.names["them:2"] = "?!"
-            XCTAssertEqual(d.refusalLine(against: voices), "Not saved: Speaker 2. A name needs at least one letter or digit.")
+            XCTAssertEqual(d.windowSave(against: voices).line, "Not saved: Speaker 2. A name needs at least one letter or digit.")
             d.names["them:2"] = "Anna"
-            XCTAssertNil(d.refusalLine(against: voices))
+            XCTAssertNil(d.windowSave(against: voices).line)
         }
+    }
+
+    /// #371.6 in the window: a draft the plan knows the daemon would answer with a 400 is never sent. Save is disabled
+    /// (`edits` nil) and the line names the voice with the duplicate reason; a draft without one is sent as it is.
+    /// Mutation: SpeakerDraft.windowSave, `edits: (line != nil || plan.edits.isEmpty) ? nil : plan.edits` -> `edits: plan.edits.isEmpty ? nil : plan.edits` -> RED.
+    func testTheWindowNeverSendsADuplicate() throws {
+        try english {
+            var d = SpeakerDraft(from: named)
+            d.names["them:3"] = "bob"
+            d.names["them:2"] = "Dora"                         // a fine rename beside the duplicate: still not sent
+            let save = d.windowSave(against: named)
+            XCTAssertNil(save.edits, "Save is disabled while a name is taken")
+            XCTAssertEqual(save.line, "Not saved: Speaker 3. Another speaker already has that name.")
+            d.names["them:3"] = "Dan"
+            let ok = d.windowSave(against: named)
+            XCTAssertNil(ok.line)
+            XCTAssertEqual(ok.edits?.rename, ["them:2": "Dora", "them:3": "Dan"])
+            XCTAssertNil(SpeakerDraft(from: named).windowSave(against: named).edits, "nothing changed: nothing to save")
+        }
+    }
+
+    // MARK: the owner's label (#371.6)
+
+    /// The daemon counts the person who recorded the call as a speaker: a name equal to theirs (case, spaces) is a duplicate.
+    /// Mutation: SpeakerDraft.dropDuplicates, delete `if key == ownerKey { return true }` -> RED.
+    func testANameEqualToTheOwnersIsADuplicate() throws {
+        var d = SpeakerDraft(from: named)
+        d.names["them:3"] = " ANNA "
+        d.names["them:1"] = "Robert"
+        let plan = d.savePlan(against: named, owner: "Anna")
+        XCTAssertEqual(plan.edits.rename, ["them:1": "Robert"])
+        XCTAssertEqual(plan.duplicates.map(\.id), ["them:3"])
+        XCTAssertNil(d.windowSave(against: named, owner: "anna").edits)
+        // not known (a failed read): left to the daemon, nothing is guessed
+        XCTAssertTrue(d.savePlan(against: named).duplicates.isEmpty)
+        XCTAssertTrue(d.savePlan(against: named, owner: "  ").duplicates.isEmpty)
+    }
+
+    /// The meeting the daemon serves carries the owner's label as `labels.me`.
+    func testTheMeetingDecodesTheOwnersLabel() throws {
+        let json = #"{"id":"m1","status":"done","labels":{"me":"Anna","them":"Others","speaker":"Speaker"}}"#
+        XCTAssertEqual(MeetingInfo.decode(Data(json.utf8))?.ownerLabel, "Anna")
+        XCTAssertNil(MeetingInfo.decode(Data(#"{"id":"m1","status":"done"}"#.utf8))?.ownerLabel)
     }
 }

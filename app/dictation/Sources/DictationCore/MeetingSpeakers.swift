@@ -163,16 +163,27 @@ public struct SpeakerDraft: Equatable {
 
     /// What the menu's panel does on OK: sends the renames and merges that are fine and names the voices whose name
     /// it refused, instead of dropping the whole save for one of them.
-    public func savePlan(against state: SpeakersState) -> SpeakersSavePlan {
+    /// `owner`: the meeting's own label for the person who recorded it (`MeetingInfo.ownerLabel`); the daemon counts
+    /// the owner as a speaker too. nil when it is not known: that name is then left to the daemon.
+    public func savePlan(against state: SpeakersState, owner: String? = nil) -> SpeakersSavePlan {
         var e = edits(against: state)
-        let duplicates = dropDuplicates(from: &e, against: state)
+        let duplicates = dropDuplicates(from: &e, against: state, owner: owner)
         return SpeakersSavePlan(edits: e, refused: refusedSpeakers(against: state), duplicates: duplicates)
     }
 
-    /// The sentence for the main window's refusal line: the voices whose typed name holds no letter or digit, named
-    /// like the menu names them. nil when every name can be sent.
-    public func refusalLine(against state: SpeakersState, text: (L10nKey) -> String = { $0.text }) -> String? {
-        SpeakersSavePlan(edits: SpeakerEdits(), refused: refusedSpeakers(against: state)).refusedSentence(text: text)
+    /// What the main window's Save button and its line under the speakers do. The window does not send a part of a draft
+    /// (that is the menu's way): while a typed name is refused or already taken, `edits` is nil (Save is disabled) and
+    /// `line` names the voices and the reason, so a draft that the daemon would answer with a 400 is never sent.
+    public struct WindowSave: Equatable {
+        public var line: String?
+        public var edits: SpeakerEdits?
+    }
+
+    public func windowSave(against state: SpeakersState, owner: String? = nil,
+                           text: (L10nKey) -> String = { $0.text }) -> WindowSave {
+        let plan = savePlan(against: state, owner: owner)
+        let line = plan.notSavedSentence(text: text)
+        return WindowSave(line: line, edits: (line != nil || plan.edits.isEmpty) ? nil : plan.edits)
     }
 
     /// How the daemon reads a name when it compares two (`internal/meeting/speakers.go` checkDistinct):
@@ -194,9 +205,10 @@ public struct SpeakerDraft: Equatable {
 
     /// Takes out of `e` the renames the daemon would 400 the whole save for: a name that, after the merges and the other
     /// renames of this draft, reads like another live speaker's (the daemon compares with `nameKey`). The lower id of
-    /// two that collide keeps its name. A name that is cleared has no default label to compare, so it is not checked.
+    /// two that collide keeps its name; a name equal to the owner's is a duplicate of the owner. A name that is cleared has no default label to compare, so it is not checked.
     /// Names with no letter or digit never reach `e` (they are `refusedSpeakers`), so one name is reported once.
-    private func dropDuplicates(from e: inout SpeakerEdits, against state: SpeakersState) -> [SpeakerInfo] {
+    private func dropDuplicates(from e: inout SpeakerEdits, against state: SpeakersState, owner: String?) -> [SpeakerInfo] {
+        let ownerKey = owner.map(Self.nameKey).flatMap { $0.isEmpty ? nil : $0 }
         let merges = standingMerges(against: state)
         let shownVoices = state.mode == "auto" || (state.mode == "offer" && split)
         let standing = state.speakers.filter { merges[$0.id] == nil && $0.isVoice == shownVoices }
@@ -210,6 +222,7 @@ public struct SpeakerDraft: Equatable {
                 guard let name = e.rename[id], !name.isEmpty else { return false }
                 let own = merges[id] ?? id
                 let key = Self.nameKey(name)
+                if key == ownerKey { return true }
                 return standing.contains { $0.id != own && label($0).map(Self.nameKey) == key }
             }
             guard let last = clashing.last else { return dropped.sorted { $0.id < $1.id } }

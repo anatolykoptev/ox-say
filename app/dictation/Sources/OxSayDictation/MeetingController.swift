@@ -694,10 +694,12 @@ final class MeetingController: NSObject, MeetingFeature {
         Task { @MainActor in
             do {
                 var state = try await host.client.speakers(id: id)
+                // The owner counts as a speaker in the daemon's duplicate check; unknown (a failed read) leaves that name to it.
+                let owner = (try? await host.client.meeting(id: id))?.ownerLabel
                 let title = recent.first(where: { $0.id == id })?.title ?? ""
                 while let draft = SpeakersPrompt.ask(title: title, state: state) {
                     // What the daemon would refuse with a 400 is not sent and is named; the rest of the draft is.
-                    let plan = draft.savePlan(against: state)
+                    let plan = draft.savePlan(against: state, owner: owner)
                     let wasOffer = state.offersSplit
                     guard let answer = try await SpeakersSaveRun.run(
                         plan: plan,
