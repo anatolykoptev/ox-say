@@ -29,6 +29,10 @@ static void t_should_redecode() {
     CHECK(!oxstt::should_redecode(2, 15.001, 15.0), "past the bound is out");
     CHECK(!oxstt::should_redecode(2, 10.0, 0.0), "0 disables");
     CHECK(!oxstt::should_redecode(2, 10.0, -1.0), "a negative bound disables");
+    // Only the max_s > 0.0 clause decides these: an empty recording fits any
+    // bound, so losing the "0 disables" rule would let them through.
+    CHECK(!oxstt::should_redecode(2, 0.0, 0.0), "0 disables even an empty recording");
+    CHECK(!oxstt::should_redecode(2, 0.0, -1.0), "a negative bound disables even an empty recording");
 }
 
 // final_text(): the re-decoded text answers only when the re-decode ran and

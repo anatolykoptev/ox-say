@@ -1174,6 +1174,8 @@ int serve(const args & a) {
         int status = 0;  // 0 = ok, else the error response
         std::string out, emsg, text;
         size_t segs_from = 0;            // results index the answer starts at
+        std::vector<decoded_seg> segs_snap;  // results snapshot the answer is built from
+        size_t pending_snap = 0;         // inflight snapshot the answer is built from
         std::vector<float> re_pcm;       // the whole recording when a re-decode stays possible
         {
             std::unique_lock<std::mutex> sl(s->mu);
@@ -1221,12 +1223,20 @@ int serve(const args & a) {
                             // Re-decode at release (#88): the decision runs
                             // under mu; the decode runs unlocked below — no
                             // lock is held across a decode (lock order above).
-                            const uint64_t total = s->audio_base + (uint64_t) s->audio.size();
-                            if (!s->re_dropped && s->re_pcm.size() == total &&
-                                oxstt::should_redecode(s->results.size(), (double) total / SR,
+                            const uint64_t drained_total =
+                                s->audio_base + (uint64_t) s->audio.size();
+                            if (!s->re_dropped && s->re_pcm.size() == drained_total &&
+                                oxstt::should_redecode(s->results.size(),
+                                                       (double) drained_total / SR,
                                                        a.redecode_max_s)) {
                                 re_pcm.swap(s->re_pcm);
                             }
+                            // The answer is built after the re-decode, outside
+                            // mu — an /audio that found this session before
+                            // the erase can still lock mu then, and a live
+                            // read would race its enqueued decodes.
+                            segs_snap = s->results;
+                            pending_snap = s->inflight;
                         }
                     } else {
                         status = 504;
@@ -1237,8 +1247,12 @@ int serve(const args & a) {
                     emsg = "VAD failed";
                 }
             }
+            // Erased from the map and drained or failed: dead seals the
+            // session — an /audio still holding it sees dead and 404s instead
+            // of enqueueing work nobody waits on; on the error path queued
+            // and in-flight jobs drop their results.
+            s->dead = true;
             if (status != 0) {
-                s->dead = true;  // queued and in-flight jobs drop their results
                 s->cv.notify_all();
             }
         }
@@ -1279,10 +1293,11 @@ int serve(const args & a) {
             }
         }
         if (status == 0) {
-            // The session left `sessions` before draining and its inflight is
-            // 0: nothing else can reach its results, so the answer builds
-            // without mu.
-            out = session_json(s->results, segs_from, s->inflight, true, text, redecoded);
+            // An /audio that found this session before the erase can still
+            // hold it: dead (set under mu) turns it away, and the answer
+            // builds from the mu-held snapshot — s->results and s->inflight
+            // are never read unlocked.
+            out = session_json(segs_snap, segs_from, pending_snap, true, text, redecoded);
             res.set_content(out, "application/json");
         } else {
             res.status = status;
