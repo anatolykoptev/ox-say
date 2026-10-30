@@ -1,5 +1,5 @@
 diff --git a/app/server/runtime.cpp b/app/server/runtime.cpp
-index 1259ddf5..cebd62fd 100644
+index 1259ddf5..7f134475 100644
 --- a/app/server/runtime.cpp
 +++ b/app/server/runtime.cpp
 @@ -2124,6 +2124,29 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
@@ -32,7 +32,18 @@ index 1259ddf5..cebd62fd 100644
      bool voice_field_is_preset = false;
      const auto * preset = select_voice_preset(model, body, voice_field_is_preset);
      // Resolved once at registration (refresh_model_option_flags): calling
-@@ -2187,16 +2210,15 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
+@@ -2162,7 +2185,9 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
+             const std::string voice_name = value->as_string();
+             if (const auto wav = resolve_voice_library_wav(*config_.voice_dir, voice_name)) {
+                 voice.speaker = engine::runtime::VoiceReference{};
+-                voice.speaker->audio = minitts::cli::read_audio_buffer(*wav);
++                // ox-say: a stored voice is a reference file like any other, so it takes the
++                // same regular-file and 5 MiB checks as the voice_ref paths (ox-say #366).
++                voice.speaker->audio = read_reference_file(*wav, "voice");
+                 has_voice = true;
+                 voice_library_resolved = true;
+                 if (can_inject_reference_text && request.options.find("reference_text") == request.options.end()) {
+@@ -2187,16 +2212,15 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
              voice.speaker = engine::runtime::VoiceReference{};
          }
          if (value->is_string()) {
@@ -52,7 +63,7 @@ index 1259ddf5..cebd62fd 100644
                  // 4/3 expansion plus slack for a data URI prefix and whitespace.
                  constexpr size_t kMaxVoiceRefB64Length = ((kMaxVoiceRefBytes + 2) / 3) * 4 + 4096;
                  const auto & data = engine::io::json::require_string(*value, "data");
-@@ -2223,6 +2245,15 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
+@@ -2223,6 +2247,15 @@ engine::runtime::TaskRequest ServerState::build_speech_request(const LoadedModel
      if (const auto * value = body.find("reference_text")) {
          request.options["reference_text"] = value->as_string();
      }
