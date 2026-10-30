@@ -749,6 +749,20 @@ int serve(const args & a) {
             return;  // the segmenter never emits one; never let one underflow the copy below
         }
         session & s = *sp;
+        if (!oxstt::seg_readable(r, s.audio_base, (uint64_t) s.audio.size())) {
+            // The floor() invariant broke: the audio this range names is gone
+            // (or never arrived). Do not read; fail the session like a failed
+            // decode, so /audio and /finish answer 500 and the client falls
+            // back to one-shot.
+            fprintf(stderr,
+                    "ox-stt: segment [%llu,%llu) is outside the session buffer [%llu,%llu); failing the session\n",
+                    (unsigned long long) r.s, (unsigned long long) r.e,
+                    (unsigned long long) s.audio_base,
+                    (unsigned long long) (s.audio_base + (uint64_t) s.audio.size()));
+            s.failed = true;
+            s.cv.notify_all();
+            return;
+        }
         decode_job j;
         j.sess = sp;
         j.s = r.s;
