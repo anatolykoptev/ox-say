@@ -35,6 +35,8 @@ public enum UpdateDialogs {
         switch prompt {
         case .upToDate(let version):
             return UpdateDialog(title: text(.updateUptodateTitle), text: fill(.updateUptodateText, text, version), buttons: [text(.commonOk)])
+        case .developmentBuild(let version):
+            return UpdateDialog(title: text(.updateDevTitle), text: fill(.updateDevText, text, version), buttons: [text(.commonOk)])
         case .failed(let reason):
             return UpdateDialog(title: text(.updateCheckFailedTitle), text: reason, buttons: [text(.commonRetry), text(.commonOk)])
         case .available(let remote, let local, let notes, let url):

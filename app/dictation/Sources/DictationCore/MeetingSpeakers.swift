@@ -142,14 +142,29 @@ public struct SpeakerDraft: Equatable {
         return MeetingLimits.hasLetterOrDigit(typed) ? typed : stored
     }
 
-    /// The sentence to show instead of saving: a typed name that holds no letter or digit, which the daemon refuses
-    /// and which cannot be repaired by dropping characters. nil when every name can be sent.
-    public func refusal(against state: SpeakersState) -> L10nKey? {
-        for s in state.speakers {
+    /// The voices whose typed name the daemon refuses and which cannot be repaired by dropping characters: no letter
+    /// or digit in it. A voice that is being folded into another in this draft is left out: `edits` never sends its
+    /// name (it goes to the voice it joins, or nowhere), so a leftover there blocks nothing.
+    public func refusedSpeakers(against state: SpeakersState) -> [SpeakerInfo] {
+        let merges = standingMerges(against: state)
+        return state.speakers.filter { s in
+            let newlyFolded = merges[s.id] != nil && merges[s.id] != s.mergedTo
+            if newlyFolded { return false }
             let typed = MeetingLimits.clamp(MeetingLimits.speakerName(names[s.id] ?? s.name), to: MeetingLimits.nameMax)
-            if !typed.isEmpty, !MeetingLimits.hasLetterOrDigit(typed) { return .speakersNameNeedsLetter }
+            return !typed.isEmpty && !MeetingLimits.hasLetterOrDigit(typed)
         }
-        return nil
+    }
+
+    /// The sentence to show instead of saving (the main window disables Save on it): a typed name that holds no letter
+    /// or digit. nil when every name can be sent.
+    public func refusal(against state: SpeakersState) -> L10nKey? {
+        refusedSpeakers(against: state).isEmpty ? nil : .speakersNameNeedsLetter
+    }
+
+    /// What the menu's panel does on OK: sends the renames and merges that are fine and names the voices whose name
+    /// it refused, instead of dropping the whole save for one of them.
+    public func savePlan(against state: SpeakersState) -> SpeakersSavePlan {
+        SpeakersSavePlan(edits: edits(against: state), refused: refusedSpeakers(against: state))
     }
 
     /// The picks of this draft that can all stand together: every target is a voice that is not itself folded away,
@@ -180,6 +195,40 @@ public struct SpeakerDraft: Equatable {
         guard !mergeInto.values.contains(id) else { return [] }
         return state.speakers.filter { $0.isVoice && $0.id != id && mergeInto[$0.id] == nil }
     }
+}
+
+/// The menu panel's save: the edits to send and the voices whose typed name was refused (not sent, stored name kept).
+public struct SpeakersSavePlan: Equatable {
+    public var edits: SpeakerEdits
+    public var refused: [SpeakerInfo]
+
+    public init(edits: SpeakerEdits, refused: [SpeakerInfo]) {
+        self.edits = edits
+        self.refused = refused
+    }
+
+    /// The sentence that names the refused voices (by what the transcript prints for them), nil when none was refused.
+    public func refusedSentence(text: (L10nKey) -> String = { $0.text }) -> String? {
+        guard !refused.isEmpty else { return nil }
+        return String(format: text(.noticeSpeakersRefused), refused.map(\.label).joined(separator: ", "))
+    }
+}
+
+/// What a menu save says and does once the daemon has answered: ONE notice per save (a second banner would bury the
+/// first, and the status-line fallback keeps only the last sentence), and whether the panel opens again.
+public enum SpeakersSaved {
+    /// The save's single notice. `exportSentence`: what the notes-folder copy had to say (a copy left alone, a copy
+    /// that could not be made) — it stands in for "names saved", which would bury it. `refused`: the plan's sentence
+    /// for names that were not sent; it is appended, never a second notice.
+    public static func notice(refused: String?, notesQueued: Bool, exportSentence: String?,
+                              text: (L10nKey) -> String = { $0.text }) -> String {
+        let base = notesQueued ? text(.noticeSpeakersSaved) : (exportSentence ?? text(.noticeSpeakersNamesSaved))
+        guard let refused else { return base }
+        return base + " " + refused
+    }
+
+    /// The split was on offer and the answer says it is taken: the panel opens again on the new state (the voices).
+    public static func reopens(wasOffer: Bool, answer: SpeakersState) -> Bool { wasOffer && !answer.offersSplit }
 }
 
 /// The Recent Meetings rows of the Meetings submenu: meetings whose speakers can be named.

@@ -742,7 +742,7 @@ func TestTranscribeErrors(t *testing.T) {
 }
 
 // An ox-stt that fails says why on stderr, and the dictation error carries those words (#258).
-// Mutation: internal/stt/stt.go Transcribe, change `strings.TrimSpace(exitErr.Tail)` to `""` -> RED.
+// Mutation: internal/stt/stt.go engineFailureReason, change `strings.TrimSpace(e.Tail)` to `""` -> RED.
 func TestEngineErrorCarriesTheStderrTail(t *testing.T) {
 	dir := t.TempDir()
 	opts, _ := fakeOpts(t, dir)
@@ -752,6 +752,43 @@ func TestEngineErrorCarriesTheStderrTail(t *testing.T) {
 	var eErr *EngineError
 	if !errors.As(err, &eErr) || !strings.Contains(err.Error(), "fake-stt: transcription failed") {
 		t.Fatalf("err = %v (%T), want an EngineError carrying the stderr tail", err, err)
+	}
+}
+
+// A per-call ox-stt that is killed prints nothing, so the stderr tail is empty: the error must still say what
+// happened (the signal), not end in "ox-stt failed: " (#372.1).
+// Mutation: internal/stt/stt.go engineFailureReason, `status := e.Err.Error()` -> `status := ""` -> RED.
+func TestKilledEngineSaysWhy(t *testing.T) {
+	dir := t.TempDir()
+	opts, _ := fakeOpts(t, dir)
+	src := testutil.WriteTinyWAV(t, dir, "ok.wav")
+	t.Setenv("OXSAY_FAKE_STT_KILL", "1")
+	_, err := Transcribe(context.Background(), src, opts)
+	var eErr *EngineError
+	if !errors.As(err, &eErr) {
+		t.Fatalf("err = %v (%T), want an EngineError", err, err)
+	}
+	msg := err.Error()
+	if strings.HasSuffix(strings.TrimSpace(msg), "failed:") {
+		t.Fatalf("empty reason: %q", msg)
+	}
+	if !strings.Contains(msg, "signal: killed") {
+		t.Fatalf("err = %q, want the signal named", msg)
+	}
+	if !strings.Contains(msg, "speech engine stopped") {
+		t.Fatalf("err = %q, want a sentence a person can read", msg)
+	}
+}
+
+// A failure that does print keeps its words and gains the status.
+func TestEngineErrorKeepsTheTailAndAddsTheStatus(t *testing.T) {
+	dir := t.TempDir()
+	opts, _ := fakeOpts(t, dir)
+	src := testutil.WriteTinyWAV(t, dir, "ok.wav")
+	t.Setenv("OXSAY_FAKE_STT_EXIT", "1")
+	_, err := Transcribe(context.Background(), src, opts)
+	if err == nil || !strings.Contains(err.Error(), "fake-stt: transcription failed") || !strings.Contains(err.Error(), "exit status 1") {
+		t.Fatalf("err = %v, want the stderr words and the exit status", err)
 	}
 }
 

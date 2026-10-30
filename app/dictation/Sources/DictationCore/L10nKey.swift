@@ -148,6 +148,7 @@ public enum L10nKey: String, CaseIterable {
     case speakersFailed = "speakers.failed"
     case noticeSpeakersSaved = "notice.speakers.saved"
     case noticeSpeakersNamesSaved = "notice.speakers.names_saved"
+    case noticeSpeakersRefused = "notice.speakers.refused"
     // Why a meeting's voices were not told apart: the menu rows under "Speakers".
     case menuMeetingSpeakersRetry = "menu.meeting.speakers_retry"
     case diarFailedEngine = "meeting.diar.failed.engine_error"
@@ -418,6 +419,8 @@ public enum L10nKey: String, CaseIterable {
     case updateStudioButton = "update.studio.button"
     case updateUptodateTitle = "update.uptodate.title"
     case updateUptodateText = "update.uptodate.text"
+    case updateDevTitle = "update.dev.title"
+    case updateDevText = "update.dev.text"
     case updateCheckFailedTitle = "update.check_failed.title"
     case updateAvailableTitle = "update.available.title"
     case updateAvailableHave = "update.available.have"

@@ -226,7 +226,12 @@ for entry in "${models[@]}"; do
         echo "copy    $name"
         cp "$OX_SAY_MODELS_FROM/$name" "$part"
     else
-        echo "fetch   $name"
+        # A rerun that continues a .part says so (and from how much): the log of a resume and of a restart must differ.
+        if [ -s "$part" ]; then
+            echo "resuming $name from $(( $(wc -c < "$part" | tr -d ' ') / 1048576 )) MB"
+        else
+            echo "fetch   $name"
+        fi
         # -sS: no progress meter (it would flood the daemon's stderr tail), errors kept
         # A dead line must end, not hang (an install waits on this): connect in 15 s, and give up on a
         # transfer that stays under 1 KB/s for $stall_secs s (an average over that window; a slow but alive

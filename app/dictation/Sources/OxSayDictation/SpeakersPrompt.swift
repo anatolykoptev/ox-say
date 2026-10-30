@@ -104,7 +104,9 @@ enum SpeakersPrompt {
 
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         withExtendedLifetime(nameCap) {}
-        for (id, field) in fields { draft.names[id] = MeetingLimits.cap(field.stringValue, to: MeetingLimits.nameMax) }
+        for (id, field) in fields {
+            draft.names[id] = MeetingLimits.cap(field.stringValue, to: MeetingLimits.nameMax, keeping: draft.names[id] ?? "")
+        }
         for (id, pick) in picks {
             draft.mergeInto[id] = pick.selectedItem?.representedObject as? String
         }

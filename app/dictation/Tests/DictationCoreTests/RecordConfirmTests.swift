@@ -104,13 +104,46 @@ final class RecordConfirmTests: XCTestCase {
         XCTAssertFalse(VoicesRetry.proceeds(asks: true, confirmed: { false }))
     }
 
-    /// A start that did not record must not leave the question's disabled buttons over the call.
-    /// Mutation: StartBadge.afterAttempt, `!started && ...` -> `false` -> RED.
-    func testAFailedStartTakesTheQuestionDown() {
-        XCTAssertEqual(StartBadge.afterAttempt(started: false, showingRecordQuestion: true), .hide)
-        XCTAssertEqual(StartBadge.afterAttempt(started: true, showingRecordQuestion: true), .keep)
-        XCTAssertEqual(StartBadge.afterAttempt(started: false, showingRecordQuestion: false), .keep,
+    /// A start that did not record must not leave the question's disabled buttons over the call -- but an ANSWERABLE
+    /// question (Record / Cancel) only goes down with its own press: an unrelated start (auto, menu, hotkey) that fails
+    /// leaves it up (#374.1).
+    /// Mutation: StartBadge.afterAttempt, `guard !started` -> `guard false` -> RED.
+    /// Mutation: StartBadge.afterAttempt, `.confirm`: `source == pressedSource ? .hide : .keep` -> `.hide` -> RED.
+    /// Mutation: MeetingController.start, `pressed: offered ? source : nil` -> `pressed: source` -> RED (wiring pin, testThePromptsRecordAsksBeforeItStarts).
+    func testAFailedStartTakesItsOwnQuestionDown() {
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, question: .confirm(source: "zoom"), pressedSource: "zoom"), .hide)
+        XCTAssertEqual(StartBadge.afterAttempt(started: true, question: .confirm(source: "zoom"), pressedSource: "zoom"), .keep)
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, question: nil, pressedSource: "zoom"), .keep,
                        "a recording badge or another prompt is never touched")
+    }
+
+    func testAnUnrelatedFailedStartLeavesTheAnswerableQuestionUp() {
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, question: .confirm(source: "zoom"), pressedSource: nil), .keep,
+                       "a start that was not the question's press")
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, question: .confirm(source: "zoom"), pressedSource: "teams"), .keep,
+                       "the press of another call's prompt")
+    }
+
+    /// The sequence behind the stuck badge: the press shows `.checking` (buttons disabled); an unrelated start begins and
+    /// is in flight when the read returns, so the resume leaves the badge alone (`.nothing`); that start then fails with
+    /// no press behind it. Nothing but this failure can take the checking state down, so it must.
+    /// Mutation: StartBadge.afterAttempt, `.checking: return .hide` -> `return source == pressedSource ? .hide : .keep` (the scoping of today's code) -> RED.
+    func testAnUnrelatedFailureTakesDownAStrandedCheckingBadge() {
+        XCTAssertEqual(RecordResume.decide(recordingOrStarting: true, badge: .checkingThis), .nothing, "the resume leaves the badge")
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, question: .checking(source: "zoom"), pressedSource: nil), .hide)
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, question: .checking(source: "zoom"), pressedSource: "zoom"), .hide)
+        XCTAssertEqual(StartBadge.afterAttempt(started: true, question: .checking(source: "zoom"), pressedSource: nil), .keep,
+                       "a start that recorded has its own badge")
+    }
+
+    /// What the badge shows when the read returns, as `RecordResume.Badge` (#374.2): the press's own checking state is
+    /// `.checkingThis`, another call's is `.other`.
+    /// Mutation: RecordResume.badge, invert `shown == source` (`checking(let shown)` -> `shown != source`) -> RED.
+    func testTheBadgeStateIsMappedForThisPress() {
+        XCTAssertEqual(RecordResume.badge(shown: .checking(source: "zoom"), pressed: "zoom"), .checkingThis)
+        XCTAssertEqual(RecordResume.badge(shown: .checking(source: "teams"), pressed: "zoom"), .other)
+        XCTAssertEqual(RecordResume.badge(shown: .nothing, pressed: "zoom"), .empty)
+        XCTAssertEqual(RecordResume.badge(shown: .other, pressed: "zoom"), .other)
     }
 
     /// The read returns up to ~1.5 s later: a running recording's badge is left alone, another prompt is not

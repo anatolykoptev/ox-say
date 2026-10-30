@@ -236,14 +236,17 @@ final class MeetingController: NSObject, MeetingFeature {
 
     // MARK: recording
 
-    /// A start that did not reach `showRecording` must not leave the Record question's disabled buttons up.
-    private func settleBadge(started: Bool) {
-        let question: Bool
+    /// A start that did not reach `showRecording` must not leave the Record question's disabled buttons up. Only the
+    /// question the start's own press showed (`pressed`: its call source, nil for a start that was not a press): an
+    /// unrelated start that fails leaves another question up, which the user can still answer.
+    private func settleBadge(started: Bool, pressed: String?) {
+        let question: StartBadge.Question?
         switch badge.mode {
-        case .recordChecking?, .recordConfirm?: question = true
-        default: question = false
+        case .recordChecking(let shown)?: question = .checking(source: shown)
+        case .recordConfirm(let shown)?: question = .confirm(source: shown)
+        default: question = nil
         }
-        if StartBadge.afterAttempt(started: started, showingRecordQuestion: question) == .hide { badge.hide() }
+        if StartBadge.afterAttempt(started: started, question: question, pressedSource: pressed) == .hide { badge.hide() }
     }
 
     /// `offered`: the user pressed Record on the call prompt — the one-time explanation runs for it like for an
@@ -251,7 +254,7 @@ final class MeetingController: NSObject, MeetingFeature {
     private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {
         // Every end of the attempt that is not a recording settles the badge: the Record question's buttons
         // are disabled, so one left up would cover the call for good (see `settleBadge`).
-        let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started) }
+        let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started, pressed: offered ? source : nil) }
         guard current == nil, !starting, !isShutDown else { done(false); return }
         // An install relaunches the app. A recording started now would be ended by it: automatic starts are offered
         // instead (MeetingPolicy.onCallStarted), a manual one asks the user to wait.
@@ -460,12 +463,13 @@ final class MeetingController: NSObject, MeetingFeature {
         badge.showRecordChecking(source: source)
         Task { @MainActor in
             let tabs = await watcher.callTabs(of: bundleID, source: source)
-            let badgeNow: RecordResume.Badge
+            let shownNow: RecordResume.Shown
             switch badge.mode {
-            case .recordChecking(let shown)?: badgeNow = shown == source ? .checkingThis : .other
-            case nil: badgeNow = .empty
-            default: badgeNow = .other
+            case .recordChecking(let shown)?: shownNow = .checking(source: shown)
+            case nil: shownNow = .nothing
+            default: shownNow = .other
             }
+            let badgeNow = RecordResume.badge(shown: shownNow, pressed: source)
             switch RecordResume.decide(recordingOrStarting: current != nil || starting, badge: badgeNow) {
             case .nothing: break
             case .apply: applyRecord(RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs), answer: nil, source: source)
@@ -648,16 +652,17 @@ final class MeetingController: NSObject, MeetingFeature {
     /// Copies the meeting into the notes folder through the ledger (`MeetingExporter`) and says what the user must
     /// hear: a copy left alone, a copy that could not be made.
     @discardableResult
-    private func export(_ info: MeetingInfo) -> (dir: URL?, failed: Bool, told: Bool) {
+    private func export(_ info: MeetingInfo, say: ((String) -> Void)? = nil) -> (dir: URL?, failed: Bool, told: Bool) {
+        let say = say ?? { [host] in host.notify($0) }
         let outcome = exporter.export(info)
         switch outcome {
         case .written(let dir), .refreshed(let dir): return (dir, false, false)
         case .keptEdited(let dir):
-            host.notify(L10nKey.noticeMeetingCopyKept.text)
+            say(L10nKey.noticeMeetingCopyKept.text)
             return (dir, false, true)
         case .alreadyExported: return (nil, false, false)
         case .failed(let why):
-            host.notify(L10nKey.noticeMeetingFailed.text(why))
+            say(L10nKey.noticeMeetingFailed.text(why))
             return (nil, true, true)
         }
     }
@@ -689,13 +694,15 @@ final class MeetingController: NSObject, MeetingFeature {
                 var state = try await host.client.speakers(id: id)
                 let title = recent.first(where: { $0.id == id })?.title ?? ""
                 while let draft = SpeakersPrompt.ask(title: title, state: state) {
-                    // A name the daemon would refuse with a 400 is told here instead of sent.
-                    if let refusal = draft.refusal(against: state) { host.notify(refusal.text); return }
-                    let edits = draft.edits(against: state)
-                    if edits.isEmpty { return }
+                    // What the daemon would refuse with a 400 is not sent and is named; the rest of the draft is.
+                    let plan = draft.savePlan(against: state)
+                    if plan.edits.isEmpty {
+                        if let sentence = plan.refusedSentence() { host.notify(sentence) }
+                        return
+                    }
                     let wasOffer = state.offersSplit
-                    state = try await saveSpeakers(id: id, edits: edits)
-                    if !(wasOffer && !state.offersSplit) { return }
+                    state = try await saveSpeakers(id: id, edits: plan.edits, refused: plan.refusedSentence())
+                    if !SpeakersSaved.reopens(wasOffer: wasOffer, answer: state) { return }
                 }
             } catch {
                 log.error("meeting speakers failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
@@ -706,18 +713,22 @@ final class MeetingController: NSObject, MeetingFeature {
 
     /// Sends the edits and follows them up. The menu's panel and the main window both come through here.
     func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState {
+        try await saveSpeakers(id: id, edits: edits, refused: nil)
+    }
+
+    /// `refused`: the menu panel's sentence for names it did not send. It joins the save's one notice.
+    func saveSpeakers(id: String, edits: SpeakerEdits, refused: String?) async throws -> SpeakersState {
         let state = try await host.client.editSpeakers(id: id, edits: edits)
         MeetingSettings.setExportStale(id, true, host.defaults)
         // Decide from the daemon's answer, never from the shape of the edit.
+        var exportSentence: String?
         if state.notesQueued {
             track(id)
-            host.notify(L10nKey.noticeSpeakersSaved.text)
-        } else {
-            // A copy left alone or not made has said so; "saved" would bury that sentence.
-            var said = false
-            if let info = try? await host.client.meeting(id: id, withTexts: true) { said = export(info).told }
-            if !said { host.notify(L10nKey.noticeSpeakersNamesSaved.text) }
+        } else if let info = try? await host.client.meeting(id: id, withTexts: true) {
+            // A copy left alone or not made has a sentence to say; it is the notice, "saved" would bury it.
+            _ = export(info, say: { exportSentence = $0 })
         }
+        host.notify(SpeakersSaved.notice(refused: refused, notesQueued: state.notesQueued, exportSentence: exportSentence))
         return state
     }
 

@@ -354,7 +354,7 @@ final class MeetingWiringTests: XCTestCase {
     func testExportsGoThroughTheLedger() throws {
         let text = try controller()
         XCTAssertTrue(text.contains("MeetingExporter(defaults: host.defaults)"))
-        let export = try XCTUnwrap(body(text, of: "private func export(_ info: MeetingInfo)"))
+        let export = try XCTUnwrap(body(text, of: "private func export(_ info: MeetingInfo, say:"))
         XCTAssertTrue(export.contains("exporter.export(info)"))
         XCTAssertTrue(export.contains("noticeMeetingCopyKept"))
         XCTAssertTrue(export.contains("noticeMeetingFailed"))
@@ -432,16 +432,20 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertFalse(press.contains("badge.hide()"))
         XCTAssertFalse(press.contains("host.alert"), "no modal alert mid-call")
         XCTAssertTrue(press.contains("RecordResume.decide(recordingOrStarting: current != nil || starting, badge: badgeNow)"))
-        XCTAssertTrue(press.contains("case .recordChecking(let shown)?: badgeNow = shown == source ? .checkingThis : .other"))
+        XCTAssertTrue(press.contains("case .recordChecking(let shown)?: shownNow = .checking(source: shown)"))
+        XCTAssertTrue(press.contains("let badgeNow = RecordResume.badge(shown: shownNow, pressed: source)"), "the mapping is core's")
+        XCTAssertFalse(press.contains("shown == source"), "the comparison lives in RecordResume.badge")
         XCTAssertTrue(press.contains("case .nothing: break"))
         XCTAssertTrue(press.contains("case .start: start(origin: .manual, source: source, offered: true)"))
         // Every end of a start that is not a recording settles the badge: the question's buttons are
         // disabled, so a stuck one would cover the call for good.
         let attempt = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
-        XCTAssertTrue(attempt.contains("let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started) }"))
-        let settle = try XCTUnwrap(body(text, of: "private func settleBadge(started: Bool) {"))
-        XCTAssertTrue(settle.contains("StartBadge.afterAttempt(started: started, showingRecordQuestion: question) == .hide { badge.hide() }"))
-        XCTAssertTrue(settle.contains("case .recordChecking?, .recordConfirm?: question = true"))
+        XCTAssertTrue(attempt.contains("let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started, pressed: offered ? source : nil) }"),
+                      "only the press of the question settles it")
+        let settle = try XCTUnwrap(body(text, of: "private func settleBadge(started: Bool, pressed: String?) {"))
+        XCTAssertTrue(settle.contains("StartBadge.afterAttempt(started: started, question: question, pressedSource: pressed) == .hide { badge.hide() }"))
+        XCTAssertTrue(settle.contains("case .recordChecking(let shown)?: question = .checking(source: shown)"))
+        XCTAssertTrue(settle.contains("case .recordConfirm(let shown)?: question = .confirm(source: shown)"))
         XCTAssertTrue(attempt.contains("guard current == nil, !starting, !isShutDown else { done(false); return }"))
         XCTAssertEqual(attempt.components(separatedBy: "done(false)").count - 1, 5,
                        "in-flight guard, install x2, consent, microphone check each report a failed start")

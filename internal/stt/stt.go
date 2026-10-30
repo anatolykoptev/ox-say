@@ -348,7 +348,7 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		}
 		var exitErr *oneshot.ExitError
 		if errors.As(err, &exitErr) {
-			return nil, &EngineError{fmt.Sprintf("stt: ox-stt failed: %s", strings.TrimSpace(exitErr.Tail))}
+			return nil, &EngineError{"stt: ox-stt failed: " + engineFailureReason(exitErr)}
 		}
 		return nil, fmt.Errorf("stt: cannot run %s: %w", opts.Bin, err)
 	}
@@ -357,6 +357,16 @@ func Transcribe(ctx context.Context, audioPath string, opts Options) (*Result, e
 		return nil, &EngineError{fmt.Sprintf("stt: ox-stt returned invalid JSON: %v", err)}
 	}
 	return &res, nil
+}
+
+// engineFailureReason says why a per-call ox-stt ended: its last words on stderr plus how it ended (the exit status
+// or the signal). A child killed from outside prints nothing, so the status is the whole reason then (#372.1).
+func engineFailureReason(e *oneshot.ExitError) string {
+	status := e.Err.Error() // "exit status 1", "signal: killed"
+	if tail := strings.TrimSpace(e.Tail); tail != "" {
+		return tail + " (" + status + ")"
+	}
+	return "the speech engine stopped (" + status + ")"
 }
 
 // transcribeServer posts the converted WAV to the resident ox-stt server.

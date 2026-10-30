@@ -230,6 +230,28 @@ func TestTranscribeUploadTempRemoved(t *testing.T) {
 	}
 }
 
+// #372.1 — a per-call ox-stt killed from outside prints nothing; the HTTP 500 must still say what happened instead
+// of ending in "ox-stt failed: ".
+// Mutation: internal/stt/stt.go engineFailureReason, drop the status (`status := e.Err.Error()` -> `""`) -> RED.
+func TestTranscribeKilledEngineNamesTheSignal(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+	sttSetup(t, d, dir)
+	srv := transcriptionServer(t, d)
+	t.Setenv("OXSAY_FAKE_STT_KILL", "1")
+	resp := postTranscription(t, srv.URL+"/v1/audio/transcriptions",
+		testutil.TinyWAV(), map[string]string{"model": "parakeet"})
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body %s)", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "signal: killed") || strings.Contains(string(body), "ox-stt failed: \"") {
+		t.Fatalf("body = %s, want the signal named and a non-empty reason", body)
+	}
+}
+
 // S6 — response formats: verbose_json is OpenAI's shape (duration, segments
 // start/end, words word/start/end) built from the engine output; ox_json
 // carries the engine's words (w/s/e/p) verbatim; srt/vtt render segment times;

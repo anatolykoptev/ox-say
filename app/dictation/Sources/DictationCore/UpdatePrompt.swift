@@ -6,6 +6,8 @@ public enum UpdatePrompt: Equatable {
     case upToDate(version: String)
     case available(remote: String, local: String, notes: String, url: URL?)
     case failed(reason: String)
+    /// This copy is a development build (version 0.0.0): no release is offered to it.
+    case developmentBuild(version: String)
 
     /// The longest release-notes excerpt an alert shows, in characters.
     public static let notesLimit = 1200
@@ -14,6 +16,8 @@ public enum UpdatePrompt: Equatable {
     public static func make(local: String,
                             fetch: Result<(tag: String, url: URL?, body: String), UpdateError>,
                             text: (L10nKey) -> String = { $0.text }) -> UpdatePrompt {
+        // Before the fetch result: a dev build has nothing to be offered, so a failed check has nothing to say either.
+        if UpdateChecker.isDevelopmentBuild(local) { return .developmentBuild(version: local) }
         switch fetch {
         case .failure(let error):
             return .failed(reason: error.message(text: text))

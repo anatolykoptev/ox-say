@@ -86,11 +86,28 @@ public enum RecordPrompt {
 public enum StartBadge {
     public enum Action: Equatable { case keep, hide }
 
-    /// A failed start hides the question — what the press did before the question existed (the badge was
-    /// hidden first, the prompt stays answered for this episode; the failure's own notice says why). A
-    /// started recording has its own badge; a badge that is not the question is never touched.
-    public static func afterAttempt(started: Bool, showingRecordQuestion: Bool) -> Action {
-        !started && showingRecordQuestion ? .hide : .keep
+    /// The Record question on the badge now.
+    public enum Question: Equatable {
+        /// The press's tab read is running; the buttons are disabled and nothing can be answered.
+        case checking(source: String)
+        /// The question itself, with its Record / Cancel buttons.
+        case confirm(source: String)
+    }
+
+    /// A failed start takes a question down — what the press did before the question existed (the badge was hidden
+    /// first, the prompt stays answered for this episode; the failure's own notice says why).
+    /// - `.checking` has no answerable button and ends with its own read; if a start that is not its press (auto, menu,
+    ///   hotkey) was in flight when the read returned, the read left the badge alone and this failure is the last thing
+    ///   that can take it down, so it always does.
+    /// - `.confirm` is answerable: only a failure of ITS OWN press (`pressedSource`, nil for a start that was not a
+    ///   press) hides it, an unrelated start that fails leaves it up (#374.1).
+    /// A started recording has its own badge; a badge that is not a question is never touched.
+    public static func afterAttempt(started: Bool, question: Question?, pressedSource: String?) -> Action {
+        guard !started, let question else { return .keep }
+        switch question {
+        case .checking: return .hide
+        case .confirm(let source): return source == pressedSource ? .hide : .keep
+        }
     }
 }
 
@@ -113,6 +130,26 @@ public enum RecordResume {
         case apply
         /// Another prompt owns the badge: do not overwrite it, but the press is still honoured — start.
         case start
+    }
+
+    /// What the app's badge is showing when the read returns, as far as this decision cares.
+    public enum Shown: Equatable {
+        /// No badge.
+        case nothing
+        /// The checking state of the Record press for `source`.
+        case checking(source: String)
+        /// Any other state (a prompt, a question, a recording, a consent question).
+        case other
+    }
+
+    /// `shown` against the press that is waiting for its read: the checking state counts as this press's only when it
+    /// is for the same call source (#374.2).
+    public static func badge(shown: Shown, pressed source: String) -> Badge {
+        switch shown {
+        case .nothing: return .empty
+        case .checking(let shown): return shown == source ? .checkingThis : .other
+        case .other: return .other
+        }
     }
 
     public static func decide(recordingOrStarting: Bool, badge: Badge) -> Action {
