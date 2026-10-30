@@ -59,6 +59,9 @@ final class CallWatcher {
 
     private var watch = CallWatch()
     private var runners: [String: QueuedScriptRunner] = [:]
+    /// The Record press's all-tab read: rare and user-initiated, so no dropWhileBusy — a second press
+    /// simply queues behind the first's read.
+    private var confirmRunner: QueuedScriptRunner?
     private let tabReads = BrowserTabReads(queue: DispatchQueue(label: "io.github.anatolykoptev.ox-say.dictation.tabreads",
                                                                  qos: .utility, attributes: .concurrent))
     private var timer: Timer?
@@ -126,5 +129,17 @@ final class CallWatcher {
         runners[bundleID] = runner
         tabReads.request(bundleID) { BrowserTabURL.read(bundleID: bundleID, runner: runner) }
         return tabReads.latest(bundleID) ?? .unreadable
+    }
+
+    /// The Record press's question for a browser holder (#342.1): is some tab still a call page — the call
+    /// may go on in a background tab the poll's front-tab read cannot see. A fresh all-tab read, off the
+    /// main thread and bounded like the poll's. Only a settled consent is used: an undetermined one must
+    /// not raise macOS's prompt out of context, so every other answer — like every non-answer of the read
+    /// itself — is `.unknown`, and the caller asks instead.
+    func callTabs(of bundleID: String) async -> RecordCheck.Tabs {
+        guard consentFor(bundleID) == .granted else { return .unknown }
+        let runner = confirmRunner ?? QueuedScriptRunner(label: "confirm.\(bundleID)")
+        confirmRunner = runner
+        return await Task.detached { BrowserTabURLs.read(bundleID: bundleID, runner: runner) }.value
     }
 }

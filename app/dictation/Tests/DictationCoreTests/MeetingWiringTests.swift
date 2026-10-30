@@ -401,8 +401,58 @@ final class MeetingWiringTests: XCTestCase {
         let text = try controller()
         let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
         XCTAssertTrue(start.contains("if origin == .auto || offered, !consentReminderAccepted() { return }"))
-        XCTAssertTrue(text.contains("self?.start(origin: .manual, source: self?.lastSource ?? \"\", offered: true)"),
+        XCTAssertTrue(text.contains("start(origin: .manual, source: source, offered: true)"),
                       "the prompt's Record is the offered start")
+    }
+
+    /// #342.1 + #348(b): the prompt's Record asks whether the call still looks live before it starts — the
+    /// offer's own staleness per OfferLifetime, and for a browser holder a fresh read of ALL its tabs (the
+    /// call may go on in a background tab; the poll's front-tab read cannot say). A native holder has no
+    /// tabs to re-read. `.ask` raises the sentence and only its Record starts, exactly the offered start.
+    /// Mutation: badge.onRecord back to `self?.badge.hide(); self?.start(origin: .manual, ...)` -> RED.
+    /// Mutation: `watcher.callTabs(of: holder)` -> `RecordCheck.Tabs.callPage` -> RED.
+    func testThePromptsRecordAsksBeforeItStarts() throws {
+        let text = try controller()
+        XCTAssertTrue(text.contains("badge.onRecord = { [weak self] in self?.recordFromPrompt() }"),
+                      "the press routes to the check, not straight to start")
+        let press = try XCTUnwrap(body(text, of: "private func recordFromPrompt() {"))
+        XCTAssertTrue(press.contains("guard case .prompt(let source) = badge.mode"))
+        XCTAssertTrue(press.contains("offerLife.stale(now: Date(), offer: .prompt(source: source), liveSource: liveCall?.source)"),
+                      "the offer's own staleness, not a second timer")
+        XCTAssertTrue(press.contains("watcher.callTabs(of: holder)"), "a fresh all-tab read, not the poll's cached front tab")
+        XCTAssertTrue(press.contains("RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs)"))
+        XCTAssertTrue(press.contains("RecordCheck.decide(offerStale: stale, holder: .native, tabs: .unknown)"))
+        let finish = try XCTUnwrap(body(text, of: "private func finishPromptRecord(_ verdict: RecordCheck.Verdict, source: String) {"))
+        XCTAssertTrue(finish.contains("host.alert(L10nKey.meetingRecordMayHaveEnded.text, \"\", [L10nKey.badgeRecord.text, L10nKey.commonCancel.text])"))
+        XCTAssertTrue(finish.contains("start(origin: .manual, source: source, offered: true)"))
+        // The holder is captured when the prompt goes up and the live call is kept per poll: the press may
+        // come after the call (and its hold on the mic) ended.
+        XCTAssertTrue(text.contains("promptHolder = tick.call?.bundleID"))
+        XCTAssertTrue(text.contains("liveCall = tick.call"))
+        let callTabs = try XCTUnwrap(body(try source("OxSayDictation/CallWatcher.swift"),
+                                          of: "func callTabs(of bundleID: String) async -> RecordCheck.Tabs {"))
+        XCTAssertTrue(callTabs.contains("guard consentFor(bundleID) == .granted else { return .unknown }"),
+                      "an undetermined consent sends no Apple Event, and \"cannot tell\" is .unknown, never .callPage")
+        XCTAssertTrue(callTabs.contains("BrowserTabURLs.read(bundleID: bundleID, runner: runner)"))
+    }
+
+    /// #340.2: the voices Try Again — the menu's row and the window's button both land in
+    /// requestVoicesAgain — asks before it remakes speaker names and notes; a meeting with neither
+    /// retries as before.
+    /// Mutation: requestVoicesAgain, delete the `VoicesRetry.asksFirst`/`host.alert` block -> RED.
+    func testTheVoicesRetryAsksBeforeItRemakesNamesAndNotes() throws {
+        // The signature also matches UnsupportedMeetings' stub — slice from the real controller first.
+        let whole = try controller()
+        let tail = String(whole[try XCTUnwrap(whole.range(of: "final class MeetingController")).lowerBound...])
+        let retry = try XCTUnwrap(body(tail, of: "func requestVoicesAgain(id: String) async throws {"))
+        XCTAssertTrue(retry.contains("host.client.meeting(id: id, withTexts: true)"), "the notes' presence is read")
+        XCTAssertTrue(retry.contains("host.client.speakers(id: id)"), "the names are read")
+        XCTAssertTrue(retry.contains("        if VoicesRetry.asksFirst(info: info, speakers: speakers),\n"),
+                      "the confirm is gated by the pure decision alone — no `false &&` / `true ||` around it")
+        XCTAssertTrue(retry.contains("host.alert(L10nKey.meetingVoicesRetryRedo.text, \"\", [L10nKey.commonRetry.text, L10nKey.commonCancel.text])"))
+        let ask = try XCTUnwrap(retry.range(of: "VoicesRetry.asksFirst"))
+        let post = try XCTUnwrap(retry.range(of: "host.client.retryMeetingVoices(id: id)"))
+        XCTAssertLessThan(ask.lowerBound, post.lowerBound, "the check comes before the POST")
     }
 
     /// The one-time dialog is a consent reminder: it can cancel this start, and it never writes the global mode or

@@ -319,6 +319,10 @@
 "meeting.copied" = "Notes copied as Markdown.";
 "meeting.folder.none" = "Nothing has been saved to the notes folder yet.";
 "meeting.voices.retry" = "Find voices again";
+/* Record pressed on a call prompt whose call may be gone (#342.1); buttons Record / Cancel. */
+"meeting.record.may_have_ended" = "The call may have ended. Record anyway?";
+/* Before the voices Try Again on a meeting with names or notes (#340.2); buttons Try Again / Cancel. */
+"meeting.voices_retry.redo" = "Speaker names and notes will be made again.";
 "permission.notifications" = "Notifications";
 "permission.notifications.why" = "Telling you when your notes are ready";
 "meeting.error.not_found" = "This recording no longer exists.";

@@ -74,3 +74,42 @@ public enum BrowserTabURL {
         }
     }
 }
+
+/// Every tab of a browser, asked through Apple Events — the Record press's question (#342.1): the call the
+/// prompt is about may have moved to a background tab the poll's front-tab read cannot see. Bounded like
+/// the poll's read; every non-answer is `.unknown` to the caller.
+public enum BrowserTabURLs {
+    /// All windows' all tabs as one newline-joined text; a window that cannot answer does not sink the read
+    /// of the rest. nil for anything that is not a bundle id — it is spliced into AppleScript source.
+    public static func script(bundleID: String) -> String? {
+        guard bundleID.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil else { return nil }
+        return """
+        if application id "\(bundleID)" is running then
+            with timeout of 1 second
+                tell application id "\(bundleID)"
+                    set found to ""
+                    set AppleScript's text item delimiters to linefeed
+                    repeat with w in windows
+                        try
+                            set found to found & ((URL of every tab of w) as text) & linefeed
+                        end try
+                    end repeat
+                    return found
+                end tell
+            end timeout
+        end if
+        return ""
+        """
+    }
+
+    /// What the read answered, for `RecordCheck.decide`: some tab a call page, none, or no answer at all.
+    public static func read(bundleID: String, runner: AppleScriptRunner) -> RecordCheck.Tabs {
+        guard let source = script(bundleID: bundleID) else { return .unknown }
+        switch runner.run(source, timeout: 1.5) {
+        case .value(let text):
+            return text.split(separator: "\n").contains { MeetingURL.source(of: String($0)) != nil } ? .callPage : .noCallPage
+        case .denied, .timedOut, .failed:
+            return .unknown
+        }
+    }
+}

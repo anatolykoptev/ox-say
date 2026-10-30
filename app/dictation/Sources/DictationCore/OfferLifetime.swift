@@ -44,6 +44,17 @@ public struct OfferLifetime {
     /// Calls and consent questions are only raised while the global mode watches for calls.
     public static func offersAllowed(mode: CallGlobalMode) -> Bool { mode != .off }
 
+    /// Would the next poll take this `.prompt` offer down — the call absent for `callGoneAfter`, or another
+    /// call live? The Record press asks this (#342.1): a peek, not a verdict — `absentSince` is read, never
+    /// moved, and a non-prompt offer is never stale for it.
+    public func stale(now: Date, offer: Offer, liveSource: String?) -> Bool {
+        guard case .prompt(let source) = offer else { return false }
+        if liveSource == source { return false }
+        if liveSource != nil { return true }
+        guard let absentSince else { return false }
+        return now.timeIntervalSince(absentSince) >= Self.callGoneAfter
+    }
+
     /// One poll. `liveSource` is the call the watcher sees now (nil = none; a browser call counts while its browser
     /// holds the microphone, whichever tab is in front, #241), `users` the microphone holders. `.hide` when the badge's `offer` must come down, with why.
     public mutating func verdict(now: Date, offer: Offer?, liveSource: String?, users: [MicUser]) -> Verdict {
