@@ -102,12 +102,17 @@ public enum BrowserTabURLs {
         """
     }
 
-    /// What the read answered, for `RecordCheck.decide`: some tab a call page, none, or no answer at all.
-    public static func read(bundleID: String, runner: AppleScriptRunner) -> RecordCheck.Tabs {
-        guard let source = script(bundleID: bundleID) else { return .unknown }
-        switch runner.run(source, timeout: 1.5) {
+    /// What the read answered, for `RecordCheck.decide`: some tab a page of THIS call's kind (`source`, as the
+    /// prompt names it — a leftover Meet tab must not vouch for a Zoom prompt; an empty source accepts any
+    /// call page), none, or no answer at all.
+    public static func read(bundleID: String, source: String, runner: AppleScriptRunner) -> RecordCheck.Tabs {
+        guard let script = script(bundleID: bundleID) else { return .unknown }
+        switch runner.run(script, timeout: 1.5) {
         case .value(let text):
-            return text.split(separator: "\n").contains { MeetingURL.source(of: String($0)) != nil } ? .callPage : .noCallPage
+            return text.split(separator: "\n").contains {
+                guard let found = MeetingURL.source(of: String($0)) else { return false }
+                return source.isEmpty || found == source
+            } ? .callPage : .noCallPage
         case .denied, .timedOut, .failed:
             return .unknown
         }

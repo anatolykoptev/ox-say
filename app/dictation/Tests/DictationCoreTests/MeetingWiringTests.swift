@@ -406,40 +406,59 @@ final class MeetingWiringTests: XCTestCase {
     }
 
     /// #342.1 + #348(b): the prompt's Record asks whether the call still looks live before it starts — the
-    /// offer's own staleness per OfferLifetime, and for a browser holder a fresh read of ALL its tabs (the
-    /// call may go on in a background tab; the poll's front-tab read cannot say). A native holder has no
-    /// tabs to re-read. `.ask` raises the sentence and only its Record starts, exactly the offered start.
-    /// Mutation: badge.onRecord back to `self?.badge.hide(); self?.start(origin: .manual, ...)` -> RED.
-    /// Mutation: `watcher.callTabs(of: holder)` -> `RecordCheck.Tabs.callPage` -> RED.
+    /// offer's own staleness per OfferLifetime, and for a browser holder a fresh read of ALL its tabs for THIS
+    /// call's source. The question is on the badge (no modal mid-call); the decisions are RecordPrompt's
+    /// (tested in RecordConfirmTests), the glue is pinned here line by line.
+    /// Mutation: badge.onRecord back to `self?.badge.hide(); self?.start(...)` -> RED.
+    /// Mutation: `watcher.callTabs(of: bundleID, source: source)` -> `RecordCheck.Tabs.callPage` -> RED.
     func testThePromptsRecordAsksBeforeItStarts() throws {
         let text = try controller()
         XCTAssertTrue(text.contains("badge.onRecord = { [weak self] in self?.recordFromPrompt() }"),
                       "the press routes to the check, not straight to start")
+        XCTAssertTrue(text.contains("badge.onConfirmRecord = { [weak self] in self?.answerRecordQuestion(.record) }"))
+        XCTAssertTrue(text.contains("badge.onConfirmCancel = { [weak self] in self?.answerRecordQuestion(.cancel) }"),
+                      "Cancel is the cancel answer")
         let press = try XCTUnwrap(body(text, of: "private func recordFromPrompt() {"))
-        XCTAssertTrue(press.contains("guard case .prompt(let source) = badge.mode"))
+        XCTAssertTrue(press.contains("guard case .prompt(let source) = badge.mode else {"))
+        XCTAssertTrue(press.contains("start(origin: .manual, source: lastSource, offered: true)"), "never a silent no-op")
         XCTAssertTrue(press.contains("offerLife.stale(now: Date(), offer: .prompt(source: source), liveSource: liveCall?.source)"),
                       "the offer's own staleness, not a second timer")
-        XCTAssertTrue(press.contains("watcher.callTabs(of: holder)"), "a fresh all-tab read, not the poll's cached front tab")
+        XCTAssertTrue(press.contains("let holder = RecordPrompt.holder(bundleID: promptHolder)"), "the holder kind is the pure function's")
+        XCTAssertTrue(press.contains("guard holder == .browser, let bundleID = promptHolder else {"))
+        XCTAssertTrue(press.contains("watcher.callTabs(of: bundleID, source: source)"), "a fresh all-tab read for this call's source")
         XCTAssertTrue(press.contains("RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs)"))
-        XCTAssertTrue(press.contains("RecordCheck.decide(offerStale: stale, holder: .native, tabs: .unknown)"))
-        let finish = try XCTUnwrap(body(text, of: "private func finishPromptRecord(_ verdict: RecordCheck.Verdict, source: String) {"))
-        XCTAssertTrue(finish.contains("host.alert(L10nKey.meetingRecordMayHaveEnded.text, \"\", [L10nKey.badgeRecord.text, L10nKey.commonCancel.text])"))
-        XCTAssertTrue(finish.contains("start(origin: .manual, source: source, offered: true)"))
+        XCTAssertTrue(press.contains("RecordCheck.decide(offerStale: stale, holder: holder, tabs: .unknown)"))
+        XCTAssertTrue(press.contains("badge.showRecordChecking(source: source)"), "the badge stays up during the read")
+        XCTAssertFalse(press.contains("badge.hide()"))
+        XCTAssertFalse(press.contains("host.alert"), "no modal alert mid-call")
+        let answer = try XCTUnwrap(body(text, of: "private func answerRecordQuestion(_ answer: RecordPrompt.Answer) {"))
+        XCTAssertTrue(answer.contains("applyRecord(.ask, answer: answer, source: source)"))
+        let apply = try XCTUnwrap(body(text, of: "private func applyRecord(_ verdict: RecordCheck.Verdict, answer: RecordPrompt.Answer?, source: String) {"))
+        XCTAssertTrue(apply.contains("switch RecordPrompt.outcome(verdict: verdict, answer: answer) {"))
+        XCTAssertTrue(apply.contains("case .start: start(origin: .manual, source: source, offered: true)"))
+        XCTAssertTrue(apply.contains("case .ask: badge.showRecordConfirm(source: source)"))
+        XCTAssertTrue(apply.contains("case .backToPrompt: badge.showPrompt(source: source)"))
+        // The question's states count as the prompt for OfferLifetime, which alone takes them down.
+        XCTAssertTrue(text.contains("case .prompt(let source)?, .recordChecking(let source)?, .recordConfirm(let source)?: offer = .prompt(source: source)"))
         // The holder is captured when the prompt goes up and the live call is kept per poll: the press may
         // come after the call (and its hold on the mic) ended.
         XCTAssertTrue(text.contains("promptHolder = tick.call?.bundleID"))
         XCTAssertTrue(text.contains("liveCall = tick.call"))
         let callTabs = try XCTUnwrap(body(try source("OxSayDictation/CallWatcher.swift"),
-                                          of: "func callTabs(of bundleID: String) async -> RecordCheck.Tabs {"))
+                                          of: "func callTabs(of bundleID: String, source: String) async -> RecordCheck.Tabs {"))
         XCTAssertTrue(callTabs.contains("guard consentFor(bundleID) == .granted else { return .unknown }"),
                       "an undetermined consent sends no Apple Event, and \"cannot tell\" is .unknown, never .callPage")
-        XCTAssertTrue(callTabs.contains("BrowserTabURLs.read(bundleID: bundleID, runner: runner)"))
+        XCTAssertTrue(callTabs.contains("BrowserTabURLs.read(bundleID: bundleID, source: source, runner: runner)"))
+        XCTAssertTrue(callTabs.contains("dropWhileBusy: true"))
+        let watcherText = try source("OxSayDictation/CallWatcher.swift")
+        XCTAssertTrue(watcherText.contains("@MainActor\n    func callTabs("), "the per-browser runner table is main-actor only")
+        XCTAssertTrue(watcherText.contains("confirmRunners[bundleID] ?? QueuedScriptRunner(label: \"confirm.\\(bundleID)\""))
     }
 
     /// #340.2: the voices Try Again — the menu's row and the window's button both land in
     /// requestVoicesAgain — asks before it remakes speaker names and notes; a meeting with neither
-    /// retries as before.
-    /// Mutation: requestVoicesAgain, delete the `VoicesRetry.asksFirst`/`host.alert` block -> RED.
+    /// retries as before. Cancel (not the first button) stops it before the POST.
+    /// Mutation: requestVoicesAgain, `== .alertFirstButtonReturn` -> `!=` -> RED.
     func testTheVoicesRetryAsksBeforeItRemakesNamesAndNotes() throws {
         // The signature also matches UnsupportedMeetings' stub — slice from the real controller first.
         let whole = try controller()
@@ -447,10 +466,13 @@ final class MeetingWiringTests: XCTestCase {
         let retry = try XCTUnwrap(body(tail, of: "func requestVoicesAgain(id: String) async throws {"))
         XCTAssertTrue(retry.contains("host.client.meeting(id: id, withTexts: true)"), "the notes' presence is read")
         XCTAssertTrue(retry.contains("host.client.speakers(id: id)"), "the names are read")
-        XCTAssertTrue(retry.contains("        if VoicesRetry.asksFirst(info: info, speakers: speakers),\n"),
-                      "the confirm is gated by the pure decision alone — no `false &&` / `true ||` around it")
-        XCTAssertTrue(retry.contains("host.alert(L10nKey.meetingVoicesRetryRedo.text, \"\", [L10nKey.commonRetry.text, L10nKey.commonCancel.text])"))
-        let ask = try XCTUnwrap(retry.range(of: "VoicesRetry.asksFirst"))
+        XCTAssertTrue(retry.contains("let asks = VoicesRetry.asksFirst(info: info, speakers: speakers)"))
+        XCTAssertTrue(retry.contains("guard VoicesRetry.proceeds(asks: asks, confirmed: {"))
+        XCTAssertTrue(retry.contains("host.alert(L10nKey.meetingVoicesRetryRedo.text, L10nKey.meetingVoicesRetryRedoWhy.text,"))
+        XCTAssertTrue(retry.contains("[L10nKey.commonRetry.text, L10nKey.commonCancel.text]) == .alertFirstButtonReturn"),
+                      "the first button (Try Again) confirms, Cancel does not")
+        XCTAssertTrue(retry.contains("}) else { return }"))
+        let ask = try XCTUnwrap(retry.range(of: "VoicesRetry.proceeds"))
         let post = try XCTUnwrap(retry.range(of: "host.client.retryMeetingVoices(id: id)"))
         XCTAssertLessThan(ask.lowerBound, post.lowerBound, "the check comes before the POST")
     }

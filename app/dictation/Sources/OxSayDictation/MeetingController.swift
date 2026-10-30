@@ -136,6 +136,8 @@ final class MeetingController: NSObject, MeetingFeature {
         badge.onStop = { [weak self] in self?.stop() }
         badge.onDontRecord = { [weak self] in self?.dontRecordThisOne() }
         badge.onRecord = { [weak self] in self?.recordFromPrompt() }
+        badge.onConfirmRecord = { [weak self] in self?.answerRecordQuestion(.record) }
+        badge.onConfirmCancel = { [weak self] in self?.answerRecordQuestion(.cancel) }
         badge.onNotNow = { [weak self] in
             self?.watcher.decline()
             self?.badge.hide()
@@ -421,33 +423,42 @@ final class MeetingController: NSObject, MeetingFeature {
 
     /// The prompt's Record. The prompt can outlive its call (#342.1, #348): it stays up for
     /// `OfferLifetime.callGoneAfter` after the call went, and a browser's hold on the microphone is not a
-    /// call either. Before starting: is the offer stale, and — for a browser holder — does some tab still
-    /// read as a call page? Anything that cannot confirm asks instead of recording silence; a Record there
-    /// is the offered start exactly as before, a Cancel leaves the prompt down for this episode (the
-    /// tracker's "asked" stays). Nothing here may refuse or end a call's recording on its own.
+    /// call either. Before starting: is the offer stale, and — for a browser holder — does some tab of THIS
+    /// call's kind still read as a call page? Anything that cannot confirm asks on the badge (no modal
+    /// mid-call); Record there is the offered start exactly as before, Cancel returns to the prompt. Nothing
+    /// here may refuse or end a call's recording on its own.
     private func recordFromPrompt() {
-        guard case .prompt(let source) = badge.mode else { return }
-        badge.hide()
-        let stale = offerLife.stale(now: Date(), offer: .prompt(source: source), liveSource: liveCall?.source)
-        guard let holder = promptHolder, CallDetector.browsers.contains(holder) else {
-            // A native call app has no tabs to re-read: the offer's staleness is the whole answer.
-            finishPromptRecord(RecordCheck.decide(offerStale: stale, holder: .native, tabs: .unknown), source: source)
+        guard case .prompt(let source) = badge.mode else {
+            // Not the prompt (it was taken down meanwhile): the press still starts, as it always did.
+            start(origin: .manual, source: lastSource, offered: true)
             return
         }
+        let stale = offerLife.stale(now: Date(), offer: .prompt(source: source), liveSource: liveCall?.source)
+        let holder = RecordPrompt.holder(bundleID: promptHolder)
+        guard holder == .browser, let bundleID = promptHolder else {
+            // A native call app has no tabs to re-read: the offer's staleness is the whole answer.
+            applyRecord(RecordCheck.decide(offerStale: stale, holder: holder, tabs: .unknown), answer: nil, source: source)
+            return
+        }
+        badge.showRecordChecking(source: source)
         Task { @MainActor in
-            let tabs = await watcher.callTabs(of: holder)
-            finishPromptRecord(RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs), source: source)
+            let tabs = await watcher.callTabs(of: bundleID, source: source)
+            applyRecord(RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs), answer: nil, source: source)
         }
     }
 
-    /// The Record check's answer: `.record` starts; `.ask` shows the sentence and only its Record starts —
-    /// Cancel is the prompt's dismissal for this episode, no recording and no refusal.
-    private func finishPromptRecord(_ verdict: RecordCheck.Verdict, source: String) {
-        if verdict == .ask,
-           host.alert(L10nKey.meetingRecordMayHaveEnded.text, "", [L10nKey.badgeRecord.text, L10nKey.commonCancel.text]) != .alertFirstButtonReturn {
-            return
+    /// The Record question's two answers on the badge.
+    private func answerRecordQuestion(_ answer: RecordPrompt.Answer) {
+        guard case .recordConfirm(let source) = badge.mode else { return }
+        applyRecord(.ask, answer: answer, source: source)
+    }
+
+    private func applyRecord(_ verdict: RecordCheck.Verdict, answer: RecordPrompt.Answer?, source: String) {
+        switch RecordPrompt.outcome(verdict: verdict, answer: answer) {
+        case .start: start(origin: .manual, source: source, offered: true)
+        case .ask: badge.showRecordConfirm(source: source)
+        case .backToPrompt: badge.showPrompt(source: source)
         }
-        start(origin: .manual, source: source, offered: true)
     }
 
     private func dontRecordThisOne() {
@@ -512,7 +523,7 @@ final class MeetingController: NSObject, MeetingFeature {
         // browser's hold on the microphone: OfferLifetime decides, this only draws.
         let offer: OfferLifetime.Offer?
         switch badge.mode {
-        case .prompt(let source)?: offer = .prompt(source: source)
+        case .prompt(let source)?, .recordChecking(let source)?, .recordConfirm(let source)?: offer = .prompt(source: source)
         case .browserConsent(let id)?: offer = .browserConsent(browser: id)
         default: offer = nil
         }
@@ -697,10 +708,11 @@ final class MeetingController: NSObject, MeetingFeature {
         // that cannot answer asks too: an unneeded question costs a click, a missed one loses the edits.
         let info = try? await host.client.meeting(id: id, withTexts: true)
         let speakers = try? await host.client.speakers(id: id)
-        if VoicesRetry.asksFirst(info: info, speakers: speakers),
-           host.alert(L10nKey.meetingVoicesRetryRedo.text, "", [L10nKey.commonRetry.text, L10nKey.commonCancel.text]) != .alertFirstButtonReturn {
-            return
-        }
+        let asks = VoicesRetry.asksFirst(info: info, speakers: speakers)
+        guard VoicesRetry.proceeds(asks: asks, confirmed: {
+            host.alert(L10nKey.meetingVoicesRetryRedo.text, L10nKey.meetingVoicesRetryRedoWhy.text,
+                       [L10nKey.commonRetry.text, L10nKey.commonCancel.text]) == .alertFirstButtonReturn
+        }) else { return }
         try await host.client.retryMeetingVoices(id: id)
         // The transcript is written again: the copy in the notes folder is of the old one.
         MeetingSettings.setExportStale(id, true, host.defaults)

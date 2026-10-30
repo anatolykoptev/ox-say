@@ -314,6 +314,8 @@ public enum L10nKey: String, CaseIterable {
     case meetingRecordMayHaveEnded = "meeting.record.may_have_ended"
     /// #340.2: the voices Try Again on a meeting that has names or notes says it remakes them.
     case meetingVoicesRetryRedo = "meeting.voices_retry.redo"
+    /// #340.2: why — the retry transcribes again, so typed names and written notes are replaced.
+    case meetingVoicesRetryRedoWhy = "meeting.voices_retry.redo.why"
     case permNotifications = "permission.notifications"
     case permNotificationsWhy = "permission.notifications.why"
     case meetingErrNotFound = "meeting.error.not_found"

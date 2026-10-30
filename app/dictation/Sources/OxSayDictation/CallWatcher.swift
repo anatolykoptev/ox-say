@@ -59,9 +59,9 @@ final class CallWatcher {
 
     private var watch = CallWatch()
     private var runners: [String: QueuedScriptRunner] = [:]
-    /// The Record press's all-tab read: rare and user-initiated, so no dropWhileBusy — a second press
-    /// simply queues behind the first's read.
-    private var confirmRunner: QueuedScriptRunner?
+    /// The Record press's all-tab reads, one worker per browser (main-actor only: see `callTabs`). A press
+    /// while that browser's read is still running is dropped as `.timedOut` — "cannot confirm", which asks.
+    private var confirmRunners: [String: QueuedScriptRunner] = [:]
     private let tabReads = BrowserTabReads(queue: DispatchQueue(label: "io.github.anatolykoptev.ox-say.dictation.tabreads",
                                                                  qos: .utility, attributes: .concurrent))
     private var timer: Timer?
@@ -136,10 +136,11 @@ final class CallWatcher {
     /// main thread and bounded like the poll's. Only a settled consent is used: an undetermined one must
     /// not raise macOS's prompt out of context, so every other answer — like every non-answer of the read
     /// itself — is `.unknown`, and the caller asks instead.
-    func callTabs(of bundleID: String) async -> RecordCheck.Tabs {
+    @MainActor
+    func callTabs(of bundleID: String, source: String) async -> RecordCheck.Tabs {
         guard consentFor(bundleID) == .granted else { return .unknown }
-        let runner = confirmRunner ?? QueuedScriptRunner(label: "confirm.\(bundleID)")
-        confirmRunner = runner
-        return await Task.detached { BrowserTabURLs.read(bundleID: bundleID, runner: runner) }.value
+        let runner = confirmRunners[bundleID] ?? QueuedScriptRunner(label: "confirm.\(bundleID)", dropWhileBusy: true)
+        confirmRunners[bundleID] = runner
+        return await Task.detached { BrowserTabURLs.read(bundleID: bundleID, source: source, runner: runner) }.value
     }
 }

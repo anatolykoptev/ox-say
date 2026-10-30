@@ -45,6 +45,40 @@ public enum RecordCheck {
     }
 }
 
+/// What the Record press does with the check's verdict and the user's answer on the badge (#342.1). Pure so
+/// that a flipped answer — Cancel recording, Record cancelling a live call — fails a test, not a user.
+public enum RecordPrompt {
+    /// The badge's question: Record starts exactly as the press always did, Cancel goes back to the prompt.
+    public enum Answer: Equatable { case record, cancel }
+
+    public enum Outcome: Equatable {
+        /// Start the recording (the offered start).
+        case start
+        /// Put the question on the badge (no modal alert mid-call).
+        case ask
+        /// Back to the normal prompt; `OfferLifetime` still takes it down by itself once the call is gone.
+        case backToPrompt
+    }
+
+    /// `answer` is nil until the badge has asked. Nothing here refuses: only a Cancel the user pressed stops
+    /// the start, and a verdict of `.record` never asks.
+    public static func outcome(verdict: RecordCheck.Verdict, answer: Answer?) -> Outcome {
+        switch (verdict, answer) {
+        case (.record, _): return .start
+        case (.ask, nil): return .ask
+        case (.ask, .record?): return .start
+        case (.ask, .cancel?): return .backToPrompt
+        }
+    }
+
+    /// A browser holder gets its tabs re-read; anything else (a native call app, or no known holder) has
+    /// no tabs and only the offer's staleness counts.
+    public static func holder(bundleID: String?) -> RecordCheck.Holder {
+        guard let bundleID, CallDetector.browsers.contains(bundleID) else { return .native }
+        return .browser
+    }
+}
+
 /// The voices Try Again on a finished meeting: the daemon transcribes it again, so the speaker names the
 /// user typed and the notes already written are made again (#340.2). The retry asks before it remakes
 /// either; a meeting with neither retries as before.
@@ -55,5 +89,11 @@ public enum VoicesRetry {
     public static func asksFirst(info: MeetingInfo?, speakers: SpeakersState?) -> Bool {
         guard let info, let speakers else { return true }
         return info.notesMD != nil || speakers.speakers.contains { !$0.name.isEmpty }
+    }
+
+    /// Whether the retry goes on. `confirmed` raises the question and is only called when `asks`; a Cancel
+    /// (false) stops the retry before anything is sent.
+    public static func proceeds(asks: Bool, confirmed: () -> Bool) -> Bool {
+        asks ? confirmed() : true
     }
 }

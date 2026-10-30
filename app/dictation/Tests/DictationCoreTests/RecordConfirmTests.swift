@@ -49,19 +49,59 @@ final class RecordConfirmTests: XCTestCase {
     /// The read maps straight to the check's three cases.
     /// Mutation: BrowserTabURLs.read, `.denied, .timedOut, .failed` -> `.callPage` -> RED.
     func testTheAllTabReadAnswersTheThreeCases() {
-        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome",
+        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", source: "meet",
                                            runner: FakeRunner(outcome: .value("https://meet.google.com/abc-defg-hij\nhttps://example.com"))),
                        .callPage)
-        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome",
+        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", source: "meet",
                                            runner: FakeRunner(outcome: .value("https://example.com\nhttps://news.ycombinator.com"))),
                        .noCallPage)
-        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", runner: FakeRunner(outcome: .value(""))), .noCallPage)
-        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", runner: FakeRunner(outcome: .denied)), .unknown)
-        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", runner: FakeRunner(outcome: .timedOut)), .unknown)
-        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", runner: FakeRunner(outcome: .failed(1))), .unknown)
-        XCTAssertEqual(BrowserTabURLs.read(bundleID: "a b\" quit",
+        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", source: "meet", runner: FakeRunner(outcome: .value(""))), .noCallPage)
+        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", source: "meet", runner: FakeRunner(outcome: .denied)), .unknown)
+        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", source: "meet", runner: FakeRunner(outcome: .timedOut)), .unknown)
+        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", source: "meet", runner: FakeRunner(outcome: .failed(1))), .unknown)
+        XCTAssertEqual(BrowserTabURLs.read(bundleID: "a b\" quit", source: "meet",
                                            runner: FakeRunner(outcome: .value("https://meet.google.com/abc-defg-hij"))),
                        .unknown, "a bundle id that is not one never reaches the runner")
+    }
+
+    /// A leftover tab of another kind must not vouch for this call: Meet open, Zoom-web prompt -> no call page.
+    /// Mutation: BrowserTabURLs.read, `found == source` -> `true` -> RED.
+    func testOnlyATabOfThePromptsOwnKindVouchesForTheCall() {
+        let tabs = FakeRunner(outcome: .value("https://meet.google.com/abc-defg-hij\nhttps://example.com"))
+        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", source: "zoom", runner: tabs), .noCallPage)
+        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", source: "meet", runner: tabs), .callPage)
+        XCTAssertEqual(BrowserTabURLs.read(bundleID: "com.google.Chrome", source: "", runner: tabs), .callPage,
+                       "a prompt with no source accepts any call page")
+    }
+
+    /// The Record press's outcome table: only a Cancel the user pressed stops the start, and Record never
+    /// cancels. A verdict of `.record` never asks.
+    /// Mutation: RecordPrompt.outcome, swap the `.record?` / `.cancel?` results -> RED; drop the `(.ask, nil)` row -> RED.
+    func testTheRecordOutcomeTable() {
+        XCTAssertEqual(RecordPrompt.outcome(verdict: .record, answer: nil), .start)
+        XCTAssertEqual(RecordPrompt.outcome(verdict: .record, answer: .cancel), .start)
+        XCTAssertEqual(RecordPrompt.outcome(verdict: .ask, answer: nil), .ask)
+        XCTAssertEqual(RecordPrompt.outcome(verdict: .ask, answer: .record), .start, "Record on the question records")
+        XCTAssertEqual(RecordPrompt.outcome(verdict: .ask, answer: .cancel), .backToPrompt, "Cancel does not record")
+    }
+
+    /// A browser holder gets its tabs re-read; everything else is native.
+    /// Mutation: RecordPrompt.holder, drop the browsers lookup (always .native) -> RED.
+    func testTheHolderKindFollowsTheBrowserList() {
+        XCTAssertEqual(RecordPrompt.holder(bundleID: "com.google.Chrome"), .browser)
+        XCTAssertEqual(RecordPrompt.holder(bundleID: "com.brave.Browser"), .browser)
+        XCTAssertEqual(RecordPrompt.holder(bundleID: "us.zoom.xos"), .native)
+        XCTAssertEqual(RecordPrompt.holder(bundleID: nil), .native)
+    }
+
+    /// The voices retry goes on when nothing needs asking, or when the user confirmed; Cancel stops it.
+    /// Mutation: VoicesRetry.proceeds, `asks ? confirmed() : true` -> `asks ? !confirmed() : true` -> RED.
+    func testTheVoicesRetryProceedsOnlyWhenNotAskedOrConfirmed() {
+        var raised = 0
+        XCTAssertTrue(VoicesRetry.proceeds(asks: false, confirmed: { raised += 1; return false }))
+        XCTAssertEqual(raised, 0, "no question when nothing is remade")
+        XCTAssertTrue(VoicesRetry.proceeds(asks: true, confirmed: { true }))
+        XCTAssertFalse(VoicesRetry.proceeds(asks: true, confirmed: { false }))
     }
 
     /// Every window's every tab is read — the call may be in a background tab; the front tab alone is the
