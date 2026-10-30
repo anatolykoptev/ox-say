@@ -103,7 +103,7 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertTrue(text.contains("try await meetings.requestVoicesAgain(id: id)"))
         XCTAssertFalse(text.contains("renameMeeting(id:"), "the window does not bypass the controller")
         let controller = try source("OxSayDictation/MeetingController.swift")
-        XCTAssertTrue(controller.contains("state = try await saveSpeakers(id: id, edits: edits)"), "the menu's panel saves through the same function")
+        XCTAssertTrue(controller.contains("state = try await saveSpeakers(id: id, edits: plan.edits)"), "the menu's panel saves through the same function")
         let save = try body(controller, of: "func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState {\n")
         XCTAssertTrue(save.contains("MeetingSettings.setExportStale(id, true, host.defaults)"))
         XCTAssertTrue(save.contains("if state.notesQueued {"))

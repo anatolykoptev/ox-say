@@ -142,14 +142,29 @@ public struct SpeakerDraft: Equatable {
         return MeetingLimits.hasLetterOrDigit(typed) ? typed : stored
     }
 
-    /// The sentence to show instead of saving: a typed name that holds no letter or digit, which the daemon refuses
-    /// and which cannot be repaired by dropping characters. nil when every name can be sent.
-    public func refusal(against state: SpeakersState) -> L10nKey? {
-        for s in state.speakers {
+    /// The voices whose typed name the daemon refuses and which cannot be repaired by dropping characters: no letter
+    /// or digit in it. A voice that is being folded into another in this draft is left out: `edits` never sends its
+    /// name (it goes to the voice it joins, or nowhere), so a leftover there blocks nothing.
+    public func refusedSpeakers(against state: SpeakersState) -> [SpeakerInfo] {
+        let merges = standingMerges(against: state)
+        return state.speakers.filter { s in
+            let newlyFolded = merges[s.id] != nil && merges[s.id] != s.mergedTo
+            if newlyFolded { return false }
             let typed = MeetingLimits.clamp(MeetingLimits.speakerName(names[s.id] ?? s.name), to: MeetingLimits.nameMax)
-            if !typed.isEmpty, !MeetingLimits.hasLetterOrDigit(typed) { return .speakersNameNeedsLetter }
+            return !typed.isEmpty && !MeetingLimits.hasLetterOrDigit(typed)
         }
-        return nil
+    }
+
+    /// The sentence to show instead of saving (the main window disables Save on it): a typed name that holds no letter
+    /// or digit. nil when every name can be sent.
+    public func refusal(against state: SpeakersState) -> L10nKey? {
+        refusedSpeakers(against: state).isEmpty ? nil : .speakersNameNeedsLetter
+    }
+
+    /// What the menu's panel does on OK: sends the renames and merges that are fine and names the voices whose name
+    /// it refused, instead of dropping the whole save for one of them.
+    public func savePlan(against state: SpeakersState) -> SpeakersSavePlan {
+        SpeakersSavePlan(edits: edits(against: state), refused: refusedSpeakers(against: state))
     }
 
     /// The picks of this draft that can all stand together: every target is a voice that is not itself folded away,
@@ -179,6 +194,26 @@ public struct SpeakerDraft: Equatable {
     public func mergeTargets(for id: String, in state: SpeakersState) -> [SpeakerInfo] {
         guard !mergeInto.values.contains(id) else { return [] }
         return state.speakers.filter { $0.isVoice && $0.id != id && mergeInto[$0.id] == nil }
+    }
+}
+
+/// The menu panel's save: the edits to send and the voices whose typed name was refused (not sent, stored name kept).
+public struct SpeakersSavePlan: Equatable {
+    public var edits: SpeakerEdits
+    public var refused: [SpeakerInfo]
+
+    public init(edits: SpeakerEdits, refused: [SpeakerInfo]) {
+        self.edits = edits
+        self.refused = refused
+    }
+
+    /// The sentence that names the refused voices (by what the transcript prints for them), or nil when none was
+    /// refused. `saved`: the rest of the draft was sent and accepted, so the sentence says that too and replaces the
+    /// plain "saved" notice.
+    public func notice(saved: Bool) -> String? {
+        guard !refused.isEmpty else { return nil }
+        let labels = refused.map(\.label).joined(separator: ", ")
+        return (saved ? L10nKey.noticeSpeakersSavedSomeRefused : L10nKey.noticeSpeakersRefused).text(labels)
     }
 }
 

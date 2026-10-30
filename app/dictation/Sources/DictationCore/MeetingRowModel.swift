@@ -222,12 +222,15 @@ public struct TranscriptTurn: Equatable, Identifiable {
 }
 
 extension MeetingRowModel {
-    /// What a rename sends: the draft trimmed, or nil when there is nothing to send. The field starts with the title the
+    /// What a rename sends: the draft as the daemon will get it (`MeetingLimits.clamp`: no text-direction controls,
+    /// trimmed, cut to the cap), or nil when there is nothing to send. The field starts with the title the
     /// window SHOWS (an auto title is localized there), so a draft the user did not change must not become their own
-    /// title, in whatever language the window happened to be in (#270). An empty draft is no title.
+    /// title, in whatever language the window happened to be in (#270). It is compared with the shown title in the
+    /// same clamped form, so a pasted bidi control is no change; a draft that clamps to "" (nothing but controls) is no
+    /// title and is refused, never sent as a request to clear it.
     public static func renamedTitle(draft: String, shown: String) -> String? {
-        let t = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, t != shown.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        let t = MeetingLimits.clamp(draft, to: MeetingLimits.titleMax)
+        guard !t.isEmpty, t != MeetingLimits.clamp(shown, to: MeetingLimits.titleMax) else { return nil }
         return t
     }
 }
