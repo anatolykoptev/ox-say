@@ -342,7 +342,10 @@ prints JSON: `text`, `segments` and `words` (`w`, `s`, `e`, `p`; seconds).
   session keeps its PCM while it can still qualify (the bound plus 1 s of
   slack; ~1 MB) and frees it the moment it runs longer. A failed or empty
   re-decode answers the streamed text instead (one stderr line); a
-  single-segment session never pays the extra decode. The decision is
+  single-segment session never pays the extra decode. The re-decode also
+  needs the session's own measured decode speed to predict it inside
+  `--redecode-budget-ms` (500; 0 disables), so a slow CPU decode (Intel
+  `-ng`) keeps the streamed text and logs why. The decision is
   unit-tested (`redecode_test.cpp`).
   HTTP guards (#65), as for tts-server's local-only patch: the server is for
   the daemon alone. A `Host` header that does not name loopback gets 403

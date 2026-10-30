@@ -36,6 +36,30 @@ static void t_should_redecode() {
     CHECK(!oxstt::should_redecode(2, 0.0, -1.0), "a negative bound disables even an empty recording");
 }
 
+// redecode_fits(): the session's own measured decode speed (ms per second of
+// audio) predicts what the whole-recording decode costs; it runs only inside
+// the budget. Apple Silicon: 30 ms for 3 s of segments -> 150 ms for 15 s.
+// Intel CPU decode: 1020 ms for 3 s -> 5100 ms for 15 s (#378 item 4).
+// RED if: the function returns true unconditionally (the F1 mutant: Intel
+// would wait seconds), the comparison turns strict (<), the no-measurement or
+// budget <= 0 guards are lost, or the prediction stops scaling by
+// total_s / decoded_s_sum.
+static void t_redecode_fits() {
+    CHECK(oxstt::redecode_fits(30.0, 3.0, 15.0, 500.0), "Apple Silicon numbers fit");
+    CHECK(!oxstt::redecode_fits(1020.0, 3.0, 15.0, 500.0), "Intel numbers do not fit");
+    CHECK(!oxstt::redecode_fits(0.0, 0.0, 15.0, 500.0), "no measurement does not fit");
+    CHECK(!oxstt::redecode_fits(30.0, 0.0, 15.0, 500.0), "no decoded audio does not fit");
+    CHECK(!oxstt::redecode_fits(30.0, -1.0, 15.0, 500.0), "a negative audio sum does not fit");
+    CHECK(!oxstt::redecode_fits(0.0, 3.0, 15.0, 0.0), "budget 0 disables even a free decode");
+    CHECK(!oxstt::redecode_fits(30.0, 3.0, 15.0, -5.0), "a negative budget disables");
+    // 100 ms/s * 15 s = 1500 ms exactly.
+    CHECK(oxstt::redecode_fits(300.0, 3.0, 15.0, 1500.0), "the boundary is inclusive");
+    CHECK(!oxstt::redecode_fits(300.0, 3.0, 15.0, 1499.999), "just under the boundary is out");
+    // Longer recording, same speed: the prediction scales with total_s.
+    CHECK(oxstt::redecode_fits(30.0, 3.0, 15.0, 150.0), "10 ms/s * 15 s = 150 ms fits a 150 ms budget");
+    CHECK(!oxstt::redecode_fits(30.0, 3.0, 16.0, 150.0), "a longer recording at the same speed exceeds it");
+}
+
 // final_text(): the re-decoded text answers only when the re-decode ran and
 // produced text; anything else keeps the streamed join — a failed or empty
 // re-decode must never lose the words the stream already decoded.
@@ -100,6 +124,7 @@ static void t_redecode_buffer_complete() {
 
 int main() {
     t_should_redecode();
+    t_redecode_fits();
     t_final_text_fallback();
     t_append_or_drop();
     t_redecode_buffer_complete();

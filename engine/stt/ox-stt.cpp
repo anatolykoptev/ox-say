@@ -33,7 +33,10 @@
 //                                 decoded once more whole, through the same padded decode path
 //                                 as /transcribe, and that text answers as "text" with
 //                                 "redecoded":true; a failed or empty re-decode answers the
-//                                 streamed text instead (one stderr line says why)
+//                                 streamed text instead (one stderr line says why). The
+//                                 re-decode also needs the session's own measured decode speed
+//                                 to predict it inside --redecode-budget-ms (500; 0 disables):
+//                                 a slow CPU decode keeps the streamed text (one stderr line)
 //            DELETE /sessions/<id>       -> drops the session and its queued work
 //          without --vad the session routes answer 501. The Host header must name loopback.
 //          Anything else is refused (403, 405, 411, 415); methods other than GET, HEAD, POST
@@ -103,6 +106,7 @@ struct args {
     int port = 0;  // set to a valid 1..65535 value by parse, or flagged invalid
     double chunk_s = 30.0;
     double redecode_max_s = 15.0;  // --serve only: re-decode at finish, 0 disables
+    double redecode_budget_ms = 500.0;  // --serve only: re-decode only if predicted to fit, 0 disables
 };
 
 void usage(const char * argv0) {
@@ -110,7 +114,7 @@ void usage(const char * argv0) {
             "usage: %s -m model -f audio.wav [--engine parakeet|whisper] [-l lang] [--prompt text]\n"
             "          [-t threads] [-ng] [--chunk-s 30] [-o out.json] [-v]\n"
             "       %s --serve -m model --port port [--vad silero-vad.bin] [-t threads] [-ng]\n"
-            "          [--chunk-s 30] [--redecode-max-s 15] [-v]\n"
+            "          [--chunk-s 30] [--redecode-max-s 15] [--redecode-budget-ms 500] [-v]\n"
             "audio must be a 16 kHz mono WAV (PCM16 or float32): ffmpeg -i in -ar 16000 -ac 1 out.wav\n"
             "--vad enables the /sessions routes: POST /sessions, then raw little-endian float32\n"
             "mono 16 kHz PCM chunks to /sessions/<id>/audio, POST /sessions/<id>/finish or\n"
@@ -150,6 +154,9 @@ bool parse(int argc, char ** argv, args & a) {
         } else if (k == "--redecode-max-s") {
             if (!next(v)) return false;
             a.redecode_max_s = atof(v.c_str());
+        } else if (k == "--redecode-budget-ms") {
+            if (!next(v)) return false;
+            a.redecode_budget_ms = atof(v.c_str());
         } else if (k == "--serve") {
             a.serve = true;
         } else if (k == "--vad") {
@@ -171,7 +178,7 @@ bool parse(int argc, char ** argv, args & a) {
     }
     if (a.model.empty() || (a.engine != "parakeet" && a.engine != "whisper") ||
         !std::isfinite(a.chunk_s) || a.chunk_s < 5.0 || !std::isfinite(a.redecode_max_s) ||
-        a.redecode_max_s < 0.0) {
+        a.redecode_max_s < 0.0 || !std::isfinite(a.redecode_budget_ms) || a.redecode_budget_ms < 0.0) {
         return false;
     }
     if (a.serve) {
@@ -554,6 +561,8 @@ struct session {
     uint64_t           vad_pos = 0;      // samples already run through VAD
     std::vector<float> re_pcm;       // the whole recording while a finish re-decode stays possible
     bool               re_dropped = false;  // re_pcm freed past --redecode-max-s: never re-decode
+    double             dec_ms_sum = 0.0;    // decode time (not the decode_mu wait) of this session's segments
+    double             dec_s_sum = 0.0;     // audio seconds of those segments (redecode_fits input)
     std::vector<decoded_seg> results;    // decoded segments in order
     size_t             returned = 0;     // results below this were already sent
     size_t             inflight = 0;     // segments queued or decoding
@@ -860,10 +869,13 @@ int serve(const args & a) {
             result r;
             std::string derr;
             bool ok;
+            double dec_ms = 0.0;  // the decode alone, taken after decode_mu is held
             {
                 std::lock_guard<std::mutex> dl(decode_mu);
                 last_decode.store(now_s());
+                const auto dt0 = std::chrono::steady_clock::now();
                 ok = decode_parakeet(ctx, a, j.pcm, r, derr);
+                dec_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dt0).count();
             }
             last_decode.store(now_s());
             {
@@ -885,6 +897,10 @@ int serve(const args & a) {
                             w.e += d.s;
                         }
                         j.sess->results.push_back(std::move(d));
+                        // the session's own decode speed, for the finish
+                        // re-decode budget (pre-warm jobs never get here)
+                        j.sess->dec_ms_sum += dec_ms;
+                        j.sess->dec_s_sum += (double) j.pcm.size() / SR;
                     }
                 } else {
                     // a failed decode must not pass for an empty segment: the
@@ -1187,6 +1203,8 @@ int serve(const args & a) {
         std::vector<decoded_seg> segs_snap;  // results snapshot the answer is built from
         size_t pending_snap = 0;         // inflight snapshot the answer is built from
         std::vector<float> re_pcm;       // the whole recording when a re-decode stays possible
+        bool   budget_stop = false;      // the time budget alone stopped the re-decode
+        double predicted_ms = -1.0;      // its predicted cost (-1: nothing measured)
         {
             std::unique_lock<std::mutex> sl(s->mu);
             if (s->failed) {
@@ -1235,11 +1253,19 @@ int serve(const args & a) {
                             // lock is held across a decode (lock order above).
                             const uint64_t drained_total =
                                 s->audio_base + (uint64_t) s->audio.size();
+                            const double total_s = (double) drained_total / SR;
                             if (!s->re_dropped && oxstt::redecode_buffer_complete(s->re_pcm.size(), drained_total) &&
-                                oxstt::should_redecode(s->results.size(),
-                                                       (double) drained_total / SR,
-                                                       a.redecode_max_s)) {
-                                re_pcm.swap(s->re_pcm);
+                                oxstt::should_redecode(s->results.size(), total_s, a.redecode_max_s)) {
+                                // Budget gate: the session's own decode speed
+                                // (sums taken under this same mu) must predict
+                                // the whole-recording decode inside the budget.
+                                if (oxstt::redecode_fits(s->dec_ms_sum, s->dec_s_sum, total_s,
+                                                         a.redecode_budget_ms)) {
+                                    re_pcm.swap(s->re_pcm);
+                                } else {
+                                    budget_stop = true;
+                                    predicted_ms = s->dec_s_sum > 0.0 ? s->dec_ms_sum / s->dec_s_sum * total_s : -1.0;
+                                }
                             }
                             // The answer is built after the re-decode, outside
                             // mu — an /audio that found this session before
@@ -1267,6 +1293,13 @@ int serve(const args & a) {
             }
         }
         bool redecoded = false;
+        if (status == 0 && budget_stop) {
+            fprintf(stderr,
+                    "ox-stt: session %s re-decode skipped: predicted %.0f ms exceeds the %.0f ms budget"
+                    "%s; answering the streamed text\n",
+                    id.c_str(), predicted_ms, a.redecode_budget_ms,
+                    predicted_ms < 0.0 ? " (no decode measured)" : "");
+        }
         if (status == 0 && !re_pcm.empty()) {
             // The whole recording once, exactly the decode /transcribe runs —
             // same chunking and edge pad inside decode_parakeet — serialized
