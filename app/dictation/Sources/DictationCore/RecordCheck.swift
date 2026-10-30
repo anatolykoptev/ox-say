@@ -86,11 +86,15 @@ public enum RecordPrompt {
 public enum StartBadge {
     public enum Action: Equatable { case keep, hide }
 
-    /// A failed start hides the question — what the press did before the question existed (the badge was
-    /// hidden first, the prompt stays answered for this episode; the failure's own notice says why). A
-    /// started recording has its own badge; a badge that is not the question is never touched.
-    public static func afterAttempt(started: Bool, showingRecordQuestion: Bool) -> Action {
-        !started && showingRecordQuestion ? .hide : .keep
+    /// A failed start hides the question its OWN press showed — what the press did before the question existed (the
+    /// badge was hidden first, the prompt stays answered for this episode; the failure's own notice says why).
+    /// `questionSource`: the call source of the Record question on the badge now, nil when the badge is not one.
+    /// `pressedSource`: the source of the Record press that began this start, nil for a start that was not one (auto,
+    /// menu, hotkey). An unrelated start that fails must not take down an answerable question (#374.1). A started
+    /// recording has its own badge; a badge that is not the question is never touched.
+    public static func afterAttempt(started: Bool, questionSource: String?, pressedSource: String?) -> Action {
+        guard !started, let questionSource, questionSource == pressedSource else { return .keep }
+        return .hide
     }
 }
 
@@ -113,6 +117,26 @@ public enum RecordResume {
         case apply
         /// Another prompt owns the badge: do not overwrite it, but the press is still honoured — start.
         case start
+    }
+
+    /// What the app's badge is showing when the read returns, as far as this decision cares.
+    public enum Shown: Equatable {
+        /// No badge.
+        case nothing
+        /// The checking state of the Record press for `source`.
+        case checking(source: String)
+        /// Any other state (a prompt, a question, a recording, a consent question).
+        case other
+    }
+
+    /// `shown` against the press that is waiting for its read: the checking state counts as this press's only when it
+    /// is for the same call source (#374.2).
+    public static func badge(shown: Shown, pressed source: String) -> Badge {
+        switch shown {
+        case .nothing: return .empty
+        case .checking(let shown): return shown == source ? .checkingThis : .other
+        case .other: return .other
+        }
     }
 
     public static func decide(recordingOrStarting: Bool, badge: Badge) -> Action {

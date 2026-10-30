@@ -236,14 +236,16 @@ final class MeetingController: NSObject, MeetingFeature {
 
     // MARK: recording
 
-    /// A start that did not reach `showRecording` must not leave the Record question's disabled buttons up.
-    private func settleBadge(started: Bool) {
-        let question: Bool
+    /// A start that did not reach `showRecording` must not leave the Record question's disabled buttons up. Only the
+    /// question the start's own press showed (`pressed`: its call source, nil for a start that was not a press): an
+    /// unrelated start that fails leaves another question up, which the user can still answer.
+    private func settleBadge(started: Bool, pressed: String?) {
+        let question: String?
         switch badge.mode {
-        case .recordChecking?, .recordConfirm?: question = true
-        default: question = false
+        case .recordChecking(let shown)?, .recordConfirm(let shown)?: question = shown
+        default: question = nil
         }
-        if StartBadge.afterAttempt(started: started, showingRecordQuestion: question) == .hide { badge.hide() }
+        if StartBadge.afterAttempt(started: started, questionSource: question, pressedSource: pressed) == .hide { badge.hide() }
     }
 
     /// `offered`: the user pressed Record on the call prompt — the one-time explanation runs for it like for an
@@ -251,7 +253,7 @@ final class MeetingController: NSObject, MeetingFeature {
     private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {
         // Every end of the attempt that is not a recording settles the badge: the Record question's buttons
         // are disabled, so one left up would cover the call for good (see `settleBadge`).
-        let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started) }
+        let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started, pressed: offered ? source : nil) }
         guard current == nil, !starting, !isShutDown else { done(false); return }
         // An install relaunches the app. A recording started now would be ended by it: automatic starts are offered
         // instead (MeetingPolicy.onCallStarted), a manual one asks the user to wait.
@@ -460,12 +462,13 @@ final class MeetingController: NSObject, MeetingFeature {
         badge.showRecordChecking(source: source)
         Task { @MainActor in
             let tabs = await watcher.callTabs(of: bundleID, source: source)
-            let badgeNow: RecordResume.Badge
+            let shownNow: RecordResume.Shown
             switch badge.mode {
-            case .recordChecking(let shown)?: badgeNow = shown == source ? .checkingThis : .other
-            case nil: badgeNow = .empty
-            default: badgeNow = .other
+            case .recordChecking(let shown)?: shownNow = .checking(source: shown)
+            case nil: shownNow = .nothing
+            default: shownNow = .other
             }
+            let badgeNow = RecordResume.badge(shown: shownNow, pressed: source)
             switch RecordResume.decide(recordingOrStarting: current != nil || starting, badge: badgeNow) {
             case .nothing: break
             case .apply: applyRecord(RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs), answer: nil, source: source)

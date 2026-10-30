@@ -104,13 +104,34 @@ final class RecordConfirmTests: XCTestCase {
         XCTAssertFalse(VoicesRetry.proceeds(asks: true, confirmed: { false }))
     }
 
-    /// A start that did not record must not leave the question's disabled buttons over the call.
-    /// Mutation: StartBadge.afterAttempt, `!started && ...` -> `false` -> RED.
+    /// A start that did not record must not leave the question's disabled buttons over the call -- but only the
+    /// question its own press showed: an unrelated start (auto, menu, hotkey) that fails leaves a live question up (#374.1).
+    /// Mutation: StartBadge.afterAttempt, `!started` -> `false` -> RED.
+    /// Mutation: StartBadge.afterAttempt, drop the `question == pressedSource` guard -> RED.
+    /// Mutation: MeetingController.start, `pressed: offered ? source : nil` -> `pressed: source` -> RED (wiring pin).
     func testAFailedStartTakesTheQuestionDown() {
-        XCTAssertEqual(StartBadge.afterAttempt(started: false, showingRecordQuestion: true), .hide)
-        XCTAssertEqual(StartBadge.afterAttempt(started: true, showingRecordQuestion: true), .keep)
-        XCTAssertEqual(StartBadge.afterAttempt(started: false, showingRecordQuestion: false), .keep,
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, questionSource: "zoom", pressedSource: "zoom"), .hide)
+        XCTAssertEqual(StartBadge.afterAttempt(started: true, questionSource: "zoom", pressedSource: "zoom"), .keep)
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, questionSource: nil, pressedSource: "zoom"), .keep,
                        "a recording badge or another prompt is never touched")
+    }
+
+    /// An unrelated failed start leaves the question of another press up.
+    func testAnUnrelatedFailedStartLeavesTheQuestionUp() {
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, questionSource: "zoom", pressedSource: nil), .keep,
+                       "a start that was not the question's press")
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, questionSource: "zoom", pressedSource: "teams"), .keep,
+                       "the press of another call's prompt")
+    }
+
+    /// What the badge shows when the read returns, as `RecordResume.Badge` (#374.2): the press's own checking state is
+    /// `.checkingThis`, another call's is `.other`.
+    /// Mutation: RecordResume.badge, invert `shown == source` (`checking(let shown)` -> `shown != source`) -> RED.
+    func testTheBadgeStateIsMappedForThisPress() {
+        XCTAssertEqual(RecordResume.badge(shown: .checking(source: "zoom"), pressed: "zoom"), .checkingThis)
+        XCTAssertEqual(RecordResume.badge(shown: .checking(source: "teams"), pressed: "zoom"), .other)
+        XCTAssertEqual(RecordResume.badge(shown: .nothing, pressed: "zoom"), .empty)
+        XCTAssertEqual(RecordResume.badge(shown: .other, pressed: "zoom"), .other)
     }
 
     /// The read returns up to ~1.5 s later: a running recording's badge is left alone, another prompt is not
