@@ -50,6 +50,12 @@ static void t_redecode_fits() {
     CHECK(!oxstt::redecode_fits(0.0, 0.0, 15.0, 500.0), "no measurement does not fit");
     CHECK(!oxstt::redecode_fits(30.0, 0.0, 15.0, 500.0), "no decoded audio does not fit");
     CHECK(!oxstt::redecode_fits(30.0, -1.0, 15.0, 500.0), "a negative audio sum does not fit");
+    // 0 audio with a negative time is -30/0 = -inf, which is <= any budget:
+    // only the decoded_s_sum guard keeps it out (the two cases above are NaN
+    // and +inf, which fail the comparison anyway). No finite non-negative
+    // time gives a finite quotient at a zero sum, so -inf is the only way to
+    // pin the guard at 0.
+    CHECK(!oxstt::redecode_fits(-30.0, 0.0, 15.0, 500.0), "a zero audio sum with a negative time does not fit");
     CHECK(!oxstt::redecode_fits(0.0, 3.0, 15.0, 0.0), "budget 0 disables even a free decode");
     CHECK(!oxstt::redecode_fits(30.0, 3.0, 15.0, -5.0), "a negative budget disables");
     // 100 ms/s * 15 s = 1500 ms exactly.

@@ -26,10 +26,13 @@ inline bool should_redecode(size_t n_segments, double total_s, double max_s) {
 // ms per second of audio, times the recording's total_s. The re-decode runs
 // only when that prediction is at most budget_ms (inclusive). No measurement
 // (decoded_s_sum <= 0) or a budget <= 0 never fits: with nothing known the
-// cheap answer (the streamed text) wins. Apple Silicon predicts ~150 ms for
+// cheap answer (the streamed text) wins. Apple Silicon predicts ~100 ms for
 // 15 s; an Intel CPU decode ~5 s (#378 item 4).
 inline bool redecode_fits(double decode_ms_sum, double decoded_s_sum, double total_s,
                           double budget_ms) {
+    // The decoded_s_sum guard is load-bearing for a nonsense measurement: a
+    // zero sum with a negative time divides to -inf, which passes <= budget.
+    // (With a zero sum and time >= 0 the quotient is NaN/+inf and fails anyway.)
     if (!(decoded_s_sum > 0.0) || !(budget_ms > 0.0)) {
         return false;
     }

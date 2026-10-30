@@ -1262,9 +1262,17 @@ int serve(const args & a) {
                                 if (oxstt::redecode_fits(s->dec_ms_sum, s->dec_s_sum, total_s,
                                                          a.redecode_budget_ms)) {
                                     re_pcm.swap(s->re_pcm);
-                                } else {
+                                } else if (a.redecode_budget_ms > 0.0) {
+                                    // A budget of 0 is the operator turning
+                                    // the re-decode off (like --redecode-max-s
+                                    // 0): skip silently, no line to log.
+                                    // dec_s_sum > 0 here: should_redecode
+                                    // needs results.size() > 1, every result
+                                    // adds its sample count to dec_s_sum under
+                                    // this mu, and enqueue_segment never
+                                    // queues an empty range.
                                     budget_stop = true;
-                                    predicted_ms = s->dec_s_sum > 0.0 ? s->dec_ms_sum / s->dec_s_sum * total_s : -1.0;
+                                    predicted_ms = s->dec_ms_sum / s->dec_s_sum * total_s;
                                 }
                             }
                             // The answer is built after the re-decode, outside
@@ -1296,9 +1304,8 @@ int serve(const args & a) {
         if (status == 0 && budget_stop) {
             fprintf(stderr,
                     "ox-stt: session %s re-decode skipped: predicted %.0f ms exceeds the %.0f ms budget"
-                    "%s; answering the streamed text\n",
-                    id.c_str(), predicted_ms, a.redecode_budget_ms,
-                    predicted_ms < 0.0 ? " (no decode measured)" : "");
+                    "; answering the streamed text\n",
+                    id.c_str(), predicted_ms, a.redecode_budget_ms);
         }
         if (status == 0 && !re_pcm.empty()) {
             // The whole recording once, exactly the decode /transcribe runs —
