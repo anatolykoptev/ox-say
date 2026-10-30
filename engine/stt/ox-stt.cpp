@@ -1120,15 +1120,7 @@ int serve(const args & a) {
             // lives here, bounded at --redecode-max-s + 1 s. Past the bound it
             // is freed (swap, not clear) and never refilled — a longer session
             // streams exactly as before.
-            if (a.redecode_max_s > 0.0 && !s->re_dropped) {
-                const size_t cap = (size_t) ((a.redecode_max_s + 1.0) * SR);
-                if (s->re_pcm.size() + fresh.size() <= cap) {
-                    s->re_pcm.insert(s->re_pcm.end(), fresh.begin(), fresh.end());
-                } else {
-                    std::vector<float>().swap(s->re_pcm);
-                    s->re_dropped = true;
-                }
-            }
+            oxstt::append_or_drop(s->re_pcm, s->re_dropped, fresh, a.redecode_max_s, SR);
             ok = pump_session(s);
         }
         if (!ok) {
@@ -1225,7 +1217,7 @@ int serve(const args & a) {
                             // lock is held across a decode (lock order above).
                             const uint64_t drained_total =
                                 s->audio_base + (uint64_t) s->audio.size();
-                            if (!s->re_dropped && s->re_pcm.size() == drained_total &&
+                            if (!s->re_dropped && oxstt::redecode_buffer_complete(s->re_pcm.size(), drained_total) &&
                                 oxstt::should_redecode(s->results.size(),
                                                        (double) drained_total / SR,
                                                        a.redecode_max_s)) {

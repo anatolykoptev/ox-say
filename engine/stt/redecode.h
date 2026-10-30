@@ -8,6 +8,7 @@
 #define OX_STT_REDECODE_H
 
 #include <string>
+#include <vector>
 
 namespace oxstt {
 
@@ -26,6 +27,34 @@ inline bool should_redecode(size_t n_segments, double total_s, double max_s) {
 inline const std::string & final_text(bool redecoded_ok, const std::string & redecoded_text,
                                       const std::string & streamed_text) {
     return redecoded_ok && !redecoded_text.empty() ? redecoded_text : streamed_text;
+}
+
+// Keep the whole recording while the finish re-decode can still run (#88):
+// appends `fresh` to re_pcm while the total stays within the cap
+// ((max_s + 1 s) * sr samples); the first append that would pass it frees the
+// buffer (swap, not clear) and sets `dropped`, which is sticky: a buffer with
+// a hole in it must never be refilled and decoded. A single chunk larger than
+// the cap drops at once. max_s <= 0 (feature off) or an already-dropped
+// buffer is a no-op.
+inline void append_or_drop(std::vector<float> & re_pcm, bool & dropped,
+                           const std::vector<float> & fresh, double max_s, int sr) {
+    if (max_s <= 0.0 || dropped) {
+        return;
+    }
+    const size_t cap = (size_t) ((max_s + 1.0) * sr);
+    if (re_pcm.size() + fresh.size() <= cap) {
+        re_pcm.insert(re_pcm.end(), fresh.begin(), fresh.end());
+    } else {
+        std::vector<float>().swap(re_pcm);
+        dropped = true;
+    }
+}
+
+// Whether the re-decode copy holds every sample the session received
+// (audio_base + audio.size() at finish). A copy with a hole or a stale
+// longer one is not the recording and must not be decoded.
+inline bool redecode_buffer_complete(size_t re_pcm_size, unsigned long long total) {
+    return (unsigned long long) re_pcm_size == total;
 }
 
 }  // namespace oxstt
