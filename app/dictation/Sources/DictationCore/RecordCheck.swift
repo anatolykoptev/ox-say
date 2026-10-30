@@ -79,6 +79,51 @@ public enum RecordPrompt {
     }
 }
 
+/// What the badge shows after a start attempt that came from the Record question. The question states
+/// (`.recordChecking`, `.recordConfirm`) have buttons that do nothing useful once the start is over: a start
+/// that did not reach `showRecording` (consent reminder declined, microphone permission missing, an install
+/// wait, a shutdown, the daemon or the recorder failing) must not leave them up over the call.
+public enum StartBadge {
+    public enum Action: Equatable { case keep, hide }
+
+    /// A failed start hides the question — what the press did before the question existed (the badge was
+    /// hidden first, the prompt stays answered for this episode; the failure's own notice says why). A
+    /// started recording has its own badge; a badge that is not the question is never touched.
+    public static func afterAttempt(started: Bool, showingRecordQuestion: Bool) -> Action {
+        !started && showingRecordQuestion ? .hide : .keep
+    }
+}
+
+/// What a Record press does when its tab read comes back (up to ~1.5 s later): the world may have moved.
+public enum RecordResume {
+    /// What the badge shows when the read returns.
+    public enum Badge: Equatable {
+        /// Still the checking state of this very press.
+        case checkingThis
+        /// Nothing (the call went away and OfferLifetime took the prompt down).
+        case empty
+        /// Something else: another call's prompt, a consent question.
+        case other
+    }
+
+    public enum Action: Equatable {
+        /// A recording is running or starting: leave the badge (and everything) alone.
+        case nothing
+        /// Carry out the check's outcome on the badge as usual.
+        case apply
+        /// Another prompt owns the badge: do not overwrite it, but the press is still honoured — start.
+        case start
+    }
+
+    public static func decide(recordingOrStarting: Bool, badge: Badge) -> Action {
+        if recordingOrStarting { return .nothing }
+        switch badge {
+        case .checkingThis, .empty: return .apply
+        case .other: return .start
+        }
+    }
+}
+
 /// The voices Try Again on a finished meeting: the daemon transcribes it again, so the speaker names the
 /// user typed and the notes already written are made again (#340.2). The retry asks before it remakes
 /// either; a meeting with neither retries as before.

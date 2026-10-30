@@ -104,6 +104,26 @@ final class RecordConfirmTests: XCTestCase {
         XCTAssertFalse(VoicesRetry.proceeds(asks: true, confirmed: { false }))
     }
 
+    /// A start that did not record must not leave the question's disabled buttons over the call.
+    /// Mutation: StartBadge.afterAttempt, `!started && ...` -> `false` -> RED.
+    func testAFailedStartTakesTheQuestionDown() {
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, showingRecordQuestion: true), .hide)
+        XCTAssertEqual(StartBadge.afterAttempt(started: true, showingRecordQuestion: true), .keep)
+        XCTAssertEqual(StartBadge.afterAttempt(started: false, showingRecordQuestion: false), .keep,
+                       "a recording badge or another prompt is never touched")
+    }
+
+    /// The read returns up to ~1.5 s later: a running recording's badge is left alone, another prompt is not
+    /// overwritten (the press still starts), the press's own checking state or an empty badge applies.
+    /// Mutation: RecordResume.decide, drop the `recordingOrStarting` line -> RED; `.other` -> `.apply` -> RED.
+    func testTheResumedReadRespectsWhatTheBadgeBecame() {
+        XCTAssertEqual(RecordResume.decide(recordingOrStarting: true, badge: .checkingThis), .nothing)
+        XCTAssertEqual(RecordResume.decide(recordingOrStarting: true, badge: .other), .nothing)
+        XCTAssertEqual(RecordResume.decide(recordingOrStarting: false, badge: .checkingThis), .apply)
+        XCTAssertEqual(RecordResume.decide(recordingOrStarting: false, badge: .empty), .apply)
+        XCTAssertEqual(RecordResume.decide(recordingOrStarting: false, badge: .other), .start)
+    }
+
     /// Every window's every tab is read — the call may be in a background tab; the front tab alone is the
     /// bug this fixes (#348). The browser is never launched, and each window answers or is skipped.
     /// Mutation: BrowserTabURLs.script, `URL of every tab of w` -> `URL of active tab of front window` -> RED.

@@ -236,23 +236,38 @@ final class MeetingController: NSObject, MeetingFeature {
 
     // MARK: recording
 
+    /// A start that did not reach `showRecording` must not leave the Record question's disabled buttons up.
+    private func settleBadge(started: Bool) {
+        let question: Bool
+        switch badge.mode {
+        case .recordChecking?, .recordConfirm?: question = true
+        default: question = false
+        }
+        if StartBadge.afterAttempt(started: started, showingRecordQuestion: question) == .hide { badge.hide() }
+    }
+
     /// `offered`: the user pressed Record on the call prompt — the one-time explanation runs for it like for an
     /// automatic start. A menu "Record a meeting" is her own act and skips it.
     private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {
-        guard current == nil, !starting, !isShutDown else { return }
+        // Every end of the attempt that is not a recording settles the badge: the Record question's buttons
+        // are disabled, so one left up would cover the call for good (see `settleBadge`).
+        let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started) }
+        guard current == nil, !starting, !isShutDown else { done(false); return }
         // An install relaunches the app. A recording started now would be ended by it: automatic starts are offered
         // instead (MeetingPolicy.onCallStarted), a manual one asks the user to wait.
         let installing = host.updateInstalling()
-        if origin == .auto, installing { return }
+        if origin == .auto, installing { done(false); return }
         if origin == .manual, MeetingPolicy.manualStart(installing: installing) == .waitForInstall {
             host.notify(L10nKey.noticeMeetingWaitInstall.text)
+            done(false)
             return
         }
-        if origin == .auto || offered, !consentReminderAccepted() { return }
+        if origin == .auto || offered, !consentReminderAccepted() { done(false); return }
         // Before a meeting exists in the daemon: a missing microphone permission leaves nothing to clean up.
         do { try MeetingRecorder.checkMicrophone() } catch {
             log.error("meeting start failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
             host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
+            done(false)
             return
         }
         starting = true
@@ -260,7 +275,8 @@ final class MeetingController: NSObject, MeetingFeature {
         let me = MeetingSettings.displayName(defaults, fallback: NSFullUserName())
         let title = MeetingLimits.title(forSource: source)
         Task { @MainActor in
-            defer { starting = false }
+            var ok = false
+            defer { starting = false; done(ok) }
             var created: MeetingInfo?
             do {
                 let info = try await host.client.createMeeting(title: title, source: source, me: me,
@@ -283,6 +299,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 badge.showRecording(auto: origin == .auto, elapsed: 0)
                 startTick()
                 host.recordingChanged()
+                ok = true
             } catch {
                 log.error("meeting start failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
                 host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
@@ -443,7 +460,17 @@ final class MeetingController: NSObject, MeetingFeature {
         badge.showRecordChecking(source: source)
         Task { @MainActor in
             let tabs = await watcher.callTabs(of: bundleID, source: source)
-            applyRecord(RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs), answer: nil, source: source)
+            let badgeNow: RecordResume.Badge
+            switch badge.mode {
+            case .recordChecking(let shown)?: badgeNow = shown == source ? .checkingThis : .other
+            case nil: badgeNow = .empty
+            default: badgeNow = .other
+            }
+            switch RecordResume.decide(recordingOrStarting: current != nil || starting, badge: badgeNow) {
+            case .nothing: break
+            case .apply: applyRecord(RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs), answer: nil, source: source)
+            case .start: start(origin: .manual, source: source, offered: true)
+            }
         }
     }
 

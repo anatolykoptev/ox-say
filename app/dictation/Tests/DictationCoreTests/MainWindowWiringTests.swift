@@ -186,8 +186,8 @@ final class MainWindowWiringTests: XCTestCase {
         let recorderStart = try XCTUnwrap(start.range(of: "try recorder.start(into:"))
         XCTAssertLessThan(created.lowerBound, flag.lowerBound)
         XCTAssertLessThan(flag.lowerBound, recorderStart.lowerBound, "checked before the recorder starts")
-        XCTAssertTrue(start.contains("guard current == nil, !starting, !isShutDown else { return }"))
-        XCTAssertTrue(start.contains("defer { starting = false }"), "starting is reset on that exit too")
+        XCTAssertTrue(start.contains("guard current == nil, !starting, !isShutDown else { done(false); return }"))
+        XCTAssertTrue(start.contains("defer { starting = false; done(ok) }"), "starting is reset on that exit too")
         let down = try body(controller, of: "func shutDown() {\n")
         XCTAssertTrue(down.contains("isShutDown = true"))
     }
