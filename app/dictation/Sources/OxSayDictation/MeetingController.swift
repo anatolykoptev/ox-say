@@ -103,6 +103,13 @@ final class MeetingController: NSObject, MeetingFeature {
     private var playingPolledAt = Date.distantPast
     private var lastSource = ""
     private var offerLife = OfferLifetime()
+    /// The call the last poll saw — the held-only memory counts: the episode goes on while its browser
+    /// holds the microphone. The prompt's Record check reads it, so it is the same answer OfferLifetime saw.
+    private var liveCall: CallDetector.Detection.Call?
+    /// The bundle id that held the microphone when the prompt went up: the press may come after the call
+    /// (and the hold) ended, so it is kept. A browser's tabs are re-read at Record time; a native app's
+    /// cannot be.
+    private var promptHolder: String?
     private var sleepObserver: NSObjectProtocol?
 
     var isRecording: Bool { current != nil }
@@ -128,10 +135,9 @@ final class MeetingController: NSObject, MeetingFeature {
         recorder.onMicrophoneRecovered = { [weak self] in self?.host.notify(L10nKey.noticeMeetingMicRecovered.text) }
         badge.onStop = { [weak self] in self?.stop() }
         badge.onDontRecord = { [weak self] in self?.dontRecordThisOne() }
-        badge.onRecord = { [weak self] in
-            self?.badge.hide()
-            self?.start(origin: .manual, source: self?.lastSource ?? "", offered: true)
-        }
+        badge.onRecord = { [weak self] in self?.recordFromPrompt() }
+        badge.onConfirmRecord = { [weak self] in self?.answerRecordQuestion(.record) }
+        badge.onConfirmCancel = { [weak self] in self?.answerRecordQuestion(.cancel) }
         badge.onNotNow = { [weak self] in
             self?.watcher.decline()
             self?.badge.hide()
@@ -230,23 +236,38 @@ final class MeetingController: NSObject, MeetingFeature {
 
     // MARK: recording
 
+    /// A start that did not reach `showRecording` must not leave the Record question's disabled buttons up.
+    private func settleBadge(started: Bool) {
+        let question: Bool
+        switch badge.mode {
+        case .recordChecking?, .recordConfirm?: question = true
+        default: question = false
+        }
+        if StartBadge.afterAttempt(started: started, showingRecordQuestion: question) == .hide { badge.hide() }
+    }
+
     /// `offered`: the user pressed Record on the call prompt — the one-time explanation runs for it like for an
     /// automatic start. A menu "Record a meeting" is her own act and skips it.
     private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {
-        guard current == nil, !starting, !isShutDown else { return }
+        // Every end of the attempt that is not a recording settles the badge: the Record question's buttons
+        // are disabled, so one left up would cover the call for good (see `settleBadge`).
+        let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started) }
+        guard current == nil, !starting, !isShutDown else { done(false); return }
         // An install relaunches the app. A recording started now would be ended by it: automatic starts are offered
         // instead (MeetingPolicy.onCallStarted), a manual one asks the user to wait.
         let installing = host.updateInstalling()
-        if origin == .auto, installing { return }
+        if origin == .auto, installing { done(false); return }
         if origin == .manual, MeetingPolicy.manualStart(installing: installing) == .waitForInstall {
             host.notify(L10nKey.noticeMeetingWaitInstall.text)
+            done(false)
             return
         }
-        if origin == .auto || offered, !consentReminderAccepted() { return }
+        if origin == .auto || offered, !consentReminderAccepted() { done(false); return }
         // Before a meeting exists in the daemon: a missing microphone permission leaves nothing to clean up.
         do { try MeetingRecorder.checkMicrophone() } catch {
             log.error("meeting start failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
             host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
+            done(false)
             return
         }
         starting = true
@@ -254,7 +275,8 @@ final class MeetingController: NSObject, MeetingFeature {
         let me = MeetingSettings.displayName(defaults, fallback: NSFullUserName())
         let title = MeetingLimits.title(forSource: source)
         Task { @MainActor in
-            defer { starting = false }
+            var ok = false
+            defer { starting = false; done(ok) }
             var created: MeetingInfo?
             do {
                 let info = try await host.client.createMeeting(title: title, source: source, me: me,
@@ -277,6 +299,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 badge.showRecording(auto: origin == .auto, elapsed: 0)
                 startTick()
                 host.recordingChanged()
+                ok = true
             } catch {
                 log.error("meeting start failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
                 host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
@@ -415,6 +438,56 @@ final class MeetingController: NSObject, MeetingFeature {
         """)
     }
 
+    /// The prompt's Record. The prompt can outlive its call (#342.1, #348): it stays up for
+    /// `OfferLifetime.callGoneAfter` after the call went, and a browser's hold on the microphone is not a
+    /// call either. Before starting: is the offer stale, and — for a browser holder — does some tab of THIS
+    /// call's kind still read as a call page? Anything that cannot confirm asks on the badge (no modal
+    /// mid-call); Record there is the offered start exactly as before, Cancel returns to the prompt. Nothing
+    /// here may refuse or end a call's recording on its own.
+    private func recordFromPrompt() {
+        guard case .prompt(let source) = badge.mode else {
+            // Not the prompt (it was taken down meanwhile): the press still starts, as it always did.
+            start(origin: .manual, source: lastSource, offered: true)
+            return
+        }
+        let stale = offerLife.stale(now: Date(), offer: .prompt(source: source), liveSource: liveCall?.source)
+        let holder = RecordPrompt.holder(bundleID: promptHolder)
+        guard holder == .browser, let bundleID = promptHolder else {
+            // A native call app has no tabs to re-read: the offer's staleness is the whole answer.
+            applyRecord(RecordCheck.decide(offerStale: stale, holder: holder, tabs: .unknown), answer: nil, source: source)
+            return
+        }
+        badge.showRecordChecking(source: source)
+        Task { @MainActor in
+            let tabs = await watcher.callTabs(of: bundleID, source: source)
+            let badgeNow: RecordResume.Badge
+            switch badge.mode {
+            case .recordChecking(let shown)?: badgeNow = shown == source ? .checkingThis : .other
+            case nil: badgeNow = .empty
+            default: badgeNow = .other
+            }
+            switch RecordResume.decide(recordingOrStarting: current != nil || starting, badge: badgeNow) {
+            case .nothing: break
+            case .apply: applyRecord(RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs), answer: nil, source: source)
+            case .start: start(origin: .manual, source: source, offered: true)
+            }
+        }
+    }
+
+    /// The Record question's two answers on the badge.
+    private func answerRecordQuestion(_ answer: RecordPrompt.Answer) {
+        guard case .recordConfirm(let source) = badge.mode else { return }
+        applyRecord(.ask, answer: answer, source: source)
+    }
+
+    private func applyRecord(_ verdict: RecordCheck.Verdict, answer: RecordPrompt.Answer?, source: String) {
+        switch RecordPrompt.outcome(verdict: verdict, answer: answer) {
+        case .start: start(origin: .manual, source: source, offered: true)
+        case .ask: badge.showRecordConfirm(source: source)
+        case .backToPrompt: badge.showPrompt(source: source)
+        }
+    }
+
     private func dontRecordThisOne() {
         watcher.decline()
         if current?.origin == .auto { stop() } else { badge.hide() }
@@ -469,6 +542,7 @@ final class MeetingController: NSObject, MeetingFeature {
     /// One poll of the call watcher: the tracker has decided (offer, start, stop); the notices it could not.
     private func observe(_ tick: CallWatcher.Tick) {
         host.callActivity.setCallSeen(tick.call != nil)
+        liveCall = tick.call
         if let call = tick.call { lastSource = call.source }
         if tick.browserDenied { host.notify(L10nKey.noticeMeetingBrowserDenied.text) }
         if tick.browserNeedsPermission { host.notify(L10nKey.noticeMeetingBrowserPending.text) }
@@ -476,7 +550,7 @@ final class MeetingController: NSObject, MeetingFeature {
         // browser's hold on the microphone: OfferLifetime decides, this only draws.
         let offer: OfferLifetime.Offer?
         switch badge.mode {
-        case .prompt(let source)?: offer = .prompt(source: source)
+        case .prompt(let source)?, .recordChecking(let source)?, .recordConfirm(let source)?: offer = .prompt(source: source)
         case .browserConsent(let id)?: offer = .browserConsent(browser: id)
         default: offer = nil
         }
@@ -494,7 +568,9 @@ final class MeetingController: NSObject, MeetingFeature {
             switch MeetingPolicy.onCallStarted(source: source, global: MeetingSettings.callMode(host.defaults),
                                                picked: CallPolicy.pickedMode(for: source, host.defaults), installing: host.updateInstalling()) {
             case .start: start(origin: .auto, source: source)
-            case .prompt: badge.showPrompt(source: source)
+            case .prompt:
+                promptHolder = tick.call?.bundleID
+                badge.showPrompt(source: source)
             case .ignore: break
             }
         case .stopRecording:
@@ -654,6 +730,16 @@ final class MeetingController: NSObject, MeetingFeature {
     }
 
     func requestVoicesAgain(id: String) async throws {
+        // The retry transcribes the meeting again: the names typed and the notes already written are made
+        // again (#340.2), so it asks first — the menu's row and the window's button both land here. A read
+        // that cannot answer asks too: an unneeded question costs a click, a missed one loses the edits.
+        let info = try? await host.client.meeting(id: id, withTexts: true)
+        let speakers = try? await host.client.speakers(id: id)
+        let asks = VoicesRetry.asksFirst(info: info, speakers: speakers)
+        guard VoicesRetry.proceeds(asks: asks, confirmed: {
+            host.alert(L10nKey.meetingVoicesRetryRedo.text, L10nKey.meetingVoicesRetryRedoWhy.text,
+                       [L10nKey.commonRetry.text, L10nKey.commonCancel.text]) == .alertFirstButtonReturn
+        }) else { return }
         try await host.client.retryMeetingVoices(id: id)
         // The transcript is written again: the copy in the notes folder is of the old one.
         MeetingSettings.setExportStale(id, true, host.defaults)

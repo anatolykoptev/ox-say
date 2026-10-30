@@ -12,6 +12,10 @@ final class MeetingBadge {
     enum Mode: Equatable {
         case recording(auto: Bool)
         case prompt(source: String)
+        /// Record was pressed on the prompt and the call is being re-checked: the prompt, its buttons off.
+        case recordChecking(source: String)
+        /// The check could not confirm the call: "may have ended — record anyway?" in the badge, no modal.
+        case recordConfirm(source: String)
         /// macOS's Automation answer for this browser is undetermined: ask in context before the first Apple Event.
         case browserConsent(browser: String)
     }
@@ -20,6 +24,9 @@ final class MeetingBadge {
     var onDontRecord: (() -> Void)?
     var onRecord: (() -> Void)?
     var onNotNow: (() -> Void)?
+    /// The record question's Record: the offered start. Its Cancel goes back to the prompt.
+    var onConfirmRecord: (() -> Void)?
+    var onConfirmCancel: (() -> Void)?
     /// "Don't ask for <App>": the prompt's third, quieter action.
     var onDontAsk: (() -> Void)?
     /// The Automation badge's "Allow…": the next tab read raises macOS's prompt in context.
@@ -221,6 +228,38 @@ final class MeetingBadge {
             views.append(quietButton(L10nKey.badgeDontAsk.text(app)) { [weak self] in self?.onDontAsk?() })
         }
         layout(views)
+    }
+
+    /// Record was pressed and the call is being re-read (a browser's tabs take up to ~1.5 s): the same prompt,
+    /// its buttons disabled so a second press cannot start a second check. No focus change.
+    func showRecordChecking(source: String) {
+        guard mode != .recordChecking(source: source) else { return }
+        mode = .recordChecking(source: source)
+        consentButton = nil
+        labelWidth.isActive = false
+        let app = CallPolicy.name(for: source)
+        label.stringValue = source.isEmpty ? L10nKey.badgePrompt.text : L10nKey.badgePromptCall.text(app)
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        let record = button(L10nKey.badgeRecord.text) {}
+        let notNow = button(L10nKey.badgeNotNow.text) {}
+        record.isEnabled = false
+        notNow.isEnabled = false
+        layout([label, record, notNow])
+    }
+
+    /// "The call may have ended. Record anyway?" with Record / Cancel, on the badge: a modal alert mid-call
+    /// would take the call window's focus. Record is the offered start, Cancel returns to the prompt.
+    func showRecordConfirm(source: String) {
+        guard mode != .recordConfirm(source: source) else { return }
+        mode = .recordConfirm(source: source)
+        panel.setAccessibilityLabel(L10nKey.meetingRecordMayHaveEnded.text)
+        consentButton = nil
+        labelWidth.isActive = false
+        label.stringValue = L10nKey.meetingRecordMayHaveEnded.text
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        layout([label,
+                button(L10nKey.badgeRecord.text) { [weak self] in self?.onConfirmRecord?() },
+                button(L10nKey.commonCancel.text) { [weak self] in self?.onConfirmCancel?() }])
     }
 
     /// The Automation-consent question before the first Apple Event to a browser (`browser` is its bundle id):
