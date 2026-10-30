@@ -749,6 +749,24 @@ int serve(const args & a) {
             return;  // the segmenter never emits one; never let one underflow the copy below
         }
         session & s = *sp;
+        if (!oxstt::seg_readable(r, s.audio_base, (uint64_t) s.audio.size())) {
+            // The floor() invariant broke: the audio this range names is gone
+            // (or never arrived). Do not read; fail the session like a failed
+            // decode, so /audio and /finish answer 500 and the client falls
+            // back to one-shot.
+            // One line per failed session: a pump can emit several unreadable
+            // segments in a row, and only the first one is news.
+            if (!s.failed) {
+                fprintf(stderr,
+                        "ox-stt: segment [%llu,%llu) is outside the session buffer [%llu,%llu); failing the session\n",
+                        (unsigned long long) r.s, (unsigned long long) r.e,
+                        (unsigned long long) s.audio_base,
+                        (unsigned long long) (s.audio_base + (uint64_t) s.audio.size()));
+            }
+            s.failed = true;
+            s.cv.notify_all();
+            return;
+        }
         decode_job j;
         j.sess = sp;
         j.s = r.s;
@@ -1120,15 +1138,7 @@ int serve(const args & a) {
             // lives here, bounded at --redecode-max-s + 1 s. Past the bound it
             // is freed (swap, not clear) and never refilled — a longer session
             // streams exactly as before.
-            if (a.redecode_max_s > 0.0 && !s->re_dropped) {
-                const size_t cap = (size_t) ((a.redecode_max_s + 1.0) * SR);
-                if (s->re_pcm.size() + fresh.size() <= cap) {
-                    s->re_pcm.insert(s->re_pcm.end(), fresh.begin(), fresh.end());
-                } else {
-                    std::vector<float>().swap(s->re_pcm);
-                    s->re_dropped = true;
-                }
-            }
+            oxstt::append_or_drop(s->re_pcm, s->re_dropped, fresh, a.redecode_max_s, SR);
             ok = pump_session(s);
         }
         if (!ok) {
@@ -1225,7 +1235,7 @@ int serve(const args & a) {
                             // lock is held across a decode (lock order above).
                             const uint64_t drained_total =
                                 s->audio_base + (uint64_t) s->audio.size();
-                            if (!s->re_dropped && s->re_pcm.size() == drained_total &&
+                            if (!s->re_dropped && oxstt::redecode_buffer_complete(s->re_pcm.size(), drained_total) &&
                                 oxstt::should_redecode(s->results.size(),
                                                        (double) drained_total / SR,
                                                        a.redecode_max_s)) {

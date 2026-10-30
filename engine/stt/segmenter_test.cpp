@@ -443,8 +443,8 @@ static void t_warm_stretch_bounded() {
 }
 
 // A warm stretch right after a segment never reaches into it.
-// RED when: the prev_end clamp at the onset is removed (second start falls
-// below the first segment's end 13440).
+// RED when: the prev_end clamp at the onset is removed (second start 13440
+// falls to 9856, inside the first segment) or loosened to prev_end_ + N.
 static void t_warm_stretch_clamped_to_prev_end() {
     stream s;
     s.add(20, 0.90f);  // speech 0..10239
@@ -453,9 +453,11 @@ static void t_warm_stretch_clamped_to_prev_end() {
     s.add(20, 0.90f);  // onset
     s.add(13, 0.02f);
     const std::vector<seg_range> got = run(s);
-    CHECK(got.size() == 2, "expected two segments");
-    if (got.size() == 2) {
-        CHECK(got[1].s >= got[0].e, "warm stretch reached into the previous segment");
+    // second start is exactly the first end: the warm reach (stretch start 13056 - 3200 pad = 9856)
+    // is clamped to prev_end_, not merely kept non-overlapping.
+    if (!eq(got, { {0, 13440}, {13440, 45696} })) {
+        dump("t_warm_stretch_clamped_to_prev_end", got);
+        CHECK(false, "expected exactly [{0,13440},{13440,45696}]: second start == first end");
     }
 }
 
@@ -486,7 +488,7 @@ static void t_warm_stretch_not_speech() {
 
 // The caller drops audio below floor(); it must keep the warm reach, or the
 // extended start would point at audio already erased.
-// RED when: floor() out of speech uses pad_pre only (floor 5120 -> 12928).
+// RED when: floor() out of speech uses pad_pre only (floor 3200 -> 22400: 25600 - 3200).
 static void t_warm_floor_keeps_reach() {
     stream s;
     s.add(10, 0.02f);
@@ -497,6 +499,24 @@ static void t_warm_floor_keeps_reach() {
     CHECK(out.empty(), "no segment yet");
     // a later onset at pos 25600 starts at 25600 - 19200 - 3200 = 3200
     CHECK(seg.floor() <= 3200, "floor() above the earliest start a future onset can claim");
+}
+
+// seg_readable(): the bounds check enqueue_segment runs before it copies
+// [r.s, r.e) out of the session buffer holding [base, base + size). A range
+// that starts below the buffer (audio already trimmed: r.s - base would wrap
+// to a huge offset) or ends past it must be refused, never read.
+// RED when: the helper always answers true (the F3 mutant), the lower bound
+// is dropped (r.s < base passes), or the upper bound is dropped/off by one.
+static void t_seg_readable() {
+    using oxstt::seg_readable;
+    CHECK(seg_readable({100, 200}, 100, 100), "the exact buffer is readable");
+    CHECK(seg_readable({150, 160}, 100, 100), "a range inside is readable");
+    CHECK(!seg_readable({99, 150}, 100, 100), "starting one sample below the buffer base");
+    CHECK(!seg_readable({0, 150}, 100, 100), "starting at 0 after the buffer was trimmed");
+    CHECK(!seg_readable({150, 201}, 100, 100), "ending one sample past the buffer");
+    CHECK(!seg_readable({300, 400}, 100, 100), "entirely past the buffer");
+    CHECK(seg_readable({0, 10}, 0, 10), "a fresh session buffer from 0");
+    CHECK(!seg_readable({0, 11}, 0, 10), "one past a fresh session buffer");
 }
 
 int main() {
@@ -523,6 +543,7 @@ int main() {
     t_warm_below_threshold_ignored();
     t_warm_stretch_not_speech();
     t_warm_floor_keeps_reach();
+    t_seg_readable();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

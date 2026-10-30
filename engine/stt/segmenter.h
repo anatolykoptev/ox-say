@@ -61,6 +61,14 @@ struct seg_range {
     }
 };
 
+// Whether [r.s, r.e) lies inside a session buffer that holds the absolute
+// samples [base, base + size). The caller reads the buffer at r.s - base; a
+// range below `base` (audio already trimmed, which the floor() invariant is
+// meant to prevent) would wrap that offset to ~2^64 and read far outside it.
+inline bool seg_readable(const seg_range & r, uint64_t base, uint64_t size) {
+    return r.s >= base && r.e <= base + size;
+}
+
 class segmenter {
 public:
     explicit segmenter(seg_params p = seg_params())
@@ -109,7 +117,7 @@ public:
                     quiet_run_ = quiet_max_ = 0;
                     // reach back over the warm run that led into this onset
                     uint64_t from = w0;
-                    if (warm_ && warm_max_ > 0) {
+                    if (warm_) {
                         from = std::max(warm_start_, w0 > warm_max_ ? w0 - warm_max_ : 0);
                     }
                     seg_start_ = from > pad_pre_ ? from - pad_pre_ : 0;

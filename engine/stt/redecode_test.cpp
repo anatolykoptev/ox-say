@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 static int failures = 0;
 
@@ -52,9 +53,56 @@ static void t_final_text_fallback() {
     CHECK(oxstt::final_text(true, "", "").empty(), "both empty stays empty");
 }
 
+// append_or_drop(): the session's whole-recording copy grows while it fits
+// cap = (max_s + 1 s) * sr, and is freed for good (sticky) the first time an
+// append would pass it, including one 30 s-sized chunk that alone overflows.
+// RED if: the cap loses its + 1 s, the comparison turns strict (<), the drop
+// is not sticky (a later small chunk would refill a buffer with a hole in
+// it), the drop keeps the old samples, or max_s <= 0 stops being a no-op.
+static void t_append_or_drop() {
+    const int sr = 10;  // 10 samples/s keeps the numbers readable; cap for max_s=2 is 30
+    std::vector<float> buf;
+    bool dropped = false;
+    const std::vector<float> ten(10, 1.0f);
+    oxstt::append_or_drop(buf, dropped, ten, 2.0, sr);
+    CHECK(!dropped && buf.size() == 10, "a fitting chunk is kept");
+    oxstt::append_or_drop(buf, dropped, ten, 2.0, sr);
+    oxstt::append_or_drop(buf, dropped, ten, 2.0, sr);
+    CHECK(!dropped && buf.size() == 30, "exactly the cap (max + 1 s) still fits");
+    oxstt::append_or_drop(buf, dropped, std::vector<float>(1, 1.0f), 2.0, sr);
+    CHECK(dropped && buf.empty() && buf.capacity() == 0, "one sample past the cap frees the buffer");
+    oxstt::append_or_drop(buf, dropped, std::vector<float>(1, 1.0f), 2.0, sr);
+    CHECK(dropped && buf.empty(), "the drop is sticky: a later small chunk is not appended");
+
+    // One chunk on its own bigger than the cap (a 30 s chunk against a 15 s bound).
+    std::vector<float> big;
+    bool big_dropped = false;
+    oxstt::append_or_drop(big, big_dropped, std::vector<float>(31, 1.0f), 2.0, sr);
+    CHECK(big_dropped && big.empty(), "a single chunk over the cap drops at once");
+
+    // Feature off: nothing is kept, nothing is flagged.
+    std::vector<float> off;
+    bool off_dropped = false;
+    oxstt::append_or_drop(off, off_dropped, ten, 0.0, sr);
+    CHECK(!off_dropped && off.empty(), "max_s <= 0 keeps nothing and drops nothing");
+}
+
+// redecode_buffer_complete(): the copy may be decoded only if it holds every
+// sample the session received (audio_base + audio.size()); a buffer with a
+// hole, or a stale longer one, must not be re-decoded.
+// RED if: the size equality is dropped (always true), or loosened to >= / <=.
+static void t_redecode_buffer_complete() {
+    CHECK(oxstt::redecode_buffer_complete(160, 160), "equal sizes are complete");
+    CHECK(!oxstt::redecode_buffer_complete(159, 160), "a short copy has a hole");
+    CHECK(!oxstt::redecode_buffer_complete(161, 160), "a longer copy is not the recording");
+    CHECK(!oxstt::redecode_buffer_complete(0, 160), "an empty copy of a non-empty session");
+}
+
 int main() {
     t_should_redecode();
     t_final_text_fallback();
+    t_append_or_drop();
+    t_redecode_buffer_complete();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

@@ -17,6 +17,10 @@
 #     built) or write nothing — "the pins stamp holds the pins of the engines that were built" fails
 #   * engine/build.sh: delete the `write_pins_stamp` call, or move it above the engine builds — "build.sh writes the pins
 #     stamp last" fails; delete the `rm -f "$out/pins.env"` line — "build.sh drops a stale pins stamp first" fails
+#   * engine/build.sh: delete the `git -C "$tts" config submodule.ggml.url "$GGML_REPO"` line, or move it below
+#     `submodule update` — "build.sh repoints submodule.ggml.url at GGML_REPO before submodule update" fails
+#   * engine/lib-check.sh: drop GGML from write_pins_stamp's tts-server prefixes — "the pins stamp holds the pins of
+#     the engines that were built" fails (GGML_REPO= is missing from the stamp)
 #   * engine/build.sh: drop `--cors-origins` from the check_help_flags "$out/ox-llm" line — "checks every flag the
 #     daemon passes" fails (the flags are read from internal/daemon/meetings.go notesServerArgs)
 set -u
@@ -119,14 +123,23 @@ for bin in tts-server ox-stt ox-align ox-llm audiocpp_server; do
     check "build.sh runs check_patched on $bin" "${n:-x}" 1
 done
 
+# The tts-server section must repoint submodule.ggml.url at the fork BEFORE `submodule update`:
+# the pinned ggml commit is orphaned upstream and stays fetchable only through the fork's pin tag
+# (#375), so an update that ran against .gitmodules' upstream URL could silently get nothing.
+tts_sec=$(awk '/^# --- tts-server/,/^# --- ox-stt/' "$root/engine/build.sh")
+url_ln=$(printf '%s\n' "$tts_sec" | grep -n '^[[:space:]]*git -C "\$tts" config submodule\.ggml\.url "\$GGML_REPO"' | head -1 | cut -d: -f1)
+upd_ln=$(printf '%s\n' "$tts_sec" | grep -n '^[[:space:]]*git -C "\$tts" submodule update' | head -1 | cut -d: -f1)
+rc=0; { [ -n "$url_ln" ] && [ -n "$upd_ln" ] && [ "$url_ln" -lt "$upd_ln" ]; } || rc=1
+check "build.sh repoints submodule.ggml.url at GGML_REPO before submodule update" "$rc" 0
+
 # write_pins_stamp: out/pins.env records the commits the binaries were built from, and only those lines: the repo
 # urls and commits of the engines whose binary is in out/ (an engine a gate skipped leaves no pin), not comments or
 # other assignments.
 mkdir -p "$tmp/stamp-out"
 : > "$tmp/stamp-out/tts-server"; : > "$tmp/stamp-out/ox-stt"; : > "$tmp/stamp-out/ox-diar"
-printf '# a comment\nQWENTTS_REPO=https://example.invalid/q\nQWENTTS_COMMIT=aaa111\nGGML_COMMIT=ggg333\nNOT_A_PIN=1\nWHISPER_COMMIT=bbb222\nAUDIOCPP_COMMIT=ccc444\nLLAMACPP_COMMIT=lll555\nDIAR_COMMIT=ddd666\n' > "$tmp/pins.env"
+printf '# a comment\nQWENTTS_REPO=https://example.invalid/q\nQWENTTS_COMMIT=aaa111\nGGML_COMMIT=ggg333\nGGML_REPO=https://example.invalid/g\nNOT_A_PIN=1\nWHISPER_COMMIT=bbb222\nAUDIOCPP_COMMIT=ccc444\nLLAMACPP_COMMIT=lll555\nDIAR_COMMIT=ddd666\n' > "$tmp/pins.env"
 write_pins_stamp "$tmp/pins.env" "$tmp/stamp-out"
-check "the pins stamp holds the pins of the engines that were built, repo and commit lines only" "$(tr '\n' ' ' < "$tmp/stamp-out/pins.env" 2>/dev/null)" "QWENTTS_REPO=https://example.invalid/q QWENTTS_COMMIT=aaa111 GGML_COMMIT=ggg333 WHISPER_COMMIT=bbb222 DIAR_COMMIT=ddd666 "
+check "the pins stamp holds the pins of the engines that were built, repo and commit lines only" "$(tr '\n' ' ' < "$tmp/stamp-out/pins.env" 2>/dev/null)" "QWENTTS_REPO=https://example.invalid/q QWENTTS_COMMIT=aaa111 GGML_COMMIT=ggg333 GGML_REPO=https://example.invalid/g WHISPER_COMMIT=bbb222 DIAR_COMMIT=ddd666 "
 rc=0; write_pins_stamp "$tmp/absent.env" "$tmp/stamp-out" >/dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] || rc=1
 check "no pins.env to stamp from fails" "$rc" 1

@@ -192,6 +192,13 @@ if ! fresh "$tts" "$stamp"; then
     # misplaced tag fails the build here: the orphan SHA still fetches upstream today, so it would
     # pass everything and break at GitHub's next gc. For an annotated tag the peeled refs/tags/*^{}
     # line is what resolves to the commit.
+    # An empty GGML_COMMIT (a corrupted pins.env) must fail here, not only in
+    # the SHA assert after `submodule update`: the tag compare would pass on
+    # two empty strings and report a missing tag with a misleading name.
+    if [ -z "${GGML_COMMIT:-}" ]; then
+        echo "engine/build.sh: GGML_COMMIT is empty — fix engine/pins.env" >&2
+        exit 1
+    fi
     ggml_tag="ox-say-pin-${GGML_COMMIT:0:7}"
     ggml_refs=$(git ls-remote "$GGML_REPO" "refs/tags/$ggml_tag" "refs/tags/$ggml_tag^{}")
     ggml_pin=$(printf '%s\n' "$ggml_refs" | awk -v r="refs/tags/$ggml_tag^{}" '$2 == r {print $1}')
