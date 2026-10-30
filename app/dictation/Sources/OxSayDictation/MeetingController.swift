@@ -239,14 +239,14 @@ final class MeetingController: NSObject, MeetingFeature {
     /// A start that did not reach `showRecording` must not leave the Record question's disabled buttons up. Only the
     /// question the start's own press showed (`pressed`: its call source, nil for a start that was not a press): an
     /// unrelated start that fails leaves another question up, which the user can still answer.
-    private func settleBadge(started: Bool, pressed: String?) {
+    private func settleBadge(started: Bool, began: Bool = true, pressed: String?) {
         let question: StartBadge.Question?
         switch badge.mode {
         case .recordChecking(let shown)?: question = .checking(source: shown)
         case .recordConfirm(let shown)?: question = .confirm(source: shown)
         default: question = nil
         }
-        if StartBadge.afterAttempt(started: started, question: question, pressedSource: pressed) == .hide { badge.hide() }
+        StartBadge.settle(started: started, began: began, pressedSource: pressed, question: { question }, hide: { badge.hide() })
     }
 
     /// `offered`: the user pressed Record on the call prompt — the one-time explanation runs for it like for an
@@ -255,11 +255,13 @@ final class MeetingController: NSObject, MeetingFeature {
         // Every end of the attempt that is not a recording settles the badge: the Record question's buttons
         // are disabled, so one left up would cover the call for good (see `settleBadge`).
         let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started, pressed: offered ? source : nil) }
-        guard current == nil, !starting, !isShutDown else { done(false); return }
+        // A start the guard turns away did not begin: it must not settle the badge of the start in progress (#384.3).
+        let rejected: () -> Void = { [weak self] in self?.settleBadge(started: false, began: false, pressed: offered ? source : nil) }
+        guard current == nil, !starting, !isShutDown else { rejected(); return }
         // An install relaunches the app. A recording started now would be ended by it: automatic starts are offered
         // instead (MeetingPolicy.onCallStarted), a manual one asks the user to wait.
         let installing = host.updateInstalling()
-        if origin == .auto, installing { done(false); return }
+        if origin == .auto, installing { rejected(); return }
         if origin == .manual, MeetingPolicy.manualStart(installing: installing) == .waitForInstall {
             host.notify(L10nKey.noticeMeetingWaitInstall.text)
             done(false)
@@ -696,12 +698,13 @@ final class MeetingController: NSObject, MeetingFeature {
                 while let draft = SpeakersPrompt.ask(title: title, state: state) {
                     // What the daemon would refuse with a 400 is not sent and is named; the rest of the draft is.
                     let plan = draft.savePlan(against: state)
-                    if plan.edits.isEmpty {
-                        if let sentence = plan.refusedSentence() { host.notify(sentence) }
-                        return
-                    }
                     let wasOffer = state.offersSplit
-                    state = try await saveSpeakers(id: id, edits: plan.edits, refused: plan.refusedSentence())
+                    guard let answer = try await SpeakersSaveRun.run(
+                        plan: plan,
+                        send: { try await host.client.editSpeakers(id: id, edits: $0) },
+                        followUp: { await afterSpeakersSave(id: id, state: $0) },
+                        notify: { host.notify($0) }) else { return }
+                    state = answer
                     if !SpeakersSaved.reopens(wasOffer: wasOffer, answer: state) { return }
                 }
             } catch {
@@ -711,16 +714,19 @@ final class MeetingController: NSObject, MeetingFeature {
         }
     }
 
-    /// Sends the edits and follows them up. The menu's panel and the main window both come through here.
+    /// Sends the edits and follows them up. The main window comes through here; the menu's panel runs the same
+    /// `SpeakersSaveRun` with its plan.
     func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState {
-        try await saveSpeakers(id: id, edits: edits, refused: nil)
+        try await SpeakersSaveRun.save(edits: edits, notSaved: nil,
+                                       send: { try await host.client.editSpeakers(id: id, edits: $0) },
+                                       followUp: { await afterSpeakersSave(id: id, state: $0) },
+                                       notify: { host.notify($0) })
     }
 
-    /// `refused`: the menu panel's sentence for names it did not send. It joins the save's one notice.
-    func saveSpeakers(id: String, edits: SpeakerEdits, refused: String?) async throws -> SpeakersState {
-        let state = try await host.client.editSpeakers(id: id, edits: edits)
+    /// What follows a save: the copy is stale, and the notes are tracked or the copy is made, decided from the daemon's
+    /// answer, never from the shape of the edit. Returns the copy's sentence, which stands in for "saved".
+    private func afterSpeakersSave(id: String, state: SpeakersState) async -> String? {
         MeetingSettings.setExportStale(id, true, host.defaults)
-        // Decide from the daemon's answer, never from the shape of the edit.
         var exportSentence: String?
         if state.notesQueued {
             track(id)
@@ -728,8 +734,7 @@ final class MeetingController: NSObject, MeetingFeature {
             // A copy left alone or not made has a sentence to say; it is the notice, "saved" would bury it.
             _ = export(info, say: { exportSentence = $0 })
         }
-        host.notify(SpeakersSaved.notice(refused: refused, notesQueued: state.notesQueued, exportSentence: exportSentence))
-        return state
+        return exportSentence
     }
 
     private func retryVoices(_ id: String) {

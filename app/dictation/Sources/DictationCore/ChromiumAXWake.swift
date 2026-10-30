@@ -183,8 +183,8 @@ public enum ChromiumAXWake {
     ///   - now: the clock the wait is measured on.
     /// - Returns: the retry's read when it answered, else `first`; `wake` says what was tried.
     ///
-    /// Time: `wait` is a deadline on `now`; every retry follows a pause of one `step`. No pause or retry starts once it has passed, but an
-    /// AX call already begun runs to its own 0.3 s messaging timeout, so a hung app costs
+    /// Time: `wait` is a deadline on `now`; every retry follows a pause of one `step`. No pause starts once it has passed; the read after the last
+    /// (shortened) pause starts at the deadline, not before it. An AX call already begun runs to its own 0.3 s messaging timeout, so a hung app costs
     /// at most `wait` + one read (the system-wide and the app source, 3 calls each) +
     /// the read of the old value, the set and the restore, about 0.4 + 1.8 + 0.9 s.
     ///
@@ -233,7 +233,8 @@ public enum ChromiumAXWake {
         var outcome = AXWake.Outcome.nothing
         while true {
             // The tree needs a moment after the set, so the first read waits one step too. The deadline is checked
-            // before every pause and read: no AX call starts once it has passed.
+            // before every pause, not before the read after it: the last pause is cut to what remains, so that read
+            // starts at the deadline (the total bound below holds).
             let remaining = deadline.timeIntervalSince(now())
             if remaining <= 0.001 { break }
             spin(min(step, remaining))

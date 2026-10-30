@@ -10,6 +10,8 @@
 #     version" passes
 #   * check-release-tag.sh: drop the `echo` before an `exit 1` — the "says why" checks fail
 #   * workflows/release.yml: inline the checks again instead of calling the script — "both jobs call it" fails
+#   * workflows/release.yml: delete the `[ "$stamped" = 0.0.0 ]` guard under "Check the package" (or its `exit 1`, or
+#     the RELEASE_CREATED env line) — "a created release fails on a 0.0.0 stamp" fails
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -103,6 +105,18 @@ n=$(grep -v '^[[:space:]]*#' "$root/.github/workflows/release.yml" | grep -c 'sc
 check "release.yml calls the script in both jobs" "$n" 2
 n=$(grep -c 'merge-base --is-ancestor' "$root/.github/workflows/release.yml" || true)
 check "release.yml has no inline ancestor test" "$n" 0
+
+# a created release is never published stamped 0.0.0 (#384.5): the package check reads the stamp back from the app's
+# Info.plist, and fails the job on 0.0.0 when the release was created
+wf=$root/.github/workflows/release.yml
+guard=$(grep -v '^[[:space:]]*#' "$wf" | grep -c '"\$RELEASE_CREATED" = true \] && \[ "\$stamped" = 0\.0\.0 \]' || true)
+check "a created release fails on a 0.0.0 stamp (the guard)" "$guard" 1
+n=$(grep -c 'RELEASE_CREATED: \${{ needs.release-please.outputs.release_created }}' "$wf" || true)
+check "the package check is told whether a release was created" "$n" 1
+n=$(grep -c 'stamped=$(plutil -extract CFBundleShortVersionString raw -o - app/OxSayDictation.app/Contents/Info.plist)' "$wf" || true)
+check "the guard reads the stamp from the built app, not from VERSION" "$n" 1
+after=$(grep -A3 '"\$RELEASE_CREATED" = true' "$wf" | grep -c 'exit 1' || true)
+check "the guard exits non-zero" "$after" 1
 
 echo
 if [ "$fails" -eq 0 ]; then echo "all checks passed"; else echo "$fails check(s) failed" >&2; exit 1; fi

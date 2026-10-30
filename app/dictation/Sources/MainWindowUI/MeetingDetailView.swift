@@ -342,7 +342,7 @@ struct SpeakersTab: View {
                     .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
                     let refusal = draft?.refusal(against: s)
                     HStack {
-                        Text((refusal ?? .meetingSpeakersFootnote).text).font(.caption)
+                        Text(draft?.refusalLine(against: s) ?? (refusal ?? .meetingSpeakersFootnote).text).font(.caption)
                             .foregroundStyle(refusal == nil ? Color.secondary : Color.red)
                         Spacer()
                         Button(L10nKey.speakersSave.text) {

@@ -164,7 +164,58 @@ public struct SpeakerDraft: Equatable {
     /// What the menu's panel does on OK: sends the renames and merges that are fine and names the voices whose name
     /// it refused, instead of dropping the whole save for one of them.
     public func savePlan(against state: SpeakersState) -> SpeakersSavePlan {
-        SpeakersSavePlan(edits: edits(against: state), refused: refusedSpeakers(against: state))
+        var e = edits(against: state)
+        let duplicates = dropDuplicates(from: &e, against: state)
+        return SpeakersSavePlan(edits: e, refused: refusedSpeakers(against: state), duplicates: duplicates)
+    }
+
+    /// The sentence for the main window's refusal line: the voices whose typed name holds no letter or digit, named
+    /// like the menu names them. nil when every name can be sent.
+    public func refusalLine(against state: SpeakersState, text: (L10nKey) -> String = { $0.text }) -> String? {
+        SpeakersSavePlan(edits: SpeakerEdits(), refused: refusedSpeakers(against: state)).refusedSentence(text: text)
+    }
+
+    /// How the daemon reads a name when it compares two (`internal/meeting/speakers.go` checkDistinct):
+    /// `strings.TrimSpace` + `strings.EqualFold`, i.e. trimmed and compared by Unicode simple case folding. Each scalar
+    /// goes to upper case and back to lower case when both are single scalars (so the Greek final sigma and the long s
+    /// meet their letter, and sharp s stays itself, as in Go).
+    static func nameKey(_ name: String) -> String {
+        func single(_ mapped: String, or scalar: Unicode.Scalar) -> Unicode.Scalar {
+            let scalars = mapped.unicodeScalars
+            return scalars.count == 1 ? scalars.first! : scalar
+        }
+        var out = String.UnicodeScalarView()
+        for scalar in name.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars {
+            let upper = single(scalar.properties.uppercaseMapping, or: scalar)
+            out.append(single(upper.properties.lowercaseMapping, or: upper))
+        }
+        return String(out)
+    }
+
+    /// Takes out of `e` the renames the daemon would 400 the whole save for: a name that, after the merges and the other
+    /// renames of this draft, reads like another live speaker's (the daemon compares with `nameKey`). The lower id of
+    /// two that collide keeps its name. A name that is cleared has no default label to compare, so it is not checked.
+    /// Names with no letter or digit never reach `e` (they are `refusedSpeakers`), so one name is reported once.
+    private func dropDuplicates(from e: inout SpeakerEdits, against state: SpeakersState) -> [SpeakerInfo] {
+        let merges = standingMerges(against: state)
+        let shownVoices = state.mode == "auto" || (state.mode == "offer" && split)
+        let standing = state.speakers.filter { merges[$0.id] == nil && $0.isVoice == shownVoices }
+        var dropped: [SpeakerInfo] = []
+        while true {
+            func label(_ s: SpeakerInfo) -> String? {
+                guard let renamed = e.rename[s.id] else { return s.label }
+                return renamed.isEmpty ? nil : renamed
+            }
+            let clashing = e.rename.keys.sorted().filter { id in
+                guard let name = e.rename[id], !name.isEmpty else { return false }
+                let own = merges[id] ?? id
+                let key = Self.nameKey(name)
+                return standing.contains { $0.id != own && label($0).map(Self.nameKey) == key }
+            }
+            guard let last = clashing.last else { return dropped.sorted { $0.id < $1.id } }
+            e.rename[last] = nil
+            if let info = state.speakers.first(where: { $0.id == last }) { dropped.append(info) }
+        }
     }
 
     /// The picks of this draft that can all stand together: every target is a voice that is not itself folded away,
@@ -197,20 +248,66 @@ public struct SpeakerDraft: Equatable {
     }
 }
 
-/// The menu panel's save: the edits to send and the voices whose typed name was refused (not sent, stored name kept).
+/// The menu panel's save: the edits to send, the voices whose typed name was refused (no letter or digit) and the ones
+/// whose name another speaker already has. Neither is sent; the stored name stays.
 public struct SpeakersSavePlan: Equatable {
     public var edits: SpeakerEdits
     public var refused: [SpeakerInfo]
+    public var duplicates: [SpeakerInfo]
 
-    public init(edits: SpeakerEdits, refused: [SpeakerInfo]) {
+    public init(edits: SpeakerEdits, refused: [SpeakerInfo], duplicates: [SpeakerInfo] = []) {
         self.edits = edits
         self.refused = refused
+        self.duplicates = duplicates
     }
 
     /// The sentence that names the refused voices (by what the transcript prints for them), nil when none was refused.
     public func refusedSentence(text: (L10nKey) -> String = { $0.text }) -> String? {
         guard !refused.isEmpty else { return nil }
         return String(format: text(.noticeSpeakersRefused), refused.map(\.label).joined(separator: ", "))
+    }
+
+    /// The sentence that names the voices whose name was taken by another speaker, nil when none was.
+    public func duplicateSentence(text: (L10nKey) -> String = { $0.text }) -> String? {
+        guard !duplicates.isEmpty else { return nil }
+        return String(format: text(.noticeSpeakersDuplicate), duplicates.map(\.label).joined(separator: ", "))
+    }
+
+    /// Everything the save left out, as the one sentence that joins the save's notice; nil when it left nothing out.
+    public func notSavedSentence(text: (L10nKey) -> String = { $0.text }) -> String? {
+        let parts = [refusedSentence(text: text), duplicateSentence(text: text)].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+}
+
+/// The menu panel's save with its side effects as closures, so that "exactly one notice per save" is a behaviour that
+/// the tests drive with recording fakes instead of a pin on the app's source text.
+public enum SpeakersSaveRun {
+    /// Sends the plan's edits and says what happened in ONE notice. Nothing to send: the notice (if the plan left
+    /// something out) is the refusal and nothing is sent; nil. Otherwise the daemon's answer.
+    /// - `send`: the daemon call; its failure propagates and notifies nothing here (the caller says it once).
+    /// - `followUp`: what the app does after a save (stale flag, notes, copy); returns the copy's sentence, if any.
+    public static func run(plan: SpeakersSavePlan,
+                           send: (SpeakerEdits) async throws -> SpeakersState,
+                           followUp: (SpeakersState) async -> String?,
+                           notify: (String) -> Void) async throws -> SpeakersState? {
+        if plan.edits.isEmpty {
+            if let sentence = plan.notSavedSentence() { notify(sentence) }
+            return nil
+        }
+        return try await save(edits: plan.edits, notSaved: plan.notSavedSentence(), send: send, followUp: followUp, notify: notify)
+    }
+
+    /// The send and its single notice. `notSaved`: the plan's sentence for what was left out; it is appended to the
+    /// notice, never a second one.
+    public static func save(edits: SpeakerEdits, notSaved: String?,
+                            send: (SpeakerEdits) async throws -> SpeakersState,
+                            followUp: (SpeakersState) async -> String?,
+                            notify: (String) -> Void) async throws -> SpeakersState {
+        let state = try await send(edits)
+        let exportSentence = await followUp(state)
+        notify(SpeakersSaved.notice(refused: notSaved, notesQueued: state.notesQueued, exportSentence: exportSentence))
+        return state
     }
 }
 

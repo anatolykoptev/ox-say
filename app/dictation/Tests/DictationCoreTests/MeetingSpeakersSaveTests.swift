@@ -141,11 +141,13 @@ final class MeetingSpeakersSaveTests: XCTestCase {
         let tail = String(text[start.upperBound...])
         let end = try XCTUnwrap(tail.range(of: "func saveSpeakers(id: String"))
         let body = String(tail[..<end.lowerBound])
+        // The decisions (one notice, nothing sent when all is refused) are SpeakersSaveRun's, see SpeakersSaveRunTests;
+        // what stays pinned is that the panel goes through the plan and the runner.
         XCTAssertTrue(body.contains("let plan = draft.savePlan(against: state)"))
-        XCTAssertTrue(body.contains("plan.refusedSentence()"))
-        XCTAssertTrue(body.contains("try await saveSpeakers(id: id, edits: plan.edits, refused: plan.refusedSentence())"))
+        XCTAssertTrue(body.contains("try await SpeakersSaveRun.run(\n                        plan: plan,"))
+        XCTAssertTrue(body.contains("notify: { host.notify($0) }"))
+        XCTAssertEqual(body.components(separatedBy: "host.notify(").count - 1, 2, "the runner's notify and the failure's own")
         XCTAssertTrue(body.contains("SpeakersSaved.reopens(wasOffer: wasOffer, answer: state)"), "the split re-open survives a partial save")
-        XCTAssertFalse(body.contains("host.notify(sentence); return }"), "no second notice after the save")
         XCTAssertFalse(body.contains(".refusal(against:"), "all-or-nothing is back")
     }
 
@@ -160,5 +162,114 @@ final class MeetingSpeakersSaveTests: XCTestCase {
         // and the function it calls keeps the name
         let huge = "e" + String(repeating: "\u{301}", count: 70)
         XCTAssertEqual(MeetingLimits.cap(huge, to: MeetingLimits.nameMax, keeping: "Ivan"), "Ivan")
+    }
+
+    // MARK: #371.6 duplicate names
+
+    private let named = SpeakersState(mode: "auto", split: false, speakers: [
+        SpeakerInfo(id: "them:1", name: "Bob", label: "Bob"),
+        SpeakerInfo(id: "them:2", name: "Carol", label: "Carol"),
+        SpeakerInfo(id: "them:3", label: "Speaker 3"),
+    ])
+
+    /// A name another voice already carries is not sent (the daemon would 400 the whole save); the rest goes out.
+    /// The daemon compares trimmed and case-folded (strings.EqualFold) against the label of every other live voice.
+    /// Mutation: SpeakerDraft.nameKey, fold -> identity (raw compare) -> RED.
+    func testADuplicateNameIsNotSentAndTheRestIs() {
+        var d = SpeakerDraft(from: voices)
+        d.names["them:1"] = "speaker 2"          // case variant of another voice's default label
+        d.names["them:3"] = "Anna"
+        let plan = d.savePlan(against: voices)
+        XCTAssertEqual(plan.edits.rename, ["them:3": "Anna"])
+        XCTAssertEqual(plan.duplicates.map(\.id), ["them:1"])
+        XCTAssertTrue(plan.refused.isEmpty)
+    }
+
+    func testWhitespaceAndCaseVariantsAreDuplicates() {
+        var d = SpeakerDraft(from: named)
+        d.names["them:3"] = "  cAROL \t"
+        XCTAssertEqual(d.savePlan(against: named).duplicates.map(\.id), ["them:3"])
+        XCTAssertTrue(d.savePlan(against: named).edits.rename.isEmpty)
+    }
+
+    /// Non-ASCII case folding like Go's EqualFold (Cyrillic here).
+    func testCyrillicCaseVariantIsADuplicate() {
+        let s = SpeakersState(mode: "auto", speakers: [SpeakerInfo(id: "them:1", name: "Анна", label: "Анна"), SpeakerInfo(id: "them:2", label: "Speaker 2")])
+        var d = SpeakerDraft(from: s)
+        d.names["them:2"] = "аННА"
+        XCTAssertEqual(d.savePlan(against: s).duplicates.map(\.id), ["them:2"])
+    }
+
+    /// Final names count, not the old ones: swapping two names is fine.
+    func testASwapIsNotADuplicate() {
+        var d = SpeakerDraft(from: named)
+        d.names["them:1"] = "Carol"
+        d.names["them:2"] = "Bob"
+        let plan = d.savePlan(against: named)
+        XCTAssertEqual(plan.edits.rename, ["them:1": "Carol", "them:2": "Bob"])
+        XCTAssertTrue(plan.duplicates.isEmpty)
+    }
+
+    /// Two voices typed the same new name: the lower id keeps it, the other is named.
+    func testTwoVoicesTypedTheSameNameKeepsTheFirst() {
+        var d = SpeakerDraft(from: voices)
+        d.names["them:1"] = "Anna"
+        d.names["them:2"] = "anna"
+        let plan = d.savePlan(against: voices)
+        XCTAssertEqual(plan.edits.rename, ["them:1": "Anna"])
+        XCTAssertEqual(plan.duplicates.map(\.id), ["them:2"])
+    }
+
+    /// A voice folded away is not a speaker any more; its old label is free. A voice's own label in another case is no duplicate.
+    func testMergedAwayVoicesAndTheVoiceItselfAreNotRivals() {
+        var d = SpeakerDraft(from: named)
+        d.mergeInto["them:2"] = "them:3"            // Carol is folded away
+        d.names["them:2"] = ""                      // and her name goes with her (a typed one would move to them:3)
+        d.names["them:1"] = "carol"                 // free now
+        XCTAssertTrue(d.savePlan(against: named).duplicates.isEmpty)
+        var own = SpeakerDraft(from: named)
+        own.names["them:1"] = "BOB"
+        XCTAssertEqual(own.savePlan(against: named).edits.rename, ["them:1": "BOB"])
+        XCTAssertTrue(own.savePlan(against: named).duplicates.isEmpty)
+    }
+
+    /// Invalid and duplicate at once: reported once, as invalid.
+    func testAnInvalidDuplicateIsReportedOnceAsInvalid() throws {
+        let s = SpeakersState(mode: "auto", speakers: [SpeakerInfo(id: "them:1", label: "?!"), SpeakerInfo(id: "them:2", label: "Speaker 2")])
+        var d = SpeakerDraft(from: s)
+        d.names["them:2"] = "?!"
+        let plan = d.savePlan(against: s)
+        XCTAssertEqual(plan.refused.map(\.id), ["them:2"])
+        XCTAssertTrue(plan.duplicates.isEmpty)
+        try english {
+            let sentence = plan.notSavedSentence() ?? ""
+            XCTAssertEqual(sentence.components(separatedBy: "Not saved").count - 1, 1)
+            XCTAssertFalse(sentence.contains("Another speaker"))
+        }
+    }
+
+    /// One sentence, own reason, both reasons when both happen.
+    func testTheDuplicateSentenceHasItsOwnReason() throws {
+        try english {
+            var d = SpeakerDraft(from: named)
+            d.names["them:3"] = "bob"
+            let plan = d.savePlan(against: named)
+            XCTAssertEqual(plan.duplicateSentence(), "Not saved: Speaker 3. Another speaker already has that name.")
+            XCTAssertEqual(plan.notSavedSentence(), plan.duplicateSentence())
+            let both = SpeakersSavePlan(edits: SpeakerEdits(), refused: [SpeakerInfo(id: "them:1", label: "Bob")], duplicates: plan.duplicates)
+            XCTAssertEqual(both.notSavedSentence(),
+                           "Not saved: Bob. A name needs at least one letter or digit. Not saved: Speaker 3. Another speaker already has that name.")
+        }
+    }
+
+    /// #384.5: the window's refusal line names the voice, with the plan's own sentence.
+    func testTheWindowsRefusalLineNamesTheVoice() throws {
+        try english {
+            var d = SpeakerDraft(from: voices)
+            d.names["them:2"] = "?!"
+            XCTAssertEqual(d.refusalLine(against: voices), "Not saved: Speaker 2. A name needs at least one letter or digit.")
+            d.names["them:2"] = "Anna"
+            XCTAssertNil(d.refusalLine(against: voices))
+        }
     }
 }
