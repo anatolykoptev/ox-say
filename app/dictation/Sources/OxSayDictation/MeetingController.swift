@@ -693,9 +693,11 @@ final class MeetingController: NSObject, MeetingFeature {
     private func editSpeakers(_ id: String) {
         Task { @MainActor in
             do {
-                var state = try await host.client.speakers(id: id)
                 // The owner counts as a speaker in the daemon's duplicate check; unknown (a failed read) leaves that name to it.
-                let owner = (try? await host.client.meeting(id: id))?.ownerLabel
+                // Read beside the speakers, so the panel does not wait for a second round trip.
+                async let ownerRead = try? await host.client.meeting(id: id)
+                var state = try await host.client.speakers(id: id)
+                let owner = await ownerRead?.ownerLabel
                 let title = recent.first(where: { $0.id == id })?.title ?? ""
                 while let draft = SpeakersPrompt.ask(title: title, state: state) {
                     // What the daemon would refuse with a 400 is not sent and is named; the rest of the draft is.

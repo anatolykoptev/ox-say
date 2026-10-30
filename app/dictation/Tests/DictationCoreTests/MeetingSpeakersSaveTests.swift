@@ -144,7 +144,8 @@ final class MeetingSpeakersSaveTests: XCTestCase {
         // The decisions (one notice, nothing sent when all is refused) are SpeakersSaveRun's, see SpeakersSaveRunTests;
         // what stays pinned is that the panel goes through the plan and the runner.
         XCTAssertTrue(body.contains("let plan = draft.savePlan(against: state, owner: owner)"))
-        XCTAssertTrue(body.contains("(try? await host.client.meeting(id: id))?.ownerLabel"))
+        XCTAssertTrue(body.contains("async let ownerRead = try? await host.client.meeting(id: id)"))
+        XCTAssertTrue(body.contains("let owner = await ownerRead?.ownerLabel"))
         XCTAssertTrue(body.contains("try await SpeakersSaveRun.run(\n                        plan: plan,"))
         XCTAssertTrue(body.contains("notify: { host.notify($0) }"))
         XCTAssertEqual(body.components(separatedBy: "host.notify(").count - 1, 2, "the runner's notify and the failure's own")

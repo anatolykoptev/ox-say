@@ -375,6 +375,12 @@ printf 'abc' > "$d/dest/$name.part"
 printf 'ok:rest\n' > "$d/script"
 out=$(run_fetch "$d" "$d/dest"); rc=$?
 case $out in *"found a partial download, 3 bytes;"*) pass "a .part under 1 KB is sized in bytes" ;; *) fail "tinypart: exit $rc: $out" ;; esac
+d="$tmp/onebyte"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'a' > "$d/dest/$name.part"
+printf 'ok:rest\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in *"found a partial download, 1 byte;"*) pass "a one-byte .part is sized '1 byte', not '1 bytes'" ;; *) fail "onebyte: exit $rc: $out" ;; esac
 # A .part the server then refuses (HTTP 416) is never announced as "resuming", before or after it is dropped.
 d="$tmp/noresume"; mkdir -p "$d" "$d/dest"
 fakecurl "$d"

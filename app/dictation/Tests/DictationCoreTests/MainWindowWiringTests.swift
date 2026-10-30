@@ -309,6 +309,22 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertFalse(rename.contains("Task.sleep"))
     }
 
+    /// The window's Save goes through the plan (#371.6): the owner's label is passed in, the button sends only what the
+    /// plan allows, Save is disabled when it allows nothing, and no raw `edits(against:)` reaches the daemon from here.
+    /// Mutation: MeetingDetailView, drop `owner: detail.info.ownerLabel` -> RED.
+    /// Mutation: MeetingDetailView, the Button back to `saveSpeakers(detail.info.id, d.edits(against: s))` -> RED.
+    /// Mutation: MeetingDetailView, `.disabled(save?.edits == nil)` back to a `refusal`/`edits(against:)` form -> RED.
+    func testTheWindowsSaveGoesThroughThePlan() throws {
+        let view = try source("MainWindowUI/MeetingDetailView.swift")
+        XCTAssertTrue(view.contains("let save = draft?.windowSave(against: s, owner: detail.info.ownerLabel)"))
+        XCTAssertTrue(view.contains("if let edits = save?.edits { model.actions.saveSpeakers(detail.info.id, edits) }"))
+        XCTAssertTrue(view.contains(".disabled(save?.edits == nil)"))
+        XCTAssertTrue(view.contains("Text(save?.line ?? L10nKey.meetingSpeakersFootnote.text)"))
+        XCTAssertFalse(view.contains(".edits(against:"), "the window never sends a raw draft")
+        XCTAssertFalse(view.contains(".refusal(against:"), "the old refusal gate is gone")
+        XCTAssertEqual(view.components(separatedBy: "saveSpeakers(").count - 1, 1, "one send, the plan's")
+    }
+
     /// A speaker's sample is what a third party said: it is shown verbatim, never read as a LocalizedStringKey (which
     /// parses Markdown, links and images included).
     /// Mutation: MeetingDetailView row, `Text(verbatim: "“\(sp.sample)”")` -> `Text("“\(sp.sample)”")` -> RED.

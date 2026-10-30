@@ -140,10 +140,11 @@ stall_secs=${OX_SAY_STALL_SECS:-30}
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
-# human_size <bytes>: "3 MB" from one MiB up, "12 KB" from one KiB up, else "512 bytes" (a small .part is never "0 MB").
+# human_size <bytes>: "3 MB" from one MiB up, "12 KB" from one KiB up, else "512 bytes" ("1 byte") (a small .part is never "0 MB").
 human_size() {
     if [ "$1" -ge 1048576 ]; then echo "$(( $1 / 1048576 )) MB"
     elif [ "$1" -ge 1024 ]; then echo "$(( $1 / 1024 )) KB"
+    elif [ "$1" -eq 1 ]; then echo "1 byte"
     else echo "$1 bytes"
     fi
 }
