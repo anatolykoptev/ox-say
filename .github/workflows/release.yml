@@ -188,6 +188,7 @@ jobs:
       - name: Check the package
         env:
           ARCH: ${{ matrix.arch }}
+          RELEASE_CREATED: ${{ needs.release-please.outputs.release_created }}
         run: |
           set -euo pipefail
           mkdir -p check
@@ -326,6 +327,13 @@ jobs:
           codesign --verify --strict app/OxSayDictation.app
           test "$(plutil -extract CFBundleIdentifier raw -o - app/OxSayDictation.app/Contents/Info.plist)" = io.github.anatolykoptev.ox-say.dictation
           test "$(plutil -extract CFBundleShortVersionString raw -o - app/OxSayDictation.app/Contents/Info.plist)" = "$(sed 's/^v//; s/[-+].*//' VERSION | grep -E '^[0-9]+[.][0-9]+[.][0-9]+$' || echo 0.0.0)"
+          # A published release is never stamped 0.0.0 (the stamp of a dev build, which is offered no updates, so a
+          # mis-stamped release would not self-heal). The check above accepts 0.0.0 when VERSION is no x.y.z.
+          stamped=$(plutil -extract CFBundleShortVersionString raw -o - app/OxSayDictation.app/Contents/Info.plist)
+          if [ "$RELEASE_CREATED" = true ] && [ "$stamped" = 0.0.0 ]; then
+            echo "::error::release $VERSION is stamped 0.0.0 in the app's Info.plist; refusing to publish it"
+            exit 1
+          fi
           test -x scripts/install-app.sh
           (cd ../../dist && shasum -a 256 -c SHA256SUMS)
 

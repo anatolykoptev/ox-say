@@ -387,7 +387,7 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(observe.contains("installing: host.updateInstalling()"))
         let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
         XCTAssertTrue(start.contains("MeetingPolicy.manualStart(installing: installing) == .waitForInstall"))
-        XCTAssertTrue(start.contains("if origin == .auto, installing { done(false); return }"))
+        XCTAssertTrue(start.contains("if origin == .auto, installing { rejected(); return }"))
         let reconcile = try XCTUnwrap(body(text, of: "private func reconcile() {"))
         XCTAssertTrue(reconcile.contains("Reconcile.action(for: m,"))
         XCTAssertTrue(reconcile.contains("currentID: current?.info.id"))
@@ -442,13 +442,18 @@ final class MeetingWiringTests: XCTestCase {
         let attempt = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
         XCTAssertTrue(attempt.contains("let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started, pressed: offered ? source : nil) }"),
                       "only the press of the question settles it")
-        let settle = try XCTUnwrap(body(text, of: "private func settleBadge(started: Bool, pressed: String?) {"))
-        XCTAssertTrue(settle.contains("StartBadge.afterAttempt(started: started, question: question, pressedSource: pressed) == .hide { badge.hide() }"))
+        // What the settle does (hide .checking, .confirm only by its own press, a rejected start leaves .checking) is
+        // StartBadge's, driven with fakes in RecordConfirmTests; what stays pinned is that the app calls it.
+        let settle = try XCTUnwrap(body(text, of: "private func settleBadge(started: Bool, began: Bool = true, pressed: String?) {"))
+        XCTAssertTrue(settle.contains("StartBadge.settle(started: started, began: began, pressedSource: pressed, question: { question }, hide: { badge.hide() })"))
         XCTAssertTrue(settle.contains("case .recordChecking(let shown)?: question = .checking(source: shown)"))
         XCTAssertTrue(settle.contains("case .recordConfirm(let shown)?: question = .confirm(source: shown)"))
-        XCTAssertTrue(attempt.contains("guard current == nil, !starting, !isShutDown else { done(false); return }"))
-        XCTAssertEqual(attempt.components(separatedBy: "done(false)").count - 1, 5,
-                       "in-flight guard, install x2, consent, microphone check each report a failed start")
+        XCTAssertTrue(attempt.contains("let rejected: () -> Void = { [weak self] in self?.settleBadge(started: false, began: false, pressed: offered ? source : nil) }"),
+                      "a start turned away at the door did not begin (#384.3)")
+        XCTAssertTrue(attempt.contains("guard current == nil, !starting, !isShutDown else { rejected(); return }"))
+        XCTAssertEqual(attempt.components(separatedBy: "rejected()").count - 1, 2, "in-flight guard and the auto start while installing")
+        XCTAssertEqual(attempt.components(separatedBy: "done(false)").count - 1, 3,
+                       "manual install wait, consent, microphone check each report a failed start that began")
         XCTAssertTrue(attempt.contains("defer { starting = false; done(ok) }"), "shutdown, daemon and recorder ends report too")
         XCTAssertTrue(attempt.contains("host.recordingChanged()\n                ok = true"), "only a started recording is a success")
         let answer = try XCTUnwrap(body(text, of: "private func answerRecordQuestion(_ answer: RecordPrompt.Answer) {"))

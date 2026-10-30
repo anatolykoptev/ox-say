@@ -140,6 +140,15 @@ stall_secs=${OX_SAY_STALL_SECS:-30}
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
+# human_size <bytes>: "3 MB" from one MiB up, "12 KB" from one KiB up, else "512 bytes" ("1 byte") (a small .part is never "0 MB").
+human_size() {
+    if [ "$1" -ge 1048576 ]; then echo "$(( $1 / 1048576 )) MB"
+    elif [ "$1" -ge 1024 ]; then echo "$(( $1 / 1024 )) KB"
+    elif [ "$1" -eq 1 ]; then echo "1 byte"
+    else echo "$1 bytes"
+    fi
+}
+
 diar_marker="$dest/diar/speaker-diarization/.fluidaudio-revision"
 
 # Seconds per retry pass to wait before the next one (pass * unit); OX_SAY_RETRY_SLEEP_UNIT=0 turns it off for tests.
@@ -226,9 +235,11 @@ for entry in "${models[@]}"; do
         echo "copy    $name"
         cp "$OX_SAY_MODELS_FROM/$name" "$part"
     else
-        # A rerun that continues a .part says so (and from how much): the log of a resume and of a restart must differ.
+        # A rerun over a .part says so (and how much it holds): the log of a continuation and of a restart must differ.
+        # Whether the server accepts the Range request is known only when it answers, so the line claims no more than
+        # it knows ("trying to continue"); a .part that is then dropped says so below, after this line.
         if [ -s "$part" ]; then
-            echo "resuming $name from $(( $(wc -c < "$part" | tr -d ' ') / 1048576 )) MB"
+            echo "fetch   $name (found a partial download, $(human_size "$(wc -c < "$part" | tr -d ' ')"); trying to continue it)"
         else
             echo "fetch   $name"
         fi
@@ -249,7 +260,7 @@ for entry in "${models[@]}"; do
         [ -s "$part" ] && resumed=1
         fetch_part "$base/$remote" "$part" 1 || rc=$?
         if [ "$resumed" = 1 ] && { [ "$rc" -eq 33 ] || { [ "$rc" -eq 22 ] && { [ "$fetch_code" = 412 ] || [ "$fetch_code" = 416 ]; }; }; }; then
-            echo "resuming $name failed (curl exit $rc${fetch_code:+, HTTP $fetch_code}); fetching it again from the start" >&2
+            echo "the partial download of $name cannot be continued (curl exit $rc${fetch_code:+, HTTP $fetch_code}); fetching it again from the start" >&2
             rc=0
             fetch_part "$base/$remote" "$part" 0 || rc=$?
         fi

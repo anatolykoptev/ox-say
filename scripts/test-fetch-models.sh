@@ -37,8 +37,12 @@
 #     its progress meter (carriage returns) -> "no progress meter" fails
 #   * fetch-models.sh: change `curl -fsSL` to `curl -fsL` -> the fake curl is
 #     silent -> "curl's own error words" fails
-#   * fetch-models.sh: delete the `echo "resuming $name from ...` line (or the `[ -s "$part" ]` condition around it) -> "a
-#     rerun over a .part says it is resuming" / "a fresh download does not say resuming" fail
+#   * fetch-models.sh: delete the `echo "fetch   $name (found a partial download ...` line (or the `[ -s "$part" ]`
+#     condition around it) -> "a rerun over a .part says what it found" / "a fresh download does not say resuming" fail
+#   * fetch-models.sh: human_size, `-ge 1024` -> `-ge 1048576` for the KB arm (or MB division for all) -> "a .part under 1 MB
+#     is sized in KB" fails
+#   * fetch-models.sh: put the word `resuming` back into the pre-download line or the drop line -> "an unresumable .part is
+#     dropped without ever saying resuming" fails
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -341,21 +345,53 @@ else
 fi
 [ -s "$d/curl.pid" ] && kill "$(cat "$d/curl.pid")" 2>/dev/null || true
 
-# A rerun over a .part says it resumes, and from how much (#372.2): the log of a restart and of a resume must differ.
+# A rerun over a .part says what it found, and how much (#372.2): the log of a restart and of a continuation must differ.
+# It does not say "resuming" (#384.4): that is known only when the server answers, and a .part it refuses is dropped.
 d="$tmp/resumeline"; mkdir -p "$d" "$d/dest"
 fakecurl "$d"
 dd if=/dev/zero of="$d/dest/$name.part" bs=1048576 count=3 2>/dev/null
 printf 'ok:rest\n' > "$d/script"
 out=$(run_fetch "$d" "$d/dest"); rc=$?
 case $out in
-    *"resuming $name from 3 MB"*) pass "a rerun over a .part says it is resuming, and from how many MB" ;;
+    *"fetch   $name (found a partial download, 3 MB; trying to continue it)"*) pass "a rerun over a .part says what it found, and how many MB" ;;
     *) fail "resumeline: exit $rc: $out" ;;
 esac
-case $out in
-    *"fetch   $name"*) fail "a resume also printed the fresh-download line: $out" ;;
-    *) pass "a resume does not claim to be a fresh fetch" ;;
-esac
+if printf '%s\n' "$out" | grep -qx "fetch   $name"; then fail "a continuation also printed the fresh-download line: $out"; else pass "a continuation does not claim to be a fresh fetch"; fi
 if sed -n 1p "$d/calls" | grep -q 'resume=1 size=3145728 '; then pass "and the download did resume from those bytes"; else fail "resumeline calls: $(cat "$d/calls")"; fi
+# A .part under 1 MB is sized in KB (or bytes), never "from 0 MB".
+d="$tmp/smallpart"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+dd if=/dev/zero of="$d/dest/$name.part" bs=1024 count=100 2>/dev/null
+printf 'ok:rest\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in
+    *"0 MB"*) fail "a small .part was sized in MB: $out" ;;
+    *"found a partial download, 100 KB;"*) pass "a .part under 1 MB is sized in KB" ;;
+    *) fail "smallpart: exit $rc: $out" ;;
+esac
+d="$tmp/tinypart"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'abc' > "$d/dest/$name.part"
+printf 'ok:rest\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in *"found a partial download, 3 bytes;"*) pass "a .part under 1 KB is sized in bytes" ;; *) fail "tinypart: exit $rc: $out" ;; esac
+d="$tmp/onebyte"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'a' > "$d/dest/$name.part"
+printf 'ok:rest\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in *"found a partial download, 1 byte;"*) pass "a one-byte .part is sized '1 byte', not '1 bytes'" ;; *) fail "onebyte: exit $rc: $out" ;; esac
+# A .part the server then refuses (HTTP 416) is never announced as "resuming", before or after it is dropped.
+d="$tmp/noresume"; mkdir -p "$d" "$d/dest"
+fakecurl "$d"
+printf 'stale bytes that no longer fit' > "$d/dest/$name.part"
+printf 'rc:22:416\nok:fresh\n' > "$d/script"
+out=$(run_fetch "$d" "$d/dest"); rc=$?
+case $out in
+    *"resuming"*) fail "an unresumable .part was announced as resuming: $out" ;;
+    *"cannot be continued (curl exit 22, HTTP 416); fetching it again from the start"*) pass "an unresumable .part is dropped without ever saying resuming" ;;
+    *) fail "noresume: exit $rc: $out" ;;
+esac
 d="$tmp/freshline"; mkdir -p "$d" "$d/dest"
 fakecurl "$d"
 printf 'ok:all\n' > "$d/script"

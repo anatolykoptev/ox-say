@@ -50,12 +50,15 @@ public struct MeetingInfo: Equatable {
     public var audioDeleted: Bool
     /// How long the call was, in seconds; nil until the recording is over.
     public var durationSeconds: Double?
+    /// What the transcript calls the person who recorded it (`labels.me` of the manifest, which `GET /v1/meetings/{id}`
+    /// serves whole). The daemon counts it as a speaker's name when it checks a rename for a duplicate.
+    public var ownerLabel: String?
 
     public init(id: String, dir: String? = nil, title: String = "", started: Date? = nil, status: Status,
                 notesPending: String? = nil, warnings: [String] = [], error: String? = nil,
                 notesMD: String? = nil, transcriptMD: String? = nil, voiceMode: String? = nil, diarReason: String? = nil,
                 audioDeleted: Bool = false, durationSeconds: Double? = nil, failReason: String? = nil,
-                voicesRetryable: Bool? = nil) {
+                voicesRetryable: Bool? = nil, ownerLabel: String? = nil) {
         self.id = id
         self.dir = dir
         self.title = title
@@ -72,6 +75,7 @@ public struct MeetingInfo: Equatable {
         self.audioDeleted = audioDeleted
         self.durationSeconds = durationSeconds
         self.failReason = failReason
+        self.ownerLabel = ownerLabel
     }
 
     public var heardNoSystemAudio: Bool { warnings.contains("no_system_audio") }
@@ -131,7 +135,8 @@ public struct MeetingInfo: Equatable {
                            audioDeleted: obj["audio_deleted"] as? Bool ?? false,
                            durationSeconds: (obj["duration_s"] as? Double).flatMap { $0 > 0 ? $0 : nil },
                            failReason: nonEmpty(obj["fail_reason"] as? String),
-                           voicesRetryable: obj["voices_retryable"] as? Bool)
+                           voicesRetryable: obj["voices_retryable"] as? Bool,
+                           ownerLabel: nonEmpty((obj["labels"] as? [String: Any])?["me"] as? String))
     }
 
     private static func nonEmpty(_ s: String?) -> String? {

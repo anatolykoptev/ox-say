@@ -183,4 +183,34 @@ final class RecordConfirmTests: XCTestCase {
         XCTAssertTrue(VoicesRetry.asksFirst(info: nil, speakers: nil), "a read that cannot answer asks")
         XCTAssertTrue(VoicesRetry.asksFirst(info: info(notes: nil), speakers: nil), "one missing side asks")
     }
+
+    // MARK: settle (the badge side effects as closures, #384.2)
+
+    private func settle(started: Bool, began: Bool = true, question: StartBadge.Question?, pressed: String?) -> Int {
+        var hides = 0
+        StartBadge.settle(started: started, began: began, pressedSource: pressed, question: { question }, hide: { hides += 1 })
+        return hides
+    }
+
+    /// A start that failed takes the `.checking` badge down whoever pressed; a `.confirm` only by its own press.
+    /// Mutation: StartBadge.settle, drop the `hide()` call -> RED.
+    func testAFailedStartHidesCheckingAndConfirmOnlyByItsOwnPress() {
+        XCTAssertEqual(settle(started: false, question: .checking(source: "zoom"), pressed: nil), 1)
+        XCTAssertEqual(settle(started: false, question: .confirm(source: "zoom"), pressed: nil), 0)
+        XCTAssertEqual(settle(started: false, question: .confirm(source: "zoom"), pressed: "teams"), 0)
+        XCTAssertEqual(settle(started: false, question: .confirm(source: "zoom"), pressed: "zoom"), 1)
+        XCTAssertEqual(settle(started: true, question: .checking(source: "zoom"), pressed: "zoom"), 0)
+        XCTAssertEqual(settle(started: false, question: nil, pressed: "zoom"), 0)
+    }
+
+    /// #384.3: a start the guard turned away (a second start while one is starting, an auto start while installing)
+    /// never began, so it must not take down the `.checking` badge of the start in progress. Its own `.confirm` still goes.
+    /// Mutation: StartBadge.afterAttempt, `.checking: return began ? .hide : .keep` -> `return .hide` -> RED.
+    func testARejectedStartLeavesTheCheckingBadgeAlone() {
+        XCTAssertEqual(settle(started: false, began: false, question: .checking(source: "zoom"), pressed: nil), 0)
+        XCTAssertEqual(settle(started: false, began: false, question: .checking(source: "zoom"), pressed: "zoom"), 0)
+        XCTAssertEqual(settle(started: false, began: false, question: .confirm(source: "zoom"), pressed: "zoom"), 1,
+                       "a press whose start was refused still takes its own question down")
+        XCTAssertEqual(settle(started: false, began: false, question: .confirm(source: "zoom"), pressed: nil), 0)
+    }
 }

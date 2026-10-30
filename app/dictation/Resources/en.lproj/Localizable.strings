@@ -158,6 +158,7 @@
 "notice.speakers.saved" = "Speakers saved. The notes are being written again.";
 "notice.speakers.names_saved" = "Names saved.";
 "notice.speakers.refused" = "Not saved: %@. A name needs at least one letter or digit.";
+"notice.speakers.duplicate" = "Not saved: %@. Another speaker already has that name.";
 /* Why a meeting's voices were not told apart. */
 "menu.meeting.speakers_retry" = "Try Again: %@";
 "meeting.diar.failed.engine_error" = "Voices were not told apart: the voice engine stopped with an error.";

@@ -340,16 +340,16 @@ struct SpeakersTab: View {
                         }
                     }
                     .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
-                    let refusal = draft?.refusal(against: s)
+                    let save = draft?.windowSave(against: s, owner: detail.info.ownerLabel)
                     HStack {
-                        Text((refusal ?? .meetingSpeakersFootnote).text).font(.caption)
-                            .foregroundStyle(refusal == nil ? Color.secondary : Color.red)
+                        Text(save?.line ?? L10nKey.meetingSpeakersFootnote.text).font(.caption)
+                            .foregroundStyle(save?.line == nil ? Color.secondary : Color.red)
                         Spacer()
                         Button(L10nKey.speakersSave.text) {
-                            if let d = draft { model.actions.saveSpeakers(detail.info.id, d.edits(against: s)) }
+                            if let edits = save?.edits { model.actions.saveSpeakers(detail.info.id, edits) }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(draft.map { $0.refusal(against: s) != nil || $0.edits(against: s).isEmpty } ?? true)
+                        .disabled(save?.edits == nil)
                     }
                 }
             }

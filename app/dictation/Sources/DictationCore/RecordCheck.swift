@@ -102,12 +102,23 @@ public enum StartBadge {
     /// - `.confirm` is answerable: only a failure of ITS OWN press (`pressedSource`, nil for a start that was not a
     ///   press) hides it, an unrelated start that fails leaves it up (#374.1).
     /// A started recording has its own badge; a badge that is not a question is never touched.
-    public static func afterAttempt(started: Bool, question: Question?, pressedSource: String?) -> Action {
+    /// - `began`: false for a start that the guard turned away before it did anything (a second start while one is
+    ///   starting, an automatic one while an update installs). It is not the start of the `.checking` badge, so it
+    ///   must not take that badge down; its own press's `.confirm` still goes (#384.3).
+    public static func afterAttempt(started: Bool, question: Question?, pressedSource: String?, began: Bool = true) -> Action {
         guard !started, let question else { return .keep }
         switch question {
-        case .checking: return .hide
+        case .checking: return began ? .hide : .keep
         case .confirm(let source): return source == pressedSource ? .hide : .keep
         }
+    }
+}
+
+extension StartBadge {
+    /// The end of a start attempt, with the badge as closures: `question` reads what the badge shows, `hide` takes it down.
+    public static func settle(started: Bool, began: Bool = true, pressedSource: String?,
+                              question: () -> Question?, hide: () -> Void) {
+        if afterAttempt(started: started, question: question(), pressedSource: pressedSource, began: began) == .hide { hide() }
     }
 }
 
