@@ -39,20 +39,24 @@ func validateStyle(style string) error {
 	return nil
 }
 
-// validateLabel checks a voice's display label: at most maxVoiceLabelChars once
-// trimmed, and no control character (a newline or tab included), line or
-// paragraph separator, or text-direction control. Callers store the trimmed form.
-func validateLabel(label string) error {
+// normalizeLabel is the only way a voice label reaches the store, from the add
+// path and from UpdateVoice alike: it returns the label trimmed of surrounding
+// whitespace (a newline included), so the string checked is the string stored.
+// Padding is not part of the label, so the length bound applies to the trimmed
+// form. A label that is blank once trimmed comes back "" (no label). What stays
+// inside the trimmed label may not hold a control character (a tab or an inner
+// newline), a line or paragraph separator, or a text-direction control.
+func normalizeLabel(label string) (string, error) {
 	label = strings.TrimSpace(label)
 	if utf8.RuneCountInString(label) > maxVoiceLabelChars {
-		return &requestError{fmt.Sprintf("label is longer than %d characters", maxVoiceLabelChars)}
+		return "", &requestError{fmt.Sprintf("label is longer than %d characters", maxVoiceLabelChars)}
 	}
 	if strings.IndexFunc(label, func(r rune) bool {
 		return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
 	}) >= 0 || meeting.HasBidiControl(label) {
-		return &requestError{"label cannot hold control or line-break characters"}
+		return "", &requestError{"label cannot hold control or line-break characters"}
 	}
-	return nil
+	return label, nil
 }
 
 // validateSource refuses a source other than unset, a recording made for the
@@ -65,24 +69,27 @@ func validateSource(source string) error {
 	return &requestError{fmt.Sprintf("source %q: want %q, %q or empty", source, voices.SourceRecorded, voices.SourceFile)}
 }
 
-// validateMeta checks the metadata of a voice being added.
-func validateMeta(m voices.Meta) error {
+// normalizeMeta checks the metadata of a voice being added and returns it in
+// the form to store (the label trimmed, see normalizeLabel).
+func normalizeMeta(m voices.Meta) (voices.Meta, error) {
 	if err := validateEngine(m.Engine); err != nil {
-		return err
+		return m, err
 	}
 	if err := validateStyle(m.Style); err != nil {
-		return err
+		return m, err
 	}
-	if err := validateLabel(m.Label); err != nil {
-		return err
+	label, err := normalizeLabel(m.Label)
+	if err != nil {
+		return m, err
 	}
+	m.Label = label
 	if err := validateSource(m.Source); err != nil {
-		return err
+		return m, err
 	}
 	if utf8.RuneCountInString(m.DesignedFrom) > maxDesignedFromChars {
-		return &requestError{fmt.Sprintf("designed_from is longer than %d characters", maxDesignedFromChars)}
+		return m, &requestError{fmt.Sprintf("designed_from is longer than %d characters", maxDesignedFromChars)}
 	}
-	return nil
+	return m, nil
 }
 
 // voxRefLimit is the longest reference clip the encoder takes, in seconds. A
@@ -110,8 +117,9 @@ func (d *Daemon) checkVoxReference(seconds float64) error {
 
 // UpdateVoice changes a voice's preferred engine, default style and/or display
 // label; a nil argument leaves the field as it is, "" clears it. The label is
-// stored trimmed. source is not updatable either: it describes the audio. Switching a voice to
-// voxcpm2 re-checks its stored recording, which may predate the limit.
+// stored as normalizeLabel returns it. source is not updatable either: it
+// describes the audio. Switching a voice to voxcpm2 re-checks its stored
+// recording, which may predate the limit.
 // voiceMu orders it against AddVoice, repairs and RemoveVoice.
 // designed_from is deliberately not updatable: it records how the voice came
 // to be, and a later edit would make it a claim about audio it does not describe.
@@ -126,8 +134,10 @@ func (d *Daemon) UpdateVoice(name string, engineName, style, label *string) (*vo
 			return nil, err
 		}
 	}
+	var newLabel string
 	if label != nil {
-		if err := validateLabel(*label); err != nil {
+		var err error
+		if newLabel, err = normalizeLabel(*label); err != nil {
 			return nil, err
 		}
 	}
@@ -146,7 +156,7 @@ func (d *Daemon) UpdateVoice(name string, engineName, style, label *string) (*vo
 			v.Style = *style
 		}
 		if label != nil {
-			v.Label = strings.TrimSpace(*label)
+			v.Label = newLabel
 		}
 	})
 }

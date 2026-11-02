@@ -416,8 +416,9 @@ type addOpts struct {
 }
 
 func (d *Daemon) addVoice(ctx context.Context, name, audioPath, refText string, m voices.Meta, o addOpts) (v *voices.Voice, registered bool, err error) {
-	if err := validateMeta(m); err != nil {
-		return nil, false, err
+	m, merr := normalizeMeta(m)
+	if merr != nil {
+		return nil, false, merr
 	}
 	if err := d.Store.ValidateInput(name, audioPath); err != nil {
 		return nil, false, err

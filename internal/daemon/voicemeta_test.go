@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -292,7 +293,7 @@ func TestVoiceLabelIsTrimmedAndKeptByOtherUpdates(t *testing.T) {
 	}
 }
 
-// Mutation F2: internal/daemon/voicemeta.go validateLabel — body -> `return nil`
+// Mutation F2: internal/daemon/voicemeta.go normalizeLabel — body -> `return nil`
 // -> RED.
 func TestVoiceLabelIsValidated(t *testing.T) {
 	for name, bad := range map[string]string{
@@ -303,7 +304,7 @@ func TestVoiceLabelIsValidated(t *testing.T) {
 		"line separator": "a\u2028b",
 		"bidi override":  "a\u202eb",
 	} {
-		if validateLabel(bad) == nil {
+		if _, err := normalizeLabel(bad); err == nil {
 			t.Errorf("%s: want an error", name)
 		}
 	}
@@ -312,7 +313,7 @@ func TestVoiceLabelIsValidated(t *testing.T) {
 		"at the limit":  strings.Repeat("я", maxVoiceLabelChars),
 		"empty":         "",
 	} {
-		if err := validateLabel(ok); err != nil {
+		if _, err := normalizeLabel(ok); err != nil {
 			t.Errorf("%s is valid: %v", name, err)
 		}
 	}
@@ -358,5 +359,52 @@ func TestPatchVoiceAcceptsLabelAndAddAcceptsLabelAndSource(t *testing.T) {
 		if code, resp := doJSON(t, http.MethodGet, u, ""); code != http.StatusOK || !strings.Contains(resp, `"label":"Новый"`) || !strings.Contains(resp, `"source":"recorded"`) {
 			t.Fatalf("GET %s = %d %s", u, code, resp)
 		}
+	}
+}
+
+// The label that is checked is the label that is stored: the add path trims it
+// before it is bounded and before the store sees it, so a blank label is no
+// label (a re-add still inherits) and padding cannot dodge the length bound.
+// Mutation: internal/daemon/voicemeta.go normalizeMeta — delete `m.Label = label`
+// (the store gets the untrimmed value) -> RED.
+func TestAddVoiceStoresTheTrimmedLabel(t *testing.T) {
+	d, url, dir := metaServer(t)
+	src := testutil.WriteSilentWAV(t, dir, "c.wav", 3)
+	post := func(name, label string) int {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"name": name, "audio_path": src, "label": label})
+		code, _ := doJSON(t, http.MethodPost, url+"/v1/audio/voices", string(body))
+		return code
+	}
+	max := strings.Repeat("я", maxVoiceLabelChars)
+	for name, tc := range map[string]struct{ in, want string }{
+		"leading newline":  {"\nabc", "abc"},
+		"trailing newline": {"abc\n", "abc"},
+		"blank":            {"   ", ""},
+		"padded at limit":  {"  " + max + "  ", max},
+	} {
+		id := "v" + strings.ReplaceAll(name, " ", "")[:3]
+		if code := post(id, tc.in); code != http.StatusOK {
+			t.Fatalf("%s: POST = %d, want 200", name, code)
+		}
+		if v, err := d.Store.Get(id); err != nil || v.Label != tc.want {
+			t.Errorf("%s: stored label = %q (%v), want %q", name, v.Label, err, tc.want)
+		}
+	}
+	if code := post("toolong", max+"я"); code != http.StatusBadRequest {
+		t.Fatalf("a label one character over the limit = %d, want 400", code)
+	}
+	if code := post("inner", "a\nb"); code != http.StatusBadRequest {
+		t.Fatalf("an inner newline = %d, want 400", code)
+	}
+	// A blank label is "no label": a re-add inherits the earlier one.
+	if code := post("keep", "Мой голос"); code != http.StatusOK {
+		t.Fatal(code)
+	}
+	if code := post("keep", "   "); code != http.StatusOK {
+		t.Fatal(code)
+	}
+	if v, _ := d.Store.Get("keep"); v.Label != "Мой голос" {
+		t.Fatalf("a blank label on a re-add must inherit, got %q", v.Label)
 	}
 }

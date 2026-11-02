@@ -285,8 +285,7 @@ func (p *Pending) Commit() (*Voice, error) {
 // its audio but keeps the preferences it was set up with (engine, style, label):
 // an older client that does not know the fields must not silently reset them.
 // DesignedFrom, Seed and Source describe the old audio, so they are never
-// carried over. Clear a
-// preference with Update.
+// carried over. Clear a preference with Update.
 func (p *Pending) inheritedMeta() Meta {
 	m := p.meta
 	if p.fresh {
