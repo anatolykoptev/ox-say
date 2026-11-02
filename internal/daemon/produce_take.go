@@ -331,17 +331,20 @@ const (
 	errEngineTimeout = "the voice engine did not answer in time; check that it is running, then resume the project"
 )
 
-// renderDeadline is the longest one render of chars characters may take.
-var renderDeadline = func(chars int) time.Duration {
+// renderDeadline is the longest one render of chars characters may take at
+// steps sampling steps. The budget was measured at defaultTimesteps; above it
+// the whole deadline grows by stepFactor (see there), so a 50-step project is
+// not timed out and its engine recycled on every chunk.
+var renderDeadline = func(chars, steps int) time.Duration {
 	audio := time.Duration(float64(chars) / estCharsPerSec * renderBudgetRTF * float64(time.Second))
-	return max(renderFloor, audio+renderSlack)
+	return time.Duration(float64(max(renderFloor, audio+renderSlack)) * stepFactor(steps))
 }
 
 // renderWithin renders spec under ctx and the per-render deadline. The port
 // is called in its own goroutine so even one that ignores its context cannot
 // hold the job: the job fails in plain words and the late answer is dropped.
 func (t *taker) renderWithin(ctx context.Context, spec takeSpec) (*synthOut, error) {
-	rctx, cancel := context.WithTimeout(ctx, renderDeadline(utf8.RuneCountInString(spec.Text))+t.ports.ColdStartSlack())
+	rctx, cancel := context.WithTimeout(ctx, renderDeadline(utf8.RuneCountInString(spec.Text), spec.Steps)+t.ports.ColdStartSlack())
 	defer cancel()
 	rctx, use := withEngineUse(rctx)
 	type answer struct {

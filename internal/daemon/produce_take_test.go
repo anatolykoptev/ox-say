@@ -248,6 +248,24 @@ func TestTakeKeyCoversInputs(t *testing.T) {
 	}
 }
 
+// A chunk's takes stay valid only for the steps they were rendered with:
+// two specs differing only in Steps have different bases (so a steps change
+// resets the chunk), while seed and cfg stay outside the basis.
+// Mutation: produce_take.go basis, `s.Seed, s.Cfg = 0, 0` -> `s.Seed, s.Cfg, s.Steps = 0, 0, 0` -> RED.
+func TestTakeBasisCoversSteps(t *testing.T) {
+	a := takeSpec{V: takeKeyVersion, Engine: "e", Voice: "nar", VoiceSHA: "aa", Mode: cloneReference, Text: "Текст.", Seed: 1, Cfg: 2, Steps: 10}
+	b := a
+	b.Steps = 8
+	if a.basis() == b.basis() {
+		t.Error("specs that differ only in Steps share a basis: a steps change would keep takes rendered with the old steps")
+	}
+	c := a
+	c.Seed, c.Cfg = 9, 1.6
+	if a.basis() != c.basis() {
+		t.Error("seed and cfg must stay outside the basis")
+	}
+}
+
 // Gates: silence and WER fail; the plausibility warning is a recorded
 // reason, not a failure (#143.6).
 // Mutation: append the warning to fails in take -> the warning case fails -> RED.

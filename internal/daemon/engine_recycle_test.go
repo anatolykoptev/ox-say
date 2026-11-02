@@ -19,7 +19,7 @@ import (
 func shortDeadline(t *testing.T, d time.Duration) {
 	t.Helper()
 	old := renderDeadline
-	renderDeadline = func(int) time.Duration { return d }
+	renderDeadline = func(int, int) time.Duration { return d }
 	t.Cleanup(func() { renderDeadline = old })
 }
 

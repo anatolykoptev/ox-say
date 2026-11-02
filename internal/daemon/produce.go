@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -40,6 +41,15 @@ const (
 	// live writer left to race (#154 amendment 4).
 	tempSweepMinAge = 2 * time.Minute
 )
+
+// stepFactor is how much longer than the default a render at steps sampling
+// steps is expected to take: max(1, steps/defaultTimesteps). ASSUMPTION: render
+// time is linear in the steps. Only the default (renderRTF, renderBudgetRTF)
+// was measured; 11-50 steps were not. Fewer steps never shorten a deadline or
+// an ETA, so a low-step project keeps today's numbers.
+func stepFactor(steps int) float64 {
+	return math.Max(1, float64(steps)/float64(defaultTimesteps))
+}
 
 // powerPoll is how often a paused job re-checks the power source (tests lower it).
 var powerPoll = 30 * time.Second
@@ -524,7 +534,7 @@ func eta(m *vproject.Manifest, elapsed float64) float64 {
 		}
 	}
 	if doneChars == 0 {
-		return float64(left) / estCharsPerSec * renderRTF
+		return float64(left) / estCharsPerSec * renderRTF * stepFactor(m.Settings.Steps)
 	}
 	return float64(left) * elapsed / float64(doneChars)
 }

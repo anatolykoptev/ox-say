@@ -364,7 +364,7 @@ are refused.
 
 | Route | Description |
 |-------|-------------|
-| `POST /v1/produce` | `{"script"` (required, ≤ 40,000 chars)`,"title","voice","style","preset","seed","takes"(1..3; 0 is refused),"clone_mode"("auto"/"reference"/"ultimate"; default auto, ultimate refuses any style),"out_path","overwrite","allow_battery"}` → 202 with the project summary. 409 + `running_id` when another voiceover is running. No `cfg_value`, steps or loudness: the preset carries them |
+| `POST /v1/produce` | `{"script"` (required, ≤ 40,000 chars)`,"title","voice","style","preset","seed","takes"(1..3; 0 is refused),"clone_mode"("auto"/"reference"/"ultimate"; default auto, ultimate refuses any style),"out_path","overwrite","allow_battery","loudness_lufs"(-40..-5; default from the preset),"inference_timesteps"(integer 1..50, default 10; an explicit 0 is refused)}` → 202 with the project summary. 409 + `running_id` when another voiceover is running. No `cfg_value`. More steps render slower; the time estimate and the render timeout grow with them |
 | `GET /v1/produce` | `{"projects":[…]}`: the 20 most recent, newest first, without their chunk lists |
 | `GET /v1/produce/<id>` | Summary: `status` (`running`, `waiting_for_dictation`, `paused_on_battery`, `review`, `done`, `failed`, `cancelled`, `interrupted`), `seed`, `progress` (`chunks_done`, `chunks_total`, `eta_s`), `outputs`, `chunks` (status, pick, reasons), `notes` |
 | `GET /v1/produce/<id>/chunks/<n>` | One chunk (0-based): its text, takes (key, seed, duration, word errors) and `take_files` (key → WAV path) |
