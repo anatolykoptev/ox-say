@@ -22,6 +22,7 @@ import (
 func modelsServer(t *testing.T) (d *Daemon, base, models string) {
 	t.Helper()
 	d, base, dir := metaServer(t)
+	d.Cfg.Home = dir // the managed folder is <home>/models
 	models = filepath.Join(dir, "models")
 	if err := os.MkdirAll(models, 0o755); err != nil {
 		t.Fatal(err)
@@ -390,7 +391,7 @@ func TestDeleteOfTheNotesModelWaitsForMeetingsAndDownloads(t *testing.T) {
 // A running engine has the model open. The delete stops it through the supervisor first, so the file is gone and so is
 // the process that held it; it does not pull a model out from under a child.
 func TestDeleteStopsTheResidentEngineThenRemovesTheFile(t *testing.T) {
-	d, dir := startNotesFake(t)
+	d, dir := startManagedNotesFake(t)
 	mux := http.NewServeMux()
 	d.Routes(mux)
 	srv := httptest.NewServer(mux)
@@ -428,7 +429,7 @@ func TestDeleteLeavesAnEngineThatIsServingARequest(t *testing.T) {
 	old := modelStopWait
 	modelStopWait = 300 * time.Millisecond
 	t.Cleanup(func() { modelStopWait = old })
-	d, dir := startNotesFake(t)
+	d, dir := startManagedNotesFake(t)
 	mux := http.NewServeMux()
 	d.Routes(mux)
 	srv := httptest.NewServer(mux)
@@ -558,7 +559,7 @@ func TestDeleteReadsTheLanesAgainAfterTheEngineStops(t *testing.T) {
 	old := modelStopWait
 	modelStopWait = 5 * time.Second
 	t.Cleanup(func() { modelStopWait = old })
-	d, dir := startNotesFake(t)
+	d, dir := startManagedNotesFake(t)
 	mux := http.NewServeMux()
 	d.Routes(mux)
 	srv := httptest.NewServer(mux)
@@ -595,7 +596,7 @@ func TestDeleteReadsTheLanesAgainAfterTheEngineStops(t *testing.T) {
 
 // An engine that is starting is loading the file: the delete says so instead of pulling it away.
 func TestDeleteWaitsForAnEngineThatIsStarting(t *testing.T) {
-	d, dir := startNotesFake(t)
+	d, dir := startManagedNotesFake(t)
 	t.Setenv("OXSAY_FAKE_START_DELAY_MS", "3000")
 	mux := http.NewServeMux()
 	d.Routes(mux)
@@ -635,5 +636,47 @@ func TestDeleteReportsAFileThatCannotBeRemoved(t *testing.T) {
 	}
 	if !exists(d.Cfg.NotesModel) {
 		t.Fatal("the file is gone")
+	}
+}
+
+// startManagedNotesFake is startNotesFake with the model moved into <home>/models, the only folder a delete may touch.
+// It returns the home.
+func startManagedNotesFake(t *testing.T) (*Daemon, string) {
+	t.Helper()
+	d, _ := startNotesFake(t)
+	managed := filepath.Join(d.Cfg.Home, "models", config.NotesModelFile)
+	if err := os.MkdirAll(filepath.Dir(managed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(d.Cfg.NotesModel, managed); err != nil {
+		t.Fatal(err)
+	}
+	d.Cfg.NotesModel = managed
+	return d, d.Cfg.Home
+}
+
+// A model an env override points to, in another folder, is managed outside OxSay: the pinned name is not enough.
+// GET still lists it, with removable false so the app hides the button.
+// Mutation: internal/daemon/models.go removeModel, delete the `!d.inModelsDir(path)` check -> RED.
+func TestDeleteRefusesAModelManagedOutsideTheModelsFolder(t *testing.T) {
+	d, base, _ := modelsServer(t)
+	other := filepath.Join(filepath.Dir(d.Cfg.Home), "elsewhere", config.NotesModelFile)
+	put(t, other, 5)
+	d.Cfg.NotesModel = other
+	code, body := doJSON(t, http.MethodDelete, base+"/v1/models/notes", "")
+	if code != http.StatusBadRequest || !strings.Contains(body, "managed outside OxSay") {
+		t.Fatalf("DELETE = %d %s, want 400 managed outside OxSay", code, body)
+	}
+	if !exists(other) {
+		t.Fatal("the file outside the models folder was removed")
+	}
+	n := find(listModels(t, base), "notes")
+	if !n.Installed || n.Removable || !n.Optional {
+		t.Fatalf("list row: %+v, want installed, optional, not removable", n)
+	}
+	d.Cfg.NotesModel = filepath.Join(d.Cfg.Home, "models", config.NotesModelFile)
+	put(t, d.Cfg.NotesModel, 1)
+	if n := find(listModels(t, base), "notes"); !n.Removable {
+		t.Fatalf("a model in the models folder is removable: %+v", n)
 	}
 }

@@ -35,8 +35,9 @@ type modelEntry struct {
 	Name       string `json:"name"` // real model name, shown only in Advanced
 	Bytes      int64  `json:"bytes"`
 	Installed  bool   `json:"installed"`
-	Default    bool   `json:"default"`  // the daemon's own default for its kind
-	Optional   bool   `json:"optional"` // the user may install / remove it
+	Default    bool   `json:"default"`   // the daemon's own default for its kind
+	Optional   bool   `json:"optional"`  // the user may install / remove it
+	Removable  bool   `json:"removable"` // optional, and its file is in <home>/models: false when an env override puts it elsewhere
 	Installing bool   `json:"installing"`
 	Available  bool   `json:"available"` // this Mac can run it
 	ReasonCode string `json:"reason_code,omitempty"`
@@ -106,6 +107,7 @@ func (d *Daemon) modelEntries() []modelEntry {
 	for _, def := range modelTable {
 		e := def.entry(d)
 		e.Optional = def.removal != nil
+		e.Removable = e.Optional && d.inModelsDir(def.removal.file(d))
 		out = append(out, e)
 	}
 	return out
@@ -279,6 +281,9 @@ func (d *Daemon) removeModel(ctx context.Context, id string) error {
 	if path == "" || !filepath.IsAbs(path) || filepath.Base(path) != rm.pinned {
 		return &modelError{http.StatusBadRequest, "this model is your own file; remove it yourself"}
 	}
+	if !d.inModelsDir(path) {
+		return &modelError{http.StatusBadRequest, "This model is managed outside OxSay; remove it yourself."}
+	}
 	// Lstat: a link to a model kept elsewhere is not removed and never followed (removing it would leave the data and
 	// report the model gone); a folder is not a model file.
 	st, err := os.Lstat(path)
@@ -335,4 +340,20 @@ func (d *Daemon) stopModelEngine(ctx context.Context, sup *engine.Supervisor) er
 		return fmt.Errorf("cannot stop the engine: %w", err)
 	}
 	return nil
+}
+
+// inModelsDir reports whether path sits directly in <home>/models, comparing the folders after resolving symlinks so a
+// models folder kept on another disk through a link still counts. A model an env override points elsewhere is managed
+// outside OxSay and is never deleted by it.
+func (d *Daemon) inModelsDir(path string) bool {
+	if path == "" || !filepath.IsAbs(path) {
+		return false
+	}
+	resolve := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return filepath.Clean(p)
+	}
+	return resolve(filepath.Dir(path)) == resolve(filepath.Join(d.Cfg.Home, "models"))
 }
