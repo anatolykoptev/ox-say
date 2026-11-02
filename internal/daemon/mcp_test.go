@@ -14,6 +14,7 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/testutil"
+	"github.com/anatolykoptev/ox-say/internal/voices"
 	"github.com/anatolykoptev/ox-say/internal/vproject"
 )
 
@@ -217,6 +218,23 @@ func TestMCPVoiceJourney(t *testing.T) {
 	v := found()
 	if v["engine"] != "voxcpm2" || v["style"] != "calm, warm" || v["designed_from"] != "a calm narrator" {
 		t.Fatalf("listed voice = %v", v)
+	}
+
+	// A label set over HTTP is visible to agents in voices_list.
+	lbl := "Рассказчик"
+	if _, err := d.UpdateVoice("ru-doc", nil, nil, &lbl); err != nil {
+		t.Fatal(err)
+	}
+	if v = found(); v["label"] != lbl {
+		t.Fatalf("voices_list dropped the label: %v", v)
+	}
+
+	// Source is a reader too: set it through the store, as a recording would.
+	if _, err := d.Store.Update("ru-doc", func(v *voices.Voice) { v.Source = voices.SourceRecorded }); err != nil {
+		t.Fatal(err)
+	}
+	if v = found(); v["source"] != voices.SourceRecorded {
+		t.Fatalf("voices_list dropped the source: %v", v)
 	}
 
 	callMCP(t, cs, "voice_update", map[string]any{"name": "ru-doc", "style": "excited"})

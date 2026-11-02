@@ -132,6 +132,8 @@ type voiceOut struct {
 	Engine       string `json:"engine,omitempty"`
 	Style        string `json:"style,omitempty"`
 	DesignedFrom string `json:"designed_from,omitempty"`
+	Label        string `json:"label,omitempty"`
+	Source       string `json:"source,omitempty"`
 }
 
 func (d *Daemon) toolVoicesList(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, voicesListOut, error) {
@@ -178,7 +180,7 @@ type voiceUpdateIn struct {
 }
 
 func (d *Daemon) toolVoiceUpdate(_ context.Context, _ *mcp.CallToolRequest, in voiceUpdateIn) (*mcp.CallToolResult, voiceOut, error) {
-	v, err := d.UpdateVoice(in.Name, in.Engine, in.Style)
+	v, err := d.UpdateVoice(in.Name, in.Engine, in.Style, nil)
 	if err != nil {
 		return nil, voiceOut{}, d.publicError(err)
 	}
@@ -194,6 +196,8 @@ func newVoiceOut(v voices.Voice) voiceOut {
 		Engine:       v.Engine,
 		Style:        v.Style,
 		DesignedFrom: v.DesignedFrom,
+		Label:        v.Label,
+		Source:       v.Source,
 	}
 }
 

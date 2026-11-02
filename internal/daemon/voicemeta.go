@@ -2,14 +2,20 @@ package daemon
 
 import (
 	"fmt"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
+	"github.com/anatolykoptev/ox-say/internal/meeting"
 	"github.com/anatolykoptev/ox-say/internal/voices"
 	"github.com/anatolykoptev/ox-say/internal/vscript"
 )
 
 const (
+	// maxVoiceLabelChars bounds a voice's display label (maxLabelChars is
+	// the meetings speaker-label cap in this package).
+	maxVoiceLabelChars = 60
 	// maxStyleChars bounds a voice's default style (vscript.MaxStyleChars).
 	maxStyleChars = vscript.MaxStyleChars
 	// maxDesignedFromChars bounds the description a designed voice records;
@@ -33,18 +39,57 @@ func validateStyle(style string) error {
 	return nil
 }
 
-// validateMeta checks the metadata of a voice being added.
-func validateMeta(m voices.Meta) error {
+// normalizeLabel is the only way a voice label reaches the store, from the add
+// path and from UpdateVoice alike: it returns the label trimmed of surrounding
+// whitespace (a newline included), so the string checked is the string stored.
+// Padding is not part of the label, so the length bound applies to the trimmed
+// form. A label that is blank once trimmed comes back "" (no label). What stays
+// inside the trimmed label may not hold a control character (a tab or an inner
+// newline), a line or paragraph separator, or a text-direction control.
+func normalizeLabel(label string) (string, error) {
+	label = strings.TrimSpace(label)
+	if utf8.RuneCountInString(label) > maxVoiceLabelChars {
+		return "", &requestError{fmt.Sprintf("label is longer than %d characters", maxVoiceLabelChars)}
+	}
+	if strings.IndexFunc(label, func(r rune) bool {
+		return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
+	}) >= 0 || meeting.HasBidiControl(label) {
+		return "", &requestError{"label cannot hold control or line-break characters"}
+	}
+	return label, nil
+}
+
+// validateSource refuses a source other than unset, a recording made for the
+// voice, or a clip picked from a file.
+func validateSource(source string) error {
+	switch source {
+	case "", voices.SourceRecorded, voices.SourceFile:
+		return nil
+	}
+	return &requestError{fmt.Sprintf("source %q: want %q, %q or empty", source, voices.SourceRecorded, voices.SourceFile)}
+}
+
+// normalizeMeta checks the metadata of a voice being added and returns it in
+// the form to store (the label trimmed, see normalizeLabel).
+func normalizeMeta(m voices.Meta) (voices.Meta, error) {
 	if err := validateEngine(m.Engine); err != nil {
-		return err
+		return m, err
 	}
 	if err := validateStyle(m.Style); err != nil {
-		return err
+		return m, err
+	}
+	label, err := normalizeLabel(m.Label)
+	if err != nil {
+		return m, err
+	}
+	m.Label = label
+	if err := validateSource(m.Source); err != nil {
+		return m, err
 	}
 	if utf8.RuneCountInString(m.DesignedFrom) > maxDesignedFromChars {
-		return &requestError{fmt.Sprintf("designed_from is longer than %d characters", maxDesignedFromChars)}
+		return m, &requestError{fmt.Sprintf("designed_from is longer than %d characters", maxDesignedFromChars)}
 	}
-	return nil
+	return m, nil
 }
 
 // voxRefLimit is the longest reference clip the encoder takes, in seconds. A
@@ -70,13 +115,15 @@ func (d *Daemon) checkVoxReference(seconds float64) error {
 		seconds, int(limit))}
 }
 
-// UpdateVoice changes a voice's preferred engine and/or default style; a nil
-// argument leaves the field as it is, "" clears it. Switching a voice to
-// voxcpm2 re-checks its stored recording, which may predate the limit.
+// UpdateVoice changes a voice's preferred engine, default style and/or display
+// label; a nil argument leaves the field as it is, "" clears it. The label is
+// stored as normalizeLabel returns it. source is not updatable either: it
+// describes the audio. Switching a voice to voxcpm2 re-checks its stored
+// recording, which may predate the limit.
 // voiceMu orders it against AddVoice, repairs and RemoveVoice.
 // designed_from is deliberately not updatable: it records how the voice came
 // to be, and a later edit would make it a claim about audio it does not describe.
-func (d *Daemon) UpdateVoice(name string, engineName, style *string) (*voices.Voice, error) {
+func (d *Daemon) UpdateVoice(name string, engineName, style, label *string) (*voices.Voice, error) {
 	if engineName != nil {
 		if err := validateEngine(*engineName); err != nil {
 			return nil, err
@@ -84,6 +131,13 @@ func (d *Daemon) UpdateVoice(name string, engineName, style *string) (*voices.Vo
 	}
 	if style != nil {
 		if err := validateStyle(*style); err != nil {
+			return nil, err
+		}
+	}
+	var newLabel string
+	if label != nil {
+		var err error
+		if newLabel, err = normalizeLabel(*label); err != nil {
 			return nil, err
 		}
 	}
@@ -100,6 +154,9 @@ func (d *Daemon) UpdateVoice(name string, engineName, style *string) (*voices.Vo
 		}
 		if style != nil {
 			v.Style = *style
+		}
+		if label != nil {
+			v.Label = newLabel
 		}
 	})
 }

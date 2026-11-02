@@ -376,7 +376,7 @@ func TestSaveDesignedVoiceExistingName(t *testing.T) {
 		t.Fatal(err)
 	}
 	style := "whisper"
-	if _, err := d.UpdateVoice("dup", nil, &style); err != nil {
+	if _, err := d.UpdateVoice("dup", nil, &style, nil); err != nil {
 		t.Fatal(err)
 	}
 	_, err := saveTake(t, d, "dup", res.Takes[1].Path)

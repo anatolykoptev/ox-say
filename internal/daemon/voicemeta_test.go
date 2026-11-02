@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -178,7 +179,7 @@ func TestRepairVoicesKeepsMeta(t *testing.T) {
 	seedStoredVoice(t, d, "longref", 20, strings.TrimSpace(strings.Repeat("word ", 90)))
 	d.Store.SetTranscriber(func(context.Context, string) ([]voices.Word, error) { return fakeWords(60), nil })
 	engine, style := config.TTSModelVoxCPM2, "calm"
-	if _, err := d.UpdateVoice("longref", &engine, &style); err != nil {
+	if _, err := d.UpdateVoice("longref", &engine, &style, nil); err != nil {
 		t.Fatal(err)
 	}
 	d.RepairVoices(context.Background())
@@ -226,5 +227,184 @@ func TestPatchVoiceRefusesUnknownField(t *testing.T) {
 	}
 	if got := readMeta(t, d, "nar"); got != good {
 		t.Fatalf("a refused PATCH changed the file:\n%s\n%s", good, got)
+	}
+}
+
+// Mutation F1: internal/daemon/voicemeta.go UpdateVoice — delete the
+// `v.Label = strings.TrimSpace(*label)` line -> RED.
+// Mutation F3: internal/voices/repair.go Apply — marshal a literal that omits
+// Meta -> RED (the repair assertion).
+func TestVoiceLabelRoundTripsAndSurvivesRepair(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+	// A long reference with a transcriber, as in TestRepairVoicesKeepsMeta:
+	// without work to do, RepairVoices never rewrites the file and the repair
+	// assertion below would pass whatever Apply marshals.
+	seedStoredVoice(t, d, "moy-golos", 20, strings.TrimSpace(strings.Repeat("word ", 90)))
+	d.Store.SetTranscriber(func(context.Context, string) ([]voices.Word, error) { return fakeWords(60), nil })
+	label := "Мой голос"
+	if _, err := d.UpdateVoice("moy-golos", nil, nil, &label); err != nil {
+		t.Fatal(err)
+	}
+	v, err := d.Store.Get("moy-golos")
+	if err != nil || v.Label != "Мой голос" {
+		t.Fatalf("label not stored: %+v %v", v, err)
+	}
+	d.RepairVoices(context.Background())
+	if v, _ = d.Store.Get("moy-golos"); !strings.HasPrefix(v.RefText, "wa wb") {
+		t.Fatalf("the repair did not run, so this test proves nothing: %+v", v)
+	}
+	if v.Label != "Мой голос" {
+		t.Fatalf("repair dropped the label: %+v", v.Meta)
+	}
+	empty := ""
+	if _, err := d.UpdateVoice("moy-golos", nil, nil, &empty); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ = d.Store.Get("moy-golos"); v.Label != "" {
+		t.Fatalf("an empty label must clear it: %q", v.Label)
+	}
+}
+
+// A label is stored trimmed, and an update that names no label leaves it.
+func TestVoiceLabelIsTrimmedAndKeptByOtherUpdates(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+	seedStoredVoice(t, d, "nar", 8, "")
+	label := "  Спокойный диктор  "
+	if _, err := d.UpdateVoice("nar", nil, nil, &label); err != nil {
+		t.Fatal(err)
+	}
+	style := "calm"
+	if _, err := d.UpdateVoice("nar", nil, &style, nil); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := d.Store.Get("nar"); v.Label != "Спокойный диктор" || v.Style != "calm" {
+		t.Fatalf("stored = %+v", v.Meta)
+	}
+	bad := "a\nb"
+	if _, err := d.UpdateVoice("nar", nil, nil, &bad); err == nil || synthStatus(err) != http.StatusBadRequest {
+		t.Fatalf("a bad label must be a request error, got %v", err)
+	}
+	if v, _ := d.Store.Get("nar"); v.Label != "Спокойный диктор" {
+		t.Fatalf("a refused label changed the voice: %q", v.Label)
+	}
+}
+
+// Mutation F2: internal/daemon/voicemeta.go normalizeLabel — body -> `return nil`
+// -> RED.
+func TestVoiceLabelIsValidated(t *testing.T) {
+	for name, bad := range map[string]string{
+		"too long":       strings.Repeat("я", maxVoiceLabelChars+1),
+		"newline":        "a\nb",
+		"control":        "a\x07b",
+		"tab":            "a\tb",
+		"line separator": "a\u2028b",
+		"bidi override":  "a\u202eb",
+	} {
+		if _, err := normalizeLabel(bad); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+	for name, ok := range map[string]string{
+		"plain russian": "  Спокойный диктор  ",
+		"at the limit":  strings.Repeat("я", maxVoiceLabelChars),
+		"empty":         "",
+	} {
+		if _, err := normalizeLabel(ok); err != nil {
+			t.Errorf("%s is valid: %v", name, err)
+		}
+	}
+}
+
+func TestPatchVoiceAcceptsLabelAndAddAcceptsLabelAndSource(t *testing.T) {
+	d, url, dir := metaServer(t)
+	src := testutil.WriteSilentWAV(t, dir, "c.wav", 3)
+	add := fmt.Sprintf(`{"name":"v","audio_path":%q,"label":"Мой голос","source":"recorded"}`, src)
+	if code, resp := doJSON(t, http.MethodPost, url+"/v1/audio/voices", add); code != http.StatusOK {
+		t.Fatalf("POST = %d %s", code, resp)
+	}
+	if v, err := d.Store.Get("v"); err != nil || v.Label != "Мой голос" || v.Source != "recorded" {
+		t.Fatalf("stored = %+v %v", v, err)
+	}
+	for name, extra := range map[string]string{
+		"source":     `"source":"bogus"`,
+		"label":      `"label":"x\ny"`,
+		"long label": `"label":"` + strings.Repeat("я", maxVoiceLabelChars+1) + `"`,
+	} {
+		bad := fmt.Sprintf(`{"name":"w","audio_path":%q,%s}`, src, extra)
+		if code, _ := doJSON(t, http.MethodPost, url+"/v1/audio/voices", bad); code != http.StatusBadRequest {
+			t.Fatalf("add with bad %s = %d, want 400", name, code)
+		}
+	}
+	if _, err := d.Store.Get("w"); !errors.Is(err, voices.ErrNotFound) {
+		t.Fatalf("a refused add stored a voice: %v", err)
+	}
+	if code, resp := doJSON(t, http.MethodPatch, url+"/v1/audio/voices/v", `{"label":"Новый"}`); code != http.StatusOK || !strings.Contains(resp, `"label":"Новый"`) {
+		t.Fatalf("PATCH label = %d %s", code, resp)
+	}
+	if code, _ := doJSON(t, http.MethodPatch, url+"/v1/audio/voices/v", `{"label":"x\ny"}`); code != http.StatusBadRequest {
+		t.Fatalf("PATCH newline label = %d, want 400", code)
+	}
+	if code, _ := doJSON(t, http.MethodPatch, url+"/v1/audio/voices/v", `{"designed_from":"x"}`); code != http.StatusBadRequest {
+		t.Fatalf("PATCH designed_from = %d, want 400 (strict decode)", code)
+	}
+	if code, _ := doJSON(t, http.MethodPatch, url+"/v1/audio/voices/v", `{"source":"file"}`); code != http.StatusBadRequest {
+		t.Fatalf("PATCH source = %d, want 400 (source describes the audio)", code)
+	}
+	// Both readers serve them: the list and the single voice.
+	for _, u := range []string{url + "/v1/audio/voices", url + "/v1/audio/voices/v"} {
+		if code, resp := doJSON(t, http.MethodGet, u, ""); code != http.StatusOK || !strings.Contains(resp, `"label":"Новый"`) || !strings.Contains(resp, `"source":"recorded"`) {
+			t.Fatalf("GET %s = %d %s", u, code, resp)
+		}
+	}
+}
+
+// The label that is checked is the label that is stored: the add path trims it
+// before it is bounded and before the store sees it, so a blank label is no
+// label (a re-add still inherits) and padding cannot dodge the length bound.
+// Mutation: internal/daemon/voicemeta.go normalizeMeta — delete `m.Label = label`
+// (the store gets the untrimmed value) -> RED.
+func TestAddVoiceStoresTheTrimmedLabel(t *testing.T) {
+	d, url, dir := metaServer(t)
+	src := testutil.WriteSilentWAV(t, dir, "c.wav", 3)
+	post := func(name, label string) int {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"name": name, "audio_path": src, "label": label})
+		code, _ := doJSON(t, http.MethodPost, url+"/v1/audio/voices", string(body))
+		return code
+	}
+	max := strings.Repeat("я", maxVoiceLabelChars)
+	for name, tc := range map[string]struct{ in, want string }{
+		"leading newline":  {"\nabc", "abc"},
+		"trailing newline": {"abc\n", "abc"},
+		"blank":            {"   ", ""},
+		"padded at limit":  {"  " + max + "  ", max},
+	} {
+		id := "v" + strings.ReplaceAll(name, " ", "")[:3]
+		if code := post(id, tc.in); code != http.StatusOK {
+			t.Fatalf("%s: POST = %d, want 200", name, code)
+		}
+		if v, err := d.Store.Get(id); err != nil || v.Label != tc.want {
+			t.Errorf("%s: stored label = %q (%v), want %q", name, v.Label, err, tc.want)
+		}
+	}
+	if code := post("toolong", max+"я"); code != http.StatusBadRequest {
+		t.Fatalf("a label one character over the limit = %d, want 400", code)
+	}
+	if code := post("inner", "a\nb"); code != http.StatusBadRequest {
+		t.Fatalf("an inner newline = %d, want 400", code)
+	}
+	// A blank label is "no label": a re-add inherits the earlier one.
+	if code := post("keep", "Мой голос"); code != http.StatusOK {
+		t.Fatal(code)
+	}
+	if code := post("keep", "   "); code != http.StatusOK {
+		t.Fatal(code)
+	}
+	if v, _ := d.Store.Get("keep"); v.Label != "Мой голос" {
+		t.Fatalf("a blank label on a re-add must inherit, got %q", v.Label)
 	}
 }
