@@ -388,10 +388,11 @@ final class MainWindowSource {
         }
     }
 
-    /// The chosen meeting is read again when the list says it moved on (processing finished, the notes arrived).
+    /// The chosen meeting is read when it was never read (a restored selection fires no `onChange`) or when the
+    /// list says it moved on (processing finished, the notes arrived).
     private func refreshSelectedDetail() {
         guard let id = model.selectedMeeting, let row = model.data.meetings.first(where: { $0.id == id }) else { return }
-        guard let shown = model.data.details[id]?.info, shown.status != row.status || shown.title != row.title else { return }
+        guard DetailRead.needed(row: row, shown: model.data.details[id]?.info, failed: model.data.detailError[id] != nil) else { return }
         loadDetail(id)
     }
 

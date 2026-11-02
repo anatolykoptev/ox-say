@@ -161,4 +161,15 @@ final class MainWindowOpenWiringTests: XCTestCase {
         XCTAssertTrue(refresh.contains("restoredMeetingUnchecked = list.isEmpty"))
         XCTAssertTrue(refresh.contains(".pruned(knownMeetingIDs: list.map(\\.id)).meetingID"))
     }
+
+    /// F1 call site: a restored selection was never read — the `onChange` does not fire for an initial value — so the
+    /// read decision, not the presence of a detail, sends it to `loadDetail`; a failed read still waits for Retry.
+    /// Mutation: MainWindowSource.refreshSelectedDetail, the `DetailRead.needed` guard back to
+    /// `guard let shown = model.data.details[id]?.info` -> RED.
+    func testARestoredMeetingAsksTheReadDecisionAndIsLoaded() throws {
+        let refresh = try body(try source("OxSayDictation/MainWindowSource.swift"), of: "private func refreshSelectedDetail() {")
+        XCTAssertTrue(refresh.contains("DetailRead.needed(row: row, shown: model.data.details[id]?.info, failed: model.data.detailError[id] != nil)"))
+        XCTAssertTrue(refresh.contains("loadDetail(id)"))
+        XCTAssertFalse(refresh.contains("guard let shown"), "a meeting whose detail was never read is read, not skipped")
+    }
 }
