@@ -75,7 +75,7 @@ if [ "$with_voxcpm2" = 1 ]; then
 fi
 
 # Speaker diarization (ox-diar): FluidInference/speaker-diarization-coreml, the Core ML conversion of pyannote's
-# community-1 pipeline, at the revision FluidAudio 0.17.7 itself asks for (the spike measured the files at the repo's
+# community-1 pipeline, at the revision FluidAudio 0.18.0 itself asks for (the spike measured the files at the repo's
 # later head; all 24 are byte-identical at both, checked against Hugging Face's own listing of each: LFS files by
 # SHA-256, the rest by git blob id). Stored as <dest>/diar/speaker-diarization/<path>, the layout FluidAudio's offline
 # loader expects under `ox-diar --models <dest>/diar`. CC-BY-4.0 (attribution in NOTICE). The three documents the
