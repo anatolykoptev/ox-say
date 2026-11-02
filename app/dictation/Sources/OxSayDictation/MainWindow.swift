@@ -42,7 +42,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         // On screen now, so the policy check of a pending revert sees a visible window; the Space it joins is the one
         // that is current (`MainWindowSpec.collectionBehavior`).
         window.orderFrontRegardless()
-        // The policy change takes effect after this turn: activating inside it is the call that gets dropped.
+        // Activation runs on the next turn, after the window is on screen.
         DispatchQueue.main.async { [weak window] in
             Self.activateApp()
             window?.makeKeyAndOrderFront(nil)
@@ -63,13 +63,10 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         open(route: route)
     }
 
-    /// macOS 14 made `activate(ignoringOtherApps:)` a request that may be declined and added `activate()`.
+    /// `activate()` is cooperative: macOS 26 declined it from a non-gesture open and left a window
+    /// the keyboard cannot reach. This call activated, with no Space switch.
     private static func activateApp() {
-        if #available(macOS 14, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func syncVisibility() {

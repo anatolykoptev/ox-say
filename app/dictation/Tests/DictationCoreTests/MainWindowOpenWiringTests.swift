@@ -45,13 +45,16 @@ final class MainWindowOpenWiringTests: XCTestCase {
         XCTAssertLessThan(asyncHop.lowerBound, activate.lowerBound, "activation runs on the next turn, after the policy change settled")
     }
 
-    func testActivationUsesTheNonDeprecatedCallOnMacOS14() throws {
+    /// F1 call site: the window takes the keyboard over a full-screen Space. `activate()` is cooperative
+    /// and macOS 26 declined it from a non-gesture open, leaving a visible window that is not key;
+    /// `activate(ignoringOtherApps:)` activated, with no Space switch (live probe, 3/3).
+    /// Mutation: MainWindow.activateApp, `NSApp.activate(ignoringOtherApps: true)` -> `NSApp.activate()` -> RED.
+    func testActivationUsesTheStrongCallOnEveryVersion() throws {
         let text = try source("OxSayDictation/MainWindow.swift")
         let activate = try body(text, of: "private static func activateApp() {")
-        XCTAssertTrue(activate.contains("if #available(macOS 14, *)"))
-        XCTAssertTrue(activate.contains("NSApp.activate()"))
-        XCTAssertTrue(activate.contains("NSApp.activate(ignoringOtherApps: true)"), "macOS 13 is still supported")
-        XCTAssertEqual(text.components(separatedBy: "activate(ignoringOtherApps").count - 1, 1, "the deprecated call only in the macOS 13 branch")
+        XCTAssertTrue(activate.contains("NSApp.activate(ignoringOtherApps: true)"))
+        XCTAssertFalse(activate.contains("#available"), "one call on every version")
+        XCTAssertFalse(text.contains("NSApp.activate()"), "the cooperative call is nowhere in the file")
     }
 
     /// F2 call site: the delayed revert asks the pure decision, and an open tells it.
