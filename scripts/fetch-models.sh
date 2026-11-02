@@ -10,7 +10,7 @@
 #   Core ML community-1 diarization models (CC-BY-4.0), 24 files and 4 documents, 22 MB, in <dest>/diar/speaker-diarization/: who
 #                                                 spoke on a group call (ox-diar). In the default set; --diar-only fetches
 #                                                 just these.
-#   Nemotron 3 Diarization fast128 (OpenMDW-1.1), 5 files and 2 documents, 202 MB, in <dest>/diar/nemotron-3-diarization/:
+#   Nemotron 3 Diarization fast128 (OpenMDW-1.1), 5 files and 2 documents, 199 MB, in <dest>/diar/nemotron-3-diarization/:
 #                                                 the ox-diar engine that replaces the pyannote pipeline. In the default set
 #                                                 and in --diar-only only on arm64 macOS 15+; --nemotron-only fetches just it.
 #
@@ -158,7 +158,7 @@ for entry in "${nem_files[@]}" "${nem_docs[@]}"; do
     nem_models+=("diar/nemotron-3-diarization/$rel $sum $nem_url $remote")
 done
 
-# A Mac that cannot run ox-diar gets no 202 MB it cannot use: the engine refuses Intel and macOS < 15
+# A Mac that cannot run ox-diar gets no 199 MB it cannot use: the engine refuses Intel and macOS < 15
 # (internal/daemon/diarize.go diarReady), so the set joins the default list and --diar-only only here.
 # OX_SAY_NEMOTRON=1 forces the set on (a seeded test dir, a CI cache); =0 forces it off. Fails closed like
 # oxs_voxcpm2_ok (scripts/lib-install.sh): a platform that will not say its version is treated as too old.
@@ -167,7 +167,9 @@ nemotron_ok() {
         1) return 0 ;;
         0) return 1 ;;
     esac
-    [ "$(uname -m)" = arm64 ] || return 1
+    # arm64 hardware, not just an arm64 shell: a Rosetta shell says x86_64 while the Mac is Apple Silicon —
+    # hw.optional.arm64 reads the hardware, the same test get.sh makes for its own arch.
+    [ "$(uname -m)" = arm64 ] || [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ] || return 1
     local ver
     ver=$(sw_vers -productVersion 2>/dev/null) || return 1
     case $ver in '' | *[!0-9.]*) return 1 ;; esac

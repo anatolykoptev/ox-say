@@ -172,7 +172,8 @@ jobs:
           OX_SAY_DIAR_DEVELOPER_DIR: ${{ matrix.diar_xcode }}
         run: scripts/package-release.sh "$VERSION"
 
-      # ox-diar's Core ML models (22 MB): fetch-models.sh checks every file against its pinned SHA-256 whatever the
+      # ox-diar's Core ML models (221 MB: the 22 MB community-1 set plus the 199 MB Nemotron fast128 set):
+      # fetch-models.sh checks every file against its pinned SHA-256 whatever the
       # cache held, so the cache only saves the download. Keyed by the hash of the script that pins them.
       - name: Cache the diarization models
         if: matrix.arch == 'arm64'
