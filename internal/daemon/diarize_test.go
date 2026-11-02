@@ -238,8 +238,8 @@ func TestDiarReadyPlatformRefusalsHoldOnTheDefaultEngine(t *testing.T) {
 // ox-diar holds the whole channel in memory on the pyannote engine (about 1.06 GB resident per hour of audio), so a
 // recording longer than 2 h is not given to it: "unavailable" (too_long), not a failure, and the engine is never
 // started. The Nemotron engine streams the mapped file in 30 s chunks (80-100 MB at 4-6 h), so its cap is 6 h. A
-// recording of exactly the cap still runs. The Swift test MeetingLimitsTests reads the pyannote `diarMaxSeconds` out
-// of diarize.go by regex: the app records up to two hours, the default engine's cap, until the default flips.
+// recording of exactly the cap still runs. The Swift test MeetingLimitsTests reads `diarMaxSecondsNemotron` out
+// of diarize.go by regex: the app records up to six hours (minus a minute), the default engine's cap.
 // Mutations: internal/daemon/diarize.go runDiarizer, change `st.Size() > diarMaxPCMBytes(cfg.Engine())` to `false` ->
 // RED (the stub is started and the error is not the unavailable one); change `>` to `>=` -> RED (the recording of
 // exactly the cap is refused); F3: diarMaxPCMBytes returns the 2 h value for nemotron -> RED (the 2 h+1 recording

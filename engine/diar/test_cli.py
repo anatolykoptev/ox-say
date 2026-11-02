@@ -294,6 +294,7 @@ class Contract(unittest.TestCase):
     # Nemotron: a real result, the units line of the Nemotron loader, none of pyannote's window log, and no voiceprints.
     # Mutation: Sources/OxDiarCore/Arguments.swift `var engine = Engine.nemotron` -> `.pyannote` -> RED here.
     def test_the_positional_form_is_the_nemotron_engine(self):
+        self.require_engine("nemotron")  # the pyannote contract step must not run Nemotron (units asked: Neural Engine)
         if not CLIP:
             self.skipTest("no --clip")
         if not os.path.isdir(os.path.join(MODELS, "nemotron-3-diarization")):
