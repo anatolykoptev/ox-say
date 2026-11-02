@@ -463,6 +463,12 @@ func (p *producer) deliver(j *job, es []deliveryEntry, lufs *float64) (vproject.
 			return vproject.Summary{}, err
 		}
 	}
+	// A loudness-only batch (validateDelivery allowed the empty chunks list
+	// only because lufs is set) re-assembles the finished file; on a project
+	// with chunks still to render it would run a hidden resume — refuse it.
+	if len(es) == 0 && countSettled(j.m.Chunks) != len(j.m.Chunks) {
+		return vproject.Summary{}, &conflictError{"the project must finish first: a loudness change re-assembles the finished file"}
+	}
 	// The mode gate comes first: a batch that is a conflict on any host must
 	// not read as "no ffmpeg" on one without it.
 	eff, effAfter, err := p.deliveryModeGate(j, es, styles)
@@ -499,7 +505,18 @@ func (p *producer) deliver(j *job, es []deliveryEntry, lufs *float64) (vproject.
 		}
 	}
 	if lufs != nil {
-		j.m.Settings.LUFS = *lufs
+		if len(es) == 0 {
+			// Loudness-only: the new target is carried on the job and persisted
+			// only once the new file is published; prevStatus is what the
+			// project read as (a stale transient status reads as interrupted).
+			j.pendingLUFS, j.prevStatus = lufs, j.m.Status
+			switch j.prevStatus {
+			case vproject.StatusRunning, vproject.StatusWaitingForDictation, vproject.StatusPausedOnBattery:
+				j.prevStatus = vproject.StatusInterrupted
+			}
+		} else {
+			j.m.Settings.LUFS = *lufs
+		}
 	}
 	j.assembleOnly = assembleOnly
 	p.mu.Unlock()
@@ -512,7 +529,7 @@ func (p *producer) deliver(j *job, es []deliveryEntry, lufs *float64) (vproject.
 // no chunk entries.
 func validateDelivery(m *vproject.Manifest, es []deliveryEntry, hasLoudness bool) ([]string, error) {
 	if len(es) == 0 && !hasLoudness {
-		return nil, &requestError{"chunks must name at least one chunk"}
+		return nil, &requestError{"chunks must name at least one chunk, or set loudness_lufs"}
 	}
 	styles := make([]string, len(es))
 	seen := map[int]bool{}

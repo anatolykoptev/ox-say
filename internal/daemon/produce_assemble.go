@@ -152,6 +152,10 @@ func (p *producer) assemble(j *job) error {
 	p.mu.Lock()
 	m := j.m.Clone()
 	p.mu.Unlock()
+	// A loudness-only delivery carries its target on the job until publish.
+	if j.pendingLUFS != nil {
+		m.Settings.LUFS = *j.pendingLUFS
+	}
 	if err := validLUFS(m.Settings.LUFS); err != nil {
 		return err
 	}
@@ -398,6 +402,9 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 		j.m.Chunks[i].StartS, j.m.Chunks[i].EndS = m.Chunks[i].StartS, m.Chunks[i].EndS
 	}
 	j.m.Outputs = m.Outputs
+	// The loudness the published file was normalised to is the manifest's
+	// target: a pending loudness-only change is persisted only now.
+	j.m.Settings.LUFS = m.Settings.LUFS
 	j.m.Progress.ElapsedS, j.m.Progress.ETAS = m.Progress.ElapsedS, 0
 	j.elapsedS = m.Progress.ElapsedS
 	j.m.Notes = withNote(j.m.Notes, vproject.NoteLimitedLoudness, tl.limited)

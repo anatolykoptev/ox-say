@@ -3,9 +3,14 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/anatolykoptev/ox-say/internal/vproject"
 )
 
 // The bulk chunk view and the delivery loudness change: one manifest read
@@ -193,5 +198,88 @@ func TestLoudnessSurvivesRestartAndEdit(t *testing.T) {
 	}
 	if got := f.normTargets[len(f.normTargets)-1]; got != -20 {
 		t.Fatalf("the edit's re-assembly normalised at %v LUFS, want -20", got)
+	}
+}
+
+// A loudness-only delivery whose re-assembly fails on a finished project
+// must not cost it its finished state (#417): the status it had is restored,
+// the loudness target the manifest carries stays the one the published file
+// was made at, the file and its outputs are untouched, and the failure is on
+// the project's error field so the app can say what happened.
+// Mutation: produce_ops.go deliver, persist the new target into the manifest
+// before the run again -> lufs is -18 and the status failed -> RED.
+func TestLoudnessOnlyFailureKeepsTheFinishedState(t *testing.T) {
+	f := newFakePorts(t)
+	p := startedProducer(t, f)
+	s, err := p.create(reelInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, p, s.ID)
+	m, err := p.manifest(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lufs0, wav := m.Settings.LUFS, m.Outputs.WAV
+	published, err := os.ReadFile(wav)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.normErr = errors.New("ffmpeg died")
+
+	if _, err := p.delivery(s.ID, nil, ptr(-18.0)); err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, p, s.ID)
+
+	m, err = p.manifest(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Status != vproject.StatusDone || m.Settings.LUFS != lufs0 || m.Outputs.WAV != wav {
+		t.Fatalf("after the failed re-assembly: status %q lufs %v wav %q", m.Status, m.Settings.LUFS, m.Outputs.WAV)
+	}
+	if !strings.Contains(m.Error, "ffmpeg died") {
+		t.Fatalf("the failure is not on the project: error %q", m.Error)
+	}
+	if after, err := os.ReadFile(wav); err != nil || !bytes.Equal(published, after) {
+		t.Fatalf("the published file changed: %v", err)
+	}
+}
+
+// A loudness-only delivery on a project that has not finished is a 409, not
+// a hidden resume: nothing launches, nothing renders and the manifest is
+// untouched. The project finishes through resume, never through delivery.
+// Mutation: produce_ops.go deliver, drop the countSettled refusal -> a run
+// with real renders -> RED.
+func TestLoudnessOnlyOnUnfinishedIsRefused(t *testing.T) {
+	f := newFakePorts(t)
+	f.block, f.started = make(chan struct{}), make(chan struct{}, 8)
+	p := newProducer(f)
+	p.start()
+	s, err := p.create(reelInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-f.started
+	p.shutdown() // the daemon stopped mid-render: interrupted, chunks pending
+	m, err := vproject.Load(filepath.Join(f.home, produceDir, s.ID))
+	if err != nil || m.Status != vproject.StatusInterrupted {
+		t.Fatalf("%v %+v", err, m)
+	}
+	before := manifestBytes(t, f, s.ID)
+	renders := len(f.renders)
+
+	p2 := newProducer(f) // a fresh producer stands in for the daemon after the restart
+	p2.start()
+	t.Cleanup(func() { p2.shutdown() })
+	if _, err := p2.delivery(s.ID, nil, ptr(-18.0)); produceStatusCode(err) != http.StatusConflict {
+		t.Fatalf("delivery on an unfinished project: %v", err)
+	}
+	if got := manifestBytes(t, f, s.ID); !bytes.Equal(before, got) {
+		t.Fatal("the refused loudness changed the manifest")
+	}
+	if len(f.renders) != renders {
+		t.Fatalf("the refused loudness rendered %d takes", len(f.renders)-renders)
 	}
 }
