@@ -979,7 +979,8 @@ func TestDiarModelsReady(t *testing.T) {
 		{"pyannote, empty marker", DiarEnginePyannote, map[string]string{wespeaker: ""}, false},
 		{"pyannote, another revision", DiarEnginePyannote, map[string]string{wespeaker: "deadbeef\n"}, false},
 		{"pyannote, a prefix of the revision", DiarEnginePyannote, map[string]string{wespeaker: DiarModelsRevision[:8] + "\n"}, false},
-		{"unset engine is the default engine", "", map[string]string{wespeaker: DiarModelsRevision}, DefaultDiarEngine == DiarEnginePyannote},
+		{"unset engine is nemotron: its marker", "", map[string]string{nemotron: NemotronModelsRevision}, true},
+		{"unset engine is nemotron: the WeSpeaker marker alone is not enough", "", map[string]string{wespeaker: DiarModelsRevision}, false},
 		{"nemotron, nothing fetched", DiarEngineNemotron, nil, false},
 		{"nemotron, only the Nemotron marker", DiarEngineNemotron, map[string]string{nemotron: NemotronModelsRevision + "\n"}, true},
 		{"nemotron, only the WeSpeaker marker", DiarEngineNemotron, map[string]string{wespeaker: DiarModelsRevision + "\n"}, false},
@@ -1006,10 +1007,13 @@ func TestDiarModelsReady(t *testing.T) {
 	}
 }
 
-// OX_SAY_DIAR_ENGINE: unset is the default engine, the two names are accepted, anything else is a config error
-// (a typo must not silently run the other engine). Config{} (a test's zero value) also reads as the default.
-// Mutation: internal/config/config.go Config.Engine, return DiarEngineNemotron for "" -> RED; delete the switch's
-// error branch in load -> RED on "bogus".
+// OX_SAY_DIAR_ENGINE: unset is the default engine (nemotron), the two names are accepted after trim and lowercasing
+// (the installer carries the plist value over on every update, so a stray space or capital must not stop the daemon),
+// and a value that is still unknown degrades to the default and is reported in DiarEngineIgnored (the serve command
+// logs it) instead of failing Load. Config{} (a test's zero value) also reads as the default.
+// Mutations: internal/config/config.go Config.Engine, return DiarEnginePyannote for "" -> RED; internal/config/config.go
+// load, drop the strings.ToLower(strings.TrimSpace(...)) around the value -> RED on " Nemotron\t"; delete the
+// DiarEngineIgnored assignment in the default branch -> RED on "bogus".
 func TestDiarEngineSetting(t *testing.T) {
 	t.Setenv("OX_SAY_HOME", t.TempDir())
 	t.Setenv("OX_SAY_DIAR_ENGINE", "")
@@ -1017,25 +1021,33 @@ func TestDiarEngineSetting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Engine() != DefaultDiarEngine || c.DiarEngine != DefaultDiarEngine {
-		t.Errorf("unset: DiarEngine %q Engine() %q, want %q", c.DiarEngine, c.Engine(), DefaultDiarEngine)
+	if c.Engine() != DefaultDiarEngine || c.DiarEngine != DefaultDiarEngine || c.DiarEngineIgnored != "" {
+		t.Errorf("unset: DiarEngine %q Engine() %q ignored %q, want %q", c.DiarEngine, c.Engine(), c.DiarEngineIgnored, DefaultDiarEngine)
 	}
-	if DefaultDiarEngine != DiarEnginePyannote {
-		t.Errorf("DefaultDiarEngine = %q: the flip to nemotron is its own change", DefaultDiarEngine)
+	if DefaultDiarEngine != DiarEngineNemotron {
+		t.Errorf("DefaultDiarEngine = %q, want nemotron", DefaultDiarEngine)
 	}
-	if (&Config{}).Engine() != DefaultDiarEngine {
+	if (&Config{}).Engine() != DiarEngineNemotron {
 		t.Errorf("zero Config engine = %q", (&Config{}).Engine())
 	}
-	for _, v := range []string{DiarEnginePyannote, DiarEngineNemotron} {
-		t.Setenv("OX_SAY_DIAR_ENGINE", v)
-		if c, err = Load(nil); err != nil || c.Engine() != v {
-			t.Errorf("OX_SAY_DIAR_ENGINE=%q: %v, engine %q", v, err, c.Engine())
+	for in, want := range map[string]string{
+		DiarEnginePyannote: DiarEnginePyannote, DiarEngineNemotron: DiarEngineNemotron,
+		"Nemotron": DiarEngineNemotron, "pyannote ": DiarEnginePyannote, " Nemotron\t": DiarEngineNemotron, "PYANNOTE": DiarEnginePyannote,
+	} {
+		t.Setenv("OX_SAY_DIAR_ENGINE", in)
+		if c, err = Load(nil); err != nil || c.Engine() != want || c.DiarEngine != want || c.DiarEngineIgnored != "" {
+			t.Errorf("OX_SAY_DIAR_ENGINE=%q: %v, engine %q ignored %q, want %q", in, err, c.Engine(), c.DiarEngineIgnored, want)
 		}
 	}
-	for _, v := range []string{"bogus", "Nemotron", "pyannote "} {
+	for _, v := range []string{"bogus", "nemo tron", "pyannote,nemotron"} {
 		t.Setenv("OX_SAY_DIAR_ENGINE", v)
-		if _, err := Load(nil); err == nil || !strings.Contains(err.Error(), "OX_SAY_DIAR_ENGINE") {
-			t.Errorf("OX_SAY_DIAR_ENGINE=%q: %v", v, err)
+		c, err := Load(nil)
+		if err != nil {
+			t.Errorf("OX_SAY_DIAR_ENGINE=%q must not stop the daemon: %v", v, err)
+			continue
+		}
+		if c.Engine() != DefaultDiarEngine || c.DiarEngine != DefaultDiarEngine || c.DiarEngineIgnored != v {
+			t.Errorf("OX_SAY_DIAR_ENGINE=%q: engine %q ignored %q, want the default and the raw value", v, c.Engine(), c.DiarEngineIgnored)
 		}
 	}
 }

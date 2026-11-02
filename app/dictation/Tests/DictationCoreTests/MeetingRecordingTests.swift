@@ -60,19 +60,21 @@ final class MeetingLimitsTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let text = try String(contentsOf: repo.appendingPathComponent("internal/daemon/diarize.go"), encoding: .utf8)
-        let re = try NSRegularExpression(pattern: #"diarMaxSeconds\s*=\s*(\d+)\s*\*\s*(\d+)"#)
-        let m = try XCTUnwrap(re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), "diarMaxSeconds not found")
+        let re = try NSRegularExpression(pattern: #"diarMaxSecondsNemotron\s*=\s*(\d+)\s*\*\s*(\d+)"#)
+        let m = try XCTUnwrap(re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), "diarMaxSecondsNemotron not found")
         let a = Int(text[Range(m.range(at: 1), in: text)!])!
         let b = Int(text[Range(m.range(at: 2), in: text)!])!
         return a * b
     }
 
     /// A recording longer than the daemon's voice-separation cap loses its speakers (too_long). The app stops under it,
-    /// by more than the stop's own lag. The cap read here is `diarMaxSeconds`, the default (pyannote) engine's; the
-    /// Nemotron engine's `diarMaxSecondsNemotron` is longer, so a Mac on it loses nothing, and this pin moves to it
-    /// when the default engine flips. The regex does not match the Nemotron constant, so a rename of the pyannote one
-    /// fails here instead of passing against nothing. (one tick of the 0.25 s badge timer and the finish call).
-    /// Mutation: MeetingLimits.maxRecordingSeconds, set it to 3 * 3600 -> RED.
+    /// by more than the stop's own lag (one tick of the 0.25 s badge timer and the finish call). The cap read here is
+    /// `diarMaxSecondsNemotron`, the default engine's (6 h). A Mac that chose the pyannote engine (cap 2 h,
+    /// `diarMaxSeconds`) keeps one far-side label on a recording over 2 h, with the number-free too_long sentence. The
+    /// regex does not match the pyannote constant, so a rename of the Nemotron one fails here instead of passing
+    /// against nothing.
+    /// Mutation: MeetingLimits.maxRecordingSeconds, set it back to 2 * 3600 - 60 -> RED (stops hours before the
+    /// daemon's cap); set it to 7 * 3600 -> RED (over the cap).
     func testTheRecordingCapStaysUnderTheDiarizationCap() throws {
         let daemon = TimeInterval(try goDiarSeconds())
         XCTAssertLessThan(MeetingLimits.maxRecordingSeconds + 10, daemon)

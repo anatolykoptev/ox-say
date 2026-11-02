@@ -715,6 +715,7 @@ func (d *Daemon) Status() statusSummary {
 			"voxcpm2_bin":       d.Cfg.VoxCPM2Bin,
 			"notes_bin":         d.Cfg.NotesBin,
 			"diar_bin":          d.Cfg.DiarBin,
+			"diar_engine":       d.Cfg.Engine(),
 			"model":             d.Cfg.Model,
 			"codec":             d.Cfg.Codec,
 			"max_batch":         d.Cfg.MaxBatch,

@@ -10,7 +10,7 @@ recordings. Run with `python -I`.
 Usage: test_der.py --bin PATH --models DIR [--engine pyannote|nemotron] --case WAV,RTTM,URI,SPEAKERS,MAX_DER[,MAX_CONF] [--case ...]
   e.g. --case ES2004a.Mix-Headset.wav,ES2004a.rttm,ES2004a,4,9.7,0.8
 
---engine picks the diarization engine (default pyannote); --models names the dir holding that engine's set
+--engine picks the diarization engine (default nemotron); --models names the dir holding that engine's set
 (`speaker-diarization/` for pyannote, `nemotron-3-diarization/` for nemotron). MAX_CONF bounds the speaker
 confusion — the detailed DiarizationErrorRate's confusion/total, the share of scored speech put on the wrong
 speaker — and `-` skips it. SPEAKERS compares against the substantial clusters under the daemon's Decide rule,
@@ -49,7 +49,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--bin", required=True)
     p.add_argument("--models", required=True)
-    p.add_argument("--engine", default="pyannote", choices=["pyannote", "nemotron"])
+    p.add_argument("--engine", default="nemotron", choices=["pyannote", "nemotron"])
     p.add_argument("--case", action="append", required=True)
     a = p.parse_args()
     from pyannote.core import Annotation, Segment, Timeline

@@ -85,7 +85,7 @@ const NemotronModelsRevision = "25a90f97f254428d4b30374b76af9c74fdee8327"
 const (
 	DiarEnginePyannote = "pyannote"
 	DiarEngineNemotron = "nemotron"
-	DefaultDiarEngine  = DiarEnginePyannote
+	DefaultDiarEngine  = DiarEngineNemotron
 )
 
 const bytesPerGB = 1 << 30
@@ -176,6 +176,10 @@ type Config struct {
 	NotesIdleStop time.Duration // OX_SAY_NOTES_IDLE_STOP_SECS
 	DiarBin       string        // OX_SAY_DIAR_BIN: path to ox-diar (speaker diarization)
 	DiarEngine    string        // OX_SAY_DIAR_ENGINE: pyannote | nemotron (ox-diar --engine)
+	// DiarEngineIgnored is the raw OX_SAY_DIAR_ENGINE value load did not recognise and replaced by the default ("" when
+	// the setting was fine). The serve command logs it: a typo in the plist, which the installer carries over on every
+	// update, must not stop the daemon, and must not pass silently either.
+	DiarEngineIgnored string
 	// NotesPortBlocked is set by load when the DEFAULT notes port collides
 	// with another ox-say listener: an explicitly set colliding port is a
 	// load error, but a colliding default must not take the daemon down for
@@ -351,10 +355,14 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if c.DiarBin = get("OX_SAY_DIAR_BIN"); c.DiarBin == "" {
 		c.DiarBin = filepath.Join(engineDir, "ox-diar")
 	}
-	switch c.DiarEngine = orDefault(get("OX_SAY_DIAR_ENGINE"), DefaultDiarEngine); c.DiarEngine {
+	raw := get("OX_SAY_DIAR_ENGINE")
+	switch v := strings.ToLower(strings.TrimSpace(raw)); v {
+	case "":
+		c.DiarEngine = DefaultDiarEngine
 	case DiarEnginePyannote, DiarEngineNemotron:
+		c.DiarEngine = v
 	default:
-		return nil, fmt.Errorf("config: OX_SAY_DIAR_ENGINE %q: want %s|%s", c.DiarEngine, DiarEnginePyannote, DiarEngineNemotron)
+		c.DiarEngine, c.DiarEngineIgnored = DefaultDiarEngine, raw
 	}
 	return c, nil
 }

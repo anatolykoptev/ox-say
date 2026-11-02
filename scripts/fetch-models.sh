@@ -12,7 +12,7 @@
 #                                                 just these.
 #   Nemotron 3 Diarization fast128 (OpenMDW-1.1), 5 files and 2 documents, 199 MB, in <dest>/diar/nemotron-3-diarization/:
 #                                                 the ox-diar engine that replaces the pyannote pipeline. In the default set
-#                                                 and in --diar-only only on arm64 macOS 15+; --nemotron-only fetches just it.
+#                                                 and in --diar-only on every Apple Silicon Mac, whatever its macOS; --nemotron-only fetches just it.
 #
 # Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [--notes-only] [--diar-only] [--nemotron-only] [dest]   (any order)
 #   dest defaults to "$OX_SAY_HOME/models" (OX_SAY_HOME defaults to
@@ -158,10 +158,12 @@ for entry in "${nem_files[@]}" "${nem_docs[@]}"; do
     nem_models+=("diar/nemotron-3-diarization/$rel $sum $nem_url $remote")
 done
 
-# A Mac that cannot run ox-diar gets no 199 MB it cannot use: the engine refuses Intel and macOS < 15
-# (internal/daemon/diarize.go diarReady), so the set joins the default list and --diar-only only here.
-# OX_SAY_NEMOTRON=1 forces the set on (a seeded test dir, a CI cache); =0 forces it off. Fails closed like
-# oxs_voxcpm2_ok (scripts/lib-install.sh): a platform that will not say its version is treated as too old.
+# A Mac that cannot run ox-diar gets no 199 MB it cannot use: the engine refuses Intel (internal/daemon/diarize.go
+# diarReady), so the set joins the default list and --diar-only on Apple Silicon only. The macOS version is NOT
+# tested: a Mac installed on macOS 14 that later upgrades to 15 gets no new fetch (nothing re-runs this script
+# without a release), and the daemon reads only the Nemotron marker, so a version test here would leave it at
+# models_missing for good. The set waits on disk (199 MB) while diarReady answers os_too_old.
+# OX_SAY_NEMOTRON=1 forces the set on (a seeded test dir, a CI cache); =0 forces it off.
 nemotron_ok() {
     case ${OX_SAY_NEMOTRON:-} in
         1) return 0 ;;
@@ -169,11 +171,7 @@ nemotron_ok() {
     esac
     # arm64 hardware, not just an arm64 shell: a Rosetta shell says x86_64 while the Mac is Apple Silicon —
     # hw.optional.arm64 reads the hardware, the same test get.sh makes for its own arch.
-    [ "$(uname -m)" = arm64 ] || [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ] || return 1
-    local ver
-    ver=$(sw_vers -productVersion 2>/dev/null) || return 1
-    case $ver in '' | *[!0-9.]*) return 1 ;; esac
-    [ "${ver%%.*}" -ge 15 ]
+    [ "$(uname -m)" = arm64 ] || [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]
 }
 
 nem_in_set=0

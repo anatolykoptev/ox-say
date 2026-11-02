@@ -21,8 +21,9 @@
 #     marker -> "the nemotron marker is present after a full fetch" fails
 #   * fetch-models.sh: drop `nemotron_ok` from the selection -> OX_SAY_NEMOTRON=0 still lists the nemotron set ->
 #     "OX_SAY_NEMOTRON=0 skips the nemotron set" fails
-#   * fetch-models.sh: `-ge 15` -> `-ge 1` in nemotron_ok -> macOS 14 admits the set -> the "macOS 14"
-#     checks below fail
+#   * fetch-models.sh: put a macOS version test back in nemotron_ok (`ver=$(sw_vers -productVersion ...)`,
+#     `[ "${ver%%.*}" -ge 15 ]`) -> "--diar-only on arm64 macOS 14 lists the nemotron set" and "a default run on
+#     arm64 macOS 14 lists the nemotron set" fail
 #   * fetch-models.sh: delete `models+=("${nem_models[@]}")` under `if [ "$diar_only" = 1 ]` ->
 #     "--diar-only on arm64 macOS 15 lists the nemotron set" fails
 #   * fetch-models.sh: delete `models+=("${nem_models[@]}")` under `if nemotron_ok` ->
@@ -165,8 +166,8 @@ out=$(PATH="$d/bin:$PATH" OX_SAY_NEMOTRON=0 bash "$root/scripts/fetch-models.sh"
 if [ "$rc" -eq 0 ]; then pass "OX_SAY_NEMOTRON=0 --diar-only completes"; else fail "OX_SAY_NEMOTRON=0 --diar-only failed (rc $rc): $out"; fi
 case $out in *nemotron*) fail "OX_SAY_NEMOTRON=0 still listed the nemotron set: $out" ;; *) pass "OX_SAY_NEMOTRON=0 skips the nemotron set" ;; esac
 
-# The gate itself, on faked Macs: with OX_SAY_NEMOTRON unset, nemotron_ok reads uname -m, hw.optional.arm64
-# and sw_vers, so three fakes on PATH answer for another machine — including the Rosetta case, an x86_64
+# The gate itself, on faked Macs: with OX_SAY_NEMOTRON unset, nemotron_ok reads uname -m and hw.optional.arm64 (not
+# the macOS version: a Mac that upgrades 14 -> 15 later must already hold the set), so fakes on PATH answer for another machine — including the Rosetta case, an x86_64
 # shell on arm64 hardware (the same hw.optional.arm64 test get.sh makes). Every file the list can name is an
 # "intact" copy in the from dir, so the run walks the WHOLE list: the nemotron set is listed last, and a test
 # that stopped at the first entry could not tell "not listed" from "listed but never reached".
@@ -261,9 +262,9 @@ nem_listed "a default run on arm64 macOS 26 lists the nemotron set" "$rc" "$out"
 
 fake_platform "$g/arm64-14" arm64 14.7 1
 out=$(run_gate "$g/arm64-14" "$g/d5" --diar-only); rc=$?
-nem_not_listed "--diar-only on arm64 macOS 14 keeps the nemotron set out" "$rc" "$out"
+nem_listed "--diar-only on arm64 macOS 14 lists the nemotron set" "$rc" "$out"
 out=$(run_gate "$g/arm64-14" "$g/d6"); rc=$?
-nem_not_listed "a default run on arm64 macOS 14 keeps the nemotron set out" "$rc" "$out"
+nem_listed "a default run on arm64 macOS 14 lists the nemotron set" "$rc" "$out"
 
 fake_platform "$g/intel-15" x86_64 15.1 0
 out=$(run_gate "$g/intel-15" "$g/d7" --diar-only); rc=$?

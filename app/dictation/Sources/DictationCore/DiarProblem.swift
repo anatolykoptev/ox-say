@@ -4,7 +4,7 @@ import Foundation
 /// it in the meeting: `warnings` holds `diarization_unavailable` or `diarization_failed`, and `diar_reason` the code.
 public enum DiarProblem: Equatable {
     /// This Mac cannot do it (an old macOS, an unsupported processor, no engine or models) or the recording is too
-    /// long for it (over two hours). Nothing was tried, and trying again cannot help.
+    /// long for it (over six hours on the default engine, over two on pyannote). Nothing was tried, and trying again cannot help.
     case unavailable(reason: String)
     /// The voice engine ran and broke. Trying again can help, except after a timeout: the same call would take as long
     /// again, and a retry transcribes it a second time first.

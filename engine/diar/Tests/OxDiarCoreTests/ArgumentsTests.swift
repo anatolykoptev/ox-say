@@ -5,11 +5,11 @@ import Testing
 /// The command line of ox-diar, parsed where `swift test` can see it: anything not exactly a known shape is a
 /// usage error, never a partial parse that dies inside FluidAudio.
 @Suite struct ArgumentsTests {
-    /// The daemon names no flag yet, so the positional form must stay the pyannote engine until Task 8 flips the
-    /// default. Mutating the default to `.nemotron` turns this red.
-    @Test func thePositionalFormIsThePyannoteEngine() {
+    /// The positional form (no flag) is the Nemotron engine. Mutation: Arguments.swift `var engine = Engine.nemotron`
+    /// -> `.pyannote` turns this red.
+    @Test func thePositionalFormIsTheNemotronEngine() {
         #expect(Arguments.parse(["in.pcm", "out.json", "--models", "d"])
-            == .diarize(pcm: "in.pcm", out: "out.json", models: "d", engine: .pyannote))
+            == .diarize(pcm: "in.pcm", out: "out.json", models: "d", engine: .nemotron))
     }
 
     @Test func theEngineFlagSelectsTheEngine() {

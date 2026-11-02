@@ -20,9 +20,11 @@ const (
 	// asks first, so a meeting on macOS 14 says so instead of starting a process that exits 5. A test compares this
 	// number with engine/diar's Platform.minimumMajor.
 	diarMinMacOS = 15
-	// diarMinTimeout and diarTimeoutDivisor bound one ox-diar run: an hour of audio takes about 21 seconds on the
-	// Neural Engine and about eighty on the CPU of an M-series Mac, so a tenth of the audio's length (six minutes per
-	// hour, four and a half times the CPU figure), never under five minutes for the model load, is a run that hung.
+	// diarMinTimeout and diarTimeoutDivisor bound one ox-diar run: the default engine takes about 2.2 seconds per
+	// 1000 s of audio on the Neural Engine (8 s an hour; the pyannote engine about 21 s an hour there and eighty on the
+	// CPU), so a tenth of the audio's length (six minutes per hour), never under five minutes, is a run that hung. The
+	// five minute floor also covers a cold Core ML compile of the model, the first run after an install or a macOS
+	// update: 26 s of model load with an empty Core ML cache, measured on an M-series Mac for the Nemotron default.
 	diarMinTimeout     = 5 * time.Minute
 	diarTimeoutDivisor = 10
 	// diarBytesPerSecond is 16 kHz mono s16le.
@@ -32,12 +34,13 @@ const (
 	// hours is about 2.1 GB. On an 8 GB Mac that leaves room for macOS, a resident Parakeet and the app; three hours
 	// (about 3.2 GB) would not. A longer call keeps one far-side label (unavailable, too_long), because diarizing it
 	// could page the Mac to a halt. The 8 GB probe (plan, 20a carried items) has not been run, so this errs low.
-	// The app's recording cap is pinned to this number (MeetingLimitsTests reads it by regex), because pyannote is
-	// the default engine; diarMaxSecondsNemotron is for a Mac that chose the other one.
+	// pyannote is no longer the default engine: this cap applies to a Mac that chose it (OX_SAY_DIAR_ENGINE=pyannote),
+	// whose longer recordings keep one far-side label. The app's recording cap is pinned to diarMaxSecondsNemotron
+	// (MeetingLimitsTests reads it by regex).
 	diarMaxSeconds = 2 * 3600
 	// diarMaxSecondsNemotron: the Nemotron engine streams the mapped channel in 30 s chunks, so memory does not grow
 	// with the call: 65 MB at 2.2 h, 80-87 MB at 4.4 h and 103 MB at 6.6 h, 17 s of wall time for 2.2 h on the Neural
-	// Engine (plan, Task 0 probe A). Six hours is the cap the probe covers.
+	// Engine (plan, Task 0 probe A). Six hours is the cap the probe covers, and the default engine's.
 	diarMaxSecondsNemotron = 6 * 3600
 	// diarStderrKeep is how much of ox-diar's stderr an error carries; it holds no transcript text (ox-diar never
 	// sees words).

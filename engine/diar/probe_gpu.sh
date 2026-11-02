@@ -5,6 +5,7 @@
 #   engine/diar/probe_gpu.sh <ox-diar> <models-dir> <raw 16 kHz mono s16le, 5 min or longer>
 # The spike's numbers on an M5 Pro: .cpuAndNeuralEngine 0 % in 14 samples, .all 80-97 %. Quit other GPU-heavy apps
 # first; a baseline that is itself high makes the probe say so and stop (exit 3) instead of passing on noise.
+# OX_DIAR_ARGS (e.g. "--engine pyannote") is passed to the binary; unset, it runs the default engine (Nemotron).
 # Mutation: Sources/ox-diar/main.swift, `ml.computeUnits = .cpuAndNeuralEngine` -> `.all` -> exit 1.
 set -u
 bin=${1:?usage: $0 <ox-diar> <models-dir> <pcm>}; models=${2:?}; wav=${3:?}
@@ -14,7 +15,8 @@ base=$(for _ in 1 2 3 4 5 6 7 8; do util; sleep 1; done | max_of)
 if [ "${base:-100}" -gt 40 ]; then echo "baseline GPU use is already ${base:-?} %: quit what is using the GPU and run again" >&2; exit 3; fi
 out=$(mktemp -d "${TMPDIR:-/tmp}/ox-diar-gpu.XXXXXX")
 samples="$out/samples"
-"$bin" "$wav" "$out/o.json" --models "$models" > /dev/null 2>&1 &
+# shellcheck disable=SC2086 # OX_DIAR_ARGS is a word list on purpose
+"$bin" "$wav" "$out/o.json" --models "$models" ${OX_DIAR_ARGS:-} > /dev/null 2>&1 &
 pid=$!
 while kill -0 "$pid" 2>/dev/null; do util >> "$samples"; sleep 1; done
 wait "$pid" || { echo "ox-diar failed" >&2; exit 2; }

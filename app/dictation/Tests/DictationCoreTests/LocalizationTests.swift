@@ -49,6 +49,23 @@ final class LocalizationTests: XCTestCase {
         XCTAssertTrue(text.contains("Озвучка"), "ru.lproj must translate the sidebar")
     }
 
+    /// The recording cap sentence names the cap the app really has (6 h, `MeetingLimits.maxRecordingSeconds`), and the
+    /// `too_long` sentence names no number at all: the daemon says `too_long` above 6 h on the default engine but
+    /// above 2 h on a Mac that chose pyannote, and the app cannot tell which engine said it.
+    /// Mutations: en "notice.meeting.cap_reached" back to "2 hours" -> RED; en "meeting.diar.unavailable.too_long" given
+    /// a number ("longer than 6 hours") -> RED.
+    func testTheCapSentencesNameTheRealCapAndTooLongNamesNone() {
+        XCTAssertEqual(MeetingLimits.maxRecordingSeconds, 6 * 3600 - 60)
+        let en = ShippedStrings.table("en"), ru = ShippedStrings.table("ru")
+        XCTAssertTrue((en["notice.meeting.cap_reached"] ?? "").contains("6 hours"), en["notice.meeting.cap_reached"] ?? "")
+        XCTAssertTrue((ru["notice.meeting.cap_reached"] ?? "").contains("6 часов"), ru["notice.meeting.cap_reached"] ?? "")
+        for table in [en, ru] {
+            let text = table["meeting.diar.unavailable.too_long"] ?? ""
+            XCTAssertFalse(text.isEmpty)
+            XCTAssertNil(text.rangeOfCharacter(from: .decimalDigits), "no number in: \(text)")
+        }
+    }
+
     /// #337.1: the reason of a lost microphone or system-audio tap is a framework error in English; the notice says the
     /// loss in the user's language and the reason goes to the log.
     /// Mutation: en "notice.meeting.tap_lost" gets ": %@" back -> RED.

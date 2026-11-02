@@ -55,26 +55,34 @@ toolchain is present (A/B tests).
 
 ## ox-diar (speaker diarization)
 
-A one-shot CLI that tells the voices of one recording apart: `ox-diar <pcm16k-mono-s16le> <out.json> --models DIR`, where
-the input is a meeting's raw channel file (the format of `them.pcm`) and DIR holds `speaker-diarization/` as
-`scripts/fetch-models.sh --diar-only` lays it out. It is a Swift package (`engine/diar`) on FluidAudio 0.18.0 (pinned with
-`exact:` and a committed `Package.resolved`), which runs the pyannote community-1 pipeline (segmentation, WeSpeaker,
-PLDA, VBx) on Core ML: `.cpuAndNeuralEngine` on Apple Silicon, so the GPU stays free for Parakeet (`probe_gpu.sh` proves
-it). There is no Intel build: the models failed on `.cpuOnly` on the Intel CI runner (the smoke of plan Task 20a), so
-the x86_64 package carries none and the daemon reports `cpu_unsupported`. The configuration is pinned in `OxDiarCore/Config.swift` (AHC threshold 0.7, step 0.1, no 1 s floor
-on a segment: the spike's `parity0`), where `swift test` reads it. The audio is read whole into memory and never written
-to a temporary file (FluidAudio's file path would stream a float32 copy to the user's temporary directory). It never
-touches the network (`ModelHub.offlineMode`), and it exits 5 on macOS older than 15, where Apple's BNNS bug can crash a
-prediction (FluidAudio issue 878). Exit 0 also for silence (empty lists), 2 usage, 3 models, 4 input missing or empty.
+A one-shot CLI that tells the voices of one recording apart: `ox-diar <pcm16k-mono-s16le> <out.json> --models DIR [--engine nemotron|pyannote]`,
+where the input is a meeting's raw channel file (the format of `them.pcm`) and DIR holds the model sets
+`scripts/fetch-models.sh --diar-only` lays out (`nemotron-3-diarization/`, and `speaker-diarization/` for the pyannote engine).
+It is a Swift package (`engine/diar`) on FluidAudio 0.18.0 (pinned with `exact:` and a committed `Package.resolved`).
+The default engine is Nemotron 3 Diarization (fast128) on Core ML: `.cpuAndNeuralEngine` on Apple Silicon, so the GPU
+stays free for Parakeet (`probe_gpu.sh` proves it; `OX_DIAR_COMPUTE_UNITS=cpuOnly` can lower the units, for a machine
+without a Neural Engine such as the CI runner, and never raises them). Its probabilities become an exclusive timeline,
+and same-voice segments less than 1.5 s apart are merged. Nemotron uses no speaker embeddings, so the answer carries an
+empty `embedding` per speaker. The recording is mapped read-only and fed in 30 s chunks, so memory stays flat with the
+length of the call (about 100 MB at 6 hours) and a call of up to 6 hours is accepted. The first run on a Mac, and the
+first after a macOS update, compiles the model for the Neural Engine (tens of seconds; the cache is
+`~/Library/Caches/ox-diar`), which the daemon's 5 minute floor on one run covers. `--engine pyannote` (or
+`OX_SAY_DIAR_ENGINE=pyannote` for the daemon) selects the previous pipeline (segmentation, WeSpeaker, PLDA, VBx), which
+reads the whole recording into memory and is limited to 2 hours; it stays until it is removed. There is no Intel build:
+the models failed on `.cpuOnly` on the Intel CI runner (the smoke of plan Task 20a), so the x86_64 package carries none
+and the daemon reports `cpu_unsupported`. The configuration is pinned in `OxDiarCore/Config.swift`, where `swift test`
+reads it. The audio is never written to a temporary file. It never touches the network (`ModelHub.offlineMode`), and it
+exits 5 on macOS older than 15, where Apple's BNNS bug can crash a prediction (FluidAudio issue 878). Exit 0 also for
+silence (empty lists), 2 usage, 3 models, 4 input missing or empty.
 
 The answer is `{version, duration_s, speakers:[{id, speech_s, embedding[256]}], segments:[{s, e, spk}], timing_s}`: the
-exclusive timeline, ids 0..n-1 by descending speech, each embedding the cluster's VBx centroid. The daemon reads it
-once, inside the meeting's `work/`, and the embeddings never reach the meeting directory (a voiceprint of people who
-never agreed to one). Building it needs Xcode 26 (Swift 6.2) and the engine only runs on macOS 15 or later, so
-`engine/build.sh` builds it when asked or able (`engine/want-diar.sh`). `test_cli.py` pins the contract and runs in CI on
-both architectures, `swift test` the pure parts, `test_der.py --engine E` scores DER and speaker confusion on three
-AMI mixes and three Russian files against their references (the limits that separate the two engines) plus two
-count-only cases (not in CI: it needs pyannote.metrics and the recordings).
+exclusive timeline, ids 0..n-1 by descending speech (`embedding` is the pyannote cluster centroid, empty on Nemotron).
+The daemon reads it once, inside the meeting's `work/`, and nothing of it reaches the meeting directory. Building it
+needs Xcode 26 (Swift 6.2) and the engine only runs on macOS 15 or later, so `engine/build.sh` builds it when asked or
+able (`engine/want-diar.sh`). `test_cli.py` pins the contract and runs in CI (one step per engine), `swift test` the
+pure parts, `test_der.py --engine E` scores DER and speaker confusion on three AMI mixes and three Russian files against
+their references (the limits that separate the two engines) plus two count-only cases (not in CI: it needs
+pyannote.metrics and the recordings).
 
 ## ox-llm (llama.cpp's llama-server)
 

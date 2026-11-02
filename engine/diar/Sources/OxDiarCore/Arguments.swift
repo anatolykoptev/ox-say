@@ -3,8 +3,8 @@ import Foundation
 /// ox-diar's command line, parsed where `swift test` can see it: anything that is not exactly a known shape is a
 /// usage error, never a partial parse that dies inside FluidAudio.
 public enum Arguments {
-    /// The diarization pipeline a diarize run uses. The positional form (no flag) is the pyannote engine — the
-    /// daemon names no flag yet — until Task 8 flips the default.
+    /// The diarization pipeline a diarize run uses. The positional form (no flag) is the Nemotron engine; the
+    /// pyannote engine stays selectable with `--engine pyannote` until it is deleted.
     public enum Engine: String, Sendable {
         case pyannote, nemotron
     }
@@ -25,7 +25,7 @@ public enum Arguments {
         guard argv.count == 4 || argv.count == 6, argv[2] == "--models" else {
             return .usage(usageLine)
         }
-        var engine = Engine.pyannote
+        var engine = Engine.nemotron
         if argv.count == 6 {
             guard argv[4] == "--engine", let parsed = Engine(rawValue: argv[5]) else {
                 return .usage(usageLine)

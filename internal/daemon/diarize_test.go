@@ -47,7 +47,7 @@ func TestRunDiarizerPassesTheContractAndReadsTheResult(t *testing.T) {
 	for _, engine := range []string{"", config.DiarEnginePyannote, config.DiarEngineNemotron} {
 		want := engine
 		if want == "" {
-			want = config.DefaultDiarEngine
+			want = config.DiarEngineNemotron // the default, spelled out so a flip back fails here
 		}
 		cfg, pcm := stubDiar(t, `
 in=$1; out=$2
@@ -137,11 +137,11 @@ func TestDiarReady(t *testing.T) {
 	if got := d.diarReady(); got != meeting.DiarModelsMissing {
 		t.Fatalf("no models: %q", got)
 	}
-	marker := filepath.Join(cfg.DiarModelsDir(), "speaker-diarization", ".fluidaudio-revision")
+	marker := filepath.Join(cfg.DiarModelsDir(), "nemotron-3-diarization", ".ox-say-revision") // the default engine's marker
 	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(marker, []byte(config.DiarModelsRevision+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(marker, []byte(config.NemotronModelsRevision+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if got := d.diarReady(); got != "" {
@@ -187,11 +187,59 @@ func TestDiarReadyOnIntel(t *testing.T) {
 	}
 }
 
+// The default flip to nemotron changes neither platform refusal: with the DEFAULT engine, a fully installed Mac
+// (binary and both model sets) still answers os_too_old on macOS 14 and cpu_unsupported on Intel, and the same Mac on
+// macOS 15 / arm64 is ready. The checks come before the engine and models, whatever the engine.
+// Mutations: internal/daemon/diarize.go diarReady, change `goArch == "amd64"` to `false` -> RED (Intel row); change
+// `major < diarMinMacOS` to `major < 14` -> RED (macOS 14 row).
+func TestDiarReadyPlatformRefusalsHoldOnTheDefaultEngine(t *testing.T) {
+	home := t.TempDir()
+	cfg := &config.Config{Home: home, DiarBin: filepath.Join(home, "ox-diar")} // DiarEngine unset: the default
+	if cfg.Engine() != config.DiarEngineNemotron {
+		t.Fatalf("default engine = %q", cfg.Engine())
+	}
+	if err := os.WriteFile(cfg.DiarBin, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for rel, rev := range map[string]string{
+		"speaker-diarization/.fluidaudio-revision": config.DiarModelsRevision,
+		"nemotron-3-diarization/.ox-say-revision":  config.NemotronModelsRevision,
+	} {
+		path := filepath.Join(cfg.DiarModelsDir(), filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(rev), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := &Daemon{Cfg: cfg}
+	was, wasArch := osMajor, goArch
+	t.Cleanup(func() { osMajor, goArch = was, wasArch })
+	for _, tc := range []struct {
+		name  string
+		major int
+		arch  string
+		want  string
+	}{
+		{"macOS 14 arm64", 14, "arm64", meeting.DiarOSTooOld},
+		{"macOS 15 Intel", 15, "amd64", meeting.DiarCPUUnsupported},
+		{"macOS 14 Intel", 14, "amd64", meeting.DiarOSTooOld},
+		{"macOS 15 arm64", 15, "arm64", ""},
+	} {
+		osMajor = func() (int, bool) { return tc.major, true }
+		goArch = tc.arch
+		if got := d.diarReady(); got != tc.want {
+			t.Errorf("%s: diarReady = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // ox-diar holds the whole channel in memory on the pyannote engine (about 1.06 GB resident per hour of audio), so a
 // recording longer than 2 h is not given to it: "unavailable" (too_long), not a failure, and the engine is never
 // started. The Nemotron engine streams the mapped file in 30 s chunks (80-100 MB at 4-6 h), so its cap is 6 h. A
-// recording of exactly the cap still runs. The Swift test MeetingLimitsTests reads the pyannote `diarMaxSeconds` out
-// of diarize.go by regex: the app records up to two hours, the default engine's cap, until the default flips.
+// recording of exactly the cap still runs. The Swift test MeetingLimitsTests reads `diarMaxSecondsNemotron` out
+// of diarize.go by regex: the app records up to six hours (minus a minute), the default engine's cap.
 // Mutations: internal/daemon/diarize.go runDiarizer, change `st.Size() > diarMaxPCMBytes(cfg.Engine())` to `false` ->
 // RED (the stub is started and the error is not the unavailable one); change `>` to `>=` -> RED (the recording of
 // exactly the cap is refused); F3: diarMaxPCMBytes returns the 2 h value for nemotron -> RED (the 2 h+1 recording
