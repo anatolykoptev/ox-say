@@ -11,14 +11,8 @@ struct SearchField: View {
             TextField(L10nKey.searchPlaceholder.text, text: $model.queryText)
                 .textFieldStyle(.plain)
             if !model.queryText.isEmpty {
-                Button {
-                    model.queryText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help(L10nKey.searchClear.text)
-                .accessibilityLabel(L10nKey.searchClear.text)
+                IconButton(symbol: "xmark.circle.fill", labelKey: .a11ySearchClear) { model.queryText = "" }
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 6)

@@ -137,16 +137,11 @@ extension MeetingDetailView {
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(MeetingRowModel.displayTitle(of: info)).font(.title2.weight(.semibold)).lineLimit(2)
-                Button {
+                IconButton(symbol: "pencil", labelKey: .a11yRename) {
                     // The field starts with the title shown; saving it unchanged sends nothing (see renamedTitle).
                     draftTitle = MeetingRowModel.displayTitle(of: info)
                     renaming = true
-                } label: {
-                    Image(systemName: "pencil")
                 }
-                .buttonStyle(.borderless)
-                .help(L10nKey.meetingRename.text)
-                .accessibilityLabel(L10nKey.meetingRename.text)
                 .disabled(info.inProgress())
             }
         }
