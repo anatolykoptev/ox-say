@@ -181,6 +181,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/diar-models
           key: diar-models-${{ hashFiles('scripts/fetch-models.sh') }}
+          restore-keys: diar-models-
 
       - name: Diarization models
         if: matrix.arch == 'arm64'
@@ -321,8 +322,12 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/build"
           if [ "$ARCH" = arm64 ]; then
             afconvert -f WAVE -d LEI16@16000 -c 1 "$GITHUB_WORKSPACE/engine/diar/testdata/ami-es2004a-780-180s.flac" "$RUNNER_TEMP/diar-clip.wav"
+            # the default engine (Nemotron), forced to the CPU like the CI job (the runner's Neural Engine is not
+            # guaranteed), then the pyannote engine's contract until that engine is deleted
+            OX_DIAR_COMPUTE_UNITS=cpuOnly python3 "$GITHUB_WORKSPACE/engine/diar/test_cli.py" --bin engine/ox-diar \
+                --models "$RUNNER_TEMP/diar-models/diar" --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4
             python3 "$GITHUB_WORKSPACE/engine/diar/test_cli.py" --bin engine/ox-diar --models "$RUNNER_TEMP/diar-models/diar" \
-                --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4
+                --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4 --engine pyannote
           fi
           # the dictation app: signed, ours, carrying this version
           codesign --verify --strict app/OxSayDictation.app

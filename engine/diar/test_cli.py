@@ -4,7 +4,7 @@
 Usage: test_cli.py --bin PATH --models DIR [--clip x.wav --speakers N] [--engine E] [unittest args]
   DIR holds the model sets scripts/fetch-models.sh lays out (speaker-diarization/ for pyannote,
   nemotron-3-diarization/ for nemotron; the nemotron engine needs only its own directory).
-  --engine E (default pyannote) is appended to every diarize call; cases that make no sense for an engine skip
+  --engine E (default nemotron) is appended to every diarize call; cases that make no sense for an engine skip
   themselves. --clip is a 16 kHz mono WAV with --speakers voices (CI passes the AMI excerpt: 4); the test turns
   it into the raw s16le file ox-diar takes. Without it the tests that need a real recording are skipped and say
   so.
@@ -26,7 +26,7 @@ import wave
 
 BIN = MODELS = CLIP = None
 SPEAKERS = 0
-ENGINE = "pyannote"
+ENGINE = "nemotron"
 
 
 def run(*args, env=None):
@@ -290,22 +290,23 @@ class Contract(unittest.TestCase):
             total = sum(g["e"] - g["s"] for g in d["segments"] if g["spk"] == s["id"])
             self.assertAlmostEqual(total, s["speech_s"], delta=0.01 * len(d["segments"]))
 
-    # The daemon calls ox-diar positionally, with no --engine (diar() always adds it for the engine under test):
-    # that argv shape must reach the pyannote engine and give a real result. Under --engine nemotron this still
-    # runs the pyannote pipeline, the one the daemon gets.
-    def test_the_positional_form_is_the_pyannote_engine(self):
+    # The positional form (no --engine; diar() always adds the flag for the engine under test) is the default engine,
+    # Nemotron: a real result, the units line of the Nemotron loader, none of pyannote's window log, and no voiceprints.
+    # Mutation: Sources/OxDiarCore/Arguments.swift `var engine = Engine.nemotron` -> `.pyannote` -> RED here.
+    def test_the_positional_form_is_the_nemotron_engine(self):
         if not CLIP:
             self.skipTest("no --clip")
-        if not os.path.isdir(os.path.join(MODELS, "speaker-diarization")):
-            self.skipTest(f"no pyannote set in {MODELS}")
+        if not os.path.isdir(os.path.join(MODELS, "nemotron-3-diarization")):
+            self.skipTest(f"no nemotron set in {MODELS}")
         r = run(self.clip_pcm(), self.path("o.json"), "--models", MODELS)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIsNotNone(re.search(r"Segmentation timings: windows=(\d+)", r.stderr),
-                             "the pyannote pipeline did not run\n" + r.stderr[-400:])
+        self.assertIsNone(re.search(r"Segmentation timings: windows=(\d+)", r.stderr),
+                          "the pyannote pipeline ran\n" + r.stderr[-400:])
+        self.assertIsNotNone(re.search(r"compute units \w+\n", r.stderr), "the Nemotron loader did not run\n" + r.stderr[-400:])
         d = self.load("o.json")
         self.assertGreater(len(d["speakers"]), 0)
         for s in d["speakers"]:
-            self.assertEqual(len(s["embedding"]), 256, "pyannote clusters carry the 256-float centroid; nemotron emits none")
+            self.assertEqual(len(s["embedding"]), 0, "nemotron emits no voiceprints")
 
     # The pinned configuration and compute units, read back from the real binary at the call site in main.swift (a
     # unit test can only read Pinned, not what main.swift hands the manager). For pyannote FluidAudio logs how many
@@ -441,7 +442,7 @@ if __name__ == "__main__":
     ap.add_argument("--models", required=True)
     ap.add_argument("--clip")
     ap.add_argument("--speakers", type=int, default=0)
-    ap.add_argument("--engine", default="pyannote", choices=["pyannote", "nemotron"])
+    ap.add_argument("--engine", default="nemotron", choices=["pyannote", "nemotron"])
     a, rest = ap.parse_known_args()
     BIN, MODELS, CLIP, SPEAKERS, ENGINE = a.bin, a.models, a.clip, a.speakers, a.engine
     unittest.main(argv=[sys.argv[0], *rest])

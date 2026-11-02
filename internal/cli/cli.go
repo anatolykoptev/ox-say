@@ -145,6 +145,9 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 		return 2
 	}
 	logger := newServeLogger(context.Background(), os.Stderr, serveLogMaxBytes, serveLogCapEvery)
+	if cfg.DiarEngineIgnored != "" {
+		logger.Warn("OX_SAY_DIAR_ENGINE not recognised, using the default", "value", cfg.DiarEngineIgnored, "engine", cfg.Engine(), "want", config.DiarEnginePyannote+"|"+config.DiarEngineNemotron)
+	}
 	d, err := newDaemon(cfg, logger)
 	if err != nil {
 		fmt.Fprintln(stderr, "ox-say:", err)

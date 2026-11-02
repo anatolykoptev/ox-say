@@ -174,15 +174,21 @@ jobs:
         with:
           path: ${{ runner.temp }}/diar-models
           key: diar-models-${{ hashFiles('scripts/fetch-models.sh') }}
+          restore-keys: diar-models-
 
       - name: Diarization models
         run: bash scripts/fetch-models.sh --diar-only "$RUNNER_TEMP/diar-models"
 
-      # The CLI contract, the offline rule, the refusal on macOS older than 15 (OX_DIAR_ASSUME_MACOS lowers the version
-      # the binary sees) and the four voices of the AMI excerpt.
+      # The default engine (Nemotron), forced to the CPU: the runner's Neural Engine is not guaranteed to compile a Core
+      # ML graph, so OX_DIAR_COMPUTE_UNITS lowers what the loader asks for (a seam that can only make the choice more
+      # conservative). The CLI contract, the offline rule, the refusal on macOS older than 15 (OX_DIAR_ASSUME_MACOS
+      # lowers the version the binary sees) and the four voices of the AMI excerpt. The ANE and GPU facts are NOT
+      # proven here; they are proven on a real Mac (engine/diar/probe_gpu.sh, scripts/probe-diar-dictation.sh).
       # The binary is copied away and the build tree removed first: it must not lean on anything it was built beside
       # (SwiftPM's FluidAudio_FluidAudio.bundle).
       - name: ox-diar smoke
+        env:
+          OX_DIAR_COMPUTE_UNITS: cpuOnly
         run: |
           mkdir "$RUNNER_TEMP/diar-run"
           cp "$RUNNER_TEMP/diar-out/ox-diar" "$RUNNER_TEMP/diar-run/"
@@ -191,11 +197,8 @@ jobs:
           python3 engine/diar/test_cli.py --bin "$RUNNER_TEMP/diar-run/ox-diar" --models "$RUNNER_TEMP/diar-models/diar" \
               --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4
 
-      # The nemotron engine, on the same binary and clip, forced to the CPU: the runner's Neural Engine is not
-      # guaranteed to compile a Core ML graph, so OX_DIAR_COMPUTE_UNITS lowers what the loader asks for.
-      - name: ox-diar smoke (nemotron)
-        env:
-          OX_DIAR_COMPUTE_UNITS: cpuOnly
+      # The pyannote engine (OX_SAY_DIAR_ENGINE=pyannote, deleted with the engine later): one contract step, same binary.
+      - name: ox-diar smoke (pyannote contract)
         run: |
           python3 engine/diar/test_cli.py --bin "$RUNNER_TEMP/diar-run/ox-diar" --models "$RUNNER_TEMP/diar-models/diar" \
-              --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4 --engine nemotron
+              --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4 --engine pyannote

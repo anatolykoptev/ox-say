@@ -749,3 +749,24 @@ func TestStatusReportsAllEnginePaths(t *testing.T) {
 		}
 	}
 }
+
+// /status says which diarization engine the daemon will ask ox-diar for (and the MCP engine_status tool returns the
+// same map), so a plist that carries a stale OX_SAY_DIAR_ENGINE is visible next to diar_bin. An unset engine reports
+// the default, nemotron.
+// Mutation: drop the "diar_engine" key from the Status config map in service.go (Status, the Config literal) -> RED.
+func TestStatusReportsTheDiarEngine(t *testing.T) {
+	for _, tc := range []struct{ set, want string }{
+		{"", config.DiarEngineNemotron},
+		{config.DiarEnginePyannote, config.DiarEnginePyannote},
+		{config.DiarEngineNemotron, config.DiarEngineNemotron},
+	} {
+		t.Run(tc.want+"/"+tc.set, func(t *testing.T) {
+			dir := t.TempDir()
+			fakeEnv(t, dir)
+			d := newTestDaemonSTT(t, dir, func(c *config.Config) { c.DiarEngine = tc.set }, nil, nil)
+			if got := d.Status().Config["diar_engine"]; got != tc.want {
+				t.Errorf("engine %q: status config[diar_engine] = %v, want %s", tc.set, got, tc.want)
+			}
+		})
+	}
+}

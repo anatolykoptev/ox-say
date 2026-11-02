@@ -21,7 +21,7 @@ final class DiarProblemTests: XCTestCase {
         XCTAssertFalse(DiarProblem.failed(reason: "timeout").canRetry)
         XCTAssertFalse(DiarProblem.unavailable(reason: "os_too_old").canRetry)
         XCTAssertFalse(DiarProblem.unavailable(reason: "models_unusable").canRetry)
-        XCTAssertFalse(DiarProblem.unavailable(reason: "too_long").canRetry, "a recording over two hours stays over two hours")
+        XCTAssertFalse(DiarProblem.unavailable(reason: "too_long").canRetry, "a recording too long for the voice engine stays too long")
         XCTAssertFalse(DiarProblem.unavailable(reason: "input_unreadable").canRetry, "the same file is unreadable again")
     }
 
@@ -67,7 +67,7 @@ final class DiarProblemTests: XCTestCase {
         XCTAssertEqual(models.shownKey(daemonSaysRetryable: false, audioDeleted: false), .diarUnavailableModels, "not ready: the reason stands")
         XCTAssertEqual(models.shownKey(daemonSaysRetryable: true, audioDeleted: true), .diarUnavailableModels, "no audio: no retry, the reason stands")
         XCTAssertEqual(DiarProblem.unavailable(reason: "too_long").shownKey(daemonSaysRetryable: true, audioDeleted: false),
-                       .diarUnavailableTooLong, "a recording over two hours is still over two hours")
+                       .diarUnavailableTooLong, "a recording too long for the voice engine is still too long")
         XCTAssertEqual(DiarProblem.failed(reason: "bad_output").shownKey(daemonSaysRetryable: true, audioDeleted: false), .diarFailedOutput)
     }
 

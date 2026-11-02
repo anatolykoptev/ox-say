@@ -47,7 +47,7 @@ It needs `ffmpeg` (`brew install ffmpeg`) and never uses `sudo`. To build from s
 | Text-to-speech, voice cloning from a short clip | Qwen3-TTS 12 Hz via [qwentts.cpp](https://github.com/ServeurpersoCom/qwentts.cpp) | faster than real time (about 0.6× RTF), first audio in about 110–250 ms | faster than real time (about 0.22× RTF), first audio byte in about 30–35 ms (Qwen3-TTS 1.7B: 0.27–0.28× RTF) |
 | Studio-quality voiceover with emotion, voice design and loudness control (opt-in, Apple Silicon, see [Studio voice](#studio-voice-voxcpm2)) | VoxCPM2 via [audio.cpp](https://github.com/ShugoAI/audio.cpp) | not available | about real time (0.58× RTF warm), 48 kHz |
 | Speech-to-text with word timestamps | Parakeet TDT v3 (25 European languages) or Whisper large-v3-turbo (99 languages) via whisper.cpp | 5 minutes of audio in about 27 s on the CPU, which the Intel daemon uses for its resident server (about 12.5 s on Metal while the GPU is free) | 6 minutes of audio in about 2.5 s on Metal |
-| Meetings: call recording, transcript, structured notes, far-side speakers (see [Meetings](#meetings)) | Parakeet TDT v3 for the transcript, Qwen3.5-4B via llama.cpp (`ox-llm`) for the notes, FluidAudio / pyannote community-1 on Core ML (`ox-diar`) for the voices | transcript and notes; notes run on the CPU and are slow, voices are not told apart | transcript, notes and voices |
+| Meetings: call recording, transcript, structured notes, far-side speakers (see [Meetings](#meetings)) | Parakeet TDT v3 for the transcript, Qwen3.5-4B via llama.cpp (`ox-llm`) for the notes, FluidAudio / Nemotron 3 Diarization on Core ML (`ox-diar`) for the voices | transcript and notes; notes run on the CPU and are slow, voices are not told apart | transcript, notes and voices |
 | `ox-align` engine tool: per-frame CTC emissions for a wav2vec2 checkpoint ([engine/README.md](engine/README.md)) — not exposed by the daemon | optional hand-converted GGUF (the MMS aligner weights are CC-BY-NC; the installer fetches none) | emissions match the transformers oracle within tolerance | not measured |
 
 Apple Silicon numbers: [docs/performance.md](docs/performance.md).
@@ -555,7 +555,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_NOTES_PORT` | `8098` | Loopback port the notes engine binds. Set explicitly, it must differ from the other listeners or the daemon refuses to start; left at the default, a collision turns notes off (`port_blocked` in `/status`) and the rest of the daemon runs |
 | `OX_SAY_NOTES_IDLE_STOP_SECS` | `120` | Stop the notes engine after N s idle |
 | `OX_SAY_DIAR_BIN` | `<engine dir>/ox-diar` | The speaker diarization engine (meeting voices); Apple Silicon, macOS 15 or later |
-| `OX_SAY_DIAR_ENGINE` | `pyannote` | Which model separates the voices of a meeting: `pyannote` or `nemotron` (Nemotron 3 Diarization on the Neural Engine, fetched by `scripts/fetch-models.sh`). A Mac that chose `nemotron` without having fetched its set keeps one far-side label (`models_missing`) until the fetch is done; `nemotron` takes calls up to 6 hours, `pyannote` up to 2 |
+| `OX_SAY_DIAR_ENGINE` | `nemotron` | Which model separates the voices of a meeting: `nemotron` (Nemotron 3 Diarization fast128 on the Neural Engine) or `pyannote` (the previous pipeline, kept until it is removed). Case and surrounding spaces do not matter; a value that is neither is logged once and the default is used. A Mac whose engine set is not fetched keeps one far-side label (`models_missing`) until `scripts/fetch-models.sh` has run; `nemotron` takes calls up to 6 hours, `pyannote` up to 2. The app records up to 6 hours (a minute less) on either; on `pyannote` a recording over 2 hours keeps one far-side label. `GET /status` shows the engine in use as `config.diar_engine` |
 | `OX_SAY_IDLE_STOP_SECS` | `300` | Stop the idle engine after N s; 0 = never |
 | `OX_SAY_STARTUP_TIMEOUT_SECS` | `180` | Covers the first-start Metal shader compile |
 | `OX_SAY_LANG` | empty | Default language; empty = engine auto-detect |
@@ -584,7 +584,7 @@ its version; anywhere else it is `$OX_SAY_HOME/engine`. A user-set
 defeats the co-versioning, and the installer carries such a variable over from
 the installed agent. `GET /status` shows the path each engine resolved to
 under `config` (`engine_bin`, `stt_bin`, `voxcpm2_bin`, `notes_bin`,
-`diar_bin`).
+`diar_bin`) and the diarization engine in use (`diar_engine`).
 
 ## Dictation
 
@@ -761,8 +761,8 @@ app can copy a sentence for that to the clipboard (**Copy consent phrase**).
 - **Transcript.** The same speech recognizer as dictation (Parakeet by default) writes it, channel by channel,
   then merges the two with who said what. Turns on your
   microphone that are only an echo of the other side are dropped.
-- **Other people's voices.** `ox-diar` (FluidAudio, running the pyannote community-1 pipeline on Core ML) separates
-  the far side's voices. With three or more voices the transcript shows them as "Speaker 1", "Speaker 2"…; with two,
+- **Other people's voices.** `ox-diar` (FluidAudio, running Nemotron 3 Diarization on the Neural Engine) separates
+  the far side's voices. The app records a meeting for up to 6 hours. With three or more voices the transcript shows them as "Speaker 1", "Speaker 2"…; with two,
   it keeps one label and offers **split by voice**. You can name a speaker, merge two voices, or split them
   again; the transcript is rewritten and the notes are made again. Without this step the whole far side is one label.
 - **Notes.** A local model (Qwen3.5-4B Q4_K_M, run by `ox-llm`) writes a summary, decisions, action items, open

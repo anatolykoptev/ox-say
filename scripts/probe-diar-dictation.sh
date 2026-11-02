@@ -12,6 +12,7 @@
 # phase 2 posts it while ox-diar loops over the long recording. Prints both p50 and p95 and exits 1 when the p95 during
 # a diarization is both 25 % and 150 ms above the idle one. Those two numbers are a starting guess, not a measurement:
 # the probe's first run on a real Mac is what sets them.
+# OX_DIAR_ARGS (e.g. "--engine pyannote") is passed to ox-diar; unset, it runs the default engine (Nemotron).
 set -u
 bin=${1:?usage: $0 <ox-diar> <models-dir> <long.pcm> <clip.wav> [requests]}
 models=${2:?}; long=${3:?}; clip=${4:?}; n=${5:-20}
@@ -30,7 +31,8 @@ latencies() { # n times: one transcription of the clip, its wall time in seconds
 
 idle=$(latencies)
 out=$(mktemp -d "${TMPDIR:-/tmp}/ox-diar-probe.XXXXXX")
-( while [ ! -e "$out/stop" ]; do "$bin" "$long" "$out/o.json" --models "$models" > /dev/null 2>&1 || break; done ) &
+# shellcheck disable=SC2086 # OX_DIAR_ARGS is a word list on purpose
+( while [ ! -e "$out/stop" ]; do "$bin" "$long" "$out/o.json" --models "$models" ${OX_DIAR_ARGS:-} > /dev/null 2>&1 || break; done ) &
 loop=$!
 sleep 3 # let the first diarization get going
 busy=$(latencies)
