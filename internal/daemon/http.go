@@ -44,6 +44,7 @@ func (d *Daemon) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /status", d.handleStatus)
 	d.produceRoutes(mux)
 	d.meetingRoutes(mux)
+	d.transcriptRoutes(mux)
 }
 
 func writeErr(w http.ResponseWriter, status int, msg string) {

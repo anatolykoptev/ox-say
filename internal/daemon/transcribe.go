@@ -66,37 +66,49 @@ func (d *Daemon) Transcribe(ctx context.Context, in TranscribeInput) (*stt.Resul
 	return stt.Transcribe(ctx, in.AudioPath, opts)
 }
 
-// handleTranscribe is OpenAI-compatible /v1/audio/transcriptions. The
-// multipart body is streamed: the "file" part goes to a temp file under the
-// size cap and is removed when the request ends, success or failure.
-// transcribeFields are the multipart fields the route reads; anything else is
-// ignored unread beyond its first 4 KB.
+// transcribeFields are the multipart fields /v1/audio/transcriptions reads;
+// anything else is ignored unread beyond its first 4 KB.
 var transcribeFields = map[string]bool{"model": true, "language": true, "prompt": true, "response_format": true}
 
-func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
+// receiveUpload reads the multipart body of an upload route: the "file" part is
+// streamed to a temp file under the size cap, the other parts named in allowed
+// are returned as fields. It extends the connection's read deadline (the
+// server's 30 s covers a whole body; a large upload from slow storage needs
+// longer, and the size cap still bounds it).
+//
+// On a refusal it has already answered the request, removed any temp file and
+// returns a non-nil err; the caller just returns. On success the caller must
+// call cleanup (idempotent, never nil) once it is done with path, success or
+// failure.
+func (d *Daemon) receiveUpload(w http.ResponseWriter, r *http.Request, allowed map[string]bool) (path string, fields map[string]string, cleanup func(), err error) {
 	maxUp := d.Cfg.STTMaxUploadMB << 20
-	// The server's 30 s read timeout covers the whole body; a large upload from
-	// slow storage needs longer. The size cap still bounds it.
 	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(d.Cfg.STTTimeout)); err != nil {
-		d.log.Warn("transcriptions: cannot extend the read deadline; large uploads hit the server read timeout", slog.Any("error", err))
+		d.log.Warn("upload: cannot extend the read deadline; large uploads hit the server read timeout", slog.Any("error", err))
+	}
+	refuse := func(status int, msg string) (string, map[string]string, func(), error) {
+		writeErr(w, status, msg)
+		return "", nil, func() {}, errors.New(msg)
 	}
 	if stt.QueueFull(0) {
-		writeErr(w, http.StatusServiceUnavailable, stt.ErrBusy.Error())
-		return
+		return refuse(http.StatusServiceUnavailable, stt.ErrBusy.Error())
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxUp+(1<<20))
 	mr, err := r.MultipartReader()
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "expected a multipart/form-data body")
-		return
+		return refuse(http.StatusBadRequest, "expected a multipart/form-data body")
 	}
 	var tmp string
-	defer func() {
+	cleanup = func() {
 		if tmp != "" {
 			_ = os.Remove(tmp)
+			tmp = ""
 		}
-	}()
-	fields := map[string]string{}
+	}
+	refuseAndClean := func(status int, msg string) (string, map[string]string, func(), error) {
+		cleanup()
+		return refuse(status, msg)
+	}
+	fields = map[string]string{}
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -105,61 +117,71 @@ func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			var mbErr *http.MaxBytesError
 			if errors.As(err, &mbErr) {
-				writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("upload exceeds %d MB", d.Cfg.STTMaxUploadMB))
-			} else {
-				writeErr(w, http.StatusBadRequest, "invalid multipart body")
+				return refuseAndClean(http.StatusRequestEntityTooLarge, fmt.Sprintf("upload exceeds %d MB", d.Cfg.STTMaxUploadMB))
 			}
-			return
+			return refuseAndClean(http.StatusBadRequest, "invalid multipart body")
 		}
 		if part.FormName() == "file" {
 			if tmp != "" {
-				writeErr(w, http.StatusBadRequest, "multiple file parts")
-				return
+				return refuseAndClean(http.StatusBadRequest, "multiple file parts")
 			}
 			f, err := os.CreateTemp("", "ox-say-upload-*")
 			if err != nil {
-				writeErr(w, http.StatusInternalServerError, err.Error())
-				return
+				return refuseAndClean(http.StatusInternalServerError, err.Error())
 			}
 			n, err := io.Copy(f, io.LimitReader(part, maxUp+1))
 			_ = f.Close()
 			tmp = f.Name()
 			var mbErr *http.MaxBytesError
 			if n > maxUp || errors.As(err, &mbErr) {
-				writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("upload exceeds %d MB", d.Cfg.STTMaxUploadMB))
-				return
+				return refuseAndClean(http.StatusRequestEntityTooLarge, fmt.Sprintf("upload exceeds %d MB", d.Cfg.STTMaxUploadMB))
 			}
 			if err != nil {
-				writeErr(w, http.StatusBadRequest, fmt.Sprintf("upload failed: %v", err))
-				return
+				return refuseAndClean(http.StatusBadRequest, fmt.Sprintf("upload failed: %v", err))
 			}
 			continue
 		}
 		v, err := io.ReadAll(io.LimitReader(part, 4<<10+1))
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid multipart body")
-			return
+			return refuseAndClean(http.StatusBadRequest, "invalid multipart body")
 		}
-		if transcribeFields[part.FormName()] {
+		if allowed[part.FormName()] {
 			if len(v) > 4<<10 {
-				writeErr(w, http.StatusBadRequest, fmt.Sprintf("field %q exceeds 4 KB", part.FormName()))
-				return
+				return refuseAndClean(http.StatusBadRequest, fmt.Sprintf("field %q exceeds 4 KB", part.FormName()))
 			}
 			fields[part.FormName()] = string(v)
 		}
 	}
 	if tmp == "" {
-		writeErr(w, http.StatusBadRequest, `"file" is required`)
+		return refuse(http.StatusBadRequest, `"file" is required`)
+	}
+	return tmp, fields, cleanup, nil
+}
+
+// engineFor maps the OpenAI "model" field to an stt engine.
+func engineFor(model string) (string, error) {
+	switch model {
+	case "", "parakeet":
+		return "parakeet", nil
+	case "whisper", "whisper-1":
+		return "whisper", nil
+	}
+	return "", fmt.Errorf("unsupported model %q (want parakeet|whisper)", model)
+}
+
+// handleTranscribe is OpenAI-compatible /v1/audio/transcriptions. The
+// multipart body is streamed: the "file" part goes to a temp file under the
+// size cap and is removed when the request ends, success or failure.
+func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
+	tmp, fields, cleanup, err := d.receiveUpload(w, r, transcribeFields)
+	if err != nil {
 		return
 	}
+	defer cleanup()
 
-	eng := "parakeet"
-	switch fields["model"] {
-	case "", "parakeet":
-	case "whisper", "whisper-1":
-		eng = "whisper"
-	default:
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("unsupported model %q (want parakeet|whisper)", fields["model"]))
+	eng, err := engineFor(fields["model"])
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	format := fields["response_format"]
@@ -183,7 +205,13 @@ func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, transcribeStatus(err), err.Error())
 		return
 	}
+	writeTranscription(w, res, format)
+}
 
+// writeTranscription answers a finished transcription in one of the formats
+// handleTranscribe accepts; the transcripts route serves its stored result
+// through the same writers.
+func writeTranscription(w http.ResponseWriter, res *stt.Result, format string) {
 	switch format {
 	case "text":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

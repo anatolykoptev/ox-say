@@ -22,6 +22,7 @@ import (
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
+	"github.com/anatolykoptev/ox-say/internal/transcripts"
 	"github.com/anatolykoptev/ox-say/internal/voices"
 )
 
@@ -55,6 +56,9 @@ type Daemon struct {
 
 	// Meet takes recorded meetings through transcription and notes.
 	Meet *meeting.Runner
+	// Transcripts keeps file transcripts under $OX_SAY_HOME/transcripts; nil when the
+	// directory could not be opened (the routes then answer 503).
+	Transcripts *transcripts.Store
 	// meetCancel and meetDone stop and await StartMeetings' goroutines.
 	meetCancel context.CancelFunc
 	meetDone   chan struct{}
@@ -287,6 +291,7 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 		}
 	}
 	d.initMeetings()
+	d.initTranscripts()
 	if d.VoxSup != nil {
 		d.voxQoS = &qosGate{
 			pid: func() int { return d.VoxSup.Status().PID },
