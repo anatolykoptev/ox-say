@@ -569,6 +569,11 @@ func TestWhoSaidWhat(t *testing.T) {
 // seconds ("" when equal): the three things prep compares for g15 against the real nemotron output.
 func wsDiarDiff(a, b *Diarization) string {
 	if !reflect.DeepEqual(a.Segments, b.Segments) {
+		for i := 0; i < len(a.Segments) && i < len(b.Segments); i++ {
+			if a.Segments[i] != b.Segments[i] {
+				return fmt.Sprintf("segment %d: %+v vs %+v", i, a.Segments[i], b.Segments[i])
+			}
+		}
 		return fmt.Sprintf("segments differ: %d vs %d", len(a.Segments), len(b.Segments))
 	}
 	if len(a.Speakers) != len(b.Speakers) {
