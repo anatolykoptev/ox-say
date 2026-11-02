@@ -8,14 +8,14 @@ import Testing
     /// The daemon names no flag yet, so the positional form must stay the pyannote engine until Task 8 flips the
     /// default. Mutating the default to `.nemotron` turns this red.
     @Test func thePositionalFormIsThePyannoteEngine() {
-        #expect(Arguments.parse(["in.pcm", "out.json", "--models", "d"], env: [:])
+        #expect(Arguments.parse(["in.pcm", "out.json", "--models", "d"])
             == .diarize(pcm: "in.pcm", out: "out.json", models: "d", engine: .pyannote))
     }
 
     @Test func theEngineFlagSelectsTheEngine() {
-        #expect(Arguments.parse(["in.pcm", "out.json", "--models", "d", "--engine", "nemotron"], env: [:])
+        #expect(Arguments.parse(["in.pcm", "out.json", "--models", "d", "--engine", "nemotron"])
             == .diarize(pcm: "in.pcm", out: "out.json", models: "d", engine: .nemotron))
-        #expect(Arguments.parse(["in.pcm", "out.json", "--models", "d", "--engine", "pyannote"], env: [:])
+        #expect(Arguments.parse(["in.pcm", "out.json", "--models", "d", "--engine", "pyannote"])
             == .diarize(pcm: "in.pcm", out: "out.json", models: "d", engine: .pyannote))
     }
 
@@ -25,7 +25,7 @@ import Testing
             ["a.pcm", "b.json", "--models", "d", "--engine"],
             ["a.pcm", "b.json", "--models", "d", "--warm", "nemotron"],
         ] {
-            guard case .usage = Arguments.parse(argv, env: [:]) else {
+            guard case .usage = Arguments.parse(argv) else {
                 Issue.record("\(argv) is not a usage error")
                 continue
             }
@@ -33,7 +33,7 @@ import Testing
     }
 
     @Test func versionAndEveryOtherShapeIsExact() {
-        #expect(Arguments.parse(["--version"], env: [:]) == .version)
+        #expect(Arguments.parse(["--version"]) == .version)
         for argv in [
             [String](),
             ["a.pcm", "b.json"],
@@ -43,17 +43,10 @@ import Testing
             ["a.pcm", "b.json", "--engine", "nemotron", "--models", "d"],
             ["--version", "extra"],
         ] {
-            guard case .usage = Arguments.parse(argv, env: [:]) else {
+            guard case .usage = Arguments.parse(argv) else {
                 Issue.record("\(argv) is not a usage error")
                 continue
             }
         }
-    }
-
-    /// There is deliberately no env layer for the engine: the flag alone picks it (the Task 4 interface), so the
-    /// parser takes the environment only so this can be pinned.
-    @Test func theEnvironmentDoesNotPickAnEngine() {
-        #expect(Arguments.parse(["in.pcm", "out.json", "--models", "d"], env: ["OX_DIAR_ENGINE": "nemotron"])
-            == .diarize(pcm: "in.pcm", out: "out.json", models: "d", engine: .pyannote))
     }
 }

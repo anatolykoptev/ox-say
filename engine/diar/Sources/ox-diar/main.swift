@@ -15,7 +15,7 @@ func die(_ code: ExitCode, _ message: String) -> Never {
     exit(code.rawValue)
 }
 
-let command = Arguments.parse(Array(CommandLine.arguments.dropFirst()), env: ProcessInfo.processInfo.environment)
+let command = Arguments.parse(Array(CommandLine.arguments.dropFirst()))
 switch command {
 case .version:
     print(Pins.versionLine)
@@ -136,25 +136,39 @@ func diarizeNemotron(pcmPath: String, modelsDir: URL) async -> (Double, [RawSegm
         die(.models, "the Nemotron models in \(nemDir.path) are missing or from another revision (fetch them with scripts/fetch-models.sh)")
     }
 
-    let started = Date()
-    let models: Nemotron3Models
+    // The load AND the stream sit inside one retry attempt (Pinned.withNemotronUnits): an ANE failure at the
+    // first prediction falls back to the CPU, not to exit 1. The phase tag on the error keeps the exit-code
+    // contract — a models problem is exit 3, a stream that broke after it exit 1 — and the timings are the
+    // successful attempt's own.
+    var loadSeconds = 0.0
+    var diarizeSeconds = 0.0
+    let outcome: (value: (p: [Float], frames: Int), fellBack: Bool)
     do {
-        models = try await Pinned.loadNemotron(from: nemDir, env: ProcessInfo.processInfo.environment)
-    } catch {
-        die(.models, "cannot load the Nemotron models from \(nemDir.path): \(error.localizedDescription)")
-    }
-    let loaded = Date()
-
-    let p: [Float]
-    let frames: Int
-    do {
-        (p, frames) = try NemotronEngine.probabilities(source: source, models: models)
+        outcome = try await Pinned.withNemotronUnits(env: ProcessInfo.processInfo.environment) { units in
+            let t = Date()
+            let models = try await Pinned.loadNemotron(from: nemDir, computeUnits: units)
+            loadSeconds = Date().timeIntervalSince(t)
+            return models
+        } stream: { models in
+            let t = Date()
+            let r = try NemotronEngine.probabilities(source: source, models: models)
+            diarizeSeconds = Date().timeIntervalSince(t)
+            return r
+        }
+    } catch let phase as NemotronPhaseError {
+        switch phase {
+        case .load(let error):
+            die(phase.exitCode, "cannot load the Nemotron models from \(nemDir.path): \(error.localizedDescription)")
+        case .stream(let error):
+            die(phase.exitCode, "diarization failed: \(error.localizedDescription)")
+        }
     } catch {
         die(.failure, "diarization failed: \(error.localizedDescription)")
     }
-    let finished = Date()
+    let (p, frames) = outcome.value
 
+    var timing = ["load": loadSeconds, "diarize": diarizeSeconds]
+    if outcome.fellBack { timing["cpu_fallback"] = 1 }   // ~4x slower; timing_s is the only record that outlives stderr
     let segments = Timeline.raw(Timeline.mergeGaps(Timeline.exclusive(probabilities: p, frameCount: frames)))
-    return (duration, segments,
-            ["load": loaded.timeIntervalSince(started), "diarize": finished.timeIntervalSince(loaded)])
+    return (duration, segments, timing)
 }

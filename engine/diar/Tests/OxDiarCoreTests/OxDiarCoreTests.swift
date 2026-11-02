@@ -159,58 +159,110 @@ private func os(_ major: Int, _ minor: Int = 0) -> OperatingSystemVersion {
         #expect(Pinned.effectiveUnits(env: ["OX_DIAR_COMPUTE_UNITS": "CPUONLY"]) == .cpuAndNeuralEngine)
     }
 
-    /// The soft landing: a load that fails under the Neural Engine retries once on the CPU (an ANE-compile
-    /// failure was seen on a macOS update); a working load calls the loader once. The recording loader sees the
-    /// units each attempt passed, so a dropped retry — or a retry that also asks for the ANE — is caught.
-    @Test func aFailedANELoadRetriesOnceOnTheCPU() async throws {
+    /// The soft landing covers the whole run: a load that fails under the Neural Engine retries once on the
+    /// CPU (an ANE-compile failure was seen on a macOS update), and the retry is a fresh attempt — new models,
+    /// new units. The recording loader sees the units each attempt asked for, so a dropped retry — or a retry
+    /// that also asks for the ANE — is caught.
+    @Test func aFailedANELoadRetriesOnceOnTheCPUOnFreshModels() async throws {
         var seen: [MLComputeUnits] = []
-        var calls = 0
+        var streamed: [Int] = []
+        var loads = 0
         struct Boom: Error {}
-        let models = try await Pinned.loadNemotron(from: URL(fileURLWithPath: "/m"), env: [:]) { _, units in
-            seen.append(units)
-            calls += 1
-            if calls == 1 { throw Boom() }
-            return 7
-        }
-        #expect(models == 7)
+        let outcome = try await Pinned.withNemotronUnits(
+            env: [:],
+            load: { units in
+                seen.append(units)
+                loads += 1
+                if loads == 1 { throw Boom() }
+                return loads
+            },
+            stream: { models in streamed.append(models); return models * 10 })
+        #expect(outcome.value == 20)
+        #expect(outcome.fellBack)
         #expect(seen == [.cpuAndNeuralEngine, .cpuOnly])
+        #expect(streamed == [2], "the retry loads fresh models and streams them, not the failed attempt's")
     }
 
-    @Test func aWorkingLoadCallsTheLoaderOnce() async throws {
+    /// A failure mid-stream retries the same way: the prediction phase is where the documented ANE-class
+    /// failure lands (the Intel leg's "Unable to compute the prediction"), so the stream sits inside the
+    /// attempt. A run that only retried the load would let this error reach the caller — a stream moved
+    /// outside the attempt turns this red.
+    @Test func aFailedANEStreamRetriesOnceOnTheCPUOnFreshModels() async throws {
         var seen: [MLComputeUnits] = []
-        let models = try await Pinned.loadNemotron(from: URL(fileURLWithPath: "/m"), env: [:]) { _, units in
-            seen.append(units)
-            return 7
-        }
-        #expect(models == 7)
+        var streamed: [Int] = []
+        var loads = 0
+        struct Boom: Error {}
+        let outcome = try await Pinned.withNemotronUnits(
+            env: [:],
+            load: { units in seen.append(units); loads += 1; return loads },
+            stream: { models in
+                streamed.append(models)
+                if models == 1 { throw Boom() }
+                return models
+            })
+        #expect(outcome.value == 2)
+        #expect(outcome.fellBack)
+        #expect(seen == [.cpuAndNeuralEngine, .cpuOnly])
+        #expect(streamed == [1, 2], "each attempt streams the models it just loaded")
+    }
+
+    @Test func aWorkingRunAttemptsOnce() async throws {
+        var seen: [MLComputeUnits] = []
+        let outcome = try await Pinned.withNemotronUnits(
+            env: [:],
+            load: { units in seen.append(units); return 7 },
+            stream: { models in models * 2 })
+        #expect(outcome.value == 14)
+        #expect(!outcome.fellBack)
         #expect(seen == [.cpuAndNeuralEngine])
     }
 
-    /// A second failure is the one reported (the first error is named in the retry line); a forced-CPU load has
-    /// nowhere lower to fall and does not retry.
+    /// A second failure is the one reported, tagged by the phase that threw it (the first error is named in
+    /// the retry line); a forced-CPU run has nowhere lower to fall and does not retry.
     @Test func theSecondFailureIsTheOneReportedAndAForcedCPUHasNoRetry() async {
         struct First: Error {}
         struct Second: Error {}
-        var calls = 0
-        await #expect(throws: Second.self) {
-            try await Pinned.loadNemotron(
-                from: URL(fileURLWithPath: "/m"), env: [:]
-            ) { (_: URL, _: MLComputeUnits) async throws -> Int in
-                calls += 1
-                let e: Error = calls == 1 ? First() : Second()
-                throw e
-            }
+        var loads = 0
+        do {
+            _ = try await Pinned.withNemotronUnits(
+                env: [:],
+                load: { (_: MLComputeUnits) async throws -> Int in
+                    loads += 1
+                    throw loads == 1 ? First() : Second()
+                },
+                stream: { (_: Int) in 0 })
+            Issue.record("a second load failure did not reach the caller")
+        } catch let phase as NemotronPhaseError {
+            #expect(phase.underlying is Second)
+            #expect(phase.exitCode == .models, "the second failure was the load again")
+        } catch {
+            Issue.record("the phase tag was lost: \(error)")
         }
+        #expect(loads == 2)
+
         var seen: [MLComputeUnits] = []
-        await #expect(throws: First.self) {
-            try await Pinned.loadNemotron(
-                from: URL(fileURLWithPath: "/m"), env: ["OX_DIAR_COMPUTE_UNITS": "cpuOnly"]
-            ) { (_: URL, units: MLComputeUnits) async throws -> Int in
-                seen.append(units)
-                throw First()
-            }
+        do {
+            _ = try await Pinned.withNemotronUnits(
+                env: ["OX_DIAR_COMPUTE_UNITS": "cpuOnly"],
+                load: { units in seen.append(units); throw First() },
+                stream: { (_: Int) in 0 })
+            Issue.record("a forced-CPU failure did not reach the caller")
+        } catch let phase as NemotronPhaseError {
+            #expect(phase.underlying is First)
+        } catch {
+            Issue.record("the phase tag was lost: \(error)")
         }
-        #expect(seen == [.cpuOnly])
+        #expect(seen == [.cpuOnly], "a forced-CPU run does not retry")
+    }
+
+    /// The phase keeps the exit-code contract the daemon reads: a models problem is exit 3, a stream that
+    /// broke after the load is exit 1 (a stream failure answered 3 would read as `models_unusable`, which no
+    /// retry of the daemon's can fix and which hides a fall-back-able failure).
+    @Test func thePhaseKeepsTheExitCodeContract() {
+        struct Boom: Error {}
+        #expect(NemotronPhaseError.load(Boom()).exitCode == .models)
+        #expect(NemotronPhaseError.stream(Boom()).exitCode == .failure)
+        #expect(NemotronPhaseError.stream(Boom()).underlying is Boom)
     }
 }
 

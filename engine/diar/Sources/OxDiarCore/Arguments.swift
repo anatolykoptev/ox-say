@@ -18,9 +18,9 @@ public enum Arguments {
     private static let usageLine =
         "usage: ox-diar <pcm16k-mono-s16le> <out.json> --models DIR [--engine pyannote|nemotron]"
 
-    /// Parses argv (without the executable). `env` is the process environment: there is deliberately no env
-    /// layer for the engine — the flag alone picks it — but the tests pin that rule by passing a map here.
-    public static func parse(_ argv: [String], env: [String: String]) -> Command {
+    /// Parses argv (without the executable). There is deliberately no env layer for the engine: the flag alone
+    /// picks it.
+    public static func parse(_ argv: [String]) -> Command {
         if argv == ["--version"] { return .version }
         guard argv.count == 4 || argv.count == 6, argv[2] == "--models" else {
             return .usage(usageLine)

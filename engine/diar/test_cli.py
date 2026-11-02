@@ -290,15 +290,34 @@ class Contract(unittest.TestCase):
             total = sum(g["e"] - g["s"] for g in d["segments"] if g["spk"] == s["id"])
             self.assertAlmostEqual(total, s["speech_s"], delta=0.01 * len(d["segments"]))
 
+    # The daemon calls ox-diar positionally, with no --engine (diar() always adds it for the engine under test):
+    # that argv shape must reach the pyannote engine and give a real result. Under --engine nemotron this still
+    # runs the pyannote pipeline, the one the daemon gets.
+    def test_the_positional_form_is_the_pyannote_engine(self):
+        if not CLIP:
+            self.skipTest("no --clip")
+        if not os.path.isdir(os.path.join(MODELS, "speaker-diarization")):
+            self.skipTest(f"no pyannote set in {MODELS}")
+        r = run(self.clip_pcm(), self.path("o.json"), "--models", MODELS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIsNotNone(re.search(r"Segmentation timings: windows=(\d+)", r.stderr),
+                             "the pyannote pipeline did not run\n" + r.stderr[-400:])
+        d = self.load("o.json")
+        self.assertGreater(len(d["speakers"]), 0)
+        for s in d["speakers"]:
+            self.assertEqual(len(s["embedding"]), 256, "pyannote clusters carry the 256-float centroid; nemotron emits none")
+
     # The pinned configuration and compute units, read back from the real binary at the call site in main.swift (a
     # unit test can only read Pinned, not what main.swift hands the manager). For pyannote FluidAudio logs how many
     # 10 s windows it ran: with the pinned step ratio 0.1 that is one per second of audio, with the library's
     # default (0.2) one per two seconds (swapping in `OfflineDiarizerConfig()` gave 90 windows on the 180 s clip
-    # instead of 180). The expected count is computed from the clip, not from ox-diar. The compute units are
-    # logged by the loader seam; OX_DIAR_COMPUTE_UNITS=cpuOnly lowers what the nemotron path asks for.
+    # instead of 180). The expected count is computed from the clip, not from ox-diar. The nemotron units line is
+    # logged after the load, read back from the loaded model's own configuration, so a loader handed other units
+    # cannot write a clean line over a bad run; OX_DIAR_COMPUTE_UNITS=cpuOnly lowers what the run asks for.
     # Mutation: Sources/ox-diar/main.swift, `OfflineDiarizerManager(config: Pinned.config())` -> `OfflineDiarizerManager()`
     # -> RED (windows=90); `Pinned.mlConfiguration()` -> `MLModelConfiguration()` -> RED (compute units all);
-    # Sources/OxDiarCore/Config.swift `effectiveUnits(env:)` -> `.all` -> RED (compute units all).
+    # Sources/OxDiarCore/Config.swift `effectiveUnits(env:)` -> `.all` -> RED (compute units all); the `computeUnits:`
+    # argument of `Nemotron3Models.load` -> `.all` -> RED (the model reports the units it actually got).
     def test_the_pinned_configuration_is_what_runs(self):
         if not CLIP:
             self.skipTest("no --clip")
@@ -312,19 +331,29 @@ class Contract(unittest.TestCase):
             self.assertEqual(int(found.group(1)), math.ceil(seconds), "window step is not the pinned 0.1 of the 10 s window")
         want = "cpuOnly" if ENGINE == "nemotron" and os.environ.get("OX_DIAR_COMPUTE_UNITS") == "cpuOnly" else "cpuAndNeuralEngine"
         self.assertIn(f"compute units {want}\n", r.stderr)
+        if want == "cpuAndNeuralEngine":
+            # a run that fell back to the CPU must not read as a clean Neural Engine run
+            self.assertNotIn("Neural Engine run failed", r.stderr)
+            self.assertNotIn("cpu_fallback", self.load("o.json")["timing_s"])
 
     # OX_DIAR_COMPUTE_UNITS can only lower the nemotron units (CI runners have no Neural Engine). The units line
-    # is written before the models load, so the second half of the check holds even where the Neural Engine
-    # cannot compile the model.
+    # is logged after the load, read back from the loaded model, so a failed attempt leaves no line at all. The
+    # second half asks for the Neural Engine on a machine that has it; on the CI VM that request is the failure
+    # OX_DIAR_COMPUTE_UNITS exists to avoid, so it is skipped when the ambient run is the forced-CPU one.
     def test_nemotron_compute_units_follow_the_env(self):
         self.require_engine("nemotron")
         r = diar(self.silence(2), self.path("o.json"), "--models", MODELS,
                  env={"OX_DIAR_COMPUTE_UNITS": "cpuOnly"})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("compute units cpuOnly\n", r.stderr)
+        if os.environ.get("OX_DIAR_COMPUTE_UNITS") == "cpuOnly":
+            self.skipTest("the ambient run is the forced-CPU one; the Neural Engine request is what it avoids")
         r = diar(self.silence(2), self.path("o2.json"), "--models", MODELS,
                  env={"OX_DIAR_COMPUTE_UNITS": ""})
+        self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("compute units cpuAndNeuralEngine\n", r.stderr)
+        self.assertNotIn("Neural Engine run failed", r.stderr)
+        self.assertNotIn("cpu_fallback", self.load("o2.json")["timing_s"])
 
     # The stream's last feed chunk is the short one, and its speech must reach the timeline. The clip with a
     # 7 s cut of its own start appended is 187 s: six full 30 s chunks plus a 7 s tail.

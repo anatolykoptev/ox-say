@@ -133,7 +133,7 @@ models+=("${diar_models[@]}")
 # nvidia/Nemotron-3-Diarization (OpenMDW-1.1), fast128 preset (monolithic/v2), at the revision the spike measured. Stored as
 # <dest>/diar/nemotron-3-diarization/, the flat layout Nemotron3Models.load(config:directory:) reads. Never `main`: the
 # library's own default revision is a moving branch. Bumping means new hashes here and nem_rev in
-# config.NemotronModelsRevision (TestDiarPinsAgreeAcrossLanguages compares the two); Pins.swift joins when the engine lands.
+# config.NemotronModelsRevision and engine/diar's Pins.swift (TestDiarPinsAgreeAcrossLanguages compares the three).
 nem_rev=25a90f97f254428d4b30374b76af9c74fdee8327
 nem_url=https://huggingface.co/FluidInference/nemotron-3-diarization-coreml/resolve/$nem_rev
 nem_bundle=Nemotron3Diarizer_fast128.mlmodelc
