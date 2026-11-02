@@ -50,7 +50,8 @@ final class MainWindowSource {
     private var searchRequest: Task<Void, Never>?
     /// Saves the route on every change (a quit with the window open never calls windowClosed).
     private var routeSaver: AnyCancellable?
-    /// A meeting restored from the last run is checked against the first list that loads, once.
+    /// A meeting restored from the last run is checked against the first non-empty list that loads: an empty
+    /// one says nothing yet (the daemon may still be coming up), so the check stays armed for the next list.
     private var restoredMeetingUnchecked = false
 
     init(host: MainWindowHost) {
@@ -197,7 +198,7 @@ final class MainWindowSource {
                 if let list {
                     model.data.meetings = list
                     if restoredMeetingUnchecked {
-                        restoredMeetingUnchecked = false
+                        restoredMeetingUnchecked = list.isEmpty
                         model.selectedMeeting = MainRoute(section: model.section, meetingID: model.selectedMeeting)
                             .pruned(knownMeetingIDs: list.map(\.id)).meetingID
                     }

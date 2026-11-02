@@ -127,12 +127,35 @@ final class MainWindowOpenWiringTests: XCTestCase {
 
     /// The menu keys reach the window through one route.
     /// Mutation: MainMenuBar.bind, the `.showSection` case aimed at nothing -> RED.
+    /// Mutation: AppDelegate.showSectionFromMenu, `mainWindow.show(` back to `mainWindow.open(route:` -> RED.
     func testSectionKeysOpenTheWindowOnThatSection() throws {
         let bar = try source("OxSayDictation/MainMenu.swift")
         XCTAssertTrue(bar.contains("case .showSection(let section):"))
         XCTAssertTrue(bar.contains("item.action = #selector(AppDelegate.showSectionFromMenu(_:))"))
         let app = try source("OxSayDictation/AppDelegate.swift")
         let show = try body(app, of: "@objc func showSectionFromMenu(_ sender: NSMenuItem) {")
-        XCTAssertTrue(show.contains("mainWindow.open(route: MainRoute(section: section, meetingID: nil))"))
+        XCTAssertTrue(show.contains("mainWindow.show(MainRoute(section: section, meetingID: nil))"))
+    }
+
+    /// A section key on a window that is already in front changes only the section: the key check comes before
+    /// the `open` call and the key branch applies the route and returns, so a key window never reaches `open`.
+    /// Mutation: MainWindow.show, drop the `isKeyWindow` check so it always applies and returns -> RED.
+    func testASectionKeyOnTheKeyWindowOnlyChangesTheSection() throws {
+        let show = try body(try source("OxSayDictation/MainWindow.swift"), of: "func show(_ route: MainRoute) {")
+        let key = try XCTUnwrap(show.range(of: "window?.isKeyWindow == true"))
+        let apply = try XCTUnwrap(show.range(of: "source.apply(route)"))
+        let open = try XCTUnwrap(show.range(of: "open(route: route)"))
+        XCTAssertLessThan(key.lowerBound, open.lowerBound, "the key check guards the open")
+        XCTAssertLessThan(apply.lowerBound, open.lowerBound, "the key branch applies, it does not open")
+        XCTAssertTrue(show[apply.upperBound..<open.lowerBound].contains("return"),
+                      "the key branch returns, so a key window never reaches open")
+    }
+
+    /// A restored meeting survives an empty first list: the check stays armed until a list with rows has judged it.
+    /// Mutation: MainWindowSource.refresh, `restoredMeetingUnchecked = list.isEmpty` -> `restoredMeetingUnchecked = false` -> RED.
+    func testAnEmptyListLeavesTheRestoredMeetingUnchecked() throws {
+        let refresh = try body(try source("OxSayDictation/MainWindowSource.swift"), of: "func refresh() {")
+        XCTAssertTrue(refresh.contains("restoredMeetingUnchecked = list.isEmpty"))
+        XCTAssertTrue(refresh.contains(".pruned(knownMeetingIDs: list.map(\\.id)).meetingID"))
     }
 }

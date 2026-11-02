@@ -52,6 +52,17 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         source.windowOpened()
     }
 
+    /// A section key pressed while the window is already in front is only a section change: the policy, the
+    /// menu and the order are already what `open` would set, and running it again would flash the window and
+    /// re-read the data. Any other state takes the full open.
+    func show(_ route: MainRoute) {
+        if window?.isKeyWindow == true, let source {
+            source.apply(route)
+            return
+        }
+        open(route: route)
+    }
+
     /// macOS 14 made `activate(ignoringOtherApps:)` a request that may be declined and added `activate()`.
     private static func activateApp() {
         if #available(macOS 14, *) {

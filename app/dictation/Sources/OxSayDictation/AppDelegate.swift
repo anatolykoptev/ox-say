@@ -798,7 +798,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// A section key of the menu bar (⌘, and ⌘1...): the window opens on that section.
     @objc func showSectionFromMenu(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let section = MainSection(rawValue: raw) else { return }
-        mainWindow.open(route: MainRoute(section: section, meetingID: nil))
+        mainWindow.show(MainRoute(section: section, meetingID: nil))
     }
 
     /// "Open OxSay…": the one main window, opened or brought forward.

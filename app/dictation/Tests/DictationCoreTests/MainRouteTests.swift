@@ -59,6 +59,14 @@ final class MainRouteTests: XCTestCase {
         XCTAssertNil(WindowRestoration.load(d).meetingID)
     }
 
+    /// An empty list says nothing about the id — the daemon may still be coming up — so the id stays for a
+    /// later list to judge.
+    /// Mutation: MainRoute.pruned, remove the empty-list return -> RED.
+    func testAnEmptyListJudgesNothing() {
+        let route = MainRoute(section: .meetings, meetingID: "m1")
+        XCTAssertEqual(route.pruned(knownMeetingIDs: []), route)
+    }
+
     /// A restored meeting that is not in the list any more is dropped once the list is known.
     func testAStaleMeetingIsDroppedAgainstTheKnownList() {
         let route = MainRoute(section: .meetings, meetingID: "gone")

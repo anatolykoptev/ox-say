@@ -22,9 +22,10 @@ public struct MainRoute: Equatable {
     }
 
     /// The route against the meetings that exist: an id that is not among them is dropped, so the list shows
-    /// instead of an empty detail.
+    /// instead of an empty detail. An empty list says nothing about the id — the daemon may still be coming
+    /// up — so it is left for a list with rows to judge.
     public func pruned(knownMeetingIDs: [String]) -> MainRoute {
-        guard let id = meetingID, !knownMeetingIDs.contains(id) else { return self }
+        guard let id = meetingID, !knownMeetingIDs.isEmpty, !knownMeetingIDs.contains(id) else { return self }
         return MainRoute(section: section, meetingID: nil)
     }
 }
