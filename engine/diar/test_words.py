@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preparation for the word-level "who said what" gate (Nemotron Task 6).
+"""Preparation for the word-level "who said what" gate.
 
 `prep` builds, per meeting, under --out (scratch, never the repo):
   <id>/them.pcm            raw 16 kHz mono s16le of the mix, the channel ox-diar and the runner both read
@@ -15,14 +15,20 @@
   <id>/diar/nemotron.json ox-diar --engine nemotron
   <id>/diar/g00..g20.json the saved fast128 probabilities through oxprobe `segs` at merge gaps
                           0/50/100/150/200 frames (the Timeline.mergeGaps code, by source)
-  <id>/diar/oracle.json   the manual RTTM turned exclusive (per-atom majority of the manual words)
-                          with a one-hot embedding per speaker
+  <id>/diar/oracle.json   the exclusive manual timeline: the manual RTTM turned exclusive (per-atom
+                          majority of the manual words), with `embedding: []` like Nemotron, so
+                          Decide joins a folded speaker by time exactly as it does for Nemotron
+                          (the file keeps the name "oracle"; it is not a ceiling)
 and asserts g15 equals ox-diar --engine nemotron to the millisecond on every meeting. The gate itself
 is internal/meeting/whosaid_test.go under the `whosaid` build tag, pointed at this directory by
-OX_WHOSAID_DIR.
+OX_WHOSAID_DIR (for example OX_WHOSAID_DIR=/path/to/whosaid).
+
+Existing files are reused so an interrupted run resumes; `--force` regenerates the diarization
+variants instead (the recognizer words and the reference words are kept).
 
 Needs no Python packages. The AMI manual annotations zip must be the 1.6.2 archive whose sha256 is
-pinned below. Audio never leaves --out; the reports it feeds hold no transcript text.
+pinned below; the Parakeet and VAD models must match the SHA-256 pinned in scripts/fetch-models.sh.
+Audio never leaves --out; the reports it feeds hold no transcript text.
 """
 import argparse
 import array
@@ -51,7 +57,7 @@ SILENT_RMS = 75                     # audio.go silentRMS
 PIECE_ATTEMPTS = 4                  # runner.go pieceAttempts
 GAPS = {"g00": 0, "g05": 50, "g10": 100, "g15": 150, "g20": 200}
 ANN_SHA256 = "b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d"
-EMB_DIM = 256                       # one-hot oracle embeddings, the VBx centroid width
+FETCH_MODELS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "fetch-models.sh")
 
 
 def fail(msg):
@@ -64,6 +70,22 @@ def shasum(path):
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def pinned_sha(name):
+    """The SHA-256 scripts/fetch-models.sh pins for a model file name (its `name sha256 url` entries)."""
+    with open(FETCH_MODELS) as f:
+        for line in f:
+            m = re.match(r'\s*"([^\s"]+) ([0-9a-f]{64}) ', line)
+            if m and m.group(1) == name:
+                return m.group(2)
+    fail(f"{name}: no pinned sha256 in {FETCH_MODELS}")
+
+
+def verify_model(path):
+    want = pinned_sha(os.path.basename(path))
+    if shasum(path) != want:
+        fail(f"{path}: sha256 mismatch against scripts/fetch-models.sh (want {want})")
 
 
 # ---------------------------------------------------------------- audio, a port of internal/meeting/audio.go
@@ -162,21 +184,26 @@ class STTServer:
         self.log = open(log, "wb")
         argv = ["nice", "-n", "15", binary, "--serve", "--port", str(self.port), "-m", model,
                 "--vad", vad, "--redecode-max-s", "15"]
+        self.logpath = log
         self.proc = subprocess.Popen(argv, stdout=self.log, stderr=self.log, stdin=subprocess.DEVNULL)
         self.pid = self.proc.pid
+        self.ready_s = 0.0
+
+    def wait_healthy(self, limit=600):
+        """Poll /health once a second. The caller holds the server under try/finally, so an
+        interrupt or a fail() here still reaches stop()."""
         t0 = time.time()
-        while time.time() - t0 < 600:
+        while time.time() - t0 < limit:
             if self.proc.poll() is not None:
-                fail(f"ox-stt exited early (code {self.proc.returncode}); see {log}")
+                fail(f"ox-stt exited early (code {self.proc.returncode}); see {self.logpath}")
             try:
                 if self.call("GET", "/health")[0] == 200:
-                    break
+                    self.ready_s = time.time() - t0
+                    return
             except OSError:
-                time.sleep(1)
-        else:
-            self.stop()
-            fail("ox-stt did not become healthy in 600 s")
-        self.ready_s = time.time() - t0
+                pass
+            time.sleep(1)
+        fail(f"ox-stt did not become healthy in {limit} s")
 
     def call(self, method, path, body=None, ctype=None, timeout=600):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
@@ -252,7 +279,7 @@ def ref_words(zf, meeting, agents):
     return words
 
 
-# ---------------------------------------------------------------- oracle: the manual RTTM, exclusive
+# ---------------------------------------------------------------- the exclusive manual timeline
 
 def read_rttm(path):
     segs = []
@@ -264,12 +291,14 @@ def read_rttm(path):
     return sorted(segs, key=lambda x: (x["s"], x["e"]))
 
 
-def oracle_diarization(rttm, words):
-    """An exclusive timeline from the overlapping manual RTTM. Every atomic interval between
+def manual_exclusive_diarization(rttm, words):
+    """The exclusive manual timeline, from the overlapping manual RTTM. Every atomic interval between
     consecutive segment bounds is labelled with the speaker whose manual words cover the atom most
     (an atom no word covers goes to its earliest-starting covering segment); adjacent atoms of one
-    speaker merge. This is the ceiling of an exclusive assignment: overlapped crosstalk keeps the
-    dominant speaker only. Embeddings are one-hot, so Decide's cosine join can only see 'different'."""
+    speaker merge. Overlapped crosstalk keeps the dominant speaker only, so this is a reference
+    timeline, not a ceiling. It carries no embeddings (`embedding: []`, as Nemotron's output): Decide
+    joins a folded speaker by time, the same rule as for Nemotron. One-hot embeddings would make every
+    cosine join 0 and land a folded speaker on an arbitrary voice."""
     bounds = sorted({x["s"] for x in rttm} | {x["e"] for x in rttm})
     # coverage of each atom by speaker, from the manual words (the ground truth of who is heard)
     bi = 0
@@ -306,11 +335,10 @@ def oracle_diarization(rttm, words):
             atoms[-1]["e"] = b
         else:
             atoms.append({"s": a, "e": b, "spk": spk})
-    return diarization_json(atoms, words[-1]["e"] if words else 0.0,
-                            embeddings=True)
+    return diarization_json(atoms, words[-1]["e"] if words else 0.0)
 
 
-def diarization_json(segs, duration_s, embeddings):
+def diarization_json(segs, duration_s):
     """engine/diar Output.Diarization.make: ms-rounded, speakers 0..n-1 by descending speech."""
     def ms(x):
         return round(x * 1000) / 1000
@@ -325,13 +353,10 @@ def diarization_json(segs, duration_s, embeddings):
     idx = {k: n for n, k in enumerate(order)}
     speakers = []
     for k in order:
-        emb = [0.0] * EMB_DIM
-        if embeddings:
-            emb[idx[k]] = 1.0
-        speakers.append({"id": idx[k], "speech_s": ms(speech[k]), "embedding": emb if embeddings else []})
+        speakers.append({"id": idx[k], "speech_s": ms(speech[k]), "embedding": []})
     return {"version": 1, "duration_s": ms(duration_s), "speakers": speakers,
             "segments": [{"s": s["s"], "e": s["e"], "spk": idx[s["spk"]]} for s in kept],
-            "timing_s": {"source": "oracle"} if embeddings else {}}
+            "timing_s": {"source": "manual-exclusive"}}
 
 
 def gxx_to_diarization(gxx):
@@ -405,15 +430,15 @@ def prep_meeting(mid, wav, zf, agents, args, srv, log):
 
     # (c) the diarization variants
     dpath = lambda v: os.path.join(out, "diar", v + ".json")  # noqa: E731
-    if not os.path.exists(dpath("old")):
+    if args.force or not os.path.exists(dpath("old")):
         run([args.ox_diar, pcm_path, dpath("old"),
              "--models", args.pyannote_models, "--engine", "pyannote"], log=log)
-    if not os.path.exists(dpath("nemotron")):
+    if args.force or not os.path.exists(dpath("nemotron")):
         run([args.ox_diar, pcm_path, dpath("nemotron"),
              "--models", args.nemotron_models, "--engine", "nemotron"], log=log)
     probs = os.path.join(args.probs_dir, f"{mid}.f32")
     for name, gap in GAPS.items():
-        if os.path.exists(dpath(name)):
+        if os.path.exists(dpath(name)) and not args.force:
             continue
         if not os.path.exists(probs):
             fail(f"no saved probabilities at {probs}")
@@ -423,10 +448,10 @@ def prep_meeting(mid, wav, zf, agents, args, srv, log):
             d = gxx_to_diarization(json.load(f))
         with open(dpath(name), "w") as f:
             json.dump(d, f)
-    if not os.path.exists(dpath("oracle")):
+    if args.force or not os.path.exists(dpath("oracle")):
         rttm = read_rttm(os.path.join(args.refs_dir, f"{mid}.ref.rttm"))
         with open(dpath("oracle"), "w") as f:
-            json.dump(oracle_diarization(rttm, ref), f)
+            json.dump(manual_exclusive_diarization(rttm, ref), f)
 
     # the gate's precondition: g15 is the product, so the sweep measures the product's own rule
     with open(os.path.join(out, "diar", "g15.json")) as f:
@@ -452,6 +477,8 @@ def cmd_prep(args):
         fail(f"{args.ann}: sha256 mismatch (want the AMI manual annotations 1.6.2 archive)")
     if not (os.path.isfile(args.stt_model) and os.path.isfile(args.stt_vad)):
         fail("the Parakeet/VAD model is missing")
+    verify_model(args.stt_model)
+    verify_model(args.stt_vad)
 
     meetings = dict(m.split("=", 1) for m in args.meeting)
     os.makedirs(args.out, exist_ok=True)
@@ -461,10 +488,11 @@ def cmd_prep(args):
 
     srv = None
     missing = [m for m, w in meetings.items() if not os.path.exists(os.path.join(args.out, m, "hyp.json"))]
-    if missing:
-        srv = STTServer(args.ox_stt, args.stt_model, args.stt_vad, os.path.join(args.out, "ox-stt.log"))
-        print(f"ox-stt pid {srv.pid} port {srv.port}, healthy after {srv.ready_s:.0f} s", flush=True)
     try:
+        if missing:  # started inside the try: an interrupt or a fail() from here on still reaches stop()
+            srv = STTServer(args.ox_stt, args.stt_model, args.stt_vad, os.path.join(args.out, "ox-stt.log"))
+            srv.wait_healthy()
+            print(f"ox-stt pid {srv.pid} port {srv.port}, healthy after {srv.ready_s:.0f} s", flush=True)
         for mid, wav in meetings.items():
             if not os.path.isfile(wav):
                 fail(f"no mix at {wav}")
@@ -484,6 +512,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("prep", help="build hyp/ref/diar per meeting under --out")
     p.add_argument("--out", required=True)
+    p.add_argument("--force", action="store_true", help="regenerate the diarization variants instead of reusing existing files")
     p.add_argument("--ox-stt", required=True)
     p.add_argument("--ox-diar", required=True)
     p.add_argument("--oxprobe", required=True)
