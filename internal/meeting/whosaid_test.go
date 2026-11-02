@@ -36,7 +36,7 @@ package meeting
 //
 // Run (the build tag is the instruction to run it):
 //
-//	OX_WHOSAID_DIR=/path/to/whosaid GOWORK=off go test -tags whosaid ./internal/meeting -run 'TestWhoSaidWhat$' -v
+//	OX_WHOSAID_DIR=/path/to/whosaid GOWORK=off go test -count=1 -tags whosaid ./internal/meeting -run 'TestWhoSaidWhat$' -v
 
 import (
 	"encoding/json"
@@ -59,6 +59,13 @@ const (
 	wsOverlap    = 0.5           // a reference word another speaker's word covers by more than this share of its
 	// duration is "overlapped": excluded from the gated accuracy, scored apart
 )
+
+// wsExpected pins each meeting's size: a truncated hyp.json or ref.json must not pass.
+// Matched must stay within 90 % of the expected aligned pairs.
+var wsExpected = map[string]struct{ refWords, matched int }{
+	"mix_EN2002a": {7516, 5380}, "mix_ES2004a": {2614, 2285}, "mix_ES2004b": {6763, 6055},
+	"mix_ES2004c": {6968, 6155}, "mix_ES2004d": {6134, 5218}, "mix_IS1009b": {6091, 5404},
+}
 
 // wsMeetings is the exact prepared set; a data dir with fewer (or more) is a broken input, not a smaller gate.
 var wsMeetings = []string{"mix_EN2002a", "mix_ES2004a", "mix_ES2004b", "mix_ES2004c", "mix_ES2004d", "mix_IS1009b"}
@@ -383,6 +390,10 @@ func TestWhoSaidWhat(t *testing.T) {
 		// The build tag already says "run the gate": a skip here would pass on an unset variable.
 		t.Fatal("OX_WHOSAID_DIR unset: point it at the prepared data (engine/diar/test_words.py prep)")
 	}
+	// A failed run must leave no results behind, stale ones included.
+	if err := os.RemoveAll(filepath.Join(dir, "results")); err != nil {
+		t.Fatal(err)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read %s: %v", dir, err)
@@ -443,6 +454,18 @@ func TestWhoSaidWhat(t *testing.T) {
 			t.Errorf("%s: old and nemotron have identical segments: the comparison is vacuous", mid)
 		}
 	}
+	for _, mid := range meetings {
+		want := wsExpected[mid]
+		for _, v := range wsVariants {
+			m := results[mid][v]
+			if m.RefWords != want.refWords {
+				t.Errorf("%s/%s: %d reference words, want %d", mid, v, m.RefWords, want.refWords)
+			}
+			if m.Matched*10 < want.matched*9 {
+				t.Errorf("%s/%s: %d matched pairs, under 90%% of the expected %d", mid, v, m.Matched, want.matched)
+			}
+		}
+	}
 	// Every variant must attribute a clear majority of words on every meeting: a mapping or voice
 	// assignment that is broken scores near zero or at the biggest speaker's share, never above this.
 	for _, mid := range meetings {
@@ -470,44 +493,6 @@ func TestWhoSaidWhat(t *testing.T) {
 	for _, m := range heldOut {
 		if m != wsHeavyGap {
 			withoutHeavy = append(withoutHeavy, m)
-		}
-	}
-
-	// Nothing is published from a run whose inputs or floor already failed.
-	if !t.Failed() {
-		out := filepath.Join(dir, "results")
-		if err := os.MkdirAll(out, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		for _, mid := range meetings {
-			row := map[string]any{"meeting": mid, "held_out": mid != wsDevMeeting}
-			for _, v := range wsVariants {
-				row[v] = results[mid][v]
-			}
-			raw, _ := json.MarshalIndent(row, "", "  ")
-			if err := os.WriteFile(filepath.Join(out, mid+".json"), raw, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		means := func(ms []string, pick func(wsMetrics) float64) map[string]float64 {
-			o := map[string]float64{}
-			for _, v := range wsVariants {
-				o[v] = mean(v, ms, pick)
-			}
-			return o
-		}
-		summary := map[string]any{
-			"meetings": meetings, "dev": wsDevMeeting, "held_out": heldOut, "variants": wsVariants,
-			"without_meeting":                   wsHeavyGap,
-			"mean_held_out":                     means(heldOut, acc),
-			"mean_dev":                          means([]string{wsDevMeeting}, acc),
-			"mean_held_out_without_heavy":       means(withoutHeavy, acc),
-			"mean_held_out_exact":               means(heldOut, exact),
-			"mean_held_out_exact_without_heavy": means(withoutHeavy, exact),
-		}
-		raw, _ := json.MarshalIndent(summary, "", "  ")
-		if err := os.WriteFile(filepath.Join(out, "summary.json"), raw, 0o644); err != nil {
-			t.Fatal(err)
 		}
 	}
 
@@ -563,6 +548,44 @@ func TestWhoSaidWhat(t *testing.T) {
 	}
 	t.Logf("merge-gap verdict: %s (dev %s %+.2f points over g15; held-out mean %+.2f points)",
 		verdict, bestGap, devDelta*100, heldDelta*100)
+
+	// Results are written last, and only when every check above passed.
+	if !t.Failed() {
+		out := filepath.Join(dir, "results")
+		if err := os.MkdirAll(out, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, mid := range meetings {
+			row := map[string]any{"meeting": mid, "held_out": mid != wsDevMeeting}
+			for _, v := range wsVariants {
+				row[v] = results[mid][v]
+			}
+			raw, _ := json.MarshalIndent(row, "", "  ")
+			if err := os.WriteFile(filepath.Join(out, mid+".json"), raw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		means := func(ms []string, pick func(wsMetrics) float64) map[string]float64 {
+			o := map[string]float64{}
+			for _, v := range wsVariants {
+				o[v] = mean(v, ms, pick)
+			}
+			return o
+		}
+		summary := map[string]any{
+			"meetings": meetings, "dev": wsDevMeeting, "held_out": heldOut, "variants": wsVariants,
+			"without_meeting":                   wsHeavyGap,
+			"mean_held_out":                     means(heldOut, acc),
+			"mean_dev":                          means([]string{wsDevMeeting}, acc),
+			"mean_held_out_without_heavy":       means(withoutHeavy, acc),
+			"mean_held_out_exact":               means(heldOut, exact),
+			"mean_held_out_exact_without_heavy": means(withoutHeavy, exact),
+		}
+		raw, _ := json.MarshalIndent(summary, "", "  ")
+		if err := os.WriteFile(filepath.Join(out, "summary.json"), raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // wsDiarDiff names the first way a differs from b in segments, speaker ids or per-speaker speech
@@ -647,8 +670,8 @@ func TestWhoSaidWhatScorerManualTimeline(t *testing.T) {
 }
 
 func TestWhoSaidWhatScorerExactAccuracy(t *testing.T) {
-	// Two matched pairs are substitutions of unrelated words (x for c, y for e) and both carry the
-	// wrong voice: accuracy counts them (4/6), exact_accuracy does not (4/4).
+	// Two matched pairs are substitutions of unrelated words (x for c, y for e): x carries the right
+	// voice, y the wrong one. accuracy counts both (5/6); exact_accuracy neither (4/4).
 	ref := []wsRefWord{
 		refW("a", 0, 1, "A"), refW("b", 1, 2, "A"), refW("c", 2, 3, "B"),
 		refW("d", 3, 4, "B"), refW("e", 4, 5, "A"), refW("f", 5, 6, "B"),
@@ -657,13 +680,13 @@ func TestWhoSaidWhatScorerExactAccuracy(t *testing.T) {
 		{W: "a", S: 0, E: 1}, {W: "b", S: 1, E: 2}, {W: "x", S: 2, E: 3},
 		{W: "d", S: 3, E: 4}, {W: "y", S: 4, E: 5}, {W: "f", S: 5, E: 6},
 	}
-	voices := []string{"them:1", "them:1", "them:1", "them:2", "them:2", "them:2"}
+	voices := []string{"them:1", "them:1", "them:2", "them:2", "them:2", "them:2"}
 	m := wsScore(hyp, voices, ref)
 	if m.Matched != 6 || m.MatchExactNon != 4 {
 		t.Fatalf("exact fixture: matched %d (want 6), exact pairs %d (want 4)", m.Matched, m.MatchExactNon)
 	}
-	if got := m.Accuracy; got < 4.0/6-1e-9 || got > 4.0/6+1e-9 {
-		t.Fatalf("exact fixture: accuracy %.4f, want 4/6", got)
+	if got := m.Accuracy; got < 5.0/6-1e-9 || got > 5.0/6+1e-9 {
+		t.Fatalf("exact fixture: accuracy %.4f, want 5/6", got)
 	}
 	if m.ExactAcc != 1.0 {
 		t.Fatalf("exact fixture: exact_accuracy %.4f, want 1.0 (the two substitutions are not counted)", m.ExactAcc)
