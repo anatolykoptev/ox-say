@@ -134,6 +134,73 @@ func TestMinorClustersJoinTheNearestVoice(t *testing.T) {
 	}
 }
 
+// The join when the engine emits no embeddings (Nemotron writes `embedding:
+// []`): a minor cluster goes to the substantial cluster nearest it in time —
+// the smallest sum, over the minor's segments, of each segment's gap to that
+// cluster's nearest segment — not to group 0, where cosine(∅, ·) = 0 used to
+// land every one of them.
+// Mutations in internal/meeting/diarize.go:
+//   - the join loop always using cosine -> RED (every minor lands on group 0)
+//   - nearestInTime's `sum < bestSum` to `<=` -> RED (the tie case)
+//   - the sum to a minimum over the segments -> RED ("the sum, not the nearest")
+//   - the all-embeddings check to the minor's alone -> RED ("partial")
+func TestMinorClustersJoinByTimeWithoutEmbeddings(t *testing.T) {
+	noEmb := func(d *Diarization) *Diarization {
+		for i := range d.Speakers {
+			d.Speakers[i].Embedding = nil
+		}
+		return d
+	}
+	group := func(d *Diarization, minor int) int { return Decide(d).Group[minor] }
+
+	// Three substantial clusters, no embeddings: the minor sits next to
+	// cluster 2's segments, so it joins that voice.
+	d := noEmb(diar(300, 200, 150, 20))
+	d.Segments = []DiarSegment{seg(0, 10, 0), seg(20, 30, 1), seg(40, 50, 2), seg(51, 53, 3)}
+	if g := group(d, 3); g != 2 {
+		t.Errorf("a minor cluster beside cluster 2 joined group %d, want 2", g)
+	}
+
+	// The sum over the minor's segments, not the single nearest pair or a
+	// per-segment vote: cluster 0 touches the minor's long first segment and
+	// sits 40 s from its second, cluster 1 is a few seconds from both — either
+	// other rule picks cluster 0, the sum picks cluster 1.
+	d = noEmb(diar(300, 200, 5))
+	d.Segments = []DiarSegment{seg(0, 10, 0), seg(10, 20, 2), seg(23, 30, 1), seg(40, 45, 1), seg(50, 52, 2)}
+	if g := group(d, 2); g != 1 {
+		t.Errorf("the summed gap should beat the nearest segment and the vote: joined group %d, want 1", g)
+	}
+
+	// Partial embeddings — one substantial cluster has none: cosine cannot
+	// compare it, so time decides. The minor's embedding is cluster 0's own,
+	// and it still joins cluster 1, whose segment it sits beside.
+	d = diar(300, 200, 5)
+	d.Speakers[1].Embedding = nil
+	d.Speakers[2].Embedding = d.Speakers[0].Embedding
+	d.Segments = []DiarSegment{seg(0, 10, 0), seg(50, 60, 1), seg(61, 63, 2)}
+	if g := group(d, 2); g != 1 {
+		t.Errorf("with a substantial cluster embeddingless the join is by time: got group %d, want 1", g)
+	}
+
+	// A tie goes to the earlier entry of big; a substantial cluster with no
+	// segments can never win; a minor cluster with no segments takes big[0].
+	d = noEmb(diar(300, 200, 5))
+	d.Segments = []DiarSegment{seg(0, 5, 0), seg(10, 20, 2), seg(25, 30, 1)}
+	if g := group(d, 2); g != 0 {
+		t.Errorf("equal gaps should join the earlier substantial cluster: got group %d, want 0", g)
+	}
+	d = noEmb(diar(300, 200, 5))
+	d.Segments = []DiarSegment{seg(50, 60, 1), seg(61, 63, 2)}
+	if g := group(d, 2); g != 1 {
+		t.Errorf("a substantial cluster with no segments cannot win: got group %d, want 1", g)
+	}
+	d = noEmb(diar(300, 200, 5))
+	d.Segments = []DiarSegment{seg(0, 10, 0), seg(20, 30, 1)}
+	if g := group(d, 2); g != 0 {
+		t.Errorf("a minor cluster with no segments joins the first substantial one: got group %d, want 0", g)
+	}
+}
+
 func seg(s, e float64, spk int) DiarSegment { return DiarSegment{S: s, E: e, Spk: spk} }
 
 // Word to voice: the largest overlap, the nearest segment within a second, the

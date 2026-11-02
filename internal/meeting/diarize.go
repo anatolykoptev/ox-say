@@ -135,7 +135,8 @@ type Plan struct {
 	Mode string
 	// Group maps a cluster id to its voice group (0..Voices-1): substantial
 	// clusters are their own group, every other cluster joins the substantial one
-	// whose centroid is nearest (cosine). Empty when Mode is "".
+	// nearest it — by centroid (cosine) when it and every substantial cluster
+	// carry an embedding, by time when any does not. Empty when Mode is "".
 	Group map[int]int
 	// Voices is the number of substantial clusters.
 	Voices int
@@ -166,6 +167,16 @@ func Decide(d *Diarization) Plan {
 	for _, s := range d.Speakers {
 		byID[s.ID] = s
 	}
+	segsBySpk := map[int][]DiarSegment{}
+	for _, s := range d.Segments {
+		segsBySpk[s.Spk] = append(segsBySpk[s.Spk], s)
+	}
+	bigSegs := make([][]DiarSegment, len(big))
+	bigEmb := true
+	for g, id := range big {
+		bigSegs[g] = segsBySpk[id]
+		bigEmb = bigEmb && len(byID[id].Embedding) > 0
+	}
 	p.Group = map[int]int{}
 	for g, id := range big {
 		p.Group[id] = g
@@ -174,13 +185,17 @@ func Decide(d *Diarization) Plan {
 		if _, ok := p.Group[s.ID]; ok {
 			continue
 		}
-		best, bestSim := 0, math.Inf(-1)
-		for g, id := range big {
-			if sim := cosine(s.Embedding, byID[id].Embedding); sim > bestSim {
-				best, bestSim = g, sim
+		if len(s.Embedding) > 0 && bigEmb {
+			best, bestSim := 0, math.Inf(-1)
+			for g, id := range big {
+				if sim := cosine(s.Embedding, byID[id].Embedding); sim > bestSim {
+					best, bestSim = g, sim
+				}
 			}
+			p.Group[s.ID] = best
+		} else {
+			p.Group[s.ID] = nearestInTime(segsBySpk[s.ID], bigSegs)
 		}
-		p.Group[s.ID] = best
 	}
 	return p
 }
@@ -199,6 +214,47 @@ func cosine(a, b []float32) float64 {
 		return 0
 	}
 	return dot / math.Sqrt(na*nb)
+}
+
+// nearestInTime joins a minor cluster to the substantial one nearest it in
+// time, the fallback when an engine emits no embeddings (Nemotron writes
+// `embedding: []`): the smallest sum, over the minor's segments, of the gap
+// from a segment to that cluster's nearest one wins, a tie going to the
+// earlier entry of big. A substantial cluster with no segments can never win
+// (its sum is infinite); a minor one with no segments joins big[0].
+func nearestInTime(minor []DiarSegment, big [][]DiarSegment) int {
+	if len(minor) == 0 {
+		return 0
+	}
+	best, bestSum := 0, math.Inf(1)
+	for g, segs := range big {
+		var sum float64
+		for _, m := range minor {
+			sum += segGap(m, segs)
+		}
+		if sum < bestSum {
+			best, bestSum = g, sum
+		}
+	}
+	return best
+}
+
+// segGap is the gap between m and the nearest segment of segs — 0 when they
+// touch or overlap. segs are in order, so once one starts past m the rest are
+// only farther.
+func segGap(m DiarSegment, segs []DiarSegment) float64 {
+	gap := math.Inf(1)
+	for _, s := range segs {
+		g := math.Max(s.S-m.E, m.S-s.E)
+		if g <= 0 {
+			return 0
+		}
+		gap = math.Min(gap, g)
+		if s.S > m.E {
+			break
+		}
+	}
+	return gap
 }
 
 // VoiceID is the Turn.Voice of voice number n (1-based, by first appearance).
