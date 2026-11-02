@@ -227,8 +227,27 @@ final class MainWindowOpenWiringTests: XCTestCase {
     /// `guard let shown = model.data.details[id]?.info` -> RED.
     func testARestoredMeetingAsksTheReadDecisionAndIsLoaded() throws {
         let refresh = try body(try source("OxSayDictation/MainWindowSource.swift"), of: "private func refreshSelectedDetail() {")
-        XCTAssertTrue(refresh.contains("DetailRead.needed(row: row, shown: model.data.details[id]?.info, failed: model.data.detailError[id] != nil)"))
+        XCTAssertTrue(refresh.contains("DetailRead.needed(row: row, shown: model.data.details[id]?.info, failed: model.data.detailError[id] != nil, loading: model.data.detailLoading.contains(id))"))
         XCTAssertTrue(refresh.contains("loadDetail(id)"))
         XCTAssertFalse(refresh.contains("guard let shown"), "a meeting whose detail was never read is read, not skipped")
+    }
+
+    /// Text-only pin (the observer lives in AppKit glue the shim does not compile); the decision is `ActivationRefreshTests`.
+    /// Mutation: MainWindowSource.windowClosed, delete `removeObserver(activeObserver)` -> RED (a closed window must cost nothing).
+    func testActivationRefreshIsRegisteredOnOpenAndRemovedOnClose() throws {
+        let text = try source("OxSayDictation/MainWindowSource.swift")
+        let opened = try body(text, of: "func windowOpened() {")
+        let closed = try body(text, of: "func windowClosed() {")
+        let observer = try body(text, of: "private func observeActivation() {")
+        let detail = try body(text, of: "private func refreshSelectedDetail() {")
+        let refresh = try body(text, of: "func refresh() {")
+        XCTAssertTrue(opened.contains("observeActivation()"))
+        XCTAssertTrue(observer.contains("didBecomeActiveNotification"))
+        XCTAssertTrue(closed.contains("removeObserver(activeObserver)"))
+        XCTAssertTrue(detail.contains("loading: model.data.detailLoading.contains(id)"))
+        // The activation path goes through the pure decision and the gated refresh, never a read of its own.
+        XCTAssertTrue(observer.contains("ActivationRefresh.shouldRefresh(windowOpen: self.windowOpen, visible: self.visible"))
+        XCTAssertTrue(observer.contains("self.refresh()"))
+        XCTAssertTrue(refresh.contains("lastPassStart ="))
     }
 }

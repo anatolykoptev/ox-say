@@ -44,6 +44,10 @@ final class MainWindowSource {
     /// Each click on a line is one request; a probe that comes back after another click, a stop or a close is dropped.
     private var playRequests = PlayRequestGuard()
     private var detailReads = DetailReads()
+    /// Reads again when the app becomes active (a permission granted in System Settings); alive only while the window is open.
+    private var activeObserver: NSObjectProtocol?
+    /// When the last refresh pass began, to tell an activation that follows one from a real return to the app.
+    private var lastPassStart: TimeInterval?
     /// Open (shown, hidden or covered) until the window is closed. A hidden window keeps its audio playing.
     private var windowOpen = false
     private var searchTimer: Task<Void, Never>?
@@ -83,9 +87,26 @@ final class MainWindowSource {
     func windowOpened() {
         windowOpen = true
         visible = true
+        observeActivation()
         // A search that was running when the window closed was cancelled: run it again rather than show a spinner.
         if model.data.search.phase == .searching { searchEvent(.retry) }
         refresh()
+    }
+
+    /// The window comes back from System Settings (or any app) with the old permissions on screen: the app becoming
+    /// active reads everything again. `refresh()` is gated, so this never runs reads beside another pass.
+    private func observeActivation() {
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+        activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                                object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let age = self.lastPassStart.map { ProcessInfo.processInfo.systemUptime - $0 }
+                guard ActivationRefresh.shouldRefresh(windowOpen: self.windowOpen, visible: self.visible,
+                                                      secondsSinceLastPass: age) else { return }
+                self.refresh()
+            }
+        }
     }
 
     /// Points the window at a section (and a meeting). A route without a meeting leaves the open one alone.
@@ -97,6 +118,8 @@ final class MainWindowSource {
 
     func windowClosed() {
         windowOpen = false
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+        activeObserver = nil
         cancelSearchWork()
         stopPlayback()
         stopClocks()
@@ -194,6 +217,7 @@ final class MainWindowSource {
         guard gate.request() else { return }
         Task { @MainActor in
             repeat {
+                lastPassStart = ProcessInfo.processInfo.systemUptime
                 syncRecording()
                 loadSimpleSections()
                 // The daemon status is read beside the list, not before it: a hung /status must not hold back the
@@ -398,7 +422,7 @@ final class MainWindowSource {
     /// list says it moved on (processing finished, the notes arrived).
     private func refreshSelectedDetail() {
         guard let id = model.selectedMeeting, let row = model.data.meetings.first(where: { $0.id == id }) else { return }
-        guard DetailRead.needed(row: row, shown: model.data.details[id]?.info, failed: model.data.detailError[id] != nil) else { return }
+        guard DetailRead.needed(row: row, shown: model.data.details[id]?.info, failed: model.data.detailError[id] != nil, loading: model.data.detailLoading.contains(id)) else { return }
         loadDetail(id)
     }
 
