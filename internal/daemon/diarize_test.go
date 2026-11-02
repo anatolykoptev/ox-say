@@ -36,27 +36,37 @@ func stubDiar(t *testing.T, body string) (*config.Config, string) {
 	return &config.Config{Home: dir, DiarBin: bin}, pcm
 }
 
-// The CLI contract: <them.pcm> <out.json> --models <models>/diar. ox-diar is given the meeting's own channel file
+// The CLI contract: <them.pcm> <out.json> --models <models>/diar --engine <engine>. ox-diar is given the meeting's own channel file
 // (no copy of the audio is made anywhere), the answer is read from <out.json> inside work/ and is not left behind.
 // The stub checks what ox-diar would depend on.
 // Mutations: internal/daemon/diarize.go runDiarizer, change `"--models", cfg.DiarModelsDir()` to `"--models", out`
-// -> RED; change `[]string{pcmPath, out,` to `[]string{out, out,` -> RED (the stub is not given the channel).
+// -> RED; change `[]string{pcmPath, out,` to `[]string{out, out,` -> RED (the stub is not given the channel);
+// F1: delete `"--engine", cfg.Engine()` from the args -> RED (the stub gets no engine: the user's switch is ignored).
 func TestRunDiarizerPassesTheContractAndReadsTheResult(t *testing.T) {
-	cfg, pcm := stubDiar(t, `
+	// the engine is arg 5 and 6, after --models <dir>, so the stub's $3/$4 contract stays; an unset engine is the default
+	for _, engine := range []string{"", config.DiarEnginePyannote, config.DiarEngineNemotron} {
+		want := engine
+		if want == "" {
+			want = config.DefaultDiarEngine
+		}
+		cfg, pcm := stubDiar(t, `
 in=$1; out=$2
 [ "$3" = "--models" ] || { echo "no --models: $*" >&2; exit 2; }
 case "$4" in */models/diar) ;; *) echo "bad models dir $4" >&2; exit 3;; esac
 case "$in" in */them.pcm) ;; *) echo "not the channel file: $in" >&2; exit 4;; esac
 case "$out" in */work/diarization.json) ;; *) echo "answer outside work/: $out" >&2; exit 4;; esac
+[ "$5" = "--engine" ] && [ "$6" = "`+want+`" ] && [ "$#" = 6 ] || { echo "engine args: $*" >&2; exit 9; }
 printf '{"size":%s}' "$(wc -c < "$in" | tr -d ' ')" > "$out"
 `)
-	raw, err := runDiarizer(context.Background(), cfg, pcm)
-	if err != nil || string(raw) != `{"size":64000}` {
-		t.Fatalf("raw %q err %v", raw, err)
-	}
-	left, _ := os.ReadDir(filepath.Join(filepath.Dir(pcm), meeting.WorkDir))
-	if len(left) != 0 {
-		t.Errorf("files left in work/: %v", left)
+		cfg.DiarEngine = engine
+		raw, err := runDiarizer(context.Background(), cfg, pcm)
+		if err != nil || string(raw) != `{"size":64000}` {
+			t.Fatalf("engine %q: raw %q err %v", engine, raw, err)
+		}
+		left, _ := os.ReadDir(filepath.Join(filepath.Dir(pcm), meeting.WorkDir))
+		if len(left) != 0 {
+			t.Errorf("engine %q: files left in work/: %v", engine, left)
+		}
 	}
 }
 
@@ -177,34 +187,55 @@ func TestDiarReadyOnIntel(t *testing.T) {
 	}
 }
 
-// ox-diar holds the whole channel in memory (about 1.06 GB resident per hour of audio), so a recording longer than
-// diarMaxSeconds is not given to it: "unavailable" (too_long), not a failure, and the engine is never started. A
-// recording of exactly the cap still runs.
-// Mutations: internal/daemon/diarize.go runDiarizer, change `st.Size() > diarMaxPCMBytes` to `false` -> RED (the stub
-// is started and the error is not the unavailable one); change `>` to `>=` -> RED (the recording of exactly the cap
-// is refused).
+// ox-diar holds the whole channel in memory on the pyannote engine (about 1.06 GB resident per hour of audio), so a
+// recording longer than 2 h is not given to it: "unavailable" (too_long), not a failure, and the engine is never
+// started. The Nemotron engine streams the mapped file in 30 s chunks (80-100 MB at 4-6 h), so its cap is 6 h. A
+// recording of exactly the cap still runs. The Swift test MeetingLimitsTests reads the pyannote `diarMaxSeconds` out
+// of diarize.go by regex: the app records up to two hours, the default engine's cap, until the default flips.
+// Mutations: internal/daemon/diarize.go runDiarizer, change `st.Size() > diarMaxPCMBytes(cfg.Engine())` to `false` ->
+// RED (the stub is started and the error is not the unavailable one); change `>` to `>=` -> RED (the recording of
+// exactly the cap is refused); F3: diarMaxPCMBytes returns the 2 h value for nemotron -> RED (the 2 h+1 recording
+// on nemotron is refused, and the 6 h+1 one is not tested at all by the pyannote row).
 func TestRunDiarizerSkipsARecordingAboveTheSizeCap(t *testing.T) {
-	cfg, pcm := stubDiar(t, `printf 'started' > "$(dirname "$2")/../ran"; printf '{}' > "$2"`)
-	ran := filepath.Join(filepath.Dir(pcm), "ran")
-	if err := os.Truncate(pcm, diarMaxPCMBytes+1); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		engine string
+		cap    int64
+	}{
+		{config.DiarEnginePyannote, 2 * 3600 * diarBytesPerSecond},
+		{config.DiarEngineNemotron, 6 * 3600 * diarBytesPerSecond},
+	} {
+		t.Run(tc.engine, func(t *testing.T) {
+			if got := diarMaxPCMBytes(tc.engine); got != tc.cap {
+				t.Fatalf("diarMaxPCMBytes(%q) = %d, want %d", tc.engine, got, tc.cap)
+			}
+			cfg, pcm := stubDiar(t, `printf 'started' > "$(dirname "$2")/../ran"; printf '{}' > "$2"`)
+			cfg.DiarEngine = tc.engine
+			ran := filepath.Join(filepath.Dir(pcm), "ran")
+			if err := os.Truncate(pcm, tc.cap+1); err != nil {
+				t.Fatal(err)
+			}
+			_, err := runDiarizer(context.Background(), cfg, pcm)
+			var un *meeting.DiarUnavailableError
+			if !errors.As(err, &un) || un.Reason != meeting.DiarTooLong {
+				t.Fatalf("over the cap: %v", err)
+			}
+			if _, serr := os.Stat(ran); serr == nil {
+				t.Error("ox-diar was started for a recording over the cap")
+			}
+			if err := os.Truncate(pcm, tc.cap); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runDiarizer(context.Background(), cfg, pcm); err != nil {
+				t.Fatalf("exactly the cap: %v", err)
+			}
+			if _, serr := os.Stat(ran); serr != nil {
+				t.Error("ox-diar was not started for a recording of exactly the cap")
+			}
+		})
 	}
-	_, err := runDiarizer(context.Background(), cfg, pcm)
-	var un *meeting.DiarUnavailableError
-	if !errors.As(err, &un) || un.Reason != meeting.DiarTooLong {
-		t.Fatalf("over the cap: %v", err)
-	}
-	if _, serr := os.Stat(ran); serr == nil {
-		t.Error("ox-diar was started for a recording over the cap")
-	}
-	if err := os.Truncate(pcm, diarMaxPCMBytes); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runDiarizer(context.Background(), cfg, pcm); err != nil {
-		t.Fatalf("exactly the cap: %v", err)
-	}
-	if _, serr := os.Stat(ran); serr != nil {
-		t.Error("ox-diar was not started for a recording of exactly the cap")
+	// the 2 h+1 file the pyannote row refuses is inside the nemotron cap
+	if diarMaxPCMBytes(config.DiarEngineNemotron) <= diarMaxPCMBytes(config.DiarEnginePyannote) {
+		t.Error("the nemotron cap is not above the pyannote cap")
 	}
 }
 
@@ -307,9 +338,10 @@ func TestDiarTimeoutIsTightAndHasAFloor(t *testing.T) {
 		bytes int64
 		want  time.Duration
 	}{
-		"a second":     {diarBytesPerSecond, diarMinTimeout},
-		"an hour":      {hour, 6 * time.Minute},
-		"the cap (2h)": {diarMaxPCMBytes, 12 * time.Minute},
+		"a second":              {diarBytesPerSecond, diarMinTimeout},
+		"an hour":               {hour, 6 * time.Minute},
+		"the pyannote cap (2h)": {diarMaxPCMBytes(config.DiarEnginePyannote), 12 * time.Minute},
+		"the nemotron cap (6h)": {diarMaxPCMBytes(config.DiarEngineNemotron), 36 * time.Minute},
 	}
 	for name, tc := range cases {
 		if got := diarTimeout(tc.bytes); got != tc.want {
@@ -317,8 +349,12 @@ func TestDiarTimeoutIsTightAndHasAFloor(t *testing.T) {
 		}
 	}
 	const cpuWorstPerHour = 80 * time.Second
-	if got := diarTimeout(diarMaxPCMBytes); got < 3*2*cpuWorstPerHour {
-		t.Errorf("the cap's timeout %v is under three times the measured CPU run", got)
+	if got := diarTimeout(diarMaxPCMBytes(config.DiarEnginePyannote)); got < 3*2*cpuWorstPerHour {
+		t.Errorf("the pyannote cap's timeout %v is under three times the measured CPU run", got)
+	}
+	// the Neural Engine streams 6.6 h in about a minute (plan, Task 0 probe A); the tenth of the audio is the generous bound
+	if got := diarTimeout(diarMaxPCMBytes(config.DiarEngineNemotron)); got < 6*time.Minute {
+		t.Errorf("the nemotron cap's timeout %v is under the run it must cover", got)
 	}
 }
 

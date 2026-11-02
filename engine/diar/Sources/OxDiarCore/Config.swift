@@ -108,7 +108,8 @@ public enum Pinned {
     /// ox-diar's Nemotron loader: FluidAudio's models from `directory` (which holds the fast128 bundle and the
     /// `.bin` assets fetch-models.sh laid out) at `units`. The compute-units line test_cli.py reads is logged
     /// after the load, from the loaded model's own configuration — a loader handed other units cannot write a
-    /// clean line over a bad run.
+    /// clean line over a bad run. A load that fails writes no line; a run whose stream fails after a good load has
+    /// already written its Neural Engine line, and the cpuOnly retry (`Pinned.withNemotronUnits`) writes a second one.
     public static func loadNemotron(from directory: URL, computeUnits units: MLComputeUnits) async throws -> Nemotron3Models {
         // This overload, never loadFromHuggingFace: its discardStaleCache deletes a directory that lacks
         // FluidAudio's own marker; ours is .ox-say-revision.
