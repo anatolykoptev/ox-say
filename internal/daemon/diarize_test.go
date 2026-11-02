@@ -241,6 +241,9 @@ func TestDiarPinsAgreeAcrossLanguages(t *testing.T) {
 	if got := find("scripts/fetch-models.sh", `(?m)^nem_rev=([0-9a-f]{40})$`); got != config.NemotronModelsRevision {
 		t.Errorf("fetch-models.sh fetches %s, config expects %s", got, config.NemotronModelsRevision)
 	}
+	if got := find("engine/diar/Sources/OxDiarCore/Pins.swift", `nemotronModelsRevision = "([0-9a-f]{40})"`); got != config.NemotronModelsRevision {
+		t.Errorf("Pins.swift names %s, config expects %s", got, config.NemotronModelsRevision)
+	}
 	if got := find("engine/diar/Sources/OxDiarCore/Platform.swift", `minimumMajor = (\d+)`); got != "15" || diarMinMacOS != 15 {
 		t.Errorf("minimumMajor %s, diarMinMacOS %d", got, diarMinMacOS)
 	}

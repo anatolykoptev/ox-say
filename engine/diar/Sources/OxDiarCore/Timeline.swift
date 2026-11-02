@@ -16,7 +16,7 @@ public enum Timeline {
     }
 
     public static func exclusive(probabilities p: [Float], frameCount n: Int) -> [Span] {
-        let n = min(n, p.count / slots)   // never trap in a daemon child on a short buffer
+        let n = max(0, min(n, p.count / slots))   // never trap in a daemon child on a short or negative buffer
         var spans: [Span] = []
         var open: (start: Int, slot: Int)?
         for f in 0...n {
