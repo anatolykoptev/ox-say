@@ -15,15 +15,19 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// What the window shows, read from the daemon and the app's stores; made when the window is first opened.
     private(set) var source: MainWindowSource?
     private var observers: [NSObjectProtocol] = []
+    /// Orders the delayed return to .accessory against a later open.
+    private var revert = AccessoryRevert()
 
     init(appDelegate: AppDelegate) {
         self.appDelegate = appDelegate
     }
 
-    /// Opens the window or brings it forward, and turns the app into a regular
-    /// one for as long as it is up.
-    func open() {
+    /// Opens the window or brings it forward — on the Space the user is on — and turns the app into a regular one for as
+    /// long as it is up. `route` selects a section (and a meeting); without one the window shows where it was.
+    func open(route: MainRoute? = nil) {
         guard let appDelegate else { return }
+        // A close that is still waiting out its revert delay must not take the policy back from this open.
+        revert.windowOpened()
         NSApp.setActivationPolicy(.regular)
         // The Edit menu is what makes ⌘V reach a text field — a posted
         // key-equivalent is matched against the main menu first, so dictation
@@ -33,11 +37,28 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         self.source = source
         let window = self.window ?? makeWindow(source)
         self.window = window
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        if let route { source.apply(route) }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        // On screen now, so the policy check of a pending revert sees a visible window; the Space it joins is the one
+        // that is current (`MainWindowSpec.collectionBehavior`).
+        window.orderFrontRegardless()
+        // The policy change takes effect after this turn: activating inside it is the call that gets dropped.
+        DispatchQueue.main.async { [weak window] in
+            Self.activateApp()
+            window?.makeKeyAndOrderFront(nil)
+        }
         // Every open reads the data again, here and nowhere else: the view has no `.task` of its own, which made
         // the first open run two passes.
         source.windowOpened()
+    }
+
+    /// macOS 14 made `activate(ignoringOtherApps:)` a request that may be declined and added `activate()`.
+    private static func activateApp() {
+        if #available(macOS 14, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     private func syncVisibility() {
@@ -54,8 +75,10 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// restore from — add no other trigger without handling that case.
     func windowWillClose(_ notification: Notification) {
         source?.windowClosed()
+        let ticket = revert.windowClosed()
         DispatchQueue.main.asyncAfter(deadline: .now() + WindowPolicy.accessoryRevertDelay) { [weak self] in
-            self?.applyPolicy()
+            guard let self, self.revert.shouldRevert(ticket) else { return }
+            self.applyPolicy()
         }
     }
 
@@ -98,6 +121,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         let window = NSWindow(contentViewController: hosting)
         window.title = L10nKey.windowTitle.text
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        // Opening brings the window to the user's current Space, a full-screen one included.
+        window.collectionBehavior = MainWindowSpec.collectionBehavior
         window.contentMinSize = NSSize(width: MainWindowSpec.minimumWidth,
                                        height: MainWindowSpec.minimumHeight)
         // One controller owns the one window for the app's whole run.

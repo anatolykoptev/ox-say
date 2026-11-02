@@ -16,6 +16,10 @@
 "menu.edit.paste" = "Вставить";
 "menu.edit.select_all" = "Выбрать всё";
 
+/* Settings… (⌘,) in the app menu, and the View menu that holds the sections. */
+"menu.settings_open" = "Настройки…";
+"menu.view" = "Вид";
+
 /* The Window menu. */
 "menu.window" = "Окно";
 "menu.window.minimize" = "Свернуть";

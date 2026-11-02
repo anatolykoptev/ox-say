@@ -26,7 +26,7 @@ final class MainMenuSpecTests: XCTestCase {
     }
 
     func testTheBarHasAppEditAndWindowMenusInOrder() {
-        XCTAssertEqual(MainMenuSpec.menu(for: .regular).map(\.title), [.menuApp, .menuEdit, .menuWindow])
+        XCTAssertEqual(MainMenuSpec.menu(for: .regular).map(\.title), [.menuApp, .menuEdit, .menuView, .menuWindow])
     }
 
     /// Under .accessory nothing on screen says the app is active — no Dock
@@ -108,7 +108,7 @@ final class MainMenuSpecTests: XCTestCase {
                 for row in spec.rows {
                     guard case .item(let item) = row else { continue }
                     switch item.action {
-                    case .about:
+                    case .about, .showSection:
                         break
                     case .standard(let name):
                         XCTAssertTrue(StandardMenuSelector.names.contains(name),
@@ -142,6 +142,46 @@ final class MainMenuSpecTests: XCTestCase {
                     XCTAssertTrue(L10nKey.allCases.contains(item.title), "\(item.title) is outside L10nKey")
                 }
             }
+        }
+    }
+
+    /// ⌘, opens Settings in the window, from the App menu.
+    func testTheAppMenuOpensSettingsWithCommandComma() {
+        let found = rows(of: .menuApp).compactMap { row -> MainMenuItem? in
+            if case .item(let item) = row, item.action == .showSection(.settings) { return item }
+            return nil
+        }
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found.first?.keyEquivalent, ",")
+        XCTAssertEqual(found.first?.title, .menuSettingsOpen)
+        XCTAssertEqual(found.first?.shift, false)
+    }
+
+    /// ⌘1... select the sections that exist, in sidebar order, derived from the spec and not from a hand list.
+    func testTheViewMenuHasACommandNumberPerVisibleSection() {
+        var keyed: [(String, MainSection)] = []
+        for row in rows(of: .menuView) {
+            guard case .item(let item) = row, case .showSection(let section) = item.action else { continue }
+            XCTAssertEqual(item.title, section.titleKey)
+            keyed.append((item.keyEquivalent, section))
+        }
+        XCTAssertEqual(keyed.map(\.1), MainWindowSpec.visibleSections)
+        XCTAssertEqual(keyed.map(\.0), (1...MainWindowSpec.visibleSections.count).map(String.init))
+        XCTAssertFalse(keyed.map(\.1).contains(where: \.isPlanned), "no key for a planned section")
+    }
+
+    func testEverySectionRowAimsAtAVisibleSection() {
+        for spec in MainMenuSpec.menu(for: .regular) {
+            for row in spec.rows {
+                guard case .item(let item) = row, case .showSection(let section) = item.action else { continue }
+                XCTAssertTrue(MainWindowSpec.visibleSections.contains(section), "\(section) has a key but no sidebar row")
+            }
+        }
+    }
+
+    func testNoSectionKeyUnderAccessory() {
+        for row in MainMenuSpec.menu(for: .accessory).flatMap(\.rows) {
+            if case .item(let item) = row, case .showSection = item.action { XCTFail("a section key under .accessory") }
         }
     }
 }

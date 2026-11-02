@@ -16,6 +16,10 @@
 "menu.edit.paste" = "Paste";
 "menu.edit.select_all" = "Select All";
 
+/* Settings… (⌘,) in the app menu, and the View menu that holds the sections. */
+"menu.settings_open" = "Settings…";
+"menu.view" = "View";
+
 /* The Window menu. */
 "menu.window" = "Window";
 "menu.window.minimize" = "Minimize";

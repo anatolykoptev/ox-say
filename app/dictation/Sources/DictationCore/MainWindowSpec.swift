@@ -1,3 +1,5 @@
+import AppKit
+
 /// The main window's sidebar sections, in sidebar order. Meetings, Dictation,
 /// Voices and Settings have real content; Reel and Projects are planned and
 /// stay out of the sidebar (and out of what users see) until something is behind them.
@@ -45,6 +47,18 @@ public enum MainWindowSpec {
     public static let minimumHeight = 520.0
     /// The frame autosave name: the window reopens where it was closed.
     public static let frameAutosaveName = "MainWindow"
+
+    /// The window comes to the user, never the other way round: it moves to the Space that is current when it is shown,
+    /// and may join another app's full-screen Space. Apple's NSWindow.h allows one Space bit (this is
+    /// MoveToActiveSpace, exclusive with CanJoinAllSpaces) and one full-screen bit (FullScreenAuxiliary, exclusive
+    /// with Primary and None); the two groups are independent. Managed stays implied, so it moves, minimises and
+    /// takes part in Mission Control like any window.
+    public static let collectionBehavior: NSWindow.CollectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+
+    /// The window is one "OxSay" whichever section is selected; the section is its subtitle.
+    public static let windowTitleKey: L10nKey = .windowTitle
+
+    public static func subtitleKey(for section: MainSection) -> L10nKey { section.titleKey }
 
     /// The sidebar's sections: the live four, or all of them behind the flag.
     public static func sections(includePlanned: Bool) -> [MainSection] {

@@ -41,7 +41,6 @@ struct DictationPage: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle(L10nKey.sectionDictation.text)
     }
 
     private func radio(_ title: String, _ choice: HotkeyMode) -> some View {

@@ -1,0 +1,138 @@
+import Foundation
+import XCTest
+@testable import DictationCore
+
+/// Source pins for the main window's open path (the shim compiles DictationCore only, so the AppKit glue is read as text,
+/// without comments). What each decision DOES is tested in DictationCore; these prove the glue calls it from the place that
+/// counts. Space behaviour, activation and the title cannot be unit-run: the live check is the owner's.
+final class MainWindowOpenWiringTests: XCTestCase {
+    private func source(_ relative: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return MeetingWiringTests.stripComments(try String(contentsOf: root.appendingPathComponent("Sources/\(relative)"), encoding: .utf8))
+    }
+
+    private func body(_ text: String, of signature: String) throws -> String {
+        let start = try XCTUnwrap(text.range(of: signature), "\(signature) not found")
+        let rest = text[start.lowerBound...]
+        var end = rest.endIndex
+        if let next = rest.dropFirst(signature.count).range(of: "\n    @objc private func |\n    @objc func |\n    private func |\n    func |\n    // MARK", options: .regularExpression) {
+            end = next.lowerBound
+        }
+        return String(rest[..<end])
+    }
+
+    /// F1 call site: the window takes the spec's Space behaviour where it is made.
+    /// Mutation: MainWindow.makeWindow, delete `window.collectionBehavior = MainWindowSpec.collectionBehavior` -> RED.
+    func testTheWindowTakesTheSpaceBehaviourAtItsOneCreationSite() throws {
+        let text = try source("OxSayDictation/MainWindow.swift")
+        XCTAssertEqual(text.components(separatedBy: "NSWindow(").count - 1, 1, "one creation site")
+        let make = try body(text, of: "private func makeWindow(")
+        XCTAssertTrue(make.contains("window.collectionBehavior = MainWindowSpec.collectionBehavior"))
+        XCTAssertFalse(text.contains("collectionBehavior = ["), "no second, hand-written behaviour")
+    }
+
+    /// Open shows the window itself, restores a minimised one and activates with the call that works on macOS 14+.
+    /// Mutation: MainWindow.open, delete the `deminiaturize` line or the `orderFrontRegardless` line -> RED.
+    func testOpenRestoresRaisesAndActivates() throws {
+        let open = try body(try source("OxSayDictation/MainWindow.swift"), of: "func open(route: MainRoute? = nil) {")
+        XCTAssertTrue(open.contains("if window.isMiniaturized { window.deminiaturize(nil) }"))
+        XCTAssertTrue(open.contains("window.orderFrontRegardless()"))
+        let policy = try XCTUnwrap(open.range(of: "NSApp.setActivationPolicy(.regular)"))
+        let activate = try XCTUnwrap(open.range(of: "Self.activateApp()"))
+        XCTAssertLessThan(policy.lowerBound, activate.lowerBound, "activation follows the policy change")
+        let asyncHop = try XCTUnwrap(open.range(of: "DispatchQueue.main.async"))
+        XCTAssertLessThan(asyncHop.lowerBound, activate.lowerBound, "activation runs on the next turn, after the policy change settled")
+    }
+
+    func testActivationUsesTheNonDeprecatedCallOnMacOS14() throws {
+        let text = try source("OxSayDictation/MainWindow.swift")
+        let activate = try body(text, of: "private static func activateApp() {")
+        XCTAssertTrue(activate.contains("if #available(macOS 14, *)"))
+        XCTAssertTrue(activate.contains("NSApp.activate()"))
+        XCTAssertTrue(activate.contains("NSApp.activate(ignoringOtherApps: true)"), "macOS 13 is still supported")
+        XCTAssertEqual(text.components(separatedBy: "activate(ignoringOtherApps").count - 1, 1, "the deprecated call only in the macOS 13 branch")
+    }
+
+    /// F2 call site: the delayed revert asks the pure decision, and an open tells it.
+    /// Mutation: MainWindow.windowWillClose, delete `guard let self, self.revert.shouldRevert(ticket) else { return }` -> RED.
+    func testTheDelayedRevertAsksWhetherAnOpenCameInBetween() throws {
+        let text = try source("OxSayDictation/MainWindow.swift")
+        let close = try body(text, of: "func windowWillClose(_ notification: Notification) {")
+        XCTAssertTrue(close.contains("let ticket = revert.windowClosed()"))
+        XCTAssertTrue(close.contains("guard let self, self.revert.shouldRevert(ticket) else { return }"))
+        let open = try body(text, of: "func open(route: MainRoute? = nil) {")
+        XCTAssertTrue(open.contains("revert.windowOpened()"))
+    }
+
+    /// F5: only the window view sets a navigation title, and it is the app's, with the section as the subtitle.
+    /// Mutation: any MainWindowUI page, add `.navigationTitle(L10nKey.sectionMeetings.text)` -> RED.
+    func testNoPageOverridesTheWindowTitle() throws {
+        let dir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/MainWindowUI")
+        let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".swift") }
+        XCTAssertFalse(files.isEmpty)
+        for file in files where file != "MainWindowView.swift" {
+            let text = try source("MainWindowUI/\(file)")
+            XCTAssertFalse(text.contains("navigationTitle("), "\(file) sets the window title")
+        }
+        let view = try source("MainWindowUI/MainWindowView.swift")
+        XCTAssertEqual(view.components(separatedBy: "navigationTitle(").count - 1, 1)
+        XCTAssertTrue(view.contains(".navigationTitle(MainWindowSpec.windowTitleKey.text)"))
+        XCTAssertTrue(view.contains(".navigationSubtitle(MainWindowSpec.subtitleKey(for: model.section).text)"))
+    }
+
+    /// Reopen (a second launch, a Dock click) opens the same window.
+    /// Mutation: AppDelegate.applicationShouldHandleReopen, delete `mainWindow.open()` -> RED.
+    func testReopenOpensTheWindow() throws {
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        let reopen = try body(app, of: "func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {")
+        XCTAssertTrue(reopen.contains("mainWindow.open()"))
+        XCTAssertTrue(reopen.contains("return false"), "handled: AppKit's own reopen must not run over it")
+    }
+
+    /// F4 call site: the decision is read before the launch migration writes its marker, from the event, and acted on.
+    /// Mutation: AppDelegate.applicationDidFinishLaunching, `atLogin:` argument -> `false` -> RED.
+    func testTheFirstLaunchDecisionReadsTheLoginEventBeforeAnythingIsWritten() throws {
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        let launch = try body(app, of: "func applicationDidFinishLaunching(_ notification: Notification) {")
+        let claim = try XCTUnwrap(launch.range(of: "FirstLaunch.claim(UserDefaults.standard, atLogin: launchedAtLogin())"))
+        let migrate = try XCTUnwrap(launch.range(of: "CallPolicy.migrateStaleAutoPicks"))
+        XCTAssertLessThan(claim.lowerBound, migrate.lowerBound, "the migration marker is itself evidence of a prior run")
+        XCTAssertTrue(launch.contains("if openWindowOnFirstLaunch { mainWindow.open() }"))
+        let probe = try body(app, of: "private func launchedAtLogin() -> Bool {")
+        XCTAssertTrue(probe.contains("NSAppleEventManager.shared().currentAppleEvent"))
+        XCTAssertTrue(probe.contains("FirstLaunch.isLoginLaunch(eventID: event?.eventID"))
+        XCTAssertTrue(probe.contains("forKeyword: FirstLaunch.propDataKeyword"))
+    }
+
+    /// The key the old copies wrote must be the one FirstLaunch looks for.
+    func testThePriorRunKeysAreTheOnesTheAppWrites() throws {
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        XCTAssertTrue(app.contains("private let keyInUseKey = \"dictationKeyInUse\""))
+        XCTAssertTrue(app.contains("private let speakKeyInUseKey = \"speakKeyInUse\""))
+        XCTAssertEqual(Set(FirstLaunch.priorRunKeys), ["dictationKeyInUse", "speakKeyInUse", CallPolicy.pickMigrationKey])
+    }
+
+    /// The section is saved on every change, so a quit with the window open still restores it; the next open restores it.
+    /// Mutation: MainWindowSource.init, `model.section = restored.section` -> `model.section = .meetings` -> RED.
+    func testTheWindowRestoresAndSavesItsRoute() throws {
+        let text = try source("OxSayDictation/MainWindowSource.swift")
+        XCTAssertTrue(text.contains("let restored = WindowRestoration.load(host.defaults)"))
+        XCTAssertTrue(text.contains("model.section = restored.section"))
+        XCTAssertTrue(text.contains("model.selectedMeeting = restored.meetingID"))
+        XCTAssertTrue(text.contains("WindowRestoration.save(MainRoute(section: section, meetingID: meeting), to: defaults)"))
+    }
+
+    /// The menu keys reach the window through one route.
+    /// Mutation: MainMenuBar.bind, the `.showSection` case aimed at nothing -> RED.
+    func testSectionKeysOpenTheWindowOnThatSection() throws {
+        let bar = try source("OxSayDictation/MainMenu.swift")
+        XCTAssertTrue(bar.contains("case .showSection(let section):"))
+        XCTAssertTrue(bar.contains("item.action = #selector(AppDelegate.showSectionFromMenu(_:))"))
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        let show = try body(app, of: "@objc func showSectionFromMenu(_ sender: NSMenuItem) {")
+        XCTAssertTrue(show.contains("mainWindow.open(route: MainRoute(section: section, meetingID: nil))"))
+    }
+}

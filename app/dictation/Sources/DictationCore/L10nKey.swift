@@ -45,6 +45,9 @@ public enum L10nKey: String, CaseIterable {
     case menuEditCopy = "menu.edit.copy"
     case menuEditPaste = "menu.edit.paste"
     case menuEditSelectAll = "menu.edit.select_all"
+    // Settings… in the App menu (⌘,) and the View menu with the sections.
+    case menuSettingsOpen = "menu.settings_open"
+    case menuView = "menu.view"
     // The Window menu.
     case menuWindow = "menu.window"
     case menuWindowMinimize = "menu.window.minimize"

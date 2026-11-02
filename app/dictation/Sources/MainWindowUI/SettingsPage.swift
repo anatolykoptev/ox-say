@@ -16,7 +16,6 @@ struct SettingsPage: View {
             general
         }
         .formStyle(.grouped)
-        .navigationTitle(L10nKey.sectionSettings.text)
     }
 
     // MARK: Meetings

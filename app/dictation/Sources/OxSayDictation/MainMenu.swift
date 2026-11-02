@@ -49,6 +49,10 @@ enum MainMenuBar {
         case .about:
             item.action = #selector(AppDelegate.showAbout)
             item.target = appDelegate
+        case .showSection(let section):
+            item.action = #selector(AppDelegate.showSectionFromMenu(_:))
+            item.target = appDelegate
+            item.representedObject = section.rawValue
         }
     }
 }
