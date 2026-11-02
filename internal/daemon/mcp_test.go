@@ -219,6 +219,15 @@ func TestMCPVoiceJourney(t *testing.T) {
 		t.Fatalf("listed voice = %v", v)
 	}
 
+	// A label set over HTTP is visible to agents in voices_list.
+	lbl := "Рассказчик"
+	if _, err := d.UpdateVoice("ru-doc", nil, nil, &lbl); err != nil {
+		t.Fatal(err)
+	}
+	if v = found(); v["label"] != lbl {
+		t.Fatalf("voices_list dropped the label: %v", v)
+	}
+
 	callMCP(t, cs, "voice_update", map[string]any{"name": "ru-doc", "style": "excited"})
 	if v = found(); v["style"] != "excited" || v["engine"] != "voxcpm2" {
 		t.Fatalf("after style update: %v", v)

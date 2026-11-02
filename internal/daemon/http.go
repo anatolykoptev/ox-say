@@ -328,6 +328,10 @@ type addVoiceRequest struct {
 	Engine       string `json:"engine"`
 	Style        string `json:"style"`
 	DesignedFrom string `json:"designed_from"`
+	// Label is the name a person sees; Source is "recorded" or "file" (see
+	// voices.Meta). Both optional, both validated in addVoice.
+	Label  string `json:"label"`
+	Source string `json:"source"`
 }
 
 func (d *Daemon) handleAddVoice(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +345,8 @@ func (d *Daemon) handleAddVoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v, registered, err := d.AddVoiceMeta(r.Context(), req.Name, req.AudioPath, req.RefText,
-		voices.Meta{Engine: req.Engine, Style: req.Style, DesignedFrom: req.DesignedFrom})
+		voices.Meta{Engine: req.Engine, Style: req.Style, DesignedFrom: req.DesignedFrom,
+			Label: req.Label, Source: req.Source})
 	if err != nil {
 		// Bad name, relative path, unreadable/undecodable clip, bad metadata:
 		// client input (400), not a daemon fault.
@@ -362,6 +367,7 @@ func (d *Daemon) handleAddVoice(w http.ResponseWriter, r *http.Request) {
 type updateVoiceRequest struct {
 	Engine *string `json:"engine"`
 	Style  *string `json:"style"`
+	Label  *string `json:"label"`
 }
 
 func (d *Daemon) handleUpdateVoice(w http.ResponseWriter, r *http.Request) {
@@ -371,10 +377,10 @@ func (d *Daemon) handleUpdateVoice(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid JSON body: only engine and style can be changed")
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: only engine, style and label can be changed")
 		return
 	}
-	v, err := d.UpdateVoice(r.PathValue("name"), req.Engine, req.Style)
+	v, err := d.UpdateVoice(r.PathValue("name"), req.Engine, req.Style, req.Label)
 	if err != nil {
 		writeErr(w, synthStatus(err), err.Error())
 		return

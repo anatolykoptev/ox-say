@@ -367,3 +367,57 @@ func TestRemoveInterruptedLeavesNoListedVoice(t *testing.T) {
 		}
 	}
 }
+
+// A re-add keeps the label (a person's name for the voice, like engine and
+// style) and drops the source (it describes the audio that was replaced).
+// Mutation: internal/voices/store.go inheritedMeta — delete the Label
+// inheritance -> RED; inherit Source too -> RED.
+func TestReAddKeepsLabelAndDropsSource(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip := testutil.WriteSilentWAV(t, t.TempDir(), "c.wav", 3)
+	add := func(m Meta) *Voice {
+		t.Helper()
+		p, err := s.Prepare(context.Background(), "nar", clip, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.SetMeta(m)
+		v, err := p.Commit()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	add(Meta{Label: "Мой голос", Source: "recorded"})
+	if v := add(Meta{}); v.Label != "Мой голос" || v.Source != "" {
+		t.Fatalf("re-add without metadata: %+v", v.Meta)
+	}
+	if got, _ := s.Get("nar"); got.Label != "Мой голос" || got.Source != "" {
+		t.Fatalf("persisted: %+v", got.Meta)
+	}
+	if v := add(Meta{Label: "Другой", Source: "file"}); v.Label != "Другой" || v.Source != "file" {
+		t.Fatalf("re-add with explicit metadata: %+v", v.Meta)
+	}
+}
+
+func TestFreshAddInheritsNoLabel(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	clip := testutil.WriteSilentWAV(t, t.TempDir(), "c.wav", 3)
+	p, _ := s.Prepare(context.Background(), "nar", clip, "")
+	p.SetMeta(Meta{Label: "Старый"})
+	if _, err := p.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = s.Prepare(context.Background(), "nar", clip, "")
+	p.Fresh()
+	v, err := p.Commit()
+	if err != nil || v.Label != "" {
+		t.Fatalf("a fresh voice replacing another keeps no label: %+v %v", v, err)
+	}
+}

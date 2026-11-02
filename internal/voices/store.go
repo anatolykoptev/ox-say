@@ -44,6 +44,12 @@ type InputError struct{ msg string }
 
 func (e *InputError) Error() string { return e.msg }
 
+// Values of Meta.Source.
+const (
+	SourceRecorded = "recorded"
+	SourceFile     = "file"
+)
+
 // Meta is the optional, engine-facing metadata of a voice. Every field is
 // additive (omitempty): a daemon that predates it reads the voice unchanged.
 type Meta struct {
@@ -57,6 +63,13 @@ type Meta struct {
 	// Seed is the seed of the design take the voice was kept from. Like
 	// DesignedFrom it describes the audio, so a re-add never inherits it.
 	Seed *int64 `json:"seed,omitempty"`
+	// Label is the name a person gave the voice. The name is a file-name-safe
+	// id; the label is free text for display. Like Engine and Style it is a
+	// preference, so a re-add inherits it.
+	Label string `json:"label,omitempty"`
+	// Source says where the clip came from: "", "recorded" or "file". It
+	// describes the audio, so a re-add never inherits it.
+	Source string `json:"source,omitempty"`
 }
 
 // Voice is one persisted clone. Every code path that rewrites the metadata
@@ -269,9 +282,10 @@ func (p *Pending) Commit() (*Voice, error) {
 }
 
 // inheritedMeta is the metadata a commit persists. Re-adding a voice replaces
-// its audio but keeps the preferences it was set up with (engine, style): an
-// older client that does not know the fields must not silently reset them.
-// DesignedFrom describes the old audio, so it is never carried over. Clear a
+// its audio but keeps the preferences it was set up with (engine, style, label):
+// an older client that does not know the fields must not silently reset them.
+// DesignedFrom, Seed and Source describe the old audio, so they are never
+// carried over. Clear a
 // preference with Update.
 func (p *Pending) inheritedMeta() Meta {
 	m := p.meta
@@ -287,6 +301,9 @@ func (p *Pending) inheritedMeta() Meta {
 	}
 	if m.Style == "" {
 		m.Style = prev.Style
+	}
+	if m.Label == "" {
+		m.Label = prev.Label
 	}
 	return m
 }
