@@ -22,10 +22,10 @@ curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | 
 
 The installer:
 - downloads a prebuilt release and checks its SHA-256;
-- fetches the models (about 2.5 GB on Apple Silicon — an Intel Mac or macOS older than 15 skips the
-  199 MB Nemotron set, about 2.3 GB there — checksummed, including 221 MB of speaker models for
-  [Meetings](#meetings); the optional Whisper adds 1.6 GB). The meeting-notes model (2.7 GB) is not
-  part of it: it is downloaded when you first ask for notes;
+- fetches the models, checksummed: about 2.5 GB on Apple Silicon with macOS 15 or later, including 221 MB of
+  speaker models for [Meetings](#meetings), and about 2.3 GB on an Intel Mac or older macOS, which skip the
+  199 MB Nemotron set. The optional Whisper adds 1.6 GB. The meeting-notes model (2.7 GB) is not part of it: it
+  is downloaded when you first ask for notes;
 - starts the daemon as a LaunchAgent;
 - registers the MCP server with Claude Code, if Claude Code is installed;
 - runs a speak-and-transcribe self-test;
