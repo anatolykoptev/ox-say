@@ -178,7 +178,7 @@ func (d *Daemon) toolProduceEdit(_ context.Context, _ *mcp.CallToolRequest, in p
 			err = &requestError{"chunks applies to action delivery only"}
 			break
 		}
-		s, err = d.prod.delivery(in.ID, in.Chunks)
+		s, err = d.prod.delivery(in.ID, in.Chunks, nil)
 	case in.Chunk == nil:
 		err = &requestError{fmt.Sprintf("action %q needs chunk", in.Action)}
 	default:

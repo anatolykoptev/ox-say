@@ -426,7 +426,7 @@ func (p *producer) chunk(id string, index int, op chunkOp) (vproject.Summary, er
 			return vproject.Summary{}, err
 		}
 	case opDelivery:
-		return p.deliver(j, []deliveryEntry{{N: &index, Style: op.Style, PauseAfter: op.PauseAfter, Pace: op.Pace}})
+		return p.deliver(j, []deliveryEntry{{N: &index, Style: op.Style, PauseAfter: op.PauseAfter, Pace: op.Pace}}, nil)
 	default:
 		return vproject.Summary{}, &requestError{fmt.Sprintf("action %q: want pick, regenerate, edit or delivery", op.Action)}
 	}
@@ -434,8 +434,9 @@ func (p *producer) chunk(id string, index int, op chunkOp) (vproject.Summary, er
 }
 
 // delivery applies a batch of style/pause changes to a project that is not
-// running and launches it once.
-func (p *producer) delivery(id string, es []deliveryEntry) (vproject.Summary, error) {
+// running and launches it once. lufs, when set, re-targets the file's
+// loudness in the same run.
+func (p *producer) delivery(id string, es []deliveryEntry, lufs *float64) (vproject.Summary, error) {
 	if err := p.ready(); err != nil {
 		return vproject.Summary{}, err
 	}
@@ -443,17 +444,24 @@ func (p *producer) delivery(id string, es []deliveryEntry) (vproject.Summary, er
 	if err != nil {
 		return vproject.Summary{}, err
 	}
-	return p.deliver(j, es)
+	return p.deliver(j, es, lufs)
 }
 
 // deliver validates every entry before changing anything, refuses a batch
 // that would move the job's clone mode, then applies and launches. A
 // pause- or pace-only batch re-assembles without a render or a checkpoint;
-// a real pace is refused here when this machine cannot stretch.
-func (p *producer) deliver(j *job, es []deliveryEntry) (vproject.Summary, error) {
-	styles, err := validateDelivery(j.m, es)
+// a real pace is refused here when this machine cannot stretch. lufs, when
+// set, is the only change a batch of no chunk entries may carry: it
+// re-assembles at the new loudness target.
+func (p *producer) deliver(j *job, es []deliveryEntry, lufs *float64) (vproject.Summary, error) {
+	styles, err := validateDelivery(j.m, es, lufs != nil)
 	if err != nil {
 		return vproject.Summary{}, err
+	}
+	if lufs != nil {
+		if err := validLUFS(*lufs); err != nil {
+			return vproject.Summary{}, err
+		}
 	}
 	// The mode gate comes first: a batch that is a conflict on any host must
 	// not read as "no ffmpeg" on one without it.
@@ -490,15 +498,20 @@ func (p *producer) deliver(j *job, es []deliveryEntry) (vproject.Summary, error)
 			c.Pace = *e.Pace
 		}
 	}
+	if lufs != nil {
+		j.m.Settings.LUFS = *lufs
+	}
 	j.assembleOnly = assembleOnly
 	p.mu.Unlock()
 	return p.launch(j)
 }
 
 // validateDelivery checks the whole batch and returns each entry's cleaned
-// style ("" where the entry has none); nothing is applied when it errs.
-func validateDelivery(m *vproject.Manifest, es []deliveryEntry) ([]string, error) {
-	if len(es) == 0 {
+// style ("" where the entry has none); nothing is applied when it errs. An
+// empty batch is allowed only when hasLoudness: a loudness change carries
+// no chunk entries.
+func validateDelivery(m *vproject.Manifest, es []deliveryEntry, hasLoudness bool) ([]string, error) {
+	if len(es) == 0 && !hasLoudness {
 		return nil, &requestError{"chunks must name at least one chunk"}
 	}
 	styles := make([]string, len(es))
@@ -751,9 +764,31 @@ func (p *producer) chunkDetail(id string, index int) (chunkDetailOut, error) {
 	if index < 0 || index >= len(m.Chunks) {
 		return chunkDetailOut{}, &requestError{fmt.Sprintf("chunk %d: the project has %d chunks (numbered from 0)", index, len(m.Chunks))}
 	}
+	return p.detailOf(m, index), nil
+}
+
+// detailOf builds one chunk's full view out of an already-read manifest: the
+// take file paths are derived from the keys, never statted.
+func (p *producer) detailOf(m *vproject.Manifest, index int) chunkDetailOut {
 	out := chunkDetailOut{Chunk: m.Chunks[index], TakeFiles: map[string]string{}}
 	for _, t := range out.Takes {
-		out.TakeFiles[t.Key] = filepath.Join(p.root, id, vproject.TakesDir, t.Key+".wav")
+		out.TakeFiles[t.Key] = filepath.Join(p.root, m.ID, vproject.TakesDir, t.Key+".wav")
+	}
+	return out
+}
+
+// chunksDetail is the bulk view: every chunk in the shape chunkDetail serves,
+// out of one manifest read — not a read per chunk. A long project is polled,
+// so the read stays O(1) in disk touches: the manifest clone of a running job
+// is memory, and a stopped one is a single manifest.json.
+func (p *producer) chunksDetail(id string) ([]chunkDetailOut, error) {
+	m, err := p.manifest(id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]chunkDetailOut, len(m.Chunks))
+	for i := range m.Chunks {
+		out[i] = p.detailOf(m, i)
 	}
 	return out, nil
 }
