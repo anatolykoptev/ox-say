@@ -6,9 +6,10 @@ public struct RawSegment: Equatable {
     public var end: Double
     public var speaker: String
     /// The cluster's VBx centroid (256 floats); FluidAudio repeats it on every segment of the cluster.
+    /// The Nemotron engine has none.
     public var embedding: [Float]
 
-    public init(start: Double, end: Double, speaker: String, embedding: [Float]) {
+    public init(start: Double, end: Double, speaker: String, embedding: [Float] = []) {
         self.start = start
         self.end = end
         self.speaker = speaker
