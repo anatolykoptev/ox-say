@@ -27,6 +27,9 @@ struct Scene {
     var tab: MeetingTab = .notes
     var height: CGFloat = 680
     var appsExpanded = false
+    /// Sidebar scenes: the Advanced switch drawn, every section listed (the build lists only the live ones).
+    var sidebar: Bool = false
+    var advanced = false
     var query: (Bool) -> String = { _ in "" }
     var find: ((Bool) -> String)?
     var data: (Date, Bool) -> MainWindowData
@@ -84,6 +87,8 @@ struct Scene {
         Scene(name: "transcript-find", section: .meetings, meeting: "m7", tab: .transcript, find: { $0 ? "пятниц" : "friday" }) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "transcript-playing", section: .meetings, meeting: "m7", tab: .transcript) { PreviewData.playing(now: $0, ru: $1) },
         Scene(name: "audio-removed", section: .meetings, meeting: "m5", tab: .transcript) { PreviewData.make(now: $0, ru: $1) },
+        Scene(name: "sidebar-simple", section: .meetings, meeting: nil, sidebar: true) { PreviewData.make(now: $0, ru: $1) },
+        Scene(name: "sidebar-advanced", section: .meetings, meeting: nil, sidebar: true, advanced: true) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "dictation", section: .dictation, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "voices", section: .voices, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         // Settings is taller than a window: the shot is made as tall as the screen allows.
@@ -116,7 +121,10 @@ struct Scene {
                 model.initialFind = scene.find?(lang == "ru")
                 model.appsExpanded = scene.appsExpanded
                 model.clock = { now }
-                let hosting = NSHostingController(rootView: MainWindowView(model: model))
+                model.advanced = scene.advanced
+                let hosting = NSHostingController(rootView: scene.sidebar
+                    ? MainWindowView(model: model, switchShown: true, live: Set(MainSection.allCases))
+                    : MainWindowView(model: model))
                 hosting.sizingOptions = []
                 window.contentViewController = hosting
                 window.setContentSize(NSSize(width: size.width, height: scene.height))

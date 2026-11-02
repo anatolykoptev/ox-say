@@ -46,7 +46,7 @@ final class LocalizationTests: XCTestCase {
     func testTheRussianFileActuallyHoldsRussian() {
         let url = packageRoot.appendingPathComponent("Resources/ru.lproj/Localizable.strings")
         let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        XCTAssertTrue(text.contains("Ролик"), "ru.lproj must translate the sidebar")
+        XCTAssertTrue(text.contains("Озвучка"), "ru.lproj must translate the sidebar")
     }
 
     /// #337.1: the reason of a lost microphone or system-audio tap is a framework error in English; the notice says the

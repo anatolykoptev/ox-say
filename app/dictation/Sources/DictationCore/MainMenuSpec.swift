@@ -79,9 +79,12 @@ public struct MainMenuSpec: Equatable {
     /// Edit menu is installed: ⌘Z/⌘X/⌘C/⌘V/⌘A still reach a modal's editor
     /// (the review sheet), but ⌘Q, ⌘H and ⌘W stay unbound — nothing on screen
     /// says the app is active, so a key meant for "dismiss this" must not quit.
-    public static func menu(for policy: WindowPolicy.Policy) -> [MainMenuSpec] {
+    /// `advanced` is the sidebar's Advanced switch: it changes which sections ⌘1... reach.
+    /// `live` is the sections that have content on this build; a test passes more than the build lists.
+    public static func menu(for policy: WindowPolicy.Policy, advanced: Bool = false,
+                            live: Set<MainSection> = MainWindowSpec.liveSections) -> [MainMenuSpec] {
         switch policy {
-        case .regular: return [app, edit, view, window]
+        case .regular: return [app, edit, view(advanced: advanced, live: live), window]
         case .accessory: return [edit]
         }
     }
@@ -112,8 +115,8 @@ public struct MainMenuSpec: Equatable {
 
     /// View — one row per sidebar section with ⌘1, ⌘2... in sidebar order, derived from the sidebar's own list so a
     /// section added there gets its key and a hidden one gets none. Keys stop at ⌘9.
-    private static var view: MainMenuSpec {
-        MainMenuSpec(title: .menuView, rows: MainWindowSpec.visibleSections.prefix(9).enumerated().map { index, section in
+    private static func view(advanced: Bool, live: Set<MainSection>) -> MainMenuSpec {
+        MainMenuSpec(title: .menuView, rows: MainWindowSpec.sections(advanced: advanced, live: live).prefix(9).enumerated().map { index, section in
             .item(MainMenuItem(title: section.titleKey, keyEquivalent: String(index + 1), action: .showSection(section)))
         })
     }

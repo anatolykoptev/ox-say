@@ -165,16 +165,16 @@ final class MainMenuSpecTests: XCTestCase {
             XCTAssertEqual(item.title, section.titleKey)
             keyed.append((item.keyEquivalent, section))
         }
-        XCTAssertEqual(keyed.map(\.1), MainWindowSpec.visibleSections)
-        XCTAssertEqual(keyed.map(\.0), (1...MainWindowSpec.visibleSections.count).map(String.init))
-        XCTAssertFalse(keyed.map(\.1).contains(where: \.isPlanned), "no key for a planned section")
+        XCTAssertEqual(keyed.map(\.1), MainWindowSpec.sections(advanced: false))
+        XCTAssertEqual(keyed.map(\.0), (1...MainWindowSpec.sections(advanced: false).count).map(String.init))
+        XCTAssertFalse(keyed.map(\.1).contains(where: \.isAdvancedOnly), "no key for Models while Advanced is off")
     }
 
     func testEverySectionRowAimsAtAVisibleSection() {
         for spec in MainMenuSpec.menu(for: .regular) {
             for row in spec.rows {
                 guard case .item(let item) = row, case .showSection(let section) = item.action else { continue }
-                XCTAssertTrue(MainWindowSpec.visibleSections.contains(section), "\(section) has a key but no sidebar row")
+                XCTAssertTrue(MainWindowSpec.sections(advanced: true).contains(section), "\(section) has a key but no sidebar row")
             }
         }
     }

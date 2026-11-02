@@ -122,10 +122,54 @@ final class MainWindowOpenWiringTests: XCTestCase {
     /// Mutation: MainWindowSource.init, `model.section = restored.section` -> `model.section = .meetings` -> RED.
     func testTheWindowRestoresAndSavesItsRoute() throws {
         let text = try source("OxSayDictation/MainWindowSource.swift")
-        XCTAssertTrue(text.contains("let restored = WindowRestoration.load(host.defaults)"))
+        XCTAssertTrue(text.contains("let restored = WindowRestoration.load(host.defaults, advanced: model.advanced)"))
         XCTAssertTrue(text.contains("model.section = restored.section"))
         XCTAssertTrue(text.contains("model.selectedMeeting = restored.meetingID"))
         XCTAssertTrue(text.contains("WindowRestoration.save(MainRoute(section: section, meetingID: meeting), to: defaults)"))
+    }
+
+    /// F1 call site: flipping the switch reinstalls the menu bar, or ⌘N points at the old order.
+    /// Mutation: MainWindow.swift:"MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular, advanced:" in the advanced sink, delete -> RED.
+    func testTheAdvancedSwitchReinstallsTheMenu() throws {
+        let text = try source("OxSayDictation/MainWindow.swift")
+        let sink = try body(text, of: "private func observeAdvanced(")
+        XCTAssertTrue(sink.contains("MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular, advanced:"))
+        let open = try body(text, of: "func open(route: MainRoute? = nil) {")
+        XCTAssertTrue(open.contains("observeAdvanced(source)"), "the sink is attached where the source is first made")
+    }
+
+    /// F0 call site: every install passes the live switch, or the first close (applyPolicy) resets ⌘ order to the
+    /// simple one while Advanced is on. The source exists before the first install, so `open` can read its state.
+    /// Mutation: MainWindow.swift:"MainMenuBar.install(appDelegateTarget: appDelegate, for: policy" in applyPolicy loses `advanced:` -> RED.
+    func testEveryMenuInstallPassesTheAdvancedState() throws {
+        let text = try source("OxSayDictation/MainWindow.swift")
+        let installs = text.components(separatedBy: "MainMenuBar.install(").dropFirst()
+        XCTAssertEqual(installs.count, 3, "open, applyPolicy and the advanced sink")
+        for call in installs {
+            let line = String(call.prefix { $0 != "\n" })
+            XCTAssertTrue(line.contains("advanced:"), "install without the switch state: \(line)")
+        }
+        let policy = try body(text, of: "private func applyPolicy() {")
+        XCTAssertTrue(policy.contains("MainMenuBar.install(appDelegateTarget: appDelegate, for: policy, advanced:"))
+        let open = try body(text, of: "func open(route: MainRoute? = nil) {")
+        let made = try XCTUnwrap(open.range(of: "MainWindowSource(host:"))
+        let install = try XCTUnwrap(open.range(of: "MainMenuBar.install("))
+        XCTAssertLessThan(made.lowerBound, install.lowerBound, "the source is made before the menu is installed")
+    }
+
+    /// The switch and the stored section are read from the same defaults before the route is restored, and a flip is saved
+    /// and moves the window off Models.
+    /// Mutation: MainWindowSource.init, delete `AdvancedMode.set(on, in: defaults)` -> RED.
+    func testTheSourceLoadsAndSavesTheSwitchAndMovesOffModels() throws {
+        let text = try source("OxSayDictation/MainWindowSource.swift")
+        let initBody = try body(text, of: "init(host: MainWindowHost) {")
+        let read = try XCTUnwrap(initBody.range(of: "model.advanced = AdvancedMode.isOn(host.defaults)"))
+        let restore = try XCTUnwrap(initBody.range(of: "WindowRestoration.load(host.defaults, advanced: model.advanced)"))
+        XCTAssertLessThan(read.lowerBound, restore.lowerBound, "the switch is read before the route is restored")
+        XCTAssertTrue(initBody.contains("AdvancedMode.set(on, in: defaults)"))
+        XCTAssertTrue(initBody.contains("model.section = AdvancedMode.section(after: on, current: model.section)"))
+        let apply = try body(text, of: "func apply(_ route: MainRoute) {")
+        XCTAssertTrue(apply.contains("route.resolved(visible: MainWindowSpec.sections(advanced: model.advanced))"))
     }
 
     /// The menu keys reach the window through one route.

@@ -1,48 +1,57 @@
 import AppKit
 
-/// The main window's sidebar sections, in sidebar order. Meetings, Dictation,
-/// Voices and Settings have real content; Reel and Projects are planned and
-/// stay out of the sidebar (and out of what users see) until something is behind them.
+/// The main window's sidebar sections, in sidebar order: Voiceover, Voices, Dictation, Meetings, Transcribe,
+/// then Models (Advanced mode only) and Settings, which the sidebar draws apart at the bottom. A section is
+/// listed only once something real is behind it (`MainWindowSpec.liveSections`).
 public enum MainSection: String, CaseIterable, Equatable, Identifiable {
-    case meetings
-    case dictation
+    case speak
     case voices
+    case dictation
+    case meetings
+    case transcribe
+    case models
     case settings
-    case reel
-    case projects
 
     public var id: String { rawValue }
 
     public var titleKey: L10nKey {
         switch self {
-        case .meetings: return .sectionMeetings
-        case .dictation: return .sectionDictation
+        case .speak: return .sectionSpeak
         case .voices: return .sectionVoices
+        case .dictation: return .sectionDictation
+        case .meetings: return .sectionMeetings
+        case .transcribe: return .sectionTranscribe
+        case .models: return .sectionModels
         case .settings: return .sectionSettings
-        case .reel: return .sectionReel
-        case .projects: return .sectionProjects
         }
     }
 
-    /// Planned sections: they exist in the model and wait for their own phase.
-    public var isPlanned: Bool { self == .reel || self == .projects }
+    /// Shown only while the Advanced switch is on.
+    public var isAdvancedOnly: Bool { self == .models }
+}
 
-    /// The one line the placeholder detail shows for a planned section; the live
-    /// sections have no placeholder.
-    public var placeholderKey: L10nKey? {
-        switch self {
-        case .reel: return .placeholderReel
-        case .projects: return .placeholderProjects
-        case .meetings, .dictation, .voices, .settings: return nil
-        }
+/// The Advanced switch: one stored preference, plus the one decision that follows a flip.
+public enum AdvancedMode {
+    public static let key = "mainWindow.advanced"
+
+    public static func isOn(_ d: UserDefaults) -> Bool { d.bool(forKey: key) }
+
+    public static func set(_ on: Bool, in d: UserDefaults) { d.set(on, forKey: key) }
+
+    /// Where the window goes when the switch flips: off while on Models -> the first section left.
+    public static func section(after flipTo: Bool, current: MainSection) -> MainSection {
+        !flipTo && current.isAdvancedOnly ? (MainWindowSpec.sections(advanced: false).first ?? .meetings) : current
     }
 }
 
 /// The main window's fixed parameters and which sections the sidebar lists.
 public enum MainWindowSpec {
-    /// Planned sections wait for their phase; a new planned case lands hidden by
-    /// default, which is the safe side of a forgotten flag.
-    public static let showsPlannedSections = false
+    /// Sections that have real content on this build. Each section task adds its own case here (one line);
+    /// a new case lands unlisted, which is the safe side of a forgotten flag.
+    public static let liveSections: Set<MainSection> = [.meetings, .dictation, .voices, .settings]
+    /// The switch is drawn only once something behind it differs (turned on by the first task that reveals
+    /// advanced content).
+    public static let showsAdvancedSwitch = false
     public static let minimumWidth = 760.0
     public static let minimumHeight = 520.0
     /// The frame autosave name: the window reopens where it was closed.
@@ -60,13 +69,11 @@ public enum MainWindowSpec {
 
     public static func subtitleKey(for section: MainSection) -> L10nKey { section.titleKey }
 
-    /// The sidebar's sections: the live four, or all of them behind the flag.
-    public static func sections(includePlanned: Bool) -> [MainSection] {
-        includePlanned ? MainSection.allCases : MainSection.allCases.filter { !$0.isPlanned }
+    /// The sidebar's sections, in order: the live ones, with the Advanced-only ones only while the switch is on.
+    public static func sections(advanced: Bool, live: Set<MainSection> = liveSections) -> [MainSection] {
+        MainSection.allCases.filter { live.contains($0) && (advanced || !$0.isAdvancedOnly) }
     }
 
-    /// What the sidebar lists on this build.
-    public static var visibleSections: [MainSection] {
-        sections(includePlanned: showsPlannedSections)
-    }
+    /// Where a first run lands: Voiceover once it is live, Meetings until then.
+    public static var firstRunSection: MainSection { liveSections.contains(.speak) ? .speak : .meetings }
 }

@@ -10,53 +10,53 @@ final class MainRouteTests: XCTestCase {
         return d
     }
 
-    func testTheDefaultRouteIsTheMeetingsList() {
-        XCTAssertEqual(MainRoute.default, MainRoute(section: .meetings, meetingID: nil))
+    func testTheDefaultRouteIsTheFirstRunSection() {
+        XCTAssertEqual(MainRoute.default, MainRoute(section: MainWindowSpec.firstRunSection, meetingID: nil))
     }
 
-    func testAHiddenSectionFallsBackToMeetingsAndForgetsTheMeeting() {
-        let planned = MainRoute(section: .reel, meetingID: "m1")
-        XCTAssertEqual(planned.resolved(visible: [.meetings, .dictation]), .default)
+    func testAHiddenSectionFallsBackToTheDefaultAndForgetsTheMeeting() {
+        let hidden = MainRoute(section: .models, meetingID: "m1")
+        XCTAssertEqual(hidden.resolved(visible: [.meetings, .dictation]), .default)
         let live = MainRoute(section: .voices, meetingID: "m1")
         XCTAssertEqual(live.resolved(visible: [.meetings, .voices]), live)
     }
 
     func testAnEmptyMeetingIDIsNoMeeting() {
-        XCTAssertNil(MainRoute(section: .meetings, meetingID: "").resolved(visible: MainWindowSpec.visibleSections).meetingID)
+        XCTAssertNil(MainRoute(section: .meetings, meetingID: "").resolved(visible: MainWindowSpec.sections(advanced: true)).meetingID)
     }
 
     /// F3: restoration returns the section and the meeting that were saved.
     func testRestorationRoundTripsTheLastSectionAndMeeting() {
         let d = defaults()
         WindowRestoration.save(MainRoute(section: .voices, meetingID: "2026-11-01-standup"), to: d)
-        XCTAssertEqual(WindowRestoration.load(d), MainRoute(section: .voices, meetingID: "2026-11-01-standup"))
+        XCTAssertEqual(WindowRestoration.load(d, advanced: false), MainRoute(section: .voices, meetingID: "2026-11-01-standup"))
     }
 
     func testNothingSavedOpensTheDefault() {
-        XCTAssertEqual(WindowRestoration.load(defaults()), .default)
+        XCTAssertEqual(WindowRestoration.load(defaults(), advanced: false), .default)
     }
 
     func testCorruptDataFallsBackToTheDefaults() {
         let d = defaults()
         d.set(42, forKey: WindowRestoration.sectionKey)
         d.set(["not", "a", "string"], forKey: WindowRestoration.meetingKey)
-        XCTAssertEqual(WindowRestoration.load(d), .default)
+        XCTAssertEqual(WindowRestoration.load(d, advanced: false), .default)
         d.set("no-such-section", forKey: WindowRestoration.sectionKey)
         d.set("", forKey: WindowRestoration.meetingKey)
-        XCTAssertEqual(WindowRestoration.load(d), .default)
+        XCTAssertEqual(WindowRestoration.load(d, advanced: false), .default)
     }
 
-    func testASavedSectionThatIsHiddenNowFallsBackToMeetings() {
+    func testASavedSectionThatIsHiddenNowFallsBackToTheDefault() {
         let d = defaults()
-        WindowRestoration.save(MainRoute(section: .reel, meetingID: "m9"), to: d)
-        XCTAssertEqual(WindowRestoration.load(d, visible: [.meetings, .settings]), .default)
+        WindowRestoration.save(MainRoute(section: .models, meetingID: "m9"), to: d)
+        XCTAssertEqual(WindowRestoration.load(d, advanced: false), .default)
     }
 
     func testSavingNoMeetingClearsTheOldOne() {
         let d = defaults()
         WindowRestoration.save(MainRoute(section: .meetings, meetingID: "m1"), to: d)
         WindowRestoration.save(MainRoute(section: .meetings, meetingID: nil), to: d)
-        XCTAssertNil(WindowRestoration.load(d).meetingID)
+        XCTAssertNil(WindowRestoration.load(d, advanced: false).meetingID)
     }
 
     /// An empty list says nothing about the id — the daemon may still be coming up — so the id stays for a

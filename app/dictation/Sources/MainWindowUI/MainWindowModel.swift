@@ -15,6 +15,9 @@ public struct MeetingFocus: Equatable {
 @MainActor
 public final class MainWindowModel: ObservableObject {
     @Published public var section: MainSection
+    /// The Advanced switch above Settings. The app saves a flip and moves the window off Models (`advancedChanged`).
+    @Published public var advanced = false
+    public var advancedChanged: (Bool) -> Void = { _ in }
     @Published public var selectedMeeting: String? {
         // A hit that was clicked in one meeting does not follow the user to another, or back to this one later.
         didSet { if selectedMeeting != oldValue, !openingHit { focus = nil } }
