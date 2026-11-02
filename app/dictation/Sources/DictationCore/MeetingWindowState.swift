@@ -212,3 +212,14 @@ public struct DetailReads: Equatable {
         again.remove(id)
     }
 }
+
+/// Whether a polling pass reads the selected meeting's detail. A selection that no `onChange` fired for (a meeting
+/// restored at launch) was never read, so it is read now; as before, a row that moved on from the shown detail
+/// (processing finished, the notes arrived, the title changed) is read again. A failed read with nothing shown
+/// waits for the user's Retry — a polling pass must not retry behind it.
+public enum DetailRead {
+    public static func needed(row: MeetingInfo, shown: MeetingInfo?, failed: Bool) -> Bool {
+        guard let shown else { return !failed }
+        return shown.status != row.status || shown.title != row.title
+    }
+}

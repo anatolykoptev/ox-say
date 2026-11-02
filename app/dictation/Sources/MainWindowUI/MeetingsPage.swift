@@ -13,7 +13,6 @@ struct MeetingsPage: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             if let notice = model.data.notice { NoticeBar(text: notice) { model.actions.dismissNotice() } }
         }
-        .navigationTitle(L10nKey.sectionMeetings.text)
         .toolbar { toolbar }
         .alert(L10nKey.meetingDeleteTitle.text, isPresented: $confirmDelete) {
             Button(L10nKey.meetingDeleteConfirm.text, role: .destructive) {

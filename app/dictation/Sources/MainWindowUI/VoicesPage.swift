@@ -29,7 +29,6 @@ struct VoicesPage: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle(L10nKey.sectionVoices.text)
     }
 
     /// "Default voice", "Random each time", then the daemon's voices.

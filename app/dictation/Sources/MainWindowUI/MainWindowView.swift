@@ -25,6 +25,10 @@ public struct MainWindowView: View {
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
         } detail: {
             page
+                // One recognisable window: "OxSay" is the title whichever page is up, the section is the subtitle.
+                // No page sets its own title; SwiftUI writes the last one it sees into the window.
+                .navigationTitle(MainWindowSpec.windowTitleKey.text)
+                .navigationSubtitle(MainWindowSpec.subtitleKey(for: model.section).text)
         }
         .frame(minWidth: MainWindowSpec.minimumWidth, minHeight: MainWindowSpec.minimumHeight)
         .environment(\.locale, L10nBundle.locale)

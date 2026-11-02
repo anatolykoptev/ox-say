@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Combine
 import DictationCore
 import MainWindowUI
 import UserNotifications
@@ -47,11 +48,24 @@ final class MainWindowSource {
     private var windowOpen = false
     private var searchTimer: Task<Void, Never>?
     private var searchRequest: Task<Void, Never>?
+    /// Saves the route on every change (a quit with the window open never calls windowClosed).
+    private var routeSaver: AnyCancellable?
+    /// A meeting restored from the last run is checked against the first non-empty list that loads: an empty
+    /// one says nothing yet (the daemon may still be coming up), so the check stays armed for the next list.
+    private var restoredMeetingUnchecked = false
 
     init(host: MainWindowHost) {
         self.host = host
         self.service = MeetingWindowService(client: host.client)
         self.model = MainWindowModel(data: Self.blank(host))
+        let restored = WindowRestoration.load(host.defaults)
+        model.section = restored.section
+        model.selectedMeeting = restored.meetingID
+        restoredMeetingUnchecked = restored.meetingID != nil
+        let defaults = host.defaults
+        routeSaver = Publishers.CombineLatest(model.$section, model.$selectedMeeting).dropFirst().sink { section, meeting in
+            WindowRestoration.save(MainRoute(section: section, meetingID: meeting), to: defaults)
+        }
         model.actions = actions()
         audio.onChange = { [weak self] values in self?.model.data.playback = values }
         audio.onFailure = { [weak self] in self?.model.data.notice = L10nKey.playFailed.text }
@@ -66,6 +80,13 @@ final class MainWindowSource {
         // A search that was running when the window closed was cancelled: run it again rather than show a spinner.
         if model.data.search.phase == .searching { searchEvent(.retry) }
         refresh()
+    }
+
+    /// Points the window at a section (and a meeting). A route without a meeting leaves the open one alone.
+    func apply(_ route: MainRoute) {
+        let route = route.resolved()
+        model.section = route.section
+        if let id = route.meetingID { model.selectedMeeting = id }
     }
 
     func windowClosed() {
@@ -174,7 +195,14 @@ final class MainWindowSource {
                 // end of the pass, so passes never overlap it.
                 let status = Task { @MainActor in await host.refreshStatus() }
                 let (list, load) = await service.list()
-                if let list { model.data.meetings = list }
+                if let list {
+                    model.data.meetings = list
+                    if restoredMeetingUnchecked {
+                        restoredMeetingUnchecked = list.isEmpty
+                        model.selectedMeeting = MainRoute(section: model.section, meetingID: model.selectedMeeting)
+                            .pruned(knownMeetingIDs: list.map(\.id)).meetingID
+                    }
+                }
                 model.data.meetingsLoad = load
                 await reloadSettingsAsync()
                 await reloadPermissions()
@@ -360,10 +388,11 @@ final class MainWindowSource {
         }
     }
 
-    /// The chosen meeting is read again when the list says it moved on (processing finished, the notes arrived).
+    /// The chosen meeting is read when it was never read (a restored selection fires no `onChange`) or when the
+    /// list says it moved on (processing finished, the notes arrived).
     private func refreshSelectedDetail() {
         guard let id = model.selectedMeeting, let row = model.data.meetings.first(where: { $0.id == id }) else { return }
-        guard let shown = model.data.details[id]?.info, shown.status != row.status || shown.title != row.title else { return }
+        guard DetailRead.needed(row: row, shown: model.data.details[id]?.info, failed: model.data.detailError[id] != nil) else { return }
         loadDetail(id)
     }
 

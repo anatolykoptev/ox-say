@@ -232,6 +232,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // First: the migration below writes a marker that reads as "an earlier copy ran".
+        let openWindowOnFirstLaunch = FirstLaunch.claim(UserDefaults.standard, atLogin: launchedAtLogin())
         // Once, before anything reads the per-app picks (#342.2).
         CallPolicy.migrateStaleAutoPicks(UserDefaults.standard)
         let baseURL = DaemonAddress.url(agentPlist: try? Data(contentsOf: DaemonAddress.agentPlist))
@@ -361,6 +363,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         startAutoUpdateChecks()
         studio.render()
+        // A fresh install shows an icon and permission prompts; the window says what to do next. Never at login or after an update.
+        if openWindowOnFirstLaunch { mainWindow.open() }
 
         // Ask for both permissions up front, so the first dictation does not stall
         // on a prompt. The Accessibility prompt shows once; the microphone prompt
@@ -776,6 +780,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func showAbout() {
         AboutPanel.show(serviceVersion: serviceStatus?.version)
+    }
+
+    /// Whether launchd started this launch as a login item (the 'oapp' event carries 'lgit').
+    private func launchedAtLogin() -> Bool {
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        return FirstLaunch.isLoginLaunch(eventID: event?.eventID,
+                                         propData: event?.paramDescriptor(forKeyword: FirstLaunch.propDataKeyword)?.enumCodeValue)
+    }
+
+    /// Launching OxSay again (Spotlight, Finder, `open -a`) or a click on the Dock icon: the same window, in front.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        mainWindow.open()
+        return false
+    }
+
+    /// A section key of the menu bar (⌘, and ⌘1...): the window opens on that section.
+    @objc func showSectionFromMenu(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let section = MainSection(rawValue: raw) else { return }
+        mainWindow.show(MainRoute(section: section, meetingID: nil))
     }
 
     /// "Open OxSay…": the one main window, opened or brought forward.

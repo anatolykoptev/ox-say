@@ -26,4 +26,27 @@ final class MainWindowSpecTests: XCTestCase {
             XCTAssertEqual(section.placeholderKey != nil, section.isPlanned, "only planned sections carry a placeholder")
         }
     }
+
+    /// F1: the Space behaviour is one pure value the window takes at its single creation site. Apple's header allows one of the
+    /// Space bits and one of the full-screen bits: MoveToActiveSpace (the window comes to the user's Space) with FullScreenAuxiliary
+    /// (that Space may be another app's full-screen one).
+    func testTheWindowComesToTheCurrentSpaceEvenAFullScreenOne() {
+        let b = MainWindowSpec.collectionBehavior
+        XCTAssertTrue(b.contains(.moveToActiveSpace))
+        XCTAssertTrue(b.contains(.fullScreenAuxiliary))
+        XCTAssertFalse(b.contains(.canJoinAllSpaces), "exclusive with moveToActiveSpace")
+        XCTAssertFalse(b.contains(.fullScreenPrimary), "exclusive with fullScreenAuxiliary")
+        XCTAssertFalse(b.contains(.fullScreenNone), "exclusive with fullScreenAuxiliary")
+        XCTAssertFalse(b.contains(.stationary), "the window stays movable and minimisable")
+        XCTAssertFalse(b.contains(.transient))
+    }
+
+    /// F5: the window is one "OxSay"; the section is the subtitle.
+    func testTheWindowTitleIsTheAppAndTheSectionIsTheSubtitle() {
+        XCTAssertEqual(MainWindowSpec.windowTitleKey, .windowTitle)
+        for section in MainWindowSpec.visibleSections {
+            XCTAssertEqual(MainWindowSpec.subtitleKey(for: section), section.titleKey)
+            XCTAssertNotEqual(MainWindowSpec.windowTitleKey, MainWindowSpec.subtitleKey(for: section))
+        }
+    }
 }

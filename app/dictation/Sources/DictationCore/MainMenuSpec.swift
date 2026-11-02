@@ -19,6 +19,8 @@ public enum MainMenuAction: Equatable {
     /// "About OxSay" — the app's own panel; the delegate knows the service
     /// version.
     case about
+    /// Opens the main window on a section: ⌘, for Settings, ⌘1... for the sidebar's rows.
+    case showSection(MainSection)
 }
 
 /// The standard AppKit selectors a menu row may name: the ones AppKit itself
@@ -79,14 +81,16 @@ public struct MainMenuSpec: Equatable {
     /// says the app is active, so a key meant for "dismiss this" must not quit.
     public static func menu(for policy: WindowPolicy.Policy) -> [MainMenuSpec] {
         switch policy {
-        case .regular: return [app, edit, window]
+        case .regular: return [app, edit, view, window]
         case .accessory: return [edit]
         }
     }
 
-    /// App — About routed to the delegate, then Hide ⌘H and Quit ⌘Q.
+    /// App — About routed to the delegate, Settings… ⌘, into the window, then Hide ⌘H and Quit ⌘Q.
     private static let app = MainMenuSpec(title: .menuApp, rows: [
         .item(MainMenuItem(title: .menuAppAbout, keyEquivalent: "", action: .about)),
+        .separator,
+        .item(MainMenuItem(title: .menuSettingsOpen, keyEquivalent: ",", action: .showSection(.settings))),
         .separator,
         .item(MainMenuItem(title: .menuAppHide, keyEquivalent: "h", action: .standard("hide:"))),
         .separator,
@@ -105,6 +109,14 @@ public struct MainMenuSpec: Equatable {
         .separator,
         .item(MainMenuItem(title: .menuEditSelectAll, keyEquivalent: "a", action: .standard("selectAll:"))),
     ])
+
+    /// View — one row per sidebar section with ⌘1, ⌘2... in sidebar order, derived from the sidebar's own list so a
+    /// section added there gets its key and a hidden one gets none. Keys stop at ⌘9.
+    private static var view: MainMenuSpec {
+        MainMenuSpec(title: .menuView, rows: MainWindowSpec.visibleSections.prefix(9).enumerated().map { index, section in
+            .item(MainMenuItem(title: section.titleKey, keyEquivalent: String(index + 1), action: .showSection(section)))
+        })
+    }
 
     /// Window — Minimize ⌘M and Close ⌘W, plus AppKit's appended window titles.
     private static let window = MainMenuSpec(title: .menuWindow, rows: [
