@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -418,7 +420,7 @@ func TestDeleteStopsTheResidentEngineThenRemovesTheFile(t *testing.T) {
 	if st.Available || st.ReasonCode != config.NotesReasonModelMissing {
 		t.Fatalf("notes status after the delete = %+v, want model_missing", st)
 	}
-	if n := find(listModels(t, srv.URL), "notes"); n.Installed || !n.Available || n.Bytes != config.NotesModelBytes {
+	if n := find(listModels(t, srv.URL), "notes"); n.Installed || !n.Supported || n.Bytes != config.NotesModelBytes {
 		t.Fatalf("list after the delete: %+v", n)
 	}
 }
@@ -631,8 +633,8 @@ func TestDeleteReportsAFileThatCannotBeRemoved(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(models, 0o755) })
 	code, body := doJSON(t, http.MethodDelete, base+"/v1/models/notes", "")
-	if code != http.StatusInternalServerError || !strings.Contains(body, "cannot remove the model file") {
-		t.Fatalf("DELETE = %d %s, want 500 naming the failure", code, body)
+	if code != http.StatusInternalServerError || !strings.Contains(body, "could not be removed") || strings.Contains(body, models) {
+		t.Fatalf("DELETE = %d %s, want 500 with a fixed sentence and no path", code, body)
 	}
 	if !exists(d.Cfg.NotesModel) {
 		t.Fatal("the file is gone")
@@ -678,5 +680,92 @@ func TestDeleteRefusesAModelManagedOutsideTheModelsFolder(t *testing.T) {
 	put(t, d.Cfg.NotesModel, 1)
 	if n := find(listModels(t, base), "notes"); !n.Removable {
 		t.Fatalf("a model in the models folder is removable: %+v", n)
+	}
+}
+
+// GET removable and DELETE use one rule, so the button the app shows is a delete that works. Each case is read through
+// GET first and then DELETEd: removable true must be 204, false must be a refusal.
+// Mutation: internal/daemon/models.go modelEntries, `e.Removable = d.inModelsDir(def.removal.file(d))` in place of the
+// checkRemovable call (a folder-only check) -> RED.
+func TestRemovableInGetAgreesWithDelete(t *testing.T) {
+	cases := []struct {
+		name   string
+		setup  func(d *Daemon, models string)
+		want   bool
+		status int
+	}{
+		{"managed file", func(d *Daemon, _ string) { put(t, d.Cfg.NotesModel, 1) }, true, http.StatusNoContent},
+		{"absent", func(*Daemon, string) {}, false, http.StatusNotFound},
+		{"symlink in the models folder", func(d *Daemon, models string) {
+			target := filepath.Join(filepath.Dir(models), "elsewhere", "real.gguf")
+			put(t, target, 3)
+			if err := os.Symlink(target, d.Cfg.NotesModel); err != nil {
+				t.Fatal(err)
+			}
+		}, false, http.StatusBadRequest},
+		{"own file in the models folder", func(d *Daemon, models string) {
+			d.Cfg.NotesModel = filepath.Join(models, "my-own.gguf")
+			put(t, d.Cfg.NotesModel, 1)
+		}, false, http.StatusBadRequest},
+		{"folder at the model path", func(d *Daemon, _ string) {
+			if err := os.MkdirAll(d.Cfg.NotesModel, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, false, http.StatusBadRequest},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, base, models := modelsServer(t)
+			c.setup(d, models)
+			n := find(listModels(t, base), "notes")
+			if n.Removable != c.want {
+				t.Fatalf("GET removable = %v, want %v: %+v", n.Removable, c.want, n)
+			}
+			if code, body := doJSON(t, http.MethodDelete, base+"/v1/models/notes", ""); code != c.status {
+				t.Fatalf("DELETE = %d %s, want %d", code, body, c.status)
+			}
+		})
+	}
+}
+
+// Recycle stops the engine before it kills the child; a deadline after that is a slow exit, not a busy engine.
+// Mutation: internal/daemon/models.go stopModelEngine, delete the `sup.State() == engine.StateStopped` early return -> RED.
+func TestDeleteTreatsASlowEngineExitAsStopped(t *testing.T) {
+	old := modelStopWait
+	modelStopWait = time.Nanosecond
+	t.Cleanup(func() { modelStopWait = old })
+	d, home := startManagedNotesFake(t)
+	mux := http.NewServeMux()
+	d.Routes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	if _, err := d.LLMSup.EnsureReady(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := doJSON(t, http.MethodDelete, srv.URL+"/v1/models/notes", ""); code != http.StatusNoContent {
+		t.Fatalf("DELETE = %d %s, want 204 (the engine was stopped)", code, body)
+	}
+	if exists(filepath.Join(home, "models", config.NotesModelFile)) {
+		t.Fatal("the model is still there")
+	}
+}
+
+// Every 400 and 409 leaves one Info line with the model and the reason, and no path.
+// Mutation: internal/daemon/models.go handleModelDelete, delete the `d.log.Info("model removal refused"` call -> RED.
+func TestDeleteLogsItsRefusals(t *testing.T) {
+	d, base, models := modelsServer(t)
+	var buf bytes.Buffer
+	d.log = slog.New(slog.NewTextHandler(&buf, nil))
+	put(t, d.Cfg.STTWhisperModel, 1)
+	d.transcribing.Add(1)
+	defer d.transcribing.Add(-1)
+	doJSON(t, http.MethodDelete, base+"/v1/models/parakeet", "")
+	doJSON(t, http.MethodDelete, base+"/v1/models/whisper", "")
+	out := buf.String()
+	if strings.Count(out, "model removal refused") != 2 || !strings.Contains(out, "model=parakeet") || !strings.Contains(out, "model=whisper") {
+		t.Fatalf("log = %q, want one refusal line per model", out)
+	}
+	if strings.Contains(out, models) {
+		t.Fatalf("a path reached the log: %q", out)
 	}
 }

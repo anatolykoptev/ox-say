@@ -39,7 +39,7 @@ type modelEntry struct {
 	Optional   bool   `json:"optional"`  // the user may install / remove it
 	Removable  bool   `json:"removable"` // optional, and its file is in <home>/models: false when an env override puts it elsewhere
 	Installing bool   `json:"installing"`
-	Available  bool   `json:"available"` // this Mac can run it
+	Supported  bool   `json:"supported"` // this Mac can run it (not "ready now": a missing model or engine is still supported)
 	ReasonCode string `json:"reason_code,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 }
@@ -107,7 +107,10 @@ func (d *Daemon) modelEntries() []modelEntry {
 	for _, def := range modelTable {
 		e := def.entry(d)
 		e.Optional = def.removal != nil
-		e.Removable = e.Optional && d.inModelsDir(def.removal.file(d))
+		if def.removal != nil {
+			_, _, err := d.checkRemovable(def.removal)
+			e.Removable = err == nil
+		}
 		out = append(out, e)
 	}
 	return out
@@ -143,7 +146,7 @@ func (d *Daemon) qwenModelEntry() modelEntry {
 	return modelEntry{
 		ID: config.TTSModelQwen, Kind: "speech", Name: "Qwen3-TTS 0.6B",
 		Bytes: size, Installed: ok, Default: d.Cfg.TTSModel == config.TTSModelQwen || d.Cfg.TTSModel == "",
-		Available: true,
+		Supported: true,
 	}
 }
 
@@ -151,14 +154,14 @@ func (d *Daemon) voxModelEntry() modelEntry {
 	size, ok := fileSize(d.Cfg.VoxCPM2Model)
 	e := modelEntry{
 		ID: config.TTSModelVoxCPM2, Kind: "speech", Name: "VoxCPM2 Q8_0",
-		Bytes: size, Installed: ok, Default: d.Cfg.TTSModel == config.TTSModelVoxCPM2, Available: true,
+		Bytes: size, Installed: ok, Default: d.Cfg.TTSModel == config.TTSModelVoxCPM2, Supported: true,
 	}
 	if !ok {
 		e.Bytes = approxVoxCPM2Bytes
 	}
 	// A missing model or engine is what an install fixes: this Mac can still run it. Only hardware says no.
 	if code, reason := d.voxBlock(); code == config.VoxReasonUnsupported {
-		e.Available, e.ReasonCode, e.Reason = false, code, reason
+		e.Supported, e.ReasonCode, e.Reason = false, code, reason
 	}
 	return e
 }
@@ -167,7 +170,7 @@ func (d *Daemon) parakeetModelEntry() modelEntry {
 	size, ok := fileSize(d.Cfg.STTModel)
 	return modelEntry{
 		ID: "parakeet", Kind: "transcribe", Name: "Parakeet TDT 0.6B v3",
-		Bytes: size, Installed: ok, Default: true, Available: true,
+		Bytes: size, Installed: ok, Default: true, Supported: true,
 	}
 }
 
@@ -175,7 +178,7 @@ func (d *Daemon) whisperModelEntry() modelEntry {
 	size, ok := fileSize(d.Cfg.STTWhisperModel)
 	e := modelEntry{
 		ID: "whisper", Kind: "transcribe", Name: "Whisper large-v3-turbo",
-		Bytes: size, Installed: ok, Available: true,
+		Bytes: size, Installed: ok, Supported: true,
 	}
 	if !ok {
 		e.Bytes = approxWhisperBytes
@@ -187,14 +190,14 @@ func (d *Daemon) notesModelEntry() modelEntry {
 	size, ok := fileSize(d.Cfg.NotesModel)
 	e := modelEntry{
 		ID: "notes", Kind: "notes", Name: "Qwen3.5-4B Q4_K_M",
-		Bytes: size, Installed: ok, Default: true, Available: true, Installing: d.notesInstalling() > 0,
+		Bytes: size, Installed: ok, Default: true, Supported: true, Installing: d.notesInstalling() > 0,
 	}
 	if !ok {
 		e.Bytes = config.NotesModelBytes
 	}
 	// A missing model is what the download fixes; the other blocks (memory, a missing engine, a taken port) are not.
 	if code, reason := d.Cfg.NotesBlock(); code != "" && code != config.NotesReasonModelMissing {
-		e.Available, e.ReasonCode, e.Reason = false, code, reason
+		e.Supported, e.ReasonCode, e.Reason = false, code, reason
 	}
 	return e
 }
@@ -247,9 +250,14 @@ func (d *Daemon) handleModelDelete(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		w.WriteHeader(http.StatusNoContent)
 	case errors.As(err, &me):
+		if me.status == http.StatusBadRequest || me.status == http.StatusConflict {
+			// id is a known model here: refusals 400/409 happen only after the table lookup.
+			d.log.Info("model removal refused", slog.String("model", r.PathValue("id")), slog.Int("status", me.status), slog.String("reason", me.msg))
+		}
 		writeErr(w, me.status, me.msg)
 	default:
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		d.log.Warn("model removal failed", slog.String("model", r.PathValue("id")), slog.Any("error", err))
+		writeErr(w, http.StatusInternalServerError, "The model could not be removed. Details are in the ox-say log.")
 	}
 }
 
@@ -277,24 +285,9 @@ func (d *Daemon) removeModel(ctx context.Context, id string) error {
 	d.modelMu.Lock()
 	defer d.modelMu.Unlock()
 
-	path := rm.file(d)
-	if path == "" || !filepath.IsAbs(path) || filepath.Base(path) != rm.pinned {
-		return &modelError{http.StatusBadRequest, "this model is your own file; remove it yourself"}
-	}
-	if !d.inModelsDir(path) {
-		return &modelError{http.StatusBadRequest, "This model is managed outside OxSay; remove it yourself."}
-	}
-	// Lstat: a link to a model kept elsewhere is not removed and never followed (removing it would leave the data and
-	// report the model gone); a folder is not a model file.
-	st, err := os.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return &modelError{http.StatusNotFound, "this model is not installed"}
-	}
+	path, size, err := d.checkRemovable(rm)
 	if err != nil {
-		return fmt.Errorf("cannot inspect the model file: %w", err)
-	}
-	if !st.Mode().IsRegular() {
-		return &modelError{http.StatusBadRequest, "this model is a link or a folder, not a file ox-say downloaded; remove it yourself"}
+		return err
 	}
 	if why := rm.busy(d); why != "" {
 		return &modelError{http.StatusConflict, why}
@@ -313,7 +306,7 @@ func (d *Daemon) removeModel(ctx context.Context, id string) error {
 		}
 		return fmt.Errorf("cannot remove the model file: %w", err)
 	}
-	d.log.Info("model removed", slog.String("model", def.id), slog.Int64("bytes", st.Size()))
+	d.log.Info("model removed", slog.String("model", def.id), slog.Int64("bytes", size))
 	return nil
 }
 
@@ -334,12 +327,45 @@ func (d *Daemon) stopModelEngine(ctx context.Context, sup *engine.Supervisor) er
 	ctx, cancel := context.WithTimeout(ctx, modelStopWait)
 	defer cancel()
 	if err := sup.Recycle(ctx, st.PID); err != nil {
+		// Recycle marks the engine stopped before it kills the child. A deadline after that point is a slow exit, not a
+		// busy engine: the child is on its way out and an unlinked file is safe under it.
+		if (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) && sup.State() == engine.StateStopped {
+			return nil
+		}
 		if errors.Is(err, engine.ErrRecycleBusy) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return &modelError{http.StatusConflict, "The engine is still working. Try again when it has finished."}
 		}
 		return fmt.Errorf("cannot stop the engine: %w", err)
 	}
 	return nil
+}
+
+// checkRemovable is the one rule for "this model's file may be deleted by ox-say", shared by GET (removable) and
+// removeModel so the two cannot disagree: the configured path is absolute and has the pinned name, sits in
+// <home>/models, and is a plain file that exists (not a link or a folder). It returns the path and size, or a
+// *modelError (400 for a file ox-say does not own, 404 when not installed), or a plain error when the file cannot be
+// inspected.
+func (d *Daemon) checkRemovable(rm *modelRemoval) (path string, size int64, err error) {
+	path = rm.file(d)
+	if path == "" || !filepath.IsAbs(path) || filepath.Base(path) != rm.pinned {
+		return "", 0, &modelError{http.StatusBadRequest, "this model is your own file; remove it yourself"}
+	}
+	if !d.inModelsDir(path) {
+		return "", 0, &modelError{http.StatusBadRequest, "This model is managed outside OxSay; remove it yourself."}
+	}
+	// Lstat: a link to a model kept elsewhere is not removed and never followed (removing it would leave the data and
+	// report the model gone); a folder is not a model file.
+	st, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", 0, &modelError{http.StatusNotFound, "this model is not installed"}
+	}
+	if err != nil {
+		return "", 0, fmt.Errorf("cannot inspect the model file: %w", err)
+	}
+	if !st.Mode().IsRegular() {
+		return "", 0, &modelError{http.StatusBadRequest, "this model is a link or a folder, not a file ox-say downloaded; remove it yourself"}
+	}
+	return path, st.Size(), nil
 }
 
 // inModelsDir reports whether path sits directly in <home>/models, comparing the folders after resolving symlinks so a
