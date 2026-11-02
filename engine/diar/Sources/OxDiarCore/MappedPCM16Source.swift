@@ -27,6 +27,7 @@ public struct MappedPCM16Source: AudioSampleSource {
 public enum ChunkFeeder {
     /// Hands the whole source to `sink` in chunks of `chunkSamples` (the last one may be shorter).
     public static func feed(source: AudioSampleSource, chunkSamples: Int, _ sink: ([Float]) throws -> Void) throws {
+        precondition(chunkSamples > 0)   // a non-positive chunk is a caller bug, and 0 would loop forever
         var buf = [Float](repeating: 0, count: chunkSamples)
         var offset = 0
         while offset < source.sampleCount {

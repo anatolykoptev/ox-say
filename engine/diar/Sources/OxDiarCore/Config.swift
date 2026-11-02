@@ -28,6 +28,18 @@ public enum Pinned {
         return ml
     }
 
+    /// The compute units a Nemotron run asks for: the pin, or `.cpuOnly` under `OX_DIAR_COMPUTE_UNITS=cpuOnly` —
+    /// a seam that can only make the choice MORE conservative (CI runners have no Neural Engine; any other value
+    /// is ignored, like `OX_DIAR_ASSUME_MACOS`).
+    public static func effectiveUnits(env: [String: String]) -> MLComputeUnits {
+        env["OX_DIAR_COMPUTE_UNITS"] == "cpuOnly" ? .cpuOnly : computeUnits
+    }
+
+    /// The Nemotron 3 Diarization preset: fast128, the largest monolithic chunk that still compiles for the
+    /// Neural Engine (192 fails ANECCompile) and the one the spike measured. Never a split preset: `splitGraph`
+    /// can put part of the graph on the GPU.
+    public static let nemotron: Nemotron3Config = .fast128
+
     /// Loads the models through `load`, handing it the pinned configuration, and logs the compute units of the
     /// configuration it passed (test_cli.py reads that line back from the binary). `load` is a seam for
     /// `swift test` only: the tests record what it receives, so a loader called with another configuration, or none,
@@ -45,6 +57,37 @@ public enum Pinned {
     public static func loadModels(from directory: URL) async throws -> OfflineDiarizerModels {
         try await loadModels(from: directory, using: { url, ml in
             try await OfflineDiarizerModels.load(from: url, configuration: ml)
+        })
+    }
+
+    /// Loads the Nemotron models through `load`, handing it the units of `effectiveUnits(env:)` and logging them
+    /// like `loadModels` does. The soft landing: a throw under the Neural Engine retries once on the CPU — a
+    /// macOS update can break the ANE compile (one was measured on 26.7) and slow voices beat `models_unusable`;
+    /// only a second failure reaches the caller. A forced-CPU load has nowhere lower to fall and does not
+    /// retry. `load` is the same kind of test seam as `loadModels(from:using:)`: the unit sequence each attempt
+    /// saw is what a test records.
+    public static func loadNemotron<Models>(
+        from directory: URL,
+        env: [String: String],
+        using load: (URL, MLComputeUnits) async throws -> Models
+    ) async throws -> Models {
+        let units = effectiveUnits(env: env)
+        FileHandle.standardError.write(Data("ox-diar: compute units \(name(of: units))\n".utf8))
+        do {
+            return try await load(directory, units)
+        } catch {
+            guard units != .cpuOnly else { throw error }
+            FileHandle.standardError.write(Data("ox-diar: ANE load failed, retrying on CPU: \(error.localizedDescription)\n".utf8))
+            FileHandle.standardError.write(Data("ox-diar: compute units \(name(of: MLComputeUnits.cpuOnly))\n".utf8))
+            return try await load(directory, .cpuOnly)
+        }
+    }
+
+    /// ox-diar's Nemotron loader: FluidAudio's models from `directory` (which holds the fast128 bundle and the
+    /// `.bin` assets fetch-models.sh laid out).
+    public static func loadNemotron(from directory: URL, env: [String: String]) async throws -> Nemotron3Models {
+        try await loadNemotron(from: directory, env: env, using: { url, units in
+            try await Nemotron3Models.load(config: nemotron, directory: url, computeUnits: units)
         })
     }
 

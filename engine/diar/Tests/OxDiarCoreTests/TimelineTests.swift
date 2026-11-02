@@ -16,6 +16,10 @@ private func probs(_ n: Int, _ on: [(slot: Int, from: Int, to: Int, p: Float)]) 
     @Test func exactlyHalfIsNotSpeech() {
         #expect(Timeline.exclusive(probabilities: probs(5, [(0, 0, 5, 0.5)]), frameCount: 5).isEmpty)
     }
+    /// A negative count is a caller bug, but a daemon child must not trap on `0...n` (#396 review): clamped.
+    @Test func aNegativeFrameCountGivesNoSpans() {
+        #expect(Timeline.exclusive(probabilities: probs(5, [(0, 0, 5, 0.9)]), frameCount: -3).isEmpty)
+    }
     @Test func aTieGoesToTheLowerSlot() {
         let p = probs(3, [(2, 0, 3, 0.8), (5, 0, 3, 0.8)])
         #expect(Timeline.exclusive(probabilities: p, frameCount: 3).map(\.slot) == [2])

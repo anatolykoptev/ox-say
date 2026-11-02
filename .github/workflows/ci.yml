@@ -190,3 +190,12 @@ jobs:
           afconvert -f WAVE -d LEI16@16000 -c 1 engine/diar/testdata/ami-es2004a-780-180s.flac "$RUNNER_TEMP/diar-clip.wav"
           python3 engine/diar/test_cli.py --bin "$RUNNER_TEMP/diar-run/ox-diar" --models "$RUNNER_TEMP/diar-models/diar" \
               --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4
+
+      # The nemotron engine, on the same binary and clip, forced to the CPU: the runner's Neural Engine is not
+      # guaranteed to compile a Core ML graph, so OX_DIAR_COMPUTE_UNITS lowers what the loader asks for.
+      - name: ox-diar smoke (nemotron)
+        env:
+          OX_DIAR_COMPUTE_UNITS: cpuOnly
+        run: |
+          python3 engine/diar/test_cli.py --bin "$RUNNER_TEMP/diar-run/ox-diar" --models "$RUNNER_TEMP/diar-models/diar" \
+              --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4 --engine nemotron

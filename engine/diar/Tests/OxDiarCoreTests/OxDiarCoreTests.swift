@@ -77,6 +77,17 @@ private func os(_ major: Int, _ minor: Int = 0) -> OperatingSystemVersion {
         let state = try #require(fluid["state"] as? [String: Any])
         #expect(state["version"] as? String == Pins.fluidAudioVersion)
     }
+
+    /// The Nemotron set's revision is the one fetch-models.sh pins (`nem_rev`); the Go pin test
+    /// (TestDiarPinsAgreeAcrossLanguages) holds the same constant against internal/config.NemotronModelsRevision.
+    @Test func theNemotronPinMatchesFetchModels() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("scripts/fetch-models.sh")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let line = text.split(separator: "\n").first { $0.hasPrefix("nem_rev=") }
+        #expect(line == "nem_rev=\(Pins.nemotronModelsRevision)")
+    }
 }
 
 @Suite struct PinnedTests {
@@ -128,6 +139,78 @@ private func os(_ major: Int, _ minor: Int = 0) -> OperatingSystemVersion {
     /// The loader accepts the models' revision marker only when it equals the revision the library asks for.
     @Test func theModelsRevisionIsTheOneTheLibraryAsksFor() {
         #expect(Pins.modelsRevision == Repo.diarizer.revision)
+    }
+
+    /// The Nemotron preset ox-diar runs: fast128, the largest monolithic chunk that still compiles for the
+    /// Neural Engine (192 fails ANECCompile) and the one the spike measured. Never a split preset: `splitGraph`
+    /// can put part of the graph on the GPU.
+    @Test func theNemotronPresetIsFast128() {
+        #expect(Pinned.nemotron.modelFileName == "Nemotron3Diarizer_fast128.mlmodelc")
+        #expect(Pinned.nemotron.chunkLen == 128)
+    }
+
+    /// OX_DIAR_COMPUTE_UNITS can only lower the units a Nemotron run asks for (CI runners have no Neural
+    /// Engine); anything but `cpuOnly` is ignored, like OX_DIAR_ASSUME_MACOS.
+    @Test func theUnitsEnvCanOnlyLowerThem() {
+        #expect(Pinned.effectiveUnits(env: [:]) == .cpuAndNeuralEngine)
+        #expect(Pinned.effectiveUnits(env: ["OX_DIAR_COMPUTE_UNITS": "cpuOnly"]) == .cpuOnly)
+        #expect(Pinned.effectiveUnits(env: ["OX_DIAR_COMPUTE_UNITS": "all"]) == .cpuAndNeuralEngine)
+        #expect(Pinned.effectiveUnits(env: ["OX_DIAR_COMPUTE_UNITS": "gpu"]) == .cpuAndNeuralEngine)
+        #expect(Pinned.effectiveUnits(env: ["OX_DIAR_COMPUTE_UNITS": "CPUONLY"]) == .cpuAndNeuralEngine)
+    }
+
+    /// The soft landing: a load that fails under the Neural Engine retries once on the CPU (an ANE-compile
+    /// failure was seen on a macOS update); a working load calls the loader once. The recording loader sees the
+    /// units each attempt passed, so a dropped retry — or a retry that also asks for the ANE — is caught.
+    @Test func aFailedANELoadRetriesOnceOnTheCPU() async throws {
+        var seen: [MLComputeUnits] = []
+        var calls = 0
+        struct Boom: Error {}
+        let models = try await Pinned.loadNemotron(from: URL(fileURLWithPath: "/m"), env: [:]) { _, units in
+            seen.append(units)
+            calls += 1
+            if calls == 1 { throw Boom() }
+            return 7
+        }
+        #expect(models == 7)
+        #expect(seen == [.cpuAndNeuralEngine, .cpuOnly])
+    }
+
+    @Test func aWorkingLoadCallsTheLoaderOnce() async throws {
+        var seen: [MLComputeUnits] = []
+        let models = try await Pinned.loadNemotron(from: URL(fileURLWithPath: "/m"), env: [:]) { _, units in
+            seen.append(units)
+            return 7
+        }
+        #expect(models == 7)
+        #expect(seen == [.cpuAndNeuralEngine])
+    }
+
+    /// A second failure is the one reported (the first error is named in the retry line); a forced-CPU load has
+    /// nowhere lower to fall and does not retry.
+    @Test func theSecondFailureIsTheOneReportedAndAForcedCPUHasNoRetry() async {
+        struct First: Error {}
+        struct Second: Error {}
+        var calls = 0
+        await #expect(throws: Second.self) {
+            try await Pinned.loadNemotron(
+                from: URL(fileURLWithPath: "/m"), env: [:]
+            ) { (_: URL, _: MLComputeUnits) async throws -> Int in
+                calls += 1
+                let e: Error = calls == 1 ? First() : Second()
+                throw e
+            }
+        }
+        var seen: [MLComputeUnits] = []
+        await #expect(throws: First.self) {
+            try await Pinned.loadNemotron(
+                from: URL(fileURLWithPath: "/m"), env: ["OX_DIAR_COMPUTE_UNITS": "cpuOnly"]
+            ) { (_: URL, units: MLComputeUnits) async throws -> Int in
+                seen.append(units)
+                throw First()
+            }
+        }
+        #expect(seen == [.cpuOnly])
     }
 }
 
