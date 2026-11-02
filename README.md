@@ -555,6 +555,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_NOTES_PORT` | `8098` | Loopback port the notes engine binds. Set explicitly, it must differ from the other listeners or the daemon refuses to start; left at the default, a collision turns notes off (`port_blocked` in `/status`) and the rest of the daemon runs |
 | `OX_SAY_NOTES_IDLE_STOP_SECS` | `120` | Stop the notes engine after N s idle |
 | `OX_SAY_DIAR_BIN` | `<engine dir>/ox-diar` | The speaker diarization engine (meeting voices); Apple Silicon, macOS 15 or later |
+| `OX_SAY_DIAR_ENGINE` | `pyannote` | Which model separates the voices of a meeting: `pyannote` or `nemotron` (Nemotron 3 Diarization on the Neural Engine, fetched by `scripts/fetch-models.sh`). A Mac that chose `nemotron` without having fetched its set keeps one far-side label (`models_missing`) until the fetch is done; `nemotron` takes calls up to 6 hours, `pyannote` up to 2 |
 | `OX_SAY_IDLE_STOP_SECS` | `300` | Stop the idle engine after N s; 0 = never |
 | `OX_SAY_STARTUP_TIMEOUT_SECS` | `180` | Covers the first-start Metal shader compile |
 | `OX_SAY_LANG` | empty | Default language; empty = engine auto-detect |

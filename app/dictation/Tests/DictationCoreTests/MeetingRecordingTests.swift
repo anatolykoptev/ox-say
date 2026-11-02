@@ -68,7 +68,10 @@ final class MeetingLimitsTests: XCTestCase {
     }
 
     /// A recording longer than the daemon's voice-separation cap loses its speakers (too_long). The app stops under it,
-    /// by more than the stop's own lag (one tick of the 0.25 s badge timer and the finish call).
+    /// by more than the stop's own lag. The cap read here is `diarMaxSeconds`, the default (pyannote) engine's; the
+    /// Nemotron engine's `diarMaxSecondsNemotron` is longer, so a Mac on it loses nothing, and this pin moves to it
+    /// when the default engine flips. The regex does not match the Nemotron constant, so a rename of the pyannote one
+    /// fails here instead of passing against nothing. (one tick of the 0.25 s badge timer and the finish call).
     /// Mutation: MeetingLimits.maxRecordingSeconds, set it to 3 * 3600 -> RED.
     func testTheRecordingCapStaysUnderTheDiarizationCap() throws {
         let daemon = TimeInterval(try goDiarSeconds())

@@ -51,8 +51,8 @@ const (
 	// written only when DropEcho dropped turns: the way back from a turn that
 	// was wrongly judged an echo.
 	RawTranscriptJSON = "transcript.raw.json"
-	// DiarizationJSON is ox-diar's answer, with the embedding of every voice: a voiceprint of people who never
-	// agreed to one. It is written by the daemon inside WorkDir for the length of one diarization and read once;
+	// DiarizationJSON is ox-diar's answer. On the pyannote engine it carries the embedding of every voice: a voiceprint
+	// of people who never agreed to one (the Nemotron engine has no embeddings, and writes none). It is written by the daemon inside WorkDir for the length of one diarization and read once;
 	// the transcript keeps the voices (Turn.Voice), and nothing but WorkDir may ever hold an embedding.
 	DiarizationJSON = "diarization.json"
 	// SpeakersJSON is what the user decided about the voices (SpeakerState).

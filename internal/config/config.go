@@ -80,6 +80,14 @@ const DiarModelsRevision = "df2625ac79a7ac6b65ad868fee6d80f320da4232"
 // names it in Pins.swift, and a test compares the three; ox-diar reads the set on the nemotron engine.
 const NemotronModelsRevision = "25a90f97f254428d4b30374b76af9c74fdee8327"
 
+// The ox-diar engines the daemon can ask for (OX_SAY_DIAR_ENGINE, passed to ox-diar as --engine). DefaultDiarEngine
+// stays pyannote until the Nemotron engine passes its gates; flipping it is its own change.
+const (
+	DiarEnginePyannote = "pyannote"
+	DiarEngineNemotron = "nemotron"
+	DefaultDiarEngine  = DiarEnginePyannote
+)
+
 const bytesPerGB = 1 << 30
 
 // GPU memory models (OX_SAY_GPU_MEMORY). auto is resolved at load, so a
@@ -167,6 +175,7 @@ type Config struct {
 	NotesPort     int           // OX_SAY_NOTES_PORT: loopback port the child binds
 	NotesIdleStop time.Duration // OX_SAY_NOTES_IDLE_STOP_SECS
 	DiarBin       string        // OX_SAY_DIAR_BIN: path to ox-diar (speaker diarization)
+	DiarEngine    string        // OX_SAY_DIAR_ENGINE: pyannote | nemotron (ox-diar --engine)
 	// NotesPortBlocked is set by load when the DEFAULT notes port collides
 	// with another ox-say listener: an explicitly set colliding port is a
 	// load error, but a colliding default must not take the daemon down for
@@ -219,6 +228,7 @@ var flagNames = map[string]string{
 	"notes-port":        "OX_SAY_NOTES_PORT",
 	"notes-idle-stop":   "OX_SAY_NOTES_IDLE_STOP_SECS",
 	"diar-bin":          "OX_SAY_DIAR_BIN",
+	"diar-engine":       "OX_SAY_DIAR_ENGINE",
 }
 
 // RegisterFlags registers one flag per supported env var on fs. Values set on
@@ -341,18 +351,37 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if c.DiarBin = get("OX_SAY_DIAR_BIN"); c.DiarBin == "" {
 		c.DiarBin = filepath.Join(engineDir, "ox-diar")
 	}
+	switch c.DiarEngine = orDefault(get("OX_SAY_DIAR_ENGINE"), DefaultDiarEngine); c.DiarEngine {
+	case DiarEnginePyannote, DiarEngineNemotron:
+	default:
+		return nil, fmt.Errorf("config: OX_SAY_DIAR_ENGINE %q: want %s|%s", c.DiarEngine, DiarEnginePyannote, DiarEngineNemotron)
+	}
 	return c, nil
 }
+
+// Engine is the ox-diar engine in use; a Config that never went through Load (a test's zero value) has the default.
+func (c *Config) Engine() string { return orDefault(c.DiarEngine, DefaultDiarEngine) }
 
 // DiarModelsDir is what ox-diar takes as --models: scripts/fetch-models.sh writes speaker-diarization/ inside it.
 func (c *Config) DiarModelsDir() string { return filepath.Join(c.Home, "models", "diar") }
 
-// DiarModelsReady reports whether the diarization models are all there for DiarModelsRevision. fetch-models.sh
-// writes the revision marker last, after every file passed its checksum, so a fetch that was cut short, or an
-// older revision, reads as not ready. The marker is read per call: a model fetched later works at once.
+// DiarModelsReady reports whether the models of the engine in use are all there. Each engine reads its own revision
+// marker and no other: pyannote needs the WeSpeaker set (speaker-diarization/.fluidaudio-revision == DiarModelsRevision);
+// nemotron needs the Nemotron set (nemotron-3-diarization/.ox-say-revision == NemotronModelsRevision) and nothing
+// else, because it has no embeddings. fetch-models.sh writes a marker last, after every file of its set passed its
+// checksum, so a fetch that was cut short, or an older revision, reads as not ready. The marker is read per call: a
+// model fetched later works at once.
 func (c *Config) DiarModelsReady() bool {
-	raw, err := os.ReadFile(filepath.Join(c.DiarModelsDir(), "speaker-diarization", ".fluidaudio-revision"))
-	return err == nil && strings.TrimSpace(string(raw)) == DiarModelsRevision
+	if c.Engine() == DiarEngineNemotron {
+		return markerIs(filepath.Join(c.DiarModelsDir(), "nemotron-3-diarization", ".ox-say-revision"), NemotronModelsRevision)
+	}
+	return markerIs(filepath.Join(c.DiarModelsDir(), "speaker-diarization", ".fluidaudio-revision"), DiarModelsRevision)
+}
+
+// markerIs: the file holds exactly want (a trailing newline allowed).
+func markerIs(path, want string) bool {
+	raw, err := os.ReadFile(path)
+	return err == nil && strings.TrimSpace(string(raw)) == want
 }
 
 // loadSTT reads the speech-to-text keys: paths, device, budgets and the

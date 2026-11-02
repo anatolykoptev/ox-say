@@ -317,7 +317,7 @@ class Contract(unittest.TestCase):
     # Mutation: Sources/ox-diar/main.swift, `OfflineDiarizerManager(config: Pinned.config())` -> `OfflineDiarizerManager()`
     # -> RED (windows=90); `Pinned.mlConfiguration()` -> `MLModelConfiguration()` -> RED (compute units all);
     # Sources/OxDiarCore/Config.swift `effectiveUnits(env:)` -> `.all` -> RED (compute units all); the `computeUnits:`
-    # argument of `Nemotron3Models.load` -> `.all` -> RED (the model reports the units it actually got).
+    # argument of `Nemotron3Models.load` -> `.all` -> RED (the model reports the units Core ML was handed).
     def test_the_pinned_configuration_is_what_runs(self):
         if not CLIP:
             self.skipTest("no --clip")
@@ -337,7 +337,8 @@ class Contract(unittest.TestCase):
             self.assertNotIn("cpu_fallback", self.load("o.json")["timing_s"])
 
     # OX_DIAR_COMPUTE_UNITS can only lower the nemotron units (CI runners have no Neural Engine). The units line
-    # is logged after the load, read back from the loaded model, so a failed attempt leaves no line at all. The
+    # is logged after the load, read back from the loaded model, so a load that fails leaves no line; a stream that
+    # fails after a good load has already written its Neural Engine line, and the cpuOnly retry then writes its own. The
     # second half asks for the Neural Engine on a machine that has it; on the CI VM that request is the failure
     # OX_DIAR_COMPUTE_UNITS exists to avoid, so it is skipped when the ambient run is the forced-CPU one.
     def test_nemotron_compute_units_follow_the_env(self):

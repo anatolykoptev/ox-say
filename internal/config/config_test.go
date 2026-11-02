@@ -306,6 +306,7 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_NOTES_PORT", "18098", "18098", func(c *Config) string { return strconv.Itoa(c.NotesPort) }},
 		{"OX_SAY_NOTES_IDLE_STOP_SECS", "67", "1m7s", func(c *Config) string { return c.NotesIdleStop.String() }},
 		{"OX_SAY_DIAR_BIN", "/tmp/oxk-4917/ox-diar-x", "/tmp/oxk-4917/ox-diar-x", func(c *Config) string { return c.DiarBin }},
+		{"OX_SAY_DIAR_ENGINE", "nemotron", "nemotron", func(c *Config) string { return c.DiarEngine }},
 	}
 	keys := EnvKeys()
 	inTable := map[string]bool{}
@@ -956,30 +957,85 @@ func TestNotesPortRejectsBadValues(t *testing.T) {
 }
 
 // The diarization models are ready only when the revision marker fetch-models.sh writes last names the revision
-// this build expects: absent (a fetch cut short), another revision (older models) and a half-written marker are
-// all "not ready".
-// Mutation: internal/config/config.go DiarModelsReady, change `== DiarModelsRevision` to `!= ""` -> RED (an old revision reads as ready).
+// this build expects, for the engine in use: absent (a fetch cut short), another revision (older models) and a
+// half-written marker are all "not ready". Each engine reads its own marker only: the Nemotron set has no
+// embeddings, so it does not need the WeSpeaker set, and the pyannote engine does not need the Nemotron one.
+// Mutations: internal/config/config.go DiarModelsReady, change `== DiarModelsRevision` to `!= ""` -> RED (an old
+// revision reads as ready); make the nemotron branch read the WeSpeaker marker (F2) -> RED on the nemotron rows.
 func TestDiarModelsReady(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("OX_SAY_HOME", home)
+	const (
+		wespeaker = "speaker-diarization/.fluidaudio-revision"
+		nemotron  = "nemotron-3-diarization/.ox-say-revision"
+	)
+	for _, tc := range []struct {
+		name    string
+		engine  string
+		markers map[string]string
+		want    bool
+	}{
+		{"pyannote, nothing fetched", DiarEnginePyannote, nil, false},
+		{"pyannote, WeSpeaker marker", DiarEnginePyannote, map[string]string{wespeaker: DiarModelsRevision + "\n"}, true},
+		{"pyannote, only the Nemotron marker", DiarEnginePyannote, map[string]string{nemotron: NemotronModelsRevision + "\n"}, false},
+		{"pyannote, empty marker", DiarEnginePyannote, map[string]string{wespeaker: ""}, false},
+		{"pyannote, another revision", DiarEnginePyannote, map[string]string{wespeaker: "deadbeef\n"}, false},
+		{"pyannote, a prefix of the revision", DiarEnginePyannote, map[string]string{wespeaker: DiarModelsRevision[:8] + "\n"}, false},
+		{"unset engine is the default engine", "", map[string]string{wespeaker: DiarModelsRevision}, DefaultDiarEngine == DiarEnginePyannote},
+		{"nemotron, nothing fetched", DiarEngineNemotron, nil, false},
+		{"nemotron, only the Nemotron marker", DiarEngineNemotron, map[string]string{nemotron: NemotronModelsRevision + "\n"}, true},
+		{"nemotron, only the WeSpeaker marker", DiarEngineNemotron, map[string]string{wespeaker: DiarModelsRevision + "\n"}, false},
+		{"nemotron, both markers", DiarEngineNemotron, map[string]string{wespeaker: DiarModelsRevision, nemotron: NemotronModelsRevision}, true},
+		{"nemotron, wrong Nemotron marker", DiarEngineNemotron, map[string]string{wespeaker: DiarModelsRevision, nemotron: "deadbeef\n"}, false},
+		{"nemotron, the WeSpeaker revision in the Nemotron marker", DiarEngineNemotron, map[string]string{nemotron: DiarModelsRevision}, false},
+		{"nemotron, empty marker", DiarEngineNemotron, map[string]string{nemotron: ""}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Config{Home: t.TempDir(), DiarEngine: tc.engine}
+			for rel, content := range tc.markers {
+				path := filepath.Join(c.DiarModelsDir(), filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := c.DiarModelsReady(); got != tc.want {
+				t.Errorf("engine %q, markers %v: ready %v, want %v", tc.engine, tc.markers, got, tc.want)
+			}
+		})
+	}
+}
+
+// OX_SAY_DIAR_ENGINE: unset is the default engine, the two names are accepted, anything else is a config error
+// (a typo must not silently run the other engine). Config{} (a test's zero value) also reads as the default.
+// Mutation: internal/config/config.go Config.Engine, return DiarEngineNemotron for "" -> RED; delete the switch's
+// error branch in load -> RED on "bogus".
+func TestDiarEngineSetting(t *testing.T) {
+	t.Setenv("OX_SAY_HOME", t.TempDir())
+	t.Setenv("OX_SAY_DIAR_ENGINE", "")
 	c, err := Load(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.DiarModelsReady() {
-		t.Fatal("no models yet, ready")
+	if c.Engine() != DefaultDiarEngine || c.DiarEngine != DefaultDiarEngine {
+		t.Errorf("unset: DiarEngine %q Engine() %q, want %q", c.DiarEngine, c.Engine(), DefaultDiarEngine)
 	}
-	dir := filepath.Join(c.DiarModelsDir(), "speaker-diarization")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
+	if DefaultDiarEngine != DiarEnginePyannote {
+		t.Errorf("DefaultDiarEngine = %q: the flip to nemotron is its own change", DefaultDiarEngine)
 	}
-	marker := filepath.Join(dir, ".fluidaudio-revision")
-	for revision, want := range map[string]bool{"": false, "deadbeef\n": false, DiarModelsRevision[:8] + "\n": false, DiarModelsRevision + "\n": true} {
-		if err := os.WriteFile(marker, []byte(revision), 0o644); err != nil {
-			t.Fatal(err)
+	if (&Config{}).Engine() != DefaultDiarEngine {
+		t.Errorf("zero Config engine = %q", (&Config{}).Engine())
+	}
+	for _, v := range []string{DiarEnginePyannote, DiarEngineNemotron} {
+		t.Setenv("OX_SAY_DIAR_ENGINE", v)
+		if c, err = Load(nil); err != nil || c.Engine() != v {
+			t.Errorf("OX_SAY_DIAR_ENGINE=%q: %v, engine %q", v, err, c.Engine())
 		}
-		if got := c.DiarModelsReady(); got != want {
-			t.Errorf("marker %q: ready %v, want %v", revision, got, want)
+	}
+	for _, v := range []string{"bogus", "Nemotron", "pyannote "} {
+		t.Setenv("OX_SAY_DIAR_ENGINE", v)
+		if _, err := Load(nil); err == nil || !strings.Contains(err.Error(), "OX_SAY_DIAR_ENGINE") {
+			t.Errorf("OX_SAY_DIAR_ENGINE=%q: %v", v, err)
 		}
 	}
 }

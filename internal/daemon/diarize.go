@@ -27,13 +27,18 @@ const (
 	diarTimeoutDivisor = 10
 	// diarBytesPerSecond is 16 kHz mono s16le.
 	diarBytesPerSecond = 32000
-	// diarMaxSeconds caps the recording ox-diar is given. It holds the whole channel in memory: measured at about
-	// 1.06 GB resident for an hour of call (1.04 GB peak on the Radio-T hour, 1.2 GB for 113 minutes), so two hours
-	// is about 2.1 GB. On an 8 GB Mac that leaves room for macOS, a resident Parakeet and the app; three hours
+	// diarMaxSeconds caps the recording the pyannote engine is given. It holds the whole channel in memory: measured
+	// at about 1.06 GB resident for an hour of call (1.04 GB peak on the Radio-T hour, 1.2 GB for 113 minutes), so two
+	// hours is about 2.1 GB. On an 8 GB Mac that leaves room for macOS, a resident Parakeet and the app; three hours
 	// (about 3.2 GB) would not. A longer call keeps one far-side label (unavailable, too_long), because diarizing it
 	// could page the Mac to a halt. The 8 GB probe (plan, 20a carried items) has not been run, so this errs low.
-	diarMaxSeconds  = 2 * 3600
-	diarMaxPCMBytes = diarMaxSeconds * diarBytesPerSecond
+	// The app's recording cap is pinned to this number (MeetingLimitsTests reads it by regex), because pyannote is
+	// the default engine; diarMaxSecondsNemotron is for a Mac that chose the other one.
+	diarMaxSeconds = 2 * 3600
+	// diarMaxSecondsNemotron: the Nemotron engine streams the mapped channel in 30 s chunks, so memory does not grow
+	// with the call: 65 MB at 2.2 h, 80-87 MB at 4.4 h and 103 MB at 6.6 h, 17 s of wall time for 2.2 h on the Neural
+	// Engine (plan, Task 0 probe A). Six hours is the cap the probe covers.
+	diarMaxSecondsNemotron = 6 * 3600
 	// diarStderrKeep is how much of ox-diar's stderr an error carries; it holds no transcript text (ox-diar never
 	// sees words).
 	diarStderrKeep = 512
@@ -56,7 +61,9 @@ var (
 
 // diarReady is Deps.DiarizeReady: why this Mac cannot tell voices apart, "" when it can. An old macOS first (the
 // engine would crash there; a system that will not say its version is treated as old, because a macOS 13 Mac cannot
-// even launch the binary), then an Intel CPU, then a missing engine, then models that are not all there.
+// even launch the binary), then an Intel CPU, then a missing engine, then models that are not all there for the
+// engine in use (Config.DiarModelsReady). A Mac on nemotron without the Nemotron set says models_missing, a code a
+// voices retry can fix: the runner accepts the retry as soon as the fetch has written the marker.
 func (d *Daemon) diarReady() string {
 	if major, ok := osMajor(); !ok || major < diarMinMacOS {
 		return meeting.DiarOSTooOld
@@ -73,7 +80,17 @@ func (d *Daemon) diarReady() string {
 	return ""
 }
 
-// diarTimeout is how long one ox-diar run on a channel of pcmBytes may take.
+// diarMaxPCMBytes is the largest far-side channel file the engine is given: 2 h for pyannote, 6 h for nemotron.
+func diarMaxPCMBytes(engine string) int64 {
+	if engine == config.DiarEngineNemotron {
+		return diarMaxSecondsNemotron * diarBytesPerSecond
+	}
+	return diarMaxSeconds * diarBytesPerSecond
+}
+
+// diarTimeout is how long one ox-diar run on a channel of pcmBytes may take. The tenth of the audio is sized on
+// pyannote's CPU worst case; the Neural Engine runs a Nemotron hour in about 8 s, so at the 6 h cap (36 minutes) the
+// bound is generous, and it only has to catch a hung process.
 func diarTimeout(pcmBytes int64) time.Duration {
 	audio := time.Duration(pcmBytes/diarBytesPerSecond) * time.Second
 	return max(diarMinTimeout, audio/diarTimeoutDivisor)
@@ -93,7 +110,7 @@ func runDiarizer(ctx context.Context, cfg *config.Config, pcmPath string) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	if st.Size() > diarMaxPCMBytes {
+	if st.Size() > diarMaxPCMBytes(cfg.Engine()) {
 		return nil, &meeting.DiarUnavailableError{Reason: meeting.DiarTooLong}
 	}
 	work := filepath.Join(filepath.Dir(pcmPath), meeting.WorkDir)
@@ -104,7 +121,7 @@ func runDiarizer(ctx context.Context, cfg *config.Config, pcmPath string) ([]byt
 	defer func() { _ = os.Remove(out) }()
 	ctx, cancel := context.WithTimeout(ctx, diarTimeout(st.Size()))
 	defer cancel()
-	_, err = diarRun(ctx, cfg.DiarBin, []string{pcmPath, out, "--models", cfg.DiarModelsDir()},
+	_, err = diarRun(ctx, cfg.DiarBin, []string{pcmPath, out, "--models", cfg.DiarModelsDir(), "--engine", cfg.Engine()},
 		oneshot.Options{StderrTail: diarStderrKeep, WaitDelay: diarWaitDelay})
 	if err != nil {
 		var exit *oneshot.ExitError
