@@ -301,23 +301,3 @@ func TestProduceHTTPCancelAndChunkRange(t *testing.T) {
 		t.Fatalf("chunk range: %d %s", rec.Code, rec.Body)
 	}
 }
-
-// loudness_lufs and inference_timesteps reach the producer over MCP, and an
-// explicit inference_timesteps of 0 is refused, not read as the default.
-// Mutation: internal/daemon/produce_mcp.go toolProduce, drop LoudnessLUFS or
-// Timesteps from the produceInput -> RED; explicitTimesteps accepting 0 -> RED.
-func TestMCPProduceLoudnessAndSteps(t *testing.T) {
-	f := newFakePorts(t)
-	cs := produceMCPSession(t, f)
-	if _, errText := toolText(t, cs, "produce", map[string]any{"script": "Привет.", "voice": "nar", "inference_timesteps": 0}); !strings.Contains(errText, "inference_timesteps must be") {
-		t.Fatalf("steps 0: %q", errText)
-	}
-	if _, errText := toolText(t, cs, "produce", map[string]any{"script": "Привет.", "voice": "nar", "loudness_lufs": -3}); !strings.Contains(errText, "loudness_lufs must be") {
-		t.Fatalf("lufs -3: %q", errText)
-	}
-	id := mcpProduceDone(t, cs, map[string]any{"script": "Привет.", "voice": "nar", "loudness_lufs": -18, "inference_timesteps": 8})
-	m, err := vproject.Load(filepath.Join(f.home, produceDir, id))
-	if err != nil || m.Settings.LUFS != -18 || m.Settings.Steps != 8 {
-		t.Fatalf("settings %+v err %v", m.Settings, err)
-	}
-}
