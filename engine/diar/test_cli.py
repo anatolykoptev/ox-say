@@ -13,6 +13,7 @@ Needs no network and no Python packages. Mutation hooks: see the plan, Task 20a.
 import argparse
 import json
 import math
+import random
 import os
 import re
 import stat
@@ -41,89 +42,318 @@ def diar(*args, env=None):
     return run(*args, "--engine", ENGINE, env=env)
 
 
-# What may appear in the shared temporary directory while ox-diar runs without being its audio. macOS system daemons
-# create their own per-daemon directories there at any moment: `com.apple.inputanalyticsd`,
-# `com.apple.ScopedBookmarkAgent` and `com.apple.Maps.mapssyncd` all showed up in real CI runs (diar, macos-15) and
-# failed a test that flagged every new entry. The rule: a new top-level entry is audio-suspect unless its name starts
-# with `com.apple.` AND it holds no regular file of AUDIO_FLOOR bytes or more, found recursively. A killed FluidAudio
-# stream file is float32 PCM, about 64 KB per second of 16 kHz audio, so 32 KB is half a second of it. Outside the
-# `com.apple.` namespace the rule is name-agnostic, as before. What cannot be checked counts against the entry: a
-# directory that cannot be listed under a `com.apple.` entry is suspect, and so is a file whose size cannot be read.
-AUDIO_FLOOR = 32 * 1024
-SYSTEM_PREFIX = "com.apple."
+# What counts as "audio reached the temporary directory". macOS system daemons create files in the shared temporary
+# directory at any moment: `com.apple.inputanalyticsd`, `com.apple.ScopedBookmarkAgent`, `com.apple.Maps.mapssyncd`,
+# then `com.apple.tipsd/CFNetworkDownload_*.tmp` (about 49 KB) and `com.apple.duetexpertd` on the hosted macos-15 VM.
+# Every rule on names or sizes of a shared directory flaked sooner or later, so the oracle looks at CONTENT, which no
+# daemon can match: a few short non-silent windows from the start of the clip are turned into byte signatures for the
+# encodings a stream or WAV copy would use (int16 little-endian; float32 little-endian scaled by 1/32768 and by
+# 1/32767), and a new or grown file at any depth, in any namespace including `com.apple.*`, is suspect when it holds
+# one of them. Files are read as they appear and again as they grow (only the new bytes, with an overlap so a
+# signature cannot hide on a chunk boundary), so a file that its owner deletes at the end of a run is still judged;
+# at most one chunk of one file is in memory. A file we cannot read is suspect only when it belongs to our own uid:
+# ox-diar runs as us, so a file it made is readable by us, while an unreadable file of another user's daemon cannot
+# be ours. A file already present at the start is judged only for bytes appended during the run.
+# What this cannot see: audio at another sample rate, compressed audio, a transformed feature matrix (mel, embedding),
+# or a file created and deleted between two polls (a few milliseconds) without ever growing past one poll.
+SIG_SAMPLES = 128           # samples per signature window: 256 bytes as int16, 512 as float32
+SIG_COUNT = 3               # windows per encoding, all near the start so a run killed after a second still has them
+SIG_SEARCH_SECONDS = 10     # how far into the clip to look for non-silent windows
+SIG_MIN_PEAK = 1000         # a window needs a sample at least this loud (of 32768) ...
+SIG_MIN_DISTINCT = 32       # ... and this many different sample values, so silence and DC offsets never qualify
+SCAN_CHUNK = 1 << 20
 
 
-def audio_suspect(path):
-    """Why `path` (a new top-level entry of a temporary directory) may hold audio, or None when it is a daemon's."""
-    if not os.path.basename(path).startswith(SYSTEM_PREFIX):
-        return f"{path}: a new entry outside {SYSTEM_PREFIX}*"
-    pending = [path]
-    while pending:
-        p = pending.pop()
+def _f32_of_ratio(num, den):
+    """The float32 nearest to num/den, rounded once (a double in between could round twice), as 4 little-endian bytes."""
+    if num == 0:
+        return struct.pack("<f", 0.0)
+    sign, n = (-1, -num) if num < 0 else (1, num)
+    e = n.bit_length() - den.bit_length() - 24  # n/den is in [2**(e+23), 2**(e+25)): scale so the quotient has 24-25 bits
+    while True:
+        scaled = (n << max(-e, 0)), (den << max(e, 0))
+        q, r = divmod(*scaled)
+        if 1 << 23 <= q < 1 << 24:
+            break
+        e += 1 if q >= 1 << 24 else -1
+    if 2 * r > scaled[1] or (2 * r == scaled[1] and q & 1):
+        q += 1
+    return struct.pack("<f", sign * math.ldexp(q, e))
+
+
+def audio_signatures(pcm):
+    """Byte signatures of up to SIG_COUNT non-silent windows near the start of `pcm` (16 kHz mono s16le), in the
+    three encodings. Empty when the clip has no such window: the caller must treat that as a failure, never a pass."""
+    sigs = []
+    limit = min(len(pcm) // 2, SIG_SEARCH_SECONDS * 16000)
+    start = 0
+    while start + SIG_SAMPLES <= limit and len(sigs) < SIG_COUNT * 3:
+        window = struct.unpack_from(f"<{SIG_SAMPLES}h", pcm, start * 2)
+        if max(map(abs, window)) >= SIG_MIN_PEAK and len(set(window)) >= SIG_MIN_DISTINCT:
+            sigs.append(pcm[start * 2:(start + SIG_SAMPLES) * 2])
+            sigs.append(b"".join(_f32_of_ratio(s, 32768) for s in window))
+            sigs.append(b"".join(_f32_of_ratio(s, 32767) for s in window))
+        start += SIG_SAMPLES
+    return sigs
+
+
+def scan_file(path, sigs, start=0, chunk=SCAN_CHUNK):
+    """(found, end): whether a signature occurs in path[start:], and the offset read up to. Reads `chunk` bytes at a
+    time with an overlap of the longest signature, so one chunk is all that is ever held."""
+    keep = max(map(len, sigs)) - 1
+    with open(path, "rb") as f:
+        pos = max(0, start - keep)
+        f.seek(pos)
+        tail = b""
+        while True:
+            block = f.read(chunk)
+            if not block:
+                return False, pos
+            buf = tail + block
+            if any(s in buf for s in sigs):
+                return True, pos + len(block)
+            tail = buf[-keep:] if keep else b""
+            pos += len(block)
+
+
+class TempWatch:
+    """Watches directory trees for files that hold a signature. Create it BEFORE the run (it snapshots what is
+    there), call poll() often during the run and once after it; `suspects` maps path -> reason."""
+
+    def __init__(self, roots, sigs, exclude=(), chunk=SCAN_CHUNK):
+        self.roots, self.sigs, self.chunk = list(roots), sigs, chunk
+        self.exclude = tuple(os.path.realpath(x) for x in exclude)  # compared as whole path components
+        self.suspects, self.scanned, self.before = {}, {}, {}
+        self.ignored = set()
+        for path, st in self._files(record_unreadable=False):
+            self.before[path] = (st.st_size, st.st_mtime_ns)
+
+    def _excluded(self, path):
+        return any(path == x or path.startswith(x + os.sep) for x in self.exclude)
+
+    def _ours(self, path):
         try:
-            st = os.lstat(p)  # lstat: a symlink is not followed, so one cannot hide or fake a big file
-            if stat.S_ISDIR(st.st_mode):
-                pending.extend(os.path.join(p, n) for n in os.listdir(p))
-            elif stat.S_ISREG(st.st_mode) and st.st_size >= AUDIO_FLOOR:
-                return f"{p}: a regular file of {st.st_size} bytes (floor {AUDIO_FLOOR})"
-        except FileNotFoundError:
-            continue  # the daemon removed it while we looked: nothing is left to hold audio
-        except OSError as e:
-            return f"{p}: cannot be inspected ({e.strerror}), so it cannot be shown to hold no audio"
-    return None
+            return os.lstat(path).st_uid == os.getuid()
+        except OSError:
+            return False  # gone: nothing left to hold audio
+
+    def _unreadable(self, path, err, record):
+        if record and path not in self.ignored and self._ours(path):
+            self.suspects[path] = f"cannot be inspected ({err.strerror}) and belongs to this user, so it cannot be shown to hold no audio"
+
+    def _files(self, record_unreadable=True):
+        for root in self.roots:
+            stack = [root]
+            while stack:
+                d = stack.pop()
+                if self._excluded(d):
+                    continue
+                try:
+                    entries = list(os.scandir(d))
+                except FileNotFoundError:
+                    continue
+                except OSError as err:
+                    self._unreadable(d, err, record_unreadable)
+                    if not record_unreadable:
+                        self.ignored.add(d)
+                    continue
+                for e in entries:
+                    try:
+                        st = e.stat(follow_symlinks=False)  # a symlink is not followed
+                    except FileNotFoundError:
+                        continue
+                    except OSError as err:
+                        self._unreadable(e.path, err, record_unreadable)
+                        continue
+                    if stat.S_ISDIR(st.st_mode):
+                        stack.append(e.path)
+                    elif stat.S_ISREG(st.st_mode):
+                        yield e.path, st
+
+    def poll(self):
+        for path, st in self._files():
+            if path in self.suspects or self._excluded(path):
+                continue
+            pos = self.scanned.get(path)
+            if pos is None:
+                old = self.before.get(path)
+                if old is None:
+                    pos = 0
+                elif (st.st_size, st.st_mtime_ns) == old:
+                    continue
+                else:
+                    pos = old[0]  # a file that was already there: only what was appended
+            elif st.st_size < pos:
+                pos = 0  # truncated and rewritten
+            if path in self.scanned and st.st_size == pos:
+                continue
+            if st.st_size <= pos:
+                self.scanned[path] = st.st_size
+                continue
+            try:
+                found, end = scan_file(path, self.sigs, pos, self.chunk)
+            except FileNotFoundError:
+                continue
+            except OSError as err:
+                self._unreadable(path, err, True)
+                continue
+            self.scanned[path] = end
+            if found:
+                self.suspects[path] = f"holds the audio of the clip ({st.st_size} bytes)"
 
 
-class AudioSuspectRule(unittest.TestCase):
-    """The classification above on fake trees; needs no models and no binary."""
+def synthetic_clip(seconds, seed, silent_seconds=0):
+    """Deterministic noise-like 16 kHz mono s16le audio (loud, many distinct values), after `silent_seconds` of zeros."""
+    rng = random.Random(seed)
+    return bytes(2 * 16000 * silent_seconds) + struct.pack(f"<{16000 * seconds}h", *(rng.randint(-12000, 12000) for _ in range(16000 * seconds)))
+
+
+def float32_copy(pcm, divisor=32768):
+    samples = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+    return b"".join(_f32_of_ratio(s, divisor) for s in samples)
+
+
+class AudioOracle(unittest.TestCase):
+    """The content check on generated audio; needs no models and no binary."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = type("Tmp", (), {"name": os.path.realpath(td.name)})  # /var is a symlink to /private/var on macOS
+        self.pcm = synthetic_clip(1, seed=1)
+        self.sigs = audio_signatures(self.pcm)
 
-    def make(self, rel, size=0):
-        p = os.path.join(self.tmp.name, rel)
+    def file(self, name, data):
+        p = os.path.join(self.tmp.name, name)
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "wb") as f:
-            f.write(b"\0" * size)
-        return os.path.join(self.tmp.name, rel.split("/")[0])
+            f.write(data)
+        return p
 
-    def test_a_daemon_directory_with_small_files_passes(self):
-        self.assertIsNone(audio_suspect(self.make("com.apple.inputanalyticsd/state.db", 4096)))
-        self.assertIsNone(audio_suspect(self.make("com.apple.ScopedBookmarkAgent/a/b/c.plist", AUDIO_FLOOR - 1)))
-        os.makedirs(os.path.join(self.tmp.name, "com.apple.Maps.mapssyncd"))
-        self.assertIsNone(audio_suspect(os.path.join(self.tmp.name, "com.apple.Maps.mapssyncd")))
+    def found(self, data, **kw):
+        return scan_file(self.file("x.bin", data), self.sigs, **kw)[0]
 
-    def test_a_big_file_in_a_daemon_directory_fails_at_any_depth(self):
-        self.assertIn("1048576", audio_suspect(self.make("com.apple.fake/x.bin", 1 << 20)))
-        self.assertIsNotNone(audio_suspect(self.make("com.apple.deep/a/b/c/d.raw", AUDIO_FLOOR)))
+    def test_the_float32_rounding_is_the_nearest_float(self):
+        from fractions import Fraction
+        for d in (32768, 32767):
+            for v in (1, -1, 7, 12345, -32768, 32767, 20000, -999, 3):
+                got = _f32_of_ratio(v, d)
+                bits = struct.unpack("<I", got)[0]
+                x = Fraction(v, d)
+                f = lambda b: Fraction(struct.unpack("<f", struct.pack("<I", b))[0])
+                for nb in (bits - 1, bits + 1):  # the neighbouring floats are never closer than the one chosen
+                    self.assertLessEqual(abs(f(bits) - x), abs(f(nb) - x), (v, d))
+        self.assertEqual(_f32_of_ratio(3, 32768), struct.pack("<f", 3 / 32768))
+        self.assertEqual(_f32_of_ratio(0, 32767), struct.pack("<f", 0.0))
 
-    def test_a_big_daemon_file_directly_in_the_directory_fails(self):
-        self.assertIsNotNone(audio_suspect(self.make("com.apple.loose", AUDIO_FLOOR)))
+    def test_an_int16_copy_is_found(self):
+        self.assertTrue(self.found(self.pcm))
 
-    def test_any_name_outside_the_system_namespace_fails_even_when_empty(self):
-        self.assertIsNotNone(audio_suspect(self.make("fluidaudio-x.raw", 0)))
-        self.assertIsNotNone(audio_suspect(self.make("apple.com.x/y", 1)))
-        self.assertIsNotNone(audio_suspect(self.make("Com.apple.x/y", 1)))
+    def test_a_float32_copy_is_found_at_both_scales(self):
+        self.assertTrue(self.found(float32_copy(self.pcm, 32768)))
+        self.assertTrue(self.found(float32_copy(self.pcm, 32767)))
 
-    def test_an_unreadable_big_file_fails(self):
-        d = self.make("com.apple.locked/big", AUDIO_FLOOR)
-        os.chmod(os.path.join(d, "big"), 0)
-        self.assertIsNotNone(audio_suspect(d))
+    def test_a_copy_with_a_header_in_front_is_found(self):
+        self.assertTrue(self.found(b"RIFF" + bytes(40) + self.pcm))
+        self.assertTrue(self.found(b"\x00" * 4099 + float32_copy(self.pcm)))
 
-    def test_an_unlistable_directory_fails(self):
-        d = self.make("com.apple.sealed/inner/f", 1)
-        os.chmod(os.path.join(d, "inner"), 0)
-        self.addCleanup(os.chmod, os.path.join(d, "inner"), 0o700)
-        self.assertIn("cannot be inspected", audio_suspect(d))
+    def test_a_partial_copy_holding_the_window_is_found(self):
+        first = audio_signatures(self.pcm)[0]
+        at = self.pcm.index(first) + len(first) + 10
+        self.assertTrue(self.found(self.pcm[:at]))
+        self.assertTrue(self.found(float32_copy(self.pcm[:at])))
 
-    def test_a_symlink_is_not_followed(self):
-        big = self.make("outside.bin", AUDIO_FLOOR * 2)
-        os.makedirs(os.path.join(self.tmp.name, "com.apple.link"))
-        os.symlink(big, os.path.join(self.tmp.name, "com.apple.link", "l"))
-        self.assertIsNone(audio_suspect(os.path.join(self.tmp.name, "com.apple.link")))
+    def test_a_signature_across_a_chunk_boundary_is_found(self):
+        data = bytes(1000) + self.sigs[0] + bytes(1000)
+        self.assertTrue(self.found(data, chunk=1000 + len(self.sigs[0]) // 2))
+        self.assertTrue(self.found(data, chunk=1))
 
-    def test_an_entry_that_vanished_passes(self):
-        self.assertIsNone(audio_suspect(os.path.join(self.tmp.name, "com.apple.gone")))
+    def test_random_bytes_and_zeros_are_not_found(self):
+        self.assertFalse(self.found(random.Random(5).randbytes(1 << 20)))
+        self.assertFalse(self.found(bytes(1 << 20)))
+
+    def test_a_different_clip_is_not_found(self):
+        other = synthetic_clip(1, seed=2)
+        self.assertFalse(self.found(other))
+        self.assertFalse(self.found(float32_copy(other)))
+
+    def test_a_silent_region_is_never_a_signature(self):
+        pcm = synthetic_clip(1, seed=3, silent_seconds=2)
+        sigs = audio_signatures(pcm)
+        self.assertTrue(sigs)
+        zeros = (bytes(2 * SIG_SAMPLES), bytes(4 * SIG_SAMPLES))
+        self.assertFalse(any(s in zeros for s in sigs))
+        self.assertTrue(all(pcm.index(s) >= 2 * 2 * 16000 for s in sigs if len(s) == 2 * SIG_SAMPLES), "the windows start after the silence")
+        self.assertEqual(audio_signatures(bytes(2 * 16000 * 3)), [], "a silent clip has no signature, and the test must fail on that, not pass")
+        self.assertFalse(scan_file(self.file("silence", bytes(1 << 16)), sigs)[0], "a file of zeros is not a copy of anything")
+
+    def test_there_are_three_windows_per_encoding_near_the_start(self):
+        self.assertEqual(len(self.sigs), 9)
+        for s in self.sigs[::3]:
+            self.assertLess(self.pcm.index(s), 2 * 16000)
+
+    def watch(self, **kw):
+        d = os.path.join(self.tmp.name, "watched")
+        os.makedirs(d, exist_ok=True)
+        return d, TempWatch([d], self.sigs, **kw)
+
+    def test_a_new_file_that_holds_the_audio_is_flagged_in_any_namespace(self):
+        d, w = self.watch()
+        p = self.file("watched/com.apple.tipsd/deep/er/stream.raw", float32_copy(self.pcm))
+        w.poll()
+        self.assertIn(p, w.suspects)
+
+    def test_a_file_deleted_after_it_was_judged_stays_flagged(self):
+        d, w = self.watch()
+        p = self.file("watched/fluidaudio-streaming-x.raw", self.pcm)
+        w.poll()
+        os.remove(p)
+        w.poll()
+        self.assertIn(p, w.suspects)
+
+    def test_a_file_that_grows_into_a_copy_is_flagged_when_it_does(self):
+        d, w = self.watch()
+        p = self.file("watched/stream.raw", b"header")
+        w.poll()
+        self.assertEqual(w.suspects, {})
+        with open(p, "ab") as f:
+            f.write(float32_copy(self.pcm))
+        w.poll()
+        self.assertIn(p, w.suspects)
+
+    def test_daemon_files_of_any_size_are_not_flagged(self):
+        d, w = self.watch()
+        self.file("watched/com.apple.tipsd/CFNetworkDownload_x.tmp", random.Random(1).randbytes(49 * 1024))
+        self.file("watched/com.apple.duetexpertd/state", b"\0" * (1 << 21))
+        w.poll()
+        self.assertEqual(w.suspects, {})
+
+    def test_a_file_that_was_already_there_and_did_not_change_is_not_flagged(self):
+        os.makedirs(os.path.join(self.tmp.name, "watched"))
+        p = self.file("watched/old.raw", self.pcm)
+        d, w = self.watch()
+        w.poll()
+        self.assertEqual(w.suspects, {})
+
+    def test_an_excluded_tree_is_not_judged(self):
+        d, w = self.watch(exclude=[os.path.join(self.tmp.name, "watched", "mine")])
+        self.file("watched/mine/clip.pcm", self.pcm)
+        other = self.file("watched/mine2/clip.pcm", self.pcm)  # a sibling whose name merely starts the same is not excluded
+        w.poll()
+        self.assertEqual(list(w.suspects), [os.path.join(d, "mine2", "clip.pcm")])
+
+    def test_an_unreadable_file_of_ours_is_flagged_and_a_symlink_is_not_followed(self):
+        d, w = self.watch()
+        p = self.file("watched/locked", b"x")
+        os.chmod(p, 0)
+        self.addCleanup(os.chmod, p, 0o600)
+        outside = self.file("outside.raw", self.pcm)
+        os.symlink(outside, os.path.join(d, "link"))
+        w.poll()
+        if os.access(p, os.R_OK):  # running as root: nothing is unreadable
+            self.skipTest("root reads everything")
+        self.assertIn(p, w.suspects)
+        self.assertNotIn(os.path.join(d, "link"), w.suspects)
 
 
 class Contract(unittest.TestCase):
@@ -393,16 +623,17 @@ class Contract(unittest.TestCase):
     # `fluidaudio-streaming-*.raw` file in the user's temporary directory (about 230 MB per hour) and only a `defer`
     # removes it, so a killed process leaves someone's call outside the meeting directory and outside retention.
     # ox-diar reads the channel into memory instead. The test runs it to the end, and again with a SIGKILL a second in,
-    # and classifies every new entry in that directory with `audio_suspect` above, and in $TMPDIR when that is a
-    # different directory. (Foundation on macOS takes its temporary directory from `confstr`
-    # (`getconf DARWIN_USER_TEMP_DIR`), not from $TMPDIR, so pointing TMPDIR elsewhere would protect nothing; both are
-    # watched.) The rule is name-agnostic outside `com.apple.*` (a rename of FluidAudio's stream file, or another
-    # library's copy, must not slip past a name filter) and size-aware inside it, because system daemons create their
-    # own directories there while the test runs (`com.apple.inputanalyticsd`, `com.apple.ScopedBookmarkAgent`,
-    # `com.apple.Maps.mapssyncd` in real CI runs). Entries are classified when first seen and again at the end.
+    # and watches the user's temporary directory (Foundation on macOS takes it from `confstr`,
+    # `getconf DARWIN_USER_TEMP_DIR`, not from $TMPDIR, so pointing TMPDIR elsewhere would protect nothing; both are
+    # watched) with `TempWatch` above. Why it looks at CONTENT: the first version flagged every new top-level entry,
+    # the second every entry outside `com.apple.*` or over a size floor, and system daemons broke both
+    # (`com.apple.inputanalyticsd`, `ScopedBookmarkAgent`, `Maps.mapssyncd`, then `tipsd`'s 49 KB
+    # `CFNetworkDownload_*.tmp` and `duetexpertd` on the hosted macos-15 VM). A file is suspect only when it holds
+    # bytes of the clip itself, as int16 or float32; see the comment on `audio_signatures` for what that cannot see.
+    # The test's own scratch directory is excluded (it holds the legitimate PCM copy of the clip).
     # Mutation: Sources/ox-diar/main.swift, write the samples to a WAV beside the output and replace
-    # `manager.process(audio: samples)` with `manager.process(thatURL)` -> RED (the killed run leaves its stream file,
-    # which is not `com.apple.*`).
+    # `manager.process(audio: samples)` with `manager.process(thatURL)` -> RED (the killed run leaves its stream file);
+    # `StubWritesAudio` below proves the same through this very method with a stub binary.
     def test_no_audio_reaches_the_temporary_directory(self):
         if not CLIP:
             self.skipTest("no --clip")
@@ -410,15 +641,11 @@ class Contract(unittest.TestCase):
         watched = {os.path.realpath(tmp)}
         if os.environ.get("TMPDIR"):
             watched.add(os.path.realpath(os.environ["TMPDIR"]))
-        mine = lambda: {os.path.join(d, n) for d in watched for n in os.listdir(d)}
-        before = mine()
-        verdicts = {}
-
-        def judge(paths):
-            for q in paths:
-                if verdicts.get(q) is None:
-                    verdicts[q] = audio_suspect(q)
         pcm = self.clip_pcm()
+        with open(pcm, "rb") as f:
+            sigs = audio_signatures(f.read())
+        self.assertTrue(sigs, "the clip has no non-silent window to look for: this test would pass without checking anything")
+        watch = TempWatch(sorted(watched), sigs, exclude=[self.tmp.name])
         env = dict(os.environ)
         env.pop("OX_DIAR_ASSUME_MACOS", None)
         for kill_after in (None, 1.0):
@@ -426,15 +653,72 @@ class Contract(unittest.TestCase):
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             started = time.time()
             while proc.poll() is None:
-                judge(mine() - before)
+                watch.poll()
                 if kill_after is not None and time.time() - started > kill_after:
                     proc.kill()
                     proc.wait()
                     break
                 time.sleep(0.005)
-            judge(mine() - before)
-            suspects = sorted(v for v in verdicts.values() if v)
-            self.assertEqual(suspects, [], f"ox-diar left audio-suspect files in {sorted(watched)} (kill_after={kill_after})")
+            watch.poll()
+            self.assertEqual(sorted(watch.suspects.items()), [],
+                             f"ox-diar left audio-suspect files in {sorted(watched)} (kill_after={kill_after})")
+
+
+class StubWritesAudio(unittest.TestCase):
+    """The REAL test method above, run against a stub `--bin` that does what the old FluidAudio path did: write a float32
+    copy of the PCM into the user's temporary directory, under a name nothing filters on, and delete it when it exits
+    normally. The method must fail on its first assertion, "ox-diar left audio-suspect files", though the file is gone
+    by the time the run ends. Needs no models and no ox-diar build."""
+
+    WRITER = (
+        "#!/usr/bin/env python3\n"
+        "import os, struct, subprocess, sys, time\n"
+        "tmp = subprocess.run(['getconf', 'DARWIN_USER_TEMP_DIR'], capture_output=True, text=True).stdout.strip()\n"
+        "pcm = open(sys.argv[1], 'rb').read()\n"
+        "path = os.path.join(tmp, 'ox-diar-oracle-stub-%d.raw' % os.getpid())\n"
+        "with open(path, 'wb') as f:\n"
+        "    f.write(struct.pack('<%df' % (len(pcm) // 2), *[s / 32768 for s in struct.unpack('<%dh' % (len(pcm) // 2), pcm)]))\n"
+        "time.sleep(1.5)\n"
+        "os.remove(path)\n"
+    )
+    IDLE = "#!/bin/sh\nsleep 1.5\n"
+
+    def run_real_method(self, stub_source):
+        global BIN, CLIP
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clip = os.path.join(tmp.name, "clip.wav")
+        with wave.open(clip, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(synthetic_clip(3, seed=9, silent_seconds=1))
+        stub = os.path.join(tmp.name, "stub")
+        with open(stub, "w") as f:
+            f.write(stub_source)
+        os.chmod(stub, 0o755)
+        was = BIN, CLIP
+        BIN, CLIP = stub, clip
+        case = Contract("test_no_audio_reaches_the_temporary_directory")
+        case.setUp()
+        try:
+            case.test_no_audio_reaches_the_temporary_directory()
+        finally:
+            BIN, CLIP = was
+            case.tmp.cleanup()
+            tdir = subprocess.run(["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True).stdout.strip()
+            for n in os.listdir(tdir):
+                if n.startswith("ox-diar-oracle-stub-"):
+                    os.remove(os.path.join(tdir, n))  # a stub that was killed leaves its file: this test cleans up after it
+
+    def test_a_float32_copy_deleted_at_exit_fails_the_real_test(self):
+        with self.assertRaises(AssertionError) as caught:
+            self.run_real_method(self.WRITER)
+        self.assertIn("ox-diar left audio-suspect files", str(caught.exception))
+        self.assertIn("kill_after=None", str(caught.exception))
+
+    def test_a_stub_that_writes_nothing_passes_the_real_test(self):
+        self.run_real_method(self.IDLE)
 
 
 if __name__ == "__main__":
