@@ -72,8 +72,9 @@ exclusive timeline, ids 0..n-1 by descending speech, each embedding the cluster'
 once, inside the meeting's `work/`, and the embeddings never reach the meeting directory (a voiceprint of people who
 never agreed to one). Building it needs Xcode 26 (Swift 6.2) and the engine only runs on macOS 15 or later, so
 `engine/build.sh` builds it when asked or able (`engine/want-diar.sh`). `test_cli.py` pins the contract and runs in CI on
-both architectures, `swift test` the pure parts, `test_der.py` scores three AMI mixes against their references (not in
-CI: it needs pyannote.metrics and the recordings).
+both architectures, `swift test` the pure parts, `test_der.py --engine E` scores DER and speaker confusion on three
+AMI mixes and three Russian files against their references (the limits that separate the two engines) plus two
+count-only cases (not in CI: it needs pyannote.metrics and the recordings).
 
 ## ox-llm (llama.cpp's llama-server)
 
