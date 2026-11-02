@@ -15,6 +15,9 @@ public struct MeetingFocus: Equatable {
 @MainActor
 public final class MainWindowModel: ObservableObject {
     @Published public var section: MainSection
+    /// The Advanced switch above Settings. The app saves a flip and moves the window off Models (`advancedChanged`).
+    @Published public var advanced = false
+    public var advancedChanged: (Bool) -> Void = { _ in }
     @Published public var selectedMeeting: String? {
         // A hit that was clicked in one meeting does not follow the user to another, or back to this one later.
         didSet { if selectedMeeting != oldValue, !openingHit { focus = nil } }
@@ -37,7 +40,7 @@ public final class MainWindowModel: ObservableObject {
     public var clock: () -> Date = { Date() }
 
     public init(data: MainWindowData, actions: MainWindowActions = MainWindowActions(),
-                section: MainSection = .meetings, selectedMeeting: String? = nil) {
+                section: MainSection = MainWindowSpec.firstRunSection, selectedMeeting: String? = nil) {
         self.data = data
         self.actions = actions
         self.section = section

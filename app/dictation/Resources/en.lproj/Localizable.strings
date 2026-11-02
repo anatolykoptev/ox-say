@@ -27,13 +27,14 @@
 
 /* The main window. */
 "window.title" = "OxSay";
-"section.reel" = "Reel";
-"section.projects" = "Projects";
+"section.speak" = "Voiceover";
+"section.transcribe" = "Transcribe";
+"section.models" = "Models";
+"advanced.mode" = "Advanced mode";
+"advanced.mode.hint" = "Shows models, the voice panel and formats";
 "section.voices" = "Voices";
 "section.dictation" = "Dictation";
 "section.settings" = "Settings";
-"placeholder.reel" = "The Reel editor will live here.";
-"placeholder.projects" = "The project list will live here.";
 "placeholder.voices" = "Voice management will live here.";
 "placeholder.dictation" = "Dictation settings will live here.";
 "placeholder.settings" = "Settings will live here.";
@@ -428,7 +429,7 @@
 "studio.cannot_run" = "This Mac can't run the studio voice.";
 "studio.create_voice" = "Create a Voice…";
 "design.form.title" = "Create a Voice";
-"design.form.info" = "Describe who should speak. ox-say makes three takes to choose from.";
+"design.form.info" = "Describe who should speak. ox-say makes three variants to choose from.";
 "design.form.description_label" = "Describe the voice";
 "design.form.sentence_label" = "Sample sentence";
 "design.form.name_label" = "Name";
@@ -443,13 +444,13 @@
 "design.problem.name" = "The name can use lowercase English letters, digits, - and _, up to 32 characters, and must start with a letter or digit.";
 "design.designing.pill" = "Designing a voice…";
 "design.failed.title" = "Couldn't create the voice";
-"design.take.title" = "Take %1$@ of %2$@";
+"design.take.title" = "Variant %1$@ of %2$@";
 "design.take.saved_as" = "It will be saved as “%@”.";
-"design.take.babble" = "This take may contain stray sounds. Listen closely, or try the next take.";
+"design.take.babble" = "This variant may contain stray sounds. Listen closely, or try the next variant.";
 "design.take.keep" = "Keep This Voice";
-"design.take.next" = "Next Take";
+"design.take.next" = "Next Variant";
 "design.take.replay" = "Play Again";
-"design.play_failed.title" = "Couldn't play the take";
+"design.play_failed.title" = "Couldn't play the variant";
 "design.play_failed.text" = "The recording could not be opened.";
 "design.exists.title" = "A voice named “%@” exists";
 "design.exists.text" = "Replace it with this one?";

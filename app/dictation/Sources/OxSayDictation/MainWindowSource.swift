@@ -58,11 +58,17 @@ final class MainWindowSource {
         self.host = host
         self.service = MeetingWindowService(client: host.client)
         self.model = MainWindowModel(data: Self.blank(host))
-        let restored = WindowRestoration.load(host.defaults)
+        model.advanced = AdvancedMode.isOn(host.defaults)
+        let restored = WindowRestoration.load(host.defaults, advanced: model.advanced)
         model.section = restored.section
         model.selectedMeeting = restored.meetingID
         restoredMeetingUnchecked = restored.meetingID != nil
         let defaults = host.defaults
+        model.advancedChanged = { [weak model] on in
+            AdvancedMode.set(on, in: defaults)
+            guard let model else { return }
+            model.section = AdvancedMode.section(after: on, current: model.section)
+        }
         routeSaver = Publishers.CombineLatest(model.$section, model.$selectedMeeting).dropFirst().sink { section, meeting in
             WindowRestoration.save(MainRoute(section: section, meetingID: meeting), to: defaults)
         }
@@ -84,7 +90,7 @@ final class MainWindowSource {
 
     /// Points the window at a section (and a meeting). A route without a meeting leaves the open one alone.
     func apply(_ route: MainRoute) {
-        let route = route.resolved()
+        let route = route.resolved(visible: MainWindowSpec.sections(advanced: model.advanced))
         model.section = route.section
         if let id = route.meetingID { model.selectedMeeting = id }
     }

@@ -89,13 +89,13 @@ final class DesignModelsTests: XCTestCase {
     }
 
     func testTakeTitle() {
-        XCTAssertEqual(DesignForm.takeTitle(index: 0, count: 3, text: en), "Take 1 of 3")
-        XCTAssertEqual(DesignForm.takeTitle(index: 2, count: 3, text: en), "Take 3 of 3")
+        XCTAssertEqual(DesignForm.takeTitle(index: 0, count: 3, text: en), "Variant 1 of 3")
+        XCTAssertEqual(DesignForm.takeTitle(index: 2, count: 3, text: en), "Variant 3 of 3")
     }
 
     func testWarningsAreInPlainWords() {
         XCTAssertEqual(DesignForm.warningText("the take is 11.2 s, longer than its text plausibly needs (9.0 s): it may contain babble; re-render with another seed", text: en),
-                       "This take may contain stray sounds. Listen closely, or try the next take.")
+                       "This variant may contain stray sounds. Listen closely, or try the next variant.")
         XCTAssertEqual(DesignForm.warningText("this take is 21 s, too long to keep as a voice (the limit is 20 s): use a shorter line", text: en),
                        "This take is 21 s, too long to keep as a voice (the limit is 20 s): use a shorter line")
     }

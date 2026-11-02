@@ -27,13 +27,14 @@
 
 /* The main window. */
 "window.title" = "OxSay";
-"section.reel" = "Ролик";
-"section.projects" = "Проекты";
+"section.speak" = "Озвучка";
+"section.transcribe" = "Расшифровка";
+"section.models" = "Модели";
+"advanced.mode" = "Расширенный режим";
+"advanced.mode.hint" = "Показывает модели, панель голоса и форматы";
 "section.voices" = "Голоса";
 "section.dictation" = "Диктовка";
 "section.settings" = "Настройки";
-"placeholder.reel" = "Здесь будет редактор ролика.";
-"placeholder.projects" = "Здесь будет список проектов.";
 "placeholder.voices" = "Здесь будут голоса.";
 "placeholder.dictation" = "Здесь будут настройки диктовки.";
 "placeholder.settings" = "Здесь будут настройки.";

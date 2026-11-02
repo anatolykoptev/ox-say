@@ -6,17 +6,17 @@ public struct MainRoute: Equatable {
     public var section: MainSection
     public var meetingID: String?
 
-    public init(section: MainSection = .meetings, meetingID: String? = nil) {
+    public init(section: MainSection = MainWindowSpec.firstRunSection, meetingID: String? = nil) {
         self.section = section
         self.meetingID = meetingID
     }
 
-    /// The Meetings list, nothing open.
-    public static let `default` = MainRoute()
+    /// The first-run section, nothing open: Voiceover once it is live, the Meetings list until then.
+    public static var `default`: MainRoute { MainRoute(section: MainWindowSpec.firstRunSection) }
 
     /// A route resolved against what this build shows: a section the sidebar does not list falls back to the
     /// default (and takes its meeting with it); an empty meeting id is no meeting.
-    public func resolved(visible: [MainSection] = MainWindowSpec.visibleSections) -> MainRoute {
+    public func resolved(visible: [MainSection] = MainWindowSpec.sections(advanced: true)) -> MainRoute {
         guard visible.contains(section) else { return .default }
         return MainRoute(section: section, meetingID: meetingID.flatMap { $0.isEmpty ? nil : $0 })
     }
@@ -37,10 +37,11 @@ public enum WindowRestoration {
     public static let meetingKey = "mainWindow.meeting"
 
     /// Whatever is stored, as a route this build can show. Missing, mistyped or unknown values give the defaults.
-    public static func load(_ d: UserDefaults, visible: [MainSection] = MainWindowSpec.visibleSections) -> MainRoute {
+    /// `advanced` is the switch as it stands: a stored Models section is not shown while it is off.
+    public static func load(_ d: UserDefaults, advanced: Bool) -> MainRoute {
         guard let raw = d.object(forKey: sectionKey) as? String, let section = MainSection(rawValue: raw) else { return .default }
         let meeting = d.object(forKey: meetingKey) as? String
-        return MainRoute(section: section, meetingID: meeting).resolved(visible: visible)
+        return MainRoute(section: section, meetingID: meeting).resolved(visible: MainWindowSpec.sections(advanced: advanced))
     }
 
     public static func save(_ route: MainRoute, to d: UserDefaults) {

@@ -7,10 +7,12 @@ import DictationCore
 enum MainMenuBar {
     /// Installs the menu for `policy`. `appDelegate` is the explicit target of
     /// the typed actions (About); standard selectors ride the responder chain.
-    static func install(appDelegateTarget appDelegate: AppDelegate, for policy: WindowPolicy.Policy) {
+    /// `advanced` is the sidebar's switch, which decides what ⌘1... reach.
+    static func install(appDelegateTarget appDelegate: AppDelegate, for policy: WindowPolicy.Policy,
+                        advanced: Bool = false) {
         let bar = NSMenu()
         NSApp.windowsMenu = nil
-        for spec in MainMenuSpec.menu(for: policy) {
+        for spec in MainMenuSpec.menu(for: policy, advanced: advanced) {
             let item = NSMenuItem(title: spec.title.text, action: nil, keyEquivalent: "")
             let rendered = submenu(spec, appDelegate: appDelegate)
             item.submenu = rendered

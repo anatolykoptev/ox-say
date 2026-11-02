@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import DictationCore
 import SwiftUI
 
@@ -15,6 +16,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// What the window shows, read from the daemon and the app's stores; made when the window is first opened.
     private(set) var source: MainWindowSource?
     private var observers: [NSObjectProtocol] = []
+    /// Reinstalls the menu bar when the Advanced switch flips (⌘1... follow the sidebar).
+    private var advancedObserver: AnyCancellable?
     /// Orders the delayed return to .accessory against a later open.
     private var revert = AccessoryRevert()
 
@@ -29,12 +32,13 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         // A close that is still waiting out its revert delay must not take the policy back from this open.
         revert.windowOpened()
         NSApp.setActivationPolicy(.regular)
+        // The source is made first: the menu's ⌘1... follow its Advanced switch.
+        let source = self.source ?? makeSource(appDelegate)
+        self.source = source
         // The Edit menu is what makes ⌘V reach a text field — a posted
         // key-equivalent is matched against the main menu first, so dictation
         // into our own window needs it installed.
-        MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular)
-        let source = self.source ?? MainWindowSource(host: appDelegate.windowHost())
-        self.source = source
+        MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular, advanced: source.model.advanced)
         let window = self.window ?? makeWindow(source)
         self.window = window
         if let route { source.apply(route) }
@@ -50,6 +54,20 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         // Every open reads the data again, here and nowhere else: the view has no `.task` of its own, which made
         // the first open run two passes.
         source.windowOpened()
+    }
+
+    /// The one place a source is made, so the Advanced observer exists exactly when the source does.
+    private func makeSource(_ appDelegate: AppDelegate) -> MainWindowSource {
+        let source = MainWindowSource(host: appDelegate.windowHost())
+        observeAdvanced(source)
+        return source
+    }
+
+    private func observeAdvanced(_ source: MainWindowSource) {
+        advancedObserver = source.model.$advanced.dropFirst().sink { [weak self] on in
+            guard let self, let appDelegate = self.appDelegate else { return }
+            MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular, advanced: on)
+        }
     }
 
     /// A section key pressed while the window is already in front is only a section change: the policy, the
@@ -102,7 +120,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         case .accessory:
             NSApp.setActivationPolicy(.accessory)
         }
-        MainMenuBar.install(appDelegateTarget: appDelegate, for: policy)
+        MainMenuBar.install(appDelegateTarget: appDelegate, for: policy, advanced: source?.model.advanced ?? false)
     }
 
     /// The kind the policy is asked about. Only the main window's answer can
