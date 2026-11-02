@@ -145,7 +145,7 @@ struct NoticeBar: View {
             if let actionTitle {
                 Button(actionTitle, action: action).controlSize(.small)
             } else {
-                Button(action: action) { Image(systemName: "xmark") }.buttonStyle(.borderless).help(L10nKey.commonCancel.text)
+                IconButton(symbol: "xmark", labelKey: .a11yDismiss, action: action)
             }
         }
         .font(.callout)

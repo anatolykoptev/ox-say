@@ -70,15 +70,12 @@ struct TranscriptTab: View {
                 .frame(maxWidth: 260)
             Text(counter).font(.caption).monospacedDigit().foregroundStyle(.secondary)
                 .frame(minWidth: 70, alignment: .leading)
-            Button { find.previous() } label: { Image(systemName: "chevron.up") }
-                .help(L10nKey.findPrevious.text).accessibilityLabel(L10nKey.findPrevious.text)
+            IconButton(symbol: "chevron.up", labelKey: .a11yFindPrevious) { find.previous() }
                 .disabled(find.matches.isEmpty)
-            Button { find.next() } label: { Image(systemName: "chevron.down") }
-                .help(L10nKey.findNext.text).accessibilityLabel(L10nKey.findNext.text)
+            IconButton(symbol: "chevron.down", labelKey: .a11yFindNext) { find.next() }
                 .disabled(find.matches.isEmpty)
             Spacer()
-            Button { closeFind() } label: { Image(systemName: "xmark") }
-                .help(L10nKey.findClose.text).accessibilityLabel(L10nKey.findClose.text)
+            IconButton(symbol: "xmark", labelKey: .a11yFindClose) { closeFind() }
                 .keyboardShortcut(.cancelAction)
         }
         .buttonStyle(.borderless)
@@ -240,8 +237,7 @@ struct MiniPlayer: View {
             }
             .accessibilityLabel(L10nKey.playPosition.text)
             Text(values.duration.map(MeetingBadgeModel.clock) ?? "–:––").font(.caption).monospacedDigit().foregroundStyle(.secondary)
-            Button { model.actions.stopPlayback() } label: { Image(systemName: "xmark") }
-                .help(L10nKey.playStop.text).accessibilityLabel(L10nKey.playStop.text)
+            IconButton(symbol: "xmark", labelKey: .a11yPlayStop) { model.actions.stopPlayback() }
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 16).padding(.vertical, 8)
