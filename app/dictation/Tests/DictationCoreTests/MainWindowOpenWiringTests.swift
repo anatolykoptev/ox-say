@@ -248,6 +248,14 @@ final class MainWindowOpenWiringTests: XCTestCase {
         // The activation path goes through the pure decision and the gated refresh, never a read of its own.
         XCTAssertTrue(observer.contains("ActivationRefresh.shouldRefresh(windowOpen: self.windowOpen, visible: self.visible"))
         XCTAssertTrue(observer.contains("self.refresh()"))
-        XCTAssertTrue(refresh.contains("lastPassStart ="))
+        // Text-only: the stamp is where the permissions are read, and they are read before any daemon call.
+        let permissions = try body(text, of: "private func reloadPermissions() async {")
+        XCTAssertTrue(permissions.contains("lastPermissionRead = ProcessInfo.processInfo.systemUptime"))
+        XCTAssertTrue(observer.contains("now: ProcessInfo.processInfo.systemUptime"))
+        let perm = try XCTUnwrap(refresh.range(of: "await reloadPermissions()"), "pass reads the permissions")
+        let list = try XCTUnwrap(refresh.range(of: "await service.list()"))
+        let settings = try XCTUnwrap(refresh.range(of: "await reloadSettingsAsync()"))
+        XCTAssertTrue(perm.lowerBound < list.lowerBound && perm.lowerBound < settings.lowerBound,
+                      "a slow daemon must not delay the permission rows")
     }
 }

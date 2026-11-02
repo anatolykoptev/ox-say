@@ -46,8 +46,8 @@ final class MainWindowSource {
     private var detailReads = DetailReads()
     /// Reads again when the app becomes active (a permission granted in System Settings); alive only while the window is open.
     private var activeObserver: NSObjectProtocol?
-    /// When the last refresh pass began, to tell an activation that follows one from a real return to the app.
-    private var lastPassStart: TimeInterval?
+    /// When the permissions were last read (monotonic clock), to tell an activation that follows a read from a real return.
+    private var lastPermissionRead: TimeInterval?
     /// Open (shown, hidden or covered) until the window is closed. A hidden window keeps its audio playing.
     private var windowOpen = false
     private var searchTimer: Task<Void, Never>?
@@ -101,9 +101,9 @@ final class MainWindowSource {
                                                                 object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                let age = self.lastPassStart.map { ProcessInfo.processInfo.systemUptime - $0 }
                 guard ActivationRefresh.shouldRefresh(windowOpen: self.windowOpen, visible: self.visible,
-                                                      secondsSinceLastPass: age) else { return }
+                                                      now: ProcessInfo.processInfo.systemUptime,
+                                                      lastPermissionRead: self.lastPermissionRead) else { return }
                 self.refresh()
             }
         }
@@ -217,7 +217,8 @@ final class MainWindowSource {
         guard gate.request() else { return }
         Task { @MainActor in
             repeat {
-                lastPassStart = ProcessInfo.processInfo.systemUptime
+                // First: the rows this exists to refresh must not wait behind a slow daemon. Nothing below feeds them.
+                await reloadPermissions()
                 syncRecording()
                 loadSimpleSections()
                 // The daemon status is read beside the list, not before it: a hung /status must not hold back the
@@ -235,7 +236,6 @@ final class MainWindowSource {
                 }
                 model.data.meetingsLoad = load
                 await reloadSettingsAsync()
-                await reloadPermissions()
                 refreshSelectedDetail()
                 await status.value
             } while gate.finish()
@@ -297,6 +297,8 @@ final class MainWindowSource {
     }
 
     private func reloadPermissions() async {
+        // Stamped before the reads: a toggle that lands during them counts as unread, never as read.
+        lastPermissionRead = ProcessInfo.processInfo.systemUptime
         let center = await UNUserNotificationCenter.current().notificationSettings()
         let notifications: PermissionAuth = (center.authorizationStatus == .authorized || center.authorizationStatus == .provisional)
             ? .authorized : (center.authorizationStatus == .notDetermined ? .notDetermined : .denied)
