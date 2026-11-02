@@ -500,6 +500,13 @@ Transcript routes (a file transcribed and kept by the daemon; the app's Transcri
 | `GET /v1/transcripts/<id>?format=` | `text`, `srt`, `vtt`, `json` (default) or `ox_json` |
 | `DELETE /v1/transcripts/<id>` | Delete one (`204`) |
 
+Model routes (the app's Models section uses them):
+
+| Route | Description |
+|-------|-------------|
+| `GET /v1/models` | `{"models":[{"id","kind","name","bytes","installed","default","optional","installing","available","reason_code","reason"}]}` for `qwen3-tts`, `voxcpm2`, `parakeet`, `whisper`, `notes`. `bytes` is the size on disk, or the expected size while not installed (an estimate for `voxcpm2` and `whisper`). One stat per file: cheap enough to call whenever a window opens |
+| `DELETE /v1/models/<id>` | Remove an optional model (`voxcpm2`, `whisper`, `notes`) and stop its engine first; `204`. `400`: a required model, or a file that is not the one the installer writes (`OX_SAY_*_MODEL` pointing at your own file, a symlink, a folder). `404`: unknown id or not installed. `409`: in use (a speech, design or produce job for `voxcpm2`; a transcription for `whisper`; a download, a queued, running or recording meeting for `notes`; an engine still serving or starting). `notes` is restored by `POST /v1/meetings/notes-model/install`; `voxcpm2` and `whisper` by `scripts/fetch-models.sh` |
+
 Streaming transcription sessions — incremental decoding on the resident
 `ox-stt --serve` (requires the VAD model; unavailable when it is absent or
 `OX_SAY_STT_SERVER=off`):
