@@ -115,6 +115,15 @@ type job struct {
 	// re-assembled without entering runChunks (no renders, no checkpoint).
 	// Set before launch; run reads it after the goroutine starts.
 	assembleOnly bool
+	// pendingLUFS is the target a loudness-only delivery asked for: it is
+	// carried on the job, applied to the manifest's clone at assembly and
+	// written to Settings.LUFS only once the new file is published, so a
+	// failed re-assembly or a crash mid-run never leaves the manifest
+	// describing a file that does not exist. prevStatus is what the project
+	// read as before the run — the status a failed loudness-only run puts
+	// back. Both are set before launch; run reads them after start.
+	pendingLUFS *float64
+	prevStatus  string
 
 	// ctx ends when the producer shuts down or the job is cancelled; waits
 	// (dictation, battery) end with it, renders do not: they run under the
@@ -289,6 +298,11 @@ func (p *producer) outcome(j *job, err error) (string, string) {
 		return vproject.StatusInterrupted, ""
 	default:
 		p.log.Warn("produce failed", slog.String("job", j.m.ID), slog.Any("error", err))
+		if j.pendingLUFS != nil {
+			// A loudness-only re-assembly changed nothing yet: the project
+			// keeps the status it had, and the error still says why.
+			return j.prevStatus, p.public(err)
+		}
 		return vproject.StatusFailed, p.public(err)
 	}
 }

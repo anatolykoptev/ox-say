@@ -286,7 +286,7 @@ func TestDeliveryPaceBounds(t *testing.T) {
 	n := 1
 	for name, pace := range map[string]float64{"NaN": math.NaN(), "+Inf": math.Inf(1), "-Inf": math.Inf(-1), "low": 0.5, "high": 2} {
 		m := &vproject.Manifest{Version: vproject.Version, Chunks: make([]vproject.Chunk, 3)}
-		if _, err := validateDelivery(m, []deliveryEntry{{N: &n, Pace: &pace}}); err == nil {
+		if _, err := validateDelivery(m, []deliveryEntry{{N: &n, Pace: &pace}}, false); err == nil {
 			t.Errorf("%s pace %v accepted", name, pace)
 		}
 	}

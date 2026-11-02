@@ -53,15 +53,19 @@ type chunkRequest struct {
 }
 
 // deliveryRequest is POST /v1/produce/{id}/delivery: one batch of chunk
-// changes applied under a single launch.
+// changes applied under a single launch. LoudnessLUFS re-targets the whole
+// file's loudness without a render; a pointer, so absent and an explicit
+// value are told apart — and the only change an empty chunks list may carry.
 type deliveryRequest struct {
-	Chunks []deliveryEntry `json:"chunks"`
+	Chunks       []deliveryEntry `json:"chunks"`
+	LoudnessLUFS *float64        `json:"loudness_lufs,omitempty"`
 }
 
 func (d *Daemon) produceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/produce", d.handleProduceCreate)
 	mux.HandleFunc("GET /v1/produce", d.handleProduceList)
 	mux.HandleFunc("GET /v1/produce/{id}", d.handleProduceStatus)
+	mux.HandleFunc("GET /v1/produce/{id}/chunks", d.handleProduceChunks)
 	mux.HandleFunc("GET /v1/produce/{id}/chunks/{n}", d.handleProduceChunkDetail)
 	mux.HandleFunc("POST /v1/produce/{id}/resume", d.handleProduceResume)
 	mux.HandleFunc("POST /v1/produce/{id}/cancel", d.handleProduceCancel)
@@ -219,6 +223,15 @@ func (d *Daemon) handleProduceChunkDetail(w http.ResponseWriter, r *http.Request
 	d.writeProduceErr(w, err)
 }
 
+func (d *Daemon) handleProduceChunks(w http.ResponseWriter, r *http.Request) {
+	all, err := d.prod.chunksDetail(r.PathValue("id"))
+	if err != nil {
+		d.writeProduceErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"chunks": all})
+}
+
 func (d *Daemon) handleProduceResume(w http.ResponseWriter, r *http.Request) {
 	var in resumeRequest
 	if !vproject.ValidID(r.PathValue("id")) {
@@ -275,7 +288,7 @@ func (d *Daemon) handleProduceDelivery(w http.ResponseWriter, r *http.Request) {
 	err := decodeStrict(r, &in)
 	var s vproject.Summary
 	if err == nil {
-		s, err = d.prod.delivery(r.PathValue("id"), in.Chunks)
+		s, err = d.prod.delivery(r.PathValue("id"), in.Chunks, in.LoudnessLUFS)
 	}
 	if err != nil {
 		d.writeProduceErr(w, err)

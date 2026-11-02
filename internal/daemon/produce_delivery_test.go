@@ -261,12 +261,12 @@ func TestDeliveryPauseZeroClearsIt(t *testing.T) {
 func TestValidateDeliveryPauseBounds(t *testing.T) {
 	m := &vproject.Manifest{Chunks: []vproject.Chunk{{Index: 0}}}
 	n, zero := 0, 0.0
-	if _, err := validateDelivery(m, []deliveryEntry{{N: &n, PauseAfter: &zero}}); err != nil {
+	if _, err := validateDelivery(m, []deliveryEntry{{N: &n, PauseAfter: &zero}}, false); err != nil {
 		t.Fatalf("pause 0 refused: %v", err)
 	}
 	nan, inf := math.NaN(), math.Inf(1)
 	for name, p := range map[string]float64{"NaN": nan, "+Inf": inf, "-Inf": -inf, "below min": 0.01, "over max": 11} {
-		if _, err := validateDelivery(m, []deliveryEntry{{N: &n, PauseAfter: &p}}); err == nil {
+		if _, err := validateDelivery(m, []deliveryEntry{{N: &n, PauseAfter: &p}}, false); err == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}
