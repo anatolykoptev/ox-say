@@ -248,14 +248,23 @@ final class MainWindowOpenWiringTests: XCTestCase {
         // The activation path goes through the pure decision and the gated refresh, never a read of its own.
         XCTAssertTrue(observer.contains("ActivationRefresh.shouldRefresh(windowOpen: self.windowOpen, visible: self.visible"))
         XCTAssertTrue(observer.contains("self.refresh()"))
-        // Text-only: the stamp is where the permissions are read, and they are read before any daemon call.
-        let permissions = try body(text, of: "private func reloadPermissions() async {")
-        XCTAssertTrue(permissions.contains("lastPermissionRead = ProcessInfo.processInfo.systemUptime"))
+        // Text-only pins: the stamp precedes the first read; the pass runs local sections, then the permissions, then the list.
+        let permissions = try body(text, of: "private func readPermissions() -> Task<Void, Never> {")
+        let stamp = try XCTUnwrap(permissions.range(of: "lastPermissionRead = ProcessInfo.processInfo.systemUptime"))
+        let firstRead = try XCTUnwrap(permissions.range(of: "applyPermissions()"))
+        XCTAssertTrue(stamp.lowerBound < firstRead.lowerBound, "stamped before the first read")
         XCTAssertTrue(observer.contains("now: ProcessInfo.processInfo.systemUptime"))
-        let perm = try XCTUnwrap(refresh.range(of: "await reloadPermissions()"), "pass reads the permissions")
+        let local = try XCTUnwrap(refresh.range(of: "loadSimpleSections()"))
+        let perm = try XCTUnwrap(refresh.range(of: "readPermissions()"), "pass reads the permissions")
         let list = try XCTUnwrap(refresh.range(of: "await service.list()"))
         let settings = try XCTUnwrap(refresh.range(of: "await reloadSettingsAsync()"))
+        XCTAssertTrue(local.lowerBound < perm.lowerBound, "local sections first")
         XCTAssertTrue(perm.lowerBound < list.lowerBound && perm.lowerBound < settings.lowerBound,
                       "a slow daemon must not delay the permission rows")
+        // The notification read is a child task joined at the end, never awaited before the list.
+        XCTAssertFalse(refresh.contains("await readPermissions()"), "a stuck notification read must not hold the pass")
+        XCTAssertTrue(permissions.contains("return Task { @MainActor in"))
+        let join = try XCTUnwrap(refresh.range(of: "await notifications.value"))
+        XCTAssertTrue(join.lowerBound > list.lowerBound && join.lowerBound > settings.lowerBound, "joined at the end of the pass")
     }
 }

@@ -48,6 +48,8 @@ final class MainWindowSource {
     private var activeObserver: NSObjectProtocol?
     /// When the permissions were last read (monotonic clock), to tell an activation that follows a read from a real return.
     private var lastPermissionRead: TimeInterval?
+    /// The last notification answer; stands until the next read lands (a stuck read leaves it, and the rest, alone).
+    private var notificationAuth: PermissionAuth = .notDetermined
     /// Open (shown, hidden or covered) until the window is closed. A hidden window keeps its audio playing.
     private var windowOpen = false
     private var searchTimer: Task<Void, Never>?
@@ -217,10 +219,12 @@ final class MainWindowSource {
         guard gate.request() else { return }
         Task { @MainActor in
             repeat {
-                // First: the rows this exists to refresh must not wait behind a slow daemon. Nothing below feeds them.
-                await reloadPermissions()
                 syncRecording()
                 loadSimpleSections()
+                // The permission rows are read before any daemon call (microphone and Accessibility at once; the
+                // notification answer joins when it lands, beside `status`), so a slow daemon never delays them and a
+                // stuck notification read never holds back the rest of the pass.
+                let notifications = readPermissions()
                 // The daemon status is read beside the list, not before it: a hung /status must not hold back the
                 // list read, whose answer ("unreachable" included) is what the window shows. It is awaited at the
                 // end of the pass, so passes never overlap it.
@@ -238,6 +242,7 @@ final class MainWindowSource {
                 await reloadSettingsAsync()
                 refreshSelectedDetail()
                 await status.value
+                await notifications.value
             } while gate.finish()
             schedulePolling()
         }
@@ -296,19 +301,30 @@ final class MainWindowSource {
             fullName: NSFullUserName())
     }
 
-    private func reloadPermissions() async {
-        // Stamped before the reads: a toggle that lands during them counts as unread, never as read.
+    /// Stamps, sets the microphone and Accessibility rows at once, and starts the notification read as a child task
+    /// (returned, to be joined at the end of the pass). Until it lands the last pass's notification value stands.
+    private func readPermissions() -> Task<Void, Never> {
+        // Stamped before the first read. A toggle that lands after the last read is not seen by this read; the gap is
+        // about one second after it, and the next poll or activation heals that.
         lastPermissionRead = ProcessInfo.processInfo.systemUptime
-        let center = await UNUserNotificationCenter.current().notificationSettings()
-        let notifications: PermissionAuth = (center.authorizationStatus == .authorized || center.authorizationStatus == .provisional)
-            ? .authorized : (center.authorizationStatus == .notDetermined ? .notDetermined : .denied)
+        applyPermissions()
+        return Task { @MainActor in
+            let center = await UNUserNotificationCenter.current().notificationSettings()
+            notificationAuth = (center.authorizationStatus == .authorized || center.authorizationStatus == .provisional)
+                ? .authorized : (center.authorizationStatus == .notDetermined ? .notDetermined : .denied)
+            applyPermissions()
+        }
+    }
+
+    /// The rows from the two synchronous reads and the last known notification answer.
+    private func applyPermissions() {
         let mic: PermissionAuth
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: mic = .authorized
         case .notDetermined: mic = .notDetermined
         default: mic = .denied
         }
-        model.data.permissions = PermissionModel.items(microphone: mic, accessibility: AXIsProcessTrusted(), notifications: notifications)
+        model.data.permissions = PermissionModel.items(microphone: mic, accessibility: AXIsProcessTrusted(), notifications: notificationAuth)
     }
 
     // MARK: search
