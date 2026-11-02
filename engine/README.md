@@ -57,7 +57,7 @@ toolchain is present (A/B tests).
 
 A one-shot CLI that tells the voices of one recording apart: `ox-diar <pcm16k-mono-s16le> <out.json> --models DIR`, where
 the input is a meeting's raw channel file (the format of `them.pcm`) and DIR holds `speaker-diarization/` as
-`scripts/fetch-models.sh --diar-only` lays it out. It is a Swift package (`engine/diar`) on FluidAudio 0.17.7 (pinned with
+`scripts/fetch-models.sh --diar-only` lays it out. It is a Swift package (`engine/diar`) on FluidAudio 0.18.0 (pinned with
 `exact:` and a committed `Package.resolved`), which runs the pyannote community-1 pipeline (segmentation, WeSpeaker,
 PLDA, VBx) on Core ML: `.cpuAndNeuralEngine` on Apple Silicon, so the GPU stays free for Parakeet (`probe_gpu.sh` proves
 it). There is no Intel build: the models failed on `.cpuOnly` on the Intel CI runner (the smoke of plan Task 20a), so

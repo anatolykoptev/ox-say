@@ -51,7 +51,7 @@ do {
 let duration = Double(samples.count) / 16_000
 
 // Every download path throws; the models are the files scripts/fetch-models.sh laid out, whose
-// .fluidaudio-revision marker names the revision FluidAudio 0.17.7 itself asks for (Pins.modelsRevision).
+// .fluidaudio-revision marker names the revision FluidAudio 0.18.0 itself asks for (Pins.modelsRevision).
 ModelHub.offlineMode = true
 
 // The configuration and the compute units are pinned in OxDiarCore (Pinned), where `swift test` reads them.
