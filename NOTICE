@@ -48,5 +48,13 @@ embedding learning toolkit", ICASSP 2023; trained on VoxCeleb, CC-BY-4.0 upstrea
 Speech@FIT (Brno University of Technology, CC-BY-4.0, commercial use included). Credit: pyannote, WeSpeaker, BUT
 Speech@FIT and Fluid Inference. The model repository's own LICENSE, NOTICE.md, README.md (which carries the citations the
 licence asks us to retain) and PROVENANCE.md are downloaded beside the models by scripts/fetch-models.sh. Licence: Creative Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/).
+
+ox-diar's Nemotron engine (the model set scripts/fetch-models.sh lays out in diar/nemotron-3-diarization/) runs
+NVIDIA's Nemotron-3-Diarization (https://huggingface.co/nvidia/Nemotron-3-Diarization), converted to Core ML by Fluid
+Inference (FluidInference/nemotron-3-diarization-coreml, the fast128 preset); the conversion's README.md, which
+carries the notices of origin the licence asks to retain, is downloaded beside the models. Licence: OpenMDW License
+Agreement 1.1 (https://openmdw.ai/license/1-1/; a copy ships in engine/diar/licenses/OpenMDW-1.1.txt and next to the
+installed binary). Credit: NVIDIA and Fluid Inference.
+
 engine/diar/testdata/ami-es2004a-780-180s.flac is a 3-minute excerpt of the AMI Meeting Corpus recording ES2004a
 (headset mix), (c) the AMI consortium, CC BY 4.0 (https://groups.inf.ed.ac.uk/ami/corpus/license.shtml).

@@ -888,6 +888,8 @@ publisher's license:
   pyannote's speaker-diarization-community-1 pipeline (pyannote segmentation, WeSpeaker ResNet34-LM embeddings,
   PLDA parameters from BUT Speech@FIT); attribute pyannote, WeSpeaker, BUT Speech@FIT and Fluid Inference when you
   redistribute them (`NOTICE` has the full credit)
+- Nemotron 3 Diarization fast128 Core ML models for `ox-diar`'s Nemotron engine: OpenMDW License 1.1
+  (NVIDIA, converted to Core ML by Fluid Inference; `NOTICE` has the full credit)
 - Forced aligner for `ox-align` (optional, converted by hand, see
   `engine/README.md`): the MMS-300m forced-aligner weights are CC-BY-NC-4.0,
   **non-commercial**; `facebook/wav2vec2-base-960h` is Apache-2.0

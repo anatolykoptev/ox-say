@@ -66,4 +66,7 @@ cp -f "$checkout/LICENSE" "$out/licenses/FluidAudio.LICENSE"
 for f in "$checkout"/ThirdPartyLicenses/*.md; do
     [ -f "$f" ] && cp -f "$f" "$out/licenses/FluidAudio-$(basename "$f")"
 done
+# OpenMDW-1.1 is the licence of the Nemotron 3 Diarization weights fetch-models.sh downloads; the HF repo carries no
+# LICENSE file, so the committed copy ships beside the binary.
+cp -f "$here/licenses/OpenMDW-1.1.txt" "$out/licenses/OpenMDW-1.1.txt"
 echo "built $out/ox-diar ($want)"

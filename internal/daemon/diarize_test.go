@@ -238,6 +238,9 @@ func TestDiarPinsAgreeAcrossLanguages(t *testing.T) {
 	if got := find("engine/diar/Sources/OxDiarCore/Pins.swift", `modelsRevision = "([0-9a-f]{40})"`); got != config.DiarModelsRevision {
 		t.Errorf("Pins.swift names %s, config expects %s", got, config.DiarModelsRevision)
 	}
+	if got := find("scripts/fetch-models.sh", `(?m)^nem_rev=([0-9a-f]{40})$`); got != config.NemotronModelsRevision {
+		t.Errorf("fetch-models.sh fetches %s, config expects %s", got, config.NemotronModelsRevision)
+	}
 	if got := find("engine/diar/Sources/OxDiarCore/Platform.swift", `minimumMajor = (\d+)`); got != "15" || diarMinMacOS != 15 {
 		t.Errorf("minimumMajor %s, diarMinMacOS %d", got, diarMinMacOS)
 	}
@@ -250,9 +253,9 @@ func TestDiarPinsAgreeAcrossLanguages(t *testing.T) {
 	if got := find("engine/diar/Sources/OxDiarCore/Platform.swift", `case input = (\d+)`); got != "4" || diarExitInput != 4 {
 		t.Errorf("input %s, diarExitInput %d", got, diarExitInput)
 	}
-	// the lists in fetch-models.sh name 24 model files and 4 documents, each with a 64-hex SHA-256
-	if n := len(regexp.MustCompile(`(?m)^    "[0-9a-f]{64}  \S+"$`).FindAllString(read("scripts/fetch-models.sh"), -1)); n != 28 {
-		t.Errorf("fetch-models.sh lists %d diarization entries, want 28", n)
+	// the lists in fetch-models.sh name 24+4 diarization and 5+2 nemotron entries, each with a 64-hex SHA-256
+	if n := len(regexp.MustCompile(`(?m)^    "[0-9a-f]{64}  \S+"$`).FindAllString(read("scripts/fetch-models.sh"), -1)); n != 35 {
+		t.Errorf("fetch-models.sh lists %d diarization entries, want 35", n)
 	}
 }
 
