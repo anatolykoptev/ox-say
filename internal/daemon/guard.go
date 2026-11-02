@@ -62,7 +62,9 @@ func crossSiteRead(r *http.Request) bool {
 }
 
 // postBodyOK requires JSON on every POST — except the transcriptions route,
-// which is OpenAI-compatible multipart/form-data (file upload), and a
+// which is OpenAI-compatible multipart/form-data (file upload), the same
+// upload to the transcripts store (compared on the ESCAPED path, as the mux
+// routes on it: "/v1%2Ftranscripts" is not this route), and a
 // session audio chunk, which is application/octet-stream (raw PCM). The
 // exemptions name the exact method and path so no other POST opens up.
 func postBodyOK(r *http.Request) bool {
@@ -77,7 +79,7 @@ func postBodyOK(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	if r.URL.Path == "/v1/audio/transcriptions" {
+	if r.URL.Path == "/v1/audio/transcriptions" || r.URL.EscapedPath() == "/v1/transcripts" {
 		return mt == "multipart/form-data"
 	}
 	return mt == "application/octet-stream" && sttSessionAudioPath(r.URL.EscapedPath())

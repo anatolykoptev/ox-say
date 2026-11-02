@@ -3,6 +3,7 @@ package daemon
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -133,6 +134,66 @@ func TestGuard(t *testing.T) {
 			h.ServeHTTP(rec, req)
 			if rec.Code != c.want {
 				t.Fatalf("%s %s Host=%s: status %d, want %d (body %s)", c.method, c.path, c.host, rec.Code, c.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+// POST /v1/transcripts takes a multipart upload like /v1/audio/transcriptions, and nothing else does: the exemption
+// is the exact path, so a sibling path, another POST route, a different content type and any browser-sent form
+// (cross-site, same-site, rebound host) stay refused.
+func TestGuardTranscriptsMultipart(t *testing.T) {
+	h := servedHandler(t)
+	mpBody := "--xx\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nx\r\n--xx--\r\n"
+	mpType := "multipart/form-data; boundary=xx"
+	cases := []struct {
+		name, method, path, host, ctype string
+		header                          map[string]string
+		want                            int
+	}{
+		{"multipart transcripts reaches the handler", "POST", "/v1/transcripts", "127.0.0.1:8094", mpType, nil, http.StatusBadRequest},
+		{"multipart transcripts child path refused", "POST", "/v1/transcripts/x", "127.0.0.1:8094", mpType, nil, http.StatusUnsupportedMediaType},
+		{"multipart transcripts trailing slash refused", "POST", "/v1/transcripts/", "127.0.0.1:8094", mpType, nil, http.StatusUnsupportedMediaType},
+		{"multipart encoded-slash path refused", "POST", "/v1%2Ftranscripts", "127.0.0.1:8094", mpType, nil, http.StatusUnsupportedMediaType},
+		{"multipart produce refused", "POST", "/v1/produce", "127.0.0.1:8094", mpType, nil, http.StatusUnsupportedMediaType},
+		{"multipart meetings refused", "POST", "/v1/meetings", "127.0.0.1:8094", mpType, nil, http.StatusUnsupportedMediaType},
+		{"multipart voices refused", "POST", "/v1/audio/voices", "127.0.0.1:8094", mpType, nil, http.StatusUnsupportedMediaType},
+		{"multipart speech refused", "POST", "/v1/audio/speech", "127.0.0.1:8094", mpType, nil, http.StatusUnsupportedMediaType},
+		{"text/plain transcripts refused", "POST", "/v1/transcripts", "127.0.0.1:8094", "text/plain", nil, http.StatusUnsupportedMediaType},
+		{"octet-stream transcripts refused", "POST", "/v1/transcripts", "127.0.0.1:8094", "application/octet-stream", nil, http.StatusUnsupportedMediaType},
+		{"urlencoded transcripts refused", "POST", "/v1/transcripts", "127.0.0.1:8094", "application/x-www-form-urlencoded", nil, http.StatusUnsupportedMediaType},
+		{"cross-site multipart transcripts", "POST", "/v1/transcripts", "127.0.0.1:8094", mpType, map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"same-site multipart transcripts", "POST", "/v1/transcripts", "127.0.0.1:8094", mpType, map[string]string{"Sec-Fetch-Site": "same-site"}, http.StatusForbidden},
+		{"cross-origin multipart transcripts without Sec-Fetch-Site", "POST", "/v1/transcripts", "127.0.0.1:8094", mpType, map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		{"rebinding multipart transcripts", "POST", "/v1/transcripts", "attacker.example:8094", mpType, nil, http.StatusForbidden},
+		{"cross-site DELETE transcript", "DELETE", "/v1/transcripts/20261001-000000-abcdef", "127.0.0.1:8094", "", map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"cross-site GET list", "GET", "/v1/transcripts", "127.0.0.1:8094", "", map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"cross-site GET one", "GET", "/v1/transcripts/20261001-000000-abcdef", "127.0.0.1:8094", "", map[string]string{"Sec-Fetch-Site": "same-site"}, http.StatusForbidden},
+		{"rebinding GET list", "GET", "/v1/transcripts", "attacker.example:8094", "", nil, http.StatusForbidden},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := ""
+			if c.method == "POST" {
+				body = mpBody
+			}
+			req := httptest.NewRequest(c.method, "http://"+c.host+"/", strings.NewReader(body))
+			req.URL.Path, req.URL.RawPath = "", ""
+			if u, err := url.Parse(c.path); err == nil {
+				req.URL = u
+			}
+			req.RequestURI = c.path
+			req.Host = c.host
+			if c.ctype != "" {
+				req.Header.Set("Content-Type", c.ctype)
+			}
+			for k, v := range c.header {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != c.want {
+				t.Fatalf("%s %s: status %d, want %d (%s)", c.method, c.path, rec.Code, c.want, rec.Body.String())
 			}
 		})
 	}

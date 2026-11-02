@@ -491,6 +491,15 @@ Meeting routes (see [Meetings](#meetings); the app uses them, and so can an agen
 | `GET /v1/meetings/settings`, `PUT …/settings` | `{"retention_days"}`: how long audio is kept — 0 (forever), 7, 30 or 90 |
 | `POST /v1/meetings/notes-model/install` | Download the notes model |
 
+Transcript routes (a file transcribed and kept by the daemon; the app's Transcribe section uses them):
+
+| Route | Description |
+|-------|-------------|
+| `POST /v1/transcripts` | Multipart like `/v1/audio/transcriptions` (`file` ≤ `OX_SAY_STT_MAX_UPLOAD_MB`, `model`, `language`, `prompt`) plus `title` (≤ 200 characters). Runs the recognizer and keeps the result; `201` with `{"id","title","engine","language","created","seconds"}`. A failed transcription keeps nothing. It queues behind other transcriptions, so a long file delays dictation as `/v1/audio/transcriptions` does |
+| `GET /v1/transcripts` | `{"transcripts":[…]}`, newest first |
+| `GET /v1/transcripts/<id>?format=` | `text`, `srt`, `vtt`, `json` (default) or `ox_json` |
+| `DELETE /v1/transcripts/<id>` | Delete one (`204`) |
+
 Streaming transcription sessions — incremental decoding on the resident
 `ox-stt --serve` (requires the VAD model; unavailable when it is absent or
 `OX_SAY_STT_SERVER=off`):
@@ -790,6 +799,10 @@ notes and transcript is written to a **Notes Folder** you can choose (default `~
 The voice engine's voiceprints are held only while it runs and never reach the meeting directory.
 The uninstaller keeps meetings, even with `--purge` (it removes engines, models, voices and run state): delete
 the `meetings` directory yourself to remove them.
+
+**Transcripts.** Files you transcribe in the app are kept as text in `~/Library/Application Support/ox-say/transcripts`
+(`OX_SAY_HOME/transcripts`), readable by you alone, one directory per transcript. The audio you drop in is not kept.
+Like meetings, they survive `uninstall.sh --purge`: delete the `transcripts` directory yourself to remove them.
 
 **How long the audio is kept.** **Keep Audio** in the menu: 7, 30 (the default) or 90 days, or never deleted.
 Only the audio goes; the transcript and the notes stay until you delete the meeting. A meeting without a
