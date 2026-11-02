@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -713,5 +714,112 @@ func TestPresetsCapSpokenAtEngineLimit(t *testing.T) {
 		if p.opts.MaxSpokenChars != maxVoxChars {
 			t.Errorf("preset %s: MaxSpokenChars = %d, want %d", name, p.opts.MaxSpokenChars, maxVoxChars)
 		}
+	}
+}
+
+// A create may carry its own loudness target and sampling steps; without them
+// the preset's target and defaultTimesteps apply.
+// Mutation: produce_ops.go newManifest, `lufs = *in.LoudnessLUFS` -> `lufs = pr.lufs` -> RED.
+// Mutation: produce_ops.go newManifest, `Steps: steps` -> `Steps: defaultTimesteps` -> RED.
+func TestCreateTakesLoudnessAndStepsOverrides(t *testing.T) {
+	f := newFakePorts(t)
+	p := startedProducer(t, f)
+	in := reelInput(t)
+	in.Preset = "reels"
+	in.LoudnessLUFS, in.Timesteps = ptr(-16.0), 8
+	m, err := p.newManifest(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Settings.LUFS != -16 || m.Settings.Steps != 8 {
+		t.Fatalf("overrides lost: lufs %v steps %d", m.Settings.LUFS, m.Settings.Steps)
+	}
+	plain := reelInput(t)
+	plain.Preset = "reels"
+	m2, err := p.newManifest(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m2.Settings.LUFS != -14 || m2.Settings.Steps != defaultTimesteps {
+		t.Fatalf("defaults changed: lufs %v steps %d", m2.Settings.LUFS, m2.Settings.Steps)
+	}
+}
+
+// Mutation: produce_ops.go newManifest, delete the validLUFS call in the override branch -> RED.
+// Mutation: produce_ops.go newManifest, delete the validTimesteps call -> RED.
+func TestCreateRefusesOutOfRangeLoudnessAndSteps(t *testing.T) {
+	p := startedProducer(t, newFakePorts(t))
+	for name, edit := range map[string]func(*produceInput){
+		"lufs too loud":  func(in *produceInput) { in.LoudnessLUFS = ptr(-3.0) },
+		"lufs too quiet": func(in *produceInput) { in.LoudnessLUFS = ptr(-60.0) },
+		"lufs NaN":       func(in *produceInput) { in.LoudnessLUFS = ptr(math.NaN()) },
+		"steps negative": func(in *produceInput) { in.Timesteps = -1 },
+		"steps too many": func(in *produceInput) { in.Timesteps = 51 },
+	} {
+		in := reelInput(t)
+		edit(&in)
+		_, err := p.newManifest(in)
+		var re *requestError
+		if !errors.As(err, &re) {
+			t.Errorf("%s: want a request error, got %v", name, err)
+		}
+	}
+}
+
+// The overrides are the project's settings, not a first-render detail: a
+// retake, an edit and a resume after a restart all keep them.
+// Mutation: produce_ops.go refresh, `Steps: s.Steps` -> `Steps: defaultTimesteps` -> RED.
+// Mutation: produce_ops.go newManifest, drop `Settings.LUFS` from the persisted manifest (LUFS: pr.lufs) -> RED.
+func TestOverridesSurviveRetakeEditAndRestart(t *testing.T) {
+	f := newFakePorts(t)
+	p := startedProducer(t, f)
+	in := reelInput(t)
+	in.LoudnessLUFS, in.Timesteps = ptr(-18.0), 8
+	s, err := p.create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, p, s.ID)
+	check := func(step string, since int) {
+		t.Helper()
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if len(f.renders) <= since {
+			t.Fatalf("%s: nothing rendered", step)
+		}
+		for _, r := range f.renders[since:] {
+			if r.Steps != 8 {
+				t.Errorf("%s: rendered with steps %d, want 8", step, r.Steps)
+			}
+		}
+		if last := f.normTargets[len(f.normTargets)-1]; last != -18 {
+			t.Errorf("%s: assembled to %v LUFS, want -18", step, last)
+		}
+	}
+	n := len(f.renders)
+	check("create", 0)
+	if _, err := p.chunk(s.ID, 0, chunkOp{Action: opRegenerate, Takes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, p, s.ID)
+	check("regenerate", n)
+	n = len(f.renders)
+	if _, err := p.chunk(s.ID, 1, chunkOp{Action: opEdit, Text: "Третье, исправленное."}); err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, p, s.ID)
+	check("edit", n)
+
+	p.shutdown()
+	p2 := startedProducer(t, f)
+	n = len(f.renders)
+	if _, err := p2.chunk(s.ID, 0, chunkOp{Action: opRegenerate, Takes: 1}); err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, p2, s.ID)
+	check("regenerate after restart", n)
+	m, err := p2.manifest(s.ID)
+	if err != nil || m.Settings.LUFS != -18 || m.Settings.Steps != 8 {
+		t.Fatalf("manifest after restart: %+v err %v", m.Settings, err)
 	}
 }

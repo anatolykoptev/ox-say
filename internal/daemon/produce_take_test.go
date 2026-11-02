@@ -44,6 +44,7 @@ type fakePorts struct {
 	engineID    string
 	normErr     error
 	normCalls   int
+	normTargets []float64                           // the LUFS target each Normalize call carried
 	normHook    func()                              // non-nil: Normalize calls it first
 	normNoop    bool                                // Normalize reports success and writes nothing
 	normOut     []byte                              // non-nil: Normalize writes these bytes instead of its input
@@ -141,9 +142,10 @@ func (f *fakePorts) ColdStartSlack() time.Duration    { return f.coldStart }
 func (f *fakePorts) ConfiguredLanguage() string       { return f.lang }
 func (f *fakePorts) Unavailable() string              { return f.unavailable }
 func (f *fakePorts) EngineID() (string, error)        { return f.engineID, nil }
-func (f *fakePorts) Normalize(_ context.Context, in, out string, _, _ float64) (bool, error) {
+func (f *fakePorts) Normalize(_ context.Context, in, out string, lufs, _ float64) (bool, error) {
 	f.mu.Lock()
 	f.normCalls++
+	f.normTargets = append(f.normTargets, lufs)
 	err, hook, noop, dyn := f.normErr, f.normHook, f.normNoop, f.normLimited
 	f.mu.Unlock()
 	if hook != nil {
@@ -243,6 +245,24 @@ func TestTakeKeyCoversInputs(t *testing.T) {
 	}
 	if s := base.attempt(1); s.basis() != base.basis() || s.key() == base.key() {
 		t.Error("basis must ignore seed/cfg; key must not")
+	}
+}
+
+// A chunk's takes stay valid only for the steps they were rendered with:
+// two specs differing only in Steps have different bases (so a steps change
+// resets the chunk), while seed and cfg stay outside the basis.
+// Mutation: produce_take.go basis, `s.Seed, s.Cfg = 0, 0` -> `s.Seed, s.Cfg, s.Steps = 0, 0, 0` -> RED.
+func TestTakeBasisCoversSteps(t *testing.T) {
+	a := takeSpec{V: takeKeyVersion, Engine: "e", Voice: "nar", VoiceSHA: "aa", Mode: cloneReference, Text: "Текст.", Seed: 1, Cfg: 2, Steps: 10}
+	b := a
+	b.Steps = 8
+	if a.basis() == b.basis() {
+		t.Error("specs that differ only in Steps share a basis: a steps change would keep takes rendered with the old steps")
+	}
+	c := a
+	c.Seed, c.Cfg = 9, 1.6
+	if a.basis() != c.basis() {
+		t.Error("seed and cfg must stay outside the basis")
 	}
 }
 

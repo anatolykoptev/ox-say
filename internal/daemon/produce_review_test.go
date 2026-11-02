@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -76,7 +77,7 @@ func TestCancelEndsWaits(t *testing.T) {
 // Mutation: produce_take.go renderWithin, call the port with ctx and no deadline/select -> the job runs forever -> RED.
 func TestWedgedRenderFailsTheJob(t *testing.T) {
 	old := renderDeadline
-	renderDeadline = func(int) time.Duration { return 150 * time.Millisecond }
+	renderDeadline = func(int, int) time.Duration { return 150 * time.Millisecond }
 	t.Cleanup(func() { renderDeadline = old })
 	for name, setup := range map[string]func(*fakePorts){
 		"ignores its context": func(f *fakePorts) { f.hang = make(chan struct{}); t.Cleanup(func() { close(f.hang) }) },
@@ -100,11 +101,11 @@ func TestWedgedRenderFailsTheJob(t *testing.T) {
 
 // renderDeadline grows with the text and never drops below its floor.
 func TestRenderDeadlineScalesWithTheText(t *testing.T) {
-	if renderDeadline(10) != renderFloor {
-		t.Fatalf("short text: %s", renderDeadline(10))
+	if renderDeadline(10, defaultTimesteps) != renderFloor {
+		t.Fatalf("short text: %s", renderDeadline(10, defaultTimesteps))
 	}
-	if renderDeadline(400) <= renderFloor || renderDeadline(4000) <= renderDeadline(400) {
-		t.Fatalf("400 chars %s, 4000 chars %s", renderDeadline(400), renderDeadline(4000))
+	if renderDeadline(400, defaultTimesteps) <= renderFloor || renderDeadline(4000, defaultTimesteps) <= renderDeadline(400, defaultTimesteps) {
+		t.Fatalf("400 chars %s, 4000 chars %s", renderDeadline(400, defaultTimesteps), renderDeadline(4000, defaultTimesteps))
 	}
 }
 
@@ -263,7 +264,7 @@ func TestEngineIDErrorIsNotCached(t *testing.T) {
 // -> the cold-start render is cut at the plain deadline -> RED.
 func TestColdStartExtendsRenderDeadline(t *testing.T) {
 	old := renderDeadline
-	renderDeadline = func(int) time.Duration { return 150 * time.Millisecond }
+	renderDeadline = func(int, int) time.Duration { return 150 * time.Millisecond }
 	t.Cleanup(func() { renderDeadline = old })
 	for name, c := range map[string]struct {
 		cold time.Duration
@@ -284,5 +285,84 @@ func TestColdStartExtendsRenderDeadline(t *testing.T) {
 				t.Fatalf("status %s (%s), want %s", got.Status, got.Error, c.want)
 			}
 		})
+	}
+}
+
+// Render time is assumed to grow linearly with the sampling steps, so the
+// deadline grows with them above the default and never shrinks below it. A
+// default-step project keeps exactly the old numbers.
+// Mutation: produce_take.go renderDeadline, drop the stepFactor multiplication -> RED.
+func TestRenderDeadlineScalesWithSteps(t *testing.T) {
+	chars := 400
+	audio := time.Duration(float64(chars) / estCharsPerSec * renderBudgetRTF * float64(time.Second))
+	want := max(renderFloor, audio+renderSlack)
+	if got := renderDeadline(chars, defaultTimesteps); got != want {
+		t.Fatalf("default steps: %s, want exactly today's %s", got, want)
+	}
+	if got := renderDeadline(chars, 50); got != 5*want {
+		t.Fatalf("50 steps: %s, want 5x = %s", got, 5*want)
+	}
+	if got := renderDeadline(10, 50); got != 5*renderFloor {
+		t.Fatalf("short text at 50 steps: %s, want 5x the floor = %s", got, 5*renderFloor)
+	}
+	for _, steps := range []int{1, 5, defaultTimesteps - 1, 0} {
+		if got := renderDeadline(chars, steps); got != want {
+			t.Errorf("%d steps: %s, want %s (fewer steps never shorten the deadline)", steps, got, want)
+		}
+	}
+}
+
+// The chunk-render path hands the take's own steps to the deadline.
+// Mutation: produce_take.go renderWithin, `renderDeadline(.., spec.Steps)` -> `(.., defaultTimesteps)` -> RED.
+func TestRenderWithinUsesTheTakesSteps(t *testing.T) {
+	var mu sync.Mutex
+	var seen []int
+	old := renderDeadline
+	renderDeadline = func(_, steps int) time.Duration {
+		mu.Lock()
+		seen = append(seen, steps)
+		mu.Unlock()
+		return time.Minute
+	}
+	t.Cleanup(func() { renderDeadline = old })
+	f := newFakePorts(t)
+	p := startedProducer(t, f)
+	in := reelInput(t)
+	in.Timesteps = 50
+	s, err := p.create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, p, s.ID)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 {
+		t.Fatal("renderDeadline was never asked")
+	}
+	for _, st := range seen {
+		if st != 50 {
+			t.Errorf("deadline asked for %d steps, want 50", st)
+		}
+	}
+}
+
+// The first ETA (no observed pace yet) scales with the project's steps the
+// same way; default steps keep today's number.
+// Mutation: produce.go eta, drop the stepFactor multiplication -> RED.
+func TestETAScalesWithSteps(t *testing.T) {
+	mk := func(steps int) *vproject.Manifest {
+		return &vproject.Manifest{Settings: vproject.Settings{Steps: steps},
+			Chunks: []vproject.Chunk{{Spoken: strings.Repeat("я", 139), Status: vproject.ChunkPending}}}
+	}
+	n := 139.0
+	want := n / estCharsPerSec * renderRTF
+	if got := eta(mk(defaultTimesteps), 0); got != want {
+		t.Fatalf("default steps: %v, want exactly %v", got, want)
+	}
+	if got := eta(mk(50), 0); got != 5*want {
+		t.Fatalf("50 steps: %v, want 5x = %v", got, 5*want)
+	}
+	if got := eta(mk(3), 0); got != want {
+		t.Fatalf("3 steps: %v, want %v (never shorter)", got, want)
 	}
 }
