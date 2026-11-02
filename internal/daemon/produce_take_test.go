@@ -44,6 +44,7 @@ type fakePorts struct {
 	engineID    string
 	normErr     error
 	normCalls   int
+	normTargets []float64                           // the LUFS target each Normalize call carried
 	normHook    func()                              // non-nil: Normalize calls it first
 	normNoop    bool                                // Normalize reports success and writes nothing
 	normOut     []byte                              // non-nil: Normalize writes these bytes instead of its input
@@ -141,9 +142,10 @@ func (f *fakePorts) ColdStartSlack() time.Duration    { return f.coldStart }
 func (f *fakePorts) ConfiguredLanguage() string       { return f.lang }
 func (f *fakePorts) Unavailable() string              { return f.unavailable }
 func (f *fakePorts) EngineID() (string, error)        { return f.engineID, nil }
-func (f *fakePorts) Normalize(_ context.Context, in, out string, _, _ float64) (bool, error) {
+func (f *fakePorts) Normalize(_ context.Context, in, out string, lufs, _ float64) (bool, error) {
 	f.mu.Lock()
 	f.normCalls++
+	f.normTargets = append(f.normTargets, lufs)
 	err, hook, noop, dyn := f.normErr, f.normHook, f.normNoop, f.normLimited
 	f.mu.Unlock()
 	if hook != nil {

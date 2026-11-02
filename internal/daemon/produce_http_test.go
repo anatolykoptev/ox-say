@@ -138,3 +138,57 @@ func TestProduceHTTPBusyAndDelete(t *testing.T) {
 		t.Fatal("project dir still there")
 	}
 }
+
+// Over HTTP an explicit inference_timesteps of 0 is a refusal (the range is
+// 1..50), never the default; a malformed or out-of-range value is a 400 that
+// names the field, and it wins over an unavailable engine or a voice error
+// because the request itself is wrong.
+// Mutation: produce_http.go handleProduceCreate, `explicitTimesteps(in.InferenceTimesteps)` -> `0` (field dropped) -> RED.
+// Mutation: produce_http.go explicitTimesteps, drop the `*p < 1` bound (0 passes as default) -> RED on "steps zero".
+func TestProduceHTTPLoudnessAndStepsOverrides(t *testing.T) {
+	f := newFakePorts(t)
+	d, mux := produceMux(t, f)
+	bad := []struct{ name, body, want string }{
+		{"steps zero", `{"script":"Привет.","inference_timesteps":0}`, "inference_timesteps"},
+		{"steps negative", `{"script":"Привет.","inference_timesteps":-1}`, "inference_timesteps"},
+		{"steps too many", `{"script":"Привет.","inference_timesteps":51}`, "inference_timesteps"},
+		{"steps fraction", `{"script":"Привет.","inference_timesteps":2.5}`, ""},
+		{"lufs too loud", `{"script":"Привет.","loudness_lufs":-3}`, "loudness_lufs"},
+		{"lufs string", `{"script":"Привет.","loudness_lufs":"loud"}`, ""},
+	}
+	check := func(label string) {
+		t.Helper()
+		for _, c := range bad {
+			rec := do(mux, http.MethodPost, "/v1/produce", c.body)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), c.want) {
+				t.Errorf("%s / %s: %d %s", label, c.name, rec.Code, rec.Body)
+			}
+		}
+	}
+	check("plain")
+	f.unavailable = "Apple Silicon only"
+	check("engine unavailable")
+	f.unavailable = ""
+	f.voiceErr = &requestError{"this voice's recording is 40 seconds long"}
+	check("voice error")
+	f.voiceErr = nil
+
+	rec := do(mux, http.MethodPost, "/v1/produce", `{"script":"Привет.","loudness_lufs":-18,"inference_timesteps":8}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("valid overrides: %d %s", rec.Code, rec.Body)
+	}
+	var s vproject.Summary
+	if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	waitTerminal(t, d.prod, s.ID)
+	m, err := d.prod.manifest(s.ID)
+	if err != nil || m.Settings.LUFS != -18 || m.Settings.Steps != 8 {
+		t.Fatalf("settings %+v err %v", m.Settings, err)
+	}
+	for _, r := range f.renders {
+		if r.Steps != 8 {
+			t.Errorf("rendered with steps %d, want 8", r.Steps)
+		}
+	}
+}

@@ -118,6 +118,22 @@ func (p *producer) newManifest(in produceInput) (*vproject.Manifest, error) {
 	if !ok {
 		return nil, &requestError{fmt.Sprintf("preset %q: want youtube, reels or voice-under-music", in.Preset)}
 	}
+	// Checked before the script and the voice: a wrong number is the caller's
+	// mistake whatever else is missing.
+	lufs := pr.lufs
+	if in.LoudnessLUFS != nil {
+		if err := validLUFS(*in.LoudnessLUFS); err != nil {
+			return nil, err
+		}
+		lufs = *in.LoudnessLUFS
+	}
+	steps := defaultTimesteps
+	if in.Timesteps != 0 {
+		if err := validTimesteps(in.Timesteps); err != nil {
+			return nil, err
+		}
+		steps = in.Timesteps
+	}
 	if n := utf8.RuneCountInString(in.Script); n == 0 || n > maxProduceChars {
 		return nil, &requestError{fmt.Sprintf("the script must have 1–%d characters (about 48 minutes of speech); it has %d", maxProduceChars, n)}
 	}
@@ -166,7 +182,7 @@ func (p *producer) newManifest(in produceInput) (*vproject.Manifest, error) {
 	}
 	m := &vproject.Manifest{Version: vproject.Version, ID: id, Title: title(in, chunks), Created: now,
 		Settings: vproject.Settings{Voice: voice, Style: style, Preset: name, CloneModePin: in.CloneMode, Seed: seed, Cfg: defaultCfgValue,
-			Steps: defaultTimesteps, Takes: takes, LUFS: pr.lufs, ChunkPause: pr.opts.ChunkPause,
+			Steps: steps, Takes: takes, LUFS: lufs, ChunkPause: pr.opts.ChunkPause,
 			ParagraphPause: pr.opts.ParagraphPause, OutPath: out, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery},
 		Notes: []string{vproject.NoteNumbers}}
 	for _, c := range chunks {

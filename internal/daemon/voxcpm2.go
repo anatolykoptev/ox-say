@@ -362,6 +362,19 @@ func voxCloneMode(body map[string]any, v *voices.Voice, style, input string) (ul
 	return false, &requestError{fmt.Sprintf("clone_mode %q: want auto|reference|ultimate", mode)}
 }
 
+// timestepsError is the caller's mistake in plain words.
+func timestepsError() error {
+	return &requestError{fmt.Sprintf("inference_timesteps must be an integer in 1..%d; %d is the default", maxTimesteps, defaultTimesteps)}
+}
+
+// validTimesteps checks a requested inference_timesteps count.
+func validTimesteps(n int) error {
+	if n < 1 || n > maxTimesteps {
+		return timestepsError()
+	}
+	return nil
+}
+
 // voxSampling reads cfg_value and inference_timesteps with their defaults.
 func voxSampling(body map[string]any) (cfg float64, steps int, err error) {
 	cfg, steps = defaultCfgValue, defaultTimesteps
@@ -374,8 +387,8 @@ func voxSampling(body map[string]any) (cfg float64, steps int, err error) {
 	}
 	if raw, ok := body["inference_timesteps"]; ok {
 		f, ok := number(raw)
-		if !ok || f < 1 || f > maxTimesteps || f != math.Trunc(f) {
-			return 0, 0, &requestError{fmt.Sprintf("inference_timesteps must be an integer in 1..%d; %d is the default", maxTimesteps, defaultTimesteps)}
+		if !ok || f != math.Trunc(f) || f < 1 || f > maxTimesteps {
+			return 0, 0, timestepsError()
 		}
 		steps = int(f)
 	}

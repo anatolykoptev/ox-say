@@ -33,7 +33,7 @@ func produceDescription() string {
 
 Script: plain text; blank lines separate paragraphs. [pause 0.8s] (or [pause 300ms]; [pause] = 0.6 s) inserts exact silence anywhere. [style: excited and joyful, lively pace] at the very start of a paragraph sets that paragraph's delivery (short English descriptors). Any other [...] is an error. style is the default delivery for every paragraph. Up to %d characters.
 
-preset: "youtube" (default: loudness target -16 LUFS, calm pauses, 1 take per chunk), "reels" (target -14 LUFS, tighter pauses, 2 takes per chunk to choose from), "voice-under-music" (target -18 LUFS); all presets: %s. Loudness values are targets: the measured level can sit a little lower when the true-peak limit holds the gain back. seed makes it reproducible (the status reports the seed used). takes (1-%d) overrides takes per chunk. There are no cfg_value, steps or loudness options: presets carry them.
+preset: "youtube" (default: loudness target -16 LUFS, calm pauses, 1 take per chunk), "reels" (target -14 LUFS, tighter pauses, 2 takes per chunk to choose from), "voice-under-music" (target -18 LUFS); all presets: %s. Loudness values are targets: the measured level can sit a little lower when the true-peak limit holds the gain back. seed makes it reproducible (the status reports the seed used). takes (1-%d) overrides takes per chunk. loudness_lufs (-40..-5) and inference_timesteps (1-50, default 10) override the preset's loudness and the sampling steps for the whole project; there is no cfg_value option.
 Output: a 48 kHz WAV plus .srt, .vtt, .words.json (word timings for animated captions) and .manifest.json next to it, in out_path (absolute .wav; existing files refused unless overwrite) or the daemon's output folder (OX_SAY_PRODUCE_OUT_DIR, default ~/Movies/ox-say/): a folder and files named from title (lowercased, letters and digits, up to 32 characters) or, with no title, the project id. On battery the job pauses unless allow_battery.`, produceTimeText, maxProduceChars, presetNames(), maxTakesPerChunk)
 }
 
@@ -62,6 +62,9 @@ type produceIn struct {
 	OutPath      string `json:"out_path,omitempty" jsonschema:"Absolute path of the final .wav; its .srt .vtt .words.json .manifest.json go beside it; existing files refused unless overwrite"`
 	Overwrite    bool   `json:"overwrite,omitempty" jsonschema:"Allow replacing existing files at out_path"`
 	AllowBattery bool   `json:"allow_battery,omitempty" jsonschema:"Keep going on battery power (default: the job pauses until the Mac is plugged in)"`
+	// Pointers: an explicit 0 steps is refused, not read as the default.
+	LoudnessLUFS       *float64 `json:"loudness_lufs,omitempty" jsonschema:"Integrated loudness target in LUFS (-40..-5), e.g. -16; default from the preset"`
+	InferenceTimesteps *int     `json:"inference_timesteps,omitempty" jsonschema:"VoxCPM2 diffusion steps, whole number 1-50; default 10 (more is slower); 0 is refused"`
 }
 
 type produceStatusIn struct {
@@ -132,9 +135,16 @@ func (d *Daemon) toolProduce(_ context.Context, _ *mcp.CallToolRequest, in produ
 	if err != nil {
 		return nil, vproject.Summary{}, d.produceErr(err)
 	}
+	steps, err := explicitTimesteps(in.InferenceTimesteps)
+	if err == nil {
+		err = explicitLoudness(in.LoudnessLUFS)
+	}
+	if err != nil {
+		return nil, vproject.Summary{}, d.produceErr(err)
+	}
 	s, err := d.prod.create(produceInput{Script: in.Script, Title: in.Title, Voice: in.Voice, Style: in.Style,
 		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery,
-		CloneMode: in.CloneMode})
+		CloneMode: in.CloneMode, LoudnessLUFS: in.LoudnessLUFS, Timesteps: steps})
 	if err != nil {
 		return nil, vproject.Summary{}, d.produceErr(err)
 	}

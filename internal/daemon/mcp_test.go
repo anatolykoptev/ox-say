@@ -77,9 +77,10 @@ var wantToolSchemas = map[string]struct{ props, required []string }{
 	"voice_design_save": {[]string{"name", "take", "replace"}, []string{"name", "take"}},
 	"engine_status":     {nil, nil},
 	"transcribe":        {[]string{"audio_path", "engine", "language", "prompt", "words", "out_path"}, []string{"audio_path"}},
-	// The produce tools carry no cfg_value/inference_timesteps/loudness_lufs:
-	// presets and the adapter's defaults carry them (the knob ruling).
-	"produce": {[]string{"script", "title", "voice", "style", "preset", "seed", "takes", "clone_mode", "out_path", "overwrite", "allow_battery"},
+	// produce carries loudness_lufs and inference_timesteps as optional
+	// overrides of the preset / adapter default; cfg_value stays off it.
+	"produce": {[]string{"script", "title", "voice", "style", "preset", "seed", "takes", "clone_mode", "out_path", "overwrite", "allow_battery",
+		"loudness_lufs", "inference_timesteps"},
 		[]string{"script"}},
 	"produce_status":  {[]string{"id", "chunk"}, nil},
 	"produce_edit":    {[]string{"id", "chunk", "action", "takes", "take", "text", "style", "pause_after", "pace", "chunks"}, []string{"id", "action"}},

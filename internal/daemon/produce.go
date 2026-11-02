@@ -90,6 +90,8 @@ type produceInput struct {
 	Seed                                                    *int64
 	Takes                                                   int
 	Overwrite, AllowBattery                                 bool
+	LoudnessLUFS                                            *float64 // nil = the preset's target
+	Timesteps                                               int      // 0 = defaultTimesteps; the boundary refuses an explicit 0
 }
 
 // job is the running project.

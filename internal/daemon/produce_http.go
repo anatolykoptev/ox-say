@@ -19,7 +19,7 @@ import (
 
 const produceBodyLimit = 1 << 20
 
-// produceRequest is POST /v1/produce. Tuning knobs are preset, seed, takes and clone_mode only.
+// produceRequest is POST /v1/produce. Tuning knobs are preset, seed, takes, clone_mode, loudness_lufs and inference_timesteps (never cfg_value).
 type produceRequest struct {
 	Script       string `json:"script"`
 	Title        string `json:"title,omitempty"`
@@ -32,6 +32,10 @@ type produceRequest struct {
 	OutPath      string `json:"out_path,omitempty"`
 	Overwrite    bool   `json:"overwrite,omitempty"`
 	AllowBattery bool   `json:"allow_battery,omitempty"`
+	// LoudnessLUFS and InferenceTimesteps override the preset's loudness and the
+	// default sampling steps; pointers, so an explicit 0 is judged, not defaulted.
+	LoudnessLUFS       *float64 `json:"loudness_lufs,omitempty"`
+	InferenceTimesteps *int     `json:"inference_timesteps,omitempty"`
 }
 
 type resumeRequest struct {
@@ -125,9 +129,17 @@ func (d *Daemon) handleProduceCreate(w http.ResponseWriter, r *http.Request) {
 		d.writeProduceErr(w, err)
 		return
 	}
+	steps, err := explicitTimesteps(in.InferenceTimesteps)
+	if err == nil {
+		err = explicitLoudness(in.LoudnessLUFS)
+	}
+	if err != nil {
+		d.writeProduceErr(w, err)
+		return
+	}
 	s, err := d.prod.create(produceInput{Script: in.Script, Title: in.Title, Voice: in.Voice, Style: in.Style,
 		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery,
-		CloneMode: in.CloneMode})
+		CloneMode: in.CloneMode, LoudnessLUFS: in.LoudnessLUFS, Timesteps: steps})
 	if err != nil {
 		d.writeProduceErr(w, err)
 		return
@@ -163,6 +175,28 @@ func explicitTakes(p *int) (int, error) {
 		return 0, &requestError{fmt.Sprintf("takes must be 1..%d", maxTakesPerChunk)}
 	}
 	return *p, nil
+}
+
+// explicitTimesteps judges inference_timesteps at the boundary, where "absent"
+// and "0" can still be told apart: absent is the default (0 in produceInput),
+// an explicit value outside 1..50, 0 included, is a refusal.
+func explicitTimesteps(p *int) (int, error) {
+	if p == nil {
+		return 0, nil
+	}
+	if err := validTimesteps(*p); err != nil {
+		return 0, err
+	}
+	return *p, nil
+}
+
+// explicitLoudness refuses a loudness target outside the range before the
+// engine or the voice is looked at.
+func explicitLoudness(p *float64) error {
+	if p == nil {
+		return nil
+	}
+	return validLUFS(*p)
 }
 
 func chunkIndex(r *http.Request) (int, error) {
