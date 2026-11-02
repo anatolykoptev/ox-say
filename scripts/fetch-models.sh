@@ -10,8 +10,11 @@
 #   Core ML community-1 diarization models (CC-BY-4.0), 24 files and 4 documents, 22 MB, in <dest>/diar/speaker-diarization/: who
 #                                                 spoke on a group call (ox-diar). In the default set; --diar-only fetches
 #                                                 just these.
+#   Nemotron 3 Diarization fast128 (OpenMDW-1.1), 5 files and 2 documents, 199 MB, in <dest>/diar/nemotron-3-diarization/:
+#                                                 the ox-diar engine that replaces the pyannote pipeline. In the default set
+#                                                 and in --diar-only only on arm64 macOS 15+; --nemotron-only fetches just it.
 #
-# Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [--notes-only] [--diar-only] [dest]   (any order)
+# Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [--notes-only] [--diar-only] [--nemotron-only] [dest]   (any order)
 #   dest defaults to "$OX_SAY_HOME/models" (OX_SAY_HOME defaults to
 #   ~/Library/Application Support/ox-say).
 #   OX_SAY_MODELS_FROM=<dir> copies matching files from a local dir instead of
@@ -22,6 +25,7 @@ with_whisper=0
 with_voxcpm2=0
 notes_only=0
 diar_only=0
+nemotron_only=0
 dest=
 for arg in "$@"; do
     case "$arg" in
@@ -29,6 +33,7 @@ for arg in "$@"; do
         --with-voxcpm2) with_voxcpm2=1 ;;
         --notes-only) notes_only=1 ;;
         --diar-only) diar_only=1 ;;
+        --nemotron-only) nemotron_only=1 ;;
         -*) echo "unknown option: $arg" >&2; exit 2 ;;
         *)
             if [ -n "$dest" ]; then
@@ -39,14 +44,14 @@ for arg in "$@"; do
             ;;
     esac
 done
-# --notes-only and --diar-only each replace the model list; an option for another model would be dropped without a word.
-if [ "$notes_only" = 1 ] && [ "$diar_only" = 1 ]; then
-    echo "--notes-only and --diar-only select different model sets; give one" >&2
+# --notes-only, --diar-only and --nemotron-only each replace the model list; an option for another model would be dropped without a word.
+if [ $((notes_only + diar_only + nemotron_only)) -gt 1 ]; then
+    echo "--notes-only, --diar-only and --nemotron-only select different model sets; give one" >&2
     exit 2
 fi
-if [ "$notes_only" = 1 ] || [ "$diar_only" = 1 ]; then
+if [ "$notes_only" = 1 ] || [ "$diar_only" = 1 ] || [ "$nemotron_only" = 1 ]; then
     if [ "$with_whisper" = 1 ] || [ "$with_voxcpm2" = 1 ]; then
-        echo "--with-whisper and --with-voxcpm2 do not combine with --notes-only or --diar-only: those fetch one set and nothing else" >&2
+        echo "--with-whisper and --with-voxcpm2 do not combine with --notes-only, --diar-only or --nemotron-only: those fetch one set and nothing else" >&2
         exit 2
     fi
 fi
@@ -124,6 +129,59 @@ for entry in "${diar_files[@]}" "${diar_docs[@]}"; do
 done
 models+=("${diar_models[@]}")
 
+# Nemotron 3 Diarization (the ox-diar engine that replaces the pyannote pipeline): FluidInference/nemotron-3-diarization-coreml, the Core ML conversion of
+# nvidia/Nemotron-3-Diarization (OpenMDW-1.1), fast128 preset (monolithic/v2), at the revision the spike measured. Stored as
+# <dest>/diar/nemotron-3-diarization/, the flat layout Nemotron3Models.load(config:directory:) reads. Never `main`: the
+# library's own default revision is a moving branch. Bumping means new hashes here and nem_rev in
+# config.NemotronModelsRevision (TestDiarPinsAgreeAcrossLanguages compares the two); Pins.swift joins when the engine lands.
+nem_rev=25a90f97f254428d4b30374b76af9c74fdee8327
+nem_url=https://huggingface.co/FluidInference/nemotron-3-diarization-coreml/resolve/$nem_rev
+nem_bundle=Nemotron3Diarizer_fast128.mlmodelc
+nem_files=(
+    "e7c029a46d9f327bec4c47fc34e5d32ee2cec9ce596950af0c403d05146b4ead  $nem_bundle/model.mil"
+    "ebcca7245d8d774305752b9f2b79433ad1858f8a06df3b326e0ae6305d981d25  $nem_bundle/coremldata.bin"
+    "e8c90d2d0e16787a420de6805fd5b7a95c116fac0163208b5bc4d8a9ae459ca4  $nem_bundle/weights/weight.bin"
+    "a71e06616a3ae7bddef06ce5dfc7fe523a286e489f63a8da2fc4f1e940d560a4  $nem_bundle/analytics/coremldata.bin"
+    "d4417b3c0eabdf7c47032fac2b5b5a7ee83d819a6ddda8fd8eaf74e2b5cc4ac7  learnable_sil_emb.bin"
+)
+nem_docs=(
+    "a091d8d252882018a82593cafdd8020b924102b2d9b8d38a0db0c57413e84115  README.md"
+    "6af4f721e1fc33b9a701f041d04addc120af7a3867596833f79e71337c35296a  config.json"
+)
+nem_models=()
+for entry in "${nem_files[@]}" "${nem_docs[@]}"; do
+    read -r sum rel <<< "$entry"
+    case $rel in
+        $nem_bundle/*) remote=monolithic/v2/$rel ;;   # the bundle sits under monolithic/v2/ at the source
+        *) remote=$rel ;;
+    esac
+    nem_models+=("diar/nemotron-3-diarization/$rel $sum $nem_url $remote")
+done
+
+# A Mac that cannot run ox-diar gets no 199 MB it cannot use: the engine refuses Intel and macOS < 15
+# (internal/daemon/diarize.go diarReady), so the set joins the default list and --diar-only only here.
+# OX_SAY_NEMOTRON=1 forces the set on (a seeded test dir, a CI cache); =0 forces it off. Fails closed like
+# oxs_voxcpm2_ok (scripts/lib-install.sh): a platform that will not say its version is treated as too old.
+nemotron_ok() {
+    case ${OX_SAY_NEMOTRON:-} in
+        1) return 0 ;;
+        0) return 1 ;;
+    esac
+    # arm64 hardware, not just an arm64 shell: a Rosetta shell says x86_64 while the Mac is Apple Silicon —
+    # hw.optional.arm64 reads the hardware, the same test get.sh makes for its own arch.
+    [ "$(uname -m)" = arm64 ] || [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ] || return 1
+    local ver
+    ver=$(sw_vers -productVersion 2>/dev/null) || return 1
+    case $ver in '' | *[!0-9.]*) return 1 ;; esac
+    [ "${ver%%.*}" -ge 15 ]
+}
+
+nem_in_set=0
+if nemotron_ok; then
+    models+=("${nem_models[@]}")   # Nemotron last
+    nem_in_set=1
+fi
+
 # Meeting notes (--notes-only): Qwen3.5-4B Q4_K_M, 2740937888 bytes, pinned to the repo commit
 # the notes spike measured. The daemon reports download progress from the size of the .part
 # file against config.NotesModelBytes, which must match this size.
@@ -133,6 +191,13 @@ if [ "$notes_only" = 1 ]; then
 fi
 if [ "$diar_only" = 1 ]; then
     models=("${diar_models[@]}")
+    if [ "$nem_in_set" = 1 ]; then
+        models+=("${nem_models[@]}")
+    fi
+fi
+if [ "$nemotron_only" = 1 ]; then
+    models=("${nem_models[@]}")
+    nem_in_set=1
 fi
 
 # Seconds a download may stay under 1 KB/s before it is given up on; OX_SAY_STALL_SECS shortens it for tests.
@@ -150,6 +215,7 @@ human_size() {
 }
 
 diar_marker="$dest/diar/speaker-diarization/.fluidaudio-revision"
+nem_marker="$dest/diar/nemotron-3-diarization/.ox-say-revision"
 
 # Seconds per retry pass to wait before the next one (pass * unit); OX_SAY_RETRY_SLEEP_UNIT=0 turns it off for tests.
 retry_unit=${OX_SAY_RETRY_SLEEP_UNIT:-2}
@@ -227,10 +293,14 @@ for entry in "${models[@]}"; do
         continue
     fi
     part="$target.part"
-    # The marker says "every diarization file passed its checksum". This one did not, so it is about to be replaced (or
-    # is missing): the marker goes now, and is written again at the end. Dropped here and not before the loop, a
-    # failure on an unrelated model earlier in the list would take the marker of intact diarization files with it.
-    case $name in diar/*) rm -f "$diar_marker" ;; esac
+    # The marker of a set says "every file of the set passed its checksum". This one did not, so it is about to be
+    # replaced (or is missing): the marker of its set goes now, and is written again at the end. Dropped here and not
+    # before the loop, a failure on an unrelated model earlier in the list would take the marker of intact files with
+    # it.
+    case $name in
+        diar/speaker-diarization/*) rm -f "$diar_marker" ;;
+        diar/nemotron-3-diarization/*) rm -f "$nem_marker" ;;
+    esac
     if [ -n "${OX_SAY_MODELS_FROM:-}" ] && [ -f "$OX_SAY_MODELS_FROM/$name" ]; then
         echo "copy    $name"
         cp "$OX_SAY_MODELS_FROM/$name" "$part"
@@ -284,16 +354,23 @@ for entry in "${models[@]}"; do
 done
 
 # FluidAudio's loader reads <dir>/.fluidaudio-revision and refuses the models when it is not the revision it was told
-# to expect (ox-diar sets it to diar_rev). It is written last, after every file above passed its checksum, so an
-# interrupted fetch has no marker: ox-diar cannot load it, and the daemon will not call the models ready either
-# (Task 20b.2: Config.DiarModelsReady). An old marker is removed before the first diarization file is fetched, for the
+# to expect (ox-diar sets it to diar_rev); .ox-say-revision is the same contract for the nemotron set, ours because no
+# loader outside this repo reads it. Each marker is written last, after every file of its set passed its checksum, so
+# an interrupted fetch has no marker: ox-diar cannot load it, and the daemon will not call the models ready either
+# (Task 20b.2: Config.DiarModelsReady). An old marker is removed before the first file of its set is fetched, for the
 # same reason.
 if [ "$notes_only" != 1 ]; then
-    printf '%s\n' "$diar_rev" > "$dest/diar/speaker-diarization/.fluidaudio-revision.part"
-    mv "$dest/diar/speaker-diarization/.fluidaudio-revision.part" "$dest/diar/speaker-diarization/.fluidaudio-revision"
+    if [ "$nemotron_only" != 1 ]; then
+        printf '%s\n' "$diar_rev" > "$dest/diar/speaker-diarization/.fluidaudio-revision.part"
+        mv "$dest/diar/speaker-diarization/.fluidaudio-revision.part" "$dest/diar/speaker-diarization/.fluidaudio-revision"
+    fi
+    if [ "$nem_in_set" = 1 ]; then
+        printf '%s\n' "$nem_rev" > "$dest/diar/nemotron-3-diarization/.ox-say-revision.part"
+        mv "$dest/diar/nemotron-3-diarization/.ox-say-revision.part" "$dest/diar/nemotron-3-diarization/.ox-say-revision"
+    fi
 fi
 
-if [ "$notes_only" = 1 ] || [ "$diar_only" = 1 ]; then exit 0; fi
+if [ "$notes_only" = 1 ] || [ "$diar_only" = 1 ] || [ "$nemotron_only" = 1 ]; then exit 0; fi
 # The f16 Parakeet weights were the default until q8_0 replaced them (the same
 # FLEURS ru/en WER, half the RAM). Name a leftover copy; never delete it here: the
 # LaunchAgent's OX_SAY_STT_MODEL may name it, and a standalone run cannot see that.

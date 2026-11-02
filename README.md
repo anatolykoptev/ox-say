@@ -22,9 +22,10 @@ curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | 
 
 The installer:
 - downloads a prebuilt release and checks its SHA-256;
-- fetches the models (about 2.3 GB, checksummed, including 22 MB of speaker models for
-  [Meetings](#meetings); the optional Whisper adds 1.6 GB). The meeting-notes model (2.7 GB) is not
-  part of it: it is downloaded when you first ask for notes;
+- fetches the models, checksummed: about 2.5 GB on Apple Silicon with macOS 15 or later, including 221 MB of
+  speaker models for [Meetings](#meetings), and about 2.3 GB on an Intel Mac or older macOS, which skip the
+  199 MB Nemotron set. The optional Whisper adds 1.6 GB. The meeting-notes model (2.7 GB) is not part of it: it
+  is downloaded when you first ask for notes;
 - starts the daemon as a LaunchAgent;
 - registers the MCP server with Claude Code, if Claude Code is installed;
 - runs a speak-and-transcribe self-test;
@@ -888,6 +889,8 @@ publisher's license:
   pyannote's speaker-diarization-community-1 pipeline (pyannote segmentation, WeSpeaker ResNet34-LM embeddings,
   PLDA parameters from BUT Speech@FIT); attribute pyannote, WeSpeaker, BUT Speech@FIT and Fluid Inference when you
   redistribute them (`NOTICE` has the full credit)
+- Nemotron 3 Diarization fast128 Core ML models for `ox-diar`'s Nemotron engine: OpenMDW License 1.1
+  (NVIDIA, converted to Core ML by Fluid Inference; `NOTICE` has the full credit)
 - Forced aligner for `ox-align` (optional, converted by hand, see
   `engine/README.md`): the MMS-300m forced-aligner weights are CC-BY-NC-4.0,
   **non-commercial**; `facebook/wav2vec2-base-960h` is Apache-2.0

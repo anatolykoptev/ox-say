@@ -15,6 +15,20 @@
 #     a failed fetch leaves an old marker -> "a failed fetch removes the marker of an earlier one" fails
 #   * fetch-models.sh: delete the `mv ... .fluidaudio-revision` line -> a complete fetch leaves no marker (the live
 #     acceptance probe sees it; this sandbox test only proves that a FAILED fetch leaves none)
+#   * fetch-models.sh: delete the `diar/nemotron-3-diarization/*) rm -f "$nem_marker"` arm -> a bad nemotron file
+#     leaves an old marker -> "its marker is gone" fails
+#   * fetch-models.sh: delete the `mv ... .ox-say-revision` write -> a complete --nemotron-only fetch leaves no
+#     marker -> "the nemotron marker is present after a full fetch" fails
+#   * fetch-models.sh: drop `nemotron_ok` from the selection -> OX_SAY_NEMOTRON=0 still lists the nemotron set ->
+#     "OX_SAY_NEMOTRON=0 skips the nemotron set" fails
+#   * fetch-models.sh: `-ge 15` -> `-ge 1` in nemotron_ok -> macOS 14 admits the set -> the "macOS 14"
+#     checks below fail
+#   * fetch-models.sh: delete `models+=("${nem_models[@]}")` under `if [ "$diar_only" = 1 ]` ->
+#     "--diar-only on arm64 macOS 15 lists the nemotron set" fails
+#   * fetch-models.sh: delete `models+=("${nem_models[@]}")` under `if nemotron_ok` ->
+#     "a default run on arm64 macOS 15 lists the nemotron set" fails
+#   * fetch-models.sh: drop the sysctl half of the arch test in nemotron_ok -> a Rosetta shell reads as
+#     Intel -> "a Rosetta shell on arm64 macOS 15 lists the nemotron set" fails
 #   * fetch-models.sh: change the notes sha256 -> the live acceptance probe
 #     (a real copy of the model) fails; this sandbox test cannot see it, because
 #     it only proves a WRONG file is refused (see Task 6 in the plan)
@@ -97,7 +111,7 @@ else
     fail "files left in dest/diar: $(find "$tmp/ddest/diar" -type f 2>/dev/null)"
 fi
 n=$(grep -c '^    "[0-9a-f]\{64\}  [^ ]*"$' "$root/scripts/fetch-models.sh")
-if [ "$n" = 28 ]; then pass "the script lists 24 diarization files and 4 documents"; else fail "the script lists $n diarization entries, want 28"; fi
+if [ "$n" = 35 ]; then pass "the script lists 28 diarization and 7 nemotron entries"; else fail "the script lists $n diarization entries, want 35"; fi
 
 # A marker from an earlier complete fetch must not outlive a failed one: the next run replaces files, and a marker over a
 # half-replaced set would tell the loader the models are all there.
@@ -108,6 +122,195 @@ if [ ! -e "$tmp/ddest2/diar/speaker-diarization/.fluidaudio-revision" ]; then
     pass "a failed fetch removes the marker of an earlier one"
 else
     fail "the old revision marker survived a failed fetch"
+fi
+
+# Nemotron set, selected alone with --nemotron-only (the loop stops at the first bad entry, so the set under test must
+# be the only one listed): its own directory and marker; a bad file there removes ITS marker and leaves the WeSpeaker
+# marker alone.
+mkdir -p "$tmp/ndest/diar/speaker-diarization" "$tmp/nfrom/diar/nemotron-3-diarization"
+echo "df2625ac79a7ac6b65ad868fee6d80f320da4232" > "$tmp/ndest/diar/speaker-diarization/.fluidaudio-revision"
+mkdir -p "$tmp/ndest/diar/nemotron-3-diarization"
+echo "25a90f97f254428d4b30374b76af9c74fdee8327" > "$tmp/ndest/diar/nemotron-3-diarization/.ox-say-revision"
+mkdir -p "$tmp/nfrom/diar/nemotron-3-diarization/Nemotron3Diarizer_fast128.mlmodelc"
+echo "not a model" > "$tmp/nfrom/diar/nemotron-3-diarization/Nemotron3Diarizer_fast128.mlmodelc/model.mil"   # the FIRST nemotron entry
+out=$(OX_SAY_NEMOTRON=1 OX_SAY_MODELS_FROM="$tmp/nfrom" bash "$root/scripts/fetch-models.sh" --nemotron-only "$tmp/ndest" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && pass "a wrong nemotron file is refused" || fail "a wrong nemotron file was accepted"
+case $out in *"checksum mismatch for diar/nemotron-3-diarization/Nemotron3Diarizer_fast128.mlmodelc/model.mil"*) pass "the mismatch names the nemotron file" ;; *) fail "no mismatch message: $out" ;; esac
+[ ! -e "$tmp/ndest/diar/nemotron-3-diarization/.ox-say-revision" ] && pass "its marker is gone" || fail "stale nemotron marker survived"
+[ -e "$tmp/ndest/diar/speaker-diarization/.fluidaudio-revision" ] && pass "the WeSpeaker marker is untouched" || fail "--nemotron-only removed the WeSpeaker marker"
+# gating: a Mac that cannot run ox-diar does not download 199 MB. All 28 WeSpeaker files stand in the dest already
+# (the fake vouches "intact"), so the fetch walks the whole --diar-only list: with OX_SAY_NEMOTRON=0 that is 28 oks
+# and done; a nemotron set still listed would go on to the no-network stub and its name would reach the output.
+d="$tmp/nemgate"; mkdir -p "$d/bin" "$d/dest/diar/speaker-diarization"
+cat > "$d/bin/shasum" <<FAKE
+#!/bin/bash
+f=\${3:-}
+case \$f in
+    */speaker-diarization/*)
+        if [ "\$(cat "\$f")" = intact ]; then
+            rel=\${f#*/speaker-diarization/}
+            rel=\${rel%.part}
+            sed -n '/^diar_files=(/,/^)/p; /^diar_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | grep -m1 "^    \"[0-9a-f]\{64\}  \$rel\"\$" | sed 's/^    "\([0-9a-f]*\) .*/\1  -/'
+            exit 0
+        fi ;;
+esac
+exec /usr/bin/shasum "\$@"
+FAKE
+chmod +x "$d/bin/shasum"
+sed -n '/^diar_files=(/,/^)/p; /^diar_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed -n 's/^    "[0-9a-f]\{64\}  \(.*\)"$/\1/p' | while IFS= read -r rel; do
+    mkdir -p "$d/dest/diar/speaker-diarization/$(dirname "$rel")"
+    printf intact > "$d/dest/diar/speaker-diarization/$rel"
+done
+out=$(PATH="$d/bin:$PATH" OX_SAY_NEMOTRON=0 bash "$root/scripts/fetch-models.sh" --diar-only "$d/dest" 2>&1); rc=$?
+if [ "$rc" -eq 0 ]; then pass "OX_SAY_NEMOTRON=0 --diar-only completes"; else fail "OX_SAY_NEMOTRON=0 --diar-only failed (rc $rc): $out"; fi
+case $out in *nemotron*) fail "OX_SAY_NEMOTRON=0 still listed the nemotron set: $out" ;; *) pass "OX_SAY_NEMOTRON=0 skips the nemotron set" ;; esac
+
+# The gate itself, on faked Macs: with OX_SAY_NEMOTRON unset, nemotron_ok reads uname -m, hw.optional.arm64
+# and sw_vers, so three fakes on PATH answer for another machine — including the Rosetta case, an x86_64
+# shell on arm64 hardware (the same hw.optional.arm64 test get.sh makes). Every file the list can name is an
+# "intact" copy in the from dir, so the run walks the WHOLE list: the nemotron set is listed last, and a test
+# that stopped at the first entry could not tell "not listed" from "listed but never reached".
+g="$tmp/nemarch"; mkdir -p "$g/bin" "$g/from"
+cat > "$g/bin/shasum" <<FAKE
+#!/bin/bash
+f=\${3:-}
+if [ "\$(cat "\$f" 2>/dev/null)" = intact ]; then
+    case \$f in
+        */diar/speaker-diarization/*)
+            rel=\${f#*/diar/speaker-diarization/}
+            rel=\${rel%.part}
+            sed -n '/^diar_files=(/,/^)/p; /^diar_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | grep -m1 "^    \"[0-9a-f]\{64\}  \$rel\"\$" | sed 's/^    "\([0-9a-f]*\) .*/\1  -/'
+            exit 0 ;;
+        */diar/nemotron-3-diarization/*)
+            rel=\${f#*/diar/nemotron-3-diarization/}
+            rel=\${rel%.part}
+            sed -n '/^nem_files=(/,/^)/p; /^nem_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed 's/\\\$nem_bundle/Nemotron3Diarizer_fast128.mlmodelc/g' | grep -m1 "^    \"[0-9a-f]\{64\}  \$rel\"\$" | sed 's/^    "\([0-9a-f]*\) .*/\1  -/'
+            exit 0 ;;
+        */*)
+            name=\${f##*/}
+            name=\${name%.part}
+            grep -m1 "^    \"\$name [0-9a-f]\{64\} " "$root/scripts/fetch-models.sh" | sed 's/^    "[^ ]* \([0-9a-f]*\) .*/\1  -/'
+            exit 0 ;;
+    esac
+fi
+exec /usr/bin/shasum "\$@"
+FAKE
+chmod +x "$g/bin/shasum"
+# Seed a copy of every name the default list or --diar-only can reach: the four engines at the top level,
+# then the two diarization sets in their directories.
+sed -n '/^models=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed -n 's/^    "\([^ ]*\) [0-9a-f]\{64\} .*/\1/p' | while IFS= read -r name; do
+    printf intact > "$g/from/$name"
+done
+sed -n '/^diar_files=(/,/^)/p; /^diar_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed -n 's/^    "[0-9a-f]\{64\}  \(.*\)"$/\1/p' | while IFS= read -r rel; do
+    mkdir -p "$g/from/diar/speaker-diarization/$(dirname "$rel")"
+    printf intact > "$g/from/diar/speaker-diarization/$rel"
+done
+sed -n '/^nem_files=(/,/^)/p; /^nem_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed 's/\$nem_bundle/Nemotron3Diarizer_fast128.mlmodelc/g' | sed -n 's/^    "[0-9a-f]\{64\}  \(.*\)"$/\1/p' | while IFS= read -r rel; do
+    mkdir -p "$g/from/diar/nemotron-3-diarization/$(dirname "$rel")"
+    printf intact > "$g/from/diar/nemotron-3-diarization/$rel"
+done
+# fake_platform <dir> <uname -m> <sw_vers -productVersion> <hw.optional.arm64>: three fakes answering as that Mac.
+fake_platform() {
+    mkdir -p "$1"
+    cat > "$1/uname" <<FAKE
+#!/bin/sh
+if [ "\${1:-}" = -m ]; then echo "$2"; else exec /usr/bin/uname "\$@"; fi
+FAKE
+    cat > "$1/sw_vers" <<FAKE
+#!/bin/sh
+if [ "\${1:-}" = -productVersion ]; then echo "$3"; else echo "sw_vers test fake: only -productVersion is known" >&2; exit 1; fi
+FAKE
+    cat > "$1/sysctl" <<FAKE
+#!/bin/sh
+if [ "\${1:-}\${2:-}" = "-nhw.optional.arm64" ]; then echo "$4"; else exec /usr/sbin/sysctl "\$@"; fi
+FAKE
+    chmod +x "$1/uname" "$1/sw_vers" "$1/sysctl"
+}
+# run_gate <fake bin> <dest> [selector]: the fetch with OX_SAY_NEMOTRON unset on the faked Mac; every listed
+# file copies clean, so a name in the set reaches a copy line exactly when the gate lets the set in.
+run_gate() {
+    env -u OX_SAY_NEMOTRON PATH="$g/bin:$1:$PATH" OX_SAY_MODELS_FROM="$g/from" bash "$root/scripts/fetch-models.sh" ${3:+$3} "$2" 2>&1
+}
+# nem_listed <label> <rc> <out>: the set, listed last, was fetched — its first file on a copy line and all
+# seven files past the checksum. nem_not_listed <label> <rc> <out>: no nemotron name printed, the run still 0.
+nem_listed() {
+    if [ "$2" != 0 ]; then fail "$1 — the run failed (rc $2): $3"; return; fi
+    case $3 in
+        *"copy    diar/nemotron-3-diarization/Nemotron3Diarizer_fast128.mlmodelc/model.mil"*) ;;
+        *) fail "$1 — the first nemotron file reached no copy line: $3"; return ;;
+    esac
+    n=$(printf '%s\n' "$3" | grep -c '^ok      diar/nemotron-3-diarization/')
+    if [ "$n" = 7 ]; then pass "$1"; else fail "$1 — $n of 7 nemotron files reached 'ok': $3"; fi
+}
+nem_not_listed() {
+    case $3 in *nemotron*) fail "$1 — the nemotron set was fetched: $3"; return ;; esac
+    if [ "$2" = 0 ]; then pass "$1"; else fail "$1 — the run failed (rc $2): $3"; fi
+}
+
+fake_platform "$g/arm64-15" arm64 15.1 1
+out=$(run_gate "$g/arm64-15" "$g/d1" --diar-only); rc=$?
+nem_listed "--diar-only on arm64 macOS 15 lists the nemotron set" "$rc" "$out"
+out=$(run_gate "$g/arm64-15" "$g/d2"); rc=$?
+nem_listed "a default run on arm64 macOS 15 lists the nemotron set" "$rc" "$out"
+
+fake_platform "$g/arm64-26" arm64 26.0 1
+out=$(run_gate "$g/arm64-26" "$g/d3" --diar-only); rc=$?
+nem_listed "--diar-only on arm64 macOS 26 lists the nemotron set" "$rc" "$out"
+out=$(run_gate "$g/arm64-26" "$g/d4"); rc=$?
+nem_listed "a default run on arm64 macOS 26 lists the nemotron set" "$rc" "$out"
+
+fake_platform "$g/arm64-14" arm64 14.7 1
+out=$(run_gate "$g/arm64-14" "$g/d5" --diar-only); rc=$?
+nem_not_listed "--diar-only on arm64 macOS 14 keeps the nemotron set out" "$rc" "$out"
+out=$(run_gate "$g/arm64-14" "$g/d6"); rc=$?
+nem_not_listed "a default run on arm64 macOS 14 keeps the nemotron set out" "$rc" "$out"
+
+fake_platform "$g/intel-15" x86_64 15.1 0
+out=$(run_gate "$g/intel-15" "$g/d7" --diar-only); rc=$?
+nem_not_listed "--diar-only on Intel macOS 15 keeps the nemotron set out" "$rc" "$out"
+out=$(run_gate "$g/intel-15" "$g/d8"); rc=$?
+nem_not_listed "a default run on Intel macOS 15 keeps the nemotron set out" "$rc" "$out"
+
+# A Rosetta shell is x86_64 on arm64 hardware; hw.optional.arm64 reads the hardware and still picks arm64.
+fake_platform "$g/rosetta" x86_64 15.1 1
+out=$(run_gate "$g/rosetta" "$g/d9" --diar-only); rc=$?
+nem_listed "a Rosetta shell on arm64 macOS 15 lists the nemotron set" "$rc" "$out"
+
+# OX_SAY_NEMOTRON=1 overrides a platform the gate would refuse.
+fake_platform "$g/intel-14" x86_64 14.7 0
+out=$(PATH="$g/bin:$g/intel-14:$PATH" OX_SAY_NEMOTRON=1 OX_SAY_MODELS_FROM="$g/from" bash "$root/scripts/fetch-models.sh" --diar-only "$g/d10" 2>&1); rc=$?
+nem_listed "OX_SAY_NEMOTRON=1 lists the nemotron set even on Intel macOS 14" "$rc" "$out"
+
+# The nemotron marker is written after every file of the set passed its checksum: a --nemotron-only run whose files
+# all copy clean ends with .ox-say-revision naming nem_rev. The fake shasum vouches for a file holding "intact" with
+# the hash the script's own nemotron table pins (the live acceptance does the same over the real files).
+# Mutation: fetch-models.sh, delete the `mv ... .ox-say-revision` write -> no marker after a full fetch -> RED.
+d="$tmp/nemmark"; mkdir -p "$d/bin" "$d/dest" "$d/from"
+cat > "$d/bin/shasum" <<FAKE
+#!/bin/bash
+f=\${3:-}
+case \$f in
+    */nemotron-3-diarization/*)
+        if [ "\$(cat "\$f")" = intact ]; then
+            rel=\${f#*/nemotron-3-diarization/}
+            rel=\${rel%.part}
+            sed -n '/^nem_files=(/,/^)/p; /^nem_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed 's/\\\$nem_bundle/Nemotron3Diarizer_fast128.mlmodelc/g' | grep -m1 "^    \"[0-9a-f]\{64\}  \$rel\"\$" | sed 's/^    "\([0-9a-f]*\) .*/\1  -/'
+            exit 0
+        fi ;;
+esac
+exec /usr/bin/shasum "\$@"
+FAKE
+chmod +x "$d/bin/shasum"
+sed -n '/^nem_files=(/,/^)/p; /^nem_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | sed 's/\$nem_bundle/Nemotron3Diarizer_fast128.mlmodelc/g' | sed -n 's/^    "[0-9a-f]\{64\}  \(.*\)"$/\1/p' | while IFS= read -r rel; do
+    mkdir -p "$d/from/diar/nemotron-3-diarization/$(dirname "$rel")"
+    printf intact > "$d/from/diar/nemotron-3-diarization/$rel"
+done
+out=$(PATH="$d/bin:$PATH" OX_SAY_MODELS_FROM="$d/from" bash "$root/scripts/fetch-models.sh" --nemotron-only "$d/dest" 2>&1); rc=$?
+[ "$rc" -eq 0 ] || fail "the nemotron fetch failed: $out"
+if [ -e "$d/dest/diar/nemotron-3-diarization/.ox-say-revision" ] && [ "$(cat "$d/dest/diar/nemotron-3-diarization/.ox-say-revision")" = "25a90f97f254428d4b30374b76af9c74fdee8327" ]; then
+    pass "the nemotron marker is present after a full fetch"
+else
+    fail "no nemotron marker after a full fetch (rc $rc): $out"
 fi
 
 # A download that fails must say why in curl's words, and must not flood stderr
@@ -143,7 +346,7 @@ case $out in
 esac
 
 # --- option conflicts: a set selector next to an option for another set is refused, not half-obeyed ---
-for combo in "--notes-only --with-whisper" "--diar-only --with-voxcpm2" "--notes-only --diar-only"; do
+for combo in "--notes-only --with-whisper" "--diar-only --with-voxcpm2" "--notes-only --diar-only" "--nemotron-only --with-whisper" "--nemotron-only --diar-only" "--nemotron-only --notes-only"; do
     # shellcheck disable=SC2086
     out=$(bash "$root/scripts/fetch-models.sh" $combo "$tmp/dconf" 2>&1)
     rc=$?

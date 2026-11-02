@@ -75,6 +75,11 @@ const NotesMinMemoryGB = 16
 // revision (diar_rev), engine/diar names it in Pins.swift, and a test compares the three.
 const DiarModelsRevision = "df2625ac79a7ac6b65ad868fee6d80f320da4232"
 
+// NemotronModelsRevision is the Hugging Face revision of the Nemotron 3 Diarization fast128 Core ML set, the ox-diar
+// engine that replaces the pyannote pipeline. scripts/fetch-models.sh downloads that revision (nem_rev) and a test
+// compares the two; engine/diar's Pins.swift joins the comparison when the engine lands. Nothing reads the set yet.
+const NemotronModelsRevision = "25a90f97f254428d4b30374b76af9c74fdee8327"
+
 const bytesPerGB = 1 << 30
 
 // GPU memory models (OX_SAY_GPU_MEMORY). auto is resolved at load, so a
