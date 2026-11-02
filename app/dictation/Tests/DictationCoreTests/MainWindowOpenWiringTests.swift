@@ -133,7 +133,7 @@ final class MainWindowOpenWiringTests: XCTestCase {
     func testTheAdvancedSwitchReinstallsTheMenu() throws {
         let text = try source("OxSayDictation/MainWindow.swift")
         let sink = try body(text, of: "private func observeAdvanced(")
-        XCTAssertTrue(sink.contains("MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular, advanced:"))
+        XCTAssertTrue(sink.contains("MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular, advanced: on)"))
         // No condition to invert: the source has one creation site, and that site attaches the observer.
         XCTAssertEqual(text.components(separatedBy: "MainWindowSource(host:").count - 1, 1, "one creation site")
         let make = try body(text, of: "private func makeSource(")

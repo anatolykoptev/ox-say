@@ -128,6 +128,8 @@ struct AdvancedSwitch: View {
         // switch's accessibility name (`labelsHidden` only hides it from view).
         HStack(spacing: 4) {
             Text(L10nKey.advancedMode.text).font(.system(size: 11)).lineLimit(1)
+                // The Toggle below carries the name; reading both would say it twice.
+                .accessibilityHidden(true)
             Spacer(minLength: 0)
             Toggle(L10nKey.advancedMode.text, isOn: $model.advanced)
                 .labelsHidden()
