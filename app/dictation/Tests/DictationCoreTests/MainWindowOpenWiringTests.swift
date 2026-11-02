@@ -134,8 +134,23 @@ final class MainWindowOpenWiringTests: XCTestCase {
         let text = try source("OxSayDictation/MainWindow.swift")
         let sink = try body(text, of: "private func observeAdvanced(")
         XCTAssertTrue(sink.contains("MainMenuBar.install(appDelegateTarget: appDelegate, for: .regular, advanced:"))
+        // No condition to invert: the source has one creation site, and that site attaches the observer.
+        XCTAssertEqual(text.components(separatedBy: "MainWindowSource(host:").count - 1, 1, "one creation site")
+        let make = try body(text, of: "private func makeSource(")
+        XCTAssertTrue(make.contains("MainWindowSource(host:"))
+        XCTAssertTrue(make.contains("observeAdvanced(source)"))
+        XCTAssertEqual(text.components(separatedBy: "observeAdvanced(").count - 1, 2, "the definition and the one call")
         let open = try body(text, of: "func open(route: MainRoute? = nil) {")
-        XCTAssertTrue(open.contains("observeAdvanced(source)"), "the sink is attached where the source is first made")
+        XCTAssertTrue(open.contains("self.source ?? makeSource(appDelegate)"))
+        XCTAssertFalse(open.contains("observeAdvanced("), "open does not decide whether to observe")
+    }
+
+    /// The window model and the route start on the same section, from one source.
+    /// Mutation: MainWindowModel.init, `section: MainSection = MainWindowSpec.firstRunSection` -> `.meetings` -> RED.
+    func testTheModelStartsOnTheFirstRunSection() throws {
+        let model = try source("MainWindowUI/MainWindowModel.swift")
+        XCTAssertTrue(model.contains("section: MainSection = MainWindowSpec.firstRunSection"))
+        XCTAssertEqual(MainRoute().section, MainWindowSpec.firstRunSection)
     }
 
     /// F0 call site: every install passes the live switch, or the first close (applyPolicy) resets ⌘ order to the
@@ -152,7 +167,7 @@ final class MainWindowOpenWiringTests: XCTestCase {
         let policy = try body(text, of: "private func applyPolicy() {")
         XCTAssertTrue(policy.contains("MainMenuBar.install(appDelegateTarget: appDelegate, for: policy, advanced:"))
         let open = try body(text, of: "func open(route: MainRoute? = nil) {")
-        let made = try XCTUnwrap(open.range(of: "MainWindowSource(host:"))
+        let made = try XCTUnwrap(open.range(of: "makeSource("))
         let install = try XCTUnwrap(open.range(of: "MainMenuBar.install("))
         XCTAssertLessThan(made.lowerBound, install.lowerBound, "the source is made before the menu is installed")
     }

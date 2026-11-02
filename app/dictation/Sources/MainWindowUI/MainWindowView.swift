@@ -19,12 +19,12 @@ public struct MainWindowView: View {
 
     public var body: some View {
         NavigationSplitView {
-            // Settings sits apart at the bottom with the Advanced switch above it. Two lists share one selection:
-            // each binding answers only for its own rows, so a single row is selected at a time.
+            // Settings sits apart at the bottom with the Advanced switch above it. The list answers only for its own
+            // rows (the binding is nil while Settings is the section), and the Settings row sizes to its content.
             VStack(spacing: 0) {
                 sidebarList(topSections)
                 if switchShown { AdvancedSwitch(model: model) }
-                sidebarList(bottomSections).frame(height: 56)
+                if sections.contains(.settings) { SettingsRow(model: model) }
             }
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
         } detail: {
@@ -40,7 +40,6 @@ public struct MainWindowView: View {
 
     private var sections: [MainSection] { MainWindowSpec.sections(advanced: model.advanced, live: live) }
     private var topSections: [MainSection] { sections.filter { $0 != .settings } }
-    private var bottomSections: [MainSection] { sections.filter { $0 == .settings } }
 
     private func sidebarList(_ rows: [MainSection]) -> some View {
         List(rows, selection: binding(for: rows)) { section in
@@ -92,18 +91,52 @@ extension MainSection {
     }
 }
 
+/// Settings, drawn under the list as a plain row: it sizes to its content (no fixed height, so a larger sidebar or
+/// text size cannot clip it) and looks like a sidebar row. It is a button, so Space/Return and ⌘, reach it.
+struct SettingsRow: View {
+    @ObservedObject var model: MainWindowModel
+
+    private var selected: Bool { model.section == .settings }
+
+    var body: some View {
+        Button { model.section = .settings } label: {
+            Label {
+                Text(MainSection.settings.titleKey.text)
+            } icon: {
+                Image(systemName: MainSection.settings.symbol)
+            }
+            .font(.system(size: 13))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 6).fill(selected ? Color.primary.opacity(0.12) : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
 /// The Advanced switch: one row above Settings. Its flip is the app's to save (`advancedChanged`).
 struct AdvancedSwitch: View {
     @ObservedObject var model: MainWindowModel
 
     var body: some View {
-        Toggle(L10nKey.advancedMode.text, isOn: $model.advanced)
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .accessibilityHint(L10nKey.advancedModeHint.text)
-            .onChange(of: model.advanced) { model.advancedChanged($0) }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        // The words sit beside a mini switch on one line at the default sidebar width; the label stays the
+        // switch's accessibility name (`labelsHidden` only hides it from view).
+        HStack(spacing: 4) {
+            Text(L10nKey.advancedMode.text).font(.system(size: 11)).lineLimit(1)
+            Spacer(minLength: 0)
+            Toggle(L10nKey.advancedMode.text, isOn: $model.advanced)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .accessibilityHint(L10nKey.advancedModeHint.text)
+                .onChange(of: model.advanced) { model.advancedChanged($0) }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }

@@ -33,10 +33,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         revert.windowOpened()
         NSApp.setActivationPolicy(.regular)
         // The source is made first: the menu's ⌘1... follow its Advanced switch.
-        let first = self.source == nil
-        let source = self.source ?? MainWindowSource(host: appDelegate.windowHost())
+        let source = self.source ?? makeSource(appDelegate)
         self.source = source
-        if first { observeAdvanced(source) }
         // The Edit menu is what makes ⌘V reach a text field — a posted
         // key-equivalent is matched against the main menu first, so dictation
         // into our own window needs it installed.
@@ -56,6 +54,13 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         // Every open reads the data again, here and nowhere else: the view has no `.task` of its own, which made
         // the first open run two passes.
         source.windowOpened()
+    }
+
+    /// The one place a source is made, so the Advanced observer exists exactly when the source does.
+    private func makeSource(_ appDelegate: AppDelegate) -> MainWindowSource {
+        let source = MainWindowSource(host: appDelegate.windowHost())
+        observeAdvanced(source)
+        return source
     }
 
     private func observeAdvanced(_ source: MainWindowSource) {

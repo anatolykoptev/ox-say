@@ -40,7 +40,7 @@ public final class MainWindowModel: ObservableObject {
     public var clock: () -> Date = { Date() }
 
     public init(data: MainWindowData, actions: MainWindowActions = MainWindowActions(),
-                section: MainSection = .meetings, selectedMeeting: String? = nil) {
+                section: MainSection = MainWindowSpec.firstRunSection, selectedMeeting: String? = nil) {
         self.data = data
         self.actions = actions
         self.section = section
