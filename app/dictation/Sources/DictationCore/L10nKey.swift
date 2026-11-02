@@ -279,6 +279,11 @@ public enum L10nKey: String, CaseIterable {
     case voicesRandom = "voices.random"
     case voicesMine = "voices.mine"
     case voicesMineEmpty = "voices.mine.empty"
+    // The voice library: the line under a voice's label says how it came to be.
+    case voicesSubtitleRecorded = "voices.subtitle.recorded"
+    case voicesSubtitleDesigned = "voices.subtitle.designed"
+    case voicesSubtitleFile = "voices.subtitle.file"
+    case voicesSubtitleOther = "voices.subtitle.other"
     case settingsAppsSummary = "settings.apps.summary"
     // The window talks to the daemon for real: its failures, its empty and failed recordings, rename, folder, voices.
     case meetingErrDaemonDown = "meeting.error.daemon_down"

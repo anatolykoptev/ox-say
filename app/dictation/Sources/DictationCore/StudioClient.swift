@@ -47,6 +47,9 @@ public struct StudioClient {
     /// be busy transcribing another one. The same bound as starting a job, the one middle tier here; the 660 s of a
     /// voice design is generation, not a read.
     public static let meetingTextsTimeout: TimeInterval = startTimeout
+    /// Adding a voice: ffmpeg's own cap on normalizing the clip is 60 s
+    /// (voices.Prepare), and a clip past the reference window is transcribed.
+    public static let voiceAddTimeout: TimeInterval = 120
     public static let designTimeout: TimeInterval = 660
 
     public var baseURL: URL
@@ -174,5 +177,56 @@ public struct StudioClient {
         let body = DesignRequest.saveBody(name: name, take: take, replace: replace)
         let (data, status) = try await perform(post("v1/audio/voices/design/save", body: body, timeout: Self.quickTimeout))
         return try SaveOutcome.interpret(status: status, data: data)
+    }
+
+    /// A PATCH with a JSON body. The daemon's Content-Type check is on POST
+    /// alone, but a body always travels with its type set.
+    func patch(_ path: String, body: Data?, timeout: TimeInterval) -> URLRequest {
+        var request = post(path, body: body, timeout: timeout)
+        request.httpMethod = "PATCH"
+        return request
+    }
+
+    /// A bare DELETE (the route reads the voice from the path, no body).
+    func delete(_ path: String, timeout: TimeInterval = StudioClient.quickTimeout) -> URLRequest {
+        var request = get(path, timeout: timeout)
+        request.httpMethod = "DELETE"
+        return request
+    }
+
+    // MARK: the voice library
+
+    /// GET /v1/audio/voices: the saved voices with their labels, origins and dates.
+    public func voiceEntries() async throws -> [VoiceEntry] {
+        let data = try await succeed(get("v1/audio/voices"))
+        guard let entries = VoiceEntry.decodeList(data) else { throw StudioError.badResponse }
+        return entries
+    }
+
+    /// POST /v1/audio/voices: adds the clip at `audioPath` as the voice `id`
+    /// (derived from `label` by VoiceName), labelled for the person; `source`
+    /// is "recorded" or "file" (voices.Meta.Source). The daemon normalizes the
+    /// clip (ffmpeg, up to its 60 s cap) and may transcribe it, so the call
+    /// outlasts a quick read.
+    public func addVoice(id: String, label: String, audioPath: String, refText: String, source: String) async throws -> SavedVoice {
+        let body: [String: Any] = ["name": id, "audio_path": audioPath, "ref_text": refText,
+                                   "label": label, "source": source]
+        let data = try await succeed(post("v1/audio/voices",
+                                          body: (try? JSONSerialization.data(withJSONObject: body)) ?? Data(),
+                                          timeout: Self.voiceAddTimeout))
+        guard let saved = SavedVoice.decode(data) else { throw StudioError.badResponse }
+        return saved
+    }
+
+    /// PATCH /v1/audio/voices/{id}: renames the voice — the label a person
+    /// sees; the on-disk id never changes.
+    public func setVoiceLabel(id: String, label: String) async throws {
+        let body = (try? JSONSerialization.data(withJSONObject: ["label": label])) ?? Data()
+        _ = try await succeed(patch("v1/audio/voices/\(id)", body: body, timeout: Self.quickTimeout))
+    }
+
+    /// DELETE /v1/audio/voices/{id}.
+    public func deleteVoice(id: String) async throws {
+        _ = try await succeed(delete("v1/audio/voices/\(id)"))
     }
 }
