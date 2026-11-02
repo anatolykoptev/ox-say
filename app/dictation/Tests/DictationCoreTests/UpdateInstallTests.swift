@@ -475,7 +475,7 @@ final class UpdateInstallRobustnessTests: XCTestCase {
             if n == 60 { FileManager.default.createFile(atPath: gate.path, contents: Data()) }
             return UInt64(n)
         }
-        let script = "while [ ! -e '\(gate.path)' ]; do sleep 0.02; done"
+        let script = "while [ ! -e '\(gate.path)' ] && [ \"$SECONDS\" -lt 60 ]; do sleep 0.02; done"
         let failure = await UpdateInstaller.run(kind: .studioVoice, tag: "v0.1.22", log: nil, scriptSource: rig.source,
                                                 installerWatch: counted.watch,
                                                 installer: { _, _, _ in .init(argv: ["/bin/sh", "-c", script], environment: [:]) },
@@ -521,7 +521,7 @@ final class UpdateInstallRobustnessTests: XCTestCase {
         defer { rig.cleanUp() }
         let counted = CountedWatch { _ in 7 }
         let pidFile = rig.dir.appendingPathComponent("stubborn.pid")
-        let script = "trap '' TERM; echo $$ > '\(pidFile.path)'; while :; do sleep 0.05; done"
+        let script = "trap '' TERM; echo $$ > '\(pidFile.path)'; while [ \"$SECONDS\" -lt 60 ]; do sleep 0.05; done"
         let failure = await UpdateInstaller.run(kind: .update, tag: "v0.1.22", log: nil, scriptSource: rig.source,
                                                 installerWatch: counted.watch,
                                                 installer: { _, _, _ in .init(argv: ["/bin/sh", "-c", script], environment: [:]) },
@@ -578,7 +578,7 @@ final class UpdateInstallRobustnessTests: XCTestCase {
             if n == 90 { FileManager.default.createFile(atPath: gate.path, contents: Data()) }
             return UpdateInstaller.installProgress(log: log)
         }
-        let script = "while [ ! -e '\(gate.path)' ]; do sleep 0.02; done"
+        let script = "while [ ! -e '\(gate.path)' ] && [ \"$SECONDS\" -lt 60 ]; do sleep 0.02; done"
         let failure = await UpdateInstaller.run(kind: .studioVoice, tag: "v0.1.22", log: log, scriptSource: rig.source,
                                                 installerWatch: counted.watch,
                                                 installer: { _, _, _ in .init(argv: ["/bin/sh", "-c", script], environment: [:]) },
