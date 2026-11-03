@@ -45,12 +45,13 @@ var outputExts = []string{".wav", ".srt", ".vtt", ".words.json", ".manifest.json
 
 var errDiskFull = errors.New("the disk is full: free some space, then resume the project")
 
-// errOutputsRemoved is the plain-words end of a publish that failed after it
-// had begun replacing the outputs: none are kept, rather than a mixed set.
-var errOutputsRemoved = errors.New("the output files could not all be put in place, so none were kept; assemble the project again")
+// errOutputsBroken is the plain-words end of a publish whose rollback could
+// not put the whole previous set back: some old files survive only under
+// their temp names, so the project must not claim the previous set stands.
+var errOutputsBroken = errors.New("the output files could not all be put in place, and the previous files could not all be restored")
 
-// errOutputsKept is the plain-words end of a publish whose very first rename
-// failed: nothing was replaced, so the previous set is still whole.
+// errOutputsKept is the plain-words end of a publish whose burst failed but
+// whose rollback restored the previous set: it is whole again, byte for byte.
 var errOutputsKept = errors.New("the output files could not be put in place; the previous files were kept")
 
 // syncOutputDir makes the renames of one publish durable; a var so a test can
@@ -348,10 +349,14 @@ type staged struct{ tmp, dest string }
 // them - every sibling as an fsynced temp beside its destination, the
 // normalised WAV moved or copied to a temp beside its destination - so a full
 // disk, a permission error or a cross-volume copy fails here, with the previous
-// set untouched and the staged temps removed. Only then does it rename the
-// staged set into place, the WAV last. If a rename in that burst fails, the
-// whole output set (new and old) is removed rather than left mixed. The job's
-// manifest records chunk times and outputs only when everything succeeded.
+// set untouched and the staged temps removed. Then it RETREATS the previous
+// set: every file the burst may replace is renamed aside, to a temp name, so
+// a failed burst can put it back byte for byte. Only then does it rename the
+// staged set into place, the WAV last. If a rename in that burst fails,
+// undoBurst restores the retreated files over whatever the burst placed and
+// removes the rest, so the folder holds the whole previous set again - never
+// a mixed or a partial one. The job's manifest records chunk times and
+// outputs only when everything succeeded.
 func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.Manifest, owned map[string]bool) error {
 	if err := os.MkdirAll(filepath.Dir(stem), outDirMode); err != nil {
 		return err
@@ -369,6 +374,14 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 		return err
 	}
 	replaceable := func(dest string) bool { return m.Settings.Overwrite || owned[dest] }
+	retreat, err := retreatOutputs(set, replaceable)
+	if err != nil {
+		problems := undoBurst(set, retreat, 0)
+		if len(problems) > 0 {
+			return fmt.Errorf("%w: %v (%s)", errOutputsBroken, err, strings.Join(problems, "; "))
+		}
+		return fmt.Errorf("%w: %v", errOutputsKept, err)
+	}
 	for k, s := range set {
 		left, err := placeStaged(s, replaceable(s.dest))
 		if left != nil {
@@ -376,22 +389,23 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 				slog.String("file", filepath.Base(s.tmp)), slog.Any("error", errors.Unwrap(left)))
 		}
 		if err != nil {
-			if k == 0 {
-				// Nothing was replaced yet: drop the staged temps only and keep
-				// the previous good set (#154.8).
-				for _, st := range set {
-					_ = os.Remove(st.tmp)
-				}
-				if errors.Is(err, fs.ErrExist) {
+			problems := undoBurst(set, retreat, k)
+			if len(problems) > 0 {
+				return fmt.Errorf("%w: %v (%s)", errOutputsBroken, err, strings.Join(problems, "; "))
+			}
+			if errors.Is(err, fs.ErrExist) {
+				if k == 0 {
 					return &requestError{fmt.Sprintf("%s appeared while the files were being written and was left alone; choose another output name or set overwrite", filepath.Base(s.dest))}
 				}
-				return fmt.Errorf("%w: %v", errOutputsKept, err)
+				return fmt.Errorf("%w: %s appeared while the files were being written and was left alone", errOutputsKept, filepath.Base(s.dest))
 			}
-			removeOutputs(set, k, replaceable)
-			if errors.Is(err, fs.ErrExist) {
-				return fmt.Errorf("%w: %s appeared while the files were being written and was left alone", errOutputsRemoved, filepath.Base(s.dest))
-			}
-			return fmt.Errorf("%w: %v", errOutputsRemoved, err)
+			return fmt.Errorf("%w: %v", errOutputsKept, err)
+		}
+	}
+	for _, tmp := range retreat {
+		if err := os.Remove(tmp); err != nil {
+			p.log.Warn("produce: cannot remove a retreated output; it will be swept later",
+				slog.String("file", filepath.Base(tmp)), slog.Any("error", err))
 		}
 	}
 	if err := syncOutputDir(filepath.Dir(stem)); err != nil {
@@ -404,7 +418,7 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 	j.m.Outputs = m.Outputs
 	// The loudness the published file was normalised to is the manifest's
 	// target: a pending loudness-only change is persisted only now.
-	j.m.Settings.LUFS = m.Settings.LUFS
+	j.m.Settings.LUFS, j.m.PendingLUFS = m.Settings.LUFS, nil
 	j.m.Progress.ElapsedS, j.m.Progress.ETAS = m.Progress.ElapsedS, 0
 	j.elapsedS = m.Progress.ElapsedS
 	j.m.Notes = withNote(j.m.Notes, vproject.NoteLimitedLoudness, tl.limited)
@@ -437,11 +451,14 @@ func sweepOutputTemps(stem string, minAge time.Duration) {
 // finalizeExport sets on the clone that becomes the .manifest.json export what
 // the project will read once this assembly is over: the final status, the
 // elapsed time and no ETA (#154.6). run() adopts the same elapsed value.
+// The export never records a pending loudness change: it is written beside
+// the file the change either produced or did not.
 func finalizeExport(j *job, m *vproject.Manifest) {
 	m.Status, m.Error = vproject.StatusDone, ""
 	if m.AnyReview() {
 		m.Status = vproject.StatusReview
 	}
+	m.PendingLUFS = nil
 	m.Progress.ETAS = 0
 	if !j.started.IsZero() {
 		m.Progress.ElapsedS = round2(time.Since(j.started).Seconds())
@@ -536,21 +553,71 @@ func placeStaged(s staged, replace bool) (leftover, err error) {
 	}
 }
 
-// removeOutputs undoes a burst that failed at set[k]: it deletes what the burst
-// placed (set[:k]), the previous files it was about to replace, and every
-// staged temp. A destination the project may not replace and did not place -
-// a file that appeared there, or the one that refused the link - is the
-// user's and stays; so does any directory.
-func removeOutputs(set []staged, k int, replaceable func(dest string) bool) {
-	for i, s := range set {
-		_ = os.Remove(s.tmp)
-		if i >= k && !replaceable(s.dest) {
+// retreatOutputs moves every destination the burst may replace aside, to a
+// temp name beside it, so a failed burst can put the previous set back byte
+// for byte. A name nothing sits at - and a directory, never ours to move - is
+// left alone. dest -> the temp the old file was moved to.
+func retreatOutputs(set []staged, replaceable func(dest string) bool) (map[string]string, error) {
+	retreat := map[string]string{}
+	for _, s := range set {
+		if !replaceable(s.dest) {
 			continue
 		}
-		if st, err := os.Lstat(s.dest); err == nil && !st.IsDir() {
-			_ = os.Remove(s.dest)
+		st, err := os.Lstat(s.dest)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			continue
+		case err != nil:
+			return retreat, err
+		case st.IsDir():
+			continue
+		}
+		f, err := os.CreateTemp(filepath.Dir(s.dest), vproject.TempPattern(filepath.Base(s.dest)))
+		if err != nil {
+			return retreat, err
+		}
+		tmp := f.Name()
+		_ = f.Close()
+		if err := renameFile(s.dest, tmp); err != nil {
+			_ = os.Remove(tmp)
+			return retreat, err
+		}
+		retreat[s.dest] = tmp
+	}
+	return retreat, nil
+}
+
+// undoBurst puts the published names back the way they were before a burst
+// that placed set[:placed] and then failed: every retreated file is renamed
+// back over whatever sits at its destination - atomically replacing the file
+// the burst put there - a staged temp that was never placed is removed, and a
+// file the burst placed at a name nothing was retreated from is removed too.
+// It returns the plain-words problems of the names it could not restore: the
+// old bytes survive at the named temp, or are gone, or the burst's file is
+// still at its destination.
+func undoBurst(set []staged, retreat map[string]string, placed int) (problems []string) {
+	for i, s := range set {
+		if i >= placed {
+			_ = os.Remove(s.tmp)
+		}
+		base := filepath.Base(s.dest)
+		if tmp, retreated := retreat[s.dest]; retreated {
+			if err := renameFile(tmp, s.dest); err != nil {
+				if _, lerr := os.Lstat(tmp); lerr == nil {
+					problems = append(problems, fmt.Sprintf("the previous %s survives as %s", base, filepath.Base(tmp)))
+				} else {
+					problems = append(problems, fmt.Sprintf("the previous %s is gone", base))
+				}
+			}
+		} else if i < placed {
+			if st, err := os.Lstat(s.dest); err == nil && st.Mode().IsRegular() {
+				if err := removeFile(s.dest); err != nil {
+					problems = append(problems, fmt.Sprintf("the new %s could not be removed", base))
+				}
+			}
 		}
 	}
+	return problems
 }
 
 // moveFile renames src to dst; across volumes (EXDEV) it copies beside dst and

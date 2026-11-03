@@ -260,6 +260,9 @@ func (p *producer) run(j *job) {
 	n, perr := pruneTakes(j)
 	p.mu.Lock()
 	j.m.Status, j.m.Error = status, msg
+	// A run that ends carries no pending change: the loudness was applied or
+	// dropped, and the outcome says which.
+	j.m.PendingLUFS = nil
 	if j.elapsedS > 0 {
 		j.m.Progress.ElapsedS = j.elapsedS
 	} else {
@@ -294,7 +297,18 @@ func (p *producer) outcome(j *job, err error) (string, string) {
 		return vproject.StatusDone, ""
 	case errors.Is(err, errCancelled):
 		return vproject.StatusCancelled, ""
+	case errors.Is(err, errOutputsBroken):
+		// The publish could not put the previous set back whole: the outputs
+		// the manifest names may not all exist, so not even a loudness-only
+		// run gets its old status back.
+		return vproject.StatusFailed, p.public(err)
 	case p.ctx.Err() != nil:
+		if j.pendingLUFS != nil {
+			// A loudness-only run cut before its publish: the project keeps
+			// the status it had - its file and target are untouched - and
+			// the error says the change did not apply.
+			return j.prevStatus, loudnessDropped(*j.pendingLUFS)
+		}
 		return vproject.StatusInterrupted, ""
 	default:
 		p.log.Warn("produce failed", slog.String("job", j.m.ID), slog.Any("error", err))
@@ -305,6 +319,14 @@ func (p *producer) outcome(j *job, err error) (string, string) {
 		}
 		return vproject.StatusFailed, p.public(err)
 	}
+}
+
+// loudnessDropped is the error a loudness-only run that was cut before its
+// publish leaves on the project: the manifest never recorded the target, so
+// the change did not apply. It names the target so the person knows what to
+// ask for again.
+func loudnessDropped(lufs float64) string {
+	return fmt.Sprintf("the loudness change to %v LUFS did not apply: the daemon stopped before it could be recorded; set the loudness again to retry", lufs)
 }
 
 // setStatus records a transient status (waiting, paused, running).

@@ -509,7 +509,10 @@ func (p *producer) deliver(j *job, es []deliveryEntry, lufs *float64) (vproject.
 			// Loudness-only: the new target is carried on the job and persisted
 			// only once the new file is published; prevStatus is what the
 			// project read as (a stale transient status reads as interrupted).
+			// The manifest copy goes to disk at launch, so a daemon that stops
+			// mid-run can still say which change did not apply.
 			j.pendingLUFS, j.prevStatus = lufs, j.m.Status
+			j.m.PendingLUFS = lufs
 			switch j.prevStatus {
 			case vproject.StatusRunning, vproject.StatusWaitingForDictation, vproject.StatusPausedOnBattery:
 				j.prevStatus = vproject.StatusInterrupted
@@ -761,7 +764,13 @@ func (p *producer) manifest(id string) (*vproject.Manifest, error) {
 	}
 	switch j.m.Status {
 	case vproject.StatusRunning, vproject.StatusWaitingForDictation, vproject.StatusPausedOnBattery:
+		// A transient status on disk means the daemon is gone. A loudness-only
+		// run it was in the middle of never published, so the change it
+		// carried did not apply - say so, not just "interrupted".
 		j.m.Status = vproject.StatusInterrupted
+		if j.m.PendingLUFS != nil {
+			j.m.Error = loudnessDropped(*j.m.PendingLUFS)
+		}
 	}
 	return j.m, nil
 }

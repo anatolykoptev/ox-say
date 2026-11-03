@@ -501,10 +501,11 @@ func TestMoveFileAcrossVolumes(t *testing.T) {
 }
 
 // A burst rename that cannot complete (here: the third sibling's path is a
-// directory) leaves no mixed set: every output file is removed, the
-// directory that is not ours stays, and the error says what happened.
-// Mutation: produce_assemble.go publish, drop the removeOutputs call -> RED.
-// Mutation: produce_assemble.go removeOutputs, drop the IsDir guard -> the empty directory is deleted -> RED.
+// directory) leaves no mixed set: the rollback removes what the burst placed,
+// the directory that is not ours stays, and the error says the previous files
+// were kept.
+// Mutation: produce_assemble.go publish, drop the undoBurst call -> RED.
+// Mutation: produce_assemble.go undoBurst, drop the IsDir guard -> the empty directory is deleted -> RED.
 func TestPublishRollsBackWhatItCreated(t *testing.T) {
 	f := newFakePorts(t)
 	p, j := assembleFixture(t, f)
@@ -514,7 +515,7 @@ func TestPublishRollsBackWhatItCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := p.assemble(j)
-	if !errors.Is(err, errOutputsRemoved) {
+	if !errors.Is(err, errOutputsKept) {
 		t.Fatalf("publishing over a directory: %v", err)
 	}
 	for _, ext := range []string{".wav", ".srt", ".vtt", ".manifest.json"} {
@@ -603,42 +604,98 @@ func TestReassemblyWAVStagingFailureLeavesThePreviousSet(t *testing.T) {
 	noTemps(t, filepath.Dir(assembledStem(j)))
 }
 
-// A rename that fails inside the final burst, after at least one output was
-// replaced, leaves no mixed set: none of the five exist, and no temp is left.
-// The first rename of the burst (.srt) replaces nothing yet, so its failure
-// keeps the previous set whole (TestReassemblyFirstRenameFailureKeepsThePreviousSet).
-// Mutation: produce_assemble.go publish, drop the removeOutputs call -> RED.
-func TestReassemblyBurstFailureLeavesNoMixedSet(t *testing.T) {
+// A rename that fails inside the final burst - at the first, a middle or the
+// last file of the set - leaves the whole previous set behind: the retreated
+// files are renamed back over whatever the burst managed to place, and the
+// staged temps are swept.
+// Mutation: produce_assemble.go publish, drop the undoBurst call -> the
+// placed new files stay where the old ones were -> RED.
+func TestReassemblyBurstFailureRestoresThePreviousSet(t *testing.T) {
 	for _, ext := range outputExts {
-		if ext == ".srt" {
-			continue
-		}
 		f := newFakePorts(t)
 		p, j := assembleFixture(t, f)
 		if err := p.assemble(j); err != nil {
 			t.Fatal(err)
 		}
+		before := outputSet(t, j)
 		editForReassembly(j)
 		dest := assembledStem(j) + ext
-		failRenames(t, func(from, to string) bool {
-			return to == dest && strings.Contains(filepath.Base(from), vproject.TempMark)
-		}, errors.New("disk on fire"))
+		failRenamesOnce(t, func(to string) bool { return to == dest }, errors.New("disk on fire"))
 		err := p.assemble(j)
-		if !errors.Is(err, errOutputsRemoved) {
+		if !errors.Is(err, errOutputsKept) {
 			t.Errorf("%s: error %v", ext, err)
 		}
-		for _, e := range outputExts {
-			if _, serr := os.Lstat(assembledStem(j) + e); !os.IsNotExist(serr) {
-				t.Errorf("failing %s left %s behind", ext, e)
+		for e, was := range before {
+			raw, serr := os.ReadFile(assembledStem(j) + e)
+			if serr != nil || string(raw) != was {
+				t.Errorf("failing %s did not put %s back: %v", ext, e, serr)
 			}
 		}
 		noTemps(t, filepath.Dir(dest))
 	}
 }
 
+// The rollback's own rename can fail too - the destination became a
+// directory, the volume went read-only: the old file then survives under its
+// temp name and the publish reports that the previous set could not all be
+// restored instead of claiming the folder holds it.
+// Mutation: produce_assemble.go publish, return errOutputsKept even when
+// undoBurst reports unrestored files -> the folder is not the old set but the
+// error says it is -> RED.
+func TestReassemblyBurstUnrestoredSetIsReported(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	before := outputSet(t, j)
+	editForReassembly(j)
+	dest := assembledStem(j) + ".words.json"
+	failRenames(t, func(from, to string) bool {
+		return to == dest && strings.Contains(filepath.Base(from), vproject.TempMark)
+	}, errors.New("read-only volume"))
+	err := p.assemble(j)
+	if !errors.Is(err, errOutputsBroken) {
+		t.Fatalf("%v", err)
+	}
+	if !strings.Contains(err.Error(), ".words.json") {
+		t.Fatalf("the unrestored file is not named: %v", err)
+	}
+	for e, was := range before {
+		if e == ".words.json" {
+			continue
+		}
+		raw, rerr := os.ReadFile(assembledStem(j) + e)
+		if rerr != nil || string(raw) != was {
+			t.Errorf("%s was not put back: %v", e, rerr)
+		}
+	}
+	if _, lerr := os.Lstat(dest); !os.IsNotExist(lerr) {
+		t.Errorf(".words.json is there: %v", lerr)
+	}
+	entries, err := os.ReadDir(filepath.Dir(dest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var temps []string
+	for _, e := range entries {
+		if strings.Contains(e.Name(), vproject.TempMark) {
+			temps = append(temps, e.Name())
+		}
+	}
+	if len(temps) != 1 {
+		t.Fatalf("temps %v, want exactly the retreated .words.json", temps)
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(dest), temps[0]))
+	if err != nil || string(raw) != before[".words.json"] {
+		t.Fatalf("the survivor does not hold the old .words.json: %v", err)
+	}
+}
+
 // The first rename of the burst failing replaces nothing: the previous good
 // set stays whole and the error says so (#154.8).
-// Mutation: produce_assemble.go publish, call removeOutputs for k == 0 too -> the old set is deleted -> RED.
+// Mutation: produce_assemble.go publish, skip undoBurst for a burst that
+// placed nothing -> the retreated old files stay under temp names -> RED.
 func TestReassemblyFirstRenameFailureKeepsThePreviousSet(t *testing.T) {
 	f := newFakePorts(t)
 	p, j := assembleFixture(t, f)
@@ -648,9 +705,7 @@ func TestReassemblyFirstRenameFailureKeepsThePreviousSet(t *testing.T) {
 	before := outputSet(t, j)
 	editForReassembly(j)
 	dest := assembledStem(j) + ".srt"
-	failRenames(t, func(from, to string) bool {
-		return to == dest && strings.Contains(filepath.Base(from), vproject.TempMark)
-	}, errors.New("disk on fire"))
+	failRenamesOnce(t, func(to string) bool { return to == dest }, errors.New("disk on fire"))
 	if err := p.assemble(j); !errors.Is(err, errOutputsKept) {
 		t.Fatalf("error %v", err)
 	}

@@ -138,18 +138,22 @@ type Outputs struct {
 
 // Manifest is a project.
 type Manifest struct {
-	Version  int       `json:"version"`
-	ID       string    `json:"id"`
-	Title    string    `json:"title"`
-	Created  time.Time `json:"created"`
-	Updated  time.Time `json:"updated"`
-	Status   string    `json:"status"`
-	Error    string    `json:"error,omitempty"`
-	Settings Settings  `json:"settings"`
-	Progress Progress  `json:"progress"`
-	Chunks   []Chunk   `json:"chunks"`
-	Outputs  Outputs   `json:"outputs"`
-	Notes    []string  `json:"notes"`
+	Version int       `json:"version"`
+	ID      string    `json:"id"`
+	Title   string    `json:"title"`
+	Created time.Time `json:"created"`
+	Updated time.Time `json:"updated"`
+	Status  string    `json:"status"`
+	Error   string    `json:"error,omitempty"`
+	// PendingLUFS, when set, is a loudness-only change a running job has not
+	// published yet: it is recorded so a daemon that stopped mid-run can say
+	// the change did not apply, and cleared when the run ends.
+	PendingLUFS *float64 `json:"pending_loudness_lufs,omitempty"`
+	Settings    Settings `json:"settings"`
+	Progress    Progress `json:"progress"`
+	Chunks      []Chunk  `json:"chunks"`
+	Outputs     Outputs  `json:"outputs"`
+	Notes       []string `json:"notes"`
 }
 
 // ChunkSummary is a chunk in the default status view.
@@ -191,6 +195,10 @@ func (m *Manifest) Summary() Summary {
 // Clone is a deep copy that cannot fail: every slice is copied by hand.
 func (m *Manifest) Clone() *Manifest {
 	c := *m
+	if m.PendingLUFS != nil {
+		v := *m.PendingLUFS
+		c.PendingLUFS = &v
+	}
 	c.Notes = append([]string(nil), m.Notes...)
 	c.Chunks = make([]Chunk, len(m.Chunks))
 	for i, ch := range m.Chunks {
