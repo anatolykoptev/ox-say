@@ -501,6 +501,13 @@ Transcript routes (a file transcribed and kept by the daemon; the app's Transcri
 | `GET /v1/transcripts/<id>?format=` | `text`, `srt`, `vtt`, `json` (default) or `ox_json` |
 | `DELETE /v1/transcripts/<id>` | Delete one (`204`) |
 
+Model routes (the app's Models section uses them):
+
+| Route | Description |
+|-------|-------------|
+| `GET /v1/models` | `{"models":[…]}` for `qwen3-tts`, `voxcpm2`, `parakeet`, `whisper`, `notes`; each row has `id`, `kind` (`speech`, `transcribe`, `notes`), `name`, `bytes`, `installed`, `default` (the daemon's own default for its kind), `optional` (may be installed and removed; false for `qwen3-tts` and `parakeet`), `removable` (true only when `DELETE` would succeed: optional, installed, the installer's file name, a plain file in `<home>/models`), `installing` (the notes download is running), `supported` and, when it is false, `reason_code` and `reason`. `supported` means this Mac can run the model; it does not mean ready now (a model that is not downloaded yet is still supported; `/status` `available` is the ready-now word). `bytes` is the size on disk when installed. For a model that is not installed it is the expected size: exact for `notes` (the pinned 2740937888, the same figure as in `scripts/fetch-models.sh`), approximate for `voxcpm2` (3.0 GB) and `whisper` (1.6 GB), and 0 where unknown (`qwen3-tts`, `parakeet`). One stat per file: cheap enough to call whenever a window opens |
+| `DELETE /v1/models/<id>` | Remove an optional model (`voxcpm2`, `whisper`, `notes`) and stop its engine first; `204`. `400`: a required model, a file that is not the one the installer writes (`OX_SAY_*_MODEL` pointing at your own file, a symlink, a folder), or a model outside `<home>/models` (managed outside OxSay; `GET` shows `removable: false`). `404`: unknown id or not installed. `409`: in use (a speech, design or produce job for `voxcpm2`; a transcription for `whisper`; a download, a queued, running or recording meeting for `notes`; an engine still serving or starting). `notes` is restored by `POST /v1/meetings/notes-model/install`; `voxcpm2` and `whisper` by `scripts/fetch-models.sh` |
+
 Streaming transcription sessions — incremental decoding on the resident
 `ox-stt --serve` (requires the VAD model; unavailable when it is absent or
 `OX_SAY_STT_SERVER=off`):
