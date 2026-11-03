@@ -30,6 +30,8 @@ struct MainWindowHost {
     var startAtLogin: () -> Bool
     var setStartAtLogin: (Bool) -> Void
     var checkForUpdates: () -> Void
+    /// The describe-a-voice driver, owned by the Studio controller: its `running` is what the version handshake reads.
+    var designer: () -> VoiceDesigner
 }
 
 /// Fills the main window with what the app really has and carries out what the window asks. The window holds no timer:
@@ -78,7 +80,7 @@ final class MainWindowSource {
         restoredMeetingUnchecked = restored.meetingID != nil
         voiceSource = VoiceSource(model: model, client: host.client, speech: host.speech, defaults: host.defaults,
                                   recordingRunning: { host.meetings()?.recordingElapsed != nil },
-                                  changed: host.voicesChanged)
+                                  designer: host.designer(), changed: host.voicesChanged)
         let defaults = host.defaults
         model.advancedChanged = { [weak model] on in
             AdvancedMode.set(on, in: defaults)
@@ -121,6 +123,12 @@ final class MainWindowSource {
         }
     }
 
+    /// The menu's Create a Voice: the sheet over the Voices page (the caller has already shown that section).
+    func openVoiceDesign() {
+        guard model.data.voices.designAvailability == .available else { return }
+        voiceSource.design(.open)
+    }
+
     /// Points the window at a section (and a meeting). A route without a meeting leaves the open one alone.
     func apply(_ route: MainRoute) {
         let route = route.resolved(visible: MainWindowSpec.sections(advanced: model.advanced))
@@ -135,6 +143,7 @@ final class MainWindowSource {
         cancelSearchWork()
         stopPlayback()
         voiceSource.stopPreview()
+        voiceSource.quietDesign()
         stopClocks()
     }
 
@@ -161,7 +170,7 @@ final class MainWindowSource {
     /// The meeting feature started or stopped a recording (or was switched off).
     func recordingChanged() {
         // A call's audio never plays while a recording runs, visible window or not — nor does a voice's sample.
-        if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview() }
+        if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview(); voiceSource.quietDesign() }
         guard visible else { return }
         syncRecording()
         refresh()
@@ -214,6 +223,7 @@ final class MainWindowSource {
         a.stopPreview = { [weak self] in self?.voiceSource.stopPreview() }
         a.renameVoice = { [weak self] id, label in self?.voiceSource.rename(id, label) }
         a.deleteVoice = { [weak self] id in self?.voiceSource.delete(id) }
+        a.voiceDesign = { [weak self] step in self?.voiceSource.design(step) }
         a.setStartAtLogin = { [weak self] on in
             guard let self else { return }
             self.host.setStartAtLogin(on)
@@ -259,6 +269,7 @@ final class MainWindowSource {
                 await reloadSettingsAsync()
                 refreshSelectedDetail()
                 await status.value
+                updateDesignAvailability()
             } while gate.finish()
             schedulePolling()
         }
@@ -307,6 +318,13 @@ final class MainWindowSource {
         if model.data.voices.entries.isEmpty, model.data.voices.load != .loaded { model.data.voices.voices = host.knownVoices() }
         model.data.about = AboutValues(version: AboutPanel.appVersion, engineRunning: host.daemonStatus() != nil,
                                        startAtLogin: host.startAtLogin())
+        updateDesignAvailability()
+    }
+
+    /// Whether «Описать словами» can be used, from the daemon's last /status.
+    private func updateDesignAvailability() {
+        let availability = DesignAvailability.of(host.daemonStatus())
+        if model.data.voices.designAvailability != availability { model.data.voices.designAvailability = availability }
     }
 
     private func reloadSettings() { Task { @MainActor in await reloadSettingsAsync() } }

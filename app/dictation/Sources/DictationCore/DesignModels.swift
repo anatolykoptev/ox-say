@@ -79,7 +79,7 @@ public enum DesignRequest {
     }
 }
 
-/// What the Create a Voice form accepts, from the daemon's own limits.
+/// What the describe-a-voice form accepts, from the daemon's own limits.
 public enum DesignForm {
     /// vscript.MaxStyleChars and design.go maxDesignText.
     public static let descriptionLimit = 300
@@ -110,27 +110,15 @@ public enum DesignForm {
         guard units > 0 else { return sentenceLimit }
         return sentenceUnitLimit * text.unicodeScalars.count / units
     }
-    /// voices/store.go voiceNameRe.
-    static let namePattern = "^[a-z0-9][a-z0-9_-]{0,31}$"
-
     public static func descriptionPlaceholder(text: (L10nKey) -> String = { $0.text }) -> String {
         text(.designFormDescriptionPlaceholder)
     }
     public static let defaultSentence =
         "Здравствуйте! Рада познакомиться, сегодня мы вместе расскажем вам что-то интересное."
 
-    public static func isValidName(_ name: String) -> Bool {
-        name.range(of: namePattern, options: .regularExpression) != nil
-    }
-
-    /// The name to save a take under: the one typed, or the daemon's suggestion for that take.
-    public static func saveName(typed: String, take: DesignTake) -> String {
-        typed.isEmpty ? take.suggestedName : typed
-    }
-
-    /// The first thing wrong with the form, in plain words; nil when it can be sent.
-    /// An empty name is fine: the daemon suggests one per take.
-    public static func problem(description: String, sentence: String, name: String,
+    /// The first thing wrong with the description or the sample sentence, in plain words; nil when they can be sent.
+    /// The label is the flow's to judge (VoiceDesignFlow.submit): it is free text, the id on disk is derived from it.
+    public static func problem(description: String, sentence: String,
                                text: (L10nKey) -> String = { $0.text }) -> String? {
         let description = description.trimmingCharacters(in: .whitespacesAndNewlines)
         let sentence = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -140,7 +128,6 @@ public enum DesignForm {
         if sentenceUnits(sentence) > sentenceUnitLimit {
             return String(format: text(.designProblemSentenceLong), String(sentenceCap(for: sentence)))
         }
-        if !name.isEmpty && !isValidName(name) { return text(.designProblemName) }
         return nil
     }
 

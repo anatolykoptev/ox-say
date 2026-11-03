@@ -29,23 +29,13 @@ final class DesignModelsTests: XCTestCase {
         XCTAssertNil(DesignTake.decodeAll(Data(#"{"takes":[]}"#.utf8)))
     }
 
-    func testNameValidationFollowsTheDaemonsRule() {
-        for good in ["anna", "a", "warm-narrator-1", "a_b-c", "0abc", String(repeating: "a", count: 32)] {
-            XCTAssertTrue(DesignForm.isValidName(good), good)
-        }
-        for bad in ["", "Anna", "-anna", "_anna", "an na", "анна", "a.b", String(repeating: "a", count: 33), "anna\n"] {
-            XCTAssertFalse(DesignForm.isValidName(bad), bad)
-        }
-    }
-
     func testFormProblemsArePlainWords() {
-        XCTAssertNil(DesignForm.problem(description: "A voice", sentence: DesignForm.defaultSentence, name: "anna-1", text: en))
-        XCTAssertEqual(DesignForm.problem(description: " ", sentence: "x", name: "a", text: en), "Describe the voice first.")
-        XCTAssertEqual(DesignForm.problem(description: "d", sentence: "", name: "a", text: en), "Write a sample sentence for the voice to say.")
-        XCTAssertNotNil(DesignForm.problem(description: String(repeating: "d", count: 301), sentence: "x", name: "a", text: en))
-        XCTAssertNotNil(DesignForm.problem(description: "d", sentence: String(repeating: "x", count: 201), name: "a", text: en))
-        XCTAssertNotNil(DesignForm.problem(description: "d", sentence: "x", name: "Bad Name", text: en))
-        XCTAssertNil(DesignForm.problem(description: "d", sentence: "x", name: "", text: en), "an empty name takes the daemon's suggestion")
+        XCTAssertNil(DesignForm.problem(description: "A voice", sentence: DesignForm.defaultSentence, text: en))
+        XCTAssertEqual(DesignForm.problem(description: " ", sentence: "x", text: en), "Describe the voice first.")
+        XCTAssertEqual(DesignForm.problem(description: "d", sentence: "", text: en), "Write a sample sentence for the voice to say.")
+        XCTAssertNotNil(DesignForm.problem(description: String(repeating: "d", count: 301), sentence: "x", text: en))
+        XCTAssertNotNil(DesignForm.problem(description: "d", sentence: String(repeating: "x", count: 201), text: en))
+        XCTAssertNil(DesignForm.problem(description: "d", sentence: "x", text: en), "the label is the flow's check, not this one's")
     }
 
     /// Same cases as the daemon's TestDesignTextCapFollowsSpokenDuration (internal/daemon/design_test.go): the cap is on
@@ -67,21 +57,15 @@ final class DesignModelsTests: XCTestCase {
             ("mixed", rep("好", 60) + rep("a", 60), false),
         ]
         for (name, text, ok) in rows {
-            let problem = DesignForm.problem(description: "d", sentence: text, name: "", text: en)
+            let problem = DesignForm.problem(description: "d", sentence: text, text: en)
             XCTAssertEqual(problem == nil, ok, "\(name): \(problem ?? "accepted")")
         }
-        XCTAssertEqual(DesignForm.problem(description: "d", sentence: rep("好", 150), name: "", text: en),
+        XCTAssertEqual(DesignForm.problem(description: "d", sentence: rep("好", 150), text: en),
                        "The sample sentence is too long: keep it under 80 characters.", "the refusal states its own cap")
-        XCTAssertEqual(DesignForm.problem(description: "d", sentence: rep("я", 201), name: "", text: en),
+        XCTAssertEqual(DesignForm.problem(description: "d", sentence: rep("я", 201), text: en),
                        "The sample sentence is too long: keep it under 200 characters.")
         XCTAssertEqual(DesignForm.sentenceCap(for: rep("あ", 150)), 120)
         XCTAssertEqual(DesignForm.sentenceUnits(rep("好", 80)), 1200)
-    }
-
-    func testAnEmptyNameFallsBackToTheTakesSuggestion() {
-        let take = DesignTake(path: "/t.wav", durationSeconds: 5, suggestedName: "warm-narrator-2")
-        XCTAssertEqual(DesignForm.saveName(typed: "", take: take), "warm-narrator-2")
-        XCTAssertEqual(DesignForm.saveName(typed: "anna", take: take), "anna")
     }
 
     func testTheDefaultSentenceFitsTheDaemonsLimit() {

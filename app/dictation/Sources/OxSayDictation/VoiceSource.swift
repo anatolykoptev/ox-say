@@ -9,6 +9,8 @@ import MainWindowUI
 final class VoiceSource {
     private let model: MainWindowModel
     private let session: VoiceLibrarySession
+    /// «Описать словами»: the flow and its effects. `running` on it is what holds the version handshake.
+    private let designer: VoiceDesigner
     /// Plays the sample through the default output at the system's volume; this class never changes the volume.
     private let player = AudioPlayer()
     /// The menu's voice list and read-aloud checkmarks follow every change of the library.
@@ -17,8 +19,9 @@ final class VoiceSource {
     private let recordingRunning: () -> Bool
 
     init(model: MainWindowModel, client: StudioClient, speech: SpeechClient, defaults: UserDefaults,
-         recordingRunning: @escaping () -> Bool, changed: @escaping ([String]) -> Void) {
+         recordingRunning: @escaping () -> Bool, designer: VoiceDesigner, changed: @escaping ([String]) -> Void) {
         self.model = model
+        self.designer = designer
         self.changed = changed
         self.recordingRunning = recordingRunning
         session = VoiceLibrarySession(
@@ -42,6 +45,48 @@ final class VoiceSource {
                 self?.sync()
             }
         }
+        designer.onChange = { [weak self] in self?.sync() }
+        designer.libraryNames = { [weak self] in self?.takenNames() ?? [] }
+        designer.mayPlay = { [recordingRunning] in VoicePreviewGate.allows(recordingRunning: recordingRunning()) }
+        designer.willPlay = { [weak self] in
+            self?.player.stop()
+            self?.session.stopPreview()
+            self?.sync()
+        }
+        designer.saved = { [weak self] voice, label in await self?.designSaved(voice, label: label) }
+    }
+
+    // MARK: describe a voice
+
+    /// One step of the sheet.
+    func design(_ step: VoiceDesignAction) {
+        switch step {
+        case .open: designer.open()
+        case .submit(let description, let sentence, let label): designer.submit(description: description, sentence: sentence, label: label)
+        case .next: designer.next()
+        case .replay: designer.replay()
+        case .keep: designer.keep()
+        case .replace(let yes): designer.replace(yes)
+        case .escape: designer.escape()
+        }
+    }
+
+    /// The window closed or hid: a variant that plays is stopped.
+    func quietDesign() { designer.quiet() }
+
+    /// The ids and lower-cased labels the library holds: a label that names one of them is refused by the form.
+    private func takenNames() -> Set<String> {
+        Set(session.entries.flatMap { [$0.id, $0.label.lowercased()] })
+    }
+
+    /// A voice was saved. The list is read through the session (the one owner of it), the label the person typed is set
+    /// through its rename (a PATCH of the label), and the result is said in the window.
+    private func designSaved(_ voice: SavedVoice, label: String) async {
+        await session.reload()
+        var problem: String?
+        if !label.isEmpty { problem = await session.rename(id: voice.name, label: label) }
+        sync()
+        model.data.notice = problem ?? DesignForm.savedNotice(name: label.isEmpty ? voice.name : label, shortened: voice.notice != nil)
     }
 
     func reload() {
@@ -122,6 +167,8 @@ final class VoiceSource {
         values.englishVoice = session.picks.english
         if let offered = session.offeredIDs { values.voices = offered }
         if session.playingID == nil, player.isActivelyPlaying { player.stop() }
+        values.design = designer.flow
+        values.designOpen = designer.sheetOpen
         if values != model.data.voices { model.data.voices = values }
         if values.voices != previousIDs { changed(values.voices) }
     }

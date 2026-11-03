@@ -24,10 +24,12 @@ struct StudioHost {
     /// Work the studio was doing has ended (a voiceover finished or was forgotten,
     /// a voice design closed): a version handshake held back for it runs again.
     var workEnded: () -> Void
+    /// The Create a Voice menu row: the window opens on Voices with the describe-a-voice sheet up.
+    var openVoiceDesign: () -> Void
 }
 
 /// The Studio submenu: draws the rows StudioMenu decides, and runs the three
-/// flows behind them — a long voiceover, following it to the end, and a new voice.
+/// flows behind them — a long voiceover and following it to the end; a new voice opens the window's sheet.
 final class StudioController: NSObject {
     let submenu = NSMenu()
     let host: StudioHost
@@ -47,7 +49,8 @@ final class StudioController: NSObject {
             self?.refreshFolder()
             self?.presentFinish(job)
         })
-    private lazy var designer = VoiceDesigner(host: host)
+    /// Describe a voice: the window's sheet drives it, the menu row opens that sheet.
+    lazy var designer = VoiceDesigner(host: host)
 
     init(host: StudioHost) {
         self.host = host
@@ -89,7 +92,7 @@ final class StudioController: NSObject {
         case .stopVoiceover: stopVoiceover()
         case .continueOnBattery: continueOnBattery()
         case .openVoiceoversFolder: openFolder()
-        case .createVoice: designer.start()
+        case .createVoice: host.openVoiceDesign()
         case .pickVoice, .pickDictationKey, .pickSpeakKey, .copyDictation, .pasteLastDictation: break
         case .startMeeting, .stopMeeting, .installNotesModel, .openMeetingsFolder, .chooseMeetingsFolder,
              .setMeetingName, .pickMeetingCallMode, .pickMeetingRetention, .editSpeakers, .retryVoices: break

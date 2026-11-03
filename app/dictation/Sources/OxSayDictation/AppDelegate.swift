@@ -877,7 +877,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setStartAtLogin: { [unowned self] on in
                 if (SMAppService.mainApp.status == .enabled) != on { self.toggleLogin() }
             },
-            checkForUpdates: { [unowned self] in self.checkForUpdates() })
+            checkForUpdates: { [unowned self] in self.checkForUpdates() },
+            designer: { [unowned self] in self.studio.designer })
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
@@ -1190,7 +1191,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             installStudioVoice: { [unowned self] in self.installStudioVoice() },
             installing: { [unowned self] in self.updateInstalling },
-            workEnded: { [unowned self] in self.handshakeWorkEnded() })
+            workEnded: { [unowned self] in self.handshakeWorkEnded() },
+            openVoiceDesign: { [unowned self] in
+                self.mainWindow.show(MainRoute(section: .voices, meetingID: nil))
+                self.mainWindow.source?.openVoiceDesign()
+            })
     }
 
     /// Install Studio Voice: confirm, then the update install pinned to the

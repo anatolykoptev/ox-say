@@ -2,8 +2,8 @@ import DictationCore
 import SwiftUI
 
 /// Voices: the voices that exist (play a sample, rename, delete) and, below, reading selected text aloud (a voice per
-/// language). The read-aloud key is set in the menu bar until Task 23 moves it here. Nothing is drawn that the window
-/// cannot do; adding a voice arrives with its own tasks.
+/// language). The read-aloud key is set in the menu bar until Task 23 moves it here. «Описать словами» opens a sheet
+/// (VoiceDesignSheet); the other ways to add a voice arrive with their own tasks.
 struct VoicesPage: View {
     @ObservedObject var model: MainWindowModel
     @State private var renaming: VoiceEntry?
@@ -14,6 +14,10 @@ struct VoicesPage: View {
         content
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let notice = model.data.notice { NoticeBar(text: notice) { model.actions.dismissNotice() } }
+            }
+            .sheet(isPresented: Binding(get: { model.data.voices.designOpen },
+                                        set: { if !$0 { model.actions.voiceDesign(.escape) } })) {
+                VoiceDesignSheet(flow: model.data.voices.design) { model.actions.voiceDesign($0) }
             }
             .sheet(item: $renaming) { entry in
                 RenameVoiceSheet(draft: $draft) {
@@ -60,6 +64,7 @@ struct VoicesPage: View {
             }
             Form {
                 Section {
+                    describeRow
                     if model.data.voices.entries.isEmpty {
                         VStack(spacing: 6) {
                             Image(systemName: "person.wave.2").font(.system(size: 30, weight: .light)).foregroundStyle(.tertiary)
@@ -91,6 +96,32 @@ struct VoicesPage: View {
                 }
             }
             .formStyle(.grouped)
+        }
+    }
+
+    /// «Описать словами…», or why it cannot be used: the studio voice is not installed (Settings has it) or this Mac
+    /// cannot run it.
+    private var describeRow: some View {
+        let availability = model.data.voices.designAvailability
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Button(L10nKey.voicesDescribe.text) { model.actions.voiceDesign(.open) }
+                    .disabled(availability != .available)
+                Spacer()
+            }
+            switch availability {
+            case .available:
+                EmptyView()
+            case .installable:
+                HStack(spacing: 6) {
+                    Text(L10nKey.voicesDescribeInstallable.text).font(.caption).foregroundStyle(.secondary)
+                    Button(L10nKey.voicesDescribeInstall.text) { model.section = .settings }
+                        .buttonStyle(.link).font(.caption)
+                }
+            case .unavailable(let reason):
+                Text(reason).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
