@@ -44,6 +44,14 @@ final class MainWindowSource {
     /// Each click on a line is one request; a probe that comes back after another click, a stop or a close is dropped.
     private var playRequests = PlayRequestGuard()
     private var detailReads = DetailReads()
+    /// Reads again when the app becomes active (a permission granted in System Settings); alive only while the window is open.
+    private var activeObserver: NSObjectProtocol?
+    /// When the permissions were last read (monotonic clock), to tell an activation that follows a read from a real return.
+    private var lastPermissionRead: TimeInterval?
+    /// The last notification answer; stands until the next read lands (nil until the first one: the row stays out meanwhile).
+    private var notificationAuth: PermissionAuth?
+    /// The notification read in flight, if any; cleared when it lands.
+    private var notificationRead: Task<Void, Never>?
     /// Open (shown, hidden or covered) until the window is closed. A hidden window keeps its audio playing.
     private var windowOpen = false
     private var searchTimer: Task<Void, Never>?
@@ -83,9 +91,26 @@ final class MainWindowSource {
     func windowOpened() {
         windowOpen = true
         visible = true
+        observeActivation()
         // A search that was running when the window closed was cancelled: run it again rather than show a spinner.
         if model.data.search.phase == .searching { searchEvent(.retry) }
         refresh()
+    }
+
+    /// The window comes back from System Settings (or any app) with the old permissions on screen: the app becoming
+    /// active reads everything again. `refresh()` is gated, so this never runs reads beside another pass.
+    private func observeActivation() {
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+        activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                                object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                guard ActivationRefresh.shouldRefresh(windowOpen: self.windowOpen, visible: self.visible,
+                                                      now: ProcessInfo.processInfo.systemUptime,
+                                                      lastPermissionRead: self.lastPermissionRead) else { return }
+                self.refresh()
+            }
+        }
     }
 
     /// Points the window at a section (and a meeting). A route without a meeting leaves the open one alone.
@@ -97,6 +122,8 @@ final class MainWindowSource {
 
     func windowClosed() {
         windowOpen = false
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+        activeObserver = nil
         cancelSearchWork()
         stopPlayback()
         stopClocks()
@@ -196,6 +223,10 @@ final class MainWindowSource {
             repeat {
                 syncRecording()
                 loadSimpleSections()
+                // The permission rows are read before any daemon call (microphone and Accessibility at once). The
+                // notification answer merges when it lands; the pass never waits for it, so a stuck read holds
+                // nothing back, least of all the gate.
+                readPermissions()
                 // The daemon status is read beside the list, not before it: a hung /status must not hold back the
                 // list read, whose answer ("unreachable" included) is what the window shows. It is awaited at the
                 // end of the pass, so passes never overlap it.
@@ -211,7 +242,6 @@ final class MainWindowSource {
                 }
                 model.data.meetingsLoad = load
                 await reloadSettingsAsync()
-                await reloadPermissions()
                 refreshSelectedDetail()
                 await status.value
             } while gate.finish()
@@ -272,17 +302,33 @@ final class MainWindowSource {
             fullName: NSFullUserName())
     }
 
-    private func reloadPermissions() async {
-        let center = await UNUserNotificationCenter.current().notificationSettings()
-        let notifications: PermissionAuth = (center.authorizationStatus == .authorized || center.authorizationStatus == .provisional)
-            ? .authorized : (center.authorizationStatus == .notDetermined ? .notDetermined : .denied)
+    /// Stamps and sets the microphone and Accessibility rows at once, and starts the notification read unless one is
+    /// already running. The pass does not wait for it; the last answer stands until it lands. One read in flight:
+    /// a stuck read blocks nothing, two reads cannot overlap, and a newer answer is never overwritten by an older one.
+    private func readPermissions() {
+        // Stamped before the first read. A toggle that lands after the last read is not seen by this read; the gap is
+        // about one second after it, and the next poll or activation heals that.
+        lastPermissionRead = ProcessInfo.processInfo.systemUptime
+        applyPermissions()
+        guard notificationRead == nil else { return }
+        notificationRead = Task { @MainActor in
+            let center = await UNUserNotificationCenter.current().notificationSettings()
+            notificationAuth = (center.authorizationStatus == .authorized || center.authorizationStatus == .provisional)
+                ? .authorized : (center.authorizationStatus == .notDetermined ? .notDetermined : .denied)
+            notificationRead = nil
+            applyPermissions()
+        }
+    }
+
+    /// The rows from the two synchronous reads and the last known notification answer.
+    private func applyPermissions() {
         let mic: PermissionAuth
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: mic = .authorized
         case .notDetermined: mic = .notDetermined
         default: mic = .denied
         }
-        model.data.permissions = PermissionModel.items(microphone: mic, accessibility: AXIsProcessTrusted(), notifications: notifications)
+        model.data.permissions = PermissionModel.items(microphone: mic, accessibility: AXIsProcessTrusted(), notifications: notificationAuth)
     }
 
     // MARK: search
@@ -398,7 +444,7 @@ final class MainWindowSource {
     /// list says it moved on (processing finished, the notes arrived).
     private func refreshSelectedDetail() {
         guard let id = model.selectedMeeting, let row = model.data.meetings.first(where: { $0.id == id }) else { return }
-        guard DetailRead.needed(row: row, shown: model.data.details[id]?.info, failed: model.data.detailError[id] != nil) else { return }
+        guard DetailRead.needed(row: row, shown: model.data.details[id]?.info, failed: model.data.detailError[id] != nil, loading: model.data.detailLoading.contains(id)) else { return }
         loadDetail(id)
     }
 
