@@ -28,9 +28,9 @@ final class VoiceDesigner {
     /// A voice was saved under `voice.name`; the window refreshes its list and sets the label.
     var saved: @MainActor (_ voice: SavedVoice, _ label: String) async -> Void = { _, _ in }
 
-    /// Counts the designs started and cancelled: an answer from an older one is dropped.
-    private var epoch = 0
     private var pillUp = false
+    /// Which playback on the app's shared player is a variant of this design (VariantPlayback).
+    private var variant = VariantPlayback()
 
     init(host: StudioHost) {
         self.host = host
@@ -50,8 +50,14 @@ final class VoiceDesigner {
         flow.description = description
         flow.sentence = sentence
         flow.label = label
-        let effect = flow.submit(taken: libraryNames())
+        let effect = flow.submit(taken: libraryNames(), recordingRunning: !mayPlay())
         perform(effect)
+    }
+
+    /// The form's text as it is typed: Cancel keeps it.
+    @MainActor
+    func edit(description: String, sentence: String, label: String) {
+        flow.edit(description: description, sentence: sentence, label: label)
     }
 
     @MainActor
@@ -66,16 +72,21 @@ final class VoiceDesigner {
     @MainActor
     func escape() {
         let closed = flow.escape()
-        if closed != nil {
-            epoch += 1
-            sheetOpen = false
-        }
+        if closed != nil { sheetOpen = false }
         perform(closed)
     }
 
     /// The window closed or hid: whatever variant plays stops.
     @MainActor
-    func quiet() { host.stopPlayback() }
+    func quiet() { stopVariant() }
+
+    /// Stops the variant this designer started, and only that: the shared player may be carrying a voiceover or a
+    /// read-aloud, which a close of the window must not cut.
+    @MainActor
+    private func stopVariant() {
+        if variant.mayStop(current: host.playbackSerial()) { host.stopPlayback() }
+        variant.released()
+    }
 
     // MARK: effects
 
@@ -86,7 +97,7 @@ final class VoiceDesigner {
         case .design(let description, let sentence): design(description, sentence)
         case .play(let take): play(take)
         case .save(let id, let label, let take, let replace): save(id: id, label: label, take: take, replace: replace)
-        case .stopPlayback: host.stopPlayback()
+        case .stopPlayback: stopVariant()
         case nil: break
         }
         finish(wasRunning: wasRunning)
@@ -108,22 +119,20 @@ final class VoiceDesigner {
 
     @MainActor
     private func design(_ description: String, _ sentence: String) {
-        epoch += 1
-        let mine = epoch
+        // The answer carries the number of the design it was asked for; the flow drops one that is not current.
+        let mine = flow.generation
         host.pill(Self.pillTask, L10nKey.designDesigningPill.text)
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let takes = try await self.host.client.designVoice(description: description, text: sentence)
-                guard mine == self.epoch else { return }
                 let wasRunning = self.running
-                self.flow.designed(takes)
+                self.flow.designed(takes, for: mine)
                 if let first = self.flow.currentTake { self.play(first) }
                 self.finish(wasRunning: wasRunning)
             } catch {
-                guard mine == self.epoch else { return }
                 let wasRunning = self.running
-                self.flow.fail(StudioError.plain(error))
+                self.flow.fail(StudioError.plain(error), for: mine)
                 self.finish(wasRunning: wasRunning)
             }
         }
@@ -132,48 +141,43 @@ final class VoiceDesigner {
     @MainActor
     private func play(_ take: DesignTake) {
         guard mayPlay() else {
-            flow.fail(L10nKey.voicesPreviewBlockedRecording.text)
+            flow.playRefused(L10nKey.voicesPreviewBlockedRecording.text)
             return
         }
         guard let wav = try? Data(contentsOf: URL(fileURLWithPath: take.path)) else {
-            flow.fail(L10nKey.designPlayFailedText.text)
+            flow.playRefused(L10nKey.designPlayFailedText.text)
             return
         }
         willPlay()
         host.play(wav, false, nil)
+        variant.started(serial: host.playbackSerial())
     }
 
     /// A taken name comes back as `.nameTaken` and the flow asks; the answer is one more save with replace.
     @MainActor
     private func save(id: String, label: String, take: String, replace: Bool) {
-        epoch += 1
-        let mine = epoch
         Task { @MainActor [weak self] in
             guard let self else { return }
+            let wasRunning = self.running
             do {
                 let outcome = try await self.host.client.saveDesign(name: id, take: take, replace: replace)
-                guard mine == self.epoch else { return }
-                let wasRunning = self.running
                 self.flow.saveAnswered(outcome)
+                self.onChange()
                 if case .saved(let voice) = outcome {
-                    // The label and the list are the window's (VoiceSource); the sheet stays up until they are done.
+                    // The label and the list are the window's (VoiceSource). The flow stays busy (`.done`) until they
+                    // are done, so the version handshake cannot relaunch the app between the save and the label.
                     await self.saved(voice, label)
-                    // Esc may have closed the sheet meanwhile; the handshake still hears that the work ended.
-                    guard mine == self.epoch else { return self.finish(wasRunning: wasRunning) }
-                    self.host.stopPlayback()
+                    self.stopVariant()
                     self.sheetOpen = false
                     _ = self.flow.cancel()
                 } else if replace {
                     // Asked to replace and told the name is taken again: not a question to ask twice.
                     self.flow.fail(L10nKey.designSaveFailedExists.text)
                 }
-                self.finish(wasRunning: wasRunning)
             } catch {
-                guard mine == self.epoch else { return }
-                let wasRunning = self.running
                 self.flow.fail(StudioError.plain(error))
-                self.finish(wasRunning: wasRunning)
             }
+            self.finish(wasRunning: wasRunning)
         }
     }
 }

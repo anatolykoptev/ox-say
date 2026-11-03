@@ -30,6 +30,8 @@ struct MainWindowHost {
     var startAtLogin: () -> Bool
     var setStartAtLogin: (Bool) -> Void
     var checkForUpdates: () -> Void
+    /// The studio voice install (its own confirmation alert included): the Voices page's «Скачать студийный голос».
+    var installStudioVoice: () -> Void
     /// The describe-a-voice driver, owned by the Studio controller: its `running` is what the version handshake reads.
     var designer: () -> VoiceDesigner
 }
@@ -125,7 +127,13 @@ final class MainWindowSource {
 
     /// The menu's Create a Voice: the sheet over the Voices page (the caller has already shown that section).
     func openVoiceDesign() {
-        guard model.data.voices.designAvailability == .available else { return }
+        // The studio voice cannot run (the status changed since the menu drew the row): the page the caller has shown
+        // has the disabled button and its reason; the same reason is said on top of it.
+        guard model.data.voices.designAvailability == .available else {
+            if case .unavailable(let reason) = model.data.voices.designAvailability { model.data.notice = reason }
+            else { model.data.notice = L10nKey.voicesDescribeInstallable.text }
+            return
+        }
         voiceSource.design(.open)
     }
 
@@ -224,6 +232,7 @@ final class MainWindowSource {
         a.renameVoice = { [weak self] id, label in self?.voiceSource.rename(id, label) }
         a.deleteVoice = { [weak self] id in self?.voiceSource.delete(id) }
         a.voiceDesign = { [weak self] step in self?.voiceSource.design(step) }
+        a.installStudioVoice = { [weak self] in self?.host.installStudioVoice() }
         a.setStartAtLogin = { [weak self] on in
             guard let self else { return }
             self.host.setStartAtLogin(on)

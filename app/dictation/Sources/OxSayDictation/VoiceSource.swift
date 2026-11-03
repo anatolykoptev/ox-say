@@ -68,6 +68,7 @@ final class VoiceSource {
         case .keep: designer.keep()
         case .replace(let yes): designer.replace(yes)
         case .escape: designer.escape()
+        case .edit(let description, let sentence, let label): designer.edit(description: description, sentence: sentence, label: label)
         }
     }
 

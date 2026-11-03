@@ -16,7 +16,7 @@ final class VoiceDesignWiringTests: XCTestCase {
         let start = try XCTUnwrap(text.range(of: signature), "\(signature) not found")
         let rest = text[start.lowerBound...]
         var end = rest.endIndex
-        if let next = rest.dropFirst(signature.count).range(of: "\n    private func |\n    func |\n    @MainActor\n    func |\n    // MARK", options: .regularExpression) {
+        if let next = rest.dropFirst(signature.count).range(of: "\n    private func |\n    func |\n    @MainActor\n    func |\n    @MainActor\n    private func |\n    // MARK", options: .regularExpression) {
             end = next.lowerBound
         }
         return String(rest[..<end])
@@ -43,7 +43,7 @@ final class VoiceDesignWiringTests: XCTestCase {
         let taken = try body(text, of: "private func takenNames()")
         let designer = try source("OxSayDictation/VoiceDesigner.swift")
         XCTAssertTrue(taken.contains("session.entries"))
-        XCTAssertTrue(designer.contains("flow.submit(taken: libraryNames())"))
+        XCTAssertTrue(designer.contains("flow.submit(taken: libraryNames(), recordingRunning"))
     }
 
     /// The effects the flow returns are carried out as they come: the daemon's design and save, the playing, and a
@@ -57,7 +57,81 @@ final class VoiceDesignWiringTests: XCTestCase {
         let voiceSource = try source("OxSayDictation/VoiceSource.swift")
         XCTAssertTrue(play.contains("guard mayPlay() else"))
         XCTAssertTrue(voiceSource.contains("VoicePreviewGate.allows(recordingRunning: recordingRunning())"))
-        XCTAssertTrue(designer.contains("guard mine == self.epoch"), "an answer from a cancelled design is dropped")
+    }
+
+    /// An answer is applied under the number of the design it was asked for (the flow drops a stale one), not under
+    /// whatever design is current when it arrives. Review finding MAJOR-3.
+    /// Mutation: VoiceDesigner.design, `flow.designed(takes, for: mine)` -> `for: self.flow.generation` -> RED;
+    /// `let mine = flow.generation` captured after the await instead -> RED.
+    func testTheDesignerAppliesAnAnswerUnderItsOwnGeneration() throws {
+        let designer = try source("OxSayDictation/VoiceDesigner.swift")
+        let design = try body(designer, of: "private func design(")
+        let ask = try XCTUnwrap(design.range(of: "let mine = flow.generation"))
+        let call = try XCTUnwrap(design.range(of: "host.client.designVoice("))
+        XCTAssertTrue(ask.lowerBound < call.lowerBound, "the number is taken before the request goes out")
+        XCTAssertTrue(design.contains("self.flow.designed(takes, for: mine)"))
+        XCTAssertTrue(design.contains("self.flow.fail(StudioError.plain(error), for: mine)"))
+    }
+
+    /// Only a variant is stopped, and only while it is the last clip the shared player started: closing the window
+    /// must not cut a voiceover or a read-aloud. Review finding MAJOR-2.
+    /// Mutation: VoiceDesigner.stopVariant, `host.stopPlayback()` called unconditionally -> RED;
+    /// `.stopPlayback: stopVariant()` back to `host.stopPlayback()` -> RED; delete `variant.started(` -> RED.
+    func testOnlyTheVariantIsEverStopped() throws {
+        let designer = try source("OxSayDictation/VoiceDesigner.swift")
+        let stop = try body(designer, of: "private func stopVariant() {")
+        XCTAssertTrue(stop.contains("if variant.mayStop(current: host.playbackSerial()) { host.stopPlayback() }"))
+        XCTAssertEqual(designer.components(separatedBy: "host.stopPlayback()").count - 1, 1, "the shared player is stopped in one place")
+        XCTAssertTrue(designer.contains("case .stopPlayback: stopVariant()"))
+        XCTAssertTrue(designer.contains("variant.started(serial: host.playbackSerial())"))
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        XCTAssertTrue(app.contains("playbackSerial: { [unowned self] in self.player.serial }"))
+        let player = try source("OxSayDictation/AudioPlayer.swift")
+        let play = try body(player, of: "func play(wav: Data) throws {")
+        XCTAssertTrue(play.contains("serial += 1"), "every clip the player starts is counted")
+    }
+
+    /// A saved voice is work until the label and the list are done: the designer ends the flow only after `saved`.
+    /// Mutation: VoiceDesigner.save, `_ = self.flow.cancel()` moved before `await self.saved(voice, label)` -> RED.
+    func testTheFlowEndsOnlyAfterTheLabelIsSet() throws {
+        let save = try body(try source("OxSayDictation/VoiceDesigner.swift"), of: "private func save(")
+        let saved = try XCTUnwrap(save.range(of: "await self.saved(voice, label)"))
+        let ended = try XCTUnwrap(save.range(of: "_ = self.flow.cancel()"))
+        XCTAssertTrue(saved.lowerBound < ended.lowerBound)
+    }
+
+    /// «Скачать студийный голос» runs the app's real install; the menu row lands on the page that shows the reason.
+    /// Mutation: VoicesPage, the install button back to `model.section = .settings` -> RED.
+    func testTheInstallLinkRunsTheInstallAndTheMenuRowLandsOnVoices() throws {
+        let page = try source("MainWindowUI/VoicesPage.swift")
+        XCTAssertTrue(page.contains("Button(L10nKey.voicesDescribeInstall.text) { model.actions.installStudioVoice() }"))
+        XCTAssertFalse(page.contains("model.section = .settings"))
+        let window = try source("OxSayDictation/MainWindowSource.swift")
+        let actions = try body(window, of: "private func actions() -> MainWindowActions {")
+        XCTAssertTrue(actions.contains("a.installStudioVoice = { [weak self] in self?.host.installStudioVoice() }"))
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        let host = try body(app, of: "func windowHost() -> MainWindowHost {")
+        XCTAssertTrue(host.contains("installStudioVoice: { [unowned self] in self.installStudioVoice() }"))
+        let open = try XCTUnwrap(app.range(of: "openVoiceDesign: { [unowned self] in"))
+        let tail = String(app[open.lowerBound...].prefix(260))
+        let shown = try XCTUnwrap(tail.range(of: "self.mainWindow.show(MainRoute(section: .voices, meetingID: nil))"))
+        let sheet = try XCTUnwrap(tail.range(of: "self.mainWindow.source?.openVoiceDesign()"))
+        XCTAssertTrue(shown.lowerBound < sheet.lowerBound, "the Voices page is shown first")
+        let opener = try body(window, of: "func openVoiceDesign() {")
+        XCTAssertTrue(opener.contains("model.data.notice = reason"), "a closed door says why")
+    }
+
+    /// The typed text and the recording gate reach the flow. Review findings MINOR-1 and MINOR-4.
+    /// Mutation: VoiceDesigner.submit, `recordingRunning: !mayPlay()` dropped -> RED; the sheet's `pushText()` calls dropped -> RED.
+    func testTheFormTextAndTheRecordingGateReachTheFlow() throws {
+        let designer = try source("OxSayDictation/VoiceDesigner.swift")
+        XCTAssertTrue(designer.contains("flow.submit(taken: libraryNames(), recordingRunning: !mayPlay())"))
+        XCTAssertTrue(designer.contains("flow.playRefused("))
+        XCTAssertFalse(designer.contains("flow.fail(L10nKey.voicesPreviewBlockedRecording"))
+        let sheet = try source("MainWindowUI/VoiceDesignSheet.swift")
+        XCTAssertEqual(sheet.components(separatedBy: "pushText() }").count - 1, 3, "description, sentence and label")
+        let voiceSource = try source("OxSayDictation/VoiceSource.swift")
+        XCTAssertTrue(voiceSource.contains("designer.edit(description: description, sentence: sentence, label: label)"))
     }
 
     /// The Create-a-Voice alerts are gone: no modal, no form dialog, and the menu row opens the window's sheet.
@@ -80,7 +154,7 @@ final class VoiceDesignWiringTests: XCTestCase {
         XCTAssertTrue(page.contains(".disabled(availability != .available)"))
         XCTAssertTrue(page.contains("model.actions.voiceDesign(.open)"))
         XCTAssertTrue(page.contains("VoiceDesignSheet(flow: model.data.voices.design)"))
-        XCTAssertTrue(page.contains("model.section = .settings"), "the install link goes to Settings")
+        XCTAssertTrue(page.contains("model.actions.installStudioVoice()"), "the install link runs the install")
         let sheet = try source("MainWindowUI/VoiceDesignSheet.swift")
         XCTAssertTrue(sheet.contains(".keyboardShortcut(.cancelAction)"), "Esc cancels")
         XCTAssertTrue(sheet.contains("Button(L10nKey.designTakeKeep.text) { send(.keep) }.keyboardShortcut(.defaultAction)"), "Return keeps")

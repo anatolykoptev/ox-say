@@ -18,6 +18,8 @@ struct StudioHost {
     /// Plays a WAV; `onFinish` runs once when it ends on its own.
     var play: (_ wav: Data, _ showPill: Bool, _ onFinish: (() -> Void)?) -> Void
     var stopPlayback: () -> Void
+    /// How many clips the shared player has started; a variant stops only if it is still the last one.
+    var playbackSerial: () -> Int
     /// Confirms and runs the studio voice install.
     var installStudioVoice: () -> Void
     var installing: () -> Bool

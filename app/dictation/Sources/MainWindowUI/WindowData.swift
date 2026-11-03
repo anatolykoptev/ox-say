@@ -60,6 +60,8 @@ public enum VoiceDesignAction: Equatable {
     case replay
     case keep
     case replace(Bool)
+    /// The form's text as it is typed, so Cancel keeps it.
+    case edit(description: String, sentence: String, label: String)
     /// Esc, Cancel, OK on a failure.
     case escape
 }
@@ -157,6 +159,8 @@ public struct MainWindowActions {
     /// «Описать словами»: one closure for the sheet's steps (open it, submit the form, next/replay/keep a variant,
     /// answer the replace question, Esc).
     public var voiceDesign: (VoiceDesignAction) -> Void = { _ in }
+    /// «Скачать студийный голос»: the app's own studio voice install, with its confirmation.
+    public var installStudioVoice: () -> Void = {}
     public var setStartAtLogin: (Bool) -> Void = { _ in }
     public var dismissNotice: () -> Void = {}
     /// The search field's text, as typed (the app debounces, cancels and retries).

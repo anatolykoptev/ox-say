@@ -878,6 +878,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if (SMAppService.mainApp.status == .enabled) != on { self.toggleLogin() }
             },
             checkForUpdates: { [unowned self] in self.checkForUpdates() },
+            installStudioVoice: { [unowned self] in self.installStudioVoice() },
             designer: { [unowned self] in self.studio.designer })
     }
 
@@ -1189,6 +1190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.playbackDone = nil
                 self.player.stop()
             },
+            playbackSerial: { [unowned self] in self.player.serial },
             installStudioVoice: { [unowned self] in self.installStudioVoice() },
             installing: { [unowned self] in self.updateInstalling },
             workEnded: { [unowned self] in self.handshakeWorkEnded() },

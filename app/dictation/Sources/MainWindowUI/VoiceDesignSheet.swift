@@ -30,10 +30,19 @@ public struct VoiceDesignSheet: View {
             case .failed(let sentence): failure(sentence)
             }
         }
+        .onChange(of: description) { _ in pushText() }
+        .onChange(of: sentence) { _ in pushText() }
+        .onChange(of: label) { _ in pushText() }
         .padding(20)
         .frame(width: 440)
         // Esc is the cancel button's shortcut on every step; a step with no cancel button still answers it.
         .background(Button("") { send(.escape) }.keyboardShortcut(.cancelAction).opacity(0).accessibilityHidden(true))
+    }
+
+    /// The typed text reaches the flow as it changes, so Cancel (or Esc) keeps it.
+    private func pushText() {
+        guard flow.phase == .form else { return }
+        send(.edit(description: description, sentence: sentence, label: label))
     }
 
     // MARK: form
@@ -120,6 +129,11 @@ public struct VoiceDesignSheet: View {
             .buttonStyle(.plain)
             .accessibilityLabel(L10nKey.designTakeReplay.text)
             .help(L10nKey.designTakeReplay.text)
+            if let notice = flow.reviewNotice {
+                Label(notice, systemImage: "speaker.slash.fill")
+                    .font(.callout).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let warning = take?.warning {
                 Label(DesignForm.warningText(warning), systemImage: "exclamationmark.triangle.fill")
                     .font(.callout).foregroundStyle(.orange)

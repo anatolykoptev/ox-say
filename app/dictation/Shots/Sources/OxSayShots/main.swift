@@ -131,12 +131,12 @@ struct Scene {
         Scene(name: "voice-design-designing", section: .voices, meeting: nil, height: 230, data: { PreviewData.make(now: $0, ru: $1) },
               sheet: { ru in flow(ru) { f in _ = f.submit(taken: []) } }),
         Scene(name: "voice-design-review", section: .voices, meeting: nil, height: 330, data: { PreviewData.make(now: $0, ru: $1) },
-              sheet: { ru in flow(ru, label: ru ? "Мой диктор" : "My narrator") { f in _ = f.submit(taken: []); f.designed(takes()) } }),
+              sheet: { ru in flow(ru, label: ru ? "Мой диктор" : "My narrator") { f in _ = f.submit(taken: []); f.designed(takes(), for: f.generation) } }),
         Scene(name: "voice-design-review-warning", section: .voices, meeting: nil, height: 380, data: { PreviewData.make(now: $0, ru: $1) },
-              sheet: { ru in flow(ru) { f in _ = f.submit(taken: []); f.designed(takes()); _ = f.next(); _ = f.next() } }),
+              sheet: { ru in flow(ru) { f in _ = f.submit(taken: []); f.designed(takes(), for: f.generation); _ = f.next(); _ = f.next() } }),
         Scene(name: "voice-design-name-taken", section: .voices, meeting: nil, height: 200, data: { PreviewData.make(now: $0, ru: $1) },
               sheet: { ru in flow(ru, label: ru ? "Мой диктор" : "My narrator") { f in
-                  _ = f.submit(taken: []); f.designed(takes()); _ = f.keep(); f.saveAnswered(.nameTaken)
+                  _ = f.submit(taken: []); f.designed(takes(), for: f.generation); _ = f.keep(); f.saveAnswered(.nameTaken)
               } }),
         Scene(name: "voice-design-failed", section: .voices, meeting: nil, height: 260, data: { PreviewData.make(now: $0, ru: $1) },
               sheet: { ru in flow(ru) { f in _ = f.submit(taken: []); f.fail(StudioError.timedOut.message()) } }),

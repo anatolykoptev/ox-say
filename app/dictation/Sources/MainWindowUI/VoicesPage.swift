@@ -115,7 +115,7 @@ struct VoicesPage: View {
             case .installable:
                 HStack(spacing: 6) {
                     Text(L10nKey.voicesDescribeInstallable.text).font(.caption).foregroundStyle(.secondary)
-                    Button(L10nKey.voicesDescribeInstall.text) { model.section = .settings }
+                    Button(L10nKey.voicesDescribeInstall.text) { model.actions.installStudioVoice() }
                         .buttonStyle(.link).font(.caption)
                 }
             case .unavailable(let reason):
