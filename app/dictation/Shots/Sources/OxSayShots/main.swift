@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import DictationCore
 import MainWindowUI
 import SwiftUI
@@ -33,11 +34,72 @@ struct Scene {
     var query: (Bool) -> String = { _ in "" }
     var find: ((Bool) -> String)?
     var data: (Date, Bool) -> MainWindowData
-    /// A sheet scene: the design sheet alone in the window (a sheet is a window of its own, which `screencapture -l` of
-    /// the main window would not include). The flow is driven through its own public steps.
-    var sheet: ((Bool) -> VoiceDesignFlow)?
-    /// A file sheet scene («Взять из файла»): the same idea for VoiceFileSheet — the model through its public steps.
-    var fileSheet: ((Bool) -> VoiceFileAdd)?
+    /// A sheet scene: the data opens a sheet on the Голоса page, exactly as the app does, and SwiftUI attaches it to
+    /// the main window. A sheet is a window of its own, which `screencapture -l` of the main window leaves out, so the
+    /// shot is the main window with the sheet window composited at its on-screen offset.
+    var sheet = false
+}
+
+/// `screencapture -l` of one window of this process (no Screen Recording permission is asked); true when it wrote `file`.
+func screencapture(_ w: NSWindow, to file: URL) -> Bool {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    p.arguments = ["-x", "-o", "-l\(w.windowNumber)", file.path]
+    guard (try? p.run()) != nil else { return false }
+    p.waitUntilExit()
+    return p.terminationStatus == 0 && FileManager.default.fileExists(atPath: file.path)
+}
+
+func cgImage(_ url: URL) -> CGImage? {
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+    return CGImageSourceCreateImageAtIndex(src, 0, nil)
+}
+
+func writePNG(_ image: CGImage, to file: URL) -> Bool {
+    let rep = NSBitmapImageRep(cgImage: image)
+    return rep.representation(using: .png, properties: [:]).flatMap { try? $0.write(to: file) } != nil
+}
+
+/// The sheet drawn onto the parent's image at its on-screen offset (SheetPlacement): one PNG, as a person sees the window.
+func composite(main: CGImage, mainFrame: NSRect, sheet: CGImage, sheetFrame: NSRect) -> CGImage? {
+    let scale = CGFloat(main.width) / mainFrame.width
+    guard let ctx = CGContext(data: nil, width: main.width, height: main.height, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    ctx.draw(main, in: CGRect(x: 0, y: 0, width: main.width, height: main.height))
+    ctx.draw(sheet, in: SheetPlacement.rect(main: mainFrame, sheet: sheetFrame, scale: scale))
+    return ctx.makeImage()
+}
+
+/// The window (and its attached sheet, if any) through `screencapture`, into `file`. `-l<main>` leaves the sheet out;
+/// `-l<sheet>` returns the sheet together with its parent, already composed by the window server. When the sheet capture
+/// is the size of the parent it is taken as the whole shot; otherwise (a sheet-sized image) the sheet is drawn onto the
+/// parent's capture at its on-screen offset. A sheet capture that fails is a failure, never a sheet-less file.
+func captureWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
+    guard let sheet else { return screencapture(window, to: file) }
+    let main = file.deletingLastPathComponent().appendingPathComponent("main-part-\(file.lastPathComponent)")
+    let part = file.deletingLastPathComponent().appendingPathComponent("sheet-part-\(file.lastPathComponent)")
+    defer { for u in [main, part] { try? FileManager.default.removeItem(at: u) } }
+    try? FileManager.default.removeItem(at: file)
+    guard screencapture(window, to: main), screencapture(sheet, to: part), let m = cgImage(main), let s = cgImage(part) else { return false }
+    if abs(s.width - m.width) <= 2 && abs(s.height - m.height) <= 2 { return writePNG(s, to: file) }
+    guard let both = composite(main: m, mainFrame: window.frame, sheet: s, sheetFrame: sheet.frame) else { return false }
+    return writePNG(both, to: file)
+}
+
+/// The fallback: `cacheDisplay` of each window's frame view, the sheet's drawn at its offset. A sheet scene whose sheet
+/// cannot be drawn is an ERR, never a sheet-less file.
+func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
+    func image(_ w: NSWindow) -> CGImage? {
+        guard let view = w.contentView?.superview ?? w.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        return rep.cgImage
+    }
+    guard let m = image(window) else { return false }
+    guard let sheet else { return writePNG(m, to: file) }
+    guard let s = image(sheet), let both = composite(main: m, mainFrame: window.frame, sheet: s, sheetFrame: sheet.frame) else { return false }
+    return writePNG(both, to: file)
 }
 
 @MainActor func run() {
@@ -77,12 +139,18 @@ struct Scene {
     func voices(_ d: MainWindowData, _ change: (inout VoicesValues) -> Void) -> MainWindowData {
         var d = d; change(&d.voices); return d
     }
-    /// The sheet's flow after the given steps, typed text in the language of the shot.
-    func flow(_ ru: Bool, label: String = "", _ steps: (inout VoiceDesignFlow) -> Void) -> VoiceDesignFlow {
+    /// The Голоса page with the design sheet open on a flow after the given steps (typed text in the language of the shot).
+    func designSheet(_ now: Date, _ ru: Bool, _ steps: (inout VoiceDesignFlow) -> Void, label: (() -> String)? = nil) -> MainWindowData {
         var f = VoiceDesignFlow(description: ru ? "Спокойный диктор, мужской голос, неспешный и тёплый" : "A calm male narrator, unhurried and warm",
-                                sentence: DesignForm.defaultSentence, label: label)
+                                sentence: DesignForm.defaultSentence, label: label?() ?? "")
         steps(&f)
-        return f
+        return voices(PreviewData.make(now: now, ru: ru)) { $0.design = f; $0.designOpen = true }
+    }
+    /// The Голоса page with the file sheet open over a picked clip, after the given steps.
+    func fileSheet(_ now: Date, _ ru: Bool, name: String, seconds: Double, bytes: Int64, _ steps: (inout VoiceFileAdd) -> Void) -> MainWindowData {
+        var add = VoiceFileAdd(fileName: name, audioPath: "/Users/anya/Music/\(name)", seconds: seconds, bytes: bytes, ext: "m4a")
+        steps(&add)
+        return voices(PreviewData.make(now: now, ru: ru)) { $0.file = add }
     }
     func takes() -> [DesignTake] {
         (1...3).map { DesignTake(path: "/t/\($0).wav", durationSeconds: 6, suggestedName: "calm-narrator-\($0)",
@@ -128,42 +196,40 @@ struct Scene {
         Scene(name: "voices-design-installable", section: .voices, meeting: nil) {
             voices(PreviewData.make(now: $0, ru: $1)) { $0.designAvailability = .installable }
         },
-        Scene(name: "voice-design-form", section: .voices, meeting: nil, height: 420, data: { PreviewData.make(now: $0, ru: $1) },
-              sheet: { ru in flow(ru, label: ru ? "Мой диктор" : "My narrator") { _ in } }),
-        Scene(name: "voice-design-designing", section: .voices, meeting: nil, height: 230, data: { PreviewData.make(now: $0, ru: $1) },
-              sheet: { ru in flow(ru) { f in _ = f.submit(taken: []) } }),
-        Scene(name: "voice-design-review", section: .voices, meeting: nil, height: 330, data: { PreviewData.make(now: $0, ru: $1) },
-              sheet: { ru in flow(ru, label: ru ? "Мой диктор" : "My narrator") { f in _ = f.submit(taken: []); f.designed(takes(), for: f.generation) } }),
-        Scene(name: "voice-design-review-warning", section: .voices, meeting: nil, height: 380, data: { PreviewData.make(now: $0, ru: $1) },
-              sheet: { ru in flow(ru) { f in _ = f.submit(taken: []); f.designed(takes(), for: f.generation); _ = f.next(); _ = f.next() } }),
-        Scene(name: "voice-design-name-taken", section: .voices, meeting: nil, height: 200, data: { PreviewData.make(now: $0, ru: $1) },
-              sheet: { ru in flow(ru, label: ru ? "Мой диктор" : "My narrator") { f in
-                  _ = f.submit(taken: []); f.designed(takes(), for: f.generation); _ = f.keep(); f.saveAnswered(.nameTaken)
-              } }),
-        Scene(name: "voice-design-failed", section: .voices, meeting: nil, height: 260, data: { PreviewData.make(now: $0, ru: $1) },
-              sheet: { ru in flow(ru) { f in _ = f.submit(taken: []); f.fail(StudioError.timedOut.message()) } }),
+        // Sheet scenes: the same Голоса page as the app shows, with the data that opens the sheet.
+        Scene(name: "voice-design-form", section: .voices, meeting: nil, data: { now, ru in
+            designSheet(now, ru) { _ in } label: { ru ? "Мой диктор" : "My narrator" }
+        }, sheet: true),
+        Scene(name: "voice-design-designing", section: .voices, meeting: nil, data: { now, ru in
+            designSheet(now, ru) { f in _ = f.submit(taken: []) }
+        }, sheet: true),
+        Scene(name: "voice-design-review", section: .voices, meeting: nil, data: { now, ru in
+            designSheet(now, ru) { f in _ = f.submit(taken: []); f.designed(takes(), for: f.generation) } label: { ru ? "Мой диктор" : "My narrator" }
+        }, sheet: true),
+        Scene(name: "voice-design-review-warning", section: .voices, meeting: nil, data: { now, ru in
+            designSheet(now, ru) { f in _ = f.submit(taken: []); f.designed(takes(), for: f.generation); _ = f.next(); _ = f.next() }
+        }, sheet: true),
+        Scene(name: "voice-design-name-taken", section: .voices, meeting: nil, data: { now, ru in
+            designSheet(now, ru) { f in
+                _ = f.submit(taken: []); f.designed(takes(), for: f.generation); _ = f.keep(); f.saveAnswered(.nameTaken)
+            } label: { ru ? "Мой диктор" : "My narrator" }
+        }, sheet: true),
+        Scene(name: "voice-design-failed", section: .voices, meeting: nil, data: { now, ru in
+            designSheet(now, ru) { f in _ = f.submit(taken: []); f.fail(StudioError.timedOut.message()) }
+        }, sheet: true),
         // «Взять из файла»: the sheet over a picked clip — ordinary, refused (under 3 s), after the daemon's own 400.
-        Scene(name: "voice-file-sheet", section: .voices, meeting: nil, height: 330, data: { PreviewData.make(now: $0, ru: $1) },
-              fileSheet: { ru in
-                  VoiceFileAdd(fileName: ru ? "Интервью 2026.m4a" : "interview-2026.m4a",
-                               audioPath: "/Users/anya/Music/interview-2026.m4a",
-                               seconds: 12.4, bytes: 1_900_000, ext: "m4a")
-              }),
-        Scene(name: "voice-file-sheet-short", section: .voices, meeting: nil, height: 330, data: { PreviewData.make(now: $0, ru: $1) },
-              fileSheet: { ru in
-                  VoiceFileAdd(fileName: ru ? "Приветствие.m4a" : "greeting.m4a",
-                               audioPath: "/Users/anya/Music/greeting.m4a",
-                               seconds: 1.8, bytes: 60_000, ext: "m4a")
-              }),
-        Scene(name: "voice-file-sheet-error", section: .voices, meeting: nil, height: 340, data: { PreviewData.make(now: $0, ru: $1) },
-              fileSheet: { ru in
-                  var add = VoiceFileAdd(fileName: ru ? "Интервью 2026.m4a" : "interview-2026.m4a",
-                                         audioPath: "/Users/anya/Music/interview-2026.m4a",
-                                         seconds: 12.4, bytes: 1_900_000, ext: "m4a")
-                  _ = add.submit(taken: [])
-                  add.refused("the clip could not be decoded")
-                  return add
-              }),
+        Scene(name: "voice-file-sheet", section: .voices, meeting: nil, data: { now, ru in
+            fileSheet(now, ru, name: ru ? "Интервью 2026.m4a" : "interview-2026.m4a", seconds: 12.4, bytes: 1_900_000) { _ in }
+        }, sheet: true),
+        Scene(name: "voice-file-sheet-short", section: .voices, meeting: nil, data: { now, ru in
+            fileSheet(now, ru, name: ru ? "Приветствие.m4a" : "greeting.m4a", seconds: 1.8, bytes: 60_000) { _ in }
+        }, sheet: true),
+        Scene(name: "voice-file-sheet-error", section: .voices, meeting: nil, data: { now, ru in
+            fileSheet(now, ru, name: ru ? "Интервью 2026.m4a" : "interview-2026.m4a", seconds: 12.4, bytes: 1_900_000) { add in
+                _ = add.submit(taken: [])
+                add.refused("the clip could not be decoded")
+            }
+        }, sheet: true),
         // Settings is taller than a window: the shot is made as tall as the screen allows.
         Scene(name: "settings", section: .settings, meeting: nil, height: 1100) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "settings-apps", section: .settings, meeting: nil, height: 1100, appsExpanded: true) { PreviewData.make(now: $0, ru: $1) },
@@ -195,45 +261,42 @@ struct Scene {
                 model.appsExpanded = scene.appsExpanded
                 model.clock = { now }
                 model.advanced = scene.advanced
-                let hosting: NSViewController
-                if let sheet = scene.sheet {
-                    hosting = NSHostingController(rootView: VoiceDesignSheet(flow: sheet(lang == "ru")) { _ in })
-                } else if let fileSheet = scene.fileSheet {
-                    hosting = NSHostingController(rootView: VoiceFileSheet(add: fileSheet(lang == "ru")) { _ in })
-                } else {
-                    hosting = NSHostingController(rootView: scene.sidebar
-                        ? MainWindowView(model: model, switchShown: true, live: Set(MainSection.allCases))
-                        : MainWindowView(model: model))
-                }
-                (hosting as? NSHostingController<VoiceDesignSheet>)?.sizingOptions = []
-                (hosting as? NSHostingController<VoiceFileSheet>)?.sizingOptions = []
-                (hosting as? NSHostingController<MainWindowView>)?.sizingOptions = []
+                let hosting = NSHostingController(rootView: scene.sidebar
+                    ? MainWindowView(model: model, switchShown: true, live: Set(MainSection.allCases))
+                    : MainWindowView(model: model))
+                hosting.sizingOptions = []
                 window.contentViewController = hosting
-                window.setContentSize(NSSize(width: scene.sheet == nil && scene.fileSheet == nil ? size.width : 440, height: scene.height))
+                window.setContentSize(NSSize(width: size.width, height: scene.height))
                 window.title = "OxSay"
                 window.orderFrontRegardless()
                 // Two short spins: the first lays the view out, the second lets lazy rows and the toolbar settle.
                 RunLoop.main.run(until: Date().addingTimeInterval(0.9))
                 window.displayIfNeeded()
-                RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+                // SwiftUI presents the sheet a beat after the page is up, and animates it in.
+                RunLoop.main.run(until: Date().addingTimeInterval(scene.sheet ? 1.5 : 0.5))
                 let file = out.appendingPathComponent("\(scene.name)-\(lang)-\(dark ? "dark" : "light").png")
+                if scene.sheet != (window.attachedSheet != nil) {
+                    // A silent wrong shot is the bug class here: a sheet scene without its sheet, or a plain one with a stray sheet.
+                    print("ERR \(file.path) (sheet \(window.attachedSheet == nil ? "missing" : "unexpected"))")
+                    if let s = window.attachedSheet { window.endSheet(s) }
+                    continue
+                }
+                let viewCapture = ProcessInfo.processInfo.environment["SHOTS_VIEW_CAPTURE"] != nil
                 var captured = false
-                if ProcessInfo.processInfo.environment["SHOTS_VIEW_CAPTURE"] == nil {
-                    let p = Process()
-                    p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-                    p.arguments = ["-x", "-o", "-l\(window.windowNumber)", file.path]
-                    try? p.run()
-                    p.waitUntilExit()
-                    captured = p.terminationStatus == 0
+                if !viewCapture {
+                    captured = captureWindows(window, sheet: window.attachedSheet, to: file)
                 }
                 // The screen is locked or the window is not on it (a night run): draw the window's views instead.
-                // No title bar and no toolbar, but the content is the same.
-                if !captured, let view = window.contentView?.superview ?? window.contentView,
-                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                    view.cacheDisplay(in: view.bounds, to: rep)
-                    captured = (rep.representation(using: .png, properties: [:])).flatMap { try? $0.write(to: file) } != nil
-                }
+                // No title bar and no toolbar, but the content is the same, and the sheet is drawn at its offset.
+                if !captured { captured = drawWindows(window, sheet: window.attachedSheet, to: file) }
                 print("\(captured ? "ok " : "ERR") \(file.path)")
+                // Close the sheet before the next scene: clear the state that presents it, so SwiftUI dismisses it itself.
+                if scene.sheet {
+                    model.data.voices.designOpen = false
+                    model.data.voices.file = nil
+                    for _ in 0..<20 where window.attachedSheet != nil { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+                    if let s = window.attachedSheet { window.endSheet(s) }
+                }
             }
         }
     }

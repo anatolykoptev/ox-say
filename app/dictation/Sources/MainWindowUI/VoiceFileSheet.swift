@@ -5,20 +5,20 @@ import SwiftUI
 /// the Voices page. It holds the text being typed and nothing else: what may be sent, what a taken name means and
 /// what the daemon answered is the model's (VoiceFileAdd), and every button is one `VoiceFileAction`. Esc cancels,
 /// Return adds.
-public struct VoiceFileSheet: View {
+struct VoiceFileSheet: View {
     let add: VoiceFileAdd
     let send: (VoiceFileAction) -> Void
     @State private var label: String
     @State private var refText: String
 
-    public init(add: VoiceFileAdd, send: @escaping (VoiceFileAction) -> Void) {
+    init(add: VoiceFileAdd, send: @escaping (VoiceFileAction) -> Void) {
         self.add = add
         self.send = send
         _label = State(initialValue: add.label)
         _refText = State(initialValue: add.refText)
     }
 
-    public var body: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(L10nKey.fileSheetTitle.text).font(.headline)
             field(L10nKey.fileSheetFile.text) {

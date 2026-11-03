@@ -4,14 +4,14 @@ import SwiftUI
 /// «Описать словами»: the form, then the variants one by one. A window-modal sheet on the Voices page. It holds the
 /// text being typed and nothing else: which step comes next is the flow's (VoiceDesignFlow), and every button is one
 /// `VoiceDesignAction`. Esc cancels, Return keeps (or submits the form).
-public struct VoiceDesignSheet: View {
+struct VoiceDesignSheet: View {
     let flow: VoiceDesignFlow
     let send: (VoiceDesignAction) -> Void
     @State private var description: String
     @State private var sentence: String
     @State private var label: String
 
-    public init(flow: VoiceDesignFlow, send: @escaping (VoiceDesignAction) -> Void) {
+    init(flow: VoiceDesignFlow, send: @escaping (VoiceDesignAction) -> Void) {
         self.flow = flow
         self.send = send
         _description = State(initialValue: flow.description)
@@ -19,7 +19,7 @@ public struct VoiceDesignSheet: View {
         _label = State(initialValue: flow.label)
     }
 
-    public var body: some View {
+    var body: some View {
         Group {
             switch flow.phase {
             case .form: form
