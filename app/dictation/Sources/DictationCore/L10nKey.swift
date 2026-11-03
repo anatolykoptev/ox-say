@@ -490,6 +490,18 @@ public enum L10nKey: String, CaseIterable {
     case designSaveFailedExists = "design.save_failed.exists"
     case designSaved = "design.saved"
     case designShortened = "design.shortened"
+    // «Взять из файла»: the picked clip, its check and the sheet.
+    case fileOpen = "file.open"
+    case fileSheetTitle = "file.sheet.title"
+    case fileSheetFile = "file.sheet.file"
+    case fileSheetRefLabel = "file.sheet.ref_label"
+    case fileSheetRefPlaceholder = "file.sheet.ref_placeholder"
+    case fileSheetAdd = "file.sheet.add"
+    case fileAdding = "file.adding"
+    case fileProblemNotAudio = "file.problem.not_audio"
+    case fileProblemUnreadable = "file.problem.unreadable"
+    case fileProblemTooShort = "file.problem.too_short"
+    case fileWarningLong = "file.warning.long"
     case updateRepairItem = "update.repair.item"
     case updateFinishingPill = "update.finishing.pill"
     // The Studio voiceover flow, the status menu, its notices and the pill (#333).

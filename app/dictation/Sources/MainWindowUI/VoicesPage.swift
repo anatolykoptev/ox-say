@@ -1,14 +1,16 @@
 import DictationCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Voices: the voices that exist (play a sample, rename, delete) and, below, reading selected text aloud (a voice per
 /// language). The read-aloud key is set in the menu bar until Task 23 moves it here. «Описать словами» opens a sheet
-/// (VoiceDesignSheet); the other ways to add a voice arrive with their own tasks.
+/// (VoiceDesignSheet); «Взять из файла…» opens the file picker and then its own sheet (VoiceFileSheet).
 struct VoicesPage: View {
     @ObservedObject var model: MainWindowModel
     @State private var renaming: VoiceEntry?
     @State private var draft = ""
     @State private var deleting: VoiceEntry?
+    @State private var pickingFile = false
 
     var body: some View {
         content
@@ -65,6 +67,7 @@ struct VoicesPage: View {
             Form {
                 Section {
                     describeRow
+                    fileRow
                     if model.data.voices.entries.isEmpty {
                         VStack(spacing: 6) {
                             Image(systemName: "person.wave.2").font(.system(size: 30, weight: .light)).foregroundStyle(.tertiary)
@@ -96,6 +99,26 @@ struct VoicesPage: View {
                 }
             }
             .formStyle(.grouped)
+        }
+        // A picked file is handed to the app, which measures it and opens the sheet; the sheet is window-modal
+        // (`.sheet`), never a modal run loop. Both sit on the list, not on `content` — a second `.sheet` on the
+        // view that already carries the design sheet is not supported.
+        .fileImporter(isPresented: $pickingFile, allowedContentTypes: [.audio, .movie]) { result in
+            if case .success(let url) = result { model.actions.voiceFile(.picked(url)) }
+        }
+        .sheet(isPresented: Binding(get: { model.data.voices.file != nil },
+                                    set: { if !$0 { model.actions.voiceFile(.escape) } })) {
+            if let add = model.data.voices.file {
+                VoiceFileSheet(add: add) { model.actions.voiceFile($0) }
+            }
+        }
+    }
+
+    /// «Взять из файла…»: opens the file picker. A clip that is not one the daemon reads is refused in the sheet.
+    private var fileRow: some View {
+        HStack {
+            Button(L10nKey.fileOpen.text) { pickingFile = true }
+            Spacer()
         }
     }
 

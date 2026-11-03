@@ -36,6 +36,8 @@ struct Scene {
     /// A sheet scene: the design sheet alone in the window (a sheet is a window of its own, which `screencapture -l` of
     /// the main window would not include). The flow is driven through its own public steps.
     var sheet: ((Bool) -> VoiceDesignFlow)?
+    /// A file sheet scene («Взять из файла»): the same idea for VoiceFileSheet — the model through its public steps.
+    var fileSheet: ((Bool) -> VoiceFileAdd)?
 }
 
 @MainActor func run() {
@@ -140,6 +142,28 @@ struct Scene {
               } }),
         Scene(name: "voice-design-failed", section: .voices, meeting: nil, height: 260, data: { PreviewData.make(now: $0, ru: $1) },
               sheet: { ru in flow(ru) { f in _ = f.submit(taken: []); f.fail(StudioError.timedOut.message()) } }),
+        // «Взять из файла»: the sheet over a picked clip — ordinary, refused (under 3 s), after the daemon's own 400.
+        Scene(name: "voice-file-sheet", section: .voices, meeting: nil, height: 330, data: { PreviewData.make(now: $0, ru: $1) },
+              fileSheet: { ru in
+                  VoiceFileAdd(fileName: ru ? "Интервью 2026.m4a" : "interview-2026.m4a",
+                               audioPath: "/Users/anya/Music/interview-2026.m4a",
+                               seconds: 12.4, bytes: 1_900_000, ext: "m4a")
+              }),
+        Scene(name: "voice-file-sheet-short", section: .voices, meeting: nil, height: 330, data: { PreviewData.make(now: $0, ru: $1) },
+              fileSheet: { ru in
+                  VoiceFileAdd(fileName: ru ? "Приветствие.m4a" : "greeting.m4a",
+                               audioPath: "/Users/anya/Music/greeting.m4a",
+                               seconds: 1.8, bytes: 60_000, ext: "m4a")
+              }),
+        Scene(name: "voice-file-sheet-error", section: .voices, meeting: nil, height: 340, data: { PreviewData.make(now: $0, ru: $1) },
+              fileSheet: { ru in
+                  var add = VoiceFileAdd(fileName: ru ? "Интервью 2026.m4a" : "interview-2026.m4a",
+                                         audioPath: "/Users/anya/Music/interview-2026.m4a",
+                                         seconds: 12.4, bytes: 1_900_000, ext: "m4a")
+                  _ = add.submit(taken: [])
+                  add.refused("the clip could not be decoded")
+                  return add
+              }),
         // Settings is taller than a window: the shot is made as tall as the screen allows.
         Scene(name: "settings", section: .settings, meeting: nil, height: 1100) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "settings-apps", section: .settings, meeting: nil, height: 1100, appsExpanded: true) { PreviewData.make(now: $0, ru: $1) },
@@ -174,15 +198,18 @@ struct Scene {
                 let hosting: NSViewController
                 if let sheet = scene.sheet {
                     hosting = NSHostingController(rootView: VoiceDesignSheet(flow: sheet(lang == "ru")) { _ in })
+                } else if let fileSheet = scene.fileSheet {
+                    hosting = NSHostingController(rootView: VoiceFileSheet(add: fileSheet(lang == "ru")) { _ in })
                 } else {
                     hosting = NSHostingController(rootView: scene.sidebar
                         ? MainWindowView(model: model, switchShown: true, live: Set(MainSection.allCases))
                         : MainWindowView(model: model))
                 }
                 (hosting as? NSHostingController<VoiceDesignSheet>)?.sizingOptions = []
+                (hosting as? NSHostingController<VoiceFileSheet>)?.sizingOptions = []
                 (hosting as? NSHostingController<MainWindowView>)?.sizingOptions = []
                 window.contentViewController = hosting
-                window.setContentSize(NSSize(width: scene.sheet == nil ? size.width : 440, height: scene.height))
+                window.setContentSize(NSSize(width: scene.sheet == nil && scene.fileSheet == nil ? size.width : 440, height: scene.height))
                 window.title = "OxSay"
                 window.orderFrontRegardless()
                 // Two short spins: the first lays the view out, the second lets lazy rows and the toolbar settle.

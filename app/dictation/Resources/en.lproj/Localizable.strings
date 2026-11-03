@@ -484,6 +484,17 @@
 "design.save_failed.exists" = "A voice with this name already exists.";
 "design.saved" = "Voice “%@” saved";
 "design.shortened" = "The recording was longer than a voice can keep, so it was shortened.";
+"file.open" = "Add from a File…";
+"file.sheet.title" = "A Voice from a File";
+"file.sheet.file" = "File";
+"file.sheet.ref_label" = "What is said in the recording";
+"file.sheet.ref_placeholder" = "Optional — the clip is enough";
+"file.sheet.add" = "Add";
+"file.adding" = "Adding the voice…";
+"file.problem.not_audio" = "Pick an audio file: WAV, MP3, M4A, AIFF, FLAC, CAF, OGG, OPUS, MP4 or MOV.";
+"file.problem.unreadable" = "The file cannot be read.";
+"file.problem.too_short" = "The clip is too short — a voice needs at least 3 seconds of speech.";
+"file.warning.long" = "The voice learns only the first 20 seconds.";
 "update.repair.item" = "Repair ox-say…";
 "update.finishing.pill" = "Finishing the update…";
 
