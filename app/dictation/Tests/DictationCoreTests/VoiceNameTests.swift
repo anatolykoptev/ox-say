@@ -65,4 +65,98 @@ final class VoiceNameTests: XCTestCase {
         XCTAssertNotEqual(first, second)
         XCTAssertLessThanOrEqual(second.count, 32)
     }
+
+    // MARK: scalars, not Characters
+
+    private static let daemonPattern = try! NSRegularExpression(pattern: VoiceName.idPattern)
+    private static func matchesDaemon(_ id: String) -> Bool {
+        daemonPattern.numberOfMatches(in: id, range: NSRange(id.startIndex..., in: id)) == 1
+    }
+
+    /// A Character that starts with an ASCII letter can carry combining scalars;
+    /// the id must be judged per scalar. These three reached the id before
+    /// ("golos-1" + keycap, "x" + underline + "y", "i" + dot) and the daemon refused them.
+    /// Mutation F2: VoiceName.id, the `for scalar in ...unicodeScalars` loop back to `for c in label.lowercased()` -> RED.
+    func testCombiningScalarsNeverReachTheId() {
+        XCTAssertEqual(VoiceName.id(from: "Голос 1\u{FE0F}\u{20E3}", taken: []), "golos-1")
+        XCTAssertEqual(VoiceName.id(from: "x\u{0332}y", taken: []), "x-y")
+        XCTAssertEqual(VoiceName.id(from: "İ", taken: []), "i")
+        // A decomposed й (и + breve) is the same letter as the precomposed one.
+        XCTAssertEqual(VoiceName.id(from: "Мои\u{0306} голос", taken: []), "moy-golos")
+    }
+
+    /// Whatever scripts, combining marks, emoji and joiners a label mixes, the id
+    /// matches the daemon's pattern. Generated from a fixed seed so a failure
+    /// reproduces; the pools are not a list of known-bad labels.
+    func testGeneratedLabelsAlwaysGiveDaemonValidIds() {
+        let pools: [[UInt32]] = [
+            Array(0x61...0x7A), Array(0x30...0x39), Array(0x41...0x5A), [0x20, 0x2D, 0x5F, 0x2E],
+            Array(0x430...0x44F) + [0x451, 0x456, 0x457, 0x454, 0x491, 0x45E], Array(0x410...0x42F),
+            Array(0x300...0x36F), [0x20E3, 0xFE0F, 0xFE0E, 0x200D, 0x200B, 0x0307, 0x0332],
+            [0x1F3A4, 0x1F468, 0x1F469, 0x1F467, 0x1F1F7, 0x1F1FA, 0x2764], Array(0x4E00...0x4E40),
+            Array(0x627...0x64A), Array(0x3040...0x3060), [0x130, 0xDF, 0xFB01, 0x1E9E, 0x2126],
+            [0x0A, 0x09, 0x2028, 0x202E, 0x00A0, 0x0085],
+        ]
+        var seed: UInt64 = 0x9E3779B97F4A7C15
+        func next(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(n))
+        }
+        for _ in 0..<3000 {
+            var label = ""
+            for _ in 0..<(1 + next(70)) {
+                let pool = pools[next(pools.count)]
+                if let scalar = Unicode.Scalar(pool[next(pool.count)]) { label.unicodeScalars.append(scalar) }
+            }
+            let id = VoiceName.id(from: label, taken: [])
+            XCTAssertTrue(Self.matchesDaemon(id), "\(label.unicodeScalars.map { String($0.value, radix: 16) }) -> \(id)")
+            let second = VoiceName.id(from: label, taken: [id])
+            XCTAssertTrue(Self.matchesDaemon(second) && second != id, "\(id) -> \(second)")
+        }
+    }
+
+    // MARK: the daemon's label rules, mirrored
+
+    /// normalizeLabel refuses Cc (U+0000-001F, U+007F-009F), U+2028/2029 and the
+    /// bidi controls U+202A-202E, U+2066-2069 — and nothing else. A ZWJ emoji
+    /// sequence, a keycap and a variation selector are stored, so they are offered.
+    /// Mutation F4: VoiceName.validLabel, the Cc ranges -> `CharacterSet.controlCharacters.contains(scalar)` -> RED.
+    func testValidLabelMirrorsTheDaemonExactly() {
+        XCTAssertEqual(VoiceName.validLabel("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} Семья"), "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} Семья")
+        XCTAssertNotNil(VoiceName.validLabel("1\u{FE0F}\u{20E3}"))
+        XCTAssertNotNil(VoiceName.validLabel("a\u{200B}b"))
+        XCTAssertNotNil(VoiceName.validLabel("a\u{00AD}b"))
+        XCTAssertNotNil(VoiceName.validLabel("a\u{2027}b"))
+        var banned: [UInt32] = Array(0x00...0x1F) + Array(0x7F...0x9F) + [0x2028, 0x2029]
+        banned += Array(0x202A...0x202E) + Array(0x2066...0x2069)
+        for value in banned {
+            let label = "a" + String(Unicode.Scalar(value)!) + "b"
+            XCTAssertNil(VoiceName.validLabel(label), "U+\(String(value, radix: 16)) inside")
+        }
+        // At the edges only whitespace trims: a control that is not whitespace stays and refuses.
+        XCTAssertNil(VoiceName.validLabel("\u{202E}abc"))
+        XCTAssertNil(VoiceName.validLabel("abc\u{0000}"))
+    }
+
+    // MARK: Cyrillic beyond Russian
+
+    /// Ukrainian, Belarusian, Serbian/Macedonian and Kazakh letters transliterate
+    /// instead of being dropped ("Їжак Іван" used to give "zhak-van").
+    /// Mutation F5: VoiceName.cyrillic, the "і", "ї", "є", "ґ", "ў" entries removed -> RED.
+    func testNonRussianCyrillicLettersAreTransliterated() {
+        XCTAssertEqual(VoiceName.id(from: "Їжак Іван", taken: []), "yizhak-ivan")
+        XCTAssertEqual(VoiceName.id(from: "Європа", taken: []), "yevropa")
+        XCTAssertEqual(VoiceName.id(from: "Ґанок", taken: []), "ganok")
+        XCTAssertEqual(VoiceName.id(from: "Ўрэй", taken: []), "urey")
+        XCTAssertEqual(VoiceName.id(from: "Қазақ", taken: []), "qazaq")
+        // Every Cyrillic letter in the blocks people type keeps at least one ASCII character.
+        for value in (0x410...0x44F) + [0x401, 0x451, 0x404, 0x454, 0x406, 0x456, 0x407, 0x457, 0x490, 0x491, 0x40E, 0x45E,
+                                       0x408, 0x458, 0x409, 0x459, 0x40A, 0x45A, 0x40B, 0x45B, 0x40F, 0x45F, 0x402, 0x452,
+                                       0x403, 0x453, 0x40C, 0x45C, 0x405, 0x455, 0x4D8, 0x4D9, 0x492, 0x493, 0x49A, 0x49B,
+                                       0x4A2, 0x4A3, 0x4E8, 0x4E9, 0x4AE, 0x4AF, 0x4B0, 0x4B1, 0x4BA, 0x4BB] {
+            let letter = String(Unicode.Scalar(UInt32(value))!)
+            if letter == "ъ" || letter == "ь" || letter == "Ъ" || letter == "Ь" { continue }
+            XCTAssertNotEqual(VoiceName.id(from: letter + "x", taken: []), "x", "U+\(String(value, radix: 16)) was dropped")
+        }
+    }
 }

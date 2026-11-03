@@ -196,6 +196,15 @@ public struct StudioClient {
 
     // MARK: the voice library
 
+    /// A JSON request body, or `badResponse` when the object cannot be encoded
+    /// (a NaN would raise an Objective-C exception in JSONSerialization, so the
+    /// object is checked first): an empty POST would only come back as a 400.
+    static func jsonBody(_ object: [String: Any]) throws -> Data {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object) else { throw StudioError.badResponse }
+        return data
+    }
+
     /// GET /v1/audio/voices: the saved voices with their labels, origins and dates.
     public func voiceEntries() async throws -> [VoiceEntry] {
         let data = try await succeed(get("v1/audio/voices"))
@@ -206,14 +215,13 @@ public struct StudioClient {
     /// POST /v1/audio/voices: adds the clip at `audioPath` as the voice `id`
     /// (derived from `label` by VoiceName), labelled for the person; `source`
     /// is "recorded" or "file" (voices.Meta.Source). The daemon normalizes the
-    /// clip (ffmpeg, up to its 60 s cap) and may transcribe it, so the call
-    /// outlasts a quick read.
+    /// clip (ffmpeg, up to its 60 s cap) and may transcribe it; transcription
+    /// shares the daemon's 60 s context rather than adding to it, so the call
+    /// outlasts a quick read and need not outlast the daemon.
     public func addVoice(id: String, label: String, audioPath: String, refText: String, source: String) async throws -> SavedVoice {
         let body: [String: Any] = ["name": id, "audio_path": audioPath, "ref_text": refText,
                                    "label": label, "source": source]
-        let data = try await succeed(post("v1/audio/voices",
-                                          body: (try? JSONSerialization.data(withJSONObject: body)) ?? Data(),
-                                          timeout: Self.voiceAddTimeout))
+        let data = try await succeed(post("v1/audio/voices", body: try Self.jsonBody(body), timeout: Self.voiceAddTimeout))
         guard let saved = SavedVoice.decode(data) else { throw StudioError.badResponse }
         return saved
     }
@@ -221,7 +229,7 @@ public struct StudioClient {
     /// PATCH /v1/audio/voices/{id}: renames the voice — the label a person
     /// sees; the on-disk id never changes.
     public func setVoiceLabel(id: String, label: String) async throws {
-        let body = (try? JSONSerialization.data(withJSONObject: ["label": label])) ?? Data()
+        let body = try Self.jsonBody(["label": label])
         _ = try await succeed(patch("v1/audio/voices/\(id)", body: body, timeout: Self.quickTimeout))
     }
 

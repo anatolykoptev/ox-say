@@ -85,6 +85,24 @@ final class StudioClientTests: XCTestCase {
         XCTAssertEqual(json["ref_text"] as? String, "текст")
         XCTAssertEqual(json["label"] as? String, "Мой голос")
         XCTAssertEqual(json["source"] as? String, "recorded")
+        // The daemon normalizes the clip (ffmpeg) and may transcribe it inside its own
+        // 60 s context, so the call outlasts a quick read yet need not outlast the daemon.
+        // Mutation F3: StudioClient.addVoice, `Self.voiceAddTimeout` -> `Self.quickTimeout` -> RED.
+        XCTAssertGreaterThan(seen()?.timeoutInterval ?? 0, 60)
+        XCTAssertLessThanOrEqual(seen()?.timeoutInterval ?? .infinity, 120)
+    }
+
+    /// A body that cannot be encoded is an error, not an empty POST the daemon answers with a 400.
+    /// Mutation F7: StudioClient.jsonBody, `throw StudioError.badResponse` -> `return Data()` -> RED.
+    func testABodyThatCannotBeEncodedThrows() throws {
+        do {
+            _ = try StudioClient.jsonBody(["x": Double.nan])
+            XCTFail("a NaN cannot be JSON; the call must throw")
+        } catch {
+            XCTAssertEqual(error as? StudioError, .badResponse)
+        }
+        let ok = try StudioClient.jsonBody(["label": "ok"])
+        XCTAssertEqual(ok, Data(#"{"label":"ok"}"#.utf8))
     }
 
     /// A rename is a PATCH holding only the label (the daemon's strict decode

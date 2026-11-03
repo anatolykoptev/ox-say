@@ -30,18 +30,29 @@ public struct VoiceEntry: Equatable, Identifiable {
         self.engine = engine
     }
 
+    /// `created`, unless it is absent or Go's zero time (year 1: what a Time with
+    /// no value marshals as). Such a date says nothing, so no line shows it.
+    var knownCreated: Date? {
+        guard let created else { return nil }
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        return utc.component(.year, from: created) <= 1 ? nil : created
+    }
+
     /// The line under the voice's name: how it came to be, with its date when
-    /// that says something. `now` is the date a daemon entry without one is
-    /// reported as of, so the row never lies about a date it was not given.
-    public func subtitle(now: Date, locale: Locale, calendar: Calendar,
+    /// the daemon gave a real one. With none (absent, or Go's zero time) the
+    /// line carries no date at all rather than today's or "1 January".
+    public func subtitle(locale: Locale, calendar: Calendar,
                          text: (L10nKey) -> String = { $0.text }) -> String {
         switch kind {
         case .designed: return text(.voicesSubtitleDesigned)
         case .file: return text(.voicesSubtitleFile)
         case .recorded:
-            return String(format: text(.voicesSubtitleRecorded), Self.day(created ?? now, locale: locale, calendar: calendar))
+            guard let date = knownCreated else { return text(.voicesSubtitleRecordedUndated) }
+            return String(format: text(.voicesSubtitleRecorded), Self.day(date, locale: locale, calendar: calendar))
         case .other:
-            return String(format: text(.voicesSubtitleOther), Self.day(created ?? now, locale: locale, calendar: calendar))
+            guard let date = knownCreated else { return text(.voicesSubtitleOtherUndated) }
+            return String(format: text(.voicesSubtitleOther), Self.day(date, locale: locale, calendar: calendar))
         }
     }
 
@@ -54,13 +65,18 @@ public struct VoiceEntry: Equatable, Identifiable {
         return formatter.string(from: date)
     }
 
-    /// `{"voices":[…]}`. An entry without a label shows its id (a daemon older
+    /// `{"voices":[…]}`. With no voices the daemon writes `{"voices":null}` (a nil
+    /// Go slice), and an older or terse one may omit the key: both are an empty
+    /// library, `[]`. Any other type is nil, a read that failed. An entry without a label shows its id (a daemon older
     /// than labels writes none); one without a source or a designed_from is
     /// `.other`. Entries that do not parse are skipped, as in MeetingInfo.
     public static func decodeList(_ data: Data) -> [VoiceEntry]? {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let list = obj["voices"] as? [[String: Any]] else { return nil }
-        return list.compactMap(decode)
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        switch obj["voices"] {
+        case nil, is NSNull: return []
+        case let list as [[String: Any]]: return list.compactMap(decode)
+        default: return nil
+        }
     }
 
     static func decode(_ obj: [String: Any]) -> VoiceEntry? {

@@ -284,6 +284,8 @@ public enum L10nKey: String, CaseIterable {
     case voicesSubtitleDesigned = "voices.subtitle.designed"
     case voicesSubtitleFile = "voices.subtitle.file"
     case voicesSubtitleOther = "voices.subtitle.other"
+    case voicesSubtitleRecordedUndated = "voices.subtitle.recorded.undated"
+    case voicesSubtitleOtherUndated = "voices.subtitle.other.undated"
     case settingsAppsSummary = "settings.apps.summary"
     // The window talks to the daemon for real: its failures, its empty and failed recordings, rename, folder, voices.
     case meetingErrDaemonDown = "meeting.error.daemon_down"

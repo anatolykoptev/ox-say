@@ -295,6 +295,8 @@
 "voices.subtitle.designed" = "Создан по описанию";
 "voices.subtitle.file" = "Из файла";
 "voices.subtitle.other" = "Добавлен %@";
+"voices.subtitle.recorded.undated" = "Записан";
+"voices.subtitle.other.undated" = "Добавлен";
 "settings.apps.summary" = "Сразу: %d · Спрашивать: %d";
 "meeting.error.daemon_down" = "Фоновая служба OxSay не отвечает. Попробуйте ещё раз через минуту.";
 "meeting.error.timeout" = "Служба слишком долго не отвечает. Попробуйте ещё раз.";
