@@ -264,6 +264,10 @@ final class MainWindowOpenWiringTests: XCTestCase {
         // The notification read is a child task joined at the end, never awaited before the list.
         XCTAssertFalse(refresh.contains("await readPermissions()"), "a stuck notification read must not hold the pass")
         XCTAssertTrue(permissions.contains("return Task { @MainActor in"))
+        // Text-only: the glue keeps the answer optional (nil until the first read), so the core leaves the row out.
+        XCTAssertTrue(text.contains("private var notificationAuth: PermissionAuth?"))
+        let apply = try body(text, of: "private func applyPermissions() {")
+        XCTAssertTrue(apply.contains("notifications: notificationAuth)"))
         let join = try XCTUnwrap(refresh.range(of: "await notifications.value"))
         XCTAssertTrue(join.lowerBound > list.lowerBound && join.lowerBound > settings.lowerBound, "joined at the end of the pass")
     }

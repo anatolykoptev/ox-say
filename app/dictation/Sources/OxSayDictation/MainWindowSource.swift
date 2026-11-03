@@ -48,8 +48,8 @@ final class MainWindowSource {
     private var activeObserver: NSObjectProtocol?
     /// When the permissions were last read (monotonic clock), to tell an activation that follows a read from a real return.
     private var lastPermissionRead: TimeInterval?
-    /// The last notification answer; stands until the next read lands (a stuck read leaves it, and the rest, alone).
-    private var notificationAuth: PermissionAuth = .notDetermined
+    /// The last notification answer; stands until the next read lands (nil until the first one: the row stays out meanwhile).
+    private var notificationAuth: PermissionAuth?
     /// Open (shown, hidden or covered) until the window is closed. A hidden window keeps its audio playing.
     private var windowOpen = false
     private var searchTimer: Task<Void, Never>?

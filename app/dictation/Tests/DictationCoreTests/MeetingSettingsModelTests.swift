@@ -178,6 +178,14 @@ final class PermissionModelTests: XCTestCase {
         XCTAssertEqual(items.map(\.pane), [.microphone, .systemAudio, .accessibility, .notifications])
     }
 
+    /// Before the first notification answer the row is absent, not "needs attention".
+    /// Mutation: PermissionModel.items, append the notifications row for a nil answer too (`?? .notDetermined`) -> RED.
+    func testNoNotificationRowBeforeItsFirstAnswer() {
+        let items = PermissionModel.items(microphone: .authorized, accessibility: true, notifications: nil)
+        XCTAssertEqual(items.map(\.id), ["mic", "audio", "ax"])
+        XCTAssertEqual(state(items, "mic"), .allowed)
+    }
+
     func testMicrophoneAndNotificationsFollowTheirStatus() {
         func at(_ mic: PermissionAuth, _ ax: Bool, _ n: PermissionAuth) -> [PermissionItem] {
             PermissionModel.items(microphone: mic, accessibility: ax, notifications: n)
