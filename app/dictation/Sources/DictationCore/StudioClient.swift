@@ -138,6 +138,58 @@ public struct StudioClient {
         return job
     }
 
+    /// GET /v1/produce/{id}/chunks: every chunk's detail in one read — the
+    /// bulk route, so a long project's detail read is one request, not N+1.
+    public func chunks(id: String) async throws -> [ProduceChunkDetail] {
+        let data = try await succeed(get("v1/produce/\(id)/chunks"))
+        guard let chunks = Self.decodeChunks(data) else { throw StudioError.badResponse }
+        return chunks
+    }
+
+    /// `{"chunks":[…]}` as the bulk route writes it. A null or missing list is
+    /// an empty one, matching decodeList: the daemon marshals `[]`, never
+    /// null, but an empty answer must not fail the whole read.
+    static func decodeChunks(_ data: Data) -> [ProduceChunkDetail]? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let list = obj["chunks"] as? [[String: Any]] ?? []
+        return list.compactMap(ProduceChunkDetail.decode)
+    }
+
+    /// POST /v1/produce/{id}/chunks/{n} {"action":"regenerate","takes":N}:
+    /// new takes of one chunk. The daemon validates and launches the job;
+    /// the 202 answer is a job summary, so the write itself is fast — the
+    /// same bound a create gets.
+    public func regenerate(id: String, chunk: Int, takes: Int) async throws {
+        _ = try await succeed(post("v1/produce/\(id)/chunks/\(chunk)",
+                                   body: ProduceRequest.chunkBody(["action": "regenerate", "takes": takes]),
+                                   timeout: Self.startTimeout))
+    }
+
+    /// POST /v1/produce/{id}/chunks/{n} {"action":"pick","take":KEY}: choose
+    /// one of the chunk's takes — the person's own pick, kept over the checks.
+    public func pick(id: String, chunk: Int, take: String) async throws {
+        _ = try await succeed(post("v1/produce/\(id)/chunks/\(chunk)",
+                                   body: ProduceRequest.chunkBody(["action": "pick", "take": take]),
+                                   timeout: Self.startTimeout))
+    }
+
+    /// POST /v1/produce/{id}/chunks/{n} {"action":"edit","text":…}: rewrite
+    /// the chunk's words; it is rendered again on the next run.
+    public func editText(id: String, chunk: Int, text: String) async throws {
+        _ = try await succeed(post("v1/produce/\(id)/chunks/\(chunk)",
+                                   body: ProduceRequest.chunkBody(["action": "edit", "text": text]),
+                                   timeout: Self.startTimeout))
+    }
+
+    /// POST /v1/produce/{id}/delivery: one batch of style/pause/pace changes,
+    /// plus the file's loudness when it changed — an assemble-only run that
+    /// needs no render.
+    public func deliver(id: String, entries: [DeliveryEntry], loudness: Double?) async throws {
+        _ = try await succeed(post("v1/produce/\(id)/delivery",
+                                   body: ProduceRequest.deliveryBody(entries: entries, loudness: loudness),
+                                   timeout: Self.startTimeout))
+    }
+
     /// GET /v1/produce: the daemon's recent voiceovers, newest first.
     public func voiceovers() async throws -> [ProduceJob] {
         let data = try await succeed(get("v1/produce"))
