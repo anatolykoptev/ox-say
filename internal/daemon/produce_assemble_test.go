@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -567,8 +569,8 @@ func noTemps(t *testing.T, dir string) {
 	t.Helper()
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		if strings.Contains(e.Name(), vproject.TempMark) {
-			t.Errorf("temp left in %s: %s", dir, e.Name())
+		if strings.Contains(e.Name(), vproject.TempMark) || strings.Contains(e.Name(), backupMark) {
+			t.Errorf("temp or backup left in %s: %s", dir, e.Name())
 		}
 	}
 }
@@ -635,86 +637,100 @@ func TestReassemblyBurstFailureRestoresThePreviousSet(t *testing.T) {
 	}
 }
 
-// The rollback's own rename can fail too - the destination became a
-// directory, the volume went read-only: the old file then survives under its
-// temp name and the publish reports that the previous set could not all be
-// restored instead of claiming the folder holds it.
+// The rollback's own rename can fail too - here the volume refuses to put the
+// old .srt back after the burst failed at .words.json: the folder then holds a
+// new .srt beside old siblings, and the publish must say the previous set could
+// not all be restored instead of claiming the folder holds it. The old .srt
+// survives under its backup name, and the sentence a person reads names no
+// hidden file; the log does.
 // Mutation: produce_assemble.go publish, return errOutputsKept even when
-// undoBurst reports unrestored files -> the folder is not the old set but the
-// error says it is -> RED.
+// undoBurst reports problems -> the folder is not the old set but the error
+// says it is -> RED.
+// Mutation: produce_assemble.go undoBurst, remove the backups although a
+// problem is left -> the only copy of the old .srt is deleted -> RED.
 func TestReassemblyBurstUnrestoredSetIsReported(t *testing.T) {
 	f := newFakePorts(t)
 	p, j := assembleFixture(t, f)
+	var logBuf bytes.Buffer
+	p.log = slog.New(slog.NewTextHandler(&logBuf, nil))
 	if err := p.assemble(j); err != nil {
 		t.Fatal(err)
 	}
 	before := outputSet(t, j)
 	editForReassembly(j)
-	dest := assembledStem(j) + ".words.json"
+	srt, words := assembledStem(j)+".srt", assembledStem(j)+".words.json"
 	failRenames(t, func(from, to string) bool {
-		return to == dest && strings.Contains(filepath.Base(from), vproject.TempMark)
+		return to == words || (to == srt && strings.Contains(filepath.Base(from), backupMark))
 	}, errors.New("read-only volume"))
 	err := p.assemble(j)
 	if !errors.Is(err, errOutputsBroken) {
 		t.Fatalf("%v", err)
 	}
-	if !strings.Contains(err.Error(), ".words.json") {
-		t.Fatalf("the unrestored file is not named: %v", err)
+	if msg := p.public(err); strings.Contains(msg, backupMark) || strings.Contains(msg, vproject.TempMark) || !strings.Contains(msg, "kept beside the files") {
+		t.Fatalf("what the person reads: %q", msg)
 	}
-	for e, was := range before {
-		if e == ".words.json" {
-			continue
-		}
-		raw, rerr := os.ReadFile(assembledStem(j) + e)
-		if rerr != nil || string(raw) != was {
-			t.Errorf("%s was not put back: %v", e, rerr)
-		}
+	if !strings.Contains(logBuf.String(), "v.srt") || !strings.Contains(logBuf.String(), "read-only volume") {
+		t.Fatalf("the log does not name the file and the cause: %s", logBuf.String())
 	}
-	if _, lerr := os.Lstat(dest); !os.IsNotExist(lerr) {
-		t.Errorf(".words.json is there: %v", lerr)
-	}
-	entries, err := os.ReadDir(filepath.Dir(dest))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var temps []string
+	dir := filepath.Dir(srt)
+	var backups []string
+	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		if strings.Contains(e.Name(), vproject.TempMark) {
-			temps = append(temps, e.Name())
+		if strings.Contains(e.Name(), backupMark) {
+			backups = append(backups, e.Name())
 		}
 	}
-	if len(temps) != 1 {
-		t.Fatalf("temps %v, want exactly the retreated .words.json", temps)
+	var holdsOldSrt bool
+	for _, b := range backups {
+		if raw, _ := os.ReadFile(filepath.Join(dir, b)); string(raw) == before[".srt"] {
+			holdsOldSrt = true
+		}
 	}
-	raw, err := os.ReadFile(filepath.Join(filepath.Dir(dest), temps[0]))
-	if err != nil || string(raw) != before[".words.json"] {
-		t.Fatalf("the survivor does not hold the old .words.json: %v", err)
+	if !holdsOldSrt {
+		t.Fatalf("no backup holds the old .srt: %v", backups)
+	}
+	for _, e := range []string{".vtt", ".words.json", ".manifest.json", ".wav"} {
+		if raw, rerr := os.ReadFile(assembledStem(j) + e); rerr != nil || string(raw) != before[e] {
+			t.Errorf("%s: %v", e, rerr)
+		}
 	}
 }
 
-// The first rename of the burst failing replaces nothing: the previous good
-// set stays whole and the error says so (#154.8).
-// Mutation: produce_assemble.go publish, skip undoBurst for a burst that
-// placed nothing -> the retreated old files stay under temp names -> RED.
-func TestReassemblyFirstRenameFailureKeepsThePreviousSet(t *testing.T) {
-	f := newFakePorts(t)
-	p, j := assembleFixture(t, f)
-	if err := p.assemble(j); err != nil {
-		t.Fatal(err)
+// A persistent fault on one name of the burst - the volume is read-only, the
+// destination became a directory - fails every attempt, not just one. At the
+// first name the old files never moved, so nothing is to be restored: the set
+// is exactly the previous one and the error says it was kept. A fault that
+// stays on a later name leaves the earlier places to be rolled back, which
+// works because the restore does not go through the faulty path.
+// Mutation: produce_assemble.go backupFile, `linkFile(src, b)` ->
+// `renameFile(src, b)` (the old file moves before the burst) -> the old .srt
+// is gone from its name when the place fails and the restore is not tried -> RED
+// at the .srt case.
+func TestReassemblyPersistentFaultKeepsThePreviousSet(t *testing.T) {
+	for _, ext := range []string{".srt", ".vtt", ".words.json", ".manifest.json", ".wav"} {
+		t.Run(ext, func(t *testing.T) {
+			f := newFakePorts(t)
+			p, j := assembleFixture(t, f)
+			if err := p.assemble(j); err != nil {
+				t.Fatal(err)
+			}
+			before := outputSet(t, j)
+			editForReassembly(j)
+			dest := assembledStem(j) + ext
+			failRenames(t, func(from, to string) bool {
+				return to == dest && strings.Contains(filepath.Base(from), vproject.TempMark)
+			}, errors.New("read-only volume"))
+			if err := p.assemble(j); !errors.Is(err, errOutputsKept) {
+				t.Fatalf("error %v", err)
+			}
+			for e, was := range outputSet(t, j) {
+				if was != before[e] {
+					t.Errorf("%s changed", e)
+				}
+			}
+			noTemps(t, filepath.Dir(dest))
+		})
 	}
-	before := outputSet(t, j)
-	editForReassembly(j)
-	dest := assembledStem(j) + ".srt"
-	failRenamesOnce(t, func(to string) bool { return to == dest }, errors.New("disk on fire"))
-	if err := p.assemble(j); !errors.Is(err, errOutputsKept) {
-		t.Fatalf("error %v", err)
-	}
-	for ext, was := range outputSet(t, j) {
-		if was != before[ext] {
-			t.Errorf("%s changed although no rename succeeded", ext)
-		}
-	}
-	noTemps(t, filepath.Dir(dest))
 }
 
 // One directory sync after the burst, once the last file is placed - renamed

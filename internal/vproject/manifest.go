@@ -149,11 +149,14 @@ type Manifest struct {
 	// published yet: it is recorded so a daemon that stopped mid-run can say
 	// the change did not apply, and cleared when the run ends.
 	PendingLUFS *float64 `json:"pending_loudness_lufs,omitempty"`
-	Settings    Settings `json:"settings"`
-	Progress    Progress `json:"progress"`
-	Chunks      []Chunk  `json:"chunks"`
-	Outputs     Outputs  `json:"outputs"`
-	Notes       []string `json:"notes"`
+	// PendingStatus is the status the project had when that change was
+	// launched; a daemon that stopped mid-run reports it back.
+	PendingStatus string   `json:"pending_status,omitempty"`
+	Settings      Settings `json:"settings"`
+	Progress      Progress `json:"progress"`
+	Chunks        []Chunk  `json:"chunks"`
+	Outputs       Outputs  `json:"outputs"`
+	Notes         []string `json:"notes"`
 }
 
 // ChunkSummary is a chunk in the default status view.

@@ -93,9 +93,10 @@ func TestLoudnessOnlyBurstFailureKeepsTheOldSet(t *testing.T) {
 }
 
 // When the rollback itself cannot put an old file back - its restore rename
-// fails too - the survivor stays under its temp name and the project must not
-// read done: outputs names a file that is not there. Here every rename to
-// .words.json fails: the publish AND the restore.
+// fails too - the survivor stays under its backup name and the project must
+// not read done: its files are not all the ones its outputs describe. Here the
+// burst fails at .words.json and the restore of .srt fails. The person reads
+// one plain sentence with no hidden file name in it.
 // Mutation: produce.go outcome, drop the errOutputsBroken case -> status done -> RED.
 func TestLoudnessOnlyBurstFailureUnrestoredIsFailed(t *testing.T) {
 	f := newFakePorts(t)
@@ -109,9 +110,9 @@ func TestLoudnessOnlyBurstFailureUnrestoredIsFailed(t *testing.T) {
 	lufs0, outputs0 := m.Settings.LUFS, m.Outputs
 	before := outputBytes(t, outputs0)
 	stem := strings.TrimSuffix(m.Settings.OutPath, ".wav")
-	dest := stem + ".words.json"
+	srt, words := stem+".srt", stem+".words.json"
 	failRenames(t, func(from, to string) bool {
-		return to == dest && strings.Contains(filepath.Base(from), vproject.TempMark)
+		return to == words || (to == srt && strings.Contains(filepath.Base(from), backupMark))
 	}, errors.New("read-only volume"))
 
 	if _, err := p.delivery(s.ID, nil, ptr(-18.0)); err != nil {
@@ -123,33 +124,25 @@ func TestLoudnessOnlyBurstFailureUnrestoredIsFailed(t *testing.T) {
 	if m.Status != vproject.StatusFailed {
 		t.Fatalf("status %q error %q: a set that is not all there must not read done", m.Status, m.Error)
 	}
-	if !strings.Contains(m.Error, ".words.json") || !strings.Contains(m.Error, "could not all be restored") {
-		t.Fatalf("the unrestored file is not named: error %q", m.Error)
+	if m.Error != errOutputsBroken.Error() || strings.Contains(m.Error, backupMark) || strings.Contains(m.Error, vproject.TempMark) {
+		t.Fatalf("error %q", m.Error)
 	}
 	if m.Settings.LUFS != lufs0 || m.Outputs != outputs0 {
 		t.Fatalf("lufs %v, outputs %+v", m.Settings.LUFS, m.Outputs)
 	}
-	if _, err := os.Lstat(dest); !os.IsNotExist(err) {
-		t.Errorf(".words.json is there: %v", err)
-	}
-	entries, err := os.ReadDir(filepath.Dir(stem))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var survivors []string
+	var holdsOld bool
+	entries, _ := os.ReadDir(filepath.Dir(stem))
 	for _, e := range entries {
-		if strings.Contains(e.Name(), vproject.TempMark) {
-			survivors = append(survivors, e.Name())
+		if strings.Contains(e.Name(), backupMark) {
+			if raw, _ := os.ReadFile(filepath.Join(filepath.Dir(stem), e.Name())); string(raw) == before[".srt"] {
+				holdsOld = true
+			}
 		}
 	}
-	if len(survivors) != 1 {
-		t.Fatalf("surviving temps %v, want exactly the retreated .words.json", survivors)
+	if !holdsOld {
+		t.Fatal("no backup holds the old .srt")
 	}
-	raw, err := os.ReadFile(filepath.Join(filepath.Dir(stem), survivors[0]))
-	if err != nil || string(raw) != before[".words.json"] {
-		t.Fatalf("the survivor does not hold the old .words.json: %v", err)
-	}
-	for _, e := range []string{".wav", ".srt", ".vtt", ".manifest.json"} {
+	for _, e := range []string{".vtt", ".words.json", ".manifest.json", ".wav"} {
 		raw, err := os.ReadFile(stem + e)
 		if err != nil || string(raw) != before[e] {
 			t.Errorf("%s was not restored: %v", e, err)
@@ -201,8 +194,9 @@ func TestLoudnessOnlyInterruptKeepsFinishedAndSaysDropped(t *testing.T) {
 // A loudness-only launch persists the pending target on the manifest - the
 // record a daemon that never comes back needs to say what did not apply -
 // and the finished run carries none.
-// Mutation: produce_ops.go deliver, drop `j.m.PendingLUFS = lufs` -> the
-// manifest carries nothing -> RED.
+// Mutation: produce_ops.go deliver, drop `j.m.PendingLUFS, j.m.PendingStatus =
+// lufs, j.prevStatus` -> the manifest carries nothing -> RED. Mutation:
+// produce_ops.go deliver, record only PendingLUFS -> the status is empty -> RED.
 func TestLoudnessOnlyDeliveryRecordsThePendingTarget(t *testing.T) {
 	f := newFakePorts(t)
 	p := startedProducer(t, f)
@@ -218,24 +212,27 @@ func TestLoudnessOnlyDeliveryRecordsThePendingTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.PendingLUFS == nil || *m.PendingLUFS != -18.0 {
-		t.Fatalf("the pending loudness is not on disk: %v", m.PendingLUFS)
+	if m.PendingLUFS == nil || *m.PendingLUFS != -18.0 || m.PendingStatus != vproject.StatusDone {
+		t.Fatalf("the pending loudness and the status it had are not on disk: %v %q", m.PendingLUFS, m.PendingStatus)
 	}
 	waitTerminal(t, p, s.ID)
 	m = manifestOf(t, f, s.ID)
-	if m.PendingLUFS != nil || m.Settings.LUFS != -18.0 || m.Status != vproject.StatusDone {
-		t.Fatalf("after the run: pending %v lufs %v status %q", m.PendingLUFS, m.Settings.LUFS, m.Status)
+	if m.PendingLUFS != nil || m.PendingStatus != "" || m.Settings.LUFS != -18.0 || m.Status != vproject.StatusDone {
+		t.Fatalf("after the run: pending %v %q lufs %v status %q", m.PendingLUFS, m.PendingStatus, m.Settings.LUFS, m.Status)
 	}
 }
 
 // A crash mid loudness-only run leaves "running" on disk with the pending
-// target recorded: after the restart the project reads interrupted and its
-// error says which change was dropped. The resume still re-assembles at the
-// old target - that is understood - and ends done.
-// Mutation: produce_ops.go manifest, drop the PendingLUFS mapping -> error
-// empty -> RED. Mutation: produce_ops.go deliver, drop `j.m.PendingLUFS =
-// lufs` -> no pending marker -> RED.
-func TestLoudnessOnlyCrashReadsInterruptedWithDroppedChange(t *testing.T) {
+// target and the status the project had recorded: after the restart the
+// project reads that status again, and its error says the change MAY not have
+// applied (the publish could have finished an instant before the stop). The
+// resume still re-assembles at the old target - that is understood - ends done
+// and carries neither value on.
+// Mutation: produce_ops.go manifest, drop the PendingStatus mapping -> the
+// project reads interrupted -> RED. Mutation: produce_ops.go manifest, drop the
+// PendingLUFS mapping -> error empty -> RED. Mutation: produce.go launch, drop
+// the clearing of a stale pending value -> the resume still carries it -> RED.
+func TestLoudnessOnlyCrashReadsThePreviousStatusWithMaybeDropped(t *testing.T) {
 	f := newFakePorts(t)
 	p := startedProducer(t, f)
 	s, err := p.create(reelInput(t))
@@ -249,7 +246,7 @@ func TestLoudnessOnlyCrashReadsInterruptedWithDroppedChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	lufs0, outputs0 := m.Settings.LUFS, m.Outputs
-	m.Status, m.PendingLUFS = vproject.StatusRunning, ptr(-18.0)
+	m.Status, m.PendingLUFS, m.PendingStatus = vproject.StatusRunning, ptr(-18.0), vproject.StatusDone
 	if err := m.Save(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -261,25 +258,84 @@ func TestLoudnessOnlyCrashReadsInterruptedWithDroppedChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Status != vproject.StatusInterrupted {
-		t.Fatalf("a crashed loudness-only run reads %q", st.Status)
+	if st.Status != vproject.StatusDone {
+		t.Fatalf("a crashed loudness-only run reads %q, want the %q it had", st.Status, vproject.StatusDone)
 	}
-	if !strings.Contains(st.Error, "loudness") || !strings.Contains(st.Error, "-18") {
-		t.Fatalf("the dropped change is not reported: error %q", st.Error)
+	if !strings.Contains(st.Error, "may not have applied") || !strings.Contains(st.Error, "-18") {
+		t.Fatalf("the maybe-dropped change is not reported: error %q", st.Error)
 	}
 	if st.Outputs != outputs0 {
 		t.Fatalf("outputs %+v", st.Outputs)
 	}
 
+	var seenOnDisk *float64
+	f.normHook = func() { // the resume's own launch has been saved by now
+		if lm, lerr := vproject.Load(dir); lerr == nil {
+			seenOnDisk = lm.PendingLUFS
+		}
+	}
 	if _, err := p2.resume(s.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	waitTerminal(t, p2, s.ID)
+	if seenOnDisk != nil {
+		t.Fatalf("the resume's launch kept the stale pending loudness %v on disk", *seenOnDisk)
+	}
 	m = manifestOf(t, f, s.ID)
-	if m.Status != vproject.StatusDone || m.Error != "" || m.Settings.LUFS != lufs0 {
-		t.Fatalf("after the resume: status %q error %q lufs %v", m.Status, m.Error, m.Settings.LUFS)
+	if m.Status != vproject.StatusDone || m.Error != "" || m.Settings.LUFS != lufs0 || m.PendingStatus != "" {
+		t.Fatalf("after the resume: status %q error %q lufs %v pending %q", m.Status, m.Error, m.Settings.LUFS, m.PendingStatus)
 	}
 	if got := f.normTargets[len(f.normTargets)-1]; got != lufs0 {
 		t.Fatalf("the resume re-assembled at %v LUFS, want the old %v", got, lufs0)
+	}
+}
+
+// A pending marker with no usable status reads interrupted, and a pending
+// loudness outside the range loudness accepts is ignored on load - it is
+// neither reported nor kept.
+// Mutation: produce_ops.go loadProject, drop the validLUFS check -> the
+// out-of-range value is reported as a dropped change -> RED. Mutation:
+// produce_ops.go settledStatus, return true -> a hand-edited status "running"
+// is shown -> RED.
+func TestPendingMarkerWithBadValuesIsIgnored(t *testing.T) {
+	for name, c := range map[string]struct {
+		lufs   float64
+		status string
+		want   string
+		err    bool
+	}{
+		"no status recorded":    {-18, "", vproject.StatusInterrupted, true},
+		"a transient status":    {-18, vproject.StatusRunning, vproject.StatusInterrupted, true},
+		"out-of-range loudness": {-99, vproject.StatusDone, vproject.StatusInterrupted, false},
+		"loudness above range":  {3, vproject.StatusDone, vproject.StatusInterrupted, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakePorts(t)
+			p := startedProducer(t, f)
+			s, err := p.create(reelInput(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitTerminal(t, p, s.ID)
+			dir := filepath.Join(f.home, produceDir, s.ID)
+			m, err := vproject.Load(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.Status, m.PendingLUFS, m.PendingStatus = vproject.StatusRunning, ptr(c.lufs), c.status
+			if err := m.Save(dir); err != nil {
+				t.Fatal(err)
+			}
+			p2 := newProducer(f)
+			p2.start()
+			t.Cleanup(func() { p2.shutdown() })
+			st, err := p2.status(s.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.Status != c.want || (st.Error != "") != c.err {
+				t.Fatalf("status %q error %q", st.Status, st.Error)
+			}
+		})
 	}
 }
