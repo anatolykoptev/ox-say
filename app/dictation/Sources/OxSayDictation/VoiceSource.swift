@@ -1,3 +1,4 @@
+import AVFoundation
 import DictationCore
 import Foundation
 import MainWindowUI
@@ -8,9 +9,12 @@ import MainWindowUI
 @MainActor
 final class VoiceSource {
     private let model: MainWindowModel
+    private let client: StudioClient
     private let session: VoiceLibrarySession
     /// «Описать словами»: the flow and its effects. `running` on it is what holds the version handshake.
     private let designer: VoiceDesigner
+    /// «Взять из файла»: the picked clip and the typed fields while its sheet is up.
+    private var fileAdd: VoiceFileAdd?
     /// Plays the sample through the default output at the system's volume; this class never changes the volume.
     private let player = AudioPlayer()
     /// The menu's voice list and read-aloud checkmarks follow every change of the library.
@@ -21,6 +25,7 @@ final class VoiceSource {
     init(model: MainWindowModel, client: StudioClient, speech: SpeechClient, defaults: UserDefaults,
          recordingRunning: @escaping () -> Bool, designer: VoiceDesigner, changed: @escaping ([String]) -> Void) {
         self.model = model
+        self.client = client
         self.designer = designer
         self.changed = changed
         self.recordingRunning = recordingRunning
@@ -74,6 +79,56 @@ final class VoiceSource {
 
     /// The window closed or hid: a variant that plays is stopped.
     func quietDesign() { designer.quiet() }
+
+    // MARK: take from a file
+
+    /// One step of the file sheet.
+    func file(_ step: VoiceFileAction) {
+        switch step {
+        case .picked(let url): pickFile(url)
+        case .edit(let label, let refText): fileAdd?.edit(label: label, refText: refText); sync()
+        case .add: submitFile()
+        case .escape: if fileAdd?.mayClose != false { fileAdd = nil; sync() }
+        }
+    }
+
+    /// The picked file is measured — its size and, when the local decode manages, its duration — before the sheet
+    /// shows. The app is not sandboxed (the entitlements are apple-events and audio-input only), so the chosen file's
+    /// absolute path reads without a security scope and is what the daemon gets.
+    private func pickFile(_ url: URL) {
+        let path = url.path
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value ?? 0
+        let studioInstalled = model.data.voices.designAvailability == .available
+        Task { @MainActor in
+            let seconds = try? await AVURLAsset(url: url).load(.duration).seconds
+            fileAdd = VoiceFileAdd(fileName: url.lastPathComponent, audioPath: path,
+                                   seconds: seconds?.isFinite == true ? seconds : nil,
+                                   bytes: bytes, ext: url.pathExtension, studioInstalled: studioInstalled)
+            sync()
+        }
+    }
+
+    /// «Добавить»: the model decides whether the form may send; a 400/409 shows the daemon's own sentence in the
+    /// sheet and keeps the input, a save refreshes the library through the session (its sole owner).
+    private func submitFile() {
+        guard var draft = fileAdd, let request = draft.submit(taken: takenNames()) else { sync(); return }
+        fileAdd = draft
+        sync()
+        Task { @MainActor in
+            do {
+                let voice = try await client.addVoice(id: request.id, label: request.label,
+                                                      audioPath: request.audioPath, refText: request.refText,
+                                                      source: "file")
+                fileAdd = nil
+                await session.reload()
+                sync()
+                model.data.notice = DesignForm.savedNotice(name: request.label, shortened: voice.notice != nil)
+            } catch {
+                fileAdd?.refused(StudioError.plain(error))
+                sync()
+            }
+        }
+    }
 
     /// The ids and lower-cased labels the library holds: a label that names one of them is refused by the form.
     private func takenNames() -> Set<String> {
@@ -170,6 +225,7 @@ final class VoiceSource {
         if session.playingID == nil, player.isActivelyPlaying { player.stop() }
         values.design = designer.flow
         values.designOpen = designer.sheetOpen
+        values.file = fileAdd
         if values != model.data.voices { model.data.voices = values }
         if values.voices != previousIDs { changed(values.voices) }
     }

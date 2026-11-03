@@ -33,10 +33,13 @@ public struct VoicesValues: Equatable {
     public var design: VoiceDesignFlow
     public var designOpen: Bool
     public var designAvailability: DesignAvailability
+    /// «Взять из файла»: the picked clip and the typed fields while its sheet is up; nil when it is not.
+    public var file: VoiceFileAdd?
 
     public init(voices: [String], russianVoice: String?, englishVoice: String?, entries: [VoiceEntry] = [],
                 load: VoicesLoad = .loaded, playingID: String? = nil, design: VoiceDesignFlow = VoiceDesignFlow(),
-                designOpen: Bool = false, designAvailability: DesignAvailability = .available) {
+                designOpen: Bool = false, designAvailability: DesignAvailability = .available,
+                file: VoiceFileAdd? = nil) {
         self.voices = voices
         self.russianVoice = russianVoice
         self.englishVoice = englishVoice
@@ -46,6 +49,7 @@ public struct VoicesValues: Equatable {
         self.design = design
         self.designOpen = designOpen
         self.designAvailability = designAvailability
+        self.file = file
     }
 
     /// What a picker row shows for a voice id: the entry's label, the id itself when it names no entry.
@@ -63,6 +67,18 @@ public enum VoiceDesignAction: Equatable {
     /// The form's text as it is typed, so Cancel keeps it.
     case edit(description: String, sentence: String, label: String)
     /// Esc, Cancel, OK on a failure.
+    case escape
+}
+
+/// What the file sheet asks of the app («Взять из файла»). The model decides what each one does (VoiceFileAdd).
+public enum VoiceFileAction: Equatable {
+    /// A file was picked in the open panel; the app measures it (duration, size) before the sheet shows.
+    case picked(URL)
+    /// The form's text as it is typed, so Cancel keeps it.
+    case edit(label: String, refText: String)
+    /// The sheet's «Добавить».
+    case add
+    /// Esc, Cancel or the sheet's close.
     case escape
 }
 
@@ -159,6 +175,9 @@ public struct MainWindowActions {
     /// «Описать словами»: one closure for the sheet's steps (open it, submit the form, next/replay/keep a variant,
     /// answer the replace question, Esc).
     public var voiceDesign: (VoiceDesignAction) -> Void = { _ in }
+    /// «Взять из файла»: one closure for the sheet's steps (a file picked in the open panel, the typed text,
+    /// «Добавить», Esc).
+    public var voiceFile: (VoiceFileAction) -> Void = { _ in }
     /// «Скачать студийный голос»: the app's own studio voice install, with its confirmation.
     public var installStudioVoice: () -> Void = {}
     public var setStartAtLogin: (Bool) -> Void = { _ in }

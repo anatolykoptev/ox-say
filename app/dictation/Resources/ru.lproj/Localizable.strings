@@ -478,6 +478,18 @@
 "design.save_failed.exists" = "Голос с таким именем уже есть.";
 "design.saved" = "Голос «%@» сохранён";
 "design.shortened" = "Запись оказалась длиннее, чем допускает голос, поэтому её сократили.";
+"file.open" = "Взять из файла…";
+"file.sheet.title" = "Голос из файла";
+"file.sheet.file" = "Файл";
+"file.sheet.ref_label" = "Что говорится в записи";
+"file.sheet.ref_placeholder" = "Необязательно — записи достаточно";
+"file.sheet.add" = "Добавить";
+"file.adding" = "Добавляю голос…";
+"file.problem.not_audio" = "Выберите аудиофайл: WAV, MP3, M4A, AIFF, FLAC, CAF, OGG, OPUS, MP4 или MOV.";
+"file.problem.unreadable" = "Файл не читается.";
+"file.problem.too_short" = "Запись слишком короткая — голосу нужны хотя бы 3 секунды речи.";
+"file.problem.too_long" = "Запись слишком длинная — студийный голос учит не больше 30 секунд.";
+"file.warning.long" = "Голос учит только первые 20 секунд.";
 "update.repair.item" = "Восстановить ox-say…";
 "update.finishing.pill" = "Завершаю обновление…";
 

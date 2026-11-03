@@ -232,6 +232,7 @@ final class MainWindowSource {
         a.renameVoice = { [weak self] id, label in self?.voiceSource.rename(id, label) }
         a.deleteVoice = { [weak self] id in self?.voiceSource.delete(id) }
         a.voiceDesign = { [weak self] step in self?.voiceSource.design(step) }
+        a.voiceFile = { [weak self] step in self?.voiceSource.file(step) }
         a.installStudioVoice = { [weak self] in self?.host.installStudioVoice() }
         a.setStartAtLogin = { [weak self] on in
             guard let self else { return }
