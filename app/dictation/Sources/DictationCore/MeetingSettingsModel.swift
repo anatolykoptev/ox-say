@@ -53,9 +53,10 @@ public struct PermissionItem: Equatable, Identifiable {
 
 /// The Permissions rows from what the app read of macOS.
 public enum PermissionModel {
-    public static func items(microphone: PermissionAuth, accessibility: Bool, notifications: PermissionAuth) -> [PermissionItem] {
+    public static func items(microphone: PermissionAuth, accessibility: Bool, notifications: PermissionAuth?) -> [PermissionItem] {
+        // nil: the notification answer has not landed yet. No row, rather than a false "needs attention".
         func state(_ auth: PermissionAuth) -> PermissionState { auth == .authorized ? .allowed : .needsAttention }
-        return [
+        var rows = [
             PermissionItem(id: "mic", titleKey: .permMic, whyKey: .permMicWhy, symbol: "mic.fill", pane: .microphone,
                            state: state(microphone)),
             // No public call answers this one without a prompt: never "allowed" on a guess.
@@ -63,9 +64,12 @@ public enum PermissionModel {
                            pane: .systemAudio, state: .unknown),
             PermissionItem(id: "ax", titleKey: .permAccessibility, whyKey: .permAccessibilityWhy, symbol: "accessibility",
                            pane: .accessibility, state: accessibility ? .allowed : .needsAttention),
-            PermissionItem(id: "notifications", titleKey: .permNotifications, whyKey: .permNotificationsWhy, symbol: "bell.fill",
-                           pane: .notifications, state: state(notifications)),
         ]
+        if let notifications {
+            rows.append(PermissionItem(id: "notifications", titleKey: .permNotifications, whyKey: .permNotificationsWhy,
+                                       symbol: "bell.fill", pane: .notifications, state: state(notifications)))
+        }
+        return rows
     }
 }
 

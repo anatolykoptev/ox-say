@@ -227,8 +227,52 @@ final class MainWindowOpenWiringTests: XCTestCase {
     /// `guard let shown = model.data.details[id]?.info` -> RED.
     func testARestoredMeetingAsksTheReadDecisionAndIsLoaded() throws {
         let refresh = try body(try source("OxSayDictation/MainWindowSource.swift"), of: "private func refreshSelectedDetail() {")
-        XCTAssertTrue(refresh.contains("DetailRead.needed(row: row, shown: model.data.details[id]?.info, failed: model.data.detailError[id] != nil)"))
+        XCTAssertTrue(refresh.contains("DetailRead.needed(row: row, shown: model.data.details[id]?.info, failed: model.data.detailError[id] != nil, loading: model.data.detailLoading.contains(id))"))
         XCTAssertTrue(refresh.contains("loadDetail(id)"))
         XCTAssertFalse(refresh.contains("guard let shown"), "a meeting whose detail was never read is read, not skipped")
+    }
+
+    /// Text-only pin (the observer lives in AppKit glue the shim does not compile); the decision is `ActivationRefreshTests`.
+    /// Mutation: MainWindowSource.windowClosed, delete `removeObserver(activeObserver)` -> RED (a closed window must cost nothing).
+    func testActivationRefreshIsRegisteredOnOpenAndRemovedOnClose() throws {
+        let text = try source("OxSayDictation/MainWindowSource.swift")
+        let opened = try body(text, of: "func windowOpened() {")
+        let closed = try body(text, of: "func windowClosed() {")
+        let observer = try body(text, of: "private func observeActivation() {")
+        let detail = try body(text, of: "private func refreshSelectedDetail() {")
+        let refresh = try body(text, of: "func refresh() {")
+        XCTAssertTrue(opened.contains("observeActivation()"))
+        XCTAssertTrue(observer.contains("didBecomeActiveNotification"))
+        XCTAssertTrue(closed.contains("removeObserver(activeObserver)"))
+        XCTAssertTrue(detail.contains("loading: model.data.detailLoading.contains(id)"))
+        // The activation path goes through the pure decision and the gated refresh, never a read of its own.
+        XCTAssertTrue(observer.contains("ActivationRefresh.shouldRefresh(windowOpen: self.windowOpen, visible: self.visible"))
+        XCTAssertTrue(observer.contains("self.refresh()"))
+        // Text-only pins: the stamp precedes the first read; the pass runs local sections, then the permissions, then the list.
+        let permissions = try body(text, of: "private func readPermissions() {")
+        let stamp = try XCTUnwrap(permissions.range(of: "lastPermissionRead = ProcessInfo.processInfo.systemUptime"))
+        let firstRead = try XCTUnwrap(permissions.range(of: "applyPermissions()"))
+        XCTAssertTrue(stamp.lowerBound < firstRead.lowerBound, "stamped before the first read")
+        XCTAssertTrue(observer.contains("now: ProcessInfo.processInfo.systemUptime"))
+        let local = try XCTUnwrap(refresh.range(of: "loadSimpleSections()"))
+        let perm = try XCTUnwrap(refresh.range(of: "readPermissions()"), "pass reads the permissions")
+        let list = try XCTUnwrap(refresh.range(of: "await service.list()"))
+        let settings = try XCTUnwrap(refresh.range(of: "await reloadSettingsAsync()"))
+        XCTAssertTrue(local.lowerBound < perm.lowerBound, "local sections first")
+        XCTAssertTrue(perm.lowerBound < list.lowerBound && perm.lowerBound < settings.lowerBound,
+                      "a slow daemon must not delay the permission rows")
+        // Text-only pins: the pass never waits for the notification read (a stuck one must not hold the gate), and
+        // one read is in flight at most, cleared when it lands.
+        XCTAssertFalse(refresh.contains("notificationRead"), "no join in refresh")
+        XCTAssertFalse(refresh.contains("await readPermissions()"))
+        XCTAssertFalse(refresh.contains("notifications.value"), "the pass awaits no notification task")
+        XCTAssertTrue(permissions.contains("guard notificationRead == nil else { return }"))
+        XCTAssertTrue(permissions.contains("notificationRead = Task { @MainActor in"))
+        XCTAssertTrue(permissions.contains("notificationRead = nil"))
+        XCTAssertFalse(closed.contains("notificationRead"), "closing the window leaves the read alone")
+        // Text-only: the glue keeps the answer optional (nil until the first read), so the core leaves the row out.
+        XCTAssertTrue(text.contains("private var notificationAuth: PermissionAuth?"))
+        let apply = try body(text, of: "private func applyPermissions() {")
+        XCTAssertTrue(apply.contains("notifications: notificationAuth)"))
     }
 }

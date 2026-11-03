@@ -35,4 +35,51 @@ final class DetailReadTests: XCTestCase {
         XCTAssertFalse(DetailRead.needed(row: row, shown: row, failed: false))
         XCTAssertFalse(DetailRead.needed(row: row, shown: row, failed: true))
     }
+
+    // MARK: #401 — a refresh landing in the first read
+
+    /// The first read of a meeting is in flight (nothing shown yet): a refresh pass must not queue a second one.
+    /// Mutation: DetailRead.needed, `return !failed && !loading` -> `return !failed` -> RED.
+    func testAFirstReadInFlightIsNotQueuedAgain() {
+        XCTAssertFalse(DetailRead.needed(row: row, shown: nil, failed: false, loading: true))
+    }
+
+    /// The restored meeting (a selection that fired no `onChange`) still loads once: nothing shown, nothing loading.
+    func testARestoredSelectionStillLoadsOnce() {
+        XCTAssertTrue(DetailRead.needed(row: row, shown: nil, failed: false, loading: false))
+    }
+
+    /// The normal click path: `onChange` starts the read, then a pass runs while it is in flight, then it lands.
+    func testAClickedMeetingIsReadOnceAcrossARefreshDuringItsRead() {
+        XCTAssertFalse(DetailRead.needed(row: row, shown: nil, failed: false, loading: true), "pass during the read")
+        XCTAssertFalse(DetailRead.needed(row: row, shown: row, failed: false, loading: false), "after it landed")
+    }
+
+    /// A first read that fails while a pass lands must not flicker into a silent retry; after it settled the Retry
+    /// state waits for the user.
+    func testRetryStateDoesNotFlickerWhileTheFirstReadFails() {
+        XCTAssertFalse(DetailRead.needed(row: row, shown: nil, failed: true, loading: true))
+        XCTAssertFalse(DetailRead.needed(row: row, shown: nil, failed: true, loading: false))
+    }
+
+    /// Failed, then the user's Retry is in flight (the error is cleared when it starts, `loading` is set): a pass
+    /// during it queues nothing. When that retry fails too, the error stands and the pass stays quiet.
+    func testTheUsersRetryInFlightIsNotDoubled() {
+        XCTAssertFalse(DetailRead.needed(row: row, shown: nil, failed: false, loading: true))
+    }
+
+    /// A shown detail whose row moved on is reread whether or not a read is loading: the in-flight read may predate
+    /// the move, and `DetailReads` folds the extra request into one rerun, so it is bounded.
+    func testAMovedOnRowIsStillReadWhileAReadIsLoading() {
+        let stale = MeetingInfo(id: "m", title: "Standup", status: .transcribing)
+        XCTAssertTrue(DetailRead.needed(row: row, shown: stale, failed: false, loading: true))
+    }
+
+    /// The pair the source relies on: the extra request during a read is folded, never a second parallel read.
+    func testARequestDuringAReadFoldsIntoOneRerun() throws {
+        var reads = DetailReads()
+        let token = try XCTUnwrap(reads.request("m"))
+        XCTAssertNil(reads.request("m"))
+        XCTAssertEqual(reads.finish("m", token: token), DetailReads.Outcome(apply: true, rerun: true))
+    }
 }

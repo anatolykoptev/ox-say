@@ -216,10 +216,11 @@ public struct DetailReads: Equatable {
 /// Whether a polling pass reads the selected meeting's detail. A selection that no `onChange` fired for (a meeting
 /// restored at launch) was never read, so it is read now; as before, a row that moved on from the shown detail
 /// (processing finished, the notes arrived, the title changed) is read again. A failed read with nothing shown
-/// waits for the user's Retry — a polling pass must not retry behind it.
+/// waits for the user's Retry — a polling pass must not retry behind it. Nor does it queue a second read while the
+/// first one is still in flight (`loading`): that read's answer is what the pass would have fetched.
 public enum DetailRead {
-    public static func needed(row: MeetingInfo, shown: MeetingInfo?, failed: Bool) -> Bool {
-        guard let shown else { return !failed }
+    public static func needed(row: MeetingInfo, shown: MeetingInfo?, failed: Bool, loading: Bool = false) -> Bool {
+        guard let shown else { return !failed && !loading }
         return shown.status != row.status || shown.title != row.title
     }
 }
