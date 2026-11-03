@@ -249,7 +249,7 @@ final class MainWindowOpenWiringTests: XCTestCase {
         XCTAssertTrue(observer.contains("ActivationRefresh.shouldRefresh(windowOpen: self.windowOpen, visible: self.visible"))
         XCTAssertTrue(observer.contains("self.refresh()"))
         // Text-only pins: the stamp precedes the first read; the pass runs local sections, then the permissions, then the list.
-        let permissions = try body(text, of: "private func readPermissions() -> Task<Void, Never> {")
+        let permissions = try body(text, of: "private func readPermissions() {")
         let stamp = try XCTUnwrap(permissions.range(of: "lastPermissionRead = ProcessInfo.processInfo.systemUptime"))
         let firstRead = try XCTUnwrap(permissions.range(of: "applyPermissions()"))
         XCTAssertTrue(stamp.lowerBound < firstRead.lowerBound, "stamped before the first read")
@@ -261,14 +261,18 @@ final class MainWindowOpenWiringTests: XCTestCase {
         XCTAssertTrue(local.lowerBound < perm.lowerBound, "local sections first")
         XCTAssertTrue(perm.lowerBound < list.lowerBound && perm.lowerBound < settings.lowerBound,
                       "a slow daemon must not delay the permission rows")
-        // The notification read is a child task joined at the end, never awaited before the list.
-        XCTAssertFalse(refresh.contains("await readPermissions()"), "a stuck notification read must not hold the pass")
-        XCTAssertTrue(permissions.contains("return Task { @MainActor in"))
+        // Text-only pins: the pass never waits for the notification read (a stuck one must not hold the gate), and
+        // one read is in flight at most, cleared when it lands.
+        XCTAssertFalse(refresh.contains("notificationRead"), "no join in refresh")
+        XCTAssertFalse(refresh.contains("await readPermissions()"))
+        XCTAssertFalse(refresh.contains("notifications.value"), "the pass awaits no notification task")
+        XCTAssertTrue(permissions.contains("guard notificationRead == nil else { return }"))
+        XCTAssertTrue(permissions.contains("notificationRead = Task { @MainActor in"))
+        XCTAssertTrue(permissions.contains("notificationRead = nil"))
+        XCTAssertFalse(closed.contains("notificationRead"), "closing the window leaves the read alone")
         // Text-only: the glue keeps the answer optional (nil until the first read), so the core leaves the row out.
         XCTAssertTrue(text.contains("private var notificationAuth: PermissionAuth?"))
         let apply = try body(text, of: "private func applyPermissions() {")
         XCTAssertTrue(apply.contains("notifications: notificationAuth)"))
-        let join = try XCTUnwrap(refresh.range(of: "await notifications.value"))
-        XCTAssertTrue(join.lowerBound > list.lowerBound && join.lowerBound > settings.lowerBound, "joined at the end of the pass")
     }
 }

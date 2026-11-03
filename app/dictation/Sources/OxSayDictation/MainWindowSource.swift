@@ -50,6 +50,8 @@ final class MainWindowSource {
     private var lastPermissionRead: TimeInterval?
     /// The last notification answer; stands until the next read lands (nil until the first one: the row stays out meanwhile).
     private var notificationAuth: PermissionAuth?
+    /// The notification read in flight, if any; cleared when it lands.
+    private var notificationRead: Task<Void, Never>?
     /// Open (shown, hidden or covered) until the window is closed. A hidden window keeps its audio playing.
     private var windowOpen = false
     private var searchTimer: Task<Void, Never>?
@@ -221,10 +223,10 @@ final class MainWindowSource {
             repeat {
                 syncRecording()
                 loadSimpleSections()
-                // The permission rows are read before any daemon call (microphone and Accessibility at once; the
-                // notification answer joins when it lands, beside `status`), so a slow daemon never delays them and a
-                // stuck notification read never holds back the rest of the pass.
-                let notifications = readPermissions()
+                // The permission rows are read before any daemon call (microphone and Accessibility at once). The
+                // notification answer merges when it lands; the pass never waits for it, so a stuck read holds
+                // nothing back, least of all the gate.
+                readPermissions()
                 // The daemon status is read beside the list, not before it: a hung /status must not hold back the
                 // list read, whose answer ("unreachable" included) is what the window shows. It is awaited at the
                 // end of the pass, so passes never overlap it.
@@ -242,7 +244,6 @@ final class MainWindowSource {
                 await reloadSettingsAsync()
                 refreshSelectedDetail()
                 await status.value
-                await notifications.value
             } while gate.finish()
             schedulePolling()
         }
@@ -301,17 +302,20 @@ final class MainWindowSource {
             fullName: NSFullUserName())
     }
 
-    /// Stamps, sets the microphone and Accessibility rows at once, and starts the notification read as a child task
-    /// (returned, to be joined at the end of the pass). Until it lands the last pass's notification value stands.
-    private func readPermissions() -> Task<Void, Never> {
+    /// Stamps and sets the microphone and Accessibility rows at once, and starts the notification read unless one is
+    /// already running. The pass does not wait for it; the last answer stands until it lands. One read in flight:
+    /// a stuck read blocks nothing, two reads cannot overlap, and a newer answer is never overwritten by an older one.
+    private func readPermissions() {
         // Stamped before the first read. A toggle that lands after the last read is not seen by this read; the gap is
         // about one second after it, and the next poll or activation heals that.
         lastPermissionRead = ProcessInfo.processInfo.systemUptime
         applyPermissions()
-        return Task { @MainActor in
+        guard notificationRead == nil else { return }
+        notificationRead = Task { @MainActor in
             let center = await UNUserNotificationCenter.current().notificationSettings()
             notificationAuth = (center.authorizationStatus == .authorized || center.authorizationStatus == .provisional)
                 ? .authorized : (center.authorizationStatus == .notDetermined ? .notDetermined : .denied)
+            notificationRead = nil
             applyPermissions()
         }
     }
