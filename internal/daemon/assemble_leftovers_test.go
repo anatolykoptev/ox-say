@@ -107,8 +107,8 @@ func TestMixedRateErrorNamesTheChunk(t *testing.T) {
 // removed, the user's file stays byte for byte, and no temp is left.
 // Mutation: produce_assemble.go placeStaged, `linkFile(s.tmp, s.dest)` ->
 // `renameFile(s.tmp, s.dest)` (the pre-check is all there is) -> the user's file
-// is replaced -> RED. Mutation: removeOutputs, drop the `i >= k &&
-// !replaceable` guard -> the user's file is deleted with the set -> RED.
+// is replaced -> RED. Mutation: undoBurst, remove the destination also for
+// i >= placed -> the user's file is deleted with the set -> RED.
 func TestPublishNeverClobbersAFileThatAppearsMeanwhile(t *testing.T) {
 	for _, ext := range outputExts {
 		t.Run(ext, func(t *testing.T) {

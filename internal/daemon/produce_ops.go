@@ -342,6 +342,11 @@ func (p *producer) loadProject(id string) (*job, error) {
 	if m.ID != id {
 		return nil, fmt.Errorf("project %s: the manifest belongs to another project", id)
 	}
+	if m.PendingLUFS != nil && validLUFS(*m.PendingLUFS) != nil {
+		// A hand-edited or damaged value: ignored, never reported or applied.
+		p.log.Warn("produce: ignoring an out-of-range pending loudness", slog.String("id", id))
+		m.PendingLUFS, m.PendingStatus = nil, ""
+	}
 	j := &job{dir: dir, m: m, regen: map[int]int{}}
 	j.allowBattery.Store(m.Settings.AllowBattery)
 	return j, nil
@@ -509,11 +514,14 @@ func (p *producer) deliver(j *job, es []deliveryEntry, lufs *float64) (vproject.
 			// Loudness-only: the new target is carried on the job and persisted
 			// only once the new file is published; prevStatus is what the
 			// project read as (a stale transient status reads as interrupted).
+			// The manifest copy goes to disk at launch, so a daemon that stops
+			// mid-run can still say which change did not apply.
 			j.pendingLUFS, j.prevStatus = lufs, j.m.Status
 			switch j.prevStatus {
 			case vproject.StatusRunning, vproject.StatusWaitingForDictation, vproject.StatusPausedOnBattery:
 				j.prevStatus = vproject.StatusInterrupted
 			}
+			j.m.PendingLUFS, j.m.PendingStatus = lufs, j.prevStatus
 		} else {
 			j.m.Settings.LUFS = *lufs
 		}
@@ -761,9 +769,30 @@ func (p *producer) manifest(id string) (*vproject.Manifest, error) {
 	}
 	switch j.m.Status {
 	case vproject.StatusRunning, vproject.StatusWaitingForDictation, vproject.StatusPausedOnBattery:
+		// A transient status on disk means the daemon is gone. A loudness-only
+		// run it was in the middle of never published, so the change it
+		// carried may not have applied - say so, not just "interrupted".
 		j.m.Status = vproject.StatusInterrupted
+		if j.m.PendingLUFS != nil {
+			// The project keeps the status it had at launch (its file and
+			// target are what that status describes) when that is a settled
+			// one; anything else reads as interrupted.
+			if settledStatus(j.m.PendingStatus) {
+				j.m.Status = j.m.PendingStatus
+			}
+			j.m.Error = loudnessMaybeDropped(*j.m.PendingLUFS)
+		}
 	}
 	return j.m, nil
+}
+
+// settledStatus reports whether s is a status a finished run leaves.
+func settledStatus(s string) bool {
+	switch s {
+	case vproject.StatusDone, vproject.StatusReview, vproject.StatusFailed, vproject.StatusCancelled, vproject.StatusInterrupted:
+		return true
+	}
+	return false
 }
 
 // chunkDetailOut is the full view of one chunk: its takes with file paths

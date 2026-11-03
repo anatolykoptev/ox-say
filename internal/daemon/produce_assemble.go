@@ -8,11 +8,14 @@ import (
 	"io/fs"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/anatolykoptev/ox-say/internal/pcm"
 	"github.com/anatolykoptev/ox-say/internal/stt"
@@ -45,12 +48,13 @@ var outputExts = []string{".wav", ".srt", ".vtt", ".words.json", ".manifest.json
 
 var errDiskFull = errors.New("the disk is full: free some space, then resume the project")
 
-// errOutputsRemoved is the plain-words end of a publish that failed after it
-// had begun replacing the outputs: none are kept, rather than a mixed set.
-var errOutputsRemoved = errors.New("the output files could not all be put in place, so none were kept; assemble the project again")
+// errOutputsBroken is the plain-words end of a publish whose rollback could
+// not put the whole previous set back. The sentence is all a person is shown;
+// the exact file names and causes go to the log (publish).
+var errOutputsBroken = errors.New("the output files could not all be put in place, and the previous files could not all be restored; the previous version is kept beside the files")
 
-// errOutputsKept is the plain-words end of a publish whose very first rename
-// failed: nothing was replaced, so the previous set is still whole.
+// errOutputsKept is the plain-words end of a publish whose burst failed but
+// whose rollback left the previous set whole: nothing a reader sees changed.
 var errOutputsKept = errors.New("the output files could not be put in place; the previous files were kept")
 
 // syncOutputDir makes the renames of one publish durable; a var so a test can
@@ -78,7 +82,8 @@ var renameFile = os.Rename
 // links.
 var linkFile = os.Link
 
-// removeFile is os.Remove for the temp left after a link; a var so a test can make it fail.
+// removeFile is os.Remove for the temp left after a link, a file a rollback
+// takes out and a backup; a var so a test can make it fail.
 var removeFile = os.Remove
 
 // outputStem is the common prefix of the five outputs of outPath, which must
@@ -342,21 +347,38 @@ func withNote(notes []string, note string, want bool) []string {
 }
 
 // staged is a file written beside its destination, not yet renamed to it.
-type staged struct{ tmp, dest string }
+// id is the staged file's identity (device and inode), taken once it is fully
+// written: a rename or a link keeps it, so after the burst the file at dest is
+// the burst's own exactly when it is the same file as id.
+type staged struct {
+	tmp, dest string
+	id        os.FileInfo
+}
 
 // publish puts the five outputs in place as one set. It first STAGES all of
 // them - every sibling as an fsynced temp beside its destination, the
 // normalised WAV moved or copied to a temp beside its destination - so a full
 // disk, a permission error or a cross-volume copy fails here, with the previous
-// set untouched and the staged temps removed. Only then does it rename the
-// staged set into place, the WAV last. If a rename in that burst fails, the
-// whole output set (new and old) is removed rather than left mixed. The job's
-// manifest records chunk times and outputs only when everything succeeded.
+// set untouched and the staged temps removed. Then it BACKS UP the previous
+// set: each file the burst may replace gets a second name, ".<name>.prev-<id>",
+// by hard link (a copy where the volume has none); the old file itself never
+// moves. Only then does it place the staged set, the WAV last: a replaceable
+// name by an atomic rename over the old file, a new name by link(2), which
+// refuses to clobber. A published name is therefore never absent. If a place
+// fails, undoBurst renames the backups back over what the burst placed and
+// removes what it created, so the folder holds the whole previous set again -
+// never a mixed one. On success the directory is synced first and the backups,
+// this publish's and any left by a crashed one, go last: new data durable,
+// then old data gone. The job's manifest records chunk times and outputs only
+// when everything succeeded, and is saved at once.
 func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.Manifest, owned map[string]bool) error {
 	if err := os.MkdirAll(filepath.Dir(stem), outDirMode); err != nil {
 		return err
 	}
 	sweepOutputTemps(stem, tempSweepMinAge)
+	// Backups a crashed publish left: the only copy of the old set may be
+	// among them, so they stay until this publish has succeeded.
+	stale := listBackups(stem)
 	finalizeExport(j, m)
 	sum, err := fileSHA(norm)
 	if err != nil {
@@ -369,6 +391,12 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 		return err
 	}
 	replaceable := func(dest string) bool { return m.Settings.Overwrite || owned[dest] }
+	backups, err := backupOutputs(set, replaceable)
+	if err != nil {
+		// Nothing was placed and no old file moved: drop what this call made.
+		undoBurst(p.log, set, backups, 0)
+		return fmt.Errorf("%w: %v", errOutputsKept, err)
+	}
 	for k, s := range set {
 		left, err := placeStaged(s, replaceable(s.dest))
 		if left != nil {
@@ -376,22 +404,20 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 				slog.String("file", filepath.Base(s.tmp)), slog.Any("error", errors.Unwrap(left)))
 		}
 		if err != nil {
-			if k == 0 {
-				// Nothing was replaced yet: drop the staged temps only and keep
-				// the previous good set (#154.8).
-				for _, st := range set {
-					_ = os.Remove(st.tmp)
-				}
-				if errors.Is(err, fs.ErrExist) {
+			problems := undoBurst(p.log, set, backups, k)
+			if len(problems) > 0 {
+				// The exact names are for the log; the person is shown the sentence.
+				p.log.Error("produce: the previous output files could not all be restored",
+					slog.String("job", j.m.ID), slog.Any("error", err), slog.Any("problems", problems))
+				return errOutputsBroken
+			}
+			if errors.Is(err, fs.ErrExist) {
+				if k == 0 {
 					return &requestError{fmt.Sprintf("%s appeared while the files were being written and was left alone; choose another output name or set overwrite", filepath.Base(s.dest))}
 				}
-				return fmt.Errorf("%w: %v", errOutputsKept, err)
+				return fmt.Errorf("%w: %s appeared while the files were being written and was left alone", errOutputsKept, filepath.Base(s.dest))
 			}
-			removeOutputs(set, k, replaceable)
-			if errors.Is(err, fs.ErrExist) {
-				return fmt.Errorf("%w: %s appeared while the files were being written and was left alone", errOutputsRemoved, filepath.Base(s.dest))
-			}
-			return fmt.Errorf("%w: %v", errOutputsRemoved, err)
+			return fmt.Errorf("%w: %v", errOutputsKept, err)
 		}
 	}
 	if err := syncOutputDir(filepath.Dir(stem)); err != nil {
@@ -404,11 +430,23 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 	j.m.Outputs = m.Outputs
 	// The loudness the published file was normalised to is the manifest's
 	// target: a pending loudness-only change is persisted only now.
-	j.m.Settings.LUFS = m.Settings.LUFS
+	j.m.Settings.LUFS, j.m.PendingLUFS, j.m.PendingStatus = m.Settings.LUFS, nil, ""
 	j.m.Progress.ElapsedS, j.m.Progress.ETAS = m.Progress.ElapsedS, 0
 	j.elapsedS = m.Progress.ElapsedS
 	j.m.Notes = withNote(j.m.Notes, vproject.NoteLimitedLoudness, tl.limited)
+	// Saved at once: a daemon that dies between the burst and run()'s save
+	// must not leave a manifest that names the old files and a pending change
+	// that already applied.
+	if err := j.m.Save(j.dir); err != nil {
+		p.log.Warn("produce: cannot save the manifest after publishing", slog.String("job", j.m.ID), slog.Any("error", err))
+	}
 	p.mu.Unlock()
+	for _, b := range append(stale, backupPaths(backups)...) {
+		if err := removeFile(b); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			p.log.Warn("produce: cannot remove a backup of the previous output; it will be removed by the next publish",
+				slog.String("file", filepath.Base(b)), slog.Any("error", err))
+		}
+	}
 	return nil
 }
 
@@ -416,7 +454,9 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 // stem: the staged temps of its five outputs (".reel.srt.tmp-123") that nobody
 // wrote to for minAge. It looks only at the names this project's outputs would
 // have, in the output directory itself; the files are the user's, so nothing
-// else there is touched.
+// else there is touched. The backups of a publish (".prev-") are not temps and
+// are never matched here: a crash can leave the only copy of the old set among
+// them (see backupOutputs).
 func sweepOutputTemps(stem string, minAge time.Duration) {
 	dir, base := filepath.Split(stem)
 	entries, _ := os.ReadDir(dir)
@@ -437,11 +477,14 @@ func sweepOutputTemps(stem string, minAge time.Duration) {
 // finalizeExport sets on the clone that becomes the .manifest.json export what
 // the project will read once this assembly is over: the final status, the
 // elapsed time and no ETA (#154.6). run() adopts the same elapsed value.
+// The export never records a pending loudness change: it is written beside
+// the file the change either produced or did not.
 func finalizeExport(j *job, m *vproject.Manifest) {
 	m.Status, m.Error = vproject.StatusDone, ""
 	if m.AnyReview() {
 		m.Status = vproject.StatusReview
 	}
+	m.PendingLUFS = nil
 	m.Progress.ETAS = 0
 	if !j.started.IsZero() {
 		m.Progress.ElapsedS = round2(time.Since(j.started).Seconds())
@@ -475,13 +518,19 @@ func stageOutputs(norm string, tl timeline, m *vproject.Manifest) (set []staged,
 		if err != nil {
 			return set, err
 		}
-		set = append(set, staged{tmp, f.dest})
+		set = append(set, staged{tmp: tmp, dest: f.dest})
 	}
 	wav, err := stageWAV(norm, m.Outputs.WAV)
 	if err != nil {
 		return set, err
 	}
-	return append(set, staged{wav, m.Outputs.WAV}), nil
+	set = append(set, staged{tmp: wav, dest: m.Outputs.WAV})
+	for i := range set {
+		if set[i].id, err = os.Lstat(set[i].tmp); err != nil {
+			return set, err
+		}
+	}
+	return set, nil
 }
 
 // stageWAV moves the normalised file to a temp name beside dest (a rename on
@@ -536,21 +585,185 @@ func placeStaged(s staged, replace bool) (leftover, err error) {
 	}
 }
 
-// removeOutputs undoes a burst that failed at set[k]: it deletes what the burst
-// placed (set[:k]), the previous files it was about to replace, and every
-// staged temp. A destination the project may not replace and did not place -
-// a file that appeared there, or the one that refused the link - is the
-// user's and stays; so does any directory.
-func removeOutputs(set []staged, k int, replaceable func(dest string) bool) {
-	for i, s := range set {
-		_ = os.Remove(s.tmp)
-		if i >= k && !replaceable(s.dest) {
-			continue
-		}
-		if st, err := os.Lstat(s.dest); err == nil && !st.IsDir() {
-			_ = os.Remove(s.dest)
+// backupMark marks the backup of an output the burst may replace. It is not
+// TempMark on purpose: every sweep of temps (sweepOutputTemps, a project's
+// SweepStaleTemp) matches TempMark, and a backup must outlive a crash - it can
+// be the only copy of the old file - until a publish has succeeded.
+const backupMark = ".prev-"
+
+// backupPrefix is the start of the backup names of the output called base,
+// cut on a rune boundary so the finished name fits a file name.
+func backupPrefix(base string) string {
+	room := 255 - len(".") - len(backupMark) - 20
+	for len(base) > room {
+		_, n := utf8.DecodeLastRuneInString(base)
+		base = base[:len(base)-n]
+	}
+	return "." + base + backupMark
+}
+
+// listBackups are the backups of the five outputs of stem that sit in its
+// directory: the leftovers of a publish that did not finish (or whose cleanup
+// did not). Regular files only.
+func listBackups(stem string) []string {
+	dir, base := filepath.Split(stem)
+	if dir == "" {
+		dir = "."
+	}
+	entries, _ := os.ReadDir(dir)
+	var out []string
+	for _, ext := range outputExts {
+		prefix := backupPrefix(base + ext)
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), prefix) && e.Type().IsRegular() {
+				out = append(out, filepath.Join(dir, e.Name()))
+			}
 		}
 	}
+	return out
+}
+
+func backupPaths(backups map[string]string) []string {
+	out := make([]string, 0, len(backups))
+	for _, b := range backups {
+		out = append(out, b)
+	}
+	return out
+}
+
+// backupOutputs gives every regular file the burst may replace a second name
+// beside it, by hard link, so a failed burst can rename it back over the file
+// the burst put there. The old file never moves: until the burst renames over
+// it, the published name holds exactly what it held. A volume without hard
+// links gets a copy (same bytes, mode and mtime) instead. A name nothing sits
+// at, a directory and a symlink are left alone - there is nothing of ours to
+// keep. dest -> backup. On an error the backups made so far are returned, so
+// the caller can drop them.
+func backupOutputs(set []staged, replaceable func(dest string) bool) (map[string]string, error) {
+	backups := map[string]string{}
+	for _, s := range set {
+		if !replaceable(s.dest) {
+			continue
+		}
+		st, err := os.Lstat(s.dest)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			continue
+		case err != nil:
+			return backups, err
+		case !st.Mode().IsRegular():
+			continue
+		}
+		b, err := backupFile(s.dest, st)
+		if err != nil {
+			return backups, err
+		}
+		backups[s.dest] = b
+	}
+	return backups, nil
+}
+
+// backupFile hard-links src to a fresh backup name, or copies it where the
+// link is refused.
+func backupFile(src string, st os.FileInfo) (string, error) {
+	prefix := backupPrefix(filepath.Base(src))
+	for range 8 {
+		b := filepath.Join(filepath.Dir(src), prefix+strconv.FormatUint(rand.Uint64N(1<<40), 36))
+		err := linkFile(src, b)
+		switch {
+		case err == nil:
+			return b, nil
+		case errors.Is(err, fs.ErrExist):
+			continue
+		default:
+			return copyBackup(src, st, prefix)
+		}
+	}
+	return copyBackup(src, st, prefix)
+}
+
+// copyBackup copies src to a new file named prefix + random beside it, with
+// the bytes, mode and mtime of src, fsynced.
+func copyBackup(src string, st os.FileInfo, prefix string) (string, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.CreateTemp(filepath.Dir(src), prefix+"*")
+	if err != nil {
+		return "", err
+	}
+	b := out.Name()
+	_, err = io.Copy(out, in)
+	if err == nil {
+		err = out.Chmod(st.Mode().Perm())
+	}
+	if err == nil {
+		err = out.Sync()
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chtimes(b, st.ModTime(), st.ModTime())
+	}
+	if err != nil {
+		_ = os.Remove(b)
+		return "", err
+	}
+	return b, nil
+}
+
+// undoBurst puts the published names back the way they were before a burst
+// that placed set[:placed] and then failed. The staged temps that were never
+// placed go. Each placed name, last first, is restored by renaming its backup
+// back over it - atomically replacing the file the burst put there - or, where
+// nothing was backed up, the file the burst created is removed. Both only
+// while the file at the name is the burst's own (same file as the staged one):
+// whatever else sits there appeared meanwhile and belongs to someone else, so
+// it is left, and the miss is a problem. When no problem is left the set is
+// whole again and the remaining backups go; otherwise they all stay, because
+// one of them may be the only copy of an old file. It returns the problems in
+// plain words, for the log.
+func undoBurst(log *slog.Logger, set []staged, backups map[string]string, placed int) (problems []string) {
+	for i := placed; i < len(set); i++ {
+		_ = os.Remove(set[i].tmp)
+	}
+	left := map[string]string{} // backups not consumed
+	for d, b := range backups {
+		left[d] = b
+	}
+	for i := placed - 1; i >= 0; i-- {
+		s := set[i]
+		base := filepath.Base(s.dest)
+		cur, lerr := os.Lstat(s.dest)
+		foreign := lerr == nil && !os.SameFile(s.id, cur)
+		b, hasBackup := backups[s.dest]
+		switch {
+		case foreign:
+			problems = append(problems, fmt.Sprintf("%s was replaced by another program during the publish and was left alone", base))
+		case hasBackup:
+			if err := renameFile(b, s.dest); err != nil {
+				problems = append(problems, fmt.Sprintf("the previous %s could not be put back (%v); it is kept as %s", base, err, filepath.Base(b)))
+			} else {
+				delete(left, s.dest)
+			}
+		case lerr == nil:
+			if err := removeFile(s.dest); err != nil {
+				problems = append(problems, fmt.Sprintf("the new %s could not be removed (%v)", base, err))
+			}
+		}
+	}
+	if len(problems) == 0 {
+		for _, b := range left {
+			if err := removeFile(b); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				log.Warn("produce: cannot remove a backup of the previous output; it will be removed by the next publish",
+					slog.String("file", filepath.Base(b)), slog.Any("error", err))
+			}
+		}
+	}
+	return problems
 }
 
 // moveFile renames src to dst; across volumes (EXDEV) it copies beside dst and
