@@ -40,7 +40,9 @@ public enum PhraseScript {
     /// empty ones dropped — vscript paragraphs(). The editor is the phrase
     /// editor; there are no per-phrase controls.
     public static func phrases(of script: String) -> [String] {
-        let lines = script.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        var src = script
+        if src.unicodeScalars.first == "\u{FEFF}" { src = String(src.unicodeScalars.dropFirst()) } // vscript Parse: strings.TrimPrefix(src, utf8BOM)
+        let lines = src.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         var phrases: [String] = []
         var current: [String] = []
         func flush() {
@@ -110,7 +112,7 @@ public enum PhraseScript {
     /// is synced exactly when this is empty: a detail fetch that failed leaves
     /// its index here and is retried on the next status poll.
     public static func missingChunks(of job: ProduceJob, paragraphOf: [Int: Int]) -> [Int] {
-        (0..<job.partsTotal).filter { paragraphOf[$0] == nil }
+        (0..<max(0, job.partsTotal)).filter { paragraphOf[$0] == nil }
     }
 
     /// "Озвучить" may be pressed: the text fits, the studio voice can run, and

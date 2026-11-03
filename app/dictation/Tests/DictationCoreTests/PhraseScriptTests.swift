@@ -36,6 +36,19 @@ final class PhraseScriptTests: XCTestCase {
         XCTAssertEqual(PhraseScript.phrases(of: " \n\n \t \n"), [])
     }
 
+    /// The daemon strips a byte-order mark before paragraphing (vscript
+    /// `Parse`: `strings.TrimPrefix(src, utf8BOM)`). An unstripped one makes a
+    /// phrase where the daemon numbers no paragraph — a lone BOM "line" ahead
+    /// of a blank line would emit, shifting every later phrase off its
+    /// paragraph index. Mutation: phrases(of:) without the BOM strip -> RED.
+    func testALeadingBOMIsNotAPhrase() {
+        XCTAssertEqual(PhraseScript.phrases(of: "\u{FEFF}Первая.\n\nВторая."), ["Первая.", "Вторая."])
+        XCTAssertEqual(PhraseScript.phrases(of: "\u{FEFF}\n\nВторая."), ["Вторая."],
+                       "a lone BOM is not the first paragraph")
+        XCTAssertEqual(PhraseScript.phrases(of: "\u{FEFF}"), [])
+        XCTAssertEqual(PhraseScript.title(of: "\u{FEFF}Заголовок."), "Заголовок.")
+    }
+
     /// The daemon counts only paragraphs that produce chunks: one of nothing
     /// but [pause …] emits none and does not take a paragraph number.
     /// Mutation: `emits` answers true for a pause-only paragraph -> RED here.
@@ -162,6 +175,14 @@ final class PhraseScriptTests: XCTestCase {
         XCTAssertEqual(PhraseScript.missingChunks(of: job, paragraphOf: [7: 0]), [0, 1])
         let empty = ProduceJob(id: "j", title: "t", status: .done, partsTotal: 0)
         XCTAssertEqual(PhraseScript.missingChunks(of: empty, paragraphOf: [:]), [])
+    }
+
+    /// chunks_total is the daemon's own int: a bogus negative must not trap
+    /// the range — `0..<(-1)` is a Swift fatal error, not an empty list.
+    /// Mutation: missingChunks without `max(0, …)` -> the runner traps, RED.
+    func testMissingChunksClampsANegativeTotal() {
+        let job = ProduceJob(id: "j", title: "t", status: .running, partsTotal: -3)
+        XCTAssertEqual(PhraseScript.missingChunks(of: job, paragraphOf: [:]), [])
     }
 
     // MARK: F3 — the export's destination rule

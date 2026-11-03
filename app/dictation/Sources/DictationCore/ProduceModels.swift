@@ -322,7 +322,7 @@ public enum ProduceText {
 
     public static func waitingForServiceText(text: Text = { $0.text }) -> String { text(.produceWaitingService) }
 
-    /// The menu's progress row: `“Title” — 3 of 10 parts`, or why it is not moving.
+    /// The menu's progress row: `“Title” — 3 of 10 done`, or why it is not moving.
     /// `serviceWaiting`: the last poll got no answer, so the numbers may be old.
     public static func progressRow(_ job: ProduceJob, serviceWaiting: Bool = false, text: Text = { $0.text }) -> String {
         let name = job.title.isEmpty ? text(.produceDefaultName) : "“\(job.title)”"
@@ -351,9 +351,14 @@ public enum ProduceText {
     }
 
     /// The alert for a job that ended; nil for one that was stopped on purpose. A failure's own reason is the daemon's text.
+    /// A done or review job still carrying an error is not a saved result: a loudness-only re-assembly that fails
+    /// keeps the old status and reports why (internal/daemon/produce.go `outcome`) — the file stayed as it was.
     public static func finishAlert(_ job: ProduceJob, text: Text = { $0.text }) -> (title: String, text: String)? {
         switch job.status {
         case .done, .review:
+            if job.error != nil {
+                return (text(.produceFinishFailedTitle), job.error ?? text(.produceFinishFailedText))
+            }
             let file = job.outputPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? text(.produceFinishDefaultFile)
             var saved = String(format: text(.produceFinishSaved), file)
             if job.status == .review {

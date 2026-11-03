@@ -621,7 +621,7 @@
 "speak.untitled" = "Озвучка";
 "speak.progress_title" = "Озвучка «%@»";
 "speak.progress_starting" = "запускаю…";
-"speak.progress_parts" = "%lld из %lld частей";
+"speak.progress_parts" = "Готово: %lld из %lld";
 "speak.progress_paused_battery" = "пауза — питание от батареи";
 "speak.progress_paused_dictation" = "пауза — идёт диктовка";
 "speak.progress_waiting" = "жду ответа сервиса ox-say…";

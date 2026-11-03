@@ -498,7 +498,7 @@
 "studio.progress.failed" = "failed";
 "studio.progress.stopped" = "stopped";
 "studio.progress.interrupted" = "interrupted";
-"studio.progress.parts" = "%1$@ of %2$@ parts";
+"studio.progress.parts" = "%1$@ of %2$@ done";
 "studio.progress.starting" = "starting…";
 "studio.progress.waiting_service" = "waiting for the ox-say service…";
 "studio.progress.listen_one" = "1 part needs a listen";
@@ -627,7 +627,7 @@
 "speak.untitled" = "Voiceover";
 "speak.progress_title" = "Voiceover “%@”";
 "speak.progress_starting" = "starting…";
-"speak.progress_parts" = "%lld of %lld parts";
+"speak.progress_parts" = "%lld of %lld done";
 "speak.progress_paused_battery" = "paused — on battery power";
 "speak.progress_paused_dictation" = "paused — you are dictating";
 "speak.progress_waiting" = "waiting for the ox-say service…";

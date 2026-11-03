@@ -25,7 +25,7 @@ public enum SpeakText {
     }
 
     /// The running job's progress row (ProduceText.progressRow's rules):
-    /// `«Title» — 3 of 10 parts`, or why it is not moving. `serviceWaiting`
+    /// `«Title» — 3 of 10 done`, or why it is not moving. `serviceWaiting`
     /// says the last poll got no answer, so the numbers may be old.
     public static func progressRow(_ job: ProduceJob, serviceWaiting: Bool, _ t: (L10nKey) -> String) -> String {
         let name = job.title.isEmpty ? t(.speakUntitled) : String(format: t(.speakProgressTitle), job.title)
@@ -53,26 +53,39 @@ public enum SpeakText {
     }
 
     /// The line for a job that ended (ProduceText.finishAlert's text); nil
-    /// while it runs or was stopped on purpose. The daemon's own error text
-    /// passes through verbatim behind a localized lead-in — it is the
-    /// daemon's message, not this window's.
+    /// while it runs or was stopped on purpose. A done or review job still
+    /// carrying an error is not a saved result: a loudness-only re-assembly
+    /// that fails keeps the old status and reports why (the daemon's
+    /// `outcome`), so the file stayed as it was and the line says the change
+    /// did not happen.
     public static func finishText(_ job: ProduceJob, _ t: (L10nKey) -> String) -> String? {
         switch job.status {
         case .done:
+            if job.error != nil { return failureText(job, t) }
             let file = job.outputPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? t(.speakUntitled)
             return String(format: t(.speakFinishSaved), file)
         case .review:
+            if job.error != nil { return failureText(job, t) }
             let file = job.outputPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? t(.speakUntitled)
             return job.partsToReview == 1
                 ? String(format: t(.speakFinishReviewOne), file)
                 : String(format: t(.speakFinishReviewMany), file, job.partsToReview)
         case .failed:
-            return job.error.map { String(format: t(.speakServiceAnswered), $0) } ?? t(.speakFinishFailed)
+            return failureText(job, t)
         case .interrupted:
             return t(.speakFinishInterrupted)
         case .cancelled, .running, .waitingForDictation, .pausedOnBattery, .unknown:
             return nil
         }
+    }
+
+    /// A failed delivery's line: the daemon's reason in plain words behind
+    /// the lead-in, or the plain sentence when nothing readable is left — a
+    /// jargon-only or empty error is never shown raw (PlainWords.clean's
+    /// rules, the same the can't-run reason gets).
+    private static func failureText(_ job: ProduceJob, _ t: (L10nKey) -> String) -> String {
+        let reason = PlainWords.clean(job.error ?? "", fallback: "")
+        return reason.isEmpty ? t(.speakFinishFailed) : String(format: t(.speakServiceAnswered), reason)
     }
 
     /// Why the studio voice cannot run here (StudioMenu.unavailableText's rules):
@@ -82,15 +95,17 @@ public enum SpeakText {
     }
 
     /// A daemon call's failure for the notice line (StudioError.message's
-    /// rules): the known StudioError cases localized, a refusal's own message
-    /// behind the lead-in, anything else the generic line.
+    /// rules): the known StudioError cases localized, a refusal in its own
+    /// words behind the lead-in, an empty message the status sentence exactly
+    /// as `StudioError.message` words it — and anything else the generic line.
     public static func notice(_ error: Error, _ t: (L10nKey) -> String) -> String {
         guard let studio = error as? StudioError else { return t(.speakErrorGeneric) }
         switch studio {
         case .daemonUnreachable: return t(.speakErrorNoService)
         case .timedOut: return t(.speakErrorTimeout)
         case .badResponse: return t(.speakErrorBadAnswer)
-        case .refused(_, let message): return String(format: t(.speakServiceAnswered), message)
+        case .refused(_, let message):
+            return message.isEmpty ? studio.message(text: t) : String(format: t(.speakServiceAnswered), message)
         }
     }
 

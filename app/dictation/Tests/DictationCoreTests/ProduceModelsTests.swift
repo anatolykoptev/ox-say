@@ -268,7 +268,7 @@ final class ProduceModelsTests: XCTestCase {
         func row(_ status: String, done: Int = 3, total: Int = 10, review: Int = 0) -> String {
             ProduceText.progressRow(ProduceJob.decode(summary(status: status, done: done, total: total, reviewChunks: review))!, text: en)
         }
-        XCTAssertEqual(row("running"), "“Chapter one” — 3 of 10 parts")
+        XCTAssertEqual(row("running"), "“Chapter one” — 3 of 10 done")
         XCTAssertEqual(row("running", done: 0, total: 0), "“Chapter one” — starting…")
         XCTAssertEqual(row("paused_on_battery"), "“Chapter one” — paused — on battery power")
         XCTAssertEqual(row("waiting_for_dictation"), "“Chapter one” — paused — you are dictating")
@@ -290,5 +290,19 @@ final class ProduceModelsTests: XCTestCase {
         XCTAssertEqual(ProduceText.finishAlert(failed, text: en)?.text, "the disk is full")
         let cancelled = try XCTUnwrap(ProduceJob.decode(summary(status: "cancelled")))
         XCTAssertNil(ProduceText.finishAlert(cancelled, text: en))
+    }
+
+    /// A loudness-only re-assembly that fails keeps the old status and reports
+    /// why (internal/daemon/produce.go `outcome`): a done or review job with a
+    /// non-empty error is not a saved result — the alert must say the change
+    /// did not happen, never "Saved".
+    /// Mutation: finishAlert without the `job.error` check on .done -> RED.
+    func testAFinishedJobThatStillCarriesAnErrorIsNotCalledSaved() throws {
+        let done = try XCTUnwrap(ProduceJob.decode(summary(status: "done", error: "ffmpeg quit", wav: "/x/Ch.wav")))
+        let alert = try XCTUnwrap(ProduceText.finishAlert(done, text: en))
+        XCTAssertEqual(alert.title, "The voiceover failed")
+        XCTAssertEqual(alert.text, "ffmpeg quit")
+        let review = try XCTUnwrap(ProduceJob.decode(summary(status: "review", error: "ffmpeg quit", wav: "/x/Ch.wav", reviewChunks: 2)))
+        XCTAssertEqual(ProduceText.finishAlert(review, text: en)?.title, "The voiceover failed")
     }
 }

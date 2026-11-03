@@ -87,7 +87,7 @@ final class StudioMenuTests: XCTestCase {
     /// noService row (drop `jobRows(...) +`) -> RED.
     func testOneFailedStatusKeepsTheFollowedVoiceoversRows() {
         let result = rows(nil, job: job(.running))
-        XCTAssertEqual(titles(result), ["“Ch 1” — 2 of 5 parts", "Stop Voiceover", StudioMenu.noServiceTitle(text: en)])
+        XCTAssertEqual(titles(result), ["“Ch 1” — 2 of 5 done", "Stop Voiceover", StudioMenu.noServiceTitle(text: en)])
         XCTAssertTrue(result.contains(.item(title: "Stop Voiceover", isOn: false, isEnabled: true, action: .stopVoiceover)))
     }
 
@@ -100,7 +100,7 @@ final class StudioMenuTests: XCTestCase {
     func testAFollowedVoiceoverSaysItIsWaitingWhileTheServiceIsGone() {
         let result = titles(rows(available, job: job(.running), waiting: true))
         XCTAssertTrue(result.contains("“Ch 1” — waiting for the ox-say service…"))
-        XCTAssertFalse(result.contains("“Ch 1” — 2 of 5 parts"))
+        XCTAssertFalse(result.contains("“Ch 1” — 2 of 5 done"))
     }
 
     func testAvailableStudioWithoutAJob() {
@@ -112,11 +112,11 @@ final class StudioMenuTests: XCTestCase {
 
     func testRunningJobShowsProgressAndStop() {
         let result = rows(available, job: job(.running), folder: true)
-        XCTAssertEqual(titles(result), ["New Voiceover from Document…", "“Ch 1” — 2 of 5 parts", "Stop Voiceover",
+        XCTAssertEqual(titles(result), ["New Voiceover from Document…", "“Ch 1” — 2 of 5 done", "Stop Voiceover",
                                         "Open Voiceovers Folder", "---", "Create a Voice…"])
         XCTAssertTrue(result.contains(.item(title: "New Voiceover from Document…", isOn: false, isEnabled: false, action: .newVoiceover)),
                       "the daemon runs one voiceover at a time")
-        XCTAssertTrue(result.contains(.item(title: "“Ch 1” — 2 of 5 parts", isOn: false, isEnabled: false, action: nil)))
+        XCTAssertTrue(result.contains(.item(title: "“Ch 1” — 2 of 5 done", isOn: false, isEnabled: false, action: nil)))
         XCTAssertTrue(result.contains(.item(title: "Stop Voiceover", isOn: false, isEnabled: true, action: .stopVoiceover)))
     }
 
