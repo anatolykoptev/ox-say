@@ -2,8 +2,8 @@ import Foundation
 @testable import DictationCore
 
 /// The StudioClient transport double every client test shares (the voiceover,
-/// voice-library and later client tests): it records the request and answers
-/// with a canned status and body.
+/// voice-library, produce-chunk and later client tests): it records the request
+/// and answers with a canned status and body.
 enum StudioClientFake {
     static func fake(status: Int = 200, body: String = "{}") -> (StudioClient, () -> URLRequest?) {
         var seen: URLRequest?

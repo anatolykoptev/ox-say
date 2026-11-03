@@ -52,7 +52,7 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(ProduceText.progressRow(job(.running), text: ru), "“Глава” — частей: 3 из 10")
         XCTAssertEqual(ProduceText.progressRow(job(.running, done: 0, total: 0), text: ru), "“Глава” — запускается…")
         XCTAssertEqual(ProduceText.progressRow(job(.running, title: ""), text: ru), "Озвучка — частей: 3 из 10")
-        XCTAssertEqual(ProduceText.progressRow(job(.running, title: ""), text: en), "Voiceover — 3 of 10 parts")
+        XCTAssertEqual(ProduceText.progressRow(job(.running, title: ""), text: en), "Voiceover — 3 of 10 done")
         XCTAssertEqual(ProduceText.progressRow(job(.waitingForDictation), text: ru), "“Глава” — пауза — вы диктуете")
         XCTAssertEqual(ProduceText.progressRow(job(.done), text: ru), "“Глава” — готово")
         XCTAssertEqual(ProduceText.progressRow(job(.review, review: 1), text: ru), "“Глава” — готово — нужно прослушать 1 часть")
