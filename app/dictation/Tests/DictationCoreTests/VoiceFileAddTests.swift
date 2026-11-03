@@ -9,16 +9,16 @@ final class VoiceFileAddTests: XCTestCase {
 
     private func draft() -> VoiceFileAdd {
         VoiceFileAdd(fileName: "Интервью 2026.m4a", audioPath: "/Users/me/Интервью 2026.m4a",
-                     seconds: 12, bytes: 240000, ext: "m4a", studioInstalled: false)
+                     seconds: 12, bytes: 240000, ext: "m4a")
     }
 
     /// The name field starts as the file's name without the extension; the person may then type over it.
     func testTheLabelStartsAsTheFileName() {
         XCTAssertEqual(draft().label, "Интервью 2026")
         XCTAssertEqual(VoiceFileAdd(fileName: "clip.wav", audioPath: "/x/clip.wav",
-                                    seconds: 5, bytes: 100, ext: "wav", studioInstalled: false).label, "clip")
+                                    seconds: 5, bytes: 100, ext: "wav").label, "clip")
         XCTAssertEqual(VoiceFileAdd(fileName: "take.two.m4a", audioPath: "/x/take.two.m4a",
-                                    seconds: 5, bytes: 100, ext: "m4a", studioInstalled: false).label, "take.two")
+                                    seconds: 5, bytes: 100, ext: "m4a").label, "take.two")
     }
 
     /// «Добавить» sends the slug id, the cleaned label, the clip's absolute path and the trimmed ref text; the add
@@ -62,7 +62,7 @@ final class VoiceFileAddTests: XCTestCase {
     /// A file the check refuses never uploads — the same sentence the sheet shows eagerly comes back on submit.
     func testARefusedFileNeverUploads() {
         var d = VoiceFileAdd(fileName: "greeting.m4a", audioPath: "/x/greeting.m4a",
-                             seconds: 2, bytes: 100, ext: "m4a", studioInstalled: false)
+                             seconds: 2, bytes: 100, ext: "m4a")
         XCTAssertNotNil(d.fileProblem)
         XCTAssertNil(d.submit(taken: [], text: en))
         XCTAssertEqual(d.problem, en(.fileProblemTooShort))

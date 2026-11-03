@@ -47,10 +47,15 @@ final class VoiceFileWiringTests: XCTestCase {
     }
 
     /// PIN: after a save the list is read through the session — its sole owner — and the voice's saving sentence is
-    /// the notice on top of the page. Mutation: VoiceSource.submitFile, `await session.reload()` deleted -> RED.
+    /// the notice on top of the page. The reload follows the add and sits in the success path, not the `catch`.
+    /// Mutation: VoiceSource.submitFile, `await session.reload()` moved before the add or into the catch -> RED.
     func testASavedFileVoiceReloadsThroughTheSession() throws {
         let submit = try body(try source("OxSayDictation/VoiceSource.swift"), of: "private func submitFile() {")
-        XCTAssertTrue(submit.contains("await session.reload()"))
+        let add = try XCTUnwrap(submit.range(of: "client.addVoice("), "the add call")
+        let reload = try XCTUnwrap(submit.range(of: "await session.reload()"), "the reload")
+        let catch_ = try XCTUnwrap(submit.range(of: "} catch"), "the failure path")
+        XCTAssertLessThan(add.lowerBound, reload.lowerBound, "the list is re-read only after the add lands")
+        XCTAssertLessThan(reload.lowerBound, catch_.lowerBound, "the reload is the success path, not the failure one")
         XCTAssertTrue(submit.contains("DesignForm.savedNotice("))
         let text = try source("OxSayDictation/VoiceSource.swift")
         XCTAssertEqual(text.components(separatedBy: "voiceEntries()").count - 1, 1,
@@ -69,6 +74,34 @@ final class VoiceFileWiringTests: XCTestCase {
         XCTAssertTrue(pick.contains("fileName: url.lastPathComponent"))
         XCTAssertTrue(pick.contains("audioPath: path"))
         XCTAssertTrue(pick.contains("ext: url.pathExtension"))
+    }
+
+    /// A pick that answers after a newer pick (or after the window closed) is dropped — the generation marks it
+    /// stale, so the earlier clip's measuring can never overwrite the newer sheet or open one for nobody.
+    /// Mutation: Generation.isCurrent, `token == value` -> `true` -> RED.
+    func testAnOldPicksAnswerIsDropped() {
+        var g = Generation()
+        let first = g.advance()
+        XCTAssertTrue(g.isCurrent(first))
+        _ = g.advance()
+        XCTAssertFalse(g.isCurrent(first), "the first pick's probe answer is stale once a second is picked")
+        XCTAssertTrue(g.isCurrent(g.value))
+    }
+
+    /// PIN: the pick's probe is a kept task — a newer pick supersedes it and cancels it, a closed window does the
+    /// same — and its answer is written only while its token is still current.
+    /// Mutation: VoiceSource.pickFile, delete `guard pickGeneration.isCurrent(token)` -> RED.
+    func testALateProbeAnswerNeverOpensASheet() throws {
+        let pick = try body(try source("OxSayDictation/VoiceSource.swift"), of: "private func pickFile(")
+        XCTAssertTrue(pick.contains("let token = pickGeneration.advance()"), "a new pick supersedes the one before")
+        XCTAssertTrue(pick.contains("pickTask?.cancel()"), "a new pick cancels the previous probe")
+        XCTAssertTrue(pick.contains("pickTask = Task"), "the probe task is kept so it can be cancelled")
+        XCTAssertTrue(pick.contains("pickGeneration.isCurrent(token)"), "a stale probe answer is dropped")
+        let quiet = try body(try source("OxSayDictation/VoiceSource.swift"), of: "func quietFile() {")
+        XCTAssertTrue(quiet.contains("pickGeneration.advance()"))
+        XCTAssertTrue(quiet.contains("pickTask?.cancel()"))
+        let closed = try body(try source("OxSayDictation/MainWindowSource.swift"), of: "func windowClosed() {")
+        XCTAssertTrue(closed.contains("voiceSource.quietFile()"), "a closed window drops a probe still in flight")
     }
 
     /// PIN: the actions reach the glue and the page: one `voiceFile` closure, the picker's audio+movie filter, the

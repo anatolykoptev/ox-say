@@ -147,19 +147,19 @@ struct Scene {
               fileSheet: { ru in
                   VoiceFileAdd(fileName: ru ? "Интервью 2026.m4a" : "interview-2026.m4a",
                                audioPath: "/Users/anya/Music/interview-2026.m4a",
-                               seconds: 12.4, bytes: 1_900_000, ext: "m4a", studioInstalled: false)
+                               seconds: 12.4, bytes: 1_900_000, ext: "m4a")
               }),
         Scene(name: "voice-file-sheet-short", section: .voices, meeting: nil, height: 330, data: { PreviewData.make(now: $0, ru: $1) },
               fileSheet: { ru in
                   VoiceFileAdd(fileName: ru ? "Приветствие.m4a" : "greeting.m4a",
                                audioPath: "/Users/anya/Music/greeting.m4a",
-                               seconds: 1.8, bytes: 60_000, ext: "m4a", studioInstalled: false)
+                               seconds: 1.8, bytes: 60_000, ext: "m4a")
               }),
         Scene(name: "voice-file-sheet-error", section: .voices, meeting: nil, height: 340, data: { PreviewData.make(now: $0, ru: $1) },
               fileSheet: { ru in
                   var add = VoiceFileAdd(fileName: ru ? "Интервью 2026.m4a" : "interview-2026.m4a",
                                          audioPath: "/Users/anya/Music/interview-2026.m4a",
-                                         seconds: 12.4, bytes: 1_900_000, ext: "m4a", studioInstalled: false)
+                                         seconds: 12.4, bytes: 1_900_000, ext: "m4a")
                   _ = add.submit(taken: [])
                   add.refused("the clip could not be decoded")
                   return add

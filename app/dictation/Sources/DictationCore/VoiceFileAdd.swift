@@ -18,8 +18,6 @@ public struct VoiceFileAdd: Equatable {
     public let seconds: Double?
     public let bytes: Int64
     public let ext: String
-    /// Whether the daemon's studio voice is installed: past its encoder window the file is refused outright.
-    public let studioInstalled: Bool
 
     /// The voice's name, as typed; starts as the file's name.
     public private(set) var label: String
@@ -31,25 +29,24 @@ public struct VoiceFileAdd: Equatable {
     public private(set) var problem: String?
 
     public init(fileName: String = "", audioPath: String = "", seconds: Double? = nil, bytes: Int64 = 0,
-                ext: String = "", studioInstalled: Bool = false) {
+                ext: String = "") {
         self.fileName = fileName
         self.audioPath = audioPath
         self.seconds = seconds
         self.bytes = bytes
         self.ext = ext
-        self.studioInstalled = studioInstalled
         label = (fileName as NSString).deletingPathExtension
         refText = ""
     }
 
     /// The file itself, checked eagerly: a refused file shows its sentence and «Добавить» stays off.
     public var fileProblem: String? {
-        VoiceFileCheck.problem(seconds: seconds, bytes: bytes, ext: ext, studioInstalled: studioInstalled)
+        VoiceFileCheck.problem(seconds: seconds, bytes: bytes, ext: ext)
     }
 
     /// The clip is longer than what a voice keeps: a warning under the form, not a refusal.
     public var warning: String? {
-        VoiceFileCheck.warning(seconds: seconds, studioInstalled: studioInstalled)
+        VoiceFileCheck.warning(seconds: seconds)
     }
 
     /// Esc, Cancel or the sheet's close: while the add is in flight it is not abandoned (a refused answer's sentence
@@ -67,8 +64,7 @@ public struct VoiceFileAdd: Equatable {
     /// labels, the same rule «Описать словами» follows (VoiceDesignFlow.submit).
     public mutating func submit(taken: Set<String>, text: (L10nKey) -> String = { $0.text }) -> Request? {
         guard !sending else { return nil }
-        if let found = VoiceFileCheck.problem(seconds: seconds, bytes: bytes, ext: ext,
-                                              studioInstalled: studioInstalled, text: text) {
+        if let found = VoiceFileCheck.problem(seconds: seconds, bytes: bytes, ext: ext, text: text) {
             problem = found
             return nil
         }

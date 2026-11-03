@@ -501,7 +501,6 @@ public enum L10nKey: String, CaseIterable {
     case fileProblemNotAudio = "file.problem.not_audio"
     case fileProblemUnreadable = "file.problem.unreadable"
     case fileProblemTooShort = "file.problem.too_short"
-    case fileProblemTooLong = "file.problem.too_long"
     case fileWarningLong = "file.warning.long"
     case updateRepairItem = "update.repair.item"
     case updateFinishingPill = "update.finishing.pill"

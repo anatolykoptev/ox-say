@@ -152,6 +152,7 @@ final class MainWindowSource {
         stopPlayback()
         voiceSource.stopPreview()
         voiceSource.quietDesign()
+        voiceSource.quietFile()
         stopClocks()
     }
 

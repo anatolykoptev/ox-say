@@ -15,6 +15,10 @@ final class VoiceSource {
     private let designer: VoiceDesigner
     /// «Взять из файла»: the picked clip and the typed fields while its sheet is up.
     private var fileAdd: VoiceFileAdd?
+    /// The picked file being measured. A newer pick supersedes it (and cancels the task), as does a closed window;
+    /// the generation is what drops the late answer.
+    private var pickTask: Task<Void, Never>?
+    private var pickGeneration = Generation()
     /// Plays the sample through the default output at the system's volume; this class never changes the volume.
     private let player = AudioPlayer()
     /// The menu's voice list and read-aloud checkmarks follow every change of the library.
@@ -94,18 +98,28 @@ final class VoiceSource {
 
     /// The picked file is measured — its size and, when the local decode manages, its duration — before the sheet
     /// shows. The app is not sandboxed (the entitlements are apple-events and audio-input only), so the chosen file's
-    /// absolute path reads without a security scope and is what the daemon gets.
+    /// absolute path reads without a security scope and is what the daemon gets. A probe that answers after a newer
+    /// pick (or after the window closed) is stale: the generation drops it, it never opens a sheet.
     private func pickFile(_ url: URL) {
         let path = url.path
         let bytes = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value ?? 0
-        let studioInstalled = model.data.voices.designAvailability == .available
-        Task { @MainActor in
+        let token = pickGeneration.advance()
+        pickTask?.cancel()
+        pickTask = Task { @MainActor in
             let seconds = try? await AVURLAsset(url: url).load(.duration).seconds
+            guard pickGeneration.isCurrent(token) else { return }
             fileAdd = VoiceFileAdd(fileName: url.lastPathComponent, audioPath: path,
                                    seconds: seconds?.isFinite == true ? seconds : nil,
-                                   bytes: bytes, ext: url.pathExtension, studioInstalled: studioInstalled)
+                                   bytes: bytes, ext: url.pathExtension)
             sync()
         }
+    }
+
+    /// The window closed or hid: a probe still measuring has nowhere to land — drop its answer.
+    func quietFile() {
+        pickGeneration.advance()
+        pickTask?.cancel()
+        pickTask = nil
     }
 
     /// «Добавить»: the model decides whether the form may send; a 400/409 shows the daemon's own sentence in the
