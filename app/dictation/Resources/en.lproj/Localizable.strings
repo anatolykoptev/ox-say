@@ -297,6 +297,12 @@
 "voices.random" = "Random each time";
 "voices.mine" = "My voices";
 "voices.mine.empty" = "No voices of your own yet.";
+"voices.subtitle.recorded" = "Recorded %@";
+"voices.subtitle.designed" = "Made from a description";
+"voices.subtitle.file" = "From a file";
+"voices.subtitle.other" = "Added %@";
+"voices.subtitle.recorded.undated" = "Recorded";
+"voices.subtitle.other.undated" = "Added";
 "settings.apps.summary" = "Automatic: %d · Ask first: %d";
 "meeting.error.daemon_down" = "OxSay's background service isn't running. Try again in a moment.";
 "meeting.error.timeout" = "The service took too long to answer. Try again.";
