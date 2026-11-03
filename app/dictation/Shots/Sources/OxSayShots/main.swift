@@ -33,6 +33,9 @@ struct Scene {
     var query: (Bool) -> String = { _ in "" }
     var find: ((Bool) -> String)?
     var data: (Date, Bool) -> MainWindowData
+    /// A sheet scene: the design sheet alone in the window (a sheet is a window of its own, which `screencapture -l` of
+    /// the main window would not include). The flow is driven through its own public steps.
+    var sheet: ((Bool) -> VoiceDesignFlow)?
 }
 
 @MainActor func run() {
@@ -72,6 +75,17 @@ struct Scene {
     func voices(_ d: MainWindowData, _ change: (inout VoicesValues) -> Void) -> MainWindowData {
         var d = d; change(&d.voices); return d
     }
+    /// The sheet's flow after the given steps, typed text in the language of the shot.
+    func flow(_ ru: Bool, label: String = "", _ steps: (inout VoiceDesignFlow) -> Void) -> VoiceDesignFlow {
+        var f = VoiceDesignFlow(description: ru ? "Спокойный диктор, мужской голос, неспешный и тёплый" : "A calm male narrator, unhurried and warm",
+                                sentence: DesignForm.defaultSentence, label: label)
+        steps(&f)
+        return f
+    }
+    func takes() -> [DesignTake] {
+        (1...3).map { DesignTake(path: "/t/\($0).wav", durationSeconds: 6, suggestedName: "calm-narrator-\($0)",
+                                warning: $0 == 3 ? "this take may contain babble" : nil) }
+    }
     let scenes: [Scene] = [
         Scene(name: "meetings-list", section: .meetings, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "meeting-notes", section: .meetings, meeting: "m7") { PreviewData.make(now: $0, ru: $1) },
@@ -106,6 +120,26 @@ struct Scene {
         Scene(name: "voices-stale", section: .voices, meeting: nil) {
             voices(PreviewData.make(now: $0, ru: $1)) { $0.load = .failed(StudioError.timedOut.message()) }
         },
+        Scene(name: "voices-design-unavailable", section: .voices, meeting: nil) {
+            voices(PreviewData.make(now: $0, ru: $1)) { $0.designAvailability = .unavailable(StudioMenu.unavailableText(reason: nil)) }
+        },
+        Scene(name: "voices-design-installable", section: .voices, meeting: nil) {
+            voices(PreviewData.make(now: $0, ru: $1)) { $0.designAvailability = .installable }
+        },
+        Scene(name: "voice-design-form", section: .voices, meeting: nil, height: 420, data: { PreviewData.make(now: $0, ru: $1) },
+              sheet: { ru in flow(ru, label: ru ? "Мой диктор" : "My narrator") { _ in } }),
+        Scene(name: "voice-design-designing", section: .voices, meeting: nil, height: 230, data: { PreviewData.make(now: $0, ru: $1) },
+              sheet: { ru in flow(ru) { f in _ = f.submit(taken: []) } }),
+        Scene(name: "voice-design-review", section: .voices, meeting: nil, height: 330, data: { PreviewData.make(now: $0, ru: $1) },
+              sheet: { ru in flow(ru, label: ru ? "Мой диктор" : "My narrator") { f in _ = f.submit(taken: []); f.designed(takes(), for: f.generation) } }),
+        Scene(name: "voice-design-review-warning", section: .voices, meeting: nil, height: 380, data: { PreviewData.make(now: $0, ru: $1) },
+              sheet: { ru in flow(ru) { f in _ = f.submit(taken: []); f.designed(takes(), for: f.generation); _ = f.next(); _ = f.next() } }),
+        Scene(name: "voice-design-name-taken", section: .voices, meeting: nil, height: 200, data: { PreviewData.make(now: $0, ru: $1) },
+              sheet: { ru in flow(ru, label: ru ? "Мой диктор" : "My narrator") { f in
+                  _ = f.submit(taken: []); f.designed(takes(), for: f.generation); _ = f.keep(); f.saveAnswered(.nameTaken)
+              } }),
+        Scene(name: "voice-design-failed", section: .voices, meeting: nil, height: 260, data: { PreviewData.make(now: $0, ru: $1) },
+              sheet: { ru in flow(ru) { f in _ = f.submit(taken: []); f.fail(StudioError.timedOut.message()) } }),
         // Settings is taller than a window: the shot is made as tall as the screen allows.
         Scene(name: "settings", section: .settings, meeting: nil, height: 1100) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "settings-apps", section: .settings, meeting: nil, height: 1100, appsExpanded: true) { PreviewData.make(now: $0, ru: $1) },
@@ -137,12 +171,18 @@ struct Scene {
                 model.appsExpanded = scene.appsExpanded
                 model.clock = { now }
                 model.advanced = scene.advanced
-                let hosting = NSHostingController(rootView: scene.sidebar
-                    ? MainWindowView(model: model, switchShown: true, live: Set(MainSection.allCases))
-                    : MainWindowView(model: model))
-                hosting.sizingOptions = []
+                let hosting: NSViewController
+                if let sheet = scene.sheet {
+                    hosting = NSHostingController(rootView: VoiceDesignSheet(flow: sheet(lang == "ru")) { _ in })
+                } else {
+                    hosting = NSHostingController(rootView: scene.sidebar
+                        ? MainWindowView(model: model, switchShown: true, live: Set(MainSection.allCases))
+                        : MainWindowView(model: model))
+                }
+                (hosting as? NSHostingController<VoiceDesignSheet>)?.sizingOptions = []
+                (hosting as? NSHostingController<MainWindowView>)?.sizingOptions = []
                 window.contentViewController = hosting
-                window.setContentSize(NSSize(width: size.width, height: scene.height))
+                window.setContentSize(NSSize(width: scene.sheet == nil ? size.width : 440, height: scene.height))
                 window.title = "OxSay"
                 window.orderFrontRegardless()
                 // Two short spins: the first lays the view out, the second lets lazy rows and the toolbar settle.

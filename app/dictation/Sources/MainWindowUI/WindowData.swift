@@ -29,19 +29,41 @@ public struct VoicesValues: Equatable {
     public var load: VoicesLoad
     /// The voice whose sample is being made or played.
     public var playingID: String?
+    /// «Описать словами»: the flow the sheet shows, whether the sheet is up, and whether the studio voice can run.
+    public var design: VoiceDesignFlow
+    public var designOpen: Bool
+    public var designAvailability: DesignAvailability
 
     public init(voices: [String], russianVoice: String?, englishVoice: String?, entries: [VoiceEntry] = [],
-                load: VoicesLoad = .loaded, playingID: String? = nil) {
+                load: VoicesLoad = .loaded, playingID: String? = nil, design: VoiceDesignFlow = VoiceDesignFlow(),
+                designOpen: Bool = false, designAvailability: DesignAvailability = .available) {
         self.voices = voices
         self.russianVoice = russianVoice
         self.englishVoice = englishVoice
         self.entries = entries
         self.load = load
         self.playingID = playingID
+        self.design = design
+        self.designOpen = designOpen
+        self.designAvailability = designAvailability
     }
 
     /// What a picker row shows for a voice id: the entry's label, the id itself when it names no entry.
     public func title(for id: String) -> String { entries.title(for: id) }
+}
+
+/// What the design sheet asks of the app. The flow decides what each one does (VoiceDesignFlow).
+public enum VoiceDesignAction: Equatable {
+    case open
+    case submit(description: String, sentence: String, label: String)
+    case next
+    case replay
+    case keep
+    case replace(Bool)
+    /// The form's text as it is typed, so Cancel keeps it.
+    case edit(description: String, sentence: String, label: String)
+    /// Esc, Cancel, OK on a failure.
+    case escape
 }
 
 public struct AboutValues: Equatable {
@@ -134,6 +156,11 @@ public struct MainWindowActions {
     public var stopPreview: () -> Void = {}
     public var renameVoice: (String, String) -> Void = { _, _ in }
     public var deleteVoice: (String) -> Void = { _ in }
+    /// «Описать словами»: one closure for the sheet's steps (open it, submit the form, next/replay/keep a variant,
+    /// answer the replace question, Esc).
+    public var voiceDesign: (VoiceDesignAction) -> Void = { _ in }
+    /// «Скачать студийный голос»: the app's own studio voice install, with its confirmation.
+    public var installStudioVoice: () -> Void = {}
     public var setStartAtLogin: (Bool) -> Void = { _ in }
     public var dismissNotice: () -> Void = {}
     /// The search field's text, as typed (the app debounces, cancels and retries).

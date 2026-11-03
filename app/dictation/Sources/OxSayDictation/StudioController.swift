@@ -18,16 +18,20 @@ struct StudioHost {
     /// Plays a WAV; `onFinish` runs once when it ends on its own.
     var play: (_ wav: Data, _ showPill: Bool, _ onFinish: (() -> Void)?) -> Void
     var stopPlayback: () -> Void
+    /// How many clips the shared player has started; a variant stops only if it is still the last one.
+    var playbackSerial: () -> Int
     /// Confirms and runs the studio voice install.
     var installStudioVoice: () -> Void
     var installing: () -> Bool
     /// Work the studio was doing has ended (a voiceover finished or was forgotten,
     /// a voice design closed): a version handshake held back for it runs again.
     var workEnded: () -> Void
+    /// The Create a Voice menu row: the window opens on Voices with the describe-a-voice sheet up.
+    var openVoiceDesign: () -> Void
 }
 
 /// The Studio submenu: draws the rows StudioMenu decides, and runs the three
-/// flows behind them — a long voiceover, following it to the end, and a new voice.
+/// flows behind them — a long voiceover and following it to the end; a new voice opens the window's sheet.
 final class StudioController: NSObject {
     let submenu = NSMenu()
     let host: StudioHost
@@ -47,7 +51,8 @@ final class StudioController: NSObject {
             self?.refreshFolder()
             self?.presentFinish(job)
         })
-    private lazy var designer = VoiceDesigner(host: host)
+    /// Describe a voice: the window's sheet drives it, the menu row opens that sheet.
+    lazy var designer = VoiceDesigner(host: host)
 
     init(host: StudioHost) {
         self.host = host
@@ -89,7 +94,7 @@ final class StudioController: NSObject {
         case .stopVoiceover: stopVoiceover()
         case .continueOnBattery: continueOnBattery()
         case .openVoiceoversFolder: openFolder()
-        case .createVoice: designer.start()
+        case .createVoice: host.openVoiceDesign()
         case .pickVoice, .pickDictationKey, .pickSpeakKey, .copyDictation, .pasteLastDictation: break
         case .startMeeting, .stopMeeting, .installNotesModel, .openMeetingsFolder, .chooseMeetingsFolder,
              .setMeetingName, .pickMeetingCallMode, .pickMeetingRetention, .editSpeakers, .retryVoices: break

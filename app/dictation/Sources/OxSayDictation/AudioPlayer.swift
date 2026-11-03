@@ -15,9 +15,13 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
     var duration: TimeInterval { player?.duration ?? 0 }
     var currentTime: TimeInterval { player?.currentTime ?? 0 }
 
+    /// Counts the clips started: whoever started one can tell later whether it is still the last (VariantPlayback).
+    private(set) var serial = 0
+
     /// Stops whatever was playing and starts the new clip.
     func play(wav: Data) throws {
         stop()
+        serial += 1
         let next = try AVAudioPlayer(data: wav)
         next.delegate = self
         next.prepareToPlay()

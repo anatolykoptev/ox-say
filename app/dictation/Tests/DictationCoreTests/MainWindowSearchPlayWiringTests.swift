@@ -55,7 +55,7 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         XCTAssertTrue(opened.contains("windowOpen = true"))
         XCTAssertTrue(opened.contains("if model.data.search.phase == .searching { searchEvent(.retry) }"), "a cancelled search restarts, no stuck spinner")
         let rec = try body(w, of: "func recordingChanged() {")
-        let stop = try XCTUnwrap(rec.range(of: "if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview() }"), "a recording starts: stop")
+        let stop = try XCTUnwrap(rec.range(of: "if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview(); voiceSource.quietDesign() }"), "a recording starts: stop")
         let visible = try XCTUnwrap(rec.range(of: "guard visible else { return }"))
         XCTAssertTrue(stop.lowerBound < visible.lowerBound, "even when the window is hidden")
         let apply = try body(w, of: "private func apply(_ change: MeetingSettingsModel.Change) {")

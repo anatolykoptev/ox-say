@@ -92,16 +92,14 @@ final class UpdateDesignL10nTests: XCTestCase {
     }
 
     func testTheCreateAVoiceFormProblemsAreInTheUsersLanguage() {
-        func problem(_ d: String, _ s: String, _ n: String) -> String? { DesignForm.problem(description: d, sentence: s, name: n, text: ru) }
-        XCTAssertEqual(problem(" ", "x", "a"), "Сначала опишите голос.")
-        XCTAssertEqual(problem(String(repeating: "d", count: 301), "x", "a"), "Описание слишком длинное: не больше 300 символов.")
-        XCTAssertEqual(problem("d", "", "a"), "Напишите пробную фразу, которую произнесёт голос.")
-        XCTAssertEqual(problem("d", String(repeating: "好", count: 81), "a"), "Пробная фраза слишком длинная: не больше 80 символов.")
-        XCTAssertEqual(problem("d", "x", "Bad Name"),
-                       "В имени можно использовать строчные английские буквы, цифры, - и _, до 32 символов; начинаться оно должно с буквы или цифры.")
-        XCTAssertEqual(DesignForm.problem(description: "d", sentence: "x", name: "Bad Name", text: en),
-                       "The name can use lowercase English letters, digits, - and _, up to 32 characters, and must start with a letter or digit.")
-        XCTAssertEqual(DesignForm.problem(description: "d", sentence: String(repeating: "x", count: 201), name: "", text: en),
+        func problem(_ d: String, _ s: String) -> String? { DesignForm.problem(description: d, sentence: s, text: ru) }
+        XCTAssertEqual(problem(" ", "x"), "Сначала опишите голос.")
+        XCTAssertEqual(problem(String(repeating: "d", count: 301), "x"), "Описание слишком длинное: не больше 300 символов.")
+        XCTAssertEqual(problem("d", ""), "Напишите пробную фразу, которую произнесёт голос.")
+        XCTAssertEqual(problem("d", String(repeating: "好", count: 81)), "Пробная фраза слишком длинная: не больше 80 символов.")
+        XCTAssertEqual(ru(.designProblemNameTaken), "Такое имя уже есть")
+        XCTAssertEqual(en(.designProblemNameTaken), "That name is already taken")
+        XCTAssertEqual(DesignForm.problem(description: "d", sentence: String(repeating: "x", count: 201), text: en),
                        "The sample sentence is too long: keep it under 200 characters.")
     }
 
