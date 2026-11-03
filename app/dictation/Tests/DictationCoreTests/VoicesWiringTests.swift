@@ -53,6 +53,23 @@ final class VoicesWiringTests: XCTestCase {
         XCTAssertTrue(preview.contains("session.playingID == id"), "a `.play` answer re-checks the session before it sounds")
     }
 
+    /// A sample never sounds into a recording: the gate is asked before the sample is made and again right before
+    /// `player.play` (a recording may begin in between), the refusal is said, and a recording that starts stops a
+    /// playing sample. Mutation: VoiceSource.preview, drop the `VoicePreviewGate.allows` guard before `player.play`
+    /// -> RED.
+    func testAPreviewIsRefusedWhileARecordingRuns() throws {
+        let preview = try body(try source("OxSayDictation/VoiceSource.swift"), of: "func preview(")
+        XCTAssertEqual(preview.components(separatedBy: "VoicePreviewGate.allows(recordingRunning: recordingRunning())").count - 1,
+                       2, "asked before the sample is made and again before it sounds")
+        XCTAssertTrue(preview.contains("L10nKey.voicesPreviewBlockedRecording.text"), "the reason is said")
+        let source = try source("OxSayDictation/MainWindowSource.swift")
+        XCTAssertTrue(source.contains("recordingRunning: { host.meetings()?.recordingElapsed != nil }"),
+                      "the gate reads the live recording state, not what the page drew")
+        let changed = try body(source, of: "func recordingChanged() {")
+        XCTAssertTrue(changed.contains("stopPlayback(); voiceSource.stopPreview()"),
+                      "a recording that starts stops the meeting audio and a playing sample")
+    }
+
     /// The window's actions reach VoiceSource, a refresh reads the library, a close stops a playing sample.
     /// Mutation: MainWindowSource.actions, delete the `a.deleteVoice` line -> RED.
     func testTheActionsAndTheRefreshReachTheVoiceSource() throws {

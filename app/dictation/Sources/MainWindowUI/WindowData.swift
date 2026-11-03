@@ -39,6 +39,9 @@ public struct VoicesValues: Equatable {
         self.load = load
         self.playingID = playingID
     }
+
+    /// What a picker row shows for a voice id: the entry's label, the id itself when it names no entry.
+    public func title(for id: String) -> String { entries.title(for: id) }
 }
 
 public struct AboutValues: Equatable {

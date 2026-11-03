@@ -472,6 +472,14 @@ final class VoiceLibrarySessionTests: XCTestCase {
         XCTAssertEqual(outcome, .dropped)
         XCTAssertEqual(s.playingID, "b")
     }
+
+    /// A recording captures the output, so a sample must not sound while one runs. The glue asks the gate before the
+    /// sample is made and again before it plays (a recording may begin in between); the decision itself is here.
+    /// Mutation: VoicePreviewGate.allows -> `true` -> RED.
+    func testThePreviewGateRefusesWhileARecordingRuns() {
+        XCTAssertFalse(VoicePreviewGate.allows(recordingRunning: true))
+        XCTAssertTrue(VoicePreviewGate.allows(recordingRunning: false))
+    }
 }
 
 /// Holds an async call until the test opens it.

@@ -319,6 +319,7 @@
 "voices.delete.title" = "Delete the voice “%@”?";
 "voices.delete.body" = "The voice is removed from OxSay. If it was chosen for reading aloud, the standard voice reads instead. This cannot be undone.";
 "voices.delete.confirm" = "Delete";
+"voices.preview_blocked_recording" = "The sample does not play while a meeting is being recorded.";
 "settings.apps.summary" = "Automatic: %d · Ask first: %d";
 "meeting.error.daemon_down" = "OxSay's background service isn't running. Try again in a moment.";
 "meeting.error.timeout" = "The service took too long to answer. Try again.";

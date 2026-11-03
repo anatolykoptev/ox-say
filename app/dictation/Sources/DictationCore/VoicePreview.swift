@@ -43,6 +43,13 @@ public enum VoicePreview {
     public static func language(locale: String) -> String { locale.hasPrefix("ru") ? "russian" : "english" }
 }
 
+/// Whether a voice's sample may play now: the meeting recorder captures the output, so a sample that sounds while a
+/// recording runs ends up in the recording — the same refusal as a transcript line's (PlaybackGate). The live state
+/// is read twice — before the sample is made and again before it sounds — because a recording may begin in between.
+public enum VoicePreviewGate {
+    public static func allows(recordingRunning: Bool) -> Bool { !recordingRunning }
+}
+
 /// The two read-aloud voice picks (`nil` is the engine's default; `MenuSections.randomVoice` is "random each time").
 public struct ReadAloudPicks: Equatable {
     public var russian: String?

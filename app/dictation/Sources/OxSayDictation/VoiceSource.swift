@@ -13,11 +13,14 @@ final class VoiceSource {
     private let player = AudioPlayer()
     /// The menu's voice list and read-aloud checkmarks follow every change of the library.
     private let changed: ([String]) -> Void
+    /// Whether a meeting is being recorded right now, read live: a sample must never sound into one (VoicePreviewGate).
+    private let recordingRunning: () -> Bool
 
     init(model: MainWindowModel, client: StudioClient, speech: SpeechClient, defaults: UserDefaults,
-         changed: @escaping ([String]) -> Void) {
+         recordingRunning: @escaping () -> Bool, changed: @escaping ([String]) -> Void) {
         self.model = model
         self.changed = changed
+        self.recordingRunning = recordingRunning
         session = VoiceLibrarySession(
             ops: VoiceLibraryOps(
                 list: { try await client.voiceEntries() },
@@ -67,6 +70,13 @@ final class VoiceSource {
 
     func preview(_ id: String) {
         player.stop()
+        // A recording captures the output: a sample must never start into one. Read live — it may have just begun.
+        guard VoicePreviewGate.allows(recordingRunning: recordingRunning()) else {
+            session.stopPreview()
+            model.data.notice = L10nKey.voicesPreviewBlockedRecording.text
+            sync()
+            return
+        }
         Task { @MainActor in
             sync(playing: id)
             let outcome = await session.preview(id: id, locale: L10nBundle.locale.identifier)
@@ -74,6 +84,12 @@ final class VoiceSource {
             case .play(let wav):
                 // A stop, a newer preview or a delete that landed while the sample was being made: it never starts.
                 guard session.playingID == id else { break }
+                // The recording may have begun while the sample was being made.
+                guard VoicePreviewGate.allows(recordingRunning: recordingRunning()) else {
+                    session.stopPreview()
+                    model.data.notice = L10nKey.voicesPreviewBlockedRecording.text
+                    break
+                }
                 do {
                     try player.play(wav: wav)
                 } catch {

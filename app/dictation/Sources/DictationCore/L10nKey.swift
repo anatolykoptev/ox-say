@@ -303,6 +303,8 @@ public enum L10nKey: String, CaseIterable {
     case voicesDeleteTitle = "voices.delete.title"
     case voicesDeleteBody = "voices.delete.body"
     case voicesDeleteConfirm = "voices.delete.confirm"
+    /// A voice sample refused while a meeting records (its audio would land in the recording).
+    case voicesPreviewBlockedRecording = "voices.preview_blocked_recording"
     case settingsAppsSummary = "settings.apps.summary"
     // The window talks to the daemon for real: its failures, its empty and failed recordings, rename, folder, voices.
     case meetingErrDaemonDown = "meeting.error.daemon_down"

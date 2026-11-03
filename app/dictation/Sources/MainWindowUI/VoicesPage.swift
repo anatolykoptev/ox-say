@@ -122,7 +122,9 @@ struct VoicesPage: View {
             Text(L10nKey.voicesDefault.text).tag(String?.none)
             Text(L10nKey.voicesRandom.text).tag(String?.some(MenuSections.randomVoice))
             Divider()
-            ForEach(model.data.voices.voices, id: \.self) { Text($0).tag(String?.some($0)) }
+            ForEach(model.data.voices.voices, id: \.self) { id in
+                Text(model.data.voices.title(for: id)).tag(String?.some(id))
+            }
         }
     }
 }

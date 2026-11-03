@@ -77,6 +77,7 @@ final class MainWindowSource {
         model.selectedMeeting = restored.meetingID
         restoredMeetingUnchecked = restored.meetingID != nil
         voiceSource = VoiceSource(model: model, client: host.client, speech: host.speech, defaults: host.defaults,
+                                  recordingRunning: { host.meetings()?.recordingElapsed != nil },
                                   changed: host.voicesChanged)
         let defaults = host.defaults
         model.advancedChanged = { [weak model] on in
@@ -159,8 +160,8 @@ final class MainWindowSource {
 
     /// The meeting feature started or stopped a recording (or was switched off).
     func recordingChanged() {
-        // A call's audio never plays while a recording runs, visible window or not.
-        if host.meetings()?.recordingElapsed != nil { stopPlayback() }
+        // A call's audio never plays while a recording runs, visible window or not — nor does a voice's sample.
+        if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview() }
         guard visible else { return }
         syncRecording()
         refresh()
