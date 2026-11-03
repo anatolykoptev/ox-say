@@ -95,4 +95,15 @@ final class VoiceLibraryTests: XCTestCase {
         XCTAssertEqual(VoicesPageState.of(load: .loading, hasVoices: true), .list(stale: nil))
         XCTAssertEqual(VoicesPageState.of(load: .loading, hasVoices: false), .loading)
     }
+
+    /// What a picker row reads: the label of a renamed voice, not its id; an id that names no entry — or an entry
+    /// whose label is empty — falls back to the id itself. The pick and the tag keep the id either way.
+    /// Mutation: `[VoiceEntry].title(for:)` -> `id` -> RED.
+    func testAPickerTitleIsTheLabelOrTheId() {
+        let entries = [VoiceEntry(id: "warm-narrator", label: "Calm narrator", kind: .recorded),
+                       VoiceEntry(id: "empty", label: "", kind: .other)]
+        XCTAssertEqual(entries.title(for: "warm-narrator"), "Calm narrator")
+        XCTAssertEqual(entries.title(for: "gone"), "gone")
+        XCTAssertEqual(entries.title(for: "empty"), "empty")
+    }
 }

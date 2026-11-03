@@ -856,7 +856,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// What the main window reads and does in the app.
     func windowHost() -> MainWindowHost {
         MainWindowHost(
-            client: studioClient, defaults: .standard,
+            client: studioClient, speech: speechClient, defaults: .standard,
             meetings: { [unowned self] in self.meetings },
             meetingsEnabledChanged: { [unowned self] in self.applyMeetingsEnabled() },
             daemonStatus: { [unowned self] in self.serviceStatus },
@@ -868,6 +868,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             soundChanged: { [unowned self] in self.syncSoundModeItems() },
             pickVoice: { [unowned self] slot, voice in
                 self.applyVoicePick(key: slot == .russian ? self.speakVoiceRUKey : self.speakVoiceENKey, voice: voice)
+            },
+            voicesChanged: { [unowned self] voices in
+                self.knownVoices = voices
+                self.rebuildVoiceMenus()
             },
             startAtLogin: { SMAppService.mainApp.status == .enabled },
             setStartAtLogin: { [unowned self] on in

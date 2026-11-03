@@ -18,17 +18,30 @@ public struct DictationValues: Equatable {
 }
 
 public struct VoicesValues: Equatable {
-    /// The voices registered on the daemon.
+    /// The ids of the voices registered on the daemon (the read-aloud pickers list them).
     public var voices: [String]
     /// nil is "Default voice"; `MenuSections.randomVoice` is "Random each time".
     public var russianVoice: String?
     public var englishVoice: String?
+    /// The library as the Voices page lists it, newest read; `load` says how the last read went (a failed read keeps
+    /// the last good list, and never looks like an empty one: `VoicesPageState`).
+    public var entries: [VoiceEntry]
+    public var load: VoicesLoad
+    /// The voice whose sample is being made or played.
+    public var playingID: String?
 
-    public init(voices: [String], russianVoice: String?, englishVoice: String?) {
+    public init(voices: [String], russianVoice: String?, englishVoice: String?, entries: [VoiceEntry] = [],
+                load: VoicesLoad = .loaded, playingID: String? = nil) {
         self.voices = voices
         self.russianVoice = russianVoice
         self.englishVoice = englishVoice
+        self.entries = entries
+        self.load = load
+        self.playingID = playingID
     }
+
+    /// What a picker row shows for a voice id: the entry's label, the id itself when it names no entry.
+    public func title(for id: String) -> String { entries.title(for: id) }
 }
 
 public struct AboutValues: Equatable {
@@ -114,6 +127,13 @@ public struct MainWindowActions {
     public var setSound: (SoundWhileDictating) -> Void = { _ in }
     public var setHotkeyMode: (HotkeyMode) -> Void = { _ in }
     public var pickVoice: (VoiceSlot, String?) -> Void = { _, _ in }
+    /// The Voices page: read the library again, play a voice's sample (one at a time), stop it, rename (id, new label),
+    /// delete. The app refuses an invalid label and cleans the read-aloud picks of a deleted voice.
+    public var reloadVoices: () -> Void = {}
+    public var previewVoice: (String) -> Void = { _ in }
+    public var stopPreview: () -> Void = {}
+    public var renameVoice: (String, String) -> Void = { _, _ in }
+    public var deleteVoice: (String) -> Void = { _ in }
     public var setStartAtLogin: (Bool) -> Void = { _ in }
     public var dismissNotice: () -> Void = {}
     /// The search field's text, as typed (the app debounces, cancels and retries).

@@ -113,3 +113,12 @@ public struct VoiceEntry: Equatable, Identifiable {
         return iso.date(from: s) ?? plain.date(from: s)
     }
 }
+
+extension Array where Element == VoiceEntry {
+    /// What a picker shows for a voice id: the entry's label, or the id itself when the id names no entry or the
+    /// entry's label is empty (the stored pick and the row's tag keep the id either way).
+    public func title(for id: String) -> String {
+        guard let label = first(where: { $0.id == id })?.label, !label.isEmpty else { return id }
+        return label
+    }
+}

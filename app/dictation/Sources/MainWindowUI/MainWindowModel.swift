@@ -84,6 +84,11 @@ public final class MainWindowModel: ObservableObject {
         for change in MeetingSettingsModel.changes(from: old, to: new) { actions.changeMeetingSetting(change) }
     }
 
+    /// What the Voices page shows: one decision, in DictationCore.
+    var voicesState: VoicesPageState {
+        VoicesPageState.of(load: data.voices.load, hasVoices: !data.voices.entries.isEmpty)
+    }
+
     var sound: Binding<SoundWhileDictating> {
         Binding(get: { self.data.dictation.sound }, set: { self.data.dictation.sound = $0; self.actions.setSound($0) })
     }

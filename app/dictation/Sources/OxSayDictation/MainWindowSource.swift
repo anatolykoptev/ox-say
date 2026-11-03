@@ -8,6 +8,7 @@ import UserNotifications
 /// What the main window needs of the app around it. Closures, so the source never reaches into AppDelegate.
 struct MainWindowHost {
     var client: StudioClient
+    var speech: SpeechClient
     var defaults: UserDefaults
     /// The running meeting feature, nil while meetings are off.
     var meetings: () -> MeetingFeature?
@@ -23,6 +24,9 @@ struct MainWindowHost {
     /// The sound pick was saved: the menu's check marks follow it.
     var soundChanged: () -> Void
     var pickVoice: (VoiceSlot, String?) -> Void
+    /// The voice library changed (a voice was deleted or renamed, or the list was read): the menu's voice list and
+    /// its read-aloud checkmarks follow.
+    var voicesChanged: ([String]) -> Void
     var startAtLogin: () -> Bool
     var setStartAtLogin: (Bool) -> Void
     var checkForUpdates: () -> Void
@@ -41,6 +45,7 @@ final class MainWindowSource {
     private var clockTimer: Timer?
     private var gate = RefreshGate()
     private let audio = MeetingAudioPlayer()
+    private var voiceSource: VoiceSource!
     /// Each click on a line is one request; a probe that comes back after another click, a stop or a close is dropped.
     private var playRequests = PlayRequestGuard()
     private var detailReads = DetailReads()
@@ -71,6 +76,9 @@ final class MainWindowSource {
         model.section = restored.section
         model.selectedMeeting = restored.meetingID
         restoredMeetingUnchecked = restored.meetingID != nil
+        voiceSource = VoiceSource(model: model, client: host.client, speech: host.speech, defaults: host.defaults,
+                                  recordingRunning: { host.meetings()?.recordingElapsed != nil },
+                                  changed: host.voicesChanged)
         let defaults = host.defaults
         model.advancedChanged = { [weak model] on in
             AdvancedMode.set(on, in: defaults)
@@ -126,6 +134,7 @@ final class MainWindowSource {
         activeObserver = nil
         cancelSearchWork()
         stopPlayback()
+        voiceSource.stopPreview()
         stopClocks()
     }
 
@@ -151,8 +160,8 @@ final class MainWindowSource {
 
     /// The meeting feature started or stopped a recording (or was switched off).
     func recordingChanged() {
-        // A call's audio never plays while a recording runs, visible window or not.
-        if host.meetings()?.recordingElapsed != nil { stopPlayback() }
+        // A call's audio never plays while a recording runs, visible window or not — nor does a voice's sample.
+        if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview() }
         guard visible else { return }
         syncRecording()
         refresh()
@@ -200,6 +209,11 @@ final class MainWindowSource {
         }
         a.setHotkeyMode = { [weak self] mode in self?.host.setHotkeyMode(mode) }
         a.pickVoice = { [weak self] slot, voice in self?.host.pickVoice(slot, voice) }
+        a.reloadVoices = { [weak self] in self?.voiceSource.reload() }
+        a.previewVoice = { [weak self] id in self?.voiceSource.preview(id) }
+        a.stopPreview = { [weak self] in self?.voiceSource.stopPreview() }
+        a.renameVoice = { [weak self] id, label in self?.voiceSource.rename(id, label) }
+        a.deleteVoice = { [weak self] id in self?.voiceSource.delete(id) }
         a.setStartAtLogin = { [weak self] on in
             guard let self else { return }
             self.host.setStartAtLogin(on)
@@ -223,6 +237,7 @@ final class MainWindowSource {
             repeat {
                 syncRecording()
                 loadSimpleSections()
+                voiceSource.reload()
                 // The permission rows are read before any daemon call (microphone and Accessibility at once). The
                 // notification answer merges when it lands; the pass never waits for it, so a stuck read holds
                 // nothing back, least of all the gate.
@@ -285,8 +300,11 @@ final class MainWindowSource {
         let d = host.defaults
         model.data.dictation = DictationValues(keyTitle: host.dictationKeyTitle(), mode: DictationSettings.mode(d),
                                                sound: DictationSettings.sound(d), recent: host.recentDictations())
-        model.data.voices = VoicesValues(voices: host.knownVoices(), russianVoice: d.string(forKey: "speakVoiceRU"),
-                                         englishVoice: d.string(forKey: "speakVoiceEN"))
+        // The library itself (entries, playing) belongs to VoiceSource; only the ids are borrowed from the menu's list
+        // until its first read lands.
+        model.data.voices.russianVoice = d.string(forKey: DictationSettings.speakVoiceRUKey)
+        model.data.voices.englishVoice = d.string(forKey: DictationSettings.speakVoiceENKey)
+        if model.data.voices.entries.isEmpty, model.data.voices.load != .loaded { model.data.voices.voices = host.knownVoices() }
         model.data.about = AboutValues(version: AboutPanel.appVersion, engineRunning: host.daemonStatus() != nil,
                                        startAtLogin: host.startAtLogin())
     }
