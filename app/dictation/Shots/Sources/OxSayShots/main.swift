@@ -277,6 +277,8 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                 let file = out.appendingPathComponent("\(scene.name)-\(lang)-\(dark ? "dark" : "light").png")
                 if scene.sheet != (window.attachedSheet != nil) {
                     // A silent wrong shot is the bug class here: a sheet scene without its sheet, or a plain one with a stray sheet.
+                    // The scene's previous PNG goes first: a rerun must not show a stale image beside a reported failure.
+                    try? FileManager.default.removeItem(at: file)
                     print("ERR \(file.path) (sheet \(window.attachedSheet == nil ? "missing" : "unexpected"))")
                     if let s = window.attachedSheet { window.endSheet(s) }
                     continue
@@ -289,6 +291,8 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                 // The screen is locked or the window is not on it (a night run): draw the window's views instead.
                 // No title bar and no toolbar, but the content is the same, and the sheet is drawn at its offset.
                 if !captured { captured = drawWindows(window, sheet: window.attachedSheet, to: file) }
+                // A failed capture leaves whatever the last run wrote; the ERR must not sit next to a stale image.
+                if !captured { try? FileManager.default.removeItem(at: file) }
                 print("\(captured ? "ok " : "ERR") \(file.path)")
                 // Close the sheet before the next scene: clear the state that presents it, so SwiftUI dismisses it itself.
                 if scene.sheet {
