@@ -69,6 +69,9 @@ struct Scene {
         d.notice = L10nKey.meetingErrDeleteBusy.text
         return d
     }
+    func voices(_ d: MainWindowData, _ change: (inout VoicesValues) -> Void) -> MainWindowData {
+        var d = d; change(&d.voices); return d
+    }
     let scenes: [Scene] = [
         Scene(name: "meetings-list", section: .meetings, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "meeting-notes", section: .meetings, meeting: "m7") { PreviewData.make(now: $0, ru: $1) },
@@ -90,7 +93,19 @@ struct Scene {
         Scene(name: "sidebar-simple", section: .meetings, meeting: nil, sidebar: true) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "sidebar-advanced", section: .meetings, meeting: nil, sidebar: true, advanced: true) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "dictation", section: .dictation, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
-        Scene(name: "voices", section: .voices, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
+        Scene(name: "voices-list", section: .voices, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
+        Scene(name: "voices-playing", section: .voices, meeting: nil) { voices(PreviewData.make(now: $0, ru: $1)) { $0.playingID = "studio-mara" } },
+        Scene(name: "voices-empty", section: .voices, meeting: nil) { voices(PreviewData.make(now: $0, ru: $1)) { $0.entries = []; $0.voices = []; $0.russianVoice = nil } },
+        Scene(name: "voices-loading", section: .voices, meeting: nil) { voices(PreviewData.make(now: $0, ru: $1)) { $0.entries = []; $0.voices = []; $0.load = .loading } },
+        Scene(name: "voices-down", section: .voices, meeting: nil) {
+            voices(PreviewData.make(now: $0, ru: $1)) {
+                $0.entries = []; $0.voices = []
+                $0.load = .failed(StudioError.daemonUnreachable.message())
+            }
+        },
+        Scene(name: "voices-stale", section: .voices, meeting: nil) {
+            voices(PreviewData.make(now: $0, ru: $1)) { $0.load = .failed(StudioError.timedOut.message()) }
+        },
         // Settings is taller than a window: the shot is made as tall as the screen allows.
         Scene(name: "settings", section: .settings, meeting: nil, height: 1100) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "settings-apps", section: .settings, meeting: nil, height: 1100, appsExpanded: true) { PreviewData.make(now: $0, ru: $1) },

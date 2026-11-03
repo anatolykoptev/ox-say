@@ -61,8 +61,14 @@ public enum PreviewData {
                        "Thanks for the quick reply, I will read the document tonight and write back tomorrow.",
                        "Team meeting on Monday at ten in the morning."]),
             voices: VoicesValues(
-                voices: ["Anna", "Studio Mara", ru ? "Тёплый рассказчик" : "Warm narrator"],
-                russianVoice: "Anna", englishVoice: nil),
+                voices: ["anna", "studio-mara", "warm-narrator"],
+                russianVoice: "anna", englishVoice: nil,
+                entries: [
+                    VoiceEntry(id: "anna", label: ru ? "Мой голос" : "My voice", kind: .recorded, created: at(daysAgo: 4, hour: 10, minute: 0)),
+                    VoiceEntry(id: "studio-mara", label: "Studio Mara", kind: .file),
+                    VoiceEntry(id: "warm-narrator", label: ru ? "Тёплый рассказчик" : "Warm narrator",
+                               kind: .designed(ru ? "тёплый голос рассказчика" : "a warm storyteller's voice")),
+                ]),
             about: AboutValues(version: "0.2.0", engineRunning: true, startAtLogin: true))
     }
 
