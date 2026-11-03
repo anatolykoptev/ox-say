@@ -3,13 +3,15 @@ import XCTest
 @testable import DictationCore
 
 /// The Voices page's behaviour, run against a fake daemon: the glue (VoiceSource) only carries these results to the window.
+@MainActor
 final class VoiceLibrarySessionTests: XCTestCase {
     private func entry(_ id: String, _ label: String? = nil) -> VoiceEntry {
         VoiceEntry(id: id, label: label ?? id, kind: .recorded)
     }
 
-    /// A daemon with a voice list, and a UserDefaults-like pair of picks.
-    private final class Fake {
+    /// A daemon with a voice list, and a UserDefaults-like pair of picks. On the main actor like the session, so the
+    /// ops closures it hands out run where the test reads the same state.
+    @MainActor private final class Fake {
         var voices: [VoiceEntry]
         var listError: Error?
         var deleteError: Error?
@@ -75,6 +77,21 @@ final class VoiceLibrarySessionTests: XCTestCase {
         XCTAssertNotNil(VoiceLabel.clean(String(repeating: "я", count: VoiceLabel.maxChars)))
         XCTAssertNil(VoiceLabel.clean("a\nb"))
         XCTAssertNil(VoiceLabel.clean("a\u{07}b"))
+    }
+
+    /// The daemon's `normalizeLabel` also refuses line/paragraph separators and bidi controls, and counts runes
+    /// (Unicode scalars), not graphemes.
+    func testALabelWithSeparatorsBidiControlsOrTooManyScalarsIsRefused() {
+        XCTAssertNil(VoiceLabel.clean("a\u{2028}b"), "a line separator inside")
+        XCTAssertNil(VoiceLabel.clean("a\u{2029}b"), "a paragraph separator inside")
+        XCTAssertNil(VoiceLabel.clean("a\u{202E}b"), "a bidi override")
+        XCTAssertNil(VoiceLabel.clean("a\u{2067}b"), "a bidi isolate")
+        // One grapheme of seven scalars each: 60 graphemes pass a grapheme count but not the daemon's rune count.
+        let family = String(repeating: "👨‍👩‍👧‍👦", count: 60)
+        XCTAssertEqual(family.count, VoiceLabel.maxChars)
+        XCTAssertNil(VoiceLabel.clean(family), "the daemon counts runes, so the app counts scalars")
+        XCTAssertNotNil(VoiceLabel.clean("семья 👨‍👩‍👧‍👦"), "a ZWJ under the cap is a label the daemon takes")
+        XCTAssertNotNil(VoiceLabel.clean("голос 👍"), "a real emoji is still a fine label")
     }
 
     // MARK: delete and the read-aloud picks
@@ -179,6 +196,75 @@ final class VoiceLibrarySessionTests: XCTestCase {
         XCTAssertEqual(s.entries.map(\.id), ["b"])
     }
 
+    /// A delete followed by a failed re-read: the stale read that began earlier answers while the delete is
+    /// still on the wire, and must not resurrect the voice. Mutation: `epoch += 1` in `delete` gone -> RED.
+    func testADeletedVoiceStaysGoneWhenTheNextReadFailsAndAnEarlyOneAnswersLate() async {
+        let fake = Fake(voices: [entry("a"), entry("b")])
+        let slowList = AsyncGate<[VoiceEntry]>()
+        let deleteCall = AsyncGate<Void>()
+        var calls = 0
+        let s = VoiceLibrarySession(
+            ops: VoiceLibraryOps(
+                list: { [unowned fake] in
+                    calls += 1
+                    switch calls {
+                    case 1: return fake.voices
+                    case 2: return await slowList.wait()
+                    default: throw StudioError.daemonUnreachable
+                    }
+                },
+                setLabel: { _, _ in },
+                delete: { [unowned fake] id in
+                    await deleteCall.wait()
+                    fake.voices.removeAll { $0.id == id }
+                },
+                speak: { _, _, _ in Data() }),
+            readPicks: { ReadAloudPicks(russian: nil, english: nil) }, writePicks: { _ in },
+            text: ShippedStrings.localizer("en"))
+        await s.reload()
+        let slow = Task { await s.reload() }
+        await slowList.waiting()
+        let deleting = Task { await s.delete(id: "a") }
+        await deleteCall.waiting()
+        XCTAssertEqual(s.entries.map(\.id), ["b"], "the delete takes it off before the daemon answers")
+        slowList.open([entry("a"), entry("b")])
+        await slow.value
+        deleteCall.open(())
+        let notice = await deleting.value
+        XCTAssertNil(notice)
+        XCTAssertEqual(s.entries.map(\.id), ["b"], "the stale answer must not bring it back")
+    }
+
+    // MARK: the offered ids
+
+    /// What the pickers and the menu may offer: nothing before the first good read, the entries' ids after —
+    /// a failed refresh keeps offering what is still held, a deleted voice included no more.
+    /// Mutation: `offeredIDs` gated on `load == .loaded` -> RED.
+    func testAFailedRefreshAfterADeleteStillOffersTheRemainingVoices() async {
+        let fake = Fake(voices: [entry("a"), entry("b")])
+        let s = fake.session()
+        XCTAssertNil(s.offeredIDs, "before any good read there is nothing to offer")
+        await s.reload()
+        XCTAssertEqual(s.offeredIDs, ["a", "b"])
+        fake.listError = StudioError.daemonUnreachable
+        _ = await s.delete(id: "a")
+        XCTAssertEqual(s.entries.map(\.id), ["b"])
+        XCTAssertEqual(s.offeredIDs, ["b"], "the failed refresh must not offer the deleted voice")
+    }
+
+    /// A daemon never reached offers nothing; an empty library read offers an empty list, which is a real answer.
+    func testTheOfferedIDsAreNilOnlyUntilTheFirstGoodRead() async {
+        let fake = Fake(voices: [entry("a")])
+        fake.listError = StudioError.daemonUnreachable
+        let s = fake.session()
+        await s.reload()
+        XCTAssertNil(s.offeredIDs, "unreachable with nothing read offers nothing")
+        fake.voices = []
+        fake.listError = nil
+        await s.reload()
+        XCTAssertEqual(s.offeredIDs, [], "a good read of no voices offers an empty list")
+    }
+
     // MARK: rename
 
     /// Mutation: VoiceLibrarySession.rename, drop the `VoiceLabel.clean` guard -> RED (an empty label reaches the daemon).
@@ -220,6 +306,70 @@ final class VoiceLibrarySessionTests: XCTestCase {
         let notice = await s.rename(id: "a", label: "New")
         XCTAssertEqual(notice, StudioError.timedOut.message(text: ShippedStrings.localizer("en")))
         XCTAssertEqual(s.entries.first?.label, "Old")
+    }
+
+    /// A timed-out PATCH may have landed anyway: the rename says it failed, but a re-read still shows the new
+    /// label. Mutation: `await reload()` on the rename error path gone -> RED.
+    func testARenameThatTimedOutStillShowsTheLabelTheDaemonTook() async {
+        let fake = Fake(voices: [entry("a", "Old")])
+        let s = fake.session()
+        await s.reload()
+        fake.labelError = StudioError.timedOut
+        fake.voices = [entry("a", "New")]   // the PATCH landed on the daemon; only its answer was lost
+        let notice = await s.rename(id: "a", label: "New")
+        XCTAssertEqual(notice, StudioError.timedOut.message(text: ShippedStrings.localizer("en")))
+        XCTAssertEqual(s.entries.first?.label, "New", "the re-read shows what the daemon stored")
+    }
+
+    /// The other side of a timeout: the PATCH did not land, and the same re-read takes the optimistic label back.
+    /// Mutation: `await reload()` on the rename error path gone -> RED.
+    func testARenameThatTimedOutButDidNotLandShowsTheOldLabel() async {
+        let fake = Fake(voices: [entry("a", "Old")])
+        let s = fake.session()
+        await s.reload()
+        fake.labelError = StudioError.timedOut   // the PATCH never reached the daemon
+        let notice = await s.rename(id: "a", label: "New")
+        XCTAssertEqual(notice, StudioError.timedOut.message(text: ShippedStrings.localizer("en")))
+        XCTAssertEqual(s.entries.first?.label, "Old", "the re-read takes back the label the daemon never took")
+    }
+
+    /// The rename analogue of the delete case: the stale read answers while the PATCH is still on the wire, and
+    /// must not undo the new label. Mutation: `epoch += 1` in `rename` gone -> RED.
+    func testARenamedVoiceKeepsItsLabelWhenTheNextReadFailsAndAnEarlyOneAnswersLate() async {
+        let fake = Fake(voices: [entry("a", "Old"), entry("b")])
+        let slowList = AsyncGate<[VoiceEntry]>()
+        let labelCall = AsyncGate<Void>()
+        var calls = 0
+        let s = VoiceLibrarySession(
+            ops: VoiceLibraryOps(
+                list: { [unowned fake] in
+                    calls += 1
+                    switch calls {
+                    case 1: return fake.voices
+                    case 2: return await slowList.wait()
+                    default: throw StudioError.daemonUnreachable
+                    }
+                },
+                setLabel: { [unowned fake] id, label in
+                    await labelCall.wait()
+                    fake.voices = fake.voices.map { $0.id == id ? VoiceEntry(id: id, label: label, kind: $0.kind) : $0 }
+                },
+                delete: { _ in },
+                speak: { _, _, _ in Data() }),
+            readPicks: { ReadAloudPicks(russian: nil, english: nil) }, writePicks: { _ in },
+            text: ShippedStrings.localizer("en"))
+        await s.reload()
+        let slow = Task { await s.reload() }
+        await slowList.waiting()
+        let renaming = Task { await s.rename(id: "a", label: "New") }
+        await labelCall.waiting()
+        XCTAssertEqual(s.entries.map(\.label), ["New", "b"], "the new label shows before the daemon answers")
+        slowList.open([entry("a", "Old"), entry("b")])
+        await slow.value
+        labelCall.open(())
+        let notice = await renaming.value
+        XCTAssertNil(notice)
+        XCTAssertEqual(s.entries.map(\.label), ["New", "b"], "the stale answer must not bring the old label back")
     }
 
     // MARK: preview
@@ -273,6 +423,54 @@ final class VoiceLibrarySessionTests: XCTestCase {
         XCTAssertEqual(s.playingID, "a")
         _ = await s.delete(id: "a")
         XCTAssertNil(s.playingID)
+    }
+
+    /// A delete that lands while the sample is still being made drops its answer: the glue is told `.dropped`,
+    /// so nothing starts playing. Mutation: `if playingID == id { stopPreview() }` in `delete` gone -> RED.
+    func testADeleteDropsTheAnswerOfAPreviewStillBeingMade() async {
+        let fake = Fake(voices: [entry("a"), entry("b")])
+        let gate = AsyncGate<Data>()
+        let s = VoiceLibrarySession(
+            ops: VoiceLibraryOps(
+                list: { [unowned fake] in fake.voices },
+                setLabel: { _, _ in },
+                delete: { [unowned fake] id in fake.voices.removeAll { $0.id == id } },
+                speak: { _, _, _ in await gate.wait() }),
+            readPicks: { ReadAloudPicks(russian: nil, english: nil) }, writePicks: { _ in },
+            text: ShippedStrings.localizer("en"))
+        await s.reload()
+        let slow = Task { await s.preview(id: "a", locale: "en") }
+        await gate.waiting()
+        _ = await s.delete(id: "a")
+        gate.open(Data([9]))
+        let outcome = await slow.value
+        XCTAssertEqual(outcome, .dropped)
+        XCTAssertNil(s.playingID)
+    }
+
+    /// A second preview supersedes the first: one's answer after the other began is dropped too.
+    /// Mutation: `previewEpoch += 1` in `preview` gone -> RED.
+    func testANewerPreviewDropsTheAnswerStillBeingMade() async {
+        let gate = AsyncGate<Data>()
+        var calls = 0
+        let s = VoiceLibrarySession(
+            ops: VoiceLibraryOps(
+                list: { [] }, setLabel: { _, _ in }, delete: { _ in },
+                speak: { _, _, _ in
+                    calls += 1
+                    if calls == 1 { return await gate.wait() }
+                    return Data([9])
+                }),
+            readPicks: { ReadAloudPicks(russian: nil, english: nil) }, writePicks: { _ in },
+            text: ShippedStrings.localizer("en"))
+        let slow = Task { await s.preview(id: "a", locale: "en") }
+        await gate.waiting()
+        let second = await s.preview(id: "b", locale: "en")
+        XCTAssertEqual(second, .play(Data([9])))
+        gate.open(Data([1]))
+        let outcome = await slow.value
+        XCTAssertEqual(outcome, .dropped)
+        XCTAssertEqual(s.playingID, "b")
     }
 }
 

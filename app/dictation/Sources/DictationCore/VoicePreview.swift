@@ -1,16 +1,28 @@
 import Foundation
 
 /// What a person may call a voice. The daemon holds the label verbatim, so the app is the one place that refuses a
-/// label the daemon would reject (or accept as an empty name): trimmed, not empty, at most 60 characters (the daemon's
-/// `maxLabelChars`), no control characters or newlines.
+/// label the daemon would reject (or accept as an empty name): trimmed, not empty, at most 60 characters (the
+/// daemon's `maxVoiceLabelChars`, counted as Unicode scalars — Go's runes), no control characters, no line or
+/// paragraph separators and no text-direction controls.
 public enum VoiceLabel {
     public static let maxChars = 60
 
     public static func clean(_ raw: String) -> String? {
         let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !label.isEmpty, label.count <= maxChars else { return nil }
-        guard !label.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
+        guard !label.isEmpty, label.unicodeScalars.count <= maxChars else { return nil }
+        guard !label.unicodeScalars.contains(where: Self.refused) else { return nil }
         return label
+    }
+
+    /// The daemon's `normalizeLabel` refuses a control character (unicode.IsControl: the Cc set), a line or
+    /// paragraph separator (U+2028/U+2029) and a bidi embedding, override or isolate (`meeting.HasBidiControl`:
+    /// it reorders the text around it). Apple's `controlCharacters` is wider — it also holds the format
+    /// characters (Cf, a ZWJ included), which the daemon does not refuse — so it is not the check.
+    private static func refused(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x2028, 0x2029, 0x202A ... 0x202E, 0x2066 ... 0x2069: return true
+        default: return scalar.properties.generalCategory == .control
+        }
     }
 }
 
@@ -69,8 +81,9 @@ public enum VoicePreviewOutcome: Equatable {
 }
 
 /// The Voices page's behaviour, apart from drawing: the list and how its last read went, the read-aloud picks, rename,
-/// delete and preview. Not isolated to an actor; the window's glue (VoiceSource) calls it from the main actor, one
-/// call at a time per user action.
+/// delete and preview. On the main actor, like the window's glue (VoiceSource): `entries`, `load`, `playingID` and
+/// the epochs are touched from one place only, so an answer landing off the wire can never tear them. The daemon
+/// calls (`VoiceLibraryOps`) stay async and still leave the actor.
 ///
 /// Invariants (each pinned by a test):
 /// - a failed read keeps the last good list and says so; with none it is "unreachable", never "empty";
@@ -79,6 +92,7 @@ public enum VoicePreviewOutcome: Equatable {
 ///   same step; one it refused leaves the picks and the list alone;
 /// - a rename with an empty or invalid label never reaches the daemon;
 /// - one preview at a time; a stop makes the answer of a running one a no-op.
+@MainActor
 public final class VoiceLibrarySession {
     public private(set) var entries: [VoiceEntry] = []
     public private(set) var load: VoicesLoad = .loading
@@ -92,6 +106,8 @@ public final class VoiceLibrarySession {
     /// Counts every change of what a list read may still show: a read applies only if no change came after it began.
     private var epoch = 0
     private var previewEpoch = 0
+    /// Set by the first list read that lands: only then do `entries` say what the daemon holds.
+    private var everLoaded = false
 
     public init(ops: VoiceLibraryOps, readPicks: @escaping () -> ReadAloudPicks,
                 writePicks: @escaping (ReadAloudPicks) -> Void, text: @escaping (L10nKey) -> String = { $0.text }) {
@@ -106,6 +122,11 @@ public final class VoiceLibrarySession {
 
     public var pageState: VoicesPageState { VoicesPageState.of(load: load, hasVoices: !entries.isEmpty) }
 
+    /// The ids the read-aloud pickers and the menu may offer: `entries`' once the library was read at all, nil
+    /// before. A failed refresh then keeps offering the list still held (a deleted voice stays out of it), and a
+    /// daemon never reached offers nothing rather than a list nobody read.
+    public var offeredIDs: [String]? { everLoaded ? entries.map(\.id) : nil }
+
     /// Reads the library again.
     public func reload() async {
         epoch += 1
@@ -115,6 +136,7 @@ public final class VoiceLibrarySession {
             guard mine == epoch else { return }
             entries = list
             load = .loaded
+            everLoaded = true
         } catch {
             guard mine == epoch else { return }
             load = .failed(sentence(error))
@@ -125,35 +147,40 @@ public final class VoiceLibrarySession {
     public func rename(id: String, label: String) async -> String? {
         guard let clean = VoiceLabel.clean(label) else { return text(.voicesRenameInvalid) }
         if entries.first(where: { $0.id == id })?.label == clean { return nil }
+        // The new label shows at once, and a read that began earlier is stale, even if the next read fails.
+        epoch += 1
+        entries = entries.map { $0.id == id ? VoiceEntry(id: $0.id, label: clean, kind: $0.kind, created: $0.created, engine: $0.engine) : $0 }
         do {
             try await ops.setLabel(id, clean)
         } catch {
+            // The PATCH may have landed despite the lost answer: one re-read shows what the daemon stored.
+            await reload()
             return sentence(error)
         }
-        epoch += 1
-        entries = entries.map { $0.id == id ? VoiceEntry(id: $0.id, label: clean, kind: $0.kind, created: $0.created, engine: $0.engine) : $0 }
         await reload()
         return nil
     }
 
-    /// Deletes the voice. Only a delete the daemon accepted touches the picks; a refusal returns its sentence and
-    /// changes nothing. A voice the daemon no longer has (404) is gone all the same: the picks are cleaned.
+    /// Deletes the voice. Only a delete the daemon accepted touches the picks; a refusal restores the list and
+    /// returns its sentence. A voice the daemon no longer has (404) is gone all the same: the picks are cleaned.
     public func delete(id: String) async -> String? {
+        // Gone from the list at once, and a read that began earlier is stale, even if the next read fails.
+        epoch += 1
+        entries.removeAll { $0.id == id }
+        if playingID == id { stopPreview() }
         do {
             try await ops.delete(id)
         } catch StudioError.refused(let status, _) where status == 404 {
-            // Already gone: fall through to the same cleanup.
+            // Already gone: the cleanup stands.
         } catch {
+            // Refused: put back what the daemon still holds.
+            await reload()
             return sentence(error)
         }
         let before = readPicks()
         let cleaned = VoicePicksCleanup.afterDelete(id: id, russian: before.russian, english: before.english)
         let after = ReadAloudPicks(russian: cleaned.russian, english: cleaned.english)
         if after != before { writePicks(after) }
-        // Gone from the list at once, and any read that began earlier is stale, even if the next read fails.
-        epoch += 1
-        entries.removeAll { $0.id == id }
-        if playingID == id { stopPreview() }
         await reload()
         return nil
     }

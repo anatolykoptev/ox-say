@@ -34,8 +34,10 @@ final class VoiceSource {
                 }
             })
         player.onFinish = { [weak self] in
-            self?.session.previewEnded()
-            self?.sync()
+            Task { @MainActor in
+                self?.session.previewEnded()
+                self?.sync()
+            }
         }
     }
 
@@ -70,6 +72,8 @@ final class VoiceSource {
             let outcome = await session.preview(id: id, locale: L10nBundle.locale.identifier)
             switch outcome {
             case .play(let wav):
+                // A stop, a newer preview or a delete that landed while the sample was being made: it never starts.
+                guard session.playingID == id else { break }
                 do {
                     try player.play(wav: wav)
                 } catch {
@@ -89,16 +93,20 @@ final class VoiceSource {
         sync()
     }
 
-    /// The session's list, picks and playing voice into the window, and the menu's list and checkmarks after them.
+    /// The session's list, picks and playing voice into the window, and the menu's list and checkmarks after them —
+    /// the menu only when the ids actually moved. The player answers to the session: a sample it no longer calls
+    /// playing (a delete may have stopped it mid-flight) is stopped.
     private func sync(playing: String? = nil) {
         var values = model.data.voices
+        let previousIDs = values.voices
         values.entries = session.entries
         values.load = session.load
         values.playingID = playing ?? session.playingID
         values.russianVoice = session.picks.russian
         values.englishVoice = session.picks.english
-        if session.load == .loaded { values.voices = session.entries.map(\.id) }
+        if let offered = session.offeredIDs { values.voices = offered }
+        if session.playingID == nil, player.isActivelyPlaying { player.stop() }
         if values != model.data.voices { model.data.voices = values }
-        if session.load == .loaded { changed(values.voices) }
+        if values.voices != previousIDs { changed(values.voices) }
     }
 }

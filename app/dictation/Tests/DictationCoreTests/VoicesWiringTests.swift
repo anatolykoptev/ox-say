@@ -34,14 +34,23 @@ final class VoicesWiringTests: XCTestCase {
     }
 
     /// The session's result reaches the window: the list, how the read went, the voice that plays, the picks.
-    /// Mutation: VoiceSource.sync, delete `values.load = session.load` -> RED.
+    /// The offered ids come from the session (not from `load == .loaded`), and a sample the session no longer
+    /// calls playing is stopped.
+    /// Mutation: VoiceSource.sync, delete `values.load = session.load` -> RED; offer ids only when `load == .loaded` -> RED.
     func testTheSessionIsCopiedIntoTheWindowValues() throws {
         let sync = try body(try source("OxSayDictation/VoiceSource.swift"), of: "func sync(")
         for line in ["values.entries = session.entries", "values.load = session.load", "values.playingID = playing ?? session.playingID",
                      "values.russianVoice = session.picks.russian", "values.englishVoice = session.picks.english",
-                     "changed(values.voices)"] {
+                     "session.offeredIDs", "player.stop()", "changed(values.voices)"] {
             XCTAssertTrue(sync.contains(line), line)
         }
+    }
+
+    /// A `.play` answer re-reads the session before it sounds: a stop or a delete that landed while the sample was
+    /// being made must start nothing. Mutation: VoiceSource.preview, drop `session.playingID == id` -> RED.
+    func testAPlayAnswerRechecksTheSessionBeforeItSounds() throws {
+        let preview = try body(try source("OxSayDictation/VoiceSource.swift"), of: "func preview(")
+        XCTAssertTrue(preview.contains("session.playingID == id"), "a `.play` answer re-checks the session before it sounds")
     }
 
     /// The window's actions reach VoiceSource, a refresh reads the library, a close stops a playing sample.
