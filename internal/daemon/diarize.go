@@ -63,8 +63,7 @@ var (
 )
 
 // diarReady is Deps.DiarizeReady: why this Mac cannot tell voices apart, "" when it can. An old macOS first (the
-// engine would crash there; a system that will not say its version is treated as old, because a macOS 13 Mac cannot
-// even launch the binary), then an Intel CPU, then a missing engine, then models that are not all there for the
+// engine would crash there; a system that will not say its version is treated as old, so the check fails closed), then an Intel CPU, then a missing engine, then models that are not all there for the
 // engine in use (Config.DiarModelsReady). A Mac on nemotron without the Nemotron set says models_missing, a code a
 // voices retry can fix: the runner accepts the retry as soon as the fetch has written the marker.
 func (d *Daemon) diarReady() string {

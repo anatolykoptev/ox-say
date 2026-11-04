@@ -1,8 +1,7 @@
 import DictationCore
 import SwiftUI
 
-/// The window's content: the section sidebar and the section's page. The package targets
-/// macOS 13, where NavigationSplitView is available.
+/// The window's content: the section sidebar and the section's page, in a NavigationSplitView.
 public struct MainWindowView: View {
     @ObservedObject var model: MainWindowModel
     private let switchShown: Bool
