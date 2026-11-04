@@ -1097,10 +1097,11 @@ func TestVoxCPM2MemoryFloorMatchesInstaller(t *testing.T) {
 }
 
 // The voice-cleanup model pin lives in scripts/fetch-models.sh (clean_rev) and here; the two must name one commit, and
-// the URL must be built from clean_rev (a `resolve/main` URL would move under the pinned hashes). Task 3 adds the
-// third read, engine/clean's Pins.swift.
+// the URL must be built from clean_rev (a `resolve/main` URL would move under the pinned hashes). engine/clean's
+// Pins.swift modelsRevision is the third copy.
 // Mutations: config.go, change one hex digit of CleanModelsRevision -> RED; fetch-models.sh, change `clean_rev=` ->
-// RED; fetch-models.sh, change `resolve/$clean_rev` to `resolve/main` in clean_url -> RED.
+// RED; fetch-models.sh, change `resolve/$clean_rev` to `resolve/main` in clean_url -> RED; Pins.swift, change one hex
+// digit of modelsRevision -> RED.
 func TestCleanPinsAgreeAcrossLanguages(t *testing.T) {
 	sh, err := os.ReadFile("../../scripts/fetch-models.sh")
 	if err != nil {
@@ -1112,6 +1113,14 @@ func TestCleanPinsAgreeAcrossLanguages(t *testing.T) {
 	}
 	if !regexp.MustCompile(`(?m)^clean_url=https://huggingface\.co/Koptev/mossformer2-se-48k-coreml/resolve/\$clean_rev$`).Match(sh) {
 		t.Fatal("fetch-models.sh clean_url is not the pinned resolve/$clean_rev URL")
+	}
+	swift, err := os.ReadFile("../../engine/clean/Sources/OxCleanCore/Pins.swift")
+	if err != nil {
+		t.Fatal(err)
+	}
+	swiftRev := regexp.MustCompile(`(?m)^\s*public static let modelsRevision = "([0-9a-f]{40})"$`).FindSubmatch(swift)
+	if swiftRev == nil || string(swiftRev[1]) != CleanModelsRevision {
+		t.Fatalf("engine/clean Pins.swift modelsRevision %q != CleanModelsRevision %s", swiftRev, CleanModelsRevision)
 	}
 }
 
