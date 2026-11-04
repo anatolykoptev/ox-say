@@ -229,6 +229,40 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertEqual(opened.components(separatedBy: "refresh()").count - 1, 1)
     }
 
+    /// N4: the sidebar's selection highlight is the system's, in both lists. Nothing in the window view draws a fill of its
+    /// own (no rounded rectangle, no `Color.primary.opacity` tint), Settings is not a hand-made button row, and
+    /// `RoundedRectangle` stays out of the sidebar for good.
+    /// Mutation: MainWindowView, add `.background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.12)))` to
+    /// the sidebar's Settings row -> RED.
+    func testTheSidebarDrawsNoSelectionOfItsOwn() throws {
+        let view = MeetingWiringTests.stripComments(try source("MainWindowUI/MainWindowView.swift"))
+        XCTAssertFalse(view.contains("RoundedRectangle"), "a hand-drawn fill in the sidebar")
+        XCTAssertFalse(view.contains("Color.primary.opacity"), "a hand-made tint in the sidebar")
+        XCTAssertFalse(view.contains("SettingsRow"), "Settings is a row of a List, not a button drawn under it")
+        XCTAssertFalse(view.contains(".buttonStyle(.plain)"))
+    }
+
+    /// N4: the sections are one List and Settings is a one-row List under the Advanced switch, both through the same
+    /// helper, so both are bound to the model's one `section` and the system draws exactly one highlight between them.
+    /// Mutation: MainWindowView, a second `List(` with its own `@State` selection for Settings -> RED (the helper is the
+    /// only `List(`); `sidebarList([.settings])` -> any other rows -> RED.
+    func testSettingsIsAOneRowListBoundToTheSameSelection() throws {
+        let view = MeetingWiringTests.stripComments(try source("MainWindowUI/MainWindowView.swift"))
+        XCTAssertEqual(view.replacingOccurrences(of: "sidebarList(", with: "").components(separatedBy: "List(").count - 1, 1, "one List builder, used for both lists")
+        XCTAssertTrue(view.contains("List(rows, selection: binding(for: rows))"))
+        XCTAssertTrue(view.contains("sidebarList(topSections)"))
+        XCTAssertTrue(view.contains("sidebarList([.settings])"))
+        XCTAssertTrue(view.contains("OneRowList { sidebarList([.settings]) }"), "a List has no height of its own")
+        XCTAssertTrue(view.contains("get: { rows.contains(model.section) ? model.section : nil }"))
+        XCTAssertTrue(view.contains("set: { if let s = $0 { model.section = s } }"))
+        // The bottom area is a safe-area inset of the sections list, the switch above the Settings list.
+        let inset = try XCTUnwrap(view.range(of: ".safeAreaInset(edge: .bottom"), "the bottom area").lowerBound
+        let rest = view[inset...]
+        let switchAt = try XCTUnwrap(rest.range(of: "AdvancedSwitch(model: model)")).lowerBound
+        let settingsAt = try XCTUnwrap(rest.range(of: "sidebarList([.settings])")).lowerBound
+        XCTAssertLessThan(switchAt, settingsAt, "the Advanced switch sits directly above Settings")
+    }
+
     /// A name typed letter by letter is saved on Return or when the field is left, and never triggers a full read.
     /// Mutation: MainWindowSource.apply, `if change.needsRefresh { refresh() }` -> `refresh()`; or NameField commits in
     /// `.onChange(of: draft)` -> RED.

@@ -18,15 +18,20 @@ public struct MainWindowView: View {
 
     public var body: some View {
         NavigationSplitView {
-            // Settings sits apart at the bottom with the Advanced switch above it. The list answers only for its own
-            // rows (the binding is nil while Settings is the section), and the Settings row sizes to its content.
-            VStack(spacing: 0) {
-                sidebarList(topSections)
-                if switchShown { AdvancedSwitch(model: model) }
-                if sections.contains(.settings) { SettingsRow(model: model) }
-            }
-            .navigationSplitViewColumnWidth(min: MainWindowSpec.sidebarWidth.minimum, ideal: MainWindowSpec.sidebarWidth.ideal,
-                                            max: MainWindowSpec.sidebarWidth.maximum)
+            // The sections are one List; Settings is a one-row List under the Advanced switch, in the bottom inset. Both
+            // are bound to the model's one `section` (each answers only for its own rows), so the system draws the
+            // selection in either and never in both.
+            sidebarList(topSections)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    VStack(spacing: 0) {
+                        if switchShown { AdvancedSwitch(model: model) }
+                        if sections.contains(.settings) {
+                            OneRowList { sidebarList([.settings]) }
+                        }
+                    }
+                }
+                .navigationSplitViewColumnWidth(min: MainWindowSpec.sidebarWidth.minimum, ideal: MainWindowSpec.sidebarWidth.ideal,
+                                                max: MainWindowSpec.sidebarWidth.maximum)
         } detail: {
             page
                 // One recognisable window: "OxSay" is the title whichever page is up, the section is the subtitle.
@@ -91,31 +96,24 @@ extension MainSection {
     }
 }
 
-/// Settings, drawn under the list as a plain row: it sizes to its content (no fixed height, so a larger sidebar or
-/// text size cannot clip it) and looks like a sidebar row. It is a button, so Space/Return and ⌘, reach it.
-struct SettingsRow: View {
-    @ObservedObject var model: MainWindowModel
+/// The one-row Settings list at the height its row needs. A List has no height of its own (`fixedSize` collapses it to 0),
+/// so the height follows the user's sidebar icon size (System Settings > Appearance), which the sidebar passes down:
+/// the table measured 48 / 52 / 60 pt for rows of 24 / 32 / 40 pt, the row plus the list's own margin.
+struct OneRowList<Rows: View>: View {
+    @Environment(\.sidebarRowSize) private var rowSize
+    @ViewBuilder var rows: () -> Rows
 
-    private var selected: Bool { model.section == .settings }
+    private var height: CGFloat {
+        switch rowSize {
+        case .small: return 48
+        case .medium: return 52
+        case .large: return 60
+        @unknown default: return 60
+        }
+    }
 
     var body: some View {
-        Button { model.section = .settings } label: {
-            Label {
-                Text(MainSection.settings.titleKey.text)
-            } icon: {
-                Image(systemName: MainSection.settings.symbol)
-            }
-            .font(.system(size: 13))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 6).fill(selected ? Color.primary.opacity(0.12) : Color.clear))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 10)
-        .padding(.bottom, 10)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        rows().scrollDisabled(true).frame(height: height)
     }
 }
 
