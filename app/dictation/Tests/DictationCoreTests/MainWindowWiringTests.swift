@@ -239,27 +239,42 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertFalse(view.contains("RoundedRectangle"), "a hand-drawn fill in the sidebar")
         XCTAssertFalse(view.contains("Color.primary.opacity"), "a hand-made tint in the sidebar")
         XCTAssertFalse(view.contains("SettingsRow"), "Settings is a row of a List, not a button drawn under it")
-        XCTAssertFalse(view.contains(".buttonStyle(.plain)"))
+        // The sidebar's own text: the split's first column and the list helper, up to the page.
+        let sidebar = try XCTUnwrap(view.range(of: "NavigationSplitView {")).lowerBound
+        let page = try XCTUnwrap(view.range(of: "@ViewBuilder private var page")).lowerBound
+        XCTAssertFalse(view[sidebar..<page].contains(".buttonStyle(.plain)"), "a plain button row in the sidebar")
     }
 
     /// N4: the sections are one List and Settings is a one-row List under the Advanced switch, both through the same
     /// helper, so both are bound to the model's one `section` and the system draws exactly one highlight between them.
+    /// Mutations: `model.objectWillChange.send()` -> `break`; either `.onKeyPress(` line deleted; `.background(.bar)` deleted -> RED
+    /// (the Shots probe, SHOTS_PROBE=1, exits 1 on the first two as well).
     /// Mutation: MainWindowView, a second `List(` with its own `@State` selection for Settings -> RED (the helper is the
     /// only `List(`); `sidebarList([.settings])` -> any other rows -> RED.
     func testSettingsIsAOneRowListBoundToTheSameSelection() throws {
         let view = MeetingWiringTests.stripComments(try source("MainWindowUI/MainWindowView.swift"))
         XCTAssertEqual(view.replacingOccurrences(of: "sidebarList(", with: "").components(separatedBy: "List(").count - 1, 1, "one List builder, used for both lists")
         XCTAssertTrue(view.contains("List(rows, selection: binding(for: rows))"))
-        XCTAssertTrue(view.contains("sidebarList(topSections)"))
-        XCTAssertTrue(view.contains("sidebarList([.settings])"))
-        XCTAssertTrue(view.contains("OneRowList { sidebarList([.settings]) }"), "a List has no height of its own")
+        XCTAssertTrue(view.contains("sidebarList(topSections, id: .sections)"))
+        XCTAssertTrue(view.contains("sidebarList([.settings], id: .settings)"))
+        XCTAssertTrue(view.contains("OneRowList { sidebarList([.settings], id: .settings) }"), "a List has no height of its own")
         XCTAssertTrue(view.contains("get: { rows.contains(model.section) ? model.section : nil }"))
-        XCTAssertTrue(view.contains("set: { if let s = $0 { model.section = s } }"))
+        // A deselect to nothing is not a choice, but the table is already empty: the getter must be asked again.
+        XCTAssertTrue(view.contains("model.section = s\n                    } else {"))
+        XCTAssertTrue(view.contains("model.objectWillChange.send()"), "a dropped deselect leaves the table with no highlight")
+        // The arrow keys cross from the last section to Settings and back, and hand the keyboard over.
+        XCTAssertTrue(view.contains(".onKeyPress(.downArrow) { move(.down, from: id) }"))
+        XCTAssertTrue(view.contains(".onKeyPress(.upArrow) { move(.up, from: id) }"))
+        XCTAssertTrue(view.contains("focusedList = .settings") && view.contains("focusedList = .sections"))
+        XCTAssertTrue(view.contains(".focused($focusedList, equals: id)"))
+        // The bottom area has the bar material and a hairline, so a scrolling list does not show through it.
+        XCTAssertTrue(view.contains("Divider()\n                        if switchShown"))
+        XCTAssertTrue(view.contains(".background(.bar)"))
         // The bottom area is a safe-area inset of the sections list, the switch above the Settings list.
         let inset = try XCTUnwrap(view.range(of: ".safeAreaInset(edge: .bottom"), "the bottom area").lowerBound
         let rest = view[inset...]
         let switchAt = try XCTUnwrap(rest.range(of: "AdvancedSwitch(model: model)")).lowerBound
-        let settingsAt = try XCTUnwrap(rest.range(of: "sidebarList([.settings])")).lowerBound
+        let settingsAt = try XCTUnwrap(rest.range(of: "sidebarList([.settings], id: .settings)")).lowerBound
         XCTAssertLessThan(switchAt, settingsAt, "the Advanced switch sits directly above Settings")
     }
 
