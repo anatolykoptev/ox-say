@@ -573,6 +573,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_NOTES_IDLE_STOP_SECS` | `120` | Stop the notes engine after N s idle |
 | `OX_SAY_DIAR_BIN` | `<engine dir>/ox-diar` | The speaker diarization engine (meeting voices); Apple Silicon, macOS 15 or later |
 | `OX_SAY_DIAR_ENGINE` | `nemotron` | Which model separates the voices of a meeting: `nemotron` (Nemotron 3 Diarization fast128 on the Neural Engine) or `pyannote` (the previous pipeline, kept until it is removed). Case and surrounding spaces do not matter; a value that is neither is logged once and the default is used. A Mac whose engine set is not fetched keeps one far-side label (`models_missing`) until `scripts/fetch-models.sh` has run; `nemotron` takes calls up to 6 hours, `pyannote` up to 2. The app records up to 6 hours (a minute less) on either; on `pyannote` a recording over 2 hours keeps one far-side label. `GET /status` shows the engine in use as `config.diar_engine` |
+| `OX_SAY_CLEAN_BIN` | `<engine dir>/ox-clean` | The voice-cleanup engine (MossFormer2 on Core ML); its model set (131 MB) is downloaded on first use |
 | `OX_SAY_IDLE_STOP_SECS` | `300` | Stop the idle engine after N s; 0 = never |
 | `OX_SAY_STARTUP_TIMEOUT_SECS` | `180` | Covers the first-start Metal shader compile |
 | `OX_SAY_LANG` | empty | Default language; empty = engine auto-detect |

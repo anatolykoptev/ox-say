@@ -335,9 +335,9 @@ func TestDiarPinsAgreeAcrossLanguages(t *testing.T) {
 	if got := find("engine/diar/Sources/OxDiarCore/Platform.swift", `case input = (\d+)`); got != "4" || diarExitInput != 4 {
 		t.Errorf("input %s, diarExitInput %d", got, diarExitInput)
 	}
-	// the lists in fetch-models.sh name 24+4 diarization and 5+2 nemotron entries, each with a 64-hex SHA-256
-	if n := len(regexp.MustCompile(`(?m)^    "[0-9a-f]{64}  \S+"$`).FindAllString(read("scripts/fetch-models.sh"), -1)); n != 35 {
-		t.Errorf("fetch-models.sh lists %d diarization entries, want 35", n)
+	// the lists in fetch-models.sh name 24+4 diarization, 5+2 nemotron and 8+4 voice-cleanup entries, each with a 64-hex SHA-256
+	if n := len(regexp.MustCompile(`(?m)^    "[0-9a-f]{64}  \S+"$`).FindAllString(read("scripts/fetch-models.sh"), -1)); n != 47 {
+		t.Errorf("fetch-models.sh lists %d pinned entries, want 47", n)
 	}
 }
 
