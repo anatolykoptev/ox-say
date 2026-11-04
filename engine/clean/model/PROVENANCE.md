@@ -17,9 +17,9 @@ rebuilt and checked.
 
 - Repo `anatolykoptev/ox-say`, `engine/clean/convert/`. The `converter` field of
   `manifest.json` is the commit that last touched that directory (`-dirty` if it had
-  uncommitted changes). The bytes below were built from a working tree before the converter
-  was merged; the published bytes are rebuilt from the merge commit at upload time, and the
-  upload step fills in the SHA-256 table and the `converter` commit.
+  uncommitted changes). The bytes below were built from merge commit `35405748e0f22a8813cb7cb30410aca5b0b779c9`
+  with a clean tree; the converter is at `3540574` (the `converter` field of `manifest.json`).
+  Source fields stay the same: pinned weights, `patches.py` module surgery.
 - Command: `convert.py --checkpoint last_best_checkpoint.pt --out out` (default
   `--precision mixed`).
 - Environment: Python 3.12, `coremltools==9.0`, `torch==2.7.0`, `torchaudio==2.7.0`,
@@ -34,16 +34,16 @@ Build of 2026-11-03, `out/` (`.mlmodelc` total 119,512,598 bytes):
 
 | file | SHA-256 |
 |---|---|
-| `MossFormer2_SE_48K.mlmodelc/analytics/coremldata.bin` | `cfc2c9d7fafd2605981d9460da2bd45538adcfaf891717b320c40c69c198464e` |
-| `MossFormer2_SE_48K.mlmodelc/coremldata.bin` | `3ad172aeee2bf3cf6107b4e3fefcfbdd13c18197fd298660e683950435a52235` |
+| `MossFormer2_SE_48K.mlmodelc/analytics/coremldata.bin` | `019a117d1b12476d342ce787954cd065e97d7977c8575b0b4a64ba1cd6f6a919` |
+| `MossFormer2_SE_48K.mlmodelc/coremldata.bin` | `45f9c86c73f7e4fcb9eb552789bbdeb11274c9de235dd637bc018b1f8a6aa2a5` |
 | `MossFormer2_SE_48K.mlmodelc/metadata.json` | `795e65fd7adda75bfe4e62912c899592a0ece1c45b19beb4a39468a622c34b9b` |
 | `MossFormer2_SE_48K.mlmodelc/model.mil` | `6db168e889ed29a8c36c4fd9429872cf1a01b241368af0f5e33baa853c8141f5` |
 | `MossFormer2_SE_48K.mlmodelc/weights/weight.bin` | `a240669911aade7aa87991de27e09d0c3d56d7d9fa491a7df180725fe3250446` |
-| `MossFormer2_SE_48K.mlpackage/Data/com.apple.CoreML/model.mlmodel` | `0d3b8944992631c500d116adbdde961d1f95eaee85f87313d20fd77a730692ac` |
+| `MossFormer2_SE_48K.mlpackage/Data/com.apple.CoreML/model.mlmodel` | `ea95014826eb0951ae7908a7e8eae7ab14cda60df3ec027ecb57898a4ddd0d0e` |
 | `MossFormer2_SE_48K.mlpackage/Data/com.apple.CoreML/weights/weight.bin` | `a240669911aade7aa87991de27e09d0c3d56d7d9fa491a7df180725fe3250446` |
-| `MossFormer2_SE_48K.mlpackage/Manifest.json` | `aa41a8e60934c7f9f58ef82aff1892061cc3ead2a65f17a3c41c72d3992e498c` |
-| `config.json` | `714759a5eb1f13ccdef2a1127dc8ce8b10c9374decfe89b9aceb1bdca451ee7b` |
-| `manifest.json` | `a92021343c2d38ff5c8c2b0d434cd17aebdc58034c7a9457125d61d7a764b7c3` |
+| `MossFormer2_SE_48K.mlpackage/Manifest.json` | `be1decd4045d6973df013e961f9d050205bcf71c022a42dc964e40f590b67a16` |
+| `config.json` | `639b015f07dda17e176b0c0473241bf507f8688127d52e681d6af0f44b373f0c` |
+| `manifest.json` | `49e9ae2faabea3259737ea6b315d4558c27ff83af2580329c1ec855cd15a12bd` |
 | `reference_window.bin` | `29fcb372069103a8337c0e19e32f2e983bc709ea45185a662213a26ee7435beb` |
 
 ## Gate results at build time
