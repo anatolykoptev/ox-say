@@ -6,6 +6,8 @@ Run from the repo root:
 Oracle: torchaudio.compliance.kaldi.fbank + torchaudio.functional.compute_deltas, dither 0.
 Also writes noise_golden.f32: the first values of the dither generator, from a pure-Python SplitMix64 + Box-Muller
 that shares no code with Fbank.swift.
+Task 5 adds stft_clip.f32 / stft_ref.f32: torch.stft of the first 20736 samples (50 frames) of the 1 s clip x 32768, the
+pair kept under 0.5 MB. Task 4's fixtures are written first and are untouched by the Task 5 block.
 """
 import math
 import pathlib
@@ -51,4 +53,13 @@ def gauss(seed, n):
 
 
 np.array(gauss(1, 64) + gauss(20261103, 64), dtype=np.float32).tofile(here / "noise_golden.f32")
+# Task 5: STFT oracle. Window 1920 non-periodic Hamming, hop 384, center=False, one-sided, real/imag pairs.
+STFT_FRAMES = 50
+stft_n = 1920 + 384 * (STFT_FRAMES - 1)  # 20736: includes the tone onset at sample 19200
+stft_clip = x[:stft_n]
+spec = torch.stft(torch.from_numpy(stft_clip * 32768.0), n_fft=1920, hop_length=384, win_length=1920,
+                  window=torch.hamming_window(1920, periodic=False), center=False, onesided=True, return_complex=False)
+assert spec.shape == (961, STFT_FRAMES, 2), spec.shape
+stft_clip.tofile(here / "stft_clip.f32")
+spec.permute(1, 0, 2).contiguous().numpy().astype(np.float32).tofile(here / "stft_ref.f32")  # [50, 961, 2]
 print(f"torch {torch.__version__} torchaudio {torchaudio.__version__}")
