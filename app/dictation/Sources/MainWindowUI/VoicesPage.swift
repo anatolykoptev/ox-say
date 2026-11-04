@@ -48,7 +48,11 @@ struct VoicesPage: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .unreachable(let sentence):
-            EmptyState(symbol: "bolt.horizontal.circle", title: L10nKey.meetingsDownTitle.text, message: sentence) {
+            ContentUnavailableView {
+                Label(L10nKey.meetingsDownTitle.text, systemImage: "bolt.horizontal.circle")
+            } description: {
+                Text(sentence)
+            } actions: {
                 Button(L10nKey.commonRetry.text) { model.actions.reloadVoices() }.controlSize(.large)
             }
         case .empty:

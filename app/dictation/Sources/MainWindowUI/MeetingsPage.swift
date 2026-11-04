@@ -1,11 +1,14 @@
 import DictationCore
 import SwiftUI
 
-/// Meetings: the recordings on the left, the chosen one on the right. The list is a lazy `List`
-/// grouped by day; the toolbar holds Record and, for a chosen meeting, Open Folder, Copy Notes and Delete.
+/// Meetings: the recordings on the left, the chosen one in the trailing inspector. The list is a lazy `List`
+/// grouped by day; the toolbar holds Record, for a chosen meeting Open Folder, Copy Notes and Delete, and
+/// the system inspector toggle.
 struct MeetingsPage: View {
     @ObservedObject var model: MainWindowModel
     @State private var confirmDelete = false
+    /// The detail column: shown, as the pane beside the list always was; the toolbar toggle hides it.
+    @State private var inspectorOpen = true
 
     var body: some View {
         // An inset, not a stacked row: the bar does not change how tall the page must be.
@@ -27,8 +30,11 @@ struct MeetingsPage: View {
     @ViewBuilder private var content: some View {
         switch model.pageState {
         case .off:
-            EmptyState(symbol: "person.2.slash", title: L10nKey.meetingsOffTitle.text,
-                       message: L10nKey.meetingsOffBody.text) {
+            ContentUnavailableView {
+                Label(L10nKey.meetingsOffTitle.text, systemImage: "person.2.slash")
+            } description: {
+                Text(L10nKey.meetingsOffBody.text)
+            } actions: {
                 Button(L10nKey.meetingsTurnOn.text) {
                     var settings = model.data.meetingSettings
                     settings.enabled = true
@@ -43,13 +49,20 @@ struct MeetingsPage: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .unreachable(let sentence):
-            EmptyState(symbol: "bolt.horizontal.circle", title: L10nKey.meetingsDownTitle.text, message: sentence) {
+            ContentUnavailableView {
+                Label(L10nKey.meetingsDownTitle.text, systemImage: "bolt.horizontal.circle")
+            } description: {
+                Text(sentence)
+            } actions: {
                 Button(L10nKey.commonRetry.text) { model.actions.refresh() }.controlSize(.large)
             }
         case .empty:
             VStack(spacing: 0) {
-                EmptyState(symbol: "waveform.badge.mic", title: L10nKey.meetingsEmptyTitle.text,
-                           message: L10nKey.meetingsEmptyBody.text) {
+                ContentUnavailableView {
+                    Label(L10nKey.meetingsEmptyTitle.text, systemImage: "waveform.badge.mic")
+                } description: {
+                    Text(L10nKey.meetingsEmptyBody.text)
+                } actions: {
                     Button(L10nKey.menuMeetingRecord.text) { model.actions.startRecording() }
                         .controlSize(.large)
                 }
@@ -61,13 +74,17 @@ struct MeetingsPage: View {
                     NoticeBar(text: stale, symbol: "exclamationmark.triangle.fill", tint: .orange,
                               actionTitle: L10nKey.commonRetry.text) { model.actions.refresh() }
                 }
-                HStack(spacing: 0) {
-                    MeetingList(model: model)
-                        .frame(width: 290)
-                    Divider()
-                    detail
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                MeetingList(model: model)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // The detail is the system inspector: same trailing column as the fixed split, with
+            // the system's slide (Reduce Motion is the system's) and its toolbar toggle. Widths
+            // match the old split's detail: ~280 at the 760 floor (also SidePanel's old default),
+            // ~500 once the 190 sidebar and 290 list are out of a 980 window — a larger ideal
+            // makes the split view slide the sidebar off-screen to fit the inspector instead.
+            .inspector(isPresented: $inspectorOpen) {
+                detail
+                    .inspectorColumnWidth(min: 280, ideal: 500, max: 1100)
             }
         }
     }
@@ -115,6 +132,13 @@ struct MeetingsPage: View {
                     }
                 }
             }
+            if case .list = model.pageState {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { inspectorOpen.toggle() } label: {
+                        Label(L10nKey.a11yInspector.text, systemImage: "sidebar.trailing")
+                    }
+                }
+            }
         }
     }
 }
@@ -150,7 +174,7 @@ private struct MeetingList: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14).padding(.vertical, 9)
         }
-        .onChange(of: model.selectedMeeting) { id in
+        .onChange(of: model.selectedMeeting) { _, id in
             if let id { model.actions.selectMeeting(id) }
         }
     }

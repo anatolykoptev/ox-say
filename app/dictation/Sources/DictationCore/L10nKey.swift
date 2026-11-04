@@ -624,6 +624,7 @@ public enum L10nKey: String, CaseIterable {
     case a11yFindClose = "a11y.find_close"
     case a11yFindNext = "a11y.find_next"
     case a11yFindPrevious = "a11y.find_previous"
+    case a11yInspector = "a11y.inspector"
     case a11yPlayStop = "a11y.play_stop"
     case a11yRename = "a11y.rename"
     case a11ySearchClear = "a11y.search_clear"
