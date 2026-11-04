@@ -72,5 +72,5 @@
   }
  ],
  "torch": "2.7.0",
- "oracle": "convert/reference.py load_net + spike windowed20_net, dither 0"
+ "oracle": "convert/reference.py load_net + golden_oracle.windowed20_net, dither 0"
 }

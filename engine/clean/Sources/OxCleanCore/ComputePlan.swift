@@ -36,7 +36,8 @@ public struct ComputePlan: Equatable {
 /// - x86_64 with a discrete Metal GPU (the first device that is neither low-power nor removable): `.cpuAndGPU`
 ///   on that device.
 /// - x86_64 with only an integrated GPU (or none): `.cpuOnly`. The iGPU is 13x slower and runs out of memory.
-/// Never `.all` and never the Neural Engine. `OX_CLEAN_COMPUTE_UNITS=cpuOnly` may lower the choice; no value raises it.
+/// Never `.all` and never the Neural Engine. On x86_64 `OX_CLEAN_COMPUTE_UNITS=cpuOnly` may lower the choice; no value
+/// raises it, and on arm64 the variable is ignored (no cpuOnly there).
 public enum ComputeChoice {
     public static func plan(architecture: CPUArchitecture, gpus: [GPUDescription], override: String?) -> ComputePlan {
         var plan: ComputePlan
@@ -50,7 +51,9 @@ public enum ComputeChoice {
                 plan = ComputePlan(units: .cpuOnly, discreteGPUIndex: nil)
             }
         }
-        if override == "cpuOnly" { plan = ComputePlan(units: .cpuOnly, discreteGPUIndex: nil) }
+        // Lowering to cpuOnly is an Intel-only knob. On arm64 there is no cpuOnly option at all (decision 5): the Core ML
+        // CPU fp16 runtime renders the first ~64 frames of each window as garbage, so the variable is ignored there.
+        if override == "cpuOnly", architecture == .x86_64 { plan = ComputePlan(units: .cpuOnly, discreteGPUIndex: nil) }
         return plan
     }
 

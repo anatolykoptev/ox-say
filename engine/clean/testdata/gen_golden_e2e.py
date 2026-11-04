@@ -11,13 +11,11 @@ Input: a 21 s synthetic voiced clip (no recording). The Swift test regenerates i
 ModelGoldenTests.swift) and spot-checks the values listed in `input_probes`; the clip itself is not stored. 21 s is
 20 s + 1 s: two windows (0 and 1 s, end-aligned) and one seam.
 Oracle: the fp32 PyTorch network (convert/reference.py `load_net`, the pinned checkpoint) driven by the spike's chunker
-(~/Developer/utilities/mossformer2-coreml-spike/reference.py `windowed20_net`: plan20, 50 ms crossfade, torch.stft and
+(`windowed20_net` in golden_oracle.py, copied from the spike with its SHA-256: plan20, 50 ms crossfade, torch.stft and
 torch.istft), at dither 0. It shares no code with Swift. The output is stored as int16 / ref_scale.
 """
-import importlib.util
 import json
 import math
-import os
 import pathlib
 import sys
 
@@ -26,18 +24,9 @@ import torch
 
 here = pathlib.Path(__file__).resolve().parent
 CONVERT = here.parent / "convert"
-SPIKE = pathlib.Path(os.path.expanduser("~/Developer/utilities/mossformer2-coreml-spike/reference.py"))
 N = 21 * 48000
 NOISE_SEED = 20261104
 M64 = (1 << 64) - 1
-
-
-def _load(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def splitmix(state):
@@ -79,8 +68,9 @@ def golden_clip(n):
 
 
 def main(ckpt):
-    spike = _load("spike_reference", SPIKE)
     sys.path.insert(0, str(CONVERT))
+    sys.path.insert(0, str(here))
+    import golden_oracle as spike
     import reference as R  # the converter's reference.py (load_net with the pinned-checkpoint SHA check)
     net, _ = R.load_net(ckpt)
     x = golden_clip(N)
@@ -93,7 +83,7 @@ def main(ckpt):
     probes = [{"at": a, "values": [float(v) for v in x[a:a + 8]]} for a in (0, 123_457, 500_003, 1_000_000, N - 8)]
     meta = {"samples": N, "ref_scale": scale, "ref_peak": peak, "ref_rms": float(np.sqrt(np.mean(y.astype(np.float64) ** 2))),
             "input_rms": float(np.sqrt(np.mean(x.astype(np.float64) ** 2))), "input_probes": probes,
-            "torch": torch.__version__, "oracle": "convert/reference.py load_net + spike windowed20_net, dither 0"}
+            "torch": torch.__version__, "oracle": "convert/reference.py load_net + golden_oracle.windowed20_net, dither 0"}
     (here / "golden21_meta.json").write_text(json.dumps(meta, indent=1) + "\n")
     print("wrote golden21_ref.i16", len(y), "samples; ref rms", meta["ref_rms"], "input rms", meta["input_rms"])
 

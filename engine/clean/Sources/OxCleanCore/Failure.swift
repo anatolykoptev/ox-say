@@ -2,6 +2,10 @@ import Foundation
 
 /// A refusal ox-clean can explain. Every error that can reach the command line is one of these, so Task 8 maps
 /// them to an exit code without guessing, and nothing on a user-reachable path ends in a trap.
+///
+/// Not covered: `WavIO.StreamWriter.append`/`finish` errors (POSIXError, `WavIO.Failure`) and the Foundation error of an
+/// unreadable input pass through `Cleaner.run` unmapped; Task 8 maps them (an unreadable input to `ExitCode.input`, a
+/// failed write to `ExitCode.failure`) and calls `abandon()` first.
 public enum Failure: Error, Equatable, CustomStringConvertible {
     /// The models are missing, disagree with this engine, or give a wrong answer. `reason` is a short code
     /// ("shape", "known_answer", ...), `detail` one plain sentence for the user.

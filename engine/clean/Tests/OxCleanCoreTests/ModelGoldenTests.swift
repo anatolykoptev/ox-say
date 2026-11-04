@@ -43,6 +43,25 @@ final class ModelGoldenTests: XCTestCase {
         XCTAssertLessThan(stats.mse, 1e-4)
     }
 
+    func testTheLoadedModelIsConfiguredWithThePlansUnitsAndDeclaresTheEnginesIO() throws {
+        let m = try model()
+        let plan = ComputeChoice.current()
+        XCTAssertEqual(m.configuredComputeUnits?.rawValue, plan.units.rawValue)
+        XCTAssertNotEqual(m.configuredComputeUnits, .all)
+        // The call-site check of the compiled model's declared I/O: a contract that disagrees must stop the load.
+        let compiled = URL(fileURLWithPath: Self.env["OX_CLEAN_MODELS"]!).appendingPathComponent(MaskModel.directoryName)
+            .appendingPathComponent(MaskModel.modelFile)
+        var wrongShape = IOSpec.engine
+        wrongShape.inputs["features"] = ArraySpec(shape: [1, 496, 180], dtype: .float32)
+        var wrongType = IOSpec.engine
+        wrongType.outputs["mask"] = ArraySpec(shape: [1, 2496, 961], dtype: .float16)
+        for (spec, reason) in [(wrongShape, "shape"), (wrongType, "dtype")] {
+            XCTAssertThrowsError(try CoreMLBackend(compiledURL: compiled, plan: plan, expected: spec), reason) {
+                XCTAssertEqual(($0 as? Failure)?.reason, reason)
+            }
+        }
+    }
+
     func testASecondLoadInTheSameProcess() throws {
         let first = try model().stats
         let dir = URL(fileURLWithPath: Self.env["OX_CLEAN_MODELS"]!)
@@ -89,13 +108,13 @@ final class ModelGoldenTests: XCTestCase {
     func testEndToEndSpeedAndMemory() throws {
         guard Self.env["OX_CLEAN_BENCH"] == "1" else { throw XCTSkip("set OX_CLEAN_BENCH=1 to measure speed") }
         let m = try model()
-        let minutes = Double(Self.env["OX_CLEAN_BENCH_SECONDS"] ?? "150") ?? 150
-        let n = Int(minutes * 48000)
+        let audioSeconds = Double(Self.env["OX_CLEAN_BENCH_SECONDS"] ?? "150") ?? 150
+        let n = Int(audioSeconds * 48000)
         let x = GoldenClip.samples(n)
         let inURL = try WavFixture.write(rate: 48000, channels: 1, samples: x)
         let outURL = CleanFixture.tmpWav()
         defer { try? FileManager.default.removeItem(at: inURL); try? FileManager.default.removeItem(at: outURL) }
-        // Warm: one window through the loaded model has already run (known answer); run one full pass untimed for the front end.
+        // Warm: the model is loaded and has run its known-answer window; this single pass is the timed one.
         let w = try WavIO.StreamWriter(url: outURL, sampleRate: 48000, channels: 1)
         let t0 = ContinuousClock.now
         let stats = try Cleaner(model: m).run(input: WavIO.readMono48k(inURL), output: w, progress: nil)
@@ -107,8 +126,8 @@ final class ModelGoldenTests: XCTestCase {
         #else
         let config = "release"
         #endif
-        print("SPEED \(config): \(minutes) s of audio in \(secs) s = \(minutes / secs)x real time; peak footprint \(peak) GiB; stats \(stats)")
-        XCTAssertGreaterThanOrEqual(minutes / secs, 8, "end-to-end speed gate (\(config) build)")
+        print("SPEED \(config): \(audioSeconds) s of audio in \(secs) s = \(audioSeconds / secs)x real time; peak footprint \(peak) GiB; stats \(stats)")
+        XCTAssertGreaterThanOrEqual(audioSeconds / secs, 8, "end-to-end speed gate (\(config) build)")
     }
 
     static func peakFootprintGiB() -> Double {

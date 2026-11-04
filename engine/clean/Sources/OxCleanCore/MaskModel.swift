@@ -35,6 +35,9 @@ public final class MaskModel: MaskPredicting {
     private let backend: MaskPredicting
     public private(set) var stats = ModelStats()
 
+    /// The compute units the Core ML model object reports, nil for a stub backend.
+    var configuredComputeUnits: MLComputeUnits? { (backend as? CoreMLBackend)?.configuredComputeUnits }
+
     /// `modelsDir` holds `mossformer2-se-48k/` (the layout `fetch-models.sh --clean-only` writes under `<dest>/clean`).
     public convenience init(modelsDir: URL, plan: ComputePlan = ComputeChoice.current()) throws {
         try self.init(modelsDir: modelsDir, loadBackend: { try CoreMLBackend(compiledURL: $0, plan: plan) })
@@ -100,33 +103,33 @@ public final class MaskModel: MaskPredicting {
 
 /// The real Core ML model. Everything that touches `MLMultiArray` memory is here and checks its bounds.
 final class CoreMLBackend: MaskPredicting {
-    private let model: MLModel
+    let model: MLModel
 
-    init(compiledURL: URL, plan: ComputePlan) throws {
+    /// `expected` is the I/O contract the compiled model must declare; only tests pass anything but `.engine`.
+    init(compiledURL: URL, plan: ComputePlan, expected: IOSpec = .engine) throws {
+        let cfg = try Self.configuration(plan: plan, devices: plan.discreteGPUIndex == nil ? [] : MTLCopyAllDevices())
+        do { model = try MLModel(contentsOf: compiledURL, configuration: cfg) } catch {
+            throw Failure.models("load", detail: "The voice-cleanup model could not be loaded: \(error.localizedDescription)")
+        }
+        try IOSpec.verify(IOSpec(model.modelDescription), against: expected)
+    }
+
+    /// The Core ML configuration for a plan: the plan's units (never `.all`, never the ANE) and, for a discrete-GPU
+    /// plan, that device (it must still be there and still be neither low-power nor removable).
+    static func configuration(plan: ComputePlan, devices: [MTLDevice]) throws -> MLModelConfiguration {
         let cfg = MLModelConfiguration()
         cfg.computeUnits = plan.units
         if let i = plan.discreteGPUIndex {
-            let devices = MTLCopyAllDevices()
-            guard i < devices.count, !devices[i].isLowPower, !devices[i].isRemovable else {
+            guard i >= 0, i < devices.count, !devices[i].isLowPower, !devices[i].isRemovable else {
                 throw Failure.models("gpu", detail: "The graphics card chosen for voice cleanup is no longer available.")
             }
             cfg.preferredMetalDevice = devices[i]
         }
-        do { model = try MLModel(contentsOf: compiledURL, configuration: cfg) } catch {
-            throw Failure.models("load", detail: "The voice-cleanup model could not be loaded: \(error.localizedDescription)")
-        }
-        try Self.check(model.modelDescription)
+        return cfg
     }
 
-    /// The compiled model's own I/O description against the engine (the JSON files are only documents).
-    static func check(_ d: MLModelDescription) throws {
-        func bad(_ what: String) -> Failure { Failure.models("shape", detail: "The compiled voice-cleanup model does not match this engine (\(what)).") }
-        guard let input = d.inputDescriptionsByName[MaskModel.inputName]?.multiArrayConstraint, d.inputDescriptionsByName.count == 1 else { throw bad("input") }
-        guard input.shape.map(\.intValue) == [1, ModelContract.frames, ModelContract.features], input.dataType == .float32 else { throw bad("input shape or type") }
-        guard let output = d.outputDescriptionsByName[MaskModel.outputName]?.multiArrayConstraint else { throw bad("output") }
-        let outShape = output.shape.map(\.intValue)
-        guard outShape.isEmpty || outShape == [1, ModelContract.frames, FeatureConfig.bins] else { throw bad("output shape") }
-    }
+    /// What the loaded model was actually configured with (the real-model test compares it with the plan).
+    var configuredComputeUnits: MLComputeUnits { model.configuration.computeUnits }
 
     func mask(features: [Float], frames: Int) throws -> [Float] {
         let input = try Self.makeInput(features, frames: frames)
@@ -205,4 +208,51 @@ final class CoreMLBackend: MaskPredicting {
 
 extension Duration {
     var seconds: Double { Double(components.seconds) + Double(components.attoseconds) / 1e18 }
+}
+
+/// The shape and element type of one multi-array feature. An empty `shape` means the model leaves it unspecified.
+struct ArraySpec: Equatable {
+    var shape: [Int]
+    var dtype: MLMultiArrayDataType
+}
+
+/// A compiled model's declared inputs and outputs, as plain values so the check is a pure function.
+struct IOSpec: Equatable {
+    var inputs: [String: ArraySpec]
+    var outputs: [String: ArraySpec]
+
+    /// What the engine feeds and reads: float32 `features [1, 2496, 180]` in, float32 `mask [1, 2496, 961]` out.
+    static let engine = IOSpec(
+        inputs: [MaskModel.inputName: ArraySpec(shape: [1, ModelContract.frames, ModelContract.features], dtype: .float32)],
+        outputs: [MaskModel.outputName: ArraySpec(shape: [1, ModelContract.frames, FeatureConfig.bins], dtype: .float32)])
+
+    /// A non-multi-array feature is left out, so it shows up as a missing name.
+    init(_ d: MLModelDescription) {
+        func specs(_ m: [String: MLFeatureDescription]) -> [String: ArraySpec] {
+            m.compactMapValues { f in f.multiArrayConstraint.map { ArraySpec(shape: $0.shape.map(\.intValue), dtype: $0.dataType) } }
+        }
+        self.init(inputs: specs(d.inputDescriptionsByName), outputs: specs(d.outputDescriptionsByName))
+    }
+
+    init(inputs: [String: ArraySpec], outputs: [String: ArraySpec]) {
+        self.inputs = inputs
+        self.outputs = outputs
+    }
+
+    /// Throws `Failure.models` with reason "names", "shape" or "dtype". An unspecified (empty) shape is accepted
+    /// wherever the expectation has one; an element type is never left open.
+    static func verify(_ actual: IOSpec, against expected: IOSpec = .engine) throws {
+        func bad(_ reason: String, _ what: String) -> Failure {
+            Failure.models(reason, detail: "The compiled voice-cleanup model does not match this engine (\(what)); download the model again.")
+        }
+        guard Set(actual.inputs.keys) == Set(expected.inputs.keys) else { throw bad("names", "input names \(actual.inputs.keys.sorted())") }
+        guard Set(actual.outputs.keys) == Set(expected.outputs.keys) else { throw bad("names", "output names \(actual.outputs.keys.sorted())") }
+        for (kind, a, e) in [("input", actual.inputs, expected.inputs), ("output", actual.outputs, expected.outputs)] {
+            for (name, want) in e {
+                let got = a[name]!
+                guard got.dtype == want.dtype else { throw bad("dtype", "\(kind) \(name) is element type \(got.dtype.rawValue), not \(want.dtype.rawValue)") }
+                guard got.shape == want.shape || (kind == "output" && got.shape.isEmpty) else { throw bad("shape", "\(kind) \(name) has shape \(got.shape)") }
+            }
+        }
+    }
 }

@@ -1,4 +1,5 @@
 import CoreML
+import Metal
 import XCTest
 @testable import OxCleanCore
 
@@ -23,7 +24,8 @@ final class MaskModelTests: XCTestCase {
             ("Intel, only an eGPU", .x86_64, [integrated, egpu], nil, .cpuOnly, nil),
             ("Intel, eGPU before the dGPU", .x86_64, [egpu, integrated, discrete], nil, .cpuAndGPU, 2),
             // OX_CLEAN_COMPUTE_UNITS may only lower the choice.
-            ("arm64 lowered to cpuOnly", .arm64, [], "cpuOnly", .cpuOnly, nil),
+            // arm64 has no cpuOnly option (decision 5: the CPU fp16 runtime defect), so the knob is ignored there.
+            ("arm64 ignores cpuOnly", .arm64, [discrete], "cpuOnly", .cpuAndGPU, nil),
             ("Intel dGPU lowered to cpuOnly", .x86_64, [discrete], "cpuOnly", .cpuOnly, nil),
             ("arm64 cpuAndGPU is no change", .arm64, [], "cpuAndGPU", .cpuAndGPU, nil),
             ("Intel iGPU cannot be raised to cpuAndGPU", .x86_64, [integrated], "cpuAndGPU", .cpuOnly, nil),
@@ -38,6 +40,90 @@ final class MaskModelTests: XCTestCase {
             XCTAssertNotEqual(plan.units, .all, name)
             XCTAssertNotEqual(plan.units, .cpuAndNeuralEngine, name)
         }
+    }
+
+    func testTheConfigurationCarriesThePlansUnitsAndDevice() throws {
+        // The call-site guarantee: whatever the plan says is what Core ML is configured with, never .all or the ANE.
+        for units in [MLComputeUnits.cpuAndGPU, .cpuOnly] {
+            let cfg = try CoreMLBackend.configuration(plan: ComputePlan(units: units, discreteGPUIndex: nil), devices: [])
+            XCTAssertEqual(cfg.computeUnits.rawValue, units.rawValue)
+            XCTAssertNil(cfg.preferredMetalDevice)
+        }
+        for (arch, gpus) in [(CPUArchitecture.arm64, [GPUDescription]()), (.x86_64, [discrete]), (.x86_64, [integrated])] {
+            let plan = ComputeChoice.plan(architecture: arch, gpus: gpus, override: nil)
+            let cfg = try CoreMLBackend.configuration(plan: plan, devices: arch == .x86_64 ? MTLCopyAllDevices() : [])
+            XCTAssertEqual(cfg.computeUnits.rawValue, plan.units.rawValue)
+            XCTAssertNotEqual(cfg.computeUnits, .all)
+            XCTAssertNotEqual(cfg.computeUnits, .cpuAndNeuralEngine)
+        }
+    }
+
+    func testThePreferredMetalDeviceIsTheChosenOneAndMustStillQualify() throws {
+        let devices = MTLCopyAllDevices()
+        guard let i = devices.firstIndex(where: { !$0.isLowPower && !$0.isRemovable }) else { throw XCTSkip("no discrete or Apple GPU here") }
+        let cfg = try CoreMLBackend.configuration(plan: ComputePlan(units: .cpuAndGPU, discreteGPUIndex: i), devices: devices)
+        XCTAssertEqual(cfg.preferredMetalDevice?.registryID, devices[i].registryID)
+        XCTAssertEqual(cfg.computeUnits.rawValue, MLComputeUnits.cpuAndGPU.rawValue)
+        for bad in [devices.count, -1] {
+            XCTAssertThrowsError(try CoreMLBackend.configuration(plan: ComputePlan(units: .cpuAndGPU, discreteGPUIndex: bad), devices: devices)) {
+                XCTAssertEqual(($0 as? Failure)?.reason, "gpu")
+            }
+        }
+        if let j = devices.firstIndex(where: { $0.isLowPower || $0.isRemovable }) {
+            XCTAssertThrowsError(try CoreMLBackend.configuration(plan: ComputePlan(units: .cpuAndGPU, discreteGPUIndex: j), devices: devices)) {
+                XCTAssertEqual(($0 as? Failure)?.reason, "gpu")
+            }
+        }
+    }
+
+    // MARK: the compiled model's declared I/O (pure over plain values)
+
+    func testTheDeclaredIOMustMatchTheEngine() throws {
+        XCTAssertNoThrow(try IOSpec.verify(.engine))
+        let io = IOSpec.engine
+        let inShape = [1, 2496, 180], outShape = [1, 2496, 961]
+        func edit(_ f: (inout IOSpec) -> Void) -> IOSpec { var c = io; f(&c); return c }
+        let ok: [(String, IOSpec)] = [("output shape left open", edit { $0.outputs["mask"] = ArraySpec(shape: [], dtype: .float32) })]
+        for (name, spec) in ok { XCTAssertNoThrow(try IOSpec.verify(spec), name) }
+        let bad: [(String, IOSpec, String)] = [
+            ("input renamed", edit { $0.inputs = ["x": ArraySpec(shape: inShape, dtype: .float32)] }, "names"),
+            ("extra input", edit { $0.inputs["extra"] = ArraySpec(shape: [1], dtype: .float32) }, "names"),
+            ("no input", edit { $0.inputs = [:] }, "names"),
+            ("output renamed", edit { $0.outputs = ["y": ArraySpec(shape: outShape, dtype: .float32)] }, "names"),
+            ("input shape", edit { $0.inputs["features"] = ArraySpec(shape: [1, 496, 180], dtype: .float32) }, "shape"),
+            ("input shape left open", edit { $0.inputs["features"] = ArraySpec(shape: [], dtype: .float32) }, "shape"),
+            ("output shape", edit { $0.outputs["mask"] = ArraySpec(shape: [1, 2496, 960], dtype: .float32) }, "shape"),
+            ("input float16", edit { $0.inputs["features"] = ArraySpec(shape: inShape, dtype: .float16) }, "dtype"),
+            ("output float16", edit { $0.outputs["mask"] = ArraySpec(shape: outShape, dtype: .float16) }, "dtype"),
+            ("output double", edit { $0.outputs["mask"] = ArraySpec(shape: outShape, dtype: .double) }, "dtype"),
+            ("output dtype with an open shape", edit { $0.outputs["mask"] = ArraySpec(shape: [], dtype: .float16) }, "dtype"),
+        ]
+        for (name, spec, reason) in bad {
+            XCTAssertThrowsError(try IOSpec.verify(spec), name) {
+                XCTAssertEqual(($0 as? Failure)?.reason, reason, name)
+                XCTAssertEqual(($0 as? Failure)?.exitCode, .models, name)
+            }
+        }
+    }
+
+    // MARK: KnownAnswer.measure against numpy
+
+    func testMeasureMatchesNumpysQuantile() throws {
+        // 100,001 Gaussian values (and then the first 50) (SplitMix64 seed 5, the stream of gen_golden_e2e.gauss) against zeros. Expected values
+        // from: np.quantile(np.abs(x.astype(np.float64)), 0.999), (e**2).mean(), e.max() on the float32 array,
+        // with engine/clean/convert/.venv/bin/python -B (numpy 1.26.4).
+        var noise = GaussianNoise(seed: 5)
+        let got = (0..<100_001).map { _ in noise.next() }
+        let s = KnownAnswer.measure(got: got, want: [Float](repeating: 0, count: got.count))
+        XCTAssertEqual(s.p999, 3.307770013809204, accuracy: 1e-5)
+        XCTAssertEqual(s.mse, 1.0035559845568813, accuracy: 1e-6)
+        XCTAssertEqual(s.maxAbs, 4.515058994293213, accuracy: 1e-5)
+        // 50 values: the 99.9th percentile falls between the two largest (position 48.951), so interpolation matters.
+        var small = GaussianNoise(seed: 5)
+        let few = (0..<50).map { _ in small.next() }
+        let t = KnownAnswer.measure(got: few, want: [Float](repeating: 0, count: 50))
+        XCTAssertEqual(t.p999, 2.072662753343582, accuracy: 1e-5)
+        XCTAssertEqual(t.mse, 0.9712980999852213, accuracy: 1e-6)
     }
 
     func testTheRealMachineGetsAPlanWithoutTheANE() {
