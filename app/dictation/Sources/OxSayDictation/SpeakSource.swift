@@ -42,7 +42,7 @@ final class SpeakSource {
     }
 
     /// A request is on its way or a clip sounds: a daemon restart or an app relaunch would cut it.
-    var busy: Bool { model.data.speak.phase == .generating || audio.busy }
+    var busy: Bool { model.data.speak.phase == .generating || audio.busy(playerIsPlaying: player.isActivelyPlaying) }
 
     // MARK: window
 
@@ -198,7 +198,10 @@ final class SpeakSource {
             case .stopOtherAudio:
                 stopOtherAudio()
             case .start:
-                guard let clip else { break }
+                guard let clip else {
+                    audio.startFailed()
+                    break
+                }
                 do {
                     try player.play(wav: clip.wav)
                     model.data.speak.playback = .playing

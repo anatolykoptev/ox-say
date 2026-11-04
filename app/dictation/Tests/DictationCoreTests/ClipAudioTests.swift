@@ -47,6 +47,16 @@ final class ClipAudioTests: XCTestCase {
         XCTAssertEqual(a.start(recordingRunning: true), [.halt, .handshakeMayRun, .blockedByRecording])
     }
 
+    /// A tracked `.playing` that the player no longer backs (it stopped without `didFinish`) holds nothing.
+    /// Mutation: ClipAudio.busy, drop `&& playerIsPlaying` -> RED.
+    func testATrackedClipTheDevicePlayerNoLongerSoundsHoldsNothing() {
+        var a = ClipAudio()
+        _ = a.start(recordingRunning: false)
+        XCTAssertTrue(a.busy(playerIsPlaying: true))
+        XCTAssertFalse(a.busy(playerIsPlaying: false))
+        XCTAssertFalse(ClipAudio().busy(playerIsPlaying: true), "a stopped clip never holds it")
+    }
+
     func testTheEndOfAClipReleasesTheHandshakeAndAFailedStartResets() {
         var a = ClipAudio()
         _ = a.start(recordingRunning: false)
@@ -55,6 +65,6 @@ final class ClipAudioTests: XCTestCase {
         _ = a.start(recordingRunning: false)
         a.startFailed()
         XCTAssertEqual(a.sound, .stopped)
-        XCTAssertFalse(a.busy)
+        XCTAssertFalse(a.busy(playerIsPlaying: true))
     }
 }

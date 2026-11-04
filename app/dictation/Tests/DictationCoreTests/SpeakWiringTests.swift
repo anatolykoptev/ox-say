@@ -100,6 +100,31 @@ final class SpeakWiringTests: XCTestCase {
         XCTAssertEqual(app.components(separatedBy: "try self.player.play(wav: wav)").count - 1, 2)
     }
 
+    /// The app's speech player is stopped from outside through ONE teardown: `AudioPlayer.stop()` drops the delegate, so
+    /// `onFinish` (pill, the voiceover's "ready" dialog after a preview, the handshake) never runs by itself.
+    /// Mutation: AppDelegate, `stopSpeechPlayer: ... self.stopSpeechPlayback()` -> `self.player.stop()` -> RED.
+    func testEveryStopOfTheSpeechPlayerGoesThroughOneTeardown() throws {
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        let teardown = try body(app, of: "private func stopSpeechPlayback() {")
+        for step in ["playbackDone = nil", "player.stop()", "overlay.finishPlaying()", "handshakeWorkEnded()"] {
+            XCTAssertTrue(teardown.contains(step), "the teardown lost `\(step)`")
+        }
+        XCTAssertTrue(app.contains("overlay.onPlaybackStop = { [weak self] in self?.stopSpeechPlayback() }"))
+        XCTAssertTrue(app.contains("stopPlayback: { [unowned self] in self.stopSpeechPlayback() }"))
+        XCTAssertTrue(app.contains("stopSpeechPlayer: { [unowned self] in self.stopSpeechPlayback() }"))
+        XCTAssertEqual(app.components(separatedBy: "player.stop()").count - 1, 1, "no bare player.stop() outside the teardown")
+    }
+
+    /// A player that does not start is a failed start, never a tracked clip; so is a start without its clip.
+    /// Mutation: AudioPlayer.play, delete the `guard next.play() else` -> RED; SpeakSource `.start` without clip, drop
+    /// `audio.startFailed()` -> RED.
+    func testAClipThatNeverStartsIsNotTracked() throws {
+        try XCTAssertTrue(source("OxSayDictation/AudioPlayer.swift").contains("guard next.play() else {"))
+        let perform = try body(source("OxSayDictation/SpeakSource.swift"), of: "private func perform(_ effects: [ClipEffect], clip: SpeakClip? = nil) {")
+        XCTAssertTrue(perform.contains("guard let clip else {\n                    audio.startFailed()"))
+        try XCTAssertTrue(source("OxSayDictation/SpeakSource.swift").contains("audio.busy(playerIsPlaying: player.isActivelyPlaying)"))
+    }
+
     /// Choosing a clip waits for a running take, and restores only a voice that still exists.
     /// Mutation: SpeakSource.select, drop the `allowsSelection` guard -> RED; use `clip.voice` unchecked -> RED.
     func testSelectWaitsForATakeAndChecksTheVoice() throws {

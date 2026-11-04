@@ -23,7 +23,9 @@ public struct ClipAudio: Equatable {
 
     public init() {}
 
-    public var busy: Bool { sound == .playing }
+    /// Holds the version handshake: the clip is `.playing` AND the player really sounds. A player that stopped without
+    /// telling (`playerIsPlaying` false) never holds it, whatever was tracked.
+    public func busy(playerIsPlaying: Bool) -> Bool { sound == .playing && playerIsPlaying }
 
     /// From the start of the clip. `recordingRunning` is read live, at the moment the clip would sound.
     public mutating func start(recordingRunning: Bool) -> [ClipEffect] {

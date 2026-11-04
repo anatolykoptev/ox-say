@@ -252,11 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speakService.onSpeak = { [weak self] text in self?.speak(text) }
         NSApp.servicesProvider = speakService
         overlay.onPlaybackToggle = { [weak self] in self?.player.toggle() }
-        overlay.onPlaybackStop = { [weak self] in
-            self?.playbackDone = nil
-            self?.player.stop()
-            self?.overlay.finishPlaying()
-        }
+        overlay.onPlaybackStop = { [weak self] in self?.stopSpeechPlayback() }
         overlay.playbackPosition = { [weak self] in
             guard let self else { return (0, 0, false) }
             return (self.player.currentTime, self.player.duration, self.player.isPaused)
@@ -890,7 +886,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             speechRefusal: { UpdateGate.allowsNewDaemonWork(installing: self.updateInstalling) ? nil : L10nKey.noticeUpdatingSpeak.text },
             mainWindow: { [unowned self] in self.mainWindow.window },
-            stopSpeechPlayer: { [unowned self] in self.player.stop() })
+            stopSpeechPlayer: { [unowned self] in self.stopSpeechPlayback() })
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
@@ -1042,6 +1038,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                     russian: defaults.string(forKey: speakVoiceRUKey),
                                     english: defaults.string(forKey: speakVoiceENKey))
         speakRequest(text, voice: voice)
+    }
+
+    /// The one way the app's own speech player (speak-selection and a finished voiceover's preview) is stopped from
+    /// outside. `AudioPlayer.stop()` drops the delegate, so `player.onFinish` never runs: the playing pill, the
+    /// "ready" dialog that would follow a preview and the version handshake are settled here instead.
+    private func stopSpeechPlayback() {
+        playbackDone = nil
+        player.stop()
+        overlay.finishPlaying()
+        handshakeWorkEnded()
     }
 
     /// Synthesizes the text through the daemon and plays it. The pill says
@@ -1199,10 +1205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.notice(L10nKey.playFailed.text)
                 }
             },
-            stopPlayback: { [unowned self] in
-                self.playbackDone = nil
-                self.player.stop()
-            },
+            stopPlayback: { [unowned self] in self.stopSpeechPlayback() },
             playbackSerial: { [unowned self] in self.player.serial },
             installStudioVoice: { [unowned self] in self.installStudioVoice() },
             installing: { [unowned self] in self.updateInstalling },
