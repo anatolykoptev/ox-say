@@ -59,7 +59,7 @@ def einsum_as_matmul(net):
     '... i d, ... j d -> ... i j' and '... i j, ... j d -> ... i d' (grouped attention) all raise
     `ValueError: perm should have the same length as rank(x)` (coremltools _utils.build_einsum_mil), and
     '..., f -> ... f' converts silently WRONG. Each equation the net uses is replaced by the equivalent
-    broadcast/matmul (checked exact in float64 by the spike). Applied to the `einsum` name inside
+    broadcast/matmul (checked exact in float64 during development). Applied to the `einsum` name inside
     mossformer2_block and rotary_embedding_torch only; any equation not listed falls through to torch.einsum."""
     import sys, torch
 

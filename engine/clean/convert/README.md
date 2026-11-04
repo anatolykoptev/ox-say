@@ -5,7 +5,7 @@ Python exists only here and never at user runtime; the output is uploaded to the
 repo (`Koptev/mossformer2-se-48k-coreml`) at release time, not committed to git.
 
 Design: fixed 20 s window, features `[1,2496,180]` -> mask `[1,2496,961]`; **mixed**
-precision (the spike's fp32 region selected by dataflow; pure fp16 returns an all-zero
+precision (an fp32 region selected by dataflow; pure fp16 returns an all-zero
 mask); **cpuAndGPU only** — on cpuOnly the Core ML CPU fp16 runtime renders the first
 ~64 frames of each window as garbage on macOS 26.5.1 (measured 2026-11-03 on an M5 Pro:
 cpuOnly mask MSE 5.5e-3 against 3.5e-8 on cpuAndGPU).
