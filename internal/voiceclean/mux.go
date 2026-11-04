@@ -22,13 +22,21 @@ type videoPlan struct {
 	dropped []DroppedStream
 }
 
-// What each container can hold by stream copy. mov and matroska take any audio or video codec; mp4 and webm are
-// narrower, so a stream outside the list is refused up front instead of failing in the middle of the mux.
+// What each container can hold by stream copy. matroska takes any audio or video codec; mov, mp4 and webm have
+// lists, so a stream outside them is refused up front instead of failing in the middle of the mux.
 var (
 	mp4Video  = setOf("h264", "hevc", "mpeg4", "mpeg2video", "mpeg1video", "av1", "vp9", "mjpeg", "png", "h263", "jpeg2000")
 	mp4Audio  = setOf("aac", "mp3", "mp2", "ac3", "eac3", "alac", "opus", "flac", "amr_nb", "amr_wb")
 	webmVideo = setOf("vp8", "vp9", "av1")
 	webmAudio = setOf("opus", "vorbis")
+
+	// Measured on ffmpeg 9.0.2 by stream-copying each codec from mkv into the container. mov takes (verified) mpeg4,
+	// h264, hevc, mjpeg, png, prores, mpeg2video, ffv1, huffyuv and aac, mp3, mp2, ac3, eac3, alac, pcm_s16le,
+	// pcm_s24le, pcm_f32le; it refuses vp8, vp9, av1, opus and flac. Codecs not measured are left out, so they are
+	// refused up front rather than failing in the middle of the mux. The mp4 lists above were measured the same way
+	// (vp8 and prores fail there, vp9/av1/opus/flac work).
+	movVideo = setOf("mpeg4", "h264", "hevc", "mjpeg", "png", "prores", "mpeg2video", "ffv1", "huffyuv")
+	movAudio = setOf("aac", "mp3", "mp2", "ac3", "eac3", "alac", "pcm_s16le", "pcm_s24le", "pcm_f32le")
 
 	textSubs   = setOf("subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text")
 	bitmapSubs = setOf("dvd_subtitle", "hdmv_pgs_subtitle", "dvb_subtitle")
@@ -55,6 +63,11 @@ func carries(ext, typ, codec string) bool {
 			return webmVideo[codec]
 		}
 		return webmAudio[codec]
+	case "mov":
+		if typ == "video" {
+			return movVideo[codec]
+		}
+		return movAudio[codec]
 	}
 	return true
 }
@@ -159,4 +172,17 @@ func outputBytes(info *probeInfo, ext string, video bool, inSize int64) float64 
 		return rate(245_000)
 	}
 	return rate(256_000)
+}
+
+// audioDropped lists what an audio-only output leaves out of the input: the audio tracks after the first (the first
+// is the one cleaned), cover art the target cannot hold (m4a, mp3 and flac keep it), subtitles, data and attachments.
+func audioDropped(info *probeInfo, ext string) []DroppedStream {
+	var out []DroppedStream
+	for _, s := range info.Streams {
+		if s.Index == info.AudioIndex || (s.AttachedPic && coverExts[ext]) {
+			continue
+		}
+		out = append(out, DroppedStream{Index: s.Index, Type: s.Type, Codec: s.Codec})
+	}
+	return out
 }

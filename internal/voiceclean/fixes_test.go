@@ -367,3 +367,103 @@ func TestTagsSurviveWithoutCoverArt(t *testing.T) {
 		}
 	}
 }
+
+// ---- round 3 -------------------------------------------------------------------------------------------------------
+
+// A hard link to a meeting file in a directory the search cannot read is not a clean bill: the guard refuses.
+func TestAnUnreadableDirectoryInAForbiddenTreeFailsClosed(t *testing.T) {
+	requireTools(t)
+	if os.Geteuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	// 000: the directory cannot be listed. 400: it lists, but its entries cannot be examined (Info fails).
+	for name, mode := range map[string]os.FileMode{"no access": 0, "listable but not searchable": 0o400} {
+		t.Run(name, func(t *testing.T) {
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			must(t, err)
+			forbid := filepath.Join(root, "meetings")
+			locked := filepath.Join(forbid, "2026", "locked")
+			must(t, os.MkdirAll(locked, 0o700))
+			secret := filepath.Join(locked, "m2.wav")
+			must(t, os.WriteFile(secret, mustRead(t, makeMonoWav(t, 48000, 1.0)), 0o600))
+			elsewhere := filepath.Join(root, "elsewhere")
+			must(t, os.Mkdir(elsewhere, 0o700))
+			hl := filepath.Join(elsewhere, "hl.wav")
+			must(t, os.Link(secret, hl))
+			must(t, os.Chmod(locked, mode))
+			t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+			o := opts(t, hl, filepath.Join(elsewhere, "o.wav"), 0.85, fakeEngine(t, "1"))
+			o.Forbidden = []string{forbid}
+			_, err = Run(context.Background(), o)
+			wantCode(t, err, CodeForbiddenPath)
+			noLeftovers(t, o)
+		})
+	}
+}
+
+// An audio-only output keeps one track: what it leaves out is reported, not silent.
+func TestAudioOnlyOutputListsTheStreamsItLeavesOut(t *testing.T) {
+	requireEncoder(t, "aac")
+	dir := t.TempDir()
+	srt := filepath.Join(dir, "s.srt")
+	must(t, os.WriteFile(srt, []byte("1\n00:00:00,000 --> 00:00:01,000\nhi\n"), 0o600))
+	t.Run("a second audio track and subtitles", func(t *testing.T) {
+		in := filepath.Join(dir, "two.mkv")
+		args := append(tone(440, 48000, 1.5), tone(880, 48000, 1.5)...)
+		ffrun(t, append(args, "-i", srt, "-map", "0:a", "-map", "1:a", "-map", "2:s", "-c:a", "aac", "-c:s", "srt", in)...)
+		o := opts(t, in, filepath.Join(t.TempDir(), "o.wav"), 0.85, fakeEngine(t, "1"))
+		r := mustRun(t, o)
+		if len(r.Dropped) != 2 || r.Dropped[0] != (DroppedStream{Index: 1, Type: "audio", Codec: "aac"}) ||
+			r.Dropped[1] != (DroppedStream{Index: 2, Type: "subtitle", Codec: "subrip"}) {
+			t.Errorf("dropped %+v", r.Dropped)
+		}
+	})
+	t.Run("cover art a wav cannot hold, but m4a keeps", func(t *testing.T) {
+		requireEncoder(t, "libmp3lame")
+		cover := filepath.Join(dir, "cover.jpg")
+		ffrun(t, "-f", "lavfi", "-i", "color=c=red:s=64x64:d=1", "-frames:v", "1", cover)
+		in := filepath.Join(dir, "in.mp3")
+		ffrun(t, "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=1.5", "-i", cover,
+			"-map", "0:a", "-map", "1:v", "-c:a", "libmp3lame", "-c:v", "copy", "-disposition:v", "attached_pic", in)
+		o := opts(t, in, filepath.Join(t.TempDir(), "o.wav"), 0.85, fakeEngine(t, "1"))
+		r := mustRun(t, o)
+		if len(r.Dropped) != 1 || r.Dropped[0].Type != "video" || r.Dropped[0].Codec != "mjpeg" {
+			t.Errorf("dropped %+v", r.Dropped)
+		}
+		o = opts(t, in, filepath.Join(t.TempDir(), "o.m4a"), 0.85, fakeEngine(t, "1"))
+		if r := mustRun(t, o); len(r.Dropped) != 0 {
+			t.Errorf("m4a keeps the cover, dropped %+v", r.Dropped)
+		}
+	})
+}
+
+// mov cannot hold Opus, VP9 and the like by copy; they are refused by name before the engine starts.
+func TestMovRefusesCodecsItCannotHold(t *testing.T) {
+	requireEncoder(t, "mpeg4")
+	requireEncoder(t, "libopus")
+	requireEncoder(t, "libvpx-vp9")
+	t.Run("opus audio in mkv", func(t *testing.T) {
+		in := filepath.Join(t.TempDir(), "in.mkv")
+		// the first audio track is replaced (re-encoded to AAC); the second, Opus, would have to be copied
+		ffrun(t, "-f", "lavfi", "-i", "testsrc=size=64x64:rate=25:duration=1", "-f", "lavfi", "-i", "sine=duration=1", "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
+			"-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "mpeg4", "-c:a:0", "aac", "-c:a:1", "libopus", in)
+		o := opts(t, in, filepath.Join(t.TempDir(), "o.mov"), 0.85, fakeEngine(t, "1"))
+		_, err := Run(context.Background(), o)
+		wantCode(t, err, CodeUnsupportedStreams)
+		if m := err.(*Error).Msg; !strings.Contains(m, "opus") || !strings.Contains(m, "stream 2") {
+			t.Errorf("message does not name the stream: %q", m)
+		}
+		noLeftovers(t, o)
+	})
+	t.Run("vp9 video in webm", func(t *testing.T) {
+		in := filepath.Join(t.TempDir(), "in.webm")
+		ffrun(t, "-f", "lavfi", "-i", "testsrc=size=64x64:rate=25:duration=1", "-f", "lavfi", "-i", "sine=duration=1", "-c:v", "libvpx-vp9", "-c:a", "libopus", in)
+		o := opts(t, in, filepath.Join(t.TempDir(), "o.mov"), 0.85, fakeEngine(t, "1"))
+		_, err := Run(context.Background(), o)
+		wantCode(t, err, CodeUnsupportedStreams)
+		if m := err.(*Error).Msg; !strings.Contains(m, "vp9") || !strings.Contains(m, "stream 0") {
+			t.Errorf("message does not name the stream: %q", m)
+		}
+		noLeftovers(t, o)
+	})
+}

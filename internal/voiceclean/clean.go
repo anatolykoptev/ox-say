@@ -64,7 +64,7 @@ type Result struct {
 	Seconds, ModelSeconds float64
 	Stereo                string // "mid" or "channels" for a stereo source, "" for mono
 	Wet                   float64
-	Dropped               []DroppedStream // streams the output container cannot carry (video input only)
+	Dropped               []DroppedStream // input streams the output leaves out (extra audio tracks, cover art, data, subtitles ...)
 }
 
 const (
@@ -153,6 +153,8 @@ type job struct {
 	temp string // scratch directory this run created; "" until then
 	part string // part file this run created exclusively; "" when none is owned
 	plan *videoPlan
+	// dropped is what the output leaves out of the input, reported in Result.Dropped
+	dropped []DroppedStream
 }
 
 func (j *job) run() (res *Result, err error) {
@@ -200,6 +202,9 @@ func (j *job) run() (res *Result, err error) {
 			return nil, err
 		}
 		j.plan = plan
+		j.dropped = plan.dropped
+	} else {
+		j.dropped = audioDropped(info, extOf(o.Out))
 	}
 	if st, err := os.Stat(o.Engine); err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0o111 == 0 {
 		return nil, newErr(CodeUnavailable, "the cleanup engine is not installed")
@@ -227,9 +232,7 @@ func (j *job) run() (res *Result, err error) {
 	}
 	res = &Result{Out: o.Out, Video: video, Channels: info.Channels, SampleRate: info.SampleRate,
 		Seconds: info.Seconds, ModelSeconds: modelSeconds, Wet: o.Wet}
-	if j.plan != nil {
-		res.Dropped = j.plan.dropped
-	}
+	res.Dropped = j.dropped
 	if info.Channels == 2 {
 		res.Stereo = o.Stereo
 	}
@@ -258,8 +261,8 @@ func (j *job) cleanup() {
 //     caught too);
 //   - hard links: an In, or an existing Out, with more than one link may be another name of a file in the tree, so
 //     each forbidden tree is walked for the same device and inode (walkForHardLink). The walk runs only for such files,
-//     costs one lstat per directory entry of the tree, skips directories it cannot read, does not follow symlinks and
-//     stops after maxWalk entries, refusing (fail closed) when it cannot finish.
+//     costs one lstat per directory entry of the tree, does not follow symlinks, and refuses (fail closed) when it
+//     cannot finish: a directory or entry it cannot read, or more than maxWalk entries.
 //
 // It does not cover a copy of a meeting's audio: a copied file is an ordinary file.
 func (j *job) checkPaths() error {
@@ -311,23 +314,30 @@ func linkedFile(p string) os.FileInfo {
 }
 
 // walkForHardLink reports whether the tree under root holds another name for the file st. It fails (error) when the
-// tree is bigger than maxWalk entries, so the caller refuses rather than guesses.
+// tree is bigger than maxWalk entries or any part of it cannot be read, so the caller refuses rather than guesses.
 func walkForHardLink(root string, st os.FileInfo) (bool, error) {
 	var seen int
 	found := false
 	errTooBig := errors.New("tree too large to search")
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			if d != nil && d.IsDir() {
-				return fs.SkipDir // unreadable directory
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil // vanished while walking
 			}
-			return nil
+			return err // an unreadable directory is a search that did not finish: the caller refuses
 		}
 		if seen++; seen > maxWalk {
 			return errTooBig
 		}
 		if d.Type().IsRegular() {
-			if fi, ierr := d.Info(); ierr == nil && os.SameFile(fi, st) {
+			fi, ierr := d.Info()
+			if ierr != nil {
+				if errors.Is(ierr, fs.ErrNotExist) {
+					return nil
+				}
+				return ierr
+			}
+			if os.SameFile(fi, st) {
 				found = true
 				return fs.SkipAll
 			}
@@ -716,7 +726,8 @@ func (j *job) publish() error {
 		return newErr(CodeExists, "the output file already exists")
 	}
 	// no hard links on this volume: an atomic rename that fails if Out exists, so nothing created since the check
-	// is replaced.
+	// is replaced. (exFAT and some SMB shares may lack RENAME_EXCL/NOREPLACE too; then the checked-rename window
+	// below remains. Documented, not fixed.)
 	if _, serr := os.Lstat(o.Out); serr == nil {
 		return newErr(CodeExists, "the output file already exists")
 	}
