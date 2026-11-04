@@ -1,8 +1,10 @@
 package voiceclean
 
 import (
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -47,6 +49,44 @@ func layoutWithoutChapterTrack(t *testing.T, path string) string {
 	return strings.Join(keep, "\n")
 }
 
+// sameChaptersOnThePicture reports whether two files have the same chapters (titles equal, times within a frame of
+// each other) measured from each file's own first video frame, which is where a viewer sees them. ffmpeg moves every
+// stream it copies by minus the input's start time and moves the chapters with them (an AAC encoder's priming makes
+// that start -21 ms on ffmpeg 6.1, so the file's streams, and its chapters, all land 21 ms later), and the mov/mp4
+// muxer starts the first chapter at 0 and ends each at the next one's start. Absolute times therefore differ by up to
+// one AAC frame (1024/48000 s = 21.3 ms) between ffmpeg versions; the picture-relative times differ by at most that
+// plus a millisecond, against chapters a second long. A missing, extra or misplaced chapter is far outside it.
+func sameChaptersOnThePicture(t *testing.T, a, b string) bool {
+	t.Helper()
+	const tol = 1024.0/48000 + 0.001
+	parse := func(path string) (rows [][]string, v0 float64) {
+		for _, l := range strings.Split(chapters(t, path), "\n") {
+			if l != "" {
+				rows = append(rows, strings.Split(l, ","))
+			}
+		}
+		return rows, startTime(t, path, "v:0")
+	}
+	ra, va := parse(a)
+	rb, vb := parse(b)
+	if len(ra) == 0 || len(ra) != len(rb) {
+		return false
+	}
+	for i := range ra {
+		if len(ra[i]) != 3 || len(rb[i]) != 3 || ra[i][2] != rb[i][2] {
+			return false
+		}
+		for k := 0; k < 2; k++ {
+			x, _ := strconv.ParseFloat(ra[i][k], 64)
+			y, _ := strconv.ParseFloat(rb[i][k], 64)
+			if math.Abs((x-va)-(y-vb)) > tol {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func chapterTracks(t *testing.T, path string) int {
 	t.Helper()
 	return strings.Count(fprobe(t, "-show_entries", "stream=codec_type,codec_name,codec_tag_string", "-of", "csv=p=0", path), "bin_data")
@@ -64,8 +104,8 @@ func TestChapterTrackInputIsCleanedAndKeepsItsLayout(t *testing.T) {
 			if streamLayout(t, in) != streamLayout(t, o.Out) {
 				t.Fatalf("layout changed:\n%s\n--\n%s", streamLayout(t, in), streamLayout(t, o.Out))
 			}
-			if c := chapters(t, o.Out); c == "" || c != chapters(t, in) {
-				t.Fatalf("chapters lost: %q vs %q", chapters(t, in), c)
+			if !sameChaptersOnThePicture(t, in, o.Out) {
+				t.Fatalf("chapters lost: %q vs %q", chapters(t, in), chapters(t, o.Out))
 			}
 			if len(r.Dropped) != 0 {
 				t.Errorf("the chapter track is rebuilt by the muxer, not dropped: %+v", r.Dropped)
@@ -88,8 +128,8 @@ func TestChapterTrackRuleForInputWithoutOne(t *testing.T) {
 		if layoutWithoutChapterTrack(t, in) != layoutWithoutChapterTrack(t, o.Out) {
 			t.Errorf(".%s: streams changed:\n%s\n--\n%s", ext, layoutWithoutChapterTrack(t, in), layoutWithoutChapterTrack(t, o.Out))
 		}
-		if c := chapters(t, o.Out); c == "" || c != chapters(t, in) {
-			t.Errorf(".%s: chapters lost: %q vs %q", ext, chapters(t, in), c)
+		if !sameChaptersOnThePicture(t, in, o.Out) {
+			t.Errorf(".%s: chapters lost: %q vs %q", ext, chapters(t, in), chapters(t, o.Out))
 		}
 		if len(r.Dropped) != 0 {
 			t.Errorf(".%s: dropped %+v", ext, r.Dropped)
