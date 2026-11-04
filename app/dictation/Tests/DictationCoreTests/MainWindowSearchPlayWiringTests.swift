@@ -148,6 +148,25 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         XCTAssertTrue(p.contains("if let line = result.footnote() { Text(line).font(.caption)"))
     }
 
+    /// The query is the system search field's (native-UI N3): `.searchable` on the Meetings list writes `model.queryText`,
+    /// the typed text still reaches the core, and no hand-built field is left. Only the Meetings list carries it.
+    /// Mutations: SearchPane, put back `TextField(L10nKey.searchPlaceholder.text, text: $model.queryText)` -> RED;
+    /// MeetingsPage, bind `.searchable(text: $localQuery` (a local @State) instead of `$model.queryText` -> RED;
+    /// delete the `searchTyped` onChange -> RED; add `.searchable` to VoicesPage or DictationPage -> RED.
+    func testTheSystemSearchFieldDrivesTheQuery_OnlyOnTheMeetingsList() throws {
+        let pane = flat(try source("Sources/MainWindowUI/SearchPane.swift"))
+        XCTAssertFalse(pane.contains("TextField(L10nKey.searchPlaceholder"), "no hand-built search field")
+        XCTAssertFalse(pane.contains("struct SearchField"))
+        let page = flat(try source("Sources/MainWindowUI/MeetingsPage.swift"))
+        XCTAssertFalse(page.contains("SearchField(model:"))
+        XCTAssertTrue(page.contains(".searchable(text: $model.queryText, placement: .toolbar, prompt: L10nKey.searchPlaceholder.text)"))
+        XCTAssertTrue(page.contains(".onChange(of: model.queryText) { _, text in model.actions.searchTyped(text) }"))
+        for other in ["VoicesPage", "DictationPage", "SettingsPage", "MainWindowView"] {
+            let t = try source("Sources/MainWindowUI/\(other).swift")
+            XCTAssertFalse(t.contains(".searchable"), "\(other) must not carry a search field")
+        }
+    }
+
     /// The end of an item that was replaced does not stop its successor.
     /// Mutation: MeetingAudioPlayer, delete `guard self?.player?.currentItem === item else { return }` in the end
     /// observer -> RED.

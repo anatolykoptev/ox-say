@@ -1,27 +1,6 @@
 import DictationCore
 import SwiftUI
 
-/// The search field above the meetings list.
-struct SearchField: View {
-    @ObservedObject var model: MainWindowModel
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField(L10nKey.searchPlaceholder.text, text: $model.queryText)
-                .textFieldStyle(.plain)
-            if !model.queryText.isEmpty {
-                IconButton(symbol: "xmark.circle.fill", labelKey: .a11ySearchClear) { model.queryText = "" }
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 8).padding(.vertical, 6)
-        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
-        .padding(.horizontal, 10).padding(.vertical, 8)
-        .onChange(of: model.queryText) { _, text in model.actions.searchTyped(text) }
-    }
-}
-
 /// What the list shows while a search is on: searching, nothing found, the daemon unreachable, or the meetings with
 /// the places that matched.
 struct SearchResults: View {
@@ -50,7 +29,7 @@ struct SearchResults: View {
                     }
                 }
             }
-            // Fills the pane: the search field stays pinned at the top and the privacy line at the bottom.
+            // Fills the pane: the privacy line stays at the bottom.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .busy:
             VStack(spacing: 8) {
