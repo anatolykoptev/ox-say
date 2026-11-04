@@ -12,6 +12,15 @@ final class MaskModelTests: XCTestCase {
     private let integrated = GPUDescription(isLowPower: true, isRemovable: false)
     private let egpu = GPUDescription(isLowPower: false, isRemovable: true)
 
+    /// The stats line (and the speed probe behind it) can only catch a plan that drifted to `.all` or the Neural Engine
+    /// if the name it prints is the real one: a binary cpuOnly/cpuAndGPU label would call both "cpuAndGPU".
+    func testEveryComputeUnitIsNamedForWhatItIs() {
+        XCTAssertEqual(ModelStats.name(of: .cpuOnly), "cpuOnly")
+        XCTAssertEqual(ModelStats.name(of: .cpuAndGPU), "cpuAndGPU")
+        XCTAssertEqual(ModelStats.name(of: .cpuAndNeuralEngine), "cpuAndNeuralEngine")
+        XCTAssertEqual(ModelStats.name(of: .all), "all")
+    }
+
     func testTheComputeUnitsTable() {
         typealias Row = (String, CPUArchitecture, [GPUDescription], String?, MLComputeUnits, Int?)
         let rows: [Row] = [
@@ -360,6 +369,29 @@ final class MaskModelTests: XCTestCase {
                 XCTAssertEqual(($0 as? Failure)?.exitCode, .models, name)
             }
         }
+    }
+
+    // Fix round 7: only a genuinely absent model says "download it"; an unreadable folder, a symlink loop or a file where
+    // the folder should be is exit 3 with another reason, so the daemon does not re-download for nothing.
+    // Mutation: MaskModel.swift, the errno switch collapsed back to "missing" -> red.
+    func testAModelsFolderThatCannotBeReadIsNotReportedAsNotInstalled() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("oxclean-models-\(UUID())")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let file = base.appendingPathComponent("a-file")
+        try Data("x".utf8).write(to: file)
+        let loop = base.appendingPathComponent("loop")
+        try FileManager.default.createSymbolicLink(atPath: loop.path, withDestinationPath: loop.path)
+        for (name, dir) in [("a file", file), ("a symlink loop", loop)] {
+            XCTAssertThrowsError(try load(dir, Lookup(answer: Self.refMask)), name) {
+                let f = $0 as? Failure
+                XCTAssertEqual(f?.reason, "unreadable", name)
+                XCTAssertEqual(f?.exitCode, .models, name)
+                XCTAssertFalse(f?.detail.contains("download") ?? true, name)
+            }
+        }
+        let absent = base.appendingPathComponent("nothing-here")
+        XCTAssertThrowsError(try load(absent, Lookup(answer: Self.refMask))) { XCTAssertEqual(($0 as? Failure)?.reason, "missing") }
     }
 
     func testMissingOrBrokenFilesAreRefusedAsModelFailures() throws {

@@ -24,8 +24,19 @@ public struct ModelStats: Equatable {
     /// nil on cpuOnly and for a stub backend. Lets the CLI, the UI and probes say which device ran.
     public var deviceName: String?
     public var deviceRegistryID: UInt64?
-    /// "cpuAndGPU" or "cpuOnly".
+    /// The units the loaded model object reports, by name: "cpuOnly", "cpuAndGPU", and, should a plan ever drift,
+    /// "cpuAndNeuralEngine" or "all" (the CLI prints it, and the speed probe refuses the last two).
     public var computeUnits: String?
+
+    static func name(of units: MLComputeUnits) -> String {
+        switch units {
+        case .cpuOnly: return "cpuOnly"
+        case .cpuAndGPU: return "cpuAndGPU"
+        case .cpuAndNeuralEngine: return "cpuAndNeuralEngine"
+        case .all: return "all"
+        @unknown default: return "unknown(\(units.rawValue))"
+        }
+    }
 }
 
 /// The MossFormer2_SE_48K mask network on Core ML. Loading checks, in order: `manifest.json` and `config.json` against
@@ -55,9 +66,18 @@ public final class MaskModel: MaskPredicting {
         let t0 = clock.now
         let dir = modelsDir.appendingPathComponent(Self.directoryName)
         let compiled = dir.appendingPathComponent(Self.modelFile)
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: compiled.path, isDirectory: &isDir), isDir.boolValue else {
-            throw Failure.models("missing", detail: "The voice-cleanup model is not installed (\(Self.modelFile) was not found); download it first.")
+        var st = stat()
+        if stat(compiled.path, &st) != 0 {
+            // Only a path that is really absent says "download it"; a file where the folder should be, a symlink loop or a
+            // folder we may not enter is a different problem that a download would not fix.
+            let e = errno
+            if e == ENOENT {
+                throw Failure.models("missing", detail: "The voice-cleanup model is not installed (\(Self.modelFile) was not found); download it first.")
+            }
+            throw Failure.models("unreadable", detail: "The voice-cleanup models folder \(modelsDir.path) cannot be used: \(String(cString: strerror(e))).")
+        }
+        guard st.st_mode & S_IFMT == S_IFDIR else {
+            throw Failure.models("missing", detail: "The voice-cleanup model is not installed (\(Self.modelFile) is not a model folder); download it first.")
         }
         try ModelContract.validate(manifest: ModelContract.read(dir.appendingPathComponent("manifest.json"), reason: "manifest"),
                                    config: ModelContract.read(dir.appendingPathComponent("config.json"), reason: "config"))
@@ -68,7 +88,7 @@ public final class MaskModel: MaskPredicting {
         if let core = backend as? CoreMLBackend {
             stats.deviceName = core.device?.name
             stats.deviceRegistryID = core.device?.registryID
-            stats.computeUnits = core.configuredComputeUnits == .cpuOnly ? "cpuOnly" : "cpuAndGPU"
+            stats.computeUnits = ModelStats.name(of: core.configuredComputeUnits)
         }
 
         let t1 = clock.now

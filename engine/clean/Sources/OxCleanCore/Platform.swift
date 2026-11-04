@@ -10,6 +10,9 @@ public enum ExitCode: Int32 {
     case input = 4
     /// macOS older than the floor below.
     case unsupportedOS = 5
+    /// The output cannot be written where the caller asked: it exists, another run holds its `.part`, the directory is
+    /// missing or not writable, the path names a directory, or the destination cannot take the file. Processing errors stay 1.
+    case output = 6
 }
 
 public enum Platform {
