@@ -88,6 +88,7 @@ var wantToolSchemas = map[string]struct{ props, required []string }{
 	"meetings_list":   {[]string{"limit"}, nil},
 	"meeting_get":     {[]string{"id", "part", "offset", "max_chars"}, []string{"id"}},
 	"meetings_search": {[]string{"query"}, []string{"query"}},
+	"voice_clean":     {[]string{"in_path", "out_path", "wet", "stereo", "overwrite"}, []string{"in_path", "out_path"}},
 }
 
 func sortedKeys[V any](m map[string]V) []string {
