@@ -1,0 +1,9 @@
+# Converted model bytes and checkpoints never enter git: they are published to the HF model repo
+# (model/PROVENANCE.md carries the SHA-256 of each published file).
+model/*.mlpackage/
+model/*.mlmodelc/
+model/reference_window.bin
+model/manifest.json
+model/config.json
+**/*.pt
+**/checkpoints/

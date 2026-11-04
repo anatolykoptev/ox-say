@@ -1,0 +1,11 @@
+# Build-time environment and generated artifacts: the venv, checkpoints and the converted
+# models never enter git (the bytes are published to the HF model repo; PROVENANCE.md +
+# manifest.json carry the SHA-256 of each published file).
+.venv/
+__pycache__/
+.pytest_cache/
+out/
+work/
+*.mlpackage
+*.mlmodelc/
+reference_window.bin
