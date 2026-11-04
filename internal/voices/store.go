@@ -97,9 +97,10 @@ type Voice struct {
 	// persisted.
 	Notice string `json:"-"`
 	// NoticeCode is the machine-readable kind of Notice (NoticeShortened or
-	// NoticeTextReplaced). Set by Commit only; persisted as provenance — an
-	// older daemon simply ignores the key.
-	NoticeCode string `json:"notice_code,omitempty"`
+	// NoticeTextReplaced). Set by Commit only; never persisted — like Notice it
+	// answers one add, and a repair that copies the stored voice must not
+	// inherit a code whose notice is gone.
+	NoticeCode string `json:"-"`
 }
 
 // WAVPath returns the clip path for a valid name.

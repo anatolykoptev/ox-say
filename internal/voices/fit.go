@@ -9,10 +9,23 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/anatolykoptev/ox-say/internal/pcm"
 )
 
 // ffmpegTimeout bounds one ffmpeg normalisation or cut.
 const ffmpegTimeout = 60 * time.Second
+
+// A clip is demonstrably silent — a muted microphone, not a quiet speaker —
+// when its peak is under silentPeakDB or its RMS under silentRMSDB.
+const (
+	// silentPeakDB: below the dither/noise floor of any live microphone, so no
+	// real take peaks this low.
+	silentPeakDB = -50.0
+	// silentRMSDB: a very quiet room's noise sits well above this; only a
+	// gated or muted input averages lower.
+	silentRMSDB = -60.0
+)
 
 // ErrNoTranscriber is returned by PrepareRepair when the store has no
 // word-timestamp source.
@@ -84,13 +97,28 @@ func (s *Store) fitReference(ctx context.Context, wav, refText string) (text, no
 	return cut.Text, notice, NoticeShortened, nil
 }
 
+// silentClip reports that wav is demonstrably silent (see silentPeakDB and
+// silentRMSDB). A clip that cannot be decoded is not proven silent.
+func silentClip(wav string) bool {
+	raw, err := os.ReadFile(wav)
+	if err != nil {
+		return false
+	}
+	c, err := pcm.Decode(raw)
+	if err != nil || len(c.S) == 0 {
+		return false
+	}
+	return c.PeakDB() < silentPeakDB || c.RMSDB() < silentRMSDB
+}
+
 // checkWithinCap keeps the invariant for a clip that fits the cap: a ref_text
 // the clip does not say (a slow reader stopped before the end of the passage)
 // would have the clone speak the missing words as a continuation of the
 // reference. The clip is transcribed; a transcript that matches keeps the
 // user's own text, one that does not replaces it (same script only, as for a
-// long clip) with code NoticeTextReplaced, and an empty one keeps the text and
-// logs a warning — a flaky STT result must not become a new failure. Nothing
+// long clip) with code NoticeTextReplaced. An empty transcript on a demonstrably
+// silent clip is refused; on a clip with sound it keeps the text and logs a
+// warning — a flaky STT result must not become a new failure. Nothing
 // to check against — no ref_text, no STT, a script the STT cannot read, or an
 // STT that failed — keeps the text as given: the add must not fail because the
 // STT is down.
@@ -109,6 +137,9 @@ func (s *Store) checkWithinCap(ctx context.Context, wav, refText string) (text, 
 	}
 	transcript := joinWords(words)
 	if transcript == "" {
+		if silentClip(wav) {
+			return "", "", "", &InputError{"voices: no speech found in the clip"}
+		}
 		slog.Warn("voice add: speech-to-text returned no words for the clip; keeping ref_text as given")
 		return refText, "", "", nil
 	}

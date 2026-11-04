@@ -150,8 +150,8 @@ public enum DesignForm {
 
     /// The line under a kept voice: "Voice “x” saved", plus the sentence saying what the daemon did
     /// to the clip or its text — picked from `notice_code`, never from the English `notice` (#439).
-    /// An unknown code (or none, from a daemon that predates it) gets a neutral sentence, never
-    /// "shortened"; no notice is the bare saved line, as before.
+    /// An unknown code (or none, from a daemon that predates it) gets a neutral sentence after the
+    /// name, never "shortened"; no notice is the bare saved line, as before.
     public static func savedNotice(name: String, voice: SavedVoice, text: (L10nKey) -> String = { $0.text }) -> String {
         let saved = String(format: text(.designSaved), name)
         guard voice.notice?.isEmpty == false else { return saved }
@@ -161,7 +161,7 @@ public enum DesignForm {
         case "text_replaced":
             return saved + ". " + text(.designTextReplaced)
         default:
-            return text(.designSavedAdjusted)
+            return saved + ". " + text(.designSavedAdjusted)
         }
     }
 }

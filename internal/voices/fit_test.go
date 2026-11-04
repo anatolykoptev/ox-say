@@ -554,24 +554,92 @@ func TestPrepareWithinCapKeepsRefTextWhenItCannotBeChecked(t *testing.T) {
 	}
 }
 
-// An empty transcript cannot tell "no speech" from a flaky STT: the add keeps
-// the typed ref_text and logs a warning, exactly like an STT failure, so a bad
-// transcription does not become a new failure the user has no answer to
-// (#439). Renamed from TestPrepareWithinCapSilentClipRefused, which asserted
-// the "no speech found in the clip" refusal.
-func TestPrepareWithinCapSilentClipKeepsRefText(t *testing.T) {
+// An empty transcript on a clip that is demonstrably silent (a muted
+// microphone) is refused: storing it would pair the typed ref_text with audio
+// that says nothing, and the clone would speak words nobody recorded.
+// Mutation: internal/voices/fit.go checkWithinCap — delete the `silentClip`
+// condition so an empty transcript always keeps the text -> RED.
+func TestPrepareWithinCapEmptyTranscriptOnSilentClipRefused(t *testing.T) {
 	s, dir := newStore(t)
 	src := testutil.WriteSilentWAV(t, dir, "take.wav", 10)
 	calls := 0
 	s.SetTranscriber(fixedWords(nil, &calls))
+	_, err := s.Add(context.Background(), "ben", src, "something was said")
+	var ie *InputError
+	if !errors.As(err, &ie) || !strings.Contains(err.Error(), "no speech found in the clip") {
+		t.Fatalf("err = %v, want *InputError \"no speech found in the clip\"", err)
+	}
+	if _, gerr := s.Get("ben"); gerr == nil {
+		t.Fatal("a refused add left a stored voice")
+	}
+}
+
+// An empty transcript on a clip that has sound is a flaky STT result, not
+// proof of silence: the add keeps the typed ref_text and logs a warning (#439).
+// Mutation: internal/voices/fit.go checkWithinCap — refuse every empty
+// transcript (return the InputError without the `silentClip` condition) -> RED.
+func TestPrepareWithinCapEmptyTranscriptOnAudibleClipKeepsRefText(t *testing.T) {
+	s, dir := newStore(t)
+	src := filepath.Join(dir, "take.wav")
+	// amp 0.1 = -20 dBFS peak, about -23 dBFS RMS: far above both silence floors.
+	if err := os.WriteFile(src, testutil.ToneWAV(testutil.QwenRate, 10, 0.1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	s.SetTranscriber(fixedWords(nil, &calls))
 	v, err := s.Add(context.Background(), "ben", src, "something was said")
 	if err != nil {
-		t.Fatalf("an empty transcript must not refuse the add: %v", err)
+		t.Fatalf("an empty transcript on an audible clip must not refuse the add: %v", err)
 	}
 	if v.RefText != "something was said" || v.Notice != "" || v.NoticeCode != "" {
 		t.Fatalf("voice = %+v, want the text as given and no notice", v)
 	}
 	if calls != 1 {
 		t.Fatalf("transcriber called %d times, want 1", calls)
+	}
+}
+
+// The silence test is peak OR RMS: a take that is one stray click in ten
+// seconds of nothing peaks well above -50 dBFS yet averages far below -60, and
+// is just as unusable as a muted one.
+// Mutation: internal/voices/fit.go silentClip — drop `|| c.RMSDB() < silentRMSDB` -> RED.
+func TestPrepareWithinCapEmptyTranscriptOnClickOnlyClipRefused(t *testing.T) {
+	s, dir := newStore(t)
+	raw := testutil.SilentWAV(10)
+	const click = 44 + 2*1000 // sample 1000 = 0x0400: 0.03 of full scale, about -30 dBFS peak
+	raw[click], raw[click+1] = 0x00, 0x04
+	src := filepath.Join(dir, "take.wav")
+	if err := os.WriteFile(src, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.SetTranscriber(fixedWords(nil, new(int)))
+	_, err := s.Add(context.Background(), "ben", src, "something was said")
+	var ie *InputError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %v, want *InputError for a click-only clip", err)
+	}
+}
+
+// notice_code is a reply to this add, not provenance: a repair copies the
+// stored voice, so a persisted code would outlive the notice it described.
+// Mutation: internal/voices/store.go Voice.NoticeCode — tag back to
+// `json:"notice_code,omitempty"` -> RED.
+func TestNoticeCodeIsNotPersisted(t *testing.T) {
+	s, dir := newStore(t)
+	src := testutil.WriteSilentWAV(t, dir, "take.wav", 10)
+	s.SetTranscriber(fixedWords(words10("The quick brown fox jumps over the lazy dog."), new(int)))
+	v, err := s.Add(context.Background(), "ben", src, "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.NoticeCode != NoticeTextReplaced {
+		t.Fatalf("returned voice notice_code = %q, want %q", v.NoticeCode, NoticeTextReplaced)
+	}
+	meta, err := os.ReadFile(s.metaPath("ben"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(meta), "notice_code") {
+		t.Fatalf("stored meta %s holds notice_code; it must not be persisted", meta)
 	}
 }
