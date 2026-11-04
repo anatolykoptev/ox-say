@@ -482,22 +482,42 @@ final class VoiceLibrarySessionTests: XCTestCase {
     }
 }
 
-/// Holds an async call until the test opens it.
-final class AsyncGate<T> {
-    private var continuation: CheckedContinuation<T, Never>?
+/// Holds an async call until the test opens it. The test thread (`waiting`, `open`) and the thread a parked call
+/// runs on both touch the state, so it sits behind a lock, and a continuation is taken out of it before it is
+/// resumed: the old unlocked single `continuation` field was written by one thread while another polled it
+/// (checked-continuation canaries released without a resume -> "wait() leaked its continuation", then SIGSEGV;
+/// issue #476), and a second parked call overwrote the first one's continuation, which then never resumed.
+final class AsyncGate<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiters: [CheckedContinuation<T, Never>] = []
     private var value: T?
+
     func wait() async -> T {
-        if let value { return value }
-        return await withCheckedContinuation { continuation = $0 }
+        await withCheckedContinuation { cont in
+            let ready = lock.withLock { () -> T? in
+                if let value { return value }
+                waiters.append(cont)
+                return nil
+            }
+            if let ready { cont.resume(returning: ready) }
+        }
     }
-    /// Returns once `wait` is parked.
+
+    var parkedCount: Int { lock.withLock { waiters.count } }
+
+    /// Returns once `wait` is parked (or the gate is already open).
     func waiting() async {
         let deadline = Date().addingTimeInterval(5)
-        while continuation == nil, Date() < deadline { await Task.yield() }
+        while lock.withLock({ waiters.isEmpty && value == nil }), Date() < deadline { await Task.yield() }
     }
+
     func open(_ v: T) {
-        value = v
-        continuation?.resume(returning: v)
-        continuation = nil
+        let pending = lock.withLock { () -> [CheckedContinuation<T, Never>] in
+            value = v
+            let w = waiters
+            waiters.removeAll()
+            return w
+        }
+        for w in pending { w.resume(returning: v) }
     }
 }
