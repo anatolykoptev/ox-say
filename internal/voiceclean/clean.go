@@ -437,7 +437,7 @@ func (j *job) checkOut(inSt os.FileInfo) error {
 // ---- probe and preflight ----------------------------------------------------------------------------------------------
 
 func (j *job) probe() (*probeInfo, error) {
-	raw, err := j.o.Run(j.ctx, j.o.FFprobe, probeArgs(j.o.In))
+	raw, err := j.o.Run(withTool(j.ctx, ToolProbe), j.o.FFprobe, probeArgs(j.o.In))
 	if err != nil {
 		if cerr := j.ctx.Err(); cerr != nil {
 			return nil, cerr
@@ -445,14 +445,14 @@ func (j *job) probe() (*probeInfo, error) {
 		if notStarted(err) {
 			return nil, newErr(CodeUnavailable, "ffprobe is not installed (brew install ffmpeg)")
 		}
-		return nil, newErr(CodeInvalidRequest, "the input is not a media file ffprobe can read: "+tailClip(err.Error(), stderrKeep))
+		return nil, newErrDetail(CodeInvalidRequest, "This file is not audio or video OxSay can read.", "ffprobe: "+tailClip(err.Error(), stderrKeep))
 	}
 	info, err := parseProbe(raw)
 	if errors.Is(err, errNoAudio) {
 		return nil, newErr(CodeNoAudio, "the file has no audio stream")
 	}
 	if err != nil {
-		return nil, newErr(CodeInvalidRequest, err.Error())
+		return nil, newErrDetail(CodeInvalidRequest, "This file is not audio or video OxSay can read.", err.Error())
 	}
 	return info, nil
 }
@@ -515,7 +515,7 @@ var ffBase = []string{"-nostdin", "-v", "error", "-y"}
 
 // ff runs ffmpeg with the common prefix; a failure becomes an engine_failed carrying the tail of its stderr.
 func (j *job) ff(args ...string) error {
-	_, err := j.o.Run(j.ctx, j.o.FFmpeg, append(append([]string(nil), ffBase...), args...))
+	_, err := j.o.Run(withTool(j.ctx, ToolFFmpeg), j.o.FFmpeg, append(append([]string(nil), ffBase...), args...))
 	return j.toolErr("ffmpeg", err)
 }
 
@@ -547,7 +547,7 @@ func (j *job) model(in, out string) (time.Duration, error) {
 		bin, args = niceBin, append([]string{"-n", "15", j.o.Engine}, args...)
 	}
 	t0 := time.Now()
-	_, err := j.o.Run(j.ctx, bin, args)
+	_, err := j.o.Run(withTool(j.ctx, ToolEngine), bin, args)
 	if err := j.toolErr("the cleanup engine", err); err != nil {
 		return 0, err
 	}
@@ -799,7 +799,7 @@ func lagWithin(delta float64) bool { return math.Abs(delta) <= lagTolerance+lagE
 // lagGap probes the part file and returns input lag minus output lag in seconds. A file that cannot be probed, or
 // shows no picture, has an unknown lag, which is a refusal, not a pass.
 func (j *job) lagGap(info *probeInfo, part string) (float64, error) {
-	raw, err := j.o.Run(j.ctx, j.o.FFprobe, probeArgs(part))
+	raw, err := j.o.Run(withTool(j.ctx, ToolProbe), j.o.FFprobe, probeArgs(part))
 	if err != nil {
 		if cerr := j.ctx.Err(); cerr != nil {
 			return 0, cerr

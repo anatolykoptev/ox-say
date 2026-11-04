@@ -1,6 +1,7 @@
 package voiceclean
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -45,6 +46,8 @@ type Error struct {
 	Code   string
 	Msg    string
 	Status int
+	// Detail is what a tool said (clipped stderr): for the daemon's log, never for a user or a response body.
+	Detail string
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Msg }
@@ -56,6 +59,32 @@ func newErr(code, msg string) *Error {
 	}
 	return &Error{Code: code, Msg: msg, Status: st}
 }
+
+// newErrDetail is newErr with the tool output kept apart from the user's sentence.
+func newErrDetail(code, msg, detail string) *Error {
+	e := newErr(code, msg)
+	e.Detail = detail
+	return e
+}
+
+// Tool names the program a Runner call starts, carried in the call's context (ToolOf) so a Runner need not guess
+// from the path.
+type Tool string
+
+const (
+	ToolProbe  Tool = "ffprobe"
+	ToolFFmpeg Tool = "ffmpeg"
+	ToolEngine Tool = "engine" // ox-clean, perhaps behind nice
+)
+
+type toolKey struct{}
+
+func withTool(ctx context.Context, t Tool) context.Context {
+	return context.WithValue(ctx, toolKey{}, t)
+}
+
+// ToolOf is the tool the Runner call in ctx starts; "" outside a voiceclean run.
+func ToolOf(ctx context.Context) Tool { t, _ := ctx.Value(toolKey{}).(Tool); return t }
 
 // stderrKeep bounds the tool output an engine_failed message carries.
 const stderrKeep = 512
