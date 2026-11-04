@@ -137,7 +137,10 @@ final class ModelGoldenTests: XCTestCase {
         let config = "release"
         #endif
         print("SPEED \(config): \(audioSeconds) s of audio in \(secs) s = \(audioSeconds / secs)x real time; peak footprint \(peak) GiB; stats \(stats)")
-        XCTAssertGreaterThanOrEqual(audioSeconds / secs, 8, "end-to-end speed gate (\(config) build)")
+        let plan = ComputeChoice.current()
+        let floor = SpeedFloor.floor(for: plan)
+        print("SPEED plan: \(CPUArchitecture.current) units \(plan.units.rawValue) (\(m.stats.computeUnits ?? "?")) device \(m.stats.deviceName ?? "none"); floor \(floor)x")
+        XCTAssertGreaterThanOrEqual(audioSeconds / secs, floor, "end-to-end speed floor for this plan (\(config) build)")
     }
 
     static func peakFootprintGiB() -> Double {

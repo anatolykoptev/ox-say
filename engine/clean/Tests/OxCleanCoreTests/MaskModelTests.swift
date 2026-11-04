@@ -133,6 +133,13 @@ final class MaskModelTests: XCTestCase {
         XCTAssertEqual(t.mse, 0.9712980999852213, accuracy: 1e-6)
     }
 
+    func testTheSpeedFloorFollowsThePlan() {
+        let gpu = ComputePlan(units: .cpuAndGPU, discreteGPUIndex: nil), cpu = ComputePlan(units: .cpuOnly, discreteGPUIndex: nil)
+        XCTAssertEqual(SpeedFloor.floor(for: gpu, architecture: .arm64), 50)
+        XCTAssertEqual(SpeedFloor.floor(for: ComputePlan(units: .cpuAndGPU, discreteGPUIndex: 1), architecture: .x86_64), 5)
+        XCTAssertEqual(SpeedFloor.floor(for: cpu, architecture: .x86_64), 2)
+    }
+
     func testTheRealMachineGetsAPlanWithoutTheANE() {
         let plan = ComputeChoice.current(environment: [:])
         XCTAssertTrue(plan.units == .cpuAndGPU || plan.units == .cpuOnly)

@@ -67,3 +67,22 @@ public enum ComputeChoice {
         return plan(architecture: .current, gpus: gpus, override: environment["OX_CLEAN_COMPUTE_UNITS"])
     }
 }
+
+/// Speed floors in times real time, end to end (features + model + STFT/iSTFT), per compute plan. The opt-in bench asserts
+/// the floor of the plan it ran, and the UI's "expected time" on Intel (decision 8) is computed from them.
+public enum SpeedFloor {
+    /// arm64, cpuAndGPU: measured 172x on an M5 Pro; 50x leaves room for a smaller chip.
+    public static let appleGPU: Double = 50
+    /// x86_64 with a discrete GPU, cpuAndGPU: measured 7.18x on a Radeon Pro 5500M (the model is 96 % of the time).
+    public static let intelDiscreteGPU: Double = 5
+    /// x86_64 without a usable discrete GPU, cpuOnly: measured 2.91x on an i9-9880H.
+    public static let intelCPUOnly: Double = 2
+
+    public static func floor(for plan: ComputePlan, architecture: CPUArchitecture = .current) -> Double {
+        switch (architecture, plan.units) {
+        case (.arm64, _): return appleGPU
+        case (.x86_64, .cpuOnly): return intelCPUOnly
+        case (.x86_64, _): return intelDiscreteGPU
+        }
+    }
+}
