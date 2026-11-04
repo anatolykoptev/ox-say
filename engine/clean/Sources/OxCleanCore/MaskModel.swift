@@ -20,6 +20,12 @@ public struct ModelStats: Equatable {
     /// Predictions after the known-answer run, and the time they took.
     public var predictions = 0
     public var predictionSeconds: Double = 0
+    /// The GPU Core ML was pointed at: the plan's discrete GPU, else the system default GPU when the units include the GPU.
+    /// nil on cpuOnly and for a stub backend. Lets the CLI, the UI and probes say which device ran.
+    public var deviceName: String?
+    public var deviceRegistryID: UInt64?
+    /// "cpuAndGPU" or "cpuOnly".
+    public var computeUnits: String?
 }
 
 /// The MossFormer2_SE_48K mask network on Core ML. Loading checks, in order: `manifest.json` and `config.json` against
@@ -59,6 +65,11 @@ public final class MaskModel: MaskPredicting {
         let backend = try loadBackend(compiled)
         self.backend = backend
         stats.loadSeconds = (clock.now - t0).seconds
+        if let core = backend as? CoreMLBackend {
+            stats.deviceName = core.device?.name
+            stats.deviceRegistryID = core.device?.registryID
+            stats.computeUnits = core.configuredComputeUnits == .cpuOnly ? "cpuOnly" : "cpuAndGPU"
+        }
 
         let t1 = clock.now
         let answer = try Self.run(backend, features: reference.features, frames: ModelContract.frames)
@@ -104,10 +115,13 @@ public final class MaskModel: MaskPredicting {
 /// The real Core ML model. Everything that touches `MLMultiArray` memory is here and checks its bounds.
 final class CoreMLBackend: MaskPredicting {
     let model: MLModel
+    /// The GPU the configuration names (or the system default one when the units include the GPU), nil on cpuOnly.
+    let device: MTLDevice?
 
     /// `expected` is the I/O contract the compiled model must declare; only tests pass anything but `.engine`.
     init(compiledURL: URL, plan: ComputePlan, expected: IOSpec = .engine) throws {
         let cfg = try Self.configuration(plan: plan, devices: plan.discreteGPUIndex == nil ? [] : MTLCopyAllDevices())
+        device = cfg.computeUnits == .cpuOnly ? nil : (cfg.preferredMetalDevice ?? MTLCreateSystemDefaultDevice())
         do { model = try MLModel(contentsOf: compiledURL, configuration: cfg) } catch {
             throw Failure.models("load", detail: "The voice-cleanup model could not be loaded: \(error.localizedDescription)")
         }
@@ -152,11 +166,12 @@ final class CoreMLBackend: MaskPredicting {
         do { array = try MLMultiArray(shape: [1, NSNumber(value: frames), NSNumber(value: n)], dataType: .float32) } catch {
             throw Failure.processing("input_alloc", detail: "Not enough memory for the voice-cleanup model.")
         }
-        try array.withUnsafeMutableBytes { raw, strides in
+        // The closure must not throw: a throwing closure handed to CoreML's rethrowing `withUnsafeMutableBytes` leaves the
+        // swifterror register non-zero on its normal return on x86_64 release builds, and XCTest's error observer then
+        // crashes bridging a junk pointer. Validate inside, report with a plain Bool, throw outside.
+        let filled: Bool = array.withUnsafeMutableBytes { raw, strides in
             let s = strides
-            guard s.count == 3, s[2] >= 1, s[1] >= 0, ((frames - 1) * s[1] + (n - 1) * s[2] + 1) * 4 <= raw.count else {
-                throw Failure.processing("input_strides", detail: "Core ML allocated an input array this engine cannot fill.")
-            }
+            guard s.count == 3, s[2] >= 1, s[1] >= 0, ((frames - 1) * s[1] + (n - 1) * s[2] + 1) * 4 <= raw.count else { return false }
             let p = raw.bindMemory(to: Float.self)
             features.withUnsafeBufferPointer { f in
                 if s[2] == 1 && s[1] == n {
@@ -165,7 +180,9 @@ final class CoreMLBackend: MaskPredicting {
                     for t in 0..<frames { for b in 0..<n { p[t * s[1] + b * s[2]] = f[t * n + b] } }
                 }
             }
+            return true
         }
+        guard filled else { throw Failure.processing("input_strides", detail: "Core ML allocated an input array this engine cannot fill.") }
         return array
     }
 
@@ -183,26 +200,28 @@ final class CoreMLBackend: MaskPredicting {
         }
         let lastIndex = (frames - 1) * rowStride + (bins - 1) * binStride
         let type = a.dataType
-        return try a.withUnsafeBytes { raw -> [Float] in
-            func gather<T>(_ t: T.Type, _ convert: (T) -> Float) throws -> [Float] {
+        // Non-throwing closure, see makeInput: the outcome travels as a Result and is unwrapped outside.
+        let outcome: Result<[Float], Failure> = a.withUnsafeBytes { raw in
+            func gather<T>(_ t: T.Type, _ convert: (T) -> Float) -> Result<[Float], Failure> {
                 // `raw.count` is the span Core ML reports for this array; the strides must fit inside it.
                 guard (lastIndex + 1) * MemoryLayout<T>.stride <= raw.count else {
-                    throw Failure.processing("mask_strides", detail: "The voice-cleanup model returned a mask whose strides reach past its memory.")
+                    return .failure(Failure.processing("mask_strides", detail: "The voice-cleanup model returned a mask whose strides reach past its memory."))
                 }
                 let p = raw.bindMemory(to: T.self)
                 var out = [Float](repeating: 0, count: frames * bins)
                 for t in 0..<frames { for b in 0..<bins { out[t * bins + b] = convert(p[t * rowStride + b * binStride]) } }
-                return out
+                return .success(out)
             }
             switch type {
-            case .float32: return try gather(Float.self) { $0 }
-            case .double: return try gather(Double.self) { Float($0) }
+            case .float32: return gather(Float.self) { $0 }
+            case .double: return gather(Double.self) { Float($0) }
             #if arch(arm64)
-            case .float16: return try gather(Float16.self) { Float($0) }
+            case .float16: return gather(Float16.self) { Float($0) }
             #endif
-            default: throw Failure.processing("mask_dtype", detail: "The voice-cleanup model returned a mask of an unsupported type.")
+            default: return .failure(Failure.processing("mask_dtype", detail: "The voice-cleanup model returned a mask of an unsupported type."))
             }
         }
+        return try outcome.get()
     }
 }
 

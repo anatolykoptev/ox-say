@@ -1,4 +1,5 @@
 import Darwin
+import Metal
 import XCTest
 @testable import OxCleanCore
 
@@ -26,7 +27,7 @@ final class ModelGoldenTests: XCTestCase {
     func testTheModelLoadsAndPassesItsKnownAnswer() throws {
         let m = try model()
         let s = m.stats
-        print("MODEL load \(s.loadSeconds) s, first prediction (known answer) \(s.firstPredictionSeconds) s, "
+        print("MODEL device \(s.deviceName ?? "none") units \(s.computeUnits ?? "?"); load \(s.loadSeconds) s, first prediction (known answer) \(s.firstPredictionSeconds) s, "
               + "known answer mse \(s.knownAnswerMSE) p99.9 \(s.knownAnswerP999) max \(s.knownAnswerMaxAbs), units \(ComputeChoice.current().units.rawValue)")
         XCTAssertLessThanOrEqual(s.knownAnswerMSE, KnownAnswer.mseLimit)
         XCTAssertLessThanOrEqual(s.knownAnswerP999, KnownAnswer.p999Limit)
@@ -48,6 +49,15 @@ final class ModelGoldenTests: XCTestCase {
         let plan = ComputeChoice.current()
         XCTAssertEqual(m.configuredComputeUnits?.rawValue, plan.units.rawValue)
         XCTAssertNotEqual(m.configuredComputeUnits, .all)
+        // Which GPU ran is reported: any GPU plan names one, cpuOnly names none.
+        if plan.units == .cpuOnly {
+            XCTAssertNil(m.stats.deviceName)
+        } else {
+            XCTAssertFalse((m.stats.deviceName ?? "").isEmpty)
+            XCTAssertNotNil(m.stats.deviceRegistryID)
+            if let i = plan.discreteGPUIndex { XCTAssertEqual(m.stats.deviceRegistryID, MTLCopyAllDevices()[i].registryID) }
+        }
+        XCTAssertEqual(m.stats.computeUnits, plan.units == .cpuOnly ? "cpuOnly" : "cpuAndGPU")
         // The call-site check of the compiled model's declared I/O: a contract that disagrees must stop the load.
         let compiled = URL(fileURLWithPath: Self.env["OX_CLEAN_MODELS"]!).appendingPathComponent(MaskModel.directoryName)
             .appendingPathComponent(MaskModel.modelFile)

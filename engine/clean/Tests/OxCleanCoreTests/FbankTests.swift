@@ -134,6 +134,9 @@ final class FbankTests: XCTestCase {
         _ = Fbank().features(scaled: x)
         print("fbank 20 s window, no dither: \(Date().timeIntervalSince(t1) * 1000) ms")
         XCTAssertEqual(out.count, 2496 * 180)
+        // Debug builds are several times slower (1.66 s on the Intel test Mac, #462): the bound is a release-build bound.
+        #if !DEBUG
         XCTAssertLessThan(dt, 1.0)
+        #endif
     }
 }

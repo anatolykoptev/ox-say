@@ -49,12 +49,19 @@ final class MaskModelTests: XCTestCase {
             XCTAssertEqual(cfg.computeUnits.rawValue, units.rawValue)
             XCTAssertNil(cfg.preferredMetalDevice)
         }
-        for (arch, gpus) in [(CPUArchitecture.arm64, [GPUDescription]()), (.x86_64, [discrete]), (.x86_64, [integrated])] {
+        // The plan for this machine's real devices (the index must fit the real list, whatever order the OS gives them).
+        let real = MTLCopyAllDevices()
+        let described = real.map { GPUDescription(isLowPower: $0.isLowPower, isRemovable: $0.isRemovable) }
+        for (arch, gpus, devices) in [(CPUArchitecture.arm64, [GPUDescription](), [MTLDevice]()), (.x86_64, described, real)] {
             let plan = ComputeChoice.plan(architecture: arch, gpus: gpus, override: nil)
-            let cfg = try CoreMLBackend.configuration(plan: plan, devices: arch == .x86_64 ? MTLCopyAllDevices() : [])
+            let cfg = try CoreMLBackend.configuration(plan: plan, devices: devices)
             XCTAssertEqual(cfg.computeUnits.rawValue, plan.units.rawValue)
             XCTAssertNotEqual(cfg.computeUnits, .all)
             XCTAssertNotEqual(cfg.computeUnits, .cpuAndNeuralEngine)
+            if let i = plan.discreteGPUIndex {
+                XCTAssertEqual(cfg.preferredMetalDevice?.registryID, real[i].registryID)
+                XCTAssertFalse(real[i].isLowPower || real[i].isRemovable)
+            }
         }
     }
 
@@ -165,6 +172,17 @@ final class MaskModelTests: XCTestCase {
             #endif
         }
         return (array, want)
+    }
+
+    func testMakeInputCopiesTheFeaturesIntoACoreMLArray() throws {
+        // Regression (Intel release): this call crashed XCTest's error observer when its closure was a throwing one.
+        let f = (0..<(2496 * 180)).map { Float($0 % 977) }
+        let a = try CoreMLBackend.makeInput(f, frames: 2496)
+        XCTAssertEqual(a.shape.map(\.intValue), [1, 2496, 180])
+        XCTAssertEqual(a.dataType, .float32)
+        for (t, b) in [(0, 0), (0, 179), (1, 0), (1234, 77), (2495, 179)] {
+            XCTAssertEqual(a[[0, t, b] as [NSNumber]].floatValue, f[t * 180 + b], "[\(t), \(b)]")
+        }
     }
 
     func testReadMaskHonoursStridesThatPadTheLastDimension() throws {
