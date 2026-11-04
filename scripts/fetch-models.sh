@@ -13,8 +13,12 @@
 #   Nemotron 3 Diarization fast128 (OpenMDW-1.1), 5 files and 2 documents, 199 MB, in <dest>/diar/nemotron-3-diarization/:
 #                                                 the ox-diar engine that replaces the pyannote pipeline. In the default set
 #                                                 and in --diar-only on every Apple Silicon Mac, whatever its macOS; --nemotron-only fetches just it.
+#   MossFormer2 SE 48K Core ML voice cleanup (Apache-2.0), 8 files and 4 documents, 131 MB, in
+#                                                 <dest>/clean/mossformer2-se-48k/: ox-clean. In NO default set, on any Mac:
+#                                                 the daemon runs --clean-only on the user's first use of cleanup. Apple Silicon
+#                                                 and Intel alike (no hardware test here; the daemon decides what runs).
 #
-# Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [--notes-only] [--diar-only] [--nemotron-only] [dest]   (any order)
+# Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [--notes-only] [--diar-only] [--nemotron-only] [--clean-only] [dest]   (any order)
 #   dest defaults to "$OX_SAY_HOME/models" (OX_SAY_HOME defaults to
 #   ~/Library/Application Support/ox-say).
 #   OX_SAY_MODELS_FROM=<dir> copies matching files from a local dir instead of
@@ -26,6 +30,7 @@ with_voxcpm2=0
 notes_only=0
 diar_only=0
 nemotron_only=0
+clean_only=0
 dest=
 for arg in "$@"; do
     case "$arg" in
@@ -34,6 +39,7 @@ for arg in "$@"; do
         --notes-only) notes_only=1 ;;
         --diar-only) diar_only=1 ;;
         --nemotron-only) nemotron_only=1 ;;
+        --clean-only) clean_only=1 ;;
         -*) echo "unknown option: $arg" >&2; exit 2 ;;
         *)
             if [ -n "$dest" ]; then
@@ -44,14 +50,14 @@ for arg in "$@"; do
             ;;
     esac
 done
-# --notes-only, --diar-only and --nemotron-only each replace the model list; an option for another model would be dropped without a word.
-if [ $((notes_only + diar_only + nemotron_only)) -gt 1 ]; then
-    echo "--notes-only, --diar-only and --nemotron-only select different model sets; give one" >&2
+# --notes-only, --diar-only, --nemotron-only and --clean-only each replace the model list; an option for another model would be dropped without a word.
+if [ $((notes_only + diar_only + nemotron_only + clean_only)) -gt 1 ]; then
+    echo "--notes-only, --diar-only, --nemotron-only and --clean-only select different model sets; give one" >&2
     exit 2
 fi
-if [ "$notes_only" = 1 ] || [ "$diar_only" = 1 ] || [ "$nemotron_only" = 1 ]; then
+if [ "$notes_only" = 1 ] || [ "$diar_only" = 1 ] || [ "$nemotron_only" = 1 ] || [ "$clean_only" = 1 ]; then
     if [ "$with_whisper" = 1 ] || [ "$with_voxcpm2" = 1 ]; then
-        echo "--with-whisper and --with-voxcpm2 do not combine with --notes-only, --diar-only or --nemotron-only: those fetch one set and nothing else" >&2
+        echo "--with-whisper and --with-voxcpm2 do not combine with --notes-only, --diar-only, --nemotron-only or --clean-only: those fetch one set and nothing else" >&2
         exit 2
     fi
 fi
@@ -180,6 +186,40 @@ if nemotron_ok; then
     nem_in_set=1
 fi
 
+# MossFormer2 SE 48K voice cleanup (ox-clean): Koptev/mossformer2-se-48k-coreml, our Core ML conversion of
+# alibabasglab/MossFormer2_SE_48K (Apache-2.0; NOTICE credits Alibaba SLAB), at the commit published and verified on
+# 2026-11-04 (the resolve URL at this commit answers with x-repo-commit: clean_rev). Never `main`. Stored as
+# <dest>/clean/mossformer2-se-48k/<rel>. The app loads the compiled .mlmodelc, so the .mlpackage (the source of
+# truth in the repo) is NOT fetched. reference_window.bin is the known-answer window the engine checks the model
+# with on every load. The four documents (LICENSE, NOTICE.md, PROVENANCE.md, README.md) keep the Apache-2.0 terms
+# next to the weights. The set is lazy: NO default list includes it, on any architecture, and only --clean-only
+# fetches it (the daemon calls that on the user's first use, as it does for the notes model). Bumping means new
+# hashes here and clean_rev in config.CleanModelsRevision (TestCleanPinsAgreeAcrossLanguages compares the two; Task 3
+# adds engine/clean's Pins.swift as the third) and config.CleanModelsBytes.
+clean_rev=da0d6b45be2fe7f2ec495ee76280132848a789c0
+clean_url=https://huggingface.co/Koptev/mossformer2-se-48k-coreml/resolve/$clean_rev
+clean_files=(
+    "019a117d1b12476d342ce787954cd065e97d7977c8575b0b4a64ba1cd6f6a919  MossFormer2_SE_48K.mlmodelc/analytics/coremldata.bin"
+    "45f9c86c73f7e4fcb9eb552789bbdeb11274c9de235dd637bc018b1f8a6aa2a5  MossFormer2_SE_48K.mlmodelc/coremldata.bin"
+    "795e65fd7adda75bfe4e62912c899592a0ece1c45b19beb4a39468a622c34b9b  MossFormer2_SE_48K.mlmodelc/metadata.json"
+    "6db168e889ed29a8c36c4fd9429872cf1a01b241368af0f5e33baa853c8141f5  MossFormer2_SE_48K.mlmodelc/model.mil"
+    "a240669911aade7aa87991de27e09d0c3d56d7d9fa491a7df180725fe3250446  MossFormer2_SE_48K.mlmodelc/weights/weight.bin"
+    "49e9ae2faabea3259737ea6b315d4558c27ff83af2580329c1ec855cd15a12bd  manifest.json"
+    "639b015f07dda17e176b0c0473241bf507f8688127d52e681d6af0f44b373f0c  config.json"
+    "29fcb372069103a8337c0e19e32f2e983bc709ea45185a662213a26ee7435beb  reference_window.bin"
+)
+clean_docs=(
+    "c95bae1d1ce0235ecccd3560b772ec1efb97f348a79f0fbe0a634f0c2ccefe2c  LICENSE"
+    "8dbf05185f2faa1e46abc7a628acc943825e5916ad50a05e9425767a4d7e6b96  NOTICE.md"
+    "5feecdab893ba16536ae78e01f85a0c8a4f46bbbebb1e018f6b0431743107504  PROVENANCE.md"
+    "cf4c35fc0e07825124e6e1196431f5fb37cd43f3db6d93218c4df2aed20e60ff  README.md"
+)
+clean_models=()
+for entry in "${clean_files[@]}" "${clean_docs[@]}"; do
+    read -r sum rel <<< "$entry"
+    clean_models+=("clean/mossformer2-se-48k/$rel $sum $clean_url $rel")
+done
+
 # Meeting notes (--notes-only): Qwen3.5-4B Q4_K_M, 2740937888 bytes, pinned to the repo commit
 # the notes spike measured. The daemon reports download progress from the size of the .part
 # file against config.NotesModelBytes, which must match this size.
@@ -196,6 +236,9 @@ fi
 if [ "$nemotron_only" = 1 ]; then
     models=("${nem_models[@]}")
     nem_in_set=1
+fi
+if [ "$clean_only" = 1 ]; then
+    models=("${clean_models[@]}")
 fi
 
 # Seconds a download may stay under 1 KB/s before it is given up on; OX_SAY_STALL_SECS shortens it for tests.
@@ -214,6 +257,7 @@ human_size() {
 
 diar_marker="$dest/diar/speaker-diarization/.fluidaudio-revision"
 nem_marker="$dest/diar/nemotron-3-diarization/.ox-say-revision"
+clean_marker="$dest/clean/mossformer2-se-48k/.ox-say-revision"
 
 # Seconds per retry pass to wait before the next one (pass * unit); OX_SAY_RETRY_SLEEP_UNIT=0 turns it off for tests.
 retry_unit=${OX_SAY_RETRY_SLEEP_UNIT:-2}
@@ -298,6 +342,7 @@ for entry in "${models[@]}"; do
     case $name in
         diar/speaker-diarization/*) rm -f "$diar_marker" ;;
         diar/nemotron-3-diarization/*) rm -f "$nem_marker" ;;
+        clean/mossformer2-se-48k/*) rm -f "$clean_marker" ;;
     esac
     if [ -n "${OX_SAY_MODELS_FROM:-}" ] && [ -f "$OX_SAY_MODELS_FROM/$name" ]; then
         echo "copy    $name"
@@ -356,8 +401,8 @@ done
 # loader outside this repo reads it. Each marker is written last, after every file of its set passed its checksum, so
 # an interrupted fetch has no marker: ox-diar cannot load it, and the daemon will not call the models ready either
 # (Task 20b.2: Config.DiarModelsReady). An old marker is removed before the first file of its set is fetched, for the
-# same reason.
-if [ "$notes_only" != 1 ]; then
+# same reason. The clean set's marker is the same contract, read by the daemon alone (Config.CleanModelsReady).
+if [ "$notes_only" != 1 ] && [ "$clean_only" != 1 ]; then
     if [ "$nemotron_only" != 1 ]; then
         printf '%s\n' "$diar_rev" > "$dest/diar/speaker-diarization/.fluidaudio-revision.part"
         mv "$dest/diar/speaker-diarization/.fluidaudio-revision.part" "$dest/diar/speaker-diarization/.fluidaudio-revision"
@@ -366,6 +411,12 @@ if [ "$notes_only" != 1 ]; then
         printf '%s\n' "$nem_rev" > "$dest/diar/nemotron-3-diarization/.ox-say-revision.part"
         mv "$dest/diar/nemotron-3-diarization/.ox-say-revision.part" "$dest/diar/nemotron-3-diarization/.ox-say-revision"
     fi
+fi
+
+if [ "$clean_only" = 1 ]; then
+    printf '%s\n' "$clean_rev" > "$dest/clean/mossformer2-se-48k/.ox-say-revision.part"
+    mv "$dest/clean/mossformer2-se-48k/.ox-say-revision.part" "$dest/clean/mossformer2-se-48k/.ox-say-revision"
+    exit 0
 fi
 
 if [ "$notes_only" = 1 ] || [ "$diar_only" = 1 ] || [ "$nemotron_only" = 1 ]; then exit 0; fi
