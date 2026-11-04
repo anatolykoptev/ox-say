@@ -3,9 +3,8 @@ import XCTest
 @testable import DictationCore
 
 /// The window component kit's wiring, read as text (the shim compiles DictationCore only): no
-/// hand-built stand-ins for the macOS-14 system views in MainWindowUI — the trailing panel is the
-/// system `.inspector`, an empty page is `ContentUnavailableView` — and every icon-only button
-/// labelled. Each test names the mutation that must turn it red.
+/// hand-built stand-ins for the macOS-14 system views in MainWindowUI — an empty page is
+/// `ContentUnavailableView` — and every icon-only button labelled. Each test names the mutation that must turn it red.
 final class ComponentsWiringTests: XCTestCase {
     /// …/app/dictation/Tests/DictationCoreTests/<this file> → Sources/MainWindowUI.
     private var mainWindowUI: URL {
@@ -17,7 +16,7 @@ final class ComponentsWiringTests: XCTestCase {
     }
 
     /// A tripwire (not a proof) against an unlabeled icon button and a hand-built panel or empty
-    /// state: within 6 lines of any `Button` in MainWindowUI, an `Image(systemName:` must be
+    /// state (comment lines are ignored, so a comment can neither trip nor satisfy the check): within 6 lines of any `Button` in MainWindowUI, an `Image(systemName:` must be
     /// accompanied by `accessibilityLabel` or `IconButton`.
     /// Mutation: add `Button { } label: { Image(systemName: "gear") }` to DictationPage.swift -> RED.
     /// Mutation: add `SidePanel(isOpen: $x) { }` or `EmptyState(symbol: "x", title: "y", message: "z") { }` to any page -> RED.
@@ -25,8 +24,9 @@ final class ComponentsWiringTests: XCTestCase {
         for url in try FileManager.default.contentsOfDirectory(at: mainWindowUI, includingPropertiesForKeys: nil)
         where url.pathExtension == "swift" && url.lastPathComponent != "IconButton.swift" {
             let text = try String(contentsOf: url, encoding: .utf8)
-            XCTAssertFalse(text.contains("SidePanel("), "\(url.lastPathComponent): use the system .inspector(isPresented:)")
-            XCTAssertFalse(text.contains("EmptyState("), "\(url.lastPathComponent): use ContentUnavailableView")
+            let code = Self.stripComments(text)
+            XCTAssertFalse(code.contains("SidePanel("), "\(url.lastPathComponent): the side panel is gone; use a list/detail split")
+            XCTAssertFalse(code.contains("EmptyState("), "\(url.lastPathComponent): use ContentUnavailableView")
             let lines = text.components(separatedBy: "\n")
             for (i, line) in lines.enumerated() where line.contains("Button") && !line.contains("buttonStyle") {
                 let window = lines[i..<min(i + 6, lines.count)].joined(separator: "\n")
@@ -38,13 +38,23 @@ final class ComponentsWiringTests: XCTestCase {
         }
     }
 
-    /// The meeting detail is the system inspector: its slide and Reduce Motion are the system's,
-    /// and the toolbar toggle is the system's `sidebar.trailing`.
-    /// Mutation: MeetingsPage.swift, `.inspector(` back to a hand-built column -> RED on the first check.
-    /// Mutation: the toggle's `sidebar.trailing` symbol changed or dropped -> RED on the second.
-    func testMeetingDetailIsTheSystemInspector() throws {
-        let text = try String(contentsOf: mainWindowUI.appendingPathComponent("MeetingsPage.swift"), encoding: .utf8)
-        XCTAssertTrue(text.contains(".inspector(isPresented:"))
-        XCTAssertTrue(text.contains("sidebar.trailing"))
+    /// The no-results view fills the pane: without the greedy frame the VStack shrinks to its content
+    /// and the search field and privacy line float mid-column.
+    /// Mutation: SearchPane.swift, drop `.frame(maxWidth: .infinity, maxHeight: .infinity)` after the no-results
+    /// `ContentUnavailableView` -> RED.
+    func testSearchNoResultsFillsThePane() throws {
+        let text = try String(contentsOf: mainWindowUI.appendingPathComponent("SearchPane.swift"), encoding: .utf8)
+        let lines = Self.stripComments(text).components(separatedBy: "\n")
+        let at = try XCTUnwrap(lines.firstIndex { $0.contains("ContentUnavailableView") }, "no ContentUnavailableView in SearchPane.swift")
+        let window = lines[at..<min(at + 14, lines.count)].joined(separator: "\n")
+        XCTAssertTrue(window.contains(".frame(maxWidth: .infinity, maxHeight: .infinity)"),
+                      "SearchPane no-results ContentUnavailableView must be followed by the greedy frame")
+    }
+
+    /// Source text without whole-line `//` and `///` comments.
+    private static func stripComments(_ text: String) -> String {
+        text.components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
     }
 }

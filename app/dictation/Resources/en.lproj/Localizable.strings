@@ -382,7 +382,6 @@
 "a11y.find_close" = "Close find";
 "a11y.find_next" = "Next match";
 "a11y.find_previous" = "Previous match";
-"a11y.inspector" = "Inspector";
 "a11y.play_stop" = "Stop playback";
 "a11y.rename" = "Rename";
 "a11y.search_clear" = "Clear search";

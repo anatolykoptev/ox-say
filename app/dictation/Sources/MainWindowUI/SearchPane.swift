@@ -50,6 +50,8 @@ struct SearchResults: View {
                     }
                 }
             }
+            // Fills the pane: the search field stays pinned at the top and the privacy line at the bottom.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .busy:
             VStack(spacing: 8) {
                 Text(L10nKey.searchBusy.text).foregroundStyle(.secondary)
