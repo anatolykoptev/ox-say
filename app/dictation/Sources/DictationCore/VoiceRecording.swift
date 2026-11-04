@@ -154,17 +154,27 @@ public struct VoiceRecording: Equatable {
         }
         guard microphone == .authorized else { return nil }
         if meetingRecording {
-            phase = .failed(text(.voiceRecordBlockedMeeting))
+            refuseStart(text(.voiceRecordBlockedMeeting))
             return nil
         }
         if dictationRecording {
-            phase = .failed(text(.voiceRecordBlockedDictation))
+            refuseStart(text(.voiceRecordBlockedDictation))
             return nil
         }
         phase = .recording
         seconds = 0
         problem = nil
         return .startRecorder
+    }
+
+    /// A refused «Записать» / «Записать ещё раз». From the review the take the person already has stays — the sentence
+    /// goes under it; from the start or a failure the sheet says it as the failure.
+    private mutating func refuseStart(_ sentence: String) {
+        if case .review = phase {
+            problem = sentence
+        } else {
+            phase = .failed(sentence)
+        }
     }
 
     /// «Остановить»: the app stopped the recorder; `seconds` is what it kept.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -30,7 +31,8 @@ func tooLongMsg(why string) string {
 const scriptMsg = "voices: clip is longer than 20 s and its ref_text is not in Latin, Cyrillic or Greek script, which the speech-to-text cannot re-derive — trim the clip to at most 20 s and keep your own transcript"
 
 // fitReference makes the clip at wav and its transcript describe the same
-// audio. A clip within the cap keeps refText as given. A longer one without a
+// audio. A clip within the cap keeps refText as given when the clip says it
+// (see checkWithinCap). A longer one without a
 // ref_text is simply cut at the cap (nothing to mismatch). A longer one WITH a
 // ref_text is transcribed, cut at a word boundary within the cap, and the
 // returned text is the transcript of the kept part; notice then says so. A
@@ -43,7 +45,7 @@ func (s *Store) fitReference(ctx context.Context, wav, refText string) (text, no
 		return "", "", fmt.Errorf("voices: %w", err)
 	}
 	if dur <= MaxRefSeconds+capEpsilon {
-		return refText, "", nil
+		return s.checkWithinCap(ctx, wav, refText)
 	}
 	if refText == "" {
 		return "", "", s.trimWAV(ctx, wav, MaxRefSeconds)
@@ -79,6 +81,38 @@ func (s *Store) fitReference(ctx context.Context, wav, refText string) (text, no
 	notice = fmt.Sprintf("clip is longer than %.0f s: kept the first %.1f s and replaced ref_text with its %d-word transcript",
 		MaxRefSeconds, cut.At, cut.Last+1)
 	return cut.Text, notice, nil
+}
+
+// checkWithinCap keeps the invariant for a clip that fits the cap: a ref_text
+// the clip does not say (a slow reader stopped before the end of the passage)
+// would have the clone speak the missing words as a continuation of the
+// reference. The clip is transcribed; a transcript that matches keeps the
+// user's own text, one that does not replaces it (same script only, as for a
+// long clip), and an empty one refuses the clip. Nothing to check against —
+// no ref_text, no STT, a script the STT cannot read, or an STT that failed —
+// keeps the text as given: the add must not fail because the STT is down.
+func (s *Store) checkWithinCap(ctx context.Context, wav, refText string) (text, notice string, err error) {
+	if refText == "" || s.transcribe == nil || Script(refText) == "" {
+		return refText, "", nil
+	}
+	words, err := s.transcribe(ctx, wav)
+	switch {
+	case errors.Is(err, ErrNoTranscriber):
+		return refText, "", nil
+	case err != nil:
+		slog.Warn("voice add: could not check ref_text against the clip; keeping it as given",
+			slog.Any("error", err))
+		return refText, "", nil
+	}
+	transcript := joinWords(words)
+	if transcript == "" {
+		return "", "", &InputError{"voices: no speech found in the clip"}
+	}
+	if TextsMatch(refText, transcript) || !SameScript(refText, transcript) {
+		return refText, "", nil
+	}
+	return transcript, fmt.Sprintf("ref_text did not match the clip: replaced it with its %d-word transcript",
+		len(strings.Fields(transcript))), nil
 }
 
 // trimWAV rewrites wav in place keeping its first sec seconds.

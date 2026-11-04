@@ -184,6 +184,23 @@ final class VoiceRecordingTests: XCTestCase {
         XCTAssertEqual(r.phase, .recording)
     }
 
+    /// «Записать ещё раз» refused by a meeting or a dictation: the reviewed take stays and the sentence is said under it.
+    /// Mutation: VoiceRecording.swift refuseStart() review branch -> `phase = .failed(sentence)` -> RED.
+    func testARefusedRerecordKeepsTheReviewedTake() {
+        var meeting = reviewed(8)
+        XCTAssertNil(meeting.start(meetingRecording: true, text: en))
+        XCTAssertEqual(meeting.phase, .review(seconds: 8), "the take is still there")
+        XCTAssertEqual(meeting.problem, en(.voiceRecordBlockedMeeting))
+        XCTAssertTrue(meeting.canSave, "and it can still be saved")
+        var dictation = reviewed(8)
+        XCTAssertNil(dictation.start(dictationRecording: true, text: en))
+        XCTAssertEqual(dictation.phase, .review(seconds: 8))
+        XCTAssertEqual(dictation.problem, en(.voiceRecordBlockedDictation))
+        // Once the meeting ends, «Записать ещё раз» starts a new take and the sentence goes.
+        XCTAssertEqual(meeting.start(text: en), .startRecorder)
+        XCTAssertNil(meeting.problem)
+    }
+
     /// A meeting starts during a take: the take is stopped and thrown away, and the sheet says so.
     func testAMeetingStartingDuringATakeDiscardsIt() {
         var r = ready()
@@ -472,7 +489,8 @@ final class VoiceRecordingTests: XCTestCase {
     func testARefusedSaveAsksWhetherTheWindowIsGone() throws {
         let voice = try source("OxSayDictation/VoiceSource.swift")
         XCTAssertTrue(voice.contains("windowGone: windowGone()"))
-        XCTAssertTrue(voice.contains("record = nil"), "the refused-and-closed take does not come back on reopen")
+        XCTAssertTrue(voice.contains("perform(.discardTake)\n                    record = nil"),
+                      "the refused-and-closed take does not come back on reopen")
         let window = try source("OxSayDictation/MainWindowSource.swift")
         XCTAssertTrue(window.contains("windowGone:"), "the gone check is wired")
     }
@@ -483,5 +501,48 @@ final class VoiceRecordingTests: XCTestCase {
     func testTheSheetOpensWithAFreeLabel() throws {
         let voice = try source("OxSayDictation/VoiceSource.swift")
         XCTAssertTrue(voice.contains("VoiceRecording(language: L10nBundle.locale.identifier, taken: takenNames())"))
+    }
+
+    // MARK: the take is heard
+
+    /// The player is stopped only when nobody claims it: a take that is playing stays, a preview the session no longer
+    /// names goes, a silent player has nothing to stop.
+    /// Mutation: VoicePlayback.swift `&& !takePlaying` dropped -> RED on the first line.
+    func testAPlayingTakeIsNotStoppedBySync() {
+        XCTAssertFalse(VoicePlayback.shouldStop(previewID: nil, takePlaying: true, active: true), "the take plays on")
+        XCTAssertTrue(VoicePlayback.shouldStop(previewID: nil, takePlaying: false, active: true), "a preview that is gone stops")
+        XCTAssertFalse(VoicePlayback.shouldStop(previewID: nil, takePlaying: false, active: false), "nothing sounds")
+        XCTAssertFalse(VoicePlayback.shouldStop(previewID: "ben", takePlaying: false, active: true), "the session names it")
+    }
+
+    /// `sync` asks the function, with the live take state; the old test on the session alone would stop every take.
+    /// PIN (source text).
+    /// Mutation: VoiceSource.swift sync() back to `if session.playingID == nil, player.isActivelyPlaying { player.stop() }` -> RED.
+    func testSyncAsksWhetherTheTakeIsPlaying() throws {
+        let voice = try source("OxSayDictation/VoiceSource.swift")
+        let sync = try body(voice, of: "private func sync(playing: String? = nil) {")
+        XCTAssertTrue(sync.contains("VoicePlayback.shouldStop(previewID: session.playingID, takePlaying: recordPlaying, active: player.isActivelyPlaying)"))
+        XCTAssertFalse(sync.contains("if session.playingID == nil, player.isActivelyPlaying"))
+    }
+
+    /// Whatever stops the take's player clears `recordPlaying`, so the sheet does not keep Stop for a take that ended:
+    /// a library preview, a designer preview, and the stop of the previews.
+    /// PIN (source text).
+    /// Mutation: VoiceSource.swift `recordPlaying = false` removed from preview(_:) -> RED.
+    func testAPreviewThatStopsTheTakeClearsItsFlag() throws {
+        let voice = try source("OxSayDictation/VoiceSource.swift")
+        for signature in ["func preview(_ id: String) {", "func stopPreview() {"] {
+            let part = try body(voice, of: signature)
+            XCTAssertTrue(part.contains("player.stop()\n        recordPlaying = false"), "\(signature) clears recordPlaying")
+        }
+        XCTAssertTrue(voice.contains("designer.willPlay = { [weak self] in\n            self?.player.stop()\n            self?.recordPlaying = false"))
+    }
+
+    /// The version handshake's getter: a voice recording holds the relaunch exactly while the sheet has work.
+    /// PIN (source text).
+    /// Mutation: VoiceSource.swift `record?.isWork ?? false` -> `false` -> RED.
+    func testRecordingVoiceReadsTheSheetsWork() throws {
+        let voice = try source("OxSayDictation/VoiceSource.swift")
+        XCTAssertTrue(voice.contains("var recordingVoice: Bool { record?.isWork ?? false }"))
     }
 }

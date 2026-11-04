@@ -88,6 +88,7 @@ final class VoiceSource {
         designer.mayPlay = { [recordingRunning] in VoicePreviewGate.allows(recordingRunning: recordingRunning()) }
         designer.willPlay = { [weak self] in
             self?.player.stop()
+            self?.recordPlaying = false
             self?.session.stopPreview()
             self?.sync()
         }
@@ -436,6 +437,7 @@ final class VoiceSource {
 
     func preview(_ id: String) {
         player.stop()
+        recordPlaying = false
         // A recording captures the output: a sample must never start into one. Read live — it may have just begun.
         guard VoicePreviewGate.allows(recordingRunning: recordingRunning()) else {
             session.stopPreview()
@@ -471,13 +473,14 @@ final class VoiceSource {
 
     func stopPreview() {
         player.stop()
+        recordPlaying = false
         session.stopPreview()
         sync()
     }
 
     /// The session's list, picks and playing voice into the window, and the menu's list and checkmarks after them —
     /// the menu only when the ids actually moved. The player answers to the session: a sample it no longer calls
-    /// playing (a delete may have stopped it mid-flight) is stopped.
+    /// playing (a delete may have stopped it mid-flight) is stopped — unless it is the person's own take.
     private func sync(playing: String? = nil) {
         var values = model.data.voices
         let previousIDs = values.voices
@@ -487,7 +490,9 @@ final class VoiceSource {
         values.russianVoice = session.picks.russian
         values.englishVoice = session.picks.english
         if let offered = session.offeredIDs { values.voices = offered }
-        if session.playingID == nil, player.isActivelyPlaying { player.stop() }
+        if VoicePlayback.shouldStop(previewID: session.playingID, takePlaying: recordPlaying, active: player.isActivelyPlaying) {
+            player.stop()
+        }
         values.design = designer.flow
         values.designOpen = designer.sheetOpen
         values.file = fileAdd
