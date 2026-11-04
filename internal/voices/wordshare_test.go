@@ -22,3 +22,19 @@ func TestWordOverlapAndWordShare(t *testing.T) {
 		t.Fatal("TextsMatch must keep ignoring case and punctuation")
 	}
 }
+
+// The typographic apostrophes (U+2019, U+02BC) fold into a plain one: a typed
+// "don’t" is the same word as the STT's "don't". Without the fold "don't"
+// splits into "don" + "t", a correct text can drop below the match threshold,
+// and its ref_text is replaced for no reason (#439).
+// Mutation: internal/voices/script.go normWords — delete the `apostrophes.Replace` fold -> RED.
+func TestNormWordsFoldsTypographicApostrophes(t *testing.T) {
+	for _, typed := range []string{"I don’t think so", "I donʼt think so"} {
+		if !TextsMatch(typed, "I don't think so") {
+			t.Fatalf("TextsMatch(%q, \"I don't think so\") = false, want true", typed)
+		}
+	}
+	if got := normWords("don’t"); len(got) != 1 || got[0] != "don't" {
+		t.Fatalf("normWords(\"don’t\") = %v, want [\"don't\"]", got)
+	}
+}

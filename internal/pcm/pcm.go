@@ -327,3 +327,24 @@ func (c Clip) QuietestWindow(window int) int {
 	}
 	return best
 }
+
+// PeakDB is the loudest sample in dBFS (-Inf for digital silence or no audio).
+func (c Clip) PeakDB() float64 {
+	peak := 0.0
+	for _, s := range c.S {
+		peak = max(peak, math.Abs(float64(s)))
+	}
+	return dbPerDecade * math.Log10(peak/fullScale)
+}
+
+// RMSDB is the whole-clip RMS level in dBFS (-Inf for digital silence or no audio).
+func (c Clip) RMSDB() float64 {
+	if len(c.S) == 0 {
+		return math.Inf(-1)
+	}
+	sum := 0.0
+	for _, s := range c.S {
+		sum += float64(s) * float64(s)
+	}
+	return dbPerDecade * math.Log10(math.Sqrt(sum/float64(len(c.S)))/fullScale)
+}

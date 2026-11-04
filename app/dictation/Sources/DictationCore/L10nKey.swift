@@ -488,6 +488,10 @@ public enum L10nKey: String, CaseIterable {
     case designSaveFailedExists = "design.save_failed.exists"
     case designSaved = "design.saved"
     case designShortened = "design.shortened"
+    // The saved voice's text was replaced by the transcript of what the clip actually says (#439).
+    case designTextReplaced = "design.text_replaced"
+    // A notice whose code the app does not know: something was adjusted, say no more than that.
+    case designSavedAdjusted = "design.saved_adjusted"
     // «Взять из файла»: the picked clip, its check and the sheet.
     case fileOpen = "file.open"
     case fileSheetTitle = "file.sheet.title"

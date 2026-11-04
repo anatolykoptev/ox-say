@@ -118,8 +118,13 @@ func commonWords(wa, wb []string) int {
 	return common
 }
 
+// apostrophes folds the typographic apostrophes a keyboard or a pasted text
+// produces (U+2019 ’, U+02BC ʼ) into the plain one, so a typed "don’t" matches
+// the STT's "don't" instead of splitting into two words.
+var apostrophes = strings.NewReplacer("’", "'", "ʼ", "'")
+
 func normWords(text string) []string {
-	fields := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+	fields := strings.FieldsFunc(apostrophes.Replace(strings.ToLower(text)), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '\''
 	})
 	out := fields[:0]

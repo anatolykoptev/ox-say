@@ -363,6 +363,9 @@ func (d *Daemon) handleAddVoice(w http.ResponseWriter, r *http.Request) {
 	if v.Notice != "" {
 		resp["notice"] = v.Notice
 	}
+	if v.NoticeCode != "" {
+		resp["notice_code"] = v.NoticeCode
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

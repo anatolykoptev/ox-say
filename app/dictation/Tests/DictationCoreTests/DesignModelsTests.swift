@@ -94,9 +94,17 @@ final class DesignModelsTests: XCTestCase {
     }
 
     func testASavedVoiceCarriesItsNameAndNotice() throws {
-        let ok = Data(#"{"name":"anna","engine":"voxcpm2","designed_from":"d","seed":5,"registered_to_engine":true,"notice":"clip is longer"}"#.utf8)
+        let ok = Data(#"{"name":"anna","engine":"voxcpm2","designed_from":"d","seed":5,"registered_to_engine":true,"notice":"clip is longer","notice_code":"shortened"}"#.utf8)
         let outcome = try SaveOutcome.interpret(status: 200, data: ok)
-        XCTAssertEqual(outcome, .saved(SavedVoice(name: "anna", notice: "clip is longer")))
+        XCTAssertEqual(outcome, .saved(SavedVoice(name: "anna", notice: "clip is longer", noticeCode: "shortened")))
+    }
+
+    /// A daemon that predates `notice_code` still decodes: the field stays nil and savedNotice
+    /// gives the neutral sentence, never "shortened" (#439).
+    func testASavedVoiceWithoutNoticeCodeDecodes() throws {
+        let ok = Data(#"{"name":"anna","notice":"ref_text did not match the clip"}"#.utf8)
+        let outcome = try SaveOutcome.interpret(status: 200, data: ok)
+        XCTAssertEqual(outcome, .saved(SavedVoice(name: "anna", notice: "ref_text did not match the clip")))
     }
 
     func testOtherFailuresCarryTheDaemonsMessage() {

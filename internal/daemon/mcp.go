@@ -162,6 +162,7 @@ type voiceAddOut struct {
 	Name               string `json:"name"`
 	RegisteredToEngine bool   `json:"registered_to_engine"`
 	Notice             string `json:"notice,omitempty"`
+	NoticeCode         string `json:"notice_code,omitempty"`
 }
 
 func (d *Daemon) toolVoiceAdd(ctx context.Context, _ *mcp.CallToolRequest, in voiceAddIn) (*mcp.CallToolResult, voiceAddOut, error) {
@@ -170,7 +171,7 @@ func (d *Daemon) toolVoiceAdd(ctx context.Context, _ *mcp.CallToolRequest, in vo
 	if err != nil {
 		return nil, voiceAddOut{}, err
 	}
-	return nil, voiceAddOut{Name: v.Name, RegisteredToEngine: registered, Notice: v.Notice}, nil
+	return nil, voiceAddOut{Name: v.Name, RegisteredToEngine: registered, Notice: v.Notice, NoticeCode: v.NoticeCode}, nil
 }
 
 type voiceUpdateIn struct {

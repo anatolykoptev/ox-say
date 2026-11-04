@@ -107,11 +107,25 @@ final class UpdateDesignL10nTests: XCTestCase {
         XCTAssertEqual(DesignForm.takeTitle(index: 1, count: 3, text: ru), "Вариант 2 из 3")
         XCTAssertEqual(DesignForm.warningText("it may contain babble", text: ru),
                        "В этом варианте могут быть посторонние звуки. Послушайте внимательно или возьмите следующий.")
-        XCTAssertEqual(DesignForm.savedNotice(name: "anna", shortened: false, text: ru), "Голос «anna» сохранён")
-        XCTAssertEqual(DesignForm.savedNotice(name: "anna", shortened: true, text: ru),
+        XCTAssertEqual(DesignForm.savedNotice(name: "anna", voice: SavedVoice(name: "a", notice: nil), text: ru), "Голос «anna» сохранён")
+        XCTAssertEqual(DesignForm.savedNotice(name: "anna", voice: SavedVoice(name: "a", notice: "n", noticeCode: "shortened"), text: ru),
                        "Голос «anna» сохранён. Запись оказалась длиннее, чем допускает голос, поэтому её сократили.")
-        XCTAssertEqual(DesignForm.savedNotice(name: "anna", shortened: true, text: en),
+        XCTAssertEqual(DesignForm.savedNotice(name: "anna", voice: SavedVoice(name: "a", notice: "n", noticeCode: "shortened"), text: en),
                        "Voice “anna” saved. The recording was longer than a voice can keep, so it was shortened.")
+        // #439: the notice's code, not its English text, picks the sentence — a replaced text is not a cut.
+        // Mutation: DesignModels.swift savedNotice — `text_replaced` -> `designShortened` or an unknown
+        // code -> `designShortened` -> RED; the unknown-code branch back to bare `text(.designSavedAdjusted)`
+        // (the voice's name lost) -> RED.
+        XCTAssertEqual(DesignForm.savedNotice(name: "anna", voice: SavedVoice(name: "a", notice: "n", noticeCode: "text_replaced"), text: ru),
+                       "Голос «anna» сохранён. Текст голоса обновлён под запись.")
+        XCTAssertEqual(DesignForm.savedNotice(name: "anna", voice: SavedVoice(name: "a", notice: "n", noticeCode: "text_replaced"), text: en),
+                       "Voice “anna” saved. The voice's text was updated to match the recording.")
+        for unknown in ["trimmed", nil] {
+            XCTAssertEqual(DesignForm.savedNotice(name: "anna", voice: SavedVoice(name: "a", notice: "n", noticeCode: unknown), text: ru),
+                           "Голос «anna» сохранён. Сервис поправил запись.")
+            XCTAssertEqual(DesignForm.savedNotice(name: "anna", voice: SavedVoice(name: "a", notice: "n", noticeCode: unknown), text: en),
+                           "Voice “anna” saved. The service adjusted the recording.")
+        }
         XCTAssertEqual(DesignForm.descriptionPlaceholder(text: ru),
                        "Тёплый женский голос, диктор лет тридцати, родной язык — русский, живая и дружелюбная манера")
     }
