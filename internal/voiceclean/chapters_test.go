@@ -100,7 +100,7 @@ func TestChapterTrackRuleForInputWithoutOne(t *testing.T) {
 // A data track that is not the chapter track (GoPro telemetry is bin_data too, with the tag gpmd) is still carried.
 func TestOtherDataTracksAreNotChapterTracks(t *testing.T) {
 	doc := `{"streams":[{"index":0,"codec_type":"video","codec_name":"h264"},{"index":1,"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":1,"duration":"2"},
-{"index":2,"codec_type":"data","codec_name":"bin_data","codec_tag_string":"gpmd"},{"index":3,"codec_type":"data","codec_name":"bin_data","codec_tag_string":"text"}],"format":{"duration":"2"}}`
+{"index":2,"codec_type":"data","codec_name":"bin_data","codec_tag_string":"gpmd"},{"index":3,"codec_type":"data","codec_name":"bin_data","codec_tag_string":"text"}],"chapters":[{"id":0}],"format":{"duration":"2"}}`
 	info, err := parseProbe([]byte(doc))
 	must(t, err)
 	if info.Streams[2].ChapterTrack || !info.Streams[3].ChapterTrack {
@@ -111,5 +111,39 @@ func TestOtherDataTracksAreNotChapterTracks(t *testing.T) {
 	got := strings.Join(p.maps, " ")
 	if !strings.Contains(got, "0:2") || strings.Contains(got, "0:3") || len(p.dropped) != 0 {
 		t.Fatalf("maps %q dropped %+v", got, p.dropped)
+	}
+}
+
+// A data/text stream in a file that lists no chapters is not a rendering of chapters: it is an ordinary data stream,
+// carried into mov and dropped (and listed) from mp4. (ffmpeg cannot write such a file here, so the decision is made
+// on probe JSON.)
+func TestTextDataTrackWithoutChaptersIsOrdinary(t *testing.T) {
+	const streams = `"streams":[{"index":0,"codec_type":"video","codec_name":"h264"},{"index":1,"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":1,"duration":"2"},
+{"index":2,"codec_type":"data","codec_name":"bin_data","codec_tag_string":"text"}]`
+	info, err := parseProbe([]byte(`{` + streams + `,"chapters":[],"format":{"duration":"2"}}`))
+	must(t, err)
+	if info.Streams[2].ChapterTrack {
+		t.Fatal("flagged as a chapter track with no chapters in the file")
+	}
+	p, err := planVideo(info, "mov")
+	must(t, err)
+	if !strings.Contains(strings.Join(p.maps, " "), "0:2") {
+		t.Errorf("mov: the data track is not carried: %v", p.maps)
+	}
+	p, err = planVideo(info, "mp4")
+	must(t, err)
+	if len(p.dropped) != 1 || p.dropped[0].Index != 2 {
+		t.Errorf("mp4: want the track dropped and listed, got %+v", p.dropped)
+	}
+	with, err := parseProbe([]byte(`{` + streams + `,"chapters":[{"id":0}],"format":{"duration":"2"}}`))
+	must(t, err)
+	if !with.Streams[2].ChapterTrack {
+		t.Fatal("not flagged although the file lists chapters")
+	}
+}
+
+func TestProbeAsksForChapters(t *testing.T) {
+	if !strings.Contains(strings.Join(probeArgs("x"), " "), "-show_chapters") {
+		t.Fatal("ffprobe is not asked for the chapters")
 	}
 }

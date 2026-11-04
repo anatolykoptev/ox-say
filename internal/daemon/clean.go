@@ -268,11 +268,30 @@ type engineOutcome struct {
 	timedOut bool
 }
 
-// SweepCleanScratch removes the scratch directories a killed cleanup left in the temp directory (see
-// voiceclean.SweepStale). Called once, at serve start, before any run can begin.
-func (d *Daemon) SweepCleanScratch() {
-	if gone := voiceclean.SweepStale(os.TempDir(), voiceclean.StaleScratchAge); len(gone) > 0 {
-		d.log.Info("removed stale voice-clean scratch directories", "count", len(gone))
+// StartCleanScratchSweep removes the scratch directories a killed cleanup left in the temp directory (see
+// voiceclean.SweepStale), once per daemon start, off the start-up path and only after something accepts on the
+// listen address (the repair pass's rule). The listener may be another instance's when our own bind failed; that is
+// harmless, because the sweep takes only marked, unlocked, 6-hour-old directories, which no live run owns.
+func (d *Daemon) StartCleanScratchSweep() {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	d.sweepCancel, d.sweepDone = cancel, done
+	go func() {
+		defer close(done)
+		if !waitListening(ctx, d.Cfg.Addr) {
+			return
+		}
+		if gone := voiceclean.SweepStale(os.TempDir(), voiceclean.StaleScratchAge); len(gone) > 0 {
+			d.log.Info("removed stale voice-clean scratch directories", "count", len(gone))
+		}
+	}()
+}
+
+// StopCleanScratchSweep ends a sweep still waiting for the listener and waits for one in progress.
+func (d *Daemon) StopCleanScratchSweep() {
+	if d.sweepCancel != nil {
+		d.sweepCancel()
+		<-d.sweepDone
 	}
 }
 

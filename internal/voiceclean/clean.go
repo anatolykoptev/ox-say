@@ -157,8 +157,9 @@ type job struct {
 	ctx context.Context
 	o   Options
 
-	temp string // scratch directory this run created; "" until then
-	part string // part file this run created exclusively; "" when none is owned
+	temp string   // scratch directory this run created; "" until then
+	lock *os.File // the marker of temp, locked for the whole run
+	part string   // part file this run created exclusively; "" when none is owned
 	plan *videoPlan
 	// dropped is what the output leaves out of the input, reported in Result.Dropped
 	dropped []DroppedStream
@@ -231,6 +232,9 @@ func (j *job) run() (res *Result, err error) {
 	}
 	j.temp = temp
 	defer j.cleanup()
+	if j.lock, err = claimScratch(temp); err != nil {
+		return nil, newErr(CodeUnavailable, "cannot create a scratch directory")
+	}
 
 	mix, modelSeconds, err := j.mixdown(info)
 	if err != nil {
@@ -259,6 +263,10 @@ func (j *job) cleanup() {
 	if j.temp != "" && filepath.IsAbs(j.temp) && strings.HasPrefix(filepath.Base(j.temp), "voice-clean.") {
 		_ = os.RemoveAll(j.temp)
 		j.temp = ""
+	}
+	if j.lock != nil {
+		_ = j.lock.Close()
+		j.lock = nil
 	}
 }
 

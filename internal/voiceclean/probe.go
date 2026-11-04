@@ -28,9 +28,11 @@ type streamInfo struct {
 	Codec       string // ffprobe codec_name
 	AttachedPic bool   // a video stream that is cover art
 	// ChapterTrack is a QuickTime chapter track: ffprobe shows it as codec_type data, codec bin_data, tag "text"
-	// (handler SubtitleHandler, no disposition). It is the mov/mp4 muxer's rendering of the chapters, so it is never
-	// mapped as a stream; -map_chapters carries the chapters and the output muxer writes a track for them. Other data
-	// tracks are bin_data too (GoPro telemetry is tagged gpmd), so the tag decides, not the codec.
+	// (handler SubtitleHandler, no disposition), in a file that also lists chapters. It is the mov/mp4 muxer's
+	// rendering of the chapters, so it is never mapped as a stream; -map_chapters carries the chapters and the output
+	// muxer writes a track for them. Other data tracks are bin_data too (GoPro telemetry is tagged gpmd), so the tag
+	// decides, not the codec; and a text data track in a file with no chapters is nobody's rendering of anything, so
+	// it is an ordinary data stream (carried where the container allows, else dropped and listed).
 	ChapterTrack bool
 }
 
@@ -48,7 +50,8 @@ type probeDoc struct {
 			AttachedPic int `json:"attached_pic"`
 		} `json:"disposition"`
 	} `json:"streams"`
-	Format struct {
+	Chapters []json.RawMessage `json:"chapters"`
+	Format   struct {
 		Duration  string `json:"duration"`
 		StartTime string `json:"start_time"`
 	} `json:"format"`
@@ -56,7 +59,7 @@ type probeDoc struct {
 
 // probeArgs is the ffprobe command line for one input (the script asked for the same fields one by one).
 func probeArgs(in string) []string {
-	return []string{"-v", "error", "-protocol_whitelist", "file", "-show_streams", "-show_format", "-of", "json", "file:" + in}
+	return []string{"-v", "error", "-protocol_whitelist", "file", "-show_streams", "-show_format", "-show_chapters", "-of", "json", "file:" + in}
 }
 
 // parseProbe reads ffprobe's JSON. A missing audio stream is the sentinel errNoAudio; anything unusable about the
@@ -70,7 +73,7 @@ func parseProbe(raw []byte) (*probeInfo, error) {
 	for _, s := range doc.Streams {
 		p.Streams = append(p.Streams, streamInfo{Index: s.Index, Type: s.CodecType, Codec: codecLabel(s.CodecName, s.CodecTag),
 			AttachedPic:  s.CodecType == "video" && s.Disposition.AttachedPic == 1,
-			ChapterTrack: s.CodecType == "data" && s.CodecTag == "text"})
+			ChapterTrack: len(doc.Chapters) > 0 && s.CodecType == "data" && s.CodecTag == "text"})
 		switch s.CodecType {
 		case "audio":
 			if p.AudioIndex >= 0 {
