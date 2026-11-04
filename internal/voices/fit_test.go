@@ -89,6 +89,9 @@ func TestPrepareLongClipCutsAtWordAndReplacesRefText(t *testing.T) {
 	if v.Notice == "" {
 		t.Fatal("no notice for a replaced ref_text")
 	}
+	if v.NoticeCode != NoticeShortened {
+		t.Fatalf("notice_code = %q, want %q for a clip cut at the cap", v.NoticeCode, NoticeShortened)
+	}
 	stored, err := s.Get("ben")
 	if err != nil || stored.RefText != v.RefText {
 		t.Fatalf("stored ref_text = %q (%v), want %q", stored.RefText, err, v.RefText)
@@ -499,6 +502,9 @@ func TestPrepareWithinCapPartialTranscriptReplacesRefText(t *testing.T) {
 	if !strings.Contains(v.Notice, "did not match the clip") || !strings.Contains(v.Notice, "9-word") {
 		t.Fatalf("notice = %q, want the mismatch notice naming the 9-word transcript", v.Notice)
 	}
+	if v.NoticeCode != NoticeTextReplaced {
+		t.Fatalf("notice_code = %q, want %q: the clip was not shortened, only its text replaced", v.NoticeCode, NoticeTextReplaced)
+	}
 }
 
 // A transcript that matches keeps the user's own text (punctuation, case) and says nothing.
@@ -548,14 +554,24 @@ func TestPrepareWithinCapKeepsRefTextWhenItCannotBeChecked(t *testing.T) {
 	}
 }
 
-// A transcript that is empty means the clip holds no speech: refused, nothing stored.
-func TestPrepareWithinCapSilentClipRefused(t *testing.T) {
+// An empty transcript cannot tell "no speech" from a flaky STT: the add keeps
+// the typed ref_text and logs a warning, exactly like an STT failure, so a bad
+// transcription does not become a new failure the user has no answer to
+// (#439). Renamed from TestPrepareWithinCapSilentClipRefused, which asserted
+// the "no speech found in the clip" refusal.
+func TestPrepareWithinCapSilentClipKeepsRefText(t *testing.T) {
 	s, dir := newStore(t)
 	src := testutil.WriteSilentWAV(t, dir, "take.wav", 10)
-	s.SetTranscriber(fixedWords(nil, new(int)))
-	_, err := s.Add(context.Background(), "ben", src, "something was said")
-	var ie *InputError
-	if !errors.As(err, &ie) || !strings.Contains(err.Error(), "no speech found in the clip") {
-		t.Fatalf("err = %v, want an InputError naming the missing speech", err)
+	calls := 0
+	s.SetTranscriber(fixedWords(nil, &calls))
+	v, err := s.Add(context.Background(), "ben", src, "something was said")
+	if err != nil {
+		t.Fatalf("an empty transcript must not refuse the add: %v", err)
+	}
+	if v.RefText != "something was said" || v.Notice != "" || v.NoticeCode != "" {
+		t.Fatalf("voice = %+v, want the text as given and no notice", v)
+	}
+	if calls != 1 {
+		t.Fatalf("transcriber called %d times, want 1", calls)
 	}
 }

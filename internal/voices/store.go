@@ -72,6 +72,17 @@ type Meta struct {
 	Source string `json:"source,omitempty"`
 }
 
+// Values of Voice.NoticeCode: the machine-readable kind of what Notice says,
+// so a client can pick its own localized sentence instead of parsing English.
+const (
+	// NoticeShortened — the clip ran past the cap and was cut; ref_text is
+	// the transcript of the kept part.
+	NoticeShortened = "shortened"
+	// NoticeTextReplaced — the clip fits the cap but does not say ref_text,
+	// so ref_text was replaced by the clip's transcript.
+	NoticeTextReplaced = "text_replaced"
+)
+
 // Voice is one persisted clone. Every code path that rewrites the metadata
 // file (Commit, Update, Repair.Apply) must carry Meta over.
 type Voice struct {
@@ -85,6 +96,10 @@ type Voice struct {
 	// stored (e.g. its ref_text was replaced). Set by Commit only; never
 	// persisted.
 	Notice string `json:"-"`
+	// NoticeCode is the machine-readable kind of Notice (NoticeShortened or
+	// NoticeTextReplaced). Set by Commit only; persisted as provenance — an
+	// older daemon simply ignores the key.
+	NoticeCode string `json:"notice_code,omitempty"`
 }
 
 // WAVPath returns the clip path for a valid name.
@@ -157,12 +172,13 @@ func (s *Store) Add(ctx context.Context, name, audioPath, refText string) (*Voic
 
 // Pending is a normalised clip waiting to be committed under its name.
 type Pending struct {
-	s       *Store
-	name    string
-	refText string
-	notice  string
-	tmp     string
-	meta    Meta
+	s          *Store
+	name       string
+	refText    string
+	notice     string
+	noticeCode string
+	tmp        string
+	meta       Meta
 	// fresh: Commit keeps nothing of a voice it replaces.
 	fresh bool
 }
@@ -241,12 +257,12 @@ func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*
 		// daemon-side, not client input.
 		return nil, fmt.Errorf("voices: ffmpeg: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	text, notice, err := s.fitReference(ctx, tmpName, refText)
+	text, notice, code, err := s.fitReference(ctx, tmpName, refText)
 	if err != nil {
 		return nil, err
 	}
 	ok = true
-	return &Pending{s: s, name: name, refText: text, notice: notice, tmp: tmpName}, nil
+	return &Pending{s: s, name: name, refText: text, notice: notice, noticeCode: code, tmp: tmpName}, nil
 }
 
 // Commit moves the clip into place and writes its metadata. The metadata is
@@ -254,7 +270,7 @@ func (s *Store) Prepare(ctx context.Context, name, audioPath, refText string) (*
 // voice being re-added exactly as it was, not with its clip replaced or gone.
 func (p *Pending) Commit() (*Voice, error) {
 	s := p.s
-	v := &Voice{Name: p.name, RefText: p.refText, Created: time.Now().UTC(), Meta: p.inheritedMeta(), Notice: p.notice}
+	v := &Voice{Name: p.name, RefText: p.refText, Created: time.Now().UTC(), Meta: p.inheritedMeta(), Notice: p.notice, NoticeCode: p.noticeCode}
 	meta, err := json.Marshal(v)
 	if err != nil {
 		return nil, err

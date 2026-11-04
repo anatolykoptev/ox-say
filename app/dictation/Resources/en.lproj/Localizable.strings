@@ -484,6 +484,8 @@
 "design.save_failed.exists" = "A voice with this name already exists.";
 "design.saved" = "Voice “%@” saved";
 "design.shortened" = "The recording was longer than a voice can keep, so it was shortened.";
+"design.text_replaced" = "The voice's text now matches what you read.";
+"design.saved_adjusted" = "Voice saved; the service adjusted the recording.";
 "file.open" = "Add from a File…";
 "file.sheet.title" = "A Voice from a File";
 "file.sheet.file" = "File";

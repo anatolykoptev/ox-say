@@ -160,6 +160,64 @@ func TestAddVoiceNoticeInResponse(t *testing.T) {
 	}
 }
 
+// The add response carries "notice_code" next to "notice", so a client picks
+// its own sentence instead of parsing English: "shortened" when the clip was
+// cut, "text_replaced" when only the ref_text was swapped for the transcript.
+// Mutation: internal/voices/fit.go checkWithinCap — `NoticeTextReplaced` ->
+// `NoticeShortened` -> RED (a within-cap replace would read as a cut).
+func TestAddVoiceNoticeCodeInResponse(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+	d.Store.SetTranscriber(func(_ context.Context, wav string) ([]voices.Word, error) {
+		if sec, _ := voices.WAVSeconds(wav); sec > voices.MaxRefSeconds {
+			return fakeWords(60), nil
+		}
+		// The normalised clip is .normalize-<name>-*.wav: the "replace" voice's
+		// clip says something other than what was typed.
+		if strings.Contains(wav, "-replace-") {
+			return []voices.Word{{W: "the", S: 0, E: 0.4}, {W: "actual", S: 0.5, E: 0.9},
+				{W: "spoken", S: 1, E: 1.4}, {W: "words", S: 1.5, E: 1.9}}, nil
+		}
+		return []voices.Word{{W: "typed", S: 0, E: 0.4}, {W: "by", S: 0.5, E: 0.9}, {W: "hand", S: 1, E: 1.4}}, nil
+	})
+	mux := http.NewServeMux()
+	d.Routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	post := func(name string, secs float64) map[string]any {
+		src := testutil.WriteSilentWAV(t, dir, name+".wav", secs)
+		body, _ := json.Marshal(map[string]any{"name": name, "audio_path": src, "ref_text": "typed by hand"})
+		resp, err := http.Post(srv.URL+"/v1/audio/voices", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %s: %s", name, resp.Status, raw)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if m := post("match", 8); len(m) != 3 {
+		t.Fatalf("unchanged response = %v, want exactly name/status/registered_to_engine", m)
+	}
+	m := post("replace", 8)
+	if got, _ := m["notice_code"].(string); got != voices.NoticeTextReplaced {
+		t.Fatalf("within-cap replace response = %v, want notice_code %q", m, voices.NoticeTextReplaced)
+	}
+	if n, _ := m["notice"].(string); !strings.Contains(n, "did not match the clip") {
+		t.Fatalf("within-cap replace response = %v, want the mismatch notice", m)
+	}
+	if got, _ := post("long", 30)["notice_code"].(string); got != voices.NoticeShortened {
+		t.Fatalf("long clip notice_code = %q, want %q", got, voices.NoticeShortened)
+	}
+}
+
 // fakeSTTPayload is an ox-stt result whose words are n speech words of 0.3 s
 // every 0.4 s, a sentence end every sixth.
 func fakeSTTPayload(t *testing.T, n int) string {

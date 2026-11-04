@@ -37,11 +37,16 @@ public struct DesignTake: Equatable {
 public struct SavedVoice: Equatable {
     public var name: String
     public var notice: String?
+    /// The machine-readable kind of `notice` — "shortened" or "text_replaced";
+    /// nil when there is no notice or the daemon predates the field (#439).
+    public var noticeCode: String?
 
     static func decode(_ data: Data) -> SavedVoice? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let name = obj["name"] as? String, !name.isEmpty else { return nil }
-        return SavedVoice(name: name, notice: (obj["notice"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+        return SavedVoice(name: name,
+                          notice: (obj["notice"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                          noticeCode: (obj["notice_code"] as? String).flatMap { $0.isEmpty ? nil : $0 })
     }
 }
 
@@ -143,9 +148,20 @@ public enum DesignForm {
         return warning.prefix(1).uppercased() + warning.dropFirst()
     }
 
-    /// The line under a kept voice: "Voice “x” saved", and the daemon's note that the clip was cut.
-    public static func savedNotice(name: String, shortened: Bool, text: (L10nKey) -> String = { $0.text }) -> String {
+    /// The line under a kept voice: "Voice “x” saved", plus the sentence saying what the daemon did
+    /// to the clip or its text — picked from `notice_code`, never from the English `notice` (#439).
+    /// An unknown code (or none, from a daemon that predates it) gets a neutral sentence, never
+    /// "shortened"; no notice is the bare saved line, as before.
+    public static func savedNotice(name: String, voice: SavedVoice, text: (L10nKey) -> String = { $0.text }) -> String {
         let saved = String(format: text(.designSaved), name)
-        return shortened ? saved + ". " + text(.designShortened) : saved
+        guard voice.notice?.isEmpty == false else { return saved }
+        switch voice.noticeCode {
+        case "shortened":
+            return saved + ". " + text(.designShortened)
+        case "text_replaced":
+            return saved + ". " + text(.designTextReplaced)
+        default:
+            return text(.designSavedAdjusted)
+        }
     }
 }

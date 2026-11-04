@@ -166,7 +166,7 @@ final class VoiceSource {
                 fileAdd = nil
                 await session.reload()
                 sync()
-                model.data.notice = DesignForm.savedNotice(name: request.label, shortened: voice.notice != nil)
+                model.data.notice = DesignForm.savedNotice(name: request.label, voice: voice)
             } catch {
                 fileAdd?.refused(StudioError.plain(error))
                 sync()
@@ -369,7 +369,7 @@ final class VoiceSource {
                 takeSamples = []
                 await session.reload()
                 sync()
-                model.data.notice = DesignForm.savedNotice(name: request.label, shortened: voice.notice != nil)
+                model.data.notice = DesignForm.savedNotice(name: request.label, voice: voice)
             } catch {
                 // The window closed while the take was being sent: there is nowhere to say why — the take goes.
                 if record?.refused(StudioError.plain(error), windowGone: windowGone()) == .discardTake {
@@ -408,7 +408,7 @@ final class VoiceSource {
         var problem: String?
         if !label.isEmpty { problem = await session.rename(id: voice.name, label: label) }
         sync()
-        model.data.notice = problem ?? DesignForm.savedNotice(name: label.isEmpty ? voice.name : label, shortened: voice.notice != nil)
+        model.data.notice = problem ?? DesignForm.savedNotice(name: label.isEmpty ? voice.name : label, voice: voice)
     }
 
     func reload() {
