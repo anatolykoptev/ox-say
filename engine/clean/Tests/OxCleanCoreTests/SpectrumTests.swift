@@ -16,7 +16,7 @@ final class SpectrumTests: XCTestCase {
     func testSTFTMatchesTorch() throws {
         let x = try Fixture.floats("stft_clip.f32").map { $0 * FeatureConfig.scale }
         let ref = try Fixture.floats("stft_ref.f32")  // [50, 961, 2]
-        let s = Spectrum().stft(scaled: x)
+        let s = try Spectrum().stft(scaled: x)
         XCTAssertEqual(s.frames, 50)
         XCTAssertEqual(s.re.count, 50 * Self.bins)
         XCTAssertEqual(s.im.count, 50 * Self.bins)
@@ -40,9 +40,9 @@ final class SpectrumTests: XCTestCase {
 
     // MARK: inverse
 
-    func testISTFTInvertsSTFTOverTheWholeSignal() {
+    func testISTFTInvertsSTFTOverTheWholeSignal() throws {
         let x = (0..<192_000).map { Float(sin(Double($0) * 0.03) * 8000 + Double($0 % 97)) }
-        let sp = Spectrum(); let s = sp.stft(scaled: x)
+        let sp = try Spectrum(); let s = sp.stft(scaled: x)
         let y = sp.istft(re: s.re, im: s.im, frames: s.frames, length: x.count)
         XCTAssertEqual(y.count, x.count)
         guard y.count == x.count else { return }
@@ -52,9 +52,9 @@ final class SpectrumTests: XCTestCase {
 
     /// Where `sum w^2` is smallest (only one window covers the sample: w[0]^2 = 0.0064) the division amplifies float
     /// error ~156x. The edges must still invert, and are checked on their own.
-    func testISTFTInvertsTheFirstAndLast384SamplesOnTheirOwn() {
+    func testISTFTInvertsTheFirstAndLast384SamplesOnTheirOwn() throws {
         let x = signal(192_000), h = Self.hop
-        let sp = Spectrum(); let s = sp.stft(scaled: x)
+        let sp = try Spectrum(); let s = sp.stft(scaled: x)
         let y = sp.istft(re: s.re, im: s.im, frames: s.frames, length: x.count)
         guard y.count == x.count else { return XCTFail("length \(y.count)") }
         let head = Fixture.maxAbsDiff(Array(x[0..<h]), Array(y[0..<h]))
@@ -73,9 +73,9 @@ final class SpectrumTests: XCTestCase {
         XCTAssertGreaterThan(Spectrum.envelope(frames: 496).min()!, 1e-11)
     }
 
-    func testAnAllOnesMaskIsTransparentAndAZeroMaskIsSilent() {
+    func testAnAllOnesMaskIsTransparentAndAZeroMaskIsSilent() throws {
         let x = (0..<192_000).map { Float(sin(Double($0) * 0.05) * 5000) }
-        let sp = Spectrum(); let s = sp.stft(scaled: x)
+        let sp = try Spectrum(); let s = sp.stft(scaled: x)
         var re = s.re, im = s.im
         sp.apply(mask: [Float](repeating: 1, count: s.frames * 961), re: &re, im: &im)
         XCTAssertLessThan(Fixture.maxAbsDiff(sp.istft(re: re, im: im, frames: s.frames, length: x.count), x), 0.05)
@@ -85,18 +85,18 @@ final class SpectrumTests: XCTestCase {
 
     /// F3: a mask that scales only the real part leaves the imaginary part and so changes phase, not just level.
     /// A pure tone with a 0.5 mask must come back at exactly half amplitude, sample for sample.
-    func testMaskScalesBothParts() {
+    func testMaskScalesBothParts() throws {
         let x = (0..<48_000).map { Float(sin(Double($0) * 0.4) * 6000) }
-        let sp = Spectrum(); let s = sp.stft(scaled: x)
+        let sp = try Spectrum(); let s = sp.stft(scaled: x)
         var re = s.re, im = s.im
         sp.apply(mask: [Float](repeating: 0.5, count: s.frames * 961), re: &re, im: &im)
         let y = sp.istft(re: re, im: im, frames: s.frames, length: x.count)
         XCTAssertLessThan(Fixture.maxAbsDiff(y, x.map { $0 * 0.5 }), 0.05)
     }
 
-    func testMaskIsPerBinPerFrame() {
+    func testMaskIsPerBinPerFrame() throws {
         // A mask that keeps only frame 1 and bin 7: every other element is zero, that one is untouched.
-        let sp = Spectrum()
+        let sp = try Spectrum()
         var re = (0..<3 * 961).map { Float($0 + 1) }, im = (0..<3 * 961).map { Float(-$0 - 1) }
         var mask = [Float](repeating: 0, count: 3 * 961); mask[961 + 7] = 0.25
         let (r0, i0) = (re, im)
@@ -109,9 +109,9 @@ final class SpectrumTests: XCTestCase {
 
     // MARK: edge cases (torch semantics where torch defines them)
 
-    func testASignalShorterThanOneFrameHasNoFrames() {
+    func testASignalShorterThanOneFrameHasNoFrames() throws {
         // torch.stft raises for n < n_fft with center=False; here "no frames" is a value (Fbank does the same).
-        let sp = Spectrum()
+        let sp = try Spectrum()
         for n in [0, 1, 1919] {
             let s = sp.stft(scaled: [Float](repeating: 1, count: n))
             XCTAssertEqual(s.frames, 0); XCTAssertTrue(s.re.isEmpty); XCTAssertTrue(s.im.isEmpty)
@@ -121,8 +121,8 @@ final class SpectrumTests: XCTestCase {
         XCTAssertEqual(sp.istft(re: [], im: [], frames: 0, length: 0), [])
     }
 
-    func testExactlyOneFrameRoundTrips() {
-        let x = signal(1920), sp = Spectrum()
+    func testExactlyOneFrameRoundTrips() throws {
+        let x = signal(1920), sp = try Spectrum()
         let s = sp.stft(scaled: x)
         XCTAssertEqual(s.frames, 1)
         let y = sp.istft(re: s.re, im: s.im, frames: s.frames, length: x.count)
@@ -137,9 +137,9 @@ final class SpectrumTests: XCTestCase {
         }
     }
 
-    func testISTFTLengthMatchesTorchTruncationAndZeroPadding() {
+    func testISTFTLengthMatchesTorchTruncationAndZeroPadding() throws {
         // 2303 samples -> one frame (1920 covered). torch.istft(length=n): the uncovered tail is zeros, a shorter length truncates.
-        let x = signal(2303), sp = Spectrum()
+        let x = signal(2303), sp = try Spectrum()
         let s = sp.stft(scaled: x)
         let full = sp.istft(re: s.re, im: s.im, frames: 1, length: 2303)
         XCTAssertEqual(full.count, 2303)
@@ -151,8 +151,8 @@ final class SpectrumTests: XCTestCase {
 
     // MARK: concurrency and speed
 
-    func testOneSpectrumIsSafeFromManyThreads() {
-        let x = signal(96_000), sp = Spectrum()
+    func testOneSpectrumIsSafeFromManyThreads() throws {
+        let x = signal(96_000), sp = try Spectrum()
         let want = sp.stft(scaled: x), wantY = sp.istft(re: want.re, im: want.im, frames: want.frames, length: x.count)
         let lock = NSLock(); var bad = 0
         DispatchQueue.concurrentPerform(iterations: 16) { _ in
@@ -163,8 +163,8 @@ final class SpectrumTests: XCTestCase {
         XCTAssertEqual(bad, 0, "calls on a shared Spectrum must not interfere")
     }
 
-    func testTwentySecondWindowTime() {
-        let x = signal(960_000), sp = Spectrum()
+    func testTwentySecondWindowTime() throws {
+        let x = signal(960_000), sp = try Spectrum()
         _ = sp.stft(scaled: x)  // warm up
         let t0 = Date()
         let s = sp.stft(scaled: x)

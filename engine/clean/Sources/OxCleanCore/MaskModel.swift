@@ -1,0 +1,208 @@
+import CoreML
+import Foundation
+import Metal
+
+/// Features `[frames, 180]` row-major in, mask `[frames, 961]` row-major out.
+public protocol MaskPredicting {
+    func mask(features: [Float], frames: Int) throws -> [Float]
+}
+
+/// What loading and using the model cost, for the CLI and the UI («Готовлю модель…» covers `firstPredictionSeconds`).
+public struct ModelStats: Equatable {
+    /// Reading the files, building the Core ML model object.
+    public var loadSeconds: Double = 0
+    /// The first prediction of a load, which is the known-answer run: the GPU compiles its kernels here (about 7 s on
+    /// an M5 Pro; the second load in the same process showed whether that compile is cached).
+    public var firstPredictionSeconds: Double = 0
+    public var knownAnswerMSE: Double = 0
+    public var knownAnswerP999: Double = 0
+    public var knownAnswerMaxAbs: Double = 0
+    /// Predictions after the known-answer run, and the time they took.
+    public var predictions = 0
+    public var predictionSeconds: Double = 0
+}
+
+/// The MossFormer2_SE_48K mask network on Core ML. Loading checks, in order: `manifest.json` and `config.json` against
+/// the engine's constants, `reference_window.bin`, the compiled model's own I/O description, and finally the
+/// known-answer run: the stored features go through the model and the mask must match the stored PyTorch mask under the
+/// converter's rule. A mismatch refuses the model, so a future macOS that mis-runs it cannot produce silent garbage.
+public final class MaskModel: MaskPredicting {
+    public static let directoryName = "mossformer2-se-48k"
+    public static let modelFile = "MossFormer2_SE_48K.mlmodelc"
+    public static let inputName = "features"
+    public static let outputName = "mask"
+
+    private let backend: MaskPredicting
+    public private(set) var stats = ModelStats()
+
+    /// `modelsDir` holds `mossformer2-se-48k/` (the layout `fetch-models.sh --clean-only` writes under `<dest>/clean`).
+    public convenience init(modelsDir: URL, plan: ComputePlan = ComputeChoice.current()) throws {
+        try self.init(modelsDir: modelsDir, loadBackend: { try CoreMLBackend(compiledURL: $0, plan: plan) })
+    }
+
+    /// The load path with the Core ML object replaced: tests drive the contract and known-answer checks through it.
+    init(modelsDir: URL, loadBackend: (URL) throws -> MaskPredicting) throws {
+        let clock = ContinuousClock()
+        let t0 = clock.now
+        let dir = modelsDir.appendingPathComponent(Self.directoryName)
+        let compiled = dir.appendingPathComponent(Self.modelFile)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: compiled.path, isDirectory: &isDir), isDir.boolValue else {
+            throw Failure.models("missing", detail: "The voice-cleanup model is not installed (\(Self.modelFile) was not found); download it first.")
+        }
+        try ModelContract.validate(manifest: ModelContract.read(dir.appendingPathComponent("manifest.json"), reason: "manifest"),
+                                   config: ModelContract.read(dir.appendingPathComponent("config.json"), reason: "config"))
+        let reference = try ReferenceWindow.read(dir.appendingPathComponent("reference_window.bin"))
+        let backend = try loadBackend(compiled)
+        self.backend = backend
+        stats.loadSeconds = (clock.now - t0).seconds
+
+        let t1 = clock.now
+        let answer = try Self.run(backend, features: reference.features, frames: ModelContract.frames)
+        stats.firstPredictionSeconds = (clock.now - t1).seconds
+        let measured = KnownAnswer.measure(got: answer, want: reference.mask)
+        stats.knownAnswerMSE = measured.mse
+        stats.knownAnswerP999 = measured.p999
+        stats.knownAnswerMaxAbs = measured.maxAbs
+        guard KnownAnswer.passes(measured) else {
+            throw Failure.models("known_answer", detail:
+                "The voice-cleanup model gave a wrong answer on this Mac, so nothing was cleaned "
+                + "(mean squared error \(Self.format(measured.mse)) against a limit of \(Self.format(KnownAnswer.mseLimit)), "
+                + "99.9th-percentile error \(Self.format(measured.p999)) against \(Self.format(KnownAnswer.p999Limit)); "
+                + "macOS \(Self.osVersion())).")
+        }
+    }
+
+    private static func osVersion() -> String {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
+    }
+
+    private static func format(_ v: Double) -> String { v.isFinite ? String(format: "%.3g", v) : "not a number" }
+
+    private static func run(_ backend: MaskPredicting, features: [Float], frames: Int) throws -> [Float] {
+        do { return try backend.mask(features: features, frames: frames) } catch let f as Failure { throw f } catch {
+            throw Failure.processing("predict", detail: "The voice-cleanup model failed: \(error.localizedDescription)")
+        }
+    }
+
+    public func mask(features: [Float], frames: Int) throws -> [Float] {
+        guard frames == ModelContract.frames, features.count == frames * ModelContract.features else {
+            throw Failure.processing("features_shape", detail: "The model takes \(ModelContract.frames) frames of \(ModelContract.features) features; got \(features.count) values for \(frames) frames.")
+        }
+        let t0 = ContinuousClock.now
+        let out = try Self.run(backend, features: features, frames: frames)
+        stats.predictions += 1
+        stats.predictionSeconds += (ContinuousClock.now - t0).seconds
+        return out
+    }
+}
+
+/// The real Core ML model. Everything that touches `MLMultiArray` memory is here and checks its bounds.
+final class CoreMLBackend: MaskPredicting {
+    private let model: MLModel
+
+    init(compiledURL: URL, plan: ComputePlan) throws {
+        let cfg = MLModelConfiguration()
+        cfg.computeUnits = plan.units
+        if let i = plan.discreteGPUIndex {
+            let devices = MTLCopyAllDevices()
+            guard i < devices.count, !devices[i].isLowPower, !devices[i].isRemovable else {
+                throw Failure.models("gpu", detail: "The graphics card chosen for voice cleanup is no longer available.")
+            }
+            cfg.preferredMetalDevice = devices[i]
+        }
+        do { model = try MLModel(contentsOf: compiledURL, configuration: cfg) } catch {
+            throw Failure.models("load", detail: "The voice-cleanup model could not be loaded: \(error.localizedDescription)")
+        }
+        try Self.check(model.modelDescription)
+    }
+
+    /// The compiled model's own I/O description against the engine (the JSON files are only documents).
+    static func check(_ d: MLModelDescription) throws {
+        func bad(_ what: String) -> Failure { Failure.models("shape", detail: "The compiled voice-cleanup model does not match this engine (\(what)).") }
+        guard let input = d.inputDescriptionsByName[MaskModel.inputName]?.multiArrayConstraint, d.inputDescriptionsByName.count == 1 else { throw bad("input") }
+        guard input.shape.map(\.intValue) == [1, ModelContract.frames, ModelContract.features], input.dataType == .float32 else { throw bad("input shape or type") }
+        guard let output = d.outputDescriptionsByName[MaskModel.outputName]?.multiArrayConstraint else { throw bad("output") }
+        let outShape = output.shape.map(\.intValue)
+        guard outShape.isEmpty || outShape == [1, ModelContract.frames, FeatureConfig.bins] else { throw bad("output shape") }
+    }
+
+    func mask(features: [Float], frames: Int) throws -> [Float] {
+        let input = try Self.makeInput(features, frames: frames)
+        let result: MLFeatureProvider
+        do {
+            result = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: [MaskModel.inputName: MLFeatureValue(multiArray: input)]))
+        } catch {
+            throw Failure.processing("predict", detail: "The voice-cleanup model failed: \(error.localizedDescription)")
+        }
+        guard let array = result.featureValue(for: MaskModel.outputName)?.multiArrayValue else {
+            throw Failure.processing("mask_missing", detail: "The voice-cleanup model returned no mask.")
+        }
+        return try Self.readMask(array, frames: frames)
+    }
+
+    static func makeInput(_ features: [Float], frames: Int) throws -> MLMultiArray {
+        let n = ModelContract.features
+        precondition(features.count == frames * n, "caller checks the size")
+        let array: MLMultiArray
+        do { array = try MLMultiArray(shape: [1, NSNumber(value: frames), NSNumber(value: n)], dataType: .float32) } catch {
+            throw Failure.processing("input_alloc", detail: "Not enough memory for the voice-cleanup model.")
+        }
+        try array.withUnsafeMutableBytes { raw, strides in
+            let s = strides
+            guard s.count == 3, s[2] >= 1, s[1] >= 0, ((frames - 1) * s[1] + (n - 1) * s[2] + 1) * 4 <= raw.count else {
+                throw Failure.processing("input_strides", detail: "Core ML allocated an input array this engine cannot fill.")
+            }
+            let p = raw.bindMemory(to: Float.self)
+            features.withUnsafeBufferPointer { f in
+                if s[2] == 1 && s[1] == n {
+                    _ = memcpy(p.baseAddress!, f.baseAddress!, frames * n * 4)
+                } else {
+                    for t in 0..<frames { for b in 0..<n { p[t * s[1] + b * s[2]] = f[t * n + b] } }
+                }
+            }
+        }
+        return array
+    }
+
+    /// The mask as a dense `[frames, 961]` row-major array, whatever the array's element type and strides: Core ML on
+    /// the GPU may pad rows, and reading as if contiguous would shear every row.
+    static func readMask(_ a: MLMultiArray, frames: Int) throws -> [Float] {
+        let bins = FeatureConfig.bins
+        guard a.shape.map(\.intValue) == [1, frames, bins] else {
+            throw Failure.processing("mask_shape", detail: "The voice-cleanup model returned a mask of shape \(a.shape.map(\.intValue)), not [1, \(frames), \(bins)].")
+        }
+        let strides = a.strides.map(\.intValue)
+        let rowStride = strides[1], binStride = strides[2]
+        guard binStride >= 1, rowStride >= 0 else {
+            throw Failure.processing("mask_strides", detail: "The voice-cleanup model returned a mask with strides this engine cannot read.")
+        }
+        let lastIndex = (frames - 1) * rowStride + (bins - 1) * binStride
+        let type = a.dataType
+        return try a.withUnsafeBytes { raw -> [Float] in
+            func gather<T>(_ t: T.Type, _ convert: (T) -> Float) throws -> [Float] {
+                // `raw.count` is the span Core ML reports for this array; the strides must fit inside it.
+                guard (lastIndex + 1) * MemoryLayout<T>.stride <= raw.count else {
+                    throw Failure.processing("mask_strides", detail: "The voice-cleanup model returned a mask whose strides reach past its memory.")
+                }
+                let p = raw.bindMemory(to: T.self)
+                var out = [Float](repeating: 0, count: frames * bins)
+                for t in 0..<frames { for b in 0..<bins { out[t * bins + b] = convert(p[t * rowStride + b * binStride]) } }
+                return out
+            }
+            switch type {
+            case .float32: return try gather(Float.self) { $0 }
+            case .double: return try gather(Double.self) { Float($0) }
+            #if arch(arm64)
+            case .float16: return try gather(Float16.self) { Float($0) }
+            #endif
+            default: throw Failure.processing("mask_dtype", detail: "The voice-cleanup model returned a mask of an unsupported type.")
+            }
+        }
+    }
+}
+
+extension Duration {
+    var seconds: Double { Double(components.seconds) + Double(components.attoseconds) / 1e18 }
+}

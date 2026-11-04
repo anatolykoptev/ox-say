@@ -24,13 +24,26 @@ public struct Spectrum: Sendable {
     private static let analysisWindow: [Float] = window.map { $0 * 0.5 }
     private static let windowSquared: [Float] = window.map { $0 * $0 }
 
-    public init() {}
+    /// Checks that this OS has the 1920-point real DFT in both directions, so `stft` and `istft` cannot meet a missing
+    /// kernel later. Throws (instead of trapping, #466) where it is missing.
+    public init() throws { try self.init(makeSetup: Self.makeSetup) }
+
+    /// `makeSetup` is the vDSP call, replaceable so a test can make it return nil.
+    init(makeSetup: (vDSP_DFT_Direction) -> vDSP_DFT_Setup?) throws {
+        for direction in [vDSP_DFT_Direction.FORWARD, .INVERSE] {
+            guard let setup = makeSetup(direction) else {
+                throw Failure.processing("dft_setup", detail: "This macOS has no 1920-point real FFT, which voice cleanup needs.")
+            }
+            vDSP_DFT_DestroySetup(setup)
+        }
+    }
 
     /// A real-DFT setup for 1920 points. `nil` would mean this OS lacks the radix-15 kernel; the tests probe it.
     static func makeSetup(_ direction: vDSP_DFT_Direction) -> vDSP_DFT_Setup? {
         vDSP_DFT_zrop_CreateSetup(nil, vDSP_Length(fftSize), direction)
     }
 
+    /// Only reached after `init` has proved the kernel exists, so a nil here would be an allocation failure.
     private static func requireSetup(_ direction: vDSP_DFT_Direction) -> vDSP_DFT_Setup {
         guard let setup = makeSetup(direction) else {
             preconditionFailure("vDSP has no 1920-point real DFT on this OS")

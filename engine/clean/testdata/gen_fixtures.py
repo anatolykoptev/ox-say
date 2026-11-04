@@ -11,6 +11,13 @@ pair kept under 0.5 MB. Task 4's fixtures are written first and are untouched by
 """
 import math
 import pathlib
+import sys
+
+if "--golden-e2e" in sys.argv:  # Task 7's end-to-end golden: needs the converter venv (clearvoice), not this script's torch
+    import gen_golden_e2e  # noqa: E402  (resolved from this directory: sys.path[0] is the script's directory)
+    gen_golden_e2e.main(sys.argv[sys.argv.index("--golden-e2e") + 1])
+    sys.exit(0)
+
 
 import numpy as np
 import torch
