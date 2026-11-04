@@ -66,9 +66,18 @@ public final class MaskModel: MaskPredicting {
         let t0 = clock.now
         let dir = modelsDir.appendingPathComponent(Self.directoryName)
         let compiled = dir.appendingPathComponent(Self.modelFile)
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: compiled.path, isDirectory: &isDir), isDir.boolValue else {
-            throw Failure.models("missing", detail: "The voice-cleanup model is not installed (\(Self.modelFile) was not found); download it first.")
+        var st = stat()
+        if stat(compiled.path, &st) != 0 {
+            // Only a path that is really absent says "download it"; a file where the folder should be, a symlink loop or a
+            // folder we may not enter is a different problem that a download would not fix.
+            let e = errno
+            if e == ENOENT {
+                throw Failure.models("missing", detail: "The voice-cleanup model is not installed (\(Self.modelFile) was not found); download it first.")
+            }
+            throw Failure.models("unreadable", detail: "The voice-cleanup models folder \(modelsDir.path) cannot be used: \(String(cString: strerror(e))).")
+        }
+        guard st.st_mode & S_IFMT == S_IFDIR else {
+            throw Failure.models("missing", detail: "The voice-cleanup model is not installed (\(Self.modelFile) is not a model folder); download it first.")
         }
         try ModelContract.validate(manifest: ModelContract.read(dir.appendingPathComponent("manifest.json"), reason: "manifest"),
                                    config: ModelContract.read(dir.appendingPathComponent("config.json"), reason: "config"))

@@ -31,7 +31,7 @@ final class PlatformTests: XCTestCase {
     }
 
     func testExitCodesAreTheDocumentedNumbers() {
-        XCTAssertEqual([ExitCode.ok, .failure, .usage, .models, .input, .unsupportedOS].map(\.rawValue), [0, 1, 2, 3, 4, 5])
+        XCTAssertEqual([ExitCode.ok, .failure, .usage, .models, .input, .unsupportedOS, .output].map(\.rawValue), [0, 1, 2, 3, 4, 5, 6])
     }
 
     func testTheVersionLineNamesTheModelPin() {

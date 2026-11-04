@@ -77,10 +77,24 @@ final class WavIOTests: XCTestCase {
 
     // Mutation: WavIO.swift, the `end <= data.count` check on the data chunk removed -> reads out of bounds.
     func testADataSizeNearUInt32MaxIsTruncatedNotAnOverflow() {
-        for size in [UInt32.max, UInt32.max - 1, UInt32.max - 3, 0x8000_0000] {
+        for size in [UInt32.max - 1, UInt32.max - 3, 0x8000_0000] {
             let b = F.riff([F.chunk("fmt ", F.fmt()), F.chunk("data", size: size, F.floats(x))])
             XCTAssertEqual(failure(b), .truncated, "size \(size)")
         }
+    }
+
+    // Fix round 8: a streaming writer (ffmpeg to a pipe) leaves 0xFFFFFFFF in the data size, and often in the RIFF size.
+    // The data runs to the end of the file: whole floats only. Any other overrun stays truncated (test above).
+    // Mutation: WavIO.swift, the `size == 0xFFFF_FFFF` clamp removed -> .truncated here.
+    func testAStreamingWavWithAnUnknownDataSizeRunsToTheEndOfTheFile() throws {
+        let stream = F.ascii("RIFF") + F.u32(UInt32.max) + F.ascii("WAVE") + F.chunk("fmt ", F.fmt()) + F.chunk("data", size: UInt32.max, F.floats(x))
+        let r = try read(stream)
+        XCTAssertEqual(r.info.frames, x.count)
+        XCTAssertEqual(r.window(start: 0, count: x.count), x)
+        let ragged = try read(F.ascii("RIFF") + F.u32(UInt32.max) + F.ascii("WAVE") + F.chunk("fmt ", F.fmt())
+                              + F.chunk("data", size: UInt32.max, F.floats(x) + [1, 2, 3], pad: false))
+        XCTAssertEqual(ragged.info.frames, x.count, "a partial trailing float is dropped")
+        XCTAssertEqual(failure(F.ascii("RIFF") + F.u32(UInt32.max) + F.ascii("WAVE") + F.chunk("fmt ", F.fmt()) + F.chunk("data", size: UInt32.max, [1, 2, 3], pad: false)), .empty)
     }
 
     func testADataChunkPastTheEndOfTheFileIsTruncated() {
@@ -337,6 +351,27 @@ final class WavIOTests: XCTestCase {
         let url = try F.write(bytes: [1, 2, 3])
         XCTAssertThrowsError(try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1))
         XCTAssertEqual([UInt8](try Data(contentsOf: url)), [1, 2, 3])
+    }
+
+    // Fix round 2: the .part is its own lock. Mutation: WavIO.swift, O_EXLOCK left out of the open flags -> red.
+    func testALockedWriterCannotBeLockedByAnotherDescriptorUntilItIsDone() throws {
+        func tryLock(_ url: URL) -> Int32 {
+            let fd = open(url.path, O_RDONLY)
+            defer { close(fd) }
+            return flock(fd, LOCK_EX | LOCK_NB) == 0 ? 0 : errno
+        }
+        let plain = F.tmp(), locked = F.tmp(), abandoned = F.tmp()
+        let p = try WavIO.StreamWriter(url: plain, sampleRate: 48000, channels: 1)
+        XCTAssertEqual(tryLock(plain), 0, "an ordinary writer holds no lock")
+        let w = try WavIO.StreamWriter(url: locked, sampleRate: 48000, channels: 1, exclusiveLock: true)
+        XCTAssertEqual(tryLock(locked), EWOULDBLOCK, "a live locked writer")
+        try w.finish()
+        XCTAssertEqual(tryLock(locked), 0, "finished: the lock is gone")
+        let a = try WavIO.StreamWriter(url: abandoned, sampleRate: 48000, channels: 1, exclusiveLock: true)
+        a.abandon()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: abandoned.path))
+        withExtendedLifetime(p) {}
+        try? FileManager.default.removeItem(at: locked); try? FileManager.default.removeItem(at: plain)
     }
 
     func testWriterRejectsBadParametersAndUseAfterFinish() throws {

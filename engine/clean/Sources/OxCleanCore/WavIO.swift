@@ -109,8 +109,11 @@ public enum WavIO {
                 guard let end = add(body, size), end <= n else { throw Failure.truncated }
                 if fmtAt == nil { fmtAt = body; fmtSize = size }
             } else if tag(pos, "data") {
-                guard let end = add(body, size), end <= n else { throw Failure.truncated }
-                if dataAt == nil { dataAt = body; dataSize = size }
+                // 0xFFFFFFFF is the "length unknown" a streaming writer leaves behind: the data runs to the end of the
+                // file. Any other size that runs past the end is a cut-off file.
+                let unknownLength = size == 0xFFFF_FFFF
+                guard let end = add(body, size), end <= n || unknownLength else { throw Failure.truncated }
+                if dataAt == nil { dataAt = body; dataSize = unknownLength ? n - body : size }
             }
             // Chunks are word-aligned: an odd payload is followed by one pad byte that the size does not count.
             guard let step = add(size, size & 1), let next = add(body, step), next <= n else { break }
@@ -181,11 +184,14 @@ public enum WavIO {
         private var finishError: Error?
         private var broken: Error?
 
-        public convenience init(url: URL, sampleRate: Int, channels: Int) throws {
-            try self.init(url: url, sampleRate: sampleRate, channels: channels, io: .posix)
+        /// `exclusiveLock`: the file is created already holding an exclusive `flock` (O_EXLOCK, atomic with the create) that
+        /// lasts until the descriptor closes (finish, abandon, or the process dying), so another process can tell a live
+        /// writer from a leftover: it can lock a leftover and cannot lock a live one.
+        public convenience init(url: URL, sampleRate: Int, channels: Int, exclusiveLock: Bool = false) throws {
+            try self.init(url: url, sampleRate: sampleRate, channels: channels, io: .posix, exclusiveLock: exclusiveLock)
         }
 
-        init(url: URL, sampleRate: Int, channels: Int, io: FileOps) throws {
+        init(url: URL, sampleRate: Int, channels: Int, io: FileOps, exclusiveLock: Bool = false) throws {
             guard (1...Int(UInt16.max)).contains(channels) else { throw Failure.unsupported("\(channels) channels") }
             guard sampleRate >= 1, sampleRate <= Int(UInt32.max) else { throw Failure.unsupported("sample rate \(sampleRate)") }
             let (perFrame, o1) = channels.multipliedReportingOverflow(by: 4)
@@ -193,7 +199,7 @@ public enum WavIO {
             guard !o1, !o2, byteRate <= Int(UInt32.max), perFrame <= Int(UInt16.max) else {
                 throw Failure.unsupported("\(sampleRate) Hz x \(channels) channels does not fit a WAV header")
             }
-            let fd = io.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
+            let fd = io.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | (exclusiveLock ? O_EXLOCK : 0), 0o644)
             guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
             var st = stat()
             guard fstat(fd, &st) == 0 else {
@@ -282,12 +288,17 @@ public enum WavIO {
         /// successful finish.
         private func discard() {
             guard !completed else { return }
+            // Identity is read from the descriptor NOW when it is still open: exFAT reports a different st_ino for the
+            // same file once it has grown, so the number recorded at create would make a failed run keep its .part.
+            var mine = identity
             if fd >= 0 {
+                var f = stat()
+                if fstat(fd, &f) == 0 { mine = (f.st_dev, f.st_ino) }
                 _ = io.close(fd)
                 fd = -1
             }
             var st = stat()
-            if stat(path, &st) == 0, st.st_dev == identity.dev, st.st_ino == identity.ino { unlink(path) }
+            if stat(path, &st) == 0, st.st_dev == mine.dev, st.st_ino == mine.ino { unlink(path) }
         }
 
         /// True when `adding` more bytes would push the RIFF size field (36 + data) past `UInt32.max`.

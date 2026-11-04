@@ -6,7 +6,8 @@ Usage: test_cli.py --bin PATH --models DIR [--clip x.wav] [unittest args]
   --clip is a mono 48 kHz float32 WAV with speech (CI passes one); without it the tests generate a synthetic voice-like
   clip, so no recording is needed. Needs no network and no Python packages.
 
-Fixtures are written here with `struct`, so nothing binary is committed. The slow and failing runs use the binary's
+Exit codes: 0 ok, 1 processing, 2 usage, 3 models, 4 input, 5 macOS < 15, 6 output; every failure line ends in
+[reason=<token>]. Fixtures are written here with `struct`, so nothing binary is committed. The slow and failing runs use the binary's
 test-only knobs OX_CLEAN_TEST_SLOW_MS and OX_CLEAN_TEST_FAIL_AFTER_WINDOWS (see Sources/ox-clean/main.swift); they are
 inert unless set. Mutations (plan Task 8): each test names the one it kills.
 """
@@ -37,7 +38,13 @@ def run(*args, env=None, timeout=600):
     return subprocess.run([BIN, *args], capture_output=True, text=True, env=e, timeout=timeout)
 
 
-def wav_bytes(samples=(), rate=RATE, channels=1, fmt=3, bits=32, data=None, data_size=None):
+def reason(stderr):
+    """The machine-readable token at the end of a failure line."""
+    m = re.search(r"\[reason=([a-z0-9_]+)\]\s*$", stderr)
+    return m.group(1) if m else None
+
+
+def wav_bytes(samples=(), rate=RATE, channels=1, fmt=3, bits=32, data=None, data_size=None, riff_size=None):
     """A canonical WAV. `samples` are float32 (fmt 3) or int16 (fmt 1); `data` overrides the payload bytes."""
     if data is None:
         code = "f" if fmt == 3 else "h"
@@ -45,7 +52,7 @@ def wav_bytes(samples=(), rate=RATE, channels=1, fmt=3, bits=32, data=None, data
     align = channels * bits // 8
     fmt_chunk = struct.pack("<HHIIHH", fmt, channels, rate, rate * align, align, bits)
     size = len(data) if data_size is None else data_size
-    return (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE" + b"fmt " + struct.pack("<I", 16) + fmt_chunk
+    return (b"RIFF" + struct.pack("<I", 36 + len(data) if riff_size is None else riff_size) + b"WAVE" + b"fmt " + struct.pack("<I", 16) + fmt_chunk
             + b"data" + struct.pack("<I", size) + data)
 
 
@@ -174,7 +181,19 @@ class Contract(Case):
         r = run(self.clip(), self.path("o.wav"), "--models", self.path("none"))
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertEqual(len(r.stderr.strip().splitlines()), 1, "one line on stderr")
+        self.assertEqual(reason(r.stderr), "missing")
         self.assertNoOutput(self.path("o.wav"))
+
+    # Fix round 7. Mutation: MaskModel.swift, the errno switch collapsed to "missing" -> RED (the daemon would re-download).
+    def test_an_unusable_models_folder_is_3_but_not_a_download_hint(self):
+        open(self.path("a-file"), "w").close()
+        os.symlink(self.path("loop"), self.path("loop"))
+        for name in ("a-file", "loop"):
+            r = run(self.clip(), self.path("o.wav"), "--models", self.path(name))
+            self.assertEqual(r.returncode, 3, r.stderr)
+            self.assertEqual(reason(r.stderr), "unreadable", name)
+            self.assertNotIn("download", r.stderr, name)
+            self.assertNoOutput(self.path("o.wav"))
 
     def test_a_corrupt_known_answer_file_is_3_with_the_sentence(self):
         copy = self.path("models")
@@ -192,6 +211,7 @@ class Contract(Case):
         r = run(self.clip(), self.path("o.wav"), "--models", copy)
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertIn("wrong answer on this Mac, so nothing was cleaned", r.stderr)
+        self.assertEqual(reason(r.stderr), "known_answer")
         self.assertNoOutput(self.path("o.wav"))
 
     # -- input: everything that is not a mono 48 kHz float WAV is exit 4 ----------------------------------------------
@@ -211,6 +231,7 @@ class Contract(Case):
             r = run(p, self.path("o.wav"), "--models", MODELS)
             self.assertEqual(r.returncode, 4, f"{name}: {r.stderr}")
             self.assertEqual(len(r.stderr.strip().splitlines()), 1, name)
+            self.assertIn(reason(r.stderr), ("not_wav", "unsupported_format", "truncated"), name)
             self.assertNoOutput(self.path("o.wav"))
 
     def test_a_missing_empty_or_unreadable_input_is_4(self):
@@ -225,6 +246,32 @@ class Contract(Case):
         os.mkdir(self.path("dir.wav"))   # a directory is not a file we can read
         self.assertEqual(run(self.path("dir.wav"), self.path("o.wav"), "--models", MODELS).returncode, 4)
         self.assertNoOutput(self.path("o.wav"))
+
+    # Fix round 7. Mutation: main.swift, the S_IFREG guard removed -> RED (the FIFO case hangs into the timeout, /dev/zero
+    # is read forever or fails as "not a WAV").
+    def test_a_device_or_fifo_input_is_4_not_a_regular_file(self):
+        os.mkfifo(self.path("fifo.wav"))
+        for p in ("/dev/zero", "/dev/null", self.path("fifo.wav")):
+            r = run(p, self.path("o.wav"), "--models", MODELS, timeout=30)
+            self.assertEqual(r.returncode, 4, f"{p}: {r.stderr}")
+            self.assertIn("not a regular file", r.stderr, p)
+            self.assertEqual(reason(r.stderr), "not_regular")
+        self.assertNoOutput(self.path("o.wav"))
+
+    # Fix round 8. Mutation: WavIO.swift, the 0xFFFFFFFF clamp removed -> RED (exit 4, truncated).
+    def test_a_streaming_wav_with_unknown_sizes_is_read_to_the_end(self):
+        x = voice_like(3, seed=2)
+        p = self.path("stream.wav")
+        with open(p, "wb") as f:
+            f.write(wav_bytes(x, data_size=0xFFFFFFFF, riff_size=0xFFFFFFFF))
+        r = run(p, self.path("o.wav"), "--models", MODELS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(read_float_wav(self.path("o.wav"))), len(x))
+        with open(p, "wb") as f:   # any other overrun is still a cut-off file
+            f.write(wav_bytes(x, data_size=0xFFFFFFFE))
+        r = run(p, self.path("o2.wav"), "--models", MODELS)
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertEqual(reason(r.stderr), "truncated")
 
     def test_a_non_finite_sample_is_4(self):
         for bad in (float("nan"), float("inf")):
@@ -292,43 +339,161 @@ class Contract(Case):
             r = run(clip, out, "--models", MODELS)
             self.assertEqual(r.returncode, 2, f"{label}: {r.stderr}")
             self.assertRegex(r.stderr, r"same file|is the input", label)
+            self.assertEqual(reason(r.stderr), "same_file", label)
             self.assertEqual(digest(clip), before, f"{label}: the input changed")
         self.assertFalse(os.path.exists(clip + ".part"))
 
-    def test_an_existing_output_is_refused_and_left_alone(self):
+    # Output problems are exit 6, so the daemon can tell them from processing errors (1).
+    # Mutation: main.swift, the `CLI.exists(outPath)` check -> `.failure` instead of `.output` -> RED.
+    def test_an_existing_output_is_6_and_left_alone(self):
         out = self.path("o.wav")
         with open(out, "wb") as f:
             f.write(b"precious")
         r = run(self.clip(), out, "--models", MODELS)
-        self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertIn("already exists", r.stderr)
+        self.assertEqual(r.returncode, 6, r.stderr)
+        self.assertEqual(reason(r.stderr), "out_exists")
         with open(out, "rb") as f:
             self.assertEqual(f.read(), b"precious")
         self.assertFalse(os.path.exists(out + ".part"))
 
-    def test_an_existing_part_file_is_refused_and_left_alone(self):
+    def test_a_part_file_that_is_not_ours_is_6_and_left_alone(self):
         out = self.path("o.wav")
         with open(out + ".part", "wb") as f:
-            f.write(b"someone else's run")
+            f.write(b"someone else's file, not a wav")
         r = run(self.clip(), out, "--models", MODELS)
-        self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertIn(".part already exists", r.stderr)
+        self.assertEqual(r.returncode, 6, r.stderr)
+        self.assertEqual(reason(r.stderr), "part_foreign")
         with open(out + ".part", "rb") as f:
-            self.assertEqual(f.read(), b"someone else's run")
+            self.assertEqual(f.read(), b"someone else's file, not a wav")
         self.assertFalse(os.path.exists(out))
 
-    def test_a_missing_output_directory_is_1_before_any_model_time(self):
+    # Fix round 2. Mutation: main.swift, `reclaim` returns .live for everything it locked -> RED (the retry is refused).
+    def test_a_killed_run_leaves_a_part_that_the_retry_removes(self):
+        out = self.path("o.wav")
+        p = self.start_slow(out)
+        p.send_signal(signal.SIGKILL)
+        p.wait(timeout=30)
+        self.assertTrue(os.path.exists(out + ".part"), "a SIGKILL leaves the .part (that is the case under test)")
+        r = run(self.clip(), out, "--models", MODELS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.exists(out))
+        self.assertFalse(os.path.exists(out + ".part"))
+
+    # Fix round 2. Mutation: WavIO.swift, O_EXLOCK dropped -> RED (the second run takes the live .part for a leftover).
+    def test_a_live_concurrent_run_is_refused_and_not_disturbed(self):
+        out = self.path("o.wav")
+        first = self.start_slow(out)
+        r = run(self.clip(), out, "--models", MODELS)
+        self.assertEqual(r.returncode, 6, r.stderr)
+        self.assertEqual(reason(r.stderr), "part_live")
+        # Fix round 5: the destination is settled BEFORE the model is touched, so even a broken models dir cannot mask it.
+        # Mutation: main.swift, `CLI.createPart` moved after the model load -> RED (3 "missing" instead of 6 "part_live").
+        r = run(self.clip(), out, "--models", self.path("no-models"))
+        self.assertEqual((r.returncode, reason(r.stderr)), (6, "part_live"), r.stderr)
+        self.assertTrue(os.path.exists(out + ".part"), "the live run's .part must survive the refused one")
+        first.wait(timeout=120)
+        self.assertEqual(first.returncode, 0, first.stderr.read())
+        self.assertEqual(len(read_float_wav(out)), len(read_float_wav(self.long_clip())))
+
+    def test_a_missing_or_unwritable_output_directory_is_6_before_any_model_time(self):
         started = time.time()
         r = run(self.clip(), self.path("no/such/dir/o.wav"), "--models", MODELS)
+        self.assertEqual((r.returncode, reason(r.stderr)), (6, "output_dir"), r.stderr)
+        open(self.path("file"), "w").close()
+        r = run(self.clip(), self.path("file/o.wav"), "--models", MODELS)   # a file where the directory should be
+        self.assertEqual((r.returncode, reason(r.stderr)), (6, "output_dir"), r.stderr)
+        os.mkdir(self.path("ro"), 0o555)
+        self.addCleanup(os.chmod, self.path("ro"), 0o755)
+        r = run(self.clip(), self.path("ro/o.wav"), "--models", MODELS)
+        self.assertEqual((r.returncode, reason(r.stderr)), (6, "not_writable"), r.stderr)
+        self.assertNotIn("units", r.stderr, "the model must not have been loaded")
+        self.assertLess(time.time() - started, 3, "three refusals, none of them paid for a model load")
+
+    # Fix round 5: an unwritable directory is refused before any model time.
+    # The .part is created before the slow model load, so a model failure has to remove it.
+    # Mutation: main.swift, the model-load failure calls `fail(f)` without `writer: writer` -> RED (a .part is left).
+    def test_a_model_failure_removes_the_part_created_before_it(self):
+        out = self.path("o.wav")
+        e = {k: v for k, v in os.environ.items() if not k.startswith("OX_CLEAN_")}
+        p = subprocess.Popen([BIN, self.clip(), out, "--models", self.path("no-models")], env=e, stderr=subprocess.PIPE, text=True)
+        _, err = p.communicate(timeout=60)
+        self.assertEqual(p.returncode, 3, err)
+        self.assertNoOutput(out)
+
+    # Fix round 6. Mutation: main.swift, the `args.outputIsDirectoryPath` check removed -> RED (exit 4/1, or a file made).
+    def test_an_output_spelled_as_a_directory_is_6_and_creates_nothing(self):
+        os.mkdir(self.path("d"))
+        self.clip()   # (the generated clip lives in the same directory)
+        before = sorted(os.listdir(self.tmp.name))
+        for spelling in (self.path("d") + "/", self.path("d") + "//", self.path("d") + "/.", self.path("d") + "/.."):
+            r = run(self.clip(), spelling, "--models", MODELS)
+            self.assertEqual((r.returncode, reason(r.stderr)), (6, "out_is_directory"), f"{spelling}: {r.stderr}")
+        self.assertEqual(sorted(os.listdir(self.tmp.name)), before)
+        self.assertEqual(os.listdir(self.path("d")), [])
+
+    # Fix round 6. Mutation: Arguments.swift, the `--` branch or the any-position --models removed -> RED.
+    def test_models_may_come_first_and_double_dash_ends_the_options(self):
+        r = run("--models", MODELS, "--", self.clip(), self.path("a.wav"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = run(self.clip(), "--models", MODELS, self.path("b.wav"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(run("-x.wav", self.path("c.wav"), "--models", MODELS).returncode, 2)
+
+    # Fix round 1: exFAT has no exclusive rename (ENOTSUP after the whole clean). The image is made, attached and detached
+    # here. Mutation: main.swift, the ENOTSUP branch removed -> RED (exit 6 publish_failed after a full run).
+    def attach_exfat(self, size_mb):
+        if not shutil.which("hdiutil"):
+            self.skipTest("hdiutil is not available: cannot build an exFAT disk image")
+        dmg, mnt = self.path("x.dmg"), self.path("mnt")
+        made = subprocess.run(["hdiutil", "create", "-size", f"{size_mb}m", "-fs", "ExFAT", "-volname", "OXCLEANT", dmg],
+                              capture_output=True, text=True)
+        if made.returncode != 0:
+            self.skipTest(f"hdiutil could not create an exFAT image: {made.stderr.strip()[:200]}")
+        os.mkdir(mnt)
+        att = subprocess.run(["hdiutil", "attach", "-nobrowse", "-mountpoint", mnt, dmg], capture_output=True, text=True)
+        if att.returncode != 0:
+            self.skipTest(f"hdiutil could not attach the exFAT image: {att.stderr.strip()[:200]}")
+        self.addCleanup(lambda: subprocess.run(["hdiutil", "detach", mnt, "-force"], capture_output=True))
+        return mnt
+
+    def test_output_on_exfat_is_published_by_copy_and_never_overwrites(self):
+        mnt = self.attach_exfat(int(os.path.getsize(self.clip()) * 2.5 / 2**20) + 10)   # room for the .part and the copy
+        out = os.path.join(mnt, "o.wav")
+        r = run(self.clip(), out, "--models", MODELS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(read_float_wav(out)), len(read_float_wav(self.clip())))
+        self.assertFalse(os.path.exists(out + ".part"))
+        before = digest(out)
+        r = run(self.clip(), out, "--models", MODELS)   # still never over an existing file
+        self.assertEqual((r.returncode, reason(r.stderr)), (6, "out_exists"), r.stderr)
+        self.assertEqual(digest(out), before)
+
+    # exFAT reports a different st_ino for the same file once it has grown, so "is the path still my file" must compare
+    # fresh numbers. Mutation: WavIO.swift, discard() compares the inode recorded at create -> RED (the .part stays).
+    def test_a_failed_run_on_exfat_removes_its_part(self):
+        mnt = self.attach_exfat(20)
+        out = os.path.join(mnt, "o.wav")
+        r = run(self.long_clip(), out, "--models", MODELS, env={"OX_CLEAN_TEST_FAIL_AFTER_WINDOWS": "2"})
         self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertIn("does not exist", r.stderr)
-        self.assertLess(time.time() - started, 5)
+        self.assertEqual([n for n in os.listdir(mnt) if not n.startswith(".")], [])
+
+    # Mutation: main.swift, `undo` no longer unlinks the output it created -> RED (a half-copied file stays).
+    def test_a_copy_that_runs_out_of_space_removes_what_it_made(self):
+        mnt = self.attach_exfat(20)   # the 13 MB .part fits; the 13 MB copy beside it does not
+        out = os.path.join(mnt, "o.wav")
+        r = run(self.long_clip(), out, "--models", MODELS)
+        self.assertEqual((r.returncode, reason(r.stderr)), (6, "publish_failed"), r.stderr)
+        self.assertEqual([n for n in os.listdir(mnt) if not n.startswith(".")], [], "nothing of ours may stay")
 
     # -- interrupted and failing runs ---------------------------------------------------------------------------------
-    def start_slow(self, out, **env):
+    def start_slow(self, out, ignore=(), **env):
         e = {k: v for k, v in os.environ.items() if not k.startswith("OX_CLEAN_")}
         e.update({"OX_CLEAN_TEST_SLOW_MS": "600"}, **env)
-        p = subprocess.Popen([BIN, self.long_clip(), out, "--models", MODELS], env=e, stderr=subprocess.PIPE, text=True)
+        def inherit_ignores():   # what `cmd &` in a non-interactive shell hands down
+            for sig in ignore:
+                signal.signal(sig, signal.SIG_IGN)
+        p = subprocess.Popen([BIN, self.long_clip(), out, "--models", MODELS], env=e, stderr=subprocess.PIPE, text=True,
+                             preexec_fn=inherit_ignores)
         self.addCleanup(lambda: p.poll() is None and p.kill())
         deadline = time.time() + 120
         # in flight: the .part (or, with the mutation that writes straight to the output, the output) exists
@@ -344,10 +509,13 @@ class Contract(Case):
 
     # Mutation: main.swift, delete `interrupt.install()` (or the unlink in Interrupt.swift) -> RED (the part is left,
     # or the default action kills the process with the .part in place).
-    def test_sigterm_and_sigint_mid_run_remove_the_part_and_fail(self):
-        for sig, code in ((signal.SIGTERM, 143), (signal.SIGINT, 130)):
+    # Fix round 4. SIGQUIT let the run finish with 0 because a process started by `cmd &` in a non-interactive shell
+    # inherits SIG_IGN for SIGINT and SIGQUIT and nothing handled SIGQUIT; the children here inherit exactly that.
+    # Mutation: Interrupt.swift, SIGHUP/SIGQUIT out of the signal list -> RED (rc 0 or -1/-3).
+    def test_signals_mid_run_remove_the_part_and_fail_even_when_the_shell_ignored_them(self):
+        for sig, code in ((signal.SIGTERM, 143), (signal.SIGINT, 130), (signal.SIGHUP, 129), (signal.SIGQUIT, 131)):
             out = self.path(f"o{int(sig)}.wav")
-            p = self.start_slow(out)
+            p = self.start_slow(out, ignore=(signal.SIGINT, signal.SIGQUIT))
             p.send_signal(sig)
             p.wait(timeout=30)
             self.assertEqual(p.returncode, code, f"{sig.name}")
@@ -367,7 +535,7 @@ class Contract(Case):
     def test_a_failure_after_the_first_window_leaves_nothing(self):
         out = self.path("o.wav")
         r = run(self.long_clip(), out, "--models", MODELS, env={"OX_CLEAN_TEST_FAIL_AFTER_WINDOWS": "1"})
-        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual((r.returncode, reason(r.stderr)), (1, "test_seam"), r.stderr)
         self.assertIn("OX_CLEAN_TEST_FAIL_AFTER_WINDOWS", r.stderr)
         self.assertEqual(len(r.stderr.strip().splitlines()), 1)
         self.assertNoOutput(out)
