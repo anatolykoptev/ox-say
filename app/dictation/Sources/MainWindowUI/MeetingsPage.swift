@@ -80,6 +80,10 @@ struct MeetingsPage: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            // The system search field, in the window toolbar: only while there is a list to search, so Off, Loading,
+            // Down and Empty carry none. It writes the query the results are read from; Esc and the clear button are its own.
+            .searchable(text: $model.queryText, placement: .toolbar, prompt: L10nKey.searchPlaceholder.text)
+            .onChange(of: model.queryText) { _, text in model.actions.searchTyped(text) }
         }
     }
 
@@ -140,8 +144,6 @@ private struct MeetingList: View {
             if let elapsed = model.data.recordingElapsed {
                 RecordingBanner(elapsed: elapsed) { model.actions.stopRecording() }
             }
-            SearchField(model: model)
-            Divider()
             if model.data.search.phase == .idle {
                 List(selection: $model.selectedMeeting) {
                     ForEach(groups.indices, id: \.self) { g in
