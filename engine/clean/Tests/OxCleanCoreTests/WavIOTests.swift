@@ -119,6 +119,12 @@ final class WavIOTests: XCTestCase {
         XCTAssertEqual(failure(F.riff([F.chunk("fmt ", F.fmt(tag: 0)), d])), .unsupported("format tag 0, need IEEE float"))
     }
 
+    // Mutation: the `blockAlign == 4` guard removed -> red.
+    func testALyingBlockAlignIsRefused() {
+        var f = F.fmt(); f.replaceSubrange(12..<14, with: F.u16(8))
+        XCTAssertEqual(failure(F.riff([F.chunk("fmt ", f), F.chunk("data", F.floats(x))])), .unsupported("block align 8, need 4"))
+    }
+
     // MARK: well-formed shapes that must parse
 
     // Mutation: the odd-size pad byte ignored when stepping to the next chunk -> red.
@@ -193,13 +199,137 @@ final class WavIOTests: XCTestCase {
         XCTAssertEqual(Array(b[20..<22]), F.u16(3))
     }
 
-    func testAWriterThatNeverFinishedLeavesAFileTheReaderRefuses() throws {
+    // A writer that never reached finish() removes its file: no half-written file at the output path, and a retry
+    // does not hit EEXIST. Mutation: deinit's discard() removed -> red.
+    func testAWriterThatNeverFinishedLeavesNoFileAndTheRetrySucceeds() throws {
         let url = F.tmp("unfinished")
         do {
             let w = try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1)
             try x.withUnsafeBufferPointer { try w.append($0) }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
         }
-        XCTAssertThrowsError(try WavIO.readMono48k(url)) { XCTAssertEqual($0 as? WavIO.Failure, .empty) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        let w2 = try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1)
+        try x.withUnsafeBufferPointer { try w2.append($0) }
+        try w2.finish()
+        XCTAssertEqual(try WavIO.readMono48k(url).info.frames, 5)
+    }
+
+    func testAbandonRemovesTheFileAndEveryLaterCallThrows() throws {
+        let url = F.tmp("abandon")
+        let w = try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1)
+        w.abandon(); w.abandon()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertThrowsError(try w.finish())
+        XCTAssertThrowsError(try x.withUnsafeBufferPointer { try w.append($0) })
+    }
+
+    func testAFinishedFileSurvivesDeinitAndAbandon() throws {
+        let url = F.tmp("kept")
+        do {
+            let w = try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1)
+            try x.withUnsafeBufferPointer { try w.append($0) }
+            try w.finish()
+            w.abandon()
+        }
+        XCTAssertEqual(try WavIO.readMono48k(url).info.frames, 5)
+    }
+
+    // Only its own file: if the path was replaced by someone else's file, abandon leaves that alone.
+    // Mutation: the dev/ino comparison in discard() dropped -> red.
+    func testAbandonDoesNotRemoveAFileItDidNotCreate() throws {
+        let url = F.tmp("swapped")
+        let w = try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1)
+        unlink(url.path)
+        try Data([9, 9, 9]).write(to: url)
+        w.abandon()
+        XCTAssertEqual([UInt8](try Data(contentsOf: url)), [9, 9, 9])
+        unlink(url.path)
+    }
+
+    // MARK: writer failure paths (system calls injected)
+
+    /// Real calls, with a log of every close and optional failures.
+    final class Spy: @unchecked Sendable {
+        var closed: [Int32] = []
+        var failWrite = false, failPwrite = false
+        var ops: WavIO.FileOps {
+            var o = WavIO.FileOps.posix
+            o.write = { [unowned self] fd, p, n in if failWrite { errno = EIO; return -1 }; return Darwin.write(fd, p, n) }
+            o.pwrite = { [unowned self] fd, p, n, off in if failPwrite { errno = EIO; return -1 }; return Darwin.pwrite(fd, p, n, off) }
+            o.close = { [unowned self] fd in closed.append(fd); return Darwin.close(fd) }
+            return o
+        }
+    }
+
+    // Bug: the header-write failure closed the fd and deinit closed the same number again, which in a threaded
+    // process can close another thread's descriptor. Mutation: closeFD/discard() stops setting `fd = -1` -> two closes.
+    func testAFailedHeaderWriteClosesTheDescriptorExactlyOnceAndRemovesTheFile() throws {
+        let spy = Spy(); spy.failWrite = true
+        let url = F.tmp("hdrfail")
+        XCTAssertThrowsError(try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1, io: spy.ops)) {
+            XCTAssertEqual(($0 as? POSIXError)?.code, .EIO)
+        }
+        XCTAssertEqual(spy.closed.count, 1, "closes: \(spy.closed)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        // And the descriptor number is really free: a fresh open gets it back and survives.
+        let probe = open("/dev/null", O_RDONLY); defer { close(probe) }
+        XCTAssertEqual(probe, spy.closed[0])
+        XCTAssertNotEqual(fcntl(probe, F_GETFD), -1)
+    }
+
+    func testEachWriterClosesItsDescriptorExactlyOnce() throws {
+        let spy = Spy()
+        let url = F.tmp("once")
+        do {
+            let w = try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1, io: spy.ops)
+            try x.withUnsafeBufferPointer { try w.append($0) }
+            try w.finish(); try w.finish()
+        }
+        XCTAssertEqual(spy.closed.count, 1)
+        let url2 = F.tmp("once2")
+        do { _ = try WavIO.StreamWriter(url: url2, sampleRate: 48000, channels: 1, io: spy.ops) }
+        XCTAssertEqual(spy.closed.count, 2)
+    }
+
+    // Bug: finish() set `finished` before the pwrites, so after a failure the second call returned silently.
+    // Mutation: `finishError = error` removed from finish()'s catch -> red.
+    func testAFailedFinishThrowsTheSameErrorOnEveryLaterCallAndRemovesTheFile() throws {
+        let spy = Spy()
+        let url = F.tmp("finfail")
+        let w = try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1, io: spy.ops)
+        try x.withUnsafeBufferPointer { try w.append($0) }
+        spy.failPwrite = true
+        XCTAssertThrowsError(try w.finish()) { XCTAssertEqual(($0 as? POSIXError)?.code, .EIO) }
+        XCTAssertThrowsError(try w.finish()) { XCTAssertEqual(($0 as? POSIXError)?.code, .EIO) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(spy.closed.count, 1)
+    }
+
+    func testAFailedAppendPoisonsTheWriterAndFinishThrows() throws {
+        let spy = Spy()
+        let url = F.tmp("appfail")
+        let w = try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1, io: spy.ops)
+        spy.failWrite = true
+        XCTAssertThrowsError(try x.withUnsafeBufferPointer { try w.append($0) })
+        spy.failWrite = false
+        XCTAssertThrowsError(try x.withUnsafeBufferPointer { try w.append($0) })
+        XCTAssertThrowsError(try w.finish())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(spy.closed.count, 1)
+    }
+
+    // The 4 GiB guard in append(), driven by placing the byte counter near the limit (4 GiB of real audio is not
+    // something a unit test writes). Mutation: the `wouldOverflowRIFF` guard removed from append() -> red.
+    func testAppendRefusesToCrossTheFourGiBLimit() throws {
+        let w = try WavIO.StreamWriter(url: F.tmp("big"), sampleRate: 48000, channels: 1)
+        w.dataBytes = UInt64(UInt32.max) - 36 - 4
+        XCTAssertThrowsError(try [Float(1), 2].withUnsafeBufferPointer { try w.append($0) }) {
+            XCTAssertEqual($0 as? WavIO.Failure, .unsupported("output passes the 4 GiB WAV limit"))
+        }
+        XCTAssertEqual(w.dataBytes, UInt64(UInt32.max) - 36 - 4)   // nothing was counted
+        try [Float(1)].withUnsafeBufferPointer { try w.append($0) }   // exactly up to the limit is fine
+        XCTAssertEqual(w.dataBytes, UInt64(UInt32.max) - 36)
     }
 
     // Constraint 5: never overwrite an existing output. Mutation: O_EXCL dropped from the writer's open -> red.

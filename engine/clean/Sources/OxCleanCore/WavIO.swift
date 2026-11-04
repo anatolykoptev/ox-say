@@ -148,18 +148,44 @@ public enum WavIO {
 
     // MARK: writer
 
+    /// The system calls the writer makes, in one place so a test can make any of them fail. Production uses `.posix`.
+    struct FileOps: Sendable {
+        var open: @Sendable (String, Int32, mode_t) -> Int32
+        var write: @Sendable (Int32, UnsafeRawPointer, Int) -> Int
+        var pwrite: @Sendable (Int32, UnsafeRawPointer, Int, off_t) -> Int
+        var close: @Sendable (Int32) -> Int32
+        static let posix = FileOps(
+            open: { Darwin.open($0, $1, $2) }, write: { Darwin.write($0, $1, $2) },
+            pwrite: { Darwin.pwrite($0, $1, $2, $3) }, close: { Darwin.close($0) })
+    }
+
     /// Streams float32 samples into a canonical 44-byte-header WAV, so memory stays flat however long the audio is.
     /// The file is created exclusively: an existing path is an error, never overwritten. The sizes in the header
-    /// start at 0 and are patched by `finish()`, so a writer that dies midway leaves a file the reader refuses
-    /// (`.empty`) rather than one that looks complete.
+    /// start at 0 and are patched by `finish()`.
+    ///
+    /// A writer that does not reach a successful `finish()` (it was abandoned, deinitialised, or a write failed)
+    /// removes the file it created, so a half-written file never sits at the output path and a retry does not hit
+    /// EEXIST. It removes only its own file: the path is unlinked only if it still names the inode this writer
+    /// created. One owner closes the descriptor: `closeFD()`, which is idempotent.
     public final class StreamWriter {
+        private let io: FileOps
+        private let path: String
+        private let identity: (dev: dev_t, ino: ino_t)
         private var fd: Int32
         private let channels: Int
-        private var dataBytes: UInt64 = 0
+        /// Internal for tests (to place the counter near the 4 GiB limit).
+        var dataBytes: UInt64 = 0
         private var finished = false
-        private var broken = false
+        /// Set only when finish() fully succeeded: from then on the file is the caller's and is never removed.
+        private var completed = false
+        private var finishError: Error?
+        private var broken: Error?
 
-        public init(url: URL, sampleRate: Int, channels: Int) throws {
+        public convenience init(url: URL, sampleRate: Int, channels: Int) throws {
+            try self.init(url: url, sampleRate: sampleRate, channels: channels, io: .posix)
+        }
+
+        init(url: URL, sampleRate: Int, channels: Int, io: FileOps) throws {
             guard (1...Int(UInt16.max)).contains(channels) else { throw Failure.unsupported("\(channels) channels") }
             guard sampleRate >= 1, sampleRate <= Int(UInt32.max) else { throw Failure.unsupported("sample rate \(sampleRate)") }
             let (perFrame, o1) = channels.multipliedReportingOverflow(by: 4)
@@ -167,8 +193,18 @@ public enum WavIO {
             guard !o1, !o2, byteRate <= Int(UInt32.max), perFrame <= Int(UInt16.max) else {
                 throw Failure.unsupported("\(sampleRate) Hz x \(channels) channels does not fit a WAV header")
             }
-            let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
+            let fd = io.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
             guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            var st = stat()
+            guard fstat(fd, &st) == 0 else {
+                let e = errno
+                _ = io.close(fd)
+                unlink(url.path)
+                throw POSIXError(POSIXErrorCode(rawValue: e) ?? .EIO)
+            }
+            self.io = io
+            self.path = url.path
+            self.identity = (st.st_dev, st.st_ino)
             self.fd = fd
             self.channels = channels
 
@@ -179,43 +215,79 @@ public enum WavIO {
                 + le16(perFrame) + le16(32)
                 + Array("data".utf8) + le32(0)
             do {
-                try header.withUnsafeBytes { try Self.writeAll(fd, $0) }
+                try header.withUnsafeBytes { try writeAll($0) }
             } catch {
-                close(fd)
-                unlink(url.path)
+                // The object is fully initialised here, so deinit runs after this throw: `discard()` closes the
+                // descriptor once and deinit's own call finds it already released.
+                discard()
                 throw error
             }
         }
 
-        deinit { if !finished { close(fd) } }
+        deinit { discard() }
 
         public func append(_ samples: UnsafeBufferPointer<Float>) throws {
             guard !finished else { throw Failure.unsupported("writer already finished") }
-            guard !broken else { throw Failure.unsupported("writer failed earlier") }
+            if let broken { throw broken }
             guard samples.count % channels == 0 else { throw Failure.unsupported("\(samples.count) samples is not a whole number of \(channels)-channel frames") }
             guard samples.count > 0 else { return }
             let bytes = samples.count * 4
             guard !Self.wouldOverflowRIFF(dataBytes: dataBytes, adding: bytes) else { throw Failure.unsupported("output passes the 4 GiB WAV limit") }
             do {
-                try Self.writeAll(fd, UnsafeRawBufferPointer(samples))
+                try writeAll(UnsafeRawBufferPointer(samples))
             } catch {
-                broken = true
+                broken = error
+                discard()
                 throw error
             }
             dataBytes += UInt64(bytes)
         }
 
-        /// Patches the two size fields and closes the file. Idempotent; throws if an append failed.
+        /// Patches the two size fields and closes the file. After a failure (this call's or an earlier append's)
+        /// the file is removed and every later call throws the same error; after a success later calls return.
         public func finish() throws {
-            guard !finished else { return }
-            finished = true
-            defer { close(fd) }
-            guard !broken else { throw Failure.unsupported("writer failed earlier") }
-            func le32(_ v: UInt64) -> [UInt8] { withUnsafeBytes(of: UInt32(v).littleEndian) { Array($0) } }
-            for (offset, value) in [(4, 36 + dataBytes), (40, dataBytes)] {
-                let b = le32(value)
-                guard pwrite(fd, b, 4, off_t(offset)) == 4 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            if finished {
+                if let finishError { throw finishError }
+                return
             }
+            finished = true
+            do {
+                if let broken { throw broken }
+                func le32(_ v: UInt64) -> [UInt8] { withUnsafeBytes(of: UInt32(v).littleEndian) { Array($0) } }
+                for (offset, value) in [(4, 36 + dataBytes), (40, dataBytes)] {
+                    let b = le32(value)
+                    guard io.pwrite(fd, b, 4, off_t(offset)) == 4 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+                }
+                let f = fd
+                fd = -1
+                guard io.close(f) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+                completed = true
+            } catch {
+                finishError = error
+                discard()
+                throw error
+            }
+        }
+
+        /// Gives up: closes the descriptor and removes the file this writer created. No-op after a successful
+        /// `finish()`. Idempotent.
+        public func abandon() {
+            guard !completed else { return }
+            finished = true
+            if finishError == nil { finishError = Failure.unsupported("writer abandoned") }
+            discard()
+        }
+
+        /// Closes the descriptor (once) and removes our file if it is still the one at `path`. A no-op after a
+        /// successful finish.
+        private func discard() {
+            guard !completed else { return }
+            if fd >= 0 {
+                _ = io.close(fd)
+                fd = -1
+            }
+            var st = stat()
+            if stat(path, &st) == 0, st.st_dev == identity.dev, st.st_ino == identity.ino { unlink(path) }
         }
 
         /// True when `adding` more bytes would push the RIFF size field (36 + data) past `UInt32.max`.
@@ -224,10 +296,10 @@ public enum WavIO {
             return overflow || total > UInt64(UInt32.max) - 36
         }
 
-        private static func writeAll(_ fd: Int32, _ buf: UnsafeRawBufferPointer) throws {
+        private func writeAll(_ buf: UnsafeRawBufferPointer) throws {
             var done = 0
             while done < buf.count {
-                let r = write(fd, buf.baseAddress! + done, buf.count - done)
+                let r = io.write(fd, buf.baseAddress! + done, buf.count - done)
                 if r < 0 {
                     if errno == EINTR { continue }
                     throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
