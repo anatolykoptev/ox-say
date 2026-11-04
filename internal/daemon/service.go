@@ -117,6 +117,9 @@ type Daemon struct {
 	repairCancel context.CancelFunc
 	repairDone   chan struct{}
 	repairStop   sync.Once
+	// sweepCancel and sweepDone stop and await a StartCleanScratchSweep pass.
+	sweepCancel context.CancelFunc
+	sweepDone   chan struct{}
 
 	// prod runs long-form voiceover jobs; inflight and lastInteractiveEnd
 	// feed the dictation yield (see interactive.go).

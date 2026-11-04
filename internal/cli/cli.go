@@ -156,6 +156,7 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 	d.StartVoiceRepair()
 	d.StartProducer()
 	d.StartMeetings()
+	d.StartCleanScratchSweep()
 	daemon.SetVersion(version)
 
 	err = serve(&mcp.Implementation{
@@ -166,6 +167,7 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 	// repair pass may already be running (it only waits for SOMETHING to
 	// accept on the address): wait for it here rather than exit mid-rewrite.
 	// A running voiceover job is interrupted first so it is not killed mid-take.
+	d.StopCleanScratchSweep()
 	d.StopMeetings()
 	d.StopProducer()
 	d.StopVoiceRepair()
