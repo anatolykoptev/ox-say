@@ -114,6 +114,7 @@ def main():
     print("compiling .mlmodelc")
     subprocess.run(["xcrun", "coremlcompiler", "compile", pkg, a.out], check=True)
     mlc = os.path.join(a.out, MODEL_STEM + ".mlmodelc")
+    weight_sha = {k: R.sha256_file(os.path.join(a.out, rel)) for k, rel in R.WEIGHT_BLOBS.items()}
     mlc_bytes = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(mlc) for f in fs)
 
     manifest = {
@@ -142,6 +143,8 @@ def main():
         "coremltools": ct.__version__,
         "torch": torch.__version__,
         "mlmodelc_bytes": mlc_bytes,
+        "mlmodelc_weights_sha256": weight_sha["mlmodelc"],
+        "mlpackage_weights_sha256": weight_sha["mlpackage"],
     }
     with open(os.path.join(a.out, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=1)

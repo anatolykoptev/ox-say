@@ -9,13 +9,15 @@ job at a time and at low priority:
   nice -n 15 env OX_CLEAN_CHECKPOINT=... .venv/bin/python -B -m pytest test_convert.py
 
 OX_CLEAN_MODEL_DIR=<a dir convert.py already wrote> skips the fixture conversion and tests that
-directory read-only (also for re-checking a downloaded model dir). verify.py needs the
-.mlpackage in that directory; the .mlmodelc alone is not enough.
+directory read-only (also for re-checking a downloaded model dir). verify.py needs both the
+.mlmodelc (the artifact that ships; every gated prediction runs on it) and the .mlpackage (it must
+agree), and the manifest's weights SHA-256 for each.
 """
 import hashlib
 import json
 import os
 import pathlib
+import shutil
 import struct
 import subprocess
 import sys
@@ -91,11 +93,12 @@ def test_reference_file_sha_matches_manifest(model_dir):
 
 def _perturbed_model_dir(src, dst, perturb):
     """A model dir whose stored reference mask is replaced by perturb(mask) (manifest sha
-    updated). The mlpackage is symlinked, so the model itself is unchanged: verify's known-answer
+    updated). Both artifacts are symlinked, so the model itself is unchanged: verify's known-answer
     error is then exactly the perturbation, with no conversion."""
     import reference as R
     dst.mkdir()
-    os.symlink(src / (MODEL_STEM + ".mlpackage"), dst / (MODEL_STEM + ".mlpackage"))
+    for ext in (".mlpackage", ".mlmodelc"):
+        os.symlink(src / (MODEL_STEM + ext), dst / (MODEL_STEM + ext))
     m = json.loads((src / "manifest.json").read_text())
     feats, mask = R.read_reference(str(src / m["reference_file"]))
     R.write_reference(str(dst / m["reference_file"]), feats, perturb(mask).astype(np.float32))
@@ -106,6 +109,85 @@ def _perturbed_model_dir(src, dst, perturb):
 
 def _ka_line(stdout):
     return next(l for l in stdout.splitlines() if "known-answer" in l)
+
+
+def _line(stdout, needle):
+    return next(l for l in stdout.splitlines() if needle in l)
+
+
+def _corrupt_compiled_dir(src, dst, how):
+    """A model dir whose .mlmodelc is a REAL copy with weights/weight.bin damaged, next to a
+    .mlpackage that is a symlink to the good one. how: "zeroed" (same size, all zero) or "onebyte"."""
+    dst.mkdir()
+    os.symlink(src / (MODEL_STEM + ".mlpackage"), dst / (MODEL_STEM + ".mlpackage"))
+    shutil.copytree(src / (MODEL_STEM + ".mlmodelc"), dst / (MODEL_STEM + ".mlmodelc"))
+    shutil.copy(src / "manifest.json", dst / "manifest.json")
+    shutil.copy(src / "reference_window.bin", dst / "reference_window.bin")
+    blob = dst / (MODEL_STEM + ".mlmodelc") / "weights" / "weight.bin"
+    data = bytearray(blob.read_bytes())
+    if how == "zeroed":
+        data = bytearray(len(data))
+    else:
+        data[len(data) // 2] ^= 0xFF
+    blob.write_bytes(bytes(data))
+    return dst
+
+
+def test_verify_gates_the_compiled_model_not_the_package(model_dir, tmp_path):
+    # A stale/wrong .mlmodelc next to a correct .mlpackage must fail on the compiled-model line.
+    d = _corrupt_compiled_dir(model_dir, tmp_path / "stale", "zeroed")
+    out = run("verify.py", str(d), "--fixtures", "0", ok=False)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert _line(out.stdout, "compiled .mlmodelc cpuAndGPU known-answer").rstrip().endswith("FAIL"), out.stdout
+    assert _line(out.stdout, "package .mlpackage cpuAndGPU known-answer").rstrip().endswith("PASS"), out.stdout
+    assert _line(out.stdout, "mlmodelc weights/weight.bin").rstrip().endswith("FAIL"), out.stdout
+
+
+def test_verify_checks_the_weights_sha_even_when_predictions_pass(model_dir, tmp_path):
+    # One flipped byte in the middle of the blob may not move the masks at all; the manifest SHA-256 is the
+    # gate that still catches it.
+    d = _corrupt_compiled_dir(model_dir, tmp_path / "onebyte", "onebyte")
+    out = run("verify.py", str(d), "--fixtures", "0", ok=False)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert _line(out.stdout, "mlmodelc weights/weight.bin").rstrip().endswith("FAIL"), out.stdout
+    assert _line(out.stdout, "mlpackage weights/weight.bin").rstrip().endswith("PASS"), out.stdout
+
+
+def test_verify_prints_both_artifact_lines_on_the_good_model(model_dir):
+    out = run("verify.py", str(model_dir), "--fixtures", "0")
+    assert _line(out.stdout, "compiled .mlmodelc cpuAndGPU known-answer").rstrip().endswith("PASS"), out.stdout
+    assert _line(out.stdout, "package .mlpackage cpuAndGPU known-answer").rstrip().endswith("PASS"), out.stdout
+    assert _line(out.stdout, ".mlmodelc vs .mlpackage").rstrip().endswith("PASS"), out.stdout
+
+
+def _load_net_in_subprocess(cwd, tmp_root, arg):
+    """load_net(arg) in a fresh interpreter whose cwd is `cwd` (offline: an unpinned download would fail)."""
+    code = ("import sys; sys.path.insert(0, %r); import reference as R; net, cv = R.load_net(sys.argv[1]); "
+            "print('LOADED', type(net).__name__)" % str(HERE))
+    env = {**os.environ, "HF_HUB_OFFLINE": "1", "TMPDIR": str(tmp_root)}
+    return subprocess.run([sys.executable, "-B", "-c", code, arg], cwd=cwd, env=env, capture_output=True, text=True)
+
+
+def _nonstandard_ckpt_dir(dst):
+    """A directory outside the checkpoints/MossFormer2_SE_48K layout holding the two pinned files."""
+    p = pathlib.Path(CKPT)
+    src = p.parent if p.is_file() else p
+    dst.mkdir()
+    for name in ("last_best_checkpoint.pt", "last_best_checkpoint"):
+        os.symlink(src / name, dst / name)
+    return dst
+
+
+def test_load_net_accepts_a_relative_checkpoint_dir_and_cleans_its_staging(tmp_path):
+    # A relative dir must be made absolute before it is symlinked under the staging root, and the
+    # staging root must not outlive the call.
+    work, tmp_root = tmp_path / "cwd", tmp_path / "tmp"
+    work.mkdir()
+    tmp_root.mkdir()
+    _nonstandard_ckpt_dir(work / "weights")
+    r = _load_net_in_subprocess(work, tmp_root, "weights")
+    assert r.returncode == 0 and "LOADED" in r.stdout, r.stdout + r.stderr
+    assert list(tmp_root.iterdir()) == [], list(tmp_root.iterdir())
 
 
 def test_known_answer_limit_is_1e4_mse(model_dir, tmp_path):

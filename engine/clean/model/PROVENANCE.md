@@ -43,13 +43,15 @@ Build of 2026-11-03, `out/` (`.mlmodelc` total 119,512,598 bytes):
 | `MossFormer2_SE_48K.mlpackage/Data/com.apple.CoreML/weights/weight.bin` | `a240669911aade7aa87991de27e09d0c3d56d7d9fa491a7df180725fe3250446` |
 | `MossFormer2_SE_48K.mlpackage/Manifest.json` | `aa41a8e60934c7f9f58ef82aff1892061cc3ead2a65f17a3c41c72d3992e498c` |
 | `config.json` | `714759a5eb1f13ccdef2a1127dc8ce8b10c9374decfe89b9aceb1bdca451ee7b` |
-| `manifest.json` | `ebeee9345315036223abba5356a02c1255f4b9089102c93ee12fc970a704fa01` |
+| `manifest.json` | `a92021343c2d38ff5c8c2b0d434cd17aebdc58034c7a9457125d61d7a764b7c3` |
 | `reference_window.bin` | `29fcb372069103a8337c0e19e32f2e983bc709ea45185a662213a26ee7435beb` |
 
 ## Gate results at build time
 
-- `verify.py` on this build: cpuAndGPU known-answer **PASS** (mask MSE 3.456e-08
-  vs the stored reference; both seeded fixtures PASS at ~2-4e-08); cpuOnly reported
+- `verify.py` on this build gates the shipped `.mlmodelc` (loaded through `CompiledMLModel`) and
+  the `.mlpackage`, and checks both `weights/weight.bin` SHA-256 values against the manifest:
+  cpuAndGPU known-answer **PASS** on each (mask MSE 3.456e-08 vs the stored reference; both seeded
+  fixtures PASS at ~2-4e-08, run on the `.mlmodelc`); cpuOnly reported
   as the known defect (MSE 5.532e-03, not supported, never gated).
 - Byte-reproducibility of `weight.bin` across two conversions: **yes** —
   `test_conversion_is_reproducible` runs `convert.py` twice and compares SHA-256

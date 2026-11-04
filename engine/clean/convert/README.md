@@ -44,12 +44,15 @@ nice -n 15 .venv/bin/python -B verify.py out --checkpoint "$CKPT"
 
 `convert.py` writes `MossFormer2_SE_48K.mlpackage` (the source of truth),
 `MossFormer2_SE_48K.mlmodelc/`, `manifest.json`, `config.json` and `reference_window.bin`.
-`verify.py` prints the cpuAndGPU known-answer result (gated), the cpuOnly line (reported,
-never gated), the stored-mask-vs-PyTorch check and two seeded fixture windows. The known-answer
+`verify.py` gates the artifact that ships: it checks the SHA-256 of `weights/weight.bin` inside the
+`.mlmodelc` and inside the `.mlpackage` against the manifest, prints the cpuAndGPU known-answer
+result for the compiled `.mlmodelc` (loaded through `CompiledMLModel`) and for the `.mlpackage`
+(both gated, and the two masks must agree), the cpuOnly line (reported, never gated), the
+stored-mask-vs-PyTorch check and two seeded fixture windows (run on the `.mlmodelc`). The known-answer
 check passes only at mask MSE <= 1e-4 AND p99.9 <= 0.05 AND no NaN (`known_answer_ok` in
 `verify.py`; the engine applies the same rule). A fixture passes only on grade PASS: WARN is
 printed as WARN and makes the exit code non-zero. Exit 1 on a gated FAIL or WARN, 2 on
-integrity/usage errors. `verify.py` needs the `.mlpackage`; the `.mlmodelc` alone is not enough.
+integrity/usage errors. `verify.py` needs both the `.mlmodelc` and the `.mlpackage`.
 
 ## Tests
 
@@ -57,11 +60,13 @@ integrity/usage errors. `verify.py` needs the `.mlpackage`; the `.mlmodelc` alon
 OX_CLEAN_CHECKPOINT="$CKPT" nice -n 15 .venv/bin/python -B -m pytest test_convert.py
 ```
 
-Nine tests: the pinned checkpoint hash, manifest shape/precision + 125 MiB budget + verify,
+Thirteen tests: the pinned checkpoint hash, manifest shape/precision + 125 MiB budget + verify,
 byte-reproducibility of `weight.bin`, `verify.py` exiting 1 on a model built with
 `--mask-gain 2.0` (the test hook), the manifest's recorded SHA-256 of the reference, the
 1e-4 MSE limit (stored mask + uniform noise) and the p99.9 rule (stored mask x0.9), no conversion, the
-`known_answer_ok` rule, and `read_reference` rejecting a truncated or mis-sized file.
+`known_answer_ok` rule, `read_reference` rejecting a truncated or mis-sized file, verify failing on a
+stale or corrupted `.mlmodelc` next to a good `.mlpackage` (no conversion), and `load_net` taking a
+relative checkpoint directory and removing its staging directory.
 `OX_CLEAN_MODEL_DIR=<dir>` re-runs the read-only tests against a prebuilt directory.
 
 `probe.swift` is the native speed/op-share probe (build `swiftc -O -o /tmp/mf2-probe probe.swift`,

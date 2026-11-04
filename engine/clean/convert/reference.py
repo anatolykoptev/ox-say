@@ -24,6 +24,11 @@ CKPT_SHA256 = {
     "last_best_checkpoint": "315744c841441f8831cb2f896e06102b4d864776bf272febaa30c639c903e1c0",
 }
 MODEL_NAME = "MossFormer2_SE_48K"
+# The two shipped artifacts and the weight blob inside each; the manifest records the SHA-256 of both blobs.
+WEIGHT_BLOBS = {
+    "mlmodelc": MODEL_NAME + ".mlmodelc/weights/weight.bin",
+    "mlpackage": MODEL_NAME + ".mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+}
 
 SR, WIN, HOP, FFT, MELS = 48000, 1920, 384, 1920, 60
 SCALE = 32768.0                                          # MossFormer2 expects waveform x 32768
@@ -35,7 +40,7 @@ BINS = FFT // 2 + 1                                      # 961
 _REF_MAGIC = b"MF2REF01"
 
 
-def _sha256(path):
+def sha256_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for b in iter(lambda: f.read(1 << 22), b""):
@@ -49,18 +54,23 @@ def load_net(checkpoint):
     ClearVoice resolves `checkpoints/MossFormer2_SE_48K` relative to the cwd and downloads
     unpinned weights when `last_best_checkpoint` is absent, so both files are SHA-256 checked
     first, and a directory outside the `checkpoints/MossFormer2_SE_48K` layout is staged
-    through a symlink under a temp root.
+    through a symlink under a temp root that is removed once the net is loaded.
     """
-    ckpt_dir = checkpoint if os.path.isdir(checkpoint) else os.path.dirname(os.path.abspath(checkpoint))
+    # Absolute before anything else: a relative path would be resolved from the staging root by the
+    # symlink, and the layout test below would see an empty dirname.
+    checkpoint = os.path.abspath(checkpoint)
+    ckpt_dir = checkpoint if os.path.isdir(checkpoint) else os.path.dirname(checkpoint)
     for name, want in CKPT_SHA256.items():
         p = os.path.join(ckpt_dir, name)
         assert os.path.isfile(p), f"missing checkpoint file {p} (ClearVoice would download unpinned weights instead)"
-        got = _sha256(p)
+        got = sha256_file(p)
         assert got == want, f"checkpoint {name} sha256 {got} != pinned {want}"
+    staging = None
     if os.path.basename(ckpt_dir) == MODEL_NAME and os.path.basename(os.path.dirname(ckpt_dir)) == "checkpoints":
         root = os.path.dirname(os.path.dirname(ckpt_dir))
     else:
-        root = tempfile.mkdtemp(prefix="mf2-ckpt-")
+        staging = tempfile.TemporaryDirectory(prefix="mf2-ckpt-")
+        root = staging.name
         sub = os.path.join(root, "checkpoints")
         os.mkdir(sub)
         os.symlink(ckpt_dir, os.path.join(sub, MODEL_NAME))
@@ -68,9 +78,13 @@ def load_net(checkpoint):
     os.chdir(root)
     try:
         from clearvoice import ClearVoice
+        # ClearVoice reads the checkpoint with an eager torch.load (no mmap, no retained handle), so
+        # the staging root is not needed once the constructor returns.
         cv = ClearVoice(task="speech_enhancement", model_names=[MODEL_NAME])
     finally:
         os.chdir(cwd)
+        if staging is not None:
+            staging.cleanup()
     net = cv.models[0].model
     net.eval()
     return net, cv
