@@ -30,7 +30,7 @@ VERSION="$version" "$root/app/dictation/build.sh"
 # i8mm/BF16/SME an M1 lacks. One such instruction is a SIGILL there, and a
 # build machine that has it would slip it in silently. The guards fail
 # closed on an otool error.
-for bin in tts-server ox-stt ox-align ox-llm $( [ -f "$work/out/ox-diar" ] && echo ox-diar ) $( [ -f "$work/out/audiocpp_server" ] && echo audiocpp_server ); do
+for bin in tts-server ox-stt ox-align ox-llm $( [ -f "$work/out/ox-diar" ] && echo ox-diar ) $( [ -f "$work/out/ox-clean" ] && echo ox-clean ) $( [ -f "$work/out/audiocpp_server" ] && echo audiocpp_server ); do
     "$root/scripts/$baseline" "$work/out/$bin"
 done
 
@@ -42,6 +42,10 @@ cp "$work"/out/tts-server "$work"/out/ox-stt "$work"/out/ox-align "$work"/out/ox
 # ox-diar: the arm64 package only (the Intel smoke failed, plan Task 20a).
 if [ -f "$work/out/ox-diar" ]; then
     cp "$work/out/ox-diar" "$stage/engine/"
+fi
+# ox-clean (voice cleanup): both packages. The Intel one runs it too (plan decision 8); release.yml asserts it.
+if [ -f "$work/out/ox-clean" ]; then
+    cp "$work/out/ox-clean" "$stage/engine/"
 fi
 # VoxCPM2's server: the arm64 package only.
 if [ -f "$work/out/audiocpp_server" ]; then

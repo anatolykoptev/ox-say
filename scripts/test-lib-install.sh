@@ -491,6 +491,43 @@ check_in_log "with ox-diar: exit 0" "$tmp/diar-with/log" "rc=0"
 check "a package without ox-diar still installs" "$(diar_case without no)" "ox-align ox-llm ox-stt tts-server "
 check_in_log "without ox-diar: exit 0" "$tmp/diar-without/log" "rc=0"
 
+# --- I3: ox-clean is installed when the package carries it ---------------------
+# Both architectures carry it (decision 8: Intel is enabled), beside ox-diar and with the same copy-then-rename.
+# Mutation: drop the `mv "$home/engine/ox-clean.new"` line in oxs_install_engines -> the binary is missing and a
+# ".new" is left behind -> RED ("installs ox-clean from a package"). Mutation (scripts/package-release.sh): drop
+# ox-clean from the `for bin in` baseline list or from the engine staging block -> the shape checks below fail.
+clean_case() { # name with-clean [stale ox-clean already installed]
+    local d="$tmp/clean-$1" bin
+    mkdir -p "$d/out/licenses" "$d/home/engine"
+    echo x > "$d/out/licenses/x.LICENSE"
+    for bin in tts-server ox-stt ox-align ox-llm ox-diar $( [ "$2" = yes ] && echo ox-clean ); do
+        printf '#!/bin/sh\n' > "$d/out/$bin"
+        chmod +x "$d/out/$bin"
+    done
+    if [ "${3:-}" = stale ]; then printf '#!/bin/sh\necho old\n' > "$d/home/engine/ox-clean"; chmod +x "$d/home/engine/ox-clean"; fi
+    bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/out'" >"$d/log" 2>&1
+    echo "rc=$?" >> "$d/log"
+    for f in "$d/home/engine"/*; do
+        if [ -f "$f" ]; then
+            printf '%s ' "$(basename "$f")"
+        fi
+    done
+}
+check "installs ox-clean from a package" "$(clean_case with yes)" "ox-align ox-clean ox-diar ox-llm ox-stt tts-server "
+check_in_log "with ox-clean: exit 0" "$tmp/clean-with/log" "rc=0"
+check_in_log "with ox-clean: says so" "$tmp/clean-with/log" "installed $tmp/clean-with/home/engine/ox-clean"
+check "a package without ox-clean still installs" "$(clean_case without no)" "ox-align ox-diar ox-llm ox-stt tts-server "
+check_in_log "without ox-clean: exit 0" "$tmp/clean-without/log" "rc=0"
+# An upgrade replaces the installed binary by a new inode (a running ox-clean keeps the old one) and leaves no ".new".
+inode_before=$(ls -i "$tmp/clean-with/home/engine/ox-clean" 2>/dev/null | awk '{print $1}')
+clean_case upgrade yes stale >/dev/null
+check "an upgrade replaces the installed ox-clean with the package's" "$(cat "$tmp/clean-upgrade/home/engine/ox-clean")" "#!/bin/sh"
+check "an upgrade leaves no .new behind" "$(ls "$tmp/clean-upgrade/home/engine" | grep -c '\.new$' || true)" 0
+n=$(grep -cE '^[^#]*for bin in .* [$]\( \[ -f "[$]work/out/ox-clean" \] && echo ox-clean \)' "$root/scripts/package-release.sh" || true)
+check "package-release.sh runs the architecture baseline guard on ox-clean" "${n:-x}" 1
+n=$(grep -cE '^[[:space:]]*cp "[$]work/out/ox-clean" "[$]stage/engine/"' "$root/scripts/package-release.sh" || true)
+check "package-release.sh stages ox-clean in the engine directory" "${n:-x}" 1
+
 # --- J: audio.cpp is built only on request ---------------------------------
 # A source install (scripts/install.sh -> engine/build.sh) must not clone and
 # build a second engine nobody asked for. Mutation (engine/want-audiocpp.sh:9):
@@ -542,8 +579,8 @@ check "package-release.sh builds with OX_SAY_DIST=1" "${n:-x}" 1
 # A source install on macOS 13/14 or with Xcode 16 must not fail on a Swift 6.2 package it cannot use. The tool
 # versions are stubs on PATH. Mutations (engine/want-diar.sh): drop the `[ "${OX_SAY_DIST:-0}" = 1 ] ||` term ->
 # "ox-diar built: dist on macOS 14" fails; change `-ge 15` to `-ge 14` -> "macOS 14, Swift 6.3" fails; change
-# `[ "$swift_minor" -ge 2 ]` to `-ge 1` -> "macOS 15, Swift 6.1" fails; (build.sh) change `if diar_gate "$out"; then` to
-# `if true; then` -> the call-site check fails.
+# `[ "$swift_minor" -ge 2 ]` to `-ge 1` -> "macOS 15, Swift 6.1" fails. (The gate is shared with ox-clean now: these
+# cases drive the diar_* wrappers, the clean cases are in scripts/test-engine-checks.sh.)
 diar_stubs="$tmp/diar-stubs"
 mkdir -p "$diar_stubs"
 want_diar_case() { # name macOS swift-version want [env assignments...]
@@ -581,12 +618,8 @@ gate_diar_case() { # name macOS swift want-continue want-stale-left [env assignm
 gate_diar_case "macOS 14" 14.8 6.3.3 stop gone
 gate_diar_case "macOS 15, Swift 6.3" 15.7 6.3.3 go left
 gate_diar_case "dist on macOS 14" 14.8 5.10 go left OX_SAY_DIST=1
-n=$(grep -cE '^[^#]*diar_gate "[$]out"' "$root/engine/build.sh" || true)
-check "build.sh guards the ox-diar block with diar_gate" "${n:-x}" 1
-n=$(grep -cE '^[^#]*diar_build "[$]here" "[$]work" "[$]out"' "$root/engine/build.sh" || true)
-check "build.sh builds ox-diar through diar_build" "${n:-x}" 1
-n=$(grep -cE '^[^#]*"[$]arch" != arm64' "$root/engine/build.sh" || true)
-check "build.sh builds ox-diar on Apple Silicon only (the Intel smoke failed)" "${n:-x}" 1
+# The call sites of both Swift helpers (and the architecture rule) are pinned in scripts/test-engine-checks.sh, next to
+# the behaviour of build_swift_helper they stand for.
 
 # --- J3: which mode opened the gate, and what a failing build does -------------
 # An automatic gate (macOS 15+ with Swift 6.2+, nobody asked) must never turn a source install that worked yesterday

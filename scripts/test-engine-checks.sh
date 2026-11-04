@@ -188,5 +188,69 @@ for f in engine/stt/ox-stt.cpp engine/patches/qwentts/0002-tts-server-local-only
     check "$f: the 405 sets Allow to the accepted methods" "$allow" "$methods"
 done
 
+# --- The Swift helpers (ox-diar, ox-clean): one gate, each helper declares its architectures ------------------------------
+# engine/want-diar.sh: build_swift_helper <name> <arch> <engine-dir> <work-dir> <out-dir> is what engine/build.sh calls
+# for each helper. The helper's own build script (<engine-dir>/<name>/build.sh) is a stub here that leaves the binary
+# in <out-dir> and succeeds or fails on demand; the Swift/Xcode/macOS test sees stub sw_vers and swift on PATH.
+# Mutations (engine/want-diar.sh): helper_archs clean -> "arm64" only -> "Intel build builds ox-clean" fails (F4);
+# drop `rm -f` of the stale binary in the architecture branch -> "Intel build drops a stale ox-diar" fails; change
+# `helper_gate` to ignore OX_SAY_WITH_CLEAN -> "requested on macOS 13" fails; in helper_build change `= auto` to
+# `= nothing` -> the automatic-failure cases fail.
+swift_stubs() { # dir macOS swift-version
+    printf '#!/bin/sh\necho %s\n' "$2" >"$1/sw_vers"
+    printf '#!/bin/sh\necho "Apple Swift version %s (swiftlang-6000.0.1)"\n' "$3" >"$1/swift"
+    chmod +x "$1/sw_vers" "$1/swift"
+}
+# helper_case <name> <arch> <macOS> <build ok|fail> <want rc> <want binaries in out/ (sorted, space separated)> [env assignments]
+helper_case() {
+    local name=$1 arch=$2 os=$3 build=$4 want_rc=$5 want_bins=$6 d="$tmp/hc-$1" rc=0 got="" f
+    shift 6
+    mkdir -p "$d/here/diar" "$d/here/clean" "$d/out" "$d/work"
+    swift_stubs "$d" "$os" 6.3.3
+    for h in diar clean; do
+        printf '#!/bin/sh\n: > "%s/out/ox-%s"\n[ %s = ok ]\n' "$d" "$h" "$build" >"$d/here/$h/build.sh"
+        chmod +x "$d/here/$h/build.sh"
+        : >"$d/out/ox-$h" # a binary an earlier build left behind
+    done
+    env -i PATH="$d:/usr/bin:/bin" "$@" bash -c "set -euo pipefail; . '$root/engine/want-diar.sh'
+        check_static() { :; }; check_dist() { :; }
+        build_swift_helper diar '$arch' '$d/here' '$d/work' '$d/out'
+        build_swift_helper clean '$arch' '$d/here' '$d/work' '$d/out'
+        echo done" >"$d/log" 2>&1 || rc=$?
+    for f in "$d/out"/*; do
+        [ -e "$f" ] && got="$got$(basename "$f") "
+    done
+    check "swift helpers, $name: exit status" "$rc" "$want_rc"
+    check "swift helpers, $name: binaries left in out/" "${got% }" "$want_bins"
+}
+helper_case "arm64" arm64 15.7 ok 0 "ox-clean ox-diar"
+helper_case "Intel build builds ox-clean" x86_64 15.7 ok 0 "ox-clean"
+helper_case "Intel, automatic, build fails" x86_64 15.7 fail 0 ""
+helper_case "macOS 14, nothing asked" arm64 14.8 ok 0 ""
+helper_case "requested on macOS 13" x86_64 13.6 ok 0 "ox-clean" OX_SAY_WITH_CLEAN=1
+helper_case "release build on Intel" x86_64 15.7 ok 0 "ox-clean" OX_SAY_DIST=1
+helper_case "release build on Intel, toolchain cannot build ox-clean: fails loudly" x86_64 14.8 fail 1 "ox-clean" OX_SAY_DIST=1
+check_in_log() { if grep -qF -- "$3" "$2"; then pass "$1"; else fail "$1 — missing [$3] in log"; fi; }
+check_in_log "an Intel build says it removed the stale ox-diar" "$tmp/hc-Intel build builds ox-clean/log" "removed a stale ox-diar"
+d="$tmp/hc-Intel, automatic, build fails"
+check "an automatic build failure warns once" "$(grep -c 'warning: ox-clean did not build' "$d/log")" 1
+check_in_log "the automatic warning names OX_SAY_WITH_CLEAN=1" "$d/log" "OX_SAY_WITH_CLEAN=1"
+check "macOS 14 says why ox-clean is not built" "$(grep -c 'ox-clean (voice cleanup) not built' "$tmp/hc-macOS 14, nothing asked/log")" 1
+# The architectures each helper declares, as a table the gate reads.
+archs_of() { env -i PATH="/usr/bin:/bin" bash -c ". '$root/engine/want-diar.sh'; helper_archs $1" 2>/dev/null; }
+check "ox-diar is built for arm64 only" "$(archs_of diar)" "arm64"
+check "ox-clean is built for arm64 and x86_64" "$(archs_of clean)" "arm64 x86_64"
+# engine/build.sh hands both helpers to the one gate and keeps no architecture test of its own.
+n=$(grep -cE '^[[:space:]]*build_swift_helper diar "\$arch" "\$here" "\$work" "\$out"' "$root/engine/build.sh" || true)
+check "build.sh builds ox-diar through build_swift_helper" "${n:-x}" 1
+n=$(grep -cE '^[[:space:]]*build_swift_helper clean "\$arch" "\$here" "\$work" "\$out"' "$root/engine/build.sh" || true)
+check "build.sh builds ox-clean through build_swift_helper" "${n:-x}" 1
+n=$(grep -cE '^[^#]*"\$arch" != arm64' "$root/engine/build.sh" || true)
+check "build.sh has no architecture test of its own for the Swift helpers" "${n:-x}" 0
+# The pins stamp names no pin for ox-clean (the package has no dependency), and an out/ with only ox-clean is no stamp.
+: > "$tmp/stamp-out/ox-clean"
+write_pins_stamp "$tmp/pins.env" "$tmp/stamp-out"
+check "ox-clean adds no pin to the stamp" "$(tr '\n' ' ' < "$tmp/stamp-out/pins.env" 2>/dev/null)" "QWENTTS_REPO=https://example.invalid/q QWENTTS_COMMIT=aaa111 GGML_COMMIT=ggg333 GGML_REPO=https://example.invalid/g WHISPER_COMMIT=bbb222 DIAR_COMMIT=ddd666 "
+
 echo
 if [ "$fails" -eq 0 ]; then echo "all checks passed"; else echo "$fails check(s) failed" >&2; exit 1; fi
