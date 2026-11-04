@@ -1,8 +1,8 @@
 """verify.py MODEL_DIR [--checkpoint PATH] [--fixtures N]
 
-The Task 1 gate for the converted model -- the same known-answer check the engine re-runs after
-every model load (decision 10, limit mask MSE <= 1e-4), plus conversion parity on seeded fixture
-windows.
+The gate for the converted model -- the same known-answer check the engine re-runs after
+every model load (limit mask MSE <= 1e-4), plus conversion parity on seeded fixture windows.
+Needs the .mlpackage in MODEL_DIR (the compiled .mlmodelc alone is not enough).
 
   * integrity:  reference_window.bin sha256 must equal manifest.reference_sha256;
   * known-answer: the model's mask on the stored features vs the stored mask, on cpuAndGPU (the
@@ -13,7 +13,9 @@ windows.
   * fixtures (--checkpoint given, --fixtures N, default 2): seeded synthetic windows -> fp32
     PyTorch mask vs the model's mask on cpuAndGPU, graded by the manifest's precision thresholds.
 
-Exit 0 PASS, 1 a gated check failed, 2 usage or integrity error.
+Verdicts: the known-answer check PASSes only under known_answer_ok() (mask MSE <= 1e-4, p99.9
+<= 0.05, no NaN); a fixture PASSes only on grade PASS -- WARN prints WARN and is a failure.
+Exit 0 PASS, 1 a gated check failed (FAIL or WARN), 2 usage or integrity error.
 """
 import argparse
 import hashlib
@@ -28,13 +30,28 @@ import metrics as M
 import reference as R
 
 KNOWN_ANSWER_MSE = 1e-4
+KNOWN_ANSWER_P999 = 0.05
 MODEL_STEM = "MossFormer2_SE_48K"
+
+
+def known_answer_ok(stats):
+    """The model-load known-answer gate; the engine must apply exactly this rule.
+
+    `stats` is metrics.mask_stats(model_mask, stored_mask). Returns True only when ALL hold:
+      * mask MSE <= 1e-4          (KNOWN_ANSWER_MSE)
+      * mask p99.9 |error| <= 0.05 (KNOWN_ANSWER_P999)
+      * every statistic is finite (a NaN anywhere in the mask makes them NaN -> False).
+    Anything else is a refusal. There is no WARN band.
+    """
+    mse, p999, mx = stats["mse"], stats["p999"], stats["max_abs"]
+    return bool(np.isfinite(mse) and np.isfinite(p999) and np.isfinite(mx)
+                and mse <= KNOWN_ANSWER_MSE and p999 <= KNOWN_ANSWER_P999)
 
 
 def predict_fn(model_dir, units):
     import coremltools as ct
-    pkg = os.path.join(model_dir, MODEL_STEM + ".mlpackage")
-    path = pkg if os.path.isdir(pkg) else os.path.join(model_dir, MODEL_STEM + ".mlmodelc")
+    path = os.path.join(model_dir, MODEL_STEM + ".mlpackage")
+    assert os.path.isdir(path), f"{path} missing: verify.py needs the .mlpackage (the .mlmodelc alone is not enough)"
     m = ct.models.MLModel(path, compute_units=units)
     spec = m.get_spec()
     inn = spec.description.input[0].name
@@ -50,7 +67,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model_dir")
     ap.add_argument("--checkpoint", help="last_best_checkpoint.pt or its directory; enables the PyTorch comparisons")
-    ap.add_argument("--fixtures", type=int, default=2, help="seeded synthetic fixture windows vs PyTorch; 0 skips")
+    ap.add_argument("--fixtures", type=int, default=2,
+                    help="seeded synthetic fixture windows vs PyTorch; 0 skips. A fixture passes only "
+                         "on grade PASS: WARN prints WARN and makes the exit code 1")
     a = ap.parse_args()
     import coremltools as ct
 
@@ -67,9 +86,7 @@ def main():
     fn = predict_fn(a.model_dir, ct.ComputeUnit.CPU_AND_GPU)
     got = fn(feats)
     st = M.mask_stats(got, stored)
-    ka_ok = st["mse"] <= KNOWN_ANSWER_MSE and not np.isnan(got).any()
-    grade = M.grade_mask(st, precision_gate)
-    verdict = "PASS" if ka_ok and grade != "FAIL" else "FAIL"
+    verdict = "PASS" if known_answer_ok(st) and not np.isnan(got).any() else "FAIL"
     if not np.abs(got).any():
         print("the model returned an all-zero mask (the pure-fp16 signature)")
     print(f"cpuAndGPU known-answer: mse {st['mse']:.3e} max {st['max_abs']:.3e} p99.9 {st['p999']:.3e} -> {verdict}")
@@ -93,11 +110,11 @@ def main():
             fi = R.features(torch.from_numpy(R.synthetic_window(seed) * R.SCALE),
                             dither=dither, seed=seed)
             st = M.mask_stats(fn(fi.numpy()), torch_fn(fi))
-            g = M.grade_mask(st, precision_gate)
+            g = M.grade_mask(st, precision_gate)      # PASS only; WARN is a failure too
             print(f"fixture {i} (seed {seed}, dither {dither}): mse {st['mse']:.3e} max {st['max_abs']:.3e} "
                   f"p99.9 {st['p999']:.3e} -> {g}")
-            if g == "FAIL":
-                fails.append(f"fixture {i} (seed {seed}) mse {st['mse']:.3e}")
+            if g != "PASS":
+                fails.append(f"fixture {i} (seed {seed}) {g} mse {st['mse']:.3e}")
     if fails:
         print("FAIL:", "; ".join(fails))
         sys.exit(1)

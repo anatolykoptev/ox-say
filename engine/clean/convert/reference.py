@@ -3,7 +3,7 @@
 Loads the network exactly as ClearVoice does (so the weights are exactly the pinned checkpoint),
 verifies the pinned SHA-256 of both checkpoint files, and computes the Kaldi fbank features the
 model consumes. The chunking rules (20 s window / 15 s stride / end-aligned last window / tiled
-short clip / 50 ms crossfade) live in the Swift engine (plan Task 6); this module serves convert.py
+short clip / 50 ms crossfade) live in the Swift engine (the engine, not this module); this module serves convert.py
 (trace + the known-answer mask) and verify.py (fixture windows). It never runs at user runtime.
 """
 import hashlib
@@ -18,7 +18,7 @@ import torchaudio
 torch.backends.mps.is_available = lambda: False          # the reference is CPU, deterministic
 
 # alibabasglab/MossFormer2_SE_48K at revision eff8c97925c8bec812af707814b3e5d777fd4503 (26 Nov 2024),
-# the same pins ashaki-video/tools/bin/voice_enhance_local.py uses.
+# (the pinned upstream revision; both checkpoint files are SHA-256 checked below).
 CKPT_SHA256 = {
     "last_best_checkpoint.pt": "03692b9f773bbd6bb43b9c5a41f96b1e28affd66e13796b7bec66ad3d8b227c6",
     "last_best_checkpoint": "315744c841441f8831cb2f896e06102b4d864776bf272febaa30c639c903e1c0",
@@ -27,7 +27,7 @@ MODEL_NAME = "MossFormer2_SE_48K"
 
 SR, WIN, HOP, FFT, MELS = 48000, 1920, 384, 1920, 60
 SCALE = 32768.0                                          # MossFormer2 expects waveform x 32768
-# The fixed 20 s window (controller decision 2): features [1,2496,180] -> mask [1,2496,961].
+# The fixed 20 s window (a fixed shape, so one Core ML model serves every clip): features [1,2496,180] -> mask [1,2496,961].
 WIN20, STRIDE20, XFADE = 20 * SR, 15 * SR, SR // 20      # 960000 / 720000 / 2400 (50 ms)
 FRAMES20 = 1 + (WIN20 - WIN) // HOP                      # 2496
 BINS = FFT // 2 + 1                                      # 961
@@ -127,6 +127,8 @@ def read_reference(path):
     d = open(path, "rb").read()
     assert d[:8] == _REF_MAGIC, "bad reference_window.bin magic"
     t, nf, nb, _ = struct.unpack("<4I", d[8:24])
+    assert (t, nf, nb) == (FRAMES20, MELS * 3, BINS), f"reference_window.bin dims {(t, nf, nb)} != {(FRAMES20, MELS * 3, BINS)}"
+    assert len(d) == 24 + 4 * t * (nf + nb), f"reference_window.bin length {len(d)} != {24 + 4 * t * (nf + nb)}"
     feats = np.frombuffer(d, "<f4", t * nf, 24).reshape(t, nf).copy()
     mask = np.frombuffer(d, "<f4", t * nb, 24 + 4 * t * nf).reshape(t, nb).copy()
     return feats, mask

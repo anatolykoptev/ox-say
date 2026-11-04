@@ -1,15 +1,13 @@
 """MossFormer2_SE_48K mask network -> Core ML (mlprogram), the repo's build-time converter.
 
-Port of the Task 0/0b spike at the fixed 20 s shape [1,2496,180] -> [1,2496,961]
-(controller decisions 1-2: mixed precision, cpuAndGPU only; the spike's three experiment
-patches are dropped, each marked "tried, no effect").
+Fixed 20 s shape [1,2496,180] -> [1,2496,961], mixed precision, cpuAndGPU only.
 
   convert.py --checkpoint PATH --out DIR [--precision fp16|fp32|mixed]
 
 Writes into DIR:
   MossFormer2_SE_48K.mlpackage    the source of truth
   MossFormer2_SE_48K.mlmodelc/    compiled (xcrun coremlcompiler compile)
-  reference_window.bin            the known-answer reference (decision 10): one seeded synthetic
+  reference_window.bin            the known-answer reference one seeded synthetic
                                   feature window + its fp32 PyTorch mask; the engine replays it
                                   after every load, limit mask MSE <= 1e-4
   manifest.json                   I/O, chunking constants, pins, the reference's SHA-256
@@ -45,10 +43,18 @@ class Mask(torch.nn.Module):
 
 
 def _git_sha():
+    """Commit that last touched the converter files (this directory), plus -dirty when the
+    directory has uncommitted changes. `HEAD` would name a commit that holds no converter."""
+    here = os.path.dirname(os.path.abspath(__file__))
     try:
-        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=os.path.dirname(os.path.abspath(__file__)),
-                           capture_output=True, text=True, timeout=10)
-        return r.stdout.strip() or "unknown"
+        r = subprocess.run(["git", "log", "-1", "--format=%h", "--", "."], cwd=here,
+                           capture_output=True, text=True, timeout=10, check=True)
+        sha = r.stdout.strip()
+        if not sha:
+            return "unknown"
+        d = subprocess.run(["git", "status", "--porcelain", "--", "."], cwd=here,
+                           capture_output=True, text=True, timeout=10, check=True)
+        return sha + ("-dirty" if d.stdout.strip() else "")
     except Exception:
         return "unknown"
 
@@ -94,7 +100,7 @@ def main():
     pkg = os.path.join(a.out, MODEL_STEM + ".mlpackage")
     mlm.save(pkg)
 
-    # Known-answer reference (decision 10): one seeded synthetic window through the production feature
+    # Known-answer reference one seeded synthetic window through the production feature
     # path (dither 1.0), mask from the fp32 PyTorch reference (the ungained net: --mask-gain must not
     # leak into the stored truth).
     sig = R.synthetic_window(REF_SEED)
@@ -130,7 +136,7 @@ def main():
         "output": OUT_NAME,
         "reference_file": "reference_window.bin",
         "reference_sha256": ref_sha,
-        "known_answer_limit": "mask MSE <= 1e-4",
+        "known_answer_limit": "mask MSE <= 1e-4 and p99.9 abs error <= 0.05, no NaN",
         "checkpoint_sha256": R.CKPT_SHA256["last_best_checkpoint.pt"],
         "converter": _git_sha(),
         "coremltools": ct.__version__,
@@ -158,7 +164,7 @@ def main():
                      "splice": "50 ms linear crossfade at the middle of each overlap",
                      "xfade_samples": R.XFADE},
         "known_answer": {"file": "reference_window.bin", "sha256": ref_sha,
-                         "check": "features -> mask MSE <= 1e-4 after every model load"},
+                         "check": "features -> mask MSE <= 1e-4, p99.9 abs error <= 0.05, no NaN, after every model load"},
     }
     with open(os.path.join(a.out, "config.json"), "w") as f:
         json.dump(config, f, indent=1)

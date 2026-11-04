@@ -10,7 +10,7 @@ def mask_stats(a, b):  # masks [T,961]
     d = a.astype(np.float64) - b.astype(np.float64)
     return dict(mse=float((d ** 2).mean()), max_abs=float(np.abs(d).max()), p999=float(np.quantile(np.abs(d), 0.999)))
 
-# Pre-registered thresholds (plan Task 0 Step 7). Verdict strings: PASS / WARN / FAIL.
+# Thresholds fixed before the measurements were taken. Verdict strings: PASS / WARN / FAIL.
 def grade_mask(stats, precision):
     if precision == "fp32":
         if stats["mse"] <= 1e-7 and stats["max_abs"] <= 1e-3: return "PASS"

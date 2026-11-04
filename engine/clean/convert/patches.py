@@ -1,9 +1,8 @@
-"""Module-surgery patches for the Core ML conversion. Each function is listed in the report with
-the failure it fixes; together they are the Apache-2.0 §4(b) list of changes on the HF card.
-Ported from the Task 0/0b spike without its experiment gates (MF2_EXTRA, pad_as_concat,
-no_group_padding): each was tried against the cpuOnly defect and had no effect (0b report).
+"""Module-surgery patches for the Core ML conversion. Each function's docstring names the
+failure it fixes; together they are the Apache-2.0 §4(b) list of changes on the HF card.
+Experiment gates tried during development (MF2_EXTRA, pad_as_concat, no_group_padding) are
+not carried: each was tried against the cpuOnly defect and had no effect on it.
 """
-import os
 
 
 def no_rotary_cache(net):
@@ -134,7 +133,7 @@ def fp32_region(block):
                         continue
                     stack.append(p)
     # linear attention: lin_kv = einsum('b g n d, b g n e -> b d e', lin_k, v) / n sums over all n positions BEFORE the
-    # division; the sum reaches 2.5e5 (> fp16 max 65504) on a 20 s window (Task 0b range scan), so
+    # division; the sum reaches 2.5e5 (> fp16 max 65504) on a 20 s window (measured by a range scan of the activations), so
     # matmul -> mul(1/n) -> expand_dims stays fp32 (48 tiny matmuls).
     users = {}
     for o in ops:

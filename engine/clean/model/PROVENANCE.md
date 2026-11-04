@@ -15,17 +15,17 @@ rebuilt and checked.
 
 ## Converter
 
-- Repo `anatolykoptev/ox-say`, `engine/clean/convert/`. The build ran on the
-  Task-1 working tree on top of commit `ffbb45a` (field `converter` in
-  `manifest.json`); the converter source itself lands in the commit that adds
-  this file.
+- Repo `anatolykoptev/ox-say`, `engine/clean/convert/`. The `converter` field of
+  `manifest.json` is the commit that last touched that directory (`-dirty` if it had
+  uncommitted changes). The bytes below were built from a working tree before the converter
+  was merged; the published bytes are rebuilt from the merge commit at upload time, and the
+  upload step fills in the SHA-256 table and the `converter` commit.
 - Command: `convert.py --checkpoint last_best_checkpoint.pt --out out` (default
   `--precision mixed`).
 - Environment: Python 3.12, `coremltools==9.0`, `torch==2.7.0`, `torchaudio==2.7.0`,
   `torchvision==0.22.0`, `clearvoice==0.1.2`, `numpy==1.26.4` — the full pinned set is
   `engine/clean/convert/requirements.lock` (`uv pip compile --generate-hashes`; the
-  torch 2.7.0 pin follows coremltools 9.0's `_TORCH_MAX_VERSION`, the written exception
-  to "latest stable").
+  torch pin: latest stable, except torch, capped at coremltools 9.0's tested maximum (2.7.0)).
 - Host: Apple M5 Pro, macOS 26.5.1, `xcrun coremlcompiler` of the installed Xcode CLT.
 
 ## Produced bytes (SHA-256)
@@ -55,5 +55,5 @@ Build of 2026-11-03, `out/` (`.mlmodelc` total 119,512,598 bytes):
   `test_conversion_is_reproducible` runs `convert.py` twice and compares SHA-256
   of `weights/weight.bin` (it does not compare `Manifest.json`/`model.mlmodel`,
   which may embed build metadata).
-- Parity and speed evidence (Task 0b, same conversion recipe and selector):
-  `~/deploy/krolik-server/reports/ox-say/mossformer2-coreml-0b-20s-2026-11-03.md`.
+- Parity and speed evidence (same conversion recipe and selector) is in the model card's
+  Evaluation section.

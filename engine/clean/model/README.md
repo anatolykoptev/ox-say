@@ -57,7 +57,7 @@ bounded [0,1] mask values — renormalise if you need one.
   Apple Silicon: the Core ML CPU fp16 runtime renders the first ~64 frames of each window as
   garbage (macOS 26.5.1, M5 Pro; a runtime defect with no minimal repro — the fp32 build is
   exact on CPU, so the conversion itself is sound). Never request `.cpuAndNeuralEngine` or
-  `.all` — the ANE compile fails outright.
+  `.all` — the ANE compile fails after about 20 minutes and falls back with 0 ops on the ANE.
 - **Intel:** measured on an i9-9880H with a Radeon Pro 5500M (macOS 26.6.2). The same build is
   correct on `cpuAndGPU` with the discrete GPU (7.9× real time, 2.2 GiB) and on `cpuOnly`
   (2.9×, 3.25 GiB) — the CPU fp16 defect does not appear there. Do **not** run it on an Intel
@@ -74,7 +74,7 @@ its expected mask, computed by the fp32 PyTorch reference on a seeded synthetic 
 Its SHA-256 is recorded in `manifest.json` and `config.json` (`known_answer`).
 
 After loading, run the stored features through the model and compare the result with the
-stored mask: **mask MSE must be ≤ 1e-4** and contain no NaN. On a mismatch, refuse the
+stored mask: **mask MSE must be ≤ 1e-4, p99.9 of the absolute error ≤ 0.05, and there must be no NaN.** On a mismatch, refuse the
 model — a Core ML runtime defect (like the cpuOnly one above) turns a silent garbage output
 into a loud refusal. File format: magic `MF2REF01`, then uint32 LE `n_frames`, `n_features`,
 `n_bins`, `reserved`, then row-major float32 features `[2496,180]` and mask `[2496,961]`.
@@ -97,7 +97,7 @@ Converted 2026-11-03 by `engine/clean/convert/convert.py` at the pinned checkpoi
 ## Evaluation
 
 Mask parity (a) and end-to-end parity (b) vs the fp32 PyTorch reference through the shared
-20 s window / 15 s stride chunker, dither 1.0, on cpuAndGPU (Task 0b report, 2026-11-03):
+20 s window / 15 s stride chunker, dither 1.0, on cpuAndGPU (measured 2026-11-03):
 
 | Clip | Mask MSE | SI-SDR (dB) | ECAPA cosine |
 |---|---|---|---|
@@ -141,22 +141,22 @@ footprint 0.403 GiB. cpuOnly is not a fallback: 1.012 s/window *and* wrong outpu
 
 ```bibtex
 @misc{zhao2024mossformer2combiningtransformerrnnfree,
-      title={MossFormer2: Combining Transformer and RNN-Free Recurrent Network for Enhanced Time-Domain Monaural Speech Separation},
+      title={MossFormer2: Combining Transformer and RNN-Free Recurrent Network for Enhanced Time-Domain Monaural Speech Separation}, 
       author={Shengkui Zhao and Yukun Ma and Chongjia Ni and Chong Zhang and Hao Wang and Trung Hieu Nguyen and Kun Zhou and Jiaqi Yip and Dianwen Ng and Bin Ma},
       year={2024},
       eprint={2312.11825},
       archivePrefix={arXiv},
       primaryClass={cs.SD},
-      url={https://arxiv.org/abs/2312.11825},
+      url={https://arxiv.org/abs/2312.11825}, 
 }
 
 @misc{zhao2025clearervoicestudiobridgingadvancedspeech,
-      title={ClearerVoice-Studio: Bridging Advanced Speech Processing Research and Practical Deployment},
+      title={ClearerVoice-Studio: Bridging Advanced Speech Processing Research and Practical Deployment}, 
       author={Shengkui Zhao and Zexu Pan and Bin Ma},
       year={2025},
       eprint={2506.19398},
       archivePrefix={arXiv},
       primaryClass={cs.SD},
-      url={https://arxiv.org/abs/2506.19398},
+      url={https://arxiv.org/abs/2506.19398}, 
 }
 ```
