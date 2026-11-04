@@ -125,7 +125,7 @@ public struct SpeechClient {
         var request = URLRequest(url: baseURL.appendingPathComponent("v1/audio/speech"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         // A cold engine start is about 15 s on this Mac; a long text behind a
         // queued request is slow, not lost.
         request.timeoutInterval = 660

@@ -89,7 +89,7 @@ final class ProduceModelsTests: XCTestCase {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { body["title"] = trimmed }
         if let voice, !voice.isEmpty { body["voice"] = voice }
-        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
     }
 
     /// Without the new options the body is byte-identical to the previous
@@ -102,6 +102,29 @@ final class ProduceModelsTests: XCTestCase {
             XCTAssertEqual(ProduceRequest.createBody(script: script, title: title, voice: voice, format: format),
                            mainCreateBody(script: script, title: title, voice: voice, format: format),
                            "script=\(script) title=\(title) voice=\(voice ?? "nil")")
+        }
+    }
+
+    /// Swift Dictionary order is hashed per instance, so an unsorted
+    /// serialisation of equal dictionaries differs between calls (issue #467:
+    /// "92 bytes" is not equal to "92 bytes" on CI). Every produce/design body
+    /// must come out with sorted keys, every time. Mutation: drop `.sortedKeys`
+    /// from `createBody` -> RED.
+    func testRequestBodiesSerialiseWithSortedKeysEveryTime() {
+        let create = #"{"clone_mode":"x","inference_timesteps":8,"loudness_lufs":-18,"out_path":"o","preset":"reels","script":"S","seed":1,"takes":2,"title":"t","voice":"v"}"#
+        let delivery = #"{"chunks":[{"n":1,"pace":1.5,"pause_after":0.5,"style":"calm"}],"loudness_lufs":-18}"#
+        let design = #"{"description":"d","takes":3,"text":"t"}"#
+        let save = #"{"name":"n","replace":true,"take":"t"}"#
+        for _ in 0..<200 {
+            XCTAssertEqual(String(decoding: ProduceRequest.createBody(
+                script: "S", title: "t", voice: "v", format: .short, takes: 2, cloneMode: "x",
+                loudness: -18, steps: 8, seed: 1, outPath: "o"), as: UTF8.self), create)
+            XCTAssertEqual(String(decoding: ProduceRequest.deliveryBody(
+                entries: [DeliveryEntry(n: 1, style: "calm", pauseAfter: 0.5, pace: 1.5)], loudness: -18), as: UTF8.self), delivery)
+            XCTAssertEqual(String(decoding: ProduceRequest.chunkBody(["action": "a", "n": 1, "style": "s"]), as: UTF8.self),
+                           #"{"action":"a","n":1,"style":"s"}"#)
+            XCTAssertEqual(String(decoding: DesignRequest.body(description: "d", text: "t"), as: UTF8.self), design)
+            XCTAssertEqual(String(decoding: DesignRequest.saveBody(name: "n", take: "t", replace: true), as: UTF8.self), save)
         }
     }
 

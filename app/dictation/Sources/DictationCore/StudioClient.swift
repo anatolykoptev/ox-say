@@ -253,7 +253,7 @@ public struct StudioClient {
     /// object is checked first): an empty POST would only come back as a 400.
     static func jsonBody(_ object: [String: Any]) throws -> Data {
         guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object) else { throw StudioError.badResponse }
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else { throw StudioError.badResponse }
         return data
     }
 
