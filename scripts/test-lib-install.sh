@@ -748,7 +748,11 @@ check "the release package check requires ox-llm.metallib" "${n:-x}" 1
 # host: sw_vers reports the version, uname an arm64 Mac, and stub curl, shasum,
 # tar and ffmpeg stand in for the download — the stub curl marks the faked
 # install root ($HOME) when it is invoked, so a download that ran before the
-# refusal is a write the assertion sees. Mutations (get.sh): compare against
+# refusal is a write the assertion sees. OX_SAY_TOOL_PREFIXES= keeps get.sh's
+# Homebrew prepend out of PATH so a real tool under /opt/homebrew/bin or
+# /usr/local/bin (the runners carry curl, tar, ffmpeg there) cannot shadow a
+# stub: drop it and the install cases fail wherever a real curl exists.
+# Mutations (get.sh): compare against
 # 14.0 (`-lt 14` -> `-lt 13`, or `-lt 2` -> `-lt 0`) -> the 14.1 case fails;
 # move the version check below the first curl -> curl-called exists -> the
 # "nothing written" check fails.
@@ -767,11 +771,13 @@ get_case() { # name macOS want(refuse|install)
     printf '#!/bin/sh\ncase "${1:-}" in -productVersion) echo %s ;; *) exit 1 ;; esac\n' "$os" > "$d/sw_vers"
     chmod +x "$d/sw_vers"
     env -i PATH="$d:$getbin:/usr/bin:/bin" HOME="$d/home" TMPDIR="$d/tmp" OX_SAY_GET_URL=http://stub \
+        OX_SAY_TOOL_PREFIXES= \
         sh "$root/get.sh" >"$d/log" 2>&1 || rc=$?
     if [ "$want" = refuse ]; then
         check "get.sh $name: exit status" "$rc" 1
         check_in_log "get.sh $name: says it needs 14.2" "$d/log" "ox-say needs macOS 14.2 or later; this is $os."
         check "get.sh $name: nothing written under the install root" "$(ls -A "$d/home")" ""
+        check "get.sh $name: nothing written under TMPDIR" "$(ls -A "$d/tmp")" ""
     else
         check "get.sh $name: exit status" "$rc" 0
         check_in_log "get.sh $name: passed the check and ran the install" "$d/log" "INSTALL-RAN"

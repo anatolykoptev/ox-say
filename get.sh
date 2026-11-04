@@ -81,8 +81,12 @@ main() {
     # The dictation app's updater runs this script under launchd's default
     # PATH (/usr/bin:/bin:/usr/sbin:/sbin), which hides a Homebrew ffmpeg. Put
     # the two standard prefixes back, when they exist, for the tool checks and
-    # for install-release.sh, which inherits this PATH.
-    for prefix in /opt/homebrew/bin /usr/local/bin; do
+    # for install-release.sh, which inherits this PATH. OX_SAY_TOOL_PREFIXES
+    # overrides the list — tests set it empty so their stub tools on PATH are
+    # never shadowed by a real curl or tar living in a Homebrew prefix (the
+    # CI runners have them; a dev Mac has only ffmpeg).
+    # shellcheck disable=SC2086 # the prefix list is a word list on purpose
+    for prefix in ${OX_SAY_TOOL_PREFIXES-/opt/homebrew/bin /usr/local/bin}; do
         if [ -d "$prefix" ]; then
             PATH="$prefix:$PATH"
         fi
