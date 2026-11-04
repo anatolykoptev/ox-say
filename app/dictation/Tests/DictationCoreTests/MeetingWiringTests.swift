@@ -485,7 +485,7 @@ final class MeetingWiringTests: XCTestCase {
     /// retries as before. Cancel (not the first button) stops it before the POST.
     /// Mutation: requestVoicesAgain, `== .alertFirstButtonReturn` -> `!=` -> RED.
     func testTheVoicesRetryAsksBeforeItRemakesNamesAndNotes() throws {
-        // The signature also matches UnsupportedMeetings' stub — slice from the real controller first.
+        // The protocol declares the same signature — slice from the real controller first.
         let whole = try controller()
         let tail = String(whole[try XCTUnwrap(whole.range(of: "final class MeetingController")).lowerBound...])
         let retry = try XCTUnwrap(body(tail, of: "func requestVoicesAgain(id: String) async throws {"))

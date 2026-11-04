@@ -741,6 +741,53 @@ check "package-release.sh requires ox-llm.metallib" "${n:-x}" 1
 n=$(grep -c 'engine/ox-llm\.metallib' "$root/.github/workflows/release.yml" || true)
 check "the release package check requires ox-llm.metallib" "${n:-x}" 1
 
+# --- L: get.sh refuses a macOS below 14.2 before it downloads or writes ------
+# The app's updater runs get.sh from main, so its refusal is the only thing
+# between an installed old app on macOS 13 and a release it cannot launch: the
+# check must come before the first download or write. Fakes on PATH play the
+# host: sw_vers reports the version, uname an arm64 Mac, and stub curl, shasum,
+# tar and ffmpeg stand in for the download — the stub curl marks the faked
+# install root ($HOME) when it is invoked, so a download that ran before the
+# refusal is a write the assertion sees. OX_SAY_TOOL_PREFIXES= keeps get.sh's
+# Homebrew prepend out of PATH so a real tool under /opt/homebrew/bin or
+# /usr/local/bin (the runners carry curl, tar, ffmpeg there) cannot shadow a
+# stub: drop it and the install cases fail wherever a real curl exists.
+# Mutations (get.sh): compare against
+# 14.0 (`-lt 14` -> `-lt 13`, or `-lt 2` -> `-lt 0`) -> the 14.1 case fails;
+# move the version check below the first curl -> curl-called exists -> the
+# "nothing written" check fails.
+getbin="$tmp/get-bin"
+mkdir -p "$getbin"
+printf '#!/bin/sh\ncase "${1:-}" in -s) echo Darwin ;; -m) echo arm64 ;; esac\n' > "$getbin/uname"
+printf '#!/bin/sh\necho 1\n' > "$getbin/sysctl"
+printf '#!/bin/sh\necho "$@" >> "$HOME/curl-called"\nout=\nprev=\nfor a in "$@"; do\n    [ "$prev" = -o ] && out=$a\n    prev=$a\ndone\ncase $out in\n    */SHA256SUMS) printf "deadbeef *ox-say-macos-arm64.tar.gz\\n" > "$out" ;;\n    ?*) : > "$out" ;;\nesac\n' > "$getbin/curl"
+printf '#!/bin/sh\necho "deadbeef  %s"\n' '$3' > "$getbin/shasum"
+printf '#!/bin/sh\nmkdir -p "$4/ox-say/scripts"\nprintf "#!/bin/sh\\ntouch \\"$HOME/installed\\"\\necho INSTALL-RAN\\n" > "$4/ox-say/scripts/install-release.sh"\n' > "$getbin/tar"
+printf '#!/bin/sh\nexit 0\n' > "$getbin/ffmpeg"
+chmod +x "$getbin"/*
+get_case() { # name macOS want(refuse|install)
+    local name=$1 os=$2 want=$3 d="$tmp/get-$1" rc=0
+    mkdir -p "$d" "$d/home" "$d/tmp"
+    printf '#!/bin/sh\ncase "${1:-}" in -productVersion) echo %s ;; *) exit 1 ;; esac\n' "$os" > "$d/sw_vers"
+    chmod +x "$d/sw_vers"
+    env -i PATH="$d:$getbin:/usr/bin:/bin" HOME="$d/home" TMPDIR="$d/tmp" OX_SAY_GET_URL=http://stub \
+        OX_SAY_TOOL_PREFIXES= \
+        sh "$root/get.sh" >"$d/log" 2>&1 || rc=$?
+    if [ "$want" = refuse ]; then
+        check "get.sh $name: exit status" "$rc" 1
+        check_in_log "get.sh $name: says it needs 14.2" "$d/log" "ox-say needs macOS 14.2 or later; this is $os."
+        check "get.sh $name: nothing written under the install root" "$(ls -A "$d/home")" ""
+        check "get.sh $name: nothing written under TMPDIR" "$(ls -A "$d/tmp")" ""
+    else
+        check "get.sh $name: exit status" "$rc" 0
+        check_in_log "get.sh $name: passed the check and ran the install" "$d/log" "INSTALL-RAN"
+    fi
+}
+get_case "macOS 13.6" 13.6 refuse
+get_case "macOS 14.1" 14.1 refuse
+get_case "macOS 14.2" 14.2 install
+get_case "macOS 26.1" 26.1 install
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "all checks passed"

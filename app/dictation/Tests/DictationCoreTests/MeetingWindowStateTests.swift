@@ -136,7 +136,6 @@ final class MeetingWindowStateTests: XCTestCase {
     }
 
     func testAMeetingFeatureThatCannotRunHasItsOwnSentences() {
-        XCTAssertEqual(MeetingErrorText.sentence(MeetingFeatureError.needsNewerMacOS, action: .rename, text: key), "meeting.error.needs_macos")
         XCTAssertEqual(MeetingErrorText.sentence(MeetingFeatureError.switchedOff, action: .speakers, text: key), "meeting.error.off")
     }
 

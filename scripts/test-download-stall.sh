@@ -213,6 +213,8 @@ else
 fi
 
 # --- get.sh: real curl against OX_SAY_GET_URL; needs macOS (it refuses elsewhere) ---
+# OX_SAY_TOOL_PREFIXES= keeps the Homebrew prepend out of PATH: the fake ffmpeg is
+# what must answer `command -v ffmpeg`, and the curl under test is the one on PATH.
 if [ "$(uname -s)" = Darwin ]; then
     mkdir -p "$tmp/fake"
     printf '#!/bin/sh\nexit 0\n' > "$tmp/fake/ffmpeg"; chmod +x "$tmp/fake/ffmpeg"
@@ -221,20 +223,20 @@ if [ "$(uname -s)" = Darwin ]; then
     # URL prefixes /stall /slow /ok serve every file under them, so each case is a base URL.
     for mode in stall slow; do
         start=$(date +%s)
-        PATH="$tmp/fake:$PATH" OX_SAY_GET_URL="http://127.0.0.1:$port/$mode" bounded 60 sh "$root/get.sh"; rc=$?
+        PATH="$tmp/fake:$PATH" OX_SAY_TOOL_PREFIXES= OX_SAY_GET_URL="http://127.0.0.1:$port/$mode" bounded 60 sh "$root/get.sh"; rc=$?
         took=$(( $(date +%s) - start ))
         out=$(cat "$tmp/out")
         if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then pass "get.sh: a dead download ends ($mode, exit $rc, ${took}s)"; else fail "get.sh: a dead download ends ($mode: exit $rc after ${took}s)"; fi
         case $out in *stalled*) pass "get.sh: the stall is named ($mode)" ;; *) fail "get.sh: no stall message ($mode): $out" ;; esac
     done
-    PATH="$tmp/fake:$PATH" OX_SAY_GET_URL="http://127.0.0.1:$port/ok" bounded 60 sh "$root/get.sh"; rc=$?
+    PATH="$tmp/fake:$PATH" OX_SAY_TOOL_PREFIXES= OX_SAY_GET_URL="http://127.0.0.1:$port/ok" bounded 60 sh "$root/get.sh"; rc=$?
     out=$(cat "$tmp/out")
     # the 6000 bytes arrive, then the SHA256SUMS fetch answers the same 6000 bytes: no checksum line for the asset
     case $out in *"no checksum listed"*) pass "get.sh: a healthy slow trickle completes both downloads" ;; *) fail "get.sh: healthy trickle did not finish (exit $rc): $out" ;; esac
 
     # The tarball is healthy and SHA256SUMS stalls: that curl needs the guard too.
     start=$(date +%s)
-    PATH="$tmp/fake:$PATH" OX_SAY_GET_URL="http://127.0.0.1:$port/mixed" bounded 60 sh "$root/get.sh"; rc=$?
+    PATH="$tmp/fake:$PATH" OX_SAY_TOOL_PREFIXES= OX_SAY_GET_URL="http://127.0.0.1:$port/mixed" bounded 60 sh "$root/get.sh"; rc=$?
     took=$(( $(date +%s) - start ))
     out=$(cat "$tmp/out")
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then pass "get.sh: a stalled SHA256SUMS ends (exit $rc, ${took}s)"; else fail "get.sh: a stalled SHA256SUMS ends (exit $rc after ${took}s)"; fi

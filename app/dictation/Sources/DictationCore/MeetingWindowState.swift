@@ -67,7 +67,6 @@ public struct RefreshGate: Equatable {
 
 /// Why a meeting call cannot even be tried.
 public enum MeetingFeatureError: Error, Equatable {
-    case needsNewerMacOS
     case switchedOff
 }
 
@@ -94,8 +93,8 @@ public protocol UserFacingError: Error {
 public enum MeetingErrorText {
     public static func sentence(_ error: Error, action: MeetingAction, text: (L10nKey) -> String = { $0.text }) -> String {
         if let error = error as? UserFacingError { return error.userText }
-        if let error = error as? MeetingFeatureError {
-            return text(error == .needsNewerMacOS ? .meetingErrNeedsMac : .meetingErrOff)
+        if error is MeetingFeatureError {
+            return text(.meetingErrOff)
         }
         guard let error = error as? StudioError else { return text(.meetingErrGeneric) }
         switch error {

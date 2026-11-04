@@ -88,7 +88,6 @@
 "menu.meeting.your_name" = "Ваше имя в расшифровках…";
 "menu.meeting.install_model" = "Скачать модель для заметок (2,7 ГБ)…";
 "menu.meeting.downloading" = "Скачивание модели для заметок… %@";
-"menu.meeting.needs_macos" = "Запись встреч требует macOS 14.2 или новее";
 "menu.meeting.notes_need_update" = "Для заметок нужно обновить OxSay";
 "menu.meeting.notes_unsupported" = "Заметки недоступны на этом Mac";
 "badge.rec" = "ЗАПИСЬ %@";
@@ -352,7 +351,6 @@
 "meeting.error.not_found" = "Этой записи больше нет.";
 "meeting.error.rename_invalid" = "Это название не подходит. Попробуйте покороче и без служебных символов.";
 "meeting.error.settings_invalid" = "Служба не принимает это значение.";
-"meeting.error.needs_macos" = "Заметки о встречах работают на macOS 14.2 и новее.";
 "meeting.error.off" = "Заметки о встречах выключены. Включите их в Настройках.";
 "meetings.title.call" = "Звонок в %@";
 "settings.keep.unchecked" = "Не удалось сверить со службой. Показан ваш последний выбор.";

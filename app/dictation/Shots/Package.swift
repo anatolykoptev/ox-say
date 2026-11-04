@@ -5,7 +5,7 @@ import PackageDescription
 
 let package = Package(
     name: "OxSayShots",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS("14.2")],
     dependencies: [.package(path: "..")],
     targets: [
         .executableTarget(name: "OxSayShots", dependencies: [

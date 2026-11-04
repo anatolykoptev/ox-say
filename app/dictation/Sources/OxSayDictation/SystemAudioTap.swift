@@ -22,7 +22,6 @@ import os
 /// Starting is asynchronous (#266): the look-up of this app's own audio process object waits up to 150 ms for the
 /// object to appear, and that wait must not block the main thread. `start(…completion:)` does the work on a serial
 /// control queue and answers on the main thread; `stop()` is synchronous and wins over a start still in flight.
-@available(macOS 14.2, *)
 final class SystemAudioTap {
     struct Failure: Error, CustomStringConvertible {
         let description: String

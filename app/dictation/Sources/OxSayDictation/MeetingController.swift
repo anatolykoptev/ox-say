@@ -21,7 +21,7 @@ struct MeetingHost {
     var updateInstalling: () -> Bool
 }
 
-/// What the app holds of the meeting feature, whatever the macOS version.
+/// What the app holds of the meeting feature.
 @MainActor
 protocol MeetingFeature: AnyObject {
     var submenu: NSMenu { get }
@@ -49,34 +49,6 @@ protocol MeetingFeature: AnyObject {
     func settingsChanged()
 }
 
-/// macOS before 14.2 has no process tap: the menu says so and nothing records.
-@MainActor
-final class UnsupportedMeetings: MeetingFeature {
-    let submenu = NSMenu()
-    var isRecording: Bool { false }
-
-    init() {
-        submenu.autoenablesItems = false
-        let state = MeetingMenuState(supported: false, recordingElapsed: nil, notes: NotesStatus(), callMode: .ask, retention: .month)
-        MenuRenderer.fill(submenu, rows: MeetingMenu.rows(state, text: { $0.text }), target: self) { _ in (#selector(noop), 0) }
-    }
-
-    @objc private func noop() {}
-    func daemonStatusChanged() {}
-    func menuWillOpen() {}
-    func stopForQuit() {}
-    var recordingElapsed: TimeInterval? { nil }
-    func startRecording() {}
-    func stop() {}
-    func saveSpeakers(id: String, edits: SpeakerEdits) async throws -> SpeakersState { throw MeetingFeatureError.needsNewerMacOS }
-    func requestVoicesAgain(id: String) async throws { throw MeetingFeatureError.needsNewerMacOS }
-    func retryNotes(id: String) async throws { throw MeetingFeatureError.needsNewerMacOS }
-    func rename(id: String, title: String) async throws { throw MeetingFeatureError.needsNewerMacOS }
-    func shutDown() {}
-    func settingsChanged() {}
-}
-
-@available(macOS 14.2, *)
 @MainActor
 final class MeetingController: NSObject, MeetingFeature {
     let submenu = NSMenu()
@@ -197,7 +169,7 @@ final class MeetingController: NSObject, MeetingFeature {
     }
 
     private func render() {
-        let state = MeetingMenuState(supported: true, recordingElapsed: current == nil ? nil : recorder.elapsed,
+        let state = MeetingMenuState(recordingElapsed: current == nil ? nil : recorder.elapsed,
                                      notes: host.daemonStatus()?.notes ?? NotesStatus(),
                                      callMode: MeetingSettings.callMode(host.defaults),
                                      retention: MeetingSettings.retention(host.defaults), recent: recent)

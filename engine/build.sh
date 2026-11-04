@@ -120,8 +120,10 @@ rm -f "$out"/*.metallib
 # carries the bf16 kernels (patches/ggml/0005, patches/audiocpp/0004,
 # patches/llamacpp/0001), which need Metal language 3.1 — a lower target
 # compiles them out and a missing kernel is a crash, not a slower fallback.
-# macOS 13.3 remains the app's floor: on 13.x the patched ggml skips the
-# library and uses the embedded sources (patches/ggml/0003,
+# The engines' own deployment target stays 13.3, below the app's 14.2 floor:
+# a lower minimum on a library is harmless, and raising it would rebuild
+# ggml with different code paths. Below the library's AIR target the patched
+# ggml skips it and uses the embedded sources (patches/ggml/0003,
 # patches/audiocpp/0003, patches/llamacpp/0001). The tensor library keeps its
 # intentional macOS 26 target (patches/ggml/0004, patches/llamacpp/0001).
 # The build dir is rebuilt from scratch every time: the metallib is a
@@ -143,7 +145,9 @@ build_metal_lib() {
 #
 # OX_SAY_DIST=1 builds binaries to hand to other machines. The default, -march/-mcpu=native,
 # targets this CPU; distribution builds use a fixed baseline instead, and macOS 13.3 is the
-# oldest target: ggml-blas calls Accelerate's new-LAPACK cblas, which exists only since 13.3.
+# oldest target — deliberately below the app's 14.2 floor: a lower minimum on a library is
+# harmless, ggml-blas needs Accelerate's new-LAPACK cblas (present since 13.3), and raising
+# the target would rebuild ggml with different code paths.
 #   x86_64: every Intel Mac since 2013 (Haswell) has AVX2/FMA/F16C/BMI2. AVX-512 stays off because
 #           most Intel MacBooks have none.
 #   arm64:  the Apple M1 (dotprod, fp16; no i8mm, BF16 or SME), pinned with -mcpu=apple-m1 on the
@@ -434,7 +438,8 @@ if audiocpp_gate "$arch" "$out"; then
         echo "$stamp" > "$ac/.ox-say-stamp"
     fi
     # Same baseline as set_cmake_flags: a distribution build pins the M1 and the
-    # 13.3 deployment target; a local build targets this CPU.
+    # 13.3 deployment target (below the app's floor, as set_cmake_flags says);
+    # a local build targets this CPU.
     native=ON
     ac_dist=()
     if [ "${OX_SAY_DIST:-0}" = 1 ]; then

@@ -3,7 +3,7 @@
 #
 # diar_mode: why ox-diar (speaker diarization) should be built, one word on stdout; fails, printing nothing, when it
 # should not. It is a Swift 6.2 package (Xcode 26) and refuses to run before macOS 15, while a source install is
-# promised to work on macOS 13.3 with the command line tools alone. So a source build makes it only when it can, or
+# promised to work on macOS 14.2 with the command line tools alone. So a source build makes it only when it can, or
 # when asked:
 #   dist       OX_SAY_DIST=1: release packaging. The package must carry it, and a toolchain that cannot build it fails
 #              the build loudly instead of shipping a package without it

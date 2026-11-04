@@ -120,10 +120,11 @@ cat > "$app/Contents/Info.plist" <<EOF
     <array><string>en</string><string>ru</string></array>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>NSHumanReadableCopyright</key><string>© 2026 Anatolii Koptev</string>
-    <!-- One floor for the whole product: the engines weak-import Accelerate's
-         new-LAPACK cblas (macOS 13.3+); get.sh refuses older versions and
-         engine/build.sh sets the same deployment target. -->
-    <key>LSMinimumSystemVersion</key><string>13.3</string>
+    <!-- One floor for the whole product: macOS 14.2, set by the process tap
+         meeting recording uses and by the macOS 14 system components in the
+         window. get.sh refuses older versions; the engines' own deployment
+         target stays lower (engine/build.sh says why). -->
+    <key>LSMinimumSystemVersion</key><string>14.2</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <!-- The daemon speaks plain http on 127.0.0.1; this allows only local hosts. -->

@@ -82,7 +82,6 @@ public enum L10nKey: String, CaseIterable {
     case menuMeetingYourName = "menu.meeting.your_name"
     case menuMeetingInstallModel = "menu.meeting.install_model"
     case menuMeetingDownloading = "menu.meeting.downloading"
-    case menuMeetingNeedsNewerMacOS = "menu.meeting.needs_macos"
     case menuMeetingNotesNeedUpdate = "menu.meeting.notes_need_update"
     case menuMeetingNotesUnsupported = "menu.meeting.notes_unsupported"
     case badgeRec = "badge.rec"
@@ -352,7 +351,6 @@ public enum L10nKey: String, CaseIterable {
     case meetingErrNotFound = "meeting.error.not_found"
     case meetingErrRenameInvalid = "meeting.error.rename_invalid"
     case meetingErrSettingsInvalid = "meeting.error.settings_invalid"
-    case meetingErrNeedsMac = "meeting.error.needs_macos"
     case meetingErrOff = "meeting.error.off"
     // Search in the meetings list, find in a transcript, and playing from a line (MW3).
     case searchPlaceholder = "search.placeholder"

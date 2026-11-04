@@ -6,9 +6,9 @@ final class MeetingMenuTests: XCTestCase {
     private func rows(_ s: MeetingMenuState) -> [MenuRow] {
         MeetingMenu.rows(s, text: { $0 == .menuMeetingStop ? "Stop (%@)" : $0.rawValue })
     }
-    private func state(recording: TimeInterval? = nil, notes: NotesStatus = NotesStatus(available: true), supported: Bool = true,
+    private func state(recording: TimeInterval? = nil, notes: NotesStatus = NotesStatus(available: true),
                        callMode: CallGlobalMode = .ask) -> MeetingMenuState {
-        MeetingMenuState(supported: supported, recordingElapsed: recording, notes: notes, callMode: callMode, retention: .month)
+        MeetingMenuState(recordingElapsed: recording, notes: notes, callMode: callMode, retention: .month)
     }
     private func actions(_ rows: [MenuRow]) -> [MenuAction] {
         rows.compactMap { if case .item(_, _, _, let a) = $0 { return a } else { return nil } }
@@ -59,12 +59,6 @@ final class MeetingMenuTests: XCTestCase {
         }
         XCTAssertEqual(on, [30])
         XCTAssertEqual(actions(r).filter { if case .pickMeetingRetention = $0 { return true } else { return false } }.count, 4)
-    }
-
-    func testAnUnsupportedMacGetsOneGreyRow() {
-        let r = rows(state(supported: false))
-        XCTAssertEqual(r.count, 1)
-        guard case .item(_, _, false, nil) = r[0] else { return XCTFail("want a disabled row") }
     }
 
     private func titles(_ rows: [MenuRow], text: (L10nKey) -> String) -> [(String, Bool)] {

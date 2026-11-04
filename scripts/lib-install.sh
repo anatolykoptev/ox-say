@@ -17,7 +17,8 @@
 # binary goes, default ~/.local/bin), OX_SAY_WITH_WHISPER (also fetch Whisper
 # large-v3-turbo), OX_SAY_WITH_VOXCPM2 (also fetch the VoxCPM2 model; Apple
 # Silicon with 24 GB or more), OX_SAY_MODELS_FROM (copy models from a local dir),
-# OX_SAY_GET_URL, OX_SAY_NO_MCP, OX_SAY_NO_SELFTEST. The allowlist is the
+# OX_SAY_GET_URL, OX_SAY_NO_MCP, OX_SAY_NO_SELFTEST, OX_SAY_TOOL_PREFIXES
+# (get.sh's Homebrew prefix list; the daemon never sees it). The allowlist is the
 # daemon's own env-keys table, not a hand-maintained list that can forget one.
 
 label=io.github.anatolykoptev.ox-say

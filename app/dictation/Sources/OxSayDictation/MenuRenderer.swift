@@ -32,17 +32,8 @@ enum MenuRenderer {
         }
     }
 
-    /// A section header: the system's own on macOS 14+, a small grey disabled row on 13.
+    /// A section header: the system's own.
     static func header(_ title: String) -> NSMenuItem {
-        if #available(macOS 14.0, *) {
-            return NSMenuItem.sectionHeader(title: title)
-        }
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        item.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ])
-        return item
+        NSMenuItem.sectionHeader(title: title)
     }
 }
