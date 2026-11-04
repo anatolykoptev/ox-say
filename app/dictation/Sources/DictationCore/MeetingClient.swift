@@ -32,7 +32,7 @@ extension StudioClient {
         let body = try JSONSerialization.data(withJSONObject: [
             "title": MeetingLimits.clamp(title, to: MeetingLimits.titleMax), "source": MeetingLimits.clamp(source, to: MeetingLimits.sourceMax),
             "labels": labels, "echo_risk": echoRisk,
-        ] as [String: Any])
+        ] as [String: Any], options: [.sortedKeys])
         let data = try await succeed(post("v1/meetings", body: body, timeout: Self.quickTimeout))
         guard let info = MeetingInfo.decode(data), info.dir != nil else { throw StudioError.badResponse }
         return info

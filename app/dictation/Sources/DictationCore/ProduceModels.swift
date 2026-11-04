@@ -277,7 +277,7 @@ public enum ProduceRequest {
         if let steps { body["inference_timesteps"] = steps }
         if let seed { body["seed"] = seed }
         if let outPath, !outPath.isEmpty { body["out_path"] = outPath }
-        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
     }
 
     /// `POST /v1/produce/{id}/delivery`: the batch of changed fields. A knob
@@ -292,12 +292,12 @@ public enum ProduceRequest {
             return entry
         }]
         if let loudness { body["loudness_lufs"] = loudness }
-        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
     }
 
     /// `POST /v1/produce/{id}/chunks/{n}`: one action plus its fields.
     public static func chunkBody(_ body: [String: Any]) -> Data {
-        (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+        (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
     }
 
     /// The daemon's cap on a script (produce.go maxProduceChars), about 48 minutes of speech.

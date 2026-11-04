@@ -74,13 +74,13 @@ public enum DesignRequest {
         let body: [String: Any] = ["description": description.trimmingCharacters(in: .whitespacesAndNewlines),
                                    "text": text.trimmingCharacters(in: .whitespacesAndNewlines),
                                    "takes": takeCount]
-        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
     }
 
     public static func saveBody(name: String, take: String, replace: Bool) -> Data {
         var body: [String: Any] = ["name": name, "take": take]
         if replace { body["replace"] = true }
-        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
     }
 }
 
