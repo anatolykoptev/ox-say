@@ -137,6 +137,8 @@ final class UpdateDesignL10nTests: XCTestCase {
         "menu.meeting.speakers_item": "just the speaker's name, a bare %@",
         "speakers.not_merged": "an em dash, no words",
         "common.ok": "OK is the button's name in Russian macOS too",
+        "speak.sample.ru": "the Russian first-run sample, the same sentence in both files (SpeakDraft picks it by language)",
+        "speak.sample.en": "the English first-run sample, the same sentence in both files (SpeakDraft picks it by language)",
     ]
 
     /// The format specifiers of a string, sorted: `%@`, `%1$@`, `%d`, `%%` ... ru must carry exactly the en ones.
