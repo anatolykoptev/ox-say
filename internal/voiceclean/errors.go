@@ -19,6 +19,7 @@ const (
 	CodeUnsupportedStreams  = "unsupported_streams"
 	CodeDiskSpace           = "disk_space"
 	CodeEngineFailed        = "engine_failed"
+	CodeLagUnverified       = "lag_unverified"
 	CodeUnavailable         = "unavailable"
 )
 
@@ -34,6 +35,7 @@ var statusByCode = map[string]int{
 	CodeUnsupportedStreams:  http.StatusUnprocessableEntity,
 	CodeDiskSpace:           http.StatusInsufficientStorage,
 	CodeEngineFailed:        http.StatusBadGateway,
+	CodeLagUnverified:       http.StatusBadGateway,
 	CodeUnavailable:         http.StatusServiceUnavailable,
 }
 
