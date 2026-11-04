@@ -29,8 +29,10 @@ it carries the bf16 kernels (`GGML_METAL_HAS_BF16`, patch `0005`,
 defines the macro on every bfloat-capable device, so the precompiled library
 must match or a bf16 op aborts on a missing function (`kernels/common.h`
 `#undef`s the macro below Metal 3.1). The 14.0 floor is the library's, not
-the app's: macOS 13.3 stays supported because on 13.x the patched ggml skips
-the library and compiles the embedded sources instead. A macOS 26 SDK also
+the app's: the engines' own deployment target stays 13.3 — a lower minimum
+on a library is harmless, and raising it would rebuild ggml with different
+code paths (the app's floor is 14.2; below the library's target the patched
+ggml skips it and compiles the embedded sources instead). A macOS 26 SDK also
 emits `<bin>-tensor.metallib`, the Metal4 kernel library, which
 intentionally keeps its macOS 26 target (patch `0004`, `llamacpp/0001`).
 

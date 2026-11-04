@@ -21,7 +21,6 @@ public enum MeetingBadgeModel {
 
 /// Everything the Meetings submenu needs to decide its rows.
 public struct MeetingMenuState: Equatable {
-    public var supported: Bool
     public var recordingElapsed: TimeInterval?
     public var notes: NotesStatus
     /// The global "when a call starts" mode.
@@ -30,9 +29,8 @@ public struct MeetingMenuState: Equatable {
     /// Meetings whose speakers can be named, newest first.
     public var recent: [MeetingMenuRecent]
 
-    public init(supported: Bool, recordingElapsed: TimeInterval?, notes: NotesStatus, callMode: CallGlobalMode, retention: MeetingRetention,
+    public init(recordingElapsed: TimeInterval?, notes: NotesStatus, callMode: CallGlobalMode, retention: MeetingRetention,
                 recent: [MeetingMenuRecent] = []) {
-        self.supported = supported
         self.recordingElapsed = recordingElapsed
         self.notes = notes
         self.callMode = callMode
@@ -54,9 +52,6 @@ public enum MeetingMenu {
     /// (the app passes `L10nKey.text`; tests pass the raw key).
     public static func rows(_ s: MeetingMenuState, text: (L10nKey) -> String) -> [MenuRow] {
         var rows: [MenuRow] = []
-        if !s.supported {
-            return [.item(title: text(.menuMeetingNeedsNewerMacOS), isOn: false, isEnabled: false, action: nil)]
-        }
         if let elapsed = s.recordingElapsed {
             rows.append(.item(title: String(format: text(.menuMeetingStop), MeetingBadgeModel.clock(elapsed)),
                               isOn: false, isEnabled: true, action: .stopMeeting))

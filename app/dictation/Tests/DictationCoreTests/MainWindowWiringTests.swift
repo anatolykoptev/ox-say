@@ -166,7 +166,6 @@ final class MainWindowWiringTests: XCTestCase {
     func testTheMeetingFeatureIsMainActorIsolatedForReal() throws {
         let controller = try source("OxSayDictation/MeetingController.swift")
         XCTAssertTrue(controller.contains("@MainActor\nprotocol MeetingFeature: AnyObject {"))
-        XCTAssertTrue(controller.contains("@MainActor\nfinal class UnsupportedMeetings: MeetingFeature {"))
         XCTAssertTrue(controller.contains("@MainActor\nfinal class MeetingController: NSObject, MeetingFeature {"))
         let app = try source("OxSayDictation/AppDelegate.swift")
         XCTAssertTrue(app.contains("@MainActor\nfinal class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {"))
@@ -274,12 +273,11 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertFalse(view.contains(".disabled(!info.settled)"))
     }
 
-    /// Meetings off, or macOS too old: a sentence that says so, never "bad response".
+    /// Meetings off: a sentence that says so, never "bad response".
     func testAFeatureThatCannotRunSaysWhy() throws {
         let text = try window()
         XCTAssertEqual(text.components(separatedBy: "throw MeetingFeatureError.switchedOff").count - 1, 4, "rename, speakers, voices, notes")
         let controller = try source("OxSayDictation/MeetingController.swift")
-        XCTAssertEqual(controller.components(separatedBy: "throw MeetingFeatureError.needsNewerMacOS").count - 1, 4)
         XCTAssertFalse(controller.contains("throw StudioError.badResponse }\n    func requestVoicesAgain"))
     }
 

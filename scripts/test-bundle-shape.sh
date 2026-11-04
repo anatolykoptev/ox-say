@@ -23,3 +23,13 @@ if [ -n "$extra" ]; then
     exit 1
 fi
 echo "ok   the bundle holds only files sign-release.sh allows"
+
+# The app's floor is 14.2 (get.sh refuses older versions; the engines' own
+# deployment target stays lower). Mutant: app/dictation/build.sh writes a
+# different value -> this exits 1 naming it.
+minv=$(plutil -extract LSMinimumSystemVersion raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)
+if [ "$minv" != 14.2 ]; then
+    echo "test-bundle-shape: LSMinimumSystemVersion is [$minv], want 14.2" >&2
+    exit 1
+fi
+echo "ok   LSMinimumSystemVersion is 14.2"

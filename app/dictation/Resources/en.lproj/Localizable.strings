@@ -89,7 +89,6 @@
 "menu.meeting.your_name" = "Your Name in Transcripts…";
 "menu.meeting.install_model" = "Download Notes Model (2.7 GB)…";
 "menu.meeting.downloading" = "Downloading notes model… %@";
-"menu.meeting.needs_macos" = "Recording meetings needs macOS 14.2 or later";
 "menu.meeting.notes_need_update" = "Notes need an OxSay update";
 "menu.meeting.notes_unsupported" = "Notes are not available on this Mac";
 "badge.rec" = "REC %@";
@@ -358,7 +357,6 @@
 "meeting.error.not_found" = "This recording no longer exists.";
 "meeting.error.rename_invalid" = "That title can't be used. Try a shorter one with plain characters.";
 "meeting.error.settings_invalid" = "The service doesn't accept that value.";
-"meeting.error.needs_macos" = "Meeting notes need macOS 14.2 or later.";
 "meeting.error.off" = "Meeting notes are switched off. Turn them on in Settings.";
 "meetings.title.call" = "%@ call";
 "settings.keep.unchecked" = "Couldn't check with the service. This is your last choice.";

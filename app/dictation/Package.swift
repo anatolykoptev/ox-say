@@ -8,7 +8,7 @@ import PackageDescription
 
 let package = Package(
     name: "OxSayDictation",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS("14.2")],
     products: [
         .library(name: "MainWindowUI", targets: ["MainWindowUI"]),
     ],

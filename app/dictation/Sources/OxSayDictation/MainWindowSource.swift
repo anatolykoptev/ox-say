@@ -624,9 +624,6 @@ final class MainWindowSource {
             case .callMode: host.meetings()?.settingsChanged()
             case .retention, .mode, .name: break
             }
-            if case .enabled(let on) = change, on, host.meetings() is UnsupportedMeetings {
-                model.data.notice = L10nKey.menuMeetingNeedsNewerMacOS.text
-            }
             if case .retention = change { model.data.meetingSettings.retentionVerified = true }
             // A name is typed letter by letter: only a change that alters other parts of the page reads it all again.
             if change.needsRefresh { refresh() }

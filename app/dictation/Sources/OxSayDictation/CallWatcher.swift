@@ -24,7 +24,6 @@ enum BrowserAutomationProbe {
 /// microphone its tab is read by AppleScript on a background queue, one read at
 /// a time per browser, and the poll uses the last completed result — the main
 /// thread (badge Stop, hotkeys) never waits for a browser.
-@available(macOS 14.2, *)
 final class CallWatcher {
     /// One poll's outcome.
     struct Tick {

@@ -231,7 +231,7 @@ jobs:
           # library's AIR target must stay at or below the 14.0 floor of the
           # precompiled libraries — one that targets the build SDK would not
           # load for users on older systems (engines on <14 skip the library
-          # and run the embedded sources, so the app's floor stays 13.3). The
+          # and run the embedded sources; the app's floor is 14.2). The
           # library must also carry the bf16 kernels the runtime source
           # compile defines on bfloat-capable devices: without them a bf16 op
           # aborts on a missing function. The -tensor libraries intentionally
@@ -268,7 +268,7 @@ jobs:
                   echo "$lib has no bf16 kernels — the runtime would fall back to the embedded compile" >&2
                   exit 1
                 }
-                echo "$lib: $n functions incl. bf16, targets macOS $major.$minor (library floor 14.0, app floor 13.3)"
+                echo "$lib: $n functions incl. bf16, targets macOS $major.$minor (library floor 14.0, app floor 14.2)"
                 ;;
             esac
           done

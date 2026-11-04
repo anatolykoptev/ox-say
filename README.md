@@ -799,7 +799,7 @@ app can copy a sentence for that to the clipboard (**Copy consent phrase**).
 - Intel Macs: recording needs macOS 14.2 or later, and the transcript works. **Voices are not told apart**: the
   Intel package has no `ox-diar` (the voice models failed on the Intel CPU), so the whole far side is one label.
   The notes model runs on the CPU, and a notes run can take many minutes.
-- A Mac with macOS older than 14.2 cannot record: the menu says so.
+- A Mac with macOS older than 14.2 cannot run OxSay at all: the installer says so and changes nothing.
 
 **Where the files are.** Each meeting is a directory under `~/Library/Application Support/ox-say/meetings`
 (`OX_SAY_HOME/meetings`): the two channel files, the transcript, the notes and the speaker choices. A copy of the
@@ -818,7 +818,7 @@ transcript keeps its audio, so the only copy of what was said is never removed.
 
 ## Install
 
-Requirements: macOS 13.3 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, Go, ffmpeg
+Requirements: macOS 14.2 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, Go, ffmpeg
 (`brew install cmake go ffmpeg`).
 Telling the voices of a group call apart (`ox-diar`) needs macOS 15 or later on Apple Silicon; building it from source also needs Xcode 26 (Swift 6.2).
 A source install on an older Mac or with older tools skips it and meetings come out with one label for the other side
@@ -861,7 +861,7 @@ voices; `--purge` removes those too. Undo the MCP registration with
 
 ## Build and install the engine
 
-Requirements: macOS 13.3 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, ffmpeg.
+Requirements: macOS 14.2 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, ffmpeg.
 
 ```
 engine/build.sh                # pinned clone + patches + static Metal build

@@ -810,14 +810,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainWindow.open()
     }
 
-    /// The Meetings submenu and its recorder, behind the feature flag. macOS
-    /// before 14.2 has no process tap and gets a menu that says so.
+    /// The Meetings submenu and its recorder, behind the feature flag.
     private func setUpMeetings() {
         guard MeetingSettings.enabled(.standard) else { return }
-        guard #available(macOS 14.2, *) else {
-            meetings = UnsupportedMeetings()
-            return
-        }
         meetings = MeetingController(host: MeetingHost(
             client: studioClient, defaults: .standard, callActivity: callActivity,
             alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) },

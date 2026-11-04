@@ -11,7 +11,6 @@ import os
 /// Clock contract (#247): one t0 for both channels, and every chunk is stamped with the CAPTURE time of its first
 /// sample — `HostClock.nanos(fromHostTicks:)` of the buffer's host time — never with the time it was delivered, so a
 /// burst after a stall is placed where it was recorded instead of being padded and then trimmed.
-@available(macOS 14.2, *)
 final class MeetingRecorder {
     enum StartError: UserFacingError, CustomStringConvertible {
         /// The sentence is already in the user's language (the permission texts).

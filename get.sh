@@ -53,9 +53,9 @@ main() {
     fi
     asset=ox-say-macos-$arch.tar.gz
     # Refuse before downloading ~3 GB into a machine that cannot run it: the
-    # engines weak-import Accelerate's new-LAPACK cblas, which exists only on
-    # macOS 13.3+ — on 13.0-13.2 it resolves to NULL and the first BLAS call
-    # crashes.
+    # app's floor is macOS 14.2 — meeting recording needs the process tap, the
+    # window uses the macOS 14 system components, and macOS 13 no longer gets
+    # security fixes.
     macos=$(sw_vers -productVersion)
     macos_major=${macos%%.*}
     case $macos_major in
@@ -68,8 +68,8 @@ main() {
     case $macos_minor in
         '' | *[!0-9]*) macos_minor=0 ;;
     esac
-    if [ "$macos_major" -lt 13 ] || { [ "$macos_major" -eq 13 ] && [ "$macos_minor" -lt 3 ]; }; then
-        echo "ox-say needs macOS 13.3 or later; this is $macos." >&2
+    if [ "$macos_major" -lt 14 ] || { [ "$macos_major" -eq 14 ] && [ "$macos_minor" -lt 2 ]; }; then
+        echo "ox-say needs macOS 14.2 or later; this is $macos." >&2
         exit 1
     fi
     if [ "$arch" = x86_64 ]; then

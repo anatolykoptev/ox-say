@@ -75,7 +75,7 @@ final class DiarProblemTests: XCTestCase {
     func testTheMenuRowOfARetryableMeetingSaysTheVoicesCanBeFoundNow() {
         let recent = [MeetingMenuRecent(id: "a", title: "Standup", problem: .unavailable(reason: "models_missing"), voicesRetryable: true),
                       MeetingMenuRecent(id: "b", title: "Plan", problem: .unavailable(reason: "models_missing"), voicesRetryable: false)]
-        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
+        let state = MeetingMenuState(recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
                                      retention: .month, recent: recent)
         let titles = MeetingMenu.rows(state, text: { $0.rawValue }).compactMap { row -> String? in
             if case .item(let title, _, _, _) = row { return title } else { return nil }
@@ -93,7 +93,7 @@ final class DiarProblemTests: XCTestCase {
             MeetingMenuRecent(id: "e", title: "Sync", problem: .failed(reason: "bad_output")),
             MeetingMenuRecent(id: "t", title: "Long", problem: .failed(reason: "timeout")),
         ]
-        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
+        let state = MeetingMenuState(recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
                                      retention: .month, recent: recent)
         let rows = MeetingMenu.rows(state, text: { $0.rawValue })
         let items = rows.compactMap { row -> (String, Bool, MenuAction?)? in
@@ -182,7 +182,7 @@ final class VoicesTryAgainTests: XCTestCase {
         ]
         let recent = MeetingMenuRecent.from(list, limit: 10)
         XCTAssertEqual(recent.map(\.id), ["new", "r1", "r2"])
-        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
+        let state = MeetingMenuState(recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
                                      retention: .month, recent: recent)
         let actions = MeetingMenu.rows(state, text: { $0.rawValue }).compactMap { row -> MenuAction? in
             if case .item(_, _, _, let a) = row { return a } else { return nil }
@@ -203,7 +203,7 @@ final class VoicesTryAgainTests: XCTestCase {
             MeetingInfo(id: "old", title: "Old", status: .done, warnings: ["diarization_failed"], diarReason: "engine_error"),
         ]
         let recent = MeetingMenuRecent.from(list, limit: 10)
-        let state = MeetingMenuState(supported: true, recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
+        let state = MeetingMenuState(recordingElapsed: nil, notes: NotesStatus(available: true), callMode: .ask,
                                      retention: .month, recent: recent)
         let actions = MeetingMenu.rows(state, text: { $0.rawValue }).compactMap { row -> MenuAction? in
             if case .item(_, _, _, let a) = row { return a } else { return nil }
