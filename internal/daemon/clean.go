@@ -222,10 +222,10 @@ func (g *cleanGate) enter(ctx context.Context) error {
 	return g.err
 }
 
-// stopIdleTTS stops the TTS child when it holds the lease and nothing is speaking, so a cleanup is not refused for the
+// stopIdleTTS stops the TTS child when it holds the lease and nothing is busy (quietBusy == 0), so a cleanup is not refused for the
 // whole idle-stop window. It uses the supervisor's Recycle, the daemon's one deliberate-stop path.
 func (d *Daemon) stopIdleTTS(ctx context.Context) {
-	if d.gpu.Owner() != "tts" || d.busy().Speaking > 0 {
+	if d.gpu.Owner() != "tts" || d.quietBusy() > 0 {
 		return
 	}
 	pid := d.Sup.Status().PID
@@ -525,9 +525,9 @@ const speechBlockedCode = "gpu_busy_cleanup"
 
 // speechBlockedError is that refusal. It is an engine-start failure (503) for every caller that only looks at the
 // status.
-type speechBlockedError struct{}
+type speechBlockedError struct{ err error } // err: why the wait ended (the caller's context error, or the budget's cancel)
 
 func (*speechBlockedError) Error() string {
 	return "Voice cleanup is using the graphics card; speech will be available when it finishes."
 }
-func (*speechBlockedError) Unwrap() error { return errEngineStart }
+func (e *speechBlockedError) Unwrap() []error { return []error{errEngineStart, e.err} }
