@@ -721,4 +721,10 @@ public enum L10nKey: String, CaseIterable {
     case voiceRecordSeconds = "voice.record.seconds"
     case voiceRecordMeterLabel = "voice.record.meter_label"
     case voiceRecordPlay = "voice.record.play"
+    // Озвучка: what the page may draw per engine, its first-run sample and input problems.
+    case speakStudioNotInstalled = "speak.studio.not_installed"
+    case speakSampleRu = "speak.sample.ru"
+    case speakSampleEn = "speak.sample.en"
+    case speakProblemEmpty = "speak.problem.empty"
+    case speakProblemTooLong = "speak.problem.too_long"
 }

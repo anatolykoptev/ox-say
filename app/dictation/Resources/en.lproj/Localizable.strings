@@ -719,3 +719,10 @@
 "voice.record.seconds" = "%@ s";
 "voice.record.meter_label" = "Microphone level";
 "voice.record.play" = "Play your recording";
+
+/* Озвучка: per-engine note, first-run sample, input problems (SpeakControls, SpeakDraft, SpeakInputCheck). */
+"speak.studio.not_installed" = "The studio voice is not downloaded. You can download it in Settings → Add-ons.";
+"speak.sample.ru" = "Привет! Это мой первый голос. Сегодня расскажу, почему короткие ролики работают лучше длинных.";
+"speak.sample.en" = "Hi! This is my first voice. Today I will explain why short videos work better than long ones.";
+"speak.problem.empty" = "Type or paste some text first.";
+"speak.problem.too_long" = "The text is longer than %@ characters. Shorten it to voice it.";
