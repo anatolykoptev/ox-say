@@ -81,6 +81,7 @@ var modelTable = []modelDef{
 		},
 		engine: func(d *Daemon) *engine.Supervisor { return d.VoxSup },
 	}},
+	{id: cleanModelID, entry: (*Daemon).cleanModelEntry},
 	{id: "parakeet", entry: (*Daemon).parakeetModelEntry},
 	{id: "whisper", entry: (*Daemon).whisperModelEntry, removal: &modelRemoval{
 		file:   func(d *Daemon) string { return d.Cfg.STTWhisperModel },
@@ -162,6 +163,24 @@ func (d *Daemon) voxModelEntry() modelEntry {
 	// A missing model or engine is what an install fixes: this Mac can still run it. Only hardware says no.
 	if code, reason := d.voxBlock(); code == config.VoxReasonUnsupported {
 		e.Supported, e.ReasonCode, e.Reason = false, code, reason
+	}
+	return e
+}
+
+// cleanModelID is the voice-cleanup model's row. It is required by the feature, not optional: nothing deletes it
+// through the API (a reinstall replaces it), and the first cleanup downloads it.
+const cleanModelID = "voice_cleanup"
+
+func (d *Daemon) cleanModelEntry() modelEntry {
+	code, reason := d.cleanReady()
+	e := modelEntry{
+		ID: cleanModelID, Kind: "cleanup", Name: "MossFormer2 SE 48K (Core ML)",
+		Bytes: config.CleanModelsBytes, Installed: d.Cfg.CleanModelsReady(), Supported: true,
+		Installing: d.cleanInstalling() > 0, ReasonCode: code, Reason: reason,
+	}
+	// A missing model is what the first cleanup downloads; an old macOS or a missing engine is what it cannot fix.
+	if code != "" && code != CleanModelsMissing {
+		e.Supported = false
 	}
 	return e
 }

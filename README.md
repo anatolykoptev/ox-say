@@ -535,6 +535,16 @@ shape. On **any** non-200 response a client should keep its own copy of
 the recording and fall back to uploading the whole clip to
 `POST /v1/audio/transcriptions`.
 
+### Voice cleanup (`POST /v1/audio/clean`)
+
+An offline file tool, not a dictation route: it never touches meetings or dictation (any path under `<home>/meetings`, including through a symlink or hard link, is 403), and dictation never waits for it. The first request on a Mac without the model starts `fetch-models.sh --clean-only` (one download at a time) and answers 503 `models_downloading`; `/status` `voice_clean` and the `voice_cleanup` row of `GET /v1/models` show the download.
+
+| Route | Description |
+|-------|-------------|
+| `POST /v1/audio/clean` | `{"in_path":"/abs/in.mov","out_path":"/abs/out.mov","wet":0.85,"stereo":"mid","overwrite":false}` → 200 `{"out_path","video","input_seconds","elapsed_s","wet","stereo","sample_rate","channels","lag_ms","dropped":[{"index","type","codec"}]}`. `wet` absent = 0.85 (a given `0` is honoured). Errors are `{"error":{"message","type","code"[,"reason","reason_code"]}}` with a stable `code`: 400 `invalid_request`, 403 `forbidden_path`, 404 `not_found`, 409 `exists` / `same_file` / `busy` (a cleanup is already running), 422 `no_audio` / `unsupported_channels` / `unsupported_streams` / `too_long`, 502 `engine_failed` / `lag_unverified` / `model_wrong_answer` (the model gave a wrong answer on this Mac; nothing was cleaned) / `engine_input` / `engine_output`, 503 `os_too_old` / `engine_missing` / `models_missing` / `models_downloading` / `models_unusable` / `busy` (dictation or another job is running for over 2 minutes) / `unavailable`, 504 `engine_timeout`, 507 `disk_space` |
+
+A cleanup starts when no dictation session, speech, transcription, voiceover render or meeting processing is running, waiting up to 2 minutes for that; while it runs a voiceover render does not start, and on a Mac that arbitrates its GPU (not unified memory) it holds the GPU lease. `busy.cleaning` in `/status` is 1 for the whole request.
+
 ### MCP
 
 The same server exposes MCP tools on `/mcp`: `speak`, `transcribe`,
