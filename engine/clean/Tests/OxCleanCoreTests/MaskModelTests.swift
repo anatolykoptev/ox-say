@@ -12,6 +12,15 @@ final class MaskModelTests: XCTestCase {
     private let integrated = GPUDescription(isLowPower: true, isRemovable: false)
     private let egpu = GPUDescription(isLowPower: false, isRemovable: true)
 
+    /// The stats line (and the speed probe behind it) can only catch a plan that drifted to `.all` or the Neural Engine
+    /// if the name it prints is the real one: a binary cpuOnly/cpuAndGPU label would call both "cpuAndGPU".
+    func testEveryComputeUnitIsNamedForWhatItIs() {
+        XCTAssertEqual(ModelStats.name(of: .cpuOnly), "cpuOnly")
+        XCTAssertEqual(ModelStats.name(of: .cpuAndGPU), "cpuAndGPU")
+        XCTAssertEqual(ModelStats.name(of: .cpuAndNeuralEngine), "cpuAndNeuralEngine")
+        XCTAssertEqual(ModelStats.name(of: .all), "all")
+    }
+
     func testTheComputeUnitsTable() {
         typealias Row = (String, CPUArchitecture, [GPUDescription], String?, MLComputeUnits, Int?)
         let rows: [Row] = [
