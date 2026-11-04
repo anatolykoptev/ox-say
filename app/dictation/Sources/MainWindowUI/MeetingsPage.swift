@@ -73,7 +73,14 @@ struct MeetingsPage: View {
                 PrivacyLine().padding(.bottom, 14)
             }
         case .list:
-            MeetingsSplit(model: model)
+            VStack(spacing: 0) {
+                // The failed-refresh bar spans the page, above both panes, as the notice bar does.
+                if case .list(let stale?) = model.pageState {
+                    NoticeBar(text: stale, symbol: "exclamationmark.triangle.fill", tint: .orange,
+                              actionTitle: L10nKey.commonRetry.text) { model.actions.refresh() }
+                }
+                MeetingsSplit(model: model)
+            }
                 // The system search field, in the window toolbar: only while there is a list to search, so Off, Loading,
                 // Down and Empty carry none. It writes the query the results are read from; Esc and the clear button are its own.
                 .searchable(text: $model.queryText, placement: .toolbar, prompt: L10nKey.searchPlaceholder.text)
@@ -145,13 +152,7 @@ struct MeetingsListColumn: View {
     @ObservedObject var model: MainWindowModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            if case .list(let stale?) = model.pageState {
-                NoticeBar(text: stale, symbol: "exclamationmark.triangle.fill", tint: .orange,
-                          actionTitle: L10nKey.commonRetry.text) { model.actions.refresh() }
-            }
-            MeetingList(model: model)
-        }
+        MeetingList(model: model)
     }
 }
 
@@ -185,11 +186,14 @@ struct MeetingsSplit: NSViewControllerRepresentable {
 }
 
 final class MeetingsSplitController: NSSplitViewController {
-    static let listLimits: ClosedRange<CGFloat> = 260...420
-    static let detailMinimum: CGFloat = 300
+    static let listLimits: ClosedRange<CGFloat> = CGFloat(MainWindowSpec.meetingsListWidth.minimum)...CGFloat(MainWindowSpec.meetingsListWidth.maximum)
+    static let detailMinimum = CGFloat(MainWindowSpec.meetingsDetailMinimum)
 
     private let model: MainWindowModel
-    private var placed = false
+    /// The stored width has been applied (the split was wide enough to honour it).
+    private var applied = false
+    /// True while this controller moves the divider itself: that move is never the user's choice and never written back.
+    private var restoring = false
 
     init(model: MainWindowModel) {
         self.model = model
@@ -218,16 +222,18 @@ final class MeetingsSplitController: NSSplitViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        guard !placed, splitView.bounds.width > 0 else { return }
-        placed = true
-        let width = min(max(model.meetingsListWidth, Self.listLimits.lowerBound), Self.listLimits.upperBound)
-        splitView.setPosition(width, ofDividerAt: 0)
+        // A first layout at a provisional width would clamp the stored one: wait for the first layout that can honour it.
+        guard !applied, splitView.bounds.width >= Self.listLimits.lowerBound + MainWindowSpec.splitDividerWidth + Self.detailMinimum else { return }
+        applied = true
+        restoring = true
+        defer { restoring = false }
+        splitView.setPosition(min(max(model.meetingsListWidth, Self.listLimits.lowerBound), Self.listLimits.upperBound), ofDividerAt: 0)
     }
 
     override func splitViewDidResizeSubviews(_ notification: Notification) {
         super.splitViewDidResizeSubviews(notification)
-        // Only a drag of the divider is the user's choice; a window resize also lands here.
-        guard placed, notification.userInfo?["NSSplitViewDividerIndex"] != nil,
+        // Only a drag of the divider by the user is stored: not our own restore, not a window resize.
+        guard applied, !restoring, NSEvent.pressedMouseButtons & 1 != 0, view.window?.inLiveResize != true,
               let list = splitViewItems.first?.viewController.view else { return }
         model.meetingsListWidth = list.frame.width
     }

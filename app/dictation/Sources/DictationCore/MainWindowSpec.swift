@@ -52,7 +52,15 @@ public enum MainWindowSpec {
     /// The switch is drawn only once something behind it differs (turned on by the first task that reveals
     /// advanced content).
     public static let showsAdvancedSwitch = false
-    public static let minimumWidth = 760.0
+    /// The sidebar's column width. Its maximum is what the window floor must leave room for.
+    public static let sidebarWidth = (minimum: 170.0, ideal: 190.0, maximum: 240.0)
+    /// Meetings: the list pane's width (ideal 290) and the least the meeting pane may get, with the divider between.
+    public static let meetingsListWidth = (minimum: 260.0, ideal: 290.0, maximum: 420.0)
+    public static let meetingsDetailMinimum = 300.0
+    public static let splitDividerWidth = 1.0
+    /// The window never gets narrower than the widest sidebar plus the Meetings list at its least, the divider and the
+    /// meeting at its least (240 + 260 + 1 + 300 = 801), so the meeting pane is never clipped.
+    public static let minimumWidth = (sidebarWidth.maximum + meetingsListWidth.minimum + splitDividerWidth + meetingsDetailMinimum).rounded(.up)
     public static let minimumHeight = 520.0
     /// The frame autosave name: the window reopens where it was closed.
     public static let frameAutosaveName = "MainWindow"

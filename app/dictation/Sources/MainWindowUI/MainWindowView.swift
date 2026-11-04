@@ -25,7 +25,8 @@ public struct MainWindowView: View {
                 if switchShown { AdvancedSwitch(model: model) }
                 if sections.contains(.settings) { SettingsRow(model: model) }
             }
-            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
+            .navigationSplitViewColumnWidth(min: MainWindowSpec.sidebarWidth.minimum, ideal: MainWindowSpec.sidebarWidth.ideal,
+                                            max: MainWindowSpec.sidebarWidth.maximum)
         } detail: {
             page
                 // One recognisable window: "OxSay" is the title whichever page is up, the section is the subtitle.
