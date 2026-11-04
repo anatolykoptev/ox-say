@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -79,11 +81,22 @@ func seedCleanModels(t *testing.T, cfg *config.Config) {
 // newCleanDaemon is a daemon on a macOS 26 arm64-unified Mac with the stub engine and models seeded.
 func newCleanDaemon(t *testing.T, engineBody string) (*Daemon, http.Handler, string) {
 	t.Helper()
+	return newCleanDaemonOn(t, engineBody, true)
+}
+
+// newCleanDaemonOn is newCleanDaemon on a Mac with unified memory (arm64) or without (Intel: the TTS supervisor is
+// wired to the GPU lease, with the fake engine child).
+func newCleanDaemonOn(t *testing.T, engineBody string, unified bool) (*Daemon, http.Handler, string) {
+	t.Helper()
 	requireFFmpeg(t)
 	setOS(t, 26)
 	setArch(t, "arm64")
-	d := newTestDaemon(t, t.TempDir(), nil)
-	d.Cfg.GPUMemory = config.GPUMemoryUnified
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemon(t, dir, nil)
+	if unified {
+		d.Cfg.GPUMemory = config.GPUMemoryUnified
+	}
 	bin, log := stubEngine(t, engineBody)
 	d.Cfg.CleanBin = bin
 	seedCleanModels(t, d.Cfg)
@@ -527,8 +540,10 @@ func TestCleanAnswers503BusyAfterTheCap(t *testing.T) {
 	}
 }
 
-// Nothing interactive waits for a cleanup: while one runs, dictation-like work starts at once, and the cleanup
-// carries on to a 200.
+// On unified memory (arm64) a cleanup holds no lease and no lock the interactive path takes: while one runs,
+// beginInteractive and /status return at once, and a transcription that starts after the cleanup passed its wait does
+// not stop it (they share the GPU briefly, by design). This does not cover Intel, where speech takes turns with the
+// cleanup (TestSpeechStartDuringACleanupGetsAClearError).
 func TestDictationIsNotBlockedByACleanup(t *testing.T) {
 	d, h, _ := newCleanDaemon(t, `sleep 1; cp "$IN" "$OUT"`)
 	dir := t.TempDir()
@@ -576,10 +591,7 @@ func TestWaitQuietWaitsForARunningCleanup(t *testing.T) {
 // unified memory it takes nothing.
 func TestCleanTakesTheGPULeaseWhereItIsArbitrated(t *testing.T) {
 	for _, unified := range []bool{false, true} {
-		d, h, _ := newCleanDaemon(t, `sleep 1; cp "$IN" "$OUT"`)
-		if !unified {
-			d.Cfg.GPUMemory = config.GPUMemoryDiscrete
-		}
+		d, h, _ := newCleanDaemonOn(t, `sleep 1; cp "$IN" "$OUT"`, unified)
 		dir := t.TempDir()
 		in := filepath.Join(dir, "in.wav")
 		makeWav(t, in, 1)
@@ -600,8 +612,7 @@ func TestCleanTakesTheGPULeaseWhereItIsArbitrated(t *testing.T) {
 
 // A lease held by the TTS engine makes the cleanup wait, then answer 503 busy; nothing is left held.
 func TestCleanGivesUpWhenTheGPULeaseStaysTaken(t *testing.T) {
-	d, h, log := newCleanDaemon(t, `cp "$IN" "$OUT"`)
-	d.Cfg.GPUMemory = config.GPUMemoryDiscrete
+	d, h, log := newCleanDaemonOn(t, `cp "$IN" "$OUT"`, false)
 	shortQuiet(t, 200*time.Millisecond)
 	if !d.gpu.TryAs("tts") {
 		t.Fatal("lease")
@@ -611,7 +622,8 @@ func TestCleanGivesUpWhenTheGPULeaseStaysTaken(t *testing.T) {
 	in := filepath.Join(dir, "in.wav")
 	makeWav(t, in, 1)
 	rec := postClean(h, cleanBody(in, filepath.Join(dir, "o.wav")))
-	if rec.Code != 503 || errCode(t, rec) != "busy" {
+	if rec.Code != 503 || errCode(t, rec) != "gpu_busy" || !strings.Contains(rec.Body.String(), "The graphics card is busy with speech; try again in a moment.") ||
+		strings.Contains(rec.Body.String(), "dictation") {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 	if _, err := os.Stat(log); err == nil {
@@ -710,5 +722,229 @@ func TestMissingModelsWithoutTheFetchScriptSaysSo(t *testing.T) {
 	rec := postClean(h, cleanBody(in, filepath.Join(dir, "o.wav")))
 	if rec.Code != 503 || errCode(t, rec) != "models_missing" || !strings.Contains(rec.Body.String(), "Reinstall") {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+// ---- Intel: one GPU job at a time ----------------------------------------------------------------------------------
+
+// An idle TTS child holds the lease for its whole life; a cleanup stops it through the supervisor and starts at once
+// instead of being refused for the idle-stop window.
+// Mutation: clean.go cleanGate.enter, delete the `stopIdleTTS` call -> RED (503 gpu_busy after the wait).
+func TestCleanStopsAnIdleTTSChildToTakeTheGPU(t *testing.T) {
+	d, h, log := newCleanDaemonOn(t, `cp "$IN" "$OUT"`, false)
+	shortQuiet(t, 400*time.Millisecond)
+	if _, err := d.Sup.EnsureReady(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	pid := d.Sup.Status().PID
+	if pid <= 0 || d.gpu.Owner() != "tts" {
+		t.Fatalf("pid %d, lease owner %q", pid, d.gpu.Owner())
+	}
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.wav")
+	makeWav(t, in, 1)
+	rec := postClean(h, cleanBody(in, filepath.Join(dir, "o.wav")))
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if calls, _ := os.ReadFile(log); len(calls) == 0 {
+		t.Error("the engine did not run")
+	}
+	waitFor(t, "the TTS child to be gone", func() bool { return !alive(pid) })
+}
+
+// A speech request that needs the TTS child while a cleanup holds the card gives up with a clear, stable error, not
+// the generic engine-start failure. A card held by something else keeps the generic one.
+// Mutation: speak.go speechOn, drop the LeaseWaitError branch -> RED; engine supervisor, return err instead of
+// &LeaseWaitError -> RED.
+func TestSpeechStartDuringACleanupGetsAClearError(t *testing.T) {
+	d, _, _ := newCleanDaemonOn(t, "exit 0", false)
+	if !d.gpu.TryAs("clean") {
+		t.Fatal("lease")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	_, err := d.speechOn(ctx, d.Sup, map[string]any{"input": "hello"})
+	var sbe *speechBlockedError
+	if !errors.As(err, &sbe) || err.Error() != "Voice cleanup is using the graphics card; speech will be available when it finishes." {
+		t.Fatalf("got %v", err)
+	}
+	if synthStatus(err) != 503 {
+		t.Errorf("status %d", synthStatus(err))
+	}
+	rec := httptest.NewRecorder()
+	writeSynthErr(rec, err)
+	var body struct {
+		Error struct{ Code, Message, Type string }
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != 503 || body.Error.Code != "gpu_busy_cleanup" || body.Error.Message != err.Error() {
+		t.Errorf("%d %s", rec.Code, rec.Body)
+	}
+	d.gpu.Release()
+
+	if !d.gpu.TryAs("transcription") {
+		t.Fatal("lease")
+	}
+	defer d.gpu.Release()
+	ctx2, cancel2 := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel2()
+	_, err = d.speechOn(ctx2, d.Sup, map[string]any{"input": "hello"})
+	if err == nil || errors.As(err, &sbe) {
+		t.Errorf("a card held by a transcription must not read as a cleanup: %v", err)
+	}
+}
+
+// ---- review round: errors, bodies, backoff ------------------------------------------------------------------------
+
+// The daemon's own outer time cap is a 504 with a log line; a client that left gets nothing written.
+// Mutation: clean.go Clean, delete the `cleanOuterCap` DeadlineExceeded branch -> RED (500).
+func TestOuterCapIs504AndAClientThatLeftGetsNoAnswer(t *testing.T) {
+	_, h, _ := newCleanDaemon(t, `sleep 5; cp "$IN" "$OUT"`)
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.wav")
+	makeWav(t, in, 1)
+	old := cleanOuterCap
+	cleanOuterCap = 600 * time.Millisecond
+	t.Cleanup(func() { cleanOuterCap = old })
+	rec := postClean(h, cleanBody(in, filepath.Join(dir, "o.wav")))
+	if rec.Code != 504 || errCode(t, rec) != "engine_timeout" {
+		t.Fatalf("outer cap: %d %s", rec.Code, rec.Body)
+	}
+	cleanOuterCap = old
+
+	ctx, cancel := context.WithCancel(t.Context())
+	req := appRequest("POST", "/v1/audio/clean", cleanBody(in, filepath.Join(dir, "o2.wav"))).WithContext(ctx)
+	time.AfterFunc(700*time.Millisecond, cancel)
+	rec = serve(h, req)
+	if rec.Body.Len() != 0 {
+		t.Errorf("an answer was written to a client that left: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// No ffprobe text reaches the JSON.
+func TestFFprobeTextNeverReachesTheResponse(t *testing.T) {
+	_, h, _ := newCleanDaemon(t, `cp "$IN" "$OUT"`)
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "bad.wav")
+	if err := os.WriteFile(bad, []byte("not audio SECRETWORDS"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := postClean(h, cleanBody(bad, filepath.Join(dir, "o.wav")))
+	body := rec.Body.String()
+	if rec.Code != 400 || errCode(t, rec) != "invalid_request" || !strings.Contains(body, "This file is not audio or video OxSay can read.") {
+		t.Fatalf("%d %s", rec.Code, body)
+	}
+	for _, leak := range []string{"ffprobe", "Invalid data", "SECRETWORDS", "moov"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("response leaks %q: %s", leak, body)
+		}
+	}
+}
+
+func TestCleanBodyIsStrict(t *testing.T) {
+	_, h, log := newCleanDaemon(t, `cp "$IN" "$OUT"`)
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.wav")
+	makeWav(t, in, 1)
+	ok := cleanBody(in, filepath.Join(dir, "o.wav"))
+	for name, body := range map[string]string{
+		"unknown field": `{"in_path":"` + in + `","out_path":"` + filepath.Join(dir, "o.wav") + `","wett":0.1}`,
+		"trailing data": ok + ` {"x":1}`,
+		"trailing junk": ok + ` junk`,
+		"not json":      `in_path`,
+	} {
+		if rec := postClean(h, body); rec.Code != 400 {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if _, err := os.Stat(log); err == nil {
+		t.Error("the engine ran for a malformed body")
+	}
+	if rec := postClean(h, ok+"\n  \n"); rec.Code != 200 {
+		t.Errorf("trailing whitespace: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// A broken engine is not run again on every /status.
+// Mutation: clean.go cleanVersion, delete the failedAt check -> RED (a call per status).
+func TestFailedVersionProbeIsRememberedForAWhile(t *testing.T) {
+	d := newTestDaemon(t, t.TempDir(), nil)
+	log := filepath.Join(t.TempDir(), "v.log")
+	bin := filepath.Join(t.TempDir(), "ox-clean")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho x >> "+log+"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d.Cfg.CleanBin = bin
+	calls := func() int { b, _ := os.ReadFile(log); return strings.Count(string(b), "x") }
+	d.cleanVersion()
+	d.cleanVersion()
+	d.cleanVersion()
+	if calls() != 1 {
+		t.Fatalf("%d runs for three calls", calls())
+	}
+	old := cleanVersionFailTTL
+	cleanVersionFailTTL = 10 * time.Millisecond
+	t.Cleanup(func() { cleanVersionFailTTL = old })
+	time.Sleep(30 * time.Millisecond)
+	d.cleanVersion()
+	if calls() != 2 {
+		t.Errorf("after the TTL: %d runs", calls())
+	}
+}
+
+// After a failed download the next request does not start another within the backoff, and the 503 says why.
+// Mutation: clean_install.go startCleanInstall, delete the failedAt check -> RED (a second start).
+func TestFailedFetchBacksOff(t *testing.T) {
+	d, h, _ := newCleanDaemon(t, `cp "$IN" "$OUT"`)
+	_ = os.Remove(filepath.Join(d.Cfg.CleanModelsDir(), "mossformer2-se-48k", ".ox-say-revision"))
+	installScript(t, d)
+	var starts atomic.Int32
+	old := cleanFetchStart
+	cleanFetchStart = func(ctx context.Context, script, dest string, tail *bytes.Buffer) (*exec.Cmd, error) {
+		starts.Add(1)
+		tail.WriteString("curl: (22) The requested URL returned error: 404\n")
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", "exit 22")
+		return cmd, cmd.Start()
+	}
+	t.Cleanup(func() { cleanFetchStart = old })
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.wav")
+	makeWav(t, in, 1)
+	body := cleanBody(in, filepath.Join(dir, "o.wav"))
+	if rec := postClean(h, body); errCode(t, rec) != "models_downloading" {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	waitFor(t, "the fetch to fail", func() bool { r, e, _ := d.cleanInst.state(); return !r && e != "" })
+	rec := postClean(h, body)
+	if rec.Code != 503 || errCode(t, rec) != "models_download_failed" || !strings.Contains(rec.Body.String(), "The download failed") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if starts.Load() != 1 {
+		t.Errorf("%d fetches", starts.Load())
+	}
+	old2 := cleanFetchBackoff
+	cleanFetchBackoff = time.Millisecond
+	t.Cleanup(func() { cleanFetchBackoff = old2 })
+	time.Sleep(10 * time.Millisecond)
+	postClean(h, body)
+	if starts.Load() != 2 {
+		t.Errorf("after the backoff: %d fetches", starts.Load())
+	}
+}
+
+// produce's wait log names the cleanup, not dictation.
+func TestWaitQuietLogNamesTheCleanup(t *testing.T) {
+	d := newTestDaemon(t, t.TempDir(), nil)
+	oq, op, om := interactiveQuiet, quietPoll, maxYield
+	interactiveQuiet, quietPoll, maxYield = 0, 10*time.Millisecond, 100*time.Millisecond
+	t.Cleanup(func() { interactiveQuiet, quietPoll, maxYield = oq, op, om })
+	var buf bytes.Buffer
+	d.log = slog.New(slog.NewTextHandler(&buf, nil))
+	d.cleanRunning.Add(1)
+	_ = d.waitQuiet(t.Context(), func() {})
+	d.cleanRunning.Add(-1)
+	if !strings.Contains(buf.String(), "reason=voice_cleanup") || strings.Contains(buf.String(), "reason=dictation") {
+		t.Errorf("log: %s", buf.String())
 	}
 }

@@ -60,7 +60,11 @@ func (d *Daemon) waitQuiet(ctx context.Context, onWait func()) error {
 			return nil
 		}
 		if waited := time.Since(start); waited >= maxYield {
-			d.log.Info("produce wait", slog.String("reason", "dictation"), slog.Float64("waited_s", waited.Seconds()), slog.Bool("bound", true))
+			reason := "dictation"
+			if d.cleanRunning.Load() != 0 && d.inflight.Load() == 0 {
+				reason = "voice_cleanup"
+			}
+			d.log.Info("produce wait", slog.String("reason", reason), slog.Float64("waited_s", waited.Seconds()), slog.Bool("bound", true))
 			return nil
 		} else if !told && waited >= waitingAfter {
 			onWait()

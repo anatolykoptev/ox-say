@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -137,6 +138,10 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 	}
 	base, err := sup.EnsureReady(ctx)
 	if err != nil {
+		var lwe *engine.LeaseWaitError
+		if errors.As(err, &lwe) && lwe.HeldBy == "clean" {
+			return nil, &speechBlockedError{}
+		}
 		return nil, fmt.Errorf("%w: %w", errEngineStart, err)
 	}
 	if vox {

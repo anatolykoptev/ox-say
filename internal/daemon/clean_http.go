@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -38,8 +37,14 @@ func writeCleanErr(w http.ResponseWriter, e *CleanError) {
 func (d *Daemon) handleClean(w http.ResponseWriter, r *http.Request) {
 	var req cleanRequest
 	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	if err := dec.Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "The request is not valid JSON.")
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil || dec.More() {
+		writeErr(w, http.StatusBadRequest, "The request is not valid: send one JSON object with in_path, out_path and optionally wet, stereo and overwrite.")
+		return
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF { // anything after the object, however it parses
+		writeErr(w, http.StatusBadRequest, "The request is not valid: send one JSON object with in_path, out_path and optionally wet, stereo and overwrite.")
 		return
 	}
 	// A long job: the server's 30 s read and write timeouts must not cut it.
@@ -58,7 +63,7 @@ func (d *Daemon) handleClean(w http.ResponseWriter, r *http.Request) {
 			writeCleanErr(w, ce)
 			return
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if r.Context().Err() != nil {
 			return // the client left; nothing is waiting for an answer
 		}
 		d.log.Warn("voice cleanup failed", slog.Any("error", err))

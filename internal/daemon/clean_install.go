@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // cleanInstall is the one running download of the voice-cleanup model: the lazy, first-use fetch (plan, decision 7).
@@ -19,12 +20,14 @@ import (
 type cleanInstall struct {
 	mu      sync.Mutex
 	running bool
-	err     string
-	code    string
-	ctx     context.Context
-	cancel  context.CancelFunc
-	stopped bool
-	wg      sync.WaitGroup
+	// failedAt is when the last download failed; a request within cleanFetchBackoff of it does not start another.
+	failedAt time.Time
+	err      string
+	code     string
+	ctx      context.Context
+	cancel   context.CancelFunc
+	stopped  bool
+	wg       sync.WaitGroup
 }
 
 func (c *cleanInstall) state() (running bool, err, code string) {
@@ -62,6 +65,10 @@ func (d *Daemon) startCleanInstall() *CleanError {
 	if c.running {
 		return downloading
 	}
+	if !c.failedAt.IsZero() && time.Since(c.failedAt) < cleanFetchBackoff {
+		return &CleanError{Status: http.StatusServiceUnavailable, Code: "models_download_failed",
+			Msg: c.err + " It will be tried again in a minute."}
+	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return &CleanError{Status: http.StatusServiceUnavailable, Code: CleanModelsMissing,
 			Msg: "The voice cleanup model cannot be downloaded: the models folder cannot be created."}
@@ -92,6 +99,7 @@ func (d *Daemon) runCleanInstall(ctx context.Context, cmd *exec.Cmd, tail *bytes
 	if err != nil && ctx.Err() == nil {
 		msg := installTail(tail.String())
 		c.err, c.code = "The download failed: "+msg, installFailureCode(msg)
+		c.failedAt = time.Now()
 		d.log.Warn("voice cleanup model download failed", slog.Any("error", err), slog.String("stderr", msg))
 	}
 }

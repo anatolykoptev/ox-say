@@ -32,8 +32,6 @@ const (
 	cleanFloorAppleGPU     = 50.0
 	cleanFloorIntelDGPU    = 5.0
 	cleanFloorIntelCPUOnly = 2.0
-	// cleanOuterCap bounds everything that is not the model (ffprobe, ffmpeg): a hung tool must not hold the lane.
-	cleanOuterCap = 3 * time.Hour
 	// cleanBytesPerSecond is the model's float32 mono 48 kHz WAV.
 	cleanBytesPerSecond = 48000 * 4
 	// cleanStderrKeep is how much of ox-clean's stderr an error carries (its last line holds [reason=<token>]).
@@ -50,10 +48,21 @@ const (
 	CleanModelsMissing     = "models_missing"
 	CleanModelsDownloading = "models_downloading"
 	CleanBusy              = "busy"
+	CleanGPUBusy           = "gpu_busy"
+	CleanEngineTimeout     = "engine_timeout"
 )
 
-// Seams for tests: the wait for a quiet daemon.
+// Seams for tests: the wait for a quiet daemon, the outer cap, the stop of an idle TTS child.
 var (
+	// cleanOuterCap bounds the whole request (ffprobe, ffmpeg, the model): a hung tool must not hold the lane. Past
+	// it the answer is 504 engine_timeout.
+	cleanOuterCap = 3 * time.Hour
+	// cleanStopWait bounds the stop of an idle TTS child before a cleanup takes the GPU lease on Intel.
+	cleanStopWait = 5 * time.Second
+	// cleanVersionFailTTL is how long a failed `ox-clean --version` is remembered before it is run again.
+	cleanVersionFailTTL = 30 * time.Second
+	// cleanFetchBackoff is how long after a failed model download the next request does not start another.
+	cleanFetchBackoff = 60 * time.Second
 	// cleanQuietCap is how long a cleanup waits for dictation and other jobs to end before it answers 503 busy.
 	cleanQuietCap  = 120 * time.Second
 	cleanQuietPoll = 250 * time.Millisecond
@@ -181,11 +190,13 @@ func (g *cleanGate) enter(ctx context.Context) error {
 		if g.err = g.d.waitCleanQuiet(ctx); g.err != nil {
 			return
 		}
-		// A Mac without unified memory (Intel) arbitrates its GPU with a lease: the TTS child holds it for its whole
-		// life, and a GPU transcription takes it per run (try-only, so it falls back to the CPU). The daemon cannot tell
-		// a discrete GPU from an integrated one, so the lease is taken whenever the existing arbitration is in force;
-		// it is the same condition under which the TTS engine and STT use it.
+		// On Intel (not unified memory) the GPU cannot hold the cleanup model and the TTS model at once, so one GPU job
+		// runs at a time: the existing lease arbitrates, the TTS child holds it for its whole life, and a cleanup that
+		// finds an idle child stops it through the supervisor (Recycle waits for in-flight requests and kills nothing
+		// that works). The daemon cannot tell a discrete GPU from an integrated one, so the rule holds on every
+		// non-unified Mac. arm64 takes no lease.
 		if !g.d.Cfg.UnifiedMemory() {
+			g.d.stopIdleTTS(ctx)
 			lctx, cancel := context.WithTimeout(ctx, cleanQuietCap)
 			ok, err := g.d.gpu.WaitOrAs(lctx, nil, "clean")
 			cancel()
@@ -193,8 +204,7 @@ func (g *cleanGate) enter(ctx context.Context) error {
 				if ctx.Err() != nil {
 					g.err = ctx.Err()
 				} else {
-					g.err = &CleanError{Status: http.StatusServiceUnavailable, Code: CleanBusy,
-						Msg: "OxSay is busy with dictation or another job; try again in a moment."}
+					g.err = gpuBusyErr(g.d.gpu.Owner())
 				}
 				return
 			}
@@ -210,6 +220,36 @@ func (g *cleanGate) enter(ctx context.Context) error {
 		}
 	})
 	return g.err
+}
+
+// stopIdleTTS stops the TTS child when it holds the lease and nothing is speaking, so a cleanup is not refused for the
+// whole idle-stop window. It uses the supervisor's Recycle, the daemon's one deliberate-stop path.
+func (d *Daemon) stopIdleTTS(ctx context.Context) {
+	if d.gpu.Owner() != "tts" || d.busy().Speaking > 0 {
+		return
+	}
+	pid := d.Sup.Status().PID
+	if pid <= 0 {
+		return
+	}
+	rctx, cancel := context.WithTimeout(ctx, cleanStopWait)
+	defer cancel()
+	if err := d.Sup.Recycle(rctx, pid); err != nil {
+		d.log.Info("voice cleanup: the TTS engine could not be stopped for the GPU", "error", err)
+	}
+}
+
+// gpuBusyErr is the 503 for a lease that stayed taken for the whole wait.
+func gpuBusyErr(holder string) *CleanError {
+	what := "another job"
+	switch holder {
+	case "tts":
+		what = "speech"
+	case "transcription":
+		what = "a transcription"
+	}
+	return &CleanError{Status: http.StatusServiceUnavailable, Code: CleanGPUBusy,
+		Msg: "The graphics card is busy with " + what + "; try again in a moment."}
 }
 
 func (g *cleanGate) leave() {
@@ -248,6 +288,7 @@ func (d *Daemon) Clean(ctx context.Context, in CleanInput) (*CleanResult, error)
 	gate := &cleanGate{d: d}
 	defer gate.leave()
 	out := &engineOutcome{}
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, cleanOuterCap)
 	defer cancel()
 
@@ -261,6 +302,11 @@ func (d *Daemon) Clean(ctx context.Context, in CleanInput) (*CleanResult, error)
 	if err != nil {
 		if gate.err != nil {
 			return nil, gate.err
+		}
+		if parent.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			d.log.Warn("voice cleanup hit the outer time cap", "cap", cleanOuterCap)
+			return nil, &CleanError{Status: http.StatusGatewayTimeout, Code: CleanEngineTimeout,
+				Msg: "The cleanup took much longer than expected and was stopped. Your file was not changed."}
 		}
 		return nil, d.mapCleanError(ctx, err, out)
 	}
@@ -278,27 +324,29 @@ func (d *Daemon) Clean(ctx context.Context, in CleanInput) (*CleanResult, error)
 func (d *Daemon) cleanRunner(gate *cleanGate, out *engineOutcome) voiceclean.Runner {
 	engine := d.Cfg.CleanBin
 	return func(ctx context.Context, bin string, args []string) ([]byte, error) {
-		if filepath.Base(bin) != "ffprobe" {
+		tool := voiceclean.ToolOf(ctx)
+		if tool != voiceclean.ToolProbe {
 			if err := gate.enter(ctx); err != nil {
 				return nil, err
 			}
 		}
-		idx := -1
-		for i, a := range append([]string{bin}, args...) {
-			if a == engine {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
+		if tool != voiceclean.ToolEngine {
 			return oneshot.Run(ctx, bin, args, oneshot.Options{StderrTail: 512, WaitDelay: cleanWaitDelay})
 		}
 		// ox-clean <in.wav> <out.wav> --models DIR, perhaps behind /usr/bin/nice -n 15: the input follows the engine.
-		full := append([]string{bin}, args...)
 		seconds := 0.0
-		if idx+1 < len(full) {
-			if st, err := os.Stat(full[idx+1]); err == nil {
-				seconds = float64(st.Size()) / cleanBytesPerSecond
+		for i, a := range args {
+			if a == engine && i+1 < len(args) {
+				if st, err := os.Stat(args[i+1]); err == nil {
+					seconds = float64(st.Size()) / cleanBytesPerSecond
+				}
+				break
+			}
+			if i == 0 && a != "-n" { // no nice wrapper: the arguments start with the input
+				if st, err := os.Stat(a); err == nil {
+					seconds = float64(st.Size()) / cleanBytesPerSecond
+				}
+				break
 			}
 		}
 		rctx, cancel := context.WithTimeout(ctx, cleanTimeout(seconds))
@@ -404,6 +452,9 @@ func (d *Daemon) mapCleanError(ctx context.Context, err error, out *engineOutcom
 		return engineFailure(exit, tail)
 	}
 	msg := ve.Msg
+	if ve.Detail != "" {
+		d.log.Warn("voice cleanup refused", "code", ve.Code, "detail", ve.Detail)
+	}
 	if s, ok := codeSentence[ve.Code]; ok {
 		msg = s
 		d.log.Warn("voice cleanup failed", "code", ve.Code, "detail", ve.Msg)
@@ -420,18 +471,25 @@ func (d *Daemon) cleanVersion() string {
 	if d.cleanVer.v != "" {
 		return d.cleanVer.v
 	}
+	if !d.cleanVer.failedAt.IsZero() && time.Since(d.cleanVer.failedAt) < cleanVersionFailTTL {
+		return ""
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), cleanVersionTimeout)
 	defer cancel()
 	raw, err := oneshot.Run(ctx, d.Cfg.CleanBin, []string{"--version"}, oneshot.Options{StderrTail: 256, WaitDelay: time.Second})
 	if err == nil {
 		d.cleanVer.v = strings.TrimSpace(strings.SplitN(string(raw), "\n", 2)[0])
+		d.cleanVer.failedAt = time.Time{}
+	} else {
+		d.cleanVer.failedAt = time.Now() // a broken engine is not run again on every /status
 	}
 	return d.cleanVer.v
 }
 
 type cleanVersionCache struct {
-	mu sync.Mutex
-	v  string
+	mu       sync.Mutex
+	v        string
+	failedAt time.Time
 }
 
 // cleanStatus is /status voice_clean.
@@ -460,3 +518,16 @@ func (d *Daemon) cleanStatus() cleanStatus {
 
 // cleanBusyCount is busy.cleaning.
 func (d *Daemon) cleanBusyCount() int { return int(d.cleaning.Load()) }
+
+// speechBlockedCode is the stable code of a speech request that could not start the TTS engine because a voice
+// cleanup holds the graphics card (Intel only; arm64 takes no lease).
+const speechBlockedCode = "gpu_busy_cleanup"
+
+// speechBlockedError is that refusal. It is an engine-start failure (503) for every caller that only looks at the
+// status.
+type speechBlockedError struct{}
+
+func (*speechBlockedError) Error() string {
+	return "Voice cleanup is using the graphics card; speech will be available when it finishes."
+}
+func (*speechBlockedError) Unwrap() error { return errEngineStart }

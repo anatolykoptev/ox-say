@@ -61,6 +61,12 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 // writeSynthErr is writeErr for a synthesis error; a runaway also carries its
 // typed code, which the app reads to show a sentence instead of the raw JSON.
 func writeSynthErr(w http.ResponseWriter, err error) {
+	var sbe *speechBlockedError
+	if errors.As(err, &sbe) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": map[string]any{"message": sbe.Error(), "type": speechBlockedCode, "code": speechBlockedCode}})
+		return
+	}
 	var rwe *runawayError
 	if errors.As(err, &rwe) {
 		w.Header().Set("Content-Type", "application/json")
