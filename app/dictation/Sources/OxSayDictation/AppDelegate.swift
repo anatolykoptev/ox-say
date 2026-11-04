@@ -614,7 +614,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                  speaking: speakInFlight || player.isActivelyPlaying,
                                  designing: studio.designing,
                                  followingVoiceover: studio.followingVoiceover,
-                                 recordingMeeting: meetings?.isRecording ?? false)
+                                 recordingMeeting: meetings?.isRecording ?? false,
+                                 recordingVoice: mainWindow.source?.recordingVoice ?? false)
     }
 
     /// Work in this process ended: a pass that held an action back runs

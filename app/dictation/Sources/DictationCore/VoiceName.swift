@@ -33,6 +33,12 @@ public enum VoiceName {
         (0x61...0x7A).contains(scalar.value) || (0x30...0x39).contains(scalar.value)
     }
 
+    /// Whether a cleaned label names a voice that exists: by the id it slugs to, or by the label itself, case-insensitively.
+    /// `taken` holds the ids and the lower-cased labels of the library. The one rule every add sheet follows.
+    public static func isTaken(_ clean: String, in taken: Set<String>) -> Bool {
+        taken.contains(id(from: clean, taken: [])) || taken.contains(clean.lowercased())
+    }
+
     /// The slug for `label`: transliterated, lowercased, every run outside
     /// [a-z0-9] collapsed to one "-", dashes trimmed, cut to the daemon's
     /// length. A label that leaves nothing becomes "voice". When the slug is

@@ -697,3 +697,24 @@
 "speak.choose_message" = "Choose a text, Markdown, Word, PDF, RTF or OpenDocument file.";
 "speak.export_folder" = "A folder already has that name. Pick another.";
 "speak.needs_listen" = "needs a listen";
+/* Record your own voice */
+"voice.record.open" = "Record your own voice…";
+"voice.record.title" = "Record your own voice";
+"voice.record.intro" = "Read the text below aloud, calmly, the way you normally speak.";
+"voice.record.why" = "OxSay listens only while you are recording";
+"voice.record.start" = "Record";
+"voice.record.stop" = "Stop";
+"voice.record.again" = "Record again";
+"voice.record.save" = "Save";
+"voice.record.saving" = "Saving the voice…";
+"voice.record.other_text" = "Another text";
+"voice.record.label_default" = "My voice";
+"voice.record.need_mic" = "OxSay needs the microphone to record your voice. Allow it in System Settings, then come back here.";
+"voice.record.open_settings" = "Open Settings";
+"voice.record.waiting_mic" = "Answer the macOS question about the microphone.";
+"voice.record.too_short" = "At least %d seconds are needed. Record again.";
+"voice.record.blocked_meeting" = "A meeting is being recorded, so the microphone is busy. Record your voice when it ends.";
+"voice.record.meeting_started" = "A meeting recording started, so your recording was stopped and not saved.";
+"voice.record.seconds" = "%@ s";
+"voice.record.meter_label" = "Microphone level";
+"voice.record.play" = "Play your recording";

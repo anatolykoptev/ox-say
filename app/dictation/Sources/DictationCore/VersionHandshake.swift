@@ -90,17 +90,22 @@ public enum VersionHandshake {
         /// A meeting is being recorded: a relaunch would end it. No default: every
         /// constructor must say, so a caller cannot silently report "not recording".
         public var recordingMeeting: Bool
+        /// The person is recording their own voice for a clone (the Voices page's «Записать свой голос»): a relaunch
+        /// would lose the take.
+        public var recordingVoice: Bool
 
-        public init(dictating: Bool, speaking: Bool, designing: Bool, followingVoiceover: Bool, recordingMeeting: Bool) {
+        public init(dictating: Bool, speaking: Bool, designing: Bool, followingVoiceover: Bool, recordingMeeting: Bool,
+                    recordingVoice: Bool = false) {
             self.dictating = dictating
             self.speaking = speaking
             self.designing = designing
             self.followingVoiceover = followingVoiceover
             self.recordingMeeting = recordingMeeting
+            self.recordingVoice = recordingVoice
         }
 
         /// True only when every lane is empty.
-        public var idle: Bool { !(dictating || speaking || designing || followingVoiceover || recordingMeeting) }
+        public var idle: Bool { !(dictating || speaking || designing || followingVoiceover || recordingMeeting || recordingVoice) }
     }
 
     /// How a kickstart command ended.

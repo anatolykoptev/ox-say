@@ -152,6 +152,12 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         steps(&add)
         return voices(PreviewData.make(now: now, ru: ru)) { $0.file = add }
     }
+    /// The Голоса page with the recording sheet open on a reducer after the given steps (in the language of the shot).
+    func recordSheet(_ now: Date, _ ru: Bool, levels: [Float] = [], _ steps: (inout VoiceRecording) -> Void) -> MainWindowData {
+        var r = VoiceRecording(language: ru ? "ru" : "en")
+        steps(&r)
+        return voices(PreviewData.make(now: now, ru: ru)) { $0.record = VoiceRecordValues(recording: r, levels: levels) }
+    }
     func takes() -> [DesignTake] {
         (1...3).map { DesignTake(path: "/t/\($0).wav", durationSeconds: 6, suggestedName: "calm-narrator-\($0)",
                                 warning: $0 == 3 ? "this take may contain babble" : nil) }
@@ -230,6 +236,24 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                 add.refused("the clip could not be decoded")
             }
         }, sheet: true),
+        // «Записать свой голос»: ready to record, recording, the review, a denied microphone, a take that is too short.
+        Scene(name: "voice-record-ready", section: .voices, meeting: nil, data: { now, ru in
+            recordSheet(now, ru) { _ = $0.micStatus(.authorized) }
+        }, sheet: true),
+        Scene(name: "voice-record-recording", section: .voices, meeting: nil, data: { now, ru in
+            recordSheet(now, ru, levels: [0.2, 0.45, 0.7, 0.9, 0.6, 0.8, 0.5, 0.3, 0.15]) {
+                _ = $0.micStatus(.authorized); _ = $0.start(); _ = $0.tick(seconds: 7.5)
+            }
+        }, sheet: true),
+        Scene(name: "voice-record-review", section: .voices, meeting: nil, data: { now, ru in
+            recordSheet(now, ru) { _ = $0.micStatus(.authorized); _ = $0.start(); $0.stop(seconds: 9.2) }
+        }, sheet: true),
+        Scene(name: "voice-record-mic-denied", section: .voices, meeting: nil, data: { now, ru in
+            recordSheet(now, ru) { _ = $0.micStatus(.denied) }
+        }, sheet: true),
+        Scene(name: "voice-record-too-short", section: .voices, meeting: nil, data: { now, ru in
+            recordSheet(now, ru) { _ = $0.micStatus(.authorized); _ = $0.start(); $0.stop(seconds: 3.4) }
+        }, sheet: true),
         // Settings is taller than a window: the shot is made as tall as the screen allows.
         Scene(name: "settings", section: .settings, meeting: nil, height: 1100) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "settings-apps", section: .settings, meeting: nil, height: 1100, appsExpanded: true) { PreviewData.make(now: $0, ru: $1) },
@@ -298,6 +322,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                 if scene.sheet {
                     model.data.voices.designOpen = false
                     model.data.voices.file = nil
+                    model.data.voices.record = nil
                     for _ in 0..<20 where window.attachedSheet != nil { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
                     if let s = window.attachedSheet { window.endSheet(s) }
                 }

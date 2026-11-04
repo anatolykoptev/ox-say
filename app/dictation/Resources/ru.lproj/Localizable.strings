@@ -691,3 +691,24 @@
 "speak.choose_message" = "Выберите текстовый, Markdown, Word, PDF, RTF или OpenDocument-файл.";
 "speak.export_folder" = "С таким именем там уже есть папка. Выберите другое имя.";
 "speak.needs_listen" = "нужно прослушать";
+/* Record your own voice */
+"voice.record.open" = "Записать свой голос…";
+"voice.record.title" = "Записать свой голос";
+"voice.record.intro" = "Прочитайте текст ниже вслух, спокойно, как обычно говорите.";
+"voice.record.why" = "OxSay слышит только пока вы записываете";
+"voice.record.start" = "Записать";
+"voice.record.stop" = "Остановить";
+"voice.record.again" = "Записать ещё раз";
+"voice.record.save" = "Сохранить";
+"voice.record.saving" = "Сохраняю голос…";
+"voice.record.other_text" = "Другой текст";
+"voice.record.label_default" = "Мой голос";
+"voice.record.need_mic" = "Для записи голоса OxSay нужен микрофон. Разрешите его в Настройках, затем вернитесь сюда.";
+"voice.record.open_settings" = "Открыть Настройки";
+"voice.record.waiting_mic" = "Ответьте на вопрос macOS о микрофоне.";
+"voice.record.too_short" = "Нужно хотя бы %d секунд. Запишите ещё раз.";
+"voice.record.blocked_meeting" = "Идёт запись встречи, микрофон занят. Запишите голос, когда она закончится.";
+"voice.record.meeting_started" = "Началась запись встречи, поэтому ваша запись остановлена и не сохранена.";
+"voice.record.seconds" = "%@ с";
+"voice.record.meter_label" = "Уровень микрофона";
+"voice.record.play" = "Прослушать запись";

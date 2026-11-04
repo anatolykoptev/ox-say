@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 /// Voices: the voices that exist (play a sample, rename, delete) and, below, reading selected text aloud (a voice per
 /// language). The read-aloud key is set in the menu bar until Task 23 moves it here. «Описать словами» opens a sheet
-/// (VoiceDesignSheet); «Взять из файла…» opens the file picker and then its own sheet (VoiceFileSheet).
+/// (VoiceDesignSheet); «Взять из файла…» opens the file picker and then its own sheet (VoiceFileSheet); «Записать свой голос…» opens the recording sheet (VoiceRecordSheet).
 struct VoicesPage: View {
     @ObservedObject var model: MainWindowModel
     @State private var renaming: VoiceEntry?
@@ -68,6 +68,7 @@ struct VoicesPage: View {
                 Section {
                     describeRow
                     fileRow
+                    recordRow
                     if model.data.voices.entries.isEmpty {
                         VStack(spacing: 6) {
                             Image(systemName: "person.wave.2").font(.system(size: 30, weight: .light)).foregroundStyle(.tertiary)
@@ -119,6 +120,22 @@ struct VoicesPage: View {
         HStack {
             Button(L10nKey.fileOpen.text) { pickingFile = true }
             Spacer()
+        }
+    }
+
+    /// «Записать свой голос…»: the guided recording sheet. Its `.sheet` sits on this row, a view of its own: the design
+    /// sheet is on `content` and the file sheet on the list, and a second `.sheet` on a view that already carries one
+    /// is not supported.
+    private var recordRow: some View {
+        HStack {
+            Button(L10nKey.voiceRecordOpen.text) { model.actions.voiceRecord(.open) }
+            Spacer()
+        }
+        .sheet(isPresented: Binding(get: { model.data.voices.record != nil },
+                                    set: { if !$0 { model.actions.voiceRecord(.escape) } })) {
+            if let values = model.data.voices.record {
+                VoiceRecordSheet(values: values) { model.actions.voiceRecord($0) }
+            }
         }
     }
 

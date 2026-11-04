@@ -85,7 +85,7 @@ public struct VoiceDesignFlow: Equatable {
                 problem = text(.voicesRenameInvalid)
                 return nil
             }
-            if taken.contains(VoiceName.id(from: clean, taken: [])) || taken.contains(clean.lowercased()) {
+            if VoiceName.isTaken(clean, in: taken) {
                 problem = text(.designProblemNameTaken)
                 return nil
             }

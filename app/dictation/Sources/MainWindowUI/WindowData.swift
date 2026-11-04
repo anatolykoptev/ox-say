@@ -35,11 +35,13 @@ public struct VoicesValues: Equatable {
     public var designAvailability: DesignAvailability
     /// «Взять из файла»: the picked clip and the typed fields while its sheet is up; nil when it is not.
     public var file: VoiceFileAdd?
+    /// «Записать свой голос»: the recording sheet's state while it is up, with the live meter and the review's playback.
+    public var record: VoiceRecordValues?
 
     public init(voices: [String], russianVoice: String?, englishVoice: String?, entries: [VoiceEntry] = [],
                 load: VoicesLoad = .loaded, playingID: String? = nil, design: VoiceDesignFlow = VoiceDesignFlow(),
                 designOpen: Bool = false, designAvailability: DesignAvailability = .available,
-                file: VoiceFileAdd? = nil) {
+                file: VoiceFileAdd? = nil, record: VoiceRecordValues? = nil) {
         self.voices = voices
         self.russianVoice = russianVoice
         self.englishVoice = englishVoice
@@ -50,6 +52,7 @@ public struct VoicesValues: Equatable {
         self.designOpen = designOpen
         self.designAvailability = designAvailability
         self.file = file
+        self.record = record
     }
 
     /// What a picker row shows for a voice id: the entry's label, the id itself when it names no entry.
@@ -79,6 +82,38 @@ public enum VoiceFileAction: Equatable {
     /// The sheet's «Добавить».
     case add
     /// Esc, Cancel or the sheet's close.
+    case escape
+}
+
+/// What the recording sheet shows: the reducer's state, the nine meter levels (0...1, from the audio thread through the
+/// app) and whether the kept take is playing.
+public struct VoiceRecordValues: Equatable {
+    public var recording: VoiceRecording
+    public var levels: [Float]
+    public var playing: Bool
+
+    public init(recording: VoiceRecording, levels: [Float] = [], playing: Bool = false) {
+        self.recording = recording
+        self.levels = levels
+        self.playing = playing
+    }
+}
+
+/// What the recording sheet asks of the app («Записать свой голос»). VoiceRecording decides what each one does.
+public enum VoiceRecordAction: Equatable {
+    /// The page's «Записать свой голос…».
+    case open
+    /// «Записать» / «Записать ещё раз»: the first press raises the macOS microphone question.
+    case start
+    case stop
+    case nextPrompt
+    case play
+    case stopPlay
+    case openSettings
+    /// The name as typed.
+    case edit(label: String)
+    case save
+    /// Esc, the sheet's close: a take is stopped and discarded.
     case escape
 }
 
@@ -178,6 +213,8 @@ public struct MainWindowActions {
     /// «Взять из файла»: one closure for the sheet's steps (a file picked in the open panel, the typed text,
     /// «Добавить», Esc).
     public var voiceFile: (VoiceFileAction) -> Void = { _ in }
+    /// «Записать свой голос»: one closure for the sheet's steps.
+    public var voiceRecord: (VoiceRecordAction) -> Void = { _ in }
     /// «Скачать студийный голос»: the app's own studio voice install, with its confirmation.
     public var installStudioVoice: () -> Void = {}
     public var setStartAtLogin: (Bool) -> Void = { _ in }
