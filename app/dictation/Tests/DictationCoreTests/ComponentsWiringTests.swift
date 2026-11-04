@@ -72,6 +72,47 @@ final class ComponentsWiringTests: XCTestCase {
         XCTAssertGreaterThan(checked, 0, "no ContentUnavailableView/PrivacyLine pair found: the check has gone vacuous")
     }
 
+    /// Meetings is a list beside a reading pane, drawn by a native split view (native-UI N2b), never a hand-built
+    /// `HStack { MeetingList.frame(width: 290); Divider(); detail }`. The window keeps ONE two-column NavigationSplitView:
+    /// a three-column shape for Meetings rebuilt the sidebar (width and focus lost) on every switch.
+    /// Mutation: MeetingsPage.swift `.list`, put back `HStack(spacing: 0) { MeetingsListColumn(model: model).frame(width: 290)
+    /// Divider() MeetingDetailColumn(model: model) }` in place of `MeetingsSplit(model: model)` -> RED.
+    func testMeetingsPageHasNoHandBuiltListDetailStack() throws {
+        let text = try String(contentsOf: mainWindowUI.appendingPathComponent("MeetingsPage.swift"), encoding: .utf8)
+        let lines = Self.stripComments(text).components(separatedBy: "\n")
+        for (i, line) in lines.enumerated() where line.contains("HStack") {
+            let near = lines[i..<min(i + 8, lines.count)].joined(separator: "\n")
+            for word in ["MeetingList(", "MeetingsListColumn(", "MeetingDetailColumn(", "detail"] {
+                XCTAssertFalse(near.contains(word), "MeetingsPage.swift:\(i + 1): a hand-built HStack list/detail (\(word))")
+            }
+        }
+        let flat = lines.joined(separator: "\n")
+        XCTAssertTrue(flat.contains("case .list:\n            MeetingsSplit(model: model)"), "the list state is the native split")
+        XCTAssertTrue(flat.contains("final class MeetingsSplitController: NSSplitViewController"))
+        XCTAssertFalse(flat.contains(".frame(width: 290)"))
+        // The window itself stays one two-column split: no content: column, no second shape.
+        let window = Self.stripComments(try String(contentsOf: mainWindowUI.appendingPathComponent("MainWindowView.swift"), encoding: .utf8))
+        XCTAssertEqual(window.components(separatedBy: "NavigationSplitView {").count - 1, 1)
+        XCTAssertFalse(window.contains("content:"), "a third column would rebuild the sidebar on each section switch")
+    }
+
+    /// The list is 260...420 wide (ideal 290), the meeting never under 300, the divider is kept on the model across a
+    /// section switch, and Open Folder / Copy Notes / Delete exist only for a chosen meeting while the list is up.
+    /// Mutations: MeetingsPage.swift `listLimits` 260...420 -> 100...900 -> RED; `SelectionToolbar`, drop
+    /// `, model.selectedMeeting != nil` (Delete offered with no meeting chosen) -> RED; the alert's
+    /// `if let id = model.selectedMeeting` -> `let id = model.selectedMeeting ?? ""` -> RED.
+    func testMeetingsSplitLimitsAndSelectionGuards() throws {
+        let page = Self.stripComments(try String(contentsOf: mainWindowUI.appendingPathComponent("MeetingsPage.swift"), encoding: .utf8))
+        XCTAssertTrue(page.contains("static let listLimits: ClosedRange<CGFloat> = 260...420"))
+        XCTAssertTrue(page.contains("static let detailMinimum: CGFloat = 300"))
+        XCTAssertTrue(page.contains("model.meetingsListWidth = list.frame.width"))
+        XCTAssertTrue(page.contains("if case .list = model.pageState, let d = model.selectedDetail, model.selectedMeeting != nil {"))
+        XCTAssertTrue(page.contains("if let id = model.selectedMeeting { model.actions.deleteMeeting(id) }"))
+        // The toolbar and the search field stay on the page, outside the AppKit split, so they reach the window.
+        XCTAssertTrue(page.contains("SelectionToolbar(model: model, confirmDelete: $confirmDelete)"))
+        XCTAssertTrue(page.contains(".searchable(text: $model.queryText"))
+    }
+
     /// Source text without whole-line `//` and `///` comments.
     private static func stripComments(_ text: String) -> String {
         text.components(separatedBy: "\n")

@@ -56,6 +56,10 @@ public final class MainWindowModel: ObservableObject {
         focus = MeetingFocus(meetingID: meetingID, destination: hit.destination, serial: focusSerial)
     }
 
+    /// Where the user left the divider between the meeting list and the meeting: kept here so it survives a switch to
+    /// another section and back. Not published: nothing redraws when it changes.
+    var meetingsListWidth: CGFloat = 290
+
     /// The meeting that is selected, with its texts when they were read.
     var selectedDetail: MeetingDetail? {
         guard let id = selectedMeeting else { return nil }

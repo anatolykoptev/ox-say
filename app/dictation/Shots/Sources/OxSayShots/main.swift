@@ -267,6 +267,8 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
     // Only these two flags are asked for on the command line, to keep a run short.
     let only = ProcessInfo.processInfo.environment["SHOTS_ONLY"].map { Set($0.split(separator: ",").map(String.init)) }
 
+    // SHOTS_WIDTHS=760,1400 renders each scene at those widths (file names get a -w<width> suffix); default is one 980 pt shot.
+    let widths = ProcessInfo.processInfo.environment["SHOTS_WIDTHS"].map { $0.split(separator: ",").compactMap { Double($0) }.map { CGFloat($0) } }
     for lang in ["en", "ru"] {
         guard let bundle = Bundle(path: root.appendingPathComponent("Resources/\(lang).lproj").path) else {
             FileHandle.standardError.write(Data("no \(lang).lproj under \(root.path)\n".utf8)); exit(1)
@@ -276,6 +278,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             for scene in scenes {
+              for width in widths ?? [size.width] {
                 if let only, !only.contains(scene.name) { continue }
                 let model = MainWindowModel(data: scene.data(now, lang == "ru"), section: scene.section,
                                             selectedMeeting: scene.meeting)
@@ -290,7 +293,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                     : MainWindowView(model: model))
                 hosting.sizingOptions = []
                 window.contentViewController = hosting
-                window.setContentSize(NSSize(width: size.width, height: scene.height))
+                window.setContentSize(NSSize(width: width, height: scene.height))
                 window.title = "OxSay"
                 window.orderFrontRegardless()
                 // Two short spins: the first lays the view out, the second lets lazy rows and the toolbar settle.
@@ -298,7 +301,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                 window.displayIfNeeded()
                 // SwiftUI presents the sheet a beat after the page is up, and animates it in.
                 RunLoop.main.run(until: Date().addingTimeInterval(scene.sheet ? 1.5 : 0.5))
-                let file = out.appendingPathComponent("\(scene.name)-\(lang)-\(dark ? "dark" : "light").png")
+                let file = out.appendingPathComponent("\(scene.name)-\(lang)-\(dark ? "dark" : "light")\(widths == nil ? "" : "-w\(Int(width))").png")
                 if scene.sheet != (window.attachedSheet != nil) {
                     // A silent wrong shot is the bug class here: a sheet scene without its sheet, or a plain one with a stray sheet.
                     // The scene's previous PNG goes first: a rerun must not show a stale image beside a reported failure.
@@ -326,6 +329,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                     for _ in 0..<20 where window.attachedSheet != nil { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
                     if let s = window.attachedSheet { window.endSheet(s) }
                 }
+              }
             }
         }
     }
