@@ -65,7 +65,6 @@ bounded [0,1] mask values — renormalise if you need one.
   Metal device via `preferredMetalDevice`, or `cpuOnly` when none exists.
 - 48 kHz mono only. Verified on one machine per architecture; run the known-answer check below
   on every load.
-- "Not for meetings" is a product rule of ox-say, not a property of this model.
 
 ## Known-answer self-check (run this after every load)
 
@@ -102,11 +101,11 @@ Mask parity (a) and end-to-end parity (b) vs the fp32 PyTorch reference through 
 | Clip | Mask MSE | SI-SDR (dB) | ECAPA cosine |
 |---|---|---|---|
 | A (30 s lav) | 2.98e-6 | 73.1 | 1.0000 |
-| B (30 s loud party) | 2.65e-6 | 47.9 | 1.0000 |
+| B (30 s, loud background) | 2.65e-6 | 47.9 | 1.0000 |
 | C (60 s concat) | 2.87e-6 | 47.3 | 1.0000 |
-| 4 party clips, 20 s each | 2.21e-6 … 3.04e-6 | 48.0 … 58.7 | 1.0000 |
+| noisy clips 1–4, 20 s each | 2.21e-6 … 3.04e-6 | 48.0 … 58.7 | 1.0000 |
 | A3 (3 s, tiled) | 2.48e-6 | 74.0 | 1.0000 |
-| party clip, 7 s, tiled | 9.10e-6 | 44.4 | 0.9999 |
+| noisy clip 5, 7 s, tiled | 9.10e-6 | 44.4 | 0.9999 |
 
 Speed on Apple **M5 Pro** (median of 200, Swift probe, model only): **68.6 ms per 20 s
 window** (218× real time, 15 s of new audio per window), first prediction 7.06 s, peak
@@ -133,7 +132,7 @@ footprint 0.403 GiB. cpuOnly is not a fallback: 1.012 s/window *and* wrong outpu
   builds, the numbers are garbage. The converter asserts zero `einsum` nodes in both the
   traced graph and the MIL program.
 - **Never zero-pad a short clip.** Tiling its own audio scored 19.6 dB SI-SDR vs 1.5 dB
-  for zero padding on a 3 s party clip.
+  for zero padding on a 3 s noisy clip.
 - **cpuOnly garbage is silent too** (see Limitations) — which is why the known-answer
   check above exists.
 
