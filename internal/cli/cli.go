@@ -156,6 +156,7 @@ func cmdServe(args []string, stderr io.Writer, version string) int {
 	d.StartVoiceRepair()
 	d.StartProducer()
 	d.StartMeetings()
+	d.SweepCleanScratch()
 	daemon.SetVersion(version)
 
 	err = serve(&mcp.Implementation{

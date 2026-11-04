@@ -114,6 +114,9 @@ func planVideo(info *probeInfo, ext string) (*videoPlan, error) {
 		}
 		drop := func() { p.dropped = append(p.dropped, DroppedStream{Index: s.Index, Type: s.Type, Codec: s.Codec}) }
 		switch {
+		case s.ChapterTrack:
+			// Not a stream of the recording: the muxer rebuilds it from the chapters (-map_chapters 0). Mapping it
+			// copies a text track the mov muxer refuses ("Tag text incompatible"), and it is no loss, so it is not Dropped.
 		case s.Index == info.AudioIndex:
 			p.maps = append(p.maps, "-map", "1:a:0")
 			keep()
@@ -179,7 +182,7 @@ func outputBytes(info *probeInfo, ext string, video bool, inSize int64) float64 
 func audioDropped(info *probeInfo, ext string) []DroppedStream {
 	var out []DroppedStream
 	for _, s := range info.Streams {
-		if s.Index == info.AudioIndex || (s.AttachedPic && coverExts[ext]) {
+		if s.Index == info.AudioIndex || s.ChapterTrack || (s.AttachedPic && coverExts[ext]) {
 			continue
 		}
 		out = append(out, DroppedStream{Index: s.Index, Type: s.Type, Codec: s.Codec})

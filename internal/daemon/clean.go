@@ -268,6 +268,14 @@ type engineOutcome struct {
 	timedOut bool
 }
 
+// SweepCleanScratch removes the scratch directories a killed cleanup left in the temp directory (see
+// voiceclean.SweepStale). Called once, at serve start, before any run can begin.
+func (d *Daemon) SweepCleanScratch() {
+	if gone := voiceclean.SweepStale(os.TempDir(), voiceclean.StaleScratchAge); len(gone) > 0 {
+		d.log.Info("removed stale voice-clean scratch directories", "count", len(gone))
+	}
+}
+
 // Clean cleans one file. One at a time: a second call while one runs is 409 busy.
 func (d *Daemon) Clean(ctx context.Context, in CleanInput) (*CleanResult, error) {
 	if !d.cleaning.CompareAndSwap(0, 1) {

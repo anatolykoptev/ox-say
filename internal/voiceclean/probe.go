@@ -27,6 +27,11 @@ type streamInfo struct {
 	Type        string // ffprobe codec_type: video, audio, subtitle, data, attachment
 	Codec       string // ffprobe codec_name
 	AttachedPic bool   // a video stream that is cover art
+	// ChapterTrack is a QuickTime chapter track: ffprobe shows it as codec_type data, codec bin_data, tag "text"
+	// (handler SubtitleHandler, no disposition). It is the mov/mp4 muxer's rendering of the chapters, so it is never
+	// mapped as a stream; -map_chapters carries the chapters and the output muxer writes a track for them. Other data
+	// tracks are bin_data too (GoPro telemetry is tagged gpmd), so the tag decides, not the codec.
+	ChapterTrack bool
 }
 
 type probeDoc struct {
@@ -64,7 +69,8 @@ func parseProbe(raw []byte) (*probeInfo, error) {
 	p := &probeInfo{AudioIndex: -1}
 	for _, s := range doc.Streams {
 		p.Streams = append(p.Streams, streamInfo{Index: s.Index, Type: s.CodecType, Codec: codecLabel(s.CodecName, s.CodecTag),
-			AttachedPic: s.CodecType == "video" && s.Disposition.AttachedPic == 1})
+			AttachedPic:  s.CodecType == "video" && s.Disposition.AttachedPic == 1,
+			ChapterTrack: s.CodecType == "data" && s.CodecTag == "text"})
 		switch s.CodecType {
 		case "audio":
 			if p.AudioIndex >= 0 {
