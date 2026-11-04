@@ -11,33 +11,6 @@ struct PrivacyLine: View {
     }
 }
 
-/// A big symbol, a title and a line, centred: the empty and the switched-off states.
-struct EmptyState<Actions: View>: View {
-    let symbol: String
-    let title: String
-    let message: String
-    @ViewBuilder var actions: () -> Actions
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: symbol)
-                .font(.system(size: 40, weight: .light))
-                .foregroundStyle(.tertiary)
-                .padding(.bottom, 4)
-            Text(title).font(.title3.weight(.semibold))
-            Text(message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
-                .fixedSize(horizontal: false, vertical: true)
-            actions().padding(.top, 6)
-        }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 /// The status of a meeting: a spinner while work runs, else a coloured dot, and the plain words.
 struct StatusLabel: View {
     let status: MeetingStatusLine

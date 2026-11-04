@@ -27,8 +27,11 @@ struct MeetingsPage: View {
     @ViewBuilder private var content: some View {
         switch model.pageState {
         case .off:
-            EmptyState(symbol: "person.2.slash", title: L10nKey.meetingsOffTitle.text,
-                       message: L10nKey.meetingsOffBody.text) {
+            ContentUnavailableView {
+                Label(L10nKey.meetingsOffTitle.text, systemImage: "person.2.slash")
+            } description: {
+                Text(L10nKey.meetingsOffBody.text)
+            } actions: {
                 Button(L10nKey.meetingsTurnOn.text) {
                     var settings = model.data.meetingSettings
                     settings.enabled = true
@@ -43,16 +46,24 @@ struct MeetingsPage: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .unreachable(let sentence):
-            EmptyState(symbol: "bolt.horizontal.circle", title: L10nKey.meetingsDownTitle.text, message: sentence) {
+            ContentUnavailableView {
+                Label(L10nKey.meetingsDownTitle.text, systemImage: "bolt.horizontal.circle")
+            } description: {
+                Text(sentence)
+            } actions: {
                 Button(L10nKey.commonRetry.text) { model.actions.refresh() }.controlSize(.large)
             }
         case .empty:
             VStack(spacing: 0) {
-                EmptyState(symbol: "waveform.badge.mic", title: L10nKey.meetingsEmptyTitle.text,
-                           message: L10nKey.meetingsEmptyBody.text) {
+                ContentUnavailableView {
+                    Label(L10nKey.meetingsEmptyTitle.text, systemImage: "waveform.badge.mic")
+                } description: {
+                    Text(L10nKey.meetingsEmptyBody.text)
+                } actions: {
                     Button(L10nKey.menuMeetingRecord.text) { model.actions.startRecording() }
                         .controlSize(.large)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 PrivacyLine().padding(.bottom, 14)
             }
         case .list(let stale):
@@ -150,7 +161,7 @@ private struct MeetingList: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14).padding(.vertical, 9)
         }
-        .onChange(of: model.selectedMeeting) { id in
+        .onChange(of: model.selectedMeeting) { _, id in
             if let id { model.actions.selectMeeting(id) }
         }
     }

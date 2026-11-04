@@ -18,7 +18,7 @@ struct SearchField: View {
         .padding(.horizontal, 8).padding(.vertical, 6)
         .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
         .padding(.horizontal, 10).padding(.vertical, 8)
-        .onChange(of: model.queryText) { model.actions.searchTyped($0) }
+        .onChange(of: model.queryText) { _, text in model.actions.searchTyped(text) }
     }
 }
 
@@ -39,16 +39,18 @@ struct SearchResults: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .noResults(let result):
-            VStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 30, weight: .light)).foregroundStyle(.tertiary)
-                Text(L10nKey.searchNoneTitle.text).font(.headline)
-                Text(L10nKey.searchNoneBody.text).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            ContentUnavailableView {
+                Label(L10nKey.searchNoneTitle.text, systemImage: "magnifyingglass")
+            } description: {
                 // Texts that could not be searched are not "nothing": the line says so.
-                if let line = result.footnote() {
-                    Text(line).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.top, 4)
+                VStack(spacing: 4) {
+                    Text(L10nKey.searchNoneBody.text)
+                    if let line = result.footnote() {
+                        Text(line).font(.caption)
+                    }
                 }
             }
-            .padding(20)
+            // Fills the pane: the search field stays pinned at the top and the privacy line at the bottom.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .busy:
             VStack(spacing: 8) {
