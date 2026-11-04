@@ -54,6 +54,10 @@ type Options struct {
 	MaxSeconds      float64  // 0 = 7200
 	TempDir         string   // "" = os.TempDir()
 	Run             Runner   // nil = exec; ox-clean is wrapped in /usr/bin/nice -n 15 as voice-clean does
+
+	// offsetSkew is added to the first guess of the audio offset; tests set it per run to stand in for an ffmpeg
+	// whose encoder or muxer delay differs from the one the guess was measured on. Unexported: production never sets it.
+	offsetSkew float64
 }
 
 // Result describes a finished run.
@@ -65,6 +69,9 @@ type Result struct {
 	Stereo                string // "mid" or "channels" for a stereo source, "" for mono
 	Wet                   float64
 	Dropped               []DroppedStream // input streams the output leaves out (extra audio tracks, cover art, data, subtitles ...)
+	// LagMs is the measured audio-to-picture lag of the output minus the input's, in milliseconds, after any
+	// correction. Within +-1 ms for every published video run; 0 for audio-only.
+	LagMs float64
 }
 
 const (
@@ -85,9 +92,6 @@ var (
 	afterPublishCheck = func() {}
 	// maxWalk bounds the hard-link search of a forbidden tree (directory entries visited).
 	maxWalk = 500_000
-	// offsetSkew is added to the first guess of the audio offset; tests use it to stand in for an ffmpeg whose
-	// encoder or muxer delay differs from the one the guess was measured on.
-	offsetSkew = 0.0
 )
 
 // execRunner is the production Runner.
@@ -158,6 +162,8 @@ type job struct {
 	plan *videoPlan
 	// dropped is what the output leaves out of the input, reported in Result.Dropped
 	dropped []DroppedStream
+	// lagMs is the verified output-minus-input A/V lag, reported in Result.LagMs
+	lagMs float64
 }
 
 func (j *job) run() (res *Result, err error) {
@@ -236,6 +242,7 @@ func (j *job) run() (res *Result, err error) {
 	res = &Result{Out: o.Out, Video: video, Channels: info.Channels, SampleRate: info.SampleRate,
 		Seconds: info.Seconds, ModelSeconds: modelSeconds, Wet: o.Wet}
 	res.Dropped = j.dropped
+	res.LagMs = j.lagMs
 	if info.Channels == 2 {
 		res.Stereo = o.Stereo
 	}
@@ -656,7 +663,7 @@ func (j *job) write(info *probeInfo, inSt os.FileInfo, mix string) error {
 			}
 			return append(a, part)
 		}
-		args = videoArgs(audioOffset(info, extOf(o.Out)) + offsetSkew)
+		args = videoArgs(audioOffset(info, extOf(o.Out)) + o.offsetSkew)
 	} else {
 		enc, _ := audioMuxArgs(extOf(o.Out))
 		// input 1 is the source again, for its tags and cover art; the audio is the cleaned mix (input 0)
@@ -671,9 +678,11 @@ func (j *job) write(info *probeInfo, inSt os.FileInfo, mix string) error {
 		return err
 	}
 	if videoArgs != nil {
-		if err := j.correctLag(info, part, audioOffset(info, extOf(o.Out))+offsetSkew, videoArgs); err != nil {
+		lag, err := j.correctLag(info, part, audioOffset(info, extOf(o.Out))+o.offsetSkew, videoArgs)
+		if err != nil {
 			return err
 		}
+		j.lagMs = lag
 	}
 	if err := flush(part, mode); err != nil {
 		return newErr(CodeEngineFailed, "the cleaned file could not be flushed to disk")
@@ -775,30 +784,61 @@ func randomHex() string {
 	return hex.EncodeToString(b[:])
 }
 
-// lagTolerance is how far the output's audio-to-picture lag may sit from the input's before the mux is corrected.
-// lagCeiling is the largest correction trusted: a bigger gap means the probe is not telling us what we think.
+// lagTolerance is how far the output's audio-to-picture lag may sit from the input's before the mux is corrected, and
+// the most it may sit from it for the file to be published. lagCeiling is the largest correction trusted: a bigger gap
+// means the probe is not telling us what we think. lagEpsilon absorbs float rounding in the comparison (start times
+// are microsecond decimals, so a gap of exactly 1 ms can read 1.0000000000003 ms and must not count as over).
 const (
 	lagTolerance = 0.001
 	lagCeiling   = 2.0
+	lagEpsilon   = 1e-9
 )
 
-// correctLag measures what the muxer actually produced. How far an AAC or Opus track lands from where it was asked to
-// start depends on the encoder's priming, the container and the ffmpeg version (measured: ffmpeg 9.0.2 puts mkv exact
-// and mp4 one frame early; 6.1 puts mkv one frame early and webm 6 ms), so no table by container name is reliable.
-// The output's audio and picture start times are read back with ffprobe; if their lag differs from the input's by
-// more than lagTolerance the mux is run once more with the offset moved by the difference. One correction, no loop.
-func (j *job) correctLag(info *probeInfo, part string, offset float64, build func(float64) []string) error {
+func lagWithin(delta float64) bool { return math.Abs(delta) <= lagTolerance+lagEpsilon }
+
+// lagGap probes the part file and returns input lag minus output lag in seconds. A file that cannot be probed, or
+// shows no picture, has an unknown lag, which is a refusal, not a pass.
+func (j *job) lagGap(info *probeInfo, part string) (float64, error) {
 	raw, err := j.o.Run(j.ctx, j.o.FFprobe, probeArgs(part))
 	if err != nil {
-		return j.toolErr("ffprobe", err)
+		if cerr := j.ctx.Err(); cerr != nil {
+			return 0, cerr
+		}
+		return 0, newErr(CodeLagUnverified, "the cleaned file's audio/picture sync could not be checked, so it was not saved")
 	}
 	out, err := parseProbe(raw)
 	if err != nil || !out.HasVideo {
-		return nil // nothing to compare; the mux itself succeeded
+		return 0, newErr(CodeLagUnverified, "the cleaned file's audio/picture sync could not be checked, so it was not saved")
 	}
-	delta := (info.AudioStart - info.VideoStart) - (out.AudioStart - out.VideoStart)
-	if math.Abs(delta) <= lagTolerance || math.Abs(delta) > lagCeiling {
-		return nil
+	return (info.AudioStart - info.VideoStart) - (out.AudioStart - out.VideoStart), nil
+}
+
+// correctLag measures what the muxer actually produced and refuses to publish a file whose lag it cannot prove. How far
+// an AAC or Opus track lands from where it was asked to start depends on the encoder's priming, the container and the
+// ffmpeg version (measured: ffmpeg 9.0.2 puts mkv exact and mp4 one frame early; 6.1 puts mkv one frame early and webm
+// 6 ms), so no table by container name is reliable. The output's audio and picture start times are read back with
+// ffprobe; if their lag differs from the input's by more than lagTolerance the mux is run once more with the offset
+// moved by the difference, and measured again. One correction, no loop. It returns the verified output-minus-input
+// lag in ms, or lag_unverified when the gap is over the ceiling, the correction did not land, or the output cannot be
+// probed.
+func (j *job) correctLag(info *probeInfo, part string, offset float64, build func(float64) []string) (float64, error) {
+	delta, err := j.lagGap(info, part)
+	if err != nil {
+		return 0, err
 	}
-	return j.ff(build(offset + delta)...)
+	if math.Abs(delta) > lagCeiling {
+		return 0, newErr(CodeLagUnverified, fmt.Sprintf("the cleaned file's audio is %.1f s out of sync with its picture, so it was not saved", math.Abs(delta)))
+	}
+	if !lagWithin(delta) {
+		if err := j.ff(build(offset + delta)...); err != nil {
+			return 0, err
+		}
+		if delta, err = j.lagGap(info, part); err != nil {
+			return 0, err
+		}
+		if !lagWithin(delta) {
+			return 0, newErr(CodeLagUnverified, fmt.Sprintf("the cleaned file's audio stayed %.0f ms out of sync with its picture after a correction, so it was not saved", math.Abs(delta)*1000))
+		}
+	}
+	return -delta * 1000, nil
 }

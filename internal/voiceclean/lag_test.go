@@ -71,12 +71,14 @@ func TestAWrongFirstGuessOfTheOffsetIsCorrectedFromTheMeasuredOutput(t *testing.
 		t.Run(name, func(t *testing.T) {
 			requireEncoder(t, cs.v)
 			requireEncoder(t, cs.a)
-			old := offsetSkew
-			defer func() { offsetSkew = old }()
-			offsetSkew = cs.skew
 			in := makeOffsetClip(t, cs.ext, cs.v, cs.a, cs.vOff, cs.aOff)
 			o := opts(t, in, filepath.Join(t.TempDir(), "o."+cs.ext), 0.85, fakeEngine(t, "1"))
-			mustRun(t, o)
+			o.offsetSkew = cs.skew
+			t.Parallel()
+			r := mustRun(t, o)
+			if math.Abs(r.LagMs) > 1.0+1e-6 {
+				t.Errorf("Result.LagMs = %.4f, want within 1 ms", r.LagMs)
+			}
 			lagIn := startTime(t, in, "a:0") - startTime(t, in, "v:0")
 			lagOut := startTime(t, o.Out, "a:0") - startTime(t, o.Out, "v:0")
 			t.Logf("input lag %.4f output lag %.4f", lagIn, lagOut)
