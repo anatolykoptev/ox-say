@@ -72,10 +72,73 @@ final class ComponentsWiringTests: XCTestCase {
         XCTAssertGreaterThan(checked, 0, "no ContentUnavailableView/PrivacyLine pair found: the check has gone vacuous")
     }
 
-    /// Source text without whole-line `//` and `///` comments.
+    /// Meetings is a list beside a reading pane, drawn by a native split view (native-UI N2b), never a hand-built
+    /// `HStack { MeetingList.frame(width: 290); Divider(); detail }`. The window keeps ONE two-column NavigationSplitView:
+    /// a three-column shape for Meetings rebuilt the sidebar (width and focus lost) on every switch.
+    /// Mutation: MeetingsPage.swift `.list`, put back `HStack(spacing: 0) { MeetingsListColumn(model: model).frame(width: 290)
+    /// Divider() MeetingDetailColumn(model: model) }` in place of `MeetingsSplit(model: model)` -> RED.
+    func testMeetingsPageHasNoHandBuiltListDetailStack() throws {
+        let text = try String(contentsOf: mainWindowUI.appendingPathComponent("MeetingsPage.swift"), encoding: .utf8)
+        let lines = Self.stripComments(text).components(separatedBy: "\n")
+        for (i, line) in lines.enumerated() where line.contains("HStack") {
+            let near = lines[i..<min(i + 8, lines.count)].joined(separator: "\n")
+            for word in ["MeetingList(", "MeetingsListColumn(", "MeetingDetailColumn(", "detail"] {
+                XCTAssertFalse(near.contains(word), "MeetingsPage.swift:\(i + 1): a hand-built HStack list/detail (\(word))")
+            }
+        }
+        let flat = lines.joined(separator: "\n")
+        let listCase = try XCTUnwrap(flat.range(of: "case .list:\n            VStack(spacing: 0) {"), "the list state").lowerBound
+        XCTAssertTrue(flat[listCase...].prefix(500).contains("MeetingsSplit(model: model)"), "the list state is the native split")
+        XCTAssertTrue(flat.contains("final class MeetingsSplitController: NSSplitViewController"))
+        XCTAssertFalse(flat.contains(".frame(width: 290)"))
+        // The window itself stays one two-column split: no content: column, no second shape.
+        let window = Self.stripComments(try String(contentsOf: mainWindowUI.appendingPathComponent("MainWindowView.swift"), encoding: .utf8))
+        XCTAssertEqual(window.components(separatedBy: "NavigationSplitView {").count - 1, 1)
+        XCTAssertFalse(window.contains("content:"), "a third column would rebuild the sidebar on each section switch")
+    }
+
+    /// The list is 260...420 wide (ideal 290), the meeting never under 300, the divider is kept on the model across a
+    /// section switch and a restore never writes back; Open Folder / Copy Notes / Delete exist only for a chosen
+    /// meeting while the list is up; the failed-refresh bar spans the page above the split. Each pin is a USE of the
+    /// value, not its declaration.
+    /// Mutations: MeetingsPage.swift `listItem.minimumThickness = Self.listLimits.lowerBound` -> `= 0` -> RED;
+    /// `splitViewDidResizeSubviews`, drop `!restoring` -> RED; `SelectionToolbar`, drop
+    /// `, model.selectedMeeting != nil` -> RED; the Retry NoticeBar back inside `MeetingsListColumn` -> RED.
+    func testMeetingsSplitLimitsAndSelectionGuards() throws {
+        let page = Self.stripComments(try String(contentsOf: mainWindowUI.appendingPathComponent("MeetingsPage.swift"), encoding: .utf8))
+        XCTAssertTrue(page.contains("CGFloat(MainWindowSpec.meetingsListWidth.minimum)...CGFloat(MainWindowSpec.meetingsListWidth.maximum)"))
+        XCTAssertTrue(page.contains("static let detailMinimum = CGFloat(MainWindowSpec.meetingsDetailMinimum)"))
+        XCTAssertTrue(page.contains("listItem.minimumThickness = Self.listLimits.lowerBound"))
+        XCTAssertTrue(page.contains("listItem.maximumThickness = Self.listLimits.upperBound"))
+        XCTAssertTrue(page.contains("detailItem.minimumThickness = Self.detailMinimum"))
+        // The restore waits for a split wide enough to honour it, and its own move is never stored.
+        XCTAssertTrue(page.contains("guard !applied, splitView.bounds.width >= Self.listLimits.lowerBound + MainWindowSpec.splitDividerWidth + Self.detailMinimum else { return }"))
+        XCTAssertTrue(page.contains("restoring = true\n        defer { restoring = false }\n        splitView.setPosition("))
+        XCTAssertTrue(page.contains("guard applied, !restoring, NSEvent.pressedMouseButtons & 1 != 0"))
+        XCTAssertTrue(page.contains("model.meetingsListWidth = list.frame.width"))
+        XCTAssertTrue(page.contains("if case .list = model.pageState, let d = model.selectedDetail, model.selectedMeeting != nil {"))
+        XCTAssertTrue(page.contains("if let id = model.selectedMeeting { model.actions.deleteMeeting(id) }"))
+        // The toolbar and the search field stay on the page, outside the AppKit split, so they reach the window.
+        XCTAssertTrue(page.contains("SelectionToolbar(model: model, confirmDelete: $confirmDelete)"))
+        XCTAssertTrue(page.contains(".searchable(text: $model.queryText"))
+        // The retry bar is the page's, above both panes: it sits before `MeetingsSplit(` and not in the list column.
+        let beforeSplit = try XCTUnwrap(page.range(of: "MeetingsSplit(model: model)")).lowerBound
+        let retry = try XCTUnwrap(page.range(of: "actionTitle: L10nKey.commonRetry.text) { model.actions.refresh() }\n                }\n                MeetingsSplit(")).lowerBound
+        XCTAssertLessThan(retry, beforeSplit)
+        let column = try XCTUnwrap(page.range(of: "struct MeetingsListColumn"))
+        XCTAssertFalse(page[column.lowerBound...].prefix(260).contains("NoticeBar"), "the retry bar must not live in the 260...420 list column")
+        // The window floor is derived from the same constants and the sidebar uses them.
+        let window = Self.stripComments(try String(contentsOf: mainWindowUI.appendingPathComponent("MainWindowView.swift"), encoding: .utf8))
+        XCTAssertTrue(window.contains("max: MainWindowSpec.sidebarWidth.maximum"))
+    }
+
+    /// Source text without comments: `/* */` blocks, whole-line `//` and `///` lines, and a trailing ` //` comment, so a
+    /// comment can neither trip nor satisfy a check.
     private static func stripComments(_ text: String) -> String {
-        text.components(separatedBy: "\n")
+        let noBlocks = text.replacingOccurrences(of: "/\\*[\\s\\S]*?\\*/", with: "", options: .regularExpression)
+        return noBlocks.components(separatedBy: "\n")
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .map { line in line.range(of: " //").map { String(line[..<$0.lowerBound]) } ?? line }
             .joined(separator: "\n")
     }
 }

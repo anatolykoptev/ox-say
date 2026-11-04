@@ -11,6 +11,17 @@ final class MainWindowSpecTests: XCTestCase {
         XCTAssertEqual(MainWindowSpec.firstRunSection, .meetings, "Voiceover is not live yet")
     }
 
+    /// The window floor leaves room for the widest sidebar (240), the Meetings list at its least (260), the divider (1) and the
+    /// meeting at its least (300): 801, so the meeting pane is never clipped. The literals are the oracle, not the constants.
+    /// Mutation: MainWindowSpec.minimumWidth back to a literal 760 -> RED.
+    func testTheWindowFloorFitsTheWidestSidebarAndTheMeetingsSplitAtTheirLeast() {
+        XCTAssertGreaterThanOrEqual(MainWindowSpec.minimumWidth, 240 + 260 + 1 + 300)
+        XCTAssertEqual(MainWindowSpec.sidebarWidth.maximum, 240)
+        XCTAssertEqual(MainWindowSpec.meetingsListWidth.minimum, 260)
+        XCTAssertEqual(MainWindowSpec.meetingsListWidth.maximum, 420)
+        XCTAssertEqual(MainWindowSpec.meetingsDetailMinimum, 300)
+    }
+
     func testEverySectionHasItsStrings() {
         let keys = Set(L10nKey.allCases)
         for section in MainSection.allCases {
