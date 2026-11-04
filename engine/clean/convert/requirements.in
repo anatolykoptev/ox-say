@@ -1,0 +1,16 @@
+# Build-time converter environment for MossFormer2_SE_48K -> Core ML.
+# Resolved with hashes into requirements.lock:
+#   uv pip compile --generate-hashes --python-version 3.12 requirements.in -o requirements.lock
+#
+# coremltools 9.0 is the latest stable (2025-11-10); its _deps/__init__.py says
+# _TORCH_MAX_VERSION = "2.7.0", so torch/torchaudio/torchvision are pinned to the
+# tested trio -- the written exception to "latest stable" (Global Constraint 9):
+# conversion is build-time and an untested torch pairing can silently mis-convert.
+# The PyTorch reference runs in the same venv, so the pair under test is the pair that ships.
+coremltools==9.0
+torch==2.7.0
+torchaudio==2.7.0
+torchvision==0.22.0
+clearvoice==0.1.2
+numpy==1.26.4      # clearvoice 0.1.2 is a numpy<2 era package
+pytest           # newest stable at lock time; test runner only
