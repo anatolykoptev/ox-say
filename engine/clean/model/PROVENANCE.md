@@ -19,7 +19,9 @@ rebuilt and checked.
   `manifest.json` is the commit that last touched that directory (`-dirty` if it had
   uncommitted changes). The bytes below were built from merge commit `35405748e0f22a8813cb7cb30410aca5b0b779c9`
   with a clean tree; the converter is at `3540574` (the `converter` field of `manifest.json`).
-  Source fields stay the same: pinned weights, `patches.py` module surgery.
+  `weights/weight.bin` and `model.mil` are byte-identical across rebuilds; `Manifest.json`,
+  `model.mlmodel` and the two `coremldata.bin` files carry per-build metadata (item UUIDs),
+  so their hashes below identify these published bytes, not every rebuild.
 - Command: `convert.py --checkpoint last_best_checkpoint.pt --out out` (default
   `--precision mixed`).
 - Environment: Python 3.12, `coremltools==9.0`, `torch==2.7.0`, `torchaudio==2.7.0`,
