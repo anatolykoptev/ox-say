@@ -86,6 +86,15 @@ pure parts, `test_der.py --engine E` scores DER and speaker confusion on three A
 their references (the limits that separate the two engines) plus two count-only cases (not in CI: it needs
 pyannote.metrics and the recordings).
 
+## ox-clean (voice cleanup)
+
+A one-shot CLI (`engine/clean`, a Swift package around a Core ML mask model; built for arm64 and x86_64, see
+`engine/want-diar.sh` for the shared build gate). CI runs its stub suite, the build and the model-free half of
+`test_cli.py` (`--no-models`) on hosted runners only: no hosted VM runs the real model (the macos-15 arm64 VM hung in
+Core ML for 36 minutes, CI run 41886943007; the Intel VM cannot run Core ML). **Before a release**,
+`engine/clean/release_check.sh <ox-clean> <models-dir>` must pass on a physical Apple Silicon Mac and, for the x86_64
+package, on a physical Intel Mac: it runs the real-model tests, the full CLI contract and the speed probe.
+
 ## ox-llm (llama.cpp's llama-server)
 
 The meeting-notes engine. `build.sh` builds `llama-server` from the llama.cpp
