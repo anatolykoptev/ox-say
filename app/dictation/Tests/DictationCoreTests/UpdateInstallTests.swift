@@ -304,7 +304,7 @@ final class UpdateInstallTests: XCTestCase {
         XCTAssertEqual(failure, .daemonNotOnVersion(expected: "v0.1.22", found: "v0.1.21"))
         XCTAssertEqual(polls, 3, "bounded: exactly `checks` polls")
         XCTAssertEqual(failure?.message(text: enText),
-                       "The ox-say service did not reach v0.1.22 after the install; /status reports v0.1.21.")
+                       "The OxSay service did not reach v0.1.22 after the install; /status reports v0.1.21.")
     }
 
     /// A daemon that never answers is the same failure, without a made-up version.
@@ -747,11 +747,11 @@ final class UpdateFailureL10nTests: XCTestCase {
          "The version did not change: expected v0.1.21 after the install, found unknown.",
          "Версия не изменилась: после установки ожидалась v0.1.21, а установленную прочитать не удалось."),
         (.daemonNotOnVersion(expected: "v0.1.22", found: "v0.1.21"),
-         "The ox-say service did not reach v0.1.22 after the install; /status reports v0.1.21.",
-         "После установки служба ox-say не обновилась до v0.1.22: /status сообщает v0.1.21."),
+         "The OxSay service did not reach v0.1.22 after the install; /status reports v0.1.21.",
+         "После установки служба OxSay не обновилась до v0.1.22: /status сообщает v0.1.21."),
         (.daemonNotOnVersion(expected: "v0.1.22", found: nil),
-         "The ox-say service did not reach v0.1.22 after the install; /status reports nothing.",
-         "После установки служба ox-say не обновилась до v0.1.22: /status не сообщил версию."),
+         "The OxSay service did not reach v0.1.22 after the install; /status reports nothing.",
+         "После установки служба OxSay не обновилась до v0.1.22: /status не сообщил версию."),
     ]
 
     /// Mutation: UpdateInstall.swift Failure.message, `.notAScript` back to its English literal -> RED on the Russian row.

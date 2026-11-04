@@ -109,6 +109,17 @@ final class LocalizationTests: XCTestCase {
         XCTAssertTrue(ShippedStrings.table("ru")["meeting.diar.unavailable.retry_now"]?.contains("можно найти") == true)
     }
 
+    /// User-facing copy names the app "OxSay" — the lowercase "ox-say" is the binary, the repo and the
+    /// daemon, never what a person reads. Keys and code identifiers keep it; no value may.
+    /// Mutation: any en/ru value back to "ox-say" -> RED.
+    func testNoUserFacingStringSpellsTheAppInLowerCase() {
+        for locale in ["en", "ru"] {
+            for (key, value) in ShippedStrings.table(locale) where value.contains("ox-say") {
+                XCTFail("\(locale).lproj \(key) has a lowercase \"ox-say\": \(value)")
+            }
+        }
+    }
+
     /// Every automatic stop says so, neutrally (it can also be a muted listener, not only a hang-up).
     /// Mutation: ru "notice.meeting.call_ended" emptied -> RED.
     func testTheCallEndedNoticeExists() {

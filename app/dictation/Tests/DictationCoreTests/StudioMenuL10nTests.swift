@@ -25,10 +25,10 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(StudioMenu.continueTitle(text: ru), "Продолжить озвучку от батареи")
         XCTAssertEqual(StudioMenu.folderTitle(text: en), "Open Voiceovers Folder")
         XCTAssertEqual(StudioMenu.folderTitle(text: ru), "Открыть папку с озвучками")
-        XCTAssertEqual(StudioMenu.noServiceTitle(text: en), "Studio needs the ox-say service, which is not answering")
-        XCTAssertEqual(StudioMenu.noServiceTitle(text: ru), "Студии нужна служба ox-say, а она не отвечает")
-        XCTAssertEqual(StudioMenu.checkingTitle(text: en), "Checking the ox-say service…")
-        XCTAssertEqual(StudioMenu.checkingTitle(text: ru), "Проверяю службу ox-say…")
+        XCTAssertEqual(StudioMenu.noServiceTitle(text: en), "Studio needs the OxSay service, which is not answering")
+        XCTAssertEqual(StudioMenu.noServiceTitle(text: ru), "Студии нужна служба OxSay, а она не отвечает")
+        XCTAssertEqual(StudioMenu.checkingTitle(text: en), "Checking the OxSay service…")
+        XCTAssertEqual(StudioMenu.checkingTitle(text: ru), "Проверяю службу OxSay…")
         let status = DaemonStatus(version: "v0.1.21", studioAvailable: true, studioReason: nil, studioReasonCode: nil)
         let running = job(.pausedOnBattery)
         let rows = StudioMenu.rows(service: .answered(status), installing: false, job: running, serviceWaiting: false,
@@ -43,9 +43,9 @@ final class StudioMenuL10nTests: XCTestCase {
             .item(title: "Создать голос…", isOn: false, isEnabled: true, action: .createVoice),
         ])
         XCTAssertEqual(StudioMenu.rows(service: .unreachable, installing: false, job: nil, serviceWaiting: false, hasOutputFolder: false, text: ru),
-                       [.item(title: "Студии нужна служба ox-say, а она не отвечает", isOn: false, isEnabled: false, action: nil)])
+                       [.item(title: "Студии нужна служба OxSay, а она не отвечает", isOn: false, isEnabled: false, action: nil)])
         XCTAssertEqual(StudioMenu.rows(service: .unknown, installing: false, job: nil, serviceWaiting: false, hasOutputFolder: false, text: ru),
-                       [.item(title: "Проверяю службу ox-say…", isOn: false, isEnabled: false, action: nil)])
+                       [.item(title: "Проверяю службу OxSay…", isOn: false, isEnabled: false, action: nil)])
     }
 
     func testTheProgressRowsAndFinishAlertsReadRightInBothLanguages() {
@@ -60,8 +60,8 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(ProduceText.progressRow(job(.failed), text: ru), "“Глава” — не получилось")
         XCTAssertEqual(ProduceText.progressRow(job(.cancelled), text: ru), "“Глава” — остановлена")
         XCTAssertEqual(ProduceText.progressRow(job(.interrupted), text: ru), "“Глава” — прервана")
-        XCTAssertEqual(ProduceText.progressRow(job(.running), serviceWaiting: true, text: ru), "“Глава” — жду службу ox-say…")
-        XCTAssertEqual(ProduceText.progressRow(job(.running), serviceWaiting: true, text: en), "“Глава” — waiting for the ox-say service…")
+        XCTAssertEqual(ProduceText.progressRow(job(.running), serviceWaiting: true, text: ru), "“Глава” — жду службу OxSay…")
+        XCTAssertEqual(ProduceText.progressRow(job(.running), serviceWaiting: true, text: en), "“Глава” — waiting for the OxSay service…")
         let done = job(.done, wav: "/x/Ch.wav")
         XCTAssertEqual(ProduceText.finishAlert(done, text: ru)?.title, "Озвучка готова")
         XCTAssertEqual(ProduceText.finishAlert(done, text: ru)?.text, "Сохранено как Ch.wav.")
@@ -69,14 +69,14 @@ final class StudioMenuL10nTests: XCTestCase {
                        "Сохранено как Ch.wav. Нужно прослушать части (2). Эти части лежат в папке.")
         XCTAssertEqual(ProduceText.finishAlert(job(.done), text: ru)?.text, "Сохранено как файл озвучки.")
         XCTAssertEqual(ProduceText.finishAlert(job(.failed), text: ru)?.title, "Не удалось сделать озвучку")
-        XCTAssertEqual(ProduceText.finishAlert(job(.failed), text: ru)?.text, "ox-say не смог её закончить.")
+        XCTAssertEqual(ProduceText.finishAlert(job(.failed), text: ru)?.text, "OxSay не смог её закончить.")
         XCTAssertEqual(ProduceText.finishAlert(job(.failed, error: "the disk is full"), text: ru)?.text, "the disk is full",
                        "the daemon's own reason stays as it sent it")
         XCTAssertEqual(ProduceText.finishAlert(job(.interrupted), text: ru)?.title, "Озвучка прервана")
         XCTAssertEqual(ProduceText.finishAlert(job(.interrupted), text: ru)?.text,
-                       "ox-say остановился во время работы. Начните озвучку заново через «Новая озвучка из документа…».")
+                       "OxSay остановился во время работы. Начните озвучку заново через «Новая озвучка из документа…».")
         XCTAssertEqual(ProduceText.finishAlert(job(.interrupted), text: en)?.text,
-                       "ox-say stopped while it was working. Start it again with New Voiceover from Document.")
+                       "OxSay stopped while it was working. Start it again with New Voiceover from Document.")
         XCTAssertEqual(ProduceFormat.short.title(text: ru), "Reels / Shorts (короткое)")
         XCTAssertEqual(ProduceFormat.long.title(text: ru), "YouTube (длинное)")
     }
@@ -87,28 +87,28 @@ final class StudioMenuL10nTests: XCTestCase {
             text: "The file could not be opened. It may have been moved.", buttons: ["OK"]))
         XCTAssertEqual(StudioDialogs.playFailed(text: ru), UpdateDialog(title: "Не удалось воспроизвести озвучку",
             text: "Не удалось открыть файл. Возможно, его переместили.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.serviceDown(text: en), UpdateDialog(title: "The ox-say service isn't answering",
+        XCTAssertEqual(StudioDialogs.serviceDown(text: en), UpdateDialog(title: "The OxSay service isn't answering",
             text: "Try again in a moment.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.serviceDown(text: ru), UpdateDialog(title: "Служба ox-say не отвечает",
+        XCTAssertEqual(StudioDialogs.serviceDown(text: ru), UpdateDialog(title: "Служба OxSay не отвечает",
             text: "Попробуйте ещё раз через минуту.", buttons: ["OK"]))
         XCTAssertEqual(StudioDialogs.startFailed(StudioError.refused(status: 400, message: "The script is empty."), text: en),
                        UpdateDialog(title: "Couldn't start the voiceover",
                                     text: "The script is empty. Your text is kept in the next window.", buttons: ["OK"]))
         XCTAssertEqual(StudioDialogs.startFailed(StudioError.timedOut, text: ru),
                        UpdateDialog(title: "Не удалось начать озвучку",
-                                    text: "Служба ox-say слишком долго не отвечала. Ваш текст сохранён в следующем окне.", buttons: ["OK"]))
+                                    text: "Служба OxSay слишком долго не отвечала. Ваш текст сохранён в следующем окне.", buttons: ["OK"]))
         XCTAssertEqual(StudioDialogs.stop(text: en), UpdateDialog(title: "Stop this voiceover?",
-            text: "ox-say stops after the part it is working on. What is already made is not turned into a finished file.",
+            text: "OxSay stops after the part it is working on. What is already made is not turned into a finished file.",
             buttons: ["Stop Voiceover", "Keep Going"]))
         XCTAssertEqual(StudioDialogs.stop(text: ru), UpdateDialog(title: "Остановить эту озвучку?",
-            text: "ox-say остановится после той части, над которой работает. Итоговый файл из уже готовых частей не соберётся.",
+            text: "OxSay остановится после той части, над которой работает. Итоговый файл из уже готовых частей не соберётся.",
             buttons: ["Остановить озвучку", "Продолжить"]))
         XCTAssertEqual(StudioDialogs.stopFailed(Boom(), text: en), UpdateDialog(title: "Couldn't stop the voiceover",
             text: "Something went wrong. Try again.", buttons: ["OK"]))
         XCTAssertEqual(StudioDialogs.stopFailed(Boom(), text: ru), UpdateDialog(title: "Не удалось остановить озвучку",
             text: "Что-то пошло не так. Попробуйте ещё раз.", buttons: ["OK"]))
         XCTAssertEqual(StudioDialogs.continueFailed(StudioError.daemonUnreachable, text: ru), UpdateDialog(
-            title: "Не удалось продолжить озвучку", text: "Служба ox-say не запущена. Попробуйте перезагрузить Mac.", buttons: ["OK"]))
+            title: "Не удалось продолжить озвучку", text: "Служба OxSay не запущена. Попробуйте перезагрузить Mac.", buttons: ["OK"]))
         XCTAssertEqual(StudioDialogs.continueFailed(StudioError.daemonUnreachable, text: en).title, "Couldn't continue the voiceover")
         XCTAssertEqual(StudioDialogs.readFailed(DocumentError.passwordProtected, text: ru), UpdateDialog(
             title: "Не удалось прочитать файл", text: "Этот PDF защищён паролем. Сохраните копию без пароля и откройте её.", buttons: ["OK"]))
@@ -126,21 +126,21 @@ final class StudioMenuL10nTests: XCTestCase {
     func testTheErrorsAreWordedInTheUsersLanguageAndKeepTheirEnglishForLogs() {
         let all: [StudioError] = [.daemonUnreachable, .timedOut, .badResponse, .refused(status: 500, message: "")]
         for error in all { XCTAssertEqual(error.message(text: en), error.description, "\(error): description is the English log text") }
-        XCTAssertEqual(StudioError.timedOut.message(text: ru), "Служба ox-say слишком долго не отвечала.")
-        XCTAssertEqual(StudioError.badResponse.message(text: ru), "Служба ox-say прислала ответ, который приложение не понимает.")
-        XCTAssertEqual(StudioError.refused(status: 500, message: "").message(text: ru), "Служба ox-say ответила ошибкой (500).")
+        XCTAssertEqual(StudioError.timedOut.message(text: ru), "Служба OxSay слишком долго не отвечала.")
+        XCTAssertEqual(StudioError.badResponse.message(text: ru), "Служба OxSay прислала ответ, который приложение не понимает.")
+        XCTAssertEqual(StudioError.refused(status: 500, message: "").message(text: ru), "Служба OxSay ответила ошибкой (500).")
         XCTAssertEqual(StudioError.refused(status: 400, message: "Daemon's own words.").message(text: ru), "Daemon's own words.")
         let docs: [DocumentError] = [.unsupported("pages"), .unsupported("xyz"), .unreadable, .passwordProtected, .unknownEncoding]
         for error in docs { XCTAssertEqual(error.message(text: en), error.description, "\(error)") }
         XCTAssertEqual(DocumentError.unsupported("pages").message(text: ru),
                        "Файлы Pages нельзя читать напрямую. В Pages выберите «Файл» → «Экспортировать в» → Word или PDF, затем откройте этот файл.")
-        XCTAssertEqual(DocumentError.unsupported("xyz").message(text: ru), "ox-say читает текстовые файлы, Markdown, Word, RTF, OpenDocument и PDF.")
+        XCTAssertEqual(DocumentError.unsupported("xyz").message(text: ru), "OxSay читает текстовые файлы, Markdown, Word, RTF, OpenDocument и PDF.")
         XCTAssertEqual(DocumentError.unreadable.message(text: ru), "Не удалось открыть файл. Возможно, он повреждён или не того типа, что указано в имени.")
-        XCTAssertEqual(DocumentError.unknownEncoding.message(text: ru), "ox-say не смог определить кодировку символов в этом файле. Сохраните его как текст UTF-8 и откройте снова.")
+        XCTAssertEqual(DocumentError.unknownEncoding.message(text: ru), "OxSay не смог определить кодировку символов в этом файле. Сохраните его как текст UTF-8 и откройте снова.")
         XCTAssertEqual(ReadScript(script: "", emptyReason: .cleanedAwayPDF).emptyMessage(text: ru), "После очистки в этом PDF не нашлось читаемого текста.")
         XCTAssertEqual(ReadScript(script: "", emptyReason: .cleanedAwayDocument).emptyMessage(text: ru), "После очистки в этом документе не нашлось читаемого текста.")
         XCTAssertEqual(ReadScript(script: "", emptyReason: .noTextDocument).emptyMessage(text: ru), "В этом документе нет текста для чтения.")
-        XCTAssertEqual(ReadScript(script: "", emptyReason: .cleanedAwayPDF).emptyMessage(text: en), "ox-say could not find readable text in this PDF after cleaning it up.")
+        XCTAssertEqual(ReadScript(script: "", emptyReason: .cleanedAwayPDF).emptyMessage(text: en), "OxSay could not find readable text in this PDF after cleaning it up.")
     }
 
     func testTheScriptLineAndVoiceMenuReadRightInBothLanguages() {
@@ -170,10 +170,10 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(SlowTranscription.pillText(seconds: 12, reason: nil, text: ru), "Расшифровываю… 12 с")
         XCTAssertEqual(SlowTranscription.pillText(seconds: 12, reason: SlowTranscription.reason(sttServerState: "starting", text: ru), text: ru),
                        "Расшифровываю… 12 с · загружается модель распознавания речи")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "crashed", text: ru), "ox-say не запущена — медленнее")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "off", text: ru), "служба ox-say выключена")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "crashed", text: ru), "OxSay не запущена — медленнее")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "off", text: ru), "служба OxSay выключена")
         XCTAssertEqual(SlowTranscription.reason(sttServerState: "ready", text: ru), "расшифровывается длинная запись")
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: nil, text: ru), "служба ox-say не ответила")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: nil, text: ru), "служба OxSay не ответила")
         XCTAssertEqual(ClipboardReason.accessibility.message(text: en),
                        "Pasting needs the Accessibility permission — choose \"Allow pasting…\" in this app's menu. The text is on the clipboard.")
         XCTAssertEqual(ClipboardReason.accessibility.message(text: ru),
@@ -216,7 +216,7 @@ final class StudioMenuL10nTests: XCTestCase {
              "Не удалось обновить разрешение универсального доступа: удалите OxSayDictation кнопкой − в Системных настройках → Конфиденциальность и безопасность → Универсальный доступ, затем добавьте снова."),
             (.reviewTitle, "New Voiceover", "Новая озвучка"), (.reviewStart, "Start", "Начать"), (.reviewKeepFirst, "Keep the First Part", "Оставить только начало"),
             (.reviewLabelTitle, "Title", "Название"), (.reviewLabelFormat, "Format", "Формат"),
-            (.reviewLabelText, "Text — check it and fix anything before ox-say reads it", "Текст: проверьте и поправьте, что нужно, перед озвучкой"),
+            (.reviewLabelText, "Text — check it and fix anything before OxSay reads it", "Текст: проверьте и поправьте, что нужно, перед озвучкой"),
         ]
         for (key, e, r) in pairs {
             XCTAssertEqual(en(key), e, key.rawValue)

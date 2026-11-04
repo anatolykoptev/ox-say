@@ -39,7 +39,7 @@ final class SpeakTextTests: XCTestCase {
         XCTAssertEqual(SpeakText.progressRow(job(.running), serviceWaiting: false, ru),
                        "Озвучка «Ролик» — Готово: 3 из 10")
         XCTAssertEqual(SpeakText.progressRow(job(.running), serviceWaiting: true, ru),
-                       "Озвучка «Ролик» — жду ответа сервиса ox-say…")
+                       "Озвучка «Ролик» — жду ответа сервиса OxSay…")
         XCTAssertEqual(SpeakText.progressRow(job(.pausedOnBattery), serviceWaiting: false, ru),
                        "Озвучка «Ролик» — пауза — питание от батареи")
         XCTAssertEqual(SpeakText.progressRow(job(.waitingForDictation), serviceWaiting: false, ru),
@@ -76,7 +76,7 @@ final class SpeakTextTests: XCTestCase {
                            "Voiceover “Ролик” — \(wantEn)", "\(status) in en")
         }
         XCTAssertEqual(SpeakText.progressRow(job(.failed), serviceWaiting: true, ru),
-                       "Озвучка «Ролик» — жду ответа сервиса ox-say…",
+                       "Озвучка «Ролик» — жду ответа сервиса OxSay…",
                        "serviceWaiting overrides the detail, whatever the status")
         XCTAssertEqual(SpeakText.progressRow(job(.running, total: 0, done: 0), serviceWaiting: false, en),
                        "Voiceover “Ролик” — starting…")
@@ -97,8 +97,8 @@ final class SpeakTextTests: XCTestCase {
     /// the interrupted line names a button the section actually has.
     func testTheFinishTextKeepsTheDaemonsWordsAndTheCreateButton() {
         XCTAssertEqual(SpeakText.finishText(job(.failed, error: "disk full"), ru),
-                       "Сервис ox-say ответил: disk full")
-        XCTAssertEqual(SpeakText.finishText(job(.failed), ru), "ox-say не смог закончить её.")
+                       "Сервис OxSay ответил: disk full")
+        XCTAssertEqual(SpeakText.finishText(job(.failed), ru), "OxSay не смог закончить её.")
         let interrupted = SpeakText.finishText(job(.interrupted), ru)
         XCTAssertEqual(interrupted?.contains("«Озвучить»"), true)
         XCTAssertEqual(interrupted?.contains("New Voiceover"), false,
@@ -123,9 +123,9 @@ final class SpeakTextTests: XCTestCase {
         XCTAssertEqual(SpeakText.finishText(job(.review, review: 3, wav: "/x/r.wav"), en),
                        "Saved as r.wav. 3 parts need a listen — they are in the folder.")
         XCTAssertEqual(SpeakText.finishText(job(.interrupted), ru),
-                       "ox-say остановился во время работы. Запустите её снова кнопкой «Озвучить».")
+                       "OxSay остановился во время работы. Запустите её снова кнопкой «Озвучить».")
         XCTAssertEqual(SpeakText.finishText(job(.interrupted), en),
-                       "ox-say stopped while it was working. Start it again with Create Voiceover.")
+                       "OxSay stopped while it was working. Start it again with Create Voiceover.")
     }
 
     /// A done or review job still carrying the daemon's error is not a saved
@@ -135,13 +135,13 @@ final class SpeakTextTests: XCTestCase {
     /// Mutation: finishText without the `job.error` check on .done -> RED.
     func testAFailedLoudnessDeliveryNeverReadsAsSaved() {
         XCTAssertEqual(SpeakText.finishText(job(.done, error: "the file is locked", wav: "/x/р.wav"), ru),
-                       "Сервис ox-say ответил: the file is locked")
+                       "Сервис OxSay ответил: the file is locked")
         XCTAssertEqual(SpeakText.finishText(job(.done, error: "the file is locked", wav: "/x/р.wav"), en),
-                       "The ox-say service answered: the file is locked")
+                       "The OxSay service answered: the file is locked")
         XCTAssertEqual(SpeakText.finishText(job(.review, review: 2, error: "the file is locked", wav: "/x/р.wav"), ru),
-                       "Сервис ox-say ответил: the file is locked")
+                       "Сервис OxSay ответил: the file is locked")
         XCTAssertEqual(SpeakText.finishText(job(.done, error: "", wav: "/x/р.wav"), ru),
-                       "ox-say не смог закончить её.", "an empty daemon error is the plain sentence, not Saved")
+                       "OxSay не смог закончить её.", "an empty daemon error is the plain sentence, not Saved")
     }
 
     /// A failed job's line is the daemon's reason in plain words behind the
@@ -149,13 +149,13 @@ final class SpeakTextTests: XCTestCase {
     /// terminal-speak. Mutation: .failed without PlainWords.clean -> RED.
     func testAFailedJobReadsItsReasonInPlainWords() {
         XCTAssertEqual(SpeakText.finishText(job(.failed, error: "the disk is full"), en),
-                       "The ox-say service answered: the disk is full")
+                       "The OxSay service answered: the disk is full")
         XCTAssertEqual(SpeakText.finishText(job(.failed, error: "rerun with OX_SAY_DEBUG=1."), ru),
-                       "ox-say не смог закончить её.", "a jargon-only reason never shows")
+                       "OxSay не смог закончить её.", "a jargon-only reason never shows")
         XCTAssertEqual(SpeakText.finishText(job(.failed, error: "rerun with OX_SAY_DEBUG=1."), en),
-                       "ox-say could not finish it.")
+                       "OxSay could not finish it.")
         XCTAssertEqual(SpeakText.finishText(job(.failed, error: "it stopped early. rerun with OX_SAY_DEBUG=1."), en),
-                       "The ox-say service answered: it stopped early.",
+                       "The OxSay service answered: it stopped early.",
                        "the plain words stay, the jargon sentence goes")
     }
 
@@ -163,12 +163,12 @@ final class SpeakTextTests: XCTestCase {
 
     func testTheNoticeReadsRussian() {
         XCTAssertEqual(SpeakText.notice(StudioError.daemonUnreachable, ru),
-                       "Сервис ox-say не запущен. Попробуйте перезагрузить Mac.")
-        XCTAssertEqual(SpeakText.notice(StudioError.timedOut, ru), "Сервис ox-say не ответил вовремя.")
+                       "Сервис OxSay не запущен. Попробуйте перезагрузить Mac.")
+        XCTAssertEqual(SpeakText.notice(StudioError.timedOut, ru), "Сервис OxSay не ответил вовремя.")
         XCTAssertEqual(SpeakText.notice(StudioError.badResponse, ru),
-                       "Сервис ox-say прислал ответ, который приложение не понимает.")
+                       "Сервис OxSay прислал ответ, который приложение не понимает.")
         XCTAssertEqual(SpeakText.notice(StudioError.refused(status: 409, message: "another voiceover is being produced"), ru),
-                       "Сервис ox-say ответил: another voiceover is being produced")
+                       "Сервис OxSay ответил: another voiceover is being produced")
         XCTAssertEqual(SpeakText.notice(CocoaError(.fileNoSuchFile), ru), "Что-то пошло не так. Попробуйте ещё раз.")
     }
 
@@ -178,9 +178,9 @@ final class SpeakTextTests: XCTestCase {
     /// words it. Mutation: .refused without the empty-message branch -> RED.
     func testAnEmptyRefusalReadsTheStatusSentence() {
         XCTAssertEqual(SpeakText.notice(StudioError.refused(status: 409, message: ""), ru),
-                       "Служба ox-say ответила ошибкой (409).")
+                       "Служба OxSay ответила ошибкой (409).")
         XCTAssertEqual(SpeakText.notice(StudioError.refused(status: 503, message: ""), en),
-                       "The ox-say service answered with an error (503).")
+                       "The OxSay service answered with an error (503).")
     }
 
     /// The fallback is localized; the daemon's own reason passes through,
@@ -201,11 +201,11 @@ final class SpeakTextTests: XCTestCase {
         XCTAssertEqual(SpeakText.documentError(DocumentError.unsupported("pages"), ru),
                        "Файлы Pages не читаются напрямую. В Pages выберите «Файл → Экспорт в → Word или PDF» и откройте полученный файл.")
         XCTAssertEqual(SpeakText.documentError(DocumentError.unsupported("xyz"), ru),
-                       "ox-say читает текстовые файлы, Markdown, Word, RTF, OpenDocument и PDF.")
+                       "OxSay читает текстовые файлы, Markdown, Word, RTF, OpenDocument и PDF.")
         XCTAssertEqual(SpeakText.documentError(DocumentError.unreadable, ru),
                        "Файл не открывается. Возможно, он повреждён, или его формат не совпадает с расширением.")
         XCTAssertEqual(SpeakText.documentError(DocumentError.unknownEncoding, ru),
-                       "ox-say не определил, в какой кодировке записан файл. Сохраните его как текст в UTF-8 и откройте снова.")
+                       "OxSay не определил, в какой кодировке записан файл. Сохраните его как текст в UTF-8 и откройте снова.")
         XCTAssertEqual(SpeakText.documentError(CocoaError(.fileReadCorruptFile), ru), "Файл не удалось открыть.")
     }
 
@@ -213,10 +213,10 @@ final class SpeakTextTests: XCTestCase {
         XCTAssertEqual(SpeakText.emptyMessage(of: ReadDocument(pages: [""], source: .pdf), ru),
                        "В этом PDF нет текста для чтения (возможно, это скан).")
         XCTAssertEqual(SpeakText.emptyMessage(of: ReadDocument(pages: ["текст"], source: .pdf), ru),
-                       "ox-say не нашёл читаемый текст в этом PDF даже после очистки.")
+                       "OxSay не нашёл читаемый текст в этом PDF даже после очистки.")
         XCTAssertEqual(SpeakText.emptyMessage(of: ReadDocument(pages: ["", "  \n"], source: .text), ru),
                        "В этом документе нет текста для чтения.")
         XCTAssertEqual(SpeakText.emptyMessage(of: ReadDocument(pages: ["текст"], source: .text), ru),
-                       "ox-say не нашёл читаемый текст в этом документе даже после очистки.")
+                       "OxSay не нашёл читаемый текст в этом документе даже после очистки.")
     }
 }

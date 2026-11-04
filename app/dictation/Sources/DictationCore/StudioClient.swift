@@ -25,10 +25,10 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case .daemonUnreachable: return "The ox-say service is not running. Try restarting your Mac."
-        case .timedOut: return "The ox-say service took too long to answer."
-        case .refused(let status, let message): return message.isEmpty ? "The ox-say service answered with an error (\(status))." : message
-        case .badResponse: return "The ox-say service sent an answer the app does not understand."
+        case .daemonUnreachable: return "The OxSay service is not running. Try restarting your Mac."
+        case .timedOut: return "The OxSay service took too long to answer."
+        case .refused(let status, let message): return message.isEmpty ? "The OxSay service answered with an error (\(status))." : message
+        case .badResponse: return "The OxSay service sent an answer the app does not understand."
         }
     }
 }

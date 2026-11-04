@@ -68,13 +68,13 @@ public enum DocumentError: Error, Equatable, CustomStringConvertible {
         case .unsupported(let ext) where ext.lowercased() == "pages":
             return "Pages files can't be read directly. In Pages choose File > Export To > Word or PDF, then open that file."
         case .unsupported:
-            return "ox-say reads text, Markdown, Word, RTF, OpenDocument and PDF files."
+            return "OxSay reads text, Markdown, Word, RTF, OpenDocument and PDF files."
         case .unreadable:
             return "The file could not be opened. It may be damaged, or not the kind of file its name says."
         case .passwordProtected:
             return "This PDF is protected by a password. Save a copy without the password and open that."
         case .unknownEncoding:
-            return "ox-say could not tell how the characters in this file are stored. Save it as UTF-8 text and open it again."
+            return "OxSay could not tell how the characters in this file are stored. Save it as UTF-8 text and open it again."
         }
     }
 }
