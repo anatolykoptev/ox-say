@@ -5,22 +5,37 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 )
 
 // probeInfo is what the run needs to know about the input.
 type probeInfo struct {
-	AudioIndex  int     // stream index of the first audio stream
-	SampleRate  int     // of that stream
-	Channels    int     // of that stream
-	Seconds     float64 // length of that stream (the container's when the stream does not say)
-	HasVideo    bool    // a video stream that is not cover art
-	StreamIndex []int   // every stream, in input order
+	AudioIndex  int          // stream index of the first audio stream
+	SampleRate  int          // of that stream
+	Channels    int          // of that stream
+	Seconds     float64      // length of that stream (the container's when the stream does not say)
+	HasVideo    bool         // a video stream that is not cover art
+	AudioStart  float64      // start_time of that stream in the container's timeline (may be negative or fractional)
+	FormatStart float64      // start_time of the whole file: ffmpeg moves every stream it copies by minus this
+	VideoStart  float64      // start_time of the first real video stream; 0 when there is none
+	Streams     []streamInfo // every stream, in input order
+}
+
+// streamInfo is one input stream as far as the muxing plan needs it.
+type streamInfo struct {
+	Index       int
+	Type        string // ffprobe codec_type: video, audio, subtitle, data, attachment
+	Codec       string // ffprobe codec_name
+	AttachedPic bool   // a video stream that is cover art
 }
 
 type probeDoc struct {
 	Streams []struct {
 		Index       int    `json:"index"`
 		CodecType   string `json:"codec_type"`
+		CodecName   string `json:"codec_name"`
+		CodecTag    string `json:"codec_tag_string"`
+		StartTime   string `json:"start_time"`
 		SampleRate  string `json:"sample_rate"`
 		Channels    int    `json:"channels"`
 		Duration    string `json:"duration"`
@@ -29,7 +44,8 @@ type probeDoc struct {
 		} `json:"disposition"`
 	} `json:"streams"`
 	Format struct {
-		Duration string `json:"duration"`
+		Duration  string `json:"duration"`
+		StartTime string `json:"start_time"`
 	} `json:"format"`
 }
 
@@ -47,7 +63,8 @@ func parseProbe(raw []byte) (*probeInfo, error) {
 	}
 	p := &probeInfo{AudioIndex: -1}
 	for _, s := range doc.Streams {
-		p.StreamIndex = append(p.StreamIndex, s.Index)
+		p.Streams = append(p.Streams, streamInfo{Index: s.Index, Type: s.CodecType, Codec: codecLabel(s.CodecName, s.CodecTag),
+			AttachedPic: s.CodecType == "video" && s.Disposition.AttachedPic == 1})
 		switch s.CodecType {
 		case "audio":
 			if p.AudioIndex >= 0 {
@@ -61,8 +78,12 @@ func parseProbe(raw []byte) (*probeInfo, error) {
 			}
 			p.SampleRate = sr
 			p.Seconds = parseSeconds(s.Duration)
+			p.AudioStart = parseSigned(s.StartTime)
 		case "video":
 			if s.Disposition.AttachedPic != 1 {
+				if !p.HasVideo {
+					p.VideoStart = parseSigned(s.StartTime)
+				}
 				p.HasVideo = true
 			}
 		}
@@ -70,6 +91,7 @@ func parseProbe(raw []byte) (*probeInfo, error) {
 	if p.AudioIndex < 0 {
 		return nil, errNoAudio
 	}
+	p.FormatStart = parseSigned(doc.Format.StartTime)
 	if p.Seconds <= 0 {
 		p.Seconds = parseSeconds(doc.Format.Duration)
 	}
@@ -85,4 +107,26 @@ func parseSeconds(s string) float64 {
 		return 0
 	}
 	return v
+}
+
+// parseSigned reads a start time: it may be negative (an edit list that begins before zero); "N/A", empty and
+// non-finite values are 0.
+func parseSigned(s string) float64 {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return v
+}
+
+// codecLabel is the codec's name, or its four-character tag when ffprobe has no name for it (a timecode track is
+// "unknown" with the tag "tmcd").
+func codecLabel(name, tag string) string {
+	if (name == "" || name == "unknown") && tag != "" && !strings.HasPrefix(tag, "[0]") {
+		return tag
+	}
+	if name == "" {
+		return "unknown"
+	}
+	return name
 }

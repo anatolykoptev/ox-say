@@ -16,6 +16,7 @@ const (
 	CodeNoAudio             = "no_audio"
 	CodeUnsupportedChannels = "unsupported_channels"
 	CodeTooLong             = "too_long"
+	CodeUnsupportedStreams  = "unsupported_streams"
 	CodeDiskSpace           = "disk_space"
 	CodeEngineFailed        = "engine_failed"
 	CodeUnavailable         = "unavailable"
@@ -30,6 +31,7 @@ var statusByCode = map[string]int{
 	CodeNoAudio:             http.StatusUnprocessableEntity,
 	CodeUnsupportedChannels: http.StatusUnprocessableEntity,
 	CodeTooLong:             http.StatusUnprocessableEntity,
+	CodeUnsupportedStreams:  http.StatusUnprocessableEntity,
 	CodeDiskSpace:           http.StatusInsufficientStorage,
 	CodeEngineFailed:        http.StatusBadGateway,
 	CodeUnavailable:         http.StatusServiceUnavailable,

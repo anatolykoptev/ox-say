@@ -2,6 +2,7 @@ package voiceclean
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 )
@@ -38,6 +39,9 @@ const (
 
 // Container extensions the cleaned file may have. A video input keeps its picture, so its output must be a video
 // container; an audio-only input gets an audio file (or .mp4, which the script wrote as an iPod-style m4a).
+// coverExts are the audio containers that take a cover picture as an attached-picture stream.
+var coverExts = map[string]bool{"m4a": true, "mp3": true, "flac": true}
+
 var (
 	videoExts = map[string]bool{"mov": true, "mp4": true, "m4v": true, "mkv": true, "webm": true}
 	audioExts = map[string]bool{"wav": true, "flac": true, "mp3": true, "m4a": true}
@@ -73,4 +77,29 @@ func audioMuxArgs(ext string) (args []string, ok bool) {
 		return []string{"-c:a", "aac", "-b:a", "256k", "-f", "ipod"}, true
 	}
 	return nil, false
+}
+
+// aacPriming is the AAC encoder's delay in samples (one frame).
+const aacPriming = 1024
+
+// audioOffset is where the cleaned track must start on the container's timeline so the lag to the picture stays what
+// the input had. The mix file starts at 0; the source's own start (an iPhone clip's audio can begin a second after the
+// picture, a late-starting video makes it negative) is put back with -itsoffset.
+//
+// In mp4, m4v and mov the AAC encoder's priming delay goes into an edit list that starts the stream one frame
+// (1024/rate) earlier than asked, so a non-zero start is pushed by that much. Measured on ffmpeg 9.0.2: without it
+// the audio of an mp4 or mov came out 0.0213 s (48 kHz) early; a zero start needs nothing; mkv is exact; webm (Opus
+// pre-skip is handled by the muxer) lands within 1 ms.
+func audioOffset(info *probeInfo, ext string) float64 {
+	// ffmpeg moves every stream it copies from the input by minus the file's own start, so the clean track moves with
+	// them: it is placed at its start relative to the file's.
+	start := info.AudioStart - info.FormatStart
+	if math.Abs(start) < 1e-6 {
+		return 0
+	}
+	switch ext {
+	case "mp4", "m4v", "mov":
+		return start + aacPriming/float64(info.SampleRate)
+	}
+	return start
 }

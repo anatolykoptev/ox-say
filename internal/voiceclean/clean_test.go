@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -337,7 +336,7 @@ func TestRefusals(t *testing.T) {
 	t.Run("disk space", func(t *testing.T) {
 		old := statFS
 		defer func() { statFS = old }()
-		statFS = func(string) (uint64, syscall.Fsid, error) { return 1000, syscall.Fsid{}, nil }
+		statFS = func(string) (uint64, string, error) { return 1000, "", nil }
 		o := opts(t, mono, filepath.Join(t.TempDir(), "o.wav"), 0.85, eng)
 		_, err := Run(context.Background(), o)
 		wantCode(t, err, CodeDiskSpace)

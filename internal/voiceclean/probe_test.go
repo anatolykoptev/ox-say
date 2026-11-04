@@ -23,8 +23,15 @@ func TestParseProbeTakesTheFirstAudioStreamAndIgnoresCoverArt(t *testing.T) {
 	if p.HasVideo {
 		t.Error("cover art is not a picture")
 	}
-	if !reflect.DeepEqual(p.StreamIndex, []int{0, 1, 2, 3}) {
-		t.Errorf("streams %v", p.StreamIndex)
+	var idx []int
+	for _, s := range p.Streams {
+		idx = append(idx, s.Index)
+	}
+	if !reflect.DeepEqual(idx, []int{0, 1, 2, 3}) {
+		t.Errorf("streams %v", idx)
+	}
+	if !p.Streams[0].AttachedPic || p.Streams[1].Type != "data" {
+		t.Errorf("stream kinds %+v", p.Streams)
 	}
 }
 
@@ -84,5 +91,18 @@ func TestTailClipKeepsTheEndOnARuneBoundary(t *testing.T) {
 	}
 	if tailClip("  short \n", 512) != "short" {
 		t.Error("short text must pass through trimmed")
+	}
+}
+
+func TestParseProbeReadsAudioAndVideoStartTimes(t *testing.T) {
+	p, err := parseProbe([]byte(`{"streams":[
+	 {"index":0,"codec_type":"video","start_time":"0.040000","disposition":{"attached_pic":0}},
+	 {"index":1,"codec_type":"audio","sample_rate":"48000","channels":1,"duration":"2","start_time":"1.477000"}]}`))
+	if err != nil || p.AudioStart != 1.477 || p.VideoStart != 0.04 {
+		t.Fatalf("%+v %v", p, err)
+	}
+	p, _ = parseProbe([]byte(`{"streams":[{"index":0,"codec_type":"audio","sample_rate":"48000","channels":1,"duration":"2","start_time":"-0.021"}]}`))
+	if p.AudioStart != -0.021 {
+		t.Errorf("negative start lost: %v", p.AudioStart)
 	}
 }

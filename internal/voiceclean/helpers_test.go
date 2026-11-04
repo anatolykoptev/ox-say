@@ -282,3 +282,5 @@ func mustGlob(t *testing.T, pattern string) []string {
 	must(t, err)
 	return m
 }
+
+func formatF(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }

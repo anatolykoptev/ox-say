@@ -64,6 +64,7 @@ type Result struct {
 	Seconds, ModelSeconds float64
 	Stereo                string // "mid" or "channels" for a stereo source, "" for mono
 	Wet                   float64
+	Dropped               []DroppedStream // streams the output container cannot carry (video input only)
 }
 
 const (
@@ -74,10 +75,16 @@ const (
 	waitDelay         = 5 * time.Second
 )
 
-// Seams for tests: the free-space probe and the random part of the part file's name.
+// Seams for tests: the free-space probe, the random part of the part file's name, hard-linking and the walk bound.
 var (
 	statFS     = diskFree
 	partSuffix = randomHex
+	linkFile   = os.Link
+	// afterPublishCheck runs in the no-hard-link fallback between the pre-check and the atomic rename, where a
+	// concurrent creator would land.
+	afterPublishCheck = func() {}
+	// maxWalk bounds the hard-link search of a forbidden tree (directory entries visited).
+	maxWalk = 500_000
 )
 
 // execRunner is the production Runner.
@@ -145,6 +152,7 @@ type job struct {
 
 	temp string // scratch directory this run created; "" until then
 	part string // part file this run created exclusively; "" when none is owned
+	plan *videoPlan
 }
 
 func (j *job) run() (res *Result, err error) {
@@ -186,6 +194,13 @@ func (j *job) run() (res *Result, err error) {
 	if info.Seconds > o.MaxSeconds {
 		return nil, newErr(CodeTooLong, fmt.Sprintf("the audio is %.0f seconds; the limit is %.0f", info.Seconds, o.MaxSeconds))
 	}
+	if video {
+		plan, err := planVideo(info, extOf(o.Out))
+		if err != nil {
+			return nil, err
+		}
+		j.plan = plan
+	}
 	if st, err := os.Stat(o.Engine); err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0o111 == 0 {
 		return nil, newErr(CodeUnavailable, "the cleanup engine is not installed")
 	}
@@ -212,6 +227,9 @@ func (j *job) run() (res *Result, err error) {
 	}
 	res = &Result{Out: o.Out, Video: video, Channels: info.Channels, SampleRate: info.SampleRate,
 		Seconds: info.Seconds, ModelSeconds: modelSeconds, Wet: o.Wet}
+	if j.plan != nil {
+		res.Dropped = j.plan.dropped
+	}
 	if info.Channels == 2 {
 		res.Stereo = o.Stereo
 	}
@@ -233,10 +251,17 @@ func (j *job) cleanup() {
 
 // ---- path guards ----------------------------------------------------------------------------------------------------
 
-// checkPaths refuses an In or Out inside a forbidden tree. The comparison is made on resolved paths (symlinks of the
-// longest existing prefix, so an Out that does not exist yet but whose parent is a link into the tree is caught) and
-// again on file identity of every existing ancestor (so another spelling of the same directory, such as its other case
-// on a case-insensitive volume, is caught too).
+// checkPaths refuses an In or Out inside a forbidden tree. What it covers:
+//   - location: the comparison is made on resolved paths (symlinks of the longest existing prefix, so an Out that does
+//     not exist yet but whose parent is a link into the tree is caught) and on file identity of every existing
+//     ancestor (so another spelling of the same directory, such as its other case on a case-insensitive volume, is
+//     caught too);
+//   - hard links: an In, or an existing Out, with more than one link may be another name of a file in the tree, so
+//     each forbidden tree is walked for the same device and inode (walkForHardLink). The walk runs only for such files,
+//     costs one lstat per directory entry of the tree, skips directories it cannot read, does not follow symlinks and
+//     stops after maxWalk entries, refusing (fail closed) when it cannot finish.
+//
+// It does not cover a copy of a meeting's audio: a copied file is an ordinary file.
 func (j *job) checkPaths() error {
 	for _, f := range j.o.Forbidden {
 		if f == "" {
@@ -251,6 +276,12 @@ func (j *job) checkPaths() error {
 		}
 		rootSt, _ := os.Stat(root)
 		for _, p := range []string{j.o.In, j.o.Out} { // both: the output must not land in the tree either
+			if st := linkedFile(p); st != nil {
+				found, err := walkForHardLink(root, st)
+				if err != nil || found {
+					return newErr(CodeForbiddenPath, "voice cleanup does not work on files in this location")
+				}
+			}
 			real, err := resolvePrefix(p)
 			if err != nil {
 				return newErr(CodeInvalidRequest, "a path could not be resolved")
@@ -261,6 +292,49 @@ func (j *job) checkPaths() error {
 		}
 	}
 	return nil
+}
+
+// linkedFile returns the file at p (the link itself for an Out that is a symlink, the target for an In) when it has
+// more than one hard link, nil otherwise or when it does not exist.
+func linkedFile(p string) os.FileInfo {
+	st, err := os.Stat(p)
+	if lst, lerr := os.Lstat(p); lerr == nil && lst.Mode()&os.ModeSymlink == 0 {
+		st, err = lst, nil
+	}
+	if err != nil || st.IsDir() {
+		return nil
+	}
+	if sys, ok := st.Sys().(*syscall.Stat_t); ok && uint64(sys.Nlink) > 1 {
+		return st
+	}
+	return nil
+}
+
+// walkForHardLink reports whether the tree under root holds another name for the file st. It fails (error) when the
+// tree is bigger than maxWalk entries, so the caller refuses rather than guesses.
+func walkForHardLink(root string, st os.FileInfo) (bool, error) {
+	var seen int
+	found := false
+	errTooBig := errors.New("tree too large to search")
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() {
+				return fs.SkipDir // unreadable directory
+			}
+			return nil
+		}
+		if seen++; seen > maxWalk {
+			return errTooBig
+		}
+		if d.Type().IsRegular() {
+			if fi, ierr := d.Info(); ierr == nil && os.SameFile(fi, st) {
+				found = true
+				return fs.SkipAll
+			}
+		}
+		return nil
+	})
+	return found, err
 }
 
 // resolvePrefix returns p with the symlinks of its longest existing prefix resolved and the missing tail appended.
@@ -372,16 +446,13 @@ func notStarted(err error) bool {
 	return errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission)
 }
 
-// diskPreflight refuses a run that cannot finish: the scratch directory needs about seconds * 48 kHz * 4 bytes *
-// (3 * channels + 2) with a fifth to spare, and the output directory about the size of the input (or of the float
-// WAV for a .wav output). When both are on one volume the needs add up.
+// diskPreflight refuses a run that cannot finish. The scratch directory needs about seconds * max(source rate, 48 kHz)
+// * 4 bytes * (3 * channels + 2) with a fifth to spare (the source and the mix are kept at the source rate, the model's
+// files at 48 kHz). The output directory needs what the target codec will write (outputBytes), not the input's size.
+// When both are on one volume the needs add up.
 func (j *job) diskPreflight(info *probeInfo, inSize int64) error {
-	scratch := uint64(info.Seconds * modelRate * 4 * float64(3*info.Channels+2) * 1.2)
-	outNeed := float64(inSize)
-	if extOf(j.o.Out) == "wav" {
-		outNeed = math.Max(outNeed, info.Seconds*float64(info.SampleRate)*float64(info.Channels)*4)
-	}
-	output := uint64(outNeed*1.1) + 1<<20
+	scratch := uint64(info.Seconds * float64(max(info.SampleRate, modelRate)) * 4 * float64(3*info.Channels+2) * 1.2)
+	output := uint64(outputBytes(info, extOf(j.o.Out), info.HasVideo, inSize)*1.1) + 1<<20
 	tFree, tID, err := statFS(j.o.TempDir)
 	if err != nil {
 		return newErr(CodeUnavailable, "the scratch directory cannot be inspected")
@@ -405,12 +476,12 @@ func (j *job) diskPreflight(info *probeInfo, inSize int64) error {
 	return nil
 }
 
-func diskFree(path string) (uint64, syscall.Fsid, error) {
+func diskFree(path string) (uint64, string, error) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {
-		return 0, syscall.Fsid{}, err
+		return 0, "", err
 	}
-	return uint64(st.Bsize) * st.Bavail, st.Fsid, nil
+	return uint64(st.Bsize) * st.Bavail, fmt.Sprint(st.Fsid), nil
 }
 
 // ---- the pipeline ---------------------------------------------------------------------------------------------------
@@ -472,7 +543,7 @@ func (j *job) mixdown(info *probeInfo) (string, float64, error) {
 	o := j.o
 	mr := min(info.SampleRate, modelRate)
 	src := j.tmp("src.wav")
-	if err := j.ff(append(source(o.In), "-map", "0:"+strconv.Itoa(info.AudioIndex), "-ar", strconv.Itoa(mr), "-c:a", "pcm_f32le", src)...); err != nil {
+	if err := j.ff(append(source(o.In), "-map", "0:"+strconv.Itoa(info.AudioIndex), "-ar", strconv.Itoa(mr), "-map_metadata", "-1", "-c:a", "pcm_f32le", src)...); err != nil {
 		return "", 0, err
 	}
 	base := src // the source at 48 kHz, which is what the model and the add-back work on
@@ -531,7 +602,7 @@ func (j *job) mixdown(info *probeInfo) (string, float64, error) {
 		drop(base)
 	}
 	mix := j.tmp("mix.wav")
-	err := j.ff("-i", src, "-i", enh, "-filter_complex", MixFilter(info.SampleRate, o.Wet), "-map", "[m]", "-c:a", "pcm_f32le", mix)
+	err := j.ff("-i", src, "-i", enh, "-filter_complex", MixFilter(info.SampleRate, o.Wet), "-map", "[m]", "-map_metadata", "-1", "-c:a", "pcm_f32le", mix)
 	drop(src, enh)
 	if err != nil {
 		return "", 0, err
@@ -555,24 +626,27 @@ func (j *job) write(info *probeInfo, inSt os.FileInfo, mix string) error {
 	var args []string
 	if info.HasVideo {
 		format, audio := videoMux(extOf(o.Out))
-		args = append(source(o.In), "-i", mix)
+		args = append(source(o.In), "-itsoffset", strconv.FormatFloat(audioOffset(info, extOf(o.Out)), 'f', 6, 64), "-i", mix)
 		// every input stream keeps its place; only the first audio stream is replaced by the cleaned mix (input 1)
-		for _, idx := range info.StreamIndex {
-			if idx == info.AudioIndex {
-				args = append(args, "-map", "1:a:0")
-			} else {
-				args = append(args, "-map", "0:"+strconv.Itoa(idx))
-			}
-		}
-		args = append(args, "-map_metadata", "0", "-map_chapters", "0", "-c", "copy", "-copy_unknown")
+		args = append(args, j.plan.maps...)
+		// every carried stream, the replaced audio one included, keeps its own metadata (language, handler name)
+		args = append(args, "-map_metadata", "0", "-map_chapters", "0")
+		args = append(args, j.plan.meta...)
+		args = append(args, "-c", "copy", "-copy_unknown")
 		args = append(args, audio...)
+		args = append(args, j.plan.codecs...)
 		args = append(args, "-ac:a:0", strconv.Itoa(info.Channels), "-f", format)
 		if format == "mp4" || format == "mov" {
 			args = append(args, "-movflags", "+faststart")
 		}
 	} else {
 		enc, _ := audioMuxArgs(extOf(o.Out))
-		args = append([]string{"-i", mix}, enc...)
+		// input 1 is the source again, for its tags and cover art; the audio is the cleaned mix (input 0)
+		args = append(append([]string{"-i", mix}, source(o.In)...), "-map", "0:a:0", "-map_metadata", "1")
+		if coverExts[extOf(o.Out)] {
+			args = append(args, "-map", "1:v?", "-c:v", "copy", "-disposition:v", "attached_pic")
+		}
+		args = append(args, enc...)
 	}
 	if err := j.ff(append(args, part)...); err != nil {
 		return err
@@ -625,14 +699,14 @@ func flush(part string, ceiling os.FileMode) error {
 
 // publish moves the finished part file onto Out. With Overwrite it is a rename (atomic, replaces a file or a link
 // itself, never what the link points to). Without it a hard link is made first, which fails if Out appeared since the
-// check, so a concurrent run's output is never replaced; on a volume without hard links it falls back to a re-check
-// and a rename.
+// check, so a concurrent run's output is never replaced; on a volume without hard links it falls back to an atomic
+// no-replace rename (renamex_np RENAME_EXCL on macOS, renameat2 RENAME_NOREPLACE on Linux).
 func (j *job) publish() error {
 	o := j.o
 	if o.Overwrite {
 		return j.moved(os.Rename(j.part, o.Out))
 	}
-	err := os.Link(j.part, o.Out)
+	err := linkFile(j.part, o.Out)
 	switch {
 	case err == nil:
 		_ = os.Remove(j.part)
@@ -641,10 +715,23 @@ func (j *job) publish() error {
 	case errors.Is(err, fs.ErrExist):
 		return newErr(CodeExists, "the output file already exists")
 	}
+	// no hard links on this volume: an atomic rename that fails if Out exists, so nothing created since the check
+	// is replaced.
 	if _, serr := os.Lstat(o.Out); serr == nil {
 		return newErr(CodeExists, "the output file already exists")
 	}
-	return j.moved(os.Rename(j.part, o.Out))
+	afterPublishCheck()
+	rerr, unsupported := renameNoReplace(j.part, o.Out)
+	if unsupported { // a filesystem without an atomic form: a re-check and a plain rename, the best left
+		if _, serr := os.Lstat(o.Out); serr == nil {
+			return newErr(CodeExists, "the output file already exists")
+		}
+		rerr = os.Rename(j.part, o.Out)
+	}
+	if errors.Is(rerr, fs.ErrExist) {
+		return newErr(CodeExists, "the output file already exists")
+	}
+	return j.moved(rerr)
 }
 
 func (j *job) moved(err error) error {
