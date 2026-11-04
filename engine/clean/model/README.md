@@ -15,7 +15,7 @@ tags:
 # MossFormer2_SE_48K — Core ML (mixed precision, 20 s window)
 
 A Core ML conversion of Alibaba SLAB's **MossFormer2_SE_48K** speech-enhancement mask network
-(ClearerVoice-Studio), built for the ox-say voice-cleanup feature on Apple Silicon. The model
+(ClearerVoice-Studio), built for the OxSay voice-cleanup feature on macOS (Apple Silicon and Intel). The model
 takes a fixed 20 s feature window and returns an STFT magnitude mask; the audio front end
 (Kaldi fbank, STFT/iSTFT, chunking) lives in the caller — see `config.json` for the exact
 I/O contract.
@@ -53,13 +53,18 @@ bounded [0,1] mask values — renormalise if you need one.
 
 ## Limitations
 
-- **Requires `cpuAndGPU`.** On `cpuOnly` this mixed-precision build is *wrong*: the Core ML
-  CPU fp16 runtime renders the first ~64 frames of each window as garbage on macOS 26.5.1
-  (a runtime defect, no minimal repro — the fp32 build is exact on CPU, so the conversion
-  itself is sound). Never request `.cpuOnly`, `.cpuAndNeuralEngine` or `.all` — the ANE
-  compile fails outright.
-- 48 kHz mono only. Apple Silicon only (arm64); Intel was not evaluated and is disabled
-  in the calling product. Verified on macOS 26.5.1.
+- **Apple Silicon requires `cpuAndGPU`.** On `cpuOnly` this mixed-precision build is *wrong* on
+  Apple Silicon: the Core ML CPU fp16 runtime renders the first ~64 frames of each window as
+  garbage (macOS 26.5.1, M5 Pro; a runtime defect with no minimal repro — the fp32 build is
+  exact on CPU, so the conversion itself is sound). Never request `.cpuAndNeuralEngine` or
+  `.all` — the ANE compile fails outright.
+- **Intel:** measured on an i9-9880H with a Radeon Pro 5500M (macOS 26.6.2). The same build is
+  correct on `cpuAndGPU` with the discrete GPU (7.9× real time, 2.2 GiB) and on `cpuOnly`
+  (2.9×, 3.25 GiB) — the CPU fp16 defect does not appear there. Do **not** run it on an Intel
+  integrated GPU (UHD 630: 0.22× and a 16.7 GiB footprint): pick the discrete, non-low-power
+  Metal device via `preferredMetalDevice`, or `cpuOnly` when none exists.
+- 48 kHz mono only. Verified on one machine per architecture; run the known-answer check below
+  on every load.
 - "Not for meetings" is a product rule of ox-say, not a property of this model.
 
 ## Known-answer self-check (run this after every load)
@@ -99,9 +104,9 @@ Mask parity (a) and end-to-end parity (b) vs the fp32 PyTorch reference through 
 | A (30 s lav) | 2.98e-6 | 73.1 | 1.0000 |
 | B (30 s loud party) | 2.65e-6 | 47.9 | 1.0000 |
 | C (60 s concat) | 2.87e-6 | 47.3 | 1.0000 |
-| IREN1–IREN4 | 2.21e-6 … 3.04e-6 | 48.0 … 58.7 | 1.0000 |
+| 4 party clips, 20 s each | 2.21e-6 … 3.04e-6 | 48.0 … 58.7 | 1.0000 |
 | A3 (3 s, tiled) | 2.48e-6 | 74.0 | 1.0000 |
-| IREN1_7 (7 s, tiled) | 9.10e-6 | 44.4 | 0.9999 |
+| party clip, 7 s, tiled | 9.10e-6 | 44.4 | 0.9999 |
 
 Speed on Apple **M5 Pro** (median of 200, Swift probe, model only): **68.6 ms per 20 s
 window** (218× real time, 15 s of new audio per window), first prediction 7.06 s, peak
