@@ -45,7 +45,8 @@ def run(*a, ok=True):
 def model_dir(tmp_path_factory):
     """One shared converted model for the read-only tests; OX_CLEAN_MODEL_DIR tests a prebuilt dir."""
     if os.environ.get("OX_CLEAN_MODEL_DIR"):
-        return pathlib.Path(os.environ["OX_CLEAN_MODEL_DIR"])
+        # Absolute: the perturbed-copy tests symlink into this dir from a temp dir.
+        return pathlib.Path(os.environ["OX_CLEAN_MODEL_DIR"]).resolve()
     d = tmp_path_factory.mktemp("model")
     run("convert.py", "--checkpoint", CKPT, "--out", str(d))
     return d
