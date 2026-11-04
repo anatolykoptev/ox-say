@@ -73,3 +73,12 @@ public enum SpeakClips {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
+
+/// The voice a restored clip may ask for.
+public enum SpeakVoice {
+    /// `voice` when the library still has it, else nil (the standard voice): a deleted voice is never requested.
+    public static func existing(_ voice: String?, in voices: [String]) -> String? {
+        guard let voice, voices.contains(voice) else { return nil }
+        return voice
+    }
+}

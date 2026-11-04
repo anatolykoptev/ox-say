@@ -47,3 +47,29 @@ final class SpeakClipsTests: XCTestCase {
         XCTAssertNotEqual(clip(1, bytes: 10), clip(2, bytes: 10))
     }
 }
+
+final class SpeakVoiceAndSelectionTests: XCTestCase {
+    /// A voice that was deleted since the clip was made is not asked for again.
+    /// Mutation: SpeakVoice.existing, return `voice` unchecked -> RED.
+    func testAVoiceThatIsGoneFallsBackToTheStandardOne() {
+        XCTAssertEqual(SpeakVoice.existing("mara", in: ["mara", "ruslan"]), "mara")
+        XCTAssertNil(SpeakVoice.existing("mara", in: ["ruslan"]))
+        XCTAssertNil(SpeakVoice.existing(nil, in: ["mara"]))
+    }
+
+    /// Choosing another clip would drop the take that is being made; the list waits for it.
+    /// Mutation: SpeakPhase.allowsSelection, return true -> RED.
+    func testNoClipCanBeChosenWhileATakeIsBeingMade() {
+        XCTAssertFalse(SpeakPhase.generating.allowsSelection)
+        for phase in [SpeakPhase.idle, .ready, .failed("x")] { XCTAssertTrue(phase.allowsSelection, "\(phase)") }
+    }
+
+    /// One missed poll after an answer keeps the studio note and its install link; nothing known yet shows nothing.
+    /// Mutation: StudioAvailability.held, ignore `waiting` -> RED.
+    func testOneMissedPollKeepsTheStudioNote() {
+        XCTAssertEqual(StudioAvailability.held(previous: .notInstalled, status: nil, waiting: true), .notInstalled)
+        XCTAssertEqual(StudioAvailability.held(previous: .notInstalled, status: nil, waiting: false), .unknown)
+        let answered = DaemonStatus(version: "1", studioAvailable: true, studioReason: nil)
+        XCTAssertEqual(StudioAvailability.held(previous: .notInstalled, status: answered, waiting: true), .available)
+    }
+}

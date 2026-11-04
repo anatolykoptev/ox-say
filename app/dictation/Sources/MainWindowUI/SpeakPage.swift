@@ -53,6 +53,8 @@ struct SpeakClipsColumn: View {
             }
         }
         .listStyle(.inset)
+        // Choosing another clip would drop the take that is being made.
+        .disabled(!model.data.speak.phase.allowsSelection)
         .overlay {
             if clips.isEmpty {
                 Text(L10nKey.speakListEmpty.text)

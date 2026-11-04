@@ -5,6 +5,14 @@ public enum DaemonReach: Equatable { case unknown, reachable, unreachable(String
 
 public enum SpeakPhase: Equatable { case idle, generating, ready, failed(String) }
 
+extension SpeakPhase {
+    /// Choosing another clip while a take is being made would silently drop that take.
+    public var allowsSelection: Bool {
+        if case .generating = self { return false }
+        return true
+    }
+}
+
 /// A problem with the text that is known before any request, in the sentence the person reads.
 public enum SpeakInputCheck {
     /// nil when the text can be voiced on `engine`. Lengths are Unicode scalars of the string that is

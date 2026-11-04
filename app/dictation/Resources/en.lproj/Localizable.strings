@@ -740,3 +740,4 @@
 "speak.save_failed" = "The file could not be saved.";
 "speak.studio.needs_apple_silicon" = "The studio voice needs a Mac with Apple Silicon.";
 "speak.studio.needs_memory" = "The studio voice needs %@ GB of memory; this Mac has %@ GB.";
+"speak.play_blocked_recording" = "The clip does not play while a meeting is being recorded, so it never ends up in the recording.";

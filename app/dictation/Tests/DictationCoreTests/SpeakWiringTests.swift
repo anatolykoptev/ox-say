@@ -62,19 +62,61 @@ final class SpeakWiringTests: XCTestCase {
         XCTAssertTrue(generate.contains("model.data.speak.reach") == false, "reach is recorded through the tracker only")
     }
 
-    /// A recording captures the output: a clip never starts into one, and a recording that begins stops it.
-    /// Mutation: SpeakSource.allowedToSound, delete the `VoicePreviewGate.allows` guard -> RED.
+    /// The recording state is read live at both places a clip can start, and a recording that begins stops the clip
+    /// before the hidden-window early return. (The decision itself is `ClipAudioTests`.)
+    /// Mutation: SpeakSource.startPlaying, `recordingRunning: false` -> RED; MainWindowSource.recordingChanged, move
+    /// `speakSource.recordingStarted()` under `guard visible` -> RED.
     func testAClipNeverSoundsIntoARecording() throws {
         let text = try source("OxSayDictation/SpeakSource.swift")
-        try XCTAssertTrue(body(text, of: "private func allowedToSound() -> Bool {")
-            .contains("VoicePreviewGate.allows(recordingRunning: host.meetings()?.recordingElapsed != nil)"))
-        try XCTAssertTrue(body(text, of: "private func startPlaying(_ clip: SpeakClip) -> Bool {").contains("allowedToSound()"))
-        try XCTAssertTrue(body(text, of: "func playPause() {").contains("allowedToSound()"))
+        let live = "recordingRunning: host.meetings()?.recordingElapsed != nil"
+        try XCTAssertTrue(body(text, of: "private func startPlaying(_ clip: SpeakClip) -> Bool {").contains("audio.start(\(live))"))
+        try XCTAssertTrue(body(text, of: "func playPause() {").contains("audio.playPause(\(live))"))
         let window = try source("OxSayDictation/MainWindowSource.swift")
-        XCTAssertTrue(window.contains("speakSource.recordingStarted()"))
+        let rec = try body(window, of: "func recordingChanged() {")
+        let stop = try XCTUnwrap(rec.range(of: "speakSource.recordingStarted()"))
+        let hidden = try XCTUnwrap(rec.range(of: "guard visible else { return }"))
+        XCTAssertLessThan(stop.lowerBound, hidden.lowerBound, "even when the window is hidden")
         XCTAssertTrue(window.contains("speakSource.windowClosed()"))
         XCTAssertTrue(window.contains("self?.speakSource.stopClip(); self?.voiceSource.preview(id)"), "a sample stops the clip")
-        XCTAssertTrue(window.contains("speakSource.stopVoicePreview = { [weak self] in self?.voiceSource.stopPreview() }"), "a clip stops the sample")
+    }
+
+    /// Every stop releases the version handshake, through the one executor; the players are mutually exclusive.
+    /// Mutation: SpeakSource.stopClip, drop `perform(audio.stop())` -> RED; AppDelegate, drop either
+    /// `stopSpeakClip()` before `player.play` -> RED; MainWindowSource.playTurn, drop `speakSource.stopClip()` -> RED.
+    func testEveryStopReleasesTheHandshakeAndThePlayersExcludeEachOther() throws {
+        let speak = try source("OxSayDictation/SpeakSource.swift")
+        try XCTAssertTrue(body(speak, of: "func stopClip() {").contains("perform(audio.stop())"))
+        try XCTAssertTrue(body(speak, of: "private func perform(_ effects: [ClipEffect], clip: SpeakClip? = nil) {").contains("case .handshakeMayRun:\n                host.workEnded()"))
+        let window = try source("OxSayDictation/MainWindowSource.swift")
+        let others = try XCTUnwrap(window.range(of: "speakSource.stopOtherAudio = {"))
+        let block = String(window[others.upperBound...].prefix(200))
+        XCTAssertTrue(block.contains("voiceSource.stopPreview()") && block.contains("self?.stopPlayback()") && block.contains("host.stopSpeechPlayer()"))
+        let playTurn = try body(window, of: "private func playTurn(_ id: String, _ turn: TranscriptTurn) {")
+        let clipStop = try XCTUnwrap(playTurn.range(of: "speakSource.stopClip()"))
+        let playAt = try XCTUnwrap(playTurn.range(of: "audio.play(url:"))
+        XCTAssertLessThan(clipStop.lowerBound, playAt.lowerBound)
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        XCTAssertEqual(app.components(separatedBy: "self.mainWindow.source?.stopSpeakClip()\n").count - 1, 2, "speak-selection and voiceover playback")
+        XCTAssertEqual(app.components(separatedBy: "try self.player.play(wav: wav)").count - 1, 2)
+    }
+
+    /// Choosing a clip waits for a running take, and restores only a voice that still exists.
+    /// Mutation: SpeakSource.select, drop the `allowsSelection` guard -> RED; use `clip.voice` unchecked -> RED.
+    func testSelectWaitsForATakeAndChecksTheVoice() throws {
+        let select = try body(source("OxSayDictation/SpeakSource.swift"), of: "func select(_ id: String) {")
+        XCTAssertTrue(select.contains("guard model.data.speak.phase.allowsSelection else { return }"))
+        XCTAssertTrue(select.contains("SpeakVoice.existing(clip.voice, in: model.data.voices.voices)"))
+        let page = try source("MainWindowUI/SpeakPage.swift")
+        XCTAssertTrue(page.contains(".disabled(!model.data.speak.phase.allowsSelection)"))
+    }
+
+    /// A missed status read keeps the studio note while the tracker waits; the save panel attaches to the main window.
+    /// Mutation: SpeakSource.statusRead, `waiting: false` -> RED; SpeakSave back to `NSApp.keyWindow` -> RED.
+    func testTheStudioNoteSurvivesOneMissAndTheSavePanelHasItsWindow() throws {
+        let speak = try source("OxSayDictation/SpeakSource.swift")
+        try XCTAssertTrue(body(speak, of: "func statusRead() {").contains("StudioAvailability.held(previous: model.data.speak.studio, status: status, waiting: tracker.waiting)"))
+        XCTAssertTrue(speak.contains("SpeakSave.present(clip, in: host.mainWindow())"))
+        XCTAssertFalse(speak.contains("NSApp.keyWindow"))
     }
 
     /// The reach comes from the status read of the refresh pass, after it is awaited, through the tracker.

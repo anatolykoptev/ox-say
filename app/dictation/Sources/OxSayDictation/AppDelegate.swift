@@ -888,7 +888,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 defer { self.firstRunPending = false }
                 return self.firstRunPending
             },
-            speechRefusal: { UpdateGate.allowsNewDaemonWork(installing: self.updateInstalling) ? nil : L10nKey.noticeUpdatingSpeak.text })
+            speechRefusal: { UpdateGate.allowsNewDaemonWork(installing: self.updateInstalling) ? nil : L10nKey.noticeUpdatingSpeak.text },
+            mainWindow: { [unowned self] in self.mainWindow.window },
+            stopSpeechPlayer: { [unowned self] in self.player.stop() })
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
@@ -1068,6 +1070,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self, self.speakGeneration == generation else { return }
                 self.speakInFlight = false
                 playing = true
+                self.mainWindow.source?.stopSpeakClip()
                 try self.player.play(wav: wav)
                 // The reply can land after a dictation started: the playback
                 // pill is shown only while our own pill still stands and no
@@ -1187,6 +1190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             play: { [unowned self] wav, showPill, onFinish in
                 self.playbackDone = onFinish
                 do {
+                    self.mainWindow.source?.stopSpeakClip()
                     try self.player.play(wav: wav)
                     if showPill && PillOwnership.mayShowPlayback(dictation: self.controller.state) { self.overlay.showPlaying() }
                 } catch {

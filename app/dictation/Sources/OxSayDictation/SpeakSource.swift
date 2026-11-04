@@ -21,8 +21,11 @@ final class SpeakSource {
     private var generation = Generation()
     private var tracker = ReachTracker()
     private var voiceChosen = false
-    /// Stops a voice sample that plays, before a clip sounds.
-    var stopVoicePreview: () -> Void = {}
+    /// What sounds elsewhere in the app (a voice sample, meeting audio, the app's own speech player) stops before a
+    /// clip sounds: two streams never overlap.
+    var stopOtherAudio: () -> Void = {}
+    /// The clip's sounding state; `ClipAudio` decides, `perform` carries it out.
+    private var audio = ClipAudio()
 
     init(model: MainWindowModel, host: MainWindowHost) {
         self.model = model
@@ -33,13 +36,13 @@ final class SpeakSource {
             Task { @MainActor in
                 guard let self else { return }
                 self.model.data.speak.playback = .stopped
-                self.host.workEnded()
+                self.perform(self.audio.finished())
             }
         }
     }
 
     /// A request is on its way or a clip sounds: a daemon restart or an app relaunch would cut it.
-    var busy: Bool { model.data.speak.phase == .generating || player.isActivelyPlaying }
+    var busy: Bool { model.data.speak.phase == .generating || audio.busy }
 
     // MARK: window
 
@@ -47,7 +50,7 @@ final class SpeakSource {
     func statusRead() {
         let status = host.daemonStatus()
         record(answered: status != nil)
-        model.data.speak.studio = StudioAvailability.of(status)
+        model.data.speak.studio = StudioAvailability.held(previous: model.data.speak.studio, status: status, waiting: tracker.waiting)
         model.data.speak.advanced = model.advanced
     }
 
@@ -60,7 +63,7 @@ final class SpeakSource {
     /// as the starting choice (`StudioMenu.voiceChoices`); a chosen voice that is gone falls back to the standard one.
     func voicesChanged() {
         let voices = model.data.voices.voices
-        if let chosen = model.data.speak.voice, !voices.contains(chosen) { model.data.speak.voice = nil }
+        model.data.speak.voice = SpeakVoice.existing(model.data.speak.voice, in: voices)
         guard !voiceChosen, !voices.isEmpty else { return }
         voiceChosen = true
         let choices = StudioMenu.voiceChoices(voices: voices, russianPick: model.data.voices.russianVoice)
@@ -98,12 +101,14 @@ final class SpeakSource {
     }
 
     func select(_ id: String) {
+        // The list is disabled while a take is made; this is the same rule for any other caller.
+        guard model.data.speak.phase.allowsSelection else { return }
         guard let clip = model.data.speak.clips.first(where: { $0.id == id }) else { return }
         stop()
         stopClip()
         model.data.speak.text = clip.text
         host.defaults.set(clip.text, forKey: Self.draftKey)
-        model.data.speak.voice = clip.voice
+        model.data.speak.voice = SpeakVoice.existing(clip.voice, in: model.data.voices.voices)
         model.data.speak.selectedID = clip.id
         model.data.speak.phase = .ready
     }
@@ -172,47 +177,52 @@ final class SpeakSource {
     /// ▶/⏸ on the clip on screen.
     func playPause() {
         guard let clip = model.data.speak.selectedClip else { return }
-        if player.isActivelyPlaying {
-            player.toggle()
-            model.data.speak.playback = .paused
-            host.workEnded()
-        } else if player.isPaused {
-            guard allowedToSound() else { return }
-            player.toggle()
-            model.data.speak.playback = .playing
-        } else {
-            _ = startPlaying(clip)
-        }
-    }
-
-    /// A recording captures the output: a clip must never start into one. Read live, at the moment it would sound.
-    private func allowedToSound() -> Bool {
-        guard VoicePreviewGate.allows(recordingRunning: host.meetings()?.recordingElapsed != nil) else {
-            stopClip()
-            model.data.notice = L10nKey.playBlockedRecording.text
-            return false
-        }
-        return true
+        perform(audio.playPause(recordingRunning: host.meetings()?.recordingElapsed != nil), clip: clip)
     }
 
     @discardableResult
     private func startPlaying(_ clip: SpeakClip) -> Bool {
-        guard allowedToSound() else { return false }
-        stopVoicePreview()
-        do {
-            try player.play(wav: clip.wav)
-            model.data.speak.playback = .playing
-            return true
-        } catch {
-            model.data.speak.playback = .stopped
-            model.data.notice = L10nKey.playFailed.text
-            return false
-        }
+        perform(audio.start(recordingRunning: host.meetings()?.recordingElapsed != nil), clip: clip)
+        return audio.sound == .playing
     }
 
     func stopClip() {
-        player.stop()
+        perform(audio.stop())
         model.data.speak.playback = .stopped
+    }
+
+    /// Carries out what `ClipAudio` decided, in order.
+    private func perform(_ effects: [ClipEffect], clip: SpeakClip? = nil) {
+        for effect in effects {
+            switch effect {
+            case .stopOtherAudio:
+                stopOtherAudio()
+            case .start:
+                guard let clip else { break }
+                do {
+                    try player.play(wav: clip.wav)
+                    model.data.speak.playback = .playing
+                } catch {
+                    audio.startFailed()
+                    model.data.speak.playback = .stopped
+                    model.data.notice = L10nKey.playFailed.text
+                    host.workEnded()
+                }
+            case .pause:
+                player.toggle()
+                model.data.speak.playback = .paused
+            case .resume:
+                player.toggle()
+                model.data.speak.playback = .playing
+            case .halt:
+                player.stop()
+                model.data.speak.playback = .stopped
+            case .handshakeMayRun:
+                host.workEnded()
+            case .blockedByRecording:
+                model.data.notice = L10nKey.speakPlayBlockedRecording.text
+            }
+        }
     }
 
     // MARK: saving
@@ -220,7 +230,7 @@ final class SpeakSource {
     /// «Сохранить…»: the save panel is a sheet on the main window; the person's own act writes the file.
     func save() {
         guard let clip = model.data.speak.selectedClip else { return }
-        SpeakSave.present(clip) { [weak self] saved in
+        SpeakSave.present(clip, in: host.mainWindow()) { [weak self] saved in
             if !saved { self?.model.data.notice = L10nKey.speakSaveFailed.text }
         }
     }
@@ -229,7 +239,7 @@ final class SpeakSource {
 /// The save panel of «Сохранить…». It lives apart from the source so the host can hand it over as a closure.
 enum SpeakSave {
     @MainActor
-    static func present(_ clip: SpeakClip, completion: @escaping (Bool) -> Void) {
+    static func present(_ clip: SpeakClip, in window: NSWindow?, completion: @escaping (Bool) -> Void) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.wav]
         panel.nameFieldStringValue = SpeakClips.fileName(forTitle: clip.title)
@@ -244,7 +254,7 @@ enum SpeakSave {
                 completion(false)
             }
         }
-        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+        if let window {
             panel.beginSheetModal(for: window, completionHandler: write)
         } else {
             panel.begin(completionHandler: write)

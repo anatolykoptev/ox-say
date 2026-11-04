@@ -43,6 +43,10 @@ struct MainWindowHost {
     var consumeFirstRun: () -> Bool
     /// Why a new speak request must wait (an update is installing), else nil.
     var speechRefusal: () -> String?
+    /// The one OxSay window, for the save panel to attach to.
+    var mainWindow: () -> NSWindow?
+    /// Stops the app's own speech player (speak-selection and voiceover playback): a clip never overlaps it.
+    var stopSpeechPlayer: () -> Void
 }
 
 /// Fills the main window with what the app really has and carries out what the window asks. The window holds no timer:
@@ -101,7 +105,11 @@ final class MainWindowSource {
                                       self?.speakSource.voicesChanged()
                                   })
         speakSource = SpeakSource(model: model, host: host)
-        speakSource.stopVoicePreview = { [weak self] in self?.voiceSource.stopPreview() }
+        speakSource.stopOtherAudio = { [weak self] in
+            self?.voiceSource.stopPreview()
+            self?.stopPlayback()
+            host.stopSpeechPlayer()
+        }
         let defaults = host.defaults
         model.advancedChanged = { [weak model] on in
             AdvancedMode.set(on, in: defaults)
@@ -159,6 +167,9 @@ final class MainWindowSource {
 
     /// The person is recording their own voice (a take in progress, kept or being sent): the version handshake waits.
     var recordingVoice: Bool { voiceSource.recordingVoice }
+
+    /// The app's own player starts (speak-selection, voiceover): a clip on Озвучка stops first.
+    func stopSpeakClip() { speakSource.stopClip() }
 
     /// A speak request is on its way or a clip sounds: the version handshake waits for it.
     var speakBusy: Bool { speakSource.busy }
@@ -494,6 +505,7 @@ final class MainWindowSource {
                         model.data.notice = L10nKey.playBlockedRecording.text
                         return
                     }
+                    speakSource.stopClip()
                     audio.play(url: host.client.meetingAudioURL(id: id), meetingID: id, from: start)
                 case .removed:
                     // Retention took it: the line says so once (the header notice) and offers no play any more.

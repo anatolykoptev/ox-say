@@ -734,3 +734,4 @@
 "speak.save_failed" = "Не удалось сохранить файл.";
 "speak.studio.needs_apple_silicon" = "Студийный голос работает только на Mac с Apple Silicon.";
 "speak.studio.needs_memory" = "Студийному голосу нужно %@ ГБ памяти, а на этом Mac — %@ ГБ.";
+"speak.play_blocked_recording" = "Озвучка не воспроизводится, пока идёт запись встречи, чтобы не попасть в запись.";
