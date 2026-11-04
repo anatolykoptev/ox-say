@@ -1,7 +1,7 @@
 import AVFoundation
 import DictationCore
 
-/// Records the default input device as 16 kHz mono float samples, which is what
+/// Records the default input device as mono float samples — 16 kHz by default, which is what
 /// the daemon's speech-to-text wants.
 final class MicRecorder: Recorder {
     /// A stuck key must not record forever.
@@ -26,15 +26,23 @@ final class MicRecorder: Recorder {
     var onEnded: ((String) -> Void)?
 
     private let engine = AVAudioEngine()
-    private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+    private let target: AVAudioFormat
     /// The recording and its epoch gate: the tap closure captures the epoch
     /// of its start, so a buffer still in flight across a recording boundary
     /// is dropped instead of leaking the old recording's tail into the next one.
-    private let recording = RecordingBuffer(sampleRate: 16000, maxSeconds: 120)
+    private let recording: RecordingBuffer
     private var ended = false
     private var configObserver: NSObjectProtocol?
     private let lock = NSLock()
-    private let meter = LevelMeter(bands: 9, sampleRate: 16000)
+    private let meter: LevelMeter
+
+    /// `sampleRate` is the rate of the samples it keeps: 16 kHz for dictation (the daemon's speech-to-text), which every
+    /// existing caller gets by passing nothing; the voice recording asks for 24 kHz, above the dictation rate, for the clone engines.
+    init(sampleRate: Int = 16000) {
+        target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(sampleRate), channels: 1, interleaved: false)!
+        recording = RecordingBuffer(sampleRate: Double(sampleRate), maxSeconds: 120)
+        meter = LevelMeter(bands: 9, sampleRate: Double(sampleRate))
+    }
 
     func prepare() throws {
         // Without permission the engine still runs and records silence, which

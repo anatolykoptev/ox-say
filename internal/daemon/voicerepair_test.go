@@ -116,7 +116,11 @@ func TestAddVoiceNoticeInResponse(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
 	d := newTestDaemon(t, dir, nil)
-	d.Store.SetTranscriber(func(context.Context, string) ([]voices.Word, error) {
+	// A clip within the cap is checked too: its transcript says what was typed, so no notice. A long one is cut.
+	d.Store.SetTranscriber(func(_ context.Context, wav string) ([]voices.Word, error) {
+		if sec, _ := voices.WAVSeconds(wav); sec <= voices.MaxRefSeconds {
+			return []voices.Word{{W: "typed", S: 0, E: 0.4}, {W: "by", S: 0.5, E: 0.9}, {W: "hand", S: 1, E: 1.4}}, nil
+		}
 		return fakeWords(60), nil
 	})
 	mux := http.NewServeMux()

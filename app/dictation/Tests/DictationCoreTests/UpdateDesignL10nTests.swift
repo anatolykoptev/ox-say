@@ -14,28 +14,28 @@ final class UpdateDesignL10nTests: XCTestCase {
 
     func testTheBusyRepairAndStudioDialogsReadRightInBothLanguages() {
         XCTAssertEqual(UpdateDialogs.busy(text: en), UpdateDialog(title: "An update is already being installed.",
-            text: "Wait for it to finish; ox-say restarts when it is done.", buttons: ["OK"]))
+            text: "Wait for it to finish; OxSay restarts when it is done.", buttons: ["OK"]))
         XCTAssertEqual(UpdateDialogs.busy(text: ru), UpdateDialog(title: "Обновление уже устанавливается.",
-            text: "Дождитесь окончания: ox-say перезапустится сам.", buttons: ["OK"]))
-        XCTAssertEqual(UpdateDialogs.repair(target: "0.1.21", text: ru), UpdateDialog(title: "Восстановить ox-say?",
-            text: "Приложение и служба ox-say работают на разных версиях. Будет заново установлена v0.1.21, она уже есть на диске; пока ox-say перезапускается, диктовка приостановится.",
+            text: "Дождитесь окончания: OxSay перезапустится сам.", buttons: ["OK"]))
+        XCTAssertEqual(UpdateDialogs.repair(target: "0.1.21", text: ru), UpdateDialog(title: "Восстановить OxSay?",
+            text: "Приложение и служба OxSay работают на разных версиях. Будет заново установлена v0.1.21, она уже есть на диске; пока OxSay перезапускается, диктовка приостановится.",
             buttons: ["Восстановить", "Отмена"]))
         XCTAssertEqual(UpdateDialogs.repair(target: "0.1.21", text: en).buttons, ["Repair", "Cancel"])
         XCTAssertEqual(UpdateDialogs.repair(target: "0.1.21", text: en).text,
-                       "The app and the ox-say service disagree on the version. This reinstalls v0.1.21, the version already on disk; dictation pauses while ox-say restarts.")
+                       "The app and the OxSay service disagree on the version. This reinstalls v0.1.21, the version already on disk; dictation pauses while OxSay restarts.")
         XCTAssertEqual(UpdateDialogs.studioVoice(text: en), UpdateDialog(title: "Install the studio voice?",
-            text: "Downloads the studio voice model once, about 3 GB. Dictation pauses for a few seconds while ox-say restarts.",
+            text: "Downloads the studio voice model once, about 3 GB. Dictation pauses for a few seconds while OxSay restarts.",
             buttons: ["Install", "Cancel"]))
         XCTAssertEqual(UpdateDialogs.studioVoice(text: ru), UpdateDialog(title: "Установить студийный голос?",
-            text: "Модель студийного голоса скачивается один раз, около 3 ГБ. Пока ox-say перезапускается, диктовка на несколько секунд приостановится.",
+            text: "Модель студийного голоса скачивается один раз, около 3 ГБ. Пока OxSay перезапускается, диктовка на несколько секунд приостановится.",
             buttons: ["Установить", "Отмена"]))
     }
 
     func testTheCheckForUpdatesAnswersReadRightInBothLanguages() {
         XCTAssertEqual(UpdateDialogs.prompt(.upToDate(version: "0.1.21"), text: en),
-                       UpdateDialog(title: "You're up to date", text: "ox-say v0.1.21 is the newest version.", buttons: ["OK"]))
+                       UpdateDialog(title: "You're up to date", text: "OxSay v0.1.21 is the newest version.", buttons: ["OK"]))
         XCTAssertEqual(UpdateDialogs.prompt(.upToDate(version: "0.1.21"), text: ru),
-                       UpdateDialog(title: "У вас последняя версия", text: "ox-say v0.1.21 — самая новая версия.", buttons: ["OK"]))
+                       UpdateDialog(title: "У вас последняя версия", text: "OxSay v0.1.21 — самая новая версия.", buttons: ["OK"]))
         let failed = UpdatePrompt.make(local: "0.1.20", fetch: .failure(.http(403)), text: ru)
         XCTAssertEqual(UpdateDialogs.prompt(failed, text: ru),
                        UpdateDialog(title: "Не удалось проверить обновления", text: "GitHub ответил кодом 403 — попробуйте позже",
@@ -46,21 +46,21 @@ final class UpdateDesignL10nTests: XCTestCase {
     func testTheDevBuildAnswerReadsRightInBothLanguages() {
         XCTAssertEqual(UpdateDialogs.prompt(.developmentBuild(version: "0.0.0"), text: en),
                        UpdateDialog(title: "This is a development build",
-                                    text: "ox-say v0.0.0 is a development build, not a release. Updates are offered to released versions only.",
+                                    text: "OxSay v0.0.0 is a development build, not a release. Updates are offered to released versions only.",
                                     buttons: ["OK"]))
         XCTAssertEqual(UpdateDialogs.prompt(.developmentBuild(version: "0.0.0"), text: ru),
                        UpdateDialog(title: "Это сборка для разработки",
-                                    text: "ox-say v0.0.0 — сборка для разработки, а не релиз. Обновления предлагаются только для выпущенных версий.",
+                                    text: "OxSay v0.0.0 — сборка для разработки, а не релиз. Обновления предлагаются только для выпущенных версий.",
                                     buttons: ["OK"]))
     }
 
     func testTheAvailableAlertCarriesNotesAndTheNotesButtonOnlyWithAPage() {
         let page = URL(string: "https://x.test/r")
         XCTAssertEqual(UpdateDialogs.prompt(.available(remote: "v0.1.22", local: "0.1.21", notes: "Fixes", url: page), text: ru),
-                       UpdateDialog(title: "Вышла новая версия ox-say v0.1.22", text: "У вас v0.1.21.\n\nFixes",
+                       UpdateDialog(title: "Вышла новая версия OxSay v0.1.22", text: "У вас v0.1.21.\n\nFixes",
                                     buttons: ["Обновить", "Позже", "Что нового…"]))
         XCTAssertEqual(UpdateDialogs.prompt(.available(remote: "v0.1.22", local: "0.1.21", notes: "", url: nil), text: en),
-                       UpdateDialog(title: "ox-say v0.1.22 is available", text: "You have v0.1.21.", buttons: ["Update", "Later"]))
+                       UpdateDialog(title: "OxSay v0.1.22 is available", text: "You have v0.1.21.", buttons: ["Update", "Later"]))
     }
 
     func testEveryUpdateErrorReadsRightInBothLanguages() {
@@ -77,8 +77,8 @@ final class UpdateDesignL10nTests: XCTestCase {
         XCTAssertEqual(UpdateInstaller.installingPill(kind: .update, tag: "v0.1.22", text: ru), "Устанавливаю v0.1.22…")
         XCTAssertEqual(UpdateInstaller.installingPill(kind: .studioVoice, tag: "v0.1.22", text: ru), "Устанавливаю студийный голос…")
         XCTAssertEqual(UpdateInstaller.installingPill(kind: .studioVoice, tag: "v0.1.22", text: en), "Installing the studio voice…")
-        XCTAssertEqual(en(.updateRepairItem), "Repair ox-say…")
-        XCTAssertEqual(ru(.updateRepairItem), "Восстановить ox-say…")
+        XCTAssertEqual(en(.updateRepairItem), "Repair OxSay…")
+        XCTAssertEqual(ru(.updateRepairItem), "Восстановить OxSay…")
         XCTAssertEqual(en(.updateFinishingPill), "Finishing the update…")
         XCTAssertEqual(ru(.updateFinishingPill), "Завершаю обновление…")
         XCTAssertEqual(StudioMenu.installTitle(text: ru), "Установить студийный голос (около 3 ГБ)…")

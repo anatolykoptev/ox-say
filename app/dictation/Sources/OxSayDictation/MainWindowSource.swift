@@ -34,6 +34,11 @@ struct MainWindowHost {
     var installStudioVoice: () -> Void
     /// The describe-a-voice driver, owned by the Studio controller: its `running` is what the version handshake reads.
     var designer: () -> VoiceDesigner
+    /// A dictation is recording and holding the microphone, read live: a voice take must never start beside it.
+    var dictationRecording: () -> Bool
+    /// Work the window was doing has ended (a voice take closed, saved or was thrown away): a version handshake
+    /// held back for it runs again.
+    var workEnded: () -> Void
 }
 
 /// Fills the main window with what the app really has and carries out what the window asks. The window holds no timer:
@@ -82,6 +87,9 @@ final class MainWindowSource {
         restoredMeetingUnchecked = restored.meetingID != nil
         voiceSource = VoiceSource(model: model, client: host.client, speech: host.speech, defaults: host.defaults,
                                   recordingRunning: { host.meetings()?.recordingElapsed != nil },
+                                  dictationRecording: { host.dictationRecording() },
+                                  windowGone: { [weak self] in self?.windowOpen == false },
+                                  workEnded: { host.workEnded() },
                                   designer: host.designer(), changed: host.voicesChanged)
         let defaults = host.defaults
         model.advancedChanged = { [weak model] on in
@@ -117,6 +125,7 @@ final class MainWindowSource {
                                                                 object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                self.voiceSource.microphoneMayHaveChanged()
                 guard ActivationRefresh.shouldRefresh(windowOpen: self.windowOpen, visible: self.visible,
                                                       now: ProcessInfo.processInfo.systemUptime,
                                                       lastPermissionRead: self.lastPermissionRead) else { return }
@@ -137,6 +146,9 @@ final class MainWindowSource {
         voiceSource.design(.open)
     }
 
+    /// The person is recording their own voice (a take in progress, kept or being sent): the version handshake waits.
+    var recordingVoice: Bool { voiceSource.recordingVoice }
+
     /// Points the window at a section (and a meeting). A route without a meeting leaves the open one alone.
     func apply(_ route: MainRoute) {
         let route = route.resolved(visible: MainWindowSpec.sections(advanced: model.advanced))
@@ -153,6 +165,7 @@ final class MainWindowSource {
         voiceSource.stopPreview()
         voiceSource.quietDesign()
         voiceSource.quietFile()
+        voiceSource.quietRecording()
         stopClocks()
     }
 
@@ -179,7 +192,7 @@ final class MainWindowSource {
     /// The meeting feature started or stopped a recording (or was switched off).
     func recordingChanged() {
         // A call's audio never plays while a recording runs, visible window or not — nor does a voice's sample.
-        if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview(); voiceSource.quietDesign() }
+        if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview(); voiceSource.quietDesign(); voiceSource.meetingStarted() }
         guard visible else { return }
         syncRecording()
         refresh()
@@ -234,6 +247,7 @@ final class MainWindowSource {
         a.deleteVoice = { [weak self] id in self?.voiceSource.delete(id) }
         a.voiceDesign = { [weak self] step in self?.voiceSource.design(step) }
         a.voiceFile = { [weak self] step in self?.voiceSource.file(step) }
+        a.voiceRecord = { [weak self] step in self?.voiceSource.recording(step) }
         a.installStudioVoice = { [weak self] in self?.host.installStudioVoice() }
         a.setStartAtLogin = { [weak self] on in
             guard let self else { return }

@@ -109,6 +109,50 @@ final class LocalizationTests: XCTestCase {
         XCTAssertTrue(ShippedStrings.table("ru")["meeting.diar.unavailable.retry_now"]?.contains("можно найти") == true)
     }
 
+    /// User-facing copy names the app "OxSay" — the lowercase "ox-say" is the binary, the repo and the
+    /// daemon, never what a person reads. Keys and code identifiers keep it; no value may. The permission
+    /// prompts are user-facing too: both InfoPlist.strings files and the Info.plist heredoc in build.sh.
+    /// Mutation: any en/ru value back to "ox-say" -> RED; an InfoPlist value back to "ox-say" -> RED.
+    func testNoUserFacingStringSpellsTheAppInLowerCase() {
+        for locale in ["en", "ru"] {
+            for (key, value) in ShippedStrings.table(locale) where value.contains("ox-say") {
+                XCTFail("\(locale).lproj \(key) has a lowercase \"ox-say\": \(value)")
+            }
+            let plistStrings = packageRoot.appendingPathComponent("Resources/\(locale).lproj/InfoPlist.strings")
+            for value in Self.stringsValues(in: plistStrings) where value.contains("ox-say") {
+                XCTFail("\(locale).lproj InfoPlist.strings has a lowercase \"ox-say\": \(value)")
+            }
+        }
+        let build = packageRoot.appendingPathComponent("build.sh")
+        let script = (try? String(contentsOf: build, encoding: .utf8)) ?? ""
+        let plist = script.range(of: "cat > \"$app/Contents/Info.plist\"").map {
+            String(script[$0.lowerBound..<(script.range(of: "\nEOF", range: $0.upperBound..<script.endIndex)?.lowerBound ?? script.endIndex)])
+        } ?? ""
+        XCTAssertFalse(plist.isEmpty, "the Info.plist heredoc in build.sh was not found")
+        for value in Self.plistStringValues(in: plist) where value.contains("ox-say") {
+            XCTFail("Info.plist in build.sh has a lowercase \"ox-say\": \(value)")
+        }
+    }
+
+    /// The right-hand values of `"key" = "value";` lines of a .strings file.
+    private static func stringsValues(in url: URL) -> [String] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        let re = try! NSRegularExpression(pattern: #""[^"\n]+"\s*=\s*"((?:[^"\\\n]|\\.)*)""#)
+        let range = NSRange(text.startIndex..., in: text)
+        return re.matches(in: text, range: range).compactMap {
+            Range($0.range(at: 1), in: text).map { String(text[$0]) }
+        }
+    }
+
+    /// The `<string>…</string>` element contents of a plist text.
+    private static func plistStringValues(in text: String) -> [String] {
+        let re = try! NSRegularExpression(pattern: #"<string>([^<]*)</string>"#)
+        let range = NSRange(text.startIndex..., in: text)
+        return re.matches(in: text, range: range).compactMap {
+            Range($0.range(at: 1), in: text).map { String(text[$0]) }
+        }
+    }
+
     /// Every automatic stop says so, neutrally (it can also be a muted listener, not only a hang-up).
     /// Mutation: ru "notice.meeting.call_ended" emptied -> RED.
     func testTheCallEndedNoticeExists() {

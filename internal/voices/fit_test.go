@@ -115,12 +115,12 @@ func TestPrepareTranscribesOnlyTheProbeWindow(t *testing.T) {
 	}
 }
 
-// Today's behaviour for a clip that fits: ref_text untouched, no STT.
+// A clip that fits and says its ref_text: the text stays as typed, no notice. The STT is asked once, to check.
 func TestPrepareShortClipUnchanged(t *testing.T) {
 	s, dir := newStore(t)
 	src := testutil.WriteSilentWAV(t, dir, "short.wav", 12)
 	calls := 0
-	s.SetTranscriber(fixedWords(speechWords(30, 0.3, 0.1, 5), &calls))
+	s.SetTranscriber(fixedWords(words10("exactly what I typed"), &calls))
 	v, err := s.Add(context.Background(), "ben", src, "exactly what I typed")
 	if err != nil {
 		t.Fatal(err)
@@ -128,8 +128,8 @@ func TestPrepareShortClipUnchanged(t *testing.T) {
 	if v.RefText != "exactly what I typed" || v.Notice != "" {
 		t.Fatalf("voice = %+v, want unchanged ref_text and no notice", v)
 	}
-	if calls != 0 {
-		t.Fatalf("transcriber called %d times for a clip that fits", calls)
+	if calls != 1 {
+		t.Fatalf("transcriber called %d times for a clip that fits, want 1", calls)
 	}
 	if d, _ := WAVSeconds(s.WAVPath("ben")); math.Abs(d-12) > 0.05 {
 		t.Fatalf("stored clip is %.2f s, want 12", d)
@@ -469,5 +469,93 @@ func TestScriptGreek(t *testing.T) {
 	}
 	if SameScript("Καλησπέρα κόσμε", "Hello world") {
 		t.Fatal("greek and latin treated as the same script")
+	}
+}
+
+// words10 is a transcript of text spoken over a 10 s clip, one word per half second.
+func words10(text string) []Word {
+	var out []Word
+	for i, w := range strings.Fields(text) {
+		out = append(out, Word{W: w, S: float64(i) * 0.5, E: float64(i)*0.5 + 0.4})
+	}
+	return out
+}
+
+// A clip within the cap whose ref_text says more than the clip does (a slow reader stopped after the first
+// sentence): the stored text is the transcript, with a notice.
+// Mutation: internal/voices/fit.go fitReference — delete the within-cap TextsMatch check
+// (return `refText, "", nil` as before) -> RED.
+func TestPrepareWithinCapPartialTranscriptReplacesRefText(t *testing.T) {
+	s, dir := newStore(t)
+	src := testutil.WriteSilentWAV(t, dir, "take.wav", 10)
+	s.SetTranscriber(fixedWords(words10("The quick brown fox jumps over the lazy dog."), new(int)))
+	v, err := s.Add(context.Background(), "ben", src, "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.RefText != "The quick brown fox jumps over the lazy dog." {
+		t.Fatalf("ref_text = %q, want the transcript of what was said", v.RefText)
+	}
+	if !strings.Contains(v.Notice, "did not match the clip") || !strings.Contains(v.Notice, "9-word") {
+		t.Fatalf("notice = %q, want the mismatch notice naming the 9-word transcript", v.Notice)
+	}
+}
+
+// A transcript that matches keeps the user's own text (punctuation, case) and says nothing.
+func TestPrepareWithinCapMatchingTranscriptKeepsRefText(t *testing.T) {
+	s, dir := newStore(t)
+	src := testutil.WriteSilentWAV(t, dir, "take.wav", 10)
+	calls := 0
+	s.SetTranscriber(fixedWords(words10("the quick brown fox jumps over the lazy dog"), &calls))
+	const typed = "The quick brown fox jumps over the lazy dog."
+	v, err := s.Add(context.Background(), "ben", src, typed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.RefText != typed || v.Notice != "" {
+		t.Fatalf("voice = %+v, want the typed ref_text and no notice", v)
+	}
+	if calls != 1 {
+		t.Fatalf("transcriber called %d times, want 1", calls)
+	}
+}
+
+// Without a transcriber, with an unsupported script, or when the STT fails, a clip within the cap keeps the text as
+// given: the add must not fail because the STT is down.
+func TestPrepareWithinCapKeepsRefTextWhenItCannotBeChecked(t *testing.T) {
+	cases := map[string]struct {
+		tr   Transcriber
+		text string
+	}{
+		"nil":      {nil, "some text"},
+		"no model": {func(context.Context, string) ([]Word, error) { return nil, fmt.Errorf("%w: missing", ErrNoTranscriber) }, "some text"},
+		"stt busy": {func(context.Context, string) ([]Word, error) { return nil, errors.New("stt: busy") }, "some text"},
+		"script":   {func(context.Context, string) ([]Word, error) { return words10("completely different"), nil }, "你好世界今天天气很好"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			s, dir := newStore(t)
+			src := testutil.WriteSilentWAV(t, dir, "take.wav", 10)
+			s.SetTranscriber(c.tr)
+			v, err := s.Add(context.Background(), "ben", src, c.text)
+			if err != nil {
+				t.Fatalf("add failed: %v", err)
+			}
+			if v.RefText != c.text || v.Notice != "" {
+				t.Fatalf("voice = %+v, want the text as given and no notice", v)
+			}
+		})
+	}
+}
+
+// A transcript that is empty means the clip holds no speech: refused, nothing stored.
+func TestPrepareWithinCapSilentClipRefused(t *testing.T) {
+	s, dir := newStore(t)
+	src := testutil.WriteSilentWAV(t, dir, "take.wav", 10)
+	s.SetTranscriber(fixedWords(nil, new(int)))
+	_, err := s.Add(context.Background(), "ben", src, "something was said")
+	var ie *InputError
+	if !errors.As(err, &ie) || !strings.Contains(err.Error(), "no speech found in the clip") {
+		t.Fatalf("err = %v, want an InputError naming the missing speech", err)
 	}
 }

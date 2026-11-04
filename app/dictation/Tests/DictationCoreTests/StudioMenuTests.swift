@@ -61,7 +61,7 @@ final class StudioMenuTests: XCTestCase {
     }
 
     func testDaemonErrorsLoseTerminalJargon() {
-        let fallback = "The ox-say service answered with an error (400)."
+        let fallback = "The OxSay service answered with an error (400)."
         XCTAssertEqual(PlainWords.clean("produce needs a saved voice: design one with voice_design or add one with voice_add", fallback: fallback), fallback)
         XCTAssertEqual(PlainWords.clean("Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them.", fallback: fallback),
                        "Studio voices need a Mac with Apple Silicon; this computer cannot run them.")
@@ -75,7 +75,7 @@ final class StudioMenuTests: XCTestCase {
         let body = Data(#"{"error":{"message":"produce needs a saved voice: design one with voice_design or add one with voice_add"}}"#.utf8)
         XCTAssertEqual(StudioClient.refusal(status: 400, body: body),
                        .refused(status: 400, message: ""), "jargon-only: the app words the status sentence when it shows it")
-        XCTAssertEqual(StudioClient.refusal(status: 400, body: body).message(text: en), "The ox-say service answered with an error (400).")
+        XCTAssertEqual(StudioClient.refusal(status: 400, body: body).message(text: en), "The OxSay service answered with an error (400).")
     }
 
     func testUnreachableDaemonDisablesStudio() {
@@ -99,7 +99,7 @@ final class StudioMenuTests: XCTestCase {
 
     func testAFollowedVoiceoverSaysItIsWaitingWhileTheServiceIsGone() {
         let result = titles(rows(available, job: job(.running), waiting: true))
-        XCTAssertTrue(result.contains("“Ch 1” — waiting for the ox-say service…"))
+        XCTAssertTrue(result.contains("“Ch 1” — waiting for the OxSay service…"))
         XCTAssertFalse(result.contains("“Ch 1” — 2 of 5 done"))
     }
 

@@ -139,7 +139,7 @@ final class DocumentReaderTests: XCTestCase {
     func testAPdfWhoseTextIsAllLayoutDoesNotSayItMayBeAScan() {
         let document = ReadDocument(pages: ["1", "2", "3"], source: .pdf)
         XCTAssertEqual(document.script, "")
-        XCTAssertEqual(Self.emptyText(document), "ox-say could not find readable text in this PDF after cleaning it up.")
+        XCTAssertEqual(Self.emptyText(document), "OxSay could not find readable text in this PDF after cleaning it up.")
         XCTAssertEqual(Self.emptyText(ReadDocument(pages: ["", "  \n"], source: .pdf)), "This PDF has no text to read (it may be a scan).")
     }
 

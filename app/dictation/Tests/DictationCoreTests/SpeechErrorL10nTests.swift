@@ -130,7 +130,7 @@ final class SpeechErrorL10nTests: XCTestCase {
     }
 
     func testTheSlowerPathReasonFitsThePill() {
-        XCTAssertEqual(SlowTranscription.reason(sttServerState: "stopped", text: en), "ox-say service off — slower")
+        XCTAssertEqual(SlowTranscription.reason(sttServerState: "stopped", text: en), "OxSay service off — slower")
         XCTAssertLessThanOrEqual(ru(.slowSlowerPath).count, 32)
         XCTAssertLessThanOrEqual(en(.slowSlowerPath).count, 32)
     }
@@ -345,11 +345,11 @@ final class SpeechErrorL10nTests: XCTestCase {
                                .transcribeErrorUnreachable, .transcribeErrorTimedOut, .transcribeErrorHttp, .transcribeErrorBadResponse,
                                .slowSlowerPath, .slowOff, .slowNoAnswer]
         for key in keys {
-            let e = en(key).lowercased(), r = ru(key).lowercased()
-            XCTAssertTrue(e.contains("ox-say service") || e.contains("ox-say"), "\(key): \(e)")
-            XCTAssertTrue(r.contains("ox-say"), "\(key): \(r)")
-            for bad in ["daemon", "speech server"] { XCTAssertFalse(e.contains(bad), "\(key): \(e)") }
-            for bad in ["речевой сервер", "сервер речи", "демон"] { XCTAssertFalse(r.contains(bad), "\(key): \(r)") }
+            let e = en(key), r = ru(key)
+            XCTAssertTrue(e.contains("OxSay service") || e.contains("OxSay"), "\(key): \(e)")
+            XCTAssertTrue(r.contains("OxSay"), "\(key): \(r)")
+            for bad in ["daemon", "speech server"] { XCTAssertFalse(e.lowercased().contains(bad), "\(key): \(e)") }
+            for bad in ["речевой сервер", "сервер речи", "демон"] { XCTAssertFalse(r.lowercased().contains(bad), "\(key): \(r)") }
         }
     }
 }

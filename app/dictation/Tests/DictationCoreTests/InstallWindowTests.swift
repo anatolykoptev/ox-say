@@ -87,9 +87,9 @@ final class InstallWindowTests: XCTestCase {
     /// Mutation: en or ru "notice.updating.dictation" reworded -> RED.
     func testTheNoticesAreShippedInBothLanguages() {
         let en = ShippedStrings.table("en"), ru = ShippedStrings.table("ru")
-        XCTAssertEqual(en["notice.updating.dictation"], "ox-say is updating — dictation will be back shortly.")
-        XCTAssertEqual(ru["notice.updating.dictation"], "ox-say обновляется — диктовка скоро вернётся.")
-        XCTAssertEqual(en["notice.updating.speak"], "ox-say is updating — reading aloud will be back shortly.")
-        XCTAssertEqual(ru["notice.updating.speak"], "ox-say обновляется — чтение вслух скоро вернётся.")
+        XCTAssertEqual(en["notice.updating.dictation"], "OxSay is updating — dictation will be back shortly.")
+        XCTAssertEqual(ru["notice.updating.dictation"], "OxSay обновляется — диктовка скоро вернётся.")
+        XCTAssertEqual(en["notice.updating.speak"], "OxSay is updating — reading aloud will be back shortly.")
+        XCTAssertEqual(ru["notice.updating.speak"], "OxSay обновляется — чтение вслух скоро вернётся.")
     }
 }
