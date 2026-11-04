@@ -63,6 +63,7 @@ struct MeetingsPage: View {
                     Button(L10nKey.menuMeetingRecord.text) { model.actions.startRecording() }
                         .controlSize(.large)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 PrivacyLine().padding(.bottom, 14)
             }
         case .list(let stale):
