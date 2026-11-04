@@ -4,11 +4,11 @@ import XCTest
 final class MainWindowSpecTests: XCTestCase {
     /// The sections with nothing behind them yet stay out of the sidebar, and the Advanced switch stays undrawn.
     func testTheSidebarShowsTheLiveSectionsInSidebarOrder() {
-        XCTAssertEqual(MainWindowSpec.sections(advanced: false), [.voices, .dictation, .meetings, .settings])
+        XCTAssertEqual(MainWindowSpec.sections(advanced: false), [.speak, .voices, .dictation, .meetings, .settings])
         XCTAssertEqual(MainWindowSpec.sections(advanced: true), MainWindowSpec.sections(advanced: false),
                        "Models is not live yet, so the switch changes nothing")
         XCTAssertFalse(MainWindowSpec.showsAdvancedSwitch)
-        XCTAssertEqual(MainWindowSpec.firstRunSection, .meetings, "Voiceover is not live yet")
+        XCTAssertEqual(MainWindowSpec.firstRunSection, .speak, "Voiceover is live")
     }
 
     /// The window floor leaves room for the widest sidebar (240), the Meetings list at its least (260), the divider (1) and the

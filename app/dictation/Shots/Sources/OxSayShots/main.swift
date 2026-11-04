@@ -158,6 +158,24 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         steps(&r)
         return voices(PreviewData.make(now: now, ru: ru)) { $0.record = VoiceRecordValues(recording: r, levels: levels) }
     }
+    /// The Озвучка page: the sample text of the shot's language, the daemon answering, and the given changes.
+    func speak(_ now: Date, _ ru: Bool, _ change: (inout SpeakValues) -> Void) -> MainWindowData {
+        var d = PreviewData.make(now: now, ru: ru)
+        var v = SpeakValues(text: ru ? L10nKey.speakSampleRu.text : L10nKey.speakSampleEn.text, reach: .reachable)
+        change(&v)
+        d.speak = v
+        return d
+    }
+    func speakClips(_ now: Date, _ ru: Bool) -> [SpeakClip] {
+        let texts = ru
+            ? ["Привет! Это мой первый голос. Сегодня расскажу, почему короткие ролики работают лучше длинных.", "Добро пожаловать в студию. Начнём с самого простого.", "Спасибо, что дослушали до конца."]
+            : ["Hi! This is my first voice. Today I will explain why short videos work better than long ones.", "Welcome to the studio. Let us start with the simplest thing.", "Thank you for listening to the end."]
+        return texts.enumerated().map { i, t in
+            SpeakClip(id: "c\(i)", title: SpeakClips.title(of: t), text: t, voice: nil, seconds: [14.0, 7.5, 3.0][i], wav: Data(count: 16),
+                      created: now.addingTimeInterval(-Double(i) * 1500 - 60))
+        }
+    }
+    let siliconReason = "Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them."
     func takes() -> [DesignTake] {
         (1...3).map { DesignTake(path: "/t/\($0).wav", durationSeconds: 6, suggestedName: "calm-narrator-\($0)",
                                 warning: $0 == 3 ? "this take may contain babble" : nil) }
@@ -182,6 +200,32 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         Scene(name: "audio-removed", section: .meetings, meeting: "m5", tab: .transcript) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "sidebar-simple", section: .meetings, meeting: nil, sidebar: true) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "sidebar-advanced", section: .meetings, meeting: nil, sidebar: true, advanced: true) { PreviewData.make(now: $0, ru: $1) },
+        // Озвучка on the fast voice: first run on an Intel Mac, a finished take, generating, failed, offline, too long,
+        // and the studio voice not downloaded.
+        Scene(name: "speak-first-run", section: .speak, meeting: nil) { now, ru in
+            speak(now, ru) { $0.studio = .unsupported(siliconReason) }
+        },
+        Scene(name: "speak-ready", section: .speak, meeting: nil) { now, ru in
+            speak(now, ru) { v in
+                v.clips = speakClips(now, ru); v.selectedID = "c0"; v.text = v.clips[0].text; v.phase = .ready
+                v.playback = .paused; v.studio = .available
+            }
+        },
+        Scene(name: "speak-generating", section: .speak, meeting: nil) { now, ru in
+            speak(now, ru) { v in v.clips = Array(speakClips(now, ru).dropFirst()); v.phase = .generating; v.studio = .available }
+        },
+        Scene(name: "speak-failed", section: .speak, meeting: nil) { now, ru in
+            speak(now, ru) { v in v.clips = speakClips(now, ru); v.phase = .failed(SpeechError.engineUnavailable.message()) }
+        },
+        Scene(name: "speak-offline", section: .speak, meeting: nil) { now, ru in
+            speak(now, ru) { v in v.reach = .unreachable(SpeechError.daemonUnreachable("").message()) }
+        },
+        Scene(name: "speak-too-long", section: .speak, meeting: nil) { now, ru in
+            speak(now, ru) { v in v.text = String(repeating: ru ? "Длинный текст. " : "A long text. ", count: 400) }
+        },
+        Scene(name: "speak-studio-note", section: .speak, meeting: nil) { now, ru in
+            speak(now, ru) { v in v.studio = .notInstalled }
+        },
         Scene(name: "dictation", section: .dictation, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "voices-list", section: .voices, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "voices-playing", section: .voices, meeting: nil) { voices(PreviewData.make(now: $0, ru: $1)) { $0.playingID = "studio-mara" } },

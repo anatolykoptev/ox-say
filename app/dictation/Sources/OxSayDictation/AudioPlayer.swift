@@ -18,7 +18,10 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
     /// Counts the clips started: whoever started one can tell later whether it is still the last (VariantPlayback).
     private(set) var serial = 0
 
-    /// Stops whatever was playing and starts the new clip.
+    struct DidNotStart: Error {}
+
+    /// Stops whatever was playing and starts the new clip. A player that does not start (the output device is gone)
+    /// throws, so nobody tracks a clip that never sounds.
     func play(wav: Data) throws {
         stop()
         serial += 1
@@ -26,7 +29,11 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
         next.delegate = self
         next.prepareToPlay()
         player = next
-        next.play()
+        guard next.play() else {
+            player = nil
+            next.delegate = nil
+            throw DidNotStart()
+        }
     }
 
     /// Toggles between pause and resume; a no-op when nothing is loaded.
@@ -45,6 +52,11 @@ final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
         player = nil
         previous?.delegate = nil
         previous?.stop()
+    }
+
+    /// A clip that cannot be decoded mid-way ends like one that finished: nobody is left waiting for it.
+    func audioPlayerDecodeErrorDidOccur(_ failed: AVAudioPlayer, error _: Error?) {
+        audioPlayerDidFinishPlaying(failed, successfully: false)
     }
 
     func audioPlayerDidFinishPlaying(_ finished: AVAudioPlayer, successfully _: Bool) {

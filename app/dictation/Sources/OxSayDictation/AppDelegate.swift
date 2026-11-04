@@ -160,6 +160,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// the newest request owns it. A daemon restart or a relaunch in between
     /// would lose the synthesis.
     private var speakInFlight = false
+    /// The first ever launch, until Озвучка takes it for its sample text.
+    private var firstRunPending = false
     /// The speak-selection hotkey and its menu state; mirrors the dictation
     /// key machinery with its own offered combinations.
     private var speakHotKey: HotKey?
@@ -234,6 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // First: the migration below writes a marker that reads as "an earlier copy ran".
         let openWindowOnFirstLaunch = FirstLaunch.claim(UserDefaults.standard, atLogin: launchedAtLogin())
+        firstRunPending = openWindowOnFirstLaunch
         // Once, before anything reads the per-app picks (#342.2).
         CallPolicy.migrateStaleAutoPicks(UserDefaults.standard)
         // A crash between a take's write and its cleanup left a private clip on disk: sweep leftovers of «Записать
@@ -249,11 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speakService.onSpeak = { [weak self] text in self?.speak(text) }
         NSApp.servicesProvider = speakService
         overlay.onPlaybackToggle = { [weak self] in self?.player.toggle() }
-        overlay.onPlaybackStop = { [weak self] in
-            self?.playbackDone = nil
-            self?.player.stop()
-            self?.overlay.finishPlaying()
-        }
+        overlay.onPlaybackStop = { [weak self] in self?.stopSpeechPlayback() }
         overlay.playbackPosition = { [weak self] in
             guard let self else { return (0, 0, false) }
             return (self.player.currentTime, self.player.duration, self.player.isPaused)
@@ -614,7 +613,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// would fail mid-way. The daemon's own half is /status `idle`.
     private func appWork() -> VersionHandshake.AppWork {
         VersionHandshake.AppWork(dictating: controller.state != .idle,
-                                 speaking: speakInFlight || player.isActivelyPlaying,
+                                 speaking: speakInFlight || player.isActivelyPlaying || (mainWindow.source?.speakBusy ?? false),
                                  designing: studio.designing,
                                  followingVoiceover: studio.followingVoiceover,
                                  recordingMeeting: meetings?.isRecording ?? false,
@@ -880,7 +879,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             installStudioVoice: { [unowned self] in self.installStudioVoice() },
             designer: { [unowned self] in self.studio.designer },
             dictationRecording: { [unowned self] in self.controller.state == .recording },
-            workEnded: { [unowned self] in self.handshakeWorkEnded() })
+            workEnded: { [unowned self] in self.handshakeWorkEnded() },
+            consumeFirstRun: { [unowned self] in
+                defer { self.firstRunPending = false }
+                return self.firstRunPending
+            },
+            speechRefusal: { UpdateGate.allowsNewDaemonWork(installing: self.updateInstalling) ? nil : L10nKey.noticeUpdatingSpeak.text },
+            mainWindow: { [unowned self] in self.mainWindow.window },
+            stopSpeechPlayer: { [unowned self] in self.stopSpeechPlayback() })
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
@@ -1034,6 +1040,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speakRequest(text, voice: voice)
     }
 
+    /// The one way the app's own speech player (speak-selection and a finished voiceover's preview) is stopped from
+    /// outside. `AudioPlayer.stop()` drops the delegate, so `player.onFinish` never runs: the playing pill, the
+    /// "ready" dialog that would follow a preview and the version handshake are settled here instead.
+    private func stopSpeechPlayback() {
+        playbackDone = nil
+        player.stop()
+        overlay.finishPlaying()
+        handshakeWorkEnded()
+    }
+
     /// Synthesizes the text through the daemon and plays it. The pill says
     /// "Speaking…" for the wait; playback then runs in the background. A newer
     /// request supersedes an in-flight one, so a slow answer cannot stop what
@@ -1060,6 +1076,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self, self.speakGeneration == generation else { return }
                 self.speakInFlight = false
                 playing = true
+                self.mainWindow.source?.stopSpeakClip()
                 try self.player.play(wav: wav)
                 // The reply can land after a dictation started: the playback
                 // pill is shown only while our own pill still stands and no
@@ -1179,6 +1196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             play: { [unowned self] wav, showPill, onFinish in
                 self.playbackDone = onFinish
                 do {
+                    self.mainWindow.source?.stopSpeakClip()
                     try self.player.play(wav: wav)
                     if showPill && PillOwnership.mayShowPlayback(dictation: self.controller.state) { self.overlay.showPlaying() }
                 } catch {
@@ -1187,10 +1205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.notice(L10nKey.playFailed.text)
                 }
             },
-            stopPlayback: { [unowned self] in
-                self.playbackDone = nil
-                self.player.stop()
-            },
+            stopPlayback: { [unowned self] in self.stopSpeechPlayback() },
             playbackSerial: { [unowned self] in self.player.serial },
             installStudioVoice: { [unowned self] in self.installStudioVoice() },
             installing: { [unowned self] in self.updateInstalling },

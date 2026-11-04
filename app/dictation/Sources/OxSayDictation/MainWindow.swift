@@ -10,7 +10,7 @@ import SwiftUI
 @MainActor
 final class MainWindowController: NSObject, NSWindowDelegate {
     /// The single window; kept across close/reopen so its autosaved frame holds.
-    private var window: NSWindow?
+    private(set) var window: NSWindow?
     /// The app delegate: the menu bar's typed `MainMenuAction`s (About) go here, and it hosts the window.
     private weak var appDelegate: AppDelegate?
     /// What the window shows, read from the daemon and the app's stores; made when the window is first opened.

@@ -19,6 +19,15 @@ public enum StudioAvailability: Equatable {
     }
 }
 
+extension StudioAvailability {
+    /// The state after a status read. A read that did not answer keeps the previous state while `waiting` (one miss after
+    /// an answer: `ReachTracker`), so the studio note and its install link do not blink away on a single miss.
+    public static func held(previous: StudioAvailability, status: DaemonStatus?, waiting: Bool) -> StudioAvailability {
+        if status == nil, waiting { return previous }
+        return of(status)
+    }
+}
+
 /// «Качество»: the fast voice works on every Mac, the studio voice needs Apple Silicon with 24 GB.
 public enum SpeakEngine: String, Equatable { case fast, studio }
 
@@ -58,7 +67,7 @@ public enum SpeakControls {
         switch a {
         case .available, .unknown: return nil
         case .notInstalled: return text(.speakStudioNotInstalled)
-        case .unsupported(let reason): return SpeakText.unavailableText(reason: reason, text)
+        case .unsupported(let reason): return SpeakText.studioReason(reason, text)
         }
     }
 }

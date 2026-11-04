@@ -67,12 +67,13 @@ public struct MainWindowView: View {
 
     @ViewBuilder private var page: some View {
         switch model.section {
+        case .speak: SpeakPage(model: model)
         case .meetings: MeetingsPage(model: model)
         case .dictation: DictationPage(model: model)
         case .voices: VoicesPage(model: model)
         case .settings: SettingsPage(model: model)
         // Not live yet: unreachable until the section's own task lists it in `MainWindowSpec.liveSections`.
-        case .speak, .transcribe, .models: EmptyView()
+        case .transcribe, .models: EmptyView()
         }
     }
 }
