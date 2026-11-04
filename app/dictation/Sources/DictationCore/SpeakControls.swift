@@ -58,7 +58,7 @@ public enum SpeakControls {
         switch a {
         case .available, .unknown: return nil
         case .notInstalled: return text(.speakStudioNotInstalled)
-        case .unsupported(let reason): return SpeakText.unavailableText(reason: reason, text)
+        case .unsupported(let reason): return SpeakText.studioReason(reason, text)
         }
     }
 }

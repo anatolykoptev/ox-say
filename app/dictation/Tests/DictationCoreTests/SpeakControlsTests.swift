@@ -94,11 +94,26 @@ final class SpeakControlsTests: XCTestCase {
                        L10nKey.speakCannotRun.rawValue)
     }
 
-    func testTheShippedNotInstalledSentenceSendsThePersonToAddOns() {
+    /// Settings -> Add-ons does not exist until window-plan Task 27, so the sentence points nowhere: the page offers the
+    /// existing studio install action beside it. Task 27 restores the pointer.
+    func testTheShippedNotInstalledSentenceHasNoDeadPointer() {
         let ru = ShippedStrings.localizer("ru"), en = ShippedStrings.localizer("en")
-        XCTAssertEqual(SpeakControls.studioNote(.notInstalled, text: ru),
-                       "Студийный голос не скачан. Его можно скачать в Настройках → Дополнения.")
-        XCTAssertEqual(SpeakControls.studioNote(.notInstalled, text: en),
-                       "The studio voice is not downloaded. You can download it in Settings → Add-ons.")
+        XCTAssertEqual(SpeakControls.studioNote(.notInstalled, text: ru), "Студийный голос не скачан.")
+        XCTAssertEqual(SpeakControls.studioNote(.notInstalled, text: en), "The studio voice is not downloaded.")
+    }
+
+    /// The daemon's own English reasons (internal/config/config.go VoxCPM2Block, the exact Go output) become ru/en sentences.
+    /// Mutation: SpeakText.studioReason, drop the Apple Silicon branch -> RED.
+    func testTheDaemonsKnownUnsupportedReasonsAreTranslated() {
+        let ru = ShippedStrings.localizer("ru"), en = ShippedStrings.localizer("en")
+        let silicon = "Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them."
+        let memory = "Studio voices (VoxCPM2) need at least 24 GB of memory; this Mac has 16 GB."
+        XCTAssertEqual(SpeakControls.studioNote(.unsupported(silicon), text: ru), "Студийный голос работает только на Mac с Apple Silicon.")
+        XCTAssertEqual(SpeakControls.studioNote(.unsupported(silicon), text: en), "The studio voice needs a Mac with Apple Silicon.")
+        XCTAssertEqual(SpeakControls.studioNote(.unsupported(memory), text: ru), "Студийному голосу нужно 24 ГБ памяти, а на этом Mac — 16 ГБ.")
+        XCTAssertEqual(SpeakControls.studioNote(.unsupported(memory), text: en), "The studio voice needs 24 GB of memory; this Mac has 16 GB.")
+        for note in [SpeakControls.studioNote(.unsupported(silicon), text: ru), SpeakControls.studioNote(.unsupported(memory), text: ru)] {
+            XCTAssertFalse(note?.contains("VoxCPM2") ?? true, "the engine's name is not shown")
+        }
     }
 }

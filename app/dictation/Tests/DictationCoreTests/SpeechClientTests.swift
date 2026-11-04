@@ -155,4 +155,41 @@ final class SpeechClientTests: XCTestCase {
         XCTAssertNil(SpeechClient.input("   \n\t  "))
         XCTAssertEqual(SpeechClient.input("  text  "), "text")
     }
+
+    // MARK: Озвучка page parameters
+
+    /// The speak-selection hotkey and the voice samples send today's body, byte for byte (keys are sorted since #475).
+    /// These literals were captured from the code before the new parameters existed.
+    /// Mutation: SpeechClient.speak, always add `"seed": 0` -> RED.
+    func testTheDefaultBodyIsTodaysBodyByteForByte() async throws {
+        let (client, lastRequest) = fakeSend(data: Data([1]))
+        _ = try await client.speak("Привет")
+        XCTAssertEqual(lastRequest()?.httpBody, Data(#"{"input":"Привет","model":"qwen3-tts","response_format":"wav"}"#.utf8))
+        _ = try await client.speak("Привет", voice: "v", language: "russian")
+        XCTAssertEqual(lastRequest()?.httpBody,
+                       Data(#"{"input":"Привет","language":"russian","model":"qwen3-tts","response_format":"wav","voice":"v"}"#.utf8))
+    }
+
+    func testSpeakCarriesOnlyTheKnobsItIsGiven() async throws {
+        let (client, lastRequest) = fakeSend(data: Data([1]))
+        _ = try await client.speak("Привет", voice: "v", seed: 7, loudnessLUFS: -14)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(lastRequest()?.httpBody)) as? [String: Any])
+        XCTAssertEqual(json["seed"] as? Int, 7)
+        XCTAssertEqual(json["loudness_lufs"] as? Double, -14)
+        XCTAssertEqual(json["voice"] as? String, "v")
+        XCTAssertEqual(json["model"] as? String, "qwen3-tts")
+        XCTAssertNil(json["instructions"], "the Qwen base model answers 400 to instructions")
+        XCTAssertNil(json["speed"], "the Qwen base model ignores speed")
+        _ = try await client.speak("Привет", seed: 0)
+        let zero = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(lastRequest()?.httpBody)) as? [String: Any])
+        XCTAssertEqual(zero["seed"] as? Int, 0, "a seed of 0 is a seed")
+        XCTAssertNil(zero["loudness_lufs"])
+    }
+
+    func testSpeakCanNameAnotherModel() async throws {
+        let (client, lastRequest) = fakeSend(data: Data([1]))
+        _ = try await client.speak("hi", model: "voxcpm2")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(lastRequest()?.httpBody)) as? [String: Any])
+        XCTAssertEqual(json["model"] as? String, "voxcpm2")
+    }
 }

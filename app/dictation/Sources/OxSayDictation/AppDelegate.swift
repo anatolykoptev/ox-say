@@ -160,6 +160,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// the newest request owns it. A daemon restart or a relaunch in between
     /// would lose the synthesis.
     private var speakInFlight = false
+    /// The first ever launch, until Озвучка takes it for its sample text.
+    private var firstRunPending = false
     /// The speak-selection hotkey and its menu state; mirrors the dictation
     /// key machinery with its own offered combinations.
     private var speakHotKey: HotKey?
@@ -234,6 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // First: the migration below writes a marker that reads as "an earlier copy ran".
         let openWindowOnFirstLaunch = FirstLaunch.claim(UserDefaults.standard, atLogin: launchedAtLogin())
+        firstRunPending = openWindowOnFirstLaunch
         // Once, before anything reads the per-app picks (#342.2).
         CallPolicy.migrateStaleAutoPicks(UserDefaults.standard)
         // A crash between a take's write and its cleanup left a private clip on disk: sweep leftovers of «Записать
@@ -614,7 +617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// would fail mid-way. The daemon's own half is /status `idle`.
     private func appWork() -> VersionHandshake.AppWork {
         VersionHandshake.AppWork(dictating: controller.state != .idle,
-                                 speaking: speakInFlight || player.isActivelyPlaying,
+                                 speaking: speakInFlight || player.isActivelyPlaying || (mainWindow.source?.speakBusy ?? false),
                                  designing: studio.designing,
                                  followingVoiceover: studio.followingVoiceover,
                                  recordingMeeting: meetings?.isRecording ?? false,
@@ -880,7 +883,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             installStudioVoice: { [unowned self] in self.installStudioVoice() },
             designer: { [unowned self] in self.studio.designer },
             dictationRecording: { [unowned self] in self.controller.state == .recording },
-            workEnded: { [unowned self] in self.handshakeWorkEnded() })
+            workEnded: { [unowned self] in self.handshakeWorkEnded() },
+            consumeFirstRun: { [unowned self] in
+                defer { self.firstRunPending = false }
+                return self.firstRunPending
+            },
+            speechRefusal: { UpdateGate.allowsNewDaemonWork(installing: self.updateInstalling) ? nil : L10nKey.noticeUpdatingSpeak.text })
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {

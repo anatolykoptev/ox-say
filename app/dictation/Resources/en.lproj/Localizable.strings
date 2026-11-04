@@ -721,8 +721,22 @@
 "voice.record.play" = "Play your recording";
 
 /* Озвучка: per-engine note, first-run sample, input problems (SpeakControls, SpeakDraft, SpeakInputCheck). */
-"speak.studio.not_installed" = "The studio voice is not downloaded. You can download it in Settings → Add-ons.";
+"speak.studio.not_installed" = "The studio voice is not downloaded.";
 "speak.sample.ru" = "Привет! Это мой первый голос. Сегодня расскажу, почему короткие ролики работают лучше длинных.";
 "speak.sample.en" = "Hi! This is my first voice. Today I will explain why short videos work better than long ones.";
 "speak.problem.empty" = "Type or paste some text first.";
 "speak.problem.too_long" = "The text is longer than %@ characters. Shorten it to voice it.";
+"speak.quality" = "Quality";
+"speak.quality.standard" = "Standard";
+"speak.new_text" = "New text";
+"speak.variant" = "Another variant";
+"speak.save" = "Save…";
+"speak.play" = "Play";
+"speak.pause" = "Pause";
+"speak.generating" = "Voicing…";
+"speak.editor_label" = "Text to voice";
+"speak.list_empty" = "Your voiceovers will appear here.";
+"speak.list_title" = "This session";
+"speak.save_failed" = "The file could not be saved.";
+"speak.studio.needs_apple_silicon" = "The studio voice needs a Mac with Apple Silicon.";
+"speak.studio.needs_memory" = "The studio voice needs %@ GB of memory; this Mac has %@ GB.";

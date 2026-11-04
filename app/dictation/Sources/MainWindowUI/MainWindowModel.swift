@@ -93,6 +93,24 @@ public final class MainWindowModel: ObservableObject {
         VoicesPageState.of(load: data.voices.load, hasVoices: !data.voices.entries.isEmpty)
     }
 
+    /// What the Озвучка page shows: one decision, in DictationCore. The fast voice is the only engine on this page yet.
+    var speakState: SpeakPageState {
+        SpeakPageState.of(reach: data.speak.reach,
+                          problem: SpeakInputCheck.problem(data.speak.text, engine: .fast, text: { $0.text }),
+                          phase: data.speak.phase)
+    }
+
+    /// The studio voice's note under «Качество», nil when it can be chosen or nothing is known yet.
+    var speakStudioNote: String? { SpeakControls.studioNote(data.speak.studio, text: { $0.text }) }
+
+    var speakText: Binding<String> {
+        Binding(get: { self.data.speak.text }, set: { self.data.speak.text = $0; self.actions.speakTextChanged($0) })
+    }
+
+    var speakVoice: Binding<String?> {
+        Binding(get: { self.data.speak.voice }, set: { self.data.speak.voice = $0; self.actions.speakVoiceChanged($0) })
+    }
+
     var sound: Binding<SoundWhileDictating> {
         Binding(get: { self.data.dictation.sound }, set: { self.data.dictation.sound = $0; self.actions.setSound($0) })
     }

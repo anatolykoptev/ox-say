@@ -114,14 +114,19 @@ public struct SpeechClient {
 
     /// Synthesizes `text` and returns the audio bytes. A nil `voice` leaves the
     /// engine's default voice; a non-nil `language` pins the request's
-    /// language instead of letting the daemon infer it.
-    public func speak(_ text: String, voice: String? = nil, language: String? = nil) async throws -> Data {
+    /// language instead of letting the daemon infer it. `model` defaults to the fast engine; `seed` and
+    /// `loudnessLUFS` are sent only when given, so a call without them has today's body byte for byte.
+    /// Never `instructions` (the Qwen base model answers 400) and never `speed` (it is ignored).
+    public func speak(_ text: String, voice: String? = nil, language: String? = nil, model: String? = nil,
+                      seed: Int? = nil, loudnessLUFS: Double? = nil) async throws -> Data {
         // The daemon counts characters (runes) and refuses more; say so before the round trip.
         if text.unicodeScalars.count > Self.maxInputChars { throw SpeechError.tooLong(max: Self.maxInputChars) }
         // The fast engine, always: a voice that prefers voxcpm2 must not slow speak-selection down.
-        var body: [String: Any] = ["input": text, "response_format": format, "model": "qwen3-tts"]
+        var body: [String: Any] = ["input": text, "response_format": format, "model": model ?? "qwen3-tts"]
         if let voice { body["voice"] = voice }
         if let language { body["language"] = language }
+        if let seed { body["seed"] = seed }
+        if let loudnessLUFS { body["loudness_lufs"] = loudnessLUFS }
         var request = URLRequest(url: baseURL.appendingPathComponent("v1/audio/speech"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
