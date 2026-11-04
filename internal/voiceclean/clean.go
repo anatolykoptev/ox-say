@@ -85,6 +85,9 @@ var (
 	afterPublishCheck = func() {}
 	// maxWalk bounds the hard-link search of a forbidden tree (directory entries visited).
 	maxWalk = 500_000
+	// offsetSkew is added to the first guess of the audio offset; tests use it to stand in for an ffmpeg whose
+	// encoder or muxer delay differs from the one the guess was measured on.
+	offsetSkew = 0.0
 )
 
 // execRunner is the production Runner.
@@ -634,21 +637,26 @@ func (j *job) write(info *probeInfo, inSt os.FileInfo, mix string) error {
 	}
 	j.part = part
 	var args []string
+	var videoArgs func(offset float64) []string // the video mux for a given audio offset (the lag check re-runs it)
 	if info.HasVideo {
 		format, audio := videoMux(extOf(o.Out))
-		args = append(source(o.In), "-itsoffset", strconv.FormatFloat(audioOffset(info, extOf(o.Out)), 'f', 6, 64), "-i", mix)
-		// every input stream keeps its place; only the first audio stream is replaced by the cleaned mix (input 1)
-		args = append(args, j.plan.maps...)
-		// every carried stream, the replaced audio one included, keeps its own metadata (language, handler name)
-		args = append(args, "-map_metadata", "0", "-map_chapters", "0")
-		args = append(args, j.plan.meta...)
-		args = append(args, "-c", "copy", "-copy_unknown")
-		args = append(args, audio...)
-		args = append(args, j.plan.codecs...)
-		args = append(args, "-ac:a:0", strconv.Itoa(info.Channels), "-f", format)
-		if format == "mp4" || format == "mov" {
-			args = append(args, "-movflags", "+faststart")
+		videoArgs = func(offset float64) []string {
+			a := append(source(o.In), "-itsoffset", strconv.FormatFloat(offset, 'f', 6, 64), "-i", mix)
+			// every input stream keeps its place; only the first audio stream is replaced by the cleaned mix (input 1)
+			a = append(a, j.plan.maps...)
+			// every carried stream, the replaced audio one included, keeps its own metadata (language, handler name)
+			a = append(a, "-map_metadata", "0", "-map_chapters", "0")
+			a = append(a, j.plan.meta...)
+			a = append(a, "-c", "copy", "-copy_unknown")
+			a = append(a, audio...)
+			a = append(a, j.plan.codecs...)
+			a = append(a, "-ac:a:0", strconv.Itoa(info.Channels), "-f", format)
+			if format == "mp4" || format == "mov" {
+				a = append(a, "-movflags", "+faststart")
+			}
+			return append(a, part)
 		}
+		args = videoArgs(audioOffset(info, extOf(o.Out)) + offsetSkew)
 	} else {
 		enc, _ := audioMuxArgs(extOf(o.Out))
 		// input 1 is the source again, for its tags and cover art; the audio is the cleaned mix (input 0)
@@ -657,9 +665,15 @@ func (j *job) write(info *probeInfo, inSt os.FileInfo, mix string) error {
 			args = append(args, "-map", "1:v?", "-c:v", "copy", "-disposition:v", "attached_pic")
 		}
 		args = append(args, enc...)
+		args = append(args, part)
 	}
-	if err := j.ff(append(args, part)...); err != nil {
+	if err := j.ff(args...); err != nil {
 		return err
+	}
+	if videoArgs != nil {
+		if err := j.correctLag(info, part, audioOffset(info, extOf(o.Out))+offsetSkew, videoArgs); err != nil {
+			return err
+		}
 	}
 	if err := flush(part, mode); err != nil {
 		return newErr(CodeEngineFailed, "the cleaned file could not be flushed to disk")
@@ -759,4 +773,32 @@ func randomHex() string {
 		return strconv.FormatInt(time.Now().UnixNano(), 16)
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// lagTolerance is how far the output's audio-to-picture lag may sit from the input's before the mux is corrected.
+// lagCeiling is the largest correction trusted: a bigger gap means the probe is not telling us what we think.
+const (
+	lagTolerance = 0.001
+	lagCeiling   = 2.0
+)
+
+// correctLag measures what the muxer actually produced. How far an AAC or Opus track lands from where it was asked to
+// start depends on the encoder's priming, the container and the ffmpeg version (measured: ffmpeg 9.0.2 puts mkv exact
+// and mp4 one frame early; 6.1 puts mkv one frame early and webm 6 ms), so no table by container name is reliable.
+// The output's audio and picture start times are read back with ffprobe; if their lag differs from the input's by
+// more than lagTolerance the mux is run once more with the offset moved by the difference. One correction, no loop.
+func (j *job) correctLag(info *probeInfo, part string, offset float64, build func(float64) []string) error {
+	raw, err := j.o.Run(j.ctx, j.o.FFprobe, probeArgs(part))
+	if err != nil {
+		return j.toolErr("ffprobe", err)
+	}
+	out, err := parseProbe(raw)
+	if err != nil || !out.HasVideo {
+		return nil // nothing to compare; the mux itself succeeded
+	}
+	delta := (info.AudioStart - info.VideoStart) - (out.AudioStart - out.VideoStart)
+	if math.Abs(delta) <= lagTolerance || math.Abs(delta) > lagCeiling {
+		return nil
+	}
+	return j.ff(build(offset + delta)...)
 }
