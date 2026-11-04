@@ -154,7 +154,7 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>NSAudioCaptureUsageDescription</key>
     <string>OxSay records the audio of your calls on this Mac to write a transcript and notes. Nothing leaves your Mac.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>OxSay Dictation records your voice while you hold the dictation key or record your own voice, and sends it to the OxSay daemon on this Mac, which turns it into text. Nothing leaves your Mac.</string>
+    <string>OxSay Dictation needs the microphone for dictation and to record your own voice. Nothing leaves your Mac.</string>
 </dict>
 </plist>
 EOF

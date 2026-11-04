@@ -714,6 +714,7 @@
 "voice.record.waiting_mic" = "Answer the macOS question about the microphone.";
 "voice.record.too_short" = "At least %d seconds are needed. Record again.";
 "voice.record.blocked_meeting" = "A meeting is being recorded, so the microphone is busy. Record your voice when it ends.";
+"voice.record.blocked_dictation" = "Dictation is recording — record your voice when it ends.";
 "voice.record.meeting_started" = "A meeting recording started, so your recording was stopped and not saved.";
 "voice.record.seconds" = "%@ s";
 "voice.record.meter_label" = "Microphone level";

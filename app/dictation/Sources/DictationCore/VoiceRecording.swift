@@ -13,7 +13,6 @@ public struct VoiceRecording: Equatable {
         case recording
         case review(seconds: Double)
         case saving
-        case saved(String)
         case failed(String)
     }
 
@@ -51,9 +50,31 @@ public struct VoiceRecording: Equatable {
     private var asked = false
     private var microphone: PermissionAuth?
 
-    public init(language: String, text: (L10nKey) -> String = { $0.text }) {
+    public init(language: String, taken: Set<String> = [], text: (L10nKey) -> String = { $0.text }) {
         self.language = language
-        label = text(.voiceRecordLabelDefault)
+        label = Self.defaultLabel(taken: taken, text: text)
+    }
+
+    /// The name a fresh take offers: «Мой голос», then «Мой голос 2», «Мой голос 3»… — the first the library does
+    /// not already hold, by the same rule «Сохранить» checks (VoiceName.isTaken).
+    public static func defaultLabel(taken: Set<String>, text: (L10nKey) -> String = { $0.text }) -> String {
+        let base = text(.voiceRecordLabelDefault)
+        var candidate = base
+        var number = 1
+        while VoiceName.isTaken(candidate, in: taken) {
+            number += 1
+            candidate = "\(base) \(number)"
+        }
+        return candidate
+    }
+
+    /// A take that a relaunch would lose: in progress, kept for review, or being sent. The version handshake reads
+    /// it through `AppWork.recordingVoice`; a refused start (`.failed`) holds nothing, so it is not work.
+    public var isWork: Bool {
+        switch phase {
+        case .recording, .review, .saving: return true
+        case .ready, .needsMicrophone, .failed: return false
+        }
     }
 
     // MARK: prompts
@@ -96,7 +117,7 @@ public struct VoiceRecording: Equatable {
     public mutating func micStatus(_ status: PermissionAuth) -> Effect? {
         microphone = status
         switch phase {
-        case .recording, .review, .saving, .saved: return nil
+        case .recording, .review, .saving: return nil
         case .ready, .needsMicrophone, .failed: break
         }
         switch status {
@@ -123,16 +144,21 @@ public struct VoiceRecording: Equatable {
 
     // MARK: a take
 
-    /// «Записать» / «Записать ещё раз»: a new take, the last one gone. Refused (with the reason) while a meeting is
-    /// being recorded — both need the microphone — and never before the microphone is known to be allowed.
-    public mutating func start(meetingRecording: Bool = false, text: (L10nKey) -> String = { $0.text }) -> Effect? {
+    /// «Записать» / «Записать ещё раз»: a new take, the last one gone. Refused (with the reason) while a meeting or
+    /// a dictation is being recorded — both need the microphone — and never before the microphone is known to be allowed.
+    public mutating func start(meetingRecording: Bool = false, dictationRecording: Bool = false,
+                               text: (L10nKey) -> String = { $0.text }) -> Effect? {
         switch phase {
         case .ready, .review, .failed: break
-        case .needsMicrophone, .recording, .saving, .saved: return nil
+        case .needsMicrophone, .recording, .saving: return nil
         }
         guard microphone == .authorized else { return nil }
         if meetingRecording {
             phase = .failed(text(.voiceRecordBlockedMeeting))
+            return nil
+        }
+        if dictationRecording {
+            phase = .failed(text(.voiceRecordBlockedDictation))
             return nil
         }
         phase = .recording
@@ -210,16 +236,14 @@ public struct VoiceRecording: Equatable {
         return Request(id: VoiceName.id(from: clean, taken: taken), label: clean, refText: prompt, source: "recorded")
     }
 
-    /// The daemon refused or failed: the take and the name stay, the sentence shows.
-    public mutating func refused(_ sentence: String) {
-        guard phase == .saving else { return }
+    /// The daemon refused or failed: the take and the name stay, the sentence shows. With the window already gone
+    /// there is nothing to show the sentence in — the take is thrown away instead (`.discardTake`).
+    public mutating func refused(_ sentence: String, windowGone: Bool = false) -> Effect? {
+        guard phase == .saving else { return nil }
+        if windowGone { return .discardTake }
         phase = .review(seconds: seconds)
         problem = sentence
-    }
-
-    public mutating func saved() {
-        guard phase == .saving else { return }
-        phase = .saved(VoiceLabel.clean(label) ?? label)
+        return nil
     }
 
     // MARK: closing

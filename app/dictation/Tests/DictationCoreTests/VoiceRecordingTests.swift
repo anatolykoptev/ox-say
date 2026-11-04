@@ -173,6 +173,17 @@ final class VoiceRecordingTests: XCTestCase {
         XCTAssertEqual(r.phase, .recording)
     }
 
+    /// A dictation holds the microphone too: the voice recording does not start, and says why.
+    /// Mutation: VoiceRecording.swift the `dictationRecording` refusal in `start` deleted -> RED.
+    func testADictationRecordingRefusesTheStart() {
+        var r = ready()
+        XCTAssertNil(r.start(dictationRecording: true, text: en))
+        XCTAssertEqual(r.phase, .failed(en(.voiceRecordBlockedDictation)))
+        // Once the dictation ends, the person tries again.
+        XCTAssertEqual(r.start(text: en), .startRecorder)
+        XCTAssertEqual(r.phase, .recording)
+    }
+
     /// A meeting starts during a take: the take is stopped and thrown away, and the sheet says so.
     func testAMeetingStartingDuringATakeDiscardsIt() {
         var r = ready()
@@ -230,6 +241,19 @@ final class VoiceRecordingTests: XCTestCase {
         XCTAssertEqual(VoiceRecording(language: "en", text: en).label, en(.voiceRecordLabelDefault))
     }
 
+    /// The default label is the first name the library does not have: «My voice», then «My voice 2», «My voice 3»…,
+    /// by the same rule «Сохранить» checks (the id it slugs to or the label itself, case-insensitively).
+    /// Mutation: VoiceRecording.swift defaultLabel -> `base` -> RED.
+    func testTheDefaultLabelIsTheFirstFreeName() {
+        XCTAssertEqual(VoiceRecording.defaultLabel(taken: [], text: en), "My voice")
+        XCTAssertEqual(VoiceRecording.defaultLabel(taken: ["my voice"], text: en), "My voice 2")
+        XCTAssertEqual(VoiceRecording.defaultLabel(taken: ["my voice", "my voice 2"], text: en), "My voice 3")
+        XCTAssertEqual(VoiceRecording.defaultLabel(taken: ["my-voice"], text: en), "My voice 2",
+                       "the slugged id counts as taken too")
+        let ru = ShippedStrings.localizer("ru")
+        XCTAssertEqual(VoiceRecording(language: "ru", taken: ["мой голос"], text: ru).label, "Мой голос 2")
+    }
+
     /// The taken-name rule is the other sheets' (VoiceName.isTaken): the id the label slugs to, or the label itself
     /// case-insensitively, names an existing voice.
     func testATakenNameIsRefusedBeforeUpload() {
@@ -246,19 +270,30 @@ final class VoiceRecordingTests: XCTestCase {
         XCTAssertEqual(empty.problem, en(.voicesRenameInvalid))
     }
 
-    /// The daemon refused: the take and the typed name stay, the sentence shows; saved ends the flow.
+    /// The daemon refused: the take and the typed name stay, the sentence shows, and a retry may be sent.
     func testARefusedAddKeepsTheTake() {
         var r = reviewed(8)
         r.edit(label: "Anya")
         _ = r.save(taken: [], text: en)
-        r.refused("the clip could not be decoded")
+        XCTAssertNil(r.refused("the clip could not be decoded"))
         XCTAssertEqual(r.phase, .review(seconds: 8))
         XCTAssertEqual(r.problem, "the clip could not be decoded")
         XCTAssertEqual(r.label, "Anya")
         XCTAssertTrue(r.canSave)
+        XCTAssertNotNil(r.save(taken: [], text: en))
+    }
+
+    /// The daemon refused while the window was already closed: there is nowhere to show the sentence, so the take
+    /// is thrown away instead of waiting in memory for a review nobody can see.
+    /// Mutation: VoiceRecording.swift the `windowGone` arm of `refused` deleted -> RED.
+    func testARefusedAddWithTheWindowGoneDiscardsTheTake() {
+        var r = reviewed(8)
         _ = r.save(taken: [], text: en)
-        r.saved()
-        XCTAssertEqual(r.phase, .saved("Anya"))
+        XCTAssertEqual(r.refused("the clip could not be decoded", windowGone: true), .discardTake)
+        var kept = reviewed(8)
+        _ = kept.save(taken: [], text: en)
+        XCTAssertNil(kept.refused("no", windowGone: false))
+        XCTAssertEqual(kept.phase, .review(seconds: 8), "the window is up: the take stays for another try")
     }
 
     func testARecorderFailureIsShownAndRecordingCanStartAgain() {
@@ -280,6 +315,25 @@ final class VoiceRecordingTests: XCTestCase {
 
     // MARK: the work a relaunch must wait for
 
+    /// Which phases are work a relaunch must wait for: a take in progress, kept or being sent. VoiceSource reads
+    /// this through `recordingVoice`. Mutation: VoiceRecording.swift `isWork` -> `false` -> RED.
+    func testThePhasesThatAreWork() {
+        var r = VoiceRecording(language: "en", text: en)
+        XCTAssertFalse(r.isWork, "ready")
+        _ = r.micStatus(.denied)
+        XCTAssertFalse(r.isWork, "needsMicrophone")
+        r = ready()
+        _ = r.start(text: en)
+        XCTAssertTrue(r.isWork, "a take in progress")
+        r.stop(seconds: 8)
+        XCTAssertTrue(r.isWork, "a kept take")
+        _ = r.save(taken: [], text: en)
+        XCTAssertTrue(r.isWork, "a take being sent")
+        var failed = ready()
+        _ = failed.start(meetingRecording: true, text: en)
+        XCTAssertFalse(failed.isWork, "a refused start holds nothing")
+    }
+
     /// A voice recording is work: a relaunch or a daemon restart waits for it.
     /// Mutation: VersionHandshake.AppWork.idle, drop `|| recordingVoice` -> RED.
     func testARecordingVoiceIsWork() {
@@ -291,6 +345,16 @@ final class VoiceRecordingTests: XCTestCase {
     }
 
     // MARK: pins on the app's source (the shim compiles DictationCore only)
+
+    private func body(_ text: String, of signature: String) throws -> String {
+        let start = try XCTUnwrap(text.range(of: signature), "\(signature) not found")
+        let rest = text[start.lowerBound...]
+        var end = rest.endIndex
+        if let next = rest.dropFirst(signature.count).range(of: "\n    private func |\n    func |\n    // MARK", options: .regularExpression) {
+            end = next.lowerBound
+        }
+        return String(rest[..<end])
+    }
 
     private func source(_ path: String) throws -> String {
         let url = URL(fileURLWithPath: #filePath)
@@ -355,5 +419,69 @@ final class VoiceRecordingTests: XCTestCase {
         let ask = try XCTUnwrap(voice.range(of: "case .askMicrophone"))
         let request = try XCTUnwrap(voice.range(of: "AVCaptureDevice.requestAccess"))
         XCTAssertLessThan(ask.lowerBound, request.lowerBound)
+    }
+
+    /// The take's end releases a deferred relaunch: `record`'s didSet is the one place the true→false transition is
+    /// noticed (close, save success or failure, discard, meeting started), and it calls the same work-ended hook the
+    /// design path does. PIN (source text).
+    /// Mutation: VoiceSource.swift the `workEnded()` call deleted -> RED.
+    func testAFinishedTakeReleasesTheDeferredRelaunch() throws {
+        let voice = try source("OxSayDictation/VoiceSource.swift")
+        XCTAssertTrue(voice.contains("if oldValue?.isWork == true, record?.isWork != true { workEnded() }"),
+                      "the work flag's true→false edge fires the release once, on every write to record")
+        let window = try source("OxSayDictation/MainWindowSource.swift")
+        XCTAssertTrue(window.contains("workEnded: { host.workEnded() }"), "the hook is the host's workEnded")
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        let host = try body(app, of: "func windowHost() -> MainWindowHost {")
+        XCTAssertTrue(host.contains("workEnded: { [unowned self] in self.handshakeWorkEnded() }"),
+                      "and that is the handshake's release, the one VoiceDesigner uses")
+    }
+
+    /// A kept take never stays in memory once nothing is shown: `record`'s didSet drops the samples whenever the
+    /// phase stops being work — `.failed` included, the «Записать ещё раз» refusal path. PIN (source text).
+    /// Mutation: VoiceSource.swift the `takeSamples = []` in `record`'s didSet deleted -> RED.
+    func testAGoneTakeKeepsNoSamples() throws {
+        let voice = try source("OxSayDictation/VoiceSource.swift")
+        XCTAssertTrue(voice.contains("if record?.isWork != true { takeSamples = [] }"))
+    }
+
+    /// Esc or a close while the take is being sent is refused by the reducer's `mayClose`, not by the window's
+    /// willingness to close. PIN (source text) that cannot match elsewhere — the guard names `record` itself.
+    /// Mutation: VoiceSource.swift `guard var r = record, r.mayClose` -> `guard var r = record` -> RED.
+    func testASavingTakeKeepsTheSheetOpen() throws {
+        let voice = try source("OxSayDictation/VoiceSource.swift")
+        XCTAssertTrue(voice.contains("guard var r = record, r.mayClose"))
+    }
+
+    /// «Записать» reads the dictation state live and hands it to the reducer; the host answers with the
+    /// controller's. PIN (source text) at the call site.
+    /// Mutation: VoiceSource.swift `dictationRecording: dictationRecording()` -> `dictationRecording: false` -> RED.
+    func testTheDictationGateReachesTheReducer() throws {
+        let voice = try source("OxSayDictation/VoiceSource.swift")
+        XCTAssertTrue(voice.contains("dictationRecording: dictationRecording()"))
+        let window = try source("OxSayDictation/MainWindowSource.swift")
+        XCTAssertTrue(window.contains("dictationRecording: { host.dictationRecording() }"))
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        let host = try body(app, of: "func windowHost() -> MainWindowHost {")
+        XCTAssertTrue(host.contains("dictationRecording: { [unowned self] in self.controller.state == .recording }"))
+    }
+
+    /// A refused save with the window closed discards the take: the glue asks `windowGone` and carries out the
+    /// reducer's `.discardTake`. PIN (source text).
+    /// Mutation: VoiceSource.swift `windowGone: windowGone()` -> `windowGone: false` -> RED.
+    func testARefusedSaveAsksWhetherTheWindowIsGone() throws {
+        let voice = try source("OxSayDictation/VoiceSource.swift")
+        XCTAssertTrue(voice.contains("windowGone: windowGone()"))
+        XCTAssertTrue(voice.contains("record = nil"), "the refused-and-closed take does not come back on reopen")
+        let window = try source("OxSayDictation/MainWindowSource.swift")
+        XCTAssertTrue(window.contains("windowGone:"), "the gone check is wired")
+    }
+
+    /// The sheet opens with the first free label, not the constant: the reducer gets the library's names.
+    /// PIN (source text).
+    /// Mutation: VoiceSource.swift `taken: takenNames()` dropped -> RED.
+    func testTheSheetOpensWithAFreeLabel() throws {
+        let voice = try source("OxSayDictation/VoiceSource.swift")
+        XCTAssertTrue(voice.contains("VoiceRecording(language: L10nBundle.locale.identifier, taken: takenNames())"))
     }
 }

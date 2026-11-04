@@ -714,6 +714,7 @@ public enum L10nKey: String, CaseIterable {
     case voiceRecordWaitingMic = "voice.record.waiting_mic"
     case voiceRecordTooShort = "voice.record.too_short"
     case voiceRecordBlockedMeeting = "voice.record.blocked_meeting"
+    case voiceRecordBlockedDictation = "voice.record.blocked_dictation"
     case voiceRecordMeetingStarted = "voice.record.meeting_started"
     case voiceRecordSeconds = "voice.record.seconds"
     case voiceRecordMeterLabel = "voice.record.meter_label"

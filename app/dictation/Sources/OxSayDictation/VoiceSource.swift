@@ -21,8 +21,15 @@ final class VoiceSource {
     private var pickTask: Task<Void, Never>?
     private var pickGeneration = Generation()
     /// «Записать свой голос»: the reducer while its sheet is up, the take's samples (24 kHz, in memory until saved or
-    /// dropped), the recorder and the timer of the take in progress, the meter and the review's playback.
-    private var record: VoiceRecording?
+    /// dropped), the recorder and the timer of the take in progress, the meter and the review's playback. Every write
+    /// to `record` passes one check: a phase that is not work frees the kept samples, and work that just ended
+    /// releases the version handshake's deferred relaunch (the same hook the design path uses, VoiceDesigner.finish).
+    private var record: VoiceRecording? {
+        didSet {
+            if record?.isWork != true { takeSamples = [] }
+            if oldValue?.isWork == true, record?.isWork != true { workEnded() }
+        }
+    }
     private var takeSamples: [Float] = []
     private var recorder: MicRecorder?
     private var recordTimer: Timer?
@@ -35,14 +42,25 @@ final class VoiceSource {
     private let changed: ([String]) -> Void
     /// Whether a meeting is being recorded right now, read live: a sample must never sound into one (VoicePreviewGate).
     private let recordingRunning: () -> Bool
+    /// Whether a dictation is recording right now, read live: a take must never start beside it (the microphone).
+    private let dictationRecording: () -> Bool
+    /// Whether the sheet's window is already closed: a refused save then has nowhere to say why — the take is dropped.
+    private let windowGone: () -> Bool
+    /// Work the version handshake was held back for has ended (a take closed, saved or was thrown away): it runs again.
+    private let workEnded: () -> Void
 
     init(model: MainWindowModel, client: StudioClient, speech: SpeechClient, defaults: UserDefaults,
-         recordingRunning: @escaping () -> Bool, designer: VoiceDesigner, changed: @escaping ([String]) -> Void) {
+         recordingRunning: @escaping () -> Bool, dictationRecording: @escaping () -> Bool,
+         windowGone: @escaping () -> Bool, workEnded: @escaping () -> Void,
+         designer: VoiceDesigner, changed: @escaping ([String]) -> Void) {
         self.model = model
         self.client = client
         self.designer = designer
         self.changed = changed
         self.recordingRunning = recordingRunning
+        self.dictationRecording = dictationRecording
+        self.windowGone = windowGone
+        self.workEnded = workEnded
         session = VoiceLibrarySession(
             ops: VoiceLibraryOps(
                 list: { try await client.voiceEntries() },
@@ -158,12 +176,7 @@ final class VoiceSource {
     // MARK: record your own voice
 
     /// A voice recording holds the relaunch: a take in progress, kept for review or being sent would be lost.
-    var recordingVoice: Bool {
-        switch record?.phase {
-        case .recording?, .review?, .saving?: return true
-        default: return false
-        }
-    }
+    var recordingVoice: Bool { record?.isWork ?? false }
 
     /// One step of the record sheet. The reducer decides; this carries out the effect it returns.
     func recording(_ step: VoiceRecordAction) {
@@ -185,7 +198,7 @@ final class VoiceSource {
     /// The sheet opens without asking: an allowed or denied microphone shows at once, an undecided one waits for the
     /// first «Записать» (the question is raised there, never at open).
     private func openRecording() {
-        var r = VoiceRecording(language: L10nBundle.locale.identifier)
+        var r = VoiceRecording(language: L10nBundle.locale.identifier, taken: takenNames())
         let status = microphoneStatus()
         if status != .notDetermined { _ = r.micStatus(status) }
         record = r
@@ -234,8 +247,8 @@ final class VoiceSource {
         }
     }
 
-    /// «Записать»: the microphone is read now. Undecided raises the macOS question and waits; a meeting recording
-    /// refuses (both use the microphone).
+    /// «Записать»: the microphone is read now. Undecided raises the macOS question and waits; a meeting or a
+    /// dictation recording refuses (all three use the microphone).
     private func startTake() {
         player.stop()
         recordPlaying = false
@@ -243,7 +256,8 @@ final class VoiceSource {
         change { r in
             let asked = r.micStatus(status)
             if asked != nil { return asked }
-            return r.start(meetingRecording: recordingRunning(), text: { $0.text })
+            return r.start(meetingRecording: recordingRunning(), dictationRecording: dictationRecording(),
+                           text: { $0.text })
         }
     }
 
@@ -356,7 +370,11 @@ final class VoiceSource {
                 sync()
                 model.data.notice = DesignForm.savedNotice(name: request.label, shortened: voice.notice != nil)
             } catch {
-                record?.refused(StudioError.plain(error))
+                // The window closed while the take was being sent: there is nowhere to say why — the take goes.
+                if record?.refused(StudioError.plain(error), windowGone: windowGone()) == .discardTake {
+                    perform(.discardTake)
+                    record = nil
+                }
                 sync()
             }
         }

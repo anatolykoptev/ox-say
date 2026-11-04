@@ -34,6 +34,11 @@ struct MainWindowHost {
     var installStudioVoice: () -> Void
     /// The describe-a-voice driver, owned by the Studio controller: its `running` is what the version handshake reads.
     var designer: () -> VoiceDesigner
+    /// A dictation is recording and holding the microphone, read live: a voice take must never start beside it.
+    var dictationRecording: () -> Bool
+    /// Work the window was doing has ended (a voice take closed, saved or was thrown away): a version handshake
+    /// held back for it runs again.
+    var workEnded: () -> Void
 }
 
 /// Fills the main window with what the app really has and carries out what the window asks. The window holds no timer:
@@ -82,6 +87,9 @@ final class MainWindowSource {
         restoredMeetingUnchecked = restored.meetingID != nil
         voiceSource = VoiceSource(model: model, client: host.client, speech: host.speech, defaults: host.defaults,
                                   recordingRunning: { host.meetings()?.recordingElapsed != nil },
+                                  dictationRecording: { host.dictationRecording() },
+                                  windowGone: { [weak self] in self?.windowOpen == false },
+                                  workEnded: { host.workEnded() },
                                   designer: host.designer(), changed: host.voicesChanged)
         let defaults = host.defaults
         model.advancedChanged = { [weak model] on in

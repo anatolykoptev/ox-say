@@ -708,6 +708,7 @@
 "voice.record.waiting_mic" = "Ответьте на вопрос macOS о микрофоне.";
 "voice.record.too_short" = "Нужно хотя бы %d секунд. Запишите ещё раз.";
 "voice.record.blocked_meeting" = "Идёт запись встречи, микрофон занят. Запишите голос, когда она закончится.";
+"voice.record.blocked_dictation" = "Сейчас идёт диктовка — запишите голос, когда она закончится.";
 "voice.record.meeting_started" = "Началась запись встречи, поэтому ваша запись остановлена и не сохранена.";
 "voice.record.seconds" = "%@ с";
 "voice.record.meter_label" = "Уровень микрофона";

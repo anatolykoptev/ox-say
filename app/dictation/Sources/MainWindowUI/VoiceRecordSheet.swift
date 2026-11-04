@@ -27,7 +27,7 @@ struct VoiceRecordSheet: View {
             case .ready, .failed: passageStep
             case .recording: recordingStep
             case .review(let seconds): reviewStep(seconds: seconds)
-            case .saving, .saved: working
+            case .saving: working
             }
         }
         .onChange(of: label) { _ in send(.edit(label: label)) }

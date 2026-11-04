@@ -236,6 +236,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let openWindowOnFirstLaunch = FirstLaunch.claim(UserDefaults.standard, atLogin: launchedAtLogin())
         // Once, before anything reads the per-app picks (#342.2).
         CallPolicy.migrateStaleAutoPicks(UserDefaults.standard)
+        // A crash between a take's write and its cleanup left a private clip on disk: sweep leftovers of «Записать
+        // свой голос» (named folders only, never a symlink).
+        VoiceTakeCleanup.sweep(in: FileManager.default.temporaryDirectory)
         let baseURL = DaemonAddress.url(agentPlist: try? Data(contentsOf: DaemonAddress.agentPlist))
         let client = TranscriptionClient(baseURL: baseURL)
         self.client = client
@@ -880,7 +883,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             checkForUpdates: { [unowned self] in self.checkForUpdates() },
             installStudioVoice: { [unowned self] in self.installStudioVoice() },
-            designer: { [unowned self] in self.studio.designer })
+            designer: { [unowned self] in self.studio.designer },
+            dictationRecording: { [unowned self] in self.controller.state == .recording },
+            workEnded: { [unowned self] in self.handshakeWorkEnded() })
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
