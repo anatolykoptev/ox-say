@@ -7,3 +7,4 @@ Generated with torch 2.14.1, torchaudio 2.11.0 (`~/Developer/ashaki-video/tools/
 - `clip1s.f32`: 1 s of 48 kHz mono float32, in [-1, 1].
 - `feat1s.f32`: torchaudio Kaldi fbank + two `compute_deltas` passes of that clip x 32768, dither 0, `[121, 180]` row-major.
 - `noise_golden.f32`: 64 dither-generator values for seed 1, then 64 for seed 20261103 (pure-Python SplitMix64 + Box-Muller).
+- `stft_clip.f32`, `stft_ref.f32` (`SpectrumTests`): the first 20736 samples of `clip1s.f32` (50 frames), and `torch.stft` of that clip x 32768 (window 1920 non-periodic Hamming, hop 384, `center=False`, one-sided), `[50, 961, 2]` real/imag. The pair is 467 KB.
