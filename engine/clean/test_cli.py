@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """CLI contract of ox-clean: exit codes, the OS gate, the output rules, signals, the offline rule, the stats line.
 
-Usage: test_cli.py --bin PATH --models DIR [--clip x.wav] [unittest args]
+Usage: test_cli.py --bin PATH (--models DIR | --no-models) [--clip x.wav] [unittest args]
   DIR is the models directory scripts/fetch-models.sh --clean-only lays out (it holds mossformer2-se-48k/).
+  --no-models runs only the tests that need no model (the ones that end before the model is loaded: usage, version,
+  the OS gate, the input and output refusals, a missing or unusable models folder); the rest are reported as skipped.
+  It is for a machine that cannot run Core ML (the CI Intel VM) and is never a substitute for --models where the model
+  can run: the release smoke on Apple Silicon passes --models.
   --clip is a mono 48 kHz float32 WAV with speech (CI passes one); without it the tests generate a synthetic voice-like
   clip, so no recording is needed. Needs no network and no Python packages.
 
@@ -13,6 +17,7 @@ inert unless set. Mutations (plan Task 8): each test names the one it kills.
 """
 import argparse
 import array
+import functools
 import hashlib
 import math
 import os
@@ -28,8 +33,19 @@ import time
 import unittest
 
 BIN = MODELS = CLIP = None
+NO_MODELS = False
 RATE = 48000
 _cache = {}
+
+
+def needs_models(test):
+    """Marks a test that loads the model: skipped under --no-models, run (and able to fail) otherwise."""
+    @functools.wraps(test)
+    def wrapper(self, *a, **k):
+        if NO_MODELS:
+            self.skipTest("needs the model (--no-models)")
+        return test(self, *a, **k)
+    return wrapper
 
 
 def run(*args, env=None, timeout=600):
@@ -195,6 +211,7 @@ class Contract(Case):
             self.assertNotIn("download", r.stderr, name)
             self.assertNoOutput(self.path("o.wav"))
 
+    @needs_models
     def test_a_corrupt_known_answer_file_is_3_with_the_sentence(self):
         copy = self.path("models")
         src, dst = os.path.join(MODELS, "mossformer2-se-48k"), os.path.join(copy, "mossformer2-se-48k")
@@ -259,6 +276,7 @@ class Contract(Case):
         self.assertNoOutput(self.path("o.wav"))
 
     # Fix round 8. Mutation: WavIO.swift, the 0xFFFFFFFF clamp removed -> RED (exit 4, truncated).
+    @needs_models
     def test_a_streaming_wav_with_unknown_sizes_is_read_to_the_end(self):
         x = voice_like(3, seed=2)
         p = self.path("stream.wav")
@@ -273,6 +291,7 @@ class Contract(Case):
         self.assertEqual(r.returncode, 4, r.stderr)
         self.assertEqual(reason(r.stderr), "truncated")
 
+    @needs_models
     def test_a_non_finite_sample_is_4(self):
         for bad in (float("nan"), float("inf")):
             samples = list(voice_like(3, seed=1))
@@ -287,6 +306,7 @@ class Contract(Case):
     STATS = (r"^ox-clean: \d+\.\d s audio in \d+\.\d s \(\d+\.\dx\), load \d+\.\d s, first prediction \d+\.\d s, "
              r"units (cpuAndGPU|cpuOnly), device (.+), floor (\d+)x$")
 
+    @needs_models
     def test_silence_in_silence_out_same_length_and_a_stats_line(self):
         n = 7 * RATE + 123
         p = float_wav(self.path("silence.wav"), [0.0] * n)
@@ -305,6 +325,7 @@ class Contract(Case):
         for forbidden in ("NeuralEngine", "units all"):
             self.assertNotIn(forbidden, r.stderr)
 
+    @needs_models
     def test_speech_is_changed_but_not_destroyed(self):
         r = run(self.clip(), self.path("o.wav"), "--models", MODELS)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -319,6 +340,7 @@ class Contract(Case):
             ex, ey = sum(v * v for v in x), sum(v * v for v in y)
             self.assertGreater(ey / ex, 0.01, "the output is nearly silent")
 
+    @needs_models
     def test_it_never_opens_a_socket(self):
         profile = "(version 1)(allow default)(deny network*)"
         e = {k: v for k, v in os.environ.items() if not k.startswith("OX_CLEAN_")}
@@ -368,6 +390,7 @@ class Contract(Case):
         self.assertFalse(os.path.exists(out))
 
     # Fix round 2. Mutation: main.swift, `reclaim` returns .live for everything it locked -> RED (the retry is refused).
+    @needs_models
     def test_a_killed_run_leaves_a_part_that_the_retry_removes(self):
         out = self.path("o.wav")
         p = self.start_slow(out)
@@ -380,6 +403,7 @@ class Contract(Case):
         self.assertFalse(os.path.exists(out + ".part"))
 
     # Fix round 2. Mutation: WavIO.swift, O_EXLOCK dropped -> RED (the second run takes the live .part for a leftover).
+    @needs_models
     def test_a_live_concurrent_run_is_refused_and_not_disturbed(self):
         out = self.path("o.wav")
         first = self.start_slow(out)
@@ -432,6 +456,7 @@ class Contract(Case):
         self.assertEqual(os.listdir(self.path("d")), [])
 
     # Fix round 6. Mutation: Arguments.swift, the `--` branch or the any-position --models removed -> RED.
+    @needs_models
     def test_models_may_come_first_and_double_dash_ends_the_options(self):
         r = run("--models", MODELS, "--", self.clip(), self.path("a.wav"))
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -456,6 +481,7 @@ class Contract(Case):
         self.addCleanup(lambda: subprocess.run(["hdiutil", "detach", mnt, "-force"], capture_output=True))
         return mnt
 
+    @needs_models
     def test_output_on_exfat_is_published_by_copy_and_never_overwrites(self):
         mnt = self.attach_exfat(int(os.path.getsize(self.clip()) * 2.5 / 2**20) + 10)   # room for the .part and the copy
         out = os.path.join(mnt, "o.wav")
@@ -470,6 +496,7 @@ class Contract(Case):
 
     # exFAT reports a different st_ino for the same file once it has grown, so "is the path still my file" must compare
     # fresh numbers. Mutation: WavIO.swift, discard() compares the inode recorded at create -> RED (the .part stays).
+    @needs_models
     def test_a_failed_run_on_exfat_removes_its_part(self):
         mnt = self.attach_exfat(20)
         out = os.path.join(mnt, "o.wav")
@@ -478,6 +505,7 @@ class Contract(Case):
         self.assertEqual([n for n in os.listdir(mnt) if not n.startswith(".")], [])
 
     # Mutation: main.swift, `undo` no longer unlinks the output it created -> RED (a half-copied file stays).
+    @needs_models
     def test_a_copy_that_runs_out_of_space_removes_what_it_made(self):
         mnt = self.attach_exfat(20)   # the 13 MB .part fits; the 13 MB copy beside it does not
         out = os.path.join(mnt, "o.wav")
@@ -512,6 +540,7 @@ class Contract(Case):
     # Fix round 4. SIGQUIT let the run finish with 0 because a process started by `cmd &` in a non-interactive shell
     # inherits SIG_IGN for SIGINT and SIGQUIT and nothing handled SIGQUIT; the children here inherit exactly that.
     # Mutation: Interrupt.swift, SIGHUP/SIGQUIT out of the signal list -> RED (rc 0 or -1/-3).
+    @needs_models
     def test_signals_mid_run_remove_the_part_and_fail_even_when_the_shell_ignored_them(self):
         for sig, code in ((signal.SIGTERM, 143), (signal.SIGINT, 130), (signal.SIGHUP, 129), (signal.SIGQUIT, 131)):
             out = self.path(f"o{int(sig)}.wav")
@@ -523,6 +552,7 @@ class Contract(Case):
 
     # Mutation F3: main.swift, `let part = outPath + ".part"` -> `let part = outPath` (write straight to the output)
     # -> RED here: the output exists while the run is killed.
+    @needs_models
     def test_a_killed_run_leaves_no_output(self):
         out = self.path("o.wav")
         p = self.start_slow(out)
@@ -532,6 +562,7 @@ class Contract(Case):
         self.assertFalse(os.path.exists(out), "a SIGKILL may leave the .part but never a half-written output")
 
     # Mutation F6: main.swift, drop `writer?.abandon()` in fail() -> RED here (exit() skips the deinit, so the .part stays).
+    @needs_models
     def test_a_failure_after_the_first_window_leaves_nothing(self):
         out = self.path("o.wav")
         r = run(self.long_clip(), out, "--models", MODELS, env={"OX_CLEAN_TEST_FAIL_AFTER_WINDOWS": "1"})
@@ -544,8 +575,13 @@ class Contract(Case):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", required=True)
-    ap.add_argument("--models", required=True)
+    which = ap.add_mutually_exclusive_group(required=True)
+    which.add_argument("--models")
+    which.add_argument("--no-models", action="store_true")
     ap.add_argument("--clip")
     a, rest = ap.parse_known_args()
-    BIN, MODELS, CLIP = os.path.abspath(a.bin), a.models, a.clip
+    NO_MODELS = a.no_models
+    # Without models the tests that still pass a models folder get one that does not exist: every test left running
+    # ends before the model is touched, so the folder is only ever named, never opened.
+    BIN, MODELS, CLIP = os.path.abspath(a.bin), a.models or os.path.join(tempfile.gettempdir(), "ox-clean-no-models"), a.clip
     unittest.main(argv=[sys.argv[0], *rest])

@@ -202,3 +202,81 @@ jobs:
         run: |
           python3 engine/diar/test_cli.py --bin "$RUNNER_TEMP/diar-run/ox-diar" --models "$RUNNER_TEMP/diar-models/diar" \
               --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4 --engine pyannote
+
+  # ox-clean (voice cleanup, engine/clean): a Swift package around a Core ML mask model, built for BOTH architectures
+  # (plan decision 8; ox-diar is Apple Silicon only). Xcode 26 because the manifest asks for Swift tools 6.2; the path
+  # below is on the macos-15 (arm64) and macos-15-intel runner images (runner-images macos-15 readmes, checked
+  # 2026-11-04). Apple Silicon runs the whole chain. Intel runs the stub suite, the build and the model-free half of
+  # the CLI contract only: the hosted Intel VM cannot run Core ML (the ox-diar Intel leg failed there, run 40100359856),
+  # so no model is fetched or loaded on it; the model on Intel was measured on a real Intel Mac (oldmac).
+  clean:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # The suite that needs no weights (the real-model tests skip without OX_CLEAN_MODELS). A debug build, so the
+      # timing bounds (release-only, `#if !DEBUG`) are asserted by the next step.
+      - name: swift test
+        run: swift test --package-path engine/clean --force-resolved-versions
+
+      # The 20 s window must stay a small fraction of the model call (#462, #472). Those two tests assert their bound
+      # only in a release build, which `swift test` is not by default; `-enable-testing` keeps @testable working. A
+      # hosted runner's speed is not ours to gate, so the opt-in bench (OX_CLEAN_BENCH) is not run here at all, and
+      # the Intel VM is left out: its bound has not been measured on a runner.
+      - name: timing tests (release)
+        if: runner.arch == 'ARM64'
+        run: |
+          swift test -c release -Xswiftc -enable-testing --package-path engine/clean --force-resolved-versions \
+              --filter 'FbankTests/testTwentySecondWindowIsFast|SpectrumTests/testTwentySecondWindowTime'
+
+      - name: build ox-clean
+        run: engine/clean/build.sh "$RUNNER_TEMP/clean-work" "$RUNNER_TEMP/clean-out"
+
+      # The model-free half of the CLI contract (usage, version, the OS gate, the input and output refusals, a missing
+      # models folder): everything that ends before a model is loaded.
+      - name: ox-clean CLI contract (no model)
+        if: runner.arch == 'X64'
+        run: python3 engine/clean/test_cli.py --bin "$RUNNER_TEMP/clean-out/ox-clean" --no-models
+
+      # The cache key is the model revision itself: a new pin is a new cache, an old one is never reused.
+      - name: Model revision
+        id: rev
+        if: runner.arch == 'ARM64'
+        run: |
+          rev=$(sed -n 's/^clean_rev=\([0-9a-f]\{40\}\)$/\1/p' scripts/fetch-models.sh)
+          test -n "$rev"
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the cleanup models
+        if: runner.arch == 'ARM64'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/clean-models
+          key: clean-models-${{ steps.rev.outputs.rev }}
+
+      # fetch-models.sh checks every file against its pinned SHA-256 whatever the cache held.
+      - name: Cleanup models
+        if: runner.arch == 'ARM64'
+        run: bash scripts/fetch-models.sh --clean-only "$RUNNER_TEMP/clean-models"
+
+      # OX_CLEAN_REQUIRE_MODELS=1 turns "the models are not here" from a skip into a failure: without it a missing
+      # variable would pass this step with every real-model test skipped.
+      - name: real-model tests
+        if: runner.arch == 'ARM64'
+        env:
+          OX_CLEAN_MODELS: ${{ runner.temp }}/clean-models/clean
+          OX_CLEAN_REQUIRE_MODELS: "1"
+        run: swift test --package-path engine/clean --force-resolved-versions --filter ModelGoldenTests
+
+      # The whole CLI contract against the built binary and the real model. The runner's GPU has to run the model: the
+      # known-answer check inside ox-clean refuses a wrong answer, which fails here rather than ships.
+      - name: ox-clean CLI contract
+        if: runner.arch == 'ARM64'
+        run: python3 engine/clean/test_cli.py --bin "$RUNNER_TEMP/clean-out/ox-clean" --models "$RUNNER_TEMP/clean-models/clean"

@@ -217,6 +217,13 @@ oxs_install_engines() {
         mv "$home/engine/ox-diar.new" "$home/engine/ox-diar"
         echo "installed $home/engine/ox-diar"
     fi
+    # ox-clean (voice cleanup) is the same kind of optional Swift helper, but both architectures' packages carry it.
+    # Its models are not installed here: the daemon fetches them on the first cleanup.
+    if [ -x "$out/ox-clean" ]; then
+        cp "$out/ox-clean" "$home/engine/ox-clean.new"
+        mv "$home/engine/ox-clean.new" "$home/engine/ox-clean"
+        echo "installed $home/engine/ox-clean"
+    fi
     cp "$out"/licenses/* "$home/engine/licenses/"
 }
 
