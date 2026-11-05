@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// The main window's sidebar sections, in sidebar order: Voiceover, Voices, Dictation, Meetings, Transcribe,
 /// then Models (Advanced mode only) and Settings, which the sidebar draws apart at the bottom. A section is
@@ -108,7 +109,15 @@ public enum MainWindowSpec {
 
 /// The two lists of the sidebar: the sections, and the one-row Settings list under the Advanced switch.
 public enum SidebarList: Hashable { case sections, settings }
-public enum SidebarArrow: Equatable { case up, down }
+public enum SidebarArrow: Equatable {
+    case up, down
+
+    /// A bare arrow: no Shift, Control, Option or Command. AppKit adds `.numericPad` and `.function` to every real
+    /// hardware arrow key, so "no modifiers at all" would reject the real keyboard; only the four user-held keys count.
+    public static func isPlain(_ modifiers: EventModifiers) -> Bool {
+        modifiers.isDisjoint(with: [.shift, .control, .option, .command])
+    }
+}
 /// Where an arrow hop lands: the section it selects and the list that takes the keyboard.
 public struct SidebarMove: Equatable {
     public let section: MainSection

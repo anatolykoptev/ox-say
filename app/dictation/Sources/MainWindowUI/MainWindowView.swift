@@ -66,8 +66,8 @@ public struct MainWindowView: View {
         .listStyle(.sidebar)
         .focused($focusedList, equals: id)
         // `onMoveCommand` never fires on a List (the table takes the arrow keys first; probed), `onKeyPress` does.
-        .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in move(.down, from: id, plain: press.modifiers.isEmpty) }
-        .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in move(.up, from: id, plain: press.modifiers.isEmpty) }
+        .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in move(.down, from: id, plain: SidebarArrow.isPlain(press.modifiers)) }
+        .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in move(.up, from: id, plain: SidebarArrow.isPlain(press.modifiers)) }
     }
 
     /// Down from the last section reaches Settings and up from Settings returns, as in Finder and Mail: the two lists

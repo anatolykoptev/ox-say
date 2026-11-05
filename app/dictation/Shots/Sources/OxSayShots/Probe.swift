@@ -59,9 +59,9 @@ func selectRow(_ table: NSTableView, row: Int) {
     print("PROBE select-row \(row)")
 }
 
-func key(_ window: NSWindow, _ code: UInt16, _ chars: String) {
+func key(_ window: NSWindow, _ code: UInt16, _ chars: String, flags: NSEvent.ModifierFlags = []) {
     for t in [NSEvent.EventType.keyDown, .keyUp] {
-        let e = NSEvent.keyEvent(with: t, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+        let e = NSEvent.keyEvent(with: t, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
                                  windowNumber: window.windowNumber, context: nil, characters: chars,
                                  charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!
         window.sendEvent(e)
@@ -113,6 +113,11 @@ func key(_ window: NSWindow, _ code: UInt16, _ chars: String) {
         probeExpect(model.section == last, "\(label): up-arrow from Settings left the section at \(model.section), wanted \(last)")
         describeSidebar(window, model, "\(label) after-arrow-up")
         probeExpect(window.firstResponder === tables()[0], "\(label): after up-arrow the sections list does not have the keyboard")
+        // A real keyboard's arrow carries .numericPad and .function: the hop must still happen.
+        key(window, 125, "\u{F701}", flags: [.numericPad, .function]); spin()
+        probeExpect(model.section == .settings, "\(label): down-arrow with numericPad+function left the section at \(model.section)")
+        key(window, 126, "\u{F700}"); spin()
+        probeExpect(model.section == last, "\(label): up-arrow after the flagged hop left the section at \(model.section)")
     }
     probeKeyLoop(window, label + " end")
 }

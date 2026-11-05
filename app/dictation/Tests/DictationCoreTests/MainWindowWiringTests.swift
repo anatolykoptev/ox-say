@@ -274,9 +274,9 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertEqual(view.components(separatedBy: "objectWillChange.send()").count - 1, 1)
         // The arrow keys cross from the last section to Settings and back, and hand the keyboard over; a key held with a
         // modifier is the list's own (`plain:`), the decision is MainWindowSpec.sidebarMove.
-        // Mutation: either `press.modifiers.isEmpty` -> `true` -> RED.
-        XCTAssertTrue(view.contains(".onKeyPress(.downArrow, phases: [.down, .repeat]) { press in move(.down, from: id, plain: press.modifiers.isEmpty) }"))
-        XCTAssertTrue(view.contains(".onKeyPress(.upArrow, phases: [.down, .repeat]) { press in move(.up, from: id, plain: press.modifiers.isEmpty) }"))
+        // Mutation: either `SidebarArrow.isPlain(press.modifiers)` -> `true` -> RED.
+        XCTAssertTrue(view.contains(".onKeyPress(.downArrow, phases: [.down, .repeat]) { press in move(.down, from: id, plain: SidebarArrow.isPlain(press.modifiers)) }"))
+        XCTAssertTrue(view.contains(".onKeyPress(.upArrow, phases: [.down, .repeat]) { press in move(.up, from: id, plain: SidebarArrow.isPlain(press.modifiers)) }"))
         XCTAssertTrue(view.contains("MainWindowSpec.sidebarMove(arrow, from: list, plain: plain"))
         XCTAssertTrue(view.contains("focusedList = hop.list"))
         XCTAssertTrue(view.contains(".focused($focusedList, equals: id)"))

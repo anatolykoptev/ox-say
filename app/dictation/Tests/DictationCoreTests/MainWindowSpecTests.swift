@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import DictationCore
 
@@ -76,5 +77,18 @@ final class MainWindowSpecTests: XCTestCase {
         // No Settings row, no hop.
         XCTAssertNil(MainWindowSpec.sidebarMove(.down, from: .sections, plain: true, current: .meetings,
                                                 sections: [.speak, .meetings]))
+    }
+
+    /// A real hardware arrow carries `.numericPad` and `.function`; those are not held modifiers.
+    /// Mutation: SidebarArrow.isPlain, `modifiers.isDisjoint(with: [...])` -> `modifiers.isEmpty` -> RED.
+    func testTheFlagsOfARealArrowKeyStillCountAsPlain() {
+        XCTAssertTrue(SidebarArrow.isPlain([]))
+        XCTAssertTrue(SidebarArrow.isPlain([.numericPad]))
+        XCTAssertTrue(SidebarArrow.isPlain([.function]))
+        XCTAssertTrue(SidebarArrow.isPlain([.numericPad, .function]))
+        for held: EventModifiers in [.shift, .control, .option, .command] {
+            XCTAssertFalse(SidebarArrow.isPlain(held))
+            XCTAssertFalse(SidebarArrow.isPlain([held, .numericPad, .function]))
+        }
     }
 }
