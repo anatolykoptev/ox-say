@@ -245,6 +245,11 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertFalse(view[sidebar..<page].contains(".buttonStyle(.plain)"), "a plain button row in the sidebar")
     }
 
+    /// All whitespace runs as one space, so a pin survives reformatting (indentation, line breaks).
+    private func squeezed(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
     /// N4: the sections are one List and Settings is a one-row List under the Advanced switch, both through the same
     /// helper, so both are bound to the model's one `section` and the system draws exactly one highlight between them.
     /// Mutations: `model.objectWillChange.send()` -> `break`; either `.onKeyPress(` line deleted; `.background(.bar)` deleted -> RED
@@ -252,7 +257,8 @@ final class MainWindowWiringTests: XCTestCase {
     /// Mutation: MainWindowView, a second `List(` with its own `@State` selection for Settings -> RED (the helper is the
     /// only `List(`); `sidebarList([.settings])` -> any other rows -> RED.
     func testSettingsIsAOneRowListBoundToTheSameSelection() throws {
-        let view = MeetingWiringTests.stripComments(try source("MainWindowUI/MainWindowView.swift"))
+        let raw = MeetingWiringTests.stripComments(try source("MainWindowUI/MainWindowView.swift"))
+        let view = squeezed(raw)
         XCTAssertEqual(view.replacingOccurrences(of: "sidebarList(", with: "").components(separatedBy: "List(").count - 1, 1, "one List builder, used for both lists")
         XCTAssertTrue(view.contains("List(rows, selection: binding(for: rows))"))
         XCTAssertTrue(view.contains("sidebarList(topSections, id: .sections)"))
@@ -260,15 +266,22 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertTrue(view.contains("OneRowList { sidebarList([.settings], id: .settings) }"), "a List has no height of its own")
         XCTAssertTrue(view.contains("get: { rows.contains(model.section) ? model.section : nil }"))
         // A deselect to nothing is not a choice, but the table is already empty: the getter must be asked again.
-        XCTAssertTrue(view.contains("model.section = s\n                    } else {"))
-        XCTAssertTrue(view.contains("model.objectWillChange.send()"), "a dropped deselect leaves the table with no highlight")
-        // The arrow keys cross from the last section to Settings and back, and hand the keyboard over.
-        XCTAssertTrue(view.contains(".onKeyPress(.downArrow) { move(.down, from: id) }"))
-        XCTAssertTrue(view.contains(".onKeyPress(.upArrow) { move(.up, from: id) }"))
-        XCTAssertTrue(view.contains("focusedList = .settings") && view.contains("focusedList = .sections"))
+        XCTAssertTrue(view.contains("model.section = s } else {"))
+        // ... on the next run-loop turn: the setter can run inside a view update, where a synchronous publish warns.
+        // Mutation: `DispatchQueue.main.async { model.objectWillChange.send() }` -> `model.objectWillChange.send()` -> RED.
+        XCTAssertTrue(view.contains("DispatchQueue.main.async { model.objectWillChange.send() }"),
+                      "a dropped deselect leaves the table with no highlight; the publish is deferred")
+        XCTAssertEqual(view.components(separatedBy: "objectWillChange.send()").count - 1, 1)
+        // The arrow keys cross from the last section to Settings and back, and hand the keyboard over; a key held with a
+        // modifier is the list's own (`plain:`), the decision is MainWindowSpec.sidebarMove.
+        // Mutation: either `press.modifiers.isEmpty` -> `true` -> RED.
+        XCTAssertTrue(view.contains(".onKeyPress(.downArrow, phases: [.down, .repeat]) { press in move(.down, from: id, plain: press.modifiers.isEmpty) }"))
+        XCTAssertTrue(view.contains(".onKeyPress(.upArrow, phases: [.down, .repeat]) { press in move(.up, from: id, plain: press.modifiers.isEmpty) }"))
+        XCTAssertTrue(view.contains("MainWindowSpec.sidebarMove(arrow, from: list, plain: plain"))
+        XCTAssertTrue(view.contains("focusedList = hop.list"))
         XCTAssertTrue(view.contains(".focused($focusedList, equals: id)"))
         // The bottom area has the bar material and a hairline, so a scrolling list does not show through it.
-        XCTAssertTrue(view.contains("Divider()\n                        if switchShown"))
+        XCTAssertTrue(view.contains("Divider() if switchShown"))
         XCTAssertTrue(view.contains(".background(.bar)"))
         // The bottom area is a safe-area inset of the sections list, the switch above the Settings list.
         let inset = try XCTUnwrap(view.range(of: ".safeAreaInset(edge: .bottom"), "the bottom area").lowerBound
@@ -276,6 +289,14 @@ final class MainWindowWiringTests: XCTestCase {
         let switchAt = try XCTUnwrap(rest.range(of: "AdvancedSwitch(model: model)")).lowerBound
         let settingsAt = try XCTUnwrap(rest.range(of: "sidebarList([.settings], id: .settings)")).lowerBound
         XCTAssertLessThan(switchAt, settingsAt, "the Advanced switch sits directly above Settings")
+        // Source layout: the type's doc comment sits right above it, and the focus state is stored with the other properties.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let uncut = try String(contentsOf: root.appendingPathComponent("Sources/MainWindowUI/MainWindowView.swift"), encoding: .utf8)
+        let lines = uncut.components(separatedBy: "\n")
+        let decl = try XCTUnwrap(lines.firstIndex { $0.hasPrefix("public struct MainWindowView") })
+        XCTAssertTrue(lines[decl - 1].hasPrefix("///"), "the doc comment is above MainWindowView")
+        let props = lines[decl...].prefix { !$0.contains("public init") }.filter { $0.contains("let ") || $0.contains("var ") || $0.contains("@") }
+        XCTAssertTrue(props.contains { $0.contains("@FocusState") })
     }
 
     /// A name typed letter by letter is saved on Return or when the field is left, and never triggers a full read.

@@ -51,4 +51,30 @@ final class MainWindowSpecTests: XCTestCase {
             XCTAssertNotEqual(MainWindowSpec.windowTitleKey, MainWindowSpec.subtitleKey(for: section))
         }
     }
+
+    // N4 review: the arrow keys cross between the sections list and the one-row Settings list only when they are bare.
+    private let nav: [MainSection] = [.speak, .voices, .dictation, .meetings, .settings]
+
+    func testBareDownOnTheLastSectionReachesSettingsAndBareUpReturns() {
+        XCTAssertEqual(MainWindowSpec.sidebarMove(.down, from: .sections, plain: true, current: .meetings, sections: nav),
+                       SidebarMove(section: .settings, list: .settings))
+        XCTAssertEqual(MainWindowSpec.sidebarMove(.up, from: .settings, plain: true, current: .settings, sections: nav),
+                       SidebarMove(section: .meetings, list: .sections))
+    }
+
+    /// Cmd/Shift/Option-Down on the last section is the list's own (extend, jump), never the hop to Settings.
+    /// Mutation: MainWindowSpec.sidebarMove, delete `guard plain else { return nil }` -> RED.
+    func testAnArrowWithAModifierNeverCrossesLists() {
+        XCTAssertNil(MainWindowSpec.sidebarMove(.down, from: .sections, plain: false, current: .meetings, sections: nav))
+        XCTAssertNil(MainWindowSpec.sidebarMove(.up, from: .settings, plain: false, current: .settings, sections: nav))
+    }
+
+    func testOtherArrowsAndPositionsStayWithTheList() {
+        XCTAssertNil(MainWindowSpec.sidebarMove(.down, from: .sections, plain: true, current: .voices, sections: nav))
+        XCTAssertNil(MainWindowSpec.sidebarMove(.up, from: .sections, plain: true, current: .meetings, sections: nav))
+        XCTAssertNil(MainWindowSpec.sidebarMove(.down, from: .settings, plain: true, current: .settings, sections: nav))
+        // No Settings row, no hop.
+        XCTAssertNil(MainWindowSpec.sidebarMove(.down, from: .sections, plain: true, current: .meetings,
+                                                sections: [.speak, .meetings]))
+    }
 }

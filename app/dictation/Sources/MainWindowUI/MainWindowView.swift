@@ -2,15 +2,12 @@ import DictationCore
 import SwiftUI
 
 /// The window's content: the section sidebar and the section's page, in a NavigationSplitView.
-/// The two lists of the sidebar.
-enum SidebarList: Hashable { case sections, settings }
-
 public struct MainWindowView: View {
     @ObservedObject var model: MainWindowModel
     private let switchShown: Bool
+    private let live: Set<MainSection>
     /// Which of the two sidebar lists has the keyboard, so an arrow key that leaves one list can hand it to the other.
     @FocusState private var focusedList: SidebarList?
-    private let live: Set<MainSection>
 
     /// `switchShown` and `live` default to what this build ships; the screenshot harness passes more to draw the parts
     /// that are not live yet.
@@ -69,27 +66,20 @@ public struct MainWindowView: View {
         .listStyle(.sidebar)
         .focused($focusedList, equals: id)
         // `onMoveCommand` never fires on a List (the table takes the arrow keys first; probed), `onKeyPress` does.
-        .onKeyPress(.downArrow) { move(.down, from: id) }
-        .onKeyPress(.upArrow) { move(.up, from: id) }
+        .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in move(.down, from: id, plain: press.modifiers.isEmpty) }
+        .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in move(.up, from: id, plain: press.modifiers.isEmpty) }
     }
 
     /// Down from the last section reaches Settings and up from Settings returns, as in Finder and Mail: the two lists
-    /// read as one. Every other arrow, and every arrow inside a list, is the list's own (`.ignored`).
-    private func move(_ direction: MoveCommandDirection, from list: SidebarList) -> KeyPress.Result {
-        switch (list, direction) {
-        case (.sections, .down):
-            guard sections.contains(.settings), model.section == topSections.last else { return .ignored }
-            model.section = .settings
-            focusedList = .settings
-            return .handled
-        case (.settings, .up):
-            guard let last = topSections.last else { return .ignored }
-            model.section = last
-            focusedList = .sections
-            return .handled
-        default:
+    /// read as one. Every other arrow, every arrow inside a list and every arrow with a modifier is the list's own
+    /// (`.ignored`); the decision is `MainWindowSpec.sidebarMove`.
+    private func move(_ arrow: SidebarArrow, from list: SidebarList, plain: Bool) -> KeyPress.Result {
+        guard let hop = MainWindowSpec.sidebarMove(arrow, from: list, plain: plain, current: model.section, sections: sections) else {
             return .ignored
         }
+        model.section = hop.section
+        focusedList = hop.list
+        return .handled
     }
 
     private func binding(for rows: [MainSection]) -> Binding<MainSection?> {
@@ -99,8 +89,11 @@ public struct MainWindowView: View {
                         model.section = s
                     } else {
                         // A deselect to nothing (Cmd-click on the selected row) is not a choice. The model does not
-                        // change, so nothing would redraw and the table would stay empty: ask for the getter again.
-                        model.objectWillChange.send()
+                        // change, so nothing would redraw and the table would stay empty: ask for the getter again. The
+                        // setter can run inside a view update (Advanced turned off on an advanced section), where a
+                        // synchronous publish is SwiftUI's "Publishing changes from within view updates": send it on the
+                        // next run-loop turn.
+                        DispatchQueue.main.async { model.objectWillChange.send() }
                     }
                 })
     }
@@ -140,12 +133,13 @@ extension MainSection {
 
 /// The one-row Settings list at the height its row needs. A List has no height of its own (`fixedSize` collapses it to 0),
 /// so the height is the row plus the room around it. `contentMargins` does not move the table's own 10 pt above the
-/// first row (probed), so `room` is that 10 pt plus 6 pt below, and the Shots probe fails the run if the row is clipped.
+/// first row (probed), so `room` is that 10 pt plus 10 pt below: 4 pt more than the 6 pt measured on macOS 26, as slack for
+/// the row metrics of macOS 14 and 15, which were not measured. The Shots probe fails the run if the row is clipped.
 /// The row heights are the sidebar's for each icon size (System Settings > Appearance, passed down as `sidebarRowSize`):
 /// 24 / 32 / 40 pt, measured on macOS 26 only. An older system draws the same or smaller rows (no clipping, a little more
-/// air below); a larger row there would clip, and the largest size is the fallback for a size not known yet.
+/// air below); a row a few points larger still fits the slack, and the largest size is the fallback for a size not known yet.
 struct OneRowList<Rows: View>: View {
-    static var room: CGFloat { 16 }
+    static var room: CGFloat { 20 }
     @Environment(\.sidebarRowSize) private var rowSize
     @ViewBuilder var rows: () -> Rows
 
