@@ -28,6 +28,8 @@ struct StudioHost {
     var workEnded: () -> Void
     /// The Create a Voice menu row: the window opens on Voices with the describe-a-voice sheet up.
     var openVoiceDesign: () -> Void
+    /// The main window is on screen (shown, not minimised or covered).
+    var windowVisible: () -> Bool
 }
 
 /// The Studio submenu: draws the rows StudioMenu decides, and runs the three
@@ -56,8 +58,12 @@ final class StudioController: NSObject {
                 if self?.voiceover.following == false { self?.host.workEnded() }
             },
             onFinish: { [weak self] job in
-                self?.refreshFolder()
-                self?.presentFinish(job)
+                guard let self else { return }
+                self.refreshFolder()
+                // A project started on Озвучка and finished with the window in view is already on the page.
+                guard FinishNotice.shouldAlert(startedOnPage: self.voiceover.startedOnPage(job.id),
+                                               windowVisible: self.host.windowVisible()) else { return }
+                self.presentFinish(job)
             })
     }
 
@@ -188,7 +194,7 @@ final class StudioController: NSObject {
         guard sure == .alertFirstButtonReturn else { return }
         Task { @MainActor [weak self] in
             do {
-                try await self?.host.client.stopVoiceover(id: job.id)
+                try await self?.voiceover.stop()
             } catch {
                 self?.show(StudioDialogs.stopFailed(error))
             }
@@ -199,7 +205,7 @@ final class StudioController: NSObject {
         guard let job = voiceover.job else { return }
         Task { @MainActor [weak self] in
             do {
-                try await self?.host.client.continueOnBattery(id: job.id)
+                try await self?.voiceover.continueOnBattery()
             } catch {
                 self?.show(StudioDialogs.continueFailed(error))
             }

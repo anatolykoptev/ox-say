@@ -9,8 +9,11 @@ public enum Waveform {
         let frames = layout.dataLength / layout.blockAlign
         guard frames > 0 else { return [] }
         var peaks = [Float](repeating: 0, count: bins)
+        var cancelled = false
         wav.withUnsafeBytes { raw in
             for bin in 0..<bins {
+                // A track that is no longer on screen is not worth finishing: its scan can be hundreds of megabytes.
+                if Task.isCancelled { cancelled = true; return }
                 let from = frames * bin / bins
                 let to = max(from + 1, frames * (bin + 1) / bins)
                 var loudest: Int32 = 0
@@ -24,7 +27,7 @@ public enum Waveform {
                 peaks[bin] = min(1, Float(loudest) / 32768)
             }
         }
-        return peaks
+        return cancelled ? [] : peaks
     }
 
     /// How far into a track the sound is, 0...1.

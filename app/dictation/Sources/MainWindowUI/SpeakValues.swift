@@ -11,7 +11,7 @@ public struct SpeakValues: Equatable {
     /// The voice id for the request; nil is «Стандартный голос» (the engine's default).
     public var voice: String?
     /// This session's takes, newest first.
-    public var clips: [SpeakClip]
+    public var clips: [SpeakClip] { didSet { items = SpeakList.merge(projects: projects, clips: clips) } }
     /// The clip whose result is on screen; nil is a text that has not been voiced yet.
     public var selectedID: String?
     public var phase: SpeakPhase
@@ -22,7 +22,9 @@ public struct SpeakValues: Equatable {
     /// «Качество» as the person set it. The engine a request really uses is `engine`: the studio voice only when it can run.
     public var quality: SpeakEngine
     /// The daemon's studio projects, newest first (`GET /v1/produce`), with the one the app follows already merged in.
-    public var projects: [ProduceJob]
+    public var projects: [ProduceJob] { didSet { items = SpeakList.merge(projects: projects, clips: clips) } }
+    /// The list on the left, merged once when a source changes (the page reads it on every redraw).
+    public private(set) var items: [SpeakListItem]
     /// The last poll of the followed voiceover got no answer: its numbers may be old.
     public var serviceWaiting: Bool
     /// Projects whose track could not be read (moved or deleted).
@@ -52,6 +54,7 @@ public struct SpeakValues: Equatable {
         self.trackMissing = trackMissing
         self.peaks = peaks
         self.playedFraction = playedFraction
+        items = SpeakList.merge(projects: projects, clips: clips)
     }
 
     public var selectedClip: SpeakClip? { clips.first { $0.id == selectedID } }
@@ -59,7 +62,4 @@ public struct SpeakValues: Equatable {
 
     /// What the voice really uses: the studio voice only while it is chosen and can run.
     public var engine: SpeakEngine { SpeakStudio.engine(chosen: quality, studio: studio) }
-
-    /// The list on the left: studio projects and this session's clips, a running project first.
-    public var items: [SpeakListItem] { SpeakList.merge(projects: projects, clips: clips) }
 }

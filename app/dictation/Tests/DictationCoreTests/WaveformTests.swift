@@ -55,4 +55,17 @@ final class WaveformTests: XCTestCase {
         XCTAssertEqual(Waveform.fraction(time: -1, duration: 120), 0)
         XCTAssertEqual(Waveform.fraction(time: 5, duration: 0), 0, "no length yet: no cursor math by zero")
     }
+
+    /// A scan whose track left the screen stops instead of reading hundreds of megabytes.
+    func testACancelledScanReturnsNothing() async {
+        let wav = WAV.pcm16([Float](repeating: 0.5, count: 4800), sampleRate: 48000)
+        let scan = Task { () -> [Float] in
+            while !Task.isCancelled { await Task.yield() }
+            return Waveform.peaks(wav: wav, bins: 10)
+        }
+        scan.cancel()
+        let peaks = await scan.value
+        XCTAssertEqual(peaks, [], "cancelled: no bars, not a half-read picture")
+        XCTAssertEqual(Waveform.peaks(wav: wav, bins: 10).count, 10, "the same call outside a cancelled task reads normally")
+    }
 }

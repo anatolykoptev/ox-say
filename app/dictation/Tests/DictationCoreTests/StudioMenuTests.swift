@@ -73,9 +73,12 @@ final class StudioMenuTests: XCTestCase {
 
     func testRefusalMessagesArePlainToo() {
         let body = Data(#"{"error":{"message":"produce needs a saved voice: design one with voice_design or add one with voice_add"}}"#.utf8)
-        XCTAssertEqual(StudioClient.refusal(status: 400, body: body),
+        // This one has its own case now (SpeakStudioErrorTests); any other jargon-only 400 still gets the status sentence.
+        XCTAssertEqual(StudioClient.refusal(status: 400, body: body), .noSavedVoice)
+        let other = Data(#"{"error":{"message":"run ox-say voice add first"}}"#.utf8)
+        XCTAssertEqual(StudioClient.refusal(status: 400, body: other),
                        .refused(status: 400, message: ""), "jargon-only: the app words the status sentence when it shows it")
-        XCTAssertEqual(StudioClient.refusal(status: 400, body: body).message(text: en), "The OxSay service answered with an error (400).")
+        XCTAssertEqual(StudioClient.refusal(status: 400, body: other).message(text: en), "The OxSay service answered with an error (400).")
     }
 
     func testUnreachableDaemonDisablesStudio() {

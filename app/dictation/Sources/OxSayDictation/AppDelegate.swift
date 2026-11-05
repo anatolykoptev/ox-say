@@ -1214,6 +1214,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             openVoiceDesign: { [unowned self] in
                 self.mainWindow.show(MainRoute(section: .voices, meetingID: nil))
                 self.mainWindow.source?.openVoiceDesign()
+            },
+            windowVisible: { [unowned self] in
+                guard let window = self.mainWindow.window else { return false }
+                return window.isVisible && window.occlusionState.contains(.visible)
             })
     }
 

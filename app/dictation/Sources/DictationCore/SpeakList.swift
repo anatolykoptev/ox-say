@@ -77,6 +77,47 @@ public enum SpeakList {
     }
 }
 
+extension SpeakList {
+    /// A fresh list read with the followed job: the follower's copy is newer than a read that started before its last poll
+    /// only while the job is still working. A finished job's copy is as old as its last poll, and the daemon's entry may be
+    /// newer (a resume or a re-render through MCP), so it wins.
+    public static func afterRead(projects: [ProduceJob], followed: ProduceJob?) -> [ProduceJob] {
+        guard let followed, !followed.status.isTerminal else { return projects }
+        return overlay(projects: projects, followed: followed)
+    }
+
+    /// Whether the selected id still names a project or a clip (nil selects nothing and is fine).
+    public static func stillPresent(_ id: String?, projects: [ProduceJob], clips: [SpeakClip]) -> Bool {
+        guard let id else { return true }
+        return projects.contains { $0.id == id } || clips.contains { $0.id == id }
+    }
+}
+
+/// The identity of a project's audio file: it changes when the file does (a re-render rewrites it), so the waveform is
+/// read again; a file that is missing has a key of its own.
+public enum SpeakTrack {
+    public static func key(projectID: String, path: String, modified: Date?, size: Int?) -> String {
+        "project:\(projectID):\(path):\(modified.map { String($0.timeIntervalSince1970) } ?? "-"):\(size.map(String.init) ?? "-")"
+    }
+}
+
+/// A studio project is on its way to the daemon. The flag belongs to the request that set it: a request that was
+/// superseded (the generation moved on) never leaves «Остановить» disabled for the ones after it.
+public struct StartingGate: Equatable {
+    private var token: Int?
+    public init() {}
+    public mutating func begin(_ token: Int) { self.token = token }
+    public mutating func end() { token = nil }
+    public func isActive(in generation: Generation) -> Bool { token.map(generation.isCurrent) ?? false }
+}
+
+/// What the Studio menu's finish alert does once the window shows the result itself.
+public enum FinishNotice {
+    /// A project started on Озвучка and finished while the window is on screen is already on the page; the alert would
+    /// only take the focus. Everything else keeps it: a menu project, and a window that is closed or hidden.
+    public static func shouldAlert(startedOnPage: Bool, windowVisible: Bool) -> Bool { !(startedOnPage && windowVisible) }
+}
+
 /// What the detail of a selected studio project shows.
 public enum SpeakProjectState: Equatable {
     /// The progress row and the bar's fill (nil: no part count yet, an indeterminate bar).

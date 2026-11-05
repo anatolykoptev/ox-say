@@ -65,6 +65,11 @@ public struct ClipAudio: Equatable {
         return [.handshakeMayRun]
     }
 
+    /// Whether the waveform cursor ticks now: only while the clip really sounds, and never under Reduce Motion (the picture
+    /// is static then). One rule, read after every event, so a clip that ends on its own or a stop of a clip that already
+    /// ended can never leave a timer waking the app four times a second.
+    public func cursorTicks(reduceMotion: Bool) -> Bool { sound == .playing && !reduceMotion }
+
     /// The player could not start the clip.
     public mutating func startFailed() { sound = .stopped }
 }

@@ -34,4 +34,11 @@ public enum SpeakRecheck {
         guard visible, section == .speak, case .unreachable = reach else { return nil }
         return VoiceoverFollower.delay(afterFailures: max(0, misses - 1))
     }
+
+    /// Arriving on Озвучка with the daemon silent reads at once: the backoff grew on passes made from other sections and
+    /// must not make the person wait up to a minute for a page they just opened.
+    public static func refreshOnArrival(to section: MainSection, from previous: MainSection, reach: DaemonReach) -> Bool {
+        guard section == .speak, previous != .speak, case .unreachable = reach else { return false }
+        return true
+    }
 }

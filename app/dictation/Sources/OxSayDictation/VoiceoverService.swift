@@ -10,6 +10,7 @@ final class VoiceoverService {
     private var follower: VoiceoverFollower!
     private var changeObservers: [() -> Void] = []
     private var finishObservers: [(ProduceJob) -> Void] = []
+    private var windowStarted: Set<String> = []
 
     init(client: StudioClient) {
         self.client = client
@@ -33,11 +34,15 @@ final class VoiceoverService {
     /// A voiceover the app follows has not reached a terminal state: the version handshake waits for it.
     var following: Bool { follower.following }
 
-    /// Starts a voiceover and follows it. The daemon runs one at a time: a second start throws its 409 message.
+    /// Whether the project was started on the Озвучка page (the page shows its end itself).
+    func startedOnPage(_ id: String) -> Bool { windowStarted.contains(id) }
+
+    /// Starts a voiceover and follows it. The daemon runs one at a time: a second start throws `voiceoverRunning`.
     @discardableResult
     func start(script: String, title: String, voice: String?, format: ProduceFormat,
-               options: VoiceoverOptions = VoiceoverOptions()) async throws -> ProduceJob {
+               options: VoiceoverOptions = VoiceoverOptions(), fromWindow: Bool = false) async throws -> ProduceJob {
         let started = try await client.startVoiceover(script: script, title: title, voice: voice, format: format, options: options)
+        if fromWindow { windowStarted.insert(started.id) }
         follower.follow(started)
         return started
     }

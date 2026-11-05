@@ -211,19 +211,19 @@ struct SpeakDetailColumn: View {
                 if !model.data.speak.peaks.isEmpty {
                     WaveformView(peaks: model.data.speak.peaks, playedFraction: model.data.speak.playedFraction)
                 }
-            HStack(spacing: 10) {
-                let playing = model.data.speak.playback == .playing
-                IconButton(symbol: playing ? "pause.fill" : "play.fill", labelKey: playing ? .speakPause : .speakPlay) {
-                    model.actions.speakPlayPause()
+                HStack(spacing: 10) {
+                    let playing = model.data.speak.playback == .playing
+                    IconButton(symbol: playing ? "pause.fill" : "play.fill", labelKey: playing ? .speakPause : .speakPlay) {
+                        model.actions.speakPlayPause()
+                    }
+                    .font(.title2)
+                    if let clip = model.data.speak.selectedClip {
+                        Text(SpeakClips.clock(clip.seconds)).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(L10nKey.speakVariant.text) { model.actions.speakVariant() }
+                    Button(L10nKey.speakSave.text) { model.actions.speakSave() }
                 }
-                .font(.title2)
-                if let clip = model.data.speak.selectedClip {
-                    Text(SpeakClips.clock(clip.seconds)).monospacedDigit().foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button(L10nKey.speakVariant.text) { model.actions.speakVariant() }
-                Button(L10nKey.speakSave.text) { model.actions.speakSave() }
-            }
             }
         case .failed(let sentence):
             HStack(spacing: 10) {

@@ -41,7 +41,11 @@ final class SpeakSource {
     /// The track whose bars are on screen or being read (id and path), so a project that finishes under the eye gets its bars once.
     private var waveformKey: String?
     /// A studio project is on its way to the daemon: «Остановить» is not offered (the answer would be dropped while the job runs).
-    private var startingStudio = false
+    /// The flag belongs to its request, so a superseded one never leaves it set.
+    private var studioStart = StartingGate()
+    private var startingStudio: Bool { studioStart.isActive(in: generation) }
+    /// The scan of the waveform that is being read, cancelled when the selection moves on.
+    private var waveformTask: Task<Void, Never>?
     /// Moves the playback cursor while a track sounds; nil otherwise.
     private var positionTimer: Timer?
 
@@ -80,6 +84,8 @@ final class SpeakSource {
         if status != nil { refreshProjects() }
     }
 
+    var reach: DaemonReach { tracker.reach }
+
     /// While the page is visible and the daemon does not answer, how long until the next read (nil when none is due).
     /// A daemon that was not up yet at first launch must not leave «unavailable» on screen until «Повторить» (#490).
     func recheckDelay(visible: Bool, section: MainSection) -> TimeInterval? {
@@ -96,20 +102,22 @@ final class SpeakSource {
         Task { @MainActor [weak self] in
             guard let jobs = try? await client.voiceovers() else { return }
             guard let self, self.projectReads.isCurrent(token) else { return }
-            self.apply(projects: jobs)
+            // A finished job's follower copy is older than the daemon's entry; only a working one is fresher than the read.
+            self.show(SpeakList.afterRead(projects: jobs, followed: self.voiceover.job))
         }
     }
 
     /// The followed job moved: its row and its detail follow without waiting for the next list read.
     private func followedChanged() {
         model.data.speak.serviceWaiting = voiceover.serviceWaiting || tracker.waiting
-        apply(projects: model.data.speak.projects)
+        show(SpeakList.overlay(projects: model.data.speak.projects, followed: voiceover.job))
     }
 
-    private func apply(projects: [ProduceJob]) {
-        model.data.speak.projects = SpeakList.overlay(projects: projects, followed: voiceover.job)
-        // A project that is gone (deleted elsewhere) must not stay selected.
-        if model.data.speak.selectedID != nil, model.data.speak.selectedClip == nil, model.data.speak.selectedProject == nil {
+    private func show(_ projects: [ProduceJob]) {
+        model.data.speak.projects = projects
+        // A project that is gone (deleted elsewhere) must not stay selected, and its track must not keep sounding.
+        if !SpeakList.stillPresent(model.data.speak.selectedID, projects: projects, clips: model.data.speak.clips) {
+            stopClip()
             model.data.speak.selectedID = nil
         }
         ensureWaveform()
@@ -155,12 +163,18 @@ final class SpeakSource {
 
     func newText() {
         stop()
+        // A studio project that is still on its way keeps running in the daemon; its answer is dropped here (the list shows
+        // the project once it exists) and the editor is free at once.
+        if startingStudio {
+            generation.advance()
+            studioStart.end()
+            host.workEnded()
+        }
         stopClip()
         model.data.speak.text = ""
         model.data.speak.selectedID = nil
         model.data.speak.phase = .idle
-        model.data.speak.peaks = []
-        waveformKey = nil
+        cancelWaveform()
         host.defaults.set("", forKey: Self.draftKey)
     }
 
@@ -188,7 +202,7 @@ final class SpeakSource {
         model.data.speak.selectedID = id
         model.data.speak.phase = .idle
         model.data.speak.trackMissing.remove(id)
-        waveformKey = nil
+        cancelWaveform()
         ensureWaveform()
     }
 
@@ -248,21 +262,26 @@ final class SpeakSource {
         stopClip()
         let voice = speak.voice
         model.data.speak.phase = .generating
-        startingStudio = true
         let token = generation.advance()
+        studioStart.begin(token)
         let voiceover = self.voiceover
         request = Task { @MainActor [weak self] in
             do {
                 let job = try await voiceover.start(script: start.script, title: start.title, voice: voice,
-                                                    format: start.format, options: start.options)
-                guard let self, self.generation.isCurrent(token) else { return }
-                self.startingStudio = false
+                                                    format: start.format, options: start.options, fromWindow: true)
+                guard let self else { return }
+                guard self.generation.isCurrent(token) else {
+                    // «Новый текст» moved on while it started: the project exists, the list will show it.
+                    self.refreshProjects()
+                    return
+                }
+                self.studioStart.end()
                 self.record(answered: true)
                 self.model.data.speak.projects = SpeakList.overlay(projects: self.model.data.speak.projects, followed: job)
                 self.selectProject(job.id)
             } catch {
                 guard let self, self.generation.isCurrent(token) else { return }
-                self.startingStudio = false
+                self.studioStart.end()
                 if case StudioError.daemonUnreachable = error { self.record(answered: false) }
                 // A 409 (another voiceover is running) comes back in the daemon's own words.
                 self.model.data.speak.phase = .failed(StudioError.plain(error))
@@ -332,7 +351,6 @@ final class SpeakSource {
     func stopClip() {
         perform(audio.stop())
         model.data.speak.playback = .stopped
-        model.data.speak.playedFraction = 0
     }
 
     /// Carries out what `ClipAudio` decided, in order. `track` supplies the audio when the effects start it.
@@ -349,7 +367,6 @@ final class SpeakSource {
                 do {
                     try player.play(wav: wav)
                     model.data.speak.playback = .playing
-                    startPositionTicks()
                 } catch {
                     audio.startFailed()
                     model.data.speak.playback = .stopped
@@ -358,16 +375,12 @@ final class SpeakSource {
                 }
             case .pause:
                 player.toggle()
-                stopPositionTicks()
                 model.data.speak.playback = .paused
             case .resume:
                 player.toggle()
-                startPositionTicks()
                 model.data.speak.playback = .playing
             case .halt:
                 player.stop()
-                stopPositionTicks()
-                model.data.speak.playedFraction = 0
                 model.data.speak.playback = .stopped
             case .handshakeMayRun:
                 host.workEnded()
@@ -375,31 +388,45 @@ final class SpeakSource {
                 model.data.notice = L10nKey.speakPlayBlockedRecording.text
             }
         }
+        syncCursor()
     }
 
     // MARK: cursor
 
-    /// The cursor of the waveform moves only while a track sounds: the timer runs between a start (or resume) and the next
-    /// pause, halt or end.
-    private func startPositionTicks() {
-        stopPositionTicks()
-        positionTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.model.data.speak.playedFraction = Waveform.fraction(time: self.player.currentTime, duration: self.player.duration)
+    /// The one place the cursor timer follows the sound: it ticks iff `ClipAudio` says so (the clip sounds and Reduce Motion
+    /// is off), and a clip that is not sounding has no cursor. `perform` calls it after every event, the end of a clip
+    /// and the stop of one that already ended included, so no path can leave a timer running.
+    private func syncCursor() {
+        if audio.cursorTicks(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) {
+            guard positionTimer == nil else { return }
+            let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.audio.sound == .playing else { return }
+                    self.model.data.speak.playedFraction = Waveform.fraction(time: self.player.currentTime, duration: self.player.duration)
+                }
             }
+            RunLoop.main.add(timer, forMode: .common)
+            positionTimer = timer
+        } else {
+            positionTimer?.invalidate()
+            positionTimer = nil
+            if audio.sound == .stopped, model.data.speak.playedFraction != 0 { model.data.speak.playedFraction = 0 }
         }
-    }
-
-    private func stopPositionTicks() {
-        positionTimer?.invalidate()
-        positionTimer = nil
     }
 
     // MARK: waveform
 
-    /// Reads the bars of the selected track once per track (and again when a project that was running gets its file).
-    /// The scan runs off the main actor; the answer of a track that is no longer selected is dropped.
+    /// Forgets the bars and cancels the scan that is reading them: the selection moved on.
+    private func cancelWaveform() {
+        waveformReads.advance()
+        waveformTask?.cancel()
+        waveformTask = nil
+        waveformKey = nil
+        model.data.speak.peaks = []
+    }
+
+    /// Reads the bars of the selected track once per track, and again when its file changes (a re-render rewrites it). The
+    /// scan runs off the main actor and stops when the selection moves; the answer of a track no longer selected is dropped.
     private func ensureWaveform() {
         let speak = model.data.speak
         let key: String
@@ -408,23 +435,27 @@ final class SpeakSource {
             key = "clip:\(clip.id)"
             source = { clip.wav }
         } else if let job = speak.selectedProject, job.status == .done || job.status == .review, let path = job.outputPath {
-            key = "project:\(job.id):\(path)"
+            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+            key = SpeakTrack.key(projectID: job.id, path: path, modified: attributes?[.modificationDate] as? Date,
+                                 size: (attributes?[.size] as? NSNumber)?.intValue)
             source = { try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) }
         } else {
-            if waveformKey != nil { waveformKey = nil; model.data.speak.peaks = [] }
+            if waveformKey != nil { cancelWaveform() }
             return
         }
         guard key != waveformKey else { return }
+        cancelWaveform()
         waveformKey = key
-        model.data.speak.peaks = []
         model.data.speak.playedFraction = 0
+        if let id = speak.selectedID { model.data.speak.trackMissing.remove(id) }
         let token = waveformReads.advance()
         let id = speak.selectedID
         let bars = Self.waveformBars
-        Task { @MainActor [weak self] in
-            // The scan of a long track runs off the main actor.
-            let peaks: [Float]? = await Task.detached(priority: .utility) { source().map { Waveform.peaks(wav: $0, bins: bars) } }.value
-            guard let self, self.waveformReads.isCurrent(token) else { return }
+        waveformTask = Task { @MainActor [weak self] in
+            // The scan of a long track runs off the main actor; cancelling this task cancels it.
+            let scan = Task.detached(priority: .utility) { source().map { Waveform.peaks(wav: $0, bins: bars) } }
+            let peaks: [Float]? = await withTaskCancellationHandler { await scan.value } onCancel: { scan.cancel() }
+            guard let self, !Task.isCancelled, self.waveformReads.isCurrent(token) else { return }
             if let peaks { self.model.data.speak.peaks = peaks } else if let id { self.model.data.speak.trackMissing.insert(id) }
         }
     }

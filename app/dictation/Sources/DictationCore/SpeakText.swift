@@ -116,6 +116,8 @@ public enum SpeakText {
         case .daemonUnreachable: return t(.speakErrorNoService)
         case .timedOut: return t(.speakErrorTimeout)
         case .badResponse: return t(.speakErrorBadAnswer)
+        case .voiceoverRunning: return t(.speakStudioBusy)
+        case .noSavedVoice: return t(.speakStudioNeedsVoice)
         case .refused(_, let message):
             return message.isEmpty ? studio.message(text: t) : String(format: t(.speakServiceAnswered), message)
         }

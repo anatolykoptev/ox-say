@@ -67,4 +67,31 @@ final class ClipAudioTests: XCTestCase {
         XCTAssertEqual(a.sound, .stopped)
         XCTAssertFalse(a.busy(playerIsPlaying: true))
     }
+
+    /// The waveform cursor timer follows the sound: it ticks only while the clip sounds, and never under Reduce Motion.
+    /// A clip that ends on its own and the stop of one that already ended must both read "no ticks" (a timer left running
+    /// wakes the app four times a second for the life of the process).
+    func testTheCursorTicksOnlyWhileTheClipSounds() {
+        var audio = ClipAudio()
+        XCTAssertFalse(audio.cursorTicks(reduceMotion: false), "nothing sounds yet")
+        _ = audio.start(recordingRunning: false)
+        XCTAssertTrue(audio.cursorTicks(reduceMotion: false))
+        XCTAssertFalse(audio.cursorTicks(reduceMotion: true), "Reduce Motion: a static picture")
+        _ = audio.playPause(recordingRunning: false)
+        XCTAssertFalse(audio.cursorTicks(reduceMotion: false), "paused")
+        _ = audio.playPause(recordingRunning: false)
+        XCTAssertTrue(audio.cursorTicks(reduceMotion: false), "resumed")
+        _ = audio.finished()
+        XCTAssertFalse(audio.cursorTicks(reduceMotion: false), "the clip ended on its own")
+        XCTAssertEqual(audio.stop(), [], "a stop of a clip that already ended has no effect to hang a timer stop on")
+        XCTAssertFalse(audio.cursorTicks(reduceMotion: false))
+        _ = audio.start(recordingRunning: false)
+        _ = audio.stop()
+        XCTAssertFalse(audio.cursorTicks(reduceMotion: false))
+        _ = audio.start(recordingRunning: true)
+        XCTAssertFalse(audio.cursorTicks(reduceMotion: false), "blocked by a recording")
+        _ = audio.start(recordingRunning: false)
+        audio.startFailed()
+        XCTAssertFalse(audio.cursorTicks(reduceMotion: false), "the player could not start")
+    }
 }

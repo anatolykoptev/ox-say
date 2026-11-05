@@ -35,4 +35,11 @@ final class SpeakRecheckTests: XCTestCase {
         tracker.record(answered: true, sentence: "x")
         XCTAssertEqual(tracker.misses, 0)
     }
+
+    func testArrivingOnOzvuchkaWithTheDaemonSilentReadsAtOnce() {
+        XCTAssertTrue(SpeakRecheck.refreshOnArrival(to: .speak, from: .meetings, reach: down))
+        XCTAssertFalse(SpeakRecheck.refreshOnArrival(to: .speak, from: .meetings, reach: .reachable), "nothing to recover")
+        XCTAssertFalse(SpeakRecheck.refreshOnArrival(to: .speak, from: .speak, reach: down), "no change of section")
+        XCTAssertFalse(SpeakRecheck.refreshOnArrival(to: .voices, from: .speak, reach: down), "leaving is not arriving")
+    }
 }

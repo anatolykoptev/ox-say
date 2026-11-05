@@ -119,3 +119,61 @@ final class SpeakListRowTests: XCTestCase {
         follower.stop()
     }
 }
+
+final class SpeakListFreshnessTests: XCTestCase {
+    private func job(_ status: ProduceStatus, done: Int = 0, id: String = "20261001-000000-aaaaaa") -> ProduceJob {
+        ProduceJob(id: id, title: "t", status: status, partsTotal: 5, partsDone: done)
+    }
+
+    func testAFinishedFollowerCopyNeverOverridesTheDaemonsNewerEntry() {
+        // The follower saw the job done; a resume through MCP made the daemon's entry running again.
+        let listed = job(.running, done: 1)
+        XCTAssertEqual(SpeakList.afterRead(projects: [listed], followed: job(.done, done: 5)), [listed])
+        XCTAssertEqual(SpeakList.afterRead(projects: [listed], followed: job(.review, done: 5)), [listed])
+        XCTAssertEqual(SpeakList.afterRead(projects: [listed], followed: job(.failed)), [listed])
+    }
+
+    func testAWorkingFollowerCopyIsFresherThanTheRead() {
+        let listed = job(.running, done: 1)
+        XCTAssertEqual(SpeakList.afterRead(projects: [listed], followed: job(.running, done: 3)).map(\.partsDone), [3])
+        XCTAssertEqual(SpeakList.afterRead(projects: [listed], followed: nil), [listed])
+    }
+
+    func testASelectionThatVanishedIsSeenAsGone() {
+        let p = job(.done)
+        let clip = SpeakClip(id: "c", title: "", text: "", voice: nil, seconds: 1, wav: Data(), created: Date())
+        XCTAssertTrue(SpeakList.stillPresent(nil, projects: [], clips: []))
+        XCTAssertTrue(SpeakList.stillPresent(p.id, projects: [p], clips: []))
+        XCTAssertTrue(SpeakList.stillPresent("c", projects: [], clips: [clip]))
+        XCTAssertFalse(SpeakList.stillPresent(p.id, projects: [], clips: [clip]))
+    }
+
+    func testTheTrackKeyChangesWhenTheFileDoes() {
+        let t0 = Date(timeIntervalSince1970: 1_000), t1 = Date(timeIntervalSince1970: 2_000)
+        let base = SpeakTrack.key(projectID: "j", path: "/x/out.wav", modified: t0, size: 100)
+        XCTAssertEqual(base, SpeakTrack.key(projectID: "j", path: "/x/out.wav", modified: t0, size: 100))
+        XCTAssertNotEqual(base, SpeakTrack.key(projectID: "j", path: "/x/out.wav", modified: t1, size: 100), "a re-render rewrites the file")
+        XCTAssertNotEqual(base, SpeakTrack.key(projectID: "j", path: "/x/out.wav", modified: t0, size: 101))
+        XCTAssertNotEqual(base, SpeakTrack.key(projectID: "j", path: "/x/out.wav", modified: nil, size: nil), "a missing file has its own key")
+    }
+
+    func testASupersededStudioStartNeverLeavesStopDisabled() {
+        var generation = Generation()
+        var gate = StartingGate()
+        XCTAssertFalse(gate.isActive(in: generation))
+        gate.begin(generation.advance())
+        XCTAssertTrue(gate.isActive(in: generation))
+        generation.advance()          // a newer request owns the page now
+        XCTAssertFalse(gate.isActive(in: generation), "the flag belonged to the request that was superseded")
+        gate.begin(generation.advance())
+        gate.end()
+        XCTAssertFalse(gate.isActive(in: generation))
+    }
+
+    func testTheFinishAlertIsSkippedOnlyForAPageProjectWithTheWindowInView() {
+        XCTAssertFalse(FinishNotice.shouldAlert(startedOnPage: true, windowVisible: true))
+        XCTAssertTrue(FinishNotice.shouldAlert(startedOnPage: true, windowVisible: false), "a closed window still gets told")
+        XCTAssertTrue(FinishNotice.shouldAlert(startedOnPage: false, windowVisible: true), "a menu project keeps its alert")
+        XCTAssertTrue(FinishNotice.shouldAlert(startedOnPage: false, windowVisible: false))
+    }
+}

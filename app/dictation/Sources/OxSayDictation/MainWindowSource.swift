@@ -83,6 +83,8 @@ final class MainWindowSource {
     private var searchRequest: Task<Void, Never>?
     /// Saves the route on every change (a quit with the window open never calls windowClosed).
     private var routeSaver: AnyCancellable?
+    /// The section the window showed before the last change, for the arrival rule of the Озвучка recheck.
+    private var lastSection: MainSection = .speak
     /// A meeting restored from the last run is checked against the first non-empty list that loads: an empty
     /// one says nothing yet (the daemon may still be coming up), so the check stays armed for the next list.
     private var restoredMeetingUnchecked = false
@@ -94,6 +96,7 @@ final class MainWindowSource {
         model.advanced = AdvancedMode.isOn(host.defaults)
         let restored = WindowRestoration.load(host.defaults, advanced: model.advanced)
         model.section = restored.section
+        lastSection = restored.section
         model.selectedMeeting = restored.meetingID
         restoredMeetingUnchecked = restored.meetingID != nil
         voiceSource = VoiceSource(model: model, client: host.client, speech: host.speech, defaults: host.defaults,
@@ -120,8 +123,15 @@ final class MainWindowSource {
         }
         routeSaver = Publishers.CombineLatest(model.$section, model.$selectedMeeting).dropFirst().sink { [weak self] section, meeting in
             WindowRestoration.save(MainRoute(section: section, meetingID: meeting), to: defaults)
-            // Arriving on Озвучка with the daemon down starts its recheck without waiting for another refresh pass.
-            Task { @MainActor in self?.schedulePolling() }
+            // Arriving on Озвучка with the daemon down reads at once (the backoff grew on passes made elsewhere) and starts
+            // its recheck without waiting for another refresh pass.
+            Task { @MainActor in
+                guard let self else { return }
+                let arrived = SpeakRecheck.refreshOnArrival(to: self.model.section, from: self.lastSection, reach: self.speakSource.reach)
+                self.lastSection = self.model.section
+                self.schedulePolling()
+                if arrived { self.refresh() }
+            }
         }
         model.actions = actions()
         audio.onChange = { [weak self] values in self?.model.data.playback = values }
