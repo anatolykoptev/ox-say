@@ -15,6 +15,10 @@
 # architecture is not the host's. Test seams (this script's own test is engine/clean/test_release_check.sh):
 #   OX_CLEAN_RELEASE_FILTER   the swift test filter, default ModelGoldenTests; set but empty is refused
 #
+# What validates what: the arch and Rosetta checks above are about $bin. ModelGoldenTests build the sources and never run
+# $bin, so on their own they say nothing about the package; test_cli.py --models (check 2) and probe_speed.sh (check 3)
+# are the ones that exercise $bin with the real model.
+#
 # Three checks, all run even when one fails; the exit status is non-zero if any did:
 #   1. ModelGoldenTests with OX_CLEAN_REQUIRE_MODELS=1 (a missing model is a failure, not a skip), and at least one
 #      test actually executed: "Executed 0 tests" (a filter that matches nothing exits 0 in swift test) is a failure

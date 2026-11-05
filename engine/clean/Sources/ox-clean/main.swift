@@ -249,7 +249,7 @@ enum CLI {
     struct PublishFailure { var reason: String; var message: String }
 
     /// Filesystems that answer ENOTSUP to an exclusive rename: copy the `.part` to a hidden temp name in the same
-    /// directory, fsync, then rename it onto `out`, so `out` is whole or absent whatever kills the process (the temp
+    /// directory, flush it to the drive (F_FULLFSYNC), then rename it onto `out`, so `out` is whole or absent whatever kills the process (the temp
     /// is the only thing a SIGKILL leaves, and the next run clears it). Never overwrites: `out` is checked right before the
     /// rename (the one thing a volume without RENAME_EXCL cannot make atomic; the window is microseconds). On any failure
     /// the temp and the `.part` are removed. Nil on success.
@@ -274,7 +274,7 @@ enum CLI {
         let ifd = open(part, O_RDONLY | O_CLOEXEC)
         guard ifd >= 0 else { return undo(errno, "copy \(part) to \(out)") }
         defer { close(ifd) }
-        let slowMs = ProcessInfo.processInfo.environment["OX_CLEAN_TEST_SLOW_COPY_MS"].flatMap { Int($0) } ?? 0
+        let slowMs = min(max(ProcessInfo.processInfo.environment["OX_CLEAN_TEST_SLOW_COPY_MS"].flatMap { Int($0) } ?? 0, 0), 60_000)
         var buffer = [UInt8](repeating: 0, count: 1 << 20)
         while true {
             let n = read(ifd, &buffer, buffer.count)
@@ -288,7 +288,9 @@ enum CLI {
             }
             if slowMs > 0 { usleep(UInt32(slowMs) * 1000) }
         }
-        guard fsync(ofd) == 0 else { return undo(errno, "copy \(part) to \(out)") }
+        // F_FULLFSYNC: on macOS fsync leaves the data in the drive's cache, so a power cut could still lose the copy that
+        // the rename is about to publish. Volumes that cannot do it fall back to fsync.
+        guard fcntl(ofd, F_FULLFSYNC) == 0 || fsync(ofd) == 0 else { return undo(errno, "copy \(part) to \(out)") }
         guard close(ofd) == 0 else { let e = errno; unlink(tmp); unlink(part); return fail(e, "finish \(out)") }
         if exists(out) { unlink(tmp); unlink(part); return PublishFailure(reason: "out_exists", message: "\(out) appeared while cleaning; not overwriting it") }
         guard rename(tmp, out) == 0 else { let e = errno; unlink(tmp); unlink(part); return fail(e, "move \(tmp) to \(out)") }
@@ -352,7 +354,7 @@ final class TestSeam: MaskPredicting, @unchecked Sendable {
     }
 
     func mask(features: [Float], frames: Int) throws -> [Float] {
-        if slowMs > 0 { usleep(UInt32(slowMs) * 1000) }
+        if slowMs > 0 { usleep(UInt32(min(slowMs, 60_000)) * 1000) }
         if let failAfter, calls >= failAfter {
             throw Failure.processing("test_seam", detail: "OX_CLEAN_TEST_FAIL_AFTER_WINDOWS: failing after \(failAfter) windows")
         }
