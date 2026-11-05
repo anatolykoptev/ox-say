@@ -154,12 +154,13 @@ public struct MainWindowData: Equatable {
     public var dictation: DictationValues
     public var voices: VoicesValues
     public var about: AboutValues
+    public var speak: SpeakValues
 
     public init(meetings: [MeetingInfo], meetingsLoad: MeetingsLoad = .loaded, details: [String: MeetingDetail],
                 detailLoading: Set<String> = [], detailError: [String: String] = [:], recordingElapsed: TimeInterval? = nil,
                 notice: String? = nil, search: MeetingSearchState = MeetingSearchState(), playback: PlaybackValues? = nil,
                 meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
-                dictation: DictationValues, voices: VoicesValues, about: AboutValues) {
+                dictation: DictationValues, voices: VoicesValues, about: AboutValues, speak: SpeakValues = SpeakValues()) {
         self.meetings = meetings
         self.meetingsLoad = meetingsLoad
         self.details = details
@@ -174,6 +175,7 @@ public struct MainWindowData: Equatable {
         self.dictation = dictation
         self.voices = voices
         self.about = about
+        self.speak = speak
     }
 }
 
@@ -228,6 +230,18 @@ public struct MainWindowActions {
     public var seekPlayback: (TimeInterval) -> Void = { _ in }
     /// The meeting is left, the window hides or the user stops it: the audio stops.
     public var stopPlayback: () -> Void = {}
+    /// Озвучка: voice the text, voice it again on a new seed («Ещё вариант»), stop a running request, play or pause
+    /// the clip on screen, save it («Сохранить…»), start a new text, pick a clip of the session, and the editor's and
+    /// the picker's changes as they happen.
+    public var speakGenerate: () -> Void = {}
+    public var speakVariant: () -> Void = {}
+    public var speakStop: () -> Void = {}
+    public var speakPlayPause: () -> Void = {}
+    public var speakSave: () -> Void = {}
+    public var speakNewText: () -> Void = {}
+    public var speakSelect: (String) -> Void = { _ in }
+    public var speakTextChanged: (String) -> Void = { _ in }
+    public var speakVoiceChanged: (String?) -> Void = { _ in }
 
     public init() {}
 }

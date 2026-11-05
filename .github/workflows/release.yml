@@ -75,14 +75,19 @@ jobs:
           # engine and only ox-diar's build switches (engine/diar/build.sh). Package.resolved carries an originHash
           # SwiftPM computes, and one toolchain keeps it from moving (build.sh fails if it does). x86_64 builds no
           # ox-diar (the Intel smoke failed, plan Task 20a), so it names none.
+          # clean_xcode: engine/clean needs Swift 6.2 as well, and ox-clean is built on BOTH architectures (plan
+          # decision 8), so both name an Xcode 26 (the path is on the macos-15-intel and macos-26 images). It has no
+          # dependency, so there is no Package.resolved for a second toolchain to disturb.
           - arch: x86_64
             runner: macos-15-intel
+            clean_xcode: /Applications/Xcode_26.3.app/Contents/Developer
           # macos-26: the macOS 26 SDK is what builds ggml-tensor.metallib,
           # the Metal4 kernel library M5/A19 devices use; macos-15's SDK 15
           # would silently ship a package that disables the tensor API there.
           - arch: arm64
             runner: macos-26
             diar_xcode: /Applications/Xcode_26.3.app/Contents/Developer
+            clean_xcode: /Applications/Xcode_26.3.app/Contents/Developer
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     # read only: this job runs the build scripts, including a PR's own
@@ -170,6 +175,7 @@ jobs:
       - name: Package
         env:
           OX_SAY_DIAR_DEVELOPER_DIR: ${{ matrix.diar_xcode }}
+          OX_SAY_CLEAN_DEVELOPER_DIR: ${{ matrix.clean_xcode }}
         run: scripts/package-release.sh "$VERSION"
 
       # ox-diar's Core ML models (221 MB: the 22 MB community-1 set plus the 199 MB Nemotron fast128 set):
@@ -188,6 +194,7 @@ jobs:
         run: bash scripts/fetch-models.sh --diar-only "$RUNNER_TEMP/diar-models"
 
       - name: Check the package
+        timeout-minutes: 30
         env:
           ARCH: ${{ matrix.arch }}
           RELEASE_CREATED: ${{ needs.release-please.outputs.release_created }}
@@ -197,10 +204,12 @@ jobs:
           tar -xzf "dist/ox-say-macos-$ARCH.tar.gz" -C check
           cd check/ox-say
           test "$(cat VERSION)" = "$VERSION"
-          # VoxCPM2's server is optional for the installer, so a build that
-          # silently dropped it would still install: pin it to the architecture
-          # here. arm64 carries it, x86_64 must not.
-          bins=(bin/ox-say engine/tts-server engine/ox-stt engine/ox-align engine/ox-llm)
+          # VoxCPM2's server and ox-diar are optional for the installer, so a build that
+          # silently dropped one would still install: pin them to the architecture
+          # here. arm64 carries both, x86_64 neither. ox-clean is optional for the installer
+          # too, and BOTH packages carry it (plan decision 8).
+          test -x engine/ox-clean
+          bins=(bin/ox-say engine/tts-server engine/ox-stt engine/ox-align engine/ox-llm engine/ox-clean)
           if [ "$ARCH" = arm64 ]; then
             test -x engine/audiocpp_server
             test -x engine/ox-diar
@@ -329,6 +338,16 @@ jobs:
             python3 "$GITHUB_WORKSPACE/engine/diar/test_cli.py" --bin engine/ox-diar --models "$RUNNER_TEMP/diar-models/diar" \
                 --clip "$RUNNER_TEMP/diar-clip.wav" --speakers 4 --engine pyannote
           fi
+          # ox-clean, the packaged binary, against the model-free half of its CLI contract: usage, version, the macOS-15
+          # gate, the input and output refusals, a missing or unusable models folder (every test of
+          # engine/clean/test_cli.py not marked @needs_models, run by --no-models), on both architectures. Copied away
+          # first (the build tree is already gone, above): it must not lean on anything it sits beside. No hosted VM
+          # runs the real model (run 41886943007 hung on the arm64 VM's GPU for 36 minutes; the Intel VM cannot run
+          # Core ML): engine/clean/release_check.sh gates it on a physical Mac before the release is cut. The step's
+          # timeout-minutes bounds a hang.
+          mkdir "$RUNNER_TEMP/clean-run"
+          cp engine/ox-clean "$RUNNER_TEMP/clean-run/"
+          python3 "$GITHUB_WORKSPACE/engine/clean/test_cli.py" --bin "$RUNNER_TEMP/clean-run/ox-clean" --no-models
           # the dictation app: signed, ours, carrying this version
           codesign --verify --strict app/OxSayDictation.app
           test "$(plutil -extract CFBundleIdentifier raw -o - app/OxSayDictation.app/Contents/Info.plist)" = io.github.anatolykoptev.ox-say.dictation

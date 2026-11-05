@@ -58,3 +58,13 @@ installed binary). Credit: NVIDIA and Fluid Inference.
 
 engine/diar/testdata/ami-es2004a-780-180s.flac is a 3-minute excerpt of the AMI Meeting Corpus recording ES2004a
 (headset mix), (c) the AMI consortium, CC BY 4.0 (https://groups.inf.ed.ac.uk/ami/corpus/license.shtml).
+
+Voice cleanup (engine/clean, the ox-clean engine) runs a Core ML conversion of MossFormer2_SE_48K, a speech-enhancement
+network by Shengkui Zhao, Yukun Ma, Chongjia Ni, Chong Zhang, Hao Wang, Trung Hieu Nguyen, Kun Zhou, Jiaqi Yip, Dianwen
+Ng and Bin Ma (Alibaba SLAB), published as part of ClearerVoice-Studio (https://github.com/modelscope/ClearerVoice-Studio)
+under the Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0). The original weights are
+distributed at alibabasglab/MossFormer2_SE_48K on Hugging Face; the conversion is published at
+Koptev/mossformer2-se-48k-coreml, which scripts/fetch-models.sh downloads at a pinned revision when cleanup is first
+used, and which modifies the computation graph as its NOTICE.md lists (engine/clean/model/NOTICE.md; both it and the
+Apache-2.0 text ship next to the installed binary and next to the models). Licence: Apache-2.0. Credit: Alibaba SLAB
+(ClearerVoice-Studio).

@@ -114,8 +114,11 @@ func TestModelsListReportsInstalledAndSizes(t *testing.T) {
 	if p := find(list, "parakeet"); p == nil || p.Optional || p.Kind != "transcribe" || !p.Default {
 		t.Fatalf("parakeet row: %+v", p)
 	}
-	if len(list) != 5 {
-		t.Fatalf("want the five models, got %d: %+v", len(list), list)
+	if c := find(list, "voice_cleanup"); c == nil || c.Optional || c.Kind != "cleanup" {
+		t.Fatalf("voice cleanup row: %+v", c)
+	}
+	if len(list) != 6 {
+		t.Fatalf("want the six models, got %d: %+v", len(list), list)
 	}
 }
 

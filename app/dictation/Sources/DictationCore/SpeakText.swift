@@ -94,6 +94,18 @@ public enum SpeakText {
         PlainWords.clean(reason ?? "", fallback: t(.speakCannotRun))
     }
 
+    /// The sentence under «Качество» when this Mac cannot run the studio voice. The daemon's two known reasons
+    /// (internal/config/config.go `VoxCPM2Block`, English) become ru/en sentences without the engine's name; anything
+    /// else goes through `unavailableText`.
+    public static func studioReason(_ reason: String, _ t: (L10nKey) -> String) -> String {
+        if reason.hasPrefix("Studio voices (VoxCPM2) need a Mac with Apple Silicon") { return t(.speakStudioNeedsAppleSilicon) }
+        if let match = reason.range(of: #"need at least (\d+) GB of memory; this Mac has (\d+) GB"#, options: .regularExpression) {
+            let numbers = reason[match].components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
+            if numbers.count == 2 { return String(format: t(.speakStudioNeedsMemory), numbers[0], numbers[1]) }
+        }
+        return unavailableText(reason: reason, t)
+    }
+
     /// A daemon call's failure for the notice line (StudioError.message's
     /// rules): the known StudioError cases localized, a refusal in its own
     /// words behind the lead-in, an empty message the status sentence exactly

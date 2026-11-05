@@ -535,13 +535,26 @@ shape. On **any** non-200 response a client should keep its own copy of
 the recording and fall back to uploading the whole clip to
 `POST /v1/audio/transcriptions`.
 
+### Voice cleanup (`POST /v1/audio/clean`)
+
+An offline file tool, not a dictation route: it never touches meetings or dictation (any path under `<home>/meetings`, including through a symlink or hard link, is 403), and dictation never waits for it. The first request on a Mac without the model starts `fetch-models.sh --clean-only` (one download at a time) and answers 503 `models_downloading`; `/status` `voice_clean` and the `voice_cleanup` row of `GET /v1/models` show the download.
+
+| Route | Description |
+|-------|-------------|
+| `POST /v1/audio/clean` | `{"in_path":"/abs/in.mov","out_path":"/abs/out.mov","wet":0.85,"stereo":"mid","overwrite":false}` → 200 `{"out_path","video","input_seconds","elapsed_s","wet","stereo","sample_rate","channels","lag_ms","dropped":[{"index","type","codec"}]}`. `wet` absent = 0.85 (a given `0` is honoured). Errors are `{"error":{"message","type","code"[,"reason","reason_code"]}}` with a stable `code`: 400 `invalid_request`, 403 `forbidden_path`, 404 `not_found`, 409 `exists` / `same_file` / `busy` (a cleanup is already running), 422 `no_audio` / `unsupported_channels` / `unsupported_streams` / `too_long`, 502 `engine_failed` / `lag_unverified` / `model_wrong_answer` (the model gave a wrong answer on this Mac; nothing was cleaned) / `engine_input` / `engine_output`, 503 `os_too_old` / `engine_missing` / `models_missing` / `models_downloading` / `models_unusable` / `busy` (dictation or another job is running for over 2 minutes) / `gpu_busy` (Intel) / `models_download_failed` / `unavailable`, 504 `engine_timeout`, 507 `disk_space` |
+
+A cleanup starts when no dictation session, speech, voice design, transcription, voiceover render or meeting processing is running, waiting up to 2 minutes for that (else 503 `busy`). Dictation and live meetings never wait for a cleanup. While a cleanup runs, a voiceover render and the processing of a finished meeting do not start a new step; they wait for it only up to 2 minutes (the producer's `maxYield`) and then carry on. `busy.cleaning` in `/status` is 1 for the whole request. A body with an unknown field or data after the object is 400; a cleanup that outlasts the daemon's 3 hour cap is 504 `engine_timeout`; a failed model download is not retried for a minute (503 `models_download_failed`, with the reason).
+
+On Apple Silicon (unified memory) a cleanup takes no GPU lease and shares the GPU with other jobs for the few seconds it runs. On Intel, voice cleanup and speech share one graphics card and take turns: the cleanup stops an idle speech engine to take the card, waits up to 2 minutes if speech is working (then 503 `gpu_busy`, "The graphics card is busy with speech; try again in a moment."), and a speech request that arrives meanwhile and cannot start the engine fails with 503 `gpu_busy_cleanup` ("Voice cleanup is using the graphics card; speech will be available when it finishes."). That refusal comes after at most 10 seconds of waiting, not when the cleanup ends. A cleanup that finds an idle speech engine recycles it, so the next speech request after the cleanup pays a cold start.
+
 ### MCP
 
 The same server exposes MCP tools on `/mcp`: `speak`, `transcribe`,
 `voices_list`, `voice_add`, `voice_update`, `voice_remove`, `voice_design`, `voice_design_save`,
 `engine_status`, the long-form voiceover tools `produce`, `produce_status`, `produce_edit`, `produce_control`,
-and three read-only meeting tools: `meetings_list`, `meeting_get` (notes and/or transcript, paged) and
-`meetings_search`. Each tool's description tells an agent when to use it, the units and limits, and what
+three read-only meeting tools: `meetings_list`, `meeting_get` (notes and/or transcript, paged) and
+`meetings_search`, and the offline voice-cleanup tool `voice_clean` (the same code as `POST /v1/audio/clean`: it refuses
+the meetings store, fetches the model on first use, and answers with the plain sentence and stable code when it is busy). Each tool's description tells an agent when to use it, the units and limits, and what
 to call next; the VoxCPM2 quality options (`model`, `instructions`, `cfg_value`, `inference_timesteps`,
 `seed`, `loudness_lufs`) are on `speak` only, and `clone_mode` is on `speak` and `produce` (the same
 `auto`/`reference`/`ultimate` set, judged by the same rules). Register with:
@@ -573,6 +586,7 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_NOTES_IDLE_STOP_SECS` | `120` | Stop the notes engine after N s idle |
 | `OX_SAY_DIAR_BIN` | `<engine dir>/ox-diar` | The speaker diarization engine (meeting voices); Apple Silicon, macOS 15 or later |
 | `OX_SAY_DIAR_ENGINE` | `nemotron` | Which model separates the voices of a meeting: `nemotron` (Nemotron 3 Diarization fast128 on the Neural Engine) or `pyannote` (the previous pipeline, kept until it is removed). Case and surrounding spaces do not matter; a value that is neither is logged once and the default is used. A Mac whose engine set is not fetched keeps one far-side label (`models_missing`) until `scripts/fetch-models.sh` has run; `nemotron` takes calls up to 6 hours, `pyannote` up to 2. The app records up to 6 hours (a minute less) on either; on `pyannote` a recording over 2 hours keeps one far-side label. `GET /status` shows the engine in use as `config.diar_engine` |
+| `OX_SAY_CLEAN_BIN` | `<engine dir>/ox-clean` | The voice-cleanup engine (MossFormer2 on Core ML); its model set (131 MB) is downloaded on first use |
 | `OX_SAY_IDLE_STOP_SECS` | `300` | Stop the idle engine after N s; 0 = never |
 | `OX_SAY_STARTUP_TIMEOUT_SECS` | `180` | Covers the first-start Metal shader compile |
 | `OX_SAY_LANG` | empty | Default language; empty = engine auto-detect |

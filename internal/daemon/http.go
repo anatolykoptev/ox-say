@@ -42,6 +42,8 @@ func (d *Daemon) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /v1/audio/voices/{name}", d.handleUpdateVoice)
 	mux.HandleFunc("DELETE /v1/audio/voices/{name}", d.handleDeleteVoice)
 	mux.HandleFunc("GET /status", d.handleStatus)
+	// Voice cleanup is an offline file tool, not an interactive route: the producer does not yield to it.
+	mux.HandleFunc("POST /v1/audio/clean", d.handleClean)
 	d.produceRoutes(mux)
 	d.meetingRoutes(mux)
 	d.transcriptRoutes(mux)
@@ -59,6 +61,12 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 // writeSynthErr is writeErr for a synthesis error; a runaway also carries its
 // typed code, which the app reads to show a sentence instead of the raw JSON.
 func writeSynthErr(w http.ResponseWriter, err error) {
+	var sbe *speechBlockedError
+	if errors.As(err, &sbe) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": map[string]any{"message": sbe.Error(), "type": speechBlockedCode, "code": speechBlockedCode}})
+		return
+	}
 	var rwe *runawayError
 	if errors.As(err, &rwe) {
 		w.Header().Set("Content-Type", "application/json")

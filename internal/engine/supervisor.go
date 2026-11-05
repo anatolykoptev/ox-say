@@ -391,7 +391,8 @@ func (s *Supervisor) EnsureReady(ctx context.Context) (string, error) {
 				}
 				ok, err := s.cfg.GPU.WaitOrAs(ctx, ch, s.leaseOwner())
 				if err != nil {
-					return "", err
+					// Gave up while another job held the card: say whose it was.
+					return "", &LeaseWaitError{HeldBy: s.cfg.GPU.Owner(), Err: err}
 				}
 				if !ok {
 					continue
@@ -658,6 +659,19 @@ func (s *Supervisor) recycleKill(ctx context.Context, c *child) error {
 		return ctx.Err()
 	}
 }
+
+// LeaseWaitError is an EnsureReady that gave up (its context ended) while waiting for the GPU lease; HeldBy is the
+// lease's holder tag at that moment ("transcription", "clean", ...; "" when it was just released). It unwraps to the
+// context's error, so callers that test for a cancel or a deadline are unaffected.
+type LeaseWaitError struct {
+	HeldBy string
+	Err    error
+}
+
+func (e *LeaseWaitError) Error() string {
+	return "engine start gave up waiting for the GPU lease (held by " + e.HeldBy + "): " + e.Err.Error()
+}
+func (e *LeaseWaitError) Unwrap() error { return e.Err }
 
 // Shutdown stops the idle loop and the child (SIGTERM, SIGKILL after the
 // grace period). Subsequent EnsureReady calls fail with ErrShutdown.

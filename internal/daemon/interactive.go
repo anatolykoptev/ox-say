@@ -54,11 +54,17 @@ func (d *Daemon) waitQuiet(ctx context.Context, onWait func()) error {
 	start, told := time.Now(), false
 	for {
 		since := time.Since(time.Unix(0, d.lastInteractiveEnd.Load()))
-		if d.inflight.Load() == 0 && since >= interactiveQuiet {
+		// A voice cleanup that is running holds a render back too: two GPU jobs side by side is what it avoids. (It does
+		// not hold dictation back: that is not in this loop.)
+		if d.inflight.Load() == 0 && since >= interactiveQuiet && d.cleanRunning.Load() == 0 {
 			return nil
 		}
 		if waited := time.Since(start); waited >= maxYield {
-			d.log.Info("produce wait", slog.String("reason", "dictation"), slog.Float64("waited_s", waited.Seconds()), slog.Bool("bound", true))
+			reason := "dictation"
+			if d.cleanRunning.Load() != 0 && d.inflight.Load() == 0 {
+				reason = "voice_cleanup"
+			}
+			d.log.Info("produce wait", slog.String("reason", reason), slog.Float64("waited_s", waited.Seconds()), slog.Bool("bound", true))
 			return nil
 		} else if !told && waited >= waitingAfter {
 			onWait()

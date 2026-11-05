@@ -48,7 +48,7 @@ public enum AdvancedMode {
 public enum MainWindowSpec {
     /// Sections that have real content on this build. Each section task adds its own case here (one line);
     /// a new case lands unlisted, which is the safe side of a forgotten flag.
-    public static let liveSections: Set<MainSection> = [.meetings, .dictation, .voices, .settings]
+    public static let liveSections: Set<MainSection> = [.speak, .meetings, .dictation, .voices, .settings]
     /// The switch is drawn only once something behind it differs (turned on by the first task that reveals
     /// advanced content).
     public static let showsAdvancedSwitch = false

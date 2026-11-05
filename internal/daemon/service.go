@@ -66,6 +66,15 @@ type Daemon struct {
 	// download (InstallNotesModel).
 	notes notesInstall
 
+	// cleaning is the voice cleanups in flight (0 or 1, busy.cleaning): the CompareAndSwap that makes a second one 409.
+	// cleanRunning is the part of that time the cleanup is past its wait for a quiet daemon and is using the GPU;
+	// waitQuiet holds a voiceover render back while it is non-zero. cleanInst is the lazy model download,
+	// cleanVer the cached `ox-clean --version`.
+	cleaning     atomic.Int64
+	cleanRunning atomic.Int64
+	cleanInst    cleanInstall
+	cleanVer     cleanVersionCache
+
 	ec  *engine.Client
 	log *slog.Logger
 
@@ -108,6 +117,9 @@ type Daemon struct {
 	repairCancel context.CancelFunc
 	repairDone   chan struct{}
 	repairStop   sync.Once
+	// sweepCancel and sweepDone stop and await a StartCleanScratchSweep pass.
+	sweepCancel context.CancelFunc
+	sweepDone   chan struct{}
 
 	// prod runs long-form voiceover jobs; inflight and lastInteractiveEnd
 	// feed the dictation yield (see interactive.go).
@@ -642,6 +654,8 @@ type busySummary struct {
 	// Meetings is the recorded meetings queued or running, plus a notes
 	// model download: a restart would lose the job's progress.
 	Meetings int `json:"meetings"`
+	// Cleaning is the voice cleanup in flight (0 or 1), including its wait for a quiet daemon.
+	Cleaning int `json:"cleaning"`
 }
 
 // idle reports whether every lane is empty — the version handshake's
@@ -660,6 +674,7 @@ func (d *Daemon) busy() busySummary {
 		Transcribing: int(d.transcribing.Load()),
 		Interactive:  int(d.inflight.Load()),
 		Meetings:     d.Meet.Active() + d.notesInstalling(),
+		Cleaning:     d.cleanBusyCount(),
 	}
 }
 
@@ -675,10 +690,13 @@ type statusSummary struct {
 	// Notes is the meeting-notes engine: available, or the reason in plain
 	// words and as a code, the runtime state and the model download's
 	// progress.
-	Notes   notesStatus    `json:"notes"`
-	Voices  []voices.Voice `json:"voices"`
-	Config  map[string]any `json:"config"`
-	Version string         `json:"version"`
+	Notes notesStatus `json:"notes"`
+	// VoiceClean is the voice-cleanup engine: available, or the reason in plain words and as a code, and the lazy
+	// model download.
+	VoiceClean cleanStatus    `json:"voice_clean"`
+	Voices     []voices.Voice `json:"voices"`
+	Config     map[string]any `json:"config"`
+	Version    string         `json:"version"`
 	// Busy counts in-flight work per lane; Idle holds only when every
 	// count is zero. A client about to restart the daemon — the app's
 	// version handshake — checks Idle first.
@@ -706,11 +724,12 @@ func (d *Daemon) Status() statusSummary {
 	}
 	busy := d.busy()
 	return statusSummary{
-		Engine:    d.Sup.Status(),
-		STTServer: sttServer,
-		VoxCPM2:   d.voxStatus(),
-		Notes:     d.notesStatus(),
-		Voices:    list,
+		Engine:     d.Sup.Status(),
+		STTServer:  sttServer,
+		VoxCPM2:    d.voxStatus(),
+		Notes:      d.notesStatus(),
+		VoiceClean: d.cleanStatus(),
+		Voices:     list,
 		Config: map[string]any{
 			"addr":              d.Cfg.Addr,
 			"engine_port":       d.Cfg.EnginePort,
@@ -719,6 +738,7 @@ func (d *Daemon) Status() statusSummary {
 			"voxcpm2_bin":       d.Cfg.VoxCPM2Bin,
 			"notes_bin":         d.Cfg.NotesBin,
 			"diar_bin":          d.Cfg.DiarBin,
+			"clean_bin":         d.Cfg.CleanBin,
 			"diar_engine":       d.Cfg.Engine(),
 			"model":             d.Cfg.Model,
 			"codec":             d.Cfg.Codec,
@@ -751,6 +771,7 @@ func (d *Daemon) Status() statusSummary {
 func (d *Daemon) Shutdown() {
 	d.StopMeetings()
 	d.StopNotesInstall()
+	d.StopCleanInstall()
 	d.StopProducer()
 	d.StopVoiceRepair()
 	d.Sup.Shutdown()

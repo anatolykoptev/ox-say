@@ -80,6 +80,16 @@ const DiarModelsRevision = "df2625ac79a7ac6b65ad868fee6d80f320da4232"
 // names it in Pins.swift, and a test compares the three; ox-diar reads the set on the nemotron engine.
 const NemotronModelsRevision = "25a90f97f254428d4b30374b76af9c74fdee8327"
 
+// CleanModelsRevision is the Hugging Face commit of the MossFormer2 voice-cleanup Core ML set
+// (Koptev/mossformer2-se-48k-coreml). scripts/fetch-models.sh --clean-only downloads that commit (clean_rev); a test
+// compares the two, and Task 3 adds the third copy in engine/clean's Pins.swift.
+const CleanModelsRevision = "da0d6b45be2fe7f2ec495ee76280132848a789c0"
+
+// CleanModelsBytes is the exact byte sum of the files --clean-only downloads (the 8 model files and 4 documents),
+// for the models row and the download's progress only; the integrity pin is the SHA-256 per file in fetch-models.sh.
+// Derived from the published files (stat -f %z, summed): 130931995. The budget is 135 MB.
+const CleanModelsBytes = 130931995
+
 // The ox-diar engines the daemon can ask for (OX_SAY_DIAR_ENGINE, passed to ox-diar as --engine). DefaultDiarEngine
 // stays pyannote until the Nemotron engine passes its gates; flipping it is its own change.
 const (
@@ -175,6 +185,7 @@ type Config struct {
 	NotesPort     int           // OX_SAY_NOTES_PORT: loopback port the child binds
 	NotesIdleStop time.Duration // OX_SAY_NOTES_IDLE_STOP_SECS
 	DiarBin       string        // OX_SAY_DIAR_BIN: path to ox-diar (speaker diarization)
+	CleanBin      string        // OX_SAY_CLEAN_BIN: path to ox-clean (voice cleanup)
 	DiarEngine    string        // OX_SAY_DIAR_ENGINE: pyannote | nemotron (ox-diar --engine)
 	// DiarEngineIgnored is the raw OX_SAY_DIAR_ENGINE value load did not recognise and replaced by the default ("" when
 	// the setting was fine). The serve command logs it: a typo in the plist, which the installer carries over on every
@@ -233,6 +244,7 @@ var flagNames = map[string]string{
 	"notes-idle-stop":   "OX_SAY_NOTES_IDLE_STOP_SECS",
 	"diar-bin":          "OX_SAY_DIAR_BIN",
 	"diar-engine":       "OX_SAY_DIAR_ENGINE",
+	"clean-bin":         "OX_SAY_CLEAN_BIN",
 }
 
 // RegisterFlags registers one flag per supported env var on fs. Values set on
@@ -355,6 +367,9 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 	if c.DiarBin = get("OX_SAY_DIAR_BIN"); c.DiarBin == "" {
 		c.DiarBin = filepath.Join(engineDir, "ox-diar")
 	}
+	if c.CleanBin = get("OX_SAY_CLEAN_BIN"); c.CleanBin == "" {
+		c.CleanBin = filepath.Join(engineDir, "ox-clean")
+	}
 	raw := get("OX_SAY_DIAR_ENGINE")
 	switch v := strings.ToLower(strings.TrimSpace(raw)); v {
 	case "":
@@ -384,6 +399,16 @@ func (c *Config) DiarModelsReady() bool {
 		return markerIs(filepath.Join(c.DiarModelsDir(), "nemotron-3-diarization", ".ox-say-revision"), NemotronModelsRevision)
 	}
 	return markerIs(filepath.Join(c.DiarModelsDir(), "speaker-diarization", ".fluidaudio-revision"), DiarModelsRevision)
+}
+
+// CleanModelsDir is where scripts/fetch-models.sh --clean-only writes the voice-cleanup set: mossformer2-se-48k/ inside it.
+func (c *Config) CleanModelsDir() string { return filepath.Join(c.Home, "models", "clean") }
+
+// CleanModelsReady reports whether the voice-cleanup set is all there: the marker fetch-models.sh writes last, after
+// every file passed its checksum, names CleanModelsRevision. A cut-short fetch, a failed re-fetch and an older
+// revision all read as not ready. The marker is read per call: a set fetched later works at once.
+func (c *Config) CleanModelsReady() bool {
+	return markerIs(filepath.Join(c.CleanModelsDir(), "mossformer2-se-48k", ".ox-say-revision"), CleanModelsRevision)
 }
 
 // markerIs: the file holds exactly want (a trailing newline allowed).

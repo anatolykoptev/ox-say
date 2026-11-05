@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -115,6 +117,46 @@ var interactiveSpeakCeiling = func() time.Duration {
 	return time.Duration(chars/estCharsPerSec*renderBudgetRTF*float64(time.Second)) + renderSlack
 }()
 
+// speechLeaseBudget is how long an interactive speech request may wait for a GPU lease that a voice cleanup holds
+// (Intel only) before it gets the typed 503 gpu_busy_cleanup. A cleanup runs minutes to hours; waiting that long
+// silently is worse than an immediate answer. A var so a test can shorten it.
+var speechLeaseBudget = 10 * time.Second
+
+// boundCleanupWait derives a context for EnsureReady that is cancelled once speechLeaseBudget has passed while the
+// lease is held by "clean". A lease held by anything else is not bounded: the timer re-arms and the wait keeps its
+// caller's deadline. The returned stop must be called when EnsureReady has returned.
+func (d *Daemon) boundCleanupWait(ctx context.Context) (context.Context, func()) {
+	wctx, cancel := context.WithCancel(ctx)
+	var t *time.Timer
+	var mu sync.Mutex
+	done := false
+	var arm func()
+	arm = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if done {
+			return
+		}
+		t = time.AfterFunc(speechLeaseBudget, func() {
+			if d.gpu != nil && d.gpu.Owner() == "clean" {
+				cancel()
+				return
+			}
+			arm()
+		})
+	}
+	arm()
+	return wctx, func() {
+		mu.Lock()
+		done = true
+		if t != nil {
+			t.Stop()
+		}
+		mu.Unlock()
+		cancel()
+	}
+}
+
 // speechOn POSTs one prepared body to sup's child and returns the WAV — the
 // shared shape of every engine call (Acquire, EnsureReady, Speech, status).
 func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[string]any) ([]byte, error) {
@@ -135,8 +177,19 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 		ctx, cancel = context.WithTimeout(ctx, interactiveSpeakCeiling)
 		defer cancel()
 	}
-	base, err := sup.EnsureReady(ctx)
+	readyCtx := ctx
+	if use == nil {
+		// Interactive speech does not park behind a cleanup for minutes (#482).
+		var stop func()
+		readyCtx, stop = d.boundCleanupWait(ctx)
+		defer stop()
+	}
+	base, err := sup.EnsureReady(readyCtx)
 	if err != nil {
+		var lwe *engine.LeaseWaitError
+		if errors.As(err, &lwe) && lwe.HeldBy == "clean" {
+			return nil, &speechBlockedError{err: lwe.Err}
+		}
 		return nil, fmt.Errorf("%w: %w", errEngineStart, err)
 	}
 	if vox {

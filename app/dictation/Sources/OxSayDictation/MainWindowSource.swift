@@ -39,6 +39,14 @@ struct MainWindowHost {
     /// Work the window was doing has ended (a voice take closed, saved or was thrown away): a version handshake
     /// held back for it runs again.
     var workEnded: () -> Void
+    /// True once, on the first ever launch: Озвучка opens with its sample text instead of an empty editor.
+    var consumeFirstRun: () -> Bool
+    /// Why a new speak request must wait (an update is installing), else nil.
+    var speechRefusal: () -> String?
+    /// The one OxSay window, for the save panel to attach to.
+    var mainWindow: () -> NSWindow?
+    /// Stops the app's own speech player (speak-selection and voiceover playback): a clip never overlaps it.
+    var stopSpeechPlayer: () -> Void
 }
 
 /// Fills the main window with what the app really has and carries out what the window asks. The window holds no timer:
@@ -55,6 +63,7 @@ final class MainWindowSource {
     private var gate = RefreshGate()
     private let audio = MeetingAudioPlayer()
     private var voiceSource: VoiceSource!
+    private var speakSource: SpeakSource!
     /// Each click on a line is one request; a probe that comes back after another click, a stop or a close is dropped.
     private var playRequests = PlayRequestGuard()
     private var detailReads = DetailReads()
@@ -90,7 +99,17 @@ final class MainWindowSource {
                                   dictationRecording: { host.dictationRecording() },
                                   windowGone: { [weak self] in self?.windowOpen == false },
                                   workEnded: { host.workEnded() },
-                                  designer: host.designer(), changed: host.voicesChanged)
+                                  designer: host.designer(),
+                                  changed: { [weak self] voices in
+                                      host.voicesChanged(voices)
+                                      self?.speakSource.voicesChanged()
+                                  })
+        speakSource = SpeakSource(model: model, host: host)
+        speakSource.stopOtherAudio = { [weak self] in
+            self?.voiceSource.stopPreview()
+            self?.stopPlayback()
+            host.stopSpeechPlayer()
+        }
         let defaults = host.defaults
         model.advancedChanged = { [weak model] on in
             AdvancedMode.set(on, in: defaults)
@@ -149,6 +168,12 @@ final class MainWindowSource {
     /// The person is recording their own voice (a take in progress, kept or being sent): the version handshake waits.
     var recordingVoice: Bool { voiceSource.recordingVoice }
 
+    /// The app's own player starts (speak-selection, voiceover): a clip on Озвучка stops first.
+    func stopSpeakClip() { speakSource.stopClip() }
+
+    /// A speak request is on its way or a clip sounds: the version handshake waits for it.
+    var speakBusy: Bool { speakSource.busy }
+
     /// Points the window at a section (and a meeting). A route without a meeting leaves the open one alone.
     func apply(_ route: MainRoute) {
         let route = route.resolved(visible: MainWindowSpec.sections(advanced: model.advanced))
@@ -162,6 +187,7 @@ final class MainWindowSource {
         activeObserver = nil
         cancelSearchWork()
         stopPlayback()
+        speakSource.windowClosed()
         voiceSource.stopPreview()
         voiceSource.quietDesign()
         voiceSource.quietFile()
@@ -193,6 +219,7 @@ final class MainWindowSource {
     func recordingChanged() {
         // A call's audio never plays while a recording runs, visible window or not — nor does a voice's sample.
         if host.meetings()?.recordingElapsed != nil { stopPlayback(); voiceSource.stopPreview(); voiceSource.quietDesign(); voiceSource.meetingStarted() }
+        if host.meetings()?.recordingElapsed != nil { speakSource.recordingStarted() }
         guard visible else { return }
         syncRecording()
         refresh()
@@ -241,7 +268,7 @@ final class MainWindowSource {
         a.setHotkeyMode = { [weak self] mode in self?.host.setHotkeyMode(mode) }
         a.pickVoice = { [weak self] slot, voice in self?.host.pickVoice(slot, voice) }
         a.reloadVoices = { [weak self] in self?.voiceSource.reload() }
-        a.previewVoice = { [weak self] id in self?.voiceSource.preview(id) }
+        a.previewVoice = { [weak self] id in self?.speakSource.stopClip(); self?.voiceSource.preview(id) }
         a.stopPreview = { [weak self] in self?.voiceSource.stopPreview() }
         a.renameVoice = { [weak self] id, label in self?.voiceSource.rename(id, label) }
         a.deleteVoice = { [weak self] id in self?.voiceSource.delete(id) }
@@ -261,6 +288,15 @@ final class MainWindowSource {
         a.togglePlayback = { [weak self] in self?.audio.toggle() }
         a.seekPlayback = { [weak self] seconds in self?.audio.seek(to: seconds) }
         a.stopPlayback = { [weak self] in self?.stopPlayback() }
+        a.speakGenerate = { [weak self] in self?.speakSource.generate() }
+        a.speakVariant = { [weak self] in self?.speakSource.generate(variant: true) }
+        a.speakStop = { [weak self] in self?.speakSource.stop() }
+        a.speakPlayPause = { [weak self] in self?.speakSource.playPause() }
+        a.speakSave = { [weak self] in self?.speakSource.save() }
+        a.speakNewText = { [weak self] in self?.speakSource.newText() }
+        a.speakSelect = { [weak self] id in self?.speakSource.select(id) }
+        a.speakTextChanged = { [weak self] text in self?.speakSource.textChanged(text) }
+        a.speakVoiceChanged = { _ in }
         return a
     }
 
@@ -295,6 +331,7 @@ final class MainWindowSource {
                 refreshSelectedDetail()
                 await status.value
                 updateDesignAvailability()
+                speakSource.statusRead()
             } while gate.finish()
             schedulePolling()
         }
@@ -468,6 +505,7 @@ final class MainWindowSource {
                         model.data.notice = L10nKey.playBlockedRecording.text
                         return
                     }
+                    speakSource.stopClip()
                     audio.play(url: host.client.meetingAudioURL(id: id), meetingID: id, from: start)
                 case .removed:
                     // Retention took it: the line says so once (the header notice) and offers no play any more.

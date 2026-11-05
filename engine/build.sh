@@ -7,12 +7,13 @@
 #   ox-align    from engine/align on the pinned whisper.cpp (wav2vec2 CTC emissions)
 #   audiocpp_server from the pinned audio.cpp, arm64, dist build or OX_SAY_WITH_VOXCPM2=1 (VoxCPM2 quality text-to-speech)
 #   ox-llm      from the pinned llama.cpp's llama-server, own ggml (meeting notes: Qwen3.5 GGUF)
-#   ox-diar     from engine/diar, a Swift package on FluidAudio's Core ML models (speaker diarization)
+#   ox-diar     from engine/diar, a Swift package on FluidAudio's Core ML models (speaker diarization), arm64
+#   ox-clean    from engine/clean, a Swift package on a Core ML mask model (voice cleanup), arm64 and x86_64
 # The first three carry engine/patches/ggml on their ggml tree, on both architectures: on
 # unified memory the patches are inert or bug fixes (engine/README.md).
 #
 # Usage: engine/build.sh [work-dir]      (default: build/engine)
-# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,ox-llm,ox-diar,audiocpp_server (arm64),
+# Output: <work-dir>/out/{tts-server,ox-stt,ox-align,ox-llm,ox-diar (arm64),ox-clean,audiocpp_server (arm64),
 #                        each <bin>.metallib (+<bin>-tensor.metallib on a
 #                        macOS 26 SDK) when the Metal toolchain is present,
 #                        licenses/, pins.env (the repo and commit pins this build used)}
@@ -359,20 +360,21 @@ echo "built $out/ox-llm"
 # A Swift package, not a ggml engine: set_cmake_flags and the metallib steps do not apply. It links only system
 # frameworks (Core ML, Accelerate, AVFoundation) and the Swift runtime the OS ships, so check_static passes; Swift
 # and clang emit no instruction past the baseline, and check_dist proves it on the output. Needs Xcode 26 (Swift
-# 6.2) and macOS 15 to run: a source install on an older Mac or with older tools skips it (diar_gate,
+# 6.2) and macOS 15 to run: a source install on an older Mac or with older tools skips it (helper_gate,
 # engine/want-diar.sh), a distribution build never does. engine/diar/build.sh reads OX_SAY_DIAR_DEVELOPER_DIR for a
 # runner whose default Xcode is older.
 # Apple Silicon only: the Intel smoke of plan Task 20a failed (Core ML cannot run the models on .cpuOnly), so the
 # x86_64 package carries no ox-diar and the daemon reports cpu_unsupported there. Where the gate opens by itself, a
-# build that fails is dropped with a warning instead of failing the install (diar_build, engine/want-diar.sh).
-if [ "$arch" != arm64 ]; then
-    if [ -e "$out/ox-diar" ]; then
-        rm -f "$out/ox-diar"
-        echo "engine/build.sh: removed a stale ox-diar from $out: the $arch package carries none (Apple Silicon only)" >&2
-    fi
-elif diar_gate "$out"; then
-    diar_build "$here" "$work" "$out"
-fi
+# build that fails is dropped with a warning instead of failing the install. The architecture rule, the gate and the
+# failure policy are build_swift_helper's (engine/want-diar.sh), shared with ox-clean below.
+build_swift_helper diar "$arch" "$here" "$work" "$out"
+
+# --- ox-clean (voice cleanup: MossFormer2_SE_48K on Core ML) ---
+# The same kind of package (Swift 6.2, system frameworks only) behind the same gate, but built for BOTH architectures
+# (plan decision 8: measured on a real Intel Mac, a discrete GPU or the CPU runs it). engine/clean/build.sh builds for
+# the architecture of this shell, as every other engine does, and reads OX_SAY_CLEAN_DEVELOPER_DIR for a runner whose
+# default Xcode is older. The models are not part of the build: the daemon fetches them on first use.
+build_swift_helper clean "$arch" "$here" "$work" "$out"
 
 # Licences of audio.cpp's vendored dependencies, derived from the tree: a
 # hand-written list cannot notice one it lacks. Every licence file under

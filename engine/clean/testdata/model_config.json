@@ -1,0 +1,57 @@
+{
+ "model": "MossFormer2_SE_48K",
+ "architecture": "mossformer2 mask network, Core ML mlprogram",
+ "compute_units": "cpuAndGPU",
+ "precision": "mixed",
+ "input": {
+  "name": "features",
+  "shape": [
+   1,
+   2496,
+   180
+  ],
+  "dtype": "float32",
+  "meaning": "Kaldi fbank 60 + delta 60 + delta-delta 60, dither 1.0"
+ },
+ "output": {
+  "name": "mask",
+  "shape": [
+   1,
+   2496,
+   961
+  ],
+  "dtype": "float32",
+  "meaning": "STFT magnitude mask (ReLU, not bounded by 1)"
+ },
+ "audio": {
+  "sample_rate": 48000,
+  "scale": 32768,
+  "fft_len": 1920,
+  "hop": 384,
+  "win_len": 1920,
+  "window": "hamming periodic=False",
+  "center": false
+ },
+ "features": {
+  "type": "kaldi_fbank",
+  "num_mel_bins": 60,
+  "deltas": 2,
+  "frame_length_ms": 40.0,
+  "frame_shift_ms": 8.0,
+  "dither": 1.0
+ },
+ "chunking": {
+  "window_samples": 960000,
+  "stride_samples": 720000,
+  "frames": 2496,
+  "last_window": "end-aligned",
+  "short_clip_fill": "tile",
+  "splice": "50 ms linear crossfade at the middle of each overlap",
+  "xfade_samples": 2400
+ },
+ "known_answer": {
+  "file": "reference_window.bin",
+  "sha256": "29fcb372069103a8337c0e19e32f2e983bc709ea45185a662213a26ee7435beb",
+  "check": "features -> mask MSE <= 1e-4, p99.9 abs error <= 0.05, no NaN, after every model load"
+ }
+}

@@ -307,6 +307,7 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_NOTES_IDLE_STOP_SECS", "67", "1m7s", func(c *Config) string { return c.NotesIdleStop.String() }},
 		{"OX_SAY_DIAR_BIN", "/tmp/oxk-4917/ox-diar-x", "/tmp/oxk-4917/ox-diar-x", func(c *Config) string { return c.DiarBin }},
 		{"OX_SAY_DIAR_ENGINE", "nemotron", "nemotron", func(c *Config) string { return c.DiarEngine }},
+		{"OX_SAY_CLEAN_BIN", "/tmp/oxk-4917/ox-clean-x", "/tmp/oxk-4917/ox-clean-x", func(c *Config) string { return c.CleanBin }},
 	}
 	keys := EnvKeys()
 	inTable := map[string]bool{}
@@ -1092,5 +1093,62 @@ func TestVoxCPM2MemoryFloorMatchesInstaller(t *testing.T) {
 	}
 	if want := int64(VoxCPM2MinMemoryGB) << 30; bytes != want {
 		t.Fatalf("installer floor %d bytes, config floor %d GB = %d bytes", bytes, VoxCPM2MinMemoryGB, want)
+	}
+}
+
+// The voice-cleanup model pin lives in scripts/fetch-models.sh (clean_rev) and here; the two must name one commit, and
+// the URL must be built from clean_rev (a `resolve/main` URL would move under the pinned hashes). engine/clean's
+// Pins.swift modelsRevision is the third copy.
+// Mutations: config.go, change one hex digit of CleanModelsRevision -> RED; fetch-models.sh, change `clean_rev=` ->
+// RED; fetch-models.sh, change `resolve/$clean_rev` to `resolve/main` in clean_url -> RED; Pins.swift, change one hex
+// digit of modelsRevision -> RED.
+func TestCleanPinsAgreeAcrossLanguages(t *testing.T) {
+	sh, err := os.ReadFile("../../scripts/fetch-models.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shRev := regexp.MustCompile(`(?m)^clean_rev=([0-9a-f]{40})$`).FindSubmatch(sh)
+	if shRev == nil || string(shRev[1]) != CleanModelsRevision {
+		t.Fatalf("fetch-models.sh clean_rev %q != CleanModelsRevision %s", shRev, CleanModelsRevision)
+	}
+	if !regexp.MustCompile(`(?m)^clean_url=https://huggingface\.co/Koptev/mossformer2-se-48k-coreml/resolve/\$clean_rev$`).Match(sh) {
+		t.Fatal("fetch-models.sh clean_url is not the pinned resolve/$clean_rev URL")
+	}
+	swift, err := os.ReadFile("../../engine/clean/Sources/OxCleanCore/Pins.swift")
+	if err != nil {
+		t.Fatal(err)
+	}
+	swiftRev := regexp.MustCompile(`(?m)^\s*public static let modelsRevision = "([0-9a-f]{40})"$`).FindSubmatch(swift)
+	if swiftRev == nil || string(swiftRev[1]) != CleanModelsRevision {
+		t.Fatalf("engine/clean Pins.swift modelsRevision %q != CleanModelsRevision %s", swiftRev, CleanModelsRevision)
+	}
+}
+
+// Ready means the marker fetch-models.sh writes last names the pinned revision; a stale or missing marker is not ready.
+// Mutation: config.go, make CleanModelsReady return true -> RED.
+func TestCleanModelsReadyNeedsTheMatchingMarker(t *testing.T) {
+	c := &Config{Home: t.TempDir()}
+	if c.CleanModelsReady() {
+		t.Fatal("ready with no files")
+	}
+	dir := filepath.Join(c.CleanModelsDir(), "mossformer2-se-48k")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, ".ox-say-revision")
+	if err := os.WriteFile(marker, []byte("0000000000000000000000000000000000000000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c.CleanModelsReady() {
+		t.Fatal("ready on a stale marker")
+	}
+	if err := os.WriteFile(marker, []byte(CleanModelsRevision+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !c.CleanModelsReady() {
+		t.Fatal("not ready on the right marker")
+	}
+	if want := filepath.Join(c.Home, "models", "clean"); c.CleanModelsDir() != want {
+		t.Fatalf("CleanModelsDir %s, want %s", c.CleanModelsDir(), want)
 	}
 }

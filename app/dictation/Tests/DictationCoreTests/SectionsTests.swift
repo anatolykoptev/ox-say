@@ -42,6 +42,16 @@ final class SectionsTests: XCTestCase {
                        MainWindowSpec.liveSections.contains(.models) ? .models : MainWindowSpec.firstRunSection)
     }
 
+    /// With Озвучка live, an empty store lands on it and a stored Meetings stays.
+    /// Mutation: MainWindowSpec.liveSections, remove `.speak` -> RED.
+    func testFirstRunLandsOnSpeakOnceItIsLive() {
+        XCTAssertEqual(MainWindowSpec.firstRunSection, .speak)
+        let d = UserDefaults(suiteName: "Speak.\(UUID())")!
+        XCTAssertEqual(WindowRestoration.load(d, advanced: false).section, .speak)
+        WindowRestoration.save(MainRoute(section: .meetings), to: d)
+        XCTAssertEqual(WindowRestoration.load(d, advanced: false).section, .meetings)
+    }
+
     /// ⌘1… follow the sidebar, so turning Advanced on shifts the keys after Models.
     func testTheViewMenuKeysFollowTheSwitch() {
         func keys(_ advanced: Bool) -> [String] {

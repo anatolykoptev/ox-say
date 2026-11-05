@@ -30,6 +30,14 @@
 #     "a default run on arm64 macOS 15 lists the nemotron set" fails
 #   * fetch-models.sh: drop the sysctl half of the arch test in nemotron_ok -> a Rosetta shell reads as
 #     Intel -> "a Rosetta shell on arm64 macOS 15 lists the nemotron set" fails
+#   * fetch-models.sh: delete the `models=("${clean_models[@]}")` line under `if [ "$clean_only" = 1 ]` ->
+#     --clean-only goes for the other models too -> "--clean-only lists only the clean models" fails
+#   * fetch-models.sh: delete the `clean/mossformer2-se-48k/*) rm -f "$clean_marker"` arm -> a bad clean file leaves
+#     an old marker -> "a failed clean fetch removes the marker of an earlier one" fails
+#   * fetch-models.sh: delete the `mv ... .ox-say-revision` write of the clean set -> "the clean marker is present
+#     after a full --clean-only fetch" fails
+#   * fetch-models.sh: add `models+=("${clean_models[@]}")` to the default list -> "a default run on arm64 lists no
+#     clean files" and "... on Intel ..." fail
 #   * fetch-models.sh: change the notes sha256 -> the live acceptance probe
 #     (a real copy of the model) fails; this sandbox test cannot see it, because
 #     it only proves a WRONG file is refused (see Task 6 in the plan)
@@ -112,7 +120,7 @@ else
     fail "files left in dest/diar: $(find "$tmp/ddest/diar" -type f 2>/dev/null)"
 fi
 n=$(grep -c '^    "[0-9a-f]\{64\}  [^ ]*"$' "$root/scripts/fetch-models.sh")
-if [ "$n" = 35 ]; then pass "the script lists 28 diarization and 7 nemotron entries"; else fail "the script lists $n diarization entries, want 35"; fi
+if [ "$n" = 47 ]; then pass "the script lists 28 diarization, 7 nemotron and 12 clean entries"; else fail "the script lists $n pinned entries, want 47"; fi
 
 # A marker from an earlier complete fetch must not outlive a failed one: the next run replaces files, and a marker over a
 # half-replaced set would tell the loader the models are all there.
@@ -314,6 +322,89 @@ else
     fail "no nemotron marker after a full fetch (rc $rc): $out"
 fi
 
+# MossFormer2 voice-cleanup set (--clean-only): 8 files and 4 documents in <dest>/clean/mossformer2-se-48k/. Lazy: no
+# default run lists it, on any Mac; only --clean-only does, on Apple Silicon and on Intel alike (no hardware gate). The
+# fake shasum vouches for a file holding "intact" with the hash the script's own clean tables pin, so the 12 files count
+# as passed without shipping 131 MB.
+clean_tables() { sed -n '/^clean_files=(/,/^)/p; /^clean_docs=(/,/^)/p' "$root/scripts/fetch-models.sh"; }
+c="$tmp/clean"; mkdir -p "$c/bin" "$c/from"
+cat > "$c/bin/shasum" <<FAKE
+#!/bin/bash
+f=\${3:-}
+case \$f in
+    */clean/mossformer2-se-48k/*)
+        if [ "\$(cat "\$f")" = intact ]; then
+            rel=\${f#*/clean/mossformer2-se-48k/}
+            rel=\${rel%.part}
+            sed -n '/^clean_files=(/,/^)/p; /^clean_docs=(/,/^)/p' "$root/scripts/fetch-models.sh" | grep -m1 "^    \"[0-9a-f]\{64\}  \$rel\"\$" | sed 's/^    "\([0-9a-f]*\) .*/\1  -/'
+            exit 0
+        fi ;;
+esac
+exec /usr/bin/shasum "\$@"
+FAKE
+chmod +x "$c/bin/shasum"
+clean_tables | sed -n 's/^    "[0-9a-f]\{64\}  \(.*\)"$/\1/p' | while IFS= read -r rel; do
+    mkdir -p "$c/from/clean/mossformer2-se-48k/$(dirname "$rel")"
+    printf intact > "$c/from/clean/mossformer2-se-48k/$rel"
+done
+cmark="clean/mossformer2-se-48k/.ox-say-revision"
+crev=da0d6b45be2fe7f2ec495ee76280132848a789c0
+
+# clean_listed <label> <rc> <out>: all 12 files of the set reached 'ok' and nothing else was looked at.
+clean_listed() {
+    if [ "$2" != 0 ]; then fail "$1 -- the run failed (rc $2): $3"; return; fi
+    n=$(printf '%s\n' "$3" | grep -c '^ok      clean/mossformer2-se-48k/')
+    other=$(printf '%s\n' "$3" | grep -E '^(ok|copy|fetch) ' | grep -vc ' clean/mossformer2-se-48k/' || true)
+    if [ "$n" = 12 ] && [ "${other:-0}" = 0 ]; then pass "$1"; else fail "$1 -- $n of 12 clean files 'ok', $other other lines: $3"; fi
+}
+# clean_not_listed <label> <rc> <out>: no clean name printed, the run still 0.
+clean_not_listed() {
+    case $3 in *clean/mossformer2*) fail "$1 -- the clean set was fetched: $3"; return ;; esac
+    if [ "$2" = 0 ]; then pass "$1"; else fail "$1 -- the run failed (rc $2): $3"; fi
+}
+
+out=$(PATH="$c/bin:$PATH" OX_SAY_MODELS_FROM="$c/from" bash "$root/scripts/fetch-models.sh" --clean-only "$c/dest" 2>&1); rc=$?
+clean_listed "--clean-only lists only the clean models" "$rc" "$out"
+if [ "$(cat "$c/dest/$cmark" 2>/dev/null)" = "$crev" ]; then pass "the clean marker is present after a full --clean-only fetch"; else fail "no clean marker after a full fetch (rc $rc): $out"; fi
+if [ ! -e "$c/dest/diar" ] && [ ! -e "$c/dest/qwen-talker-0.6b-base-Q8_0.gguf" ]; then pass "--clean-only writes nothing outside the clean directory"; else fail "--clean-only wrote elsewhere: $(ls "$c/dest")"; fi
+# the .mlpackage is not downloaded: the app loads the compiled .mlmodelc
+case $out in *mlpackage*) fail "the .mlpackage was listed: $out" ;; *) pass "the .mlpackage is not downloaded" ;; esac
+
+# No hardware gate: Intel (and a Rosetta shell) get the set as well.
+fake_platform "$c/intel" x86_64 15.1 0
+out=$(PATH="$c/bin:$c/intel:$PATH" OX_SAY_MODELS_FROM="$c/from" bash "$root/scripts/fetch-models.sh" --clean-only "$c/dest-intel" 2>&1); rc=$?
+clean_listed "--clean-only on Intel lists the clean set" "$rc" "$out"
+
+# Lazy download: a default run lists no clean files, whatever the Mac.
+out=$(run_gate "$g/arm64-15" "$g/d11"); rc=$?
+clean_not_listed "a default run on arm64 lists no clean files" "$rc" "$out"
+out=$(run_gate "$g/intel-15" "$g/d12"); rc=$?
+clean_not_listed "a default run on Intel lists no clean files" "$rc" "$out"
+out=$(run_gate "$g/arm64-15" "$g/d13" --diar-only); rc=$?
+clean_not_listed "--diar-only lists no clean files" "$rc" "$out"
+
+# A bad file of the set removes ITS marker (the first listed file is wrong), and nothing of another set.
+mkdir -p "$c/bad/clean/mossformer2-se-48k/MossFormer2_SE_48K.mlmodelc/analytics" "$c/bdest/clean/mossformer2-se-48k" "$c/bdest/diar/nemotron-3-diarization"
+echo "not a model" > "$c/bad/clean/mossformer2-se-48k/MossFormer2_SE_48K.mlmodelc/analytics/coremldata.bin"
+echo "$crev" > "$c/bdest/$cmark"
+echo "25a90f97f254428d4b30374b76af9c74fdee8327" > "$c/bdest/diar/nemotron-3-diarization/.ox-say-revision"
+out=$(OX_SAY_MODELS_FROM="$c/bad" bash "$root/scripts/fetch-models.sh" --clean-only "$c/bdest" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && pass "a wrong clean file is refused" || fail "a wrong clean file was accepted"
+case $out in *"checksum mismatch for clean/mossformer2-se-48k/MossFormer2_SE_48K.mlmodelc/analytics/coremldata.bin"*) pass "the mismatch names the clean file" ;; *) fail "no mismatch message: $out" ;; esac
+if [ ! -e "$c/bdest/$cmark" ]; then pass "a failed clean fetch removes the marker of an earlier one"; else fail "the old clean marker survived a failed fetch"; fi
+[ -e "$c/bdest/diar/nemotron-3-diarization/.ox-say-revision" ] && pass "the clean failure leaves the nemotron marker alone" || fail "a clean failure removed the nemotron marker"
+# a file that vanished from a complete set also takes the marker, and a wrong replacement fails the run
+cp -R "$c/from" "$c/gone-from"
+PATH="$c/bin:$PATH" OX_SAY_MODELS_FROM="$c/from" bash "$root/scripts/fetch-models.sh" --clean-only "$c/gone" > /dev/null 2>&1
+if [ ! -e "$c/gone/$cmark" ]; then fail "(setup) the first clean fetch left no marker"; fi
+rm "$c/gone/clean/mossformer2-se-48k/config.json"
+echo "not the config" > "$c/gone-from/clean/mossformer2-se-48k/config.json"
+out=$(PATH="$c/bin:$PATH" OX_SAY_MODELS_FROM="$c/gone-from" bash "$root/scripts/fetch-models.sh" --clean-only "$c/gone" 2>&1); rc=$?
+if [ "$rc" -ne 0 ] && [ ! -e "$c/gone/$cmark" ]; then pass "a missing file of a complete set removes the marker and fails the run"; else fail "gone: rc $rc: $out"; fi
+# an unchanged complete set downloads nothing and keeps the marker
+out=$(PATH="$c/bin:$PATH" OX_SAY_MODELS_FROM="$c/from" bash "$root/scripts/fetch-models.sh" --clean-only "$c/dest" 2>&1); rc=$?
+case $out in *"copy    "*|*"fetch   "*) fail "a repeat run fetched again: $out" ;; *) [ "$rc" = 0 ] && [ "$(cat "$c/dest/$cmark")" = "$crev" ] && pass "a repeat run fetches nothing and keeps the marker" || fail "repeat: rc $rc: $out" ;; esac
+
 # A download that fails must say why in curl's words, and must not flood stderr
 # with the progress meter: the daemon shows the tail of that stderr to the user.
 # The fake curl behaves like the real one: -s drops the meter and the error,
@@ -347,7 +438,7 @@ case $out in
 esac
 
 # --- option conflicts: a set selector next to an option for another set is refused, not half-obeyed ---
-for combo in "--notes-only --with-whisper" "--diar-only --with-voxcpm2" "--notes-only --diar-only" "--nemotron-only --with-whisper" "--nemotron-only --diar-only" "--nemotron-only --notes-only"; do
+for combo in "--notes-only --with-whisper" "--diar-only --with-voxcpm2" "--notes-only --diar-only" "--nemotron-only --with-whisper" "--nemotron-only --diar-only" "--nemotron-only --notes-only" "--clean-only --with-whisper" "--clean-only --with-voxcpm2" "--clean-only --notes-only" "--clean-only --diar-only" "--clean-only --nemotron-only"; do
     # shellcheck disable=SC2086
     out=$(bash "$root/scripts/fetch-models.sh" $combo "$tmp/dconf" 2>&1)
     rc=$?
