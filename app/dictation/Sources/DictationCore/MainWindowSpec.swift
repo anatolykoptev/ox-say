@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// The main window's sidebar sections, in sidebar order: Voiceover, Voices, Dictation, Meetings, Transcribe,
 /// then Models (Advanced mode only) and Settings, which the sidebar draws apart at the bottom. A section is
@@ -82,6 +83,44 @@ public enum MainWindowSpec {
         MainSection.allCases.filter { live.contains($0) && (advanced || !$0.isAdvancedOnly) }
     }
 
+    /// The sidebar's arrow-key hop between the sections list and the one-row Settings list: down from the last section
+    /// reaches Settings, up from Settings returns to the last section. `nil` is "the list's own arrow": any other
+    /// arrow or position, no Settings row, and any arrow held with a modifier (Cmd/Shift/Option-Down extends or jumps
+    /// inside the list, it never leaves it).
+    public static func sidebarMove(_ arrow: SidebarArrow, from list: SidebarList, plain: Bool, current: MainSection,
+                                   sections: [MainSection]) -> SidebarMove? {
+        guard plain else { return nil }
+        let top = sections.filter { $0 != .settings }
+        switch (list, arrow) {
+        case (.sections, .down):
+            guard sections.contains(.settings), current == top.last else { return nil }
+            return SidebarMove(section: .settings, list: .settings)
+        case (.settings, .up):
+            guard let last = top.last else { return nil }
+            return SidebarMove(section: last, list: .sections)
+        default:
+            return nil
+        }
+    }
+
     /// Where a first run lands: Voiceover once it is live, Meetings until then.
     public static var firstRunSection: MainSection { liveSections.contains(.speak) ? .speak : .meetings }
+}
+
+/// The two lists of the sidebar: the sections, and the one-row Settings list under the Advanced switch.
+public enum SidebarList: Hashable { case sections, settings }
+public enum SidebarArrow: Equatable {
+    case up, down
+
+    /// A bare arrow: no Shift, Control, Option or Command. AppKit adds `.numericPad` and `.function` to every real
+    /// hardware arrow key, so "no modifiers at all" would reject the real keyboard; only the four user-held keys count.
+    public static func isPlain(_ modifiers: EventModifiers) -> Bool {
+        modifiers.isDisjoint(with: [.shift, .control, .option, .command])
+    }
+}
+/// Where an arrow hop lands: the section it selects and the list that takes the keyboard.
+public struct SidebarMove: Equatable {
+    public let section: MainSection
+    public let list: SidebarList
+    public init(section: MainSection, list: SidebarList) { self.section = section; self.list = list }
 }
