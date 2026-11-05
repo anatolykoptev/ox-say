@@ -216,6 +216,23 @@ public struct ProduceJob: Equatable {
         self.chunks = chunks
     }
 
+    /// When the project was made, from its id `yyyyMMdd-HHmmss-xxxxxx` (the daemon builds it from the UTC clock,
+    /// `vproject.NewID`); nil for an id of any other shape.
+    public var createdAt: Date? {
+        let stamp = id.prefix(15)
+        guard stamp.count == 15, id.dropFirst(15).first == "-" else { return nil }
+        return Self.idFormatter.date(from: String(stamp))
+    }
+
+    private static let idFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        f.isLenient = false
+        return f
+    }()
+
     /// The folder the finished files are in.
     public var outputFolder: URL? {
         outputPath.map { URL(fileURLWithPath: $0).deletingLastPathComponent() }
@@ -256,8 +273,35 @@ public struct ProduceJob: Equatable {
     }
 }
 
+/// The optional knobs of a new voiceover; a nil one is left out of the body and the daemon picks its own.
+public struct VoiceoverOptions: Equatable {
+    public var takes: Int?
+    public var cloneMode: String?
+    public var loudness: Double?
+    public var steps: Int?
+    public var seed: Int?
+    public var outPath: String?
+
+    public init(takes: Int? = nil, cloneMode: String? = nil, loudness: Double? = nil, steps: Int? = nil,
+                seed: Int? = nil, outPath: String? = nil) {
+        self.takes = takes
+        self.cloneMode = cloneMode
+        self.loudness = loudness
+        self.steps = steps
+        self.seed = seed
+        self.outPath = outPath
+    }
+}
+
 /// `POST /v1/produce` and the job controls.
 public enum ProduceRequest {
+    public static func createBody(script: String, title: String, voice: String?, format: ProduceFormat,
+                                  options: VoiceoverOptions) -> Data {
+        createBody(script: script, title: title, voice: voice, format: format, takes: options.takes,
+                   cloneMode: options.cloneMode, loudness: options.loudness, steps: options.steps,
+                   seed: options.seed, outPath: options.outPath)
+    }
+
     /// The body of a new voiceover. An empty title or voice is left out so the
     /// daemon picks its own (the script's first words, the configured voice);
     /// so are the optional knobs — a caller that passes none gets the body it

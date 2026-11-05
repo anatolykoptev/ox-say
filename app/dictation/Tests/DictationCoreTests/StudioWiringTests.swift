@@ -30,13 +30,13 @@ final class StudioWiringTests: XCTestCase {
     }
 
     /// Dropping the call disables the launch pickup retry with every behavioural test green.
-    /// Mutation: StudioController.statusChanged, delete `if StudioPickup.lookOnStatus(new) { follower.serviceAnswered() }`
+    /// Mutation: StudioController.statusChanged, delete `if StudioPickup.lookOnStatus(new) { voiceover.serviceAnswered() }`
     /// (or restore `if new != nil`-less code) -> RED.
     func testStatusChangedAsksTheFollowerToLookForARunningVoiceover() throws {
         let controller = try source("OxSayDictation/StudioController.swift")
         let changed = try body(controller, of: "func statusChanged(_ new: DaemonStatus?) {")
-        XCTAssertTrue(changed.contains("if StudioPickup.lookOnStatus(new) { follower.serviceAnswered() }"))
-        let answered = try XCTUnwrap(changed.range(of: "follower.serviceAnswered()"))
+        XCTAssertTrue(changed.contains("if StudioPickup.lookOnStatus(new) { voiceover.serviceAnswered() }"))
+        let answered = try XCTUnwrap(changed.range(of: "voiceover.serviceAnswered()"))
         let rendered = try XCTUnwrap(changed.range(of: "render()"))
         XCTAssertLessThan(answered.lowerBound, rendered.lowerBound)
     }
@@ -101,7 +101,7 @@ final class StudioWiringTests: XCTestCase {
         let controller = try source("OxSayDictation/StudioController.swift")
         let flow = try body(controller, of: "private func newVoiceover() {")
         XCTAssertTrue(flow.contains("await ReviewRetry.run(first, review: { ReviewSheet(draft: $0, voiceNames: choices.names).run() }"))
-        XCTAssertTrue(flow.contains("client.startVoiceover(script: draft.script, title: draft.title, voice: draft.voice, format: draft.format)"))
+        XCTAssertTrue(flow.contains("voiceover.start(script: draft.script, title: draft.title, voice: draft.voice, format: draft.format)"))
         XCTAssertFalse(flow.contains("script: first.script"), "a refused start must not fall back to the first cleaning")
         XCTAssertTrue(flow.contains("guard let self, let script = await self.readScript(file) else { return }"))
         let sheet = try source("OxSayDictation/ReviewSheet.swift")

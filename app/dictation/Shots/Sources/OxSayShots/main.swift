@@ -175,6 +175,32 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                       created: now.addingTimeInterval(-Double(i) * 1500 - 60))
         }
     }
+    /// A project id the way the daemon writes it (`yyyyMMdd-HHmmss-xxxxxx`, UTC) for `age` seconds before `now`.
+    func projectID(_ now: Date, age: Double, _ tail: String) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "UTC"); f.dateFormat = "yyyyMMdd-HHmmss"
+        return f.string(from: now.addingTimeInterval(-age)) + "-" + tail
+    }
+    func projectTitle(_ ru: Bool) -> String { ru ? "Подкаст: глава 3" : "Podcast: chapter 3" }
+    /// A project on the Озвучка page, with the studio voice available, the list next to it and the project selected.
+    func speakProject(_ now: Date, _ ru: Bool, _ job: (String) -> ProduceJob, _ change: (inout SpeakValues) -> Void = { _ in }) -> MainWindowData {
+        speak(now, ru) { v in
+            let id = projectID(now, age: 600, "a1b2c3")
+            let older = ProduceJob(id: projectID(now, age: 90_000, "d4e5f6"), title: ru ? "Рассказ: вступление" : "Story: introduction",
+                                   status: .done, outputPath: "/x/old.wav", durationS: 412)
+            v.studio = .available; v.quality = .studio
+            v.clips = Array(speakClips(now, ru).prefix(1))
+            v.projects = [job(id), older]; v.selectedID = id
+            change(&v)
+        }
+    }
+    /// A pseudo-waveform with phrases and pauses, like a read text.
+    func sampleBars() -> [Float] {
+        (0..<96).map { i in
+            let phrase = abs(sin(Double(i) / 5.5)) * 0.6 + 0.15
+            return i % 17 < 2 ? 0.06 : Float(min(1, phrase + 0.25 * abs(sin(Double(i) * 1.7))))
+        }
+    }
     let siliconReason = "Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them."
     func takes() -> [DesignTake] {
         (1...3).map { DesignTake(path: "/t/\($0).wav", durationSeconds: 6, suggestedName: "calm-narrator-\($0)",
@@ -225,6 +251,36 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         },
         Scene(name: "speak-studio-note", section: .speak, meeting: nil) { now, ru in
             speak(now, ru) { v in v.studio = .notInstalled }
+        },
+        // Озвучка on the studio voice: a project running, finished, finished with parts to listen to, interrupted, its file
+        // gone, and a second start refused because another voiceover runs.
+        Scene(name: "speak-studio-running", section: .speak, meeting: nil) { now, ru in
+            speakProject(now, ru, { ProduceJob(id: $0, title: projectTitle(ru), status: .running, partsTotal: 5, partsDone: 3) })
+        },
+        Scene(name: "speak-studio-done", section: .speak, meeting: nil) { now, ru in
+            speakProject(now, ru, { ProduceJob(id: $0, title: projectTitle(ru), status: .done, outputPath: "/x/out.wav", durationS: 724) }) { v in
+                v.peaks = sampleBars(); v.playback = .paused; v.playedFraction = 0.35
+            }
+        },
+        Scene(name: "speak-studio-review-needed", section: .speak, meeting: nil) { now, ru in
+            speakProject(now, ru, { ProduceJob(id: $0, title: projectTitle(ru), status: .review, partsToReview: 2, outputPath: "/x/out.wav", durationS: 724) }) { v in
+                v.peaks = sampleBars()
+            }
+        },
+        Scene(name: "speak-studio-interrupted", section: .speak, meeting: nil) { now, ru in
+            speakProject(now, ru, { ProduceJob(id: $0, title: projectTitle(ru), status: .interrupted, partsTotal: 5, partsDone: 2) })
+        },
+        Scene(name: "speak-studio-file-missing", section: .speak, meeting: nil) { now, ru in
+            speakProject(now, ru, { ProduceJob(id: $0, title: projectTitle(ru), status: .done, outputPath: "/x/gone.wav", durationS: 724) }) { v in
+                v.trackMissing = [v.selectedID ?? ""]
+            }
+        },
+        Scene(name: "speak-studio-conflict", section: .speak, meeting: nil) { now, ru in
+            speak(now, ru) { v in
+                v.studio = .available; v.quality = .studio
+                v.projects = [ProduceJob(id: projectID(now, age: 120, "a1b2c3"), title: projectTitle(ru), status: .running, partsTotal: 5, partsDone: 1)]
+                v.phase = .failed(ru ? "Другая озвучка уже идёт. Дождитесь её конца и повторите." : "Another voiceover is already running. Wait for it to finish, then try again.")
+            }
         },
         Scene(name: "dictation", section: .dictation, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "voices-list", section: .voices, meeting: nil) { PreviewData.make(now: $0, ru: $1) },

@@ -40,39 +40,37 @@ final class StudioController: NSObject {
     /// A document is being read: the menu row waits and the pill says so.
     private var readingDocument = false
     static let readingPillTask = "reading-document"
-    private lazy var follower = VoiceoverFollower(
-        source: VoiceoverFollower.Source(voiceover: { [client = host.client] in try await client.voiceover(id: $0) },
-                                         voiceovers: { [client = host.client] in try await client.voiceovers() }),
-        onChange: { [weak self] in
-            self?.render()
-            if self?.followingVoiceover == false { self?.host.workEnded() }
-        },
-        onFinish: { [weak self] job in
-            self?.refreshFolder()
-            self?.presentFinish(job)
-        })
+    /// The voiceover being followed; the window's Озвучка page starts and reads the same one.
+    let voiceover: VoiceoverService
     /// Describe a voice: the window's sheet drives it, the menu row opens that sheet.
     lazy var designer = VoiceDesigner(host: host)
 
     init(host: StudioHost) {
         self.host = host
+        voiceover = VoiceoverService(client: host.client)
         super.init()
         submenu.autoenablesItems = false
+        voiceover.observe(
+            onChange: { [weak self] in
+                self?.render()
+                if self?.voiceover.following == false { self?.host.workEnded() }
+            },
+            onFinish: { [weak self] job in
+                self?.refreshFolder()
+                self?.presentFinish(job)
+            })
     }
 
     /// A voice design is running or its takes are being reviewed.
     var designing: Bool { designer.running }
-
-    /// A voiceover the app follows has not reached a terminal state.
-    var followingVoiceover: Bool { follower.job.map { !$0.status.isTerminal } ?? false }
 
     // MARK: menu
 
     func render() {
         let folderExists = latestFolder.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
         let rows = StudioMenu.rows(
-            service: service, installing: host.installing(), job: follower.job,
-            serviceWaiting: follower.serviceWaiting, hasOutputFolder: folderExists,
+            service: service, installing: host.installing(), job: voiceover.job,
+            serviceWaiting: voiceover.serviceWaiting, hasOutputFolder: folderExists,
             readingDocument: readingDocument)
         MenuRenderer.fill(submenu, rows: rows, target: self) { action in (#selector(choose(_:)), action) }
     }
@@ -81,7 +79,7 @@ final class StudioController: NSObject {
     /// voiceover's folder, and pick up a voiceover already running.
     func statusChanged(_ new: DaemonStatus?) {
         service = new.map { .answered($0) } ?? .unreachable
-        if StudioPickup.lookOnStatus(new) { follower.serviceAnswered() }
+        if StudioPickup.lookOnStatus(new) { voiceover.serviceAnswered() }
         if new?.studioAvailable == true { refreshFolder() }
         render()
     }
@@ -153,14 +151,14 @@ final class StudioController: NSObject {
             let first = ReviewSheet.Result(title: StudioMenu.defaultTitle(fileName: file.lastPathComponent), script: script,
                                            format: ProduceFormat.allCases[0], voice: choices.names[choices.selected])
             // A start the daemon refuses reopens the sheet with the person's text, not the first cleaning.
-            let started = await ReviewRetry.run(first, review: { ReviewSheet(draft: $0, voiceNames: choices.names).run() },
-                start: { [client = self.host.client] draft in
-                    try await client.startVoiceover(script: draft.script, title: draft.title, voice: draft.voice, format: draft.format)
+            // The service follows the job it starts.
+            _ = await ReviewRetry.run(first, review: { ReviewSheet(draft: $0, voiceNames: choices.names).run() },
+                start: { [voiceover = self.voiceover] draft in
+                    try await voiceover.start(script: draft.script, title: draft.title, voice: draft.voice, format: draft.format)
                 },
                 failed: { error in
                     self.show(StudioDialogs.startFailed(error))
                 })
-            if let started { self.follower.follow(started) }
         }
     }
 
@@ -185,7 +183,7 @@ final class StudioController: NSObject {
     }
 
     private func stopVoiceover() {
-        guard let job = follower.job else { return }
+        guard let job = voiceover.job else { return }
         let sure = show(StudioDialogs.stop())
         guard sure == .alertFirstButtonReturn else { return }
         Task { @MainActor [weak self] in
@@ -198,7 +196,7 @@ final class StudioController: NSObject {
     }
 
     private func continueOnBattery() {
-        guard let job = follower.job else { return }
+        guard let job = voiceover.job else { return }
         Task { @MainActor [weak self] in
             do {
                 try await self?.host.client.continueOnBattery(id: job.id)

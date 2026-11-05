@@ -19,10 +19,24 @@ public struct SpeakValues: Equatable {
     public var playback: SpeakPlayback
     public var studio: StudioAvailability
     public var advanced: Bool
+    /// «Качество» as the person set it. The engine a request really uses is `engine`: the studio voice only when it can run.
+    public var quality: SpeakEngine
+    /// The daemon's studio projects, newest first (`GET /v1/produce`), with the one the app follows already merged in.
+    public var projects: [ProduceJob]
+    /// The last poll of the followed voiceover got no answer: its numbers may be old.
+    public var serviceWaiting: Bool
+    /// Projects whose track could not be read (moved or deleted).
+    public var trackMissing: Set<String>
+    /// The selected item's waveform bars, 0...1; empty while they are being read or when the audio is not a PCM WAV.
+    public var peaks: [Float]
+    /// How far into the selected track the sound is, 0...1; moves only while it plays.
+    public var playedFraction: Double
 
     public init(text: String = "", voice: String? = nil, clips: [SpeakClip] = [],
                 selectedID: String? = nil, phase: SpeakPhase = .idle, reach: DaemonReach = .unknown,
-                playback: SpeakPlayback = .stopped, studio: StudioAvailability = .unknown, advanced: Bool = false) {
+                playback: SpeakPlayback = .stopped, studio: StudioAvailability = .unknown, advanced: Bool = false,
+                quality: SpeakEngine = .fast, projects: [ProduceJob] = [], serviceWaiting: Bool = false,
+                trackMissing: Set<String> = [], peaks: [Float] = [], playedFraction: Double = 0) {
         self.text = text
         self.voice = voice
         self.clips = clips
@@ -32,7 +46,20 @@ public struct SpeakValues: Equatable {
         self.playback = playback
         self.studio = studio
         self.advanced = advanced
+        self.quality = quality
+        self.projects = projects
+        self.serviceWaiting = serviceWaiting
+        self.trackMissing = trackMissing
+        self.peaks = peaks
+        self.playedFraction = playedFraction
     }
 
     public var selectedClip: SpeakClip? { clips.first { $0.id == selectedID } }
+    public var selectedProject: ProduceJob? { projects.first { $0.id == selectedID } }
+
+    /// What the voice really uses: the studio voice only while it is chosen and can run.
+    public var engine: SpeakEngine { SpeakStudio.engine(chosen: quality, studio: studio) }
+
+    /// The list on the left: studio projects and this session's clips, a running project first.
+    public var items: [SpeakListItem] { SpeakList.merge(projects: projects, clips: clips) }
 }

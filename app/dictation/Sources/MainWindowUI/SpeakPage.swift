@@ -38,25 +38,25 @@ struct SpeakPage: View {
     }
 }
 
-/// The left pane: this session's takes, newest first.
+/// The left pane: the studio projects the daemon keeps and this session's takes, a running project first.
 struct SpeakClipsColumn: View {
     @ObservedObject var model: MainWindowModel
 
     var body: some View {
-        let clips = model.data.speak.clips
+        let items = model.data.speak.items
         List(selection: Binding(get: { model.data.speak.selectedID },
                                 set: { if let id = $0 { model.actions.speakSelect(id) } })) {
             Section(L10nKey.speakListTitle.text) {
-                ForEach(clips) { clip in
-                    SpeakClipRow(clip: clip, now: model.clock()).tag(clip.id)
+                ForEach(items) { item in
+                    SpeakItemRow(item: item, now: model.clock()).tag(item.id)
                 }
             }
         }
         .listStyle(.inset)
-        // Choosing another clip would drop the take that is being made.
+        // Choosing another item would drop the take that is being made.
         .disabled(!model.data.speak.phase.allowsSelection)
         .overlay {
-            if clips.isEmpty {
+            if items.isEmpty {
                 Text(L10nKey.speakListEmpty.text)
                     .font(.callout).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center).padding(20)
@@ -65,24 +65,28 @@ struct SpeakClipsColumn: View {
     }
 }
 
-private struct SpeakClipRow: View {
-    let clip: SpeakClip
+private struct SpeakItemRow: View {
+    let item: SpeakListItem
     let now: Date
 
     var body: some View {
-        let length = SpeakClips.clock(clip.seconds)
+        let title = item.title.isEmpty ? L10nKey.speakUntitled.text : item.title
+        let status = item.status { $0.text }
         VStack(alignment: .leading, spacing: 2) {
-            Text(clip.title).lineLimit(1)
+            Text(title).lineLimit(1)
             HStack(spacing: 4) {
-                Text(length).monospacedDigit()
-                Text("·")
-                Text(Self.age(clip.created, now: now))
+                if item.state == .running { ProgressView().controlSize(.mini) }
+                Text(status).monospacedDigit()
+                if item.state == .ready || item.state == .review {
+                    Text("·")
+                    Text(Self.age(item.created, now: now))
+                }
             }
             .font(.caption).foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(clip.title), \(length)")
+        .accessibilityLabel("\(title), \(status)")
     }
 
     private static func age(_ date: Date, now: Date) -> String {
@@ -98,10 +102,18 @@ struct SpeakDetailColumn: View {
     @ObservedObject var model: MainWindowModel
 
     var body: some View {
+        if let project = model.data.speak.selectedProject {
+            SpeakProjectDetail(model: model, job: project)
+        } else {
+            editor
+        }
+    }
+
+    private var editor: some View {
         let state = model.speakState
         let values = model.data.speak
-        let shown = SpeakControls.shown(engine: .fast, voiceIsDesigned: false, advanced: values.advanced)
-        VStack(spacing: 0) {
+        let shown = SpeakControls.shown(engine: values.engine, voiceIsDesigned: false, advanced: values.advanced)
+        return VStack(spacing: 0) {
             Form {
                 Section {
                     TextEditor(text: model.speakText)
@@ -109,7 +121,10 @@ struct SpeakDetailColumn: View {
                         .frame(minHeight: 150)
                         .disabled(isGenerating(state))
                         .accessibilityLabel(L10nKey.speakEditorLabel.text)
-                    if case .editing(let problem?) = state {
+                    if values.engine == .studio {
+                        // The studio voice counts and sends the trimmed script, and says how long it will take.
+                        Text(SpeakText.statusLine(editorText: values.text) { $0.text }).font(.callout).foregroundStyle(.secondary)
+                    } else if case .editing(let problem?) = state {
                         Text(problem).font(.callout).foregroundStyle(.secondary)
                     }
                 }
@@ -139,17 +154,31 @@ struct SpeakDetailColumn: View {
         .disabled(isGenerating(model.speakState))
     }
 
-    /// «Качество»: the fast voice works on every Mac, so «Обычное» is the one choice and is shown as a value, not as a
-    /// one-segment control. The studio voice arrives with Task 15; until then this says why it cannot be chosen, or
-    /// offers the install that exists.
-    private var quality: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            LabeledContent(L10nKey.speakQuality.text) { Text(L10nKey.speakQualityStandard.text) }
-            if let note = model.speakStudioNote {
-                Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if model.data.speak.studio == .notInstalled {
-                    Button(L10nKey.voicesDescribeInstall.text) { model.actions.installStudioVoice() }
-                        .buttonStyle(.link).font(.caption)
+    /// «Качество»: «Обычное» works on every Mac, «Студийное» only where the studio voice can run. Where it cannot, the
+    /// control is a value with the reason under it (and the install, when that is what is missing), never a dead segment.
+    @ViewBuilder private var quality: some View {
+        if model.data.speak.studio == .available {
+            VStack(alignment: .leading, spacing: 4) {
+                Picker(L10nKey.speakQuality.text, selection: model.speakQuality) {
+                    Text(L10nKey.speakQualityStandard.text).tag(SpeakEngine.fast)
+                    Text(L10nKey.speakQualityStudio.text).tag(SpeakEngine.studio)
+                }
+                .pickerStyle(.segmented)
+                .disabled(isGenerating(model.speakState))
+                if model.data.speak.quality == .studio {
+                    Text(L10nKey.speakQualityStudioHint.text).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                LabeledContent(L10nKey.speakQuality.text) { Text(L10nKey.speakQualityStandard.text) }
+                if let note = model.speakStudioNote {
+                    Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if model.data.speak.studio == .notInstalled {
+                        Button(L10nKey.voicesDescribeInstall.text) { model.actions.installStudioVoice() }
+                            .buttonStyle(.link).font(.caption)
+                    }
                 }
             }
         }
@@ -172,9 +201,16 @@ struct SpeakDetailColumn: View {
                 ProgressView().controlSize(.small)
                 Text(L10nKey.speakGenerating.text).foregroundStyle(.secondary)
                 Spacer()
-                Button(L10nKey.speakStop.text) { model.actions.speakStop() }.keyboardShortcut(.cancelAction)
+                // A studio project is already on its way to the daemon; the person stops it from its row once it runs.
+                if model.data.speak.engine == .fast {
+                    Button(L10nKey.speakStop.text) { model.actions.speakStop() }.keyboardShortcut(.cancelAction)
+                }
             }
         case .ready:
+            VStack(spacing: 10) {
+                if !model.data.speak.peaks.isEmpty {
+                    WaveformView(peaks: model.data.speak.peaks, playedFraction: model.data.speak.playedFraction)
+                }
             HStack(spacing: 10) {
                 let playing = model.data.speak.playback == .playing
                 IconButton(symbol: playing ? "pause.fill" : "play.fill", labelKey: playing ? .speakPause : .speakPlay) {
@@ -188,6 +224,7 @@ struct SpeakDetailColumn: View {
                 Button(L10nKey.speakVariant.text) { model.actions.speakVariant() }
                 Button(L10nKey.speakSave.text) { model.actions.speakSave() }
             }
+            }
         case .failed(let sentence):
             HStack(spacing: 10) {
                 Label(sentence, systemImage: "exclamationmark.triangle.fill")
@@ -196,6 +233,52 @@ struct SpeakDetailColumn: View {
                 Button(L10nKey.commonRetry.text) { model.actions.speakGenerate() }
             }
         }
+    }
+}
+
+/// A studio project on the right: its progress while it runs, its track once it is done, and what happened when it did not
+/// finish. The state is `SpeakProjectState`'s; the track plays through the same player as a fast clip.
+struct SpeakProjectDetail: View {
+    @ObservedObject var model: MainWindowModel
+    let job: ProduceJob
+
+    var body: some View {
+        let values = model.data.speak
+        let state = SpeakProjectState.of(job, serviceWaiting: values.serviceWaiting,
+                                         trackMissing: values.trackMissing.contains(job.id)) { $0.text }
+        VStack(alignment: .leading, spacing: 16) {
+            Text(job.title.isEmpty ? L10nKey.speakUntitled.text : job.title).font(.title2).lineLimit(2)
+            switch state {
+            case .running(let label, let fraction):
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(label).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if let fraction { ProgressView(value: fraction) } else { ProgressView() }
+                }
+            case .ready(let note, let seconds):
+                VStack(alignment: .leading, spacing: 10) {
+                    if !values.peaks.isEmpty {
+                        WaveformView(peaks: values.peaks, playedFraction: values.playedFraction)
+                    }
+                    HStack(spacing: 10) {
+                        let playing = values.playback == .playing
+                        IconButton(symbol: playing ? "pause.fill" : "play.fill", labelKey: playing ? .speakPause : .speakPlay) {
+                            model.actions.speakPlayPause()
+                        }
+                        .font(.title2)
+                        if let seconds { Text(SpeakClips.clock(seconds)).monospacedDigit().foregroundStyle(.secondary) }
+                    }
+                    if let note { Text(note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                }
+            case .trackMissing:
+                Label(L10nKey.speakTrackMissing.text, systemImage: "questionmark.folder").foregroundStyle(.secondary)
+            case .ended(let sentence):
+                Label(sentence, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

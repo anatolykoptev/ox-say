@@ -9,7 +9,8 @@ public struct ReachTracker: Equatable {
     public static let missedPollsBeforeOffline = 2
 
     public private(set) var reach: DaemonReach = .unknown
-    private var misses = 0
+    /// Consecutive missed polls; the backoff of `SpeakRecheck` counts them.
+    public private(set) var misses = 0
 
     public init() {}
 

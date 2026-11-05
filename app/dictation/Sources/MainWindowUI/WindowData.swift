@@ -242,6 +242,8 @@ public struct MainWindowActions {
     public var speakSelect: (String) -> Void = { _ in }
     public var speakTextChanged: (String) -> Void = { _ in }
     public var speakVoiceChanged: (String?) -> Void = { _ in }
+    /// «Качество» changed; the app keeps it as a view preference.
+    public var speakQualityChanged: (SpeakEngine) -> Void = { _ in }
 
     public init() {}
 }

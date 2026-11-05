@@ -730,8 +730,15 @@
 "speak.generating" = "Озвучиваю…";
 "speak.editor_label" = "Текст для озвучки";
 "speak.list_empty" = "Здесь появятся ваши озвучки.";
-"speak.list_title" = "Эта сессия";
+"speak.list_title" = "Проекты и варианты";
 "speak.save_failed" = "Не удалось сохранить файл.";
 "speak.studio.needs_apple_silicon" = "Студийный голос работает только на Mac с Apple Silicon.";
 "speak.studio.needs_memory" = "Студийному голосу нужно %@ ГБ памяти, а на этом Mac — %@ ГБ.";
 "speak.play_blocked_recording" = "Озвучка не воспроизводится, пока идёт запись встречи, чтобы не попасть в запись.";
+
+/* Озвучка: studio voice, projects, track. */
+"speak.quality.studio" = "Студийное";
+"speak.quality.studio_hint" = "Для длинных текстов: готовится в фоне, ход работы виден в списке слева.";
+"speak.track_missing" = "Файл перенесён или удалён";
+"speak.waveform" = "Звуковая дорожка";
+"speak.project_interrupted" = "OxSay остановился во время работы, и озвучка не закончена. Вставьте текст в «Новый текст» и озвучьте его заново.";

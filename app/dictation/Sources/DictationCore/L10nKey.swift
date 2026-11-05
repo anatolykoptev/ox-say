@@ -742,4 +742,9 @@ public enum L10nKey: String, CaseIterable {
     case speakStudioNeedsAppleSilicon = "speak.studio.needs_apple_silicon"
     case speakStudioNeedsMemory = "speak.studio.needs_memory"
     case speakPlayBlockedRecording = "speak.play_blocked_recording"
+    case speakQualityStudio = "speak.quality.studio"
+    case speakQualityStudioHint = "speak.quality.studio_hint"
+    case speakTrackMissing = "speak.track_missing"
+    case speakWaveform = "speak.waveform"
+    case speakProjectInterrupted = "speak.project_interrupted"
 }

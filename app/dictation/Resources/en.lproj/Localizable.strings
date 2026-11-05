@@ -736,8 +736,15 @@
 "speak.generating" = "Voicing…";
 "speak.editor_label" = "Text to voice";
 "speak.list_empty" = "Your voiceovers will appear here.";
-"speak.list_title" = "This session";
+"speak.list_title" = "Projects and variants";
 "speak.save_failed" = "The file could not be saved.";
 "speak.studio.needs_apple_silicon" = "The studio voice needs a Mac with Apple Silicon.";
 "speak.studio.needs_memory" = "The studio voice needs %@ GB of memory; this Mac has %@ GB.";
 "speak.play_blocked_recording" = "The clip does not play while a meeting is being recorded, so it never ends up in the recording.";
+
+/* Озвучка: studio voice, projects, track. */
+"speak.quality.studio" = "Studio";
+"speak.quality.studio_hint" = "For long texts: made in the background, progress shows in the list on the left.";
+"speak.track_missing" = "The file was moved or deleted";
+"speak.waveform" = "Audio waveform";
+"speak.project_interrupted" = "OxSay stopped while working on this, so it is not finished. Paste the text into New text and voice it again.";

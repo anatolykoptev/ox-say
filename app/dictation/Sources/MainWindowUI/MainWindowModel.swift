@@ -93,10 +93,11 @@ public final class MainWindowModel: ObservableObject {
         VoicesPageState.of(load: data.voices.load, hasVoices: !data.voices.entries.isEmpty)
     }
 
-    /// What the Озвучка page shows: one decision, in DictationCore. The fast voice is the only engine on this page yet.
+    /// What the Озвучка page shows: one decision, in DictationCore. The engine is the fast voice unless the studio voice
+    /// is chosen and can run.
     var speakState: SpeakPageState {
         SpeakPageState.of(reach: data.speak.reach,
-                          problem: SpeakInputCheck.problem(data.speak.text, engine: .fast, text: { $0.text }),
+                          problem: SpeakInputCheck.problem(data.speak.text, engine: data.speak.engine, text: { $0.text }),
                           phase: data.speak.phase)
     }
 
@@ -105,6 +106,10 @@ public final class MainWindowModel: ObservableObject {
 
     var speakText: Binding<String> {
         Binding(get: { self.data.speak.text }, set: { self.data.speak.text = $0; self.actions.speakTextChanged($0) })
+    }
+
+    var speakQuality: Binding<SpeakEngine> {
+        Binding(get: { self.data.speak.quality }, set: { self.data.speak.quality = $0; self.actions.speakQualityChanged($0) })
     }
 
     var speakVoice: Binding<String?> {

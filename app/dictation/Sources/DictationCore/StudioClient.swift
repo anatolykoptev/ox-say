@@ -127,8 +127,9 @@ public struct StudioClient {
 
     /// POST /v1/produce: starts a voiceover of `script`. The daemon runs one at
     /// a time; a second start answers 409 with its message.
-    public func startVoiceover(script: String, title: String, voice: String?, format: ProduceFormat) async throws -> ProduceJob {
-        let body = ProduceRequest.createBody(script: script, title: title, voice: voice, format: format)
+    public func startVoiceover(script: String, title: String, voice: String?, format: ProduceFormat,
+                               options: VoiceoverOptions = VoiceoverOptions()) async throws -> ProduceJob {
+        let body = ProduceRequest.createBody(script: script, title: title, voice: voice, format: format, options: options)
         let data = try await succeed(post("v1/produce", body: body, timeout: Self.startTimeout))
         guard let job = ProduceJob.decode(data) else { throw StudioError.badResponse }
         return job
