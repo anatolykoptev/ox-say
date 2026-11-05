@@ -6,7 +6,9 @@ import OxCleanCore
 // ox-clean --version
 // <in.wav> is a regular file: mono, 48 kHz, IEEE float32 (a streaming header with the size 0xFFFFFFFF is read to the end
 // of the file). The cleaned track (same length) is written to <out.wav>.part and renamed into place at the end, so
-// <out.wav> either does not exist or is whole. Nothing here opens a socket.
+// <out.wav> either does not exist or is whole. Where the volume has no exclusive rename (exFAT) the .part is copied to
+// a hidden <dir>/.<out.wav>.copy first and that is renamed into place, so even a SIGKILL or a power cut during the copy
+// leaves no truncated file under the final name. Nothing here opens a socket.
 //
 // Exit codes (OxCleanCore.ExitCode); the last stderr line always ends in [reason=<token>]:
 //   0 ok (a silent input too)          1 anything else (processing: the model, the pipeline, a failed write)
@@ -14,7 +16,9 @@ import OxCleanCore
 //   4 input: not a regular file, missing, empty, not mono-48k-float, non-finite, short read, unreadable
 //   5 macOS < 15
 //   6 output: <out> exists, another run holds <out>.part, the output directory is missing / not a directory / not
-//     writable, <out> is spelled as a directory, or the destination cannot take the file (even by copy)
+//     writable, <out> is spelled as a directory, or the destination cannot take the file (even by copy). A full disk is
+//     always 6 [reason=disk_full]: refused up front when the free space cannot hold the result, and mapped to the same
+//     code when the disk fills mid-write or mid-copy (#474)
 //   128 + n   SIGINT, SIGTERM, SIGHUP or SIGQUIT: the .part is removed (Interrupt.swift)
 //
 // The .part is its own lock. It is created with O_EXCL and an exclusive flock that lasts as long as the run (the kernel
@@ -24,6 +28,8 @@ import OxCleanCore
 // Test-only knobs, ignored unless set (the CLI contract test needs a run that is slow, or fails after N windows):
 //   OX_CLEAN_TEST_SLOW_MS=<n>            sleep n ms before every window's mask
 //   OX_CLEAN_TEST_FAIL_AFTER_WINDOWS=<n> the mask call number n + 1 fails with a processing error
+//   OX_CLEAN_TEST_FREE_BYTES=<n>         the free-space check sees n bytes instead of the volume's
+//   OX_CLEAN_TEST_SLOW_COPY_MS=<n>       sleep n ms after every megabyte copied by the exFAT publish
 
 setvbuf(stderr, nil, _IOLBF, 0)
 signal(SIGPIPE, SIG_IGN)
@@ -87,6 +93,9 @@ func realMain(_ interrupt: Interrupt) -> Int32 {
         fail(.input, "input_unreadable", "cannot read \(inPath): \(error.localizedDescription)")
     }
 
+    // The disk, before the slow model load: the .part (and, without an exclusive rename, the copy beside it) must fit.
+    if let why = CLI.spaceRefusal(dir: outDir, frames: wav.info.frames) { fail(.output, "disk_full", why) }
+
     // The output, created exclusively and locked, BEFORE the slow model load: a destination that cannot work fails now.
     // Only after this succeeds may a signal unlink the .part.
     let writer = CLI.createPart(part)
@@ -108,7 +117,8 @@ func realMain(_ interrupt: Interrupt) -> Int32 {
     } catch let f as Failure {
         fail(f, writer: writer)
     } catch {
-        // A failed write (disk full, the 4 GiB WAV limit) is the run failing, not the input being bad.
+        // A full disk is an output problem (6), here as in the copy; any other failed write (the 4 GiB WAV limit) is the run failing.
+        if CLI.isDiskFull(error) { fail(.output, "disk_full", "the disk is full: cannot write \(part)", writer: writer) }
         fail(.failure, "write_failed", "cannot write \(part): \(CLI.message(error))", writer: writer)
     }
 
@@ -196,57 +206,92 @@ enum CLI {
         fail(.output, "part_live", "\(part) keeps being recreated by another ox-clean; try again")
     }
 
+    // MARK: disk space
+
+    static func isDiskFull(_ error: Error) -> Bool {
+        guard let e = error as? POSIXError else { return false }
+        return e.code == .ENOSPC || e.code == .EDQUOT
+    }
+
+    /// Whether the volume under `dir` has an exclusive rename (APFS, HFS+: yes; exFAT, FAT: no).
+    static func hasExclusiveRename(dir: String) -> Bool {
+        var list = attrlist()
+        list.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        list.volattr = attrgroup_t(ATTR_VOL_INFO) | attrgroup_t(ATTR_VOL_CAPABILITIES)
+        var buf = [UInt8](repeating: 0, count: 256)
+        guard getattrlist(dir, &list, &buf, buf.count, 0) == 0 else { return true }   // cannot tell: the copy room is only asked for when we know
+        // layout: u32 length, vol_capabilities_attr_t { u32 capabilities[4]; u32 valid[4] }
+        let caps = buf.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4 + 4, as: UInt32.self) }   // capabilities[VOL_CAPABILITIES_INTERFACES]
+        let valid = buf.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4 + 16 + 4, as: UInt32.self) }
+        let bit = UInt32(VOL_CAP_INT_RENAME_EXCL)
+        return valid & bit == 0 || caps & bit != 0
+    }
+
+    static func freeBytes(dir: String) -> Int64? {
+        if let v = ProcessInfo.processInfo.environment["OX_CLEAN_TEST_FREE_BYTES"].flatMap({ Int64($0) }) { return v }
+        var fs = statfs()
+        guard statfs(dir, &fs) == 0 else { return nil }
+        return Int64(fs.f_bavail) * Int64(fs.f_bsize)
+    }
+
+    /// A refusal sentence when the free space under `dir` cannot hold the result (44-byte header + 4 bytes a frame), plus a
+    /// second copy of it where the volume has no exclusive rename and the publish is a copy. Nil when it fits or cannot be read.
+    static func spaceRefusal(dir: String, frames: Int) -> String? {
+        let one = Int64(frames) * 4 + 44
+        let needed = hasExclusiveRename(dir: dir) ? one : 2 * one
+        guard let free = freeBytes(dir: dir), free < needed else { return nil }
+        func mb(_ n: Int64) -> String { String(format: "%.1f", Double(n) / 1_048_576) }
+        return "the disk is full: \(dir) has \(mb(free)) MB free and the result needs \(mb(needed)) MB"
+    }
+
     // MARK: publishing without RENAME_EXCL
 
     struct PublishFailure { var reason: String; var message: String }
 
-    /// Filesystems that answer ENOTSUP to an exclusive rename: create `out` with O_EXCL (so an existing file is still
-    /// never overwritten), copy the `.part`, fsync, close, remove the `.part`. On any failure only what this run created
-    /// is removed (`out` only if the path still names the inode this call created). Nil on success.
+    /// Filesystems that answer ENOTSUP to an exclusive rename: copy the `.part` to a hidden temp name in the same
+    /// directory, fsync, then rename it onto `out`, so `out` is whole or absent whatever kills the process (the temp
+    /// is the only thing a SIGKILL leaves, and the next run clears it). Never overwrites: `out` is checked right before the
+    /// rename (the one thing a volume without RENAME_EXCL cannot make atomic; the window is microseconds). On any failure
+    /// the temp and the `.part` are removed. Nil on success.
     static func publishByCopy(part: String, out: String) -> PublishFailure? {
-        let ofd = open(out, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
-        guard ofd >= 0 else {
-            let e = errno
-            unlink(part)
-            return PublishFailure(reason: e == EEXIST ? "out_exists" : "publish_failed",
-                                  message: e == EEXIST ? "\(out) appeared while cleaning; not overwriting it"
-                                      : "cannot create \(out): \(String(cString: strerror(e)))")
+        let url = URL(fileURLWithPath: out)
+        let tmp = url.deletingLastPathComponent().appendingPathComponent("." + url.lastPathComponent + ".copy").path
+        func fail(_ e: Int32, _ what: String) -> PublishFailure {
+            PublishFailure(reason: e == ENOSPC || e == EDQUOT ? "disk_full" : "publish_failed",
+                           message: e == ENOSPC || e == EDQUOT ? "the disk is full: cannot copy \(part) to \(out)"
+                               : "cannot \(what): \(String(cString: strerror(e)))")
         }
-        // Compared with numbers read at the moment of the check, from the open descriptor and from the path: exFAT's
-        // st_ino for a file changes as it grows, so a number recorded at create would never match.
-        func isStillOurs() -> Bool {
-            var mine = stat(), now = stat()
-            return fstat(ofd, &mine) == 0 && stat(out, &now) == 0 && now.st_dev == mine.st_dev && now.st_ino == mine.st_ino
-        }
-        func undo(_ why: String) -> PublishFailure {
-            if isStillOurs() { unlink(out) }
+        if exists(out) { unlink(part); return PublishFailure(reason: "out_exists", message: "\(out) appeared while cleaning; not overwriting it") }
+        unlink(tmp)   // a leftover of a killed copy; this run owns the .part, so it owns this name too
+        let ofd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
+        guard ofd >= 0 else { let e = errno; unlink(part); return fail(e, "create \(tmp)") }
+        func undo(_ e: Int32, _ what: String) -> PublishFailure {
             close(ofd)
+            unlink(tmp)
             unlink(part)
-            return PublishFailure(reason: "publish_failed", message: "cannot copy \(part) to \(out): \(why)")
+            return fail(e, what)
         }
         let ifd = open(part, O_RDONLY | O_CLOEXEC)
-        guard ifd >= 0 else { return undo(String(cString: strerror(errno))) }
+        guard ifd >= 0 else { return undo(errno, "copy \(part) to \(out)") }
         defer { close(ifd) }
+        let slowMs = ProcessInfo.processInfo.environment["OX_CLEAN_TEST_SLOW_COPY_MS"].flatMap { Int($0) } ?? 0
         var buffer = [UInt8](repeating: 0, count: 1 << 20)
         while true {
             let n = read(ifd, &buffer, buffer.count)
-            if n < 0 { if errno == EINTR { continue }; return undo(String(cString: strerror(errno))) }
+            if n < 0 { if errno == EINTR { continue }; return undo(errno, "copy \(part) to \(out)") }
             if n == 0 { break }
             var done = 0
             while done < n {
                 let w = buffer.withUnsafeBytes { write(ofd, $0.baseAddress! + done, n - done) }
-                if w < 0 { if errno == EINTR { continue }; return undo(String(cString: strerror(errno))) }
+                if w < 0 { if errno == EINTR { continue }; return undo(errno, "copy \(part) to \(out)") }
                 done += w
             }
+            if slowMs > 0 { usleep(UInt32(slowMs) * 1000) }
         }
-        guard fsync(ofd) == 0 else { return undo(String(cString: strerror(errno))) }
-        let ours = isStillOurs()
-        guard close(ofd) == 0 else {
-            let why = String(cString: strerror(errno))
-            if ours { unlink(out) }
-            unlink(part)
-            return PublishFailure(reason: "publish_failed", message: "cannot finish \(out): \(why)")
-        }
+        guard fsync(ofd) == 0 else { return undo(errno, "copy \(part) to \(out)") }
+        guard close(ofd) == 0 else { let e = errno; unlink(tmp); unlink(part); return fail(e, "finish \(out)") }
+        if exists(out) { unlink(tmp); unlink(part); return PublishFailure(reason: "out_exists", message: "\(out) appeared while cleaning; not overwriting it") }
+        guard rename(tmp, out) == 0 else { let e = errno; unlink(tmp); unlink(part); return fail(e, "move \(tmp) to \(out)") }
         unlink(part)
         return nil
     }

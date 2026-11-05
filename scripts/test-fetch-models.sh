@@ -71,7 +71,7 @@ set -u
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/ox-say-fetchtest.XXXXXX")
 fails=0
-trap 'find "$tmp" -depth -delete 2>/dev/null || true' EXIT
+trap 'rm -rf "${tmp:?}"' EXIT
 pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1"; fails=$((fails + 1)); }
 
@@ -119,8 +119,30 @@ if [ ! -e "$tmp/ddest/diar/speaker-diarization/.fluidaudio-revision" ] && [ ! -e
 else
     fail "files left in dest/diar: $(find "$tmp/ddest/diar" -type f 2>/dev/null)"
 fi
-n=$(grep -c '^    "[0-9a-f]\{64\}  [^ ]*"$' "$root/scripts/fetch-models.sh")
-if [ "$n" = 47 ]; then pass "the script lists 28 diarization, 7 nemotron and 12 clean entries"; else fail "the script lists $n pinned entries, want 47"; fi
+# Each pinned array is counted on its own, so a new set does not touch the others' expectations (#457).
+count_pins() { # array-name -> number of 64-hex SHA-256 entries inside name=( ... )
+    awk -v a="$1" '$0 == a "=(" {on=1; next} on && $0 == ")" {on=0} on && /^    "[0-9a-f]{64}  [^ ]*"$/ {n++} END {print n+0}' "$root/scripts/fetch-models.sh"
+}
+for want in diar_files:24 diar_docs:4 nem_files:5 nem_docs:2 clean_files:8 clean_docs:4; do
+    n=$(count_pins "${want%%:*}")
+    if [ "$n" = "${want##*:}" ]; then pass "${want%%:*} lists $n pinned entries"; else fail "${want%%:*} lists $n pinned entries, want ${want##*:}"; fi
+done
+
+# #456: the cleanup trap must stop on an empty $tmp ("${tmp:?}"), never run a recursive delete on it, and never be find -delete.
+del="-del""ete"
+if grep -n "find .* $del" "$root/scripts/test-fetch-models.sh" | grep -v 'grep -n' > "$tmp/finddel"; then
+    fail "this script cleans up with find $del again: $(cat "$tmp/finddel")"
+else
+    pass "the cleanup does not use find $del"
+fi
+if grep -q "^trap 'rm -rf \"\${tmp:?}\"' EXIT" "$root/scripts/test-fetch-models.sh"; then pass "the cleanup trap is rm -rf with \${tmp:?}"; else fail "the cleanup trap is not rm -rf \"\${tmp:?}\""; fi
+
+# No model comes from a floating branch: a changed upstream file would break every new install under the pinned hashes (#437).
+if grep -n 'resolve/main' "$root/scripts/fetch-models.sh" > "$tmp/floating"; then
+    fail "fetch-models.sh still has resolve/main URLs: $(cat "$tmp/floating")"
+else
+    pass "no resolve/main URL in fetch-models.sh"
+fi
 
 # A marker from an earlier complete fetch must not outlive a failed one: the next run replaces files, and a marker over a
 # half-replaced set would tell the loader the models are all there.

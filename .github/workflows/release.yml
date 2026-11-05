@@ -226,6 +226,9 @@ jobs:
             case $libs in
               *@rpath*) echo "$bin links @rpath libraries" >&2; exit 1 ;;
             esac
+            # Stripping can invalidate the ad-hoc signature; arm64 kills a binary with a bad one at launch.
+            # Read-only: verify, never re-sign.
+            codesign --verify --strict "$bin"
           done
           # The precompiled Metal libraries: every engine's <bin>.metallib
           # must be there and structurally sound — a missing or corrupt one is
