@@ -333,6 +333,24 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         Scene(name: "speak-mood-hidden-on-clone", section: .speak, meeting: nil) { now, ru in
             speakPhrases(now, ru, voice: "anna")
         },
+        // The Advanced voice panel: on the studio voice (a finished reel, every row), on the fast voice (an Intel Mac: three rows),
+        // and closed (the toolbar button only).
+        Scene(name: "speak-panel-studio", section: .speak, meeting: nil, advanced: true) { now, ru in
+            speakPhrases(now, ru, voice: "warm-narrator") { v in
+                v.panelShown = true
+                v.projects[0].seed = 2_401_631_678
+                v.panel = VoicePanelSettings(loudness: .underMusic, quality: .draft)
+            }
+        },
+        Scene(name: "speak-panel-fast", section: .speak, meeting: nil, advanced: true) { now, ru in
+            speak(now, ru) { v in
+                v.studio = .unsupported(siliconReason); v.panelShown = true
+                v.panel = VoicePanelSettings(loudness: .reels, seed: 481_516_234)
+            }
+        },
+        Scene(name: "speak-panel-closed", section: .speak, meeting: nil, advanced: true) { now, ru in
+            speakPhrases(now, ru, voice: "warm-narrator")
+        },
         Scene(name: "dictation", section: .dictation, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "voices-list", section: .voices, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "voices-playing", section: .voices, meeting: nil) { voices(PreviewData.make(now: $0, ru: $1)) { $0.playingID = "studio-mara" } },

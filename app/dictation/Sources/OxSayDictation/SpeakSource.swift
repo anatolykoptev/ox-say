@@ -58,6 +58,7 @@ final class SpeakSource {
         self.host = host
         voiceover = host.voiceover()
         model.data.speak.quality = host.defaults.string(forKey: Self.qualityKey).flatMap(SpeakEngine.init(rawValue:)) ?? .fast
+        model.data.speak.panel = VoicePanelSettings.load(from: host.defaults)
         model.data.speak.text = SpeakDraft.initial(stored: host.defaults.string(forKey: Self.draftKey),
                                                    firstRun: host.consumeFirstRun(), language: L10nBundle.locale.identifier)
         player.onFinish = { [weak self] in
@@ -295,7 +296,9 @@ final class SpeakSource {
             return
         }
         stopClip()
-        let seed = variant ? Int.random(in: 1...999_999_999) : nil
+        // The panel's pinned sound and level reach the request only while Advanced is on; «Ещё вариант» is always a new sound.
+        let knobs = VoicePanelModel.speechKnobs(panel: speak.panel, advanced: model.advanced)
+        let seed = variant ? Int.random(in: 1...999_999_999) : knobs.seed
         let voice = speak.voice
         let language = VoicePick.languageHint(of: text).map { VoicePreview.language(locale: $0) }
         model.data.speak.phase = .generating
@@ -303,7 +306,7 @@ final class SpeakSource {
         let speech = host.speech
         request = Task { @MainActor [weak self] in
             do {
-                let wav = try await speech.speak(text, voice: voice, language: language, seed: seed)
+                let wav = try await speech.speak(text, voice: voice, language: language, seed: seed, loudnessLUFS: knobs.loudness)
                 guard let self, self.generation.isCurrent(token) else { return }
                 self.record(answered: true)
                 self.finished(wav: wav, text: text, voice: voice)
@@ -321,7 +324,7 @@ final class SpeakSource {
     private func generateStudio() {
         let speak = model.data.speak
         guard SpeakInputCheck.problem(speak.text, engine: .studio, text: { $0.text }) == nil,
-              let start = SpeakStudio.start(text: speak.text, reel: speak.reel) else { return }
+              let start = SpeakStudio.start(text: speak.text, reel: speak.reel, advanced: model.advanced, panel: speak.panel) else { return }
         if let refusal = host.speechRefusal() {
             model.data.notice = refusal
             return
@@ -345,6 +348,8 @@ final class SpeakSource {
                 self.studioStart.end()
                 self.record(answered: true)
                 self.model.data.speak.projectVoices = SpeakStudio.rememberVoice(voice, for: job.id, in: self.model.data.speak.projectVoices)
+                // A project that copies the recording's delivery takes no mood: remembered so its phrases draw no chip.
+                if SpeakStudio.copiesRecording(start.options) { self.model.data.speak.projectCopies.insert(job.id) }
                 self.model.data.speak.projects = SpeakList.overlay(projects: self.model.data.speak.projects, followed: job)
                 self.selectProject(job.id)
             } catch {
@@ -671,6 +676,61 @@ final class SpeakSource {
                 self.model.data.notice = SpeakText.notice(error) { $0.text }
                 self.refreshProjects()
             }
+        }
+    }
+
+    // MARK: voice panel
+
+    /// The settings only a new voicing reads (quality, the recording's delivery, the sound's number, variants): kept as view
+    /// preferences, never sent to a project that exists.
+    func panelChanged(_ settings: VoicePanelSettings) {
+        model.data.speak.panel = settings
+        savePanel()
+    }
+
+    private func savePanel() {
+        model.data.speak.panel.save(to: host.defaults)
+    }
+
+    /// «Громкость»: the choice is kept for the next voicing, and a finished project is levelled at once, as a delivery with the
+    /// target and no render. The daemon re-assembles the finished file as a job of its own (one at a time), so it goes through
+    /// the same gate as a change to a phrase and the app waits for it before reading the project again.
+    func setLoudness(_ target: LoudnessTarget?) {
+        model.data.speak.panel.loudness = target
+        savePanel()
+        guard let target, let job = model.data.speak.selectedProject, VoicePanelModel.loudnessAppliesNow(status: job.status) else { return }
+        phraseOperation(chunk: PhraseWork.wholeProject, kind: .loudness) { [voiceover = self.voiceover] client, id in
+            try await client.deliver(id: id, entries: [], loudness: target.lufs)
+            try await voiceover.followAndWait(id: id)
+            return try await client.chunks(id: id)
+        }
+    }
+
+    /// «Темп» and «Пауза» for the chosen phrase or all of them: the track is put together again without a render.
+    func setPace(_ slider: Double) { applyDelivery(.pace(slider), kind: .pace) }
+
+    func setPause(_ seconds: Double) { applyDelivery(.pause(seconds), kind: .pause) }
+
+    /// «Настроение» from the panel: the phrase (or every phrase) is rendered again with the mood word.
+    func setPanelMood(_ mood: Mood?) { applyDelivery(.mood(mood), kind: .mood) }
+
+    /// One batch of delivery entries for the panel's scope. A batch with nothing to change is not sent (the daemon answers 400 to
+    /// an empty one), and chunks that belong to another project are never used.
+    private func applyDelivery(_ change: PanelChange, kind: PhraseWork.Kind) {
+        let speak = model.data.speak
+        guard speak.phrasesFor == speak.selectedID,
+              let scope = VoicePanelModel.scope(allText: speak.panelAllText, phrase: speak.panelPhrase, chunks: speak.phraseChunks) else { return }
+        let entries = VoicePanelModel.deliveryEntries(chunks: speak.phraseChunks, scope: scope, change: change)
+        guard !entries.isEmpty else { return }
+        let chunk: Int
+        switch scope {
+        case .phrase(let n): chunk = n
+        case .all: chunk = PhraseWork.wholeProject
+        }
+        phraseOperation(chunk: chunk, kind: kind) { [voiceover = self.voiceover] client, id in
+            try await client.deliver(id: id, entries: entries, loudness: nil)
+            try await voiceover.followAndWait(id: id)
+            return try await client.chunks(id: id)
         }
     }
 

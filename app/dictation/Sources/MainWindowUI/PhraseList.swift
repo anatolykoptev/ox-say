@@ -97,6 +97,7 @@ private struct PhraseRow: View {
         case .pick: return L10nKey.speakPhraseWorkPick.text
         case .mood: return L10nKey.speakPhraseWorkMood.text
         case .text: return L10nKey.speakPhraseWorkText.text
+        case .pace, .pause, .loudness: return L10nKey.speakPanelBusy.text
         }
     }
 }

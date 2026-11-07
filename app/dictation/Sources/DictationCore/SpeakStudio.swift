@@ -12,14 +12,15 @@ public enum SpeakStudio {
     /// The project for the editor's text: the trimmed script (what `SpeakInputCheck` counts for the studio voice), titled by
     /// its first words, as the long format. Every project from Озвучка is created with `clone_mode: "reference"`: under `auto`
     /// a designed voice with a `ref_text` resolves to ultimate (`jobCloneMode`), and the daemon then answers 409 to any mood
-    /// change (`deliveryModeGate`, internal/daemon/produce_ops.go). The Advanced «Манера записи» switch (a later task) is the
-    /// one thing that may choose otherwise. nil for a text with nothing to voice.
-    public static func start(text: String, reel: Bool = false) -> StudioStart? {
+    /// change (`deliveryModeGate`, internal/daemon/produce_ops.go). The Advanced voice panel (`VoicePanelModel.options`) is the
+    /// one thing that may choose otherwise, and only while Advanced is on. nil for a text with nothing to voice.
+    public static func start(text: String, reel: Bool = false, advanced: Bool = false, panel: VoicePanelSettings = VoicePanelSettings()) -> StudioStart? {
         let script = ScriptLimit.script(from: text)
         guard !script.isEmpty else { return nil }
+        let base = reel ? NewReelPreset.options() : VoiceoverOptions(cloneMode: "reference")
         return StudioStart(script: script, title: SpeakClips.title(of: script),
                            format: reel ? NewReelPreset.format : .long,
-                           options: reel ? NewReelPreset.options() : VoiceoverOptions(cloneMode: "reference"))
+                           options: VoicePanelModel.options(base: base, panel: panel, advanced: advanced))
     }
 
     /// «Оставить только начало» is offered under the editor for a studio text over the daemon's cap (the same trim the
@@ -27,6 +28,9 @@ public enum SpeakStudio {
     public static func offersFirstPart(text: String, engine: SpeakEngine) -> Bool {
         engine == .studio && ScriptLimit.overBy(ScriptLimit.script(from: text)) > 0
     }
+
+    /// The project keeps the recording's own delivery (clone mode ultimate): its phrases take no mood.
+    public static func copiesRecording(_ options: VoiceoverOptions) -> Bool { options.cloneMode == "ultimate" }
 
     /// The voice a project was started with, kept for the session: the daemon's summary does not name it, and the mood
     /// chips are drawn for a designed voice only (`PhraseEditing.showsMood`). The default voice (nil) is not recorded.

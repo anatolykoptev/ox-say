@@ -240,4 +240,13 @@ extension PhraseEditingTests {
         XCTAssertTrue(PhraseEditing.showsMood(voice: "mine", voices: voices, advanced: true))
         XCTAssertTrue(PhraseEditing.showsMood(voice: nil, voices: voices, advanced: true))
     }
+
+    /// A project made with the recording's own delivery answers 409 to any mood (`deliveryModeGate`): no chip is drawn for it.
+    /// Mutation: PhraseEditing.swift, `copiesRecordingStyle` not passed on to `SpeakControls.shown` -> RED.
+    func testNoMoodChipsOnAProjectThatCopiesTheRecordingsDelivery() {
+        let voices = [VoiceEntry(id: "made", label: "Made", kind: .designed("calm"))]
+        XCTAssertFalse(PhraseEditing.showsMood(voice: "made", voices: voices, advanced: true, copiesRecordingStyle: true))
+        XCTAssertFalse(PhraseEditing.showsMood(voice: "made", voices: voices, advanced: false, copiesRecordingStyle: true))
+        XCTAssertTrue(PhraseEditing.showsMood(voice: "made", voices: voices, advanced: true, copiesRecordingStyle: false))
+    }
 }

@@ -28,7 +28,7 @@ final class SpeakWiringTests: XCTestCase {
     func testTheFastTextIsSentExactlyAsTypedAndCheckedFirst() throws {
         let generate = try body(source("OxSayDictation/SpeakSource.swift"), of: "func generate(variant: Bool = false) {")
         XCTAssertTrue(generate.contains("let text = speak.text"))
-        XCTAssertTrue(generate.contains("speech.speak(text, voice: voice, language: language, seed: seed)"))
+        XCTAssertTrue(generate.contains("speech.speak(text, voice: voice, language: language, seed: seed, loudnessLUFS: knobs.loudness)"))
         XCTAssertFalse(generate.contains("trimmingCharacters"))
         XCTAssertFalse(generate.contains("ScriptLimit"))
         XCTAssertFalse(generate.contains("SpeechClient.input"))

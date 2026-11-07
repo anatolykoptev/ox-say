@@ -47,6 +47,16 @@ public struct SpeakValues: Equatable {
     /// The voice each project of this session was started with (the daemon's summary does not name it): the mood chips
     /// are drawn for a designed voice only (plan decision D8), and a project of an earlier session has none recorded.
     public var projectVoices: [String: String]
+    /// What the person set in the Advanced voice panel for the next voicing (the app keeps it as view preferences).
+    public var panel: VoicePanelSettings
+    /// The panel is open (a view state, so the screenshots can open it).
+    public var panelShown: Bool
+    /// The phrase pace, pause and mood go to, and «Ко всему тексту» (every phrase instead of that one).
+    public var panelPhrase: Int?
+    public var panelAllText: Bool
+    /// The projects of this session that were made with the recording's own delivery (`SpeakStudio.copiesRecording`): the daemon
+    /// answers 409 to a mood on them, so none is offered.
+    public var projectCopies: Set<String>
 
     public init(text: String = "", voice: String? = nil, clips: [SpeakClip] = [],
                 selectedID: String? = nil, phase: SpeakPhase = .idle, reach: DaemonReach = .unknown,
@@ -54,7 +64,9 @@ public struct SpeakValues: Equatable {
                 quality: SpeakEngine = .fast, projects: [ProduceJob] = [], serviceWaiting: Bool = false,
                 trackMissing: Set<String> = [], peaks: [Float] = [], playedFraction: Double = 0,
                 reel: Bool = false, reading: Bool = false, phraseChunks: [ProduceChunkDetail] = [], phrasesFor: String? = nil,
-                phraseWork: PhraseWork? = nil, playingPhrase: Int? = nil, projectVoices: [String: String] = [:]) {
+                phraseWork: PhraseWork? = nil, playingPhrase: Int? = nil, projectVoices: [String: String] = [:],
+                panel: VoicePanelSettings = VoicePanelSettings(), panelShown: Bool = false, panelPhrase: Int? = nil,
+                panelAllText: Bool = false, projectCopies: Set<String> = []) {
         self.text = text
         self.voice = voice
         self.clips = clips
@@ -77,6 +89,11 @@ public struct SpeakValues: Equatable {
         self.phraseWork = phraseWork
         self.playingPhrase = playingPhrase
         self.projectVoices = projectVoices
+        self.panel = panel
+        self.panelShown = panelShown
+        self.panelPhrase = panelPhrase
+        self.panelAllText = panelAllText
+        self.projectCopies = projectCopies
         items = SpeakList.merge(projects: projects, clips: clips)
     }
 
@@ -91,7 +108,12 @@ public struct SpeakValues: Equatable {
 
     /// The mood chips are drawn for the selected project (`PhraseEditing.showsMood`).
     public func showsMood(voices: [VoiceEntry]) -> Bool {
-        PhraseEditing.showsMood(voice: selectedID.flatMap { projectVoices[$0] }, voices: voices, advanced: advanced)
+        PhraseEditing.showsMood(voice: selectedID.flatMap { projectVoices[$0] }, voices: voices, advanced: advanced, copiesRecordingStyle: copiesRecordingStyle)
+    }
+
+    /// The delivery the project on screen was made with, or, with none open, the one the next project will get.
+    public var copiesRecordingStyle: Bool {
+        selectedProject.map { projectCopies.contains($0.id) } ?? panel.copiesRecording
     }
 
     /// What the voice really uses: the studio voice only while it is chosen and can run.

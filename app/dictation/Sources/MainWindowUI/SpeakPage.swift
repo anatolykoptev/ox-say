@@ -14,7 +14,15 @@ struct SpeakPage: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let notice = model.data.notice { NoticeBar(text: notice) { model.actions.dismissNotice() } }
             }
-            .toolbar {
+                        .toolbar {
+                if model.advanced {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { model.speakPanelShown.wrappedValue.toggle() } label: {
+                            Label(L10nKey.speakPanelTitle.text, systemImage: "slider.horizontal.3").labelStyle(.titleAndIcon)
+                        }
+                        .help(L10nKey.speakPanelTitle.text)
+                    }
+                }
                 // A reel is made on the studio voice, so the button exists only where that voice can run.
                 if model.data.speak.studio == .available {
                     ToolbarItem(placement: .primaryAction) {
@@ -43,7 +51,7 @@ struct SpeakPage: View {
                 Button(L10nKey.commonRetry.text) { model.actions.refresh() }.controlSize(.large)
             }
         } else {
-            SpeakSplit(model: model)
+            SpeakSplit(model: model, panelOpen: model.speakPanelOpen.wrappedValue)
         }
     }
 }
@@ -182,14 +190,7 @@ struct SpeakDetailColumn: View {
     }
 
     private var voicePicker: some View {
-        Picker(L10nKey.speakVoice.text, selection: model.speakVoice) {
-            Text(L10nKey.voicesStandard.text).tag(String?.none)
-            Divider()
-            ForEach(model.data.voices.voices, id: \.self) { id in
-                Text(model.data.voices.title(for: id)).tag(String?.some(id))
-            }
-        }
-        .disabled(isGenerating(model.speakState))
+        SpeakVoicePicker(model: model).disabled(isGenerating(model.speakState))
     }
 
     /// «Качество»: «Обычное» works on every Mac, «Студийное» only where the studio voice can run. Where it cannot, the
@@ -274,6 +275,21 @@ struct SpeakDetailColumn: View {
     }
 }
 
+/// «Голос»: the standard voice and every voice of the library. One picker for the page and the voice panel.
+struct SpeakVoicePicker: View {
+    @ObservedObject var model: MainWindowModel
+
+    var body: some View {
+        Picker(L10nKey.speakVoice.text, selection: model.speakVoice) {
+            Text(L10nKey.voicesStandard.text).tag(String?.none)
+            Divider()
+            ForEach(model.data.voices.voices, id: \.self) { id in
+                Text(model.data.voices.title(for: id)).tag(String?.some(id))
+            }
+        }
+    }
+}
+
 /// A studio project on the right: its progress while it runs, its track once it is done, and what happened when it did not
 /// finish. The state is `SpeakProjectState`'s; the track plays through the same player as a fast clip.
 struct SpeakProjectDetail: View {
@@ -333,16 +349,31 @@ struct SpeakProjectDetail: View {
 /// the window floor (801).
 struct SpeakSplit: NSViewControllerRepresentable {
     @ObservedObject var model: MainWindowModel
+    /// The voice panel (Advanced) is open: the third pane of the split.
+    let panelOpen: Bool
 
-    func makeNSViewController(context: Context) -> SpeakSplitController { SpeakSplitController(model: model) }
-    func updateNSViewController(_ controller: SpeakSplitController, context: Context) {}
+    func makeNSViewController(context: Context) -> SpeakSplitController {
+        let controller = SpeakSplitController(model: model)
+        controller.setPanel(open: panelOpen, animated: false)
+        return controller
+    }
+
+    func updateNSViewController(_ controller: SpeakSplitController, context: Context) {
+        controller.setPanel(open: panelOpen, animated: true)
+    }
 }
 
 final class SpeakSplitController: NSSplitViewController {
     static let listWidth: ClosedRange<CGFloat> = 180...300
     static let detailMinimum: CGFloat = 340
+    /// The voice panel's width when open, and the text's width the window keeps for it (what the text had before the panel).
+    static let panelWidth: ClosedRange<CGFloat> = 300...380
+    static let detailComfortable: CGFloat = 520
+    private var panelItem: NSSplitViewItem?
+    private weak var model: MainWindowModel?
 
     init(model: MainWindowModel) {
+        self.model = model
         super.init(nibName: nil, bundle: nil)
         splitView.isVertical = true
         splitView.dividerStyle = .thin
@@ -360,7 +391,76 @@ final class SpeakSplitController: NSSplitViewController {
         detailItem.canCollapse = false
         addSplitViewItem(listItem)
         addSplitViewItem(detailItem)
+        // The voice panel is the system's inspector pane: collapsed until the toolbar button opens it (Advanced only).
+        let panel = NSHostingController(rootView: VoicePanel(model: model).environment(\.locale, L10nBundle.locale))
+        panel.sizingOptions = []
+        let panelItem = NSSplitViewItem(inspectorWithViewController: panel)
+        panelItem.minimumThickness = Self.panelWidth.lowerBound
+        panelItem.maximumThickness = Self.panelWidth.upperBound
+        panelItem.isCollapsed = true
+        addSplitViewItem(panelItem)
+        self.panelItem = panelItem
     }
+
+    /// Opens or closes the voice panel; the same call twice changes nothing. The window makes room for it, so the text keeps its
+    /// width instead of being squeezed under its least (`PanelWindow`).
+    func setPanel(open: Bool, animated: Bool) {
+        guard let panelItem, panelItem.isCollapsed == open else { return }
+        let animate = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if open { makeRoom(animate: animate) } else { giveBackRoom(animate: animate) }
+        if animate {
+            panelItem.animator().isCollapsed = !open
+        } else {
+            panelItem.isCollapsed = !open
+        }
+    }
+
+    private var grewBy = 0.0
+
+    /// The page goes away (another section, the daemon offline, the window closing) with the panel open: the window gives its
+    /// room back and the panel closes for good, so coming back starts closed with the window at its own size. Left as it was,
+    /// the open state would outlive this controller and the next one would open the panel into a window with no room made.
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        guard let panelItem, !panelItem.isCollapsed else { return }
+        giveBackRoom(animate: false)
+        panelItem.isCollapsed = true
+        DispatchQueue.main.async { [weak model] in model?.data.speak.panelShown = false }
+    }
+
+    /// The panel needs more than the window floor: widen the window so the text keeps the width it had (to the screen's edge at
+    /// most), and keep the window from being dragged under what the panes need at their least.
+    private func makeRoom(animate: Bool) {
+        guard let window = view.window else { return }
+        let sidebar = view.convert(view.bounds, to: nil).minX
+        let divider = MainWindowSpec.splitDividerWidth
+        let least = PanelWindow.neededWidth(sidebar: sidebar, list: Self.listWidth.lowerBound, detail: Self.detailMinimum,
+                                            panel: Self.panelWidth.lowerBound, divider: divider, panelOpen: true)
+        let needed = PanelWindow.neededWidth(sidebar: sidebar, list: Self.listWidth.lowerBound, detail: Self.detailComfortable,
+                                             panel: Self.panelWidth.lowerBound, divider: divider, panelOpen: true)
+        window.contentMinSize.width = PanelWindow.minimumWidth(floor: MainWindowSpec.minimumWidth, needed: least, panelOpen: true)
+        let visible = window.screen?.visibleFrame ?? window.frame
+        let growth = PanelWindow.growth(needed: needed, current: window.contentLayoutRect.width, room: visible.width - window.frame.width)
+        guard growth > 0 else { return }
+        var frame = window.frame
+        frame.size.width += growth
+        if frame.maxX > visible.maxX { frame.origin.x = max(visible.minX, visible.maxX - frame.width) }
+        window.setFrame(frame, display: true, animate: animate)
+        grewBy = growth
+    }
+
+    /// The window goes back to its floor, and gives back only the width the opening added.
+    private func giveBackRoom(animate: Bool) {
+        guard let window = view.window else { return }
+        window.contentMinSize.width = MainWindowSpec.minimumWidth
+        let back = PanelWindow.shrink(grewBy: grewBy, current: window.contentLayoutRect.width, floor: MainWindowSpec.minimumWidth)
+        grewBy = 0
+        guard back > 0 else { return }
+        var frame = window.frame
+        frame.size.width -= back
+        window.setFrame(frame, display: true, animate: animate)
+    }
+
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("not used") }
 

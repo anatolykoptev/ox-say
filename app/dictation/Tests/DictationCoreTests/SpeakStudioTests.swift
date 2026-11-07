@@ -29,6 +29,30 @@ final class SpeakStudioTests: XCTestCase {
         XCTAssertEqual(start.title, "Привет.")
     }
 
+    /// Advanced off: the panel's values stay out of the create body, whatever they were set to earlier.
+    /// Mutation: SpeakStudio.swift, `advanced: advanced` -> `advanced: true` in `start` -> RED.
+    func testThePanelReachesTheCreateBodyOnlyWhileAdvancedIsOn() throws {
+        let panel = VoicePanelSettings(loudness: .underMusic, quality: .draft, copiesRecording: true, seed: 9, takes: 2)
+        let off = try XCTUnwrap(SpeakStudio.start(text: "Привет.", advanced: false, panel: panel))
+        XCTAssertEqual(off.options, VoiceoverOptions(cloneMode: "reference"))
+        let on = try XCTUnwrap(SpeakStudio.start(text: "Привет.", advanced: true, panel: panel))
+        let sent = try body(on)
+        XCTAssertEqual(sent["clone_mode"] as? String, "ultimate")
+        XCTAssertEqual(sent["inference_timesteps"] as? Int, 8)
+        XCTAssertEqual(sent["loudness_lufs"] as? Double, -18)
+        XCTAssertEqual(sent["seed"] as? Int, 9)
+        XCTAssertEqual(sent["takes"] as? Int, 2)
+        let reel = try XCTUnwrap(SpeakStudio.start(text: "Привет.", reel: true, advanced: false, panel: panel))
+        XCTAssertEqual(reel.options, NewReelPreset.options())
+    }
+
+    /// The project's clone mode is remembered so its phrases draw no mood chip.
+    func testAProjectThatCopiesTheRecordingIsRecognisedFromItsOptions() {
+        XCTAssertTrue(SpeakStudio.copiesRecording(VoiceoverOptions(cloneMode: "ultimate")))
+        XCTAssertFalse(SpeakStudio.copiesRecording(VoiceoverOptions(cloneMode: "reference")))
+        XCTAssertFalse(SpeakStudio.copiesRecording(VoiceoverOptions()))
+    }
+
     func testTheOldCreateBodyIsUnchangedWithoutOptions() throws {
         let data = ProduceRequest.createBody(script: "s", title: "", voice: nil, format: .short)
         let keys = Set(try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any]).keys)

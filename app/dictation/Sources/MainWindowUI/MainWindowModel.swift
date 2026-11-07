@@ -112,6 +112,24 @@ public final class MainWindowModel: ObservableObject {
         Binding(get: { self.data.speak.quality }, set: { self.data.speak.quality = $0; self.actions.speakQualityChanged($0) })
     }
 
+    /// The panel button's state; the panel is open only while Advanced is on, so switching Advanced off closes it.
+    var speakPanelShown: Binding<Bool> {
+        Binding(get: { self.data.speak.panelShown }, set: { self.data.speak.panelShown = $0 })
+    }
+
+    var speakPanelOpen: Binding<Bool> {
+        Binding(get: { self.data.speak.panelShown && self.advanced }, set: { self.data.speak.panelShown = $0 })
+    }
+
+    /// The settings a new voicing reads; the level has its own action because it also acts on a finished project.
+    var speakPanelSettings: Binding<VoicePanelSettings> {
+        Binding(get: { self.data.speak.panel }, set: { self.data.speak.panel = $0; self.actions.speakPanelChanged($0) })
+    }
+
+    var speakLoudness: Binding<LoudnessTarget?> {
+        Binding(get: { self.data.speak.panel.loudness }, set: { self.data.speak.panel.loudness = $0; self.actions.speakLoudness($0) })
+    }
+
     var speakVoice: Binding<String?> {
         Binding(get: { self.data.speak.voice }, set: { self.data.speak.voice = $0; self.actions.speakVoiceChanged($0) })
     }
