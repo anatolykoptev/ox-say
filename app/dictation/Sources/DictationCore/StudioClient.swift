@@ -6,6 +6,10 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
     /// The daemon refused or failed; the text is its own plain-words message.
     case refused(status: Int, message: String)
     case badResponse
+    /// A second voiceover was started while one runs (409 carrying `running_id`); the id is not shown.
+    case voiceoverRunning
+    /// Starting a project needs a saved voice and the library has none (400).
+    case noSavedVoice
 
     /// What the person reads, in their language. The daemon's own words in a refusal stay as it sent them; an empty
     /// one is the app's sentence naming the status. `description` below stays English: it is for logs.
@@ -15,6 +19,8 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .timedOut: return text(.studioErrorTimedOut)
         case .refused(let status, let message): return message.isEmpty ? String(format: text(.studioErrorRefused), String(status)) : message
         case .badResponse: return text(.studioErrorBadResponse)
+        case .voiceoverRunning: return text(.speakStudioBusy)
+        case .noSavedVoice: return text(.speakStudioNeedsVoice)
         }
     }
 
@@ -29,6 +35,8 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .timedOut: return "The OxSay service took too long to answer."
         case .refused(let status, let message): return message.isEmpty ? "The OxSay service answered with an error (\(status))." : message
         case .badResponse: return "The OxSay service sent an answer the app does not understand."
+        case .voiceoverRunning: return "Another voiceover is being produced."
+        case .noSavedVoice: return "Producing a voiceover needs a saved voice."
         }
     }
 }
@@ -91,6 +99,12 @@ public struct StudioClient {
     static func refusal(status: Int, body: Data) -> StudioError {
         let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
         let message = (obj?["error"] as? [String: Any])?["message"] as? String ?? ""
+        // The daemon's busy answer is the 409 that carries `running_id` (produce_http.go writeProduceErr): a code, not a
+        // sentence. The other 409s (still cancelling, not running) carry none and keep their own words.
+        if status == 409, obj?["running_id"] is String { return .voiceoverRunning }
+        // "produce needs a saved voice" has no code on the wire (only type "Bad Request"), so its opening words are the one
+        // text match, kept at this edge and pinned by a test; PlainWords would drop the whole sentence for its `voice_` hint.
+        if status == 400, message.hasPrefix("produce needs a saved voice") { return .noSavedVoice }
         // An empty message is the app's sentence naming the status, worded when it is shown (StudioError.message).
         return .refused(status: status, message: PlainWords.clean(message, fallback: ""))
     }
@@ -127,8 +141,9 @@ public struct StudioClient {
 
     /// POST /v1/produce: starts a voiceover of `script`. The daemon runs one at
     /// a time; a second start answers 409 with its message.
-    public func startVoiceover(script: String, title: String, voice: String?, format: ProduceFormat) async throws -> ProduceJob {
-        let body = ProduceRequest.createBody(script: script, title: title, voice: voice, format: format)
+    public func startVoiceover(script: String, title: String, voice: String?, format: ProduceFormat,
+                               options: VoiceoverOptions = VoiceoverOptions()) async throws -> ProduceJob {
+        let body = ProduceRequest.createBody(script: script, title: title, voice: voice, format: format, options: options)
         let data = try await succeed(post("v1/produce", body: body, timeout: Self.startTimeout))
         guard let job = ProduceJob.decode(data) else { throw StudioError.badResponse }
         return job

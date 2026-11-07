@@ -137,7 +137,8 @@ final class MainWindowWiringTests: XCTestCase {
     func testNothingRunsWhileTheWindowIsClosedOrHidden() throws {
         let text = try window()
         let poll = try body(text, of: "private func schedulePolling() {")
-        XCTAssertTrue(poll.contains("guard MeetingsPolling.needed(visible: visible, meetings: model.data.meetings, writer: model.data.meetingSettings.notesWriter) else { return }"))
+        XCTAssertTrue(poll.contains("let meetings = MeetingsPolling.needed(visible: visible, meetings: model.data.meetings, writer: model.data.meetingSettings.notesWriter)"))
+        XCTAssertTrue(poll.contains("guard let delay = due.min() else { return }"), "a meeting still working is polled as before; Озвучка adds its own recheck")
         let stop = try body(text, of: "private func stopClocks() {")
         XCTAssertTrue(stop.contains("visible = false"))
         XCTAssertTrue(stop.contains("pollTask?.cancel()"))

@@ -4,13 +4,19 @@ import DictationCore
 import MainWindowUI
 import UniformTypeIdentifiers
 
-/// The Озвучка page's glue on the fast voice: it sends the text to the daemon, keeps the session's clips, plays them
-/// and carries «Сохранить…» out. What the page may show is DictationCore's (`SpeakPageState`, `SpeakControls`,
-/// `SpeakInputCheck`, `ReachTracker`, `SpeakClips`); nothing is decided here beyond the order of the calls.
+/// The Озвучка page's glue: on the fast voice it sends the text to the daemon, keeps the session's clips, plays them
+/// and carries «Сохранить…» out; on the studio voice it starts a project, keeps the daemon's project list and plays a
+/// finished track through the same player. What the page may show is DictationCore's (`SpeakPageState`, `SpeakControls`,
+/// `SpeakInputCheck`, `ReachTracker`, `SpeakClips`, `SpeakList`, `SpeakStudio`); nothing is decided here beyond the order
+/// of the calls.
 @MainActor
 final class SpeakSource {
     /// The editor's text, kept as a view preference.
     static let draftKey = "speak.draft"
+    /// «Качество» as the person left it, a view preference.
+    static let qualityKey = "speak.quality"
+    /// Bars of the waveform.
+    static let waveformBars = 96
 
     private let model: MainWindowModel
     private let host: MainWindowHost
@@ -26,10 +32,28 @@ final class SpeakSource {
     var stopOtherAudio: () -> Void = {}
     /// The clip's sounding state; `ClipAudio` decides, `perform` carries it out.
     private var audio = ClipAudio()
+    /// The voiceover the app follows, shared with the Studio menu.
+    private let voiceover: VoiceoverService
+    /// A project list read that lands after a newer one started is dropped.
+    private var projectReads = Generation()
+    /// Waveform reads: the answer for a track that is no longer on screen is dropped.
+    private var waveformReads = Generation()
+    /// The track whose bars are on screen or being read (id and path), so a project that finishes under the eye gets its bars once.
+    private var waveformKey: String?
+    /// A studio project is on its way to the daemon: «Остановить» is not offered (the answer would be dropped while the job runs).
+    /// The flag belongs to its request, so a superseded one never leaves it set.
+    private var studioStart = StartingGate()
+    private var startingStudio: Bool { studioStart.isActive(in: generation) }
+    /// The scan of the waveform that is being read, cancelled when the selection moves on.
+    private var waveformTask: Task<Void, Never>?
+    /// Moves the playback cursor while a track sounds; nil otherwise.
+    private var positionTimer: Timer?
 
     init(model: MainWindowModel, host: MainWindowHost) {
         self.model = model
         self.host = host
+        voiceover = host.voiceover()
+        model.data.speak.quality = host.defaults.string(forKey: Self.qualityKey).flatMap(SpeakEngine.init(rawValue:)) ?? .fast
         model.data.speak.text = SpeakDraft.initial(stored: host.defaults.string(forKey: Self.draftKey),
                                                    firstRun: host.consumeFirstRun(), language: L10nBundle.locale.identifier)
         player.onFinish = { [weak self] in
@@ -39,6 +63,10 @@ final class SpeakSource {
                 self.perform(self.audio.finished())
             }
         }
+        // The follower reports from the main actor; the observers hop there explicitly (their type is not isolated).
+        voiceover.observe(
+            onChange: { [weak self] in Task { @MainActor in self?.followedChanged() } },
+            onFinish: { [weak self] _ in Task { @MainActor in self?.refreshProjects() } })
     }
 
     /// A request is on its way or a clip sounds: a daemon restart or an app relaunch would cut it.
@@ -52,6 +80,47 @@ final class SpeakSource {
         record(answered: status != nil)
         model.data.speak.studio = StudioAvailability.held(previous: model.data.speak.studio, status: status, waiting: tracker.waiting)
         model.data.speak.advanced = model.advanced
+        model.data.speak.serviceWaiting = voiceover.serviceWaiting || tracker.waiting
+        if status != nil { refreshProjects() }
+    }
+
+    var reach: DaemonReach { tracker.reach }
+
+    /// While the page is visible and the daemon does not answer, how long until the next read (nil when none is due).
+    /// A daemon that was not up yet at first launch must not leave «unavailable» on screen until «Повторить» (#490).
+    func recheckDelay(visible: Bool, section: MainSection) -> TimeInterval? {
+        SpeakRecheck.delay(visible: visible, section: section, reach: tracker.reach, misses: tracker.misses)
+    }
+
+    // MARK: projects
+
+    /// Reads the daemon's projects. The voiceover the app follows is fresher than the list and wins; a read that fails
+    /// keeps the list on screen (the reach tracker, not this read, decides when the page is offline).
+    func refreshProjects() {
+        let token = projectReads.advance()
+        let client = host.client
+        Task { @MainActor [weak self] in
+            guard let jobs = try? await client.voiceovers() else { return }
+            guard let self, self.projectReads.isCurrent(token) else { return }
+            // A finished job's follower copy is older than the daemon's entry; only a working one is fresher than the read.
+            self.show(SpeakList.afterRead(projects: jobs, followed: self.voiceover.job))
+        }
+    }
+
+    /// The followed job moved: its row and its detail follow without waiting for the next list read.
+    private func followedChanged() {
+        model.data.speak.serviceWaiting = voiceover.serviceWaiting || tracker.waiting
+        show(SpeakList.overlay(projects: model.data.speak.projects, followed: voiceover.job))
+    }
+
+    private func show(_ projects: [ProduceJob]) {
+        model.data.speak.projects = projects
+        // A project that is gone (deleted elsewhere) must not stay selected, and its track must not keep sounding.
+        if !SpeakList.stillPresent(model.data.speak.selectedID, projects: projects, clips: model.data.speak.clips) {
+            stopClip()
+            model.data.speak.selectedID = nil
+        }
+        ensureWaveform()
     }
 
     private func record(answered: Bool) {
@@ -94,15 +163,28 @@ final class SpeakSource {
 
     func newText() {
         stop()
+        // A studio project that is still on its way keeps running in the daemon; its answer is dropped here (the list shows
+        // the project once it exists) and the editor is free at once.
+        if startingStudio {
+            generation.advance()
+            studioStart.end()
+            host.workEnded()
+        }
         stopClip()
         model.data.speak.text = ""
         model.data.speak.selectedID = nil
+        model.data.speak.phase = .idle
+        cancelWaveform()
         host.defaults.set("", forKey: Self.draftKey)
     }
 
     func select(_ id: String) {
         // The list is disabled while a take is made; this is the same rule for any other caller.
         guard model.data.speak.phase.allowsSelection else { return }
+        if model.data.speak.projects.contains(where: { $0.id == id }) {
+            selectProject(id)
+            return
+        }
         guard let clip = model.data.speak.clips.first(where: { $0.id == id }) else { return }
         stop()
         stopClip()
@@ -111,6 +193,21 @@ final class SpeakSource {
         model.data.speak.voice = SpeakVoice.existing(clip.voice, in: model.data.voices.voices)
         model.data.speak.selectedID = clip.id
         model.data.speak.phase = .ready
+        ensureWaveform()
+    }
+
+    /// A studio project: the editor's text and voice stay as they are for the next «Новый текст».
+    private func selectProject(_ id: String) {
+        stopClip()
+        model.data.speak.selectedID = id
+        model.data.speak.phase = .idle
+        model.data.speak.trackMissing.remove(id)
+        cancelWaveform()
+        ensureWaveform()
+    }
+
+    func qualityChanged(_ quality: SpeakEngine) {
+        host.defaults.set(quality.rawValue, forKey: Self.qualityKey)
     }
 
     // MARK: voicing
@@ -119,6 +216,10 @@ final class SpeakSource {
     func generate(variant: Bool = false) {
         let speak = model.data.speak
         if case .generating = speak.phase { return }
+        if speak.engine == .studio, !variant {
+            generateStudio()
+            return
+        }
         // The text goes to the daemon exactly as typed: that is what `SpeakInputCheck` counts.
         let text = speak.text
         guard SpeakInputCheck.problem(text, engine: .fast, text: { $0.text }) == nil else { return }
@@ -148,9 +249,50 @@ final class SpeakSource {
         }
     }
 
+    /// The studio voice: the trimmed script becomes a project the daemon renders in the background and the app follows. The
+    /// text is checked as the studio counts it (the trimmed script) and the same string is what goes out.
+    private func generateStudio() {
+        let speak = model.data.speak
+        guard SpeakInputCheck.problem(speak.text, engine: .studio, text: { $0.text }) == nil,
+              let start = SpeakStudio.start(text: speak.text) else { return }
+        if let refusal = host.speechRefusal() {
+            model.data.notice = refusal
+            return
+        }
+        stopClip()
+        let voice = speak.voice
+        model.data.speak.phase = .generating
+        let token = generation.advance()
+        studioStart.begin(token)
+        let voiceover = self.voiceover
+        request = Task { @MainActor [weak self] in
+            do {
+                let job = try await voiceover.start(script: start.script, title: start.title, voice: voice,
+                                                    format: start.format, options: start.options, fromWindow: true)
+                guard let self else { return }
+                guard self.generation.isCurrent(token) else {
+                    // «Новый текст» moved on while it started: the project exists, the list will show it.
+                    self.refreshProjects()
+                    return
+                }
+                self.studioStart.end()
+                self.record(answered: true)
+                self.model.data.speak.projects = SpeakList.overlay(projects: self.model.data.speak.projects, followed: job)
+                self.selectProject(job.id)
+            } catch {
+                guard let self, self.generation.isCurrent(token) else { return }
+                self.studioStart.end()
+                if case StudioError.daemonUnreachable = error { self.record(answered: false) }
+                // A 409 (another voiceover is running) comes back in the daemon's own words.
+                self.model.data.speak.phase = .failed(StudioError.plain(error))
+                self.host.workEnded()
+            }
+        }
+    }
+
     /// «Остановить»: the request is dropped, and the page goes back to its text.
     func stop() {
-        guard case .generating = model.data.speak.phase else { return }
+        guard case .generating = model.data.speak.phase, !startingStudio else { return }
         generation.advance()
         request?.cancel()
         request = nil
@@ -169,21 +311,41 @@ final class SpeakSource {
         model.data.speak.clips = SpeakClips.append(clip, to: model.data.speak.clips)
         model.data.speak.selectedID = clip.id
         model.data.speak.phase = .ready
+        ensureWaveform()
         if !startPlaying(clip) { host.workEnded() }
     }
 
     // MARK: playing
 
-    /// ▶/⏸ on the clip on screen.
+    /// ▶/⏸ on the item on screen: a clip, or the track of a finished project. Both go through `ClipAudio` and `perform`.
     func playPause() {
-        guard let clip = model.data.speak.selectedClip else { return }
-        perform(audio.playPause(recordingRunning: host.meetings()?.recordingElapsed != nil), clip: clip)
+        guard let track = selectedTrack() else { return }
+        perform(audio.playPause(recordingRunning: host.meetings()?.recordingElapsed != nil), track: track)
     }
 
     @discardableResult
     private func startPlaying(_ clip: SpeakClip) -> Bool {
-        perform(audio.start(recordingRunning: host.meetings()?.recordingElapsed != nil), clip: clip)
+        perform(audio.start(recordingRunning: host.meetings()?.recordingElapsed != nil), track: { clip.wav })
         return audio.sound == .playing
+    }
+
+    /// The audio of what is selected, read only when a start needs it.
+    private func selectedTrack() -> (() -> Data?)? {
+        if let clip = model.data.speak.selectedClip { return { clip.wav } }
+        guard let job = model.data.speak.selectedProject else { return nil }
+        return { [weak self] in
+            guard let data = Self.readTrack(of: job) else {
+                self?.model.data.speak.trackMissing.insert(job.id)
+                return nil
+            }
+            return data
+        }
+    }
+
+    /// The published WAV of a finished project, mapped rather than copied: a long track is hundreds of megabytes.
+    private static func readTrack(of job: ProduceJob) -> Data? {
+        guard let path = job.outputPath else { return nil }
+        return try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
     }
 
     func stopClip() {
@@ -191,19 +353,19 @@ final class SpeakSource {
         model.data.speak.playback = .stopped
     }
 
-    /// Carries out what `ClipAudio` decided, in order.
-    private func perform(_ effects: [ClipEffect], clip: SpeakClip? = nil) {
+    /// Carries out what `ClipAudio` decided, in order. `track` supplies the audio when the effects start it.
+    private func perform(_ effects: [ClipEffect], track: (() -> Data?)? = nil) {
         for effect in effects {
             switch effect {
             case .stopOtherAudio:
                 stopOtherAudio()
             case .start:
-                guard let clip else {
+                guard let wav = track?() else {
                     audio.startFailed()
                     break
                 }
                 do {
-                    try player.play(wav: clip.wav)
+                    try player.play(wav: wav)
                     model.data.speak.playback = .playing
                 } catch {
                     audio.startFailed()
@@ -225,6 +387,76 @@ final class SpeakSource {
             case .blockedByRecording:
                 model.data.notice = L10nKey.speakPlayBlockedRecording.text
             }
+        }
+        syncCursor()
+    }
+
+    // MARK: cursor
+
+    /// The one place the cursor timer follows the sound: it ticks iff `ClipAudio` says so (the clip sounds and Reduce Motion
+    /// is off), and a clip that is not sounding has no cursor. `perform` calls it after every event, the end of a clip
+    /// and the stop of one that already ended included, so no path can leave a timer running.
+    private func syncCursor() {
+        if audio.cursorTicks(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) {
+            guard positionTimer == nil else { return }
+            let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.audio.sound == .playing else { return }
+                    self.model.data.speak.playedFraction = Waveform.fraction(time: self.player.currentTime, duration: self.player.duration)
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            positionTimer = timer
+        } else {
+            positionTimer?.invalidate()
+            positionTimer = nil
+            if audio.sound == .stopped, model.data.speak.playedFraction != 0 { model.data.speak.playedFraction = 0 }
+        }
+    }
+
+    // MARK: waveform
+
+    /// Forgets the bars and cancels the scan that is reading them: the selection moved on.
+    private func cancelWaveform() {
+        waveformReads.advance()
+        waveformTask?.cancel()
+        waveformTask = nil
+        waveformKey = nil
+        model.data.speak.peaks = []
+    }
+
+    /// Reads the bars of the selected track once per track, and again when its file changes (a re-render rewrites it). The
+    /// scan runs off the main actor and stops when the selection moves; the answer of a track no longer selected is dropped.
+    private func ensureWaveform() {
+        let speak = model.data.speak
+        let key: String
+        let source: () -> Data?
+        if let clip = speak.selectedClip {
+            key = "clip:\(clip.id)"
+            source = { clip.wav }
+        } else if let job = speak.selectedProject, job.status == .done || job.status == .review, let path = job.outputPath {
+            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+            key = SpeakTrack.key(projectID: job.id, path: path, modified: attributes?[.modificationDate] as? Date,
+                                 size: (attributes?[.size] as? NSNumber)?.intValue)
+            source = { try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) }
+        } else {
+            if waveformKey != nil { cancelWaveform() }
+            return
+        }
+        guard key != waveformKey else { return }
+        cancelWaveform()
+        waveformKey = key
+        model.data.speak.playedFraction = 0
+        if let id = speak.selectedID { model.data.speak.trackMissing.remove(id) }
+        let token = waveformReads.advance()
+        let id = speak.selectedID
+        let bars = Self.waveformBars
+        waveformTask = Task { @MainActor [weak self] in
+            // The scan of a long track runs off the main actor; cancelling this task cancels it.
+            let scan = Task.detached(priority: .utility) { source().map { Waveform.peaks(wav: $0, bins: bars) } }
+            let peaks: [Float]? = await withTaskCancellationHandler { await scan.value } onCancel: { scan.cancel() }
+            guard let self, !Task.isCancelled, self.waveformReads.isCurrent(token) else { return }
+            if let peaks { self.model.data.speak.peaks = peaks } else if let id { self.model.data.speak.trackMissing.insert(id) }
         }
     }
 

@@ -54,6 +54,9 @@ public final class VoiceoverFollower {
         self.onFinish = onFinish
     }
 
+    /// The followed job has not reached a terminal state: the version handshake waits for it.
+    public var following: Bool { job.map { !$0.status.isTerminal } ?? false }
+
     /// Stops following; the job stays as last seen.
     public func stop() {
         polling?.cancel()

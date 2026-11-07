@@ -24,7 +24,8 @@ final class StudioClientTests: XCTestCase {
             _ = try await client.startVoiceover(script: "Hi.", title: "", voice: nil, format: .short)
             XCTFail("expected an error")
         } catch {
-            XCTAssertEqual(error as? StudioError, .refused(status: 409, message: "another voiceover is running"))
+            // The busy 409 carries `running_id`: a code, so the person reads the app's sentence, not the daemon's English.
+            XCTAssertEqual(error as? StudioError, .voiceoverRunning)
         }
     }
 

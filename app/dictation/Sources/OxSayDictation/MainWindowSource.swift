@@ -47,6 +47,8 @@ struct MainWindowHost {
     var mainWindow: () -> NSWindow?
     /// Stops the app's own speech player (speak-selection and voiceover playback): a clip never overlaps it.
     var stopSpeechPlayer: () -> Void
+    /// The voiceover the app follows, shared with the Studio menu: a studio project started on Озвучка is followed by it.
+    var voiceover: () -> VoiceoverService
 }
 
 /// Fills the main window with what the app really has and carries out what the window asks. The window holds no timer:
@@ -81,6 +83,8 @@ final class MainWindowSource {
     private var searchRequest: Task<Void, Never>?
     /// Saves the route on every change (a quit with the window open never calls windowClosed).
     private var routeSaver: AnyCancellable?
+    /// The section the window showed before the last change, for the arrival rule of the Озвучка recheck.
+    private var lastSection: MainSection = .speak
     /// A meeting restored from the last run is checked against the first non-empty list that loads: an empty
     /// one says nothing yet (the daemon may still be coming up), so the check stays armed for the next list.
     private var restoredMeetingUnchecked = false
@@ -92,6 +96,7 @@ final class MainWindowSource {
         model.advanced = AdvancedMode.isOn(host.defaults)
         let restored = WindowRestoration.load(host.defaults, advanced: model.advanced)
         model.section = restored.section
+        lastSection = restored.section
         model.selectedMeeting = restored.meetingID
         restoredMeetingUnchecked = restored.meetingID != nil
         voiceSource = VoiceSource(model: model, client: host.client, speech: host.speech, defaults: host.defaults,
@@ -116,8 +121,17 @@ final class MainWindowSource {
             guard let model else { return }
             model.section = AdvancedMode.section(after: on, current: model.section)
         }
-        routeSaver = Publishers.CombineLatest(model.$section, model.$selectedMeeting).dropFirst().sink { section, meeting in
+        routeSaver = Publishers.CombineLatest(model.$section, model.$selectedMeeting).dropFirst().sink { [weak self] section, meeting in
             WindowRestoration.save(MainRoute(section: section, meetingID: meeting), to: defaults)
+            // Arriving on Озвучка with the daemon down reads at once (the backoff grew on passes made elsewhere) and starts
+            // its recheck without waiting for another refresh pass.
+            Task { @MainActor in
+                guard let self else { return }
+                let arrived = SpeakRecheck.refreshOnArrival(to: self.model.section, from: self.lastSection, reach: self.speakSource.reach)
+                self.lastSection = self.model.section
+                self.schedulePolling()
+                if arrived { self.refresh() }
+            }
         }
         model.actions = actions()
         audio.onChange = { [weak self] values in self?.model.data.playback = values }
@@ -297,6 +311,7 @@ final class MainWindowSource {
         a.speakSelect = { [weak self] id in self?.speakSource.select(id) }
         a.speakTextChanged = { [weak self] text in self?.speakSource.textChanged(text) }
         a.speakVoiceChanged = { _ in }
+        a.speakQualityChanged = { [weak self] quality in self?.speakSource.qualityChanged(quality) }
         return a
     }
 
@@ -340,9 +355,13 @@ final class MainWindowSource {
     private func schedulePolling() {
         pollTask?.cancel()
         pollTask = nil
-        guard MeetingsPolling.needed(visible: visible, meetings: model.data.meetings, writer: model.data.meetingSettings.notesWriter) else { return }
+        // The next read is due when a meeting is still being processed, or when Озвучка is in view and the daemon does not
+        // answer (it backs off, so a daemon that never comes up is asked rarely): whichever is sooner.
+        let meetings = MeetingsPolling.needed(visible: visible, meetings: model.data.meetings, writer: model.data.meetingSettings.notesWriter)
+        let due = [meetings ? MeetingsPolling.interval : nil, speakSource.recheckDelay(visible: visible, section: model.section)].compactMap { $0 }
+        guard let delay = due.min() else { return }
         pollTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(MeetingsPolling.interval * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
             self?.refresh()
         }

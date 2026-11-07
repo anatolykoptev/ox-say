@@ -5,8 +5,7 @@ import XCTest
 /// Source pins for the Озвучка page's glue (the shim compiles DictationCore only, so the AppKit/SwiftUI files are
 /// read as text, without comments). What each decision DOES is tested in SpeakClipsTests, ReachTrackerTests,
 /// SpeakPageStateTests and SpeechClientTests; these prove the glue calls the decision from the place that counts.
-/// The studio half of controller note 1 (the trimmed script goes to `ProduceRequest.createBody`) is Task 15's pin:
-/// this page has no studio path yet.
+/// The studio half of controller note 1 (the trimmed script goes to the daemon) is pinned in SpeakStudioWiringTests.
 final class SpeakWiringTests: XCTestCase {
     private func source(_ relative: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath)
@@ -86,7 +85,7 @@ final class SpeakWiringTests: XCTestCase {
     func testEveryStopReleasesTheHandshakeAndThePlayersExcludeEachOther() throws {
         let speak = try source("OxSayDictation/SpeakSource.swift")
         try XCTAssertTrue(body(speak, of: "func stopClip() {").contains("perform(audio.stop())"))
-        try XCTAssertTrue(body(speak, of: "private func perform(_ effects: [ClipEffect], clip: SpeakClip? = nil) {").contains("case .handshakeMayRun:\n                host.workEnded()"))
+        try XCTAssertTrue(body(speak, of: "private func perform(_ effects: [ClipEffect], track: (() -> Data?)? = nil) {").contains("case .handshakeMayRun:\n                host.workEnded()"))
         let window = try source("OxSayDictation/MainWindowSource.swift")
         let others = try XCTUnwrap(window.range(of: "speakSource.stopOtherAudio = {"))
         let block = String(window[others.upperBound...].prefix(200))
@@ -120,8 +119,8 @@ final class SpeakWiringTests: XCTestCase {
     /// `audio.startFailed()` -> RED.
     func testAClipThatNeverStartsIsNotTracked() throws {
         try XCTAssertTrue(source("OxSayDictation/AudioPlayer.swift").contains("guard next.play() else {"))
-        let perform = try body(source("OxSayDictation/SpeakSource.swift"), of: "private func perform(_ effects: [ClipEffect], clip: SpeakClip? = nil) {")
-        XCTAssertTrue(perform.contains("guard let clip else {\n                    audio.startFailed()"))
+        let perform = try body(source("OxSayDictation/SpeakSource.swift"), of: "private func perform(_ effects: [ClipEffect], track: (() -> Data?)? = nil) {")
+        XCTAssertTrue(perform.contains("guard let wav = track?() else {\n                    audio.startFailed()"))
         try XCTAssertTrue(source("OxSayDictation/SpeakSource.swift").contains("audio.busy(playerIsPlaying: player.isActivelyPlaying)"))
     }
 
@@ -170,13 +169,13 @@ final class SpeakWiringTests: XCTestCase {
     /// Mutation: SpeakPage, drop the `shown.contains(.voice)` condition around the picker -> RED.
     func testThePageDrawsOnlyWhatTheMatrixListsAndOffersTheInstall() throws {
         let page = try source("MainWindowUI/SpeakPage.swift")
-        XCTAssertTrue(page.contains("SpeakControls.shown(engine: .fast, voiceIsDesigned: false, advanced: values.advanced)"))
+        XCTAssertTrue(page.contains("SpeakControls.shown(engine: values.engine, voiceIsDesigned: false, advanced: values.advanced)"))
         XCTAssertTrue(page.contains("if shown.contains(.voice) { voicePicker }"))
         XCTAssertTrue(page.contains("if shown.contains(.quality) { quality }"))
         XCTAssertTrue(page.contains("model.actions.installStudioVoice()"), "no pointer to a Settings page that does not exist yet")
         let model = try source("MainWindowUI/MainWindowModel.swift")
         XCTAssertTrue(model.contains("SpeakPageState.of(reach: data.speak.reach"))
-        XCTAssertTrue(model.contains("SpeakInputCheck.problem(data.speak.text, engine: .fast"))
+        XCTAssertTrue(model.contains("SpeakInputCheck.problem(data.speak.text, engine: data.speak.engine"))
         try XCTAssertTrue(source("MainWindowUI/MainWindowView.swift").contains("case .speak: SpeakPage(model: model)"))
     }
 }

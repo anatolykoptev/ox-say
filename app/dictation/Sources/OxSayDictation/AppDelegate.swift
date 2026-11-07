@@ -615,7 +615,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         VersionHandshake.AppWork(dictating: controller.state != .idle,
                                  speaking: speakInFlight || player.isActivelyPlaying || (mainWindow.source?.speakBusy ?? false),
                                  designing: studio.designing,
-                                 followingVoiceover: studio.followingVoiceover,
+                                 followingVoiceover: studio.voiceover.following,
                                  recordingMeeting: meetings?.isRecording ?? false,
                                  recordingVoice: mainWindow.source?.recordingVoice ?? false)
     }
@@ -886,7 +886,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             speechRefusal: { UpdateGate.allowsNewDaemonWork(installing: self.updateInstalling) ? nil : L10nKey.noticeUpdatingSpeak.text },
             mainWindow: { [unowned self] in self.mainWindow.window },
-            stopSpeechPlayer: { [unowned self] in self.stopSpeechPlayback() })
+            stopSpeechPlayer: { [unowned self] in self.stopSpeechPlayback() },
+            voiceover: { [unowned self] in self.studio.voiceover })
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {
@@ -1213,6 +1214,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             openVoiceDesign: { [unowned self] in
                 self.mainWindow.show(MainRoute(section: .voices, meetingID: nil))
                 self.mainWindow.source?.openVoiceDesign()
+            },
+            windowVisible: { [unowned self] in
+                guard let window = self.mainWindow.window else { return false }
+                return window.isVisible && window.occlusionState.contains(.visible)
             })
     }
 
