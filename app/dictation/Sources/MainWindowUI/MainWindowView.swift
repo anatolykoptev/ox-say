@@ -6,6 +6,8 @@ public struct MainWindowView: View {
     @ObservedObject var model: MainWindowModel
     private let switchShown: Bool
     private let live: Set<MainSection>
+    /// Which of the two sidebar lists has the keyboard, so an arrow key that leaves one list can hand it to the other.
+    @FocusState private var focusedList: SidebarList?
 
     /// `switchShown` and `live` default to what this build ships; the screenshot harness passes more to draw the parts
     /// that are not live yet.
@@ -18,15 +20,25 @@ public struct MainWindowView: View {
 
     public var body: some View {
         NavigationSplitView {
-            // Settings sits apart at the bottom with the Advanced switch above it. The list answers only for its own
-            // rows (the binding is nil while Settings is the section), and the Settings row sizes to its content.
-            VStack(spacing: 0) {
-                sidebarList(topSections)
-                if switchShown { AdvancedSwitch(model: model) }
-                if sections.contains(.settings) { SettingsRow(model: model) }
-            }
-            .navigationSplitViewColumnWidth(min: MainWindowSpec.sidebarWidth.minimum, ideal: MainWindowSpec.sidebarWidth.ideal,
-                                            max: MainWindowSpec.sidebarWidth.maximum)
+            // The sections are one List; Settings is a one-row List under the Advanced switch, in the bottom inset. Both
+            // are bound to the model's one `section` (each answers only for its own rows), so the system draws the
+            // selection in either and never in both.
+            sidebarList(topSections, id: .sections)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    VStack(spacing: 0) {
+                        // The bar material and a hairline, as the bottom bar of Xcode's navigator has: before the
+                        // scroll-edge effect of macOS 26, the sections list scrolls under this area and must not show
+                        // through it.
+                        Divider()
+                        if switchShown { AdvancedSwitch(model: model) }
+                        if sections.contains(.settings) {
+                            OneRowList { sidebarList([.settings], id: .settings) }
+                        }
+                    }
+                    .background(.bar)
+                }
+                .navigationSplitViewColumnWidth(min: MainWindowSpec.sidebarWidth.minimum, ideal: MainWindowSpec.sidebarWidth.ideal,
+                                                max: MainWindowSpec.sidebarWidth.maximum)
         } detail: {
             page
                 // One recognisable window: "OxSay" is the title whichever page is up, the section is the subtitle.
@@ -41,7 +53,7 @@ public struct MainWindowView: View {
     private var sections: [MainSection] { MainWindowSpec.sections(advanced: model.advanced, live: live) }
     private var topSections: [MainSection] { sections.filter { $0 != .settings } }
 
-    private func sidebarList(_ rows: [MainSection]) -> some View {
+    private func sidebarList(_ rows: [MainSection], id: SidebarList) -> some View {
         List(rows, selection: binding(for: rows)) { section in
             Label {
                 Text(section.titleKey.text)
@@ -52,11 +64,38 @@ public struct MainWindowView: View {
             .tag(section)
         }
         .listStyle(.sidebar)
+        .focused($focusedList, equals: id)
+        // `onMoveCommand` never fires on a List (the table takes the arrow keys first; probed), `onKeyPress` does.
+        .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in move(.down, from: id, plain: SidebarArrow.isPlain(press.modifiers)) }
+        .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in move(.up, from: id, plain: SidebarArrow.isPlain(press.modifiers)) }
+    }
+
+    /// Down from the last section reaches Settings and up from Settings returns, as in Finder and Mail: the two lists
+    /// read as one. Every other arrow, every arrow inside a list and every arrow with a modifier is the list's own
+    /// (`.ignored`); the decision is `MainWindowSpec.sidebarMove`.
+    private func move(_ arrow: SidebarArrow, from list: SidebarList, plain: Bool) -> KeyPress.Result {
+        guard let hop = MainWindowSpec.sidebarMove(arrow, from: list, plain: plain, current: model.section, sections: sections) else {
+            return .ignored
+        }
+        model.section = hop.section
+        focusedList = hop.list
+        return .handled
     }
 
     private func binding(for rows: [MainSection]) -> Binding<MainSection?> {
         Binding(get: { rows.contains(model.section) ? model.section : nil },
-                set: { if let s = $0 { model.section = s } })
+                set: {
+                    if let s = $0 {
+                        model.section = s
+                    } else {
+                        // A deselect to nothing (Cmd-click on the selected row) is not a choice. The model does not
+                        // change, so nothing would redraw and the table would stay empty: ask for the getter again. The
+                        // setter can run inside a view update (Advanced turned off on an advanced section), where a
+                        // synchronous publish is SwiftUI's "Publishing changes from within view updates": send it on the
+                        // next run-loop turn.
+                        DispatchQueue.main.async { model.objectWillChange.send() }
+                    }
+                })
     }
 
     /// A recording that runs shows on the Meetings row, wherever the user is.
@@ -92,31 +131,29 @@ extension MainSection {
     }
 }
 
-/// Settings, drawn under the list as a plain row: it sizes to its content (no fixed height, so a larger sidebar or
-/// text size cannot clip it) and looks like a sidebar row. It is a button, so Space/Return and ⌘, reach it.
-struct SettingsRow: View {
-    @ObservedObject var model: MainWindowModel
+/// The one-row Settings list at the height its row needs. A List has no height of its own (`fixedSize` collapses it to 0),
+/// so the height is the row plus the room around it. `contentMargins` does not move the table's own 10 pt above the
+/// first row (probed), so `room` is that 10 pt plus 10 pt below: 4 pt more than the 6 pt measured on macOS 26, as slack for
+/// the row metrics of macOS 14 and 15, which were not measured. The Shots probe fails the run if the row is clipped.
+/// The row heights are the sidebar's for each icon size (System Settings > Appearance, passed down as `sidebarRowSize`):
+/// 24 / 32 / 40 pt, measured on macOS 26 only. An older system draws the same or smaller rows (no clipping, a little more
+/// air below); a row a few points larger still fits the slack, and the largest size is the fallback for a size not known yet.
+struct OneRowList<Rows: View>: View {
+    static var room: CGFloat { 20 }
+    @Environment(\.sidebarRowSize) private var rowSize
+    @ViewBuilder var rows: () -> Rows
 
-    private var selected: Bool { model.section == .settings }
+    private var rowHeight: CGFloat {
+        switch rowSize {
+        case .small: return 24
+        case .medium: return 32
+        case .large: return 40
+        @unknown default: return 40
+        }
+    }
 
     var body: some View {
-        Button { model.section = .settings } label: {
-            Label {
-                Text(MainSection.settings.titleKey.text)
-            } icon: {
-                Image(systemName: MainSection.settings.symbol)
-            }
-            .font(.system(size: 13))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 6).fill(selected ? Color.primary.opacity(0.12) : Color.clear))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 10)
-        .padding(.bottom, 10)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        rows().scrollDisabled(true).frame(height: rowHeight + Self.room)
     }
 }
 
