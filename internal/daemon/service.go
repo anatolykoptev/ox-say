@@ -54,6 +54,10 @@ type Daemon struct {
 	// when NotesBin is empty — a Config literal without notes settings.
 	LLMSup *engine.Supervisor
 
+	// mem makes the large engines (Sup, VoxSup, LLMSup) take turns on an Apple Silicon Mac with less memory than
+	// config.OneLargeEngineBelowGB; nil elsewhere, where every enter is a no-op (see residency).
+	mem *residency
+
 	// Meet takes recorded meetings through transcription and notes.
 	Meet *meeting.Runner
 	// Transcripts keeps file transcripts under $OX_SAY_HOME/transcripts; nil when the
@@ -306,6 +310,10 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 			return nil, err
 		}
 	}
+	if cfg.OneLargeEngine() {
+		d.mem = newResidency(logger, d.Sup, d.VoxSup, d.LLMSup)
+	}
+	logger.Info("large engine memory model", slog.String("mode", d.mem.mode()))
 	d.initMeetings()
 	d.initTranscripts()
 	if d.VoxSup != nil {
@@ -366,17 +374,23 @@ func (d *Daemon) replayVoices(ctx context.Context, baseURL string) error {
 	return firstErr
 }
 
-// engineBase acquires an in-flight guard and ensures the engine is ready.
-// On failure the guard is released inside the helper; on success the caller
-// owns g and must Release it when the request finishes.
-func (d *Daemon) engineBase(ctx context.Context) (base string, g *engine.Guard, err error) {
-	g = d.Sup.Acquire()
+// engineBase takes the fast voice's turn (see residency), acquires an in-flight
+// guard and ensures the engine is ready. On failure everything is released
+// inside the helper; on success the caller owns release and must call it when
+// the request finishes (guard first, then the turn).
+func (d *Daemon) engineBase(ctx context.Context) (base string, release func(), err error) {
+	leave, err := d.mem.enter(ctx, d.Sup, engineTurnBudget)
+	if err != nil {
+		return "", nil, err
+	}
+	g := d.Sup.Acquire()
 	base, err = d.Sup.EnsureReady(ctx)
 	if err != nil {
 		g.Release()
+		leave()
 		return "", nil, err
 	}
-	return base, g, nil
+	return base, func() { g.Release(); leave() }, nil
 }
 
 // sttServer is the Options.Server closure for the resident ox-stt server —
@@ -697,6 +711,12 @@ type statusSummary struct {
 	Voices     []voices.Voice `json:"voices"`
 	Config     map[string]any `json:"config"`
 	Version    string         `json:"version"`
+	// MemoryMode is how the large GPU engines share this Mac's memory:
+	// "one_large_engine" (the fast voice, the studio voice and the notes model
+	// take turns; Apple Silicon below config.OneLargeEngineBelowGB) or "shared"
+	// (all of them may be resident at once). The resident STT server is in
+	// neither: it is never stopped for another engine.
+	MemoryMode string `json:"memory_mode"`
 	// Busy counts in-flight work per lane; Idle holds only when every
 	// count is zero. A client about to restart the daemon — the app's
 	// version handshake — checks Idle first.
@@ -756,10 +776,11 @@ func (d *Daemon) Status() statusSummary {
 			"stt_vad_model":     d.Cfg.STTVADModel,
 			"tts_model":         d.Cfg.TTSModel,
 		},
-		Version:   version,
-		Busy:      busy,
-		Idle:      busy.idle(),
-		TTSFaults: ttsFaults{Runaways: d.runaways.Load(), StreamAborts: d.streamAborts.Load()},
+		Version:    version,
+		MemoryMode: d.mem.mode(),
+		Busy:       busy,
+		Idle:       busy.idle(),
+		TTSFaults:  ttsFaults{Runaways: d.runaways.Load(), StreamAborts: d.streamAborts.Load()},
 	}
 }
 

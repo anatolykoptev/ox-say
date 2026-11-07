@@ -644,6 +644,57 @@ func (s *Supervisor) blockedLocked(from uint64) bool {
 	return false
 }
 
+// Stop stops the engine now so its memory is free when Stop returns: the daemon calls it to make room for another
+// large engine. Unlike Shutdown it is not terminal (the next EnsureReady starts a fresh child), and unlike Recycle it
+// names no pid. It never kills a request: it waits, bounded by RecycleWait and ctx, until no Guard is held and no start
+// attempt is in flight (a Ready child is the only one it may stop), and an idle stop already under way is waited out,
+// because the process still holds its memory until it exits. On timeout it returns ErrRecycleBusy and leaves the child
+// alone; a supervisor that is shut down or has no child returns nil.
+func (s *Supervisor) Stop(ctx context.Context) error {
+	timer := time.NewTimer(s.cfg.RecycleWait)
+	defer timer.Stop()
+	s.mu.Lock()
+	s.recyclers++ // Guard.Release and finishStart wake a parked Stop
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.recyclers--
+		s.mu.Unlock()
+	}()
+	for {
+		s.mu.Lock()
+		c := s.child
+		if s.dead || (s.state != StateStarting && c == nil) {
+			s.mu.Unlock()
+			return nil
+		}
+		var exited <-chan struct{} // a stop already under way: wait for the process itself
+		if s.state != StateStarting && c.userStop {
+			exited = c.done
+		}
+		if s.state != StateStarting && exited == nil && s.guards == 0 {
+			c.userStop = true
+			s.state = StateStopped
+			s.failCount = 0 // a deliberate stop clears crash/start backoff
+			s.broadcastLocked()
+			s.mu.Unlock()
+			s.log.Info("engine stopped to free memory", slog.Int("pid", c.cmd.Process.Pid))
+			return s.recycleKill(ctx, c)
+		}
+		ch := s.change
+		s.mu.Unlock()
+		select {
+		case <-ch:
+		case <-exited:
+			return nil
+		case <-timer.C:
+			return ErrRecycleBusy
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 // recycleKill kills c in the background and waits for it, but gives up the
 // WAIT when ctx ends: the child still dies, only the caller stops waiting.
 func (s *Supervisor) recycleKill(ctx context.Context, c *child) error {
