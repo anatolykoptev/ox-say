@@ -19,7 +19,7 @@ final class SpeakTextTests: XCTestCase {
 
     func testTheStatusLineReadsRussian() {
         XCTAssertEqual(SpeakText.statusLine(editorText: "", ru), "Пока нет текста для чтения.")
-        XCTAssertEqual(SpeakText.statusLine(editorText: "Hello.", ru), "Символов: 6 · примерно 1 мин.")
+        XCTAssertEqual(SpeakText.statusLine(editorText: "Hello.", ru), "Символов: 6 · примерно 1 с")
         XCTAssertEqual(SpeakText.statusLine(editorText: String(repeating: "я", count: 8340), ru),
                        "Символов: 8340 · примерно 10 мин.")
         let over = String(repeating: "я", count: ScriptLimit.maxCharacters + 7)
@@ -28,7 +28,7 @@ final class SpeakTextTests: XCTestCase {
     }
 
     func testTheEnglishStatusLineKeepsTheStudioShape() {
-        XCTAssertEqual(SpeakText.statusLine(editorText: "Hello.", en), "6 characters · about 1 minute")
+        XCTAssertEqual(SpeakText.statusLine(editorText: "Hello.", en), "6 characters · about 1 sec")
         XCTAssertEqual(SpeakText.statusLine(editorText: String(repeating: "я", count: 8340), en),
                        "8340 characters · about 10 minutes")
     }
@@ -87,9 +87,9 @@ final class SpeakTextTests: XCTestCase {
     func testTheFinishTextReadsRussian() {
         XCTAssertEqual(SpeakText.finishText(job(.done, wav: "/x/ролик.wav"), ru), "Сохранено как ролик.wav.")
         XCTAssertEqual(SpeakText.finishText(job(.review, review: 1, wav: "/x/р.wav"), ru),
-                       "Сохранено как р.wav. Одна часть на прослушку — она в папке.")
+                       "Сохранено как р.wav. Одна часть на прослушку — она отмечена ниже.")
         XCTAssertEqual(SpeakText.finishText(job(.review, review: 3, wav: "/x/р.wav"), ru),
-                       "Сохранено как р.wav. Частей на прослушку: 3 — они в папке.")
+                       "Сохранено как р.wav. Частей на прослушку: 3 — они отмечены ниже.")
         XCTAssertNil(SpeakText.finishText(job(.cancelled), ru), "stopped on purpose: nothing to announce")
     }
 
@@ -119,9 +119,9 @@ final class SpeakTextTests: XCTestCase {
         XCTAssertEqual(SpeakText.finishText(job(.done, wav: "/x/r.wav"), en), "Saved as r.wav.")
         XCTAssertEqual(SpeakText.finishText(job(.done), en), "Saved as Voiceover.")
         XCTAssertEqual(SpeakText.finishText(job(.review, review: 1, wav: "/x/r.wav"), en),
-                       "Saved as r.wav. 1 part needs a listen — it is in the folder.")
+                       "Saved as r.wav. 1 part needs a listen — it is marked below.")
         XCTAssertEqual(SpeakText.finishText(job(.review, review: 3, wav: "/x/r.wav"), en),
-                       "Saved as r.wav. 3 parts need a listen — they are in the folder.")
+                       "Saved as r.wav. 3 parts need a listen — they are marked below.")
         XCTAssertEqual(SpeakText.finishText(job(.interrupted), ru),
                        "OxSay остановился во время работы. Запустите её снова кнопкой «Озвучить».")
         XCTAssertEqual(SpeakText.finishText(job(.interrupted), en),

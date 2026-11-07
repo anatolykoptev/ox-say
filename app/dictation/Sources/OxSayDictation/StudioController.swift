@@ -5,9 +5,6 @@ import DictationCore
 /// studio code never reaches into AppDelegate.
 struct StudioHost {
     var client: StudioClient
-    var speech: SpeechClient
-    /// The Russian voice pick of the Voice menu, preselected in the voiceover form.
-    var russianVoicePick: () -> String?
     /// Shows a modal alert over every app and returns the pressed button.
     var alert: (_ title: String, _ text: String, _ buttons: [String]) -> NSApplication.ModalResponse
     /// The pill of Studio task `task` with this text, or that task's end for nil. Each task has its own
@@ -28,20 +25,19 @@ struct StudioHost {
     var workEnded: () -> Void
     /// The Create a Voice menu row: the window opens on Voices with the describe-a-voice sheet up.
     var openVoiceDesign: () -> Void
+    /// The New Voiceover menu row: the window opens on Озвучка, where the text, a document and the voice are chosen.
+    var openSpeak: () -> Void
     /// The main window is on screen (shown, not minimised or covered).
     var windowVisible: () -> Bool
 }
 
-/// The Studio submenu: draws the rows StudioMenu decides, and runs the three
-/// flows behind them — a long voiceover and following it to the end; a new voice opens the window's sheet.
+/// The Studio submenu: draws the rows StudioMenu decides and runs what they do — stop and continue a voiceover, open
+/// its folder, follow it to the end. A new voiceover and a new voice open the window (Озвучка, the describe-a-voice sheet).
 final class StudioController: NSObject {
     let submenu = NSMenu()
     let host: StudioHost
     private var service = StudioMenu.ServiceState.unknown
     private var latestFolder: URL?
-    /// A document is being read: the menu row waits and the pill says so.
-    private var readingDocument = false
-    static let readingPillTask = "reading-document"
     /// The voiceover being followed; the window's Озвучка page starts and reads the same one.
     let voiceover: VoiceoverService
     /// Describe a voice: the window's sheet drives it, the menu row opens that sheet.
@@ -76,8 +72,7 @@ final class StudioController: NSObject {
         let folderExists = latestFolder.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
         let rows = StudioMenu.rows(
             service: service, installing: host.installing(), job: voiceover.job,
-            serviceWaiting: voiceover.serviceWaiting, hasOutputFolder: folderExists,
-            readingDocument: readingDocument)
+            serviceWaiting: voiceover.serviceWaiting, hasOutputFolder: folderExists)
         MenuRenderer.fill(submenu, rows: rows, target: self) { action in (#selector(choose(_:)), action) }
     }
 
@@ -94,7 +89,7 @@ final class StudioController: NSObject {
         guard let action = sender.representedObject as? MenuAction else { return }
         switch action {
         case .installStudioVoice: host.installStudioVoice()
-        case .newVoiceover: newVoiceover()
+        case .newVoiceover: host.openSpeak()
         case .stopVoiceover: stopVoiceover()
         case .continueOnBattery: continueOnBattery()
         case .openVoiceoversFolder: openFolder()
@@ -144,49 +139,6 @@ final class StudioController: NSObject {
     }
 
     // MARK: flows
-
-    private func newVoiceover() {
-        guard let file = StudioForms.chooseDocument() else { return }
-        Task { @MainActor [weak self] in
-            guard let self, let script = await self.readScript(file) else { return }
-            guard let voices = try? await self.host.speech.voices() else {
-                self.show(StudioDialogs.serviceDown())
-                return
-            }
-            let choices = StudioMenu.voiceChoices(voices: voices, russianPick: self.host.russianVoicePick())
-            let first = ReviewSheet.Result(title: StudioMenu.defaultTitle(fileName: file.lastPathComponent), script: script,
-                                           format: ProduceFormat.allCases[0], voice: choices.names[choices.selected])
-            // A start the daemon refuses reopens the sheet with the person's text, not the first cleaning.
-            // The service follows the job it starts.
-            _ = await ReviewRetry.run(first, review: { ReviewSheet(draft: $0, voiceNames: choices.names).run() },
-                start: { [voiceover = self.voiceover] draft in
-                    try await voiceover.start(script: draft.script, title: draft.title, voice: draft.voice, format: draft.format)
-                },
-                failed: { error in
-                    self.show(StudioDialogs.startFailed(error))
-                })
-        }
-    }
-
-    /// The cleaned text of the document, or nil after telling the person why there is none.
-    private func readScript(_ file: URL) async -> String? {
-        readingDocument = true
-        render()
-        host.pill(Self.readingPillTask, L10nKey.studioReadingPill.text)
-        defer {
-            readingDocument = false
-            render()
-            host.pill(Self.readingPillTask, nil)
-        }
-        do {
-            let read = try await DocumentReader.readScript(file)
-            if read.script.isEmpty { show(StudioDialogs.nothingToRead(read)) }
-            return read.script.isEmpty ? nil : read.script
-        } catch {
-            show(StudioDialogs.readFailed(error))
-            return nil
-        }
-    }
 
     private func stopVoiceover() {
         guard let job = voiceover.job else { return }

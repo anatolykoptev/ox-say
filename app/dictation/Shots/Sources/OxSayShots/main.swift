@@ -206,6 +206,28 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
             return i % 17 < 2 ? 0.06 : Float(min(1, phrase + 0.25 * abs(sin(Double(i) * 1.7))))
         }
     }
+    /// The phrases of a short reel: one with a mood, one left for a listen, one with three variants of which the second plays.
+    func reelChunks(_ ru: Bool) -> [ProduceChunkDetail] {
+        let words = ru
+            ? ["Привет! Это мой первый ролик.", "Сегодня расскажу, как озвучить текст за одну минуту.", "Выбирайте настроение для каждой фразы.", "Спасибо, что досмотрели до конца."]
+            : ["Hi! This is my first reel.", "Today I will show how to voice a text in one minute.", "Pick a mood for every phrase.", "Thank you for watching to the end."]
+        let files = ["a": "/x/a.wav", "b": "/x/b.wav", "c": "/x/c.wav"]
+        return [
+            ProduceChunkDetail(index: 0, paragraph: 0, text: words[0], style: Mood.warm.styleWord, status: .ok, pick: "a", takeKeys: ["a"], takeFiles: files),
+            ProduceChunkDetail(index: 1, paragraph: 1, text: words[1], status: .review, pick: "b", takeKeys: ["a", "b", "c"], takeFiles: files),
+            ProduceChunkDetail(index: 2, paragraph: 2, text: words[2], status: .ok, pick: "a", takeKeys: ["a"], takeFiles: files),
+            ProduceChunkDetail(index: 3, paragraph: 3, text: words[3], status: .ok, pick: "a", takeKeys: ["a"], takeFiles: files),
+        ]
+    }
+    /// A finished reel project with its phrases read, made with the given voice.
+    func speakPhrases(_ now: Date, _ ru: Bool, voice: String, status: ProduceStatus = .done, _ change: (inout SpeakValues) -> Void = { _ in }) -> MainWindowData {
+        speakProject(now, ru, { ProduceJob(id: $0, title: ru ? "Ролик: первый" : "Reel: the first one", status: status, outputPath: "/x/out.wav", durationS: 41) }) { v in
+            v.peaks = sampleBars()
+            v.phraseChunks = reelChunks(ru); v.phrasesFor = v.selectedID
+            v.projectVoices[v.selectedID ?? ""] = voice
+            change(&v)
+        }
+    }
     let siliconReason = "Studio voices (VoxCPM2) need a Mac with Apple Silicon; this computer cannot run them."
     func takes() -> [DesignTake] {
         (1...3).map { DesignTake(path: "/t/\($0).wav", durationSeconds: 6, suggestedName: "calm-narrator-\($0)",
@@ -287,6 +309,29 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                 v.projects = [ProduceJob(id: projectID(now, age: 120, "a1b2c3"), title: projectTitle(ru), status: .running, partsTotal: 5, partsDone: 1)]
                 v.phase = .failed(ru ? "Другая озвучка уже идёт. Дождитесь её конца и повторите." : "Another voiceover is already running. Wait for it to finish, then try again.")
             }
+        },
+        // Phrases: mood and variants on a designed voice; a new reel draft; a document over the cap; one phrase being remade;
+        // no mood chips on a cloned voice.
+        Scene(name: "speak-phrases", section: .speak, meeting: nil) { now, ru in
+            speakPhrases(now, ru, voice: "warm-narrator")
+        },
+        Scene(name: "speak-reel", section: .speak, meeting: nil) { now, ru in
+            speak(now, ru) { v in v.studio = .available; v.quality = .studio; v.reel = true }
+        },
+        Scene(name: "speak-document-too-long", section: .speak, meeting: nil) { now, ru in
+            speak(now, ru) { v in
+                v.studio = .available; v.quality = .studio
+                v.text = String(repeating: ru ? "Глава из документа, которая не помещается целиком.\n\n" : "A chapter from the document that does not fit whole.\n\n", count: 800)
+            }
+        },
+        Scene(name: "speak-phrase-regenerating", section: .speak, meeting: nil) { now, ru in
+            speakPhrases(now, ru, voice: "warm-narrator", status: .running) { v in
+                v.phraseWork = PhraseWork(project: v.selectedID ?? "", chunk: 1, kind: .variant)
+                v.projects[0].partsTotal = 4; v.projects[0].partsDone = 4
+            }
+        },
+        Scene(name: "speak-mood-hidden-on-clone", section: .speak, meeting: nil) { now, ru in
+            speakPhrases(now, ru, voice: "anna")
         },
         Scene(name: "dictation", section: .dictation, meeting: nil) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "voices-list", section: .voices, meeting: nil) { PreviewData.make(now: $0, ru: $1) },

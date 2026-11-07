@@ -33,12 +33,28 @@ public struct SpeakValues: Equatable {
     public var peaks: [Float]
     /// How far into the selected track the sound is, 0...1; moves only while it plays.
     public var playedFraction: Double
+    /// «Новый ролик»: the draft is a short video, so «Озвучить» sends the Reels preset (`NewReelPreset`).
+    public var reel: Bool
+    /// A document is being read into the editor.
+    public var reading: Bool
+    /// The chunks of the selected finished project (one read of `GET /v1/produce/{id}/chunks`) and the project they belong to.
+    public var phraseChunks: [ProduceChunkDetail]
+    public var phrasesFor: String?
+    /// The phrase the daemon is working on, nil when none.
+    public var phraseWork: PhraseWork?
+    /// The phrase whose take sounds now, nil when the track or nothing does.
+    public var playingPhrase: Int?
+    /// The voice each project of this session was started with (the daemon's summary does not name it): the mood chips
+    /// are drawn for a designed voice only (plan decision D8), and a project of an earlier session has none recorded.
+    public var projectVoices: [String: String]
 
     public init(text: String = "", voice: String? = nil, clips: [SpeakClip] = [],
                 selectedID: String? = nil, phase: SpeakPhase = .idle, reach: DaemonReach = .unknown,
                 playback: SpeakPlayback = .stopped, studio: StudioAvailability = .unknown, advanced: Bool = false,
                 quality: SpeakEngine = .fast, projects: [ProduceJob] = [], serviceWaiting: Bool = false,
-                trackMissing: Set<String> = [], peaks: [Float] = [], playedFraction: Double = 0) {
+                trackMissing: Set<String> = [], peaks: [Float] = [], playedFraction: Double = 0,
+                reel: Bool = false, reading: Bool = false, phraseChunks: [ProduceChunkDetail] = [], phrasesFor: String? = nil,
+                phraseWork: PhraseWork? = nil, playingPhrase: Int? = nil, projectVoices: [String: String] = [:]) {
         self.text = text
         self.voice = voice
         self.clips = clips
@@ -54,11 +70,29 @@ public struct SpeakValues: Equatable {
         self.trackMissing = trackMissing
         self.peaks = peaks
         self.playedFraction = playedFraction
+        self.reel = reel
+        self.reading = reading
+        self.phraseChunks = phraseChunks
+        self.phrasesFor = phrasesFor
+        self.phraseWork = phraseWork
+        self.playingPhrase = playingPhrase
+        self.projectVoices = projectVoices
         items = SpeakList.merge(projects: projects, clips: clips)
     }
 
     public var selectedClip: SpeakClip? { clips.first { $0.id == selectedID } }
     public var selectedProject: ProduceJob? { projects.first { $0.id == selectedID } }
+
+    /// The phrases of the selected project, ready to draw; empty until its chunks were read.
+    public var phrases: [PhraseRowValue] {
+        guard let job = selectedProject, phrasesFor == job.id else { return [] }
+        return PhraseEditing.rows(chunks: phraseChunks, jobRunning: !job.status.isTerminal)
+    }
+
+    /// The mood chips are drawn for the selected project (`PhraseEditing.showsMood`).
+    public func showsMood(voices: [VoiceEntry]) -> Bool {
+        PhraseEditing.showsMood(voice: selectedID.flatMap { projectVoices[$0] }, voices: voices, advanced: advanced)
+    }
 
     /// What the voice really uses: the studio voice only while it is chosen and can run.
     public var engine: SpeakEngine { SpeakStudio.engine(chosen: quality, studio: studio) }

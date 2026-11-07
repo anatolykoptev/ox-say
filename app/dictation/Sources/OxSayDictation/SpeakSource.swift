@@ -44,6 +44,10 @@ final class SpeakSource {
     /// The flag belongs to its request, so a superseded one never leaves it set.
     private var studioStart = StartingGate()
     private var startingStudio: Bool { studioStart.isActive(in: generation) }
+    /// Phrase reads: a read that lands after a newer one started is dropped.
+    private var phraseReads = Generation()
+    /// The track whose phrases are on screen or being read; a re-render rewrites the file, which changes the key.
+    private var phrasesKey: String?
     /// The scan of the waveform that is being read, cancelled when the selection moves on.
     private var waveformTask: Task<Void, Never>?
     /// Moves the playback cursor while a track sounds; nil otherwise.
@@ -60,6 +64,7 @@ final class SpeakSource {
             Task { @MainActor in
                 guard let self else { return }
                 self.model.data.speak.playback = .stopped
+                self.model.data.speak.playingPhrase = nil
                 self.perform(self.audio.finished())
             }
         }
@@ -121,6 +126,7 @@ final class SpeakSource {
             model.data.speak.selectedID = nil
         }
         ensureWaveform()
+        ensurePhrases()
     }
 
     private func record(answered: Bool) {
@@ -174,8 +180,65 @@ final class SpeakSource {
         model.data.speak.text = ""
         model.data.speak.selectedID = nil
         model.data.speak.phase = .idle
+        endReel()
         cancelWaveform()
         host.defaults.set("", forKey: Self.draftKey)
+    }
+
+    /// A reel is a draft, not a setting: leaving it drops the preset and puts «Качество» back to what the person saved.
+    private func endReel() {
+        guard model.data.speak.reel else { return }
+        model.data.speak.reel = false
+        model.data.speak.quality = host.defaults.string(forKey: Self.qualityKey).flatMap(SpeakEngine.init(rawValue:)) ?? .fast
+    }
+
+    /// «Новый ролик»: a new draft that is a short video; «Озвучить» sends the Reels preset. It only exists on the studio
+    /// voice, so the page switches «Качество» to it (the button is drawn only where the studio voice can run).
+    func newReel() {
+        guard model.data.speak.studio == .available else { return }
+        newText()
+        model.data.speak.reel = true
+        // The switch to the studio voice belongs to this draft; it is not saved as the person's «Качество».
+        model.data.speak.quality = .studio
+    }
+
+    /// «Оставить только начало» under the editor: the text that fits, ending where a paragraph or sentence ends.
+    func keepFirstPart() {
+        let text = ScriptLimit.keepFirstPart(model.data.speak.text)
+        model.data.speak.text = text
+        textChanged(text)
+    }
+
+    /// «Открыть документ…»: the picked file becomes the editor's text. Over the cap the page offers to keep the first part;
+    /// a file that gives no text, or cannot be read, says why in the notice and leaves the text as it was.
+    func openDocument(_ url: URL) {
+        guard !model.data.speak.reading, model.data.speak.phase.allowsSelection else { return }
+        model.data.speak.reading = true
+        // A file chosen in the importer is a security-scoped URL; the access lasts as long as the read.
+        let scoped = url.startAccessingSecurityScopedResource()
+        Task { @MainActor [weak self] in
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let read = try await DocumentReader.readScript(url)
+                guard let self else { return }
+                self.model.data.speak.reading = false
+                if read.script.isEmpty {
+                    self.model.data.notice = read.emptyMessage()
+                    return
+                }
+                self.stop()
+                self.stopClip()
+                self.model.data.speak.selectedID = nil
+                self.model.data.speak.phase = .idle
+                self.cancelWaveform()
+                self.model.data.speak.text = read.script
+                self.host.defaults.set(read.script, forKey: Self.draftKey)
+            } catch {
+                guard let self else { return }
+                self.model.data.speak.reading = false
+                self.model.data.notice = SpeakText.documentError(error) { $0.text }
+            }
+        }
     }
 
     func select(_ id: String) {
@@ -188,6 +251,7 @@ final class SpeakSource {
         guard let clip = model.data.speak.clips.first(where: { $0.id == id }) else { return }
         stop()
         stopClip()
+        endReel()
         model.data.speak.text = clip.text
         host.defaults.set(clip.text, forKey: Self.draftKey)
         model.data.speak.voice = SpeakVoice.existing(clip.voice, in: model.data.voices.voices)
@@ -199,11 +263,14 @@ final class SpeakSource {
     /// A studio project: the editor's text and voice stay as they are for the next «Новый текст».
     private func selectProject(_ id: String) {
         stopClip()
+        endReel()
         model.data.speak.selectedID = id
         model.data.speak.phase = .idle
         model.data.speak.trackMissing.remove(id)
+        phrasesKey = nil
         cancelWaveform()
         ensureWaveform()
+        ensurePhrases()
     }
 
     func qualityChanged(_ quality: SpeakEngine) {
@@ -254,7 +321,7 @@ final class SpeakSource {
     private func generateStudio() {
         let speak = model.data.speak
         guard SpeakInputCheck.problem(speak.text, engine: .studio, text: { $0.text }) == nil,
-              let start = SpeakStudio.start(text: speak.text) else { return }
+              let start = SpeakStudio.start(text: speak.text, reel: speak.reel) else { return }
         if let refusal = host.speechRefusal() {
             model.data.notice = refusal
             return
@@ -277,6 +344,7 @@ final class SpeakSource {
                 }
                 self.studioStart.end()
                 self.record(answered: true)
+                self.model.data.speak.projectVoices = SpeakStudio.rememberVoice(voice, for: job.id, in: self.model.data.speak.projectVoices)
                 self.model.data.speak.projects = SpeakList.overlay(projects: self.model.data.speak.projects, followed: job)
                 self.selectProject(job.id)
             } catch {
@@ -320,6 +388,8 @@ final class SpeakSource {
     /// ▶/⏸ on the item on screen: a clip, or the track of a finished project. Both go through `ClipAudio` and `perform`.
     func playPause() {
         guard let track = selectedTrack() else { return }
+        // The track's ▶ never pauses a phrase's take: it ends it and starts the track from the top.
+        if model.data.speak.playingPhrase != nil { stopClip() }
         perform(audio.playPause(recordingRunning: host.meetings()?.recordingElapsed != nil), track: track)
     }
 
@@ -351,6 +421,7 @@ final class SpeakSource {
     func stopClip() {
         perform(audio.stop())
         model.data.speak.playback = .stopped
+        model.data.speak.playingPhrase = nil
     }
 
     /// Carries out what `ClipAudio` decided, in order. `track` supplies the audio when the effects start it.
@@ -401,7 +472,7 @@ final class SpeakSource {
             guard positionTimer == nil else { return }
             let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
                 Task { @MainActor in
-                    guard let self, self.audio.sound == .playing else { return }
+                    guard let self, self.audio.sound == .playing, self.model.data.speak.playingPhrase == nil else { return }
                     self.model.data.speak.playedFraction = Waveform.fraction(time: self.player.currentTime, duration: self.player.duration)
                 }
             }
@@ -457,6 +528,149 @@ final class SpeakSource {
             let peaks: [Float]? = await withTaskCancellationHandler { await scan.value } onCancel: { scan.cancel() }
             guard let self, !Task.isCancelled, self.waveformReads.isCurrent(token) else { return }
             if let peaks { self.model.data.speak.peaks = peaks } else if let id { self.model.data.speak.trackMissing.insert(id) }
+        }
+    }
+
+    // MARK: phrases
+
+    /// The key of a finished project's track, the same one the waveform uses: it changes when the file is rewritten.
+    private func trackKey(of job: ProduceJob) -> String? {
+        guard job.status == .done || job.status == .review, let path = job.outputPath else { return nil }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        return SpeakTrack.key(projectID: job.id, path: path, modified: attributes?[.modificationDate] as? Date,
+                              size: (attributes?[.size] as? NSNumber)?.intValue)
+    }
+
+    /// Reads the chunks of the selected finished project once per track (and again after a re-render). While the project
+    /// runs the rows on screen stay as they are, and while a phrase is being worked on its own result lands instead.
+    private func ensurePhrases() {
+        let speak = model.data.speak
+        guard let job = speak.selectedProject, !PhraseEditing.isBusy(speak.phraseWork, project: job.id), let key = trackKey(of: job), key != phrasesKey else { return }
+        phrasesKey = key
+        let token = phraseReads.advance()
+        let client = host.client
+        Task { @MainActor [weak self] in
+            let chunks = try? await client.chunks(id: job.id)
+            guard let self, self.phraseReads.isCurrent(token) else { return }
+            guard let chunks else {
+                self.phrasesKey = nil
+                return
+            }
+            self.model.data.speak.phraseChunks = chunks
+            self.model.data.speak.phrasesFor = job.id
+        }
+    }
+
+    private func chunk(_ n: Int) -> ProduceChunkDetail? {
+        model.data.speak.phraseChunks.first { $0.index == n }
+    }
+
+    /// ▶ on a phrase: its picked take sounds; ▶ again ends it. A missing file says so instead of staying silent.
+    func playPhrase(_ n: Int) {
+        guard let chunk = chunk(n), model.data.speak.selectedProject != nil else { return }
+        if model.data.speak.playingPhrase == n {
+            stopClip()
+            return
+        }
+        guard let path = PhraseEditing.takeFile(of: chunk), FileManager.default.fileExists(atPath: path) else {
+            model.data.notice = L10nKey.speakPhraseFileMissing.text
+            return
+        }
+        stopClip()
+        model.data.speak.playingPhrase = n
+        model.data.speak.playedFraction = 0
+        perform(audio.start(recordingRunning: host.meetings()?.recordingElapsed != nil), track: {
+            try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
+        })
+        if audio.sound != .playing { model.data.speak.playingPhrase = nil }
+    }
+
+    /// «Ещё вариант» on a phrase: one more variant of that phrase only, and it becomes the one that plays. The daemon renders
+    /// it as a job, so the order (ask, wait, read, pick, wait, read) is `PhraseRegeneration`'s.
+    func anotherVariant(_ n: Int) {
+        guard let known = chunk(n)?.takeKeys else { return }
+        phraseOperation(chunk: n, kind: .variant) { [voiceover = self.voiceover] client, id in
+            try await PhraseRegeneration.run(chunk: n, known: known, steps: PhraseRegeneration.Steps(
+                regenerate: { chunk in try await client.regenerate(id: id, chunk: chunk, takes: 1) },
+                waitUntilIdle: { try await voiceover.followAndWait(id: id) },
+                chunks: { try await client.chunks(id: id) },
+                pick: { chunk, key in try await client.pick(id: id, chunk: chunk, take: key) }))
+        }
+    }
+
+    /// «Выбрать другой вариант»: the next variant the phrase already has.
+    func pickOtherVariant(_ n: Int) {
+        guard let chunk = chunk(n), chunk.takeKeys.count > 1,
+              let next = PhraseEditing.nextPick(current: chunk.pick, keys: chunk.takeKeys) else { return }
+        phraseOperation(chunk: n, kind: .pick) { [voiceover = self.voiceover] client, id in
+            try await client.pick(id: id, chunk: n, take: next)
+            try await voiceover.followAndWait(id: id)
+            return try await client.chunks(id: id)
+        }
+    }
+
+    /// A mood chip: only this phrase is rendered again (`POST …/delivery` with one entry).
+    func setMood(_ n: Int, _ mood: Mood?) {
+        guard let current = chunk(n) else { return }
+        let unchanged = mood == nil ? current.style == nil : PhraseEditing.mood(of: current.style) == mood
+        guard !unchanged else { return }
+        phraseOperation(chunk: n, kind: .mood) { [voiceover = self.voiceover] client, id in
+            try await client.deliver(id: id, entries: [PhraseEditing.deliveryEntry(chunk: n, mood: mood)], loudness: nil)
+            try await voiceover.followAndWait(id: id)
+            return try await client.chunks(id: id)
+        }
+    }
+
+    /// «Править текст…»: the phrase's words are replaced and only that phrase is rendered again.
+    func editPhraseText(_ n: Int, _ text: String) {
+        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty, words != chunk(n)?.text else { return }
+        phraseOperation(chunk: n, kind: .text) { [voiceover = self.voiceover] client, id in
+            try await client.editText(id: id, chunk: n, text: words)
+            try await voiceover.followAndWait(id: id)
+            return try await client.chunks(id: id)
+        }
+    }
+
+    /// One change to one phrase of the selected project. Every one of them is refused by the daemon while the project runs
+    /// (`PhraseEditing.canEditText`), so the page does not send it; a second one waits for the first. The phrase's row says
+    /// what is being done until the project has ended, then the chunks are read again.
+    private func phraseOperation(chunk n: Int, kind: PhraseWork.Kind,
+                                 _ body: @escaping (StudioClient, String) async throws -> [ProduceChunkDetail]) {
+        guard let job = model.data.speak.selectedProject, !PhraseEditing.isBusy(model.data.speak.phraseWork, project: job.id),
+              PhraseEditing.canEditText(status: job.status) else { return }
+        // The daemon works on one project at a time: a change to this one while another is being changed would be refused.
+        guard model.data.speak.phraseWork == nil else {
+            model.data.notice = StudioError.voiceoverRunning.message()
+            return
+        }
+        if let refusal = host.speechRefusal() {
+            model.data.notice = refusal
+            return
+        }
+        // A take that sounds would go on playing the old audio while it is being replaced.
+        stopClip()
+        model.data.speak.phraseWork = PhraseWork(project: job.id, chunk: n, kind: kind)
+        let client = host.client
+        Task { @MainActor [weak self] in
+            do {
+                let chunks = try await body(client, job.id)
+                guard let self else { return }
+                self.model.data.speak.phraseWork = nil
+                // The person may have moved to another project meanwhile: its phrases are not replaced by these.
+                if self.model.data.speak.selectedID == job.id {
+                    self.model.data.speak.phraseChunks = chunks
+                    self.model.data.speak.phrasesFor = job.id
+                }
+                // The track was rewritten: its bars and its key are read again.
+                self.phrasesKey = nil
+                self.refreshProjects()
+            } catch {
+                guard let self else { return }
+                self.model.data.speak.phraseWork = nil
+                self.model.data.notice = SpeakText.notice(error) { $0.text }
+                self.refreshProjects()
+            }
         }
     }
 

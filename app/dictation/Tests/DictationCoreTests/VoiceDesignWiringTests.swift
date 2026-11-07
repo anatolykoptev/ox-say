@@ -140,9 +140,6 @@ final class VoiceDesignWiringTests: XCTestCase {
         for forbidden in ["host.alert", "runModal", "NSAlert", "designForm"] {
             XCTAssertFalse(designer.contains(forbidden), forbidden)
         }
-        let forms = try source("OxSayDictation/StudioForms.swift")
-        XCTAssertFalse(forms.contains("NSAlert"))
-        XCTAssertFalse(forms.contains("designForm"))
         let controller = try source("OxSayDictation/StudioController.swift")
         XCTAssertTrue(controller.contains("case .createVoice: host.openVoiceDesign()"))
     }
