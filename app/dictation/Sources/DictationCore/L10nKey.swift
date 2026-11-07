@@ -733,6 +733,7 @@ public enum L10nKey: String, CaseIterable {
     case speakProjectInterrupted = "speak.project_interrupted"
     case speakStudioBusy = "speak.studio.busy"
     case speakStudioNeedsVoice = "speak.studio.needs_voice"
+    case speakEngineBusy = "speak.engine_busy"
     // Озвучка: the reel preset, the phrase list with mood and variants.
     case speakNewReel = "speak.new_reel"
     case speakReelHint = "speak.reel_hint"

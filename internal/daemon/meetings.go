@@ -346,6 +346,7 @@ func (d *Daemon) initMeetings() {
 			return d.Transcribe(ctx, TranscribeInput{AudioPath: wav})
 		},
 		Chat:       llmChat{d: d},
+		NotesTurn:  func(ctx context.Context) (func(), error) { return d.mem.enter(ctx, d.LLMSup, 0) },
 		NotesReady: func() string { code, _ := d.Cfg.NotesBlock(); return code },
 		TranscribeReady: func() string {
 			if _, err := os.Stat(d.Cfg.STTModel); err != nil {

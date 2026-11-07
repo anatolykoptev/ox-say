@@ -190,6 +190,167 @@ func TestSmallMemoryStreamedFastVoiceEvictsTheStudioVoice(t *testing.T) {
 	if alive(voxPid) {
 		t.Fatalf("studio voice child %d survived a streamed fast-voice request", voxPid)
 	}
+	// The request is over: its turn is released (engineBase's returned release), so the studio voice can claim it.
+	// Mutation: service.go engineBase, delete `leave()` from the returned `func() { g.Release(); leave() }` -> the use
+	// count stays 1 and the studio voice is refused until a restart -> RED.
+	if n := d.usesInFlight(); n != 0 {
+		t.Fatalf("%d uses still counted after the streamed request completed: the turn leaked", n)
+	}
+	requireClaim(t, d)
+}
+
+// requireClaim: the studio voice gets its turn within a short budget.
+func requireClaim(t *testing.T, d *Daemon) {
+	t.Helper()
+	old := engineTurnBudget
+	engineTurnBudget = 500 * time.Millisecond
+	defer func() { engineTurnBudget = old }()
+	if err := voxSpeak(context.Background(), d); err != nil {
+		t.Fatalf("the studio voice could not claim a turn that should be free: %v", err)
+	}
+}
+
+// An EnsureReady failure inside engineBase releases the turn too.
+// Mutation: service.go engineBase, delete the `leave()` after `g.Release()` on the EnsureReady-failure path -> the use
+// count stays 1 -> RED.
+func TestSmallMemoryFailedFastVoiceStartFreesTheTurn(t *testing.T) {
+	d := smallMemDaemon(t, 16)
+	d.Sup.Shutdown() // EnsureReady now fails with ErrShutdown
+	if _, _, err := d.engineBase(context.Background()); err == nil {
+		t.Fatal("engineBase on a shut-down engine succeeded")
+	}
+	if n := d.usesInFlight(); n != 0 {
+		t.Fatalf("%d uses still counted after a failed start: the turn leaked", n)
+	}
+	requireClaim(t, d)
+}
+
+// A panic while making room (here: in the stop) must not leave the claim behind: the next request still gets its turn.
+// Mutation: residency.go settle, delete the deferred rollback (`defer func() {...}()` block) -> n stays 1 and active
+// stays set, the next claim parks until the budget -> RED.
+func TestSmallMemoryPanicWhileMakingRoomRollsTheClaimBack(t *testing.T) {
+	d := smallMemDaemon(t, 16)
+	d.mem.stop = func(context.Context, *engine.Supervisor) error { panic("stop exploded") }
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = d.mem.enter(context.Background(), d.VoxSup, 0)
+	}()
+	d.mem.stop = nil
+	if n := d.usesInFlight(); n != 0 {
+		t.Fatalf("a panic in the stop left %d uses claimed", n)
+	}
+	leave, err := d.mem.enter(withShortDeadline(t, 2*time.Second), d.Sup, 0)
+	if err != nil {
+		t.Fatalf("the arbiter stayed wedged after a panic: %v", err)
+	}
+	leave()
+}
+
+func withShortDeadline(t *testing.T, d time.Duration) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// The producer holds the studio voice's turn for the whole job (the Turn port): a fast-voice request between two takes
+// is refused with the busy answer and VoxCPM2 is never evicted, so the next take pays no cold start.
+// Mutation: produce_wire.go producePorts, make `turn` return `func() {}, nil` (no claim) -> the fast voice evicts the
+// studio voice between the takes -> RED.
+func TestSmallMemoryProducerJobTurnSurvivesAFastVoiceBetweenTakes(t *testing.T) {
+	d := smallMemDaemon(t, 16)
+	ports := d.producePorts()
+	release, err := ports.Turn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			release()
+		}
+	}()
+	take := func() *engineUse {
+		ctx, use := withEngineUse(context.Background())
+		if _, err := ports.Render(ctx, renderParams{Text: "hello there", Seed: 1, Cfg: 2, Steps: 10}); err != nil {
+			t.Fatalf("take: %v", err)
+		}
+		return use
+	}
+	take()
+	voxPid := d.VoxSup.Status().PID
+	old := engineTurnBudget
+	engineTurnBudget = 300 * time.Millisecond
+	err = fastSpeak(t, d) // lands between two takes
+	engineTurnBudget = old
+	var busy *engineBusyError
+	if !errors.As(err, &busy) {
+		t.Fatalf("a fast voice between two takes = %v, want the busy answer", err)
+	}
+	if !alive(voxPid) {
+		t.Fatal("the studio voice was evicted between two takes of one job")
+	}
+	take()
+	if got := d.VoxSup.Status().PID; got != voxPid {
+		t.Fatalf("the second take ran on a new child %d (was %d): a cold start", got, voxPid)
+	}
+	release()
+	released = true
+	if err := fastSpeak(t, d); err != nil {
+		t.Fatalf("fast voice after the job ended: %v", err)
+	}
+}
+
+// The notes job's claim (Runner.NotesTurn, wired in initMeetings) holds the notes model's turn: a voice request while it
+// is held gets the busy answer; after the release it is served.
+// Mutation: meetings.go initMeetings, make NotesTurn return `func() {}, nil` -> the fast voice is served (and would
+// evict the model) while the job holds its turn -> RED.
+func TestSmallMemoryNotesJobTurnIsWired(t *testing.T) {
+	d := smallMemDaemon(t, 16)
+	release, err := d.Meet.NotesTurn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := engineTurnBudget
+	engineTurnBudget = 300 * time.Millisecond
+	err = fastSpeak(t, d)
+	engineTurnBudget = old
+	var busy *engineBusyError
+	if !errors.As(err, &busy) {
+		release()
+		t.Fatalf("a fast voice during a notes job = %v, want the busy answer", err)
+	}
+	release()
+	if err := fastSpeak(t, d); err != nil {
+		t.Fatalf("fast voice after the notes job: %v", err)
+	}
+}
+
+// A voice save's long preparation must not hold up another engine's turn: the idle-only guard across Prepare does not
+// block Stop, while the engine survives the idle loop (TestAddVoicePrepareHoldsGuard).
+// Mutation: service.go addVoice, `d.Sup.AcquireIdleOnly()` -> `d.Sup.Acquire()` -> Stop waits for the preparation and
+// the bounded wait ends -> RED.
+func TestSmallMemoryVoiceSavePreparationDoesNotBlockAnotherEnginesTurn(t *testing.T) {
+	d := smallMemDaemon(t, 16)
+	if err := fastSpeak(t, d); err != nil {
+		t.Fatal(err)
+	}
+	src := testutil.WriteTinyWAV(t, t.TempDir(), "clip.wav")
+	preparing, finish := make(chan struct{}), make(chan struct{})
+	d.slowPrepare = func() { close(preparing); <-finish }
+	addDone := make(chan error, 1)
+	go func() { _, _, err := d.AddVoice(context.Background(), "ben", src, "ref words"); addDone <- err }()
+	<-preparing
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := d.Sup.Stop(ctx)
+	close(finish)
+	if e := <-addDone; e != nil {
+		t.Fatal(e)
+	}
+	if err != nil {
+		t.Fatalf("Stop waited on a voice save's preparation: %v", err)
+	}
 }
 
 // A request is never cut: while the studio voice renders, a fast-voice request waits its turn, gives up after the
@@ -214,14 +375,17 @@ func TestSmallMemoryNeverStopsAnEngineMidRequest(t *testing.T) {
 	if !errors.As(err, &busy) {
 		t.Fatalf("fast voice during a render = %v, want the typed engineBusyError", err)
 	}
-	if !errors.Is(err, errEngineStart) || synthStatus(err) != http.StatusServiceUnavailable {
-		t.Fatalf("busy error must map to 503, got status %d", synthStatus(err))
+	if errors.Is(err, errEngineStart) || synthStatus(err) != http.StatusServiceUnavailable {
+		t.Fatalf("busy is a 503 of its own, not an engine-start failure: is-start %v status %d", errors.Is(err, errEngineStart), synthStatus(err))
 	}
 	if el := time.Since(start); el > 5*time.Second {
 		t.Fatalf("the bounded wait took %s", el)
 	}
 	if gone(voxPid) {
 		t.Fatal("the studio voice was stopped while it was rendering")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "retry") || !strings.Contains(msg, "studio voice") {
+		t.Fatalf("an agent reading this must learn what is busy and that a retry works: %q", msg)
 	}
 	rec := httptest.NewRecorder()
 	writeSynthErr(rec, err)
@@ -371,5 +535,20 @@ func TestSmallMemoryRefusesToStartWhenTheOtherEngineCannotStop(t *testing.T) {
 	}
 	if n := d.usesInFlight(); n != 0 {
 		t.Fatalf("a failed claim left %d uses counted", n)
+	}
+}
+
+// The voice-design routes keep the typed busy body (the app keys on the code, not the words).
+// Mutation: http.go writeErrOrBusy, delete the busy branch -> the body has no code -> RED.
+func TestBusyKeepsItsTypedBodyOnTheDesignRoutes(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeErrOrBusy(rec, &engineBusyError{err: context.DeadlineExceeded}, "scrubbed text")
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"code":"`+engineBusyCode+`"`) {
+		t.Fatalf("busy answer = %d %s", rec.Code, rec.Body.String())
+	}
+	plain := httptest.NewRecorder()
+	writeErrOrBusy(plain, errors.New("x"), "scrubbed text")
+	if plain.Code != http.StatusInternalServerError || strings.Contains(plain.Body.String(), engineBusyCode) {
+		t.Fatalf("any other error keeps its old shape: %d %s", plain.Code, plain.Body.String())
 	}
 }

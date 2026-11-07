@@ -85,6 +85,17 @@ func writeSynthErr(w http.ResponseWriter, err error) {
 	writeErr(w, synthStatus(err), err.Error())
 }
 
+// writeErrOrBusy is writeErr for a synthesis error, except that the memory-busy refusal keeps its typed body
+// (engine_busy_memory), which the app keys on instead of the words.
+func writeErrOrBusy(w http.ResponseWriter, err error, msg string) {
+	var busy *engineBusyError
+	if errors.As(err, &busy) {
+		writeSynthErr(w, err)
+		return
+	}
+	writeErr(w, synthStatus(err), msg)
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

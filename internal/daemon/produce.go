@@ -415,15 +415,33 @@ func (p *producer) runChunks(j *job, start time.Time) error {
 		return err
 	}
 	tk := &taker{ports: p.ports, dir: filepath.Join(j.dir, vproject.TakesDir), quiet: p.quiet(j)}
-	for i := range specs {
-		if err := p.checkpoint(j); err != nil {
-			return err
+	return p.holdTurn(j, func() error {
+		for i := range specs {
+			if err := p.checkpoint(j); err != nil {
+				return err
+			}
+			if err := p.runChunk(j, tk, i, specs[i], start); err != nil {
+				return err
+			}
 		}
-		if err := p.runChunk(j, tk, i, specs[i], start); err != nil {
-			return err
+		return nil
+	})
+}
+
+// holdTurn runs fn holding the studio voice's turn among the large engines for the whole job, so a fast-voice request
+// or a notes call between two takes neither evicts the engine (a ~14 s cold start per take) nor eats a take's render
+// deadline waiting for it: it waits at the busy answer instead. The turn is released on every way out of fn,
+// a panic included. Its wait is cut by a cancel like any wait of the job.
+func (p *producer) holdTurn(j *job, fn func() error) error {
+	release, err := p.ports.Turn(j.ctx)
+	if err != nil {
+		if j.cancel.Load() {
+			return errCancelled
 		}
+		return fmt.Errorf("the studio voice could not take its turn: %w", err)
 	}
-	return nil
+	defer release()
+	return fn()
 }
 
 // runChunk renders attempts until Takes passing takes exist (or 3

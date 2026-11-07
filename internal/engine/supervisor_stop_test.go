@@ -100,3 +100,49 @@ func TestStopAfterShutdownIsANoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An idle-only guard keeps the idle loop off the child but does not hold Stop; a hard guard does.
+// Mutation: supervisor.go Stop, `s.guards-s.softGuards == 0` -> `s.guards == 0` -> Stop waits for the idle-only guard
+// -> RED. supervisor.go Release, drop the `softGuards--` -> a later Stop keeps counting a released guard -> RED.
+func TestStopDoesNotWaitForAnIdleOnlyGuard(t *testing.T) {
+	sup := recycleSup(t, 200*time.Millisecond)
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g := sup.AcquireIdleOnly()
+	if err := sup.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop with only an idle-only guard held: %v", err)
+	}
+	g.Release()
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	hard := sup.Acquire()
+	defer hard.Release()
+	if err := sup.Stop(context.Background()); !errors.Is(err, ErrRecycleBusy) {
+		t.Fatalf("Stop with a hard guard (after an idle-only one was released) = %v, want ErrRecycleBusy", err)
+	}
+}
+
+// The idle loop does honour an idle-only guard.
+func TestIdleOnlyGuardKeepsTheIdleLoopOff(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	sup := newTestSupervisor(t, dir, func(c *Config) { c.IdleStop = 150 * time.Millisecond; c.IdleTick = 20 * time.Millisecond })
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g := sup.AcquireIdleOnly()
+	time.Sleep(600 * time.Millisecond)
+	if st := sup.State(); st != StateReady {
+		t.Fatalf("state under an idle-only guard = %s, want ready", st)
+	}
+	g.Release()
+	deadline := time.Now().Add(5 * time.Second)
+	for sup.State() != StateStopped && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if sup.State() != StateStopped {
+		t.Fatal("the idle loop never stopped the child after the guard was released")
+	}
+}

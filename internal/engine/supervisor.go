@@ -163,6 +163,7 @@ type Supervisor struct {
 	nextAttempt   time.Time
 	lastActivity  time.Time // last Ready commit or Guard release
 	guards        int
+	softGuards    int                 // the part of guards taken by AcquireIdleOnly: Stop does not wait for these
 	held          map[*Guard]struct{} // guards in flight, for Recycle's age rule
 	sendSeq       uint64              // last send stamp handed out by Guard.MarkSent
 	recyclers     int                 // Recycle calls waiting for guards to drain; Release wakes them
@@ -518,6 +519,7 @@ type Guard struct {
 	s    *Supervisor
 	once sync.Once
 	sent uint64 // send stamp; 0: the request has not been written to the child yet (under s.mu)
+	soft bool   // taken by AcquireIdleOnly
 }
 
 // MarkSent stamps the guard with the next send number and returns it. Call it
@@ -555,10 +557,26 @@ func (s *Supervisor) Acquire() *Guard {
 	return g
 }
 
+// AcquireIdleOnly takes a guard that only keeps the idle loop from stopping the child: it is for work that merely
+// prefers the child to stay up (a slow voice save that registers into it at the end), not work the child is serving.
+// Stop, the daemon's make-room-for-another-engine stop, does not wait for it, so a long preparation cannot hold up
+// another engine's turn. Recycle still waits for it.
+func (s *Supervisor) AcquireIdleOnly() *Guard {
+	g := s.Acquire()
+	s.mu.Lock()
+	g.soft = true
+	s.softGuards++
+	s.mu.Unlock()
+	return g
+}
+
 // Release returns the guard; idle accounting restarts now.
 func (g *Guard) Release() {
 	g.once.Do(func() {
 		g.s.mu.Lock()
+		if g.soft {
+			g.s.softGuards--
+		}
 		g.s.guards--
 		delete(g.s.held, g)
 		g.s.lastActivity = time.Now()
@@ -672,7 +690,7 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 		if s.state != StateStarting && c.userStop {
 			exited = c.done
 		}
-		if s.state != StateStarting && exited == nil && s.guards == 0 {
+		if s.state != StateStarting && exited == nil && s.guards-s.softGuards == 0 {
 			c.userStop = true
 			s.state = StateStopped
 			s.failCount = 0 // a deliberate stop clears crash/start backoff

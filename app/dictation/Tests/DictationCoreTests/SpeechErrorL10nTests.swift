@@ -250,6 +250,23 @@ final class SpeechErrorL10nTests: XCTestCase {
         } catch { XCTFail("\(error)") }
     }
 
+    /// The speech client path: a 503 with code `engine_busy_memory` is the busy sentence, not "engine not ready".
+    /// Mutation: SpeechClient.failure, replace `isEnginesBusy(body: body) ? .enginesBusy : .engineUnavailable` with
+    /// `.engineUnavailable` -> RED.
+    func testAMemoryBusy503BecomesTheBusySentenceNotTheEngineNotReadyOne() async {
+        let busy = #"{"error":{"message":"Another voice or notes engine is using this Mac's memory","type":"engine_busy_memory","code":"engine_busy_memory"}}"#
+        let client = SpeechClient { req in (Data(busy.utf8), HTTPURLResponse(url: req.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!) }
+        do {
+            _ = try await client.speak("hi")
+            XCTFail("a 503 must throw")
+        } catch let error as SpeechError {
+            XCTAssertEqual(error, .enginesBusy)
+            XCTAssertEqual(error.message(text: ru), "Сейчас готовится другая озвучка или заметки встречи. Подождите, пока она закончится.")
+            XCTAssertEqual(error.message(text: en), "Another voiceover or meeting notes are being made right now. Please wait until it finishes.")
+            XCTAssertNotEqual(error.message(text: ru), SpeechError.engineUnavailable.message(text: ru))
+        } catch { XCTFail("\(error)") }
+    }
+
     // MARK: the log keeps a body private
 
     /// Mutation: LogDetail.publicText, return `e.description` for `.http` -> RED.

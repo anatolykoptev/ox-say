@@ -42,4 +42,35 @@ final class SpeakStudioErrorTests: XCTestCase {
         XCTAssertNotEqual(StudioError.voiceoverRunning.message(text: ShippedStrings.localizer("ru")),
                           StudioError.voiceoverRunning.message(text: ShippedStrings.localizer("en")))
     }
+
+    // MARK: the memory-busy refusal (internal/daemon/residency.go engineBusyCode)
+
+    private let busyBody = #"{"error":{"message":"Another voice or notes engine is using this Mac's memory","type":"engine_busy_memory","code":"engine_busy_memory"}}"#
+
+    /// Mutation: StudioClient.refusal, delete the `SpeechClient.isEnginesBusy` line -> a plain `.refused` carrying the
+    /// daemon's English words -> RED.
+    func testTheMemoryBusyAnswerIsRecognisedByItsCodeNotByItsWords() {
+        XCTAssertEqual(StudioClient.refusal(status: 503, body: body(busyBody)), .enginesBusy)
+        // Other words, same code: still busy. The same words without the code, or another status: not.
+        XCTAssertEqual(StudioClient.refusal(status: 503, body: body(#"{"error":{"message":"x","code":"engine_busy_memory"}}"#)), .enginesBusy)
+        XCTAssertEqual(StudioClient.refusal(status: 503, body: body(#"{"error":{"message":"Another voice or notes engine is using this Mac's memory"}}"#)),
+                       .refused(status: 503, message: PlainWords.clean("Another voice or notes engine is using this Mac's memory", fallback: "")))
+        XCTAssertNotEqual(StudioClient.refusal(status: 500, body: body(busyBody)), .enginesBusy)
+    }
+
+    /// Mutation: SpeakText.notice or StudioError.message, drop the `.enginesBusy` case's key (use the generic line) -> RED.
+    func testTheMemoryBusySentenceIsPlainInBothLanguagesAndNeverTheDaemonsEnglish() {
+        for lang in ["en", "ru"] {
+            let t = ShippedStrings.localizer(lang)
+            let sentence = StudioError.enginesBusy.message(text: t)
+            XCTAssertEqual(sentence, SpeakText.notice(StudioError.enginesBusy, t))
+            XCTAssertEqual(sentence, t(.speakEngineBusy))
+            XCTAssertFalse(sentence.contains("503"))
+            XCTAssertNotEqual(sentence, StudioError.enginesBusy.description)
+        }
+        XCTAssertEqual(StudioError.enginesBusy.message(text: ShippedStrings.localizer("ru")),
+                       "Сейчас готовится другая озвучка или заметки встречи. Подождите, пока она закончится.")
+        XCTAssertEqual(StudioError.enginesBusy.message(text: ShippedStrings.localizer("en")),
+                       "Another voiceover or meeting notes are being made right now. Please wait until it finishes.")
+    }
 }

@@ -463,7 +463,11 @@ func (d *Daemon) addVoice(ctx context.Context, name, audioPath, refText string, 
 	// wait (the start goroutine runs Replay, which takes voiceMu, with s.mu
 	// released), so taking it before or after voiceMu cannot form a cycle
 	// (#310.3). RemoveVoice takes them in the other order for that reason.
-	g := d.Sup.Acquire()
+	// Across Prepare (a transcription, up to 60 s) the guard only keeps the idle loop off the child, so it is the
+	// idle-only kind: with a hard guard a studio-voice turn, which stops this engine, would wait out the whole
+	// preparation (a busy answer at 10 s, a failed take at 30 s). If the engine is stopped for another one meanwhile,
+	// the voice is still stored and the next start replays it. The registration itself takes a hard guard below.
+	g := d.Sup.AcquireIdleOnly()
 	defer g.Release()
 	if d.slowPrepare != nil {
 		d.slowPrepare()
@@ -504,6 +508,8 @@ func (d *Daemon) addVoice(ctx context.Context, name, audioPath, refText string, 
 	// child that is past /health but still inside its start attempt
 	// (mid-replay): skipping it would strand a voice that replay's
 	// snapshot already missed.
+	rg := d.Sup.Acquire() // the registration is a request the child is serving: Stop waits for it
+	defer rg.Release()
 	if base, ok := d.Sup.LiveURL(); ok {
 		if rerr := d.ec.RegisterVoice(ctx, base, v.Name, d.Store.WAVPath(v.Name), v.RefText); rerr != nil {
 			d.log.Warn("voice stored but engine registration failed; it will be replayed on next start",

@@ -32,6 +32,7 @@ type portFuncs struct {
 	quiet          func(context.Context, func()) error
 	power          func(context.Context) (bool, bool)
 	background     func(bool)
+	turn           func(context.Context) (func(), error)
 	recycle        func(context.Context, int, uint64)
 	home           func() string
 	outputRoot     func() string
@@ -55,6 +56,7 @@ func (f *portFuncs) Normalize(ctx context.Context, in, out string, lufs, dur flo
 func (f *portFuncs) Quiet(ctx context.Context, onWait func()) error { return f.quiet(ctx, onWait) }
 func (f *portFuncs) Power(ctx context.Context) (bool, bool)         { return f.power(ctx) }
 func (f *portFuncs) Background(on bool)                             { f.background(on) }
+func (f *portFuncs) Turn(ctx context.Context) (func(), error)       { return f.turn(ctx) }
 func (f *portFuncs) Recycle(ctx context.Context, pid int, from uint64) {
 	f.recycle(ctx, pid, from)
 }
@@ -153,6 +155,7 @@ func (d *Daemon) producePorts() producePorts {
 		quiet:      d.waitQuiet,
 		power:      powerState,
 		background: qos.setBackground,
+		turn:       func(ctx context.Context) (func(), error) { return d.mem.enter(ctx, d.VoxSup, 0) },
 		recycle: func(ctx context.Context, pid int, from uint64) {
 			if d.VoxSup == nil {
 				return

@@ -33,6 +33,8 @@ type residency struct {
 	n       int  // uses in flight
 	engines []*engine.Supervisor
 	log     *slog.Logger
+	// stop stops one engine (tests only; nil is Supervisor.Stop).
+	stop func(context.Context, *engine.Supervisor) error
 }
 
 // newResidency returns the arbiter over engines (nil entries are skipped), or nil when fewer than two exist.
@@ -80,14 +82,14 @@ const (
 // engineBusyCode is the stable code of a request that gave up waiting for another large engine's turn.
 const engineBusyCode = "engine_busy_memory"
 
-// engineBusyError is that refusal: another large engine is working and this Mac has no room for both. It is an
-// engine-start failure (503) for every caller that only looks at the status.
+// engineBusyError is that refusal: another large engine is working and this Mac has no room for both. It is its own
+// 503 (synthStatus, writeSynthErr), not an engine-start failure: nothing failed to start.
 type engineBusyError struct{ err error } // err: why the wait ended
 
 func (*engineBusyError) Error() string {
-	return "Another voice engine is using this Mac's memory right now; try again when it has finished."
+	return "Another voice or notes engine (the studio voice, the fast voice or the meeting-notes model) is using this Mac's memory right now, so this request was not started. Nothing failed: retry in a minute or two."
 }
-func (e *engineBusyError) Unwrap() []error { return []error{errEngineStart, e.err} }
+func (e *engineBusyError) Unwrap() error { return e.err }
 
 // enter takes sup's turn and returns the release; call it after the engine's Guard is released. budget bounds the wait
 // for another engine's turn (0: only ctx does): when it runs out while ctx is still alive the answer is the typed
@@ -135,18 +137,28 @@ func (r *residency) take(ctx context.Context, sup *engine.Supervisor) error {
 			// (sup's own included) until the others have exited.
 			r.active, r.settled, r.n = sup, false, 1
 			r.mu.Unlock()
-			err := r.evictOthers(ctx, sup)
-			r.mu.Lock()
-			if err != nil {
-				r.active, r.n = nil, 0
-			} else {
-				r.settled = true
-			}
-			r.broadcastLocked()
-			r.mu.Unlock()
-			return err
+			return r.settle(ctx, sup)
 		}
 	}
+}
+
+// settle makes room for the claimed turn and publishes the outcome. A failure and a panic both roll the claim back:
+// a claim left behind would refuse every other engine until the daemon restarts.
+func (r *residency) settle(ctx context.Context, sup *engine.Supervisor) (err error) {
+	completed := false
+	defer func() {
+		r.mu.Lock()
+		if completed && err == nil {
+			r.settled = true
+		} else {
+			r.active, r.n = nil, 0
+		}
+		r.broadcastLocked()
+		r.mu.Unlock()
+	}()
+	err = r.evictOthers(ctx, sup)
+	completed = true
+	return err
 }
 
 // evictOthers stops every managed engine but keep, waiting for each one's exit.
@@ -155,7 +167,11 @@ func (r *residency) evictOthers(ctx context.Context, keep *engine.Supervisor) er
 		if e == keep {
 			continue
 		}
-		if err := e.Stop(ctx); err != nil {
+		stop := r.stop
+		if stop == nil {
+			stop = func(ctx context.Context, e *engine.Supervisor) error { return e.Stop(ctx) }
+		}
+		if err := stop(ctx, e); err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				r.log.Warn("memory: could not stop a large engine to make room", slog.Any("error", err))
 			}
