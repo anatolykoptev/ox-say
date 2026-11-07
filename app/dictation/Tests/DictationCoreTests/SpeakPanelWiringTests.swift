@@ -28,9 +28,11 @@ final class SpeakPanelWiringTests: XCTestCase {
         let speak = try source("OxSayDictation/SpeakSource.swift")
         let change = try body(speak, of: "func setLoudness(")
         XCTAssertTrue(change.contains("client.deliver(id: id, entries: [], loudness: target.lufs)"))
-        XCTAssertTrue(change.contains("phraseOperation(chunk: PhraseWork.wholeProject, kind: .loudness)"))
+        XCTAssertTrue(change.contains("phraseOperation(chunk: PhraseWork.wholeProject, kind: .loudness,"))
         XCTAssertTrue(change.contains("VoicePanelModel.loudnessAppliesNow(status: job.status)"))
         XCTAssertTrue(change.contains("voiceover.followAndWait(id: id)"), "the next read waits for the assemble run")
+        XCTAssertTrue(change.contains("guard accepted else { return }"), "stored and shown only once accepted")
+        XCTAssertTrue(change.contains("self?.model.data.speak.panel.loudness = previous"), "put back if the daemon fails it")
         for recreate in ["voiceover.start", "startVoiceover", "generateStudio", "SpeakStudio.start"] {
             XCTAssertFalse(change.contains(recreate), "a loudness change must not recreate the project (\(recreate))")
         }
@@ -47,10 +49,11 @@ final class SpeakPanelWiringTests: XCTestCase {
         XCTAssertTrue(apply.contains("guard !entries.isEmpty"))
         XCTAssertTrue(apply.contains("speak.phrasesFor == speak.selectedID"), "chunks of another project are never used")
         XCTAssertTrue(apply.contains("client.deliver(id: id, entries: entries, loudness: nil)"))
+        XCTAssertTrue(apply.contains("voiceover.followAndWait(id: id)"), "the next read waits for the assemble run")
+        XCTAssertTrue(apply.contains("if !accepted { model.data.speak.panelEpoch &+= 1 }"), "a refused slider starts again from the stored value")
         XCTAssertTrue(apply.contains("phraseOperation(chunk:"))
         try XCTAssertTrue(body(speak, of: "func setPace(").contains("applyDelivery(.pace(slider), kind: .pace)"))
         try XCTAssertTrue(body(speak, of: "func setPause(").contains("applyDelivery(.pause(seconds), kind: .pause)"))
-        try XCTAssertTrue(body(speak, of: "func setPanelMood(").contains("applyDelivery(.mood(mood), kind: .mood)"))
     }
 
     /// The panel's values reach the fast voice and the studio create through the one merge that ignores them while Advanced is
@@ -92,7 +95,7 @@ final class SpeakPanelWiringTests: XCTestCase {
     func testEveryPanelActionIsWiredToTheSpeakSource() throws {
         let window = try source("OxSayDictation/MainWindowSource.swift")
         for (action, method) in [("speakLoudness", "setLoudness(target)"), ("speakPace", "setPace(value)"), ("speakPause", "setPause(value)"),
-                                 ("speakPanelMood", "setPanelMood(mood)"), ("speakPanelChanged", "panelChanged(settings)")] {
+                                 ("speakPanelChanged", "panelChanged(settings)")] {
             XCTAssertTrue(window.contains("a.\(action) = { [weak self] "), "\(action) is not assigned")
             XCTAssertTrue(window.contains("self?.speakSource.\(method) }"), "\(action) does not reach \(method)")
         }
@@ -110,7 +113,7 @@ final class SpeakPanelWiringTests: XCTestCase {
         XCTAssertTrue(page.contains("NSSplitViewItem(inspectorWithViewController: panel)"), "the system's own inspector pane")
         XCTAssertTrue(page.contains("controller.setPanel(open: panelOpen, animated: true)"))
         let model = try source("MainWindowUI/MainWindowModel.swift")
-        XCTAssertTrue(model.contains("get: { self.data.speak.panelShown && self.advanced }"))
+        XCTAssertTrue(model.contains("get: { VoicePanelModel.panelShown(self.data.speak.panelShown, advanced: self.advanced) }"))
     }
 
     /// Opening the panel makes room for it through the pure decisions, and closing gives back only what was added.
@@ -131,10 +134,11 @@ final class SpeakPanelWiringTests: XCTestCase {
 
     /// Leaving Озвучка with the panel open gives the window its room back and closes the panel for good: the open state lives in
     /// the model and would otherwise outlive the controller that made room for it.
-    /// Mutation: SpeakPage.viewWillDisappear, delete `giveBackRoom(animate: false)` -> RED; delete `panelShown = false` -> RED.
+    /// Mutation: SpeakPage.closeForGood, delete `giveBackRoom(animate: false)` -> RED; delete `panelShown = false` -> RED.
     func testLeavingThePageClosesThePanelAndGivesTheRoomBack() throws {
         let page = try source("MainWindowUI/SpeakPage.swift")
-        let leave = try body(page, of: "override func viewWillDisappear() {")
+        let leave = try body(page, of: "private func closeForGood() {")
+        try XCTAssertTrue(body(page, of: "override func viewWillDisappear() {").contains("closeForGood()"))
         XCTAssertTrue(leave.contains("giveBackRoom(animate: false)"))
         XCTAssertTrue(leave.contains("panelItem.isCollapsed = true"))
         XCTAssertTrue(leave.contains("model?.data.speak.panelShown = false"))
@@ -147,14 +151,87 @@ final class SpeakPanelWiringTests: XCTestCase {
     func testThePanelDrawsOnlyTheRowsTheModelLists() throws {
         let panel = try source("MainWindowUI/VoicePanel.swift")
         XCTAssertTrue(panel.contains("VoicePanelModel.engine(chosen: values.engine, projectSelected: values.selectedProject != nil)"))
-        XCTAssertTrue(panel.contains("SpeakControls.shown(engine: engine, voiceIsDesigned: false, advanced: true, copiesRecordingStyle: values.copiesRecordingStyle)"))
+        XCTAssertTrue(panel.contains("SpeakControls.shown(engine: engine, voiceIsDesigned: false, advanced: true)"))
         XCTAssertTrue(panel.contains("VoicePanelModel.rows(controls: controls, engine: engine).map(\\.id)"))
-        for id in ["voice", "mood", "pace", "pause", "loudness", "quality", "cloneMode", "seed", "takes"] {
+        for id in ["pace", "pause", "loudness", "quality", "cloneMode", "seed", "takes"] {
             XCTAssertTrue(panel.contains("if ids.contains(\"\(id)\")"), "row \(id) is not guarded by the model's list")
         }
         XCTAssertTrue(panel.contains("VoicePanelModel.timing(of:"))
         XCTAssertTrue(panel.contains("VoicePanelModel.captionKey(row:"))
+        XCTAssertFalse(panel.contains("SpeakVoicePicker"), "the page's picker is the only «Голос»")
+        XCTAssertFalse(panel.contains("MoodChips"), "the mood stays on the phrase rows")
+        XCTAssertTrue(panel.contains("VoicePanelModel.shouldCommit"), "a slider is not sent on a tap")
+        XCTAssertTrue(panel.contains("L10nKey.speakPanelRandom.text"))
         XCTAssertTrue(panel.contains("ForEach(LoudnessTarget.presets"))
         XCTAssertTrue(panel.contains("VoicePanelModel.scope(allText: values.panelAllText, phrase: values.panelPhrase, chunks: values.phraseChunks)"))
+    }
+
+    /// A click on a phrase row chooses it for pace and pause (Advanced only), and choosing another project forgets it.
+    /// Mutation: PhraseList, `model.data.speak.panelPhrase = row.index` removed -> RED; SpeakSource.selectProject, `panelPhrase = nil` removed -> RED.
+    func testAPhraseRowIsChosenByAClickAndForgottenWithItsProject() throws {
+        let list = try source("MainWindowUI/PhraseList.swift")
+        XCTAssertTrue(list.contains("selected: model.advanced && values.panelPhrase == row.index"))
+        XCTAssertTrue(list.contains("select: model.advanced ? { model.data.speak.panelPhrase = row.index } : nil"))
+        XCTAssertTrue(list.contains(".onTapGesture { select?() }"))
+        XCTAssertTrue(list.contains(".accessibilityAddTraits(selected ? .isSelected : [])"))
+        let speak = try source("OxSayDictation/SpeakSource.swift")
+        try XCTAssertTrue(body(speak, of: "private func selectProject(").contains("model.data.speak.panelPhrase = nil"))
+    }
+
+    /// The saved-settings line sits by «Озвучить» and opens the panel; the panel button follows Advanced and Advanced closes it.
+    /// Mutation: SpeakPage, `model.speakPanelShown.wrappedValue = true` in the line -> `= false` -> RED.
+    func testTheOwnSettingsLineOpensThePanel() throws {
+        let page = try source("MainWindowUI/SpeakPage.swift")
+        XCTAssertTrue(page.contains("VoicePanelModel.ownSettingsOn(panel: model.data.speak.panel, engine: model.data.speak.engine, advanced: model.advanced)"))
+        XCTAssertTrue(page.contains("Button(L10nKey.speakPanelOwnSettings.text) { model.speakPanelShown.wrappedValue = true }"))
+        let model = try source("MainWindowUI/MainWindowModel.swift")
+        XCTAssertTrue(model.contains("didSet { data.speak.panelShown = VoicePanelModel.panelShown(data.speak.panelShown, advanced: advanced) }"))
+    }
+
+    /// A panel that starts open makes its room once laid out, a full-screen window is not grown, and the room goes back before
+    /// the frame is saved (window close, app quit).
+    /// Mutation: SpeakPage.viewDidLayout, delete `makeRoom(animate: false)` -> RED; closeForGood observers removed -> RED.
+    func testTheRoomIsMadeOnLayoutNotGrownInFullScreenAndGivenBackBeforeTheFrameIsSaved() throws {
+        let page = try source("MainWindowUI/SpeakPage.swift")
+        let layout = try body(page, of: "override func viewDidLayout() {")
+        XCTAssertTrue(layout.contains("PanelWindow.shouldMakeRoom(panelOpen:"))
+        XCTAssertTrue(layout.contains("makeRoom(animate: false)"))
+        let room = try body(page, of: "private func makeRoom(")
+        XCTAssertTrue(room.contains("PanelWindow.mayGrow(fullScreen: window.styleMask.contains(.fullScreen), zoomed: window.isZoomed)"))
+        let appear = try body(page, of: "override func viewDidAppear() {")
+        XCTAssertTrue(appear.contains("NSWindow.willCloseNotification"))
+        XCTAssertTrue(appear.contains("NSApplication.willTerminateNotification"))
+        XCTAssertTrue(appear.contains(".sink { [weak self] _ in self?.closeForGood() }"))
+        XCTAssertFalse(appear.contains("assumeIsolated"), "plan constraint 8")
+    }
+
+    /// Every binding of MainWindowModel that carries a change calls its action in the setter: the page changes the value, the
+    /// action is what the app hears. A deleted action line would leave the page looking right and the app deaf.
+    /// Mutation: MainWindowModel.speakPanelSettings, delete `self.actions.speakPanelChanged($0)` -> RED; speakLoudness, delete
+    /// `self.actions.speakLoudness($0)` -> RED (and the same for each binding below).
+    func testEveryBindingOfTheModelCallsItsActionInTheSetter() throws {
+        let model = try source("MainWindowUI/MainWindowModel.swift")
+        let bindings: [(signature: String, setter: String)] = [
+            ("var speakText: Binding<String> {", "self.actions.speakTextChanged($0)"),
+            ("var speakQuality: Binding<SpeakEngine> {", "self.actions.speakQualityChanged($0)"),
+            ("var speakPanelSettings: Binding<VoicePanelSettings> {", "self.actions.speakPanelChanged($0)"),
+            ("var speakLoudness: Binding<LoudnessTarget?> {", "self.actions.speakLoudness($0)"),
+            ("var speakVoice: Binding<String?> {", "self.actions.speakVoiceChanged($0)"),
+            ("var sound: Binding<SoundWhileDictating> {", "self.actions.setSound($0)"),
+            ("var hotkeyMode: Binding<HotkeyMode> {", "self.actions.setHotkeyMode($0)"),
+            ("func voice(_ slot: VoiceSlot) -> Binding<String?> {", "self.actions.pickVoice(slot, $0)"),
+            ("var startAtLogin: Binding<Bool> {", "self.actions.setStartAtLogin($0)"),
+        ]
+        for (signature, setter) in bindings {
+            let start = try XCTUnwrap(model.range(of: signature), "\(signature) not found")
+            let rest = model[start.upperBound...]
+            let end = rest.range(of: "\n    }\n")?.lowerBound ?? rest.endIndex
+            XCTAssertTrue(rest[..<end].contains(setter), "\(signature) does not call \(setter)")
+        }
+        // The loudness setter does not touch the shown value itself: the source stores it once the change is accepted.
+        let loudness = try body(model, of: "var speakLoudness: Binding<LoudnessTarget?> {")
+        XCTAssertFalse(loudness.contains("self.data.speak.panel.loudness = $0"))
+        // A new binding is a new decision: it is listed above, or it is one of the three that carry no action.
+        XCTAssertEqual(model.components(separatedBy: "Binding(get:").count - 1, bindings.count + 3, "list the new binding above")
     }
 }

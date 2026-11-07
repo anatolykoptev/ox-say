@@ -11,14 +11,15 @@ struct VoicePanel: View {
     var body: some View {
         let values = model.data.speak
         let engine = VoicePanelModel.engine(chosen: values.engine, projectSelected: values.selectedProject != nil)
-        let controls = SpeakControls.shown(engine: engine, voiceIsDesigned: false, advanced: true, copiesRecordingStyle: values.copiesRecordingStyle)
+        let controls = SpeakControls.shown(engine: engine, voiceIsDesigned: false, advanced: true)
         let ids = VoicePanelModel.rows(controls: controls, engine: engine).map(\.id)
         let scope = VoicePanelModel.scope(allText: values.panelAllText, phrase: values.panelPhrase, chunks: values.phraseChunks)
         let job = values.selectedProject
         // Phrases to change: a finished project whose phrases were read. Anything else has none to change yet.
-        let finished = job.map { VoicePanelModel.loudnessAppliesNow(status: $0.status) && values.phrasesFor == $0.id && scope != nil } ?? false
+        let finished = job.map { VoicePanelModel.loudnessAppliesNow(status: $0.status) && values.phrasesFor == $0.id && !values.phraseChunks.isEmpty } ?? false
         let busy = job.map { PhraseEditing.isBusy(values.phraseWork, project: $0.id) } ?? false
-        let context = Context(engine: engine, finished: finished, allText: values.panelAllText, copies: values.copiesRecordingStyle)
+        let context = Context(engine: engine, finished: finished, allText: values.panelAllText, copies: values.copiesRecordingStyle,
+                              reel: values.reel && job == nil, levelChosen: values.panel.loudness != nil)
         Form {
             if busy {
                 Section {
@@ -28,15 +29,15 @@ struct VoicePanel: View {
                     }
                 }
             }
-            if ids.contains("voice") {
-                Section { SpeakVoicePicker(model: model).disabled(values.phase == .generating) }
-            }
-            if ids.contains("mood") || ids.contains("pace") || ids.contains("pause") {
+            if ids.contains("pace") || ids.contains("pause") {
                 Section(L10nKey.speakPhrasesTitle.text) {
                     phraseScope(values, scope: scope, finished: finished, busy: busy)
-                    if ids.contains("mood") { moodRow(values, scope: scope, context: context, off: !finished || busy) }
-                    if ids.contains("pace") { paceRow(values, scope: scope, context: context, off: !finished || busy) }
-                    if ids.contains("pause") { pauseRow(values, scope: scope, context: context, off: !finished || busy) }
+                    if ids.contains("pace") { paceRow(values, scope: scope, context: context, off: !finished || busy || scope == nil) }
+                    if ids.contains("pause") { pauseRow(values, scope: scope, context: context, off: !finished || busy || scope == nil) }
+                    if finished {
+                        Toggle(L10nKey.speakPanelAllText.text, isOn: Binding(get: { values.panelAllText }, set: { model.data.speak.panelAllText = $0 }))
+                            .disabled(busy)
+                    }
                 }
             }
             Section {
@@ -55,10 +56,12 @@ struct VoicePanel: View {
         let finished: Bool
         let allText: Bool
         let copies: Bool
+        let reel: Bool
+        let levelChosen: Bool
 
         func caption(_ row: String) -> String? {
             VoicePanelModel.captionKey(row: row, timing: VoicePanelModel.timing(of: row, engine: engine, finishedProject: finished),
-                                       allText: allText, copiesRecording: copies)?.text
+                                       allText: allText, copiesRecording: copies, reel: reel, levelChosen: levelChosen)?.text
         }
     }
 
@@ -70,20 +73,18 @@ struct VoicePanel: View {
 
     // MARK: phrases
 
+    /// The phrase the person clicked in the list (one line), or «Все фразы»; with none chosen, the hint to choose one.
     @ViewBuilder private func phraseScope(_ values: SpeakValues, scope: PanelScope?, finished: Bool, busy: Bool) -> some View {
-        if scope == nil || !finished {
+        if !finished {
             Text(L10nKey.speakPanelNeedsProject.text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        } else {
-            Picker(L10nKey.speakPanelPhrase.text, selection: Binding(
-                get: { if case .phrase(let n)? = scope { return n } else { return values.phraseChunks.first?.index ?? 0 } },
-                set: { model.data.speak.panelPhrase = $0 })) {
-                ForEach(values.phraseChunks) { chunk in
-                    Text("\(chunk.index + 1). \(PhraseScript.preview(chunk.text))").lineLimit(1).tag(chunk.index)
-                }
+        } else if case .phrase(let n)? = scope, let chunk = values.phraseChunks.first(where: { $0.index == n }) {
+            LabeledContent(L10nKey.speakPanelPhrase.text) {
+                Text("\(chunk.index + 1). \(PhraseScript.preview(chunk.text))").lineLimit(1).truncationMode(.tail)
             }
-            .disabled(values.panelAllText || busy)
-            Toggle(L10nKey.speakPanelAllText.text, isOn: Binding(get: { values.panelAllText }, set: { model.data.speak.panelAllText = $0 }))
-                .disabled(busy)
+        } else if scope == .all {
+            LabeledContent(L10nKey.speakPanelPhrase.text) { Text(L10nKey.speakPanelAllPhrases.text) }
+        } else {
+            Text(L10nKey.speakPanelPickPhrase.text).font(.callout).foregroundStyle(.secondary)
         }
     }
 
@@ -96,42 +97,28 @@ struct VoicePanel: View {
         }
     }
 
-    private func moodRow(_ values: SpeakValues, scope: PanelScope?, context: Context, off: Bool) -> some View {
-        let first = targets(values, scope).first
-        let mood = scope == .all ? nil : PhraseEditing.mood(of: first?.style)
-        return VStack(alignment: .leading, spacing: 4) {
-            LabeledContent(L10nKey.speakPhraseMood.text) {
-                MoodChips(selected: mood, custom: scope == .all || mood != nil ? nil : first?.style) { model.actions.speakPanelMood($0) }
-            }
-            .disabled(off)
-            if !off { caption(context.caption("mood")) }
-        }
-    }
-
     private func paceRow(_ values: SpeakValues, scope: PanelScope?, context: Context, off: Bool) -> some View {
-        let stored = Set(targets(values, scope).map { $0.pace == 0 ? 1.0 : $0.pace })
-        let start = stored.count == 1 ? stored.first ?? 1 : 1
+        let shared = VoicePanelModel.sharedValue(targets(values, scope).map { $0.pace == 0 ? 1.0 : $0.pace })
         return VStack(alignment: .leading, spacing: 4) {
-            PanelSlider(title: L10nKey.speakPanelPace.text, range: 0.85...1.15, step: 0.01, initial: start,
+            PanelSlider(title: L10nKey.speakPanelPace.text, range: 0.85...1.15, step: 0.01, initial: shared ?? 1, mixed: shared == nil && scope != nil,
                         valueText: { VoicePanelModel.paceValue($0).map { String(format: L10nKey.speakPanelPaceValue.text, Int(($0 * 100).rounded())) } ?? L10nKey.speakPanelPaceNeutral.text },
                         commit: { model.actions.speakPace($0) })
-                .id("pace-\(String(describing: scope))-\(start)")
+                .id("pace-\(String(describing: scope))-\(shared ?? -1)-\(values.panelEpoch)")
                 .disabled(off)
             if !off { caption(context.caption("pace")) }
         }
     }
 
     private func pauseRow(_ values: SpeakValues, scope: PanelScope?, context: Context, off: Bool) -> some View {
-        let stored = Set(targets(values, scope).map(\.pauseAfter))
-        let start = stored.count == 1 ? stored.first ?? 0 : 0
+        let shared = VoicePanelModel.sharedValue(targets(values, scope).map(\.pauseAfter))
         return VStack(alignment: .leading, spacing: 4) {
-            PanelSlider(title: L10nKey.speakPanelPause.text, range: 0...3, step: 0.05, initial: start,
+            PanelSlider(title: L10nKey.speakPanelPause.text, range: VoicePanelModel.pauseRange, step: 0.05, initial: shared ?? 0, mixed: shared == nil && scope != nil,
                         valueText: {
                             let v = VoicePanelModel.pauseValue($0)
                             return v == 0 ? L10nKey.speakPanelPauseNone.text : L10nKey.speakPanelPauseValue.text(v.formatted(.number.precision(.fractionLength(2)).locale(L10nBundle.locale)))
                         },
                         commit: { model.actions.speakPause($0) })
-                .id("pause-\(String(describing: scope))-\(start)")
+                .id("pause-\(String(describing: scope))-\(shared ?? -1)-\(values.panelEpoch)")
                 .disabled(off)
             if !off { caption(context.caption("pause")) }
         }
@@ -202,6 +189,12 @@ struct VoicePanel: View {
                     set: { var s = values.panel; s.seed = VoicePanelModel.seed($0); model.speakPanelSettings.wrappedValue = s }),
                           format: .number.grouping(.never))
                     .monospacedDigit()
+                Button(L10nKey.speakPanelRandom.text) {
+                    var s = values.panel
+                    s.seed = Int.random(in: 1...999_999_999)
+                    model.speakPanelSettings.wrappedValue = s
+                }
+                .buttonStyle(.link)
                 if let projectSeed = values.selectedProject?.seed, projectSeed != pinned {
                     Button(L10nKey.speakPanelSeedFromProject.text) {
                         var s = values.panel
@@ -229,38 +222,50 @@ struct VoicePanel: View {
     }
 }
 
-/// A slider that changes the sound only when it is let go: dragging it must not send a change per tick (the daemon works on one
-/// at a time and would refuse the rest). Starts from the value the phrase has.
+/// A slider that changes the sound only when it is let go and was really moved: dragging it must not send a change per tick, and
+/// a tap must not rewrite a stored value through the snap. Starts from the value the phrase has; when the phrases differ
+/// (`mixed`) it says «разные» and sends nothing until it is moved.
 private struct PanelSlider: View {
     let title: String
     let range: ClosedRange<Double>
     let step: Double
+    let initial: Double
+    let mixed: Bool
     let valueText: (Double) -> String
     let commit: (Double) -> Void
     @State private var value: Double
+    @State private var moved = false
 
-    init(title: String, range: ClosedRange<Double>, step: Double, initial: Double, valueText: @escaping (Double) -> String,
-         commit: @escaping (Double) -> Void) {
+    init(title: String, range: ClosedRange<Double>, step: Double, initial: Double, mixed: Bool,
+         valueText: @escaping (Double) -> String, commit: @escaping (Double) -> Void) {
         self.title = title
         self.range = range
         self.step = step
+        self.initial = initial
+        self.mixed = mixed
         self.valueText = valueText
         self.commit = commit
         _value = State(initialValue: initial)
     }
+
+    private var shownText: String { mixed && !moved ? L10nKey.speakPanelMixed.text : valueText(value) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(title)
                 Spacer()
-                Text(valueText(value)).monospacedDigit().foregroundStyle(.secondary)
+                Text(shownText).monospacedDigit().foregroundStyle(.secondary)
             }
             Slider(value: $value, in: range, step: step) { editing in
-                if !editing { commit(value) }
+                if !editing, VoicePanelModel.shouldCommit(moved: moved, mixed: mixed, initial: initial, value: value) {
+                    commit(value)
+                    moved = false
+                }
             }
+            .onChange(of: value) { _, _ in moved = true }
             .accessibilityLabel(title)
-            .accessibilityValue(valueText(value))
+            .accessibilityValue(shownText)
         }
     }
 }

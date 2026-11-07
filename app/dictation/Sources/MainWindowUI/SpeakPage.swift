@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import DictationCore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -14,7 +15,7 @@ struct SpeakPage: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let notice = model.data.notice { NoticeBar(text: notice) { model.actions.dismissNotice() } }
             }
-                        .toolbar {
+            .toolbar {
                 if model.advanced {
                     ToolbarItem(placement: .primaryAction) {
                         Button { model.speakPanelShown.wrappedValue.toggle() } label: {
@@ -229,6 +230,11 @@ struct SpeakDetailColumn: View {
             EmptyView()
         case .editing(let problem):
             HStack {
+                // Saved panel values change what «Озвучить» makes: said once, and a click shows them.
+                if VoicePanelModel.ownSettingsOn(panel: model.data.speak.panel, engine: model.data.speak.engine, advanced: model.advanced) {
+                    Button(L10nKey.speakPanelOwnSettings.text) { model.speakPanelShown.wrappedValue = true }
+                        .buttonStyle(.link).font(.callout)
+                }
                 Spacer()
                 Button(L10nKey.speakCreate.text) { model.actions.speakGenerate() }
                     .buttonStyle(.borderedProminent).controlSize(.large)
@@ -416,12 +422,29 @@ final class SpeakSplitController: NSSplitViewController {
     }
 
     private var grewBy = 0.0
+    private var roomChecked = false
+    private var observers: [AnyCancellable] = []
 
-    /// The page goes away (another section, the daemon offline, the window closing) with the panel open: the window gives its
-    /// room back and the panel closes for good, so coming back starts closed with the window at its own size. Left as it was,
-    /// the open state would outlive this controller and the next one would open the panel into a window with no room made.
+    /// The page goes away (another section, the daemon offline, the window closing, the app quitting) with the panel open: the
+    /// window gives its room back and the panel closes for good, so coming back starts closed with the window at its own size,
+    /// and the frame the window saves is the narrow one. Left as it was, the open state would outlive this controller.
     override func viewWillDisappear() {
         super.viewWillDisappear()
+        closeForGood()
+        observers = []
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        guard observers.isEmpty else { return }
+        // Both are posted on the main thread, before the frame is last saved; the sinks run there, on this controller's actor.
+        observers = [NotificationCenter.default.publisher(for: NSWindow.willCloseNotification, object: view.window)
+                        .sink { [weak self] _ in self?.closeForGood() },
+                     NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+                        .sink { [weak self] _ in self?.closeForGood() }]
+    }
+
+    private func closeForGood() {
         guard let panelItem, !panelItem.isCollapsed else { return }
         giveBackRoom(animate: false)
         panelItem.isCollapsed = true
@@ -429,10 +452,12 @@ final class SpeakSplitController: NSSplitViewController {
     }
 
     /// The panel needs more than the window floor: widen the window so the text keeps the width it had (to the screen's edge at
-    /// most), and keep the window from being dragged under what the panes need at their least.
+    /// most), and keep the window from being dragged under what the panes need at their least. A full-screen or zoomed window
+    /// is left alone: the panel fits inside it.
     private func makeRoom(animate: Bool) {
-        guard let window = view.window else { return }
-        let sidebar = view.convert(view.bounds, to: nil).minX
+        guard let window = view.window, view.bounds.width > 0,
+              PanelWindow.mayGrow(fullScreen: window.styleMask.contains(.fullScreen), zoomed: window.isZoomed) else { return }
+        let sidebar = window.contentLayoutRect.width - view.bounds.width
         let divider = MainWindowSpec.splitDividerWidth
         let least = PanelWindow.neededWidth(sidebar: sidebar, list: Self.listWidth.lowerBound, detail: Self.detailMinimum,
                                             panel: Self.panelWidth.lowerBound, divider: divider, panelOpen: true)
@@ -453,6 +478,7 @@ final class SpeakSplitController: NSSplitViewController {
     private func giveBackRoom(animate: Bool) {
         guard let window = view.window else { return }
         window.contentMinSize.width = MainWindowSpec.minimumWidth
+        roomChecked = false
         let back = PanelWindow.shrink(grewBy: grewBy, current: window.contentLayoutRect.width, floor: MainWindowSpec.minimumWidth)
         grewBy = 0
         guard back > 0 else { return }
@@ -468,6 +494,11 @@ final class SpeakSplitController: NSSplitViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        if PanelWindow.shouldMakeRoom(panelOpen: panelItem.map { !$0.isCollapsed } ?? false, grewBy: grewBy, checked: roomChecked,
+                                      hasWindow: view.window != nil, width: view.bounds.width) {
+            roomChecked = true
+            makeRoom(animate: false)
+        }
         guard !placed, splitView.bounds.width >= Self.listWidth.lowerBound + MainWindowSpec.splitDividerWidth + Self.detailMinimum else { return }
         placed = true
         splitView.setPosition(220, ofDividerAt: 0)

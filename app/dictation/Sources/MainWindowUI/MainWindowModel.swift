@@ -16,7 +16,10 @@ public struct MeetingFocus: Equatable {
 public final class MainWindowModel: ObservableObject {
     @Published public var section: MainSection
     /// The Advanced switch above Settings. The app saves a flip and moves the window off Models (`advancedChanged`).
-    @Published public var advanced = false
+    @Published public var advanced = false {
+        // A hidden voice panel is a closed one: it does not come back by itself when Advanced is turned on again.
+        didSet { data.speak.panelShown = VoicePanelModel.panelShown(data.speak.panelShown, advanced: advanced) }
+    }
     public var advancedChanged: (Bool) -> Void = { _ in }
     @Published public var selectedMeeting: String? {
         // A hit that was clicked in one meeting does not follow the user to another, or back to this one later.
@@ -118,7 +121,7 @@ public final class MainWindowModel: ObservableObject {
     }
 
     var speakPanelOpen: Binding<Bool> {
-        Binding(get: { self.data.speak.panelShown && self.advanced }, set: { self.data.speak.panelShown = $0 })
+        Binding(get: { VoicePanelModel.panelShown(self.data.speak.panelShown, advanced: self.advanced) }, set: { self.data.speak.panelShown = $0 })
     }
 
     /// The settings a new voicing reads; the level has its own action because it also acts on a finished project.
@@ -126,8 +129,10 @@ public final class MainWindowModel: ObservableObject {
         Binding(get: { self.data.speak.panel }, set: { self.data.speak.panel = $0; self.actions.speakPanelChanged($0) })
     }
 
+    /// The level shown is the one the app holds: a choice that is refused (another project busy, this one not finished) never
+    /// shows, because the source stores it only once the change is accepted.
     var speakLoudness: Binding<LoudnessTarget?> {
-        Binding(get: { self.data.speak.panel.loudness }, set: { self.data.speak.panel.loudness = $0; self.actions.speakLoudness($0) })
+        Binding(get: { self.data.speak.panel.loudness }, set: { self.actions.speakLoudness($0) })
     }
 
     var speakVoice: Binding<String?> {

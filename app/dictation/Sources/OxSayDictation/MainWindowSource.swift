@@ -323,7 +323,6 @@ final class MainWindowSource {
         a.speakLoudness = { [weak self] target in self?.speakSource.setLoudness(target) }
         a.speakPace = { [weak self] value in self?.speakSource.setPace(value) }
         a.speakPause = { [weak self] value in self?.speakSource.setPause(value) }
-        a.speakPanelMood = { [weak self] mood in self?.speakSource.setPanelMood(mood) }
         a.speakPanelChanged = { [weak self] settings in self?.speakSource.panelChanged(settings) }
         return a
     }

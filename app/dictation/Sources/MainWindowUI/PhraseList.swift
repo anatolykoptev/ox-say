@@ -20,7 +20,10 @@ struct PhraseList: View {
                     ForEach(rows) { row in
                         PhraseRow(row: row, work: PhraseEditing.shownWork(values.phraseWork, project: job.id, chunk: row.index),
                                   busy: busy, playing: values.playingPhrase == row.index && values.playback == .playing,
-                                  showsMood: showsMood, actions: model.actions) { editing = row }
+                                  showsMood: showsMood, actions: model.actions,
+                                  selected: model.advanced && values.panelPhrase == row.index,
+                                  // With Advanced on a click chooses the phrase the voice panel's pace and pause go to.
+                                  select: model.advanced ? { model.data.speak.panelPhrase = row.index } : nil) { editing = row }
                     }
                 }
             }
@@ -41,6 +44,8 @@ private struct PhraseRow: View {
     let playing: Bool
     let showsMood: Bool
     let actions: MainWindowActions
+    let selected: Bool
+    let select: (() -> Void)?
     let edit: () -> Void
 
     var body: some View {
@@ -88,7 +93,11 @@ private struct PhraseRow: View {
             .disabled(busy)
         }
         .padding(.vertical, 2)
+        .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Color.accentColor.opacity(0.18) : Color.clear))
+        .contentShape(Rectangle())
+        .onTapGesture { select?() }
         .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private static func workText(_ kind: PhraseWork.Kind) -> String {

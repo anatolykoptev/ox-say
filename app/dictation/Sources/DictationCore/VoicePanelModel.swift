@@ -50,17 +50,16 @@ public struct PanelRow: Equatable {
     public let id: String
 }
 
-/// Which phrases a pace, pause or mood change goes to.
+/// Which phrases a pace or pause change goes to.
 public enum PanelScope: Equatable {
     case phrase(Int)
     case all
 }
 
-/// One change of the batch the panel sends as `deliver` entries.
+/// One change of the batch the panel sends as `deliver` entries. A mood is changed on the phrase's own row, not here.
 public enum PanelChange: Equatable {
     case pace(Double)
     case pause(Double)
-    case mood(Mood?)
 }
 
 /// When a row's change is heard.
@@ -122,11 +121,12 @@ public struct VoicePanelSettings: Equatable {
 /// The Advanced voice panel's decisions. Pure; `SpeakSource` carries them out and `VoicePanel` draws them.
 public enum VoicePanelModel {
     /// The panel's rows for the controls the matrix shows, in the fixed order. `quality` is the matrix's `steps`. The page's own
-    /// «Качество», the variant button and the phrase list are not rows. Rows that only the studio voice has are dropped for the
-    /// fast voice whatever the set says, so a wrong set can never draw a control that does nothing there.
+    /// «Голос» and «Качество», the variant button, the mood chips and the phrase list stay on the page and are not rows. Rows that
+    /// only the studio voice has are dropped for the fast voice whatever the set says, so a wrong set can never draw a control
+    /// that does nothing there.
     public static func rows(controls: Set<SpeakControl>, engine: SpeakEngine) -> [PanelRow] {
         let order: [(id: String, control: SpeakControl, studioOnly: Bool)] = [
-            ("voice", .voice, false), ("mood", .mood, true), ("pace", .pace, true), ("pause", .pause, true),
+            ("pace", .pace, true), ("pause", .pause, true),
             ("loudness", .loudness, false), ("quality", .steps, true), ("cloneMode", .cloneMode, true),
             ("seed", .seed, false), ("takes", .takes, true),
         ]
@@ -147,11 +147,45 @@ public enum VoicePanelModel {
         return grid == 1 ? nil : grid
     }
 
-    /// Pause after a phrase: 0 clears, otherwise 0.05...3 s on the 0.05 grid (the daemon takes 0.05...10; a value between 0
-    /// and 0.05 would be refused). NaN is no pause.
+    /// The pause slider's range: the whole of what the daemon takes, so a stored pause is never shown as something else.
+    public static let pauseRange: ClosedRange<Double> = 0 ... 10
+
+    /// Pause after a phrase: 0 clears, otherwise 0.05...10 s on the 0.05 grid (a value between 0 and 0.05 would be refused).
+    /// NaN is no pause.
     public static func pauseValue(_ seconds: Double) -> Double {
         guard !seconds.isNaN else { return 0 }
-        return Double(Int((min(3, max(0, seconds)) * 20).rounded())) / 20
+        return Double(Int((min(pauseRange.upperBound, max(0, seconds)) * 20).rounded())) / 20
+    }
+
+    /// The fast voice's pinned sound: 1...999999999, the range the app has always sent to that route («Ещё вариант» draws from
+    /// it). The studio's own range is wider (`seed`), and the daemon has no upper bound for the fast route, so the narrower one is
+    /// the conservative choice.
+    public static func fastSeed(_ n: Int) -> Int { min(999_999_999, max(1, n)) }
+
+    /// A slider is let go: send only if it was really moved. A tap must not rewrite a stored value through the snap, and when the
+    /// phrases differ (`mixed`) any move is a choice, even back to where it started.
+    public static func shouldCommit(moved: Bool, mixed: Bool, initial: Double, value: Double) -> Bool {
+        mixed ? moved : value != initial
+    }
+
+    /// The one value every phrase has, or nil when they differ or there are none.
+    public static func sharedValue(_ values: [Double]) -> Double? {
+        guard let first = values.first, values.allSatisfy({ $0 == first }) else { return nil }
+        return first
+    }
+
+    /// The panel is shown only while Advanced is on, and a hidden panel is a closed one: turning Advanced off closes it for good.
+    public static func panelShown(_ shown: Bool, advanced: Bool) -> Bool { shown && advanced }
+
+    /// Whether the saved panel values change this voicing: the engine reads only its own (the fast voice a level and a pinned
+    /// sound), and nothing counts while Advanced is off. The page says so once, next to «Озвучить».
+    public static func ownSettingsOn(panel: VoicePanelSettings, engine: SpeakEngine, advanced: Bool) -> Bool {
+        guard advanced else { return false }
+        switch engine {
+        case .fast: return panel.loudness != nil || panel.seed != nil
+        case .studio:
+            return panel.loudness != nil || panel.quality != nil || panel.copiesRecording || panel.seed != nil || panel.takes != nil
+        }
     }
 
     /// Steps behind «Черновик» and «Чистовик»: 8 cost 19 % less time with no loss measured, 10 is the engine's default. Six are
@@ -173,12 +207,14 @@ public enum VoicePanelModel {
 
     /// The options of a new studio project: the preset or default `base`, with the panel's choices on top. While Advanced is
     /// off the panel's values are ignored entirely: a control that is not drawn must not change the sound.
-    public static func options(base: VoiceoverOptions, panel: VoicePanelSettings, advanced: Bool) -> VoiceoverOptions {
+    /// `presetWins` (a new reel): the preset's own loudness and takes stay; the sound finish, the delivery and the pinned sound
+    /// of the panel still apply.
+    public static func options(base: VoiceoverOptions, panel: VoicePanelSettings, advanced: Bool, presetWins: Bool = false) -> VoiceoverOptions {
         guard advanced else { return base }
         var merged = base
         merged.cloneMode = cloneMode(copiesRecording: panel.copiesRecording)
-        if let takes = panel.takes { merged.takes = Self.takes(takes) }
-        if let loudness = panel.loudness { merged.loudness = loudness.lufs }
+        if let takes = panel.takes, !presetWins { merged.takes = Self.takes(takes) }
+        if let loudness = panel.loudness, !presetWins { merged.loudness = loudness.lufs }
         if let quality = panel.quality { merged.steps = steps(quality) }
         if let seed = panel.seed { merged.seed = Self.seed(seed) }
         return merged
@@ -187,7 +223,7 @@ public enum VoicePanelModel {
     /// What the fast voice's request carries: the pinned sound and the level, only while Advanced is on.
     public static func speechKnobs(panel: VoicePanelSettings, advanced: Bool) -> (seed: Int?, loudness: Double?) {
         guard advanced else { return (nil, nil) }
-        return (panel.seed.map(seed), panel.loudness?.lufs)
+        return (panel.seed.map(fastSeed), panel.loudness?.lufs)
     }
 
     /// A level can be applied to an open project at once only when it is finished: the daemon re-assembles the finished file
@@ -196,13 +232,13 @@ public enum VoicePanelModel {
         status == .done || status == .review
     }
 
-    /// The phrases a change goes to: all of them, or the chosen one (the first when none is chosen or it is gone). nil when
-    /// the project has no phrases read yet.
+    /// The phrases a change goes to: all of them, or the phrase the person clicked in the list. nil when the project has no
+    /// phrases read yet, or none is chosen (or the chosen one is gone): nothing is changed behind the person's back.
     public static func scope(allText: Bool, phrase: Int?, chunks: [ProduceChunkDetail]) -> PanelScope? {
-        guard let first = chunks.first else { return nil }
+        guard !chunks.isEmpty else { return nil }
         if allText { return .all }
         if let phrase, chunks.contains(where: { $0.index == phrase }) { return .phrase(phrase) }
-        return .phrase(first.index)
+        return nil
     }
 
     /// The `deliver` entries for a change: one per phrase of the scope whose stored value differs. A pace or pause going back to
@@ -223,22 +259,22 @@ public enum VoicePanelModel {
             case .pause(let seconds):
                 let wanted = pauseValue(seconds)
                 return wanted == chunk.pauseAfter ? nil : DeliveryEntry(n: chunk.index, pauseAfter: wanted)
-            case .mood(let mood):
-                let unchanged = mood == nil ? chunk.style == nil : PhraseEditing.mood(of: chunk.style) == mood
-                return unchanged ? nil : PhraseEditing.deliveryEntry(chunk: chunk.index, mood: mood)
             }
         }
     }
 
     /// The sentence under a row: what happens to the sound and when. nil where a row has none to add (the panel says once that
     /// phrases need a finished voiceover).
-    public static func captionKey(row: String, timing: PanelTiming, allText: Bool, copiesRecording: Bool) -> L10nKey? {
+    /// A new reel keeps its preset's loudness and variants, and says so. «Громкость» on a finished project says what really
+    /// happens: a chosen level is applied at once, «Как обычно» leaves the project alone; both are kept for later voicings.
+    public static func captionKey(row: String, timing: PanelTiming, allText: Bool, copiesRecording: Bool,
+                                  reel: Bool = false, levelChosen: Bool = true) -> L10nKey? {
+        if reel, row == "loudness" || row == "takes" { return .speakPanelReelWins }
         switch (row, timing) {
         case (_, .needsProject): return nil
-        case ("loudness", .now): return .speakPanelLoudnessNow
+        case ("loudness", .now): return levelChosen ? .speakPanelLoudnessNow : .speakPanelLoudnessUsualNow
         case ("loudness", .nextVoicing): return .speakPanelLoudnessNext
         case ("pace", _), ("pause", _): return allText ? .speakPanelNowAll : .speakPanelNowPhrase
-        case ("mood", _): return allText ? .speakPanelMoodNowAll : .speakPanelMoodNow
         case ("quality", _): return .speakPanelQualityHint
         case ("cloneMode", _): return copiesRecording ? .speakPanelStyleHintOn : .speakPanelStyleHint
         case ("seed", _): return .speakPanelSeedHint
@@ -252,7 +288,7 @@ public enum VoicePanelModel {
     /// otherwise kept for the next voicing; steps, clone mode, takes and the sound's number exist only when a project is made.
     public static func timing(of row: String, engine: SpeakEngine, finishedProject: Bool) -> PanelTiming {
         switch row {
-        case "pace", "pause", "mood": return finishedProject ? .now : .needsProject
+        case "pace", "pause": return finishedProject ? .now : .needsProject
         case "loudness": return engine == .studio && finishedProject ? .now : .nextVoicing
         default: return .nextVoicing
         }
@@ -277,6 +313,15 @@ public enum PanelWindow {
     /// The least content width the window may be dragged to: its normal floor, and with the panel open what the panes need.
     public static func minimumWidth(floor: Double, needed: Double, panelOpen: Bool) -> Double {
         panelOpen ? max(floor, needed) : floor
+    }
+
+    /// A full-screen or zoomed window is already as big as it gets: the panel fits inside it and the window is left alone.
+    public static func mayGrow(fullScreen: Bool, zoomed: Bool) -> Bool { !fullScreen && !zoomed }
+
+    /// A page that comes up with the panel already open (a restored window) makes its room once it has a window and a laid-out
+    /// width, once; closing re-arms it.
+    public static func shouldMakeRoom(panelOpen: Bool, grewBy: Double, checked: Bool, hasWindow: Bool, width: Double) -> Bool {
+        panelOpen && grewBy == 0 && !checked && hasWindow && width > 100
     }
 
     /// What to take back when the panel closes: only what the opening added, and never below the floor.

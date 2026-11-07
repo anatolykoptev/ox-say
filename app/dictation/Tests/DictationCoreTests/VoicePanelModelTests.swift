@@ -39,14 +39,15 @@ final class VoicePanelModelTests: XCTestCase {
         XCTAssertEqual(LoudnessTarget.of(lufs: -90), .custom(-40))
     }
 
-    /// The daemon takes 0 (clears) or 0.05...10; the panel offers 0...3 on the 0.05 grid. A value between 0 and 0.05 would be a 400.
+    /// The daemon takes 0 (clears) or 0.05...10; the panel offers the same on the 0.05 grid. A value between 0 and 0.05 would be a 400.
     /// Mutation: VoicePanelModel.swift, `pauseValue` snap -> `return seconds` -> RED.
     func testPauseSnapsToTheDaemonGridAndNeverLandsBetweenZeroAndTheMinimum() {
         XCTAssertEqual(VoicePanelModel.pauseValue(0.01), 0)
         XCTAssertEqual(VoicePanelModel.pauseValue(0.02), 0)
         XCTAssertEqual(VoicePanelModel.pauseValue(0.03), 0.05)
         XCTAssertEqual(VoicePanelModel.pauseValue(0.15), 0.15)
-        XCTAssertEqual(VoicePanelModel.pauseValue(5), 3)
+        XCTAssertEqual(VoicePanelModel.pauseValue(5), 5, "a stored pause above three seconds is not shown as three")
+        XCTAssertEqual(VoicePanelModel.pauseValue(12), 10)
         XCTAssertEqual(VoicePanelModel.pauseValue(-1), 0)
     }
 
@@ -63,9 +64,11 @@ final class VoicePanelModelTests: XCTestCase {
 
     func testThePanelDrawsExactlyTheRowsTheEngineSupports() {
         let fast = VoicePanelModel.rows(controls: SpeakControls.shown(engine: .fast, voiceIsDesigned: false, advanced: true), engine: .fast).map(\.id)
-        XCTAssertEqual(fast, ["voice", "loudness", "seed"])
+        XCTAssertEqual(fast, ["loudness", "seed"])
         let studio = VoicePanelModel.rows(controls: SpeakControls.shown(engine: .studio, voiceIsDesigned: true, advanced: true), engine: .studio).map(\.id)
-        XCTAssertEqual(studio, ["voice", "mood", "pace", "pause", "loudness", "quality", "cloneMode", "seed", "takes"])
+        XCTAssertEqual(studio, ["pace", "pause", "loudness", "quality", "cloneMode", "seed", "takes"])
+        XCTAssertFalse(studio.contains("voice"), "the page's picker is the only «Голос»")
+        XCTAssertFalse(studio.contains("mood"), "the mood stays on the phrase rows")
         XCTAssertFalse(studio.contains("cfg")); XCTAssertFalse(studio.contains("pitch")); XCTAssertFalse(studio.contains("emotionStrength"))
     }
 
@@ -73,13 +76,7 @@ final class VoicePanelModelTests: XCTestCase {
     /// Mutation: VoicePanelModel.swift, drop the `engine == .studio` filter on the studio-only rows -> RED.
     func testTheFastVoiceNeverGetsAStudioRowEvenWhenHandedItsControls() {
         let everything = Set(SpeakControl.allCases)
-        XCTAssertEqual(VoicePanelModel.rows(controls: everything, engine: .fast).map(\.id), ["voice", "loudness", "seed"])
-    }
-
-    func testTheMoodRowIsGoneWhenTheRecordingsDeliveryIsCopied() {
-        let controls = SpeakControls.shown(engine: .studio, voiceIsDesigned: false, advanced: true, copiesRecordingStyle: true)
-        XCTAssertEqual(VoicePanelModel.rows(controls: controls, engine: .studio).map(\.id),
-                       ["voice", "pace", "pause", "loudness", "quality", "cloneMode", "seed", "takes"])
+        XCTAssertEqual(VoicePanelModel.rows(controls: everything, engine: .fast).map(\.id), ["loudness", "seed"])
     }
 
     /// A finished studio project is on the right: the panel speaks for the studio voice whatever «Качество» says.
@@ -108,8 +105,6 @@ final class VoicePanelModelTests: XCTestCase {
         XCTAssertEqual(VoicePanelModel.deliveryEntries(chunks: [chunk(0, pace: 1.0)], scope: .phrase(0), change: .pace(1.0)), [])
         XCTAssertEqual(VoicePanelModel.deliveryEntries(chunks: [chunk(0, pace: 1.1)], scope: .phrase(0), change: .pace(1.1)), [])
         XCTAssertEqual(VoicePanelModel.deliveryEntries(chunks: [chunk(0, pause: 0.5)], scope: .phrase(0), change: .pause(0.5)), [])
-        XCTAssertEqual(VoicePanelModel.deliveryEntries(chunks: [chunk(0)], scope: .phrase(0), change: .mood(nil)), [])
-        XCTAssertEqual(VoicePanelModel.deliveryEntries(chunks: [chunk(0, style: "спокойно")], scope: .phrase(0), change: .mood(.calm)), [])
     }
 
     func testAPaceIsClampedAndAPauseSnappedBeforeTheyAreSent() {
@@ -127,19 +122,14 @@ final class VoicePanelModelTests: XCTestCase {
         XCTAssertEqual(VoicePanelModel.deliveryEntries(chunks: chunks, scope: .phrase(7), change: .pace(1.1)), [], "no such phrase")
     }
 
-    func testAMoodGoesAsItsWordAndClearingSendsAnEmptyStyle() {
-        XCTAssertEqual(VoicePanelModel.deliveryEntries(chunks: [chunk(0)], scope: .phrase(0), change: .mood(.excited)),
-                       [DeliveryEntry(n: 0, style: "восторженно")])
-        XCTAssertEqual(VoicePanelModel.deliveryEntries(chunks: [chunk(0, style: "тепло")], scope: .all, change: .mood(nil)),
-                       [DeliveryEntry(n: 0, style: "")])
-    }
-
-    func testTheScopeIsTheChosenPhraseOrTheFirstOrNone() {
+    /// Nothing is changed behind the person's back: with no phrase clicked (and no «Ко всему тексту») there is no scope.
+    /// Mutation: VoicePanelModel.swift, the final `return nil` of `scope` -> `return .phrase(chunks[0].index)` -> RED.
+    func testTheScopeIsTheClickedPhraseOrAllTextOrNothing() {
         let chunks = [chunk(3), chunk(5)]
         XCTAssertEqual(VoicePanelModel.scope(allText: true, phrase: 5, chunks: chunks), .all)
         XCTAssertEqual(VoicePanelModel.scope(allText: false, phrase: 5, chunks: chunks), .phrase(5))
-        XCTAssertEqual(VoicePanelModel.scope(allText: false, phrase: nil, chunks: chunks), .phrase(3))
-        XCTAssertEqual(VoicePanelModel.scope(allText: false, phrase: 9, chunks: chunks), .phrase(3), "a phrase that is gone")
+        XCTAssertNil(VoicePanelModel.scope(allText: false, phrase: nil, chunks: chunks), "no phrase chosen: Темп and Пауза are off")
+        XCTAssertNil(VoicePanelModel.scope(allText: false, phrase: 9, chunks: chunks), "a phrase that is gone")
         XCTAssertNil(VoicePanelModel.scope(allText: true, phrase: nil, chunks: []))
     }
 
@@ -165,8 +155,6 @@ final class VoicePanelModelTests: XCTestCase {
         let untouched = VoicePanelModel.options(base: NewReelPreset.options(), panel: VoicePanelSettings(), advanced: true)
         XCTAssertEqual(untouched, NewReelPreset.options())
         XCTAssertEqual(untouched.takes, 1); XCTAssertEqual(untouched.cloneMode, "reference")
-        // A takes count chosen in the panel wins over the reel's.
-        XCTAssertEqual(VoicePanelModel.options(base: NewReelPreset.options(), panel: VoicePanelSettings(takes: 3), advanced: true).takes, 3)
         let knobs = VoicePanelModel.speechKnobs(panel: loud, advanced: true)
         XCTAssertEqual(knobs.seed, 42); XCTAssertEqual(knobs.loudness, -18)
     }
@@ -175,6 +163,29 @@ final class VoicePanelModelTests: XCTestCase {
     func testTheRecordingsDeliveryIsCopiedOnlyOnRequest() {
         XCTAssertEqual(VoicePanelModel.cloneMode(copiesRecording: true), "ultimate")
         XCTAssertEqual(VoicePanelModel.cloneMode(copiesRecording: false), "reference")
+    }
+
+    /// A new reel keeps its preset's loudness and takes; the sound finish and the pinned sound of the panel still apply.
+    /// Mutation: VoicePanelModel.swift, `!presetWins` on the takes line removed -> RED.
+    func testTheReelPresetWinsForLoudnessAndTakesOnly() {
+        let panel = VoicePanelSettings(loudness: .underMusic, quality: .draft, copiesRecording: true, seed: 7, takes: 3)
+        let reel = VoicePanelModel.options(base: NewReelPreset.options(), panel: panel, advanced: true, presetWins: true)
+        XCTAssertEqual(reel.takes, NewReelPreset.options().takes)
+        XCTAssertEqual(reel.loudness, NewReelPreset.options().loudness)
+        XCTAssertEqual(reel.steps, 8); XCTAssertEqual(reel.seed, 7); XCTAssertEqual(reel.cloneMode, "ultimate")
+        let plain = VoicePanelModel.options(base: VoiceoverOptions(cloneMode: "reference"), panel: panel, advanced: true, presetWins: false)
+        XCTAssertEqual(plain.takes, 3); XCTAssertEqual(plain.loudness, -18)
+    }
+
+    /// The fast route has always been sent 1...999999999; the pinned sound is brought into it.
+    /// Mutation: VoicePanelModel.swift, `speechKnobs` returns `panel.seed` unclamped -> RED.
+    func testThePinnedSoundOfTheFastVoiceStaysInTheRangeItHasAlwaysTaken() {
+        XCTAssertEqual(VoicePanelModel.fastSeed(0), 1)
+        XCTAssertEqual(VoicePanelModel.fastSeed(4_000_000_000), 999_999_999)
+        XCTAssertEqual(VoicePanelModel.fastSeed(481_516_234), 481_516_234)
+        XCTAssertEqual(VoicePanelModel.speechKnobs(panel: VoicePanelSettings(seed: 4_000_000_000), advanced: true).seed, 999_999_999)
+        XCTAssertEqual(VoicePanelModel.options(base: VoiceoverOptions(), panel: VoicePanelSettings(seed: 4_000_000_000), advanced: true).seed, 4_000_000_000,
+                       "the studio keeps its own, wider range")
     }
 
     func testAnOutOfRangeStoredValueIsClampedOnTheWayOut() {
@@ -203,7 +214,6 @@ final class VoicePanelModelTests: XCTestCase {
         }
         XCTAssertEqual(VoicePanelModel.timing(of: "pace", engine: .studio, finishedProject: true), .now)
         XCTAssertEqual(VoicePanelModel.timing(of: "pause", engine: .studio, finishedProject: false), .needsProject)
-        XCTAssertEqual(VoicePanelModel.timing(of: "mood", engine: .studio, finishedProject: false), .needsProject)
     }
 
     // MARK: storing
@@ -228,17 +238,22 @@ final class VoicePanelModelTests: XCTestCase {
 extension VoicePanelModelTests {
     /// Every caption names what really happens: pace and pause re-assemble without a render, a mood renders the phrase again,
     /// a level is heard at once on a finished project, and the rest wait for the next voicing.
-    /// Mutation: VoicePanelModel.swift, `("mood", _)` caption -> the pace one -> RED.
+    /// Mutation: VoicePanelModel.swift, `levelChosen ? .speakPanelLoudnessNow : .speakPanelLoudnessUsualNow` -> `.speakPanelLoudnessNow` -> RED.
     func testEachCaptionIsTheOneForWhatTheRowReallyDoes() {
-        func key(_ row: String, _ timing: PanelTiming, all: Bool = false, copies: Bool = false) -> L10nKey? {
-            VoicePanelModel.captionKey(row: row, timing: timing, allText: all, copiesRecording: copies)
+        func key(_ row: String, _ timing: PanelTiming, all: Bool = false, copies: Bool = false, reel: Bool = false, level: Bool = true) -> L10nKey? {
+            VoicePanelModel.captionKey(row: row, timing: timing, allText: all, copiesRecording: copies, reel: reel, levelChosen: level)
         }
+        // «Как обычно» on a finished project sends nothing, and the caption does not claim it was applied.
+        XCTAssertEqual(key("loudness", .now, level: false), .speakPanelLoudnessUsualNow)
+        // A new reel keeps its preset's loudness and variants, and says so.
+        XCTAssertEqual(key("loudness", .nextVoicing, reel: true), .speakPanelReelWins)
+        XCTAssertEqual(key("takes", .nextVoicing, reel: true), .speakPanelReelWins)
+        XCTAssertEqual(key("seed", .nextVoicing, reel: true), .speakPanelSeedHint)
         XCTAssertEqual(key("loudness", .now), .speakPanelLoudnessNow)
         XCTAssertEqual(key("loudness", .nextVoicing), .speakPanelLoudnessNext)
         XCTAssertEqual(key("pace", .now), .speakPanelNowPhrase)
         XCTAssertEqual(key("pause", .now, all: true), .speakPanelNowAll)
-        XCTAssertEqual(key("mood", .now), .speakPanelMoodNow)
-        XCTAssertEqual(key("mood", .now, all: true), .speakPanelMoodNowAll)
+        XCTAssertNil(key("mood", .now), "the panel has no mood row")
         XCTAssertEqual(key("quality", .nextVoicing), .speakPanelQualityHint)
         XCTAssertEqual(key("cloneMode", .nextVoicing), .speakPanelStyleHint)
         XCTAssertEqual(key("cloneMode", .nextVoicing, copies: true), .speakPanelStyleHintOn)
@@ -279,5 +294,61 @@ extension VoicePanelModelTests {
         XCTAssertEqual(PanelWindow.shrink(grewBy: 179, current: 980, floor: 801), 179)
         XCTAssertEqual(PanelWindow.shrink(grewBy: 179, current: 850, floor: 801), 49, "the person had made it narrower meanwhile")
         XCTAssertEqual(PanelWindow.shrink(grewBy: 0, current: 980, floor: 801), 0)
+    }
+}
+
+extension VoicePanelModelTests {
+    /// A tap must not rewrite a stored value; differing phrases wait for a real move.
+    /// Mutation: VoicePanelModel.swift, `mixed ? moved : value != initial` -> `true` -> RED.
+    func testASliderSendsOnlyWhatWasReallyMoved() {
+        XCTAssertFalse(VoicePanelModel.shouldCommit(moved: false, mixed: false, initial: 5, value: 5), "a tap on a stored 5 s pause")
+        XCTAssertFalse(VoicePanelModel.shouldCommit(moved: true, mixed: false, initial: 1.1, value: 1.1), "moved and put back")
+        XCTAssertTrue(VoicePanelModel.shouldCommit(moved: true, mixed: false, initial: 1.1, value: 1.0))
+        XCTAssertFalse(VoicePanelModel.shouldCommit(moved: false, mixed: true, initial: 1, value: 1), "phrases differ: nothing until moved")
+        XCTAssertTrue(VoicePanelModel.shouldCommit(moved: true, mixed: true, initial: 1, value: 1), "any move is a choice for all of them")
+    }
+
+    func testPhrasesThatDifferHaveNoSharedValue() {
+        XCTAssertEqual(VoicePanelModel.sharedValue([1.1, 1.1]), 1.1)
+        XCTAssertNil(VoicePanelModel.sharedValue([1.1, 1.0]))
+        XCTAssertNil(VoicePanelModel.sharedValue([]))
+    }
+
+    /// Mutation: VoicePanelModel.swift, `shown && advanced` -> `shown` -> RED.
+    func testAHiddenPanelIsAClosedOne() {
+        XCTAssertTrue(VoicePanelModel.panelShown(true, advanced: true))
+        XCTAssertFalse(VoicePanelModel.panelShown(true, advanced: false), "Advanced off closes it for good")
+        XCTAssertFalse(VoicePanelModel.panelShown(false, advanced: true))
+    }
+
+    /// Saved values that change a voicing are announced once; only the engine's own count, and nothing while Advanced is off.
+    /// Mutation: VoicePanelModel.swift, `guard advanced else { return false }` removed -> RED.
+    func testSavedPanelValuesAreAnnouncedOnlyWhereTheyChangeTheVoicing() {
+        let studioOnly = VoicePanelSettings(quality: .draft, copiesRecording: true, takes: 2)
+        XCTAssertFalse(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(), engine: .studio, advanced: true))
+        XCTAssertTrue(VoicePanelModel.ownSettingsOn(panel: studioOnly, engine: .studio, advanced: true))
+        XCTAssertFalse(VoicePanelModel.ownSettingsOn(panel: studioOnly, engine: .fast, advanced: true), "the fast voice reads none of them")
+        XCTAssertTrue(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(seed: 4), engine: .fast, advanced: true))
+        XCTAssertTrue(VoicePanelModel.ownSettingsOn(panel: VoicePanelSettings(loudness: .reels), engine: .fast, advanced: true))
+        XCTAssertFalse(VoicePanelModel.ownSettingsOn(panel: studioOnly, engine: .studio, advanced: false))
+    }
+
+    /// Mutation: VoicePanelModel.swift, `mayGrow` returns true -> RED.
+    func testAFullScreenOrZoomedWindowIsNotGrown() {
+        XCTAssertTrue(PanelWindow.mayGrow(fullScreen: false, zoomed: false))
+        XCTAssertFalse(PanelWindow.mayGrow(fullScreen: true, zoomed: false))
+        XCTAssertFalse(PanelWindow.mayGrow(fullScreen: false, zoomed: true))
+    }
+
+    /// A page that starts with the panel open makes its room once, when it has a window and a laid-out width.
+    /// Mutation: VoicePanelModel.swift, `!checked` removed from `shouldMakeRoom` -> RED.
+    func testAPanelThatStartsOpenMakesItsRoomOnce() {
+        func go(open: Bool = true, grew: Double = 0, checked: Bool = false, window: Bool = true, width: Double = 700) -> Bool {
+            PanelWindow.shouldMakeRoom(panelOpen: open, grewBy: grew, checked: checked, hasWindow: window, width: width)
+        }
+        XCTAssertTrue(go())
+        XCTAssertFalse(go(open: false)); XCTAssertFalse(go(grew: 179)); XCTAssertFalse(go(checked: true))
+        XCTAssertFalse(go(window: false), "no window yet: wait for the layout")
+        XCTAssertFalse(go(width: 0), "not laid out yet")
     }
 }

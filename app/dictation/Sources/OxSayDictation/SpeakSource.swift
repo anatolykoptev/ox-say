@@ -266,6 +266,7 @@ final class SpeakSource {
         stopClip()
         endReel()
         model.data.speak.selectedID = id
+        model.data.speak.panelPhrase = nil
         model.data.speak.phase = .idle
         model.data.speak.trackMissing.remove(id)
         phrasesKey = nil
@@ -640,18 +641,22 @@ final class SpeakSource {
     /// One change to one phrase of the selected project. Every one of them is refused by the daemon while the project runs
     /// (`PhraseEditing.canEditText`), so the page does not send it; a second one waits for the first. The phrase's row says
     /// what is being done until the project has ended, then the chunks are read again.
+    /// True when the change was accepted and is on its way; false when a gate refused it (the panel then shows the value it
+    /// really holds). `onFailure` runs when an accepted change fails on the daemon.
+    @discardableResult
     private func phraseOperation(chunk n: Int, kind: PhraseWork.Kind,
-                                 _ body: @escaping (StudioClient, String) async throws -> [ProduceChunkDetail]) {
+                                 _ body: @escaping (StudioClient, String) async throws -> [ProduceChunkDetail],
+                                 onFailure: (() -> Void)? = nil) -> Bool {
         guard let job = model.data.speak.selectedProject, !PhraseEditing.isBusy(model.data.speak.phraseWork, project: job.id),
-              PhraseEditing.canEditText(status: job.status) else { return }
+              PhraseEditing.canEditText(status: job.status) else { return false }
         // The daemon works on one project at a time: a change to this one while another is being changed would be refused.
         guard model.data.speak.phraseWork == nil else {
             model.data.notice = StudioError.voiceoverRunning.message()
-            return
+            return false
         }
         if let refusal = host.speechRefusal() {
             model.data.notice = refusal
-            return
+            return false
         }
         // A take that sounds would go on playing the old audio while it is being replaced.
         stopClip()
@@ -662,6 +667,7 @@ final class SpeakSource {
                 let chunks = try await body(client, job.id)
                 guard let self else { return }
                 self.model.data.speak.phraseWork = nil
+                self.model.data.speak.panelEpoch &+= 1
                 // The person may have moved to another project meanwhile: its phrases are not replaced by these.
                 if self.model.data.speak.selectedID == job.id {
                     self.model.data.speak.phraseChunks = chunks
@@ -673,10 +679,13 @@ final class SpeakSource {
             } catch {
                 guard let self else { return }
                 self.model.data.speak.phraseWork = nil
+                self.model.data.speak.panelEpoch &+= 1
+                onFailure?()
                 self.model.data.notice = SpeakText.notice(error) { $0.text }
                 self.refreshProjects()
             }
         }
+        return true
     }
 
     // MARK: voice panel
@@ -692,27 +701,35 @@ final class SpeakSource {
         model.data.speak.panel.save(to: host.defaults)
     }
 
-    /// «Громкость»: the choice is kept for the next voicing, and a finished project is levelled at once, as a delivery with the
-    /// target and no render. The daemon re-assembles the finished file as a job of its own (one at a time), so it goes through
-    /// the same gate as a change to a phrase and the app waits for it before reading the project again.
+    /// «Громкость»: a finished project is levelled at once, as a delivery with the target and no render, and the choice is kept
+    /// for later voicings. The daemon re-assembles the finished file as a job of its own (one at a time), so it goes through the
+    /// same gate as a change to a phrase and the app waits for it before reading the project again. The choice is stored (and
+    /// shown) only once the change is accepted, and put back if the daemon then fails it. «Как обычно» on a finished project
+    /// sends nothing: it is kept for the next voicings only.
     func setLoudness(_ target: LoudnessTarget?) {
-        model.data.speak.panel.loudness = target
-        savePanel()
-        guard let target, let job = model.data.speak.selectedProject, VoicePanelModel.loudnessAppliesNow(status: job.status) else { return }
-        phraseOperation(chunk: PhraseWork.wholeProject, kind: .loudness) { [voiceover = self.voiceover] client, id in
+        let previous = model.data.speak.panel.loudness
+        guard let target, let job = model.data.speak.selectedProject, VoicePanelModel.loudnessAppliesNow(status: job.status) else {
+            model.data.speak.panel.loudness = target
+            savePanel()
+            return
+        }
+        let accepted = phraseOperation(chunk: PhraseWork.wholeProject, kind: .loudness, { [voiceover = self.voiceover] client, id in
             try await client.deliver(id: id, entries: [], loudness: target.lufs)
             try await voiceover.followAndWait(id: id)
             return try await client.chunks(id: id)
-        }
+        }, onFailure: { [weak self] in
+            self?.model.data.speak.panel.loudness = previous
+            self?.savePanel()
+        })
+        guard accepted else { return }
+        model.data.speak.panel.loudness = target
+        savePanel()
     }
 
     /// «Темп» and «Пауза» for the chosen phrase or all of them: the track is put together again without a render.
     func setPace(_ slider: Double) { applyDelivery(.pace(slider), kind: .pace) }
 
     func setPause(_ seconds: Double) { applyDelivery(.pause(seconds), kind: .pause) }
-
-    /// «Настроение» from the panel: the phrase (or every phrase) is rendered again with the mood word.
-    func setPanelMood(_ mood: Mood?) { applyDelivery(.mood(mood), kind: .mood) }
 
     /// One batch of delivery entries for the panel's scope. A batch with nothing to change is not sent (the daemon answers 400 to
     /// an empty one), and chunks that belong to another project are never used.
@@ -727,11 +744,13 @@ final class SpeakSource {
         case .phrase(let n): chunk = n
         case .all: chunk = PhraseWork.wholeProject
         }
-        phraseOperation(chunk: chunk, kind: kind) { [voiceover = self.voiceover] client, id in
+        let accepted = phraseOperation(chunk: chunk, kind: kind) { [voiceover = self.voiceover] client, id in
             try await client.deliver(id: id, entries: entries, loudness: nil)
             try await voiceover.followAndWait(id: id)
             return try await client.chunks(id: id)
         }
+        // A refused change leaves the slider where the person put it: it starts again from the value the phrase has.
+        if !accepted { model.data.speak.panelEpoch &+= 1 }
     }
 
     // MARK: saving

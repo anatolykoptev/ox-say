@@ -57,6 +57,8 @@ public struct SpeakValues: Equatable {
     /// The projects of this session that were made with the recording's own delivery (`SpeakStudio.copiesRecording`): the daemon
     /// answers 409 to a mood on them, so none is offered.
     public var projectCopies: Set<String>
+    /// Moves when a change to a phrase was refused or has landed, so the panel's sliders start again from the stored value.
+    public var panelEpoch: Int
 
     public init(text: String = "", voice: String? = nil, clips: [SpeakClip] = [],
                 selectedID: String? = nil, phase: SpeakPhase = .idle, reach: DaemonReach = .unknown,
@@ -66,7 +68,7 @@ public struct SpeakValues: Equatable {
                 reel: Bool = false, reading: Bool = false, phraseChunks: [ProduceChunkDetail] = [], phrasesFor: String? = nil,
                 phraseWork: PhraseWork? = nil, playingPhrase: Int? = nil, projectVoices: [String: String] = [:],
                 panel: VoicePanelSettings = VoicePanelSettings(), panelShown: Bool = false, panelPhrase: Int? = nil,
-                panelAllText: Bool = false, projectCopies: Set<String> = []) {
+                panelAllText: Bool = false, projectCopies: Set<String> = [], panelEpoch: Int = 0) {
         self.text = text
         self.voice = voice
         self.clips = clips
@@ -94,6 +96,7 @@ public struct SpeakValues: Equatable {
         self.panelPhrase = panelPhrase
         self.panelAllText = panelAllText
         self.projectCopies = projectCopies
+        self.panelEpoch = panelEpoch
         items = SpeakList.merge(projects: projects, clips: clips)
     }
 

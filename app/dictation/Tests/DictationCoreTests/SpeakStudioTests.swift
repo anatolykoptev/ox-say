@@ -46,6 +46,16 @@ final class SpeakStudioTests: XCTestCase {
         XCTAssertEqual(reel.options, NewReelPreset.options())
     }
 
+    /// A new reel keeps its preset's loudness and takes even with Advanced on; the panel's sound finish and sound still apply.
+    /// Mutation: SpeakStudio.swift, `presetWins: reel` -> `presetWins: false` -> RED.
+    func testAReelKeepsItsPresetLoudnessAndTakesWithAdvancedOn() throws {
+        let panel = VoicePanelSettings(loudness: .underMusic, quality: .draft, seed: 9, takes: 3)
+        let reel = try XCTUnwrap(SpeakStudio.start(text: "Привет.", reel: true, advanced: true, panel: panel))
+        XCTAssertEqual(reel.options.takes, NewReelPreset.options().takes)
+        XCTAssertEqual(reel.options.loudness, NewReelPreset.options().loudness)
+        XCTAssertEqual(reel.options.steps, 8); XCTAssertEqual(reel.options.seed, 9)
+    }
+
     /// The project's clone mode is remembered so its phrases draw no mood chip.
     func testAProjectThatCopiesTheRecordingIsRecognisedFromItsOptions() {
         XCTAssertTrue(SpeakStudio.copiesRecording(VoiceoverOptions(cloneMode: "ultimate")))

@@ -335,12 +335,25 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         },
         // The Advanced voice panel: on the studio voice (a finished reel, every row), on the fast voice (an Intel Mac: three rows),
         // and closed (the toolbar button only).
-        Scene(name: "speak-panel-studio", section: .speak, meeting: nil, advanced: true) { now, ru in
+        // Tall enough for every row: the panel's Form also scrolls in a shorter window.
+        Scene(name: "speak-panel-studio", section: .speak, meeting: nil, height: 1000, advanced: true) { now, ru in
             speakPhrases(now, ru, voice: "warm-narrator") { v in
                 v.panelShown = true
                 v.projects[0].seed = 2_401_631_678
                 v.panel = VoicePanelSettings(loudness: .underMusic, quality: .draft)
             }
+        },
+        // A phrase chosen in the list (highlighted): the panel shows it, with its own pace and pause.
+        Scene(name: "speak-panel-phrase", section: .speak, meeting: nil, height: 1000, advanced: true) { now, ru in
+            speakPhrases(now, ru, voice: "warm-narrator") { v in
+                v.panelShown = true; v.panelPhrase = 1
+                v.phraseChunks[1].pace = 1.1; v.phraseChunks[1].pauseAfter = 0.5
+                v.projects[0].seed = 2_401_631_678
+            }
+        },
+        // The saved-settings line by «Озвучить», on the fast voice, with the panel closed.
+        Scene(name: "speak-own-settings", section: .speak, meeting: nil, advanced: true) { now, ru in
+            speak(now, ru) { v in v.studio = .unsupported(siliconReason); v.panel = VoicePanelSettings(loudness: .reels, seed: 481_516_234) }
         },
         Scene(name: "speak-panel-fast", section: .speak, meeting: nil, advanced: true) { now, ru in
             speak(now, ru) { v in

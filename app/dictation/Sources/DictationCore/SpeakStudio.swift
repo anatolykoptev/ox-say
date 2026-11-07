@@ -20,7 +20,7 @@ public enum SpeakStudio {
         let base = reel ? NewReelPreset.options() : VoiceoverOptions(cloneMode: "reference")
         return StudioStart(script: script, title: SpeakClips.title(of: script),
                            format: reel ? NewReelPreset.format : .long,
-                           options: VoicePanelModel.options(base: base, panel: panel, advanced: advanced))
+                           options: VoicePanelModel.options(base: base, panel: panel, advanced: advanced, presetWins: reel))
     }
 
     /// «Оставить только начало» is offered under the editor for a studio text over the daemon's cap (the same trim the
