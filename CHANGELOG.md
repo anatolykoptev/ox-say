@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.31](https://github.com/anatolykoptev/ox-say/compare/v0.1.30...v0.1.31) (2026-11-07)
+
+
+### Added
+
+* **voiceover:** studio-voice projects in the Озвучка list with progress and a finished track (window Task 15) ([#497](https://github.com/anatolykoptev/ox-say/issues/497)) ([aa48fb4](https://github.com/anatolykoptev/ox-say/commit/aa48fb444b6e3300ddf8a305211a972e37e71908))
+
 ## [0.1.30](https://github.com/anatolykoptev/ox-say/compare/v0.1.29...v0.1.30) (2026-11-07)
 
 
