@@ -1,5 +1,69 @@
 # Changelog
 
+## [0.1.30](https://github.com/anatolykoptev/ox-say/compare/v0.1.29...v0.1.30) (2026-11-07)
+
+
+### Added
+
+* **app:** raise the macOS floor to 14.2 (native-UI N1) ([#446](https://github.com/anatolykoptev/ox-say/issues/446)) ([b86c942](https://github.com/anatolykoptev/ox-say/commit/b86c942034a67cf885243ae320a083da14087b05))
+* **clean:** build, package and install ox-clean (arm64 + Intel); CI job and release assertions ([#477](https://github.com/anatolykoptev/ox-say/issues/477)) ([1533cca](https://github.com/anatolykoptev/ox-say/commit/1533cca511090cc98245de8c5cbf6952066b9d47))
+* **clean:** fetch the voice-cleanup model set, pinned and marker-checked ([#455](https://github.com/anatolykoptev/ox-say/issues/455)) ([a0412a6](https://github.com/anatolykoptev/ox-say/commit/a0412a6dfb26b09613ce2d7788dccbfe0ec24630))
+* **clean:** Kaldi fbank with deltas, checked against torchaudio ([#461](https://github.com/anatolykoptev/ox-say/issues/461)) ([f1f6ec1](https://github.com/anatolykoptev/ox-say/commit/f1f6ec1ed61a62be118631c5ef578959343df132))
+* **clean:** MossFormer2_SE_48K Core ML converter and model documents ([#444](https://github.com/anatolykoptev/ox-say/issues/444)) ([3540574](https://github.com/anatolykoptev/ox-say/commit/35405748e0f22a8813cb7cb30410aca5b0b779c9))
+* **clean:** ox-clean core -- pins, platform gate, arguments, streaming WAV I/O ([#458](https://github.com/anatolykoptev/ox-say/issues/458)) ([e4d95da](https://github.com/anatolykoptev/ox-say/commit/e4d95da1dde9706e032055ad35249e9d75f174fe))
+* **clean:** STFT and iSTFT on Accelerate, checked against torch ([#465](https://github.com/anatolykoptev/ox-say/issues/465)) ([bb5e187](https://github.com/anatolykoptev/ox-say/commit/bb5e18783aa9577e740d3e8a179b5e7b6172ca5b))
+* **clean:** the 20 s / 15 s chunker with end-aligned tail, tiled short clips and 50 ms crossfades ([#468](https://github.com/anatolykoptev/ox-say/issues/468)) ([479f2f1](https://github.com/anatolykoptev/ox-say/commit/479f2f1b1128624fe9c454ab83ee596b4f4d0a5b))
+* **clean:** the Core ML mask model and the windowed cleaning pipeline ([#471](https://github.com/anatolykoptev/ox-say/issues/471)) ([b77b1a7](https://github.com/anatolykoptev/ox-say/commit/b77b1a748aa3b0fd9f4aaa33077e47004db524c4))
+* **clean:** the ox-clean helper -- CLI contract, build script and speed probe ([#473](https://github.com/anatolykoptev/ox-say/issues/473)) ([9898924](https://github.com/anatolykoptev/ox-say/commit/9898924201c444aa3a48a767eab04c76cd1548a1))
+* **daemon:** diar engine switch, per-engine readiness and the 6 h Nemotron cap ([#404](https://github.com/anatolykoptev/ox-say/issues/404)) ([7268ea4](https://github.com/anatolykoptev/ox-say/commit/7268ea4c60e8c985166b2269a7e5a82f0aa0c2c3))
+* **daemon:** voice cleanup route, readiness, status and models row ([#481](https://github.com/anatolykoptev/ox-say/issues/481)) ([4b3eae1](https://github.com/anatolykoptev/ox-say/commit/4b3eae1285e062cbeda0983a04575f36a311751e))
+* **diar:** fetch the Nemotron 3 Diarization fast128 model set ([#395](https://github.com/anatolykoptev/ox-say/issues/395)) ([f054c50](https://github.com/anatolykoptev/ox-say/commit/f054c50df3255a1b958345784c13f7340a369adb))
+* **diar:** Nemotron 3 fast128 is the default speaker engine ([#407](https://github.com/anatolykoptev/ox-say/issues/407)) ([04dbb00](https://github.com/anatolykoptev/ox-say/commit/04dbb00afa419a8f8945e6e38288ab3b30d74efe))
+* **diar:** Nemotron timeline and mapped PCM source ([#396](https://github.com/anatolykoptev/ox-say/issues/396)) ([e47a589](https://github.com/anatolykoptev/ox-say/commit/e47a589208960bbd800f2b936b2bccbeb68e7bfb))
+* **diar:** ox-diar --engine nemotron (fast128 on the Neural Engine), off by default ([#398](https://github.com/anatolykoptev/ox-say/issues/398)) ([1d38380](https://github.com/anatolykoptev/ox-say/commit/1d383802d5ac241cb5161a5d22e4792ee041e620))
+* **dictation:** voice library model ([#425](https://github.com/anatolykoptev/ox-say/issues/425)) ([95e63a0](https://github.com/anatolykoptev/ox-say/commit/95e63a0521a9cf3376d03fd8eaf943e7baf0167c))
+* **mcp:** the voice_clean tool ([#484](https://github.com/anatolykoptev/ox-say/issues/484)) ([09b4b92](https://github.com/anatolykoptev/ox-say/commit/09b4b9293c2704396e49489ca7176e36b3d8d857))
+* **models:** list the models and remove an optional one ([#419](https://github.com/anatolykoptev/ox-say/issues/419)) ([4d5703d](https://github.com/anatolykoptev/ox-say/commit/4d5703de1858aea467afb1564763e5962ffa5168))
+* **produce:** bulk chunk view and loudness in the delivery batch ([#417](https://github.com/anatolykoptev/ox-say/issues/417)) ([af7855e](https://github.com/anatolykoptev/ox-say/commit/af7855e70c44258a0be6a0fa55816fd54c8e3952))
+* **produce:** chunk client and phrase-script rules for the voiceover section ([#429](https://github.com/anatolykoptev/ox-say/issues/429)) ([c61959e](https://github.com/anatolykoptev/ox-say/commit/c61959e53629c41efc728c7bd297c6e5732bf1fe))
+* **produce:** optional loudness_lufs and inference_timesteps on create ([#410](https://github.com/anatolykoptev/ox-say/issues/410)) ([62b5774](https://github.com/anatolykoptev/ox-say/commit/62b5774fef6a14110882dfa6b6e3db4f660c1ed3))
+* **transcripts:** keep file transcripts in the daemon (store and routes) ([#413](https://github.com/anatolykoptev/ox-say/issues/413)) ([aada8d2](https://github.com/anatolykoptev/ox-say/commit/aada8d2fa390b26749762442450cde88199cb20a))
+* **voiceclean:** the ffmpeg orchestration of voice cleanup, ported from voice-clean ([#463](https://github.com/anatolykoptev/ox-say/issues/463)) ([5d5bb13](https://github.com/anatolykoptev/ox-say/commit/5d5bb13f7956290838342e34acefafd6c6087e0c))
+* **voiceover:** per-engine control matrix, page states and first-run sample ([#487](https://github.com/anatolykoptev/ox-say/issues/487)) ([40b0a6c](https://github.com/anatolykoptev/ox-say/commit/40b0a6cd5c9955dafcae050d595ae19d81136a38))
+* **voiceover:** the Озвучка page on the fast voice (window Task 14) ([#489](https://github.com/anatolykoptev/ox-say/issues/489)) ([05ef8b9](https://github.com/anatolykoptev/ox-say/commit/05ef8b9ead8921467b6ad87c3e6c05afedc29da5))
+* **voices:** add a voice from an audio file ([#434](https://github.com/anatolykoptev/ox-say/issues/434)) ([394df7a](https://github.com/anatolykoptev/ox-say/commit/394df7ad840a3d69607282c8d8854e2677ef89c5))
+* **voices:** describe a voice in words, in the window (replaces the Create-a-Voice alerts) ([#432](https://github.com/anatolykoptev/ox-say/issues/432)) ([5e2a2ae](https://github.com/anatolykoptev/ox-say/commit/5e2a2ae1cbf652c3cc58f360d850ccc50281a9cf))
+* **voices:** optional display label and source on a voice ([#405](https://github.com/anatolykoptev/ox-say/issues/405)) ([4377c7b](https://github.com/anatolykoptev/ox-say/commit/4377c7ba3a7445f3e165964af7ed660b9b160056))
+* **voices:** record your own voice in the window ([#438](https://github.com/anatolykoptev/ox-say/issues/438)) ([6fdab95](https://github.com/anatolykoptev/ox-say/commit/6fdab95d51c6ee6d880d1f261731be0b129621cd))
+* **voices:** the Voices page lists, previews, renames and deletes voices ([#430](https://github.com/anatolykoptev/ox-say/issues/430)) ([52a4a96](https://github.com/anatolykoptev/ox-say/commit/52a4a96f8d68b0b69d644858b8e2f0a0e0c0c0a8))
+* **window:** .searchable replaces the hand-built search field (native-UI N3) ([#451](https://github.com/anatolykoptev/ox-say/issues/451)) ([3e3c1fa](https://github.com/anatolykoptev/ox-say/commit/3e3c1fa5390c2b0f69390a2ca3ca982b64686020))
+* **window:** ContentUnavailableView replaces the hand-built empty states (native-UI N2) ([#448](https://github.com/anatolykoptev/ox-say/issues/448)) ([589bbd4](https://github.com/anatolykoptev/ox-say/commit/589bbd44d2f046c2c268e90a79b25ada2ef8bd88))
+* **window:** final sections behind live flags and the Advanced switch ([#414](https://github.com/anatolykoptev/ox-say/issues/414)) ([eb694e1](https://github.com/anatolykoptev/ox-say/commit/eb694e17f3523267fcfe9f0c504a095b69e53b86))
+* **window:** IconButton, SidePanel and MotionPolicy for the new pages ([#421](https://github.com/anatolykoptev/ox-say/issues/421)) ([b79de55](https://github.com/anatolykoptev/ox-say/commit/b79de554b91af8b101e70ae8475fd856083ed49a))
+* **window:** Meetings list and meeting in a native split view (native-UI N2b) ([#453](https://github.com/anatolykoptev/ox-say/issues/453)) ([58966f7](https://github.com/anatolykoptev/ox-say/commit/58966f7e869663ae21c80a75764846cd5f09c818))
+* **window:** Open OxSay always shows the window; routes, restoration, reopen ([#393](https://github.com/anatolykoptev/ox-say/issues/393)) ([a1a3639](https://github.com/anatolykoptev/ox-say/commit/a1a363983164986b27bc356fd8384dacc6c730e5))
+* **window:** Settings is a real sidebar row with the system highlight (native-UI N4) ([#459](https://github.com/anatolykoptev/ox-say/issues/459)) ([044bb88](https://github.com/anatolykoptev/ox-say/commit/044bb883a6327b682dcbf35f72b34a571d43368d))
+
+
+### Fixed
+
+* **daemon:** bound the Intel speech wait on a cleanup lease to 10 s ([#482](https://github.com/anatolykoptev/ox-say/issues/482)) ([#485](https://github.com/anatolykoptev/ox-say/issues/485)) ([e32b46d](https://github.com/anatolykoptev/ox-say/commit/e32b46d1c61e5f481a5f17c57e4468e151472562))
+* **dictation:** serialise JSON request bodies with sorted keys ([#467](https://github.com/anatolykoptev/ox-say/issues/467)) ([#475](https://github.com/anatolykoptev/ox-say/issues/475)) ([b9a63c3](https://github.com/anatolykoptev/ox-say/commit/b9a63c3d205b123b96776727ffde8dd35a2ee2be))
+* **meeting:** join a minor cluster by time when the engine gives no embeddings ([#399](https://github.com/anatolykoptev/ox-say/issues/399)) ([e261fa9](https://github.com/anatolykoptev/ox-say/commit/e261fa97906f997de3658a849b6dd889c51c5005))
+* **produce:** a failed publish restores the previous output set ([#426](https://github.com/anatolykoptev/ox-say/issues/426)) ([fbafa8e](https://github.com/anatolykoptev/ox-say/commit/fbafa8e4c553ad4c83e5f87b39c67692b600a57f))
+* **release:** pre-0.1.30 hardening — real-model gate, pinned model URLs, exFAT publish, engine signature check ([#496](https://github.com/anatolykoptev/ox-say/issues/496)) ([6205561](https://github.com/anatolykoptev/ox-say/commit/6205561499251c156979e475223f6d4f26948c89))
+* **shots:** sheet scenes render the real main window with the sheet attached ([#436](https://github.com/anatolykoptev/ox-say/issues/436)) ([ffbb45a](https://github.com/anatolykoptev/ox-say/commit/ffbb45acc8d6bdb7bc44c552c18b373d967912e7))
+* **voiceclean:** QuickTime chapter tracks ride -map_chapters; sweep stale scratch at serve ([#486](https://github.com/anatolykoptev/ox-say/issues/486)) ([14cbb36](https://github.com/anatolykoptev/ox-say/commit/14cbb363f35f77b00699e21711f665fb18eaed54))
+* **voiceclean:** refuse to publish a file whose A/V lag is unverified or still off ([#469](https://github.com/anatolykoptev/ox-say/issues/469)) ([#470](https://github.com/anatolykoptev/ox-say/issues/470)) ([bff48b2](https://github.com/anatolykoptev/ox-say/commit/bff48b20b763829f6ae37127bb0f99f63ef1e458))
+* **voices:** notice_code, so the app says what really happened ([#439](https://github.com/anatolykoptev/ox-say/issues/439)) ([#445](https://github.com/anatolykoptev/ox-say/issues/445)) ([e2624fc](https://github.com/anatolykoptev/ox-say/commit/e2624fc9150646d597e7f873a93f40eb12ea179e))
+* **window:** refresh after System Settings, and read a detail once ([#423](https://github.com/anatolykoptev/ox-say/issues/423)) ([b525fab](https://github.com/anatolykoptev/ox-say/commit/b525fabcdd4c68710be9517abb61a777c82ecfcd))
+
+
+### Documentation
+
+* **clean:** provenance of the MossFormer2 bytes built from the merge commit ([#450](https://github.com/anatolykoptev/ox-say/issues/450)) ([f053579](https://github.com/anatolykoptev/ox-say/commit/f0535792024cf4f6e2ef916212933cb37eb4cafd))
+* **readme:** bring the README up to v0.1.29 (meetings, installer, Intel figures, re-decode, licences) ([#391](https://github.com/anatolykoptev/ox-say/issues/391)) ([63382d1](https://github.com/anatolykoptev/ox-say/commit/63382d1cb006fda5843a277f6e174311b49a82cd))
+
 ## [0.1.29](https://github.com/anatolykoptev/ox-say/compare/v0.1.28...v0.1.29) (2026-10-30)
 
 
