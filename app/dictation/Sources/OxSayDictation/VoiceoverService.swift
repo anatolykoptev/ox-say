@@ -47,6 +47,17 @@ final class VoiceoverService {
         return started
     }
 
+    /// A chunk operation (another variant, a mood, new words, a pick) launched a job on a project that was done: follow it
+    /// and return when it has ended. The follower shows the project busy meanwhile; the answer is the project's final state.
+    @discardableResult
+    func followAndWait(id: String) async throws -> ProduceJob {
+        let job = try await client.voiceover(id: id)
+        windowStarted.insert(id)
+        follower.follow(job)
+        return try await JobWait.untilTerminal(id: id, poll: { [client] in try await client.voiceover(id: $0) },
+                                               sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) })
+    }
+
     /// The daemon answered /status: look for a voiceover already running (the app quit and came back).
     func serviceAnswered() { follower.serviceAnswered() }
 

@@ -144,4 +144,15 @@ public enum SpeakText {
         if hadText { return pdf ? t(.speakEmptyPDFCleaned) : t(.speakEmptyDocCleaned) }
         return pdf ? t(.speakEmptyPDF) : t(.speakEmptyDoc)
     }
+
+    /// The name on a mood chip (the style word sent to the engine stays `Mood.styleWord`).
+    public static func moodName(_ mood: Mood, _ t: (L10nKey) -> String) -> String {
+        switch mood {
+        case .calm: return t(.speakMoodCalm)
+        case .warm: return t(.speakMoodWarm)
+        case .energetic: return t(.speakMoodEnergetic)
+        case .excited: return t(.speakMoodExcited)
+        case .serious: return t(.speakMoodSerious)
+        }
+    }
 }

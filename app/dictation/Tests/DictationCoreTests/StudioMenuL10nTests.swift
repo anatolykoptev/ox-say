@@ -259,9 +259,6 @@ final class StudioMenuL10nTests: XCTestCase {
             "OxSayDictation/StudioController.swift": ["Couldn't play", "isn't answering", "Couldn't start", "Reading the document", "Nothing to read",
                 "Couldn't read that file", "Stop this voiceover", "Stop Voiceover", "Keep Going", "Couldn't stop", "Couldn't continue",
                 "[\"Show in Finder\"", "\"Play\"", "[\"OK\"]", "Something went wrong", "static func plain"],
-            "OxSayDictation/StudioForms.swift": ["Choose the document to voice", "Choose a text, Markdown"],
-            "OxSayDictation/ReviewSheet.swift": ["\"New Voiceover\"", "\"Start\"", "title: \"Keep the First Part\"", "\"Cancel\"", "\"Title\"", "\"Format\"",
-                "\"Voice\"", "Text — check it", "Default voice", "Start the voiceover ("],
             "OxSayDictation/MeetingController.swift": ["addButton(withTitle: \"OK\")", "addButton(withTitle: \"Cancel\")", "host.notify(\"\\(error)\")"],
             "OxSayDictation/Overlay.swift": ["labelWithString: \"Transcribing…\"", "setWorkingText(\"Transcribing…\")"],
             "OxSayDictation/AppDelegate.swift": ["Allow pasting… (Accessibility", "Toggle Mode (press", "\"Start at Login\"", "Every speak key is", "is taken by another app",
@@ -296,9 +293,7 @@ final class StudioMenuL10nTests: XCTestCase {
             XCTAssertTrue(app.contains(pin), "AppDelegate.swift lost `\(pin)`")
         }
         let studio = try source("OxSayDictation/StudioController.swift")
-        for pin in ["show(StudioDialogs.stop())", "StudioDialogs.finished(finished)", "show(StudioDialogs.playFailed())", "show(StudioDialogs.serviceDown())",
-                    "show(StudioDialogs.startFailed(error))", "show(StudioDialogs.nothingToRead(read))", "show(StudioDialogs.readFailed(error))",
-                    "StudioDialogs.stopFailed(error)", "StudioDialogs.continueFailed(error)"] {
+        for pin in ["show(StudioDialogs.stop())", "StudioDialogs.finished(finished)", "show(StudioDialogs.playFailed())", "StudioDialogs.stopFailed(error)", "StudioDialogs.continueFailed(error)"] {
             XCTAssertTrue(studio.contains(pin), "StudioController.swift lost `\(pin)`")
         }
     }

@@ -244,6 +244,17 @@ public struct MainWindowActions {
     public var speakVoiceChanged: (String?) -> Void = { _ in }
     /// «Качество» changed; the app keeps it as a view preference.
     public var speakQualityChanged: (SpeakEngine) -> Void = { _ in }
+    /// «Новый ролик», the file the person picked to open as the text, and the offer to keep only the first part.
+    public var speakNewReel: () -> Void = {}
+    public var speakOpenDocument: (URL) -> Void = { _ in }
+    public var speakKeepFirstPart: () -> Void = {}
+    /// A phrase of the selected project (its chunk number): play its take, make another variant, switch to the next
+    /// existing variant, set its mood (nil = as usual), rewrite its words.
+    public var phrasePlay: (Int) -> Void = { _ in }
+    public var phraseVariant: (Int) -> Void = { _ in }
+    public var phrasePickOther: (Int) -> Void = { _ in }
+    public var phraseMood: (Int, Mood?) -> Void = { _, _ in }
+    public var phraseEditText: (Int, String) -> Void = { _, _ in }
 
     public init() {}
 }

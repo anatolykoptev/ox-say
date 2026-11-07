@@ -312,6 +312,14 @@ final class MainWindowSource {
         a.speakTextChanged = { [weak self] text in self?.speakSource.textChanged(text) }
         a.speakVoiceChanged = { _ in }
         a.speakQualityChanged = { [weak self] quality in self?.speakSource.qualityChanged(quality) }
+        a.speakNewReel = { [weak self] in self?.speakSource.newReel() }
+        a.speakOpenDocument = { [weak self] url in self?.speakSource.openDocument(url) }
+        a.speakKeepFirstPart = { [weak self] in self?.speakSource.keepFirstPart() }
+        a.phrasePlay = { [weak self] n in self?.speakSource.playPhrase(n) }
+        a.phraseVariant = { [weak self] n in self?.speakSource.anotherVariant(n) }
+        a.phrasePickOther = { [weak self] n in self?.speakSource.pickOtherVariant(n) }
+        a.phraseMood = { [weak self] n, mood in self?.speakSource.setMood(n, mood) }
+        a.phraseEditText = { [weak self] n, text in self?.speakSource.editPhraseText(n, text) }
         return a
     }
 

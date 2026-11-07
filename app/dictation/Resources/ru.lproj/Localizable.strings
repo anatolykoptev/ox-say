@@ -744,3 +744,26 @@
 "speak.project_interrupted" = "OxSay остановился во время работы, и озвучка не закончена. Вставьте текст в «Новый текст» и озвучьте его заново.";
 "speak.studio.busy" = "Другая озвучка ещё готовится. Дождитесь её конца и повторите.";
 "speak.studio.needs_voice" = "Для студийного голоса нужен сохранённый голос. Создайте его на странице «Голоса» и повторите.";
+
+/* Озвучка: the reel preset, the phrase list with mood and variants. */
+"speak.new_reel" = "Новый ролик";
+"speak.reel_hint" = "Короткий ролик для Reels и Shorts: паузы короче, звук громче.";
+"speak.phrases_title" = "Фразы";
+"speak.phrase_variant" = "Вариант %d из %d";
+"speak.phrase_mood" = "Настроение";
+"speak.phrase_mood_none" = "Как обычно";
+"speak.mood.calm" = "Спокойно";
+"speak.mood.warm" = "Тепло";
+"speak.mood.energetic" = "Энергично";
+"speak.mood.excited" = "Восторженно";
+"speak.mood.serious" = "Серьёзно";
+"speak.phrase_actions" = "Действия с фразой";
+"speak.phrase_pick_other" = "Выбрать другой вариант";
+"speak.phrase_edit" = "Править текст…";
+"speak.phrase_edit_title" = "Текст фразы";
+"speak.phrase_work_variant" = "Делаю ещё вариант…";
+"speak.phrase_work_mood" = "Меняю настроение…";
+"speak.phrase_work_text" = "Озвучиваю фразу заново…";
+"speak.phrase_work_pick" = "Переключаю вариант…";
+"speak.phrase_listen" = "Стоит послушать";
+"speak.phrase_file_missing" = "Запись этой фразы не найдена.";

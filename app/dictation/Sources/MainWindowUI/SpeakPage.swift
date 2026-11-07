@@ -1,6 +1,7 @@
 import AppKit
 import DictationCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Озвучка on the fast voice: the session's clips on the left; on the right the text, the voice, one big button and,
 /// once a take exists, play, another variant and save. The states are `SpeakPageState`'s (offline, editing,
@@ -14,6 +15,15 @@ struct SpeakPage: View {
                 if let notice = model.data.notice { NoticeBar(text: notice) { model.actions.dismissNotice() } }
             }
             .toolbar {
+                // A reel is made on the studio voice, so the button exists only where that voice can run.
+                if model.data.speak.studio == .available {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { model.actions.speakNewReel() } label: {
+                            Label(L10nKey.speakNewReel.text, systemImage: "film")
+                        }
+                        .help(L10nKey.speakNewReel.text)
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button { model.actions.speakNewText() } label: {
                         Label(L10nKey.speakNewText.text, systemImage: "square.and.pencil")
@@ -100,6 +110,10 @@ private struct SpeakItemRow: View {
 /// The right pane: the editor, the voice and quality rows, and the state's own action area.
 struct SpeakDetailColumn: View {
     @ObservedObject var model: MainWindowModel
+    @State private var choosingDocument = false
+
+    /// The kinds `DocumentReader` reads: text, Markdown, Word, RTF, OpenDocument, PDF.
+    private static let documentTypes = DocumentReader.supportedExtensions.compactMap { UTType(filenameExtension: $0) }
 
     var body: some View {
         if let project = model.data.speak.selectedProject {
@@ -116,14 +130,35 @@ struct SpeakDetailColumn: View {
         return VStack(spacing: 0) {
             Form {
                 Section {
+                    HStack(spacing: 10) {
+                        Button { choosingDocument = true } label: {
+                            Label(L10nKey.speakOpenDocument.text, systemImage: "doc.text")
+                        }
+                        .disabled(isGenerating(state) || values.reading)
+                        if values.reading {
+                            ProgressView().controlSize(.small)
+                            Text(L10nKey.speakReadingDocument.text).font(.callout).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
                     TextEditor(text: model.speakText)
                         .font(.body)
-                        .frame(minHeight: 150)
-                        .disabled(isGenerating(state))
+                        // A whole document is far taller than the page: the editor scrolls inside its box, so the length line,
+                        // the offer to keep the first part and the voice rows stay in view.
+                        .frame(minHeight: 150, maxHeight: 300)
+                        .disabled(isGenerating(state) || values.reading)
                         .accessibilityLabel(L10nKey.speakEditorLabel.text)
                     if values.engine == .studio {
                         // The studio voice counts and sends the trimmed script, and says how long it will take.
                         Text(SpeakText.statusLine(editorText: values.text) { $0.text }).font(.callout).foregroundStyle(.secondary)
+                        if SpeakStudio.offersFirstPart(text: values.text, engine: values.engine) {
+                            Button(L10nKey.reviewKeepFirst.text) { model.actions.speakKeepFirstPart() }
+                                .buttonStyle(.link).disabled(isGenerating(state))
+                        }
+                        if values.reel {
+                            Text(L10nKey.speakReelHint.text).font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     } else if case .editing(let problem?) = state {
                         Text(problem).font(.callout).foregroundStyle(.secondary)
                     }
@@ -135,6 +170,9 @@ struct SpeakDetailColumn: View {
             }
             .formStyle(.grouped)
             action(state).padding(.horizontal, 20).padding(.bottom, 16)
+        }
+        .fileImporter(isPresented: $choosingDocument, allowedContentTypes: Self.documentTypes) { result in
+            if case .success(let url) = result { model.actions.speakOpenDocument(url) }
         }
     }
 
@@ -246,6 +284,13 @@ struct SpeakProjectDetail: View {
         let values = model.data.speak
         let state = SpeakProjectState.of(job, serviceWaiting: values.serviceWaiting,
                                          trackMissing: values.trackMissing.contains(job.id)) { $0.text }
+        VStack(spacing: 0) {
+            header(values, state)
+            PhraseList(model: model, job: job)
+        }
+    }
+
+    private func header(_ values: SpeakValues, _ state: SpeakProjectState) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(job.title.isEmpty ? L10nKey.speakUntitled.text : job.title).font(.title2).lineLimit(2)
             switch state {
@@ -260,7 +305,8 @@ struct SpeakProjectDetail: View {
                         WaveformView(peaks: values.peaks, playedFraction: values.playedFraction)
                     }
                     HStack(spacing: 10) {
-                        let playing = values.playback == .playing
+                        // A phrase's take sounding is not the track: the track's button offers ▶ then.
+                        let playing = values.playback == .playing && values.playingPhrase == nil
                         IconButton(symbol: playing ? "pause.fill" : "play.fill", labelKey: playing ? .speakPause : .speakPlay) {
                             model.actions.speakPlayPause()
                         }
@@ -275,10 +321,10 @@ struct SpeakProjectDetail: View {
                 Label(sentence, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
+            if values.phrases.isEmpty { Spacer() }
         }
         .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: values.phrases.isEmpty ? .infinity : nil, alignment: .topLeading)
     }
 }
 

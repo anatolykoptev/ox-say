@@ -1183,8 +1183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// What the Studio features use of the app: alerts, the pill, the player and the installer.
     private func studioHost() -> StudioHost {
         StudioHost(
-            client: studioClient, speech: speechClient,
-            russianVoicePick: { [unowned self] in UserDefaults.standard.string(forKey: self.speakVoiceRUKey) },
+            client: studioClient,
             alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) },
             pill: { [unowned self] task, text in
                 if let text {
@@ -1215,6 +1214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.mainWindow.show(MainRoute(section: .voices, meetingID: nil))
                 self.mainWindow.source?.openVoiceDesign()
             },
+            openSpeak: { [unowned self] in self.mainWindow.show(MainRoute(section: .speak, meetingID: nil)) },
             windowVisible: { [unowned self] in
                 guard let window = self.mainWindow.window else { return false }
                 return window.isVisible && window.occlusionState.contains(.visible)

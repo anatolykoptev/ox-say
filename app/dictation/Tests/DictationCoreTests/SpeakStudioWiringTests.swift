@@ -27,7 +27,7 @@ final class SpeakStudioWiringTests: XCTestCase {
     func testTheStudioCallSiteSendsTheTrimmedScript() throws {
         let studio = try body(source("OxSayDictation/SpeakSource.swift"), of: "private func generateStudio() {")
         XCTAssertTrue(studio.contains("SpeakInputCheck.problem(speak.text, engine: .studio"))
-        XCTAssertTrue(studio.contains("let start = SpeakStudio.start(text: speak.text)"))
+        XCTAssertTrue(studio.contains("let start = SpeakStudio.start(text: speak.text, reel: speak.reel)"))
         XCTAssertTrue(studio.contains("voiceover.start(script: start.script, title: start.title, voice: voice,\n                                                    format: start.format, options: start.options, fromWindow: true)"))
         XCTAssertFalse(studio.contains("script: speak.text"))
         let gate = try XCTUnwrap(studio.range(of: "host.speechRefusal()"))
@@ -46,10 +46,10 @@ final class SpeakStudioWiringTests: XCTestCase {
         let followed = try XCTUnwrap(start.range(of: "follower.follow(started)"))
         XCTAssertLessThan(begun.lowerBound, followed.lowerBound)
         XCTAssertTrue(start.contains("options: options"))
-        // The menu starts through the same service, so its job is the page's job.
+        // The menu no longer starts one (its row opens the window); the page starts through the same service the menu follows.
         let menu = try source("OxSayDictation/StudioController.swift")
-        XCTAssertTrue(menu.contains("voiceover.start(script: draft.script"))
         XCTAssertFalse(menu.contains("startVoiceover("), "no second way to start a voiceover that nobody follows")
+        XCTAssertFalse(menu.contains("voiceover.start("), "the menu opens the window; starting is the page's")
     }
 
     /// A followed voiceover holds the version handshake, whichever surface started it.

@@ -181,10 +181,6 @@ final class UpdateDesignL10nTests: XCTestCase {
         XCTAssertTrue(app.contains("runAlert(UpdateDialogs.repair(target: target))"))
         XCTAssertTrue(app.contains("runAlert(UpdateDialogs.studioVoice())"))
         XCTAssertEqual(app.components(separatedBy: "runAlert(UpdateDialogs.busy())").count - 1, 4, "the four install gates")
-        let forms = try source("OxSayDictation/StudioForms.swift")
-        for literal in ["Create a Voice\"", "Check the form", "Describe the voice\"", "Sample sentence", "Optional — ox-say", "withTitle: \"Create\"", "withTitle: \"OK\"", "withTitle: \"Cancel\""] {
-            XCTAssertFalse(forms.contains(literal), "StudioForms.swift still has \(literal)")
-        }
         let designer = try source("OxSayDictation/VoiceDesigner.swift")
         for literal in ["Designing a voice", "Couldn't create", "Couldn't play", "Couldn't save", "\"Keep This Voice\"", "\"Next Take\"", "\"Play Again\"", "It will be saved", "Replace it with", "\"OK\""] {
             XCTAssertFalse(designer.contains(literal), "VoiceDesigner.swift still has \(literal)")
