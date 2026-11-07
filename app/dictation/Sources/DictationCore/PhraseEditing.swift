@@ -18,6 +18,21 @@ public enum Mood: String, CaseIterable {
     }
 }
 
+/// What the daemon is doing to one phrase of one project. The project is part of it: the daemon works on one project at a
+/// time, and a phrase number means nothing in another project.
+public struct PhraseWork: Equatable {
+    public enum Kind: Equatable { case variant, pick, mood, text }
+    public var project: String
+    public var chunk: Int
+    public var kind: Kind
+
+    public init(project: String, chunk: Int, kind: Kind) {
+        self.project = project
+        self.chunk = chunk
+        self.kind = kind
+    }
+}
+
 /// One row of the phrase list on a finished project: what the person reads and which controls the row has.
 public struct PhraseRowValue: Equatable, Identifiable {
     public var index: Int
@@ -27,6 +42,8 @@ public struct PhraseRowValue: Equatable, Identifiable {
     public var style: String?
     /// The one of the five moods that style is, nil for none or for a style written some other way.
     public var mood: Mood?
+    /// A style that is none of the five moods (set elsewhere): the row offers it as its own entry so «Как обычно» can clear it.
+    public var customStyle: String? { mood == nil ? style : nil }
     /// Zero-based position of the picked variant among the phrase's variants.
     public var variant: Int
     public var variants: Int
@@ -94,6 +111,18 @@ public enum PhraseEditing {
         return SpeakControls.shown(engine: .studio, voiceIsDesigned: designed, advanced: advanced).contains(.mood)
     }
 
+    /// The work that is on this phrase of this project, if any: another project's work never shows on this one's rows.
+    public static func shownWork(_ work: PhraseWork?, project: String, chunk: Int) -> PhraseWork? {
+        guard let work, work.project == project, work.chunk == chunk else { return nil }
+        return work
+    }
+
+    /// Whether this project's phrases are being worked on (and so cannot take another change). Work on another project
+    /// leaves this one free to read and play.
+    public static func isBusy(_ work: PhraseWork?, project: String) -> Bool {
+        work?.project == project
+    }
+
     /// The WAV of the variant the phrase plays now.
     public static func takeFile(of chunk: ProduceChunkDetail) -> String? {
         chunk.pick.flatMap { chunk.takeFiles[$0] }
@@ -129,11 +158,11 @@ public enum PhraseRegeneration {
         /// Starts the render of one more variant of the chunk.
         public var regenerate: (Int) async throws -> Void
         /// Returns when the project's job has ended.
-        public var waitUntilIdle: () async throws -> Void
+        public var waitUntilIdle: () async throws -> ProduceJob
         public var chunks: () async throws -> [ProduceChunkDetail]
         public var pick: (Int, String) async throws -> Void
 
-        public init(regenerate: @escaping (Int) async throws -> Void, waitUntilIdle: @escaping () async throws -> Void,
+        public init(regenerate: @escaping (Int) async throws -> Void, waitUntilIdle: @escaping () async throws -> ProduceJob,
                     chunks: @escaping () async throws -> [ProduceChunkDetail], pick: @escaping (Int, String) async throws -> Void) {
             self.regenerate = regenerate
             self.waitUntilIdle = waitUntilIdle
@@ -147,28 +176,59 @@ public enum PhraseRegeneration {
     public static func run(chunk: Int, known: [String], steps: Steps) async throws -> [ProduceChunkDetail] {
         let before = known
         try await steps.regenerate(chunk)
-        try await steps.waitUntilIdle()
+        try JobWait.requireFinished(try await steps.waitUntilIdle())
         let after = try await steps.chunks()
         guard let fresh = after.first(where: { $0.index == chunk })?.takeKeys.last(where: { !before.contains($0) }) else { return after }
         try await steps.pick(chunk, fresh)
-        try await steps.waitUntilIdle()
+        try JobWait.requireFinished(try await steps.waitUntilIdle())
         return try await steps.chunks()
     }
 }
 
 /// Waits for a project's job to end by asking the daemon for it; one lost answer does not end the wait.
 public enum JobWait {
-    public enum Failure: Error, Equatable { case gaveUp }
+    public enum Failure: Error, Equatable {
+        /// The job did not end within the limit.
+        case gaveUp
+        /// The project is gone (404): deleted elsewhere.
+        case gone
+        /// The render ended in failure.
+        case renderFailed
+        /// The render was stopped (cancelled, or the daemon stopped mid-run).
+        case renderStopped
+    }
 
-    /// The first terminal state of project `id`. `maxPolls` answers (or silences) later it gives up: a job that never ends
-    /// must not hold a row busy for ever.
+    /// How long the wait lasts at most, seconds of the clock (a poll that hangs for its own timeout counts too).
+    public static let limit: TimeInterval = 15 * 60
+
+    /// The first terminal state of project `id`. After `limit` seconds it gives up: a job that never ends must not hold a row
+    /// busy for ever. A 404 ends it at once: the project is not coming back.
     public static func untilTerminal(id: String, poll: (String) async throws -> ProduceJob,
                                      sleep: (TimeInterval) async -> Void, interval: TimeInterval = 1,
-                                     maxPolls: Int = 900) async throws -> ProduceJob {
-        for attempt in 0..<maxPolls {
-            if attempt > 0 { await sleep(interval) }
-            if let job = try? await poll(id), job.status.isTerminal { return job }
+                                     limit: TimeInterval = JobWait.limit, now: () -> Date = Date.init) async throws -> ProduceJob {
+        let deadline = now().addingTimeInterval(limit)
+        while true {
+            do {
+                let job = try await poll(id)
+                if job.status.isTerminal { return job }
+            } catch StudioError.refused(status: 404, _) {
+                throw Failure.gone
+            } catch {
+                // A lost answer: ask again.
+            }
+            if now() >= deadline { throw Failure.gaveUp }
+            await sleep(interval)
         }
-        throw Failure.gaveUp
+    }
+
+    /// A job that ended is finished only when it did not fail or stop: a failed or stopped render has no new variant, mood
+    /// or text to show, and nothing may be picked from it.
+    @discardableResult
+    public static func requireFinished(_ job: ProduceJob) throws -> ProduceJob {
+        switch job.status {
+        case .failed: throw Failure.renderFailed
+        case .cancelled, .interrupted: throw Failure.renderStopped
+        default: return job
+        }
     }
 }

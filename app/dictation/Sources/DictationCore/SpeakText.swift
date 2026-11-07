@@ -15,8 +15,14 @@ public enum SpeakText {
             return String(format: t(.speakStatusOver), length, over, ScriptLimit.maxCharacters,
                           minutes(ScriptLimit.minutes(characters: ScriptLimit.maxCharacters), t))
         }
-        return String(format: t(.speakStatusCount), length,
-                      minutes(ScriptLimit.minutes(characters: length), t))
+        return String(format: t(.speakStatusCount), length, duration(characters: length, t))
+    }
+
+    /// How long a text of `characters` takes to read: seconds below a minute («примерно 7 с»), whole minutes from there.
+    public static func duration(characters: Int, _ t: (L10nKey) -> String) -> String {
+        let seconds = Int((Double(characters) / ScriptLimit.charsPerMinute * 60).rounded())
+        if seconds < 60 { return String(format: t(.speakSecondsMany), max(1, seconds)) }
+        return minutes(ScriptLimit.minutes(characters: characters), t)
     }
 
     /// "1 minute" / "n minutes", one of the status line's moving parts.
@@ -111,6 +117,14 @@ public enum SpeakText {
     /// words behind the lead-in, an empty message the status sentence exactly
     /// as `StudioError.message` words it — and anything else the generic line.
     public static func notice(_ error: Error, _ t: (L10nKey) -> String) -> String {
+        if let wait = error as? JobWait.Failure {
+            switch wait {
+            case .gaveUp: return t(.speakErrorTimeout)
+            case .gone: return t(.speakProjectGone)
+            case .renderFailed: return t(.speakPhraseFailed)
+            case .renderStopped: return t(.speakPhraseStopped)
+            }
+        }
         guard let studio = error as? StudioError else { return t(.speakErrorGeneric) }
         switch studio {
         case .daemonUnreachable: return t(.speakErrorNoService)
@@ -118,6 +132,7 @@ public enum SpeakText {
         case .badResponse: return t(.speakErrorBadAnswer)
         case .voiceoverRunning: return t(.speakStudioBusy)
         case .noSavedVoice: return t(.speakStudioNeedsVoice)
+        case .stylingUnavailable: return t(.speakMoodUnavailable)
         case .refused(_, let message):
             return message.isEmpty ? studio.message(text: t) : String(format: t(.speakServiceAnswered), message)
         }

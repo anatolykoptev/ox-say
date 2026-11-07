@@ -28,9 +28,8 @@ public enum StudioMenu {
     ///   - job: the voiceover the app is following, while it is not over.
     ///   - serviceWaiting: the app is following `job` but the daemon did not answer the last poll.
     ///   - hasOutputFolder: the latest voiceover's folder exists on this Mac.
-    ///   - readingDocument: a document is being read for a new voiceover; a second one waits.
     public static func rows(service: ServiceState, installing: Bool, job: ProduceJob?,
-                            serviceWaiting: Bool, hasOutputFolder: Bool, readingDocument: Bool = false,
+                            serviceWaiting: Bool, hasOutputFolder: Bool,
                             text: (L10nKey) -> String = { $0.text }) -> [MenuRow] {
         let active = job.flatMap { $0.status.isTerminal ? nil : $0 }
         switch service {
@@ -44,7 +43,7 @@ public enum StudioMenu {
                 guard status.installWouldHelp else { return [disabled(unavailableText(reason: status.studioReason, text: text))] }
                 return [.item(title: installTitle(text: text), isOn: false, isEnabled: !installing, action: .installStudioVoice)]
             }
-            var rows: [MenuRow] = [.item(title: newVoiceoverTitle(text: text), isOn: false, isEnabled: active == nil && !readingDocument, action: .newVoiceover)]
+            var rows: [MenuRow] = [.item(title: newVoiceoverTitle(text: text), isOn: false, isEnabled: active == nil, action: .newVoiceover)]
             rows += jobRows(active, waiting: serviceWaiting, text: text)
             rows.append(.item(title: folderTitle(text: text), isOn: false, isEnabled: hasOutputFolder, action: hasOutputFolder ? .openVoiceoversFolder : nil))
             rows.append(.separator)
@@ -83,10 +82,6 @@ public enum StudioMenu {
         return (names, selected)
     }
 
-    /// The file name without its extension: the form's default title.
-    public static func defaultTitle(fileName: String) -> String {
-        (fileName as NSString).deletingPathExtension
-    }
 }
 
 /// The daemon words its errors for terminals and agents too. What an owner reads

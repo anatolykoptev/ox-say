@@ -4,18 +4,6 @@ import Foundation
 /// Whether a clip sounds now.
 public enum SpeakPlayback: Equatable { case stopped, playing, paused }
 
-/// What a phrase is waiting for while the daemon works on it; the row says so and the project is busy meanwhile.
-public struct PhraseWork: Equatable {
-    public enum Kind: Equatable { case variant, pick, mood, text }
-    public var chunk: Int
-    public var kind: Kind
-
-    public init(chunk: Int, kind: Kind) {
-        self.chunk = chunk
-        self.kind = kind
-    }
-}
-
 /// What the Озвучка page shows. Plain values: the app fills them, the screenshot harness fills them with samples.
 public struct SpeakValues: Equatable {
     /// The editor's text, as typed. The fast voice sends it exactly as typed.

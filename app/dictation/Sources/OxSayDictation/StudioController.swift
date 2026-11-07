@@ -72,8 +72,7 @@ final class StudioController: NSObject {
         let folderExists = latestFolder.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
         let rows = StudioMenu.rows(
             service: service, installing: host.installing(), job: voiceover.job,
-            serviceWaiting: voiceover.serviceWaiting, hasOutputFolder: folderExists,
-            readingDocument: false)
+            serviceWaiting: voiceover.serviceWaiting, hasOutputFolder: folderExists)
         MenuRenderer.fill(submenu, rows: rows, target: self) { action in (#selector(choose(_:)), action) }
     }
 

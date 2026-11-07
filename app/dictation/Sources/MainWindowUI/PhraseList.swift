@@ -12,13 +12,13 @@ struct PhraseList: View {
     var body: some View {
         let values = model.data.speak
         let rows = values.phrases
-        let busy = values.phraseWork != nil || !PhraseEditing.canEditText(status: job.status)
+        let busy = PhraseEditing.isBusy(values.phraseWork, project: job.id) || !PhraseEditing.canEditText(status: job.status)
         let showsMood = values.showsMood(voices: model.data.voices.entries)
         if !rows.isEmpty {
             Form {
                 Section(L10nKey.speakPhrasesTitle.text) {
                     ForEach(rows) { row in
-                        PhraseRow(row: row, work: values.phraseWork.flatMap { $0.chunk == row.index ? $0 : nil },
+                        PhraseRow(row: row, work: PhraseEditing.shownWork(values.phraseWork, project: job.id, chunk: row.index),
                                   busy: busy, playing: values.playingPhrase == row.index && values.playback == .playing,
                                   showsMood: showsMood, actions: model.actions) { editing = row }
                     }
@@ -71,7 +71,7 @@ private struct PhraseRow: View {
             }
             Spacer(minLength: 8)
             if showsMood {
-                MoodChips(selected: row.mood) { actions.phraseMood(row.index, $0) }.disabled(busy)
+                MoodChips(selected: row.mood, custom: row.customStyle) { actions.phraseMood(row.index, $0) }.disabled(busy)
             }
             Menu {
                 Button(L10nKey.speakVariant.text) { actions.phraseVariant(row.index) }

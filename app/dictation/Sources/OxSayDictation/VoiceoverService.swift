@@ -54,8 +54,10 @@ final class VoiceoverService {
         let job = try await client.voiceover(id: id)
         windowStarted.insert(id)
         follower.follow(job)
-        return try await JobWait.untilTerminal(id: id, poll: { [client] in try await client.voiceover(id: $0) },
-                                               sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) })
+        let ended = try await JobWait.untilTerminal(id: id, poll: { [client] in try await client.voiceover(id: $0) },
+                                                    sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) })
+        // A render that failed or was stopped has nothing new to show, and nothing is picked from it.
+        return try JobWait.requireFinished(ended)
     }
 
     /// The daemon answered /status: look for a voiceover already running (the app quit and came back).

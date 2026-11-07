@@ -326,7 +326,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         },
         Scene(name: "speak-phrase-regenerating", section: .speak, meeting: nil) { now, ru in
             speakPhrases(now, ru, voice: "warm-narrator", status: .running) { v in
-                v.phraseWork = PhraseWork(chunk: 1, kind: .variant)
+                v.phraseWork = PhraseWork(project: v.selectedID ?? "", chunk: 1, kind: .variant)
                 v.projects[0].partsTotal = 4; v.projects[0].partsDone = 4
             }
         },

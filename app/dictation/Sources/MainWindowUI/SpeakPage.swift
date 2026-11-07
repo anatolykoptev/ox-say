@@ -19,7 +19,7 @@ struct SpeakPage: View {
                 if model.data.speak.studio == .available {
                     ToolbarItem(placement: .primaryAction) {
                         Button { model.actions.speakNewReel() } label: {
-                            Label(L10nKey.speakNewReel.text, systemImage: "film")
+                            Label(L10nKey.speakNewReel.text, systemImage: "film").labelStyle(.titleAndIcon)
                         }
                         .help(L10nKey.speakNewReel.text)
                     }

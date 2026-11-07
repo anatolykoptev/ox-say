@@ -28,6 +28,15 @@ public enum SpeakStudio {
         engine == .studio && ScriptLimit.overBy(ScriptLimit.script(from: text)) > 0
     }
 
+    /// The voice a project was started with, kept for the session: the daemon's summary does not name it, and the mood
+    /// chips are drawn for a designed voice only (`PhraseEditing.showsMood`). The default voice (nil) is not recorded.
+    public static func rememberVoice(_ voice: String?, for project: String, in known: [String: String]) -> [String: String] {
+        guard let voice else { return known }
+        var next = known
+        next[project] = voice
+        return next
+    }
+
     /// The studio voice only while it is chosen and this Mac can run it; otherwise the fast voice, never a job that cannot run.
     public static func engine(chosen: SpeakEngine, studio: StudioAvailability) -> SpeakEngine {
         chosen == .studio && studio == .available ? .studio : .fast

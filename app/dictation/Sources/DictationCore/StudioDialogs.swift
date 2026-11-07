@@ -10,28 +10,6 @@ public enum StudioDialogs {
         UpdateDialog(title: text(.studioPlayFailedTitle), text: text(.studioPlayFailedText), buttons: [text(.commonOk)])
     }
 
-    /// The voice list could not be read: the service is not answering.
-    public static func serviceDown(text: Text = { $0.text }) -> UpdateDialog {
-        UpdateDialog(title: text(.studioServiceDownTitle), text: text(.studioServiceDownText), buttons: [text(.commonOk)])
-    }
-
-    /// The daemon refused to start the voiceover; the review window reopens with the person's text.
-    public static func startFailed(_ error: Error, text: Text = { $0.text }) -> UpdateDialog {
-        UpdateDialog(title: text(.studioStartFailedTitle), text: "\(StudioError.plain(error, text: text)) \(text(.studioStartFailedKept))",
-                     buttons: [text(.commonOk)])
-    }
-
-    /// The document gave no text to read.
-    public static func nothingToRead(_ read: ReadScript, text: Text = { $0.text }) -> UpdateDialog {
-        UpdateDialog(title: text(.studioNothingTitle), text: read.emptyMessage(text: text), buttons: [text(.commonOk)])
-    }
-
-    /// The document could not be read at all.
-    public static func readFailed(_ error: Error, text: Text = { $0.text }) -> UpdateDialog {
-        UpdateDialog(title: text(.studioReadFailedTitle), text: (error as? DocumentError)?.message(text: text) ?? text(.studioOpenFailed),
-                     buttons: [text(.commonOk)])
-    }
-
     /// Stop a running voiceover: the first button stops it.
     public static func stop(text: Text = { $0.text }) -> UpdateDialog {
         UpdateDialog(title: text(.studioStopTitle), text: text(.studioStopText),

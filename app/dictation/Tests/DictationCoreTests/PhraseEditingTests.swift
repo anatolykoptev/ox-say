@@ -81,11 +81,16 @@ private final class FakeDaemon {
     var log: [String] = []
     var keys = ["a"]
     var addTake = true
+    var endStatus = ProduceStatus.done
 
     func steps() -> PhraseRegeneration.Steps {
         PhraseRegeneration.Steps(
             regenerate: { n in self.log.append("regenerate \(n)"); self.running = true },
-            waitUntilIdle: { self.log.append("wait"); self.running = false; if self.addTake, !self.keys.contains("b") { self.keys.append("b") } },
+            waitUntilIdle: {
+                self.log.append("wait"); self.running = false
+                if self.addTake, !self.keys.contains("b") { self.keys.append("b") }
+                return ProduceJob(id: "p", title: "", status: self.endStatus)
+            },
             chunks: { self.log.append("chunks"); return [chunk(2, .ok, pick: "a", keys: self.keys)] },
             pick: { n, key in
                 if self.running || !self.keys.contains(key) { throw StudioError.refused(status: 400, message: "take is not one of this chunk's takes") }
@@ -112,7 +117,7 @@ extension PhraseEditingTests {
 
     func testAFailedRegenerateStopsBeforeAnythingElse() async {
         var log: [String] = []
-        let steps = PhraseRegeneration.Steps(regenerate: { _ in throw StudioError.voiceoverRunning }, waitUntilIdle: { log.append("wait") },
+        let steps = PhraseRegeneration.Steps(regenerate: { _ in throw StudioError.voiceoverRunning }, waitUntilIdle: { log.append("wait"); return ProduceJob(id: "p", title: "", status: .done) },
                                              chunks: { log.append("chunks"); return [] }, pick: { _, _ in log.append("pick") })
         do { _ = try await PhraseRegeneration.run(chunk: 0, known: [], steps: steps); XCTFail("must throw") } catch {}
         XCTAssertEqual(log, [])
@@ -127,7 +132,7 @@ extension PhraseEditingTests {
         XCTAssertEqual(slept, 2)
     }
 
-    func testTheWaitSurvivesAMissedPollAndGivesUpAtTheLimit() async throws {
+    func testTheWaitSurvivesAMissedPoll() async throws {
         var polls = 0
         let job = try await JobWait.untilTerminal(id: "p", poll: { _ in
             polls += 1
@@ -135,13 +140,88 @@ extension PhraseEditingTests {
             return ProduceJob(id: "p", title: "", status: .review)
         }, sleep: { _ in })
         XCTAssertEqual(job.status, .review)
+    }
+}
+
+/// A clock the wait's sleep moves: the limit is seconds of it, not a count of polls (a poll may hang for its own timeout).
+private final class JobClock {
+    var now = Date(timeIntervalSince1970: 1_000_000)
+    func sleep(_ seconds: TimeInterval) async { now = now.addingTimeInterval(seconds) }
+}
+
+extension PhraseEditingTests {
+    func testTheWaitGivesUpAfterTheLimitInSecondsOfTheClock() async {
+        let clock = JobClock()
+        var polls = 0
         do {
-            _ = try await JobWait.untilTerminal(id: "p", poll: { _ in ProduceJob(id: "p", title: "", status: .running) },
-                                                sleep: { _ in }, maxPolls: 3)
+            _ = try await JobWait.untilTerminal(id: "p", poll: { _ in
+                polls += 1
+                clock.now = clock.now.addingTimeInterval(10)   // every poll hangs for its 10 s timeout
+                return ProduceJob(id: "p", title: "", status: .running)
+            }, sleep: { await clock.sleep($0) }, interval: 1, limit: 100, now: { clock.now })
             XCTFail("must give up")
         } catch {
             XCTAssertEqual(error as? JobWait.Failure, .gaveUp)
         }
+        XCTAssertLessThan(polls, 15, "100 s of 11 s polls is about 9 polls, not hundreds")
+    }
+
+    func testTheWaitStopsAtOnceWhenTheProjectIsGone() async {
+        var polls = 0
+        do {
+            _ = try await JobWait.untilTerminal(id: "p", poll: { _ in polls += 1; throw StudioError.refused(status: 404, message: "") },
+                                                sleep: { _ in })
+            XCTFail("must stop")
+        } catch {
+            XCTAssertEqual(error as? JobWait.Failure, .gone)
+        }
+        XCTAssertEqual(polls, 1)
+    }
+
+    func testAFailedOrStoppedRenderIsNotFinished() {
+        func outcome(_ status: ProduceStatus) -> JobWait.Failure? {
+            do { try JobWait.requireFinished(ProduceJob(id: "p", title: "", status: status)); return nil } catch { return error as? JobWait.Failure }
+        }
+        XCTAssertEqual(outcome(.failed), .renderFailed)
+        XCTAssertEqual(outcome(.cancelled), .renderStopped)
+        XCTAssertEqual(outcome(.interrupted), .renderStopped)
+        XCTAssertNil(outcome(.review))
+        XCTAssertNil(outcome(.done))
+    }
+
+    func testNothingIsPickedFromARenderThatFailed() async {
+        let daemon = FakeDaemon()
+        daemon.endStatus = .failed
+        do {
+            _ = try await PhraseRegeneration.run(chunk: 2, known: ["a"], steps: daemon.steps())
+            XCTFail("must throw")
+        } catch {
+            XCTAssertEqual(error as? JobWait.Failure, .renderFailed)
+        }
+        XCTAssertEqual(daemon.log, ["regenerate 2", "wait"], "no chunks read, no pick")
+    }
+
+    func testTheVoiceOfAProjectIsRecordedWhenThereIsOne() {
+        XCTAssertEqual(SpeakStudio.rememberVoice("made", for: "p1", in: ["p0": "x"]), ["p0": "x", "p1": "made"])
+        XCTAssertEqual(SpeakStudio.rememberVoice(nil, for: "p1", in: ["p0": "x"]), ["p0": "x"], "the default voice is not recorded")
+    }
+
+    func testAStyleThatIsNoMoodIsKeptAsItsOwnEntry() {
+        let rows = PhraseEditing.rows(chunks: [chunk(0, .ok, style: "устало"), chunk(1, .ok, style: "тепло"), chunk(2, .ok)], jobRunning: false)
+        guard rows.count == 3 else { return XCTFail("three rows") }
+        XCTAssertEqual(rows[0].customStyle, "устало")
+        XCTAssertNil(rows[1].customStyle, "a mood is not a custom style")
+        XCTAssertNil(rows[2].customStyle)
+    }
+
+    func testWorkOnOneProjectNeverShowsOrBlocksAnother() {
+        let work = PhraseWork(project: "A", chunk: 1, kind: .variant)
+        XCTAssertEqual(PhraseEditing.shownWork(work, project: "A", chunk: 1), work)
+        XCTAssertNil(PhraseEditing.shownWork(work, project: "B", chunk: 1), "the same phrase number in another project")
+        XCTAssertNil(PhraseEditing.shownWork(work, project: "A", chunk: 2))
+        XCTAssertTrue(PhraseEditing.isBusy(work, project: "A"))
+        XCTAssertFalse(PhraseEditing.isBusy(work, project: "B"), "B stays free to read and play")
+        XCTAssertFalse(PhraseEditing.isBusy(nil, project: "A"))
     }
 }
 

@@ -180,9 +180,16 @@ final class SpeakSource {
         model.data.speak.text = ""
         model.data.speak.selectedID = nil
         model.data.speak.phase = .idle
-        model.data.speak.reel = false
+        endReel()
         cancelWaveform()
         host.defaults.set("", forKey: Self.draftKey)
+    }
+
+    /// A reel is a draft, not a setting: leaving it drops the preset and puts «Качество» back to what the person saved.
+    private func endReel() {
+        guard model.data.speak.reel else { return }
+        model.data.speak.reel = false
+        model.data.speak.quality = host.defaults.string(forKey: Self.qualityKey).flatMap(SpeakEngine.init(rawValue:)) ?? .fast
     }
 
     /// «Новый ролик»: a new draft that is a short video; «Озвучить» sends the Reels preset. It only exists on the studio
@@ -191,8 +198,8 @@ final class SpeakSource {
         guard model.data.speak.studio == .available else { return }
         newText()
         model.data.speak.reel = true
+        // The switch to the studio voice belongs to this draft; it is not saved as the person's «Качество».
         model.data.speak.quality = .studio
-        qualityChanged(.studio)
     }
 
     /// «Оставить только начало» under the editor: the text that fits, ending where a paragraph or sentence ends.
@@ -244,6 +251,7 @@ final class SpeakSource {
         guard let clip = model.data.speak.clips.first(where: { $0.id == id }) else { return }
         stop()
         stopClip()
+        endReel()
         model.data.speak.text = clip.text
         host.defaults.set(clip.text, forKey: Self.draftKey)
         model.data.speak.voice = SpeakVoice.existing(clip.voice, in: model.data.voices.voices)
@@ -255,6 +263,7 @@ final class SpeakSource {
     /// A studio project: the editor's text and voice stay as they are for the next «Новый текст».
     private func selectProject(_ id: String) {
         stopClip()
+        endReel()
         model.data.speak.selectedID = id
         model.data.speak.phase = .idle
         model.data.speak.trackMissing.remove(id)
@@ -335,7 +344,7 @@ final class SpeakSource {
                 }
                 self.studioStart.end()
                 self.record(answered: true)
-                if let voice { self.model.data.speak.projectVoices[job.id] = voice }
+                self.model.data.speak.projectVoices = SpeakStudio.rememberVoice(voice, for: job.id, in: self.model.data.speak.projectVoices)
                 self.model.data.speak.projects = SpeakList.overlay(projects: self.model.data.speak.projects, followed: job)
                 self.selectProject(job.id)
             } catch {
@@ -536,7 +545,7 @@ final class SpeakSource {
     /// runs the rows on screen stay as they are, and while a phrase is being worked on its own result lands instead.
     private func ensurePhrases() {
         let speak = model.data.speak
-        guard let job = speak.selectedProject, speak.phraseWork == nil, let key = trackKey(of: job), key != phrasesKey else { return }
+        guard let job = speak.selectedProject, !PhraseEditing.isBusy(speak.phraseWork, project: job.id), let key = trackKey(of: job), key != phrasesKey else { return }
         phrasesKey = key
         let token = phraseReads.advance()
         let client = host.client
@@ -628,30 +637,38 @@ final class SpeakSource {
     /// what is being done until the project has ended, then the chunks are read again.
     private func phraseOperation(chunk n: Int, kind: PhraseWork.Kind,
                                  _ body: @escaping (StudioClient, String) async throws -> [ProduceChunkDetail]) {
-        guard let job = model.data.speak.selectedProject, model.data.speak.phraseWork == nil,
+        guard let job = model.data.speak.selectedProject, !PhraseEditing.isBusy(model.data.speak.phraseWork, project: job.id),
               PhraseEditing.canEditText(status: job.status) else { return }
+        // The daemon works on one project at a time: a change to this one while another is being changed would be refused.
+        guard model.data.speak.phraseWork == nil else {
+            model.data.notice = StudioError.voiceoverRunning.message()
+            return
+        }
         if let refusal = host.speechRefusal() {
             model.data.notice = refusal
             return
         }
         // A take that sounds would go on playing the old audio while it is being replaced.
         stopClip()
-        model.data.speak.phraseWork = PhraseWork(chunk: n, kind: kind)
+        model.data.speak.phraseWork = PhraseWork(project: job.id, chunk: n, kind: kind)
         let client = host.client
         Task { @MainActor [weak self] in
             do {
                 let chunks = try await body(client, job.id)
                 guard let self else { return }
                 self.model.data.speak.phraseWork = nil
-                self.model.data.speak.phraseChunks = chunks
-                self.model.data.speak.phrasesFor = job.id
+                // The person may have moved to another project meanwhile: its phrases are not replaced by these.
+                if self.model.data.speak.selectedID == job.id {
+                    self.model.data.speak.phraseChunks = chunks
+                    self.model.data.speak.phrasesFor = job.id
+                }
                 // The track was rewritten: its bars and its key are read again.
                 self.phrasesKey = nil
                 self.refreshProjects()
             } catch {
                 guard let self else { return }
                 self.model.data.speak.phraseWork = nil
-                self.model.data.notice = error is JobWait.Failure ? StudioError.timedOut.message() : SpeakText.notice(error) { $0.text }
+                self.model.data.notice = SpeakText.notice(error) { $0.text }
                 self.refreshProjects()
             }
         }

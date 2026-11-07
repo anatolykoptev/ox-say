@@ -18,8 +18,8 @@ final class StudioMenuL10nTests: XCTestCase {
     }
 
     func testTheStudioMenuRowsReadRightInBothLanguages() {
-        XCTAssertEqual(StudioMenu.newVoiceoverTitle(text: en), "New Voiceover from Document…")
-        XCTAssertEqual(StudioMenu.newVoiceoverTitle(text: ru), "Новая озвучка из документа…")
+        XCTAssertEqual(StudioMenu.newVoiceoverTitle(text: en), "Open Voiceover…")
+        XCTAssertEqual(StudioMenu.newVoiceoverTitle(text: ru), "Открыть Озвучку…")
         XCTAssertEqual(StudioMenu.stopTitle(text: en), "Stop Voiceover")
         XCTAssertEqual(StudioMenu.stopTitle(text: ru), "Остановить озвучку")
         XCTAssertEqual(StudioMenu.continueTitle(text: ru), "Продолжить озвучку от батареи")
@@ -34,7 +34,7 @@ final class StudioMenuL10nTests: XCTestCase {
         let rows = StudioMenu.rows(service: .answered(status), installing: false, job: running, serviceWaiting: false,
                                    hasOutputFolder: true, text: ru)
         XCTAssertEqual(rows, [
-            .item(title: "Новая озвучка из документа…", isOn: false, isEnabled: false, action: .newVoiceover),
+            .item(title: "Открыть Озвучку…", isOn: false, isEnabled: false, action: .newVoiceover),
             .item(title: "“Глава” — пауза — работа от батареи", isOn: false, isEnabled: false, action: nil),
             .item(title: "Остановить озвучку", isOn: false, isEnabled: true, action: .stopVoiceover),
             .item(title: "Продолжить озвучку от батареи", isOn: false, isEnabled: true, action: .continueOnBattery),
@@ -87,16 +87,6 @@ final class StudioMenuL10nTests: XCTestCase {
             text: "The file could not be opened. It may have been moved.", buttons: ["OK"]))
         XCTAssertEqual(StudioDialogs.playFailed(text: ru), UpdateDialog(title: "Не удалось воспроизвести озвучку",
             text: "Не удалось открыть файл. Возможно, его переместили.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.serviceDown(text: en), UpdateDialog(title: "The OxSay service isn't answering",
-            text: "Try again in a moment.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.serviceDown(text: ru), UpdateDialog(title: "Служба OxSay не отвечает",
-            text: "Попробуйте ещё раз через минуту.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.startFailed(StudioError.refused(status: 400, message: "The script is empty."), text: en),
-                       UpdateDialog(title: "Couldn't start the voiceover",
-                                    text: "The script is empty. Your text is kept in the next window.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.startFailed(StudioError.timedOut, text: ru),
-                       UpdateDialog(title: "Не удалось начать озвучку",
-                                    text: "Служба OxSay слишком долго не отвечала. Ваш текст сохранён в следующем окне.", buttons: ["OK"]))
         XCTAssertEqual(StudioDialogs.stop(text: en), UpdateDialog(title: "Stop this voiceover?",
             text: "OxSay stops after the part it is working on. What is already made is not turned into a finished file.",
             buttons: ["Stop Voiceover", "Keep Going"]))
@@ -110,13 +100,6 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(StudioDialogs.continueFailed(StudioError.daemonUnreachable, text: ru), UpdateDialog(
             title: "Не удалось продолжить озвучку", text: "Служба OxSay не запущена. Попробуйте перезагрузить Mac.", buttons: ["OK"]))
         XCTAssertEqual(StudioDialogs.continueFailed(StudioError.daemonUnreachable, text: en).title, "Couldn't continue the voiceover")
-        XCTAssertEqual(StudioDialogs.readFailed(DocumentError.passwordProtected, text: ru), UpdateDialog(
-            title: "Не удалось прочитать файл", text: "Этот PDF защищён паролем. Сохраните копию без пароля и откройте её.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.readFailed(Boom(), text: en), UpdateDialog(
-            title: "Couldn't read that file", text: "The file could not be opened.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.nothingToRead(ReadScript(script: "", emptyReason: .noTextPDF), text: ru), UpdateDialog(
-            title: "Нечего читать", text: "В этом PDF нет текста для чтения (возможно, это скан).", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.nothingToRead(ReadScript(script: "", emptyReason: .noTextDocument), text: en).title, "Nothing to read")
         XCTAssertEqual(StudioDialogs.finished(job(.done, wav: "/x/Ch.wav"), text: ru)?.buttons, ["Показать в Finder", "Воспроизвести", "OK"])
         XCTAssertEqual(StudioDialogs.finished(job(.done, wav: "/x/Ch.wav"), text: en)?.buttons, ["Show in Finder", "Play", "OK"])
         XCTAssertEqual(StudioDialogs.finished(job(.failed), text: ru)?.buttons, ["OK"])
@@ -207,16 +190,11 @@ final class StudioMenuL10nTests: XCTestCase {
             (.statusListening, "Listening… (esc cancels)", "Слушаю… (esc — отмена)"),
             (.statusTranscribing, "Transcribing… (esc cancels)", "Расшифровываю… (esc — отмена)"),
             (.pillTranscribing, "Transcribing…", "Расшифровываю…"), (.pillSpeaking, "Speaking…", "Читаю вслух…"),
-            (.studioReadingPill, "Reading the document…", "Читаю документ…"),
-            (.studioChooseTitle, "Choose the document to voice", "Выберите документ для озвучки"),
-            (.studioChooseMessage, "Choose a text, Markdown, Word, PDF, RTF or OpenDocument file.", "Выберите текстовый файл, Markdown, Word, PDF, RTF или OpenDocument."),
             (.noticeSpeakAllMacOS, "Every speak key is a macOS shortcut on this Mac. Free one in System Settings → Keyboard → Keyboard Shortcuts.",
              "Все клавиши озвучки — системные сочетания macOS. Освободите одну в Системных настройках → Клавиатура → Сочетания клавиш."),
             (.noticeAccessibilityRefresh, "Could not refresh the Accessibility permission: remove OxSayDictation with − in System Settings → Privacy & Security → Accessibility, then add it again.",
              "Не удалось обновить разрешение универсального доступа: удалите OxSayDictation кнопкой − в Системных настройках → Конфиденциальность и безопасность → Универсальный доступ, затем добавьте снова."),
-            (.reviewTitle, "New Voiceover", "Новая озвучка"), (.reviewStart, "Start", "Начать"), (.reviewKeepFirst, "Keep the First Part", "Оставить только начало"),
-            (.reviewLabelTitle, "Title", "Название"), (.reviewLabelFormat, "Format", "Формат"),
-            (.reviewLabelText, "Text — check it and fix anything before OxSay reads it", "Текст: проверьте и поправьте, что нужно, перед озвучкой"),
+            (.reviewKeepFirst, "Keep the First Part", "Оставить только начало"),
         ]
         for (key, e, r) in pairs {
             XCTAssertEqual(en(key), e, key.rawValue)
@@ -240,8 +218,6 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(ru(.recordingEndedMicChanged), "Микрофон сменился во время записи.")
         XCTAssertEqual(String(format: en(.recordingEndedCap), "600"), "Recordings stop after 600 seconds.")
         XCTAssertEqual(String(format: ru(.recordingEndedCap), "600"), "Запись останавливается через 600 с.")
-        XCTAssertEqual(String(format: en(.reviewStartTip), "⌘Return"), "Start the voiceover (⌘Return)")
-        XCTAssertEqual(String(format: ru(.reviewStartTip), "⌘Return"), "Начать озвучку (⌘Return)")
     }
 
     /// The dictation controller words a failed start through its injected localizer. Mutation: DictationController,

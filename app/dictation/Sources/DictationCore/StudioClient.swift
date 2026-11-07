@@ -10,6 +10,8 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
     case voiceoverRunning
     /// Starting a project needs a saved voice and the library has none (400).
     case noSavedVoice
+    /// A mood on a project made with the recording's own delivery (409 from `deliveryModeGate`): no style can apply there.
+    case stylingUnavailable
 
     /// What the person reads, in their language. The daemon's own words in a refusal stay as it sent them; an empty
     /// one is the app's sentence naming the status. `description` below stays English: it is for logs.
@@ -21,6 +23,7 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .badResponse: return text(.studioErrorBadResponse)
         case .voiceoverRunning: return text(.speakStudioBusy)
         case .noSavedVoice: return text(.speakStudioNeedsVoice)
+        case .stylingUnavailable: return text(.speakMoodUnavailable)
         }
     }
 
@@ -37,6 +40,7 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .badResponse: return "The OxSay service sent an answer the app does not understand."
         case .voiceoverRunning: return "Another voiceover is being produced."
         case .noSavedVoice: return "Producing a voiceover needs a saved voice."
+        case .stylingUnavailable: return "This project cannot take a mood: it keeps the recording's own delivery."
         }
     }
 }
@@ -105,6 +109,9 @@ public struct StudioClient {
         // "produce needs a saved voice" has no code on the wire (only type "Bad Request"), so its opening words are the one
         // text match, kept at this edge and pinned by a test; PlainWords would drop the whole sentence for its `voice_` hint.
         if status == 400, message.hasPrefix("produce needs a saved voice") { return .noSavedVoice }
+        // The two delivery-gate 409s (`deliveryNeedsReference`, `deliveryIsUltimate`, produce_ops.go) carry no code on the wire
+        // either, only their opening words; both mean the project keeps the recording's delivery and a mood cannot apply.
+        if status == 409, message.hasPrefix("styling a phrase") { return .stylingUnavailable }
         // An empty message is the app's sentence naming the status, worded when it is shown (StudioError.message).
         return .refused(status: status, message: PlainWords.clean(message, fallback: ""))
     }
