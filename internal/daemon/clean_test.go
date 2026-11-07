@@ -433,6 +433,7 @@ func TestEngineFailureMapsExitCodesAndReasons(t *testing.T) {
 		{4, "x [reason=empty]", 502, "engine_input", "empty", "could not read"},
 		{5, "x [reason=os_too_old]", 503, "os_too_old", "os_too_old", "macOS 15"},
 		{6, "x [reason=out_exists]", 502, "engine_output", "out_exists", "disk space"},
+		{6, "x [reason=disk_full]", 502, "engine_output", "disk_full", "disk space"},
 		{1, "x [reason=write_failed]", 502, "engine_failed", "write_failed", "Your file was not changed"},
 		{2, "x [reason=usage]", 502, "engine_usage", "usage", "bug"},
 		{130, "", 503, "engine_interrupted", "", "stopped"},

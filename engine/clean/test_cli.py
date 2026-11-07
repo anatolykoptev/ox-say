@@ -500,18 +500,76 @@ class Contract(Case):
     def test_a_failed_run_on_exfat_removes_its_part(self):
         mnt = self.attach_exfat(20)
         out = os.path.join(mnt, "o.wav")
-        r = run(self.long_clip(), out, "--models", MODELS, env={"OX_CLEAN_TEST_FAIL_AFTER_WINDOWS": "2"})
+        # (the early free-space check is bypassed: this test is about a run that fails after it started writing)
+        r = run(self.long_clip(), out, "--models", MODELS,
+                env={"OX_CLEAN_TEST_FAIL_AFTER_WINDOWS": "2", "OX_CLEAN_TEST_FREE_BYTES": str(10**12)})
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual([n for n in os.listdir(mnt) if not n.startswith(".")], [])
 
-    # Mutation: main.swift, `undo` no longer unlinks the output it created -> RED (a half-copied file stays).
+    # Mutation: main.swift, `undo` no longer unlinks the temp it created -> RED (a half-copied .copy stays).
+    # The early free-space check is bypassed (OX_CLEAN_TEST_FREE_BYTES) so the ENOSPC really happens in the copy.
     @needs_models
-    def test_a_copy_that_runs_out_of_space_removes_what_it_made(self):
+    def test_a_copy_that_runs_out_of_space_removes_what_it_made_and_is_disk_full(self):
         mnt = self.attach_exfat(20)   # the 13 MB .part fits; the 13 MB copy beside it does not
         out = os.path.join(mnt, "o.wav")
+        r = run(self.long_clip(), out, "--models", MODELS, env={"OX_CLEAN_TEST_FREE_BYTES": str(10**12)})
+        self.assertEqual((r.returncode, reason(r.stderr)), (6, "disk_full"), r.stderr)
+        self.assertEqual([n for n in os.listdir(mnt) if n == "o.wav" or n.startswith(".o.wav") or n.endswith(".part")], [],
+                         "nothing of ours may stay")
+
+    # #474: a full disk mid-WRITE is the same exit 6 / disk_full as mid-copy (it was 1 write_failed).
+    # Mutation: main.swift, the `CLI.isDiskFull(error)` line removed -> RED (exit 1, write_failed).
+    @needs_models
+    def test_a_disk_that_fills_during_the_clean_is_6_disk_full(self):
+        mnt = self.attach_exfat(8)   # smaller than the 13 MB .part
+        out = os.path.join(mnt, "o.wav")
+        r = run(self.long_clip(), out, "--models", MODELS, env={"OX_CLEAN_TEST_FREE_BYTES": str(10**12)})
+        self.assertEqual((r.returncode, reason(r.stderr)), (6, "disk_full"), r.stderr)
+        self.assertEqual([n for n in os.listdir(mnt) if n == "o.wav" or n.startswith(".o.wav") or n.endswith(".part")], [])
+
+    # #474: the free-space check comes before the model load and counts the copy room where there is no exclusive rename.
+    # Mutation: main.swift, the `CLI.spaceRefusal` call removed -> RED (exit 3, the missing models, or a file made).
+    def test_too_little_free_space_is_refused_before_the_model_load(self):
+        out = self.path("o.wav")
+        r = run(self.clip(), out, "--models", self.path("no-models"), env={"OX_CLEAN_TEST_FREE_BYTES": "1000"})
+        self.assertEqual((r.returncode, reason(r.stderr)), (6, "disk_full"), r.stderr)
+        self.assertIn("MB free", r.stderr)
+        self.assertNoOutput(out)
+
+    # Mutation: main.swift, spaceRefusal's `2 * one` -> `one` -> RED on the exFAT volume (the run goes on to the models, exit 3).
+    def test_on_exfat_the_free_space_check_wants_room_for_the_copy_too(self):
+        mnt = self.attach_exfat(20)   # ~19 MB free: fits one 13 MB result, not two
+        out = os.path.join(mnt, "o.wav")
+        r = run(self.long_clip(), out, "--models", self.path("no-models"))
+        self.assertEqual((r.returncode, reason(r.stderr)), (6, "disk_full"), r.stderr)
+        self.assertEqual([n for n in os.listdir(mnt) if n == "o.wav" or n.startswith(".o.wav") or n.endswith(".part")], [])
+
+    # #474: a kill (or power cut) during the exFAT copy must not leave a truncated file under the FINAL name.
+    # Mutation: main.swift publishByCopy, create `out` itself with O_EXCL and copy into it (the old way) -> RED (o.wav exists, partial).
+    @needs_models
+    def test_a_sigkill_during_the_exfat_copy_leaves_no_partial_output(self):
+        mnt = self.attach_exfat(int(os.path.getsize(self.long_clip()) * 2.5 / 2**20) + 10)
+        out = os.path.join(mnt, "o.wav")
+        e = {k: v for k, v in os.environ.items() if not k.startswith("OX_CLEAN_")}
+        e["OX_CLEAN_TEST_SLOW_COPY_MS"] = "1500"
+        p = subprocess.Popen([BIN, self.long_clip(), out, "--models", MODELS], env=e, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        tmpname = os.path.join(mnt, ".o.wav.copy")
+        deadline = time.time() + 300
+        while not os.path.exists(tmpname):   # the copy has begun (the old code made `out` itself here)
+            if p.poll() is not None:   # (stderr is read only here: reading a live process would block)
+                self.fail(f"the run ended before the copy began: {p.stderr.read()}")
+            self.assertLess(time.time(), deadline, "the copy never began")
+            time.sleep(0.05)
+        time.sleep(1.0)   # a chunk or two in
+        p.kill()
+        p.wait()
+        self.assertFalse(os.path.exists(out), f"a partial {out} of {os.path.getsize(out) if os.path.exists(out) else 0} bytes sits under the final name")
+        # the next run clears the leftovers and publishes a whole file
         r = run(self.long_clip(), out, "--models", MODELS)
-        self.assertEqual((r.returncode, reason(r.stderr)), (6, "publish_failed"), r.stderr)
-        self.assertEqual([n for n in os.listdir(mnt) if not n.startswith(".")], [], "nothing of ours may stay")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(read_float_wav(out)), len(read_float_wav(self.long_clip())))
+        self.assertEqual([n for n in os.listdir(mnt) if n.endswith(".copy") or n.endswith(".part")], [])
 
     # -- interrupted and failing runs ---------------------------------------------------------------------------------
     def start_slow(self, out, ignore=(), **env):

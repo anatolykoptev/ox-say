@@ -64,10 +64,14 @@ fi
 home=${OX_SAY_HOME:-"$HOME/Library/Application Support/ox-say"}
 dest=${dest:-"$home/models"}
 
-qwen=https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main
-parakeet=https://huggingface.co/ggml-org/parakeet-GGUF/resolve/main
-whisper=https://huggingface.co/ggerganov/whisper.cpp/resolve/main
-whisper_vad=https://huggingface.co/ggml-org/whisper-vad/resolve/main
+# Pinned to the commit each repo's main resolved to on 2026-11-05 (x-repo-commit of a HEAD on the file URL), so a user
+# installs the bytes we tested even when upstream moves main. At each commit the LFS SHA-256 (x-linked-etag) of every file
+# below equals the hash in the list, and so does x-linked-size at main. A bump means new hashes. A test fails if a
+# floating-branch URL comes back.
+qwen=https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/b7ee2e8c7459c3bea99da23e3d178125a7d1713c
+parakeet=https://huggingface.co/ggml-org/parakeet-GGUF/resolve/35156454d1a39de06863303dd209fd2bed6ee079
+whisper=https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1
+whisper_vad=https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b
 
 # name sha256 base-url [name-at-the-url]
 models=(

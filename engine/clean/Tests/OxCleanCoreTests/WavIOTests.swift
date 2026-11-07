@@ -266,11 +266,11 @@ final class WavIOTests: XCTestCase {
     /// Real calls, with a log of every close and optional failures.
     final class Spy: @unchecked Sendable {
         var closed: [Int32] = []
-        var failWrite = false, failPwrite = false
+        var failWrite = false, failPwrite = false, shortPwrite = false
         var ops: WavIO.FileOps {
             var o = WavIO.FileOps.posix
             o.write = { [unowned self] fd, p, n in if failWrite { errno = EIO; return -1 }; return Darwin.write(fd, p, n) }
-            o.pwrite = { [unowned self] fd, p, n, off in if failPwrite { errno = EIO; return -1 }; return Darwin.pwrite(fd, p, n, off) }
+            o.pwrite = { [unowned self] fd, p, n, off in if shortPwrite { errno = ENOSPC; return 2 }; if failPwrite { errno = EIO; return -1 }; return Darwin.pwrite(fd, p, n, off) }
             o.close = { [unowned self] fd in closed.append(fd); return Darwin.close(fd) }
             return o
         }
@@ -318,6 +318,31 @@ final class WavIOTests: XCTestCase {
         XCTAssertThrowsError(try w.finish()) { XCTAssertEqual(($0 as? POSIXError)?.code, .EIO) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
         XCTAssertEqual(spy.closed.count, 1)
+    }
+
+    // #460: a short positive pwrite left errno stale (here ENOSPC, as a leftover from an earlier call); it is an EIO.
+    // Mutation: finish(), `n < 0 ? ... : .EIO` -> always errno -> red (ENOSPC).
+    func testAShortPwriteInFinishIsEIONotAStaleErrno() throws {
+        let spy = Spy()
+        let url = F.tmp("shortpw")
+        let w = try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1, io: spy.ops)
+        try x.withUnsafeBufferPointer { try w.append($0) }
+        spy.shortPwrite = true
+        XCTAssertThrowsError(try w.finish()) { XCTAssertEqual(($0 as? POSIXError)?.code, .EIO) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    // #460: a symlink swapped in at the path, pointing at the writer's own (renamed) file, is not unlinked.
+    // Mutation: discard(), lstat -> stat -> red (the symlink is removed).
+    func testAbandonNeverUnlinksASymlinkSwappedInAtThePath() throws {
+        let url = F.tmp("symlinked"), moved = F.tmp("symlinked-moved")
+        let w = try WavIO.StreamWriter(url: url, sampleRate: 48000, channels: 1)
+        XCTAssertEqual(rename(url.path, moved.path), 0)
+        XCTAssertEqual(symlink(moved.path, url.path), 0)
+        w.abandon()
+        var st = stat()
+        XCTAssertEqual(lstat(url.path, &st), 0, "the symlink at the path was unlinked")
+        unlink(url.path); unlink(moved.path)
     }
 
     func testAFailedAppendPoisonsTheWriterAndFinishThrows() throws {
