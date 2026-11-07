@@ -230,6 +230,76 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertEqual(opened.components(separatedBy: "refresh()").count - 1, 1)
     }
 
+    /// N4: the sidebar's selection highlight is the system's, in both lists. Nothing in the window view draws a fill of its
+    /// own (no rounded rectangle, no `Color.primary.opacity` tint), Settings is not a hand-made button row, and
+    /// `RoundedRectangle` stays out of the sidebar for good.
+    /// Mutation: MainWindowView, add `.background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.12)))` to
+    /// the sidebar's Settings row -> RED.
+    func testTheSidebarDrawsNoSelectionOfItsOwn() throws {
+        let view = MeetingWiringTests.stripComments(try source("MainWindowUI/MainWindowView.swift"))
+        XCTAssertFalse(view.contains("RoundedRectangle"), "a hand-drawn fill in the sidebar")
+        XCTAssertFalse(view.contains("Color.primary.opacity"), "a hand-made tint in the sidebar")
+        XCTAssertFalse(view.contains("SettingsRow"), "Settings is a row of a List, not a button drawn under it")
+        // The sidebar's own text: the split's first column and the list helper, up to the page.
+        let sidebar = try XCTUnwrap(view.range(of: "NavigationSplitView {")).lowerBound
+        let page = try XCTUnwrap(view.range(of: "@ViewBuilder private var page")).lowerBound
+        XCTAssertFalse(view[sidebar..<page].contains(".buttonStyle(.plain)"), "a plain button row in the sidebar")
+    }
+
+    /// All whitespace runs as one space, so a pin survives reformatting (indentation, line breaks).
+    private func squeezed(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    /// N4: the sections are one List and Settings is a one-row List under the Advanced switch, both through the same
+    /// helper, so both are bound to the model's one `section` and the system draws exactly one highlight between them.
+    /// Mutations: `model.objectWillChange.send()` -> `break`; either `.onKeyPress(` line deleted; `.background(.bar)` deleted -> RED
+    /// (the Shots probe, SHOTS_PROBE=1, exits 1 on the first two as well).
+    /// Mutation: MainWindowView, a second `List(` with its own `@State` selection for Settings -> RED (the helper is the
+    /// only `List(`); `sidebarList([.settings])` -> any other rows -> RED.
+    func testSettingsIsAOneRowListBoundToTheSameSelection() throws {
+        let raw = MeetingWiringTests.stripComments(try source("MainWindowUI/MainWindowView.swift"))
+        let view = squeezed(raw)
+        XCTAssertEqual(view.replacingOccurrences(of: "sidebarList(", with: "").components(separatedBy: "List(").count - 1, 1, "one List builder, used for both lists")
+        XCTAssertTrue(view.contains("List(rows, selection: binding(for: rows))"))
+        XCTAssertTrue(view.contains("sidebarList(topSections, id: .sections)"))
+        XCTAssertTrue(view.contains("sidebarList([.settings], id: .settings)"))
+        XCTAssertTrue(view.contains("OneRowList { sidebarList([.settings], id: .settings) }"), "a List has no height of its own")
+        XCTAssertTrue(view.contains("get: { rows.contains(model.section) ? model.section : nil }"))
+        // A deselect to nothing is not a choice, but the table is already empty: the getter must be asked again.
+        XCTAssertTrue(view.contains("model.section = s } else {"))
+        // ... on the next run-loop turn: the setter can run inside a view update, where a synchronous publish warns.
+        // Mutation: `DispatchQueue.main.async { model.objectWillChange.send() }` -> `model.objectWillChange.send()` -> RED.
+        XCTAssertTrue(view.contains("DispatchQueue.main.async { model.objectWillChange.send() }"),
+                      "a dropped deselect leaves the table with no highlight; the publish is deferred")
+        XCTAssertEqual(view.components(separatedBy: "objectWillChange.send()").count - 1, 1)
+        // The arrow keys cross from the last section to Settings and back, and hand the keyboard over; a key held with a
+        // modifier is the list's own (`plain:`), the decision is MainWindowSpec.sidebarMove.
+        // Mutation: either `SidebarArrow.isPlain(press.modifiers)` -> `true` -> RED.
+        XCTAssertTrue(view.contains(".onKeyPress(.downArrow, phases: [.down, .repeat]) { press in move(.down, from: id, plain: SidebarArrow.isPlain(press.modifiers)) }"))
+        XCTAssertTrue(view.contains(".onKeyPress(.upArrow, phases: [.down, .repeat]) { press in move(.up, from: id, plain: SidebarArrow.isPlain(press.modifiers)) }"))
+        XCTAssertTrue(view.contains("MainWindowSpec.sidebarMove(arrow, from: list, plain: plain"))
+        XCTAssertTrue(view.contains("focusedList = hop.list"))
+        XCTAssertTrue(view.contains(".focused($focusedList, equals: id)"))
+        // The bottom area has the bar material and a hairline, so a scrolling list does not show through it.
+        XCTAssertTrue(view.contains("Divider() if switchShown"))
+        XCTAssertTrue(view.contains(".background(.bar)"))
+        // The bottom area is a safe-area inset of the sections list, the switch above the Settings list.
+        let inset = try XCTUnwrap(view.range(of: ".safeAreaInset(edge: .bottom"), "the bottom area").lowerBound
+        let rest = view[inset...]
+        let switchAt = try XCTUnwrap(rest.range(of: "AdvancedSwitch(model: model)")).lowerBound
+        let settingsAt = try XCTUnwrap(rest.range(of: "sidebarList([.settings], id: .settings)")).lowerBound
+        XCTAssertLessThan(switchAt, settingsAt, "the Advanced switch sits directly above Settings")
+        // Source layout: the type's doc comment sits right above it, and the focus state is stored with the other properties.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let uncut = try String(contentsOf: root.appendingPathComponent("Sources/MainWindowUI/MainWindowView.swift"), encoding: .utf8)
+        let lines = uncut.components(separatedBy: "\n")
+        let decl = try XCTUnwrap(lines.firstIndex { $0.hasPrefix("public struct MainWindowView") })
+        XCTAssertTrue(lines[decl - 1].hasPrefix("///"), "the doc comment is above MainWindowView")
+        let props = lines[decl...].prefix { !$0.contains("public init") }.filter { $0.contains("let ") || $0.contains("var ") || $0.contains("@") }
+        XCTAssertTrue(props.contains { $0.contains("@FocusState") })
+    }
+
     /// A name typed letter by letter is saved on Return or when the field is left, and never triggers a full read.
     /// Mutation: MainWindowSource.apply, `if change.needsRefresh { refresh() }` -> `refresh()`; or NameField commits in
     /// `.onChange(of: draft)` -> RED.

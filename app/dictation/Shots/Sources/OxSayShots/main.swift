@@ -12,6 +12,10 @@ import SwiftUI
 // ImageRenderer, so each shot is a real NSWindow captured with `screencapture -l` (a window of
 // this process: no Screen Recording permission is asked). The app's own bundle, hotkeys,
 // daemon and UserDefaults are never touched: nothing but MainWindowUI and sample data runs.
+//
+// SHOTS_PROBE=1 (or =edges) prints PROBE lines instead of PNGs for the sidebar scenes: the sidebar tables' rows and
+// selection, the key-view loop, and (edges) the sidebar's width limits and collapse. It reads AppKit state, so it also
+// works on a locked screen. SHOTS_SIDEBAR_SIZE_MODE=1|2|3 sets the process's sidebar icon size (small, medium, large).
 
 /// A window that claims to be key (this does not change how the window server paints it as unfocused).
 final class ShotWindow: NSWindow {
@@ -116,6 +120,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
     // .prohibited: the harness never takes focus. The shots therefore show an unfocused window
     // (grey title buttons, grey selection, pale switches); a focused one has accent colours.
     app.setActivationPolicy(.prohibited)
+    if let m = ProcessInfo.processInfo.environment["SHOTS_SIDEBAR_SIZE_MODE"].flatMap(Int.init) { UserDefaults.standard.register(defaults: ["NSTableViewDefaultSizeMode": m]) }
 
     let cal = Calendar(identifier: .gregorian)
     var parts = DateComponents()
@@ -226,6 +231,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         Scene(name: "audio-removed", section: .meetings, meeting: "m5", tab: .transcript) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "sidebar-simple", section: .meetings, meeting: nil, sidebar: true) { PreviewData.make(now: $0, ru: $1) },
         Scene(name: "sidebar-advanced", section: .meetings, meeting: nil, sidebar: true, advanced: true) { PreviewData.make(now: $0, ru: $1) },
+        Scene(name: "sidebar-settings", section: .settings, meeting: nil, sidebar: true, advanced: true) { PreviewData.make(now: $0, ru: $1) },
         // Озвучка on the fast voice: first run on an Intel Mac, a finished take, generating, failed, offline, too long,
         // and the studio voice not downloaded.
         Scene(name: "speak-first-run", section: .speak, meeting: nil) { now, ru in
@@ -401,6 +407,13 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                 window.displayIfNeeded()
                 // SwiftUI presents the sheet a beat after the page is up, and animates it in.
                 RunLoop.main.run(until: Date().addingTimeInterval(scene.sheet ? 1.5 : 0.5))
+                if ProcessInfo.processInfo.environment["SHOTS_PROBE"] != nil {
+                    if scene.sidebar {
+                        let tag = "\(scene.name)-\(lang)-\(dark ? "dark" : "light")-w\(Int(width))"
+                        if ProcessInfo.processInfo.environment["SHOTS_PROBE"] == "edges" { probeSidebarEdges(window, model, tag) } else { probeSidebar(window, model, tag) }
+                    }
+                    continue
+                }
                 let file = out.appendingPathComponent("\(scene.name)-\(lang)-\(dark ? "dark" : "light")\(widths == nil ? "" : "-w\(Int(width))").png")
                 if scene.sheet != (window.attachedSheet != nil) {
                     // A silent wrong shot is the bug class here: a sheet scene without its sheet, or a plain one with a stray sheet.
@@ -434,6 +447,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         }
     }
     window.close()
+    if ProcessInfo.processInfo.environment["SHOTS_PROBE"] != nil { finishProbe() }
 }
 
 MainActor.assumeIsolated { run() }

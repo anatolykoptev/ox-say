@@ -88,6 +88,8 @@ const CleanModelsRevision = "da0d6b45be2fe7f2ec495ee76280132848a789c0"
 // CleanModelsBytes is the exact byte sum of the files --clean-only downloads (the 8 model files and 4 documents),
 // for the models row and the download's progress only; the integrity pin is the SHA-256 per file in fetch-models.sh.
 // Derived from the published files (stat -f %z, summed): 130931995. The budget is 135 MB.
+// On a bump, refetch (`scripts/fetch-models.sh --clean-only <dest>`) and re-sum every regular file under
+// <dest>/clean/mossformer2-se-48k except .ox-say-revision: 12 files; nothing else ties this number to the pins (#457).
 const CleanModelsBytes = 130931995
 
 // The ox-diar engines the daemon can ask for (OX_SAY_DIAR_ENGINE, passed to ox-diar as --engine). DefaultDiarEngine

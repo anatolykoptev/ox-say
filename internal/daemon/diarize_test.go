@@ -335,9 +335,21 @@ func TestDiarPinsAgreeAcrossLanguages(t *testing.T) {
 	if got := find("engine/diar/Sources/OxDiarCore/Platform.swift", `case input = (\d+)`); got != "4" || diarExitInput != 4 {
 		t.Errorf("input %s, diarExitInput %d", got, diarExitInput)
 	}
-	// the lists in fetch-models.sh name 24+4 diarization, 5+2 nemotron and 8+4 voice-cleanup entries, each with a 64-hex SHA-256
-	if n := len(regexp.MustCompile(`(?m)^    "[0-9a-f]{64}  \S+"$`).FindAllString(read("scripts/fetch-models.sh"), -1)); n != 47 {
-		t.Errorf("fetch-models.sh lists %d pinned entries, want 47", n)
+	// each pinned array in fetch-models.sh holds its own count of 64-hex SHA-256 entries; counting per array keeps a new
+	// set from touching the others (#457)
+	script := read("scripts/fetch-models.sh")
+	for _, want := range []struct {
+		array string
+		n     int
+	}{{"diar_files", 24}, {"diar_docs", 4}, {"nem_files", 5}, {"nem_docs", 2}, {"clean_files", 8}, {"clean_docs", 4}} {
+		m := regexp.MustCompile(`(?ms)^` + want.array + `=\(\n(.*?)^\)$`).FindStringSubmatch(script)
+		if m == nil {
+			t.Errorf("fetch-models.sh has no %s array", want.array)
+			continue
+		}
+		if n := len(regexp.MustCompile(`(?m)^    "[0-9a-f]{64}  \S+"$`).FindAllString(m[1], -1)); n != want.n {
+			t.Errorf("%s lists %d pinned entries, want %d", want.array, n, want.n)
+		}
 	}
 }
 

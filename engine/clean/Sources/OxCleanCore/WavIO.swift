@@ -170,6 +170,10 @@ public enum WavIO {
     /// removes the file it created, so a half-written file never sits at the output path and a retry does not hit
     /// EEXIST. It removes only its own file: the path is unlinked only if it still names the inode this writer
     /// created. One owner closes the descriptor: `closeFD()`, which is idempotent.
+    ///
+    /// Cleanup runs only through `abandon()`, a failed call or `deinit`: `exit()`, SIGKILL or a crash never reach it, so a
+    /// caller must `abandon()` before every error-path `exit(code)` (ox-clean's `fail` does) and handle SIGINT/SIGTERM itself
+    /// (Interrupt.swift); a SIGKILL leaves the partial file, which is why ox-clean writes `<out>.part`, not `<out>` (#460).
     public final class StreamWriter {
         private let io: FileOps
         private let path: String
@@ -262,7 +266,9 @@ public enum WavIO {
                 func le32(_ v: UInt64) -> [UInt8] { withUnsafeBytes(of: UInt32(v).littleEndian) { Array($0) } }
                 for (offset, value) in [(4, 36 + dataBytes), (40, dataBytes)] {
                     let b = le32(value)
-                    guard io.pwrite(fd, b, 4, off_t(offset)) == 4 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+                    let n = io.pwrite(fd, b, 4, off_t(offset))
+                    // A short positive return leaves errno stale (or 0): that is an I/O error, not whatever errno was (#460).
+                    guard n == 4 else { throw POSIXError(n < 0 ? (POSIXErrorCode(rawValue: errno) ?? .EIO) : .EIO) }
                 }
                 let f = fd
                 fd = -1
@@ -298,7 +304,8 @@ public enum WavIO {
                 fd = -1
             }
             var st = stat()
-            if stat(path, &st) == 0, st.st_dev == mine.dev, st.st_ino == mine.ino { unlink(path) }
+            // lstat: a symlink swapped in at the path is never ours, even when it points at our own inode (#460).
+            if lstat(path, &st) == 0, st.st_dev == mine.dev, st.st_ino == mine.ino { unlink(path) }
         }
 
         /// True when `adding` more bytes would push the RIFF size field (36 + data) past `UInt32.max`.
