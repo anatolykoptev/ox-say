@@ -112,6 +112,9 @@ type producePorts interface {
 	Quiet(ctx context.Context, onWait func()) error
 	Power(ctx context.Context) (onBattery, lowPower bool)
 	Background(on bool)
+	// Turn claims the studio voice's turn among the large engines (see residency) for a whole job and returns its
+	// release; it waits on ctx. A no-op where the engines do not take turns.
+	Turn(ctx context.Context) (release func(), err error)
 	// Recycle stops the engine child with this pid, which accepted a render and
 	// never answered, so the next request gets a fresh one (#156.12b). from is
 	// the render's engine.Guard.Seq: requests that queued behind it are not

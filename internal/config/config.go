@@ -57,6 +57,12 @@ const VoxCPM2ModelFile = "voxcpm2-q8_0.gguf"
 // 16 GB Mac is unmeasured and Metal wires at most about 2/3 of RAM.
 const VoxCPM2MinMemoryGB = 24
 
+// OneLargeEngineBelowGB is the memory below which an Apple Silicon Mac holds one large GPU engine at a time (the fast
+// voice, the studio voice, the notes model): VoxCPM2 peaks near 7.5 GB, the fast voice holds about 5 GB and the notes
+// model about 7 GB while Metal wires at most about 2/3 of RAM (issue #501). It is its own number, not
+// VoxCPM2MinMemoryGB: lowering the studio-voice gate to 16 GB must not switch the eviction off for 16-23 GB Macs.
+const OneLargeEngineBelowGB = 24
+
 // NotesModelFile is the one model filename fetch-models.sh --notes-only and
 // the default path share (Qwen3.5-4B Q4_K_M, the notes spike's default).
 const NotesModelFile = "Qwen3.5-4B-Q4_K_M.gguf"
@@ -203,6 +209,12 @@ type Config struct {
 	// HostMemoryBytes is the installed RAM read by load; 0 (a Config literal,
 	// or an unreadable host) means unknown and never blocks VoxCPM2.
 	HostMemoryBytes uint64
+
+	// AssumedMemoryBytes is OX_SAY_ASSUME_MEMORY_GB: a test and diagnostic knob that makes OneLargeEngine decide as if the
+	// Mac had this much memory. 0 (unset) means the real HostMemoryBytes decides. It feeds that decision ONLY: the
+	// VoxCPM2 and notes memory gates keep reading HostMemoryBytes, so the knob can switch the eviction on for a
+	// 48 GB Mac without taking the gate's protection away from a small one.
+	AssumedMemoryBytes uint64
 }
 
 // flagNames maps flag names to env var names for ApplyFlags.
@@ -247,6 +259,8 @@ var flagNames = map[string]string{
 	"diar-bin":          "OX_SAY_DIAR_BIN",
 	"diar-engine":       "OX_SAY_DIAR_ENGINE",
 	"clean-bin":         "OX_SAY_CLEAN_BIN",
+	// A test and diagnostic knob: see Config.AssumedMemoryBytes.
+	"assume-memory-gb": "OX_SAY_ASSUME_MEMORY_GB",
 }
 
 // RegisterFlags registers one flag per supported env var on fs. Values set on
@@ -513,6 +527,16 @@ func loadVoxCPM2(c *Config, get func(string) string, engineDir string) error {
 		return fmt.Errorf("config: OX_SAY_TTS_MODEL %q: want %s|%s", c.TTSModel, TTSModelQwen, TTSModelVoxCPM2)
 	}
 	c.HostMemoryBytes = hostMemoryBytes()
+	if raw := get("OX_SAY_ASSUME_MEMORY_GB"); raw != "" {
+		gb, err := intVar(raw, 0)
+		if err != nil {
+			return fmt.Errorf("config: OX_SAY_ASSUME_MEMORY_GB: %w", err)
+		}
+		if gb < 1 {
+			return fmt.Errorf("config: OX_SAY_ASSUME_MEMORY_GB %d: want >= 1 (or unset)", gb)
+		}
+		c.AssumedMemoryBytes = uint64(gb) * bytesPerGB
+	}
 	return nil
 }
 
@@ -703,6 +727,20 @@ func resolveGPUMemory(v string) (string, error) {
 // the GPU side by side and no GPU lease is taken. Anything else — the zero
 // value included — keeps the discrete-card arbitration (issue #11).
 func (c *Config) UnifiedMemory() bool { return c.GPUMemory == GPUMemoryUnified }
+
+// OneLargeEngine reports whether the large GPU engines take turns: Apple Silicon with less memory than
+// OneLargeEngineBelowGB, where two of them do not fit what Metal may wire. An unknown size (0) never turns it on, like
+// the memory gates. OX_SAY_ASSUME_MEMORY_GB, when set, replaces the size for this decision alone.
+func (c *Config) OneLargeEngine() bool {
+	if !c.UnifiedMemory() {
+		return false
+	}
+	mem := c.HostMemoryBytes
+	if c.AssumedMemoryBytes != 0 {
+		mem = c.AssumedMemoryBytes
+	}
+	return mem != 0 && mem < OneLargeEngineBelowGB*bytesPerGB
+}
 
 func intVar(v string, def int) (int, error) {
 	if v == "" {

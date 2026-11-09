@@ -12,6 +12,9 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
     case noSavedVoice
     /// A mood on a project made with the recording's own delivery (409 from `deliveryModeGate`): no style can apply there.
     case stylingUnavailable
+    /// A small-memory Mac is busy with another large engine (a voiceover, the fast voice or meeting notes): the daemon's
+    /// 503 with code `engine_busy_memory`. Nothing failed; the request can be repeated later.
+    case enginesBusy
 
     /// What the person reads, in their language. The daemon's own words in a refusal stay as it sent them; an empty
     /// one is the app's sentence naming the status. `description` below stays English: it is for logs.
@@ -24,6 +27,7 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .voiceoverRunning: return text(.speakStudioBusy)
         case .noSavedVoice: return text(.speakStudioNeedsVoice)
         case .stylingUnavailable: return text(.speakMoodUnavailable)
+        case .enginesBusy: return text(.speakEngineBusy)
         }
     }
 
@@ -41,6 +45,7 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .voiceoverRunning: return "Another voiceover is being produced."
         case .noSavedVoice: return "Producing a voiceover needs a saved voice."
         case .stylingUnavailable: return "This project cannot take a mood: it keeps the recording's own delivery."
+        case .enginesBusy: return "Another large voice or notes engine is busy; try again later."
         }
     }
 }
@@ -103,6 +108,8 @@ public struct StudioClient {
     static func refusal(status: Int, body: Data) -> StudioError {
         let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
         let message = (obj?["error"] as? [String: Any])?["message"] as? String ?? ""
+        // The daemon's memory-busy answer: keyed on its JSON code, never on the English words.
+        if status == 503, SpeechClient.isEnginesBusy(body: body) { return .enginesBusy }
         // The daemon's busy answer is the 409 that carries `running_id` (produce_http.go writeProduceErr): a code, not a
         // sentence. The other 409s (still cancelling, not running) carry none and keep their own words.
         if status == 409, obj?["running_id"] is String { return .voiceoverRunning }
