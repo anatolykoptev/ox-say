@@ -105,6 +105,7 @@ func synthStatus(err error) int {
 	var rwe *runawayError
 	var te *engineTransportError
 	var tre *transientError
+	var ebe *engineBusyError
 	switch {
 	case errors.As(err, &tre):
 		return http.StatusServiceUnavailable
@@ -120,7 +121,7 @@ func synthStatus(err error) int {
 		return http.StatusUnprocessableEntity
 	case errors.As(err, &ee):
 		return ee.status
-	case errors.Is(err, errEngineStart):
+	case errors.Is(err, errEngineStart), errors.As(err, &ebe):
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
