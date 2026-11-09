@@ -67,6 +67,12 @@ func writeSynthErr(w http.ResponseWriter, err error) {
 			"error": map[string]any{"message": sbe.Error(), "type": speechBlockedCode, "code": speechBlockedCode}})
 		return
 	}
+	var ebe *engineBusyError
+	if errors.As(err, &ebe) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": map[string]any{"message": ebe.Error(), "type": engineBusyCode, "code": engineBusyCode}})
+		return
+	}
 	var rwe *runawayError
 	if errors.As(err, &rwe) {
 		w.Header().Set("Content-Type", "application/json")
@@ -77,6 +83,17 @@ func writeSynthErr(w http.ResponseWriter, err error) {
 		return
 	}
 	writeErr(w, synthStatus(err), err.Error())
+}
+
+// writeErrOrBusy is writeErr for a synthesis error, except that the memory-busy refusal keeps its typed body
+// (engine_busy_memory), which the app keys on instead of the words.
+func writeErrOrBusy(w http.ResponseWriter, err error, msg string) {
+	var busy *engineBusyError
+	if errors.As(err, &busy) {
+		writeSynthErr(w, err)
+		return
+	}
+	writeErr(w, synthStatus(err), msg)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -142,12 +159,17 @@ func (d *Daemon) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Ox-Say-Warning", warning)
 	}
 
-	base, g, err := d.engineBase(r.Context())
+	base, release, err := d.engineBase(r.Context())
 	if err != nil {
+		var busy *engineBusyError
+		if errors.As(err, &busy) {
+			writeSynthErr(w, err) // another large engine has the turn: the typed 503
+			return
+		}
 		writeErr(w, http.StatusServiceUnavailable, fmt.Sprintf("engine failed to start: %v", err))
 		return
 	}
-	defer g.Release()
+	defer release()
 
 	seedDefaulted := popSeedDefaulted(body)
 	upstream := body

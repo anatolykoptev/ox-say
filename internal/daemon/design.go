@@ -686,7 +686,7 @@ func (d *Daemon) handleDesignVoice(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := d.DesignVoice(r.Context(), in)
 	if err != nil {
-		writeErr(w, synthStatus(err), d.publicError(err).Error())
+		writeErrOrBusy(w, err, d.publicError(err).Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
@@ -701,7 +701,7 @@ func (d *Daemon) handleSaveDesign(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := d.saveDesignResult(r.Context(), in)
 	if err != nil {
-		writeErr(w, synthStatus(err), d.publicError(err).Error())
+		writeErrOrBusy(w, err, d.publicError(err).Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, res)

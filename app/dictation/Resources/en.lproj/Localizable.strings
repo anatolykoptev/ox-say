@@ -732,6 +732,7 @@
 "speak.track_missing" = "The file was moved or deleted";
 "speak.waveform" = "Audio waveform";
 "speak.project_interrupted" = "OxSay stopped while working on this, so it is not finished. Paste the text into New text and voice it again.";
+"speak.engine_busy" = "Another voiceover or meeting notes are being made right now. Please wait until it finishes.";
 "speak.studio.busy" = "Another voiceover is still being made. Wait for it to finish, then try again.";
 "speak.studio.needs_voice" = "The studio voice needs a saved voice. Create one on the Voices page, then try again.";
 

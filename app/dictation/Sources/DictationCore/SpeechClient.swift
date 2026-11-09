@@ -15,6 +15,9 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
     case tooLong(max: Int)
     /// The daemon answered 503: the speech engine is starting or failed to start.
     case engineUnavailable
+    /// The daemon answered 503 with code `engine_busy_memory`: another large engine (a voiceover, the fast voice or
+    /// meeting notes) holds this Mac's memory right now. Nothing is broken; trying again later works.
+    case enginesBusy
 
     public var description: String {
         switch self {
@@ -26,6 +29,7 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
         case .runawayRetried: return "The ox-say speech engine stopped a take that did not end, on both tries."
         case .tooLong(let max): return "The text is longer than \(max) characters."
         case .engineUnavailable: return "The ox-say speech engine is not ready (503)."
+        case .enginesBusy: return "Another voice or notes engine is busy (engine_busy_memory); try again later."
         }
     }
 
@@ -41,6 +45,7 @@ public enum SpeechError: Error, Equatable, CustomStringConvertible {
         case .runawayRetried: return text(.noticeSpeechRunawayRetried)
         case .tooLong(let max): return String(format: text(.speechErrorTooLong), String(max))
         case .engineUnavailable: return text(.speechErrorEngineUnavailable)
+        case .enginesBusy: return text(.speakEngineBusy)
         }
     }
 
@@ -78,8 +83,16 @@ public struct SpeechClient {
            let error = obj["error"] as? [String: Any], error["type"] as? String == "generation_runaway" {
             return error["retried"] as? Bool == true ? .runawayRetried : .runaway
         }
-        if status == 503 { return .engineUnavailable }
+        if status == 503 { return isEnginesBusy(body: body) ? .enginesBusy : .engineUnavailable }
         return .http(status, String(decoding: body.prefix(300), as: UTF8.self))
+    }
+
+    /// The daemon's memory-busy refusal (`{"error":{"code":"engine_busy_memory"}}`, internal/daemon/residency.go
+    /// `engineBusyCode`): the code is the contract, the English message is not read.
+    static func isEnginesBusy(body: Data) -> Bool {
+        guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let error = obj["error"] as? [String: Any] else { return false }
+        return error["code"] as? String == "engine_busy_memory"
     }
 
     /// What the daemon accepts as the text to speak. Empty and whitespace-only

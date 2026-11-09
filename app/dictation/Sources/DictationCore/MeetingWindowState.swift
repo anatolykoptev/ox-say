@@ -102,6 +102,7 @@ public enum MeetingErrorText {
         case .timedOut: return text(.meetingErrTimeout)
         case .badResponse: return text(.meetingErrBadResponse)
         case .voiceoverRunning, .noSavedVoice, .stylingUnavailable, .projectNotFinished, .recordingStyleUnavailable: return text(.meetingErrGeneric)
+        case .enginesBusy: return text(.speakEngineBusy)
         case .refused(let status, _):
             // The daemon's own words are English and name internals: they never reach the window.
             switch (status, action) {

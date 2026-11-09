@@ -280,6 +280,18 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	if c.d.LLMSup == nil {
 		return "", errors.New("the notes engine is not configured")
 	}
+	// Below config.OneLargeEngineBelowGB the notes model takes its turn: the fast and the studio voice are stopped
+	// first, and the call waits (on the composer's own context) while one of them is working. Before the Guard, see
+	// residency.
+	leave, err := c.d.mem.enter(ctx, c.d.LLMSup, 0)
+	if err != nil {
+		err = fmt.Errorf("the notes model could not take its turn: %w", err)
+		if ctx.Err() != nil {
+			return "", err
+		}
+		return "", &meeting.EngineDownError{Err: err, Retryable: true, Reason: meeting.FailNotesEngineStart}
+	}
+	defer leave()
 	g := c.d.LLMSup.Acquire()
 	defer g.Release()
 	base, err := c.d.LLMSup.EnsureReady(ctx)
@@ -334,6 +346,7 @@ func (d *Daemon) initMeetings() {
 			return d.Transcribe(ctx, TranscribeInput{AudioPath: wav})
 		},
 		Chat:       llmChat{d: d},
+		NotesTurn:  func(ctx context.Context) (func(), error) { return d.mem.enter(ctx, d.LLMSup, 0) },
 		NotesReady: func() string { code, _ := d.Cfg.NotesBlock(); return code },
 		TranscribeReady: func() string {
 			if _, err := os.Stat(d.Cfg.STTModel); err != nil {

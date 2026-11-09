@@ -131,6 +131,9 @@ type job struct {
 	ctx      context.Context
 	stopWait context.CancelFunc
 
+	// turn is the studio voice's memory turn while runChunks holds it (nil otherwise); the pauses give it back.
+	turn *turnHold
+
 	started  time.Time // when this run began
 	elapsedS float64   // the elapsed time the export recorded (guarded by producer.mu)
 }
@@ -373,14 +376,20 @@ func (p *producer) checkpoint(j *job) error {
 // render in flight must not be cut by a cancel.
 func (p *producer) quiet(j *job) func(context.Context) error {
 	return func(context.Context) error {
-		err := p.ports.Quiet(j.ctx, func() { p.setStatus(j, vproject.StatusWaitingForDictation) })
+		err := p.ports.Quiet(j.ctx, func() {
+			j.turn.drop() // a dictation wait can last minutes: the memory turn goes back until it ends
+			p.setStatus(j, vproject.StatusWaitingForDictation)
+		})
 		// Whatever ended the wait, the job is no longer waiting: a rendered take
 		// is still heard and kept after a cancel, and must not show "waiting".
 		p.setStatus(j, vproject.StatusRunning)
 		if err != nil && j.cancel.Load() {
 			return errCancelled
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		return j.turn.take() // the next take needs the turn again
 	}
 }
 
@@ -392,6 +401,7 @@ func (p *producer) waitPower(j *job) error {
 			break
 		}
 		p.setStatus(j, vproject.StatusPausedOnBattery)
+		j.turn.drop() // a battery pause can last hours: the memory turn goes back until it ends
 		select {
 		case <-j.ctx.Done():
 			if j.cancel.Load() {
@@ -405,6 +415,8 @@ func (p *producer) waitPower(j *job) error {
 		}
 	}
 	p.setStatus(j, vproject.StatusRunning)
+	// The turn is taken again by the quiet check that always follows (checkpoint): one place takes it back after
+	// any pause.
 	return nil
 }
 
@@ -415,15 +427,79 @@ func (p *producer) runChunks(j *job, start time.Time) error {
 		return err
 	}
 	tk := &taker{ports: p.ports, dir: filepath.Join(j.dir, vproject.TakesDir), quiet: p.quiet(j)}
-	for i := range specs {
-		if err := p.checkpoint(j); err != nil {
-			return err
+	return p.holdTurn(j, func() error {
+		for i := range specs {
+			if err := p.checkpoint(j); err != nil {
+				return err
+			}
+			if err := p.runChunk(j, tk, i, specs[i], start); err != nil {
+				return err
+			}
 		}
-		if err := p.runChunk(j, tk, i, specs[i], start); err != nil {
-			return err
-		}
+		return nil
+	})
+}
+
+// holdTurn runs fn holding the studio voice's turn among the large engines for the whole job, so a fast-voice request
+// or a notes call between two takes neither evicts the engine (a ~14 s cold start per take) nor eats a take's render
+// deadline waiting for it: it waits at the busy answer instead. The turn is released on every way out of fn,
+// a panic included. Its wait is cut by a cancel like any wait of the job.
+func (p *producer) holdTurn(j *job, fn func() error) error {
+	h := &turnHold{p: p, j: j}
+	if err := h.take(); err != nil {
+		return err
 	}
+	j.turn = h
+	defer func() {
+		h.drop()
+		j.turn = nil
+	}()
+	return fn()
+}
+
+// turnHold is the job's claim on the studio voice's turn. One claim at a time, one release per claim: a pause (battery,
+// dictation) drops it, so a person who unplugs the laptop or dictates does not lock the fast voice out for hours, and
+// the next take takes it again. All calls come from the job's own goroutine; a nil hold is a no-op.
+type turnHold struct {
+	p       *producer
+	j       *job
+	mu      sync.Mutex
+	release func()
+}
+
+// take claims the turn when the job does not hold it, waiting on the job's context. A cancel during the wait is
+// errCancelled, like every other wait of the job.
+func (h *turnHold) take() error {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.release != nil {
+		return nil
+	}
+	release, err := h.p.ports.Turn(h.j.ctx)
+	if err != nil {
+		if h.j.cancel.Load() {
+			return errCancelled
+		}
+		return fmt.Errorf("the studio voice could not take its turn: %w", err)
+	}
+	h.release = release
 	return nil
+}
+
+// drop gives the turn back if the job holds it.
+func (h *turnHold) drop() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.release != nil {
+		h.release()
+		h.release = nil
+	}
 }
 
 // runChunk renders attempts until Takes passing takes exist (or 3

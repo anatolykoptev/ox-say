@@ -308,6 +308,7 @@ func TestEnvKeysAllLoaded(t *testing.T) {
 		{"OX_SAY_DIAR_BIN", "/tmp/oxk-4917/ox-diar-x", "/tmp/oxk-4917/ox-diar-x", func(c *Config) string { return c.DiarBin }},
 		{"OX_SAY_DIAR_ENGINE", "nemotron", "nemotron", func(c *Config) string { return c.DiarEngine }},
 		{"OX_SAY_CLEAN_BIN", "/tmp/oxk-4917/ox-clean-x", "/tmp/oxk-4917/ox-clean-x", func(c *Config) string { return c.CleanBin }},
+		{"OX_SAY_ASSUME_MEMORY_GB", "13", "13", func(c *Config) string { return strconv.FormatUint(c.AssumedMemoryBytes/bytesPerGB, 10) }},
 	}
 	keys := EnvKeys()
 	inTable := map[string]bool{}

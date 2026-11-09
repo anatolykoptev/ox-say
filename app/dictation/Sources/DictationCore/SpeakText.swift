@@ -135,6 +135,7 @@ public enum SpeakText {
         case .stylingUnavailable: return t(.speakMoodUnavailable)
         case .projectNotFinished: return t(.speakPanelErrNotFinished)
         case .recordingStyleUnavailable: return t(.speakPanelErrRecordingStyle)
+        case .enginesBusy: return t(.speakEngineBusy)
         case .refused(_, let message):
             return message.isEmpty ? studio.message(text: t) : String(format: t(.speakServiceAnswered), message)
         }
