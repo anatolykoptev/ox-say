@@ -53,4 +53,5 @@ fi
 # conversion of Alibaba SLAB's MossFormer2_SE_48K (Apache-2.0); LICENSE and NOTICE ship beside the binary.
 cp -f "$here/model/LICENSE" "$out/licenses/MossFormer2-SE.LICENSE"
 cp -f "$here/model/NOTICE.md" "$out/licenses/NOTICE.md"
+find "$out/licenses" -type f -exec chmod 0644 {} + # same as engine/diar/build.sh: never ship a read-only licence
 echo "built $out/ox-clean ($want)"

@@ -204,6 +204,14 @@ jobs:
           tar -xzf "dist/ox-say-macos-$ARCH.tar.gz" -C check
           cd check/ox-say
           test "$(cat VERSION)" = "$VERSION"
+          # No file the owner cannot write: an install over an earlier copy of it fails with "Permission
+          # denied" (the 0400 FluidAudio licences broke 0.1.29 -> 0.1.30). `find` prints, the test fails.
+          unwritable=$(find . ! -perm -u+w)
+          if [ -n "$unwritable" ]; then
+            echo "the package holds files the owner cannot write:" >&2
+            echo "$unwritable" >&2
+            exit 1
+          fi
           # VoxCPM2's server and ox-diar are optional for the installer, so a build that
           # silently dropped one would still install: pin them to the architecture
           # here. arm64 carries both, x86_64 neither. ox-clean is optional for the installer

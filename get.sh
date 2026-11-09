@@ -159,6 +159,27 @@ main() {
     fi
     echo "checksum ok"
 
+    # An update over a 0.1.29 install: its FluidAudio licence files are 0400, and the 0.1.30 installer inside the
+    # tarball cannot overwrite them ("cp: ...: Permission denied", after the engines were replaced). This script is
+    # always fetched from main, so it can make them writable before that installer runs. The home is resolved as
+    # lib-install.sh does (oxs_settings): OX_SAY_HOME from the environment wins, then the installed LaunchAgent's
+    # OX_SAY_HOME (the only key read), then the default. Only <home>/engine/licenses, only when it is a real
+    # directory under an absolute home. A failure warns: the installer reports the real one.
+    oxs_home=${OX_SAY_HOME-}
+    agent_plist="$HOME/Library/LaunchAgents/io.github.anatolykoptev.ox-say.plist"
+    if [ -z "$oxs_home" ] && [ -f "$agent_plist" ] && command -v plutil >/dev/null 2>&1; then
+        oxs_home=$(plutil -extract EnvironmentVariables.OX_SAY_HOME raw -o - "$agent_plist" 2>/dev/null || true)
+    fi
+    [ -n "$oxs_home" ] || oxs_home="$HOME/Library/Application Support/ox-say"
+    case $oxs_home in
+        /?*)
+            licdir="$oxs_home/engine/licenses"
+            if [ -d "$licdir" ] && [ ! -L "$licdir" ]; then
+                chmod -R u+rwX "$licdir" || echo "ox-say: could not make $licdir writable; continuing" >&2
+            fi
+            ;;
+    esac
+
     mkdir "$tmp/release"
     tar -xzf "$tmp/$asset" -C "$tmp/release"
     bash "$tmp/release/ox-say/scripts/install-release.sh"

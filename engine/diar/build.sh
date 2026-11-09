@@ -69,4 +69,7 @@ done
 # OpenMDW-1.1 is the licence of the Nemotron 3 Diarization weights fetch-models.sh downloads; the HF repo carries no
 # LICENSE file, so the committed copy ships beside the binary.
 cp -f "$here/licenses/OpenMDW-1.1.txt" "$out/licenses/OpenMDW-1.1.txt"
+# SwiftPM checkouts are read-only, and cp keeps the mode: the FluidAudio files came out 0400, and an update over an
+# install holding them failed ("Permission denied", 0.1.29 -> 0.1.30). Ship every licence 0644.
+find "$out/licenses" -type f -exec chmod 0644 {} +
 echo "built $out/ox-diar ($want)"

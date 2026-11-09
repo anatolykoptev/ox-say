@@ -42,18 +42,14 @@ oxs_install_engines "$root/engine"
 oxs_install_binary "$root/bin/ox-say"
 # get.sh deletes the extracted release tree, so the uninstaller must live
 # under $OX_SAY_HOME.
-cp "$root/scripts/uninstall.sh" "$home/uninstall.sh"
+oxs_put "$root/scripts/uninstall.sh" "$home/uninstall.sh"
 # The daemon downloads the notes model on first use by running this copy
 # (fetch-models.sh --notes-only); get.sh deletes the release tree.
-cp "$root/scripts/fetch-models.sh" "$home/fetch-models.sh"
+oxs_put "$root/scripts/fetch-models.sh" "$home/fetch-models.sh"
 # Third-party licenses for the Go binary ship in the release under licenses/go.
 # They go under engine/licenses, a directory ox-say owns, never a directory of
 # their own in OX_SAY_HOME, which may be shared with other things.
-if [ -d "$home/engine/licenses/go" ]; then
-    find "$home/engine/licenses/go" -depth -delete
-fi
-mkdir -p "$home/engine/licenses"
-cp -R "$root/licenses/go" "$home/engine/licenses/"
+oxs_install_go_licenses "$root/licenses/go"
 oxs_load_agent "$tmp"
 oxs_wait_version "$version"
 

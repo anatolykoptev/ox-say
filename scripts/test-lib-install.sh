@@ -493,8 +493,7 @@ check_in_log "without ox-diar: exit 0" "$tmp/diar-without/log" "rc=0"
 
 # --- I3: ox-clean is installed when the package carries it ---------------------
 # Both architectures carry it (decision 8: Intel is enabled), beside ox-diar and with the same copy-then-rename.
-# Mutation: drop the `mv "$home/engine/ox-clean.new"` line in oxs_install_engines -> the binary is missing and a
-# ".new" is left behind -> RED ("installs ox-clean from a package"). Mutation (scripts/package-release.sh): drop
+# Mutation: drop the ox-clean staging in the `for bin in ox-diar ox-clean` loop of oxs_install_engines -> the binary is missing -> RED ("installs ox-clean from a package"). Mutation (scripts/package-release.sh): drop
 # ox-clean from the `for bin in` baseline list or from the engine staging block -> the shape checks below fail.
 clean_case() { # name with-clean [stale ox-clean already installed]
     local d="$tmp/clean-$1" bin
@@ -730,7 +729,7 @@ metal_order_case() {
     env PATH="$d/bin:$PATH" \
         bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/out'" >"$d/log" 2>&1 \
         || echo "rc=$?" >>"$d/log"
-    cat "$d/order"
+    grep -v '\.LICENSE$' "$d/order"  # the licences are renamed too, after the engines
 }
 check "each engine's metallibs install before its binary" "$(metal_order_case)" \
     "tts-server.metallib
@@ -820,6 +819,165 @@ get_case "macOS 13.6" 13.6 refuse
 get_case "macOS 14.1" 14.1 refuse
 get_case "macOS 14.2" 14.2 install
 get_case "macOS 26.1" 26.1 install
+
+# --- L: read-only licence files (0.1.29 -> 0.1.30 update failed: "cp: ...-LICENSE.md: Permission denied") ---------
+# The release package carried FluidAudio's licences 0400 (SwiftPM checkouts are read-only), the first install left
+# them 0400, and the update's plain `cp` could not open them for writing - after the engines were already replaced.
+# Mutations (lib-install.sh oxs_install_engines, the licence loop; each must turn the named cases RED):
+#   * licence loop -> `cp "$out"/licenses/* "$home/engine/licenses/"` after oxs_stage_commit: "(a) update over
+#     0400 licences" and "(b) a 0400 package, second install" fail (Permission denied, rc 1), and (c) fails
+#     because the engines are already replaced by then
+#   * drop the `chmod "$3"` from oxs_stage: a 0400 package stays 0400 - the "0644" check in (b) fails
+#   * stage the licences after oxs_stage_commit instead of before it (or run the commit inside the loops): (c) fails -
+#     the engines are replaced although the licence copy failed
+modeof() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+lic_pkg() { # dir licence-mode content: a package with four engines and two licences
+    local d=$1 bin
+    mkdir -p "$d/licenses"
+    for bin in tts-server ox-stt ox-align ox-llm; do
+        printf '#!/bin/sh\necho new-%s\n' "$bin" > "$d/$bin"
+        chmod +x "$d/$bin"
+    done
+    printf '%s\n' "$3" > "$d/licenses/FluidAudio-fastcluster-LICENSE.md"
+    printf '%s\n' "$3" > "$d/licenses/a b LICENSE.txt"  # a name with spaces
+    chmod "$2" "$d/licenses/FluidAudio-fastcluster-LICENSE.md" "$d/licenses/a b LICENSE.txt"
+}
+lic_install() { # home pkg
+    bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$1'; oxs_install_engines '$2'" >"$1.log" 2>&1
+}
+# (a) an update over a previous install whose licences are 0400
+d="$tmp/lic-a"; mkdir -p "$d/home/engine/licenses"
+lic_pkg "$d/pkg" 0644 new-text
+printf 'old-text\n' > "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md"
+printf 'old-text\n' > "$d/home/engine/licenses/a b LICENSE.txt"
+chmod 0400 "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md" "$d/home/engine/licenses/a b LICENSE.txt"
+rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+check "(a) update over 0400 licences: exit status" "$rc" 0
+check "(a) update over 0400 licences: new content" "$(cat "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" new-text
+check "(a) update over 0400 licences: mode 0644" "$(modeof "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" 644
+check "(a) update over 0400 licences: name with spaces, new content" "$(cat "$d/home/engine/licenses/a b LICENSE.txt")" new-text
+check "(a) update over 0400 licences: name with spaces, mode 0644" "$(modeof "$d/home/engine/licenses/a b LICENSE.txt")" 644
+check "(a) update over 0400 licences: no .new left" "$(find "$d/home" -name '*.new' | wc -l | tr -d ' ')" 0
+# (b) a package that itself carries 0400 licences, installed twice in a row
+d="$tmp/lic-b"; mkdir -p "$d/home"
+lic_pkg "$d/pkg" 0400 pkg-text
+rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+check "(b) a 0400 package, first install: exit status" "$rc" 0
+rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+check "(b) a 0400 package, second install: exit status" "$rc" 0
+check "(b) a 0400 package: installed mode 0644" "$(modeof "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" 644
+check "(b) a 0400 package: installed content" "$(cat "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" pkg-text
+# (c) a licence that cannot be copied fails the install BEFORE any engine is replaced
+d="$tmp/lic-c"; mkdir -p "$d/home/engine/licenses"
+lic_pkg "$d/pkg" 0644 new-text
+chmod 000 "$d/pkg/licenses/a b LICENSE.txt"
+printf '#!/bin/sh\necho old-tts-server\n' > "$d/home/engine/tts-server"; chmod +x "$d/home/engine/tts-server"
+printf 'old-text\n' > "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md"
+if [ "$(id -u)" = 0 ]; then
+    pass "(c) failing licence copy: skipped as root (root reads mode 000)"
+else
+    rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+    check "(c) failing licence copy: install fails" "$([ "$rc" != 0 ] && echo failed || echo succeeded)" failed
+    check "(c) failing licence copy: old engine untouched" "$("$d/home/engine/tts-server")" old-tts-server
+    check "(c) failing licence copy: no other engine appeared" "$(cd "$d/home/engine" && find . -type f | tr '\n' ' ')" "./licenses/FluidAudio-fastcluster-LICENSE.md ./tts-server "
+    check "(c) failing licence copy: old licence untouched" "$(ls -A "$d/home/engine/licenses" | tr '\n' ' ')" "FluidAudio-fastcluster-LICENSE.md "
+    check "(c) failing licence copy: old licence content" "$(cat "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" old-text
+    chmod 644 "$d/pkg/licenses/a b LICENSE.txt"
+fi
+# the installers use the same replace-by-rename for what they copy into an existing OX_SAY_HOME / bindir
+n=$(grep -cE '^[^#]*oxs_put "[$]root/scripts/(uninstall|fetch-models)[.]sh"' "$root/scripts/install-release.sh" || true)
+check "install-release.sh copies uninstall.sh and fetch-models.sh through oxs_put" "${n:-x}" 2
+
+
+# --- get.sh makes installed licences writable before the tarball's installer runs ---------------------------------
+# 0.1.29 left 0400 licence files and the 0.1.30 installer cannot overwrite them; get.sh (always fetched from main)
+# repairs the installed copy first. The fake installer records whether the file was writable when it ran.
+# Mutations (get.sh): delete the `chmod -R u+rwX "$licdir"` line -> "get.sh unsticks ... writable before the
+# installer" fails in all three cases; delete the plutil read of OX_SAY_HOME (the `oxs_home=$(plutil ...)` line) -> the
+# "home from the LaunchAgent" case fails (the file under the plist home stays unwritable).
+unstick_case() { # name home-source (default, plist, env or none)
+    local name=$1 src=$2 d="$tmp/unstick-$1" lic h envhome=
+    mkdir -p "$d/home" "$d/tmp" "$d/bin"
+    h="$d/home/Library/Application Support/ox-say"
+    case $src in plist | env) h="$d/custom home" ;; esac
+    [ "$src" = env ] && envhome=$h
+    if [ "$src" != none ]; then
+        mkdir -p "$h/engine/licenses"
+        lic="$h/engine/licenses/FluidAudio-x.md"
+        echo old > "$lic"; chmod 0400 "$lic"
+    fi
+    if [ "$src" = plist ]; then
+        mkdir -p "$d/home/Library/LaunchAgents"
+        plutil -create xml1 "$d/home/Library/LaunchAgents/io.github.anatolykoptev.ox-say.plist"
+        plutil -insert EnvironmentVariables -dictionary "$d/home/Library/LaunchAgents/io.github.anatolykoptev.ox-say.plist"
+        plutil -insert EnvironmentVariables.OX_SAY_HOME -string "$h" "$d/home/Library/LaunchAgents/io.github.anatolykoptev.ox-say.plist"
+    fi
+    printf '#!/bin/sh\ncase "${1:-}" in -productVersion) echo 15.0 ;; *) exit 1 ;; esac\n' > "$d/bin/sw_vers"
+    # the fake installer: is the licence writable now?
+    printf '#!/bin/sh\nmkdir -p "$4/ox-say/scripts"\nprintf "#!/bin/sh\\nif [ -w \\"%s\\" ]; then echo WRITABLE; else echo READONLY; fi\\n" "%s" > "$4/ox-say/scripts/install-release.sh"\n' "${lic:-/nonexistent}" "${lic:-/nonexistent}" > "$d/bin/tar"
+    chmod +x "$d/bin/sw_vers" "$d/bin/tar"
+    env -i PATH="$d/bin:$getbin:/usr/bin:/bin" HOME="$d/home" TMPDIR="$d/tmp" OX_SAY_GET_URL=http://stub \
+        OX_SAY_TOOL_PREFIXES= ${envhome:+"OX_SAY_HOME=$envhome"} \
+        sh "$root/get.sh" >"$d/log" 2>&1 || true
+}
+unstick_case plist plist
+check_in_log "get.sh unsticks: home from the LaunchAgent, writable before the installer" "$tmp/unstick-plist/log" WRITABLE
+unstick_case env env
+check_in_log "get.sh unsticks: OX_SAY_HOME from the environment, writable before the installer" "$tmp/unstick-env/log" WRITABLE
+unstick_case default default
+check_in_log "get.sh unsticks: default home, writable before the installer" "$tmp/unstick-default/log" WRITABLE
+unstick_case none none
+check_in_log "get.sh: no installed licences, the update goes on" "$tmp/unstick-none/log" READONLY
+
+# --- L2: review round (#506) -----------------------------------------------------------------------------------
+# Commit phase: stale-library removals run after every rename, a failed rename is named and cleaned up, and a
+# directory at a destination is refused before anything is replaced. Mutations (lib-install.sh, oxs_stage_commit):
+#   * run the `rm` kind inside the first loop (`rm) rm -f "$dst" ;;` back next to mv) -> "commit failure: the stale
+#     metallib is still there" fails; drop the echo "...install is incomplete" -> "names the file" and "incomplete" fail
+#   * drop the `[ -d "$2" ]` test in oxs_stage -> "directory destination: refused" fails (mv nests the copy in it)
+# Go licences (oxs_install_go_licenses): drop the `[ -L "$lic/go" ]` branch -> "symlinked licenses/go: target mode
+# untouched" fails (chmod -R / find -delete follow it); drop the `[ ! -L "$lic" ]` line -> the symlinked-licenses case fails.
+d="$tmp/rev-commit"; mkdir -p "$d/out/licenses" "$d/home/engine" "$d/bin"
+echo x > "$d/out/licenses/x.LICENSE"
+for bin in tts-server ox-stt ox-align ox-llm; do printf '#!/bin/sh\n' > "$d/out/$bin"; chmod +x "$d/out/$bin"; echo lib > "$d/out/$bin.metallib"; done
+echo stale > "$d/home/engine/ox-align-tensor.metallib"  # queued for removal before the failing rename
+# a mv that fails for the ox-llm binary only
+printf '#!/bin/sh\ncase "$2" in */ox-llm) echo "mv: stubbed failure" >&2; exit 1 ;; esac\nexec /bin/mv "$@"\n' > "$d/bin/mv"; chmod +x "$d/bin/mv"
+rc=0; env PATH="$d/bin:$PATH" bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/out'" >"$d/log" 2>&1 || rc=$?
+check "commit failure: install fails" "$([ "$rc" != 0 ] && echo failed || echo succeeded)" failed
+check_in_log "commit failure: names the file" "$d/log" "could not replace $d/home/engine/ox-llm"
+check_in_log "commit failure: says the install is incomplete" "$d/log" "the install is incomplete"
+check "commit failure: the stale metallib is still there" "$([ -f "$d/home/engine/ox-align-tensor.metallib" ] && echo yes || echo no)" yes
+check "commit failure: no .new left" "$(find "$d/home" -name '*.new' | wc -l | tr -d ' ')" 0
+d="$tmp/rev-dir"; mkdir -p "$d/out/licenses" "$d/home/engine/ox-llm" "$d/home/engine/licenses"
+echo x > "$d/out/licenses/x.LICENSE"
+for bin in tts-server ox-stt ox-align ox-llm; do printf '#!/bin/sh\n' > "$d/out/$bin"; chmod +x "$d/out/$bin"; done
+echo stale > "$d/home/engine/audiocpp_server.metallib"
+rc=0; lic_install "$d/home" "$d/out" || rc=$?
+check "directory destination: refused" "$([ "$rc" != 0 ] && echo failed || echo succeeded)" failed
+check_in_log "directory destination: names it" "$d/home.log" "$d/home/engine/ox-llm is a directory"
+check "directory destination: nothing nested into it" "$(find "$d/home/engine/ox-llm" | wc -l | tr -d ' ')" 1
+check "directory destination: nothing replaced, stale metallib kept" "$(find "$d/home/engine" -type f | sort | tr '\n' ' ')" "$d/home/engine/audiocpp_server.metallib "
+# symlinked licenses/go (and licenses): the target outside the home stays as it is
+go_link_case() { # name layout(go|licenses)
+    local d="$tmp/gl-$1" t="$tmp/gl-$1-target"
+    mkdir -p "$d/home/engine" "$t" "$d/src/go/m"
+    echo keep > "$t/f"; chmod 0400 "$t/f"; chmod 0500 "$t"
+    echo new > "$d/src/go/m/LICENSE"
+    if [ "$2" = go ]; then mkdir -p "$d/home/engine/licenses"; ln -s "$t" "$d/home/engine/licenses/go"; else ln -s "$t" "$d/home/engine/licenses"; fi
+    bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_go_licenses '$d/src/go'" >"$d/log" 2>&1 || true
+    check "symlinked $2: target file mode untouched" "$(modeof "$t/f")" 400
+    check "symlinked $2: target dir mode untouched" "$(modeof "$t")" 500
+    check "symlinked $2: target content untouched" "$(cat "$t/f")" keep
+    check "symlinked $2: target holds nothing new" "$(ls -A "$t")" f
+    check "symlinked $2: fresh copy in the home" "$(cat "$d/home/engine/licenses/go/m/LICENSE")" new
+    check "symlinked $2: licenses/go is a real directory" "$([ -d "$d/home/engine/licenses/go" ] && [ ! -L "$d/home/engine/licenses/go" ] && echo yes || echo no)" yes
+    chmod 0700 "$t"
+}
+go_link_case go go
+go_link_case licenses licenses
+n=$(grep -cE '^[^#]*oxs_install_go_licenses "[$]root/licenses/go"' "$root/scripts/install-release.sh" || true)
+check "install-release.sh installs the Go licences through oxs_install_go_licenses" "${n:-x}" 1
 
 echo
 if [ "$fails" -eq 0 ]; then

@@ -167,9 +167,89 @@ oxs_render_agent() {
     plutil -lint "$tmp" >/dev/null
 }
 
-# Copy then rename, so a running process keeps its old inode.
+# oxs_put <src> <dst> [mode]: copy <src> to <dst> through <dst>.new and a rename, so a running process keeps its
+# old inode and a read-only <dst> (a 0400 file an earlier install left) is replaced, not opened for writing: mv
+# needs a writable directory, not a writable file. The copy gets <mode> (default: owner-writable, otherwise as the
+# source). Safe for names with spaces.
+oxs_put() {
+    oxs_stage "$1" "$2" "${3:-u+w}" || return 1
+    mv "$2.new" "$2"
+}
+
+# oxs_stage <src> <dst> <mode>: the first half of oxs_put, leaving <dst>.new. The rm first clears a .new an
+# interrupted run left read-only: cp could not open it for writing.
+# Explicit returns: callers use it in `|| ...`, where bash switches `set -e` off inside the function.
+oxs_stage() {
+    # mv would move the copy INTO a directory at <dst> and report success
+    if [ -d "$2" ] && [ ! -L "$2" ]; then
+        echo "ox-say install: $2 is a directory, not a file ox-say installed" >&2
+        return 1
+    fi
+    rm -f "$2.new"
+    if ! cp "$1" "$2.new" || ! chmod "$3" "$2.new"; then
+        rm -f "$2.new"
+        return 1
+    fi
+}
+
+# Staged installs: oxs_stage_add queues one step, oxs_stage_commit runs the queue. A step is "mv" (rename the
+# staged copy over <dst>), "say" (the same, announced) or "rm" (drop a stale file). Everything that can fail on a
+# disk, a permission or a bad source happens while staging; the commit is renames and removals only.
+oxs_staged_kind=()
+oxs_staged_dst=()
+oxs_stage_add() {
+    oxs_staged_kind+=("$1")
+    oxs_staged_dst+=("$2")
+}
+
+# On a failed stage, drop every .new written so far: the installed files were never touched.
+oxs_stage_abort() {
+    echo "ox-say install: could not stage the engines; nothing installed was changed" >&2
+    oxs_stage_abort_quiet
+}
+oxs_stage_abort_quiet() {
+    local i=0
+    while [ "$i" -lt "${#oxs_staged_dst[@]}" ]; do
+        rm -f "${oxs_staged_dst[$i]}.new"
+        i=$((i + 1))
+    done
+    oxs_staged_kind=()
+    oxs_staged_dst=()
+}
+
+# The renames run first and the queued removals of stale files after them: a rename that fails must not leave an old
+# library deleted while its binary is still the old one. A failed rename stops the install (no rollback: the files
+# already renamed stay), says which file and that the install is incomplete, and removes the remaining .new files.
+oxs_stage_commit() {
+    local i=0 dst
+    while [ "$i" -lt "${#oxs_staged_dst[@]}" ]; do
+        dst=${oxs_staged_dst[$i]}
+        case ${oxs_staged_kind[$i]} in
+            mv | say)
+                if ! mv "$dst.new" "$dst"; then
+                    echo "ox-say install: could not replace $dst; the install is incomplete (files before it were already replaced, nothing was rolled back). Run the installer again." >&2
+                    oxs_stage_abort_quiet
+                    exit 1
+                fi
+                [ "${oxs_staged_kind[$i]}" = say ] && echo "installed $dst"
+                ;;
+        esac
+        i=$((i + 1))
+    done
+    i=0
+    while [ "$i" -lt "${#oxs_staged_dst[@]}" ]; do
+        [ "${oxs_staged_kind[$i]}" = rm ] && rm -f "${oxs_staged_dst[$i]}"
+        i=$((i + 1))
+    done
+    oxs_staged_kind=()
+    oxs_staged_dst=()
+}
+
+# Stage and switch over: every file is copied to <dst>.new first (licenses included), and only when all of them
+# are in place does the first rename replace anything. A failure while staging leaves the installed engines and
+# licenses exactly as they were, instead of the half-replaced mix a failure in the middle used to leave.
 oxs_install_engines() {
-    local out=$1 bin lib
+    local out=$1 bin lib f
     for bin in tts-server ox-stt ox-align ox-llm; do
         if [ ! -x "$out/$bin" ]; then
             echo "ox-say install: no $bin in $out" >&2
@@ -179,14 +259,19 @@ oxs_install_engines() {
             exit 1
         fi
     done
+    if [ ! -d "$out/licenses" ]; then
+        echo "ox-say install: no licenses/ in $out" >&2
+        exit 1
+    fi
     mkdir -p "$home/engine/licenses"
+    oxs_staged_kind=()
+    oxs_staged_dst=()
     # Each engine's precompiled Metal library travels next to it under its own
     # name (<bin>.metallib, plus <bin>-tensor.metallib on Metal4-capable
     # builds). Per engine, its libraries go in before its binary, so a new
     # binary never starts without its new library and pays no embedded-source
     # compile. That is all the order buys: the pair is not atomic. An old
-    # binary respawned between the two copies meets the new library, and a
-    # failed binary copy after the libraries went in leaves a mismatched pair
+    # binary respawned between the two renames meets the new library
     # (#207). What keeps a mismatched or missing library harmless is the
     # runtime guards (OS floor, bf16 and tensor kernels — the patched ggml
     # skips a library it cannot safely use) and the embedded shader sources
@@ -194,42 +279,62 @@ oxs_install_engines() {
     # by an older install must still go — the guards cannot tell it is stale.
     # The cleanup runs for audiocpp_server even when this package carries no
     # binary for it.
+    # ox-diar is no ggml engine: no Metal library to pair with, so it comes after the loop. Optional, like
+    # audiocpp_server: a package without it still installs (the daemon then reports the diarizer as engine_missing)
+    # and release.yml pins which architectures must carry it. ox-clean (voice cleanup) is the same kind of
+    # optional Swift helper, but both architectures' packages carry it. Its models are not installed here: the
+    # daemon fetches them on the first cleanup.
     for bin in tts-server ox-stt ox-align ox-llm audiocpp_server; do
         for lib in "$bin.metallib" "$bin-tensor.metallib"; do
             if [ -f "$out/$lib" ]; then
-                cp "$out/$lib" "$home/engine/$lib.new"
-                mv "$home/engine/$lib.new" "$home/engine/$lib"
+                oxs_stage "$out/$lib" "$home/engine/$lib" u+w || { oxs_stage_abort; exit 1; }
+                oxs_stage_add mv "$home/engine/$lib"
             else
-                rm -f "$home/engine/$lib"
+                oxs_stage_add rm "$home/engine/$lib"
             fi
         done
         # Optional: only the arm64 package carries the VoxCPM2 server.
         [ -x "$out/$bin" ] || continue
-        cp "$out/$bin" "$home/engine/$bin.new"
-        mv "$home/engine/$bin.new" "$home/engine/$bin"
-        echo "installed $home/engine/$bin"
+        oxs_stage "$out/$bin" "$home/engine/$bin" u+w || { oxs_stage_abort; exit 1; }
+        oxs_stage_add say "$home/engine/$bin"
     done
-    # ox-diar is no ggml engine: no Metal library to pair with, so it comes after the loop. Optional, like
-    # audiocpp_server: a package without it still installs (the daemon then reports the diarizer as engine_missing)
-    # and release.yml pins which architectures must carry it.
-    if [ -x "$out/ox-diar" ]; then
-        cp "$out/ox-diar" "$home/engine/ox-diar.new"
-        mv "$home/engine/ox-diar.new" "$home/engine/ox-diar"
-        echo "installed $home/engine/ox-diar"
+    for bin in ox-diar ox-clean; do
+        if [ -x "$out/$bin" ]; then
+            oxs_stage "$out/$bin" "$home/engine/$bin" u+w || { oxs_stage_abort; exit 1; }
+            oxs_stage_add say "$home/engine/$bin"
+        fi
+    done
+    # Licenses: the SwiftPM checkouts they are copied from are read-only, so a package can carry them 0400, and an
+    # install of such a package leaves 0400 files behind. Staged like the binaries (the rename replaces a
+    # read-only file) and installed 0644.
+    for f in "$out"/licenses/*; do
+        [ -f "$f" ] || continue
+        oxs_stage "$f" "$home/engine/licenses/${f##*/}" 0644 || { oxs_stage_abort; exit 1; }
+        oxs_stage_add mv "$home/engine/licenses/${f##*/}"
+    done
+    oxs_stage_commit
+}
+
+# oxs_install_go_licenses <dir>: replace $home/engine/licenses/go by a copy of <dir>. A symlink at engine/licenses or
+# engine/licenses/go is removed itself, never followed: chmod -R and find -delete would otherwise act on its target.
+# chmod first: an earlier install may have left read-only files or directories (a Go module cache's are 0444/0555),
+# and an unwritable directory stops both the delete and the copy.
+oxs_install_go_licenses() {
+    local lic="${home:?}/engine/licenses"
+    [ ! -L "$lic" ] || rm -f "$lic"
+    if [ -L "$lic/go" ]; then
+        rm -f "$lic/go"
+    elif [ -d "$lic/go" ]; then
+        chmod -R u+rwX "$lic/go"
+        find "$lic/go" -depth -delete
     fi
-    # ox-clean (voice cleanup) is the same kind of optional Swift helper, but both architectures' packages carry it.
-    # Its models are not installed here: the daemon fetches them on the first cleanup.
-    if [ -x "$out/ox-clean" ]; then
-        cp "$out/ox-clean" "$home/engine/ox-clean.new"
-        mv "$home/engine/ox-clean.new" "$home/engine/ox-clean"
-        echo "installed $home/engine/ox-clean"
-    fi
-    cp "$out"/licenses/* "$home/engine/licenses/"
+    mkdir -p "$lic"
+    cp -R "$1" "$lic/"
+    chmod -R u+rwX "$lic/go"
 }
 
 oxs_install_binary() {
-    cp "$1" "$bindir/ox-say.new"
-    mv "$bindir/ox-say.new" "$bindir/ox-say"
+    oxs_put "$1" "$bindir/ox-say"
 }
 
 # Put the rendered agent in place and (re)load it.

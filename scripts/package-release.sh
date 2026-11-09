@@ -118,6 +118,12 @@ fi
 mkdir -p "$stage/licenses/go/go"
 cp "$golicense" "$stage/licenses/go/go/LICENSE"
 
+# Modes. A file the owner cannot write stops the installer when it meets the same file from an earlier install
+# (the 0400 FluidAudio licences, and the 0444 Go licences copied out of the read-only module cache). Licences ship
+# 0644; every other file at least owner-writable. release.yml asserts it on the built archive.
+find "$stage/engine/licenses" "$stage/licenses" -type f -exec chmod 0644 {} +
+find "$stage" ! -perm -u+w -exec chmod u+w {} +
+
 # COPYFILE_DISABLE: no AppleDouble ._ files for extended attributes in the archive
 COPYFILE_DISABLE=1 tar -C "$root/build/release" -czf "$dist/$asset" ox-say
 (cd "$dist" && shasum -a 256 "$asset" > SHA256SUMS)
