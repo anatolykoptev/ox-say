@@ -889,6 +889,46 @@ n=$(grep -cE '^[^#]*oxs_put "[$]root/scripts/(uninstall|fetch-models)[.]sh"' "$r
 check "install-release.sh copies uninstall.sh and fetch-models.sh through oxs_put" "${n:-x}" 2
 
 
+# --- get.sh makes installed licences writable before the tarball's installer runs ---------------------------------
+# 0.1.29 left 0400 licence files and the 0.1.30 installer cannot overwrite them; get.sh (always fetched from main)
+# repairs the installed copy first. The fake installer records whether the file was writable when it ran.
+# Mutations (get.sh): delete the `chmod -R u+rwX "$licdir"` line -> "get.sh unsticks ... writable before the
+# installer" fails in all three cases; delete the plutil read of OX_SAY_HOME (the `oxs_home=$(plutil ...)` line) -> the
+# "home from the LaunchAgent" case fails (the file under the plist home stays unwritable).
+unstick_case() { # name home-source (default, plist, env or none)
+    local name=$1 src=$2 d="$tmp/unstick-$1" lic h envhome=
+    mkdir -p "$d/home" "$d/tmp" "$d/bin"
+    h="$d/home/Library/Application Support/ox-say"
+    case $src in plist | env) h="$d/custom home" ;; esac
+    [ "$src" = env ] && envhome=$h
+    if [ "$src" != none ]; then
+        mkdir -p "$h/engine/licenses"
+        lic="$h/engine/licenses/FluidAudio-x.md"
+        echo old > "$lic"; chmod 0400 "$lic"
+    fi
+    if [ "$src" = plist ]; then
+        mkdir -p "$d/home/Library/LaunchAgents"
+        plutil -create xml1 "$d/home/Library/LaunchAgents/io.github.anatolykoptev.ox-say.plist"
+        plutil -insert EnvironmentVariables -dictionary "$d/home/Library/LaunchAgents/io.github.anatolykoptev.ox-say.plist"
+        plutil -insert EnvironmentVariables.OX_SAY_HOME -string "$h" "$d/home/Library/LaunchAgents/io.github.anatolykoptev.ox-say.plist"
+    fi
+    printf '#!/bin/sh\ncase "${1:-}" in -productVersion) echo 15.0 ;; *) exit 1 ;; esac\n' > "$d/bin/sw_vers"
+    # the fake installer: is the licence writable now?
+    printf '#!/bin/sh\nmkdir -p "$4/ox-say/scripts"\nprintf "#!/bin/sh\\nif [ -w \\"%s\\" ]; then echo WRITABLE; else echo READONLY; fi\\n" "%s" > "$4/ox-say/scripts/install-release.sh"\n' "${lic:-/nonexistent}" "${lic:-/nonexistent}" > "$d/bin/tar"
+    chmod +x "$d/bin/sw_vers" "$d/bin/tar"
+    env -i PATH="$d/bin:$getbin:/usr/bin:/bin" HOME="$d/home" TMPDIR="$d/tmp" OX_SAY_GET_URL=http://stub \
+        OX_SAY_TOOL_PREFIXES= ${envhome:+"OX_SAY_HOME=$envhome"} \
+        sh "$root/get.sh" >"$d/log" 2>&1 || true
+}
+unstick_case plist plist
+check_in_log "get.sh unsticks: home from the LaunchAgent, writable before the installer" "$tmp/unstick-plist/log" WRITABLE
+unstick_case env env
+check_in_log "get.sh unsticks: OX_SAY_HOME from the environment, writable before the installer" "$tmp/unstick-env/log" WRITABLE
+unstick_case default default
+check_in_log "get.sh unsticks: default home, writable before the installer" "$tmp/unstick-default/log" WRITABLE
+unstick_case none none
+check_in_log "get.sh: no installed licences, the update goes on" "$tmp/unstick-none/log" READONLY
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "all checks passed"
