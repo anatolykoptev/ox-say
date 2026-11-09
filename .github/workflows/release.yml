@@ -195,7 +195,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/org.swift.swiftpm
-          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-${{ hashFiles('engine/diar/Package.swift', 'engine/diar/Package.resolved', 'engine/clean/Package.swift', 'engine/clean/Package.resolved', 'app/dictation/Package.swift', 'app/dictation/Package.resolved') }}
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-${{ hashFiles('engine/diar/Package.swift', 'engine/diar/Package.resolved', 'engine/clean/Package.swift', 'engine/clean/Package.resolved') }}
+          # restore-keys stays here: this cache is the shared SwiftPM download store, and SwiftPM verifies a
+          # downloaded archive against the manifest checksum, so a prefix restore cannot serve a wrong archive.
           restore-keys: |
             swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-
             swiftpm-${{ runner.os }}-${{ runner.arch }}-
@@ -206,8 +208,8 @@ jobs:
         with:
           path: engine/diar/.build/artifacts
           key: swiftpm-artifacts-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-${{ hashFiles('engine/diar/Package.resolved') }}
-          restore-keys: |
-            swiftpm-artifacts-${{ runner.os }}-${{ runner.arch }}-
+          # No restore-keys: a broad prefix could restore artifacts extracted for an older resolution —
+          # only an exact key may hit.
 
       - name: Resolve Swift packages
         env:
@@ -223,7 +225,6 @@ jobs:
           else
             scripts/swiftpm-resolve.sh engine/clean --force-resolved-versions
           fi
-          scripts/swiftpm-resolve.sh app/dictation
 
       - name: Package
         env:
