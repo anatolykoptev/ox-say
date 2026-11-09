@@ -117,6 +117,18 @@ jobs:
           commit=$(scripts/check-release-tag.sh "$TAG" "$GITHUB_SHA")
           git checkout --detach "$commit"
 
+      # The upgrade gate runs from the WORKFLOW commit, not from the tree above: a release tag can predate the PR that
+      # added the gate, and the tag checkout would then leave these scripts out and fail the release. The package
+      # under test is still the one built from the tag tree, and its own installer is what the gate runs.
+      - name: Upgrade gate scripts
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/upgrade-gate"
+          for f in test-upgrade-from-release.sh test-upgrade-guard.sh; do
+            git show "$GITHUB_SHA:scripts/$f" > "$RUNNER_TEMP/upgrade-gate/$f"
+            chmod +x "$RUNNER_TEMP/upgrade-gate/$f"
+          done
+
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           # The newest 1.26.x, not the exact `go 1.26.0` floor in go.mod: setup-go v5.6.0 reads only the `go` line
@@ -132,7 +144,7 @@ jobs:
           bash scripts/test-lib-install.sh
           bash scripts/test-fetch-models.sh
           bash scripts/test-download-stall.sh
-          bash scripts/test-upgrade-guard.sh
+          bash "$RUNNER_TEMP/upgrade-gate/test-upgrade-guard.sh"
 
       - name: Build tools
         run: command -v cmake >/dev/null || brew install cmake
@@ -386,7 +398,8 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           GH_TOKEN: ${{ github.token }}
-        run: scripts/test-upgrade-from-release.sh "dist/ox-say-macos-$ARCH.tar.gz"
+        run: |
+          "$RUNNER_TEMP/upgrade-gate/test-upgrade-from-release.sh" "dist/ox-say-macos-$ARCH.tar.gz"
 
       - name: Keep the package as a workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

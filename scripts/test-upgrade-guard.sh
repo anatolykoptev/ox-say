@@ -7,7 +7,7 @@
 # unchanged (a lexical check) -- the three symlinked cases then pass the guard.
 set -u
 
-root=$(cd "$(dirname "$0")/.." && pwd -P)
+here=$(cd "$(dirname "$0")" && pwd -P) # the gate is a sibling of this script (the workflow runs both from outside the tree)
 t=$(mktemp -d "${TMPDIR:-/tmp}/ox-say-guardtest.XXXXXX")
 trap 'chmod -R u+rwX "${t:?}" 2>/dev/null; rm -rf "${t:?}"' EXIT
 fails=0
@@ -23,7 +23,7 @@ ln -s "$t/fake/install/sub" "$t/link-parent"
 run() { # <tmpdir> -> prints "rc|first matching message"
     local out rc=0
     out=$(env TMPDIR="$1" OX_SAY_UPGRADE_TEST_REAL_INSTALL="$t/fake/install" OX_SAY_UPGRADE_TEST_REAL_BIN="$t/fake/bin" \
-        bash "$root/scripts/test-upgrade-from-release.sh" "$t/pkg.tar.gz" v0.0.0 2>&1) || rc=$?
+        bash "$here/test-upgrade-from-release.sh" "$t/pkg.tar.gz" v0.0.0 2>&1) || rc=$?
     printf '%s|%s\n' "$rc" "$(printf '%s\n' "$out" | grep -E 'refusing|not an ox-say package' | head -n 1 | sed 's/ resolves to .*//; s/, .* overlaps.*//')"
 }
 
