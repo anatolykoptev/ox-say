@@ -49,15 +49,7 @@ oxs_put "$root/scripts/fetch-models.sh" "$home/fetch-models.sh"
 # Third-party licenses for the Go binary ship in the release under licenses/go.
 # They go under engine/licenses, a directory ox-say owns, never a directory of
 # their own in OX_SAY_HOME, which may be shared with other things.
-# chmod first: an earlier install may have left read-only files or directories (a Go module cache's are 0444/0555),
-# and an unwritable directory stops both the delete and the copy.
-if [ -d "$home/engine/licenses/go" ]; then
-    chmod -R u+rwX "${home:?}/engine/licenses/go"
-    find "$home/engine/licenses/go" -depth -delete
-fi
-mkdir -p "$home/engine/licenses"
-cp -R "$root/licenses/go" "$home/engine/licenses/"
-chmod -R u+rwX "${home:?}/engine/licenses/go"
+oxs_install_go_licenses "$root/licenses/go"
 oxs_load_agent "$tmp"
 oxs_wait_version "$version"
 

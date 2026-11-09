@@ -929,6 +929,56 @@ check_in_log "get.sh unsticks: default home, writable before the installer" "$tm
 unstick_case none none
 check_in_log "get.sh: no installed licences, the update goes on" "$tmp/unstick-none/log" READONLY
 
+# --- L2: review round (#506) -----------------------------------------------------------------------------------
+# Commit phase: stale-library removals run after every rename, a failed rename is named and cleaned up, and a
+# directory at a destination is refused before anything is replaced. Mutations (lib-install.sh, oxs_stage_commit):
+#   * run the `rm` kind inside the first loop (`rm) rm -f "$dst" ;;` back next to mv) -> "commit failure: the stale
+#     metallib is still there" fails; drop the echo "...install is incomplete" -> "names the file" and "incomplete" fail
+#   * drop the `[ -d "$2" ]` test in oxs_stage -> "directory destination: refused" fails (mv nests the copy in it)
+# Go licences (oxs_install_go_licenses): drop the `[ -L "$lic/go" ]` branch -> "symlinked licenses/go: target mode
+# untouched" fails (chmod -R / find -delete follow it); drop the `[ ! -L "$lic" ]` line -> the symlinked-licenses case fails.
+d="$tmp/rev-commit"; mkdir -p "$d/out/licenses" "$d/home/engine" "$d/bin"
+echo x > "$d/out/licenses/x.LICENSE"
+for bin in tts-server ox-stt ox-align ox-llm; do printf '#!/bin/sh\n' > "$d/out/$bin"; chmod +x "$d/out/$bin"; echo lib > "$d/out/$bin.metallib"; done
+echo stale > "$d/home/engine/ox-align-tensor.metallib"  # queued for removal before the failing rename
+# a mv that fails for the ox-llm binary only
+printf '#!/bin/sh\ncase "$2" in */ox-llm) echo "mv: stubbed failure" >&2; exit 1 ;; esac\nexec /bin/mv "$@"\n' > "$d/bin/mv"; chmod +x "$d/bin/mv"
+rc=0; env PATH="$d/bin:$PATH" bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/out'" >"$d/log" 2>&1 || rc=$?
+check "commit failure: install fails" "$([ "$rc" != 0 ] && echo failed || echo succeeded)" failed
+check_in_log "commit failure: names the file" "$d/log" "could not replace $d/home/engine/ox-llm"
+check_in_log "commit failure: says the install is incomplete" "$d/log" "the install is incomplete"
+check "commit failure: the stale metallib is still there" "$([ -f "$d/home/engine/ox-align-tensor.metallib" ] && echo yes || echo no)" yes
+check "commit failure: no .new left" "$(find "$d/home" -name '*.new' | wc -l | tr -d ' ')" 0
+d="$tmp/rev-dir"; mkdir -p "$d/out/licenses" "$d/home/engine/ox-llm" "$d/home/engine/licenses"
+echo x > "$d/out/licenses/x.LICENSE"
+for bin in tts-server ox-stt ox-align ox-llm; do printf '#!/bin/sh\n' > "$d/out/$bin"; chmod +x "$d/out/$bin"; done
+echo stale > "$d/home/engine/audiocpp_server.metallib"
+rc=0; lic_install "$d/home" "$d/out" || rc=$?
+check "directory destination: refused" "$([ "$rc" != 0 ] && echo failed || echo succeeded)" failed
+check_in_log "directory destination: names it" "$d/home.log" "$d/home/engine/ox-llm is a directory"
+check "directory destination: nothing nested into it" "$(find "$d/home/engine/ox-llm" | wc -l | tr -d ' ')" 1
+check "directory destination: nothing replaced, stale metallib kept" "$(find "$d/home/engine" -type f | sort | tr '\n' ' ')" "$d/home/engine/audiocpp_server.metallib "
+# symlinked licenses/go (and licenses): the target outside the home stays as it is
+go_link_case() { # name layout(go|licenses)
+    local d="$tmp/gl-$1" t="$tmp/gl-$1-target"
+    mkdir -p "$d/home/engine" "$t" "$d/src/go/m"
+    echo keep > "$t/f"; chmod 0400 "$t/f"; chmod 0500 "$t"
+    echo new > "$d/src/go/m/LICENSE"
+    if [ "$2" = go ]; then mkdir -p "$d/home/engine/licenses"; ln -s "$t" "$d/home/engine/licenses/go"; else ln -s "$t" "$d/home/engine/licenses"; fi
+    bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_go_licenses '$d/src/go'" >"$d/log" 2>&1 || true
+    check "symlinked $2: target file mode untouched" "$(modeof "$t/f")" 400
+    check "symlinked $2: target dir mode untouched" "$(modeof "$t")" 500
+    check "symlinked $2: target content untouched" "$(cat "$t/f")" keep
+    check "symlinked $2: target holds nothing new" "$(ls -A "$t")" f
+    check "symlinked $2: fresh copy in the home" "$(cat "$d/home/engine/licenses/go/m/LICENSE")" new
+    check "symlinked $2: licenses/go is a real directory" "$([ -d "$d/home/engine/licenses/go" ] && [ ! -L "$d/home/engine/licenses/go" ] && echo yes || echo no)" yes
+    chmod 0700 "$t"
+}
+go_link_case go go
+go_link_case licenses licenses
+n=$(grep -cE '^[^#]*oxs_install_go_licenses "[$]root/licenses/go"' "$root/scripts/install-release.sh" || true)
+check "install-release.sh installs the Go licences through oxs_install_go_licenses" "${n:-x}" 1
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "all checks passed"

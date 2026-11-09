@@ -180,6 +180,11 @@ oxs_put() {
 # interrupted run left read-only: cp could not open it for writing.
 # Explicit returns: callers use it in `|| ...`, where bash switches `set -e` off inside the function.
 oxs_stage() {
+    # mv would move the copy INTO a directory at <dst> and report success
+    if [ -d "$2" ] && [ ! -L "$2" ]; then
+        echo "ox-say install: $2 is a directory, not a file ox-say installed" >&2
+        return 1
+    fi
     rm -f "$2.new"
     if ! cp "$1" "$2.new" || ! chmod "$3" "$2.new"; then
         rm -f "$2.new"
@@ -199,8 +204,11 @@ oxs_stage_add() {
 
 # On a failed stage, drop every .new written so far: the installed files were never touched.
 oxs_stage_abort() {
-    local i=0
     echo "ox-say install: could not stage the engines; nothing installed was changed" >&2
+    oxs_stage_abort_quiet
+}
+oxs_stage_abort_quiet() {
+    local i=0
     while [ "$i" -lt "${#oxs_staged_dst[@]}" ]; do
         rm -f "${oxs_staged_dst[$i]}.new"
         i=$((i + 1))
@@ -209,15 +217,28 @@ oxs_stage_abort() {
     oxs_staged_dst=()
 }
 
+# The renames run first and the queued removals of stale files after them: a rename that fails must not leave an old
+# library deleted while its binary is still the old one. A failed rename stops the install (no rollback: the files
+# already renamed stay), says which file and that the install is incomplete, and removes the remaining .new files.
 oxs_stage_commit() {
     local i=0 dst
     while [ "$i" -lt "${#oxs_staged_dst[@]}" ]; do
         dst=${oxs_staged_dst[$i]}
         case ${oxs_staged_kind[$i]} in
-            mv) mv "$dst.new" "$dst" ;;
-            say) mv "$dst.new" "$dst"; echo "installed $dst" ;;
-            rm) rm -f "$dst" ;;
+            mv | say)
+                if ! mv "$dst.new" "$dst"; then
+                    echo "ox-say install: could not replace $dst; the install is incomplete (files before it were already replaced, nothing was rolled back). Run the installer again." >&2
+                    oxs_stage_abort_quiet
+                    exit 1
+                fi
+                [ "${oxs_staged_kind[$i]}" = say ] && echo "installed $dst"
+                ;;
         esac
+        i=$((i + 1))
+    done
+    i=0
+    while [ "$i" -lt "${#oxs_staged_dst[@]}" ]; do
+        [ "${oxs_staged_kind[$i]}" = rm ] && rm -f "${oxs_staged_dst[$i]}"
         i=$((i + 1))
     done
     oxs_staged_kind=()
@@ -292,6 +313,24 @@ oxs_install_engines() {
         oxs_stage_add mv "$home/engine/licenses/${f##*/}"
     done
     oxs_stage_commit
+}
+
+# oxs_install_go_licenses <dir>: replace $home/engine/licenses/go by a copy of <dir>. A symlink at engine/licenses or
+# engine/licenses/go is removed itself, never followed: chmod -R and find -delete would otherwise act on its target.
+# chmod first: an earlier install may have left read-only files or directories (a Go module cache's are 0444/0555),
+# and an unwritable directory stops both the delete and the copy.
+oxs_install_go_licenses() {
+    local lic="${home:?}/engine/licenses"
+    [ ! -L "$lic" ] || rm -f "$lic"
+    if [ -L "$lic/go" ]; then
+        rm -f "$lic/go"
+    elif [ -d "$lic/go" ]; then
+        chmod -R u+rwX "$lic/go"
+        find "$lic/go" -depth -delete
+    fi
+    mkdir -p "$lic"
+    cp -R "$1" "$lic/"
+    chmod -R u+rwX "$lic/go"
 }
 
 oxs_install_binary() {
