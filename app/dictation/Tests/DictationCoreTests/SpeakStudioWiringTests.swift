@@ -27,7 +27,7 @@ final class SpeakStudioWiringTests: XCTestCase {
     func testTheStudioCallSiteSendsTheTrimmedScript() throws {
         let studio = try body(source("OxSayDictation/SpeakSource.swift"), of: "private func generateStudio() {")
         XCTAssertTrue(studio.contains("SpeakInputCheck.problem(speak.text, engine: .studio"))
-        XCTAssertTrue(studio.contains("let start = SpeakStudio.start(text: speak.text, reel: speak.reel)"))
+        XCTAssertTrue(studio.contains("let start = SpeakStudio.start(text: speak.text, reel: speak.reel, advanced: model.advanced, panel: speak.panel)"))
         XCTAssertTrue(studio.contains("voiceover.start(script: start.script, title: start.title, voice: voice,\n                                                    format: start.format, options: start.options, fromWindow: true)"))
         XCTAssertFalse(studio.contains("script: speak.text"))
         let gate = try XCTUnwrap(studio.range(of: "host.speechRefusal()"))

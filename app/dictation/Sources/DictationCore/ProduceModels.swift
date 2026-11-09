@@ -200,10 +200,13 @@ public struct ProduceJob: Equatable {
     public var durationS: Double?
     /// Every chunk the summary lists, with its live status.
     public var chunks: [ProduceChunk]
+    /// The sound's own number (`seed` of the summary); nil when the answer has none.
+    public var seed: Int?
 
     public init(id: String, title: String, status: ProduceStatus, partsTotal: Int = 0, partsDone: Int = 0,
                 partsToReview: Int = 0, error: String? = nil, outputPath: String? = nil,
-                durationS: Double? = nil, chunks: [ProduceChunk] = []) {
+                durationS: Double? = nil, chunks: [ProduceChunk] = [], seed: Int? = nil) {
+        self.seed = seed
         self.id = id
         self.title = title
         self.status = status
@@ -258,7 +261,8 @@ public struct ProduceJob: Equatable {
             chunks: chunks.enumerated().map {
                 ProduceChunk(index: $0.element["index"] as? Int ?? $0.offset,
                              status: ProduceChunkState($0.element["status"] as? String ?? ""))
-            })
+            },
+            seed: (obj["seed"] as? NSNumber)?.intValue)
     }
 
     public static func decode(_ data: Data) -> ProduceJob? {

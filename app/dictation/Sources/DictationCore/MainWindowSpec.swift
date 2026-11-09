@@ -50,9 +50,8 @@ public enum MainWindowSpec {
     /// Sections that have real content on this build. Each section task adds its own case here (one line);
     /// a new case lands unlisted, which is the safe side of a forgotten flag.
     public static let liveSections: Set<MainSection> = [.speak, .meetings, .dictation, .voices, .settings]
-    /// The switch is drawn only once something behind it differs (turned on by the first task that reveals
-    /// advanced content).
-    public static let showsAdvancedSwitch = false
+    /// The switch is drawn only once something behind it differs: since the Advanced voice panel on Озвучка it does.
+    public static let showsAdvancedSwitch = true
     /// The sidebar's column width. Its maximum is what the window floor must leave room for.
     public static let sidebarWidth = (minimum: 170.0, ideal: 190.0, maximum: 240.0)
     /// Meetings: the list pane's width (ideal 290) and the least the meeting pane may get, with the divider between.

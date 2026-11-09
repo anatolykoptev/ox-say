@@ -17,8 +17,9 @@ final class SpeakPhrasesCopyTests: XCTestCase {
                         "styling a phrase cannot apply: the project was created with clone_mode ultimate"] {
             XCTAssertEqual(StudioClient.refusal(status: 409, body: body(message)), .stylingUnavailable)
         }
-        XCTAssertEqual(StudioClient.refusal(status: 409, body: body("the project must finish first: a loudness change re-assembles the finished file")),
-                       .refused(status: 409, message: "the project must finish first: a loudness change re-assembles the finished file"),
+        // The loudness-before-finished 409 has its own mapping since the voice panel (SpeakStudioErrorTests); this one keeps its words.
+        XCTAssertEqual(StudioClient.refusal(status: 409, body: body("this voiceover is still cancelling, try again in a moment")),
+                       .refused(status: 409, message: "this voiceover is still cancelling, try again in a moment"),
                        "another 409 keeps its own words")
         XCTAssertEqual(StudioClient.refusal(status: 400, body: body("styling a phrase is odd")).self,
                        .refused(status: 400, message: "styling a phrase is odd"), "only a 409 is the gate")

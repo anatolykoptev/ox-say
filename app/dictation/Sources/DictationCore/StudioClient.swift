@@ -12,6 +12,10 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
     case noSavedVoice
     /// A mood on a project made with the recording's own delivery (409 from `deliveryModeGate`): no style can apply there.
     case stylingUnavailable
+    /// A loudness change on a project whose phrases are not all settled (409 "the project must finish first").
+    case projectNotFinished
+    /// «Манера записи» asked of a voice that cannot give it (400 "clone_mode ultimate …").
+    case recordingStyleUnavailable
     /// A small-memory Mac is busy with another large engine (a voiceover, the fast voice or meeting notes): the daemon's
     /// 503 with code `engine_busy_memory`. Nothing failed; the request can be repeated later.
     case enginesBusy
@@ -27,6 +31,8 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .voiceoverRunning: return text(.speakStudioBusy)
         case .noSavedVoice: return text(.speakStudioNeedsVoice)
         case .stylingUnavailable: return text(.speakMoodUnavailable)
+        case .projectNotFinished: return text(.speakPanelErrNotFinished)
+        case .recordingStyleUnavailable: return text(.speakPanelErrRecordingStyle)
         case .enginesBusy: return text(.speakEngineBusy)
         }
     }
@@ -45,6 +51,8 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .voiceoverRunning: return "Another voiceover is being produced."
         case .noSavedVoice: return "Producing a voiceover needs a saved voice."
         case .stylingUnavailable: return "This project cannot take a mood: it keeps the recording's own delivery."
+        case .projectNotFinished: return "The project must finish first."
+        case .recordingStyleUnavailable: return "This voice cannot copy the recording's delivery."
         case .enginesBusy: return "Another large voice or notes engine is busy; try again later."
         }
     }
@@ -119,6 +127,12 @@ public struct StudioClient {
         // The two delivery-gate 409s (`deliveryNeedsReference`, `deliveryIsUltimate`, produce_ops.go) carry no code on the wire
         // either, only their opening words; both mean the project keeps the recording's delivery and a mood cannot apply.
         if status == 409, message.hasPrefix("styling a phrase") { return .stylingUnavailable }
+        // The two refusals the voice panel can meet, also without a code: a loudness change before the project has finished
+        // (409, `deliver` in produce_ops.go) and «Манера записи» asked of a voice that cannot give it (400, `voxCloneMode`
+        // in voxcpm2.go: no voice, no saved text of the recording, or a style set). The clone mode itself has no flip route:
+        // a change after creation is a new project, so these are the clone-mode answers the app can actually get.
+        if status == 409, message.hasPrefix("the project must finish first") { return .projectNotFinished }
+        if status == 400, message.hasPrefix("clone_mode ultimate") { return .recordingStyleUnavailable }
         // An empty message is the app's sentence naming the status, worded when it is shown (StudioError.message).
         return .refused(status: status, message: PlainWords.clean(message, fallback: ""))
     }

@@ -320,6 +320,10 @@ final class MainWindowSource {
         a.phrasePickOther = { [weak self] n in self?.speakSource.pickOtherVariant(n) }
         a.phraseMood = { [weak self] n, mood in self?.speakSource.setMood(n, mood) }
         a.phraseEditText = { [weak self] n, text in self?.speakSource.editPhraseText(n, text) }
+        a.speakLoudness = { [weak self] target in self?.speakSource.setLoudness(target) }
+        a.speakPace = { [weak self] value in self?.speakSource.setPace(value) }
+        a.speakPause = { [weak self] value in self?.speakSource.setPause(value) }
+        a.speakPanelChanged = { [weak self] settings in self?.speakSource.panelChanged(settings) }
         return a
     }
 
