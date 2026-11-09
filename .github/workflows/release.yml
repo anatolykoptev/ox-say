@@ -117,6 +117,20 @@ jobs:
           commit=$(scripts/check-release-tag.sh "$TAG" "$GITHUB_SHA")
           git checkout --detach "$commit"
 
+      # The tag checkout above can leave the tree at a commit that predates this
+      # workflow — the tag is the release commit, not the commit this run
+      # started for — so a helper a step below calls may not exist on disk
+      # (scripts/swiftpm-resolve.sh is absent at v0.1.30). Read it out of the
+      # workflow commit instead: checkout ran with fetch-depth:0, so
+      # $GITHUB_SHA's objects are in the clone, and $RUNNER_TEMP is outside the
+      # checked-out tree, so no later checkout can clobber it.
+      - name: Extract the resolve helper
+        if: matrix.diar_xcode != ''
+        run: |
+          set -euo pipefail
+          git show "$GITHUB_SHA:scripts/swiftpm-resolve.sh" > "$RUNNER_TEMP/swiftpm-resolve.sh"
+          chmod +x "$RUNNER_TEMP/swiftpm-resolve.sh"
+
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           # The newest 1.26.x, not the exact `go 1.26.0` floor in go.mod: setup-go v5.6.0 reads only the `go` line
@@ -211,7 +225,7 @@ jobs:
         if: matrix.diar_xcode != ''
         env:
           OX_SAY_DIAR_DEVELOPER_DIR: ${{ matrix.diar_xcode }}
-        run: DEVELOPER_DIR=$OX_SAY_DIAR_DEVELOPER_DIR scripts/swiftpm-resolve.sh engine/diar --force-resolved-versions
+        run: DEVELOPER_DIR=$OX_SAY_DIAR_DEVELOPER_DIR "$RUNNER_TEMP/swiftpm-resolve.sh" engine/diar --force-resolved-versions
 
       - name: Package
         env:
