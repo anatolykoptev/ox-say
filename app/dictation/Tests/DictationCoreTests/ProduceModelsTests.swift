@@ -229,6 +229,12 @@ final class ProduceModelsTests: XCTestCase {
         XCTAssertEqual(job.outputPath, "/tmp/ox-say-probe/out/тестовый-ролик/тестовый-ролик.wav")
         XCTAssertEqual(job.chunks.map(\.status), [.ok, .review])
         XCTAssertEqual(job.partsToReview, 1)
+        // The sound's own number: the oracle is the daemon's recorded answer, not a value this test chose.
+        XCTAssertEqual(job.seed, 2401631678)
+    }
+
+    func testAnAnswerWithoutASeedHasNone() throws {
+        XCTAssertNil(ProduceJob.decode(Data(#"{"id":"20261016-151944-f07629","title":"t","status":"done"}"#.utf8))?.seed)
     }
 
     /// The same probe's chunk detail (`GET /v1/produce/{id}/chunks/{n}` —

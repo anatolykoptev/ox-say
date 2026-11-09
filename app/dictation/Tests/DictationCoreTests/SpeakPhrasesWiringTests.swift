@@ -42,7 +42,7 @@ final class SpeakPhrasesWiringTests: XCTestCase {
     func testAReelSendsItsPresetAndAVariantGoesThroughTheOrderedFlow() throws {
         let speak = try source("OxSayDictation/SpeakSource.swift")
         let studio = try body(speak, of: "private func generateStudio() {")
-        XCTAssertTrue(studio.contains("SpeakStudio.start(text: speak.text, reel: speak.reel)"))
+        XCTAssertTrue(studio.contains("SpeakStudio.start(text: speak.text, reel: speak.reel, advanced: model.advanced, panel: speak.panel)"))
         let variant = try body(speak, of: "func anotherVariant(")
         XCTAssertTrue(variant.contains("PhraseRegeneration.run(chunk: n, known: known"))
         XCTAssertTrue(variant.contains("waitUntilIdle: { try await voiceover.followAndWait(id: id) }"))
@@ -74,7 +74,7 @@ final class SpeakPhrasesWiringTests: XCTestCase {
         XCTAssertTrue(list.contains("if showsMood {"))
         XCTAssertTrue(list.contains("let busy = PhraseEditing.isBusy(values.phraseWork, project: job.id) || !PhraseEditing.canEditText(status: job.status)"))
         let values = try source("MainWindowUI/SpeakValues.swift")
-        XCTAssertTrue(values.contains("PhraseEditing.showsMood(voice: selectedID.flatMap { projectVoices[$0] }, voices: voices, advanced: advanced)"))
+        XCTAssertTrue(values.contains("PhraseEditing.showsMood(voice: selectedID.flatMap { projectVoices[$0] }, voices: voices, advanced: advanced, copiesRecordingStyle: copiesRecordingStyle)"))
     }
 
     /// The decisions the page makes at its call sites, pinned because no behavioural test sees them.
