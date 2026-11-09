@@ -132,6 +132,7 @@ jobs:
           bash scripts/test-lib-install.sh
           bash scripts/test-fetch-models.sh
           bash scripts/test-download-stall.sh
+          bash scripts/test-upgrade-guard.sh
 
       - name: Build tools
         run: command -v cmake >/dev/null || brew install cmake

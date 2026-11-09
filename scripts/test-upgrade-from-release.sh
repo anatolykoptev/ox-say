@@ -68,6 +68,34 @@ for tool in curl jq shasum tar cmp plutil; do
 done
 
 # --- the temp root: everything the installers write lives here ---------------------------------------------------
+# physical <path>: the path with every symlink resolved, also for a path that does not exist yet (its nearest
+# existing ancestor is resolved, the rest appended). Lexical checks are not enough: a TMPDIR or parent of the temp
+# root that is a symlink into the real install would put the whole test, and its cleanup, inside it.
+physical() {
+    local p=$1 rest=
+    while [ ! -d "$p" ]; do
+        rest=/${p##*/}$rest
+        p=${p%/*}
+        [ -n "$p" ] || p=/
+    done
+    p=$(cd "$p" && pwd -P)
+    [ "$p" = / ] && p=
+    printf '%s%s\n' "$p" "$rest"
+}
+# overlap <a> <b>: succeeds when the physical paths are equal or one contains the other
+overlap() {
+    case $1/ in "$2"/*) return 0 ;; esac
+    case $2/ in "$1"/*) return 0 ;; esac
+    return 1
+}
+# The real install the test must never touch. OX_SAY_UPGRADE_TEST_REAL_* exist only for the guard's own test.
+real_dirs=$(
+    physical "${OX_SAY_UPGRADE_TEST_REAL_INSTALL:-$real_home/Library/Application Support/ox-say}"
+    physical "${OX_SAY_UPGRADE_TEST_REAL_BIN:-$real_home/.local/bin}"
+    physical "$real_home/Library/LaunchAgents"
+    physical "$real_home/Library/Logs/ox-say"
+)
+
 root=$(mktemp -d "${TMPDIR:-/tmp}/ox-say-upgrade-test.XXXXXX")
 case $root in
     /*/ox-say-upgrade-test.?*) ;;
@@ -76,6 +104,41 @@ case $root in
         exit 2
         ;;
 esac
+root=$(cd "$root" && pwd -P) # the physical root, from here on
+th=$root/home                # the HOME the installers see
+home=$th/ox-say
+bindir=$th/bin
+stubs=$root/stubs
+
+# Refuse unless every path an installer will write is physically under $root, and none overlaps the real install.
+guard() {
+    local p pp r
+    for p in "$th" "$home" "$bindir" "$th/Library/LaunchAgents" "$th/Library/Logs/ox-say"; do
+        pp=$(physical "$p")
+        case $pp in
+            "$root"/*) ;;
+            *)
+                echo "upgrade-test: refusing, $p resolves to $pp, not under the temp root $root" >&2
+                return 1
+                ;;
+        esac
+    done
+    for p in "$root" "$th" "$home" "$bindir"; do
+        pp=$(physical "$p")
+        while IFS= read -r r; do
+            if overlap "$pp" "$r"; then
+                echo "upgrade-test: refusing, $pp overlaps the real install path $r" >&2
+                return 1
+            fi
+        done <<EOF
+$real_dirs
+EOF
+    done
+}
+if ! guard; then
+    rmdir "$root" 2>/dev/null || true # empty: nothing was written yet
+    exit 2
+fi
 cleanup() {
     if [ "${OX_SAY_UPGRADE_KEEP:-0}" = 1 ]; then
         echo "upgrade-test: kept $root"
@@ -88,33 +151,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM HUP PIPE
 trap 'exit 130' INT
-
-th=$root/home # the HOME the installers see
-home=$th/ox-say
-bindir=$th/bin
-stubs=$root/stubs
 mkdir -p "$th" "$stubs" "$root/dl" "$root/old" "$root/new"
-
-# Refuse unless every path an installer will write is under $root, and none is the real install.
-guard() {
-    local p
-    for p in "$th" "$home" "$bindir" "$th/Library/LaunchAgents" "$th/Library/Logs/ox-say"; do
-        case $p in
-            "$root"/*) ;;
-            *)
-                echo "upgrade-test: refusing, $p is not under the temp root $root" >&2
-                exit 2
-                ;;
-        esac
-    done
-    case $root in
-        "$real_home/Library/Application Support/ox-say"* | "$real_home/.local/bin"*)
-            echo "upgrade-test: refusing, the temp root is inside the real install" >&2
-            exit 2
-            ;;
-    esac
-}
-guard
 
 # --- download with bounded retries -------------------------------------------------------------------------------
 # fetch <url> <dest> [curl args]: up to $tries attempts, backoff 5 s * attempt; fails loudly after the last.
@@ -231,7 +268,7 @@ version_file=$root/stub-version
 # run_installer <label> <release dir> <expected version>: the release's own installer, clean environment.
 run_installer() {
     local name=$1 rel=$2 version=$3 rc=0
-    guard
+    guard || exit 2
     printf '%s\n' "$version" >"$version_file"
     echo "upgrade-test: running $name installer ($rel/scripts/install-release.sh)"
     env -i PATH="$stubs:$PATH" HOME="$th" TMPDIR="$root" \
@@ -300,6 +337,17 @@ checked=$((checked + 3))
 [ -x "$home/uninstall.sh" ] || bad "uninstall.sh is not executable"
 for b in tts-server ox-stt ox-align ox-llm; do
     [ -x "$home/engine/$b" ] || bad "engine/$b is not executable"
+done
+
+# Stale engine files: the installer replaces what the package carries and removes only the metallibs of the known
+# engines; a binary or library of the previous release that the new package no longer ships would stay and keep
+# being picked up. Top-level files of engine/ must all come from the package. No exemptions: the daemon only reads
+# engine/ (internal/config fallback "engine"), nothing creates files there at runtime. engine/licenses is not
+# pruned by the installer by design (oxs_install_engines overwrites the files of the package and
+# oxs_install_go_licenses replaces only licenses/go), so a licence file dropped from a package stays; not checked.
+for f in "$home"/engine/* "$home"/engine/.[!.]*; do
+    [ -f "$f" ] || [ -L "$f" ] || continue
+    [ -e "$new/engine/${f##*/}" ] || bad "stale file left from $prev_tag, not in the new package: engine/${f##*/}"
 done
 
 unwritable=$(cd "$th" && find . ! -perm -u+w)
