@@ -3,12 +3,12 @@ import XCTest
 @testable import DictationCore
 
 final class MainWindowSpecTests: XCTestCase {
-    /// The sections with nothing behind them yet stay out of the sidebar, and the Advanced switch stays undrawn.
+    /// The sections with nothing behind them yet stay out of the sidebar, and the Advanced switch is drawn once the voice panel gives it content.
     func testTheSidebarShowsTheLiveSectionsInSidebarOrder() {
         XCTAssertEqual(MainWindowSpec.sections(advanced: false), [.speak, .voices, .dictation, .meetings, .settings])
         XCTAssertEqual(MainWindowSpec.sections(advanced: true), MainWindowSpec.sections(advanced: false),
                        "Models is not live yet, so the switch changes nothing")
-        XCTAssertFalse(MainWindowSpec.showsAdvancedSwitch)
+        XCTAssertTrue(MainWindowSpec.showsAdvancedSwitch, "the voice panel (Озвучка, Advanced) is real content behind it")
         XCTAssertEqual(MainWindowSpec.firstRunSection, .speak, "Voiceover is live")
     }
 

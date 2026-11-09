@@ -255,6 +255,13 @@ public struct MainWindowActions {
     public var phrasePickOther: (Int) -> Void = { _ in }
     public var phraseMood: (Int, Mood?) -> Void = { _, _ in }
     public var phraseEditText: (Int, String) -> Void = { _, _ in }
+    /// The Advanced voice panel: a level (applied at once to a finished project, kept for the next voicing), a pace or a pause
+    /// for the chosen phrase or all of them (the scope is in `SpeakValues`), and the settings that
+    /// only a new voicing reads (quality, delivery, the sound's number, variants).
+    public var speakLoudness: (LoudnessTarget?) -> Void = { _ in }
+    public var speakPace: (Double) -> Void = { _ in }
+    public var speakPause: (Double) -> Void = { _ in }
+    public var speakPanelChanged: (VoicePanelSettings) -> Void = { _ in }
 
     public init() {}
 }
