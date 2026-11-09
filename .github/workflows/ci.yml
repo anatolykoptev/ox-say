@@ -83,6 +83,10 @@ jobs:
       - name: notary helper test
         run: bash scripts/test-lib-notary.sh
 
+      # swiftpm-resolve.sh's bounded retry, against a fake swift; needs only bash.
+      - name: swiftpm resolve helper test
+        run: bash scripts/test-swiftpm-resolve.sh
+
       # engine/lib-check.sh (build guards) against fake lipo/otool, and the
       # release-tag check on throwaway git repos; need bash, git and jq.
       - name: engine check and release tag tests
@@ -103,6 +107,9 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      # No SwiftPM resolve or download cache here: app/dictation declares no remote package dependency and
+      # carries no Package.resolved, so nothing downloads — and a resolve without --force-resolved-versions
+      # could write a lockfile the repo does not track.
       - name: swift test
         run: swift test --package-path app/dictation
 
@@ -161,6 +168,29 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # FluidAudio and its binary targets come down from third-party release URLs inside `swift test`/`swift
+      # build` — one hiccup there must not fail the gate (PR #505's diar job died on one zip). Resolve first,
+      # with a bounded retry, and keep the shared SwiftPM cache plus the extracted artifacts across runs; both
+      # hold only public package downloads, no credentials. engine/diar is the repo's only Swift package with
+      # remote dependencies — the other Swift jobs resolve nothing and cache nothing.
+      - name: Swift toolchain fingerprint
+        id: swift-toolchain
+        run: swift --version | shasum -a 256 | awk '{print "fingerprint=" $1}' >> "$GITHUB_OUTPUT"
+
+      - name: Cache SwiftPM downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            engine/diar/.build/artifacts
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-${{ hashFiles('engine/diar/Package.swift', 'engine/diar/Package.resolved') }}
+          # No restore-keys: this cache also holds the extracted .build/artifacts, and a broad prefix could
+          # restore artifacts extracted for an older resolution — only an exact key may hit.
+
+      # --force-resolved-versions: the same flag swift test and engine/diar/build.sh use.
+      - name: Resolve Swift packages
+        run: scripts/swiftpm-resolve.sh engine/diar --force-resolved-versions
 
       - name: swift test
         # --force-resolved-versions: swift test must not rewrite Package.resolved before build.sh takes its copy to compare.
@@ -226,6 +256,9 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      # No SwiftPM resolve or download cache here: engine/clean declares no remote package dependency and
+      # carries no Package.resolved, so nothing downloads — and a resolve without --force-resolved-versions
+      # could write a lockfile the repo does not track.
       # The suite that needs no weights (the real-model tests skip without OX_CLEAN_MODELS). A debug build, so the
       # timing bounds (release-only, `#if !DEBUG`) are asserted by the next step.
       - name: swift test
