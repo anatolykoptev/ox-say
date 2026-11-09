@@ -374,6 +374,19 @@ jobs:
           test -x scripts/install-app.sh
           (cd ../../dist && shasum -a 256 -c SHA256SUMS)
 
+      # Release N over the real release N-1: downloads the previous published release (retried, never skipped),
+      # installs it with ITS installer, then installs this package over it with the package's own installer and
+      # checks the files. 0.1.29 -> 0.1.30 failed on every Apple Silicon Mac because 0.1.29 left read-only licence
+      # files and 0.1.30's installer wrote into them after it had replaced the engines; the fake packages of the
+      # installer tests could not see it. The launchd load, version wait, self-test, app and MCP registration are
+      # stubbed (scripts/test-upgrade-from-release.sh says how). Runs on PRs, which build this job too.
+      - name: Upgrade over the previous release
+        timeout-minutes: 15
+        env:
+          ARCH: ${{ matrix.arch }}
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/test-upgrade-from-release.sh "dist/ox-say-macos-$ARCH.tar.gz"
+
       - name: Keep the package as a workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
