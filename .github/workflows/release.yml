@@ -174,28 +174,24 @@ jobs:
 
       # SwiftPM resolves packages inside `swift build` deep in package-release.sh, pulling FluidAudio and its
       # binary targets from third-party release URLs — one hiccup there must not kill a release (PR #505's
-      # package job died on one zip). Resolve first, with a bounded retry, and keep the shared SwiftPM cache
-      # across runs so a warm run needs no download at all; it holds only public package downloads, no
-      # credentials. ox-diar is built on arm64 alone, so its resolve and its extracted-artifact cache run only
-      # where the Xcode 26 for it is named.
+      # package job died on one zip). engine/diar is the repo's only Swift package with remote dependencies —
+      # engine/clean and the app declare none and carry no Package.resolved — and ox-diar is built on arm64
+      # alone, so the fingerprint, both caches and the resolve run only where the Xcode 26 for it is named.
+      # Resolve first, with a bounded retry, and keep the shared SwiftPM cache across runs so a warm run needs
+      # no download at all; it holds only public package downloads, no credentials.
       - name: Swift toolchain fingerprint
+        if: matrix.diar_xcode != ''
         id: swift-toolchain
         env:
           OX_SAY_DIAR_DEVELOPER_DIR: ${{ matrix.diar_xcode }}
-          OX_SAY_CLEAN_DEVELOPER_DIR: ${{ matrix.clean_xcode }}
-        run: |
-          set -euo pipefail
-          {
-            swift --version
-            if [ -n "${OX_SAY_DIAR_DEVELOPER_DIR:-}" ]; then DEVELOPER_DIR=$OX_SAY_DIAR_DEVELOPER_DIR swift --version; fi
-            if [ -n "${OX_SAY_CLEAN_DEVELOPER_DIR:-}" ]; then DEVELOPER_DIR=$OX_SAY_CLEAN_DEVELOPER_DIR swift --version; fi
-          } | shasum -a 256 | awk '{print "fingerprint=" $1}' >> "$GITHUB_OUTPUT"
+        run: DEVELOPER_DIR=$OX_SAY_DIAR_DEVELOPER_DIR swift --version | shasum -a 256 | awk '{print "fingerprint=" $1}' >> "$GITHUB_OUTPUT"
 
       - name: Cache SwiftPM downloads
+        if: matrix.diar_xcode != ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/org.swift.swiftpm
-          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-${{ hashFiles('engine/diar/Package.swift', 'engine/diar/Package.resolved', 'engine/clean/Package.swift', 'engine/clean/Package.resolved') }}
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-${{ hashFiles('engine/diar/Package.swift', 'engine/diar/Package.resolved') }}
           # restore-keys stays here: this cache is the shared SwiftPM download store, and SwiftPM verifies a
           # downloaded archive against the manifest checksum, so a prefix restore cannot serve a wrong archive.
           restore-keys: |
@@ -212,19 +208,10 @@ jobs:
           # only an exact key may hit.
 
       - name: Resolve Swift packages
+        if: matrix.diar_xcode != ''
         env:
           OX_SAY_DIAR_DEVELOPER_DIR: ${{ matrix.diar_xcode }}
-          OX_SAY_CLEAN_DEVELOPER_DIR: ${{ matrix.clean_xcode }}
-        run: |
-          set -euo pipefail
-          if [ -n "${OX_SAY_DIAR_DEVELOPER_DIR:-}" ]; then
-            DEVELOPER_DIR=$OX_SAY_DIAR_DEVELOPER_DIR scripts/swiftpm-resolve.sh engine/diar --force-resolved-versions
-          fi
-          if [ -n "${OX_SAY_CLEAN_DEVELOPER_DIR:-}" ]; then
-            DEVELOPER_DIR=$OX_SAY_CLEAN_DEVELOPER_DIR scripts/swiftpm-resolve.sh engine/clean --force-resolved-versions
-          else
-            scripts/swiftpm-resolve.sh engine/clean --force-resolved-versions
-          fi
+        run: DEVELOPER_DIR=$OX_SAY_DIAR_DEVELOPER_DIR scripts/swiftpm-resolve.sh engine/diar --force-resolved-versions
 
       - name: Package
         env:

@@ -172,7 +172,8 @@ jobs:
       # FluidAudio and its binary targets come down from third-party release URLs inside `swift test`/`swift
       # build` — one hiccup there must not fail the gate (PR #505's diar job died on one zip). Resolve first,
       # with a bounded retry, and keep the shared SwiftPM cache plus the extracted artifacts across runs; both
-      # hold only public package downloads, no credentials.
+      # hold only public package downloads, no credentials. engine/diar is the repo's only Swift package with
+      # remote dependencies — the other Swift jobs resolve nothing and cache nothing.
       - name: Swift toolchain fingerprint
         id: swift-toolchain
         run: swift --version | shasum -a 256 | awk '{print "fingerprint=" $1}' >> "$GITHUB_OUTPUT"
@@ -255,27 +256,9 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      # Same download-hiccup invariant as the other Swift jobs: resolve first with a bounded retry and keep the
-      # shared SwiftPM cache across runs. The cache holds only public package downloads, no credentials.
-      - name: Swift toolchain fingerprint
-        id: swift-toolchain
-        run: swift --version | shasum -a 256 | awk '{print "fingerprint=" $1}' >> "$GITHUB_OUTPUT"
-
-      - name: Cache SwiftPM downloads
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/Library/Caches/org.swift.swiftpm
-          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-${{ hashFiles('engine/clean/Package.swift', 'engine/clean/Package.resolved') }}
-          # restore-keys stays here: this cache is the shared SwiftPM download store, and SwiftPM verifies a
-          # downloaded archive against the manifest checksum, so a prefix restore cannot serve a wrong archive.
-          restore-keys: |
-            swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-
-            swiftpm-${{ runner.os }}-${{ runner.arch }}-
-
-      # --force-resolved-versions: the same flag swift test and engine/clean's suite use.
-      - name: Resolve Swift packages
-        run: scripts/swiftpm-resolve.sh engine/clean --force-resolved-versions
-
+      # No SwiftPM resolve or download cache here: engine/clean declares no remote package dependency and
+      # carries no Package.resolved, so nothing downloads — and a resolve without --force-resolved-versions
+      # could write a lockfile the repo does not track.
       # The suite that needs no weights (the real-model tests skip without OX_CLEAN_MODELS). A debug build, so the
       # timing bounds (release-only, `#if !DEBUG`) are asserted by the next step.
       - name: swift test
