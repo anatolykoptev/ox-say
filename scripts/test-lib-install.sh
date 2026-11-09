@@ -493,8 +493,7 @@ check_in_log "without ox-diar: exit 0" "$tmp/diar-without/log" "rc=0"
 
 # --- I3: ox-clean is installed when the package carries it ---------------------
 # Both architectures carry it (decision 8: Intel is enabled), beside ox-diar and with the same copy-then-rename.
-# Mutation: drop the `mv "$home/engine/ox-clean.new"` line in oxs_install_engines -> the binary is missing and a
-# ".new" is left behind -> RED ("installs ox-clean from a package"). Mutation (scripts/package-release.sh): drop
+# Mutation: drop the ox-clean staging in the `for bin in ox-diar ox-clean` loop of oxs_install_engines -> the binary is missing -> RED ("installs ox-clean from a package"). Mutation (scripts/package-release.sh): drop
 # ox-clean from the `for bin in` baseline list or from the engine staging block -> the shape checks below fail.
 clean_case() { # name with-clean [stale ox-clean already installed]
     local d="$tmp/clean-$1" bin
@@ -730,7 +729,7 @@ metal_order_case() {
     env PATH="$d/bin:$PATH" \
         bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$d/home'; oxs_install_engines '$d/out'" >"$d/log" 2>&1 \
         || echo "rc=$?" >>"$d/log"
-    cat "$d/order"
+    grep -v '\.LICENSE$' "$d/order"  # the licences are renamed too, after the engines
 }
 check "each engine's metallibs install before its binary" "$(metal_order_case)" \
     "tts-server.metallib
@@ -820,6 +819,75 @@ get_case "macOS 13.6" 13.6 refuse
 get_case "macOS 14.1" 14.1 refuse
 get_case "macOS 14.2" 14.2 install
 get_case "macOS 26.1" 26.1 install
+
+# --- L: read-only licence files (0.1.29 -> 0.1.30 update failed: "cp: ...-LICENSE.md: Permission denied") ---------
+# The release package carried FluidAudio's licences 0400 (SwiftPM checkouts are read-only), the first install left
+# them 0400, and the update's plain `cp` could not open them for writing - after the engines were already replaced.
+# Mutations (lib-install.sh oxs_install_engines, the licence loop; each must turn the named cases RED):
+#   * licence loop -> `cp "$out"/licenses/* "$home/engine/licenses/"` after oxs_stage_commit: "(a) update over
+#     0400 licences" and "(b) a 0400 package, second install" fail (Permission denied, rc 1), and (c) fails
+#     because the engines are already replaced by then
+#   * drop the `chmod "$3"` from oxs_stage: a 0400 package stays 0400 - the "0644" check in (b) fails
+#   * stage the licences after oxs_stage_commit instead of before it (or run the commit inside the loops): (c) fails -
+#     the engines are replaced although the licence copy failed
+modeof() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+lic_pkg() { # dir licence-mode content: a package with four engines and two licences
+    local d=$1 bin
+    mkdir -p "$d/licenses"
+    for bin in tts-server ox-stt ox-align ox-llm; do
+        printf '#!/bin/sh\necho new-%s\n' "$bin" > "$d/$bin"
+        chmod +x "$d/$bin"
+    done
+    printf '%s\n' "$3" > "$d/licenses/FluidAudio-fastcluster-LICENSE.md"
+    printf '%s\n' "$3" > "$d/licenses/a b LICENSE.txt"  # a name with spaces
+    chmod "$2" "$d/licenses/FluidAudio-fastcluster-LICENSE.md" "$d/licenses/a b LICENSE.txt"
+}
+lic_install() { # home pkg
+    bash -c "set -euo pipefail; . '$root/scripts/lib-install.sh'; home='$1'; oxs_install_engines '$2'" >"$1.log" 2>&1
+}
+# (a) an update over a previous install whose licences are 0400
+d="$tmp/lic-a"; mkdir -p "$d/home/engine/licenses"
+lic_pkg "$d/pkg" 0644 new-text
+printf 'old-text\n' > "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md"
+printf 'old-text\n' > "$d/home/engine/licenses/a b LICENSE.txt"
+chmod 0400 "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md" "$d/home/engine/licenses/a b LICENSE.txt"
+rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+check "(a) update over 0400 licences: exit status" "$rc" 0
+check "(a) update over 0400 licences: new content" "$(cat "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" new-text
+check "(a) update over 0400 licences: mode 0644" "$(modeof "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" 644
+check "(a) update over 0400 licences: name with spaces, new content" "$(cat "$d/home/engine/licenses/a b LICENSE.txt")" new-text
+check "(a) update over 0400 licences: name with spaces, mode 0644" "$(modeof "$d/home/engine/licenses/a b LICENSE.txt")" 644
+check "(a) update over 0400 licences: no .new left" "$(find "$d/home" -name '*.new' | wc -l | tr -d ' ')" 0
+# (b) a package that itself carries 0400 licences, installed twice in a row
+d="$tmp/lic-b"; mkdir -p "$d/home"
+lic_pkg "$d/pkg" 0400 pkg-text
+rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+check "(b) a 0400 package, first install: exit status" "$rc" 0
+rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+check "(b) a 0400 package, second install: exit status" "$rc" 0
+check "(b) a 0400 package: installed mode 0644" "$(modeof "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" 644
+check "(b) a 0400 package: installed content" "$(cat "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" pkg-text
+# (c) a licence that cannot be copied fails the install BEFORE any engine is replaced
+d="$tmp/lic-c"; mkdir -p "$d/home/engine/licenses"
+lic_pkg "$d/pkg" 0644 new-text
+chmod 000 "$d/pkg/licenses/a b LICENSE.txt"
+printf '#!/bin/sh\necho old-tts-server\n' > "$d/home/engine/tts-server"; chmod +x "$d/home/engine/tts-server"
+printf 'old-text\n' > "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md"
+if [ "$(id -u)" = 0 ]; then
+    pass "(c) failing licence copy: skipped as root (root reads mode 000)"
+else
+    rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+    check "(c) failing licence copy: install fails" "$([ "$rc" != 0 ] && echo failed || echo succeeded)" failed
+    check "(c) failing licence copy: old engine untouched" "$("$d/home/engine/tts-server")" old-tts-server
+    check "(c) failing licence copy: no other engine appeared" "$(cd "$d/home/engine" && find . -type f | tr '\n' ' ')" "./licenses/FluidAudio-fastcluster-LICENSE.md ./tts-server "
+    check "(c) failing licence copy: old licence untouched" "$(ls -A "$d/home/engine/licenses" | tr '\n' ' ')" "FluidAudio-fastcluster-LICENSE.md "
+    check "(c) failing licence copy: old licence content" "$(cat "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" old-text
+    chmod 644 "$d/pkg/licenses/a b LICENSE.txt"
+fi
+# the installers use the same replace-by-rename for what they copy into an existing OX_SAY_HOME / bindir
+n=$(grep -cE '^[^#]*oxs_put "[$]root/scripts/(uninstall|fetch-models)[.]sh"' "$root/scripts/install-release.sh" || true)
+check "install-release.sh copies uninstall.sh and fetch-models.sh through oxs_put" "${n:-x}" 2
+
 
 echo
 if [ "$fails" -eq 0 ]; then

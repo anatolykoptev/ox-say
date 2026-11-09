@@ -471,5 +471,9 @@ if audiocpp_gate "$arch" "$out"; then
     echo "built $out/audiocpp_server"
 fi
 
+# Licence files copied out of read-only checkouts keep their 0400/0444 mode; an install over an earlier one cannot
+# open such a file for writing (the 0.1.30 update failure). Ship them 0644.
+find "$out/licenses" -type f -exec chmod 0644 {} +
+
 # The commits these binaries were built from, for ox-say-bench's report.
 write_pins_stamp "$here/pins.env" "$out"
