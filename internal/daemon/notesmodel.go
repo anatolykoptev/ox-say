@@ -9,12 +9,16 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 )
@@ -191,12 +195,97 @@ func (d *Daemon) handleNotesModelGet(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// notesModelTrialLoad is where N1b's trial load plugs in: a check that opens
+// the model the way the engine would, beyond the static gates of
+// notesModelPathError. nil: the static checks are the whole validation.
+var notesModelTrialLoad func(path string) string
+
+// notesModelPathError is the PUT's gate for the user's own model file, run
+// before the choice is saved: the path must be a canonical absolute path
+// (no . or .. segments, no doubled separators) naming a regular file after
+// links are followed — non-empty, a .gguf by name and a GGUF by magic — so
+// a saved choice cannot send the engine at a folder, a missing file or
+// something that is not a model at all. The returned sentence is the 400's
+// reason; "" accepts.
+func notesModelPathError(path string) string {
+	switch {
+	case !filepath.IsAbs(path):
+		return "The model path must be absolute."
+	case filepath.Clean(path) != path:
+		return "The model path must not contain . or .. segments or doubled separators."
+	}
+	st, err := os.Stat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "There is no file at the model path."
+	case err != nil:
+		return "The model path cannot be read."
+	case !st.Mode().IsRegular():
+		return "The model path is a folder or a device, not a model file."
+	case !strings.EqualFold(filepath.Ext(path), ".gguf"):
+		return "The model file must be a .gguf."
+	case st.Size() == 0:
+		return "The model file is empty."
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "The model file cannot be read."
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil || string(magic[:]) != "GGUF" {
+		return "The model file is not a GGUF model."
+	}
+	if notesModelTrialLoad != nil {
+		return notesModelTrialLoad(path)
+	}
+	return ""
+}
+
+// notesModelSwitchProbe, when set, runs inside the model switch's critical
+// section — after the busy check, before the stop and the write — so a test
+// can hold the section open while a job tries to be admitted. nil in
+// production; only tests set it.
+var notesModelSwitchProbe func()
+
+// notesModelSwitch is the PUT's critical section, run under the meeting
+// queue's admission lock so the busy check, the engine stop and the saved
+// choice are one step against job admission: a meeting cannot slip between
+// the check and the stop and leave the old child serving a changed choice.
+// The stop comes before the write, so a refused stop leaves the file — and
+// the resolved model — exactly as they were.
+func (d *Daemon) notesModelSwitch(ctx context.Context, ch config.NotesChoice) error {
+	body := func(active int) error {
+		if why := d.notesModelBusyAt(active); why != "" {
+			return &modelError{http.StatusConflict, why}
+		}
+		if notesModelSwitchProbe != nil {
+			notesModelSwitchProbe()
+		}
+		// The resolved file changed: stop the child so its next start loads it.
+		if err := d.stopModelEngine(ctx, d.LLMSup); err != nil {
+			return err
+		}
+		if err := writeNotesChoice(d.Cfg.Home, ch); err != nil {
+			d.log.Warn("notes model choice could not be saved", "error", err)
+			return &modelError{http.StatusInternalServerError, "The choice could not be saved. Details are in the ox-say log."}
+		}
+		return nil
+	}
+	if d.Meet == nil {
+		return body(0)
+	}
+	return d.Meet.WithAdmissionLock(body)
+}
+
 // handleNotesModelPut saves the user's choice. While the notes model is busy
 // — a meeting queued or running, one still recording, a download in flight —
-// it answers 409 and changes nothing. While idle the choice file is written
-// and the child is stopped: the next start resolves the new path. The choice
-// is validated first: an unknown catalog id, "custom" without a file, or a
-// relative path all fail 400.
+// it answers 409 and changes nothing; the busy check, the engine stop and
+// the save are one step under the queue's admission lock, so nothing slips
+// between them. While idle the child is stopped and the choice file written:
+// the next start resolves the new path. The choice is validated first: an
+// unknown catalog id, a model this Mac cannot run, "custom" without a file,
+// or a path that does not name a real .gguf all fail 400.
 func (d *Daemon) handleNotesModelPut(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID   string `json:"id"`
@@ -209,14 +298,21 @@ func (d *Daemon) handleNotesModelPut(w http.ResponseWriter, r *http.Request) {
 	var ch config.NotesChoice
 	switch {
 	case req.Path != "":
-		if !filepath.IsAbs(req.Path) {
-			writeErr(w, http.StatusBadRequest, "The model path must be absolute.")
+		if why := notesModelPathError(req.Path); why != "" {
+			writeErr(w, http.StatusBadRequest, why)
 			return
 		}
 		ch = config.NotesChoice{Path: req.Path}
 	case req.ID != "" && req.ID != config.NotesCustomID:
-		if config.NotesModelByID(config.NotesCatalog, req.ID) == nil {
+		e := config.NotesModelByID(config.NotesCatalog, req.ID)
+		if e == nil {
 			writeErr(w, http.StatusBadRequest, fmt.Sprintf("Unknown notes model %q.", req.ID))
+			return
+		}
+		// Refuse what this Mac cannot run before anything is saved — the same
+		// verdict (and sentence) /status gives through NotesBlock.
+		if code, reason := d.Cfg.NotesBlock(config.NotesResolution{Entry: e}); code == config.NotesReasonUnsupported {
+			writeErr(w, http.StatusBadRequest, reason)
 			return
 		}
 		ch = config.NotesChoice{ID: req.ID}
@@ -224,19 +320,7 @@ func (d *Daemon) handleNotesModelPut(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "Name the catalog id of the model, or the absolute path of your own .gguf.")
 		return
 	}
-	// The busy check comes before any change: a meeting's notes must not lose
-	// their model mid-run.
-	if why := d.notesModelBusy(); why != "" {
-		writeErr(w, http.StatusConflict, why)
-		return
-	}
-	if err := writeNotesChoice(d.Cfg.Home, ch); err != nil {
-		d.log.Warn("notes model choice could not be saved", "error", err)
-		writeErr(w, http.StatusInternalServerError, "The choice could not be saved. Details are in the ox-say log.")
-		return
-	}
-	// The resolved file changed: stop the child so its next start loads it.
-	if err := d.stopModelEngine(r.Context(), d.LLMSup); err != nil {
+	if err := d.notesModelSwitch(r.Context(), ch); err != nil {
 		var me *modelError
 		if errors.As(err, &me) {
 			writeErr(w, me.status, me.msg)

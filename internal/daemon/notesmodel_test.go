@@ -3,8 +3,10 @@ package daemon
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +159,267 @@ func TestNotesModelGetAndPut(t *testing.T) {
 	if res := d.notesResolve(); res.ID != "qwen3.5-9b" || res.Source != config.NotesSourceSaved {
 		t.Fatalf("after PUT: %+v", res)
 	}
+}
+
+// A catalog model this Mac cannot run is refused before the choice is saved,
+// with NotesBlock's own verdict — the same unsupported sentence /status
+// gives — and the same refusal stands in front of an install that names it.
+// On the injected 16 GB Mac the 27B (floor 32 GB) is refused while the 9B
+// (floor 16 GB) still switches. Mutations:
+// internal/daemon/notesmodel.go handleNotesModelPut, delete the
+// NotesReasonUnsupported arm -> RED (the 27B saves);
+// internal/daemon/meetings.go InstallNotesModel, delete the NotesBlock check
+// -> RED (the 27B download starts).
+func TestNotesModelPutRefusesAModelTheMacCannotRun(t *testing.T) {
+	d, mux := meetingFixture(t, func(c *config.Config) {
+		bin := filepath.Join(filepath.Dir(c.Home), "ox-llm")
+		_ = os.MkdirAll(filepath.Dir(bin), 0o755)
+		_ = os.WriteFile(bin, []byte("x"), 0o755)
+		c.NotesBin = bin
+		c.HostMemoryBytes = 16 * gib // the injected 16 GB Mac
+	})
+	_ = os.MkdirAll(d.Cfg.ModelsDir(), 0o755)
+	if err := os.WriteFile(filepath.Join(d.Cfg.ModelsDir(), config.NotesModelFile), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := call(t, mux, http.MethodPut, "/v1/meetings/notes-model", `{"id":"qwen3.8-27b-uncensored"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT the 27B on 16 GB: %d %s, want 400", rec.Code, bodyText(rec))
+	}
+	if got := bodyText(rec); !strings.Contains(got, "needs at least 32 GB of memory; this Mac has 16 GB.") {
+		t.Fatalf("PUT answer = %s, want NotesBlock's unsupported sentence", got)
+	}
+	if ch := readNotesChoice(d.Cfg.Home); ch != nil {
+		t.Fatalf("a refused PUT saved a choice: %+v", ch)
+	}
+	// The install of the same model refuses with the same words — before any
+	// download starts.
+	if err := d.InstallNotesModel("qwen3.8-27b-uncensored"); err == nil ||
+		!strings.Contains(err.Error(), "needs at least 32 GB of memory; this Mac has 16 GB.") {
+		t.Fatalf("install of the 27B on 16 GB: err = %v, want the unsupported refusal", err)
+	}
+	if d.notesInstalling() != 0 {
+		t.Fatal("a download started for a model this Mac cannot run")
+	}
+	// And the model whose floor the Mac meets still switches: the gate is the
+	// entry's own MinMemoryGB, not a blanket refusal.
+	rec = call(t, mux, http.MethodPut, "/v1/meetings/notes-model", `{"id":"qwen3.5-9b"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT the 9B on 16 GB: %d %s, want 200", rec.Code, bodyText(rec))
+	}
+	if res := d.notesResolve(); res.ID != "qwen3.5-9b" {
+		t.Fatalf("after PUT: %+v, want the saved 9B", res)
+	}
+}
+
+// The PUT's own-model gate: only a canonical absolute .gguf that really is a
+// GGUF file is saved — every other path is a reasoned 400 and leaves no
+// choice behind. Mutation: internal/daemon/notesmodel.go
+// notesModelPathError, `return ""` unconditionally -> every row RED.
+func TestNotesModelPutValidatesTheOwnModelPath(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	dir := t.TempDir()
+	gguf := filepath.Join(dir, "mine.gguf")
+	if err := os.WriteFile(gguf, append([]byte("GGUF"), make([]byte, 64)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notGGUF := filepath.Join(dir, "mine.bin")
+	if err := os.WriteFile(notGGUF, append([]byte("GGUF"), make([]byte, 64)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	badMagic := filepath.Join(dir, "bad.gguf")
+	if err := os.WriteFile(badMagic, []byte("not a model, just bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(dir, "empty.gguf")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.GGUF") // a link to a real file is followed, and the suffix is case-insensitive
+	if err := os.Symlink(gguf, link); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct{ name, path, want string }{
+		{"a folder", dir, "not a model file"},
+		{"a missing file", filepath.Join(dir, "gone.gguf"), "no file"},
+		{"not a .gguf", notGGUF, ".gguf"},
+		{"the wrong magic", badMagic, "not a GGUF"},
+		{"empty", empty, "empty"},
+		{"relative", "rel/x.gguf", "absolute"},
+		{"a .. segment", filepath.Dir(dir) + "/../" + filepath.Base(dir) + "/x.gguf", ".."},
+	}
+	for _, tc := range cases {
+		rec := call(t, mux, http.MethodPut, "/v1/meetings/notes-model", `{"path":`+strconv.Quote(tc.path)+`}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: %d %s, want 400", tc.name, rec.Code, bodyText(rec))
+		}
+		if got := bodyText(rec); !strings.Contains(got, tc.want) {
+			t.Fatalf("%s: answer = %s, want a reason naming %q", tc.name, got, tc.want)
+		}
+		if ch := readNotesChoice(d.Cfg.Home); ch != nil {
+			t.Fatalf("%s: a refused path was saved: %+v", tc.name, ch)
+		}
+	}
+	for _, path := range []string{gguf, link} {
+		rec := call(t, mux, http.MethodPut, "/v1/meetings/notes-model", `{"path":`+strconv.Quote(path)+`}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT %s: %d %s, want 200", path, rec.Code, bodyText(rec))
+		}
+		if res := d.notesResolve(); res.ID != config.NotesCustomID || res.Path != path {
+			t.Fatalf("after PUT %s: %+v, want the custom model at that path", path, res)
+		}
+	}
+}
+
+// A job admitted while the model switch is inside its critical section waits
+// the section out, then lands on the new model: the busy check, the engine
+// stop and the saved choice are one step under the queue's admission lock —
+// never a changed file under an old child, never a job slipped between.
+// The probe holds the section open deterministically; the finished meeting's
+// Enqueue must park until it lets go. Mutation:
+// internal/daemon/notesmodel.go notesModelSwitch, return body(0) instead of
+// d.Meet.WithAdmissionLock(body) -> RED (the lock probe sees the section
+// unheld and the Finish lands before the choice is saved).
+func TestNotesModelPutIsOneStepAgainstJobAdmission(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	inSwitch := make(chan struct{})
+	release := make(chan struct{})
+	held := make(chan bool, 1)
+	notesModelSwitchProbe = func() {
+		close(inSwitch)
+		held <- d.Meet.AdmissionLocked()
+		<-release
+	}
+	t.Cleanup(func() { notesModelSwitchProbe = nil })
+
+	put := make(chan *httptest.ResponseRecorder, 1)
+	go func() { put <- call(t, mux, http.MethodPut, "/v1/meetings/notes-model", `{"id":"qwen3.5-9b"}`) }()
+	<-inSwitch
+	if !<-held {
+		t.Fatal("the switch ran outside the admission lock")
+	}
+	// A real finish of a real recording: its Enqueue must park behind the
+	// lock for as long as the switch's section is open.
+	m, _, err := d.Meet.Store.Create(meeting.Manifest{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fin := make(chan error, 1)
+	go func() {
+		_, err := d.Meet.Finish(m.ID, time.Now())
+		fin <- err
+	}()
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		got, _ := d.Meet.Store.Load(m.ID)
+		return got != nil && got.Status == meeting.StatusQueued
+	}, "the finish to stamp the manifest")
+	select {
+	case err := <-fin:
+		t.Fatalf("a job was admitted while the switch held the lock (%v)", err)
+	default:
+	}
+	close(release)
+	if err := <-fin; err != nil {
+		t.Fatal(err)
+	}
+	rec := <-put
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT = %d %s", rec.Code, bodyText(rec))
+	}
+	if ch := readNotesChoice(d.Cfg.Home); ch == nil || ch.ID != "qwen3.5-9b" {
+		t.Fatalf("the PUT's choice = %+v, want the saved 9B", ch)
+	}
+	// The admitted meeting resolves the new model: it is queued against the
+	// choice the switch saved, not the one the switch replaced.
+	if res := d.notesResolve(); res.ID != "qwen3.5-9b" {
+		t.Fatalf("resolve = %+v: the admitted job's model is not the new one", res)
+	}
+	if d.Meet.Active() != 1 {
+		t.Fatal("the finished meeting was not admitted")
+	}
+}
+
+// Exactly one notes row is selected — the effective model's own row: its
+// catalog row for a resolved catalog model, notes:custom for the user's own
+// file — and the legacy "notes" row mirrors the pick. The automatic,
+// saved-choice and env-pin resolutions each put the mark on a different row.
+// Mutation: internal/daemon/models.go notesCatalogEntry, `Selected: res.Entry
+// != nil && res.Entry.ID == entry.ID` -> `Selected: res.Entry != nil` -> RED
+// (every catalog row marks itself).
+func TestModelsListMarksTheSelectedNotesModel(t *testing.T) {
+	d, mux := meetingFixture(t, func(c *config.Config) {
+		bin := filepath.Join(filepath.Dir(c.Home), "ox-llm")
+		_ = os.MkdirAll(filepath.Dir(bin), 0o755)
+		_ = os.WriteFile(bin, []byte("x"), 0o755)
+		c.NotesBin = bin
+	})
+	_ = os.MkdirAll(d.Cfg.ModelsDir(), 0o755)
+	// Only the 4B on disk: the automatic pick resolves to it over the 9B.
+	if err := os.WriteFile(filepath.Join(d.Cfg.ModelsDir(), config.NotesModelFile), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selected := func() map[string]bool {
+		rec := call(t, mux, http.MethodGet, "/v1/models", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /v1/models: %d", rec.Code)
+		}
+		var list struct {
+			Models []struct {
+				ID       string
+				Selected bool `json:"selected"`
+			}
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, m := range list.Models {
+			if m.Selected {
+				out[m.ID] = true
+			}
+		}
+		return out
+	}
+	want := map[string]bool{"notes": true, "notes:qwen3.5-4b": true} // the installed 4B wins the automatic pick over the 9B
+	if got := selected(); !mapsEqual(got, want) {
+		t.Fatalf("automatic: selected = %+v, want %+v", got, want)
+	}
+	if err := writeNotesChoice(d.Cfg.Home, config.NotesChoice{ID: "qwen3.5-9b"}); err != nil {
+		t.Fatal(err)
+	}
+	want = map[string]bool{"notes": true, "notes:qwen3.5-9b": true}
+	if got := selected(); !mapsEqual(got, want) {
+		t.Fatalf("saved 9B: selected = %+v, want %+v", got, want)
+	}
+	// The env pin on the user's own file: notes:custom is the pick and the
+	// notes row mirrors it; no catalog row is marked.
+	own := filepath.Join(t.TempDir(), "mine.gguf")
+	if err := os.WriteFile(own, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.Cfg.NotesModel, d.Cfg.NotesModelEnv = own, true
+	want = map[string]bool{"notes": true, "notes:custom": true}
+	if got := selected(); !mapsEqual(got, want) {
+		t.Fatalf("env pin on the user's file: selected = %+v, want %+v", got, want)
+	}
+	// An env pin that names a catalog file resolves to that catalog row.
+	d.Cfg.NotesModel = filepath.Join(d.Cfg.ModelsDir(), "Qwen3.5-9B-Q4_K_M.gguf")
+	want = map[string]bool{"notes": true, "notes:qwen3.5-9b": true}
+	if got := selected(); !mapsEqual(got, want) {
+		t.Fatalf("env pin on a catalog file: selected = %+v, want %+v", got, want)
+	}
+}
+
+func mapsEqual(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range b {
+		if !a[k] || !v {
+			return false
+		}
+	}
+	return true
 }
 
 // A switch while a meeting's notes are queued, running or recording is 409

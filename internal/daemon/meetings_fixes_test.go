@@ -529,6 +529,53 @@ func TestNotesDiskCheck(t *testing.T) {
 	}
 }
 
+// The free-space margin is 2 GiB beyond the model's bytes — pinned by
+// absolute numbers, not by the constant itself: the 9B plus 1 GiB of room
+// refuses an explicit id with the disk answer, and drops an automatic
+// install to the 4B (which does fit); the 9B plus exactly the margin fits.
+// Mutation: internal/daemon/meetings.go notesDiskMargin, change `2 << 30`
+// back to `512 << 20` -> RED (the 9B fits under both refusal rows).
+func TestTheNotesDownloadMarginIsTwoGiB(t *testing.T) {
+	var nine *config.NotesModelEntry
+	for i := range config.NotesCatalog {
+		if config.NotesCatalog[i].ID == "qwen3.5-9b" {
+			nine = &config.NotesCatalog[i]
+		}
+	}
+	if nine == nil {
+		t.Fatal("no qwen3.5-9b in the catalog")
+	}
+	// An explicit id reports the disk, never a silent smaller download.
+	d := installFixture(t, "#!/bin/sh\nexit 0\n")
+	withFreeBytes(t, func(string) (int64, error) { return nine.Bytes + 1<<30, nil })
+	if err := d.InstallNotesModel("qwen3.5-9b"); err == nil || !strings.Contains(err.Error(), "free disk space") {
+		t.Fatalf("explicit id, model+1GiB free: err = %v, want the disk refusal", err)
+	}
+	if d.notesInstalling() != 0 {
+		t.Fatal("a download started for a refused install")
+	}
+	// The same room on the automatic pick: the 9B does not fit and the 4B
+	// does — the fallback fetch targets the compact model, marked "disk".
+	if err := d.InstallNotesModel(""); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the fallback download to end")
+	file, want, fb := d.notes.target()
+	if fb != "disk" || filepath.Base(file) != config.NotesModelFile || want != config.NotesModelBytes {
+		t.Fatalf("target = %q %d %q, want the 4B on a disk fallback", file, want, fb)
+	}
+	// The exact boundary — model bytes + 2 GiB — is enough for the 9B.
+	d2 := installFixture(t, "#!/bin/sh\nexit 0\n")
+	withFreeBytes(t, func(string) (int64, error) { return nine.Bytes + notesDiskMargin, nil })
+	if err := d2.InstallNotesModel("qwen3.5-9b"); err != nil {
+		t.Fatalf("explicit id, model+2GiB free: %v, want the boundary to fit", err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d2.notesInstalling() == 0 }, "the boundary download to end")
+	if file, _, _ := d2.notes.target(); filepath.Base(file) != nine.File {
+		t.Fatalf("target = %q, want the 9B at the exact boundary", file)
+	}
+}
+
 // --- the failure words ------------------------------------------------------
 
 // A fetch's progress meter redraws with carriage returns; the failure shown

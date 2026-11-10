@@ -171,6 +171,29 @@ func (r *Runner) Active() int {
 	return len(r.pending)
 }
 
+// WithAdmissionLock runs fn while holding the admission lock — the one
+// Enqueue takes, which every way a meeting reaches the queue goes through
+// (Finish, Retry, RetryVoices, the recovery re-queues, a speakers edit's
+// re-queue). While fn runs nothing can be admitted: the count handed to fn
+// cannot change, and a job being processed keeps its pending entry until it
+// ends, so a caller that asks "is the queue idle" and then acts gets the
+// check and the act as one step (the notes-model switch).
+func (r *Runner) WithAdmissionLock(fn func(active int) error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return fn(len(r.pending))
+}
+
+// AdmissionLocked reports whether the admission lock is held right now: a
+// test seam for code that must run inside WithAdmissionLock.
+func (r *Runner) AdmissionLocked() bool {
+	if r.mu.TryLock() {
+		r.mu.Unlock()
+		return false
+	}
+	return true
+}
+
 func (r *Runner) next() (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

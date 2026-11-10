@@ -37,8 +37,10 @@ const (
 	// notesCallTimeout bounds one model call: 5k prompt tokens plus 3k tokens
 	// of answer took 11 s on an M-series Mac; CPU-only Intel is far slower.
 	notesCallTimeout = 20 * time.Minute
-	// notesDiskMargin is the free space kept beyond the model download.
-	notesDiskMargin = 512 << 20
+	// notesDiskMargin is the free space kept beyond the model download: the
+	// spec is the model's bytes plus 2 GiB of room for the machine while the
+	// fetch lands.
+	notesDiskMargin = 2 << 30
 	// meetingHousekeepEvery: orphaned recordings and retention are checked this
 	// often. It must stay under half of staleRecording (3 min) minus a flush.
 	meetingHousekeepEvery = time.Minute
@@ -575,8 +577,8 @@ func (d *Daemon) InstallNotesModel(id string) error {
 		if envPath != "" && filepath.Base(envPath) != target.File {
 			return fmt.Errorf("%w: OX_SAY_NOTES_MODEL names a different file; place the model there yourself", ErrNotesInstall)
 		}
-		if d.Cfg.HostMemoryBytes != 0 && d.Cfg.HostMemoryBytes < uint64(target.MinMemoryGB)<<30 {
-			return fmt.Errorf("%w: %s needs at least %d GB of memory; this Mac has %d GB", ErrNotesInstall, target.Name, target.MinMemoryGB, d.Cfg.HostMemoryBytes>>30)
+		if code, reason := d.Cfg.NotesBlock(config.NotesResolution{Entry: target}); code == config.NotesReasonUnsupported {
+			return fmt.Errorf("%w: %s", ErrNotesInstall, reason)
 		}
 	case envPath != "":
 		if target = notesModelByFile(envPath); target == nil {

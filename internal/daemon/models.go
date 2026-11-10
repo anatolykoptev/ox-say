@@ -40,6 +40,10 @@ type modelEntry struct {
 	Removable  bool   `json:"removable"` // optional, and its file is in <home>/models: false when an env override puts it elsewhere
 	Installing bool   `json:"installing"`
 	Supported  bool   `json:"supported"` // this Mac can run it (not "ready now": a missing model or engine is still supported)
+	// Selected marks the notes row that is the effective model: true on the
+	// resolved catalog row or notes:custom, mirrored by the "notes" row that
+	// always names it. Absent (false) everywhere else.
+	Selected   bool   `json:"selected,omitempty"`
 	ReasonCode string `json:"reason_code,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 }
@@ -265,6 +269,7 @@ func (d *Daemon) notesModelEntry() modelEntry {
 		Bytes: bytes, Installed: ok,
 		Default:   res.Entry != nil && res.Entry.ID == d.Cfg.NotesAutomaticDefault().ID,
 		Supported: true, Installing: d.notesInstalling() > 0,
+		Selected: true, // the notes row always names the effective model
 	}
 	// A missing model is what the download fixes; the other blocks (memory, a missing engine, a taken port) are not.
 	if code, reason := d.Cfg.NotesBlock(res); code != "" && code != config.NotesReasonModelMissing {
@@ -278,11 +283,13 @@ func (d *Daemon) notesModelEntry() modelEntry {
 func (d *Daemon) notesCatalogEntry(entry *config.NotesModelEntry) modelEntry {
 	path := filepath.Join(d.Cfg.ModelsDir(), entry.File)
 	size, ok := fileSize(path)
+	res := d.notesResolve()
 	e := modelEntry{
 		ID: "notes:" + entry.ID, Kind: "notes", Name: entry.Name,
 		Bytes: size, Installed: ok,
 		Default:   entry.ID == d.Cfg.NotesAutomaticDefault().ID,
 		Supported: true,
+		Selected:  res.Entry != nil && res.Entry.ID == entry.ID,
 	}
 	if !ok {
 		e.Bytes = entry.Bytes
@@ -309,16 +316,28 @@ func (d *Daemon) notesCustomEntry() modelEntry {
 	return modelEntry{
 		ID: "notes:custom", Kind: "notes", Name: filepath.Base(res.Path),
 		Bytes: size, Installed: ok, Supported: true,
+		Selected: res.Entry == nil, // the row exists only while the custom file resolves
 	}
 }
 
 // notesModelBusy: the notes model is read by a meeting that is queued or running, a meeting still being recorded (its
 // notes are made when it ends), and the download writes it.
 func (d *Daemon) notesModelBusy() string {
+	active := 0
+	if d.Meet != nil {
+		active = d.Meet.Active()
+	}
+	return d.notesModelBusyAt(active)
+}
+
+// notesModelBusyAt is notesModelBusy for a caller holding the queue's
+// admission lock: the pending count is handed over so the answer cannot move
+// under the caller (the notes-model switch checks and acts as one step).
+func (d *Daemon) notesModelBusyAt(active int) string {
 	if d.notesInstalling() > 0 {
 		return "The notes model is being downloaded. Try again when it has finished."
 	}
-	if d.Meet != nil && d.Meet.Active() > 0 {
+	if active > 0 {
 		return "A meeting is being processed and needs the notes model. Try again when it has finished."
 	}
 	if d.Meet != nil && d.Meet.Store != nil {
