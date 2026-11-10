@@ -413,7 +413,7 @@ func TestShutdownKillsTheModelDownloadAndItsChildren(t *testing.T) {
 	_ = os.MkdirAll(pids, 0o755)
 	body := "#!/bin/sh\necho $$ > '" + pids + "/script'\nsleep 600 &\necho $! > '" + pids + "/curl'\nwait\n"
 	d := installFixture(t, body)
-	if err := d.InstallNotesModel(); err != nil {
+	if err := d.InstallNotesModel(""); err != nil {
 		t.Fatal(err)
 	}
 	script, curl := readPid(t, filepath.Join(pids, "script")), readPid(t, filepath.Join(pids, "curl"))
@@ -431,7 +431,7 @@ func TestShutdownKillsTheModelDownloadAndItsChildren(t *testing.T) {
 	if d.notesInstalling() != 0 {
 		t.Fatal("the download is still reported as running")
 	}
-	if err := d.InstallNotesModel(); err == nil {
+	if err := d.InstallNotesModel(""); err == nil {
 		t.Fatal("a download must not start once the daemon is shutting down")
 	}
 }
@@ -445,8 +445,8 @@ func TestShutdownKillsTheModelDownloadAndItsChildren(t *testing.T) {
 // block -> RED (a second writer is let in).
 func TestADownloadInFlightBlocksASecondWriter(t *testing.T) {
 	d := installFixture(t, "#!/bin/sh\nsleep 600\n")
-	lockPath := d.Cfg.NotesModel + ".part.lock"
-	if err := d.InstallNotesModel(); err != nil {
+	lockPath := filepath.Join(d.Cfg.ModelsDir(), d.Cfg.NotesAutomaticDefault().File) + ".part.lock"
+	if err := d.InstallNotesModel(""); err != nil {
 		t.Fatal(err)
 	}
 	// The daemon has let go of its descriptor; the fetch still holds the lock.
@@ -457,7 +457,7 @@ func TestADownloadInFlightBlocksASecondWriter(t *testing.T) {
 	// A second daemon with its own state is refused.
 	other := installFixture(t, "#!/bin/sh\nexit 0\n")
 	other.Cfg.Home, other.Cfg.NotesModel = d.Cfg.Home, d.Cfg.NotesModel
-	if err := other.InstallNotesModel(); err == nil || !strings.Contains(err.Error(), "already running") {
+	if err := other.InstallNotesModel(""); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("second daemon: err = %v, want a refusal", err)
 	}
 	d.StopNotesInstall()
@@ -491,11 +491,11 @@ func TestNotesDiskCheck(t *testing.T) {
 	}
 
 	withFreeBytes(t, func(string) (int64, error) { return total - 1, nil })
-	if err := d.InstallNotesModel(); err == nil || !strings.Contains(err.Error(), "free disk space") {
+	if err := d.InstallNotesModel(""); err == nil || !strings.Contains(err.Error(), "free disk space") {
 		t.Fatalf("one byte short: err = %v, want a disk-space refusal", err)
 	}
 	withFreeBytes(t, func(string) (int64, error) { return total, nil })
-	if err := d.InstallNotesModel(); err != nil {
+	if err := d.InstallNotesModel(""); err != nil {
 		t.Fatalf("exactly enough: %v", err)
 	}
 	wait()
@@ -509,23 +509,70 @@ func TestNotesDiskCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	withFreeBytes(t, func(string) (int64, error) { return total - 1<<30 - 1, nil })
-	if err := d.InstallNotesModel(); err == nil {
+	if err := d.InstallNotesModel(""); err == nil {
 		t.Fatal("one byte short of the rest: want a refusal")
 	}
 	withFreeBytes(t, func(string) (int64, error) { return total - 1<<30, nil })
-	if err := d.InstallNotesModel(); err != nil {
+	if err := d.InstallNotesModel(""); err != nil {
 		t.Fatalf("the rest fits next to the .part: %v", err)
 	}
 	wait()
 
 	// Free space that cannot be read does not block the download, and says so.
 	withFreeBytes(t, func(string) (int64, error) { return 0, errors.New("statfs: boom") })
-	if err := d.InstallNotesModel(); err != nil {
+	if err := d.InstallNotesModel(""); err != nil {
 		t.Fatalf("unreadable free space: %v", err)
 	}
 	wait()
 	if !testLogSaw(t, "cannot read the free disk space") {
 		t.Fatal("the skipped check was not logged")
+	}
+}
+
+// The free-space margin is 2 GiB beyond the model's bytes — pinned by
+// absolute numbers, not by the constant itself: the 9B plus 1 GiB of room
+// refuses an explicit id with the disk answer, and drops an automatic
+// install to the 4B (which does fit); the 9B plus exactly the margin fits.
+// Mutation: internal/daemon/meetings.go notesDiskMargin, change `2 << 30`
+// back to `512 << 20` -> RED (the 9B fits under both refusal rows).
+func TestTheNotesDownloadMarginIsTwoGiB(t *testing.T) {
+	var nine *config.NotesModelEntry
+	for i := range config.NotesCatalog {
+		if config.NotesCatalog[i].ID == "qwen3.5-9b" {
+			nine = &config.NotesCatalog[i]
+		}
+	}
+	if nine == nil {
+		t.Fatal("no qwen3.5-9b in the catalog")
+	}
+	// An explicit id reports the disk, never a silent smaller download.
+	d := installFixture(t, "#!/bin/sh\nexit 0\n")
+	withFreeBytes(t, func(string) (int64, error) { return nine.Bytes + 1<<30, nil })
+	if err := d.InstallNotesModel("qwen3.5-9b"); err == nil || !strings.Contains(err.Error(), "free disk space") {
+		t.Fatalf("explicit id, model+1GiB free: err = %v, want the disk refusal", err)
+	}
+	if d.notesInstalling() != 0 {
+		t.Fatal("a download started for a refused install")
+	}
+	// The same room on the automatic pick: the 9B does not fit and the 4B
+	// does — the fallback fetch targets the compact model, marked "disk".
+	if err := d.InstallNotesModel(""); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the fallback download to end")
+	file, want, fb := d.notes.target()
+	if fb != "disk" || filepath.Base(file) != config.NotesModelFile || want != config.NotesModelBytes {
+		t.Fatalf("target = %q %d %q, want the 4B on a disk fallback", file, want, fb)
+	}
+	// The exact boundary — model bytes + 2 GiB — is enough for the 9B.
+	d2 := installFixture(t, "#!/bin/sh\nexit 0\n")
+	withFreeBytes(t, func(string) (int64, error) { return nine.Bytes + notesDiskMargin, nil })
+	if err := d2.InstallNotesModel("qwen3.5-9b"); err != nil {
+		t.Fatalf("explicit id, model+2GiB free: %v, want the boundary to fit", err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d2.notesInstalling() == 0 }, "the boundary download to end")
+	if file, _, _ := d2.notes.target(); filepath.Base(file) != nine.File {
+		t.Fatalf("target = %q, want the 9B at the exact boundary", file)
 	}
 }
 
@@ -537,7 +584,7 @@ func TestNotesDiskCheck(t *testing.T) {
 // `strings.LastIndex(...)` redraw cut -> RED.
 func TestInstallErrorCarriesCurlsWordsNotTheMeter(t *testing.T) {
 	d := installFixture(t, "#!/bin/sh\nprintf '  1  100M\\r  2  100M\\r  3  100M\\rcurl: (22) The requested URL returned error: 404\\n' >&2\nexit 22\n")
-	if err := d.InstallNotesModel(); err != nil {
+	if err := d.InstallNotesModel(""); err != nil {
 		t.Fatal(err)
 	}
 	testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to fail")
@@ -575,7 +622,7 @@ func TestAFailedDownloadHasAStableCode(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d := installFixture(t, "#!/bin/sh\ncat >&2 <<'EOT'\n"+tc.stderr+"\nEOT\nexit 1\n")
-			if err := d.InstallNotesModel(); err != nil {
+			if err := d.InstallNotesModel(""); err != nil {
 				t.Fatal(err)
 			}
 			testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to fail")
@@ -606,10 +653,10 @@ func TestInstallRefusesWhenTheModelIsThereButNotesAreBlockedElsewhere(t *testing
 		t.Fatal(err)
 	}
 	d.Cfg.NotesPortBlocked = true
-	if code, _ := d.Cfg.NotesBlock(); code != config.NotesReasonPortBlocked {
+	if code, _ := d.Cfg.NotesBlock(d.notesResolve()); code != config.NotesReasonPortBlocked {
 		t.Fatalf("setup: block = %q", code)
 	}
-	if err := d.InstallNotesModel(); err == nil || !strings.Contains(err.Error(), "already installed") {
+	if err := d.InstallNotesModel(""); err == nil || !strings.Contains(err.Error(), "already installed") {
 		t.Fatalf("err = %v, want \"already installed\"", err)
 	}
 }
@@ -653,7 +700,7 @@ func TestACurl23FailureLooksAtTheDisk(t *testing.T) {
 				}
 				return tc.freeAfter, nil
 			})
-			if err := d.InstallNotesModel(); err != nil {
+			if err := d.InstallNotesModel(""); err != nil {
 				t.Fatal(err)
 			}
 			testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to fail")
@@ -706,8 +753,8 @@ func TestEveryInstallFailureCodeHasASwiftSentence(t *testing.T) {
 // Mutation: internal/daemon/meetings.go runNotesInstall, delete the `removePartLock(...)` line -> RED.
 func TestTheLockFileGoesWhenTheDownloadEnds(t *testing.T) {
 	d := installFixture(t, "#!/bin/sh\nexit 0\n")
-	lockPath := d.Cfg.NotesModel + ".part.lock"
-	if err := d.InstallNotesModel(); err != nil {
+	lockPath := filepath.Join(d.Cfg.ModelsDir(), d.Cfg.NotesAutomaticDefault().File) + ".part.lock"
+	if err := d.InstallNotesModel(""); err != nil {
 		t.Fatal(err)
 	}
 	testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to end")

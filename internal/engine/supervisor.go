@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -203,7 +204,8 @@ type child struct {
 	waitErr  error         // valid once done is closed
 	baseURL  string
 	readyAt  time.Time
-	userStop bool // daemon-requested stop (idle, shutdown, failed-start cleanup)
+	userStop bool     // daemon-requested stop (idle, shutdown, failed-start cleanup)
+	args     []string // the argv this generation was spawned with
 }
 
 // New creates a supervisor, reaps an orphaned engine left by a previous daemon
@@ -495,6 +497,21 @@ func (s *Supervisor) LiveURL() (string, bool) {
 		return s.child.baseURL, true
 	}
 	return "", false
+}
+
+// SpawnArgs is the argv the live child was spawned with — the child's own
+// record of what this generation runs. A caller whose Config.Args are
+// resolved per spawn (the notes engine resolves its model file at every
+// start) compares them with what a spawn would use now: a difference means
+// the child predates the change and can be recycled. Nil while no child is
+// alive or the child is already being stopped — its replacement re-resolves.
+func (s *Supervisor) SpawnArgs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.child == nil || s.child.userStop {
+		return nil
+	}
+	return slices.Clone(s.child.args)
 }
 
 // Backoff reports how long a NEW EnsureReady caller would have to sleep out
@@ -886,7 +903,8 @@ func (s *Supervisor) spawn() (*child, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(s.cfg.Bin, s.childArgs()...)
+	args := s.childArgs()
+	cmd := exec.Command(s.cfg.Bin, args...)
 	if len(s.cfg.Env) > 0 {
 		cmd.Env = append(os.Environ(), s.cfg.Env...)
 	}
@@ -901,6 +919,7 @@ func (s *Supervisor) spawn() (*child, error) {
 		logf:    logf,
 		done:    make(chan struct{}),
 		baseURL: s.baseURL(),
+		args:    args,
 	}
 	// The pidfile is written before the waiter starts: a child that dies at
 	// once is then removed by the waiter's onExit, instead of the write

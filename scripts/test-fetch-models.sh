@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sandbox test for scripts/fetch-models.sh --notes-only. Nothing is downloaded:
+# Sandbox test for scripts/fetch-models.sh --notes <file> <sha256> <url>. Nothing is downloaded:
 # OX_SAY_MODELS_FROM serves a local file, and the checksum is the pinned one,
 # so a file of the wrong content must be refused. Compatible with /bin/bash 3.2.
 #
@@ -54,7 +54,7 @@
 #   * fetch-models.sh: delete the `case $name in diar/*) rm -f "$diar_marker" ;; esac` line and put
 #     `rm -f "$dest/diar/speaker-diarization/.fluidaudio-revision"` before the loop -> "an unrelated failure keeps the
 #     marker" fails (and the delete alone makes "a failed fetch removes the marker" fail)
-#   * fetch-models.sh: delete the `--notes-only ... --with-whisper` conflict check -> "an option for another set is
+#   * fetch-models.sh: delete the `notes_only ... with_whisper` conflict check -> "an option for another set is
 #     refused" fails
 #   * fetch-models.sh: change `curl -fsSL` to `curl -fL` -> the fake curl prints
 #     its progress meter (carriage returns) -> "no progress meter" fails
@@ -83,15 +83,18 @@ chmod +x "$tmp/nonet/curl"
 PATH="$tmp/nonet:$PATH"
 
 name=Qwen3.5-4B-Q4_K_M.gguf
+# The daemon names the notes model: file name, pinned sha256, pinned resolve URL (the catalog's 4B row here).
+notes_sha=00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4
+notes_url=https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523
 mkdir -p "$tmp/from" "$tmp/dest"
 echo "not the model" > "$tmp/from/$name"
-out=$(OX_SAY_MODELS_FROM="$tmp/from" bash "$root/scripts/fetch-models.sh" --notes-only "$tmp/dest" 2>&1)
+out=$(OX_SAY_MODELS_FROM="$tmp/from" bash "$root/scripts/fetch-models.sh" --notes "$name" "$notes_sha" "$notes_url" "$tmp/dest" 2>&1)
 rc=$?
 
 if [ "$rc" -ne 0 ]; then pass "a wrong notes model is refused (exit $rc)"; else fail "a wrong notes model was accepted"; fi
 case $out in *"checksum mismatch for $name"*) pass "the mismatch names the file" ;; *) fail "no mismatch message: $out" ;; esac
 case $out in
-    *"fetch   "*) fail "--notes-only tried to download something: $out" ;;
+    *"fetch   "*) fail "--notes tried to download something: $out" ;;
     *) pass "only the notes model is looked at" ;;
 esac
 if [ ! -e "$tmp/dest/$name" ] && [ ! -e "$tmp/dest/$name.part" ]; then
@@ -100,6 +103,39 @@ else
     fail "files left in dest: $(ls "$tmp/dest")"
 fi
 case $out in *"copy    $name"*) pass "the local copy path ran for the notes model" ;; *) fail "OX_SAY_MODELS_FROM was not used: $out" ;; esac
+
+# --notes refuses a malformed call at the option, before any file is copied or any URL is fetched: a non-.gguf or
+# path-shaped file name, a sha that is not 64 lowercase hex, a non-Hugging-Face-resolve URL, missing arguments and a
+# second --notes all exit 2 with a usage error and leave nothing behind. Mutation: fetch-models.sh, delete the
+# `*[!0-9a-f]*` sha arm -> "a --notes call with a non-hex sha is refused" fails; delete the hf URL arm -> "...with a
+# non-HF URL..." fails.
+mkdir -p "$tmp/baddest"
+bad_notes() { # label, --notes args...
+    label=$1; shift
+    out=$(OX_SAY_MODELS_FROM="$tmp/from" bash "$root/scripts/fetch-models.sh" "$@" "$tmp/baddest" 2>&1)
+    rc=$?
+    if [ "$rc" -eq 2 ]; then pass "$label"; else fail "$label: exit $rc, $out"; fi
+    case $out in *"--notes"*) ;; *) fail "$label: no usage error: $out" ;; esac
+}
+bad_notes "a --notes call with a non-.gguf name is refused" --notes model.bin "$notes_sha" "$notes_url"
+bad_notes "a --notes call with a path for a name is refused" --notes sub/model.gguf "$notes_sha" "$notes_url"
+bad_notes "a --notes call with a non-hex sha is refused" --notes "$name" zzzz "$notes_url"
+bad_notes "a --notes call with a short sha is refused" --notes "$name" 00fe "$notes_url"
+bad_notes "a --notes call with an uppercase sha is refused" --notes "$name" "$(printf '%s' "$notes_sha" | tr 'a-f' 'A-F')" "$notes_url"
+bad_notes "a --notes call with a non-HF URL is refused" --notes "$name" "$notes_sha" "https://example.com/x.gguf"
+bad_notes "a --notes call with a floating-branch URL is refused" --notes "$name" "$notes_sha" "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/blob/main/$name"
+bad_notes "a --notes call with a resolve/<branch> URL is refused" --notes "$name" "$notes_sha" "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main"
+bad_notes "a --notes call with a resolve/<tag> URL is refused" --notes "$name" "$notes_sha" "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/v1.0.0"
+bad_notes "--notes with missing arguments is refused" --notes "$name" "$notes_sha"
+out=$(OX_SAY_MODELS_FROM="$tmp/from" bash "$root/scripts/fetch-models.sh" --notes "$name" "$notes_sha" "$notes_url" --notes "$name" "$notes_sha" "$notes_url" "$tmp/baddest" 2>&1)
+rc=$?
+if [ "$rc" -eq 2 ]; then pass "a second --notes is refused"; else fail "a second --notes: exit $rc, $out"; fi
+if [ ! -e "$tmp/baddest/$name" ] && [ ! -e "$tmp/baddest/$name.part" ]; then
+    pass "a refused --notes left nothing in dest"
+else
+    fail "a refused --notes wrote: $(ls "$tmp/baddest")"
+fi
+if [ ! -e "$tmp/nonet-calls" ]; then pass "a refused --notes never reached the network"; else fail "a refused --notes called curl"; fi
 
 # --diar-only: the 24 diarization files, under <dest>/diar/speaker-diarization/, nothing else, and no revision
 # marker unless every file passed its checksum (FluidAudio refuses a directory without it).
@@ -450,7 +486,7 @@ fi
 exit 22
 FAKE
 chmod +x "$tmp/bin/curl"
-out=$(PATH="$tmp/bin:$PATH" OX_SAY_MODELS_FROM= bash "$root/scripts/fetch-models.sh" --notes-only "$tmp/dest2" 2>&1)
+out=$(PATH="$tmp/bin:$PATH" OX_SAY_MODELS_FROM='' bash "$root/scripts/fetch-models.sh" --notes "$name" "$notes_sha" "$notes_url" "$tmp/dest2" 2>&1)
 rc=$?
 if [ "$rc" -ne 0 ]; then pass "a failed download fails the script (exit $rc)"; else fail "a failed download exited 0"; fi
 case $out in *"returned error: 404"*) pass "curl's own error words reach stderr" ;; *) fail "no curl error in: $out" ;; esac
@@ -460,7 +496,7 @@ case $out in
 esac
 
 # --- option conflicts: a set selector next to an option for another set is refused, not half-obeyed ---
-for combo in "--notes-only --with-whisper" "--diar-only --with-voxcpm2" "--notes-only --diar-only" "--nemotron-only --with-whisper" "--nemotron-only --diar-only" "--nemotron-only --notes-only" "--clean-only --with-whisper" "--clean-only --with-voxcpm2" "--clean-only --notes-only" "--clean-only --diar-only" "--clean-only --nemotron-only"; do
+for combo in "--notes $name $notes_sha $notes_url --with-whisper" "--diar-only --with-voxcpm2" "--notes $name $notes_sha $notes_url --diar-only" "--nemotron-only --with-whisper" "--nemotron-only --diar-only" "--nemotron-only --notes $name $notes_sha $notes_url" "--clean-only --with-whisper" "--clean-only --with-voxcpm2" "--clean-only --notes $name $notes_sha $notes_url" "--clean-only --diar-only" "--clean-only --nemotron-only"; do
     # shellcheck disable=SC2086
     out=$(bash "$root/scripts/fetch-models.sh" $combo "$tmp/dconf" 2>&1)
     rc=$?
@@ -503,7 +539,7 @@ FAKE
     chmod +x "$1/bin/curl"
 }
 run_fetch() { # dir dest
-    PATH="$1/bin:$PATH" OX_SAY_MODELS_FROM='' OX_SAY_STALL_SECS=1 bash "$root/scripts/fetch-models.sh" --notes-only "$2" 2>&1
+    PATH="$1/bin:$PATH" OX_SAY_MODELS_FROM='' OX_SAY_STALL_SECS=1 bash "$root/scripts/fetch-models.sh" --notes "$name" "$notes_sha" "$notes_url" "$2" 2>&1
 }
 
 # A stall is resumed in the shell from what the .part holds now: pass 2 sees the 3 bytes pass 1 wrote, and no pass
@@ -627,7 +663,7 @@ printf 12345 >> "$out"; sleep 3; printf 67890 >> "$out"; sleep 3
 printf 200
 FAKE
 chmod +x "$d/bin/curl"
-out=$(PATH="$d/bin:$PATH" OX_SAY_MODELS_FROM='' OX_SAY_PROGRESS_SECS=1 bash "$root/scripts/fetch-models.sh" --notes-only "$d/dest" 2>&1)
+out=$(PATH="$d/bin:$PATH" OX_SAY_MODELS_FROM='' OX_SAY_PROGRESS_SECS=1 bash "$root/scripts/fetch-models.sh" --notes "$name" "$notes_sha" "$notes_url" "$d/dest" 2>&1)
 lines=$(printf '%s\n' "$out" | grep -c '^progress Qwen3.5-4B-Q4_K_M.gguf.part [0-9]* bytes$' || true)
 sizes=$(printf '%s\n' "$out" | sed -n 's/^progress Qwen3.5-4B-Q4_K_M.gguf.part \([0-9]*\) bytes$/\1/p' | sort -u | wc -l | tr -d ' ')
 if [ "${lines:-0}" -ge 2 ] && [ "${sizes:-0}" -ge 2 ]; then pass "a slow download prints progress lines with growing sizes"; else fail "progress lines: $lines lines, $sizes sizes in: $out"; fi
@@ -645,7 +681,7 @@ exec sleep 30
 FAKE
 chmod +x "$d/bin/curl"
 ORPHAN_CURL_PID="$d/curl.pid" PATH="$d/bin:$PATH" OX_SAY_MODELS_FROM='' OX_SAY_PROGRESS_SECS=1 \
-    bash "$root/scripts/fetch-models.sh" --notes-only "$d/dest" > "$d/out" 2>&1 &
+    bash "$root/scripts/fetch-models.sh" --notes "$name" "$notes_sha" "$notes_url" "$d/dest" > "$d/out" 2>&1 &
 script=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q "^progress" "$d/out" && break; sleep 1; done
 if grep -q "^progress" "$d/out"; then

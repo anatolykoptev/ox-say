@@ -63,18 +63,20 @@ const VoxCPM2MinMemoryGB = 24
 // VoxCPM2MinMemoryGB: lowering the studio-voice gate to 16 GB must not switch the eviction off for 16-23 GB Macs.
 const OneLargeEngineBelowGB = 24
 
-// NotesModelFile is the one model filename fetch-models.sh --notes-only and
-// the default path share (Qwen3.5-4B Q4_K_M, the notes spike's default).
+// NotesModelFile is the compact catalog entry's filename and the default
+// OX_SAY_NOTES_MODEL path (Qwen3.5-4B Q4_K_M): an install that already has it
+// keeps resolving to it after the catalog lands.
 const NotesModelFile = "Qwen3.5-4B-Q4_K_M.gguf"
 
-// NotesModelBytes is that file's size, for the download's progress only; the
-// integrity pin is the SHA-256 in fetch-models.sh.
+// NotesModelBytes is that file's size. The download's progress and integrity
+// pin come from the catalog entry for the selected model.
 const NotesModelBytes = 2740937888
 
-// NotesMinMemoryGB is the smallest Mac the notes model is offered on: the 4B
-// model peaked at 4.4 GB (7.2 GB resident) in the spike, next to the resident
+// NotesMinMemoryGB is the smallest Mac any catalog model is offered on: the
+// 4B peaked at 4.4 GB (7.2 GB resident) in the spike, next to the resident
 // speech engines; an 8 GB Mac is unmeasured and gets the transcript without
-// notes until it is.
+// notes until it is. Models with a higher floor gate on their own
+// NotesModelEntry.MinMemoryGB.
 const NotesMinMemoryGB = 16
 
 // DiarModelsRevision is the Hugging Face revision of the diarization models. scripts/fetch-models.sh downloads that
@@ -189,7 +191,8 @@ type Config struct {
 	VoxCPM2Port   int           // OX_SAY_VOXCPM2_PORT: loopback port the child binds
 	TTSModel      string        // OX_SAY_TTS_MODEL: default model of a speech request
 	NotesBin      string        // OX_SAY_NOTES_BIN: path to ox-llm (llama-server)
-	NotesModel    string        // OX_SAY_NOTES_MODEL: the notes GGUF
+	NotesModel    string        // OX_SAY_NOTES_MODEL: the notes GGUF the operator pinned, or the built-in default
+	NotesModelEnv bool          // OX_SAY_NOTES_MODEL (or --notes-model) was given: it wins over a saved choice
 	NotesPort     int           // OX_SAY_NOTES_PORT: loopback port the child binds
 	NotesIdleStop time.Duration // OX_SAY_NOTES_IDLE_STOP_SECS
 	DiarBin       string        // OX_SAY_DIAR_BIN: path to ox-diar (speaker diarization)
@@ -548,6 +551,8 @@ func loadNotes(c *Config, get func(string) string, engineDir string) error {
 	}
 	if c.NotesModel = get("OX_SAY_NOTES_MODEL"); c.NotesModel == "" {
 		c.NotesModel = filepath.Join(c.Home, "models", NotesModelFile)
+	} else {
+		c.NotesModelEnv = true
 	}
 	rawPort := get("OX_SAY_NOTES_PORT")
 	var err error
@@ -591,10 +596,15 @@ const (
 )
 
 // NotesBlock reports why the notes engine cannot run, as a code for a program
-// and a sentence for a person; both are "" when it can. Files are stat'ed per
-// call, so a model downloaded later works without a daemon restart.
-func (c *Config) NotesBlock() (code, reason string) {
-	if c.HostMemoryBytes != 0 && c.HostMemoryBytes < NotesMinMemoryGB*bytesPerGB {
+// and a sentence for a person; both are "" when it can. The resolved model's
+// own memory floor gates it (a 16 GB Mac runs the 4B but not the 27B). Files
+// are stat'ed per call, so a model downloaded later works without a restart.
+func (c *Config) NotesBlock(res NotesResolution) (code, reason string) {
+	if res.Entry != nil && c.HostMemoryBytes != 0 && c.HostMemoryBytes < uint64(res.Entry.MinMemoryGB)*bytesPerGB {
+		return NotesReasonUnsupported, fmt.Sprintf("%s needs at least %d GB of memory; this Mac has %d GB.",
+			res.Entry.Name, res.Entry.MinMemoryGB, c.HostMemoryBytes/bytesPerGB)
+	}
+	if res.Entry == nil && c.HostMemoryBytes != 0 && c.HostMemoryBytes < NotesMinMemoryGB*bytesPerGB {
 		return NotesReasonUnsupported, fmt.Sprintf("Meeting notes need at least %d GB of memory; this Mac has %d GB.",
 			NotesMinMemoryGB, c.HostMemoryBytes/bytesPerGB)
 	}
@@ -604,8 +614,8 @@ func (c *Config) NotesBlock() (code, reason string) {
 	if !isRegularFile(c.NotesBin) {
 		return NotesReasonEngineMissing, "This ox-say install has no notes engine. Update ox-say."
 	}
-	if !isRegularFile(c.NotesModel) {
-		return NotesReasonModelMissing, fmt.Sprintf("The notes model is not downloaded yet (about %.1f GB).", float64(NotesModelBytes)/1e9)
+	if !res.Installed {
+		return NotesReasonModelMissing, res.MissingText()
 	}
 	return "", ""
 }

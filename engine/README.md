@@ -105,8 +105,10 @@ newer ggml), and the rename keeps the per-binary lookup
 (`<argv[0]>.metallib`) working. The daemon starts it
 with `-c 16384 -fa on --jinja --no-ui -np 1 --cache-ram 0 --api-key-file …`
 (`internal/daemon/meetings.go`); the build fails if the pinned llama-server no
-longer lists those flags. The model (Qwen3.5-4B Q4_K_M) is not part of the
-package: `scripts/fetch-models.sh --notes-only` downloads it on first use.
+longer lists those flags. The model is not part of the package:
+`scripts/fetch-models.sh --notes <file> <sha256> <url>` downloads the resolved
+catalog entry (Qwen3.5-9B by default, the 4B as the lighter fallback) on first
+use.
 
 ## patches/ggml/0001-metal-amd-discrete-gpu.patch
 

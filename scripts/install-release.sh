@@ -44,7 +44,7 @@ oxs_install_binary "$root/bin/ox-say"
 # under $OX_SAY_HOME.
 oxs_put "$root/scripts/uninstall.sh" "$home/uninstall.sh"
 # The daemon downloads the notes model on first use by running this copy
-# (fetch-models.sh --notes-only); get.sh deletes the release tree.
+# (fetch-models.sh --notes <file> <sha256> <url>); get.sh deletes the release tree.
 oxs_put "$root/scripts/fetch-models.sh" "$home/fetch-models.sh"
 # Third-party licenses for the Go binary ship in the release under licenses/go.
 # They go under engine/licenses, a directory ox-say owns, never a directory of

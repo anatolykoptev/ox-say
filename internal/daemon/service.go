@@ -88,8 +88,9 @@ type Daemon struct {
 	// discrete card; with unified memory nothing takes it.
 	gpu *engine.GPULease
 
-	// modelMu serializes model removals (DELETE /v1/models/{id}): two at once would
-	// both stop the same engine and race on the same file.
+	// modelMu serializes model removals (DELETE /v1/models/{id}) and the notes
+	// model's saved-choice switch (PUT /v1/meetings/notes-model): two writers at
+	// once would both stop the same engine and race on the same file.
 	modelMu sync.Mutex
 
 	// voiceMu serializes voice mutations against engine-start replay: a
@@ -312,6 +313,14 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 	}
 	if cfg.OneLargeEngine() {
 		d.mem = newResidency(logger, d.Sup, d.VoxSup, d.LLMSup)
+	} else if d.notesCouldBeExclusive() {
+		// A notes model over config.NotesExclusiveBytes makes the large
+		// engines take turns even on a Mac the voices share; the condition is
+		// read per call, so a model the user switches to counts at once.
+		if r := newResidency(logger, d.Sup, d.VoxSup, d.LLMSup); r != nil {
+			r.cond = d.notesExclusive
+			d.mem = r
+		}
 	}
 	logger.Info("large engine memory model", slog.String("mode", d.mem.mode()))
 	d.initMeetings()

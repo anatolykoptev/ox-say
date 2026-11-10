@@ -117,8 +117,19 @@ func TestModelsListReportsInstalledAndSizes(t *testing.T) {
 	if c := find(list, "voice_cleanup"); c == nil || c.Optional || c.Kind != "cleanup" {
 		t.Fatalf("voice cleanup row: %+v", c)
 	}
-	if len(list) != 6 {
-		t.Fatalf("want the six models, got %d: %+v", len(list), list)
+	// The notes catalog: one row per selectable model; the default is the 9B,
+	// the installed 4B reports its real size.
+	if n := find(list, "notes:qwen3.5-9b"); n == nil || n.Installed || !n.Default || n.Bytes != 5680522464 {
+		t.Fatalf("notes 9B row: %+v", n)
+	}
+	if n := find(list, "notes:qwen3.5-4b"); n == nil || !n.Installed || n.Bytes != 4096 || n.Default {
+		t.Fatalf("notes 4B row: %+v", n)
+	}
+	if n := find(list, "notes:qwen3.8-27b-uncensored"); n == nil || n.Installed || n.Kind != "notes" {
+		t.Fatalf("notes uncensored row: %+v", n)
+	}
+	if len(list) != 9 {
+		t.Fatalf("want the nine models, got %d: %+v", len(list), list)
 	}
 }
 
@@ -207,8 +218,9 @@ func TestDeleteRefusesAnEmptyOrRelativeConfiguredPath(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(victim) })
 	for _, path := range []string{"", config.NotesModelFile, "./" + config.NotesModelFile} {
 		d.Cfg.NotesModel = path
-		if code, _ := doJSON(t, http.MethodDelete, base+"/v1/models/notes", ""); code != http.StatusBadRequest {
-			t.Fatalf("path %q: got %d, want 400", path, code)
+		code, _ := doJSON(t, http.MethodDelete, base+"/v1/models/notes", "")
+		if code == http.StatusNoContent || code == http.StatusOK {
+			t.Fatalf("path %q: got %d, want a refusal", path, code)
 		}
 		if !exists(victim) {
 			t.Fatalf("path %q: a file in the working directory was removed", path)
@@ -423,7 +435,9 @@ func TestDeleteStopsTheResidentEngineThenRemovesTheFile(t *testing.T) {
 	if st.Available || st.ReasonCode != config.NotesReasonModelMissing {
 		t.Fatalf("notes status after the delete = %+v, want model_missing", st)
 	}
-	if n := find(listModels(t, srv.URL), "notes"); n.Installed || !n.Supported || n.Bytes != config.NotesModelBytes {
+	// With the 4B gone the row reports the automatic default (the 9B): the
+	// model a new install would fetch.
+	if n := find(listModels(t, srv.URL), "notes"); n.Installed || !n.Supported || n.Bytes != d.Cfg.NotesAutomaticDefault().Bytes {
 		t.Fatalf("list after the delete: %+v", n)
 	}
 }
@@ -711,7 +725,9 @@ func TestRemovableInGetAgreesWithDelete(t *testing.T) {
 			put(t, d.Cfg.NotesModel, 1)
 		}, false, http.StatusBadRequest},
 		{"folder at the model path", func(d *Daemon, _ string) {
-			if err := os.MkdirAll(d.Cfg.NotesModel, 0o755); err != nil {
+			// The resolved path is what DELETE would touch: a folder there is
+			// not a file ox-say downloaded.
+			if err := os.MkdirAll(d.notesResolve().Path, 0o755); err != nil {
 				t.Fatal(err)
 			}
 		}, false, http.StatusBadRequest},

@@ -33,6 +33,11 @@ type residency struct {
 	n       int  // uses in flight
 	engines []*engine.Supervisor
 	log     *slog.Logger
+	// cond, when set, decides per call whether the engines take turns at all:
+	// a notes model over config.NotesExclusiveBytes makes the large engines
+	// exclusive on a Mac that would otherwise share them (see notesExclusive).
+	// nil: managed unconditionally.
+	cond func() bool
 	// stop stops one engine (tests only; nil is Supervisor.Stop).
 	stop func(context.Context, *engine.Supervisor) error
 }
@@ -51,9 +56,10 @@ func newResidency(log *slog.Logger, engines ...*engine.Supervisor) *residency {
 	return r
 }
 
-// managed reports whether sup takes turns (STT, and any engine not in the set, does not).
+// managed reports whether sup takes turns (STT, and any engine not in the set, does not). When cond is set the whole
+// set is managed only while it holds — the notes engine is exclusive only with a model large enough to need it.
 func (r *residency) managed(sup *engine.Supervisor) bool {
-	if r == nil {
+	if r == nil || (r.cond != nil && !r.cond()) {
 		return false
 	}
 	for _, e := range r.engines {
@@ -66,7 +72,7 @@ func (r *residency) managed(sup *engine.Supervisor) bool {
 
 // mode is /status's memory_mode.
 func (r *residency) mode() string {
-	if r == nil {
+	if r == nil || (r.cond != nil && !r.cond()) {
 		return memoryModeShared
 	}
 	return memoryModeOneLarge

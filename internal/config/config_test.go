@@ -845,27 +845,27 @@ func TestNotesBlock(t *testing.T) {
 	dir := t.TempDir()
 	bin, model := filepath.Join(dir, "ox-llm"), filepath.Join(dir, NotesModelFile)
 	c := &Config{NotesBin: bin, NotesModel: model, HostMemoryBytes: 16 * bytesPerGB}
-	if code, _ := c.NotesBlock(); code != NotesReasonEngineMissing {
+	if code, _ := c.NotesBlock(c.ResolveNotes(nil, isRegularFile)); code != NotesReasonEngineMissing {
 		t.Fatalf("no engine: code = %q", code)
 	}
 	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if code, _ := c.NotesBlock(); code != NotesReasonModelMissing {
+	if code, _ := c.NotesBlock(c.ResolveNotes(nil, isRegularFile)); code != NotesReasonModelMissing {
 		t.Fatalf("no model: code = %q", code)
 	}
 	if err := os.WriteFile(model, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code, reason := c.NotesBlock(); code != "" || reason != "" {
+	if code, reason := c.NotesBlock(c.ResolveNotes(nil, isRegularFile)); code != "" || reason != "" {
 		t.Fatalf("ready: %q %q", code, reason)
 	}
 	c.HostMemoryBytes = 8 * bytesPerGB
-	if code, _ := c.NotesBlock(); code != NotesReasonUnsupported {
+	if code, _ := c.NotesBlock(c.ResolveNotes(nil, isRegularFile)); code != NotesReasonUnsupported {
 		t.Fatalf("8 GB Mac: code = %q", code)
 	}
 	c.HostMemoryBytes = 0 // unknown memory never blocks
-	if code, _ := c.NotesBlock(); code != "" {
+	if code, _ := c.NotesBlock(c.ResolveNotes(nil, isRegularFile)); code != "" {
 		t.Fatalf("unknown memory: code = %q", code)
 	}
 }
@@ -937,7 +937,7 @@ func TestDefaultNotesPortCollisionBlocksNotesOnly(t *testing.T) {
 			if !c.NotesPortBlocked {
 				t.Fatal("the default collision was not recorded")
 			}
-			if code, _ := c.NotesBlock(); code != NotesReasonPortBlocked {
+			if code, _ := c.NotesBlock(c.ResolveNotes(nil, isRegularFile)); code != NotesReasonPortBlocked {
 				t.Fatalf("NotesBlock = %q, want %q", code, NotesReasonPortBlocked)
 			}
 		})
@@ -1062,7 +1062,7 @@ func TestNotesModelMissingTextNamesTheModelSize(t *testing.T) {
 	if err := os.WriteFile(c.NotesBin, []byte("x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	code, msg := c.NotesBlock()
+	code, msg := c.NotesBlock(c.ResolveNotes(nil, isRegularFile))
 	if code != NotesReasonModelMissing || !strings.Contains(msg, fmt.Sprintf("about %.1f GB", float64(NotesModelBytes)/1e9)) {
 		t.Fatalf("NotesBlock = %q, %q", code, msg)
 	}
