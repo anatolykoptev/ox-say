@@ -11,14 +11,28 @@ final class VoiceoverService {
     private var changeObservers: [() -> Void] = []
     private var finishObservers: [(ProduceJob) -> Void] = []
     private var windowStarted: Set<String> = []
+    /// The main window is on screen: a voiceover it shows ending needs no notification.
+    private let windowVisible: () -> Bool
 
-    init(client: StudioClient) {
+    init(client: StudioClient, windowVisible: @escaping () -> Bool) {
         self.client = client
+        self.windowVisible = windowVisible
         follower = VoiceoverFollower(
             source: VoiceoverFollower.Source(voiceover: { [client] in try await client.voiceover(id: $0) },
                                              voiceovers: { [client] in try await client.voiceovers() }),
             onChange: { [weak self] in self?.changeObservers.forEach { $0() } },
-            onFinish: { [weak self] job in self?.finishObservers.forEach { $0(job) } })
+            onFinish: { [weak self] job in
+                guard let self else { return }
+                self.finishObservers.forEach { $0(job) }
+                self.announce(job)
+            })
+    }
+
+    /// A voiceover ended while the window was not showing it: a notification says so (the system asks for permission at the
+    /// first one), and a click opens the window on that project. The window shows the result whether or not this arrives.
+    private func announce(_ job: ProduceJob) {
+        guard let notice = VoiceoverReady.notice(for: job, startedOnPage: startedOnPage(job.id), windowVisible: windowVisible()) else { return }
+        MeetingNotifier.shared.voiceoverReady(notice)
     }
 
     /// Called after the followed job changes (a poll, a start, a forgotten job).
@@ -63,9 +77,11 @@ final class VoiceoverService {
     /// The daemon answered /status: look for a voiceover already running (the app quit and came back).
     func serviceAnswered() { follower.serviceAnswered() }
 
-    func stop() async throws {
-        guard let job = follower.job else { return }
-        try await client.stopVoiceover(id: job.id)
+    /// A row action changed a project's course (stopped, resumed, continued): follow it from the state the daemon now reports.
+    func refollow(id: String) async {
+        guard let latest = try? await client.voiceover(id: id) else { return }
+        windowStarted.insert(id)
+        follower.follow(latest)
     }
 
     func continueOnBattery() async throws {

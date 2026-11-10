@@ -5,8 +5,6 @@ import DictationCore
 /// studio code never reaches into AppDelegate.
 struct StudioHost {
     var client: StudioClient
-    /// Shows a modal alert over every app and returns the pressed button.
-    var alert: (_ title: String, _ text: String, _ buttons: [String]) -> NSApplication.ModalResponse
     /// The pill of Studio task `task` with this text, or that task's end for nil. Each task has its own
     /// slot: one ending never takes another's pill down (TaskPills).
     var pill: (_ task: String, _ text: String?) -> Void
@@ -27,12 +25,15 @@ struct StudioHost {
     var openVoiceDesign: () -> Void
     /// The New Voiceover menu row: the window opens on Озвучка, where the text, a document and the voice are chosen.
     var openSpeak: () -> Void
+    /// The Stop row: the window opens on that voiceover, where stopping asks for its confirmation (never an alert over every app).
+    var openSpeakProject: (_ id: String) -> Void
     /// The main window is on screen (shown, not minimised or covered).
     var windowVisible: () -> Bool
 }
 
-/// The Studio submenu: draws the rows StudioMenu decides and runs what they do — stop and continue a voiceover, open
-/// its folder, follow it to the end. A new voiceover and a new voice open the window (Озвучка, the describe-a-voice sheet).
+/// The Studio submenu: draws the rows StudioMenu decides and runs what they do — continue a voiceover on battery, open
+/// its folder, follow it to the end. A new voiceover, a stop and a new voice open the window (Озвучка, the describe-a-voice
+/// sheet); a finished voiceover is told by a notification and by its row there, never by an alert.
 final class StudioController: NSObject {
     let submenu = NSMenu()
     let host: StudioHost
@@ -45,7 +46,7 @@ final class StudioController: NSObject {
 
     init(host: StudioHost) {
         self.host = host
-        voiceover = VoiceoverService(client: host.client)
+        voiceover = VoiceoverService(client: host.client, windowVisible: host.windowVisible)
         super.init()
         submenu.autoenablesItems = false
         voiceover.observe(
@@ -53,14 +54,7 @@ final class StudioController: NSObject {
                 self?.render()
                 if self?.voiceover.following == false { self?.host.workEnded() }
             },
-            onFinish: { [weak self] job in
-                guard let self else { return }
-                self.refreshFolder()
-                // A project started on Озвучка and finished with the window in view is already on the page.
-                guard FinishNotice.shouldAlert(startedOnPage: self.voiceover.startedOnPage(job.id),
-                                               windowVisible: self.host.windowVisible()) else { return }
-                self.presentFinish(job)
-            })
+            onFinish: { [weak self] _ in self?.refreshFolder() })
     }
 
     /// A voice design is running or its takes are being reviewed.
@@ -90,7 +84,7 @@ final class StudioController: NSObject {
         switch action {
         case .installStudioVoice: host.installStudioVoice()
         case .newVoiceover: host.openSpeak()
-        case .stopVoiceover: stopVoiceover()
+        case .stopVoiceover: if let job = voiceover.job { host.openSpeakProject(job.id) }
         case .continueOnBattery: continueOnBattery()
         case .openVoiceoversFolder: openFolder()
         case .createVoice: host.openVoiceDesign()
@@ -108,58 +102,16 @@ final class StudioController: NSObject {
         }
     }
 
-    // MARK: finishing
-
-    /// Shows `dialog` over every app and returns the pressed button.
-    @discardableResult
-    private func show(_ dialog: UpdateDialog) -> NSApplication.ModalResponse {
-        host.alert(dialog.title, dialog.text, dialog.buttons)
-    }
-
-    /// "Voiceover ready" with Show in Finder / Play / OK, or why it failed.
-    private func presentFinish(_ finished: ProduceJob) {
-        guard let dialog = StudioDialogs.finished(finished) else { return }
-        guard let path = finished.outputPath else {
-            show(dialog)
-            return
-        }
-        let url = URL(fileURLWithPath: path)
-        switch show(dialog) {
-        case .alertFirstButtonReturn:
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        case .alertSecondButtonReturn:
-            guard let wav = try? Data(contentsOf: url, options: .mappedIfSafe) else {
-                show(StudioDialogs.playFailed())
-                return
-            }
-            host.play(wav, true) { [weak self] in self?.presentFinish(finished) }
-        default:
-            break
-        }
-    }
-
     // MARK: flows
 
-    private func stopVoiceover() {
-        guard let job = voiceover.job else { return }
-        let sure = show(StudioDialogs.stop())
-        guard sure == .alertFirstButtonReturn else { return }
-        Task { @MainActor [weak self] in
-            do {
-                try await self?.voiceover.stop()
-            } catch {
-                self?.show(StudioDialogs.stopFailed(error))
-            }
-        }
-    }
-
+    /// «Continue on Battery Power» goes straight to the daemon: the person already asked. A refusal is said on the status line.
     private func continueOnBattery() {
-        guard let job = voiceover.job else { return }
+        guard voiceover.job != nil else { return }
         Task { @MainActor [weak self] in
             do {
                 try await self?.voiceover.continueOnBattery()
             } catch {
-                self?.show(StudioDialogs.continueFailed(error))
+                self?.host.notify(StudioError.plain(error))
             }
         }
     }

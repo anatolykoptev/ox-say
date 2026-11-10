@@ -56,7 +56,7 @@ final class MeetingController: NSObject, MeetingFeature {
     private let recorder = MeetingRecorder()
     private let badge = MeetingBadge()
     private let watcher = CallWatcher()
-    private let notifier = MeetingNotifier()
+    private let notifier = MeetingNotifier.shared
     private let exporter: MeetingExporter
     private let log = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "meeting")
     private var current: (info: MeetingInfo, origin: CallTracker.Origin)?

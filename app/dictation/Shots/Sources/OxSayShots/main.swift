@@ -295,6 +295,9 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
                 v.peaks = sampleBars()
             }
         },
+        Scene(name: "speak-studio-battery", section: .speak, meeting: nil) { now, ru in
+            speakProject(now, ru, { ProduceJob(id: $0, title: projectTitle(ru), status: .pausedOnBattery, partsTotal: 5, partsDone: 2) })
+        },
         Scene(name: "speak-studio-interrupted", section: .speak, meeting: nil) { now, ru in
             speakProject(now, ru, { ProduceJob(id: $0, title: projectTitle(ru), status: .interrupted, partsTotal: 5, partsDone: 2) })
         },

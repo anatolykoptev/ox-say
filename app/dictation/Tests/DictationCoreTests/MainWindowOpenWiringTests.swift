@@ -125,7 +125,8 @@ final class MainWindowOpenWiringTests: XCTestCase {
         XCTAssertTrue(text.contains("let restored = WindowRestoration.load(host.defaults, advanced: model.advanced)"))
         XCTAssertTrue(text.contains("model.section = restored.section"))
         XCTAssertTrue(text.contains("model.selectedMeeting = restored.meetingID"))
-        XCTAssertTrue(text.contains("WindowRestoration.save(MainRoute(section: section, meetingID: meeting), to: defaults)"))
+        XCTAssertTrue(text.contains("WindowRestoration.save(MainRoute(section: section, meetingID: meeting, speakID: speak), to: defaults)"))
+        XCTAssertTrue(text.contains("if let id = restored.speakID { speakSource.openProject(id) }"))
     }
 
     /// F1 call site: flipping the switch reinstalls the menu bar, or ⌘N points at the old order.

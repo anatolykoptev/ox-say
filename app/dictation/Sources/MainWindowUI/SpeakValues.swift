@@ -59,6 +59,9 @@ public struct SpeakValues: Equatable {
     public var projectCopies: Set<String>
     /// Moves when a change to a phrase was refused or has landed, so the panel's sliders start again from the stored value.
     public var panelEpoch: Int
+    /// A voiceover the route points at (a notification's click, the last run's open project) that the list has not shown yet:
+    /// it is opened when the list has it, and dropped when the list does not (`MainRoute.pruned`).
+    public var pendingProjectID: String?
 
     public init(text: String = "", voice: String? = nil, clips: [SpeakClip] = [],
                 selectedID: String? = nil, phase: SpeakPhase = .idle, reach: DaemonReach = .unknown,
@@ -68,7 +71,7 @@ public struct SpeakValues: Equatable {
                 reel: Bool = false, reading: Bool = false, phraseChunks: [ProduceChunkDetail] = [], phrasesFor: String? = nil,
                 phraseWork: PhraseWork? = nil, playingPhrase: Int? = nil, projectVoices: [String: String] = [:],
                 panel: VoicePanelSettings = VoicePanelSettings(), panelShown: Bool = false, panelPhrase: Int? = nil,
-                panelAllText: Bool = false, projectCopies: Set<String> = [], panelEpoch: Int = 0) {
+                panelAllText: Bool = false, projectCopies: Set<String> = [], panelEpoch: Int = 0, pendingProjectID: String? = nil) {
         self.text = text
         self.voice = voice
         self.clips = clips
@@ -97,11 +100,15 @@ public struct SpeakValues: Equatable {
         self.panelAllText = panelAllText
         self.projectCopies = projectCopies
         self.panelEpoch = panelEpoch
+        self.pendingProjectID = pendingProjectID
         items = SpeakList.merge(projects: projects, clips: clips)
     }
 
     public var selectedClip: SpeakClip? { clips.first { $0.id == selectedID } }
     public var selectedProject: ProduceJob? { projects.first { $0.id == selectedID } }
+
+    /// The voiceover the window is pointed at, for the saved route: the open project, or the one still waiting for the list.
+    public var routeProjectID: String? { selectedProject?.id ?? pendingProjectID }
 
     /// The phrases of the selected project, ready to draw; empty until its chunks were read.
     public var phrases: [PhraseRowValue] {

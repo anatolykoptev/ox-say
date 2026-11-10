@@ -110,6 +110,7 @@ final class MainWindowSource {
                                       self?.speakSource.voicesChanged()
                                   })
         speakSource = SpeakSource(model: model, host: host)
+        if let id = restored.speakID { speakSource.openProject(id) }
         speakSource.stopOtherAudio = { [weak self] in
             self?.voiceSource.stopPreview()
             self?.stopPlayback()
@@ -121,8 +122,9 @@ final class MainWindowSource {
             guard let model else { return }
             model.section = AdvancedMode.section(after: on, current: model.section)
         }
-        routeSaver = Publishers.CombineLatest(model.$section, model.$selectedMeeting).dropFirst().sink { [weak self] section, meeting in
-            WindowRestoration.save(MainRoute(section: section, meetingID: meeting), to: defaults)
+        let openVoiceover = model.$data.map(\.speak.routeProjectID).removeDuplicates()
+        routeSaver = Publishers.CombineLatest3(model.$section, model.$selectedMeeting, openVoiceover).dropFirst().sink { [weak self] section, meeting, speak in
+            WindowRestoration.save(MainRoute(section: section, meetingID: meeting, speakID: speak), to: defaults)
             // Arriving on Озвучка with the daemon down reads at once (the backoff grew on passes made elsewhere) and starts
             // its recheck without waiting for another refresh pass.
             Task { @MainActor in
@@ -193,6 +195,7 @@ final class MainWindowSource {
         let route = route.resolved(visible: MainWindowSpec.sections(advanced: model.advanced))
         model.section = route.section
         if let id = route.meetingID { model.selectedMeeting = id }
+        if let id = route.speakID { speakSource.openProject(id) }
     }
 
     func windowClosed() {
@@ -305,6 +308,7 @@ final class MainWindowSource {
         a.speakGenerate = { [weak self] in self?.speakSource.generate() }
         a.speakVariant = { [weak self] in self?.speakSource.generate(variant: true) }
         a.speakStop = { [weak self] in self?.speakSource.stop() }
+        a.speakRowAction = { [weak self] action in self?.speakSource.runRowAction(action) }
         a.speakPlayPause = { [weak self] in self?.speakSource.playPause() }
         a.speakSave = { [weak self] in self?.speakSource.save() }
         a.speakNewText = { [weak self] in self?.speakSource.newText() }

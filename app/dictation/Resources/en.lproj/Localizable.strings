@@ -630,6 +630,12 @@
 "speak.stop_confirm" = "Stop Voiceover";
 "speak.keep_going" = "Keep Going";
 "speak.continue_battery" = "Continue on Battery Power";
+"speak.resume" = "Resume";
+"speak.remove" = "Delete…";
+"speak.remove_title" = "Delete this voiceover?";
+"speak.remove_text" = "The text, the phrases and the finished file are deleted from this Mac. This cannot be undone.";
+"speak.remove_confirm" = "Delete";
+"speak.listen_flagged" = "Listen to flagged parts (%lld)";
 "speak.duration" = "Duration: %@";
 "speak.export" = "Export WAV…";
 "speak.show_in_finder" = "Show in Finder";
@@ -731,7 +737,7 @@
 "speak.quality.studio_hint" = "For long texts: made in the background, progress shows in the list on the left.";
 "speak.track_missing" = "The file was moved or deleted";
 "speak.waveform" = "Audio waveform";
-"speak.project_interrupted" = "OxSay stopped while working on this, so it is not finished. Paste the text into New text and voice it again.";
+"speak.project_interrupted" = "OxSay stopped while working on this, so it is not finished. Press Resume to carry on.";
 "speak.engine_busy" = "Another voiceover or meeting notes are being made right now. Please wait until it finishes.";
 "speak.studio.busy" = "Another voiceover is still being made. Wait for it to finish, then try again.";
 "speak.studio.needs_voice" = "The studio voice needs a saved voice. Create one on the Voices page, then try again.";

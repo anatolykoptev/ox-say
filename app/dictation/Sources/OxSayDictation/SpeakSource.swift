@@ -126,8 +126,30 @@ final class SpeakSource {
             stopClip()
             model.data.speak.selectedID = nil
         }
+        resolvePendingProject(in: projects)
         ensureWaveform()
         ensurePhrases()
+    }
+
+    /// Points the page at a voiceover the route names (a notification's click, the last run's open project). A project the list
+    /// does not have yet waits for it; one the list lacks (deleted since) is dropped, as `MainRoute.pruned` drops a meeting.
+    func openProject(_ id: String) {
+        guard !id.isEmpty else { return }
+        model.data.speak.pendingProjectID = id
+        resolvePendingProject(in: model.data.speak.projects)
+    }
+
+    private func resolvePendingProject(in projects: [ProduceJob]) {
+        guard let id = model.data.speak.pendingProjectID else { return }
+        let route = MainRoute(section: .speak, speakID: id).pruned(knownSpeakIDs: projects.map(\.id))
+        guard let known = route.speakID else {
+            model.data.speak.pendingProjectID = nil
+            return
+        }
+        // Not on Озвучка (a restored route) or a take being made: the choice waits; the next list read asks again.
+        guard projects.contains(where: { $0.id == known }), model.section == .speak, model.data.speak.phase.allowsSelection else { return }
+        model.data.speak.pendingProjectID = nil
+        selectProject(known)
     }
 
     private func record(answered: Bool) {
@@ -753,6 +775,47 @@ final class SpeakSource {
         if !accepted { model.data.speak.panelEpoch &+= 1 }
     }
 
+    // MARK: the row's buttons
+
+    /// A button of the open voiceover's row. The daemon's ones (stop, continue on battery, resume, delete) go through
+    /// `SpeakRowActions.perform` and the app follows the project from its new state; Finder, the save panel and the first
+    /// flagged phrase are the window's own. A refusal is said in the daemon's words on the notice bar.
+    func runRowAction(_ action: SpeakRowAction) {
+        guard let job = model.data.speak.selectedProject else { return }
+        switch action {
+        case .showInFinder:
+            if let path = job.outputPath { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+        case .save:
+            saveProject(job)
+        case .listenToFlagged:
+            // The first part the automatic checks flagged plays; the phrase list below shows the others.
+            if let n = model.data.speak.phraseChunks.first(where: { $0.status == .review })?.index { playPhrase(n) }
+        case .stop, .continueOnBattery, .resume, .remove:
+            let id = job.id
+            let client = host.client
+            let voiceover = self.voiceover
+            Task { @MainActor [weak self] in
+                do {
+                    try await SpeakRowActions.perform(action, id: id, client: client)
+                    if action != .remove { await voiceover.refollow(id: id) }
+                } catch {
+                    self?.model.data.notice = StudioError.plain(error)
+                }
+                self?.refreshProjects()
+            }
+        }
+    }
+
+    private func saveProject(_ job: ProduceJob) {
+        guard let path = job.outputPath, FileManager.default.fileExists(atPath: path) else {
+            model.data.notice = L10nKey.speakTrackMissing.text
+            return
+        }
+        SpeakSave.presentFile(URL(fileURLWithPath: path), name: SpeakClips.fileName(forTitle: job.title), in: host.mainWindow()) { [weak self] saved in
+            if !saved { self?.model.data.notice = L10nKey.speakSaveFailed.text }
+        }
+    }
+
     // MARK: saving
 
     /// «Сохранить…»: the save panel is a sheet on the main window; the person's own act writes the file.
@@ -777,6 +840,32 @@ enum SpeakSave {
             guard response == .OK, let url = panel.url else { return }
             do {
                 try clip.wav.write(to: url, options: .atomic)
+                completion(true)
+            } catch {
+                completion(false)
+            }
+        }
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: write)
+        } else {
+            panel.begin(completionHandler: write)
+        }
+    }
+
+    /// The finished track of a project: copied, not read into memory (a long one is hundreds of megabytes).
+    @MainActor
+    static func presentFile(_ source: URL, name: String, in window: NSWindow?, completion: @escaping (Bool) -> Void) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.wav]
+        panel.nameFieldStringValue = name
+        panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        panel.canCreateDirectories = true
+        let write: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                // The panel has asked about replacing; a file that is there is the person's to overwrite.
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+                try FileManager.default.copyItem(at: source, to: url)
                 completion(true)
             } catch {
                 completion(false)

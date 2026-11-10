@@ -253,6 +253,17 @@ public struct StudioClient {
         _ = try await succeed(post("v1/produce/\(id)/resume", body: ProduceRequest.resumeOnBatteryBody(), timeout: Self.quickTimeout))
     }
 
+    /// POST /v1/produce/{id}/resume with an empty body: an interrupted project goes on from where it stopped. The battery is
+    /// not allowed by it (`continueOnBattery` says so).
+    public func resume(id: String) async throws {
+        _ = try await succeed(post("v1/produce/\(id)/resume", body: nil, timeout: Self.quickTimeout))
+    }
+
+    /// DELETE /v1/produce/{id}: the project and its files.
+    public func removeVoiceover(id: String) async throws {
+        _ = try await succeed(delete("v1/produce/\(id)"))
+    }
+
     // MARK: voice design
 
     /// POST /v1/audio/voices/design: renders the candidate takes. It waits for a

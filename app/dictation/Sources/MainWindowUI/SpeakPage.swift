@@ -301,6 +301,8 @@ struct SpeakVoicePicker: View {
 struct SpeakProjectDetail: View {
     @ObservedObject var model: MainWindowModel
     let job: ProduceJob
+    /// The action waiting for the person's yes (stop, delete): asked in a sheet on this window.
+    @State private var asking: SpeakRowAction?
 
     var body: some View {
         let values = model.data.speak
@@ -343,10 +345,46 @@ struct SpeakProjectDetail: View {
                 Label(sentence, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
+            rowActions
             if values.phrases.isEmpty { Spacer() }
+        }
+        .confirmationDialog(asking?.confirmation { $0.text }?.title ?? "", isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } }),
+                            titleVisibility: .visible, presenting: asking) { action in
+            if let words = action.confirmation({ $0.text }) {
+                Button(words.confirm, role: .destructive) { model.actions.speakRowAction(action) }
+                Button(L10nKey.commonCancel.text, role: .cancel) {}
+            }
+        } message: { action in
+            Text(action.confirmation { $0.text }?.text ?? "")
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: values.phrases.isEmpty ? .infinity : nil, alignment: .topLeading)
+    }
+}
+
+extension SpeakProjectDetail {
+    /// The buttons `SpeakRowActions` lists for this project's state: stop, continue on battery, resume, the finished file, delete.
+    @ViewBuilder fileprivate var rowActions: some View {
+        // A track that is gone cannot be shown or saved: the page already says so.
+        let missing = model.data.speak.trackMissing.contains(job.id)
+        let actions = SpeakRowActions.of(job: job).filter { !(missing && ($0 == .showInFinder || $0 == .save)) }
+        if !actions.isEmpty {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { buttons(actions) }
+                VStack(alignment: .leading, spacing: 8) { buttons(actions) }
+            }
+        }
+    }
+
+    @ViewBuilder private func buttons(_ actions: [SpeakRowAction]) -> some View {
+        ForEach(actions, id: \.self) { action in
+            Button(role: action == .remove ? .destructive : nil) {
+                if action.needsConfirmation { asking = action } else { model.actions.speakRowAction(action) }
+            } label: {
+                Text(action.title { $0.text })
+            }
+            .fixedSize()
+        }
     }
 }
 
