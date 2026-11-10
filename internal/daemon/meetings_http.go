@@ -38,6 +38,7 @@ func (d *Daemon) meetingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/meetings/notes-model", d.handleNotesModelGet)
 	mux.HandleFunc("PUT /v1/meetings/notes-model", d.handleNotesModelPut)
 	mux.HandleFunc("POST /v1/meetings/notes-model/install", d.handleNotesModelInstall)
+	mux.HandleFunc("POST /v1/meetings/notes-model/validate", d.handleNotesModelValidate)
 	d.speakersRoutes(mux)
 }
 

@@ -46,6 +46,10 @@ type modelEntry struct {
 	Selected   bool   `json:"selected,omitempty"`
 	ReasonCode string `json:"reason_code,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+	// Upstream is the uncensored notes model's "is the file still on its
+	// host" (available | gone | unknown) while it is not installed; omitted
+	// everywhere else.
+	Upstream string `json:"upstream,omitempty"`
 }
 
 // modelRemoval says how one optional model is removed. A model without one is required by the release and is never
@@ -290,6 +294,7 @@ func (d *Daemon) notesCatalogEntry(entry *config.NotesModelEntry) modelEntry {
 		Default:   entry.ID == d.Cfg.NotesAutomaticDefault().ID,
 		Supported: true,
 		Selected:  res.Entry != nil && res.Entry.ID == entry.ID,
+		Upstream:  d.notesUpstream(entry, ok),
 	}
 	if !ok {
 		e.Bytes = entry.Bytes

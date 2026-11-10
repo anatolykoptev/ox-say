@@ -155,6 +155,10 @@ type notesModelChoice struct {
 	Bytes     int64  `json:"bytes"`
 	Installed bool   `json:"installed"`
 	Supported bool   `json:"supported"` // this Mac's memory runs it
+	// Upstream is the uncensored entry's "is the file still on its host"
+	// (available | gone | unknown) while it is not installed; the field is
+	// omitted for every other row and once the file is on disk.
+	Upstream string `json:"upstream,omitempty"`
 }
 
 func (d *Daemon) notesModelChoices() []notesModelChoice {
@@ -166,6 +170,7 @@ func (d *Daemon) notesModelChoices() []notesModelChoice {
 			ID: e.ID, Name: e.Name, Kind: e.Kind, Bytes: e.Bytes,
 			Installed: installed,
 			Supported: d.Cfg.HostMemoryBytes == 0 || d.Cfg.HostMemoryBytes >= uint64(e.MinMemoryGB)<<30,
+			Upstream:  d.notesUpstream(e, installed),
 		})
 	}
 	return out
@@ -179,13 +184,14 @@ func (d *Daemon) handleNotesModelGet(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// notesModelTrialLoad is where N1b's trial load plugs in: a check that opens
-// the model the way the engine would, beyond the static gates of
-// notesModelPathError. nil: the static checks are the whole validation.
-var notesModelTrialLoad func(path string) string
+// notesModelTrialLoad is the PUT's trial-load gate for the user's own model,
+// bound per daemon in newDaemon: after the static checks of
+// notesModelPathError it loads the file the way the notes engine would before
+// the choice may be saved. nil: the static checks are the whole validation.
+var notesModelTrialLoad func(ctx context.Context, path string) *modelError
 
-// notesModelPathError is the PUT's gate for the user's own model file, run
-// before the choice is saved: the path must be a canonical absolute path
+// notesModelPathError is the static half of the own-model gate, shared by PUT
+// and the validate route: the path must be a canonical absolute path
 // (no . or .. segments, no doubled separators) naming a regular file after
 // links are followed — non-empty, a .gguf by name and a GGUF by magic — so
 // a saved choice cannot send the engine at a folder, a missing file or
@@ -219,9 +225,6 @@ func notesModelPathError(path string) string {
 	var magic [4]byte
 	if _, err := io.ReadFull(f, magic[:]); err != nil || string(magic[:]) != "GGUF" {
 		return "The model file is not a GGUF model."
-	}
-	if notesModelTrialLoad != nil {
-		return notesModelTrialLoad(path)
 	}
 	return ""
 }
@@ -289,6 +292,14 @@ func (d *Daemon) handleNotesModelPut(w http.ResponseWriter, r *http.Request) {
 		if why := notesModelPathError(req.Path); why != "" {
 			writeErr(w, http.StatusBadRequest, why)
 			return
+		}
+		// The static gate passed; the own-model trial — load it the way the
+		// engine would — is the last word before the choice is saved.
+		if notesModelTrialLoad != nil {
+			if me := notesModelTrialLoad(r.Context(), req.Path); me != nil {
+				writeErr(w, me.status, me.msg)
+				return
+			}
 		}
 		ch = config.NotesChoice{Path: req.Path}
 	case req.ID != "" && req.ID != config.NotesCustomID:

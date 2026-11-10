@@ -88,10 +88,27 @@ type Daemon struct {
 	// discrete card; with unified memory nothing takes it.
 	gpu *engine.GPULease
 
-	// modelMu serializes model removals (DELETE /v1/models/{id}) and the notes
-	// model's saved-choice switch (PUT /v1/meetings/notes-model): two writers at
+	// modelMu serializes model removals (DELETE /v1/models/{id}), the notes
+	// model's saved-choice switch (PUT /v1/meetings/notes-model) and the
+	// own-model trial load that precedes a {"path"} choice: two writers at
 	// once would both stop the same engine and race on the same file.
 	modelMu sync.Mutex
+
+	// upstream is the single-flight cached answer to "is the uncensored
+	// model's download URL still on its host", read by its /v1/models row
+	// and the notes-model choices while that file is not installed.
+	upstream notesUpstreamProbe
+
+	// trialExclusive flips the residency condition while an own-model trial
+	// of a file over config.NotesExclusiveBytes runs: on a Mac where the
+	// large engines take turns only for a large notes model, a large trial
+	// takes the turn like a notes job would.
+	trialExclusive atomic.Bool
+
+	// trialMu guards trialSup: the supervisor of the one own-model trial
+	// child, so the daemon's shutdown can stop it too.
+	trialMu  sync.Mutex
+	trialSup *engine.Supervisor
 
 	// voiceMu serializes voice mutations against engine-start replay: a
 	// voice written while replayVoices runs could otherwise be missing
@@ -316,13 +333,17 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 	} else if d.notesCouldBeExclusive() {
 		// A notes model over config.NotesExclusiveBytes makes the large
 		// engines take turns even on a Mac the voices share; the condition is
-		// read per call, so a model the user switches to counts at once.
+		// read per call, so a model the user switches to counts at once, and
+		// an own-model trial of a large file counts for its duration.
 		if r := newResidency(logger, d.Sup, d.VoxSup, d.LLMSup); r != nil {
-			r.cond = d.notesExclusive
+			r.cond = func() bool { return d.notesExclusive() || d.trialExclusive.Load() }
 			d.mem = r
 		}
 	}
 	logger.Info("large engine memory model", slog.String("mode", d.mem.mode()))
+	// The own-model trial plugs into the PUT's {"path"} gate here, bound to
+	// this daemon: its check loads the file the way the engine would.
+	notesModelTrialLoad = d.notesModelTrialRefusal
 	d.initMeetings()
 	d.initTranscripts()
 	if d.VoxSup != nil {
@@ -807,6 +828,7 @@ func (d *Daemon) Status() statusSummary {
 func (d *Daemon) Shutdown() {
 	d.StopMeetings()
 	d.StopNotesInstall()
+	d.stopTrialSup()
 	d.StopCleanInstall()
 	d.StopProducer()
 	d.StopVoiceRepair()

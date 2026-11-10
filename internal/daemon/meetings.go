@@ -100,6 +100,13 @@ func notesBinPath(cfg *config.Config) string {
 // page the user opens talk to the server. Layers go to the GPU only with
 // unified memory; a discrete card stays with the speech engines.
 func notesServerArgs(cfg *config.Config, port int, modelPath string) []string {
+	return notesServerArgsKey(cfg, port, modelPath, notesKeyFile)
+}
+
+// notesServerArgsKey is notesServerArgs with the key file named: the trial
+// child gets the same argv but its own key, so rotating it cannot break a
+// resident engine still serving its first key.
+func notesServerArgsKey(cfg *config.Config, port int, modelPath, keyFile string) []string {
 	args := []string{
 		"-m", modelPath, "-c", strconv.Itoa(notesCtx),
 		"--host", voxLoopbackHost, "--port", strconv.Itoa(port),
@@ -107,7 +114,7 @@ func notesServerArgs(cfg *config.Config, port int, modelPath string) []string {
 		"--cors-origins", "localhost",
 	}
 	args = append(args, "-ngl", notesGPULayers(cfg))
-	return append(args, "--api-key-file", filepath.Join(cfg.RunDir(), notesKeyFile))
+	return append(args, "--api-key-file", filepath.Join(cfg.RunDir(), keyFile))
 }
 
 // notesGPULayers is the -ngl value: all layers on the GPU with unified memory, none without.
