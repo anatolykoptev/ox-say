@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -304,6 +305,17 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 		return "", &meeting.EngineDownError{Err: err, Retryable: true, Reason: meeting.FailNotesEngineStart}
 	}
 	defer leave()
+	// A child spawned on an older resolution — a model downloaded or removed
+	// since — still serves the file it loaded. Recycle it before the guard,
+	// under the same turn, so the start below loads what the resolver names
+	// now.
+	if err := c.d.notesStaleChild(ctx); err != nil {
+		err = fmt.Errorf("the notes model could not take its turn: %w", err)
+		if ctx.Err() != nil {
+			return "", err
+		}
+		return "", &meeting.EngineDownError{Err: err, Retryable: true, Reason: meeting.FailNotesEngineStart}
+	}
 	g := c.d.LLMSup.Acquire()
 	defer g.Release()
 	base, err := c.d.LLMSup.EnsureReady(ctx)
@@ -322,6 +334,29 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	ctx, cancel := context.WithTimeout(ctx, notesCallTimeout)
 	defer cancel()
 	return meeting.HTTPChat{BaseURL: base, Key: c.d.notesKey}.Complete(ctx, r)
+}
+
+// notesStaleChild stops the resident notes engine when it was spawned on
+// different args than a start would use now — above all a different model
+// file. The child loads its model at spawn: a download landing, a file
+// appearing or one removed flips the resolution under it, and without the
+// recycle meetings keep generating on the old file until it idles out. The
+// spawn argv is the child's own record of what it loaded; the stop waits
+// for a request in flight (Supervisor.Stop's own discipline), so it runs
+// under the notes engine's residency turn.
+func (d *Daemon) notesStaleChild(ctx context.Context) error {
+	if d.LLMSup == nil {
+		return nil
+	}
+	args := d.LLMSup.SpawnArgs()
+	if args == nil || slices.Equal(args, notesServerArgs(d.Cfg, d.Cfg.NotesPort, notesModelPath(d.Cfg))) {
+		return nil
+	}
+	d.log.Info("notes model changed under the resident engine; recycling it")
+	if err := d.LLMSup.Stop(ctx); err != nil {
+		return fmt.Errorf("the notes engine still runs the previous model: %w", err)
+	}
+	return nil
 }
 
 // engineDownReason is how a failed notes-engine start ended, as the code the meeting records.
@@ -553,19 +588,24 @@ func removePartLock(path string) {
 // InstallNotesModel downloads a notes model by running the installed
 // fetch-models.sh --notes <file> <sha256> <url>: the one place that knows the
 // download protocol; the catalog entry supplies the pinned URL and SHA-256.
-// With id "" the automatic default is the target — the standard model this
-// Mac can run, or the compact one when the disk holds only that (reported as
-// fallback "disk"). It returns at once; /status reports the progress. The
-// download belongs to the daemon: Shutdown kills it, and a lock next to the
-// .part file keeps a second daemon from starting a second writer on it.
+// With id "" the effective resolution is the target — a saved catalog
+// choice's own entry or the automatic pick — so the file that lands is the
+// one /status keeps reporting; the automatic pick drops to the compact model
+// when the disk holds only that (reported as fallback "disk"). It returns at
+// once; /status reports the progress. The download belongs to the daemon:
+// Shutdown kills it, and a lock next to the .part file keeps a second daemon
+// from starting a second writer on it.
 func (d *Daemon) InstallNotesModel(id string) error {
 	res := d.notesResolve()
-	if code, reason := d.Cfg.NotesBlock(res); code == config.NotesReasonUnsupported || code == config.NotesReasonEngineMissing {
-		return fmt.Errorf("%w: %s", ErrNotesInstall, reason)
-	}
-	// The download target. OX_SAY_NOTES_MODEL pins the file name: an id that
-	// names another file is refused, and an env file the catalog does not
-	// know is the user's own — never downloaded over.
+	// The download target. An explicit id gates on the engine, the port and
+	// THAT entry's memory floor — never the selected model's: a saved choice
+	// this Mac cannot run must not block a smaller download. With no id the
+	// target is the model the resolver says is effective — the saved or
+	// automatic resolution's own entry — gated on that model's own floor; a
+	// resolution on the user's own file is refused: there is nothing to
+	// download. OX_SAY_NOTES_MODEL pins the file name: an id that names
+	// another file is refused, and an env file the catalog does not know is
+	// the user's own — never downloaded over.
 	var target *config.NotesModelEntry
 	envPath := d.Cfg.NotesEnvPath()
 	switch {
@@ -577,18 +617,28 @@ func (d *Daemon) InstallNotesModel(id string) error {
 		if envPath != "" && filepath.Base(envPath) != target.File {
 			return fmt.Errorf("%w: OX_SAY_NOTES_MODEL names a different file; place the model there yourself", ErrNotesInstall)
 		}
-		if code, reason := d.Cfg.NotesBlock(config.NotesResolution{Entry: target}); code == config.NotesReasonUnsupported {
+		// Installed suppresses only the model-missing verdict: the entry's
+		// floor, the port and the engine still gate the download.
+		if code, reason := d.Cfg.NotesBlock(config.NotesResolution{Entry: target, Installed: true}); code != "" {
 			return fmt.Errorf("%w: %s", ErrNotesInstall, reason)
 		}
 	case envPath != "":
+		if code, reason := d.Cfg.NotesBlock(res); code == config.NotesReasonUnsupported || code == config.NotesReasonEngineMissing {
+			return fmt.Errorf("%w: %s", ErrNotesInstall, reason)
+		}
 		if target = notesModelByFile(envPath); target == nil {
 			return fmt.Errorf("%w: OX_SAY_NOTES_MODEL names a different file; place the model there yourself", ErrNotesInstall)
 		}
 	default:
+		if code, reason := d.Cfg.NotesBlock(res); code == config.NotesReasonUnsupported || code == config.NotesReasonEngineMissing {
+			return fmt.Errorf("%w: %s", ErrNotesInstall, reason)
+		}
 		if res.Installed {
 			return fmt.Errorf("%w: the notes model is already installed", ErrNotesInstall)
 		}
-		target = d.Cfg.NotesAutomaticDefault()
+		if target = res.Entry; target == nil {
+			return fmt.Errorf("%w: the notes model is your own file at %s; place it there yourself", ErrNotesInstall, res.Path)
+		}
 	}
 	// Where the fetch puts the file. The env pin names the path the engine
 	// reads, so a pin outside <home>/models is fetched into its own dir; every
@@ -608,15 +658,15 @@ func (d *Daemon) InstallNotesModel(id string) error {
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return fmt.Errorf("%w: %v", ErrNotesInstall, err)
 	}
-	// Disk fallback: asked-for-nothing gets the automatic pick, and when the
-	// disk cannot hold it, the compact model — the one model that keeps
-	// notes working on a tight disk. An explicit id reports the failure.
+	// Disk fallback: the automatic pick drops to the compact model when the
+	// disk cannot hold it — the one model that keeps notes working on a
+	// tight disk. An explicit id, an env pin or a saved choice reports the
+	// failure instead: silently fetching a different file leaves the
+	// resolution pointing at the missing one.
 	fallback := ""
 	if err := d.checkNotesDisk(dest, file, target.Bytes); err != nil {
 		fb := notesDiskFallback(target)
-		if fb == nil || id != "" || envPath != "" {
-			// An explicit id or an operator's file name reports the failure;
-			// the fallback is only for the automatic pick.
+		if fb == nil || id != "" || res.Source != config.NotesSourceAutomatic {
 			return err
 		}
 		fbFile := filepath.Join(d.Cfg.ModelsDir(), fb.File)

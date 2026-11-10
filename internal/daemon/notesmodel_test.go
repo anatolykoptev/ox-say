@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -613,5 +616,245 @@ func TestALargeNotesModelIsExclusiveBelow48GB(t *testing.T) {
 	}
 	if got := small.Status().MemoryMode; got != memoryModeShared {
 		t.Fatalf("memory_mode = %q, want %q", got, memoryModeShared)
+	}
+}
+
+// An install that names no id — what the app's Download button sends —
+// fetches the model the resolver says is effective: a saved catalog choice's
+// own entry, so the file that lands is the one /status keeps reporting, never
+// the automatic default while the saved file is missing. The compact
+// fallback is the automatic pick's alone: a saved choice that does not fit
+// the disk gets the refusal, not a silent different model, and a saved
+// custom path is refused — there is nothing to download over the user's own
+// file.
+// Mutations in internal/daemon/meetings.go InstallNotesModel:
+//   - `target = res.Entry` -> `target = d.Cfg.NotesAutomaticDefault()` -> RED
+//     (the saved-4B install fetches the 9B);
+//   - the `res.Source != config.NotesSourceAutomatic` disk guard dropped ->
+//     RED (the saved-9B install silently falls back to the 4B);
+//   - the `target == nil` arm removed -> RED (the custom path fetches).
+func TestAnEmptyInstallFetchesTheResolvedModel(t *testing.T) {
+	// The saved 4B is missing: the empty install fetches the 4B.
+	d := installFixture(t, "#!/bin/sh\necho model > \"$5/$2\"\n")
+	if err := writeNotesChoice(d.Cfg.Home, config.NotesChoice{ID: "qwen3.5-4b"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.InstallNotesModel(""); err != nil {
+		t.Fatalf("install the resolved model: %v", err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to end")
+	file, _, _ := d.notes.target()
+	if filepath.Base(file) != config.NotesModelFile {
+		t.Fatalf("the empty install fetched %q, want the saved 4B %q", file, config.NotesModelFile)
+	}
+	if res := d.notesResolve(); !res.Installed || res.ID != "qwen3.5-4b" {
+		t.Fatalf("after the download: %+v, want the saved 4B installed", res)
+	}
+
+	// The saved 9B does not fit a disk the 4B would: the refusal, not a
+	// silent compact model the resolution still does not point at.
+	d2 := installFixture(t, "#!/bin/sh\nexit 0\n")
+	if err := writeNotesChoice(d2.Cfg.Home, config.NotesChoice{ID: "qwen3.5-9b"}); err != nil {
+		t.Fatal(err)
+	}
+	withFreeBytes(t, func(string) (int64, error) {
+		return config.NotesModelBytes + notesDiskMargin, nil
+	})
+	err := d2.InstallNotesModel("")
+	if err == nil || !strings.Contains(err.Error(), "free disk space") {
+		t.Fatalf("err = %v, want the disk refusal on the saved 9B", err)
+	}
+	if d2.notesInstalling() != 0 {
+		t.Fatal("a download started: the saved 9B silently fell back to the 4B")
+	}
+
+	// A saved custom path names the user's own file: nothing to download.
+	d3 := installFixture(t, "#!/bin/sh\nexit 0\n")
+	own := filepath.Join(t.TempDir(), "mine.gguf")
+	if err := writeNotesChoice(d3.Cfg.Home, config.NotesChoice{Path: own}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d3.InstallNotesModel(""); err == nil {
+		t.Fatal("an empty install on the user's own file must refuse: there is nothing to download")
+	}
+}
+
+// A resident notes child keeps the model it was spawned with; a model that
+// lands afterwards flips the automatic resolution under it — nothing stops
+// the child, so meetings would keep generating on the old file until it
+// idled out. The child carries its spawn argv; a notes job that finds it
+// stale stops it first and the fresh start loads what the resolver names.
+// Mutation: internal/daemon/meetings.go llmChat.Complete, delete the
+// stale-child check -> RED (the second call is served by the 4B child: same
+// pid, no second spawn).
+func TestANotesJobRecyclesAnEngineSpawnedOnAnOlderModel(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OXSAY_FAKE_DIR", dir)
+	var model4b, model9b string
+	d, _ := meetingFixture(t, func(c *config.Config) {
+		model4b = filepath.Join(c.ModelsDir(), config.NotesModelFile)
+		model9b = filepath.Join(c.ModelsDir(), "Qwen3.5-9B-Q4_K_M.gguf")
+		if err := os.MkdirAll(c.ModelsDir(), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(model4b, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c.NotesBin = os.Args[0]
+	})
+	if res := d.notesResolve(); res.ID != "qwen3.5-4b" || !res.Installed {
+		t.Fatalf("setup resolution = %+v, want the installed 4B", res)
+	}
+	if err := notesCall(t, d); err != nil {
+		t.Fatal(err)
+	}
+	first := d.LLMSup.Status().PID
+	if first == 0 {
+		t.Fatal("the notes child did not start")
+	}
+	// The 9B lands over the warm 4B child: the automatic pick flips.
+	if err := os.WriteFile(model9b, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res := d.notesResolve(); res.ID != "qwen3.5-9b" || !res.Installed {
+		t.Fatalf("after the 9B lands: %+v, want the 9B selected", res)
+	}
+	if err := notesCall(t, d); err != nil {
+		t.Fatal(err)
+	}
+	st := d.LLMSup.Status()
+	if st.PID == first {
+		t.Fatalf("the second call was served by the child spawned on the 4B (pid %d)", first)
+	}
+	waitProcessGone(t, first, "the 4B child")
+	stamp := filepath.Join(dir, "llm-spawn-"+strconv.Itoa(st.PID))
+	raw, err := os.ReadFile(stamp)
+	if err != nil {
+		t.Fatalf("no spawn stamp for the recycled child: %v", err)
+	}
+	if !strings.Contains(string(raw), model9b) {
+		t.Fatalf("the recycled child's argv = %q, want it on the 9B %s", raw, model9b)
+	}
+}
+
+// The explicit-id install gates on the target — its memory floor, the port,
+// the engine — never on the selection: a saved choice this Mac cannot run
+// must not block the download of a model it can. On a 24 GB Mac with the 27B
+// saved, installing the 4B proceeds.
+// Mutation: internal/daemon/meetings.go InstallNotesModel, gate the explicit
+// id on NotesBlock(res) (the selected model) -> RED (the 24 GB Mac refuses
+// the 4B for the 27B's 32 GB floor).
+func TestAnExplicitInstallChecksTheTargetNotTheSelection(t *testing.T) {
+	d := installFixture(t, "#!/bin/sh\nexit 0\n")
+	d.Cfg.HostMemoryBytes = 24 * gib
+	if err := writeNotesChoice(d.Cfg.Home, config.NotesChoice{ID: "qwen3.8-27b-uncensored"}); err != nil {
+		t.Fatal(err)
+	}
+	res := d.notesResolve()
+	if res.ID != "qwen3.8-27b-uncensored" || res.Source != config.NotesSourceSaved {
+		t.Fatalf("setup resolution = %+v, want the saved 27B", res)
+	}
+	if code, _ := d.Cfg.NotesBlock(res); code != config.NotesReasonUnsupported {
+		t.Fatal("setup: the saved 27B should be unsupported on a 24 GB Mac")
+	}
+	if err := d.InstallNotesModel("qwen3.5-4b"); err != nil {
+		t.Fatalf("installing the 4B over a saved 27B: %v", err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to end")
+	file, _, _ := d.notes.target()
+	if filepath.Base(file) != config.NotesModelFile {
+		t.Fatalf("the download fetched %q, want the 4B %q", file, config.NotesModelFile)
+	}
+}
+
+// Every write of the saved choice gets its own private temp file, and every
+// switch — the busy check, the engine stop and the write — holds one lock,
+// also with no meeting queue. A fixed notes-model.json.tmp let two PUTs
+// share one inode: writes interleaved, and the loser's rename found the temp
+// the winner had already moved.
+// Mutations in internal/daemon/notesmodel.go:
+//   - writeNotesChoice, restore the fixed path+".tmp" write -> RED (the
+//     planted temp is eaten by the write);
+//   - notesModelSwitch, drop the mutex around the switch -> RED (the probe
+//     sees both switches inside the section at once).
+func TestConcurrentNotesModelChoicesKeepAWholeFile(t *testing.T) {
+	d := notesDaemon(t)
+
+	// A write does not touch a file at the old fixed temp name.
+	tmp := filepath.Join(d.Cfg.Home, notesChoiceFile+".tmp")
+	if err := os.WriteFile(tmp, []byte("sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNotesChoice(d.Cfg.Home, config.NotesChoice{ID: "qwen3.5-9b"}); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(tmp); err != nil || string(raw) != "sentinel" {
+		t.Fatalf("the write consumed the fixed temp name (%q, %v): writers share an inode", raw, err)
+	}
+
+	// Concurrent writers: every one succeeds and the file is always one whole
+	// choice — never interleaved, never a lost rename.
+	const writers = 16
+	var wg sync.WaitGroup
+	werrs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := "qwen3.5-9b"
+			if i%2 == 0 {
+				id = "qwen3.5-4b"
+			}
+			werrs <- writeNotesChoice(d.Cfg.Home, config.NotesChoice{ID: id})
+		}(i)
+	}
+	wg.Wait()
+	close(werrs)
+	for err := range werrs {
+		if err != nil {
+			t.Fatalf("a concurrent choice write failed: %v", err)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(d.Cfg.Home, notesChoiceFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &saved); err != nil ||
+		(saved.ID != "qwen3.5-4b" && saved.ID != "qwen3.5-9b") {
+		t.Fatalf("the saved choice = %s, want one whole choice file", raw)
+	}
+
+	// The switch serializes with no meeting queue: a second PUT cannot sit
+	// inside the critical section while the first still holds it.
+	d.Meet = nil
+	release := make(chan struct{})
+	var in, overlap atomic.Int32
+	notesModelSwitchProbe = func() {
+		if in.Add(1) > 1 {
+			overlap.Add(1)
+		}
+		<-release
+		in.Add(-1)
+	}
+	t.Cleanup(func() { notesModelSwitchProbe = nil })
+	errs := make(chan error, 2)
+	go func() {
+		errs <- d.notesModelSwitch(context.Background(), config.NotesChoice{Path: filepath.Join(t.TempDir(), "one.gguf")})
+	}()
+	go func() {
+		errs <- d.notesModelSwitch(context.Background(), config.NotesChoice{Path: filepath.Join(t.TempDir(), "two.gguf")})
+	}()
+	testutil.WaitFor(t, 5*time.Second, func() bool { return in.Load() > 0 }, "the first switch to enter")
+	close(release)
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if overlap.Load() != 0 {
+		t.Fatal("two switches held the critical section at once")
 	}
 }

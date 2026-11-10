@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
+	"github.com/anatolykoptev/ox-say/internal/vproject"
 )
 
 // notesChoiceFile is the saved notes-model choice, written by PUT
@@ -60,8 +61,10 @@ func readNotesChoice(home string) *config.NotesChoice {
 }
 
 // writeNotesChoice stores the choice atomically, 0600 (a meeting's model pick
-// is as private as the meeting): temp file, fsync, rename, same pattern as
-// writeNotesKey.
+// is as private as the meeting): vproject.WriteAtomic stages a unique temp
+// file, fsyncs it, renames it into place and fsyncs the directory — two
+// concurrent writers never share one temp inode the way a fixed .tmp name
+// made them.
 func writeNotesChoice(home string, ch config.NotesChoice) (err error) {
 	var buf bytes.Buffer
 	if ch.Path != "" {
@@ -76,26 +79,7 @@ func writeNotesChoice(home string, ch config.NotesChoice) (err error) {
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(home, notesChoiceFile)
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err = f.Write(buf.Bytes()); err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp, path)
-	}
-	if err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	return vproject.WriteAtomic(filepath.Join(home, notesChoiceFile), buf.Bytes(), 0o600)
 }
 
 // notesResolve is the daemon's one call for "which notes model now": env pin,
@@ -248,13 +232,17 @@ func notesModelPathError(path string) string {
 // production; only tests set it.
 var notesModelSwitchProbe func()
 
-// notesModelSwitch is the PUT's critical section, run under the meeting
-// queue's admission lock so the busy check, the engine stop and the saved
-// choice are one step against job admission: a meeting cannot slip between
-// the check and the stop and leave the old child serving a changed choice.
-// The stop comes before the write, so a refused stop leaves the file — and
-// the resolved model — exactly as they were.
+// notesModelSwitch is the PUT's critical section: the model mutex serializes
+// every switch — also on a daemon with no meeting queue, and against the
+// model removals that run the same busy-check-then-engine-stop shape under
+// it — and the meeting queue's admission lock makes the busy check, the
+// engine stop and the saved choice one step against job admission: a meeting
+// cannot slip between the check and the stop and leave the old child serving
+// a changed choice. The stop comes before the write, so a refused stop
+// leaves the file — and the resolved model — exactly as they were.
 func (d *Daemon) notesModelSwitch(ctx context.Context, ch config.NotesChoice) error {
+	d.modelMu.Lock()
+	defer d.modelMu.Unlock()
 	body := func(active int) error {
 		if why := d.notesModelBusyAt(active); why != "" {
 			return &modelError{http.StatusConflict, why}

@@ -88,8 +88,9 @@ type Daemon struct {
 	// discrete card; with unified memory nothing takes it.
 	gpu *engine.GPULease
 
-	// modelMu serializes model removals (DELETE /v1/models/{id}): two at once would
-	// both stop the same engine and race on the same file.
+	// modelMu serializes model removals (DELETE /v1/models/{id}) and the notes
+	// model's saved-choice switch (PUT /v1/meetings/notes-model): two writers at
+	// once would both stop the same engine and race on the same file.
 	modelMu sync.Mutex
 
 	// voiceMu serializes voice mutations against engine-start replay: a
