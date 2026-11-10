@@ -126,6 +126,7 @@ final class SpeakSource {
             stopClip()
             model.data.speak.selectedID = nil
         }
+        adoptFreshTarget()
         resolvePendingProject(in: projects)
         ensureWaveform()
         ensurePhrases()
@@ -139,8 +140,47 @@ final class SpeakSource {
         resolvePendingProject(in: model.data.speak.projects)
     }
 
+    /// Opens a voiceover a notification or the menu names. The cached list is not asked whether it exists (it predates a project
+    /// that just finished); the daemon is, by id (`SpeakTarget`). Found: it joins the list and opens, as soon as a take being made
+    /// allows. Not found: it is dropped and the selection stays.
+    func showProject(_ id: String) {
+        guard !id.isEmpty else { return }
+        model.data.speak.pendingProjectID = id
+        fetchingID = id
+        let cached = model.data.speak.projects
+        let client = host.client
+        Task { @MainActor [weak self] in
+            let outcome = await SpeakTarget.resolve(id: id, cached: cached, fetch: { try await client.voiceover(id: $0) })
+            if self?.fetchingID == id { self?.fetchingID = nil }
+            // Another target (or the same one opened meanwhile) took over while the daemon answered.
+            guard let self, self.model.data.speak.pendingProjectID == id else { return }
+            switch outcome {
+            case .cached: self.resolvePendingProject(in: self.model.data.speak.projects)
+            case .fetched(let job):
+                self.freshTarget = job
+                self.adoptFreshTarget()
+            case .gone: self.model.data.speak.pendingProjectID = nil
+            }
+        }
+    }
+
+    /// The daemon's answer for the target waits here while a take is being made; the next list change opens it.
+    private var freshTarget: ProduceJob?
+    /// The id the daemon is being asked about: a list read that lands meanwhile must not prune it.
+    private var fetchingID: String?
+
+    private func adoptFreshTarget() {
+        guard let job = freshTarget else { return }
+        guard model.data.speak.pendingProjectID == job.id else { freshTarget = nil; return }
+        guard model.section == .speak, model.data.speak.phase.allowsSelection else { return }
+        freshTarget = nil
+        model.data.speak.pendingProjectID = nil
+        model.data.speak.projects = SpeakList.overlay(projects: model.data.speak.projects, followed: job)
+        selectProject(job.id)
+    }
+
     private func resolvePendingProject(in projects: [ProduceJob]) {
-        guard let id = model.data.speak.pendingProjectID else { return }
+        guard let id = model.data.speak.pendingProjectID, freshTarget?.id != id, fetchingID != id else { return }
         let route = MainRoute(section: .speak, speakID: id).pruned(knownSpeakIDs: projects.map(\.id))
         guard let known = route.speakID else {
             model.data.speak.pendingProjectID = nil
@@ -863,9 +903,8 @@ enum SpeakSave {
         let write: (NSApplication.ModalResponse) -> Void = { response in
             guard response == .OK, let url = panel.url else { return }
             do {
-                // The panel has asked about replacing; a file that is there is the person's to overwrite.
-                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
-                try FileManager.default.copyItem(at: source, to: url)
+                // The panel has asked about replacing; the old file goes only once the copy has landed (ExportRules.install).
+                try ExportRules.install(source, to: url)
                 completion(true)
             } catch {
                 completion(false)

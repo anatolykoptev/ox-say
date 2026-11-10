@@ -259,9 +259,16 @@ public struct StudioClient {
         _ = try await succeed(post("v1/produce/\(id)/resume", body: nil, timeout: Self.quickTimeout))
     }
 
-    /// DELETE /v1/produce/{id}: the project and its files.
+    /// DELETE /v1/produce/{id}?delete_outputs=true: the project and the finished files it published (the confirmation says
+    /// so). The daemon deletes those only when they are provably the project's own (not saved over, no symlinks): otherwise
+    /// it refuses in plain words and nothing is removed, and the person reads that sentence.
     public func removeVoiceover(id: String) async throws {
-        _ = try await succeed(delete("v1/produce/\(id)"))
+        var request = delete("v1/produce/\(id)")
+        if let url = request.url, var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            parts.queryItems = [URLQueryItem(name: "delete_outputs", value: "true")]
+            request.url = parts.url
+        }
+        _ = try await succeed(request)
     }
 
     // MARK: voice design

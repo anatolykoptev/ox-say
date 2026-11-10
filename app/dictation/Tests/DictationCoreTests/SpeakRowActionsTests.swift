@@ -90,6 +90,8 @@ final class SpeakRowActionsTests: XCTestCase {
         let (client, seen) = counting()
         _ = try await SpeakRowActions.perform(.remove, id: "p1", client: client)
         XCTAssertEqual(seen().map { "\($0.httpMethod ?? "") \($0.url?.path ?? "")" }, ["DELETE /v1/produce/p1"])
+        XCTAssertEqual(seen().first?.url?.query, "delete_outputs=true", "the confirmation promises the finished files go too")
+        XCTAssertEqual(seen().first?.url?.path, "/v1/produce/p1", "the query is a query, not part of the path")
         for local in [SpeakRowAction.showInFinder, .save, .listenToFlagged(2)] {
             let handled = try await SpeakRowActions.perform(local, id: "p1", client: client)
             XCTAssertFalse(handled, "\(local) is the window's own")
@@ -106,6 +108,8 @@ final class SpeakRowActionsTests: XCTestCase {
         XCTAssertEqual(SpeakRowAction.listenToFlagged(4).title(en), "Listen to flagged parts (4)")
         XCTAssertEqual(SpeakRowAction.stop.confirmation(ru)?.confirm, "Остановить")
         XCTAssertEqual(SpeakRowAction.remove.confirmation(en)?.title, "Delete this voiceover?")
+        XCTAssertTrue(SpeakRowAction.remove.confirmation(en)?.text.contains("finished files") == true)
+        XCTAssertTrue(SpeakRowAction.remove.confirmation(ru)?.text.contains("готовые файлы") == true)
         XCTAssertNil(SpeakRowAction.resume.confirmation(en))
     }
 

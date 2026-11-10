@@ -195,7 +195,7 @@ final class MainWindowSource {
         let route = route.resolved(visible: MainWindowSpec.sections(advanced: model.advanced))
         model.section = route.section
         if let id = route.meetingID { model.selectedMeeting = id }
-        if let id = route.speakID { speakSource.openProject(id) }
+        if let id = route.speakID { speakSource.showProject(id) }
     }
 
     func windowClosed() {

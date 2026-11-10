@@ -633,7 +633,7 @@
 "speak.resume" = "Resume";
 "speak.remove" = "Delete…";
 "speak.remove_title" = "Delete this voiceover?";
-"speak.remove_text" = "The text, the phrases and the finished file are deleted from this Mac. This cannot be undone.";
+"speak.remove_text" = "The text, the phrases and the finished files are deleted from this Mac. This cannot be undone.";
 "speak.remove_confirm" = "Delete";
 "speak.listen_flagged" = "Listen to flagged parts (%lld)";
 "speak.duration" = "Duration: %@";
