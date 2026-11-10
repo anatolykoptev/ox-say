@@ -236,6 +236,8 @@ public struct MainWindowActions {
     public var speakGenerate: () -> Void = {}
     public var speakVariant: () -> Void = {}
     public var speakStop: () -> Void = {}
+    /// A button of the open voiceover's row (the window has asked first where `needsConfirmation` says so).
+    public var speakRowAction: (SpeakRowAction) -> Void = { _ in }
     public var speakPlayPause: () -> Void = {}
     public var speakSave: () -> Void = {}
     public var speakNewText: () -> Void = {}

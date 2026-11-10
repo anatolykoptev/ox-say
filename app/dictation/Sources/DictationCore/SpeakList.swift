@@ -111,11 +111,33 @@ public struct StartingGate: Equatable {
     public func isActive(in generation: Generation) -> Bool { token.map(generation.isCurrent) ?? false }
 }
 
-/// What the Studio menu's finish alert does once the window shows the result itself.
+/// What the main window shows at this moment (read when a voiceover ends, never remembered from its start).
+public struct ShownWindow: Equatable {
+    /// OxSay is the app in front.
+    public var appActive: Bool
+    /// The window is key, on screen on the active Space, not minimised and not covered.
+    public var windowVisible: Bool
+    /// The section on screen; nil without a window.
+    public var section: MainSection?
+    /// The voiceover project open on Озвучка; nil for a clip or none.
+    public var speakID: String?
+
+    public init(appActive: Bool, windowVisible: Bool, section: MainSection?, speakID: String?) {
+        self.appActive = appActive
+        self.windowVisible = windowVisible
+        self.section = section
+        self.speakID = speakID
+    }
+}
+
+/// When a finished voiceover is told by a notification.
 public enum FinishNotice {
-    /// A project started on Озвучка and finished while the window is on screen is already on the page; the alert would
-    /// only take the focus. Everything else keeps it: a menu project, and a window that is closed or hidden.
-    public static func shouldAlert(startedOnPage: Bool, windowVisible: Bool) -> Bool { !(startedOnPage && windowVisible) }
+    /// The notification would only take the focus when the person is looking at that project: OxSay is in front and its
+    /// window is on screen, on Озвучка, with this very project open. Any other state (another app, another section, another
+    /// project, a window that is closed, minimised or elsewhere) still gets told.
+    public static func windowShows(jobID: String, _ shown: ShownWindow) -> Bool {
+        shown.appActive && shown.windowVisible && shown.section == .speak && shown.speakID == jobID
+    }
 }
 
 /// What the detail of a selected studio project shows.

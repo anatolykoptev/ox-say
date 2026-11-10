@@ -248,6 +248,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speechClient = SpeechClient(baseURL: baseURL)
         studioClient = StudioClient(baseURL: baseURL)
         studio = StudioController(host: studioHost())
+        // A click on a "Voiceover ready" notification opens the window on that project (also with meetings switched off).
+        MeetingNotifier.shared.install()
+        MeetingNotifier.shared.openRoute = { [unowned self] route in self.mainWindow.show(route) }
         setUpMeetings()
         speakService.onSpeak = { [weak self] text in self?.speak(text) }
         NSApp.servicesProvider = speakService
@@ -1184,7 +1187,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func studioHost() -> StudioHost {
         StudioHost(
             client: studioClient,
-            alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) },
             pill: { [unowned self] task, text in
                 if let text {
                     self.showStudioPill(task: task, text: text)
@@ -1215,9 +1217,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.mainWindow.source?.openVoiceDesign()
             },
             openSpeak: { [unowned self] in self.mainWindow.show(MainRoute(section: .speak, meetingID: nil)) },
-            windowVisible: { [unowned self] in
-                guard let window = self.mainWindow.window else { return false }
-                return window.isVisible && window.occlusionState.contains(.visible)
+            openSpeakProject: { [unowned self] id in self.mainWindow.show(MainRoute(section: .speak, speakID: id)) },
+            windowShown: { [unowned self] in
+                let window = self.mainWindow.window
+                let visible = window.map {
+                    $0.isVisible && $0.isKeyWindow && !$0.isMiniaturized && $0.isOnActiveSpace && $0.occlusionState.contains(.visible)
+                } ?? false
+                return ShownWindow(appActive: NSApp.isActive, windowVisible: visible,
+                                   section: self.mainWindow.source?.model.section,
+                                   speakID: self.mainWindow.source?.model.data.speak.selectedProject?.id)
             })
     }
 
