@@ -223,7 +223,10 @@ func TestNotesModelPutValidatesTheOwnModelPath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("OXSAY_FAKE_LLM", "1")
 	t.Setenv("OXSAY_FAKE_DIR", dir)
-	d, mux := meetingFixture(t, func(c *config.Config) { c.NotesBin = os.Args[0] })
+	d, mux := meetingFixture(t, func(c *config.Config) {
+		c.NotesBin = os.Args[0]
+		c.HostMemoryBytes = 32 << 30 // the test Mac reports its memory
+	})
 	gguf := filepath.Join(dir, "mine.gguf")
 	if err := os.WriteFile(gguf, writeTestGGUF(t, 3, nil), 0o600); err != nil {
 		t.Fatal(err)

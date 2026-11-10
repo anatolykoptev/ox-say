@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -97,7 +98,13 @@ func (d *Daemon) notesModelTrial(ctx context.Context, path string) notesModelTri
 	if meta.Version != 2 && meta.Version != 3 {
 		return refuse(http.StatusBadRequest, "The file is GGUF version %d; the notes engine loads version 2 or 3.", meta.Version)
 	}
-	if ram := d.Cfg.HostMemoryBytes; ram > 0 && meta.Bytes > int64(ram*notesOwnRAMShare/10) {
+	// A Mac that cannot report its memory fails closed: the model cannot be
+	// checked against a limit the daemon does not know.
+	ram := d.Cfg.HostMemoryBytes
+	if ram == 0 {
+		return refuse(http.StatusBadRequest, "This Mac's memory size could not be read; the model cannot be checked.")
+	}
+	if meta.Bytes > int64(ram*notesOwnRAMShare/10) {
 		return refuse(http.StatusBadRequest,
 			"The model file is %.1f GB; a notes model must fit in %d%% of this Mac's %d GB of memory.",
 			float64(meta.Bytes)/1e9, notesOwnRAMShare*10, ram>>30)
@@ -106,17 +113,22 @@ func (d *Daemon) notesModelTrial(ctx context.Context, path string) notesModelTri
 		return refuse(http.StatusBadRequest, "The notes engine is not installed, so the model cannot be tried.")
 	}
 	// The trial and a model switch (or removal) touch the same engines and
-	// the same choice; modelMu keeps them one at a time, and the queue's
-	// admission lock makes the busy check and the trial one step.
+	// the same choice; modelMu keeps them one at a time. Under the queue's
+	// admission lock the busy check and the engine reservation are one step,
+	// so a job admitted later always finds the mark and waits the trial out
+	// — the lock itself is never held for the run and a finish queues behind
+	// nothing.
 	d.modelMu.Lock()
 	defer d.modelMu.Unlock()
-	var res notesModelTrial
+	res := out
+	reserved := false
 	body := func(active int) error {
 		if why := d.notesModelBusyAt(active); why != "" {
 			res = refuse(http.StatusConflict, "%s", why)
 			return nil
 		}
-		res = d.trialLoadModel(ctx, path, out)
+		d.reserveNotesTrial()
+		reserved = true
 		return nil
 	}
 	if d.Meet == nil {
@@ -124,7 +136,14 @@ func (d *Daemon) notesModelTrial(ctx context.Context, path string) notesModelTri
 	} else {
 		_ = d.Meet.WithAdmissionLock(body)
 	}
-	return res
+	if !reserved {
+		return res
+	}
+	// The reservation lifts only here, after trialLoadModel's own defers
+	// have stopped the child, removed the trial files and left the
+	// residency turn — a job that waited on it starts against a free engine.
+	defer d.releaseNotesTrial()
+	return d.trialLoadModel(ctx, path, out)
 }
 
 // trialLoadModel is the part that owns a process: the residency turn a notes
@@ -176,11 +195,13 @@ func (d *Daemon) trialLoadModel(ctx context.Context, path string, out notesModel
 	}
 	// The child dies on every path out of here — a failed start, a failed
 	// completion, the caller's ctx ending, or the verdict arriving — and
-	// d.trialSup lets the daemon's Shutdown kill it too.
+	// d.trialSup lets the daemon's Shutdown kill it too. Its files go with
+	// it: the key is a bearer credential and the pid file a dead handle.
 	d.setTrialSup(sup)
 	defer func() {
 		d.clearTrialSup(sup)
 		sup.Shutdown()
+		d.removeNotesTrialFiles()
 	}()
 	base, err := sup.EnsureReady(ctx)
 	if err != nil {
@@ -193,6 +214,11 @@ func (d *Daemon) trialLoadModel(ctx context.Context, path string, out notesModel
 		default:
 			return refuse(http.StatusBadRequest, "The notes engine could not load the file as a model.")
 		}
+	}
+	// The engine is up and the check mid-run: a test parks here to act while
+	// the trial still owns the engine. nil in production.
+	if notesTrialProbe != nil {
+		notesTrialProbe()
 	}
 	cctx, cancel := context.WithTimeout(ctx, notesTrialCallTimeout)
 	defer cancel()
@@ -290,6 +316,8 @@ func (d *Daemon) clearTrialSup(sup *engine.Supervisor) {
 // stopTrialSup is the daemon-shutdown half of "no orphan ox-llm": a check in
 // flight when the daemon ends loses its child here; Shutdown on an already
 // stopped supervisor is a no-op, so the trial's own cleanup cannot conflict.
+// The reservation and the child's files go with it wherever the check's
+// goroutine is — its own defer may lose the race against process exit.
 func (d *Daemon) stopTrialSup() {
 	d.trialMu.Lock()
 	sup := d.trialSup
@@ -297,6 +325,77 @@ func (d *Daemon) stopTrialSup() {
 	if sup != nil {
 		sup.Shutdown()
 	}
+	d.releaseNotesTrial()
+	d.removeNotesTrialFiles()
+}
+
+// notesTrialProbe, when set, runs inside a trial once its engine is ready —
+// a test parks the check there to act while the trial still owns the engine.
+var notesTrialProbe func()
+
+// removeNotesTrialFiles deletes the trial child's key and pid files: the key
+// is a bearer credential and neither has a reader once the child is down.
+func (d *Daemon) removeNotesTrialFiles() {
+	for _, name := range []string{notesTrialKeyFile, notesTrialPidFile} {
+		if err := os.Remove(filepath.Join(d.Cfg.RunDir(), name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			d.log.Warn("own notes model: a trial file could not be removed", slog.String("file", name), slog.Any("error", err))
+		}
+	}
+}
+
+// reserveNotesTrial marks the notes engine as held by a trial; it runs where
+// the idle check ran — inside the queue's admission lock — so a job admitted
+// after it always sees the mark. The mark is a closed-once channel, so any
+// number of notes jobs wait the same trial out.
+func (d *Daemon) reserveNotesTrial() {
+	d.trialMu.Lock()
+	if d.trialDone != nil {
+		close(d.trialDone) // a leaked reservation never strands a waiter
+	}
+	d.trialDone = make(chan struct{})
+	d.trialMu.Unlock()
+}
+
+// releaseNotesTrial clears the reservation; a waiting notes job takes the
+// engine turn next. Idempotent — the trial's own exit defer and stopTrialSup
+// (daemon Shutdown) can both run it.
+func (d *Daemon) releaseNotesTrial() {
+	d.trialMu.Lock()
+	if d.trialDone != nil {
+		close(d.trialDone)
+		d.trialDone = nil
+	}
+	d.trialMu.Unlock()
+}
+
+// waitNotesTrial holds a notes job's engine claim back while a trial owns
+// the engine: the job waits the trial out on its own context — it is never
+// refused and never lost.
+func (d *Daemon) waitNotesTrial(ctx context.Context) error {
+	d.trialMu.Lock()
+	done := d.trialDone
+	d.trialMu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// notesEngineTurn is the notes model's residency turn (residency.go) behind
+// the own-model trial's reservation: while a trial holds the engine the job
+// waits it out instead of meeting the trial's second large model in the same
+// memory. The trial itself enters d.mem directly — it cannot wait on its own
+// mark.
+func (d *Daemon) notesEngineTurn(ctx context.Context) (func(), error) {
+	if err := d.waitNotesTrial(ctx); err != nil {
+		return nil, err
+	}
+	return d.mem.enter(ctx, d.LLMSup, 0)
 }
 
 // handleNotesModelValidate answers POST /v1/meetings/notes-model/validate:

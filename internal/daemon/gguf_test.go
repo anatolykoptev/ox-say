@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // ggufKV is one test metadata entry; which of the Value fields the writer
@@ -114,6 +116,73 @@ func TestGGUFReadMetaReportsAnUnsupportedVersion(t *testing.T) {
 	}
 	if m.Version != 4 {
 		t.Fatalf("version = %d", m.Version)
+	}
+}
+
+// The parse reads through every declared entry — a valid head does not cut
+// it short once the two general.* strings are in: a malformed tail, an
+// unknown value type included, is refused. Mutation: gguf.go ggufReadMeta,
+// restore the early `if m.Name != "" && m.Architecture != "" { return m,
+// nil }` -> both rows RED (the tail is never reached).
+func TestGGUFReadMetaReadsThroughTheDeclaredEntries(t *testing.T) {
+	head := writeTestGGUF(t, 3, []ggufKV{
+		{Key: "general.architecture", Type: ggufTypeString, Str: "qwen3"},
+		{Key: "general.name", Type: ggufTypeString, Str: "Mine"},
+	})
+	// The header sits before the writer's 64-byte tensor stand-in; the
+	// declared count is rewritten for the third, broken entry.
+	withTail := func(entry []byte, tail bool) []byte {
+		body := append([]byte(nil), head[:len(head)-64]...)
+		binary.LittleEndian.PutUint64(body[16:24], 3)
+		body = append(body, entry...)
+		if tail {
+			body = append(body, make([]byte, 64)...)
+		}
+		return body
+	}
+	t.Run("an unknown value type after the head", func(t *testing.T) {
+		var e bytes.Buffer
+		_ = binary.Write(&e, binary.LittleEndian, uint64(1))
+		e.WriteString("x")
+		_ = binary.Write(&e, binary.LittleEndian, uint32(99))
+		_, err := ggufReadMeta(ggufFile(t, withTail(e.Bytes(), true)))
+		if !errors.Is(err, errGGUFFormat) {
+			t.Fatalf("err = %v, want the malformed tail refused", err)
+		}
+	})
+	t.Run("the file ends inside the tail", func(t *testing.T) {
+		var e bytes.Buffer
+		_ = binary.Write(&e, binary.LittleEndian, uint64(1))
+		e.WriteString("x")
+		// No type word follows: the file ends inside the third entry.
+		_, err := ggufReadMeta(ggufFile(t, withTail(e.Bytes(), false)))
+		if !errors.Is(err, errGGUFTruncated) {
+			t.Fatalf("err = %v, want the truncated tail refused", err)
+		}
+	})
+}
+
+// The two general.* strings are the file's own words — bounded and cleaned
+// before they ride out in the validate answer: no control characters, at
+// most ggufMaxMetaRunes runes. Mutation: ggufReadMeta, drop the
+// ggufMetaString calls -> the raw values come back -> RED.
+func TestGGUFReadMetaCleansTheReportedStrings(t *testing.T) {
+	path := ggufFile(t, writeTestGGUF(t, 3, []ggufKV{
+		{Key: "general.architecture", Type: ggufTypeString, Str: "qwen\x003\x07"},
+		{Key: "general.name", Type: ggufTypeString, Str: "Mine\n" + strings.Repeat("y", 200)},
+	}))
+	m, err := ggufReadMeta(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if m.Architecture != "qwen3" {
+		t.Fatalf("architecture = %q, want the control bytes stripped", m.Architecture)
+	}
+	if strings.ContainsAny(m.Name, "\n\x00") {
+		t.Fatalf("name carries a control character: %q", m.Name)
+	}
+	if n := utf8.RuneCountInString(m.Name); n != 128 {
+		t.Fatalf("name = %d runes, want the 128 cap", n)
 	}
 }
 

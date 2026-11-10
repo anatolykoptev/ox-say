@@ -105,10 +105,14 @@ type Daemon struct {
 	// takes the turn like a notes job would.
 	trialExclusive atomic.Bool
 
-	// trialMu guards trialSup: the supervisor of the one own-model trial
-	// child, so the daemon's shutdown can stop it too.
-	trialMu  sync.Mutex
-	trialSup *engine.Supervisor
+	// trialMu guards trialSup and trialDone: the supervisor of the one
+	// own-model trial child, so the daemon's shutdown can stop it too, and
+	// the reservation marking the notes engine as the trial's — a channel
+	// closed when the trial ends, which notes jobs wait on before taking
+	// the engine turn (notesvalidate.go).
+	trialMu   sync.Mutex
+	trialSup  *engine.Supervisor
+	trialDone chan struct{}
 
 	// voiceMu serializes voice mutations against engine-start replay: a
 	// voice written while replayVoices runs could otherwise be missing
@@ -341,6 +345,10 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 		}
 	}
 	logger.Info("large engine memory model", slog.String("mode", d.mem.mode()))
+	// A daemon killed mid-trial left the trial's key behind: a dead bearer
+	// credential, swept here. The pidfile stays — the next trial's
+	// supervisor reaps the leftover child through it.
+	_ = os.Remove(filepath.Join(cfg.RunDir(), notesTrialKeyFile))
 	// The own-model trial plugs into the PUT's {"path"} gate here, bound to
 	// this daemon: its check loads the file the way the engine would.
 	notesModelTrialLoad = d.notesModelTrialRefusal

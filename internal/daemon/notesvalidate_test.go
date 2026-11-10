@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
+	"github.com/anatolykoptev/ox-say/internal/meeting"
 	"github.com/anatolykoptev/ox-say/internal/testutil"
 )
 
@@ -27,6 +29,7 @@ func trialDaemon(t *testing.T, dir string, edit func(*config.Config)) (*Daemon, 
 	t.Setenv("OXSAY_FAKE_DIR", dir)
 	return meetingFixture(t, func(c *config.Config) {
 		c.NotesBin = os.Args[0]
+		c.HostMemoryBytes = 32 << 30 // the test Mac reports its memory
 		if edit != nil {
 			edit(c)
 		}
@@ -295,6 +298,202 @@ func TestNotesModelTrialHoldsAndReleasesTheResidencyTurn(t *testing.T) {
 	d.mem.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("the turn outlived the trial: n=%d", n)
+	}
+}
+
+// The trial's key is a bearer credential and its pid file a dead handle once
+// the check is over — both are gone on every way out: a verdict, a child
+// that never loads, a health timeout, a dead completion, a cancel mid-check,
+// a daemon shutdown mid-check. Mutation: notesvalidate.go trialLoadModel,
+// drop the d.removeNotesTrialFiles() call in the exit defer -> the key
+// survives every direct exit -> all rows but the shutdown one RED; that row's
+// mutation is the call in stopTrialSup.
+func TestNotesModelTrialLeavesNoFilesBehind(t *testing.T) {
+	dir := t.TempDir()
+	d, _ := trialDaemon(t, dir, nil)
+	keyPath := filepath.Join(d.Cfg.RunDir(), notesTrialKeyFile)
+	pidPath := filepath.Join(d.Cfg.RunDir(), notesTrialPidFile)
+	gone := func(t *testing.T) {
+		t.Helper()
+		for _, p := range []string{keyPath, pidPath} {
+			if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("%s survived the trial", filepath.Base(p))
+			}
+		}
+	}
+	// spawned parks the check where the key must already exist and the
+	// supervisor is registered: a child of THIS trial spawned (Prepare runs
+	// ahead of it). A leftover key from a refused row would pass a plain
+	// stat at once.
+	spawned := func(t *testing.T, before int) {
+		t.Helper()
+		testutil.WaitFor(t, 5*time.Second, func() bool {
+			return len(llmSpawnPids(dir)) > before
+		}, "the trial child to spawn")
+	}
+	path := ownGGUF(t, dir, nil)
+
+	t.Run("a verdict arrives", func(t *testing.T) {
+		if res := d.notesModelTrial(context.Background(), path); !res.OK {
+			t.Fatalf("verdict = %+v", res)
+		}
+		gone(t)
+	})
+	t.Run("the engine exits at once", func(t *testing.T) {
+		t.Setenv("OXSAY_FAKE_LLM_EXIT", "1")
+		if res := d.notesModelTrial(context.Background(), path); res.OK {
+			t.Fatal("the exit-1 model must be refused")
+		}
+		gone(t)
+	})
+	t.Run("the engine never answers health", func(t *testing.T) {
+		t.Setenv("OXSAY_FAKE_LLM_LOADING_SPAWNS", "99")
+		old := notesTrialStartupTimeout
+		notesTrialStartupTimeout = 300 * time.Millisecond
+		t.Cleanup(func() { notesTrialStartupTimeout = old })
+		if res := d.notesModelTrial(context.Background(), path); res.OK {
+			t.Fatal("a never-healthy engine must be refused")
+		}
+		gone(t)
+	})
+	t.Run("the model does not answer a completion", func(t *testing.T) {
+		old := notesTrialCallTimeout
+		notesTrialCallTimeout = time.Nanosecond // the completion's ctx is born dead
+		t.Cleanup(func() { notesTrialCallTimeout = old })
+		if res := d.notesModelTrial(context.Background(), path); res.OK {
+			t.Fatal("a dead completion must be refused")
+		}
+		gone(t)
+	})
+	t.Run("the check is cancelled mid-start", func(t *testing.T) {
+		t.Setenv("OXSAY_FAKE_LLM_LOADING_SPAWNS", "99")
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan notesModelTrial, 1)
+		before := len(llmSpawnPids(dir))
+		go func() { done <- d.notesModelTrial(ctx, path) }()
+		spawned(t, before)
+		cancel()
+		res := <-done
+		if res.OK || !strings.Contains(res.Reason, "cancelled") {
+			t.Fatalf("verdict = %+v", res)
+		}
+		gone(t)
+	})
+	t.Run("the daemon is shut down mid-check", func(t *testing.T) {
+		// The probe parks the check with its engine up: while it parks, its
+		// own exit defer cannot have run — files gone right after Shutdown
+		// are stopTrialSup's doing alone.
+		inTrial := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		free := func() { once.Do(func() { close(release) }) }
+		defer free()
+		notesTrialProbe = func() { close(inTrial); <-release }
+		defer func() { notesTrialProbe = nil }()
+		done := make(chan notesModelTrial, 1)
+		go func() { done <- d.notesModelTrial(context.Background(), path) }()
+		<-inTrial
+		d.Shutdown()
+		gone(t)
+		free()
+		if res := <-done; res.OK {
+			t.Fatalf("verdict = %+v", res)
+		}
+		gone(t)
+	})
+}
+
+// The trial's engine reservation — not the queue's admission lock — is what
+// a meeting's notes wait on: the probe parks a running trial mid-check, and
+// while it holds the engine a real Finish still lands at once and the queued
+// job's notes run once the reservation lifts. Mutation: notesvalidate.go
+// notesModelTrial, run trialLoadModel inside the WithAdmissionLock body ->
+// the finish parks behind it -> RED.
+func TestNotesModelTrialNeverBlocksAFinish(t *testing.T) {
+	dir := t.TempDir()
+	d, _ := trialDaemon(t, dir, nil)
+
+	// The probe parks the trial with its engine up: the reservation is held
+	// for as long as the check still runs.
+	inTrial := make(chan struct{})
+	release := make(chan struct{})
+	notesTrialProbe = func() { close(inTrial); <-release }
+	t.Cleanup(func() { notesTrialProbe = nil })
+	trial := make(chan notesModelTrial, 1)
+	go func() { trial <- d.notesModelTrial(context.Background(), ownGGUF(t, dir, nil)) }()
+	<-inTrial
+
+	// A real Finish of a real recording lands while the trial still runs:
+	// the admission lock was held for the reservation only.
+	m, mdir, err := d.Meet.Store.Create(meeting.Manifest{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTone(t, filepath.Join(mdir, meeting.MePCM), 5)
+	fin := make(chan error, 1)
+	go func() {
+		_, err := d.Meet.Finish(m.ID, time.Now())
+		fin <- err
+	}()
+	var ferr error
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		select {
+		case ferr = <-fin:
+			return true
+		default:
+			return false
+		}
+	}, "the finish to return while the trial runs")
+	if ferr != nil {
+		t.Fatal(ferr)
+	}
+	// The meeting is queued and its notes wait the trial out — they are
+	// never refused and never lost.
+	if got := meetingManifest(t, d, m.ID); got.Status != meeting.StatusQueued {
+		t.Fatalf("status = %s, want queued", got.Status)
+	}
+	runCtx, stopRun := context.WithCancel(context.Background())
+	t.Cleanup(stopRun)
+	go d.Meet.Run(runCtx)
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		return meetingManifest(t, d, m.ID).Status == meeting.StatusSummarizing
+	}, "the meeting's notes to be waiting on the trial")
+	close(release)
+	if res := <-trial; !res.OK {
+		t.Fatalf("verdict = %+v", res)
+	}
+	testutil.WaitFor(t, 10*time.Second, func() bool {
+		return meetingManifest(t, d, m.ID).Status == meeting.StatusDone
+	}, "the queued meeting's notes to run once the trial ends")
+	if _, err := os.Stat(filepath.Join(mdir, meeting.NotesJSON)); err != nil {
+		t.Fatalf("no notes.json after the wait: %v", err)
+	}
+}
+
+// A Mac that cannot report its memory fails closed: the model cannot be
+// checked, so no child starts — the fit gate is not skipped. Mutation:
+// notesvalidate.go notesModelTrial, delete the `ram == 0` refusal -> the 70%
+// gate is skipped, a child spawns and the verdict is ok -> RED.
+func TestNotesModelTrialRefusesWhenMemoryIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	_, mux := trialDaemon(t, dir, func(c *config.Config) { c.HostMemoryBytes = 0 })
+	path := ownGGUF(t, dir, nil)
+	rec := call(t, mux, http.MethodPost, "/v1/meetings/notes-model/validate", `{"path":`+strconv.Quote(path)+`}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("validate: %d %s", rec.Code, bodyText(rec))
+	}
+	var out struct {
+		OK     bool   `json:"ok"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.OK || !strings.Contains(out.Reason, "memory size could not be read") {
+		t.Fatalf("verdict = %+v, want ok:false on unknown memory", out)
+	}
+	if pids := llmSpawnPids(dir); len(pids) != 0 {
+		t.Fatalf("an unchecked model spawned %d children", len(pids))
 	}
 }
 

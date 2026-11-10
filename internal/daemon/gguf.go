@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode"
 )
 
 // The own-model check's first look at a file: the GGUF header and the
@@ -121,12 +122,9 @@ func ggufReadMeta(path string) (ggufMeta, error) {
 				return m, err
 			}
 			if key == "general.name" {
-				m.Name = s
+				m.Name = ggufMetaString(s)
 			} else {
-				m.Architecture = s
-			}
-			if m.Name != "" && m.Architecture != "" {
-				return m, nil
+				m.Architecture = ggufMetaString(s)
 			}
 			continue
 		}
@@ -135,6 +133,25 @@ func ggufReadMeta(path string) (ggufMeta, error) {
 		}
 	}
 	return m, nil
+}
+
+// ggufMaxMetaRunes bounds the metadata strings the check reports: they are
+// the file's own words and bound nothing.
+const ggufMaxMetaRunes = 128
+
+// ggufMetaString makes a metadata string safe to report: control characters
+// are stripped and it is capped at ggufMaxMetaRunes runes.
+func ggufMetaString(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	if rs := []rune(s); len(rs) > ggufMaxMetaRunes {
+		s = string(rs[:ggufMaxMetaRunes])
+	}
+	return s
 }
 
 // metaCapReader fails reads past the metadata budget instead of reporting a

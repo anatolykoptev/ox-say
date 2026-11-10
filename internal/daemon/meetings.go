@@ -303,7 +303,7 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	// Below config.OneLargeEngineBelowGB the notes model takes its turn: the fast and the studio voice are stopped
 	// first, and the call waits (on the composer's own context) while one of them is working. Before the Guard, see
 	// residency.
-	leave, err := c.d.mem.enter(ctx, c.d.LLMSup, 0)
+	leave, err := c.d.notesEngineTurn(ctx)
 	if err != nil {
 		err = fmt.Errorf("the notes model could not take its turn: %w", err)
 		if ctx.Err() != nil {
@@ -400,7 +400,7 @@ func (d *Daemon) initMeetings() {
 			return d.Transcribe(ctx, TranscribeInput{AudioPath: wav})
 		},
 		Chat:       llmChat{d: d},
-		NotesTurn:  func(ctx context.Context) (func(), error) { return d.mem.enter(ctx, d.LLMSup, 0) },
+		NotesTurn:  func(ctx context.Context) (func(), error) { return d.notesEngineTurn(ctx) },
 		NotesReady: func() string { code, _ := d.notesBlock(); return code },
 		TranscribeReady: func() string {
 			if _, err := os.Stat(d.Cfg.STTModel); err != nil {
