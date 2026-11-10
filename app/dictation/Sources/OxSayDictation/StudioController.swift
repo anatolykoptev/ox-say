@@ -27,8 +27,8 @@ struct StudioHost {
     var openSpeak: () -> Void
     /// The Stop row: the window opens on that voiceover, where stopping asks for its confirmation (never an alert over every app).
     var openSpeakProject: (_ id: String) -> Void
-    /// The main window is on screen (shown, not minimised or covered).
-    var windowVisible: () -> Bool
+    /// What the window and the app show at this moment (a finished voiceover is announced unless it is on screen).
+    var windowShown: () -> ShownWindow
 }
 
 /// The Studio submenu: draws the rows StudioMenu decides and runs what they do — continue a voiceover on battery, open
@@ -46,7 +46,7 @@ final class StudioController: NSObject {
 
     init(host: StudioHost) {
         self.host = host
-        voiceover = VoiceoverService(client: host.client, windowVisible: host.windowVisible)
+        voiceover = VoiceoverService(client: host.client, windowShown: host.windowShown)
         super.init()
         submenu.autoenablesItems = false
         voiceover.observe(

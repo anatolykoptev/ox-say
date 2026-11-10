@@ -1218,9 +1218,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             openSpeak: { [unowned self] in self.mainWindow.show(MainRoute(section: .speak, meetingID: nil)) },
             openSpeakProject: { [unowned self] id in self.mainWindow.show(MainRoute(section: .speak, speakID: id)) },
-            windowVisible: { [unowned self] in
-                guard let window = self.mainWindow.window else { return false }
-                return window.isVisible && window.occlusionState.contains(.visible)
+            windowShown: { [unowned self] in
+                let window = self.mainWindow.window
+                let visible = window.map {
+                    $0.isVisible && $0.isKeyWindow && !$0.isMiniaturized && $0.isOnActiveSpace && $0.occlusionState.contains(.visible)
+                } ?? false
+                return ShownWindow(appActive: NSApp.isActive, windowVisible: visible,
+                                   section: self.mainWindow.source?.model.section,
+                                   speakID: self.mainWindow.source?.model.data.speak.selectedProject?.id)
             })
     }
 

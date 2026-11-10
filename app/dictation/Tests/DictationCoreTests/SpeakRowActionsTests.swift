@@ -113,15 +113,17 @@ final class SpeakRowActionsTests: XCTestCase {
 
     func testFinishPostsANotification() throws {
         let done = job(.done, wav: "/x/Chapter.wav")
-        let notice = try XCTUnwrap(VoiceoverReady.notice(for: done, startedOnPage: false, windowVisible: true, text: ShippedStrings.localizer("en")))
+        let en = ShippedStrings.localizer("en")
+        let elsewhere = ShownWindow(appActive: true, windowVisible: true, section: .voices, speakID: nil)
+        let onIt = ShownWindow(appActive: true, windowVisible: true, section: .speak, speakID: done.id)
+        let notice = try XCTUnwrap(VoiceoverReady.notice(for: done, shown: elsewhere, text: en))
         XCTAssertEqual(notice.speakID, done.id)
-        XCTAssertEqual(notice.title, ProduceText.finishAlert(done, text: ShippedStrings.localizer("en"))?.title)
+        XCTAssertEqual(notice.title, ProduceText.finishAlert(done, text: en)?.title)
         XCTAssertTrue(notice.body.contains("Chapter.wav"))
-        XCTAssertNil(VoiceoverReady.notice(for: job(.cancelled), startedOnPage: false, windowVisible: false, text: ShippedStrings.localizer("en")),
-                     "a voiceover stopped on purpose earns none")
-        XCTAssertNil(VoiceoverReady.notice(for: done, startedOnPage: true, windowVisible: true, text: ShippedStrings.localizer("en")),
-                     "the window already shows it")
-        XCTAssertNotNil(VoiceoverReady.notice(for: done, startedOnPage: true, windowVisible: false, text: ShippedStrings.localizer("en")))
+        XCTAssertNil(VoiceoverReady.notice(for: job(.cancelled), shown: elsewhere, text: en), "a voiceover stopped on purpose earns none")
+        XCTAssertNil(VoiceoverReady.notice(for: done, shown: onIt, text: en), "the window already shows it")
+        var inactive = onIt; inactive.appActive = false
+        XCTAssertNotNil(VoiceoverReady.notice(for: done, shown: inactive, text: en), "another app is in front")
     }
 
     // MARK: wiring (the app target is not importable here: the call sites are read as text, like the other wiring tests)

@@ -11,12 +11,12 @@ final class VoiceoverService {
     private var changeObservers: [() -> Void] = []
     private var finishObservers: [(ProduceJob) -> Void] = []
     private var windowStarted: Set<String> = []
-    /// The main window is on screen: a voiceover it shows ending needs no notification.
-    private let windowVisible: () -> Bool
+    /// What the window and the app show now, read when a voiceover ends: one the person is looking at needs no notification.
+    private let windowShown: () -> ShownWindow
 
-    init(client: StudioClient, windowVisible: @escaping () -> Bool) {
+    init(client: StudioClient, windowShown: @escaping () -> ShownWindow) {
         self.client = client
-        self.windowVisible = windowVisible
+        self.windowShown = windowShown
         follower = VoiceoverFollower(
             source: VoiceoverFollower.Source(voiceover: { [client] in try await client.voiceover(id: $0) },
                                              voiceovers: { [client] in try await client.voiceovers() }),
@@ -31,7 +31,7 @@ final class VoiceoverService {
     /// A voiceover ended while the window was not showing it: a notification says so (the system asks for permission at the
     /// first one), and a click opens the window on that project. The window shows the result whether or not this arrives.
     private func announce(_ job: ProduceJob) {
-        guard let notice = VoiceoverReady.notice(for: job, startedOnPage: startedOnPage(job.id), windowVisible: windowVisible()) else { return }
+        guard let notice = VoiceoverReady.notice(for: job, shown: windowShown()) else { return }
         MeetingNotifier.shared.voiceoverReady(notice)
     }
 

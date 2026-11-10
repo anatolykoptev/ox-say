@@ -86,11 +86,11 @@ public enum VoiceoverReady {
         public var speakID: String
     }
 
-    /// nil for a project stopped on purpose, and for one the window shows ending (`FinishNotice`): the notification would only
-    /// take the focus. The words are the finish alert's (`ProduceText.finishAlert`).
-    public static func notice(for job: ProduceJob, startedOnPage: Bool, windowVisible: Bool,
+    /// nil for a project stopped on purpose, and for one the window shows right now (`FinishNotice.windowShows`): the
+    /// notification would only take the focus. The words are the finish alert's (`ProduceText.finishAlert`).
+    public static func notice(for job: ProduceJob, shown: ShownWindow,
                               text: (L10nKey) -> String = { $0.text }) -> Notice? {
-        guard FinishNotice.shouldAlert(startedOnPage: startedOnPage, windowVisible: windowVisible),
+        guard !FinishNotice.windowShows(jobID: job.id, shown),
               let (title, body) = ProduceText.finishAlert(job, text: text) else { return nil }
         return Notice(title: title, body: body, speakID: job.id)
     }
