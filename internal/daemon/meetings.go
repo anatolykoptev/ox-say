@@ -55,7 +55,7 @@ const stateNotesUnavailable engine.State = "unavailable"
 const notesReasonEngineFailed = "notes_engine_failed"
 
 // notesStatus is the /status "notes" value: whether meeting notes can run,
-// and the model download's progress.
+// the model it runs on, and the model download's progress.
 type notesStatus struct {
 	Available   bool         `json:"available"`
 	Reason      string       `json:"reason,omitempty"`
@@ -68,6 +68,14 @@ type notesStatus struct {
 	// InstallCode is the stable code behind InstallErr: network, disk_full, checksum, server or other. The app shows its own
 	// sentence for it; InstallErr stays the fetch's English words for the log and the menu.
 	InstallCode string `json:"install_error_code,omitempty"`
+	// Model is the catalog id of the resolved notes model, or "custom" for the
+	// user's own file. Source says where the answer came from: env
+	// (OX_SAY_NOTES_MODEL), saved (the user's stored choice) or automatic.
+	Model  string `json:"model,omitempty"`
+	Source string `json:"source,omitempty"`
+	// Fallback is why the model is not the automatic default: "disk" — the
+	// disk held the compact 4B but not the standard 9B.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // notesBinPath is the path ox-llm is spawned by: always absolute, because the
@@ -88,9 +96,9 @@ func notesBinPath(cfg *config.Config) string {
 // origins (v0.7.0's special value): the default is "*", which would let any web
 // page the user opens talk to the server. Layers go to the GPU only with
 // unified memory; a discrete card stays with the speech engines.
-func notesServerArgs(cfg *config.Config, port int) []string {
+func notesServerArgs(cfg *config.Config, port int, modelPath string) []string {
 	args := []string{
-		"-m", cfg.NotesModel, "-c", strconv.Itoa(notesCtx),
+		"-m", modelPath, "-c", strconv.Itoa(notesCtx),
 		"--host", voxLoopbackHost, "--port", strconv.Itoa(port),
 		"-fa", "on", "--jinja", "--no-ui", "-np", "1", "--cache-ram", "0",
 		"--cors-origins", "localhost",
@@ -263,10 +271,12 @@ func notesEngineConfig(cfg *config.Config, logger *slog.Logger) engine.Config {
 		LogDir:         cfg.EngineLogDir,
 		PidPath:        filepath.Join(cfg.RunDir(), "notes.pid"),
 		Logger:         logger,
-		Args:           func(port int) []string { return notesServerArgs(cfg, port) },
-		Env:            notesServerEnv(cfg),
-		Prepare:        func() error { return notesPrepare(cfg) },
-		Verify:         notesVerifyAuth,
+		// The model file is resolved per spawn: a switched choice is loaded by
+		// the next start without a daemon restart.
+		Args:    func(port int) []string { return notesServerArgs(cfg, port, notesModelPath(cfg)) },
+		Env:     notesServerEnv(cfg),
+		Prepare: func() error { return notesPrepare(cfg) },
+		Verify:  notesVerifyAuth,
 	}
 }
 
@@ -347,7 +357,7 @@ func (d *Daemon) initMeetings() {
 		},
 		Chat:       llmChat{d: d},
 		NotesTurn:  func(ctx context.Context) (func(), error) { return d.mem.enter(ctx, d.LLMSup, 0) },
-		NotesReady: func() string { code, _ := d.Cfg.NotesBlock(); return code },
+		NotesReady: func() string { code, _ := d.notesBlock(); return code },
 		TranscribeReady: func() string {
 			if _, err := os.Stat(d.Cfg.STTModel); err != nil {
 				return meeting.WaitSTTModel
@@ -400,12 +410,18 @@ func (d *Daemon) StopMeetings() {
 	d.meetCancel = nil
 }
 
-// notesInstall is the one running model download.
+// notesInstall is the one running model download. file/bytes/name describe
+// the file being fetched (progress and the failure's disk check read them);
+// fallback is "disk" when this fetch is the compact model because the disk
+// could not hold the standard one.
 type notesInstall struct {
-	mu      sync.Mutex
-	running bool
-	err     string
-	code    string // installFailureCode of err
+	mu       sync.Mutex
+	running  bool
+	err      string
+	code     string // installFailureCode of err
+	file     string // the model file being fetched, absolute
+	bytes    int64  // its pinned size
+	fallback string
 	// ctx ends the download with the daemon: Shutdown cancels it and waits on wg.
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -417,6 +433,13 @@ func (n *notesInstall) state() (running bool, err, code string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.running, n.err, n.code
+}
+
+// target is the download's file fields; "" when idle.
+func (n *notesInstall) target() (file string, bytes int64, fallback string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.file, n.bytes, n.fallback
 }
 
 // curlExit finds curl's exit number in a fetch's last words: curl's own "curl: (N) ..." line, or the script's
@@ -525,33 +548,83 @@ func removePartLock(path string) {
 	_ = f.Close()
 }
 
-// InstallNotesModel downloads the notes model by running the installed
-// fetch-models.sh --notes-only: the one place that knows the model's URL and
-// SHA-256. It returns at once; /status reports the progress. The download
-// belongs to the daemon: Shutdown kills it, and a lock next to the .part file
-// keeps a second daemon from starting a second writer on it.
-func (d *Daemon) InstallNotesModel() error {
-	if code, reason := d.Cfg.NotesBlock(); code == config.NotesReasonUnsupported || code == config.NotesReasonEngineMissing {
+// InstallNotesModel downloads a notes model by running the installed
+// fetch-models.sh --notes <file> <sha256> <url>: the one place that knows the
+// download protocol; the catalog entry supplies the pinned URL and SHA-256.
+// With id "" the automatic default is the target — the standard model this
+// Mac can run, or the compact one when the disk holds only that (reported as
+// fallback "disk"). It returns at once; /status reports the progress. The
+// download belongs to the daemon: Shutdown kills it, and a lock next to the
+// .part file keeps a second daemon from starting a second writer on it.
+func (d *Daemon) InstallNotesModel(id string) error {
+	res := d.notesResolve()
+	if code, reason := d.Cfg.NotesBlock(res); code == config.NotesReasonUnsupported || code == config.NotesReasonEngineMissing {
 		return fmt.Errorf("%w: %s", ErrNotesInstall, reason)
 	}
-	if st, err := os.Stat(d.Cfg.NotesModel); err == nil && st.Mode().IsRegular() {
-		return fmt.Errorf("%w: the notes model is already installed", ErrNotesInstall)
+	// The download target. OX_SAY_NOTES_MODEL pins the file name: an id that
+	// names another file is refused, and an env file the catalog does not
+	// know is the user's own — never downloaded over.
+	var target *config.NotesModelEntry
+	envPath := d.Cfg.NotesEnvPath()
+	switch {
+	case id != "":
+		target = config.NotesModelByID(config.NotesCatalog, id)
+		if target == nil {
+			return fmt.Errorf("%w: unknown notes model %q", ErrNotesInstall, id)
+		}
+		if envPath != "" && filepath.Base(envPath) != target.File {
+			return fmt.Errorf("%w: OX_SAY_NOTES_MODEL names a different file; place the model there yourself", ErrNotesInstall)
+		}
+		if d.Cfg.HostMemoryBytes != 0 && d.Cfg.HostMemoryBytes < uint64(target.MinMemoryGB)<<30 {
+			return fmt.Errorf("%w: %s needs at least %d GB of memory; this Mac has %d GB", ErrNotesInstall, target.Name, target.MinMemoryGB, d.Cfg.HostMemoryBytes>>30)
+		}
+	case envPath != "":
+		if target = notesModelByFile(envPath); target == nil {
+			return fmt.Errorf("%w: OX_SAY_NOTES_MODEL names a different file; place the model there yourself", ErrNotesInstall)
+		}
+	default:
+		if res.Installed {
+			return fmt.Errorf("%w: the notes model is already installed", ErrNotesInstall)
+		}
+		target = d.Cfg.NotesAutomaticDefault()
 	}
-	if filepath.Base(d.Cfg.NotesModel) != config.NotesModelFile {
-		// The script writes the pinned file name; a model at another path is the
-		// user's own and is never downloaded over.
-		return fmt.Errorf("%w: OX_SAY_NOTES_MODEL names a different file; place the model there yourself", ErrNotesInstall)
+	// Where the fetch puts the file. The env pin names the path the engine
+	// reads, so a pin outside <home>/models is fetched into its own dir; every
+	// other target lives in the models dir.
+	file := filepath.Join(d.Cfg.ModelsDir(), target.File)
+	dest := d.Cfg.ModelsDir()
+	if envPath != "" {
+		file, dest = envPath, filepath.Dir(envPath)
+	}
+	if notesInstalled(file) {
+		return fmt.Errorf("%w: the notes model is already installed", ErrNotesInstall)
 	}
 	script := filepath.Join(d.Cfg.Home, fetchModelsScript)
 	if _, err := os.Stat(script); err != nil {
 		return fmt.Errorf("%w: %s is missing; reinstall ox-say", ErrNotesInstall, fetchModelsScript)
 	}
-	dest := filepath.Dir(d.Cfg.NotesModel)
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return fmt.Errorf("%w: %v", ErrNotesInstall, err)
 	}
-	if err := d.checkNotesDisk(dest); err != nil {
-		return err
+	// Disk fallback: asked-for-nothing gets the automatic pick, and when the
+	// disk cannot hold it, the compact model — the one model that keeps
+	// notes working on a tight disk. An explicit id reports the failure.
+	fallback := ""
+	if err := d.checkNotesDisk(dest, file, target.Bytes); err != nil {
+		fb := notesDiskFallback(target)
+		if fb == nil || id != "" || envPath != "" {
+			// An explicit id or an operator's file name reports the failure;
+			// the fallback is only for the automatic pick.
+			return err
+		}
+		fbFile := filepath.Join(d.Cfg.ModelsDir(), fb.File)
+		if notesInstalled(fbFile) {
+			return fmt.Errorf("%w: the notes model is already installed", ErrNotesInstall)
+		}
+		if ferr := d.checkNotesDisk(d.Cfg.ModelsDir(), fbFile, fb.Bytes); ferr != nil {
+			return err // even the fallback does not fit: name the first failure
+		}
+		target, file, fallback = fb, fbFile, "disk"
 	}
 	// Single-flight under the lock (#225): two concurrent requests must not
 	// run two fetch processes appending to the same .part file.
@@ -563,14 +636,14 @@ func (d *Daemon) InstallNotesModel() error {
 	if d.notes.running {
 		return fmt.Errorf("%w: a download is already running", ErrNotesInstall)
 	}
-	lock, err := lockPart(d.Cfg.NotesModel + ".part.lock")
+	lock, err := lockPart(file + ".part.lock")
 	if err != nil {
 		return fmt.Errorf("%w: a download is already running (another ox-say owns the .part file)", ErrNotesInstall)
 	}
 	if d.notes.ctx == nil {
 		d.notes.ctx, d.notes.cancel = context.WithCancel(context.Background())
 	}
-	cmd := exec.CommandContext(d.notes.ctx, script, "--notes-only", dest)
+	cmd := exec.CommandContext(d.notes.ctx, script, "--notes", target.File, target.SHA256, target.URL, dest)
 	var tail bytes.Buffer
 	cmd.Stderr = &tail
 	// The fetch gets the lock as fd 3 and its own process group, so killing it
@@ -584,17 +657,41 @@ func (d *Daemon) InstallNotesModel() error {
 	}
 	_ = lock.Close() // the child's copy keeps the lock
 	d.notes.running, d.notes.err, d.notes.code = true, "", ""
+	d.notes.file, d.notes.bytes, d.notes.fallback = file, target.Bytes, fallback
 	d.notes.wg.Add(1)
 	go d.runNotesInstall(d.notes.ctx, cmd, &tail)
 	return nil
 }
 
-// checkNotesDisk refuses a download the disk cannot hold. A .part file from an
-// earlier try already counts; a disk whose free space cannot be read does not
-// block the download (the fetch itself fails loudly on a full disk), but the
-// log says the check was skipped.
-func (d *Daemon) checkNotesDisk(dest string) error {
-	need := d.notesDiskNeed()
+// notesModelByFile maps an OX_SAY_NOTES_MODEL path to its catalog entry by
+// file name; nil: the user's own file.
+func notesModelByFile(path string) *config.NotesModelEntry {
+	base := filepath.Base(path)
+	for i := range config.NotesCatalog {
+		if config.NotesCatalog[i].File == base {
+			return &config.NotesCatalog[i]
+		}
+	}
+	return nil
+}
+
+// notesDiskFallback is the model a no-id install drops to when the disk
+// cannot hold the target: the catalog's compact entry.
+func notesDiskFallback(target *config.NotesModelEntry) *config.NotesModelEntry {
+	for i := range config.NotesCatalog {
+		if e := &config.NotesCatalog[i]; e.Kind == config.NotesKindCompact && e.ID != target.ID {
+			return e
+		}
+	}
+	return nil
+}
+
+// checkNotesDisk refuses a download of want bytes (plus the margin) into dest
+// that the disk cannot hold. A .part file from an earlier try already counts;
+// a disk whose free space cannot be read does not block the download (the
+// fetch itself fails loudly on a full disk), but the log says it was skipped.
+func (d *Daemon) checkNotesDisk(dest, file string, want int64) error {
+	need := notesDiskNeed(file, want)
 	free, err := freeBytes(dest)
 	if err != nil {
 		d.log.Warn("notes model download: cannot read the free disk space, downloading without the check", slog.Any("error", err))
@@ -609,10 +706,10 @@ func (d *Daemon) checkNotesDisk(dest string) error {
 
 // notesDiskNeed is the free space the rest of the model download needs: the model and a margin, less what a .part file
 // from an earlier try already holds.
-func (d *Daemon) notesDiskNeed() int64 {
-	need := int64(config.NotesModelBytes + notesDiskMargin)
-	if st, err := os.Stat(d.Cfg.NotesModel + ".part"); err == nil {
-		need -= min(st.Size(), int64(config.NotesModelBytes))
+func notesDiskNeed(file string, want int64) int64 {
+	need := want + notesDiskMargin
+	if st, err := os.Stat(file + ".part"); err == nil {
+		need -= min(st.Size(), want)
 	}
 	return need
 }
@@ -639,11 +736,15 @@ func (d *Daemon) installFailure(tail string) string {
 	if code != "other" || !strings.Contains(tail, "curl: (23)") && !strings.Contains(tail, "curl exit 23") {
 		return code
 	}
-	dir := filepath.Dir(d.Cfg.NotesModel)
+	file, want, _ := d.notes.target()
+	if file == "" {
+		return code
+	}
+	dir := filepath.Dir(file)
 	if !dirWritable(dir) {
 		return code
 	}
-	if free, err := freeBytes(dir); err == nil && free < d.notesDiskNeed() {
+	if free, err := freeBytes(dir); err == nil && free < notesDiskNeed(file, want) {
 		return "disk_full"
 	}
 	return code
@@ -652,15 +753,19 @@ func (d *Daemon) installFailure(tail string) string {
 func (d *Daemon) runNotesInstall(ctx context.Context, cmd *exec.Cmd, tail *bytes.Buffer) {
 	defer d.notes.wg.Done()
 	err := cmd.Wait()
+	if err != nil && ctx.Err() == nil {
+		// installFailure reads notes.target() — compute it before the lock.
+		msg := installTail(tail.String())
+		code := d.installFailure(msg)
+		d.notes.mu.Lock()
+		d.notes.err, d.notes.code = "The download failed: "+msg, code
+		d.log.Warn("notes model download failed", slog.Any("error", err), slog.String("stderr", msg))
+		d.notes.mu.Unlock()
+	}
 	d.notes.mu.Lock()
 	defer d.notes.mu.Unlock()
-	removePartLock(d.Cfg.NotesModel + ".part.lock")
+	removePartLock(d.notes.file + ".part.lock")
 	d.notes.running = false
-	if err != nil && ctx.Err() == nil {
-		msg := installTail(tail.String())
-		d.notes.err, d.notes.code = "The download failed: "+msg, d.installFailure(msg)
-		d.log.Warn("notes model download failed", slog.Any("error", err), slog.String("stderr", msg))
-	}
 }
 
 // installTail is the last words of a fetch's stderr for a person: a progress
@@ -700,13 +805,17 @@ func (d *Daemon) StopNotesInstall() {
 // "unsupported", which is a config-level judgement (#243).
 func (d *Daemon) notesStatus() notesStatus {
 	running, ierr, icode := d.notes.state()
-	out := notesStatus{Installing: running, InstallErr: ierr, InstallCode: icode}
+	res := d.notesResolve()
+	out := notesStatus{Installing: running, InstallErr: ierr, InstallCode: icode,
+		Model: res.ID, Source: res.Source, Fallback: d.notesFallback(res)}
 	if running {
-		if st, err := os.Stat(d.Cfg.NotesModel + ".part"); err == nil {
-			out.ProgressPct = int(min(99, st.Size()*100/config.NotesModelBytes))
+		if file, want, _ := d.notes.target(); file != "" && want > 0 {
+			if st, err := os.Stat(file + ".part"); err == nil {
+				out.ProgressPct = int(min(99, st.Size()*100/want))
+			}
 		}
 	}
-	if code, reason := d.Cfg.NotesBlock(); reason != "" {
+	if code, reason := d.Cfg.NotesBlock(res); reason != "" {
 		out.State, out.Reason, out.ReasonCode = stateNotesUnavailable, reason, code
 		return out
 	}
@@ -729,6 +838,42 @@ func (d *Daemon) notesStatus() notesStatus {
 		}
 	}
 	return out
+}
+
+// notesFallback is why the resolved model is not the automatic default:
+// "disk" — an install fell back to the compact model because the standard one
+// did not fit the disk, or the compact model is installed while the standard
+// one still cannot fit the disk now. Anything else is no fallback.
+func (d *Daemon) notesFallback(res config.NotesResolution) string {
+	if running, _, _ := d.notes.state(); running {
+		if _, _, fb := d.notes.target(); fb != "" {
+			return fb
+		}
+	}
+	if res.Entry == nil || res.Entry.Kind != config.NotesKindCompact {
+		return ""
+	}
+	if res.Source != config.NotesSourceAutomatic {
+		return ""
+	}
+	var std *config.NotesModelEntry
+	for i := range config.NotesCatalog {
+		if config.NotesCatalog[i].Kind == config.NotesKindStandard {
+			std = &config.NotesCatalog[i]
+			break
+		}
+	}
+	if std == nil || notesInstalled(filepath.Join(d.Cfg.ModelsDir(), std.File)) {
+		return ""
+	}
+	if d.Cfg.HostMemoryBytes != 0 && d.Cfg.HostMemoryBytes < uint64(std.MinMemoryGB)<<30 {
+		return "" // it is memory, not disk, that keeps the standard model out
+	}
+	free, err := freeBytes(d.Cfg.ModelsDir())
+	if err != nil || free >= notesDiskNeed(filepath.Join(d.Cfg.ModelsDir(), std.File), std.Bytes) {
+		return ""
+	}
+	return "disk"
 }
 
 // notesInstalling is 1 while the notes model downloads.

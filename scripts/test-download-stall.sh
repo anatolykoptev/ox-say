@@ -137,6 +137,11 @@ export OX_SAY_RETRY_SLEEP_UNIT=0
 
 # --- fetch-models.sh: real curl, URL rewritten to the listener by a shim ---
 mkdir -p "$tmp/bin"
+# The daemon names the notes model for --notes: file, pinned sha256 and resolve URL (the catalog's 4B row here).
+name=Qwen3.5-4B-Q4_K_M.gguf
+sha=00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4
+url=https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523
+
 cat > "$tmp/bin/curl" <<SHIM
 #!/bin/bash
 args=()
@@ -150,14 +155,14 @@ chmod +x "$tmp/bin/curl"
 
 echo stall > "$tmp/path"
 start=$(date +%s)
-PATH="$tmp/bin:$PATH" OX_SAY_MODELS_FROM= bounded 60 bash "$root/scripts/fetch-models.sh" --notes-only "$tmp/d1"; rc=$?
+PATH="$tmp/bin:$PATH" OX_SAY_MODELS_FROM='' bounded 60 bash "$root/scripts/fetch-models.sh" --notes "$name" "$sha" "$url" "$tmp/d1"; rc=$?
 took=$(( $(date +%s) - start ))
 out=$(cat "$tmp/out")
 if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then pass "fetch-models.sh: a dead download ends non-zero (exit $rc, ${took}s)"; else fail "fetch-models.sh: a dead download ends (exit $rc after ${took}s)"; fi
 case $out in *stalled*|*"curl exit"*) pass "fetch-models.sh: the stall is named" ;; *) fail "fetch-models.sh: no stall message: $out" ;; esac
 
 echo ok > "$tmp/path"
-PATH="$tmp/bin:$PATH" OX_SAY_MODELS_FROM= bounded 60 bash "$root/scripts/fetch-models.sh" --notes-only "$tmp/d2"; rc=$?
+PATH="$tmp/bin:$PATH" OX_SAY_MODELS_FROM='' bounded 60 bash "$root/scripts/fetch-models.sh" --notes "$name" "$sha" "$url" "$tmp/d2"; rc=$?
 out=$(cat "$tmp/out")
 case $out in *"checksum mismatch"*) pass "fetch-models.sh: a healthy slow trickle completes its download" ;; *) fail "fetch-models.sh: healthy trickle did not finish (exit $rc): $out" ;; esac
 
@@ -169,7 +174,7 @@ fetch_http() {
     echo "$1" > "$tmp/path"
     : > "$tmp/reqlog"
     if [ -n "${seed:-}" ]; then printf '%s' "$seed" > "$hd/Qwen3.5-4B-Q4_K_M.gguf.part"; fi
-    PATH="$tmp/bin:$PATH" OX_SAY_MODELS_FROM= bounded 60 bash "$root/scripts/fetch-models.sh" --notes-only "$hd"; rc=$?
+    PATH="$tmp/bin:$PATH" OX_SAY_MODELS_FROM='' bounded 60 bash "$root/scripts/fetch-models.sh" --notes "$name" "$sha" "$url" "$hd"; rc=$?
     out=$(cat "$tmp/out"); reqs=$(wc -l < "$tmp/reqlog" | tr -d ' ')
 }
 part="Qwen3.5-4B-Q4_K_M.gguf.part"

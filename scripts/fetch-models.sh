@@ -5,8 +5,10 @@
 #   Silero VAD v5.1.2 (MIT)                      ox-stt --serve --vad streaming sessions
 #   Whisper large-v3-turbo (MIT), --with-whisper  speech-to-text, 99 languages (1.6 GB)
 #   VoxCPM2 Q8_0 (Apache-2.0), --with-voxcpm2    quality text-to-speech, Apple Silicon only (3.0 GB)
-#   Qwen3.5-4B Q4_K_M (Apache-2.0), --notes-only  meeting notes (2.7 GB); fetches this one model and nothing else.
-#                                                 The daemon runs it from $OX_SAY_HOME/fetch-models.sh on the user's first use of notes.
+#   a notes model (one of the meeting-notes catalog), --notes <file> <sha256> <url>
+#                                                 fetches this one model and nothing else; the daemon names the
+#                                                 catalog file, its pinned SHA-256 and its pinned resolve URL, and
+#                                                 runs it from $OX_SAY_HOME/fetch-models.sh.
 #   Core ML community-1 diarization models (CC-BY-4.0), 24 files and 4 documents, 22 MB, in <dest>/diar/speaker-diarization/: who
 #                                                 spoke on a group call (ox-diar). In the default set; --diar-only fetches
 #                                                 just these.
@@ -18,7 +20,7 @@
 #                                                 the daemon runs --clean-only on the user's first use of cleanup. Apple Silicon
 #                                                 and Intel alike (no hardware test here; the daemon decides what runs).
 #
-# Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [--notes-only] [--diar-only] [--nemotron-only] [--clean-only] [dest]   (any order)
+# Usage: scripts/fetch-models.sh [--with-whisper] [--with-voxcpm2] [--notes <file> <sha256> <url>] [--diar-only] [--nemotron-only] [--clean-only] [dest]   (any order)
 #   dest defaults to "$OX_SAY_HOME/models" (OX_SAY_HOME defaults to
 #   ~/Library/Application Support/ox-say).
 #   OX_SAY_MODELS_FROM=<dir> copies matching files from a local dir instead of
@@ -28,36 +30,87 @@ set -euo pipefail
 with_whisper=0
 with_voxcpm2=0
 notes_only=0
+notes_file=
+notes_sha=
+notes_url=
 diar_only=0
 nemotron_only=0
 clean_only=0
 dest=
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --with-whisper) with_whisper=1 ;;
         --with-voxcpm2) with_voxcpm2=1 ;;
-        --notes-only) notes_only=1 ;;
+        --notes)
+            if [ "$notes_only" = 1 ]; then
+                echo "--notes may be given once" >&2
+                exit 2
+            fi
+            if [ $# -lt 4 ]; then
+                echo "--notes wants a file name, its sha256 and its Hugging Face URL" >&2
+                exit 2
+            fi
+            notes_only=1
+            notes_file=$2
+            notes_sha=$3
+            notes_url=$4
+            shift 3
+            ;;
         --diar-only) diar_only=1 ;;
         --nemotron-only) nemotron_only=1 ;;
         --clean-only) clean_only=1 ;;
-        -*) echo "unknown option: $arg" >&2; exit 2 ;;
+        -*) echo "unknown option: $1" >&2; exit 2 ;;
         *)
             if [ -n "$dest" ]; then
-                echo "more than one destination: $dest, $arg" >&2
+                echo "more than one destination: $dest, $1" >&2
                 exit 2
             fi
-            dest=$arg
+            dest=$1
             ;;
     esac
+    shift
 done
-# --notes-only, --diar-only, --nemotron-only and --clean-only each replace the model list; an option for another model would be dropped without a word.
+# --notes, --diar-only, --nemotron-only and --clean-only each replace the model list; an option for another model would be dropped without a word.
 if [ $((notes_only + diar_only + nemotron_only + clean_only)) -gt 1 ]; then
-    echo "--notes-only, --diar-only, --nemotron-only and --clean-only select different model sets; give one" >&2
+    echo "--notes, --diar-only, --nemotron-only and --clean-only select different model sets; give one" >&2
     exit 2
 fi
 if [ "$notes_only" = 1 ] || [ "$diar_only" = 1 ] || [ "$nemotron_only" = 1 ] || [ "$clean_only" = 1 ]; then
     if [ "$with_whisper" = 1 ] || [ "$with_voxcpm2" = 1 ]; then
-        echo "--with-whisper and --with-voxcpm2 do not combine with --notes-only, --diar-only, --nemotron-only or --clean-only: those fetch one set and nothing else" >&2
+        echo "--with-whisper and --with-voxcpm2 do not combine with --notes, --diar-only, --nemotron-only or --clean-only: those fetch one set and nothing else" >&2
+        exit 2
+    fi
+fi
+# --notes is the daemon's download: its three arguments are checked here, before
+# any file is copied or any URL is fetched, so a malformed call fails with a
+# usage error and never touches the network. The sha256 itself is what verifies
+# the downloaded file below.
+if [ "$notes_only" = 1 ]; then
+    case "$notes_file" in
+        *.gguf) ;;
+        *) echo "--notes: the file name must end in .gguf: $notes_file" >&2; exit 2 ;;
+    esac
+    case "$notes_file" in
+        */* | *" "* | "") echo "--notes: the file name must be a plain name, not a path: $notes_file" >&2; exit 2 ;;
+    esac
+    case "$notes_sha" in
+        *[!0-9a-f]* | "") echo "--notes: the sha256 must be 64 lowercase hex chars" >&2; exit 2 ;;
+    esac
+    if [ "${#notes_sha}" -ne 64 ]; then
+        echo "--notes: the sha256 must be 64 hex chars, got ${#notes_sha}" >&2
+        exit 2
+    fi
+    case "$notes_url" in
+        https://huggingface.co/*/resolve/*) ;;
+        *) echo "--notes: the URL must be a pinned https://huggingface.co/<repo>/resolve/<rev> URL" >&2; exit 2 ;;
+    esac
+    # A branch or tag name floats; the pin is a 40-hex commit, like every other URL here.
+    notes_rev=${notes_url##*/resolve/}
+    case "$notes_rev" in
+        */* | *[!0-9a-f]* | "") echo "--notes: the URL must pin a commit, got $notes_url" >&2; exit 2 ;;
+    esac
+    if [ "${#notes_rev}" -ne 40 ]; then
+        echo "--notes: the URL must pin a 40-hex commit, got $notes_url" >&2
         exit 2
     fi
 fi
@@ -224,12 +277,12 @@ for entry in "${clean_files[@]}" "${clean_docs[@]}"; do
     clean_models+=("clean/mossformer2-se-48k/$rel $sum $clean_url $rel")
 done
 
-# Meeting notes (--notes-only): Qwen3.5-4B Q4_K_M, 2740937888 bytes, pinned to the repo commit
-# the notes spike measured. The daemon reports download progress from the size of the .part
-# file against config.NotesModelBytes, which must match this size.
-qwen35=https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523
+# Meeting notes (--notes): the daemon names the catalog model — its file name,
+# pinned SHA-256 and pinned resolve URL come from internal/config/notesmodels.go.
+# The daemon reports download progress from the size of the .part file against
+# the catalog entry's bytes.
 if [ "$notes_only" = 1 ]; then
-    models=("Qwen3.5-4B-Q4_K_M.gguf 00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4 $qwen35")
+    models=("$notes_file $notes_sha $notes_url")
 fi
 if [ "$diar_only" = 1 ]; then
     models=("${diar_models[@]}")

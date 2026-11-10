@@ -312,6 +312,14 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 	}
 	if cfg.OneLargeEngine() {
 		d.mem = newResidency(logger, d.Sup, d.VoxSup, d.LLMSup)
+	} else if d.notesCouldBeExclusive() {
+		// A notes model over config.NotesExclusiveBytes makes the large
+		// engines take turns even on a Mac the voices share; the condition is
+		// read per call, so a model the user switches to counts at once.
+		if r := newResidency(logger, d.Sup, d.VoxSup, d.LLMSup); r != nil {
+			r.cond = d.notesExclusive
+			d.mem = r
+		}
 	}
 	logger.Info("large engine memory model", slog.String("mode", d.mem.mode()))
 	d.initMeetings()
