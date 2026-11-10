@@ -637,7 +637,7 @@ func (d *Daemon) InstallNotesModel(id string) error {
 			return fmt.Errorf("%w: the notes model is already installed", ErrNotesInstall)
 		}
 		if target = res.Entry; target == nil {
-			return fmt.Errorf("%w: the notes model is your own file at %s; place it there yourself", ErrNotesInstall, res.Path)
+			return fmt.Errorf("%w: Your own model file is in use; OxSay does not download it. Choose a model from the list to download one.", ErrNotesInstall)
 		}
 	}
 	// Where the fetch puts the file. The env pin names the path the engine

@@ -632,7 +632,9 @@ func TestALargeNotesModelIsExclusiveBelow48GB(t *testing.T) {
 //     (the saved-4B install fetches the 9B);
 //   - the `res.Source != config.NotesSourceAutomatic` disk guard dropped ->
 //     RED (the saved-9B install silently falls back to the 4B);
-//   - the `target == nil` arm removed -> RED (the custom path fetches).
+//   - the `target == nil` arm removed -> RED (the custom path fetches);
+//   - the own-file refusal reworded to name res.Path -> RED (the response
+//     body carries the temp dir's absolute path).
 func TestAnEmptyInstallFetchesTheResolvedModel(t *testing.T) {
 	// The saved 4B is missing: the empty install fetches the 4B.
 	d := installFixture(t, "#!/bin/sh\necho model > \"$5/$2\"\n")
@@ -676,6 +678,15 @@ func TestAnEmptyInstallFetchesTheResolvedModel(t *testing.T) {
 	}
 	if err := d3.InstallNotesModel(""); err == nil {
 		t.Fatal("an empty install on the user's own file must refuse: there is nothing to download")
+	}
+	// The refusal is the 409's body: the sentence is generic and carries no
+	// path — the file's absolute path is the user's own, not the app's answer.
+	rec := serve(servedFor(t, d3), appRequest("POST", "/v1/meetings/notes-model/install", ""))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("install over the user's own file = %d %s, want 409", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), filepath.Dir(own)) {
+		t.Fatalf("the refusal names the user's own path: %s", rec.Body)
 	}
 }
 
