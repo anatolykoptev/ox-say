@@ -150,8 +150,11 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // done: whatever asked for it (a later Finish, a Retry) changed it after
 // Process read it.
 func (r *Runner) Enqueue(id string) {
-	r.lockAdmission(id)
-	defer r.mu.Unlock()
+	waited := r.lockAdmission()
+	defer func() {
+		r.mu.Unlock()
+		logWait(r.Log, id, waitAdmission, waited) // after the unlock: a slow log handler must not extend the lock
+	}()
 	if r.pending[id] {
 		if r.running == id {
 			r.dirty[id] = true
@@ -183,21 +186,25 @@ func (r *Runner) Active() int {
 // ends, so a caller that asks "is the queue idle" and then acts gets the
 // check and the act as one step (the notes-model switch).
 func (r *Runner) WithAdmissionLock(fn func(active int) error) error {
-	r.lockAdmission("")
-	defer r.mu.Unlock()
+	waited := r.lockAdmission()
+	defer func() {
+		r.mu.Unlock()
+		logWait(r.Log, "", waitAdmission, waited)
+	}()
 	return fn(len(r.pending))
 }
 
-// lockAdmission takes the queue lock, writing a wait line when it stood in
-// line for it past waitLogMin: a notes-model trial or switch holds the lock
-// long enough to stall a Finish.
-func (r *Runner) lockAdmission(id string) {
+// lockAdmission takes the queue lock and returns how long it stood in line for
+// it: a notes-model trial or switch holds the lock long enough to stall a
+// Finish. The caller writes the wait line after it has unlocked — logging here
+// would run the log handler inside the lock.
+func (r *Runner) lockAdmission() time.Duration {
 	if r.mu.TryLock() {
-		return
+		return 0
 	}
 	t := r.Now()
 	r.mu.Lock()
-	logWait(r.Log, id, waitAdmission, r.Now().Sub(t))
+	return r.Now().Sub(t)
 }
 
 // AdmissionLocked reports whether the admission lock is held right now: a
@@ -235,7 +242,7 @@ func (r *Runner) Run(ctx context.Context) {
 			}
 		}
 		if err := r.Process(ctx, id); err != nil && ctx.Err() == nil {
-			r.Log.Warn("meeting: processing failed", slog.String("id", id), slog.Any("error", err))
+			r.Log.Warn("meeting: processing failed", slog.String("id", id), slog.String("error_class", errClass(err)))
 		}
 		r.mu.Lock()
 		r.running = ""
@@ -619,7 +626,7 @@ func (r *Runner) Process(ctx context.Context, id string) error {
 		logWait(r.Log, id, waitQueue, r.Now().Sub(queued))
 	}
 	sl := newStageLog(r.Log, id, r.Now)
-	defer sl.summary()
+	defer sl.finish()
 	if m.Status == StatusQueued || m.Status == StatusTranscribing {
 		if err := r.transcribe(ctx, id, sl); err != nil {
 			return r.stop(ctx, id, err)
@@ -699,11 +706,12 @@ var channels = []channel{{MePCM, SpeakerMe}, {ThemPCM, SpeakerThem}}
 // transcribe recognizes both channels piece by piece, caching each piece so a
 // restart resumes where it stopped, then merges them into the transcript.
 func (r *Runner) transcribe(ctx context.Context, id string, sl *stageLog) error {
+	done := sl.begin(stageTranscribe) // before any work that can fail: a failure has a stage line
 	dir, err := r.Store.Dir(id)
 	if err != nil {
+		done(stageFailed, errClass(err))
 		return err
 	}
-	done := sl.begin(stageTranscribe)
 	if kept, err := r.keepFinishedWithoutAudio(id, dir); kept || err != nil {
 		if err != nil {
 			done(stageFailed, errClass(err))

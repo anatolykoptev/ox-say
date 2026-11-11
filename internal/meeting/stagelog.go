@@ -32,6 +32,9 @@ const (
 	stageFailed  = "failed"  // the stage ended on an error; reason is errClass
 )
 
+// reasonPanic is a failed stage's reason when the run panicked inside it.
+const reasonPanic = "panic"
+
 // The things a stage or a call can wait on (the wait line's "wait" value).
 const (
 	waitDictation  = "dictation"   // the dictation yield ahead of an engine call
@@ -56,6 +59,13 @@ type stageLog struct {
 	now   func() time.Time
 	total time.Time
 	durs  []stageDur
+	open  []*openStage // begun, not yet ended: finish closes them on a panic
+}
+
+// openStage is a begun stage whose end line has not been written yet.
+type openStage struct {
+	end   stageEnd
+	ended bool
 }
 
 type stageDur struct {
@@ -84,12 +94,13 @@ func (s *stageLog) begin(stage string) stageEnd {
 	s.log.Info("meeting: stage",
 		slog.String("id", s.id), slog.String("stage", stage), slog.String("event", "start"))
 	t := s.now()
-	ended := false
-	return func(result, reason string, attrs ...slog.Attr) {
-		if ended {
+	run := &openStage{}
+	s.open = append(s.open, run)
+	run.end = func(result, reason string, attrs ...slog.Attr) {
+		if run.ended {
 			return
 		}
-		ended = true
+		run.ended = true
 		d := s.now().Sub(t)
 		s.durs = append(s.durs, stageDur{stage, d.Milliseconds()})
 		args := make([]slog.Attr, 0, 7+len(attrs))
@@ -106,6 +117,7 @@ func (s *stageLog) begin(stage string) stageEnd {
 		}
 		s.log.LogAttrs(context.Background(), lvl, "meeting: stage", args...)
 	}
+	return run.end
 }
 
 // skip is a stage that never ran, written as start and end in one: the log's
@@ -131,6 +143,23 @@ func (s *stageLog) timed(what string, fn func() error) error {
 	err := fn()
 	s.waited(what, s.now().Sub(t))
 	return err
+}
+
+// finish is Process's deferred closer: it writes the summary on every way out,
+// and when the run is unwinding from a panic it first ends each stage still
+// open as failed with reasonPanic (a recovered panic must not leave a stage
+// with a start line and no end), then lets the panic go on.
+func (s *stageLog) finish() {
+	p := recover()
+	if p != nil && s != nil {
+		for i := len(s.open) - 1; i >= 0; i-- {
+			s.open[i].end(stageFailed, reasonPanic)
+		}
+	}
+	s.summary()
+	if p != nil {
+		panic(p)
+	}
 }
 
 // summary writes the meeting's one closing line — the run's wall time and the

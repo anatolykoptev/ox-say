@@ -569,7 +569,7 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 			if errors.As(err, &down) {
 				return Notes{}, err
 			}
-			c.logf("notes: chunk failed", slog.Int("chunk", i), slog.Any("error", err))
+			c.logf("notes: chunk failed", slog.Int("chunk", i), slog.String("error_class", errClass(err)))
 			skipped = append(skipped, i)
 			continue
 		}
@@ -584,7 +584,7 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 		if ctx.Err() != nil {
 			return Notes{}, ctx.Err() // a cancelled run is not a finished one, whichever call it stopped in
 		}
-		c.logf("notes: settling the open points failed, merging by words only", slog.Any("error", err))
+		c.logf("notes: settling the open points failed, merging by words only", slog.String("error_class", errClass(err)))
 		claims = nil
 	}
 	n := mergeChunks(parts, l, claims)

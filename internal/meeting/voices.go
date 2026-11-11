@@ -60,7 +60,7 @@ func (r *Runner) voices(ctx context.Context, dir string, words []stt.Word, sl *s
 	}
 	var unavailable *DiarUnavailableError
 	if errors.As(err, &unavailable) {
-		r.Log.Info("meeting: diarization unavailable", slog.String("reason", unavailable.Reason), slog.Any("error", err))
+		r.Log.Info("meeting: diarization unavailable", slog.String("reason", unavailable.Reason), slog.String("error_class", errClass(err)))
 		done(stageSkipped, unavailable.Reason)
 		sl.skip(stageVoices, unavailable.Reason)
 		return voiceResult{warn: WarnDiarUnavailable, reason: unavailable.Reason}, nil
@@ -75,7 +75,7 @@ func (r *Runner) voices(ctx context.Context, dir string, words []stt.Word, sl *s
 		reason = DiarTimeout
 	}
 	if err != nil {
-		r.Log.Warn("meeting: diarization failed", slog.String("reason", reason), slog.Any("error", err))
+		r.Log.Warn("meeting: diarization failed", slog.String("reason", reason), slog.String("error_class", errClass(err)))
 		done(stageFailed, reason)
 		sl.skip(stageVoices, reason)
 		return voiceResult{warn: WarnNoDiarization, reason: reason}, nil
