@@ -422,7 +422,20 @@ func sameName(a, b string) bool {
 	return string(ra) == string(rb) || sameStem(ra, rb)
 }
 
-// sameWord: two forms of one content word (launch/launches, move/moves, рассылка/рассылку).
+// enForms are a Latin word and the word with one simple English suffix taken off (-ing, -ed, -es, -s), when three
+// letters are left.
+func enForms(w []rune) []string {
+	out := []string{string(w)}
+	for _, suf := range []string{"ing", "ed", "es", "s"} {
+		if len(w)-len(suf) >= 3 && strings.HasSuffix(string(w), suf) {
+			out = append(out, string(w[:len(w)-len(suf)]))
+		}
+	}
+	return out
+}
+
+// sameWord: two forms of one content word (launch/launches, move/moves, check/checking, рассылка/рассылку). Latin words
+// are equal after one suffix, never by a shared beginning: mark and market, plan and planet are two.
 func sameWord(a, b []rune) bool {
 	if string(a) == string(b) || sameStem(a, b) {
 		return true
@@ -430,11 +443,14 @@ func sameWord(a, b []rune) bool {
 	if isCyrillic(a) || isCyrillic(b) {
 		return false
 	}
-	p := 0
-	for p < len(a) && p < len(b) && a[p] == b[p] {
-		p++
+	for _, x := range enForms(a) {
+		for _, y := range enForms(b) {
+			if x == y {
+				return true
+			}
+		}
 	}
-	return min(len(a), len(b)) >= 4 && p >= 4 && len(a)-p <= 2 && len(b)-p <= 2
+	return false
 }
 
 // settleStops are meeting words that carry no subject, added to the package's stopwords (echo_match.go) for the
@@ -462,21 +478,32 @@ func contentWords(s string) [][]rune {
 	return out
 }
 
-// sharesContentWord: a and b have a content word in common. A decision that shares none with an open question is not
-// about it, whatever the model claims.
-func sharesContentWord(a, b string) bool {
-	wb := contentWords(b)
-	for _, x := range contentWords(a) {
-		for _, y := range wb {
+// sharesContentWord: more than half of the open point's content words are in the decided one (at least one). A single
+// generic word in common ("report") does not make a decision about an open question; the question's own subject must.
+// A question with no content word is settled by nothing.
+func sharesContentWord(open, decided string) bool {
+	seen := map[string]bool{}
+	var ow [][]rune
+	for _, w := range contentWords(open) {
+		if !seen[string(w)] {
+			seen[string(w)] = true
+			ow = append(ow, w)
+		}
+	}
+	wd := contentWords(decided)
+	shared := 0
+	for _, x := range ow {
+		for _, y := range wd {
 			if sameWord(x, y) {
-				return true
+				shared++
+				break
 			}
 		}
 	}
-	return false
+	return len(ow) > 0 && 2*shared > len(ow)
 }
 
-// settleOK is the code's check that a decided point can settle an open one: they share at least one content word,
+// settleOK is the code's check that a decided point can settle an open one: more than half of the open point's content words are in it,
 // their numbers do not conflict (each states something the other lacks), and every name the open point mentions (not
 // counting its first word) is mentioned by the decided one (sameName). An open point that names no one, or one that
 // only gains a number or a name when it is settled, passes those two.
