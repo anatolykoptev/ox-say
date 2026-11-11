@@ -387,6 +387,7 @@ var ErrNoNotes = errors.New("meeting: the notes model failed on every part of th
 // question; the enums keep the evidence to the four values the code knows.
 func chunkSchema() map[string]any {
 	str := map[string]any{"type": "string"}
+	quoteStr := map[string]any{"type": "string", "maxLength": maxQuoteRunes}
 	enum := func(vals ...string) map[string]any { return map[string]any{"type": "string", "enum": vals} }
 	return map[string]any{
 		"type": "object",
@@ -394,7 +395,7 @@ func chunkSchema() map[string]any {
 			"summary": str,
 			"points": map[string]any{"type": "array", "items": map[string]any{
 				"type":                 "object",
-				"properties":           map[string]any{"text": str, "status": enum(statusDecided, statusOpen), "quote": str},
+				"properties":           map[string]any{"text": str, "status": enum(statusDecided, statusOpen), "quote": quoteStr},
 				"required":             []string{"text", "status", "quote"},
 				"additionalProperties": false,
 			}},
@@ -402,7 +403,7 @@ func chunkSchema() map[string]any {
 				"type": "object",
 				"properties": map[string]any{
 					"what": str, "owner": str, "requested_by": str,
-					"owner_evidence": enum(ownerEvidence...), "quote": str, "when": str,
+					"owner_evidence": enum(ownerEvidence...), "quote": quoteStr, "when": str,
 				},
 				"required":             []string{"what", "owner", "requested_by", "owner_evidence", "quote", "when"},
 				"additionalProperties": false,

@@ -142,30 +142,44 @@ func TestOwnerFixtures(t *testing.T) {
 	}
 }
 
-// quoteIn pins the quote rule: exact on words, forgiving on form only.
+// TestQuoteMatchRule pins the quote rule: exact on words inside one turn, forgiving on form only.
+// Mutations: notes_points.go newTextIndex, replace `x.turns = append(x.turns, toks)` so all lines share turn 0 (no
+// per-turn split) -> RED on the cross-turn and label cases; delete the norm.NFKC.String call in quoteTokens -> RED on
+// the decomposed cases; delete the `len(q) > maxQuoteTokens` test in has -> RED on the oversized case.
 func TestQuoteMatchRule(t *testing.T) {
-	text := "[0:05] Anatoly: Дафна, can you make a TICKET for that?\n[0:09] Артём: Ёжик, да."
-	idx := newTextIndex(text)
+	text := "[0:05] Anatoly: Дафна, can you make a TICKET for that?\n[0:09] Артём: Ёжик, да, I agree.\n" +
+		"[0:12] Daphne: to ship on Friday.\n[0:20] Zo\u00eb: caf\u00e9 au lait\n[0:30] Ivan: \u0419\u043e\u0433\u0430 \u0438 \u0440\u044b\u0431\u0430\n"
+	long := strings.Repeat("make ", maxQuoteTokens+1)
+	idx := newTextIndex(text + "[0:40] Z: " + long + "\n") // the text really holds it: only the size rule can refuse
 	for _, c := range []struct {
-		quote string
-		want  bool
+		name, quote string
+		want        bool
 	}{
-		{"Дафна, can you make a ticket for that", true},   // case and punctuation
-		{"  can   you make\na ticket ", true},             // whitespace
-		{"anatoly: дафна can you", true},                  // across the speaker label
-		{"артем ежик", true},                              // ё/е
-		{"Daphne, can you make a ticket for that", false}, // a different name
-		{"can you make the ticket for that", false},       // one word changed
-		{"can you make ticket", false},                    // one word dropped
-		{"can you make a quick ticket for that", false},   // one word added
-		{"ticket", false},                                 // one word is no evidence
-		{"", false},
-		{"[0:05] Anatoly дафна can you make", true},    // the timestamp is part of the text
-		{"please make a ticket for that today", false}, // a paraphrase of real words
+		{"case and punctuation", "Дафна, can you make a ticket for that", true},
+		{"whitespace", "  can   you make\na ticket ", true},
+		{"e/yo", "ежик да", true},
+		{"a different name", "Daphne, can you make a ticket for that", false},
+		{"one word changed", "can you make the ticket for that", false},
+		{"one word dropped", "can you make ticket", false},
+		{"one word added", "can you make a quick ticket for that", false},
+		{"one word is no evidence", "ticket", false},
+		{"empty", "", false},
+		{"a paraphrase of real words", "please make a ticket for that today", false},
+		{"across the speaker label", "anatoly: дафна can you", false},
+		{"the speaker label alone", "артем ёжик", false},
+		{"the timestamp", "[0:05] Anatoly дафна can you make", false},
+		{"across two turns", "I agree to ship on Friday", false},
+		{"the end of a turn", "да I agree", true},
+		{"composed against decomposed", "cafe\u0301 au lait", true},
+		{"decomposed Y-breve against composed", "\u0438\u0306\u043e\u0433\u0430 \u0438", true},
+		{"oversized", long, false},
 	} {
 		if got := idx.has(c.quote); got != c.want {
-			t.Errorf("has(%q) = %v, want %v", c.quote, got, c.want)
+			t.Errorf("%s: has(%q) = %v, want %v", c.name, c.quote, got, c.want)
 		}
+	}
+	if newTextIndex(strings.Repeat("[0:01] A: make make make\n", 5000)).has(strings.Repeat("make ", 59) + "x") {
+		t.Error("a long non-match must be refused")
 	}
 }
 
@@ -517,5 +531,145 @@ func TestWordsAloneMergeRestatementsAndMissParaphrases(t *testing.T) {
 		if got := samePoint(c.a, c.b); got != c.want {
 			t.Errorf("samePoint(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
 		}
+	}
+}
+
+// Review 1: a quote lies inside one turn. Two turns joined, or a speaker label, do not show agreement or an owner.
+// Mutation: notes_points.go newTextIndex, replace `x.turns = append(x.turns, toks)` with
+// `x.turns = [][]string{append(append([]string(nil), firstOr(x.turns)...), toks...)}`-style joining (all lines one
+// turn) -> RED here and in TestQuoteMatchRule.
+func TestComposeQuoteAcrossTurnsOrLabelsIsRefused(t *testing.T) {
+	text := "[0:05] Daphne: I agree\n[0:06] Anatoly: to ship Friday\n[0:09] Anatoly: Somebody make the ticket.\n"
+	f := &fakeChat{replies: []string{answerJSON(t, chunkAnswer{Summary: "s",
+		Points: []Point{{Text: "Ship on Friday", Status: statusDecided, Quote: "I agree to ship Friday"}},
+		ActionItems: []modelAction{{What: "make the ticket", Owner: "Anatoly", OwnerEvidence: evSelfCommit,
+			Quote: "Anatoly: Somebody make the ticket"}},
+	})}}
+	n := composeWith(t, f, text, Labels{Me: "Anatoly"}, "en")
+	if len(n.Decisions) != 0 || len(n.OpenQuestions) != 1 {
+		t.Fatalf("decisions = %q, open = %q: a quote joining two turns is not agreement", n.Decisions, n.OpenQuestions)
+	}
+	if n.ActionItems[0].Who != "" {
+		t.Fatalf("item = %+v: a quote that starts at a speaker label is not evidence", n.ActionItems[0])
+	}
+}
+
+// Review 2: the code, not the prompt, keeps points that differ in a name or number apart.
+// Mutation: notes_points.go groupPoints join, delete the `if !pairFactsOK(...) { return }` check -> RED (the table
+// is on pairFactsOK itself; the journey fails because the paired Bob and Ann points merge).
+func TestPairFactsOK(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"Pay Bob for the shoot", "Pay Ann for the shoot", false},
+		{"Paris office opens in May", "Rome office opens in May", false},
+		{"Budget 500 for ads", "Budget 700 for ads", false},
+		{"Open the office in Paris", "Open the office in Rome", false},
+		{"What is the budget", "Budget is 700", true},
+		{"Who does the ticket", "The ticket goes to Daphne", true},
+		{"Who does the ticket", "Daphne does the ticket", false}, // only the first word differs: same as Paris and Rome
+		{"Should the launch move to March", "The launch is in March", true},
+		{"Ship the beta on Friday", "Ship the beta on friday", true},
+	} {
+		if got := pairFactsOK(c.a, c.b); got != c.want {
+			t.Errorf("pairFactsOK(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func partsOf(pts ...Point) []ChunkNotes {
+	// one point per part, in order: part i is the i-th chunk
+	var parts []ChunkNotes
+	for _, p := range pts {
+		parts = append(parts, ChunkNotes{Points: []Point{p}})
+	}
+	return parts
+}
+
+func TestReducePairOfDifferentNamesStaysApart(t *testing.T) {
+	parts := partsOf(Point{Text: "Pay Bob for the shoot", Status: statusOpen}, Point{Text: "Pay Ann for the shoot", Status: statusDecided})
+	n := mergeChunks(parts, Labels{}, []pointPair{{0, 1}})
+	if len(n.Decisions) != 1 || len(n.OpenQuestions) != 1 {
+		t.Fatalf("decisions = %q, open = %q: the model's pair of Bob and Ann must be refused", n.Decisions, n.OpenQuestions)
+	}
+}
+
+// Review 3: pairs do not chain. a~b and b~c agree pairwise with their neighbour, but a and c name different
+// people, so c never joins the group of a and b. The check is on every member pair of the two groups.
+// Mutation: notes_points.go groupPoints join, change the inner `for _, y := range members[gj]` loop to test only
+// `members[gj][0]` (and `members[gi][0]`) -> RED.
+func TestPairsDoNotChain(t *testing.T) {
+	parts := partsOf(
+		Point{Text: "Pay Bob for the shoot", Status: statusOpen},
+		Point{Text: "Pay for the shoot", Status: statusDecided},
+		Point{Text: "Pay Ann for the shoot", Status: statusOpen},
+	)
+	n := mergeChunks(parts, Labels{}, []pointPair{{0, 1}, {1, 2}})
+	if strings.Join(n.Decisions, "|") != "Pay for the shoot" || strings.Join(n.OpenQuestions, "|") != "Pay Ann for the shoot" {
+		t.Fatalf("decisions = %q, open = %q: Bob's and Ann's points were chained through the one without a name", n.Decisions, n.OpenQuestions)
+	}
+}
+
+func distinctPoint(i int, status string, chunk int) pointRef {
+	return pointRef{chunk: chunk, Point: Point{Text: fmt.Sprintf("topic%dalpha topic%dbeta topic%dgamma", i, i, i), Status: status}}
+}
+
+// Review 6: the reduce call is bounded by maxReduceCalls calls of at most maxReducePoints lines, and a long meeting
+// does not lose the open-then-settled case: the open point goes with the decided ones most like it.
+// Mutation: notes_points.go reduceBatches, replace the batching with `return nil` once
+// len(open)+len(decided) > maxReducePoints -> RED (both tests).
+func TestReduceBatchesAreBounded(t *testing.T) {
+	var pts []pointRef
+	for i := 0; i < 400; i++ {
+		pts = append(pts, distinctPoint(i, statusOpen, 0))
+	}
+	for i := 400; i < 800; i++ {
+		pts = append(pts, distinctPoint(i, statusDecided, 1))
+	}
+	batches := reduceBatches(pts)
+	if len(batches) == 0 || len(batches) > maxReduceCalls {
+		t.Fatalf("%d batches, want 1..%d", len(batches), maxReduceCalls)
+	}
+	for _, b := range batches {
+		if len(b) > maxReducePoints {
+			t.Fatalf("a batch of %d lines exceeds %d", len(b), maxReducePoints)
+		}
+	}
+}
+
+func TestLongMeetingStillPairsAnOpenPointWithItsDecision(t *testing.T) {
+	const decided = 150
+	text := "[0:01] A: Should we move the launch to March?\n" + pad + "[50:00] B: Agreed on everything here, done.\n"
+	var pts []Point
+	for i := 0; i < decided; i++ {
+		pts = append(pts, Point{Text: fmt.Sprintf("topic%dalpha topic%dbeta topic%dgamma", i, i, i), Status: statusDecided, Quote: "Agreed on everything here"})
+	}
+	target := 97 // the decision that settles the open question, reworded
+	pts[target].Text = "The launch moves to March"
+	reduce := fmt.Sprintf(`{"same":[{"a":0,"b":%d}]}`, 1+target)
+	f := &fakeChat{replies: []string{
+		answerJSON(t, chunkAnswer{Summary: "a", Points: []Point{{Text: "Should the launch move to March", Status: statusOpen}}}),
+		answerJSON(t, chunkAnswer{Summary: "b", Points: pts}),
+		reduce, "merged",
+	}}
+	n := composeWith(t, f, text, Labels{}, "en")
+	if len(f.reqs) != 4 {
+		t.Fatalf("%d calls, want 2 chunks + 1 reduce + 1 summary", len(f.reqs))
+	}
+	if lines := strings.Count(f.reqs[2].User, "\n"); lines > maxReducePoints || !strings.Contains(f.reqs[2].User, "The launch moves to March") {
+		t.Fatalf("the reduce prompt has %d lines and must hold the reworded decision:\n%.400s", lines, f.reqs[2].User)
+	}
+	if len(n.Decisions) != decided || len(n.OpenQuestions) != 0 {
+		t.Fatalf("%d decisions, open = %q: the question and its decision are one point", len(n.Decisions), n.OpenQuestions)
+	}
+}
+
+// Review 4: the schema asks for a bounded quote. Mutation: notes.go chunkSchema, delete `"maxLength": maxQuoteRunes`
+// from quoteStr -> RED.
+func TestChunkSchemaBoundsTheQuote(t *testing.T) {
+	raw, _ := json.Marshal(chunkSchema())
+	if got := strings.Count(string(raw), fmt.Sprintf(`"maxLength":%d`, maxQuoteRunes)); got != 2 {
+		t.Fatalf("%d quote fields carry maxLength, want 2 (points, action items):\n%s", got, raw)
 	}
 }
