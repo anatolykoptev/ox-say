@@ -28,7 +28,10 @@ const ChunkChars = 16000
 // answer cap and the call's fixed overhead. The bounds are the call sites'
 // own constants — a map chunk of ChunkChars runes with its part framing, the
 // reduce call's list of at most maxReducePoints points of maxReduceText
-// runes, the merge call's summaryBudget of partial summaries.
+// runes, the merge call's summaryBudget of partial summaries. On top of the
+// rune bounds every builder caps its prompt by estimated tokens (see
+// EstimateTokens): dense scripts tokenize near one token per rune, so a rune
+// bound alone overfills the context for them.
 const (
 	// notesRunesPerToken is the text density the sizing assumes: real
 	// transcripts tokenize near 3.2 runes per token, and dense or
@@ -58,6 +61,15 @@ func NotesContextTokens() int {
 	return (need + 511) / 512 * 512
 }
 
+// The token budget of one call's prompt: the context minus that call's
+// answer cap and the fixed overhead, so the bounds and the context cannot
+// drift. The rune bounds above stay as the tighter cap for light scripts —
+// an English or Russian transcript reaches them first and is cut exactly as
+// before.
+func chunkTokenBudget() int  { return NotesContextTokens() - maxAnswer - notesPromptOverhead }
+func reduceTokenBudget() int { return NotesContextTokens() - reduceAnswer - notesPromptOverhead }
+func mergeTokenBudget() int  { return NotesContextTokens() - mergeAnswer - notesPromptOverhead }
+
 const (
 	// similarAction and similarLine: word overlap at which two items are one.
 	similarAction = 0.6
@@ -65,6 +77,10 @@ const (
 	// summaryBudget caps the partial summaries sent to the merge call.
 	summaryBudget = 12000
 	maxAnswer     = 3000
+	// reduceAnswer and mergeAnswer are the smaller answer caps of the
+	// reduce and merge calls.
+	reduceAnswer = 600
+	mergeAnswer  = 800
 )
 
 const (
@@ -120,10 +136,13 @@ type Notes struct {
 // turnPrefix matches the "[m:ss] Name: " a prompt line starts with.
 var turnPrefix = regexp.MustCompile(`^\[[0-9:]+\] [^:\n]{1,64}: `)
 
-// Chunk splits text into pieces of at most limit characters, breaking only at
-// line ends. A line longer than limit is cut, and every piece after the first
-// repeats the line's "[time] Speaker: " prefix so the model never reads an
-// unattributed fragment. A limit of zero or less means ChunkChars.
+// Chunk splits text into pieces of at most limit runes and at most
+// chunkTokenBudget estimated tokens, breaking only at line ends. For a Latin
+// or Cyrillic transcript the rune bound lands first; for a dense script the
+// token bound does. A line longer than either bound is cut, and every piece
+// after the first repeats the line's "[time] Speaker: " prefix so the model
+// never reads an unattributed fragment. A limit of zero or less means
+// ChunkChars.
 func Chunk(text string, limit int) []string {
 	if limit <= 0 {
 		limit = ChunkChars
@@ -131,48 +150,73 @@ func Chunk(text string, limit int) []string {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
+	budget := chunkTokenBudget() * unitsPerToken // the units tokenUnits counts
 	var out []string
 	var cur strings.Builder
+	curUnits := 0
 	flush := func() {
 		if s := strings.TrimRight(cur.String(), "\n"); strings.TrimSpace(s) != "" {
 			out = append(out, s)
 		}
 		cur.Reset()
+		curUnits = 0
 	}
 	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
-		if runeLen(line) > limit {
+		units := tokenUnits(line)
+		if runeLen(line) > limit || units > budget {
 			flush()
 			out = append(out, cutLine(line, limit)...)
 			continue
 		}
-		if runeLen(cur.String())+runeLen(line)+1 > limit {
+		if runeLen(cur.String())+runeLen(line)+1 > limit || curUnits+units+runeUnits('\n') > budget {
 			flush()
 		}
 		cur.WriteString(line)
 		cur.WriteByte('\n')
+		curUnits += units + runeUnits('\n')
 	}
 	flush()
 	return out
 }
 
-// cutLine cuts one overlong line into pieces of at most limit characters, each
-// continuation led by the line's own speaker prefix when it has one and the
-// prefix leaves room for text.
+// cutLine cuts one overlong line into pieces of at most limit runes and at
+// most chunkTokenBudget estimated tokens, each continuation led by the
+// line's own speaker prefix when it has one and the prefix leaves room for
+// text.
 func cutLine(line string, limit int) []string {
+	budget := chunkTokenBudget() * unitsPerToken
 	prefix := turnPrefix.FindString(line)
-	if runeLen(prefix) > limit/2 {
+	if runeLen(prefix) > limit/2 || tokenUnits(prefix) > budget/2 {
 		prefix = ""
 	}
 	r := []rune(line)
-	out := []string{string(r[:limit])}
-	r = r[limit:]
+	n := fitRunes(r, limit, budget)
+	out := []string{string(r[:n])}
+	r = r[n:]
 	room := limit - runeLen(prefix)
+	roomUnits := budget - tokenUnits(prefix)
 	for len(r) > 0 {
-		n := min(room, len(r))
+		n := fitRunes(r, room, roomUnits)
 		out = append(out, prefix+string(r[:n]))
 		r = r[n:]
 	}
 	return out
+}
+
+// fitRunes is how many leading runes of r fit: at most maxRunes runes and at
+// most maxUnits token units. It never returns zero, so a caller cannot loop
+// on a bound a single rune already overflows.
+func fitRunes(r []rune, maxRunes, maxUnits int) int {
+	runes, units := 0, 0
+	for _, c := range r {
+		u := runeUnits(c)
+		if runes+1 > maxRunes || units+u > maxUnits {
+			break
+		}
+		runes++
+		units += u
+	}
+	return max(runes, 1)
 }
 
 var unstated = map[string]bool{
@@ -697,17 +741,20 @@ func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int
 // partial summaries stand as they are.
 func (c Composer) mergeSummary(ctx context.Context, parts []ChunkNotes, fallback, lang string) string {
 	var b strings.Builder
+	units := 0
 	for i, p := range parts {
 		s := strings.TrimSpace(p.Summary)
-		if runeLen(b.String())+runeLen(s) > summaryBudget {
+		part := fmt.Sprintf("--- PART %d ---\n%s\n\n", i+1, s)
+		if runeLen(b.String())+runeLen(s) > summaryBudget || units+tokenUnits(part) > mergeTokenBudget()*unitsPerToken {
 			break
 		}
-		fmt.Fprintf(&b, "--- PART %d ---\n%s\n\n", i+1, s)
+		b.WriteString(part)
+		units += tokenUnits(part)
 	}
 	if c.Before != nil && c.Before(ctx) != nil {
 		return fallback
 	}
-	out, err := c.call(ctx, Request{System: mergeSystem(lang), User: b.String(), MaxTokens: 800})
+	out, err := c.call(ctx, Request{System: mergeSystem(lang), User: b.String(), MaxTokens: mergeAnswer})
 	out = strings.TrimSpace(out)
 	if err != nil || out == "" || runeLen(out) > 2000 {
 		return fallback
@@ -724,3 +771,44 @@ func (c Composer) logf(msg string, args ...any) {
 // runeLen is utf8.RuneCountInString: chunk sizes count characters, the way the
 // notes spike measured them, so Cyrillic is not charged twice.
 func runeLen(s string) int { return utf8.RuneCountInString(s) }
+
+// unitsPerToken is the quantum token costs are counted in: a dense-script
+// rune weighs 5 (one token per rune), every other rune 2 — the 2.5 runes
+// per token of notesRunesPerToken.
+const unitsPerToken = 5
+
+// denseBlocks are the Unicode blocks counted dense on top of the Han,
+// Hiragana, Katakana and Hangul scripts. 0x3000-0x30FF is CJK punctuation
+// plus both kana blocks whole: the prolonged-sound mark and the middle dot
+// are script-Common, so a script table alone would charge them as Latin.
+// The others are CJK compatibility forms and the halfwidth and fullwidth
+// forms.
+var denseBlocks = &unicode.RangeTable{R16: []unicode.Range16{
+	{0x3000, 0x30FF, 1},
+	{0xFE30, 0xFE4F, 1},
+	{0xFF00, 0xFFEF, 1},
+}}
+
+// runeUnits is one rune's token cost in unitsPerToken units. Han ideographs,
+// kana, hangul and CJK punctuation tokenize at about one token per rune.
+func runeUnits(r rune) int {
+	if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) ||
+		unicode.Is(unicode.Katakana, r) || unicode.Is(unicode.Hangul, r) || unicode.Is(denseBlocks, r) {
+		return unitsPerToken
+	}
+	return 2
+}
+
+// tokenUnits is the token cost of s in unitsPerToken units.
+func tokenUnits(s string) int {
+	n := 0
+	for _, r := range s {
+		n += runeUnits(r)
+	}
+	return n
+}
+
+// EstimateTokens is how many tokens s costs the notes model, rounded up. It
+// counts script-weighted runes, it does not call the model's tokenizer:
+// chunking must not make a request to measure a prompt.
+func EstimateTokens(s string) int { return (tokenUnits(s) + unitsPerToken - 1) / unitsPerToken }
