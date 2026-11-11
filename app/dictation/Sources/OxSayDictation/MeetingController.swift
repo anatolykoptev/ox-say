@@ -116,6 +116,7 @@ final class MeetingController: NSObject, MeetingFeature {
             self?.badge.hide()
         }
         badge.onNotVisible = { [weak self] in self?.plateNotVisible() }
+        notifier.onReminderOpened = { [weak self] in self?.reminderAcknowledged(plateOK: false, notificationOpened: true) }
         badge.defaults = host.defaults
         badge.onDontAsk = { [weak self] in self?.dontAskForThisApp() }
         badge.onBrowserAllow = { [weak self] in self?.allowBrowserAutomation() }
@@ -626,22 +627,22 @@ final class MeetingController: NSObject, MeetingFeature {
     private func noteConsentReminder() {
         guard !MeetingSettings.explained(host.defaults) else { return }
         let text = ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text })
-        notifier.post(title: L10nKey.meetingRemindTitle.text, body: text) { [weak self] delivered in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                // Counted as given only once the body was surfaced: delivered, or shown on the plate. Neither: asked again.
-                switch ConsentReminderFlow.afterPost(delivered: delivered) {
-                case .explained: MeetingSettings.setExplained(self.host.defaults)
-                case .showOnPlate:
-                    let shown = self.badge.showReminder(text)
-                    if ConsentReminderFlow.afterPlate(shown: shown) == .explained { MeetingSettings.setExplained(self.host.defaults) }
-                case .askAgain: break
-                }
-            }
-        }
+        // The plate is the reminder, always: it shows whether or not a notification gets through. The notification is an
+        // extra for a person looking at another screen. Nothing here counts it as given; only an acknowledgement does.
+        _ = badge.showReminder(text) { [weak self] in self?.reminderAcknowledged(plateOK: true, notificationOpened: false) }
+        notifier.post(title: L10nKey.meetingRemindTitle.text, body: text, reminder: true)
         // Creating the folder makes macOS ask for Documents access: off the main thread, so the prompt never holds the app.
         let folder = MeetingSettings.folder(host.defaults)
         Task.detached { try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+    }
+
+    /// The only place the reminder is marked given: OK pressed on the plate that showed it (so it was shown), or the
+    /// reminder notification opened. A recording that stops, or an app that quits, with the reminder unanswered leaves it
+    /// to be asked again at the next recording.
+    private func reminderAcknowledged(plateOK: Bool, notificationOpened: Bool) {
+        if ConsentReminderFlow.step(plateShown: plateOK, plateOK: plateOK, notificationOpened: notificationOpened) == .explained {
+            MeetingSettings.setExplained(host.defaults)
+        }
     }
 
     // MARK: after the call

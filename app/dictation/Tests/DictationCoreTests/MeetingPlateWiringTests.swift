@@ -98,8 +98,7 @@ final class MeetingPlateWiringTests: XCTestCase {
         XCTAssertLessThan(recorded.lowerBound, reminded.lowerBound, "the reminder follows the start, never gates it")
         let note = try XCTUnwrap(body(c, of: "private func noteConsentReminder() {"))
         XCTAssertTrue(note.contains("ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text })"))
-        XCTAssertTrue(note.contains("notifier.post(title: L10nKey.meetingRemindTitle.text, body: text)"))
-        XCTAssertTrue(note.contains("ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text })"))
+        XCTAssertTrue(note.contains("notifier.post(title: L10nKey.meetingRemindTitle.text, body: text, reminder: true)"))
         XCTAssertFalse(note.contains("setCallMode"))
         XCTAssertFalse(note.contains("createDirectory(") && !note.contains("Task.detached"), "the folder (a macOS permission prompt) never blocks the main thread")
     }
@@ -174,21 +173,39 @@ final class MeetingPlateWiringTests: XCTestCase {
         XCTAssertTrue(observe.contains("badge.verifyOnScreen()"), "the 2 s call poll runs while a prompt is up, recording or not")
     }
 
-    /// Mutation: MeetingController.noteConsentReminder, call `MeetingSettings.setExplained` before the post -> RED.
-    func testTheReminderIsExplainedOnlyOnceItsBodyWasSurfaced() throws {
+    /// The reminder is "explained" only on an acknowledgement, and only `reminderAcknowledged` may say so: NO spelling of
+    /// `setExplained` anywhere else in the app target (Codex: a `setExplained(host.defaults)` after the guard stayed green).
+    /// Mutation: MeetingController.noteConsentReminder, add `MeetingSettings.setExplained(host.defaults)` after the guard -> RED.
+    /// Mutation: MeetingController.reminderAcknowledged, drop the `ConsentReminderFlow.step(` condition -> RED.
+    func testTheReminderIsExplainedOnlyOnAnAcknowledgement() throws {
+        let appDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/OxSayDictation")
+        var callers: [String] = []
+        for file in try FileManager.default.contentsOfDirectory(atPath: appDir.path) where file.hasSuffix(".swift") {
+            let text = try source("OxSayDictation/\(file)")
+            if text.contains("setExplained") { callers.append("\(file) x\(text.components(separatedBy: "setExplained").count - 1)") }
+        }
+        XCTAssertEqual(callers, ["MeetingController.swift x1"], "one call site in the whole app target")
         let c = try controller()
+        let ack = try XCTUnwrap(body(c, of: "private func reminderAcknowledged(plateOK: Bool, notificationOpened: Bool) {"))
+        XCTAssertTrue(ack.contains("ConsentReminderFlow.step(plateShown: plateOK, plateOK: plateOK, notificationOpened: notificationOpened) == .explained"))
+        XCTAssertTrue(ack.contains("MeetingSettings.setExplained(host.defaults)"), "the one call site is the acknowledgement")
         let note = try XCTUnwrap(body(c, of: "private func noteConsentReminder() {"))
-        XCTAssertTrue(note.contains("ConsentReminderFlow.afterPost(delivered: delivered)"))
-        XCTAssertTrue(note.contains("ConsentReminderFlow.afterPlate(shown: shown)"))
-        XCTAssertTrue(note.contains("badge.showReminder(text)"), "a denied notification shows the full text on the plate")
-        let post = try XCTUnwrap(note.range(of: "notifier.post("))
-        let mark = try XCTUnwrap(note.range(of: "MeetingSettings.setExplained(self.host.defaults)"))
-        XCTAssertLessThan(post.lowerBound, mark.lowerBound, "marked after the post's answer, never before")
-        XCTAssertFalse(note.contains("host.notify(title)"), "the title alone is not the reminder")
-        let showReminder = try XCTUnwrap(body(try badge(), of: "func showReminder(_ text: String) -> Bool {"))
-        XCTAssertTrue(showReminder.contains("guard case .recording? = mode"), "false when nothing is recording: asked again next time")
-        XCTAssertTrue(showReminder.contains("return true"))
+        XCTAssertEqual(note.components(separatedBy: "xplained").count - 1, 1, "noteConsentReminder only asks (its guard); it never decides")
+        XCTAssertTrue(note.contains("guard !MeetingSettings.explained(host.defaults) else { return }"))
+        XCTAssertTrue(note.contains("badge.showReminder(text) { [weak self] in self?.reminderAcknowledged(plateOK: true, notificationOpened: false) }"),
+                      "the reminder always shows on the plate; OK is the acknowledgement")
+        XCTAssertTrue(note.contains("notifier.post(title: L10nKey.meetingRemindTitle.text, body: text, reminder: true)"), "the notification is an extra")
+        XCTAssertTrue(c.contains("notifier.onReminderOpened = { [weak self] in self?.reminderAcknowledged(plateOK: false, notificationOpened: true) }"))
+        let n = try source("OxSayDictation/MeetingNotifier.swift")
+        let received = try XCTUnwrap(body(n, of: "func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,"))
+        XCTAssertTrue(received.contains("info[Self.reminderKey] != nil"))
+        XCTAssertTrue(received.contains("self?.onReminderOpened()"))
+        let showReminder = try XCTUnwrap(body(try badge(), of: "func showReminder(_ text: String, onOK: @escaping () -> Void) -> Bool {"))
+        XCTAssertTrue(showReminder.contains("guard case .recording? = mode"), "false when nothing is recording")
         XCTAssertFalse(showReminder.contains("runModal"))
+        let b = try badge()
+        XCTAssertTrue(b.contains("reminderOK = nil\n        restoreSingleLineLabel()"), "a plate taken down unanswered drops the acknowledgement")
     }
 
     /// Mutation: MeetingController.recordFromPrompt, delete `case .nothing: trace(.checkSuperseded)` -> RED.

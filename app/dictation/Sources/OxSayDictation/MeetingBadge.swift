@@ -78,6 +78,8 @@ final class MeetingBadge {
     private var recordingAuto = false
     /// The consent reminder's full text while it is on the recording plate (notifications were not allowed).
     private var reminderText: String?
+    /// What OK on the reminder does: the acknowledgement. Dropped, unanswered, when the plate comes down.
+    private var reminderOK: (() -> Void)?
     private var lastElapsed: TimeInterval = 0
 
     /// The widest clock the label shows (digits are monospaced): 9:59:59.
@@ -289,6 +291,7 @@ final class MeetingBadge {
         mode = .recording(auto: auto)
         userCollapsed = false
         reminderText = nil
+        reminderOK = nil
         recordingAuto = auto
         panel.setAccessibilityLabel(L10nKey.badgeA11yPanel.text)
         layoutRecording(elapsed: elapsed)
@@ -310,11 +313,8 @@ final class MeetingBadge {
             labelWidth.isActive = false
             consentButton = nil
             layout([dot, label, button(L10nKey.badgeStop.text) { [weak self] in self?.onStop?() },
-                    button(L10nKey.commonOk.text) { [weak self] in
-                self?.reminderText = nil
-                self?.restoreSingleLineLabel()
-                self?.layoutRecording(elapsed: self?.lastElapsed ?? 0)
-            }], keepingPlace: panel.isVisible, capLabel: true)
+                    button(L10nKey.commonOk.text) { [weak self] in self?.acknowledgeReminder() }],
+                   keepingPlace: panel.isVisible, capLabel: true)
             return
         }
         if collapsed {
@@ -340,6 +340,16 @@ final class MeetingBadge {
         update(elapsed: elapsed, me: 0, them: 0)
     }
 
+    /// OK on the reminder: the plate returns to the recording and the acknowledgement is reported.
+    private func acknowledgeReminder() {
+        let ok = reminderOK
+        reminderOK = nil
+        reminderText = nil
+        restoreSingleLineLabel()
+        layoutRecording(elapsed: lastElapsed)
+        ok?()
+    }
+
     private func restoreSingleLineLabel() {
         label.maximumNumberOfLines = 1
         label.lineBreakMode = .byTruncatingTail
@@ -348,9 +358,10 @@ final class MeetingBadge {
 
     /// The consent reminder's whole text on the recording plate, for when a notification cannot be delivered. False when
     /// no recording is up (nothing was surfaced: the caller asks again next time).
-    func showReminder(_ text: String) -> Bool {
+    func showReminder(_ text: String, onOK: @escaping () -> Void) -> Bool {
         guard case .recording? = mode else { return false }
         reminderText = text
+        reminderOK = onOK
         layoutRecording(elapsed: lastElapsed)
         return true
     }
@@ -472,6 +483,7 @@ final class MeetingBadge {
         consentButton = nil
         userCollapsed = false
         reminderText = nil
+        reminderOK = nil
         restoreSingleLineLabel()
         panel.orderOut(nil)
         watch = PlateWatch()
