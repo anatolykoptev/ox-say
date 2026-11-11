@@ -111,9 +111,13 @@ final class MeetingController: NSObject, MeetingFeature {
         badge.onConfirmRecord = { [weak self] in self?.answerRecordQuestion(.record) }
         badge.onConfirmCancel = { [weak self] in self?.answerRecordQuestion(.cancel) }
         badge.onNotNow = { [weak self] in
+            self?.trace(.answered(.notNow, app: CallPolicy.name(for: self?.lastSource ?? "")))
             self?.watcher.decline()
             self?.badge.hide()
         }
+        badge.onNotVisible = { [weak self] in self?.plateNotVisible() }
+        notifier.reminderOpened.setHandler { [weak self] in self?.reminderAcknowledged(plateOK: false, notificationOpened: true) }
+        badge.defaults = host.defaults
         badge.onDontAsk = { [weak self] in self?.dontAskForThisApp() }
         badge.onBrowserAllow = { [weak self] in self?.allowBrowserAutomation() }
         badge.onBrowserNotNow = { [weak self] in self?.skipBrowserAutomation() }
@@ -221,29 +225,35 @@ final class MeetingController: NSObject, MeetingFeature {
         StartBadge.settle(started: started, began: began, pressedSource: pressed, question: { question }, hide: { badge.hide() })
     }
 
-    /// `offered`: the user pressed Record on the call prompt — the one-time explanation runs for it like for an
-    /// automatic start. A menu "Record a meeting" is her own act and skips it.
+    /// `offered`: the user pressed Record on the call prompt. A menu "Record a meeting" is her own act and is not
+    /// `offered`. Neither waits for a window: the one-time reminder follows the start as a notification, so an answered
+    /// Record (or a detected call in auto mode) reaches the daemon with nothing between that someone must see first.
+    /// Every exit that is not a recording is in the log, and a failure is said on the plate and in a notification.
     private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {
+        trace(.startRequested(origin: origin == .auto ? "auto" : "manual", offered: offered, app: source))
         // Every end of the attempt that is not a recording settles the badge: the Record question's buttons
         // are disabled, so one left up would cover the call for good (see `settleBadge`).
         let done: (Bool) -> Void = { [weak self] started in self?.settleBadge(started: started, pressed: offered ? source : nil) }
         // A start the guard turns away did not begin: it must not settle the badge of the start in progress (#384.3).
         let rejected: () -> Void = { [weak self] in self?.settleBadge(started: false, began: false, pressed: offered ? source : nil) }
-        guard current == nil, !starting, !isShutDown else { rejected(); return }
+        guard current == nil, !starting, !isShutDown else {
+            trace(.startRefused(reason: current != nil ? "already_recording" : starting ? "already_starting" : "shut_down"))
+            rejected()
+            return
+        }
         // An install relaunches the app. A recording started now would be ended by it: automatic starts are offered
         // instead (MeetingPolicy.onCallStarted), a manual one asks the user to wait.
         let installing = host.updateInstalling()
-        if origin == .auto, installing { rejected(); return }
+        if origin == .auto, installing { trace(.startRefused(reason: "update_installing")); rejected(); return }
         if origin == .manual, MeetingPolicy.manualStart(installing: installing) == .waitForInstall {
+            trace(.startRefused(reason: "update_installing"))
             host.notify(L10nKey.noticeMeetingWaitInstall.text)
             done(false)
             return
         }
-        if origin == .auto || offered, !consentReminderAccepted() { done(false); return }
         // Before a meeting exists in the daemon: a missing microphone permission leaves nothing to clean up.
         do { try MeetingRecorder.checkMicrophone() } catch {
-            log.error("meeting start failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
-            host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
+            failStart(error)
             done(false)
             return
         }
@@ -263,6 +273,7 @@ final class MeetingController: NSObject, MeetingFeature {
                 created = info
                 // Switched off while the daemon was opening the meeting: close it through the usual path and record nothing.
                 if isShutDown {
+                    trace(.startRefused(reason: "shut_down"))
                     discardEmpty(info.id)
                     return
                 }
@@ -276,14 +287,46 @@ final class MeetingController: NSObject, MeetingFeature {
                 badge.showRecording(auto: origin == .auto, elapsed: 0)
                 startTick()
                 host.recordingChanged()
+                trace(.started(id: info.id, origin: origin == .auto ? "auto" : "manual"))
+                if origin == .auto || offered { noteConsentReminder() }
                 ok = true
             } catch {
-                log.error("meeting start failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
-                host.notify(L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start)))
+                failStart(error)
                 // A meeting the daemon opened but the recorder never started would sit as "recording".
                 if let created, current == nil { discardEmpty(created.id) }
             }
             render()
+        }
+    }
+
+    /// A start that did not become a recording says why — in the log, in the status line, on the plate until it is
+    /// dismissed, and as a notification for the user who is not looking at this screen (#518).
+    private func failStart(_ error: Error) {
+        trace(.startFailed(reason: MeetingTrace.reason(of: error)))
+        log.error("meeting start failed: \(LogDetail.publicText(error), privacy: .public) \(LogDetail.privateText(error), privacy: .private)")
+        let sentence = L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start))
+        host.notify(sentence)
+        badge.showError(sentence)
+        notifier.post(title: sentence)
+    }
+
+    /// One line of the prompt/recording story under the `meeting` category (`MeetingTrace`: public data only).
+    private func trace(_ event: MeetingTrace.Event) {
+        log.info("\(event.line, privacy: .public)")
+    }
+
+    /// The plate has been up and unseen by the window server through every self-heal. A recording must never run
+    /// invisibly: a notification shows over a full-screen Space where a panel may not.
+    private func plateNotVisible() {
+        switch badge.mode {
+        case .recording?:
+            let text = L10nKey.noticeMeetingPlateHidden.text
+            host.notify(text)
+            notifier.post(title: L10nKey.noticeMeetingPlateHiddenTitle.text, body: text)
+        case .prompt(let source)?:
+            host.notify(L10nKey.noticeMeetingPromptHidden.text)
+            notifier.post(title: L10nKey.badgePromptCall.text(CallPolicy.name(for: source)), body: L10nKey.noticeMeetingPromptHidden.text)
+        default: break
         }
     }
 
@@ -314,6 +357,7 @@ final class MeetingController: NSObject, MeetingFeature {
         guard current != nil else { return }
         let l = recorder.levels
         badge.update(elapsed: recorder.elapsed, me: l.me, them: l.them)
+        badge.verifyOnScreen()
         pollPlaying()
         let stats = recorder.tapStats
         let tick = RecordingMonitor.Tick(elapsed: recorder.elapsed, writeFailed: recorder.writeFailed,
@@ -363,6 +407,7 @@ final class MeetingController: NSObject, MeetingFeature {
 
     func stop() {
         guard let (info, _) = current else { return }
+        trace(.stopped(id: info.id, why: "user"))
         current = nil
         syncCallActivity()
         tick?.invalidate()
@@ -424,16 +469,21 @@ final class MeetingController: NSObject, MeetingFeature {
     private func recordFromPrompt() {
         guard case .prompt(let source) = badge.mode else {
             // Not the prompt (it was taken down meanwhile): the press still starts, as it always did.
+            trace(.answered(.record, app: CallPolicy.name(for: lastSource)))
             start(origin: .manual, source: lastSource, offered: true)
             return
         }
+        trace(.answered(.record, app: CallPolicy.name(for: source)))
         let stale = offerLife.stale(now: Date(), offer: .prompt(source: source), liveSource: liveCall?.source)
         let holder = RecordPrompt.holder(bundleID: promptHolder)
         guard holder == .browser, let bundleID = promptHolder else {
             // A native call app has no tabs to re-read: the offer's staleness is the whole answer.
-            applyRecord(RecordCheck.decide(offerStale: stale, holder: holder, tabs: .unknown), answer: nil, source: source)
+            let verdict = RecordCheck.decide(offerStale: stale, holder: holder, tabs: .unknown)
+            trace(.checked(verdict, stale: stale, tabs: "native"))
+            applyRecord(verdict, answer: nil, source: source)
             return
         }
+        trace(.checking(holder: "browser"))
         badge.showRecordChecking(source: source)
         Task { @MainActor in
             let tabs = await watcher.callTabs(of: bundleID, source: source)
@@ -445,8 +495,11 @@ final class MeetingController: NSObject, MeetingFeature {
             }
             let badgeNow = RecordResume.badge(shown: shownNow, pressed: source)
             switch RecordResume.decide(recordingOrStarting: current != nil || starting, badge: badgeNow) {
-            case .nothing: break
-            case .apply: applyRecord(RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs), answer: nil, source: source)
+            case .nothing: trace(.checkSuperseded)
+            case .apply:
+                let verdict = RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs)
+                trace(.checked(verdict, stale: stale, tabs: tabs == .callPage ? "call_page" : tabs == .noCallPage ? "no_call_page" : "unknown"))
+                applyRecord(verdict, answer: nil, source: source)
             case .start: start(origin: .manual, source: source, offered: true)
             }
         }
@@ -455,6 +508,7 @@ final class MeetingController: NSObject, MeetingFeature {
     /// The Record question's two answers on the badge.
     private func answerRecordQuestion(_ answer: RecordPrompt.Answer) {
         guard case .recordConfirm(let source) = badge.mode else { return }
+        trace(.answered(answer == .record ? .record : .cancel, app: CallPolicy.name(for: source)))
         applyRecord(.ask, answer: answer, source: source)
     }
 
@@ -475,6 +529,7 @@ final class MeetingController: NSObject, MeetingFeature {
     /// (reversible in Settings), and this call is done asking.
     private func dontAskForThisApp() {
         guard case .prompt(let source) = badge.mode else { return }
+        trace(.answered(.dontAsk, app: CallPolicy.name(for: source)))
         CallPolicy.setMode(.never, for: source, host.defaults)
         watcher.decline()
         badge.hide()
@@ -513,12 +568,17 @@ final class MeetingController: NSObject, MeetingFeature {
         }
         // Off means no offers: a prompt or consent badge that is still up must not keep asking.
         if !OfferLifetime.offersAllowed(mode: mode) {
-            if case .recording = badge.mode {} else { badge.hide() }
+            switch badge.mode {
+            case .recording?, .failed?: break
+            default: badge.hide()
+            }
         }
     }
 
     /// One poll of the call watcher: the tracker has decided (offer, start, stop); the notices it could not.
     private func observe(_ tick: CallWatcher.Tick) {
+        // The call poll runs every 2 s while a prompt or question is up, so an unseen one is noticed like a recording's.
+        badge.verifyOnScreen()
         host.callActivity.setCallSeen(tick.call != nil)
         liveCall = tick.call
         if let call = tick.call { lastSource = call.source }
@@ -545,11 +605,14 @@ final class MeetingController: NSObject, MeetingFeature {
         case .callStarted(let source):
             switch MeetingPolicy.onCallStarted(source: source, global: MeetingSettings.callMode(host.defaults),
                                                picked: CallPolicy.pickedMode(for: source, host.defaults), installing: host.updateInstalling()) {
-            case .start: start(origin: .auto, source: source)
+            case .start:
+                trace(.autoStarting(app: CallPolicy.name(for: source)))
+                start(origin: .auto, source: source)
             case .prompt:
                 promptHolder = tick.call?.bundleID
+                trace(.promptShown(app: CallPolicy.name(for: source)))
                 badge.showPrompt(source: source)
-            case .ignore: break
+            case .ignore: trace(.autoIgnored(app: CallPolicy.name(for: source), reason: "mode_never"))
             }
         case .stopRecording:
             host.notify(L10nKey.noticeMeetingCallEnded.text)
@@ -557,20 +620,29 @@ final class MeetingController: NSObject, MeetingFeature {
         }
     }
 
-    /// The one-time consent reminder before the first recording that was offered or started automatically:
-    /// what is recorded, and to tell the others. It is a reminder only — it never writes the call mode or an
-    /// app's pick; "Don't Record" cancels this start and the reminder comes again next time.
-    private func consentReminderAccepted() -> Bool {
-        if MeetingSettings.explained(host.defaults) { return true }
-        let pressed = host.alert(L10nKey.meetingRemindTitle.text,
-                                 ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text }),
-                                 [L10nKey.meetingRemindRecord.text, L10nKey.meetingRemindSkip.text])
-        guard pressed == .alertFirstButtonReturn else { return false }
-        MeetingSettings.setExplained(host.defaults)
-        // Creating the folder now makes macOS ask for Documents access here, with the
-        // reminder on screen, not at the end of the first call.
-        try? FileManager.default.createDirectory(at: MeetingSettings.folder(host.defaults), withIntermediateDirectories: true)
-        return true
+    /// The one-time consent reminder after the first recording that was offered or started automatically: what is
+    /// recorded, and to tell the others. A notification, never a modal alert — a modal waits for a window the user may
+    /// not see (another app's full-screen call) and held the recording back (#518). The recording badge's "Copy consent
+    /// phrase" button carries the same duty on screen. It never writes the call mode or an app's pick.
+    private func noteConsentReminder() {
+        guard !MeetingSettings.explained(host.defaults) else { return }
+        let text = ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text })
+        // The plate is the reminder, always: it shows whether or not a notification gets through. The notification is an
+        // extra for a person looking at another screen. Nothing here counts it as given; only an acknowledgement does.
+        _ = badge.showReminder(text) { [weak self] in self?.reminderAcknowledged(plateOK: true, notificationOpened: false) }
+        notifier.post(title: L10nKey.meetingRemindTitle.text, body: text, reminder: true)
+        // Creating the folder makes macOS ask for Documents access: off the main thread, so the prompt never holds the app.
+        let folder = MeetingSettings.folder(host.defaults)
+        Task.detached { try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+    }
+
+    /// The only place the reminder is marked given: OK pressed on the plate that showed it (so it was shown), or the
+    /// reminder notification opened. A recording that stops, or an app that quits, with the reminder unanswered leaves it
+    /// to be asked again at the next recording.
+    private func reminderAcknowledged(plateOK: Bool, notificationOpened: Bool) {
+        if ConsentReminderFlow.step(plateShown: plateOK, plateOK: plateOK, notificationOpened: notificationOpened) == .explained {
+            MeetingSettings.setExplained(host.defaults)
+        }
     }
 
     // MARK: after the call

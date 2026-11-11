@@ -129,9 +129,12 @@ final class PillOwnershipTests: XCTestCase {
     /// display the panel is on, not the main one.
     /// Mutation: restore `CGMainDisplayID()` in checkVisible's asleep test, or drop the `recheck.skipped(show:` call -> RED.
     func testTheSkippedCheckIsRearmedAndTheAsleepTestUsesThePanelsDisplay() {
-        let check = Self.overlayBody("private func checkVisible(expected: Int, owner ownerAtShow: Int, healed: Bool) {")
-        XCTAssertTrue(check.contains("CGDisplayIsAsleep(panelDisplayID())"), "the asleep test must look at the panel's display")
-        XCTAssertFalse(check.contains("CGMainDisplayID()"), "the main display is not the panel's display")
+        let check = Self.overlayBody("private func checkVisible(expected: Int, owner ownerAtShow: Int) {")
+        XCTAssertTrue(check.contains("PlateProbe.expectsOnscreen(panel)"), "the lock/asleep guard stays in front of the check")
+        let probe = (try? String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/OxSayDictation/PlateProbe.swift"), encoding: .utf8)) ?? ""
+        XCTAssertTrue(probe.contains("CGDisplayIsAsleep(display)") && probe.contains("panel.screen?.deviceDescription"),
+                      "the asleep test must look at the panel's display")
         XCTAssertTrue(check.contains("recheck.skipped(show: expected)"), "a skipped check is not remembered")
         let back = Self.overlayBody("private func screenCameBack() {")
         XCTAssertTrue(back.contains("recheck.resume(show: expected, wantsVisible: wantsVisible)") && back.contains("checkVisible("),
@@ -214,8 +217,8 @@ final class PillOwnershipTests: XCTestCase {
     /// Mutation: move the PillVisibility guard below the fault log in
     /// Overlay.checkVisible -> RED.
     func testTheVisibilityCheckSkipsWhenTheScreenIsLocked() {
-        let body = Self.overlayBody("private func checkVisible(expected: Int, owner ownerAtShow: Int, healed: Bool) {")
-        guard let skip = body.range(of: "PillVisibility.expectsOnscreen"),
+        let body = Self.overlayBody("private func checkVisible(expected: Int, owner ownerAtShow: Int) {")
+        guard let skip = body.range(of: "PlateProbe.expectsOnscreen"),
               let fault = body.range(of: ".fault(") else {
             return XCTFail("checkVisible lost the screen-state guard or the fault log")
         }
