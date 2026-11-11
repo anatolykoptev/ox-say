@@ -116,7 +116,7 @@ final class MeetingController: NSObject, MeetingFeature {
             self?.badge.hide()
         }
         badge.onNotVisible = { [weak self] in self?.plateNotVisible() }
-        notifier.onReminderOpened = { [weak self] in self?.reminderAcknowledged(plateOK: false, notificationOpened: true) }
+        notifier.reminderOpened.setHandler { [weak self] in self?.reminderAcknowledged(plateOK: false, notificationOpened: true) }
         badge.defaults = host.defaults
         badge.onDontAsk = { [weak self] in self?.dontAskForThisApp() }
         badge.onBrowserAllow = { [weak self] in self?.allowBrowserAutomation() }

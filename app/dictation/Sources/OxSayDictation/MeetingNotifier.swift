@@ -15,8 +15,11 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// Points the window at a route; set by the app, so the notifier does not know the window.
     var openRoute: @MainActor (MainRoute) -> Void = { _ in }
-    /// The consent reminder's notification was opened: the person read it, which counts as acknowledging it.
-    var onReminderOpened: @MainActor () -> Void = {}
+    /// The consent reminder's notification was opened: the person read it, which counts as acknowledging it. An older
+    /// reminder opened later counts too, by design: it is the reminder's text the person opened. Latched, because a
+    /// launch by clicking the notification delivers it before the meeting controller exists (the delegate itself is
+    /// installed in `applicationDidFinishLaunching`, before it returns, which is what the system requires).
+    @MainActor let reminderOpened = LatchedSignal()
 
     func install() {
         // Only the delegate is set here: the authorization question is asked at the first `post`, in context,
@@ -66,7 +69,7 @@ final class MeetingNotifier: NSObject, UNUserNotificationCenterDelegate {
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
         if info[Self.reminderKey] != nil {
-            Task { @MainActor [weak self] in self?.onReminderOpened() }
+            Task { @MainActor [weak self] in self?.reminderOpened.fire() }
         } else if let id = info[Self.speakKey] as? String {
             // Delivered on a system queue; the window is the main actor's.
             Task { @MainActor [weak self] in self?.openRoute(MainRoute(section: .speak, speakID: id)) }
