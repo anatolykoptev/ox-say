@@ -4,13 +4,26 @@ package daemon
 
 import "golang.org/x/sys/unix"
 
-// notesGPUWiredSysctl reads the Metal wired budget on Apple Silicon:
-// iogpu.wired_limit_mb is the ceiling the GPU heap may wire — the number the
-// emulated-memory runs measure against — and iogpu.wired_allocated_mb is
-// what is wired right now, the daemon's own engines and every other client
-// included. Both are megabytes; (0,0) reports a Mac that answers nothing.
-func notesGPUWiredSysctl() (limit, used uint64) {
-	limit, _ = unix.SysctlUint64("iogpu.wired_limit_mb")
-	used, _ = unix.SysctlUint64("iogpu.wired_allocated_mb")
-	return limit << 20, used << 20
+// wiredLimitMB reads iogpu.wired_limit_mb: 0 on a stock Mac (the system
+// default), non-zero only when someone set it. The kernel's width for this
+// oid is not documented, so both are tried.
+func wiredLimitMB() uint64 {
+	if v, err := unix.SysctlUint64("iogpu.wired_limit_mb"); err == nil {
+		return v
+	}
+	if v, err := unix.SysctlUint32("iogpu.wired_limit_mb"); err == nil {
+		return uint64(v)
+	}
+	return 0
+}
+
+var realGPUProbe = newGPUProbe(wiredLimitMB, execRun)
+
+// defaultNotesGPUWired and notesGPUWarm are the darwin probe (see
+// notesfit_probe.go for where each figure comes from).
+func defaultNotesGPUWired(string) (limit, used uint64) { return realGPUProbe.wired() }
+func notesGPUWarm(bin string) {
+	if wiredLimitMB() == 0 { // an explicit limit makes the Metal call moot
+		realGPUProbe.warm(bin)
+	}
 }

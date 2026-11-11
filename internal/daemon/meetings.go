@@ -306,6 +306,9 @@ func notesVerifyAuth(ctx context.Context, baseURL string) error {
 // newLLMSupervisor builds the notes server's supervisor. The child holds
 // 4-7 GB while loaded, so a short idle stop returns it to zero between meetings.
 func newLLMSupervisor(d *Daemon) (*engine.Supervisor, error) {
+	if d.Cfg.UnifiedMemory() {
+		notesGPUWarmup(notesBinPath(d.Cfg)) // Metal's total, off the spawn path
+	}
 	return engine.New(notesEngineConfig(d.Cfg, d.log, d.notesSpawnPlan))
 }
 

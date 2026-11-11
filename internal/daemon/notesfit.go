@@ -70,16 +70,23 @@ const (
 )
 
 // notesGPUWired reports the Metal wired limit and the bytes already
-// allocated. The build-tagged default reads the iogpu sysctls on Darwin and
-// reports (0,0) elsewhere — and tests replace it. (0,0) means unknown and
-// the check is skipped entirely: the same "unknown never blocks" convention
-// as the other memory gates.
-var notesGPUWired = notesGPUWiredSysctl
+// allocated system-wide for the ox-llm binary at bin. On Darwin the limit is
+// iogpu.wired_limit_mb when set, else the Metal total ox-llm --list-devices
+// prints (read once per process, in the background); the used figure is the
+// IOAccelerator "Alloc system memory" from ioreg (notesfit_probe.go). It
+// reports (0,0) elsewhere — and tests replace it. A zero limit means unknown
+// and the check is skipped entirely: the same "unknown never blocks"
+// convention as the other memory gates.
+var notesGPUWired = defaultNotesGPUWired
+
+// notesGPUWarmup starts the one background Metal-total read at daemon start
+// (a no-op off Darwin); tests replace it so the fake ox-llm is not exec'd.
+var notesGPUWarmup = notesGPUWarm
 
 // notesGPUFree is the GPU budget actually free right now: the wired limit
 // minus what is already allocated, and whether the probe knew the numbers.
-func notesGPUFree() (free int64, known bool) {
-	limit, used := notesGPUWired()
+func notesGPUFree(bin string) (free int64, known bool) {
+	limit, used := notesGPUWired(bin)
 	if limit == 0 {
 		return 0, false
 	}
@@ -170,7 +177,7 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 	if !d.Cfg.UnifiedMemory() || !res.Installed {
 		return p // CPU decode decides nothing; a missing model fails as before
 	}
-	free, known := notesGPUFree()
+	free, known := notesGPUFree(notesBinPath(d.Cfg))
 	if !known {
 		return p
 	}

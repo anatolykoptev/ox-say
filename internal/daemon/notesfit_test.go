@@ -49,7 +49,7 @@ func notesFitDaemon(t *testing.T, files ...string) (*Daemon, string) {
 func fakeWired(t *testing.T, free int64) {
 	t.Helper()
 	old := notesGPUWired
-	notesGPUWired = func() (limit, used uint64) { return uint64(free) + (500 << 20), 500 << 20 }
+	notesGPUWired = func(string) (limit, used uint64) { return uint64(free) + (500 << 20), 500 << 20 }
 	t.Cleanup(func() { notesGPUWired = old })
 }
 
