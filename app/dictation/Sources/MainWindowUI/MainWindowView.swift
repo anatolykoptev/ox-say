@@ -110,9 +110,10 @@ public struct MainWindowView: View {
         case .meetings: MeetingsPage(model: model)
         case .dictation: DictationPage(model: model)
         case .voices: VoicesPage(model: model)
+        case .transcribe: TranscribePage(model: model)
         case .settings: SettingsPage(model: model)
         // Not live yet: unreachable until the section's own task lists it in `MainWindowSpec.liveSections`.
-        case .transcribe, .models: EmptyView()
+        case .models: EmptyView()
         }
     }
 }

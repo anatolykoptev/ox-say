@@ -93,19 +93,22 @@ public enum VersionHandshake {
         /// The person is recording their own voice for a clone (the Voices page's «Записать свой голос»): a relaunch
         /// would lose the take.
         public var recordingVoice: Bool
+        /// A file is being uploaded or transcribed (the Расшифровка page): a relaunch or a daemon restart would lose it.
+        public var transcribing: Bool
 
         public init(dictating: Bool, speaking: Bool, designing: Bool, followingVoiceover: Bool, recordingMeeting: Bool,
-                    recordingVoice: Bool = false) {
+                    recordingVoice: Bool = false, transcribing: Bool = false) {
             self.dictating = dictating
             self.speaking = speaking
             self.designing = designing
             self.followingVoiceover = followingVoiceover
             self.recordingMeeting = recordingMeeting
             self.recordingVoice = recordingVoice
+            self.transcribing = transcribing
         }
 
         /// True only when every lane is empty.
-        public var idle: Bool { !(dictating || speaking || designing || followingVoiceover || recordingMeeting || recordingVoice) }
+        public var idle: Bool { !(dictating || speaking || designing || followingVoiceover || recordingMeeting || recordingVoice || transcribing) }
     }
 
     /// How a kickstart command ended.

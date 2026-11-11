@@ -818,3 +818,31 @@
 "speak.panel.mixed" = "разные";
 "speak.panel.own_settings" = "Включены свои настройки звука";
 "speak.panel.random" = "Случайный";
+
+/* Расшифровка */
+"transcribe.pick" = "Выбрать файл…";
+"transcribe.drop.title" = "Перетащите запись сюда";
+"transcribe.drop.message" = "Аудио или видео. Вы получите текст и субтитры.";
+"transcribe.drop.targeted" = "Отпустите, чтобы расшифровать";
+"transcribe.loading" = "Загружаю расшифровки…";
+"transcribe.working" = "Расшифровываю…";
+"transcribe.working.hint" = "Длинная запись идёт дольше. Окно можно закрыть: расшифровка продолжится.";
+"transcribe.done" = "Готово";
+"transcribe.text" = "Текст";
+"transcribe.subtitles" = "Субтитры";
+"transcribe.more" = "Ещё";
+"transcribe.copy" = "Копировать";
+"transcribe.save" = "Сохранить…";
+"transcribe.save_vtt" = "Сохранить как .vtt…";
+"transcribe.save_json" = "Сохранить как .json…";
+"transcribe.delete" = "Удалить…";
+"transcribe.delete.title" = "Удалить «%@»?";
+"transcribe.delete.body" = "Текст и субтитры будут удалены из OxSay. Сама запись не затрагивается. Это нельзя отменить.";
+"transcribe.delete.confirm" = "Удалить";
+"transcribe.minutes" = "%@ мин";
+"transcribe.problem.not_media" = "Выберите аудио- или видеофайл: WAV, MP3, M4A, AIFF, FLAC, MP4, MOV и подобные.";
+"transcribe.problem.too_big" = "Файл больше %@ МБ — это больше, чем OxSay берёт за раз. Разрежьте его на части.";
+"transcribe.busy" = "Одна запись за раз: дождитесь, пока закончится текущая.";
+"transcribe.copied" = "Текст скопирован.";
+"transcribe.save_failed" = "Не удалось сохранить файл.";
+"transcribe.default_name" = "Расшифровка";

@@ -19,6 +19,10 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
     /// A small-memory Mac is busy with another large engine (a voiceover, the fast voice or meeting notes): the daemon's
     /// 503 with code `engine_busy_memory`. Nothing failed; the request can be repeated later.
     case enginesBusy
+    /// A file picked for upload could not be read (moved, deleted or unreadable) while its body was being prepared.
+    case fileUnreadable
+    /// A file over the daemon's upload cap (megabytes), found while it was being prepared for upload.
+    case fileTooLarge(megabytes: Int)
 
     /// What the person reads, in their language. The daemon's own words in a refusal stay as it sent them; an empty
     /// one is the app's sentence naming the status. `description` below stays English: it is for logs.
@@ -34,6 +38,8 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .projectNotFinished: return text(.speakPanelErrNotFinished)
         case .recordingStyleUnavailable: return text(.speakPanelErrRecordingStyle)
         case .enginesBusy: return text(.speakEngineBusy)
+        case .fileUnreadable: return text(.fileProblemUnreadable)
+        case .fileTooLarge(let megabytes): return String(format: text(.transcribeProblemTooBig), String(megabytes))
         }
     }
 
@@ -54,6 +60,8 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .projectNotFinished: return "The project must finish first."
         case .recordingStyleUnavailable: return "This voice cannot copy the recording's delivery."
         case .enginesBusy: return "Another large voice or notes engine is busy; try again later."
+        case .fileUnreadable: return "The file could not be read."
+        case .fileTooLarge(let megabytes): return "The file is over the \(megabytes) MB the OxSay service takes."
         }
     }
 }
@@ -63,6 +71,8 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
 /// decision lives in the pure types next to it.
 public struct StudioClient {
     public typealias Send = (URLRequest) async throws -> (Data, URLResponse)
+    /// Uploads the file at the URL as the request's body (a file too large to hold in memory).
+    public typealias Upload = (URLRequest, URL) async throws -> (Data, URLResponse)
 
     /// Timeouts, seconds. A status or list read is instant on a healthy daemon.
     public static let quickTimeout: TimeInterval = 10
@@ -79,11 +89,14 @@ public struct StudioClient {
 
     public var baseURL: URL
     public var send: Send
+    public var upload: Upload
 
     public init(baseURL: URL = DaemonAddress.fallback,
-                send: @escaping Send = { try await URLSession.shared.data(for: $0) }) {
+                send: @escaping Send = { try await URLSession.shared.data(for: $0) },
+                upload: @escaping Upload = { try await URLSession.shared.upload(for: $0, fromFile: $1) }) {
         self.baseURL = baseURL
         self.send = send
+        self.upload = upload
     }
 
     /// The daemon's answer to one request: its body, or why there is none.

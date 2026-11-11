@@ -770,3 +770,22 @@ func TestStatusReportsTheDiarEngine(t *testing.T) {
 		})
 	}
 }
+
+// /status carries the transcription timeout and the upload cap the daemon runs with, so the app's upload timeout and
+// size check follow OX_SAY_STT_TIMEOUT_SECS / OX_SAY_STT_MAX_UPLOAD_MB instead of assuming the defaults.
+// Mutation: drop "stt_timeout_s" or "stt_max_upload_mb" from the Status config map in service.go -> RED.
+func TestStatusReportsTheUploadLimits(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemonSTT(t, dir, func(c *config.Config) {
+		c.STTTimeout = 1234 * time.Second
+		c.STTMaxUploadMB = 77
+	}, nil, nil)
+	cfg := d.Status().Config
+	if cfg["stt_timeout_s"] != float64(1234) {
+		t.Errorf("status config[stt_timeout_s] = %v, want 1234", cfg["stt_timeout_s"])
+	}
+	if cfg["stt_max_upload_mb"] != int64(77) {
+		t.Errorf("status config[stt_max_upload_mb] = %v (%T), want 77", cfg["stt_max_upload_mb"], cfg["stt_max_upload_mb"])
+	}
+}
