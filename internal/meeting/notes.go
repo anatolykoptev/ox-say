@@ -165,12 +165,12 @@ func isUnstated(s string) bool { return unstated[strings.ToLower(strings.TrimSpa
 // mapped to Labels.Them: a group call has several far-side people.
 func MergeChunks(parts []ChunkNotes, l Labels) Notes { return mergeChunks(parts, l, nil) }
 
-// mergeChunks is MergeChunks with the pairs of points the reduce call found to be one (see mergePoints).
+// mergeChunks is MergeChunks with the open points the reduce call says later decisions settle (see mergePoints).
 //
-// Decisions and open questions are one list of points with a status: the same point in two parts is one point and
-// the later part's status wins, so a question settled later is a decision only, and a decision reopened later is
-// a question only.
-func mergeChunks(parts []ChunkNotes, l Labels, pairs []pointPair) Notes {
+// Decisions and open questions are one list of points with a status: a point restated in two parts is one point and
+// the later part's status wins, so a decision reopened later is a question only; a question that a later part
+// decides is dropped when the reduce call names the decision (claims), and the decision keeps its own words.
+func mergeChunks(parts []ChunkNotes, l Labels, claims []settleClaim) Notes {
 	var n Notes
 	var summaries []string
 	for _, p := range parts {
@@ -181,7 +181,7 @@ func mergeChunks(parts []ChunkNotes, l Labels, pairs []pointPair) Notes {
 		n.Numbers = append(n.Numbers, p.Numbers...)
 	}
 	n.Summary = strings.Join(summaries, "\n\n")
-	n.Decisions, n.OpenQuestions = mergePoints(flattenPoints(parts), pairs)
+	n.Decisions, n.OpenQuestions = mergePoints(flattenPoints(parts), claims)
 	n.Numbers = dedupeLines(n.Numbers, false)
 	n.ActionItems = dedupeActions(n.ActionItems, l)
 	return n
@@ -578,13 +578,13 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 	if len(parts) == 0 {
 		return Notes{}, ErrNoNotes
 	}
-	// One reduce call at most, after the map steps and before the summary merge; it can only add pairs.
-	pairs, err := c.pairPoints(ctx, parts)
+	// At most maxReduceCalls reduce calls (one for most meetings), after the map steps and before the summary merge; they can only settle open points.
+	claims, err := c.pairPoints(ctx, parts)
 	if err != nil {
-		c.logf("notes: pairing the points failed, merging them by words only", slog.Any("error", err))
-		pairs = nil
+		c.logf("notes: settling the open points failed, merging by words only", slog.Any("error", err))
+		claims = nil
 	}
-	n := mergeChunks(parts, l, pairs)
+	n := mergeChunks(parts, l, claims)
 	n.SkippedChunks = skipped
 	if len(parts) > 1 {
 		n.Summary = c.mergeSummary(ctx, parts, n.Summary, lang)

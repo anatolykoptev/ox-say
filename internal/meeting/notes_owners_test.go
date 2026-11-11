@@ -104,7 +104,7 @@ func ownerFixtures(t *testing.T) []ownerFixture {
 			replies: []string{
 				ans(chunkAnswer{Summary: "Launch date discussed.", Points: []Point{{Text: "Should the launch move to March", Status: statusOpen}}}),
 				ans(chunkAnswer{Summary: "Launch agreed.", Points: []Point{{Text: "The launch is in March", Status: statusDecided, Quote: "Yes, agreed, March it is"}}}),
-				`{"same":[{"a":0,"b":1}]}`,
+				`{"settles":[{"open":0,"decided":[1]}]}`,
 				"Launch date discussed and agreed.",
 			},
 			decided: []string{"The launch is in March"},
@@ -402,7 +402,7 @@ func TestComposeSurvivesAFailedReduceCall(t *testing.T) {
 	}{
 		"an error":         {"", errors.New("engine fell over")},
 		"unreadable":       {"{not json", nil},
-		"ids out of range": {`{"same":[{"a":-1,"b":99},{"a":0,"b":0}]}`, nil},
+		"ids out of range": {`{"settles":[{"open":-1,"decided":[99]},{"open":0,"decided":[0,7]}]}`, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := &fakeChat{replies: []string{fx.replies[0], fx.replies[1], tc.reply, "merged"}, errs: []error{nil, nil, tc.err}}
@@ -410,7 +410,7 @@ func TestComposeSurvivesAFailedReduceCall(t *testing.T) {
 			if len(f.reqs) != 4 {
 				t.Fatalf("%d calls, want 2 chunks + 1 reduce + 1 summary", len(f.reqs))
 			}
-			// the paraphrase was not paired: both points stay, each under its own status
+			// nothing was settled: both points stay, each under its own status
 			if strings.Join(n.Decisions, "|") != "The launch is in March" || strings.Join(n.OpenQuestions, "|") != "Should the launch move to March" {
 				t.Fatalf("decisions = %q, open = %q", n.Decisions, n.OpenQuestions)
 			}
@@ -418,43 +418,6 @@ func TestComposeSurvivesAFailedReduceCall(t *testing.T) {
 				t.Fatalf("summary = %q: the summary merge must still run after a failed reduce", n.Summary)
 			}
 		})
-	}
-}
-
-// The reduce call is bounded: none for a single chunk or when the code merge leaves fewer than two points, at most
-// one otherwise; a pair inside one chunk, or between two different numbers, is ignored.
-func TestReduceCallIsBoundedAndItsPairsAreChecked(t *testing.T) {
-	one := &fakeChat{replies: []string{answerJSON(t, chunkAnswer{Summary: "s", Points: []Point{
-		{Text: "Budget is 500", Status: statusOpen}, {Text: "Ads go live Monday", Status: statusOpen}}})}}
-	composeWith(t, one, "[0:01] Anatoly: Budget is 500 and ads go live Monday.\n", Labels{}, "en")
-	if len(one.reqs) != 1 {
-		t.Fatalf("a single chunk made %d calls, want 1", len(one.reqs))
-	}
-
-	text := "[0:01] A: Budget talk.\n" + pad + "[50:00] B: Budget again.\n"
-	chunk := func(pts ...Point) string { return answerJSON(t, chunkAnswer{Summary: "s", Points: pts}) }
-	run := func(pair string, a, b Point) Notes {
-		f := &fakeChat{replies: []string{chunk(a), chunk(b), pair, "merged"}}
-		n := composeWith(t, f, text, Labels{}, "en")
-		if len(f.reqs) != 4 {
-			t.Fatalf("%d calls", len(f.reqs))
-		}
-		if req := f.reqs[2]; req.Schema == nil || !strings.Contains(req.User, "[0] (part 1, open)") || !strings.Contains(req.User, "[1] (part 2, decided)") {
-			t.Fatalf("the reduce request is not the id list: %+v", req)
-		}
-		return n
-	}
-	q := "Agreed, budget talk again."
-	// paraphrase: paired -> one decision
-	n := run(`{"same":[{"a":0,"b":1}]}`, Point{Text: "What is the ad budget", Status: statusOpen}, Point{Text: "Ad spend is capped", Status: statusDecided, Quote: "Budget again"})
-	_ = q
-	if len(n.Decisions) != 1 || len(n.OpenQuestions) != 0 {
-		t.Fatalf("paired: decisions = %q, open = %q", n.Decisions, n.OpenQuestions)
-	}
-	// two different numbers are two points even when the model pairs them
-	n = run(`{"same":[{"a":0,"b":1}]}`, Point{Text: "Budget 500 for ads", Status: statusOpen}, Point{Text: "Budget 700 for ads", Status: statusDecided, Quote: "Budget again"})
-	if len(n.Decisions) != 1 || len(n.OpenQuestions) != 1 {
-		t.Fatalf("different numbers: decisions = %q, open = %q", n.Decisions, n.OpenQuestions)
 	}
 }
 
@@ -554,26 +517,79 @@ func TestComposeQuoteAcrossTurnsOrLabelsIsRefused(t *testing.T) {
 	}
 }
 
-// Review 2: the code, not the prompt, keeps points that differ in a name or number apart.
-// Mutation: notes_points.go groupPoints join, delete the `if !pairFactsOK(...) { return }` check -> RED (the table
-// is on pairFactsOK itself; the journey fails because the paired Bob and Ann points merge).
-func TestPairFactsOK(t *testing.T) {
+// The reduce call is bounded and its answer is only a claim: none for a single chunk, one otherwise; a claim about a
+// decision of an earlier part, one that names another number, and an id out of range are ignored.
+// Mutation: notes_points.go acceptSettles, delete `pts[d].chunk <= grp.last ||` -> RED on the earlier-part case.
+func TestReduceCallIsBoundedAndItsClaimsAreChecked(t *testing.T) {
+	one := &fakeChat{replies: []string{answerJSON(t, chunkAnswer{Summary: "s", Points: []Point{
+		{Text: "Budget is 500", Status: statusOpen}, {Text: "Ads go live Monday", Status: statusOpen}}})}}
+	composeWith(t, one, "[0:01] Anatoly: Budget is 500 and ads go live Monday.\n", Labels{}, "en")
+	if len(one.reqs) != 1 {
+		t.Fatalf("a single chunk made %d calls, want 1", len(one.reqs))
+	}
+
+	text := "[0:01] A: Budget talk.\n" + pad + "[50:00] B: Budget again.\n"
+	chunk := func(pts ...Point) string { return answerJSON(t, chunkAnswer{Summary: "s", Points: pts}) }
+	run := func(reply string, a, b Point) Notes {
+		f := &fakeChat{replies: []string{chunk(a), chunk(b), reply, "merged"}}
+		n := composeWith(t, f, text, Labels{}, "en")
+		if len(f.reqs) != 4 {
+			t.Fatalf("%d calls", len(f.reqs))
+		}
+		if req := f.reqs[2]; req.Schema == nil || !strings.Contains(req.User, "[0] (part 1, open)") || !strings.Contains(req.User, "[1] (part 2, decided)") {
+			t.Fatalf("the reduce request is not the id list: %+v", req)
+		}
+		return n
+	}
+	open := Point{Text: "What is the ad budget", Status: statusOpen}
+	dec := Point{Text: "Ad spend is capped", Status: statusDecided, Quote: "Budget again"}
+	n := run(`{"settles":[{"open":0,"decided":[1]}]}`, open, dec)
+	if len(n.Decisions) != 1 || len(n.OpenQuestions) != 0 {
+		t.Fatalf("settled: decisions = %q, open = %q", n.Decisions, n.OpenQuestions)
+	}
+	n = run(`{"settles":[{"open":0,"decided":[1]}]}`, Point{Text: "Budget 500 for ads", Status: statusOpen}, Point{Text: "Budget 700 for ads", Status: statusDecided, Quote: "Budget again"})
+	if len(n.Decisions) != 1 || len(n.OpenQuestions) != 1 {
+		t.Fatalf("different numbers: decisions = %q, open = %q", n.Decisions, n.OpenQuestions)
+	}
+	// a decision of an earlier part settles nothing, and no call is made for it
+	early := Point{Text: dec.Text, Status: statusDecided, Quote: "Budget talk"} // verifiable in the first part
+	f := &fakeChat{replies: []string{chunk(early), chunk(open), "merged"}}
+	n = composeWith(t, f, text, Labels{}, "en")
+	if len(f.reqs) != 3 || len(n.Decisions) != 1 || len(n.OpenQuestions) != 1 {
+		t.Fatalf("earlier part: %d calls, decisions = %q, open = %q", len(f.reqs), n.Decisions, n.OpenQuestions)
+	}
+	n = mergeChunks(partsOf(dec, open), Labels{}, []settleClaim{{Open: 1, Decided: []int{0}}})
+	if len(n.Decisions) != 1 || len(n.OpenQuestions) != 1 {
+		t.Fatalf("a claim about an earlier decision was accepted: decisions = %q, open = %q", n.Decisions, n.OpenQuestions)
+	}
+}
+
+// Review (round 3): the check on a settlement. Names are compared by stem (case endings), numbers must not conflict,
+// and a first word is not a name.
+// Mutations: notes_points.go sameName, compare `string(ra) == string(rb)` always -> RED on the Russian rows;
+// settleOK, delete the `for _, n := range capitalized(open, false)` loop -> RED on the name rows.
+func TestSettleOK(t *testing.T) {
 	for _, c := range []struct {
-		a, b string
-		want bool
+		open, decided string
+		want          bool
 	}{
+		{"Нужно отправить Даше отчёт", "Отчёт отправит Даша", true}, // inflection: Даше / Даша
+		{"Нужно отправить Даше отчёт", "Отчёт отправим Даше", true},
+		{"Нужно отправить Даше отчёт", "Отчёт отправит Маша", false},
+		{"Кто отправит отчёт Даше", "Даша получит отчёт", true},
 		{"Pay Bob for the shoot", "Pay Ann for the shoot", false},
-		{"Paris office opens in May", "Rome office opens in May", false},
-		{"Budget 500 for ads", "Budget 700 for ads", false},
+		{"Pay Bob for the shoot", "Bob is paid for the shoot", true},
 		{"Open the office in Paris", "Open the office in Rome", false},
+		{"Open the office in Paris", "Paris it is", true},
+		{"Budget 500 for ads", "Budget 700 for ads", false},
 		{"What is the budget", "Budget is 700", true},
 		{"Who does the ticket", "The ticket goes to Daphne", true},
-		{"Who does the ticket", "Daphne does the ticket", false}, // only the first word differs: same as Paris and Rome
 		{"Should the launch move to March", "The launch is in March", true},
-		{"Ship the beta on Friday", "Ship the beta on friday", true},
+		{"Should we ask Anna", "Ann will ask", true}, // the stem rule is tolerant on purpose
+		{"Where do we meet", "We meet in Rome", true},
 	} {
-		if got := pairFactsOK(c.a, c.b); got != c.want {
-			t.Errorf("pairFactsOK(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		if got := settleOK(c.open, c.decided); got != c.want {
+			t.Errorf("settleOK(%q, %q) = %v, want %v", c.open, c.decided, got, c.want)
 		}
 	}
 }
@@ -587,27 +603,72 @@ func partsOf(pts ...Point) []ChunkNotes {
 	return parts
 }
 
-func TestReducePairOfDifferentNamesStaysApart(t *testing.T) {
-	parts := partsOf(Point{Text: "Pay Bob for the shoot", Status: statusOpen}, Point{Text: "Pay Ann for the shoot", Status: statusDecided})
-	n := mergeChunks(parts, Labels{}, []pointPair{{0, 1}})
-	if len(n.Decisions) != 1 || len(n.OpenQuestions) != 1 {
-		t.Fatalf("decisions = %q, open = %q: the model's pair of Bob and Ann must be refused", n.Decisions, n.OpenQuestions)
+// A settlement is a map from an open point to a decision, never a graph. The model names several decisions for Bob's
+// question, one about Ann; it is settled by the ones that pass the check, and the answer does not depend on the order
+// of the claims or of the ids in them.
+// Mutation: notes_points.go acceptSettles, replace `|| !settleOK(pts[grp.rep].Text, pts[d].Text) {` with `|| false {`
+// -> RED on the "only Ann's decision" row.
+func TestSettlementsAreChecksAndDoNotDependOnOrder(t *testing.T) {
+	parts := partsOf(
+		Point{Text: "Pay Bob for the shoot", Status: statusOpen},
+		Point{Text: "Pay Ann for the shoot by card", Status: statusDecided},
+		Point{Text: "Bob is paid in cash", Status: statusDecided},
+		Point{Text: "Bob is paid by bank transfer", Status: statusDecided},
+	)
+	const settledBy2 = "Pay Ann for the shoot by card|Bob is paid in cash|Bob is paid by bank transfer // "
+	for i, cl := range [][]settleClaim{
+		{{Open: 0, Decided: []int{3, 2, 1}}},
+		{{Open: 0, Decided: []int{1, 2, 3}}},
+		{{Open: 0, Decided: []int{2}}, {Open: 0, Decided: []int{1}}},
+		{{Open: 0, Decided: []int{3}}, {Open: 0, Decided: []int{1}}, {Open: 0, Decided: []int{2}}},
+	} {
+		n := mergeChunks(parts, Labels{}, cl)
+		if got := strings.Join(n.Decisions, "|") + " // " + strings.Join(n.OpenQuestions, "|"); got != settledBy2 {
+			t.Errorf("claims %d: %q, want %q", i, got, settledBy2)
+		}
+	}
+	n := mergeChunks(parts, Labels{}, []settleClaim{{Open: 0, Decided: []int{1}}})
+	if len(n.OpenQuestions) != 1 || len(n.Decisions) != 3 {
+		t.Fatalf("decisions = %q, open = %q: only Ann's decision was named, Bob's question stays open", n.Decisions, n.OpenQuestions)
+	}
+	// One decision may settle several open points.
+	two := partsOf(
+		Point{Text: "Where do we meet", Status: statusOpen},
+		Point{Text: "At what time do we meet", Status: statusOpen},
+		Point{Text: "We meet at the office at noon", Status: statusDecided},
+	)
+	n = mergeChunks(two, Labels{}, []settleClaim{{Open: 0, Decided: []int{2}}, {Open: 1, Decided: []int{2}}})
+	if len(n.Decisions) != 1 || len(n.OpenQuestions) != 0 {
+		t.Fatalf("decisions = %q, open = %q: one decision settles both", n.Decisions, n.OpenQuestions)
 	}
 }
 
-// Review 3: pairs do not chain. a~b and b~c agree pairwise with their neighbour, but a and c name different
-// people, so c never joins the group of a and b. The check is on every member pair of the two groups.
-// Mutation: notes_points.go groupPoints join, change the inner `for _, y := range members[gj]` loop to test only
-// `members[gj][0]` (and `members[gi][0]`) -> RED.
-func TestPairsDoNotChain(t *testing.T) {
-	parts := partsOf(
-		Point{Text: "Pay Bob for the shoot", Status: statusOpen},
-		Point{Text: "Pay for the shoot", Status: statusDecided},
-		Point{Text: "Pay Ann for the shoot", Status: statusOpen},
-	)
-	n := mergeChunks(parts, Labels{}, []pointPair{{0, 1}, {1, 2}})
-	if strings.Join(n.Decisions, "|") != "Pay for the shoot" || strings.Join(n.OpenQuestions, "|") != "Pay Ann for the shoot" {
-		t.Fatalf("decisions = %q, open = %q: Bob's and Ann's points were chained through the one without a name", n.Decisions, n.OpenQuestions)
+// Turns: a line without the "[m:ss] Name: " prefix continues the line before it, and so does a line with the same
+// prefix (the pieces Chunk cuts an overlong line into). A different speaker starts a new turn.
+// Mutation: notes_points.go newTextIndex, change `prefix == "" || prefix == lastPrefix` to `false` -> RED.
+func TestContinuationLinesJoinThePreviousTurn(t *testing.T) {
+	text := "[0:05] Daphne: I agree to ship\non Friday if QA is done.\n" +
+		"[0:20] Anatoly: Let me think about the budget for\n[0:20] Anatoly: the ads next week.\n" +
+		"[0:30] Daphne: Fine.\n"
+	idx := newTextIndex(text)
+	for _, c := range []struct {
+		quote string
+		want  bool
+	}{
+		{"agree to ship on Friday if QA is done", true},
+		{"think about the budget for the ads next week", true},
+		{"next week Fine", false}, // a new speaker is a new turn
+		{"Daphne I agree", false},
+	} {
+		if got := idx.has(c.quote); got != c.want {
+			t.Errorf("has(%q) = %v, want %v", c.quote, got, c.want)
+		}
+	}
+	// through Chunk: an overlong line cut into pieces still holds a quote that runs over the cut
+	long := "[0:01] Daphne: " + strings.Repeat("filler ", 40) + "I agree to ship on Friday\n"
+	cut := strings.Join(Chunk(long, 150), "\n")
+	if !newTextIndex(cut).has("I agree to ship on Friday") {
+		t.Errorf("a quote over a Chunk cut is not found in:\n%s", cut)
 	}
 }
 
@@ -647,7 +708,7 @@ func TestLongMeetingStillPairsAnOpenPointWithItsDecision(t *testing.T) {
 	}
 	target := 97 // the decision that settles the open question, reworded
 	pts[target].Text = "The launch moves to March"
-	reduce := fmt.Sprintf(`{"same":[{"a":0,"b":%d}]}`, 1+target)
+	reduce := fmt.Sprintf(`{"settles":[{"open":0,"decided":[%d]}]}`, 1+target)
 	f := &fakeChat{replies: []string{
 		answerJSON(t, chunkAnswer{Summary: "a", Points: []Point{{Text: "Should the launch move to March", Status: statusOpen}}}),
 		answerJSON(t, chunkAnswer{Summary: "b", Points: pts}),

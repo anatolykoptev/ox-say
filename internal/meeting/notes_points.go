@@ -168,16 +168,28 @@ type tokenPos struct{ turn, pos int }
 
 func newTextIndex(text string) textIndex {
 	x := textIndex{at: map[string][]tokenPos{}}
+	lastPrefix := ""
 	for _, line := range strings.Split(text, "\n") {
-		line = turnPrefix.ReplaceAllString(line, "")
-		toks := quoteTokens(line)
+		prefix := turnPrefix.FindString(line)
+		toks := quoteTokens(line[len(prefix):])
 		if len(toks) == 0 {
 			continue
 		}
-		for pos, w := range toks {
-			x.at[w] = append(x.at[w], tokenPos{len(x.turns), pos})
+		// A line without a prefix goes on from the line before it (a turn that spans lines), and so does a line with
+		// the same prefix as the one before (the pieces Chunk cuts an overlong line into): one utterance, one turn.
+		if len(x.turns) > 0 && (prefix == "" || prefix == lastPrefix) {
+			x.turns[len(x.turns)-1] = append(x.turns[len(x.turns)-1], toks...)
+		} else {
+			x.turns = append(x.turns, toks)
 		}
-		x.turns = append(x.turns, toks)
+		if prefix != "" {
+			lastPrefix = prefix
+		}
+	}
+	for t, toks := range x.turns {
+		for pos, w := range toks {
+			x.at[w] = append(x.at[w], tokenPos{t, pos})
+		}
 	}
 	return x
 }
@@ -234,62 +246,10 @@ func (x textIndex) verified(quote string) string {
 
 // ---- merging points across chunks ----
 
-// samePoint: two points are one by words alone, the way the lists were deduplicated before they were joined.
+// samePoint: two points are one by words alone, the way the lists were deduplicated before they were joined. A
+// restatement is one point; a reworded one is two, and a duplicate line is the price of never merging by guess.
 func samePoint(a, b string) bool {
 	return normKey(a) == normKey(b) || (voices.WordOverlap(a, b) >= similarLine && !factsDiffer(a, b))
-}
-
-// subsetKeys: every key of a is in b.
-func subsetKeys(a, b map[string]bool) bool {
-	for k := range a {
-		if !b[k] {
-			return false
-		}
-	}
-	return true
-}
-
-func numberSet(s string) map[string]bool {
-	m := map[string]bool{}
-	for _, n := range numberRun.FindAllString(s, -1) {
-		m[n] = true
-	}
-	return m
-}
-
-// nameSet is the proper names of a point: capitalized words that are not its first word (a sentence start is
-// capitalized anyway).
-func nameSet(s string) map[string]bool {
-	m := map[string]bool{}
-	for i, w := range tokens(s) {
-		r, _ := utf8.DecodeRuneInString(w)
-		if i > 0 && utf8.RuneCountInString(w) >= 2 && unicode.IsUpper(r) {
-			m[strings.ToLower(w)] = true
-		}
-	}
-	return m
-}
-
-// disagree: each set has something the other lacks ("Bob" and "Ann", "500" and "700"). A set that only grows
-// ("what budget?" then "budget 700", "who does it?" then "Daphne does it") is the same point settled.
-func disagree(a, b map[string]bool) bool { return !subsetKeys(a, b) && !subsetKeys(b, a) }
-
-// pairFactsOK is the code's check of a claim that two points are one, whoever made the claim (the words rule or the
-// reduce call): their numbers and proper names must not disagree, and two points that differ only in their first
-// word ("Paris office", "Rome office") are two. A paraphrase changes more than that.
-func pairFactsOK(a, b string) bool {
-	if disagree(numberSet(a), numberSet(b)) || disagree(nameSet(a), nameSet(b)) {
-		return false
-	}
-	ta, tb := tokens(a), tokens(b)
-	if len(ta) > 1 && len(ta) == len(tb) && !strings.EqualFold(ta[0], tb[0]) {
-		same := true
-		for i := 1; i < len(ta); i++ {
-			same = same && strings.EqualFold(ta[i], tb[i])
-		}
-		return !same
-	}
-	return true
 }
 
 type pointRef struct {
@@ -326,112 +286,179 @@ func flattenPoints(parts []ChunkNotes) []pointRef {
 	return out
 }
 
-// pointPair is two indices into flattenPoints that the reduce call says are one point.
-type pointPair struct {
-	A int `json:"a"`
-	B int `json:"b"`
+// pointGroup is the restatements of one point. It has one status: the one from the latest part that mentions it, and
+// open when that part holds the same point both ways. It is written once, as rep: the first member with that status.
+type pointGroup struct {
+	members []int
+	status  string
+	last    int // the latest part that mentions it
+	rep     int
 }
 
-// groupPoints groups the points that are one. A link (by words, or a pair from the reduce call) joins two groups only
-// when EVERY point of one agrees with EVERY point of the other under pairFactsOK, so a chain a~b, b~c never
-// puts a and c together when they disagree. Chains are refused rather than limited to one partner: the check is on
-// facts, which is what makes two points different, and it needs no ordering of the model's pairs. Groups come back
-// in order of their first point.
-func groupPoints(pts []pointRef, pairs []pointPair) [][]int {
-	group := make([]int, len(pts)) // point -> group id
-	members := map[int][]int{}
+// buildGroups groups the points by words. Each point joins the first group whose first member it restates, in the
+// order of the points: no chains, and the same input always gives the same groups.
+func buildGroups(pts []pointRef) []pointGroup {
+	var gs []pointGroup
 	for i := range pts {
-		group[i] = i
-		members[i] = []int{i}
-	}
-	join := func(i, j int) {
-		gi, gj := group[i], group[j]
-		if gi == gj {
-			return
-		}
-		for _, x := range members[gi] {
-			for _, y := range members[gj] {
-				if !pairFactsOK(pts[x].Text, pts[y].Text) {
-					return
-				}
+		placed := false
+		for g := range gs {
+			if samePoint(pts[i].Text, pts[gs[g].members[0]].Text) {
+				gs[g].members = append(gs[g].members, i)
+				placed = true
+				break
 			}
 		}
-		keep, drop := min(gi, gj), max(gi, gj)
-		for _, y := range members[drop] {
-			group[y] = keep
+		if !placed {
+			gs = append(gs, pointGroup{members: []int{i}})
 		}
-		members[keep] = append(members[keep], members[drop]...)
-		delete(members, drop)
 	}
-	for i := range pts {
-		for j := 0; j < i; j++ {
-			if samePoint(pts[i].Text, pts[j].Text) {
-				join(i, j)
+	for g := range gs {
+		m := gs[g].members
+		for _, i := range m {
+			gs[g].last = max(gs[g].last, pts[i].chunk)
+		}
+		gs[g].status = statusDecided
+		for _, i := range m {
+			if pts[i].chunk == gs[g].last && pts[i].Status != statusDecided {
+				gs[g].status = statusOpen // the latest part is not sure; neither are the notes
+			}
+		}
+		gs[g].rep = m[0]
+		for _, i := range m {
+			if (pts[i].Status == statusDecided) == (gs[g].status == statusDecided) {
+				gs[g].rep = i
+				break
 			}
 		}
 	}
-	for _, p := range pairs {
-		if p.A < 0 || p.B < 0 || p.A >= len(pts) || p.B >= len(pts) || p.A == p.B {
-			continue
-		}
-		// Two points of one part were listed apart by the model on purpose.
-		if pts[p.A].chunk == pts[p.B].chunk {
-			continue
-		}
-		join(p.A, p.B)
+	return gs
+}
+
+// settleClaim is the reduce call's answer for one open point: the decided points of later parts that settle it.
+// It is a claim, checked by acceptSettles.
+type settleClaim struct {
+	Open    int   `json:"open"`
+	Decided []int `json:"decided"`
+}
+
+// numberSet is the numbers in s.
+func numberSet(s string) map[string]bool {
+	m := map[string]bool{}
+	for _, n := range numberRun.FindAllString(s, -1) {
+		m[n] = true
 	}
-	var out [][]int
-	for _, m := range members {
-		sort.Ints(m)
-		out = append(out, m)
+	return m
+}
+
+func subsetKeys(a, b map[string]bool) bool {
+	for k := range a {
+		if !b[k] {
+			return false
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
+	return true
+}
+
+// capitalized lists the capitalized words of s; withFirst keeps the first word, which a sentence start capitalizes
+// anyway.
+func capitalized(s string, withFirst bool) []string {
+	var out []string
+	for i, w := range tokens(s) {
+		r, _ := utf8.DecodeRuneInString(w)
+		if (i > 0 || withFirst) && utf8.RuneCountInString(w) >= 2 && unicode.IsUpper(r) {
+			out = append(out, w)
+		}
+	}
 	return out
 }
 
-// groupStatus is the status a group settles on: the one from the latest part that mentions it, open when that part
-// holds the same point both ways.
-func groupStatus(pts []pointRef, g []int) string {
-	last := 0
-	for _, i := range g {
-		last = max(last, pts[i].chunk)
+// sameName: two spellings of one name, tolerant of case endings (Даше, Даша, Дашу; Bob, Bobby): they share all but
+// their last letter, up to four letters. Bob and Ann, Paris and Rome do not. Names of one or two letters must be equal.
+func sameName(a, b string) bool {
+	fold := func(w string) []rune {
+		return []rune(strings.NewReplacer("ё", "е").Replace(strings.ToLower(norm.NFKC.String(w))))
 	}
-	for _, i := range g {
-		if pts[i].chunk == last && pts[i].Status != statusDecided {
-			return statusOpen // the latest part is not sure; neither are the notes
-		}
+	ra, rb := fold(a), fold(b)
+	n := min(4, min(len(ra), len(rb))-1)
+	if n < 2 {
+		return string(ra) == string(rb)
 	}
-	return statusDecided
+	return string(ra[:n]) == string(rb[:n])
 }
 
-// groupRep is the point a group is written as: the first one that has the group's status.
-func groupRep(pts []pointRef, g []int, status string) int {
-	for _, i := range g {
-		if (pts[i].Status == statusDecided) == (status == statusDecided) {
-			return i
+// settleOK is the code's check that a decided point can settle an open one: their numbers do not conflict (each
+// states something the other lacks), and every name the open point mentions (not counting its first word) is
+// mentioned by the decided one, by stem. An open point that names no one, or one that only gains a number or a name
+// when it is settled, passes.
+func settleOK(open, decided string) bool {
+	no, nd := numberSet(open), numberSet(decided)
+	if !subsetKeys(no, nd) && !subsetKeys(nd, no) {
+		return false
+	}
+	have := capitalized(decided, true)
+	for _, n := range capitalized(open, false) {
+		found := false
+		for _, h := range have {
+			found = found || sameName(n, h)
+		}
+		if !found {
+			return false
 		}
 	}
-	return g[0]
+	return true
 }
 
-// mergePoints returns the decided and open lists of the meeting. A group has exactly one status (groupStatus) and
-// is written once, in the words of groupRep, at that point's place.
-func mergePoints(pts []pointRef, pairs []pointPair) (decided, open []string) {
-	type rep struct {
-		idx    int
-		status string
+// acceptSettles returns the open groups the claims settle. An open group (named by its rep) is settled when at least
+// one decided point claimed for it belongs to a group that stays decided, comes from a part after the open group's
+// last, and passes settleOK; the others are ignored. Which one passes does not matter to the notes, so the answer
+// depends on the set of claims, not their order or the order of the ids in them. One decided point may settle several
+// open groups. A settlement is a link from an open group to a decided one, never a union of groups, so nothing chains.
+func acceptSettles(pts []pointRef, gs []pointGroup, claims []settleClaim) map[int]bool {
+	groupOf := map[int]int{}
+	for g, grp := range gs {
+		for _, i := range grp.members {
+			groupOf[i] = g
+		}
 	}
-	var reps []rep
-	for _, g := range groupPoints(pts, pairs) {
-		st := groupStatus(pts, g)
-		reps = append(reps, rep{groupRep(pts, g, st), st})
+	byOpen := map[int][]int{}
+	for _, c := range claims {
+		byOpen[c.Open] = append(byOpen[c.Open], c.Decided...)
 	}
-	sort.Slice(reps, func(i, j int) bool { return reps[i].idx < reps[j].idx })
-	for _, r := range reps {
-		if r.status == statusDecided {
-			decided = append(decided, pts[r.idx].Text)
-		} else {
-			open = append(open, pts[r.idx].Text)
+	settled := map[int]bool{}
+	for g, grp := range gs {
+		if grp.status != statusOpen {
+			continue
+		}
+		for _, d := range byOpen[grp.rep] {
+			gd, ok := groupOf[d]
+			if !ok || gs[gd].status != statusDecided || pts[d].Status != statusDecided ||
+				pts[d].chunk <= grp.last || !settleOK(pts[grp.rep].Text, pts[d].Text) {
+				continue
+			}
+			settled[g] = true
+			break
+		}
+	}
+	return settled
+}
+
+// mergePoints returns the decided and open lists of the meeting: each group once, under its status, in the words of
+// its rep, in the order of the reps; an open group that a decided point settles is not listed.
+func mergePoints(pts []pointRef, claims []settleClaim) (decided, open []string) {
+	gs := buildGroups(pts)
+	settled := acceptSettles(pts, gs, claims)
+	order := make([]int, len(gs))
+	for g := range order {
+		order[g] = g
+	}
+	sort.Slice(order, func(a, b int) bool { return gs[order[a]].rep < gs[order[b]].rep })
+	for _, g := range order {
+		switch {
+		case settled[g]:
+		case gs[g].status == statusDecided:
+			decided = append(decided, pts[gs[g].rep].Text)
+		default:
+			open = append(open, pts[gs[g].rep].Text)
 		}
 	}
 	return decided, open
@@ -450,62 +477,88 @@ func pairSchema() map[string]any {
 	num := map[string]any{"type": "integer"}
 	return map[string]any{
 		"type": "object",
-		"properties": map[string]any{"same": map[string]any{"type": "array", "items": map[string]any{
-			"type":                 "object",
-			"properties":           map[string]any{"a": num, "b": num},
-			"required":             []string{"a", "b"},
+		"properties": map[string]any{"settles": map[string]any{"type": "array", "items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"open":    num,
+				"decided": map[string]any{"type": "array", "items": num},
+			},
+			"required":             []string{"open", "decided"},
 			"additionalProperties": false,
 		}}},
-		"required":             []string{"same"},
+		"required":             []string{"settles"},
 		"additionalProperties": false,
 	}
 }
 
 func pairSystem() string {
-	return "You compare the points of one meeting, written from different parts of its transcript. Each line is " +
-		"\"[id] (part N, decided|open) text\". Output the pairs of ids that state the SAME point: the same topic and " +
-		"the same name, number and subject, said again or reworded, or a point left open in an earlier part and settled " +
-		"in a later one. Pair points from different parts only. Never pair points that differ in a name, a number or " +
-		"what is decided. If no points are the same, output an empty list. Output only ids. " + untrustedRule
+	return "You check the points of one meeting, written from different parts of its transcript. Each line is " +
+		"\"[id] (part N, open|decided) text\". For each OPEN point, give the ids of the DECIDED points from a LATER part " +
+		"that settle it: they answer the question it left open or make the decision it was waiting for, about the same " +
+		"subject. Leave an open point out when nothing settles it. Never name a decided point about another person, " +
+		"number or subject. Output only ids. " + untrustedRule
 }
 
-// reduceBatches lists, for the reduce call(s), the points that can still change the notes: one per group of the
-// words-only merge, the open ones (a question left unsettled) and the decided ones (what may settle or reopen it).
-// Two settled-the-same-way groups are never sent against each other. Up to maxReducePoints they go in one call. Over
-// that, the open groups are split into at most maxReduceCalls slices and each slice goes with the decided groups
-// that share the most words with it, filling the prompt to maxReducePoints; whatever does not fit keeps the words-only merge. So a
-// meeting costs at most maxReduceCalls calls, each at most maxReducePoints lines.
+// reduceBatches lists the points for the reduce call(s): one line per group of the words-only merge, the open groups
+// and the decided groups that come after the earliest of them. Up to maxReducePoints they go in one call. Over that,
+// the open groups are split into at most maxReduceCalls slices and each slice goes with the decided groups that share
+// the most words with it, filling the prompt to maxReducePoints; whatever does not fit keeps the words-only merge. So
+// a meeting costs at most maxReduceCalls calls of at most maxReducePoints lines, and none when nothing is open or
+// nothing was decided after it.
 func reduceBatches(pts []pointRef) [][]int {
-	var open, decided []int
-	for _, g := range groupPoints(pts, nil) {
-		st := groupStatus(pts, g)
-		if st == statusOpen {
-			open = append(open, groupRep(pts, g, st))
+	var open, decided []pointGroup
+	for _, g := range buildGroups(pts) {
+		if g.status == statusOpen {
+			open = append(open, g)
 		} else {
-			decided = append(decided, groupRep(pts, g, st))
+			decided = append(decided, g)
 		}
 	}
-	if len(open) == 0 || len(open)+len(decided) < 2 {
+	if len(open) == 0 || len(decided) == 0 {
 		return nil
 	}
-	if len(open)+len(decided) <= maxReducePoints {
-		return [][]int{sortedUnion(open, decided)}
+	reps := func(gs []pointGroup, after int) []int {
+		var out []int
+		for _, g := range gs {
+			if g.last > after {
+				out = append(out, g.rep)
+			}
+		}
+		return out
 	}
-	per := (len(open) + maxReduceCalls - 1) / maxReduceCalls
-	per = min(per, maxReducePoints/2)
+	if len(open)+len(decided) <= maxReducePoints {
+		first := open[0].last
+		for _, g := range open {
+			first = min(first, g.last)
+		}
+		later := reps(decided, first)
+		if len(later) == 0 {
+			return nil
+		}
+		return [][]int{sortedUnion(reps(open, -1), later)}
+	}
+	per := min((len(open)+maxReduceCalls-1)/maxReduceCalls, maxReducePoints/2)
 	var out [][]int
 	for lo := 0; lo < len(open) && len(out) < maxReduceCalls; lo += per {
 		sl := open[lo:min(lo+per, len(open))]
-		near := append([]int(nil), decided...)
+		first := sl[0].last
+		var slReps []int
+		for _, g := range sl {
+			first = min(first, g.last)
+			slReps = append(slReps, g.rep)
+		}
+		near := reps(decided, first)
 		score := map[int]float64{}
 		for _, d := range near {
-			for _, o := range sl {
+			for _, o := range slReps {
 				score[d] = max(score[d], voices.WordOverlap(pts[d].Text, pts[o].Text))
 			}
 		}
 		sort.SliceStable(near, func(a, b int) bool { return score[near[a]] > score[near[b]] })
-		near = near[:min(len(near), maxReducePoints-len(sl))]
-		out = append(out, sortedUnion(sl, near))
+		near = near[:min(len(near), maxReducePoints-len(slReps))]
+		if len(near) > 0 {
+			out = append(out, sortedUnion(slReps, near))
+		}
 	}
 	return out
 }
@@ -516,19 +569,16 @@ func sortedUnion(a, b []int) []int {
 	return out
 }
 
-// pairPoints asks the model which points of different parts are one: at most maxReduceCalls calls (usually one),
+// pairPoints asks the model which later decision settles each open point: at most maxReduceCalls calls (usually one),
 // none when nothing can change (see reduceBatches). A failed batch is skipped; the first error is returned beside
-// the pairs the other batches gave, for Compose to log. The pairs are only claims: groupPoints checks them.
-func (c Composer) pairPoints(ctx context.Context, parts []ChunkNotes) ([]pointPair, error) {
+// the claims of the other batches, for Compose to log. The claims are only claims: acceptSettles checks them, and
+// without them the notes are the words-only merge.
+func (c Composer) pairPoints(ctx context.Context, parts []ChunkNotes) ([]settleClaim, error) {
 	pts := flattenPoints(parts)
-	chunks := map[int]bool{}
-	for _, p := range pts {
-		chunks[p.chunk] = true
-	}
-	if len(pts) < 2 || len(chunks) < 2 {
+	if len(pts) < 2 {
 		return nil, nil
 	}
-	var pairs []pointPair
+	var claims []settleClaim
 	var firstErr error
 	for _, batch := range reduceBatches(pts) {
 		got, err := c.pairBatch(ctx, pts, batch)
@@ -538,14 +588,16 @@ func (c Composer) pairPoints(ctx context.Context, parts []ChunkNotes) ([]pointPa
 			}
 			continue
 		}
-		pairs = append(pairs, got...)
+		claims = append(claims, got...)
 	}
-	return pairs, firstErr
+	return claims, firstErr
 }
 
-func (c Composer) pairBatch(ctx context.Context, pts []pointRef, batch []int) ([]pointPair, error) {
+func (c Composer) pairBatch(ctx context.Context, pts []pointRef, batch []int) ([]settleClaim, error) {
 	var b strings.Builder
+	in := map[int]bool{}
 	for _, i := range batch {
+		in[i] = true
 		p := pts[i]
 		fmt.Fprintf(&b, "[%d] (part %d, %s) %s\n", i, p.chunk+1, p.Status, truncateRunes(strings.Join(strings.Fields(p.Text), " "), maxReduceText))
 	}
@@ -559,20 +611,23 @@ func (c Composer) pairBatch(ctx context.Context, pts []pointRef, batch []int) ([
 		return nil, err
 	}
 	var out struct {
-		Same []pointPair `json:"same"`
+		Settles []settleClaim `json:"settles"`
 	}
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		return nil, err
 	}
-	in := map[int]bool{}
-	for _, i := range batch {
-		in[i] = true
-	}
-	var ok []pointPair
-	for _, p := range out.Same {
-		if in[p.A] && in[p.B] { // an id the prompt did not list is not a claim about this prompt
-			ok = append(ok, p)
+	var ok []settleClaim
+	for _, cl := range out.Settles {
+		if !in[cl.Open] { // an id the prompt did not list is not a claim about this prompt
+			continue
 		}
+		kept := settleClaim{Open: cl.Open}
+		for _, d := range cl.Decided {
+			if in[d] {
+				kept.Decided = append(kept.Decided, d)
+			}
+		}
+		ok = append(ok, kept)
 	}
 	return ok, nil
 }
