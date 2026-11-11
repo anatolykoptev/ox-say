@@ -38,8 +38,8 @@ func TestResolveNotesModel(t *testing.T) {
 			wantInstalled: true, wantCatalog: true,
 		},
 		{
-			name:          "nothing installed: the automatic pick is the 9B, not installed",
-			in:            NotesResolveInput{ModelsDir: dir, HostMem: mem16, Catalog: NotesCatalog, Installed: have()},
+			name:          "nothing installed on 24 GB: the automatic pick is the 9B, not installed",
+			in:            NotesResolveInput{ModelsDir: dir, HostMem: uint64(24) << 30, Catalog: NotesCatalog, Installed: have()},
 			wantID:        "qwen3.5-9b",
 			wantSrc:       NotesSourceAutomatic,
 			wantPath:      filepath.Join(dir, "Qwen3.5-9B-Q4_K_M.gguf"),
@@ -133,11 +133,13 @@ func TestResolveNotesModel(t *testing.T) {
 			wantInstalled: true, wantCatalog: true,
 		},
 		{
+			// Mutation: internal/config/notesmodels.go qwen3.5-9b MinMemoryGB
+			// 24 -> 16 -> RED (the 16 GB Mac is answered the 9B).
 			name:          "the 9B on a 16 GB Mac is not automatic: memory keeps the 4B",
 			in:            NotesResolveInput{ModelsDir: dir, HostMem: mem16, Catalog: NotesCatalog, Installed: have()},
-			wantID:        "qwen3.5-9b", // the pin says 16 GB: the 9B fits and stays the default
+			wantID:        "qwen3.5-4b", // the 9B needs 24 GB: a 16 GB Mac keeps room for the call
 			wantSrc:       NotesSourceAutomatic,
-			wantPath:      filepath.Join(dir, "Qwen3.5-9B-Q4_K_M.gguf"),
+			wantPath:      filepath.Join(dir, "Qwen3.5-4B-Q4_K_M.gguf"),
 			wantInstalled: false, wantCatalog: true,
 		},
 	} {

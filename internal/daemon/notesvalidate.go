@@ -437,8 +437,12 @@ func (d *Daemon) waitNotesTrial(ctx context.Context) error {
 // memory. The trial itself enters d.mem directly — it cannot wait on its own
 // mark.
 func (d *Daemon) notesEngineTurn(ctx context.Context) (func(), error) {
+	t := time.Now()
 	if err := d.waitNotesTrial(ctx); err != nil {
 		return nil, err
+	}
+	if w := time.Since(t); w >= engineTurnWaitLog {
+		d.log.Info("notes engine: waited on the own-model trial", slog.Int64("dur_ms", w.Milliseconds()))
 	}
 	return d.mem.enter(ctx, d.LLMSup, 0)
 }

@@ -25,7 +25,7 @@ The installer:
 - fetches the models, checksummed: about 2.5 GB on Apple Silicon, including 221 MB of
   speaker models for [Meetings](#meetings) (the 199 MB Nemotron set is fetched whatever the macOS version, so a
   Mac that upgrades to macOS 15 later already has it), and about 2.3 GB on an Intel Mac, which skips that set. The optional Whisper adds 1.6 GB. The meeting-notes model is not part of it: it
-  is downloaded when you first ask for notes (5.7 GB for the default 9B, 2.7 GB for the lighter 4B);
+  is downloaded when you first ask for notes (5.7 GB for the default 9B on a Mac with 24 GB or more, 2.7 GB for the 4B that 16–23 GB Macs use);
 - starts the daemon as a LaunchAgent;
 - registers the MCP server with Claude Code, if Claude Code is installed;
 - runs a speak-and-transcribe self-test;
@@ -805,8 +805,8 @@ app can copy a sentence for that to the clipboard (**Copy consent phrase**).
   Model**) or with `POST /v1/meetings/notes-model/install`. Until then a meeting shows "transcript only".
   The model is loaded for a notes run and stopped after
   `OX_SAY_NOTES_IDLE_STOP_SECS` of idleness (120 s by default); it holds 4–7 GB while loaded.
-  **The model is your choice.** The catalog: **Qwen3.5-9B Q4_K_M** (standard, the automatic default, 5.7 GB),
-  **Qwen3.5-4B Q4_K_M** (the lighter compact model, 2.7 GB — the download falls back to it when the disk cannot
+  **The model is your choice.** The catalog: **Qwen3.5-9B Q4_K_M** (standard, the automatic default on a Mac with 24 GB or more, 5.7 GB; a 16–23 GB Mac keeps the room for the browser running the call and gets the 4B, and refuses an explicit pick of the 9B),
+  **Qwen3.5-4B Q4_K_M** (the lighter compact model, 2.7 GB — the automatic choice on a 16–23 GB Mac, and the download falls back to it when the disk cannot
   hold the 9B, and a Mac that already had it keeps running it after an update), and
   **Qwen3.8-27B abliterated** (an optional uncensored model for a Mac with 32 GB or more, 20.7 GB — never picked
   automatically). `PUT /v1/meetings/notes-model` switches: it saves the choice, refuses while a meeting needs the
