@@ -211,6 +211,14 @@ func (d *Daemon) trialLoadModel(ctx context.Context, path string, out notesModel
 		sup.Shutdown()
 		d.removeNotesTrialFiles()
 	}()
+	// The guard goes on before the engine is asked to be ready — the shape
+	// engineBase uses: a child can commit Ready inside EnsureReady, and an
+	// acquire only after it leaves a window where the idle stop sees a
+	// ready child with no guard and kills it between the commit and the
+	// acquire. Held from here the child is guarded for the whole check:
+	// the idle stop can only ever fire on a child the check left behind.
+	g := sup.Acquire()
+	defer g.Release()
 	base, err := sup.EnsureReady(ctx)
 	if err != nil {
 		d.log.Warn("own notes model: the trial engine did not start", "error", err)
@@ -230,11 +238,7 @@ func (d *Daemon) trialLoadModel(ctx context.Context, path string, out notesModel
 	}
 	cctx, cancel := context.WithTimeout(ctx, notesTrialCallTimeout)
 	defer cancel()
-	// The guard marks the completion as work the child is serving, so the
-	// idle stop can only ever fire on a child the check left behind.
-	g := sup.Acquire()
 	answer, err := d.notesTrialChat(base).Complete(cctx, meeting.Request{User: notesTrialPrompt, MaxTokens: notesTrialMaxTokens})
-	g.Release()
 	switch {
 	case errors.Is(err, meeting.ErrTruncated):
 		// finish_reason "length": the model answered past the token cap —
@@ -253,21 +257,21 @@ func (d *Daemon) trialLoadModel(ctx context.Context, path string, out notesModel
 	return out
 }
 
-// residentEngineBytes is the model memory the large engines still hold
-// while the trial runs — each live supervisor's footprint, measured the way
-// /v1/models reports it (the real file size, or the estimate where the file
-// cannot be read back from a running child). The trial counts it against
+// residentEngineBytes is the model memory the engines still hold while
+// the trial runs — every resident engine, not only the large ones the
+// arbiter manages: the small STT server is resident beside any trial, so
+// its model counts the same. Each live supervisor's footprint is measured
+// the way /v1/models reports it (the real file size, or the estimate
+// where the file cannot be read back from a running child), and the set
+// itself is the daemon's one engine list — residentEngines — so an engine
+// added there cannot slip this accounting. The trial counts it against
 // the same memory gate as its own file.
 func (d *Daemon) residentEngineBytes() int64 {
 	var n int64
-	if d.Sup != nil && d.Sup.Status().PID != 0 {
-		n += d.qwenModelEntry().Bytes
-	}
-	if d.VoxSup != nil && d.VoxSup.Status().PID != 0 {
-		n += d.voxModelEntry().Bytes
-	}
-	if d.LLMSup != nil && d.LLMSup.Status().PID != 0 {
-		n += d.notesModelEntry().Bytes
+	for _, e := range d.residentEngines() {
+		if e.sup != nil && e.sup.Status().PID != 0 {
+			n += e.modelBytes()
+		}
 	}
 	return n
 }

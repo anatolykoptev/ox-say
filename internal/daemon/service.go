@@ -333,13 +333,13 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 		}
 	}
 	if cfg.OneLargeEngine() {
-		d.mem = newResidency(logger, d.Sup, d.VoxSup, d.LLMSup)
+		d.mem = newResidency(logger, d.largeEngineSups()...)
 	} else if d.notesCouldBeExclusive() {
 		// A notes model over config.NotesExclusiveBytes makes the large
 		// engines take turns even on a Mac the voices share; the condition is
 		// read per call, so a model the user switches to counts at once, and
 		// an own-model trial of a large file counts for its duration.
-		if r := newResidency(logger, d.Sup, d.VoxSup, d.LLMSup); r != nil {
+		if r := newResidency(logger, d.largeEngineSups()...); r != nil {
 			r.cond = func() bool { return d.notesExclusive() || d.trialExclusive.Load() }
 			d.mem = r
 		}

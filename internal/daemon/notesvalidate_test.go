@@ -650,6 +650,56 @@ func TestNotesModelTrialCountsResidentEnginesAgainstMemory(t *testing.T) {
 	}
 }
 
+// The resident STT server is never part of the residency turns — it is
+// small and deliberately never evicted — but its model is still in memory
+// while a trial runs, so the same gate counts it: a resident 4 GB
+// recognizer puts a 30 GB trial over the 33.6 GB gate of a 48 GB Mac —
+// refused 409 before a trial child spawns, and the STT child keeps
+// running. Mutation: residency.go residentEngines, drop the STT row ->
+// RED (the over-gate trial runs and answers ok).
+func TestNotesModelTrialCountsTheResidentSTTAgainstMemory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OXSAY_FAKE_STT", "1")
+	sttModel := filepath.Join(dir, "parakeet.bin")
+	if err := os.WriteFile(sttModel, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(sttModel, 4<<30); err != nil { // a sparse 4 GB recognizer
+		t.Fatal(err)
+	}
+	d, _ := trialDaemon(t, dir, func(c *config.Config) {
+		c.HostMemoryBytes = 48 << 30
+		c.STTModel = sttModel
+	})
+	// The fakes are chosen by env at spawn and the LLM marker shadows the
+	// STT one (FakeChildMain checks it first): the marker is off for the
+	// resident child's spawn — the real --serve fake — then back on for
+	// the trial's, which must never come.
+	t.Setenv("OXSAY_FAKE_LLM", "")
+	if _, err := d.STTSup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OXSAY_FAKE_LLM", "1")
+	own := ownGGUF(t, dir, nil)
+	if err := os.Truncate(own, 30<<30); err != nil { // a sparse 30 GB own model
+		t.Fatal(err)
+	}
+	before := len(llmSpawnPids(dir))
+	res := d.notesModelTrial(context.Background(), own)
+	if res.OK || res.status != http.StatusConflict {
+		t.Fatalf("verdict = %+v, want a 409 refusal", res)
+	}
+	if !strings.Contains(res.Reason, "36.5 GB") {
+		t.Fatalf("reason = %q, want the file-plus-engines total named", res.Reason)
+	}
+	if got := len(llmSpawnPids(dir)); got != before {
+		t.Fatalf("a refused trial spawned %d children", got-before)
+	}
+	if d.STTSup.Status().PID == 0 {
+		t.Fatal("the refusal stopped the resident STT server")
+	}
+}
+
 // A daemon killed mid-check leaves its trial child running: notes-trial.pid
 // names it, and the next daemon's startup reaps it through the same exe +
 // start-token check the next trial would use — before any regular notes
@@ -738,27 +788,58 @@ func TestDaemonStartupReapsAnOrphanedTrialChild(t *testing.T) {
 
 // A trial child the daemon loses track of still self-terminates: its
 // supervisor carries the notes engine's own idle stop — the only watchdog
-// left once the check's defers and the daemon itself are gone. The probe
-// parks the trial past one idle window: the child must be down while the
-// check still runs. Mutation: notesvalidate.go newNotesTrialSupervisor,
-// drop the IdleStop line -> RED (the parked child outlives the window).
+// left once the check's defers and the daemon itself are gone. The child
+// is brought up through the trial's own constructor and parked unguarded
+// — exactly what a crashed daemon leaves behind — and it must be down
+// within one idle window. Mutation: notesvalidate.go
+// newNotesTrialSupervisor, drop the IdleStop line -> RED (the parked
+// child outlives the window).
 func TestNotesModelTrialChildStopsWhenIdle(t *testing.T) {
 	dir := t.TempDir()
 	d, _ := trialDaemon(t, dir, func(c *config.Config) { c.NotesIdleStop = 300 * time.Millisecond })
-	inTrial, release := make(chan struct{}), make(chan struct{})
-	notesTrialProbe = func() { close(inTrial); <-release }
-	t.Cleanup(func() { notesTrialProbe = nil })
-	done := make(chan notesModelTrial, 1)
-	go func() { done <- d.notesModelTrial(context.Background(), ownGGUF(t, dir, nil)) }()
-	<-inTrial
-	pids := llmSpawnPids(dir)
-	if len(pids) != 1 {
-		t.Fatalf("%d trial spawns, want one", len(pids))
+	sup, err := d.newNotesTrialSupervisor(ownGGUF(t, dir, nil))
+	if err != nil {
+		t.Fatal(err)
 	}
-	testutil.WaitFor(t, 5*time.Second, func() bool { return !childAlive(pids[0]) },
-		"the parked trial child to be stopped for idleness")
-	close(release)
-	if res := <-done; res.OK {
-		t.Fatalf("verdict = %+v, want the dead-engine refusal", res)
+	t.Cleanup(sup.Shutdown)
+	if _, err := sup.EnsureReady(context.Background()); err != nil {
+		t.Fatalf("the trial child did not start: %v", err)
+	}
+	pid := sup.Status().PID
+	if pid == 0 {
+		t.Fatal("the trial child did not start")
+	}
+	// No Acquire — the state a daemon crash leaves the child in: ready
+	// with nothing holding it, its own idle stop the only stopper.
+	testutil.WaitFor(t, 5*time.Second, func() bool { return !childAlive(pid) },
+		"the unguarded trial child to be stopped for idleness")
+}
+
+// The check holds the child's in-flight guard for the whole run, so the
+// idle stop can never find it ready and unguarded: the probe parks the
+// check far past the child's own idle window and the guarded child is
+// still up at the end of the park, the verdict still ok. Mutation:
+// notesvalidate.go trialLoadModel, move the Acquire back below
+// EnsureReady, guarding only the completion -> RED (the parked child is
+// idle-stopped and the check refused).
+func TestNotesModelTrialChildIsGuardedThroughTheCheck(t *testing.T) {
+	dir := t.TempDir()
+	d, _ := trialDaemon(t, dir, func(c *config.Config) { c.NotesIdleStop = 300 * time.Millisecond })
+	var lived atomic.Bool
+	notesTrialProbe = func() {
+		// A 300 ms idle stop fires inside this park if the child is
+		// unguarded; 5x the window leaves the scheduler its margin.
+		time.Sleep(1500 * time.Millisecond)
+		for _, pid := range llmSpawnPids(dir) {
+			lived.Store(childAlive(pid))
+		}
+	}
+	t.Cleanup(func() { notesTrialProbe = nil })
+	res := d.notesModelTrial(context.Background(), ownGGUF(t, dir, nil))
+	if !lived.Load() {
+		t.Fatal("the trial child was idle-stopped while the check still held it")
+	}
+	if !res.OK {
+		t.Fatalf("verdict = %+v", res)
 	}
 }
