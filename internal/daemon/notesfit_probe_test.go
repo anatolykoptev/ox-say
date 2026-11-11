@@ -4,13 +4,19 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/anatolykoptev/ox-say/internal/config"
 )
 
 func init() {
-	// The fake ox-llm is the test binary: never exec it for --list-devices.
+	// The fake ox-llm is the test binary: never exec it for --list-devices —
+	// neither at daemon start nor from a spawn-time retry (the real probe
+	// would do both). A test that needs a budget installs its own.
 	notesGPUWarmup = func(string) {}
+	notesGPUWired = func(string) (uint64, uint64) { return 0, 0 }
 }
 
 // Fixtures: the two outputs measured on a stock M5 Pro, byte for byte.
@@ -67,8 +73,15 @@ func TestParseIoregAlloc(t *testing.T) {
 // fakeRunner answers --list-devices and ioreg and counts the calls.
 type fakeRunner struct {
 	listCalls, ioregCalls atomic.Int32
+	mu                    sync.Mutex
 	listErr, ioregErr     error
 	ioregOut              string
+}
+
+func (f *fakeRunner) setListErr(err error) {
+	f.mu.Lock()
+	f.listErr = err
+	f.mu.Unlock()
 }
 
 func (f *fakeRunner) run(_ context.Context, name string, args ...string) (string, error) {
@@ -77,6 +90,8 @@ func (f *fakeRunner) run(_ context.Context, name string, args ...string) (string
 		return f.ioregOut, f.ioregErr
 	}
 	f.listCalls.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return listDevicesFixture, f.listErr
 }
 
@@ -87,8 +102,8 @@ func newFakeProbe(sysctlMB uint64, f *fakeRunner) *gpuProbe {
 // wiredWarm warms the probe and waits for the background read.
 func wiredWarm(p *gpuProbe) (uint64, uint64) {
 	p.warm("ox-llm")
-	<-p.done
-	return p.wired()
+	p.wg.Wait()
+	return p.wired("ox-llm")
 }
 
 // Mutation (F6): notesfit_probe.go gpuProbe.limit, return 0 instead of the
@@ -104,7 +119,7 @@ func TestProbeLimitFallsBackToMetalWhenSysctlZero(t *testing.T) {
 func TestProbeSysctlWinsOverMetal(t *testing.T) {
 	f := &fakeRunner{ioregOut: ioregFixture}
 	p := newFakeProbe(10922, f)
-	limit, _ := p.wired()
+	limit, _ := p.wired("ox-llm")
 	if limit != 10922<<20 {
 		t.Errorf("limit = %d, want the sysctl's 10922 MiB", limit)
 	}
@@ -113,14 +128,16 @@ func TestProbeSysctlWinsOverMetal(t *testing.T) {
 	}
 }
 
-// Mutation (F8): notesfit_probe.go gpuProbe.warm, drop the startOnce guard so
-// every wired() call re-runs --list-devices instead of once -> this goes RED.
+// Mutation (F8): notesfit_probe.go gpuProbe.warm, drop the
+// `p.metal.Load() != 0 ||` guard so a known total is read again at every
+// spawn -> this goes RED.
 func TestProbeListDevicesRunsOncePerProcess(t *testing.T) {
 	f := &fakeRunner{ioregOut: ioregFixture}
 	p := newFakeProbe(0, f)
 	wiredWarm(p)
-	p.wired()
-	p.wired()
+	p.wired("ox-llm")
+	p.wired("ox-llm")
+	p.wg.Wait()
 	if n := f.listCalls.Load(); n != 1 {
 		t.Errorf("--list-devices ran %d times across three spawns, want 1", n)
 	}
@@ -129,17 +146,97 @@ func TestProbeListDevicesRunsOncePerProcess(t *testing.T) {
 	}
 }
 
+// While the total is unknown a spawn-time read reports unknown at once and
+// starts the one background retry; it never waits for it.
 func TestProbeUnknownUntilWarmed(t *testing.T) {
 	f := &fakeRunner{ioregOut: ioregFixture}
 	p := newFakeProbe(0, f)
-	if limit, used := p.wired(); limit != 0 || used != 0 {
+	if limit, used := p.wired("ox-llm"); limit != 0 || used != 0 {
 		t.Errorf("wired before warm = (%d,%d), want unknown (0,0)", limit, used)
 	}
-	if n := f.listCalls.Load(); n != 0 {
-		t.Errorf("a spawn-time read started --list-devices (%d calls); only warm may", n)
+	p.wg.Wait()
+	if limit, _ := p.wired("ox-llm"); limit != 38338<<20 {
+		t.Errorf("limit after the retry = %d, want 38338 MiB", limit)
 	}
-	if limit, _ := wiredWarm(p); limit != 38338<<20 {
-		t.Errorf("limit after warm = %d, want 38338 MiB", limit)
+}
+
+// MINOR-1: a --list-devices call that failed at daemon start (GPU busy at
+// login) is retried by a later spawn instead of disabling the check for the
+// process lifetime.
+// Mutation (F5'): notesfit_probe.go gpuProbe.wired, drop the `p.warm(bin)`
+// call on an unknown limit -> this goes RED.
+func TestProbeRetriesTheMetalReadWhileUnknown(t *testing.T) {
+	f := &fakeRunner{ioregOut: ioregFixture, listErr: errors.New("gpu busy")}
+	p := newFakeProbe(0, f)
+	if limit, _ := wiredWarm(p); limit != 0 {
+		t.Fatalf("limit = %d after a failed read, want unknown", limit)
+	}
+	f.setListErr(nil)
+	p.wired("ox-llm") // a spawn: unknown still, starts the retry
+	p.wg.Wait()
+	limit, used := p.wired("ox-llm")
+	if limit != 38338<<20 || used != 4014014464 {
+		t.Errorf("wired after the retry = (%d,%d), want (%d,%d)", limit, used, uint64(38338<<20), uint64(4014014464))
+	}
+	if n := f.listCalls.Load(); n != 2 {
+		t.Errorf("--list-devices ran %d times, want the failed one and one retry", n)
+	}
+}
+
+// At most one read is in flight: a burst of spawns while it runs starts no
+// second one.
+func TestProbeRetryIsSingleFlight(t *testing.T) {
+	release := make(chan struct{})
+	var calls atomic.Int32
+	p := newGPUProbe(func() uint64 { return 0 }, func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == ioregPath {
+			return ioregFixture, nil
+		}
+		calls.Add(1)
+		<-release
+		return "", errors.New("still busy")
+	})
+	for range 5 {
+		p.wired("ox-llm")
+	}
+	close(release)
+	p.wg.Wait()
+	if n := calls.Load(); n != 1 {
+		t.Errorf("%d --list-devices calls in flight at once, want 1", n)
+	}
+}
+
+// F4': newLLMSupervisor warms the Metal read with the notes binary — through
+// the same notesGPUWarmup var production calls. Without it a stock Mac
+// (sysctl 0) would start every spawn unchecked.
+// Mutation (F4'): meetings.go newLLMSupervisor, replace the notesGPUWarmup
+// call with `_ = notesGPUWarmup` -> this goes RED.
+func TestNewLLMSupervisorWarmsTheMetalRead(t *testing.T) {
+	d, _ := notesFitDaemon(t)
+	var got atomic.Value
+	old := notesGPUWarmup
+	notesGPUWarmup = func(bin string) { got.Store(bin) }
+	t.Cleanup(func() { notesGPUWarmup = old })
+	if _, err := newLLMSupervisor(d); err != nil {
+		t.Fatal(err)
+	}
+	if bin, _ := got.Load().(string); bin != notesBinPath(d.Cfg) {
+		t.Errorf("warmup bin = %q, want %q", bin, notesBinPath(d.Cfg))
+	}
+}
+
+func TestProbeDiscreteCardsAreNotWarmed(t *testing.T) {
+	d, _ := notesFitDaemon(t)
+	d.Cfg.GPUMemory = config.GPUMemoryDiscrete
+	var calls atomic.Int32
+	old := notesGPUWarmup
+	notesGPUWarmup = func(string) { calls.Add(1) }
+	t.Cleanup(func() { notesGPUWarmup = old })
+	if _, err := newLLMSupervisor(d); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 0 {
+		t.Errorf("a discrete-memory daemon warmed the Metal read")
 	}
 }
 

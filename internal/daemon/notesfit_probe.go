@@ -10,8 +10,10 @@ package daemon
 //   - the limit is Metal's recommendedMaxWorkingSetSize, which the pinned
 //     llama-server prints in `ox-llm --list-devices` ("MTL0: ... (38338 MiB,
 //     38337 MiB free)": the first figure is the total). The call costs about
-//     3 s of Metal init, so it runs once per daemon process, in the
-//     background, and until it answers the limit is unknown. An explicit
+//     3 s of Metal init, so it runs in the background (at daemon start, and
+//     again at a spawn while the total is still unknown, one at a time) and
+//     until it answers the limit is unknown; once it has answered it never
+//     runs again in this process. An explicit
 //     iogpu.wired_limit_mb (> 0: the user's or the gate's own setting, which
 //     Metal follows) wins; 0 there means "the system default", not unknown.
 //   - what is already allocated, system-wide (the STT engines, the window
@@ -20,7 +22,8 @@ package daemon
 //     before each spawn.
 //
 // Any failure — a missing binary, a timeout, an output nobody recognises —
-// reports unknown, which skips the fit check (the OOM retry still guards).
+// reports unknown: /status says "unchecked" and llama.cpp fits with its
+// default margin (the OOM retry still guards).
 
 import (
 	"context"
@@ -102,37 +105,44 @@ type gpuProbe struct {
 	sysctlMB func() uint64 // iogpu.wired_limit_mb; 0 = unset or unreadable
 	run      cmdRunner
 
-	startOnce sync.Once
-	done      chan struct{} // closed when the --list-devices call finished
-	metal     atomic.Uint64 // bytes; 0 until known or when it failed
-	warnOnce  sync.Once
+	retrying atomic.Bool    // a --list-devices call is in flight
+	wg       sync.WaitGroup // the background calls, for tests to wait on
+	metal    atomic.Uint64  // bytes; 0 until known
+	warnOnce sync.Once
 }
 
 func newGPUProbe(sysctlMB func() uint64, run cmdRunner) *gpuProbe {
-	return &gpuProbe{sysctlMB: sysctlMB, run: run, done: make(chan struct{})}
+	return &gpuProbe{sysctlMB: sysctlMB, run: run}
 }
 
-// warm starts the one --list-devices call of this process, in the
-// background; further calls are no-ops, whatever bin they name.
+// warm starts a background --list-devices call unless the total is known
+// already or a call is in flight: at most one at a time, never blocking its
+// caller, and none after a success.
 func (p *gpuProbe) warm(bin string) {
-	p.startOnce.Do(func() {
-		go func() {
-			defer close(p.done)
-			ctx, cancel := context.WithTimeout(context.Background(), listDevicesTimeout)
-			defer cancel()
-			out, err := p.run(ctx, bin, "--list-devices")
-			total, ok := parseListDevicesTotal(out)
-			if err != nil || !ok {
-				slog.Warn("notes fit: Metal memory total unavailable; the GPU fit check is skipped", "err", err, "parsed", ok)
-				return
-			}
-			p.metal.Store(total)
-		}()
-	})
+	if p.metal.Load() != 0 || !p.retrying.CompareAndSwap(false, true) {
+		return
+	}
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		defer p.retrying.Store(false)
+		if p.metal.Load() != 0 {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), listDevicesTimeout)
+		defer cancel()
+		out, err := p.run(ctx, bin, "--list-devices")
+		total, ok := parseListDevicesTotal(out)
+		if err != nil || !ok {
+			slog.Warn("notes fit: Metal memory total unavailable; the GPU budget is unchecked until a later start reads it", "err", err, "parsed", ok)
+			return
+		}
+		p.metal.Store(total)
+	}()
 }
 
 // limit is the Metal wired limit in bytes, 0 while unknown. It never starts
-// or waits for the Metal call: warm does, at daemon start.
+// or waits for the Metal call.
 func (p *gpuProbe) limit() uint64 {
 	if mb := p.sysctlMB(); mb > 0 {
 		return mb << 20
@@ -156,9 +166,13 @@ func (p *gpuProbe) used() (uint64, bool) {
 }
 
 // wired is the (limit, used) pair notesGPUWired reports; (0, 0) is unknown.
-func (p *gpuProbe) wired() (limit, used uint64) {
+// While the limit is unknown it starts (without waiting for) one background
+// retry of the Metal read, so a start that missed it at daemon start gets it
+// for the next spawn.
+func (p *gpuProbe) wired(bin string) (limit, used uint64) {
 	limit = p.limit()
 	if limit == 0 {
+		p.warm(bin)
 		return 0, 0
 	}
 	used, ok := p.used()

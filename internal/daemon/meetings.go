@@ -76,10 +76,12 @@ type notesStatus struct {
 	// disk held the compact 4B but not the standard 9B.
 	Fallback string `json:"fallback,omitempty"`
 	// Fit is how the last engine start landed in the free GPU budget:
-	// "partial_offload" — the resolved model ran with some layers left off
-	// the GPU — or "fallback_4b" — the compact model ran instead (an
-	// automatic choice only). FitReason says why, in plain words. Empty
-	// means the last start was the ordinary full offload.
+	// "full" — the plan is a full-offload fit; "fitted" — llama.cpp's fitter
+	// left layers off the GPU, or the fit margin was raised after an
+	// out-of-memory start; "fallback_4b" — the compact model ran instead (an
+	// automatic choice only); "unchecked" — the GPU budget could not be
+	// read, so llama.cpp fitted with its default margin. FitReason says why,
+	// in plain words. Empty means CPU decode (no fitter) or no start yet.
 	Fit       string `json:"fit,omitempty"`
 	FitReason string `json:"fit_reason,omitempty"`
 }
@@ -119,29 +121,37 @@ func notesServerArgs(cfg *config.Config, port int, modelPath string) []string {
 // child gets the same argv but its own key, so rotating it cannot break a
 // resident engine still serving its first key.
 func notesServerArgsKey(cfg *config.Config, port int, modelPath, keyFile string) []string {
-	return notesArgs(cfg, port, modelPath, notesGPULayers(cfg), keyFile)
+	return notesArgs(cfg, port, modelPath, notesGPULayers(cfg), 0, keyFile)
 }
 
-// notesPlanArgs is the argv the spawn-time fit check decided: the plan's
-// model file and its -ngl — the default offload when the plan leaves it "".
+// notesPlanArgs is the argv the spawn-time fit decided: the plan's model
+// file, and — with a fit target — no -ngl, so llama.cpp's own fitter picks
+// the layer count against --fit-target. A plan without a target (CPU decode)
+// keeps the config's -ngl.
 func notesPlanArgs(cfg *config.Config, port int, p notesPlan) []string {
-	ngl := p.ngl
-	if ngl == "" {
-		ngl = notesGPULayers(cfg)
+	if p.fitMiB > 0 {
+		return notesArgs(cfg, port, p.model, "", p.fitMiB, notesKeyFile)
 	}
-	return notesArgs(cfg, port, p.model, ngl, notesKeyFile)
+	return notesArgs(cfg, port, p.model, notesGPULayers(cfg), 0, notesKeyFile)
 }
 
 // notesArgs builds the child argv. ngl is the -ngl value verbatim: "99" for
-// full offload, "0" for CPU decode, or the partial-offload layer count the
-// fit check computed.
-func notesArgs(cfg *config.Config, port int, modelPath, ngl, keyFile string) []string {
+// full offload, "0" for CPU decode, or "" to leave it unset for the fitter
+// (fitMiB > 0 then names its --fit-target). -lv 4 makes the loader print
+// which layers went to the GPU (no prompt text is logged at that level).
+func notesArgs(cfg *config.Config, port int, modelPath, ngl string, fitMiB int, keyFile string) []string {
 	args := []string{
 		"-m", modelPath, "-c", strconv.Itoa(meeting.NotesContextTokens()),
 		"-ctk", "q8_0", "-ctv", "q8_0",
 		"--host", voxLoopbackHost, "--port", strconv.Itoa(port),
 		"-fa", "on", "--jinja", "--no-ui", "-np", "1", "--cache-ram", "0",
-		"--cors-origins", "localhost", "-ngl", ngl,
+		"--cors-origins", "localhost", "-lv", "4",
+	}
+	if ngl != "" {
+		args = append(args, "-ngl", ngl)
+	}
+	if fitMiB > 0 {
+		args = append(args, "--fit", "on", "--fit-target", strconv.Itoa(fitMiB))
 	}
 	return append(args, "--api-key-file", filepath.Join(cfg.RunDir(), keyFile))
 }
@@ -378,13 +388,16 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	defer g.Release()
 	mark := notesLogMark(c.d.Cfg.EngineLogDir)
 	base, err := c.d.LLMSup.EnsureReady(ctx)
-	// A start that failed with an out-of-memory line retries degraded: once
-	// partially offloaded, then — an automatic choice with the compact
-	// model installed — on the 4B (notesfit.go). The mark is re-read before
-	// each attempt so the check sees only what that child wrote.
+	// A start that failed with an out-of-memory line retries with a higher
+	// fit margin, then — an automatic choice with the compact model
+	// installed — on the 4B (notesfit.go). The mark is re-read before each
+	// attempt so the check sees only what that child wrote.
 	for err != nil && ctx.Err() == nil && c.d.notesStartOOMed(mark) && c.d.notesEscalate() {
 		mark = notesLogMark(c.d.Cfg.EngineLogDir)
 		base, err = c.d.LLMSup.EnsureReady(ctx)
+	}
+	if err == nil {
+		c.d.notesNoteOffload(mark) // what llama.cpp's fitter chose, if this call started the child
 	}
 	if err != nil {
 		err = fmt.Errorf("the notes model failed to start: %w", err)
@@ -403,23 +416,35 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	return meeting.HTTPChat{BaseURL: base, Key: c.d.notesKey}.Complete(ctx, r)
 }
 
-// notesStaleChild stops the resident notes engine when it was spawned on
-// different args than a start would use now — above all a different model
-// file. The child loads its model at spawn: a download landing, a file
-// appearing or one removed flips the resolution under it, and without the
-// recycle meetings keep generating on the old file until it idles out. The
-// spawn argv is the child's own record of what it loaded; the stop waits
-// for a request in flight (Supervisor.Stop's own discipline), so it runs
-// under the notes engine's residency turn.
+// notesStaleChild stops the resident notes engine when the model resolution
+// changed since it was spawned. The child loads its model at spawn: a
+// download landing, a file appearing or one removed flips the resolution
+// under it, and without the recycle meetings keep generating on the old
+// file until it idles out. The comparison is resolution against resolution
+// (the path the last spawn was planned for) — never a fresh fit plan: that
+// would read the GPU budget with the resident child's own allocation counted
+// as somebody else's, and recycle or relabel an engine nothing changed
+// under. The stop waits for a request in flight (Supervisor.Stop's own
+// discipline), so it runs under the notes engine's residency turn.
 func (d *Daemon) notesStaleChild(ctx context.Context) error {
 	if d.LLMSup == nil {
 		return nil
 	}
 	args := d.LLMSup.SpawnArgs()
-	// Only the model file matters: the fit check's -ngl legitimately varies
-	// with the free budget and must not recycle a resident engine.
-	if args == nil || notesFlagValue(args, "-m") == "" || notesFlagValue(args, "-m") == d.notesSpawnPlan().model {
+	running := notesFlagValue(args, "-m")
+	if args == nil || running == "" {
 		return nil
+	}
+	res := d.notesResolve()
+	d.fit.mu.Lock()
+	sp := d.fit.spawn
+	d.fit.mu.Unlock()
+	if sp.set {
+		if sp.resPath == res.Path {
+			return nil
+		}
+	} else if running == res.Path || (res.Path == "" && running == d.Cfg.NotesModel) {
+		return nil // an engine not planned by notesSpawnPlan: its own -m is the record
 	}
 	d.log.Info("notes model changed under the resident engine; recycling it")
 	if err := d.LLMSup.Stop(ctx); err != nil {
@@ -461,8 +486,11 @@ func (d *Daemon) initMeetings() {
 		Transcribe: func(ctx context.Context, wav string) (*stt.Result, error) {
 			return d.Transcribe(ctx, TranscribeInput{AudioPath: wav})
 		},
-		Chat:       llmChat{d: d},
-		NotesTurn:  func(ctx context.Context) (func(), error) { return d.notesEngineTurn(ctx) },
+		Chat: llmChat{d: d},
+		NotesTurn: func(ctx context.Context) (func(), error) {
+			d.liftNotesFloor() // a new notes job decides the GPU budget afresh
+			return d.notesEngineTurn(ctx)
+		},
 		NotesReady: func() string { code, _ := d.notesBlock(); return code },
 		TranscribeReady: func() string {
 			if _, err := os.Stat(d.Cfg.STTModel); err != nil {

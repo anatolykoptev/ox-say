@@ -21,7 +21,7 @@ var realGPUProbe = newGPUProbe(wiredLimitMB, execRun)
 
 // defaultNotesGPUWired and notesGPUWarm are the darwin probe (see
 // notesfit_probe.go for where each figure comes from).
-func defaultNotesGPUWired(string) (limit, used uint64) { return realGPUProbe.wired() }
+func defaultNotesGPUWired(bin string) (limit, used uint64) { return realGPUProbe.wired(bin) }
 func notesGPUWarm(bin string) {
 	if wiredLimitMB() == 0 { // an explicit limit makes the Metal call moot
 		realGPUProbe.warm(bin)
