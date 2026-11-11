@@ -144,6 +144,21 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
     func voices(_ d: MainWindowData, _ change: (inout VoicesValues) -> Void) -> MainWindowData {
         var d = d; change(&d.voices); return d
     }
+    /// The Расшифровка page: sample transcripts (the language of the shot) and the state the scene sets.
+    func transcribe(_ now: Date, _ ru: Bool, _ change: (inout TranscribeValues, inout MainWindowData) -> Void) -> MainWindowData {
+        var d = PreviewData.make(now: now, ru: ru)
+        var v = TranscribeValues(entries: [
+            TranscriptEntry(id: "20261026-101010-a1b2c3", title: ru ? "Интервью с Анной" : "Interview with Anna", created: now.addingTimeInterval(-3600),
+                            seconds: 720, engine: "parakeet"),
+            TranscriptEntry(id: "20261025-091500-d4e5f6", title: ru ? "Заметка в дороге" : "A note on the road", created: now.addingTimeInterval(-86_400),
+                            seconds: 95, engine: "parakeet"),
+            TranscriptEntry(id: "20261020-170000-0a9b8c", title: ru ? "Лекция, часть 1" : "Lecture, part 1", created: now.addingTimeInterval(-6 * 86_400),
+                            seconds: 3_300, engine: "parakeet"),
+        ], load: .loaded)
+        change(&v, &d)
+        d.transcribe = v
+        return d
+    }
     /// The Голоса page with the design sheet open on a flow after the given steps (typed text in the language of the shot).
     func designSheet(_ now: Date, _ ru: Bool, _ steps: (inout VoiceDesignFlow) -> Void, label: (() -> String)? = nil) -> MainWindowData {
         var f = VoiceDesignFlow(description: ru ? "Спокойный диктор, мужской голос, неспешный и тёплый" : "A calm male narrator, unhurried and warm",
@@ -380,6 +395,27 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
         },
         Scene(name: "voices-stale", section: .voices, meeting: nil) {
             voices(PreviewData.make(now: $0, ru: $1)) { $0.load = .failed(StudioError.timedOut.message()) }
+        },
+        Scene(name: "transcribe-empty", section: .transcribe, meeting: nil) { now, ru in
+            transcribe(now, ru) { v, _ in v.entries = [] }
+        },
+        Scene(name: "transcribe-list", section: .transcribe, meeting: nil) { now, ru in
+            transcribe(now, ru) { v, _ in v.selectedID = v.entries.first?.id }
+        },
+        Scene(name: "transcribe-working", section: .transcribe, meeting: nil) { now, ru in
+            transcribe(now, ru) { v, _ in v.working = ru ? "Совещание, 12 мин" : "Team call, 12 min" }
+        },
+        Scene(name: "transcribe-failed", section: .transcribe, meeting: nil) { now, ru in
+            transcribe(now, ru) { _, d in d.notice = StudioError.refused(status: 500, message: ru ? "Распознавание не удалось: файл повреждён." : "Transcription failed: the file is damaged.").message() }
+        },
+        Scene(name: "transcribe-offline", section: .transcribe, meeting: nil) { now, ru in
+            transcribe(now, ru) { v, _ in v.entries = []; v.load = .failed(StudioError.daemonUnreachable.message()) }
+        },
+        Scene(name: "transcribe-too-big", section: .transcribe, meeting: nil) { now, ru in
+            transcribe(now, ru) { v, d in
+                v.entries = []
+                d.notice = TranscribeFileCheck.problem(bytes: Int64(TranscribeFileCheck.maxBytes) + 1, ext: "mp4")
+            }
         },
         Scene(name: "voices-design-unavailable", section: .voices, meeting: nil) {
             voices(PreviewData.make(now: $0, ru: $1)) { $0.designAvailability = .unavailable(StudioMenu.unavailableText(reason: nil)) }

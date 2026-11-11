@@ -168,7 +168,7 @@ func TestNotesModelGetAndPut(t *testing.T) {
 // with NotesBlock's own verdict — the same unsupported sentence /status
 // gives — and the same refusal stands in front of an install that names it.
 // On the injected 16 GB Mac the 27B (floor 32 GB) is refused while the 9B
-// (floor 16 GB) still switches. Mutations:
+// (floor 24 GB) is refused too, and the 4B (floor 16 GB) still switches. Mutations:
 // internal/daemon/notesmodel.go handleNotesModelPut, delete the
 // NotesReasonUnsupported arm -> RED (the 27B saves);
 // internal/daemon/meetings.go InstallNotesModel, delete the NotesBlock check
@@ -204,14 +204,20 @@ func TestNotesModelPutRefusesAModelTheMacCannotRun(t *testing.T) {
 	if d.notesInstalling() != 0 {
 		t.Fatal("a download started for a model this Mac cannot run")
 	}
+	// The 9B needs 24 GB: an explicit pick below it is refused like any
+	// other model over its floor.
+	rec = call(t, mux, http.MethodPut, "/v1/meetings/notes-model", `{"id":"qwen3.5-9b"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(bodyText(rec), "needs at least 24 GB of memory; this Mac has 16 GB.") {
+		t.Fatalf("PUT the 9B on 16 GB: %d %s, want 400 naming 24 GB", rec.Code, bodyText(rec))
+	}
 	// And the model whose floor the Mac meets still switches: the gate is the
 	// entry's own MinMemoryGB, not a blanket refusal.
-	rec = call(t, mux, http.MethodPut, "/v1/meetings/notes-model", `{"id":"qwen3.5-9b"}`)
+	rec = call(t, mux, http.MethodPut, "/v1/meetings/notes-model", `{"id":"qwen3.5-4b"}`)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("PUT the 9B on 16 GB: %d %s, want 200", rec.Code, bodyText(rec))
+		t.Fatalf("PUT the 4B on 16 GB: %d %s, want 200", rec.Code, bodyText(rec))
 	}
-	if res := d.notesResolve(); res.ID != "qwen3.5-9b" {
-		t.Fatalf("after PUT: %+v, want the saved 9B", res)
+	if res := d.notesResolve(); res.ID != "qwen3.5-4b" {
+		t.Fatalf("after PUT: %+v, want the saved 4B", res)
 	}
 }
 

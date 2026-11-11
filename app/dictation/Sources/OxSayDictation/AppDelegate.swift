@@ -620,7 +620,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                  designing: studio.designing,
                                  followingVoiceover: studio.voiceover.following,
                                  recordingMeeting: meetings?.isRecording ?? false,
-                                 recordingVoice: mainWindow.source?.recordingVoice ?? false)
+                                 recordingVoice: mainWindow.source?.recordingVoice ?? false,
+                                 transcribing: mainWindow.source?.transcribing ?? false)
     }
 
     /// Work in this process ended: a pass that held an action back runs
@@ -890,7 +891,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             speechRefusal: { UpdateGate.allowsNewDaemonWork(installing: self.updateInstalling) ? nil : L10nKey.noticeUpdatingSpeak.text },
             mainWindow: { [unowned self] in self.mainWindow.window },
             stopSpeechPlayer: { [unowned self] in self.stopSpeechPlayback() },
-            voiceover: { [unowned self] in self.studio.voiceover })
+            voiceover: { [unowned self] in self.studio.voiceover },
+            saveFile: { [unowned self] file, done in
+                TranscriptSave.present(file, in: self.mainWindow.window, completion: done)
+            })
     }
 
     private func submenuItem(_ title: String, _ submenu: NSMenu) -> NSMenuItem {

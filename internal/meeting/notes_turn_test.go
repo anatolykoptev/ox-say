@@ -65,7 +65,7 @@ func TestComposeHoldsTheNotesTurnAcrossAllCalls(t *testing.T) {
 	}
 	chat.replies = append(chat.replies, "The merged summary.")
 	r := &Runner{Deps: Deps{Chat: chat, NotesTurn: probe.claim}}
-	if _, err := r.compose(context.Background(), text, Labels{}, "en"); err != nil {
+	if _, err := r.compose(context.Background(), nil, text, Labels{}, "en"); err != nil {
 		t.Fatal(err)
 	}
 	if len(chat.at) != n+1 {
@@ -109,7 +109,7 @@ func TestComposeReleasesTheNotesTurnOnEveryExit(t *testing.T) {
 			defer cancel()
 			func() {
 				defer func() { _ = recover() }()
-				_, _ = r.compose(ctx, text, Labels{}, "en")
+				_, _ = r.compose(ctx, nil, text, Labels{}, "en")
 			}()
 			if probe.held || probe.releases != probe.claims {
 				t.Fatalf("claims %d releases %d held %v: the turn leaked", probe.claims, probe.releases, probe.held)
@@ -127,7 +127,7 @@ func TestComposeTurnRefusalIsAnEngineDownError(t *testing.T) {
 	text, _ := multiChunkText(t)
 	probe := &turnProbe{err: errors.New("busy")}
 	r := &Runner{Deps: Deps{Chat: &fakeChat{}, NotesTurn: probe.claim}}
-	_, err := r.compose(context.Background(), text, Labels{}, "en")
+	_, err := r.compose(context.Background(), nil, text, Labels{}, "en")
 	var down *EngineDownError
 	if !errors.As(err, &down) || !down.Retryable || down.Reason != FailNotesEngineStart {
 		t.Fatalf("err = %v, want a retryable engine-down failure", err)

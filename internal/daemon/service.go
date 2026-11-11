@@ -69,6 +69,10 @@ type Daemon struct {
 	// notes is the single-flight guard and last error of the notes model
 	// download (InstallNotesModel).
 	notes notesInstall
+	// fit records the notes engine's start-time GPU-fit decisions — the
+	// degradation floor an OOM'd start forced and the label /status
+	// reports (notesfit.go).
+	fit notesFit
 
 	// cleaning is the voice cleanups in flight (0 or 1, busy.cleaning): the CompareAndSwap that makes a second one 409.
 	// cleanRunning is the part of that time the cleanup is past its wait for a quiet daemon and is using the GPU;
@@ -320,7 +324,7 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 	// A Config literal (tests) names no notes binary: no supervisor, and the
 	// notes engine reports itself unavailable in /status.
 	if cfg.NotesBin != "" {
-		if d.LLMSup, err = newLLMSupervisor(cfg, logger); err != nil {
+		if d.LLMSup, err = newLLMSupervisor(d); err != nil {
 			sup.Shutdown()
 			if d.STTSup != nil {
 				d.STTSup.Shutdown()
@@ -828,6 +832,11 @@ func (d *Daemon) Status() statusSummary {
 			"stt_idle_stop_s":   d.Cfg.STTIdleStop.Seconds(),
 			"stt_vad_model":     d.Cfg.STTVADModel,
 			"tts_model":         d.Cfg.TTSModel,
+			// What a client uploading a file must stay inside: the per-transcription timeout and the upload cap,
+			// both configurable (OX_SAY_STT_TIMEOUT_SECS, OX_SAY_STT_MAX_UPLOAD_MB). The app sizes its own timeout
+			// and size check on them and falls back to the defaults when an older daemon omits them.
+			"stt_timeout_s":     d.Cfg.STTTimeout.Seconds(),
+			"stt_max_upload_mb": d.Cfg.STTMaxUploadMB,
 		},
 		Version:    version,
 		MemoryMode: d.mem.mode(),

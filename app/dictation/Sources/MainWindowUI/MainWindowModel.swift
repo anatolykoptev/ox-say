@@ -96,6 +96,11 @@ public final class MainWindowModel: ObservableObject {
         VoicesPageState.of(load: data.voices.load, hasVoices: !data.voices.entries.isEmpty)
     }
 
+    /// What the Расшифровка page shows: one decision, in DictationCore.
+    var transcribeState: TranscribePageState {
+        TranscribePageState.of(load: data.transcribe.load, hasItems: !data.transcribe.entries.isEmpty, working: data.transcribe.working)
+    }
+
     /// What the Озвучка page shows: one decision, in DictationCore. The engine is the fast voice unless the studio voice
     /// is chosen and can run.
     var speakState: SpeakPageState {

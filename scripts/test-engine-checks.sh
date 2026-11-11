@@ -165,11 +165,17 @@ for patch in ggml/0003-metal-per-binary-metallib.patch audiocpp/0003-metal-per-b
 done
 
 # Every long flag the daemon starts ox-llm with is in the --help check (read from the daemon, not a second list).
-want=$(awk '/^func notesServerArgs/,/^}/' "$root/internal/daemon/meetings.go" | grep -o '"--[a-z0-9-]*"' | tr -d '"' | sort -u)
+# The argv literals live in notesArgs, the single builder notesServerArgs/notesServerArgsKey/notesPlanArgs all go
+# through; the wrappers must hold none of their own, or a flag added there would escape the check.
+fn=$(awk '/^func notesArgs\(/,/^}/' "$root/internal/daemon/meetings.go")
+want=$(printf '%s\n' "$fn" | grep -o '"--[a-z0-9-]*"' | tr -d '"' | sort -u)
 # Every `"--` literal must have been read as a plain flag: a `"--x=%d"` or a concatenated flag would drop out of the list.
-fn=$(awk '/^func notesServerArgs/,/^}/' "$root/internal/daemon/meetings.go")
-check "every -- literal of notesServerArgs is a plain flag" "$(printf '%s\n' "$fn" | grep -o '"--' | wc -l | tr -d ' ')" "$(printf '%s\n' "$want" | grep -c .)"
+check "every -- literal of notesArgs is a plain flag" "$(printf '%s\n' "$fn" | grep -o '"--' | wc -l | tr -d ' ')" "$(printf '%s\n' "$want" | grep -c .)"
+wrappers=$(awk '/^func notes(ServerArgs|ServerArgsKey|PlanArgs)\(/,/^}/' "$root/internal/daemon/meetings.go")
+check "the notes argv wrappers were found" "$([ "$(printf '%s\n' "$wrappers" | grep -c '^func ')" -eq 3 ] && echo yes || echo no)" yes
+check "the notes argv wrappers carry no -- literal of their own" "$(printf '%s\n' "$wrappers" | grep -c '"--' || true)" 0
 check "daemon's ox-llm flags were found" "$([ -n "$want" ] && echo yes || echo no)" yes
+echo "  ox-llm flags found in notesArgs: $(printf '%s' "$want" | tr '\n' ' ')"
 line=$(grep -E '^check_help_flags "\$out/ox-llm"' "$root/engine/build.sh" || true)
 for flag in $want; do
     case " $line " in

@@ -39,8 +39,10 @@ var NotesCatalog = []NotesModelEntry{
 		File: "Qwen3.5-9B-Q4_K_M.gguf", Bytes: 5680522464,
 		SHA256: "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
 		URL:    "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5",
-		// Provisional: the 9B is gated until it is measured below 24 GB.
-		MinMemoryGB: 16,
+		// 24 GB: below it the 9B (about 7 GB resident, plus its KV cache) leaves
+		// the browser running the call (1.5-4 GB) and macOS too little room; an
+		// emulated 16 GB run fitted it with ~300 MB of GPU headroom.
+		MinMemoryGB: 24,
 	},
 	{
 		ID: "qwen3.5-4b", Kind: NotesKindCompact, Name: "Qwen3.5-4B Q4_K_M",
