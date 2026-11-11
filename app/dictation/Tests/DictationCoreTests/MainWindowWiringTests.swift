@@ -184,11 +184,11 @@ final class MainWindowWiringTests: XCTestCase {
         let controller = try source("OxSayDictation/MeetingController.swift")
         let start = try body(controller, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {")
         let created = try XCTUnwrap(start.range(of: "created = info"))
-        let flag = try XCTUnwrap(start.range(of: "if isShutDown {\n                    discardEmpty(info.id)\n                    return\n                }"))
+        let flag = try XCTUnwrap(start.range(of: "if isShutDown {\n                    trace(.startRefused(reason: \"shut_down\"))\n                    discardEmpty(info.id)\n                    return\n                }"))
         let recorderStart = try XCTUnwrap(start.range(of: "try recorder.start(into:"))
         XCTAssertLessThan(created.lowerBound, flag.lowerBound)
         XCTAssertLessThan(flag.lowerBound, recorderStart.lowerBound, "checked before the recorder starts")
-        XCTAssertTrue(start.contains("guard current == nil, !starting, !isShutDown else { rejected(); return }"))
+        XCTAssertTrue(start.contains("guard current == nil, !starting, !isShutDown else {"))
         XCTAssertTrue(start.contains("defer { starting = false; done(ok) }"), "starting is reset on that exit too")
         let down = try body(controller, of: "func shutDown() {\n")
         XCTAssertTrue(down.contains("isShutDown = true"))
@@ -430,7 +430,7 @@ final class MainWindowWiringTests: XCTestCase {
         let controller = try source("OxSayDictation/MeetingController.swift")
         let observe = try body(controller, of: "private func observe(_ tick: CallWatcher.Tick) {")
         XCTAssertTrue(observe.contains("picked: CallPolicy.pickedMode(for: source, host.defaults)"))
-        XCTAssertTrue(observe.contains("case .ignore: break"))
+        XCTAssertTrue(observe.contains("case .ignore: trace(.autoIgnored("))
         XCTAssertTrue(observe.contains("installing: host.updateInstalling()"))
     }
 

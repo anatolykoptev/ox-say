@@ -56,14 +56,11 @@ final class Overlay {
         size = pillSize
         panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        panel.isFloatingPanel = true
-        panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        PlateWindowSpec.apply(to: panel, extra: .ignoresCycle)
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
         panel.ignoresMouseEvents = true
-        panel.hidesOnDeactivate = false
         panel.appearance = NSAppearance(named: .vibrantDark)
 
         background = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
@@ -136,6 +133,7 @@ final class Overlay {
     private var screenObservers: [NSObjectProtocol] = []
     /// The show whose visibility check the lock or a sleeping display skipped.
     private var recheck = PillRecheck()
+    private var watch = PlateWatch()
 
     /// The screen unlocked or a display woke: the skipped check of the pill still up runs once, after the window
     /// server has had its 250 ms to put the window back.
@@ -144,13 +142,8 @@ final class Overlay {
         guard recheck.resume(show: expected, wantsVisible: wantsVisible) else { return }
         let ownerAtShow = owner
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            self?.checkVisible(expected: expected, owner: ownerAtShow, healed: false)
+            self?.checkVisible(expected: expected, owner: ownerAtShow)
         }
-    }
-
-    /// The display the pill is on; the main one while the panel has no screen yet.
-    private func panelDisplayID() -> CGDirectDisplayID {
-        (panel.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
     }
 
     /// Counts the times a new owner took the pill (listening, working,
@@ -424,6 +417,7 @@ final class Overlay {
         }, completionHandler: { [weak self] in
             guard let self, self.shown == fading else { return }
             self.panel.orderOut(nil)
+            self.watch = PlateWatch()
         })
     }
 
@@ -455,65 +449,55 @@ final class Overlay {
             panel.animator().alphaValue = 1
         }
         panel.alphaValue = 1
+        PlateWindowSpec.apply(to: panel, extra: .ignoresCycle)
         panel.orderFrontRegardless()
         panel.invalidateShadow()
         overlayLog.notice("overlay show kind=\(self.kind, privacy: .public) owner=\(self.owner, privacy: .public)")
         let expected = shown
         let ownerAtShow = owner
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            self?.checkVisible(expected: expected, owner: ownerAtShow, healed: false)
+            self?.checkVisible(expected: expected, owner: ownerAtShow)
         }
     }
 
-    /// The window server's truth about the pill's own window, ~250 ms after a
-    /// show: a panel that should be up but is not onscreen or not opaque gets
-    /// logged at fault and re-shown once, then checked a second time.
-    private func checkVisible(expected: Int, owner ownerAtShow: Int, healed: Bool) {
+    /// The window server's truth about the pill's own window, ~250 ms after a show: a panel that should be up but is
+    /// not onscreen or not opaque is logged at fault (with the activation policy) and re-configured and shown front
+    /// again by `PlateWatch`, then checked again.
+    private func checkVisible(expected: Int, owner ownerAtShow: Int) {
         guard shown == expected, wantsVisible else { return }
-        // A pill cannot be onscreen while the display sleeps or the screen is
-        // locked: that is not a fault, and a self-heal would fight the lock.
-        guard PillVisibility.expectsOnscreen(screenLocked: Self.sessionScreenLocked(),
-                                             displayAsleep: CGDisplayIsAsleep(panelDisplayID()) != 0) else {
+        // A pill cannot be onscreen while the display sleeps or the screen is locked: that is not a fault, and a
+        // self-heal would fight the lock.
+        guard PlateProbe.expectsOnscreen(panel) else {
             overlayLog.notice("overlay check skipped: screen locked or display asleep owner=\(ownerAtShow, privacy: .public)")
             recheck.skipped(show: expected)
             return
         }
-        let server = windowServerState()
+        let server = PlateProbe.state(panel)
         let frame = NSStringFromRect(panel.frame)
         let visibleFrame = (NSScreen.screens.first { $0.frame.intersects(panel.frame) } ?? NSScreen.main)
             .map { NSStringFromRect($0.visibleFrame) } ?? "none"
-        let detail = "owner=\(ownerAtShow) onscreen=\(server.onscreen) alpha=\(server.alpha) frame=\(frame) visible_frame=\(visibleFrame)\(healed ? " (after self-heal)" : "")"
-        if server.onscreen && server.alpha >= 1 {
-            overlayLog.notice("overlay check \(detail, privacy: .public)")
-        } else if healed {
-            overlayLog.fault("overlay not visible after self-heal \(detail, privacy: .public)")
-        } else {
-            overlayLog.fault("overlay not visible \(detail, privacy: .public)")
-            // Self-heal once: opaque, front again, recentred — then re-check.
-            panel.alphaValue = 1
-            recentre()
-            panel.orderFrontRegardless()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                self?.checkVisible(expected: expected, owner: ownerAtShow, healed: true)
+        let policy = PlateProbe.policy()
+        let detail = "owner=\(ownerAtShow) onscreen=\(server.onscreen) alpha=\(server.alpha) frame=\(frame) visible_frame=\(visibleFrame) policy=\(policy)"
+        var again = false
+        for action in watch.observe(onscreen: server.onscreen && server.alpha >= 1, expected: true) {
+            switch action {
+            case .log(.missed): overlayLog.fault("overlay not visible \(detail, privacy: .public)")
+            case .log(.recovered): overlayLog.notice("overlay visible again \(detail, privacy: .public)")
+            case .reorder:
+                PlateWindowSpec.apply(to: panel, extra: .ignoresCycle)
+                panel.alphaValue = 1
+                recentre()
+                panel.orderFrontRegardless()
+                again = true
+            case .tell: overlayLog.fault("overlay not visible after self-heal \(detail, privacy: .public)")
             }
         }
-    }
-
-    /// The login session's lock state, from the same dictionary the lock screen publishes.
-    private static func sessionScreenLocked() -> Bool {
-        (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
-    }
-
-    /// The pill's window as the window server sees it: onscreen and alpha.
-    /// (false, 0) when the panel has no window yet or the list knows none.
-    private func windowServerState() -> (onscreen: Bool, alpha: Double) {
-        guard panel.windowNumber > 0,
-              let list = CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(panel.windowNumber)) as? [[String: Any]],
-              let entry = list.first else {
-            return (false, 0)
+        if server.onscreen && server.alpha >= 1 { overlayLog.notice("overlay check \(detail, privacy: .public)") }
+        if again {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.checkVisible(expected: expected, owner: ownerAtShow)
+            }
         }
-        return ((entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? false,
-                (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0)
     }
 
     private static func pill(radius: CGFloat) -> NSImage {

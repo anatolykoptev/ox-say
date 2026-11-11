@@ -979,30 +979,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The status icon for `statusSymbol`, with a small dot at its corner while
     /// an update is on offer.
     private func applyStatusIcon() {
-        // One place decides symbol and tint from BOTH states: a dictation and a meeting recording.
+        // One place decides symbol and colour from BOTH states: a dictation and a meeting recording. The red is painted
+        // into the image: the menu bar ignores `contentTintColor` for a template image and draws it black (#519).
         let style = StatusIconStyle.style(meetingRecording: meetings?.isRecording == true,
                                           dictationRecording: controller.state == .recording, dictationSymbol: statusSymbol)
-        statusItem.button?.contentTintColor = style.red ? .systemRed : nil
-        if meetings?.isRecording == true,
-           let rec = NSImage(systemSymbolName: style.symbol, accessibilityDescription: "OxSay is recording a meeting") {
-            statusItem.button?.image = rec
-            return
-        }
-        guard let base = NSImage(systemSymbolName: statusSymbol, accessibilityDescription: "OxSay Dictation") else { return }
-        guard updateOffer != nil else {
-            statusItem.button?.image = base
-            return
-        }
-        let size = base.size
-        let badged = NSImage(size: size, flipped: false) { rect in
-            base.draw(in: rect)
-            let dot: CGFloat = 5
-            NSBezierPath(ovalIn: NSRect(x: rect.maxX - dot, y: rect.maxY - dot, width: dot, height: dot)).fill()
-            return true
-        }
-        badged.isTemplate = true
-        badged.accessibilityDescription = "OxSay Dictation — update available"
-        statusItem.button?.image = badged
+        // The symbol already follows the recording state (`style.symbol`); the update dot is composed onto whichever
+        // image that is, so an update offered mid-recording keeps its dot.
+        let description = meetings?.isRecording == true ? "OxSay is recording a meeting" : "OxSay Dictation"
+        guard let base = StatusIconImage.make(symbol: style.symbol, red: style.red, description: description) else { return }
+        statusItem.button?.image = updateOffer != nil
+            ? StatusIconImage.badged(base, red: style.red, description: description + " — update available") : base
     }
 
     private func startWorkingTimer() {

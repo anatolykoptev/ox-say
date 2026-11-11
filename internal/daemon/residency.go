@@ -56,6 +56,46 @@ func newResidency(log *slog.Logger, engines ...*engine.Supervisor) *residency {
 	return r
 }
 
+// residentEngine is one engine the daemon may have resident while another
+// runs: its supervisor (nil where the feature is off or the Mac cannot run
+// it), the /v1/models measure of the model bytes it holds, and whether it
+// is one of the large engines this file arbitrates. The diarizer has no
+// row: ox-diar runs per call (runDiarizer), it never stays resident.
+type residentEngine struct {
+	sup        *engine.Supervisor
+	modelBytes func() int64
+	large      bool
+}
+
+// residentEngines is THE list of the daemon's engine supervisors, in the
+// Daemon's field order: the managed set newResidency gets and the
+// own-model trial's resident-memory accounting both come from it, so an
+// engine added here is counted — and, when large, managed — and neither
+// consumer keeps a second list to forget it in (the accounting once
+// missed the STT server exactly that way). STT is a row although it is
+// never managed: the package comment rules it out of the turns, but it
+// still holds its model while a trial runs.
+func (d *Daemon) residentEngines() []residentEngine {
+	return []residentEngine{
+		{d.Sup, func() int64 { return d.qwenModelEntry().Bytes }, true},
+		{d.STTSup, d.sttModelBytes, false},
+		{d.VoxSup, func() int64 { return d.voxModelEntry().Bytes }, true},
+		{d.LLMSup, func() int64 { return d.notesModelEntry().Bytes }, true},
+	}
+}
+
+// largeEngineSups is the managed set newResidency gets: the supervisors of
+// the resident engines large enough to take turns.
+func (d *Daemon) largeEngineSups() []*engine.Supervisor {
+	var out []*engine.Supervisor
+	for _, e := range d.residentEngines() {
+		if e.large {
+			out = append(out, e.sup)
+		}
+	}
+	return out
+}
+
 // managed reports whether sup takes turns (STT, and any engine not in the set, does not). When cond is set the whole
 // set is managed only while it holds — the notes engine is exclusive only with a model large enough to need it.
 func (r *residency) managed(sup *engine.Supervisor) bool {

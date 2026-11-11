@@ -1,5 +1,8 @@
 import AppKit
 import DictationCore
+import os
+
+private let badgeLog = Logger(subsystem: "io.github.anatolykoptev.ox-say.dictation", category: "meeting")
 
 /// The always-visible recording control: a small panel at the top of the screen
 /// with a red dot, the clock, a level for each side and a Stop button; or, when
@@ -18,6 +21,9 @@ final class MeetingBadge {
         case recordConfirm(source: String)
         /// macOS's Automation answer for this browser is undetermined: ask in context before the first Apple Event.
         case browserConsent(browser: String)
+        /// A start that did not become a recording, with the reason in words. Stays until it is dismissed: an error
+        /// that fades is an error nobody read (#518).
+        case failed(text: String)
     }
 
     var onStop: (() -> Void)?
@@ -34,6 +40,11 @@ final class MeetingBadge {
     /// The Automation badge's "Not now": no Apple Event until the browser lets the microphone go.
     var onBrowserNotNow: (() -> Void)?
     var onCopyConsent: (() -> Void)?
+    /// The plate is up and the window server says it is not on screen, and every self-heal failed (#517): the owner
+    /// tells the user another way.
+    var onNotVisible: (() -> Void)?
+    /// Where the plate's spot per display is remembered.
+    var defaults: UserDefaults = .standard
 
     private let panel: NSPanel
     private let stack = NSStackView()
@@ -51,6 +62,25 @@ final class MeetingBadge {
     /// The panel's left edge from that display's left: kept across a change of the arrangement, whose global coordinates shift.
     private var placedOffset: Double?
     private var screenObserver: NSObjectProtocol?
+    private var moveObserver: NSObjectProtocol?
+    /// The gap under the top of that display's usable area: the vertical half of the panel's place.
+    private var placedInset: Double?
+    /// True while the app itself moves the panel, so a drag by the user is told from a placement.
+    private var isPlacing = false
+    private var watch = PlateWatch()
+    private var lastVerified = Date.distantPast
+    /// Seconds between two asks of the window server about a plate that is up.
+    private static let verifyEvery: TimeInterval = 2
+    /// Caps the label of an error, which is a sentence, so the plate stays on its screen.
+    private let maxLabelWidth: NSLayoutConstraint
+    /// The user folded the recording plate to its dot and clock; it starts expanded for every recording.
+    private var userCollapsed = false
+    private var recordingAuto = false
+    /// The consent reminder's full text while it is on the recording plate (notifications were not allowed).
+    private var reminderText: String?
+    /// What OK on the reminder does: the acknowledgement. Dropped, unanswered, when the plate comes down.
+    private var reminderOK: (() -> Void)?
+    private var lastElapsed: TimeInterval = 0
 
     /// The widest clock the label shows (digits are monospaced): 9:59:59.
     private static let widestElapsed: TimeInterval = 10 * 3600 - 1
@@ -58,10 +88,9 @@ final class MeetingBadge {
     init() {
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 36),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        panel.level = .statusBar
-        panel.isFloatingPanel = true
-        panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        PlateWindowSpec.apply(to: panel)
+        // Dragged by any part that is not a button; where it is left is remembered per display.
+        panel.isMovableByWindowBackground = true
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -88,9 +117,18 @@ final class MeetingBadge {
         }
         label.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
         labelWidth = label.widthAnchor.constraint(greaterThanOrEqualToConstant: 0)
+        maxLabelWidth = label.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
         dot.setAccessibilityElement(true)
         dot.setAccessibilityRole(.image)
         dot.setAccessibilityLabel(L10nKey.badgeA11yDot.text)
+        // A click on the dot of a collapsed plate opens it again.
+        let dotClick = ActionTarget { [weak self] in
+            guard let self, self.userCollapsed else { return }
+            self.setCollapsed(false)
+        }
+        let recognizer = NSClickGestureRecognizer(target: dotClick, action: #selector(ActionTarget.fire))
+        dot.addGestureRecognizer(recognizer)
+        objc_setAssociatedObject(dot, &Self.handlerKey, dotClick, .OBJC_ASSOCIATION_RETAIN)
         meBar.setAccessibilityLabel(L10nKey.badgeA11yMe.text)
         themBar.setAccessibilityLabel(L10nKey.badgeA11yThem.text)
         stack.orientation = .horizontal
@@ -106,10 +144,13 @@ final class MeetingBadge {
         ])
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                                  object: nil, queue: .main) { [weak self] _ in self?.screensChanged() }
+        moveObserver = NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: panel,
+                                                              queue: .main) { [weak self] _ in self?.panelMoved() }
     }
 
     deinit {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        if let moveObserver { NotificationCenter.default.removeObserver(moveObserver) }
     }
 
     var isVisible: Bool { panel.isVisible }
@@ -132,6 +173,17 @@ final class MeetingBadge {
         return b
     }
 
+    /// A small symbol-only button (the fold and unfold of the recording plate), named for VoiceOver and the tooltip.
+    private func iconButton(_ symbol: String, _ label: String, _ action: @escaping () -> Void) -> NSButton {
+        let b = button("", action)
+        b.bezelStyle = .inline
+        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        b.imagePosition = .imageOnly
+        b.toolTip = label
+        b.setAccessibilityLabel(label)
+        return b
+    }
+
     private static var handlerKey = 0
 
     private final class ActionTarget: NSObject {
@@ -140,10 +192,14 @@ final class MeetingBadge {
         @objc func fire() { action() }
     }
 
-    private func layout(_ views: [NSView]) {
+    private func layout(_ views: [NSView], keepingPlace: Bool = false, capLabel: Bool = false) {
+        maxLabelWidth.isActive = capLabel
+        label.toolTip = capLabel ? label.stringValue : nil
         stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
         views.forEach { stack.addArrangedSubview($0) }
-        resize(keepingPlace: false)
+        resize(keepingPlace: keepingPlace)
+        // Level and behaviour are asserted again at every show, not only when the panel was built.
+        PlateWindowSpec.apply(to: panel)
         panel.orderFrontRegardless()
     }
 
@@ -156,25 +212,66 @@ final class MeetingBadge {
         panel.contentView?.layoutSubtreeIfNeeded()
         let size = stack.fittingSize
         let offset = keepingPlace && panel.isVisible ? placedOffset : nil
-        panel.setContentSize(NSSize(width: max(size.width, 220), height: 36))
-        place(anchoredOffset: offset, onScreen: keepingPlace ? placedOn : nil)
+        let inset = keepingPlace && panel.isVisible ? placedInset : nil
+        // A collapsed plate is its dot and clock; every other content keeps the width the buttons need.
+        let minimum: CGFloat = PlateCollapse.presentation(isRecording: isRecording, userCollapsed: userCollapsed) == .collapsed ? 0 : 220
+        panel.setContentSize(NSSize(width: max(size.width, minimum), height: reminderText == nil ? 36 : max(36, size.height)))
+        place(anchoredOffset: offset, anchoredInset: inset, onScreen: keepingPlace ? placedOn : nil)
+    }
+
+    private var isRecording: Bool {
+        if case .recording? = mode { return true }
+        return false
     }
 
     /// Puts the panel on a screen that exists now: `BadgePlacement.place` decides which one and where (DictationCore,
     /// table-tested); this reads the screens and moves the window.
-    private func place(anchoredOffset: Double?, onScreen: UInt32?) {
-        let screens = NSScreen.screens.compactMap { screen -> BadgePlacement.Screen? in
-            guard let id = Self.displayID(screen) else { return nil }
-            let frame = screen.visibleFrame
-            return BadgePlacement.Screen(id: id, minX: Double(frame.minX), maxX: Double(frame.maxX), maxY: Double(frame.maxY))
-        }
+    private func place(anchoredOffset: Double?, anchoredInset: Double? = nil, onScreen: UInt32?) {
+        let screens = Self.placementScreens()
         // No screens (the lid closed, the display asleep): the badge stays where it is; the next change places it.
         guard let spot = BadgePlacement.place(screens: screens, placedOn: onScreen, main: NSScreen.main.flatMap(Self.displayID),
-                                              anchoredOffset: anchoredOffset, width: Double(panel.frame.width),
+                                              anchoredOffset: anchoredOffset, anchoredInset: anchoredInset,
+                                              saved: BadgePositions.load(defaults), width: Double(panel.frame.width),
                                               height: Double(panel.frame.height)) else { return }
         placedOn = spot.screenID
         placedOffset = spot.offset
+        placedInset = spot.topInset
+        isPlacing = true
         panel.setFrameOrigin(NSPoint(x: spot.x, y: spot.y))
+        isPlacing = false
+    }
+
+    private static func placementScreens() -> [BadgePlacement.Screen] {
+        NSScreen.screens.compactMap { screen -> BadgePlacement.Screen? in
+            guard let id = displayID(screen) else { return nil }
+            let frame = screen.visibleFrame
+            return BadgePlacement.Screen(id: id, minX: Double(frame.minX), maxX: Double(frame.maxX), maxY: Double(frame.maxY),
+                                         minY: Double(frame.minY), key: displayKey(screen) ?? String(id))
+        }
+    }
+
+    /// The user dragged the plate: its new place, on the display it now covers most, is what the next appearance and the
+    /// next change of width keep.
+    private func panelMoved() {
+        guard !isPlacing, panel.isVisible else { return }
+        let frame = panel.frame
+        let centre = NSPoint(x: frame.midX, y: frame.midY)
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(centre, $0.frame, false) }),
+              let id = Self.displayID(screen) else { return }
+        let visible = screen.visibleFrame
+        let dx = Double(frame.minX - visible.minX)
+        let inset = Double(visible.maxY - frame.height - frame.minY)
+        placedOn = id
+        placedOffset = dx
+        placedInset = inset
+        BadgePositions.save(key: Self.displayKey(screen) ?? String(id), dx: dx, topInset: inset, defaults)
+    }
+
+    /// The display's UUID: what a remembered spot is filed under. The numeric id changes when a monitor reconnects.
+    private static func displayKey(_ screen: NSScreen) -> String? {
+        guard let id = displayID(screen), let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue(),
+              let text = CFUUIDCreateString(nil, uuid) else { return nil }
+        return text as String
     }
 
     private static func displayID(_ screen: NSScreen) -> UInt32? {
@@ -186,19 +283,52 @@ final class MeetingBadge {
     /// content is placed when it appears.
     private func screensChanged() {
         guard panel.isVisible, mode != nil else { return }
-        place(anchoredOffset: placedOffset, onScreen: placedOn)
+        place(anchoredOffset: placedOffset, anchoredInset: placedInset, onScreen: placedOn)
     }
 
     func showRecording(auto: Bool, elapsed: TimeInterval) {
         guard mode != .recording(auto: auto) else { return }
         mode = .recording(auto: auto)
+        userCollapsed = false
+        reminderText = nil
+        reminderOK = nil
+        recordingAuto = auto
         panel.setAccessibilityLabel(L10nKey.badgeA11yPanel.text)
-        var views: [NSView] = [dot, label, meBar, themBar, button(L10nKey.badgeStop.text) { [weak self] in self?.onStop?() }]
-        if auto { views.append(button(L10nKey.badgeDontRecord.text) { [weak self] in self?.onDontRecord?() }) }
-        let consent = button(L10nKey.badgeCopyConsent.text) { [weak self] in self?.onCopyConsent?() }
-        consent.isHidden = !MeetingBadgeModel.showsConsentHint(elapsed: elapsed)
-        consentButton = consent
-        views.append(consent)
+        layoutRecording(elapsed: elapsed)
+    }
+
+    /// The recording plate, whole or folded to its dot and clock. Both are the same panel on the same screen: folding
+    /// makes it smaller, never absent.
+    private func layoutRecording(elapsed: TimeInterval) {
+        lastElapsed = elapsed
+        let collapsed = PlateCollapse.presentation(isRecording: true, userCollapsed: userCollapsed) == .collapsed
+        var views: [NSView]
+        if let reminder = reminderText {
+            // The one-time reminder, whole, with the plate still the recording's: dot, the words, OK. Dismissible, never modal.
+            label.font = .systemFont(ofSize: 12, weight: .regular)
+            label.maximumNumberOfLines = 0
+            label.lineBreakMode = .byWordWrapping
+            label.preferredMaxLayoutWidth = 440
+            label.stringValue = reminder
+            labelWidth.isActive = false
+            consentButton = nil
+            layout([dot, label, button(L10nKey.badgeStop.text) { [weak self] in self?.onStop?() },
+                    button(L10nKey.commonOk.text) { [weak self] in self?.acknowledgeReminder() }],
+                   keepingPlace: panel.isVisible, capLabel: true)
+            return
+        }
+        if collapsed {
+            views = [dot, label, iconButton("chevron.down", L10nKey.badgeExpand.text) { [weak self] in self?.setCollapsed(false) }]
+            consentButton = nil
+        } else {
+            views = [dot, label, meBar, themBar, button(L10nKey.badgeStop.text) { [weak self] in self?.onStop?() }]
+            if recordingAuto { views.append(button(L10nKey.badgeDontRecord.text) { [weak self] in self?.onDontRecord?() }) }
+            let consent = button(L10nKey.badgeCopyConsent.text) { [weak self] in self?.onCopyConsent?() }
+            consent.isHidden = !MeetingBadgeModel.showsConsentHint(elapsed: elapsed)
+            consentButton = consent
+            views.append(consent)
+            views.append(iconButton("chevron.up", L10nKey.badgeCollapse.text) { [weak self] in self?.setCollapsed(true) })
+        }
         // The panel is sized before the first clock draw: the label must already
         // hold text of its final width, or the stack measures an empty label.
         label.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
@@ -206,8 +336,55 @@ final class MeetingBadge {
         labelWidth.constant = label.intrinsicContentSize.width
         labelWidth.isActive = true
         label.stringValue = MeetingBadgeModel.recText(elapsed: elapsed, format: L10nKey.badgeRec.text)
-        layout(views)
+        layout(views, keepingPlace: panel.isVisible)
         update(elapsed: elapsed, me: 0, them: 0)
+    }
+
+    /// OK on the reminder: the plate returns to the recording and the acknowledgement is reported.
+    private func acknowledgeReminder() {
+        let ok = reminderOK
+        reminderOK = nil
+        reminderText = nil
+        restoreSingleLineLabel()
+        layoutRecording(elapsed: lastElapsed)
+        ok?()
+    }
+
+    private func restoreSingleLineLabel() {
+        label.maximumNumberOfLines = 1
+        label.lineBreakMode = .byTruncatingTail
+        label.preferredMaxLayoutWidth = 0
+    }
+
+    /// The consent reminder's whole text on the recording plate, for when a notification cannot be delivered. False when
+    /// no recording is up (nothing was surfaced: the caller asks again next time).
+    func showReminder(_ text: String, onOK: @escaping () -> Void) -> Bool {
+        guard case .recording? = mode else { return false }
+        reminderText = text
+        reminderOK = onOK
+        layoutRecording(elapsed: lastElapsed)
+        return true
+    }
+
+    /// Folds the recording plate to its dot and clock, or opens it again. The panel stays on screen either way.
+    func setCollapsed(_ collapsed: Bool) {
+        guard case .recording? = mode, userCollapsed != collapsed else { return }
+        userCollapsed = collapsed
+        layoutRecording(elapsed: lastElapsed)
+    }
+
+    /// A start that did not become a recording, said on the plate until the user dismisses it (#518). The same panel,
+    /// the same Space guarantees as every other content.
+    func showError(_ text: String) {
+        mode = .failed(text: text)
+        userCollapsed = false
+        panel.setAccessibilityLabel(text)
+        consentButton = nil
+        labelWidth.isActive = false
+        label.stringValue = text
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        label.lineBreakMode = .byTruncatingTail
+        layout([label, button(L10nKey.commonOk.text) { [weak self] in self?.hide() }], capLabel: true)
     }
 
     /// The detected-call question, naming the app (or the site's app — a browser call says "Google Meet").
@@ -279,7 +456,7 @@ final class MeetingBadge {
 
     /// Redraws the clock and levels while recording.
     func update(elapsed: TimeInterval, me: Float, them: Float) {
-        guard case .recording? = mode else { return }
+        guard case .recording? = mode, reminderText == nil else { return }
         label.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
         label.stringValue = MeetingBadgeModel.recText(elapsed: elapsed, format: L10nKey.badgeRec.text)
         meBar.doubleValue = Double(min(1, me * 8))
@@ -304,6 +481,45 @@ final class MeetingBadge {
     func hide() {
         mode = nil
         consentButton = nil
+        userCollapsed = false
+        reminderText = nil
+        reminderOK = nil
+        restoreSingleLineLabel()
         panel.orderOut(nil)
+        watch = PlateWatch()
+    }
+
+    /// The window server's truth about the plate, asked every few seconds while it is up (the user changes Space after
+    /// it was shown, which is when #517 hid it): a plate that should be up and is not is logged at fault and escalated
+    /// by `PlateWatch`: configured and ordered front again; if it is still not there, `onNotVisible` tells the user
+    /// another way (a notification shows over a full-screen Space).
+    func verifyOnScreen() {
+        guard mode != nil, panel.isVisible, Date().timeIntervalSince(lastVerified) >= Self.verifyEvery else { return }
+        lastVerified = Date()
+        let state = PlateProbe.state(panel)
+        let policy = PlateProbe.policy()
+        let detail = "onscreen=\(state.onscreen) alpha=\(state.alpha) policy=\(policy) mode=\(Self.modeName(mode))"
+        for action in watch.observe(onscreen: state.onscreen && state.alpha >= 1, expected: PlateProbe.expectsOnscreen(panel)) {
+            switch action {
+            case .log(.missed(let n)): badgeLog.fault("plate not visible misses=\(n, privacy: .public) \(detail, privacy: .public)")
+            case .log(.recovered): badgeLog.notice("plate visible again \(detail, privacy: .public)")
+            case .reorder:
+                PlateWindowSpec.apply(to: panel)
+                panel.orderFrontRegardless()
+            case .tell: onNotVisible?()
+            }
+        }
+    }
+
+    private static func modeName(_ mode: Mode?) -> String {
+        switch mode {
+        case .recording?: return "recording"
+        case .prompt?: return "prompt"
+        case .recordChecking?: return "record_checking"
+        case .recordConfirm?: return "record_confirm"
+        case .browserConsent?: return "browser_consent"
+        case .failed?: return "failed"
+        case nil: return "none"
+        }
     }
 }

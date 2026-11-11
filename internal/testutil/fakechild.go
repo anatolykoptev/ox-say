@@ -145,6 +145,8 @@
 //	                            in OXSAY_FAKE_DIR) never become healthy
 //	OXSAY_FAKE_LLM_JSON         the message content /v1/chat/completions
 //	                            returns (default "the canned notes")
+//	OXSAY_FAKE_LLM_TRUNCATED=1  answer with finish_reason "length" — the
+//	                            model answered past the token cap
 package testutil
 
 import (
@@ -361,10 +363,14 @@ func runFakeLLM(args []string) int {
 			http.Error(w, "bad key", http.StatusUnauthorized)
 			return
 		}
+		finish := "stop"
+		if os.Getenv("OXSAY_FAKE_LLM_TRUNCATED") == "1" {
+			finish = "length"
+		}
 		raw, _ := json.Marshal(map[string]any{
 			"choices": []map[string]any{{
 				"message":       map[string]string{"role": "assistant", "content": reply},
-				"finish_reason": "stop",
+				"finish_reason": finish,
 			}},
 		})
 		w.Header().Set("Content-Type", "application/json")
