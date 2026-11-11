@@ -3,10 +3,12 @@ import AppKit
 /// The window configuration of every always-on-top panel the app draws over the user's work: the meeting plate (the
 /// recording clock, the record prompt, its questions and errors) and the dictation pill.
 ///
-/// Over ANOTHER app's full-screen Space a panel needs all of: an `.accessory` activation policy, a non-activating
-/// panel, level `.screenSaver` (`.statusBar` and `.floating` sit below full-screen content) and
-/// `.canJoinAllApplications` (`.canJoinAllSpaces` alone spans the app's own Spaces). Apple DTS, Developer Forums
-/// thread 826308. The policy is `PlatePolicyHold`'s; the rest is here, once, so no panel carries a second copy.
+/// Over ANOTHER app's full-screen Space a panel needs a non-activating panel, level `.screenSaver` (`.statusBar` and
+/// `.floating` sit below full-screen content) and `.canJoinAllApplications` (`.canJoinAllSpaces` alone spans the app's
+/// own Spaces): Apple DTS, Developer Forums thread 826308; Granola uses `screen-saver` for its recording notices. Apple
+/// DTS also asks for an `.accessory` policy, but shipping apps (Granola, Anarlog) draw the same panels from a
+/// `.regular` app, so the policy is NOT changed here: it is logged beside every miss, and a live run decides. Applied
+/// at construction and again at every show, so nothing that changed the window since leaves it behind.
 public enum PlateWindowSpec {
     public static let level: NSWindow.Level = .screenSaver
     public static let collectionBehavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications,
@@ -17,41 +19,6 @@ public enum PlateWindowSpec {
         panel.hidesOnDeactivate = false
         panel.level = level
         panel.collectionBehavior = collectionBehavior.union(extra)
-    }
-}
-
-extension WindowPolicy.Policy {
-    public var nsPolicy: NSApplication.ActivationPolicy {
-        switch self {
-        case .regular: return .regular
-        case .accessory: return .accessory
-        }
-    }
-}
-
-/// Panels that must be seen can need the app to be `.accessory`: a `.regular` app's panels do not appear over another
-/// app's full-screen Space. While any holder is up the policy is `.accessory`, whatever the main window would want;
-/// the Dock icon and the menu bar come back when the last holder lets go.
-public final class PlatePolicyHold {
-    public static let shared = PlatePolicyHold()
-    private var holders: Set<String> = []
-    /// The app re-evaluates its activation policy when this fires.
-    public var onChange: (() -> Void)?
-
-    public init() {}
-
-    public var isHeld: Bool { !holders.isEmpty }
-
-    public func effective(_ wanted: WindowPolicy.Policy) -> WindowPolicy.Policy { isHeld ? .accessory : wanted }
-
-    /// True when the hold as a whole changed.
-    @discardableResult
-    public func set(_ name: String, held: Bool) -> Bool {
-        let before = isHeld
-        if held { holders.insert(name) } else { holders.remove(name) }
-        guard isHeld != before else { return false }
-        onChange?()
-        return true
     }
 }
 
@@ -69,8 +36,6 @@ public struct PlateWatch {
         case log(Event)
         /// Order the panel front again.
         case reorder
-        /// The app is `.regular`: hold it `.accessory` so the panel can join the full-screen Space.
-        case holdAccessory
         /// Nothing worked: say so outside the panel. Once per outage.
         case tell
     }
@@ -81,7 +46,7 @@ public struct PlateWatch {
     public init() {}
 
     /// `expected`: false while the screen is locked or the display asleep — not a fault and not a miss.
-    public mutating func observe(onscreen: Bool, expected: Bool, policy: WindowPolicy.Policy) -> [Action] {
+    public mutating func observe(onscreen: Bool, expected: Bool) -> [Action] {
         guard expected else { return [] }
         if onscreen {
             defer { misses = 0; told = false }
@@ -93,8 +58,6 @@ public struct PlateWatch {
         if misses <= 3 || misses % 10 == 0 { actions.append(.log(.missed(misses))) }
         if misses == 1 {
             actions.append(.reorder)
-        } else if misses == 2 && policy == .regular {
-            actions.append(.holdAccessory)
         } else if !told {
             told = true
             actions.append(.tell)

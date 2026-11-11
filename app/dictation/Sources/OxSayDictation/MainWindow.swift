@@ -23,19 +23,6 @@ final class MainWindowController: NSObject, NSWindowDelegate {
 
     init(appDelegate: AppDelegate) {
         self.appDelegate = appDelegate
-        super.init()
-        // A plate or the dictation pill that must be seen holds the app `.accessory`; when the last one goes the
-        // window gets its Dock icon and menu bar back.
-        PlatePolicyHold.shared.onChange = { [weak self] in self?.plateHoldChanged() }
-    }
-
-    /// The hold began or ended. A minimized window still counts as the user's window: only a close hands the policy back.
-    private func plateHoldChanged() {
-        guard let appDelegate else { return }
-        let hasWindow = window.map { $0.isVisible || $0.isMiniaturized } ?? false
-        let policy = PlatePolicyHold.shared.effective(hasWindow ? .regular : .accessory)
-        NSApp.setActivationPolicy(policy.nsPolicy)
-        MainMenuBar.install(appDelegateTarget: appDelegate, for: policy, advanced: source?.model.advanced ?? false)
     }
 
     /// Opens the window or brings it forward — on the Space the user is on — and turns the app into a regular one for as
@@ -44,7 +31,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         guard let appDelegate else { return }
         // A close that is still waiting out its revert delay must not take the policy back from this open.
         revert.windowOpened()
-        NSApp.setActivationPolicy(PlatePolicyHold.shared.effective(.regular).nsPolicy)
+        NSApp.setActivationPolicy(.regular)
         // The source is made first: the menu's ⌘1... follow its Advanced switch.
         let source = self.source ?? makeSource(appDelegate)
         self.source = source
@@ -126,8 +113,13 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// to the Edit menu, so ⌘Q/⌘H/⌘W stop being live in our own modals.
     private func applyPolicy() {
         guard let appDelegate else { return }
-        let policy = PlatePolicyHold.shared.effective(WindowPolicy.policy(for: NSApp.windows.map(describe)))
-        NSApp.setActivationPolicy(policy.nsPolicy)
+        let policy = WindowPolicy.policy(for: NSApp.windows.map(describe))
+        switch policy {
+        case .regular:
+            NSApp.setActivationPolicy(.regular)
+        case .accessory:
+            NSApp.setActivationPolicy(.accessory)
+        }
         MainMenuBar.install(appDelegateTarget: appDelegate, for: policy, advanced: source?.model.advanced ?? false)
     }
 

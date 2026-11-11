@@ -418,7 +418,6 @@ final class Overlay {
             guard let self, self.shown == fading else { return }
             self.panel.orderOut(nil)
             self.watch = PlateWatch()
-            PlatePolicyHold.shared.set("overlay", held: false)
         })
     }
 
@@ -450,6 +449,7 @@ final class Overlay {
             panel.animator().alphaValue = 1
         }
         panel.alphaValue = 1
+        PlateWindowSpec.apply(to: panel, extra: .ignoresCycle)
         panel.orderFrontRegardless()
         panel.invalidateShadow()
         overlayLog.notice("overlay show kind=\(self.kind, privacy: .public) owner=\(self.owner, privacy: .public)")
@@ -461,9 +461,8 @@ final class Overlay {
     }
 
     /// The window server's truth about the pill's own window, ~250 ms after a show: a panel that should be up but is
-    /// not onscreen or not opaque is logged at fault and escalated by `PlateWatch` — shown front again, then (when
-    /// the app is `.regular`, whose panels do not join another app's full-screen Space) the app is held `.accessory`
-    /// while the pill is up — and checked again.
+    /// not onscreen or not opaque is logged at fault (with the activation policy) and re-configured and shown front
+    /// again by `PlateWatch`, then checked again.
     private func checkVisible(expected: Int, owner ownerAtShow: Int) {
         guard shown == expected, wantsVisible else { return }
         // A pill cannot be onscreen while the display sleeps or the screen is locked: that is not a fault, and a
@@ -480,18 +479,14 @@ final class Overlay {
         let policy = PlateProbe.policy()
         let detail = "owner=\(ownerAtShow) onscreen=\(server.onscreen) alpha=\(server.alpha) frame=\(frame) visible_frame=\(visibleFrame) policy=\(policy)"
         var again = false
-        for action in watch.observe(onscreen: server.onscreen && server.alpha >= 1, expected: true, policy: policy) {
+        for action in watch.observe(onscreen: server.onscreen && server.alpha >= 1, expected: true) {
             switch action {
             case .log(.missed): overlayLog.fault("overlay not visible \(detail, privacy: .public)")
             case .log(.recovered): overlayLog.notice("overlay visible again \(detail, privacy: .public)")
             case .reorder:
+                PlateWindowSpec.apply(to: panel, extra: .ignoresCycle)
                 panel.alphaValue = 1
                 recentre()
-                panel.orderFrontRegardless()
-                again = true
-            case .holdAccessory:
-                overlayLog.notice("overlay held on .accessory policy owner=\(ownerAtShow, privacy: .public)")
-                PlatePolicyHold.shared.set("overlay", held: true)
                 panel.orderFrontRegardless()
                 again = true
             case .tell: overlayLog.fault("overlay not visible after self-heal \(detail, privacy: .public)")

@@ -138,8 +138,12 @@ public enum BadgePlacement {
         public var maxX: Double
         public var maxY: Double
         public var minY: Double
-        public init(id: UInt32, minX: Double, maxX: Double, maxY: Double, minY: Double = -Double.greatestFiniteMagnitude) {
-            self.id = id; self.minX = minX; self.maxX = maxX; self.maxY = maxY; self.minY = minY
+        /// What a remembered spot is filed under: the display's UUID. A `CGDirectDisplayID` is not stable across
+        /// reconnects, so the id only says which screen is meant NOW.
+        public var key: String
+        public init(id: UInt32, minX: Double, maxX: Double, maxY: Double, minY: Double = -Double.greatestFiniteMagnitude,
+                    key: String? = nil) {
+            self.id = id; self.minX = minX; self.maxX = maxX; self.maxY = maxY; self.minY = minY; self.key = key ?? String(id)
         }
         var midX: Double { (minX + maxX) / 2 }
     }
@@ -178,7 +182,7 @@ public enum BadgePlacement {
                              width: Double, height: Double) -> Placement? {
         let kept = placedOn.flatMap { id in screens.first { $0.id == id } }
         guard let screen = kept ?? main.flatMap({ id in screens.first { $0.id == id } }) ?? screens.first else { return nil }
-        let remembered = kept == nil ? saved[String(screen.id)] : nil
+        let remembered = kept == nil ? saved[screen.key] : nil
         let left = kept == nil ? remembered.map { screen.minX + $0.dx } : anchoredOffset.map { screen.minX + $0 }
         let inset = kept == nil ? (remembered?.topInset ?? topMargin) : (anchoredInset ?? topMargin)
         let x = originX(anchoredLeft: left, width: width, screenMidX: screen.midX)
@@ -198,9 +202,11 @@ public enum BadgePositions {
         return raw.compactMapValues { $0.count == 2 ? BadgePlacement.Saved(dx: $0[0], topInset: $0[1]) : nil }
     }
 
-    public static func save(display: UInt32, dx: Double, topInset: Double, _ d: UserDefaults) {
+    /// `key`: the display's UUID (`BadgePlacement.Screen.key`). Spots filed under the old numeric ids are never matched
+    /// and so are dropped by use: the plate is centred once per display and remembered again.
+    public static func save(key display: String, dx: Double, topInset: Double, _ d: UserDefaults) {
         var raw = (d.dictionary(forKey: key) as? [String: [Double]]) ?? [:]
-        raw[String(display)] = [dx, topInset]
+        raw[display] = [dx, topInset]
         d.set(raw, forKey: key)
     }
 }

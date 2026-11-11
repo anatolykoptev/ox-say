@@ -43,40 +43,34 @@ final class PlateVisibilityTests: XCTestCase {
 
     // MARK: PlateWatch
 
-    private func run(_ w: inout PlateWatch, _ seq: [(Bool, WindowPolicy.Policy)]) -> [[PlateWatch.Action]] {
-        seq.map { w.observe(onscreen: $0.0, expected: true, policy: $0.1) }
+    private func run(_ w: inout PlateWatch, _ seq: [Bool]) -> [[PlateWatch.Action]] {
+        seq.map { w.observe(onscreen: $0, expected: true) }
     }
 
-    /// Mutation: PlateWatch.observe, `misses == 2` hold branch removed (return [] there) -> RED.
-    func testRegularAppEscalatesToAccessoryThenTells() {
+    /// Mutation: PlateWatch.observe, `} else if !told {` -> `} else if false {` (never tells the user) -> RED.
+    func testAMissIsReorderedOnceThenToldOncePerOutage() {
         var w = PlateWatch()
-        let out = run(&w, [(false, .regular), (false, .regular), (false, .accessory), (false, .accessory)])
+        let out = run(&w, [false, false, false, false])
         XCTAssertEqual(out[0], [.log(.missed(1)), .reorder])
-        XCTAssertEqual(out[1], [.log(.missed(2)), .holdAccessory])
-        XCTAssertEqual(out[2], [.log(.missed(3)), .tell])
+        XCTAssertEqual(out[1], [.log(.missed(2)), .tell])
+        XCTAssertEqual(out[2], [.log(.missed(3))])
         XCTAssertEqual(out[3], [], "told once per episode, not every poll")
     }
 
-    func testAccessoryAppTellsOnSecondMissWithoutHold() {
-        var w = PlateWatch()
-        let out = run(&w, [(false, .accessory), (false, .accessory)])
-        XCTAssertEqual(out[1], [.log(.missed(2)), .tell])
-    }
-
-    /// Mutation: PlateWatch.observe, drop the `reported` flag reset on recovery -> RED (second episode never told).
+    /// Mutation: PlateWatch.observe, drop the `told = false` reset on recovery -> RED (second episode never told).
     func testRecoveryIsLoggedAndANewEpisodeIsToldAgain() {
         var w = PlateWatch()
-        _ = run(&w, [(false, .accessory), (false, .accessory)])
-        XCTAssertEqual(w.observe(onscreen: true, expected: true, policy: .accessory), [.log(.recovered)])
-        XCTAssertEqual(w.observe(onscreen: true, expected: true, policy: .accessory), [])
-        let out = run(&w, [(false, .accessory), (false, .accessory)])
+        _ = run(&w, [false, false])
+        XCTAssertEqual(w.observe(onscreen: true, expected: true), [.log(.recovered)])
+        XCTAssertEqual(w.observe(onscreen: true, expected: true), [])
+        let out = run(&w, [false, false])
         XCTAssertEqual(out[1], [.log(.missed(2)), .tell])
     }
 
     func testLockedScreenIsNotAFault() {
         var w = PlateWatch()
-        XCTAssertEqual(w.observe(onscreen: false, expected: false, policy: .regular), [])
-        XCTAssertEqual(w.observe(onscreen: false, expected: true, policy: .regular), [.log(.missed(1)), .reorder],
+        XCTAssertEqual(w.observe(onscreen: false, expected: false), [])
+        XCTAssertEqual(w.observe(onscreen: false, expected: true), [.log(.missed(1)), .reorder],
                        "a locked-screen poll does not count as a miss")
     }
 
@@ -84,24 +78,9 @@ final class PlateVisibilityTests: XCTestCase {
         var w = PlateWatch()
         var logs = 0
         for _ in 0..<100 {
-            if w.observe(onscreen: false, expected: true, policy: .accessory).contains(where: { if case .log = $0 { return true }; return false }) { logs += 1 }
+            if w.observe(onscreen: false, expected: true).contains(where: { if case .log = $0 { return true }; return false }) { logs += 1 }
         }
         XCTAssertLessThan(logs, 15)
-    }
-
-    // MARK: hold
-
-    func testHoldForcesAccessoryWhileAnyHolderIsUp() {
-        let hold = PlatePolicyHold()
-        XCTAssertEqual(hold.effective(.regular), .regular)
-        XCTAssertTrue(hold.set("meeting", held: true))
-        XCTAssertEqual(hold.effective(.regular), .accessory)
-        XCTAssertFalse(hold.set("meeting", held: true), "no change")
-        XCTAssertFalse(hold.set("overlay", held: true), "already held: the whole did not change")
-        XCTAssertFalse(hold.set("meeting", held: false))
-        XCTAssertEqual(hold.effective(.regular), .accessory, "the overlay still holds")
-        XCTAssertTrue(hold.set("overlay", held: false))
-        XCTAssertEqual(hold.effective(.regular), .regular)
     }
 
     // MARK: collapse

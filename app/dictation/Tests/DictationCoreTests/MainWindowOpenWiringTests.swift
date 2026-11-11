@@ -38,7 +38,7 @@ final class MainWindowOpenWiringTests: XCTestCase {
         let open = try body(try source("OxSayDictation/MainWindow.swift"), of: "func open(route: MainRoute? = nil) {")
         XCTAssertTrue(open.contains("if window.isMiniaturized { window.deminiaturize(nil) }"))
         XCTAssertTrue(open.contains("window.orderFrontRegardless()"))
-        let policy = try XCTUnwrap(open.range(of: "NSApp.setActivationPolicy(PlatePolicyHold.shared.effective(.regular).nsPolicy)"))
+        let policy = try XCTUnwrap(open.range(of: "NSApp.setActivationPolicy(.regular)"))
         let activate = try XCTUnwrap(open.range(of: "Self.activateApp()"))
         XCTAssertLessThan(policy.lowerBound, activate.lowerBound, "activation follows the policy change")
         let asyncHop = try XCTUnwrap(open.range(of: "DispatchQueue.main.async"))
@@ -160,7 +160,7 @@ final class MainWindowOpenWiringTests: XCTestCase {
     func testEveryMenuInstallPassesTheAdvancedState() throws {
         let text = try source("OxSayDictation/MainWindow.swift")
         let installs = text.components(separatedBy: "MainMenuBar.install(").dropFirst()
-        XCTAssertEqual(installs.count, 4, "open, applyPolicy, the advanced sink and the plate hold")
+        XCTAssertEqual(installs.count, 3, "open, applyPolicy and the advanced sink")
         for call in installs {
             let line = String(call.prefix { $0 != "\n" })
             XCTAssertTrue(line.contains("advanced:"), "install without the switch state: \(line)")

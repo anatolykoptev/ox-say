@@ -14,6 +14,7 @@ final class MeetingTraceTests: XCTestCase {
             (.checking(holder: "browser"), "record check holder=browser"),
             (.checked(.record, stale: false, tabs: "call_page"), "record check verdict=record stale=false tabs=call_page"),
             (.checked(.ask, stale: true, tabs: "unknown"), "record check verdict=ask stale=true tabs=unknown"),
+            (.checkSuperseded, "record check superseded"),
             (.autoStarting(app: "Zoom"), "auto record app=Zoom"),
             (.autoIgnored(app: "Zoom", reason: "mode_never"), "call ignored app=Zoom reason=mode_never"),
             (.startRequested(origin: "manual", offered: false, app: "manual"), "start requested origin=manual offered=false app=manual"),

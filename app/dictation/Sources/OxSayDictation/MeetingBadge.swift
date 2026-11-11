@@ -76,6 +76,8 @@ final class MeetingBadge {
     /// The user folded the recording plate to its dot and clock; it starts expanded for every recording.
     private var userCollapsed = false
     private var recordingAuto = false
+    /// The consent reminder's full text while it is on the recording plate (notifications were not allowed).
+    private var reminderText: String?
     private var lastElapsed: TimeInterval = 0
 
     /// The widest clock the label shows (digits are monospaced): 9:59:59.
@@ -194,6 +196,8 @@ final class MeetingBadge {
         stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
         views.forEach { stack.addArrangedSubview($0) }
         resize(keepingPlace: keepingPlace)
+        // Level and behaviour are asserted again at every show, not only when the panel was built.
+        PlateWindowSpec.apply(to: panel)
         panel.orderFrontRegardless()
     }
 
@@ -209,7 +213,7 @@ final class MeetingBadge {
         let inset = keepingPlace && panel.isVisible ? placedInset : nil
         // A collapsed plate is its dot and clock; every other content keeps the width the buttons need.
         let minimum: CGFloat = PlateCollapse.presentation(isRecording: isRecording, userCollapsed: userCollapsed) == .collapsed ? 0 : 220
-        panel.setContentSize(NSSize(width: max(size.width, minimum), height: 36))
+        panel.setContentSize(NSSize(width: max(size.width, minimum), height: reminderText == nil ? 36 : max(36, size.height)))
         place(anchoredOffset: offset, anchoredInset: inset, onScreen: keepingPlace ? placedOn : nil)
     }
 
@@ -240,7 +244,7 @@ final class MeetingBadge {
             guard let id = displayID(screen) else { return nil }
             let frame = screen.visibleFrame
             return BadgePlacement.Screen(id: id, minX: Double(frame.minX), maxX: Double(frame.maxX), maxY: Double(frame.maxY),
-                                         minY: Double(frame.minY))
+                                         minY: Double(frame.minY), key: displayKey(screen) ?? String(id))
         }
     }
 
@@ -258,7 +262,14 @@ final class MeetingBadge {
         placedOn = id
         placedOffset = dx
         placedInset = inset
-        BadgePositions.save(display: id, dx: dx, topInset: inset, defaults)
+        BadgePositions.save(key: Self.displayKey(screen) ?? String(id), dx: dx, topInset: inset, defaults)
+    }
+
+    /// The display's UUID: what a remembered spot is filed under. The numeric id changes when a monitor reconnects.
+    private static func displayKey(_ screen: NSScreen) -> String? {
+        guard let id = displayID(screen), let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue(),
+              let text = CFUUIDCreateString(nil, uuid) else { return nil }
+        return text as String
     }
 
     private static func displayID(_ screen: NSScreen) -> UInt32? {
@@ -277,6 +288,7 @@ final class MeetingBadge {
         guard mode != .recording(auto: auto) else { return }
         mode = .recording(auto: auto)
         userCollapsed = false
+        reminderText = nil
         recordingAuto = auto
         panel.setAccessibilityLabel(L10nKey.badgeA11yPanel.text)
         layoutRecording(elapsed: elapsed)
@@ -288,6 +300,23 @@ final class MeetingBadge {
         lastElapsed = elapsed
         let collapsed = PlateCollapse.presentation(isRecording: true, userCollapsed: userCollapsed) == .collapsed
         var views: [NSView]
+        if let reminder = reminderText {
+            // The one-time reminder, whole, with the plate still the recording's: dot, the words, OK. Dismissible, never modal.
+            label.font = .systemFont(ofSize: 12, weight: .regular)
+            label.maximumNumberOfLines = 0
+            label.lineBreakMode = .byWordWrapping
+            label.preferredMaxLayoutWidth = 440
+            label.stringValue = reminder
+            labelWidth.isActive = false
+            consentButton = nil
+            layout([dot, label, button(L10nKey.badgeStop.text) { [weak self] in self?.onStop?() },
+                    button(L10nKey.commonOk.text) { [weak self] in
+                self?.reminderText = nil
+                self?.restoreSingleLineLabel()
+                self?.layoutRecording(elapsed: self?.lastElapsed ?? 0)
+            }], keepingPlace: panel.isVisible, capLabel: true)
+            return
+        }
         if collapsed {
             views = [dot, label, iconButton("chevron.down", L10nKey.badgeExpand.text) { [weak self] in self?.setCollapsed(false) }]
             consentButton = nil
@@ -309,6 +338,21 @@ final class MeetingBadge {
         label.stringValue = MeetingBadgeModel.recText(elapsed: elapsed, format: L10nKey.badgeRec.text)
         layout(views, keepingPlace: panel.isVisible)
         update(elapsed: elapsed, me: 0, them: 0)
+    }
+
+    private func restoreSingleLineLabel() {
+        label.maximumNumberOfLines = 1
+        label.lineBreakMode = .byTruncatingTail
+        label.preferredMaxLayoutWidth = 0
+    }
+
+    /// The consent reminder's whole text on the recording plate, for when a notification cannot be delivered. False when
+    /// no recording is up (nothing was surfaced: the caller asks again next time).
+    func showReminder(_ text: String) -> Bool {
+        guard case .recording? = mode else { return false }
+        reminderText = text
+        layoutRecording(elapsed: lastElapsed)
+        return true
     }
 
     /// Folds the recording plate to its dot and clock, or opens it again. The panel stays on screen either way.
@@ -401,7 +445,7 @@ final class MeetingBadge {
 
     /// Redraws the clock and levels while recording.
     func update(elapsed: TimeInterval, me: Float, them: Float) {
-        guard case .recording? = mode else { return }
+        guard case .recording? = mode, reminderText == nil else { return }
         label.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
         label.stringValue = MeetingBadgeModel.recText(elapsed: elapsed, format: L10nKey.badgeRec.text)
         meBar.doubleValue = Double(min(1, me * 8))
@@ -427,29 +471,28 @@ final class MeetingBadge {
         mode = nil
         consentButton = nil
         userCollapsed = false
+        reminderText = nil
+        restoreSingleLineLabel()
         panel.orderOut(nil)
         watch = PlateWatch()
-        PlatePolicyHold.shared.set("meeting", held: false)
     }
 
     /// The window server's truth about the plate, asked every few seconds while it is up (the user changes Space after
     /// it was shown, which is when #517 hid it): a plate that should be up and is not is logged at fault and escalated
-    /// by `PlateWatch`: ordered front again, then the app held `.accessory`, which is what lets a panel join another
-    /// app's full-screen Space; if it is still not there, `onNotVisible` tells the user another way.
+    /// by `PlateWatch`: configured and ordered front again; if it is still not there, `onNotVisible` tells the user
+    /// another way (a notification shows over a full-screen Space).
     func verifyOnScreen() {
         guard mode != nil, panel.isVisible, Date().timeIntervalSince(lastVerified) >= Self.verifyEvery else { return }
         lastVerified = Date()
         let state = PlateProbe.state(panel)
         let policy = PlateProbe.policy()
         let detail = "onscreen=\(state.onscreen) alpha=\(state.alpha) policy=\(policy) mode=\(Self.modeName(mode))"
-        for action in watch.observe(onscreen: state.onscreen && state.alpha >= 1, expected: PlateProbe.expectsOnscreen(panel), policy: policy) {
+        for action in watch.observe(onscreen: state.onscreen && state.alpha >= 1, expected: PlateProbe.expectsOnscreen(panel)) {
             switch action {
             case .log(.missed(let n)): badgeLog.fault("plate not visible misses=\(n, privacy: .public) \(detail, privacy: .public)")
             case .log(.recovered): badgeLog.notice("plate visible again \(detail, privacy: .public)")
-            case .reorder: panel.orderFrontRegardless()
-            case .holdAccessory:
-                badgeLog.notice("plate held on .accessory policy")
-                PlatePolicyHold.shared.set("meeting", held: true)
+            case .reorder:
+                PlateWindowSpec.apply(to: panel)
                 panel.orderFrontRegardless()
             case .tell: onNotVisible?()
             }

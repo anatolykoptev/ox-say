@@ -16,6 +16,8 @@ public enum MeetingTrace {
         case answered(Choice, app: String)
         case checking(holder: String)
         case checked(RecordCheck.Verdict, stale: Bool, tabs: String)
+        /// The Record press's check came back after a recording began or was starting: nothing is done, and it is said.
+        case checkSuperseded
         case autoStarting(app: String)
         case autoIgnored(app: String, reason: String)
         case startRequested(origin: String, offered: Bool, app: String)
@@ -31,6 +33,7 @@ public enum MeetingTrace {
             case .checking(let holder): return "record check holder=\(holder)"
             case .checked(let verdict, let stale, let tabs):
                 return "record check verdict=\(verdict == .record ? "record" : "ask") stale=\(stale) tabs=\(tabs)"
+            case .checkSuperseded: return "record check superseded"
             case .autoStarting(let app): return "auto record app=\(app)"
             case .autoIgnored(let app, let reason): return "call ignored app=\(app) reason=\(MeetingTrace.sanitized(reason))"
             case .startRequested(let origin, let offered, let app):

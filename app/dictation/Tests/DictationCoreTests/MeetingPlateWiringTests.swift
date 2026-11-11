@@ -40,19 +40,21 @@ final class MeetingPlateWiringTests: XCTestCase {
         XCTAssertFalse(o.contains("collectionBehavior"))
     }
 
-    /// The plate is checked while it is up, not only when it appears: the user changes Space after it was shown.
-    /// Mutation: MeetingBadge.verify, delete `case .holdAccessory:` handling -> RED.
-    func testTheBadgeChecksItselfAgainstTheWindowServerAndEscalates() throws {
+    /// The plate is checked while it is up, not only when it appears: the user changes Space after it was shown. A
+    /// miss configures the panel again and orders it front; the process type is NOT flipped (Granola and Anarlog draw
+    /// the same panels from a `.regular` app); the policy is in the log line so a live run can say whether it matters.
+    /// Mutation: MeetingBadge.verifyOnScreen, delete `PlateWindowSpec.apply(to: panel)` after `case .reorder:` -> RED.
+    func testTheBadgeChecksItselfAgainstTheWindowServerAndReconfigures() throws {
         let b = try badge()
         let verify = try XCTUnwrap(body(b, of: "func verifyOnScreen() {"))
-        XCTAssertTrue(verify.contains("watch.observe(onscreen: state.onscreen && state.alpha >= 1, expected: PlateProbe.expectsOnscreen(panel), policy: policy)"))
-        XCTAssertTrue(verify.contains("case .reorder: panel.orderFrontRegardless()"))
-        XCTAssertTrue(verify.contains("case .holdAccessory:"))
-        XCTAssertTrue(verify.contains("PlatePolicyHold.shared.set(\"meeting\", held: true)"))
+        XCTAssertTrue(verify.contains("watch.observe(onscreen: state.onscreen && state.alpha >= 1, expected: PlateProbe.expectsOnscreen(panel))"))
+        XCTAssertTrue(verify.contains("case .reorder:\n                PlateWindowSpec.apply(to: panel)\n                panel.orderFrontRegardless()"),
+                      "level and behaviour are asserted again before the plate is ordered front")
         XCTAssertTrue(verify.contains("case .tell: onNotVisible?()"))
         XCTAssertTrue(verify.contains("badgeLog.fault("), "a plate that cannot be seen is a fault in the log")
-        let hide = try XCTUnwrap(body(b, of: "func hide() {"))
-        XCTAssertTrue(hide.contains("PlatePolicyHold.shared.set(\"meeting\", held: false)"), "the hold ends with the plate")
+        XCTAssertTrue(verify.contains("policy=\\(policy)"), "the activation policy is in the miss line")
+        let layout = try XCTUnwrap(body(b, of: "private func layout(_ views: [NSView], keepingPlace: Bool = false, capLabel: Bool = false) {"))
+        XCTAssertTrue(layout.contains("PlateWindowSpec.apply(to: panel)\n        panel.orderFrontRegardless()"), "asserted again at every show")
         let c = try controller()
         XCTAssertTrue(c.contains("badge.onNotVisible = { [weak self] in self?.plateNotVisible() }"))
         let tell = try XCTUnwrap(body(c, of: "private func plateNotVisible() {"))
@@ -62,24 +64,22 @@ final class MeetingPlateWiringTests: XCTestCase {
         XCTAssertTrue(tick.contains("badge.verifyOnScreen()"), "while recording, every few seconds")
     }
 
-    func testTheDictationPillEscalatesTheSameWay() throws {
+    func testTheDictationPillReconfiguresTheSameWay() throws {
         let o = try overlay()
         let check = try XCTUnwrap(body(o, of: "private func checkVisible(expected: Int, owner ownerAtShow: Int) {"))
         XCTAssertTrue(check.contains("watch.observe(onscreen:"))
-        XCTAssertTrue(check.contains("PlatePolicyHold.shared.set(\"overlay\", held: true)"))
-        try XCTAssertTrue(overlay().contains("PlatePolicyHold.shared.set(\"overlay\", held: false)"))
+        XCTAssertTrue(check.contains("PlateWindowSpec.apply(to: panel, extra: .ignoresCycle)"))
+        let show = try XCTUnwrap(body(o, of: "private func show() {"))
+        XCTAssertTrue(show.contains("PlateWindowSpec.apply(to: panel, extra: .ignoresCycle)\n        panel.orderFrontRegardless()"))
     }
 
-    /// The activation policy follows the hold: a `.regular` app's panels do not join another app's full-screen Space.
-    /// Mutation: MainWindow.applyPolicy, drop `PlatePolicyHold.shared.effective(` -> RED.
-    func testTheMainWindowPolicyRespectsThePlateHold() throws {
-        let m = try source("OxSayDictation/MainWindow.swift")
-        let apply = try XCTUnwrap(body(m, of: "private func applyPolicy() {"))
-        XCTAssertTrue(apply.contains("PlatePolicyHold.shared.effective("))
-        let open = try XCTUnwrap(body(m, of: "func open(route: MainRoute? = nil) {"))
-        XCTAssertTrue(open.contains("NSApp.setActivationPolicy(PlatePolicyHold.shared.effective(.regular).nsPolicy)"))
-        XCTAssertFalse(open.contains("setActivationPolicy(.regular)"))
-        XCTAssertTrue(m.contains("PlatePolicyHold.shared.onChange"))
+    /// The process type is not flipped by this change: only a live full-screen run can show that it matters.
+    /// Mutation: add `NSApp.setActivationPolicy(.accessory)` to MeetingBadge or Overlay -> RED.
+    func testTheActivationPolicyIsNotTouchedByThePlates() throws {
+        for file in ["OxSayDictation/MeetingBadge.swift", "OxSayDictation/Overlay.swift", "OxSayDictation/PlateProbe.swift"] {
+            let text = try source(file)
+            XCTAssertFalse(text.contains("setActivationPolicy"), file)
+        }
     }
 
     // MARK: #518 prompt -> record
@@ -97,8 +97,8 @@ final class MeetingPlateWiringTests: XCTestCase {
         let reminded = try XCTUnwrap(start.range(of: "if origin == .auto || offered { noteConsentReminder() }"))
         XCTAssertLessThan(recorded.lowerBound, reminded.lowerBound, "the reminder follows the start, never gates it")
         let note = try XCTUnwrap(body(c, of: "private func noteConsentReminder() {"))
-        XCTAssertTrue(note.contains("notifier.post(title: title, body: ConsentReminder.body("))
-        XCTAssertTrue(note.contains("let title = L10nKey.meetingRemindTitle.text"))
+        XCTAssertTrue(note.contains("ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text })"))
+        XCTAssertTrue(note.contains("notifier.post(title: L10nKey.meetingRemindTitle.text, body: text)"))
         XCTAssertTrue(note.contains("ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text })"))
         XCTAssertFalse(note.contains("setCallMode"))
         XCTAssertFalse(note.contains("createDirectory(") && !note.contains("Task.detached"), "the folder (a macOS permission prompt) never blocks the main thread")
@@ -165,6 +165,48 @@ final class MeetingPlateWiringTests: XCTestCase {
         XCTAssertTrue(CallDetector.autoStartSources.contains("meet"), "Google Meet records by itself under Record automatically")
     }
 
+    // MARK: Codex review of cb38f0f + Fable assessment
+
+    /// The prompt plate gets the same periodic check as the recording one: an unseen prompt was the original failure.
+    /// Mutation: MeetingController.observe, delete `badge.verifyOnScreen()` -> RED.
+    func testThePromptPlateIsCheckedEveryPoll() throws {
+        let observe = try XCTUnwrap(body(try controller(), of: "private func observe(_ tick: CallWatcher.Tick) {"))
+        XCTAssertTrue(observe.contains("badge.verifyOnScreen()"), "the 2 s call poll runs while a prompt is up, recording or not")
+    }
+
+    /// Mutation: MeetingController.noteConsentReminder, call `MeetingSettings.setExplained` before the post -> RED.
+    func testTheReminderIsExplainedOnlyOnceItsBodyWasSurfaced() throws {
+        let c = try controller()
+        let note = try XCTUnwrap(body(c, of: "private func noteConsentReminder() {"))
+        XCTAssertTrue(note.contains("ConsentReminderFlow.afterPost(delivered: delivered)"))
+        XCTAssertTrue(note.contains("ConsentReminderFlow.afterPlate(shown: shown)"))
+        XCTAssertTrue(note.contains("badge.showReminder(text)"), "a denied notification shows the full text on the plate")
+        let post = try XCTUnwrap(note.range(of: "notifier.post("))
+        let mark = try XCTUnwrap(note.range(of: "MeetingSettings.setExplained(self.host.defaults)"))
+        XCTAssertLessThan(post.lowerBound, mark.lowerBound, "marked after the post's answer, never before")
+        XCTAssertFalse(note.contains("host.notify(title)"), "the title alone is not the reminder")
+        let showReminder = try XCTUnwrap(body(try badge(), of: "func showReminder(_ text: String) -> Bool {"))
+        XCTAssertTrue(showReminder.contains("guard case .recording? = mode"), "false when nothing is recording: asked again next time")
+        XCTAssertTrue(showReminder.contains("return true"))
+        XCTAssertFalse(showReminder.contains("runModal"))
+    }
+
+    /// Mutation: MeetingController.recordFromPrompt, delete `case .nothing: trace(.checkSuperseded)` -> RED.
+    func testASupersededRecordCheckIsLoggedAndAStaleOneOffersRecordAnyway() throws {
+        let press = try XCTUnwrap(body(try controller(), of: "private func recordFromPrompt() {"))
+        XCTAssertTrue(press.contains("case .nothing: trace(.checkSuperseded)"))
+        // A stale or unconfirmable check asks on the plate, whose Record starts at once (the offered start).
+        XCTAssertEqual(RecordPrompt.outcome(verdict: .ask, answer: nil), .ask)
+        XCTAssertEqual(RecordPrompt.outcome(verdict: .ask, answer: .record), .start)
+        XCTAssertEqual(RecordCheck.decide(offerStale: true, holder: .browser, tabs: .callPage), .ask)
+        XCTAssertEqual(RecordResume.decide(recordingOrStarting: false, badge: .empty), .apply, "a prompt taken down meanwhile still asks, it does not end")
+    }
+
+    func testTheOverlayNeverDrivesTheActivationPolicy() throws {
+        let overlayText = try source("OxSayDictation/Overlay.swift")
+        XCTAssertFalse(overlayText.contains("ActivationPolicy"))
+    }
+
     // MARK: #519 icon
 
     /// Mutation: AppDelegate.applyStatusIcon, `StatusIconImage.make(symbol: style.symbol, red: style.red,` -> `NSImage(systemSymbolName:` -> RED.
@@ -173,6 +215,8 @@ final class MeetingPlateWiringTests: XCTestCase {
         let icon = try XCTUnwrap(body(a, of: "private func applyStatusIcon() {"))
         XCTAssertTrue(icon.contains("StatusIconImage.make(symbol: style.symbol, red: style.red,"))
         XCTAssertFalse(a.contains("contentTintColor"), "the menu bar ignores the tint of a template image")
+        XCTAssertTrue(icon.contains("StatusIconImage.badged(base, red: style.red,"), "one composition for the recording and the normal path")
+        XCTAssertEqual(icon.components(separatedBy: "StatusIconImage.make(").count - 1, 1, "no early return that skips the update dot")
     }
 
     // MARK: #520 drag + collapse
@@ -181,7 +225,8 @@ final class MeetingPlateWiringTests: XCTestCase {
         let b = try badge()
         XCTAssertTrue(b.contains("panel.isMovableByWindowBackground = true"))
         XCTAssertTrue(b.contains("NSWindow.didMoveNotification"))
-        XCTAssertTrue(b.contains("BadgePositions.save(display:"))
+        XCTAssertTrue(b.contains("BadgePositions.save(key:"))
+        XCTAssertTrue(b.contains("CGDisplayCreateUUIDFromDisplayID"), "keyed by the display's UUID, not its numeric id")
         XCTAssertTrue(b.contains("BadgePositions.load("))
         XCTAssertTrue(b.contains("saved: BadgePositions.load(defaults)"))
     }

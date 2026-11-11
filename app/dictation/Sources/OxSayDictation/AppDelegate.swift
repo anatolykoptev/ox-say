@@ -983,27 +983,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // into the image: the menu bar ignores `contentTintColor` for a template image and draws it black (#519).
         let style = StatusIconStyle.style(meetingRecording: meetings?.isRecording == true,
                                           dictationRecording: controller.state == .recording, dictationSymbol: statusSymbol)
-        if meetings?.isRecording == true,
-           let rec = StatusIconImage.make(symbol: style.symbol, red: style.red, description: "OxSay is recording a meeting") {
-            statusItem.button?.image = rec
-            return
-        }
-        guard let base = StatusIconImage.make(symbol: statusSymbol, red: style.red, description: "OxSay Dictation") else { return }
-        guard updateOffer != nil else {
-            statusItem.button?.image = base
-            return
-        }
-        let size = base.size
-        let badged = NSImage(size: size, flipped: false) { rect in
-            base.draw(in: rect)
-            (style.red ? NSColor.systemRed : NSColor.black).setFill()
-            let dot: CGFloat = 5
-            NSBezierPath(ovalIn: NSRect(x: rect.maxX - dot, y: rect.maxY - dot, width: dot, height: dot)).fill()
-            return true
-        }
-        badged.isTemplate = !style.red
-        badged.accessibilityDescription = "OxSay Dictation — update available"
-        statusItem.button?.image = badged
+        // The symbol already follows the recording state (`style.symbol`); the update dot is composed onto whichever
+        // image that is, so an update offered mid-recording keeps its dot.
+        let description = meetings?.isRecording == true ? "OxSay is recording a meeting" : "OxSay Dictation"
+        guard let base = StatusIconImage.make(symbol: style.symbol, red: style.red, description: description) else { return }
+        statusItem.button?.image = updateOffer != nil
+            ? StatusIconImage.badged(base, red: style.red, description: description + " — update available") : base
     }
 
     private func startWorkingTimer() {

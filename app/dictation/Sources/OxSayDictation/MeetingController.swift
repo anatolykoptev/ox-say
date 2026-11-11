@@ -494,7 +494,7 @@ final class MeetingController: NSObject, MeetingFeature {
             }
             let badgeNow = RecordResume.badge(shown: shownNow, pressed: source)
             switch RecordResume.decide(recordingOrStarting: current != nil || starting, badge: badgeNow) {
-            case .nothing: break
+            case .nothing: trace(.checkSuperseded)
             case .apply:
                 let verdict = RecordCheck.decide(offerStale: stale, holder: .browser, tabs: tabs)
                 trace(.checked(verdict, stale: stale, tabs: tabs == .callPage ? "call_page" : tabs == .noCallPage ? "no_call_page" : "unknown"))
@@ -576,6 +576,8 @@ final class MeetingController: NSObject, MeetingFeature {
 
     /// One poll of the call watcher: the tracker has decided (offer, start, stop); the notices it could not.
     private func observe(_ tick: CallWatcher.Tick) {
+        // The call poll runs every 2 s while a prompt or question is up, so an unseen one is noticed like a recording's.
+        badge.verifyOnScreen()
         host.callActivity.setCallSeen(tick.call != nil)
         liveCall = tick.call
         if let call = tick.call { lastSource = call.source }
@@ -623,11 +625,19 @@ final class MeetingController: NSObject, MeetingFeature {
     /// phrase" button carries the same duty on screen. It never writes the call mode or an app's pick.
     private func noteConsentReminder() {
         guard !MeetingSettings.explained(host.defaults) else { return }
-        MeetingSettings.setExplained(host.defaults)
-        let title = L10nKey.meetingRemindTitle.text
-        notifier.post(title: title, body: ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text })) { [weak self] delivered in
-            guard !delivered else { return }
-            DispatchQueue.main.async { self?.host.notify(title) }
+        let text = ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text })
+        notifier.post(title: L10nKey.meetingRemindTitle.text, body: text) { [weak self] delivered in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // Counted as given only once the body was surfaced: delivered, or shown on the plate. Neither: asked again.
+                switch ConsentReminderFlow.afterPost(delivered: delivered) {
+                case .explained: MeetingSettings.setExplained(self.host.defaults)
+                case .showOnPlate:
+                    let shown = self.badge.showReminder(text)
+                    if ConsentReminderFlow.afterPlate(shown: shown) == .explained { MeetingSettings.setExplained(self.host.defaults) }
+                case .askAgain: break
+                }
+            }
         }
         // Creating the folder makes macOS ask for Documents access: off the main thread, so the prompt never holds the app.
         let folder = MeetingSettings.folder(host.defaults)

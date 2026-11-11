@@ -436,7 +436,7 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(press.contains("case .recordChecking(let shown)?: shownNow = .checking(source: shown)"))
         XCTAssertTrue(press.contains("let badgeNow = RecordResume.badge(shown: shownNow, pressed: source)"), "the mapping is core's")
         XCTAssertFalse(press.contains("shown == source"), "the comparison lives in RecordResume.badge")
-        XCTAssertTrue(press.contains("case .nothing: break"))
+        XCTAssertTrue(press.contains("case .nothing: trace(.checkSuperseded)"))
         XCTAssertTrue(press.contains("case .start: start(origin: .manual, source: source, offered: true)"))
         // Every end of a start that is not a recording settles the badge: the question's buttons are
         // disabled, so a stuck one would cover the call for good.
