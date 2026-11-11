@@ -138,6 +138,9 @@
 //
 //	OXSAY_FAKE_LLM=1            run the fake ox-llm
 //	OXSAY_FAKE_LLM_EXIT=1       exit 1 at once (the engine cannot load)
+//	OXSAY_FAKE_LLM_OOM          print a Metal/KV allocation failure and exit
+//	                            before /health: "1" fails every spawn, a
+//	                            substring fails only spawns whose -m carries it
 //	OXSAY_FAKE_LLM_OPEN=1       ignore the key: every route answers without
 //	                            auth, as llama-server does with an empty key
 //	                            file (zero keys = no auth, CORS "*")
@@ -286,12 +289,15 @@ func sttLog(rec string) {
 func runFakeLLM(args []string) int {
 	var port int
 	var keyFile string
+	var model string
 	for i, a := range args {
 		switch {
 		case a == "--port" && i+1 < len(args):
 			port, _ = strconv.Atoi(args[i+1])
 		case a == "--api-key-file" && i+1 < len(args):
 			keyFile = args[i+1]
+		case a == "-m" && i+1 < len(args):
+			model = args[i+1]
 		}
 	}
 	loadingSpawns, _ := strconv.Atoi(os.Getenv("OXSAY_FAKE_LLM_LOADING_SPAWNS"))
@@ -309,6 +315,14 @@ func runFakeLLM(args []string) int {
 	}
 	if os.Getenv("OXSAY_FAKE_LLM_EXIT") == "1" {
 		fmt.Fprintln(os.Stderr, "fake-llm: cannot load the model")
+		return 1
+	}
+	// An out-of-memory start: the child writes the words a real Metal
+	// allocation failure writes and exits before /health. Set to "1" to
+	// fail every spawn, or to a substring the -m file must carry — so a
+	// fallback spawn on a different file succeeds.
+	if oom := os.Getenv("OXSAY_FAKE_LLM_OOM"); oom != "" && (oom == "1" || strings.Contains(model, oom)) {
+		fmt.Fprintln(os.Stderr, "llama_kv_cache_init: failed to allocate KV self buffer")
 		return 1
 	}
 	delay := envMS("OXSAY_FAKE_START_DELAY_MS")

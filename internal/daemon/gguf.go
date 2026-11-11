@@ -57,12 +57,18 @@ var (
 )
 
 // ggufMeta is what a GGUF file tells the check: the header version, the two
-// general.* strings worth reporting, and the file's size.
+// general.* strings worth reporting, the file's size, and the shape numbers
+// the notes engine's memory estimate reads — the layer count and the
+// attention KV's heads and head dimension (0 when the file does not carry
+// them or the parse stops early).
 type ggufMeta struct {
 	Version      uint32
 	Name         string
 	Architecture string
 	Bytes        int64
+	Layers       uint32 // <arch>.block_count
+	KVHeads      uint32 // <arch>.attention.head_count_kv
+	HeadDim      uint32 // <arch>.attention.key_length
 }
 
 // ggufReadMeta reads the header and metadata of the GGUF at path. A file whose
@@ -115,6 +121,23 @@ func ggufReadMeta(path string) (ggufMeta, error) {
 		typ, err := ggufU32(r)
 		if err != nil {
 			return m, ggufErr(err)
+		}
+		if typ == ggufTypeUint32 && (strings.HasSuffix(key, ".block_count") ||
+			strings.HasSuffix(key, ".attention.head_count_kv") ||
+			strings.HasSuffix(key, ".attention.key_length")) {
+			v, err := ggufU32(r)
+			if err != nil {
+				return m, ggufErr(err)
+			}
+			switch {
+			case strings.HasSuffix(key, ".block_count"):
+				m.Layers = v
+			case strings.HasSuffix(key, ".attention.head_count_kv"):
+				m.KVHeads = v
+			default:
+				m.HeadDim = v
+			}
+			continue
 		}
 		if typ == ggufTypeString && (key == "general.name" || key == "general.architecture") {
 			s, err := ggufString(r, ggufMaxStringLen)

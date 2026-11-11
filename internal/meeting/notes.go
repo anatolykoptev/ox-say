@@ -23,6 +23,41 @@ import (
 // leaves the context room for a 3k-token answer).
 const ChunkChars = 16000
 
+// The notes server is started with the context NotesContextTokens computes,
+// not a measured constant: the largest prompt any call here can build, its
+// answer cap and the call's fixed overhead. The bounds are the call sites'
+// own constants — a map chunk of ChunkChars runes with its part framing, the
+// reduce call's list of at most maxReducePoints points of maxReduceText
+// runes, the merge call's summaryBudget of partial summaries.
+const (
+	// notesRunesPerToken is the text density the sizing assumes: real
+	// transcripts tokenize near 3.2 runes per token, and dense or
+	// non-English text costs more — 2.5 keeps that margin.
+	notesRunesPerToken = 2.5
+	// notesPromptOverhead is the fixed part of one call's prompt that is
+	// not the text itself: the system prompt (chunkSystem is the largest,
+	// ~700 tokens), the request's own framing and the chat template.
+	notesPromptOverhead = 1500
+)
+
+// notesLargestPromptRunes is the biggest text body one call can carry.
+func notesLargestPromptRunes() int {
+	map_ := ChunkChars + 128                      // the "This is part N of M" wrapper
+	red := maxReducePoints * (maxReduceText + 24) // a "[id] (part N, status) " line per point
+	sum := summaryBudget + 64
+	return max(map_, red, sum)
+}
+
+// NotesContextTokens is the -c the notes server is started with: the largest
+// prompt the calls below can send at the sizing density, the largest answer
+// cap any of them asks, and the fixed call overhead — rounded up to a
+// 512-token boundary. maxAnswer is the cap shared by every call site
+// (the reduce and merge calls ask for less).
+func NotesContextTokens() int {
+	need := int(float64(notesLargestPromptRunes())/notesRunesPerToken) + maxAnswer + notesPromptOverhead
+	return (need + 511) / 512 * 512
+}
+
 const (
 	// similarAction and similarLine: word overlap at which two items are one.
 	similarAction = 0.6

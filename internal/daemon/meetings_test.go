@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -215,7 +216,14 @@ func TestNotesServerArgsWriteAPrivateKeyPerSpawn(t *testing.T) {
 		t.Fatal("the key must change on every spawn")
 	}
 	joined := " " + strings.Join(a, " ") + " "
-	for _, want := range []string{" -c 16384 ", " --host 127.0.0.1 ", " --port 8098 ", " --jinja ", " -np 1 ", " --api-key-file " + key + " ", " -ngl 0 ", " --cors-origins localhost "} {
+	// The context is derived from the calls' own bounds (the chunk sizes and
+	// answer caps), not the spike's measured constant — and it must stay
+	// under that constant, which was the headroom problem's size.
+	wantCtx := " -c " + strconv.Itoa(meeting.NotesContextTokens()) + " "
+	if meeting.NotesContextTokens() >= 16384 {
+		t.Fatalf("the derived context %d is not under the measured 16384", meeting.NotesContextTokens())
+	}
+	for _, want := range []string{wantCtx, " -ctk q8_0 ", " -ctv q8_0 ", " --host 127.0.0.1 ", " --port 8098 ", " --jinja ", " -np 1 ", " --api-key-file " + key + " ", " -ngl 0 ", " --cors-origins localhost "} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("argv lacks %q: %s", want, joined)
 		}
@@ -225,7 +233,7 @@ func TestNotesServerArgsWriteAPrivateKeyPerSpawn(t *testing.T) {
 	}
 	// `-ngl 0` (asserted above) and the Metal env go together (#238.c); the full pairing is in
 	// TestNotesEnginePinsCPUDecodeAndMetalConcurrencyTogether.
-	if env := notesEngineConfig(cfg, nil).Env; !slices.Equal(env, []string{"GGML_METAL_CONCURRENCY_DISABLE=1"}) {
+	if env := notesEngineConfig(cfg, nil, nil).Env; !slices.Equal(env, []string{"GGML_METAL_CONCURRENCY_DISABLE=1"}) {
 		t.Errorf("with -ngl 0 the notes child env = %q, want GGML_METAL_CONCURRENCY_DISABLE=1", env)
 	}
 }
@@ -412,7 +420,7 @@ func TestNotesEnginePinsCPUDecodeAndMetalConcurrencyTogether(t *testing.T) {
 	} {
 		cfg := testCfg(t, t.TempDir())
 		cfg.NotesModel, cfg.GPUMemory = "/m/notes.gguf", tc.memory
-		ec := notesEngineConfig(cfg, nil)
+		ec := notesEngineConfig(cfg, nil, nil)
 		joined := " " + strings.Join(ec.Args(8098), " ") + " "
 		if !strings.Contains(joined, tc.wantNGL) {
 			t.Errorf("%s: argv lacks %q: %s", tc.name, tc.wantNGL, joined)
