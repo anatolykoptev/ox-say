@@ -651,11 +651,11 @@ const (
 	// maxReducePoints bounds one reduce prompt; maxReduceCalls bounds the calls of a meeting.
 	maxReducePoints = 120
 	maxReduceCalls  = 3
-	// maxReduceText caps a point's text in the reduce prompt for the
-	// context sizing; the line itself is built to reducePointTokens
-	// estimated tokens — the same cost those 200 Latin runes have, so a
-	// Latin transcript keeps its lines while a dense one fits
-	// reduceTokenBudget.
+	// maxReduceText is the rune cap on a point's text in the reduce prompt;
+	// the line itself is built to reducePointTokens estimated tokens, and
+	// the whole prompt to reduceTokenBudget — which binds once about 100
+	// points cost the full reducePointTokens (dense scripts, long Cyrillic
+	// points); the rest then keeps the words-only merge.
 	maxReduceText     = 200
 	reducePointTokens = 80
 )
@@ -787,7 +787,7 @@ func (c Composer) pairBatch(ctx context.Context, pts []pointRef, batch []int) ([
 	for _, i := range batch {
 		p := pts[i]
 		line := fmt.Sprintf("[%d] (part %d, %s) %s\n", i, p.chunk+1, p.Status,
-			truncateTokens(strings.Join(strings.Fields(p.Text), " "), reducePointTokens))
+			truncateRunes(truncateTokens(strings.Join(strings.Fields(p.Text), " "), reducePointTokens), maxReduceText))
 		if units+tokenUnits(line) > reduceTokenBudget()*unitsPerToken {
 			break // the prompt is full; the rest keeps the words-only merge
 		}
@@ -826,15 +826,26 @@ func (c Composer) pairBatch(ctx context.Context, pts []pointRef, batch []int) ([
 	return ok, nil
 }
 
-// truncateTokens cuts s to at most n estimated tokens, on a rune boundary.
-// It subsumes a rune cap: n tokens is never more than 5n/2 runes.
+// truncateTokens cuts s to at most n estimated tokens, on a grapheme-cluster
+// boundary (see cutAt).
 func truncateTokens(s string, n int) string {
 	units := 0
 	for i, r := range s {
 		units += runeUnits(r)
 		if units > n*unitsPerToken {
-			return s[:i]
+			rs := []rune(s)
+			k := utf8.RuneCountInString(s[:i])
+			return string(rs[:cutAt(rs, k)])
 		}
 	}
 	return s
+}
+
+// truncateRunes cuts s to at most n runes, on a grapheme-cluster boundary.
+func truncateRunes(s string, n int) string {
+	rs := []rune(s)
+	if len(rs) <= n {
+		return s
+	}
+	return string(rs[:cutAt(rs, n)])
 }
