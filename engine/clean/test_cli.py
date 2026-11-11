@@ -419,19 +419,20 @@ class Contract(Case):
         self.assertEqual(first.returncode, 0, first.stderr.read())
         self.assertEqual(len(read_float_wav(out)), len(read_float_wav(self.long_clip())))
 
-    def test_a_missing_or_unwritable_output_directory_is_6_before_any_model_time(self):
-        started = time.time()
-        r = run(self.clip(), self.path("no/such/dir/o.wav"), "--models", MODELS)
+    # The proof that no model was touched is the models folder, not a stopwatch: it does not exist, so a refusal that
+    # got as far as the model load would be exit 3 "missing" instead of the destination's own 6.
+    # Mutation: main.swift, a MaskModel load placed before the `stat(outDir, ...)` guard -> RED (3 "missing" instead of 6 "output_dir").
+    def test_a_missing_or_unwritable_output_directory_is_6_before_the_models_are_touched(self):
+        no_models = self.path("no-models")
+        r = run(self.clip(), self.path("no/such/dir/o.wav"), "--models", no_models)
         self.assertEqual((r.returncode, reason(r.stderr)), (6, "output_dir"), r.stderr)
         open(self.path("file"), "w").close()
-        r = run(self.clip(), self.path("file/o.wav"), "--models", MODELS)   # a file where the directory should be
+        r = run(self.clip(), self.path("file/o.wav"), "--models", no_models)   # a file where the directory should be
         self.assertEqual((r.returncode, reason(r.stderr)), (6, "output_dir"), r.stderr)
         os.mkdir(self.path("ro"), 0o555)
         self.addCleanup(os.chmod, self.path("ro"), 0o755)
-        r = run(self.clip(), self.path("ro/o.wav"), "--models", MODELS)
+        r = run(self.clip(), self.path("ro/o.wav"), "--models", no_models)
         self.assertEqual((r.returncode, reason(r.stderr)), (6, "not_writable"), r.stderr)
-        self.assertNotIn("units", r.stderr, "the model must not have been loaded")
-        self.assertLess(time.time() - started, 3, "three refusals, none of them paid for a model load")
 
     # Fix round 5: an unwritable directory is refused before any model time.
     # The .part is created before the slow model load, so a model failure has to remove it.
