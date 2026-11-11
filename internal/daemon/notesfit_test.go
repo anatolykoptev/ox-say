@@ -149,8 +149,8 @@ func TestTheSpawnLetsLlamaCppFitTheModel(t *testing.T) {
 	if m := modelOf(a); !strings.Contains(m, "9B") {
 		t.Fatalf("the spawn's model = %q, want the 9B", m)
 	}
-	if n := d.Status().Notes; n.Fit != "full" {
-		t.Fatalf("notes = %+v, want fit full", n)
+	if n := d.Status().Notes; n.Fit != "full" || !strings.Contains(n.FitReason, "--fit-target "+strconv.Itoa(othersMiB+notesFitHeadroomMiB)) {
+		t.Fatalf("notes = %+v, want fit full with the fit target in its reason", n)
 	}
 }
 
@@ -465,49 +465,6 @@ func TestTheFitLabelFollowsEveryPlan(t *testing.T) {
 	}
 }
 
-// What llama.cpp chose reaches /status: the loader's own line, captured
-// from the pinned ox-llm at -lv 4 (offloaded 16/33 under a 35000 MiB target
-// on a 38338 MiB Mac).
-func TestStatusShowsWhatTheFitterChose(t *testing.T) {
-	d, _ := bothModels(t)
-	t.Setenv("OXSAY_FAKE_LLM_OFFLOAD", "16/33")
-	fakeBudget(t, ampleLimitMiB, othersMiB)
-	if err := complete(t, d); err != nil {
-		t.Fatal(err)
-	}
-	n := d.Status().Notes
-	if n.Fit != "fitted" || !strings.Contains(n.FitReason, "16 of 33 layers") {
-		t.Fatalf("notes = %+v, want fitted with 16 of 33 layers", n)
-	}
-}
-
-func TestParseOffloaded(t *testing.T) {
-	// Lines from `ox-llm ... -lv 4` at the pin (620d2225), 9B Q4_K_M.
-	const partial = "0.01.661.648 I load_tensors: offloading output layer to GPU\n" +
-		"0.01.661.648 I load_tensors: offloading 15 repeating layers to GPU\n" +
-		"0.01.661.649 I load_tensors: offloaded 16/33 layers to GPU\n"
-	const full = "0.00.763.705 I load_tensors: offloading 31 repeating layers to GPU\n" +
-		"0.00.763.705 I load_tensors: offloaded 33/33 layers to GPU\n"
-	for _, tc := range []struct {
-		name, log string
-		on, total int
-		ok        bool
-	}{
-		{"partial", partial, 16, 33, true},
-		{"full", full, 33, 33, true},
-		{"the last start wins", partial + full, 33, 33, true},
-		{"none", "srv load_model: loading model\n", 0, 0, false},
-		{"empty", "", 0, 0, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			on, total, ok := parseOffloaded([]byte(tc.log))
-			if on != tc.on || total != tc.total || ok != tc.ok {
-				t.Errorf("parseOffloaded = (%d,%d,%v), want (%d,%d,%v)", on, total, ok, tc.on, tc.total, tc.ok)
-			}
-		})
-	}
-}
-
 // MINOR-3: the scan reads the TAIL of what the child wrote since the mark,
 // and a mark past the end of the file (the supervisor truncated the log)
 // means everything in it is new.
@@ -583,6 +540,36 @@ func TestOOMSignaturesMatchRealLlamaWords(t *testing.T) {
 	} {
 		if match(line) {
 			t.Errorf("the healthy fitter line %q matches an OOM signature", line)
+		}
+	}
+}
+
+// The notes child must never run at debug verbosity: llama-server then logs
+// request and response bodies and every prompt token, which would put the
+// meeting transcript into notes.log in plain text.
+// Mutation: internal/daemon/meetings.go notesArgs — add "-lv", "4" to the
+// argv literal -> RED.
+func TestTheNotesChildNeverRunsAtDebugVerbosity(t *testing.T) {
+	d, _ := bothModels(t)
+	forbidden := []string{"-lv", "--verbosity", "--log-verbosity", "-v", "--verbose", "--log-verbose"}
+	argvs := map[string][]string{
+		"default":  notesServerArgs(d.Cfg, 1234, "m.gguf"),
+		"fit plan": notesPlanArgs(d.Cfg, 1234, notesPlan{model: "m.gguf", fitMiB: 4608}),
+		"cpu plan": notesPlanArgs(d.Cfg, 1234, notesPlan{model: "m.gguf"}),
+	}
+	for name, args := range argvs {
+		for _, f := range forbidden {
+			if slices.Contains(args, f) {
+				t.Errorf("%s argv carries %s: %q", name, f, strings.Join(args, " "))
+			}
+		}
+	}
+	for _, mem := range []string{config.GPUMemoryUnified, config.GPUMemoryDiscrete} {
+		d.Cfg.GPUMemory = mem
+		for _, e := range notesServerEnv(d.Cfg) {
+			if strings.HasPrefix(e, "LLAMA_ARG_VERBOSITY") || strings.HasPrefix(e, "LLAMA_LOG_VERBOSITY") || strings.HasPrefix(e, "LLAMA_ARG_VERBOSE") {
+				t.Errorf("%s env carries %s", mem, e)
+			}
 		}
 	}
 }

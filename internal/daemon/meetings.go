@@ -76,12 +76,11 @@ type notesStatus struct {
 	// disk held the compact 4B but not the standard 9B.
 	Fallback string `json:"fallback,omitempty"`
 	// Fit is how the last engine start landed in the free GPU budget:
-	// "full" — the plan is a full-offload fit; "fitted" — llama.cpp's fitter
-	// left layers off the GPU, or the fit margin was raised after an
-	// out-of-memory start; "fallback_4b" — the compact model ran instead (an
+	// "full" — the plan is a full-offload fit; "fitted" — an out-of-memory
+	// start raised the fit target; "fallback_4b" — the compact model ran instead (an
 	// automatic choice only); "unchecked" — the GPU budget could not be
 	// read, so llama.cpp fitted with its default margin. FitReason says why,
-	// in plain words. Empty means CPU decode (no fitter) or no start yet.
+	// in plain words, and carries the --fit-target in MiB. Empty means CPU decode (no fitter) or no start yet.
 	Fit       string `json:"fit,omitempty"`
 	FitReason string `json:"fit_reason,omitempty"`
 }
@@ -137,15 +136,16 @@ func notesPlanArgs(cfg *config.Config, port int, p notesPlan) []string {
 
 // notesArgs builds the child argv. ngl is the -ngl value verbatim: "99" for
 // full offload, "0" for CPU decode, or "" to leave it unset for the fitter
-// (fitMiB > 0 then names its --fit-target). -lv 4 makes the loader print
-// which layers went to the GPU (no prompt text is logged at that level).
+// (fitMiB > 0 then names its --fit-target). Never a verbosity flag: at
+// debug level llama-server logs request bodies and every prompt token, which
+// would put the meeting transcript into notes.log.
 func notesArgs(cfg *config.Config, port int, modelPath, ngl string, fitMiB int, keyFile string) []string {
 	args := []string{
 		"-m", modelPath, "-c", strconv.Itoa(meeting.NotesContextTokens()),
 		"-ctk", "q8_0", "-ctv", "q8_0",
 		"--host", voxLoopbackHost, "--port", strconv.Itoa(port),
 		"-fa", "on", "--jinja", "--no-ui", "-np", "1", "--cache-ram", "0",
-		"--cors-origins", "localhost", "-lv", "4",
+		"--cors-origins", "localhost",
 	}
 	if ngl != "" {
 		args = append(args, "-ngl", ngl)
@@ -395,9 +395,6 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	for err != nil && ctx.Err() == nil && c.d.notesStartOOMed(mark) && c.d.notesEscalate() {
 		mark = notesLogMark(c.d.Cfg.EngineLogDir)
 		base, err = c.d.LLMSup.EnsureReady(ctx)
-	}
-	if err == nil {
-		c.d.notesNoteOffload(mark) // what llama.cpp's fitter chose, if this call started the child
 	}
 	if err != nil {
 		err = fmt.Errorf("the notes model failed to start: %w", err)

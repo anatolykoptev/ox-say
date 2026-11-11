@@ -40,8 +40,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"sync"
 	"time"
 
@@ -51,7 +49,7 @@ import (
 const (
 	// The values /status reports in notes.fit.
 	fitFull      = "full"        // the plan is a full-offload fit
-	fitFitted    = "fitted"      // llama.cpp fitted fewer layers, or the target was raised after an OOM
+	fitFitted    = "fitted"      // an OOM raised the fit target
 	fitFallback  = "fallback_4b" // the automatic choice was swapped for the installed 4B
 	fitUnchecked = "unchecked"   // the budget probe is unknown; llama.cpp fitted with its default margin
 
@@ -167,12 +165,13 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 	switch {
 	case !known:
 		p.fit = fitUnchecked
-		p.why = fmt.Sprintf("the GPU budget could not be read; llama.cpp fits the model with its default %d MiB margin", target)
+		p.why = fmt.Sprintf("the GPU budget could not be read; llama.cpp fits the model with --fit-target %d MiB", target)
 	case esc > 0:
 		p.fit = fitFitted
-		p.why = fmt.Sprintf("an earlier start ran out of memory; the fit margin is raised to %d MiB", target)
+		p.why = fmt.Sprintf("an earlier start ran out of memory; llama.cpp fits the model with --fit-target raised to %d MiB", target)
 	default:
 		p.fit = fitFull
+		p.why = fmt.Sprintf("llama.cpp fits the model with --fit-target %d MiB: the rest of the system's GPU memory plus %d MiB of headroom", target, notesFitHeadroomMiB)
 	}
 	if res.Source == config.NotesSourceAutomatic {
 		swap, why := esc >= 2, "an earlier start of the resolved model ran out of memory twice"
@@ -295,44 +294,6 @@ func (d *Daemon) fitSnapshot() (fit, why string) {
 	d.fit.mu.Lock()
 	defer d.fit.mu.Unlock()
 	return d.fit.fit, d.fit.why
-}
-
-// offloadedRe is the loader's own line for what the fitter decided:
-// "load_tensors: offloaded 16/33 layers to GPU" (printed at -lv 4).
-var offloadedRe = regexp.MustCompile(`load_tensors: offloaded (\d+)/(\d+) layers to GPU`)
-
-// parseOffloaded returns the last offloaded-layers line of a child log.
-func parseOffloaded(log []byte) (on, total int, ok bool) {
-	all := offloadedRe.FindAllSubmatch(log, -1)
-	if len(all) == 0 {
-		return 0, 0, false
-	}
-	m := all[len(all)-1]
-	on, e1 := strconv.Atoi(string(m[1]))
-	total, e2 := strconv.Atoi(string(m[2]))
-	return on, total, e1 == nil && e2 == nil && total > 0
-}
-
-// notesNoteOffload folds what llama.cpp chose into /status after a start:
-// fewer layers than the model has means the fitter trimmed it.
-func (d *Daemon) notesNoteOffload(mark int64) {
-	on, total, ok := parseOffloaded(d.notesLogSince(mark))
-	if !ok || on >= total {
-		return
-	}
-	d.fit.mu.Lock()
-	defer d.fit.mu.Unlock()
-	if d.fit.fit == "" {
-		return // CPU decode (-ngl 0): no fitter ran, "0 layers" is the plan
-	}
-	if d.fit.fit == fitFull || d.fit.fit == fitUnchecked {
-		d.fit.fit = fitFitted
-		d.fit.why = ""
-	}
-	if d.fit.why != "" {
-		d.fit.why += "; "
-	}
-	d.fit.why += fmt.Sprintf("llama.cpp fitted %d of %d layers onto the GPU", on, total)
 }
 
 // notesOOMSignatures are the words llama-server writes to stderr when the
