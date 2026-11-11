@@ -27,31 +27,42 @@ type voiceResult struct {
 // WarnNoDiarization; both carry a reason code. Only a daemon shutdown (ctx) is an error, so the meeting resumes.
 // The embeddings in ox-diar's answer are used here and dropped: nothing of them reaches the meeting directory
 // outside work/, where the daemon wrote them for the length of the call.
-func (r *Runner) voices(ctx context.Context, dir string, words []stt.Word) (voiceResult, error) {
+func (r *Runner) voices(ctx context.Context, dir string, words []stt.Word, sl *stageLog) (voiceResult, error) {
 	if r.Diarize == nil || len(words) < minDiarWords {
+		reason := "too_few_words"
+		if r.Diarize == nil {
+			reason = "no_engine"
+		}
+		sl.skip(stageDiarize, reason)
+		sl.skip(stageVoices, reason)
 		return voiceResult{}, nil
 	}
 	if r.DiarizeReady != nil {
 		if code := r.DiarizeReady(); code != "" {
 			r.Log.Info("meeting: diarization unavailable", slog.String("reason", code))
+			sl.skip(stageDiarize, code)
+			sl.skip(stageVoices, code)
 			return voiceResult{warn: WarnDiarUnavailable, reason: code}, nil
 		}
 	}
-	if r.Before != nil {
-		if err := r.Before(ctx); err != nil {
-			return voiceResult{}, err
-		}
+	done := sl.begin(stageDiarize)
+	if err := r.waitBefore(ctx, sl); err != nil {
+		done(stageFailed, errClass(err))
+		return voiceResult{}, err
 	}
 	raw, err := r.Diarize(ctx, filepath.Join(dir, ThemPCM))
 	// The daemon wrote the answer, voiceprints included, into work/ for this call: it goes the moment it has been
 	// read, on every way out (a failure, a shutdown, a run that a later Finish supersedes), not with the work dir.
 	defer r.dropVoiceprints(dir)
 	if ctx.Err() != nil {
+		done(stageFailed, errClass(ctx.Err()))
 		return voiceResult{}, ctx.Err()
 	}
 	var unavailable *DiarUnavailableError
 	if errors.As(err, &unavailable) {
 		r.Log.Info("meeting: diarization unavailable", slog.String("reason", unavailable.Reason), slog.Any("error", err))
+		done(stageSkipped, unavailable.Reason)
+		sl.skip(stageVoices, unavailable.Reason)
 		return voiceResult{warn: WarnDiarUnavailable, reason: unavailable.Reason}, nil
 	}
 	reason := DiarEngineError
@@ -65,20 +76,27 @@ func (r *Runner) voices(ctx context.Context, dir string, words []stt.Word) (voic
 	}
 	if err != nil {
 		r.Log.Warn("meeting: diarization failed", slog.String("reason", reason), slog.Any("error", err))
+		done(stageFailed, reason)
+		sl.skip(stageVoices, reason)
 		return voiceResult{warn: WarnNoDiarization, reason: reason}, nil
 	}
+	done(stageOK, "")
+	done = sl.begin(stageVoices)
 	if err := dropVoiceState(dir); err != nil {
+		done(stageFailed, errClass(err))
 		return voiceResult{}, err
 	}
 	plan := Decide(d)
 	res := voiceResult{mode: plan.Mode, voices: plan.Voices}
 	if plan.Mode == "" {
+		done(stageSkipped, "one_voice")
 		return res, nil
 	}
 	res.of = map[[2]float64]string{}
 	for i, v := range AssignVoices(words, d, plan) {
 		res.of[[2]float64{words[i].S, words[i].E}] = v
 	}
+	done(stageOK, "", slog.Int("voices", plan.Voices))
 	return res, nil
 }
 

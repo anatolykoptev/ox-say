@@ -472,7 +472,7 @@ func TestTheVoiceprintFileIsGoneWhenTheRunEnds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.r.voices(context.Background(), dir, ws); err != nil {
+		if _, err := f.r.voices(context.Background(), dir, ws, nil); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if d.calls.Load() != 1 {

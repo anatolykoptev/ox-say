@@ -128,6 +128,10 @@ const (
 // engineBusyCode is the stable code of a request that gave up waiting for another large engine's turn.
 const engineBusyCode = "engine_busy_memory"
 
+// engineTurnWaitLog: only a turn wait at least this long gets its own line —
+// the usual case is another engine mid-request, which ends in moments.
+const engineTurnWaitLog = 250 * time.Millisecond
+
 // engineBusyError is that refusal: another large engine is working and this Mac has no room for both. It is its own
 // 503 (synthStatus, writeSynthErr), not an engine-start failure: nothing failed to start.
 type engineBusyError struct{ err error } // err: why the wait ended
@@ -163,15 +167,19 @@ func (r *residency) enter(ctx context.Context, sup *engine.Supervisor, budget ti
 
 // take waits for sup's turn and counts one use of it.
 func (r *residency) take(ctx context.Context, sup *engine.Supervisor) error {
+	start := time.Now()
+	var held *engine.Supervisor
 	for {
 		r.mu.Lock()
 		switch {
 		case r.active == sup && r.settled:
 			r.n++
 			r.mu.Unlock()
+			r.logTurnWait(sup, held, start)
 			return nil
 		case r.n > 0: // another engine is in use, or sup's own turn is still being set up
 			ch := r.change
+			held = r.active
 			r.mu.Unlock()
 			select {
 			case <-ch:
@@ -183,8 +191,26 @@ func (r *residency) take(ctx context.Context, sup *engine.Supervisor) error {
 			// (sup's own included) until the others have exited.
 			r.active, r.settled, r.n = sup, false, 1
 			r.mu.Unlock()
-			return r.settle(ctx, sup)
+			err := r.settle(ctx, sup)
+			if err == nil {
+				r.logTurnWait(sup, held, start)
+			}
+			return err
 		}
+	}
+}
+
+// logTurnWait writes the wait a use stood through for a large engine's turn:
+// which engine it wanted and which held the turn — the line that explains a
+// stalled notes job or voice request.
+func (r *residency) logTurnWait(sup, held *engine.Supervisor, start time.Time) {
+	if held == nil {
+		return
+	}
+	if d := time.Since(start); d >= engineTurnWaitLog {
+		r.log.Info("memory: engine turn wait",
+			slog.String("for", sup.Name()), slog.String("held_by", held.Name()),
+			slog.Int64("dur_ms", d.Milliseconds()))
 	}
 }
 

@@ -448,6 +448,10 @@ func (s *Supervisor) leaseOwner() string {
 	return "tts"
 }
 
+// Name is the engine's log name — the same tag leaseOwner gives the GPU
+// lease's holder — so a line naming an engine reads alike everywhere.
+func (s *Supervisor) Name() string { return s.leaseOwner() }
+
 // Status returns a snapshot for /status and engine_status.
 func (s *Supervisor) Status() Status {
 	s.mu.Lock()
