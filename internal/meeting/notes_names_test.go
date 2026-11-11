@@ -6,11 +6,14 @@ import (
 )
 
 // Names that merely start alike are two people, and two decisions that differ only by such a name stay two lines.
-// namesMissing compares whole words (lower-cased); no inflection or stem rule decides that two names are one person,
-// because without a morphology oracle every such rule merged some pair of different people (Александр/Александра,
-// Кирилл/Кириллой, Мария/Мариам, ...): a miss costs a duplicate line, a false merge a lost task.
-// Mutation: internal/meeting/notes.go namesMissing, compare by a shared stem (e.g. replace `!have[strings.ToLower(w)]`
-// with a test that no word of t shares its first four letters with w) -> RED.
+// This is the words-only merge (samePoint -> factsDiffer -> namesMissing), which compares whole words, lower-cased: no
+// inflection or stem rule decides that two names are one person there, because without a morphology oracle every such
+// rule merged some pair of different people (Александр/Александра, Кирилл/Кириллой, Мария/Мариам, ...): a miss costs a
+// duplicate line, a false merge a lost task. The settlement check (notes_points.go sameName) is a separate, narrower
+// rule that only decides whether a later decision may close an open question, and has its own tests
+// (TestSettleOK).
+// Mutation: internal/meeting/notes.go namesMissing, replace `!have[strings.ToLower(w)]` with a test that no word of t
+// shares its first four letters with w -> RED.
 func TestSimilarNamesStayTwoLines(t *testing.T) {
 	line := func(name string) string {
 		return "Pay " + name + " 500 dollars for the shoot in the studio tomorrow morning"

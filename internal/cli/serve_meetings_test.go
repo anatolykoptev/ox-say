@@ -24,7 +24,7 @@ import (
 type cannedNotes struct{}
 
 func (cannedNotes) Complete(context.Context, meeting.Request) (string, error) {
-	return `{"summary":"A call.","decisions":[],"action_items":[],"open_questions":[],"numbers":[]}`, nil
+	return `{"summary":"A call.","points":[],"action_items":[],"numbers":[]}`, nil
 }
 
 // finishMeeting records five seconds of audio and hands the meeting to the runner.
