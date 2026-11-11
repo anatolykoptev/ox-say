@@ -360,37 +360,130 @@ func subsetKeys(a, b map[string]bool) bool {
 }
 
 // capitalized lists the capitalized words of s; withFirst keeps the first word, which a sentence start capitalizes
-// anyway.
+// anyway. A word in capitals (API, QA, an emphasis) is an ordinary word here, not a name.
 func capitalized(s string, withFirst bool) []string {
 	var out []string
 	for i, w := range tokens(s) {
 		r, _ := utf8.DecodeRuneInString(w)
-		if (i > 0 || withFirst) && utf8.RuneCountInString(w) >= 2 && unicode.IsUpper(r) {
+		if (i > 0 || withFirst) && utf8.RuneCountInString(w) >= 2 && unicode.IsUpper(r) && strings.ToUpper(w) != w {
 			out = append(out, w)
 		}
 	}
 	return out
 }
 
-// sameName: two spellings of one name, tolerant of case endings (Даше, Даша, Дашу; Bob, Bobby): they share all but
-// their last letter, up to four letters. Bob and Ann, Paris and Rome do not. Names of one or two letters must be equal.
-func sameName(a, b string) bool {
-	fold := func(w string) []rune {
-		return []rune(strings.NewReplacer("ё", "е").Replace(strings.ToLower(norm.NFKC.String(w))))
-	}
-	ra, rb := fold(a), fold(b)
-	n := min(4, min(len(ra), len(rb))-1)
-	if n < 2 {
-		return string(ra) == string(rb)
-	}
-	return string(ra[:n]) == string(rb[:n])
+func foldWord(w string) []rune {
+	w = strings.NewReplacer("ё", "е").Replace(strings.ToLower(norm.NFKC.String(w)))
+	w = strings.TrimSuffix(strings.TrimSuffix(w, "'s"), "’s")
+	return []rune(w)
 }
 
-// settleOK is the code's check that a decided point can settle an open one: their numbers do not conflict (each
-// states something the other lacks), and every name the open point mentions (not counting its first word) is
-// mentioned by the decided one, by stem. An open point that names no one, or one that only gains a number or a name
-// when it is settled, passes.
+func isCyrillic(r []rune) bool {
+	for _, c := range r {
+		if !unicode.Is(unicode.Cyrillic, c) {
+			return false
+		}
+	}
+	return len(r) > 0
+}
+
+// ruEndings are the Russian case and gender endings, up to three letters, that stemRu takes off.
+var ruEndings = map[string]bool{}
+
+func init() {
+	for _, e := range strings.Fields(`ами ями ого его ому ему ией ой ей ою ею ом ем ам ям ах ях ов ев ию ия ие ии ых их ый ий
+		ая яя ое ее ую юю а я у ю е ы и о ь й`) {
+		ruEndings[e] = true
+	}
+}
+
+// stemRu is a Cyrillic word without its case ending, when at least three letters are left: Дашей, Даше, Дашу, Даша are
+// "даш". A word with no such ending is its own stem. The names Мария (мар) and Марину (марин) stay two.
+func stemRu(r []rune) string {
+	for l := 3; l >= 1; l-- {
+		if len(r)-l >= 3 && ruEndings[string(r[len(r)-l:])] {
+			return string(r[:len(r)-l])
+		}
+	}
+	return string(r)
+}
+
+// sameStem: a and b are the same Cyrillic word up to a case ending.
+func sameStem(a, b []rune) bool {
+	return isCyrillic(a) && isCyrillic(b) && stemRu(a) == stemRu(b)
+}
+
+// sameName: two spellings of one name. Latin names must be equal (a possessive 's aside): any shorter rule made Ann
+// and Anton, Dan and Daphne, Bob and Boris one person. Cyrillic names are equal or differ by a case ending only
+// (Даша, Даше, Дашу, Дашей); Оля and Олег, Маша and Даша are two. When unsure the names are two, and the open question
+// stays open.
+func sameName(a, b string) bool {
+	ra, rb := foldWord(a), foldWord(b)
+	return string(ra) == string(rb) || sameStem(ra, rb)
+}
+
+// sameWord: two forms of one content word (launch/launches, move/moves, рассылка/рассылку).
+func sameWord(a, b []rune) bool {
+	if string(a) == string(b) || sameStem(a, b) {
+		return true
+	}
+	if isCyrillic(a) || isCyrillic(b) {
+		return false
+	}
+	p := 0
+	for p < len(a) && p < len(b) && a[p] == b[p] {
+		p++
+	}
+	return min(len(a), len(b)) >= 4 && p >= 4 && len(a)-p <= 2 && len(b)-p <= 2
+}
+
+// settleStops are meeting words that carry no subject, added to the package's stopwords (echo_match.go) for the
+// overlap below; ё is folded to е.
+var settleStops = func() map[string]bool {
+	m := map[string]bool{}
+	for _, w := range strings.Fields(`about when where why how into from need needs want wants let lets get got make made
+		out off over under after before into what who
+		нужно надо можно будет будем были было была быть есть давайте этот эта эти этом того этого том тем все всех
+		после перед между через мне меня тебя себя свою свой когда где кто чем чего если`) {
+		m[string(foldWord(w))] = true
+	}
+	return m
+}()
+
+// contentWords are the words of s that say what it is about: three letters or more, not a stopword.
+func contentWords(s string) [][]rune {
+	var out [][]rune
+	for _, w := range tokens(s) {
+		f := foldWord(w)
+		if len(f) >= 3 && !stopwords[string(f)] && !settleStops[string(f)] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// sharesContentWord: a and b have a content word in common. A decision that shares none with an open question is not
+// about it, whatever the model claims.
+func sharesContentWord(a, b string) bool {
+	wb := contentWords(b)
+	for _, x := range contentWords(a) {
+		for _, y := range wb {
+			if sameWord(x, y) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// settleOK is the code's check that a decided point can settle an open one: they share at least one content word,
+// their numbers do not conflict (each states something the other lacks), and every name the open point mentions (not
+// counting its first word) is mentioned by the decided one (sameName). An open point that names no one, or one that
+// only gains a number or a name when it is settled, passes those two.
 func settleOK(open, decided string) bool {
+	if !sharesContentWord(open, decided) {
+		return false
+	}
 	no, nd := numberSet(open), numberSet(decided)
 	if !subsetKeys(no, nd) && !subsetKeys(nd, no) {
 		return false

@@ -542,7 +542,7 @@ func TestReduceCallIsBoundedAndItsClaimsAreChecked(t *testing.T) {
 		return n
 	}
 	open := Point{Text: "What is the ad budget", Status: statusOpen}
-	dec := Point{Text: "Ad spend is capped", Status: statusDecided, Quote: "Budget again"}
+	dec := Point{Text: "The ad budget is capped", Status: statusDecided, Quote: "Budget again"}
 	n := run(`{"settles":[{"open":0,"decided":[1]}]}`, open, dec)
 	if len(n.Decisions) != 1 || len(n.OpenQuestions) != 0 {
 		t.Fatalf("settled: decisions = %q, open = %q", n.Decisions, n.OpenQuestions)
@@ -566,8 +566,12 @@ func TestReduceCallIsBoundedAndItsClaimsAreChecked(t *testing.T) {
 
 // Review (round 3): the check on a settlement. Names are compared by stem (case endings), numbers must not conflict,
 // and a first word is not a name.
-// Mutations: notes_points.go sameName, compare `string(ra) == string(rb)` always -> RED on the Russian rows;
-// settleOK, delete the `for _, n := range capitalized(open, false)` loop -> RED on the name rows.
+// Mutations (notes_points.go): sameName, replace `|| sameStem(ra, rb)` with a two-letter prefix test -> RED on the
+// Ann/Anton and Dan/Daphne rows; stemRu, change `len(r)-l >= 3` to `>= 1` -> RED on the Олю/Оля row; sameStem, return
+// false -> RED on the Даше/Даша rows; settleOK, delete the `if !sharesContentWord(open, decided)` block -> RED on the
+// "new schedule" rows; capitalized, delete `&& strings.ToUpper(w) != w` -> RED on the API and NEW rows; delete the name
+// loop -> RED on the name rows. Measured on these rows, the core pairs in English and Russian all pass with the
+// threshold of one shared content word (three letters or more, not a stopword, equal or with a case ending).
 func TestSettleOK(t *testing.T) {
 	for _, c := range []struct {
 		open, decided string
@@ -585,8 +589,29 @@ func TestSettleOK(t *testing.T) {
 		{"What is the budget", "Budget is 700", true},
 		{"Who does the ticket", "The ticket goes to Daphne", true},
 		{"Should the launch move to March", "The launch is in March", true},
-		{"Should we ask Anna", "Ann will ask", true}, // the stem rule is tolerant on purpose
 		{"Where do we meet", "We meet in Rome", true},
+		// Latin names are equal or two people
+		{"Should we ask Ann about the shoot", "Anton will ask about the shoot", false},
+		{"Should we ask Dan about the shoot", "Daphne will ask about the shoot", false},
+		{"Should we ask Bob about the shoot", "Boris will ask about the shoot", false},
+		{"Should we ask Anna about the shoot", "Ann will ask about the shoot", false},
+		{"Should we ask Bob about the shoot", "Bob's team will ask about the shoot", true},
+		// Cyrillic: case endings only, and only on words of four letters or more
+		{"Спросить ли Дашу про съёмку", "Даша спросит про съёмку", true},
+		{"Спросить ли Дашу про съёмку", "Дашей съёмка согласована", true},
+		{"Спросить ли Олю про съёмку", "Олег спросит про съёмку", false},
+		{"Спросить ли Машу про съёмку", "Даша спросит про съёмку", false},
+		{"Спросить ли Олю про съёмку", "Оля спросит про съёмку", false}, // too short to strip an ending: unsure, so two
+		{"Спросить ли Марину про съёмку", "Мария спросит про съёмку", false},
+		// the decision must be about the open point
+		{"Should the launch move to March", "The office has a new schedule", false},
+		{"Переносим ли запуск на март", "В офисе новое расписание", false},
+		{"Переносим ли запуск на март", "Запуск в марте", true},
+		{"Должны ли мы выпускать рассылку", "Рассылку выпускаем по пятницам", true},
+		// capitals: an acronym or an emphasis is a word, a name is a name
+		{"Should we use the API for the report", "Use the interface for the report", true},
+		{"Should we use the NEW report", "Use the report", true},
+		{"Should we send the report to Bob", "Send the report to the client", false},
 	} {
 		if got := settleOK(c.open, c.decided); got != c.want {
 			t.Errorf("settleOK(%q, %q) = %v, want %v", c.open, c.decided, got, c.want)
