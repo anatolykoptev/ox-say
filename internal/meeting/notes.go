@@ -45,11 +45,17 @@ const (
 )
 
 // ActionItem is one task; Who and When are empty when the transcript names
-// neither.
+// neither. Who is the person who will do it. The last three fields are the
+// evidence behind Who, written by Composer after it checked the model's claim
+// against the transcript; they are absent from notes written before they
+// existed. Quote is stored cleaned (cleanLine) and is not rendered.
 type ActionItem struct {
-	Who  string `json:"who"`
-	What string `json:"what"`
-	When string `json:"when"`
+	Who           string `json:"who"`
+	What          string `json:"what"`
+	When          string `json:"when"`
+	RequestedBy   string `json:"requested_by,omitempty"`
+	OwnerEvidence string `json:"owner_evidence,omitempty"`
+	Quote         string `json:"quote,omitempty"`
 }
 
 // ChunkNotes is what the model returns for one chunk (and, merged, the notes).
@@ -59,6 +65,9 @@ type ChunkNotes struct {
 	ActionItems   []ActionItem `json:"action_items"`
 	OpenQuestions []string     `json:"open_questions"`
 	Numbers       []string     `json:"numbers"`
+	// Points are the chunk's decisions and open questions with the status the code settled on, kept so MergeChunks
+	// can let a later part overrule an earlier one. Not stored: Decisions and OpenQuestions are the stored form.
+	Points []Point `json:"-"`
 }
 
 // Notes are the finished notes. SkippedChunks lists the zero-based chunks the
@@ -154,21 +163,25 @@ func isUnstated(s string) bool { return unstated[strings.ToLower(strings.TrimSpa
 // compared: a spelling of the recorder's own name (Labels.Me) becomes that
 // label, so MergeChunks is correct for any caller. A named owner is never
 // mapped to Labels.Them: a group call has several far-side people.
-func MergeChunks(parts []ChunkNotes, l Labels) Notes {
+func MergeChunks(parts []ChunkNotes, l Labels) Notes { return mergeChunks(parts, l, nil) }
+
+// mergeChunks is MergeChunks with the pairs of points the reduce call found to be one (see mergePoints).
+//
+// Decisions and open questions are one list of points with a status: the same point in two parts is one point and
+// the later part's status wins, so a question settled later is a decision only, and a decision reopened later is
+// a question only.
+func mergeChunks(parts []ChunkNotes, l Labels, pairs []pointPair) Notes {
 	var n Notes
 	var summaries []string
 	for _, p := range parts {
 		if s := strings.TrimSpace(p.Summary); s != "" {
 			summaries = append(summaries, s)
 		}
-		n.Decisions = append(n.Decisions, p.Decisions...)
 		n.ActionItems = append(n.ActionItems, p.ActionItems...)
-		n.OpenQuestions = append(n.OpenQuestions, p.OpenQuestions...)
 		n.Numbers = append(n.Numbers, p.Numbers...)
 	}
 	n.Summary = strings.Join(summaries, "\n\n")
-	n.Decisions = dedupeLines(n.Decisions, true)
-	n.OpenQuestions = dedupeLines(n.OpenQuestions, true)
+	n.Decisions, n.OpenQuestions = mergePoints(flattenPoints(parts), pairs)
 	n.Numbers = dedupeLines(n.Numbers, false)
 	n.ActionItems = dedupeActions(n.ActionItems, l)
 	return n
@@ -214,8 +227,8 @@ func dedupeActions(in []ActionItem, l Labels) []ActionItem {
 			if len(a.What) > len(o.What) {
 				out[i].What = a.What
 			}
-			if isUnstated(o.Who) {
-				out[i].Who = a.Who
+			if isUnstated(o.Who) && !isUnstated(a.Who) {
+				out[i].Who, out[i].RequestedBy, out[i].OwnerEvidence, out[i].Quote = a.Who, a.RequestedBy, a.OwnerEvidence, a.Quote
 			}
 			if isUnstated(o.When) {
 				out[i].When = a.When
@@ -368,26 +381,35 @@ type Request struct {
 // ErrNoNotes: the model failed on every chunk.
 var ErrNoNotes = errors.New("meeting: the notes model failed on every part of the transcript")
 
-// chunkSchema is the answer shape of a map step; llama-server turns it into a
-// grammar, so the reply is always parseable JSON of this shape.
+// chunkSchema is the answer shape of a map step (a chunkAnswer); llama-server
+// turns it into a grammar, so the reply is always parseable JSON of this
+// shape. A point has one status, so it cannot be both a decision and an open
+// question; the enums keep the evidence to the four values the code knows.
 func chunkSchema() map[string]any {
 	str := map[string]any{"type": "string"}
-	list := map[string]any{"type": "array", "items": str}
+	enum := func(vals ...string) map[string]any { return map[string]any{"type": "string", "enum": vals} }
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"summary":   str,
-			"decisions": list,
-			"action_items": map[string]any{"type": "array", "items": map[string]any{
+			"summary": str,
+			"points": map[string]any{"type": "array", "items": map[string]any{
 				"type":                 "object",
-				"properties":           map[string]any{"who": str, "what": str, "when": str},
-				"required":             []string{"who", "what", "when"},
+				"properties":           map[string]any{"text": str, "status": enum(statusDecided, statusOpen), "quote": str},
+				"required":             []string{"text", "status", "quote"},
 				"additionalProperties": false,
 			}},
-			"open_questions": list,
-			"numbers":        list,
+			"action_items": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"what": str, "owner": str, "requested_by": str,
+					"owner_evidence": enum(ownerEvidence...), "quote": str, "when": str,
+				},
+				"required":             []string{"what", "owner", "requested_by", "owner_evidence", "quote", "when"},
+				"additionalProperties": false,
+			}},
+			"numbers": map[string]any{"type": "array", "items": str},
 		},
-		"required":             []string{"summary", "decisions", "action_items", "open_questions", "numbers"},
+		"required":             []string{"summary", "points", "action_items", "numbers"},
 		"additionalProperties": false,
 	}
 }
@@ -419,13 +441,21 @@ func languageRule(lang string) string {
 func chunkSystem(l Labels, lang string) string {
 	return "You write meeting notes from one part of a transcript. " + languageRule(lang) +
 		"Use ONLY facts stated in the transcript; never invent names, numbers, dates or owners. " +
-		fmt.Sprintf("The speakers are %q (the person who recorded the call) and %s; in \"who\" use these names, or a name said in the transcript. ", l.Me, otherPeople(l)) +
-		"If the owner or the date of an action item is not stated, leave that field an empty string. " +
-		"Attribute each action to the person who said they will do it; do not swap who did what. " +
-		"Do not repeat the owner's name inside \"what\". " +
-		"summary: 2-4 sentences. decisions: what was agreed. " +
-		"action_items: every task someone took on or was asked to do, one entry per task; a task someone committed to with an owner belongs here, not only in decisions. " +
-		"open_questions: questions left unanswered. numbers: key numbers, amounts and dates with what they refer to. Skip small talk. " +
+		fmt.Sprintf("The speakers are %q (the person who recorded the call) and %s; in \"owner\" and \"requested_by\" use these names, or a name said in the transcript. ", l.Me, otherPeople(l)) +
+		"summary: 2-4 sentences. " +
+		"action_items: every task someone took on or was asked to do, one entry per task; a task someone committed to belongs here, not only in points. " +
+		"owner is the person who will DO the task. When someone asks or tells another person to do it (\"Daphne, can you make a ticket?\"), " +
+		"the owner is the person asked, NEVER the one who asked; requested_by is the one who asked, and is empty when the owner offered or took it on themselves. " +
+		"Thanks, greetings and other uses of a name that are not a request are not tasks. " +
+		"owner_evidence: self_commit (the owner said they will do it), addressed_by_name (the request names the owner), " +
+		"accepted_request (the request named no one and the person who answered agreed to it), unstated (you cannot tell who will do it; then owner is an empty string). " +
+		"When unsure, use unstated and an empty owner: a wrong owner is worse than none. " +
+		"quote: the words from the transcript that show the owner, copied exactly as written (at least a short phrase), not reworded; empty when evidence is unstated. " +
+		"If the date of a task is not stated, leave when an empty string. Do not repeat the owner's name inside \"what\". " +
+		"points: every topic the meeting discussed or settled, each ONCE with ONE status. status decided: the people agreed on it; " +
+		"quote must then be the words that show the agreement, copied exactly. status open: it was raised and not settled, or it is a question left unanswered; " +
+		"a point that is open cannot also be decided. " +
+		"numbers: key numbers, amounts and dates with what they refer to. Skip small talk. " +
 		"Use empty lists when a part has nothing for a field. " + untrustedRule
 }
 
@@ -519,7 +549,9 @@ func (c Composer) call(ctx context.Context, r Request) (string, error) {
 }
 
 // Compose writes the notes for the transcript text: one structured call per
-// chunk, a dedupe in code, and one short call to merge the summaries. lang is
+// chunk (each answer checked against its chunk's text in code), a merge in code
+// with at most one grammar-constrained call to pair the points that are one,
+// and one short call to merge the summaries. lang is
 // the meeting's notes language, the same code NotesMarkdown takes.
 func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang string) (Notes, error) {
 	chunks := Chunk(transcript, ChunkChars)
@@ -545,7 +577,13 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 	if len(parts) == 0 {
 		return Notes{}, ErrNoNotes
 	}
-	n := MergeChunks(parts, l)
+	// One reduce call at most, after the map steps and before the summary merge; it can only add pairs.
+	pairs, err := c.pairPoints(ctx, parts)
+	if err != nil {
+		c.logf("notes: pairing the points failed, merging them by words only", slog.Any("error", err))
+		pairs = nil
+	}
+	n := mergeChunks(parts, l, pairs)
 	n.SkippedChunks = skipped
 	if len(parts) > 1 {
 		n.Summary = c.mergeSummary(ctx, parts, n.Summary, lang)
@@ -557,11 +595,6 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 // prompt asks for a summary of every part, so an all-empty answer is a failed
 // one, not a quiet part.
 var errEmptyNotes = errors.New("meeting: the notes model returned empty notes")
-
-func (n ChunkNotes) empty() bool {
-	return strings.TrimSpace(n.Summary) == "" && len(n.Decisions) == 0 && len(n.ActionItems) == 0 &&
-		len(n.OpenQuestions) == 0 && len(n.Numbers) == 0
-}
 
 // retryable: the server was busy or not up yet, so a retry should wait a
 // moment. A parse failure or an empty answer retries at once.
@@ -593,10 +626,10 @@ func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int
 		}
 		raw, err := c.call(ctx, req)
 		if err == nil {
-			var out ChunkNotes
+			var out chunkAnswer
 			if err = json.Unmarshal([]byte(raw), &out); err == nil {
 				if !out.empty() {
-					return out, nil
+					return out.notes(text), nil
 				}
 				err = errEmptyNotes
 			}

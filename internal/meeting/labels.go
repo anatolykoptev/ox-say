@@ -298,7 +298,7 @@ func notesStrings(n Notes) []string {
 	out = append(out, n.OpenQuestions...)
 	out = append(out, n.Numbers...)
 	for _, a := range n.ActionItems {
-		out = append(out, a.Who, a.What, a.When)
+		out = append(out, a.Who, a.What, a.When, a.RequestedBy)
 	}
 	return out
 }
@@ -325,7 +325,7 @@ func (c labelChanges) apply(n Notes) Notes {
 		} else {
 			a.Who = free(a.Who)
 		}
-		a.What, a.When = free(a.What), free(a.When)
+		a.What, a.When, a.RequestedBy = free(a.What), free(a.When), free(a.RequestedBy)
 		items[i] = a
 	}
 	n.ActionItems = items
