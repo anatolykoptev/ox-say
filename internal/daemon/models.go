@@ -46,6 +46,10 @@ type modelEntry struct {
 	Selected   bool   `json:"selected,omitempty"`
 	ReasonCode string `json:"reason_code,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+	// Upstream is the uncensored notes model's "is the file still on its
+	// host" (available | gone | unknown) while it is not installed; omitted
+	// everywhere else.
+	Upstream string `json:"upstream,omitempty"`
 }
 
 // modelRemoval says how one optional model is removed. A model without one is required by the release and is never
@@ -239,6 +243,18 @@ func (d *Daemon) parakeetModelEntry() modelEntry {
 	}
 }
 
+// sttModelBytes is the resident STT server's model footprint for the
+// memory gate: the recognizer file — the parakeet row's measure — plus
+// the VAD model where one is on disk, since the server's argv loads it
+// whenever it stats (STTServeArgs).
+func (d *Daemon) sttModelBytes() int64 {
+	n, _ := fileSize(d.Cfg.STTModel)
+	if vad, ok := fileSize(d.Cfg.STTVADModel); ok {
+		n += vad
+	}
+	return n
+}
+
 func (d *Daemon) whisperModelEntry() modelEntry {
 	size, ok := fileSize(d.Cfg.STTWhisperModel)
 	e := modelEntry{
@@ -290,6 +306,7 @@ func (d *Daemon) notesCatalogEntry(entry *config.NotesModelEntry) modelEntry {
 		Default:   entry.ID == d.Cfg.NotesAutomaticDefault().ID,
 		Supported: true,
 		Selected:  res.Entry != nil && res.Entry.ID == entry.ID,
+		Upstream:  d.notesUpstream(entry, ok),
 	}
 	if !ok {
 		e.Bytes = entry.Bytes

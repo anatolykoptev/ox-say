@@ -100,6 +100,13 @@ func notesBinPath(cfg *config.Config) string {
 // page the user opens talk to the server. Layers go to the GPU only with
 // unified memory; a discrete card stays with the speech engines.
 func notesServerArgs(cfg *config.Config, port int, modelPath string) []string {
+	return notesServerArgsKey(cfg, port, modelPath, notesKeyFile)
+}
+
+// notesServerArgsKey is notesServerArgs with the key file named: the trial
+// child gets the same argv but its own key, so rotating it cannot break a
+// resident engine still serving its first key.
+func notesServerArgsKey(cfg *config.Config, port int, modelPath, keyFile string) []string {
 	args := []string{
 		"-m", modelPath, "-c", strconv.Itoa(notesCtx),
 		"--host", voxLoopbackHost, "--port", strconv.Itoa(port),
@@ -107,7 +114,7 @@ func notesServerArgs(cfg *config.Config, port int, modelPath string) []string {
 		"--cors-origins", "localhost",
 	}
 	args = append(args, "-ngl", notesGPULayers(cfg))
-	return append(args, "--api-key-file", filepath.Join(cfg.RunDir(), notesKeyFile))
+	return append(args, "--api-key-file", filepath.Join(cfg.RunDir(), keyFile))
 }
 
 // notesGPULayers is the -ngl value: all layers on the GPU with unified memory, none without.
@@ -296,7 +303,7 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 	// Below config.OneLargeEngineBelowGB the notes model takes its turn: the fast and the studio voice are stopped
 	// first, and the call waits (on the composer's own context) while one of them is working. Before the Guard, see
 	// residency.
-	leave, err := c.d.mem.enter(ctx, c.d.LLMSup, 0)
+	leave, err := c.d.notesEngineTurn(ctx)
 	if err != nil {
 		err = fmt.Errorf("the notes model could not take its turn: %w", err)
 		if ctx.Err() != nil {
@@ -393,7 +400,7 @@ func (d *Daemon) initMeetings() {
 			return d.Transcribe(ctx, TranscribeInput{AudioPath: wav})
 		},
 		Chat:       llmChat{d: d},
-		NotesTurn:  func(ctx context.Context) (func(), error) { return d.mem.enter(ctx, d.LLMSup, 0) },
+		NotesTurn:  func(ctx context.Context) (func(), error) { return d.notesEngineTurn(ctx) },
 		NotesReady: func() string { code, _ := d.notesBlock(); return code },
 		TranscribeReady: func() string {
 			if _, err := os.Stat(d.Cfg.STTModel); err != nil {
