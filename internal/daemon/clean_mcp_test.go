@@ -181,12 +181,12 @@ func TestVoiceCleanRequiresAbsolutePaths(t *testing.T) {
 // A tool's own output never reaches the agent: the engine's stderr stays in the log; the agent gets the sentence.
 // Mutation: clean_mcp.go cleanToolError, append e.Reason or the engine tail (use err.Error() of the cause) -> RED.
 func TestVoiceCleanToolErrorCarriesTheSentenceNeverToolOutput(t *testing.T) {
-	d, _, _ := newCleanDaemon(t, `echo "SECRET-STDERR /Users/someone/private/path [reason=boom]" >&2; exit 1`)
+	d, _, _ := newCleanDaemon(t, `echo "SECRET-STDERR /srv/someone/private/path [reason=boom]" >&2; exit 1`)
 	dir := t.TempDir()
 	in := filepath.Join(dir, "in.wav")
 	makeWav(t, in, 1)
 	errText := toolErrText(t, mcpSession(t, d), "voice_clean", map[string]any{"in_path": in, "out_path": filepath.Join(dir, "o.wav")})
-	for _, bad := range []string{"SECRET-STDERR", "/Users/someone", "reason=boom", "boom"} {
+	for _, bad := range []string{"SECRET-STDERR", "/srv/someone", "reason=boom", "boom"} {
 		if strings.Contains(errText, bad) {
 			t.Errorf("tool output %q leaked into the tool error: %s", bad, errText)
 		}

@@ -153,14 +153,14 @@ final class ProduceModelsTests: XCTestCase {
     }
 
     func testJobFieldsDecode() throws {
-        let job = try XCTUnwrap(ProduceJob.decode(summary(status: "review", done: 10, total: 10, wav: "/Users/a/Movies/ox-say/Chapter one.wav", reviewChunks: 2)))
+        let job = try XCTUnwrap(ProduceJob.decode(summary(status: "review", done: 10, total: 10, wav: "/tmp/a/Movies/ox-say/Chapter one.wav", reviewChunks: 2)))
         XCTAssertEqual(job.id, "20261015-120000-abcd")
         XCTAssertEqual(job.title, "Chapter one")
         XCTAssertEqual(job.partsDone, 10)
         XCTAssertEqual(job.partsTotal, 10)
         XCTAssertEqual(job.partsToReview, 2)
-        XCTAssertEqual(job.outputPath, "/Users/a/Movies/ox-say/Chapter one.wav")
-        XCTAssertEqual(job.outputFolder?.path, "/Users/a/Movies/ox-say")
+        XCTAssertEqual(job.outputPath, "/tmp/a/Movies/ox-say/Chapter one.wav")
+        XCTAssertEqual(job.outputFolder?.path, "/tmp/a/Movies/ox-say")
     }
 
     func testFailedJobCarriesTheDaemonsReason() throws {
@@ -302,7 +302,7 @@ final class ProduceModelsTests: XCTestCase {
     }
 
     func testFinishAlerts() throws {
-        let done = try XCTUnwrap(ProduceJob.decode(summary(status: "done", wav: "/Users/a/Movies/ox-say/Chapter one.wav")))
+        let done = try XCTUnwrap(ProduceJob.decode(summary(status: "done", wav: "/tmp/a/Movies/ox-say/Chapter one.wav")))
         let ready = try XCTUnwrap(ProduceText.finishAlert(done, text: en))
         XCTAssertEqual(ready.title, "Voiceover ready")
         XCTAssertEqual(ready.text, "Saved as Chapter one.wav.")

@@ -629,20 +629,20 @@ final class UpdateInstallRobustnessTests: XCTestCase {
 
     // The installed copy, not the running one.
     func testTheInstalledCopyIsReadWhenItExists() {
-        let home = URL(fileURLWithPath: "/Users/sample")
+        let home = URL(fileURLWithPath: "/tmp/sample")
         let running = URL(fileURLWithPath: "/Volumes/Download/OxSayDictation.app")
-        let installed = InstalledApp.bundleURL(running: running, home: home, exists: { $0.path == "/Users/sample/Applications/OxSayDictation.app/Contents/Info.plist" },
+        let installed = InstalledApp.bundleURL(running: running, home: home, exists: { $0.path == "/tmp/sample/Applications/OxSayDictation.app/Contents/Info.plist" },
                                                 version: { _ in "0.1.28" })
-        XCTAssertEqual(installed.path, "/Users/sample/Applications/OxSayDictation.app")
+        XCTAssertEqual(installed.path, "/tmp/sample/Applications/OxSayDictation.app")
     }
 
     /// The installed copy is offered only when it is not older than the running one: a dev build run next to an
     /// old ~/Applications copy must not be "repaired" down to it. Reads versions through a fake, never ~/Applications.
     /// Mutation: InstalledApp.bundleURL, delete the `isNewer` check (always the installed copy) -> RED.
     func testAnOlderInstalledCopyIsNotPreferredToTheRunningOne() {
-        let home = URL(fileURLWithPath: "/Users/sample")
+        let home = URL(fileURLWithPath: "/tmp/sample")
         let running = URL(fileURLWithPath: "/Volumes/Build/OxSayDictation.app")
-        let installedPath = "/Users/sample/Applications/OxSayDictation.app"
+        let installedPath = "/tmp/sample/Applications/OxSayDictation.app"
         func pick(installed: String?, running runningVersion: String?) -> String {
             InstalledApp.bundleURL(running: running, home: home, exists: { _ in true },
                                    version: { $0.path == installedPath ? installed : runningVersion }).path
@@ -657,7 +657,7 @@ final class UpdateInstallRobustnessTests: XCTestCase {
 
     func testTheRunningCopyIsTheFallbackWhenNothingIsInstalled() {
         let running = URL(fileURLWithPath: "/Volumes/Download/OxSayDictation.app")
-        let got = InstalledApp.bundleURL(running: running, home: URL(fileURLWithPath: "/Users/sample"), exists: { _ in false })
+        let got = InstalledApp.bundleURL(running: running, home: URL(fileURLWithPath: "/tmp/sample"), exists: { _ in false })
         XCTAssertEqual(got, running)
     }
 

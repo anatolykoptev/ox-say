@@ -16,7 +16,7 @@ final class MeetingSettingsTests: XCTestCase {
         XCTAssertEqual(MeetingSettings.retention(d), .month)
         XCTAssertEqual(MeetingSettings.callMode(d), .ask, "nothing records by itself until the user says so")
         XCTAssertFalse(MeetingSettings.explained(d))
-        XCTAssertEqual(MeetingSettings.folder(d, home: URL(fileURLWithPath: "/Users/u")).path, "/Users/u/Documents/ox-say Meetings")
+        XCTAssertEqual(MeetingSettings.folder(d, home: URL(fileURLWithPath: "/tmp/u")).path, "/tmp/u/Documents/ox-say Meetings")
         XCTAssertEqual(MeetingSettings.displayName(d, fallback: "Ann"), "Ann")
     }
 

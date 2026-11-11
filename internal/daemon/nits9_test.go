@@ -44,8 +44,8 @@ func TestPublicErrorLogLabelIsNeutral(t *testing.T) {
 	d := newTestDaemon(t, t.TempDir(), nil)
 	var buf bytes.Buffer
 	d.log = slog.New(slog.NewTextHandler(&buf, nil))
-	out := d.publicError(errors.New("engine said: cannot open /Users/someone/secret/ref.wav"))
-	if strings.Contains(out.Error(), "/Users/someone") {
+	out := d.publicError(errors.New("engine said: cannot open /srv/someone/secret/ref.wav"))
+	if strings.Contains(out.Error(), "/srv/someone") {
 		t.Fatalf("path leaked: %v", out)
 	}
 	if !strings.Contains(buf.String(), "error with a path withheld") {

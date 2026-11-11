@@ -153,7 +153,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
     }
     /// The Голоса page with the file sheet open over a picked clip, after the given steps.
     func fileSheet(_ now: Date, _ ru: Bool, name: String, seconds: Double, bytes: Int64, _ steps: (inout VoiceFileAdd) -> Void) -> MainWindowData {
-        var add = VoiceFileAdd(fileName: name, audioPath: "/Users/anya/Music/\(name)", seconds: seconds, bytes: bytes, ext: "m4a")
+        var add = VoiceFileAdd(fileName: name, audioPath: "/var/demo/Music/\(name)", seconds: seconds, bytes: bytes, ext: "m4a")
         steps(&add)
         return voices(PreviewData.make(now: now, ru: ru)) { $0.file = add }
     }
