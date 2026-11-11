@@ -8,7 +8,7 @@ final class MeetingFailureTests: XCTestCase {
     private func failed(_ code: String?) -> MeetingInfo {
         var info = MeetingInfo(id: "a", status: .failed)
         info.failReason = code
-        info.error = "stt: model ggml-x.bin not found at /Users/someone/.ox-say"
+        info.error = "stt: model ggml-x.bin not found at /var/ox-say-test/.ox-say"
         return info
     }
 

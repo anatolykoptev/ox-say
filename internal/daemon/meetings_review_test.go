@@ -95,10 +95,10 @@ func failedWithError(t *testing.T, d *Daemon, msg string) meeting.Manifest {
 func TestServedMeetingErrorsCarryNoAbsolutePath(t *testing.T) {
 	d, mux := meetingFixture(t, nil)
 	home := d.Cfg.Home
-	m := failedWithError(t, d, "notes run: open "+home+"/models/notes.gguf: no such file; also /Users/bob/secret/dir/x.txt")
+	m := failedWithError(t, d, "notes run: open "+home+"/models/notes.gguf: no such file; also /srv/bob/secret/dir/x.txt")
 	leaks := func(where, body string) {
 		t.Helper()
-		for _, bad := range []string{home, "/Users/bob", "secret/dir"} {
+		for _, bad := range []string{home, "/srv/bob", "secret/dir"} {
 			if strings.Contains(body, bad) {
 				t.Errorf("%s leaks %q: %s", where, bad, body)
 			}

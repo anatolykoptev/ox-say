@@ -522,7 +522,7 @@ func TestBackupNeverTouchesAFileThatIsNotReplaceable(t *testing.T) {
 // publicMessage of the broken-set error is its sentence, with no hidden file
 // name and no path.
 func TestBrokenSetSentenceNamesNoTempFile(t *testing.T) {
-	msg := publicMessage(fmt.Errorf("x: %w", errOutputsBroken), "/home/u")
+	msg := publicMessage(fmt.Errorf("x: %w", errOutputsBroken), "/srv/u")
 	if strings.Contains(msg, backupMark) || strings.Contains(msg, vproject.TempMark) || !strings.Contains(msg, "the previous version is kept beside the files") {
 		t.Fatalf("%q", msg)
 	}
