@@ -32,7 +32,7 @@ func meetingFixture(t *testing.T, edit func(*config.Config)) (*Daemon, *http.Ser
 		}
 		return &stt.Result{Words: w}, nil
 	}
-	d.Meet.Chat = cannedChat{`{"summary":"A planning call.","points":[{"text":"Ship Friday","status":"decided","quote":"agree who sends what by when"}],"action_items":[{"what":"send the plan","owner":"Me","requested_by":"","owner_evidence":"self_commit","quote":"go through the plan and the open questions","when":"Friday"}],"numbers":[]}`}
+	d.Meet.Chat = cannedChat{`{"summary":"A planning call.","points":[{"text":"Ship Friday","status":"decided","quote":"agree who sends what by when"}],"action_items":[{"what":"send the plan","owner":"Anatoly","requested_by":"","owner_evidence":"self_commit","quote":"go through the plan and the open questions","when":"Friday"}],"numbers":[]}`}
 	d.Meet.NotesReady = func() string { return "" }
 	mux := http.NewServeMux()
 	d.Routes(mux)

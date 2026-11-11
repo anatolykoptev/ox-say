@@ -581,6 +581,9 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 	// At most maxReduceCalls reduce calls (one for most meetings), after the map steps and before the summary merge; they can only settle open points.
 	claims, err := c.pairPoints(ctx, parts)
 	if err != nil {
+		if ctx.Err() != nil {
+			return Notes{}, ctx.Err() // a cancelled run is not a finished one, whichever call it stopped in
+		}
 		c.logf("notes: settling the open points failed, merging by words only", slog.Any("error", err))
 		claims = nil
 	}

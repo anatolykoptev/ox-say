@@ -123,6 +123,8 @@ func (m modelAction) checked(idx textIndex) ActionItem {
 		a.Who = "" // the transcript does not hold the words the model says show it
 	case ev != evSelfCommit && a.RequestedBy != "" && foldName(a.Who) == foldName(a.RequestedBy):
 		a.Who = "" // "owner" is the one who asked: the model swapped the roles
+	case a.Who != "" && !idx.showsOwner(m.Quote, ev, a.Who):
+		a.Who = "" // a real quote, but about someone else
 	}
 	if a.Who != "" {
 		a.OwnerEvidence = ev
@@ -160,8 +162,9 @@ func splitPoints(pts []Point) (decisions, open []string) {
 // a similarity threshold would let a model that invented a sentence through whenever it borrowed enough words, and the
 // failure of a miss is only an empty owner.
 type textIndex struct {
-	turns [][]string
-	at    map[string][]tokenPos // where each word occurs
+	turns    [][]string
+	speakers []string              // who spoke each turn, as the transcript prints it
+	at       map[string][]tokenPos // where each word occurs
 }
 
 type tokenPos struct{ turn, pos int }
@@ -181,6 +184,7 @@ func newTextIndex(text string) textIndex {
 			x.turns[len(x.turns)-1] = append(x.turns[len(x.turns)-1], toks...)
 		} else {
 			x.turns = append(x.turns, toks)
+			x.speakers = append(x.speakers, speakerOf(prefix))
 		}
 		if prefix != "" {
 			lastPrefix = prefix
@@ -194,6 +198,12 @@ func newTextIndex(text string) textIndex {
 	return x
 }
 
+// speakerOf is the name in a "[m:ss] Name: " prefix.
+func speakerOf(prefix string) string {
+	_, rest, _ := strings.Cut(prefix, "] ")
+	return strings.TrimSuffix(rest, ": ")
+}
+
 func quoteTokens(s string) []string {
 	return tokens(strings.NewReplacer("ё", "е").Replace(strings.ToLower(norm.NFKC.String(s))))
 }
@@ -202,17 +212,46 @@ func quoteTokens(s string) []string {
 // inside one turn. An oversized quote is refused before it is tokenized: it is not a phrase, and the model's string
 // is not trusted to be small.
 func (x textIndex) has(quote string) bool {
+	turns, _ := x.turnsWith(quote)
+	return len(turns) > 0
+}
+
+// turnsWith lists the turns the quote occurs in (see has for the rule) and the quote's words.
+func (x textIndex) turnsWith(quote string) (turns []int, q []string) {
 	if len(quote) > maxQuoteBytes {
-		return false
+		return nil, nil
 	}
-	q := quoteTokens(quote)
+	q = quoteTokens(quote)
 	if len(q) < minQuoteTokens || len(q) > maxQuoteTokens {
-		return false
+		return nil, nil
 	}
 	for _, at := range x.at[q[0]] {
 		turn := x.turns[at.turn]
 		if at.pos+len(q) <= len(turn) && equalTokens(turn[at.pos:at.pos+len(q)], q) {
+			turns = append(turns, at.turn)
+		}
+	}
+	return turns, q
+}
+
+// showsOwner: the quote occurs in a turn that shows owner as the person who will do the task. For self_commit the
+// turn is spoken by the owner. For a request the turn is spoken by the owner (the one who accepted) or names the owner
+// (the request addressed to them): a real quote about someone else does not make them the owner.
+func (x textIndex) showsOwner(quote, evidence, owner string) bool {
+	turns, q := x.turnsWith(quote)
+	for _, t := range turns {
+		if foldName(x.speakers[t]) == foldName(owner) {
 			return true
+		}
+		if evidence == evSelfCommit {
+			continue
+		}
+		for _, o := range tokens(owner) {
+			for _, w := range q {
+				if utf8.RuneCountInString(o) >= 2 && sameName(o, w) {
+					return true
+				}
+			}
 		}
 	}
 	return false

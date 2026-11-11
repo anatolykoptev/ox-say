@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // pad is a marker a fixture's transcript uses to force the next line into a new chunk: it is replaced by enough
@@ -323,7 +324,8 @@ const oldNotesJSON = `{
  }
 }`
 
-const oldNotesMD = "# Sync — 0000-12-31 16:07\n\n## Summary\n\nLaunch plan agreed.\n\nBudget still open.\n\n## Decisions\n\n" +
+// oldNotesBody is notes.md after its first line, which holds the meeting time in the local time zone.
+const oldNotesBody = "\n\n## Summary\n\nLaunch plan agreed.\n\nBudget still open.\n\n## Decisions\n\n" +
 	"- Ship the beta on Friday\n- Use the final song version\n\n## Action items\n\n- [ ] Daphne — make the ticket — today\n" +
 	"- [ ] not stated — book the \\[venue\\](http://x) — not stated\n\n## Open questions\n\n- Who pays for the ads?\n\n" +
 	"## Key numbers and dates\n\n- Budget: 5000 dollars\n\n_Part 3 of the transcript could not be summarized._\n"
@@ -337,8 +339,15 @@ func TestOldNotesJSONLoadsRendersAndWritesBackUnchanged(t *testing.T) {
 	if err := json.Unmarshal([]byte(oldNotesJSON), &n); err != nil {
 		t.Fatal(err)
 	}
-	if got := NotesMarkdown(Manifest{Title: "Sync"}, n, "en"); got != oldNotesMD {
-		t.Fatalf("notes.md changed:\n%s\nwant:\n%s", got, oldNotesMD)
+	started := time.Date(2026, 11, 10, 9, 30, 0, 0, time.UTC)
+	got := NotesMarkdown(Manifest{Title: "Sync", Started: started}, n, "en")
+	// The heading shows the time in the local zone (heading() in transcript.go): build it the same way, so the test
+	// holds in any zone without touching time.Local.
+	if want := "# Sync — " + started.Local().Format("2006-01-02 15:04"); !strings.HasPrefix(got, want) {
+		t.Fatalf("heading = %q, want it to start with %q", strings.SplitN(got, "\n", 2)[0], want)
+	}
+	if body := got[strings.Index(got, "\n"):]; body != oldNotesBody {
+		t.Fatalf("notes.md changed:\n%s\nwant:\n%s", body, oldNotesBody)
 	}
 	out, err := json.MarshalIndent(n, "", " ")
 	if err != nil {
@@ -787,5 +796,75 @@ func TestSameWord(t *testing.T) {
 		if got := sameWord(foldWord(c.a), foldWord(c.b)); got != c.want {
 			t.Errorf("sameWord(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
 		}
+	}
+}
+
+// A stored quote follows a rename, cleaned like the quote itself: a new name with markup in it stays escaped.
+// Mutation: labels.go apply, delete the `a.Quote = replaceLabels(a.Quote, cleanFree)` line -> RED. (A label that is
+// the single far-side one is exact-only, as in the notes text, so the replay test above leaves its quote alone.)
+func TestRenameKeepsAStoredQuoteCleaned(t *testing.T) {
+	c := labelChanges{free: map[string]string{"Speaker 2": "[Ivan](http://evil.example/x)"}, exact: map[string]string{}}
+	n := c.apply(Notes{ChunkNotes: ChunkNotes{ActionItems: []ActionItem{{Who: "x", What: "y", Quote: "Speaker 2, can you make the ticket"}}}})
+	q := n.ActionItems[0].Quote
+	if !strings.HasPrefix(q, `\[Ivan\]`) || strings.Contains(strings.ReplaceAll(q, `\]`, ""), "](") {
+		t.Fatalf("quote after the rename = %q: the new name must be escaped", q)
+	}
+}
+
+// A cancelled run is not a finished one: when the reduce call is the one that is cut off, Compose returns the
+// cancellation instead of notes that the runner would store as done.
+// Mutation: notes.go Compose, delete the `if ctx.Err() != nil { return Notes{}, ctx.Err() }` under the pairPoints error
+// -> RED.
+func TestComposeCancelledInTheReduceCallReturnsTheCancellation(t *testing.T) {
+	fx := ownerFixtures(t)[6]
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := &cancelOnCall{fakeChat: fakeChat{replies: []string{fx.replies[0], fx.replies[1]}}, at: 2, cancel: cancel}
+	_, err := Composer{Chat: f}.Compose(ctx, expandPad(fx.transcript), Labels{}, "en")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+// cancelOnCall is a fakeChat whose call number `at` (from 0) cancels the run and fails.
+type cancelOnCall struct {
+	fakeChat
+	at     int
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnCall) Complete(ctx context.Context, r Request) (string, error) {
+	if len(c.reqs) == c.at {
+		c.reqs = append(c.reqs, r)
+		c.cancel()
+		return "", ctx.Err()
+	}
+	return c.fakeChat.Complete(ctx, r)
+}
+
+// The quote must show the owner: a real quote about someone else does not make them the owner.
+// Mutation: notes_points.go modelAction.checked, delete the `case a.Who != "" && !idx.showsOwner(m.Quote, ev, a.Who):`
+// arm -> RED on the cleared rows; in showsOwner change `foldName(x.speakers[t]) == foldName(owner)` to `true` -> RED too.
+func TestComposeOwnerMustBeShownByTheQuote(t *testing.T) {
+	text := "[0:05] Anatoly: I'll send the deck to the board.\n[0:09] Anatoly: Somebody needs to book the venue.\n" +
+		"[0:12] Daphne: Sure, I will do it today.\n[0:15] Anatoly: Daphne, can you make a ticket?\n"
+	for name, tc := range map[string]struct {
+		m    modelAction
+		want string
+	}{
+		"self-commit quoted from another speaker": {modelAction{What: "send the deck", Owner: "Daphne", OwnerEvidence: evSelfCommit, Quote: "I'll send the deck to the board"}, ""},
+		"self-commit quoted from the owner":       {modelAction{What: "send the deck", Owner: "Anatoly", OwnerEvidence: evSelfCommit, Quote: "I'll send the deck to the board"}, "Anatoly"},
+		"addressed, the quote names no one":       {modelAction{What: "book the venue", Owner: "Daphne", OwnerEvidence: evAddressedByName, Quote: "Somebody needs to book the venue"}, ""},
+		"addressed, the quote names the owner":    {modelAction{What: "make a ticket", Owner: "Daphne", OwnerEvidence: evAddressedByName, Quote: "Daphne, can you make a ticket"}, "Daphne"},
+		"accepted, the quote is the owner's turn": {modelAction{What: "book the venue", Owner: "Daphne", OwnerEvidence: evAcceptedRequest, Quote: "Sure, I will do it today"}, "Daphne"},
+		"accepted, the quote is another's turn":   {modelAction{What: "book the venue", Owner: "Daphne", OwnerEvidence: evAcceptedRequest, Quote: "Somebody needs to book the venue"}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeChat{replies: []string{answerJSON(t, chunkAnswer{Summary: "s", ActionItems: []modelAction{tc.m}})}}
+			n := composeWith(t, f, text, Labels{Me: "Anatoly"}, "en")
+			if got := n.ActionItems[0].Who; got != tc.want {
+				t.Fatalf("owner = %q, want %q (%+v)", got, tc.want, n.ActionItems[0])
+			}
+		})
 	}
 }

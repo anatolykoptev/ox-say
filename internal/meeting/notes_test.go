@@ -99,7 +99,10 @@ func (f *fakeChat) Complete(_ context.Context, r Request) (string, error) {
 
 // fixtureQuote is words the runner fixture's transcript really holds (see newFixture), so a canned owner or
 // decision built from it passes the code's check of the model's quotes.
-const fixtureQuote = "happy to start with the status of the proposal"
+const (
+	fixtureQuote     = "happy to start with the status of the proposal"
+	fixtureThemQuote = "thanks everyone for joining today"
+)
 
 // replyJSON is a canned model answer for c: its owners are self-commitments and its decisions are agreed, both
 // quoting fixtureQuote. A test that needs a wrong or missing quote writes its answer by hand.
@@ -114,8 +117,14 @@ func replyJSON(t *testing.T, c ChunkNotes) string {
 	}
 	for _, it := range c.ActionItems {
 		m := modelAction{What: it.What, Owner: it.Who, When: it.When, OwnerEvidence: evUnstated}
-		if it.Who != "" {
+		switch {
+		case it.Who == "":
+		case it.Who == "Anatoly": // the recorder, who speaks the fixtureQuote words
 			m.OwnerEvidence, m.Quote = evSelfCommit, fixtureQuote
+		case it.Who == "Other": // the single far-side label
+			m.OwnerEvidence, m.Quote = evSelfCommit, fixtureThemQuote
+		default: // a numbered far-side voice of groupFixture
+			m.OwnerEvidence, m.Quote = evSelfCommit, "alpha bravo charlie delta"
 		}
 		a.ActionItems = append(a.ActionItems, m)
 	}
