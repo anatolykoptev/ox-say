@@ -630,20 +630,14 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 	var skipped []int
 	restarts := 1 // extra engine starts this run may spend on a retryable failure
 	for i, ch := range chunks {
-		got, err := c.chunk(ctx, l, lang, i, len(chunks), ch, &restarts)
+		got, lost, err := c.summarise(ctx, l, lang, i, len(chunks), ch, &restarts, 0)
 		if err != nil {
-			if ctx.Err() != nil {
-				return Notes{}, ctx.Err()
-			}
-			var down *EngineDownError
-			if errors.As(err, &down) {
-				return Notes{}, err
-			}
-			c.logf("notes: chunk failed", slog.Int("chunk", i), slog.String("error_class", errClass(err)))
-			skipped = append(skipped, i)
-			continue
+			return Notes{}, err
 		}
-		parts = append(parts, got)
+		parts = append(parts, got...)
+		if lost {
+			skipped = append(skipped, i)
+		}
 	}
 	if len(parts) == 0 {
 		return Notes{}, ErrNoNotes
@@ -663,6 +657,82 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 		n.Summary = c.mergeSummary(ctx, parts, n.Summary, lang)
 	}
 	return n, nil
+}
+
+const (
+	// maxSplitDepth: a chunk whose answer hit the token cap is halved, and a half that hits it again is halved once
+	// more (quarters); a piece that still overflows is given up.
+	maxSplitDepth = 2
+	// minSplitRunes: a text this short that still overflows the answer cap is not a size problem; halving it
+	// would only feed the model fragments.
+	minSplitRunes = 400
+)
+
+// summarise writes the notes for one chunk. A chunk whose answer hit the token cap is not retried as it is (the
+// same request overflows again about as often as not): its text is split at a line end and each half is summarised
+// on its own, down to maxSplitDepth levels. The halves' notes come back in order, as ordinary parts. lost reports
+// that some piece of the chunk has no notes (the caller records the chunk as skipped). A non-truncation failure
+// keeps chunk's own retry and then loses the piece. err is set only for a stop the whole run must honour: a
+// cancelled context or a dead engine.
+func (c Composer) summarise(ctx context.Context, l Labels, lang string, i, total int, text string, restarts *int, depth int) (parts []ChunkNotes, lost bool, err error) {
+	got, err := c.chunk(ctx, l, lang, i, total, text, restarts)
+	if err == nil {
+		return []ChunkNotes{got}, false, nil
+	}
+	if ctx.Err() != nil {
+		return nil, false, ctx.Err()
+	}
+	var down *EngineDownError
+	if errors.As(err, &down) {
+		return nil, false, err
+	}
+	if !errors.Is(err, ErrTruncated) {
+		c.logf("notes: chunk failed", slog.Int("chunk", i), slog.String("error_class", errClass(err)))
+		return nil, true, nil
+	}
+	a, b, ok := splitText(text)
+	if depth >= maxSplitDepth || !ok {
+		c.logf("notes: chunk piece overflowed the answer cap and cannot be split further", slog.Int("chunk", i), slog.Int("depth", depth))
+		return nil, true, nil
+	}
+	c.logf("notes: chunk answer hit the token cap, summarising its halves", slog.Int("chunk", i), slog.Int("depth", depth))
+	for _, half := range []string{a, b} {
+		got, lostHalf, err := c.summarise(ctx, l, lang, i, total, half, restarts, depth+1)
+		if err != nil {
+			return nil, false, err
+		}
+		parts = append(parts, got...)
+		lost = lost || lostHalf
+	}
+	return parts, lost, nil
+}
+
+// splitText cuts text into two pieces of about equal length at a line end. A text of one line is cut inside it
+// with cutLine (token-bounded, grapheme-safe, continuation led by the speaker prefix). ok is false when text is
+// too short to be worth halving.
+func splitText(text string) (a, b string, ok bool) {
+	text = strings.TrimRight(text, "\n")
+	total := runeLen(text)
+	if total < minSplitRunes {
+		return "", "", false
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) == 1 {
+		prefix := runeLen(turnPrefix.FindString(text))
+		pieces := cutLine(text, total/2+prefix+1)
+		if len(pieces) < 2 {
+			return "", "", false
+		}
+		return pieces[0], strings.Join(pieces[1:], "\n"), true
+	}
+	best, bestDist, run := 1, total, 0
+	for k := 1; k < len(lines); k++ {
+		run += runeLen(lines[k-1]) + 1
+		if d := max(run-total/2, total/2-run); d < bestDist {
+			best, bestDist = k, d
+		}
+	}
+	return strings.Join(lines[:best], "\n"), strings.Join(lines[best:], "\n"), true
 }
 
 // errEmptyNotes: the model returned valid JSON with nothing in it. The system
@@ -710,6 +780,10 @@ func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int
 		}
 		if ctx.Err() != nil {
 			return ChunkNotes{}, ctx.Err()
+		}
+		if errors.Is(err, ErrTruncated) {
+			// The same request overflows again about as often as not; summarise splits the text instead.
+			return ChunkNotes{}, err
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			// The call used its whole deadline; a second one would too.
