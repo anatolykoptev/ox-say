@@ -233,17 +233,23 @@ func (r *residency) settle(ctx context.Context, sup *engine.Supervisor) (err err
 	return err
 }
 
+// stopEngine stops one large engine and returns once its process has exited, so its memory is free. It is the one
+// stop path: the arbiter's turn change and the notes turn's make-room step (makeNotesRoom) both use it. A nil
+// arbiter stops with Supervisor.Stop.
+func (r *residency) stopEngine(ctx context.Context, e *engine.Supervisor) error {
+	if r != nil && r.stop != nil {
+		return r.stop(ctx, e)
+	}
+	return e.Stop(ctx)
+}
+
 // evictOthers stops every managed engine but keep, waiting for each one's exit.
 func (r *residency) evictOthers(ctx context.Context, keep *engine.Supervisor) error {
 	for _, e := range r.engines {
 		if e == keep {
 			continue
 		}
-		stop := r.stop
-		if stop == nil {
-			stop = func(ctx context.Context, e *engine.Supervisor) error { return e.Stop(ctx) }
-		}
-		if err := stop(ctx, e); err != nil {
+		if err := r.stopEngine(ctx, e); err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				r.log.Warn("memory: could not stop a large engine to make room", slog.Any("error", err))
 			}

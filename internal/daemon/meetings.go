@@ -384,6 +384,8 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 		}
 		return "", &meeting.EngineDownError{Err: err, Retryable: true, Reason: meeting.FailNotesEngineStart}
 	}
+	// Shared mode: idle voices that leave the model less room than its weights are stopped first (notesfit.go).
+	c.d.makeNotesRoom(ctx)
 	g := c.d.LLMSup.Acquire()
 	defer g.Release()
 	mark := notesLogMark(c.d.Cfg.EngineLogDir)

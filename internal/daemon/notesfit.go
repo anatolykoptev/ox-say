@@ -35,6 +35,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -44,11 +45,13 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/ox-say/internal/config"
+	"github.com/anatolykoptev/ox-say/internal/engine"
 )
 
 const (
 	// The values /status reports in notes.fit.
 	fitFull      = "full"        // the plan is a full-offload fit
+	fitPartial   = "partial"     // the weights exceed the room left: llama.cpp keeps part of the model on the CPU
 	fitFitted    = "fitted"      // an OOM raised the fit target
 	fitFallback  = "fallback_4b" // the automatic choice was swapped for the installed 4B
 	fitUnchecked = "unchecked"   // the budget probe is unknown; llama.cpp fitted with its default margin
@@ -190,7 +193,74 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 			}
 		}
 	}
+	if known && p.fit == fitFull {
+		if free := notesRoomBytes(limit, used); notesWeightBytes(res) > free {
+			p.fit = fitPartial
+			p.why = fmt.Sprintf("the model's weights (%s) exceed the %s of GPU memory left after the rest of the system (%s) and the call's headroom; llama.cpp keeps part of the model on the CPU, so notes are slower",
+				notesGiB(notesWeightBytes(res)), notesGiB(max(free, 0)), notesGiB(int64(used)))
+		}
+	}
 	return d.finishPlan(res, p)
+}
+
+// notesRoomBytes is the GPU memory left for the notes model: the wired limit minus what the rest of the system
+// holds minus the call's headroom. Negative when the others already take more.
+func notesRoomBytes(limit, used uint64) int64 {
+	return int64(limit) - int64(used) - int64(notesFitHeadroomMiB)<<20
+}
+
+// notesRoomSlack is how much room beyond the weights makeNotesRoom wants before it leaves the voices alone: the
+// KV cache and the compute buffers.
+const notesRoomSlack = 1 << 30
+
+// makeNotesRoom runs before a meeting's notes engine is spawned. In shared mode (no arbiter turn) the idle voices
+// stay resident, and on a small Mac they leave the model less room than its weights; llama.cpp then keeps layers on
+// the CPU and the notes run at a fraction of the speed (gate, 24 GB tier: 28 tok/s against 70). When the probe is
+// known and the room is under weights + notesRoomSlack, the fast and the studio voice are stopped if they are idle.
+// A voice that is rendering is never stopped (the spawn goes ahead and the fitter copes); a stopped voice starts
+// again on its next request, as after its own idle stop. The spawn that follows plans from a fresh probe.
+func (d *Daemon) makeNotesRoom(ctx context.Context) {
+	if d.LLMSup == nil || !d.Cfg.UnifiedMemory() || d.mem.managed(d.LLMSup) {
+		return // the arbiter makes the room by its own turn change
+	}
+	if _, live := d.LLMSup.LiveURL(); live {
+		return // already spawned: later chunks of the same job
+	}
+	res := d.notesResolve()
+	w := notesWeightBytes(res)
+	if !res.Installed || w <= 0 {
+		return
+	}
+	bin := notesBinPath(d.Cfg)
+	limit, used := notesGPUWired(bin)
+	if limit == 0 {
+		return
+	}
+	before := notesRoomBytes(limit, used)
+	if before >= w+notesRoomSlack {
+		return
+	}
+	var stopped []string
+	for _, v := range []*engine.Supervisor{d.Sup, d.VoxSup} {
+		if v == nil || !v.Idle() {
+			continue
+		}
+		sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err := d.mem.stopEngine(sctx, v)
+		cancel()
+		if err != nil {
+			d.log.Warn("notes: could not stop an idle voice to make room", slog.String("engine", v.Name()), slog.Any("error", err))
+			continue
+		}
+		stopped = append(stopped, v.Name())
+	}
+	if len(stopped) == 0 {
+		return
+	}
+	_, usedAfter := notesGPUWired(bin)
+	d.log.Info("notes: stopped idle voices to make room for the notes model",
+		slog.Any("stopped", stopped), slog.String("weights", notesGiB(w)),
+		slog.String("room_before", notesGiB(max(before, 0))), slog.String("room_after", notesGiB(max(notesRoomBytes(limit, usedAfter), 0))))
 }
 
 // finishPlan records the spawn and the /status label of plan p.

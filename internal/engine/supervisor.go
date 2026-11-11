@@ -477,6 +477,15 @@ func (s *Supervisor) Status() Status {
 	return st
 }
 
+// Idle reports whether the engine holds a ready child that no request is using (a guard that only prefers the child
+// to stay up does not count). It is the check before stopping an engine for its memory without waiting on its work:
+// Stop would wait for a busy engine's guards, this says not to ask.
+func (s *Supervisor) Idle() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state == StateReady && s.child != nil && s.guards-s.softGuards == 0
+}
+
 // ReadyURL returns the base URL if the engine is ready, without starting it.
 func (s *Supervisor) ReadyURL() (string, bool) {
 	s.mu.Lock()
