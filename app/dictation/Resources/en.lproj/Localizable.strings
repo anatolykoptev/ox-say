@@ -824,3 +824,31 @@
 "speak.panel.mixed" = "different";
 "speak.panel.own_settings" = "Your own sound settings are on";
 "speak.panel.random" = "Random";
+
+/* Расшифровка */
+"transcribe.pick" = "Choose File…";
+"transcribe.drop.title" = "Drop a recording here";
+"transcribe.drop.message" = "Audio or video. You get the text and the subtitles.";
+"transcribe.drop.targeted" = "Release to transcribe";
+"transcribe.loading" = "Loading transcripts…";
+"transcribe.working" = "Transcribing…";
+"transcribe.working.hint" = "A long recording takes a while. You can close the window; it keeps going.";
+"transcribe.done" = "Done";
+"transcribe.text" = "Text";
+"transcribe.subtitles" = "Subtitles";
+"transcribe.more" = "More";
+"transcribe.copy" = "Copy";
+"transcribe.save" = "Save…";
+"transcribe.save_vtt" = "Save as .vtt…";
+"transcribe.save_json" = "Save as .json…";
+"transcribe.delete" = "Delete…";
+"transcribe.delete.title" = "Delete “%@”?";
+"transcribe.delete.body" = "The text and the subtitles are removed from OxSay. The recording itself is not touched. This cannot be undone.";
+"transcribe.delete.confirm" = "Delete";
+"transcribe.minutes" = "%@ min";
+"transcribe.problem.not_media" = "Pick an audio or video file: WAV, MP3, M4A, AIFF, FLAC, MP4, MOV and the like.";
+"transcribe.problem.too_big" = "The file is over %@ MB, more than OxSay takes at once. Cut it into parts.";
+"transcribe.busy" = "One recording at a time: wait for the current one to finish.";
+"transcribe.copied" = "The text is copied.";
+"transcribe.save_failed" = "The file could not be saved.";
+"transcribe.default_name" = "Transcript";

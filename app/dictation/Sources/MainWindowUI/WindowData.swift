@@ -155,12 +155,14 @@ public struct MainWindowData: Equatable {
     public var voices: VoicesValues
     public var about: AboutValues
     public var speak: SpeakValues
+    public var transcribe: TranscribeValues
 
     public init(meetings: [MeetingInfo], meetingsLoad: MeetingsLoad = .loaded, details: [String: MeetingDetail],
                 detailLoading: Set<String> = [], detailError: [String: String] = [:], recordingElapsed: TimeInterval? = nil,
                 notice: String? = nil, search: MeetingSearchState = MeetingSearchState(), playback: PlaybackValues? = nil,
                 meetingSettings: MeetingSettingsValues, permissions: [PermissionItem],
-                dictation: DictationValues, voices: VoicesValues, about: AboutValues, speak: SpeakValues = SpeakValues()) {
+                dictation: DictationValues, voices: VoicesValues, about: AboutValues, speak: SpeakValues = SpeakValues(),
+                transcribe: TranscribeValues = TranscribeValues()) {
         self.meetings = meetings
         self.meetingsLoad = meetingsLoad
         self.details = details
@@ -176,6 +178,7 @@ public struct MainWindowData: Equatable {
         self.voices = voices
         self.about = about
         self.speak = speak
+        self.transcribe = transcribe
     }
 }
 
@@ -264,6 +267,14 @@ public struct MainWindowActions {
     public var speakPace: (Double) -> Void = { _ in }
     public var speakPause: (Double) -> Void = { _ in }
     public var speakPanelChanged: (VoicePanelSettings) -> Void = { _ in }
+    /// Расшифровка: a file picked or dropped, the list read again, a row picked, a row's text copied, a row saved in
+    /// a format (the app opens the save panel), a row deleted (the page has already asked).
+    public var transcribePick: (URL) -> Void = { _ in }
+    public var transcribeReload: () -> Void = {}
+    public var transcribeSelect: (String) -> Void = { _ in }
+    public var transcribeCopy: (String) -> Void = { _ in }
+    public var transcribeSave: (String, TranscriptFormat) -> Void = { _, _ in }
+    public var transcribeDelete: (String) -> Void = { _ in }
 
     public init() {}
 }
