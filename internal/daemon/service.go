@@ -345,13 +345,22 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 		}
 	}
 	logger.Info("large engine memory model", slog.String("mode", d.mem.mode()))
-	// A daemon killed mid-trial left the trial's key behind: a dead bearer
-	// credential, swept here. The pidfile stays — the next trial's
-	// supervisor reaps the leftover child through it.
+	// A daemon killed mid-trial left the child itself behind: notes-trial.pid
+	// names it, and constructing the trial supervisor reaps the orphan through
+	// the same exe + start-token check the next trial would run — here, at
+	// startup, before any notes work, not only when another check happens to
+	// build a trial supervisor. Its key — a dead bearer credential — is swept
+	// with it.
 	_ = os.Remove(filepath.Join(cfg.RunDir(), notesTrialKeyFile))
-	// The own-model trial plugs into the PUT's {"path"} gate here, bound to
-	// this daemon: its check loads the file the way the engine would.
-	notesModelTrialLoad = d.notesModelTrialRefusal
+	if cfg.NotesBin != "" {
+		// A reaper that cannot be built must not keep the daemon down: the
+		// next check reaps the orphan the same way.
+		if tsup, err := d.newNotesTrialSupervisor(""); err != nil {
+			logger.Warn("own notes model: the orphaned trial child could not be looked for", "error", err)
+		} else {
+			tsup.Shutdown()
+		}
+	}
 	d.initMeetings()
 	d.initTranscripts()
 	if d.VoxSup != nil {

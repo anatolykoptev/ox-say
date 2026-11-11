@@ -184,12 +184,6 @@ func (d *Daemon) handleNotesModelGet(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// notesModelTrialLoad is the PUT's trial-load gate for the user's own model,
-// bound per daemon in newDaemon: after the static checks of
-// notesModelPathError it loads the file the way the notes engine would before
-// the choice may be saved. nil: the static checks are the whole validation.
-var notesModelTrialLoad func(ctx context.Context, path string) *modelError
-
 // notesModelPathError is the static half of the own-model gate, shared by PUT
 // and the validate route: the path must be a canonical absolute path
 // (no . or .. segments, no doubled separators) naming a regular file after
@@ -294,12 +288,12 @@ func (d *Daemon) handleNotesModelPut(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// The static gate passed; the own-model trial — load it the way the
-		// engine would — is the last word before the choice is saved.
-		if notesModelTrialLoad != nil {
-			if me := notesModelTrialLoad(r.Context(), req.Path); me != nil {
-				writeErr(w, me.status, me.msg)
-				return
-			}
+		// engine would — is the last word before the choice is saved. It runs
+		// on the daemon the request reached: its engine, its run dir, its
+		// busy state — never a sibling daemon's.
+		if me := d.notesModelTrialRefusal(r.Context(), req.Path); me != nil {
+			writeErr(w, me.status, me.msg)
+			return
 		}
 		ch = config.NotesChoice{Path: req.Path}
 	case req.ID != "" && req.ID != config.NotesCustomID:

@@ -61,8 +61,11 @@ func TestHTTPChatFreeTextCutAtTheTokenLimitIsTruncated(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"half a summ"},"finish_reason":"length"}]}`))
 	}))
 	defer srv.Close()
-	if _, err := (HTTPChat{BaseURL: srv.URL}).Complete(context.Background(), Request{}); !errors.Is(err, ErrTruncated) {
-		t.Fatalf("a free-text answer cut at the token limit = %v, want ErrTruncated", err)
+	// The cut-off text rides along with ErrTruncated: a caller that only
+	// needs proof of generation (the own-model trial) reads it.
+	out, err := (HTTPChat{BaseURL: srv.URL}).Complete(context.Background(), Request{})
+	if !errors.Is(err, ErrTruncated) || out != "half a summ" {
+		t.Fatalf("a free-text answer cut at the token limit = %q, %v, want the text and ErrTruncated", out, err)
 	}
 }
 

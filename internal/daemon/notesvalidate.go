@@ -175,18 +175,26 @@ func (d *Daemon) trialLoadModel(ctx context.Context, path string, out notesModel
 		}
 	}
 	defer leave()
-	// A managed notes engine keeps its model resident; the trial is a
-	// second large model in the same memory, so it goes first — the same
-	// slot a notes run takes over.
-	if d.LLMSup != nil && d.mem.managed(d.LLMSup) {
-		if err := d.stopModelEngine(ctx, d.LLMSup); err != nil {
-			var me *modelError
-			if errors.As(err, &me) {
-				return refuse(me.status, "%s", me.msg)
-			}
-			d.log.Warn("own notes model: the resident notes engine could not be stopped", "error", err)
-			return refuse(http.StatusInternalServerError, "The notes engine could not be stopped for the model check.")
+	// The resident notes engine is itself a second large model in memory: a
+	// trial beside it can exceed physical RAM on ANY Mac — d.mem arbitrates
+	// the engines' turns only where memory is tight, so on a Mac it does not
+	// manage nothing else would make room. It goes first, whatever the
+	// arbiter's state.
+	if err := d.stopModelEngine(ctx, d.LLMSup); err != nil {
+		var me *modelError
+		if errors.As(err, &me) {
+			return refuse(me.status, "%s", me.msg)
 		}
+		d.log.Warn("own notes model: the resident notes engine could not be stopped", "error", err)
+		return refuse(http.StatusInternalServerError, "The notes engine could not be stopped for the model check.")
+	}
+	// The file's bytes plus every large model still resident — the voices,
+	// where nothing evicts them — must leave the headroom the file alone
+	// needed; memory the trial does not get still counts against it.
+	if rem := out.Bytes + d.residentEngineBytes(); rem > int64(d.Cfg.HostMemoryBytes*notesOwnRAMShare/10) {
+		return refuse(http.StatusConflict,
+			"The model file plus the engines still resident is %.1f GB; together they must fit in %d%% of this Mac's %d GB of memory.",
+			float64(rem)/1e9, notesOwnRAMShare*10, d.Cfg.HostMemoryBytes>>30)
 	}
 	sup, err := d.newNotesTrialSupervisor(path)
 	if err != nil {
@@ -222,16 +230,46 @@ func (d *Daemon) trialLoadModel(ctx context.Context, path string, out notesModel
 	}
 	cctx, cancel := context.WithTimeout(ctx, notesTrialCallTimeout)
 	defer cancel()
-	_, err = d.notesTrialChat(base).Complete(cctx, meeting.Request{User: notesTrialPrompt, MaxTokens: notesTrialMaxTokens})
-	if err != nil {
+	// The guard marks the completion as work the child is serving, so the
+	// idle stop can only ever fire on a child the check left behind.
+	g := sup.Acquire()
+	answer, err := d.notesTrialChat(base).Complete(cctx, meeting.Request{User: notesTrialPrompt, MaxTokens: notesTrialMaxTokens})
+	g.Release()
+	switch {
+	case errors.Is(err, meeting.ErrTruncated):
+		// finish_reason "length": the model answered past the token cap —
+		// that answer is the proof it generates; only silence is a refusal.
+	case err != nil:
 		d.log.Warn("own notes model: the test completion failed", "error", err)
 		if ctx.Err() != nil {
 			return refuse(http.StatusServiceUnavailable, "The model check was cancelled.")
 		}
 		return refuse(http.StatusBadRequest, "The model loaded but did not answer a test completion.")
 	}
+	if strings.TrimSpace(answer) == "" {
+		return refuse(http.StatusBadRequest, "The model loaded but did not answer a test completion.")
+	}
 	out.OK = true
 	return out
+}
+
+// residentEngineBytes is the model memory the large engines still hold
+// while the trial runs — each live supervisor's footprint, measured the way
+// /v1/models reports it (the real file size, or the estimate where the file
+// cannot be read back from a running child). The trial counts it against
+// the same memory gate as its own file.
+func (d *Daemon) residentEngineBytes() int64 {
+	var n int64
+	if d.Sup != nil && d.Sup.Status().PID != 0 {
+		n += d.qwenModelEntry().Bytes
+	}
+	if d.VoxSup != nil && d.VoxSup.Status().PID != 0 {
+		n += d.voxModelEntry().Bytes
+	}
+	if d.LLMSup != nil && d.LLMSup.Status().PID != 0 {
+		n += d.notesModelEntry().Bytes
+	}
+	return n
 }
 
 // freeLoopbackPort asks the kernel for a free loopback port; the child binds
@@ -246,7 +284,9 @@ func freeLoopbackPort() (int, error) {
 }
 
 // newNotesTrialSupervisor is the trial's ox-llm: the daemon's own notes argv
-// on a free loopback port, its own key and pid files, no idle stop.
+// on a free loopback port, its own key and pid files, and the notes engine's
+// own idle stop — a child a check loses track of still self-terminates.
+// Constructing it also reaps the previous trial's orphan through the pidfile.
 func (d *Daemon) newNotesTrialSupervisor(path string) (*engine.Supervisor, error) {
 	port, err := freeLoopbackPort()
 	if err != nil {
@@ -256,6 +296,7 @@ func (d *Daemon) newNotesTrialSupervisor(path string) (*engine.Supervisor, error
 	return engine.New(engine.Config{
 		Name: "notes-trial", Bin: notesBinPath(d.Cfg), Port: port,
 		StartupTimeout: notesTrialStartupTimeout,
+		IdleStop:       d.Cfg.NotesIdleStop,
 		LogName:        "notes-trial.log", LogDir: d.Cfg.EngineLogDir,
 		PidPath: filepath.Join(d.Cfg.RunDir(), notesTrialPidFile),
 		Logger:  d.log,

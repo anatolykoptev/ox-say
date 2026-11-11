@@ -7,10 +7,12 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -511,5 +513,252 @@ func TestNotesModelTrialLeavesTheChoiceUntouched(t *testing.T) {
 	}
 	if ch := readNotesChoice(d.Cfg.Home); ch == nil || ch.ID != "qwen3.5-4b" {
 		t.Fatalf("a refused trial changed the saved choice: %+v", ch)
+	}
+}
+
+// A model that answers in more tokens than the trial's cap still proved it
+// generates: finish_reason "length" is an answer — only silence, an error
+// or an empty body is not. Mutation: notesvalidate.go trialLoadModel, drop
+// the errors.Is(err, meeting.ErrTruncated) case -> RED (the capped answer
+// is refused as "did not answer").
+func TestNotesModelTrialAcceptsATruncatedAnswer(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OXSAY_FAKE_LLM_TRUNCATED", "1")
+	d, _ := trialDaemon(t, dir, nil)
+	if res := d.notesModelTrial(context.Background(), ownGGUF(t, dir, nil)); !res.OK {
+		t.Fatalf("verdict = %+v, a capped answer must prove the model", res)
+	}
+}
+
+// Two daemons in one process: the PUT's trial must run on the daemon it
+// was addressed to — its engine, its run dir, its busy state — never the
+// one constructed last. The spawned child's argv is the evidence: the
+// trial key file sits in the OWNING daemon's run dir. Mutation:
+// notesmodel.go handleNotesModelPut, route the trial through a
+// package-level hook bound by the last newDaemon -> RED (the argv names
+// the second daemon's run dir).
+func TestNotesModelPutTrialsOnItsOwnDaemon(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	dA, muxA := trialDaemon(t, dirA, nil)
+	_, _ = trialDaemon(t, dirB, nil)
+	path := ownGGUF(t, dirB, nil) // trial stamps land under dirB — the last OXSAY_FAKE_DIR
+	rec := call(t, muxA, http.MethodPut, "/v1/meetings/notes-model", `{"path":`+strconv.Quote(path)+`}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT: %d %s", rec.Code, bodyText(rec))
+	}
+	pids := llmSpawnPids(dirB)
+	if len(pids) != 1 {
+		t.Fatalf("%d trial spawns, want one", len(pids))
+	}
+	argv := llmArgv(t, dirB, pids[0])
+	want := filepath.Join(dA.Cfg.RunDir(), notesTrialKeyFile)
+	if !strings.Contains(argv, "--api-key-file\n"+want) {
+		t.Fatalf("trial argv\n%s\nnames %s — the PUT ran the other daemon's trial", argv, want)
+	}
+}
+
+// A resident notes model is a second large engine on EVERY Mac — the
+// residency arbiter only arbitrates turns where memory is tight, so on a
+// 48 GB host an unmanaged daemon would leave a resident 20 GB model beside
+// a 30 GB trial. The resident child must be down BEFORE the trial child
+// comes up. Mutation: notesvalidate.go trialLoadModel, restore the
+// `d.mem.managed(d.LLMSup)` condition on the stop -> RED (the resident
+// child is still alive inside the trial).
+func TestNotesModelTrialStopsAResidentNotesEngine(t *testing.T) {
+	dir := t.TempDir()
+	d, _ := trialDaemon(t, dir, func(c *config.Config) { c.HostMemoryBytes = 48 << 30 })
+	resident := filepath.Join(dir, "resident.gguf")
+	if err := os.WriteFile(resident, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(resident, 20<<30); err != nil { // a sparse 20 GB model
+		t.Fatal(err)
+	}
+	if err := writeNotesChoice(d.Cfg.Home, config.NotesChoice{Path: resident}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.LLMSup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	resPid := d.LLMSup.Status().PID
+	if resPid == 0 {
+		t.Fatal("the resident notes child did not start")
+	}
+	// The probe sees the trial with its engine ready — the resident child
+	// must already be down by then.
+	var sawResident atomic.Bool
+	notesTrialProbe = func() {
+		if childAlive(resPid) {
+			sawResident.Store(true)
+		}
+	}
+	t.Cleanup(func() { notesTrialProbe = nil })
+	own := ownGGUF(t, dir, nil)
+	if err := os.Truncate(own, 30<<30); err != nil { // a sparse 30 GB own model
+		t.Fatal(err)
+	}
+	if res := d.notesModelTrial(context.Background(), own); !res.OK {
+		t.Fatalf("verdict = %+v", res)
+	}
+	if sawResident.Load() {
+		t.Fatal("the resident notes child was still alive inside the trial")
+	}
+}
+
+// The trial counts against the same memory gate as the file alone: its
+// bytes plus every large engine still resident must leave the gate's
+// headroom. A resident fast voice holding 5 GB puts a 30 GB trial over the
+// 33.6 GB gate of a 48 GB Mac — refused 409 before a trial child spawns,
+// and the resident voice is left running. Mutation: notesvalidate.go
+// trialLoadModel, drop the residentBytes term -> RED (the over-gate trial
+// runs and answers ok).
+func TestNotesModelTrialCountsResidentEnginesAgainstMemory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OXSAY_FAKE_CHILD", "1")
+	talker := filepath.Join(dir, "talker.gguf")
+	if err := os.WriteFile(talker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(talker, 5<<30); err != nil { // a sparse 5 GB talker
+		t.Fatal(err)
+	}
+	codec := filepath.Join(dir, "codec.gguf")
+	if err := os.WriteFile(codec, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := trialDaemon(t, dir, func(c *config.Config) {
+		c.HostMemoryBytes = 48 << 30
+		c.Model, c.Codec = talker, codec
+	})
+	if _, err := d.Sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	own := ownGGUF(t, dir, nil)
+	if err := os.Truncate(own, 30<<30); err != nil {
+		t.Fatal(err)
+	}
+	before := len(llmSpawnPids(dir))
+	res := d.notesModelTrial(context.Background(), own)
+	if res.OK || res.status != http.StatusConflict {
+		t.Fatalf("verdict = %+v, want a 409 refusal", res)
+	}
+	if got := len(llmSpawnPids(dir)); got != before {
+		t.Fatalf("a refused trial spawned %d children", got-before)
+	}
+	if d.Sup.Status().PID == 0 {
+		t.Fatal("the refusal stopped the resident voice engine")
+	}
+}
+
+// A daemon killed mid-check leaves its trial child running: notes-trial.pid
+// names it, and the next daemon's startup reaps it through the same exe +
+// start-token check the next trial would use — before any regular notes
+// work. A pidfile naming a live same-binary process that is NOT that child
+// is left alone. Mutation: service.go newDaemon, delete the startup trial
+// reap -> RED (row one: the orphaned child survives startup; row two turns
+// red only if the reap ignores the token, e.g. a bare kill of the pid).
+func TestDaemonStartupReapsAnOrphanedTrialChild(t *testing.T) {
+	t.Run("a leftover trial child is reaped", func(t *testing.T) {
+		dir := t.TempDir()
+		d1, _ := trialDaemon(t, dir, nil)
+		// Park the check mid-trial: the child is up and the pidfile
+		// written — the state a SIGKILLed daemon leaves behind.
+		inTrial, release := make(chan struct{}), make(chan struct{})
+		notesTrialProbe = func() { close(inTrial); <-release }
+		t.Cleanup(func() { notesTrialProbe = nil })
+		done := make(chan notesModelTrial, 1)
+		go func() { done <- d1.notesModelTrial(context.Background(), ownGGUF(t, dir, nil)) }()
+		<-inTrial
+		pids := llmSpawnPids(dir)
+		if len(pids) != 1 {
+			t.Fatalf("%d trial spawns, want one", len(pids))
+		}
+		pidPath := filepath.Join(d1.Cfg.RunDir(), notesTrialPidFile)
+		if _, err := os.Stat(pidPath); err != nil {
+			t.Fatalf("the trial wrote no pidfile: %v", err)
+		}
+		// The daemon "dies": the home lock is released while its children
+		// stay — the launchd restart next must reap by the pidfile.
+		if err := d1.lockFile.Close(); err != nil {
+			t.Fatal(err)
+		}
+		d1.lockFile = nil
+		// The restarted daemon comes up on the same home: the parent dir of
+		// d1's home, since testCfg builds home = <dir>/home.
+		_ = newTestDaemonSTT(t, filepath.Dir(d1.Cfg.Home), func(c *config.Config) {
+			c.NotesBin = os.Args[0]
+			c.HostMemoryBytes = 32 << 30
+		}, nil, nil)
+		testutil.WaitFor(t, 5*time.Second, func() bool { return !childAlive(pids[0]) },
+			"the orphaned trial child to be reaped at startup")
+		if _, err := os.Stat(pidPath); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal("the trial pidfile outlived its child")
+		}
+		close(release)
+		if res := <-done; res.OK {
+			t.Fatalf("verdict = %+v, want the reaped-child refusal", res)
+		}
+	})
+	t.Run("a start-token mismatch is left alone", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("OXSAY_FAKE_LLM", "1")
+		orphan := exec.Command(os.Args[0], "--port", strconv.Itoa(testutil.FreePort(t)))
+		orphan.Env = os.Environ()
+		if err := orphan.Start(); err != nil {
+			t.Fatal(err)
+		}
+		waitDone := make(chan struct{})
+		go func() { _ = orphan.Wait(); close(waitDone) }()
+		t.Cleanup(func() { _ = orphan.Process.Kill(); <-waitDone })
+		// The pidfile names it, but the token is not its own start instant:
+		// a pid recycled onto a same-binary process, never to be killed.
+		pidPath := filepath.Join(dir, "home", "run", notesTrialPidFile)
+		if err := os.MkdirAll(filepath.Dir(pidPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(pidPath, []byte(strconv.Itoa(orphan.Process.Pid)+" 0"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_ = newTestDaemonSTT(t, dir, func(c *config.Config) {
+			c.NotesBin = os.Args[0]
+			c.HostMemoryBytes = 32 << 30
+		}, nil, nil)
+		// The fake child does not trap SIGTERM: a kill would land within
+		// milliseconds; 500 ms is ample on a loaded box.
+		select {
+		case <-waitDone:
+			t.Fatal("the startup reap killed a process whose start token did not match")
+		case <-time.After(500 * time.Millisecond):
+		}
+		if _, err := os.Stat(pidPath); err != nil {
+			t.Fatal("the pidfile was removed for a live start-token mismatch")
+		}
+	})
+}
+
+// A trial child the daemon loses track of still self-terminates: its
+// supervisor carries the notes engine's own idle stop — the only watchdog
+// left once the check's defers and the daemon itself are gone. The probe
+// parks the trial past one idle window: the child must be down while the
+// check still runs. Mutation: notesvalidate.go newNotesTrialSupervisor,
+// drop the IdleStop line -> RED (the parked child outlives the window).
+func TestNotesModelTrialChildStopsWhenIdle(t *testing.T) {
+	dir := t.TempDir()
+	d, _ := trialDaemon(t, dir, func(c *config.Config) { c.NotesIdleStop = 300 * time.Millisecond })
+	inTrial, release := make(chan struct{}), make(chan struct{})
+	notesTrialProbe = func() { close(inTrial); <-release }
+	t.Cleanup(func() { notesTrialProbe = nil })
+	done := make(chan notesModelTrial, 1)
+	go func() { done <- d.notesModelTrial(context.Background(), ownGGUF(t, dir, nil)) }()
+	<-inTrial
+	pids := llmSpawnPids(dir)
+	if len(pids) != 1 {
+		t.Fatalf("%d trial spawns, want one", len(pids))
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return !childAlive(pids[0]) },
+		"the parked trial child to be stopped for idleness")
+	close(release)
+	if res := <-done; res.OK {
+		t.Fatalf("verdict = %+v, want the dead-engine refusal", res)
 	}
 }
