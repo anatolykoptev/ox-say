@@ -79,14 +79,14 @@ final class MeetingWiringTests: XCTestCase {
 
     /// The icon's symbol and tint come from ONE decision over both states; nothing else sets the tint.
     /// Mutation: AppDelegate.applyStatusIcon, delete `dictationRecording: controller.state == .recording` -> RED;
-    /// or a second `contentTintColor =` elsewhere -> RED.
+    /// or `contentTintColor` back anywhere -> RED.
     func testTheStatusIconIsDecidedFromBothStatesInOnePlace() throws {
         let text = try app()
         let icon = try XCTUnwrap(body(text, of: "private func applyStatusIcon() {"))
         XCTAssertTrue(icon.contains("StatusIconStyle.style(meetingRecording: meetings?.isRecording == true,"))
         XCTAssertTrue(icon.contains("dictationRecording: controller.state == .recording"))
-        XCTAssertTrue(icon.contains("statusItem.button?.contentTintColor = style.red ? .systemRed : nil"))
-        XCTAssertEqual(text.components(separatedBy: "contentTintColor =").count - 1, 1, "only applyStatusIcon sets the tint")
+        XCTAssertTrue(icon.contains("StatusIconImage.make(symbol: style.symbol, red: style.red,"), "the red is painted into the image (#519)")
+        XCTAssertFalse(text.contains("contentTintColor"), "the menu bar ignores the tint of a template image")
     }
 
     /// The host tells the controller whether an update installs.
@@ -230,11 +230,11 @@ final class MeetingWiringTests: XCTestCase {
         let badge = try source("OxSayDictation/MeetingBadge.swift")
         let update = try XCTUnwrap(body(badge, of: "func update(elapsed: TimeInterval, me: Float, them: Float) {"))
         XCTAssertTrue(update.contains("if changed { resize(keepingPlace: true) }"))
-        let layout = try XCTUnwrap(body(badge, of: "private func layout(_ views: [NSView]) {"))
-        XCTAssertTrue(layout.contains("resize(keepingPlace: false)"), "new content is centred")
+        let layout = try XCTUnwrap(body(badge, of: "private func layout(_ views: [NSView], keepingPlace: Bool = false, capLabel: Bool = false) {"))
+        XCTAssertTrue(layout.contains("resize(keepingPlace: keepingPlace)"), "new content is placed afresh unless the caller keeps the place")
         let resize = try XCTUnwrap(body(badge, of: "private func resize(keepingPlace: Bool) {"))
-        XCTAssertTrue(resize.contains("place(anchoredOffset: offset, onScreen: keepingPlace ? placedOn : nil)"))
-        let place = try XCTUnwrap(body(badge, of: "private func place(anchoredOffset: Double?, onScreen: UInt32?) {"))
+        XCTAssertTrue(resize.contains("place(anchoredOffset: offset, anchoredInset: inset, onScreen: keepingPlace ? placedOn : nil)"))
+        let place = try XCTUnwrap(body(badge, of: "private func place(anchoredOffset: Double?, anchoredInset: Double? = nil, onScreen: UInt32?) {"))
         XCTAssertTrue(place.contains("BadgePlacement.place(screens: screens, placedOn: onScreen"))
     }
 
@@ -249,8 +249,8 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(badge.contains("NotificationCenter.default.removeObserver(screenObserver)"))
         let changed = try XCTUnwrap(body(badge, of: "private func screensChanged() {"))
         XCTAssertTrue(changed.contains("guard panel.isVisible, mode != nil else { return }"))
-        XCTAssertTrue(changed.contains("place(anchoredOffset: placedOffset, onScreen: placedOn)"))
-        let place = try XCTUnwrap(body(badge, of: "private func place(anchoredOffset: Double?, onScreen: UInt32?) {"))
+        XCTAssertTrue(changed.contains("place(anchoredOffset: placedOffset, anchoredInset: placedInset, onScreen: placedOn)"))
+        let place = try XCTUnwrap(body(badge, of: "private func place(anchoredOffset: Double?, anchoredInset: Double? = nil, onScreen: UInt32?) {"))
         XCTAssertTrue(place.contains("placedOn = spot.screenID") && place.contains("placedOffset = spot.offset"))
         XCTAssertTrue(place.contains("panel.setFrameOrigin(NSPoint(x: spot.x, y: spot.y))"))
         XCTAssertFalse(badge.contains("BadgePlacement.originX"), "the position is decided in one place")
@@ -387,7 +387,7 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(observe.contains("installing: host.updateInstalling()"))
         let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
         XCTAssertTrue(start.contains("MeetingPolicy.manualStart(installing: installing) == .waitForInstall"))
-        XCTAssertTrue(start.contains("if origin == .auto, installing { rejected(); return }"))
+        XCTAssertTrue(start.contains("if origin == .auto, installing { trace(.startRefused(reason: \"update_installing\")); rejected(); return }"))
         let reconcile = try XCTUnwrap(body(text, of: "private func reconcile() {"))
         XCTAssertTrue(reconcile.contains("Reconcile.action(for: m,"))
         XCTAssertTrue(reconcile.contains("currentID: current?.info.id"))
@@ -397,10 +397,11 @@ final class MeetingWiringTests: XCTestCase {
     /// menu "Record a meeting" is the user's own act and never raises it (the dialog talks about calls, and its first
     /// button would flip the global mode).
     /// Mutation: MeetingController.start, `origin == .auto || offered` -> `true` -> RED.
+    /// (It follows the start as a notification now; see MeetingPlateWiringTests for why no modal gates a recording.)
     func testTheExplanationIsForAutoStartsAndThePromptNotTheMenu() throws {
         let text = try controller()
         let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
-        XCTAssertTrue(start.contains("if origin == .auto || offered, !consentReminderAccepted() { done(false); return }"))
+        XCTAssertTrue(start.contains("if origin == .auto || offered { noteConsentReminder() }"))
         XCTAssertTrue(text.contains("start(origin: .manual, source: source, offered: true)"),
                       "the prompt's Record is the offered start")
     }
@@ -450,12 +451,13 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertTrue(settle.contains("case .recordConfirm(let shown)?: question = .confirm(source: shown)"))
         XCTAssertTrue(attempt.contains("let rejected: () -> Void = { [weak self] in self?.settleBadge(started: false, began: false, pressed: offered ? source : nil) }"),
                       "a start turned away at the door did not begin (#384.3)")
-        XCTAssertTrue(attempt.contains("guard current == nil, !starting, !isShutDown else { rejected(); return }"))
+        XCTAssertTrue(attempt.contains("guard current == nil, !starting, !isShutDown else {\n            trace(.startRefused("))
+        XCTAssertTrue(attempt.contains("\n            rejected()\n            return\n        }"))
         XCTAssertEqual(attempt.components(separatedBy: "rejected()").count - 1, 2, "in-flight guard and the auto start while installing")
-        XCTAssertEqual(attempt.components(separatedBy: "done(false)").count - 1, 3,
-                       "manual install wait, consent, microphone check each report a failed start that began")
+        XCTAssertEqual(attempt.components(separatedBy: "done(false)").count - 1, 2,
+                       "manual install wait and microphone check each report a failed start that began (the reminder no longer gates a start)")
         XCTAssertTrue(attempt.contains("defer { starting = false; done(ok) }"), "shutdown, daemon and recorder ends report too")
-        XCTAssertTrue(attempt.contains("host.recordingChanged()\n                ok = true"), "only a started recording is a success")
+        XCTAssertTrue(attempt.contains("if origin == .auto || offered { noteConsentReminder() }\n                ok = true"), "only a started recording is a success")
         let answer = try XCTUnwrap(body(text, of: "private func answerRecordQuestion(_ answer: RecordPrompt.Answer) {"))
         XCTAssertTrue(answer.contains("applyRecord(.ask, answer: answer, source: source)"))
         let apply = try XCTUnwrap(body(text, of: "private func applyRecord(_ verdict: RecordCheck.Verdict, answer: RecordPrompt.Answer?, source: String) {"))
@@ -502,20 +504,18 @@ final class MeetingWiringTests: XCTestCase {
         XCTAssertLessThan(ask.lowerBound, post.lowerBound, "the check comes before the POST")
     }
 
-    /// The one-time dialog is a consent reminder: it can cancel this start, and it never writes the global mode or
-    /// an app's pick (a user who presses Record for one call must not end up on "Record automatically").
-    /// Mutation: MeetingController.consentReminderAccepted, add `MeetingSettings.setCallMode(.auto, host.defaults)` -> RED.
-    /// Mutation: same function, `guard pressed == .alertFirstButtonReturn else { return false }` removed -> RED.
+    /// The one-time reminder is a consent reminder: it never writes the global mode or an app's pick (a user who presses
+    /// Record for one call must not end up on "Record automatically").
+    /// Mutation: MeetingController.noteConsentReminder, add `MeetingSettings.setCallMode(.auto, host.defaults)` -> RED.
+    /// Mutation: same function, `retention: MeetingSettings.retention(host.defaults)` -> `.month` -> RED.
     func testTheConsentReminderNeverChangesASetting() throws {
-        let reminder = try XCTUnwrap(body(try controller(), of: "private func consentReminderAccepted() -> Bool {"))
+        let reminder = try XCTUnwrap(body(try controller(), of: "private func noteConsentReminder() {"))
         XCTAssertFalse(reminder.contains("setCallMode"), "the reminder must not write the global mode")
         XCTAssertFalse(reminder.contains("CallPolicy.setMode"), "nor a per-app pick")
         XCTAssertFalse(reminder.contains("callMode"))
-        // Mutation: MeetingController.consentReminderAccepted, `retention: MeetingSettings.retention(host.defaults)` -> `.month` -> RED.
         XCTAssertTrue(reminder.contains("ConsentReminder.body(retention: MeetingSettings.retention(host.defaults), text: { $0.text })"),
                       "the reminder names the user's retention, not a hardwired one")
-        XCTAssertTrue(reminder.contains("guard pressed == .alertFirstButtonReturn else { return false }"), "Don't Record cancels the start")
-        XCTAssertTrue(reminder.contains("L10nKey.meetingRemindRecord.text, L10nKey.meetingRemindSkip.text"), "Record This Call is the default button")
+        XCTAssertTrue(reminder.contains("guard !MeetingSettings.explained(host.defaults) else { return }"), "once")
         let whole = try controller()
         XCTAssertFalse(whole.contains("Only When I Choose"))
     }
@@ -533,7 +533,7 @@ final class MeetingWiringTests: XCTestCase {
         // Mutation: MeetingController.observe, delete `if why.withdrawsOffer { watcher.offerWithdrawn() }` -> RED.
         XCTAssertTrue(observe.contains("if why.withdrawsOffer { watcher.offerWithdrawn() }"))
         let apply = try XCTUnwrap(body(text, of: "private func applyCallMode() {"))
-        XCTAssertTrue(apply.contains("if !OfferLifetime.offersAllowed(mode: mode) {\n            if case .recording = badge.mode {} else { badge.hide() }"))
+        XCTAssertTrue(apply.contains("if !OfferLifetime.offersAllowed(mode: mode) {\n            switch badge.mode {\n            case .recording?, .failed?: break\n            default: badge.hide()"))
     }
 
     /// "Don't ask for <App>" writes the per-app "Don't record" — reversible in Settings — and declines this call.
@@ -609,8 +609,10 @@ final class MeetingWiringTests: XCTestCase {
         }
         let text = try controller()
         let start = try XCTUnwrap(body(text, of: "private func start(origin: CallTracker.Origin, source: String, offered: Bool = false) {"))
-        XCTAssertEqual(start.components(separatedBy: "L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start))").count - 1, 2,
-                       "the microphone check and the daemon/recorder start both")
+        let fail = try XCTUnwrap(body(text, of: "private func failStart(_ error: Error) {"))
+        XCTAssertEqual(fail.components(separatedBy: "L10nKey.noticeMeetingStartFailed.text(MeetingErrorText.sentence(error, action: .start))").count - 1, 1)
+        XCTAssertEqual(start.components(separatedBy: "failStart(error)").count - 1, 2,
+                       "the microphone check and the daemon/recorder start both say it through the one place")
         let speakers = try XCTUnwrap(body(text, of: "private func editSpeakers(_ id: String) {"))
         XCTAssertTrue(speakers.contains("L10nKey.speakersFailed.text(MeetingErrorText.sentence(error, action: .speakers))"))
         let install = try XCTUnwrap(body(text, of: "private func installModel() {"))
@@ -618,7 +620,7 @@ final class MeetingWiringTests: XCTestCase {
         // The real error is logged where the user gets the generic sentence.
         // Mutation: delete the `log.error(` line of any of the four catches -> RED.
         let logLine = "log.error(\"meeting %@ failed: \\(LogDetail.publicText(error), privacy: .public) \\(LogDetail.privateText(error), privacy: .private)\")"
-        XCTAssertEqual(start.components(separatedBy: logLine.replacingOccurrences(of: "%@", with: "start")).count - 1, 2)
+        XCTAssertEqual(fail.components(separatedBy: logLine.replacingOccurrences(of: "%@", with: "start")).count - 1, 1)
         XCTAssertTrue(speakers.contains(logLine.replacingOccurrences(of: "%@", with: "speakers")))
         XCTAssertTrue(install.contains(logLine.replacingOccurrences(of: "%@", with: "notes model")))
         XCTAssertTrue(text.contains("recorder.onSystemAudioFailed = { [weak self] in"))

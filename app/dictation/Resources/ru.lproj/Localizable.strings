@@ -101,6 +101,11 @@
 "badge.record" = "Записать";
 "badge.not_now" = "Не сейчас";
 "badge.copy_consent" = "Скопировать фразу согласия";
+"badge.collapse" = "Свернуть в точку";
+"badge.expand" = "Показать плашку целиком";
+"notice.meeting.plate_hidden.title" = "OxSay записывает";
+"notice.meeting.plate_hidden" = "Плашку записи не видно на этом экране. Запись идёт; остановить её можно из значка OxSay в строке меню.";
+"notice.meeting.prompt_hidden" = "Откройте значок OxSay в строке меню и выберите «Записать встречу».";
 "badge.a11y.panel" = "Запись встречи";
 "badge.a11y.dot" = "Идёт запись";
 "badge.a11y.me" = "Уровень вашего микрофона";

@@ -311,13 +311,13 @@ final class SpeechErrorL10nTests: XCTestCase {
         return MeetingWiringTests.stripComments(try String(contentsOf: root.appendingPathComponent("Sources/OxSayDictation/MeetingController.swift"), encoding: .utf8))
     }
 
-    /// #346: the five error logs of the meeting controller go through LogDetail like the AppDelegate's.
+    /// #346: the four error logs of the meeting controller (the two start failures share `failStart`) go through LogDetail like the AppDelegate's.
     /// Mutation: MeetingController, any log line back to `String(describing: error), privacy: .public` -> RED.
     func testNoMeetingControllerLogLineWritesAnErrorsDescriptionPublicly() throws {
         let source = try meetingController()
         XCTAssertFalse(source.contains("String(describing: error), privacy: .public"))
-        XCTAssertEqual(source.components(separatedBy: "LogDetail.publicText(error), privacy: .public").count - 1, 5)
-        XCTAssertEqual(source.components(separatedBy: "LogDetail.privateText(error), privacy: .private").count - 1, 5)
+        XCTAssertEqual(source.components(separatedBy: "LogDetail.publicText(error), privacy: .public").count - 1, 4)
+        XCTAssertEqual(source.components(separatedBy: "LogDetail.privateText(error), privacy: .private").count - 1, 4)
     }
 
     /// #358: no way for an error's own text to reach a `.public` log in the meeting controller or the cleanup, however it

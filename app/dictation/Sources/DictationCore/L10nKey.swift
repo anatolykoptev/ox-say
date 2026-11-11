@@ -98,6 +98,14 @@ public enum L10nKey: String, CaseIterable {
     case badgeRecord = "badge.record"
     case badgeNotNow = "badge.not_now"
     case badgeCopyConsent = "badge.copy_consent"
+    /// Folds the recording plate to its dot and clock; unfolds it.
+    case badgeCollapse = "badge.collapse"
+    case badgeExpand = "badge.expand"
+    /// A recording plate that cannot be seen on this screen: said as a notification, which does show over a full-screen Space.
+    case noticeMeetingPlateHiddenTitle = "notice.meeting.plate_hidden.title"
+    case noticeMeetingPlateHidden = "notice.meeting.plate_hidden"
+    /// The record question that could not be shown: the way to record it anyway.
+    case noticeMeetingPromptHidden = "notice.meeting.prompt_hidden"
     case badgeA11yPanel = "badge.a11y.panel"
     case badgeA11yDot = "badge.a11y.dot"
     case badgeA11yMe = "badge.a11y.me"

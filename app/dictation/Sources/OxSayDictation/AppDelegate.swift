@@ -979,16 +979,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The status icon for `statusSymbol`, with a small dot at its corner while
     /// an update is on offer.
     private func applyStatusIcon() {
-        // One place decides symbol and tint from BOTH states: a dictation and a meeting recording.
+        // One place decides symbol and colour from BOTH states: a dictation and a meeting recording. The red is painted
+        // into the image: the menu bar ignores `contentTintColor` for a template image and draws it black (#519).
         let style = StatusIconStyle.style(meetingRecording: meetings?.isRecording == true,
                                           dictationRecording: controller.state == .recording, dictationSymbol: statusSymbol)
-        statusItem.button?.contentTintColor = style.red ? .systemRed : nil
         if meetings?.isRecording == true,
-           let rec = NSImage(systemSymbolName: style.symbol, accessibilityDescription: "OxSay is recording a meeting") {
+           let rec = StatusIconImage.make(symbol: style.symbol, red: style.red, description: "OxSay is recording a meeting") {
             statusItem.button?.image = rec
             return
         }
-        guard let base = NSImage(systemSymbolName: statusSymbol, accessibilityDescription: "OxSay Dictation") else { return }
+        guard let base = StatusIconImage.make(symbol: statusSymbol, red: style.red, description: "OxSay Dictation") else { return }
         guard updateOffer != nil else {
             statusItem.button?.image = base
             return
@@ -996,11 +996,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let size = base.size
         let badged = NSImage(size: size, flipped: false) { rect in
             base.draw(in: rect)
+            (style.red ? NSColor.systemRed : NSColor.black).setFill()
             let dot: CGFloat = 5
             NSBezierPath(ovalIn: NSRect(x: rect.maxX - dot, y: rect.maxY - dot, width: dot, height: dot)).fill()
             return true
         }
-        badged.isTemplate = true
+        badged.isTemplate = !style.red
         badged.accessibilityDescription = "OxSay Dictation — update available"
         statusItem.button?.image = badged
     }
