@@ -22,15 +22,22 @@ public struct DaemonStatus: Equatable {
     public var idle: Bool
     /// The meeting-notes engine; unavailable (all defaults) from a daemon that predates it.
     public var notes: NotesStatus
+    /// The daemon's per-transcription timeout (`config.stt_timeout_s`) and upload cap (`config.stt_max_upload_mb`); nil
+    /// from a daemon that does not report them (the app then assumes the defaults, `TranscribeLimits.fallback`).
+    public var sttTimeoutSeconds: Double?
+    public var sttMaxUploadMB: Int?
 
     public init(version: String?, studioAvailable: Bool, studioReason: String? = nil, studioReasonCode: String? = nil,
-                idle: Bool = true, notes: NotesStatus = NotesStatus()) {
+                idle: Bool = true, notes: NotesStatus = NotesStatus(), sttTimeoutSeconds: Double? = nil,
+                sttMaxUploadMB: Int? = nil) {
         self.version = version
         self.studioAvailable = studioAvailable
         self.studioReason = studioReason
         self.studioReasonCode = studioReasonCode
         self.idle = idle
         self.notes = notes
+        self.sttTimeoutSeconds = sttTimeoutSeconds
+        self.sttMaxUploadMB = sttMaxUploadMB
     }
 
     public static let reasonModelMissing = "model_missing"
@@ -49,12 +56,15 @@ public struct DaemonStatus: Equatable {
     public static func decode(_ data: Data) -> DaemonStatus? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let studio = obj["voxcpm2"] as? [String: Any]
+        let config = obj["config"] as? [String: Any]
         return DaemonStatus(version: nonEmpty(obj["version"] as? String),
                             studioAvailable: studio?["available"] as? Bool ?? false,
                             studioReason: nonEmpty(studio?["reason"] as? String),
                             studioReasonCode: nonEmpty(studio?["reason_code"] as? String),
                             idle: obj["idle"] as? Bool ?? true,
-                            notes: NotesStatus.decode(obj["notes"] as? [String: Any]))
+                            notes: NotesStatus.decode(obj["notes"] as? [String: Any]),
+                            sttTimeoutSeconds: (config?["stt_timeout_s"] as? Double).flatMap { $0 > 0 ? $0 : nil },
+                            sttMaxUploadMB: (config?["stt_max_upload_mb"] as? Int).flatMap { $0 > 0 ? $0 : nil })
     }
 
     private static func nonEmpty(_ text: String?) -> String? {

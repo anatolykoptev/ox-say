@@ -832,6 +832,11 @@ func (d *Daemon) Status() statusSummary {
 			"stt_idle_stop_s":   d.Cfg.STTIdleStop.Seconds(),
 			"stt_vad_model":     d.Cfg.STTVADModel,
 			"tts_model":         d.Cfg.TTSModel,
+			// What a client uploading a file must stay inside: the per-transcription timeout and the upload cap,
+			// both configurable (OX_SAY_STT_TIMEOUT_SECS, OX_SAY_STT_MAX_UPLOAD_MB). The app sizes its own timeout
+			// and size check on them and falls back to the defaults when an older daemon omits them.
+			"stt_timeout_s":     d.Cfg.STTTimeout.Seconds(),
+			"stt_max_upload_mb": d.Cfg.STTMaxUploadMB,
 		},
 		Version:    version,
 		MemoryMode: d.mem.mode(),

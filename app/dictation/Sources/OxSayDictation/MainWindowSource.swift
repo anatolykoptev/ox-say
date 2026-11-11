@@ -49,6 +49,8 @@ struct MainWindowHost {
     var stopSpeechPlayer: () -> Void
     /// The voiceover the app follows, shared with the Studio menu: a studio project started on Озвучка is followed by it.
     var voiceover: () -> VoiceoverService
+    /// The save panel for a transcript (a sheet on the main window); the answer says whether the file was written.
+    var saveFile: (TranscriptFile, @escaping (Bool) -> Void) -> Void
 }
 
 /// Fills the main window with what the app really has and carries out what the window asks. The window holds no timer:
@@ -66,6 +68,7 @@ final class MainWindowSource {
     private let audio = MeetingAudioPlayer()
     private var voiceSource: VoiceSource!
     private var speakSource: SpeakSource!
+    private var transcribeSource: TranscribeSource!
     /// Each click on a line is one request; a probe that comes back after another click, a stop or a close is dropped.
     private var playRequests = PlayRequestGuard()
     private var detailReads = DetailReads()
@@ -110,6 +113,7 @@ final class MainWindowSource {
                                       self?.speakSource.voicesChanged()
                                   })
         speakSource = SpeakSource(model: model, host: host)
+        transcribeSource = TranscribeSource(model: model, host: host)
         if let id = restored.speakID { speakSource.openProject(id) }
         speakSource.stopOtherAudio = { [weak self] in
             self?.voiceSource.stopPreview()
@@ -189,6 +193,9 @@ final class MainWindowSource {
 
     /// A speak request is on its way or a clip sounds: the version handshake waits for it.
     var speakBusy: Bool { speakSource.busy }
+
+    /// A file is being uploaded or transcribed: the version handshake waits for it.
+    var transcribing: Bool { transcribeSource.transcribing }
 
     /// Points the window at a section (and a meeting). A route without a meeting leaves the open one alone.
     func apply(_ route: MainRoute) {
@@ -328,6 +335,12 @@ final class MainWindowSource {
         a.speakPace = { [weak self] value in self?.speakSource.setPace(value) }
         a.speakPause = { [weak self] value in self?.speakSource.setPause(value) }
         a.speakPanelChanged = { [weak self] settings in self?.speakSource.panelChanged(settings) }
+        a.transcribePick = { [weak self] url in self?.transcribeSource.pick(url) }
+        a.transcribeReload = { [weak self] in self?.transcribeSource.reload() }
+        a.transcribeSelect = { [weak self] id in self?.transcribeSource.select(id) }
+        a.transcribeCopy = { [weak self] id in self?.transcribeSource.copy(id) }
+        a.transcribeSave = { [weak self] id, format in self?.transcribeSource.save(id, format) }
+        a.transcribeDelete = { [weak self] id in self?.transcribeSource.delete(id) }
         return a
     }
 
@@ -340,6 +353,7 @@ final class MainWindowSource {
                 syncRecording()
                 loadSimpleSections()
                 voiceSource.reload()
+                transcribeSource.reload()
                 // The permission rows are read before any daemon call (microphone and Accessibility at once). The
                 // notification answer merges when it lands; the pass never waits for it, so a stuck read holds
                 // nothing back, least of all the gate.
