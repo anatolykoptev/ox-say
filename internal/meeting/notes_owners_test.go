@@ -868,3 +868,36 @@ func TestComposeOwnerMustBeShownByTheQuote(t *testing.T) {
 		})
 	}
 }
+
+// Unnamed voices cannot refute an owner: the first real meeting had none named. Only a named person who is not the
+// owner does.
+// Mutation: notes_points.go showsOwner, delete the `if x.unnamed(sp) && evidence != evAddressedByName { return true }`
+// block -> RED on the unnamed rows; in unnamed, return false -> RED too; delete the `|| sameName(sp, owner)` -> RED on
+// the inflected-name row.
+func TestUnnamedVoicesDoNotRefuteTheOwner(t *testing.T) {
+	text := "[0:05] Speaker 2: I'll send the deck to the board.\n[0:09] Other: I'll book the venue.\n" +
+		"[0:12] Anatoly: I'll make the ticket.\n[0:15] Me: I'll pay the invoice.\n[0:18] Даша: Я отправлю отчёт.\n" +
+		"[0:20] Speaker 2: Somebody needs to call the client.\n"
+	for name, tc := range map[string]struct {
+		m    modelAction
+		l    Labels
+		want string
+	}{
+		"numbered voice, owner by name":        {modelAction{What: "send the deck", Owner: "Daphne", OwnerEvidence: evSelfCommit, Quote: "I'll send the deck to the board"}, Labels{Me: "Anatoly", Them: "Other"}, "Daphne"},
+		"single far-side label, owner by name": {modelAction{What: "book the venue", Owner: "Daphne", OwnerEvidence: evSelfCommit, Quote: "I'll book the venue"}, Labels{Me: "Anatoly", Them: "Other"}, "Daphne"},
+		"a named other person refutes":         {modelAction{What: "make the ticket", Owner: "Daphne", OwnerEvidence: evSelfCommit, Quote: "I'll make the ticket"}, Labels{Me: "Anatoly", Them: "Other"}, ""},
+		"the recorder's label and its owner":   {modelAction{What: "pay the invoice", Owner: "Me", OwnerEvidence: evSelfCommit, Quote: "I'll pay the invoice"}, Labels{Me: "Me", Them: "Other"}, "Me"},
+		"the recorder's label, another owner":  {modelAction{What: "pay the invoice", Owner: "Daphne", OwnerEvidence: evSelfCommit, Quote: "I'll pay the invoice"}, Labels{Me: "Me", Them: "Other"}, ""},
+		"inflected name":                       {modelAction{What: "отправить отчёт", Owner: "Дашу", OwnerEvidence: evSelfCommit, Quote: "Я отправлю отчёт"}, Labels{Me: "Anatoly", Them: "Other"}, "Дашу"},
+		"unnamed voice, addressed, no name":    {modelAction{What: "call the client", Owner: "Daphne", OwnerEvidence: evAddressedByName, Quote: "Somebody needs to call the client"}, Labels{Me: "Anatoly", Them: "Other"}, ""},
+		"unnamed voice, accepted":              {modelAction{What: "call the client", Owner: "Daphne", OwnerEvidence: evAcceptedRequest, Quote: "Somebody needs to call the client"}, Labels{Me: "Anatoly", Them: "Other"}, "Daphne"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeChat{replies: []string{answerJSON(t, chunkAnswer{Summary: "s", ActionItems: []modelAction{tc.m}})}}
+			n := composeWith(t, f, text, tc.l, "en")
+			if got := n.ActionItems[0].Who; got != tc.want {
+				t.Fatalf("owner = %q, want %q (%+v)", got, tc.want, n.ActionItems[0])
+			}
+		})
+	}
+}

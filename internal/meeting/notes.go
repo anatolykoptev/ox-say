@@ -633,7 +633,7 @@ func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int
 			var out chunkAnswer
 			if err = json.Unmarshal([]byte(raw), &out); err == nil {
 				if !out.empty() {
-					return out.notes(text), nil
+					return out.notes(text, l), nil
 				}
 				err = errEmptyNotes
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -79,8 +80,9 @@ func (a chunkAnswer) empty() bool {
 // model's quote occurs in the text and its evidence is not "unstated"; a decision is kept only with an agreement
 // quote that occurs in the text, else it is an open point. A task never needs evidence to stay: an empty owner is
 // better than a confident wrong one.
-func (a chunkAnswer) notes(chunkText string) ChunkNotes {
+func (a chunkAnswer) notes(chunkText string, l Labels) ChunkNotes {
 	idx := newTextIndex(chunkText)
+	idx.them = l.Them
 	out := ChunkNotes{Summary: a.Summary, Numbers: a.Numbers}
 	for _, p := range a.Points {
 		claimed := strings.ToLower(strings.TrimSpace(p.Status))
@@ -164,6 +166,7 @@ func splitPoints(pts []Point) (decisions, open []string) {
 type textIndex struct {
 	turns    [][]string
 	speakers []string              // who spoke each turn, as the transcript prints it
+	them     string                // the label of the single far-side voice
 	at       map[string][]tokenPos // where each word occurs
 }
 
@@ -234,13 +237,28 @@ func (x textIndex) turnsWith(quote string) (turns []int, q []string) {
 	return turns, q
 }
 
-// showsOwner: the quote occurs in a turn that shows owner as the person who will do the task. For self_commit the
-// turn is spoken by the owner. For a request the turn is spoken by the owner (the one who accepted) or names the owner
-// (the request addressed to them): a real quote about someone else does not make them the owner.
+// unnamedVoice is a label the app gives a voice nobody has named: "Speaker 2", "Спикер 3".
+var unnamedVoice = regexp.MustCompile(`^\p{L}+ \d+$`)
+
+// unnamed: the transcript label says nothing about who is speaking (a numbered voice, the single far-side label, no
+// label at all), so it cannot show that someone other than the owner spoke.
+func (x textIndex) unnamed(speaker string) bool {
+	sp := strings.TrimSpace(speaker)
+	return sp == "" || unnamedVoice.MatchString(sp) || (x.them != "" && foldName(sp) == foldName(x.them))
+}
+
+// showsOwner: the quote occurs in a turn that shows owner as the person who will do the task. A turn spoken by the
+// owner does. A turn spoken by an unnamed voice does for a self-commitment or an acceptance: only a named person who is
+// not the owner refutes. A request that names the owner does too, whoever made it: the owner is still the person it
+// was addressed to, which is the attribution wanted whether the model calls the evidence addressed or accepted.
 func (x textIndex) showsOwner(quote, evidence, owner string) bool {
 	turns, q := x.turnsWith(quote)
 	for _, t := range turns {
-		if foldName(x.speakers[t]) == foldName(owner) {
+		sp := x.speakers[t]
+		if foldName(sp) == foldName(owner) || sameName(sp, owner) {
+			return true
+		}
+		if x.unnamed(sp) && evidence != evAddressedByName {
 			return true
 		}
 		if evidence == evSelfCommit {
