@@ -27,7 +27,7 @@ final class SpeakStudioWiringTests: XCTestCase {
     func testTheStudioCallSiteSendsTheTrimmedScript() throws {
         let studio = try body(source("OxSayDictation/SpeakSource.swift"), of: "private func generateStudio() {")
         XCTAssertTrue(studio.contains("SpeakInputCheck.problem(speak.text, engine: .studio"))
-        XCTAssertTrue(studio.contains("let start = SpeakStudio.start(text: speak.text, reel: speak.reel)"))
+        XCTAssertTrue(studio.contains("let start = SpeakStudio.start(text: speak.text, reel: speak.reel, advanced: model.advanced, panel: speak.panel)"))
         XCTAssertTrue(studio.contains("voiceover.start(script: start.script, title: start.title, voice: voice,\n                                                    format: start.format, options: start.options, fromWindow: true)"))
         XCTAssertFalse(studio.contains("script: speak.text"))
         let gate = try XCTUnwrap(studio.range(of: "host.speechRefusal()"))
@@ -163,18 +163,24 @@ final class SpeakStudioWiringTests: XCTestCase {
         XCTAssertTrue(newText.contains("if startingStudio {\n            generation.advance()\n            studioStart.end()"))
     }
 
-    /// The finish alert is skipped for a page project with the window in view; the menu's stop and battery actions go
+    /// The finish notification is skipped for a page project with the window in view; the menu's battery action goes
     /// through the one service; arriving on Озвучка offline reads at once; the list is cached, not re-merged per redraw.
-    /// Mutation: StudioController, drop the `FinishNotice.shouldAlert` guard -> RED; MainWindowSource, drop
+    /// Mutation: VoiceoverReady.notice, drop the `FinishNotice.windowShows` guard -> RED; MainWindowSource, drop
     /// `if arrived { self.refresh() }` -> RED; SpeakValues, `items` back to a computed merge -> RED.
     func testTheMenuAndTheWindowShareTheServiceAndTheArrivalReads() throws {
         let menu = try source("OxSayDictation/StudioController.swift")
-        XCTAssertTrue(menu.contains("FinishNotice.shouldAlert(startedOnPage: self.voiceover.startedOnPage(job.id)"))
-        XCTAssertTrue(menu.contains("windowVisible: self.host.windowVisible()"))
-        XCTAssertTrue(menu.contains("try await self?.voiceover.stop()"))
+        let service = try source("OxSayDictation/VoiceoverService.swift")
+        XCTAssertTrue(service.contains("VoiceoverReady.notice(for: job, shown: windowShown())"))
+        XCTAssertTrue(menu.contains("VoiceoverService(client: host.client, windowShown: host.windowShown)"))
+        // The live window and app state reach the decision when the voiceover ends; no start-time flag does.
+        XCTAssertFalse(service.contains("startedOnPage(job.id)"))
+        let app = try source("OxSayDictation/AppDelegate.swift")
+        XCTAssertTrue(app.contains("appActive: NSApp.isActive"))
+        XCTAssertTrue(app.contains("section: self.mainWindow.source?.model.section"))
+        XCTAssertTrue(app.contains("speakID: self.mainWindow.source?.model.data.speak.selectedProject?.id"))
         XCTAssertTrue(menu.contains("try await self?.voiceover.continueOnBattery()"))
         XCTAssertFalse(menu.contains("host.client.stopVoiceover"))
-        try XCTAssertTrue(source("OxSayDictation/AppDelegate.swift").contains("window.isVisible && window.occlusionState.contains(.visible)"))
+        try XCTAssertTrue(source("OxSayDictation/AppDelegate.swift").contains("$0.isVisible && $0.isKeyWindow && !$0.isMiniaturized && $0.isOnActiveSpace && $0.occlusionState.contains(.visible)"))
         try XCTAssertTrue(source("OxSayDictation/VoiceoverService.swift").contains("if fromWindow { windowStarted.insert(started.id) }"))
         let window = try source("OxSayDictation/MainWindowSource.swift")
         XCTAssertTrue(window.contains("SpeakRecheck.refreshOnArrival(to: self.model.section, from: self.lastSection, reach: self.speakSource.reach)"))

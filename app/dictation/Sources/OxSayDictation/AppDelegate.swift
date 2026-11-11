@@ -248,6 +248,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speechClient = SpeechClient(baseURL: baseURL)
         studioClient = StudioClient(baseURL: baseURL)
         studio = StudioController(host: studioHost())
+        // A click on a "Voiceover ready" notification opens the window on that project (also with meetings switched off).
+        MeetingNotifier.shared.install()
+        MeetingNotifier.shared.openRoute = { [unowned self] route in self.mainWindow.show(route) }
         setUpMeetings()
         speakService.onSpeak = { [weak self] text in self?.speak(text) }
         NSApp.servicesProvider = speakService
@@ -976,30 +979,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The status icon for `statusSymbol`, with a small dot at its corner while
     /// an update is on offer.
     private func applyStatusIcon() {
-        // One place decides symbol and tint from BOTH states: a dictation and a meeting recording.
+        // One place decides symbol and colour from BOTH states: a dictation and a meeting recording. The red is painted
+        // into the image: the menu bar ignores `contentTintColor` for a template image and draws it black (#519).
         let style = StatusIconStyle.style(meetingRecording: meetings?.isRecording == true,
                                           dictationRecording: controller.state == .recording, dictationSymbol: statusSymbol)
-        statusItem.button?.contentTintColor = style.red ? .systemRed : nil
-        if meetings?.isRecording == true,
-           let rec = NSImage(systemSymbolName: style.symbol, accessibilityDescription: "OxSay is recording a meeting") {
-            statusItem.button?.image = rec
-            return
-        }
-        guard let base = NSImage(systemSymbolName: statusSymbol, accessibilityDescription: "OxSay Dictation") else { return }
-        guard updateOffer != nil else {
-            statusItem.button?.image = base
-            return
-        }
-        let size = base.size
-        let badged = NSImage(size: size, flipped: false) { rect in
-            base.draw(in: rect)
-            let dot: CGFloat = 5
-            NSBezierPath(ovalIn: NSRect(x: rect.maxX - dot, y: rect.maxY - dot, width: dot, height: dot)).fill()
-            return true
-        }
-        badged.isTemplate = true
-        badged.accessibilityDescription = "OxSay Dictation — update available"
-        statusItem.button?.image = badged
+        // The symbol already follows the recording state (`style.symbol`); the update dot is composed onto whichever
+        // image that is, so an update offered mid-recording keeps its dot.
+        let description = meetings?.isRecording == true ? "OxSay is recording a meeting" : "OxSay Dictation"
+        guard let base = StatusIconImage.make(symbol: style.symbol, red: style.red, description: description) else { return }
+        statusItem.button?.image = updateOffer != nil
+            ? StatusIconImage.badged(base, red: style.red, description: description + " — update available") : base
     }
 
     private func startWorkingTimer() {
@@ -1184,7 +1173,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func studioHost() -> StudioHost {
         StudioHost(
             client: studioClient,
-            alert: { [unowned self] title, text, buttons in self.runAlert(title: title, text: text, buttons: buttons) },
             pill: { [unowned self] task, text in
                 if let text {
                     self.showStudioPill(task: task, text: text)
@@ -1215,9 +1203,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.mainWindow.source?.openVoiceDesign()
             },
             openSpeak: { [unowned self] in self.mainWindow.show(MainRoute(section: .speak, meetingID: nil)) },
-            windowVisible: { [unowned self] in
-                guard let window = self.mainWindow.window else { return false }
-                return window.isVisible && window.occlusionState.contains(.visible)
+            openSpeakProject: { [unowned self] id in self.mainWindow.show(MainRoute(section: .speak, speakID: id)) },
+            windowShown: { [unowned self] in
+                let window = self.mainWindow.window
+                let visible = window.map {
+                    $0.isVisible && $0.isKeyWindow && !$0.isMiniaturized && $0.isOnActiveSpace && $0.occlusionState.contains(.visible)
+                } ?? false
+                return ShownWindow(appActive: NSApp.isActive, windowVisible: visible,
+                                   section: self.mainWindow.source?.model.section,
+                                   speakID: self.mainWindow.source?.model.data.speak.selectedProject?.id)
             })
     }
 

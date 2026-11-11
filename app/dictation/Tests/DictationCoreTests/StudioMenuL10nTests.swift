@@ -81,31 +81,6 @@ final class StudioMenuL10nTests: XCTestCase {
         XCTAssertEqual(ProduceFormat.long.title(text: ru), "YouTube (длинное)")
     }
 
-    func testTheFlowAlertsReadRightInBothLanguages() {
-        struct Boom: Error {}
-        XCTAssertEqual(StudioDialogs.playFailed(text: en), UpdateDialog(title: "Couldn't play the voiceover",
-            text: "The file could not be opened. It may have been moved.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.playFailed(text: ru), UpdateDialog(title: "Не удалось воспроизвести озвучку",
-            text: "Не удалось открыть файл. Возможно, его переместили.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.stop(text: en), UpdateDialog(title: "Stop this voiceover?",
-            text: "OxSay stops after the part it is working on. What is already made is not turned into a finished file.",
-            buttons: ["Stop Voiceover", "Keep Going"]))
-        XCTAssertEqual(StudioDialogs.stop(text: ru), UpdateDialog(title: "Остановить эту озвучку?",
-            text: "OxSay остановится после той части, над которой работает. Итоговый файл из уже готовых частей не соберётся.",
-            buttons: ["Остановить озвучку", "Продолжить"]))
-        XCTAssertEqual(StudioDialogs.stopFailed(Boom(), text: en), UpdateDialog(title: "Couldn't stop the voiceover",
-            text: "Something went wrong. Try again.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.stopFailed(Boom(), text: ru), UpdateDialog(title: "Не удалось остановить озвучку",
-            text: "Что-то пошло не так. Попробуйте ещё раз.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.continueFailed(StudioError.daemonUnreachable, text: ru), UpdateDialog(
-            title: "Не удалось продолжить озвучку", text: "Служба OxSay не запущена. Попробуйте перезагрузить Mac.", buttons: ["OK"]))
-        XCTAssertEqual(StudioDialogs.continueFailed(StudioError.daemonUnreachable, text: en).title, "Couldn't continue the voiceover")
-        XCTAssertEqual(StudioDialogs.finished(job(.done, wav: "/x/Ch.wav"), text: ru)?.buttons, ["Показать в Finder", "Воспроизвести", "OK"])
-        XCTAssertEqual(StudioDialogs.finished(job(.done, wav: "/x/Ch.wav"), text: en)?.buttons, ["Show in Finder", "Play", "OK"])
-        XCTAssertEqual(StudioDialogs.finished(job(.failed), text: ru)?.buttons, ["OK"])
-        XCTAssertNil(StudioDialogs.finished(job(.cancelled), text: ru), "a voiceover stopped on purpose earns no alert")
-    }
-
     func testTheErrorsAreWordedInTheUsersLanguageAndKeepTheirEnglishForLogs() {
         let all: [StudioError] = [.daemonUnreachable, .timedOut, .badResponse, .refused(status: 500, message: "")]
         for error in all { XCTAssertEqual(error.message(text: en), error.description, "\(error): description is the English log text") }
@@ -269,8 +244,11 @@ final class StudioMenuL10nTests: XCTestCase {
             XCTAssertTrue(app.contains(pin), "AppDelegate.swift lost `\(pin)`")
         }
         let studio = try source("OxSayDictation/StudioController.swift")
-        for pin in ["show(StudioDialogs.stop())", "StudioDialogs.finished(finished)", "show(StudioDialogs.playFailed())", "StudioDialogs.stopFailed(error)", "StudioDialogs.continueFailed(error)"] {
+        for pin in ["host.openSpeakProject(job.id)", "self?.host.notify(StudioError.plain(error))"] {
             XCTAssertTrue(studio.contains(pin), "StudioController.swift lost `\(pin)`")
+        }
+        for gone in ["StudioDialogs", "host.alert", "presentFinish"] {
+            XCTAssertFalse(studio.contains(gone), "StudioController.swift has `\(gone)` again: a voiceover never raises a modal alert")
         }
     }
 }

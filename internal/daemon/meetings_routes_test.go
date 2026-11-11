@@ -36,7 +36,7 @@ func TestMeetingHTTPJourney(t *testing.T) {
 	rec = call(t, mux, "GET", "/v1/meetings/"+created.ID+"?include=notes,transcript", "")
 	var got meetingDetail
 	_ = json.Unmarshal(rec.Body.Bytes(), &got)
-	if got.Status != meeting.StatusDone || !strings.Contains(got.NotesMD, "- [ ] Me — send the plan — Friday") ||
+	if got.Status != meeting.StatusDone || !strings.Contains(got.NotesMD, "- [ ] Anatoly — send the plan — Friday") ||
 		!strings.Contains(got.TranscriptMD, "**Anatoly**") {
 		t.Fatalf("meeting = %+v", got)
 	}

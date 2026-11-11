@@ -170,10 +170,19 @@ final class SpeakListFreshnessTests: XCTestCase {
         XCTAssertFalse(gate.isActive(in: generation))
     }
 
-    func testTheFinishAlertIsSkippedOnlyForAPageProjectWithTheWindowInView() {
-        XCTAssertFalse(FinishNotice.shouldAlert(startedOnPage: true, windowVisible: true))
-        XCTAssertTrue(FinishNotice.shouldAlert(startedOnPage: true, windowVisible: false), "a closed window still gets told")
-        XCTAssertTrue(FinishNotice.shouldAlert(startedOnPage: false, windowVisible: true), "a menu project keeps its alert")
-        XCTAssertTrue(FinishNotice.shouldAlert(startedOnPage: false, windowVisible: false))
+    /// The notification is skipped only while the window shows this very project right now: the app is active, the window is
+    /// on screen, Озвучка is the section and this job is the open one. Read at the moment it finishes, not at the start.
+    func testTheFinishNoticeIsSkippedOnlyWhileTheWindowShowsThatProject() {
+        let id = "20261110-101500-abc123"
+        func shown(active: Bool = true, visible: Bool = true, section: MainSection? = .speak, speak: String? = id) -> ShownWindow {
+            ShownWindow(appActive: active, windowVisible: visible, section: section, speakID: speak)
+        }
+        XCTAssertTrue(FinishNotice.windowShows(jobID: id, shown()), "the one suppressing case")
+        XCTAssertFalse(FinishNotice.windowShows(jobID: id, shown(section: .voices)), "another section")
+        XCTAssertFalse(FinishNotice.windowShows(jobID: id, shown(section: nil)), "no window")
+        XCTAssertFalse(FinishNotice.windowShows(jobID: id, shown(speak: "other")), "another project is open")
+        XCTAssertFalse(FinishNotice.windowShows(jobID: id, shown(speak: nil)), "a clip or nothing is open")
+        XCTAssertFalse(FinishNotice.windowShows(jobID: id, shown(active: false)), "another app is in front")
+        XCTAssertFalse(FinishNotice.windowShows(jobID: id, shown(visible: false)), "minimised, covered, closed or on another Space")
     }
 }

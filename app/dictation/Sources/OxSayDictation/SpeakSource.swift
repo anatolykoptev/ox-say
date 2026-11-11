@@ -58,6 +58,7 @@ final class SpeakSource {
         self.host = host
         voiceover = host.voiceover()
         model.data.speak.quality = host.defaults.string(forKey: Self.qualityKey).flatMap(SpeakEngine.init(rawValue:)) ?? .fast
+        model.data.speak.panel = VoicePanelSettings.load(from: host.defaults)
         model.data.speak.text = SpeakDraft.initial(stored: host.defaults.string(forKey: Self.draftKey),
                                                    firstRun: host.consumeFirstRun(), language: L10nBundle.locale.identifier)
         player.onFinish = { [weak self] in
@@ -125,8 +126,70 @@ final class SpeakSource {
             stopClip()
             model.data.speak.selectedID = nil
         }
+        adoptFreshTarget()
+        resolvePendingProject(in: projects)
         ensureWaveform()
         ensurePhrases()
+    }
+
+    /// Points the page at a voiceover the route names (a notification's click, the last run's open project). A project the list
+    /// does not have yet waits for it; one the list lacks (deleted since) is dropped, as `MainRoute.pruned` drops a meeting.
+    func openProject(_ id: String) {
+        guard !id.isEmpty else { return }
+        model.data.speak.pendingProjectID = id
+        resolvePendingProject(in: model.data.speak.projects)
+    }
+
+    /// Opens a voiceover a notification or the menu names. The cached list is not asked whether it exists (it predates a project
+    /// that just finished); the daemon is, by id (`SpeakTarget`). Found: it joins the list and opens, as soon as a take being made
+    /// allows. Not found: it is dropped and the selection stays.
+    func showProject(_ id: String) {
+        guard !id.isEmpty else { return }
+        model.data.speak.pendingProjectID = id
+        fetchingID = id
+        let cached = model.data.speak.projects
+        let client = host.client
+        Task { @MainActor [weak self] in
+            let outcome = await SpeakTarget.resolve(id: id, cached: cached, fetch: { try await client.voiceover(id: $0) })
+            if self?.fetchingID == id { self?.fetchingID = nil }
+            // Another target (or the same one opened meanwhile) took over while the daemon answered.
+            guard let self, self.model.data.speak.pendingProjectID == id else { return }
+            switch outcome {
+            case .cached: self.resolvePendingProject(in: self.model.data.speak.projects)
+            case .fetched(let job):
+                self.freshTarget = job
+                self.adoptFreshTarget()
+            case .gone: self.model.data.speak.pendingProjectID = nil
+            }
+        }
+    }
+
+    /// The daemon's answer for the target waits here while a take is being made; the next list change opens it.
+    private var freshTarget: ProduceJob?
+    /// The id the daemon is being asked about: a list read that lands meanwhile must not prune it.
+    private var fetchingID: String?
+
+    private func adoptFreshTarget() {
+        guard let job = freshTarget else { return }
+        guard model.data.speak.pendingProjectID == job.id else { freshTarget = nil; return }
+        guard model.section == .speak, model.data.speak.phase.allowsSelection else { return }
+        freshTarget = nil
+        model.data.speak.pendingProjectID = nil
+        model.data.speak.projects = SpeakList.overlay(projects: model.data.speak.projects, followed: job)
+        selectProject(job.id)
+    }
+
+    private func resolvePendingProject(in projects: [ProduceJob]) {
+        guard let id = model.data.speak.pendingProjectID, freshTarget?.id != id, fetchingID != id else { return }
+        let route = MainRoute(section: .speak, speakID: id).pruned(knownSpeakIDs: projects.map(\.id))
+        guard let known = route.speakID else {
+            model.data.speak.pendingProjectID = nil
+            return
+        }
+        // Not on Озвучка (a restored route) or a take being made: the choice waits; the next list read asks again.
+        guard projects.contains(where: { $0.id == known }), model.section == .speak, model.data.speak.phase.allowsSelection else { return }
+        model.data.speak.pendingProjectID = nil
+        selectProject(known)
     }
 
     private func record(answered: Bool) {
@@ -265,6 +328,7 @@ final class SpeakSource {
         stopClip()
         endReel()
         model.data.speak.selectedID = id
+        model.data.speak.panelPhrase = nil
         model.data.speak.phase = .idle
         model.data.speak.trackMissing.remove(id)
         phrasesKey = nil
@@ -295,7 +359,9 @@ final class SpeakSource {
             return
         }
         stopClip()
-        let seed = variant ? Int.random(in: 1...999_999_999) : nil
+        // The panel's pinned sound and level reach the request only while Advanced is on; «Ещё вариант» is always a new sound.
+        let knobs = VoicePanelModel.speechKnobs(panel: speak.panel, advanced: model.advanced)
+        let seed = variant ? Int.random(in: 1...999_999_999) : knobs.seed
         let voice = speak.voice
         let language = VoicePick.languageHint(of: text).map { VoicePreview.language(locale: $0) }
         model.data.speak.phase = .generating
@@ -303,7 +369,7 @@ final class SpeakSource {
         let speech = host.speech
         request = Task { @MainActor [weak self] in
             do {
-                let wav = try await speech.speak(text, voice: voice, language: language, seed: seed)
+                let wav = try await speech.speak(text, voice: voice, language: language, seed: seed, loudnessLUFS: knobs.loudness)
                 guard let self, self.generation.isCurrent(token) else { return }
                 self.record(answered: true)
                 self.finished(wav: wav, text: text, voice: voice)
@@ -321,7 +387,7 @@ final class SpeakSource {
     private func generateStudio() {
         let speak = model.data.speak
         guard SpeakInputCheck.problem(speak.text, engine: .studio, text: { $0.text }) == nil,
-              let start = SpeakStudio.start(text: speak.text, reel: speak.reel) else { return }
+              let start = SpeakStudio.start(text: speak.text, reel: speak.reel, advanced: model.advanced, panel: speak.panel) else { return }
         if let refusal = host.speechRefusal() {
             model.data.notice = refusal
             return
@@ -345,6 +411,8 @@ final class SpeakSource {
                 self.studioStart.end()
                 self.record(answered: true)
                 self.model.data.speak.projectVoices = SpeakStudio.rememberVoice(voice, for: job.id, in: self.model.data.speak.projectVoices)
+                // A project that copies the recording's delivery takes no mood: remembered so its phrases draw no chip.
+                if SpeakStudio.copiesRecording(start.options) { self.model.data.speak.projectCopies.insert(job.id) }
                 self.model.data.speak.projects = SpeakList.overlay(projects: self.model.data.speak.projects, followed: job)
                 self.selectProject(job.id)
             } catch {
@@ -635,18 +703,22 @@ final class SpeakSource {
     /// One change to one phrase of the selected project. Every one of them is refused by the daemon while the project runs
     /// (`PhraseEditing.canEditText`), so the page does not send it; a second one waits for the first. The phrase's row says
     /// what is being done until the project has ended, then the chunks are read again.
+    /// True when the change was accepted and is on its way; false when a gate refused it (the panel then shows the value it
+    /// really holds). `onFailure` runs when an accepted change fails on the daemon.
+    @discardableResult
     private func phraseOperation(chunk n: Int, kind: PhraseWork.Kind,
-                                 _ body: @escaping (StudioClient, String) async throws -> [ProduceChunkDetail]) {
+                                 _ body: @escaping (StudioClient, String) async throws -> [ProduceChunkDetail],
+                                 onFailure: (() -> Void)? = nil) -> Bool {
         guard let job = model.data.speak.selectedProject, !PhraseEditing.isBusy(model.data.speak.phraseWork, project: job.id),
-              PhraseEditing.canEditText(status: job.status) else { return }
+              PhraseEditing.canEditText(status: job.status) else { return false }
         // The daemon works on one project at a time: a change to this one while another is being changed would be refused.
         guard model.data.speak.phraseWork == nil else {
             model.data.notice = StudioError.voiceoverRunning.message()
-            return
+            return false
         }
         if let refusal = host.speechRefusal() {
             model.data.notice = refusal
-            return
+            return false
         }
         // A take that sounds would go on playing the old audio while it is being replaced.
         stopClip()
@@ -657,6 +729,7 @@ final class SpeakSource {
                 let chunks = try await body(client, job.id)
                 guard let self else { return }
                 self.model.data.speak.phraseWork = nil
+                self.model.data.speak.panelEpoch &+= 1
                 // The person may have moved to another project meanwhile: its phrases are not replaced by these.
                 if self.model.data.speak.selectedID == job.id {
                     self.model.data.speak.phraseChunks = chunks
@@ -668,9 +741,118 @@ final class SpeakSource {
             } catch {
                 guard let self else { return }
                 self.model.data.speak.phraseWork = nil
+                self.model.data.speak.panelEpoch &+= 1
+                onFailure?()
                 self.model.data.notice = SpeakText.notice(error) { $0.text }
                 self.refreshProjects()
             }
+        }
+        return true
+    }
+
+    // MARK: voice panel
+
+    /// The settings only a new voicing reads (quality, the recording's delivery, the sound's number, variants): kept as view
+    /// preferences, never sent to a project that exists.
+    func panelChanged(_ settings: VoicePanelSettings) {
+        model.data.speak.panel = settings
+        savePanel()
+    }
+
+    private func savePanel() {
+        model.data.speak.panel.save(to: host.defaults)
+    }
+
+    /// «Громкость»: a finished project is levelled at once, as a delivery with the target and no render, and the choice is kept
+    /// for later voicings. The daemon re-assembles the finished file as a job of its own (one at a time), so it goes through the
+    /// same gate as a change to a phrase and the app waits for it before reading the project again. The choice is stored (and
+    /// shown) only once the change is accepted, and put back if the daemon then fails it. «Как обычно» on a finished project
+    /// sends nothing: it is kept for the next voicings only.
+    func setLoudness(_ target: LoudnessTarget?) {
+        let previous = model.data.speak.panel.loudness
+        guard let target, let job = model.data.speak.selectedProject, VoicePanelModel.loudnessAppliesNow(status: job.status) else {
+            model.data.speak.panel.loudness = target
+            savePanel()
+            return
+        }
+        let accepted = phraseOperation(chunk: PhraseWork.wholeProject, kind: .loudness, { [voiceover = self.voiceover] client, id in
+            try await client.deliver(id: id, entries: [], loudness: target.lufs)
+            try await voiceover.followAndWait(id: id)
+            return try await client.chunks(id: id)
+        }, onFailure: { [weak self] in
+            self?.model.data.speak.panel.loudness = previous
+            self?.savePanel()
+        })
+        guard accepted else { return }
+        model.data.speak.panel.loudness = target
+        savePanel()
+    }
+
+    /// «Темп» and «Пауза» for the chosen phrase or all of them: the track is put together again without a render.
+    func setPace(_ slider: Double) { applyDelivery(.pace(slider), kind: .pace) }
+
+    func setPause(_ seconds: Double) { applyDelivery(.pause(seconds), kind: .pause) }
+
+    /// One batch of delivery entries for the panel's scope. A batch with nothing to change is not sent (the daemon answers 400 to
+    /// an empty one), and chunks that belong to another project are never used.
+    private func applyDelivery(_ change: PanelChange, kind: PhraseWork.Kind) {
+        let speak = model.data.speak
+        guard speak.phrasesFor == speak.selectedID,
+              let scope = VoicePanelModel.scope(allText: speak.panelAllText, phrase: speak.panelPhrase, chunks: speak.phraseChunks) else { return }
+        let entries = VoicePanelModel.deliveryEntries(chunks: speak.phraseChunks, scope: scope, change: change)
+        guard !entries.isEmpty else { return }
+        let chunk: Int
+        switch scope {
+        case .phrase(let n): chunk = n
+        case .all: chunk = PhraseWork.wholeProject
+        }
+        let accepted = phraseOperation(chunk: chunk, kind: kind) { [voiceover = self.voiceover] client, id in
+            try await client.deliver(id: id, entries: entries, loudness: nil)
+            try await voiceover.followAndWait(id: id)
+            return try await client.chunks(id: id)
+        }
+        // A refused change leaves the slider where the person put it: it starts again from the value the phrase has.
+        if !accepted { model.data.speak.panelEpoch &+= 1 }
+    }
+
+    // MARK: the row's buttons
+
+    /// A button of the open voiceover's row. The daemon's ones (stop, continue on battery, resume, delete) go through
+    /// `SpeakRowActions.perform` and the app follows the project from its new state; Finder, the save panel and the first
+    /// flagged phrase are the window's own. A refusal is said in the daemon's words on the notice bar.
+    func runRowAction(_ action: SpeakRowAction) {
+        guard let job = model.data.speak.selectedProject else { return }
+        switch action {
+        case .showInFinder:
+            if let path = job.outputPath { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+        case .save:
+            saveProject(job)
+        case .listenToFlagged:
+            // The first part the automatic checks flagged plays; the phrase list below shows the others.
+            if let n = model.data.speak.phraseChunks.first(where: { $0.status == .review })?.index { playPhrase(n) }
+        case .stop, .continueOnBattery, .resume, .remove:
+            let id = job.id
+            let client = host.client
+            let voiceover = self.voiceover
+            Task { @MainActor [weak self] in
+                do {
+                    try await SpeakRowActions.perform(action, id: id, client: client)
+                    if action != .remove { await voiceover.refollow(id: id) }
+                } catch {
+                    self?.model.data.notice = StudioError.plain(error)
+                }
+                self?.refreshProjects()
+            }
+        }
+    }
+
+    private func saveProject(_ job: ProduceJob) {
+        guard let path = job.outputPath, FileManager.default.fileExists(atPath: path) else {
+            model.data.notice = L10nKey.speakTrackMissing.text
+            return
+        }
+        SpeakSave.presentFile(URL(fileURLWithPath: path), name: SpeakClips.fileName(forTitle: job.title), in: host.mainWindow()) { [weak self] saved in
+            if !saved { self?.model.data.notice = L10nKey.speakSaveFailed.text }
         }
     }
 
@@ -698,6 +880,31 @@ enum SpeakSave {
             guard response == .OK, let url = panel.url else { return }
             do {
                 try clip.wav.write(to: url, options: .atomic)
+                completion(true)
+            } catch {
+                completion(false)
+            }
+        }
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: write)
+        } else {
+            panel.begin(completionHandler: write)
+        }
+    }
+
+    /// The finished track of a project: copied, not read into memory (a long one is hundreds of megabytes).
+    @MainActor
+    static func presentFile(_ source: URL, name: String, in window: NSWindow?, completion: @escaping (Bool) -> Void) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.wav]
+        panel.nameFieldStringValue = name
+        panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        panel.canCreateDirectories = true
+        let write: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                // The panel has asked about replacing; the old file goes only once the copy has landed (ExportRules.install).
+                try ExportRules.install(source, to: url)
                 completion(true)
             } catch {
                 completion(false)

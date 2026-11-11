@@ -54,6 +54,10 @@ type Daemon struct {
 	// when NotesBin is empty — a Config literal without notes settings.
 	LLMSup *engine.Supervisor
 
+	// mem makes the large engines (Sup, VoxSup, LLMSup) take turns on an Apple Silicon Mac with less memory than
+	// config.OneLargeEngineBelowGB; nil elsewhere, where every enter is a no-op (see residency).
+	mem *residency
+
 	// Meet takes recorded meetings through transcription and notes.
 	Meet *meeting.Runner
 	// Transcripts keeps file transcripts under $OX_SAY_HOME/transcripts; nil when the
@@ -84,9 +88,31 @@ type Daemon struct {
 	// discrete card; with unified memory nothing takes it.
 	gpu *engine.GPULease
 
-	// modelMu serializes model removals (DELETE /v1/models/{id}): two at once would
-	// both stop the same engine and race on the same file.
+	// modelMu serializes model removals (DELETE /v1/models/{id}), the notes
+	// model's saved-choice switch (PUT /v1/meetings/notes-model) and the
+	// own-model trial load that precedes a {"path"} choice: two writers at
+	// once would both stop the same engine and race on the same file.
 	modelMu sync.Mutex
+
+	// upstream is the single-flight cached answer to "is the uncensored
+	// model's download URL still on its host", read by its /v1/models row
+	// and the notes-model choices while that file is not installed.
+	upstream notesUpstreamProbe
+
+	// trialExclusive flips the residency condition while an own-model trial
+	// of a file over config.NotesExclusiveBytes runs: on a Mac where the
+	// large engines take turns only for a large notes model, a large trial
+	// takes the turn like a notes job would.
+	trialExclusive atomic.Bool
+
+	// trialMu guards trialSup and trialDone: the supervisor of the one
+	// own-model trial child, so the daemon's shutdown can stop it too, and
+	// the reservation marking the notes engine as the trial's — a channel
+	// closed when the trial ends, which notes jobs wait on before taking
+	// the engine turn (notesvalidate.go).
+	trialMu   sync.Mutex
+	trialSup  *engine.Supervisor
+	trialDone chan struct{}
 
 	// voiceMu serializes voice mutations against engine-start replay: a
 	// voice written while replayVoices runs could otherwise be missing
@@ -306,6 +332,35 @@ func newDaemon(cfg *config.Config, logger *slog.Logger, tune, tuneSTT, tuneVox f
 			return nil, err
 		}
 	}
+	if cfg.OneLargeEngine() {
+		d.mem = newResidency(logger, d.largeEngineSups()...)
+	} else if d.notesCouldBeExclusive() {
+		// A notes model over config.NotesExclusiveBytes makes the large
+		// engines take turns even on a Mac the voices share; the condition is
+		// read per call, so a model the user switches to counts at once, and
+		// an own-model trial of a large file counts for its duration.
+		if r := newResidency(logger, d.largeEngineSups()...); r != nil {
+			r.cond = func() bool { return d.notesExclusive() || d.trialExclusive.Load() }
+			d.mem = r
+		}
+	}
+	logger.Info("large engine memory model", slog.String("mode", d.mem.mode()))
+	// A daemon killed mid-trial left the child itself behind: notes-trial.pid
+	// names it, and constructing the trial supervisor reaps the orphan through
+	// the same exe + start-token check the next trial would run — here, at
+	// startup, before any notes work, not only when another check happens to
+	// build a trial supervisor. Its key — a dead bearer credential — is swept
+	// with it.
+	_ = os.Remove(filepath.Join(cfg.RunDir(), notesTrialKeyFile))
+	if cfg.NotesBin != "" {
+		// A reaper that cannot be built must not keep the daemon down: the
+		// next check reaps the orphan the same way.
+		if tsup, err := d.newNotesTrialSupervisor(""); err != nil {
+			logger.Warn("own notes model: the orphaned trial child could not be looked for", "error", err)
+		} else {
+			tsup.Shutdown()
+		}
+	}
 	d.initMeetings()
 	d.initTranscripts()
 	if d.VoxSup != nil {
@@ -366,17 +421,23 @@ func (d *Daemon) replayVoices(ctx context.Context, baseURL string) error {
 	return firstErr
 }
 
-// engineBase acquires an in-flight guard and ensures the engine is ready.
-// On failure the guard is released inside the helper; on success the caller
-// owns g and must Release it when the request finishes.
-func (d *Daemon) engineBase(ctx context.Context) (base string, g *engine.Guard, err error) {
-	g = d.Sup.Acquire()
+// engineBase takes the fast voice's turn (see residency), acquires an in-flight
+// guard and ensures the engine is ready. On failure everything is released
+// inside the helper; on success the caller owns release and must call it when
+// the request finishes (guard first, then the turn).
+func (d *Daemon) engineBase(ctx context.Context) (base string, release func(), err error) {
+	leave, err := d.mem.enter(ctx, d.Sup, engineTurnBudget)
+	if err != nil {
+		return "", nil, err
+	}
+	g := d.Sup.Acquire()
 	base, err = d.Sup.EnsureReady(ctx)
 	if err != nil {
 		g.Release()
+		leave()
 		return "", nil, err
 	}
-	return base, g, nil
+	return base, func() { g.Release(); leave() }, nil
 }
 
 // sttServer is the Options.Server closure for the resident ox-stt server —
@@ -449,7 +510,11 @@ func (d *Daemon) addVoice(ctx context.Context, name, audioPath, refText string, 
 	// wait (the start goroutine runs Replay, which takes voiceMu, with s.mu
 	// released), so taking it before or after voiceMu cannot form a cycle
 	// (#310.3). RemoveVoice takes them in the other order for that reason.
-	g := d.Sup.Acquire()
+	// Across Prepare (a transcription, up to 60 s) the guard only keeps the idle loop off the child, so it is the
+	// idle-only kind: with a hard guard a studio-voice turn, which stops this engine, would wait out the whole
+	// preparation (a busy answer at 10 s, a failed take at 30 s). If the engine is stopped for another one meanwhile,
+	// the voice is still stored and the next start replays it. The registration itself takes a hard guard below.
+	g := d.Sup.AcquireIdleOnly()
 	defer g.Release()
 	if d.slowPrepare != nil {
 		d.slowPrepare()
@@ -490,6 +555,8 @@ func (d *Daemon) addVoice(ctx context.Context, name, audioPath, refText string, 
 	// child that is past /health but still inside its start attempt
 	// (mid-replay): skipping it would strand a voice that replay's
 	// snapshot already missed.
+	rg := d.Sup.Acquire() // the registration is a request the child is serving: Stop waits for it
+	defer rg.Release()
 	if base, ok := d.Sup.LiveURL(); ok {
 		if rerr := d.ec.RegisterVoice(ctx, base, v.Name, d.Store.WAVPath(v.Name), v.RefText); rerr != nil {
 			d.log.Warn("voice stored but engine registration failed; it will be replayed on next start",
@@ -697,6 +764,12 @@ type statusSummary struct {
 	Voices     []voices.Voice `json:"voices"`
 	Config     map[string]any `json:"config"`
 	Version    string         `json:"version"`
+	// MemoryMode is how the large GPU engines share this Mac's memory:
+	// "one_large_engine" (the fast voice, the studio voice and the notes model
+	// take turns; Apple Silicon below config.OneLargeEngineBelowGB) or "shared"
+	// (all of them may be resident at once). The resident STT server is in
+	// neither: it is never stopped for another engine.
+	MemoryMode string `json:"memory_mode"`
 	// Busy counts in-flight work per lane; Idle holds only when every
 	// count is zero. A client about to restart the daemon — the app's
 	// version handshake — checks Idle first.
@@ -756,10 +829,11 @@ func (d *Daemon) Status() statusSummary {
 			"stt_vad_model":     d.Cfg.STTVADModel,
 			"tts_model":         d.Cfg.TTSModel,
 		},
-		Version:   version,
-		Busy:      busy,
-		Idle:      busy.idle(),
-		TTSFaults: ttsFaults{Runaways: d.runaways.Load(), StreamAborts: d.streamAborts.Load()},
+		Version:    version,
+		MemoryMode: d.mem.mode(),
+		Busy:       busy,
+		Idle:       busy.idle(),
+		TTSFaults:  ttsFaults{Runaways: d.runaways.Load(), StreamAborts: d.streamAborts.Load()},
 	}
 }
 
@@ -771,6 +845,7 @@ func (d *Daemon) Status() statusSummary {
 func (d *Daemon) Shutdown() {
 	d.StopMeetings()
 	d.StopNotesInstall()
+	d.stopTrialSup()
 	d.StopCleanInstall()
 	d.StopProducer()
 	d.StopVoiceRepair()

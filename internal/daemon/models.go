@@ -40,8 +40,16 @@ type modelEntry struct {
 	Removable  bool   `json:"removable"` // optional, and its file is in <home>/models: false when an env override puts it elsewhere
 	Installing bool   `json:"installing"`
 	Supported  bool   `json:"supported"` // this Mac can run it (not "ready now": a missing model or engine is still supported)
+	// Selected marks the notes row that is the effective model: true on the
+	// resolved catalog row or notes:custom, mirrored by the "notes" row that
+	// always names it. Absent (false) everywhere else.
+	Selected   bool   `json:"selected,omitempty"`
 	ReasonCode string `json:"reason_code,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+	// Upstream is the uncensored notes model's "is the file still on its
+	// host" (available | gone | unknown) while it is not installed; omitted
+	// everywhere else.
+	Upstream string `json:"upstream,omitempty"`
 }
 
 // modelRemoval says how one optional model is removed. A model without one is required by the release and is never
@@ -53,6 +61,10 @@ type modelRemoval struct {
 	// pinned is the one file name fetch-models.sh writes. Another name is the user's own file (OX_SAY_*_MODEL points at
 	// it) and is never removed, as InstallNotesModel never downloads over it.
 	pinned string
+	// pinnedFor, when set, supplies the pinned name per call (the "notes" row's
+	// pinned name is the resolved model's catalog file); "" answers never
+	// removable, the user's own file.
+	pinnedFor func(d *Daemon) string
 	// busy is the plain-words reason the model is in use right now, or "".
 	busy func(d *Daemon) string
 	// engine is the supervisor whose child has the file open; nil when nothing resident does (whisper runs per call).
@@ -93,19 +105,57 @@ var modelTable = []modelDef{
 			return ""
 		},
 	}},
-	{id: "notes", entry: (*Daemon).notesModelEntry, removal: &modelRemoval{
-		file:   func(d *Daemon) string { return d.Cfg.NotesModel },
-		pinned: config.NotesModelFile,
+}
+
+// notesModelDefs builds the notes rows per call — the resolved model's own
+// "notes" (the id the app has always used), one "notes:<id>" row per catalog
+// file, and "notes:custom" when the notes model is the user's own file (never
+// deletable). Static defs cannot hold them: which file "notes" names depends
+// on the resolution.
+func (d *Daemon) notesModelDefs() []modelDef {
+	defs := []modelDef{{id: "notes", entry: (*Daemon).notesModelEntry, removal: &modelRemoval{
+		file: func(d *Daemon) string { return d.notesResolve().Path },
+		pinnedFor: func(d *Daemon) string {
+			if e := d.notesResolve().Entry; e != nil {
+				return e.File
+			}
+			return ""
+		},
 		busy:   (*Daemon).notesModelBusy,
 		engine: func(d *Daemon) *engine.Supervisor { return d.LLMSup },
-	}},
+	}}}
+	for i := range config.NotesCatalog {
+		e := &config.NotesCatalog[i]
+		defs = append(defs, modelDef{
+			id:    "notes:" + e.ID,
+			entry: func(d *Daemon) modelEntry { return d.notesCatalogEntry(e) },
+			removal: &modelRemoval{
+				file:   func(d *Daemon) string { return filepath.Join(d.Cfg.ModelsDir(), e.File) },
+				pinned: e.File,
+				busy:   (*Daemon).notesModelBusy,
+				engine: func(d *Daemon) *engine.Supervisor {
+					if res := d.notesResolve(); res.Entry != nil && res.Entry.ID == e.ID {
+						return d.LLMSup
+					}
+					return nil
+				},
+			},
+		})
+	}
+	if d.notesResolve().Entry == nil {
+		defs = append(defs, modelDef{id: "notes:custom", entry: (*Daemon).notesCustomEntry})
+	}
+	return defs
 }
 
 // modelEntries builds every row. Each model stats its one or two files and nothing else: no directory is walked, so the
 // call costs the same on a 3 GB model as on an empty one.
 func (d *Daemon) modelEntries() []modelEntry {
-	out := make([]modelEntry, 0, len(modelTable))
-	for _, def := range modelTable {
+	defs := make([]modelDef, 0, len(modelTable)+len(config.NotesCatalog)+2)
+	defs = append(defs, modelTable...)
+	defs = append(defs, d.notesModelDefs()...)
+	out := make([]modelEntry, 0, len(defs))
+	for _, def := range defs {
 		e := def.entry(d)
 		e.Optional = def.removal != nil
 		if def.removal != nil {
@@ -193,6 +243,18 @@ func (d *Daemon) parakeetModelEntry() modelEntry {
 	}
 }
 
+// sttModelBytes is the resident STT server's model footprint for the
+// memory gate: the recognizer file — the parakeet row's measure — plus
+// the VAD model where one is on disk, since the server's argv loads it
+// whenever it stats (STTServeArgs).
+func (d *Daemon) sttModelBytes() int64 {
+	n, _ := fileSize(d.Cfg.STTModel)
+	if vad, ok := fileSize(d.Cfg.STTVADModel); ok {
+		n += vad
+	}
+	return n
+}
+
 func (d *Daemon) whisperModelEntry() modelEntry {
 	size, ok := fileSize(d.Cfg.STTWhisperModel)
 	e := modelEntry{
@@ -205,29 +267,94 @@ func (d *Daemon) whisperModelEntry() modelEntry {
 	return e
 }
 
+// notesModelEntry is the "notes" row: the resolved model — what notes runs on
+// — under the id the app has always used. Its name and size are the catalog
+// entry's, or the user's own file's.
 func (d *Daemon) notesModelEntry() modelEntry {
-	size, ok := fileSize(d.Cfg.NotesModel)
-	e := modelEntry{
-		ID: "notes", Kind: "notes", Name: "Qwen3.5-4B Q4_K_M",
-		Bytes: size, Installed: ok, Default: true, Supported: true, Installing: d.notesInstalling() > 0,
+	res := d.notesResolve()
+	size, ok := fileSize(res.Path)
+	name, bytes := "your own model", size
+	if res.Entry != nil {
+		name = res.Entry.Name
+		if !ok {
+			bytes = res.Entry.Bytes
+		}
 	}
-	if !ok {
-		e.Bytes = config.NotesModelBytes
+	e := modelEntry{
+		ID: "notes", Kind: "notes", Name: name,
+		Bytes: bytes, Installed: ok,
+		Default:   res.Entry != nil && res.Entry.ID == d.Cfg.NotesAutomaticDefault().ID,
+		Supported: true, Installing: d.notesInstalling() > 0,
+		Selected: true, // the notes row always names the effective model
 	}
 	// A missing model is what the download fixes; the other blocks (memory, a missing engine, a taken port) are not.
-	if code, reason := d.Cfg.NotesBlock(); code != "" && code != config.NotesReasonModelMissing {
+	if code, reason := d.Cfg.NotesBlock(res); code != "" && code != config.NotesReasonModelMissing {
 		e.Supported, e.ReasonCode, e.Reason = false, code, reason
 	}
 	return e
 }
 
+// notesCatalogEntry is a "notes:<id>" row: one catalog file, whether or not
+// it is the resolved one.
+func (d *Daemon) notesCatalogEntry(entry *config.NotesModelEntry) modelEntry {
+	path := filepath.Join(d.Cfg.ModelsDir(), entry.File)
+	size, ok := fileSize(path)
+	res := d.notesResolve()
+	e := modelEntry{
+		ID: "notes:" + entry.ID, Kind: "notes", Name: entry.Name,
+		Bytes: size, Installed: ok,
+		Default:   entry.ID == d.Cfg.NotesAutomaticDefault().ID,
+		Supported: true,
+		Selected:  res.Entry != nil && res.Entry.ID == entry.ID,
+		Upstream:  d.notesUpstream(entry, ok),
+	}
+	if !ok {
+		e.Bytes = entry.Bytes
+	}
+	if file, _, _ := d.notes.target(); file == path && d.notesInstalling() > 0 {
+		e.Installing = true
+	}
+	// Only the memory floor makes a catalog model unsupportable; a missing
+	// file or engine is what an install fixes.
+	if d.Cfg.HostMemoryBytes != 0 && d.Cfg.HostMemoryBytes < uint64(entry.MinMemoryGB)<<30 {
+		e.Supported, e.ReasonCode = false, config.NotesReasonUnsupported
+		e.Reason = fmt.Sprintf("%s needs at least %d GB of memory; this Mac has %d GB.",
+			entry.Name, entry.MinMemoryGB, d.Cfg.HostMemoryBytes>>30)
+	}
+	return e
+}
+
+// notesCustomEntry is the "notes:custom" row, present while the notes model
+// is the user's own file. It is display only — ox-say never deletes it (no
+// removal), so it is not optional.
+func (d *Daemon) notesCustomEntry() modelEntry {
+	res := d.notesResolve()
+	size, ok := fileSize(res.Path)
+	return modelEntry{
+		ID: "notes:custom", Kind: "notes", Name: filepath.Base(res.Path),
+		Bytes: size, Installed: ok, Supported: true,
+		Selected: res.Entry == nil, // the row exists only while the custom file resolves
+	}
+}
+
 // notesModelBusy: the notes model is read by a meeting that is queued or running, a meeting still being recorded (its
 // notes are made when it ends), and the download writes it.
 func (d *Daemon) notesModelBusy() string {
+	active := 0
+	if d.Meet != nil {
+		active = d.Meet.Active()
+	}
+	return d.notesModelBusyAt(active)
+}
+
+// notesModelBusyAt is notesModelBusy for a caller holding the queue's
+// admission lock: the pending count is handed over so the answer cannot move
+// under the caller (the notes-model switch checks and acts as one step).
+func (d *Daemon) notesModelBusyAt(active int) string {
 	if d.notesInstalling() > 0 {
 		return "The notes model is being downloaded. Try again when it has finished."
 	}
-	if d.Meet != nil && d.Meet.Active() > 0 {
+	if active > 0 {
 		return "A meeting is being processed and needs the notes model. Try again when it has finished."
 	}
 	if d.Meet != nil && d.Meet.Store != nil {
@@ -287,10 +414,13 @@ func (d *Daemon) handleModelDelete(w http.ResponseWriter, r *http.Request) {
 // its open file until it exits, so a delete never pulls a model out from under a request; the sole window left is a
 // request admitted between the last check and the unlink, which gets the ordinary "model missing" answer.
 func (d *Daemon) removeModel(ctx context.Context, id string) error {
+	defs := make([]modelDef, 0, len(modelTable)+len(config.NotesCatalog)+2)
+	defs = append(defs, modelTable...)
+	defs = append(defs, d.notesModelDefs()...)
 	var def *modelDef
-	for i := range modelTable {
-		if modelTable[i].id == id {
-			def = &modelTable[i]
+	for i := range defs {
+		if defs[i].id == id {
+			def = &defs[i]
 			break
 		}
 	}
@@ -366,7 +496,11 @@ func (d *Daemon) stopModelEngine(ctx context.Context, sup *engine.Supervisor) er
 // inspected.
 func (d *Daemon) checkRemovable(rm *modelRemoval) (path string, size int64, err error) {
 	path = rm.file(d)
-	if path == "" || !filepath.IsAbs(path) || filepath.Base(path) != rm.pinned {
+	pinned := rm.pinned
+	if rm.pinnedFor != nil {
+		pinned = rm.pinnedFor(d)
+	}
+	if path == "" || !filepath.IsAbs(path) || pinned == "" || filepath.Base(path) != pinned {
 		return "", 0, &modelError{http.StatusBadRequest, "this model is your own file; remove it yourself"}
 	}
 	if !d.inModelsDir(path) {

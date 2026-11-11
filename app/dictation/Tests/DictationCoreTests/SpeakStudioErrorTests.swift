@@ -42,4 +42,64 @@ final class SpeakStudioErrorTests: XCTestCase {
         XCTAssertNotEqual(StudioError.voiceoverRunning.message(text: ShippedStrings.localizer("ru")),
                           StudioError.voiceoverRunning.message(text: ShippedStrings.localizer("en")))
     }
+
+    /// The loudness-before-finished 409 and the two create-time «Манера записи» refusals (400) carry no code on the wire;
+    /// the daemon's own opening words are the one text match, kept at the client edge. Oracle: the daemon's real sentences
+    /// (produce_ops.go `deliver`, voxcpm2.go `voxCloneMode`).
+    /// Mutation: StudioClient.swift, `hasPrefix("the project must finish first")` -> `hasPrefix("x")` -> RED.
+    func testThePanelsOwnRefusalsBecomeSentencesNotDaemonEnglish() {
+        func refuse(_ status: Int, _ message: String) -> StudioError {
+            let json = try! JSONSerialization.data(withJSONObject: ["error": ["message": message, "type": "x"]])
+            return StudioClient.refusal(status: status, body: json)
+        }
+        XCTAssertEqual(refuse(409, "the project must finish first: a loudness change re-assembles the finished file"), .projectNotFinished)
+        XCTAssertEqual(refuse(400, "clone_mode ultimate needs a voice with ref_text; \"nar\" has none"), .recordingStyleUnavailable)
+        XCTAssertEqual(refuse(400, "clone_mode ultimate needs a voice"), .recordingStyleUnavailable)
+        XCTAssertEqual(refuse(400, "clone_mode ultimate continues the reference's own delivery and ignores a style (the request's, or the voice's saved one): drop instructions"),
+                       .recordingStyleUnavailable)
+        // The same words under another status, and other clone_mode errors, stay the daemon's.
+        XCTAssertEqual(refuse(500, "the project must finish first"), .refused(status: 500, message: PlainWords.clean("the project must finish first", fallback: "")))
+        XCTAssertEqual(refuse(409, "this voiceover is still cancelling"), .refused(status: 409, message: PlainWords.clean("this voiceover is still cancelling", fallback: "")))
+        // The delivery gate keeps its own mapping.
+        XCTAssertEqual(refuse(409, "styling a phrase cannot apply: the project was created with clone_mode ultimate"), .stylingUnavailable)
+    }
+
+    func testThePanelsRefusalsReadInThePersonsLanguage() {
+        let t: (L10nKey) -> String = { $0.rawValue }
+        XCTAssertEqual(SpeakText.notice(StudioError.projectNotFinished, t), "speak.panel.err_not_finished")
+        XCTAssertEqual(SpeakText.notice(StudioError.recordingStyleUnavailable, t), "speak.panel.err_recording_style")
+        XCTAssertEqual(StudioError.projectNotFinished.message(text: t), "speak.panel.err_not_finished")
+        XCTAssertEqual(StudioError.recordingStyleUnavailable.message(text: t), "speak.panel.err_recording_style")
+    }
+
+    // MARK: the memory-busy refusal (internal/daemon/residency.go engineBusyCode)
+
+    private let busyBody = #"{"error":{"message":"Another voice or notes engine is using this Mac's memory","type":"engine_busy_memory","code":"engine_busy_memory"}}"#
+
+    /// Mutation: StudioClient.refusal, delete the `SpeechClient.isEnginesBusy` line -> a plain `.refused` carrying the
+    /// daemon's English words -> RED.
+    func testTheMemoryBusyAnswerIsRecognisedByItsCodeNotByItsWords() {
+        XCTAssertEqual(StudioClient.refusal(status: 503, body: body(busyBody)), .enginesBusy)
+        // Other words, same code: still busy. The same words without the code, or another status: not.
+        XCTAssertEqual(StudioClient.refusal(status: 503, body: body(#"{"error":{"message":"x","code":"engine_busy_memory"}}"#)), .enginesBusy)
+        XCTAssertEqual(StudioClient.refusal(status: 503, body: body(#"{"error":{"message":"Another voice or notes engine is using this Mac's memory"}}"#)),
+                       .refused(status: 503, message: PlainWords.clean("Another voice or notes engine is using this Mac's memory", fallback: "")))
+        XCTAssertNotEqual(StudioClient.refusal(status: 500, body: body(busyBody)), .enginesBusy)
+    }
+
+    /// Mutation: SpeakText.notice or StudioError.message, drop the `.enginesBusy` case's key (use the generic line) -> RED.
+    func testTheMemoryBusySentenceIsPlainInBothLanguagesAndNeverTheDaemonsEnglish() {
+        for lang in ["en", "ru"] {
+            let t = ShippedStrings.localizer(lang)
+            let sentence = StudioError.enginesBusy.message(text: t)
+            XCTAssertEqual(sentence, SpeakText.notice(StudioError.enginesBusy, t))
+            XCTAssertEqual(sentence, t(.speakEngineBusy))
+            XCTAssertFalse(sentence.contains("503"))
+            XCTAssertNotEqual(sentence, StudioError.enginesBusy.description)
+        }
+        XCTAssertEqual(StudioError.enginesBusy.message(text: ShippedStrings.localizer("ru")),
+                       "Сейчас готовится другая озвучка или заметки встречи. Подождите, пока она закончится.")
+        XCTAssertEqual(StudioError.enginesBusy.message(text: ShippedStrings.localizer("en")),
+                       "Another voiceover or meeting notes are being made right now. Please wait until it finishes.")
+    }
 }

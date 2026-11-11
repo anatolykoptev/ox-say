@@ -51,7 +51,7 @@ func (c *scriptChat) Complete(context.Context, Request) (string, error) {
 	if i < len(c.errs) && c.errs[i] != nil {
 		return "", c.errs[i]
 	}
-	return `{"summary":"A planning call.","decisions":["Ship Friday"],"action_items":[],"open_questions":[],"numbers":[]}`, nil
+	return `{"summary":"A planning call.","points":[{"text":"Ship Friday","status":"open","quote":""}],"action_items":[],"numbers":[]}`, nil
 }
 
 var startTimeout = &EngineDownError{Err: errors.New("engine did not become healthy"), Retryable: true}

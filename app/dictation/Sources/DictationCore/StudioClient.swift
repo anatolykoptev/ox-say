@@ -12,6 +12,13 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
     case noSavedVoice
     /// A mood on a project made with the recording's own delivery (409 from `deliveryModeGate`): no style can apply there.
     case stylingUnavailable
+    /// A loudness change on a project whose phrases are not all settled (409 "the project must finish first").
+    case projectNotFinished
+    /// «Манера записи» asked of a voice that cannot give it (400 "clone_mode ultimate …").
+    case recordingStyleUnavailable
+    /// A small-memory Mac is busy with another large engine (a voiceover, the fast voice or meeting notes): the daemon's
+    /// 503 with code `engine_busy_memory`. Nothing failed; the request can be repeated later.
+    case enginesBusy
 
     /// What the person reads, in their language. The daemon's own words in a refusal stay as it sent them; an empty
     /// one is the app's sentence naming the status. `description` below stays English: it is for logs.
@@ -24,6 +31,9 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .voiceoverRunning: return text(.speakStudioBusy)
         case .noSavedVoice: return text(.speakStudioNeedsVoice)
         case .stylingUnavailable: return text(.speakMoodUnavailable)
+        case .projectNotFinished: return text(.speakPanelErrNotFinished)
+        case .recordingStyleUnavailable: return text(.speakPanelErrRecordingStyle)
+        case .enginesBusy: return text(.speakEngineBusy)
         }
     }
 
@@ -41,6 +51,9 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .voiceoverRunning: return "Another voiceover is being produced."
         case .noSavedVoice: return "Producing a voiceover needs a saved voice."
         case .stylingUnavailable: return "This project cannot take a mood: it keeps the recording's own delivery."
+        case .projectNotFinished: return "The project must finish first."
+        case .recordingStyleUnavailable: return "This voice cannot copy the recording's delivery."
+        case .enginesBusy: return "Another large voice or notes engine is busy; try again later."
         }
     }
 }
@@ -103,6 +116,8 @@ public struct StudioClient {
     static func refusal(status: Int, body: Data) -> StudioError {
         let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
         let message = (obj?["error"] as? [String: Any])?["message"] as? String ?? ""
+        // The daemon's memory-busy answer: keyed on its JSON code, never on the English words.
+        if status == 503, SpeechClient.isEnginesBusy(body: body) { return .enginesBusy }
         // The daemon's busy answer is the 409 that carries `running_id` (produce_http.go writeProduceErr): a code, not a
         // sentence. The other 409s (still cancelling, not running) carry none and keep their own words.
         if status == 409, obj?["running_id"] is String { return .voiceoverRunning }
@@ -112,6 +127,12 @@ public struct StudioClient {
         // The two delivery-gate 409s (`deliveryNeedsReference`, `deliveryIsUltimate`, produce_ops.go) carry no code on the wire
         // either, only their opening words; both mean the project keeps the recording's delivery and a mood cannot apply.
         if status == 409, message.hasPrefix("styling a phrase") { return .stylingUnavailable }
+        // The two refusals the voice panel can meet, also without a code: a loudness change before the project has finished
+        // (409, `deliver` in produce_ops.go) and «Манера записи» asked of a voice that cannot give it (400, `voxCloneMode`
+        // in voxcpm2.go: no voice, no saved text of the recording, or a style set). The clone mode itself has no flip route:
+        // a change after creation is a new project, so these are the clone-mode answers the app can actually get.
+        if status == 409, message.hasPrefix("the project must finish first") { return .projectNotFinished }
+        if status == 400, message.hasPrefix("clone_mode ultimate") { return .recordingStyleUnavailable }
         // An empty message is the app's sentence naming the status, worded when it is shown (StudioError.message).
         return .refused(status: status, message: PlainWords.clean(message, fallback: ""))
     }
@@ -230,6 +251,24 @@ public struct StudioClient {
     /// POST /v1/produce/{id}/resume with the battery allowed.
     public func continueOnBattery(id: String) async throws {
         _ = try await succeed(post("v1/produce/\(id)/resume", body: ProduceRequest.resumeOnBatteryBody(), timeout: Self.quickTimeout))
+    }
+
+    /// POST /v1/produce/{id}/resume with an empty body: an interrupted project goes on from where it stopped. The battery is
+    /// not allowed by it (`continueOnBattery` says so).
+    public func resume(id: String) async throws {
+        _ = try await succeed(post("v1/produce/\(id)/resume", body: nil, timeout: Self.quickTimeout))
+    }
+
+    /// DELETE /v1/produce/{id}?delete_outputs=true: the project and the finished files it published (the confirmation says
+    /// so). The daemon deletes those only when they are provably the project's own (not saved over, no symlinks): otherwise
+    /// it refuses in plain words and nothing is removed, and the person reads that sentence.
+    public func removeVoiceover(id: String) async throws {
+        var request = delete("v1/produce/\(id)")
+        if let url = request.url, var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            parts.queryItems = [URLQueryItem(name: "delete_outputs", value: "true")]
+            request.url = parts.url
+        }
+        _ = try await succeed(request)
     }
 
     // MARK: voice design

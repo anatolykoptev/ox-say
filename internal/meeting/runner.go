@@ -56,6 +56,9 @@ type Deps struct {
 	// Transcribe recognizes one 16 kHz mono WAV file.
 	Transcribe func(ctx context.Context, wav string) (*stt.Result, error)
 	Chat       Chat
+	// NotesTurn claims the notes model's turn among the large engines for one whole notes job (every call of the
+	// map-reduce) and returns its release; it waits on ctx. Nil: no claim.
+	NotesTurn func(ctx context.Context) (release func(), err error)
 	// NotesReady returns "" when the notes model can run, else the reason
 	// code ("model_missing", "unsupported"); the transcript is then kept and
 	// the notes wait.
@@ -166,6 +169,29 @@ func (r *Runner) Active() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.pending)
+}
+
+// WithAdmissionLock runs fn while holding the admission lock — the one
+// Enqueue takes, which every way a meeting reaches the queue goes through
+// (Finish, Retry, RetryVoices, the recovery re-queues, a speakers edit's
+// re-queue). While fn runs nothing can be admitted: the count handed to fn
+// cannot change, and a job being processed keeps its pending entry until it
+// ends, so a caller that asks "is the queue idle" and then acts gets the
+// check and the act as one step (the notes-model switch).
+func (r *Runner) WithAdmissionLock(fn func(active int) error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return fn(len(r.pending))
+}
+
+// AdmissionLocked reports whether the admission lock is held right now: a
+// test seam for code that must run inside WithAdmissionLock.
+func (r *Runner) AdmissionLocked() bool {
+	if r.mu.TryLock() {
+		r.mu.Unlock()
+		return false
+	}
+	return true
 }
 
 func (r *Runner) next() (string, bool) {
@@ -996,7 +1022,7 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 		return err
 	}
 	shown, display := Present(*m, st, turns)
-	notes, err := Composer{Chat: r.Chat, Before: r.Before, Log: r.Log}.Compose(ctx, PromptText(shown, display), shown.Labels, m.Language)
+	notes, err := r.compose(ctx, PromptText(shown, display), shown.Labels, m.Language)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -1011,6 +1037,24 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 	}
 	notes.Labels = labelMap(*m, st, turns)
 	return r.writeNotes(id, dir, NotesMarkdown(*m, notes, m.Language), &notes)
+}
+
+// compose runs the notes map-reduce holding the notes model's turn for the whole job, so a voice request between two
+// chunks does not evict the model (a reload per chunk) and waits at its own busy answer instead. The turn is released
+// on every way out, a panic included. A turn that cannot be taken is a retryable engine-down failure, like a start
+// that failed.
+func (r *Runner) compose(ctx context.Context, text string, l Labels, lang string) (Notes, error) {
+	if r.NotesTurn != nil {
+		release, err := r.NotesTurn(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return Notes{}, ctx.Err()
+			}
+			return Notes{}, &EngineDownError{Err: fmt.Errorf("the notes model could not take its turn: %w", err), Retryable: true, Reason: FailNotesEngineStart}
+		}
+		defer release()
+	}
+	return Composer{Chat: r.Chat, Before: r.Before, Log: r.Log}.Compose(ctx, text, l, lang)
 }
 
 func (r *Runner) writeNotes(id, dir, md string, n *Notes) error {

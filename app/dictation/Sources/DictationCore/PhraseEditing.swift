@@ -21,7 +21,9 @@ public enum Mood: String, CaseIterable {
 /// What the daemon is doing to one phrase of one project. The project is part of it: the daemon works on one project at a
 /// time, and a phrase number means nothing in another project.
 public struct PhraseWork: Equatable {
-    public enum Kind: Equatable { case variant, pick, mood, text }
+    public enum Kind: Equatable { case variant, pick, mood, text, pace, pause, loudness }
+    /// The `chunk` of work that is on the whole project (a level, a change to every phrase), not on one phrase.
+    public static let wholeProject = -1
     public var project: String
     public var chunk: Int
     public var kind: Kind
@@ -104,11 +106,14 @@ public enum PhraseEditing {
     /// Whether a project's phrases carry mood chips. The studio voice only; the controls matrix (`SpeakControls`) decides:
     /// in the simple mode a designed voice shows them (its mood effect is measured), a cloned or unknown voice does not;
     /// Advanced shows them for any voice. Projects of Озвучка are made with `clone_mode: "reference"`, so the recording's own
-    /// delivery never hides them. `voice` is the project's voice id when this session started it, nil otherwise.
-    public static func showsMood(voice: String?, voices: [VoiceEntry], advanced: Bool) -> Bool {
+    /// delivery never hides them, unless Advanced «Манера записи» made the project with it (`copiesRecordingStyle`): then the
+    /// daemon answers 409 to every mood and none is offered. `voice` is the project's voice id when this session started it,
+    /// nil otherwise.
+    public static func showsMood(voice: String?, voices: [VoiceEntry], advanced: Bool, copiesRecordingStyle: Bool = false) -> Bool {
         var designed = false
         if let voice, let entry = voices.first(where: { $0.id == voice }), case .designed = entry.kind { designed = true }
-        return SpeakControls.shown(engine: .studio, voiceIsDesigned: designed, advanced: advanced).contains(.mood)
+        return SpeakControls.shown(engine: .studio, voiceIsDesigned: designed, advanced: advanced,
+                                   copiesRecordingStyle: copiesRecordingStyle).contains(.mood)
     }
 
     /// The work that is on this phrase of this project, if any: another project's work never shows on this one's rows.

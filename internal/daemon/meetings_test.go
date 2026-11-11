@@ -17,6 +17,7 @@ import (
 	"github.com/anatolykoptev/ox-say/internal/engine"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
 	"github.com/anatolykoptev/ox-say/internal/stt"
+	"github.com/anatolykoptev/ox-say/internal/testutil"
 )
 
 // meetingFixture is a daemon whose recognizer and notes model are fakes.
@@ -31,7 +32,7 @@ func meetingFixture(t *testing.T, edit func(*config.Config)) (*Daemon, *http.Ser
 		}
 		return &stt.Result{Words: w}, nil
 	}
-	d.Meet.Chat = cannedChat{`{"summary":"A planning call.","decisions":["Ship Friday"],"action_items":[{"who":"Me","what":"send the plan","when":"Friday"}],"open_questions":[],"numbers":[]}`}
+	d.Meet.Chat = cannedChat{`{"summary":"A planning call.","points":[{"text":"Ship Friday","status":"decided","quote":"agree who sends what by when"}],"action_items":[{"what":"send the plan","owner":"Anatoly","requested_by":"","owner_evidence":"self_commit","quote":"go through the plan and the open questions","when":"Friday"}],"numbers":[]}`}
 	d.Meet.NotesReady = func() string { return "" }
 	mux := http.NewServeMux()
 	d.Routes(mux)
@@ -88,8 +89,9 @@ func TestStatusReportsWhyNotesCannotRun(t *testing.T) {
 	}
 }
 
-// The model download runs the installed fetch-models.sh --notes-only, reports
-// progress from the .part file, and ends with the model in place.
+// The model download runs the installed fetch-models.sh --notes <file> <sha>
+// <url>, reports progress from the .part file, and ends with the model in
+// place — the automatic default, the 9B, when nothing is chosen or installed.
 // Mutation: internal/daemon/meetings.go InstallNotesModel, change
 // `if d.notes.running {` to `if false {` -> RED (two downloads write one
 // .part file).
@@ -101,21 +103,21 @@ func TestInstallNotesModelRunsTheFetchScript(t *testing.T) {
 		_ = os.WriteFile(bin, []byte("x"), 0o755)
 		c.NotesBin = bin
 		c.NotesModel = filepath.Join(c.Home, "models", config.NotesModelFile)
-		model = c.NotesModel
+		model = filepath.Join(c.Home, "models", "Qwen3.5-9B-Q4_K_M.gguf")
 	})
 	script := filepath.Join(d.Cfg.Home, fetchModelsScript)
 	_ = os.MkdirAll(d.Cfg.Home, 0o755)
-	body := "#!/bin/sh\n[ \"$1\" = --notes-only ] || exit 9\nsleep 0.3\necho model > \"$2/" + config.NotesModelFile + "\"\n"
+	body := "#!/bin/sh\n[ \"$1\" = --notes ] || exit 9\nsleep 0.3\necho model > \"$5/$2\"\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if n := d.Status().Notes; n.ReasonCode != config.NotesReasonModelMissing {
 		t.Fatalf("before: %+v", n)
 	}
-	if err := d.InstallNotesModel(); err != nil {
+	if err := d.InstallNotesModel(""); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.InstallNotesModel(); err == nil {
+	if err := d.InstallNotesModel(""); err == nil {
 		t.Fatal("a second download must be refused while one runs")
 	}
 	if d.Status().Idle {
@@ -143,7 +145,7 @@ func TestInstallNotesModelReportsAFailure(t *testing.T) {
 	})
 	_ = os.MkdirAll(d.Cfg.Home, 0o755)
 	_ = os.WriteFile(filepath.Join(d.Cfg.Home, fetchModelsScript), []byte("#!/bin/sh\necho 'checksum mismatch' >&2\nexit 1\n"), 0o755)
-	if err := d.InstallNotesModel(); err != nil {
+	if err := d.InstallNotesModel(""); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -163,8 +165,26 @@ func TestInstallNotesModelNeedsTheScript(t *testing.T) {
 		c.NotesBin = bin
 		c.NotesModel = filepath.Join(c.Home, "models", config.NotesModelFile)
 	})
-	if err := d.InstallNotesModel(); err == nil || !strings.Contains(err.Error(), fetchModelsScript) {
+	if err := d.InstallNotesModel(""); err == nil || !strings.Contains(err.Error(), fetchModelsScript) {
 		t.Fatalf("err = %v, want it to name the missing script", err)
+	}
+}
+
+// An operator's OX_SAY_NOTES_MODEL outside <home>/models is fetched into the
+// pin's own directory — the path the engine is configured to read.
+func TestInstallWithAnEnvPinOutsideTheModelsDirFetchesThere(t *testing.T) {
+	d := installFixture(t, "#!/bin/sh\n[ \"$1\" = --notes ] || exit 9\necho model > \"$5/$2\"\n")
+	elsewhere := filepath.Join(d.Cfg.Home, "elsewhere", "Qwen3.5-9B-Q4_K_M.gguf")
+	d.Cfg.NotesModel, d.Cfg.NotesModelEnv = elsewhere, true
+	if err := d.InstallNotesModel(""); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to end")
+	if _, err := os.Stat(elsewhere); err != nil {
+		t.Fatalf("the model did not land at the env path: %v", err)
+	}
+	if n := d.Status().Notes; !n.Available {
+		t.Fatalf("notes = %+v, want available on the env model", n)
 	}
 }
 
@@ -180,7 +200,7 @@ func TestNotesServerArgsWriteAPrivateKeyPerSpawn(t *testing.T) {
 	if err := notesPrepare(cfg); err != nil {
 		t.Fatal(err)
 	}
-	a := notesServerArgs(cfg, 8098)
+	a := notesServerArgs(cfg, 8098, cfg.NotesModel)
 	key := filepath.Join(cfg.RunDir(), notesKeyFile)
 	st, err := os.Stat(key)
 	if err != nil || st.Mode().Perm() != 0o600 {
@@ -370,7 +390,7 @@ func TestInstallNotesModelRefusesAForeignFileName(t *testing.T) {
 		c.NotesBin = bin
 		c.NotesModel = filepath.Join(c.Home, "models", "my-own-model.gguf")
 	})
-	if err := d.InstallNotesModel(); err == nil || !strings.Contains(err.Error(), "different file") {
+	if err := d.InstallNotesModel(""); err == nil || !strings.Contains(err.Error(), "different file") {
 		t.Fatalf("err = %v, want a refusal to download over the user's own model path", err)
 	}
 }

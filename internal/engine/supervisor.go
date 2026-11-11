@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -163,6 +164,7 @@ type Supervisor struct {
 	nextAttempt   time.Time
 	lastActivity  time.Time // last Ready commit or Guard release
 	guards        int
+	softGuards    int                 // the part of guards taken by AcquireIdleOnly: Stop does not wait for these
 	held          map[*Guard]struct{} // guards in flight, for Recycle's age rule
 	sendSeq       uint64              // last send stamp handed out by Guard.MarkSent
 	recyclers     int                 // Recycle calls waiting for guards to drain; Release wakes them
@@ -202,7 +204,8 @@ type child struct {
 	waitErr  error         // valid once done is closed
 	baseURL  string
 	readyAt  time.Time
-	userStop bool // daemon-requested stop (idle, shutdown, failed-start cleanup)
+	userStop bool     // daemon-requested stop (idle, shutdown, failed-start cleanup)
+	args     []string // the argv this generation was spawned with
 }
 
 // New creates a supervisor, reaps an orphaned engine left by a previous daemon
@@ -496,6 +499,21 @@ func (s *Supervisor) LiveURL() (string, bool) {
 	return "", false
 }
 
+// SpawnArgs is the argv the live child was spawned with — the child's own
+// record of what this generation runs. A caller whose Config.Args are
+// resolved per spawn (the notes engine resolves its model file at every
+// start) compares them with what a spawn would use now: a difference means
+// the child predates the change and can be recycled. Nil while no child is
+// alive or the child is already being stopped — its replacement re-resolves.
+func (s *Supervisor) SpawnArgs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.child == nil || s.child.userStop {
+		return nil
+	}
+	return slices.Clone(s.child.args)
+}
+
 // Backoff reports how long a NEW EnsureReady caller would have to sleep out
 // before the next start attempt may launch — the cool-down charged by a
 // crash or a failed start. It is 0 whenever an attempt could start at once:
@@ -518,6 +536,7 @@ type Guard struct {
 	s    *Supervisor
 	once sync.Once
 	sent uint64 // send stamp; 0: the request has not been written to the child yet (under s.mu)
+	soft bool   // taken by AcquireIdleOnly
 }
 
 // MarkSent stamps the guard with the next send number and returns it. Call it
@@ -555,10 +574,26 @@ func (s *Supervisor) Acquire() *Guard {
 	return g
 }
 
+// AcquireIdleOnly takes a guard that only keeps the idle loop from stopping the child: it is for work that merely
+// prefers the child to stay up (a slow voice save that registers into it at the end), not work the child is serving.
+// Stop, the daemon's make-room-for-another-engine stop, does not wait for it, so a long preparation cannot hold up
+// another engine's turn. Recycle still waits for it.
+func (s *Supervisor) AcquireIdleOnly() *Guard {
+	g := s.Acquire()
+	s.mu.Lock()
+	g.soft = true
+	s.softGuards++
+	s.mu.Unlock()
+	return g
+}
+
 // Release returns the guard; idle accounting restarts now.
 func (g *Guard) Release() {
 	g.once.Do(func() {
 		g.s.mu.Lock()
+		if g.soft {
+			g.s.softGuards--
+		}
 		g.s.guards--
 		delete(g.s.held, g)
 		g.s.lastActivity = time.Now()
@@ -642,6 +677,57 @@ func (s *Supervisor) blockedLocked(from uint64) bool {
 		}
 	}
 	return false
+}
+
+// Stop stops the engine now so its memory is free when Stop returns: the daemon calls it to make room for another
+// large engine. Unlike Shutdown it is not terminal (the next EnsureReady starts a fresh child), and unlike Recycle it
+// names no pid. It never kills a request: it waits, bounded by RecycleWait and ctx, until no Guard is held and no start
+// attempt is in flight (a Ready child is the only one it may stop), and an idle stop already under way is waited out,
+// because the process still holds its memory until it exits. On timeout it returns ErrRecycleBusy and leaves the child
+// alone; a supervisor that is shut down or has no child returns nil.
+func (s *Supervisor) Stop(ctx context.Context) error {
+	timer := time.NewTimer(s.cfg.RecycleWait)
+	defer timer.Stop()
+	s.mu.Lock()
+	s.recyclers++ // Guard.Release and finishStart wake a parked Stop
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.recyclers--
+		s.mu.Unlock()
+	}()
+	for {
+		s.mu.Lock()
+		c := s.child
+		if s.dead || (s.state != StateStarting && c == nil) {
+			s.mu.Unlock()
+			return nil
+		}
+		var exited <-chan struct{} // a stop already under way: wait for the process itself
+		if s.state != StateStarting && c.userStop {
+			exited = c.done
+		}
+		if s.state != StateStarting && exited == nil && s.guards-s.softGuards == 0 {
+			c.userStop = true
+			s.state = StateStopped
+			s.failCount = 0 // a deliberate stop clears crash/start backoff
+			s.broadcastLocked()
+			s.mu.Unlock()
+			s.log.Info("engine stopped to free memory", slog.Int("pid", c.cmd.Process.Pid))
+			return s.recycleKill(ctx, c)
+		}
+		ch := s.change
+		s.mu.Unlock()
+		select {
+		case <-ch:
+		case <-exited:
+			return nil
+		case <-timer.C:
+			return ErrRecycleBusy
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // recycleKill kills c in the background and waits for it, but gives up the
@@ -817,7 +903,8 @@ func (s *Supervisor) spawn() (*child, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(s.cfg.Bin, s.childArgs()...)
+	args := s.childArgs()
+	cmd := exec.Command(s.cfg.Bin, args...)
 	if len(s.cfg.Env) > 0 {
 		cmd.Env = append(os.Environ(), s.cfg.Env...)
 	}
@@ -832,6 +919,7 @@ func (s *Supervisor) spawn() (*child, error) {
 		logf:    logf,
 		done:    make(chan struct{}),
 		baseURL: s.baseURL(),
+		args:    args,
 	}
 	// The pidfile is written before the waiter starts: a child that dies at
 	// once is then removed by the waiter's onExit, instead of the write

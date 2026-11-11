@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -24,6 +25,12 @@ import (
 
 func TestMain(m *testing.M) {
 	testutil.FakeChildMain()
+	// No test may reach the network through the upstream probe: the default
+	// answer is a transport error, reported as "unknown". A test that needs
+	// a verdict stubs upstreamHEAD itself.
+	upstreamHEAD = func(context.Context, string) (int, error) {
+		return 0, errors.New("upstream probe disabled in tests")
+	}
 	os.Exit(m.Run())
 }
 

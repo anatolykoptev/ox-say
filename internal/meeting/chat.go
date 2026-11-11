@@ -27,7 +27,8 @@ type HTTPChat struct {
 }
 
 // ErrTruncated: the model stopped at the token limit, so its answer, structured
-// or free text, is cut off.
+// or free text, is cut off. Complete returns the cut-off text together with
+// it; a caller that needs a whole answer must treat the error as failure.
 var ErrTruncated = errors.New("meeting: the model's answer hit the token limit")
 
 // StatusError: the model server answered with a status other than 200. Detail
@@ -141,7 +142,7 @@ func (h HTTPChat) Complete(ctx context.Context, r Request) (string, error) {
 		return "", fmt.Errorf("meeting: notes model sent an answer the daemon cannot read")
 	}
 	if out.Choices[0].FinishReason == "length" {
-		return "", ErrTruncated
+		return out.Choices[0].Message.Content, ErrTruncated
 	}
 	return out.Choices[0].Message.Content, nil
 }

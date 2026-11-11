@@ -19,44 +19,60 @@ import (
 // of secs per request and "hears" the request's text (or an override per
 // render index). Shared by F1-3, F1-4 and F1-5 tests.
 type fakePorts struct {
-	coldStart   time.Duration // ColdStartSlack: the engine start budget a render may need on top
-	renderDelay time.Duration // Render takes this long (or ctx ends)
-	lang        string        // ConfiguredLanguage: OX_SAY_LANG as the speak route resolves it
-	mu          sync.Mutex
-	home        string
-	secs        float64
-	gapAt       map[int]float64 // render index -> insert a silent gap of this many seconds mid-take
-	silentAt    map[int]bool    // render index -> the whole take is silence
-	heard       map[int]string  // render index -> transcript override
-	warning     string
-	renders     []renderParams
-	inFlight    int
-	maxInFlight int
-	block       chan struct{} // non-nil: Render waits for it (or ctx)
-	started     chan struct{} // non-nil: Render signals each start
-	hears       int
-	quietWait   time.Duration
-	onBattery   bool
-	bg          []bool
-	voice       voiceFacts
-	voiceErr    error
-	unavailable string
-	engineID    string
-	normErr     error
-	normCalls   int
-	normTargets []float64                           // the LUFS target each Normalize call carried
-	normHook    func()                              // non-nil: Normalize calls it first
-	normNoop    bool                                // Normalize reports success and writes nothing
-	normOut     []byte                              // non-nil: Normalize writes these bytes instead of its input
-	normLimited bool                                // Normalize reports a hard-limited take
-	outRoot     string                              // non-empty: OutputRoot answers it
-	hang        chan struct{}                       // non-nil: Render ignores its context and waits for this
-	events      []string                            // "quiet", "render", "hear" in call order
-	quietFn     func(context.Context, func()) error // non-nil: replaces Quiet
-	hearHook    func()                              // non-nil: Hear calls it first
-	noPID       bool                                // Render never reaches an engine child: reports no pid
-	recycles    []int                               // pids Recycle was asked to stop
-	recycleFrom []uint64                            // the send stamp each Recycle call carried
+	coldStart    time.Duration // ColdStartSlack: the engine start budget a render may need on top
+	renderDelay  time.Duration // Render takes this long (or ctx ends)
+	lang         string        // ConfiguredLanguage: OX_SAY_LANG as the speak route resolves it
+	mu           sync.Mutex
+	home         string
+	secs         float64
+	gapAt        map[int]float64 // render index -> insert a silent gap of this many seconds mid-take
+	silentAt     map[int]bool    // render index -> the whole take is silence
+	heard        map[int]string  // render index -> transcript override
+	warning      string
+	renders      []renderParams
+	inFlight     int
+	maxInFlight  int
+	block        chan struct{} // non-nil: Render waits for it (or ctx)
+	started      chan struct{} // non-nil: Render signals each start
+	hears        int
+	quietWait    time.Duration
+	onBattery    bool
+	bg           []bool
+	voice        voiceFacts
+	voiceErr     error
+	unavailable  string
+	engineID     string
+	normErr      error
+	normCalls    int
+	normTargets  []float64                           // the LUFS target each Normalize call carried
+	normHook     func()                              // non-nil: Normalize calls it first
+	normNoop     bool                                // Normalize reports success and writes nothing
+	normOut      []byte                              // non-nil: Normalize writes these bytes instead of its input
+	normLimited  bool                                // Normalize reports a hard-limited take
+	outRoot      string                              // non-empty: OutputRoot answers it
+	hang         chan struct{}                       // non-nil: Render ignores its context and waits for this
+	events       []string                            // "quiet", "render", "hear" in call order
+	quietFn      func(context.Context, func()) error // non-nil: replaces Quiet
+	hearHook     func()                              // non-nil: Hear calls it first
+	noPID        bool                                // Render never reaches an engine child: reports no pid
+	recycles     []int                               // pids Recycle was asked to stop
+	recycleFrom  []uint64                            // the send stamp each Recycle call carried
+	turns        int                                 // Turn calls
+	turnHeld     bool                                // a Turn is held now
+	releases     int                                 // Turn releases
+	heldAtRender []bool                              // turnHeld at each Render
+	turnErr      error                               // non-nil: Turn fails
+}
+
+func (f *fakePorts) Turn(context.Context) (func(), error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.turnErr != nil {
+		return nil, f.turnErr
+	}
+	f.turns++
+	f.turnHeld = true
+	return func() { f.mu.Lock(); f.turnHeld = false; f.releases++; f.mu.Unlock() }, nil
 }
 
 func newFakePorts(t *testing.T) *fakePorts {
@@ -81,6 +97,7 @@ func (f *fakePorts) Render(ctx context.Context, p renderParams) (*synthOut, erro
 	f.mu.Lock()
 	idx := len(f.renders)
 	f.renders = append(f.renders, p)
+	f.heldAtRender = append(f.heldAtRender, f.turnHeld)
 	f.events = append(f.events, "render")
 	hang := f.hang
 	f.inFlight++

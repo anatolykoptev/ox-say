@@ -157,6 +157,10 @@ func (d *Daemon) boundCleanupWait(ctx context.Context) (context.Context, func())
 	}
 }
 
+// engineTurnBudget is how long an interactive request may wait for another large engine's turn (see residency) before
+// it gets the typed 503 engine_busy_memory. A var so a test can shorten it.
+var engineTurnBudget = 10 * time.Second
+
 // speechOn POSTs one prepared body to sup's child and returns the WAV — the
 // shared shape of every engine call (Acquire, EnsureReady, Speech, status).
 func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[string]any) ([]byte, error) {
@@ -164,11 +168,29 @@ func (d *Daemon) speechOn(ctx context.Context, sup *engine.Supervisor, body map[
 	if err != nil {
 		return nil, err
 	}
-	g := sup.Acquire()
-	defer g.Release()
 	// A request that is not the producer's own is interactive: while it uses
 	// the shared voxcpm2 child the child runs at normal priority (#156.7).
 	use := engineUseOf(ctx)
+	// Below config.OneLargeEngineBelowGB on Apple Silicon the large engines take turns: this stops the others (and
+	// waits for their exit) before this engine may start, and parks the request while another one is working. Every
+	// start of the fast and the studio voice - speech, voice design, the producer's takes - passes this line. It comes
+	// before the Guard: a request parked here must not hold the Guard that the engine making room waits for. An
+	// interactive request gives up after engineTurnBudget with a typed 503; the producer waits on its own deadline.
+	budget := engineTurnBudget
+	if use != nil {
+		budget = 0
+	}
+	leave, err := d.mem.enter(ctx, sup, budget)
+	if err != nil {
+		var busy *engineBusyError
+		if errors.As(err, &busy) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %w", errEngineStart, err)
+	}
+	defer leave()
+	g := sup.Acquire()
+	defer g.Release()
 	vox := d.VoxSup != nil && sup == d.VoxSup
 	callerCtx := ctx
 	if vox && use == nil {

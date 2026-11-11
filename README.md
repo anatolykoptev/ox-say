@@ -24,8 +24,8 @@ The installer:
 - downloads a prebuilt release and checks its SHA-256;
 - fetches the models, checksummed: about 2.5 GB on Apple Silicon, including 221 MB of
   speaker models for [Meetings](#meetings) (the 199 MB Nemotron set is fetched whatever the macOS version, so a
-  Mac that upgrades to macOS 15 later already has it), and about 2.3 GB on an Intel Mac, which skips that set. The optional Whisper adds 1.6 GB. The meeting-notes model (2.7 GB) is not part of it: it
-  is downloaded when you first ask for notes;
+  Mac that upgrades to macOS 15 later already has it), and about 2.3 GB on an Intel Mac, which skips that set. The optional Whisper adds 1.6 GB. The meeting-notes model is not part of it: it
+  is downloaded when you first ask for notes (5.7 GB for the default 9B, 2.7 GB for the lighter 4B);
 - starts the daemon as a LaunchAgent;
 - registers the MCP server with Claude Code, if Claude Code is installed;
 - runs a speak-and-transcribe self-test;
@@ -490,7 +490,10 @@ Meeting routes (see [Meetings](#meetings); the app uses them, and so can an agen
 | `POST /v1/meetings/<id>/voices` | Tell the voices apart again after the voice engine failed |
 | `DELETE /v1/meetings/<id>` | Delete a meeting that nothing is working on |
 | `GET /v1/meetings/settings`, `PUT …/settings` | `{"retention_days"}`: how long audio is kept — 0 (forever), 7, 30 or 90 |
-| `POST /v1/meetings/notes-model/install` | Download the notes model |
+| `GET /v1/meetings/notes-model` | The notes model in use: resolved `model` (catalog id or `custom`), `source` (`env`, `saved`, `automatic`), `path`, `installed`, and `choices` — one row per catalog model with `installed` and `supported`, and `upstream` on the uncensored row while it is not installed (`available`, `gone`, `unknown`: a background HEAD of its download URL, 404/410 and 401/403 read as `gone`, everything else as `unknown`) |
+| `PUT /v1/meetings/notes-model` | `{"id":"<catalog id>"}` or `{"path":"/abs/file.gguf"}` — choose the notes model. `400`: unknown id, relative path, neither field, or an own file that fails the trial load. `409`: the model is busy (a download, or a meeting queued, running or recording). On success the choice is saved, a resident notes engine is stopped and the next notes run loads the new file — no restart |
+| `POST /v1/meetings/notes-model/validate` | Try an own notes model without choosing it: `{"path":"/abs/file.gguf"}` → `200` with `{"ok":true,"name","architecture","bytes"}` — the file's own GGUF `general.name`/`general.architecture` — or `{"ok":false,"reason"}`. The check is the one `PUT {"path"}` runs: a v2/v3 GGUF that fits 70% of this Mac's memory, then `ox-llm` really loading it on a private port, answering `/health` and one short completion |
+| `POST /v1/meetings/notes-model/install` | Download a notes model: `{"id":"<catalog id>"}` or a bodiless POST for the automatic default (the 9B, or the 4B when the disk cannot hold it — `/status` `notes.fallback` says `disk`). `409`: already installed, already downloading, a disk or memory refusal |
 
 Transcript routes (a file transcribed and kept by the daemon; the app's Transcribe section uses them):
 
@@ -505,8 +508,8 @@ Model routes (the app's Models section uses them):
 
 | Route | Description |
 |-------|-------------|
-| `GET /v1/models` | `{"models":[…]}` for `qwen3-tts`, `voxcpm2`, `parakeet`, `whisper`, `notes`; each row has `id`, `kind` (`speech`, `transcribe`, `notes`), `name`, `bytes`, `installed`, `default` (the daemon's own default for its kind), `optional` (may be installed and removed; false for `qwen3-tts` and `parakeet`), `removable` (true only when `DELETE` would succeed: optional, installed, the installer's file name, a plain file in `<home>/models`), `installing` (the notes download is running), `supported` and, when it is false, `reason_code` and `reason`. `supported` means this Mac can run the model; it does not mean ready now (a model that is not downloaded yet is still supported; `/status` `available` is the ready-now word). `bytes` is the size on disk when installed. For a model that is not installed it is the expected size: exact for `notes` (the pinned 2740937888, the same figure as in `scripts/fetch-models.sh`), approximate for `voxcpm2` (3.0 GB) and `whisper` (1.6 GB), and 0 where unknown (`qwen3-tts`, `parakeet`). One stat per file: cheap enough to call whenever a window opens |
-| `DELETE /v1/models/<id>` | Remove an optional model (`voxcpm2`, `whisper`, `notes`) and stop its engine first; `204`. `400`: a required model, a file that is not the one the installer writes (`OX_SAY_*_MODEL` pointing at your own file, a symlink, a folder), or a model outside `<home>/models` (managed outside OxSay; `GET` shows `removable: false`). `404`: unknown id or not installed. `409`: in use (a speech, design or produce job for `voxcpm2`; a transcription for `whisper`; a download, a queued, running or recording meeting for `notes`; an engine still serving or starting). `notes` is restored by `POST /v1/meetings/notes-model/install`; `voxcpm2` and `whisper` by `scripts/fetch-models.sh` |
+| `GET /v1/models` | `{"models":[…]}` for `qwen3-tts`, `voxcpm2`, `parakeet`, `whisper`, `notes`, `notes:qwen3.5-9b`, `notes:qwen3.5-4b`, `notes:qwen3.8-27b-uncensored` (and `notes:custom` while your own file is the notes model); each row has `id`, `kind` (`speech`, `transcribe`, `notes`), `name`, `bytes`, `installed`, `default` (the daemon's own default for its kind — `notes:qwen3.5-9b` for notes), `optional` (may be installed and removed; false for `qwen3-tts`, `parakeet` and `notes:custom`), `removable` (true only when `DELETE` would succeed: optional, installed, the installer's file name, a plain file in `<home>/models`), `installing` (the notes download is running), `supported` and, when it is false, `reason_code` and `reason`; the `notes:qwen3.8-27b-uncensored` row also carries `upstream` while its file is not installed (`available`, `gone`, `unknown` — whether the download URL still answers; `gone` is only 404/410 or a gated 401/403, a network error or 5xx is `unknown`, and the field is omitted once the file is on disk). The plain `notes` row is the model notes would run on now — the resolved one — kept for clients written before the catalog. `supported` means this Mac can run the model; it does not mean ready now (a model that is not downloaded yet is still supported; `/status` `available` is the ready-now word). `bytes` is the size on disk when installed. For a model that is not installed it is the expected size: exact for every `notes…` row (the catalog's pinned bytes, the same figures `scripts/fetch-models.sh` downloads), approximate for `voxcpm2` (3.0 GB) and `whisper` (1.6 GB), and 0 where unknown (`qwen3-tts`, `parakeet`). One stat per file: cheap enough to call whenever a window opens |
+| `DELETE /v1/models/<id>` | Remove an optional model (`voxcpm2`, `whisper`, `notes`, `notes:<catalog id>`) and stop its engine first; `204`. `400`: a required model, `notes:custom`, a file that is not the one the installer writes (`OX_SAY_*_MODEL` pointing at your own file, a symlink, a folder), or a model outside `<home>/models` (managed outside OxSay; `GET` shows `removable: false`). `404`: unknown id or not installed. `409`: in use (a speech, design or produce job for `voxcpm2`; a transcription for `whisper`; a download, a queued, running or recording meeting for `notes` and `notes:<id>`; an engine still serving or starting). Deleting `notes` removes the file the resolution names; deleting `notes:<id>` removes that catalog file (and stops the notes engine when it is the resolved one). `notes` and `notes:<id>` are restored by `POST /v1/meetings/notes-model/install`; `voxcpm2` and `whisper` by `scripts/fetch-models.sh` |
 
 Streaming transcription sessions — incremental decoding on the resident
 `ox-stt --serve` (requires the VAD model; unavailable when it is absent or
@@ -581,9 +584,10 @@ Environment variables (flags on `serve` override them):
 | `OX_SAY_VOXCPM2_MODEL` | `$OX_SAY_HOME/models/voxcpm2-q8_0.gguf` | VoxCPM2 weights (`OX_SAY_WITH_VOXCPM2=1` fetch) |
 | `OX_SAY_VOXCPM2_PORT` | `8097` | Loopback port the VoxCPM2 child binds |
 | `OX_SAY_NOTES_BIN` | `<engine dir>/ox-llm` | The meeting-notes engine (llama.cpp's llama-server); on the GPU with unified memory (Apple Silicon), on the CPU otherwise |
-| `OX_SAY_NOTES_MODEL` | `$OX_SAY_HOME/models/Qwen3.5-4B-Q4_K_M.gguf` | Notes model weights (about 2.7 GB, downloaded on request) |
+| `OX_SAY_NOTES_MODEL` | unset (the catalog decides) | The operator's notes-model pin: an absolute path to a `.gguf`, written by the installer. It wins over the user's saved choice in every case. A file name the catalog knows (`Qwen3.5-9B-Q4_K_M.gguf`, `Qwen3.5-4B-Q4_K_M.gguf`, `Huihui-Qwen3.8-27B-abliterated-UD-Q5_K_XL.gguf`) pins that model; any other path is the user's own file — reported as `custom`, never downloaded over and never deleted by ox-say. Unset, the model is the saved choice or the automatic pick (see [Meetings](#meetings)) |
 | `OX_SAY_NOTES_PORT` | `8098` | Loopback port the notes engine binds. Set explicitly, it must differ from the other listeners or the daemon refuses to start; left at the default, a collision turns notes off (`port_blocked` in `/status`) and the rest of the daemon runs |
 | `OX_SAY_NOTES_IDLE_STOP_SECS` | `120` | Stop the notes engine after N s idle |
+| `OX_SAY_ASSUME_MEMORY_GB` | unset | Test and diagnostic knob. Makes the daemon decide as if the Mac had N GB for ONE thing: whether the large engines (fast voice, studio voice, notes model) take turns, which they do on Apple Silicon below 24 GB (`/status` `memory_mode` is `one_large_engine`, otherwise `shared`). It does not change the memory gates: the studio voice and the notes model still read the real memory. Use it to exercise the turn-taking on a bigger Mac |
 | `OX_SAY_DIAR_BIN` | `<engine dir>/ox-diar` | The speaker diarization engine (meeting voices); Apple Silicon, macOS 15 or later |
 | `OX_SAY_DIAR_ENGINE` | `nemotron` | Which model separates the voices of a meeting: `nemotron` (Nemotron 3 Diarization fast128 on the Neural Engine) or `pyannote` (the previous pipeline, kept until it is removed). Case and surrounding spaces do not matter; a value that is neither is logged once and the default is used. A Mac whose engine set is not fetched keeps one far-side label (`models_missing`) until `scripts/fetch-models.sh` has run; `nemotron` takes calls up to 6 hours, `pyannote` up to 2. The app records up to 6 hours (a minute less) on either; on `pyannote` a recording over 2 hours keeps one far-side label. `GET /status` shows the engine in use as `config.diar_engine` |
 | `OX_SAY_CLEAN_BIN` | `<engine dir>/ox-clean` | The voice-cleanup engine (MossFormer2 on Core ML); its model set (131 MB) is downloaded on first use |
@@ -796,11 +800,23 @@ app can copy a sentence for that to the clipboard (**Copy consent phrase**).
   the far side's voices. The app records a meeting for up to 6 hours. With three or more voices the transcript shows them as "Speaker 1", "Speaker 2"…; with two,
   it keeps one label and offers **split by voice**. You can name a speaker, merge two voices, or split them
   again; the transcript is rewritten and the notes are made again. Without this step the whole far side is one label.
-- **Notes.** A local model (Qwen3.5-4B Q4_K_M, run by `ox-llm`) writes a summary, decisions, action items, open
+- **Notes.** A local model (run by `ox-llm`) writes a summary, decisions, action items, open
   questions and key numbers, in the meeting's own language. Install it from the Meetings menu (**Download Notes
-  Model**, 2.7 GB) or with `POST /v1/meetings/notes-model/install`. Until then a meeting shows "transcript only".
+  Model**) or with `POST /v1/meetings/notes-model/install`. Until then a meeting shows "transcript only".
   The model is loaded for a notes run and stopped after
   `OX_SAY_NOTES_IDLE_STOP_SECS` of idleness (120 s by default); it holds 4–7 GB while loaded.
+  **The model is your choice.** The catalog: **Qwen3.5-9B Q4_K_M** (standard, the automatic default, 5.7 GB),
+  **Qwen3.5-4B Q4_K_M** (the lighter compact model, 2.7 GB — the download falls back to it when the disk cannot
+  hold the 9B, and a Mac that already had it keeps running it after an update), and
+  **Qwen3.8-27B abliterated** (an optional uncensored model for a Mac with 32 GB or more, 20.7 GB — never picked
+  automatically). `PUT /v1/meetings/notes-model` switches: it saves the choice, refuses while a meeting needs the
+  model (`409`), and the next notes run loads the new file without a restart. `{"path":"…"}` names your own
+  `.gguf`, which ox-say reports as `custom` and never downloads or deletes — and only saves once the file proves
+  it really loads: a v2/v3 GGUF that fits this Mac's memory, loaded by a trial `ox-llm` and answering one
+  completion (`POST /v1/meetings/notes-model/validate` runs the same check without choosing). While the
+  uncensored model is not installed, its row says whether the file is still on its host (`upstream` — `gone` is
+  a clear 404/410 or a gated repo, `unknown` a network hiccup). A model over 12 GB is exclusive on a
+  Mac under 48 GB of unified memory: the large engines take turns there (`/status` `memory_mode`).
 - **The main window** (**Open OxSay…** in the menu): the list of recordings, search over titles, notes and
   transcripts, find-in-transcript, and playing the audio from any line of the transcript.
 - **For agents.** The MCP tools `meetings_list`, `meeting_get` and `meetings_search`, and the HTTP routes listed
@@ -919,8 +935,10 @@ publisher's license:
   6.81% against 6.84%, 8.13% against 8.15%) at about half the memory (669 MB
   against 1229 MB resident). The other 23 languages were not measured
 - Whisper large-v3-turbo (optional): MIT (OpenAI)
-- Qwen3.5-4B Q4_K_M, the meeting-notes model (downloaded on first use of notes): Apache-2.0 (Qwen team,
-  Alibaba), the GGUF conversion by Unsloth
+- Qwen3.5-9B and Qwen3.5-4B Q4_K_M, the meeting-notes models (downloaded on first use of notes): Apache-2.0
+  (Qwen team, Alibaba), the GGUF conversions by Unsloth
+- Huihui-Qwen3.8-27B-abliterated UD Q5_K_XL, the optional uncensored notes model: Apache-2.0, the GGUF conversion
+  by huihui-ai (an abliterated Qwen3.8 derivative)
 - Core ML speaker models for `ox-diar`: CC-BY-4.0. They are Fluid Inference's conversions of
   pyannote's speaker-diarization-community-1 pipeline (pyannote segmentation, WeSpeaker ResNet34-LM embeddings,
   PLDA parameters from BUT Speech@FIT); attribute pyannote, WeSpeaker, BUT Speech@FIT and Fluid Inference when you

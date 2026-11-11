@@ -117,6 +117,32 @@ jobs:
           commit=$(scripts/check-release-tag.sh "$TAG" "$GITHUB_SHA")
           git checkout --detach "$commit"
 
+      # The upgrade gate runs from the WORKFLOW commit, not from the tree above: a release tag can predate the PR that
+      # added the gate, and the tag checkout would then leave these scripts out and fail the release. The package
+      # under test is still the one built from the tag tree, and its own installer is what the gate runs.
+      - name: Upgrade gate scripts
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/upgrade-gate"
+          for f in test-upgrade-from-release.sh test-upgrade-guard.sh; do
+            git show "$GITHUB_SHA:scripts/$f" > "$RUNNER_TEMP/upgrade-gate/$f"
+            chmod +x "$RUNNER_TEMP/upgrade-gate/$f"
+          done
+
+      # The tag checkout above can leave the tree at a commit that predates this
+      # workflow — the tag is the release commit, not the commit this run
+      # started for — so a helper a step below calls may not exist on disk
+      # (scripts/swiftpm-resolve.sh is absent at v0.1.30). Read it out of the
+      # workflow commit instead: checkout ran with fetch-depth:0, so
+      # $GITHUB_SHA's objects are in the clone, and $RUNNER_TEMP is outside the
+      # checked-out tree, so no later checkout can clobber it.
+      - name: Extract the resolve helper
+        if: matrix.diar_xcode != ''
+        run: |
+          set -euo pipefail
+          git show "$GITHUB_SHA:scripts/swiftpm-resolve.sh" > "$RUNNER_TEMP/swiftpm-resolve.sh"
+          chmod +x "$RUNNER_TEMP/swiftpm-resolve.sh"
+
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           # The newest 1.26.x, not the exact `go 1.26.0` floor in go.mod: setup-go v5.6.0 reads only the `go` line
@@ -132,6 +158,7 @@ jobs:
           bash scripts/test-lib-install.sh
           bash scripts/test-fetch-models.sh
           bash scripts/test-download-stall.sh
+          bash "$RUNNER_TEMP/upgrade-gate/test-upgrade-guard.sh"
 
       - name: Build tools
         run: command -v cmake >/dev/null || brew install cmake
@@ -172,6 +199,47 @@ jobs:
           xcrun -sdk macosx metal --version | head -1
           echo "SDK $(xcrun -sdk macosx --show-sdk-version)"
 
+      # SwiftPM resolves packages inside `swift build` deep in package-release.sh, pulling FluidAudio and its
+      # binary targets from third-party release URLs — one hiccup there must not kill a release (PR #505's
+      # package job died on one zip). engine/diar is the repo's only Swift package with remote dependencies —
+      # engine/clean and the app declare none and carry no Package.resolved — and ox-diar is built on arm64
+      # alone, so the fingerprint, both caches and the resolve run only where the Xcode 26 for it is named.
+      # Resolve first, with a bounded retry, and keep the shared SwiftPM cache across runs so a warm run needs
+      # no download at all; it holds only public package downloads, no credentials.
+      - name: Swift toolchain fingerprint
+        if: matrix.diar_xcode != ''
+        id: swift-toolchain
+        env:
+          OX_SAY_DIAR_DEVELOPER_DIR: ${{ matrix.diar_xcode }}
+        run: DEVELOPER_DIR=$OX_SAY_DIAR_DEVELOPER_DIR swift --version | shasum -a 256 | awk '{print "fingerprint=" $1}' >> "$GITHUB_OUTPUT"
+
+      - name: Cache SwiftPM downloads
+        if: matrix.diar_xcode != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-${{ hashFiles('engine/diar/Package.swift', 'engine/diar/Package.resolved') }}
+          # restore-keys stays here: this cache is the shared SwiftPM download store, and SwiftPM verifies a
+          # downloaded archive against the manifest checksum, so a prefix restore cannot serve a wrong archive.
+          restore-keys: |
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache ox-diar's binary artifacts
+        if: matrix.diar_xcode != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: engine/diar/.build/artifacts
+          key: swiftpm-artifacts-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift-toolchain.outputs.fingerprint }}-${{ hashFiles('engine/diar/Package.resolved') }}
+          # No restore-keys: a broad prefix could restore artifacts extracted for an older resolution —
+          # only an exact key may hit.
+
+      - name: Resolve Swift packages
+        if: matrix.diar_xcode != ''
+        env:
+          OX_SAY_DIAR_DEVELOPER_DIR: ${{ matrix.diar_xcode }}
+        run: DEVELOPER_DIR=$OX_SAY_DIAR_DEVELOPER_DIR "$RUNNER_TEMP/swiftpm-resolve.sh" engine/diar --force-resolved-versions
+
       - name: Package
         env:
           OX_SAY_DIAR_DEVELOPER_DIR: ${{ matrix.diar_xcode }}
@@ -204,6 +272,14 @@ jobs:
           tar -xzf "dist/ox-say-macos-$ARCH.tar.gz" -C check
           cd check/ox-say
           test "$(cat VERSION)" = "$VERSION"
+          # No file the owner cannot write: an install over an earlier copy of it fails with "Permission
+          # denied" (the 0400 FluidAudio licences broke 0.1.29 -> 0.1.30). `find` prints, the test fails.
+          unwritable=$(find . ! -perm -u+w)
+          if [ -n "$unwritable" ]; then
+            echo "the package holds files the owner cannot write:" >&2
+            echo "$unwritable" >&2
+            exit 1
+          fi
           # VoxCPM2's server and ox-diar are optional for the installer, so a build that
           # silently dropped one would still install: pin them to the architecture
           # here. arm64 carries both, x86_64 neither. ox-clean is optional for the installer
@@ -365,6 +441,20 @@ jobs:
           fi
           test -x scripts/install-app.sh
           (cd ../../dist && shasum -a 256 -c SHA256SUMS)
+
+      # Release N over the real release N-1: downloads the previous published release (retried, never skipped),
+      # installs it with ITS installer, then installs this package over it with the package's own installer and
+      # checks the files. 0.1.29 -> 0.1.30 failed on every Apple Silicon Mac because 0.1.29 left read-only licence
+      # files and 0.1.30's installer wrote into them after it had replaced the engines; the fake packages of the
+      # installer tests could not see it. The launchd load, version wait, self-test, app and MCP registration are
+      # stubbed (scripts/test-upgrade-from-release.sh says how). Runs on PRs, which build this job too.
+      - name: Upgrade over the previous release
+        timeout-minutes: 15
+        env:
+          ARCH: ${{ matrix.arch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$RUNNER_TEMP/upgrade-gate/test-upgrade-from-release.sh" "dist/ox-say-macos-$ARCH.tar.gz"
 
       - name: Keep the package as a workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

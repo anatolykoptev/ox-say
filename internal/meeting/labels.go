@@ -298,7 +298,7 @@ func notesStrings(n Notes) []string {
 	out = append(out, n.OpenQuestions...)
 	out = append(out, n.Numbers...)
 	for _, a := range n.ActionItems {
-		out = append(out, a.Who, a.What, a.When)
+		out = append(out, a.Who, a.What, a.When, a.RequestedBy)
 	}
 	return out
 }
@@ -314,6 +314,12 @@ func labelKey(id string, m Manifest, st SpeakerState) string {
 // apply returns n with the substitutions made in every string of it.
 func (c labelChanges) apply(n Notes) Notes {
 	free := func(s string) string { return replaceLabels(s, c.free) }
+	// A stored quote is cleanLine'd text; the new labels go into it cleaned the same way, so a name with markup in it
+	// cannot undo the escaping.
+	cleanFree := map[string]string{}
+	for from, to := range c.free {
+		cleanFree[cleanLine(from)] = cleanLine(to)
+	}
 	n.Summary = free(n.Summary)
 	n.Decisions = mapStrings(n.Decisions, free)
 	n.OpenQuestions = mapStrings(n.OpenQuestions, free)
@@ -325,7 +331,8 @@ func (c labelChanges) apply(n Notes) Notes {
 		} else {
 			a.Who = free(a.Who)
 		}
-		a.What, a.When = free(a.What), free(a.When)
+		a.What, a.When, a.RequestedBy = free(a.What), free(a.When), free(a.RequestedBy)
+		a.Quote = replaceLabels(a.Quote, cleanFree)
 		items[i] = a
 	}
 	n.ActionItems = items

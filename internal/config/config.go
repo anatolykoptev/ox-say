@@ -57,18 +57,26 @@ const VoxCPM2ModelFile = "voxcpm2-q8_0.gguf"
 // 16 GB Mac is unmeasured and Metal wires at most about 2/3 of RAM.
 const VoxCPM2MinMemoryGB = 24
 
-// NotesModelFile is the one model filename fetch-models.sh --notes-only and
-// the default path share (Qwen3.5-4B Q4_K_M, the notes spike's default).
+// OneLargeEngineBelowGB is the memory below which an Apple Silicon Mac holds one large GPU engine at a time (the fast
+// voice, the studio voice, the notes model): VoxCPM2 peaks near 7.5 GB, the fast voice holds about 5 GB and the notes
+// model about 7 GB while Metal wires at most about 2/3 of RAM (issue #501). It is its own number, not
+// VoxCPM2MinMemoryGB: lowering the studio-voice gate to 16 GB must not switch the eviction off for 16-23 GB Macs.
+const OneLargeEngineBelowGB = 24
+
+// NotesModelFile is the compact catalog entry's filename and the default
+// OX_SAY_NOTES_MODEL path (Qwen3.5-4B Q4_K_M): an install that already has it
+// keeps resolving to it after the catalog lands.
 const NotesModelFile = "Qwen3.5-4B-Q4_K_M.gguf"
 
-// NotesModelBytes is that file's size, for the download's progress only; the
-// integrity pin is the SHA-256 in fetch-models.sh.
+// NotesModelBytes is that file's size. The download's progress and integrity
+// pin come from the catalog entry for the selected model.
 const NotesModelBytes = 2740937888
 
-// NotesMinMemoryGB is the smallest Mac the notes model is offered on: the 4B
-// model peaked at 4.4 GB (7.2 GB resident) in the spike, next to the resident
+// NotesMinMemoryGB is the smallest Mac any catalog model is offered on: the
+// 4B peaked at 4.4 GB (7.2 GB resident) in the spike, next to the resident
 // speech engines; an 8 GB Mac is unmeasured and gets the transcript without
-// notes until it is.
+// notes until it is. Models with a higher floor gate on their own
+// NotesModelEntry.MinMemoryGB.
 const NotesMinMemoryGB = 16
 
 // DiarModelsRevision is the Hugging Face revision of the diarization models. scripts/fetch-models.sh downloads that
@@ -183,7 +191,8 @@ type Config struct {
 	VoxCPM2Port   int           // OX_SAY_VOXCPM2_PORT: loopback port the child binds
 	TTSModel      string        // OX_SAY_TTS_MODEL: default model of a speech request
 	NotesBin      string        // OX_SAY_NOTES_BIN: path to ox-llm (llama-server)
-	NotesModel    string        // OX_SAY_NOTES_MODEL: the notes GGUF
+	NotesModel    string        // OX_SAY_NOTES_MODEL: the notes GGUF the operator pinned, or the built-in default
+	NotesModelEnv bool          // OX_SAY_NOTES_MODEL (or --notes-model) was given: it wins over a saved choice
 	NotesPort     int           // OX_SAY_NOTES_PORT: loopback port the child binds
 	NotesIdleStop time.Duration // OX_SAY_NOTES_IDLE_STOP_SECS
 	DiarBin       string        // OX_SAY_DIAR_BIN: path to ox-diar (speaker diarization)
@@ -203,6 +212,12 @@ type Config struct {
 	// HostMemoryBytes is the installed RAM read by load; 0 (a Config literal,
 	// or an unreadable host) means unknown and never blocks VoxCPM2.
 	HostMemoryBytes uint64
+
+	// AssumedMemoryBytes is OX_SAY_ASSUME_MEMORY_GB: a test and diagnostic knob that makes OneLargeEngine decide as if the
+	// Mac had this much memory. 0 (unset) means the real HostMemoryBytes decides. It feeds that decision ONLY: the
+	// VoxCPM2 and notes memory gates keep reading HostMemoryBytes, so the knob can switch the eviction on for a
+	// 48 GB Mac without taking the gate's protection away from a small one.
+	AssumedMemoryBytes uint64
 }
 
 // flagNames maps flag names to env var names for ApplyFlags.
@@ -247,6 +262,8 @@ var flagNames = map[string]string{
 	"diar-bin":          "OX_SAY_DIAR_BIN",
 	"diar-engine":       "OX_SAY_DIAR_ENGINE",
 	"clean-bin":         "OX_SAY_CLEAN_BIN",
+	// A test and diagnostic knob: see Config.AssumedMemoryBytes.
+	"assume-memory-gb": "OX_SAY_ASSUME_MEMORY_GB",
 }
 
 // RegisterFlags registers one flag per supported env var on fs. Values set on
@@ -513,6 +530,16 @@ func loadVoxCPM2(c *Config, get func(string) string, engineDir string) error {
 		return fmt.Errorf("config: OX_SAY_TTS_MODEL %q: want %s|%s", c.TTSModel, TTSModelQwen, TTSModelVoxCPM2)
 	}
 	c.HostMemoryBytes = hostMemoryBytes()
+	if raw := get("OX_SAY_ASSUME_MEMORY_GB"); raw != "" {
+		gb, err := intVar(raw, 0)
+		if err != nil {
+			return fmt.Errorf("config: OX_SAY_ASSUME_MEMORY_GB: %w", err)
+		}
+		if gb < 1 {
+			return fmt.Errorf("config: OX_SAY_ASSUME_MEMORY_GB %d: want >= 1 (or unset)", gb)
+		}
+		c.AssumedMemoryBytes = uint64(gb) * bytesPerGB
+	}
 	return nil
 }
 
@@ -524,6 +551,8 @@ func loadNotes(c *Config, get func(string) string, engineDir string) error {
 	}
 	if c.NotesModel = get("OX_SAY_NOTES_MODEL"); c.NotesModel == "" {
 		c.NotesModel = filepath.Join(c.Home, "models", NotesModelFile)
+	} else {
+		c.NotesModelEnv = true
 	}
 	rawPort := get("OX_SAY_NOTES_PORT")
 	var err error
@@ -567,10 +596,15 @@ const (
 )
 
 // NotesBlock reports why the notes engine cannot run, as a code for a program
-// and a sentence for a person; both are "" when it can. Files are stat'ed per
-// call, so a model downloaded later works without a daemon restart.
-func (c *Config) NotesBlock() (code, reason string) {
-	if c.HostMemoryBytes != 0 && c.HostMemoryBytes < NotesMinMemoryGB*bytesPerGB {
+// and a sentence for a person; both are "" when it can. The resolved model's
+// own memory floor gates it (a 16 GB Mac runs the 4B but not the 27B). Files
+// are stat'ed per call, so a model downloaded later works without a restart.
+func (c *Config) NotesBlock(res NotesResolution) (code, reason string) {
+	if res.Entry != nil && c.HostMemoryBytes != 0 && c.HostMemoryBytes < uint64(res.Entry.MinMemoryGB)*bytesPerGB {
+		return NotesReasonUnsupported, fmt.Sprintf("%s needs at least %d GB of memory; this Mac has %d GB.",
+			res.Entry.Name, res.Entry.MinMemoryGB, c.HostMemoryBytes/bytesPerGB)
+	}
+	if res.Entry == nil && c.HostMemoryBytes != 0 && c.HostMemoryBytes < NotesMinMemoryGB*bytesPerGB {
 		return NotesReasonUnsupported, fmt.Sprintf("Meeting notes need at least %d GB of memory; this Mac has %d GB.",
 			NotesMinMemoryGB, c.HostMemoryBytes/bytesPerGB)
 	}
@@ -580,8 +614,8 @@ func (c *Config) NotesBlock() (code, reason string) {
 	if !isRegularFile(c.NotesBin) {
 		return NotesReasonEngineMissing, "This ox-say install has no notes engine. Update ox-say."
 	}
-	if !isRegularFile(c.NotesModel) {
-		return NotesReasonModelMissing, fmt.Sprintf("The notes model is not downloaded yet (about %.1f GB).", float64(NotesModelBytes)/1e9)
+	if !res.Installed {
+		return NotesReasonModelMissing, res.MissingText()
 	}
 	return "", ""
 }
@@ -703,6 +737,20 @@ func resolveGPUMemory(v string) (string, error) {
 // the GPU side by side and no GPU lease is taken. Anything else — the zero
 // value included — keeps the discrete-card arbitration (issue #11).
 func (c *Config) UnifiedMemory() bool { return c.GPUMemory == GPUMemoryUnified }
+
+// OneLargeEngine reports whether the large GPU engines take turns: Apple Silicon with less memory than
+// OneLargeEngineBelowGB, where two of them do not fit what Metal may wire. An unknown size (0) never turns it on, like
+// the memory gates. OX_SAY_ASSUME_MEMORY_GB, when set, replaces the size for this decision alone.
+func (c *Config) OneLargeEngine() bool {
+	if !c.UnifiedMemory() {
+		return false
+	}
+	mem := c.HostMemoryBytes
+	if c.AssumedMemoryBytes != 0 {
+		mem = c.AssumedMemoryBytes
+	}
+	return mem != 0 && mem < OneLargeEngineBelowGB*bytesPerGB
+}
 
 func intVar(v string, def int) (int, error) {
 	if v == "" {

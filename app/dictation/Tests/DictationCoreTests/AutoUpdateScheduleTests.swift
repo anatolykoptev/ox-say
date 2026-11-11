@@ -213,7 +213,7 @@ final class AutoUpdateWiringTests: XCTestCase {
         let sync = requireBody("private func syncTopRows(in menu: NSMenu) {")
         XCTAssertTrue(sync.contains("wantUpdate: updateOffer != nil"), "the Update row is not driven by the offer")
         let icon = requireBody("private func applyStatusIcon() {")
-        XCTAssertTrue(icon.contains("guard updateOffer != nil else {"), "the status dot is not driven by the offer")
+        XCTAssertTrue(icon.contains("updateOffer != nil\n            ? StatusIconImage.badged("), "the status dot is not driven by the offer")
         let check = requireBody("private func backgroundUpdateCheck(")
         guard let notice = check.range(of: "self.notice(.updateAvailable(L10nKey.noticeUpdateAvailable"),
               let rows = check.range(of: "self.syncTopRows(in: menu)", range: notice.upperBound..<check.endIndex),

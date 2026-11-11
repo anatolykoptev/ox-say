@@ -35,7 +35,10 @@ func (d *Daemon) meetingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/meetings/{id}/finish", d.handleMeetingFinish)
 	mux.HandleFunc("POST /v1/meetings/{id}/notes", d.handleMeetingNotes)
 	mux.HandleFunc("DELETE /v1/meetings/{id}", d.handleMeetingDelete)
+	mux.HandleFunc("GET /v1/meetings/notes-model", d.handleNotesModelGet)
+	mux.HandleFunc("PUT /v1/meetings/notes-model", d.handleNotesModelPut)
 	mux.HandleFunc("POST /v1/meetings/notes-model/install", d.handleNotesModelInstall)
+	mux.HandleFunc("POST /v1/meetings/notes-model/validate", d.handleNotesModelValidate)
 	d.speakersRoutes(mux)
 }
 
@@ -394,8 +397,18 @@ func (d *Daemon) handleMeetingSettingsSet(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, d.Meet.Store.Settings())
 }
 
-func (d *Daemon) handleNotesModelInstall(w http.ResponseWriter, _ *http.Request) {
-	if err := d.InstallNotesModel(); err != nil {
+// handleNotesModelInstall starts the download of a notes model. The app's
+// bodiless POST installs the automatic default; {"id":"<catalog id>"} names
+// the model to download.
+func (d *Daemon) handleNotesModelInstall(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := decodeStrict(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "The request body must be a JSON object like {\"id\":\"qwen3.5-9b\"} or empty.")
+		return
+	}
+	if err := d.InstallNotesModel(req.ID); err != nil {
 		d.writeMeetingErr(w, err)
 		return
 	}

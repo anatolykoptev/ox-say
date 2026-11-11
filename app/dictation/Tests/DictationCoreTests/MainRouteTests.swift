@@ -73,4 +73,23 @@ final class MainRouteTests: XCTestCase {
         XCTAssertNil(route.pruned(knownMeetingIDs: ["a", "b"]).meetingID)
         XCTAssertEqual(MainRoute(section: .meetings, meetingID: "a").pruned(knownMeetingIDs: ["a", "b"]).meetingID, "a")
     }
+
+    /// Window Task 18 F3: the voiceover that is open is saved and restored with the section.
+    func testRouteRoundTripsTheVoiceoverID() {
+        let d = defaults()
+        WindowRestoration.save(MainRoute(section: .speak, speakID: "20261110-101500-abc123"), to: d)
+        XCTAssertEqual(WindowRestoration.load(d, advanced: false).speakID, "20261110-101500-abc123")
+        XCTAssertEqual(d.string(forKey: "mainWindow.speak"), "20261110-101500-abc123")
+        WindowRestoration.save(MainRoute(section: .speak, speakID: nil), to: d)
+        XCTAssertNil(WindowRestoration.load(d, advanced: false).speakID, "no voiceover clears the old one")
+    }
+
+    func testAStaleVoiceoverIDIsPrunedLikeAMeeting() {
+        let route = MainRoute(section: .speak, speakID: "gone")
+        XCTAssertNil(route.pruned(knownSpeakIDs: ["a", "b"]).speakID)
+        XCTAssertEqual(route.pruned(knownSpeakIDs: ["gone", "b"]).speakID, "gone")
+        XCTAssertEqual(route.pruned(knownSpeakIDs: []).speakID, "gone", "an empty list says nothing yet")
+        XCTAssertEqual(MainRoute(section: .speak, meetingID: "m", speakID: "gone").pruned(knownSpeakIDs: ["a"]).meetingID, "m")
+        XCTAssertNil(MainRoute(section: .speak, speakID: "").resolved().speakID)
+    }
 }

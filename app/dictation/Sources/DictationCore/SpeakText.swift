@@ -133,6 +133,9 @@ public enum SpeakText {
         case .voiceoverRunning: return t(.speakStudioBusy)
         case .noSavedVoice: return t(.speakStudioNeedsVoice)
         case .stylingUnavailable: return t(.speakMoodUnavailable)
+        case .projectNotFinished: return t(.speakPanelErrNotFinished)
+        case .recordingStyleUnavailable: return t(.speakPanelErrRecordingStyle)
+        case .enginesBusy: return t(.speakEngineBusy)
         case .refused(_, let message):
             return message.isEmpty ? studio.message(text: t) : String(format: t(.speakServiceAnswered), message)
         }
