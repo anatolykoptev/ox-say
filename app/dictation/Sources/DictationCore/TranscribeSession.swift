@@ -36,6 +36,18 @@ public struct TranscriptFile: Equatable {
     public func write(to url: URL) throws {
         try data.write(to: url, options: .atomic)
     }
+
+    /// What the save panel's answer means: nil when the person cancelled (nothing to say), otherwise whether the file was
+    /// written. A cancel is not a failure.
+    public func finishSave(confirmed: Bool, url: URL?) -> Bool? {
+        guard confirmed, let url else { return nil }
+        do {
+            try write(to: url)
+            return true
+        } catch {
+            return false
+        }
+    }
 }
 
 /// The Расшифровка page's decisions. The app copies the result into the window's values.
@@ -55,12 +67,15 @@ public final class TranscribeSession {
     public var onChange: () -> Void = {}
 
     private let ops: TranscribeOps
+    private let limits: () -> TranscribeLimits
     private let text: (L10nKey) -> String
     /// Counts every change of what a list read may still show: a read applies only if no change came after it began.
     private var epoch = 0
 
-    public init(ops: TranscribeOps, text: @escaping (L10nKey) -> String = { $0.text }) {
+    public init(ops: TranscribeOps, limits: @escaping () -> TranscribeLimits = { .fallback },
+                text: @escaping (L10nKey) -> String = { $0.text }) {
         self.ops = ops
+        self.limits = limits
         self.text = text
     }
 
@@ -95,8 +110,8 @@ public final class TranscribeSession {
     /// Transcribes the file. Returns the sentence to show when it did not go through; nil when it did.
     public func submit(_ url: URL, bytes: Int64) async -> String? {
         if working != nil { return text(.transcribeBusy) }
-        if let problem = TranscribeFileCheck.problem(bytes: bytes, ext: url.pathExtension, text: text) { return problem }
-        let title = url.deletingPathExtension().lastPathComponent
+        if let problem = TranscribeFileCheck.problem(bytes: bytes, ext: url.pathExtension, limit: limits().maxBytes, text: text) { return problem }
+        let title = TranscribeFileCheck.title(fromFileName: url.deletingPathExtension().lastPathComponent)
         working = title
         onChange()
         defer {

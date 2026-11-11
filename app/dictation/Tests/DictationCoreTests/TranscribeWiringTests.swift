@@ -80,4 +80,14 @@ final class TranscribeWiringTests: XCTestCase {
     func testTheSectionIsLive() {
         XCTAssertTrue(MainWindowSpec.liveSections.contains(.transcribe))
     }
+
+    /// The panel's answer goes through `finishSave`, so a cancel never reaches the failure notice.
+    /// Mutation: TranscribeSource.swift TranscriptSave.present, call `completion(false)` outside `finishSave` -> RED.
+    func testTheSavePanelAnswersThroughFinishSave() throws {
+        let glue = try source("OxSayDictation/TranscribeSource.swift")
+        let panel = try XCTUnwrap(glue.range(of: "enum TranscriptSave"))
+        let tail = String(glue[panel.lowerBound...])
+        XCTAssertTrue(tail.contains("file.finishSave(confirmed: response == .OK, url: panel.url)"))
+        XCTAssertEqual(tail.components(separatedBy: "completion(").count - 1, 1, "the panel reports through one call")
+    }
 }

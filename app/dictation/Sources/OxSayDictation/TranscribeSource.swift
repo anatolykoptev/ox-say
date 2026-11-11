@@ -23,14 +23,17 @@ final class TranscribeSource {
         session = TranscribeSession(ops: TranscribeOps(
             list: { try await client.transcripts() },
             transcribe: { url, title, seconds in
-                try await client.transcribeFile(url, title: title, engine: nil, language: nil, prompt: nil, seconds: seconds)
+                // The daemon's last /status is app state: read it on the main actor, the upload itself runs off it.
+                let limits = await MainActor.run { TranscribeLimits(status: host.daemonStatus()) }
+                return try await client.transcribeFile(url, title: title, engine: nil, language: nil, prompt: nil, seconds: seconds,
+                                                       limits: limits)
             },
             text: { id, format in try await client.transcriptText(id: id, format: format) },
             delete: { id in try await client.deleteTranscript(id: id) },
             duration: { url in
                 let seconds = try? await AVURLAsset(url: url).load(.duration).seconds
                 return seconds?.isFinite == true ? seconds : nil
-            }))
+            }), limits: { TranscribeLimits(status: host.daemonStatus()) })
         session.onChange = { [weak self] in self?.sync() }
     }
 
@@ -105,13 +108,8 @@ enum TranscriptSave {
         panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
         panel.canCreateDirectories = true
         let write: (NSApplication.ModalResponse) -> Void = { response in
-            guard response == .OK, let url = panel.url else { return }
-            do {
-                try file.write(to: url)
-                completion(true)
-            } catch {
-                completion(false)
-            }
+            // A cancelled panel is nothing to report; only a write that was asked for can fail.
+            if let saved = file.finishSave(confirmed: response == .OK, url: panel.url) { completion(saved) }
         }
         if let window {
             panel.beginSheetModal(for: window, completionHandler: write)

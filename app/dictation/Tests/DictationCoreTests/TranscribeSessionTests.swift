@@ -170,4 +170,56 @@ final class TranscribeSessionTests: XCTestCase {
         _ = await s.delete(id: a.id)
         XCTAssertEqual(s.pageState, .empty)
     }
+
+    /// The size check follows the daemon's own cap, not a built-in one.
+    /// Mutation: TranscribeSession.swift, `limit: limits().maxBytes` -> the built-in default -> RED.
+    func testTheCapFollowsTheDaemon() async {
+        var uploads = 0
+        let s = TranscribeSession(ops: TranscribeOps(list: { [] }, transcribe: { _, t, _ in
+            uploads += 1
+            return TranscriptEntry(id: "20261030-101019-abcdef", title: t, created: Date(), seconds: 1, engine: "p")
+        }, text: { _, _ in Data() }, delete: { _ in }), limits: { TranscribeLimits(maxBytes: 5 << 20, daemonTimeout: 600) }, text: { $0.rawValue })
+        let over = await s.submit(URL(fileURLWithPath: "/tmp/a.wav"), bytes: 6 << 20)
+        XCTAssertEqual(over, L10nKey.transcribeProblemTooBig.rawValue)
+        XCTAssertEqual(uploads, 0)
+        let fits = await s.submit(URL(fileURLWithPath: "/tmp/a.wav"), bytes: 5 << 20)
+        XCTAssertNil(fits)
+        XCTAssertEqual(uploads, 1)
+    }
+
+    /// A file that passed the check and then grew: the client's streaming stop surfaces as the size sentence and nothing is stored.
+    func testAFileThatGrewPastTheCapSaysTheSizeSentenceAndStoresNothing() async {
+        let s = session(transcribe: { _, _, _ in throw StudioError.fileTooLarge(megabytes: 200) })
+        let notice = await s.submit(URL(fileURLWithPath: "/tmp/a.wav"), bytes: 10)
+        XCTAssertEqual(notice, L10nKey.transcribeProblemTooBig.rawValue)
+        XCTAssertTrue(s.entries.isEmpty)
+        XCTAssertNil(s.working)
+    }
+
+    /// The title is one line the daemon takes: line breaks become spaces and a long name is cut at 200.
+    /// Mutation: TranscribeFileCheck.title, return `name` unchanged -> RED.
+    func testTheTitleIsOneLineWithinTheDaemonsCap() async {
+        var titles: [String] = []
+        let s = session(transcribe: { _, title, _ in
+            titles.append(title)
+            return TranscriptEntry(id: "20261030-101019-abcdef", title: title, created: Date(), seconds: 1, engine: "p")
+        })
+        _ = await s.submit(URL(fileURLWithPath: "/tmp/a\nb\r\n  c.wav"), bytes: 10)
+        XCTAssertEqual(titles.last, "a b c")
+        XCTAssertEqual(TranscribeFileCheck.title(fromFileName: String(repeating: "я", count: 300)).count, 200)
+    }
+
+    /// Cancelling the save panel is nothing to report; a write that was asked for and failed is.
+    /// Mutation: TranscribeSession.swift finishSave, `guard confirmed, let url else { return false }` -> RED.
+    func testACancelledSaveIsNotAFailure() throws {
+        let file = TranscriptFile(name: "a.srt", data: Data("x".utf8))
+        XCTAssertNil(file.finishSave(confirmed: false, url: URL(fileURLWithPath: "/tmp/a.srt")))
+        XCTAssertNil(file.finishSave(confirmed: true, url: nil))
+        XCTAssertEqual(file.finishSave(confirmed: true, url: URL(fileURLWithPath: "/nonexistent-dir-\(UUID())/a.srt")), false)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("t-\(UUID()).srt")
+        defer { try? FileManager.default.removeItem(at: out) }
+        XCTAssertEqual(file.finishSave(confirmed: true, url: out), true)
+        let written = try Data(contentsOf: out)
+        XCTAssertEqual(written, Data("x".utf8))
+    }
 }

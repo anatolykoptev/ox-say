@@ -21,6 +21,8 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
     case enginesBusy
     /// A file picked for upload could not be read (moved, deleted or unreadable) while its body was being prepared.
     case fileUnreadable
+    /// A file over the daemon's upload cap (megabytes), found while it was being prepared for upload.
+    case fileTooLarge(megabytes: Int)
 
     /// What the person reads, in their language. The daemon's own words in a refusal stay as it sent them; an empty
     /// one is the app's sentence naming the status. `description` below stays English: it is for logs.
@@ -37,6 +39,7 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .recordingStyleUnavailable: return text(.speakPanelErrRecordingStyle)
         case .enginesBusy: return text(.speakEngineBusy)
         case .fileUnreadable: return text(.fileProblemUnreadable)
+        case .fileTooLarge(let megabytes): return String(format: text(.transcribeProblemTooBig), String(megabytes))
         }
     }
 
@@ -58,6 +61,7 @@ public enum StudioError: Error, Equatable, CustomStringConvertible {
         case .recordingStyleUnavailable: return "This voice cannot copy the recording's delivery."
         case .enginesBusy: return "Another large voice or notes engine is busy; try again later."
         case .fileUnreadable: return "The file could not be read."
+        case .fileTooLarge(let megabytes): return "The file is over the \(megabytes) MB the OxSay service takes."
         }
     }
 }

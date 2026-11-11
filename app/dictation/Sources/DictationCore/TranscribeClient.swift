@@ -92,17 +92,20 @@ public enum TranscriptFormat: String, Equatable {
 }
 
 extension StudioClient {
-    /// The upload's time limit: the recording's length twice over, never under the daemon's own 600 s per transcription plus
-    /// the queue (the daemon's `OX_SAY_STT_TIMEOUT_SECS` default is 600; whoever raises one raises both).
-    public static func transcribeTimeout(forSeconds seconds: Double?) -> TimeInterval {
-        max(900, 2 * (seconds ?? 0))
+    /// Room for the upload itself and the queue, on top of the daemon's own per-transcription timeout.
+    public static let uploadMargin: TimeInterval = 300
+
+    /// The upload's time limit: the daemon's own timeout (its `OX_SAY_STT_TIMEOUT_SECS`, from /status) plus a margin for the
+    /// upload, and never less than the recording's length twice over.
+    public static func transcribeTimeout(forSeconds seconds: Double?, daemonTimeout: TimeInterval = TranscribeLimits.fallback.daemonTimeout) -> TimeInterval {
+        max(daemonTimeout + uploadMargin, 2 * (seconds ?? 0))
     }
 
     /// POST /v1/transcripts: transcribes the file and keeps the result. The body is a multipart file on disk, streamed
     /// by the transport; it is removed when the call ends. A nil `engine` leaves the choice to the daemon, and an empty
     /// language or prompt is not sent.
     public func transcribeFile(_ url: URL, title: String, engine: String?, language: String?, prompt: String?,
-                               seconds: Double? = nil) async throws -> TranscriptEntry {
+                               seconds: Double? = nil, limits: TranscribeLimits = .fallback) async throws -> TranscriptEntry {
         var fields = ["title": title]
         for (name, value) in [("model", engine), ("language", language), ("prompt", prompt)] {
             if let value, !value.isEmpty { fields[name] = value }
@@ -111,13 +114,15 @@ extension StudioClient {
         let body = FileManager.default.temporaryDirectory.appendingPathComponent("ox-say-upload-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: body) }
         do {
-            try MultipartFile.write(file: url, fields: fields, boundary: boundary, to: body)
+            try MultipartFile.write(file: url, fields: fields, boundary: boundary, to: body, maxFileBytes: limits.maxBytes)
+        } catch MultipartFile.Failure.tooLarge {
+            throw StudioError.fileTooLarge(megabytes: Int(limits.maxBytes >> 20))
         } catch {
             throw StudioError.fileUnreadable
         }
         var request = URLRequest(url: baseURL.appendingPathComponent("v1/transcripts"))
         request.httpMethod = "POST"
-        request.timeoutInterval = Self.transcribeTimeout(forSeconds: seconds)
+        request.timeoutInterval = Self.transcribeTimeout(forSeconds: seconds, daemonTimeout: limits.daemonTimeout)
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let data: Data, response: URLResponse
         do {

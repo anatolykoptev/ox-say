@@ -133,4 +133,56 @@ final class TranscribeClientTests: XCTestCase {
         } catch let error as StudioError { XCTAssertEqual(error, .fileUnreadable) }
         XCTAssertFalse(called)
     }
+
+    /// The upload timeout and the size cap follow the daemon's own numbers from /status, with today's defaults when it sends none.
+    /// Mutation: DaemonStatus.swift, stop reading `stt_timeout_s` (always nil) -> RED.
+    func testTheLimitsComeFromTheDaemonStatusWithDefaultsForAnOlderOne() throws {
+        let newer = try XCTUnwrap(DaemonStatus.decode(Data(#"{"version":"v1","config":{"stt_timeout_s":1800,"stt_max_upload_mb":77}}"#.utf8)))
+        XCTAssertEqual(TranscribeLimits(status: newer), TranscribeLimits(maxBytes: 77 << 20, daemonTimeout: 1800))
+        let older = try XCTUnwrap(DaemonStatus.decode(Data(#"{"version":"v1"}"#.utf8)))
+        XCTAssertEqual(TranscribeLimits(status: older), .fallback)
+        XCTAssertEqual(TranscribeLimits(status: nil), .fallback)
+        XCTAssertEqual(TranscribeLimits.fallback, TranscribeLimits(maxBytes: Int64(TranscribeFileCheck.maxBytes), daemonTimeout: 600))
+    }
+
+    /// Mutation: TranscribeClient.swift, `transcribeTimeout` ignores `daemonTimeout` (uses 600) -> RED.
+    func testTheUploadTimeoutIsTheDaemonsPlusAMargin() async throws {
+        XCTAssertEqual(StudioClient.transcribeTimeout(forSeconds: 100, daemonTimeout: 1800), 1800 + StudioClient.uploadMargin)
+        XCTAssertEqual(StudioClient.transcribeTimeout(forSeconds: 3600, daemonTimeout: 1800), 7200, "never under twice the recording")
+        let url = try recording(); defer { try? FileManager.default.removeItem(at: url) }
+        var got = Upload()
+        let client = uploadClient(body: #"{"id":"20261030-101010-abcdef","title":"t","engine":"p","created":"2026-10-30T10:10:10Z","seconds":1}"#) { got = $0 }
+        _ = try await client.transcribeFile(url, title: "t", engine: nil, language: nil, prompt: nil, seconds: 10,
+                                            limits: TranscribeLimits(maxBytes: 1 << 20, daemonTimeout: 1800))
+        XCTAssertEqual(got.request?.timeoutInterval, 2100)
+    }
+
+    /// A file that is over the daemon's cap when it is staged (it grew after the check) is stopped and never uploaded.
+    /// Mutation: TranscribeClient.swift, drop `maxFileBytes: limits.maxBytes` from the MultipartFile.write call -> RED.
+    func testAFileOverTheCapAtStagingIsNeverUploaded() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("grown-\(UUID()).wav")
+        try Data(count: (1 << 20) + 1).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var called = false
+        let client = uploadClient(body: "") { _ in called = true }
+        do {
+            _ = try await client.transcribeFile(url, title: "t", engine: nil, language: nil, prompt: nil,
+                                                limits: TranscribeLimits(maxBytes: 1 << 20, daemonTimeout: 600))
+            XCTFail("must throw")
+        } catch let error as StudioError {
+            XCTAssertEqual(error, .fileTooLarge(megabytes: 1))
+        }
+        XCTAssertFalse(called)
+    }
+
+    func testALineBreakInTheTitleNeverReachesTheNetwork() async throws {
+        let url = try recording(); defer { try? FileManager.default.removeItem(at: url) }
+        var called = false
+        let client = uploadClient(body: "") { _ in called = true }
+        do {
+            _ = try await client.transcribeFile(url, title: "a\r\nb", engine: nil, language: nil, prompt: nil)
+            XCTFail("must throw")
+        } catch let error as StudioError { XCTAssertEqual(error, .fileUnreadable) }
+        XCTAssertFalse(called)
+    }
 }
