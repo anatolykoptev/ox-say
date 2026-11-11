@@ -482,25 +482,29 @@ func contentWords(s string) [][]rune {
 // generic word in common ("report") does not make a decision about an open question; the question's own subject must.
 // A question with no content word is settled by nothing.
 func sharesContentWord(open, decided string) bool {
-	seen := map[string]bool{}
-	var ow [][]rune
+	var classes [][]rune // the open point's words, one per sameWord class
 	for _, w := range contentWords(open) {
-		if !seen[string(w)] {
-			seen[string(w)] = true
-			ow = append(ow, w)
+		dup := false
+		for _, c := range classes {
+			dup = dup || sameWord(w, c)
+		}
+		if !dup {
+			classes = append(classes, w)
 		}
 	}
 	wd := contentWords(decided)
+	used := make([]bool, len(wd)) // a decided word counts for one class only
 	shared := 0
-	for _, x := range ow {
-		for _, y := range wd {
-			if sameWord(x, y) {
+	for _, x := range classes {
+		for i, y := range wd {
+			if !used[i] && sameWord(x, y) {
+				used[i] = true
 				shared++
 				break
 			}
 		}
 	}
-	return len(ow) > 0 && 2*shared > len(ow)
+	return len(classes) > 0 && 2*shared > len(classes)
 }
 
 // settleOK is the code's check that a decided point can settle an open one: more than half of the open point's content words are in it,

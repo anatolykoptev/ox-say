@@ -571,7 +571,7 @@ func TestReduceCallIsBoundedAndItsClaimsAreChecked(t *testing.T) {
 // false -> RED on the Даше/Даша rows; settleOK, delete the `if !sharesContentWord(open, decided)` block -> RED on the
 // "new schedule" rows; capitalized, delete `&& strings.ToUpper(w) != w` -> RED on the API and NEW rows; delete the name
 // loop -> RED on the name rows; in sharesContentWord change `2*shared > len(ow)` to `shared > 0` -> RED on the "report"
-// rows and the generic-word row; in sameWord replace the enForms loop with a four-letter-prefix test -> RED in
+// rows and the generic-word row; in sharesContentWord delete the `dup = dup || sameWord(w, c)` line -> RED on the "Launch launches budget" row; in sameWord replace the enForms loop with a four-letter-prefix test -> RED in
 // TestSameWord. Measured on these rows, the core pairs in English and Russian all pass with the
 // threshold of more than half of the open point's content words (three letters or more, not a stopword, equal or with a case ending, at least one).
 func TestSettleOK(t *testing.T) {
@@ -609,6 +609,9 @@ func TestSettleOK(t *testing.T) {
 		{"Should the launch move to March", "The office has a new schedule", false},
 		{"Переносим ли запуск на март", "В офисе новое расписание", false},
 		{"Переносим ли запуск на март", "Запуск в марте", true},
+		// forms of one word are one word: "launch launches" is one of two subjects here, not two of three
+		{"Launch launches budget", "Launches: the launch is on", false},
+		{"Launch launches budget", "The launch and the budget", true},
 		// verbs are not stemmed (выпускать / выпускаем): one of three content words is not enough, so this pair fails
 		{"Должны ли мы выпускать рассылку", "Рассылку выпускаем по пятницам", false},
 		{"Выпускать ли рассылку по пятницам", "Рассылка выходит по пятницам", true},
