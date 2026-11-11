@@ -103,6 +103,9 @@ type Runner struct {
 	retentionWarned bool // the unreadable-settings warning was logged
 
 	speakerLocks keyedLocks // one speakers edit at a time per meeting
+	// queuedAt stamps when a pending meeting entered the queue: a Process
+	// that finds it waited long writes a wait line for it.
+	queuedAt map[string]time.Time
 	// clearStale drops the notes-stale mark; nil is clearNotesStale (tests put a failure here).
 	clearStale func(dir string, m Manifest, written *Notes) error
 	// beforeRenameUpdate, when set, is called by Rename after its first status check and before the store update (tests).
@@ -128,7 +131,7 @@ func NewRunner(d Deps) *Runner {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
-	return &Runner{Deps: d, pending: map[string]bool{}, dirty: map[string]bool{}, wake: make(chan struct{}, 1)}
+	return &Runner{Deps: d, pending: map[string]bool{}, dirty: map[string]bool{}, queuedAt: map[string]time.Time{}, wake: make(chan struct{}, 1)}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -147,8 +150,11 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // done: whatever asked for it (a later Finish, a Retry) changed it after
 // Process read it.
 func (r *Runner) Enqueue(id string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	waited := r.lockAdmission()
+	defer func() {
+		r.mu.Unlock()
+		logWait(r.Log, id, waitAdmission, waited) // after the unlock: a slow log handler must not extend the lock
+	}()
 	if r.pending[id] {
 		if r.running == id {
 			r.dirty[id] = true
@@ -156,6 +162,7 @@ func (r *Runner) Enqueue(id string) {
 		return
 	}
 	r.pending[id] = true
+	r.queuedAt[id] = r.Now()
 	r.order = append(r.order, id)
 	select {
 	case r.wake <- struct{}{}:
@@ -179,9 +186,25 @@ func (r *Runner) Active() int {
 // ends, so a caller that asks "is the queue idle" and then acts gets the
 // check and the act as one step (the notes-model switch).
 func (r *Runner) WithAdmissionLock(fn func(active int) error) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	waited := r.lockAdmission()
+	defer func() {
+		r.mu.Unlock()
+		logWait(r.Log, "", waitAdmission, waited)
+	}()
 	return fn(len(r.pending))
+}
+
+// lockAdmission takes the queue lock and returns how long it stood in line for
+// it: a notes-model trial or switch holds the lock long enough to stall a
+// Finish. The caller writes the wait line after it has unlocked — logging here
+// would run the log handler inside the lock.
+func (r *Runner) lockAdmission() time.Duration {
+	if r.mu.TryLock() {
+		return 0
+	}
+	t := r.Now()
+	r.mu.Lock()
+	return r.Now().Sub(t)
 }
 
 // AdmissionLocked reports whether the admission lock is held right now: a
@@ -219,13 +242,14 @@ func (r *Runner) Run(ctx context.Context) {
 			}
 		}
 		if err := r.Process(ctx, id); err != nil && ctx.Err() == nil {
-			r.Log.Warn("meeting: processing failed", slog.String("id", id), slog.Any("error", err))
+			r.Log.Warn("meeting: processing failed", slog.String("id", id), slog.String("error_class", errClass(err)))
 		}
 		r.mu.Lock()
 		r.running = ""
 		if r.dirty[id] {
 			delete(r.dirty, id)
 			r.order = append(r.order, id) // still pending: it goes round again
+			r.queuedAt[id] = r.Now()      // its next run's queue wait starts now
 		} else {
 			delete(r.pending, id)
 		}
@@ -587,6 +611,10 @@ func (r *Runner) Housekeep(ctx context.Context, every time.Duration) {
 // that is not the model's refusal (the disk) leaves the transcript standing
 // and the notes pending.
 func (r *Runner) Process(ctx context.Context, id string) error {
+	r.mu.Lock()
+	queued, wasQueued := r.queuedAt[id]
+	delete(r.queuedAt, id)
+	r.mu.Unlock()
 	m, err := r.Store.Load(id)
 	if errors.Is(err, ErrNotFound) {
 		return nil // deleted while queued
@@ -594,8 +622,13 @@ func (r *Runner) Process(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if wasQueued {
+		logWait(r.Log, id, waitQueue, r.Now().Sub(queued))
+	}
+	sl := newStageLog(r.Log, id, r.Now)
+	defer sl.finish()
 	if m.Status == StatusQueued || m.Status == StatusTranscribing {
-		if err := r.transcribe(ctx, id); err != nil {
+		if err := r.transcribe(ctx, id, sl); err != nil {
 			return r.stop(ctx, id, err)
 		}
 		m, err = r.Store.Load(id)
@@ -611,7 +644,7 @@ func (r *Runner) Process(ctx context.Context, id string) error {
 	} else if m.Status != StatusSummarizing {
 		return nil
 	}
-	if err := r.summarize(ctx, id); err != nil {
+	if err := r.summarize(ctx, id, sl); err != nil {
 		if errors.Is(err, errNoTranscript) {
 			return r.stop(ctx, id, err)
 		}
@@ -672,20 +705,29 @@ var channels = []channel{{MePCM, SpeakerMe}, {ThemPCM, SpeakerThem}}
 
 // transcribe recognizes both channels piece by piece, caching each piece so a
 // restart resumes where it stopped, then merges them into the transcript.
-func (r *Runner) transcribe(ctx context.Context, id string) error {
+func (r *Runner) transcribe(ctx context.Context, id string, sl *stageLog) error {
+	done := sl.begin(stageTranscribe) // before any work that can fail: a failure has a stage line
 	dir, err := r.Store.Dir(id)
 	if err != nil {
+		done(stageFailed, errClass(err))
 		return err
 	}
 	if kept, err := r.keepFinishedWithoutAudio(id, dir); kept || err != nil {
+		if err != nil {
+			done(stageFailed, errClass(err))
+		} else {
+			done(stageSkipped, "transcript_kept")
+		}
 		return err
 	}
 	m, err := r.Store.Update(id, func(m *Manifest) { m.Status = StatusTranscribing })
 	if err != nil {
+		done(stageFailed, errClass(err))
 		return err
 	}
 	work := filepath.Join(dir, WorkDir)
 	if err := os.MkdirAll(work, 0o700); err != nil {
+		done(stageFailed, errClass(err))
 		return err
 	}
 	// A crash mid-recognition leaves its clip behind: audio of the meeting
@@ -698,8 +740,9 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 	var warnings []string
 	var seconds float64
 	for _, ch := range channels {
-		w, speech, secs, err := r.channelWords(ctx, dir, ch)
+		w, speech, secs, err := r.channelWords(ctx, dir, ch, sl)
 		if err != nil {
+			done(stageFailed, errClass(err))
 			return err
 		}
 		words[ch.label] = w
@@ -709,8 +752,12 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 		}
 	}
 	turns := MergeTurns(words[SpeakerMe], words[SpeakerThem])
+	done(stageOK, "", slog.Float64("audio_s", seconds))
+	done = sl.begin(stageEcho)
 	dropped := 0
-	if m.EchoRisk {
+	if !m.EchoRisk {
+		done(stageSkipped, "no_echo_risk")
+	} else {
 		var kept []Turn
 		kept, dropped = DropEcho(turns)
 		if dropped > 0 {
@@ -718,18 +765,21 @@ func (r *Runner) transcribe(ctx context.Context, id string) error {
 			// judged an echo can be put back from this file.
 			raw, err := json.MarshalIndent(turns, "", " ")
 			if err != nil {
+				done(stageFailed, errClass(err))
 				return err
 			}
 			if err := vproject.WriteAtomic(filepath.Join(dir, RawTranscriptJSON), raw, 0o600); err != nil {
+				done(stageFailed, errClass(err))
 				return err
 			}
 			warnings = append(warnings, WarnEchoDropped)
 		}
 		turns = kept
+		done(stageOK, "", slog.Int("dropped", dropped))
 	}
 	// The far side's voices, told apart after the echo gate: that gate measures
 	// whole channel turns, and voice turns sit edge to edge.
-	vr, err := r.voices(ctx, dir, words[SpeakerThem])
+	vr, err := r.voices(ctx, dir, words[SpeakerThem], sl)
 	if err != nil {
 		return err
 	}
@@ -850,7 +900,7 @@ func (r *Runner) keepFinishedWithoutAudio(id, dir string) (kept bool, err error)
 
 // channelWords recognizes one channel file. speech is false when the file is
 // missing, empty or silent throughout — the sign of a capture that heard nothing.
-func (r *Runner) channelWords(ctx context.Context, dir string, ch channel) (words []stt.Word, speech bool, seconds float64, err error) {
+func (r *Runner) channelWords(ctx context.Context, dir string, ch channel, sl *stageLog) (words []stt.Word, speech bool, seconds float64, err error) {
 	f, err := os.Open(filepath.Join(dir, ch.file))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, 0, nil
@@ -868,7 +918,7 @@ func (r *Runner) channelWords(ctx context.Context, dir string, ch channel) (word
 		return nil, false, 0, err
 	}
 	for _, sp := range spans {
-		w, loud, err := r.pieceWords(ctx, dir, f, ch, sp)
+		w, loud, err := r.pieceWords(ctx, dir, f, ch, sp, sl)
 		if err != nil {
 			return nil, false, 0, err
 		}
@@ -887,7 +937,7 @@ type pieceCache struct {
 	Loud  bool       `json:"loud"`
 }
 
-func (r *Runner) pieceWords(ctx context.Context, dir string, f io.ReaderAt, ch channel, sp Span) ([]stt.Word, bool, error) {
+func (r *Runner) pieceWords(ctx context.Context, dir string, f io.ReaderAt, ch channel, sp Span, sl *stageLog) ([]stt.Word, bool, error) {
 	cache := filepath.Join(dir, WorkDir, fmt.Sprintf("%s-%d-%d.json", ch.label, sp.From, sp.To))
 	if raw, err := os.ReadFile(cache); err == nil {
 		var pc pieceCache
@@ -902,7 +952,7 @@ func (r *Runner) pieceWords(ctx context.Context, dir string, f io.ReaderAt, ch c
 	var words []stt.Word
 	loud := !Silent(clip)
 	if loud {
-		if words, err = r.recognize(ctx, dir, ch, sp, clip); err != nil {
+		if words, err = r.recognize(ctx, dir, ch, sp, clip, sl); err != nil {
 			return nil, false, err
 		}
 	}
@@ -913,13 +963,13 @@ func (r *Runner) pieceWords(ctx context.Context, dir string, f io.ReaderAt, ch c
 	return words, loud, nil
 }
 
-func (r *Runner) recognize(ctx context.Context, dir string, ch channel, sp Span, clip pcm.Clip) ([]stt.Word, error) {
+func (r *Runner) recognize(ctx context.Context, dir string, ch channel, sp Span, clip pcm.Clip, sl *stageLog) ([]stt.Word, error) {
 	wav := filepath.Join(dir, WorkDir, fmt.Sprintf("%s-%d.wav", ch.label, sp.From))
 	if err := os.WriteFile(wav, clip.Encode(), 0o600); err != nil {
 		return nil, err
 	}
 	defer func() { _ = os.Remove(wav) }()
-	res, err := r.transcribePiece(ctx, wav)
+	res, err := r.transcribePiece(ctx, wav, sl)
 	if err != nil {
 		return nil, err
 	}
@@ -937,12 +987,10 @@ func (r *Runner) recognize(ctx context.Context, dir string, ch channel, sp Span,
 // and a missing model are not retried; everything else (the engine restarting,
 // a full queue, a timeout) gets pieceAttempts tries, with the dictation yield
 // ahead of each and a wait between, but none after the last.
-func (r *Runner) transcribePiece(ctx context.Context, wav string) (*stt.Result, error) {
+func (r *Runner) transcribePiece(ctx context.Context, wav string, sl *stageLog) (*stt.Result, error) {
 	for attempt := 1; ; attempt++ {
-		if r.Before != nil {
-			if err := r.Before(ctx); err != nil {
-				return nil, err
-			}
+		if err := r.waitBefore(ctx, sl); err != nil {
+			return nil, err
 		}
 		res, err := r.Transcribe(ctx, wav)
 		if err == nil && res == nil {
@@ -955,13 +1003,25 @@ func (r *Runner) transcribePiece(ctx context.Context, wav string) (*stt.Result, 
 			return nil, err
 		}
 		wait := retryWait << (attempt - 1)
+		what := waitSTTRetry
 		if errors.Is(err, stt.ErrBusy) {
 			wait = busyWait
+			what = waitSTTQueue
 		}
-		if serr := r.Sleep(ctx, wait); serr != nil {
+		if serr := sl.timed(what, func() error { return r.Sleep(ctx, wait) }); serr != nil {
 			return nil, serr
 		}
 	}
+}
+
+// waitBefore is Deps.Before — the dictation yield ahead of an engine call —
+// timed for the stage log: a call that stood behind interactive speech says
+// how long it stood there.
+func (r *Runner) waitBefore(ctx context.Context, sl *stageLog) error {
+	if r.Before == nil {
+		return nil
+	}
+	return sl.timed(waitDictation, func() error { return r.Before(ctx) })
 }
 
 // permanent reports an error a retry cannot cure.
@@ -971,13 +1031,16 @@ func permanent(err error) bool {
 }
 
 // summarize writes the notes, or leaves the transcript waiting for them.
-func (r *Runner) summarize(ctx context.Context, id string) error {
+func (r *Runner) summarize(ctx context.Context, id string, sl *stageLog) error {
+	done := sl.begin(stageNotes)
 	m, err := r.Store.Load(id)
 	if err != nil {
+		done(stageFailed, errClass(err))
 		return err
 	}
 	dir, err := r.Store.Dir(id)
 	if err != nil {
+		done(stageFailed, errClass(err))
 		return err
 	}
 	var turns []Turn
@@ -986,10 +1049,17 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 		err = json.Unmarshal(raw, &turns)
 	}
 	if err != nil {
-		return fmt.Errorf("%w: %w", errNoTranscript, err)
+		err = fmt.Errorf("%w: %w", errNoTranscript, err)
+		done(stageFailed, errClass(err))
+		return err
 	}
 	if WordCount(turns) < minNotesWords {
-		return r.writeNotes(id, dir, ShortNotesMarkdown(*m, m.Language), nil)
+		if err := r.writeNotes(id, dir, ShortNotesMarkdown(*m, m.Language), nil); err != nil {
+			done(stageFailed, errClass(err))
+			return err
+		}
+		done(stageSkipped, "short_transcript")
+		return nil
 	}
 	if r.NotesReady != nil {
 		if code := r.NotesReady(); code != "" {
@@ -999,7 +1069,12 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 				}
 				m.Status, m.NotesPending = StatusTranscribed, code
 			})
-			return err
+			if err != nil {
+				done(stageFailed, errClass(err))
+				return err
+			}
+			done(stageSkipped, code)
+			return nil
 		}
 	}
 	// A Finish may have queued the meeting again since it was read: these
@@ -1012,19 +1087,23 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 		}
 		m.Status, m.NotesPending, m.Error, m.FailReason = StatusSummarizing, "", "", ""
 	}); err != nil {
+		done(stageFailed, errClass(err))
 		return err
 	}
 	if superseded {
+		done(stageSkipped, "superseded")
 		return nil
 	}
 	st, err := LoadSpeakers(dir)
 	if err != nil {
+		done(stageFailed, errClass(err))
 		return err
 	}
 	shown, display := Present(*m, st, turns)
-	notes, err := r.compose(ctx, PromptText(shown, display), shown.Labels, m.Language)
+	notes, err := r.compose(ctx, sl, PromptText(shown, display), shown.Labels, m.Language)
 	if err != nil {
 		if ctx.Err() != nil {
+			done(stageFailed, errClass(ctx.Err()))
 			return ctx.Err()
 		}
 		_, uerr := r.Store.Update(id, func(m *Manifest) {
@@ -1033,19 +1112,30 @@ func (r *Runner) summarize(ctx context.Context, id string) error {
 			}
 			m.markNotesFailed(err)
 		})
+		done(stageFailed, errClass(err))
 		return uerr
 	}
 	notes.Labels = labelMap(*m, st, turns)
-	return r.writeNotes(id, dir, NotesMarkdown(*m, notes, m.Language), &notes)
+	if err := r.writeNotes(id, dir, NotesMarkdown(*m, notes, m.Language), &notes); err != nil {
+		done(stageFailed, errClass(err))
+		return err
+	}
+	done(stageOK, "", slog.Int("skipped_chunks", len(notes.SkippedChunks)))
+	return nil
 }
 
 // compose runs the notes map-reduce holding the notes model's turn for the whole job, so a voice request between two
 // chunks does not evict the model (a reload per chunk) and waits at its own busy answer instead. The turn is released
 // on every way out, a panic included. A turn that cannot be taken is a retryable engine-down failure, like a start
 // that failed.
-func (r *Runner) compose(ctx context.Context, text string, l Labels, lang string) (Notes, error) {
+func (r *Runner) compose(ctx context.Context, sl *stageLog, text string, l Labels, lang string) (Notes, error) {
 	if r.NotesTurn != nil {
-		release, err := r.NotesTurn(ctx)
+		var release func()
+		err := sl.timed(waitNotesModel, func() error {
+			var terr error
+			release, terr = r.NotesTurn(ctx)
+			return terr
+		})
 		if err != nil {
 			if ctx.Err() != nil {
 				return Notes{}, ctx.Err()
@@ -1054,7 +1144,13 @@ func (r *Runner) compose(ctx context.Context, text string, l Labels, lang string
 		}
 		defer release()
 	}
-	return Composer{Chat: r.Chat, Before: r.Before, Log: r.Log}.Compose(ctx, text, l, lang)
+	// The composer's own Before calls get the same wait line: a notes chunk
+	// that stood behind a dictation says so under the meeting's id.
+	before := func(ctx context.Context) error { return r.waitBefore(ctx, sl) }
+	if r.Before == nil {
+		before = nil
+	}
+	return Composer{Chat: r.Chat, Before: before, Log: r.Log}.Compose(ctx, text, l, lang)
 }
 
 func (r *Runner) writeNotes(id, dir, md string, n *Notes) error {
