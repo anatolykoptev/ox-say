@@ -1,950 +1,253 @@
-# ox-say
+# OxSay
 
-Local speech for **Macs** — natively on Apple Silicon's GPU, and on Intel Macs' AMD GPU:
-- text-to-speech with voice cloning;
-- speech-to-text with word timestamps;
-- dictation: hold ⌃Space (⌥Space when ⌃Space is taken) in any app, speak,
-  and the text is typed where the cursor is (a menu-bar app, see [Dictation](#dictation));
-- meetings: record a call (both sides), get a transcript, notes and the other people's voices told
-  apart, all on the Mac (see [Meetings](#meetings)).
-
-The engine build also produces `ox-align`, a wav2vec2 tool that emits
-per-frame CTC emissions — the first phase of a forced aligner (see
-[engine/README.md](engine/README.md)); the daemon, CLI and MCP expose no
-alignment.
-
-It is one small daemon with an OpenAI-compatible HTTP API, an MCP server for coding agents, and a
-`say`-like CLI. There is no Python, no PyTorch, no Electron and no cloud.
+A private voice studio for the Mac. Dictate into any app, record calls and get a transcript with notes,
+turn an audio or video file into text, voice a script in your own or a designed voice, and clean
+the noise out of a recording. Everything runs on your Mac. No audio or text is uploaded.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | sh
 ```
 
-The installer:
-- downloads a prebuilt release and checks its SHA-256;
-- fetches the models, checksummed: about 2.5 GB on Apple Silicon, including 221 MB of
-  speaker models for [Meetings](#meetings) (the 199 MB Nemotron set is fetched whatever the macOS version, so a
-  Mac that upgrades to macOS 15 later already has it), and about 2.3 GB on an Intel Mac, which skips that set. The optional Whisper adds 1.6 GB. The meeting-notes model is not part of it: it
-  is downloaded when you first ask for notes (5.7 GB for the default 9B on a Mac with 24 GB or more, 2.7 GB for the 4B that 16–23 GB Macs use);
-- starts the daemon as a LaunchAgent;
-- registers the MCP server with Claude Code, if Claude Code is installed;
-- runs a speak-and-transcribe self-test;
-- installs the dictation app into `~/Applications` and starts it
-  (`OX_SAY_NO_DICTATION=1` skips it).
+You need macOS 14.2 or later and `ffmpeg` (`brew install ffmpeg`). Apple Silicon and Intel Macs are supported.
+See [Requirements](#requirements) for what each amount of memory gets you.
 
-It needs `ffmpeg` (`brew install ffmpeg`) and never uses `sudo`. To build from source instead, run
-`scripts/install.sh` (it needs Xcode CLT, `go`, `cmake` and `ffmpeg`).
+The repository is `ox-say`. The app and the menu-bar item are called OxSay, and the command is `ox-say`.
 
-**Install through your coding agent.** Paste this into Claude Code, Codex or Cursor:
+## Why it is different
 
-> Install ox-say on this Mac with `curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | sh`,
-> then show me `ox-say status` and speak one sentence with `ox-say say`.
+- **It runs on the Mac.** Speech recognition, notes and voices all run locally. Models are downloaded once,
+  and then nothing leaves the machine ([Privacy](#privacy)).
+- **No bot joins your call.** OxSay records your microphone and the sound the Mac plays, so it works with Zoom,
+  Google Meet, Microsoft Teams, FaceTime and the other apps it recognizes. Nothing joins the call, so calls
+  with outside guests work. Tell people you are recording, because the law in some places requires everyone's consent.
+- **Languages.** The speech recognizer covers 25 European languages, Russian and English among them. Notes are
+  written in the language of the transcript. The optional Whisper model adds 99 languages to the command line
+  and the API.
+- **It works on a 16 GB Mac.** The notes model is chosen by the memory you have, and it leaves room for the
+  browser that runs your call.
+- **Apple Silicon and Intel.** Intel Macs with an AMD graphics card run the same engines. A few features
+  need Apple Silicon, and the list is under [Requirements](#requirements).
+- **Agents can use it.** The same engines are behind an MCP server and an OpenAI-compatible HTTP API on
+  your own machine.
 
-## What it does
+## What you can do
 
-| | Engine | On a Radeon Pro 5500M | On an Apple M5 Pro |
-|---|---|---|---|
-| Text-to-speech, voice cloning from a short clip | Qwen3-TTS 12 Hz via [qwentts.cpp](https://github.com/ServeurpersoCom/qwentts.cpp) | faster than real time (about 0.6× RTF), first audio in about 110–250 ms | faster than real time (about 0.22× RTF), first audio byte in about 30–35 ms (Qwen3-TTS 1.7B: 0.27–0.28× RTF) |
-| Studio-quality voiceover with emotion, voice design and loudness control (opt-in, Apple Silicon, see [Studio voice](#studio-voice-voxcpm2)) | VoxCPM2 via [audio.cpp](https://github.com/ShugoAI/audio.cpp) | not available | about real time (0.58× RTF warm), 48 kHz |
-| Speech-to-text with word timestamps | Parakeet TDT v3 (25 European languages) or Whisper large-v3-turbo (99 languages) via whisper.cpp | 5 minutes of audio in about 27 s on the CPU, which the Intel daemon uses for its resident server (about 12.5 s on Metal while the GPU is free) | 6 minutes of audio in about 2.5 s on Metal |
-| Meetings: call recording, transcript, structured notes, far-side speakers (see [Meetings](#meetings)) | Parakeet TDT v3 for the transcript, Qwen3.5-4B via llama.cpp (`ox-llm`) for the notes, FluidAudio / Nemotron 3 Diarization on Core ML (`ox-diar`) for the voices | transcript and notes; notes run on the CPU and are slow, voices are not told apart | transcript, notes and voices |
-| `ox-align` engine tool: per-frame CTC emissions for a wav2vec2 checkpoint ([engine/README.md](engine/README.md)) — not exposed by the daemon | optional hand-converted GGUF (the MMS aligner weights are CC-BY-NC; the installer fetches none) | emissions match the transformers oracle within tolerance | not measured |
+The app has a window with a sidebar and a menu-bar item. The sidebar sections are Voiceover, Voices,
+Dictation, Meetings, Transcribe and Settings. The app ships in English and Russian, so the section
+names appear as «Озвучка», «Голоса», «Диктовка», «Встречи», «Расшифровка» and «Настройки» on a Russian system.
 
-Apple Silicon numbers: [docs/performance.md](docs/performance.md).
+### Dictation
 
-## Intel Macs and Apple Silicon
+Hold **⌃Space** (**⌥Space** when ⌃Space is taken), speak, and let go. The text appears where the cursor is,
+in any app. A pill at the bottom of the screen shows bars that move with your voice, and Esc cancels.
+Toggle mode (press to start, press to stop) is in the app's settings.
 
-The modern local speech stacks have left Intel Macs behind:
-- PyTorch stopped publishing macOS x86_64 wheels after 2.2.
-- MLX runs only on Apple Silicon.
-- [VoiceStudio's install guide](https://github.com/debpalash/VoiceStudio/blob/main/docs/install/macos.md)
-  states that its local backend cannot run on Intel Macs.
-- Stock ggml gives wrong results on discrete, non-unified-memory Metal GPUs.
+While you dictate, the app can pause Apple Music and Spotify, lower everything else the Mac plays, or leave
+the sound alone. The text goes in through the clipboard, and your previous clipboard comes back afterwards. A
+focused password field gets no paste: the text stays on the clipboard. The last ten dictations are kept in memory,
+so a paste that went nowhere is recoverable from the menu.
 
-ox-say carries the fixes (`engine/patches/ggml`, see [engine/README.md](engine/README.md)). It
-builds static binaries, so a 2019–2020 MacBook Pro with a Radeon Pro 5300M/5500M/5600M runs
-current speech models on its GPU.
+The microphone is streamed to the local recognizer while you speak, so a short dictation turns into text
+about a second after you let go (0.9 s measured when the unfinished tail was short, see [docs/dictation.md](docs/dictation.md)).
 
-On Apple Silicon the same engines build natively for arm64 and run on Metal. The GPU shares the
-Mac's memory, so the TTS engine and speech-to-text run on it side by side, with no lease
-(`OX_SAY_GPU_MEMORY`, see [Usage](#usage)). The ggml patches are carried there too; on unified
-memory they are inert or plain bug fixes ([engine/README.md](engine/README.md#apple-silicon)).
-Measurements: [docs/performance.md](docs/performance.md).
+The same app reads text aloud. Select text in any app and press **⌃⌥Space** (or use Services → Speak
+Selection), and OxSay speaks it in a voice you pick per language. Details, permissions and troubleshooting:
+[docs/dictation.md](docs/dictation.md).
 
-ox-say itself is Apache-2.0, and the default models are Apache-2.0 and CC-BY-4.0 (see
-[Licenses](#licenses)).
+### Meetings
 
-## Status
+OxSay records a call, writes the transcript, tells the other people's voices apart and writes notes.
 
-- Engines: pinned upstream plus patches, static `tts-server`, `ox-stt`, `ox-align` and `ox-llm`
-  (the meeting-notes model server), verified on a Radeon Pro 5500M and an Apple M5 Pro. Speaker
-  diarization (`ox-diar`) is a separate Core ML engine for Apple Silicon.
-- Daemon, CLI and MCP server: `cmd/ox-say`.
-- Menu-bar app (`app/dictation`): dictation, speak selection, Studio and Meetings, with a main window for
-  recordings, settings and voices.
-- Releases: one macOS package per architecture, `ox-say-macos-arm64.tar.gz` (built on GitHub's
-  `macos-15` runner) and `ox-say-macos-x86_64.tar.gz` (built on `macos-15-intel`), with one combined
-  `SHA256SUMS`. `get.sh` picks the package for the hardware it runs on; a release cut before the
-  arm64 package existed has no arm64 asset, and `get.sh` then says so.
+- **Starting.** When a call starts in Zoom, Teams, Google Meet (in Chrome, Brave, Arc or Edge), Webex, Slack,
+  FaceTime, Discord, WhatsApp, Telegram or OxPulse, a prompt asks **Record this call?** In Settings you can
+  choose to be asked, to record automatically, or to stay off, per app. For any other app, press **Record
+  Meeting** in the menu. A red REC badge stays on screen during every recording.
+- **What is recorded.** Two channels that start together: your microphone and everything the Mac plays.
+  macOS asks once for System Audio Recording.
+- **Transcript.** Each channel is transcribed, then the two are merged into one conversation with who said what.
+  Your microphone picking up the other side's voice is detected and dropped.
+- **Speakers.** On Apple Silicon with macOS 15 or later, the other side's voices are told apart and labelled
+  Speaker 1, Speaker 2 and so on (with two voices the app offers a split by voice). You can name a speaker, merge two or split one, and the transcript and notes
+  are rewritten with the names. Intel Macs keep one label for the whole far side.
+- **Notes.** A local language model writes a summary, decisions, action items, open questions and key numbers,
+  in the language of the meeting. An action item names the person who owns it only when the transcript shows
+  it, and quotes the words that show it. Long meetings are summarized in parts, and a part that comes out too
+  large is split rather than dropped.
+- **Find things.** Search covers titles, notes and transcripts. Click any line of the transcript to play the
+  audio from there.
+- **Keeping.** Audio is deleted after 7, 30 (default) or 90 days, or never. The transcript and notes stay until
+  you delete the meeting. A copy of each meeting is written to a notes folder you choose.
 
-## Studio voice (VoxCPM2)
+The notes model is downloaded the first time you ask for notes. Until then a meeting shows its transcript only.
+Which model you get depends on memory ([Requirements](#requirements)). More: [docs/meetings.md](docs/meetings.md).
 
-This is the voice to use when you want a **lively, emotional voiceover** (in Russian, or one of 29 other
-languages) for a Reel, a YouTube video or a podcast. It sounds like a person reading with feeling. The
-default fast voice (Qwen3-TTS) is better for short notices. You can use both: you pick one for each line.
+### Transcribe
 
-**What you need.** A Mac with Apple Silicon and 24 GB of memory or more. It is an opt-in install that adds
-about 3 GB. Run the installer once more with the switch on:
+Drop an audio or video file on the **Transcribe** page, or pick one. WAV, MP3, M4A, AIFF, FLAC, MP4, MOV and
+similar files work, up to 200 MB by default. You get the text, which you can copy or save as `.txt`, and
+subtitles as `.srt`. `.vtt` and `.json` are under **More**. Transcripts are kept in a list, a long file keeps
+working if you close the window, and one file is processed at a time. The audio you drop is not kept.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | OX_SAY_WITH_VOXCPM2=1 sh
-```
-
-Check it with `ox-say status`: the `voxcpm2` line says `ready` or `stopped` (it starts when you first use
-it and rests when idle), or says in plain words why it cannot run. Intel Macs cannot run it: the model
-does not fit a 4 GB card and would be far too slow on the processor. Everything else keeps working there.
-
-**The way to a lively voice.** Do not clone a flat recording and hope: a flat reading gives a flat
-copy. Instead:
-
-1. **Describe** the voice you want, in words, and hear a few versions (takes):
-   ```sh
-   ox-say voice design "A warm, deep male narrator in his forties, native Russian speaker, calm documentary voice-over" \
-     -t "Добро пожаловать. Сегодня я расскажу о свете." -n 3
-   ```
-   It prints each take's file path and seed, and the exact command to keep one. Each take takes about as
-   long as it plays; the first one after a pause also waits 10–40 s for the model to load. Keep the text
-   to one or two sentences (up to 200 characters): the voice you save is made from that take.
-2. **Listen** to the takes (`--play` plays them) and pick the one you like.
-3. **Save** it under a name: `ox-say voice save narrator '<take path>'`.
-4. **Use** it, with a style for the feeling you want:
-   ```sh
-   ox-say say -m voxcpm2 -v narrator -i "excited and joyful, lively pace" -o line.wav "Честно говоря, я и сам не верил, что это сработает."
-   ```
-
-Your own recording works too (`ox-say voice add me clip.wav`), with the same warning: the clone is as
-expressive as the clip. A calm, flat reading will not become excited. Change a voice's engine or default
-style later with `ox-say voice set narrator --style "calm and warm, slow"`.
-
-**Styles.** `-i` (`instructions`) says *how* to speak. Write a few short English words separated by commas:
-the feeling, the pace, the loudness. It works for text in any language. Examples:
-- `excited and joyful, lively pace, smiling voice`
-- `calm and warm, slow, close to the mic`
-- `sad and tender, quiet`
-- `angry and frustrated, loud, sharp emphasis`
-
-With a saved voice, the style changes the delivery and keeps the voice. A voice can carry a default style
-(`--style` on `voice add` or `voice set`) that is used when you give none. Do not start your text with a
-bracket `(` when a style is in effect, from `-i` or from the voice's saved style: the engine reads it as a
-style, and the call is refused.
-
-**Seeds.** The same words come out a little differently every time, and the feeling varies most. For a line
-that matters, make 2–3 takes with different `--seed` numbers and keep the best. `ox-say say` prints the seed it used (and any warning) on the error stream, so it never lands in your
-audio or output file. The same seed on the same Mac and the same build gives the same take again.
-
-**Length.** One call takes up to **1000 characters** (about 75 seconds). For a longer script use
-[`ox-say produce`](#long-form-voiceover-produce), which does the splitting, checking and joining for you.
-
-**Loudness.** `--loudness -16` (or `loudness_lufs`) sets the finished file to a standard level: -16 for online
-video and podcasts, -14 for music streaming, -23 for broadcast. The level is one constant gain, with a
-true-peak limiter at -1.5 dBTP; 2-3 second takes land within 0.2 LU (measured -16.0 to -16.2 at -16). A very
-peaky take gets a warning that the limiter worked hard, and a take too quiet to raise (more than +25 dB) is
-returned unchanged with a warning.
-
-**Quality knobs, for the curious.** Leave them alone unless a take goes wrong. `--cfg` (default 2.0; above 0 and
-at most 5) is how strictly the voice follows the text and style; higher is stricter, too high sounds strained.
-`--steps` (default 10; a whole number from 1 to 50) is the number of refinement steps; more costs time and was
-measured not to help. `--clone-mode` chooses how the voice is copied:
-- `auto` (default) makes the most faithful copy, continuing the voice's own recording, only when the voice has
-  its transcript, **no style is in effect** (neither `-i` nor the voice's saved style) and your text is in the
-  same alphabet as that transcript. Otherwise it copies the timbre only.
-- `reference` always copies the timbre only and lets a style steer the delivery.
-- `ultimate` needs the voice's transcript and no style at all. With `-i`, or with a voice that has a saved
-  style, it is refused: use `--clone-mode reference`, clear the voice's style (`ox-say voice set <name> --style ""`),
-  or drop `-i`.
-
-**Safety nets.** The engine stops a take that runs away, and ox-say warns you when a take is much longer than
-its text needs (it may contain babble): make another with a different seed.
-
-**If something is wrong.**
-- `ox-say status` says `unavailable`: read the reason. "Not installed" or "model not downloaded": run the installer
-  with `OX_SAY_WITH_VOXCPM2=1`.
-- It crashed at start: read `~/Library/Logs/ox-say/voxcpm2.log`. Usual causes: a damaged model file, or
-  port 8097 taken (`OX_SAY_VOXCPM2_PORT`).
-- A warning about a long take: make another with a different seed, or shorten the line.
-- A request for `voxcpm2` on a Mac that cannot run it is answered with the reason; a saved voice that prefers
-  it speaks with the fast voice and says so (`ox-say say` prints the warning, and names any studio-only options
-  it ignored).
-
-**Rules of use.** The VoxCPM2 model card forbids impersonation, fraud and disinformation, and asks that
-AI-generated speech be labelled as such. Please do.
-
-**Make it the default.** `OX_SAY_TTS_MODEL=voxcpm2` makes the studio voice the default for the CLI, MCP agents
-and OpenAI clients that do not name a model. The daemon runs under launchd, which does not read your shell, so set it
-when you run the installer; it is written into the daemon's LaunchAgent and kept on later re-runs:
+The command line and the API do the same, with a choice of recognizer and language:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | OX_SAY_TTS_MODEL=voxcpm2 sh
-```
-
-(From a source checkout: `OX_SAY_TTS_MODEL=voxcpm2 scripts/install.sh`.) To go back, run the installer once with
-`OX_SAY_TTS_MODEL=` (empty). The dictation app's Speak Selection always asks for the fast voice, so it is not
-affected.
-
-## Long-form voiceover (`produce`)
-
-`ox-say produce` turns a whole script, a Reel or a ten-minute YouTube voiceover, into one finished file in
-the studio voice ([VoxCPM2](#studio-voice-voxcpm2)). You write the script as plain text; ox-say cuts it
-into pieces at sentence ends, speaks each piece, **listens to every piece again** to catch a swallowed
-word or a long stall, joins them with natural pauses, sets the loudness, and hands you the audio together
-with ready subtitles. It needs the same Mac as the studio voice (Apple Silicon, 24 GB or more) and a saved
-voice (see [Studio voice](#studio-voice-voxcpm2) for making one).
-
-```sh
-ox-say produce script.txt -v narrator --preset reels
-```
-
-**Writing the script.**
-- A **blank line starts a new paragraph**; the pause between paragraphs is longer than between sentences.
-- `[pause 0.8s]` puts exactly that much silence at that spot (`[pause 300ms]` works too; a bare `[pause]`
-  is 0.6 s). Use it before a punchline or between sections.
-- `[style: excited and joyful, lively pace]` at the **very start of a paragraph** changes how that
-  paragraph is spoken (a few short English words, comma-separated, the same as `-i`). Without it the
-  paragraph uses `-i`, or the voice's saved style.
-- **Any other text in square brackets is an error**, and ox-say says where: it will not read `[music]`
-  aloud by accident.
-
-```text
-Вы когда-нибудь замечали, что лучшие идеи приходят в душ?
-
-[style: excited and joyful, lively pace, smiling voice]
-Вот три приёма, которые работают у меня каждый день!
-
-[pause 0.8s]
-Сохраните это видео, чтобы не забыть.
-```
-
-Numbers are turned into words before they are spoken, and the check hears them like any other word. Only a
-number you deliberately leave as digits is not checked (the project notes say so), so listen to those
-lines. Write a number as words if you want to be sure. Abbreviations such as «т.е.» may be read letter by letter. Write them out.
-
-**Choosing a preset** (`--preset`):
-
-| Preset | For | Loudness target | Pauses (sentence / paragraph) | Takes per piece |
-|---|---|---|---|---|
-| `youtube` (default) | YouTube, podcasts | −16 LUFS | 0.30 s / 0.70 s | 1 |
-| `reels` | Reels, Shorts, TikTok | −14 LUFS | 0.20 s / 0.45 s (tighter) | 2: the better one is used |
-| `voice-under-music` | a voice over a music bed | −18 LUFS | 0.30 s / 0.70 s | 1 |
-
-The loudness is reached with one constant gain plus a true-peak limiter at −1.5 dBTP, so peaks never pass
-that ceiling. When the limiter has to cut the loudest peaks by more than 6 dB, the summary notes "loudness needed
-a peak limiter: the loudest peaks were pulled down by several dB to hold the true-peak ceiling, so very peaky
-speech may sound slightly squashed". Measured: 33-second and 30-second `reels` runs −14.2 and −14.3 LUFS against
-−14, the 11-minute `youtube` run −16.1 against −16. A take that would need more than +25 dB (hiss, near silence)
-is refused instead of boosting its noise.
-
-`--takes 1..3` overrides the takes per piece (more takes cost proportionally more time).
-`--seed N` makes the whole voiceover reproducible; ox-say prints the seed it used.
-
-`--clone-mode auto|reference|ultimate` picks how the voice is copied for the whole voiceover — the same
-three modes as [`ox-say say`](#studio-voice-voxcpm2). `auto`, the default, applies the engine's rule: the
-job continues the voice's own recording (`ultimate`) when the voice has its transcript, no style is set
-anywhere and the script shares its alphabet, else every piece copies the timbre (`reference`). `reference`
-pins the job to timbre copying: a per-piece style may steer, and a style change below can never hit the
-mode conflict — this is the mode the Reel editor creates its projects in. `ultimate` pins the job to
-continuing the recording: a style at create (`-i`, a `[style: …]` line, the voice's own saved style) is
-refused, and a per-piece style later is refused too.
-
-**Where the files go.** With `-o ~/Movies/reel/reel.wav` the files land next to that path; otherwise in
-`~/Movies/ox-say/<title>/` (`-t "my title"` names the folder and the files: the title lowercased, letters and
-digits joined by hyphens, at most 32 characters, e.g. `my-title`; without `-t` they are named after the
-project id. This default folder is a provisional choice: change it with `OX_SAY_PRODUCE_OUT_DIR`, an
-absolute path, then restart the daemon). An existing file is never replaced
-unless you pass `--overwrite`. You get five files with the same name:
-
-| File | What it is |
-|---|---|
-| `name.wav` | the voiceover: 48 kHz, mono, near the preset's loudness target |
-| `name.srt`, `name.vtt` | subtitles, ready for a video editor |
-| `name.words.json` | the time of every word, for animated captions |
-| `name.manifest.json` | a copy of the project record: the settings, the pieces, the takes |
-
-**Listening to a flagged piece.** When the run ends, ox-say tells you if it is `done` (exit code 0) or
-`review` (exit code 3). *Review* means the file is complete, but some pieces failed the automatic check three
-times in a row: a stall of more than 1.5 s inside the speech, or words that do not match the script. The
-check rejects broken audio; it does not judge whether the delivery is good, so a `done` voiceover is still
-worth a listen. For each flagged piece ox-say prints what was wrong and the commands to use:
-
-```sh
-ox-say produce status 20261015-120000-a1b2c3 --chunk 1      # its takes: file paths to open and listen to
-ox-say produce chunk 20261015-120000-a1b2c3 1 --regen 2     # render 2 more takes of this piece
-ox-say produce chunk 20261015-120000-a1b2c3 1 --pick <take> # use that take
-ox-say produce chunk 20261015-120000-a1b2c3 1 --text "…"    # replace the piece's words (one piece, no brackets)
-```
-
-**Tuning the delivery.** `--style` changes how a piece is spoken, `--pause` the silence after it and
-`--pace` its speed — a rate of 0.85–1.15 (1.1 faster, 0.9 slower, 0 back to normal), stretched with
-ffmpeg's `atempo` — without recreating the voiceover:
-
-```sh
-ox-say produce chunk 20261015-120000-a1b2c3 1 --style "excited, lively"   # re-renders only this piece
-ox-say produce chunk 20261015-120000-a1b2c3 1 --pause 1.2                 # only re-assembles, no render
-ox-say produce chunk 20261015-120000-a1b2c3 1 --pace 1.1                  # only re-assembles, no render
-ox-say produce chunk 20261015-120000-a1b2c3 1 --style ""                  # back to the voiceover's default
-```
-
-A pace needs ffmpeg with the `atempo` filter on this machine; without it the change is refused and
-nothing moves.
-
-A style the previous take used is kept: switching back is instant. On a voiceover whose voice runs in
-`ultimate` clone mode (a clone voice with no style anywhere), styling a piece is refused — it would
-re-render every piece; set a style at create (`-i`, or `[style: …]` in the script) or create the
-voiceover with `--clone-mode reference` to run in `reference` mode, where a per-piece style is allowed.
-A voiceover created with `--clone-mode ultimate` refuses a per-piece style outright.
-
-**Picking is final.** `--pick` means you listened and accept that take: the piece becomes OK even if the take
-failed the automatic check, the manifest marks it `user_pick`, and once no piece is left in review the
-project turns `done`. (A take that is completely silent cannot be accepted.)
-
-**Regenerating does not switch to the new take by itself:** your current pick stays until you choose.
-After `--regen`, ox-say lists the new takes with their files and prints the exact `--pick` command for
-each. Every change rebuilds the file in seconds, because only that piece is touched.
-
-**Exit codes** (the run, `resume`, `chunk`, and `status`): 0 done, 3 review, 1 failed, cancelled or
-interrupted, 2 wrong usage (an unknown or misplaced flag is refused with its name, never ignored).
-`status` of a project that is still going exits 0.
-
-**Closing the laptop.** If anything interrupts a run (the Mac shuts down, ox-say restarts, you cancel), the project is kept.
-`ox-say produce resume <id>` continues it; only the missing pieces are made again, and the result is the
-same as an uninterrupted run. `ox-say produce ls` lists your projects, `ox-say produce cancel <id>` stops
-one (the take being made finishes and is kept), `ox-say produce rm <id>` deletes a project's working files
-(the finished files stay unless you add `--delete-outputs`).
-
-**Battery.** On battery or in Low Power Mode, the job pauses (`ox-say produce status` says *paused: on
-battery*) so a long render does not drain the Mac. Plug in, or continue anyway with
-`ox-say produce resume <id> --allow-battery` (`--allow-battery` on the first command does the same).
-**Dictation always goes first:** while you are dictating or using Speak Selection, the voiceover waits
-(*waiting for dictation*) and carries on afterwards. While paused on battery the command keeps waiting for
-the end; `--no-wait` returns at once with the project id, so you can close the terminal and check later.
-`--timeout 30m` waits at most that long (`s`, `m`, `h`), then prints the project id and exits with code 4 while the
-voiceover keeps going.
-
-**How long it takes.** On a quiet Mac the engine makes speech at about 0.55 times real time (a lab measurement
-on an M5 Pro: 10 s of speech in about 5.5 s). A voiceover takes longer than that for three reasons: every
-piece is made once per take you ask for (`reels` asks for 2), a piece that fails the check is made again
-(up to three tries), and the first piece after a rest waits 10–40 s for the model to load. Measured runs
-(M5 Pro, AC power, one voice; another heavy job shared the Mac for part of the long run, so treat them as
-upper bounds):
-- A 33-second Reel (`reels`, 2 takes per piece): 48 s on a warm model, 62 s on a cold one.
-- An 11.2-minute voiceover (`youtube`, 64 pieces): 12.7 minutes. The engine made 93 takes with 941 s of
-  speech to deliver 670 s, because the 7 pieces that kept failing the check were tried three times each and
-  a few others once more. The rest of that run, after an interruption at piece 11, took 10 minutes.
-- Estimates, not measured: a 60-second Reel about 1.5–2 minutes; a 10-minute `youtube` voiceover about 11–12
-  minutes; `--takes 2` on a long script roughly half as long again.
-
-The status line shows the time left while it works. The engine uses about 3–4 GB of memory while it runs
-(4.1 GB peak in the long run above).
-
-**Limits.**
-- **One voiceover at a time.** Starting a second one while one is running is refused and names the
-  running one.
-- One voice per voiceover, a recording of at most 30 s. Numbers left as digits are not checked (see above).
-- About 40,000 characters per project (roughly 48 minutes of speech). Split longer books in parts.
-- Apple Silicon with 24 GB or more only; the same disk space as the working takes (a free-space check
-  runs first).
-- After you replace the engine or the model **by hand**, restart the daemon: the engine's identity is read
-  once per start, so without a restart the old takes would still be reused.
-- The VoxCPM2 model card forbids impersonation, fraud and disinformation, and asks that AI-generated
-  speech be labelled as such. Please do.
-
-### `produce` HTTP API
-
-All on `OX_SAY_ADDR`, loopback only. A project id looks like `20261015-120000-a1b2c3`. Unknown JSON fields
-are refused.
-
-| Route | Description |
-|-------|-------------|
-| `POST /v1/produce` | `{"script"` (required, ≤ 40,000 chars)`,"title","voice","style","preset","seed","takes"(1..3; 0 is refused),"clone_mode"("auto"/"reference"/"ultimate"; default auto, ultimate refuses any style),"out_path","overwrite","allow_battery","loudness_lufs"(-40..-5; default from the preset),"inference_timesteps"(integer 1..50, default 10; an explicit 0 is refused)}` → 202 with the project summary. 409 + `running_id` when another voiceover is running. No `cfg_value`. More steps render slower; the time estimate and the render timeout grow with them |
-| `GET /v1/produce` | `{"projects":[…]}`: the 20 most recent, newest first, without their chunk lists |
-| `GET /v1/produce/<id>` | Summary: `status` (`running`, `waiting_for_dictation`, `paused_on_battery`, `review`, `done`, `failed`, `cancelled`, `interrupted`), `seed`, `progress` (`chunks_done`, `chunks_total`, `eta_s`), `outputs`, `chunks` (status, pick, reasons), `notes` |
-| `GET /v1/produce/<id>/chunks` | `{"chunks":[…]}`: every chunk in one read, same element shape as `…/chunks/<n>` |
-| `GET /v1/produce/<id>/chunks/<n>` | One chunk (0-based): its text, takes (key, seed, duration, word errors) and `take_files` (key → WAV path) |
-| `POST /v1/produce/<id>/resume` | `{"allow_battery"}` → continue an interrupted, cancelled or finished project |
-| `POST /v1/produce/<id>/cancel` | Stop a running project; the take in progress finishes and is kept. A project that is not running answers 409 |
-| `POST /v1/produce/<id>/chunks/<n>` | `{"action":"regenerate","takes":1..3}` / `{"action":"pick","take":"<key>"}` / `{"action":"edit","text":"…"}` / `{"action":"delivery","style":"…","pause_after":0.05..10 or 0 to clear,"pace":0.85..1.15 or 0 to clear}` (any of them; `"style":""` restores the default); `regenerate` keeps the current pick; `pick` is final (the chunk becomes ok, `user_pick: true`). A chunk number past the end answers 400 with the chunk count |
-| `POST /v1/produce/<id>/delivery` | `{"chunks":[{"n":0,"style":"…"},{"n":3,"pause_after":0.6,"pace":1.1}]}` — every entry is checked before anything changes (a bad entry is a 400 and nothing moved), then one relaunch; only chunks whose style changed render, a pause- or pace-only batch only re-assembles. Optional `"loudness_lufs"` (-40..-5) re-targets the whole file's loudness the same way, and is the only change an empty `chunks` list may carry: a loudness-only batch needs a finished project (unfinished chunks answer 409) and renders nothing, it only re-assembles — and when that fails the project keeps the status, target and files it had (or reports `failed` when the previous files could not all be restored: the previous version then stays beside the files as hidden `.<name>.prev-…` copies, which the next successful publish removes), with the reason in its `error`. A publish never makes a published name vanish: it backs each old file up by hard link, renames the new one over it, and removes the backups only after the folder is synced. A daemon that dies mid-run reports the status the project had, with an `error` saying the loudness change may not have applied. A pace on a machine without ffmpeg's `atempo` filter answers 422. A style that would switch the job's clone mode answers 409 (`styling a phrase needs clone_mode reference…`); on a project created with `clone_mode: "ultimate"` any style answers 409 |
-| `DELETE /v1/produce/<id>` | Remove the project; `?delete_outputs=true` also deletes its published files |
-
-**Agents (MCP)** use four tools, `produce`, `produce_status`, `produce_edit` and `produce_control`, that
-mirror the routes above. `produce` returns at once with the id; poll `produce_status` every ~10 s.
-
-## Usage
-
-One binary, `ox-say`, is the daemon, the CLI client and the MCP server.
-
-```
-ox-say serve        # run the daemon (launchd starts this)
-ox-say say hello                        # speak like `say`
-ox-say say -v ben -l Russian -f mp3 -o hi.mp3 "privet"
-echo piped | ox-say say                 # text from stdin
-ox-say say -m voxcpm2 -i "excited, lively pace" --seed 9 --loudness -16 -o hi.wav "..."   # studio voice
-ox-say voice add ben ./clip.wav --ref-text "what the clip says"
-ox-say voice design "A clear, pleasant female narrator in her thirties" -t "Привет." -n 3   # describe a voice
-ox-say voice save narrator <take path>  # keep a take
-ox-say voice set narrator --style "calm and warm, slow"   # change a voice's engine/style
-ox-say voice ls
-ox-say voice rm ben
-ox-say produce script.txt -v narrator --preset reels   # a whole voiceover from a script (see "Long-form voiceover")
-ox-say transcribe meeting.wav           # speech-to-text
+ox-say transcribe meeting.wav
 ox-say transcribe -e whisper --srt talk.mp4 > talk.srt
-ox-say status
 ```
 
-The daemon owns the `tts-server` child process: it starts the engine on the
-first request, stops it after `OX_SAY_IDLE_STOP_SECS` (default 300 s) of
-idleness so it does not hold ~2 GB of GPU memory, restarts it after a crash
-with backoff, and replays persisted voices into every fresh child.
+### Voiceover
 
-Speech-to-text is served by a resident `ox-stt --serve` child
-(`OX_SAY_STT_SERVER=on`, the default): the daemon starts it on the first
-parakeet request, it loads the model once and decodes 1 s of silence before
-listening on `OX_SAY_STT_PORT`, and a warm transcription skips the
-multi-second model load a per-call `ox-stt` pays every time. On an Intel
-Mac the server runs on the CPU — spawned with `-ng` — so it never takes GPU
-memory from the TTS engine; on Apple Silicon it runs on the GPU (below).
-Its idle cost is ~0.7 GB of RAM, and
-`OX_SAY_STT_IDLE_STOP_SECS` (default 600 s) stops it when unused. When a
-streaming session opens after a minute or more without a decode, the server
-first decodes 1 s of silence on its worker, so a model the OS has paged out
-pages back in while you speak rather than after you release the key. Parakeet
-clips up to 300 s go to the server whatever the TTS state; a server failure
-falls back to the per-call CLI, and audio longer than 300 s stays on the
-CLI (a cancelled server decode cannot be killed the way a CLI child is).
-Whisper always uses the CLI. When the silero VAD model
-(`OX_SAY_STT_VAD_MODEL`) is present, the spawned server is passed `--vad`
-and can also host streaming transcription sessions — the daemon proxies
-them under `/v1/audio/transcriptions/sessions` (below).
+Write or paste a script, or open a document (text, Markdown, Word, RTF, OpenDocument or PDF), pick a voice and
+press **Create Voiceover**. You choose between two voices:
 
-How the GPU is shared depends on its memory. `OX_SAY_GPU_MEMORY=auto` (the
-default) picks `unified` on Apple Silicon and `discrete` elsewhere. With
-`unified`, the TTS engine and the resident STT server run on the GPU at the
-same time, nothing is arbitrated, and `OX_SAY_STT_GPU=off` is the way to
-put speech-to-text on the CPU. With `discrete` (an Intel Mac's AMD card)
-the rest of this section applies. On the per-call CLI path `auto` and `on`
-then behave the same: the GPU at any length. The 5-minute cap below bounds
-how long a GPU run can hold a 4 GB card away from the TTS engine, and with
-unified memory nothing waits.
+- **Standard** is the fast voice (Qwen3-TTS). It suits short notices and first audio arrives in a fraction of
+  a second.
+- **Studio** is the expressive voice (VoxCPM2), for Reels, YouTube and podcasts. It needs Apple Silicon with
+  24 GB or more and an opt-in download of about 3 GB. It works piece by piece in the background, listens
+  to each piece again to catch a swallowed word or a long stall, joins the pieces with natural pauses and sets
+  the loudness. A finished voiceover is listed with its phrases. Each phrase can get a mood and another variant,
+  and the change touches that phrase only. The **New reel** preset is tuned for short vertical video.
+  The Advanced switch in the window adds pace, pause and loudness controls.
 
-On a discrete card, the single GPU is arbitrated by a lease the daemon
-shares between the two consumers. A per-call `ox-stt` that runs without
-`-ng` holds it for the whole run, and a TTS engine start must wait for it
-before spawning — the engine then keeps it until the child has actually
-exited, so the brief window where the supervisor already reports stopped
-but the process is still tearing down is covered too. On the CLI path
-`OX_SAY_STT_GPU=auto` prefers CPU over contention — and caps how long it
-will hold the card: it takes the lease only when free AND the decoded
-audio is at most 5 minutes, so a `speak` that needs the engine
-mid-transcription waits out a short GPU run at worst (the tool's timeout
-is about 5 minutes). Longer audio runs with `-ng` without touching the
-lease. `on` lifts the length cap but, like `auto`, only takes a free lease
-and otherwise runs on the CPU — a transcription never waits for the GPU.
-With `on`, a `speak` that needs the engine can block behind a long GPU
-run, and over MCP fail after about 5 minutes. `off` never touches the card.
-On a discrete card `OX_SAY_STT_GPU=on` does not opt the resident server into
-the GPU — a process that holds GPU memory for its whole lifetime cannot take
-part in a per-run lease, so the server is always `-ng` there. Transcriptions
-run one at a time; up to 8 more wait,
-further ones get 503.
+A voiceover can be stopped, resumed after an interruption or a closed laptop, and paused on battery power.
+You get a notification when it finishes and you are not looking at it. The command line and the API also write subtitles (`.srt`, `.vtt`)
+and the time of every word for animated captions. Guides: [studio voice](docs/studio-voice.md),
+[long-form voiceover with `ox-say produce`](docs/produce.md).
 
-### HTTP API
+### Voices
 
-Listening on `OX_SAY_ADDR` (default `127.0.0.1:8094`, loopback only):
+The **Voices** page holds your voices and the voices used to read selected text aloud.
 
-| Route | Description |
-|-------|-------------|
-| `POST /v1/audio/speech` | OpenAI-compatible TTS. `input` required; `voice`, `language`, `response_format` (`wav`, `pcm`, `mp3`, `opus` — last two transcoded with ffmpeg), `model` (`qwen3-tts` or `voxcpm2`; absent = the voice's engine, then `OX_SAY_TTS_MODEL`), `instructions`, `seed`, `loudness_lufs` (-40..-5, normalizes the take), voxcpm2 only: `cfg_value`, `inference_timesteps`, `clone_mode` (`auto`/`reference`/`ultimate`; input up to 1000 chars); qwen3-tts only: `temperature`, `top_k`, `top_p`, `repetition_penalty`, `max_new_tokens`; its input (up to 5000 chars) over 600 chars is spoken in pieces cut at sentence ends, on one seed, and answered as one buffered take, and a take that does not end inside its frame budget (or inside `max_new_tokens`) is a 502, never a cut audio (`/status` `tts_faults` counts them). A voxcpm2 or normalized answer is a finished take with `X-Ox-Say-Model`, `X-Ox-Say-Seed` and `X-Ox-Say-Warning` headers |
-| `POST /v1/audio/transcriptions` | OpenAI-compatible STT, multipart: `file` (required, ≤ `OX_SAY_STT_MAX_UPLOAD_MB`), `model` (`parakeet` default; `whisper`/`whisper-1`), `language`, `prompt`, `response_format` (`json` default → `{"text"}`; `text`; `verbose_json` → OpenAI's shape: `duration`, `segments` (`start`/`end`), `words` (`word`/`start`/`end`); `srt`; `vtt`; `ox_json` → ox-stt's own result with words as `w`/`s`/`e`/`p`, what `ox-say transcribe --json` prints), `timestamp_granularities[]` (accepted; words are always returned). Errors: 400 bad input, 413 over the upload cap, 500 engine failure, 503 model missing or queue full, 504 timeout |
-| `GET /v1/audio/voices` | List persisted voices |
-| `POST /v1/audio/voices` | `{"name","audio_path","ref_text"}` plus optional `engine`, `style`, `designed_from`, `label` (display name, ≤60 characters, no control characters) and `source` (`recorded` or `file`) — clone from a local clip (normalized to 24 kHz mono WAV, max 20 s). Re-adding an existing name keeps its stored `engine`/`style`/`label` (`source` and `designed_from` describe the audio, so they are not kept): an empty or absent value on POST means "unchanged", only PATCH clears |
-| `POST /v1/audio/voices/design` | `{"description","text","takes"(1..4),"seed"}` → takes rendered with voxcpm2 (no reference voice), each with path, seed, duration and a suggested name |
-| `POST /v1/audio/voices/design/save` | `{"name","take","replace"}` → keeps a take returned by design as a voice; the daemon records the description, seed and transcript itself |
-| `GET /v1/audio/voices/<name>` | Voice metadata |
-| `PATCH /v1/audio/voices/<name>` | `{"engine","style","label"}` — change a voice's preferred engine, default style and display label; a given `""` clears, an absent field stays; any other field is a 400 |
-| `DELETE /v1/audio/voices/<name>` | Remove a voice |
-| `GET /status` | Engine and STT-server state, pids, uptime, restarts, voices, config |
-| `GET /health` | Daemon liveness (always 200; engine may be stopped) |
+- **Clone a voice** by recording yourself in the app (read the shown text for a few seconds) or from an audio
+  file. The command line takes a clip of up to 20 seconds.
+- **Describe a voice** in words ("a warm, deep male narrator in his forties"), hear several versions and keep
+  the one you like. This uses the studio voice.
+- **Pick the voice** for Russian and English text separately, or let the app choose a random one each time.
 
-Meeting routes (see [Meetings](#meetings); the app uses them, and so can an agent):
+### Voice cleanup
 
-| Route | Description |
-|-------|-------------|
-| `POST /v1/meetings` | Create a meeting; the app then writes `me.pcm` and `them.pcm` (raw 16 kHz mono) into its directory |
-| `GET /v1/meetings` | List meetings |
-| `GET /v1/meetings/search?q=` | Find meetings by words in the title, notes or transcript |
-| `GET /v1/meetings/<id>` | One meeting: status, notes, transcript |
-| `PATCH /v1/meetings/<id>` | `{"title"}` — rename. A meeting still being recorded or processed answers 409 |
-| `GET /v1/meetings/<id>/audio` | Both channels mixed into one mono 16 kHz WAV, built as it is read (Range requests work) |
-| `POST /v1/meetings/<id>/finish` | End a recording and queue it for the transcript and notes |
-| `POST /v1/meetings/<id>/notes` | Retry the notes |
-| `GET /v1/meetings/<id>/speakers`, `PATCH …/speakers` | The other side's voices; name, merge and split them in one request |
-| `POST /v1/meetings/<id>/voices` | Tell the voices apart again after the voice engine failed |
-| `DELETE /v1/meetings/<id>` | Delete a meeting that nothing is working on |
-| `GET /v1/meetings/settings`, `PUT …/settings` | `{"retention_days"}`: how long audio is kept — 0 (forever), 7, 30 or 90 |
-| `GET /v1/meetings/notes-model` | The notes model in use: resolved `model` (catalog id or `custom`), `source` (`env`, `saved`, `automatic`), `path`, `installed`, and `choices` — one row per catalog model with `installed` and `supported`, and `upstream` on the uncensored row while it is not installed (`available`, `gone`, `unknown`: a background HEAD of its download URL, 404/410 and 401/403 read as `gone`, everything else as `unknown`) |
-| `PUT /v1/meetings/notes-model` | `{"id":"<catalog id>"}` or `{"path":"/abs/file.gguf"}` — choose the notes model. `400`: unknown id, relative path, neither field, or an own file that fails the trial load. `409`: the model is busy (a download, or a meeting queued, running or recording). On success the choice is saved, a resident notes engine is stopped and the next notes run loads the new file — no restart |
-| `POST /v1/meetings/notes-model/validate` | Try an own notes model without choosing it: `{"path":"/abs/file.gguf"}` → `200` with `{"ok":true,"name","architecture","bytes"}` — the file's own GGUF `general.name`/`general.architecture` — or `{"ok":false,"reason"}`. The check is the one `PUT {"path"}` runs: a v2/v3 GGUF that fits 70% of this Mac's memory, then `ox-llm` really loading it on a private port, answering `/health` and one short completion |
-| `POST /v1/meetings/notes-model/install` | Download a notes model: `{"id":"<catalog id>"}` or a bodiless POST for the automatic default (the 9B, or the 4B when the disk cannot hold it — `/status` `notes.fallback` says `disk`). `409`: already installed, already downloading, a disk or memory refusal |
+Give OxSay a video or audio file and get a copy with the voice cleaned of noise, room sound and other sounds
+under it. The video, other audio streams and chapters are copied unchanged. It uses a Core ML speech-enhancement
+model (about 131 MB, downloaded on first use) and needs macOS 15 or later. It is a file tool, so it is
+reached through the HTTP API (`POST /v1/audio/clean`) and the MCP tool `voice_clean`, and it refuses files in the
+meetings store. See [docs/http-api.md](docs/http-api.md#voice-cleanup-post-v1audioclean).
 
-Transcript routes (a file transcribed and kept by the daemon; the app's Transcribe section uses them):
+### For agents
 
-| Route | Description |
-|-------|-------------|
-| `POST /v1/transcripts` | Multipart like `/v1/audio/transcriptions` (`file` ≤ `OX_SAY_STT_MAX_UPLOAD_MB`, `model`, `language`, `prompt`) plus `title` (≤ 200 characters). Runs the recognizer and keeps the result; `201` with `{"id","title","engine","language","created","seconds"}`. A failed transcription keeps nothing. It queues behind other transcriptions, so a long file delays dictation as `/v1/audio/transcriptions` does |
-| `GET /v1/transcripts` | `{"transcripts":[…]}`, newest first |
-| `GET /v1/transcripts/<id>?format=` | `text`, `srt`, `vtt`, `json` (default) or `ox_json` |
-| `DELETE /v1/transcripts/<id>` | Delete one (`204`) |
+OxSay runs a daemon on `127.0.0.1:8094`. It serves an MCP server at `/mcp` and an OpenAI-compatible HTTP
+API (`/v1/audio/speech`, `/v1/audio/transcriptions`) beside the routes the app uses. The installer registers
+the MCP server with Claude Code. Tools: `speak`, `transcribe`, voice management and design, long-form
+`produce`, read-only meeting access (`meetings_list`, `meeting_get`, `meetings_search`) and `voice_clean`.
+Meeting texts quote other people's speech, so a client should treat them as data, never as instructions.
+Reference: [docs/mcp.md](docs/mcp.md), [docs/http-api.md](docs/http-api.md),
+[docs/usage.md](docs/usage.md) for the `ox-say` command line.
 
-Model routes (the app's Models section uses them):
+### Coming next
 
-| Route | Description |
-|-------|-------------|
-| `GET /v1/models` | `{"models":[…]}` for `qwen3-tts`, `voxcpm2`, `parakeet`, `whisper`, `notes`, `notes:qwen3.5-9b`, `notes:qwen3.5-4b`, `notes:qwen3.8-27b-uncensored` (and `notes:custom` while your own file is the notes model); each row has `id`, `kind` (`speech`, `transcribe`, `notes`), `name`, `bytes`, `installed`, `default` (the daemon's own default for its kind — `notes:qwen3.5-9b` for notes), `optional` (may be installed and removed; false for `qwen3-tts`, `parakeet` and `notes:custom`), `removable` (true only when `DELETE` would succeed: optional, installed, the installer's file name, a plain file in `<home>/models`), `installing` (the notes download is running), `supported` and, when it is false, `reason_code` and `reason`; the `notes:qwen3.8-27b-uncensored` row also carries `upstream` while its file is not installed (`available`, `gone`, `unknown` — whether the download URL still answers; `gone` is only 404/410 or a gated 401/403, a network error or 5xx is `unknown`, and the field is omitted once the file is on disk). The plain `notes` row is the model notes would run on now — the resolved one — kept for clients written before the catalog. `supported` means this Mac can run the model; it does not mean ready now (a model that is not downloaded yet is still supported; `/status` `available` is the ready-now word). `bytes` is the size on disk when installed. For a model that is not installed it is the expected size: exact for every `notes…` row (the catalog's pinned bytes, the same figures `scripts/fetch-models.sh` downloads), approximate for `voxcpm2` (3.0 GB) and `whisper` (1.6 GB), and 0 where unknown (`qwen3-tts`, `parakeet`). One stat per file: cheap enough to call whenever a window opens |
-| `DELETE /v1/models/<id>` | Remove an optional model (`voxcpm2`, `whisper`, `notes`, `notes:<catalog id>`) and stop its engine first; `204`. `400`: a required model, `notes:custom`, a file that is not the one the installer writes (`OX_SAY_*_MODEL` pointing at your own file, a symlink, a folder), or a model outside `<home>/models` (managed outside OxSay; `GET` shows `removable: false`). `404`: unknown id or not installed. `409`: in use (a speech, design or produce job for `voxcpm2`; a transcription for `whisper`; a download, a queued, running or recording meeting for `notes` and `notes:<id>`; an engine still serving or starting). Deleting `notes` removes the file the resolution names; deleting `notes:<id>` removes that catalog file (and stops the notes engine when it is the resolved one). `notes` and `notes:<id>` are restored by `POST /v1/meetings/notes-model/install`; `voxcpm2` and `whisper` by `scripts/fetch-models.sh` |
+Live captions while a meeting is recording ([#527](https://github.com/anatolykoptev/ox-say/issues/527)) and a
+live meeting transcript for your own agents ([#549](https://github.com/anatolykoptev/ox-say/issues/549)).
+Neither exists yet.
 
-Streaming transcription sessions — incremental decoding on the resident
-`ox-stt --serve` (requires the VAD model; unavailable when it is absent or
-`OX_SAY_STT_SERVER=off`):
+## Requirements
 
-| Route | Description |
-|-------|-------------|
-| `POST /v1/audio/transcriptions/sessions` | `{}` → `{"id":"<32 hex>"}`. 429 past 4 live sessions |
-| `POST /v1/audio/transcriptions/sessions/<id>/audio` | `application/octet-stream` body: little-endian float32 mono PCM at 16 kHz, ≤ 30 s (1,920,000 bytes) per request → `{"segments","words","pending"}` with what was decoded since the previous call |
-| `POST /v1/audio/transcriptions/sessions/<id>/finish` | Waits for pending decodes (up to ~60 s) → final `{"segments","words","done":true,"text"}`, then deletes the session |
-| `DELETE /v1/audio/transcriptions/sessions/<id>` | Drop the session without finishing |
+- **macOS 14.2 or later.** The installer checks and changes nothing on an older Mac. Separating the voices of
+  a call and voice cleanup need macOS 15 or later.
+- **Apple Silicon, or an Intel Mac with AVX2** (a 2019 to 2020 MacBook Pro with a Radeon Pro 5300M, 5500M or
+  5600M is the tested case).
+- **`ffmpeg`**, from `brew install ffmpeg`. The installer never uses `sudo`.
+- **Disk.** The installer downloads about 2.5 GB on Apple Silicon and about 2.3 GB on Intel (the speech
+  models and, on Apple Silicon, the speaker models). On top of that: the notes model, 2.7 to 5.7 GB, fetched
+  on first use; the studio voice, about 3 GB, opt-in; Whisper, 1.6 GB, opt-in.
 
-Session errors are `{"error":"…"}`:
-- 400: an audio body that is not whole float32 samples, holds a non-finite sample, or cannot be read.
-- 404: unknown session. This includes a server restart, since sessions do not survive one.
-- 413: over the per-chunk cap, or a JSON body over 4 KB.
-- 429: past 4 live sessions, or a decode backlog.
-- 500: a segment failed to decode or VAD failed, so the session is unusable; or the server could not create a session.
-- 501: no VAD model.
-- 502: the STT server could not be reached.
-- 503: the STT server is off or cooling down.
-- 504: `finish` waited too long.
+What your memory gets you on Apple Silicon:
 
-Requests the daemon's guard refuses (403, 415) keep its usual error
-shape. On **any** non-200 response a client should keep its own copy of
-the recording and fall back to uploading the whole clip to
-`POST /v1/audio/transcriptions`.
+| Memory | Notes model | Studio voice |
+|---|---|---|
+| under 16 GB | none: a meeting keeps its transcript only | no |
+| 16 to 23 GB | Qwen3.5-4B (2.7 GB) | no |
+| 24 GB or more | Qwen3.5-9B (5.7 GB) | yes |
 
-### Voice cleanup (`POST /v1/audio/clean`)
+The table covers the two memory-gated features. Everything else runs on any supported Mac, and below 16 GB it was
+not measured.
 
-An offline file tool, not a dictation route: it never touches meetings or dictation (any path under `<home>/meetings`, including through a symlink or hard link, is 403), and dictation never waits for it. The first request on a Mac without the model starts `fetch-models.sh --clean-only` (one download at a time) and answers 503 `models_downloading`; `/status` `voice_clean` and the `voice_cleanup` row of `GET /v1/models` show the download.
+The notes model never starts below its floor, so the 9B does not squeeze the browser that runs your call on
+a 16 GB Mac. On 16 to 23 GB the large engines (fast voice, studio voice, notes) take turns instead of sharing the
+GPU. A Mac with 32 GB or more can also choose an optional uncensored 27B notes model (20.7 GB) through the
+API ([docs/meetings.md](docs/meetings.md)).
 
-| Route | Description |
-|-------|-------------|
-| `POST /v1/audio/clean` | `{"in_path":"/abs/in.mov","out_path":"/abs/out.mov","wet":0.85,"stereo":"mid","overwrite":false}` → 200 `{"out_path","video","input_seconds","elapsed_s","wet","stereo","sample_rate","channels","lag_ms","dropped":[{"index","type","codec"}]}`. `wet` absent = 0.85 (a given `0` is honoured). Errors are `{"error":{"message","type","code"[,"reason","reason_code"]}}` with a stable `code`: 400 `invalid_request`, 403 `forbidden_path`, 404 `not_found`, 409 `exists` / `same_file` / `busy` (a cleanup is already running), 422 `no_audio` / `unsupported_channels` / `unsupported_streams` / `too_long`, 502 `engine_failed` / `lag_unverified` / `model_wrong_answer` (the model gave a wrong answer on this Mac; nothing was cleaned) / `engine_input` / `engine_output`, 503 `os_too_old` / `engine_missing` / `models_missing` / `models_downloading` / `models_unusable` / `busy` (dictation or another job is running for over 2 minutes) / `gpu_busy` (Intel) / `models_download_failed` / `unavailable`, 504 `engine_timeout`, 507 `disk_space` |
+On an Intel Mac, dictation, Transcribe, the fast voice and the meeting transcript work. The notes model runs on the
+CPU, and a notes run can take many minutes. The voices of a call are not told apart, and the studio voice is not available.
 
-A cleanup starts when no dictation session, speech, voice design, transcription, voiceover render or meeting processing is running, waiting up to 2 minutes for that (else 503 `busy`). Dictation and live meetings never wait for a cleanup. While a cleanup runs, a voiceover render and the processing of a finished meeting do not start a new step; they wait for it only up to 2 minutes (the producer's `maxYield`) and then carry on. `busy.cleaning` in `/status` is 1 for the whole request. A body with an unknown field or data after the object is 400; a cleanup that outlasts the daemon's 3 hour cap is 504 `engine_timeout`; a failed model download is not retried for a minute (503 `models_download_failed`, with the reason).
-
-On Apple Silicon (unified memory) a cleanup takes no GPU lease and shares the GPU with other jobs for the few seconds it runs. On Intel, voice cleanup and speech share one graphics card and take turns: the cleanup stops an idle speech engine to take the card, waits up to 2 minutes if speech is working (then 503 `gpu_busy`, "The graphics card is busy with speech; try again in a moment."), and a speech request that arrives meanwhile and cannot start the engine fails with 503 `gpu_busy_cleanup` ("Voice cleanup is using the graphics card; speech will be available when it finishes."). That refusal comes after at most 10 seconds of waiting, not when the cleanup ends. A cleanup that finds an idle speech engine recycles it, so the next speech request after the cleanup pays a cold start.
-
-### MCP
-
-The same server exposes MCP tools on `/mcp`: `speak`, `transcribe`,
-`voices_list`, `voice_add`, `voice_update`, `voice_remove`, `voice_design`, `voice_design_save`,
-`engine_status`, the long-form voiceover tools `produce`, `produce_status`, `produce_edit`, `produce_control`,
-three read-only meeting tools: `meetings_list`, `meeting_get` (notes and/or transcript, paged) and
-`meetings_search`, and the offline voice-cleanup tool `voice_clean` (the same code as `POST /v1/audio/clean`: it refuses
-the meetings store, fetches the model on first use, and answers with the plain sentence and stable code when it is busy). Each tool's description tells an agent when to use it, the units and limits, and what
-to call next; the VoxCPM2 quality options (`model`, `instructions`, `cfg_value`, `inference_timesteps`,
-`seed`, `loudness_lufs`) are on `speak` only, and `clone_mode` is on `speak` and `produce` (the same
-`auto`/`reference`/`ultimate` set, judged by the same rules). Register with:
-
-```
-claude mcp add --transport http --scope user ox-say http://127.0.0.1:8094/mcp
-```
-
-### Configuration
-
-Environment variables (flags on `serve` override them):
-
-| Variable | Default | Notes |
-|----------|---------|-------|
-| `OX_SAY_HOME` | `~/Library/Application Support/ox-say` | Engine, models, voices, run dir |
-| `OX_SAY_ADDR` | `127.0.0.1:8094` | Daemon listen address; loopback only, refused otherwise |
-| `OX_SAY_ENGINE_PORT` | `8095` | Loopback port for the engine child |
-| `OX_SAY_ENGINE_BIN` | `<engine dir>/tts-server` | |
-| `OX_SAY_MODEL` | `$OX_SAY_HOME/models/qwen-talker-0.6b-base-Q8_0.gguf` | |
-| `OX_SAY_CODEC` | `$OX_SAY_HOME/models/qwen-tokenizer-12hz-F32.gguf` | |
-| `OX_SAY_MAX_BATCH` | `2` | |
-| `OX_SAY_TTS_MODEL` | `qwen3-tts` | Engine for a speech request that names no model and whose voice has no preference: `qwen3-tts` or `voxcpm2` |
-| `OX_SAY_VOXCPM2_BIN` | `<engine dir>/audiocpp_server` | The VoxCPM2 engine (audio.cpp's server); Apple Silicon only |
-| `OX_SAY_VOXCPM2_MODEL` | `$OX_SAY_HOME/models/voxcpm2-q8_0.gguf` | VoxCPM2 weights (`OX_SAY_WITH_VOXCPM2=1` fetch) |
-| `OX_SAY_VOXCPM2_PORT` | `8097` | Loopback port the VoxCPM2 child binds |
-| `OX_SAY_NOTES_BIN` | `<engine dir>/ox-llm` | The meeting-notes engine (llama.cpp's llama-server); on the GPU with unified memory (Apple Silicon), on the CPU otherwise |
-| `OX_SAY_NOTES_MODEL` | unset (the catalog decides) | The operator's notes-model pin: an absolute path to a `.gguf`, written by the installer. It wins over the user's saved choice in every case. A file name the catalog knows (`Qwen3.5-9B-Q4_K_M.gguf`, `Qwen3.5-4B-Q4_K_M.gguf`, `Huihui-Qwen3.8-27B-abliterated-UD-Q5_K_XL.gguf`) pins that model; any other path is the user's own file — reported as `custom`, never downloaded over and never deleted by ox-say. Unset, the model is the saved choice or the automatic pick (see [Meetings](#meetings)) |
-| `OX_SAY_NOTES_PORT` | `8098` | Loopback port the notes engine binds. Set explicitly, it must differ from the other listeners or the daemon refuses to start; left at the default, a collision turns notes off (`port_blocked` in `/status`) and the rest of the daemon runs |
-| `OX_SAY_NOTES_IDLE_STOP_SECS` | `120` | Stop the notes engine after N s idle |
-| `OX_SAY_ASSUME_MEMORY_GB` | unset | Test and diagnostic knob. Makes the daemon decide as if the Mac had N GB for ONE thing: whether the large engines (fast voice, studio voice, notes model) take turns, which they do on Apple Silicon below 24 GB (`/status` `memory_mode` is `one_large_engine`, otherwise `shared`). It does not change the memory gates: the studio voice and the notes model still read the real memory. Use it to exercise the turn-taking on a bigger Mac |
-| `OX_SAY_DIAR_BIN` | `<engine dir>/ox-diar` | The speaker diarization engine (meeting voices); Apple Silicon, macOS 15 or later |
-| `OX_SAY_DIAR_ENGINE` | `nemotron` | Which model separates the voices of a meeting: `nemotron` (Nemotron 3 Diarization fast128 on the Neural Engine) or `pyannote` (the previous pipeline, kept until it is removed). Case and surrounding spaces do not matter; a value that is neither is logged once and the default is used. A Mac whose engine set is not fetched keeps one far-side label (`models_missing`) until `scripts/fetch-models.sh` has run; `nemotron` takes calls up to 6 hours, `pyannote` up to 2. The app records up to 6 hours (a minute less) on either; on `pyannote` a recording over 2 hours keeps one far-side label. `GET /status` shows the engine in use as `config.diar_engine` |
-| `OX_SAY_CLEAN_BIN` | `<engine dir>/ox-clean` | The voice-cleanup engine (MossFormer2 on Core ML); its model set (131 MB) is downloaded on first use |
-| `OX_SAY_IDLE_STOP_SECS` | `300` | Stop the idle engine after N s; 0 = never |
-| `OX_SAY_STARTUP_TIMEOUT_SECS` | `180` | Covers the first-start Metal shader compile |
-| `OX_SAY_LANG` | empty | Default language; empty = engine auto-detect |
-| `OX_SAY_SEED` | empty | Default seed (0 to 4294967295) for a speech request that passes none, so the voice stays the same between requests; a `seed` in the request wins; empty = every request draws its own |
-| `OX_SAY_ENGINE_LOG_DIR` | `~/Library/Logs/ox-say` | Child stdout/stderr go to `engine.log` here |
-| `OX_SAY_CACHE_DIR` | `~/Library/Caches/ox-say` | Default output dir for `speak` |
-| `OX_SAY_PRODUCE_OUT_DIR` | `~/Movies/ox-say` | Where `produce` publishes a finished voiceover when the request names no `out_path` (provisional default, pending the owner) |
-| `OX_SAY_STT_BIN` | `<engine dir>/ox-stt` | Speech-to-text binary |
-| `OX_SAY_STT_MODEL` | `$OX_SAY_HOME/models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin` | Parakeet weights |
-| `OX_SAY_STT_VAD_MODEL` | `$OX_SAY_HOME/models/ggml-silero-v5.1.2.bin` | Silero VAD model; enables the streaming session routes when present at STT-server spawn |
-| `OX_SAY_STT_WHISPER_MODEL` | `$OX_SAY_HOME/models/ggml-large-v3-turbo.bin` | Whisper weights (`--with-whisper` fetch) |
-| `OX_SAY_STT_GPU` | `auto` | CLI device under the shared GPU lease: `auto` = GPU only for audio ≤ 5 min while the lease is free (TTS engine down, no GPU run in flight), else CPU (-ng); `on` = GPU whenever the lease is free, any length, else CPU (never waits); `off` forces CPU. With a discrete card the resident server is always CPU-only; with unified memory `auto`/`on` put the server and the CLI on the GPU and `off` puts both on the CPU |
-| `OX_SAY_GPU_MEMORY` | `auto` | `auto` = `unified` on Apple Silicon, `discrete` elsewhere. `unified`: TTS and STT share the GPU with no lease. `discrete`: the GPU lease and the CPU-only resident STT server described above |
-| `OX_SAY_STT_TIMEOUT_SECS` | `600` | Fixed part of the per-transcription budget: it bounds the HTTP upload and the ffmpeg conversion, and the engine run gets this base plus k×audio duration (k ≈ 0.5 s/s parakeet, 3 s/s whisper — ≥3× the measured CPU rates, GPU runs reuse them). An explicit value is a floor, not a hard cap. At most 86400 |
-| `OX_SAY_STT_MAX_UPLOAD_MB` | `200` | `file` part cap on the transcriptions route |
-| `OX_SAY_STT_MAX_AUDIO_SECS` | `14400` | Longer audio is refused with 400, not cut (a small compressed upload can expand to hours of PCM). At most 86400 |
-| `OX_SAY_STT_SERVER` | `on` | Resident `ox-stt --serve` for parakeet clips ≤ 300 s; `off` = per-call CLI only |
-| `OX_SAY_STT_PORT` | `8096` | Loopback port the STT server binds; must differ from `OX_SAY_ENGINE_PORT` and the daemon's port |
-| `OX_SAY_STT_IDLE_STOP_SECS` | `600` | Stop the STT server after N s idle; its idle cost is RAM, not VRAM |
-
-`<engine dir>` is the directory of the running daemon when it sits in an app
-bundle's `Contents/Helpers`, so the engines travel with the daemon and share
-its version; anywhere else it is `$OX_SAY_HOME/engine`. A user-set
-`OX_SAY_ENGINE_BIN`, `OX_SAY_STT_BIN`, `OX_SAY_VOXCPM2_BIN`,
-`OX_SAY_NOTES_BIN` or `OX_SAY_DIAR_BIN` overrides that for one engine and
-defeats the co-versioning, and the installer carries such a variable over from
-the installed agent. `GET /status` shows the path each engine resolved to
-under `config` (`engine_bin`, `stt_bin`, `voxcpm2_bin`, `notes_bin`,
-`diar_bin`) and the diarization engine in use (`diar_engine`).
-
-## Dictation
-
-`app/dictation` is a menu-bar app: hold ⌃Space (⌥Space when macOS or another app owns
-⌃Space), speak, release, and the text appears where the cursor is, in any app. The daemon transcribes it, so nothing
-leaves the Mac. While you speak, a pill at the bottom of the screen shows bars
-that move with your voice; Esc cancels. **Keyboard Shortcuts** in the menu
-switches the key to ⌥Space, and **Settings** turns on toggle mode (press to
-start, press again to stop). **Studio** in the same menu makes long
-voiceovers from a text file and designs new voices (it needs the studio
-voice, which the menu installs on request); **About OxSay** shows the version.
-
-`get.sh` installs it into `~/Applications`. To build it from source instead:
-
-```
-app/dictation/build.sh --install    # needs Xcode; installs ~/Applications/OxSayDictation.app
-```
-
-On first launch macOS asks for two permissions: the microphone, and
-Accessibility, which lets the app paste into other apps. Without Accessibility
-the text is left on the clipboard. The app pastes through the clipboard and puts
-your previous clipboard back afterwards, unless something else changed the
-clipboard in between. When a password field has focus, it does not paste at all
-and leaves the text on the clipboard.
-
-The app finds the daemon at the address the installer gave it (`OX_SAY_ADDR`
-in the ox-say LaunchAgent), 127.0.0.1:8094 by default. When something goes
-wrong, or the text could not be pasted, the pill says why for a few seconds.
-
-What happens to sound while you hold the key is the **Settings → Sound While
-Dictating** submenu, with three choices. **Pause Music**: Apple
-Music and Spotify are paused if they are playing and resume from the same
-spot when you let go, cancel with Esc, or the recording ends; a player that
-was already paused stays paused, and one that is not running is never
-launched. The first time, macOS asks to let OxSay control Music or Spotify
-(System Settings → Privacy & Security → Automation). **Lower All Sound**
-(the default): everything the Mac plays — Music, a browser, YouTube — keeps playing but
-fades to a fraction of its volume while you dictate, then fades back to
-exactly the level it had, even over a volume you changed during the dictation.
-If the app is killed mid-dictation the output stays quiet until you raise it.
-It uses CoreAudio's output volume, so no permission prompt.
-**Don't Touch** leaves every sound alone.
-
-The app streams the microphone into a transcription session while you speak.
-Silero VAD cuts the stream at pauses of 400 ms or more, and force-cuts any
-segment at 12 s, at the quietest point of its last second. Each segment is
-decoded as soon as it closes. On release, only the open tail is left to decode:
-the operator's own dictations measured 0.9 s from release to text when the tail
-was short, and 2.1 s for an 11 s dictation with no pause long enough to cut.
-
-Accuracy has a cost: segments decode without their neighbours. On FLEURS
-utterances of 8 s or more (measured with the f16 model, before q8_0 became the
-default), streaming came out 1.6 (Russian) and 2.5 (English) WER points worse
-than decoding the whole recording, and punctuation can break at a join ([#88](https://github.com/anatolykoptev/ox-say/issues/88)). A
-dictation shorter than 12 s with no long pause is one segment, so it is not
-affected.
-
-To win that back, the STT server decodes the whole recording once more at release when a dictation was cut
-into more than one segment and is at most 15 s long. It does this only when the server's own measured
-decode speed predicts the extra decode fits in 500 ms; a slow CPU decode (an Intel Mac) keeps the streamed
-text. If the extra decode fails or comes back empty, the streamed text is used
-([engine/README.md](engine/README.md), "Re-decode at release").
-
-### Speak selection
-
-The same app speaks selected text in any app — pick the way that reaches it:
-press the **Speak Selection** key (⌃⌥Space by default, change it under **Keyboard Shortcuts** in the app's menu) with
-text selected, or open the right-click menu (or the app's menu) → Services →
-**Speak Selection** («Озвучить выделенное»). The key works everywhere: it asks
-the focused element for its selection through Accessibility first, and only
-falls back to a ⌘C-and-restore when that gives nothing — the clipboard ends
-up untouched, and a password field or an unrestorable clipboard blocks the
-copy instead of risking it. The Services menu depends on the app handing its
-selection to Services, so some Electron apps will not show the item.
-
-The selection goes to the daemon's `/v1/audio/speech`, and the synthesized
-wav plays through the app's audio player — nothing leaves the Mac. While the
-daemon synthesizes, the pill reads "Speaking…"; the first use after an engine
-stop waits out a cold start of about 15 s. Once playback starts the pill turns
-into playback controls — pause/resume, the position counter and stop.
-
-The **Voice** submenu has a **Russian** and an **English** section that pick a voice per
-language: **Default voice** follows the daemon's configured default,
-**Random each time** always rolls a new engine voice, and any cloned voice
-registered on the daemon (`ox-say voice list`) can be picked by name. The
-text's script decides which pick a request sends — Cyrillic gets the Russian
-pick, Latin the English one, anything else leaves the voice to the daemon.
-Picking a voice speaks a sample phrase in that voice right away. The
-configured default resolves per language too: `OX_SAY_VOICE_RU` for Russian,
-`OX_SAY_VOICE_EN` for English, then `OX_SAY_VOICE` for everything else — the
-request's `language` field wins, otherwise the input's script decides
-(Cyrillic is Russian, Latin is English). The same resolution applies to
-`ox-say say` and the MCP `speak` tool — `-v default` or
-`"voice": "default"` asks for a random voice explicitly. A new request
-while one is in flight supersedes it; a new playback stops the previous one.
-
-**Check for Updates…** compares the installed version with the latest
-GitHub release; a newer tag offers a one-click install of the signed
-package (the same `get.sh` as the manual install) and relaunches the app.
-
-The service registers when LaunchServices scans the app, so it appears after
-the first launch of an updated build. Apps that do not hand their selection to
-Services (some Electron apps) will not show the item.
-
-### Diagnosing dictation
-
-Three logs describe a dictation without recording what was said:
-
-- **The app writes one line per dictation to the unified log:**
-
-  ```
-  /usr/bin/log show --last 1h --style compact --info \
-    --predicate 'subsystem == "io.github.anatolykoptev.ox-say.dictation"'
-  ```
-
-  A line looks like this:
-  `outcome=delivered path=stream recorded_s=11.30 release_to_text_ms=2057 tail_s=0.30 segments_before_release=0 session_create_ms=3 delivery=paste id=12`.
-  - `path`: `stream`, `fallback` (the session failed and the recording was sent whole) or `one-shot`.
-  - `tail_s`: audio not yet acknowledged when the key was released.
-  - `session_create_ms`: time to open the session. It is large when the STT server had to start, and `none` when no session opened (the one-shot path, a failed create, or a create still in flight at release).
-  - `delivery`: how the text reached the user — `paste`, `typed` (keystrokes, while the clipboard held a copy from another device), or `clipboard` plus `clipboard_reason=accessibility|secure_input|focus_moved`. `none` when the dictation was empty or failed.
-
-  When a paste was posted, a second line follows once it settles: `paste settled id=12 read=yes|no`. The `id` is the same as on that dictation's line, so two quick dictations do not interleave. A paste also settles early, when the next dictation starts or the app quits. `read=no` means no app had read the clipboard by the time it settled — the paste probably went nowhere; any app counts as a read, a clipboard manager too.
-
-  In zsh, type `/usr/bin/log`: plain `log` is a shell builtin.
-- **The daemon writes one line per closed segment to `~/Library/Logs/ox-say/ox-say.log`:**
-  `msg="stt segment" session=<first 8 id chars> dur_s=… cut=pause|cap|finish min_p=… quiet_ms=…`.
-  - `cut`: why the segment closed.
-  - `min_p`: the lowest speech probability the VAD saw inside the segment.
-  - `quiet_ms`: its longest quiet run. A string of `cut=cap` lines with a small `quiet_ms` means the pauses were too short to close a segment.
-- **The STT server reports each pre-warm to `~/Library/Logs/ox-say/stt.log`:**
-  `ox-stt: pre-warm after <N> s idle took <M> ms`. A resident model decodes that second in about 0.3 s; the higher M is above that, the more of the model had been paged out.
-
-Releases ship the app signed with a Developer ID and notarized, so macOS keeps
-its microphone and Accessibility permissions across updates. A build from
-source is signed ad hoc unless `OX_SAY_SIGN_IDENTITY` names a Developer ID
-identity: macOS then ties the permissions to the exact build and asks again
-after every rebuild, and a stale entry in System Settings → Privacy & Security
-→ Accessibility looks enabled but no longer applies. While that is the state
-the app's menu offers **Allow pasting… (Accessibility is off)** at the top: it
-resets this app's own Accessibility entry (`tccutil reset Accessibility
-<bundle id>`) so the permission prompt can store a grant matching the running
-build, then raises the permission prompt and opens the Accessibility pane (the
-prompt can stay silent for an app that is already listed; the pane is where the
-switch is). The menu row stays greyed while the reset runs, and a reset that
-hangs is stopped after 10 s and reported as a failure. If the item is missing or the reset
-fails, remove OxSayDictation with − in the pane and add it again. The same
-happens once when updating from ox-say 0.1.x, whose app was signed ad hoc. See
-the header of `app/dictation/build.sh`.
-
-## Meetings
-
-OxSay can record a call, write the transcript, make structured notes, and tell the other people's voices apart.
-It all runs on this Mac: the daemon and its engines are the only things that touch the audio, and no audio or
-text is uploaded. Models are downloaded once, from Hugging Face.
-
-**Starting a recording.**
-- When a call starts in Zoom, Microsoft Teams, Google Meet (in Chrome, Brave, Arc or Edge), Webex, Slack, FaceTime,
-  Discord, WhatsApp, Telegram or OxPulse, a prompt asks **Record this call?** The choice is **When a call starts**
-  in Settings: **Ask me first** (the default), **Record automatically**, or **Off**. Each app can have its own pick;
-  the messengers still ask under **Record automatically**.
-- Or press **Record Meeting** in the app's **Meetings** menu.
-- A red **REC** badge stays on screen during every recording, and you can stop at any time.
-- A recording stops by itself a minute short of six hours (the limit of the voice engine, below).
-- Meetings are on by default; **Record calls and write notes** in Settings turns them off.
-
-**What is recorded.** Two channels, both starting at the same instant: your microphone (`me.pcm`) and everything
-the Mac plays (`them.pcm`, a system-audio tap that leaves out OxSay's own sound). That needs macOS 14.2 or later,
-and macOS asks once for System Audio Recording; for a Meet call in a browser it also asks to let OxSay read the
-tab's address. Tell the other people you are recording: the law in some places requires everyone's consent. The
-app can copy a sentence for that to the clipboard (**Copy consent phrase**).
-
-**What you get.**
-- **Transcript.** The same speech recognizer as dictation (Parakeet by default) writes it, channel by channel,
-  then merges the two with who said what. Turns on your
-  microphone that are only an echo of the other side are dropped.
-- **Other people's voices.** `ox-diar` (FluidAudio, running Nemotron 3 Diarization on the Neural Engine) separates
-  the far side's voices. The app records a meeting for up to 6 hours. With three or more voices the transcript shows them as "Speaker 1", "Speaker 2"…; with two,
-  it keeps one label and offers **split by voice**. You can name a speaker, merge two voices, or split them
-  again; the transcript is rewritten and the notes are made again. Without this step the whole far side is one label.
-- **Notes.** A local model (run by `ox-llm`) writes a summary, decisions, action items, open
-  questions and key numbers, in the meeting's own language. Install it from the Meetings menu (**Download Notes
-  Model**) or with `POST /v1/meetings/notes-model/install`. Until then a meeting shows "transcript only".
-  The model is loaded for a notes run and stopped after
-  `OX_SAY_NOTES_IDLE_STOP_SECS` of idleness (120 s by default); it holds 4–7 GB while loaded.
-  **The model is your choice.** The catalog: **Qwen3.5-9B Q4_K_M** (standard, the automatic default on a Mac with 24 GB or more, 5.7 GB; a 16–23 GB Mac keeps the room for the browser running the call and gets the 4B, and refuses an explicit pick of the 9B),
-  **Qwen3.5-4B Q4_K_M** (the lighter compact model, 2.7 GB — the automatic choice on a 16–23 GB Mac, and the download falls back to it when the disk cannot
-  hold the 9B, and a Mac that already had it keeps running it after an update), and
-  **Qwen3.8-27B abliterated** (an optional uncensored model for a Mac with 32 GB or more, 20.7 GB — never picked
-  automatically). `PUT /v1/meetings/notes-model` switches: it saves the choice, refuses while a meeting needs the
-  model (`409`), and the next notes run loads the new file without a restart. `{"path":"…"}` names your own
-  `.gguf`, which ox-say reports as `custom` and never downloads or deletes — and only saves once the file proves
-  it really loads: a v2/v3 GGUF that fits this Mac's memory, loaded by a trial `ox-llm` and answering one
-  completion (`POST /v1/meetings/notes-model/validate` runs the same check without choosing). While the
-  uncensored model is not installed, its row says whether the file is still on its host (`upstream` — `gone` is
-  a clear 404/410 or a gated repo, `unknown` a network hiccup). A model over 12 GB is exclusive on a
-  Mac under 48 GB of unified memory: the large engines take turns there (`/status` `memory_mode`).
-- **The main window** (**Open OxSay…** in the menu): the list of recordings, search over titles, notes and
-  transcripts, find-in-transcript, and playing the audio from any line of the transcript.
-- **For agents.** The MCP tools `meetings_list`, `meeting_get` and `meetings_search`, and the HTTP routes listed
-  under [HTTP API](#http-api). The texts quote other people's speech: a client should treat them as data, never as
-  instructions.
-
-**What runs where.**
-- Apple Silicon: everything above. Voices need macOS 15 or later (the release package carries `ox-diar`; a
-  source install builds it only with Xcode 26, see [Install](#install)). The notes model runs on the GPU.
-- Intel Macs: recording needs macOS 14.2 or later, and the transcript works. **Voices are not told apart**: the
-  Intel package has no `ox-diar` (the voice models failed on the Intel CPU), so the whole far side is one label.
-  The notes model runs on the CPU, and a notes run can take many minutes.
-- A Mac with macOS older than 14.2 cannot run OxSay at all: the installer says so and changes nothing.
-
-**Where the files are.** Each meeting is a directory under `~/Library/Application Support/ox-say/meetings`
-(`OX_SAY_HOME/meetings`): the two channel files, the transcript, the notes and the speaker choices. A copy of the
-notes and transcript is written to a **Notes Folder** you can choose (default `~/Documents/ox-say Meetings`).
-The voice engine's voiceprints are held only while it runs and never reach the meeting directory.
-The uninstaller keeps meetings, even with `--purge` (it removes engines, models, voices and run state): delete
-the `meetings` directory yourself to remove them.
-
-**Transcripts.** Files you transcribe in the app are kept as text in `~/Library/Application Support/ox-say/transcripts`
-(`OX_SAY_HOME/transcripts`), readable by you alone, one directory per transcript. The audio you drop in is not kept.
-Like meetings, they survive `uninstall.sh --purge`: delete the `transcripts` directory yourself to remove them.
-
-**How long the audio is kept.** **Keep Audio** in the menu: 7, 30 (the default) or 90 days, or never deleted.
-Only the audio goes; the transcript and the notes stay until you delete the meeting. A meeting without a
-transcript keeps its audio, so the only copy of what was said is never removed.
+Measured speeds: [docs/performance.md](docs/performance.md).
 
 ## Install
 
-Requirements: macOS 14.2 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, Go, ffmpeg
-(`brew install cmake go ffmpeg`).
-Telling the voices of a group call apart (`ox-diar`) needs macOS 15 or later on Apple Silicon; building it from source also needs Xcode 26 (Swift 6.2).
-A source install on an older Mac or with older tools skips it and meetings come out with one label for the other side
-(`OX_SAY_WITH_DIAR=1` builds it anyway; the Apple Silicon release package carries it, the Intel one does not).
-
-```
-scripts/install.sh      # engines + models + ox-say + LaunchAgent, then waits for /health
-claude mcp add --transport http --scope user ox-say http://127.0.0.1:8094/mcp
+```sh
+curl -fsSL https://raw.githubusercontent.com/anatolykoptev/ox-say/main/get.sh | sh
 ```
 
-It installs `ox-say` into `~/.local/bin` (`OX_SAY_BINDIR` overrides; keep it on
-your `PATH` for the CLI), the engines and models into
-`~/Library/Application Support/ox-say`, logs into `~/Library/Logs/ox-say`, and
-the LaunchAgent `io.github.anatolykoptev.ox-say`, which keeps `ox-say serve`
-running. The agent is an Interactive launchd job: the daemon and its engines run at
-an app's base CPU priority (31) instead of launchd's throttled default (20),
-still below the app in front and the window server.
-`OX_SAY_WITH_WHISPER=1 scripts/install.sh` also fetches Whisper
-large-v3-turbo.
-`OX_SAY_WITH_VOXCPM2=1 scripts/install.sh` also builds audio.cpp's server and
-fetches the VoxCPM2 model (Q8_0, about 3 GB), the quality text-to-speech engine.
-It needs Apple Silicon with 24 GB of memory or more: elsewhere the installer
-says so and fetches nothing. Without the variable a source install does not
-build the engine at all; a release package for Apple Silicon always carries the
-binary, and the same variable fetches the model.
+The installer downloads the release for your Mac and checks its SHA-256, fetches the models (checksummed),
+starts the daemon as a LaunchAgent, registers the MCP server with Claude Code if it is installed, runs a
+speak-and-transcribe self-test, and installs the OxSay app into `~/Applications`. On first launch macOS asks for the
+microphone and Accessibility, which lets the app paste into other apps.
 
-launchd does not read your shell environment: set any `OX_SAY_*` configuration
-(see below) when you run the installer, e.g.
-`OX_SAY_IDLE_STOP_SECS=600 scripts/install.sh`, and it is written into the
-LaunchAgent. Path settings must be absolute. Re-running the installer upgrades
-in place; settings of the installed agent carry over unless you set them again
-(an empty value drops one). The `ox-say` CLI reads `OX_SAY_ADDR` from your shell,
-so export it there too if you installed the daemon on a custom address.
+For the studio voice, add `OX_SAY_WITH_VOXCPM2=1` before `sh`. To install through a coding agent, paste the
+command into Claude Code, Codex or Cursor and ask it to run `ox-say status` afterwards. Options, source
+installs and the `OX_SAY_*` settings: [docs/install.md](docs/install.md), [docs/configuration.md](docs/configuration.md).
 
-`~/Library/Application Support/ox-say/uninstall.sh` (installed there by the
-release installer; in a source checkout it is `scripts/uninstall.sh`) removes
-the agent, the binary and the dictation app, and keeps engines, models and
-voices; `--purge` removes those too. Undo the MCP registration with
-`claude mcp remove --scope user ox-say`.
+**Update.** Choose **Check for Updates…** in the app, or run the install command again. A new release is
+announced in the menu and installs when you click it. `sh -s -- --version v0.1.31` installs a specific
+version.
 
-## Build and install the engine
+**Uninstall.** Run `~/Library/Application Support/ox-say/uninstall.sh`. It removes the agent, the command and the app and
+keeps models and voices. With `--purge` it removes those too. Meetings and transcripts are never removed
+for you (see [Privacy](#privacy)). Undo the MCP registration with `claude mcp remove --scope user ox-say`.
 
-Requirements: macOS 14.2 or later on Apple Silicon, or on an Intel Mac with AVX2; Xcode command line tools, CMake, ffmpeg.
+## Privacy
 
-```
-engine/build.sh                # pinned clone + patches + static Metal build
-scripts/install-engine.sh      # -> ~/Library/Application Support/ox-say/engine
-scripts/fetch-models.sh        # pinned GGUF weights, SHA-256 verified
-```
+- **Audio and text stay on the Mac.** Recognition, notes, voices and cleanup run in local processes. The
+  daemon listens on `127.0.0.1` only and refuses requests that a web page could send to it.
+- **The only network traffic** is to `huggingface.co` for model files (and a background check that a model
+  is still on its host), and to `github.com` for the installer, release packages and the check for a new
+  version. No account is needed. The hosts in the code are these two and the loopback address.
+- **Where things live.** Everything is under `~/Library/Application Support/ox-say`: `meetings`
+  (microphone and system channels, transcript, notes), `transcripts` (text only, readable by you alone),
+  `voices`, `models`, `engine`. A copy of each meeting's notes and transcript goes to your notes folder
+  (`~/Documents/ox-say Meetings` by default). Voiceovers are written to `~/Movies/ox-say` unless you name another folder. Logs are in
+  `~/Library/Logs/ox-say`. Dictated text is held in memory only and never written to disk.
+- **The browser address.** To tell a Meet call from other tabs, the app reads the address of the active tab in Chrome,
+  Brave, Arc or Edge. It stays on the Mac.
+- **Deleting.** Delete a meeting, a transcript, a voice or a voiceover from the app. **Keep Audio** removes old
+  recordings automatically. `uninstall.sh --purge` removes engines, models and voices, but not
+  `meetings` and `transcripts`, so delete those two folders yourself to wipe your recordings.
+- **Recording others.** The law in some places requires everyone's consent. The app can copy a sentence
+  to the clipboard for that (**Copy consent phrase**).
 
-The first start of a freshly built engine compiles the Metal shaders
-(about a minute on a Radeon Pro 5500M); macOS caches them afterwards.
+## Documentation
 
-## Licenses
+| | |
+|---|---|
+| [Dictation and Speak Selection](docs/dictation.md) | Permissions, sound settings, diagnosing a dictation |
+| [Meetings](docs/meetings.md) | Recording, transcript, speakers, notes models, where files are |
+| [Studio voice](docs/studio-voice.md) | Describing, saving and using an expressive voice |
+| [Long-form voiceover](docs/produce.md) | `ox-say produce`, its files and its HTTP API |
+| [Command line and daemon](docs/usage.md) | `ox-say` commands, how the engines are started and shared |
+| [HTTP API](docs/http-api.md) | Speech, transcription, voices, meetings, transcripts, models, voice cleanup |
+| [MCP](docs/mcp.md) | The tools an agent gets |
+| [Configuration](docs/configuration.md) | Every `OX_SAY_*` variable |
+| [Install](docs/install.md) | The installer and installing from source |
+| [Building the engines](docs/building.md) | `engine/build.sh` and friends |
+| [Engines and platforms](docs/engines.md) | What runs on which Mac |
+| [Performance](docs/performance.md) | Measurements on an M5 Pro and an Intel MacBook Pro |
+| [Licenses](docs/licenses.md) | Third-party engines and model licenses |
 
-ox-say's own code is Apache-2.0 (see `LICENSE`; `NOTICE` carries the
-required third-party notices). The engines it builds are MIT:
+[engine/README.md](engine/README.md) covers the engine build and patches. The changelog is
+[CHANGELOG.md](CHANGELOG.md). Bugs and ideas go to the
+[issue tracker](https://github.com/anatolykoptev/ox-say/issues).
 
-- qwentts.cpp, with the ServeurpersoCom fork of ggml;
-- whisper.cpp, with its vendored ggml;
-- cpp-httplib and yyjson, vendored by qwentts.cpp;
-- llama.cpp (the `ox-llm` meeting-notes engine), with its own ggml.
+## License
 
-The optional VoxCPM2 engine, [audio.cpp](https://github.com/ShugoAI/audio.cpp), is Apache-2.0 (ShugoAI LLC)
-with its own vendored dependencies; `NOTICE` lists our patches to it. The speaker engine `ox-diar` is built on
-[FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache-2.0, Fluid Inference).
-
-`engine/build.sh` copies all their license files next to the binaries.
-`engine/patches/` modify ggml and qwentts.cpp: our lines are Apache-2.0,
-and the upstream lines they contain stay MIT. The test clips in
-`engine/align/testdata/` are LibriSpeech, CC-BY-4.0 (see its README).
-
-`scripts/fetch-models.sh` downloads the model weights from Hugging Face.
-They are GGUF conversions of the publishers' weights, each under the
-publisher's license:
-
-- Qwen3-TTS 12 Hz talker and tokenizer: Apache-2.0 (Qwen team, Alibaba)
-- VoxCPM2 (optional): Apache-2.0 (OpenBMB); the GGUF conversion comes from audio.cpp. The model
-  card forbids impersonation, fraud and disinformation and asks that AI-generated speech be labelled
-- Parakeet TDT 0.6B v3: CC-BY-4.0 (NVIDIA); attribute NVIDIA when you
-  redistribute the weights. ox-say uses the q8_0 conversion. On 300 Russian
-  and 300 English FLEURS test utterances its WER matched f16 (normalised:
-  Russian 5.17% against 5.27%, English 6.00% against 6.03%; with case kept:
-  6.81% against 6.84%, 8.13% against 8.15%) at about half the memory (669 MB
-  against 1229 MB resident). The other 23 languages were not measured
-- Whisper large-v3-turbo (optional): MIT (OpenAI)
-- Qwen3.5-9B and Qwen3.5-4B Q4_K_M, the meeting-notes models (downloaded on first use of notes): Apache-2.0
-  (Qwen team, Alibaba), the GGUF conversions by Unsloth
-- Huihui-Qwen3.8-27B-abliterated UD Q5_K_XL, the optional uncensored notes model: Apache-2.0, the GGUF conversion
-  by huihui-ai (an abliterated Qwen3.8 derivative)
-- Core ML speaker models for `ox-diar`: CC-BY-4.0. They are Fluid Inference's conversions of
-  pyannote's speaker-diarization-community-1 pipeline (pyannote segmentation, WeSpeaker ResNet34-LM embeddings,
-  PLDA parameters from BUT Speech@FIT); attribute pyannote, WeSpeaker, BUT Speech@FIT and Fluid Inference when you
-  redistribute them (`NOTICE` has the full credit)
-- Nemotron 3 Diarization fast128 Core ML models for `ox-diar`'s Nemotron engine: OpenMDW License 1.1
-  (NVIDIA, converted to Core ML by Fluid Inference; `NOTICE` has the full credit)
-- Forced aligner for `ox-align` (optional, converted by hand, see
-  `engine/README.md`): the MMS-300m forced-aligner weights are CC-BY-NC-4.0,
-  **non-commercial**; `facebook/wav2vec2-base-960h` is Apache-2.0
+OxSay's own code is Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The default models are Apache-2.0
+and CC-BY-4.0, and every model keeps its publisher's license. Details in [docs/licenses.md](docs/licenses.md).
+The VoxCPM2 model card forbids impersonation, fraud and disinformation and asks that AI-generated speech be
+labelled as such. Please do.
