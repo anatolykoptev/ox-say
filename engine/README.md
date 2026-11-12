@@ -103,9 +103,10 @@ than whisper.cpp's, so none of `patches/ggml` applies — the same metallib
 handling comes from `patches/llamacpp/0001` (the `0003`–`0005` port onto the
 newer ggml), and the rename keeps the per-binary lookup
 (`<argv[0]>.metallib`) working. The daemon starts it
-with `-c 16384 -fa on --jinja --no-ui -np 1 --cache-ram 0 --api-key-file …`
-(`internal/daemon/meetings.go`); the build fails if the pinned llama-server no
-longer lists those flags. The model is not part of the package:
+with `-c <n> -fa on --jinja --no-ui -np 1 --cache-ram 0 --api-key-file …`
+(`internal/daemon/meetings.go`), where `-c` is derived from the notes prompt
+budget (`meeting.NotesContextTokens`); the build fails if the pinned
+llama-server no longer lists those flags. The model is not part of the package:
 `scripts/fetch-models.sh --notes <file> <sha256> <url>` downloads the resolved
 catalog entry (Qwen3.5-9B by default, the 4B as the lighter fallback) on first
 use.
