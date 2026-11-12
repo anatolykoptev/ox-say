@@ -31,8 +31,11 @@ const (
 	// notesStartupTimeout: loading a 2.7 GB model is seconds when cached, tens
 	// of seconds cold.
 	notesStartupTimeout = 120 * time.Second
-	// notesCallTimeout bounds one model call: 5k prompt tokens plus 3k tokens
-	// of answer took 11 s on an M-series Mac; CPU-only Intel is far slower.
+	// notesCallTimeout bounds one model call. A map call may write up to
+	// meeting's maxAnswer (8192) tokens, so a call that runs to its cap finishes
+	// inside the bound only above ~7 tokens/s of decode (5k prompt plus 3k tokens
+	// took 11 s on an M-series Mac); a CPU-only Intel Mac at ~1 token/s times out
+	// on any long answer, as it did at the old 3000-token cap.
 	notesCallTimeout = 20 * time.Minute
 	// notesDiskMargin is the free space kept beyond the model download: the
 	// spec is the model's bytes plus 2 GiB of room for the machine while the

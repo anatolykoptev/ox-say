@@ -19,8 +19,8 @@ import (
 )
 
 // ChunkChars is the size of one map step's transcript: about 16k characters,
-// the size the notes spike measured with -c 16384 (a call of 5k prompt tokens
-// leaves the context room for a 3k-token answer).
+// the size the notes spike measured (a call of 5k prompt tokens plus the
+// answer cap fits NotesContextTokens).
 const ChunkChars = 16000
 
 // The notes server is started with the context NotesContextTokens computes:
@@ -67,11 +67,28 @@ const (
 	similarLine   = 0.7
 	// summaryBudget caps the partial summaries sent to the merge call.
 	summaryBudget = 12000
-	maxAnswer     = 3000
-	// reduceAnswer and mergeAnswer are the smaller answer caps of the
-	// reduce and merge calls.
-	reduceAnswer = 600
-	mergeAnswer  = 800
+	// maxAnswer is the answer cap of a map call. A dense 16k-rune chunk of a
+	// two-person meeting measured about 6400 tokens of notes on the 9B (about 35
+	// distinct points with quotes, about 40 numbers; chunk 1 of the gate's e7
+	// meeting), so 3000 cut it three times in a run (every cut is a wasted call
+	// and a split). 8192 holds it with about 28% headroom; a chunk that still
+	// overflows is split as before. The KV cache that pays for the room is
+	// small (see NotesContextTokens).
+	maxAnswer = 8192
+	// reduceAnswer is the answer cap of the reduce call: the longest answer the
+	// pairSchema format allows for a full prompt (maxReducePoints entries of
+	// maxSettleIDs ids). The 9B writes an entry in 27-35 tokens (forced to the
+	// maximum shape on the 9B with the daemon's flags; ids of four digits, the
+	// multi-line layout it picks for long lists), so 120 entries are about 4250
+	// tokens; 5632 is 32% over that. It was 600, which a real 24 GB run reached
+	// exactly: the settle step failed and the meeting got the weaker words-only
+	// merge. See TestReduceAnswerCoversTheLargestAnswerTheFormatAllows. It stays
+	// under the map call's prompt+answer, so it does not move the context.
+	reduceAnswer = 5632
+	// mergeAnswer is the cap of the summary merge call: 3-5 lines, about 100-400
+	// tokens; no run has reached it, and a cut summary falls back to the partial
+	// ones.
+	mergeAnswer = 800
 )
 
 const (
