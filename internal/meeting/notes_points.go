@@ -651,6 +651,10 @@ const (
 	// maxReducePoints bounds one reduce prompt; maxReduceCalls bounds the calls of a meeting.
 	maxReducePoints = 120
 	maxReduceCalls  = 3
+	// maxSettleIDs bounds the decided ids one open point may name in the answer: acceptSettles takes the first
+	// one that checks out, so two candidates are plenty, and the bound (a grammar maxItems) is what makes the
+	// longest possible answer, hence reduceAnswer, a number rather than a hope.
+	maxSettleIDs = 2
 	// maxReduceText is the rune cap on a point's text in the reduce prompt;
 	// the line itself is built to reducePointTokens estimated tokens, and
 	// the whole prompt to reduceTokenBudget — which binds once about 100
@@ -664,11 +668,11 @@ func pairSchema() map[string]any {
 	num := map[string]any{"type": "integer"}
 	return map[string]any{
 		"type": "object",
-		"properties": map[string]any{"settles": map[string]any{"type": "array", "items": map[string]any{
+		"properties": map[string]any{"settles": map[string]any{"type": "array", "maxItems": maxReducePoints, "items": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"open":    num,
-				"decided": map[string]any{"type": "array", "items": num},
+				"decided": map[string]any{"type": "array", "items": num, "maxItems": maxSettleIDs},
 			},
 			"required":             []string{"open", "decided"},
 			"additionalProperties": false,

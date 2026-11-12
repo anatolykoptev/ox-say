@@ -31,9 +31,6 @@ const (
 	// notesStartupTimeout: loading a 2.7 GB model is seconds when cached, tens
 	// of seconds cold.
 	notesStartupTimeout = 120 * time.Second
-	// notesCallTimeout bounds one model call: 5k prompt tokens plus 3k tokens
-	// of answer took 11 s on an M-series Mac; CPU-only Intel is far slower.
-	notesCallTimeout = 20 * time.Minute
 	// notesDiskMargin is the free space kept beyond the model download: the
 	// spec is the model's bytes plus 2 GiB of room for the machine while the
 	// fetch lands.
@@ -45,6 +42,21 @@ const (
 	notesKeyFile = "notes.key"
 	// fetchModelsScript is where install-release.sh copies scripts/fetch-models.sh.
 	fetchModelsScript = "fetch-models.sh"
+)
+
+var (
+	// notesCallTimeout bounds one model call. A map call may write up to
+	// meeting's maxAnswer (8192) tokens, so a call that runs to its cap finishes
+	// inside the bound only above ~7 tokens/s of decode (5k prompt plus 3k tokens
+	// took 11 s on an M-series Mac); a CPU-only Intel Mac at ~1 token/s times out
+	// on any long answer, as it did at the old 3000-token cap.
+	// A var so a test can shorten it.
+	notesCallTimeout = 20 * time.Minute
+	// notesAliveProbe bounds the one /health check that tells a slow-but-alive
+	// notes server from a hung one after a call ran out of its deadline: a
+	// server still producing answers it at once, a wedged one never does. A var
+	// so a test can shorten it.
+	notesAliveProbe = 5 * time.Second
 )
 
 const stateNotesUnavailable engine.State = "unavailable"
@@ -410,9 +422,47 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 		// model is then in the page cache): Compose may start once more.
 		return "", &meeting.EngineDownError{Err: err, Retryable: !engine.IsVerifyRefusal(err) && !errors.Is(err, engine.ErrShutdown), Reason: engineDownReason(err)}
 	}
-	ctx, cancel := context.WithTimeout(ctx, notesCallTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, notesCallTimeout)
 	defer cancel()
-	return meeting.HTTPChat{BaseURL: base, Key: c.d.notesKey}.Complete(ctx, r)
+	out, err := meeting.HTTPChat{BaseURL: base, Key: c.d.notesKey}.Complete(callCtx, r)
+	if err == nil || ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) || callCtx.Err() != context.DeadlineExceeded {
+		return out, err
+	}
+	// Only this call's own deadline ended it — the run's context still lives —
+	// so either the answer was too long for this machine or the server is
+	// hung, and one health probe tells them apart: a slow engine answers it,
+	// a wedged one does not. The alive case is the same class as a token-cap
+	// cut, so the caller splits the chunk into halves; a server silent on
+	// /health is engine-down, never a split (the halves would each burn the
+	// whole deadline).
+	if notesAlive(ctx, base) {
+		return "", &meeting.AnswerTimeoutError{Err: err}
+	}
+	return "", &meeting.EngineDownError{
+		Err:       fmt.Errorf("the notes engine did not answer a health probe after a call ran out of time: %w", err),
+		Retryable: true,
+		Reason:    meeting.FailNotesEngineTimeout,
+	}
+}
+
+// notesAlive asks the notes server that just timed out whether it still
+// answers: the call's own base URL's public /health under a short probe. It is
+// the only evidence used to mark a deadline error "the answer was too long" —
+// a process can be alive (the supervisor's child record) while its HTTP loop
+// is wedged, so the probe, not the process, is the check.
+func notesAlive(ctx context.Context, base string) bool {
+	hctx, cancel := context.WithTimeout(ctx, notesAliveProbe)
+	defer cancel()
+	req, err := http.NewRequestWithContext(hctx, http.MethodGet, base+"/health", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // notesStaleChild stops the resident notes engine when the model resolution

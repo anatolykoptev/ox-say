@@ -150,6 +150,14 @@
 //	                            returns (default "the canned notes")
 //	OXSAY_FAKE_LLM_TRUNCATED=1  answer with finish_reason "length" — the
 //	                            model answered past the token cap
+//	OXSAY_FAKE_LLM_HANG_MS      sleep this long before answering a completion
+//	                            (a slow or wedged server: the caller's own
+//	                            deadline ends first); /health still answers,
+//	                            the way a decoding llama-server does
+//	OXSAY_FAKE_LLM_HEALTH_HANG_AFTER=n  the n-th /health answer on, /health
+//	                            also sleeps HANG_MS — a wedged server, not a
+//	                            slow one (the first n answers let the start's
+//	                            health wait succeed)
 package testutil
 
 import (
@@ -352,8 +360,19 @@ func runFakeLLM(args []string) int {
 		want, _ := os.ReadFile(keyFile)
 		return r.Header.Get("Authorization") == "Bearer "+strings.TrimSpace(string(want))
 	}
+	hang := envMS("OXSAY_FAKE_LLM_HANG_MS")
+	healthHangAfter, _ := strconv.Atoi(os.Getenv("OXSAY_FAKE_LLM_HEALTH_HANG_AFTER"))
+	var healthMu sync.Mutex
+	healthAnswers := 0
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		healthMu.Lock()
+		healthAnswers++
+		n := healthAnswers
+		healthMu.Unlock()
+		if healthHangAfter > 0 && n > healthHangAfter {
+			time.Sleep(hang) // a wedged server: not even /health answers in time
+		}
 		if loading() {
 			http.Error(w, "loading", http.StatusServiceUnavailable)
 			return
@@ -376,6 +395,9 @@ func runFakeLLM(args []string) int {
 		if !authed(r) {
 			http.Error(w, "bad key", http.StatusUnauthorized)
 			return
+		}
+		if hang > 0 {
+			time.Sleep(hang) // a slow or hung server: the caller's deadline ends first
 		}
 		finish := "stop"
 		if os.Getenv("OXSAY_FAKE_LLM_TRUNCATED") == "1" {

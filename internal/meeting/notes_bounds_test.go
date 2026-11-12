@@ -1,6 +1,7 @@
 package meeting
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -366,5 +367,46 @@ func TestNotesContextTokensCoversTheLargestCall(t *testing.T) {
 	}
 	if ctx-512 >= max(chunkPromptTokens+maxAnswer, reducePromptTokens+reduceAnswer, mergePromptTokens+mergeAnswer)+notesPromptOverhead {
 		t.Errorf("context %d is more than one block above the largest call", ctx)
+	}
+}
+
+// The reduce call's answer cap covers the longest answer pairSchema allows for a full prompt: maxReducePoints entries
+// (one per open line), each naming maxSettleIDs ids of four digits (a meeting of thousands of points). Two counts:
+// the estimator and the independent oracle on the compact rendering, and the rate measured on the 9B with the
+// daemon's flags (35.4 tokens an entry in its widest layout, 36 rounded up). The schema must carry the two bounds the
+// count relies on, or the "longest answer" is not a bound at all.
+// Mutation: notes.go reduceAnswer = 600 (the value a real 24 GB run reached exactly) -> RED.
+func TestReduceAnswerCoversTheLargestAnswerTheFormatAllows(t *testing.T) {
+	const measuredTokensPerEntry = 36 // 9B, forced to maxSettleIDs ids per entry, 40-100 entries: 35.4 at most
+	props := pairSchema()["properties"].(map[string]any)["settles"].(map[string]any)
+	if got := props["maxItems"]; got != maxReducePoints {
+		t.Fatalf("settles maxItems = %v, want maxReducePoints %d: the answer length is unbounded", got, maxReducePoints)
+	}
+	dec := props["items"].(map[string]any)["properties"].(map[string]any)["decided"].(map[string]any)
+	if got := dec["maxItems"]; got != maxSettleIDs {
+		t.Fatalf("decided maxItems = %v, want maxSettleIDs %d: the answer length is unbounded", got, maxSettleIDs)
+	}
+	var claims []settleClaim
+	for i := 0; i < maxReducePoints; i++ {
+		c := settleClaim{Open: 9000 + i}
+		for k := 0; k < maxSettleIDs; k++ {
+			c.Decided = append(c.Decided, 9100+k)
+		}
+		claims = append(claims, c)
+	}
+	raw, err := json.Marshal(map[string]any{"settles": claims})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := string(raw)
+	t.Logf("longest reduce answer: %d bytes, ~%d estimated tokens, ~%.0f oracle tokens, ~%d measured", len(answer), EstimateTokens(answer), oracleTokens(answer), maxReducePoints*measuredTokensPerEntry)
+	if got := EstimateTokens(answer); got > reduceAnswer {
+		t.Errorf("the longest reduce answer is ~%d estimated tokens > reduceAnswer %d: the settle step would be cut", got, reduceAnswer)
+	}
+	if got := oracleTokens(answer); got > float64(reduceAnswer) {
+		t.Errorf("the longest reduce answer is ~%.0f oracle tokens > reduceAnswer %d: the settle step would be cut", got, reduceAnswer)
+	}
+	if got := maxReducePoints * measuredTokensPerEntry; got > reduceAnswer {
+		t.Errorf("the longest reduce answer is ~%d tokens at the measured rate > reduceAnswer %d: the settle step would be cut", got, reduceAnswer)
 	}
 }
