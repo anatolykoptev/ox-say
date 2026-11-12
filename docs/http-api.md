@@ -46,7 +46,7 @@ Transcript routes (a file transcribed and kept by the daemon; the app's Transcri
 | `GET /v1/transcripts/<id>?format=` | `text`, `srt`, `vtt`, `json` (default) or `ox_json` |
 | `DELETE /v1/transcripts/<id>` | Delete one (`204`) |
 
-Model routes (the app's Models section uses them):
+Model routes (list the models this Mac can run, and install or remove the optional ones):
 
 | Route | Description |
 |-------|-------------|
