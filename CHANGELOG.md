@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.31](https://github.com/anatolykoptev/ox-say/compare/v0.1.30...v0.1.31) (2026-11-12)
+
+
+### Added
+
+* **daemon:** one large GPU engine at a time below 24 GB on Apple Silicon ([#504](https://github.com/anatolykoptev/ox-say/issues/504)) ([2594332](https://github.com/anatolykoptev/ox-say/commit/2594332999d34ddb1fb4817d2b5c6b615173919a))
+* **meetings:** log each processing stage with its duration and why it waited ([#535](https://github.com/anatolykoptev/ox-say/issues/535)) ([70fa6b2](https://github.com/anatolykoptev/ox-say/commit/70fa6b2bcfa7d93af38c55325d88f720978e48d3))
+* **notes:** a choice of notes model — 9B by default, 4B as the lighter fallback, the uncensored 27B where it fits ([#512](https://github.com/anatolykoptev/ox-say/issues/512)) ([f37a211](https://github.com/anatolykoptev/ox-say/commit/f37a211707e0da11e91402eace147603ef1f6c33))
+* **notes:** say when the uncensored model is gone from its host, and check an own model really loads ([#516](https://github.com/anatolykoptev/ox-say/issues/516)) ([d5f6b34](https://github.com/anatolykoptev/ox-say/commit/d5f6b34d9fcc98c66ea83d986de3ab944ab6f416))
+* **transcribe:** the Расшифровка section — drop a file, copy text, save subtitles (window Task 20) ([#536](https://github.com/anatolykoptev/ox-say/issues/536)) ([93eb79a](https://github.com/anatolykoptev/ox-say/commit/93eb79acdd05fc4f5cd18d5d7e5c431bc31811e5))
+* **voiceover:** phrases with mood and variants, New reel preset, open a document in the editor (window Task 16) ([#502](https://github.com/anatolykoptev/ox-say/issues/502)) ([807ee68](https://github.com/anatolykoptev/ox-say/commit/807ee68807df2abe111a58d4b1836434f988e541))
+* **voiceover:** stop, continue, resume and finish live in the window; finished voiceovers notify (window Task 18) ([#511](https://github.com/anatolykoptev/ox-say/issues/511)) ([45a795b](https://github.com/anatolykoptev/ox-say/commit/45a795bcac5d21c3b3c6eacccc5fb1e3b93b4609))
+* **voiceover:** studio-voice projects in the Озвучка list with progress and a finished track (window Task 15) ([#497](https://github.com/anatolykoptev/ox-say/issues/497)) ([aa48fb4](https://github.com/anatolykoptev/ox-say/commit/aa48fb444b6e3300ddf8a305211a972e37e71908))
+* **voiceover:** the Advanced voice panel with only the controls that change the sound (window Task 17) ([#505](https://github.com/anatolykoptev/ox-say/issues/505)) ([a70e082](https://github.com/anatolykoptev/ox-say/commit/a70e0828ed849e44ca2a85b7470c1781cec8fd26))
+
+
+### Fixed
+
+* **install:** updates no longer fail on read-only licence files; get.sh unsticks 0.1.29 users ([#506](https://github.com/anatolykoptev/ox-say/issues/506)) ([23d5525](https://github.com/anatolykoptev/ox-say/commit/23d552540b5560cb845935a359ae2fb926268b1a))
+* **meetings:** the recording plate and prompt are always visible, an answered prompt always records, a red icon while recording ([#529](https://github.com/anatolykoptev/ox-say/issues/529)) ([9cbca50](https://github.com/anatolykoptev/ox-say/commit/9cbca50b38b5f2e1c2a1ff5ace250f500e506312))
+* **notes:** an action goes to the person asked, with the words that show it; a point is decided or open, never both ([#533](https://github.com/anatolykoptev/ox-say/issues/533)) ([e9b7920](https://github.com/anatolykoptev/ox-say/commit/e9b7920d7185579378527e69f10a958dd3c14f3f))
+* **notes:** bound prompts by estimated tokens so Chinese, Japanese and Korean meetings fit the context ([#544](https://github.com/anatolykoptev/ox-say/issues/544)) ([8662fcd](https://github.com/anatolykoptev/ox-say/commit/8662fcdad463fe21175ac05233bfada4a7ee0d0e))
+* **notes:** leave GPU room — derived context, q8 KV, llama.cpp fits the model against the whole system, OOM retry ([#539](https://github.com/anatolykoptev/ox-say/issues/539)) ([777c3b9](https://github.com/anatolykoptev/ox-say/commit/777c3b900b89f3b9fe674779745157bddcd1ebbb))
+* **notes:** size the answer caps to what the 9B writes; bound the reduce answer ([#551](https://github.com/anatolykoptev/ox-say/issues/551)) ([a04ab85](https://github.com/anatolykoptev/ox-say/commit/a04ab855d7bcc24d915ca278bb13b0aeef50232a))
+* **notes:** split a capped chunk instead of retrying it; free idle voices for the 9B; honest fit label ([#547](https://github.com/anatolykoptev/ox-say/issues/547)) ([ebea34f](https://github.com/anatolykoptev/ox-say/commit/ebea34fb5321351600d74c48db0e021ceafeb5f4))
+* **notes:** the 9B needs 24 GB, so a 16 GB Mac keeps room for the call and defaults to the 4B ([#538](https://github.com/anatolykoptev/ox-say/issues/538)) ([be932f0](https://github.com/anatolykoptev/ox-say/commit/be932f00d103b7e9585d231f5dd41194865a5ba0))
+
 ## [0.1.30](https://github.com/anatolykoptev/ox-say/compare/v0.1.29...v0.1.30) (2026-11-07)
 
 
