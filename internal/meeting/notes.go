@@ -599,6 +599,21 @@ type EngineDownError struct {
 func (e *EngineDownError) Error() string { return e.Err.Error() }
 func (e *EngineDownError) Unwrap() error { return e.Err }
 
+// AnswerTimeoutError is a model call that ran out of its own per-call deadline
+// while the engine still answered — the answer is longer than this machine can
+// write inside the bound, the same class as ErrTruncated: summarise splits the
+// text and calls the halves. It is only ever wrapped around the call's own
+// deadline after a health probe answered, so a run whose context ended keeps
+// its cancellation, and a server that is not producing (a hung or dead engine)
+// stays an ordinary failure — never a split that would burn the whole deadline
+// once per half.
+type AnswerTimeoutError struct {
+	Err error
+}
+
+func (e *AnswerTimeoutError) Error() string { return e.Err.Error() }
+func (e *AnswerTimeoutError) Unwrap() error { return e.Err }
+
 // Composer runs the map-reduce. Before, when set, runs ahead of every model
 // call: the daemon passes the dictation yield so notes never starve a user who
 // is dictating.
@@ -685,12 +700,13 @@ const (
 	minSplitRunes = 400
 )
 
-// summarise writes the notes for one chunk. A chunk whose answer hit the token cap is not retried as it is (the
-// same request overflows again about as often as not): its text is split at a line end and each half is summarised
-// on its own, down to maxSplitDepth levels. The halves' notes come back in order, as ordinary parts. lost reports
-// that some piece of the chunk has no notes (the caller records the chunk as skipped). A non-truncation failure
-// keeps chunk's own retry and then loses the piece. err is set only for a stop the whole run must honour: a
-// cancelled context or a dead engine.
+// summarise writes the notes for one chunk. A chunk whose answer hit the token cap — or ran out of the call's
+// own deadline while the run still lives (AnswerTimeoutError: the engine answered health, so the answer was
+// simply too long for this machine) — is not retried as it is (the same request overflows again about as often
+// as not): its text is split at a line end and each half is summarised on its own, down to maxSplitDepth levels.
+// The halves' notes come back in order, as ordinary parts. lost reports that some piece of the chunk has no
+// notes (the caller records the chunk as skipped). A non-truncation failure keeps chunk's own retry and then
+// loses the piece. err is set only for a stop the whole run must honour: a cancelled context or a dead engine.
 func (c Composer) summarise(ctx context.Context, l Labels, lang string, i, total int, text string, restarts *int, depth int) (parts []ChunkNotes, lost bool, err error) {
 	got, err := c.chunk(ctx, l, lang, i, total, text, restarts)
 	if err == nil {
@@ -703,16 +719,26 @@ func (c Composer) summarise(ctx context.Context, l Labels, lang string, i, total
 	if errors.As(err, &down) {
 		return nil, false, err
 	}
-	if !errors.Is(err, ErrTruncated) {
+	var overtime *AnswerTimeoutError
+	truncated := errors.Is(err, ErrTruncated)
+	if !truncated && !errors.As(err, &overtime) {
 		c.logf("notes: chunk failed", slog.Int("chunk", i), slog.String("error_class", errClass(err)))
 		return nil, true, nil
 	}
 	a, b, ok := splitText(text)
 	if depth >= maxSplitDepth || !ok {
-		c.logf("notes: chunk piece overflowed the answer cap and cannot be split further", slog.Int("chunk", i), slog.Int("depth", depth))
+		if truncated {
+			c.logf("notes: chunk piece overflowed the answer cap and cannot be split further", slog.Int("chunk", i), slog.Int("depth", depth))
+		} else {
+			c.logf("notes: chunk piece ran past the per-call time limit and cannot be split further", slog.Int("chunk", i), slog.Int("depth", depth))
+		}
 		return nil, true, nil
 	}
-	c.logf("notes: chunk answer hit the token cap, summarising its halves", slog.Int("chunk", i), slog.Int("depth", depth))
+	if truncated {
+		c.logf("notes: chunk answer hit the token cap, summarising its halves", slog.Int("chunk", i), slog.Int("depth", depth))
+	} else {
+		c.logf("notes: chunk answer ran past the per-call time limit, summarising its halves", slog.Int("chunk", i), slog.Int("depth", depth))
+	}
 	for _, half := range []string{a, b} {
 		got, lostHalf, err := c.summarise(ctx, l, lang, i, total, half, restarts, depth+1)
 		if err != nil {
@@ -802,7 +828,8 @@ func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int
 			// The same request overflows again about as often as not; summarise splits the text instead.
 			return ChunkNotes{}, err
 		}
-		if errors.Is(err, context.DeadlineExceeded) {
+		var overtime *AnswerTimeoutError
+		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &overtime) {
 			// The call used its whole deadline; a second one would too.
 			return ChunkNotes{}, err
 		}
