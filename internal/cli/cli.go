@@ -117,7 +117,7 @@ produce turns a whole script (a file, or - for stdin) into one finished voiceove
   --no-wait     start it and return; check with ox-say produce status <id>
   Exit codes (also for status): 0 done, 3 done but some chunks need a listen (printed), 1 failed/cancelled/interrupted, 2 wrong usage.
   On battery the job pauses and this command keeps waiting; --no-wait returns at once. --pick of a take is final (the chunk becomes ok).
-  See the README, "Long-form voiceover (produce)".
+  See docs/produce.md in the ox-say repository.
 
 transcribe flags:
   -e engine     parakeet (default) | whisper

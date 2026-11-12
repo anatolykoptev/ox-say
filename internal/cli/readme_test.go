@@ -7,20 +7,23 @@ import (
 	"testing"
 )
 
-// The README sends a non-technical reader from the Studio voice section to the
-// produce guide, documents the output folder variable, and no longer promises
+// The docs send a non-technical reader from the Studio voice guide to the
+// produce guide, document the output folder variable, and no longer promise
 // a long-form command "coming".
-// Mutation: README.md Studio voice "Length", restore the interim note
+// Mutation: docs/studio-voice.md "Length", restore the interim note
 // ("a long-form command ... is coming") -> RED.
 func TestReadmeDocumentsProduce(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
-	if err != nil {
-		t.Fatal(err)
+	read := func(name string) string {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "docs", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
 	}
-	readme := string(raw)
+	produce := read("produce.md")
+	studio := read("studio-voice.md")
 	for _, want := range []string{
-		"## Long-form voiceover (`produce`)",
-		"(#long-form-voiceover-produce)",
+		"# Long-form voiceover (`produce`)",
 		"OX_SAY_PRODUCE_OUT_DIR",
 		"[pause 0.8s]",
 		"[style:",
@@ -34,11 +37,14 @@ func TestReadmeDocumentsProduce(t *testing.T) {
 		"`--no-wait` returns at once",
 		"Estimates, not measured",
 	} {
-		if !strings.Contains(readme, want) {
-			t.Errorf("README lacks %q", want)
+		if !strings.Contains(produce, want) {
+			t.Errorf("docs/produce.md lacks %q", want)
 		}
 	}
-	if strings.Contains(readme, "is coming") {
-		t.Error("README still promises a long-form command that is coming")
+	if !strings.Contains(studio, "(produce.md)") {
+		t.Error("docs/studio-voice.md does not link to the produce guide")
+	}
+	if strings.Contains(studio, "is coming") || strings.Contains(produce, "is coming") {
+		t.Error("the docs still promise a long-form command that is coming")
 	}
 }
