@@ -3,8 +3,10 @@
 // failing check prints its test name and message and the exit status is 1.
 #include "boost.h"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -277,6 +279,56 @@ static void t_build_skips() {
     CHECK(sum == 0.0f && empty->step(0, A) == 0, "an empty graph biases nothing");
 }
 
+// Privacy: the skipped-term line carries a count, never the user's term text.
+static void t_skip_report_no_text() {
+    cur = "t_skip_report_no_text";
+    const vocab_view v = view_of(kToy);
+    std::vector<std::string> skipped;
+    graph::build({ { "a b x", 1.0f }, { "zqsecret", 1.0f } }, v, params{}, &skipped);
+    CHECK(!skipped.empty(), "the unspellable term is collected");
+    std::string line = skip_report(skipped);
+    for (char & c : line) c = (char) std::tolower((unsigned char) c);
+    CHECK(line.find("zqsecret") == std::string::npos && line.find("secret") == std::string::npos,
+          "the report never contains term text (any case variant)");
+    CHECK(line.find(std::to_string(skipped.size())) != std::string::npos, "the report carries the count");
+    CHECK(skip_report({}).empty(), "nothing skipped, nothing logged");
+}
+
+// Finite everywhere: strtod accepts 1e100 and the float cast would turn it into inf.
+static void t_finite_bounds() {
+    cur = "t_finite_bounds";
+    float a = -1.0f;
+    CHECK(!parse_alpha("1e100", a), "alpha 1e100 is rejected");
+    CHECK(!parse_alpha("1e39", a), "alpha 1e39 (finite double, inf float) is rejected");
+    CHECK(!parse_alpha("101", a) && !parse_alpha("-1", a) && !parse_alpha("nan", a) && !parse_alpha("inf", a) &&
+              !parse_alpha("2x", a) && !parse_alpha("", a),
+          "alpha above the cap, negative, NaN, inf, junk or empty is rejected");
+    CHECK(parse_alpha("2", a) && near(a, 2.0f) && parse_alpha("0", a) && a == 0.0f && parse_alpha("100", a),
+          "alpha 0, 2 and the cap are accepted");
+
+    std::string err;
+    auto t = parse_terms("big\t1e100\nhuge\t1e39\nover\t101\nedge\t100\n", err);
+    CHECK(t.size() == 1 && t[0].text == "edge" && near(t[0].weight, 100.0f), "a weight above the cap or overflowing float drops the line");
+
+    // A caller that skipped parse_terms: huge weight and huge alpha still give finite biases.
+    const vocab_view v = view_of(kToy);
+    auto g = graph::build({ { "a b x", 1e30f }, { "b y", std::numeric_limits<float>::infinity() } }, v, params{});
+    run r(g, 1e30f);
+    r.reset();
+    std::vector<float> logits(14, 0.0f), b(14, 0.0f);
+    for (int tok : { A, B, X }) {
+        b.assign(14, 0.0f);
+        r.fill(logits.data(), b.data(), 14);
+        for (float f : b) CHECK(std::isfinite(f), "every bias is finite");
+        r.on_token(tok);
+    }
+    run nan_alpha(g, std::nanf(""));
+    nan_alpha.reset();
+    b.assign(14, 0.0f);
+    nan_alpha.fill(logits.data(), b.data(), 14);
+    for (float f : b) CHECK(std::isfinite(f), "a NaN alpha biases nothing, finitely");
+}
+
 // map_spoken: whole-word, case-insensitive, ё=е, longest alias first. RED if the boundary test is dropped
 // ("дозорного" would become "dozorного") or the alias comparison stops folding case.
 static void t_map_spoken() {
@@ -332,6 +384,8 @@ int main() {
     t_case_variants();
     t_parse_terms();
     t_build_skips();
+    t_skip_report_no_text();
+    t_finite_bounds();
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

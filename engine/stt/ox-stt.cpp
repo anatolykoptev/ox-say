@@ -189,10 +189,7 @@ bool parse(int argc, char ** argv, args & a) {
             a.terms_stdin = true;
         } else if (k == "--boost-alpha") {
             if (!next(v)) return false;
-            char * end = nullptr;
-            const double al = strtod(v.c_str(), &end);
-            if (v.empty() || *end != '\0' || !std::isfinite(al) || al < 0.0) return false;
-            a.boost_alpha = (float) al;
+            if (!oxstt::boost::parse_alpha(v, a.boost_alpha)) return false;
         } else if (k == "--serve") {
             a.serve = true;
         } else if (k == "--vad") {
@@ -400,9 +397,7 @@ bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std:
         v.piece   = [ctx](int i) { return parakeet_token_to_str(ctx, i); };
         std::vector<std::string> skipped;
         graph = oxstt::boost::graph::build(terms, v, oxstt::boost::params{}, &skipped);
-        for (const std::string & s : skipped) {
-            fprintf(stderr, "ox-stt: boost: cannot spell \"%s\" with the model's vocabulary, skipped\n", s.c_str());
-        }
+        fputs(oxstt::boost::skip_report(skipped).c_str(), stderr);
     }
     const auto t_dec = std::chrono::steady_clock::now();
     const bool ok = decode_parakeet(ctx, a, x, r, err, graph, a.boost_alpha);

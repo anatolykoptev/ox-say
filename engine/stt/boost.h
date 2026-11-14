@@ -31,6 +31,11 @@
 
 namespace oxstt::boost {
 
+// Upper bounds, applied in double before any float cast: strtod accepts 1e100, which is finite as a double
+// and infinite as a float, and an infinite bias would corrupt every decode step it reaches.
+inline constexpr double kMaxAlpha = 100.0;
+inline constexpr double kMaxWeight = 100.0;
+
 struct params {
     float alpha = 1.0f;          // decode-time weight (NeMo boosting_tree_alpha)
     float context_score = 1.0f;  // arc score at depth 0
@@ -236,7 +241,7 @@ class graph {
                     if (skipped) skipped->push_back(variant);
                     continue;
                 }
-                g->insert(toks, t.weight, p);
+                g->insert(toks, clamp_weight(t.weight), p);
             }
         }
         g->finish();
@@ -333,6 +338,13 @@ class graph {
     std::vector<node> nodes_;
     std::vector<bool> word_start_;
 
+    // A weight outside (0, kMaxWeight] (or NaN) can only come from a caller that skipped parse_terms; keep
+    // every arc score finite regardless.
+    static float clamp_weight(float w) {
+        if (!(w > 0.0f)) return 1.0f;
+        return w > (float) kMaxWeight ? (float) kMaxWeight : w;
+    }
+
     static float arc_score_at(size_t depth, float weight, const params & p) {
         const float base = depth == 0 ? p.context_score
                                       : p.context_score * p.depth_scaling + std::log((float) depth + 1.0f);
@@ -406,7 +418,8 @@ class graph {
 // Per-decode state: one per parakeet_full call, driven by the three callbacks.
 class run {
   public:
-    explicit run(std::shared_ptr<const graph> g, float alpha = 1.0f) : g_(std::move(g)), alpha_(alpha) {}
+    explicit run(std::shared_ptr<const graph> g, float alpha = 1.0f)
+        : g_(std::move(g)), alpha_(std::isfinite(alpha) && alpha > 0.0f ? std::min(alpha, (float) kMaxAlpha) : 0.0f) {}
 
     void reset() {  // encoder_begin_callback
         state_ = g_->root();
@@ -472,6 +485,24 @@ class run {
 // problem; the terms that were fine are still returned (a malformed list degrades, it never fails the
 // decode).
 inline constexpr size_t kMinTermChars = 3;
+
+// Parses a --boost-alpha / daemon alpha: a finite number in [0, kMaxAlpha], nothing after it.
+inline bool parse_alpha(const std::string & s, float & out) {
+    if (s.empty()) return false;
+    char * end = nullptr;
+    const double d = std::strtod(s.c_str(), &end);
+    if (end == s.c_str() || *end != '\0' || !std::isfinite(d) || d < 0.0 || d > kMaxAlpha) return false;
+    out = (float) d;
+    return true;
+}
+
+// The one stderr line about terms the vocabulary cannot spell. Terms are the user's glossary: a count
+// only, never their text.
+inline std::string skip_report(const std::vector<std::string> & skipped) {
+    if (skipped.empty()) return std::string();
+    return "ox-stt: boost: " + std::to_string(skipped.size()) +
+           " term form(s) cannot be spelled with the model's vocabulary, skipped\n";
+}
 inline constexpr size_t kMaxTerms = 200;
 inline constexpr size_t kMaxAliases = 8;
 
@@ -513,7 +544,7 @@ inline std::vector<term> parse_terms(const std::string & text, std::string & err
                 const bool numeric = end != f[i].c_str() && *end == '\0';
                 const bool numberish = end != f[i].c_str() && (std::isdigit((unsigned char) f[i][0]) || f[i][0] == '-' || f[i][0] == '.');
                 if (numeric) {
-                    if (!std::isfinite(d) || d <= 0.0) {
+                    if (!std::isfinite(d) || d <= 0.0 || d > kMaxWeight) {
                         err += at + "bad weight\n";
                         bad = true;
                     } else {
