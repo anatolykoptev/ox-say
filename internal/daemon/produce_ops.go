@@ -149,7 +149,7 @@ func (p *producer) newManifest(in produceInput) (*vproject.Manifest, error) {
 		voice = p.ports.DefaultVoice(langOfText(in.Script))
 	}
 	if voice == "" {
-		return nil, &requestError{"produce needs a saved voice: design one with voice_design or add one with voice_add"}
+		return nil, &noSavedVoiceError{"produce needs a saved voice: design one with voice_design or add one with voice_add"}
 	}
 	facts, err := p.ports.Voice(voice)
 	if err != nil {

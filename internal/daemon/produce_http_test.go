@@ -100,6 +100,32 @@ func TestProduceHTTPIDs(t *testing.T) {
 	}
 }
 
+// A produce that can name no voice answers 400 with the stable code the app keys on
+// (no_saved_voice, StudioClient.refusal), not only a sentence to match.
+// Mutation: produce_http.go writeProduceErr, drop the noSavedVoiceError case -> a plain
+// {"message","type"} body -> RED; produce_ops.go create, &requestError back -> RED.
+func TestProduceNoSavedVoiceCarriesACode(t *testing.T) {
+	f := newFakePorts(t)
+	f.defaultVoice = ""
+	_, mux := produceMux(t, f)
+	rec := do(mux, http.MethodPost, "/v1/produce", `{"script":"Привет."}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Error.Code != noSavedVoiceCode {
+		t.Fatalf("no %q code in the answer: %s", noSavedVoiceCode, rec.Body)
+	}
+	if !strings.HasPrefix(body.Error.Message, "produce needs a saved voice") {
+		t.Fatalf("the sentence is still the caller's: %s", rec.Body)
+	}
+}
+
 // Busy: 409 with the running id. DELETE keeps outputs unless asked.
 func TestProduceHTTPBusyAndDelete(t *testing.T) {
 	f := newFakePorts(t)

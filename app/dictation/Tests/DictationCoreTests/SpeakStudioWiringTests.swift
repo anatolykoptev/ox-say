@@ -28,7 +28,7 @@ final class SpeakStudioWiringTests: XCTestCase {
         let studio = try body(source("OxSayDictation/SpeakSource.swift"), of: "private func generateStudio() {")
         XCTAssertTrue(studio.contains("SpeakInputCheck.problem(speak.text, engine: .studio"))
         XCTAssertTrue(studio.contains("let start = SpeakStudio.start(text: speak.text, reel: speak.reel, advanced: model.advanced, panel: speak.panel)"))
-        XCTAssertTrue(studio.contains("voiceover.start(script: start.script, title: start.title, voice: voice,\n                                                    format: start.format, options: start.options, fromWindow: true)"))
+        XCTAssertTrue(studio.contains("voiceover.start(script: start.script, title: start.title, voice: voice,\n                                                    format: start.format, options: start.options)"))
         XCTAssertFalse(studio.contains("script: speak.text"))
         let gate = try XCTUnwrap(studio.range(of: "host.speechRefusal()"))
         let send = try XCTUnwrap(studio.range(of: "voiceover.start("))
@@ -152,8 +152,10 @@ final class SpeakStudioWiringTests: XCTestCase {
         for step in ["waveformReads.advance()", "waveformTask?.cancel()", "waveformTask = nil"] { XCTAssertTrue(cancel.contains(step), step) }
         try XCTAssertTrue(body(speak, of: "func newText() {").contains("cancelWaveform()"))
         let ensure = try body(speak, of: "private func ensureWaveform() {")
-        XCTAssertTrue(ensure.contains("if waveformKey != nil { cancelWaveform() }"), "no track: the scan of the last one stops")
+        XCTAssertTrue(ensure.contains("if waveformKey != nil || waveformProbe != nil { cancelWaveform() }"), "no track: the scan of the last one stops")
         XCTAssertTrue(ensure.contains("SpeakTrack.key(projectID: job.id, path: path, modified:"), "keyed on the file, so a re-render reloads")
+        XCTAssertTrue(ensure.contains("await Task.detached(priority: .utility) { keySource() }"),
+                      "the stat that keys the track runs off the main actor: a network volume must not block show()")
         XCTAssertTrue(ensure.contains("withTaskCancellationHandler"))
         XCTAssertTrue(speak.contains("private var studioStart = StartingGate()"))
         XCTAssertTrue(speak.contains("studioStart.begin(token)"))
@@ -181,7 +183,10 @@ final class SpeakStudioWiringTests: XCTestCase {
         XCTAssertTrue(menu.contains("try await self?.voiceover.continueOnBattery()"))
         XCTAssertFalse(menu.contains("host.client.stopVoiceover"))
         try XCTAssertTrue(source("OxSayDictation/AppDelegate.swift").contains("$0.isVisible && $0.isKeyWindow && !$0.isMiniaturized && $0.isOnActiveSpace && $0.occlusionState.contains(.visible)"))
-        try XCTAssertTrue(source("OxSayDictation/VoiceoverService.swift").contains("if fromWindow { windowStarted.insert(started.id) }"))
+        // The end decision reads the live window, so no "started on the page" set is kept (#499): it had no reader.
+        XCTAssertFalse(service.contains("windowStarted"))
+        XCTAssertFalse(service.contains("startedOnPage"))
+        XCTAssertFalse(service.contains("fromWindow"))
         let window = try source("OxSayDictation/MainWindowSource.swift")
         XCTAssertTrue(window.contains("SpeakRecheck.refreshOnArrival(to: self.model.section, from: self.lastSection, reach: self.speakSource.reach)"))
         XCTAssertTrue(window.contains("if arrived { self.refresh() }"))

@@ -40,6 +40,8 @@ final class SpeakSource {
     private var waveformReads = Generation()
     /// The track whose bars are on screen or being read (id and path), so a project that finishes under the eye gets its bars once.
     private var waveformKey: String?
+    /// The file a scan task is looking at now; repeats of the same show() do not stack a second stat on it.
+    private var waveformProbe: String?
     /// A studio project is on its way to the daemon: «Остановить» is not offered (the answer would be dropped while the job runs).
     /// The flag belongs to its request, so a superseded one never leaves it set.
     private var studioStart = StartingGate()
@@ -401,7 +403,7 @@ final class SpeakSource {
         request = Task { @MainActor [weak self] in
             do {
                 let job = try await voiceover.start(script: start.script, title: start.title, voice: voice,
-                                                    format: start.format, options: start.options, fromWindow: true)
+                                                    format: start.format, options: start.options)
                 guard let self else { return }
                 guard self.generation.isCurrent(token) else {
                     // «Новый текст» moved on while it started: the project exists, the list will show it.
@@ -419,7 +421,8 @@ final class SpeakSource {
                 guard let self, self.generation.isCurrent(token) else { return }
                 self.studioStart.end()
                 if case StudioError.daemonUnreachable = error { self.record(answered: false) }
-                // A 409 (another voiceover is running) comes back in the daemon's own words.
+                // A 409 (another voiceover is running) arrives as the app's own .voiceoverRunning sentence
+                // (StudioClient.refusal keys on running_id), not in the daemon's words.
                 self.model.data.speak.phase = .failed(StudioError.plain(error))
                 self.host.workEnded()
             }
@@ -561,40 +564,55 @@ final class SpeakSource {
         waveformTask?.cancel()
         waveformTask = nil
         waveformKey = nil
+        waveformProbe = nil
         model.data.speak.peaks = []
     }
 
-    /// Reads the bars of the selected track once per track, and again when its file changes (a re-render rewrites it). The
-    /// scan runs off the main actor and stops when the selection moves; the answer of a track no longer selected is dropped.
+    /// Reads the bars of the selected track once per track, and again when its file changes (a re-render rewrites it).
+    /// The stat that keys the file and the scan itself run off the main actor: a custom out_path on a network volume must
+    /// not block show(). A probe already looking at the same file is not stacked on; its answer is dropped when the
+    /// selection moves.
     private func ensureWaveform() {
         let speak = model.data.speak
-        let key: String
+        let probe: String
+        let keySource: () -> String
         let source: () -> Data?
         if let clip = speak.selectedClip {
-            key = "clip:\(clip.id)"
+            probe = "clip:\(clip.id)"
+            keySource = { probe }
             source = { clip.wav }
         } else if let job = speak.selectedProject, job.status == .done || job.status == .review, let path = job.outputPath {
-            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
-            key = SpeakTrack.key(projectID: job.id, path: path, modified: attributes?[.modificationDate] as? Date,
-                                 size: (attributes?[.size] as? NSNumber)?.intValue)
+            probe = "proj:\(job.id):\(path)"
+            keySource = {
+                let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+                return SpeakTrack.key(projectID: job.id, path: path, modified: attributes?[.modificationDate] as? Date,
+                                      size: (attributes?[.size] as? NSNumber)?.intValue)
+            }
             source = { try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) }
         } else {
-            if waveformKey != nil { cancelWaveform() }
+            if waveformKey != nil || waveformProbe != nil { cancelWaveform() }
             return
         }
-        guard key != waveformKey else { return }
-        cancelWaveform()
-        waveformKey = key
-        model.data.speak.playedFraction = 0
-        if let id = speak.selectedID { model.data.speak.trackMissing.remove(id) }
+        guard probe != waveformProbe else { return }
         let token = waveformReads.advance()
+        waveformTask?.cancel()
+        waveformProbe = probe
         let id = speak.selectedID
         let bars = Self.waveformBars
         waveformTask = Task { @MainActor [weak self] in
-            // The scan of a long track runs off the main actor; cancelling this task cancels it.
+            // The stat that keys the file runs off the main actor like the scan itself; the key decides whether the
+            // bars on screen are already this file's, so a cancelled scan never blocks the next one.
+            let key = await Task.detached(priority: .utility) { keySource() }.value
+            guard let self, !Task.isCancelled, self.waveformReads.isCurrent(token) else { return }
+            defer { if self.waveformProbe == probe { self.waveformProbe = nil } }
+            guard key != self.waveformKey else { return }
+            self.model.data.speak.playedFraction = 0
+            self.model.data.speak.peaks = []
+            if let id { self.model.data.speak.trackMissing.remove(id) }
             let scan = Task.detached(priority: .utility) { source().map { Waveform.peaks(wav: $0, bins: bars) } }
             let peaks: [Float]? = await withTaskCancellationHandler { await scan.value } onCancel: { scan.cancel() }
-            guard let self, !Task.isCancelled, self.waveformReads.isCurrent(token) else { return }
+            guard !Task.isCancelled, self.waveformReads.isCurrent(token) else { return }
+            self.waveformKey = key
             if let peaks { self.model.data.speak.peaks = peaks } else if let id { self.model.data.speak.trackMissing.insert(id) }
         }
     }

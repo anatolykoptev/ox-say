@@ -134,8 +134,10 @@ public struct StudioClient {
         // The daemon's busy answer is the 409 that carries `running_id` (produce_http.go writeProduceErr): a code, not a
         // sentence. The other 409s (still cancelling, not running) carry none and keep their own words.
         if status == 409, obj?["running_id"] is String { return .voiceoverRunning }
-        // "produce needs a saved voice" has no code on the wire (only type "Bad Request"), so its opening words are the one
-        // text match, kept at this edge and pinned by a test; PlainWords would drop the whole sentence for its `voice_` hint.
+        // "produce needs a saved voice" carries `no_saved_voice` on the wire (produce_http.go writeProduceErr); the
+        // opening-words match stays for a daemon older than the code — PlainWords would drop the whole sentence for its
+        // `voice_` hint.
+        if status == 400, (obj?["error"] as? [String: Any])?["code"] as? String == "no_saved_voice" { return .noSavedVoice }
         if status == 400, message.hasPrefix("produce needs a saved voice") { return .noSavedVoice }
         // The two delivery-gate 409s (`deliveryNeedsReference`, `deliveryIsUltimate`, produce_ops.go) carry the code
         // `styling_unavailable`: both mean the project keeps the recording's delivery and a mood cannot apply. The
