@@ -24,8 +24,11 @@ func isWordRune(r rune) bool {
 		r == '\'' || r == '’' || r == 'ʼ' || r == '-' || r == '_'
 }
 
+// tokenize cuts the raw string — no NFC: comparisons fold per token, and
+// combining marks are word runes, so normalising here would only rewrite
+// bytes the caller then emits verbatim for every unmatched span.
 func tokenize(s string) []token {
-	rs := []rune(norm.NFC.String(s))
+	rs := []rune(s)
 	var out []token
 	var b strings.Builder
 	word := false

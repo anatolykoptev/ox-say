@@ -157,6 +157,29 @@ func TestApplyLeavesAlreadyCorrect(t *testing.T) {
 	}
 }
 
+// Untouched text keeps its bytes: matching folds to NFC, but only the
+// replaced span is written — a decomposed й (и + U+0306) outside the
+// match is not composed on the way out, and Text, Segments and Words all
+// carry the original bytes.
+// Mutation: apply.go tokenize, restore norm.NFC.String(s) -> RED (the й
+// outside the match is composed).
+func TestApplyKeepsUnmatchedBytes(t *testing.T) {
+	dec := "привеи\u0306т" // привейт with a decomposed й
+	pairs := []Pair{act("окс", "Ox")}
+	in, want := "скажи "+dec+" окс", "скажи "+dec+" Ox"
+	if got, n := Apply(in, pairs); got != want || n != 1 {
+		t.Fatalf("Apply = %q, %d; want %q, %d", got, n, want, n)
+	}
+	ws := []stt.Word{{W: " " + dec, S: 0, E: 0.4}, {W: " окс", S: 0.4, E: 0.8}}
+	res := &stt.Result{Text: in, Segments: []stt.Segment{{S: 0, E: 0.8, Text: in}}, Words: ws}
+	if n := ApplyResult(res, pairs); n != 1 {
+		t.Fatalf("n = %d", n)
+	}
+	if res.Text != want || res.Segments[0].Text != want || res.Words[0].W != " "+dec || res.Words[1].W != " Ox" {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
 // Mutation: apply.go ApplyResult, skip the Segments loop -> RED (subtitles keep the wrong word).
 func TestApplyResult(t *testing.T) {
 	res := &stt.Result{Text: "открой Воксей", Segments: []stt.Segment{{S: 0, E: 1, Text: "открой Воксей"}}, Words: []stt.Word{{W: "открой"}, {W: " Воксей"}}}
