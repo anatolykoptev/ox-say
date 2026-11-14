@@ -132,10 +132,12 @@ public struct VoiceDesignFlow: Equatable {
     }
 
     /// Keeps the take under review: the id comes from the label typed (never one that exists), else from the daemon's
-    /// suggestion for the take.
-    public mutating func keep() -> Effect? {
+    /// suggestion for the take. `fresh` is the library's names read at Keep — the set the form saw at Submit can be
+    /// hours old, and a voice saved or renamed meanwhile is suffixed here instead of refused by the save.
+    public mutating func keep(taken fresh: Set<String>) -> Effect? {
         guard let take = currentTake else { return nil }
-        let id = VoiceName.id(from: cleanLabel.isEmpty ? take.suggestedName : cleanLabel, taken: taken)
+        taken = fresh
+        let id = VoiceName.id(from: cleanLabel.isEmpty ? take.suggestedName : cleanLabel, taken: fresh)
         sentID = id
         confirmReplace = nil
         reviewNotice = nil

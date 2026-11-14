@@ -65,7 +65,7 @@ final class VoiceDesigner {
     @MainActor
     func replay() { perform(flow.replay()) }
     @MainActor
-    func keep() { perform(flow.keep()) }
+    func keep() { perform(flow.keep(taken: libraryNames())) }
     @MainActor
     func replace(_ yes: Bool) { perform(flow.confirmReplaceAnswered(yes)) }
 

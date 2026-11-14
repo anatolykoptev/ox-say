@@ -26,13 +26,13 @@ struct VoiceDesignSheet: View {
             case .designing: working(L10nKey.designDesigningPill.text, cancel: true)
             case .reviewing(let index): review(index: index)
             case .done: working(L10nKey.designSaving.text, cancel: false)
-            case .saving: flow.confirmReplace.map { replaceQuestion(flow.label.isEmpty ? $0 : flow.label) } ?? AnyView(working(L10nKey.designSaving.text, cancel: false))
+            case .saving: flow.confirmReplace.map { replaceQuestion($0) } ?? AnyView(working(L10nKey.designSaving.text, cancel: false))
             case .failed(let sentence): failure(sentence)
             }
         }
-        .onChange(of: description) { _ in pushText() }
-        .onChange(of: sentence) { _ in pushText() }
-        .onChange(of: label) { _ in pushText() }
+        .onChange(of: description) { pushText() }
+        .onChange(of: sentence) { pushText() }
+        .onChange(of: label) { pushText() }
         .padding(20)
         .frame(width: 440)
         // Esc is the cancel button's shortcut on every step; a step with no cancel button still answers it.

@@ -35,17 +35,17 @@ final class VoiceDesignFlowTests: XCTestCase {
     }
     func testKeepDerivesAnIdFromTheLabelOrTheSuggestion() {
         var f = reviewing(); f.label = "Мой диктор"
-        XCTAssertEqual(f.keep(), .save(id: "moy-diktor", label: "Мой диктор", take: "/t/1.wav", replace: false))
+        XCTAssertEqual(f.keep(taken: []), .save(id: "moy-diktor", label: "Мой диктор", take: "/t/1.wav", replace: false))
         var g = reviewing()
-        XCTAssertEqual(g.keep(), .save(id: "voice-1", label: "", take: "/t/1.wav", replace: false))
+        XCTAssertEqual(g.keep(taken: []), .save(id: "voice-1", label: "", take: "/t/1.wav", replace: false))
     }
     func testATakenNameAsksBeforeReplacingAndNoReturnsToTheSameTake() {
-        var f = reviewing(); _ = f.next(); _ = f.keep()
+        var f = reviewing(); _ = f.next(); _ = f.keep(taken: [])
         f.saveAnswered(.nameTaken)
         XCTAssertNotNil(f.confirmReplace)
         XCTAssertNil(f.confirmReplaceAnswered(false))
         XCTAssertEqual(f.phase, .reviewing(index: 1))
-        _ = f.keep(); f.saveAnswered(.nameTaken)
+        _ = f.keep(taken: []); f.saveAnswered(.nameTaken)
         XCTAssertEqual(f.confirmReplaceAnswered(true), .save(id: "voice-2", label: "", take: "/t/2.wav", replace: true))
     }
     func testCancelAlwaysStopsPlaybackAndKeepsTheTypedText() {
@@ -66,7 +66,7 @@ final class VoiceDesignFlowTests: XCTestCase {
         XCTAssertFalse(f.isBusy, "the form")
         _ = f.submit(taken: []); XCTAssertTrue(f.isBusy, "designing")
         f.designed([take(1)], for: f.generation); XCTAssertTrue(f.isBusy, "reviewing")
-        _ = f.keep(); XCTAssertTrue(f.isBusy, "saving")
+        _ = f.keep(taken: []); XCTAssertTrue(f.isBusy, "saving")
         f.saveAnswered(.saved(SavedVoice(name: "voice-1", notice: nil)))
         XCTAssertEqual(f.phase, .done(savedAs: "voice-1")); XCTAssertTrue(f.isBusy, "done: the label and the list are still being set")
         _ = f.cancel(); XCTAssertFalse(f.isBusy, "ended by the app once they are")
@@ -101,11 +101,22 @@ final class VoiceDesignFlowTests: XCTestCase {
         var f = VoiceDesignFlow(description: "диктор", sentence: "Привет", label: "")
         _ = f.submit(taken: ["voice-1"])
         f.designed([take(1)], for: f.generation)
-        XCTAssertEqual(f.keep(), .save(id: "voice-1-2", label: "", take: "/t/1.wav", replace: false))
+        XCTAssertEqual(f.keep(taken: ["voice-1"]), .save(id: "voice-1-2", label: "", take: "/t/1.wav", replace: false))
+    }
+    /// Issue #433: the names are read again at Keep — the set the form saw at Submit can be hours old, and a voice
+    /// saved (or renamed) through another path meanwhile is suffixed here instead of going out as an id the save
+    /// then has to refuse.
+    /// Mutation: VoiceDesignFlow.keep, `taken: fresh` -> `taken: self.taken` (the parameter ignored) -> RED.
+    func testKeepDerivesTheIdFromTheNamesReadAtKeep() {
+        var f = reviewing()
+        XCTAssertEqual(f.keep(taken: ["voice-1"]), .save(id: "voice-1-2", label: "", take: "/t/1.wav", replace: false))
+        var g = reviewing()
+        XCTAssertEqual(g.keep(taken: ["voice-1-2", "other"]), .save(id: "voice-1", label: "", take: "/t/1.wav", replace: false),
+                       "a name gone from the library is free again")
     }
     func testTheLabelSentIsTheCleanedOne() {
         var f = reviewing(); f.label = "  Диктор  "
-        XCTAssertEqual(f.keep(), .save(id: "diktor", label: "Диктор", take: "/t/1.wav", replace: false))
+        XCTAssertEqual(f.keep(taken: []), .save(id: "diktor", label: "Диктор", take: "/t/1.wav", replace: false))
     }
     func testReplayPlaysTheTakeUnderReview() {
         var f = reviewing(); _ = f.next()
@@ -136,14 +147,14 @@ final class VoiceDesignFlowTests: XCTestCase {
         XCTAssertEqual(d.phase, .form)
         XCTAssertEqual(d.description, "диктор")
 
-        var s = reviewing(); _ = s.next(); _ = s.keep()
+        var s = reviewing(); _ = s.next(); _ = s.keep(taken: [])
         s.fail("disk full")
         s.acknowledgeFailure()
         XCTAssertEqual(s.phase, .reviewing(index: 1))
     }
     func testASavedVoiceEndsTheFlowAndTheNextOneStartsFromTheSameText() {
         var f = reviewing(); f.label = "Мой диктор"
-        _ = f.keep()
+        _ = f.keep(taken: [])
         f.saveAnswered(.saved(SavedVoice(name: "moy-diktor", notice: nil)))
         _ = f.cancel()
         XCTAssertEqual(f.description, "спокойный диктор")
@@ -154,7 +165,7 @@ final class VoiceDesignFlowTests: XCTestCase {
     /// version handshake relaunches the app between the save and the label. Esc does not end it either.
     /// Mutation: VoiceDesignFlow.isBusy, `.done` moved to the `return false` case -> RED.
     func testASavedVoiceStaysWorkUntilTheAppEndsTheFlow() {
-        var f = reviewing(); f.label = "Мой диктор"; _ = f.keep()
+        var f = reviewing(); f.label = "Мой диктор"; _ = f.keep(taken: [])
         f.saveAnswered(.saved(SavedVoice(name: "moy-diktor", notice: nil)))
         XCTAssertTrue(f.isBusy)
         XCTAssertNil(f.escape(), "Esc does not abandon the label that is being set")
@@ -232,16 +243,16 @@ final class VoiceDesignFlowTests: XCTestCase {
         var form = VoiceDesignFlow(description: "диктор", sentence: "Привет", label: "")
         XCTAssertEqual(form.escape(), .stopPlayback)
 
-        var saving = reviewing(); _ = saving.keep()
+        var saving = reviewing(); _ = saving.keep(taken: [])
         XCTAssertNil(saving.escape(), "a save in flight is not abandoned")
         XCTAssertEqual(saving.phase, .saving)
 
-        var asking = reviewing(); _ = asking.keep(); asking.saveAnswered(.nameTaken)
+        var asking = reviewing(); _ = asking.keep(taken: []); asking.saveAnswered(.nameTaken)
         XCTAssertNil(asking.escape(), "Esc on the replace question is No")
         XCTAssertEqual(asking.phase, .reviewing(index: 0))
         XCTAssertNil(asking.confirmReplace)
 
-        var failed = reviewing(); _ = failed.keep(); failed.fail("disk full")
+        var failed = reviewing(); _ = failed.keep(taken: []); failed.fail("disk full")
         XCTAssertNil(failed.escape(), "Esc reads a failure")
         XCTAssertEqual(failed.phase, .reviewing(index: 0))
     }
