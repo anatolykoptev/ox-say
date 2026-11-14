@@ -275,8 +275,8 @@ final class MainWindowSource {
             if let url = URL(string: pane.settingsURL) { NSWorkspace.shared.open(url) }
         }
         a.chooseNotesFolder = { [weak self] in
-            guard let self, NotesFolder.choose(self.host.defaults) else { return }
-            self.reloadSettings()
+            guard let self, let url = NotesFolder.choose(self.host.defaults) else { return }
+            self.reloadSettings(pickedFolder: url)
         }
         a.openNotesFolder = { [weak self] in
             guard let self else { return }
@@ -438,13 +438,19 @@ final class MainWindowSource {
         if model.data.voices.designAvailability != availability { model.data.voices.designAvailability = availability }
     }
 
-    private func reloadSettings() { Task { @MainActor in await reloadSettingsAsync() } }
+    private func reloadSettings(pickedFolder url: URL) { Task { @MainActor in await reloadSettingsAsync(pickedFolder: url) } }
 
-    /// The settings from their stores; the daemon's retention wins over the app's copy.
-    private func reloadSettingsAsync() async {
+    /// The settings from their stores; the daemon's retention wins over the app's copy. A picked
+    /// folder is stored before the daemon round-trip (up to 10 s), so new notes go to it at once, and
+    /// read back through the model's one step after the reply, so the iCloud answer is the new folder's own.
+    private func reloadSettingsAsync(pickedFolder: URL? = nil) async {
+        if let pickedFolder { MeetingSettings.setFolder(pickedFolder, host.defaults) }
         let daemon = try? await host.client.meetingDaemonSettings()
         let notes = host.daemonStatus()?.notes
-        model.data.meetingSettings = MeetingSettingsModel.load(
+        model.data.meetingSettings = pickedFolder.map {
+            MeetingSettingsModel.folderPicked($0, defaults: host.defaults, daemonRetention: daemon?.retention,
+                                              notesWriter: NotesWriterState.of(notes), fullName: NSFullUserName())
+        } ?? MeetingSettingsModel.load(
             defaults: host.defaults, daemonRetention: daemon?.retention, notesWriter: NotesWriterState.of(notes),
             fullName: NSFullUserName())
     }

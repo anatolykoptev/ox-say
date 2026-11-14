@@ -184,6 +184,7 @@
 "common.open" = "Открыть";
 "common.choose" = "Выбрать…";
 "privacy.line" = "Записи, расшифровки и заметки остаются на этом Mac. Ничего не загружается.";
+"privacy.line.icloud" = "Записи, расшифровки и заметки остаются на этом Mac — кроме папки заметок, которая синхронизируется с iCloud.";
 "meetings.day.today" = "Сегодня";
 "meetings.day.yesterday" = "Вчера";
 "meetings.untitled" = "Звонок";
@@ -235,6 +236,7 @@
 "settings.apps.default" = "Как выбрано выше (%@)";
 "settings.apps.browsers" = "В Chrome, Brave, Arc или Edge";
 "settings.folder" = "Папка для заметок";
+"settings.folder.icloud" = "Эта папка синхронизируется с iCloud: заметки и расшифровки будут загружены в iCloud. Выберите папку вне «Документов» и «Рабочего стола», чтобы они оставались на этом Mac.";
 "settings.keep" = "Хранить записи";
 "settings.keep.footer" = "По истечении срока удаляется только звук. Заметки и расшифровки остаются, пока вы их не удалите.";
 "settings.name" = "Ваше имя в расшифровках";

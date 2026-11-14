@@ -97,6 +97,34 @@ final class ComponentsWiringTests: XCTestCase {
         XCTAssertFalse(window.contains("content:"), "a third column would rebuild the sidebar on each section switch")
     }
 
+    /// #532: the iCloud warning sits under the notes-folder row keyed on `folderSyncsICloud`, and no
+    /// PrivacyLine call stays bare — an unconditional one keeps promising "nothing is uploaded"
+    /// while the folder syncs. Components.swift picks the honest variant on the same flag.
+    /// Mutations: SettingsPage, drop the `if s.wrappedValue.folderSyncsICloud` row -> RED; a
+    /// `PrivacyLine()` call anywhere -> RED; Components.swift, the ternary back to
+    /// `L10nKey.privacyLine.text` alone -> RED.
+    func testTheICloudWarningAndTheHonestPrivacyLineAreWired() throws {
+        let page = Self.stripComments(try String(contentsOf: mainWindowUI.appendingPathComponent("SettingsPage.swift"), encoding: .utf8))
+        let lines = page.components(separatedBy: "\n")
+        let folder = try XCTUnwrap(lines.firstIndex { $0.contains("L10nKey.settingsFolder.text") }, "the folder row")
+        let warning = try XCTUnwrap(lines.firstIndex { $0.contains("L10nKey.settingsFolderICloud.text") }, "the iCloud warning")
+        XCTAssertGreaterThan(warning, folder, "the warning sits under the folder row")
+        XCTAssertTrue(lines[folder...warning].joined(separator: "\n").contains("if s.wrappedValue.folderSyncsICloud"))
+        let components = Self.stripComments(try String(contentsOf: mainWindowUI.appendingPathComponent("Components.swift"), encoding: .utf8))
+        XCTAssertTrue(components.contains("notesFolderSyncs ? L10nKey.privacyLineICloud.text : L10nKey.privacyLine.text"))
+        var calls = 0
+        for url in try FileManager.default.contentsOfDirectory(at: mainWindowUI, includingPropertiesForKeys: nil)
+        where url.pathExtension == "swift" {
+            let text = Self.stripComments(try String(contentsOf: url, encoding: .utf8))
+            for line in text.components(separatedBy: "\n") where line.contains("PrivacyLine(") {
+                calls += 1
+                XCTAssertTrue(line.contains("notesFolderSyncs"),
+                              "\(url.lastPathComponent): a bare PrivacyLine keeps the promise unconditional")
+            }
+        }
+        XCTAssertGreaterThan(calls, 0, "no PrivacyLine call found: the check has gone vacuous")
+    }
+
     /// The list is 260...420 wide (ideal 290), the meeting never under 300, the divider is kept on the model across a
     /// section switch and a restore never writes back; Open Folder / Copy Notes / Delete exist only for a chosen
     /// meeting while the list is up; the failed-refresh bar spans the page above the split. Each pin is a USE of the

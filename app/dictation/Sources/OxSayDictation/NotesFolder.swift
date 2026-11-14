@@ -10,9 +10,10 @@ enum NotesFolder {
         NSWorkspace.shared.open(folder)
     }
 
-    /// Asks for a folder; true when the user picked one (it is stored).
-    @discardableResult
-    static func choose(_ defaults: UserDefaults) -> Bool {
+    /// Asks for a folder; the picked URL, nil on cancel. Storing is the caller's one step
+    /// (`MeetingSettingsModel.folderPicked` in the window, `MeetingSettings.setFolder` in the
+    /// menu), so the save and the iCloud recompute cannot drift apart.
+    static func choose(_ defaults: UserDefaults) -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -20,8 +21,7 @@ enum NotesFolder {
         panel.directoryURL = MeetingSettings.folder(defaults)
         panel.prompt = L10nKey.menuMeetingChooseFolder.text
         NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return false }
-        MeetingSettings.setFolder(url, defaults)
-        return true
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
     }
 }

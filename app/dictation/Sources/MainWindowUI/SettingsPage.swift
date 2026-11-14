@@ -35,6 +35,10 @@ struct SettingsPage: View {
                     Button(L10nKey.commonChoose.text) { model.actions.chooseNotesFolder() }
                     Button(L10nKey.commonOpen.text) { model.actions.openNotesFolder() }
                 }
+                if s.wrappedValue.folderSyncsICloud {
+                    Label(L10nKey.settingsFolderICloud.text, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout).foregroundStyle(.orange).labelStyle(.titleAndIcon)
+                }
                 HintedRow(title: L10nKey.settingsKeep.text,
                           hint: s.wrappedValue.retentionVerified ? L10nKey.settingsKeepFooter.text : L10nKey.settingsKeepUnchecked.text) {
                     Picker("", selection: s.retention) {
@@ -146,7 +150,7 @@ struct SettingsPage: View {
         } header: {
             Text(L10nKey.settingsGeneral.text)
         } footer: {
-            PrivacyLine().padding(.top, 4)
+            PrivacyLine(notesFolderSyncs: model.data.meetingSettings.folderSyncsICloud).padding(.top, 4)
         }
     }
 }

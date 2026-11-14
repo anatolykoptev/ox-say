@@ -181,6 +181,8 @@ public enum L10nKey: String, CaseIterable {
     case commonOpen = "common.open"
     case commonChoose = "common.choose"
     case privacyLine = "privacy.line"
+    /// The honest variant of the promise when the notes folder itself syncs to iCloud (#532).
+    case privacyLineICloud = "privacy.line.icloud"
     case meetingsToday = "meetings.day.today"
     case meetingsYesterday = "meetings.day.yesterday"
     case meetingsUntitled = "meetings.untitled"
@@ -233,6 +235,8 @@ public enum L10nKey: String, CaseIterable {
     case settingsAppsDefault = "settings.apps.default"
     case settingsAppsBrowsers = "settings.apps.browsers"
     case settingsFolder = "settings.folder"
+    /// The warning under the notes-folder picker when macOS uploads that folder to iCloud (#532).
+    case settingsFolderICloud = "settings.folder.icloud"
     case settingsKeep = "settings.keep"
     case settingsKeepFooter = "settings.keep.footer"
     case settingsName = "settings.name"
