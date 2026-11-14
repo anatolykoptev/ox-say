@@ -554,3 +554,69 @@ func TestCeilingDuringBodyReadIsATransportError(t *testing.T) {
 		t.Fatalf("ceiling during the body read: %v, want the engine-did-not-answer transport error", err)
 	}
 }
+
+// #338.1 second half: a guard that outlives RecycleWait parks the recycle as
+// ErrRecycleBusy — before, nobody retried, so the wedged child survived
+// until the next render paid a whole deadline. The detached retry still
+// replaces it once the guard releases.
+// Mutation: produce_wire.go portFuncs.recycle, return after the first
+// RecycleWedged error -> RED (the child stays the same pid).
+func TestABusyRecycleIsRetriedAfterTheGuardReleases(t *testing.T) {
+	d, _ := voxFixtureTuned(t, func(c *engine.Config) { c.RecycleWait = 100 * time.Millisecond })
+	if _, err := d.VoxSup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pid := d.VoxSup.Status().PID
+	g := d.VoxSup.Acquire()
+	g.MarkSent() // sent before the render's stamp: the recycle waits on it
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.producePorts().Recycle(context.Background(), pid, g.MarkSent()+1)
+	}()
+	<-done // the port waited out RecycleWait, logged busy, spawned the retry
+	g.Release()
+	waitForNewChild(t, d, pid)
+}
+
+// The same hole from the caller side: a cancelled render's ctx ends the
+// guard wait, and before the fix the wedged child was left for the next
+// render's deadline. The detached retry still replaces it.
+// Mutation: produce_wire.go portFuncs.recycle, return after the first
+// RecycleWedged error -> RED (the child stays the same pid).
+func TestACancelledRecycleStillReplacesTheWedgedChild(t *testing.T) {
+	d, _ := voxFixtureTuned(t, func(c *engine.Config) { c.RecycleWait = 10 * time.Second })
+	if _, err := d.VoxSup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pid := d.VoxSup.Status().PID
+	g := d.VoxSup.Acquire()
+	g.MarkSent()
+	defer g.Release()
+	rctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.producePorts().Recycle(rctx, pid, g.MarkSent()+1)
+	}()
+	time.Sleep(50 * time.Millisecond) // let the port reach its guard wait — a bound on the wait, not a sync point
+	cancel()
+	<-done // the port logged the cancel and spawned the detached retry
+	g.Release()
+	waitForNewChild(t, d, pid)
+}
+
+// waitForNewChild polls the supervisor until the recycled child is gone:
+// the detached retry runs off the test goroutine, so the test waits on the
+// state, never on a wall-clock margin.
+func waitForNewChild(t *testing.T, d *Daemon, wedged int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if d.VoxSup.Status().PID != wedged {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pid %d was never replaced", wedged)
+}

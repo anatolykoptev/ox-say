@@ -160,13 +160,20 @@ func (d *Daemon) producePorts() producePorts {
 			if d.VoxSup == nil {
 				return
 			}
-			if err := d.VoxSup.RecycleWedged(ctx, pid, from); err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					d.log.Info("produce: stopped waiting for the unresponsive voice engine to be replaced; it is still being stopped", "pid", pid, "error", err)
-					return
-				}
+			err := d.VoxSup.RecycleWedged(ctx, pid, from)
+			if err == nil {
+				return
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				d.log.Info("produce: stopped waiting for the unresponsive voice engine to be replaced; it is still being stopped", "pid", pid, "error", err)
+			} else {
 				d.log.Warn("produce: the unresponsive voice engine was not restarted", "pid", pid, "error", err)
 			}
+			// A recycle the caller stopped waiting on must still happen: the
+			// wedge serves nothing, and otherwise every later render pays the
+			// deadline that finds it (#338.1). A kill already under way makes
+			// the retry a no-op, as does a replaced or shut-down supervisor.
+			go retryWedgedRecycle(d.VoxSup, pid, from)
 		},
 		home: func() string { return d.Cfg.Home },
 		// outputRoot is the QF5 default (config.DefaultProduceOutDir), or the
@@ -177,6 +184,18 @@ func (d *Daemon) producePorts() producePorts {
 			}
 			return filepath.Join(d.Cfg.Home, produceDir, exportsSubdir)
 		},
+	}
+}
+
+// retryWedgedRecycle finishes a recycle whose first caller stopped waiting:
+// the wedged child is replaced as soon as the guard it was parked on
+// releases. Each pass waits out another RecycleWait, and every engine guard
+// is bounded by its own request ceiling, so the loop ends; a nil return (the
+// child recycled, replaced already, or the supervisor shut down) also ends
+// it. It runs detached with a background context — the caller's ctx is the
+// reason it exists.
+func retryWedgedRecycle(sup *engine.Supervisor, pid int, from uint64) {
+	for errors.Is(sup.RecycleWedged(context.Background(), pid, from), engine.ErrRecycleBusy) {
 	}
 }
 
