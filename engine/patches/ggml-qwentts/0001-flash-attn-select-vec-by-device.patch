@@ -1,0 +1,28 @@
+diff --git a/src/ggml-metal/ggml-metal-device.m b/src/ggml-metal/ggml-metal-device.m
+index d38ab4a6..8ca9c751 100644
+--- a/src/ggml-metal/ggml-metal-device.m
++++ b/src/ggml-metal/ggml-metal-device.m
+@@ -2587,6 +2587,10 @@ void ggml_metal_buffer_get_tensor(ggml_metal_buffer_t buf, const struct ggml_ten
+ 
+         [cmd_buf commit];
+         [cmd_buf waitUntilCompleted];
++
++        if (!dst_aligned) {
++            memcpy(data, [buf_dst contents], size);
++        }
+     }
+ }
+ 
+diff --git a/src/ggml-metal/ggml-metal-ops.cpp b/src/ggml-metal/ggml-metal-ops.cpp
+index 916e49c4..aeef34cc 100644
+--- a/src/ggml-metal/ggml-metal-ops.cpp
++++ b/src/ggml-metal/ggml-metal-ops.cpp
+@@ -3520,7 +3520,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
+         }
+     }
+ 
+-    if (!use_sparse && !ggml_metal_op_flash_attn_ext_use_vec(op)) {
++    if (!use_sparse && !ggml_metal_op_flash_attn_ext_use_vec(op, props_dev->has_simdgroup_mm)) {
+         // half8x8 kernel
+         const int nqptg = OP_FLASH_ATTN_EXT_NQPSG; // queries per threadgroup
+         const int ncpsg = OP_FLASH_ATTN_EXT_NCPSG; // cache values per simdgroup

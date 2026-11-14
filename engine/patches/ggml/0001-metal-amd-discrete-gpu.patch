@@ -54,14 +54,10 @@ diff --git a/src/ggml-metal/ggml-metal-device.h b/src/ggml-metal/ggml-metal-devi
 index 1bdaecc7..08fdb0fd 100644
 --- a/src/ggml-metal/ggml-metal-device.h
 +++ b/src/ggml-metal/ggml-metal-device.h
-@@ -136,6 +136,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_del
- struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri         (ggml_metal_library_t lib, const struct ggml_tensor * op);
- struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_ext        (ggml_metal_library_t lib, const struct ggml_tensor * op, int nsg, int nxpsg, int r1ptg);
+@@ -138,2 +138,3 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_del
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm            (ggml_metal_library_t lib, const struct ggml_tensor * op);
 +struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_tg         (ggml_metal_library_t lib, const struct ggml_tensor * op);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv            (ggml_metal_library_t lib, const struct ggml_tensor * op);
- struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_map0    (ggml_metal_library_t lib, int ne02, int ne20);
- struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_amax(ggml_metal_library_t lib);
 diff --git a/src/ggml-metal/ggml-metal-device.m b/src/ggml-metal/ggml-metal-device.m
 index 37133060..d544a34b 100644
 --- a/src/ggml-metal/ggml-metal-device.m
@@ -74,7 +70,7 @@ index 37133060..d544a34b 100644
  
  #ifndef TARGET_OS_VISION
  #define TARGET_OS_VISION 0
-@@ -1754,7 +1755,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
+@@ -1754,5 +1755,7 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                  default:
                      return false;
              }
@@ -83,8 +79,6 @@ index 37133060..d544a34b 100644
 +            // the vec kernel loses precision on AMD for head sizes >= 512
 +            return has_simdgroup_mm || (has_simdgroup_reduction && op->src[0]->ne[0] % 32 == 0 && op->src[0]->ne[0] < 512);
          case GGML_OP_LIGHTNING_INDEXER:
-             if (op->src[0]->ne[0] != OP_LIGHTNING_INDEXER_DK ||
-                 op->src[0]->ne[1] != OP_LIGHTNING_INDEXER_NH) {
 @@ -2303,7 +2306,7 @@ void ggml_metal_buffer_memset_tensor(ggml_metal_buffer_t buf, struct ggml_tensor
              id<MTLBlitCommandEncoder> encoder = [cmd_buf blitCommandEncoder];
  
@@ -145,17 +139,6 @@ index 37133060..d544a34b 100644
 +                                                options:MTLResourceStorageModeShared];
  
          GGML_ASSERT(buf_dst);
- 
-@@ -2403,6 +2421,10 @@ void ggml_metal_buffer_get_tensor(ggml_metal_buffer_t buf, const struct ggml_ten
- 
-         [cmd_buf commit];
-         [cmd_buf waitUntilCompleted];
-+
-+        if (!dst_aligned) {
-+            memcpy(data, [buf_dst contents], size);
-+        }
-     }
- }
  
 diff --git a/src/ggml-metal/ggml-metal-ops.cpp b/src/ggml-metal/ggml-metal-ops.cpp
 index ba144ecc..e85294e6 100644
@@ -285,15 +268,6 @@ index ba144ecc..e85294e6 100644
  
      return res;
  }
-@@ -3408,7 +3442,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
-         }
-     }
- 
--    if (!use_sparse && !ggml_metal_op_flash_attn_ext_use_vec(op)) {
-+    if (!use_sparse && !ggml_metal_op_flash_attn_ext_use_vec(op, props_dev->has_simdgroup_mm)) {
-         // half8x8 kernel
-         const int nqptg = OP_FLASH_ATTN_EXT_NQPSG; // queries per threadgroup
-         const int ncpsg = OP_FLASH_ATTN_EXT_NCPSG; // cache values per simdgroup
 @@ -3713,6 +3747,11 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
                      nsg *= 2;
                  }

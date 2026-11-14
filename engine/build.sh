@@ -44,8 +44,14 @@ case $arch in
     *) echo "engine/build.sh: unsupported architecture $arch" >&2; exit 1 ;;
 esac
 
+# ggml_patches [tree]: patches/ggml is shared by the ggml trees of qwentts.cpp and whisper.cpp.
+# The two pins sit on different ggml revisions: where the shared patch cannot carry a hunk for both
+# (the flash-attention vec-kernel call sites), patches/ggml-<tree>/ follows it with the tree's own.
 ggml_patches() {
     find "$here/patches/ggml" -name '*.patch' -type f | LC_ALL=C sort
+    if [ -n "${1:-}" ]; then
+        find "$here/patches/ggml-$1" -name '*.patch' -type f | LC_ALL=C sort
+    fi
 }
 
 # Rebuild a source tree whenever its pins or the patches it takes change.
@@ -187,7 +193,7 @@ rm -f "$out/pins.env"
 
 # --- tts-server (qwentts.cpp) ---
 tts="$work/qwentts"
-stamp=$( { echo "$QWENTTS_REPO $QWENTTS_COMMIT $GGML_REPO $GGML_COMMIT"; ggml_patches | xargs cat; find "$here/patches/qwentts" -name '*.patch' -type f | LC_ALL=C sort | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
+stamp=$( { echo "$QWENTTS_REPO $QWENTTS_COMMIT $GGML_REPO $GGML_COMMIT"; ggml_patches qwentts | xargs cat; find "$here/patches/qwentts" -name '*.patch' -type f | LC_ALL=C sort | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
 if ! fresh "$tts" "$stamp"; then
     rm -rf "$tts"
     git clone --quiet "$QWENTTS_REPO" "$tts"
@@ -221,7 +227,7 @@ if ! fresh "$tts" "$stamp"; then
         echo "ggml submodule is $actual, expected $GGML_COMMIT" >&2
         exit 1
     fi
-    ggml_patches | while read -r p; do git -C "$tts/ggml" apply "$p"; done
+    ggml_patches qwentts | while read -r p; do git -C "$tts/ggml" apply "$p"; done
     for p in "$here"/patches/qwentts/*.patch; do
         git -C "$tts" apply "$p"
     done
@@ -248,12 +254,12 @@ echo "built $out/tts-server"
 
 # --- ox-stt (whisper.cpp, vendored ggml) ---
 stt="$work/whisper.cpp"
-stamp=$( { echo "$WHISPER_REPO $WHISPER_COMMIT"; ggml_patches | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
+stamp=$( { echo "$WHISPER_REPO $WHISPER_COMMIT"; ggml_patches whisper | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
 if ! fresh "$stt" "$stamp"; then
     rm -rf "$stt"
     git clone --quiet "$WHISPER_REPO" "$stt"
     git -C "$stt" checkout --quiet "$WHISPER_COMMIT"
-    ggml_patches | while read -r p; do git -C "$stt" apply --directory=ggml "$p"; done
+    ggml_patches whisper | while read -r p; do git -C "$stt" apply --directory=ggml "$p"; done
     echo "$stamp" > "$stt/.ox-say-stamp"
 fi
 # ox-stt and ox-align -ng set GGML_METAL_DEVICES=0 so that ggml registers no
