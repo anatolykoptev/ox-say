@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/anatolykoptev/ox-say/internal/glossary"
+	"github.com/anatolykoptev/ox-say/internal/stt"
 )
 
 func (d *Daemon) initGlossary() { d.Glossary = glossary.NewStore(d.Cfg.Home) }
@@ -101,4 +103,69 @@ func (d *Daemon) corrector() func(string) string {
 		out, _ := glossary.Apply(s, pairs)
 		return out
 	}
+}
+
+// correctResult applies the active pairs to a recognised result in place.
+func (d *Daemon) correctResult(res *stt.Result, route string) {
+	if n := glossary.ApplyResult(res, d.glossaryPairs()); n > 0 {
+		d.log.Info("glossary applied", slog.String("route", route), slog.Int("replacements", n))
+	}
+}
+
+// correctSessionBody applies the active pairs to a streaming session
+// response: its "text" and each segment's "text". Every other field is kept;
+// the "words" array is left as the recogniser gave it (the app reads only
+// "text"). The body passes through unchanged, byte for byte, when nothing was
+// replaced or it does not parse.
+func (d *Daemon) correctSessionBody(body []byte) []byte {
+	pairs := d.glossaryPairs()
+	if len(pairs) == 0 {
+		return body
+	}
+	var top map[string]json.RawMessage
+	if json.Unmarshal(body, &top) != nil {
+		return body
+	}
+	n := 0
+	fix := func(raw json.RawMessage) json.RawMessage {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return raw
+		}
+		out, k := glossary.Apply(s, pairs)
+		if k == 0 {
+			return raw
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return raw
+		}
+		n += k
+		return b
+	}
+	if raw, ok := top["text"]; ok {
+		top["text"] = fix(raw)
+	}
+	if raw, ok := top["segments"]; ok {
+		var segs []map[string]json.RawMessage
+		if json.Unmarshal(raw, &segs) == nil {
+			for _, s := range segs {
+				if t, ok := s["text"]; ok {
+					s["text"] = fix(t)
+				}
+			}
+			if b, err := json.Marshal(segs); err == nil {
+				top["segments"] = b
+			}
+		}
+	}
+	if n == 0 {
+		return body
+	}
+	out, err := json.Marshal(top)
+	if err != nil {
+		return body
+	}
+	d.log.Info("glossary applied", slog.String("route", "session"), slog.Int("replacements", n))
+	return out
 }

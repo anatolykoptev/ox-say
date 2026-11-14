@@ -205,6 +205,7 @@ func (d *Daemon) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, transcribeStatus(err), err.Error())
 		return
 	}
+	d.correctResult(res, "transcriptions")
 	writeTranscription(w, res, format)
 }
 
@@ -395,6 +396,7 @@ func (d *Daemon) toolTranscribe(ctx context.Context, _ *mcp.CallToolRequest, in 
 	if err != nil {
 		return nil, transcribeToolOut{}, err
 	}
+	d.correctResult(res, "mcp_transcribe")
 	if in.OutPath != "" {
 		raw, err := json.Marshal(res)
 		if err != nil {
