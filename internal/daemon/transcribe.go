@@ -217,12 +217,20 @@ func writeTranscription(w http.ResponseWriter, res *stt.Result, format string) {
 	case "text":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, res.Text)
-	case "srt":
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = io.WriteString(w, toSRT(res.Segments))
-	case "vtt":
-		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
-		_, _ = io.WriteString(w, toVTT(res.Segments))
+	case "srt", "vtt":
+		// A result with text but no timed segments renders as an empty
+		// file; say so instead of answering one.
+		if len(res.Segments) == 0 && res.Text != "" {
+			writeErr(w, http.StatusUnprocessableEntity, "the transcription has text but no timed segments to render as "+format)
+			return
+		}
+		if format == "srt" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = io.WriteString(w, toSRT(res.Segments))
+		} else {
+			w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+			_, _ = io.WriteString(w, toVTT(res.Segments))
+		}
 	case "verbose_json":
 		writeJSON(w, http.StatusOK, toOpenAIVerbose(res))
 	case "ox_json":
