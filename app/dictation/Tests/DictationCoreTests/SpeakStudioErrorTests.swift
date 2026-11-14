@@ -64,6 +64,20 @@ final class SpeakStudioErrorTests: XCTestCase {
         XCTAssertEqual(refuse(409, "styling a phrase cannot apply: the project was created with clone_mode ultimate"), .stylingUnavailable)
     }
 
+    /// The delivery-gate 409 carries the code `styling_unavailable` (produce_ops.go): the app keys on it the same
+    /// way it keys on `engine_busy_memory` — the words may change, the code may not. A daemon from before the
+    /// code still matches on its opening words.
+    /// Mutation: StudioClient.swift, `code == "styling_unavailable"` -> `false` -> RED (the code-only row).
+    func testTheStylingGateIsMatchedOnItsCode() {
+        let coded = body(#"{"error":{"message":"words the app never reads","type":"Conflict","code":"styling_unavailable"}}"#)
+        XCTAssertEqual(StudioClient.refusal(status: 409, body: coded), .stylingUnavailable)
+        // A code on another status is not this gate.
+        XCTAssertNotEqual(StudioClient.refusal(status: 500, body: coded), .stylingUnavailable)
+        // The code-free answer of an older daemon is still recognised by its words.
+        let legacy = body(#"{"error":{"message":"styling a phrase needs clone_mode reference; create the project with clone_mode reference","type":"Conflict"}}"#)
+        XCTAssertEqual(StudioClient.refusal(status: 409, body: legacy), .stylingUnavailable)
+    }
+
     func testThePanelsRefusalsReadInThePersonsLanguage() {
         let t: (L10nKey) -> String = { $0.rawValue }
         XCTAssertEqual(SpeakText.notice(StudioError.projectNotFinished, t), "speak.panel.err_not_finished")

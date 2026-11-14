@@ -40,10 +40,18 @@ const (
 	metaFile  = "meta.json"
 	oxFile    = "ox.json"
 	tmpPrefix = ".tmp-"
+	// tmpSweepMinAge is how long a leftover temp directory must have been
+	// untouched before New takes it: a younger one may belong to a live
+	// daemon mid-Put — a second `ox-say serve` must not delete the first's
+	// in-flight write.
+	tmpSweepMinAge = 2 * time.Minute
 )
 
 // rename is os.Rename; a var so a test can make the final step fail.
 var rename = os.Rename
+
+// removeAll is os.RemoveAll; a var so a test can make the sweep fail.
+var removeAll = os.RemoveAll
 
 // Store is a directory of transcripts.
 type Store struct {
@@ -58,24 +66,33 @@ func ValidID(id string) bool { return vproject.ValidID(id) }
 
 // New opens (creating it) the store directory with mode 0700 and removes the
 // temp directories an interrupted write or delete left behind. An existing
-// directory with looser permissions is tightened.
-func New(dir string) (*Store, error) {
+// directory with looser permissions is tightened. A temp directory younger
+// than tmpSweepMinAge is left alone — it may be a live daemon's in-flight
+// write — and one that cannot be removed is logged and kept rather than
+// failing the store over it.
+func New(dir string, log *slog.Logger) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir}
+	s := &Store{dir: dir, Log: log}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), tmpPrefix) {
-			if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
-				return nil, fmt.Errorf("transcripts: sweep %s: %w", e.Name(), err)
-			}
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), tmpPrefix) {
+			continue
+		}
+		info, ierr := e.Info()
+		if ierr != nil || now.Sub(info.ModTime()) < tmpSweepMinAge {
+			continue
+		}
+		if err := removeAll(filepath.Join(dir, e.Name())); err != nil && s.Log != nil {
+			s.Log.Warn("transcripts: cannot remove a leftover temp dir", slog.String("name", e.Name()), slog.Any("error", err))
 		}
 	}
 	return s, nil
@@ -203,7 +220,12 @@ func (s *Store) Get(id string) (Meta, []byte, error) {
 		return Meta{}, nil, err
 	}
 	ox, err := os.ReadFile(filepath.Join(s.dir, id, oxFile))
-	if err != nil {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		// deleted between the meta read and this one, or an entry that lost
+		// its document: the transcript is not there
+		return Meta{}, nil, ErrNotFound
+	case err != nil:
 		return Meta{}, nil, fmt.Errorf("transcripts: %s: %w", oxFile, err)
 	}
 	return m, ox, nil

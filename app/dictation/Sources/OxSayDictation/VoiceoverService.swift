@@ -65,7 +65,14 @@ final class VoiceoverService {
     /// and return when it has ended. The follower shows the project busy meanwhile; the answer is the project's final state.
     @discardableResult
     func followAndWait(id: String) async throws -> ProduceJob {
-        let job = try await client.voiceover(id: id)
+        // The first GET gets the same answer as a mid-wait one: a project deleted elsewhere is .gone
+        // («Проект удалён»), not a bare service refusal (JobWait.untilTerminal maps its own 404 the same way).
+        let job: ProduceJob
+        do {
+            job = try await client.voiceover(id: id)
+        } catch StudioError.refused(status: 404, _) {
+            throw JobWait.Failure.gone
+        }
         windowStarted.insert(id)
         follower.follow(job)
         let ended = try await JobWait.untilTerminal(id: id, poll: { [client] in try await client.voiceover(id: $0) },

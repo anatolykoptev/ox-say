@@ -152,7 +152,7 @@ func TestProduceHTTPLoudnessAndStepsOverrides(t *testing.T) {
 		{"steps zero", `{"script":"Привет.","inference_timesteps":0}`, "inference_timesteps"},
 		{"steps negative", `{"script":"Привет.","inference_timesteps":-1}`, "inference_timesteps"},
 		{"steps too many", `{"script":"Привет.","inference_timesteps":51}`, "inference_timesteps"},
-		{"steps fraction", `{"script":"Привет.","inference_timesteps":2.5}`, ""},
+		{"steps fraction", `{"script":"Привет.","inference_timesteps":2.5}`, "inference_timesteps"},
 		{"lufs too loud", `{"script":"Привет.","loudness_lufs":-3}`, "loudness_lufs"},
 		{"lufs string", `{"script":"Привет.","loudness_lufs":"loud"}`, ""},
 	}
@@ -191,4 +191,64 @@ func TestProduceHTTPLoudnessAndStepsOverrides(t *testing.T) {
 			t.Errorf("rendered with steps %d, want 8", r.Steps)
 		}
 	}
+}
+
+// The produce routes read integer knobs the way /v1/audio/speech does: any
+// mathematically whole JSON number — 8, 8.0, 1e3 — is the integer; a fraction,
+// a word or an out-of-range value is a plain 400 naming the field, never a
+// Go struct name.
+// Mutation: produce_http.go wholeField, `f != math.Trunc(f)` -> `false` -> RED
+// on the fraction rows.
+func TestProduceHTTPWholeJSONNumbers(t *testing.T) {
+	f := newFakePorts(t)
+	d, mux := produceMux(t, f)
+	var lastID string
+	for _, c := range []struct{ name, body string }{
+		{"steps decimal", `{"script":"Привет.","inference_timesteps":8.0}`},
+		{"steps exponent", `{"script":"Привет.","inference_timesteps":1e1}`},
+		{"takes decimal", `{"script":"Привет.","takes":2.0}`},
+		{"seed decimal", `{"script":"Привет.","seed":77.0}`},
+		{"seed exponent", `{"script":"Привет.","seed":7e2}`},
+	} {
+		rec := do(mux, http.MethodPost, "/v1/produce", c.body)
+		if rec.Code != http.StatusAccepted {
+			t.Errorf("%s: %d %s", c.name, rec.Code, rec.Body)
+			continue
+		}
+		var s vproject.Summary
+		if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil {
+			t.Fatal(err)
+		}
+		lastID = s.ID
+		waitTerminal(t, d.prod, s.ID)
+	}
+	if lastID != "" {
+		if m, err := d.prod.manifest(lastID); err != nil || m.Settings.Steps != 10 {
+			t.Errorf("1e1 steps stored %+v, want 10 (%v)", m.Settings, err)
+		}
+	}
+	for _, c := range []struct{ name, body, want string }{
+		{"steps fraction", `{"script":"Привет.","inference_timesteps":2.5}`, "inference_timesteps"},
+		{"steps word", `{"script":"Привет.","inference_timesteps":"eight"}`, "inference_timesteps"},
+		{"takes fraction", `{"script":"Привет.","takes":2.5}`, "takes"},
+		{"takes word", `{"script":"Привет.","takes":"two"}`, "takes"},
+		{"takes decimal out of range", `{"script":"Привет.","takes":9.0}`, "takes"},
+		{"seed fraction", `{"script":"Привет.","seed":1.5}`, "seed"},
+		{"seed word", `{"script":"Привет.","seed":"lucky"}`, "seed"},
+		{"steps range via decimal", `{"script":"Привет.","inference_timesteps":51.0}`, "inference_timesteps"},
+	} {
+		rec := do(mux, http.MethodPost, "/v1/produce", c.body)
+		body := rec.Body.String()
+		if rec.Code != http.StatusBadRequest || !strings.Contains(body, c.want) ||
+			strings.Contains(body, "unmarshal") || strings.Contains(body, "Go struct") {
+			t.Errorf("%s: %d %s", c.name, rec.Code, body)
+		}
+	}
+	// The same integer rule holds on the chunk route: a whole decimal counts.
+	id := createDone(t, mux, `{"script":"Раз. Два.\n\nТри.\n\nЧетыре.","voice":"nar","out_path":"`+filepath.Join(t.TempDir(), "v.wav")+`"}`)
+	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/0", `{"action":"regenerate","takes":1.0}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("chunk takes 1.0: %d %s", rec.Code, rec.Body)
+	}
+	waitDoneHTTP(t, mux, id)
 }

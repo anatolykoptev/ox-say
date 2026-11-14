@@ -310,10 +310,37 @@ func TestTranscriptsTextNeverReachesTheLog(t *testing.T) {
 	}
 }
 
+// blockedTranscriptsRig is a rig whose store open fails at start: the
+// transcripts path is held by a file, and the returned blocked path can be
+// removed to let a later request's retry succeed.
+func blockedTranscriptsRig(t *testing.T) (*transcriptsRig, string) {
+	t.Helper()
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	tmpdir := filepath.Join(dir, "tmp")
+	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmpdir)
+	t.Setenv("OXSAY_FAKE_STT_JSON", transcriptPayload)
+	if err := os.MkdirAll(filepath.Join(dir, "home"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(dir, "home", "transcripts")
+	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := newTestDaemon(t, dir, nil)
+	if d.Transcripts != nil {
+		t.Fatal("the store opened on a path held by a file")
+	}
+	sttSetup(t, d, dir)
+	return rigFor(t, d, dir, tmpdir), blocked
+}
+
 // A store that could not be opened must not take the daemon down: the routes say so, and no recognizer time is spent.
 func TestTranscriptsUnavailableStoreAnswers503BeforeTranscribing(t *testing.T) {
-	r := newTranscriptsRig(t)
-	r.d.Transcripts = nil
+	r, _ := blockedTranscriptsRig(t)
 	if code, body := r.post(t, nil); code != http.StatusServiceUnavailable {
 		t.Fatalf("POST without a store: %d (%s), want 503", code, body)
 	}
@@ -326,6 +353,92 @@ func TestTranscriptsUnavailableStoreAnswers503BeforeTranscribing(t *testing.T) {
 		if code, _, _ := r.do(t, c.method, c.path); code != http.StatusServiceUnavailable {
 			t.Errorf("%s %s without a store: %d, want 503", c.method, c.path, code)
 		}
+	}
+}
+
+// An init that failed at start is retried on the next request, not at the
+// next restart: once the path frees, the store opens and the routes serve.
+func TestTranscriptsStoreRetriesAfterAFailedInit(t *testing.T) {
+	r, blocked := blockedTranscriptsRig(t)
+	if code, _, _ := r.do(t, http.MethodGet, "/v1/transcripts"); code != http.StatusServiceUnavailable {
+		t.Fatalf("list with the store path held: %d, want 503", code)
+	}
+	if err := os.Remove(blocked); err != nil {
+		t.Fatal(err)
+	}
+	code, _, body := r.do(t, http.MethodGet, "/v1/transcripts")
+	if code != http.StatusOK || !strings.Contains(string(body), `"transcripts"`) {
+		t.Fatalf("list after the path freed: %d %s, want 200", code, body)
+	}
+}
+
+// List's skip-warning must reach the daemon log: a store wired to a logger
+// that drops it would leave a corrupt entry silently invisible (#415).
+func TestTranscriptsListWarnsOnACorruptEntry(t *testing.T) {
+	r := newTranscriptsRig(t)
+	bad := filepath.Join(r.d.Cfg.Home, "transcripts", "20261001-000000-abcdef")
+	if err := os.MkdirAll(bad, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "meta.json"), []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := r.do(t, http.MethodGet, "/v1/transcripts"); code != http.StatusOK {
+		t.Fatalf("list with a corrupt entry: %d, want 200 (the entry is skipped)", code)
+	}
+	if !testLogSaw(t, "skipping an unreadable entry") || !testLogSaw(t, "20261001-000000-abcdef") {
+		t.Fatal("the skipped-entry warning did not reach the daemon log")
+	}
+}
+
+// An entry whose ox.json is gone reads as not found — the same answer a
+// Delete that raced the two reads gives — never a 500.
+func TestTranscriptGetMetaWithoutDocumentAnswers404(t *testing.T) {
+	r := newTranscriptsRig(t)
+	bare := filepath.Join(r.d.Cfg.Home, "transcripts", "20261001-000000-abcdef")
+	if err := os.MkdirAll(bare, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bare, "meta.json"),
+		[]byte(`{"id":"20261001-000000-abcdef","title":"x","engine":"parakeet","created":"2026-10-01T00:00:00Z","seconds":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, _ := r.do(t, http.MethodGet, "/v1/transcripts/20261001-000000-abcdef")
+	if code != http.StatusNotFound {
+		t.Fatalf("meta without a document: %d, want 404", code)
+	}
+}
+
+// srt and vtt render only Segments: a stored result that has text but no
+// segments must not download as an empty file with a 200 (#415).
+func TestTranscriptGetWithTextAndNoSegmentsAnswers422(t *testing.T) {
+	r := newTranscriptsRig(t)
+	m, err := r.d.Transcripts.Put(transcripts.Meta{Title: "x"},
+		[]byte(`{"engine":"parakeet","duration_s":1.5,"elapsed_s":0.2,"text":"zebra quartz sentinel."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"srt", "vtt"} {
+		code, _, body := r.do(t, http.MethodGet, "/v1/transcripts/"+m.ID+"?format="+format)
+		if code != http.StatusUnprocessableEntity {
+			t.Errorf("format=%s on a segmentless result: %d (%s), want 422", format, code, body)
+		}
+	}
+	// The formats that carry text still serve it.
+	code, _, body := r.do(t, http.MethodGet, "/v1/transcripts/"+m.ID+"?format=text")
+	if code != http.StatusOK || !strings.Contains(string(body), "zebra") {
+		t.Fatalf("format=text on the same result: %d %s, want 200 with the text", code, body)
+	}
+	// A transcript of silence has nothing to render either way: an empty
+	// file is the honest answer there.
+	silent, err := r.d.Transcripts.Put(transcripts.Meta{Title: "s"},
+		[]byte(`{"engine":"parakeet","duration_s":1.5,"elapsed_s":0.2,"text":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, _ = r.do(t, http.MethodGet, "/v1/transcripts/"+silent.ID+"?format=vtt")
+	if code != http.StatusOK {
+		t.Fatalf("format=vtt on an empty transcript: %d, want 200", code)
 	}
 }
 
