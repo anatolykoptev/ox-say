@@ -97,7 +97,9 @@ final class MainWindowWiringTests: XCTestCase {
     /// step — a save alone keeps the old folder's warning and privacy line.
     /// Mutation: MainWindowSource.actions, `self.reloadSettings(pickedFolder: url)` ->
     /// `MeetingSettings.setFolder(url, self.host.defaults)` -> RED; the
-    /// `MeetingSettingsModel.folderPicked(` branch of reloadSettingsAsync -> plain `load` -> RED.
+    /// `MeetingSettingsModel.folderPicked(` branch of reloadSettingsAsync -> plain `load` -> RED;
+    /// reloadSettingsAsync, the `MeetingSettings.setFolder(pickedFolder, host.defaults)` line moved below
+    /// `let daemon = try? await ...` -> RED.
     func testTheFolderPickIsSavedAndRecomputedInOneStep() throws {
         let text = try window()
         let action = try XCTUnwrap(text.range(of: "a.chooseNotesFolder = {"), "the picker action").upperBound
@@ -106,6 +108,11 @@ final class MainWindowWiringTests: XCTestCase {
         let reload = try body(text, of: "private func reloadSettingsAsync(")
         XCTAssertTrue(reload.contains("MeetingSettingsModel.folderPicked("),
                       "the picked branch stores and reads back in one core call")
+        let store = try XCTUnwrap(reload.range(of: "MeetingSettings.setFolder(pickedFolder, host.defaults)"),
+                                  "the pick is stored synchronously, before the daemon round-trip")
+        let await_ = try XCTUnwrap(reload.range(of: "await "), "the daemon read")
+        XCTAssertLessThan(store.lowerBound, await_.lowerBound,
+                          "the pick is stored before the first await: the old folder stays active for up to 10 s otherwise")
     }
 
     /// Rename and speakers go through the meeting feature, which also refreshes the notes-folder copy; the menu's panel

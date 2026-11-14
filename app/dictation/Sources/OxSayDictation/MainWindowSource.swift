@@ -441,9 +441,10 @@ final class MainWindowSource {
     private func reloadSettings(pickedFolder url: URL) { Task { @MainActor in await reloadSettingsAsync(pickedFolder: url) } }
 
     /// The settings from their stores; the daemon's retention wins over the app's copy. A picked
-    /// folder is stored and read back through the model's one step, so the iCloud answer is the
-    /// new folder's own.
+    /// folder is stored before the daemon round-trip (up to 10 s), so new notes go to it at once, and
+    /// read back through the model's one step after the reply, so the iCloud answer is the new folder's own.
     private func reloadSettingsAsync(pickedFolder: URL? = nil) async {
+        if let pickedFolder { MeetingSettings.setFolder(pickedFolder, host.defaults) }
         let daemon = try? await host.client.meetingDaemonSettings()
         let notes = host.daemonStatus()?.notes
         model.data.meetingSettings = pickedFolder.map {
