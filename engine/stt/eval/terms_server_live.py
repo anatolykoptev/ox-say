@@ -19,6 +19,7 @@ import struct
 import subprocess
 import sys
 import time
+import wave
 
 
 def b64(s):
@@ -82,6 +83,24 @@ def main(oxstt, model, vad, wav, want):
                 st2, _ = call(port, "POST", "/sessions/%s/audio" % sid, pcm, {"Content-Type": "application/octet-stream"})
                 st3, b3 = call(port, "POST", "/sessions/%s/finish" % sid, b"{}", {"Content-Type": "application/json"})
                 check(name + " session answers audio+finish", st2 == 200 and st3 == 200)
+
+        # the dictation path end to end: the audio streamed through a session whose create body carries the list
+        w = wave.open(wav, "rb")
+        samples = struct.unpack("<%dh" % w.getnframes(), w.readframes(w.getnframes()))
+        pcm = struct.pack("<%df" % len(samples), *[x / 32768.0 for x in samples]) + struct.pack("<%df" % 16000, *([0.0] * 16000))
+
+        def streamed(body):
+            st, b = call(port, "POST", "/sessions", body, {"Content-Type": "application/json"})
+            sid = json.loads(b)["id"]
+            for i in range(0, len(pcm), 1 << 18):
+                call(port, "POST", "/sessions/%s/audio" % sid, pcm[i:i + (1 << 18)], {"Content-Type": "application/octet-stream"})
+            st, b = call(port, "POST", "/sessions/%s/finish" % sid, b"{}", {"Content-Type": "application/json"})
+            return json.loads(b).get("text", "") if st == 200 else ""
+
+        plain, boosted = streamed(b""), streamed(good.encode())
+        print("     session text without list:", plain)
+        print("     session text with list:   ", boosted)
+        check("session finish text carries the written form only with the list", want in boosted and want not in plain)
     finally:
         srv.terminate()
         try:
