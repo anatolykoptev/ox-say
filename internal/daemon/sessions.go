@@ -112,7 +112,7 @@ func (d *Daemon) handleSTTSessionCreate(w http.ResponseWriter, r *http.Request) 
 		writeSessionErr(w, http.StatusServiceUnavailable, fmt.Sprintf("stt server: %v", err))
 		return
 	}
-	status, body := d.sttSessionProxy(w, r, base, "/sessions", sessionMaxJSON)
+	status, body := d.sttSessionProxy(w, r, base, "/sessions", sessionMaxJSON, nil)
 	if status/100 == 2 {
 		var created struct {
 			ID string `json:"id"`
@@ -164,7 +164,11 @@ func (d *Daemon) sttSessionOp(w http.ResponseWriter, r *http.Request, op string,
 	if op != "" {
 		up += "/" + op
 	}
-	status, _ := d.sttSessionProxy(w, r, base, up, limit)
+	var rewrite func([]byte) []byte
+	if op == "finish" || op == "audio" {
+		rewrite = d.correctSessionBody
+	}
+	status, _ := d.sttSessionProxy(w, r, base, up, limit, rewrite)
 	switch {
 	case op == "audio" && status/100 == 2:
 		d.noteSTTSession(id) // session traffic refreshes its idle clock
@@ -181,7 +185,7 @@ func (d *Daemon) sttSessionOp(w http.ResponseWriter, r *http.Request, op string,
 // The status returned is what was written to the client — the upstream's
 // code on a proxy-through, the proxy's own on a local refusal — and the
 // body the one sent back, so the caller can keep the session registry.
-func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, path string, limit int64) (int, []byte) {
+func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, path string, limit int64, rewrite func([]byte) []byte) (int, []byte) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		writeSessionErr(w, http.StatusBadRequest, fmt.Sprintf("cannot read body: %v", err))
@@ -212,6 +216,9 @@ func (d *Daemon) sttSessionProxy(w http.ResponseWriter, r *http.Request, base, p
 		return http.StatusBadGateway, nil
 	}
 	d.logSegments(out, r.PathValue("id"))
+	if rewrite != nil && resp.StatusCode/100 == 2 {
+		out = rewrite(out)
+	}
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	} else {
@@ -235,8 +242,9 @@ type sessionSegment struct {
 }
 
 // logSegments writes one "stt segment" Info line per segment the upstream
-// response carries — parsed off a copy; the body passed to the client stays
-// byte-for-byte. A response without segments (create, delete, an error
+// response carries — parsed off a copy; the body passed to the client is the
+// upstream's, except that the glossary may rewrite the text of an audio or
+// finish response afterwards. A response without segments (create, delete, an error
 // body) logs nothing. Low volume by design: one line per closed utterance.
 // sessID attributes the line to its session — the first 8 id chars — so
 // concurrent sessions' lines can be told apart; "" on the create route,

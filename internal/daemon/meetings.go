@@ -23,6 +23,7 @@ import (
 
 	"github.com/anatolykoptev/ox-say/internal/config"
 	"github.com/anatolykoptev/ox-say/internal/engine"
+	"github.com/anatolykoptev/ox-say/internal/glossary"
 	"github.com/anatolykoptev/ox-say/internal/meeting"
 	"github.com/anatolykoptev/ox-say/internal/stt"
 )
@@ -555,6 +556,16 @@ func (d *Daemon) initMeetings() {
 		// Without unified memory the recognizer runs on the CPU, far slower than
 		// real time, and one call holds it for dictation too: short pieces.
 		PieceSeconds: d.pieceSeconds(),
+		// The glossary, loaded once per meeting: a pair filed while a meeting
+		// transcribes applies from the next one.
+		Correct: func() (func(string) string, []string) {
+			pairs := d.glossaryPairs()
+			ids := make([]string, 0, len(pairs))
+			for _, p := range pairs {
+				ids = append(ids, p.ID)
+			}
+			return func(s string) string { out, _ := glossary.Apply(s, pairs); return out }, ids
+		},
 	})
 }
 

@@ -41,6 +41,8 @@ func Run(args []string, stdout, stderr io.Writer, version string) int {
 		return cmdVoice(args[1:], stdout, stderr)
 	case "transcribe":
 		return cmdTranscribe(args[1:], stdout, stderr)
+	case "vocab":
+		return cmdVocab(args[1:], stdout, stderr)
 	case "produce":
 		return cmdProduce(args[1:], stdout, stderr, producePollInterval)
 	case "status":
@@ -75,6 +77,8 @@ Usage:
   ox-say voice save <name> <take path> [--replace]
   ox-say voice ls
   ox-say voice rm <name>
+  ox-say vocab add <heard> <meant> [--context sentence]
+  ox-say vocab ls | ok <id> | rm <id>
   ox-say produce <script.txt|-> [-v v] [-i style] [-t title] [-o out.wav] [--preset p] [--seed N] [--takes N]
                  [--clone-mode m] [--overwrite] [--allow-battery] [--no-wait]
   ox-say produce status|resume|cancel|rm <id>   ox-say produce chunk <id> <n> --regen N|--pick KEY|--text "…"

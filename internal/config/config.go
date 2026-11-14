@@ -289,6 +289,26 @@ func EnvKeys() []string {
 	return keys
 }
 
+// defaultHome is the app-support dir the daemon's files live under when
+// OX_SAY_HOME is unset.
+func defaultHome(homeDir string) string {
+	return filepath.Join(homeDir, "Library", "Application Support", "ox-say")
+}
+
+// Home resolves the daemon home the way Load does — OX_SAY_HOME, else the
+// default app-support dir — so the CLI finds the files the daemon writes
+// next to glossary.json (owner.token) without loading the whole config.
+func Home() string {
+	if h := os.Getenv("OX_SAY_HOME"); h != "" {
+		return h
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return defaultHome(homeDir)
+}
+
 // Load reads configuration from the environment, then applies any flags that
 // were explicitly set on fs (see RegisterFlags). It refuses a non-loopback
 // listen address: the API has no auth and must never bind a LAN interface.
@@ -330,7 +350,7 @@ func load(getenv func(string) string, overrides map[string]string) (*Config, err
 		return nil, err
 	}
 	if c.Home == "" {
-		c.Home = filepath.Join(homeDir, "Library", "Application Support", "ox-say")
+		c.Home = defaultHome(homeDir)
 	}
 	engineDir := defaultEngineDir(c.Home)
 

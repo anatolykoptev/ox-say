@@ -1,0 +1,393 @@
+package daemon
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/anatolykoptev/ox-say/internal/glossary"
+)
+
+// msgLog counts records by message.
+type msgLog struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (h *msgLog) Enabled(context.Context, slog.Level) bool { return true }
+func (h *msgLog) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	h.msgs = append(h.msgs, r.Message)
+	h.mu.Unlock()
+	return nil
+}
+func (h *msgLog) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *msgLog) WithGroup(string) slog.Handler      { return h }
+func (h *msgLog) count(m string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, x := range h.msgs {
+		if x == m {
+			n++
+		}
+	}
+	return n
+}
+
+// callWith is call plus request headers.
+func callWith(t *testing.T, mux http.Handler, method, path, body string, hdr map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// ownerAuth reads the bearer the daemon wrote at $OX_SAY_HOME/owner.token —
+// the file, not the field, so the test checks what a real client sends.
+func ownerAuth(t *testing.T, d *Daemon) map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(d.Cfg.Home, OwnerTokenFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]string{"Authorization": "Bearer " + strings.TrimSpace(string(raw))}
+}
+
+// Mutation: http.go Routes, delete the `d.glossaryRoutes(mux)` line -> RED (404 on every call).
+func TestGlossaryRoutes(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	auth := ownerAuth(t, d)
+
+	rec := call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"Воксей","meant":"OxSay","context":"сделай Воксей релиз"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add: %d %s", rec.Code, rec.Body)
+	}
+	var p glossary.Pair
+	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil || p.Status != glossary.Candidate {
+		t.Fatalf("add body %s (%v)", rec.Body, err)
+	}
+	if rec := callWith(t, mux, http.MethodPost, "/v1/glossary/"+p.ID+"/approve", "{}", auth); rec.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body)
+	}
+	if got := d.corrector()("открой Воксей"); got != "открой OxSay" {
+		t.Fatalf("corrector = %q", got)
+	}
+	if rec := callWith(t, mux, http.MethodPost, "/v1/glossary/"+p.ID+"/reject", "{}", auth); rec.Code != http.StatusOK {
+		t.Fatalf("reject: %d", rec.Code)
+	}
+	rec = call(t, mux, http.MethodGet, "/v1/glossary", "")
+	var list struct{ Pairs []glossary.Pair }
+	if json.Unmarshal(rec.Body.Bytes(), &list) != nil || len(list.Pairs) != 1 || list.Pairs[0].Status != glossary.Rejected {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body)
+	}
+	for _, c := range []struct {
+		method, path, body string
+		code               int
+	}{
+		{http.MethodPost, "/v1/glossary", `{"heard":"","meant":"x"}`, http.StatusBadRequest},
+		{http.MethodPost, "/v1/glossary", `{"heard":"a","meant":"b","source":"owner"}`, http.StatusBadRequest},
+		{http.MethodPost, "/v1/glossary", `{"heard":"x","meant":"a\nb"}`, http.StatusBadRequest},
+		{http.MethodPost, "/v1/glossary", `{"heard":"x","meant":"a;b"}`, http.StatusBadRequest},
+		{http.MethodPost, "/v1/glossary", `{"heard":"x","meant":"one two three four five"}`, http.StatusBadRequest},
+		{http.MethodPost, "/v1/glossary", `{"heard":"node.js","meant":"Node.js"}`, http.StatusBadRequest},
+	} {
+		if rec := call(t, mux, c.method, c.path, c.body); rec.Code != c.code {
+			t.Errorf("%s %s %s = %d, want %d", c.method, c.path, c.body, rec.Code, c.code)
+		}
+	}
+	if rec := callWith(t, mux, http.MethodPost, "/v1/glossary/ffffffff/approve", "{}", auth); rec.Code != http.StatusNotFound {
+		t.Errorf("approve unknown id = %d, want 404", rec.Code)
+	}
+	call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"окс сей","meant":"OxSay"}`)
+	if rec := call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"окс сей","meant":"OxPulse"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("conflict = %d", rec.Code)
+	}
+}
+
+// Approving or rejecting is the owner's call, made at a terminal: the routes
+// answer 403 without the bearer the daemon wrote at $OX_SAY_HOME/owner.token
+// (created once, 32 bytes hex, mode 0600), while list and add stay open —
+// an agent files candidates, it never settles them.
+// Mutation: glossary_http.go handleGlossaryStatus, delete the ownerOK check -> RED.
+func TestGlossaryStatusIsOwnerOnly(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+
+	st, err := os.Stat(filepath.Join(d.Cfg.Home, OwnerTokenFile))
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("owner.token: stat %v err %v; want mode 0600", st, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(d.Cfg.Home, OwnerTokenFile))
+	if err != nil || len(strings.TrimSpace(string(raw))) != 64 {
+		t.Fatalf("owner.token = %q, want 64 hex chars", raw)
+	}
+
+	rec := call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"Воксей","meant":"OxSay"}`)
+	var p glossary.Pair
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil {
+		t.Fatalf("add stays open to agents: %d %s", rec.Code, rec.Body)
+	}
+
+	for _, bad := range []map[string]string{
+		nil,
+		{"Authorization": "Bearer 0000000000000000000000000000000000000000000000000000000000000000"},
+		{"Authorization": "Basic dGVzdA=="},
+	} {
+		for _, verb := range []string{"approve", "reject"} {
+			if rec := callWith(t, mux, http.MethodPost, "/v1/glossary/"+p.ID+"/"+verb, "{}", bad); rec.Code != http.StatusForbidden {
+				t.Fatalf("%s with Authorization %q: %d, want 403", verb, bad["Authorization"], rec.Code)
+			}
+		}
+	}
+	if got, _ := d.Glossary.List(); len(got) != 1 || got[0].Status != glossary.Candidate {
+		t.Fatalf("a refused call changed the pair: %+v", got)
+	}
+
+	auth := ownerAuth(t, d)
+	if rec := callWith(t, mux, http.MethodPost, "/v1/glossary/"+p.ID+"/approve", "{}", auth); rec.Code != http.StatusOK {
+		t.Fatalf("owner approve: %d %s", rec.Code, rec.Body)
+	}
+	if rec := callWith(t, mux, http.MethodPost, "/v1/glossary/"+p.ID+"/reject", "{}", auth); rec.Code != http.StatusOK {
+		t.Fatalf("owner reject: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// The owner bearer is accepted only as the daemon writes it: 64 lowercase
+// hex and a mode with no group/other bits (one trailing newline is fine).
+// A wider mode is tightened and kept, wrong content is regenerated
+// atomically at 0600 with a single Warn that never carries the value, and
+// a home that cannot be written fails closed — ownerOK denies every call.
+// Mutation: glossary_http.go ownerToken, return any non-empty trimmed
+// content -> RED (the short file is used as the bearer).
+func TestOwnerTokenFile(t *testing.T) {
+	valid := strings.Repeat("a1", 32)
+	put := func(t *testing.T, home, data string, mode os.FileMode) string {
+		t.Helper()
+		path := filepath.Join(home, OwnerTokenFile)
+		if err := os.WriteFile(path, []byte(data), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	mode := func(t *testing.T, path string) os.FileMode {
+		t.Helper()
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Mode().Perm()
+	}
+	read := func(t *testing.T, path string) string {
+		t.Helper()
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(raw))
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		home := t.TempDir()
+		path := put(t, home, valid+"\n", 0o600)
+		if tok := ownerToken(home, slog.New(&msgLog{})); tok != valid {
+			t.Fatalf("tok = %q, want the file's own token", tok)
+		}
+		if got := mode(t, path); got != 0o600 {
+			t.Fatalf("mode = %o, want 0600", got)
+		}
+	})
+
+	t.Run("world-readable gets tightened", func(t *testing.T) {
+		home := t.TempDir()
+		path := put(t, home, valid+"\n", 0o644)
+		if tok := ownerToken(home, slog.New(&msgLog{})); tok != valid {
+			t.Fatalf("tok = %q, want the file's own token kept", tok)
+		}
+		if got := mode(t, path); got != 0o600 {
+			t.Fatalf("mode = %o, want 0600", got)
+		}
+	})
+
+	for name, data := range map[string]string{
+		"short":     "abc\n",
+		"non-hex":   strings.Repeat("z", 64) + "\n",
+		"uppercase": strings.Repeat("AB", 32) + "\n",
+	} {
+		t.Run(name+" is regenerated", func(t *testing.T) {
+			home := t.TempDir()
+			path := put(t, home, data, 0o600)
+			h := &msgLog{}
+			tok := ownerToken(home, slog.New(h))
+			if len(tok) != 64 || tok == strings.TrimSpace(data) {
+				t.Fatalf("tok = %q, want a fresh 64-hex token", tok)
+			}
+			if got := read(t, path); got != tok {
+				t.Fatalf("file = %q, tok = %q", got, tok)
+			}
+			if got := mode(t, path); got != 0o600 {
+				t.Fatalf("mode = %o, want 0600", got)
+			}
+			if n := h.count("glossary: the owner token file is not valid; a new one is generated"); n != 1 {
+				t.Fatalf("warnings = %d, want 1", n)
+			}
+		})
+	}
+
+	t.Run("unwritable home fails closed", func(t *testing.T) {
+		home := t.TempDir()
+		if err := os.Chmod(home, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
+		if tok := ownerToken(home, slog.New(&msgLog{})); tok != "" {
+			t.Fatalf("tok = %q, want empty", tok)
+		}
+		d := &Daemon{}
+		req := httptest.NewRequest(http.MethodPost, "/v1/glossary/x/approve", nil)
+		req.Header.Set("Authorization", "Bearer "+strings.Repeat("a1", 32))
+		if d.ownerOK(req) {
+			t.Fatal("ownerOK passed without a token")
+		}
+	})
+}
+
+// A broken glossary costs the corrections, never the text, and warns once per job, not once per line.
+// Mutation: glossary_http.go corrector, call d.glossaryPairs() inside the returned closure -> RED (3 warnings).
+func TestCorrectorLoadsOnceAndFailsOpen(t *testing.T) {
+	d, _ := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	h := &msgLog{}
+	d.log = slog.New(h)
+	if err := os.WriteFile(filepath.Join(d.Cfg.Home, glossary.FileName), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fix := d.corrector()
+	for _, s := range []string{"открой Воксей", "два", "три"} {
+		if got := fix(s); got != s {
+			t.Fatalf("fix(%q) = %q", s, got)
+		}
+	}
+	if n := h.count("glossary: not applied"); n != 1 {
+		t.Fatalf("warnings = %d, want 1", n)
+	}
+}
+
+// glossaryPairs caches the active pairs by the file's mtime+size: the
+// per-chunk path stats one small file instead of parsing it, and a change is
+// picked up the next call.
+// Mutation: glossary_http.go glossaryPairs, drop the `k == d.glKey` return -> RED (two loads).
+func TestGlossaryPairsCachesByFileState(t *testing.T) {
+	d, _ := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+
+	loads := 0
+	inner := d.Glossary.Active
+	d.activePairs = func() ([]glossary.Pair, error) { loads++; return inner() }
+
+	d.glossaryPairs()
+	d.glossaryPairs()
+	if loads != 1 {
+		t.Fatalf("loads = %d, want 1 for an unchanged file", loads)
+	}
+	p, err := d.Glossary.Add("sentinel", "guardian", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Glossary.Approve(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := d.glossaryPairs()
+	if loads != 2 || len(got) != 1 || got[0].Meant != "guardian" {
+		t.Fatalf("after a change: loads = %d pairs = %+v", loads, got)
+	}
+}
+
+// A write the daemon makes itself can leave glossary.json with the same
+// mtime+size — here the seen counter grows in place — so the pair cache is
+// dropped on every successful add/approve/reject, not inferred from stat.
+// Mutation: glossary_http.go handleGlossaryAdd/handleGlossaryStatus, drop
+// the invalidate call -> RED (the cache still serves seen 1).
+func TestGlossaryPairsDropsCacheOnOwnWrite(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	auth := ownerAuth(t, d)
+	path := filepath.Join(d.Cfg.Home, glossary.FileName)
+
+	rec := call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"sentinel","meant":"guardian"}`)
+	var p glossary.Pair
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil {
+		t.Fatalf("add: %d %s", rec.Code, rec.Body)
+	}
+	if rec := callWith(t, mux, http.MethodPost, "/v1/glossary/"+p.ID+"/approve", "{}", auth); rec.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body)
+	}
+	pairs := d.glossaryPairs()
+	if len(pairs) != 1 || pairs[0].Seen != 1 {
+		t.Fatalf("pairs = %+v", pairs)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"sentinel","meant":"guardian"}`); rec.Code != http.StatusOK {
+		t.Fatalf("second add: %d %s", rec.Code, rec.Body)
+	}
+	if err := os.Chtimes(path, st.ModTime(), st.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := d.glossaryFileKey(), (glKey{mtime: st.ModTime().UnixNano(), size: st.Size(), exist: true}); got != want {
+		t.Fatalf("file key = %+v, want the pre-write state %+v restored", got, want)
+	}
+	if pairs = d.glossaryPairs(); len(pairs) != 1 || pairs[0].Seen != 2 {
+		t.Fatalf("pairs = %+v, want seen 2 after the daemon's own write", pairs)
+	}
+}
+
+// A malformed glossary warns once per distinct file state — the state is the
+// mtime+size pair — then stays quiet until the file changes; corrections
+// still fail open.
+func TestGlossaryPairsWarnsOncePerState(t *testing.T) {
+	d, _ := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	h := &msgLog{}
+	d.log = slog.New(h)
+	path := filepath.Join(d.Cfg.Home, glossary.FileName)
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.glossaryPairs()
+	d.glossaryPairs()
+	if n := h.count("glossary: not applied"); n != 1 {
+		t.Fatalf("warnings = %d, want 1 per state", n)
+	}
+	if err := os.WriteFile(path, []byte("{ still broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.glossaryPairs()
+	if n := h.count("glossary: not applied"); n != 2 {
+		t.Fatalf("warnings = %d, want 2 for a new state", n)
+	}
+	if err := os.WriteFile(path, []byte(`{"version":1,"pairs":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.glossaryPairs()
+	if n := h.count("glossary: not applied"); n != 2 {
+		t.Fatalf("warnings = %d, want 2 after the fix", n)
+	}
+}
