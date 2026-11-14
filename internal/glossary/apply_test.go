@@ -102,6 +102,38 @@ func TestApplyMatcherEdges(t *testing.T) {
 	}
 }
 
+// A span that already reads as the full meant — edges and all — is left
+// alone: C → C++ must not turn "C++" into "C+++", foo → [foo] must not turn
+// "[foo]" into "[[foo]]". The normal case still replaces.
+// Mutation: apply.go Apply, delete the alreadyMeant check -> RED ("use C+++ now").
+func TestApplyLeavesAlreadyCorrect(t *testing.T) {
+	cpp := []Pair{act("c", "C++")}
+	if got, n := Apply("use C++ now", cpp); got != "use C++ now" || n != 0 {
+		t.Fatalf("C++ = %q, %d", got, n)
+	}
+	if got, n := Apply("use c++ now", cpp); got != "use c++ now" || n != 0 {
+		t.Fatalf("c++ = %q, %d", got, n)
+	}
+	if got, n := Apply("use c now", cpp); got != "use C++ now" || n != 1 {
+		t.Fatalf("c = %q, %d", got, n)
+	}
+	bracket := []Pair{act("foo", "[foo]")}
+	if got, n := Apply("call [foo] twice", bracket); got != "call [foo] twice" || n != 0 {
+		t.Fatalf("[foo] = %q, %d", got, n)
+	}
+	if got, n := Apply("call foo twice", bracket); got != "call [foo] twice" || n != 1 {
+		t.Fatalf("foo = %q, %d", got, n)
+	}
+	ws := []stt.Word{{W: " C", S: 0, E: 0.3, P: 0.9}, {W: "++", S: 0.3, E: 0.5, P: 0.9}, {W: " now", S: 0.5, E: 0.8, P: 0.9}}
+	if got := ApplyWords(ws, cpp); len(got) != 3 || got[0].W != " C" || got[1].W != "++" {
+		t.Fatalf("words C++ = %+v", got)
+	}
+	wb := []stt.Word{{W: " [foo]", S: 0, E: 0.3, P: 0.9}, {W: " twice", S: 0.3, E: 0.6, P: 0.9}}
+	if got := ApplyWords(wb, bracket); len(got) != 2 || got[0].W != " [foo]" {
+		t.Fatalf("words [foo] = %+v", got)
+	}
+}
+
 // Mutation: apply.go ApplyResult, skip the Segments loop -> RED (subtitles keep the wrong word).
 func TestApplyResult(t *testing.T) {
 	res := &stt.Result{Text: "открой Воксей", Segments: []stt.Segment{{S: 0, E: 1, Text: "открой Воксей"}}, Words: []stt.Word{{W: "открой"}, {W: " Воксей"}}}

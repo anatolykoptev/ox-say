@@ -89,6 +89,12 @@ func containsSeq(hay, needle []string) bool {
 type compiled struct {
 	heard []string
 	meant string
+	// mkey is the folded meant minus its non-word edges; lead and trail are
+	// those edges folded (the "[" and "]" of "[foo]", the "++" of "C++") — a
+	// meant that is only words and whitespace has neither.
+	mkey  string
+	lead  string
+	trail string
 }
 
 // compile keeps the active pairs, longest heard form first.
@@ -99,7 +105,22 @@ func compile(pairs []Pair) []compiled {
 			continue
 		}
 		if h := words(p.Heard); len(h) > 0 {
-			cs = append(cs, compiled{h, p.Meant})
+			c := compiled{heard: h, meant: p.Meant}
+			mt := tokenize(p.Meant)
+			if len(mt) > 0 && !mt[0].word {
+				c.lead = fold(mt[0].s)
+				mt = mt[1:]
+			}
+			if len(mt) > 0 && !mt[len(mt)-1].word {
+				c.trail = fold(mt[len(mt)-1].s)
+				mt = mt[:len(mt)-1]
+			}
+			var mid strings.Builder
+			for _, t := range mt {
+				mid.WriteString(t.s)
+			}
+			c.mkey = fold(mid.String())
+			cs = append(cs, c)
 		}
 	}
 	sort.SliceStable(cs, func(i, j int) bool { return len(cs[i].heard) > len(cs[j].heard) })
@@ -120,12 +141,10 @@ func Apply(text string, pairs []Pair) (string, int) {
 	for i := 0; i < len(toks); {
 		if toks[i].word {
 			if c, end, ok := match(toks, i, cs); ok {
-				var span strings.Builder
-				for _, t := range toks[i:end] {
-					span.WriteString(t.s)
-				}
-				if span.String() == c.meant {
-					b.WriteString(c.meant)
+				if alreadyMeant(toks, i, end, c) {
+					for _, t := range toks[i:end] {
+						b.WriteString(t.s)
+					}
 				} else {
 					b.WriteString(c.meant)
 					n++
@@ -141,6 +160,32 @@ func Apply(text string, pairs []Pair) (string, int) {
 		return text, 0
 	}
 	return b.String(), n
+}
+
+// alreadyMeant reports whether the source at toks[i:end] already reads as
+// the full meant — its word part plus the non-word edges it carries — so a
+// replacement would double the decoration: C → C++ on "C++" would write
+// "C+++", foo → [foo] on "[foo]" "[[foo]]". A meant of plain words compares
+// the span verbatim (github → GitHub still corrects the case).
+func alreadyMeant(toks []token, i, end int, c compiled) bool {
+	var span strings.Builder
+	for _, t := range toks[i:end] {
+		span.WriteString(t.s)
+	}
+	if c.lead == "" && c.trail == "" {
+		return span.String() == c.meant
+	}
+	if fold(span.String()) != c.mkey {
+		return false
+	}
+	left, right := "", ""
+	if i > 0 {
+		left = fold(toks[i-1].s)
+	}
+	if end < len(toks) {
+		right = fold(toks[end].s)
+	}
+	return strings.HasSuffix(left, c.lead) && strings.HasPrefix(right, c.trail)
 }
 
 // match tries each pair at toks[i]; the words of a multi-word form may be
@@ -212,6 +257,11 @@ func ApplyWords(ws []stt.Word, pairs []Pair) []stt.Word {
 			i++
 			continue
 		}
+		if alreadyMeantWords(ws, i, n, c) {
+			out = append(out, ws[i:i+n]...)
+			i += n
+			continue
+		}
 		first, last := ws[i], ws[i+n-1]
 		pre, _ := edges(first.W)
 		_, post := edges(last.W)
@@ -223,6 +273,41 @@ func ApplyWords(ws []stt.Word, pairs []Pair) []stt.Word {
 		i += n
 	}
 	return out
+}
+
+// alreadyMeantWords is alreadyMeant for a word list: the meant's edges may
+// live inside the matched words (" [foo]") or in the words next to them
+// (" C" + "++"), so the check reads the previous word's post and the next
+// one's pre.
+func alreadyMeantWords(ws []stt.Word, i, n int, c compiled) bool {
+	if c.lead == "" && c.trail == "" {
+		return false
+	}
+	left, span, right := "", "", ""
+	if i > 0 {
+		_, post := edges(ws[i-1].W)
+		left = post
+	}
+	for k := 0; k < n; k++ {
+		w := ws[i+k].W
+		pre, post := edges(w)
+		if k == 0 {
+			left += pre
+		} else {
+			span += pre
+		}
+		span += w[len(pre) : len(w)-len(post)]
+		if k == n-1 {
+			right = post
+		}
+	}
+	if i+n < len(ws) {
+		pre, _ := edges(ws[i+n].W)
+		right += pre
+	}
+	return fold(span) == c.mkey &&
+		strings.HasSuffix(fold(left), c.lead) &&
+		strings.HasPrefix(fold(right), c.trail)
 }
 
 func matchWords(ws []stt.Word, i int, cs []compiled) (compiled, int, bool) {
