@@ -170,8 +170,11 @@ func (d *Daemon) correctResult(res *stt.Result, route string) {
 // correctSessionBody applies the active pairs to a streaming session
 // response: its "text" and each segment's "text". Every other field is kept;
 // the "words" array is left as the recogniser gave it (the app reads only
-// "text"). The body passes through unchanged, byte for byte, when nothing was
-// replaced or it does not parse.
+// "text"). A pair whose words an /audio chunk boundary splits is corrected
+// only in the final "text" of /finish — the per-chunk and finish "segments"
+// texts are rewritten one response at a time and never stitched. The body
+// passes through unchanged, byte for byte, when nothing was replaced or it
+// does not parse.
 func (d *Daemon) correctSessionBody(body []byte) []byte {
 	pairs := d.glossaryPairs()
 	if len(pairs) == 0 {

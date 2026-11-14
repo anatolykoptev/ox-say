@@ -65,6 +65,12 @@ local process, which could read the token file anyway.
 Active pairs apply to dictation responses (streaming sessions), `/v1/audio/transcriptions`,
 `/v1/transcripts` when read (the stored document stays raw, so rejecting a pair restores the
 original words), the MCP `transcribe` tool, and meetings transcribed after the pair is active.
+Batch results rewrite a match that spans segments: the meant goes into the first spanned
+segment, the matched words come out of the later ones (a segment that becomes empty is dropped,
+the rest keep their timings), so text, words, SRT and VTT agree. In a streaming session a pair
+whose words an `/audio` chunk boundary splits is corrected only in the final `text` of
+`/finish` — the per-chunk `segments` texts are rewritten one response at a time and keep what
+they decoded.
 
 Model routes (list the models this Mac can run, and install or remove the optional ones):
 

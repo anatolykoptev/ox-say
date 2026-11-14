@@ -63,6 +63,54 @@ func TestCorrectSessionBody(t *testing.T) {
 	}
 }
 
+// A multi-word match that spans segments puts the meant in the first
+// spanned segment, removes the matched words from the later ones and drops
+// a segment that becomes empty — Text, Words, Segments, SRT and VTT agree.
+// The fixture is Whisper-shaped: one segment per word.
+// Mutation: apply.go ApplyResult, keep the per-segment Apply -> RED
+// (Segments keep the split heard form while Text is corrected).
+func TestApplyResultSpansSegments(t *testing.T) {
+	pairs := []glossary.Pair{{Heard: "pill versus pasted", Meant: "built vs tested", Status: glossary.Active}}
+	res := &stt.Result{
+		Text: "said pill versus pasted and more",
+		Segments: []stt.Segment{
+			{S: 0, E: 1, Text: "said"},
+			{S: 1, E: 2, Text: "pill"},
+			{S: 2, E: 3, Text: "versus"},
+			{S: 3, E: 4, Text: "pasted and more"},
+		},
+		Words: []stt.Word{
+			{W: "said", S: 0, E: 1}, {W: " pill", S: 1, E: 2},
+			{W: " versus", S: 2, E: 3}, {W: " pasted", S: 3, E: 3.5}, {W: " and", S: 3.5, E: 3.8}, {W: " more", S: 3.8, E: 4},
+		},
+	}
+	if n := glossary.ApplyResult(res, pairs); n != 1 {
+		t.Fatalf("n = %d", n)
+	}
+	if res.Text != "said built vs tested and more" {
+		t.Fatalf("text = %q", res.Text)
+	}
+	want := []stt.Segment{
+		{S: 0, E: 1, Text: "said"},
+		{S: 1, E: 2, Text: "built vs tested"},
+		{S: 3, E: 4, Text: " and more"},
+	}
+	if !slices.Equal(res.Segments, want) {
+		t.Fatalf("segments = %+v, want %+v", res.Segments, want)
+	}
+	if len(res.Words) != 4 || res.Words[1].W != " built vs tested" || res.Words[1].S != 1 || res.Words[1].E != 3.5 {
+		t.Fatalf("words = %+v", res.Words)
+	}
+	srt := toSRT(res.Segments)
+	if !strings.Contains(srt, "built vs tested") || strings.Contains(srt, "versus") || strings.Contains(srt, "pasted") {
+		t.Fatalf("srt = %q", srt)
+	}
+	vtt := toVTT(res.Segments)
+	if !strings.Contains(vtt, "built vs tested") || strings.Contains(vtt, "versus") || strings.Contains(vtt, "pasted") {
+		t.Fatalf("vtt = %q", vtt)
+	}
+}
+
 // Mutation: glossary_http.go correctResult, skip ApplyResult -> RED.
 func TestCorrectResult(t *testing.T) {
 	d, _ := meetingFixture(t, nil)
@@ -116,6 +164,49 @@ func TestSTTSessionFinishAppliesGlossary(t *testing.T) {
 	}
 	if err := json.Unmarshal(body, &fin); err != nil || fin.Text != "piece 1 piece 2" {
 		t.Fatalf("finish text = %q (body %s), want %q", fin.Text, body, "piece 1 piece 2")
+	}
+}
+
+// Same seam: a pair whose words a chunk boundary splits is corrected only in
+// the finish text — the per-chunk segment texts are rewritten one by one and
+// keep what they decoded. The fake emits "chunk 1" and "chunk 2"; the pair
+// "1 chunk" spans the two.
+func TestSTTSessionFinishAppliesGlossaryAcrossChunks(t *testing.T) {
+	dir := t.TempDir()
+	fakeEnv(t, dir)
+	d := newTestDaemonSTT(t, dir, nil, nil, nil)
+	sttSetupServer(t, d, dir)
+	sttVADModel(t, d, dir)
+	srv := transcriptionServer(t, d)
+	base := sessBase(srv)
+
+	code, body := sessReq(t, http.MethodPost, base, "application/json", []byte("{}"))
+	if code != http.StatusOK {
+		t.Fatalf("create: status %d body %s", code, body)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("create body = %s", body)
+	}
+	for i, size := range []int{640, 1280} {
+		code, body = sessReq(t, http.MethodPost, base+"/"+created.ID+"/audio", "application/octet-stream", bytes.Repeat([]byte{1}, size))
+		if code != http.StatusOK {
+			t.Fatalf("audio %d: status %d body %s", i+1, code, body)
+		}
+	}
+	approvedPair(t, d, "1 chunk", "uno")
+
+	code, body = sessReq(t, http.MethodPost, base+"/"+created.ID+"/finish", "application/json", []byte("{}"))
+	if code != http.StatusOK {
+		t.Fatalf("finish: status %d body %s", code, body)
+	}
+	var fin struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(body, &fin); err != nil || fin.Text != "chunk uno 2" {
+		t.Fatalf("finish text = %q (body %s), want %q", fin.Text, body, "chunk uno 2")
 	}
 }
 

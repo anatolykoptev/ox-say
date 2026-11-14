@@ -334,16 +334,103 @@ func matchWords(ws []stt.Word, i int, cs []compiled) (compiled, int, bool) {
 }
 
 // ApplyResult corrects a recognised result in place: the text, each segment's
-// text and the words. It returns the replacements counted in the text.
+// text and the words. Segments are corrected against the joined stream, not
+// one by one, so a multi-word match that a segment cut splits is still
+// rewritten — Text, Words, SRT and VTT agree. It returns the replacements
+// counted in the text.
 func ApplyResult(res *stt.Result, pairs []Pair) int {
 	if res == nil {
 		return 0
 	}
+	cs := compile(pairs)
 	text, n := Apply(res.Text, pairs)
 	res.Text = text
-	for i := range res.Segments {
-		res.Segments[i].Text, _ = Apply(res.Segments[i].Text, pairs)
-	}
+	res.Segments = applySegments(res.Segments, cs)
 	res.Words = ApplyWords(res.Words, pairs)
 	return n
+}
+
+// segTok is one token's place in a segment's token list.
+type segTok struct{ seg, tok int }
+
+// applySegments rewrites segment texts against the same token stream the
+// whole text matches on: all segments' tokens in order, with a whitespace
+// token inserted where a segment cut falls between two words (recognisers
+// cut on pauses, never mid-word) and adjacent non-word runs at the cut
+// merged. A match puts the meant in the segment its first word begins in,
+// removes the matched tokens from every spanned segment and drops a segment
+// that becomes empty; retained segments keep their timings.
+func applySegments(segs []stt.Segment, cs []compiled) []stt.Segment {
+	if len(segs) == 0 || len(cs) == 0 {
+		return segs
+	}
+	toks := make([][]token, len(segs))
+	var flat []token
+	var parts [][]segTok
+	for k, s := range segs {
+		toks[k] = tokenize(s.Text)
+		for j, t := range toks[k] {
+			if len(flat) > 0 {
+				last := len(flat) - 1
+				switch {
+				case flat[last].word && t.word:
+					flat = append(flat, token{s: " ", word: false})
+					parts = append(parts, nil)
+				case !flat[last].word && !t.word:
+					flat[last].s += t.s
+					parts[last] = append(parts[last], segTok{seg: k, tok: j})
+					continue
+				}
+			}
+			flat = append(flat, t)
+			parts = append(parts, []segTok{{seg: k, tok: j}})
+		}
+	}
+	covered := make([][]bool, len(segs))
+	insert := make([][]string, len(segs))
+	for k := range segs {
+		covered[k] = make([]bool, len(toks[k]))
+		insert[k] = make([]string, len(toks[k]))
+	}
+	matched := false
+	for i := 0; i < len(flat); {
+		if flat[i].word {
+			if c, end, ok := match(flat, i, cs); ok {
+				if !alreadyMeant(flat, i, end, c) {
+					for fi := i; fi < end; fi++ {
+						for _, st := range parts[fi] {
+							covered[st.seg][st.tok] = true
+						}
+					}
+					first := parts[i][0]
+					insert[first.seg][first.tok] = c.meant
+					matched = true
+				}
+				i = end
+				continue
+			}
+		}
+		i++
+	}
+	if !matched {
+		return segs
+	}
+	out := make([]stt.Segment, 0, len(segs))
+	for k, s := range segs {
+		var b strings.Builder
+		for j, t := range toks[k] {
+			if insert[k][j] != "" {
+				b.WriteString(insert[k][j])
+			}
+			if !covered[k][j] {
+				b.WriteString(t.s)
+			}
+		}
+		if b.Len() == 0 && len(toks[k]) > 0 {
+			continue
+		}
+		s.Text = b.String()
+		out = append(out, s)
+	}
+	return out
 }
