@@ -102,6 +102,7 @@ func TestGlossaryRoutes(t *testing.T) {
 		{http.MethodPost, "/v1/glossary", `{"heard":"x","meant":"a\nb"}`, http.StatusBadRequest},
 		{http.MethodPost, "/v1/glossary", `{"heard":"x","meant":"a;b"}`, http.StatusBadRequest},
 		{http.MethodPost, "/v1/glossary", `{"heard":"x","meant":"one two three four five"}`, http.StatusBadRequest},
+		{http.MethodPost, "/v1/glossary", `{"heard":"node.js","meant":"Node.js"}`, http.StatusBadRequest},
 	} {
 		if rec := call(t, mux, c.method, c.path, c.body); rec.Code != c.code {
 			t.Errorf("%s %s %s = %d, want %d", c.method, c.path, c.body, rec.Code, c.code)

@@ -216,6 +216,14 @@ func validate(heard, meant string) error {
 	case heard == meant:
 		return fmt.Errorf("%w: heard and meant are the same", ErrInvalid)
 	}
+	// The heard form is matched against tokenised words, so it may carry only
+	// word characters and spaces — "node.js" would never match and files a
+	// dead pair.
+	for _, r := range heard {
+		if !isWordRune(r) && r != ' ' {
+			return fmt.Errorf("%w: the heard form may carry only letters, digits, spaces, ' and -", ErrInvalid)
+		}
+	}
 	hw := words(heard)
 	if len(hw) == 0 || len(hw) > maxWords {
 		return fmt.Errorf("%w: heard must be 1 to %d words", ErrInvalid, maxWords)

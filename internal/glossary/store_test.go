@@ -115,6 +115,24 @@ func TestAddValidatesMeantIsATerm(t *testing.T) {
 	}
 }
 
+// The heard form is matched against recognised words, so only word
+// characters and spaces are allowed — "node.js" would never match a
+// tokenised word and files a dead pair.
+// Mutation: store.go validate, delete the heard rune check -> RED ("node.js" is filed).
+func TestAddValidatesHeardIsWords(t *testing.T) {
+	s := newTestStore(t)
+	for _, h := range []string{"node.js", "a+b", "a_b", "C#", "a;b", "a\nb", "a🙂b"} {
+		if _, err := s.Add(h, "term", ""); !errors.Is(err, ErrInvalid) {
+			t.Errorf("heard %q: err = %v, want ErrInvalid", h, err)
+		}
+	}
+	for _, h := range []string{"it's", "rock-n-roll", "naïve", "foo bar"} {
+		if _, err := s.Add(h, "OxSay", ""); err != nil {
+			t.Errorf("heard %q: err = %v, want filed", h, err)
+		}
+	}
+}
+
 // Mutation: store.go validate, delete the containsSeq check -> RED ("сей" → "Окс Сей" would grow on every pass).
 func TestAddValidates(t *testing.T) {
 	s := newTestStore(t)
