@@ -108,7 +108,8 @@ func TestStripMarkdownKeepsLiteralDelimiters(t *testing.T) {
 // punctuation (0.31: the P and S categories), so decomposed and precomposed text give the same answer and
 // "🎉_great_" is emphasis.
 // Mutation: internal/meeting/search.go isMDPunct, back to `unicode.IsPunct(r) || (r < utf8.RuneSelf && unicode.IsSymbol(r))`
-// -> the emoji and currency rows keep their underscores -> RED.
+// -> the emoji and currency rows keep their underscores -> RED. Mutation: stripInline, the prev scan
+// reading cells[run.start-1].r directly (no mark skip) -> the VS16 row keeps its underscores -> RED (#340).
 func TestStripMarkdownMarksAndSymbolsNextToDelimiters(t *testing.T) {
 	for _, c := range []struct{ name, in, want string }{
 		{"emoji before emphasis", "🎉_great_ news", "🎉great news"},
@@ -119,6 +120,7 @@ func TestStripMarkdownMarksAndSymbolsNextToDelimiters(t *testing.T) {
 		{"decomposed accent inside snake_case", "cafe\u0301_au_lait", "cafe\u0301_au_lait"},
 		{"precomposed accent inside snake_case", "caf\u00e9_au_lait", "caf\u00e9_au_lait"},
 		{"mark after the closer stays a word", "_x_\u0301", "_x_\u0301"},
+		{"emoji with VS16 before a delimiter", "\u2764\ufe0f_x_", "\u2764\ufe0fx"},
 	} {
 		if got := stripMarkdown(c.in); got != c.want {
 			t.Errorf("%s: stripMarkdown(%q) = %q, want %q", c.name, c.in, got, c.want)
