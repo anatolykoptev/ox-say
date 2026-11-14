@@ -1187,3 +1187,57 @@ func TestCleanModelsBytesIsTheInstalledSum(t *testing.T) {
 		t.Errorf("the installed clean set is %d files and %d bytes; CleanModelsBytes says %d in 12 files", files, sum, CleanModelsBytes)
 	}
 }
+
+// cleanPinnedSizes are the byte sizes of the 12 files fetch-models.sh pins at CleanModelsRevision, read from the
+// hub's x-linked-size headers for that commit - an oracle the constant was not derived from in this test.
+var cleanPinnedSizes = map[string]int64{
+	"MossFormer2_SE_48K.mlmodelc/analytics/coremldata.bin": 243,
+	"MossFormer2_SE_48K.mlmodelc/coremldata.bin":           375,
+	"MossFormer2_SE_48K.mlmodelc/metadata.json":            2377,
+	"MossFormer2_SE_48K.mlmodelc/model.mil":                1989795,
+	"MossFormer2_SE_48K.mlmodelc/weights/weight.bin":       117519808,
+	"manifest.json":        1004,
+	"config.json":          1276,
+	"reference_window.bin": 11391768,
+	"LICENSE":              11358,
+	"NOTICE.md":            1791,
+	"PROVENANCE.md":        4132,
+	"README.md":            8068,
+}
+
+// CleanModelsBytes is checked without any model installed: the files the pin list in fetch-models.sh names must
+// be exactly the 12 sized in cleanPinnedSizes, and those sizes must sum to the constant. A bump that changes the
+// list, or one file's size, or the constant alone, fails here on any host.
+// Mutation: config.go, change one digit of CleanModelsBytes -> RED; fetch-models.sh, rename or drop a clean_files
+// entry -> RED.
+func TestCleanModelsBytesIsTheSumOfThePinnedFiles(t *testing.T) {
+	sh, err := os.ReadFile(filepath.Join("..", "..", "scripts", "fetch-models.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := regexp.MustCompile(`(?s)\nclean_files=\((.*?)\n\)\nclean_docs=\((.*?)\n\)\n`).FindSubmatch(sh)
+	if block == nil {
+		t.Fatal("fetch-models.sh has no clean_files/clean_docs lists in the expected shape")
+	}
+	entry := regexp.MustCompile(`(?m)^\s*"[0-9a-f]{64}  (\S+)"$`)
+	names := map[string]bool{}
+	for _, b := range block[1:] {
+		for _, m := range entry.FindAllSubmatch(b, -1) {
+			names[string(m[1])] = true
+		}
+	}
+	var sum int64
+	for name := range names {
+		size, ok := cleanPinnedSizes[name]
+		if !ok {
+			t.Errorf("fetch-models.sh pins %s, which the size table does not know", name)
+		}
+		sum += size
+	}
+	if len(names) != len(cleanPinnedSizes) {
+		t.Errorf("fetch-models.sh pins %d files, the size table has %d", len(names), len(cleanPinnedSizes))
+	}
+	if sum != CleanModelsBytes {
+		t.Errorf("the pinned files sum to %d bytes; CleanModelsBytes says %d", sum, CleanModelsBytes)
+	}
+}
