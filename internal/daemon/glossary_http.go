@@ -102,6 +102,16 @@ func (d *Daemon) glossaryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/glossary/{id}", d.handleGlossaryPurge)
 }
 
+// glossaryMessage is a store error's text for a caller: a corrupt or unreadable
+// glossary.json names its full path in the error, so the daemon home (and the
+// file) is scrubbed with the producer's publicMessage; the detail is logged.
+func (d *Daemon) glossaryMessage(err error) string {
+	if glossaryStatus(err) == http.StatusInternalServerError {
+		d.log.Warn("glossary: request failed", slog.Any("error", err))
+	}
+	return publicMessage(err, d.Cfg.Home)
+}
+
 func glossaryStatus(err error) int {
 	switch {
 	case errors.Is(err, glossary.ErrInvalid):
@@ -117,7 +127,7 @@ func glossaryStatus(err error) int {
 func (d *Daemon) handleGlossaryList(w http.ResponseWriter, r *http.Request) {
 	pairs, err := d.Glossary.List()
 	if err != nil {
-		writeErr(w, glossaryStatus(err), err.Error())
+		writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
 		return
 	}
 	if pairs == nil {
@@ -138,7 +148,7 @@ func (d *Daemon) handleGlossaryAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := d.Glossary.Add(in.Heard, in.Meant, in.Context)
 	if err != nil {
-		writeErr(w, glossaryStatus(err), err.Error())
+		writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
 		return
 	}
 	d.invalidateGlossary()
@@ -167,7 +177,7 @@ func (d *Daemon) handleGlossaryStatus(approve bool) http.HandlerFunc {
 		}
 		p, err := set(r.PathValue("id"))
 		if err != nil {
-			writeErr(w, glossaryStatus(err), err.Error())
+			writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
 			return
 		}
 		d.invalidateGlossary()
@@ -190,7 +200,7 @@ func (d *Daemon) handleGlossaryEdit(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := d.Glossary.Edit(r.PathValue("id"), in.Meant)
 	if err != nil {
-		writeErr(w, glossaryStatus(err), err.Error())
+		writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
 		return
 	}
 	d.invalidateGlossary()
@@ -205,7 +215,7 @@ func (d *Daemon) handleGlossaryPurge(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if err := d.Glossary.Purge(id); err != nil {
-		writeErr(w, glossaryStatus(err), err.Error())
+		writeErr(w, glossaryStatus(err), d.glossaryMessage(err))
 		return
 	}
 	d.invalidateGlossary()

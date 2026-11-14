@@ -16,6 +16,10 @@ import (
 	"github.com/anatolykoptev/ox-say/internal/daemon"
 )
 
+// ownerKeyUnreadable is all a failed owner.token read says: the path and the fs
+// error name the daemon home, which stays out of terminals and logs.
+const ownerKeyUnreadable = "ox-say: cannot read the owner key (the daemon writes it on start; is it running?)"
+
 const vocabUsage = "usage: ox-say vocab add <heard> <meant> [--context <sentence>] | ls | ok <id> | rm <id> | edit <id> <meant> | purge <id>\n" +
 	"ok, rm, edit and purge are owner-only: they ask a person at a terminal. purge deletes the pair for good (rm keeps a rejected tombstone)."
 
@@ -211,8 +215,7 @@ func cmdVocabSet(args []string, action string, stdout, stderr io.Writer) int {
 	}
 	tok, err := ownerToken()
 	if err != nil {
-		fmt.Fprintf(stderr, "ox-say: cannot read %s (the daemon writes it on start): %v\n",
-			filepath.Join(config.Home(), daemon.OwnerTokenFile), err)
+		fmt.Fprintln(stderr, ownerKeyUnreadable)
 		return 1
 	}
 	body, err := vocabOwnerCall(http.MethodPost, daemonURL()+"/v1/glossary/"+url.PathEscape(args[0])+"/"+action, tok, "{}")
@@ -242,8 +245,7 @@ func vocabOwnerGate(id, verb, question string, stdout, stderr io.Writer) (tok st
 	}
 	tok, err = ownerToken()
 	if err != nil {
-		fmt.Fprintf(stderr, "ox-say: cannot read %s (the daemon writes it on start): %v\n",
-			filepath.Join(config.Home(), daemon.OwnerTokenFile), err)
+		fmt.Fprintln(stderr, ownerKeyUnreadable)
 		return "", 1, false
 	}
 	return tok, 0, true

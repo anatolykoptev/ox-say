@@ -224,3 +224,28 @@ func TestVocabPurgeNeedsATerminal(t *testing.T) {
 		t.Fatalf("code %d, daemon hit %v: purge ran without a terminal", code, hit)
 	}
 }
+
+// A missing owner.token must not print the daemon home or the fs error.
+// Mutation: vocab.go vocabOwnerGate, print filepath.Join(config.Home(), ...) and err again -> RED.
+func TestVocabOwnerTokenFailureIsPathFree(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"pairs":[{"id":"1a2b3c4d","heard":"a","meant":"b","status":"candidate","seen":1}]}`))
+	}))
+	defer srv.Close()
+	t.Setenv("OX_SAY_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+	home := t.TempDir()
+	t.Setenv("OX_SAY_HOME", home)
+	oldTTY, oldIn := vocabTTY, vocabIn
+	t.Cleanup(func() { vocabTTY, vocabIn = oldTTY, oldIn })
+	vocabTTY = func(io.Reader, io.Writer) bool { return true }
+	for _, args := range [][]string{{"vocab", "ok", "1a2b3c4d"}, {"vocab", "rm", "1a2b3c4d"}, {"vocab", "edit", "1a2b3c4d", "x"}, {"vocab", "purge", "1a2b3c4d"}} {
+		vocabIn = strings.NewReader("y\n")
+		var out, errb strings.Builder
+		if code := Run(args, &out, &errb, "test"); code != 1 {
+			t.Fatalf("%v: code %d, want 1", args, code)
+		}
+		if strings.Contains(errb.String(), home) || strings.Contains(errb.String(), "no such file") || !strings.Contains(errb.String(), "owner key") {
+			t.Errorf("%v: stderr %q must name the owner key without a path or fs error", args, errb.String())
+		}
+	}
+}

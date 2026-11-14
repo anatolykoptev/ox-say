@@ -471,3 +471,30 @@ func TestGlossaryOwnerEditAndPurge(t *testing.T) {
 		t.Fatalf("list after purge: %s", rec.Body)
 	}
 }
+
+// A glossary.json the daemon cannot parse carries its full path in the store's
+// error; no glossary route may hand that path (the daemon home) to a caller.
+// Mutation: glossary_http.go handleGlossaryEdit, writeErr(..., err.Error()) instead of glossaryMessage -> RED.
+// Mutation: same in handleGlossaryPurge -> RED.
+func TestGlossaryErrorsCarryNoHomePath(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	auth := ownerAuth(t, d)
+	if err := os.WriteFile(filepath.Join(d.Cfg.Home, glossary.FileName), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/glossary/ffffffff/edit", `{"meant":"x"}`},
+		{http.MethodDelete, "/v1/glossary/ffffffff", ""},
+		{http.MethodPost, "/v1/glossary/ffffffff/approve", "{}"},
+		{http.MethodGet, "/v1/glossary", ""},
+	} {
+		rec := callWith(t, mux, c.method, c.path, c.body, auth)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("%s %s = %d, want 500 on a corrupt file: %s", c.method, c.path, rec.Code, rec.Body)
+		}
+		if strings.Contains(rec.Body.String(), d.Cfg.Home) || strings.Contains(rec.Body.String(), glossary.FileName) {
+			t.Errorf("%s %s leaks the file path: %s", c.method, c.path, rec.Body)
+		}
+	}
+}
