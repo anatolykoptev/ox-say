@@ -527,3 +527,141 @@ func TestBrokenSetSentenceNamesNoTempFile(t *testing.T) {
 		t.Fatalf("%q", msg)
 	}
 }
+
+// #427.1: "new data durable, then old data gone" is the order, so a publish whose last durability step
+// failed does not reach "old data gone": the directory sync or the manifest save not completing keeps this
+// publish's backups for the next one, which removes them when it succeeds.
+// Mutation: produce_assemble.go publish, drop the `durable` guard so the backups are removed unconditionally
+// -> RED in both cases.
+func TestBackupsStayWhenDurabilityFails(t *testing.T) {
+	cases := []struct {
+		name     string
+		sabotage func(t *testing.T, j *job)
+		heal     func(t *testing.T, j *job)
+	}{
+		{"the directory sync fails", func(t *testing.T, j *job) {
+			orig := syncOutputDir
+			syncOutputDir = func(string) error { return errors.New("syncfs: cannot") }
+			t.Cleanup(func() { syncOutputDir = orig })
+		}, func(t *testing.T, j *job) {
+			syncOutputDir = vproject.SyncDir
+		}},
+		{"the manifest save fails", func(t *testing.T, j *job) {
+			manifest := filepath.Join(j.dir, vproject.ManifestFile)
+			if err := os.Remove(manifest); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(manifest, 0o700); err != nil { // WriteAtomic's rename onto a directory fails
+				t.Fatal(err)
+			}
+		}, func(t *testing.T, j *job) {
+			if err := os.Remove(filepath.Join(j.dir, vproject.ManifestFile)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakePorts(t)
+			p, j := assembleFixture(t, f)
+			if err := p.assemble(j); err != nil {
+				t.Fatal(err)
+			}
+			editForReassembly(j)
+			j.m.Settings.Overwrite = true // the sabotage leaves no manifest proof for the owned check
+			tc.sabotage(t, j)
+			if err := p.assemble(j); err != nil {
+				t.Fatalf("the publish returned an error: %v", err)
+			}
+			if got := backupsOf(t, j); len(got) != len(outputExts) {
+				t.Fatalf("%d backups left, want %d: a failed durability step still removed them", len(got), len(outputExts))
+			}
+			tc.heal(t, j)
+			if err := p.assemble(j); err != nil {
+				t.Fatalf("the healed publish: %v", err)
+			}
+			if left := backupsOf(t, j); len(left) != 0 {
+				t.Fatalf("backups left after a durable publish: %v", left)
+			}
+		})
+	}
+}
+
+// #427.2: a deleted project's publish leftovers go with it. A backup is a hidden full-size copy of an old
+// output, so delete_outputs is the privacy promise that removes it — in the tagged shape a publish writes
+// today and in the untagged one a publish before the tag could have left.
+// Mutation: produce_ops.go deleteOwnedOutputs, drop the listBackupLeftovers loop -> the backups survive -> RED.
+func TestDeleteOutputsRemovesPublishBackups(t *testing.T) {
+	f := newFakePorts(t)
+	p, j := assembleFixture(t, f)
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	stem := assembledStem(j)
+	dir := filepath.Dir(stem)
+	left := []string{
+		filepath.Join(dir, backupPrefix(filepath.Base(stem)+".wav")+"zz"),
+		filepath.Join(dir, "."+filepath.Base(stem)+".srt"+backupMark+"old"), // the untagged, pre-tag shape
+	}
+	for _, b := range left {
+		if err := os.WriteFile(b, []byte("the old file"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.remove(assembleID, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range left {
+		if _, err := os.Lstat(b); !os.IsNotExist(err) {
+			t.Errorf("a publish backup survived the project delete: %s", filepath.Base(b))
+		}
+	}
+}
+
+// #427.3: two output names sharing their first bytes used to share a backup prefix — the name is cut to
+// fit a file name — so a publish of one listed and removed the other's leftover backup. The tag of the
+// full output name in the backup name makes the match exact again.
+// Mutation: produce_assemble.go backupPrefix, drop the tag (back to "." + base + backupMark) -> the
+// foreign backup matches stemA's list -> RED; publish, remove the `durable` guard together with it -> the
+// foreign backup is removed -> RED.
+func TestBackupsMatchTheirOwnStemOnly(t *testing.T) {
+	dir := t.TempDir()
+	long := strings.Repeat("a", 235)
+	stemA := filepath.Join(dir, long+"1")
+	stemB := filepath.Join(dir, long+"2")
+	foreign := filepath.Join(dir, backupPrefix(filepath.Base(stemB)+".wav")+"x9")
+	if err := os.WriteFile(foreign, []byte("B's old set"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range listBackups(stemA) {
+		if b == foreign {
+			t.Fatalf("listBackups of one stem returned another's leftover: %s", filepath.Base(foreign))
+		}
+	}
+	found := false
+	for _, b := range listBackups(stemB) {
+		found = found || b == foreign
+	}
+	if !found {
+		t.Fatalf("listBackups did not find the stem's own leftover %s", filepath.Base(foreign))
+	}
+}
+
+// The same end to end: a successful publish of one project leaves the other's leftover backup alone.
+func TestPublishLeavesAForeignStemsBackupsAlone(t *testing.T) {
+	f := newFakePorts(t)
+	dir := t.TempDir()
+	long := strings.Repeat("a", 235)
+	p, j := assembleFixtureAs(t, f, assembleID, filepath.Join(dir, long+"1.wav"))
+	stemB := filepath.Join(dir, long+"2")
+	foreign := filepath.Join(dir, backupPrefix(filepath.Base(stemB)+".vtt")+"q7")
+	if err := os.WriteFile(foreign, []byte("B's old set"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.assemble(j); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(foreign); err != nil {
+		t.Fatalf("the publish removed or never spared another stem's leftover backup: %v", err)
+	}
+}
