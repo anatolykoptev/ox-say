@@ -46,6 +46,32 @@ Transcript routes (a file transcribed and kept by the daemon; the app's Transcri
 | `GET /v1/transcripts/<id>?format=` | `text`, `srt`, `vtt`, `json` (default) or `ox_json` |
 | `DELETE /v1/transcripts/<id>` | Delete one (`204`) |
 
+Glossary routes (the heard → meant pairs applied to recognised text):
+
+| Route | Description |
+|-------|-------------|
+| `GET /v1/glossary` | `{"pairs":[…]}` — every pair: `id`, `heard`, `meant`, `status` (`candidate`/`active`/`rejected`), `sightings` (hashes only), `seen`, `added` |
+| `POST /v1/glossary` | `{"heard","meant","context"}` — file a pair. The context must contain the heard form and only its hash is kept; `409` when the heard form already maps to another term, `400` on an invalid pair (heard: 1–4 words of letters, digits, spaces, `'` and `-` only; meant: ≤ 4 words, ≤ 60 chars, letters/digits/spaces and `. - + _ ' #` only) |
+| `POST /v1/glossary/<id>/approve` | Make the pair active (also reactivates a rejected one). Owner-only — `403` without `Authorization: Bearer <owner token>` |
+| `POST /v1/glossary/<id>/reject` | Stop the pair applying; it stays as a tombstone a later `add` cannot reactivate. Owner-only — `403` without `Authorization: Bearer <owner token>` |
+
+Approve and reject are owner-only. The daemon creates `$OX_SAY_HOME/owner.token` on first start
+(32 random bytes, hex, mode 0600) and the two routes compare the `Authorization: Bearer` value against
+it in constant time. The owner settles pairs through `ox-say vocab ok|rm`, which runs only at a
+terminal, shows the pair, and sends the token after a bare `y`. This keeps an agent from approving its
+own filings by mistake — it is a guard against our own tools acting eagerly, not against a hostile
+local process, which could read the token file anyway.
+
+Active pairs apply to dictation responses (streaming sessions), `/v1/audio/transcriptions`,
+`/v1/transcripts` when read (the stored document stays raw, so rejecting a pair restores the
+original words), the MCP `transcribe` tool, and meetings transcribed after the pair is active.
+Batch results rewrite a match that spans segments: the meant goes into the first spanned
+segment, the matched words come out of the later ones (a segment that becomes empty is dropped,
+the rest keep their timings), so text, words, SRT and VTT agree. In a streaming session a pair
+whose words an `/audio` chunk boundary splits is corrected only in the final `text` of
+`/finish` — the per-chunk `segments` texts are rewritten one response at a time and keep what
+they decoded.
+
 Model routes (list the models this Mac can run, and install or remove the optional ones):
 
 | Route | Description |

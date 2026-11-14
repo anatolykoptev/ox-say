@@ -145,6 +145,7 @@ func (d *Daemon) handleTranscriptGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "the stored transcript is unreadable")
 		return
 	}
+	d.correctResult(&res, "transcripts")
 	writeTranscription(w, &res, format)
 }
 

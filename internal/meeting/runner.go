@@ -86,6 +86,9 @@ type Deps struct {
 	// DiarEngineMissing, DiarModelsMissing codes: the meeting then gets one far-side label, WarnDiarUnavailable
 	// and that reason, and the diarizer is not started.
 	DiarizeReady func() string
+	// Correct returns the user's glossary as a text fixer for one transcript and
+	// the ids of the pairs in it, loaded once per meeting. Nil: none.
+	Correct func() (fix func(string) string, ids []string)
 }
 
 // Runner takes finished meetings through transcription and notes, one at a
@@ -803,6 +806,18 @@ func (r *Runner) transcribe(ctx context.Context, id string, sl *stageLog) error 
 	if script == "" && WordCount(turns) >= minNotesWords {
 		warnings = append(warnings, WarnLanguage)
 	}
+	// The glossary runs after the language check: a Latin meant form must not
+	// move the detected language. What is written — transcript.json,
+	// transcript.md, the notes prompt — is the corrected text; rejecting the
+	// pair later does not undo a written transcript.
+	var glossaryIDs []string
+	if r.Correct != nil {
+		fix, ids := r.Correct()
+		for i := range turns {
+			turns[i].Text = fix(turns[i].Text)
+		}
+		glossaryIDs = ids
+	}
 	// A Finish that queued the meeting again while it ran makes these turns
 	// those of the shorter recording: write nothing, the next round does.
 	if cur, err := r.Store.Load(id); err != nil {
@@ -835,6 +850,7 @@ func (r *Runner) transcribe(ctx context.Context, id string, sl *stageLog) error 
 		}
 		m.Status, m.Language, m.DurationS, m.Warnings, m.EchoDropped = StatusTranscribed, lang, seconds, warnings, dropped
 		m.VoiceMode, m.Voices, m.DiarReason = vr.mode, vr.voices, vr.reason
+		m.Glossary = glossaryIDs
 	}); err != nil {
 		return err
 	}

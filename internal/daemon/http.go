@@ -48,6 +48,7 @@ func (d *Daemon) Routes(mux *http.ServeMux) {
 	d.meetingRoutes(mux)
 	d.transcriptRoutes(mux)
 	d.modelRoutes(mux)
+	d.glossaryRoutes(mux)
 }
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
