@@ -92,7 +92,7 @@ func TestApplyResultSpansSegments(t *testing.T) {
 	}
 	want := []stt.Segment{
 		{S: 0, E: 1, Text: "said"},
-		{S: 1, E: 2, Text: "built vs tested"},
+		{S: 1, E: 3, Text: "built vs tested"},
 		{S: 3, E: 4, Text: " and more"},
 	}
 	if !slices.Equal(res.Segments, want) {
@@ -108,6 +108,59 @@ func TestApplyResultSpansSegments(t *testing.T) {
 	vtt := toVTT(res.Segments)
 	if !strings.Contains(vtt, "built vs tested") || strings.Contains(vtt, "versus") || strings.Contains(vtt, "pasted") {
 		t.Fatalf("vtt = %q", vtt)
+	}
+}
+
+// A match that spans segments gives its surviving segment the whole matched
+// interval: the meant lands where the first word began and the segment runs
+// to the end of the last spanned one — its own E when it is dropped, its own
+// S when it keeps words the cut cannot re-time (a segment has no word times).
+// Mutation: apply.go applySegments, skip the end-time merge -> RED (the kept
+// segment ends where its own text used to).
+func TestApplyResultSpansSegmentsKeepsTime(t *testing.T) {
+	pairs := []glossary.Pair{{Heard: "окс сей", Meant: "OxSay", Status: glossary.Active}}
+	res := &stt.Result{
+		Text: "окс сей",
+		Segments: []stt.Segment{
+			{S: 0, E: 0.4, Text: "окс"},
+			{S: 0.4, E: 1.2, Text: "сей"},
+		},
+		Words: []stt.Word{{W: "окс", S: 0, E: 0.4}, {W: " сей", S: 0.4, E: 1.2}},
+	}
+	if n := glossary.ApplyResult(res, pairs); n != 1 {
+		t.Fatalf("n = %d", n)
+	}
+	want := []stt.Segment{{S: 0, E: 1.2, Text: "OxSay"}}
+	if !slices.Equal(res.Segments, want) {
+		t.Fatalf("segments = %+v, want %+v", res.Segments, want)
+	}
+	if srt := toSRT(res.Segments); !strings.Contains(srt, "00:00:00,000 --> 00:00:01,200") {
+		t.Fatalf("srt = %q", srt)
+	}
+	if vtt := toVTT(res.Segments); !strings.Contains(vtt, "00:00:00.000 --> 00:00:01.200") {
+		t.Fatalf("vtt = %q", vtt)
+	}
+
+	// The last spanned segment keeps words: it claims from its own S on (word
+	// times are not tracked inside a segment), so the merged one ends at the
+	// cut — the cues stay a partition, never an overlap.
+	res2 := &stt.Result{
+		Text: "pill versus pasted and more",
+		Segments: []stt.Segment{
+			{S: 0, E: 1, Text: "pill"},
+			{S: 1, E: 2, Text: "versus"},
+			{S: 2, E: 4, Text: "pasted and more"},
+		},
+	}
+	if n := glossary.ApplyResult(res2, []glossary.Pair{{Heard: "pill versus pasted", Meant: "built vs tested", Status: glossary.Active}}); n != 1 {
+		t.Fatalf("n = %d", n)
+	}
+	want2 := []stt.Segment{
+		{S: 0, E: 2, Text: "built vs tested"},
+		{S: 2, E: 4, Text: " and more"},
+	}
+	if !slices.Equal(res2.Segments, want2) {
+		t.Fatalf("segments = %+v, want %+v", res2.Segments, want2)
 	}
 }
 

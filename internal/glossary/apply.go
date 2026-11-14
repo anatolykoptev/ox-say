@@ -359,7 +359,11 @@ type segTok struct{ seg, tok int }
 // cut on pauses, never mid-word) and adjacent non-word runs at the cut
 // merged. A match puts the meant in the segment its first word begins in,
 // removes the matched tokens from every spanned segment and drops a segment
-// that becomes empty; retained segments keep their timings.
+// that becomes empty. The surviving segment takes the whole matched
+// interval: it runs to the end of the last spanned segment when that one is
+// dropped, or to that segment's start when it keeps words — a segment has no
+// word times, so its start cannot move past the removed words and the cues
+// stay a partition. Other retained segments keep their timings.
 func applySegments(segs []stt.Segment, cs []compiled) []stt.Segment {
 	if len(segs) == 0 || len(cs) == 0 {
 		return segs
@@ -388,6 +392,7 @@ func applySegments(segs []stt.Segment, cs []compiled) []stt.Segment {
 	}
 	covered := make([][]bool, len(segs))
 	insert := make([][]string, len(segs))
+	spans := map[int]int{} // the segment a match starts in -> the last one it spans
 	for k := range segs {
 		covered[k] = make([]bool, len(toks[k]))
 		insert[k] = make([]string, len(toks[k]))
@@ -402,7 +407,10 @@ func applySegments(segs []stt.Segment, cs []compiled) []stt.Segment {
 							covered[st.seg][st.tok] = true
 						}
 					}
-					first := parts[i][0]
+					first, last := parts[i][0], parts[end-1][len(parts[end-1])-1]
+					if last.seg != first.seg && last.seg > spans[first.seg] {
+						spans[first.seg] = last.seg
+					}
 					insert[first.seg][first.tok] = c.meant
 					matched = true
 				}
@@ -414,6 +422,27 @@ func applySegments(segs []stt.Segment, cs []compiled) []stt.Segment {
 	}
 	if !matched {
 		return segs
+	}
+	alive := make([]bool, len(segs))
+	for k := range segs {
+		alive[k] = len(toks[k]) == 0
+		for j := range toks[k] {
+			if insert[k][j] != "" || !covered[k][j] {
+				alive[k] = true
+				break
+			}
+		}
+	}
+	// grow is the end a surviving segment must take to cover its match.
+	grow := map[int]float64{}
+	for first, last := range spans {
+		e := segs[last].S
+		if !alive[last] {
+			e = segs[last].E
+		}
+		if e > grow[first] {
+			grow[first] = e
+		}
 	}
 	out := make([]stt.Segment, 0, len(segs))
 	for k, s := range segs {
@@ -430,6 +459,9 @@ func applySegments(segs []stt.Segment, cs []compiled) []stt.Segment {
 			continue
 		}
 		s.Text = b.String()
+		if e, ok := grow[k]; ok && e > s.E {
+			s.E = e
+		}
 		out = append(out, s)
 	}
 	return out
