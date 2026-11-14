@@ -177,6 +177,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -387,6 +388,33 @@ func runFakeLLM(args []string) int {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{"id":"notes"}]}`))
 	})
+	// /slots is llama-server's decode-progress view. A request in flight makes
+	// the slot report processing and each poll shows more decoded tokens; the
+	// same wedged HTTP loop as /health hangs it, and OXSAY_FAKE_LLM_SLOTS_STALL
+	// freezes the counter while claiming to process — a compute wedge that
+	// /health would call alive (#552).
+	var inflight, decoded atomic.Int64
+	slotsStall := os.Getenv("OXSAY_FAKE_LLM_SLOTS_STALL") == "1"
+	mux.HandleFunc("GET /slots", func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad key", http.StatusUnauthorized)
+			return
+		}
+		healthMu.Lock()
+		healthAnswers++
+		n := healthAnswers
+		healthMu.Unlock()
+		if healthHangAfter > 0 && n > healthHangAfter {
+			time.Sleep(hang)
+		}
+		proc := slotsStall || inflight.Load() > 0
+		nd := decoded.Load()
+		if proc && !slotsStall {
+			nd = decoded.Add(10) // the decode moved since the last read
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `[{"id":0,"is_processing":%t,"n_decoded":%d}]`, proc, nd)
+	})
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		if loading() {
 			http.Error(w, "loading", http.StatusServiceUnavailable)
@@ -396,6 +424,8 @@ func runFakeLLM(args []string) int {
 			http.Error(w, "bad key", http.StatusUnauthorized)
 			return
 		}
+		inflight.Add(1)
+		defer inflight.Add(-1)
 		if hang > 0 {
 			time.Sleep(hang) // a slow or hung server: the caller's deadline ends first
 		}

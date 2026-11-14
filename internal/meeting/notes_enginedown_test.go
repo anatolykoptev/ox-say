@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 type downChat struct{ calls int }
@@ -102,5 +103,49 @@ func TestComposeSpendsItsOneExtraStartAcrossChunks(t *testing.T) {
 	}
 	if chat.calls != 3 {
 		t.Fatalf("model calls = %d, want 3 (chunk 1 twice, chunk 2 once)", chat.calls)
+	}
+}
+
+// hangChat answers its first call, then every call waits out its own
+// deadline and reports the engine still alive — the daemon's AnswerTimeout
+// mark — so each later chunk splits to the depth limit: 7 calls, each
+// burning a whole per-call deadline.
+type hangChat struct{ calls int }
+
+func (c *hangChat) Complete(ctx context.Context, _ Request) (string, error) {
+	if c.calls++; c.calls == 1 {
+		return `{"summary":"First part.","points":[],"action_items":[],"numbers":[]}`, nil
+	}
+	<-ctx.Done()
+	return "", &AnswerTimeoutError{Err: ctx.Err()}
+}
+
+// The run's wall clock is bounded too: once it has spent three per-call
+// deadlines per chunk, the chunks not yet started are marked skipped and
+// the parts that landed merge — a pathological run does not pay every
+// chunk's worst case.
+// Mutation: notes.go Compose, summarise under ctx not runCtx -> RED (the
+// run pays every chunk's worst case: ~50 calls, nothing skipped).
+func TestComposeSpendsItsBudgetAndSkipsTheRest(t *testing.T) {
+	chat := &hangChat{}
+	text := strings.Repeat("word ", ChunkChars/5*8)
+	if n := len(Chunk(text, ChunkChars)); n < 8 {
+		t.Fatalf("test transcript has %d chunk(s), want at least 8", n)
+	}
+	n, err := Composer{Chat: chat, CallTimeout: 50 * time.Millisecond}.Compose(context.Background(), text, Labels{}, "en")
+	if err != nil {
+		t.Fatalf("err = %v, want the first chunk's notes to merge", err)
+	}
+	if n.Summary == "" {
+		t.Fatal("the answered chunk's summary did not land")
+	}
+	// Which in-flight call the 1.2s budget lands in is timing, so the
+	// assertions are a range: the tail must be skipped and the spend must
+	// end early — an unbounded run pays 7 calls per wedged chunk (50 here).
+	if len(n.SkippedChunks) < 3 || n.SkippedChunks[len(n.SkippedChunks)-1] != 7 {
+		t.Fatalf("skipped = %v, want the tail chunks marked skipped once the budget ran out", n.SkippedChunks)
+	}
+	if chat.calls > 40 {
+		t.Fatalf("model calls = %d, want the budget to have ended the spend", chat.calls)
 	}
 }

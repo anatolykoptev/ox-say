@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -437,40 +438,109 @@ func (c llmChat) Complete(ctx context.Context, r meeting.Request) (string, error
 		return out, err
 	}
 	// Only this call's own deadline ended it — the run's context still lives —
-	// so either the answer was too long for this machine or the server is
-	// hung, and one health probe tells them apart: a slow engine answers it,
-	// a wedged one does not. The alive case is the same class as a token-cap
-	// cut, so the caller splits the chunk into halves; a server silent on
-	// /health is engine-down, never a split (the halves would each burn the
-	// whole deadline).
-	if notesAlive(ctx, base) {
+	// so either the answer was too long for this machine or the decode is
+	// wedged, and /slots read twice tells them apart: the decode counter of a
+	// slow engine moves, a compute-wedged one's does not (/health calls both
+	// alive, #552). The alive case is the same class as a token-cap cut, so
+	// the caller splits the chunk into halves; a wedged or unreachable engine
+	// is engine-down, never a split (the halves would each burn the whole
+	// deadline).
+	if c.d.notesProgressing(ctx, base) {
 		return "", &meeting.AnswerTimeoutError{Err: err}
 	}
+	// The retry Compose may spend should not re-ask the same wedged process:
+	// release the guard and stop the child so the retry spawns a fresh one.
+	g.Release()
+	if stopErr := c.d.LLMSup.Stop(ctx); stopErr != nil {
+		c.d.log.Warn("notes: the wedged notes engine could not be stopped before its retry", slog.Any("error", stopErr))
+	}
 	return "", &meeting.EngineDownError{
-		Err:       fmt.Errorf("the notes engine did not answer a health probe after a call ran out of time: %w", err),
+		Err:       fmt.Errorf("the notes engine stopped producing after a call ran out of time: %w", err),
 		Retryable: true,
 		Reason:    meeting.FailNotesEngineTimeout,
 	}
 }
 
-// notesAlive asks the notes server that just timed out whether it still
-// answers: the call's own base URL's public /health under a short probe. It is
-// the only evidence used to mark a deadline error "the answer was too long" —
-// a process can be alive (the supervisor's child record) while its HTTP loop
-// is wedged, so the probe, not the process, is the check.
-func notesAlive(ctx context.Context, base string) bool {
+// notesProgressProbe is the gap between the two /slots reads the wedge check
+// makes; a decoding engine's counter visibly grows inside it. A var so a
+// test can shorten the wait.
+var notesProgressProbe = 500 * time.Millisecond
+
+// notesSlot is one /slots row's decode counters, whichever level the pinned
+// server reports n_decoded at (top-level on older builds, under next_token
+// on newer ones).
+type notesSlot struct {
+	Decoded    int  `json:"n_decoded"`
+	Processing bool `json:"is_processing"`
+	NextToken  struct {
+		Decoded int `json:"n_decoded"`
+	} `json:"next_token"`
+}
+
+func (s notesSlot) decoded() int { return max(s.Decoded, s.NextToken.Decoded) }
+
+// notesProgressing asks the notes server that just timed out whether its
+// decode is moving: /slots is read twice, notesProgressProbe apart. A slot
+// that claims to process but whose decode counter does not grow is a
+// compute-wedged generation — /health would call it alive; an engine with
+// nothing in flight is alive too (the request simply ended), as is one
+// whose counter moved.
+func (d *Daemon) notesProgressing(ctx context.Context, base string) bool {
+	a, ok := d.notesSlots(ctx, base)
+	if !ok {
+		return false
+	}
+	select {
+	case <-time.After(notesProgressProbe):
+	case <-ctx.Done():
+		return false
+	}
+	b, ok := d.notesSlots(ctx, base)
+	if !ok {
+		return false
+	}
+	processing := false
+	for i := range a {
+		if i >= len(b) {
+			break
+		}
+		if a[i].Processing || b[i].Processing {
+			processing = true
+			if b[i].decoded() > a[i].decoded() {
+				return true // the decode moved between the reads
+			}
+		}
+	}
+	return !processing
+}
+
+// notesSlots reads the engine's /slots: the decode counters each in-flight
+// generation reports, under the server's own key. ok is false when the
+// server cannot answer at all.
+func (d *Daemon) notesSlots(ctx context.Context, base string) (slots []notesSlot, ok bool) {
 	hctx, cancel := context.WithTimeout(ctx, notesAliveProbe)
 	defer cancel()
-	req, err := http.NewRequestWithContext(hctx, http.MethodGet, base+"/health", nil)
+	key, err := d.notesKey()
 	if err != nil {
-		return false
+		return nil, false
 	}
+	req, err := http.NewRequestWithContext(hctx, http.MethodGet, base+"/slots", nil)
+	if err != nil {
+		return nil, false
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false
+		return nil, false
 	}
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&slots); err != nil {
+		return nil, false
+	}
+	return slots, true
 }
 
 // notesStaleChild stops the resident notes engine when the model resolution

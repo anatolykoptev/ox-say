@@ -101,6 +101,10 @@ const (
 	// retryDelay is the pause before retrying a call that failed because the
 	// server was busy or not up yet (HTTP 503, connection refused).
 	retryDelay = 5 * time.Second
+	// runBudgetCalls: a run may spend this many per-call deadlines per chunk
+	// in total — three worst-case calls' worth — after which the chunks not
+	// yet started are marked skipped (#552).
+	runBudgetCalls = 3
 )
 
 // ActionItem is one task; Who and When are empty when the transcript names
@@ -663,9 +667,22 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 	var parts []ChunkNotes
 	var skipped []int
 	restarts := 1 // extra engine starts this run may spend on a retryable failure
+	// The run's wall clock is bounded too: a chunk that keeps spending whole
+	// per-call deadlines would otherwise let every chunk pay the same worst
+	// case, so once the run has spent runBudgetCalls deadlines per chunk the
+	// chunks not yet started are marked skipped and what landed merges (#552).
+	runCtx, runCancel := context.WithDeadline(ctx, time.Now().Add(runBudgetCalls*c.callTimeout()*time.Duration(len(chunks))))
+	defer runCancel()
 	for i, ch := range chunks {
-		got, lost, err := c.summarise(ctx, l, lang, i, len(chunks), ch, &restarts, 0)
+		got, lost, err := c.summarise(runCtx, l, lang, i, len(chunks), ch, &restarts, 0)
 		if err != nil {
+			if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+				// The run's own budget, not the caller's context.
+				for j := i; j < len(chunks); j++ {
+					skipped = append(skipped, j)
+				}
+				break
+			}
 			return Notes{}, err
 		}
 		parts = append(parts, got...)
@@ -677,7 +694,7 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 		return Notes{}, ErrNoNotes
 	}
 	// At most maxReduceCalls reduce calls (one for most meetings), after the map steps and before the summary merge; they can only settle open points.
-	claims, err := c.pairPoints(ctx, parts)
+	claims, err := c.pairPoints(runCtx, parts)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Notes{}, ctx.Err() // a cancelled run is not a finished one, whichever call it stopped in
@@ -688,7 +705,7 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 	n := mergeChunks(parts, l, claims)
 	n.SkippedChunks = skipped
 	if len(parts) > 1 {
-		n.Summary = c.mergeSummary(ctx, parts, n.Summary, lang)
+		n.Summary = c.mergeSummary(runCtx, parts, n.Summary, lang)
 	}
 	return n, nil
 }
@@ -830,9 +847,9 @@ func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int
 			// The same request overflows again about as often as not; summarise splits the text instead.
 			return ChunkNotes{}, err
 		}
-		var overtime *AnswerTimeoutError
-		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &overtime) {
-			// The call used its whole deadline; a second one would too.
+		if errors.Is(err, context.DeadlineExceeded) {
+			// The call used its whole deadline; a second one would too. The
+			// AnswerTimeout mark unwraps to the same error.
 			return ChunkNotes{}, err
 		}
 		var down *EngineDownError
