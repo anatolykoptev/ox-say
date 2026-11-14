@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -59,8 +60,15 @@ func (d *Daemon) meetingErrText(err error) string {
 		return "no such meeting"
 	case errors.Is(err, ErrNotesInstall):
 		// The refusal's plain reason follows the sentinel: "notes model
-		// download: <reason>".
-		return strings.TrimPrefix(err.Error(), ErrNotesInstall.Error()+": ")
+		// download: <reason>". A wrapped filesystem error still names the
+		// absolute path behind it — serve its path-free words; a plain
+		// reason gets the path scrub either way (#514).
+		var pe *fs.PathError
+		var le *os.LinkError
+		if errors.As(err, &pe) || errors.As(err, &le) {
+			return publicMessage(err, d.Cfg.Home)
+		}
+		return publicMessage(errors.New(strings.TrimPrefix(err.Error(), ErrNotesInstall.Error()+": ")), d.Cfg.Home)
 	}
 	for _, r := range meetingRetryRefusals {
 		if strings.Contains(err.Error(), r.match) {
@@ -93,7 +101,13 @@ func (d *Daemon) writeMeetingErr(w http.ResponseWriter, err error) {
 	if code >= http.StatusInternalServerError {
 		level = slog.LevelWarn
 	}
-	d.log.Log(context.Background(), level, "meeting request failed", slog.Int("status", code), slog.Any("error", err))
+	// An install refusal wraps the OS error that names the absolute destination: log its path-free words, the
+	// ones the response carries (#514).
+	reason := err.Error()
+	if errors.Is(err, ErrNotesInstall) {
+		reason = d.meetingErrText(err)
+	}
+	d.log.Log(context.Background(), level, "meeting request failed", slog.Int("status", code), slog.String("error", reason))
 	writeErr(w, code, d.meetingErrText(err))
 }
 

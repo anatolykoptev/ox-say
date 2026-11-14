@@ -934,6 +934,46 @@ func TestFailedFetchBacksOff(t *testing.T) {
 	}
 }
 
+// The cleanup model's install_error is the same surface as the notes one: a
+// fetch's stderr can name an absolute path and /status must not repeat it
+// (#514).
+// Mutation: internal/daemon/clean.go cleanStatus, serve the raw ierr -> RED.
+func TestACleanInstallErrorNamesNoAbsolutePath(t *testing.T) {
+	d := newTestDaemon(t, t.TempDir(), nil)
+	script := filepath.Join(d.Cfg.Home, fetchModelsScript)
+	if err := os.MkdirAll(d.Cfg.Home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := cleanFetchStart
+	cleanFetchStart = func(ctx context.Context, _ string, dest string, tail *bytes.Buffer) (*exec.Cmd, error) {
+		tail.WriteString("mv: cannot create '" + dest + "/mossformer2.gguf': Permission denied\n")
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1")
+		return cmd, cmd.Start()
+	}
+	t.Cleanup(func() { cleanFetchStart = old })
+	if ce := d.startCleanInstall(); ce == nil || ce.Code != CleanModelsDownloading {
+		t.Fatalf("startCleanInstall = %+v, want %s", ce, CleanModelsDownloading)
+	}
+	waitFor(t, "the fetch to fail", func() bool { r, e, _ := d.cleanInst.state(); return !r && e != "" })
+	got := d.cleanStatus().InstallErr
+	if strings.Contains(got, d.Cfg.Home) || strings.Contains(got, "/") {
+		t.Fatalf("clean install_error names an absolute path: %q", got)
+	}
+	if !strings.Contains(got, "Permission denied") {
+		t.Fatalf("clean install_error lost the fetch's words: %q", got)
+	}
+	// The log line of the failure is path-free too (#514, review).
+	if !testLogSaw(t, "voice cleanup model download failed") {
+		t.Fatal("the failed cleanup download was not logged")
+	}
+	if testLogSaw(t, d.Cfg.Home) {
+		t.Fatal("the daemon log of a failed cleanup fetch names the absolute path")
+	}
+}
+
 // produce's wait log names the cleanup, not dictation.
 func TestWaitQuietLogNamesTheCleanup(t *testing.T) {
 	d := newTestDaemon(t, t.TempDir(), nil)

@@ -31,7 +31,7 @@ oxs_fetch_models "$root/scripts/fetch-models.sh"
 # stop the install.
 tmpdir=$(mktemp -d)
 tmp="$tmpdir/agent.plist"
-trap 'rm -f "$tmp"; rmdir "$tmpdir" 2>/dev/null || true; [ -z "${st:-}" ] || find "$st" -depth -delete 2>/dev/null || true' EXIT
+trap 'oxs_stage_abort_quiet; rm -f "$tmp"; rmdir "$tmpdir" 2>/dev/null || true; [ -z "${st:-}" ] || find "$st" -depth -delete 2>/dev/null || true' EXIT
 # the app ends a wedged install with TERM (#356); the EXIT trap above then cleans up
 trap 'exit 143' TERM
 trap 'exit 130' INT

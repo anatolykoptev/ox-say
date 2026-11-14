@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -100,7 +101,7 @@ func (d *Daemon) runCleanInstall(ctx context.Context, cmd *exec.Cmd, tail *bytes
 		msg := installTail(tail.String())
 		c.err, c.code = "The download failed: "+msg, installFailureCode(msg)
 		c.failedAt = time.Now()
-		d.log.Warn("voice cleanup model download failed", slog.Any("error", err), slog.String("stderr", msg))
+		d.log.Warn("voice cleanup model download failed", slog.Any("error", err), slog.String("stderr", publicMessage(errors.New(msg), d.Cfg.Home)))
 	}
 }
 

@@ -396,16 +396,21 @@ esac
 # the x86_64, 16 GB and 23.99 GB cases fail. Mutation: `-lt` -> `-le` in
 # oxs_voxcpm2_ok -> the exactly-24 GB case fails. Mutation: delete the
 # `case $mem` digits check in oxs_voxcpm2_ok -> the sysctl-fails, sysctl-empty
-# and sysctl-garbage cases fail (they used to fetch 3 GB).
-vox_case() { # name arch memsize want [extra env assignments...]
-    local d="$tmp/vox-$1" name=$1 arch=$2 mem=$3 want=$4
+# and sysctl-garbage cases fail (they used to fetch 3 GB). Mutation: drop the
+# hw.optional.arm64 disjunct from the arch test -> the Rosetta case fails (#397).
+vox_case() { # name arch memsize want [armhw=0|1] [extra env assignments...]
+    local d="$tmp/vox-$1" name=$1 arch=$2 mem=$3 want=$4 armhw=0
     shift 4
+    case "${1:-}" in
+        armhw=*) armhw=${1#armhw=}; shift ;;
+    esac
     mkdir -p "$d/bin"
     printf '#!/bin/sh\necho "$@" > "%s/fetch-args"\n' "$d" > "$d/fetch"
     printf '#!/bin/sh\necho %s\n' "$arch" > "$d/bin/uname"
     case $mem in
         fail) printf '#!/bin/sh\nexit 1\n' > "$d/bin/sysctl" ;;
-        *) printf '#!/bin/sh\necho %s\n' "$mem" > "$d/bin/sysctl" ;;
+        # sysctl answers the oid it is asked for: -n hw.memsize the size, -n hw.optional.arm64 the flag
+        *) printf '#!/bin/sh\ncase "${2:-}" in hw.memsize) echo %s ;; hw.optional.arm64) echo %s ;; *) exit 1 ;; esac\n' "$mem" "$armhw" > "$d/bin/sysctl" ;;
     esac
     chmod +x "$d/fetch" "$d/bin/uname" "$d/bin/sysctl"
     env PATH="$d/bin:$PATH" OX_SAY_WITH_VOXCPM2=1 "$@" \
@@ -417,6 +422,9 @@ vox_case arm64-24g-exact arm64 25769803776 "--with-voxcpm2"
 vox_case arm64-just-under-24g arm64 25769803775 ""
 vox_case arm64-16g arm64 17179869184 ""
 vox_case x86_64 x86_64 34359738368 ""
+# A Rosetta shell says x86_64 on arm64 hardware; hw.optional.arm64 reads the
+# hardware — the same test get.sh makes for its arch (#397).
+vox_case rosetta-32g x86_64 34359738368 "--with-voxcpm2" armhw=1
 vox_case sysctl-fails arm64 fail ""
 vox_case sysctl-empty arm64 "" ""
 vox_case sysctl-garbage arm64 "n/a" ""
@@ -978,6 +986,86 @@ go_link_case go go
 go_link_case licenses licenses
 n=$(grep -cE '^[^#]*oxs_install_go_licenses "[$]root/licenses/go"' "$root/scripts/install-release.sh" || true)
 check "install-release.sh installs the Go licences through oxs_install_go_licenses" "${n:-x}" 1
+
+# --- M: a symlinked engine/licenses is replaced, not written through (#508) ----------------------------------
+# ox-say owns engine/licenses; a symlink there (a stray manual edit) would send the staged licences into the
+# target outside the home before oxs_install_go_licenses ever sees the link. oxs_install_engines drops the link
+# and makes a real directory first, the same idiom oxs_install_go_licenses uses. The target stays writable here
+# on purpose: the write-through this guards against is silent.
+# Mutation (lib-install.sh): drop the `[ ! -L "$home/engine/licenses" ] || rm -f` line -> the licences land in
+# the target -> "symlinked licenses dir: target holds nothing new" fails.
+d="$tmp/liclink"; mkdir -p "$d/home/engine" "$d/target"
+lic_pkg "$d/pkg" 0644 new-text
+echo keep > "$d/target/f"
+ln -s "$d/target" "$d/home/engine/licenses"
+rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+check "symlinked licenses dir: install completes" "$rc" 0
+check "symlinked licenses dir: licenses is a real dir" "$([ -d "$d/home/engine/licenses" ] && [ ! -L "$d/home/engine/licenses" ] && echo yes || echo no)" yes
+check "symlinked licenses dir: licence installed in the home" "$(cat "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" new-text
+check "symlinked licenses dir: target holds nothing new" "$(ls -A "$d/target")" f
+check "symlinked licenses dir: target content untouched" "$(cat "$d/target/f")" keep
+
+# --- N: a kill mid-staging strands no .new (#508, review comment) --------------------------------------------
+# The installers arm oxs_stage_abort_quiet on the EXIT trap for the staging stretch: a TERM (the app's wedged
+# install timeout, Ctrl-C) ends the run with staged copies on disk, and the trap is what removes them. The mini
+# installer below carries the same traps as install-release.sh; a cp that sleeps on its second call puts the
+# TERM mid-stage, when the first .new already exists.
+# Mutations: drop `oxs_stage_abort_quiet; ` from an installer's EXIT trap -> its "$s arms ..." check fails; drop
+# the abort itself -> "a TERM mid-stage leaves no .new" fails.
+for s in install.sh install-release.sh install-engine.sh; do
+    n=$(grep -cE "^trap 'oxs_stage_abort_quiet" "$root/scripts/$s" || true)
+    check "$s arms the stage abort on EXIT" "${n:-0}" 1
+done
+d="$tmp/stagekill"; mkdir -p "$d/out/licenses" "$d/home" "$d/bin"
+echo x > "$d/out/licenses/x.LICENSE"
+for bin in tts-server ox-stt ox-align ox-llm; do printf '#!/bin/sh\n' > "$d/out/$bin"; chmod +x "$d/out/$bin"; done
+printf '#!/bin/sh\nn=$(( $(cat "$SK_N" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$SK_N"; if [ "$n" -ge 2 ]; then echo $$ > "$SK_PID"; exec sleep 30; fi; exec /bin/cp "$@"\n' > "$d/bin/cp"
+chmod +x "$d/bin/cp"
+SK_N="$d/n" SK_PID="$d/sleep.pid" PATH="$d/bin:$PATH" bash -c "
+    set -euo pipefail
+    . '$root/scripts/lib-install.sh'
+    home='$d/home'
+    trap 'exit 143' TERM
+    trap 'oxs_stage_abort_quiet' EXIT
+    oxs_install_engines '$d/out'
+" > "$d/log" 2>&1 &
+kpid=$!
+# the stub cp records its sleep's pid once the second copy starts: the first staged copy (tts-server) exists by then
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$d/sleep.pid" ] && break; sleep 1; done
+# Signal the wrapper AND its sleeping child before waiting: bash runs its TERM trap only when the foreground child
+# returns, so waiting on the wrapper alone would stall until the stub's sleep ended.
+stop_stagekill() {
+    kill -TERM "$kpid" 2>/dev/null || true
+    if [ -s "$d/sleep.pid" ]; then kill "$(cat "$d/sleep.pid")" 2>/dev/null || true; fi
+    wait "$kpid" 2>/dev/null || true
+}
+if [ -s "$d/sleep.pid" ] && [ -e "$d/home/engine/tts-server.new" ]; then
+    stop_stagekill
+    check "a TERM mid-stage leaves no .new" "$(find "$d/home" -name '*.new' | wc -l | tr -d ' ')" 0
+    check "a TERM mid-stage replaced no engine" "$(find "$d/home/engine" -type f | wc -l | tr -d ' ')" 0
+else
+    stop_stagekill
+    fail "no staged copy appeared within 10 s; cannot test a mid-stage kill: $(cat "$d/log")"
+fi
+# --- M2: a stage that fails after the symlink guard leaves the link and its target alone (#508) -----------------
+# The licences are staged in a real directory beside the link and swapped in only once everything staged, so a
+# licence that cannot be copied leaves engine/licenses a symlink to its untouched target.
+# Mutation (lib-install.sh): remove the link up front again (`rm -f "$lic"` before staging) -> "licenses is still a
+# symlink" fails.
+if [ "$(id -u)" = 0 ]; then
+    pass "failing stage behind a symlinked licenses dir: skipped as root (root reads mode 000)"
+else
+    d="$tmp/liclink-fail"; mkdir -p "$d/home/engine" "$d/target"
+    lic_pkg "$d/pkg" 0644 new-text
+    chmod 000 "$d/pkg/licenses/a b LICENSE.txt"
+    echo keep > "$d/target/f"
+    ln -s "$d/target" "$d/home/engine/licenses"
+    rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+    check "failing stage, symlinked licenses dir: install fails" "$([ "$rc" != 0 ] && echo failed || echo succeeded)" failed
+    check "failing stage, symlinked licenses dir: licenses is still a symlink" "$([ -L "$d/home/engine/licenses" ] && echo yes || echo no)" yes
+    check "failing stage, symlinked licenses dir: target untouched" "$(ls -A "$d/target" | tr '\n' ' ')" "f "
+    check "failing stage, symlinked licenses dir: no stage directory left" "$(find "$d/home/engine" -name '.licenses.stage' | wc -l | tr -d ' ')" 0
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then

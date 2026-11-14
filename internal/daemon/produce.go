@@ -696,8 +696,10 @@ func pruneTakes(j *job) (int, error) {
 	return n, nil
 }
 
-// absPathRe finds absolute path tokens in an error text.
-var absPathRe = regexp.MustCompile(`(^|[\s"'(:=])(/[^\s"'()<>]+)`)
+// absPathRe finds absolute path tokens in an error text: a "/" that starts a token (after a space, quote, bracket,
+// backtick, comma, colon, equals sign or the start), up to the next space, quote, bracket or separator, so a path
+// closed by ")", "]", "," or ";" is found as well as one closed by a space.
+var absPathRe = regexp.MustCompile("(^|[^\\w./~-])(/[^\\s\"'()<>\\[\\]{}`,;]+)")
 
 // public is an error's text for a caller: no internal absolute path, ever
 // (#154.5). Typed write/path errors become plain words naming only the file's

@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log/slog"
 	"net"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -716,6 +719,153 @@ func TestACurl23FailureLooksAtTheDisk(t *testing.T) {
 				t.Fatalf("install_error_code = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A refused or failed install answers in words, never in an absolute path:
+// the person reads the response on a machine where the daemon's paths mean
+// nothing (#514). The raw error still goes to the log.
+// Mutations: internal/daemon/meetings_http.go meetingErrText, serve the
+// reason after the sentinel raw -> the mkdir and fork-exec cases fail;
+// internal/daemon/meetings.go notesStatus, serve the raw ierr -> the
+// install_error case fails.
+func TestInstallFailuresNameNoAbsolutePath(t *testing.T) {
+	pathFree := func(t *testing.T, what, got, home string) {
+		t.Helper()
+		if strings.Contains(got, home) {
+			t.Fatalf("%s names an absolute path: %q", what, got)
+		}
+		for _, tok := range strings.Fields(got) {
+			if strings.HasPrefix(strings.TrimLeft(tok, "\"'(:=$"), "/") {
+				t.Fatalf("%s names an absolute path: %q", what, got)
+			}
+		}
+	}
+
+	// The models directory exists as a FILE: MkdirAll fails with a PathError
+	// that names the absolute destination.
+	d := installFixture(t, "#!/bin/sh\nexit 0\n")
+	if err := os.WriteFile(d.Cfg.ModelsDir(), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := d.InstallNotesModel("")
+	if err == nil {
+		t.Fatal("a models dir that is a file must refuse the download")
+	}
+	got := d.meetingErrText(err)
+	pathFree(t, "the mkdir refusal", got, d.Cfg.Home)
+	if !strings.Contains(got, "not a directory") {
+		t.Fatalf("the mkdir refusal lost its reason: %q", got)
+	}
+
+	// The fetch script is not executable: cmd.Start's PathError names the
+	// absolute script path.
+	d2 := installFixture(t, "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(d2.Cfg.Home, fetchModelsScript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = d2.InstallNotesModel("")
+	if err == nil {
+		t.Fatal("a fetch script without the execute bit must refuse")
+	}
+	got = d2.meetingErrText(err)
+	pathFree(t, "the fork/exec refusal", got, d2.Cfg.Home)
+	if !strings.Contains(got, "permission denied") {
+		t.Fatalf("the fork/exec refusal lost its reason: %q", got)
+	}
+
+	// The fetch itself writes a path under the daemon home to stderr: the
+	// install_error /status serves keeps the words, drops the path.
+	d3 := installFixture(t, "#!/bin/sh\necho \"cp: cannot create regular file '$5/qwen.gguf': Permission denied\" >&2\nexit 1\n")
+	if err := d3.InstallNotesModel(""); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d3.notesInstalling() == 0 }, "the download to fail")
+	got = d3.Status().Notes.InstallErr
+	pathFree(t, "install_error", got, d3.Cfg.Home)
+	if !strings.Contains(got, "Permission denied") {
+		t.Fatalf("install_error lost the fetch's words: %q", got)
+	}
+}
+
+// The daemon log is as path-free as the response (#514, review): a refused notes-model install (MkdirAll,
+// cmd.Start) and a failed fetch's stderr tail both name the absolute destination, and the Warn that records
+// them used to carry it raw.
+// Mutations: meetings_http.go writeMeetingErr, log `slog.Any("error", err)` -> the refusal case fails;
+// meetings.go runNotesInstall, log the raw `msg` as stderr -> the fetch case fails.
+func TestInstallFailureLogsNameNoAbsolutePath(t *testing.T) {
+	d := installFixture(t, "#!/bin/sh\nexit 0\n")
+	if err := os.WriteFile(d.Cfg.ModelsDir(), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := d.InstallNotesModel("")
+	if err == nil {
+		t.Fatal("a models dir that is a file must refuse the download")
+	}
+	// A refusal is a 409, logged at debug: read it there.
+	var buf bytes.Buffer
+	saved := d.log
+	d.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	d.writeMeetingErr(httptest.NewRecorder(), err)
+	d.log = saved
+	if strings.Contains(buf.String(), d.Cfg.ModelsDir()) {
+		t.Fatalf("the daemon log of a refused install names the absolute models path: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "not a directory") {
+		t.Fatalf("the daemon log of a refused install lost its reason: %s", buf.String())
+	}
+
+	d2 := installFixture(t, "#!/bin/sh\necho \"cp: cannot create regular file '$5/qwen.gguf': Permission denied\" >&2\nexit 1\n")
+	if err := d2.InstallNotesModel(""); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d2.notesInstalling() == 0 }, "the download to fail")
+	if !testLogSaw(t, "notes model download failed") {
+		t.Fatal("the failed download was not logged")
+	}
+	if testLogSaw(t, d2.Cfg.ModelsDir()) {
+		t.Fatal("the daemon log of a failed fetch names the absolute models path")
+	}
+}
+
+// publicMessage drops the directory from every absolute path in an error text, wherever the path ends: at a
+// space, a quote, or punctuation (")", "]", ",", ";", "`") - and whether it sits inside the home or outside it
+// (#514, review). The words around the path survive.
+// Mutation: produce.go absPathRe back to the old `(^|[\s"'(:=])(/[^\s"'()<>]+)` -> the bracket, backtick, brace and
+// comma rows fail, and install_error keeps "/srv/other/part".
+func TestPublicMessageScrubsPathsAtPunctuation(t *testing.T) {
+	home := "/home/me/ox"
+	for _, c := range []struct{ name, in, want string }{
+		{"paren", "curl: (23) Failure writing output to destination (/opt/x/model.bin)", "curl: (23) Failure writing output to destination (model.bin)"},
+		{"bracket", "error [/opt/x/model.bin]; retry", "error [model.bin]; retry"},
+		{"backtick", "see `/opt/x/model.bin` for details", "see `model.bin` for details"},
+		{"brace", "got {/opt/x/y} back", "got {y} back"},
+		{"comma and semicolon", "moved /opt/a/b,/opt/c/d;/opt/e/f done", "moved b,d;f done"},
+		{"inside the home", "open " + home + "/models/q.gguf: permission denied", "open …: permission denied"},
+		{"colon", "wrote:/opt/x/model.bin: no space left", "wrote:model.bin: no space left"},
+	} {
+		if got := publicMessage(errors.New(c.in), home); got != c.want {
+			t.Errorf("%s: publicMessage(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// The install_error /status serves for a failed fetch keeps the useful words and names no path, inside the home or
+// not, even when the path is closed by punctuation.
+func TestInstallErrorScrubsFetchStderrPaths(t *testing.T) {
+	d := installFixture(t, "#!/bin/sh\necho \"curl: (23) Failure writing output to destination (/opt/x/model.bin) while copying [/srv/other/part]\" >&2\nexit 1\n")
+	if err := d.InstallNotesModel(""); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to fail")
+	got := d.Status().Notes.InstallErr
+	if strings.Contains(got, "/opt") || strings.Contains(got, "/srv") || strings.Contains(got, d.Cfg.Home) {
+		t.Fatalf("install_error names a path: %q", got)
+	}
+	for _, w := range []string{"Failure writing output to destination", "model.bin", "while copying"} {
+		if !strings.Contains(got, w) {
+			t.Fatalf("install_error lost %q: %q", w, got)
+		}
 	}
 }
 
