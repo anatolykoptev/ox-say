@@ -38,7 +38,14 @@ public enum GlossaryLoad: Equatable {
 @MainActor
 public final class GlossaryModel: ObservableObject {
     @Published public private(set) var pairs: [GlossaryPair] = []
-    @Published public var filter: GlossaryFilter = .all
+    @Published public var filter: GlossaryFilter = .all {
+        // A row the new filter hides is not selected any more: the toolbar must never act on a pair the owner cannot see.
+        didSet { dropHiddenSelection() }
+    }
+    /// The selected row; always one of `visible` (a filter change or a reload that hides it clears it).
+    @Published public var selection: GlossaryPair.ID? {
+        didSet { dropHiddenSelection() }
+    }
     @Published public private(set) var load: GlossaryLoad = .loading
     /// An action is in flight: the page disables its buttons so two cannot overlap.
     @Published public private(set) var busy = false
@@ -59,6 +66,13 @@ public final class GlossaryModel: ObservableObject {
     /// The pairs the filter admits, in the daemon's order.
     public var visible: [GlossaryPair] { pairs.filter { filter.admits($0.status) } }
 
+    /// The selected pair, resolved against what the filter shows, never against the whole list.
+    public var selectedPair: GlossaryPair? { visible.first { $0.id == selection } }
+
+    private func dropHiddenSelection() {
+        if let id = selection, !visible.contains(where: { $0.id == id }) { selection = nil }
+    }
+
     public func count(_ f: GlossaryFilter) -> Int { pairs.filter { f.admits($0.status) }.count }
 
     public func dismissProblem() { problem = nil }
@@ -68,19 +82,27 @@ public final class GlossaryModel: ObservableObject {
         ownerAvailable = client.canActAsOwner
         do {
             pairs = try await client.pairs()
+            dropHiddenSelection()
             load = .loaded
         } catch {
             load = .failed(describe(error))
         }
     }
 
-    public func approve(_ id: String) async { await act { try await self.client.approve(id: id) } }
-    public func reject(_ id: String) async { await act { try await self.client.reject(id: id) } }
-    public func delete(_ id: String) async { await act { try await self.client.purge(id: id) } }
+    /// The four owner actions on an existing pair act only on a pair the current filter shows: an id the owner can no
+    /// longer see (hidden by a filter change, gone after a reload) sends nothing.
+    public func approve(_ id: String) async { await actOnVisible(id) { try await self.client.approve(id: id) } }
+    public func reject(_ id: String) async { await actOnVisible(id) { try await self.client.reject(id: id) } }
+    public func delete(_ id: String) async { await actOnVisible(id) { try await self.client.purge(id: id) } }
 
     public func edit(_ id: String, meant: String) async {
         let meant = meant.trimmingCharacters(in: .whitespacesAndNewlines)
-        await act { try await self.client.edit(id: id, meant: meant) }
+        await actOnVisible(id) { try await self.client.edit(id: id, meant: meant) }
+    }
+
+    private func actOnVisible(_ id: String, _ action: () async throws -> Void) async {
+        guard visible.contains(where: { $0.id == id }) else { return }
+        await act(action)
     }
 
     /// The owner is present, so a pair filed here is approved at once: filing, then approving the id the daemon gave.

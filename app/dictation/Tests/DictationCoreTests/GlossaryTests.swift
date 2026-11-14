@@ -292,4 +292,60 @@ final class GlossaryModelTests: XCTestCase {
         guard case .failed = m.load else { return XCTFail("the refresh failed") }
         XCTAssertEqual(m.pairs.map(\.id), ["a1"], "the last good list stays on screen")
     }
+
+    private func fourPairs() -> GlossaryStub {
+        GlossaryStub { request in
+            request.httpMethod == "GET"
+                ? (200, self.list(pairJSON("a1", "а", "1", "candidate"), pairJSON("a2", "б", "2", "active"), pairJSON("a3", "в", "3", "rejected")))
+                : (200, "{}")
+        }
+    }
+
+    /// Switching the filter drops a selection the new filter hides, and keeps one it still shows.
+    /// Mutation: GlossaryModel.dropHiddenSelection(), delete the `selection = nil` -> RED.
+    func testGlossaryAFilterChangeDropsAHiddenSelection() async {
+        let m = model(fourPairs())
+        await m.reload()
+        m.selection = "a1"
+        XCTAssertEqual(m.selectedPair?.id, "a1")
+        m.filter = .active
+        XCTAssertNil(m.selection, "a1 is a candidate: the active filter hides it")
+        XCTAssertNil(m.selectedPair)
+        m.selection = "a2"
+        m.filter = .all
+        XCTAssertEqual(m.selection, "a2", "a row the new filter still shows stays selected")
+        m.selection = "a1"
+        m.filter = .rejected
+        XCTAssertNil(m.selection)
+        m.selection = "a1"
+        XCTAssertNil(m.selection, "a hidden row cannot be selected at all")
+    }
+
+    /// An action on an id the filter hides sends nothing: the owner cannot see that pair.
+    /// Mutation: GlossaryModel.actOnVisible(_:_:), delete the `guard visible.contains` -> RED.
+    func testGlossaryActionsActOnlyOnAVisiblePair() async {
+        let stub = fourPairs()
+        let m = model(stub)
+        await m.reload()
+        m.filter = .active
+        await m.approve("a1")
+        await m.reject("a1")
+        await m.edit("a1", meant: "x")
+        await m.delete("a1")
+        XCTAssertEqual(stub.lines, ["GET /v1/glossary"], "nothing but the load: a1 is hidden by the filter")
+        await m.delete("a2")
+        XCTAssertEqual(stub.lines.suffix(2), ["DELETE /v1/glossary/a2", "GET /v1/glossary"])
+    }
+
+    /// A reload that removes the selected pair clears the selection.
+    func testGlossaryAReloadThatDropsTheSelectedPairClearsIt() async {
+        var rows = [pairJSON("a1", "а", "1", "active")]
+        let stub = GlossaryStub { _ in (200, self.list(rows.joined(separator: ",") == "" ? "" : rows[0])) }
+        let m = model(stub)
+        await m.reload()
+        m.selection = "a1"
+        rows = [pairJSON("a2", "б", "2", "active")]
+        await m.reload()
+        XCTAssertNil(m.selection)
+    }
 }

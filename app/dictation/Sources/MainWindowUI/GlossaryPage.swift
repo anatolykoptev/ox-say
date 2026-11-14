@@ -7,7 +7,6 @@ import SwiftUI
 /// only. Without the owner key the list still shows and the owner buttons are off, with a line saying why.
 struct GlossaryPage: View {
     @StateObject private var model = GlossaryModel(client: .current())
-    @State private var selection: GlossaryPair.ID?
     @State private var sheet: GlossarySheet?
     @State private var deleting: GlossaryPair?
 
@@ -37,7 +36,7 @@ struct GlossaryPage: View {
     }
 
     private var ownerOn: Bool { model.ownerAvailable && !model.busy }
-    private var selected: GlossaryPair? { model.pairs.first { $0.id == selection } }
+    private var selected: GlossaryPair? { model.selectedPair }
 
     // MARK: states
 
@@ -71,7 +70,7 @@ struct GlossaryPage: View {
     }
 
     private var table: some View {
-        Table(model.visible, selection: $selection) {
+        Table(model.visible, selection: $model.selection) {
             TableColumn(L10nKey.glossaryColHeard.text, value: \.heard)
             TableColumn(L10nKey.glossaryColMeant.text, value: \.meant)
             TableColumn(L10nKey.glossaryColStatus.text) { pair in
@@ -84,9 +83,9 @@ struct GlossaryPage: View {
             .width(min: 40, ideal: 50)
         }
         .contextMenu(forSelectionType: GlossaryPair.ID.self) { ids in
-            if let id = ids.first, let pair = model.pairs.first(where: { $0.id == id }) { actions(for: pair) }
+            if let id = ids.first, let pair = model.visible.first(where: { $0.id == id }) { actions(for: pair) }
         } primaryAction: { ids in
-            if ownerOn, let id = ids.first, let pair = model.pairs.first(where: { $0.id == id }) { sheet = .edit(pair) }
+            if ownerOn, let id = ids.first, let pair = model.visible.first(where: { $0.id == id }) { sheet = .edit(pair) }
         }
         .overlay {
             if model.visible.isEmpty {
