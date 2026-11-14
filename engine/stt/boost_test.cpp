@@ -231,8 +231,23 @@ static void t_parse_terms() {
     t = parse_terms("ab\n\xD0\xB4\xD0\xBE\n", err);
     CHECK(t.empty(), "a 2-character ASCII term and a 2-character Cyrillic term (4 bytes) are dropped");
 
-    t = parse_terms("good\tnope\nfine\t-1\nok3\t0\nwell\t2\nnan1\tnan\n", err);
-    CHECK(t.size() == 1 && t[0].text == "well", "a bad, non-positive or non-finite weight drops the line");
+    t = parse_terms("fine\t-1\nok3\t0\nwell\t2\nnan1\tnan\nxyz\t2.5x\n", err);
+    CHECK(t.size() == 1 && t[0].text == "well", "a negative, zero, non-finite or half-numeric weight drops the line");
+
+    // Spoken forms: a numeric second field is the weight, anything else is an alias.
+    t = parse_terms("GitHub\t\xD0\x93\xD0\xB8\xD1\x82\xD1\x85\xD0\xB0\xD0\xB1\n"
+                    "OxSay\t2.5\t\xD0\x9E\xD0\xBA\xD1\x81 \xD0\xA1\xD0\xB5\xD0\xB9\t\xD0\x9E\xD0\xBA\xD1\x81\xD0\xB5\xD0\xB9\n"
+                    "Devin\t\t\xD0\x94\xD0\xB5\xD0\xB2\xD0\xB8\xD0\xBD\t\xD0\xB4\xD0\xB5\xD0\xB2\xD0\xB8\xD0\xBD\tab\tDevin\n", err);
+    CHECK(t.size() == 3, "three terms with aliases");
+    if (t.size() == 3) {
+        CHECK(t[0].weight == 1.0f && t[0].spoken.size() == 1, "no weight field: weight 1, one alias");
+        CHECK(near(t[1].weight, 2.5f) && t[1].spoken.size() == 2 && t[1].spoken[0] == "\xD0\x9E\xD0\xBA\xD1\x81 \xD0\xA1\xD0\xB5\xD0\xB9",
+              "numeric second field is the weight, the rest are aliases (multi-word kept)");
+        CHECK(t[2].spoken.size() == 2, "empty field skipped, 2-char alias dropped, the written form is not its own alias");
+    }
+    t = parse_terms("abc\t5\t7777\n", err);
+    CHECK(t.size() == 1 && near(t[0].weight, 5.0f) && t[0].spoken == std::vector<std::string>({ "7777" }),
+          "only the second field can be a weight; a later number is an alias");
 
     std::string big;
     for (int i = 0; i < 250; ++i) big += "term" + std::to_string(i) + "\n";
@@ -262,7 +277,50 @@ static void t_build_skips() {
     CHECK(sum == 0.0f && empty->step(0, A) == 0, "an empty graph biases nothing");
 }
 
+// map_spoken: whole-word, case-insensitive, ё=е, longest alias first. RED if the boundary test is dropped
+// ("дозорного" would become "dozorного") or the alias comparison stops folding case.
+static void t_map_spoken() {
+    cur = "t_map_spoken";
+    const std::vector<term> ts = { { "dozor", 1.0f, { "\xD0\xB4\xD0\xBE\xD0\xB7\xD0\xBE\xD1\x80" } },
+                                   { "OxSay", 1.0f, { "\xD0\x9E\xD0\xBA\xD1\x81 \xD0\xA1\xD0\xB5\xD0\xB9", "\xD0\x9E\xD0\xBA\xD1\x81" "\xD0\xB5\xD0\xB9" } } };
+    CHECK(map_spoken("\xD0\x94\xD0\xBE\xD0\xB7\xD0\xBE\xD1\x80 \xD1\x80\xD0\xB0\xD0\xB1\xD0\xBE\xD1\x82\xD0\xB0\xD0\xB5\xD1\x82.", ts) == "dozor \xD1\x80\xD0\xB0\xD0\xB1\xD0\xBE\xD1\x82\xD0\xB0\xD0\xB5\xD1\x82.",
+          "a capitalised alias at a word start maps; punctuation after it is kept");
+    const std::string longer = "\xD0\xBF\xD0\xBE\xD0\xB5\xD1\x85\xD0\xB0\xD0\xBB\xD0\xB8 \xD0\xB4\xD0\xBE \xD0\xB4\xD0\xBE\xD0\xB7\xD0\xBE\xD1\x80\xD0\xBD\xD0\xBE\xD0\xB3\xD0\xBE";  // "поехали до дозорного"
+    CHECK(map_spoken(longer, ts) == longer, "an alias inside a longer word is left alone");
+    const std::string pre = "\xD0\xBF\xD1\x80\xD0\xB5\xD0\xB4\xD0\xB4\xD0\xBE\xD0\xB7\xD0\xBE\xD1\x80";  // "преддозор"
+    CHECK(map_spoken(pre, ts) == pre, "nor at the end of a longer word");
+    CHECK(map_spoken("\xD0\xBE\xD0\xBA\xD1\x81 \xD1\x81\xD0\xB5\xD0\xB9, \xD0\xBE\xD0\xBA\xD1\x81\xD1\x8D\xD0\xB9", ts) == "OxSay, \xD0\xBE\xD0\xBA\xD1\x81\xD1\x8D\xD0\xB9",
+          "a multi-word alias maps; an unlisted spelling does not");
+    CHECK(map_spoken("nothing here", ts) == "nothing here", "no match, no change");
+    CHECK(map_spoken("x", {}) == "x", "no aliases, no change");
+}
+
+// Word-boundary guard (run::fill): vocabulary with the term "ab" = [▁a b] boosting the continuation 'b'
+// (id 3) after ▁a. When the raw argmax is a word-start token (▁b, id 9) the bias must not pull a
+// continuation in (that would glue two words: "до за.." -> "дозор"); when the raw argmax is itself a
+// continuation the bias applies. RED if the guard is removed from run::fill.
+static void t_word_boundary_guard() {
+    cur = "t_word_boundary_guard";
+    const vocab_view v = view_of(kToy);
+    auto g = graph::build({ { "ab", 1.0f } }, v, params{});  // ▁ a b = ids 1 2 3
+    run r(g, 1.0f);
+    r.reset();
+    r.on_token(A);  // "ab" segments as [▁a b] (ids 8 3): the toy vocabulary has the piece ▁a
+    std::vector<float> logits(14, 0.0f), b(14, 0.0f);
+    logits[B] = 5.0f;  // raw argmax ▁b: a new word
+    r.fill(logits.data(), b.data(), 14);
+    CHECK(b[3] == 0.0f, "no continuation bias when the raw argmax starts a word");
+    b.assign(14, 0.0f);
+    logits.assign(14, 0.0f);
+    logits[4] = 5.0f;  // raw argmax 'c': a continuation
+    r.fill(logits.data(), b.data(), 14);
+    CHECK(b[3] > 0.0f, "continuation bias applies when the raw argmax continues the word");
+    CHECK(!g->word_start(3) && g->word_start(9) && g->word_start(1), "word_start flags from the vocabulary");
+}
+
 int main() {
+    t_map_spoken();
+    t_word_boundary_guard();
     t_graph_shape();
     t_score_tables();
     t_fail_links();

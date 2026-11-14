@@ -9,9 +9,12 @@
 //          re-ranks the non-blank candidates of a step it was going to emit a token for; blank, duration and
 //          the reported probabilities are untouched. --boost-alpha scales the boost (default 0 = off, and
 //          off prints byte-for-byte what a run without the flags prints). With a boost on, the JSON gains
-//          "tokens":[{"id","t","p","boosted"}] after "words": every emitted token with its RAW (unboosted)
+//          "tokens":[{"id","t","p","boosted"}] and "text_raw" after "words": every emitted token with its RAW (unboosted)
 //          probability and whether the boost changed it, so a veto on a low raw p can be computed after
-//          the fact. CLI only: --serve, /transcribe and the session routes decode without terms.
+//          the fact. Term lines may carry spoken forms ("GitHub<TAB>Гитхаб<TAB>Гит хаб"; a numeric second
+//          field is the weight): the model writes a Latin name in Cyrillic when it is said inside Russian
+//          speech, so every spoken form is boosted too and, after the decode, replaced by the written form on
+//          whole words only ("text" is mapped, "text_raw" is as decoded). CLI only: --serve, /transcribe and the session routes decode without terms.
 //
 //   ox-stt --serve -m <parakeet model> --port <port> [--vad <silero VAD model>]
 //          [-t threads] [-ng] [--chunk-s 30] [-v]
@@ -118,6 +121,7 @@ struct result {
     std::vector<word> words;
     bool has_tokens = false;  // set when a boost graph was active; the JSON then carries "tokens"
     std::vector<token_rec> tokens;
+    std::string text_raw;  // boost active: the text as decoded, before spoken forms became written forms
 };
 
 struct args {
@@ -402,6 +406,14 @@ bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std:
     }
     const auto t_dec = std::chrono::steady_clock::now();
     const bool ok = decode_parakeet(ctx, a, x, r, err, graph, a.boost_alpha);
+    if (ok && graph) {
+        // Spoken -> written, on whole words only (boost.h map_spoken). The raw text stays in "text_raw".
+        for (const segment & sg : r.segments) {
+            r.text_raw += (r.text_raw.empty() ? "" : " ") + sg.text;
+        }
+        for (segment & sg : r.segments) sg.text = oxstt::boost::map_spoken(sg.text, terms);
+        for (word & w : r.words) w.w = oxstt::boost::map_spoken(w.w, terms);
+    }
     if (a.verbose) {
         fprintf(stderr, "ox-stt: decode_ms=%.1f\n",
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_dec).count());
@@ -577,7 +589,8 @@ std::string result_json(const std::string & engine, const result & r, size_t n_s
             json_str(o, r.tokens[i].text);
             o += std::string(",\"p\":") + p + ",\"boosted\":" + (r.tokens[i].boosted ? "true" : "false") + "}";
         }
-        o += "]";
+        o += "],\"text_raw\":";
+        json_str(o, r.text_raw);
     }
     o += "}\n";
     return o;
