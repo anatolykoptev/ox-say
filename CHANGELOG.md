@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.32](https://github.com/anatolykoptev/ox-say/compare/v0.1.31...v0.1.32) (2026-11-14)
+
+
+### Added
+
+* learning glossary — heard → meant pairs applied after recognition ([#556](https://github.com/anatolykoptev/ox-say/issues/556)) ([835f218](https://github.com/anatolykoptev/ox-say/commit/835f218538808c57f0009adf2ba60828a813ba95))
+
+
+### Fixed
+
+* **meetings:** warn when the notes folder syncs to iCloud ([#557](https://github.com/anatolykoptev/ox-say/issues/557)) ([22fdea9](https://github.com/anatolykoptev/ox-say/commit/22fdea9c4d75f2158f645ddcdff3a414ae849079))
+
+
+### Documentation
+
+* rewrite the README around what OxSay does for a person ([#550](https://github.com/anatolykoptev/ox-say/issues/550)) ([30b0eea](https://github.com/anatolykoptev/ox-say/commit/30b0eeaf47fd750c482c36da45474b3fbce633fb))
+
 ## [0.1.31](https://github.com/anatolykoptev/ox-say/compare/v0.1.30...v0.1.31) (2026-11-12)
 
 
