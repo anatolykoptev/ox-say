@@ -411,8 +411,9 @@ bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std:
         for (const segment & sg : r.segments) {
             r.text_raw += (r.text_raw.empty() ? "" : " ") + sg.text;
         }
-        for (segment & sg : r.segments) sg.text = oxstt::boost::map_spoken(sg.text, terms);
-        for (word & w : r.words) w.w = oxstt::boost::map_spoken(w.w, terms);
+        const oxstt::boost::speller sp(terms);
+        for (segment & sg : r.segments) sg.text = sp.map(sg.text);
+        for (word & w : r.words) w.w = sp.map(w.w);
     }
     if (a.verbose) {
         fprintf(stderr, "ox-stt: decode_ms=%.1f\n",
