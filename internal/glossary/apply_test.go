@@ -74,6 +74,34 @@ func TestApplyWords(t *testing.T) {
 	}
 }
 
+// "_" is a word character, so "foo_bar" is one word and a heard form can
+// name it. A newline is a hard boundary: a multi-word match never spans
+// one — the two sides are different lines of a subtitle.
+// Mutation: apply.go isWordRune, drop the `r == '_'` case -> RED ("foo_bar" is not one word).
+// Mutation: apply.go match, drop the newline check -> RED (the pair applies across a newline).
+// Mutation: apply.go matchWords, drop the newline check -> RED.
+func TestApplyMatcherEdges(t *testing.T) {
+	under := []Pair{act("foo_bar", "Foo-Bar")}
+	if got, _ := Apply("use foo_bar daily", under); got != "use Foo-Bar daily" {
+		t.Fatalf("underscore = %q", got)
+	}
+	multi := []Pair{act("foo bar", "FB")}
+	if got, n := Apply("foo\nbar baz", multi); got != "foo\nbar baz" || n != 0 {
+		t.Fatalf("newline = %q, %d", got, n)
+	}
+	if got, n := Apply("foo bar baz", multi); got != "FB baz" || n != 1 {
+		t.Fatalf("spaces still match = %q, %d", got, n)
+	}
+	ws := []stt.Word{{W: "foo", S: 0, E: 0.4, P: 0.9}, {W: "\nbar", S: 0.4, E: 0.8, P: 0.9}}
+	if got := ApplyWords(ws, multi); len(got) != 2 || got[0].W != "foo" || got[1].W != "\nbar" {
+		t.Fatalf("words across newline = %+v", got)
+	}
+	within := []stt.Word{{W: "foo", S: 0, E: 0.4, P: 0.9}, {W: " bar", S: 0.4, E: 0.8, P: 0.9}}
+	if got := ApplyWords(within, multi); len(got) != 1 || got[0].W != "FB" || got[0].S != 0 || got[0].E != 0.8 {
+		t.Fatalf("words within a line = %+v", got)
+	}
+}
+
 // Mutation: apply.go ApplyResult, skip the Segments loop -> RED (subtitles keep the wrong word).
 func TestApplyResult(t *testing.T) {
 	res := &stt.Result{Text: "открой Воксей", Segments: []stt.Segment{{S: 0, E: 1, Text: "открой Воксей"}}, Words: []stt.Word{{W: "открой"}, {W: " Воксей"}}}

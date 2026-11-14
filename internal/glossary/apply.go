@@ -16,12 +16,12 @@ type token struct {
 	word bool
 }
 
-// isWordRune: letters, digits, combining marks (a decomposed й), apostrophes
-// and the hyphen. Keep the apostrophe set in step with wordalign.normalise
-// (internal/wordalign/wer.go).
+// isWordRune: letters, digits, combining marks (a decomposed й), apostrophes,
+// the hyphen and the underscore (foo_bar is one word). Keep the apostrophe
+// set in step with wordalign.normalise (internal/wordalign/wer.go).
 func isWordRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.Is(unicode.Mn, r) ||
-		r == '\'' || r == '’' || r == 'ʼ' || r == '-'
+		r == '\'' || r == '’' || r == 'ʼ' || r == '-' || r == '_'
 }
 
 func tokenize(s string) []token {
@@ -144,13 +144,16 @@ func Apply(text string, pairs []Pair) (string, int) {
 }
 
 // match tries each pair at toks[i]; the words of a multi-word form may be
-// separated by whitespace only. It returns the index after the match.
+// separated by whitespace only, and a newline ends the match — the two
+// sides are different lines of a subtitle. It returns the index after the
+// match.
 func match(toks []token, i int, cs []compiled) (compiled, int, bool) {
 	for _, c := range cs {
 		j, ok := i, true
 		for k, h := range c.heard {
 			if k > 0 {
-				if j >= len(toks) || toks[j].word || strings.TrimSpace(toks[j].s) != "" {
+				if j >= len(toks) || toks[j].word || strings.TrimSpace(toks[j].s) != "" ||
+					strings.IndexByte(toks[j].s, '\n') >= 0 {
 					ok = false
 					break
 				}
@@ -232,7 +235,8 @@ func matchWords(ws []stt.Word, i int, cs []compiled) (compiled, int, bool) {
 		for k, h := range c.heard {
 			w := ws[i+k].W
 			pre, post := edges(w)
-			if key(w) != h || (k < n-1 && post != "") || (k > 0 && strings.TrimSpace(pre) != "") {
+			if key(w) != h || (k < n-1 && post != "") ||
+				(k > 0 && (strings.TrimSpace(pre) != "" || strings.IndexByte(pre, '\n') >= 0)) {
 				ok = false
 				break
 			}
