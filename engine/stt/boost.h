@@ -38,8 +38,14 @@ struct params {
 };
 
 struct term {
-    std::string text;
-    float weight = 1.0f;  // multiplies the phrase's arcs (NeMo's per-phrase alpha)
+    std::string text;                 // the written form: what the user wants in the output
+    float weight = 1.0f;              // multiplies the phrase's arcs (NeMo's per-phrase alpha)
+    std::vector<std::string> spoken;  // spellings the model writes when the term is SPOKEN (e.g. Cyrillic
+                                      // for a Latin name in Russian speech); boosted like the written form
+                                      // and mapped back to `text` by map_spoken() after the decode
+    term() = default;
+    term(std::string t, float w = 1.0f, std::vector<std::string> sp = {})
+        : text(std::move(t)), weight(w), spoken(std::move(sp)) {}
 };
 
 // The vocabulary as the decoder exposes it: piece(i) is the text of token i (SentencePiece spelling,
@@ -200,8 +206,19 @@ class graph {
                                               std::vector<std::string> * skipped = nullptr) {
         auto g = std::make_shared<graph>();
         g->nodes_.emplace_back();  // root
+        g->word_start_.assign((size_t) std::max(v.n_vocab, 0), false);
+        for (int i = 0; i < v.n_vocab; ++i) {
+            const char * pc = v.piece ? v.piece(i) : nullptr;
+            g->word_start_[(size_t) i] = pc && std::string(pc).compare(0, 3, kWordStart) == 0;
+        }
         for (const term & t : terms) {
-            for (const std::string & variant : case_variants(t.text)) {
+            std::vector<std::string> forms = case_variants(t.text);
+            for (const std::string & sp : t.spoken) {
+                for (const std::string & cv : case_variants(sp)) {
+                    if (std::find(forms.begin(), forms.end(), cv) == forms.end()) forms.push_back(cv);
+                }
+            }
+            for (const std::string & variant : forms) {
                 std::vector<int> toks;
                 bool ok = true;
                 size_t start = 0;
@@ -227,6 +244,10 @@ class graph {
     }
 
     int root() const { return 0; }
+    // True when token starts a word ("▁..." piece). The guard in run::fill uses it.
+    bool word_start(int token) const {
+        return token >= 0 && (size_t) token < word_start_.size() && word_start_[(size_t) token];
+    }
     size_t n_nodes() const { return nodes_.size(); }
 
     // Next state after emitting token: the arc of the nearest state on the fail chain that has one, else
@@ -286,6 +307,7 @@ class graph {
         bool end = false;
     };
     std::vector<node> nodes_;
+    std::vector<bool> word_start_;
 
     static float arc_score_at(size_t depth, float weight, const params & p) {
         const float base = depth == 0 ? p.context_score
@@ -378,6 +400,11 @@ class run {
 
     // token_bias_callback: logits = the raw joint logits, bias[n_vocab] arrives zeroed. Also remembers the
     // unbiased argmax, so on_token can tell whether the bias changed the token.
+    //
+    // Word-boundary guard: when the raw argmax starts a new word, a bias never selects a token that
+    // continues the previous word. Without it a partial match swallows the space ("до" + "за..." ->
+    // "дозор...") and an alias completes inside a longer word; with it an alias can only replace a token
+    // of the same kind (word start for word start, continuation for continuation).
     void fill(const float * logits, float * bias, int n_vocab) {
         int best = 0;
         for (int i = 1; i < n_vocab; ++i) {
@@ -385,7 +412,10 @@ class run {
         }
         raw_best_ = n_vocab > 0 ? best : -1;
         g_->bias(state_, bias, n_vocab);
-        for (int i = 0; i < n_vocab; ++i) bias[i] *= alpha_;
+        const bool raw_starts_word = n_vocab > 0 && g_->word_start(best);
+        for (int i = 0; i < n_vocab; ++i) {
+            bias[i] = (raw_starts_word && !g_->word_start(i)) ? 0.0f : bias[i] * alpha_;
+        }
     }
 
     int state() const { return state_; }
@@ -402,13 +432,20 @@ class run {
     std::vector<bool> changed_;
 };
 
-// stdin text -> terms. One term per line, "term[\tweight]"; surrounding whitespace trimmed, blank lines
-// and '#' lines skipped, exact duplicates dropped (first wins), terms under 3 characters (code points)
-// dropped — the paper filtered 2-letter phrases to limit false accepts — at most 200 kept. A line with a
-// weight that is not a finite positive number is dropped. err collects one line per problem; the terms
-// that were fine are still returned (a malformed list degrades, it never fails the decode).
+// stdin text -> terms. One term per line: "written[\tfield...]". A second field that parses as a finite
+// positive number is the weight; every other field is a spoken form (an alias the model writes when the
+// term is said aloud, e.g. "GitHub\tГитхаб\tГитхаб"), so "OxSay\t2.5\tОкс Сей" is weight 2.5 with the
+// alias "Окс Сей", and "OxSay\tОкс Сей" is weight 1 with the same alias. Only the second field can be a
+// weight; a number further along is an alias. Surrounding whitespace is trimmed, blank and '#' lines are
+// skipped, duplicate written forms dropped (first wins), terms and aliases under 3 characters (code
+// points) dropped — the paper filtered 2-letter phrases to limit false accepts — at most 200 terms and 8
+// aliases per term kept. A weight that is not a finite positive number is just an alias, unless the field
+// looks like a number with junk after it ("2.5x"), which drops the line. err collects one line per
+// problem; the terms that were fine are still returned (a malformed list degrades, it never fails the
+// decode).
 inline constexpr size_t kMinTermChars = 3;
 inline constexpr size_t kMaxTerms = 200;
+inline constexpr size_t kMaxAliases = 8;
 
 inline std::string trim(const std::string & s) {
     size_t b = 0, e = s.size();
@@ -424,36 +461,131 @@ inline std::vector<term> parse_terms(const std::string & text, std::string & err
     for (size_t pos = 0; pos <= text.size();) {
         size_t nl = text.find('\n', pos);
         if (nl == std::string::npos) nl = text.size();
-        std::string line = text.substr(pos, nl - pos);
+        const std::string line = text.substr(pos, nl - pos);
         pos = nl + 1;
         ++line_no;
-        const size_t tab = line.find('\t');
-        std::string t = trim(tab == std::string::npos ? line : line.substr(0, tab));
+        std::vector<std::string> f;
+        for (size_t b = 0;;) {
+            const size_t tab = line.find('\t', b);
+            f.push_back(trim(line.substr(b, tab == std::string::npos ? std::string::npos : tab - b)));
+            if (tab == std::string::npos) break;
+            b = tab + 1;
+        }
+        const std::string & t = f[0];
         if (t.empty() || t[0] == '#') continue;
-        float w = 1.0f;
-        if (tab != std::string::npos) {
-            const std::string ws = trim(line.substr(tab + 1));
-            if (!ws.empty()) {
+        const std::string at = "line " + std::to_string(line_no) + ": ";
+        term tm;
+        tm.text = t;
+        bool bad = false;
+        for (size_t i = 1; i < f.size() && !bad; ++i) {
+            if (f[i].empty()) continue;
+            if (i == 1) {
                 char * end = nullptr;
-                const double d = std::strtod(ws.c_str(), &end);
-                if (*end != '\0' || !std::isfinite(d) || d <= 0.0) {
-                    err += "line " + std::to_string(line_no) + ": bad weight\n";
+                const double d = std::strtod(f[i].c_str(), &end);
+                const bool numeric = end != f[i].c_str() && *end == '\0';
+                const bool numberish = end != f[i].c_str() && (std::isdigit((unsigned char) f[i][0]) || f[i][0] == '-' || f[i][0] == '.');
+                if (numeric) {
+                    if (!std::isfinite(d) || d <= 0.0) {
+                        err += at + "bad weight\n";
+                        bad = true;
+                    } else {
+                        tm.weight = (float) d;
+                    }
                     continue;
                 }
-                w = (float) d;
+                if (numberish) {
+                    err += at + "bad weight\n";
+                    bad = true;
+                    continue;
+                }
+            }
+            if (cp_count(f[i]) < kMinTermChars) {
+                err += at + "spoken form shorter than 3 characters\n";
+                continue;
+            }
+            if (std::find(tm.spoken.begin(), tm.spoken.end(), f[i]) == tm.spoken.end() && f[i] != t &&
+                tm.spoken.size() < kMaxAliases) {
+                tm.spoken.push_back(f[i]);
             }
         }
+        if (bad) continue;
         if (cp_count(t) < kMinTermChars) {
-            err += "line " + std::to_string(line_no) + ": term shorter than 3 characters\n";
+            err += at + "term shorter than 3 characters\n";
             continue;
         }
         const bool dup = std::any_of(out.begin(), out.end(), [&](const term & x) { return x.text == t; });
         if (dup) continue;
         if (out.size() >= kMaxTerms) {
-            err += "line " + std::to_string(line_no) + ": more than 200 terms, rest ignored\n";
+            err += at + "more than 200 terms, rest ignored\n";
             break;
         }
-        out.push_back({ t, w });
+        out.push_back(std::move(tm));
+    }
+    return out;
+}
+
+// Spoken -> written, after the decode. Replaces each whole-word, case-insensitive occurrence of a spoken
+// form with its term's written form. "Whole word" means the characters on both sides are not letters or
+// digits, so an alias that the decoder completed inside a longer word ("дозорного" for the alias "дозор")
+// is left alone. Longest alias first; ё and е are the same letter. Done here and not in the Go glossary
+// pass because the decoder knows exactly which forms it was asked to find, and the match has to respect the
+// decode's own word boundaries; the glossary pass (heard -> meant, learned from usage) still runs after.
+namespace detail {
+inline bool is_letter_cp(uint32_t c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= 0xC0 && c <= 0x24F) || (c >= 0x400 && c <= 0x4FF);
+}
+inline std::vector<uint32_t> fold_cps(const std::string & s) {
+    std::vector<uint32_t> o;
+    for (const std::string & ch : utf8_chars(s)) {
+        uint32_t c = to_lower_cp(decode_cp(ch));
+        if (c == 0x451) c = 0x435;  // ё -> е
+        o.push_back(c);
+    }
+    return o;
+}
+}  // namespace detail
+
+inline std::string map_spoken(const std::string & text, const std::vector<term> & terms) {
+    struct al {
+        std::vector<uint32_t> f;
+        const std::string * written;
+    };
+    std::vector<al> als;
+    for (const term & t : terms) {
+        for (const std::string & sp : t.spoken) {
+            std::vector<uint32_t> f = detail::fold_cps(sp);
+            if (!f.empty()) als.push_back({ std::move(f), &t.text });
+        }
+    }
+    if (als.empty()) return text;
+    std::stable_sort(als.begin(), als.end(), [](const al & a, const al & b) { return a.f.size() > b.f.size(); });
+    const std::vector<std::string> ch = detail::utf8_chars(text);
+    std::vector<uint32_t> fold;
+    std::vector<uint32_t> raw;
+    for (const std::string & c : ch) {
+        uint32_t cp = detail::decode_cp(c);
+        raw.push_back(cp);
+        cp = detail::to_lower_cp(cp);
+        fold.push_back(cp == 0x451 ? 0x435 : cp);
+    }
+    std::string out;
+    for (size_t i = 0; i < ch.size();) {
+        bool hit = false;
+        if (i == 0 || !detail::is_letter_cp(raw[i - 1])) {
+            for (const al & a : als) {
+                const size_t n = a.f.size();
+                if (i + n > ch.size() || !std::equal(a.f.begin(), a.f.end(), fold.begin() + (long) i)) continue;
+                if (i + n < ch.size() && detail::is_letter_cp(raw[i + n])) continue;
+                out += *a.written;
+                i += n;
+                hit = true;
+                break;
+            }
+        }
+        if (!hit) {
+            out += ch[i];
+            ++i;
+        }
     }
     return out;
 }
