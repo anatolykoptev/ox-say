@@ -17,6 +17,7 @@ type probeInfo struct {
 	HasVideo    bool         // a video stream that is not cover art
 	AudioStart  float64      // start_time of that stream in the container's timeline (may be negative or fractional)
 	FormatStart float64      // start_time of the whole file: ffmpeg moves every stream it copies by minus this
+	FormatName  string       // the input container's demuxer list ("mov,mp4,m4a,3gp,3g2,mj2" for every QuickTime file)
 	VideoStart  float64      // start_time of the first real video stream; 0 when there is none
 	Streams     []streamInfo // every stream, in input order
 }
@@ -52,8 +53,9 @@ type probeDoc struct {
 	} `json:"streams"`
 	Chapters []json.RawMessage `json:"chapters"`
 	Format   struct {
-		Duration  string `json:"duration"`
-		StartTime string `json:"start_time"`
+		Duration   string `json:"duration"`
+		StartTime  string `json:"start_time"`
+		FormatName string `json:"format_name"`
 	} `json:"format"`
 }
 
@@ -101,6 +103,7 @@ func parseProbe(raw []byte) (*probeInfo, error) {
 		return nil, errNoAudio
 	}
 	p.FormatStart = parseSigned(doc.Format.StartTime)
+	p.FormatName = doc.Format.FormatName
 	if p.Seconds <= 0 {
 		p.Seconds = parseSeconds(doc.Format.Duration)
 	}
