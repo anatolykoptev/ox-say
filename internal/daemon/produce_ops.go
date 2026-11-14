@@ -38,6 +38,9 @@ const (
 	// deliveryIsUltimate refuses a style on a job pinned to clone_mode
 	// ultimate at create: no style can ever apply there.
 	deliveryIsUltimate = "styling a phrase cannot apply: the project was created with clone_mode ultimate"
+	// stylingUnavailableCode is the wire code both delivery-gate refusals
+	// carry: the app reads it instead of matching the sentence.
+	stylingUnavailableCode = "styling_unavailable"
 	// takesMargin is the factor of takes kept on disk per planned take, with
 	// room for retries, in the free-space estimate.
 	takesMargin = 1.3
@@ -472,7 +475,7 @@ func (p *producer) deliver(j *job, es []deliveryEntry, lufs *float64) (vproject.
 	// only because lufs is set) re-assembles the finished file; on a project
 	// with chunks still to render it would run a hidden resume — refuse it.
 	if len(es) == 0 && countSettled(j.m.Chunks) != len(j.m.Chunks) {
-		return vproject.Summary{}, &conflictError{"the project must finish first: a loudness change re-assembles the finished file"}
+		return vproject.Summary{}, &conflictError{msg: "the project must finish first: a loudness change re-assembles the finished file"}
 	}
 	// The mode gate comes first: a batch that is a conflict on any host must
 	// not read as "no ffmpeg" on one without it.
@@ -616,7 +619,7 @@ func (p *producer) deliveryModeGate(j *job, es []deliveryEntry, styles []string)
 	switch pin {
 	case cloneUltimate:
 		if styled {
-			return nil, nil, &conflictError{deliveryIsUltimate}
+			return nil, nil, &conflictError{msg: deliveryIsUltimate, code: stylingUnavailableCode}
 		}
 		return nil, nil, nil
 	case cloneReference:
@@ -647,7 +650,7 @@ func (p *producer) deliveryModeGate(j *job, es []deliveryEntry, styles []string)
 	}
 	// Pinned to reference already: no style op moves the mode.
 	if pin != cloneReference && modeAfter != modeBefore {
-		return nil, nil, &conflictError{deliveryNeedsReference}
+		return nil, nil, &conflictError{msg: deliveryNeedsReference, code: stylingUnavailableCode}
 	}
 	return before, after, nil
 }

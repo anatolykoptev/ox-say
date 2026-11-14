@@ -119,6 +119,11 @@ func (d *Daemon) writeProduceErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"message": be.Error(), "type": "Conflict"}, "running_id": be.id})
 		return
 	}
+	var ce *conflictError
+	if errors.As(err, &ce) && ce.code != "" {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"message": d.prod.public(err), "type": "Conflict", "code": ce.code}})
+		return
+	}
 	writeErr(w, code, d.prod.public(err))
 }
 

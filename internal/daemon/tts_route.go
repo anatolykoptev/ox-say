@@ -62,7 +62,12 @@ type unavailableError struct{ msg string }
 func (e *unavailableError) Error() string { return e.msg }
 
 // conflictError is a request that clashes with existing state (HTTP 409).
-type conflictError struct{ msg string }
+// A non-empty code rides the answer's JSON so the app matches the refusal on
+// a stable name, not on the English sentence.
+type conflictError struct {
+	msg  string
+	code string
+}
 
 func (e *conflictError) Error() string { return e.msg }
 

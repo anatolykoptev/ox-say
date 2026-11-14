@@ -675,7 +675,7 @@ func (d *Daemon) SaveDesignedVoice(ctx context.Context, in SaveDesignInput) (*vo
 
 // errVoiceExists is the 409 for a save onto a taken name.
 func errVoiceExists(name string) error {
-	return &conflictError{fmt.Sprintf("a voice named %q already exists; choose another name, or pass replace (--replace on the command line)", name)}
+	return &conflictError{msg: fmt.Sprintf("a voice named %q already exists; choose another name, or pass replace (--replace on the command line)", name)}
 }
 
 func (d *Daemon) handleDesignVoice(w http.ResponseWriter, r *http.Request) {
