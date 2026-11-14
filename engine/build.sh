@@ -12,7 +12,7 @@
 # The first three carry engine/patches/ggml on their ggml tree, on both architectures: on
 # unified memory the patches are inert or bug fixes (engine/README.md).
 #
-# Usage: engine/build.sh [work-dir]      (default: build/engine)
+# Usage: [OX_SAY_ONLY=stt] engine/build.sh [work-dir]      (default: build/engine)
 # Output: <work-dir>/out/{tts-server,ox-stt,ox-align,ox-llm,ox-diar (arm64),ox-clean,audiocpp_server (arm64),
 #                        each <bin>.metallib (+<bin>-tensor.metallib on a
 #                        macOS 26 SDK) when the Metal toolchain is present,
@@ -52,6 +52,11 @@ ggml_patches() {
     if [ -n "${1:-}" ]; then
         find "$here/patches/ggml-$1" -name '*.patch' -type f | LC_ALL=C sort
     fi
+}
+
+# whisper_patches: patches/whisper applies to the root of the whisper.cpp tree, in sort order.
+whisper_patches() {
+    find "$here/patches/whisper" -name '*.patch' -type f | LC_ALL=C sort
 }
 
 # stamp_patches: the manifest a tree's rebuild stamp is hashed from — one
@@ -203,7 +208,17 @@ mkdir -p "$out/licenses"
 # An interrupted build must not leave the previous build's pins next to new binaries; the stamp is written last.
 rm -f "$out/pins.env"
 
+# OX_SAY_ONLY=stt builds ox-stt alone (the Parakeet spike, eval harness): everything before and after the
+# ox-stt block is skipped. Never set for a release build.
+only_stt=0
+if [ "${OX_SAY_ONLY:-}" = stt ]; then only_stt=1; fi
+if [ -n "${OX_SAY_ONLY:-}" ] && [ "$only_stt" = 0 ]; then
+    echo "engine/build.sh: OX_SAY_ONLY accepts only 'stt', got '$OX_SAY_ONLY'" >&2
+    exit 1
+fi
+
 # --- tts-server (qwentts.cpp) ---
+if [ "$only_stt" = 0 ]; then
 tts="$work/qwentts"
 stamp=$( { echo "$QWENTTS_REPO $QWENTTS_COMMIT $GGML_REPO $GGML_COMMIT"; { ggml_patches qwentts; find "$here/patches/qwentts" -name '*.patch' -type f | LC_ALL=C sort; } | stamp_patches; } | shasum -a 256 | cut -d' ' -f1)
 if ! fresh "$tts" "$stamp"; then
@@ -263,15 +278,18 @@ cp "$tts/ggml/LICENSE" "$out/licenses/ggml.LICENSE"
 cp "$tts/vendor/cpp-httplib/LICENSE" "$out/licenses/cpp-httplib.LICENSE"
 sed -n '1,\|\*/|p' "$tts/vendor/yyjson/yyjson.h" > "$out/licenses/yyjson.LICENSE"
 echo "built $out/tts-server"
+fi
 
 # --- ox-stt (whisper.cpp, vendored ggml) ---
 stt="$work/whisper.cpp"
-stamp=$( { echo "$WHISPER_REPO $WHISPER_COMMIT"; ggml_patches whisper | stamp_patches; } | shasum -a 256 | cut -d' ' -f1)
+stamp=$( { echo "$WHISPER_REPO $WHISPER_COMMIT"; { ggml_patches whisper; whisper_patches; } | stamp_patches; } | shasum -a 256 | cut -d' ' -f1)
 if ! fresh "$stt" "$stamp"; then
     rm -rf "$stt"
     git clone --quiet "$WHISPER_REPO" "$stt"
     git -C "$stt" checkout --quiet "$WHISPER_COMMIT"
     ggml_patches whisper | while read -r p; do git -C "$stt" apply --directory=ggml "$p"; done
+    # patches/whisper carry whisper.cpp's own sources (the Parakeet token-bias hook), applied at the tree root.
+    whisper_patches | while read -r p; do git -C "$stt" apply "$p"; done
     echo "$stamp" > "$stt/.ox-say-stamp"
 fi
 # ox-stt and ox-align -ng set GGML_METAL_DEVICES=0 so that ggml registers no
@@ -300,6 +318,7 @@ check_dist "$out/ox-stt"
 check_patched "$out/ox-stt"
 cp "$stt/LICENSE" "$out/licenses/whisper.cpp.LICENSE"
 echo "built $out/ox-stt"
+if [ "$only_stt" = 1 ]; then exit 0; fi
 
 # --- ox-align (same whisper.cpp tree as ox-stt; only ggml is linked) ---
 # Re-set the flags: this block must not depend on whatever the stt block left.

@@ -1,0 +1,84 @@
+diff --git a/include/parakeet.h b/include/parakeet.h
+index c10442d9..d88b3257 100644
+--- a/include/parakeet.h
++++ b/include/parakeet.h
+@@ -231,6 +231,20 @@ extern "C" {
+     // If it returns false, the computation is aborted
+     typedef bool (*parakeet_encoder_begin_callback)(struct parakeet_context * ctx, struct parakeet_state * state, void * user_data);
+ 
++    // Token bias callback
++    // If not NULL, called at a joint step whose unbiased argmax is not blank, before the token is emitted.
++    // logits points at the raw joint logits (n_vocab entries, blank and durations excluded) and must not be
++    // modified. bias[n_vocab] arrives zeroed; the decoder re-selects the best token among the non-blank
++    // candidates by logits[i] + bias[i]. Blank and duration are never biased, and the probability reported in
++    // parakeet_token_data stays that of the raw logits.
++    typedef void (*parakeet_token_bias_callback)(
++            struct parakeet_context * ctx,
++              struct parakeet_state * state,
++                      const float * logits,
++                            float * bias,
++                              int   n_vocab,
++                             void * user_data);
++
+     // Parameters for the parakeet_full() function
+     // If you change the order or add new parameters, make sure to update the default values in parakeet.cpp:
+     // parakeet_full_default_params()
+@@ -264,6 +278,10 @@ extern "C" {
+         // called each time before ggml computation starts
+         ggml_abort_callback abort_callback;
+         void * abort_callback_user_data;
++
++        // called at every joint step that would emit a token, to bias the choice among the non-blank tokens
++        parakeet_token_bias_callback token_bias_callback;
++        void * token_bias_callback_user_data;
+     };
+ 
+     // NOTE: this function allocates memory, and it is the responsibility of the caller to free the pointer - see parakeet_free_context_params() & parakeet_free_params()
+diff --git a/src/parakeet.cpp b/src/parakeet.cpp
+index ed663829..d688b2b5 100644
+--- a/src/parakeet.cpp
++++ b/src/parakeet.cpp
+@@ -2514,6 +2514,9 @@ static bool parakeet_decode(
+     const int  n_vocab_logits           = blank_id + 1;
+     const int  max_tokens_per_timestep = hparams.n_max_tokens;
+ 
++    // scratch for params->token_bias_callback, allocated once per decode
++    std::vector<float> token_bias;
++
+     // time index into the encoder frame (current time frame)
+     int t = 0;
+     // number of symbols emitted for the current time frame
+@@ -2569,6 +2572,24 @@ static bool parakeet_decode(
+             }
+         }
+ 
++        // Optional token bias: only when the unbiased argmax is a token, never blank, so the blank
++        // decision and the duration below are untouched. max_logit stays the raw logit of the chosen
++        // token, which keeps the reported probability honest.
++        if (params && params->token_bias_callback && best_token != blank_id) {
++            token_bias.assign(blank_id, 0.0f);
++            params->token_bias_callback(&pctx, &pstate, pstate.logits.data(), token_bias.data(), blank_id,
++                                        params->token_bias_callback_user_data);
++            float best_biased = -1e10f;
++            for (int i = 0; i < blank_id; ++i) {
++                const float v = pstate.logits[i] + token_bias[i];
++                if (v > best_biased) {
++                    best_biased = v;
++                    best_token = i;
++                }
++            }
++            max_logit = pstate.logits[best_token];
++        }
++
+         // find the max index of the duration logits, and look up that index
+         // value in the tdt_durations array to get the actual duration value.
+         int best_duration_idx = 0;
+@@ -3552,6 +3573,8 @@ struct parakeet_full_params parakeet_full_default_params(enum parakeet_sampling_
+         /*.encoder_begin_callback_user_data =*/ nullptr,
+         /*.abort_callback                   =*/ nullptr,
+         /*.abort_callback_user_data         =*/ nullptr,
++        /*.token_bias_callback              =*/ nullptr,
++        /*.token_bias_callback_user_data    =*/ nullptr,
+     };
+ 
+     return result;
