@@ -318,6 +318,47 @@ func TestGlossaryPairsCachesByFileState(t *testing.T) {
 	}
 }
 
+// A write the daemon makes itself can leave glossary.json with the same
+// mtime+size — here the seen counter grows in place — so the pair cache is
+// dropped on every successful add/approve/reject, not inferred from stat.
+// Mutation: glossary_http.go handleGlossaryAdd/handleGlossaryStatus, drop
+// the invalidate call -> RED (the cache still serves seen 1).
+func TestGlossaryPairsDropsCacheOnOwnWrite(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	auth := ownerAuth(t, d)
+	path := filepath.Join(d.Cfg.Home, glossary.FileName)
+
+	rec := call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"sentinel","meant":"guardian"}`)
+	var p glossary.Pair
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil {
+		t.Fatalf("add: %d %s", rec.Code, rec.Body)
+	}
+	if rec := callWith(t, mux, http.MethodPost, "/v1/glossary/"+p.ID+"/approve", "{}", auth); rec.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body)
+	}
+	pairs := d.glossaryPairs()
+	if len(pairs) != 1 || pairs[0].Seen != 1 {
+		t.Fatalf("pairs = %+v", pairs)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := call(t, mux, http.MethodPost, "/v1/glossary", `{"heard":"sentinel","meant":"guardian"}`); rec.Code != http.StatusOK {
+		t.Fatalf("second add: %d %s", rec.Code, rec.Body)
+	}
+	if err := os.Chtimes(path, st.ModTime(), st.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := d.glossaryFileKey(), (glKey{mtime: st.ModTime().UnixNano(), size: st.Size(), exist: true}); got != want {
+		t.Fatalf("file key = %+v, want the pre-write state %+v restored", got, want)
+	}
+	if pairs = d.glossaryPairs(); len(pairs) != 1 || pairs[0].Seen != 2 {
+		t.Fatalf("pairs = %+v, want seen 2 after the daemon's own write", pairs)
+	}
+}
+
 // A malformed glossary warns once per distinct file state — the state is the
 // mtime+size pair — then stays quiet until the file changes; corrections
 // still fail open.

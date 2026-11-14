@@ -138,6 +138,7 @@ func (d *Daemon) handleGlossaryAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, glossaryStatus(err), err.Error())
 		return
 	}
+	d.invalidateGlossary()
 	d.log.Info("glossary pair filed", slog.String("id", p.ID), slog.String("status", string(p.Status)), slog.Int("seen", p.Seen))
 	writeJSON(w, http.StatusOK, p)
 }
@@ -165,6 +166,7 @@ func (d *Daemon) handleGlossaryStatus(approve bool) http.HandlerFunc {
 			writeErr(w, glossaryStatus(err), err.Error())
 			return
 		}
+		d.invalidateGlossary()
 		d.log.Info("glossary pair set", slog.String("id", p.ID), slog.String("status", string(p.Status)))
 		writeJSON(w, http.StatusOK, p)
 	}
@@ -184,6 +186,15 @@ func (d *Daemon) glossaryFileKey() glKey {
 		return glKey{}
 	}
 	return glKey{mtime: st.ModTime().UnixNano(), size: st.Size(), exist: true}
+}
+
+// invalidateGlossary drops the pair cache after the daemon's own write: a
+// same-size rewrite under one mtime tick keeps the file's key, so the next
+// glossaryPairs must reload rather than trust stat.
+func (d *Daemon) invalidateGlossary() {
+	d.glMu.Lock()
+	d.glSet = false
+	d.glMu.Unlock()
 }
 
 // glossaryPairs loads the active pairs, cached by the file's mtime+size.
