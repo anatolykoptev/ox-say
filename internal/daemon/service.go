@@ -66,6 +66,17 @@ type Daemon struct {
 	Transcripts *transcripts.Store
 	// Glossary holds the user's heard → meant pairs ($OX_SAY_HOME/glossary.json).
 	Glossary *glossary.Store
+	// activePairs is Glossary.Active behind a field so a test can count the
+	// file loads the pair cache saves.
+	activePairs func() ([]glossary.Pair, error)
+	// gl* is the active-pairs cache, keyed by the glossary file's mtime+size
+	// (glWarned is the state a Warn was last emitted for) — the per-chunk
+	// path stats one small file instead of parsing it.
+	glMu     sync.Mutex
+	glSet    bool
+	glKey    glKey
+	glPairs  []glossary.Pair
+	glWarned glKey
 	// ownerToken is the bearer the owner-only glossary routes check, loaded
 	// or created at start from $OX_SAY_HOME/owner.token (mode 0600). Empty
 	// fails closed: nothing approves or rejects.

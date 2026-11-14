@@ -25,6 +25,7 @@ const OwnerTokenFile = "owner.token"
 
 func (d *Daemon) initGlossary() {
 	d.Glossary = glossary.NewStore(d.Cfg.Home)
+	d.activePairs = d.Glossary.Active
 	d.ownerToken = ownerToken(d.Cfg.Home, d.log)
 }
 
@@ -136,17 +137,44 @@ func (d *Daemon) handleGlossaryStatus(approve bool) http.HandlerFunc {
 	}
 }
 
-// glossaryPairs loads the active pairs; any problem means no corrections and
-// one Warn line, never a failed recognition.
+// glKey identifies one state of glossary.json: its mtime and size, or its
+// absence — a stat is all an unchanged file costs the per-chunk path.
+type glKey struct {
+	mtime int64
+	size  int64
+	exist bool
+}
+
+func (d *Daemon) glossaryFileKey() glKey {
+	st, err := os.Stat(filepath.Join(d.Cfg.Home, glossary.FileName))
+	if err != nil {
+		return glKey{}
+	}
+	return glKey{mtime: st.ModTime().UnixNano(), size: st.Size(), exist: true}
+}
+
+// glossaryPairs loads the active pairs, cached by the file's mtime+size.
+// Any problem means no corrections and one Warn per distinct file state,
+// never a failed recognition.
 func (d *Daemon) glossaryPairs() []glossary.Pair {
 	if d.Glossary == nil {
 		return nil
 	}
-	pairs, err := d.Glossary.Active()
-	if err != nil {
-		d.log.Warn("glossary: not applied", slog.Any("error", err))
-		return nil
+	k := d.glossaryFileKey()
+	d.glMu.Lock()
+	defer d.glMu.Unlock()
+	if d.glSet && k == d.glKey {
+		return d.glPairs
 	}
+	pairs, err := d.activePairs()
+	if err != nil {
+		if k != d.glWarned {
+			d.glWarned = k
+			d.log.Warn("glossary: not applied", slog.Any("error", err))
+		}
+		pairs = nil
+	}
+	d.glSet, d.glKey, d.glPairs = true, k, pairs
 	return pairs
 }
 

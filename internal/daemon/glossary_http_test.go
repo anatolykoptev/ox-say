@@ -185,3 +185,66 @@ func TestCorrectorLoadsOnceAndFailsOpen(t *testing.T) {
 		t.Fatalf("warnings = %d, want 1", n)
 	}
 }
+
+// glossaryPairs caches the active pairs by the file's mtime+size: the
+// per-chunk path stats one small file instead of parsing it, and a change is
+// picked up the next call.
+// Mutation: glossary_http.go glossaryPairs, drop the `k == d.glKey` return -> RED (two loads).
+func TestGlossaryPairsCachesByFileState(t *testing.T) {
+	d, _ := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+
+	loads := 0
+	inner := d.Glossary.Active
+	d.activePairs = func() ([]glossary.Pair, error) { loads++; return inner() }
+
+	d.glossaryPairs()
+	d.glossaryPairs()
+	if loads != 1 {
+		t.Fatalf("loads = %d, want 1 for an unchanged file", loads)
+	}
+	p, err := d.Glossary.Add("sentinel", "guardian", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Glossary.Approve(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := d.glossaryPairs()
+	if loads != 2 || len(got) != 1 || got[0].Meant != "guardian" {
+		t.Fatalf("after a change: loads = %d pairs = %+v", loads, got)
+	}
+}
+
+// A malformed glossary warns once per distinct file state — the state is the
+// mtime+size pair — then stays quiet until the file changes; corrections
+// still fail open.
+func TestGlossaryPairsWarnsOncePerState(t *testing.T) {
+	d, _ := meetingFixture(t, nil)
+	t.Cleanup(d.Shutdown)
+	h := &msgLog{}
+	d.log = slog.New(h)
+	path := filepath.Join(d.Cfg.Home, glossary.FileName)
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.glossaryPairs()
+	d.glossaryPairs()
+	if n := h.count("glossary: not applied"); n != 1 {
+		t.Fatalf("warnings = %d, want 1 per state", n)
+	}
+	if err := os.WriteFile(path, []byte("{ still broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.glossaryPairs()
+	if n := h.count("glossary: not applied"); n != 2 {
+		t.Fatalf("warnings = %d, want 2 for a new state", n)
+	}
+	if err := os.WriteFile(path, []byte(`{"version":1,"pairs":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.glossaryPairs()
+	if n := h.count("glossary: not applied"); n != 2 {
+		t.Fatalf("warnings = %d, want 2 after the fix", n)
+	}
+}
