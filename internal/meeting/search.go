@@ -251,8 +251,13 @@ func stripInline(rs []rune) string {
 		run.n = i - run.start
 		run.left = run.n
 		prev, next := ' ', ' ' // the block's edges count as whitespace
-		if run.start > 0 {
-			prev = cells[run.start-1].r
+		// A combining mark attaches to the base character before it, so the run's left neighbour is the base,
+		// not the mark: an emoji's VS16 (Mn) must not make "_x_" after "❤️" read as inside a word.
+		for p := run.start - 1; p >= 0; p-- {
+			if !unicode.IsMark(cells[p].r) {
+				prev = cells[p].r
+				break
+			}
 		}
 		if i < len(cells) {
 			next = cells[i].r

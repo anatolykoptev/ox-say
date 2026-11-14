@@ -955,7 +955,9 @@ func ownedPaths(m *vproject.Manifest) ([]string, error) {
 	return paths, nil
 }
 
-// deleteOwnedOutputs removes the regular files ownedPaths vouches for.
+// deleteOwnedOutputs removes the regular files ownedPaths vouches for, and
+// the backups its publishes could have left (also when none is recorded): a ".prev-" file is a hidden
+// full-size copy of an old output, so it goes with the project (#427.2).
 func (p *producer) deleteOwnedOutputs(m *vproject.Manifest) error {
 	paths, err := ownedPaths(m)
 	if err != nil {
@@ -968,7 +970,36 @@ func (p *producer) deleteOwnedOutputs(m *vproject.Manifest) error {
 			}
 		}
 	}
+	// No recorded outputs (a publish whose manifest save failed, then a restart)
+	// still leaves backups beside the output path: they go too, unless the export
+	// at the stem names another project.
+	stem, err := outputStem(m.Settings.OutPath)
+	if err != nil {
+		return nil // nothing was published, or ownedPaths refused it above
+	}
+	if len(paths) == 0 && exportNamesAnother(stem, m.ID) {
+		return nil
+	}
+	for _, b := range listBackupLeftovers(stem) {
+		if err := removeFile(b); err != nil && !errors.Is(err, os.ErrNotExist) {
+			p.log.Warn("produce: cannot remove a publish backup", slog.String("file", filepath.Base(b)), slog.Any("error", err))
+		}
+	}
 	return nil
+}
+
+// exportNamesAnother reports that the exported manifest at stem is readable and
+// names a project other than id: the files there are somebody else's, and so
+// are their backups. An absent or unreadable export names nobody.
+func exportNamesAnother(stem, id string) bool {
+	raw, err := os.ReadFile(stem + ".manifest.json")
+	if err != nil {
+		return false
+	}
+	var export struct {
+		ID string `json:"id"`
+	}
+	return json.Unmarshal(raw, &export) == nil && export.ID != "" && export.ID != id
 }
 
 // fileSHA is the sha256 of a file, hex.

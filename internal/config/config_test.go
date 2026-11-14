@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -1151,5 +1152,92 @@ func TestCleanModelsReadyNeedsTheMatchingMarker(t *testing.T) {
 	}
 	if want := filepath.Join(c.Home, "models", "clean"); c.CleanModelsDir() != want {
 		t.Fatalf("CleanModelsDir %s, want %s", c.CleanModelsDir(), want)
+	}
+}
+
+// CleanModelsBytes is display text only, so nothing checked it against the files it describes (#457.3). Where
+// the --clean-only set is installed — its marker names CleanModelsRevision — every regular file under
+// mossformer2-se-48k except the marker must sum to it: the 8 model files and 4 documents the pinned list
+// fetches. Where the set is not installed there is nothing to sum and the test skips.
+// Mutation: config.go, change one digit of CleanModelsBytes -> RED on a host with the set installed (and on a
+// fabricated OX_SAY_HOME whose marker is right but whose files are not the pinned set's size).
+func TestCleanModelsBytesIsTheInstalledSum(t *testing.T) {
+	c := &Config{Home: Home()}
+	if !c.CleanModelsReady() {
+		t.Skip("the clean model set is not installed on this host")
+	}
+	var sum int64
+	var files int
+	err := filepath.WalkDir(filepath.Join(c.CleanModelsDir(), "mossformer2-se-48k"), func(_ string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := e.Info()
+		if err != nil || !info.Mode().IsRegular() || e.Name() == ".ox-say-revision" {
+			return err
+		}
+		sum += info.Size()
+		files++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum != CleanModelsBytes || files != 12 {
+		t.Errorf("the installed clean set is %d files and %d bytes; CleanModelsBytes says %d in 12 files", files, sum, CleanModelsBytes)
+	}
+}
+
+// cleanPinnedSizes are the byte sizes of the 12 files fetch-models.sh pins at CleanModelsRevision, read from the
+// hub's x-linked-size headers for that commit - an oracle the constant was not derived from in this test.
+var cleanPinnedSizes = map[string]int64{
+	"MossFormer2_SE_48K.mlmodelc/analytics/coremldata.bin": 243,
+	"MossFormer2_SE_48K.mlmodelc/coremldata.bin":           375,
+	"MossFormer2_SE_48K.mlmodelc/metadata.json":            2377,
+	"MossFormer2_SE_48K.mlmodelc/model.mil":                1989795,
+	"MossFormer2_SE_48K.mlmodelc/weights/weight.bin":       117519808,
+	"manifest.json":        1004,
+	"config.json":          1276,
+	"reference_window.bin": 11391768,
+	"LICENSE":              11358,
+	"NOTICE.md":            1791,
+	"PROVENANCE.md":        4132,
+	"README.md":            8068,
+}
+
+// CleanModelsBytes is checked without any model installed: the files the pin list in fetch-models.sh names must
+// be exactly the 12 sized in cleanPinnedSizes, and those sizes must sum to the constant. A bump that changes the
+// list, or one file's size, or the constant alone, fails here on any host.
+// Mutation: config.go, change one digit of CleanModelsBytes -> RED; fetch-models.sh, rename or drop a clean_files
+// entry -> RED.
+func TestCleanModelsBytesIsTheSumOfThePinnedFiles(t *testing.T) {
+	sh, err := os.ReadFile(filepath.Join("..", "..", "scripts", "fetch-models.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := regexp.MustCompile(`(?s)\nclean_files=\((.*?)\n\)\nclean_docs=\((.*?)\n\)\n`).FindSubmatch(sh)
+	if block == nil {
+		t.Fatal("fetch-models.sh has no clean_files/clean_docs lists in the expected shape")
+	}
+	entry := regexp.MustCompile(`(?m)^\s*"[0-9a-f]{64}  (\S+)"$`)
+	names := map[string]bool{}
+	for _, b := range block[1:] {
+		for _, m := range entry.FindAllSubmatch(b, -1) {
+			names[string(m[1])] = true
+		}
+	}
+	var sum int64
+	for name := range names {
+		size, ok := cleanPinnedSizes[name]
+		if !ok {
+			t.Errorf("fetch-models.sh pins %s, which the size table does not know", name)
+		}
+		sum += size
+	}
+	if len(names) != len(cleanPinnedSizes) {
+		t.Errorf("fetch-models.sh pins %d files, the size table has %d", len(names), len(cleanPinnedSizes))
+	}
+	if sum != CleanModelsBytes {
+		t.Errorf("the pinned files sum to %d bytes; CleanModelsBytes says %d", sum, CleanModelsBytes)
 	}
 }

@@ -467,3 +467,118 @@ func TestMovRefusesCodecsItCannotHold(t *testing.T) {
 		noLeftovers(t, o)
 	})
 }
+
+// A QuickTime input's own streams go back into a .mov by copy even when the measured allow-list never met the codec
+// (the #464 repro: a .mov of dnxhd or rawvideo cleaned to a .mov). Any other input still meets the list, and a
+// QuickTime input widens nothing outside .mov.
+func TestQuickTimeInputKeepsItsOwnCodecsIntoMov(t *testing.T) {
+	qt := &probeInfo{FormatName: "mov,mp4,m4a,3gp,3g2,mj2", MajorBrand: "qt", AudioIndex: 1, Streams: []streamInfo{
+		{Index: 0, Type: "video", Codec: "dnxhd"},
+		{Index: 1, Type: "audio", Codec: "aac"},
+		{Index: 2, Type: "audio", Codec: "pcm_s16be"},
+		{Index: 3, Type: "video", Codec: "bmp", AttachedPic: true},
+	}}
+	p, err := planVideo(qt, "mov")
+	if err != nil {
+		t.Fatalf("mov -> mov of its own codecs: %v", err)
+	}
+	if got := strings.Join(p.maps, " "); !strings.Contains(got, "0:0") || !strings.Contains(got, "0:2") || !strings.Contains(got, "0:3") {
+		t.Errorf("maps %q", got)
+	}
+	mkv := *qt
+	mkv.FormatName = "matroska,webm"
+	if _, err := planVideo(&mkv, "mov"); err == nil || err.(*Error).Code != CodeUnsupportedStreams || !strings.Contains(err.Error(), "dnxhd") {
+		t.Fatalf("mkv -> mov must still refuse dnxhd: %v", err)
+	}
+	if _, err := planVideo(qt, "mp4"); err == nil || err.(*Error).Code != CodeUnsupportedStreams {
+		t.Fatalf("a QuickTime input must not widen the mp4 list: %v", err)
+	}
+	// The same demuxer name covers an mp4, an m4a and a 3gp: only a QuickTime movie's streams are known to go
+	// back into the mov muxer, so the others meet the allow-list.
+	for _, brand := range []string{"isom", "mp42", "M4A", "3gp4", ""} {
+		other := *qt
+		other.MajorBrand = brand
+		if _, err := planVideo(&other, "mov"); err == nil || err.(*Error).Code != CodeUnsupportedStreams {
+			t.Errorf("major brand %q must not pass dnxhd into mov: %v", brand, err)
+		}
+	}
+}
+
+// The brand reaches the plan from the real file: a .mov probes as "qt", an mp4 does not, so an mp4 holding a codec
+// the mov list never met (vp9) is refused up front instead of being handed to the mov muxer.
+// Mutation: mux.go isQuickTime, drop `&& info.MajorBrand == "qt"` -> the mp4 run is not refused -> RED.
+func TestOnlyAQuickTimeMovieKeepsItsOwnCodecsIntoMov(t *testing.T) {
+	requireTools(t)
+	requireEncoder(t, "libvpx-vp9")
+	mk := func(name string) string {
+		in := filepath.Join(t.TempDir(), name)
+		args := []string{"-f", "lavfi", "-i", "testsrc=size=64x64:rate=25:duration=1"}
+		args = append(args, tone(440, 48000, 1)...)
+		args = append(args, "-map", "0:v", "-map", "1:a", "-c:v", "libvpx-vp9", "-c:a", "aac", in)
+		ffrun(t, args...)
+		return in
+	}
+	mp4 := mk("in.mp4")
+	o := opts(t, mp4, filepath.Join(t.TempDir(), "o.mov"), 0.85, fakeEngine(t, "1"))
+	_, err := Run(context.Background(), o)
+	wantCode(t, err, CodeUnsupportedStreams)
+	if m := err.(*Error).Msg; !strings.Contains(m, "vp9") {
+		t.Errorf("message does not name the stream: %q", m)
+	}
+	noLeftovers(t, o)
+}
+
+// The refusal names a container that can hold the stream — never the extension that just refused it (#464.2).
+func TestRefusalSuggestsAContainerThatHoldsTheStream(t *testing.T) {
+	mk := func(typ, codec string) *probeInfo {
+		return &probeInfo{FormatName: "matroska,webm", AudioIndex: 1, Streams: []streamInfo{
+			{Index: 0, Type: "video", Codec: "h264"},
+			{Index: 1, Type: "audio", Codec: "aac"},
+			{Index: 2, Type: typ, Codec: codec},
+		}}
+	}
+	_, err := planVideo(mk("video", "vp9"), "mov")
+	if m := err.(*Error).Msg; !strings.Contains(m, "choose .mkv") || strings.Contains(m, "or .mov") {
+		t.Errorf("a .mov refusal must not offer .mov: %q", m)
+	}
+	_, err = planVideo(mk("video", "vp8"), "mp4")
+	if m := err.(*Error).Msg; !strings.Contains(m, "choose .mkv") || strings.Contains(m, "or .mov") {
+		t.Errorf("mp4 refusing vp8 must offer only .mkv: %q", m)
+	}
+	_, err = planVideo(mk("video", "prores"), "mp4")
+	if m := err.(*Error).Msg; !strings.Contains(m, "choose .mkv or .mov") {
+		t.Errorf("mp4 refusing prores should offer .mov too: %q", m)
+	}
+}
+
+// The reported repro: a .mov that already holds dnxhd or rawvideo cleaned to a .mov keeps those streams (#464).
+func TestMovToMovKeepsTheCodecsItHolds(t *testing.T) {
+	requireTools(t)
+	requireEncoder(t, "dnxhd")
+	t.Run("dnxhd", func(t *testing.T) {
+		in := filepath.Join(t.TempDir(), "in.mov")
+		args := []string{"-f", "lavfi", "-i", "testsrc=size=1280x720:rate=25:duration=1"}
+		args = append(args, tone(440, 48000, 1)...)
+		args = append(args, "-map", "0:v", "-map", "1:a", "-c:v", "dnxhd", "-profile:v", "dnxhr_sq", "-pix_fmt", "yuv422p", "-c:a", "aac", in)
+		ffrun(t, args...)
+		o := opts(t, in, filepath.Join(t.TempDir(), "o.mov"), 0.85, fakeEngine(t, "1"))
+		mustRun(t, o)
+		if got := fprobe(t, "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", o.Out); got != "dnxhd" {
+			t.Errorf("video stream %q, want dnxhd", got)
+		}
+		noLeftovers(t, o)
+	})
+	t.Run("rawvideo", func(t *testing.T) {
+		in := filepath.Join(t.TempDir(), "in.mov")
+		args := []string{"-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=1"}
+		args = append(args, tone(440, 48000, 1)...)
+		args = append(args, "-map", "0:v", "-map", "1:a", "-c:v", "rawvideo", "-pix_fmt", "uyvy422", "-c:a", "aac", in)
+		ffrun(t, args...)
+		o := opts(t, in, filepath.Join(t.TempDir(), "o.mov"), 0.85, fakeEngine(t, "1"))
+		mustRun(t, o)
+		if got := fprobe(t, "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", o.Out); got != "rawvideo" {
+			t.Errorf("video stream %q, want rawvideo", got)
+		}
+		noLeftovers(t, o)
+	})
+}

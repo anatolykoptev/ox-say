@@ -50,6 +50,17 @@ func setOf(v ...string) map[string]bool {
 	return m
 }
 
+// qtFormats is ffprobe's one demuxer name for the whole QuickTime family: every .mov, .mp4, .m4a or .3gp file
+// reads as it. Only the major brand tells a QuickTime movie from the rest (isQuickTime).
+const qtFormats = "mov,mp4,m4a,3gp,3g2,mj2"
+
+// isQuickTime reports a QuickTime movie proper (major brand "qt"): the one input whose streams the mov muxer is
+// known to write back. An mp4, m4a or 3gp reads as the same demuxer but may hold codecs its own muxer accepted
+// and the mov muxer was never shown to.
+func isQuickTime(info *probeInfo) bool {
+	return info.FormatName == qtFormats && info.MajorBrand == "qt"
+}
+
 // carries reports whether the container (by output extension) can hold a stream of this type and codec by copy.
 func carries(ext, typ, codec string) bool {
 	switch ext {
@@ -101,10 +112,24 @@ func subtitleCodec(ext, codec string) string {
 	return ""
 }
 
+// altFor is the "choose" tail of an unsupported_streams refusal: ".mkv" holds everything, ".mov" too when the codec
+// is on its list — the extension that just refused is never suggested.
+func altFor(typ, codec string) string {
+	if carries("mov", typ, codec) {
+		return ".mkv or .mov"
+	}
+	return ".mkv"
+}
+
 // planVideo decides, stream by stream, what the output carries. Audio and video that the container cannot hold are a
-// refusal naming the stream; the rest that it cannot hold is dropped and listed.
+// refusal naming the stream; the rest that it cannot hold is dropped and listed. A QuickTime movie's streams all go
+// back into a .mov: the mov muxer writes every codec that container already holds — the pro codecs (dnxhd, rawvideo,
+// dvvideo, big-endian pcm) the measured allow-list never met.
 func planVideo(info *probeInfo, ext string) (*videoPlan, error) {
 	p := &videoPlan{}
+	holds := func(typ, codec string) bool {
+		return carries(ext, typ, codec) || (ext == "mov" && isQuickTime(info))
+	}
 	var ns, out int // out counts the output streams mapped so far
 	for _, s := range info.Streams {
 		in := "0:" + strconv.Itoa(s.Index)
@@ -121,15 +146,15 @@ func planVideo(info *probeInfo, ext string) (*videoPlan, error) {
 			p.maps = append(p.maps, "-map", "1:a:0")
 			keep()
 		case s.Type == "video" && s.AttachedPic:
-			if carries(ext, "video", s.Codec) {
+			if holds("video", s.Codec) {
 				p.maps = append(p.maps, "-map", in)
 				keep()
 			} else {
 				drop() // cover art is not the picture
 			}
 		case s.Type == "video" || s.Type == "audio":
-			if !carries(ext, s.Type, s.Codec) {
-				return nil, newErr(CodeUnsupportedStreams, fmt.Sprintf("stream %d (%s, %s) cannot be stored in a .%s file; choose .mkv or .mov for this input", s.Index, s.Type, s.Codec, ext))
+			if !holds(s.Type, s.Codec) {
+				return nil, newErr(CodeUnsupportedStreams, fmt.Sprintf("stream %d (%s, %s) cannot be stored in a .%s file; choose %s for this input", s.Index, s.Type, s.Codec, ext, altFor(s.Type, s.Codec)))
 			}
 			p.maps = append(p.maps, "-map", in)
 			keep()

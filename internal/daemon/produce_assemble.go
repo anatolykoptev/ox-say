@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -369,8 +371,10 @@ type staged struct {
 // removes what it created, so the folder holds the whole previous set again -
 // never a mixed one. On success the directory is synced first and the backups,
 // this publish's and any left by a crashed one, go last: new data durable,
-// then old data gone. The job's manifest records chunk times and outputs only
-// when everything succeeded, and is saved at once.
+// then old data gone. A failed sync or manifest save means the new data is not
+// known durable, so the "then" is not reached and the backups stay for the
+// next publish (#427.1). The job's manifest records chunk times and outputs
+// only when everything succeeded, and is saved at once.
 func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.Manifest, owned map[string]bool) error {
 	if err := os.MkdirAll(filepath.Dir(stem), outDirMode); err != nil {
 		return err
@@ -420,7 +424,9 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 			return fmt.Errorf("%w: %v", errOutputsKept, err)
 		}
 	}
+	durable := true
 	if err := syncOutputDir(filepath.Dir(stem)); err != nil {
+		durable = false
 		p.log.Warn("produce: cannot sync the output directory", slog.Any("error", err))
 	}
 	p.mu.Lock()
@@ -438,13 +444,18 @@ func (p *producer) publish(j *job, stem, norm string, tl timeline, m *vproject.M
 	// must not leave a manifest that names the old files and a pending change
 	// that already applied.
 	if err := j.m.Save(j.dir); err != nil {
+		durable = false
 		p.log.Warn("produce: cannot save the manifest after publishing", slog.String("job", j.m.ID), slog.Any("error", err))
 	}
 	p.mu.Unlock()
-	for _, b := range append(stale, backupPaths(backups)...) {
-		if err := removeFile(b); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			p.log.Warn("produce: cannot remove a backup of the previous output; it will be removed by the next publish",
-				slog.String("file", filepath.Base(b)), slog.Any("error", err))
+	// The new set is not known durable, so "then old data gone" is not
+	// reached: the backups stay for the next publish (#427.1).
+	if durable {
+		for _, b := range append(stale, backupPaths(backups)...) {
+			if err := removeFile(b); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				p.log.Warn("produce: cannot remove a backup of the previous output; it will be removed by the next publish",
+					slog.String("file", filepath.Base(b)), slog.Any("error", err))
+			}
 		}
 	}
 	return nil
@@ -592,8 +603,31 @@ func placeStaged(s staged, replace bool) (leftover, err error) {
 const backupMark = ".prev-"
 
 // backupPrefix is the start of the backup names of the output called base,
-// cut on a rune boundary so the finished name fits a file name.
+// cut on a rune boundary so the finished name fits a file name. The tag seals
+// the name to the FULL base: two outputs sharing their first room bytes would
+// otherwise share a prefix, and a publish of one could remove the other's
+// leftover backup (#427.3).
 func backupPrefix(base string) string {
+	tag := backupTag(base)
+	room := 255 - len(".") - len(backupMark) - len(tag) - len("-") - 20
+	for len(base) > room {
+		_, n := utf8.DecodeLastRuneInString(base)
+		base = base[:len(base)-n]
+	}
+	return "." + base + backupMark + tag + "-"
+}
+
+// backupTag is 8 hex of the full base's hash: the part of a backup name an
+// exact match is made on.
+func backupTag(base string) string {
+	sum := sha256.Sum256([]byte(base))
+	return hex.EncodeToString(sum[:4])
+}
+
+// legacyBackupPrefix is the untagged shape backup names had before the tag:
+// matched only by listBackupLeftovers, for the copies a publish before the
+// tag could have left.
+func legacyBackupPrefix(base string) string {
 	room := 255 - len(".") - len(backupMark) - 20
 	for len(base) > room {
 		_, n := utf8.DecodeLastRuneInString(base)
@@ -604,8 +638,15 @@ func backupPrefix(base string) string {
 
 // listBackups are the backups of the five outputs of stem that sit in its
 // directory: the leftovers of a publish that did not finish (or whose cleanup
-// did not). Regular files only.
-func listBackups(stem string) []string {
+// did not). Regular files only, and only this stem's own: the tag in the name
+// makes the match exact (#427.3).
+func listBackups(stem string) []string { return stemBackups(stem, false) }
+
+// listBackupLeftovers is listBackups plus the untagged names a publish before
+// the tag could have left (#427.2): a project delete wants every copy.
+func listBackupLeftovers(stem string) []string { return stemBackups(stem, true) }
+
+func stemBackups(stem string, legacy bool) []string {
 	dir, base := filepath.Split(stem)
 	if dir == "" {
 		dir = "."
@@ -613,10 +654,19 @@ func listBackups(stem string) []string {
 	entries, _ := os.ReadDir(dir)
 	var out []string
 	for _, ext := range outputExts {
-		prefix := backupPrefix(base + ext)
+		prefixes := []string{backupPrefix(base + ext)}
+		if legacy {
+			prefixes = append(prefixes, legacyBackupPrefix(base+ext))
+		}
 		for _, e := range entries {
-			if strings.HasPrefix(e.Name(), prefix) && e.Type().IsRegular() {
-				out = append(out, filepath.Join(dir, e.Name()))
+			if !e.Type().IsRegular() {
+				continue
+			}
+			for _, prefix := range prefixes {
+				if strings.HasPrefix(e.Name(), prefix) {
+					out = append(out, filepath.Join(dir, e.Name()))
+					break
+				}
 			}
 		}
 	}
