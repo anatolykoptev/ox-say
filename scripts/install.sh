@@ -33,7 +33,11 @@ oxs_fetch_models "$root/scripts/fetch-models.sh"
 # stop the install.
 tmpdir=$(mktemp -d)
 tmp="$tmpdir/agent.plist"
-trap 'rm -f "$tmp"; rmdir "$tmpdir" 2>/dev/null || true' EXIT
+# A kill mid-staging (TERM from the app's install timeout, Ctrl-C) must not strand .new copies beside the
+# engines: the abort drops them, and is a no-op once oxs_stage_commit has emptied the queue (#508).
+trap 'oxs_stage_abort_quiet; rm -f "$tmp"; rmdir "$tmpdir" 2>/dev/null || true' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 oxs_render_agent "$root/launchd/$label.plist.in" "$tmp"
 
 # 3. Swap in the new engines and binary, then reload the agent.

@@ -265,6 +265,9 @@ oxs_install_engines() {
         echo "ox-say install: no licenses/ in $out" >&2
         exit 1
     fi
+    # ox-say owns engine/licenses: a symlink there would carry the staged licences into its target outside the
+    # home, so it is replaced, never followed (the same idiom oxs_install_go_licenses uses) (#508).
+    [ ! -L "$home/engine/licenses" ] || rm -f "$home/engine/licenses"
     mkdir -p "$home/engine/licenses"
     oxs_staged_kind=()
     oxs_staged_dst=()

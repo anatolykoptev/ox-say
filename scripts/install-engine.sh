@@ -11,4 +11,8 @@ if [ ! -x "$root/build/engine/out/tts-server" ]; then
     echo "ox-say install: no engines in $root/build/engine/out — run engine/build.sh first" >&2
     exit 1
 fi
+# A kill mid-staging must not strand .new copies beside the engines (#508); a no-op once the commit ran.
+trap 'oxs_stage_abort_quiet' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 oxs_install_engines "$root/build/engine/out"

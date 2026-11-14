@@ -987,6 +987,63 @@ go_link_case licenses licenses
 n=$(grep -cE '^[^#]*oxs_install_go_licenses "[$]root/licenses/go"' "$root/scripts/install-release.sh" || true)
 check "install-release.sh installs the Go licences through oxs_install_go_licenses" "${n:-x}" 1
 
+# --- M: a symlinked engine/licenses is replaced, not written through (#508) ----------------------------------
+# ox-say owns engine/licenses; a symlink there (a stray manual edit) would send the staged licences into the
+# target outside the home before oxs_install_go_licenses ever sees the link. oxs_install_engines drops the link
+# and makes a real directory first, the same idiom oxs_install_go_licenses uses. The target stays writable here
+# on purpose: the write-through this guards against is silent.
+# Mutation (lib-install.sh): drop the `[ ! -L "$home/engine/licenses" ] || rm -f` line -> the licences land in
+# the target -> "symlinked licenses dir: target holds nothing new" fails.
+d="$tmp/liclink"; mkdir -p "$d/home/engine" "$d/target"
+lic_pkg "$d/pkg" 0644 new-text
+echo keep > "$d/target/f"
+ln -s "$d/target" "$d/home/engine/licenses"
+rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+check "symlinked licenses dir: install completes" "$rc" 0
+check "symlinked licenses dir: licenses is a real dir" "$([ -d "$d/home/engine/licenses" ] && [ ! -L "$d/home/engine/licenses" ] && echo yes || echo no)" yes
+check "symlinked licenses dir: licence installed in the home" "$(cat "$d/home/engine/licenses/FluidAudio-fastcluster-LICENSE.md")" new-text
+check "symlinked licenses dir: target holds nothing new" "$(ls -A "$d/target")" f
+check "symlinked licenses dir: target content untouched" "$(cat "$d/target/f")" keep
+
+# --- N: a kill mid-staging strands no .new (#508, review comment) --------------------------------------------
+# The installers arm oxs_stage_abort_quiet on the EXIT trap for the staging stretch: a TERM (the app's wedged
+# install timeout, Ctrl-C) ends the run with staged copies on disk, and the trap is what removes them. The mini
+# installer below carries the same traps as install-release.sh; a cp that sleeps on its second call puts the
+# TERM mid-stage, when the first .new already exists.
+# Mutations: drop `oxs_stage_abort_quiet; ` from an installer's EXIT trap -> its "$s arms ..." check fails; drop
+# the abort itself -> "a TERM mid-stage leaves no .new" fails.
+for s in install.sh install-release.sh install-engine.sh; do
+    n=$(grep -cE "^trap 'oxs_stage_abort_quiet" "$root/scripts/$s" || true)
+    check "$s arms the stage abort on EXIT" "${n:-0}" 1
+done
+d="$tmp/stagekill"; mkdir -p "$d/out/licenses" "$d/home" "$d/bin"
+echo x > "$d/out/licenses/x.LICENSE"
+for bin in tts-server ox-stt ox-align ox-llm; do printf '#!/bin/sh\n' > "$d/out/$bin"; chmod +x "$d/out/$bin"; done
+printf '#!/bin/sh\nn=$(( $(cat "$SK_N" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$SK_N"; if [ "$n" -ge 2 ]; then echo $$ > "$SK_PID"; exec sleep 30; fi; exec /bin/cp "$@"\n' > "$d/bin/cp"
+chmod +x "$d/bin/cp"
+SK_N="$d/n" SK_PID="$d/sleep.pid" PATH="$d/bin:$PATH" bash -c "
+    set -euo pipefail
+    . '$root/scripts/lib-install.sh'
+    home='$d/home'
+    trap 'exit 143' TERM
+    trap 'oxs_stage_abort_quiet' EXIT
+    oxs_install_engines '$d/out'
+" > "$d/log" 2>&1 &
+kpid=$!
+# the first staged copy (tts-server) exists before the second cp starts sleeping
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$d/home/engine/tts-server.new" ] && break; sleep 1; done
+if [ -e "$d/home/engine/tts-server.new" ]; then
+    kill -TERM "$kpid" 2>/dev/null || true
+    wait "$kpid" 2>/dev/null || true
+    if [ -s "$d/sleep.pid" ]; then kill "$(cat "$d/sleep.pid")" 2>/dev/null || true; fi
+    check "a TERM mid-stage leaves no .new" "$(find "$d/home" -name '*.new' | wc -l | tr -d ' ')" 0
+    check "a TERM mid-stage replaced no engine" "$(find "$d/home/engine" -type f | wc -l | tr -d ' ')" 0
+else
+    kill -TERM "$kpid" 2>/dev/null || true
+    wait "$kpid" 2>/dev/null || true
+    fail "no staged copy appeared within 10 s; cannot test a mid-stage kill: $(cat "$d/log")"
+fi
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "all checks passed"
