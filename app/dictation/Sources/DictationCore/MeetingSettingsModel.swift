@@ -153,6 +153,17 @@ public enum MeetingSettingsModel {
             retentionVerified: daemonRetention != nil, yourName: d.string(forKey: MeetingSettings.nameKey) ?? "", yourNameFallback: fullName, notesWriter: notesWriter)
     }
 
+    /// The folder pick as one step: stored, then the values read again, so the page's iCloud
+    /// answer is the new folder's own and a caller cannot save without the recompute.
+    public static func folderPicked(_ url: URL, defaults d: UserDefaults, daemonRetention: MeetingRetention?,
+                                    notesWriter: NotesWriterState, fullName: String,
+                                    home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                                    probe: ICloudSync.Probe = ICloudSync.probe) -> MeetingSettingsValues {
+        MeetingSettings.setFolder(url, d)
+        return load(defaults: d, daemonRetention: daemonRetention, notesWriter: notesWriter,
+                    fullName: fullName, home: home, probe: probe)
+    }
+
     /// The edits that take `old` to `new`.
     public static func changes(from old: MeetingSettingsValues, to new: MeetingSettingsValues) -> [Change] {
         var out: [Change] = []

@@ -117,6 +117,29 @@ final class ICloudSyncTests: XCTestCase {
         XCTAssertFalse(load().folderSyncsICloud)
     }
 
+    /// The picker's one step (#532): the picked folder is stored and the flag is the new folder's
+    /// own answer, so the page cannot keep the previous folder's warning.
+    /// Mutation: MeetingSettingsModel.folderPicked, read the values before `MeetingSettings.setFolder`
+    /// (or pin `folderSyncsICloud` instead of recomputing) -> RED.
+    func testTheFolderPickStoresAndRecomputesTheFlag() {
+        let d = UserDefaults(suiteName: "i532-\(UUID().uuidString)")!
+        let answers = ["/i532/icloud": true, "/i532/local": false, "/i532/icloud-too": true]
+        func pick(_ path: String) -> MeetingSettingsValues {
+            MeetingSettingsModel.folderPicked(URL(fileURLWithPath: path, isDirectory: true), defaults: d,
+                                              daemonRetention: nil, notesWriter: .ready, fullName: "x",
+                                              home: home, probe: { url in answers[url.path] })
+        }
+        var v = pick("/i532/icloud")
+        XCTAssertEqual(v.folderPath, "/i532/icloud", "the pick is stored")
+        XCTAssertTrue(v.folderSyncsICloud)
+        v = pick("/i532/local")
+        XCTAssertEqual(v.folderPath, "/i532/local")
+        XCTAssertFalse(v.folderSyncsICloud, "moved off iCloud: the old warning is gone")
+        v = pick("/i532/icloud-too")
+        XCTAssertTrue(v.folderSyncsICloud, "and back on again")
+        XCTAssertEqual(MeetingSettings.folder(d, home: home).path, "/i532/icloud-too")
+    }
+
     /// The honest variant names iCloud in both locales; the key-set tests pin its presence.
     func testTheHonestVariantNamesICloudInBothLocales() {
         for locale in ["en", "ru"] {

@@ -853,7 +853,10 @@ final class MeetingController: NSObject, MeetingFeature {
 
     private func openFolder() { NotesFolder.open(host.defaults) }
 
-    private func chooseFolder() { NotesFolder.choose(host.defaults) }
+    private func chooseFolder() {
+        guard let url = NotesFolder.choose(host.defaults) else { return }
+        MeetingSettings.setFolder(url, host.defaults)
+    }
 
     private func askName() {
         let alert = NSAlert()

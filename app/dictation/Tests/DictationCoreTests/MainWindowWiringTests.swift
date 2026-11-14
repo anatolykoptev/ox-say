@@ -93,6 +93,21 @@ final class MainWindowWiringTests: XCTestCase {
         XCTAssertTrue(apply.contains("case .callMode: host.meetings()?.settingsChanged()"))
     }
 
+    /// #532: a picked notes folder is stored and its iCloud answer recomputed in the model's one
+    /// step — a save alone keeps the old folder's warning and privacy line.
+    /// Mutation: MainWindowSource.actions, `self.reloadSettings(pickedFolder: url)` ->
+    /// `MeetingSettings.setFolder(url, self.host.defaults)` -> RED; the
+    /// `MeetingSettingsModel.folderPicked(` branch of reloadSettingsAsync -> plain `load` -> RED.
+    func testTheFolderPickIsSavedAndRecomputedInOneStep() throws {
+        let text = try window()
+        let action = try XCTUnwrap(text.range(of: "a.chooseNotesFolder = {"), "the picker action").upperBound
+        XCTAssertTrue(text[action...].prefix(300).contains("self.reloadSettings(pickedFolder: url)"),
+                      "the pick goes through the model's save-and-read step, not a bare store")
+        let reload = try body(text, of: "private func reloadSettingsAsync(")
+        XCTAssertTrue(reload.contains("MeetingSettingsModel.folderPicked("),
+                      "the picked branch stores and reads back in one core call")
+    }
+
     /// Rename and speakers go through the meeting feature, which also refreshes the notes-folder copy; the menu's panel
     /// uses the very same function.
     /// Mutation: MainWindowSource.rename, call `host.client.renameMeeting` directly -> RED.
