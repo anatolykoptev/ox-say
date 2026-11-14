@@ -54,9 +54,15 @@ func samples() []sample {
 		"ml": "ഞങ്ങൾ റിലീസ് പദ്ധതി, ഷെഡ്യൂൾ അപകടസാധ്യതകൾ, ടീമുകൾ തമ്മിലുള്ള ജോലി വിഭജനം എന്നിവ ചർച്ച ചെയ്തു. ",
 		"km": "យើងបានពិភាក្សាអំពីផែនការចេញផ្សាយ ហានិភ័យនៃកាលវិភាគ និងការបែងចែកការងារក្នុងចំណោមក្រុម។ ",
 		"am": "የመልቀቂያውን እቅድ፣ የጊዜ ሰሌዳ አደጋዎችን እና በቡድኖች መካከል የሥራ ክፍፍልን ለሩብ ዓመቱ ተወያይተናል። ",
+		// Vietnamese, Turkish, Polish and Czech: Latin letters with dense
+		// diacritics — the class the estimator charges them on (#545).
+		"vi": "Chúng tôi đã thảo luận về kế hoạch phát hành, các rủi ro về tiến độ và việc phân chia công việc giữa các nhóm trong quý này. ",
+		"tr": "Yayın planını, takvim risklerini ve görevlerin çeyrek boyunca ekipler arasında dağılımını görüştük. ",
+		"pl": "Omówiliśmy plan wydania, ryzyko harmonogramu oraz podział zadań między zespołami na ten kwartał. ",
+		"cs": "Projednali jsme plán vydání, rizika harmonogramu a rozdělení úkolů mezi týmy na toto čtvrtletí. ",
 	}
 	var out []sample
-	for _, k := range []string{"en", "ru", "uk", "de", "es", "fr", "zh", "ja", "ko", "hi", "bn", "ta", "th", "ar", "he", "ka", "hy", "pa", "gu", "te", "kn", "ml", "km", "am"} {
+	for _, k := range []string{"en", "ru", "uk", "de", "es", "fr", "zh", "ja", "ko", "hi", "bn", "ta", "th", "ar", "he", "ka", "hy", "pa", "gu", "te", "kn", "ml", "km", "am", "vi", "tr", "pl", "cs"} {
 		out = append(out, sample{"prose_" + k, rep(prose[k])})
 	}
 	out = append(out,

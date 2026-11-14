@@ -833,13 +833,12 @@ func (c Composer) pairBatch(ctx context.Context, pts []pointRef, batch []int) ([
 // truncateTokens cuts s to at most n estimated tokens, on a grapheme-cluster
 // boundary (see cutAt).
 func truncateTokens(s string, n int) string {
+	rs := []rune(s)
 	units := 0
-	for i, r := range s {
-		units += runeUnits(r)
+	for i := range rs {
+		units += runeUnitsIn(rs, i)
 		if units > n*unitsPerToken {
-			rs := []rune(s)
-			k := utf8.RuneCountInString(s[:i])
-			return string(rs[:cutAt(rs, k)])
+			return string(rs[:cutAt(rs, i)])
 		}
 	}
 	return s

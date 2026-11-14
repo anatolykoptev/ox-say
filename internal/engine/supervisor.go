@@ -61,6 +61,11 @@ type Config struct {
 	// port; nil keeps the tts-server argv
 	// (--model/--codec/--host/--port/--max-batch).
 	Args func(port int) []string
+	// ExtraFiles are inherited by the child as fd 3+i (exec.Cmd semantics).
+	// A test hands the fake engine an already-bound loopback socket, so the
+	// port is never free between picking it and the spawn (#443); a real
+	// engine binds its own Port.
+	ExtraFiles []*os.File
 	// Env is added to the child's environment (KEY=VALUE, after the daemon's own, so it wins); nil keeps the
 	// daemon's environment as it is.
 	Env []string
@@ -923,6 +928,7 @@ func (s *Supervisor) spawn() (*child, error) {
 	}
 	cmd.Stdout = logf
 	cmd.Stderr = logf
+	cmd.ExtraFiles = s.cfg.ExtraFiles
 	if err := cmd.Start(); err != nil {
 		_ = logf.Close()
 		return nil, fmt.Errorf("engine: spawn %s: %w", s.cfg.Bin, err)

@@ -235,6 +235,43 @@ func TestCutNeverStartsWithACombiningMark(t *testing.T) {
 	}
 }
 
+// A flag is two regional-indicator runes; a cut between them turns one flag
+// into two letters on both sides of the split.
+// Mutation: notes.go cutAt, drop the splitsFlag branch -> RED (the boundary
+// stays between the pair's halves).
+func TestACutNeverSplitsAFlagPair(t *testing.T) {
+	flag := "\U0001F1EB\U0001F1EE" // FI: two regional indicators, one flag
+	rs := []rune("ab" + flag + "cd")
+	if got := cutAt(rs, 3); got != 2 {
+		t.Errorf("cutAt(ab FI cd, 3) = %d, want 2 — the pair stays whole", got)
+	}
+	// Between two flags is a real boundary: the second flag's first rune
+	// follows an even run.
+	if got := cutAt([]rune("ab"+flag+flag+"cd"), 4); got != 4 {
+		t.Errorf("cutAt(ab FI FI cd, 4) = %d, want 4 — between pairs is a boundary", got)
+	}
+	if got := truncateRunes("ab"+flag+"cd", 3); got != "ab" {
+		t.Errorf("truncateRunes cut the flag: %q", got)
+	}
+}
+
+// A space inside the mid scripts merges into the next word's token — the
+// calibration's Thai and Arabic samples — so the estimate stops charging it
+// a whole token and those transcripts stop being chunked short. A space
+// before a digit or a non-mid letter keeps its token (digits_only).
+// Mutation: notes.go runeUnitsIn, return runeUnits unconditionally -> RED.
+func TestASpaceInsideAMidScriptMerges(t *testing.T) {
+	if got := EstimateTokens("กก กกกก"); got != EstimateTokens("กกกกกก") {
+		t.Errorf("EstimateTokens(Thai with a space) = %d, want %d — the space merges into the next token", got, EstimateTokens("กกกกกก"))
+	}
+	if got := EstimateTokens("ab cd"); got != 3 {
+		t.Errorf("EstimateTokens(ab cd) = %d, want 3 — a space before a Latin letter stays its own token", got)
+	}
+	if got := EstimateTokens("ก 5"); got != 3 {
+		t.Errorf("EstimateTokens(ก 5) = %d, want 3 — a space before a digit stays its own token", got)
+	}
+}
+
 // The reduce prompt is bounded by reduceTokenBudget: 120 points of dense
 // text cost more than the budget, so the prompt stops before the last ones
 // and keeps the words-only merge for the rest.

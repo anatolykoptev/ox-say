@@ -752,8 +752,10 @@ func TestDaemonStartupReapsAnOrphanedTrialChild(t *testing.T) {
 	t.Run("a start-token mismatch is left alone", func(t *testing.T) {
 		dir := t.TempDir()
 		t.Setenv("OXSAY_FAKE_LLM", "1")
-		orphan := exec.Command(os.Args[0], "--port", strconv.Itoa(testutil.FreePort(t)))
-		orphan.Env = os.Environ()
+		port, sock := boundLoopbackFile(t)
+		orphan := exec.Command(os.Args[0], "--port", strconv.Itoa(port))
+		orphan.Env = append(os.Environ(), "OXSAY_FAKE_LISTENER_FD=3")
+		orphan.ExtraFiles = []*os.File{sock}
 		if err := orphan.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -797,7 +799,7 @@ func TestDaemonStartupReapsAnOrphanedTrialChild(t *testing.T) {
 func TestNotesModelTrialChildStopsWhenIdle(t *testing.T) {
 	dir := t.TempDir()
 	d, _ := trialDaemon(t, dir, func(c *config.Config) { c.NotesIdleStop = 300 * time.Millisecond })
-	sup, err := d.newNotesTrialSupervisor(ownGGUF(t, dir, nil))
+	sup, err := d.newNotesTrialSupervisor(ownGGUF(t, dir, nil), inheritFreshPort(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -842,4 +844,70 @@ func TestNotesModelTrialChildIsGuardedThroughTheCheck(t *testing.T) {
 	if !res.OK {
 		t.Fatalf("verdict = %+v", res)
 	}
+}
+
+// #542: the custom-model trial is a real llama-server start on shared
+// memory: it must get the same llama.cpp fitting plan the notes spawn gets —
+// no -ngl, the fitter on, the rest of the system's allocation plus the
+// headroom as its target — or a file that only loads under the fitter passes
+// the check and the real spawn then runs out of memory. On discrete memory
+// the plan keeps the config's own offload.
+// Mutation: notesvalidate.go newNotesTrialSupervisor, use
+// notesServerArgsKey again -> RED (-ngl 99, no --fit-target).
+func TestTheTrialChildGetsTheFittingPlan(t *testing.T) {
+	t.Run("shared memory", func(t *testing.T) {
+		dir := t.TempDir()
+		d, _ := trialDaemon(t, dir, func(c *config.Config) { c.GPUMemory = config.GPUMemoryUnified })
+		fakeBudget(t, ampleLimitMiB, othersMiB)
+		sup, err := d.newNotesTrialSupervisor(ownGGUF(t, dir, nil), inheritFreshPort(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(sup.Shutdown)
+		if _, err := sup.EnsureReady(context.Background()); err != nil {
+			t.Fatalf("the trial child did not start: %v", err)
+		}
+		args := spawnArgvs(t, dir)
+		if len(args) != 1 {
+			t.Fatalf("spawns = %d, want 1", len(args))
+		}
+		a := args[0]
+		for _, f := range a {
+			if f == "-ngl" {
+				t.Fatalf("the trial argv carries -ngl, which disables llama.cpp's fitter: %q", strings.Join(a, " "))
+			}
+		}
+		if notesFlagValue(a, "--fit") != "on" {
+			t.Fatalf("--fit = %q, want on", notesFlagValue(a, "--fit"))
+		}
+		// The literal 4608: the probe's 3072 MiB plus the 1536 MiB headroom —
+		// an expectation derived from the constants would not catch a
+		// formula bug (MINOR-D, #542).
+		if got := fitTargetOf(t, a); got != 4608 {
+			t.Fatalf("--fit-target = %d, want the others' 3072 MiB plus the 1536 MiB headroom", got)
+		}
+	})
+	t.Run("discrete memory", func(t *testing.T) {
+		dir := t.TempDir()
+		d, _ := trialDaemon(t, dir, func(c *config.Config) { c.GPUMemory = config.GPUMemoryDiscrete })
+		sup, err := d.newNotesTrialSupervisor(ownGGUF(t, dir, nil), inheritFreshPort(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(sup.Shutdown)
+		if _, err := sup.EnsureReady(context.Background()); err != nil {
+			t.Fatalf("the trial child did not start: %v", err)
+		}
+		args := spawnArgvs(t, dir)
+		if len(args) != 1 {
+			t.Fatalf("spawns = %d, want 1", len(args))
+		}
+		a := args[0]
+		if notesFlagValue(a, "--fit-target") != "" {
+			t.Fatalf("discrete memory got a fit target: %q", strings.Join(a, " "))
+		}
+		if got := notesFlagValue(a, "-ngl"); got != "0" {
+			t.Fatalf("-ngl = %q, want 0 — the config's CPU decode", got)
+		}
+	})
 }

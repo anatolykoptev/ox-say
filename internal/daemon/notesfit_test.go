@@ -137,8 +137,11 @@ func TestTheSpawnLetsLlamaCppFitTheModel(t *testing.T) {
 	if notesFlagValue(a, "--fit") != "on" {
 		t.Fatalf("--fit = %q, want on", notesFlagValue(a, "--fit"))
 	}
-	if got, want := fitTargetOf(t, a), othersMiB+notesFitHeadroomMiB; got != want {
-		t.Fatalf("--fit-target = %d, want the others' %d MiB plus the %d MiB headroom", got, othersMiB, notesFitHeadroomMiB)
+	// The literal 4608: the probe's 3072 MiB plus the 1536 MiB headroom — an
+	// expectation derived from the constants would not catch a formula bug
+	// (#542, MINOR-D).
+	if got := fitTargetOf(t, a); got != 4608 {
+		t.Fatalf("--fit-target = %d, want the others' 3072 MiB plus the 1536 MiB headroom", got)
 	}
 	if c := notesFlagValue(a, "-c"); c != strconv.Itoa(meeting.NotesContextTokens()) {
 		t.Fatalf("-c = %q, want the derived %d", c, meeting.NotesContextTokens())
@@ -149,7 +152,7 @@ func TestTheSpawnLetsLlamaCppFitTheModel(t *testing.T) {
 	if m := modelOf(a); !strings.Contains(m, "9B") {
 		t.Fatalf("the spawn's model = %q, want the 9B", m)
 	}
-	if n := d.Status().Notes; n.Fit != "full" || !strings.Contains(n.FitReason, "--fit-target "+strconv.Itoa(othersMiB+notesFitHeadroomMiB)) {
+	if n := d.Status().Notes; n.Fit != "full" || !strings.Contains(n.FitReason, "--fit-target 4608") {
 		t.Fatalf("notes = %+v, want fit full with the fit target in its reason", n)
 	}
 }

@@ -42,7 +42,7 @@ func smallMemDaemon(t *testing.T, assumeGB uint64) *Daemon {
 		c.GPUMemory = config.GPUMemoryUnified
 		c.VoxCPM2Bin = os.Args[0]
 		c.VoxCPM2Model = model
-		c.VoxCPM2Port = testutil.FreePort(t)
+		c.VoxCPM2Port = boundLoopback(t)
 		c.NotesBin, c.NotesModel = os.Args[0], notes
 		c.Lang = "en"
 		c.HostMemoryBytes = 48 * gib

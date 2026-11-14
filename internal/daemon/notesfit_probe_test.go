@@ -217,7 +217,7 @@ func TestNewLLMSupervisorWarmsTheMetalRead(t *testing.T) {
 	old := notesGPUWarmup
 	notesGPUWarmup = func(bin string) { got.Store(bin) }
 	t.Cleanup(func() { notesGPUWarmup = old })
-	if _, err := newLLMSupervisor(d); err != nil {
+	if _, err := newLLMSupervisor(d, nil); err != nil {
 		t.Fatal(err)
 	}
 	if bin, _ := got.Load().(string); bin != notesBinPath(d.Cfg) {
@@ -232,7 +232,7 @@ func TestProbeDiscreteCardsAreNotWarmed(t *testing.T) {
 	old := notesGPUWarmup
 	notesGPUWarmup = func(string) { calls.Add(1) }
 	t.Cleanup(func() { notesGPUWarmup = old })
-	if _, err := newLLMSupervisor(d); err != nil {
+	if _, err := newLLMSupervisor(d, nil); err != nil {
 		t.Fatal(err)
 	}
 	if calls.Load() != 0 {

@@ -157,10 +157,7 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 	esc := d.fitEscalation(res)
 	limit, used := notesGPUWired(notesBinPath(d.Cfg))
 	known := limit > 0
-	target := notesFitDefaultTargetMiB
-	if known {
-		target = int(used>>20) + notesFitHeadroomMiB
-	}
+	target := notesFitTargetMiB(limit, used)
 	if esc > 0 {
 		target += notesFitOOMStepMiB
 	}
@@ -179,7 +176,7 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 	if res.Source == config.NotesSourceAutomatic {
 		swap, why := esc >= 2, "an earlier start of the resolved model ran out of memory twice"
 		if !swap && known {
-			free := int64(limit) - int64(used) - int64(notesFitHeadroomMiB)<<20
+			free := notesRoomBytes(limit, used)
 			if w := notesWeightBytes(res); w > 0 && w > free {
 				swap = true
 				why = fmt.Sprintf("the resolved model's weights (%s) exceed the %s of GPU memory left after the rest of the system and the call's headroom",
@@ -194,19 +191,46 @@ func (d *Daemon) notesSpawnPlan() notesPlan {
 		}
 	}
 	if known && p.fit == fitFull {
-		if free := notesRoomBytes(limit, used); notesWeightBytes(res) > free {
+		// partial is promised the same room makeNotesRoom works for: the
+		// weights plus the 1 GiB of KV/buffer slack.
+		if free := notesRoomBytes(limit, used); notesWeightBytes(res)+notesRoomSlack > free {
 			p.fit = fitPartial
-			p.why = fmt.Sprintf("the model's weights (%s) exceed the %s of GPU memory left after the rest of the system (%s) and the call's headroom; llama.cpp keeps part of the model on the CPU, so notes are slower",
+			p.why = fmt.Sprintf("the model's weights (%s) plus 1 GiB of cache exceed the %s of GPU memory left after the rest of the system (%s) and the call's headroom; llama.cpp keeps part of the model on the CPU, so notes are slower",
 				notesGiB(notesWeightBytes(res)), notesGiB(max(free, 0)), notesGiB(int64(used)))
 		}
 	}
 	return d.finishPlan(res, p)
 }
 
+// notesFitTargetMiB is the figure llama.cpp's fitter aims for: what the rest
+// of the system has allocated plus the headroom left for it to grow into.
+// While the probe has no answer llama.cpp's own default stands.
+func notesFitTargetMiB(limit, used uint64) int {
+	if limit == 0 {
+		return notesFitDefaultTargetMiB
+	}
+	return int(used>>20) + notesFitHeadroomMiB
+}
+
 // notesRoomBytes is the GPU memory left for the notes model: the wired limit minus what the rest of the system
 // holds minus the call's headroom. Negative when the others already take more.
 func notesRoomBytes(limit, used uint64) int64 {
 	return int64(limit) - int64(used) - int64(notesFitHeadroomMiB)<<20
+}
+
+// notesTrialPlan is the plan the custom-model trial's spawn gets: the user's
+// file is the model and is never swapped, but the fit is decided the way a
+// real spawn decides it — llama.cpp's fitter with the rest of the system's
+// allocation plus the headroom as its target on shared memory, no target
+// elsewhere. A trial that skipped the fitter would pass a file the real
+// spawn then cannot load (#542).
+func (d *Daemon) notesTrialPlan(path string) notesPlan {
+	p := notesPlan{model: path}
+	if !d.Cfg.UnifiedMemory() {
+		return p
+	}
+	p.fitMiB = notesFitTargetMiB(notesGPUWired(notesBinPath(d.Cfg)))
+	return p
 }
 
 // notesRoomSlack is how much room beyond the weights makeNotesRoom wants before it leaves the voices alone: the
@@ -257,10 +281,10 @@ func (d *Daemon) makeNotesRoom(ctx context.Context) {
 	if len(stopped) == 0 {
 		return
 	}
-	_, usedAfter := notesGPUWired(bin)
+	limitAfter, usedAfter := notesGPUWired(bin)
 	d.log.Info("notes: stopped idle voices to make room for the notes model",
 		slog.Any("stopped", stopped), slog.String("weights", notesGiB(w)),
-		slog.String("room_before", notesGiB(max(before, 0))), slog.String("room_after", notesGiB(max(notesRoomBytes(limit, usedAfter), 0))))
+		slog.String("room_before", notesGiB(max(before, 0))), slog.String("room_after", notesGiB(max(notesRoomBytes(limitAfter, usedAfter), 0))))
 }
 
 // finishPlan records the spawn and the /status label of plan p.

@@ -101,6 +101,10 @@ const (
 	// retryDelay is the pause before retrying a call that failed because the
 	// server was busy or not up yet (HTTP 503, connection refused).
 	retryDelay = 5 * time.Second
+	// runBudgetCalls: a run may spend this many per-call deadlines per chunk
+	// in total — three worst-case calls' worth — after which the chunks not
+	// yet started are marked skipped (#552).
+	runBudgetCalls = 3
 )
 
 // ActionItem is one task; Who and When are empty when the transcript names
@@ -129,8 +133,10 @@ type ChunkNotes struct {
 	Points []Point `json:"-"`
 }
 
-// Notes are the finished notes. SkippedChunks lists the zero-based chunks the
-// model failed on twice; the notes say so instead of looking complete.
+// Notes are the finished notes. SkippedChunks lists the zero-based chunks
+// some piece of which had no notes — a call the retry could not save, a
+// piece the splitting gave up on, or the run budget spent — so the notes say
+// so instead of looking complete.
 type Notes struct {
 	ChunkNotes
 	SkippedChunks []int `json:"skipped_chunks,omitempty"`
@@ -216,8 +222,8 @@ func cutLine(line string, limit int) []string {
 // overflows.
 func fitRunes(r []rune, maxRunes, maxUnits int) int {
 	runes, units := 0, 0
-	for _, c := range r {
-		u := runeUnits(c)
+	for i := range r {
+		u := runeUnitsIn(r, i)
 		if runes+1 > maxRunes || units+u > maxUnits {
 			break
 		}
@@ -661,9 +667,25 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 	var parts []ChunkNotes
 	var skipped []int
 	restarts := 1 // extra engine starts this run may spend on a retryable failure
+	// The run's wall clock is bounded too: a chunk that keeps spending whole
+	// per-call deadlines would otherwise let every chunk pay the same worst
+	// case, so once the run has spent runBudgetCalls deadlines per chunk the
+	// chunks not yet started are marked skipped and what landed merges (#552).
+	runCtx, runCancel := context.WithDeadline(ctx, time.Now().Add(runBudgetCalls*c.callTimeout()*time.Duration(len(chunks))))
+	defer runCancel()
 	for i, ch := range chunks {
-		got, lost, err := c.summarise(ctx, l, lang, i, len(chunks), ch, &restarts, 0)
+		got, lost, err := c.summarise(runCtx, l, lang, i, len(chunks), ch, &restarts, 0)
 		if err != nil {
+			// Notes a split chunk finished before the stop still count.
+			parts = append(parts, got...)
+			// The run's own budget is runCtx expiring under a live caller context;
+			// an engine error that merely wraps DeadlineExceeded is not it.
+			if ctx.Err() == nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				for j := i; j < len(chunks); j++ {
+					skipped = append(skipped, j)
+				}
+				break
+			}
 			return Notes{}, err
 		}
 		parts = append(parts, got...)
@@ -675,7 +697,7 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 		return Notes{}, ErrNoNotes
 	}
 	// At most maxReduceCalls reduce calls (one for most meetings), after the map steps and before the summary merge; they can only settle open points.
-	claims, err := c.pairPoints(ctx, parts)
+	claims, err := c.pairPoints(runCtx, parts)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Notes{}, ctx.Err() // a cancelled run is not a finished one, whichever call it stopped in
@@ -686,7 +708,7 @@ func (c Composer) Compose(ctx context.Context, transcript string, l Labels, lang
 	n := mergeChunks(parts, l, claims)
 	n.SkippedChunks = skipped
 	if len(parts) > 1 {
-		n.Summary = c.mergeSummary(ctx, parts, n.Summary, lang)
+		n.Summary = c.mergeSummary(runCtx, parts, n.Summary, lang)
 	}
 	return n, nil
 }
@@ -706,7 +728,8 @@ const (
 // as not): its text is split at a line end and each half is summarised on its own, down to maxSplitDepth levels.
 // The halves' notes come back in order, as ordinary parts. lost reports that some piece of the chunk has no
 // notes (the caller records the chunk as skipped). A non-truncation failure keeps chunk's own retry and then
-// loses the piece. err is set only for a stop the whole run must honour: a cancelled context or a dead engine.
+// loses the piece. err is set only for a stop the whole run must honour: a cancelled context or a dead engine;
+// the parts already finished by then come back with it.
 func (c Composer) summarise(ctx context.Context, l Labels, lang string, i, total int, text string, restarts *int, depth int) (parts []ChunkNotes, lost bool, err error) {
 	got, err := c.chunk(ctx, l, lang, i, total, text, restarts)
 	if err == nil {
@@ -742,7 +765,8 @@ func (c Composer) summarise(ctx context.Context, l Labels, lang string, i, total
 	for _, half := range []string{a, b} {
 		got, lostHalf, err := c.summarise(ctx, l, lang, i, total, half, restarts, depth+1)
 		if err != nil {
-			return nil, false, err
+			// Hand back what the earlier half (or this one's own pieces) finished.
+			return append(parts, got...), true, err
 		}
 		parts = append(parts, got...)
 		lost = lost || lostHalf
@@ -828,9 +852,9 @@ func (c Composer) chunk(ctx context.Context, l Labels, lang string, i, total int
 			// The same request overflows again about as often as not; summarise splits the text instead.
 			return ChunkNotes{}, err
 		}
-		var overtime *AnswerTimeoutError
-		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &overtime) {
-			// The call used its whole deadline; a second one would too.
+		if errors.Is(err, context.DeadlineExceeded) {
+			// The call used its whole deadline; a second one would too. The
+			// AnswerTimeout mark unwraps to the same error.
 			return ChunkNotes{}, err
 		}
 		var down *EngineDownError
@@ -958,11 +982,26 @@ func runeUnits(r rune) int {
 	return 20
 }
 
+// runeUnitsIn is runeUnits with the context it sits in: a space followed by
+// a mid-script letter merges into the next word's token and costs nothing —
+// the calibration's Thai and Arabic samples measure it that way, and
+// charging it a whole token chunked those transcripts short (#545).
+// Everywhere else a space keeps its token: before a digit or a symbol it is
+// its own token (digits_only), and the other scripts' word starts are not
+// measured to merge this reliably.
+func runeUnitsIn(rs []rune, i int) int {
+	if rs[i] == ' ' && i+1 < len(rs) && unicode.IsLetter(rs[i+1]) && unicode.IsOneOf(midScripts, rs[i+1]) {
+		return 0
+	}
+	return runeUnits(rs[i])
+}
+
 // tokenUnits is the token cost of s in unitsPerToken units.
 func tokenUnits(s string) int {
+	rs := []rune(s)
 	n := 0
-	for _, r := range s {
-		n += runeUnits(r)
+	for i := range rs {
+		n += runeUnitsIn(rs, i)
 	}
 	return n
 }
@@ -981,16 +1020,35 @@ func startsCluster(r rune) bool {
 }
 
 // cutAt moves a cut at r[n] back to a cluster boundary: a piece never starts
-// with a combining mark, variation selector, joiner or modifier, and never
-// ends on a joiner (that would split an emoji ZWJ sequence). A cluster longer
-// than the whole piece is cut where it was.
+// with a combining mark, variation selector, joiner or modifier, never ends
+// on a joiner (that would split an emoji ZWJ sequence), and never splits a
+// regional-indicator pair — a flag cut in half shows as two letters. A
+// cluster longer than the whole piece is cut where it was.
 func cutAt(r []rune, n int) int {
 	m := n
-	for m > 0 && m < len(r) && (startsCluster(r[m]) || r[m-1] == 0x200D) {
+	for m > 0 && m < len(r) && (startsCluster(r[m]) || r[m-1] == 0x200D || splitsFlag(r, m)) {
 		m--
 	}
 	if m == 0 {
 		return n
 	}
 	return m
+}
+
+// isRegionalIndicator is a flag letter: two adjacent ones form a flag emoji.
+func isRegionalIndicator(r rune) bool {
+	return r >= 0x1F1E6 && r <= 0x1F1FF
+}
+
+// splitsFlag reports whether a cut at r[m] breaks a regional-indicator pair:
+// an odd run of flag letters ending at m-1 pairs with r[m].
+func splitsFlag(r []rune, m int) bool {
+	if !isRegionalIndicator(r[m]) {
+		return false
+	}
+	n := 0
+	for i := m - 1; i >= 0 && isRegionalIndicator(r[i]); i-- {
+		n++
+	}
+	return n%2 == 1
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -104,12 +105,89 @@ func testLogSaw(t *testing.T, sub string) bool {
 	return false
 }
 
+// boundFiles holds the loopback sockets bound by boundLoopback, keyed by
+// port and kept open for the test's whole run: the kernel cannot hand a
+// held port to a parallel test, which is the pick-then-bind window that
+// made engine starts collide under -race (#443). A supervisor taking a
+// bound port gets the socket itself through inheritBoundPort.
+var boundFiles sync.Map // int -> *os.File
+
+// boundLoopbackFile binds a loopback port for a fake engine child and
+// returns the port and the socket as an *os.File. The socket stays bound
+// until the test's cleanup, so the port is never free to be taken; the
+// child inherits the descriptor as fd 3 and serves it instead of binding
+// (#443).
+func boundLoopbackFile(t *testing.T) (int, *os.File) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	f, err := ln.(*net.TCPListener).File()
+	_ = ln.Close() // f keeps the socket bound
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundFiles.Store(port, f)
+	t.Cleanup(func() {
+		boundFiles.Delete(port)
+		_ = f.Close()
+	})
+	return port, f
+}
+
+// boundLoopback is boundLoopbackFile for a supervisor, which finds the
+// socket again by port in inheritBoundPort.
+func boundLoopback(t *testing.T) int {
+	t.Helper()
+	port, _ := boundLoopbackFile(t)
+	return port
+}
+
+// inheritBoundPort wires a supervisor to hand its bound port's socket to
+// the child — fd 3 through ExtraFiles — and tells the fake to serve it
+// (testutil's fakeListener reads OXSAY_FAKE_LISTENER_FD). A port
+// boundLoopback did not pick gets nothing: the child binds it itself, the
+// pre-#443 behaviour. It runs last in a tune chain so it reads the tuned
+// port.
+func inheritBoundPort(t *testing.T, ec *engine.Config) {
+	t.Helper()
+	v, ok := boundFiles.Load(ec.Port)
+	if !ok {
+		return
+	}
+	ec.ExtraFiles = []*os.File{v.(*os.File)}
+	ec.Env = append(ec.Env, "OXSAY_FAKE_LISTENER_FD=3")
+}
+
+// inheritFreshPort is a tune hook for a supervisor whose constructor picks
+// its own port (newNotesTrialSupervisor): the picked port is replaced by a
+// boundLoopback one the child then serves by inheritance.
+func inheritFreshPort(t *testing.T) func(*engine.Config) {
+	return func(ec *engine.Config) {
+		ec.Port = boundLoopback(t)
+		inheritBoundPort(t, ec)
+	}
+}
+
+// inheritBoundNotesPort is inheritBoundPort for the notes supervisor. The
+// held socket is itself the proof nothing else took the port, so Prepare
+// drops to its key half — the same work the trial's notesTrialPrepare runs.
+func inheritBoundNotesPort(t *testing.T, ec *engine.Config, cfg *config.Config) {
+	t.Helper()
+	inheritBoundPort(t, ec)
+	if ec.ExtraFiles != nil {
+		ec.Prepare = func() error { return notesPrepareKey(cfg) }
+	}
+}
+
 // testCfg is the shared daemon test config. The STT server is ON — mirroring
 // the production default — with the test binary as the fake ox-stt; tests
 // asserting the per-call CLI path switch it off in sttSetup.
 func testCfg(t *testing.T, dir string) *config.Config {
 	t.Helper()
-	ports := testutil.FreePorts(t, 4)
+	ports := []int{boundLoopback(t), boundLoopback(t), boundLoopback(t), boundLoopback(t)}
 	return &config.Config{
 		Home:           filepath.Join(dir, "home"),
 		Addr:           "127.0.0.1:0",
@@ -158,25 +236,20 @@ func newTestDaemonVox(t *testing.T, dir string, editCfg func(*config.Config), tu
 	fast := func(ec *engine.Config) {
 		ec.KillGrace = 2 * time.Second
 	}
-	d, err := newDaemon(cfg, testLogger(t),
-		func(ec *engine.Config) {
+	// Every supervisor the fixture builds serves its port by inheritance:
+	// inheritBoundPort runs last, after the caller's own tune, so it reads
+	// the port the child will actually get.
+	wire := func(user func(*engine.Config)) func(*engine.Config) {
+		return func(ec *engine.Config) {
 			fast(ec)
-			if tune != nil {
-				tune(ec)
+			if user != nil {
+				user(ec)
 			}
-		},
-		func(ec *engine.Config) {
-			fast(ec)
-			if tuneSTT != nil {
-				tuneSTT(ec)
-			}
-		},
-		func(ec *engine.Config) {
-			fast(ec)
-			if tuneVox != nil {
-				tuneVox(ec)
-			}
-		})
+			inheritBoundPort(t, ec)
+		}
+	}
+	d, err := newDaemon(cfg, testLogger(t), wire(tune), wire(tuneSTT), wire(tuneVox),
+		func(ec *engine.Config) { inheritBoundNotesPort(t, ec, cfg) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -891,8 +964,10 @@ func TestDaemonHomeLock(t *testing.T) {
 	dir := t.TempDir()
 	fakeEnv(t, dir)
 	home := filepath.Join(dir, "home")
-	// d1 and d2 are alive together, so they get distinct engine ports.
-	ports := testutil.FreePorts(t, 2)
+	// d1 and d2 are alive together, so they get distinct engine ports —
+	// bound ones the children serve by inheritance (#443).
+	ports := []int{boundLoopback(t), boundLoopback(t)}
+	inherit := func(ec *engine.Config) { inheritBoundPort(t, ec) }
 	mkCfg := func(port int) *config.Config {
 		return &config.Config{
 			Home:           home,
@@ -908,11 +983,11 @@ func TestDaemonHomeLock(t *testing.T) {
 		}
 	}
 
-	d1, err := newDaemon(mkCfg(ports[0]), testLogger(t), nil, nil, nil)
+	d1, err := newDaemon(mkCfg(ports[0]), testLogger(t), inherit, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d2, err := newDaemon(mkCfg(ports[1]), testLogger(t), nil, nil, nil); err == nil {
+	if d2, err := newDaemon(mkCfg(ports[1]), testLogger(t), inherit, nil, nil, nil); err == nil {
 		d2.Shutdown()
 		t.Fatal("second daemon on the same home started successfully")
 	} else if !strings.Contains(err.Error(), "another daemon") {
@@ -920,7 +995,7 @@ func TestDaemonHomeLock(t *testing.T) {
 	}
 	d1.Shutdown()
 	// The lock is released on shutdown — a later daemon can take it.
-	d3, err := newDaemon(mkCfg(ports[0]), testLogger(t), nil, nil, nil)
+	d3, err := newDaemon(mkCfg(ports[0]), testLogger(t), inherit, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("daemon after lock release: %v", err)
 	}

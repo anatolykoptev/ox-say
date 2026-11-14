@@ -177,6 +177,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -387,6 +388,33 @@ func runFakeLLM(args []string) int {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{"id":"notes"}]}`))
 	})
+	// /slots is llama-server's decode-progress view. A request in flight makes
+	// the slot report processing and each poll shows more decoded tokens; the
+	// same wedged HTTP loop as /health hangs it, and OXSAY_FAKE_LLM_SLOTS_STALL
+	// freezes the counter while claiming to process — a compute wedge that
+	// /health would call alive (#552).
+	var inflight, decoded atomic.Int64
+	slotsStall := os.Getenv("OXSAY_FAKE_LLM_SLOTS_STALL") == "1"
+	mux.HandleFunc("GET /slots", func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "bad key", http.StatusUnauthorized)
+			return
+		}
+		healthMu.Lock()
+		healthAnswers++
+		n := healthAnswers
+		healthMu.Unlock()
+		if healthHangAfter > 0 && n > healthHangAfter {
+			time.Sleep(hang)
+		}
+		proc := slotsStall || inflight.Load() > 0
+		nd := decoded.Load()
+		if proc && !slotsStall {
+			nd = decoded.Add(10) // the decode moved since the last read
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `[{"id":0,"is_processing":%t,"n_decoded":%d}]`, proc, nd)
+	})
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		if loading() {
 			http.Error(w, "loading", http.StatusServiceUnavailable)
@@ -396,6 +424,8 @@ func runFakeLLM(args []string) int {
 			http.Error(w, "bad key", http.StatusUnauthorized)
 			return
 		}
+		inflight.Add(1)
+		defer inflight.Add(-1)
 		if hang > 0 {
 			time.Sleep(hang) // a slow or hung server: the caller's deadline ends first
 		}
@@ -412,7 +442,7 @@ func runFakeLLM(args []string) int {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(raw)
 	})
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	ln, err := fakeListener(port)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fake-llm: listen:", err)
 		return 2
@@ -605,7 +635,7 @@ func runFakeSTTServe(args []string) int {
 		fmt.Fprintln(w, "{}")
 	})
 
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	ln, err := fakeListener(port)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fake-stt serve: listen:", err)
 		return 2
@@ -840,7 +870,7 @@ func runFakeChild() int {
 		}()
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(*port))
+	ln, err := fakeListener(*port)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fake-child: listen:", err)
 		return 2
@@ -852,6 +882,21 @@ func runFakeChild() int {
 func envMS(key string) time.Duration {
 	v, _ := strconv.Atoi(os.Getenv(key))
 	return time.Duration(v) * time.Millisecond
+}
+
+// fakeListener is the socket a fake child serves. When
+// OXSAY_FAKE_LISTENER_FD names an inherited descriptor — the parent bound
+// the socket and handed it over through the child's ExtraFiles — the fake
+// serves that, so the port was never free for a parallel test to take in
+// the pick-then-bind window (#443). Otherwise the fake binds the port
+// itself, the pre-#443 behaviour.
+func fakeListener(port int) (net.Listener, error) {
+	if fd, err := strconv.Atoi(os.Getenv("OXSAY_FAKE_LISTENER_FD")); err == nil && fd > 0 {
+		f := os.NewFile(uintptr(fd), "inherited-listener")
+		defer func() { _ = f.Close() }()
+		return net.FileListener(f)
+	}
+	return net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
 }
 
 // FreePorts returns n pairwise distinct free loopback TCP ports. All n
@@ -1142,8 +1187,13 @@ func runFakeVox(args []string) int {
 		}
 		_, _ = w.Write(SilentWAV(secs))
 	})
-	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", sc.Host, sc.Port), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	if err := srv.ListenAndServe(); err != nil {
+	ln, err := fakeListener(sc.Port)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake-vox:", err)
+		return 1
+	}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	if err := srv.Serve(ln); err != nil {
 		fmt.Fprintln(os.Stderr, "fake-vox:", err)
 		return 1
 	}

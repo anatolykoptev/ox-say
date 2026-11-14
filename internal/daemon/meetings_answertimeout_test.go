@@ -57,3 +57,41 @@ func TestACallTimeoutOnAHungEngineIsEngineDown(t *testing.T) {
 		t.Fatalf("err = %v (%T), want the engine-down error with %s", err, err, meeting.FailNotesEngineTimeout)
 	}
 }
+
+// A generation wedged so its HTTP loop still answers is engine-down, not
+// "too long": /slots shows a slot claiming to process while its decode
+// counter does not move between two reads. And a retry that re-asked the
+// same wedged process would just fail again — the daemon stops the child,
+// so the retry Compose makes lands on a fresh spawn.
+// Mutation: internal/daemon/meetings.go llmChat.Complete, return the
+// AnswerTimeoutError without the progress probe -> RED (the wedge is split,
+// not restarted); drop the Stop -> RED (the second call's spawn count
+// stays 1).
+func TestAComputeWedgedEngineIsDownAndRestarted(t *testing.T) {
+	d, dir := startNotesFake(t)
+	t.Setenv("OXSAY_FAKE_LLM_HANG_MS", "30000") // the request outlives the caller's deadline
+	t.Setenv("OXSAY_FAKE_LLM_SLOTS_STALL", "1") // and its decode never moves: a compute wedge
+	shortNotesCallTimeout(t)
+	keep := notesAliveProbe
+	notesAliveProbe = 100 * time.Millisecond
+	t.Cleanup(func() { notesAliveProbe = keep })
+	keepGap := notesProgressProbe
+	notesProgressProbe = 10 * time.Millisecond
+	t.Cleanup(func() { notesProgressProbe = keepGap })
+	_, err := (llmChat{d: d}).Complete(context.Background(), meeting.Request{System: "s", User: "u"})
+	var down *meeting.EngineDownError
+	if !errors.As(err, &down) || down.Reason != meeting.FailNotesEngineTimeout {
+		t.Fatalf("err = %v (%T), want the engine-down error with %s", err, err, meeting.FailNotesEngineTimeout)
+	}
+	if !down.Retryable {
+		t.Fatal("the wedge should spend the run's one restart, not kill it")
+	}
+	t.Setenv("OXSAY_FAKE_LLM_SLOTS_STALL", "")
+	t.Setenv("OXSAY_FAKE_LLM_HANG_MS", "")
+	if _, err := (llmChat{d: d}).Complete(context.Background(), meeting.Request{System: "s", User: "u"}); err != nil {
+		t.Fatalf("the retry after the wedge: %v", err)
+	}
+	if n := len(spawnArgvs(t, dir)); n != 2 {
+		t.Fatalf("spawns = %d, want 2 — the wedged child was replaced before the retry", n)
+	}
+}

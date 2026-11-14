@@ -60,8 +60,9 @@ func TestAFailedKeyWriteLeavesNoKeyFile(t *testing.T) {
 }
 
 // startNotesFake builds a daemon whose ox-llm is the fake child, with its
-// spawn stamps in the returned dir.
-func startNotesFake(t *testing.T) (*Daemon, string) {
+// spawn stamps in the returned dir. edits adjust the config after the
+// fixture's own setup.
+func startNotesFake(t *testing.T, edits ...func(*config.Config)) (*Daemon, string) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("OXSAY_FAKE_LLM", "1")
@@ -71,6 +72,9 @@ func startNotesFake(t *testing.T) (*Daemon, string) {
 		_ = os.MkdirAll(filepath.Dir(model), 0o755)
 		_ = os.WriteFile(model, []byte("x"), 0o600)
 		c.NotesBin, c.NotesModel = os.Args[0], model
+		for _, e := range edits {
+			e(c)
+		}
 	})
 	return d, dir
 }
@@ -226,7 +230,11 @@ func TestTheDaemonRefusesABlankKey(t *testing.T) {
 // Mutation: internal/daemon/meetings.go notesPrepare, delete the whole
 // `net.Listen` check -> RED (ox-llm is spawned into the taken port).
 func TestAForeignListenerOnTheNotesPortFailsTheStart(t *testing.T) {
-	d, dir := startNotesFake(t)
+	// The foreign listener the test binds below IS the port's owner: the
+	// port must be free for it to take, so the fixture's bound-port wiring
+	// (#443) is swapped for a plain free one. No child ever spawns — the
+	// probe refuses it — so the pick-then-bind window cannot manifest.
+	d, dir := startNotesFake(t, func(c *config.Config) { c.NotesPort = testutil.FreePort(t) })
 	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(d.Cfg.NotesPort))
 	if err != nil {
 		t.Fatal(err)

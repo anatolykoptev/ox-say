@@ -196,7 +196,7 @@ func (d *Daemon) trialLoadModel(ctx context.Context, path string, out notesModel
 			"The model file plus the engines still resident is %.1f GB; together they must fit in %d%% of this Mac's %d GB of memory.",
 			float64(rem)/1e9, notesOwnRAMShare*10, d.Cfg.HostMemoryBytes>>30)
 	}
-	sup, err := d.newNotesTrialSupervisor(path)
+	sup, err := d.newNotesTrialSupervisor(path, nil)
 	if err != nil {
 		d.log.Warn("own notes model: the trial engine could not be set up", "error", err)
 		return refuse(http.StatusInternalServerError, "The model check could not start the notes engine.")
@@ -291,24 +291,32 @@ func freeLoopbackPort() (int, error) {
 // on a free loopback port, its own key and pid files, and the notes engine's
 // own idle stop — a child a check loses track of still self-terminates.
 // Constructing it also reaps the previous trial's orphan through the pidfile.
-func (d *Daemon) newNotesTrialSupervisor(path string) (*engine.Supervisor, error) {
+// tune is the same test hook the resident supervisors get; nil in production.
+func (d *Daemon) newNotesTrialSupervisor(path string, tune func(*engine.Config)) (*engine.Supervisor, error) {
 	port, err := freeLoopbackPort()
 	if err != nil {
 		return nil, fmt.Errorf("no free loopback port: %w", err)
 	}
 	keyPath := filepath.Join(d.Cfg.RunDir(), notesTrialKeyFile)
-	return engine.New(engine.Config{
+	ec := engine.Config{
 		Name: "notes-trial", Bin: notesBinPath(d.Cfg), Port: port,
 		StartupTimeout: notesTrialStartupTimeout,
 		IdleStop:       d.Cfg.NotesIdleStop,
 		LogName:        "notes-trial.log", LogDir: d.Cfg.EngineLogDir,
 		PidPath: filepath.Join(d.Cfg.RunDir(), notesTrialPidFile),
 		Logger:  d.log,
-		Args:    func(p int) []string { return notesServerArgsKey(d.Cfg, p, path, notesTrialKeyFile) },
+		// The trial is a real llama-server start on this Mac: it gets the same
+		// fitting plan the notes spawn gets (#542), so a file that only loads
+		// under llama.cpp's fitter is not passed by a trial that skipped it.
+		Args:    func(p int) []string { return notesPlanArgsKey(d.Cfg, p, d.notesTrialPlan(path), notesTrialKeyFile) },
 		Env:     notesServerEnv(d.Cfg),
 		Prepare: func() error { return notesTrialPrepare(keyPath) },
 		Verify:  notesVerifyAuth,
-	})
+	}
+	if tune != nil {
+		tune(&ec)
+	}
+	return engine.New(ec)
 }
 
 // notesTrialPrepare is notesPrepare's key half: the trial's port came free

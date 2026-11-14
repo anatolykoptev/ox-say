@@ -109,6 +109,7 @@ func notesCold(t *testing.T, d *Daemon, neverHealthy int) {
 	t.Setenv("OXSAY_FAKE_LLM_JSON", `{"summary":"A planning call.","points":[{"text":"Ship Friday","status":"open","quote":""}],"action_items":[],"numbers":[]}`)
 	cfg := notesEngineConfig(d.Cfg, d.log, d.notesSpawnPlan)
 	cfg.StartupTimeout, cfg.KillGrace = 600*time.Millisecond, 2*time.Second
+	inheritBoundNotesPort(t, &cfg, d.Cfg)
 	sup, err := engine.New(cfg)
 	if err != nil {
 		t.Fatal(err)
