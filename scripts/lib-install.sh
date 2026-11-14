@@ -209,8 +209,15 @@ oxs_stage_abort() {
     echo "ox-say install: could not stage the engines; nothing installed was changed" >&2
     oxs_stage_abort_quiet
 }
+# oxs_lic_stage: while engine/licenses is a symlink, the licences are staged in this real directory and swapped in
+# for the link only once everything staged (#508); an abort drops it and the link stays.
+oxs_lic_stage=
 oxs_stage_abort_quiet() {
     local i=0
+    if [ -n "${oxs_lic_stage:-}" ]; then
+        find "$oxs_lic_stage" -depth -delete 2>/dev/null || true
+        oxs_lic_stage=
+    fi
     while [ "$i" -lt "${#oxs_staged_dst[@]}" ]; do
         rm -f "${oxs_staged_dst[$i]}.new"
         i=$((i + 1))
@@ -266,9 +273,17 @@ oxs_install_engines() {
         exit 1
     fi
     # ox-say owns engine/licenses: a symlink there would carry the staged licences into its target outside the
-    # home, so it is replaced, never followed (the same idiom oxs_install_go_licenses uses) (#508).
-    [ ! -L "$home/engine/licenses" ] || rm -f "$home/engine/licenses"
-    mkdir -p "$home/engine/licenses"
+    # home. They are staged in a real directory beside it instead, and that directory replaces the link only
+    # after everything staged and committed: a failed stage leaves the link and its target as they were (#508).
+    local lic="$home/engine/licenses" licdir="$home/engine/licenses"
+    if [ -L "$lic" ]; then
+        oxs_lic_stage="$home/engine/.licenses.stage"
+        find "$oxs_lic_stage" -depth -delete 2>/dev/null || true
+        mkdir -p "$oxs_lic_stage"
+        licdir=$oxs_lic_stage
+    else
+        mkdir -p "$lic"
+    fi
     oxs_staged_kind=()
     oxs_staged_dst=()
     # Each engine's precompiled Metal library travels next to it under its own
@@ -314,10 +329,23 @@ oxs_install_engines() {
     # read-only file) and installed 0644.
     for f in "$out"/licenses/*; do
         [ -f "$f" ] || continue
-        oxs_stage "$f" "$home/engine/licenses/${f##*/}" 0644 || { oxs_stage_abort; exit 1; }
-        oxs_stage_add mv "$home/engine/licenses/${f##*/}"
+        oxs_stage "$f" "$licdir/${f##*/}" 0644 || { oxs_stage_abort; exit 1; }
+        oxs_stage_add mv "$licdir/${f##*/}"
     done
     oxs_stage_commit
+    if [ -n "$oxs_lic_stage" ]; then
+        # The link is renamed aside, never followed: mv of a directory onto a symlink to a directory moves INTO it.
+        mv "$lic" "$lic.old-link"
+        if mv "$oxs_lic_stage" "$lic"; then
+            rm -f "$lic.old-link"
+        else
+            mv "$lic.old-link" "$lic"
+            echo "ox-say install: could not replace the symlinked $lic; it was left as it was" >&2
+            oxs_stage_abort_quiet
+            exit 1
+        fi
+        oxs_lic_stage=
+    fi
 }
 
 # oxs_install_go_licenses <dir>: replace $home/engine/licenses/go by a copy of <dir>. A symlink at engine/licenses or

@@ -1030,18 +1030,41 @@ SK_N="$d/n" SK_PID="$d/sleep.pid" PATH="$d/bin:$PATH" bash -c "
     oxs_install_engines '$d/out'
 " > "$d/log" 2>&1 &
 kpid=$!
-# the first staged copy (tts-server) exists before the second cp starts sleeping
-for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e "$d/home/engine/tts-server.new" ] && break; sleep 1; done
-if [ -e "$d/home/engine/tts-server.new" ]; then
+# the stub cp records its sleep's pid once the second copy starts: the first staged copy (tts-server) exists by then
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$d/sleep.pid" ] && break; sleep 1; done
+# Signal the wrapper AND its sleeping child before waiting: bash runs its TERM trap only when the foreground child
+# returns, so waiting on the wrapper alone would stall until the stub's sleep ended.
+stop_stagekill() {
     kill -TERM "$kpid" 2>/dev/null || true
-    wait "$kpid" 2>/dev/null || true
     if [ -s "$d/sleep.pid" ]; then kill "$(cat "$d/sleep.pid")" 2>/dev/null || true; fi
+    wait "$kpid" 2>/dev/null || true
+}
+if [ -s "$d/sleep.pid" ] && [ -e "$d/home/engine/tts-server.new" ]; then
+    stop_stagekill
     check "a TERM mid-stage leaves no .new" "$(find "$d/home" -name '*.new' | wc -l | tr -d ' ')" 0
     check "a TERM mid-stage replaced no engine" "$(find "$d/home/engine" -type f | wc -l | tr -d ' ')" 0
 else
-    kill -TERM "$kpid" 2>/dev/null || true
-    wait "$kpid" 2>/dev/null || true
+    stop_stagekill
     fail "no staged copy appeared within 10 s; cannot test a mid-stage kill: $(cat "$d/log")"
+fi
+# --- M2: a stage that fails after the symlink guard leaves the link and its target alone (#508) -----------------
+# The licences are staged in a real directory beside the link and swapped in only once everything staged, so a
+# licence that cannot be copied leaves engine/licenses a symlink to its untouched target.
+# Mutation (lib-install.sh): remove the link up front again (`rm -f "$lic"` before staging) -> "licenses is still a
+# symlink" fails.
+if [ "$(id -u)" = 0 ]; then
+    pass "failing stage behind a symlinked licenses dir: skipped as root (root reads mode 000)"
+else
+    d="$tmp/liclink-fail"; mkdir -p "$d/home/engine" "$d/target"
+    lic_pkg "$d/pkg" 0644 new-text
+    chmod 000 "$d/pkg/licenses/a b LICENSE.txt"
+    echo keep > "$d/target/f"
+    ln -s "$d/target" "$d/home/engine/licenses"
+    rc=0; lic_install "$d/home" "$d/pkg" || rc=$?
+    check "failing stage, symlinked licenses dir: install fails" "$([ "$rc" != 0 ] && echo failed || echo succeeded)" failed
+    check "failing stage, symlinked licenses dir: licenses is still a symlink" "$([ -L "$d/home/engine/licenses" ] && echo yes || echo no)" yes
+    check "failing stage, symlinked licenses dir: target untouched" "$(ls -A "$d/target" | tr '\n' ' ')" "f "
+    check "failing stage, symlinked licenses dir: no stage directory left" "$(find "$d/home/engine" -name '.licenses.stage' | wc -l | tr -d ' ')" 0
 fi
 
 echo

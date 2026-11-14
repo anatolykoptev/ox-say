@@ -820,6 +820,47 @@ func TestInstallFailureLogsNameNoAbsolutePath(t *testing.T) {
 	}
 }
 
+// publicMessage drops the directory from every absolute path in an error text, wherever the path ends: at a
+// space, a quote, or punctuation (")", "]", ",", ";", "`") - and whether it sits inside the home or outside it
+// (#514, review). The words around the path survive.
+// Mutation: produce.go absPathRe back to the old `(^|[\s"'(:=])(/[^\s"'()<>]+)` -> the bracket, backtick, brace and
+// comma rows fail, and install_error keeps "/srv/other/part".
+func TestPublicMessageScrubsPathsAtPunctuation(t *testing.T) {
+	home := "/home/me/ox"
+	for _, c := range []struct{ name, in, want string }{
+		{"paren", "curl: (23) Failure writing output to destination (/opt/x/model.bin)", "curl: (23) Failure writing output to destination (model.bin)"},
+		{"bracket", "error [/opt/x/model.bin]; retry", "error [model.bin]; retry"},
+		{"backtick", "see `/opt/x/model.bin` for details", "see `model.bin` for details"},
+		{"brace", "got {/opt/x/y} back", "got {y} back"},
+		{"comma and semicolon", "moved /opt/a/b,/opt/c/d;/opt/e/f done", "moved b,d;f done"},
+		{"inside the home", "open " + home + "/models/q.gguf: permission denied", "open …: permission denied"},
+		{"colon", "wrote:/opt/x/model.bin: no space left", "wrote:model.bin: no space left"},
+	} {
+		if got := publicMessage(errors.New(c.in), home); got != c.want {
+			t.Errorf("%s: publicMessage(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// The install_error /status serves for a failed fetch keeps the useful words and names no path, inside the home or
+// not, even when the path is closed by punctuation.
+func TestInstallErrorScrubsFetchStderrPaths(t *testing.T) {
+	d := installFixture(t, "#!/bin/sh\necho \"curl: (23) Failure writing output to destination (/opt/x/model.bin) while copying [/srv/other/part]\" >&2\nexit 1\n")
+	if err := d.InstallNotesModel(""); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d.notesInstalling() == 0 }, "the download to fail")
+	got := d.Status().Notes.InstallErr
+	if strings.Contains(got, "/opt") || strings.Contains(got, "/srv") || strings.Contains(got, d.Cfg.Home) {
+		t.Fatalf("install_error names a path: %q", got)
+	}
+	for _, w := range []string{"Failure writing output to destination", "model.bin", "while copying"} {
+		if !strings.Contains(got, w) {
+			t.Fatalf("install_error lost %q: %q", w, got)
+		}
+	}
+}
+
 // Every code installFailureCode can return, but the catch-all, has its sentence in the app. The codes are read from the
 // function's return statements, so a new one cannot be added without a row in NotesWriterState.downloadFailureKey.
 // Mutation: MeetingWindowService.swift, delete `case "checksum": return .settingsNotesWriterDownloadChecksum` -> RED.
