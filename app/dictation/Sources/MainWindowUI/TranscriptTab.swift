@@ -47,13 +47,17 @@ struct TranscriptTab: View {
                 }
             }
             .background(shortcuts(turns))
+            // The Find command's ⌘F: it wins while this tab is on screen (the menu's precedence reads the flag).
+            .onChange(of: model.transcriptFindSerial) { _ in openFind(turns) }
             .onAppear {
+                model.transcriptOnScreen = true
                 if let q = model.initialFind, !findOpen {
                     findOpen = true
                     query = q
                     find.setQuery(q, turns: turns)
                 }
             }
+            .onDisappear { model.transcriptOnScreen = false }
         }
     }
 
@@ -89,11 +93,10 @@ struct TranscriptTab: View {
         return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : L10nKey.findNone.text
     }
 
-    /// ⌘F opens the bar, ⌘G and ⇧⌘G step through the matches. Invisible buttons: they exist only while this tab does.
+    /// ⌘G and ⇧⌘G step through the matches — invisible buttons that exist only while this tab does. ⌘F is not
+    /// here: the one Find command lives in the Edit menu and reaches `openFind` through `transcriptFindSerial`.
     private func shortcuts(_ turns: [TranscriptTurn]) -> some View {
         ZStack {
-            Button("") { openFind(turns) }
-                .keyboardShortcut("f", modifiers: .command)
             Button("") { find.next() }.keyboardShortcut("g", modifiers: .command)
             Button("") { find.previous() }.keyboardShortcut("g", modifiers: [.command, .shift])
         }

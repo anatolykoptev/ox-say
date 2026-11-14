@@ -115,6 +115,35 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         XCTAssertTrue(flat(t).contains("\"\\(L10nKey.playFromHere.text), \\(turn.speaker) \\(turn.time)\" }"))
     }
 
+    /// #452 — one Find command: Edit ▸ Find… ⌘F routes through the app delegate into the window's source, which asks
+    /// `FindTarget.decide`: the transcript's bar while a transcript is on screen (its tab flags itself and answers the
+    /// serial), the meetings search field otherwise (`isPresented:` focuses it). The hidden ⌘F button that owned the
+    /// key inside the tab is gone — a menu key-equivalent is matched before any button would be, so keeping it meant
+    /// keeping a dead second ⌘F.
+    /// Mutations: FindTarget.decide, transcript first -> search first -> RED; MainWindowSource.openFind, delete
+    /// `model.transcriptFindSerial += 1` -> RED; MeetingsPage, drop `isPresented: $model.searchPresented` -> RED.
+    func testOneFindCommandWithTheTranscriptFirst() throws {
+        let menu = flat(try source("Sources/OxSayDictation/MainMenu.swift"))
+        XCTAssertTrue(menu.contains("case .find:"), "the typed Find action is bound")
+        XCTAssertTrue(menu.contains("#selector(AppDelegate.findFromMenu(_:))"))
+        let app = flat(try source("Sources/OxSayDictation/AppDelegate.swift"))
+        XCTAssertTrue(app.contains("func findFromMenu(_ sender: NSMenuItem)"))
+        XCTAssertTrue(app.contains("mainWindow.find()"))
+        let w = flat(try body(try window(), of: "func openFind() {"))
+        XCTAssertTrue(w.contains("FindTarget.decide(transcriptOnScreen: model.transcriptOnScreen"), "the source asks the core")
+        XCTAssertTrue(w.contains("model.transcriptFindSerial += 1"), "a transcript is on screen: its bar")
+        XCTAssertTrue(w.contains("model.searchPresented = true"), "otherwise: the meetings search field")
+        let t = flat(try source("Sources/MainWindowUI/TranscriptTab.swift"))
+        XCTAssertTrue(t.contains(".onChange(of: model.transcriptFindSerial)"), "the tab answers the serial")
+        XCTAssertTrue(t.contains("model.transcriptOnScreen = true") && t.contains("model.transcriptOnScreen = false"),
+                      "the tab flags itself on screen, so the precedence has a fact to read")
+        XCTAssertFalse(t.contains(".keyboardShortcut(\"f\""), "the menu owns ⌘F now: a hidden button would never fire")
+        let windowModel = flat(try source("Sources/MainWindowUI/MainWindowModel.swift"))
+        XCTAssertTrue(windowModel.contains("var transcriptOnScreen = false"))
+        let win = flat(try source("Sources/OxSayDictation/MainWindow.swift"))
+        XCTAssertTrue(win.contains("func find()"), "the controller forwards ⌘F to the source")
+    }
+
     /// Find scrolls on the state's serial (not on `current`, which does not move for 0 → 0), ⌘F with the bar open keeps
     /// the match, the field is focused on the next run-loop turn, and the parsed turns are kept between ticks.
     /// Mutation: TranscriptTab, `.onChange(of: find.serial)` -> `.onChange(of: find.current)` -> RED; ⌘F calling
@@ -149,9 +178,12 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
     }
 
     /// The query is the system search field's (native-UI N3): `.searchable` on the Meetings list writes `model.queryText`,
-    /// the typed text still reaches the core, and no hand-built field is left. Only the Meetings list carries it.
+    /// the typed text still reaches the core, and no hand-built field is left. Only the Meetings list carries it: the
+    /// modifier must sit INSIDE the `.list` branch — moved onto `body` it would hang the field on Off, Loading, Down
+    /// and Empty as well (#452). The sibling sweep reads the MainWindowUI directory, not a named few.
     /// Mutations: SearchPane, put back `TextField(L10nKey.searchPlaceholder.text, text: $model.queryText)` -> RED;
-    /// MeetingsPage, bind `.searchable(text: $localQuery` (a local @State) instead of `$model.queryText` -> RED;
+    /// MeetingsPage, move `.searchable` out of `case .list` onto `body` -> RED;
+    /// bind `.searchable(text: $localQuery` (a local @State) instead of `$model.queryText` -> RED;
     /// delete the `searchTyped` onChange -> RED; add `.searchable` to VoicesPage or DictationPage -> RED.
     func testTheSystemSearchFieldDrivesTheQuery_OnlyOnTheMeetingsList() throws {
         let pane = flat(try source("Sources/MainWindowUI/SearchPane.swift"))
@@ -159,11 +191,17 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         XCTAssertFalse(pane.contains("struct SearchField"))
         let page = flat(try source("Sources/MainWindowUI/MeetingsPage.swift"))
         XCTAssertFalse(page.contains("SearchField(model:"))
-        XCTAssertTrue(page.contains(".searchable(text: $model.queryText, placement: .toolbar, prompt: L10nKey.searchPlaceholder.text)"))
+        let listCase = try XCTUnwrap(page.range(of: "case .list:"), "the .list branch")
+        let searchable = try XCTUnwrap(page.range(of: ".searchable("), "the system search field")
+        XCTAssertGreaterThan(searchable.lowerBound, listCase.lowerBound, ".searchable belongs to the .list branch only")
+        XCTAssertTrue(page.contains(".searchable(text: $model.queryText, isPresented: $model.searchPresented, placement: .toolbar, prompt: L10nKey.searchPlaceholder.text)"))
         XCTAssertTrue(page.contains(".onChange(of: model.queryText) { _, text in model.actions.searchTyped(text) }"))
-        for other in ["VoicesPage", "DictationPage", "SettingsPage", "MainWindowView"] {
-            let t = try source("Sources/MainWindowUI/\(other).swift")
-            XCTAssertFalse(t.contains(".searchable"), "\(other) must not carry a search field")
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        for file in try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Sources/MainWindowUI").path)
+            where file.hasSuffix(".swift") && file != "MeetingsPage.swift" {
+            let t = try source("Sources/MainWindowUI/\(file)")
+            XCTAssertFalse(t.contains(".searchable"), "\(file) must not carry a search field")
         }
     }
 

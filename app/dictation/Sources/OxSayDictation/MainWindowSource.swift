@@ -255,6 +255,20 @@ final class MainWindowSource {
         model.data.notice = message
     }
 
+    /// ⌘F (Edit ▸ Find…): the transcript's own find bar while a transcript is on screen, the meetings
+    /// search field otherwise; nowhere when neither shows — the item stays enabled because a disabled
+    /// item never matches its key equivalent.
+    func openFind() {
+        var searchOnScreen = false
+        if case .list = model.pageState { searchOnScreen = true }
+        switch FindTarget.decide(transcriptOnScreen: model.transcriptOnScreen,
+                                meetingsSearchOnScreen: model.section == .meetings && searchOnScreen) {
+        case .transcript: model.transcriptFindSerial += 1
+        case .meetingsSearch: model.searchPresented = true
+        case nil: break
+        }
+    }
+
     // MARK: reading
 
     private func actions() -> MainWindowActions {
