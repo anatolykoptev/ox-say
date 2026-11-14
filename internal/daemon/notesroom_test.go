@@ -152,6 +152,61 @@ func TestNotesTurnLeavesVoicesWhenTheRoomIsEnough(t *testing.T) {
 	}
 }
 
+// The notes engine stays resident across a meeting's chunk calls: the room
+// check must not re-run while it is live — the probe's figure already counts
+// the resident child, so re-probing would double-count it and stop voices
+// that came back meanwhile.
+// Mutation: internal/daemon/notesfit.go makeNotesRoom, drop the
+// `_, live := d.LLMSup.LiveURL(); live` early return -> RED (the restarted
+// voice is stopped by a later call).
+func TestNotesRoomIsNotRecheckedWhileTheChildIsLive(t *testing.T) {
+	d, _ := notesRoomDaemon(t, 12<<10, 7<<10, 1<<10)
+	if err := complete(t, d); err != nil {
+		t.Fatal(err)
+	}
+	// One idle voice comes back; several more chunk calls run against the
+	// resident notes child.
+	if _, err := d.Sup.EnsureReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stopAttempts.mu.Lock()
+	stopAttempts.s = ""
+	stopAttempts.mu.Unlock()
+	for i := range 3 {
+		if err := complete(t, d); err != nil {
+			t.Fatalf("complete %d: %v", i, err)
+		}
+	}
+	if s := stopAttempts.String(); strings.Contains(s, d.Sup.Name()) || strings.Contains(s, d.VoxSup.Name()) {
+		t.Fatalf("stops %q: a live notes child must not re-run the room check", s)
+	}
+	if d.Sup.State() != engine.StateReady {
+		t.Fatalf("the restarted voice %s was stopped under a live notes child", d.Sup.State())
+	}
+}
+
+// The room the model is promised is weights + 1 GiB of KV/buffer slack:
+// between the two the label is partial, not full — llama.cpp will keep some
+// of the model on the CPU.
+// Mutation: internal/daemon/notesfit.go notesSpawnPlan, compare the weights
+// to free without notesRoomSlack -> RED (the band reports full).
+func TestFitSaysPartialInTheSlackBand(t *testing.T) {
+	d, _ := notesFitDaemon(t, "Qwen3.5-9B-Q4_K_M.gguf")
+	if err := writeNotesChoice(d.Cfg.Home, config.NotesChoice{ID: "qwen3.5-9b"}); err != nil { // never swapped
+		t.Fatal(err)
+	}
+	// 8192-656-1536 = 6000 MiB of room: over the 9B's 5418 MiB of weights,
+	// under weights+1 GiB.
+	fakeBudget(t, tightLimitMiB, 656)
+	if err := complete(t, d); err != nil {
+		t.Fatal(err)
+	}
+	n := d.Status().Notes
+	if n.Fit != fitPartial {
+		t.Fatalf("notes.fit = %q, want partial inside the 1 GiB slack band", n.Fit)
+	}
+}
+
 // F5: the weights exceed the room, so /status says partial and why — never full.
 // Mutation: internal/daemon/notesfit.go notesSpawnPlan, make the partial branch `if false && known && ...` -> RED.
 func TestFitSaysPartialWhenTheWeightsExceedTheRoom(t *testing.T) {

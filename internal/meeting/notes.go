@@ -129,8 +129,10 @@ type ChunkNotes struct {
 	Points []Point `json:"-"`
 }
 
-// Notes are the finished notes. SkippedChunks lists the zero-based chunks the
-// model failed on twice; the notes say so instead of looking complete.
+// Notes are the finished notes. SkippedChunks lists the zero-based chunks
+// some piece of which had no notes — a call the retry could not save, a
+// piece the splitting gave up on, or the run budget spent — so the notes say
+// so instead of looking complete.
 type Notes struct {
 	ChunkNotes
 	SkippedChunks []int `json:"skipped_chunks,omitempty"`
