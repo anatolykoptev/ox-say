@@ -1,0 +1,104 @@
+diff --git a/src/ggml-metal/ggml-metal-device.m b/src/ggml-metal/ggml-metal-device.m
+index d42de5ef..01fc4998 100644
+--- a/src/ggml-metal/ggml-metal-device.m
++++ b/src/ggml-metal/ggml-metal-device.m
+@@ -2602,6 +2602,10 @@ void ggml_metal_buffer_get_tensor(ggml_metal_buffer_t buf, const struct ggml_ten
+         [cmd_buf commit];
+         [cmd_buf waitUntilCompleted];
+ 
++        if (!dst_aligned) {
++            memcpy(data, [buf_dst contents], size);
++        }
++
+         [buf_dst release];
+     }
+ }
+diff --git a/src/ggml-metal/ggml-metal-ops.cpp b/src/ggml-metal/ggml-metal-ops.cpp
+index 8830ea78..12d8dd0b 100644
+--- a/src/ggml-metal/ggml-metal-ops.cpp
++++ b/src/ggml-metal/ggml-metal-ops.cpp
+@@ -2585,13 +2585,13 @@ static int ggml_metal_op_mul_mat_mv(ggml_metal_op_t ctx, int idx) {
+     return 1;
+ }
+ 
+-bool ggml_metal_op_mul_mat_use_mps(const ggml_tensor * op, bool use_mps_mul_mat) {
++bool ggml_metal_op_mul_mat_use_mps(const ggml_tensor * op, bool use_mps_mul_mat, size_t max_tg_mem) {
+     const ggml_tensor * src0 = op->src[0];
+     const ggml_tensor * src1 = op->src[1];
+ 
+     // plain 2D products with element-contiguous rows; an fp16 src0 is widened into the scratch after
+     // dst, which only exists for a dst allocated through get_alloc_size (not a view)
+-    return use_mps_mul_mat && !ggml_metal_op_mul_mat_use_fwht(op) &&
++    return use_mps_mul_mat && !ggml_metal_op_mul_mat_use_fwht(op, max_tg_mem) &&
+         op->type == GGML_TYPE_F32 && ggml_is_contiguous(op) && op->view_src == nullptr &&
+         (src0->type == GGML_TYPE_F32 || (src0->type == GGML_TYPE_F16 && ggml_is_contiguous(src0))) &&
+         src1->type == GGML_TYPE_F32 &&
+@@ -2609,8 +2609,8 @@ static int64_t ggml_metal_op_mul_mat_mps_chunk_rows(const ggml_tensor * op) {
+     return std::max<int64_t>(1, GGML_METAL_MPS_WIDEN_MAX/op->src[0]->ne[0]);
+ }
+ 
+-size_t ggml_metal_op_mul_mat_extra_mps(const ggml_tensor * op, bool use_mps_mul_mat) {
+-    if (!ggml_metal_op_mul_mat_use_mps(op, use_mps_mul_mat) || op->src[0]->type != GGML_TYPE_F16) {
++size_t ggml_metal_op_mul_mat_extra_mps(const ggml_tensor * op, bool use_mps_mul_mat, size_t max_tg_mem) {
++    if (!ggml_metal_op_mul_mat_use_mps(op, use_mps_mul_mat, max_tg_mem) || op->src[0]->type != GGML_TYPE_F16) {
+         return 0;
+     }
+ 
+@@ -2651,7 +2651,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+     const int16_t r2 = ne12/ne02;
+     const int16_t r3 = ne13/ne03;
+ 
+-    if (ggml_metal_op_mul_mat_use_mps(op, props_dev->use_mps_mul_mat)) {
++    if (ggml_metal_op_mul_mat_use_mps(op, props_dev->use_mps_mul_mat, props_dev->max_theadgroup_memory_size)) {
+         const ggml_metal_buffer_id bid_src0 = ggml_metal_get_buffer_id(op->src[0]);
+         const ggml_metal_buffer_id bid_src1 = ggml_metal_get_buffer_id(op->src[1]);
+         const ggml_metal_buffer_id bid_dst  = ggml_metal_get_buffer_id(op);
+@@ -3219,7 +3219,8 @@ static bool ggml_metal_op_flash_attn_ext_use_kv_f16(const ggml_tensor * op) {
+ static bool ggml_metal_op_flash_attn_ext_use_tensor(const ggml_tensor * op, bool has_tensor) {
+     assert(op->op == GGML_OP_FLASH_ATTN_EXT);
+ 
+-    if (!has_tensor || ggml_metal_op_flash_attn_ext_use_vec(op)) {
++    // the tensor API is only on GPUs with simdgroup matrix support
++    if (!has_tensor || ggml_metal_op_flash_attn_ext_use_vec(op, true)) {
+         return false;
+     }
+ 
+@@ -3787,7 +3788,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
+         ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
+ 
+         ggml_metal_encoder_dispatch_threadgroups(enc, (ne01 + nqptg - 1)/nqptg, ne02, ne03, 32, nsg, 1);
+-    } else if (!use_sparse && !ggml_metal_op_flash_attn_ext_use_vec(op)) {
++    } else if (!use_sparse && !ggml_metal_op_flash_attn_ext_use_vec(op, props_dev->has_simdgroup_mm)) {
+         // half8x8 kernel
+         const int nqptg = OP_FLASH_ATTN_EXT_NQPSG; // queries per threadgroup
+         const int ncpsg = OP_FLASH_ATTN_EXT_NCPSG; // cache values per simdgroup
+diff --git a/src/ggml-metal/ggml-metal-ops.h b/src/ggml-metal/ggml-metal-ops.h
+index 681c5b22..b83cb4a5 100644
+--- a/src/ggml-metal/ggml-metal-ops.h
++++ b/src/ggml-metal/ggml-metal-ops.h
+@@ -39,10 +39,10 @@ size_t ggml_metal_op_mul_mat_id_extra_ids(const struct ggml_tensor * op);
+ size_t ggml_metal_op_mul_mat_id_extra_amax(const struct ggml_tensor * op);
+ 
+ // return true if MUL_MAT runs through MPSMatrixMultiplication (see ggml_metal_op_mul_mat)
+-bool ggml_metal_op_mul_mat_use_mps(const struct ggml_tensor * op, bool use_mps_mul_mat);
++bool ggml_metal_op_mul_mat_use_mps(const struct ggml_tensor * op, bool use_mps_mul_mat, size_t max_tg_mem);
+ 
+ // scratch after dst for the fp32 copy of an fp16 src0 on the MPS path
+-size_t ggml_metal_op_mul_mat_extra_mps(const struct ggml_tensor * op, bool use_mps_mul_mat);
++size_t ggml_metal_op_mul_mat_extra_mps(const struct ggml_tensor * op, bool use_mps_mul_mat, size_t max_tg_mem);
+ 
+ // return true if we should use the FA vector kernel for this op
+ bool ggml_metal_op_flash_attn_ext_use_vec(const struct ggml_tensor * op, bool has_simdgroup_mm);
+diff --git a/src/ggml-metal/ggml-metal.cpp b/src/ggml-metal/ggml-metal.cpp
+index 5054f7f6..7742e6a8 100644
+--- a/src/ggml-metal/ggml-metal.cpp
++++ b/src/ggml-metal/ggml-metal.cpp
+@@ -226,7 +226,7 @@ static size_t ggml_backend_metal_buffer_type_get_alloc_size(ggml_backend_buffer_
+             {
+                 const ggml_metal_device_props * props_dev = ggml_metal_device_get_props((ggml_metal_device_t) buft->device->context);
+ 
+-                res += ggml_metal_op_mul_mat_extra_mps(tensor, props_dev->use_mps_mul_mat);
++                res += ggml_metal_op_mul_mat_extra_mps(tensor, props_dev->use_mps_mul_mat, props_dev->max_theadgroup_memory_size);
+             } break;
+         case GGML_OP_MUL_MAT_ID:
+             {

@@ -60,21 +60,15 @@ index 08fdb0fd..b199a565 100644
  //
  // MTLLibrary wrapper
  //
-@@ -137,6 +146,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri
- struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_ext        (ggml_metal_library_t lib, const struct ggml_tensor * op, int nsg, int nxpsg, int r1ptg);
- struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm            (ggml_metal_library_t lib, const struct ggml_tensor * op);
+@@ -139,2 +148,3 @@  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_solve_tri
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_tg         (ggml_metal_library_t lib, const struct ggml_tensor * op);
 +struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_cvt_f16_f32       (ggml_metal_library_t lib);
  struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv            (ggml_metal_library_t lib, const struct ggml_tensor * op);
- struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_map0    (ggml_metal_library_t lib, int ne02, int ne20);
- struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_amax(ggml_metal_library_t lib);
-@@ -294,6 +304,7 @@ struct ggml_metal_device_props {
+@@ -294,4 +304,5 @@  struct ggml_metal_device_props {
      bool has_tensor;
      bool use_residency_sets;
      bool use_shared_buffers;
 +    bool use_mps_mul_mat;
- 
-     bool supports_gpu_family_apple7;
  
 diff --git a/src/ggml-metal/ggml-metal-device.m b/src/ggml-metal/ggml-metal-device.m
 index d544a34b..8299fef8 100644
@@ -192,9 +186,7 @@ index d544a34b..8299fef8 100644
  struct ggml_metal_device {
      id<MTLDevice> mtl_device;
  
-@@ -1267,6 +1324,16 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
- 
-                 dev->props.supports_gpu_family_apple7 = [dev->mtl_device supportsFamily:MTLGPUFamilyApple7];
+@@ -1269,4 +1326,14 @@  ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
  
 +                // discrete GPUs without simdgroup matrix multiply (AMD on Intel Macs): MPS reaches ~85% of
 +                // the fp32 peak there, about 3x the tiled threadgroup kernel. Opt-in (GGML_METAL_MPS_ENABLE=1):

@@ -43,7 +43,7 @@ measurement. The 1.7B Q8 talker is not fetched by
 - Cores: 6 performance + 12 efficiency
 - Memory (bytes): 51539607552
 - macOS: 26.5.1
-- Engine pins (engine/pins.env): QWENTTS_COMMIT=6fae929, GGML_COMMIT=40e16e4, WHISPER_COMMIT=6e4ab85
+- Engine pins (engine/pins.env): QWENTTS_COMMIT=6fae929, GGML_COMMIT=40e16e4, WHISPER_COMMIT=6e4ab85 — measured on whisper.cpp 6e4ab85, before the v1.9.5 bump; the bump's old-vs-new regression showed identical text and equal or faster decode (PR #558)
 - Date: 2026-10-14
 
 ### Text-to-speech: tts-server (Qwen3-TTS) on Metal
@@ -109,7 +109,7 @@ installed, so there are no 1.7B rows.
 - Cores: 8 (16 threads)
 - Memory (bytes): 17179869184
 - macOS: 26.6.2
-- Engine pins (engine/pins.env): QWENTTS_COMMIT=6fae929, GGML_COMMIT=40e16e4, WHISPER_COMMIT=6e4ab85
+- Engine pins (engine/pins.env): QWENTTS_COMMIT=6fae929, GGML_COMMIT=40e16e4, WHISPER_COMMIT=6e4ab85 — measured on whisper.cpp 6e4ab85, before the v1.9.5 bump; the bump's old-vs-new regression showed identical text and equal or faster decode (PR #558)
 - Date: 2026-10-14
 
 ### Text-to-speech: tts-server (Qwen3-TTS) on Metal

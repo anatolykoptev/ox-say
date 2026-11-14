@@ -127,6 +127,16 @@ memory and without simdgroup matrix multiply (Intel Macs with AMD GPUs):
   without simdgroup matrix multiply, plus mat-vec and flash-attention
   routing that stays within what these devices compute correctly.
 
+`patches/ggml` is shared by the ggml trees of qwentts.cpp and whisper.cpp, which sit on
+different ggml revisions. A hunk goes in the shared patch only if it applies to both trees and
+lands in the same function in each. The rest follows in `patches/ggml-qwentts/` and
+`patches/ggml-whisper/` (`build.sh` applies them after the shared ones): the flash-attention
+call site of `ggml_metal_op_flash_attn_ext_use_vec`, the `get_tensor` copy-back, and, for
+whisper.cpp v1.9.5 only, the call sites that need the new `use_fwht(op, max_tg_mem)` and the
+new tensor-API flash-attention branch. Checked on a clone of each pin: the qwentts tree after
+the shared and `ggml-qwentts` patches is byte-identical to the tree the former single
+`patches/ggml` produced.
+
 ## Apple Silicon
 
 `build.sh` builds for the shell's architecture (`uname -m`). On arm64 the same pins and the same
@@ -144,7 +154,7 @@ Two parts of it do apply on Apple Silicon:
 `0002-metal-mps-mul-mat.patch` never runs there (`!has_unified_memory`).
 
 Verified on an Apple M5 Pro (macOS 26.5) at qwentts.cpp `6fae929` / ggml `40e16e4` and
-whisper.cpp `6e4ab85`:
+whisper.cpp `d1be6fd` (v1.9.5, the speech-to-text claim re-checked at this pin):
 - `test-backend-ops test -b MTL0` for MUL_MAT, MUL_MAT_ID and FLASH_ATTN_EXT gives the same
   OK/FAIL set on the patched tree as on stock ggml (791, 796 and 4115 cases; FAIL: 0 on both).
   Cases that already flip between two stock runs (random inputs) are excluded — there were none.
