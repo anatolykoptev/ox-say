@@ -13,6 +13,10 @@ ox-say voice save narrator <take path>  # keep a take
 ox-say voice set narrator --style "calm and warm, slow"   # change a voice's engine/style
 ox-say voice ls
 ox-say voice rm ben
+ox-say vocab add "Воксей" "OxSay" --context "сделай Воксей релиз"   # file a correction (an agent does this)
+ox-say vocab ls                         # pairs: candidate, active or rejected
+ox-say vocab ok 1a2b3c4d                # you approve it: it applies from now on
+ox-say vocab rm 1a2b3c4d                # reject it; filing it again will not bring it back
 ox-say produce script.txt -v narrator --preset reels   # a whole voiceover from a script (see "Long-form voiceover")
 ox-say transcribe meeting.wav           # speech-to-text
 ox-say transcribe -e whisper --srt talk.mp4 > talk.srt

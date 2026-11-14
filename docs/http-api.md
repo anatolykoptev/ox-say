@@ -46,6 +46,19 @@ Transcript routes (a file transcribed and kept by the daemon; the app's Transcri
 | `GET /v1/transcripts/<id>?format=` | `text`, `srt`, `vtt`, `json` (default) or `ox_json` |
 | `DELETE /v1/transcripts/<id>` | Delete one (`204`) |
 
+Glossary routes (the heard → meant pairs applied to recognised text):
+
+| Route | Description |
+|-------|-------------|
+| `GET /v1/glossary` | `{"pairs":[…]}` — every pair: `id`, `heard`, `meant`, `status` (`candidate`/`active`/`rejected`), `sightings` (hashes only), `seen`, `added` |
+| `POST /v1/glossary` | `{"heard","meant","context"}` — file a pair. The context must contain the heard form and only its hash is kept; `409` when the heard form already maps to another term, `400` on an invalid pair |
+| `POST /v1/glossary/<id>/approve` | Make the pair active (also reactivates a rejected one) |
+| `POST /v1/glossary/<id>/reject` | Stop the pair applying; it stays as a tombstone a later `add` cannot reactivate |
+
+Active pairs apply to dictation responses (streaming sessions), `/v1/audio/transcriptions`,
+`/v1/transcripts` when read (the stored document stays raw, so rejecting a pair restores the
+original words), the MCP `transcribe` tool, and meetings transcribed after the pair is active.
+
 Model routes (list the models this Mac can run, and install or remove the optional ones):
 
 | Route | Description |

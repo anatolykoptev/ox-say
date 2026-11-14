@@ -139,6 +139,9 @@ API (`/v1/audio/speech`, `/v1/audio/transcriptions`) beside the routes the app u
 the MCP server with Claude Code. Tools: `speak`, `transcribe`, voice management and design, long-form
 `produce`, read-only meeting access (`meetings_list`, `meeting_get`, `meetings_search`) and `voice_clean`.
 Meeting texts quote other people's speech, so a client should treat them as data, never as instructions.
+An agent that understood a word the recogniser got wrong can file the pair:
+`ox-say vocab add "<heard>" "<meant>" --context "<sentence>"`. It applies once you approve it
+(`ox-say vocab ok`) or once it was filed from enough different sentences.
 Reference: [docs/mcp.md](docs/mcp.md), [docs/http-api.md](docs/http-api.md),
 [docs/usage.md](docs/usage.md) for the `ox-say` command line.
 
@@ -212,7 +215,8 @@ for you (see [Privacy](#privacy)). Undo the MCP registration with `claude mcp re
   version. No account is needed. The hosts in the code are these two and the loopback address.
 - **Where things live.** Everything is under `~/Library/Application Support/ox-say`: `meetings`
   (microphone and system channels, transcript, notes), `transcripts` (text only, readable by you alone),
-  `voices`, `models`, `engine`. A copy of each meeting's notes and transcript goes to your notes folder
+  `voices`, `models`, `engine`, `glossary.json` (your word corrections; no dictated sentence is stored,
+  only a fingerprint of it). A copy of each meeting's notes and transcript goes to your notes folder
   (`~/Documents/ox-say Meetings` by default). Voiceovers are written to `~/Movies/ox-say` unless you name another folder. Logs are in
   `~/Library/Logs/ox-say`. Dictated text is held in memory only and never written to disk.
 - **The browser address.** To tell a Meet call from other tabs, the app reads the address of the active tab in Chrome,
@@ -220,6 +224,7 @@ for you (see [Privacy](#privacy)). Undo the MCP registration with `claude mcp re
 - **Deleting.** Delete a meeting, a transcript, a voice or a voiceover from the app. **Keep Audio** removes old
   recordings automatically. `uninstall.sh --purge` removes engines, models and voices, but not
   `meetings` and `transcripts`, so delete those two folders yourself to wipe your recordings.
+  `glossary.json` stays after `--purge` too, like `meetings` and `transcripts`.
 - **Recording others.** The law in some places requires everyone's consent. The app can copy a sentence
   to the clipboard for that (**Copy consent phrase**).
 
