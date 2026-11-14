@@ -468,15 +468,15 @@ func TestMovRefusesCodecsItCannotHold(t *testing.T) {
 	})
 }
 
-// A QuickTime input's own streams go back into a .mov by copy even when the measured allow-list never met the codec
-// (the #464 repro: a .mov of dnxhd or rawvideo cleaned to a .mov). Any other input still meets the list, and a
+// A QuickTime input's own streams go back into a .mov by copy even when the mov allow-list never met the codec, as long
+// as it is on the measured QuickTime lists (the #464 repro: a .mov of dnxhd or rawvideo cleaned to a .mov). Any other input still meets the list, and a
 // QuickTime input widens nothing outside .mov.
 func TestQuickTimeInputKeepsItsOwnCodecsIntoMov(t *testing.T) {
 	qt := &probeInfo{FormatName: "mov,mp4,m4a,3gp,3g2,mj2", MajorBrand: "qt", AudioIndex: 1, Streams: []streamInfo{
 		{Index: 0, Type: "video", Codec: "dnxhd"},
 		{Index: 1, Type: "audio", Codec: "aac"},
 		{Index: 2, Type: "audio", Codec: "pcm_s16be"},
-		{Index: 3, Type: "video", Codec: "bmp", AttachedPic: true},
+		{Index: 3, Type: "video", Codec: "tiff", AttachedPic: true},
 	}}
 	p, err := planVideo(qt, "mov")
 	if err != nil {
@@ -492,6 +492,16 @@ func TestQuickTimeInputKeepsItsOwnCodecsIntoMov(t *testing.T) {
 	}
 	if _, err := planVideo(qt, "mp4"); err == nil || err.(*Error).Code != CodeUnsupportedStreams {
 		t.Fatalf("a QuickTime input must not widen the mp4 list: %v", err)
+	}
+	// Only measured codecs: a qt-branded file holding one the mov muxer refuses is refused up front (#573).
+	// Mutation: mux.go planVideo holds, drop `&& qtCarries(typ, codec)` -> RED (vp9 and opus pass preflight).
+	for _, c := range []struct{ typ, codec string }{{"video", "vp9"}, {"video", "av1"}, {"audio", "opus"}, {"audio", "flac"}, {"video", "unmeasured_codec"}} {
+		bad := *qt
+		bad.Streams = []streamInfo{{Index: 0, Type: "video", Codec: "h264"}, {Index: 1, Type: "audio", Codec: "aac"}}
+		bad.Streams = append(bad.Streams, streamInfo{Index: 2, Type: c.typ, Codec: c.codec})
+		if _, err := planVideo(&bad, "mov"); err == nil || err.(*Error).Code != CodeUnsupportedStreams || !strings.Contains(err.Error(), c.codec) {
+			t.Errorf("qt input with %s %s into mov: %v, want an unsupported_streams refusal naming it", c.typ, c.codec, err)
+		}
 	}
 	// The same demuxer name covers an mp4, an m4a and a 3gp: only a QuickTime movie's streams are known to go
 	// back into the mov muxer, so the others meet the allow-list.
