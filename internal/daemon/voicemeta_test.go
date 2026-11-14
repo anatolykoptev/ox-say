@@ -145,6 +145,22 @@ func TestVoxReferenceLimitCoversStoreCap(t *testing.T) {
 	}
 }
 
+// #143.9: the refusal quotes the engine's own window (voxMaxRefSeconds), never
+// the seam — d.voxRefMax exists so a cheap clip can trip the add-path check
+// (the store's cap sits below the window, so no real clip reaches it), and the
+// person must still read the bound the engine really applies.
+// Mutation: voicemeta.go checkVoxReference, the message's voxMaxRefSeconds back
+// to int(limit) -> the refusal under a lowered seam says "at most 1 seconds"
+// -> RED.
+func TestCheckVoxReferenceQuotesTheEngineWindow(t *testing.T) {
+	d := newTestDaemon(t, t.TempDir(), nil)
+	d.voxRefMax = 1
+	err := d.checkVoxReference(3)
+	if err == nil || !strings.Contains(err.Error(), "at most 30 seconds") {
+		t.Fatalf("refusal = %v, want it quoting the engine's %d s window", err, voxMaxRefSeconds)
+	}
+}
+
 func TestAddVoiceMetaRefusals(t *testing.T) {
 	d, url, dir := metaServer(t)
 	src := testutil.WriteSilentWAV(t, dir, "c.wav", 3)
