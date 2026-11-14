@@ -711,6 +711,72 @@ func TestACurl23FailureLooksAtTheDisk(t *testing.T) {
 	}
 }
 
+// A refused or failed install answers in words, never in an absolute path:
+// the person reads the response on a machine where the daemon's paths mean
+// nothing (#514). The raw error still goes to the log.
+// Mutations: internal/daemon/meetings_http.go meetingErrText, serve the
+// reason after the sentinel raw -> the mkdir and fork-exec cases fail;
+// internal/daemon/meetings.go notesStatus, serve the raw ierr -> the
+// install_error case fails.
+func TestInstallFailuresNameNoAbsolutePath(t *testing.T) {
+	pathFree := func(t *testing.T, what, got, home string) {
+		t.Helper()
+		if strings.Contains(got, home) {
+			t.Fatalf("%s names an absolute path: %q", what, got)
+		}
+		for _, tok := range strings.Fields(got) {
+			if strings.HasPrefix(strings.TrimLeft(tok, "\"'(:=$"), "/") {
+				t.Fatalf("%s names an absolute path: %q", what, got)
+			}
+		}
+	}
+
+	// The models directory exists as a FILE: MkdirAll fails with a PathError
+	// that names the absolute destination.
+	d := installFixture(t, "#!/bin/sh\nexit 0\n")
+	if err := os.WriteFile(d.Cfg.ModelsDir(), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := d.InstallNotesModel("")
+	if err == nil {
+		t.Fatal("a models dir that is a file must refuse the download")
+	}
+	got := d.meetingErrText(err)
+	pathFree(t, "the mkdir refusal", got, d.Cfg.Home)
+	if !strings.Contains(got, "not a directory") {
+		t.Fatalf("the mkdir refusal lost its reason: %q", got)
+	}
+
+	// The fetch script is not executable: cmd.Start's PathError names the
+	// absolute script path.
+	d2 := installFixture(t, "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(d2.Cfg.Home, fetchModelsScript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = d2.InstallNotesModel("")
+	if err == nil {
+		t.Fatal("a fetch script without the execute bit must refuse")
+	}
+	got = d2.meetingErrText(err)
+	pathFree(t, "the fork/exec refusal", got, d2.Cfg.Home)
+	if !strings.Contains(got, "permission denied") {
+		t.Fatalf("the fork/exec refusal lost its reason: %q", got)
+	}
+
+	// The fetch itself writes a path under the daemon home to stderr: the
+	// install_error /status serves keeps the words, drops the path.
+	d3 := installFixture(t, "#!/bin/sh\necho \"cp: cannot create regular file '$5/qwen.gguf': Permission denied\" >&2\nexit 1\n")
+	if err := d3.InstallNotesModel(""); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d3.notesInstalling() == 0 }, "the download to fail")
+	got = d3.Status().Notes.InstallErr
+	pathFree(t, "install_error", got, d3.Cfg.Home)
+	if !strings.Contains(got, "Permission denied") {
+		t.Fatalf("install_error lost the fetch's words: %q", got)
+	}
+}
+
 // Every code installFailureCode can return, but the catch-all, has its sentence in the app. The codes are read from the
 // function's return statements, so a new one cannot be added without a row in NotesWriterState.downloadFailureKey.
 // Mutation: MeetingWindowService.swift, delete `case "checksum": return .settingsNotesWriterDownloadChecksum` -> RED.

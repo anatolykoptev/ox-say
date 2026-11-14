@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -59,8 +60,15 @@ func (d *Daemon) meetingErrText(err error) string {
 		return "no such meeting"
 	case errors.Is(err, ErrNotesInstall):
 		// The refusal's plain reason follows the sentinel: "notes model
-		// download: <reason>".
-		return strings.TrimPrefix(err.Error(), ErrNotesInstall.Error()+": ")
+		// download: <reason>". A wrapped filesystem error still names the
+		// absolute path behind it — serve its path-free words; a plain
+		// reason gets the path scrub either way (#514).
+		var pe *fs.PathError
+		var le *os.LinkError
+		if errors.As(err, &pe) || errors.As(err, &le) {
+			return publicMessage(err, d.Cfg.Home)
+		}
+		return publicMessage(errors.New(strings.TrimPrefix(err.Error(), ErrNotesInstall.Error()+": ")), d.Cfg.Home)
 	}
 	for _, r := range meetingRetryRefusals {
 		if strings.Contains(err.Error(), r.match) {

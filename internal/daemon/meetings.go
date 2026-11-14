@@ -813,7 +813,7 @@ func (d *Daemon) InstallNotesModel(id string) error {
 		return fmt.Errorf("%w: %s is missing; reinstall ox-say", ErrNotesInstall, fetchModelsScript)
 	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return fmt.Errorf("%w: %v", ErrNotesInstall, err)
+		return fmt.Errorf("%w: %w", ErrNotesInstall, err)
 	}
 	// Disk fallback: the automatic pick drops to the compact model when the
 	// disk cannot hold it — the one model that keeps notes working on a
@@ -862,7 +862,7 @@ func (d *Daemon) InstallNotesModel(id string) error {
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	if err := cmd.Start(); err != nil {
 		_ = lock.Close()
-		return fmt.Errorf("%w: %v", ErrNotesInstall, err)
+		return fmt.Errorf("%w: %w", ErrNotesInstall, err)
 	}
 	_ = lock.Close() // the child's copy keeps the lock
 	d.notes.running, d.notes.err, d.notes.code = true, "", ""
@@ -1014,6 +1014,12 @@ func (d *Daemon) StopNotesInstall() {
 // "unsupported", which is a config-level judgement (#243).
 func (d *Daemon) notesStatus() notesStatus {
 	running, ierr, icode := d.notes.state()
+	if ierr != "" {
+		// The fetch's last words can name an absolute path (a destination, a
+		// model file); /status gets the path-free text, the log kept the
+		// raw stderr (#514).
+		ierr = publicMessage(errors.New(ierr), d.Cfg.Home)
+	}
 	res := d.notesResolve()
 	out := notesStatus{Installing: running, InstallErr: ierr, InstallCode: icode,
 		Model: res.ID, Source: res.Source, Fallback: d.notesFallback(res)}

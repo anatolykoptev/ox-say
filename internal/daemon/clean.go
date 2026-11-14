@@ -535,6 +535,11 @@ type cleanStatus struct {
 func (d *Daemon) cleanStatus() cleanStatus {
 	code, reason := d.cleanReady()
 	running, ierr, icode := d.cleanInst.state()
+	if ierr != "" {
+		// Same surface as the notes install_error: the fetch's words stay,
+		// an absolute path does not (#514).
+		ierr = publicMessage(errors.New(ierr), d.Cfg.Home)
+	}
 	s := cleanStatus{Available: code == "", ReasonCode: code, Reason: reason,
 		ModelRevision: config.CleanModelsRevision, Installing: running, InstallErr: ierr, InstallCode: icode}
 	if code != CleanOSTooOld && code != CleanEngineMissing {
