@@ -25,11 +25,15 @@ func isWordRune(r rune) bool {
 }
 
 func tokenize(s string) []token {
+	rs := []rune(norm.NFC.String(s))
 	var out []token
 	var b strings.Builder
 	word := false
-	for _, r := range norm.NFC.String(s) {
-		w := isWordRune(r)
+	for i, r := range rs {
+		// A "." between word characters is word-internal (x.foo, node.js,
+		// v1.2 are one word each); at a space or an edge it stays a
+		// sentence boundary.
+		w := isWordRune(r) || (r == '.' && i > 0 && i+1 < len(rs) && isWordRune(rs[i-1]) && isWordRune(rs[i+1]))
 		if b.Len() > 0 && w != word {
 			out = append(out, token{b.String(), word})
 			b.Reset()

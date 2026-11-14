@@ -102,6 +102,29 @@ func TestApplyMatcherEdges(t *testing.T) {
 	}
 }
 
+// A "." with a word character on both sides is word-internal — "x.foo",
+// "node.js" and "v1.2" are one word each — while a "." at a space or the
+// end stays a sentence boundary and the word before it still matches.
+// Mutation: apply.go tokenize, drop the dot rule -> RED ("x.foo" is rewritten).
+func TestApplyDottedWords(t *testing.T) {
+	pairs := []Pair{act("foo", "Z"), act("node", "N"), act("v1", "V")}
+	for _, c := range []struct{ in, want string }{
+		{"use x.foo now", "use x.foo now"},
+		{"use foo.bar now", "use foo.bar now"},
+		{"run node.js daily", "run node.js daily"},
+		{"at v1.2 level", "at v1.2 level"},
+		{"say foo.", "say Z."},
+		{"a foo, please", "a Z, please"},
+		{"foo", "Z"},
+		{"foo.bar.baz", "foo.bar.baz"},
+		{"dot .foo leads", "dot .Z leads"},
+	} {
+		if got, _ := Apply(c.in, pairs); got != c.want {
+			t.Errorf("Apply(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // A span that already reads as the full meant — edges and all — is left
 // alone: C → C++ must not turn "C++" into "C+++", foo → [foo] must not turn
 // "[foo]" into "[[foo]]". The normal case still replaces.
