@@ -23,15 +23,27 @@ const msgTranscriptsUnavailable = "transcripts are unavailable: the store could 
 
 // initTranscripts opens $OX_SAY_HOME/transcripts. A directory that cannot be
 // opened is logged and leaves d.Transcripts nil: dictation and everything else
-// keep working, and the transcript routes answer 503.
+// keep working, and the transcript routes answer 503. Callers run under
+// d.transcriptsMu when they reach it through transcriptStore.
 func (d *Daemon) initTranscripts() {
-	s, err := transcripts.New(filepath.Join(d.Cfg.Home, "transcripts"))
+	s, err := transcripts.New(filepath.Join(d.Cfg.Home, "transcripts"), d.log)
 	if err != nil {
 		d.log.Warn("transcripts: store unavailable", slog.Any("error", err))
 		return
 	}
-	s.Log = d.log
 	d.Transcripts = s
+}
+
+// transcriptStore answers the open store, retrying an init that failed at
+// start: a directory that was unwritable then serves 503 only until it opens,
+// not until a restart.
+func (d *Daemon) transcriptStore() *transcripts.Store {
+	d.transcriptsMu.Lock()
+	defer d.transcriptsMu.Unlock()
+	if d.Transcripts == nil {
+		d.initTranscripts()
+	}
+	return d.Transcripts
 }
 
 // transcriptRoutes registers the transcripts store. POST is deliberately not an
@@ -60,7 +72,8 @@ func (d *Daemon) writeTranscriptErr(w http.ResponseWriter, err error) {
 }
 
 func (d *Daemon) handleTranscriptCreate(w http.ResponseWriter, r *http.Request) {
-	if d.Transcripts == nil {
+	s := d.transcriptStore()
+	if s == nil {
 		writeErr(w, http.StatusServiceUnavailable, msgTranscriptsUnavailable)
 		return
 	}
@@ -100,7 +113,7 @@ func (d *Daemon) handleTranscriptCreate(w http.ResponseWriter, r *http.Request) 
 	if res.Language != nil {
 		m.Language = *res.Language
 	}
-	m, err = d.Transcripts.Put(m, ox)
+	m, err = s.Put(m, ox)
 	if err != nil {
 		d.writeTranscriptErr(w, err)
 		return
@@ -109,11 +122,12 @@ func (d *Daemon) handleTranscriptCreate(w http.ResponseWriter, r *http.Request) 
 }
 
 func (d *Daemon) handleTranscriptList(w http.ResponseWriter, _ *http.Request) {
-	if d.Transcripts == nil {
+	s := d.transcriptStore()
+	if s == nil {
 		writeErr(w, http.StatusServiceUnavailable, msgTranscriptsUnavailable)
 		return
 	}
-	list, err := d.Transcripts.List(0)
+	list, err := s.List(0)
 	if err != nil {
 		d.writeTranscriptErr(w, err)
 		return
@@ -122,7 +136,8 @@ func (d *Daemon) handleTranscriptList(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (d *Daemon) handleTranscriptGet(w http.ResponseWriter, r *http.Request) {
-	if d.Transcripts == nil {
+	s := d.transcriptStore()
+	if s == nil {
 		writeErr(w, http.StatusServiceUnavailable, msgTranscriptsUnavailable)
 		return
 	}
@@ -134,7 +149,7 @@ func (d *Daemon) handleTranscriptGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("unsupported format %q (want text|srt|vtt|json|ox_json)", format))
 		return
 	}
-	_, ox, err := d.Transcripts.Get(r.PathValue("id"))
+	_, ox, err := s.Get(r.PathValue("id"))
 	if err != nil {
 		d.writeTranscriptErr(w, err)
 		return
@@ -150,11 +165,12 @@ func (d *Daemon) handleTranscriptGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Daemon) handleTranscriptDelete(w http.ResponseWriter, r *http.Request) {
-	if d.Transcripts == nil {
+	s := d.transcriptStore()
+	if s == nil {
 		writeErr(w, http.StatusServiceUnavailable, msgTranscriptsUnavailable)
 		return
 	}
-	if err := d.Transcripts.Delete(r.PathValue("id")); err != nil {
+	if err := s.Delete(r.PathValue("id")); err != nil {
 		d.writeTranscriptErr(w, err)
 		return
 	}

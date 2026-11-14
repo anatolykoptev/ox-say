@@ -22,6 +22,8 @@ final class VoiceTakeCleanupTests: XCTestCase {
         let take = root.appendingPathComponent("ox-say-voice-\(UUID().uuidString)")
         try fm.createDirectory(at: take, withIntermediateDirectories: true)
         try Data("wav".utf8).write(to: take.appendingPathComponent("voice.wav"))
+        // A leftover is an old folder: a fresh one may belong to a save still in flight (liveWindowSeconds).
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: take.path)
         let keep = root.appendingPathComponent("keep-me")
         try fm.createDirectory(at: keep, withIntermediateDirectories: true)
         // A file whose name matches is not a folder we made.
@@ -43,6 +45,23 @@ final class VoiceTakeCleanupTests: XCTestCase {
         var isLink: ObjCBool = false
         XCTAssertTrue(fm.fileExists(atPath: link.path, isDirectory: &isLink), "the link itself stays too")
         XCTAssertEqual(VoiceTakeCleanup.sweep(in: root), 0, "a second pass finds nothing")
+    }
+
+    /// A take folder fresh enough to belong to a save still in flight stays for the next launch; an hour-old
+    /// leftover is unowned and goes. Mutation: the modificationDate guard in `sweep` dropped -> RED.
+    func testTheSweepLeavesAHotTakeFolder() throws {
+        let root = try makeTemp()
+        defer { try? fm.removeItem(at: root) }
+        let hot = root.appendingPathComponent("ox-say-voice-\(UUID().uuidString)")
+        try fm.createDirectory(at: hot, withIntermediateDirectories: true)
+        try Data("wav".utf8).write(to: hot.appendingPathComponent("voice.wav"))
+        let stale = root.appendingPathComponent("ox-say-voice-\(UUID().uuidString)")
+        try fm.createDirectory(at: stale, withIntermediateDirectories: true)
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)], ofItemAtPath: stale.path)
+
+        XCTAssertEqual(VoiceTakeCleanup.sweep(in: root), 1)
+        XCTAssertTrue(fm.fileExists(atPath: hot.path), "a folder a save could still be writing stays")
+        XCTAssertFalse(fm.fileExists(atPath: stale.path), "an hour-old leftover goes")
     }
 
     /// The name rule: the prefix plus anything — nothing else is the app's to touch.

@@ -331,3 +331,37 @@ func TestQuietestWindowBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// PeakDB and RMSDB read the clip's level in dBFS: no audio and digital silence
+// are -Inf, full scale is 0 dB, and a sine's RMS sits 3.01 dB under its peak
+// (the voice-add silence floors compare the two).
+// Mutations: internal/pcm/pcm.go PeakDB, `peak/fullScale` -> `peak` -> RED
+// (full scale reads 90 dB, not 0); RMSDB, drop `len(c.S) == 0` -> RED.
+func TestPeakDBAndRMSDB(t *testing.T) {
+	for name, c := range map[string]Clip{
+		"empty":     {Rate: 24000},
+		"all zeros": {Rate: 24000, S: make([]int16, 4800)},
+	} {
+		if got := c.PeakDB(); !math.IsInf(got, -1) {
+			t.Errorf("%s: PeakDB = %v, want -Inf", name, got)
+		}
+		if got := c.RMSDB(); !math.IsInf(got, -1) {
+			t.Errorf("%s: RMSDB = %v, want -Inf", name, got)
+		}
+	}
+	for name, tc := range map[string]struct {
+		c         Clip
+		peak, rms float64
+	}{
+		"full scale": {Clip{Rate: 24000, S: []int16{-32768, -32768, 32767}}, 0, 0},
+		"half scale": {Clip{Rate: 24000, S: []int16{16384, -16384}}, -6.02, -6.02},
+		"a 440 sine": {Clip{Rate: 48000, S: tone(48000, 1)}, -6.23, -9.24},
+	} {
+		if got := tc.c.PeakDB(); math.Abs(got-tc.peak) > 0.05 {
+			t.Errorf("%s: PeakDB = %.2f, want %.2f", name, got, tc.peak)
+		}
+		if got := tc.c.RMSDB(); math.Abs(got-tc.rms) > 0.05 {
+			t.Errorf("%s: RMSDB = %.2f, want %.2f", name, got, tc.rms)
+		}
+	}
+}

@@ -37,6 +37,34 @@ final class VoiceRecordingTests: XCTestCase {
         XCTAssertNotNil(long.save(taken: [], text: en))
     }
 
+    /// A take of digital silence is what a muted microphone hands back: «Сохранить» refuses it with the
+    /// microphone hint before the add is ever sent, and the take stays so a re-record is one button away.
+    /// Mutation: VoiceRecording.swift `guard !silent` dropped -> RED.
+    func testASilentTakeCannotBeSaved() {
+        var r = reviewed(10)
+        XCTAssertTrue(r.canSave, "long enough — only the silence refuses it")
+        XCTAssertNil(r.save(taken: [], silent: true, text: en))
+        XCTAssertEqual(r.problem, en(.voiceRecordSilent))
+        XCTAssertEqual(r.phase, .review(seconds: 10), "a refused save keeps the take on screen")
+        XCTAssertNotNil(r.save(taken: [], text: en), "with sound the same take saves")
+    }
+
+    /// isSilent reads the take's samples on the daemon's floors (fit.go silentClip): a peak under -50 dBFS or an
+    /// RMS under -60 dBFS. A constant -54 dBFS hiss trips the peak arm alone; one click in twenty seconds of
+    /// nothing trips the RMS arm alone; a take at a talk level saves.
+    /// Mutations: isSilent `||` -> `&&` -> RED (both single-arm rows); the floors `0.0031623`/`0.001` doubled -> RED.
+    func testIsSilentReadsTheTake() {
+        XCTAssertTrue(VoiceRecording.isSilent([]), "no samples is silence")
+        XCTAssertTrue(VoiceRecording.isSilent([Float](repeating: 0, count: 24000)))
+        // -54 dBFS on both measures: the peak floor alone refuses it (RMS -54 is above the -60 floor).
+        XCTAssertTrue(VoiceRecording.isSilent([Float](repeating: 0.002, count: 24000)))
+        // One -8 dBFS click in twenty seconds of zeros: RMS -65 dBFS, the RMS floor alone refuses it.
+        XCTAssertTrue(VoiceRecording.isSilent([Float](repeating: 0, count: 480000) + [0.4]))
+        // -40 dBFS steady: quiet but a voice.
+        XCTAssertFalse(VoiceRecording.isSilent([Float](repeating: 0.01, count: 24000)))
+        XCTAssertFalse(VoiceRecording.isSilent((0..<24000).map { 0.5 * sin(2 * .pi * 440 * Float($0) / 24000) }))
+    }
+
     /// At twenty seconds the take ends by itself and goes to the review; just under, it keeps recording.
     /// Mutation: VoiceRecording.swift "maximumSeconds" in `tick` -> ".infinity" -> RED.
     func testStopsItselfAtTwentySeconds() {

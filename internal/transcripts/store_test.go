@@ -1,16 +1,20 @@
 package transcripts
 
 import (
+	"bytes"
 	"errors"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
 
 func TestPutGetListDelete(t *testing.T) {
-	s, err := New(filepath.Join(t.TempDir(), "transcripts"))
+	s, err := New(filepath.Join(t.TempDir(), "transcripts"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +48,7 @@ func TestPutGetListDelete(t *testing.T) {
 // Two uploads in one second must not collide: the id carries a random suffix, and List orders them
 // deterministically (Created, then id) however fast they arrive.
 func TestSameSecondPutsGetDistinctIDsAndAStableOrder(t *testing.T) {
-	s, _ := New(filepath.Join(t.TempDir(), "t"))
+	s, _ := New(filepath.Join(t.TempDir(), "t"), nil)
 	at := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
 	seen := map[string]bool{}
 	for i := 0; i < 20; i++ {
@@ -78,7 +82,7 @@ func TestSameSecondPutsGetDistinctIDsAndAStableOrder(t *testing.T) {
 }
 
 func TestRealPutsInOneSecondListNewestFirst(t *testing.T) {
-	s, _ := New(filepath.Join(t.TempDir(), "t"))
+	s, _ := New(filepath.Join(t.TempDir(), "t"), nil)
 	var ids []string
 	for i := 0; i < 5; i++ {
 		m, err := s.Put(Meta{Title: "x"}, []byte(`{}`))
@@ -96,7 +100,7 @@ func TestRealPutsInOneSecondListNewestFirst(t *testing.T) {
 }
 
 func TestListLimit(t *testing.T) {
-	s, _ := New(filepath.Join(t.TempDir(), "t"))
+	s, _ := New(filepath.Join(t.TempDir(), "t"), nil)
 	for i := 0; i < 3; i++ {
 		_, _ = s.Put(Meta{Title: "x"}, []byte(`{}`))
 	}
@@ -110,7 +114,7 @@ func TestListLimit(t *testing.T) {
 
 func TestIDsAreValidatedBeforeTheDiskIsTouched(t *testing.T) {
 	root := t.TempDir()
-	s, _ := New(filepath.Join(root, "t"))
+	s, _ := New(filepath.Join(root, "t"), nil)
 	// a victim next to the store: a traversal id must not reach it
 	victim := filepath.Join(root, "x")
 	if err := os.MkdirAll(victim, 0o700); err != nil {
@@ -137,7 +141,7 @@ func TestIDsAreValidatedBeforeTheDiskIsTouched(t *testing.T) {
 }
 
 func TestPutRefusesACallerIDThatIsNotValid(t *testing.T) {
-	s, _ := New(filepath.Join(t.TempDir(), "t"))
+	s, _ := New(filepath.Join(t.TempDir(), "t"), nil)
 	if _, err := s.Put(Meta{ID: "../x", Title: "x"}, []byte(`{}`)); !errors.Is(err, ErrInvalidID) {
 		t.Fatalf("Put with a traversal id: %v, want ErrInvalidID", err)
 	}
@@ -145,7 +149,7 @@ func TestPutRefusesACallerIDThatIsNotValid(t *testing.T) {
 
 func TestFilesAreOwnerOnly(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "t")
-	s, _ := New(dir)
+	s, _ := New(dir, nil)
 	m, _ := s.Put(Meta{Title: "x"}, []byte(`{}`))
 	for _, p := range []string{dir, filepath.Join(dir, m.ID), filepath.Join(dir, m.ID, "meta.json"), filepath.Join(dir, m.ID, "ox.json")} {
 		st, err := os.Stat(p)
@@ -160,7 +164,7 @@ func TestNewTightensALooseExistingDirectory(t *testing.T) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(dir); err != nil {
+	if _, err := New(dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ := os.Stat(dir); st.Mode().Perm()&0o077 != 0 {
@@ -170,7 +174,7 @@ func TestNewTightensALooseExistingDirectory(t *testing.T) {
 
 func TestAFailedWriteLeavesNoPartialTranscript(t *testing.T) {
 	dir := t.TempDir()
-	s, _ := New(dir)
+	s, _ := New(dir, nil)
 	old := rename
 	rename = func(string, string) error { return errors.New("boom") }
 	defer func() { rename = old }()
@@ -191,7 +195,11 @@ func TestNewSweepsTempDirsACrashLeft(t *testing.T) {
 	if err := os.MkdirAll(left, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(dir); err != nil {
+	staleAt := time.Now().Add(-2 * tmpSweepMinAge)
+	if err := os.Chtimes(left, staleAt, staleAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(left); !os.IsNotExist(err) {
@@ -199,9 +207,57 @@ func TestNewSweepsTempDirsACrashLeft(t *testing.T) {
 	}
 }
 
+// A temp dir modified within tmpSweepMinAge may be a live daemon's in-flight
+// Put: a second `ox-say serve` must leave it alone.
+func TestNewLeavesAFreshTempDirAlone(t *testing.T) {
+	dir := t.TempDir()
+	fresh := filepath.Join(dir, ".tmp-20261001-000000-abcdef")
+	if err := os.MkdirAll(fresh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("a temp dir a live writer may own was removed: %v", err)
+	}
+}
+
+// A leftover that cannot be removed warns and does not fail New: one stuck
+// temp dir must not take the store down.
+func TestNewWarnsAndOpensOnAStuckTempDir(t *testing.T) {
+	dir := t.TempDir()
+	stuck := filepath.Join(dir, ".tmp-20261001-000000-abcdef")
+	if err := os.MkdirAll(stuck, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	staleAt := time.Now().Add(-2 * tmpSweepMinAge)
+	if err := os.Chtimes(stuck, staleAt, staleAt); err != nil {
+		t.Fatal(err)
+	}
+	old := removeAll
+	// os.RemoveAll's real failure carries the full path in a *PathError.
+	removeAll = func(p string) error {
+		return &fs.PathError{Op: "unlinkat", Path: p, Err: syscall.EACCES}
+	}
+	defer func() { removeAll = old }()
+	var logs bytes.Buffer
+	s, err := New(dir, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil || s == nil {
+		t.Fatalf("a stuck temp dir failed New: %v", err)
+	}
+	if !strings.Contains(logs.String(), "cannot remove a leftover temp dir") {
+		t.Fatalf("the sweep failure was not logged: %q", logs.String())
+	}
+	// The path holds the user's home directory; the log must not carry it.
+	if strings.Contains(logs.String(), dir) {
+		t.Fatalf("the sweep warning leaks the store path: %q", logs.String())
+	}
+}
+
 func TestListSkipsWhatIsNotATranscript(t *testing.T) {
 	dir := t.TempDir()
-	s, _ := New(dir)
+	s, _ := New(dir, nil)
 	good, _ := s.Put(Meta{Title: "ok"}, []byte(`{}`))
 	// a stray file, a half-deleted dir without meta, a dir with a broken meta
 	_ = os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o600)
@@ -215,14 +271,16 @@ func TestListSkipsWhatIsNotATranscript(t *testing.T) {
 	}
 }
 
-func TestGetMissingDocumentIsAnError(t *testing.T) {
+// An entry that lost its ox.json — or a Delete that landed between the two
+// reads — is a transcript that is not there, not a server fault.
+func TestGetMissingDocumentIsNotFound(t *testing.T) {
 	dir := t.TempDir()
-	s, _ := New(dir)
+	s, _ := New(dir, nil)
 	m, _ := s.Put(Meta{Title: "x"}, []byte(`{}`))
 	if err := os.Remove(filepath.Join(dir, m.ID, "ox.json")); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Get(m.ID); err == nil || errors.Is(err, ErrNotFound) {
-		t.Fatalf("meta without a document must be a real error, got %v", err)
+	if _, _, err := s.Get(m.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("meta without a document must read as not found, got %v", err)
 	}
 }

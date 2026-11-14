@@ -62,8 +62,11 @@ type Daemon struct {
 	// Meet takes recorded meetings through transcription and notes.
 	Meet *meeting.Runner
 	// Transcripts keeps file transcripts under $OX_SAY_HOME/transcripts; nil when the
-	// directory could not be opened (the routes then answer 503).
+	// directory could not be opened (the routes then answer 503 and retry the
+	// open on the next request — see transcriptStore).
 	Transcripts *transcripts.Store
+	// transcriptsMu guards lazy retries of the store open.
+	transcriptsMu sync.Mutex
 	// Glossary holds the user's heard → meant pairs ($OX_SAY_HOME/glossary.json).
 	Glossary *glossary.Store
 	// activePairs is Glossary.Active behind a field so a test can count the

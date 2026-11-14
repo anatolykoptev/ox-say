@@ -158,8 +158,13 @@ func TestDeliveryStyleOnAutoCloneIsRefused(t *testing.T) {
 	}
 	before := manifestBytes(t, f, id)
 	rec := do(mux, http.MethodPost, "/v1/produce/"+id+"/chunks/1", `{"action":"delivery","style":"excited"}`)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "clone_mode reference") {
+	body := rec.Body.String()
+	if rec.Code != http.StatusConflict || !strings.Contains(body, "clone_mode reference") {
 		t.Fatalf("want 409 with the reference hint: %d %s", rec.Code, rec.Body)
+	}
+	// The app matches the gate on the wire code, not the English words.
+	if !strings.Contains(body, `"code":"styling_unavailable"`) {
+		t.Fatalf("the delivery-gate 409 carries no code: %s", body)
 	}
 	if len(f.renders) != 3 {
 		t.Fatalf("the refused op rendered: %d takes", len(f.renders))

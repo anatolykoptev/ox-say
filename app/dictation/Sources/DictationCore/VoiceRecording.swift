@@ -220,17 +220,37 @@ public struct VoiceRecording: Equatable {
         return false
     }
 
+    /// The take is all digital silence — what a muted microphone or a dead input hands back. The floors are the
+    /// daemon's own (internal/voices/fit.go silentClip): a peak under -50 dBFS or an RMS under -60 dBFS means
+    /// there is no voice to clone, so the add is refused here instead of after the upload.
+    public static func isSilent(_ samples: [Float]) -> Bool {
+        guard !samples.isEmpty else { return true }
+        var peak = 0.0, energy = 0.0
+        for s in samples {
+            let a = abs(Double(s))
+            peak = max(peak, a)
+            energy += a * a
+        }
+        return peak < 0.0031623 || (energy / Double(samples.count)).squareRoot() < 0.001
+    }
+
     /// The name as typed.
     public mutating func edit(label: String) {
         self.label = label
     }
 
     /// «Сохранить»: the request to send, or nil with `problem` set. `taken` holds ids and lower-cased labels of the
-    /// library; the name rule is the other add sheets' (VoiceName.isTaken).
-    public mutating func save(taken: Set<String>, text: (L10nKey) -> String = { $0.text }) -> Request? {
+    /// library; the name rule is the other add sheets' (VoiceName.isTaken). A silent take (`isSilent` on its
+    /// samples) is refused with the microphone hint before it is ever sent.
+    public mutating func save(taken: Set<String>, silent: Bool = false,
+                              text: (L10nKey) -> String = { $0.text }) -> Request? {
         guard case .review = phase else { return nil }
         guard canSave else {
             problem = String(format: text(.voiceRecordTooShort), Int(Self.minimumSeconds))
+            return nil
+        }
+        guard !silent else {
+            problem = text(.voiceRecordSilent)
             return nil
         }
         guard let clean = VoiceLabel.clean(label) else {

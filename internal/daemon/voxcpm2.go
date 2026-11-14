@@ -293,6 +293,12 @@ func buildVoxCPM2(body map[string]any, v *voices.Voice, wavPath string) (*voxReq
 	return &voxReq{body: out, budgetSec: lengthBudget(input), seed: seed}, nil
 }
 
+// seedError is the seed refusal in plain words; /v1/produce words its own
+// malformed seed the same way.
+func seedError() error {
+	return &requestError{fmt.Sprintf("seed must be an integer in 0..%d", uint32(maxVoxSeed))}
+}
+
 // voxSeed is the request's seed, validated, else a fresh random one.
 func voxSeed(body map[string]any) (int64, error) {
 	raw, ok := body[fieldSeed]
@@ -301,7 +307,7 @@ func voxSeed(body map[string]any) (int64, error) {
 	}
 	f, ok := number(raw)
 	if !ok || f < 0 || f > maxVoxSeed || f != math.Trunc(f) {
-		return 0, &requestError{fmt.Sprintf("seed must be an integer in 0..%d", uint32(maxVoxSeed))}
+		return 0, seedError()
 	}
 	if s := seedOf(body); s != nil {
 		return *s, nil

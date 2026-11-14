@@ -355,7 +355,7 @@ final class VoiceSource {
     /// «Сохранить»: the take is written to a private temp folder, sent, and the folder removed — whatever the answer.
     private func saveTake() {
         guard var r = record else { return }
-        let request = r.save(taken: takenNames())
+        let request = r.save(taken: takenNames(), silent: VoiceRecording.isSilent(takeSamples))
         record = r
         sync()
         guard let request else { return }

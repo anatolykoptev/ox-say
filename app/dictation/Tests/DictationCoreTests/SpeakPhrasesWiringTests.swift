@@ -48,6 +48,32 @@ final class SpeakPhrasesWiringTests: XCTestCase {
         XCTAssertTrue(variant.contains("waitUntilIdle: { try await voiceover.followAndWait(id: id) }"))
     }
 
+    /// A finished phrase operation lands its chunks only when the project is still the selected one — project A's
+    /// op must not overwrite the phrases of project B the person has opened meanwhile. And the read-ahead key is
+    /// cleared on BOTH endings: a failed or cancelled mood can still leave a stored style on the daemon, so the
+    /// chunks are re-read rather than showing a stale chip until reselect.
+    /// Mutations: SpeakSource.phraseOperation, `selectedID == job.id` -> `true` -> RED; the catch's
+    /// `self.phrasesKey = nil` deleted -> RED.
+    func testAnOperationLandsOnlyOnItsProjectAndClearsTheKeyBothWays() throws {
+        let speak = try source("OxSayDictation/SpeakSource.swift")
+        let op = try body(speak, of: "private func phraseOperation(")
+        XCTAssertTrue(op.contains("if self.model.data.speak.selectedID == job.id {"),
+                      "a moved-away project's op would overwrite the phrases on screen")
+        let failure = try XCTUnwrap(op.range(of: "} catch {"), "phraseOperation lost its failure path")
+        XCTAssertTrue(String(op[failure.lowerBound...]).contains("self.phrasesKey = nil"),
+                      "a failed or cancelled change must re-read the stored chunks")
+    }
+
+    /// A phrase op on a project deleted elsewhere ends as «Проект удалён», never the raw «Служба ответила…»: the
+    /// wait's own poll already maps a mid-wait 404 to .gone (JobWait.untilTerminal), the first GET does too.
+    /// Mutation: VoiceoverService.followAndWait, the `catch StudioError.refused(status: 404` clause deleted -> RED.
+    func testAGoneProjectDuringAnOperationReadsAsGone() throws {
+        let service = try source("OxSayDictation/VoiceoverService.swift")
+        let wait = try body(service, of: "func followAndWait(")
+        XCTAssertTrue(wait.contains("catch StudioError.refused(status: 404"), "the first GET's 404 is not mapped")
+        XCTAssertTrue(wait.contains("throw JobWait.Failure.gone"), "the first GET's 404 is not .gone")
+    }
+
     /// A refused start keeps the person's text: the failure path sets the phase and nothing else about the editor.
     /// Mutation: SpeakSource.generateStudio catch, add `self.model.data.speak.text = ""` -> RED.
     func testARefusedStartKeepsTheText() throws {

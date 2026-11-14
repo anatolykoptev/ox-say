@@ -43,11 +43,24 @@ func validateStyle(style string) error {
 // path and from UpdateVoice alike: it returns the label trimmed of surrounding
 // whitespace (a newline included), so the string checked is the string stored.
 // Padding is not part of the label, so the length bound applies to the trimmed
-// form. A label that is blank once trimmed comes back "" (no label). What stays
-// inside the trimmed label may not hold a control character (a tab or an inner
-// newline), a line or paragraph separator, or a text-direction control.
+// form. A label that is blank once trimmed comes back "" (no label), and so
+// does one that holds no visible character — zero-width spaces, a BOM, word
+// joiners and other format characters (Unicode category Cf) read as blank in
+// the picker. Only the all-invisible label is dropped: a format character
+// inside a real one stays, the U+200D joiner an emoji sequence needs included.
+// What stays inside the trimmed label may not hold a control character (a tab
+// or an inner newline), a line or paragraph separator, or a text-direction
+// control.
 func normalizeLabel(label string) (string, error) {
 	label = strings.TrimSpace(label)
+	// hasVisible: a rune that is not blank padding and not an invisible format
+	// character (Cf). Letters, marks, emoji and punctuation are all visible.
+	hasVisible := strings.IndexFunc(label, func(r rune) bool {
+		return !unicode.IsSpace(r) && !unicode.Is(unicode.Cf, r)
+	}) >= 0
+	if !hasVisible {
+		return "", nil
+	}
 	if utf8.RuneCountInString(label) > maxVoiceLabelChars {
 		return "", &requestError{fmt.Sprintf("label is longer than %d characters", maxVoiceLabelChars)}
 	}

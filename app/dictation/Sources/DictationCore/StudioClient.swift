@@ -137,9 +137,11 @@ public struct StudioClient {
         // "produce needs a saved voice" has no code on the wire (only type "Bad Request"), so its opening words are the one
         // text match, kept at this edge and pinned by a test; PlainWords would drop the whole sentence for its `voice_` hint.
         if status == 400, message.hasPrefix("produce needs a saved voice") { return .noSavedVoice }
-        // The two delivery-gate 409s (`deliveryNeedsReference`, `deliveryIsUltimate`, produce_ops.go) carry no code on the wire
-        // either, only their opening words; both mean the project keeps the recording's delivery and a mood cannot apply.
-        if status == 409, message.hasPrefix("styling a phrase") { return .stylingUnavailable }
+        // The two delivery-gate 409s (`deliveryNeedsReference`, `deliveryIsUltimate`, produce_ops.go) carry the code
+        // `styling_unavailable`: both mean the project keeps the recording's delivery and a mood cannot apply. The
+        // opening-words match stays for a daemon from before the code.
+        let code = (obj?["error"] as? [String: Any])?["code"] as? String
+        if status == 409, code == "styling_unavailable" || message.hasPrefix("styling a phrase") { return .stylingUnavailable }
         // The two refusals the voice panel can meet, also without a code: a loudness change before the project has finished
         // (409, `deliver` in produce_ops.go) and «Манера записи» asked of a voice that cannot give it (400, `voxCloneMode`
         // in voxcpm2.go: no voice, no saved text of the recording, or a style set). The clone mode itself has no flip route:

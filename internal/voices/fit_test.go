@@ -566,11 +566,32 @@ func TestPrepareWithinCapEmptyTranscriptOnSilentClipRefused(t *testing.T) {
 	s.SetTranscriber(fixedWords(nil, &calls))
 	_, err := s.Add(context.Background(), "ben", src, "something was said")
 	var ie *InputError
-	if !errors.As(err, &ie) || !strings.Contains(err.Error(), "no speech found in the clip") {
-		t.Fatalf("err = %v, want *InputError \"no speech found in the clip\"", err)
+	if !errors.As(err, &ie) || !strings.Contains(err.Error(), "no speech found in the clip") ||
+		!strings.Contains(err.Error(), "microphone is not muted") {
+		t.Fatalf("err = %v, want *InputError naming the silence and the muted-microphone hint", err)
 	}
 	if _, gerr := s.Get("ben"); gerr == nil {
 		t.Fatal("a refused add left a stored voice")
+	}
+}
+
+// The silence test is peak OR RMS: a take of steady hiss quiet enough to peak
+// under -50 dBFS (its RMS near -58 stays above the -60 floor) is refused by
+// the peak arm alone — a muted input, not a quiet speaker.
+// Mutation: internal/voices/fit.go silentClip — drop `c.PeakDB() < silentPeakDB ||` -> RED.
+func TestPrepareWithinCapEmptyTranscriptOnHissClipRefused(t *testing.T) {
+	s, dir := newStore(t)
+	// amp 0.0018: a sine peaking at -54.9 dBFS, -57.9 dBFS RMS — inside the
+	// peak floor, outside the RMS one, so only the peak arm can refuse it.
+	src := filepath.Join(dir, "take.wav")
+	if err := os.WriteFile(src, testutil.ToneWAV(testutil.QwenRate, 10, 0.0018), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.SetTranscriber(fixedWords(nil, new(int)))
+	_, err := s.Add(context.Background(), "ben", src, "something was said")
+	var ie *InputError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %v, want *InputError for a peak-only silent clip", err)
 	}
 }
 

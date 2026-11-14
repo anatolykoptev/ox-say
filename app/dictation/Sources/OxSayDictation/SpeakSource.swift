@@ -744,6 +744,9 @@ final class SpeakSource {
                 self.model.data.speak.panelEpoch &+= 1
                 onFailure?()
                 self.model.data.notice = SpeakText.notice(error) { $0.text }
+                // The daemon may have stored part of the change (a mood lands before the render): the key is
+                // cleared so the chunks are read again — the row must not keep a stale chip until reselect.
+                self.phrasesKey = nil
                 self.refreshProjects()
             }
         }
