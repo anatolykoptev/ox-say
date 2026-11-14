@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -20,22 +21,26 @@ import (
 const produceBodyLimit = 1 << 20
 
 // produceRequest is POST /v1/produce. Tuning knobs are preset, seed, takes, clone_mode, loudness_lufs and inference_timesteps (never cfg_value).
+// Seed, Takes and InferenceTimesteps stay raw so a whole JSON number in any
+// spelling — 8, 8.0, 1e3 — is judged like /v1/audio/speech's, not rejected by
+// the decoder with a Go struct name.
 type produceRequest struct {
-	Script       string `json:"script"`
-	Title        string `json:"title,omitempty"`
-	Voice        string `json:"voice,omitempty"`
-	Style        string `json:"style,omitempty"`
-	Preset       string `json:"preset,omitempty"`
-	Seed         *int64 `json:"seed,omitempty"`
-	Takes        *int   `json:"takes,omitempty"`
-	CloneMode    string `json:"clone_mode,omitempty"`
-	OutPath      string `json:"out_path,omitempty"`
-	Overwrite    bool   `json:"overwrite,omitempty"`
-	AllowBattery bool   `json:"allow_battery,omitempty"`
+	Script       string          `json:"script"`
+	Title        string          `json:"title,omitempty"`
+	Voice        string          `json:"voice,omitempty"`
+	Style        string          `json:"style,omitempty"`
+	Preset       string          `json:"preset,omitempty"`
+	Seed         json.RawMessage `json:"seed,omitempty"`
+	Takes        json.RawMessage `json:"takes,omitempty"`
+	CloneMode    string          `json:"clone_mode,omitempty"`
+	OutPath      string          `json:"out_path,omitempty"`
+	Overwrite    bool            `json:"overwrite,omitempty"`
+	AllowBattery bool            `json:"allow_battery,omitempty"`
 	// LoudnessLUFS and InferenceTimesteps override the preset's loudness and the
-	// default sampling steps; pointers, so an explicit 0 is judged, not defaulted.
-	LoudnessLUFS       *float64 `json:"loudness_lufs,omitempty"`
-	InferenceTimesteps *int     `json:"inference_timesteps,omitempty"`
+	// default sampling steps; absent and an explicit value are told apart —
+	// an explicit 0 is judged, not defaulted.
+	LoudnessLUFS       *float64        `json:"loudness_lufs,omitempty"`
+	InferenceTimesteps json.RawMessage `json:"inference_timesteps,omitempty"`
 }
 
 type resumeRequest struct {
@@ -43,13 +48,13 @@ type resumeRequest struct {
 }
 
 type chunkRequest struct {
-	Action     string   `json:"action"`
-	Takes      int      `json:"takes,omitempty"`
-	Take       string   `json:"take,omitempty"`
-	Text       string   `json:"text,omitempty"`
-	Style      *string  `json:"style,omitempty"`
-	PauseAfter *float64 `json:"pause_after,omitempty"`
-	Pace       *float64 `json:"pace,omitempty"`
+	Action     string          `json:"action"`
+	Takes      json.RawMessage `json:"takes,omitempty"`
+	Take       string          `json:"take,omitempty"`
+	Text       string          `json:"text,omitempty"`
+	Style      *string         `json:"style,omitempty"`
+	PauseAfter *float64        `json:"pause_after,omitempty"`
+	Pace       *float64        `json:"pace,omitempty"`
 }
 
 // deliveryRequest is POST /v1/produce/{id}/delivery: one batch of chunk
@@ -142,12 +147,19 @@ func (d *Daemon) handleProduceCreate(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		err = explicitLoudness(in.LoudnessLUFS)
 	}
+	var seed *int64
+	if err == nil {
+		seed, err = wholeField(in.Seed)
+		if err != nil {
+			err = seedError()
+		}
+	}
 	if err != nil {
 		d.writeProduceErr(w, err)
 		return
 	}
 	s, err := d.prod.create(produceInput{Script: in.Script, Title: in.Title, Voice: in.Voice, Style: in.Style,
-		Preset: in.Preset, OutPath: in.OutPath, Seed: in.Seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery,
+		Preset: in.Preset, OutPath: in.OutPath, Seed: seed, Takes: takes, Overwrite: in.Overwrite, AllowBattery: in.AllowBattery,
 		CloneMode: in.CloneMode, LoudnessLUFS: in.LoudnessLUFS, Timesteps: steps})
 	if err != nil {
 		d.writeProduceErr(w, err)
@@ -174,29 +186,71 @@ func (d *Daemon) handleProduceStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
+// errNotWhole marks a JSON value that is no whole number — a fraction, a word,
+// or a magnitude past the integers' reach.
+var errNotWhole = errors.New("not a whole number")
+
+// wholeField reads an optional integer knob a JSON author may write as 8, 8.0
+// or 1e3 — every mathematically whole number, the way /v1/audio/speech reads
+// its fields through number(). Absent and null are "not given"; any other
+// malformed shape is errNotWhole for the caller to word.
+func wholeField(raw json.RawMessage) (*int64, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return nil, errNotWhole
+	}
+	if i, err := n.Int64(); err == nil {
+		return &i, nil
+	}
+	f, err := n.Float64()
+	if err != nil || f != math.Trunc(f) || math.Abs(f) > 1<<53 {
+		return nil, errNotWhole
+	}
+	i := int64(f)
+	return &i, nil
+}
+
 // explicitTakes turns the optional takes field into the producer's value (0 =
-// the preset's): a given 0 or negative number is refused, not read as "default".
-func explicitTakes(p *int) (int, error) {
+// the preset's): a given 0 or negative number is refused, not read as "default",
+// and a fractional or non-numeric one is refused with the same words.
+func explicitTakes(raw json.RawMessage) (int, error) {
+	p, err := wholeField(raw)
+	if err != nil {
+		return 0, &requestError{fmt.Sprintf("takes must be an integer in 1..%d", maxTakesPerChunk)}
+	}
+	return judgeTakes(p)
+}
+
+// judgeTakes applies the takes range to a value already read (the MCP tool's
+// decoder hands the int straight over).
+func judgeTakes(p *int64) (int, error) {
 	if p == nil {
 		return 0, nil
 	}
-	if *p < 1 || *p > maxTakesPerChunk {
+	if *p < 1 || *p > int64(maxTakesPerChunk) {
 		return 0, &requestError{fmt.Sprintf("takes must be 1..%d", maxTakesPerChunk)}
 	}
-	return *p, nil
+	return int(*p), nil
 }
 
 // explicitTimesteps judges inference_timesteps at the boundary, where "absent"
 // and "0" can still be told apart: absent is the default (0 in produceInput),
 // an explicit value outside 1..50, 0 included, is a refusal.
-func explicitTimesteps(p *int) (int, error) {
+func explicitTimesteps(raw json.RawMessage) (int, error) {
+	p, err := wholeField(raw)
+	if err != nil {
+		return 0, timestepsError()
+	}
 	if p == nil {
 		return 0, nil
 	}
-	if err := validTimesteps(*p); err != nil {
-		return 0, err
+	if *p < 1 || *p > maxTimesteps {
+		return 0, timestepsError()
 	}
-	return *p, nil
+	return int(*p), nil
 }
 
 // explicitLoudness refuses a loudness target outside the range before the
@@ -270,12 +324,23 @@ func (d *Daemon) handleProduceChunk(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := chunkIndex(r)
 	var in chunkRequest
+	var takes int64
 	if err == nil {
 		err = decodeStrict(r, &in)
 	}
+	if err == nil {
+		var p *int64
+		if p, err = wholeField(in.Takes); err != nil {
+			err = &requestError{fmt.Sprintf("takes must be an integer in 1..%d", maxTakesPerChunk)}
+		} else if p != nil {
+			takes = *p
+		}
+	}
 	var s vproject.Summary
 	if err == nil {
-		s, err = d.prod.chunk(r.PathValue("id"), n, chunkOp(in))
+		op := chunkOp{Action: in.Action, Takes: int(takes), Take: in.Take, Text: in.Text,
+			Style: in.Style, PauseAfter: in.PauseAfter, Pace: in.Pace}
+		s, err = d.prod.chunk(r.PathValue("id"), n, op)
 	}
 	if err != nil {
 		d.writeProduceErr(w, err)
