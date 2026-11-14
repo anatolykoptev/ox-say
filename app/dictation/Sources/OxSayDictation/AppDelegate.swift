@@ -808,6 +808,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainWindow.show(MainRoute(section: section, meetingID: nil))
     }
 
+    /// Edit ▸ Find… (⌘F): the window decides which field the command wakes.
+    @objc func findFromMenu(_ sender: NSMenuItem) {
+        mainWindow.find()
+    }
+
     /// "Open OxSay…": the one main window, opened or brought forward.
     @objc private func openMainWindow() {
         mainWindow.open()

@@ -12,11 +12,15 @@ final class MainWindowSpecTests: XCTestCase {
         XCTAssertEqual(MainWindowSpec.firstRunSection, .speak, "Voiceover is live")
     }
 
-    /// The window floor leaves room for the widest sidebar (240), the Meetings list at its least (260), the divider (1) and the
-    /// meeting at its least (300): 801, so the meeting pane is never clipped. The literals are the oracle, not the constants.
-    /// Mutation: MainWindowSpec.minimumWidth back to a literal 760 -> RED.
+    /// The window floor leaves room for the widest sidebar (240), the outer sidebar divider (1), the Meetings list at
+    /// its least (260), the inner divider (1) and the meeting at its least (300): 802, so the meeting pane is never
+    /// clipped. Without the outer divider the detail column comes up one point short at the floor: the split
+    /// overflows, the restore never applies and divider drags are not stored. The literals are the oracle, not the
+    /// constants.
+    /// Mutation: MainWindowSpec.minimumWidth back to a literal 801 (the inner split alone) -> RED.
     func testTheWindowFloorFitsTheWidestSidebarAndTheMeetingsSplitAtTheirLeast() {
-        XCTAssertGreaterThanOrEqual(MainWindowSpec.minimumWidth, 240 + 260 + 1 + 300)
+        XCTAssertGreaterThanOrEqual(MainWindowSpec.minimumWidth, 240 + 1 + 260 + 1 + 300)
+        XCTAssertEqual(MainWindowSpec.outerSplitDividerWidth, 1)
         XCTAssertEqual(MainWindowSpec.sidebarWidth.maximum, 240)
         XCTAssertEqual(MainWindowSpec.meetingsListWidth.minimum, 260)
         XCTAssertEqual(MainWindowSpec.meetingsListWidth.maximum, 420)

@@ -115,6 +115,35 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         XCTAssertTrue(flat(t).contains("\"\\(L10nKey.playFromHere.text), \\(turn.speaker) \\(turn.time)\" }"))
     }
 
+    /// #452 — one Find command: Edit ▸ Find… ⌘F routes through the app delegate into the window's source, which asks
+    /// `FindTarget.decide`: the transcript's bar while a transcript is on screen (its tab flags itself and answers the
+    /// serial), the meetings search field otherwise (`isPresented:` focuses it). The hidden ⌘F button that owned the
+    /// key inside the tab is gone — a menu key-equivalent is matched before any button would be, so keeping it meant
+    /// keeping a dead second ⌘F.
+    /// Mutations: FindTarget.decide, transcript first -> search first -> RED; MainWindowSource.openFind, delete
+    /// `model.transcriptFindSerial += 1` -> RED; MeetingsPage, drop `isPresented: $model.searchPresented` -> RED.
+    func testOneFindCommandWithTheTranscriptFirst() throws {
+        let menu = flat(try source("Sources/OxSayDictation/MainMenu.swift"))
+        XCTAssertTrue(menu.contains("case .find:"), "the typed Find action is bound")
+        XCTAssertTrue(menu.contains("#selector(AppDelegate.findFromMenu(_:))"))
+        let app = flat(try source("Sources/OxSayDictation/AppDelegate.swift"))
+        XCTAssertTrue(app.contains("func findFromMenu(_ sender: NSMenuItem)"))
+        XCTAssertTrue(app.contains("mainWindow.find()"))
+        let w = flat(try body(try window(), of: "func openFind() {"))
+        XCTAssertTrue(w.contains("FindTarget.decide(transcriptOnScreen: model.transcriptOnScreen"), "the source asks the core")
+        XCTAssertTrue(w.contains("model.transcriptFindSerial += 1"), "a transcript is on screen: its bar")
+        XCTAssertTrue(w.contains("model.searchPresented = true"), "otherwise: the meetings search field")
+        let t = flat(try source("Sources/MainWindowUI/TranscriptTab.swift"))
+        XCTAssertTrue(t.contains(".onChange(of: model.transcriptFindSerial)"), "the tab answers the serial")
+        XCTAssertTrue(t.contains("model.transcriptOnScreen = true") && t.contains("model.transcriptOnScreen = false"),
+                      "the tab flags itself on screen, so the precedence has a fact to read")
+        XCTAssertFalse(t.contains(".keyboardShortcut(\"f\""), "the menu owns ⌘F now: a hidden button would never fire")
+        let windowModel = flat(try source("Sources/MainWindowUI/MainWindowModel.swift"))
+        XCTAssertTrue(windowModel.contains("var transcriptOnScreen = false"))
+        let win = flat(try source("Sources/OxSayDictation/MainWindow.swift"))
+        XCTAssertTrue(win.contains("func find()"), "the controller forwards ⌘F to the source")
+    }
+
     /// Find scrolls on the state's serial (not on `current`, which does not move for 0 → 0), ⌘F with the bar open keeps
     /// the match, the field is focused on the next run-loop turn, and the parsed turns are kept between ticks.
     /// Mutation: TranscriptTab, `.onChange(of: find.serial)` -> `.onChange(of: find.current)` -> RED; ⌘F calling
@@ -149,9 +178,12 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
     }
 
     /// The query is the system search field's (native-UI N3): `.searchable` on the Meetings list writes `model.queryText`,
-    /// the typed text still reaches the core, and no hand-built field is left. Only the Meetings list carries it.
+    /// the typed text still reaches the core, and no hand-built field is left. Only the Meetings list carries it: the
+    /// modifier must sit INSIDE the `.list` branch — moved onto `body` it would hang the field on Off, Loading, Down
+    /// and Empty as well (#452). The sibling sweep reads the MainWindowUI directory, not a named few.
     /// Mutations: SearchPane, put back `TextField(L10nKey.searchPlaceholder.text, text: $model.queryText)` -> RED;
-    /// MeetingsPage, bind `.searchable(text: $localQuery` (a local @State) instead of `$model.queryText` -> RED;
+    /// MeetingsPage, move `.searchable` out of `case .list` onto `body` -> RED;
+    /// bind `.searchable(text: $localQuery` (a local @State) instead of `$model.queryText` -> RED;
     /// delete the `searchTyped` onChange -> RED; add `.searchable` to VoicesPage or DictationPage -> RED.
     func testTheSystemSearchFieldDrivesTheQuery_OnlyOnTheMeetingsList() throws {
         let pane = flat(try source("Sources/MainWindowUI/SearchPane.swift"))
@@ -159,11 +191,17 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         XCTAssertFalse(pane.contains("struct SearchField"))
         let page = flat(try source("Sources/MainWindowUI/MeetingsPage.swift"))
         XCTAssertFalse(page.contains("SearchField(model:"))
-        XCTAssertTrue(page.contains(".searchable(text: $model.queryText, placement: .toolbar, prompt: L10nKey.searchPlaceholder.text)"))
+        let listCase = try XCTUnwrap(page.range(of: "case .list:"), "the .list branch")
+        let searchable = try XCTUnwrap(page.range(of: ".searchable("), "the system search field")
+        XCTAssertGreaterThan(searchable.lowerBound, listCase.lowerBound, ".searchable belongs to the .list branch only")
+        XCTAssertTrue(page.contains(".searchable(text: $model.queryText, isPresented: $model.searchPresented, placement: .toolbar, prompt: L10nKey.searchPlaceholder.text)"))
         XCTAssertTrue(page.contains(".onChange(of: model.queryText) { _, text in model.actions.searchTyped(text) }"))
-        for other in ["VoicesPage", "DictationPage", "SettingsPage", "MainWindowView"] {
-            let t = try source("Sources/MainWindowUI/\(other).swift")
-            XCTAssertFalse(t.contains(".searchable"), "\(other) must not carry a search field")
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        for file in try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Sources/MainWindowUI").path)
+            where file.hasSuffix(".swift") && file != "MeetingsPage.swift" {
+            let t = try source("Sources/MainWindowUI/\(file)")
+            XCTAssertFalse(t.contains(".searchable"), "\(file) must not carry a search field")
         }
     }
 
@@ -196,6 +234,21 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         }
     }
 
+    /// #424 — a first detail read that lands while its row moved on (processing → done, a title saved) left the
+    /// stale state on screen: `DetailRead.needed` refuses to start a second read while the first is in flight, and
+    /// the settled row then stops the polling that would have read it again. After each landing the landed detail
+    /// is compared with the live row and one more read runs when the row moved.
+    /// Mutation: MainWindowSource.loadDetail, delete the `DetailRead.needed(row: row, shown: detail.info …)` check -> RED.
+    func testAReadThatLandedBehindTheRowReadsOnceMore() throws {
+        let load = flat(try body(try window(), of: "private func loadDetail(_ id: String) {"))
+        XCTAssertTrue(load.contains("model.data.details[id] = detail"), "the landed detail is applied")
+        XCTAssertTrue(load.contains("let row = model.data.meetings.first(where: { $0.id == id })"), "the LIVE row, not the landed detail")
+        XCTAssertTrue(load.contains("DetailRead.needed(row: row, shown: detail.info, failed: false) { again = true }"),
+                      "the landed detail is compared with the row, which may have moved during the read")
+        XCTAssertTrue(load.contains("if again { loadDetail(id) } else { model.data.detailLoading.remove(id) }"),
+                      "the rerun path and the stale-landing path share the one more read")
+    }
+
     /// Search: typing goes through the core's state machine; the effects cancel the stale request and drop an answer
     /// that arrives after the cancel.
     /// Mutation: MainWindowSource.searchEvent, `searchRequest?.cancel()` in .cancelInFlight deleted -> RED; or the
@@ -208,6 +261,37 @@ final class MainWindowSearchPlayWiringTests: XCTestCase {
         XCTAssertTrue(s.contains("guard !Task.isCancelled else { return } self?.searchEvent(.answered(generation: generation, answer))"))
         let w = try window()
         XCTAssertTrue(w.contains("a.searchTyped = { [weak self] text in self?.searchEvent(.typed(text)) }"))
+    }
+
+    /// #521 — «People on this call» picks a layout by width: the wide line of avatars with one-line
+    /// names under them while it fits, a collapsed cluster (overlapping avatars, «N participants», a
+    /// popover that lists everyone) when it does not. A name must never wrap letter by letter again.
+    /// Mutation: MeetingDetailView, delete `ViewThatFits` in the people section -> RED; delete
+    /// `.lineLimit(1)` -> RED; delete `.popover` -> RED.
+    func testThePeopleRowCollapsesInsteadOfWrapping() throws {
+        let d = flat(try source("Sources/MainWindowUI/MeetingDetailView.swift"))
+        let label = try XCTUnwrap(d.range(of: "Text(L10nKey.meetingPeople.text)"), "the people label")
+        let fit = try XCTUnwrap(d.range(of: "ViewThatFits(in: .horizontal)"), "the row picks a layout by width")
+        XCTAssertTrue(fit.lowerBound > label.lowerBound, "the label still heads the row")
+        XCTAssertTrue(d.contains(".lineLimit(1)"), "a name is one truncated line under its avatar, never wrapped")
+        XCTAssertTrue(d.contains(".popover("), "the collapsed variant lists everyone in a popover")
+        XCTAssertTrue(d.contains("L10nKey.meetingPeopleCount"), "the collapsed variant says how many are on the call")
+        // The rename action is reachable from both variants.
+        XCTAssertGreaterThanOrEqual(d.components(separatedBy: "openSpeakers").count - 1, 2)
+        XCTAssertFalse(d.contains("HStack(spacing: 14) { ForEach(Array(names.enumerated())"),
+                       "the old side-by-side row (the one that wrapped) is gone")
+    }
+
+    /// #521 — the player bar's close button was clipped at the column edge: the row was wider than the
+    /// narrowest column and the slider would not shrink. The bar now picks a variant that fits — full,
+    /// then a merged clock, then the clock without the scrubber — so the stop button is always inside.
+    /// Mutation: TranscriptTab MiniPlayer, delete `ViewThatFits` -> RED; delete the scrub-less variant -> RED.
+    func testThePlayerBarChoosesAVariantThatFits() throws {
+        let t = flat(try source("Sources/MainWindowUI/TranscriptTab.swift"))
+        XCTAssertTrue(t.contains("ViewThatFits(in: .horizontal) { row(clock: .split) row(clock: .merged) row(clock: .merged, scrub: false) }"),
+                      "three variants: full, merged clock, merged clock without the scrubber")
+        XCTAssertTrue(t.contains("IconButton(symbol: \"xmark\", labelKey: .a11yPlayStop)"), "the stop button is part of every variant")
+        XCTAssertTrue(t.contains(".accessibilityLabel(L10nKey.playPosition.text)"), "the scrubber still names itself")
     }
 
     /// A snippet is shown through the core's link-free renderer; a transcript turn is shown verbatim (no markup read).

@@ -70,6 +70,12 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Edit ▸ Find… (⌘F): answered by the source while the window exists; the command never opens it.
+    func find() {
+        guard window != nil else { return }
+        source?.openFind()
+    }
+
     /// A section key pressed while the window is already in front is only a section change: the policy, the
     /// menu and the order are already what `open` would set, and running it again would flash the window and
     /// re-read the data. Any other state takes the full open.

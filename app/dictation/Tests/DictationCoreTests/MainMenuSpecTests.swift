@@ -108,7 +108,7 @@ final class MainMenuSpecTests: XCTestCase {
                 for row in spec.rows {
                     guard case .item(let item) = row else { continue }
                     switch item.action {
-                    case .about, .showSection:
+                    case .about, .showSection, .find:
                         break
                     case .standard(let name):
                         XCTAssertTrue(StandardMenuSelector.names.contains(name),
@@ -176,6 +176,22 @@ final class MainMenuSpecTests: XCTestCase {
                 guard case .item(let item) = row, case .showSection(let section) = item.action else { continue }
                 XCTAssertTrue(MainWindowSpec.sections(advanced: true).contains(section), "\(section) has a key but no sidebar row")
             }
+        }
+    }
+
+    /// #452 — one Find command, ⌘F, under .regular only: under .accessory the window is not up and there is nothing
+    /// on screen for it to find in. It is a typed action, so a name that resolves to nothing cannot ship dead.
+    func testTheEditMenuHasOneFindCommandUnderRegular() {
+        let found = rows(of: .menuEdit).compactMap { row -> MainMenuItem? in
+            if case .item(let item) = row, item.action == .find { return item }
+            return nil
+        }
+        XCTAssertEqual(found.count, 1, "exactly one Find command — no Find Next/Previous items of our own")
+        XCTAssertEqual(found.first?.keyEquivalent, "f")
+        XCTAssertEqual(found.first?.title, .menuEditFind)
+        XCTAssertEqual(found.first?.shift, false)
+        for row in rows(of: .menuEdit, for: .accessory) {
+            if case .item(let item) = row, item.action == .find { XCTFail("no Find under .accessory") }
         }
     }
 

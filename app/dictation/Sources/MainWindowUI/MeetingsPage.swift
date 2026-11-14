@@ -83,7 +83,7 @@ struct MeetingsPage: View {
             }
                 // The system search field, in the window toolbar: only while there is a list to search, so Off, Loading,
                 // Down and Empty carry none. It writes the query the results are read from; Esc and the clear button are its own.
-                .searchable(text: $model.queryText, placement: .toolbar, prompt: L10nKey.searchPlaceholder.text)
+                .searchable(text: $model.queryText, isPresented: $model.searchPresented, placement: .toolbar, prompt: L10nKey.searchPlaceholder.text)
                 .onChange(of: model.queryText) { _, text in model.actions.searchTyped(text) }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -185,11 +185,28 @@ struct MeetingsSplit: NSViewControllerRepresentable {
     func updateNSViewController(_ controller: MeetingsSplitController, context: Context) {}
 }
 
+/// The Meetings split's own view: a mouseDown that reaches it is on its divider — the panes take every other
+/// point — and AppKit tracks the drag inside the call, so the flag stands exactly while the inner divider is
+/// dragged. A width may be written back only then: a drag of the window's outer sidebar divider resizes these
+/// subviews too (with the left button down all the same), and a width the outer clamp forced on the list must not
+/// overwrite the user's stored one. A divider moved by keyboard or VoiceOver never reaches mouseDown, so those
+/// moves are not persisted (accepted: issue #454).
+private final class MeetingsSplitView: NSSplitView {
+    private(set) var dividerDragActive = false
+
+    override func mouseDown(with event: NSEvent) {
+        dividerDragActive = true
+        super.mouseDown(with: event)
+        dividerDragActive = false
+    }
+}
+
 final class MeetingsSplitController: NSSplitViewController {
     static let listLimits: ClosedRange<CGFloat> = CGFloat(MainWindowSpec.meetingsListWidth.minimum)...CGFloat(MainWindowSpec.meetingsListWidth.maximum)
     static let detailMinimum = CGFloat(MainWindowSpec.meetingsDetailMinimum)
 
     private let model: MainWindowModel
+    private let meetingsSplit = MeetingsSplitView()
     /// The stored width has been applied (the split was wide enough to honour it).
     private var applied = false
     /// True while this controller moves the divider itself: that move is never the user's choice and never written back.
@@ -198,6 +215,7 @@ final class MeetingsSplitController: NSSplitViewController {
     init(model: MainWindowModel) {
         self.model = model
         super.init(nibName: nil, bundle: nil)
+        splitView = meetingsSplit
         splitView.isVertical = true
         splitView.dividerStyle = .thin
         let list = NSHostingController(rootView: MeetingsListColumn(model: model).environment(\.locale, L10nBundle.locale))
@@ -232,8 +250,10 @@ final class MeetingsSplitController: NSSplitViewController {
 
     override func splitViewDidResizeSubviews(_ notification: Notification) {
         super.splitViewDidResizeSubviews(notification)
-        // Only a drag of the divider by the user is stored: not our own restore, not a window resize.
-        guard applied, !restoring, NSEvent.pressedMouseButtons & 1 != 0, view.window?.inLiveResize != true,
+        // Only a drag of OUR divider by the user is stored: not our own restore, not a window resize, and not a
+        // drag of the window's outer sidebar divider (it resizes these subviews with the button down all the same,
+        // and a width its clamp forced on the list must not overwrite the stored one).
+        guard applied, !restoring, meetingsSplit.dividerDragActive,
               let list = splitViewItems.first?.viewController.view else { return }
         model.meetingsListWidth = list.frame.width
     }
