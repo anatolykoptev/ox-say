@@ -618,6 +618,55 @@ func TestDeleteOutputsRemovesPublishBackups(t *testing.T) {
 	}
 }
 
+// #427.2, review of #567: a project whose manifest holds no recorded outputs - the publish's manifest save
+// failed and the daemon restarted - still has its publish backups beside the output path. Deleting it with
+// its outputs removes them; the visible files stay (nothing vouches for them), and a stem whose export names
+// another project keeps its backups too.
+// Mutation: produce_ops.go deleteOwnedOutputs, restore `if len(paths) == 0 { return nil }` before the backup
+// loop -> the backups survive -> RED (TestDeleteOutputsRemovesBackupsOfAProjectWithNoRecordedOutputs/unrecorded).
+func TestDeleteOutputsRemovesBackupsOfAProjectWithNoRecordedOutputs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		exportID string // the stem's export manifest names this project when empty
+		gone     bool
+	}{
+		{"unrecorded", "", true},
+		{"another projects export", "some-other-project", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakePorts(t)
+			p, j := assembleFixture(t, f)
+			if err := p.assemble(j); err != nil {
+				t.Fatal(err)
+			}
+			stem := assembledStem(j)
+			if tc.exportID != "" {
+				if err := os.WriteFile(stem+".manifest.json", []byte(`{"id":"`+tc.exportID+`"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			j.m.Outputs = vproject.Outputs{}
+			if err := j.m.Save(j.dir); err != nil {
+				t.Fatal(err)
+			}
+			backup := filepath.Join(filepath.Dir(stem), backupPrefix(filepath.Base(stem)+".wav")+"zz")
+			if err := os.WriteFile(backup, []byte("the old file"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.remove(assembleID, true); err != nil {
+				t.Fatal(err)
+			}
+			_, err := os.Lstat(backup)
+			if gone := os.IsNotExist(err); gone != tc.gone {
+				t.Errorf("backup removed = %v, want %v (%v)", gone, tc.gone, err)
+			}
+			if _, err := os.Lstat(stem + ".wav"); err != nil {
+				t.Errorf("a visible output nothing vouches for was removed: %v", err)
+			}
+		})
+	}
+}
+
 // #427.3: two output names sharing their first bytes used to share a backup prefix — the name is cut to
 // fit a file name — so a publish of one listed and removed the other's leftover backup. The tag of the
 // full output name in the backup name makes the match exact again.
