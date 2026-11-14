@@ -462,3 +462,20 @@ func TestTranscriptionsRouteStillIgnoresTitle(t *testing.T) {
 		t.Fatalf("the OpenAI route stored a transcript: %+v", list)
 	}
 }
+
+// The retry path logs on every request while the store path is held; that
+// line must not carry the user's filesystem path (#571).
+func TestTranscriptsStoreRetryLogsNoPath(t *testing.T) {
+	r, blocked := blockedTranscriptsRig(t)
+	for i := 0; i < 2; i++ {
+		if code, _, _ := r.do(t, http.MethodGet, "/v1/transcripts"); code != http.StatusServiceUnavailable {
+			t.Fatalf("list with the store path held: %d, want 503", code)
+		}
+	}
+	if !testLogSaw(t, "transcripts: store unavailable") {
+		t.Fatal("the unavailable-store warning did not reach the daemon log")
+	}
+	if testLogSaw(t, blocked) || testLogSaw(t, r.d.Cfg.Home) {
+		t.Fatal("the store-open warning carries the filesystem path")
+	}
+}

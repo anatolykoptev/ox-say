@@ -28,7 +28,7 @@ const msgTranscriptsUnavailable = "transcripts are unavailable: the store could 
 func (d *Daemon) initTranscripts() {
 	s, err := transcripts.New(filepath.Join(d.Cfg.Home, "transcripts"), d.log)
 	if err != nil {
-		d.log.Warn("transcripts: store unavailable", slog.Any("error", err))
+		d.log.Warn("transcripts: store unavailable", slog.String("error", publicMessage(err, d.Cfg.Home)))
 		return
 	}
 	d.Transcripts = s
