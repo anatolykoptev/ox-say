@@ -270,15 +270,39 @@ class graph {
     // delta is >= the arc score > 0 (the whole-chain backoff is <= 0), so a non-zero entry marks a token
     // already set by a nearer state. bias[] must arrive zeroed.
     void bias(int state, float * bias, int n_vocab) const {
+        std::vector<std::pair<int, float>> e;
+        bias_sparse(state, e);
+        for (const auto & [tok, v] : e) {
+            if (tok >= 0 && tok < n_vocab) bias[tok] = v;
+        }
+    }
+
+    // The same table as (token, delta) pairs, one per token that gets a non-zero bias: a decode step
+    // touches a handful of tokens, not the whole vocabulary.
+    // `mark` (size n_vocab, zero-initialised, owned by the caller) makes the "already set by a nearer state"
+    // test O(1); it is left zeroed again on return.
+    void bias_sparse(int state, std::vector<std::pair<int, float>> & out, std::vector<unsigned char> * mark = nullptr) const {
+        out.clear();
         const float total = nodes_[(size_t) state].acc_total;
         float acc = 0.0f;
         for (int s = state; s >= 0; s = nodes_[(size_t) s].fail) {
-            for (const auto & [tok, child] : nodes_[(size_t) s].next) {
-                if (tok >= 0 && tok < n_vocab && bias[tok] == 0.0f) {
-                    bias[tok] = acc + nodes_[(size_t) child].arc_in - total;
+            for (const auto & kv : nodes_[(size_t) s].next) {
+                const int tok = kv.first;
+                bool seen;
+                if (mark && tok >= 0 && (size_t) tok < mark->size()) {
+                    seen = (*mark)[(size_t) tok] != 0;
+                    (*mark)[(size_t) tok] = 1;
+                } else {
+                    seen = std::any_of(out.begin(), out.end(), [tok](const std::pair<int, float> & p) { return p.first == tok; });
                 }
+                if (!seen) out.emplace_back(tok, acc + nodes_[(size_t) kv.second].arc_in - total);
             }
             acc += nodes_[(size_t) s].backoff;
+        }
+        if (mark) {
+            for (const auto & p : out) {
+                if (p.first >= 0 && (size_t) p.first < mark->size()) (*mark)[(size_t) p.first] = 0;
+            }
         }
     }
 
@@ -411,10 +435,12 @@ class run {
             if (logits[i] > logits[best]) best = i;
         }
         raw_best_ = n_vocab > 0 ? best : -1;
-        g_->bias(state_, bias, n_vocab);
+        if (mark_.size() != (size_t) n_vocab) mark_.assign((size_t) n_vocab, 0);
+        g_->bias_sparse(state_, scratch_, &mark_);
         const bool raw_starts_word = n_vocab > 0 && g_->word_start(best);
-        for (int i = 0; i < n_vocab; ++i) {
-            bias[i] = (raw_starts_word && !g_->word_start(i)) ? 0.0f : bias[i] * alpha_;
+        for (const auto & [tok, v] : scratch_) {
+            if (tok < 0 || tok >= n_vocab) continue;
+            bias[tok] = (raw_starts_word && !g_->word_start(tok)) ? 0.0f : v * alpha_;
         }
     }
 
@@ -428,6 +454,8 @@ class run {
     float alpha_;
     int state_ = 0;
     int raw_best_ = -1;
+    std::vector<std::pair<int, float>> scratch_;
+    std::vector<unsigned char> mark_;
     std::vector<int> ids_;
     std::vector<bool> changed_;
 };
@@ -545,49 +573,63 @@ inline std::vector<uint32_t> fold_cps(const std::string & s) {
 }
 }  // namespace detail
 
-inline std::string map_spoken(const std::string & text, const std::vector<term> & terms) {
-    struct al {
-        std::vector<uint32_t> f;
-        const std::string * written;
-    };
-    std::vector<al> als;
-    for (const term & t : terms) {
-        for (const std::string & sp : t.spoken) {
-            std::vector<uint32_t> f = detail::fold_cps(sp);
-            if (!f.empty()) als.push_back({ std::move(f), &t.text });
-        }
-    }
-    if (als.empty()) return text;
-    std::stable_sort(als.begin(), als.end(), [](const al & a, const al & b) { return a.f.size() > b.f.size(); });
-    const std::vector<std::string> ch = detail::utf8_chars(text);
-    std::vector<uint32_t> fold;
-    std::vector<uint32_t> raw;
-    for (const std::string & c : ch) {
-        uint32_t cp = detail::decode_cp(c);
-        raw.push_back(cp);
-        cp = detail::to_lower_cp(cp);
-        fold.push_back(cp == 0x451 ? 0x435 : cp);
-    }
-    std::string out;
-    for (size_t i = 0; i < ch.size();) {
-        bool hit = false;
-        if (i == 0 || !detail::is_letter_cp(raw[i - 1])) {
-            for (const al & a : als) {
-                const size_t n = a.f.size();
-                if (i + n > ch.size() || !std::equal(a.f.begin(), a.f.end(), fold.begin() + (long) i)) continue;
-                if (i + n < ch.size() && detail::is_letter_cp(raw[i + n])) continue;
-                out += *a.written;
-                i += n;
-                hit = true;
-                break;
+// The aliases folded once; map() is then allocation-light enough to run per word and per segment.
+class speller {
+  public:
+    explicit speller(const std::vector<term> & terms) {
+        for (const term & t : terms) {
+            for (const std::string & sp : t.spoken) {
+                std::vector<uint32_t> f = detail::fold_cps(sp);
+                if (!f.empty()) als_.push_back({ std::move(f), t.text });
             }
         }
-        if (!hit) {
-            out += ch[i];
-            ++i;
-        }
+        std::stable_sort(als_.begin(), als_.end(), [](const al & a, const al & b) { return a.f.size() > b.f.size(); });
     }
-    return out;
+
+    std::string map(const std::string & text) const {
+        if (als_.empty()) return text;
+        const std::vector<std::string> ch = detail::utf8_chars(text);
+        std::vector<uint32_t> fold, raw;
+        fold.reserve(ch.size());
+        raw.reserve(ch.size());
+        for (const std::string & c : ch) {
+            uint32_t cp = detail::decode_cp(c);
+            raw.push_back(cp);
+            cp = detail::to_lower_cp(cp);
+            fold.push_back(cp == 0x451 ? 0x435 : cp);
+        }
+        std::string out;
+        for (size_t i = 0; i < ch.size();) {
+            bool hit = false;
+            if (i == 0 || !detail::is_letter_cp(raw[i - 1])) {
+                for (const al & a : als_) {
+                    const size_t n = a.f.size();
+                    if (i + n > ch.size() || fold[i] != a.f[0] || !std::equal(a.f.begin(), a.f.end(), fold.begin() + (long) i)) continue;
+                    if (i + n < ch.size() && detail::is_letter_cp(raw[i + n])) continue;
+                    out += a.written;
+                    i += n;
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit) {
+                out += ch[i];
+                ++i;
+            }
+        }
+        return out;
+    }
+
+  private:
+    struct al {
+        std::vector<uint32_t> f;
+        std::string written;
+    };
+    std::vector<al> als_;
+};
+
+inline std::string map_spoken(const std::string & text, const std::vector<term> & terms) {
+    return speller(terms).map(text);
 }
 
 }  // namespace oxstt::boost

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Synthetic eval of Parakeet decoder term boosting (engine/stt/boost.h + the token-bias patch).
 #
-#   engine/stt/eval/boost_eval.sh corpus|synth|decode|score|all
+#   engine/stt/eval/boost_eval.sh corpus|synth|decode|cyr|score|all
 #
 #   corpus  vocab dump + manifest.tsv (boost_corpus.py)
 #   synth   one clip per manifest line with the installed `ox-say say` (read-only use of the daemon),
@@ -10,6 +10,7 @@
 #           a1 a2 a3, interleaved per clip so drift hits every arm alike; plus tiny (alpha 1e-6, token
 #           reference) and huge (alpha 30) on every 4th clip and on the silence clips, for the
 #           patch-level self-checks
+#   cyr     spoken-form arms (boost_cyr.py corpus|lists first; then boost_cyr.py score)
 #   score   boost_score.py: recall RU/EN, false insertions per 100 sentences, decode ms, the
 #           acoustic-veto arms and the self-checks
 #
@@ -57,14 +58,7 @@ cmd_corpus() {
     python3 -I "$here/boost_corpus.py" "$WORK/vocab.json" "$WORK" "$repo"
 }
 
-cmd_synth() {
-    [ -f "$WORK/manifest.tsv" ] || cmd_corpus
-    local have
-    have=$(ox-say voice ls 2>&1) || die "ox-say voice ls failed: $have"
-    for v in ru-milena ru-ruslan en-emma; do
-        printf '%s\n' "$have" | grep -q "^$v " || die "voice $v is not installed (ox-say voice ls)"
-    done
-    guard
+synth_manifest() {
     local n=0 id kind _lang voice text _terms attempt
     while IFS=$'\t' read -r id kind _lang voice text _terms; do
         [ -f "$WORK/audio/$id.wav" ] && continue
@@ -77,7 +71,19 @@ cmd_synth() {
             [ "$attempt" -lt 3 ] || die "ox-say say failed 4 times for $id: $(cat "$WORK/raw/$id.err")"
         done
         ffmpeg -nostdin -v error -y -i "$WORK/raw/$id.wav" -ar 16000 -ac 1 -c:a pcm_s16le "$WORK/audio/$id.wav"
-    done < "$WORK/manifest.tsv"
+    done < "$1"
+}
+
+cmd_synth() {
+    [ -f "$WORK/manifest.tsv" ] || cmd_corpus
+    local have
+    have=$(ox-say voice ls 2>&1) || die "ox-say voice ls failed: $have"
+    for v in ru-milena ru-ruslan en-emma; do
+        printf '%s\n' "$have" | grep -q "^$v " || die "voice $v is not installed (ox-say voice ls)"
+    done
+    guard
+    synth_manifest "$WORK/manifest.tsv"
+    [ ! -f "$WORK/manifest_neg.tsv" ] || synth_manifest "$WORK/manifest_neg.tsv"
     # silence-padded variants (3 s of digital silence on each side) of every 8th term clip, and 5 s of pure
     # silence: the patch-level self-checks (a boost must not make words out of silence)
     local k=0
@@ -141,6 +147,41 @@ cmd_decode() {
     echo "decode done"
 }
 
+
+# Spoken-form arms (boost_cyr.py): the lists are in $WORK/lists. Held-out recall: list A (hand + ru-milena
+# observations) decodes the ru-ruslan term clips, list B the ru-milena ones. U / Usafe (all observations)
+# decode every other clip, the new negatives and the EN clips. Interleaved per clip with the unboosted run.
+run_list() { # clip arm list alpha
+    local clip=$1 arm=$2 list=$3 alpha=$4 d="$WORK/out/$2"
+    mkdir -p "$d"
+    [ -f "$d/$clip.json" ] && return 0
+    nice -n 15 "$OXSTT" -m "$MODEL" -f "$WORK/audio/$clip.wav" --terms-stdin --boost-alpha "$alpha" -v \
+        < "$WORK/lists/$list.tsv" > "$d/$clip.json.tmp" 2> "$d/$clip.err"
+    mv "$d/$clip.json.tmp" "$d/$clip.json"
+}
+
+cmd_cyr() {
+    [ -f "$WORK/lists/U.tsv" ] || python3 -I "$here/boost_cyr.py" lists "$WORK" > /dev/null
+    guard
+    local n=0 id kind lang voice _text _terms a held
+    cat "$WORK/manifest.tsv" "$WORK/manifest_neg.tsv" > "$WORK/manifest_all.tsv"
+    while IFS=$'\t' read -r id kind lang voice _text _terms; do
+        n=$((n + 1))
+        if [ $((n % 25)) -eq 0 ]; then guard; fi
+        run_arm "$id" base
+        for a in 1 2 3; do
+            if [ "$kind" = term ] && [ "$lang" = ru ]; then
+                if [ "$voice" = ru-ruslan ]; then held=A; else held=B; fi
+                run_list "$id" "h${held}-a$a" "$held" "$a"
+                run_list "$id" "h${held}safe-a$a" "${held}safe" "$a"
+            fi
+            run_list "$id" "U-a$a" U "$a"
+            run_list "$id" "Usafe-a$a" Usafe "$a"
+        done
+    done < "$WORK/manifest_all.tsv"
+    echo "cyr decode done"
+}
+
 cmd_score() {
     python3 -I "$here/boost_score.py" "$WORK"
 }
@@ -149,7 +190,8 @@ case ${1:-} in
     corpus) cmd_corpus ;;
     synth) cmd_synth ;;
     decode) cmd_decode ;;
+    cyr) cmd_cyr ;;
     score) cmd_score ;;
     all) cmd_corpus; cmd_synth; cmd_decode; cmd_score ;;
-    *) die "usage: boost_eval.sh corpus|synth|decode|score|all" ;;
+    *) die "usage: boost_eval.sh corpus|synth|decode|cyr|score|all" ;;
 esac
