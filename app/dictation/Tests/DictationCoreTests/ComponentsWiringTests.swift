@@ -131,7 +131,8 @@ final class ComponentsWiringTests: XCTestCase {
     /// value, not its declaration.
     /// Mutations: MeetingsPage.swift `listItem.minimumThickness = Self.listLimits.lowerBound` -> `= 0` -> RED;
     /// `splitViewDidResizeSubviews`, drop `!restoring` -> RED; `SelectionToolbar`, drop
-    /// `, model.selectedMeeting != nil` -> RED; the Retry NoticeBar back inside `MeetingsListColumn` -> RED.
+    /// `, model.selectedMeeting != nil` -> RED; the Retry NoticeBar back inside `MeetingsListColumn` -> RED;
+    /// `MeetingsSplitView.mouseDown` without `dividerDragActive = true` -> RED (a sidebar drag can clobber the width).
     func testMeetingsSplitLimitsAndSelectionGuards() throws {
         let page = Self.stripComments(try String(contentsOf: mainWindowUI.appendingPathComponent("MeetingsPage.swift"), encoding: .utf8))
         XCTAssertTrue(page.contains("CGFloat(MainWindowSpec.meetingsListWidth.minimum)...CGFloat(MainWindowSpec.meetingsListWidth.maximum)"))
@@ -142,7 +143,13 @@ final class ComponentsWiringTests: XCTestCase {
         // The restore waits for a split wide enough to honour it, and its own move is never stored.
         XCTAssertTrue(page.contains("guard !applied, splitView.bounds.width >= Self.listLimits.lowerBound + MainWindowSpec.splitDividerWidth + Self.detailMinimum else { return }"))
         XCTAssertTrue(page.contains("restoring = true\n        defer { restoring = false }\n        splitView.setPosition("))
-        XCTAssertTrue(page.contains("guard applied, !restoring, NSEvent.pressedMouseButtons & 1 != 0"))
+        // A width is stored only while OUR divider is dragged: a drag of the window's outer sidebar divider
+        // resizes these subviews too (left button down all the same) and must not overwrite the stored width.
+        XCTAssertTrue(page.contains("guard applied, !restoring, meetingsSplit.dividerDragActive,"))
+        XCTAssertFalse(page.contains("pressedMouseButtons"), "a held button is not proof OUR divider is the one being dragged")
+        XCTAssertTrue(page.contains("splitView = meetingsSplit"))
+        XCTAssertTrue(page.contains("private final class MeetingsSplitView: NSSplitView {"))
+        XCTAssertTrue(page.contains("dividerDragActive = true\n        super.mouseDown(with: event)\n        dividerDragActive = false"))
         XCTAssertTrue(page.contains("model.meetingsListWidth = list.frame.width"))
         XCTAssertTrue(page.contains("if case .list = model.pageState, let d = model.selectedDetail, model.selectedMeeting != nil {"))
         XCTAssertTrue(page.contains("if let id = model.selectedMeeting { model.actions.deleteMeeting(id) }"))

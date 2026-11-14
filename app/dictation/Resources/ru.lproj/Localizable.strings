@@ -15,6 +15,7 @@
 "menu.edit.copy" = "Копировать";
 "menu.edit.paste" = "Вставить";
 "menu.edit.select_all" = "Выбрать всё";
+"menu.edit.find" = "Найти…";
 
 /* Settings… (⌘,) in the app menu, and the View menu that holds the sections. */
 "menu.settings_open" = "Настройки…";
@@ -221,6 +222,7 @@
 "meeting.speaker.you" = "Вы";
 "meeting.speaker.time" = "Время речи: %@";
 "meeting.people" = "Участники звонка";
+"meeting.people.count" = "Участники: %d";
 "meeting.name_them" = "Назвать";
 "meeting.speakers.footnote" = "Имена появятся в заметках и в расшифровке.";
 "meeting.duration.min" = "%d мин";
@@ -385,7 +387,6 @@
 "a11y.find_previous" = "Предыдущее совпадение";
 "a11y.play_stop" = "Остановить воспроизведение";
 "a11y.rename" = "Переименовать";
-"a11y.search_clear" = "Очистить поиск";
 "notice.speech_runaway" = "Голос не смог дочитать этот текст и был остановлен. Попробуйте ещё раз или выделите меньше текста.";
 "notice.speech_runaway.retried" = "Голос не смог дочитать этот текст даже со второй попытки. Выделите меньше текста или выберите другой голос.";
 "meeting.failed.where_retry" = "Откройте встречу и нажмите «Повторить».";

@@ -45,6 +45,7 @@ public enum L10nKey: String, CaseIterable {
     case menuEditCopy = "menu.edit.copy"
     case menuEditPaste = "menu.edit.paste"
     case menuEditSelectAll = "menu.edit.select_all"
+    case menuEditFind = "menu.edit.find"
     // Settings… in the App menu (⌘,) and the View menu with the sections.
     case menuSettingsOpen = "menu.settings_open"
     case menuView = "menu.view"
@@ -219,6 +220,7 @@ public enum L10nKey: String, CaseIterable {
     case meetingSpeakerYou = "meeting.speaker.you"
     case meetingSpeakerTime = "meeting.speaker.time"
     case meetingPeople = "meeting.people"
+    case meetingPeopleCount = "meeting.people.count"
     case meetingNameThem = "meeting.name_them"
     case meetingSpeakersFootnote = "meeting.speakers.footnote"
     case meetingDurationMin = "meeting.duration.min"
@@ -626,7 +628,6 @@ public enum L10nKey: String, CaseIterable {
     case a11yFindPrevious = "a11y.find_previous"
     case a11yPlayStop = "a11y.play_stop"
     case a11yRename = "a11y.rename"
-    case a11ySearchClear = "a11y.search_clear"
     // The Озвучка (speak) section's editor and progress rows.
     case speakScript = "speak.script"
     case speakOpenDocument = "speak.open_document"

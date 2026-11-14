@@ -191,15 +191,9 @@ private struct NotesTab: View {
             if !names.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(L10nKey.meetingPeople.text).font(.subheadline).foregroundStyle(.secondary)
-                    HStack(spacing: 14) {
-                        ForEach(Array(names.enumerated()), id: \.offset) { i, n in
-                            HStack(spacing: 6) {
-                                SpeakerAvatar(name: n.name, index: i, size: 24)
-                                Text(n.name)
-                            }
-                            .opacity(n.named ? 1 : 0.65)
-                        }
-                        Button(L10nKey.meetingNameThem.text, action: openSpeakers).buttonStyle(.link)
+                    ViewThatFits(in: .horizontal) {
+                        PeopleLine(names: names, openSpeakers: openSpeakers)
+                        PeopleCluster(names: names, openSpeakers: openSpeakers)
                     }
                 }
             }
@@ -247,6 +241,69 @@ enum PeopleRow {
             out += live.map { Person(name: $0.label, named: !$0.name.isEmpty) }
         }
         return out
+    }
+}
+
+/// The people row while it fits: one cell per voice — its circle, the name under it on one line,
+/// truncated — then «Name them».
+private struct PeopleLine: View {
+    let names: [PeopleRow.Person]
+    let openSpeakers: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            ForEach(Array(names.enumerated()), id: \.offset) { i, n in
+                VStack(spacing: 3) {
+                    SpeakerAvatar(name: n.name, index: i, size: 28)
+                    Text(n.name).font(.caption).lineLimit(1)
+                }
+                .frame(width: 64)
+                .opacity(n.named ? 1 : 0.65)
+            }
+            Button(L10nKey.meetingNameThem.text, action: openSpeakers)
+                .buttonStyle(.link)
+                .padding(.top, 6)
+        }
+    }
+}
+
+/// The people row collapsed when the line cannot fit: the circles overlapped, «N participants ▾»,
+/// and a popover that lists everyone with the rename action.
+private struct PeopleCluster: View {
+    let names: [PeopleRow.Person]
+    let openSpeakers: () -> Void
+    @State private var open = false
+
+    var body: some View {
+        Button { open = true } label: {
+            HStack(spacing: 8) {
+                HStack(spacing: -10) {
+                    ForEach(Array(names.enumerated()), id: \.offset) { i, n in
+                        SpeakerAvatar(name: n.name, index: i, size: 24)
+                            .overlay(Circle().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
+                            .opacity(n.named ? 1 : 0.65)
+                            .zIndex(Double(-i))
+                    }
+                }
+                Text(String(format: L10nKey.meetingPeopleCount.text, names.count))
+                Image(systemName: "chevron.down").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(names.enumerated()), id: \.offset) { i, n in
+                    HStack(spacing: 8) {
+                        SpeakerAvatar(name: n.name, index: i, size: 24)
+                        Text(n.name)
+                    }
+                    .opacity(n.named ? 1 : 0.65)
+                }
+                Button(L10nKey.meetingNameThem.text) { open = false; openSpeakers() }
+                    .buttonStyle(.link)
+            }
+            .padding(14)
+        }
     }
 }
 

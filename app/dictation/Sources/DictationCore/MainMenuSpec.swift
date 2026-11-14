@@ -21,6 +21,9 @@ public enum MainMenuAction: Equatable {
     case about
     /// Opens the main window on a section: ⌘, for Settings, ⌘1... for the sidebar's rows.
     case showSection(MainSection)
+    /// Edit ▸ Find… ⌘F: the one Find command. Which field it wakes — the transcript's
+    /// bar or the meetings search — is the window's call (`FindTarget`), not the menu's.
+    case find
 }
 
 /// The standard AppKit selectors a menu row may name: the ones AppKit itself
@@ -84,8 +87,8 @@ public struct MainMenuSpec: Equatable {
     public static func menu(for policy: WindowPolicy.Policy, advanced: Bool = false,
                             live: Set<MainSection> = MainWindowSpec.liveSections) -> [MainMenuSpec] {
         switch policy {
-        case .regular: return [app, edit, view(advanced: advanced, live: live), window]
-        case .accessory: return [edit]
+        case .regular: return [app, edit(find: true), view(advanced: advanced, live: live), window]
+        case .accessory: return [edit(find: false)]
         }
     }
 
@@ -101,17 +104,25 @@ public struct MainMenuSpec: Equatable {
     ])
 
     /// Edit — the standard editing selectors, so ⌘Z/⌘X/⌘C/⌘V/⌘A reach the
-    /// responder chain in any of the app's windows.
-    private static let edit = MainMenuSpec(title: .menuEdit, rows: [
-        .item(MainMenuItem(title: .menuEditUndo, keyEquivalent: "z", action: .standard("undo:"))),
-        .item(MainMenuItem(title: .menuEditRedo, keyEquivalent: "z", shift: true, action: .standard("redo:"))),
-        .separator,
-        .item(MainMenuItem(title: .menuEditCut, keyEquivalent: "x", action: .standard("cut:"))),
-        .item(MainMenuItem(title: .menuEditCopy, keyEquivalent: "c", action: .standard("copy:"))),
-        .item(MainMenuItem(title: .menuEditPaste, keyEquivalent: "v", action: .standard("paste:"))),
-        .separator,
-        .item(MainMenuItem(title: .menuEditSelectAll, keyEquivalent: "a", action: .standard("selectAll:"))),
-    ])
+    /// responder chain in any of the app's windows. `find` adds the one Find
+    /// command, ⌘F, under .regular only: under .accessory the window is not up
+    /// and there is nothing on screen for it to find in.
+    private static func edit(find: Bool) -> MainMenuSpec {
+        var rows: [MainMenuRow] = [
+            .item(MainMenuItem(title: .menuEditUndo, keyEquivalent: "z", action: .standard("undo:"))),
+            .item(MainMenuItem(title: .menuEditRedo, keyEquivalent: "z", shift: true, action: .standard("redo:"))),
+            .separator,
+            .item(MainMenuItem(title: .menuEditCut, keyEquivalent: "x", action: .standard("cut:"))),
+            .item(MainMenuItem(title: .menuEditCopy, keyEquivalent: "c", action: .standard("copy:"))),
+            .item(MainMenuItem(title: .menuEditPaste, keyEquivalent: "v", action: .standard("paste:"))),
+            .separator,
+            .item(MainMenuItem(title: .menuEditSelectAll, keyEquivalent: "a", action: .standard("selectAll:"))),
+        ]
+        if find {
+            rows += [.separator, .item(MainMenuItem(title: .menuEditFind, keyEquivalent: "f", action: .find))]
+        }
+        return MainMenuSpec(title: .menuEdit, rows: rows)
+    }
 
     /// View — one row per sidebar section with ⌘1, ⌘2... in sidebar order, derived from the sidebar's own list so a
     /// section added there gets its key and a hidden one gets none. Keys stop at ⌘9.

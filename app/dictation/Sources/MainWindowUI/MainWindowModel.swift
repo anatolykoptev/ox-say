@@ -33,6 +33,12 @@ public final class MainWindowModel: ObservableObject {
     /// The hit that was clicked last; the open meeting follows it.
     @Published public var focus: MeetingFocus?
     private var focusSerial = 0
+    /// The transcript tab flags itself while it is on screen: the Find command's precedence reads it.
+    public var transcriptOnScreen = false
+    /// Bumped by the Find command: the transcript's bar opens and focuses on the change.
+    @Published public var transcriptFindSerial = 0
+    /// The Find command's other answer: the .list branch's `.searchable` binds it, so ⌘F wakes that field.
+    @Published public var searchPresented = false
     /// The tab a chosen meeting opens on.
     public var initialMeetingTab: MeetingTab = .notes
     /// The text the transcript's find opens with; the screenshot harness sets it, the app leaves it nil.
@@ -74,7 +80,7 @@ public final class MainWindowModel: ObservableObject {
     var meetingsEnabled: Bool { data.meetingSettings.enabled }
 
     /// What the Meetings page shows: one decision, in DictationCore.
-    var pageState: MeetingsPageState {
+    public var pageState: MeetingsPageState {
         MeetingsPageState.of(enabled: meetingsEnabled, load: data.meetingsLoad, hasMeetings: !data.meetings.isEmpty,
                              recording: data.recordingElapsed != nil)
     }

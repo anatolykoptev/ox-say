@@ -488,7 +488,7 @@ func drawWindows(_ window: NSWindow, sheet: NSWindow?, to file: URL) -> Bool {
     // Only these two flags are asked for on the command line, to keep a run short.
     let only = ProcessInfo.processInfo.environment["SHOTS_ONLY"].map { Set($0.split(separator: ",").map(String.init)) }
 
-    // SHOTS_WIDTHS=760,1400 renders each scene at those widths (file names get a -w<width> suffix); default is one 980 pt shot.
+    // SHOTS_WIDTHS=802,1400 renders each scene at those widths (file names get a -w<width> suffix); default is one 980 pt shot.
     let widths = ProcessInfo.processInfo.environment["SHOTS_WIDTHS"].map { $0.split(separator: ",").compactMap { Double($0) }.map { CGFloat($0) } }
     for lang in ["en", "ru"] {
         guard let bundle = Bundle(path: root.appendingPathComponent("Resources/\(lang).lproj").path) else {

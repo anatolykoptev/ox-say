@@ -55,6 +55,9 @@ enum MainMenuBar {
             item.action = #selector(AppDelegate.showSectionFromMenu(_:))
             item.target = appDelegate
             item.representedObject = section.rawValue
+        case .find:
+            item.action = #selector(AppDelegate.findFromMenu(_:))
+            item.target = appDelegate
         }
     }
 }
