@@ -3,6 +3,16 @@
 //   ox-stt -m <model> -f <16 kHz mono WAV> [--engine parakeet|whisper] [-l lang] [--prompt text]
 //          [-t threads] [-ng] [--chunk-s 30] [-o out.json] [-v]
 //
+//   ox-stt -m <parakeet model> -f <WAV> --terms-stdin [--boost-alpha <f>]
+//          reads terms (one per line, "term[<TAB>weight]", at least 3 characters, at most 200) from stdin only,
+//          never from argv or a file, and boosts them in the greedy decode (engine/stt/boost.h): the decoder
+//          re-ranks the non-blank candidates of a step it was going to emit a token for; blank, duration and
+//          the reported probabilities are untouched. --boost-alpha scales the boost (default 0 = off, and
+//          off prints byte-for-byte what a run without the flags prints). With a boost on, the JSON gains
+//          "tokens":[{"id","t","p","boosted"}] after "words": every emitted token with its RAW (unboosted)
+//          probability and whether the boost changed it, so a veto on a low raw p can be computed after
+//          the fact. CLI only: --serve, /transcribe and the session routes decode without terms.
+//
 //   ox-stt --serve -m <parakeet model> --port <port> [--vad <silero VAD model>]
 //          [-t threads] [-ng] [--chunk-s 30] [-v]
 //          loads the model once, warms it up, then serves loopback HTTP (whisper stays CLI-only):
@@ -55,6 +65,7 @@
 #include "whisper.h"
 
 #include "../common/wav_reader.h"
+#include "boost.h"
 #include "edge_pad.h"
 #include "redecode.h"
 #include "segmenter.h"
@@ -93,10 +104,20 @@ struct segment {
     std::string text;
 };
 
+// A decoded token as the boost reports it: raw (unboosted) probability, and whether the boost changed it.
+struct token_rec {
+    int id;
+    std::string text;
+    float p;
+    bool boosted;
+};
+
 struct result {
     std::string language;
     std::vector<segment> segments;
     std::vector<word> words;
+    bool has_tokens = false;  // set when a boost graph was active; the JSON then carries "tokens"
+    std::vector<token_rec> tokens;
 };
 
 struct args {
@@ -107,19 +128,22 @@ struct args {
     double chunk_s = 30.0;
     double redecode_max_s = 15.0;  // --serve only: re-decode at finish, 0 disables
     double redecode_budget_ms = 500.0;  // --serve only: re-decode only if predicted to fit, 0 disables
+    bool terms_stdin = false;  // CLI only: read boost terms from stdin
+    float boost_alpha = 0.0f;  // 0 = off
 };
 
 void usage(const char * argv0) {
     fprintf(stderr,
             "usage: %s -m model -f audio.wav [--engine parakeet|whisper] [-l lang] [--prompt text]\n"
             "          [-t threads] [-ng] [--chunk-s 30] [-o out.json] [-v]\n"
+            "       %s -m parakeet-model -f audio.wav --terms-stdin [--boost-alpha 1]   (terms on stdin)\n"
             "       %s --serve -m model --port port [--vad silero-vad.bin] [-t threads] [-ng]\n"
             "          [--chunk-s 30] [--redecode-max-s 15] [--redecode-budget-ms 500] [-v]\n"
             "audio must be a 16 kHz mono WAV (PCM16 or float32): ffmpeg -i in -ar 16000 -ac 1 out.wav\n"
             "--vad enables the /sessions routes: POST /sessions, then raw little-endian float32\n"
             "mono 16 kHz PCM chunks to /sessions/<id>/audio, POST /sessions/<id>/finish or\n"
             "DELETE /sessions/<id> to end it\n",
-            argv0, argv0);
+            argv0, argv0, argv0);
 }
 
 bool parse(int argc, char ** argv, args & a) {
@@ -157,6 +181,14 @@ bool parse(int argc, char ** argv, args & a) {
         } else if (k == "--redecode-budget-ms") {
             if (!next(v)) return false;
             a.redecode_budget_ms = atof(v.c_str());
+        } else if (k == "--terms-stdin") {
+            a.terms_stdin = true;
+        } else if (k == "--boost-alpha") {
+            if (!next(v)) return false;
+            char * end = nullptr;
+            const double al = strtod(v.c_str(), &end);
+            if (v.empty() || *end != '\0' || !std::isfinite(al) || al < 0.0) return false;
+            a.boost_alpha = (float) al;
         } else if (k == "--serve") {
             a.serve = true;
         } else if (k == "--vad") {
@@ -180,6 +212,9 @@ bool parse(int argc, char ** argv, args & a) {
         !std::isfinite(a.chunk_s) || a.chunk_s < 5.0 || !std::isfinite(a.redecode_max_s) ||
         a.redecode_max_s < 0.0 || !std::isfinite(a.redecode_budget_ms) || a.redecode_budget_ms < 0.0) {
         return false;
+    }
+    if ((a.terms_stdin || a.boost_alpha != 0.0f) && (a.serve || a.engine != "parakeet")) {
+        return false;  // boosting is a parakeet CLI feature for now
     }
     if (a.serve) {
         // serve mode is parakeet only and takes audio over HTTP, not from flags
@@ -267,8 +302,24 @@ parakeet_context * load_parakeet(const args & a, std::string & err) {
     return ctx;
 }
 
+// Hooks of one chunk's decode: the boost run is reset when the encoder starts, advanced on every emitted
+// token and asked for the bias at every step that would emit one.
+bool boost_encoder_begin(parakeet_context *, parakeet_state *, void * ud) {
+    static_cast<oxstt::boost::run *>(ud)->reset();
+    return true;
+}
+void boost_new_token(parakeet_context *, parakeet_state *, const parakeet_token_data * d, void * ud) {
+    static_cast<oxstt::boost::run *>(ud)->on_token(d->id);
+}
+void boost_token_bias(parakeet_context *, parakeet_state *, const float * logits, float * bias, int n_vocab,
+                      void * ud) {
+    static_cast<oxstt::boost::run *>(ud)->fill(logits, bias, n_vocab);
+}
+
+// graph: optional boost graph (null = today's decode, byte for byte), applied with weight alpha.
 bool decode_parakeet(parakeet_context * ctx, const args & a, const std::vector<float> & x, result & r,
-                     std::string & err) {
+                     std::string & err, const std::shared_ptr<const oxstt::boost::graph> & graph = nullptr,
+                     float alpha = 0.0f) {
     const std::vector<size_t> b = chunk_bounds(x, (size_t) (a.chunk_s * SR));
     std::vector<float> padded;
     for (size_t c = 0; c + 1 < b.size(); ++c) {
@@ -283,17 +334,39 @@ bool decode_parakeet(parakeet_context * ctx, const args & a, const std::vector<f
         parakeet_full_params fp = parakeet_full_default_params(PARAKEET_SAMPLING_GREEDY);
         fp.n_threads  = a.threads;
         fp.no_context = true;
+        std::unique_ptr<oxstt::boost::run> brun;  // one run per chunk: parakeet_full restarts the decoder
+        if (graph) {
+            brun = std::make_unique<oxstt::boost::run>(graph, alpha);
+            fp.encoder_begin_callback           = boost_encoder_begin;
+            fp.encoder_begin_callback_user_data = brun.get();
+            fp.new_token_callback               = boost_new_token;
+            fp.new_token_callback_user_data     = brun.get();
+            fp.token_bias_callback              = boost_token_bias;
+            fp.token_bias_callback_user_data    = brun.get();
+        }
         if (parakeet_full(ctx, fp, in, n_in) != 0) {
             err = "parakeet failed on chunk " + std::to_string(c) + " at " + std::to_string(off) + " s";
             return false;
         }
         const double end = (double) b[c + 1] / SR;
+        size_t n_tok = 0;
+        r.has_tokens = r.has_tokens || brun != nullptr;
         int n_dropped = 0;  // tokens the decoder made out of a pad alone
         for (int i = 0; i < parakeet_full_n_segments(ctx); ++i) {
             std::vector<edge_pad::token> toks;
             for (int j = 0; j < parakeet_full_n_tokens(ctx, i); ++j) {
                 const parakeet_token_data d = parakeet_full_get_token_data(ctx, i, j);
                 toks.push_back({ parakeet_full_get_token_text(ctx, i, j), d.t0, d.t1, d.p, d.is_word_start });
+                if (brun) {
+                    // d.p is the raw probability (the hook keeps the logits unbiased); the run recorded,
+                    // in emission order, which tokens the bias changed
+                    const size_t k = n_tok++;
+                    const bool agrees = k < brun->ids().size() && brun->ids()[k] == d.id;
+                    if (!agrees) {
+                        fprintf(stderr, "ox-stt: boost record out of step with the decode at token %zu\n", k);
+                    }
+                    r.tokens.push_back({ d.id, toks.back().piece, d.p, agrees && brun->changed()[k] });
+                }
             }
             const edge_pad::segment_result sr = edge_pad::map_segment(
                 toks, parakeet_full_get_segment_text(ctx, i), parakeet_full_get_segment_t0(ctx, i),
@@ -310,12 +383,29 @@ bool decode_parakeet(parakeet_context * ctx, const args & a, const std::vector<f
     return true;
 }
 
-bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std::string & err) {
+bool run_parakeet(const args & a, const std::vector<float> & x, result & r, std::string & err,
+                  const std::vector<oxstt::boost::term> & terms = {}) {
     parakeet_context * ctx = load_parakeet(a, err);
     if (!ctx) {
         return false;
     }
-    const bool ok = decode_parakeet(ctx, a, x, r, err);
+    std::shared_ptr<const oxstt::boost::graph> graph;
+    if (a.boost_alpha > 0.0f && !terms.empty()) {
+        oxstt::boost::vocab_view v;
+        v.n_vocab = parakeet_n_vocab(ctx);
+        v.piece   = [ctx](int i) { return parakeet_token_to_str(ctx, i); };
+        std::vector<std::string> skipped;
+        graph = oxstt::boost::graph::build(terms, v, oxstt::boost::params{}, &skipped);
+        for (const std::string & s : skipped) {
+            fprintf(stderr, "ox-stt: boost: cannot spell \"%s\" with the model's vocabulary, skipped\n", s.c_str());
+        }
+    }
+    const auto t_dec = std::chrono::steady_clock::now();
+    const bool ok = decode_parakeet(ctx, a, x, r, err, graph, a.boost_alpha);
+    if (a.verbose) {
+        fprintf(stderr, "ox-stt: decode_ms=%.1f\n",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_dec).count());
+    }
     parakeet_free(ctx);
     return ok;
 }
@@ -477,7 +567,19 @@ std::string result_json(const std::string & engine, const result & r, size_t n_s
         json_str(o, r.words[i].w);
         o += ",\"s\":" + num(r.words[i].s) + ",\"e\":" + num(r.words[i].e) + ",\"p\":" + num(r.words[i].p) + "}";
     }
-    o += "]}\n";
+    o += "]";
+    if (r.has_tokens) {
+        o += ",\"tokens\":[";
+        for (size_t i = 0; i < r.tokens.size(); ++i) {
+            char p[32];
+            snprintf(p, sizeof(p), "%.6f", r.tokens[i].p);
+            o += (i ? "," : "") + std::string("{\"id\":") + std::to_string(r.tokens[i].id) + ",\"t\":";
+            json_str(o, r.tokens[i].text);
+            o += std::string(",\"p\":") + p + ",\"boosted\":" + (r.tokens[i].boosted ? "true" : "false") + "}";
+        }
+        o += "]";
+    }
+    o += "}\n";
     return o;
 }
 
@@ -1421,9 +1523,24 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "ox-stt: %s\n", err.c_str());
         return 1;
     }
+    // Terms come from stdin only: argv shows in `ps`, and a file would be a second copy of the user's list.
+    std::vector<oxstt::boost::term> terms;
+    if (a.terms_stdin) {
+        std::string text;
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0) {
+            text.append(buf, n);
+        }
+        std::string perr;
+        terms = oxstt::boost::parse_terms(text, perr);
+        if (!perr.empty()) {
+            fprintf(stderr, "ox-stt: terms: %s", perr.c_str());  // a bad line is skipped, never a failed decode
+        }
+    }
     const auto t0 = std::chrono::steady_clock::now();
     result r;
-    const bool ok = a.engine == "whisper" ? run_whisper(a, x, r, err) : run_parakeet(a, x, r, err);
+    const bool ok = a.engine == "whisper" ? run_whisper(a, x, r, err) : run_parakeet(a, x, r, err, terms);
     if (!ok) {
         fprintf(stderr, "ox-stt: %s\n", err.c_str());
         return 1;
