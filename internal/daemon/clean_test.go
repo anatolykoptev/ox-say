@@ -965,6 +965,13 @@ func TestACleanInstallErrorNamesNoAbsolutePath(t *testing.T) {
 	if !strings.Contains(got, "Permission denied") {
 		t.Fatalf("clean install_error lost the fetch's words: %q", got)
 	}
+	// The log line of the failure is path-free too (#514, review).
+	if !testLogSaw(t, "voice cleanup model download failed") {
+		t.Fatal("the failed cleanup download was not logged")
+	}
+	if testLogSaw(t, d.Cfg.Home) {
+		t.Fatal("the daemon log of a failed cleanup fetch names the absolute path")
+	}
 }
 
 // produce's wait log names the cleanup, not dictation.

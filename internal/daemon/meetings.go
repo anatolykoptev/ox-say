@@ -968,7 +968,7 @@ func (d *Daemon) runNotesInstall(ctx context.Context, cmd *exec.Cmd, tail *bytes
 		code := d.installFailure(msg)
 		d.notes.mu.Lock()
 		d.notes.err, d.notes.code = "The download failed: "+msg, code
-		d.log.Warn("notes model download failed", slog.Any("error", err), slog.String("stderr", msg))
+		d.log.Warn("notes model download failed", slog.Any("error", err), slog.String("stderr", publicMessage(errors.New(msg), d.Cfg.Home)))
 		d.notes.mu.Unlock()
 	}
 	d.notes.mu.Lock()

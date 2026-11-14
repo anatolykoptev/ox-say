@@ -101,7 +101,13 @@ func (d *Daemon) writeMeetingErr(w http.ResponseWriter, err error) {
 	if code >= http.StatusInternalServerError {
 		level = slog.LevelWarn
 	}
-	d.log.Log(context.Background(), level, "meeting request failed", slog.Int("status", code), slog.Any("error", err))
+	// An install refusal wraps the OS error that names the absolute destination: log its path-free words, the
+	// ones the response carries (#514).
+	reason := err.Error()
+	if errors.Is(err, ErrNotesInstall) {
+		reason = d.meetingErrText(err)
+	}
+	d.log.Log(context.Background(), level, "meeting request failed", slog.Int("status", code), slog.String("error", reason))
 	writeErr(w, code, d.meetingErrText(err))
 }
 

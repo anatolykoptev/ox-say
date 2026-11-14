@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log/slog"
 	"net"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -774,6 +777,46 @@ func TestInstallFailuresNameNoAbsolutePath(t *testing.T) {
 	pathFree(t, "install_error", got, d3.Cfg.Home)
 	if !strings.Contains(got, "Permission denied") {
 		t.Fatalf("install_error lost the fetch's words: %q", got)
+	}
+}
+
+// The daemon log is as path-free as the response (#514, review): a refused notes-model install (MkdirAll,
+// cmd.Start) and a failed fetch's stderr tail both name the absolute destination, and the Warn that records
+// them used to carry it raw.
+// Mutations: meetings_http.go writeMeetingErr, log `slog.Any("error", err)` -> the refusal case fails;
+// meetings.go runNotesInstall, log the raw `msg` as stderr -> the fetch case fails.
+func TestInstallFailureLogsNameNoAbsolutePath(t *testing.T) {
+	d := installFixture(t, "#!/bin/sh\nexit 0\n")
+	if err := os.WriteFile(d.Cfg.ModelsDir(), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := d.InstallNotesModel("")
+	if err == nil {
+		t.Fatal("a models dir that is a file must refuse the download")
+	}
+	// A refusal is a 409, logged at debug: read it there.
+	var buf bytes.Buffer
+	saved := d.log
+	d.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	d.writeMeetingErr(httptest.NewRecorder(), err)
+	d.log = saved
+	if strings.Contains(buf.String(), d.Cfg.ModelsDir()) {
+		t.Fatalf("the daemon log of a refused install names the absolute models path: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "not a directory") {
+		t.Fatalf("the daemon log of a refused install lost its reason: %s", buf.String())
+	}
+
+	d2 := installFixture(t, "#!/bin/sh\necho \"cp: cannot create regular file '$5/qwen.gguf': Permission denied\" >&2\nexit 1\n")
+	if err := d2.InstallNotesModel(""); err != nil {
+		t.Fatal(err)
+	}
+	testutil.WaitFor(t, 5*time.Second, func() bool { return d2.notesInstalling() == 0 }, "the download to fail")
+	if !testLogSaw(t, "notes model download failed") {
+		t.Fatal("the failed download was not logged")
+	}
+	if testLogSaw(t, d2.Cfg.ModelsDir()) {
+		t.Fatal("the daemon log of a failed fetch names the absolute models path")
 	}
 }
 
