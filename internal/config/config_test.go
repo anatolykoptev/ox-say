@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -1151,5 +1152,38 @@ func TestCleanModelsReadyNeedsTheMatchingMarker(t *testing.T) {
 	}
 	if want := filepath.Join(c.Home, "models", "clean"); c.CleanModelsDir() != want {
 		t.Fatalf("CleanModelsDir %s, want %s", c.CleanModelsDir(), want)
+	}
+}
+
+// CleanModelsBytes is display text only, so nothing checked it against the files it describes (#457.3). Where
+// the --clean-only set is installed — its marker names CleanModelsRevision — every regular file under
+// mossformer2-se-48k except the marker must sum to it: the 8 model files and 4 documents the pinned list
+// fetches. Where the set is not installed there is nothing to sum and the test skips.
+// Mutation: config.go, change one digit of CleanModelsBytes -> RED on a host with the set installed (and on a
+// fabricated OX_SAY_HOME whose marker is right but whose files are not the pinned set's size).
+func TestCleanModelsBytesIsTheInstalledSum(t *testing.T) {
+	c := &Config{Home: Home()}
+	if !c.CleanModelsReady() {
+		t.Skip("the clean model set is not installed on this host")
+	}
+	var sum int64
+	var files int
+	err := filepath.WalkDir(filepath.Join(c.CleanModelsDir(), "mossformer2-se-48k"), func(_ string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := e.Info()
+		if err != nil || !info.Mode().IsRegular() || e.Name() == ".ox-say-revision" {
+			return err
+		}
+		sum += info.Size()
+		files++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum != CleanModelsBytes || files != 12 {
+		t.Errorf("the installed clean set is %d files and %d bytes; CleanModelsBytes says %d in 12 files", files, sum, CleanModelsBytes)
 	}
 }
