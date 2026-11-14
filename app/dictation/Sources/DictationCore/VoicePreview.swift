@@ -112,6 +112,9 @@ public final class VoiceLibrarySession {
     private let text: (L10nKey) -> String
     /// Counts every change of what a list read may still show: a read applies only if no change came after it began.
     private var epoch = 0
+    /// Daemon writes (rename, delete) on the wire: a list read that answers while one runs may carry the list from
+    /// before that write landed, even though it took the newer epoch.
+    private var writesInFlight = 0
     private var previewEpoch = 0
     /// Set by the first list read that lands: only then do `entries` say what the daemon holds.
     private var everLoaded = false
@@ -140,12 +143,14 @@ public final class VoiceLibrarySession {
         let mine = epoch
         do {
             let list = try await ops.list()
-            guard mine == epoch else { return }
+            // An answer that arrived while a write was on the wire may predate that write: it is dropped too.
+            guard mine == epoch, writesInFlight == 0 else { return }
             entries = list
             load = .loaded
             everLoaded = true
         } catch {
-            guard mine == epoch else { return }
+            // A failed read mid-write says nothing about reachability: the post-write read decides `load`.
+            guard mine == epoch, writesInFlight == 0 else { return }
             load = .failed(sentence(error))
         }
     }
@@ -158,12 +163,16 @@ public final class VoiceLibrarySession {
         epoch += 1
         entries = entries.map { $0.id == id ? VoiceEntry(id: $0.id, label: clean, kind: $0.kind, created: $0.created, engine: $0.engine) : $0 }
         do {
+            writesInFlight += 1
+            defer { writesInFlight -= 1 }
             try await ops.setLabel(id, clean)
         } catch {
             // The PATCH may have landed despite the lost answer: one re-read shows what the daemon stored.
             await reload()
             return sentence(error)
         }
+        // The PATCH returned: a read that began while it was on the wire is stale even now.
+        epoch += 1
         await reload()
         return nil
     }
@@ -173,17 +182,23 @@ public final class VoiceLibrarySession {
     public func delete(id: String) async -> String? {
         // Gone from the list at once, and a read that began earlier is stale, even if the next read fails.
         epoch += 1
+        let held = entries
         entries.removeAll { $0.id == id }
         if playingID == id { stopPreview() }
         do {
+            writesInFlight += 1
+            defer { writesInFlight -= 1 }
             try await ops.delete(id)
         } catch StudioError.refused(let status, _) where status == 404 {
             // Already gone: the cleanup stands.
         } catch {
-            // Refused: put back what the daemon still holds.
+            // Refused: put back what was on screen — a re-read may fail and must not hide a voice the daemon kept.
+            entries = held
             await reload()
             return sentence(error)
         }
+        // The delete returned: a read that began while it was on the wire is stale even now.
+        epoch += 1
         let before = readPicks()
         let cleaned = VoicePicksCleanup.afterDelete(id: id, russian: before.russian, english: before.english)
         let after = ReadAloudPicks(russian: cleaned.russian, english: cleaned.english)

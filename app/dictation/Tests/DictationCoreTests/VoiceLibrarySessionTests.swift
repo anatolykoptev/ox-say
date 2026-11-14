@@ -372,6 +372,109 @@ final class VoiceLibrarySessionTests: XCTestCase {
         XCTAssertEqual(s.entries.map(\.label), ["New", "b"], "the stale answer must not bring the old label back")
     }
 
+    /// Issue #431: a read that begins while the delete is still on the wire takes the new epoch, but the daemon
+    /// answered it before the write landed — its list still holds the deleted voice. The `writesInFlight` guard
+    /// drops it even though its epoch is current; then the post-write read fails and nothing brings the voice back.
+    /// Mutation: the `writesInFlight == 0` guard in `reload` gone (or `writesInFlight += 1` in `delete`) -> RED.
+    func testAReadBegunDuringADeleteCannotResurrectTheVoice() async {
+        let fake = Fake(voices: [entry("a"), entry("b")])
+        let deleteCall = AsyncGate<Void>()
+        let midRead = AsyncGate<[VoiceEntry]>()
+        var calls = 0
+        let s = VoiceLibrarySession(
+            ops: VoiceLibraryOps(
+                list: { [unowned fake] in
+                    calls += 1
+                    switch calls {
+                    case 1: return fake.voices
+                    case 2: return await midRead.wait()
+                    default: throw StudioError.daemonUnreachable
+                    }
+                },
+                setLabel: { _, _ in },
+                delete: { [unowned fake] id in
+                    await deleteCall.wait()
+                    fake.voices.removeAll { $0.id == id }
+                },
+                speak: { _, _, _ in Data() }),
+            readPicks: { ReadAloudPicks(russian: nil, english: nil) }, writePicks: { _ in },
+            text: ShippedStrings.localizer("en"))
+        await s.reload()
+        let deleting = Task { await s.delete(id: "a") }
+        await deleteCall.waiting()
+        let racing = Task { await s.reload() }
+        await midRead.waiting()
+        midRead.open([entry("a"), entry("b")])
+        _ = await racing.value
+        deleteCall.open(())
+        let notice = await deleting.value
+        XCTAssertNil(notice)
+        XCTAssertEqual(s.entries.map(\.id), ["b"], "the mid-write read's stale list must not resurrect the voice")
+    }
+
+    /// The rename analogue: the racing read's answer carries the label from before the PATCH landed, and the
+    /// post-write read fails — the new label must not be undone.
+    /// Mutation: the `writesInFlight == 0` guard in `reload` gone (or `writesInFlight += 1` in `rename`) -> RED.
+    func testAReadBegunDuringARenameCannotBringTheOldLabelBack() async {
+        let fake = Fake(voices: [entry("a", "Old"), entry("b")])
+        let labelCall = AsyncGate<Void>()
+        let midRead = AsyncGate<[VoiceEntry]>()
+        var calls = 0
+        let s = VoiceLibrarySession(
+            ops: VoiceLibraryOps(
+                list: { [unowned fake] in
+                    calls += 1
+                    switch calls {
+                    case 1: return fake.voices
+                    case 2: return await midRead.wait()
+                    default: throw StudioError.daemonUnreachable
+                    }
+                },
+                setLabel: { [unowned fake] id, label in
+                    await labelCall.wait()
+                    fake.voices = fake.voices.map { $0.id == id ? VoiceEntry(id: id, label: label, kind: $0.kind) : $0 }
+                },
+                delete: { _ in },
+                speak: { _, _, _ in Data() }),
+            readPicks: { ReadAloudPicks(russian: nil, english: nil) }, writePicks: { _ in },
+            text: ShippedStrings.localizer("en"))
+        await s.reload()
+        let renaming = Task { await s.rename(id: "a", label: "New") }
+        await labelCall.waiting()
+        let racing = Task { await s.reload() }
+        await midRead.waiting()
+        midRead.open([entry("a", "Old"), entry("b")])
+        _ = await racing.value
+        labelCall.open(())
+        let notice = await renaming.value
+        XCTAssertNil(notice)
+        XCTAssertEqual(s.entries.map(\.label), ["New", "b"], "the mid-write read's stale list must not undo the label")
+    }
+
+    /// Issue #431: a refused delete puts back the list that was on screen, not whatever a re-read happens to get —
+    /// here the re-read fails, and the voice the daemon still holds must stay visible.
+    /// Mutation: VoiceLibrarySession.delete, `entries = held` on the refused path gone -> RED.
+    func testARefusedDeleteRestoresTheListEvenWhenTheNextReadFails() async {
+        let fake = Fake(voices: [entry("a"), entry("b")])
+        var calls = 0
+        let s = VoiceLibrarySession(
+            ops: VoiceLibraryOps(
+                list: { [unowned fake] in
+                    calls += 1
+                    guard calls == 1 else { throw StudioError.daemonUnreachable }
+                    return fake.voices
+                },
+                setLabel: { _, _ in },
+                delete: { _ in throw StudioError.daemonUnreachable },
+                speak: { _, _, _ in Data() }),
+            readPicks: { ReadAloudPicks(russian: nil, english: nil) }, writePicks: { _ in },
+            text: ShippedStrings.localizer("en"))
+        await s.reload()
+        let notice = await s.delete(id: "a")
+        XCTAssertEqual(notice, StudioError.daemonUnreachable.message(text: ShippedStrings.localizer("en")))
+        XCTAssertEqual(s.entries.map(\.id), ["a", "b"], "a refused delete hides nothing the daemon still holds")
+    }
+
     // MARK: preview
 
     func testAPreviewSpeaksTheSentenceWithThatVoiceInTheLanguage() async {
