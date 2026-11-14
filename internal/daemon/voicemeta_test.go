@@ -293,6 +293,34 @@ func TestVoiceLabelIsTrimmedAndKeptByOtherUpdates(t *testing.T) {
 	}
 }
 
+// A label made only of invisible characters — zero-width spaces, the BOM —
+// reads as blank in the picker, so it stores as "" like a blank label does
+// (#406). A visible character anywhere keeps the label, the U+200D joiner an
+// emoji sequence needs included.
+// Mutation: internal/daemon/voicemeta.go normalizeLabel — delete the
+// hasVisible check -> RED (a zero-width label is stored).
+func TestVoiceLabelAllInvisibleIsNoLabel(t *testing.T) {
+	for name, label := range map[string]string{
+		"zero-width space": "\u200b",
+		"format mix":       "\u200b\ufeff\u2060",
+		"padded invisible": " \u200b ",
+	} {
+		if got, err := normalizeLabel(label); err != nil || got != "" {
+			t.Errorf("%s: normalizeLabel = %q, %v; want \"\", nil", name, got, err)
+		}
+	}
+	for name, label := range map[string]string{
+		"emoji joiner":   "👩‍👧",
+		"zwsp inside":    "a\u200bb",
+		"soft hyphen":    "re\u00adady",
+		"combining mark": "e\u0301tat",
+	} {
+		if got, err := normalizeLabel(label); err != nil || got != label {
+			t.Errorf("%s: normalizeLabel = %q, %v; want %q kept", name, got, err, label)
+		}
+	}
+}
+
 // Mutation F2: internal/daemon/voicemeta.go normalizeLabel — body -> `return nil`
 // -> RED.
 func TestVoiceLabelIsValidated(t *testing.T) {
