@@ -54,6 +54,18 @@ ggml_patches() {
     fi
 }
 
+# stamp_patches: the manifest a tree's rebuild stamp is hashed from — one
+# "<sha256>  <repo-relative path>" line per patch, read on stdin in apply
+# order. The path must be hashed alongside the contents: a rename changes the
+# sorted apply order but not the concatenated contents, and a stamp blind to
+# it would keep a tree patched in the old order.
+stamp_patches() {
+    local p repo=${here%/*}
+    while IFS= read -r p; do
+        printf '%s  %s\n' "$(shasum -a 256 "$p" | cut -d' ' -f1)" "${p#"$repo"/}"
+    done
+}
+
 # Rebuild a source tree whenever its pins or the patches it takes change.
 fresh() {
     local dir=$1 stamp=$2
@@ -193,7 +205,7 @@ rm -f "$out/pins.env"
 
 # --- tts-server (qwentts.cpp) ---
 tts="$work/qwentts"
-stamp=$( { echo "$QWENTTS_REPO $QWENTTS_COMMIT $GGML_REPO $GGML_COMMIT"; ggml_patches qwentts | xargs cat; find "$here/patches/qwentts" -name '*.patch' -type f | LC_ALL=C sort | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
+stamp=$( { echo "$QWENTTS_REPO $QWENTTS_COMMIT $GGML_REPO $GGML_COMMIT"; { ggml_patches qwentts; find "$here/patches/qwentts" -name '*.patch' -type f | LC_ALL=C sort; } | stamp_patches; } | shasum -a 256 | cut -d' ' -f1)
 if ! fresh "$tts" "$stamp"; then
     rm -rf "$tts"
     git clone --quiet "$QWENTTS_REPO" "$tts"
@@ -254,7 +266,7 @@ echo "built $out/tts-server"
 
 # --- ox-stt (whisper.cpp, vendored ggml) ---
 stt="$work/whisper.cpp"
-stamp=$( { echo "$WHISPER_REPO $WHISPER_COMMIT"; ggml_patches whisper | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
+stamp=$( { echo "$WHISPER_REPO $WHISPER_COMMIT"; ggml_patches whisper | stamp_patches; } | shasum -a 256 | cut -d' ' -f1)
 if ! fresh "$stt" "$stamp"; then
     rm -rf "$stt"
     git clone --quiet "$WHISPER_REPO" "$stt"
@@ -310,7 +322,7 @@ echo "built $out/ox-align"
 # library lookup keys on argv[0] (patches/llamacpp/0001), and every engine in
 # out/ needs a name of its own.
 ll="$work/llama.cpp"
-stamp=$( { echo "$LLAMACPP_REPO $LLAMACPP_COMMIT"; find "$here/patches/llamacpp" -name '*.patch' -type f | LC_ALL=C sort | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
+stamp=$( { echo "$LLAMACPP_REPO $LLAMACPP_COMMIT"; find "$here/patches/llamacpp" -name '*.patch' -type f | LC_ALL=C sort | stamp_patches; } | shasum -a 256 | cut -d' ' -f1)
 if ! fresh "$ll" "$stamp"; then
     rm -rf "$ll"
     git clone --quiet "$LLAMACPP_REPO" "$ll"
@@ -426,7 +438,7 @@ copy_audiocpp_licenses() {
 # (engine/want-audiocpp.sh).
 if audiocpp_gate "$arch" "$out"; then
     ac="$work/audio.cpp"
-    stamp=$( { echo "$AUDIOCPP_REPO $AUDIOCPP_COMMIT"; find "$here/patches/audiocpp" -name '*.patch' -type f | LC_ALL=C sort | xargs cat; } | shasum -a 256 | cut -d' ' -f1)
+    stamp=$( { echo "$AUDIOCPP_REPO $AUDIOCPP_COMMIT"; find "$here/patches/audiocpp" -name '*.patch' -type f | LC_ALL=C sort | stamp_patches; } | shasum -a 256 | cut -d' ' -f1)
     if ! fresh "$ac" "$stamp"; then
         rm -rf "$ac"
         git clone --quiet "$AUDIOCPP_REPO" "$ac"

@@ -23,6 +23,9 @@
 #     the engines that were built" fails (GGML_REPO= is missing from the stamp)
 #   * engine/build.sh: drop `--cors-origins` from the check_help_flags "$out/ox-llm" line — "checks every flag the
 #     daemon passes" fails (the flags are read from internal/daemon/meetings.go notesServerArgs)
+#   * engine/build.sh: revert a rebuild stamp to hashing the concatenated patch contents (`| xargs cat`
+#     instead of `| stamp_patches`) — "a patch rename (same contents) changes the rebuild stamp" fails
+#     (a rename changes the sorted apply order but not the contents)
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -153,6 +156,40 @@ n=$(grep -cE '^rm -f "\$out/pins.env"' "$root/engine/build.sh" || true)
 check "build.sh drops a stale pins stamp first" "${n:-x}" 1
 last=$(grep -nE '^(check_patched|write_pins_stamp|echo "built )|^[[:space:]]+(check_patched|echo "built )' "$root/engine/build.sh" | tail -1 | grep -c 'write_pins_stamp' || true)
 check "build.sh writes the pins stamp last" "${last:-x}" 1
+
+# --- The rebuild stamps hash the patch paths, not just the contents ------------------------------------------
+# Renaming a patch changes the sorted apply order, so a stamp of the concatenated contents alone would
+# stay the same and reuse a tree patched in the old order. ggml_patches and stamp_patches are extracted
+# from build.sh and run on a fixture — the shipped code, not a copy of it.
+eval "$(awk '/^ggml_patches\(\)|^stamp_patches\(\)/,/^\}/' "$root/engine/build.sh")"
+check "build.sh defines stamp_patches" "$(type -t stamp_patches)" function
+stf="$tmp/patch-stamp"
+mkdir -p "$stf/engine/patches/ggml" "$stf/engine/patches/ggml-whisper"
+printf 'first patch\n'  >"$stf/engine/patches/ggml/0001-first.patch"
+printf 'second patch\n' >"$stf/engine/patches/ggml/0002-second.patch"
+printf 'tree patch\n'   >"$stf/engine/patches/ggml-whisper/0001-tree.patch"
+# shellcheck disable=SC2034 # read by the eval'd ggml_patches/stamp_patches
+here="$stf/engine"
+man=$(ggml_patches whisper | stamp_patches)
+check "the stamp manifest is the repo-relative paths in apply order" \
+    "$(printf '%s\n' "$man" | sed 's|^[0-9a-f]*  ||')" \
+    "engine/patches/ggml/0001-first.patch
+engine/patches/ggml/0002-second.patch
+engine/patches/ggml-whisper/0001-tree.patch"
+s1=$(ggml_patches whisper | stamp_patches | shasum -a 256 | cut -d' ' -f1)
+mv "$stf/engine/patches/ggml/0002-second.patch" "$stf/engine/patches/ggml/0000-second.patch"
+s2=$(ggml_patches whisper | stamp_patches | shasum -a 256 | cut -d' ' -f1)
+rc=0; { [ -n "$s1" ] && [ "$s1" != "$s2" ]; } || rc=1
+check "a patch rename (same contents) changes the rebuild stamp" "$rc" 0
+printf 'changed patch\n' >"$stf/engine/patches/ggml/0000-second.patch"
+s3=$(ggml_patches whisper | stamp_patches | shasum -a 256 | cut -d' ' -f1)
+rc=0; { [ -n "$s2" ] && [ "$s2" != "$s3" ]; } || rc=1
+check "a patch content change still changes the rebuild stamp" "$rc" 0
+# Every rebuild stamp must hash the manifest; none may hash the bare contents.
+n=$(grep -c 'stamp=.*stamp_patches' "$root/engine/build.sh" || true)
+check "every rebuild stamp hashes the patch manifest" "${n:-x}" 4
+n=$(grep -c 'stamp=.*xargs cat' "$root/engine/build.sh" || true)
+check "no rebuild stamp hashes the bare patch contents" "${n:-x}" 0
 
 # The marker is a literal copied from the patches: the three patches that add the string must still carry it, or
 # every engine build would fail at release time (and the unit test above only compares the constant with itself).
