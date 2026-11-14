@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/anatolykoptev/ox-say/internal/glossary"
+	"github.com/anatolykoptev/ox-say/internal/meeting"
 	"github.com/anatolykoptev/ox-say/internal/stt"
 	"github.com/anatolykoptev/ox-say/internal/testutil"
 	"github.com/anatolykoptev/ox-say/internal/transcripts"
@@ -213,5 +215,81 @@ func TestTranscriptReadAppliesGlossary(t *testing.T) {
 	}
 	if got := get(); got != "zebra quartz sentinel." {
 		t.Fatalf("rejected text = %q, want the raw word back", got)
+	}
+}
+
+// The pair a meeting ran with is on its manifest; every turn it touched —
+// transcript.json, transcript.md and what the notes model read — carries the
+// meant form. meetingFixture's recognizer ends "...about the next steps"; the
+// canned notes quote the plan and the open questions, which this pair does
+// not touch.
+// Mutation: internal/daemon/meetings.go initMeetings, do not pass Deps.Correct -> RED.
+func TestMeetingTranscriptAppliesGlossary(t *testing.T) {
+	d, mux := meetingFixture(t, nil)
+	p, err := d.Glossary.Add("next steps", "action items", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Glossary.Approve(p.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := call(t, mux, http.MethodPost, "/v1/meetings", `{"title":"Plan"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d %s", rec.Code, rec.Body)
+	}
+	var created createMeetingResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	writeTone(t, filepath.Join(created.Dir, meeting.MePCM), 30)
+	if rec := call(t, mux, http.MethodPost, "/v1/meetings/"+created.ID+"/finish", ""); rec.Code != http.StatusAccepted {
+		t.Fatalf("finish = %d %s", rec.Code, rec.Body)
+	}
+	if err := d.Meet.Process(context.Background(), created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = call(t, mux, http.MethodGet, "/v1/meetings/"+created.ID+"?include=transcript", "")
+	var got struct {
+		Status       meeting.Status `json:"status"`
+		TranscriptMD string         `json:"transcript_md"`
+		Glossary     []string       `json:"glossary"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != meeting.StatusDone {
+		t.Fatalf("status = %s (body %s)", got.Status, rec.Body)
+	}
+	if !strings.Contains(got.TranscriptMD, "action items") || strings.Contains(got.TranscriptMD, "next steps") {
+		t.Fatalf("transcript_md = %q", got.TranscriptMD)
+	}
+	if !slices.Contains(got.Glossary, p.ID) {
+		t.Fatalf("manifest glossary = %v, want %q", got.Glossary, p.ID)
+	}
+	// The stored turns carry the same correction: the notes prompt and any
+	// later speakers rename read them back from transcript.json.
+	dir, err := d.Meet.Store.Dir(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, meeting.TranscriptJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var turns []meeting.Turn
+	if err := json.Unmarshal(raw, &turns); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tr := range turns {
+		if strings.Contains(tr.Text, "next steps") {
+			t.Fatalf("a stored turn still says \"next steps\": %q", tr.Text)
+		}
+		found = found || strings.Contains(tr.Text, "action items")
+	}
+	if !found {
+		t.Fatalf("no stored turn says \"action items\": %s", raw)
 	}
 }
